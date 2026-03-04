@@ -76,7 +76,7 @@ select, input[type=date] { background: var(--surface2); border: 1px solid var(--
 .card[data-cat="env"] .card-value { color: var(--env); }
 
 /* ── Featured charts ── */
-#featured-charts { margin-top: 20px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+#featured-charts { margin-top: 20px; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
 .feat-chart { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px; cursor: pointer; transition: border-color 0.15s; }
 .feat-chart:hover { border-color: var(--accent); }
 .feat-chart-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); margin-bottom: 10px; }
@@ -105,6 +105,7 @@ select, input[type=date] { background: var(--surface2); border: 1px solid var(--
   #hamburger { display: flex; }
   #chart-view { padding: 10px 12px; gap: 8px; }
   #dashboard-view { padding: 12px; }
+  #cards-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
 }
 </style>
 </head>
