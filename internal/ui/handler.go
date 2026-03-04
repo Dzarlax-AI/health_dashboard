@@ -28,10 +28,7 @@ func New(db *storage.DB, password string) *Handler {
 
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/login", h.login)
-	mux.HandleFunc("/ui", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/ui/", http.StatusMovedPermanently)
-	})
-	mux.HandleFunc("/ui/", h.guard(h.page))
+	mux.HandleFunc("/", h.guard(h.page))
 	mux.HandleFunc("/api/metrics", h.guard(h.listMetrics))
 	mux.HandleFunc("/api/metrics/data", h.guard(h.metricData))
 	mux.HandleFunc("/api/dashboard", h.guard(h.dashboard))
@@ -55,7 +52,7 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	next := r.URL.Query().Get("next")
 	if next == "" {
-		next = "/ui/"
+		next = "/"
 	}
 
 	if r.Method == http.MethodPost {

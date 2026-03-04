@@ -25,7 +25,7 @@ cp docker-compose.yml docker-compose.override.yml
 docker compose up -d
 ```
 
-Web UI will be available at `http://your-server:8080/ui/`.
+Web UI will be available at `http://your-server:8080/`.
 
 ## Configuration
 
@@ -34,7 +34,7 @@ All configuration is via environment variables in `docker-compose.yml`:
 | Variable | Required | Description |
 |---|---|---|
 | `API_KEY` | Recommended | Protects `/health` (data upload) and `/mcp`. If not set — endpoints are open. |
-| `UI_PASSWORD` | Recommended | Password for the web dashboard at `/ui/`. If not set — UI is open. |
+| `UI_PASSWORD` | Recommended | Password for the web dashboard at `/`. If not set — UI is open. |
 | `DB_PATH` | No | Path to SQLite file. Default: `/app/data/health.db` |
 | `ADDR` | No | Listen address. Default: `:8080` |
 | `BASE_URL` | No | Used in logs for MCP URL. Default: `http://localhost:8080` |
@@ -65,13 +65,13 @@ The app will POST data periodically. Supported metric types:
 
 ## Web Dashboard
 
-Available at `/ui/` — password protected if `UI_PASSWORD` is set.
+Available at `/` — password protected if `UI_PASSWORD` is set.
 
 Features:
 - **Dashboard** — today's metrics with trend vs yesterday, sparklines, and featured 7-day charts
 - **Metric charts** — time series with auto-bucketing (minute / hour / day)
 - **Sidebar** — metrics grouped by category (Heart, Activity, Fitness, Sleep, Environment)
-- URL hash state — shareable links like `/ui/#metric=heart_rate&from=2026-01-01&to=2026-01-31`
+- URL hash state — shareable links like `/#metric=heart_rate&from=2026-01-01&to=2026-01-31`
 
 ## MCP Server
 

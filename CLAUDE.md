@@ -22,7 +22,7 @@ Single binary HTTP server (`cmd/server/main.go`) that wires together three packa
 
 - **`internal/handler`** — receives health data from the Health Auto Export iOS app via `POST /health`. Parses JSON payload into `[]storage.MetricPoint` and writes to DB. Auth via `X-API-Key` header (env `API_KEY`).
 
-- **`internal/ui`** — web dashboard SPA at `/ui/`. Password-protected via cookie (env `UI_PASSWORD`). Login page at `/login`. API endpoints: `/api/dashboard`, `/api/metrics`, `/api/metrics/data`. The entire frontend is a single embedded Go string (`template.go`), using Chart.js 4 from CDN.
+- **`internal/ui`** — web dashboard SPA at `/`. Password-protected via cookie (env `UI_PASSWORD`). Login page at `/login`. API endpoints: `/api/dashboard`, `/api/metrics`, `/api/metrics/data`. The entire frontend is a single embedded Go string (`template.go`), using Chart.js 4 from CDN.
 
 - **`internal/mcpserver`** — MCP Streamable HTTP server at `/mcp` (mark3labs/mcp-go v0.44.1). Auth via `Authorization: Bearer <key>` or `X-API-Key` header (same `API_KEY` env). Tools: `list_metrics`, `get_dashboard`, `get_metric_data`, `summarize_metric`, `sql_query`.
 
