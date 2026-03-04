@@ -6,9 +6,9 @@ data/
 
 # Compiled binaries
 bin/
-migrate
-downsample
-server
+/migrate
+/downsample
+/server
 
 # Claude Code
 .claude/
