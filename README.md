@@ -96,7 +96,20 @@ Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_conf
 }
 ```
 
-Available tools: `list_metrics`, `get_dashboard`, `get_metric_data`, `summarize_metric`, `sql_query`.
+Available tools:
+
+| Tool | Description |
+|---|---|
+| `list_metrics` | List all available metrics with record counts and date ranges. Good starting point. |
+| `get_dashboard` | Today's summary: steps, calories, heart rate, SpO₂, HRV, sleep. Includes trend vs yesterday. |
+| `get_metric_data` | Time series for a single metric. Supports minute / hour / day buckets and AVG / SUM / MIN / MAX aggregation. |
+| `summarize_metric` | Statistical summary (avg, min, max, count) + daily breakdown for the last N days. |
+| `compare_periods` | Compare a metric between two date ranges. Returns values and `change_pct`. Useful for before/after analysis. |
+| `get_sleep_summary` | All sleep phases (deep, REM, core, awake, total) per night in one response. |
+| `find_anomalies` | Days where a metric was statistically unusual (configurable σ threshold). |
+| `get_weekly_summary` | Week-by-week aggregates for one or more metrics. |
+| `get_personal_records` | All-time best and worst values per metric with dates. |
+| `sql_query` | Run any read-only SQL SELECT directly on the database for custom analysis. |
 
 ## Data Downsampling
 
