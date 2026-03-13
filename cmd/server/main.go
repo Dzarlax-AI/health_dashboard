@@ -4,11 +4,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"sync/atomic"
 	"time"
 
 	"health-receiver/internal/handler"
 	"health-receiver/internal/mcpserver"
+	"health-receiver/internal/notify"
 	"health-receiver/internal/storage"
 	"health-receiver/internal/ui"
 )
@@ -56,6 +58,21 @@ func main() {
 			db.BackfillScores(true)
 			log.Println("force backfill: done")
 		}()
+	}
+
+	// Start Telegram report scheduler if credentials are configured.
+	notifyCfg := notify.Config{
+		Token:              os.Getenv("TELEGRAM_TOKEN"),
+		ChatID:             os.Getenv("TELEGRAM_CHAT_ID"),
+		Lang:               getEnv("REPORT_LANG", "en"),
+		MorningWeekdayHour: getEnvInt("REPORT_MORNING_WEEKDAY", 8),
+		MorningWeekendHour: getEnvInt("REPORT_MORNING_WEEKEND", 9),
+		EveningWeekdayHour: getEnvInt("REPORT_EVENING_WEEKDAY", 20),
+		EveningWeekendHour: getEnvInt("REPORT_EVENING_WEEKEND", 21),
+	}
+	if notifyCfg.Enabled() {
+		log.Println("Telegram reports enabled")
+		go runReportScheduler(db, notifyCfg)
 	}
 
 	mux := http.NewServeMux()
@@ -122,9 +139,54 @@ func (s *backfillScheduler) run() {
 	}
 }
 
+// runReportScheduler fires morning and evening Telegram reports on schedule.
+func runReportScheduler(db *storage.DB, cfg notify.Config) {
+	bot := notify.NewBot(cfg.Token, cfg.ChatID)
+	for {
+		now := time.Now()
+		nextMorning := cfg.NextMorning(now)
+		nextEvening := cfg.NextEvening(now)
+
+		var next time.Time
+		isMorning := nextMorning.Before(nextEvening)
+		if isMorning {
+			next = nextMorning
+		} else {
+			next = nextEvening
+		}
+
+		log.Printf("report scheduler: next %s report at %s",
+			map[bool]string{true: "morning", false: "evening"}[isMorning],
+			next.Format("2006-01-02 15:04"))
+
+		time.Sleep(time.Until(next))
+
+		if isMorning {
+			log.Println("report scheduler: sending morning report…")
+			if err := notify.SendMorning(bot, db, cfg.Lang); err != nil {
+				log.Printf("report scheduler: morning send error: %v", err)
+			}
+		} else {
+			log.Println("report scheduler: sending evening report…")
+			if err := notify.SendEvening(bot, db, cfg.Lang); err != nil {
+				log.Printf("report scheduler: evening send error: %v", err)
+			}
+		}
+	}
+}
+
 func getEnv(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func getEnvInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return fallback
 }

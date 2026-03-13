@@ -93,6 +93,13 @@ Dates arrive with timezone offset: `"2026-03-04 09:02:00 +0100"`. SQLite's `strf
 | `API_KEY` | — | Auth for `/health` and `/mcp` |
 | `UI_PASSWORD` | — | Auth for web UI |
 | `BASE_URL` | `http://localhost:8080` | Used for MCP server URL in logs |
+| `TELEGRAM_TOKEN` | — | Telegram bot token; if set with `TELEGRAM_CHAT_ID` — enables daily reports |
+| `TELEGRAM_CHAT_ID` | — | Recipient chat/user ID |
+| `REPORT_LANG` | `en` | Report language: en/ru/sr |
+| `REPORT_MORNING_WEEKDAY` | `8` | Morning report hour on weekdays |
+| `REPORT_MORNING_WEEKEND` | `9` | Morning report hour on weekends |
+| `REPORT_EVENING_WEEKDAY` | `20` | Evening report hour on weekdays |
+| `REPORT_EVENING_WEEKEND` | `21` | Evening report hour on weekends |
 
 ## One-time DB Migrations
 

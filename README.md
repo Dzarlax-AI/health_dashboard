@@ -81,6 +81,13 @@ All configuration is via environment variables in `docker-compose.yml`:
 | `DB_PATH` | No | Path to SQLite file. Default: `/app/data/health.db` |
 | `ADDR` | No | Listen address. Default: `:8080` |
 | `BASE_URL` | No | Used in logs for MCP URL. Default: `http://localhost:8080` |
+| `TELEGRAM_TOKEN` | No | Telegram bot token for daily reports. If not set — reports disabled. |
+| `TELEGRAM_CHAT_ID` | No | Telegram chat/user ID to send reports to. |
+| `REPORT_LANG` | No | Report language: `en`, `ru`, `sr`. Default: `en`. |
+| `REPORT_MORNING_WEEKDAY` | No | Hour (0–23) for morning sleep report on weekdays. Default: `8`. |
+| `REPORT_MORNING_WEEKEND` | No | Hour (0–23) for morning sleep report on weekends. Default: `9`. |
+| `REPORT_EVENING_WEEKDAY` | No | Hour (0–23) for evening day summary on weekdays. Default: `20`. |
+| `REPORT_EVENING_WEEKEND` | No | Hour (0–23) for evening day summary on weekends. Default: `21`. |
 
 ## Health Auto Export Setup
 
@@ -146,6 +153,15 @@ Available tools:
 | `get_weekly_summary` | Week-by-week aggregates for one or more metrics. |
 | `get_personal_records` | All-time best and worst values per metric with dates. |
 | `sql_query` | Run any read-only SQL SELECT directly on the database. Schemas for `daily_scores`, `hourly_metrics`, `minute_metrics`, and `metric_points` are documented in the tool description. |
+
+## Telegram Reports
+
+When `TELEGRAM_TOKEN` and `TELEGRAM_CHAT_ID` are set, the server sends two daily reports:
+
+- **Morning** (weekday 08:00 / weekend 09:00) — sleep duration, phases (deep/REM/core/awake), readiness score, HRV and RHR
+- **Evening** (weekday 20:00 / weekend 21:00) — steps, calories, exercise minutes, cardio summary, top insights
+
+Times are configurable per weekday/weekend via env vars. To get your `TELEGRAM_CHAT_ID`, send any message to your bot and call `https://api.telegram.org/bot<TOKEN>/getUpdates`.
 
 ## Maintenance
 
