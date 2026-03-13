@@ -10,12 +10,13 @@ type TableStat struct {
 
 // CacheStatus is returned by GetCacheStatus and shown in the admin panel.
 type CacheStatus struct {
-	ScoreVersion int       `json:"score_version"`
-	LastSync     string    `json:"last_sync,omitempty"`
-	RawPoints    TableStat `json:"raw_points"`
-	MinuteCache  TableStat `json:"minute_cache"`
-	HourlyCache  TableStat `json:"hourly_cache"`
-	DailyScores  TableStat `json:"daily_scores"`
+	ScoreVersion    int       `json:"score_version"`
+	LastSync        string    `json:"last_sync,omitempty"`
+	RawPoints       TableStat `json:"raw_points"`
+	MinuteCache     TableStat `json:"minute_cache"`
+	HourlyCache     TableStat `json:"hourly_cache"`
+	DailyScores     TableStat `json:"daily_scores"`
+	TelegramEnabled bool      `json:"telegram_enabled"`
 }
 
 // GetCacheStatus returns row counts and date ranges for all cache tables.

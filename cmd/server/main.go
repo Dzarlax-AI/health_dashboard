@@ -70,14 +70,22 @@ func main() {
 		EveningWeekdayHour: getEnvInt("REPORT_EVENING_WEEKDAY", 20),
 		EveningWeekendHour: getEnvInt("REPORT_EVENING_WEEKEND", 21),
 	}
+	var testNotifyFn func(kind string) error
 	if notifyCfg.Enabled() {
 		log.Println("Telegram reports enabled")
 		go runReportScheduler(db, notifyCfg)
+		bot := notify.NewBot(notifyCfg.Token, notifyCfg.ChatID)
+		testNotifyFn = func(kind string) error {
+			if kind == "evening" {
+				return notify.SendEvening(bot, db, notifyCfg.Lang)
+			}
+			return notify.SendMorning(bot, db, notifyCfg.Lang)
+		}
 	}
 
 	mux := http.NewServeMux()
 	handler.New(db, apiKey, onNewData).Register(mux)
-	ui.New(db, uiPassword, backfillFn).Register(mux)
+	ui.New(db, uiPassword, backfillFn, testNotifyFn).Register(mux)
 	mcpserver.Register(mux, db, baseURL, apiKey)
 
 	logged := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

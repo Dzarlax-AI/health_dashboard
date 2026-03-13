@@ -62,7 +62,11 @@ var I18N = {
     admin_score_version:'Score version', admin_last_sync:'Last sync',
     admin_incremental_title:'Update cache', admin_incremental_desc:'Fill missing entries since last run. Fast, safe to run anytime.',
     admin_force_title:'Rebuild all', admin_force_desc:'Clear and recompute all caches from raw data. Use after formula changes.',
-    admin_run:'Run', admin_force_run:'Rebuild'
+    admin_run:'Run', admin_force_run:'Rebuild',
+    admin_notify_title:'Telegram reports',
+    admin_notify_morning_title:'Morning report', admin_notify_morning_desc:'Send a test sleep summary right now.',
+    admin_notify_evening_title:'Evening report', admin_notify_evening_desc:'Send a test day summary right now.',
+    admin_notify_send:'Send test'
   },
   ru: {
     app_title:'\u0417\u0434\u043e\u0440\u043e\u0432\u044c\u0435', explore:'\u041f\u043e\u0438\u0441\u043a', loading:'\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430 \u0434\u0430\u043d\u043d\u044b\u0445',
@@ -139,7 +143,11 @@ var I18N = {
     admin_score_version:'\u0412\u0435\u0440\u0441\u0438\u044f \u0441\u043a\u043e\u0440\u0438\u043d\u0433\u0430', admin_last_sync:'\u041f\u043e\u0441\u043b\u0435\u0434\u043d\u0438\u0439 \u0441\u0438\u043d\u0445',
     admin_incremental_title:'\u041e\u0431\u043d\u043e\u0432\u0438\u0442\u044c \u043a\u044d\u0448', admin_incremental_desc:'\u0414\u043e\u0437\u0430\u043f\u043e\u043b\u043d\u0438\u0442\u044c \u043f\u0440\u043e\u043f\u0443\u0449\u0435\u043d\u043d\u044b\u0435 \u0437\u0430\u043f\u0438\u0441\u0438. \u0411\u044b\u0441\u0442\u0440\u043e, \u0431\u0435\u0437\u043e\u043f\u0430\u0441\u043d\u043e.',
     admin_force_title:'\u041f\u0435\u0440\u0435\u0441\u0442\u0440\u043e\u0438\u0442\u044c \u0432\u0441\u0451', admin_force_desc:'\u041e\u0447\u0438\u0441\u0442\u0438\u0442\u044c \u0438 \u043f\u0435\u0440\u0435\u0441\u0447\u0438\u0442\u0430\u0442\u044c \u0432\u0441\u0435 \u043a\u044d\u0448\u0438. \u0418\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u0439\u0442\u0435 \u043f\u043e\u0441\u043b\u0435 \u0438\u0437\u043c\u0435\u043d\u0435\u043d\u0438\u044f \u0444\u043e\u0440\u043c\u0443\u043b\u044b.',
-    admin_run:'\u0417\u0430\u043f\u0443\u0441\u0442\u0438\u0442\u044c', admin_force_run:'\u041f\u0435\u0440\u0435\u0441\u0442\u0440\u043e\u0438\u0442\u044c'
+    admin_run:'\u0417\u0430\u043f\u0443\u0441\u0442\u0438\u0442\u044c', admin_force_run:'\u041f\u0435\u0440\u0435\u0441\u0442\u0440\u043e\u0438\u0442\u044c',
+    admin_notify_title:'Telegram-\u043e\u0442\u0447\u0451\u0442\u044b',
+    admin_notify_morning_title:'\u0423\u0442\u0440\u0435\u043d\u043d\u0438\u0439 \u043e\u0442\u0447\u0451\u0442', admin_notify_morning_desc:'\u041e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c \u0442\u0435\u0441\u0442\u043e\u0432\u0443\u044e \u0441\u0432\u043e\u0434\u043a\u0443 \u043f\u043e \u0441\u043d\u0443 \u0441\u0435\u0439\u0447\u0430\u0441.',
+    admin_notify_evening_title:'\u0412\u0435\u0447\u0435\u0440\u043d\u0438\u0439 \u043e\u0442\u0447\u0451\u0442', admin_notify_evening_desc:'\u041e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c \u0442\u0435\u0441\u0442\u043e\u0432\u0443\u044e \u0441\u0432\u043e\u0434\u043a\u0443 \u0437\u0430 \u0434\u0435\u043d\u044c \u0441\u0435\u0439\u0447\u0430\u0441.',
+    admin_notify_send:'\u041e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c \u0442\u0435\u0441\u0442'
   },
   sr: {
     app_title:'Zdravlje', explore:'Pretra\u017ei', loading:'U\u010ditavanje podataka',
@@ -198,7 +206,11 @@ var I18N = {
     lbl_total:'Ukupno', lbl_deep:'Duboki', lbl_core:'Osnovni',
     how_it_works:'Kako to radi',
     health_sections:'Pregled zdravlja',
-    at_a_glance:'Danas'
+    at_a_glance:'Danas',
+    admin_notify_title:'Telegram izve\u0161taji',
+    admin_notify_morning_title:'Jutarnji izve\u0161taj', admin_notify_morning_desc:'Po\u0161alji test san sada.',
+    admin_notify_evening_title:'Ve\u010dernji izve\u0161taj', admin_notify_evening_desc:'Po\u0161alji test pregled dana sada.',
+    admin_notify_send:'Po\u0161alji test'
   }
 };
 function t(key) {

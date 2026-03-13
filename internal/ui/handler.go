@@ -13,19 +13,20 @@ import (
 )
 
 type Handler struct {
-	db       *storage.DB
-	password string // empty = no auth
-	token    string // sha256(password), used as cookie value
-	backfill func(force bool)
+	db          *storage.DB
+	password    string // empty = no auth
+	token       string // sha256(password), used as cookie value
+	backfill    func(force bool)
+	testNotify  func(kind string) error // nil when Telegram not configured
 }
 
-func New(db *storage.DB, password string, backfill func(force bool)) *Handler {
+func New(db *storage.DB, password string, backfill func(force bool), testNotify func(kind string) error) *Handler {
 	var token string
 	if password != "" {
 		h := sha256.Sum256([]byte(password))
 		token = hex.EncodeToString(h[:])
 	}
-	return &Handler{db: db, password: password, token: token, backfill: backfill}
+	return &Handler{db: db, password: password, token: token, backfill: backfill, testNotify: testNotify}
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
@@ -39,6 +40,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/readiness-history", h.guard(h.readinessHistory))
 	mux.HandleFunc("/api/admin/status", h.guard(h.adminStatus))
 	mux.HandleFunc("/api/admin/backfill", h.guard(h.adminBackfill))
+	mux.HandleFunc("/api/admin/test-notify", h.guard(h.adminTestNotify))
 }
 
 func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
@@ -226,6 +228,7 @@ func (h *Handler) adminStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	status.TelegramEnabled = h.testNotify != nil
 	jsonResponse(w, status)
 }
 
@@ -245,6 +248,26 @@ func (h *Handler) adminBackfill(w http.ResponseWriter, r *http.Request) {
 		msg = "full rebuild started"
 	}
 	jsonResponse(w, map[string]string{"status": "ok", "message": msg})
+}
+
+func (h *Handler) adminTestNotify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.testNotify == nil {
+		jsonResponse(w, map[string]string{"status": "error", "message": "Telegram not configured (TELEGRAM_TOKEN / TELEGRAM_CHAT_ID missing)"})
+		return
+	}
+	kind := r.URL.Query().Get("kind") // "morning" or "evening"
+	if kind != "morning" && kind != "evening" {
+		kind = "morning"
+	}
+	if err := h.testNotify(kind); err != nil {
+		jsonResponse(w, map[string]string{"status": "error", "message": err.Error()})
+		return
+	}
+	jsonResponse(w, map[string]string{"status": "ok", "message": "message sent"})
 }
 
 func jsonResponse(w http.ResponseWriter, v any) {

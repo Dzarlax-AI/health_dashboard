@@ -171,6 +171,29 @@ const htmlBody = `
           <div id="admin-msg" style="display:none"></div>
         </div>
 
+        <div class="admin-section" id="admin-notify-section" style="display:none">
+          <div class="section-title" data-i18n="admin_notify_title">Telegram reports</div>
+          <div class="admin-actions">
+            <div class="admin-action-card">
+              <div class="admin-action-title" data-i18n="admin_notify_morning_title">Morning report</div>
+              <div class="admin-action-desc" data-i18n="admin_notify_morning_desc">Send a test sleep summary right now.</div>
+              <button class="admin-btn primary" onclick="triggerTestNotify('morning')" id="btn-notify-morning">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 12 19.79 19.79 0 0 1 1.65 3.4 2 2 0 0 1 3.62 1h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 8.6a16 16 0 0 0 6 6l.96-.96a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+                <span data-i18n="admin_notify_send">Send test</span>
+              </button>
+            </div>
+            <div class="admin-action-card">
+              <div class="admin-action-title" data-i18n="admin_notify_evening_title">Evening report</div>
+              <div class="admin-action-desc" data-i18n="admin_notify_evening_desc">Send a test day summary right now.</div>
+              <button class="admin-btn primary" onclick="triggerTestNotify('evening')" id="btn-notify-evening">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 12 19.79 19.79 0 0 1 1.65 3.4 2 2 0 0 1 3.62 1h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 8.6a16 16 0 0 0 6 6l.96-.96a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+                <span data-i18n="admin_notify_send">Send test</span>
+              </button>
+            </div>
+          </div>
+          <div id="admin-notify-msg" style="display:none"></div>
+        </div>
+
       </div>
     </div>
   </div>

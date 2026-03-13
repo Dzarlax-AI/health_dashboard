@@ -34,6 +34,11 @@ function loadAdminStatus() {
 }
 
 function renderAdminStatus(d) {
+  // Show Telegram section only when configured server-side.
+  if (d.telegram_enabled) {
+    $('admin-notify-section').style.display = 'block';
+  }
+
   var rows = [
     { label: t('admin_raw'),    stat: d.raw_points,  icon: '&#128190;' },
     { label: t('admin_minute'), stat: d.minute_cache, icon: '&#9201;' },
@@ -90,6 +95,29 @@ function triggerBackfill(force) {
       btn.disabled = false;
       // Refresh stats after a short delay to show updated row counts.
       setTimeout(loadAdminStatus, 3000);
+    })
+    .catch(function(e) {
+      msg.textContent = String(e);
+      msg.className = 'admin-msg-err';
+      msg.style.display = 'block';
+      btn.disabled = false;
+    });
+}
+
+function triggerTestNotify(kind) {
+  var btnId = kind === 'morning' ? 'btn-notify-morning' : 'btn-notify-evening';
+  var btn = $(btnId);
+  btn.disabled = true;
+  var msg = $('admin-notify-msg');
+  msg.style.display = 'none';
+
+  fetch('/api/admin/test-notify?kind=' + kind, { method: 'POST' })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      msg.textContent = d.message || 'Sent';
+      msg.className = d.status === 'ok' ? 'admin-msg-ok' : 'admin-msg-err';
+      msg.style.display = 'block';
+      btn.disabled = false;
     })
     .catch(function(e) {
       msg.textContent = String(e);
