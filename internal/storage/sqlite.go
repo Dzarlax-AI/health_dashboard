@@ -4,7 +4,9 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
+	"health-receiver/internal/health"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -340,6 +342,90 @@ func (s *DB) QueryReadOnly(query string) ([]map[string]any, error) {
 		result = append(result, row)
 	}
 	return result, rows.Err()
+}
+
+// GetHealthBriefing fetches raw metric time series from the DB and delegates
+// all scoring and insight computation to the health package.
+// lang selects the output language ("en", "ru", "sr").
+func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
+	var lastDate string
+	if err := s.db.QueryRow(`SELECT MAX(substr(date,1,10)) FROM metric_points WHERE qty > 0`).Scan(&lastDate); err != nil || lastDate == "" {
+		return &health.BriefingResponse{Greeting: "Welcome! No health data yet."}, nil
+	}
+
+	getDailyValues := func(metric string, days int, agg string) []float64 {
+		rows, err := s.db.Query(`
+			SELECT `+agg+`(qty)
+			FROM metric_points
+			WHERE metric_name = ? AND substr(date,1,10) >= ? AND qty > 0
+			GROUP BY substr(date,1,10)
+			ORDER BY substr(date,1,10) DESC
+			LIMIT ?`,
+			metric, subtractDays(lastDate, days), days)
+		if err != nil {
+			return nil
+		}
+		defer rows.Close()
+		var vals []float64
+		for rows.Next() {
+			var v float64
+			if err := rows.Scan(&v); err == nil {
+				vals = append(vals, v)
+			}
+		}
+		return vals
+	}
+
+	getDailyWithDates := func(metric string, days int, agg string) []health.DatedValue {
+		rows, err := s.db.Query(`
+			SELECT substr(date,1,10), `+agg+`(qty)
+			FROM metric_points
+			WHERE metric_name = ? AND substr(date,1,10) >= ? AND qty > 0
+			GROUP BY substr(date,1,10)
+			ORDER BY substr(date,1,10) DESC
+			LIMIT ?`,
+			metric, subtractDays(lastDate, days), days)
+		if err != nil {
+			return nil
+		}
+		defer rows.Close()
+		var out []health.DatedValue
+		for rows.Next() {
+			var dv health.DatedValue
+			if err := rows.Scan(&dv.Date, &dv.Val); err == nil {
+				out = append(out, dv)
+			}
+		}
+		return out
+	}
+
+	data := health.RawMetrics{
+		LastDate:       lastDate,
+		HRV:            getDailyValues("heart_rate_variability", 30, "AVG"),
+		RHR:            getDailyValues("resting_heart_rate", 30, "AVG"),
+		Sleep:          getDailyValues("sleep_total", 30, "SUM"),
+		Deep:           getDailyValues("sleep_deep", 30, "SUM"),
+		REM:            getDailyValues("sleep_rem", 30, "SUM"),
+		Awake:          getDailyValues("sleep_awake", 30, "SUM"),
+		Steps:          getDailyValues("step_count", 30, "SUM"),
+		Cal:            getDailyValues("active_energy", 30, "SUM"),
+		Exercise:       getDailyValues("apple_exercise_time", 30, "SUM"),
+		SpO2:           getDailyValues("blood_oxygen_saturation", 30, "AVG"),
+		VO2:            getDailyValues("vo2_max", 30, "AVG"),
+		Resp:           getDailyValues("respiratory_rate", 30, "AVG"),
+		StepsWithDates: getDailyWithDates("step_count", 7, "SUM"),
+		HRVWithDates:   getDailyWithDates("heart_rate_variability", 7, "AVG"),
+	}
+
+	return health.ComputeBriefing(data, lang), nil
+}
+
+func subtractDays(dateStr string, days int) string {
+	t, err := time.Parse("2006-01-02", dateStr)
+	if err != nil {
+		return dateStr
+	}
+	return t.AddDate(0, 0, -days).Format("2006-01-02")
 }
 
 func (s *DB) Close() error {

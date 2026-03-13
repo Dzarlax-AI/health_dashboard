@@ -32,6 +32,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/metrics", h.guard(h.listMetrics))
 	mux.HandleFunc("/api/metrics/data", h.guard(h.metricData))
 	mux.HandleFunc("/api/dashboard", h.guard(h.dashboard))
+	mux.HandleFunc("/api/health-briefing", h.guard(h.healthBriefing))
 }
 
 func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
@@ -160,6 +161,19 @@ func (h *Handler) metricData(w http.ResponseWriter, r *http.Request) {
 		"agg":    aggFunc,
 		"points": points,
 	})
+}
+
+func (h *Handler) healthBriefing(w http.ResponseWriter, r *http.Request) {
+	lang := r.URL.Query().Get("lang")
+	if lang == "" {
+		lang = "en"
+	}
+	resp, err := h.db.GetHealthBriefing(lang)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, resp)
 }
 
 func jsonResponse(w http.ResponseWriter, v any) {
