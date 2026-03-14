@@ -66,6 +66,7 @@ func main() {
 		Token:              os.Getenv("TELEGRAM_TOKEN"),
 		ChatID:             os.Getenv("TELEGRAM_CHAT_ID"),
 		Lang:               getEnv("REPORT_LANG", "en"),
+		Timezone:           getEnv("REPORT_TZ", ""),
 		MorningWeekdayHour: getEnvInt("REPORT_MORNING_WEEKDAY", 8),
 		MorningWeekendHour: getEnvInt("REPORT_MORNING_WEEKEND", 9),
 		EveningWeekdayHour: getEnvInt("REPORT_EVENING_WEEKDAY", 20),
@@ -77,15 +78,23 @@ func main() {
 
 	// testNotify reads fresh config from DB on every call.
 	testNotifyFn := func(kind string) error {
-		cfg := db.GetNotifyConfig(notifyDefaults)
-		if !cfg.Enabled() {
+		scfg := db.GetNotifyConfig(notifyDefaults)
+		if !scfg.Enabled() {
 			return fmt.Errorf("Telegram not configured: set TELEGRAM_TOKEN and TELEGRAM_CHAT_ID")
 		}
-		bot := notify.NewBot(cfg.Token, cfg.ChatID)
-		if kind == "evening" {
-			return notify.SendEvening(bot, db, cfg.Lang)
+		ncfg := notify.Config{
+			Token: scfg.Token, ChatID: scfg.ChatID, Lang: scfg.Lang,
+			Timezone:           scfg.Timezone,
+			MorningWeekdayHour: scfg.MorningWeekdayHour,
+			MorningWeekendHour: scfg.MorningWeekendHour,
+			EveningWeekdayHour: scfg.EveningWeekdayHour,
+			EveningWeekendHour: scfg.EveningWeekendHour,
 		}
-		return notify.SendMorning(bot, db, cfg.Lang)
+		bot := notify.NewBot(ncfg.Token, ncfg.ChatID)
+		if kind == "evening" {
+			return notify.SendEvening(bot, db, ncfg)
+		}
+		return notify.SendMorning(bot, db, ncfg)
 	}
 
 	mux := http.NewServeMux()
@@ -165,6 +174,7 @@ func runReportScheduler(db *storage.DB, defaults storage.NotifyConfig) {
 
 		ncfg := notify.Config{
 			Token: cfg.Token, ChatID: cfg.ChatID, Lang: cfg.Lang,
+			Timezone:           cfg.Timezone,
 			MorningWeekdayHour: cfg.MorningWeekdayHour,
 			MorningWeekendHour: cfg.MorningWeekendHour,
 			EveningWeekdayHour: cfg.EveningWeekdayHour,
@@ -195,12 +205,12 @@ func runReportScheduler(db *storage.DB, defaults storage.NotifyConfig) {
 		bot := notify.NewBot(cfg.Token, cfg.ChatID)
 		if isMorning {
 			log.Println("report scheduler: sending morning report…")
-			if err := notify.SendMorning(bot, db, cfg.Lang); err != nil {
+			if err := notify.SendMorning(bot, db, ncfg); err != nil {
 				log.Printf("report scheduler: morning send error: %v", err)
 			}
 		} else {
 			log.Println("report scheduler: sending evening report…")
-			if err := notify.SendEvening(bot, db, cfg.Lang); err != nil {
+			if err := notify.SendEvening(bot, db, ncfg); err != nil {
 				log.Printf("report scheduler: evening send error: %v", err)
 			}
 		}

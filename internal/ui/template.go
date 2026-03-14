@@ -10,6 +10,6 @@ var indexHTML = `<!DOCTYPE html>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <style>` + cssStyle + `</style>
 </head>
-<body>` + htmlBody + `<script>` + jsI18N + jsState + jsDashboard + jsUI + jsCharts + jsSection + jsMetrics + jsAdmin + `</script>
+<body>` + htmlBody + `<script>` + jsI18N + jsState + jsDashboard + jsUI + jsCharts + jsSection + jsMetrics + jsAdmin + jsImport + `</script>
 </body>
 </html>`

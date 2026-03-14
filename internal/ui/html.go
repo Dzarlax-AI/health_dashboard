@@ -144,7 +144,10 @@ const htmlBody = `
       <div id="admin-body" style="display:none">
 
         <div class="admin-section">
-          <div class="section-title" data-i18n="admin_cache_status">Cache status</div>
+          <div class="admin-section-header">
+            <div class="section-title" data-i18n="admin_cache_status">Cache status</div>
+            <button class="admin-btn" id="btn-refresh-status" onclick="loadAdminStatus()" data-i18n="admin_refresh">Refresh</button>
+          </div>
           <div id="admin-cache-table"></div>
         </div>
 
@@ -171,6 +174,42 @@ const htmlBody = `
           <div id="admin-msg" style="display:none"></div>
         </div>
 
+        <div class="admin-section">
+          <div class="admin-section-header">
+            <div class="section-title" data-i18n="admin_gaps_section_title">Data Integrity</div>
+            <button class="admin-btn" id="btn-check-gaps" onclick="checkDataGaps()" data-i18n="admin_gaps_check">Check for gaps</button>
+          </div>
+          <div id="admin-gaps-section"></div>
+        </div>
+
+        <div class="admin-section" id="admin-import-section">
+          <div class="section-title" data-i18n="admin_import_title">Apple Health Import</div>
+          <div class="admin-import-body">
+            <div class="admin-import-desc" data-i18n="admin_import_desc">Upload your Apple Health export.zip (or export.xml) to import historical data. Duplicates are skipped automatically.</div>
+            <div id="import-gap-hint" style="display:none" class="admin-gap-hint"></div>
+            <div class="admin-import-form">
+              <label class="admin-import-file-label" id="import-file-label" for="import-file-input" data-i18n="admin_import_choose">Choose file…</label>
+              <input type="file" id="import-file-input" accept=".zip,.xml" style="display:none" onchange="importFileChosen(this)">
+              <div class="admin-import-options">
+                <label class="admin-import-opt-label">
+                  <input type="number" id="import-batch" value="500" min="100" max="5000" style="width:70px"> <span data-i18n="admin_import_batch">points/batch</span>
+                </label>
+                <label class="admin-import-opt-label">
+                  <input type="number" id="import-pause" value="150" min="0" max="5000" style="width:70px"> <span data-i18n="admin_import_pause">ms pause</span>
+                </label>
+              </div>
+              <button class="admin-btn primary" onclick="startImport()" id="btn-import-start" disabled>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                <span data-i18n="admin_import_start">Start import</span>
+              </button>
+            </div>
+            <div id="import-progress" style="display:none">
+              <div class="import-progress-bar-track"><div class="import-progress-bar-fill" id="import-bar"></div></div>
+              <div id="import-status-text" class="import-status-text"></div>
+            </div>
+          </div>
+        </div>
+
         <div class="admin-section" id="admin-notify-section">
           <div class="section-title" data-i18n="admin_notify_title">Telegram reports</div>
           <div class="admin-settings-form">
@@ -189,6 +228,10 @@ const htmlBody = `
                 <option value="ru">Русский</option>
                 <option value="sr">Srpski</option>
               </select>
+            </div>
+            <div class="admin-field-row">
+              <label class="admin-field-label" data-i18n="admin_notify_timezone">Timezone</label>
+              <input class="admin-field-input" type="text" id="cfg-timezone" autocomplete="off" placeholder="Europe/Belgrade">
             </div>
             <div class="admin-field-group-title" data-i18n="admin_notify_schedule_morning">Morning report</div>
             <div class="admin-field-row-pair">
@@ -248,6 +291,8 @@ const htmlBody = `
         <button class="preset-btn" onclick="applyPreset(7)">7d</button>
         <button class="preset-btn active" onclick="applyPreset(30)">30d</button>
         <button class="preset-btn" onclick="applyPreset(90)">90d</button>
+        <button class="preset-btn" onclick="applyPreset(365)">1y</button>
+        <button class="preset-btn" onclick="applyPresetAll()" data-i18n="preset_all">All</button>
       </div>
       <div class="ctrl-group">
         <input type="date" id="from" onchange="onDateChange()">

@@ -8,6 +8,7 @@ type NotifyConfig struct {
 	Token              string
 	ChatID             string
 	Lang               string
+	Timezone           string
 	MorningWeekdayHour int
 	MorningWeekendHour int
 	EveningWeekdayHour int
@@ -58,6 +59,7 @@ func (s *DB) GetNotifyConfig(defaults NotifyConfig) NotifyConfig {
 		Token:              s.GetSetting("telegram_token", defaults.Token),
 		ChatID:             s.GetSetting("telegram_chat_id", defaults.ChatID),
 		Lang:               s.GetSetting("report_lang", defaults.Lang),
+		Timezone:           s.GetSetting("timezone", defaults.Timezone),
 		MorningWeekdayHour: getSettingInt(s, "report_morning_weekday", defaults.MorningWeekdayHour),
 		MorningWeekendHour: getSettingInt(s, "report_morning_weekend", defaults.MorningWeekendHour),
 		EveningWeekdayHour: getSettingInt(s, "report_evening_weekday", defaults.EveningWeekdayHour),

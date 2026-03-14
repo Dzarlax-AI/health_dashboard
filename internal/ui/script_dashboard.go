@@ -118,7 +118,7 @@ function renderBriefing(data) {
       card.dataset.key = s.key;
       card.style.cursor = 'pointer';
       card.onclick = (function(key) { return function() { showSection(key); }; })(s.key);
-      var html = '<div class="insight-header"><div class="insight-icon">' + (ICON_MAP[s.icon] || '') + '</div><div class="insight-title">' + s.title + '</div><div class="insight-badge">' + t('status_' + s.status) + '</div><svg class="sec-card-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></div><div class="insight-summary">' + s.summary + '</div>';
+      var html = '<div class="insight-header"><div class="insight-icon">' + (ICON_MAP[s.icon] || '') + '</div><div class="insight-title-wrap"><div class="insight-title">' + s.title + '</div><div class="insight-badge">' + t('status_' + s.status) + '</div></div><svg class="sec-card-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></div><div class="insight-summary">' + s.summary + '</div>';
       if (s.details && s.details.length) {
         html += '<div class="insight-details">';
         s.details.forEach(function(d) {

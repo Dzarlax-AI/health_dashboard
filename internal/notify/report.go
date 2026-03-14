@@ -11,9 +11,10 @@ import (
 
 // Config holds Telegram credentials and per-weekday schedule.
 type Config struct {
-	Token  string
-	ChatID string
-	Lang   string
+	Token    string
+	ChatID   string
+	Lang     string
+	Timezone string // IANA tz name, e.g. "Europe/Belgrade"; empty = system local
 
 	// Hour (0–23) at which to send the morning sleep report.
 	MorningWeekdayHour int
@@ -27,6 +28,16 @@ type Config struct {
 // Enabled returns true when Telegram credentials are configured.
 func (c Config) Enabled() bool {
 	return c.Token != "" && c.ChatID != ""
+}
+
+// location returns the configured time.Location, falling back to local.
+func (c Config) location() *time.Location {
+	if c.Timezone != "" {
+		if loc, err := time.LoadLocation(c.Timezone); err == nil {
+			return loc
+		}
+	}
+	return time.Local
 }
 
 func (c Config) morningHour(wd time.Weekday) int {
@@ -43,40 +54,44 @@ func (c Config) eveningHour(wd time.Weekday) int {
 	return c.EveningWeekdayHour
 }
 
-// NextMorning returns the next time the morning report should fire.
+// NextMorning returns the next time the morning report should fire (in configured tz).
 func (c Config) NextMorning(from time.Time) time.Time {
-	h := c.morningHour(from.Weekday())
-	t := time.Date(from.Year(), from.Month(), from.Day(), h, 0, 0, 0, from.Location())
-	if !t.After(from) {
+	loc := c.location()
+	now := from.In(loc)
+	h := c.morningHour(now.Weekday())
+	t := time.Date(now.Year(), now.Month(), now.Day(), h, 0, 0, 0, loc)
+	if !t.After(now) {
 		t = t.Add(24 * time.Hour)
-		t = time.Date(t.Year(), t.Month(), t.Day(), c.morningHour(t.Weekday()), 0, 0, 0, t.Location())
+		t = time.Date(t.Year(), t.Month(), t.Day(), c.morningHour(t.Weekday()), 0, 0, 0, loc)
 	}
 	return t
 }
 
-// NextEvening returns the next time the evening report should fire.
+// NextEvening returns the next time the evening report should fire (in configured tz).
 func (c Config) NextEvening(from time.Time) time.Time {
-	h := c.eveningHour(from.Weekday())
-	t := time.Date(from.Year(), from.Month(), from.Day(), h, 0, 0, 0, from.Location())
-	if !t.After(from) {
+	loc := c.location()
+	now := from.In(loc)
+	h := c.eveningHour(now.Weekday())
+	t := time.Date(now.Year(), now.Month(), now.Day(), h, 0, 0, 0, loc)
+	if !t.After(now) {
 		t = t.Add(24 * time.Hour)
-		t = time.Date(t.Year(), t.Month(), t.Day(), c.eveningHour(t.Weekday()), 0, 0, 0, t.Location())
+		t = time.Date(t.Year(), t.Month(), t.Day(), c.eveningHour(t.Weekday()), 0, 0, 0, loc)
 	}
 	return t
 }
 
 // SendMorning sends the sleep report for the most recent night.
-func SendMorning(bot *Bot, db *storage.DB, lang string) error {
-	briefing, err := db.GetHealthBriefing(lang)
+func SendMorning(bot *Bot, db *storage.DB, cfg Config) error {
+	briefing, err := db.GetHealthBriefing(cfg.Lang)
 	if err != nil {
 		return err
 	}
-	return bot.Send(formatMorning(briefing, lang))
+	return bot.Send(formatMorning(briefing, cfg.Lang, cfg.location()))
 }
 
 // SendEvening sends the daily activity summary.
-func SendEvening(bot *Bot, db *storage.DB, lang string) error {
-	briefing, err := db.GetHealthBriefing(lang)
+func SendEvening(bot *Bot, db *storage.DB, cfg Config) error {
+	briefing, err := db.GetHealthBriefing(cfg.Lang)
 	if err != nil {
 		return err
 	}
@@ -84,7 +99,7 @@ func SendEvening(bot *Bot, db *storage.DB, lang string) error {
 	if err != nil {
 		return err
 	}
-	return bot.Send(formatEvening(briefing, dash, lang))
+	return bot.Send(formatEvening(briefing, dash, cfg.Lang, cfg.location()))
 }
 
 // ── formatters ───────────────────────────────────────────────────────────────
@@ -93,6 +108,47 @@ var morningHeader = map[string]string{
 	"en": "🌅 Morning report",
 	"ru": "🌅 Утренний отчёт",
 	"sr": "🌅 Jutarnji izveštaj",
+}
+
+var staleWarning = map[string]string{
+	"en": "⚠️ <i>Data is %d day(s) old — Apple Health may not have synced yet.</i>\n\n",
+	"ru": "⚠️ <i>Данные устарели на %d дн. — возможно, синхронизация ещё не прошла.</i>\n\n",
+	"sr": "⚠️ <i>Podaci su stari %d dan(a) — sinhronizacija možda još nije završena.</i>\n\n",
+}
+var noSleepWarning = map[string]string{
+	"en": "😴 <i>No sleep data for last night yet — phone may not have synced after waking up.</i>\n\n",
+	"ru": "😴 <i>Данных о сне прошлой ночи пока нет — возможно, телефон ещё не синхронизировался.</i>\n\n",
+	"sr": "😴 <i>Nema podataka o snu za prošlu noć — telefon možda još nije sinhronizovan.</i>\n\n",
+}
+var noActivityWarning = map[string]string{
+	"en": "📭 <i>No activity data for today yet.</i>\n\n",
+	"ru": "📭 <i>Данных об активности за сегодня пока нет.</i>\n\n",
+	"sr": "📭 <i>Nema podataka o aktivnosti za danas.</i>\n\n",
+}
+
+// staleDays returns how many calendar days ago dataDate is relative to today in loc.
+func staleDays(dataDate string, loc *time.Location) int {
+	if dataDate == "" {
+		return 999
+	}
+	t, err := time.Parse("2006-01-02", dataDate)
+	if err != nil {
+		return 0
+	}
+	now := time.Now().In(loc)
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	return int(today.Sub(t).Hours() / 24)
+}
+
+func warnMsg(m map[string]string, lang string, args ...any) string {
+	tpl, ok := m[lang]
+	if !ok {
+		tpl = m["en"]
+	}
+	if len(args) > 0 {
+		return fmt.Sprintf(tpl, args...)
+	}
+	return tpl
 }
 var eveningHeader = map[string]string{
 	"en": "🌆 Day summary",
@@ -105,7 +161,7 @@ var statusEmoji = map[string]string{
 	"low":  "🔴",
 }
 
-func formatMorning(b *health.BriefingResponse, lang string) string {
+func formatMorning(b *health.BriefingResponse, lang string, loc *time.Location) string {
 	hdr := morningHeader[lang]
 	if hdr == "" {
 		hdr = morningHeader["en"]
@@ -113,8 +169,16 @@ func formatMorning(b *health.BriefingResponse, lang string) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("<b>%s — %s</b>\n\n", hdr, b.Date))
 
+	// Morning report should show last night's sleep (stored with today's date in Apple Health).
+	// If data is 1+ day old, the phone hasn't synced after waking up yet.
+	if d := staleDays(b.Date, loc); d >= 1 {
+		sb.WriteString(warnMsg(staleWarning, lang, d))
+	}
+
 	// Sleep section
-	if b.Sleep != nil {
+	if b.Sleep == nil {
+		sb.WriteString(warnMsg(noSleepWarning, lang))
+	} else {
 		// Find the sleep section for its details
 		for _, sec := range b.Sections {
 			if sec.Key != "sleep" {
@@ -172,13 +236,25 @@ func formatMorning(b *health.BriefingResponse, lang string) string {
 	return sb.String()
 }
 
-func formatEvening(b *health.BriefingResponse, dash *storage.DashboardResponse, lang string) string {
+func formatEvening(b *health.BriefingResponse, dash *storage.DashboardResponse, lang string, loc *time.Location) string {
 	hdr := eveningHeader[lang]
 	if hdr == "" {
 		hdr = eveningHeader["en"]
 	}
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("<b>%s — %s</b>\n\n", hdr, b.Date))
+
+	// Evening report shows today's activity. If data is 1+ day old, it's stale.
+	if d := staleDays(b.Date, loc); d >= 1 {
+		sb.WriteString(warnMsg(staleWarning, lang, d))
+	}
+
+	// Check if dashboard has no data for today specifically.
+	now := time.Now().In(loc)
+	today := fmt.Sprintf("%d-%02d-%02d", now.Year(), int(now.Month()), now.Day())
+	if dash == nil || dash.Date != today || len(dash.Cards) == 0 {
+		sb.WriteString(warnMsg(noActivityWarning, lang))
+	}
 
 	// Activity section
 	for _, sec := range b.Sections {

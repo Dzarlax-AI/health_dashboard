@@ -1,4 +1,4 @@
-.PHONY: dev build migrate dedup backfill backfill-force docker-up docker-down test
+.PHONY: dev build migrate dedup backfill backfill-force import docker-up docker-down test
 
 DB_PATH ?= ./data/health.db
 ADDR    ?= :8080
@@ -21,6 +21,9 @@ backfill:
 
 backfill-force:
 	DB_PATH=$(DB_PATH) go run ./cmd/backfill --force
+
+import:
+	CGO_ENABLED=1 go run ./cmd/import --db $(DB_PATH) --file $(FILE) --batch 500 --pause 150ms
 
 docker-up:
 	docker compose up -d --build

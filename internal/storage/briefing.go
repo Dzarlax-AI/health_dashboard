@@ -197,8 +197,9 @@ func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
 // all scoring and insight computation to the health package.
 // lang selects the output language ("en", "ru", "sr").
 func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
+	// Use hourly_metrics for lastDate — avoids full scan of metric_points.
 	var lastDate string
-	if err := s.db.QueryRow(`SELECT MAX(substr(date,1,10)) FROM metric_points WHERE qty > 0`).Scan(&lastDate); err != nil || lastDate == "" {
+	if err := s.db.QueryRow(`SELECT MAX(substr(hour,1,10)) FROM hourly_metrics`).Scan(&lastDate); err != nil || lastDate == "" {
 		return &health.BriefingResponse{Greeting: "Welcome! No health data yet."}, nil
 	}
 
@@ -212,19 +213,20 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 	resp := health.ComputeBriefing(*data, lang)
 
 	// Attach per-source sleep breakdown for the most recent night.
+	// Query hourly_metrics (indexed by hour) instead of metric_points.
 	if resp.Sleep != nil {
 		sleepRows, qErr := s.db.Query(`
-			SELECT SUBSTR(source, 1, INSTR(source || '|', '|') - 1) AS src,
-				SUM(CASE WHEN metric_name='sleep_total' THEN qty ELSE 0 END),
-				SUM(CASE WHEN metric_name='sleep_deep'  THEN qty ELSE 0 END),
-				SUM(CASE WHEN metric_name='sleep_rem'   THEN qty ELSE 0 END),
-				SUM(CASE WHEN metric_name='sleep_core'  THEN qty ELSE 0 END),
-				SUM(CASE WHEN metric_name='sleep_awake' THEN qty ELSE 0 END)
-			FROM metric_points
+			SELECT source,
+				SUM(CASE WHEN metric_name='sleep_total' THEN sum_val ELSE 0 END),
+				SUM(CASE WHEN metric_name='sleep_deep'  THEN sum_val ELSE 0 END),
+				SUM(CASE WHEN metric_name='sleep_rem'   THEN sum_val ELSE 0 END),
+				SUM(CASE WHEN metric_name='sleep_core'  THEN sum_val ELSE 0 END),
+				SUM(CASE WHEN metric_name='sleep_awake' THEN sum_val ELSE 0 END)
+			FROM hourly_metrics
 			WHERE metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake')
-			  AND substr(date,1,10) = ? AND qty > 0
-			GROUP BY src
-			ORDER BY SUM(CASE WHEN metric_name='sleep_total' THEN qty ELSE 0 END) DESC`,
+			  AND substr(hour,1,10) = ?
+			GROUP BY source
+			ORDER BY SUM(CASE WHEN metric_name='sleep_total' THEN sum_val ELSE 0 END) DESC`,
 			lastDate)
 		if qErr == nil {
 			defer sleepRows.Close()

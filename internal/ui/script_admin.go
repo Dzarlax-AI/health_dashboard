@@ -10,7 +10,7 @@ function showAdminView() {
   $('chart-view').style.display = 'none';
   $('admin-view').style.display = 'block';
   window.scrollTo(0, 0);
-  loadAdminStatus();
+  loadAdminSettings();
 }
 
 function hideAdminView() {
@@ -18,21 +18,32 @@ function hideAdminView() {
   showDashboard();
 }
 
-function loadAdminStatus() {
-  $('admin-loading').style.display = 'flex';
-  $('admin-body').style.display = 'none';
-  Promise.all([
-    fetch('/api/admin/status').then(function(r) { return r.json(); }),
-    fetch('/api/admin/settings').then(function(r) { return r.json(); })
-  ])
-    .then(function(results) {
-      renderAdminStatus(results[0]);
-      renderNotifySettings(results[1]);
+function loadAdminSettings() {
+  fetch('/api/admin/settings')
+    .then(function(r) { return r.json(); })
+    .then(function(s) {
+      renderNotifySettings(s);
       $('admin-loading').style.display = 'none';
       $('admin-body').style.display = 'block';
+      checkImportResume();
     })
     .catch(function(e) {
       $('admin-loading').innerHTML = '<div style="color:var(--danger);padding:16px">' + e + '</div>';
+    });
+}
+
+function loadAdminStatus() {
+  var btn = $('btn-refresh-status');
+  if (btn) btn.disabled = true;
+  fetch('/api/admin/status')
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      renderAdminStatus(d);
+      if (btn) btn.disabled = false;
+    })
+    .catch(function(e) {
+      $('admin-cache-table').innerHTML = '<div style="color:var(--danger);font-size:13px">' + e + '</div>';
+      if (btn) btn.disabled = false;
     });
 }
 
@@ -40,6 +51,7 @@ function renderNotifySettings(s) {
   $('cfg-telegram-token').value    = s.telegram_token || '';
   $('cfg-telegram-chat-id').value  = s.telegram_chat_id || '';
   $('cfg-report-lang').value       = s.report_lang || 'en';
+  $('cfg-timezone').value          = s.timezone || '';
   $('cfg-morning-weekday').value   = s.report_morning_weekday != null ? s.report_morning_weekday : 8;
   $('cfg-morning-weekend').value   = s.report_morning_weekend != null ? s.report_morning_weekend : 9;
   $('cfg-evening-weekday').value   = s.report_evening_weekday != null ? s.report_evening_weekday : 20;
@@ -56,6 +68,7 @@ function saveNotifySettings() {
     telegram_token:          $('cfg-telegram-token').value.trim(),
     telegram_chat_id:        $('cfg-telegram-chat-id').value.trim(),
     report_lang:             $('cfg-report-lang').value,
+    timezone:                $('cfg-timezone').value.trim(),
     report_morning_weekday:  $('cfg-morning-weekday').value,
     report_morning_weekend:  $('cfg-morning-weekend').value,
     report_evening_weekday:  $('cfg-evening-weekday').value,
@@ -118,6 +131,61 @@ function renderAdminStatus(d) {
   $('admin-cache-table').innerHTML = html;
 }
 
+function checkDataGaps() {
+  var btn = $('btn-check-gaps');
+  var el = $('admin-gaps-section');
+  btn.disabled = true;
+  btn.textContent = '…';
+  el.style.display = '';
+  el.innerHTML = '<div class="admin-gaps-checking">' + t('admin_gaps_checking') + '</div>';
+  fetch('/api/admin/gaps')
+    .then(function(r) { return r.json(); })
+    .then(function(d) { renderDataGaps(d); btn.disabled = false; btn.setAttribute('data-i18n','admin_gaps_check'); btn.textContent = t('admin_gaps_check'); })
+    .catch(function(e) { el.innerHTML = '<div style="color:var(--danger);font-size:13px">' + e + '</div>'; btn.disabled = false; });
+}
+
+function renderDataGaps(d) {
+  var el = $('admin-gaps-section');
+  if (!el) return;
+  var gaps = d.gaps || [];
+  if (!gaps.length) {
+    el.innerHTML = '<div class="admin-gaps-ok">&#10003; ' + t('admin_gaps_ok') + '</div>';
+    return;
+  }
+  var html = '<div class="admin-gaps-title"><span class="admin-gaps-icon">&#9888;</span>' + t('admin_gaps_title') + ' (' + gaps.length + ')</div>';
+  html += '<div class="admin-gaps-list">';
+  gaps.forEach(function(g) {
+    var label, rowClass = '';
+    if (g.today_missing) {
+      label = '<span class="admin-gap-today">' + t('admin_gaps_today') + '</span>';
+      rowClass = ' admin-gap-row-today';
+    } else if (g.partial) {
+      label = g.from + ' <span class="admin-gap-partial">' + t('admin_gaps_partial') + '</span>';
+    } else {
+      label = g.from + (g.from !== g.to ? ' &rarr; ' + g.to : '') + ' <span class="admin-gap-days">' + g.days + ' ' + t('admin_gaps_days') + '</span>';
+    }
+    html += '<div class="admin-gap-row' + rowClass + '">'
+      + '<span class="admin-gap-range">' + label + '</span>'
+      + (g.today_missing ? '' : '<button class="admin-gap-btn" onclick="startImportForGap(\'' + g.from + '\',\'' + g.to + '\')">' + t('admin_gaps_fill') + '</button>')
+      + '</div>';
+  });
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+function startImportForGap(from, to) {
+  // Scroll to the import section and show a hint about the gap.
+  var imp = $('admin-import-section');
+  if (imp) {
+    imp.scrollIntoView({ behavior: 'smooth' });
+    var hint = $('import-gap-hint');
+    if (hint) {
+      hint.textContent = t('admin_gaps_hint') + ' ' + from + ' → ' + to;
+      hint.style.display = 'block';
+    }
+  }
+}
+
 function fmtSyncTime(ts) {
   if (!ts) return '—';
   var d = new Date(ts.replace(' ', 'T'));
@@ -138,8 +206,6 @@ function triggerBackfill(force) {
       msg.className = 'admin-msg-ok';
       msg.style.display = 'block';
       btn.disabled = false;
-      // Refresh stats after a short delay to show updated row counts.
-      setTimeout(loadAdminStatus, 3000);
     })
     .catch(function(e) {
       msg.textContent = String(e);

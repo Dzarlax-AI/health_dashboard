@@ -35,6 +35,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/", h.guard(h.page))
 	mux.HandleFunc("/api/metrics", h.guard(h.listMetrics))
 	mux.HandleFunc("/api/metrics/latest", h.guard(h.latestMetricValues))
+	mux.HandleFunc("/api/metrics/range", h.guard(h.metricRange))
 	mux.HandleFunc("/api/metrics/data", h.guard(h.metricData))
 	mux.HandleFunc("/api/dashboard", h.guard(h.dashboard))
 	mux.HandleFunc("/api/health-briefing", h.guard(h.healthBriefing))
@@ -43,6 +44,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/backfill", h.guard(h.adminBackfill))
 	mux.HandleFunc("/api/admin/test-notify", h.guard(h.adminTestNotify))
 	mux.HandleFunc("/api/admin/settings", h.guard(h.adminSettings))
+	mux.HandleFunc("/api/admin/gaps", h.guard(h.adminGaps))
+	h.registerImportRoutes(mux)
 }
 
 func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
@@ -104,6 +107,20 @@ func (h *Handler) listMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, metrics)
+}
+
+func (h *Handler) metricRange(w http.ResponseWriter, r *http.Request) {
+	metric := r.URL.Query().Get("metric")
+	if metric == "" {
+		http.Error(w, "metric required", http.StatusBadRequest)
+		return
+	}
+	min, max, err := h.db.GetMetricDateRange(metric)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, map[string]string{"min": min, "max": max})
 }
 
 func (h *Handler) latestMetricValues(w http.ResponseWriter, r *http.Request) {
@@ -261,6 +278,7 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		allowed := map[string]bool{
 			"telegram_token": true, "telegram_chat_id": true, "report_lang": true,
+			"timezone": true,
 			"report_morning_weekday": true, "report_morning_weekend": true,
 			"report_evening_weekday": true, "report_evening_weekend": true,
 		}
@@ -284,6 +302,7 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 		"telegram_token":          cfg.Token,
 		"telegram_chat_id":        cfg.ChatID,
 		"report_lang":             cfg.Lang,
+		"timezone":                cfg.Timezone,
 		"report_morning_weekday":  cfg.MorningWeekdayHour,
 		"report_morning_weekend":  cfg.MorningWeekendHour,
 		"report_evening_weekday":  cfg.EveningWeekdayHour,
@@ -310,6 +329,18 @@ func (h *Handler) adminTestNotify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, map[string]string{"status": "ok", "message": "message sent"})
+}
+
+func (h *Handler) adminGaps(w http.ResponseWriter, r *http.Request) {
+	gaps, err := h.db.GetDataGaps(2, 6)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if gaps == nil {
+		gaps = []storage.DataGap{}
+	}
+	jsonResponse(w, map[string]any{"gaps": gaps})
 }
 
 func jsonResponse(w http.ResponseWriter, v any) {

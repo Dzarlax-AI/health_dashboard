@@ -192,7 +192,23 @@ function loadChart() {
     } else {
       $('stats-row').innerHTML = '<div style="color:var(--muted);padding:8px">' + t('no_data_range') + '</div>';
     }
-    if (!pts.length) { if (chart) { chart.destroy(); chart = null; } pushHash(); return; }
+    if (!pts.length) {
+      if (chart) { chart.destroy(); chart = null; }
+      // Auto-expand: if the current range has no data, find the full available range and reload.
+      fetch('/api/metrics/range?metric=' + encodeURIComponent(currentMetric))
+        .then(function(r){return r.json();})
+        .then(function(range){
+          if (range.min && range.min < $('from').value) {
+            $('from').value = range.min;
+            $('to').value = todayStr();
+            document.querySelectorAll('.preset-btn').forEach(function(b){b.classList.remove('active');});
+            loadChart();
+          } else {
+            pushHash();
+          }
+        }).catch(function(){ pushHash(); });
+      return;
+    }
     var labels = pts.map(function(p){return p.date});
     var avgVals = pts.map(function(p){return p.qty});
     var minVals = pts.map(function(p){return p.min});

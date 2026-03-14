@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 )
@@ -54,21 +55,20 @@ type LatestValue struct {
 }
 
 // GetLatestMetricValues returns the latest non-zero daily average for every metric in the DB.
+// Reads from hourly_metrics (fast cache, ~100K rows) instead of metric_points (4M+ rows).
 func (s *DB) GetLatestMetricValues() ([]LatestValue, error) {
 	rows, err := s.db.Query(`
-		WITH latest AS (
-			SELECT metric_name, MAX(substr(date,1,10)) AS max_date
-			FROM metric_points
-			WHERE qty > 0
+		WITH latest_day AS (
+			SELECT metric_name, MAX(substr(hour,1,10)) AS max_date
+			FROM hourly_metrics
 			GROUP BY metric_name
 		)
-		SELECT mp.metric_name, mp.units, l.max_date, AVG(mp.qty) AS value
-		FROM metric_points mp
-		JOIN latest l ON mp.metric_name = l.metric_name
-			AND substr(mp.date,1,10) = l.max_date
-		WHERE mp.qty > 0
-		GROUP BY mp.metric_name
-		ORDER BY mp.metric_name
+		SELECT h.metric_name, '', l.max_date, AVG(h.avg_val)
+		FROM hourly_metrics h
+		JOIN latest_day l ON h.metric_name = l.metric_name
+			AND substr(h.hour,1,10) = l.max_date
+		GROUP BY h.metric_name
+		ORDER BY h.metric_name
 	`)
 	if err != nil {
 		return nil, err
@@ -101,10 +101,9 @@ type MetricStats struct {
 
 func (s *DB) ListMetrics() ([]MetricSummary, error) {
 	rows, err := s.db.Query(`
-		SELECT metric_name, units, COUNT(*) as cnt, MIN(date), MAX(date)
-		FROM metric_points
-		WHERE qty > 0
-		GROUP BY metric_name, units
+		SELECT metric_name, '', COUNT(*) AS cnt, MIN(substr(hour,1,10)), MAX(substr(hour,1,10))
+		FROM hourly_metrics
+		GROUP BY metric_name
 		ORDER BY cnt DESC`)
 	if err != nil {
 		return nil, err
@@ -179,7 +178,38 @@ func (s *DB) metricDataFromCache(table, col, metric, from, to string) ([]DataPoi
 
 // metricDataDayFromHourly builds daily buckets by aggregating hourly_metrics.
 // This is the third level of the cascade (hourly → daily).
+// For any date range not covered by the hourly cache (e.g. historical Apple Health
+// import data), it supplements with raw metric_points so the full history is visible.
 func (s *DB) metricDataDayFromHourly(metric, from, to string) ([]DataPoint, error) {
+	// Find the earliest hour we have in the cache for this metric.
+	var minHour string
+	s.db.QueryRow(`SELECT MIN(hour) FROM hourly_metrics WHERE metric_name = ?`, metric).Scan(&minHour)
+
+	var out []DataPoint
+
+	// If there is historical data before the cache starts, read it directly from metric_points.
+	if minHour == "" || from < minHour {
+		rawTo := to
+		if minHour != "" && minHour[:10] > from[:10] {
+			// Stop just before the first cached day to avoid overlap.
+			rawTo = minHour[:10] + " 00:00:00"
+		}
+		rawPoints, rerr := s.metricDataRaw(metric, from, rawTo, "day", aggFuncFor(metric))
+		if rerr == nil {
+			out = append(out, rawPoints...)
+		}
+	}
+
+	if minHour == "" {
+		// No cache at all — raw data already returned above.
+		return out, nil
+	}
+
+	// Read cached (hourly_metrics) portion.
+	hourlyFrom := from
+	if minHour > from {
+		hourlyFrom = minHour
+	}
 	combine := combineFuncFor(metric)
 	query := fmt.Sprintf(`
 		SELECT substr(hour,1,10), %s(avg_val), MIN(min_val), MAX(max_val)
@@ -188,21 +218,17 @@ func (s *DB) metricDataDayFromHourly(metric, from, to string) ([]DataPoint, erro
 		GROUP BY substr(hour,1,10)
 		ORDER BY substr(hour,1,10)`, combine)
 
-	rows, err := s.db.Query(query, metric, from, to)
+	rows, err := s.db.Query(query, metric, hourlyFrom, to)
 	if err != nil {
-		return nil, err
+		return out, err
 	}
 	defer rows.Close()
 
-	var out []DataPoint
 	for rows.Next() {
 		var p DataPoint
 		if rows.Scan(&p.Date, &p.Qty, &p.Min, &p.Max) == nil {
 			out = append(out, p)
 		}
-	}
-	if len(out) == 0 {
-		return s.metricDataRaw(metric, from, to, "day", aggFuncFor(metric))
 	}
 	return out, rows.Err()
 }
@@ -341,12 +367,12 @@ func (s *DB) scanSourcePoints(query, metric, from, to string) ([]SourceDataPoint
 
 func (s *DB) GetDashboard() (*DashboardResponse, error) {
 	var today string
-	if err := s.db.QueryRow(`SELECT MAX(substr(date,1,10)) FROM metric_points WHERE qty > 0`).Scan(&today); err != nil || today == "" {
+	if err := s.db.QueryRow(`SELECT MAX(substr(hour,1,10)) FROM hourly_metrics`).Scan(&today); err != nil || today == "" {
 		return &DashboardResponse{}, nil
 	}
 
 	var yesterday string
-	s.db.QueryRow(`SELECT MAX(substr(date,1,10)) FROM metric_points WHERE qty > 0 AND substr(date,1,10) < ?`, today).Scan(&yesterday)
+	s.db.QueryRow(`SELECT MAX(substr(hour,1,10)) FROM hourly_metrics WHERE substr(hour,1,10) < ?`, today).Scan(&yesterday)
 
 	var lastUpdated string
 	s.db.QueryRow(`SELECT MAX(received_at) FROM health_records`).Scan(&lastUpdated)
@@ -361,48 +387,58 @@ func (s *DB) GetDashboard() (*DashboardResponse, error) {
 		{"basal_energy_burned", "SUM"},
 		{"heart_rate", "AVG"},
 		{"resting_heart_rate", "AVG"},
-		{"heart_rate_variability", "AVG"},
-		{"blood_oxygen_saturation", "AVG"},
+		{"heart_rate_variability_sdnn", "AVG"},
+		{"oxygen_saturation", "AVG"},
 		{"respiratory_rate", "AVG"},
 		{"sleep_total", "SUM"},
 		{"apple_exercise_time", "SUM"},
 		{"walking_running_distance", "SUM"},
-		{"apple_sleeping_wrist_temperature", "AVG"},
+		{"wrist_temperature", "AVG"},
 	}
 
-	queryDay := func(metric, agg, day string) (float64, string) {
+	queryDay := func(metric, agg, day string) float64 {
 		var val float64
-		var unit string
 		// Sleep metrics need MAX-per-source to avoid double-counting from two devices.
-		// Cumulative metrics (steps etc.) use flat SUM — HealthKit already deduplicates.
 		if agg == "SUM" && strings.HasPrefix(metric, "sleep_") {
 			s.db.QueryRow(`
-				SELECT MAX(source_sum), units FROM (
-					SELECT source, SUM(qty) AS source_sum, units
-					FROM metric_points
-					WHERE metric_name=? AND substr(date,1,10)=? AND qty>0
+				SELECT COALESCE(MAX(source_sum), 0) FROM (
+					SELECT source, SUM(sum_val) AS source_sum
+					FROM hourly_metrics
+					WHERE metric_name=? AND substr(hour,1,10)=?
 					GROUP BY source
 				)`, metric, day,
-			).Scan(&val, &unit)
+			).Scan(&val)
+		} else if agg == "SUM" {
+			s.db.QueryRow(
+				`SELECT COALESCE(SUM(sum_val), 0) FROM hourly_metrics WHERE metric_name=? AND substr(hour,1,10)=?`,
+				metric, day,
+			).Scan(&val)
 		} else {
 			s.db.QueryRow(
-				`SELECT `+agg+`(qty), units FROM metric_points WHERE metric_name=? AND substr(date,1,10)=? AND qty>0`,
+				`SELECT COALESCE(AVG(avg_val), 0) FROM hourly_metrics WHERE metric_name=? AND substr(hour,1,10)=?`,
 				metric, day,
-			).Scan(&val, &unit)
+			).Scan(&val)
 		}
-		return val, unit
+		return val
+	}
+
+	// Look up units from hourly_metrics (stored there) falling back to metric_points.
+	unitFor := func(metric string) string {
+		var u string
+		s.db.QueryRow(`SELECT units FROM hourly_metrics WHERE metric_name=? LIMIT 1`, metric).Scan(&u)
+		return u
 	}
 
 	var result []CardData
 	for _, c := range cards {
-		val, unit := queryDay(c.metric, c.agg, today)
+		val := queryDay(c.metric, c.agg, today)
 		if val == 0 {
 			continue
 		}
-		prev, _ := queryDay(c.metric, c.agg, yesterday)
+		prev := queryDay(c.metric, c.agg, yesterday)
 		result = append(result, CardData{
 			Metric: c.metric, Value: val, Prev: prev,
-			Unit: unit, Date: today,
+			Unit: unitFor(c.metric), Date: today,
 		})
 	}
 	return &DashboardResponse{Date: today, LastUpdated: lastUpdated, Cards: result}, nil
@@ -534,4 +570,19 @@ func bucketExpression(bucket string) string {
 	default: // minute
 		return "substr(date, 1, 16)"
 	}
+}
+
+// GetMetricDateRange returns the earliest and latest dates for a metric.
+// Returns empty strings (no error) when the metric has no data.
+func (s *DB) GetMetricDateRange(metric string) (min, max string, err error) {
+	var minN, maxN sql.NullString
+	err = s.db.QueryRow(
+		`SELECT substr(MIN(date),1,10), substr(MAX(date),1,10) FROM metric_points WHERE metric_name = ?`,
+		metric,
+	).Scan(&minN, &maxN)
+	if err == nil {
+		min = minN.String
+		max = maxN.String
+	}
+	return
 }

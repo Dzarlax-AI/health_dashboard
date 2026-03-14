@@ -116,7 +116,7 @@ func (s *DB) BackfillScores(force bool) error {
 
 	var earliest string
 	if err := s.db.QueryRow(
-		`SELECT MIN(substr(date,1,10)) FROM metric_points WHERE qty > 0`,
+		`SELECT MIN(substr(hour,1,10)) FROM hourly_metrics`,
 	).Scan(&earliest); err != nil || earliest == "" {
 		return fmt.Errorf("no metric data found")
 	}

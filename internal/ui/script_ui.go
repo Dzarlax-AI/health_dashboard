@@ -93,6 +93,19 @@ function applyPreset(days) {
   $('bucket').value = '';
   loadChart();
 }
+function applyPresetAll() {
+  document.querySelectorAll('.preset-btn').forEach(function(b) { b.classList.remove('active'); });
+  if (event && event.target) event.target.classList.add('active');
+  if (!currentMetric) return;
+  fetch('/api/metrics/range?metric=' + encodeURIComponent(currentMetric))
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.min) $('from').value = d.min;
+      $('to').value = todayStr();
+      $('bucket').value = '';
+      loadChart();
+    });
+}
 function onDateChange() {
   document.querySelectorAll('.preset-btn').forEach(function(b) { b.classList.remove('active'); });
   loadChart();
@@ -150,9 +163,9 @@ document.addEventListener('keydown', function(e) {
       break;
     case 'ArrowLeft':  if (currentMetric) { e.preventDefault(); shiftRange(-1); } break;
     case 'ArrowRight': if (currentMetric) { e.preventDefault(); shiftRange(1); } break;
-    case '1': case '2': case '3': case '4':
+    case '1': case '2': case '3': case '4': case '5':
       if (currentMetric) {
-        var days = [1,7,30,90][+e.key-1];
+        var days = [1,7,30,90,365][+e.key-1];
         document.querySelectorAll('.preset-btn').forEach(function(b,i) { b.classList.toggle('active', i===+e.key-1); });
         $('from').value = daysAgoStr(days - 1);
         $('to').value = todayStr();

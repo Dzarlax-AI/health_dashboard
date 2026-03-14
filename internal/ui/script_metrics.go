@@ -53,9 +53,9 @@ function renderMetricsView() {
   var colorMap = {
     heart: 'var(--heart)', activity: 'var(--activity)',
     mobility: '#f59e0b', sleep: 'var(--sleep)',
-    env: '#06b6d4', other: 'var(--muted)'
+    body: '#10b981', env: '#06b6d4', nutrition: '#f97316', other: 'var(--muted)'
   };
-  var catOrder = ['heart', 'activity', 'mobility', 'sleep', 'env', 'other'];
+  var catOrder = ['heart', 'activity', 'mobility', 'sleep', 'body', 'env', 'nutrition', 'other'];
 
   var valueMap = latestMetricValues || {};
 

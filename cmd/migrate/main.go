@@ -23,7 +23,7 @@ func main() {
 		log.Fatalf("ensure table: %v", err)
 	}
 
-	rows, err := db.Query(`SELECT id, payload FROM health_records ORDER BY id`)
+	rows, err := db.Query(`SELECT id, payload FROM health_records WHERE content_type != 'apple-health-import' ORDER BY id`)
 	if err != nil {
 		log.Fatalf("query: %v", err)
 	}
