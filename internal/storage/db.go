@@ -9,8 +9,13 @@ import (
 )
 
 type DB struct {
-	db *sql.DB
+	db                 *sql.DB
+	needsForceBackfill bool // set by migrate() when data-altering migrations ran
 }
+
+// NeedsForceBackfill returns true if startup migrations changed metric_points
+// data (renames, unit conversions) and the caches need a full rebuild.
+func (s *DB) NeedsForceBackfill() bool { return s.needsForceBackfill }
 
 func New(path string) (*DB, error) {
 	db, err := sql.Open("sqlite3", path+"?_journal_mode=WAL&_busy_timeout=5000")
@@ -137,6 +142,7 @@ func (s *DB) migrateMetricNames() error {
 		for _, tbl := range []string{"minute_metrics", "hourly_metrics"} {
 			s.db.Exec(`DELETE FROM `+tbl+` WHERE metric_name = ?`, old)
 		}
+		s.needsForceBackfill = true
 		log.Printf("migrated metric_points: %s → %s (%d rows)", old, canonical, cnt)
 	}
 	return nil
@@ -171,6 +177,7 @@ func (s *DB) migrateFractionToPercent() error {
 		for _, tbl := range []string{"minute_metrics", "hourly_metrics"} {
 			s.db.Exec(`DELETE FROM `+tbl+` WHERE metric_name = ?`, m)
 		}
+		s.needsForceBackfill = true
 		log.Printf("migrated %s: %d rows fraction→percent (×100)", m, cnt)
 	}
 	return nil

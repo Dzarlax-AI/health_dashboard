@@ -29,11 +29,23 @@ func main() {
 	}
 	defer db.Close()
 
-	// Start the backfill scheduler. It runs an initial incremental backfill
-	// shortly after startup and then re-runs whenever new data arrives,
-	// debouncing rapid successive syncs into a single pass.
+	// Start the backfill scheduler. It runs an initial backfill shortly after
+	// startup and then re-runs whenever new data arrives, debouncing rapid
+	// successive syncs into a single pass.
+	// If caches are stale (data migrations ran, or ScoreVersion bumped),
+	// a force rebuild runs instead of an incremental fill.
 	sched := newBackfillScheduler(db, 2*time.Minute)
-	sched.scheduleAfter(10 * time.Second) // warm caches soon after startup
+	if db.NeedsForceBackfill() || db.HasStaleScores() {
+		log.Println("stale caches detected — scheduling force backfill on startup")
+		go func() {
+			time.Sleep(5 * time.Second)
+			db.BackfillAggregates(true)
+			db.BackfillScores(true)
+			log.Println("startup force backfill done")
+		}()
+	} else {
+		sched.scheduleAfter(10 * time.Second) // warm caches soon after startup
+	}
 
 	onNewData := func() {
 		db.InvalidateRecentAggregates(6)

@@ -25,6 +25,18 @@ func (s *DB) RunIncrementalBackfill() {
 // and recomputed on the next request or backfill run.
 const ScoreVersion = 2
 
+// HasStaleScores returns true if daily_scores contains rows with an outdated
+// score_version. This means the scoring formula changed since the last backfill
+// and a force rebuild is needed to recompute all readiness scores.
+func (s *DB) HasStaleScores() bool {
+	var cnt int
+	s.db.QueryRow(
+		`SELECT COUNT(*) FROM daily_scores WHERE score_version IS NOT NULL AND score_version != ?`,
+		ScoreVersion,
+	).Scan(&cnt)
+	return cnt > 0
+}
+
 // readinessFromCache returns the most-recent `limit` readiness scores
 // (ascending by date) that match the current ScoreVersion.
 func (s *DB) readinessFromCache(limit int) ([]health.ReadinessPoint, error) {
