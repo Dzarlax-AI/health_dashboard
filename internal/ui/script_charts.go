@@ -40,6 +40,7 @@ Chart.register({
 // ---- Sleep stacked chart ----
 function loadSleepChart(from, to) {
   if (bySourceEnabled) { return loadSleepBySourceChart(from, to); }
+  updateShowYear();
   setLoading(true);
   Promise.all(SLEEP_PHASES.map(function(ph) {
     return fetch('/api/metrics/data?metric=' + ph.metric + '&from=' + from + '&to=' + to + '&bucket=day&agg=AVG').then(function(r){return r.json()});
@@ -89,6 +90,7 @@ function loadSleepChart(from, to) {
 
 // ---- Readiness history chart ----
 function loadReadinessChart(from, to) {
+  updateShowYear();
   setLoading(true);
   var fromD = new Date(from + 'T12:00:00');
   var toD = new Date(to + 'T12:00:00');
@@ -152,6 +154,7 @@ function loadReadinessChart(from, to) {
 // ---- Main chart ----
 function loadChart() {
   if (!currentMetric) return;
+  updateShowYear();
   var from = $('from').value, to = $('to').value;
   var bucket = $('bucket').value, agg = $('agg').value;
   if (currentMetric === 'readiness') return loadReadinessChart(from, to);
@@ -312,6 +315,7 @@ function renderMultiSourceChart(pointsBySource) {
 }
 
 function loadSleepBySourceChart(from, to) {
+  updateShowYear();
   setLoading(true);
   fetch('/api/metrics/data?metric=sleep_total&from='+from+'&to='+to+'&bucket=day&agg=SUM&by_source=1')
     .then(function(r){return r.json()})

@@ -25,9 +25,17 @@ function fmtAxisDate(label) {
   var d = new Date(dateStr + 'T12:00:00');
   var localeCode = LANG === 'ru' ? 'ru' : LANG === 'sr' ? 'sr-Latn' : 'en';
   var weekday = d.toLocaleDateString(localeCode, { weekday:'short' });
-  var md = d.toLocaleDateString(localeCode, { month:'short', day:'numeric' });
+  var opts = { month:'short', day:'numeric' };
+  if (_fmtShowYear) opts.year = 'numeric';
+  var md = d.toLocaleDateString(localeCode, opts);
   if (!timeStr || timeStr === '00:00') return weekday + ' ' + md;
   return md + ' ' + timeStr;
+}
+var _fmtShowYear = false;
+function updateShowYear() {
+  var from = $('from'), to = $('to');
+  if (!from || !to || !from.value || !to.value) { _fmtShowYear = false; return; }
+  _fmtShowYear = from.value.slice(0,4) !== to.value.slice(0,4);
 }
 function chip(label, value, unit) {
   return '<div class="stat-chip"><div class="s-label">' + label + '</div><div class="s-value">' + value + (unit ? ' <span style="font-size:12px;color:var(--muted)">' + unit + '</span>' : '') + '</div></div>';

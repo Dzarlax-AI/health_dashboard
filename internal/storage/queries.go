@@ -187,12 +187,23 @@ func (s *DB) metricDataDayFromHourly(metric, from, to string) ([]DataPoint, erro
 
 	var out []DataPoint
 
+	// Determine the first cached date (day granularity).
+	cacheStartDate := ""
+	if minHour != "" && len(minHour) >= 10 {
+		cacheStartDate = minHour[:10]
+	}
+
+	fromDate := from
+	if len(fromDate) > 10 {
+		fromDate = fromDate[:10]
+	}
+
 	// If there is historical data before the cache starts, read it directly from metric_points.
-	if minHour == "" || from < minHour {
+	if cacheStartDate == "" || fromDate < cacheStartDate {
 		rawTo := to
-		if minHour != "" && minHour[:10] > from[:10] {
-			// Stop just before the first cached day to avoid overlap.
-			rawTo = minHour[:10] + " 00:00:00"
+		if cacheStartDate != "" {
+			// Stop one day before the first cached day to avoid overlap.
+			rawTo = cacheStartDate
 		}
 		rawPoints, rerr := s.metricDataRaw(metric, from, rawTo, "day", aggFuncFor(metric))
 		if rerr == nil {
@@ -200,7 +211,7 @@ func (s *DB) metricDataDayFromHourly(metric, from, to string) ([]DataPoint, erro
 		}
 	}
 
-	if minHour == "" {
+	if cacheStartDate == "" {
 		// No cache at all — raw data already returned above.
 		return out, nil
 	}
@@ -210,13 +221,30 @@ func (s *DB) metricDataDayFromHourly(metric, from, to string) ([]DataPoint, erro
 	if minHour > from {
 		hourlyFrom = minHour
 	}
-	combine := combineFuncFor(metric)
-	query := fmt.Sprintf(`
-		SELECT substr(hour,1,10), %s(avg_val), MIN(min_val), MAX(max_val)
-		FROM hourly_metrics
-		WHERE metric_name = ? AND hour >= ? AND hour <= ?
-		GROUP BY substr(hour,1,10)
-		ORDER BY substr(hour,1,10)`, combine)
+
+	var query string
+	if SumMetrics[metric] {
+		// SUM metrics: first SUM hourly values per source per day,
+		// then MAX across sources to avoid double-counting overlapping devices.
+		query = `
+			SELECT day, MAX(src_sum), MIN(src_min), MAX(src_max)
+			FROM (
+				SELECT substr(hour,1,10) AS day, source,
+				       SUM(avg_val) AS src_sum, MIN(min_val) AS src_min, MAX(max_val) AS src_max
+				FROM hourly_metrics
+				WHERE metric_name = ? AND hour >= ? AND hour <= ?
+				GROUP BY day, source
+			)
+			GROUP BY day
+			ORDER BY day`
+	} else {
+		query = `
+			SELECT substr(hour,1,10), AVG(avg_val), MIN(min_val), MAX(max_val)
+			FROM hourly_metrics
+			WHERE metric_name = ? AND hour >= ? AND hour <= ?
+			GROUP BY substr(hour,1,10)
+			ORDER BY substr(hour,1,10)`
+	}
 
 	rows, err := s.db.Query(query, metric, hourlyFrom, to)
 	if err != nil {
@@ -243,7 +271,9 @@ func (s *DB) metricDataRaw(metric, from, to, bucket, aggFunc string) ([]DataPoin
 	}
 
 	var query string
-	if aggFunc == "SUM" && strings.HasPrefix(metric, "sleep_") {
+	if SumMetrics[metric] {
+		// SUM metrics: per source SUM, then MAX across sources to avoid
+		// double-counting overlapping devices.
 		query = `SELECT bucket, MAX(source_sum), MIN(source_min), MAX(source_max)
 			FROM (
 				SELECT ` + bucketExpr + ` AS bucket, source, SUM(qty) AS source_sum, MIN(qty) AS source_min, MAX(qty) AS source_max
