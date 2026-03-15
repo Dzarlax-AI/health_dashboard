@@ -26,24 +26,18 @@ func combineFuncFor(metric string) string {
 	return "AVG"
 }
 
-// sumCombineExpr returns a SQL CASE expression that correctly combines
-// per-source values for SUM metrics. It handles two data patterns:
+// sumCombineExpr returns `MAX(valCol)` — picks the source with the highest
+// total for SUM metrics. This correctly handles both data patterns:
 //
-//   - Health Auto Export: sends HealthKit-deduplicated records with
-//     pipe-separated source names ("Watch|iPhone|Ring"). These are
-//     non-overlapping fragments and should be SUMmed.
-//   - Apple Health XML import: sends raw per-device records ("Watch",
-//     "iPhone") that overlap. MAX picks the most complete device.
+//   - Health Auto Export: pipe-separated sources ("Watch|iPhone|Ring")
+//     represent different HealthKit dedup levels of the same data.
+//     The source with the most devices has the most complete total.
+//   - Apple Health XML import: single-device sources overlap.
+//     MAX picks the device with the most data.
 //
-// Logic: if any pipe-separated source exists in the bucket, SUM only
-// those records (authoritative HealthKit dedup). Otherwise MAX across
-// single-device sources.
+// In both cases, MAX across per-source totals is the correct strategy.
 func sumCombineExpr(valCol string) string {
-	return `CASE
-		WHEN SUM(CASE WHEN source LIKE '%|%' THEN 1 ELSE 0 END) > 0
-		THEN SUM(CASE WHEN source LIKE '%|%' THEN ` + valCol + ` ELSE 0 END)
-		ELSE MAX(` + valCol + `)
-	END`
+	return "MAX(" + valCol + ")"
 }
 
 // SumMetrics is the canonical set of metrics that should be SUMmed within a bucket.
