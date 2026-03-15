@@ -21,8 +21,9 @@ function renderBriefing(data) {
 
   // Update hero label: "Today" only if data is fresh, otherwise show date.
   var heroLabel = $('readiness-label-top');
-  if (heroLabel) {
-    if (data.is_stale && data.date) {
+  if (heroLabel && data.date) {
+    var isDataStale = data.date < todayStr();
+    if (isDataStale) {
       var dd = new Date(data.date + 'T12:00:00');
       var loc = LANG === 'ru' ? 'ru' : LANG === 'sr' ? 'sr-Latn' : 'en';
       heroLabel.textContent = dd.toLocaleDateString(loc, { day:'numeric', month:'short' });
@@ -31,25 +32,23 @@ function renderBriefing(data) {
     }
   }
 
-  // Date in hero
+  // Date in hero — stale detection on client (uses browser local time, not server time)
   if (data.date) {
     var d = new Date(data.date + 'T12:00:00');
     var localeCode = LANG === 'ru' ? 'ru' : LANG === 'sr' ? 'sr-Latn' : 'en';
     var dateLabel = d.toLocaleDateString(localeCode, { weekday:'long', month:'long', day:'numeric' });
     var heroDate = dateLabel;
-    if (data.is_stale) {
-      heroDate += '<span class="stale-badge">' + t('stale_prefix') + data.days_ago + t('stale_suffix') + '</span>';
+    var isStale = data.date < todayStr();
+    if (isStale) {
+      var daysAgo = Math.round((new Date() - d) / 86400000);
+      heroDate += '<span class="stale-badge">' + t('stale_prefix') + daysAgo + t('stale_suffix') + '</span>';
     }
     $('hero-date-strip').innerHTML = heroDate;
 
     // Update "At a glance" title to reflect actual date, not "Today".
     var glanceEl = document.querySelector('[data-i18n="at_a_glance"]');
     if (glanceEl) {
-      if (data.is_stale) {
-        glanceEl.textContent = dateLabel;
-      } else {
-        glanceEl.textContent = t('at_a_glance');
-      }
+      glanceEl.textContent = isStale ? dateLabel : t('at_a_glance');
     }
   }
 

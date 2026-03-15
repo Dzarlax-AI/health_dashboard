@@ -8,8 +8,8 @@ var SOURCE_PALETTE = ['#2563eb','#e11d48','#059669','#d97706','#7c3aed','#06b6d4
 var trendCharts = [];
 var prevView = 'dashboard';
 function $(id) { return document.getElementById(id); }
-function todayStr() { return new Date().toISOString().slice(0,10); }
-function daysAgoStr(n) { var d = new Date(); d.setDate(d.getDate()-n); return d.toISOString().slice(0,10); }
+function todayStr() { var d = new Date(); return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0'); }
+function daysAgoStr(n) { var d = new Date(); d.setDate(d.getDate()-n); return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0'); }
 
 // ---- Init ----
 $('from').value = daysAgoStr(29);

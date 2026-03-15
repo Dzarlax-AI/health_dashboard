@@ -513,8 +513,17 @@ func (s *DB) SummarizeMetric(metric string, days int) (*MetricStats, error) {
 	if days <= 0 {
 		days = 7
 	}
-	from := time.Now().AddDate(0, 0, -(days - 1)).Format("2006-01-02")
-	to := time.Now().Format("2006-01-02") + " 23:59:59"
+	// Use latest date from data (not server time) to avoid timezone mismatch.
+	_, maxDate, _ := s.GetMetricDateRange(metric)
+	if maxDate == "" {
+		return nil, fmt.Errorf("no data for %s", metric)
+	}
+	to := maxDate + " 23:59:59"
+	t, err := time.Parse("2006-01-02", maxDate)
+	if err != nil {
+		return nil, fmt.Errorf("parse max date %s: %w", maxDate, err)
+	}
+	from := t.AddDate(0, 0, -(days - 1)).Format("2006-01-02")
 
 	// Get daily-level data (already handles SUM/AVG and per-source dedup).
 	daily, err := s.GetMetricData(metric, from, to, "day", aggFuncFor(metric))

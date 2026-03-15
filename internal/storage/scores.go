@@ -126,18 +126,22 @@ func (s *DB) BackfillScores(force bool) error {
 		}
 	}
 
-	var earliest string
+	var earliest, latest string
 	if err := s.db.QueryRow(
-		`SELECT MIN(substr(hour,1,10)) FROM hourly_metrics`,
-	).Scan(&earliest); err != nil || earliest == "" {
+		`SELECT MIN(substr(hour,1,10)), MAX(substr(hour,1,10)) FROM hourly_metrics`,
+	).Scan(&earliest, &latest); err != nil || earliest == "" {
 		return fmt.Errorf("no metric data found")
 	}
 
-	t, err := time.Parse("2006-01-02", earliest)
+	tEarliest, err := time.Parse("2006-01-02", earliest)
 	if err != nil {
 		return fmt.Errorf("parse earliest date: %w", err)
 	}
-	days := int(time.Since(t).Hours()/24) + 2 // +2 so today is always included
+	tLatest, err := time.Parse("2006-01-02", latest)
+	if err != nil {
+		return fmt.Errorf("parse latest date: %w", err)
+	}
+	days := int(tLatest.Sub(tEarliest).Hours()/24) + 2
 
 	log.Printf("backfilling readiness scores for ~%d days (from %s)…", days, earliest)
 

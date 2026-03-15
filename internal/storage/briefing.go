@@ -270,6 +270,14 @@ func (s *DB) computeReadinessHistory(outputDays int) ([]health.ReadinessPoint, e
 	window := 30
 	total := outputDays + window
 
+	// Determine the latest date from data (not server time) to avoid TZ mismatch.
+	var lastDate string
+	s.db.QueryRow(`SELECT MAX(substr(date,1,10)) FROM metric_points`).Scan(&lastDate)
+	if lastDate == "" {
+		return nil, fmt.Errorf("no metric data found")
+	}
+	fromDate := subtractDays(lastDate, total)
+
 	// Fetch date-keyed maps for the full look-back period.
 	fetch := func(metric, agg string, isSleep bool) (map[string]float64, error) {
 		var rows *sql.Rows
@@ -282,20 +290,20 @@ func (s *DB) computeReadinessHistory(outputDays int) ([]health.ReadinessPoint, e
 					FROM metric_points
 					WHERE metric_name = ?
 					  AND qty > 0
-					  AND substr(date,1,10) >= date('now', ? || ' days')
+					  AND substr(date,1,10) >= ?
 					GROUP BY d, source
 				)
 				GROUP BY d`,
-				metric, fmt.Sprintf("-%d", total))
+				metric, fromDate)
 		} else {
 			rows, err = s.db.Query(`
 				SELECT substr(date,1,10), `+agg+`(qty)
 				FROM metric_points
 				WHERE metric_name = ?
 				  AND qty > 0
-				  AND substr(date,1,10) >= date('now', ? || ' days')
+				  AND substr(date,1,10) >= ?
 				GROUP BY substr(date,1,10)`,
-				metric, fmt.Sprintf("-%d", total))
+				metric, fromDate)
 		}
 		if err != nil {
 			return nil, err

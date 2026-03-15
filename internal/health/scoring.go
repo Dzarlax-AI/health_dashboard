@@ -1,7 +1,5 @@
 package health
 
-import "time"
-
 // ComputeBriefing calculates all health scores and insights from pre-fetched raw metrics.
 // It is a pure function — no I/O, all inputs come from RawMetrics.
 // lang selects the output language ("en", "ru", "sr"); defaults to "en".
@@ -28,21 +26,8 @@ func ComputeBriefing(d RawMetrics, lang string) *BriefingResponse {
 	highlights := buildHighlights(d, ls)
 	metricCards := buildMetricCards(d)
 
-	// Detect stale data: compare last data date with today.
-	isStale := false
-	daysAgo := 0
-	today := time.Now().Format("2006-01-02")
-	if d.LastDate != "" && d.LastDate < today {
-		isStale = true
-		if t, err := time.Parse("2006-01-02", d.LastDate); err == nil {
-			daysAgo = int(time.Since(t).Hours() / 24)
-		}
-	}
-
 	return &BriefingResponse{
 		Date:           d.LastDate,
-		IsStale:        isStale,
-		DaysAgo:        daysAgo,
 		Greeting:       "Here's your health summary",
 		Overall:        overall,
 		Sections:       sections,

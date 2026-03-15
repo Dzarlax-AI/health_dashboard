@@ -96,8 +96,6 @@ type Alert struct {
 
 type BriefingResponse struct {
 	Date           string             `json:"date"`
-	IsStale        bool               `json:"is_stale"`         // true if data is not from today
-	DaysAgo        int                `json:"days_ago"`         // 0 = today, 1 = yesterday, etc.
 	Greeting       string             `json:"greeting"`
 	Overall        string             `json:"overall"` // "good", "fair", "low"
 	Sections       []BriefingSection  `json:"sections"`
