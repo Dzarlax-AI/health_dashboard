@@ -57,20 +57,42 @@ func (s *DB) rawMetricsFromDailyScores(lastDate string) *health.RawMetrics {
 		}
 	}
 
+	// For the most recent day, daily_scores may be stale (backfill hasn't run
+	// yet after a sync). Read fresh values from metric_points directly — they
+	// are always up-to-date (INSERT writes there immediately).
+	freshToday := s.freshDayFromRaw(lastDate)
+
 	d := &health.RawMetrics{LastDate: lastDate}
-	for _, r := range all {
-		appendIfPositive(&d.HRV, r.hrv)
-		appendIfPositive(&d.RHR, r.rhr)
-		appendIfPositive(&d.Sleep, r.slp)
-		appendIfPositive(&d.Deep, r.deep)
-		appendIfPositive(&d.REM, r.rem)
-		appendIfPositive(&d.Awake, r.awake)
-		appendIfPositive(&d.Steps, r.steps)
-		appendIfPositive(&d.Cal, r.cal)
-		appendIfPositive(&d.Exercise, r.ex)
-		appendIfPositive(&d.SpO2, r.spo2)
-		appendIfPositive(&d.VO2, r.vo2)
-		appendIfPositive(&d.Resp, r.resp)
+	for i, r := range all {
+		isLatest := i == 0
+		if isLatest && freshToday != nil {
+			// Override stale daily_scores with fresh hourly data for today.
+			appendIfPositive(&d.HRV, coalesce(freshToday.hrv, r.hrv))
+			appendIfPositive(&d.RHR, coalesce(freshToday.rhr, r.rhr))
+			appendIfPositive(&d.Sleep, coalesce(freshToday.slp, r.slp))
+			appendIfPositive(&d.Deep, coalesce(freshToday.deep, r.deep))
+			appendIfPositive(&d.REM, coalesce(freshToday.rem, r.rem))
+			appendIfPositive(&d.Awake, coalesce(freshToday.awake, r.awake))
+			appendIfPositive(&d.Steps, coalesce(freshToday.steps, r.steps))
+			appendIfPositive(&d.Cal, coalesce(freshToday.cal, r.cal))
+			appendIfPositive(&d.Exercise, coalesce(freshToday.ex, r.ex))
+			appendIfPositive(&d.SpO2, coalesce(freshToday.spo2, r.spo2))
+			appendIfPositive(&d.VO2, coalesce(freshToday.vo2, r.vo2))
+			appendIfPositive(&d.Resp, coalesce(freshToday.resp, r.resp))
+		} else {
+			appendIfPositive(&d.HRV, r.hrv)
+			appendIfPositive(&d.RHR, r.rhr)
+			appendIfPositive(&d.Sleep, r.slp)
+			appendIfPositive(&d.Deep, r.deep)
+			appendIfPositive(&d.REM, r.rem)
+			appendIfPositive(&d.Awake, r.awake)
+			appendIfPositive(&d.Steps, r.steps)
+			appendIfPositive(&d.Cal, r.cal)
+			appendIfPositive(&d.Exercise, r.ex)
+			appendIfPositive(&d.SpO2, r.spo2)
+			appendIfPositive(&d.VO2, r.vo2)
+			appendIfPositive(&d.Resp, r.resp)
+		}
 	}
 
 	// StepsWithDates and HRVWithDates — last 7 rows with actual data.
@@ -412,6 +434,77 @@ func (s *DB) fetchDailyMetric(metric, lastDate string, days int, agg string) []f
 		}
 	}
 	return vals
+}
+
+// dayRow mirrors the daily_scores column set, used for fresh-day override.
+type dayRow struct {
+	hrv, rhr, slp, deep, rem, core, awake *float64
+	steps, cal, ex, spo2, vo2, resp       *float64
+}
+
+// freshDayFromRaw reads today's values directly from metric_points (always
+// up-to-date, unlike hourly_metrics which may be stale after cache invalidation).
+// Uses smart combine for SUM metrics (pipe-source aware dedup).
+func (s *DB) freshDayFromRaw(date string) *dayRow {
+	type spec struct {
+		metric string
+		dest   **float64
+		isSum  bool
+	}
+	r := &dayRow{}
+	specs := []spec{
+		{"heart_rate_variability", &r.hrv, false},
+		{"resting_heart_rate", &r.rhr, false},
+		{"sleep_total", &r.slp, true},
+		{"sleep_deep", &r.deep, true},
+		{"sleep_rem", &r.rem, true},
+		{"sleep_core", &r.core, true},
+		{"sleep_awake", &r.awake, true},
+		{"step_count", &r.steps, true},
+		{"active_energy", &r.cal, true},
+		{"apple_exercise_time", &r.ex, true},
+		{"blood_oxygen_saturation", &r.spo2, false},
+		{"vo2_max", &r.vo2, false},
+		{"respiratory_rate", &r.resp, false},
+	}
+	anyFound := false
+	for _, sp := range specs {
+		var val float64
+		var err error
+		if sp.isSum {
+			// Smart combine: prefer pipe-source (HealthKit dedup), else MAX single.
+			err = s.db.QueryRow(fmt.Sprintf(`
+				SELECT COALESCE(%s, 0) FROM (
+					SELECT source, SUM(qty) AS source_sum
+					FROM metric_points
+					WHERE metric_name=? AND substr(date,1,10)=? AND qty > 0
+					GROUP BY source
+				)`, sumCombineExpr("source_sum")), sp.metric, date).Scan(&val)
+		} else {
+			err = s.db.QueryRow(`
+				SELECT COALESCE(AVG(qty), 0)
+				FROM metric_points
+				WHERE metric_name=? AND substr(date,1,10)=? AND qty > 0`,
+				sp.metric, date).Scan(&val)
+		}
+		if err == nil && val > 0 {
+			v := val
+			*sp.dest = &v
+			anyFound = true
+		}
+	}
+	if !anyFound {
+		return nil
+	}
+	return r
+}
+
+// coalesce returns the first non-nil pointer, or nil if both are nil.
+func coalesce(a, b *float64) *float64 {
+	if a != nil {
+		return a
+	}
+	return b
 }
 
 func subtractDays(dateStr string, days int) string {
