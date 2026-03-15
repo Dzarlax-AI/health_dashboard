@@ -85,7 +85,7 @@ Defined in `internal/storage/aggregates.go::SumMetrics` (exported):
 ## Cache Invalidation & Backfill
 
 - **On startup**: `RunIncrementalBackfill()` fires after 10 s (fills missing rows only)
-- **After `POST /health`**: `InvalidateRecentAggregates(6h)` + `InvalidateRecentScores(3d)` then debounced backfill (2 min window collapses multiple syncs)
+- **After `POST /health`**: inline `UpsertRecentCache()` rebuilds hourly+daily for affected dates directly from metric_points (no stale window). Debounced backfill (2 min) runs as safety net to refresh last 48h.
 - **ScoreVersion** constant in `scores.go` (currently 2): bump to invalidate all cached readiness scores on next run
 - **Force rebuild**: wipes cache tables, recomputes everything from `metric_points`
 

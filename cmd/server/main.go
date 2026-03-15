@@ -48,9 +48,10 @@ func main() {
 	}
 
 	onNewData := func() {
-		db.InvalidateRecentAggregates(6)
-		db.InvalidateRecentScores(3)
-		sched.schedule() // debounced: triggers backfill 2 min after last sync
+		// Inline cache upsert already happened in the handler (UpsertRecentCache).
+		// The debounced backfill is a safety net that refreshes the last 48h and
+		// recomputes readiness scores — no cache invalidation/deletion needed.
+		sched.schedule()
 	}
 
 	// forceRunning prevents concurrent force-rebuild runs.

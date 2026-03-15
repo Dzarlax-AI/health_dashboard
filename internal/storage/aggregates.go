@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"time"
 )
 
 // aggFuncFor returns the aggregation function name for a metric.
@@ -74,27 +73,138 @@ func (s *DB) listMetricNames() ([]string, error) {
 	return out, rows.Err()
 }
 
-// InvalidateRecentAggregates deletes pre-aggregated rows for the last `hours`
-// hours from both minute_metrics and hourly_metrics. Safe to call from a goroutine.
-func (s *DB) InvalidateRecentAggregates(hours int) {
-	cutoff := time.Now().Add(-time.Duration(hours) * time.Hour).Format("2006-01-02 15:04")
-	for _, tbl := range []string{"minute_metrics", "hourly_metrics"} {
-		col := "minute"
-		if tbl == "hourly_metrics" {
-			col = "hour"
+// UpsertRecentCache rebuilds hourly_metrics and daily_scores for the given
+// dates directly from metric_points. Called inline after POST /health so the
+// cache is always fresh — no "hole" between invalidation and backfill.
+// Typically takes <100ms for a single day.
+func (s *DB) UpsertRecentCache(dates []string) {
+	if len(dates) == 0 {
+		return
+	}
+	metrics, err := s.listMetricNames()
+	if err != nil {
+		log.Printf("upsert cache: list metrics: %v", err)
+		return
+	}
+	for _, date := range dates {
+		for _, m := range metrics {
+			s.upsertHourlyForDate(m, date)
 		}
-		if _, err := s.db.Exec(
-			fmt.Sprintf("DELETE FROM %s WHERE %s >= ?", tbl, col), cutoff,
-		); err != nil {
-			log.Printf("invalidate %s: %v", tbl, err)
-		}
+		s.upsertDailyForDate(date)
 	}
 }
 
-// BackfillAggregates (re)builds minute_metrics and hourly_metrics for all
-// available data, cascading: metric_points → minute_metrics → hourly_metrics.
-// If force=true the tables are truncated first; otherwise only rows missing
-// from the cache are computed.
+// upsertHourlyForDate rebuilds hourly_metrics for one metric+date from metric_points.
+// Uses INSERT OR REPLACE so stale values are overwritten.
+func (s *DB) upsertHourlyForDate(metric, date string) {
+	agg := aggFuncFor(metric)
+
+	sleepDedup := ""
+	if isSleepMetric(metric) {
+		sleepDedup = `AND NOT (
+			substr(date, 12, 8) = '00:00:00'
+			AND EXISTS (
+				SELECT 1 FROM metric_points p2
+				WHERE p2.metric_name = metric_points.metric_name
+				  AND substr(p2.date, 1, 10) = substr(metric_points.date, 1, 10)
+				  AND p2.source = metric_points.source
+				  AND substr(p2.date, 12, 8) != '00:00:00'
+				  AND p2.qty > 0
+			)
+		)`
+	}
+
+	var query string
+	if agg == "SUM" {
+		// For SUM metrics: MAX within each minute (dedup re-syncs),
+		// then SUM across minutes within each hour.
+		query = fmt.Sprintf(`
+			INSERT OR REPLACE INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val)
+			SELECT metric_name, hour, source, SUM(minute_max), MIN(minute_min), MAX(minute_max)
+			FROM (
+				SELECT metric_name, source,
+				       substr(date, 1, 13) || ':00' AS hour,
+				       substr(date, 1, 16) AS minute,
+				       MAX(qty) AS minute_max, MIN(qty) AS minute_min
+				FROM metric_points
+				WHERE metric_name = ? AND substr(date,1,10) = ? AND qty > 0 %s
+				GROUP BY metric_name, source, minute
+			)
+			GROUP BY metric_name, hour, source`, sleepDedup)
+	} else {
+		query = fmt.Sprintf(`
+			INSERT OR REPLACE INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val)
+			SELECT metric_name,
+			       substr(date, 1, 13) || ':00' AS hour,
+			       source,
+			       AVG(qty), MIN(qty), MAX(qty)
+			FROM metric_points
+			WHERE metric_name = ? AND substr(date,1,10) = ? AND qty > 0 %s
+			GROUP BY metric_name, hour, source`, sleepDedup)
+	}
+
+	if _, err := s.db.Exec(query, metric, date); err != nil {
+		log.Printf("upsert hourly %s/%s: %v", metric, date, err)
+	}
+}
+
+// upsertDailyForDate rebuilds daily_scores metric columns for one date
+// from hourly_metrics. Readiness is not touched (computed separately).
+func (s *DB) upsertDailyForDate(date string) {
+	type spec struct {
+		col  string
+		name string
+	}
+	specs := []spec{
+		{"hrv_avg", "heart_rate_variability"},
+		{"rhr_avg", "resting_heart_rate"},
+		{"sleep_total", "sleep_total"},
+		{"sleep_deep", "sleep_deep"},
+		{"sleep_rem", "sleep_rem"},
+		{"sleep_core", "sleep_core"},
+		{"sleep_awake", "sleep_awake"},
+		{"steps", "step_count"},
+		{"calories", "active_energy"},
+		{"exercise_min", "apple_exercise_time"},
+		{"spo2_avg", "blood_oxygen_saturation"},
+		{"vo2_avg", "vo2_max"},
+		{"resp_avg", "respiratory_rate"},
+	}
+
+	for _, sp := range specs {
+		var val float64
+		var err error
+		if SumMetrics[sp.name] {
+			combineVal := sumCombineExpr("avg_val")
+			err = s.db.QueryRow(fmt.Sprintf(`
+				SELECT COALESCE(SUM(hour_val), 0) FROM (
+					SELECT hour, %s AS hour_val
+					FROM hourly_metrics
+					WHERE metric_name=? AND substr(hour,1,10)=?
+					GROUP BY hour
+				)`, combineVal), sp.name, date).Scan(&val)
+		} else {
+			err = s.db.QueryRow(`
+				SELECT COALESCE(AVG(avg_val), 0)
+				FROM hourly_metrics
+				WHERE metric_name=? AND substr(hour,1,10)=?`,
+				sp.name, date).Scan(&val)
+		}
+		if err != nil || val == 0 {
+			continue
+		}
+		s.db.Exec(fmt.Sprintf(`
+			INSERT INTO daily_scores (date, %s, computed_at)
+			VALUES (?, ?, datetime('now'))
+			ON CONFLICT(date) DO UPDATE SET %s = excluded.%s, computed_at = excluded.computed_at`,
+			sp.col, sp.col, sp.col), date, val)
+	}
+}
+
+// BackfillAggregates rebuilds hourly_metrics from metric_points and
+// daily_scores from hourly_metrics. If force=true all cache tables are
+// truncated first; otherwise the last 48h are refreshed (catches re-synced
+// data) and new data is appended.
 func (s *DB) BackfillAggregates(force bool) error {
 	if force {
 		for _, tbl := range []string{"minute_metrics", "hourly_metrics"} {
@@ -102,7 +212,7 @@ func (s *DB) BackfillAggregates(force bool) error {
 				return fmt.Errorf("clear %s: %w", tbl, err)
 			}
 		}
-		log.Println("minute_metrics and hourly_metrics cleared")
+		log.Println("cache tables cleared")
 	}
 
 	metrics, err := s.listMetricNames()
@@ -114,15 +224,12 @@ func (s *DB) BackfillAggregates(force bool) error {
 
 	for _, m := range metrics {
 		agg := aggFuncFor(m)
-		if err := s.buildMinuteMetric(m, agg, force); err != nil {
-			log.Printf("  minute %s: %v", m, err)
-		}
 		if err := s.buildHourlyMetric(m, agg, force); err != nil {
 			log.Printf("  hourly %s: %v", m, err)
 		}
 	}
 
-	// Level 3: hourly_metrics → daily_scores metric columns.
+	// Level 2: hourly_metrics → daily_scores metric columns.
 	if err := s.BuildDailyMetrics(force); err != nil {
 		return fmt.Errorf("daily metrics: %w", err)
 	}
@@ -132,7 +239,6 @@ func (s *DB) BackfillAggregates(force bool) error {
 }
 
 // BuildDailyMetrics fills the metric columns of daily_scores from hourly_metrics.
-// This is Level 3 of the cascade: hourly → daily.
 // Existing readiness/score_version columns are not touched.
 func (s *DB) BuildDailyMetrics(force bool) error {
 	type spec struct {
@@ -167,21 +273,18 @@ func (s *DB) BuildDailyMetrics(force bool) error {
 func (s *DB) buildDailyMetricCol(col, metric string, force bool) error {
 	var fromClause string
 	if !force {
-		// Only fill dates that don't have this column set yet.
-		var lastFilled string
-		s.db.QueryRow(
-			`SELECT MAX(date) FROM daily_scores WHERE `+col+` IS NOT NULL`,
-		).Scan(&lastFilled)
-		if lastFilled != "" {
-			fromClause = fmt.Sprintf("AND substr(hour,1,10) > '%s'", lastFilled)
+		// Refresh last 2 days + fill new dates (catches re-synced data).
+		var maxDate string
+		s.db.QueryRow(`SELECT MAX(substr(hour,1,10)) FROM hourly_metrics WHERE metric_name = ?`, metric).Scan(&maxDate)
+		if maxDate == "" {
+			return nil
 		}
+		refreshFrom := subtractDaysStr(maxDate, 2)
+		fromClause = fmt.Sprintf("AND substr(hour,1,10) >= '%s'", refreshFrom)
 	}
 
 	var query string
 	if SumMetrics[metric] {
-		// SUM metrics: smart combine per hour, then SUM across hours per day.
-		// Per hour: prefer pipe-source (HealthKit deduped) when available,
-		// fall back to MAX per single-source (XML import overlap).
 		combineVal := sumCombineExpr("avg_val")
 		query = fmt.Sprintf(`
 			SELECT day, SUM(hour_val) FROM (
@@ -214,38 +317,35 @@ func (s *DB) buildDailyMetricCol(col, metric string, force bool) error {
 		s.db.Exec(fmt.Sprintf(`
 			INSERT INTO daily_scores (date, %s, computed_at)
 			VALUES (?, ?, datetime('now'))
-			ON CONFLICT(date) DO UPDATE SET %s = excluded.%s`, col, col, col),
-			date, val)
+			ON CONFLICT(date) DO UPDATE SET %s = excluded.%s, computed_at = excluded.computed_at`,
+			col, col, col), date, val)
 	}
 	return rows.Err()
 }
 
 // isSleepMetric returns true for sleep_* metrics that may have both a midnight
-// summary record and individual fragment records from different data sources
-// (Health Auto Export vs Apple Health XML import).
+// summary record and individual fragment records from different data sources.
 func isSleepMetric(metric string) bool {
 	return strings.HasPrefix(metric, "sleep_")
 }
 
-// buildMinuteMetric fills minute_metrics for one metric by reading metric_points.
-// Level 1 of the cascade.
-func (s *DB) buildMinuteMetric(metric, agg string, force bool) error {
-	// Find the range to (re)compute: if not force, only fill missing minutes.
+// buildHourlyMetric fills hourly_metrics for one metric directly from
+// metric_points (skipping minute_metrics). Uses INSERT OR REPLACE so
+// re-synced data overwrites stale cache values.
+func (s *DB) buildHourlyMetric(metric, agg string, force bool) error {
 	var fromClause string
 	if !force {
+		// Refresh last 48h + append new data (catches re-synced values).
 		var lastCached string
 		s.db.QueryRow(
-			`SELECT MAX(minute) FROM minute_metrics WHERE metric_name = ?`, metric,
+			`SELECT MAX(hour) FROM hourly_metrics WHERE metric_name = ?`, metric,
 		).Scan(&lastCached)
 		if lastCached != "" {
-			fromClause = fmt.Sprintf("AND substr(date,1,16) > '%s'", lastCached)
+			refreshFrom := subtractDaysStr(lastCached[:10], 2)
+			fromClause = fmt.Sprintf("AND substr(date,1,10) >= '%s'", refreshFrom)
 		}
 	}
 
-	// For sleep metrics, Health Auto Export writes a single summary at 00:00:00
-	// while Apple Health XML import writes individual fragments with real timestamps.
-	// When both exist for the same day+source, exclude the midnight summary to
-	// avoid double-counting.
 	sleepDedup := ""
 	if isSleepMetric(metric) {
 		sleepDedup = `AND NOT (
@@ -261,51 +361,44 @@ func (s *DB) buildMinuteMetric(metric, agg string, force bool) error {
 		)`
 	}
 
-	// For SUM metrics: use MAX per (minute, source) to deduplicate re-synced
-	// records from Health Auto Export (same qty at e.g. 11:00:00 and 11:00:30).
-	// For AVG metrics: use AVG as before.
-	minuteAgg := agg
+	var query string
 	if agg == "SUM" {
-		minuteAgg = "MAX"
+		// SUM metrics: MAX within each minute (dedup re-syncs), then SUM per hour.
+		query = fmt.Sprintf(`
+			INSERT OR REPLACE INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val)
+			SELECT metric_name, hour, source, SUM(minute_max), MIN(minute_min), MAX(minute_max)
+			FROM (
+				SELECT metric_name, source,
+				       substr(date, 1, 13) || ':00' AS hour,
+				       substr(date, 1, 16) AS minute,
+				       MAX(qty) AS minute_max, MIN(qty) AS minute_min
+				FROM metric_points
+				WHERE metric_name = ? AND qty > 0 %s %s
+				GROUP BY metric_name, source, minute
+			)
+			GROUP BY metric_name, hour, source`, sleepDedup, fromClause)
+	} else {
+		query = fmt.Sprintf(`
+			INSERT OR REPLACE INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val)
+			SELECT metric_name,
+			       substr(date, 1, 13) || ':00' AS hour,
+			       source,
+			       AVG(qty), MIN(qty), MAX(qty)
+			FROM metric_points
+			WHERE metric_name = ? AND qty > 0 %s %s
+			GROUP BY metric_name, hour, source`, sleepDedup, fromClause)
 	}
-	_, err := s.db.Exec(fmt.Sprintf(`
-		INSERT OR REPLACE INTO minute_metrics (metric_name, minute, source, avg_val, min_val, max_val)
-		SELECT metric_name,
-		       substr(date, 1, 16) AS minute,
-		       source,
-		       %s(qty), MIN(qty), MAX(qty)
-		FROM metric_points
-		WHERE metric_name = ? AND qty > 0 %s %s
-		GROUP BY metric_name, minute, source
-	`, minuteAgg, sleepDedup, fromClause), metric)
+
+	_, err := s.db.Exec(query, metric)
 	return err
 }
 
-// buildHourlyMetric fills hourly_metrics for one metric by reading minute_metrics.
-// Level 2 of the cascade — never touches metric_points.
-func (s *DB) buildHourlyMetric(metric, agg string, force bool) error {
-	var fromClause string
-	if !force {
-		var lastCached string
-		s.db.QueryRow(
-			`SELECT MAX(hour) FROM hourly_metrics WHERE metric_name = ?`, metric,
-		).Scan(&lastCached)
-		if lastCached != "" {
-			fromClause = fmt.Sprintf("AND substr(minute,1,13) > '%s'", lastCached)
-		}
+// subtractDaysStr subtracts N days from a YYYY-MM-DD string.
+func subtractDaysStr(dateStr string, days int) string {
+	// Reuse the subtractDays from briefing.go via simple inline logic.
+	t, err := parseDate(dateStr)
+	if err != nil {
+		return dateStr
 	}
-
-	// Combine per-source minute values into hourly per-source values.
-	// For SUM metrics: SUM the per-minute sums. For AVG: AVG the per-minute avgs.
-	_, err := s.db.Exec(fmt.Sprintf(`
-		INSERT OR REPLACE INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val)
-		SELECT metric_name,
-		       substr(minute, 1, 13) || ':00' AS hour,
-		       source,
-		       %s(avg_val), MIN(min_val), MAX(max_val)
-		FROM minute_metrics
-		WHERE metric_name = ? %s
-		GROUP BY metric_name, hour, source
-	`, agg, fromClause), metric)
-	return err
+	return t.AddDate(0, 0, -days).Format("2006-01-02")
 }

@@ -75,6 +75,23 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("saved record id=%d points=%d", id, len(points))
+
+	// Inline cache upsert: rebuild hourly + daily for affected dates
+	// directly from metric_points. No stale window.
+	dateSet := make(map[string]bool)
+	for _, p := range points {
+		if len(p.Date) >= 10 {
+			dateSet[p.Date[:10]] = true
+		}
+	}
+	if len(dateSet) > 0 {
+		dates := make([]string, 0, len(dateSet))
+		for d := range dateSet {
+			dates = append(dates, d)
+		}
+		h.db.UpsertRecentCache(dates)
+	}
+
 	if h.onNewData != nil {
 		go h.onNewData()
 	}

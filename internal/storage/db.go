@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -226,6 +227,11 @@ func (s *DB) migrateDailyScores() error {
 
 func (s *DB) Close() error {
 	return s.db.Close()
+}
+
+// parseDate parses a YYYY-MM-DD string.
+func parseDate(s string) (time.Time, error) {
+	return time.Parse("2006-01-02", s)
 }
 
 // Record is the raw payload received from Health Auto Export.

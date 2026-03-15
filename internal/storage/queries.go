@@ -435,13 +435,14 @@ func (s *DB) scanSourcePoints(query, metric, from, to string) ([]SourceDataPoint
 }
 
 func (s *DB) GetDashboard() (*DashboardResponse, error) {
+	// Use metric_points for "today" detection — always fresh after POST.
 	var today string
-	if err := s.db.QueryRow(`SELECT MAX(substr(hour,1,10)) FROM hourly_metrics`).Scan(&today); err != nil || today == "" {
+	if err := s.db.QueryRow(`SELECT MAX(substr(date,1,10)) FROM metric_points`).Scan(&today); err != nil || today == "" {
 		return &DashboardResponse{}, nil
 	}
 
 	var yesterday string
-	s.db.QueryRow(`SELECT MAX(substr(hour,1,10)) FROM hourly_metrics WHERE substr(hour,1,10) < ?`, today).Scan(&yesterday)
+	s.db.QueryRow(`SELECT MAX(substr(date,1,10)) FROM metric_points WHERE substr(date,1,10) < ?`, today).Scan(&yesterday)
 
 	var lastUpdated string
 	s.db.QueryRow(`SELECT MAX(received_at) FROM health_records`).Scan(&lastUpdated)
@@ -465,10 +466,33 @@ func (s *DB) GetDashboard() (*DashboardResponse, error) {
 		{"wrist_temperature", "AVG"},
 	}
 
-	queryDay := func(metric, agg, day string) float64 {
+	// queryDayRaw reads a metric's daily value directly from metric_points
+	// (always fresh). Used for "today" to avoid stale cache.
+	queryDayRaw := func(metric, agg, day string) float64 {
 		var val float64
 		if agg == "SUM" {
-			// Smart combine per hour, then SUM across hours for the day.
+			combineVal := sumCombineExpr("source_sum")
+			s.db.QueryRow(fmt.Sprintf(`
+				SELECT COALESCE(%s, 0) FROM (
+					SELECT source, SUM(qty) AS source_sum
+					FROM metric_points
+					WHERE metric_name=? AND substr(date,1,10)=? AND qty > 0
+					GROUP BY source
+				)`, combineVal), metric, day,
+			).Scan(&val)
+		} else {
+			s.db.QueryRow(
+				`SELECT COALESCE(AVG(qty), 0) FROM metric_points WHERE metric_name=? AND substr(date,1,10)=? AND qty > 0`,
+				metric, day,
+			).Scan(&val)
+		}
+		return val
+	}
+
+	// queryDayCache reads from hourly_metrics (fast, for historical days).
+	queryDayCache := func(metric, agg, day string) float64 {
+		var val float64
+		if agg == "SUM" {
 			combineVal := sumCombineExpr("avg_val")
 			s.db.QueryRow(fmt.Sprintf(`
 				SELECT COALESCE(SUM(hour_val), 0) FROM (
@@ -496,11 +520,13 @@ func (s *DB) GetDashboard() (*DashboardResponse, error) {
 
 	var result []CardData
 	for _, c := range cards {
-		val := queryDay(c.metric, c.agg, today)
+		// Today: read from metric_points (always fresh after POST).
+		// Yesterday: read from hourly_metrics cache (fast, stable).
+		val := queryDayRaw(c.metric, c.agg, today)
 		if val == 0 {
 			continue
 		}
-		prev := queryDay(c.metric, c.agg, yesterday)
+		prev := queryDayCache(c.metric, c.agg, yesterday)
 		result = append(result, CardData{
 			Metric: c.metric, Value: val, Prev: prev,
 			Unit: unitFor(c.metric), Date: today,
