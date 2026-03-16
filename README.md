@@ -92,50 +92,44 @@ All configuration is via environment variables in `docker-compose.yml`:
 
 ## Health Auto Export Setup
 
-You need **two automations** in [Health Auto Export](https://www.healthyapps.dev) — one for cumulative metrics (steps, calories, sleep) with hourly grouping, and one for instantaneous metrics (heart rate, HRV, SpO₂) with default (minute-level) grouping. This prevents HealthKit redistribution from inflating step counts while preserving granular heart rate data.
+You need **two automations** in [Health Auto Export](https://www.healthyapps.dev) with different Time Grouping, both sending to filtered endpoints. The server automatically keeps only the right metric types from each endpoint — no manual metric selection needed.
 
-### Automation 1 — Activity & Sleep (hourly)
+### Automation 1 — Hourly (activity & sleep)
 
 1. Open **Health Auto Export** → **Automations** → **Create new**
 2. Set **Destination**: `REST API`
-3. Set **URL**: `http://your-server:8080/health`
+3. Set **URL**: `http://your-server:8080/health/hourly` ← filtered endpoint
 4. Add **Header**: `X-API-Key: your-secret-key`
-5. **Select Health Metrics** — pick only these:
-   - Step Count, Active Energy, Basal Energy Burned, Apple Exercise Time
-   - Apple Stand Time, Apple Stand Hour, Flights Climbed
-   - Walking + Running Distance, Distance Cycling, Distance Swimming
-   - Time in Daylight, Physical Effort
-   - Sleep Analysis
+5. **Select Health Metrics**: `All Selected` (server filters automatically)
 6. **Export Settings**:
    - Export Format: `JSON`
    - Export Version: `v2`
-   - Date Range: `Since Last Sync`
+   - **Date Range: `Today`** ← ensures running totals update every sync
    - **Summarize Data: ON** ✅
-   - **Time Grouping: Hour** ← critical for accurate step counts
+   - **Time Grouping: `Hours`** ← critical for accurate step counts
 7. **Sync Cadence**: Quantity `5`, Interval `Minutes`
 
-### Automation 2 — Vitals & Body (minute-level)
+### Automation 2 — Vitals (heart rate, HRV, SpO₂)
 
-1. Create another automation with the same URL and API key header
-2. **Select Health Metrics** — pick only these:
-   - Heart Rate, Resting Heart Rate, Heart Rate Variability, Walking Heart Rate Average
-   - Blood Oxygen Saturation, Respiratory Rate, VO₂ Max
-   - Wrist Temperature, Breathing Disturbances
-   - Blood Pressure (Systolic & Diastolic)
-   - Environmental Audio Exposure, Headphone Audio Exposure
-   - Walking Speed, Walking Step Length, Walking Asymmetry, Walking Double Support, Walking Steadiness
-   - Body Mass, Body Fat Percentage, Height
-3. **Export Settings**:
+1. Create another automation
+2. Set **URL**: `http://your-server:8080/health/vitals` ← filtered endpoint
+3. Same **Header**: `X-API-Key: your-secret-key`
+4. **Select Health Metrics**: `All Selected` (server filters automatically)
+5. **Export Settings**:
    - Export Format: `JSON`
    - Export Version: `v2`
-   - Date Range: `Since Last Sync`
+   - **Date Range: `Since Last Sync`**
    - **Summarize Data: ON** ✅
-   - **Time Grouping: Default** (minute-level granularity)
-4. **Sync Cadence**: Quantity `5`, Interval `Minutes`
+   - **Time Grouping: `Default`** (minute-level granularity for heart rate)
+6. **Sync Cadence**: Quantity `5`, Interval `Minutes`
+
+The `/health` endpoint (no suffix) still accepts all metrics unfiltered for backward compatibility.
 
 > **Why two automations?** HealthKit redistributes cumulative metrics (steps, calories) across time buckets with fractional values. With minute-level grouping, the sum of these fractions exceeds the actual total by ~20–30%. Hourly grouping uses `HKStatisticsQuery` which returns correctly deduplicated totals. Instantaneous metrics (heart rate, SpO₂) don't have this problem — they are averaged, not summed — so minute-level grouping preserves useful granularity.
 
-> **Important:** Do not overlap metrics between the two automations. Each metric should be in exactly one automation. If both automations send `step_count`, the last sync wins and may overwrite the correct hourly value with a wrong minute-redistributed one.
+> **Why `/health/hourly` and `/health/vitals`?** Both automations send all metrics, but the server filters: `/health/hourly` keeps only SUM metrics (steps, calories, sleep, distance), `/health/vitals` keeps only AVG metrics (heart rate, HRV, SpO₂, temperature). This way you don't need to manually select metrics in the app — the server handles separation.
+
+> **Why "Today" for hourly?** With "Since Last Sync", hourly values that update within the current hour may not be re-sent. "Today" ensures every sync sends the full day's running totals, and `INSERT ON CONFLICT UPDATE` keeps the latest values.
 
 ## Web Dashboard
 
