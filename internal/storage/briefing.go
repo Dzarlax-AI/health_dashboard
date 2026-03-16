@@ -472,14 +472,29 @@ func (s *DB) freshDayFromRaw(date string) *dayRow {
 		var val float64
 		var err error
 		if sp.isSum {
-			// Smart combine: prefer pipe-source (HealthKit dedup), else MAX single.
+			// Sleep dedup: exclude midnight summary (00:00:00) when real
+			// fragments exist for the same day+source.
+			sleepDedup := ""
+			if isSleepMetric(sp.metric) {
+				sleepDedup = `AND NOT (
+					substr(date, 12, 8) = '00:00:00'
+					AND EXISTS (
+						SELECT 1 FROM metric_points p2
+						WHERE p2.metric_name = metric_points.metric_name
+						  AND substr(p2.date, 1, 10) = substr(metric_points.date, 1, 10)
+						  AND p2.source = metric_points.source
+						  AND substr(p2.date, 12, 8) != '00:00:00'
+						  AND p2.qty > 0
+					)
+				)`
+			}
 			err = s.db.QueryRow(fmt.Sprintf(`
 				SELECT COALESCE(%s, 0) FROM (
 					SELECT source, SUM(qty) AS source_sum
 					FROM metric_points
-					WHERE metric_name=? AND substr(date,1,10)=? AND qty > 0
+					WHERE metric_name=? AND substr(date,1,10)=? AND qty > 0 %s
 					GROUP BY source
-				)`, sumCombineExpr("source_sum")), sp.metric, date).Scan(&val)
+				)`, sumCombineExpr("source_sum"), sleepDedup), sp.metric, date).Scan(&val)
 		} else {
 			err = s.db.QueryRow(`
 				SELECT COALESCE(AVG(qty), 0)

@@ -471,14 +471,29 @@ func (s *DB) GetDashboard() (*DashboardResponse, error) {
 	queryDayRaw := func(metric, agg, day string) float64 {
 		var val float64
 		if agg == "SUM" {
+			// Sleep dedup: exclude midnight summary when fragments exist.
+			sleepDedup := ""
+			if strings.HasPrefix(metric, "sleep_") {
+				sleepDedup = `AND NOT (
+					substr(date, 12, 8) = '00:00:00'
+					AND EXISTS (
+						SELECT 1 FROM metric_points p2
+						WHERE p2.metric_name = metric_points.metric_name
+						  AND substr(p2.date, 1, 10) = substr(metric_points.date, 1, 10)
+						  AND p2.source = metric_points.source
+						  AND substr(p2.date, 12, 8) != '00:00:00'
+						  AND p2.qty > 0
+					)
+				)`
+			}
 			combineVal := sumCombineExpr("source_sum")
 			s.db.QueryRow(fmt.Sprintf(`
 				SELECT COALESCE(%s, 0) FROM (
 					SELECT source, SUM(qty) AS source_sum
 					FROM metric_points
-					WHERE metric_name=? AND substr(date,1,10)=? AND qty > 0
+					WHERE metric_name=? AND substr(date,1,10)=? AND qty > 0 %s
 					GROUP BY source
-				)`, combineVal), metric, day,
+				)`, combineVal, sleepDedup), metric, day,
 			).Scan(&val)
 		} else {
 			s.db.QueryRow(
