@@ -52,6 +52,26 @@ var SumMetrics = map[string]bool{
 	"sleep_core": true, "sleep_awake": true,
 }
 
+// sleepDedupClause returns a SQL WHERE clause that excludes midnight summary
+// records (00:00:00) when real sleep fragments exist for the same day+source.
+// Returns empty string for non-sleep metrics.
+func sleepDedupClause(metric string) string {
+	if !isSleepMetric(metric) {
+		return ""
+	}
+	return `AND NOT (
+		substr(date, 12, 8) = '00:00:00'
+		AND EXISTS (
+			SELECT 1 FROM metric_points p2
+			WHERE p2.metric_name = metric_points.metric_name
+			  AND substr(p2.date, 1, 10) = substr(metric_points.date, 1, 10)
+			  AND p2.source = metric_points.source
+			  AND substr(p2.date, 12, 8) != '00:00:00'
+			  AND p2.qty > 0
+		)
+	)`
+}
+
 func (s *DB) listMetricNames() ([]string, error) {
 	rows, err := s.db.Query(`SELECT DISTINCT metric_name FROM metric_points ORDER BY metric_name`)
 	if err != nil {

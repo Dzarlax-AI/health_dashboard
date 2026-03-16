@@ -310,18 +310,17 @@ func (s *DB) metricDataRaw(metric, from, to, bucket, aggFunc string) ([]DataPoin
 
 	var query string
 	if SumMetrics[metric] {
-		// SUM metrics: smart combine — prefer pipe-source (HealthKit deduped),
-		// fall back to MAX per single-source (XML import overlap).
 		combineVal := sumCombineExpr("source_sum")
+		sleepDedup := sleepDedupClause(metric)
 		query = fmt.Sprintf(`SELECT bucket, %s, MIN(source_min), MAX(source_max)
 			FROM (
 				SELECT %s AS bucket, source, SUM(qty) AS source_sum, MIN(qty) AS source_min, MAX(qty) AS source_max
 				FROM metric_points
-				WHERE metric_name = ? AND date >= ? AND date <= ? AND qty > 0
+				WHERE metric_name = ? AND date >= ? AND date <= ? AND qty > 0 %s
 				GROUP BY bucket, source
 			)
 			GROUP BY bucket
-			ORDER BY bucket`, combineVal, bucketExpr)
+			ORDER BY bucket`, combineVal, bucketExpr, sleepDedup)
 	} else {
 		query = "SELECT " + bucketExpr + " as bucket, " + aggFunc + `(qty), MIN(qty), MAX(qty)
 			FROM metric_points
@@ -471,21 +470,7 @@ func (s *DB) GetDashboard() (*DashboardResponse, error) {
 	queryDayRaw := func(metric, agg, day string) float64 {
 		var val float64
 		if agg == "SUM" {
-			// Sleep dedup: exclude midnight summary when fragments exist.
-			sleepDedup := ""
-			if strings.HasPrefix(metric, "sleep_") {
-				sleepDedup = `AND NOT (
-					substr(date, 12, 8) = '00:00:00'
-					AND EXISTS (
-						SELECT 1 FROM metric_points p2
-						WHERE p2.metric_name = metric_points.metric_name
-						  AND substr(p2.date, 1, 10) = substr(metric_points.date, 1, 10)
-						  AND p2.source = metric_points.source
-						  AND substr(p2.date, 12, 8) != '00:00:00'
-						  AND p2.qty > 0
-					)
-				)`
-			}
+			sleepDedup := sleepDedupClause(metric)
 			combineVal := sumCombineExpr("source_sum")
 			s.db.QueryRow(fmt.Sprintf(`
 				SELECT COALESCE(%s, 0) FROM (
@@ -615,6 +600,8 @@ type SleepNight struct {
 // when two wearables (e.g. Apple Watch + RingConn) both record the same night.
 func (s *DB) GetSleepSummary(from, to string) ([]SleepNight, error) {
 	combine := sumCombineExpr("source_sum")
+	// Exclude midnight summaries when real fragments exist.
+	sleepDedup := sleepDedupClause("sleep_total")
 	rows, err := s.db.Query(fmt.Sprintf(`
 		SELECT d,
 			MAX(CASE WHEN metric_name='sleep_total' THEN combined ELSE 0 END),
@@ -629,13 +616,13 @@ func (s *DB) GetSleepSummary(from, to string) ([]SleepNight, error) {
 					SUM(qty) AS source_sum
 				FROM metric_points
 				WHERE metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake')
-				  AND substr(date,1,10) >= ? AND substr(date,1,10) <= ? AND qty > 0
+				  AND substr(date,1,10) >= ? AND substr(date,1,10) <= ? AND qty > 0 %s
 				GROUP BY d, metric_name, source
 			)
 			GROUP BY d, metric_name
 		)
 		GROUP BY d
-		ORDER BY d`, combine),
+		ORDER BY d`, combine, sleepDedup),
 		from, to)
 	if err != nil {
 		return nil, err
