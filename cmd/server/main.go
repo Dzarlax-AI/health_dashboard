@@ -32,20 +32,18 @@ func main() {
 	// Start the backfill scheduler. It runs an initial backfill shortly after
 	// startup and then re-runs whenever new data arrives, debouncing rapid
 	// successive syncs into a single pass.
-	// If caches are stale (data migrations ran, or ScoreVersion bumped),
-	// a force rebuild runs instead of an incremental fill.
+	// Always force-rebuild caches on startup. The hourly/daily caches may be
+	// stale after code changes (aggregation logic, dedup fixes, etc.) and
+	// ScoreVersion only covers readiness, not metric columns. With 3.7M rows
+	// this takes ~30-60s in the background — acceptable at startup.
 	sched := newBackfillScheduler(db, 2*time.Minute)
-	if db.NeedsForceBackfill() || db.HasStaleScores() {
-		log.Println("stale caches detected — scheduling force backfill on startup")
-		go func() {
-			time.Sleep(5 * time.Second)
-			db.BackfillAggregates(true)
-			db.BackfillScores(true)
-			log.Println("startup force backfill done")
-		}()
-	} else {
-		sched.scheduleAfter(10 * time.Second) // warm caches soon after startup
-	}
+	go func() {
+		time.Sleep(5 * time.Second)
+		log.Println("startup: rebuilding all caches…")
+		db.BackfillAggregates(true)
+		db.BackfillScores(true)
+		log.Println("startup: cache rebuild done")
+	}()
 
 	onNewData := func() {
 		// Inline cache upsert already happened in the handler (UpsertRecentCache).
