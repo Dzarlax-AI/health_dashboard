@@ -122,8 +122,9 @@ func main() {
 	mcpserver.Register(mux, db, baseURL, apiKey)
 
 	logged := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("%s %s %s", r.RemoteAddr, r.Method, r.URL.Path)
+		start := time.Now()
 		mux.ServeHTTP(w, r)
+		log.Printf("%s %s %s %v", r.RemoteAddr, r.Method, r.URL.Path, time.Since(start).Round(time.Millisecond))
 	})
 
 	log.Printf("listening on %s", addr)
