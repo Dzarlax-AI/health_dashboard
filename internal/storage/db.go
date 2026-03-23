@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -27,6 +28,9 @@ func New(ctx context.Context, connString string) (*DB, error) {
 	}
 	config.MaxConns = 20
 	config.MinConns = 5
+	// Disable automatic prepared statement caching — it causes lock contention
+	// when multiple goroutines prepare the same statement concurrently.
+	config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
