@@ -1,11 +1,12 @@
 package storage
 
 import (
-	"database/sql"
+	"context"
 	"fmt"
 	"sort"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"health-receiver/internal/health"
 )
 
@@ -13,12 +14,13 @@ import (
 // daily_scores cache in a single query. Returns nil if the cache is empty or
 // has no usable rows (cold start).
 func (s *DB) rawMetricsFromDailyScores(lastDate string) *health.RawMetrics {
-	rows, err := s.db.Query(`
+	ctx := context.Background()
+	rows, err := s.pool.Query(ctx, `
 		SELECT date, hrv_avg, rhr_avg, sleep_total, sleep_deep, sleep_rem,
 		       sleep_core, sleep_awake, steps, calories, exercise_min,
 		       spo2_avg, vo2_avg, resp_avg
 		FROM daily_scores
-		WHERE date >= ? AND date <= ?
+		WHERE date >= $1 AND date <= $2
 		  AND (hrv_avg IS NOT NULL OR sleep_total IS NOT NULL OR steps IS NOT NULL)
 		ORDER BY date DESC
 		LIMIT 30`,
@@ -114,32 +116,38 @@ func (s *DB) rawMetricsFromDailyScores(lastDate string) *health.RawMetrics {
 // rawMetricsFromPoints reads raw metric time-series from metric_points using
 // per-metric queries. This is the fallback path when daily_scores cache is cold.
 func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
+	ctx := context.Background()
+
 	getDailyValues := func(metric string, days int, agg string) []float64 {
-		var rows *sql.Rows
 		var err error
+		var rows pgx.Rows
 		if agg == "SUM" {
 			sleepDedup := sleepDedupClause(metric)
-			rows, err = s.db.Query(fmt.Sprintf(`
+			r, e := s.pool.Query(ctx, fmt.Sprintf(`
 				SELECT MAX(source_sum)
 				FROM (
-					SELECT substr(date,1,10) AS d, source, SUM(qty) AS source_sum
+					SELECT SUBSTRING(date,1,10) AS d, source, SUM(qty) AS source_sum
 					FROM metric_points
-					WHERE metric_name = ? AND substr(date,1,10) >= ? AND qty > 0 %s
+					WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND qty > 0 %s
 					GROUP BY d, source
-				)
+				) sub
 				GROUP BY d
 				ORDER BY d DESC
-				LIMIT ?`, sleepDedup),
+				LIMIT $3`, sleepDedup),
 				metric, subtractDays(lastDate, days), days)
+			rows = r
+			err = e
 		} else {
-			rows, err = s.db.Query(`
+			r, e := s.pool.Query(ctx, `
 				SELECT `+agg+`(qty)
 				FROM metric_points
-				WHERE metric_name = ? AND substr(date,1,10) >= ? AND qty > 0
-				GROUP BY substr(date,1,10)
-				ORDER BY substr(date,1,10) DESC
-				LIMIT ?`,
+				WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND qty > 0
+				GROUP BY SUBSTRING(date,1,10)
+				ORDER BY SUBSTRING(date,1,10) DESC
+				LIMIT $3`,
 				metric, subtractDays(lastDate, days), days)
+			rows = r
+			err = e
 		}
 		if err != nil {
 			return nil
@@ -156,31 +164,35 @@ func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
 	}
 
 	getDailyWithDates := func(metric string, days int, agg string) []health.DatedValue {
-		var rows *sql.Rows
 		var err error
+		var rows pgx.Rows
 		if agg == "SUM" {
 			sleepDedup := sleepDedupClause(metric)
-			rows, err = s.db.Query(fmt.Sprintf(`
+			r, e := s.pool.Query(ctx, fmt.Sprintf(`
 				SELECT d, MAX(source_sum)
 				FROM (
-					SELECT substr(date,1,10) AS d, source, SUM(qty) AS source_sum
+					SELECT SUBSTRING(date,1,10) AS d, source, SUM(qty) AS source_sum
 					FROM metric_points
-					WHERE metric_name = ? AND substr(date,1,10) >= ? AND qty > 0 %s
+					WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND qty > 0 %s
 					GROUP BY d, source
-				)
+				) sub
 				GROUP BY d
 				ORDER BY d DESC
-				LIMIT ?`, sleepDedup),
+				LIMIT $3`, sleepDedup),
 				metric, subtractDays(lastDate, days), days)
+			rows = r
+			err = e
 		} else {
-			rows, err = s.db.Query(`
-				SELECT substr(date,1,10), `+agg+`(qty)
+			r, e := s.pool.Query(ctx, `
+				SELECT SUBSTRING(date,1,10), `+agg+`(qty)
 				FROM metric_points
-				WHERE metric_name = ? AND substr(date,1,10) >= ? AND qty > 0
-				GROUP BY substr(date,1,10)
-				ORDER BY substr(date,1,10) DESC
-				LIMIT ?`,
+				WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND qty > 0
+				GROUP BY SUBSTRING(date,1,10)
+				ORDER BY SUBSTRING(date,1,10) DESC
+				LIMIT $3`,
 				metric, subtractDays(lastDate, days), days)
+			rows = r
+			err = e
 		}
 		if err != nil {
 			return nil
@@ -220,22 +232,23 @@ func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
 // all scoring and insight computation to the health package.
 // lang selects the output language ("en", "ru", "sr").
 func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
+	ctx := context.Background()
 	// Use hourly_metrics for lastDate — avoids full scan of metric_points.
-	var lastDate string
-	if err := s.db.QueryRow(`SELECT MAX(substr(hour,1,10)) FROM hourly_metrics`).Scan(&lastDate); err != nil || lastDate == "" {
+	var lastDate *string
+	if err := s.pool.QueryRow(ctx, `SELECT MAX(SUBSTRING(hour,1,10)) FROM hourly_metrics`).Scan(&lastDate); err != nil || lastDate == nil {
 		return &health.BriefingResponse{Greeting: "Welcome! No health data yet."}, nil
 	}
 
 	// Try reading 30-day metric history from daily_scores (1 query).
 	// Fall back to per-metric queries against metric_points if cache is cold.
-	data := s.rawMetricsFromDailyScores(lastDate)
+	data := s.rawMetricsFromDailyScores(*lastDate)
 	if data == nil {
-		data = s.rawMetricsFromPoints(lastDate)
+		data = s.rawMetricsFromPoints(*lastDate)
 	}
 
 	// Supplement wrist_temperature (not in daily_scores) for anomaly detection.
 	if len(data.WristTemp) == 0 {
-		data.WristTemp = s.fetchDailyMetric("wrist_temperature", lastDate, 30, "AVG")
+		data.WristTemp = s.fetchDailyMetric("wrist_temperature", *lastDate, 30, "AVG")
 	}
 
 	resp := health.ComputeBriefing(*data, lang)
@@ -243,7 +256,7 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 	// Attach per-source sleep breakdown for the most recent night.
 	// Query hourly_metrics (indexed by hour) instead of metric_points.
 	if resp.Sleep != nil {
-		sleepRows, qErr := s.db.Query(`
+		sleepRows, qErr := s.pool.Query(ctx, `
 			SELECT source,
 				SUM(CASE WHEN metric_name='sleep_total' THEN avg_val ELSE 0 END),
 				SUM(CASE WHEN metric_name='sleep_deep'  THEN avg_val ELSE 0 END),
@@ -252,10 +265,10 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 				SUM(CASE WHEN metric_name='sleep_awake' THEN avg_val ELSE 0 END)
 			FROM hourly_metrics
 			WHERE metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake')
-			  AND substr(hour,1,10) = ?
+			  AND SUBSTRING(hour,1,10) = $1
 			GROUP BY source
 			ORDER BY SUM(CASE WHEN metric_name='sleep_total' THEN avg_val ELSE 0 END) DESC`,
-			lastDate)
+			*lastDate)
 		if qErr == nil {
 			defer sleepRows.Close()
 			for sleepRows.Next() {
@@ -289,53 +302,58 @@ func (s *DB) GetReadinessHistory(outputDays int) ([]health.ReadinessPoint, error
 // For each output day D it uses HRV/RHR/sleep data from D-29..D
 // (most-recent-first) and calls health.ComputeReadinessScore.
 func (s *DB) computeReadinessHistory(outputDays int) ([]health.ReadinessPoint, error) {
+	ctx := context.Background()
 	window := 30
 	total := outputDays + window
 
 	// Determine the latest date from data (not server time) to avoid TZ mismatch.
-	var lastDate string
-	s.db.QueryRow(`SELECT MAX(substr(date,1,10)) FROM metric_points`).Scan(&lastDate)
-	if lastDate == "" {
+	var lastDate *string
+	s.pool.QueryRow(ctx, `SELECT MAX(SUBSTRING(date,1,10)) FROM metric_points`).Scan(&lastDate)
+	if lastDate == nil {
 		return nil, fmt.Errorf("no metric data found")
 	}
-	fromDate := subtractDays(lastDate, total)
+	fromDate := subtractDays(*lastDate, total)
 
 	// Fetch date-keyed maps for the full look-back period.
 	fetch := func(metric, agg string, isSleep bool) (map[string]float64, error) {
-		var rows *sql.Rows
+		var pgxRows pgx.Rows
 		var err error
 		if isSleep {
-			rows, err = s.db.Query(`
+			r, e := s.pool.Query(ctx, `
 				SELECT d, MAX(source_sum)
 				FROM (
-					SELECT substr(date,1,10) AS d, source, SUM(qty) AS source_sum
+					SELECT SUBSTRING(date,1,10) AS d, source, SUM(qty) AS source_sum
 					FROM metric_points
-					WHERE metric_name = ?
+					WHERE metric_name = $1
 					  AND qty > 0
-					  AND substr(date,1,10) >= ?
+					  AND SUBSTRING(date,1,10) >= $2
 					GROUP BY d, source
-				)
+				) sub
 				GROUP BY d`,
 				metric, fromDate)
+			pgxRows = r
+			err = e
 		} else {
-			rows, err = s.db.Query(`
-				SELECT substr(date,1,10), `+agg+`(qty)
+			r, e := s.pool.Query(ctx, `
+				SELECT SUBSTRING(date,1,10), `+agg+`(qty)
 				FROM metric_points
-				WHERE metric_name = ?
+				WHERE metric_name = $1
 				  AND qty > 0
-				  AND substr(date,1,10) >= ?
-				GROUP BY substr(date,1,10)`,
+				  AND SUBSTRING(date,1,10) >= $2
+				GROUP BY SUBSTRING(date,1,10)`,
 				metric, fromDate)
+			pgxRows = r
+			err = e
 		}
 		if err != nil {
 			return nil, err
 		}
-		defer rows.Close()
+		defer pgxRows.Close()
 		m := make(map[string]float64)
-		for rows.Next() {
+		for pgxRows.Next() {
 			var d string
 			var v float64
-			if rows.Scan(&d, &v) == nil {
+			if pgxRows.Scan(&d, &v) == nil {
 				m[d] = v
 			}
 		}
@@ -414,13 +432,13 @@ func (s *DB) computeReadinessHistory(outputDays int) ([]health.ReadinessPoint, e
 // fetchDailyMetric reads a single metric's daily values from metric_points.
 // Used for metrics not stored in daily_scores (e.g. wrist_temperature).
 func (s *DB) fetchDailyMetric(metric, lastDate string, days int, agg string) []float64 {
-	rows, err := s.db.Query(`
+	rows, err := s.pool.Query(context.Background(), `
 		SELECT `+agg+`(qty)
 		FROM metric_points
-		WHERE metric_name = ? AND substr(date,1,10) >= ? AND qty > 0
-		GROUP BY substr(date,1,10)
-		ORDER BY substr(date,1,10) DESC
-		LIMIT ?`,
+		WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND qty > 0
+		GROUP BY SUBSTRING(date,1,10)
+		ORDER BY SUBSTRING(date,1,10) DESC
+		LIMIT $3`,
 		metric, subtractDays(lastDate, days), days)
 	if err != nil {
 		return nil
@@ -446,6 +464,7 @@ type dayRow struct {
 // up-to-date, unlike hourly_metrics which may be stale after cache invalidation).
 // Uses smart combine for SUM metrics (pipe-source aware dedup).
 func (s *DB) freshDayFromRaw(date string) *dayRow {
+	ctx := context.Background()
 	type spec struct {
 		metric string
 		dest   **float64
@@ -473,18 +492,18 @@ func (s *DB) freshDayFromRaw(date string) *dayRow {
 		var err error
 		if sp.isSum {
 			sleepDedup := sleepDedupClause(sp.metric)
-			err = s.db.QueryRow(fmt.Sprintf(`
+			err = s.pool.QueryRow(ctx, fmt.Sprintf(`
 				SELECT COALESCE(%s, 0) FROM (
 					SELECT source, SUM(qty) AS source_sum
 					FROM metric_points
-					WHERE metric_name=? AND substr(date,1,10)=? AND qty > 0 %s
+					WHERE metric_name=$1 AND SUBSTRING(date,1,10)=$2 AND qty > 0 %s
 					GROUP BY source
-				)`, sumCombineExpr("source_sum"), sleepDedup), sp.metric, date).Scan(&val)
+				) sub`, sumCombineExpr("source_sum"), sleepDedup), sp.metric, date).Scan(&val)
 		} else {
-			err = s.db.QueryRow(`
+			err = s.pool.QueryRow(ctx, `
 				SELECT COALESCE(AVG(qty), 0)
 				FROM metric_points
-				WHERE metric_name=? AND substr(date,1,10)=? AND qty > 0`,
+				WHERE metric_name=$1 AND SUBSTRING(date,1,10)=$2 AND qty > 0`,
 				sp.metric, date).Scan(&val)
 		}
 		if err == nil && val > 0 {

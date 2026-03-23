@@ -24,14 +24,11 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      - name: Install gcc (required for CGO/sqlite3)
-        run: sudo apt-get install -y gcc
-
       - name: Build all binaries
-        run: CGO_ENABLED=1 go build -mod=vendor ./...
+        run: CGO_ENABLED=0 go build -mod=vendor ./...
 
       - name: Vet
-        run: CGO_ENABLED=1 go vet -mod=vendor ./...
+        run: CGO_ENABLED=0 go vet -mod=vendor ./...
 
   docker-amd64:
     name: Docker Build & Push (amd64)

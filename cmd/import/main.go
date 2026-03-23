@@ -10,9 +10,11 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	"health-receiver/internal/applehealth"
@@ -20,7 +22,6 @@ import (
 )
 
 func main() {
-	dbPath := flag.String("db", "/app/data/health.db", "path to health.db")
 	filePath := flag.String("file", "", "Apple Health export (.zip or export.xml) — required")
 	batchSize := flag.Int("batch", 500, "metric points per DB transaction")
 	pauseDur := flag.Duration("pause", 150*time.Millisecond, "sleep between batches (rate-limits DB load)")
@@ -33,8 +34,12 @@ func main() {
 
 	var db *storage.DB
 	if !*dryRun {
+		dbURL := os.Getenv("DATABASE_URL")
+		if dbURL == "" {
+			log.Fatal("DATABASE_URL environment variable is required")
+		}
 		var err error
-		db, err = storage.New(*dbPath)
+		db, err = storage.New(context.Background(), dbURL)
 		if err != nil {
 			log.Fatalf("open db: %v", err)
 		}

@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"time"
@@ -30,8 +31,8 @@ const ScoreVersion = 2
 // and a force rebuild is needed to recompute all readiness scores.
 func (s *DB) HasStaleScores() bool {
 	var cnt int
-	s.db.QueryRow(
-		`SELECT COUNT(*) FROM daily_scores WHERE score_version IS NOT NULL AND score_version != ?`,
+	s.pool.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM daily_scores WHERE score_version IS NOT NULL AND score_version != $1`,
 		ScoreVersion,
 	).Scan(&cnt)
 	return cnt > 0
@@ -40,11 +41,11 @@ func (s *DB) HasStaleScores() bool {
 // readinessFromCache returns the most-recent `limit` readiness scores
 // (ascending by date) that match the current ScoreVersion.
 func (s *DB) readinessFromCache(limit int) ([]health.ReadinessPoint, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.pool.Query(context.Background(), `
 		SELECT date, readiness FROM daily_scores
-		WHERE score_version = ?
+		WHERE score_version = $1
 		ORDER BY date DESC
-		LIMIT ?`, ScoreVersion, limit)
+		LIMIT $2`, ScoreVersion, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -66,11 +67,12 @@ func (s *DB) readinessFromCache(limit int) ([]health.ReadinessPoint, error) {
 
 // saveReadinessScores upserts readiness scores without touching metric columns.
 func (s *DB) saveReadinessScores(pts []health.ReadinessPoint) {
+	ctx := context.Background()
 	now := time.Now().Format(time.RFC3339)
 	for _, p := range pts {
-		if _, err := s.db.Exec(`
+		if _, err := s.pool.Exec(ctx, `
 			INSERT INTO daily_scores (date, readiness, score_version, computed_at)
-			VALUES (?, ?, ?, ?)
+			VALUES ($1, $2, $3, $4)
 			ON CONFLICT(date) DO UPDATE SET
 				readiness     = excluded.readiness,
 				score_version = excluded.score_version,
@@ -98,8 +100,8 @@ func isCacheRecent(pts []health.ReadinessPoint) bool {
 // Safe to call from a goroutine; errors are logged, not returned.
 func (s *DB) InvalidateRecentScores(days int) {
 	cutoff := time.Now().AddDate(0, 0, -days).Format("2006-01-02")
-	if _, err := s.db.Exec(
-		`UPDATE daily_scores SET readiness=NULL, score_version=NULL WHERE date >= ?`, cutoff,
+	if _, err := s.pool.Exec(context.Background(),
+		`UPDATE daily_scores SET readiness=NULL, score_version=NULL WHERE date >= $1`, cutoff,
 	); err != nil {
 		log.Printf("invalidate recent scores: %v", err)
 	}
@@ -109,41 +111,42 @@ func (s *DB) InvalidateRecentScores(days int) {
 // data.  If force=true the entire cache is cleared first; otherwise only rows
 // with an outdated score_version are removed before computing.
 func (s *DB) BackfillScores(force bool) error {
+	ctx := context.Background()
 	if force {
 		// Wipe only the readiness columns — metric columns are refilled by
 		// BackfillAggregates and should not be lost here.
-		if _, err := s.db.Exec(`UPDATE daily_scores SET readiness=NULL, score_version=NULL`); err != nil {
+		if _, err := s.pool.Exec(ctx, `UPDATE daily_scores SET readiness=NULL, score_version=NULL`); err != nil {
 			return fmt.Errorf("clear readiness cache: %w", err)
 		}
 		log.Println("daily_scores readiness cleared (metric columns preserved)")
 	} else {
 		// NULL out stale-version rows so they get recomputed.
-		if _, err := s.db.Exec(
-			`UPDATE daily_scores SET readiness=NULL, score_version=NULL WHERE score_version != ?`,
+		if _, err := s.pool.Exec(ctx,
+			`UPDATE daily_scores SET readiness=NULL, score_version=NULL WHERE score_version != $1`,
 			ScoreVersion,
 		); err != nil {
 			return fmt.Errorf("remove stale scores: %w", err)
 		}
 	}
 
-	var earliest, latest string
-	if err := s.db.QueryRow(
-		`SELECT MIN(substr(hour,1,10)), MAX(substr(hour,1,10)) FROM hourly_metrics`,
-	).Scan(&earliest, &latest); err != nil || earliest == "" {
+	var earliest, latest *string
+	if err := s.pool.QueryRow(ctx,
+		`SELECT MIN(SUBSTRING(hour,1,10)), MAX(SUBSTRING(hour,1,10)) FROM hourly_metrics`,
+	).Scan(&earliest, &latest); err != nil || earliest == nil {
 		return fmt.Errorf("no metric data found")
 	}
 
-	tEarliest, err := time.Parse("2006-01-02", earliest)
+	tEarliest, err := time.Parse("2006-01-02", *earliest)
 	if err != nil {
 		return fmt.Errorf("parse earliest date: %w", err)
 	}
-	tLatest, err := time.Parse("2006-01-02", latest)
+	tLatest, err := time.Parse("2006-01-02", *latest)
 	if err != nil {
 		return fmt.Errorf("parse latest date: %w", err)
 	}
 	days := int(tLatest.Sub(tEarliest).Hours()/24) + 2
 
-	log.Printf("backfilling readiness scores for ~%d days (from %s)…", days, earliest)
+	log.Printf("backfilling readiness scores for ~%d days (from %s)…", days, *earliest)
 
 	pts, err := s.computeReadinessHistory(days)
 	if err != nil {

@@ -2,11 +2,12 @@
 //
 // Usage:
 //
-//	DB_PATH=./data/health.db go run ./cmd/backfill           # incremental
-//	DB_PATH=./data/health.db go run ./cmd/backfill --force   # full rebuild
+//	DATABASE_URL=postgres://... go run ./cmd/backfill           # incremental
+//	DATABASE_URL=postgres://... go run ./cmd/backfill --force   # full rebuild
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 
@@ -14,7 +15,10 @@ import (
 )
 
 func main() {
-	dbPath := getEnv("DB_PATH", "./data/health.db")
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		log.Fatal("DATABASE_URL environment variable is required")
+	}
 
 	force := false
 	for _, arg := range os.Args[1:] {
@@ -23,7 +27,7 @@ func main() {
 		}
 	}
 
-	db, err := storage.New(dbPath)
+	db, err := storage.New(context.Background(), dbURL)
 	if err != nil {
 		log.Fatalf("open db: %v", err)
 	}
@@ -38,11 +42,4 @@ func main() {
 	if err := db.BackfillScores(force); err != nil {
 		log.Fatalf("backfill scores: %v", err)
 	}
-}
-
-func getEnv(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }

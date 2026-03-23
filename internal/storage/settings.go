@@ -1,6 +1,9 @@
 package storage
 
-import "strconv"
+import (
+	"context"
+	"strconv"
+)
 
 // NotifyConfig holds Telegram credentials and per-weekday report schedule.
 // It mirrors notify.Config but lives in storage to avoid import cycles.
@@ -22,34 +25,31 @@ func (c NotifyConfig) Enabled() bool {
 
 // GetSetting returns the value for key, or fallback if not found.
 func (s *DB) GetSetting(key, fallback string) string {
-	var val string
-	if err := s.db.QueryRow(`SELECT value FROM settings WHERE key = ?`, key).Scan(&val); err != nil || val == "" {
+	var val *string
+	if err := s.pool.QueryRow(context.Background(), `SELECT value FROM settings WHERE key = $1`, key).Scan(&val); err != nil || val == nil || *val == "" {
 		return fallback
 	}
-	return val
+	return *val
 }
 
 // SaveSettings upserts a map of key→value pairs into the settings table.
 func (s *DB) SaveSettings(kv map[string]string) error {
-	tx, err := s.db.Begin()
+	ctx := context.Background()
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
-	stmt, err := tx.Prepare(`
-		INSERT INTO settings (key, value, updated_at)
-		VALUES (?, ?, datetime('now'))
-		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
+	defer tx.Rollback(ctx)
 	for k, v := range kv {
-		if _, err := stmt.Exec(k, v); err != nil {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO settings (key, value, updated_at)
+			VALUES ($1, $2, NOW()::TEXT)
+			ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+			k, v); err != nil {
 			return err
 		}
 	}
-	return tx.Commit()
+	return tx.Commit(ctx)
 }
 
 // GetNotifyConfig builds a NotifyConfig from the settings table,

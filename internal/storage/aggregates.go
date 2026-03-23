@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -60,20 +61,20 @@ func sleepDedupClause(metric string) string {
 		return ""
 	}
 	return `AND NOT (
-		substr(date, 12, 8) = '00:00:00'
+		SUBSTRING(date, 12, 8) = '00:00:00'
 		AND EXISTS (
 			SELECT 1 FROM metric_points p2
 			WHERE p2.metric_name = metric_points.metric_name
-			  AND substr(p2.date, 1, 10) = substr(metric_points.date, 1, 10)
+			  AND SUBSTRING(p2.date, 1, 10) = SUBSTRING(metric_points.date, 1, 10)
 			  AND p2.source = metric_points.source
-			  AND substr(p2.date, 12, 8) != '00:00:00'
+			  AND SUBSTRING(p2.date, 12, 8) != '00:00:00'
 			  AND p2.qty > 0
 		)
 	)`
 }
 
 func (s *DB) listMetricNames() ([]string, error) {
-	rows, err := s.db.Query(`SELECT DISTINCT metric_name FROM metric_points ORDER BY metric_name`)
+	rows, err := s.pool.Query(context.Background(), `SELECT DISTINCT metric_name FROM metric_points ORDER BY metric_name`)
 	if err != nil {
 		return nil, err
 	}
@@ -109,20 +110,20 @@ func (s *DB) UpsertRecentCache(dates []string) {
 }
 
 // upsertHourlyForDate rebuilds hourly_metrics for one metric+date from metric_points.
-// Uses INSERT OR REPLACE so stale values are overwritten.
+// Uses INSERT ... ON CONFLICT so stale values are overwritten.
 func (s *DB) upsertHourlyForDate(metric, date string) {
 	agg := aggFuncFor(metric)
 
 	sleepDedup := ""
 	if isSleepMetric(metric) {
 		sleepDedup = `AND NOT (
-			substr(date, 12, 8) = '00:00:00'
+			SUBSTRING(date, 12, 8) = '00:00:00'
 			AND EXISTS (
 				SELECT 1 FROM metric_points p2
 				WHERE p2.metric_name = metric_points.metric_name
-				  AND substr(p2.date, 1, 10) = substr(metric_points.date, 1, 10)
+				  AND SUBSTRING(p2.date, 1, 10) = SUBSTRING(metric_points.date, 1, 10)
 				  AND p2.source = metric_points.source
-				  AND substr(p2.date, 12, 8) != '00:00:00'
+				  AND SUBSTRING(p2.date, 12, 8) != '00:00:00'
 				  AND p2.qty > 0
 			)
 		)`
@@ -133,31 +134,35 @@ func (s *DB) upsertHourlyForDate(metric, date string) {
 		// For SUM metrics: MAX within each minute (dedup re-syncs),
 		// then SUM across minutes within each hour.
 		query = fmt.Sprintf(`
-			INSERT OR REPLACE INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val)
+			INSERT INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val)
 			SELECT metric_name, hour, source, SUM(minute_max), MIN(minute_min), MAX(minute_max)
 			FROM (
 				SELECT metric_name, source,
-				       substr(date, 1, 13) || ':00' AS hour,
-				       substr(date, 1, 16) AS minute,
+				       SUBSTRING(date, 1, 13) || ':00' AS hour,
+				       SUBSTRING(date, 1, 16) AS minute,
 				       MAX(qty) AS minute_max, MIN(qty) AS minute_min
 				FROM metric_points
-				WHERE metric_name = ? AND substr(date,1,10) = ? AND qty > 0 %s
+				WHERE metric_name = $1 AND SUBSTRING(date,1,10) = $2 AND qty > 0 %s
 				GROUP BY metric_name, source, minute
-			)
-			GROUP BY metric_name, hour, source`, sleepDedup)
+			) sub
+			GROUP BY metric_name, hour, source
+			ON CONFLICT (metric_name, hour, source) DO UPDATE SET
+				avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val`, sleepDedup)
 	} else {
 		query = fmt.Sprintf(`
-			INSERT OR REPLACE INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val)
+			INSERT INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val)
 			SELECT metric_name,
-			       substr(date, 1, 13) || ':00' AS hour,
+			       SUBSTRING(date, 1, 13) || ':00' AS hour,
 			       source,
 			       AVG(qty), MIN(qty), MAX(qty)
 			FROM metric_points
-			WHERE metric_name = ? AND substr(date,1,10) = ? AND qty > 0 %s
-			GROUP BY metric_name, hour, source`, sleepDedup)
+			WHERE metric_name = $1 AND SUBSTRING(date,1,10) = $2 AND qty > 0 %s
+			GROUP BY metric_name, hour, source
+			ON CONFLICT (metric_name, hour, source) DO UPDATE SET
+				avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val`, sleepDedup)
 	}
 
-	if _, err := s.db.Exec(query, metric, date); err != nil {
+	if _, err := s.pool.Exec(context.Background(), query, metric, date); err != nil {
 		log.Printf("upsert hourly %s/%s: %v", metric, date, err)
 	}
 }
@@ -185,31 +190,32 @@ func (s *DB) upsertDailyForDate(date string) {
 		{"resp_avg", "respiratory_rate"},
 	}
 
+	ctx := context.Background()
 	for _, sp := range specs {
 		var val float64
 		var err error
 		if SumMetrics[sp.name] {
 			combineVal := sumCombineExpr("avg_val")
-			err = s.db.QueryRow(fmt.Sprintf(`
+			err = s.pool.QueryRow(ctx, fmt.Sprintf(`
 				SELECT COALESCE(SUM(hour_val), 0) FROM (
 					SELECT hour, %s AS hour_val
 					FROM hourly_metrics
-					WHERE metric_name=? AND substr(hour,1,10)=?
+					WHERE metric_name=$1 AND SUBSTRING(hour,1,10)=$2
 					GROUP BY hour
-				)`, combineVal), sp.name, date).Scan(&val)
+				) sub`, combineVal), sp.name, date).Scan(&val)
 		} else {
-			err = s.db.QueryRow(`
+			err = s.pool.QueryRow(ctx, `
 				SELECT COALESCE(AVG(avg_val), 0)
 				FROM hourly_metrics
-				WHERE metric_name=? AND substr(hour,1,10)=?`,
+				WHERE metric_name=$1 AND SUBSTRING(hour,1,10)=$2`,
 				sp.name, date).Scan(&val)
 		}
 		if err != nil || val == 0 {
 			continue
 		}
-		s.db.Exec(fmt.Sprintf(`
+		s.pool.Exec(ctx, fmt.Sprintf(`
 			INSERT INTO daily_scores (date, %s, computed_at)
-			VALUES (?, ?, datetime('now'))
+			VALUES ($1, $2, NOW()::TEXT)
 			ON CONFLICT(date) DO UPDATE SET %s = excluded.%s, computed_at = excluded.computed_at`,
 			sp.col, sp.col, sp.col), date, val)
 	}
@@ -220,9 +226,10 @@ func (s *DB) upsertDailyForDate(date string) {
 // truncated first; otherwise the last 48h are refreshed (catches re-synced
 // data) and new data is appended.
 func (s *DB) BackfillAggregates(force bool) error {
+	ctx := context.Background()
 	if force {
 		for _, tbl := range []string{"minute_metrics", "hourly_metrics"} {
-			if _, err := s.db.Exec("DELETE FROM " + tbl); err != nil {
+			if _, err := s.pool.Exec(ctx, "DELETE FROM "+tbl); err != nil {
 				return fmt.Errorf("clear %s: %w", tbl, err)
 			}
 		}
@@ -285,16 +292,17 @@ func (s *DB) BuildDailyMetrics(force bool) error {
 }
 
 func (s *DB) buildDailyMetricCol(col, metric string, force bool) error {
+	ctx := context.Background()
 	var fromClause string
 	if !force {
 		// Refresh last 2 days + fill new dates (catches re-synced data).
-		var maxDate string
-		s.db.QueryRow(`SELECT MAX(substr(hour,1,10)) FROM hourly_metrics WHERE metric_name = ?`, metric).Scan(&maxDate)
-		if maxDate == "" {
+		var maxDate *string
+		s.pool.QueryRow(ctx, `SELECT MAX(SUBSTRING(hour,1,10)) FROM hourly_metrics WHERE metric_name = $1`, metric).Scan(&maxDate)
+		if maxDate == nil {
 			return nil
 		}
-		refreshFrom := subtractDaysStr(maxDate, 2)
-		fromClause = fmt.Sprintf("AND substr(hour,1,10) >= '%s'", refreshFrom)
+		refreshFrom := subtractDaysStr(*maxDate, 2)
+		fromClause = fmt.Sprintf("AND SUBSTRING(hour,1,10) >= '%s'", refreshFrom)
 	}
 
 	var query string
@@ -302,21 +310,21 @@ func (s *DB) buildDailyMetricCol(col, metric string, force bool) error {
 		combineVal := sumCombineExpr("avg_val")
 		query = fmt.Sprintf(`
 			SELECT day, SUM(hour_val) FROM (
-				SELECT substr(hour,1,10) AS day, hour, %s AS hour_val
+				SELECT SUBSTRING(hour,1,10) AS day, hour, %s AS hour_val
 				FROM hourly_metrics
-				WHERE metric_name = ? %s
+				WHERE metric_name = $1 %s
 				GROUP BY hour
-			)
+			) sub
 			GROUP BY day`, combineVal, fromClause)
 	} else {
 		query = fmt.Sprintf(`
-			SELECT substr(hour,1,10), AVG(avg_val)
+			SELECT SUBSTRING(hour,1,10), AVG(avg_val)
 			FROM hourly_metrics
-			WHERE metric_name = ? %s
-			GROUP BY substr(hour,1,10)`, fromClause)
+			WHERE metric_name = $1 %s
+			GROUP BY SUBSTRING(hour,1,10)`, fromClause)
 	}
 
-	rows, err := s.db.Query(query, metric)
+	rows, err := s.pool.Query(ctx, query, metric)
 	if err != nil {
 		return err
 	}
@@ -328,9 +336,9 @@ func (s *DB) buildDailyMetricCol(col, metric string, force bool) error {
 		if rows.Scan(&date, &val) != nil {
 			continue
 		}
-		s.db.Exec(fmt.Sprintf(`
+		s.pool.Exec(ctx, fmt.Sprintf(`
 			INSERT INTO daily_scores (date, %s, computed_at)
-			VALUES (?, ?, datetime('now'))
+			VALUES ($1, $2, NOW()::TEXT)
 			ON CONFLICT(date) DO UPDATE SET %s = excluded.%s, computed_at = excluded.computed_at`,
 			col, col, col), date, val)
 	}
@@ -344,32 +352,33 @@ func isSleepMetric(metric string) bool {
 }
 
 // buildHourlyMetric fills hourly_metrics for one metric directly from
-// metric_points (skipping minute_metrics). Uses INSERT OR REPLACE so
+// metric_points (skipping minute_metrics). Uses INSERT ... ON CONFLICT so
 // re-synced data overwrites stale cache values.
 func (s *DB) buildHourlyMetric(metric, agg string, force bool) error {
+	ctx := context.Background()
 	var fromClause string
 	if !force {
 		// Refresh last 48h + append new data (catches re-synced values).
-		var lastCached string
-		s.db.QueryRow(
-			`SELECT MAX(hour) FROM hourly_metrics WHERE metric_name = ?`, metric,
+		var lastCached *string
+		s.pool.QueryRow(ctx,
+			`SELECT MAX(hour) FROM hourly_metrics WHERE metric_name = $1`, metric,
 		).Scan(&lastCached)
-		if lastCached != "" {
-			refreshFrom := subtractDaysStr(lastCached[:10], 2)
-			fromClause = fmt.Sprintf("AND substr(date,1,10) >= '%s'", refreshFrom)
+		if lastCached != nil {
+			refreshFrom := subtractDaysStr((*lastCached)[:10], 2)
+			fromClause = fmt.Sprintf("AND SUBSTRING(date,1,10) >= '%s'", refreshFrom)
 		}
 	}
 
 	sleepDedup := ""
 	if isSleepMetric(metric) {
 		sleepDedup = `AND NOT (
-			substr(date, 12, 8) = '00:00:00'
+			SUBSTRING(date, 12, 8) = '00:00:00'
 			AND EXISTS (
 				SELECT 1 FROM metric_points p2
 				WHERE p2.metric_name = metric_points.metric_name
-				  AND substr(p2.date, 1, 10) = substr(metric_points.date, 1, 10)
+				  AND SUBSTRING(p2.date, 1, 10) = SUBSTRING(metric_points.date, 1, 10)
 				  AND p2.source = metric_points.source
-				  AND substr(p2.date, 12, 8) != '00:00:00'
+				  AND SUBSTRING(p2.date, 12, 8) != '00:00:00'
 				  AND p2.qty > 0
 			)
 		)`
@@ -379,31 +388,35 @@ func (s *DB) buildHourlyMetric(metric, agg string, force bool) error {
 	if agg == "SUM" {
 		// SUM metrics: MAX within each minute (dedup re-syncs), then SUM per hour.
 		query = fmt.Sprintf(`
-			INSERT OR REPLACE INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val)
+			INSERT INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val)
 			SELECT metric_name, hour, source, SUM(minute_max), MIN(minute_min), MAX(minute_max)
 			FROM (
 				SELECT metric_name, source,
-				       substr(date, 1, 13) || ':00' AS hour,
-				       substr(date, 1, 16) AS minute,
+				       SUBSTRING(date, 1, 13) || ':00' AS hour,
+				       SUBSTRING(date, 1, 16) AS minute,
 				       MAX(qty) AS minute_max, MIN(qty) AS minute_min
 				FROM metric_points
-				WHERE metric_name = ? AND qty > 0 %s %s
+				WHERE metric_name = $1 AND qty > 0 %s %s
 				GROUP BY metric_name, source, minute
-			)
-			GROUP BY metric_name, hour, source`, sleepDedup, fromClause)
+			) sub
+			GROUP BY metric_name, hour, source
+			ON CONFLICT (metric_name, hour, source) DO UPDATE SET
+				avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val`, sleepDedup, fromClause)
 	} else {
 		query = fmt.Sprintf(`
-			INSERT OR REPLACE INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val)
+			INSERT INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val)
 			SELECT metric_name,
-			       substr(date, 1, 13) || ':00' AS hour,
+			       SUBSTRING(date, 1, 13) || ':00' AS hour,
 			       source,
 			       AVG(qty), MIN(qty), MAX(qty)
 			FROM metric_points
-			WHERE metric_name = ? AND qty > 0 %s %s
-			GROUP BY metric_name, hour, source`, sleepDedup, fromClause)
+			WHERE metric_name = $1 AND qty > 0 %s %s
+			GROUP BY metric_name, hour, source
+			ON CONFLICT (metric_name, hour, source) DO UPDATE SET
+				avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val`, sleepDedup, fromClause)
 	}
 
-	_, err := s.db.Exec(query, metric)
+	_, err := s.pool.Exec(ctx, query, metric)
 	return err
 }
 

@@ -1,8 +1,7 @@
-FROM golang:1.23-alpine AS builder
-RUN apk add --no-cache gcc musl-dev
+FROM golang:1.25-alpine AS builder
 WORKDIR /src
 COPY . .
-RUN CGO_ENABLED=1 go build -mod=vendor -o /app/server ./cmd/server
+RUN CGO_ENABLED=0 go build -mod=vendor -ldflags="-w -s" -o /app/server ./cmd/server
 
 FROM alpine:latest
 

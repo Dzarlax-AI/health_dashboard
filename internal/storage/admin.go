@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"log"
 	"time"
 )
@@ -45,13 +46,17 @@ func (s *DB) GetDataGaps(minGapDays, minHours int) ([]DataGap, error) {
 		minHours = 6
 	}
 
+	// Compute the 12-months-ago cutoff in Go and pass as parameter.
+	twelveMonthsAgo := time.Now().AddDate(-1, 0, 0).Format("2006-01-02")
+
 	// Fetch all days in the last 12 months with their hour counts.
-	rows, err := s.db.Query(`
-		SELECT substr(hour,1,10) AS day, COUNT(DISTINCT substr(hour,1,13)) AS hours
+	ctx := context.Background()
+	rows, err := s.pool.Query(ctx, `
+		SELECT SUBSTRING(hour,1,10) AS day, COUNT(DISTINCT SUBSTRING(hour,1,13)) AS hours
 		FROM hourly_metrics
-		WHERE substr(hour,1,10) >= date('now','-12 months')
+		WHERE SUBSTRING(hour,1,10) >= $1
 		GROUP BY day
-		ORDER BY day`)
+		ORDER BY day`, twelveMonthsAgo)
 	if err != nil {
 		return nil, err
 	}
@@ -163,35 +168,37 @@ func (s *DB) GetDataGaps(minGapDays, minHours int) ([]DataGap, error) {
 // InvalidateDateRangeAggregates deletes all pre-aggregated rows for [from, to]
 // (inclusive, YYYY-MM-DD) so that the next backfill recomputes them from metric_points.
 func (s *DB) InvalidateDateRangeAggregates(from, to string) {
-	if _, err := s.db.Exec(
-		"DELETE FROM hourly_metrics WHERE substr(hour,1,10) >= ? AND substr(hour,1,10) <= ?", from, to,
+	ctx := context.Background()
+	if _, err := s.pool.Exec(ctx,
+		"DELETE FROM hourly_metrics WHERE SUBSTRING(hour,1,10) >= $1 AND SUBSTRING(hour,1,10) <= $2", from, to,
 	); err != nil {
 		log.Printf("invalidate hourly_metrics [%s,%s]: %v", from, to, err)
 	}
-	if _, err := s.db.Exec("DELETE FROM daily_scores WHERE date >= ? AND date <= ?", from, to); err != nil {
+	if _, err := s.pool.Exec(ctx, "DELETE FROM daily_scores WHERE date >= $1 AND date <= $2", from, to); err != nil {
 		log.Printf("invalidate daily_scores [%s,%s]: %v", from, to, err)
 	}
 }
 
 // GetCacheStatus returns row counts and date ranges for all cache tables.
 func (s *DB) GetCacheStatus() (*CacheStatus, error) {
+	ctx := context.Background()
 	cs := &CacheStatus{ScoreVersion: ScoreVersion}
 
-	s.db.QueryRow(`SELECT COUNT(*) FROM metric_points`).Scan(&cs.RawPoints.Rows)
-	s.db.QueryRow(`SELECT COUNT(DISTINCT metric_name) FROM hourly_metrics`).Scan(&cs.RawPoints.Metrics)
+	s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM metric_points`).Scan(&cs.RawPoints.Rows)
+	s.pool.QueryRow(ctx, `SELECT COUNT(DISTINCT metric_name) FROM hourly_metrics`).Scan(&cs.RawPoints.Metrics)
 
 	// minute_metrics is no longer used (reads go to metric_points directly).
 	// Keep the struct field for API compat but leave it zeroed.
 
-	s.db.QueryRow(
+	s.pool.QueryRow(ctx,
 		`SELECT COUNT(*), MIN(hour), MAX(hour) FROM hourly_metrics`,
 	).Scan(&cs.HourlyCache.Rows, &cs.HourlyCache.Oldest, &cs.HourlyCache.Newest)
 
-	s.db.QueryRow(
+	s.pool.QueryRow(ctx,
 		`SELECT COUNT(*), MIN(date), MAX(date) FROM daily_scores`,
 	).Scan(&cs.DailyScores.Rows, &cs.DailyScores.Oldest, &cs.DailyScores.Newest)
 
-	s.db.QueryRow(
+	s.pool.QueryRow(ctx,
 		`SELECT MAX(received_at) FROM health_records`,
 	).Scan(&cs.LastSync)
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -17,13 +18,16 @@ import (
 )
 
 func main() {
-	dbPath := getEnv("DB_PATH", "/app/data/health.db")
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		log.Fatal("DATABASE_URL environment variable is required")
+	}
 	addr := getEnv("ADDR", ":8080")
 	apiKey     := os.Getenv("API_KEY")
 	uiPassword := os.Getenv("UI_PASSWORD")
 	baseURL    := getEnv("BASE_URL", "http://localhost"+addr)
 
-	db, err := storage.New(dbPath)
+	db, err := storage.New(context.Background(), dbURL)
 	if err != nil {
 		log.Fatalf("init db: %v", err)
 	}
