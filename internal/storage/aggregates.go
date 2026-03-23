@@ -28,18 +28,26 @@ func combineFuncFor(metric string) string {
 }
 
 // sumCombineExpr returns `MAX(valCol)` — picks the source with the highest
-// total for SUM metrics. This correctly handles both data patterns:
-//
-//   - Health Auto Export: pipe-separated sources ("Watch|iPhone|Ring")
-//     represent different HealthKit dedup levels of the same data.
-//     The source with the most devices has the most complete total.
-//   - Apple Health XML import: single-device sources overlap.
-//     MAX picks the device with the most data.
-//
-// In both cases, MAX across per-source totals is the correct strategy.
+// total for SUM metrics. Used for per-hour dedup in raw metric_points queries
+// where sources overlap within a single timeslot.
 func sumCombineExpr(valCol string) string {
 	return "MAX(" + valCol + ")"
 }
+
+// preferredSourceSQL returns a SQL snippet that picks the best source's daily
+// total from a subquery with (source, source_total) columns.
+// Priority: Apple Watch ("Ultra") > iPhone > other (e.g. RingConn).
+// Falls back to MAX(source_total) if no Apple device is present.
+const preferredSourceSQL = `
+	SELECT COALESCE(
+		(SELECT source_total FROM source_totals
+		 WHERE source LIKE '%Ultra%' OR source LIKE '%Apple Watch%'
+		 ORDER BY source_total DESC LIMIT 1),
+		(SELECT source_total FROM source_totals
+		 WHERE source LIKE '%iPhone%'
+		 ORDER BY source_total DESC LIMIT 1),
+		(SELECT MAX(source_total) FROM source_totals)
+	)`
 
 // SumMetrics is the canonical set of metrics that should be SUMmed within a bucket.
 // Exported so the MCP server can use the same classification without duplication.
@@ -196,12 +204,12 @@ func (s *DB) upsertDailyForDate(date string) {
 		var err error
 		if SumMetrics[sp.name] {
 			err = s.pool.QueryRow(ctx, `
-				SELECT COALESCE(MAX(source_total), 0) FROM (
+				WITH source_totals AS (
 					SELECT source, SUM(avg_val) AS source_total
 					FROM hourly_metrics
 					WHERE metric_name=$1 AND SUBSTRING(hour,1,10)=$2
 					GROUP BY source
-				) sub`, sp.name, date).Scan(&val)
+				) `+preferredSourceSQL, sp.name, date).Scan(&val)
 		} else {
 			err = s.pool.QueryRow(ctx, `
 				SELECT COALESCE(AVG(avg_val), 0)
@@ -306,15 +314,17 @@ func (s *DB) buildDailyMetricCol(col, metric string, force bool) error {
 
 	var query string
 	if SumMetrics[metric] {
-		combineVal := sumCombineExpr("avg_val")
+		// MAX of per-source daily totals. For single-day queries (dashboard),
+		// source priority is applied separately; for multi-day (charts), MAX is fine.
 		query = fmt.Sprintf(`
-			SELECT SUBSTRING(hour,1,10) AS day, SUM(hour_val) FROM (
-				SELECT SUBSTRING(hour,1,10) AS day, hour, %s AS hour_val
+			SELECT day, MAX(source_total) FROM (
+				SELECT SUBSTRING(hour,1,10) AS day, source, SUM(avg_val) AS source_total
 				FROM hourly_metrics
 				WHERE metric_name = $1 %s
-				GROUP BY hour
+				GROUP BY SUBSTRING(hour,1,10), source
 			) sub
-			GROUP BY SUBSTRING(hour,1,10)`, combineVal, fromClause)
+			GROUP BY day
+			ORDER BY day`, fromClause)
 	} else {
 		query = fmt.Sprintf(`
 			SELECT SUBSTRING(hour,1,10), AVG(avg_val)

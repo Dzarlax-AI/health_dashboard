@@ -501,16 +501,14 @@ func (s *DB) GetDashboard() (*DashboardResponse, error) {
 	queryDayCache := func(metric, agg, day string) float64 {
 		var val float64
 		if agg == "SUM" {
-			// MAX of per-source daily totals (not SUM of per-hour MAX).
-			// Prevents overcounting when multiple devices (Watch + Ring)
-			// report different amounts per hour.
+			// Prefer Apple Watch source, fallback to others.
 			s.pool.QueryRow(ctx, `
-				SELECT COALESCE(MAX(source_total), 0) FROM (
+				WITH source_totals AS (
 					SELECT source, SUM(avg_val) AS source_total
 					FROM hourly_metrics
 					WHERE metric_name=$1 AND SUBSTRING(hour,1,10)=$2
 					GROUP BY source
-				) sub`, metric, day,
+				) `+preferredSourceSQL, metric, day,
 			).Scan(&val)
 		} else {
 			s.pool.QueryRow(ctx,
