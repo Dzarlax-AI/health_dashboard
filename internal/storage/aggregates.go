@@ -195,14 +195,13 @@ func (s *DB) upsertDailyForDate(date string) {
 		var val float64
 		var err error
 		if SumMetrics[sp.name] {
-			combineVal := sumCombineExpr("avg_val")
-			err = s.pool.QueryRow(ctx, fmt.Sprintf(`
-				SELECT COALESCE(SUM(hour_val), 0) FROM (
-					SELECT hour, %s AS hour_val
+			err = s.pool.QueryRow(ctx, `
+				SELECT COALESCE(MAX(source_total), 0) FROM (
+					SELECT source, SUM(avg_val) AS source_total
 					FROM hourly_metrics
 					WHERE metric_name=$1 AND SUBSTRING(hour,1,10)=$2
-					GROUP BY hour
-				) sub`, combineVal), sp.name, date).Scan(&val)
+					GROUP BY source
+				) sub`, sp.name, date).Scan(&val)
 		} else {
 			err = s.pool.QueryRow(ctx, `
 				SELECT COALESCE(AVG(avg_val), 0)

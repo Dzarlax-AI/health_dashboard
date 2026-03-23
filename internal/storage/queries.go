@@ -262,19 +262,19 @@ func (s *DB) metricDataDayFromHourly(metric, from, to string) ([]DataPoint, erro
 
 	var query string
 	if SumMetrics[metric] {
-		// SUM metrics: smart combine per hour, then SUM across hours per day.
-		combineVal := sumCombineExpr("avg_val")
-		query = fmt.Sprintf(`
-			SELECT SUBSTRING(hour,1,10) AS day, SUM(hour_val), MIN(hour_min), MAX(hour_max)
+		// SUM metrics: per-source daily total, then MAX across sources.
+		// Prevents overcounting when multiple devices report different amounts per hour.
+		query = `
+			SELECT day, MAX(source_total), MIN(source_min), MAX(source_max)
 			FROM (
-				SELECT SUBSTRING(hour,1,10) AS day, hour,
-				       %s AS hour_val, MIN(min_val) AS hour_min, MAX(max_val) AS hour_max
+				SELECT SUBSTRING(hour,1,10) AS day, source,
+				       SUM(avg_val) AS source_total, MIN(min_val) AS source_min, MAX(max_val) AS source_max
 				FROM hourly_metrics
 				WHERE metric_name = $1 AND hour >= $2 AND hour <= $3
-				GROUP BY hour
+				GROUP BY SUBSTRING(hour,1,10), source
 			) sub
-			GROUP BY SUBSTRING(hour,1,10)
-			ORDER BY SUBSTRING(hour,1,10)`, combineVal)
+			GROUP BY day
+			ORDER BY day`
 	} else {
 		query = `
 			SELECT SUBSTRING(hour,1,10), AVG(avg_val), MIN(min_val), MAX(max_val)
@@ -501,14 +501,16 @@ func (s *DB) GetDashboard() (*DashboardResponse, error) {
 	queryDayCache := func(metric, agg, day string) float64 {
 		var val float64
 		if agg == "SUM" {
-			combineVal := sumCombineExpr("avg_val")
-			s.pool.QueryRow(ctx, fmt.Sprintf(`
-				SELECT COALESCE(SUM(hour_val), 0) FROM (
-					SELECT hour, %s AS hour_val
+			// MAX of per-source daily totals (not SUM of per-hour MAX).
+			// Prevents overcounting when multiple devices (Watch + Ring)
+			// report different amounts per hour.
+			s.pool.QueryRow(ctx, `
+				SELECT COALESCE(MAX(source_total), 0) FROM (
+					SELECT source, SUM(avg_val) AS source_total
 					FROM hourly_metrics
 					WHERE metric_name=$1 AND SUBSTRING(hour,1,10)=$2
-					GROUP BY hour
-				) sub`, combineVal), metric, day,
+					GROUP BY source
+				) sub`, metric, day,
 			).Scan(&val)
 		} else {
 			s.pool.QueryRow(ctx,
