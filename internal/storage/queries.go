@@ -527,14 +527,14 @@ func (s *DB) GetDashboard() (*DashboardResponse, error) {
 	// Batch units lookup (1 query instead of 12)
 	unitMap := make(map[string]string)
 	unitRows, err := s.pool.Query(ctx, `
-		SELECT DISTINCT ON (metric_name) metric_name, units
+		SELECT metric_name, units
 		FROM metric_points
 		WHERE metric_name IN ('step_count','active_energy','basal_energy_burned',
 		      'heart_rate','resting_heart_rate','heart_rate_variability',
 		      'blood_oxygen_saturation','respiratory_rate','sleep_total',
 		      'apple_exercise_time','walking_running_distance','wrist_temperature')
-		  AND units != ''
-		ORDER BY metric_name, id DESC`)
+		  AND units IS NOT NULL AND units != ''
+		GROUP BY metric_name, units`)
 	if err == nil {
 		defer unitRows.Close()
 		for unitRows.Next() {
