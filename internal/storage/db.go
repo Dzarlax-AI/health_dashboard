@@ -21,7 +21,14 @@ func (s *DB) NeedsForceBackfill() bool {
 }
 
 func New(ctx context.Context, connString string) (*DB, error) {
-	pool, err := pgxpool.New(ctx, connString)
+	config, err := pgxpool.ParseConfig(connString)
+	if err != nil {
+		return nil, fmt.Errorf("parse pg config: %w", err)
+	}
+	config.MaxConns = 20
+	config.MinConns = 5
+
+	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("connect to pg: %w", err)
 	}
