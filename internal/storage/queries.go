@@ -84,7 +84,7 @@ func (s *DB) GetLatestMetricValues() ([]LatestValue, error) {
 				JOIN latest_day l ON h.metric_name = l.metric_name
 					AND SUBSTRING(h.hour,1,10) = l.max_date
 				WHERE h.metric_name IN (%s)
-				GROUP BY h.metric_name, h.source
+				GROUP BY h.metric_name, l.max_date, h.source
 			) sub GROUP BY metric_name, max_date
 		),
 		avg_agg AS (
