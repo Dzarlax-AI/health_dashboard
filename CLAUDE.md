@@ -5,19 +5,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-make dev              # run server locally (data stored in ./data/health.db)
-make build            # CGO_ENABLED=1 binary → bin/server
-make migrate          # re-parse raw payloads from health_records → metric_points
-make dedup            # rebuild metric_points with UNIQUE constraint, remove duplicates
-make backfill         # rebuild pre-aggregated caches incrementally (missing rows only)
-make backfill-force   # wipe and fully rebuild all caches from metric_points
+DATABASE_URL=postgres://... make dev       # run server locally
+DATABASE_URL=postgres://... make build     # pure Go binary → bin/server (no CGO)
+DATABASE_URL=postgres://... make backfill  # rebuild pre-aggregated caches incrementally
+DATABASE_URL=postgres://... make backfill-force  # wipe and fully rebuild all caches
 make docker-up        # docker compose up -d --build
 make docker-down      # docker compose down
 make test             # send a test POST to localhost:8080/health
-make import FILE=export.zip  # import Apple Health export (ZIP or XML)
+DATABASE_URL=postgres://... make import FILE=export.zip  # import Apple Health export
 ```
 
-Build requires CGO (for go-sqlite3). Always use `CGO_ENABLED=1`.
+Build is pure Go (no CGO). Uses `jackc/pgx/v5` for PostgreSQL. Docker images built via GitHub Actions.
 
 ## Architecture
 
@@ -31,7 +29,7 @@ Single binary HTTP server (`cmd/server/main.go`) that wires together several pac
 
 - **`internal/health`** — pure business logic for health analysis (no I/O). Readiness scoring (`scoring.go`, `readiness.go`), health anomaly alerts (`alerts.go`), cardio analysis (`cardio.go`), sleep breakdowns (`sleep.go`), activity analysis (`activity.go`), insights generation (`insights.go`), and i18n (`i18n_en.go`, `i18n_ru.go`, `i18n_sr.go`). Core types in `types.go`.
 
-- **`internal/storage`** — SQLite via `go-sqlite3` (CGO). WAL mode. Tables: `health_records`, `metric_points`, three pre-aggregated cache tables (`minute_metrics`, `hourly_metrics`, `daily_scores`), and `settings` (key-value store for Telegram config). Also includes `admin.go` (data gap detection) and `settings.go` (notification config persistence).
+- **`internal/storage`** — PostgreSQL via `jackc/pgx/v5` connection pool. Tables: `health_records`, `metric_points`, three pre-aggregated cache tables (`minute_metrics`, `hourly_metrics`, `daily_scores`), and `settings` (key-value store for Telegram config). Also includes `admin.go` (data gap detection) and `settings.go` (notification config persistence). Schema managed externally via `init.sql`.
 
 - **`internal/notify`** — Telegram notification subsystem. Bot client (`telegram.go`) and report scheduler (`report.go`) with timezone-aware morning/evening scheduling. Config loaded from env vars with DB overrides.
 
@@ -39,7 +37,7 @@ Single binary HTTP server (`cmd/server/main.go`) that wires together several pac
 
 - **`cmd/backfill`** — standalone CLI to rebuild caches. Flags: `--force` / `-f`.
 
-- **`cmd/import`** — standalone CLI to import Apple Health export files. Flags: `--db`, `--file`, `--batch`, `--pause`, `--dry-run`. Streams XML to avoid memory overload.
+- **`cmd/import`** — standalone CLI to import Apple Health export files. Flags: `--file`, `--batch`, `--pause`, `--dry-run`. Streams XML to avoid memory overload.
 
 ## Data Flow
 
@@ -61,43 +59,60 @@ Special metric handling in `internal/handler/health.go::extractPoints`:
 - `sleep_analysis` → expands to 5 metrics: `sleep_deep`, `sleep_rem`, `sleep_core`, `sleep_awake`, `sleep_total`
 - All others → read `qty` field
 
-## Database Schema
+## Database
+
+**PostgreSQL** (shared instance, schema `health`). Connection via `DATABASE_URL` env var.
+
+Schema managed by `init.sql` (not by the application). Tables:
 
 ```
 health_records     — raw JSON payloads, never modified
 metric_points      — parsed time series, append-only, UNIQUE(metric_name, date, source)
-minute_metrics     — Level 1 cache: metric_points → per-minute per-source aggregates
-hourly_metrics     — Level 2 cache: minute_metrics → per-hour per-source aggregates
-daily_scores       — Level 3 cache: hourly_metrics → per-day rollups (hrv_avg, rhr_avg,
+                     date stored as TEXT (YYYY-MM-DD HH:MM:SS ±TZ)
+minute_metrics     — Level 1 cache (no longer actively populated)
+hourly_metrics     — Level 2 cache: per-hour per-source aggregates
+daily_scores       — Level 3 cache: per-day rollups (hrv_avg, rhr_avg,
                      sleep_*, steps, calories, exercise_min, spo2_avg, vo2_avg, resp_avg)
                      + Level 4: readiness score (0–100) with score_version
+settings           — key-value store for Telegram config
 ```
 
-`daily_scores` is the primary read target for briefing and dashboard queries — one row replaces 14+ metric_points queries.
+**Expression indexes** (critical for performance with 3.7M+ rows in metric_points):
+- `idx_mp_name_day` — `(metric_name, SUBSTRING(date, 1, 10))`
+- `idx_mp_day` — `(SUBSTRING(date, 1, 10) DESC)` — for MAX(date) queries
+- `idx_mp_name_units` — partial index for units lookup
+- `idx_hm_name_day` — `(metric_name, SUBSTRING(hour, 1, 10))`
+- `idx_hm_day_desc` — `(SUBSTRING(hour, 1, 10) DESC)`
+
+**pgx specifics**:
+- Connection pool: MaxConns=20, MinConns=5
+- SimpleProtocol mode (avoids prepared statement lock contention)
+- All SQL uses `SUBSTRING()` (not `substr()`), `$1/$2/$3` placeholders (not `?`)
 
 ## Aggregation Rules
 
 Defined in `internal/storage/aggregates.go::SumMetrics` (exported):
 - **SUM metrics**: step_count, active_energy, basal_energy_burned, apple_exercise_time, apple_stand_time, flights_climbed, walking_running_distance, time_in_daylight, apple_stand_hour, sleep_total, sleep_deep, sleep_rem, sleep_core, sleep_awake
-- **Multi-device dedup**: all SUM metrics use `MAX(per-source sum)` across sources to avoid double-counting overlapping devices (Apple Watch + iPhone + RingConn)
+- **Source priority**: Apple Watch (Ultra) > iPhone > other (RingConn). For dashboard and daily_scores, preferred source is selected via `preferredSourceSQL`. Falls back to MAX(source_total) if no Apple device present.
+- **Multi-device dedup (charts)**: MAX(per-source daily sum) across sources
 - **All others**: AVG
 
 ## Cache Invalidation & Backfill
 
-- **On startup**: `RunIncrementalBackfill()` fires after 10 s (fills missing rows only)
+- **On startup**: incremental backfill (refreshes last 48h). Only force-rebuilds when caches are empty (first import). Use `cmd/backfill --force` for manual full rebuild.
 - **After `POST /health`**: inline `UpsertRecentCache()` rebuilds hourly+daily for affected dates directly from metric_points (no stale window). Debounced backfill (2 min) runs as safety net to refresh last 48h.
 - **ScoreVersion** constant in `scores.go` (currently 2): bump to invalidate all cached readiness scores on next run
 - **Force rebuild**: wipes cache tables, recomputes everything from `metric_points`
 
-## SQLite Date Format
+## Sleep Dedup
 
-Dates arrive with timezone offset: `"2026-03-04 09:02:00 +0100"`. SQLite's `strftime` cannot parse this format — always use `substr(date, 1, N)` for date truncation (not `strftime`).
+`sleepDedupClause()` in `aggregates.go` excludes midnight summary records (00:00:00) when real sleep fragments exist for the same day+source. Applied to all sleep_* metrics in raw queries and hourly cache building.
 
 ## Environment Variables
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `DB_PATH` | `/app/data/health.db` | SQLite file path |
+| `DATABASE_URL` | — (required) | PostgreSQL connection string (e.g. `postgres://health_user:pass@host/db?search_path=health`) |
 | `ADDR` | `:8080` | Listen address |
 | `API_KEY` | — | Auth for `/health` and `/mcp` |
 | `UI_PASSWORD` | — | Auth for web UI |
@@ -109,22 +124,7 @@ Dates arrive with timezone offset: `"2026-03-04 09:02:00 +0100"`. SQLite's `strf
 | `REPORT_MORNING_WEEKEND` | `9` | Morning report hour on weekends |
 | `REPORT_EVENING_WEEKDAY` | `20` | Evening report hour on weekdays |
 | `REPORT_EVENING_WEEKEND` | `21` | Evening report hour on weekends |
-| `REPORT_TZ` | system local | Timezone for report scheduling (e.g. `Europe/Berlin`) |
-
-## Automatic DB Migrations (run on every startup)
-
-- **Metric name normalization**: renames `heart_rate_variability_sdnn` → `heart_rate_variability`, `oxygen_saturation` → `blood_oxygen_saturation`
-- **Fraction→percent normalization**: multiplies ×100 for SpO₂, body fat, walking asymmetry/double support/steadiness values that were imported as fractions (0.0–1.0) from Apple Health XML
-
-## One-time DB Migrations
-
-If migrating from an old schema without `UNIQUE` constraint on `metric_points`:
-```bash
-make dedup    # run once — rebuilds table and removes duplicates
-make migrate  # re-parse existing health_records payloads (e.g. after adding new metric types)
-```
-
-After schema changes to `daily_scores`, run `make backfill-force` to rebuild the cache.
+| `REPORT_TZ` | system local | Timezone for report scheduling (e.g. `Europe/Belgrade`) |
 
 ## Readiness Scoring
 
