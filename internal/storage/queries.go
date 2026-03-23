@@ -455,100 +455,71 @@ func (s *DB) GetDashboard() (*DashboardResponse, error) {
 	var lastUpdated *string
 	s.pool.QueryRow(context.Background(), `SELECT MAX(received_at) FROM health_records`).Scan(&lastUpdated)
 
-	yesterdayStr := ""
-	if yesterday != nil {
-		yesterdayStr = *yesterday
+	type spec struct {
+		metric string
+		agg    string
 	}
-	lastUpdatedStr := ""
-	if lastUpdated != nil {
-		lastUpdatedStr = *lastUpdated
+	cards := []spec{
+		{"step_count", "SUM"},
+		{"active_energy", "SUM"},
+		{"basal_energy_burned", "SUM"},
+		{"heart_rate", "AVG"},
+		{"resting_heart_rate", "AVG"},
+		{"heart_rate_variability", "AVG"},
+		{"blood_oxygen_saturation", "AVG"},
+		{"respiratory_rate", "AVG"},
+		{"sleep_total", "SUM"},
+		{"apple_exercise_time", "SUM"},
+		{"walking_running_distance", "SUM"},
+		{"wrist_temperature", "AVG"},
 	}
 
 	ctx := context.Background()
 
-	// --- Batch 1: today's values from metric_points (fresh, 1 query) ---
-	// SUM metrics: per-source SUM then MAX across sources.
-	// AVG metrics: plain AVG.
-	// Sleep dedup applied for sleep_* metrics.
-	todayVals := make(map[string]float64)
-	todayRows, err := s.pool.Query(ctx, `
-		SELECT metric_name, val FROM (
-			SELECT metric_name, MAX(source_sum) AS val
-			FROM (
-				SELECT metric_name, source, SUM(qty) AS source_sum
-				FROM metric_points
-				WHERE SUBSTRING(date,1,10) = $1 AND qty > 0
-				  AND metric_name IN ('step_count','active_energy','basal_energy_burned',
-				      'sleep_total','apple_exercise_time','walking_running_distance')
-				  AND NOT (
-				      metric_name LIKE 'sleep_%'
-				      AND SUBSTRING(date, 12, 8) = '00:00:00'
-				      AND EXISTS (
-				          SELECT 1 FROM metric_points p2
-				          WHERE p2.metric_name = metric_points.metric_name
-				            AND SUBSTRING(p2.date, 1, 10) = SUBSTRING(metric_points.date, 1, 10)
-				            AND p2.source = metric_points.source
-				            AND SUBSTRING(p2.date, 12, 8) != '00:00:00'
-				            AND p2.qty > 0
-				      )
-				  )
-				GROUP BY metric_name, source
-			) sub
-			GROUP BY metric_name
-		  UNION ALL
-			SELECT metric_name, AVG(qty) AS val
-			FROM metric_points
-			WHERE SUBSTRING(date,1,10) = $1 AND qty > 0
-			  AND metric_name IN ('heart_rate','resting_heart_rate','heart_rate_variability',
-			      'blood_oxygen_saturation','respiratory_rate','wrist_temperature')
-			GROUP BY metric_name
-		) combined`, *today)
-	if err == nil {
-		defer todayRows.Close()
-		for todayRows.Next() {
-			var name string
-			var val float64
-			if todayRows.Scan(&name, &val) == nil {
-				todayVals[name] = val
-			}
+	queryDayRaw := func(metric, agg, day string) float64 {
+		var val float64
+		if agg == "SUM" {
+			sleepDedup := sleepDedupClause(metric)
+			combineVal := sumCombineExpr("source_sum")
+			s.pool.QueryRow(ctx, fmt.Sprintf(`
+				SELECT COALESCE(%s, 0) FROM (
+					SELECT source, SUM(qty) AS source_sum
+					FROM metric_points
+					WHERE metric_name=$1 AND SUBSTRING(date,1,10)=$2 AND qty > 0 %s
+					GROUP BY source
+				) sub`, combineVal, sleepDedup), metric, day,
+			).Scan(&val)
+		} else {
+			s.pool.QueryRow(ctx,
+				`SELECT COALESCE(AVG(qty), 0) FROM metric_points WHERE metric_name=$1 AND SUBSTRING(date,1,10)=$2 AND qty > 0`,
+				metric, day,
+			).Scan(&val)
 		}
+		return val
 	}
 
-	// --- Batch 2: yesterday's values from hourly_metrics cache (1 query) ---
-	yesterdayVals := make(map[string]float64)
-	if yesterdayStr != "" {
-		yesterdayRows, err := s.pool.Query(ctx, `
-			SELECT metric_name, val FROM (
-				SELECT metric_name, SUM(hour_val) AS val FROM (
-					SELECT metric_name, hour, MAX(avg_val) AS hour_val
+	queryDayCache := func(metric, agg, day string) float64 {
+		var val float64
+		if agg == "SUM" {
+			combineVal := sumCombineExpr("avg_val")
+			s.pool.QueryRow(ctx, fmt.Sprintf(`
+				SELECT COALESCE(SUM(hour_val), 0) FROM (
+					SELECT hour, %s AS hour_val
 					FROM hourly_metrics
-					WHERE SUBSTRING(hour,1,10) = $1
-					  AND metric_name IN ('step_count','active_energy','basal_energy_burned',
-					      'sleep_total','apple_exercise_time','walking_running_distance')
-					GROUP BY metric_name, hour
-				) sub
-				GROUP BY metric_name
-			  UNION ALL
-				SELECT metric_name, AVG(avg_val) AS val
-				FROM hourly_metrics
-				WHERE SUBSTRING(hour,1,10) = $1
-				  AND metric_name IN ('heart_rate','resting_heart_rate','heart_rate_variability',
-				      'blood_oxygen_saturation','respiratory_rate','wrist_temperature')
-				GROUP BY metric_name
-			) combined`, yesterdayStr)
-		if err == nil {
-			defer yesterdayRows.Close()
-			for yesterdayRows.Next() {
-				var name string
-				var val float64
-				if yesterdayRows.Scan(&name, &val) == nil {
-					yesterdayVals[name] = val
-				}
-			}
+					WHERE metric_name=$1 AND SUBSTRING(hour,1,10)=$2
+					GROUP BY hour
+				) sub`, combineVal), metric, day,
+			).Scan(&val)
+		} else {
+			s.pool.QueryRow(ctx,
+				`SELECT COALESCE(AVG(avg_val), 0) FROM hourly_metrics WHERE metric_name=$1 AND SUBSTRING(hour,1,10)=$2`,
+				metric, day,
+			).Scan(&val)
 		}
+		return val
 	}
 
-	// --- Batch 3: units for all dashboard metrics (1 query) ---
+	// Batch units lookup (1 query instead of 12)
 	unitMap := make(map[string]string)
 	unitRows, err := s.pool.Query(ctx, `
 		SELECT DISTINCT ON (metric_name) metric_name, units
@@ -569,23 +540,25 @@ func (s *DB) GetDashboard() (*DashboardResponse, error) {
 		}
 	}
 
-	// --- Assemble cards ---
-	cardOrder := []string{
-		"step_count", "active_energy", "basal_energy_burned",
-		"heart_rate", "resting_heart_rate", "heart_rate_variability",
-		"blood_oxygen_saturation", "respiratory_rate", "sleep_total",
-		"apple_exercise_time", "walking_running_distance", "wrist_temperature",
+	yesterdayStr := ""
+	if yesterday != nil {
+		yesterdayStr = *yesterday
+	}
+	lastUpdatedStr := ""
+	if lastUpdated != nil {
+		lastUpdatedStr = *lastUpdated
 	}
 
 	var result []CardData
-	for _, metric := range cardOrder {
-		val := todayVals[metric]
+	for _, c := range cards {
+		val := queryDayRaw(c.metric, c.agg, *today)
 		if val == 0 {
 			continue
 		}
+		prev := queryDayCache(c.metric, c.agg, yesterdayStr)
 		result = append(result, CardData{
-			Metric: metric, Value: val, Prev: yesterdayVals[metric],
-			Unit: unitMap[metric], Date: *today,
+			Metric: c.metric, Value: val, Prev: prev,
+			Unit: unitMap[c.metric], Date: *today,
 		})
 	}
 	return &DashboardResponse{Date: *today, LastUpdated: lastUpdatedStr, Cards: result}, nil
