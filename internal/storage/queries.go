@@ -480,14 +480,13 @@ func (s *DB) GetDashboard() (*DashboardResponse, error) {
 		var val float64
 		if agg == "SUM" {
 			sleepDedup := sleepDedupClause(metric)
-			combineVal := sumCombineExpr("source_sum")
 			s.pool.QueryRow(ctx, fmt.Sprintf(`
-				SELECT COALESCE(%s, 0) FROM (
-					SELECT source, SUM(qty) AS source_sum
+				WITH source_totals AS (
+					SELECT source, SUM(qty) AS source_total
 					FROM metric_points
 					WHERE metric_name=$1 AND SUBSTRING(date,1,10)=$2 AND qty > 0 %s
 					GROUP BY source
-				) sub`, combineVal, sleepDedup), metric, day,
+				) `+preferredSourceSQL, sleepDedup), metric, day,
 			).Scan(&val)
 		} else {
 			s.pool.QueryRow(ctx,
