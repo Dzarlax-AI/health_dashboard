@@ -1,39 +1,37 @@
-# Health Processing
+# Health Dashboard
 
-Self-hosted server that receives data from the [Health Auto Export](https://www.healthyapps.dev) iOS app, stores it in SQLite, and provides a web dashboard and MCP server for AI-assisted analysis.
+Self-hosted server that receives data from the [Health Auto Export](https://www.healthyapps.dev) iOS app, stores it in PostgreSQL, and provides a web dashboard and MCP server for AI-assisted analysis.
 
 ## How It Works
 
 ```mermaid
 flowchart TD
-    App["📱 Health Auto Export (iOS)"]
+    App["Health Auto Export (iOS)"]
 
-    subgraph Server["Go Server"]
+    subgraph Server["Go Server (pure Go, no CGO)"]
         H["/health POST handler"]
         UI["Web Dashboard"]
         MCP["/mcp MCP Server"]
         BF["Backfill Scheduler (debounced 2 min)"]
     end
 
-    subgraph SQLite["SQLite Database"]
+    subgraph PG["PostgreSQL (shared instance, schema: health)"]
         HR[("health_records")]
         MP[("metric_points")]
-        MM[("minute_metrics")]
         HM[("hourly_metrics")]
         DS[("daily_scores")]
     end
 
-    Claude["🤖 Claude / AI"]
-    Browser["🌐 Browser"]
+    Claude["Claude / AI"]
+    Browser["Browser"]
 
     App -->|"POST /health X-API-Key"| H
     H --> HR
     H --> MP
     H -->|"trigger"| BF
 
-    BF -->|"Level 1"| MM
-    MM -->|"Level 2"| HM
-    HM -->|"Level 3"| DS
+    BF -->|"aggregate"| HM
+    HM -->|"rollup"| DS
 
     Browser -->|"password auth"| UI
     UI -->|"reads"| DS
@@ -46,24 +44,27 @@ flowchart TD
 
 Data is stored in layers:
 
-- **`health_records`** — raw JSON payloads, never modified
-- **`metric_points`** — parsed time series, append-only
-- **`minute_metrics` / `hourly_metrics`** — pre-aggregated caches (auto-maintained)
-- **`daily_scores`** — daily rollups + readiness scores (auto-maintained)
+- **`health_records`** -- raw JSON payloads, never modified
+- **`metric_points`** -- parsed time series, append-only (3.7M+ rows)
+- **`hourly_metrics`** -- pre-aggregated cache: per-hour per-source aggregates
+- **`daily_scores`** -- daily rollups + readiness scores (auto-maintained)
 
 The pre-aggregated tables are built automatically on startup and after each sync. They can be wiped and rebuilt at any time from `metric_points`.
 
 ## Quick Start
 
+Requires a running PostgreSQL instance with the `health` schema (see `init.sql` in the [personal-ai-stack](https://github.com/dzarlax/personal_ai_stack) monorepo).
+
 ```bash
-# Download docker-compose.yml
-curl -O https://raw.githubusercontent.com/dzarlax/health_dashboard/main/docker-compose.yml
+# Pull and run
+docker pull dzarlax/health_dashboard:latest
 
-# Set secrets (edit the file or use environment variables)
-# API_KEY=your-secret-key
-# UI_PASSWORD=your-dashboard-password
-
-docker compose up -d
+docker run -d \
+  -e DATABASE_URL="postgres://health_user:pass@postgres:5432/aistack?search_path=health" \
+  -e API_KEY=your-secret-key \
+  -e UI_PASSWORD=your-dashboard-password \
+  -p 8080:8080 \
+  dzarlax/health_dashboard:latest
 ```
 
 Web UI will be available at `http://your-server:8080/`.
@@ -72,85 +73,83 @@ The image is published on Docker Hub: [`dzarlax/health_dashboard`](https://hub.d
 
 ## Configuration
 
-All configuration is via environment variables in `docker-compose.yml`:
+All configuration is via environment variables:
 
 | Variable | Required | Description |
 |---|---|---|
-| `API_KEY` | Recommended | Protects `/health` (data upload) and `/mcp`. If not set — endpoints are open. |
-| `UI_PASSWORD` | Recommended | Password for the web dashboard at `/`. If not set — UI is open. |
-| `DB_PATH` | No | Path to SQLite file. Default: `/app/data/health.db` |
+| `DATABASE_URL` | **Yes** | PostgreSQL connection string (e.g. `postgres://health_user:pass@host/db?search_path=health`) |
+| `API_KEY` | Recommended | Protects `/health` (data upload) and `/mcp`. If not set -- endpoints are open. |
+| `UI_PASSWORD` | Recommended | Password for the web dashboard at `/`. If not set -- UI is open. |
 | `ADDR` | No | Listen address. Default: `:8080` |
 | `BASE_URL` | No | Used in logs for MCP URL. Default: `http://localhost:8080` |
-| `TELEGRAM_TOKEN` | No | Telegram bot token for daily reports. If not set — reports disabled. |
+| `TELEGRAM_TOKEN` | No | Telegram bot token for daily reports. If not set -- reports disabled. |
 | `TELEGRAM_CHAT_ID` | No | Telegram chat/user ID to send reports to. |
 | `REPORT_LANG` | No | Report language: `en`, `ru`, `sr`. Default: `en`. |
-| `REPORT_MORNING_WEEKDAY` | No | Hour (0–23) for morning sleep report on weekdays. Default: `8`. |
-| `REPORT_MORNING_WEEKEND` | No | Hour (0–23) for morning sleep report on weekends. Default: `9`. |
-| `REPORT_EVENING_WEEKDAY` | No | Hour (0–23) for evening day summary on weekdays. Default: `20`. |
-| `REPORT_EVENING_WEEKEND` | No | Hour (0–23) for evening day summary on weekends. Default: `21`. |
-| `REPORT_TZ` | No | Timezone for report scheduling (e.g. `Europe/Berlin`). Default: system local. |
+| `REPORT_MORNING_WEEKDAY` | No | Hour (0-23) for morning sleep report on weekdays. Default: `8`. |
+| `REPORT_MORNING_WEEKEND` | No | Hour (0-23) for morning sleep report on weekends. Default: `9`. |
+| `REPORT_EVENING_WEEKDAY` | No | Hour (0-23) for evening day summary on weekdays. Default: `20`. |
+| `REPORT_EVENING_WEEKEND` | No | Hour (0-23) for evening day summary on weekends. Default: `21`. |
+| `REPORT_TZ` | No | Timezone for report scheduling (e.g. `Europe/Belgrade`). Default: system local. |
 
 ## Health Auto Export Setup
 
-You need **two automations** in [Health Auto Export](https://www.healthyapps.dev) with different Time Grouping, both sending to filtered endpoints. The server automatically keeps only the right metric types from each endpoint — no manual metric selection needed.
+You need **two automations** in [Health Auto Export](https://www.healthyapps.dev) with different Time Grouping, both sending to filtered endpoints. The server automatically keeps only the right metric types from each endpoint -- no manual metric selection needed.
 
 Ready-to-import automation files are in the [`automations/`](automations/) folder:
 
 1. Transfer `automations/hourly.json` and `automations/vitals.json` to your iPhone (AirDrop, iCloud, email)
-2. Open each file — it will import into Health Auto Export automatically
+2. Open each file -- it will import into Health Auto Export automatically
 3. Edit each automation in the app:
    - **URL**: replace `YOUR_SERVER:8080` with your actual server address
    - **Headers**: replace `YOUR_API_KEY` with your `API_KEY` value
 4. Delete the old single automation (if upgrading from a previous setup)
 
-### Automation 1 — Hourly (activity & sleep)
+### Automation 1 -- Hourly (activity & sleep)
 
-1. Open **Health Auto Export** → **Automations** → **Create new**
+1. Open **Health Auto Export** > **Automations** > **Create new**
 2. Set **Destination**: `REST API`
-3. Set **URL**: `http://your-server:8080/health/hourly` ← filtered endpoint
+3. Set **URL**: `http://your-server:8080/health/hourly`
 4. Add **Header**: `X-API-Key: your-secret-key`
 5. **Select Health Metrics**: `All Selected` (server filters automatically)
 6. **Export Settings**:
    - Export Format: `JSON`
    - Export Version: `v2`
-   - **Date Range: `Today`** ← ensures running totals update every sync
-   - **Summarize Data: ON** ✅
-   - **Time Grouping: `Hours`** ← critical for accurate step counts
+   - **Date Range: `Today`**
+   - **Summarize Data: ON**
+   - **Time Grouping: `Hours`**
 7. **Sync Cadence**: Quantity `5`, Interval `Minutes`
 
-### Automation 2 — Vitals (heart rate, HRV, SpO₂)
+### Automation 2 -- Vitals (heart rate, HRV, SpO2)
 
 1. Create another automation
-2. Set **URL**: `http://your-server:8080/health/vitals` ← filtered endpoint
+2. Set **URL**: `http://your-server:8080/health/vitals`
 3. Same **Header**: `X-API-Key: your-secret-key`
 4. **Select Health Metrics**: `All Selected` (server filters automatically)
 5. **Export Settings**:
    - Export Format: `JSON`
    - Export Version: `v2`
    - **Date Range: `Since Last Sync`**
-   - **Summarize Data: ON** ✅
+   - **Summarize Data: ON**
    - **Time Grouping: `Default`** (minute-level granularity for heart rate)
 6. **Sync Cadence**: Quantity `5`, Interval `Minutes`
 
 The `/health` endpoint (no suffix) still accepts all metrics unfiltered for backward compatibility.
 
-> **Why two automations?** HealthKit redistributes cumulative metrics (steps, calories) across time buckets with fractional values. With minute-level grouping, the sum of these fractions exceeds the actual total by ~20–30%. Hourly grouping uses `HKStatisticsQuery` which returns correctly deduplicated totals. Instantaneous metrics (heart rate, SpO₂) don't have this problem — they are averaged, not summed — so minute-level grouping preserves useful granularity.
+> **Why two automations?** HealthKit redistributes cumulative metrics (steps, calories) across time buckets with fractional values. With minute-level grouping, the sum of these fractions exceeds the actual total by ~20-30%. Hourly grouping uses `HKStatisticsQuery` which returns correctly deduplicated totals. Instantaneous metrics (heart rate, SpO2) don't have this problem -- they are averaged, not summed -- so minute-level grouping preserves useful granularity.
 
-> **Why `/health/hourly` and `/health/vitals`?** Both automations send all metrics, but the server filters: `/health/hourly` keeps only SUM metrics (steps, calories, sleep, distance), `/health/vitals` keeps only AVG metrics (heart rate, HRV, SpO₂, temperature). This way you don't need to manually select metrics in the app — the server handles separation.
-
-> **Why "Today" for hourly?** With "Since Last Sync", hourly values that update within the current hour may not be re-sent. "Today" ensures every sync sends the full day's running totals, and `INSERT ON CONFLICT UPDATE` keeps the latest values.
+> **Why `/health/hourly` and `/health/vitals`?** Both automations send all metrics, but the server filters: `/health/hourly` keeps only SUM metrics (steps, calories, sleep, distance), `/health/vitals` keeps only AVG metrics (heart rate, HRV, SpO2, temperature). This way you don't need to manually select metrics in the app -- the server handles separation.
 
 ## Web Dashboard
 
-Available at `/` — password protected if `UI_PASSWORD` is set.
+Available at `/` -- password protected if `UI_PASSWORD` is set.
 
 Features:
-- **Dashboard** — today's metrics with trend vs yesterday, sparklines, and featured 7-day charts
-- **Health Briefing** — AI-style daily summary with readiness score, sleep analysis, insights, and health alerts (respiratory rate, wrist temperature, HRV variability anomalies)
-- **Metrics view** — full list of available metrics with latest values; click any to open its chart
-- **Metric charts** — time series with auto-bucketing (minute / hour / day)
-- **Settings** — cache status, backfill controls, Telegram notification config, data gap detection, and Apple Health import (gear icon, top-right)
-- URL hash state — shareable links like `/#metric=heart_rate&from=2026-01-01&to=2026-01-31`
+- **Dashboard** -- today's metrics with trend vs yesterday, sparklines, and featured 7-day charts
+- **Health Briefing** -- AI-style daily summary with readiness score, sleep analysis, insights, and health alerts
+- **Metrics view** -- full list of available metrics with latest values; click any to open its chart
+- **Metric charts** -- time series with auto-bucketing (minute / hour / day)
+- **Settings** -- cache status, backfill controls, Telegram notification config, data gap detection, and Apple Health import
+- URL hash state -- shareable links like `/#metric=heart_rate&from=2026-01-01&to=2026-01-31`
 
 ## MCP Server
 
@@ -177,67 +176,71 @@ Available tools:
 
 | Tool | Description |
 |---|---|
-| `get_health_briefing` | Full daily health briefing: readiness score (7-day HRV/RHR/sleep vs personal baseline), sleep analysis, activity, insights, and health alerts (RR/temperature/HRV anomalies). Best starting point. Supports `lang` (en/ru/sr). |
-| `get_readiness_history` | Daily readiness scores (0–100) for the last N days. Score combines 7-day HRV trend, RHR, and sleep vs personal baseline. Includes oversleep penalty. |
+| `get_health_briefing` | Full daily health briefing: readiness score, sleep analysis, activity, insights, and health alerts. Best starting point. Supports `lang` (en/ru/sr). |
+| `get_readiness_history` | Daily readiness scores (0-100) for the last N days. |
 | `list_metrics` | List all available metrics with record counts and date ranges. |
-| `get_dashboard` | Today's summary: steps, calories, heart rate, SpO₂, HRV, sleep. Includes trend vs yesterday. |
-| `get_metric_data` | Time series for a single metric. Supports minute / hour / day buckets and AVG / SUM / MIN / MAX aggregation. |
-| `summarize_metric` | Statistical summary (avg, min, max, count) + daily breakdown for the last N days. |
-| `compare_periods` | Compare a metric between two date ranges. Returns values and `change_pct`. Useful for before/after analysis. |
-| `get_sleep_summary` | All sleep phases (deep, REM, core, awake, total) per night in one response. |
-| `find_anomalies` | Days where a metric was statistically unusual (configurable σ threshold). |
+| `get_dashboard` | Today's summary with trend vs yesterday. |
+| `get_metric_data` | Time series for a single metric with minute/hour/day buckets. |
+| `summarize_metric` | Statistical summary + daily breakdown for the last N days. |
+| `compare_periods` | Compare a metric between two date ranges. |
+| `get_sleep_summary` | All sleep phases per night in one response. |
+| `find_anomalies` | Days where a metric was statistically unusual. |
 | `get_weekly_summary` | Week-by-week aggregates for one or more metrics. |
-| `get_personal_records` | All-time best and worst values per metric with dates. |
-| `sql_query` | Run any read-only SQL SELECT directly on the database. Schemas for `daily_scores`, `hourly_metrics`, `minute_metrics`, and `metric_points` are documented in the tool description. |
+| `get_personal_records` | All-time best and worst values per metric. |
+| `sql_query` | Run any read-only SQL SELECT on the PostgreSQL database. |
 
 ## Telegram Reports
 
 When `TELEGRAM_TOKEN` and `TELEGRAM_CHAT_ID` are set, the server sends two daily reports:
 
-- **Morning** (weekday 08:00 / weekend 09:00) — sleep duration, phases (deep/REM/core/awake), readiness score, HRV and RHR
-- **Evening** (weekday 20:00 / weekend 21:00) — steps, calories, exercise minutes, cardio summary, top insights
+- **Morning** (weekday 08:00 / weekend 09:00) -- sleep duration, phases, readiness score, HRV and RHR
+- **Evening** (weekday 20:00 / weekend 21:00) -- steps, calories, exercise minutes, cardio summary, top insights
 
-Times are configurable per weekday/weekend via env vars or through the Settings panel in the web UI (DB settings take priority over env vars). Timezone is controlled by `REPORT_TZ`. To get your `TELEGRAM_CHAT_ID`, send any message to your bot and call `https://api.telegram.org/bot<TOKEN>/getUpdates`. You can send test reports from the Settings panel.
+Times are configurable per weekday/weekend via env vars or through the Settings panel in the web UI (DB settings take priority). To get your `TELEGRAM_CHAT_ID`, send any message to your bot and call `https://api.telegram.org/bot<TOKEN>/getUpdates`. Test reports can be sent from the Settings panel.
 
 ## Apple Health Import
 
-You can import a full Apple Health export (the `export.xml` or `.zip` from iPhone Settings → Health → Export All Health Data):
+Import a full Apple Health export (from iPhone Settings > Health > Export All Health Data):
 
+**Via web UI**: Settings > Import (upload the `.zip` file)
+
+**Via CLI**:
 ```bash
-make import FILE=path/to/export.zip
+DATABASE_URL=postgres://... go run ./cmd/import --file path/to/export.zip
 ```
 
-The import streams the XML to avoid memory issues with large files. It can also be done via the web UI: Settings → Import. Percentage metrics (SpO₂, body fat, walking asymmetry, etc.) are automatically normalized from Apple Health's fraction format (0.96) to percentage scale (96%) during import.
+The import streams the XML to avoid memory issues with large files. Percentage metrics (SpO2, body fat, walking asymmetry, etc.) are automatically normalized from Apple Health's fraction format (0.96) to percentage scale (96%).
+
+## Multi-Device Source Priority
+
+When multiple devices record overlapping data (Apple Watch, iPhone, RingConn), the system uses source priority for SUM metrics (steps, calories, sleep):
+
+1. **Apple Watch** (Ultra / Apple Watch) -- preferred source
+2. **iPhone** -- fallback if Watch data unavailable
+3. **Other** (RingConn, etc.) -- last resort
+
+For chart data, MAX of per-source daily totals is used. For dashboard and daily scores, the preferred source is selected explicitly.
 
 ## Maintenance
 
 ```bash
-make dev              # run locally for development
-make build            # compile binary to bin/server (requires CGO_ENABLED=1)
-make migrate          # re-parse health_records → metric_points (run after adding new metric types)
-make dedup            # rebuild metric_points with UNIQUE constraint (run once on old databases)
-make backfill         # rebuild pre-aggregated caches from metric_points (incremental)
-make backfill-force   # wipe and fully rebuild all caches
-make import FILE=...  # import Apple Health export (ZIP or XML)
+DATABASE_URL=postgres://... make dev              # run locally for development
+DATABASE_URL=postgres://... make build            # compile binary (pure Go, no CGO)
+DATABASE_URL=postgres://... make backfill         # rebuild caches incrementally
+DATABASE_URL=postgres://... make backfill-force   # wipe and fully rebuild all caches
+DATABASE_URL=postgres://... make import FILE=...  # import Apple Health export
 make docker-up        # build and start with Docker Compose
 make docker-down      # stop all services
 ```
 
-The cache tables (`minute_metrics`, `hourly_metrics`, `daily_scores`) are also rebuilt automatically:
-- On server startup (incremental, fills missing rows only)
-- After each `POST /health` sync (debounced, 2-minute delay)
-- On demand via the Settings panel in the web UI
-
-## Known Limitations
-
-- **Timezone changes (travel)** — day boundaries use the device's local time at recording. When you travel across timezones, Apple Watch/iPhone update the offset automatically. Travel days may show reduced step counts, calories, and sleep duration because the calendar day is "compressed" (flying east) or "stretched" (flying west). Readiness scores self-correct after 1–2 days in the new timezone.
-- **Multi-device deduplication** — when multiple devices (Apple Watch, iPhone, RingConn) record overlapping data, the system uses HealthKit-deduplicated records (pipe-separated source names) when available, falling back to MAX-per-source for XML-imported data. This handles most cases correctly but edge cases with partial syncs may slightly under- or over-count.
-- **Percentage metrics from Apple Health XML** — SpO₂, body fat, walking asymmetry, etc. are stored as fractions (0.0–1.0) in Apple Health XML but as percentages (0–100) by Health Auto Export. The import automatically converts fractions to percentages, and existing data is migrated on server startup.
+Cache tables are rebuilt automatically on server startup (incremental, last 48h) and after each sync (debounced, 2-minute delay). Use `make backfill-force` only after code changes to aggregation logic.
 
 ## Backups
 
-The entire database is a single file: `./data/health.db`. Back it up by copying that file. For a live backup while the server is running:
+Data is in PostgreSQL (shared instance). Backup the entire database:
 
 ```bash
-sqlite3 ./data/health.db ".backup ./data/health.db.bak"
+docker exec infra-postgres-1 pg_dump -U health_user aistack --schema=health > health_backup.sql
 ```
+
+Or use the unified backup strategy from the personal-ai-stack monorepo (`pg_dumpall`).
