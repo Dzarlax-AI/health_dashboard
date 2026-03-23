@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 )
@@ -439,7 +438,6 @@ func (s *DB) scanSourcePoints(query, metric, from, to string) ([]SourceDataPoint
 }
 
 func (s *DB) GetDashboard() (*DashboardResponse, error) {
-	t0 := time.Now()
 	// Detect "today" from the descending index on SUBSTRING(date,1,10) — fast index-only scan.
 	var today *string
 	if err := s.pool.QueryRow(context.Background(),
@@ -447,14 +445,12 @@ func (s *DB) GetDashboard() (*DashboardResponse, error) {
 	).Scan(&today); err != nil || today == nil {
 		return &DashboardResponse{}, nil
 	}
-	log.Printf("[dashboard] today: %v", time.Since(t0).Round(time.Millisecond))
 
 	// "yesterday" from hourly_metrics (smaller table, already cached).
 	var yesterday *string
 	s.pool.QueryRow(context.Background(),
 		`SELECT MAX(SUBSTRING(hour,1,10)) FROM hourly_metrics WHERE SUBSTRING(hour,1,10) < $1`, *today,
 	).Scan(&yesterday)
-	log.Printf("[dashboard] yesterday: %v", time.Since(t0).Round(time.Millisecond))
 
 	var lastUpdated *string
 	s.pool.QueryRow(context.Background(), `SELECT MAX(received_at) FROM health_records`).Scan(&lastUpdated)
@@ -523,7 +519,6 @@ func (s *DB) GetDashboard() (*DashboardResponse, error) {
 		return val
 	}
 
-	log.Printf("[dashboard] before units: %v", time.Since(t0).Round(time.Millisecond))
 	// Batch units lookup (1 query instead of 12)
 	unitMap := make(map[string]string)
 	unitRows, err := s.pool.Query(ctx, `
@@ -554,8 +549,6 @@ func (s *DB) GetDashboard() (*DashboardResponse, error) {
 		lastUpdatedStr = *lastUpdated
 	}
 
-	log.Printf("[dashboard] after units: %v", time.Since(t0).Round(time.Millisecond))
-
 	var result []CardData
 	for _, c := range cards {
 		val := queryDayRaw(c.metric, c.agg, *today)
@@ -567,9 +560,7 @@ func (s *DB) GetDashboard() (*DashboardResponse, error) {
 			Metric: c.metric, Value: val, Prev: prev,
 			Unit: unitMap[c.metric], Date: *today,
 		})
-		log.Printf("[dashboard] card %s: %v", c.metric, time.Since(t0).Round(time.Millisecond))
 	}
-	log.Printf("[dashboard] TOTAL: %v (%d cards)", time.Since(t0).Round(time.Millisecond), len(result))
 	return &DashboardResponse{Date: *today, LastUpdated: lastUpdatedStr, Cards: result}, nil
 }
 
