@@ -55,8 +55,8 @@ func (s *DB) GetDataGaps(minGapDays, minHours int) ([]DataGap, error) {
 		SELECT SUBSTRING(hour,1,10) AS day, COUNT(DISTINCT SUBSTRING(hour,1,13)) AS hours
 		FROM hourly_metrics
 		WHERE SUBSTRING(hour,1,10) >= $1
-		GROUP BY day
-		ORDER BY day`, twelveMonthsAgo)
+		GROUP BY SUBSTRING(hour,1,10)
+		ORDER BY SUBSTRING(hour,1,10)`, twelveMonthsAgo)
 	if err != nil {
 		return nil, err
 	}

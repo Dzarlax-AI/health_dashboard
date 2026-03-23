@@ -143,7 +143,7 @@ func (s *DB) upsertHourlyForDate(metric, date string) {
 				       MAX(qty) AS minute_max, MIN(qty) AS minute_min
 				FROM metric_points
 				WHERE metric_name = $1 AND SUBSTRING(date,1,10) = $2 AND qty > 0 %s
-				GROUP BY metric_name, source, minute
+				GROUP BY metric_name, source, SUBSTRING(date, 1, 13) || ':00', SUBSTRING(date, 1, 16)
 			) sub
 			GROUP BY metric_name, hour, source
 			ON CONFLICT (metric_name, hour, source) DO UPDATE SET
@@ -157,7 +157,7 @@ func (s *DB) upsertHourlyForDate(metric, date string) {
 			       AVG(qty), MIN(qty), MAX(qty)
 			FROM metric_points
 			WHERE metric_name = $1 AND SUBSTRING(date,1,10) = $2 AND qty > 0 %s
-			GROUP BY metric_name, hour, source
+			GROUP BY metric_name, SUBSTRING(date, 1, 13) || ':00', source
 			ON CONFLICT (metric_name, hour, source) DO UPDATE SET
 				avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val`, sleepDedup)
 	}
@@ -309,13 +309,13 @@ func (s *DB) buildDailyMetricCol(col, metric string, force bool) error {
 	if SumMetrics[metric] {
 		combineVal := sumCombineExpr("avg_val")
 		query = fmt.Sprintf(`
-			SELECT day, SUM(hour_val) FROM (
+			SELECT SUBSTRING(hour,1,10) AS day, SUM(hour_val) FROM (
 				SELECT SUBSTRING(hour,1,10) AS day, hour, %s AS hour_val
 				FROM hourly_metrics
 				WHERE metric_name = $1 %s
 				GROUP BY hour
 			) sub
-			GROUP BY day`, combineVal, fromClause)
+			GROUP BY SUBSTRING(hour,1,10)`, combineVal, fromClause)
 	} else {
 		query = fmt.Sprintf(`
 			SELECT SUBSTRING(hour,1,10), AVG(avg_val)
@@ -397,7 +397,7 @@ func (s *DB) buildHourlyMetric(metric, agg string, force bool) error {
 				       MAX(qty) AS minute_max, MIN(qty) AS minute_min
 				FROM metric_points
 				WHERE metric_name = $1 AND qty > 0 %s %s
-				GROUP BY metric_name, source, minute
+				GROUP BY metric_name, source, SUBSTRING(date, 1, 13) || ':00', SUBSTRING(date, 1, 16)
 			) sub
 			GROUP BY metric_name, hour, source
 			ON CONFLICT (metric_name, hour, source) DO UPDATE SET
@@ -411,7 +411,7 @@ func (s *DB) buildHourlyMetric(metric, agg string, force bool) error {
 			       AVG(qty), MIN(qty), MAX(qty)
 			FROM metric_points
 			WHERE metric_name = $1 AND qty > 0 %s %s
-			GROUP BY metric_name, hour, source
+			GROUP BY metric_name, SUBSTRING(date, 1, 13) || ':00', source
 			ON CONFLICT (metric_name, hour, source) DO UPDATE SET
 				avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val`, sleepDedup, fromClause)
 	}

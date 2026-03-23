@@ -265,7 +265,7 @@ func (s *DB) metricDataDayFromHourly(metric, from, to string) ([]DataPoint, erro
 		// SUM metrics: smart combine per hour, then SUM across hours per day.
 		combineVal := sumCombineExpr("avg_val")
 		query = fmt.Sprintf(`
-			SELECT day, SUM(hour_val), MIN(hour_min), MAX(hour_max)
+			SELECT SUBSTRING(hour,1,10) AS day, SUM(hour_val), MIN(hour_min), MAX(hour_max)
 			FROM (
 				SELECT SUBSTRING(hour,1,10) AS day, hour,
 				       %s AS hour_val, MIN(min_val) AS hour_min, MAX(max_val) AS hour_max
@@ -273,8 +273,8 @@ func (s *DB) metricDataDayFromHourly(metric, from, to string) ([]DataPoint, erro
 				WHERE metric_name = $1 AND hour >= $2 AND hour <= $3
 				GROUP BY hour
 			) sub
-			GROUP BY day
-			ORDER BY day`, combineVal)
+			GROUP BY SUBSTRING(hour,1,10)
+			ORDER BY SUBSTRING(hour,1,10)`, combineVal)
 	} else {
 		query = `
 			SELECT SUBSTRING(hour,1,10), AVG(avg_val), MIN(min_val), MAX(max_val)
@@ -317,10 +317,10 @@ func (s *DB) metricDataRaw(metric, from, to, bucket, aggFunc string) ([]DataPoin
 				SELECT %s AS bucket, source, SUM(qty) AS source_sum, MIN(qty) AS source_min, MAX(qty) AS source_max
 				FROM metric_points
 				WHERE metric_name = $1 AND date >= $2 AND date <= $3 AND qty > 0 %s
-				GROUP BY bucket, source
+				GROUP BY %s, source
 			) sub
 			GROUP BY bucket
-			ORDER BY bucket`, combineVal, bucketExpr, sleepDedup)
+			ORDER BY bucket`, combineVal, bucketExpr, sleepDedup, bucketExpr)
 	} else {
 		query = "SELECT " + bucketExpr + " as bucket, " + aggFunc + `(qty), MIN(qty), MAX(qty)
 			FROM metric_points
@@ -328,8 +328,8 @@ func (s *DB) metricDataRaw(metric, from, to, bucket, aggFunc string) ([]DataPoin
 			  AND date >= $2
 			  AND date <= $3
 			  AND qty > 0
-			GROUP BY bucket
-			ORDER BY bucket`
+			GROUP BY ` + bucketExpr + `
+			ORDER BY ` + bucketExpr
 	}
 
 	rows, err := s.pool.Query(context.Background(), query, metric, from, to)
@@ -377,8 +377,8 @@ func (s *DB) metricDataBySourceFromCache(metric, from, to, bucket string) ([]Sou
 			SELECT SUBSTRING(hour,1,10) as bkt, %s as src, %s(avg_val), MIN(min_val), MAX(max_val)
 			FROM %s
 			WHERE metric_name = $1 AND hour >= $2 AND hour <= $3
-			GROUP BY bkt, src
-			ORDER BY bkt, src`, normSource, agg, table)
+			GROUP BY SUBSTRING(hour,1,10), %s
+			ORDER BY SUBSTRING(hour,1,10), %s`, normSource, agg, table, normSource, normSource)
 		return s.scanSourcePoints(query, metric, from, to)
 	}
 
@@ -388,8 +388,8 @@ func (s *DB) metricDataBySourceFromCache(metric, from, to, bucket string) ([]Sou
 		SELECT %s as bkt, %s as src, %s(avg_val), MIN(min_val), MAX(max_val)
 		FROM %s
 		WHERE metric_name = $1 AND %s >= $2 AND %s <= $3
-		GROUP BY bkt, src
-		ORDER BY bkt, src`, col, normSource, agg, table, col, col)
+		GROUP BY %s, %s
+		ORDER BY %s, %s`, col, normSource, agg, table, col, col, col, normSource, col, normSource)
 	return s.scanSourcePoints(query, metric, from, to)
 }
 
@@ -400,8 +400,8 @@ func (s *DB) metricDataBySourceRaw(metric, from, to, bucket, aggFunc string) ([]
 		FROM metric_points
 		WHERE metric_name = $1 AND date >= $2 AND date <= $3 AND qty > 0
 		` + sleepDedupClause(metric) + `
-		GROUP BY bucket, src
-		ORDER BY bucket, src`
+		GROUP BY ` + bucketExpr + `, ` + normSource + `
+		ORDER BY ` + bucketExpr + `, ` + normSource
 	return s.scanSourcePoints(query, metric, from, to)
 }
 
