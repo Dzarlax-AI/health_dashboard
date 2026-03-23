@@ -438,14 +438,19 @@ func (s *DB) scanSourcePoints(query, metric, from, to string) ([]SourceDataPoint
 }
 
 func (s *DB) GetDashboard() (*DashboardResponse, error) {
-	// Use metric_points for "today" detection — always fresh after POST.
+	// Detect "today" from the descending index on SUBSTRING(date,1,10) — fast index-only scan.
 	var today *string
-	if err := s.pool.QueryRow(context.Background(), `SELECT MAX(SUBSTRING(date,1,10)) FROM metric_points`).Scan(&today); err != nil || today == nil {
+	if err := s.pool.QueryRow(context.Background(),
+		`SELECT SUBSTRING(date,1,10) FROM metric_points ORDER BY SUBSTRING(date,1,10) DESC LIMIT 1`,
+	).Scan(&today); err != nil || today == nil {
 		return &DashboardResponse{}, nil
 	}
 
+	// "yesterday" from hourly_metrics (smaller table, already cached).
 	var yesterday *string
-	s.pool.QueryRow(context.Background(), `SELECT MAX(SUBSTRING(date,1,10)) FROM metric_points WHERE SUBSTRING(date,1,10) < $1`, *today).Scan(&yesterday)
+	s.pool.QueryRow(context.Background(),
+		`SELECT MAX(SUBSTRING(hour,1,10)) FROM hourly_metrics WHERE SUBSTRING(hour,1,10) < $1`, *today,
+	).Scan(&yesterday)
 
 	var lastUpdated *string
 	s.pool.QueryRow(context.Background(), `SELECT MAX(received_at) FROM health_records`).Scan(&lastUpdated)

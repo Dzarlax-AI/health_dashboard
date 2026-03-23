@@ -308,7 +308,7 @@ func (s *DB) computeReadinessHistory(outputDays int) ([]health.ReadinessPoint, e
 
 	// Determine the latest date from data (not server time) to avoid TZ mismatch.
 	var lastDate *string
-	s.pool.QueryRow(ctx, `SELECT MAX(SUBSTRING(date,1,10)) FROM metric_points`).Scan(&lastDate)
+	s.pool.QueryRow(ctx, `SELECT SUBSTRING(date,1,10) FROM metric_points ORDER BY SUBSTRING(date,1,10) DESC LIMIT 1`).Scan(&lastDate)
 	if lastDate == nil {
 		return nil, fmt.Errorf("no metric data found")
 	}
