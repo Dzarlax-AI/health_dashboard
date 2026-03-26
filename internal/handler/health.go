@@ -213,7 +213,17 @@ func parseMetricPoints(body []byte) ([]storage.MetricPoint, error) {
 	return points, nil
 }
 
+// metricAliases maps Health Auto Export metric names to canonical names
+// used by the dashboard. Add entries here when upstream changes naming.
+var metricAliases = map[string]string{
+	"weight_body_mass": "body_mass",
+}
+
 func extractPoints(metricName, units string, raw json.RawMessage) []storage.MetricPoint {
+	if canonical, ok := metricAliases[metricName]; ok {
+		metricName = canonical
+	}
+
 	var base basePoint
 	json.Unmarshal(raw, &base)
 	if base.Date == "" {
