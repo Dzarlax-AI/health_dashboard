@@ -249,13 +249,22 @@ func computeReadinessToday(d RawMetrics) int {
 	return s
 }
 
-// ComputeReadinessScore computes a 0–100 readiness score from pre-sorted
-// (most-recent-first) slices. At least 3 data points in each slice are needed
-// for a meaningful result; if a slice is empty, that component is treated as 100.
+// ComputeReadinessScore computes a composite 0–100 readiness that blends
+// today's snapshot (60%) with the 7-day trend (40%). This gives a single
+// number that reflects "how am I right now" while accounting for accumulated
+// fatigue or sleep debt from the past week.
 func ComputeReadinessScore(hrv, rhr, sleep []float64) int {
 	d := RawMetrics{HRV: hrv, RHR: rhr, Sleep: sleep}
-	score, _, _, _ := computeReadiness(d)
-	return score
+	trend, _, _, _ := computeReadiness(d)
+	today := computeReadinessToday(d)
+	composite := int(math.Round(float64(today)*0.6 + float64(trend)*0.4))
+	if composite > 100 {
+		composite = 100
+	}
+	if composite < 0 {
+		composite = 0
+	}
+	return composite
 }
 
 func readinessLabelTip(score int, ls LangStrings) (label, tip string) {
