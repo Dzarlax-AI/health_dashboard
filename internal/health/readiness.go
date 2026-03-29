@@ -14,8 +14,6 @@ func scoreRecovery(d RawMetrics, ls LangStrings) *BriefingSection {
 		baseline := avg(d.HRV[7:])
 		pct := pctChange(recent, baseline)
 		t := trend(pct, false)
-		// Dynamic threshold: ±1 SD expressed as % of baseline.
-		// Clamped to [3%, 15%] so sparse or noisy data stays sensible.
 		sd := stddev(d.HRV[7:])
 		thresholdPct := 5.0
 		if baseline > 0 && sd > 0 {
@@ -82,189 +80,189 @@ func scoreRecovery(d RawMetrics, ls LangStrings) *BriefingSection {
 	return sec
 }
 
-// computeReadiness scores 0-100 based on how recent metrics (last 7 days)
-// compare to the historical baseline (days 8+). Slices must be sorted
-// most-recent-first (index 0 = today).
+// ---------------------------------------------------------------------------
+// Readiness Score — z-score based, following Plews et al. (2013/2014)
+// ---------------------------------------------------------------------------
 //
-// Scoring philosophy:
-//   - "Normal day" (metrics equal to baseline) → ~70
-//   - "Good day"  (~10% above baseline)        → ~85
-//   - "Peak day"  (~20%+ above baseline)        → ~95-100
-//   - "Poor day"  (~15% below baseline)         → ~45
+// Each metric is converted to a z-score against a 30-day personal baseline.
+// A blended z-score (today 60% + 7-day trend 40%) captures both immediate
+// state and accumulated fatigue/debt.
 //
-// This means 100 is genuinely exceptional, not the default.
+// References:
+//   - Plews et al. (2013): lnRMSSD rolling mean + CV for training adaptation
+//   - Buchheit (2014): combining HRV trend with autonomic markers
+//   - Bellenger et al. (2016): HRV-guided training improves outcomes
+//   - Walker (2017): sleep debt accumulates, one good night doesn't erase it
+//   - Li et al. (2025): U-shaped sleep duration mortality curve (6.5-8h optimal)
 //
-// The 7-day recent window aligns with the ACWR acute window (Gabbett 2016)
-// and is the consensus recommendation for HRV-guided training decisions
-// (Plews 2014, Pereira 2026).
+// Mapping: z=0 (at baseline) → 70, z=+1 → 85, z=-1 → 55, clamped [0,100].
+// This means 70 = "normal you", not "average human".
+//
+// Component weights (evidence-based):
+//   - HRV:   40% — strongest autonomic recovery marker (Plews 2013)
+//   - RHR:   25% — complementary cardiac marker (Buchheit 2014)
+//   - Sleep: 35% — duration + consistency penalty (Walker 2017)
+
+const (
+	zToScoreCenter = 70.0  // z=0 maps to this score
+	zToScoreScale  = 15.0  // each 1 SD = 15 points
+	minReadiness   = 0
+	maxReadiness   = 100
+
+	// Minimum data points in baseline for meaningful z-score.
+	minBaseline = 7
+
+	// Component weights.
+	wHRV   = 0.40
+	wRHR   = 0.25
+	wSleep = 0.35
+
+	// Blending: today vs 7-day trend.
+	wToday = 0.60
+	wTrend = 0.40
+)
+
+// zScore returns (value - mean) / sd. Returns 0 if sd ≈ 0 (no variance).
+func zScore(value, mean, sd float64) float64 {
+	if sd < 1e-9 {
+		return 0
+	}
+	return (value - mean) / sd
+}
+
+// zToScore maps a z-score to 0-100 readiness.
+func zToScore(z float64) float64 {
+	return math.Min(float64(maxReadiness),
+		math.Max(float64(minReadiness), zToScoreCenter+z*zToScoreScale))
+}
+
+// sleepCV returns the coefficient of variation of sleep durations.
+// High CV (>15%) indicates inconsistent sleep, which is independently
+// associated with worse health outcomes (Huang et al. 2020).
+func sleepCV(vals []float64) float64 {
+	if len(vals) < 3 {
+		return 0
+	}
+	m := avg(vals)
+	if m < 0.1 {
+		return 0
+	}
+	return stddev(vals) / m * 100
+}
+
+// computeReadiness computes a single composite 0-100 readiness score.
+//
+// Data slices must be sorted most-recent-first (index 0 = today).
+// Needs at least minBaseline+2 days of data for meaningful results.
 func computeReadiness(d RawMetrics) (score int, label, tip string, recoveryPct int) {
-	// ratioScore maps a ratio (recent/baseline) to 0-100.
-	// ratio=1.0 → 70, ratio=1.2 → 100, ratio=0.8 → 40, ratio=0.67 → ~5
-	ratioScore := func(ratio float64) float64 {
-		return math.Min(100, math.Max(0, 70+(ratio-1)*150))
-	}
+	components := 0
+	totalZ := 0.0
 
-	hrvScore := 70.0
-	if len(d.HRV) >= 9 {
-		recent := avg(d.HRV[:7])
-		baseline := avg(d.HRV[7:]) // exclude recent from baseline to avoid dilution
-		if baseline > 0 {
-			hrvScore = ratioScore(recent / baseline)
-		}
-	}
-
-	rhrScore := 70.0
-	if len(d.RHR) >= 9 {
-		recent := avg(d.RHR[:7])
-		baseline := avg(d.RHR[7:])
-		if recent > 0 {
-			// RHR: lower is better → invert ratio
-			rhrScore = ratioScore(baseline / recent)
-		}
-	}
-
-	// Sleep: blend absolute duration with relative-to-baseline component.
-	sleepScore := 70.0
-	if len(d.Sleep) >= 9 {
-		recent := avg(d.Sleep[:7])
-		baseline := avg(d.Sleep[7:])
-
-		var absScore float64
-		switch {
-		case recent >= 8.0:
-			absScore = 95
-		case recent >= 7.5:
-			absScore = 85
-		case recent >= 7.0:
-			absScore = 75
-		case recent >= 6.5:
-			absScore = 60
-		case recent >= 6.0:
-			absScore = 45
-		case recent >= 5.5:
-			absScore = 30
-		default:
-			absScore = 15
-		}
-
-		// Oversleep penalty: ≥9h associated with 34% higher all-cause
-		// mortality (Li et al. 2025, 79 cohort meta-analysis).
-		switch {
-		case recent >= 10.0:
-			absScore = math.Min(absScore, 40)
-		case recent >= 9.5:
-			absScore = math.Min(absScore, 60)
-		case recent >= 9.0:
-			absScore = math.Min(absScore, 80)
-		}
-
-		relScore := 70.0
-		if baseline > 0 {
-			relScore = ratioScore(recent / baseline)
-		}
-		sleepScore = absScore*0.5 + relScore*0.5
-	}
-
-	s := int(math.Round(hrvScore*0.4 + rhrScore*0.3 + sleepScore*0.3))
-	if s > 100 {
-		s = 100
-	}
-	if s < 0 {
-		s = 0
-	}
-	return s, "", "", 0 // label/tip filled by caller with i18n
-}
-
-// computeReadinessToday scores 0-100 using today's values (index 0) vs the
-// historical baseline (days 7+). Same formula as computeReadiness but reacts
-// immediately to a single bad night instead of smoothing over 7 days.
-func computeReadinessToday(d RawMetrics) int {
-	ratioScore := func(ratio float64) float64 {
-		return math.Min(100, math.Max(0, 70+(ratio-1)*150))
-	}
-
-	hrvScore := 70.0
-	if len(d.HRV) >= 9 {
+	// --- HRV (higher = better) ---
+	if len(d.HRV) >= minBaseline+2 {
 		today := d.HRV[0]
-		baseline := avg(d.HRV[7:])
-		if baseline > 0 && today > 0 {
-			hrvScore = ratioScore(today / baseline)
-		}
+		recent7 := avg(safeSlice(d.HRV, 0, 7))
+		baseVals := safeSlice(d.HRV, 7, len(d.HRV))
+		baseMean := avg(baseVals)
+		baseSD := stddev(baseVals)
+
+		zToday := zScore(today, baseMean, baseSD)
+		zTrend := zScore(recent7, baseMean, baseSD)
+		blended := zToday*wToday + zTrend*wTrend
+
+		totalZ += blended * wHRV
+		components++
 	}
 
-	rhrScore := 70.0
-	if len(d.RHR) >= 9 {
+	// --- RHR (lower = better → invert z-score) ---
+	if len(d.RHR) >= minBaseline+2 {
 		today := d.RHR[0]
-		baseline := avg(d.RHR[7:])
-		if today > 0 {
-			rhrScore = ratioScore(baseline / today)
-		}
+		recent7 := avg(safeSlice(d.RHR, 0, 7))
+		baseVals := safeSlice(d.RHR, 7, len(d.RHR))
+		baseMean := avg(baseVals)
+		baseSD := stddev(baseVals)
+
+		zToday := -zScore(today, baseMean, baseSD) // inverted
+		zTrend := -zScore(recent7, baseMean, baseSD)
+		blended := zToday*wToday + zTrend*wTrend
+
+		totalZ += blended * wRHR
+		components++
 	}
 
-	sleepScore := 70.0
-	if len(d.Sleep) >= 9 {
+	// --- Sleep (duration + consistency) ---
+	if len(d.Sleep) >= minBaseline+2 {
 		today := d.Sleep[0]
-		baseline := avg(d.Sleep[7:])
+		recent7 := safeSlice(d.Sleep, 0, 7)
+		recent7Avg := avg(recent7)
+		baseVals := safeSlice(d.Sleep, 7, len(d.Sleep))
+		baseMean := avg(baseVals)
+		baseSD := stddev(baseVals)
 
-		var absScore float64
+		// Duration z-score
+		zToday := zScore(today, baseMean, baseSD)
+		zTrend := zScore(recent7Avg, baseMean, baseSD)
+		durationZ := zToday*wToday + zTrend*wTrend
+
+		// Absolute duration penalty (U-shaped: <6h and >9.5h are bad)
+		absPenalty := 0.0
 		switch {
-		case today >= 8.0:
-			absScore = 95
-		case today >= 7.5:
-			absScore = 85
-		case today >= 7.0:
-			absScore = 75
-		case today >= 6.5:
-			absScore = 60
-		case today >= 6.0:
-			absScore = 45
-		case today >= 5.5:
-			absScore = 30
-		default:
-			absScore = 15
-		}
-		switch {
-		case today >= 10.0:
-			absScore = math.Min(absScore, 40)
-		case today >= 9.5:
-			absScore = math.Min(absScore, 60)
-		case today >= 9.0:
-			absScore = math.Min(absScore, 80)
+		case recent7Avg < 5.0:
+			absPenalty = -1.5
+		case recent7Avg < 5.5:
+			absPenalty = -1.0
+		case recent7Avg < 6.0:
+			absPenalty = -0.5
+		case recent7Avg >= 10.0:
+			absPenalty = -1.0
+		case recent7Avg >= 9.5:
+			absPenalty = -0.5
 		}
 
-		relScore := 70.0
-		if baseline > 0 {
-			relScore = ratioScore(today / baseline)
+		// Consistency penalty: CV > 15% = inconsistent (Huang et al. 2020)
+		cv := sleepCV(recent7)
+		consistencyPenalty := 0.0
+		if cv > 25 {
+			consistencyPenalty = -0.5
+		} else if cv > 15 {
+			consistencyPenalty = -0.25
 		}
-		sleepScore = absScore*0.5 + relScore*0.5
+
+		sleepZ := durationZ + absPenalty + consistencyPenalty
+		totalZ += sleepZ * wSleep
+		components++
 	}
 
-	s := int(math.Round(hrvScore*0.4 + rhrScore*0.3 + sleepScore*0.3))
-	if s > 100 {
-		s = 100
+	if components == 0 {
+		return 70, "", "", 70 // no data → neutral
 	}
-	if s < 0 {
-		s = 0
+
+	// Normalize: totalZ is a weighted sum where weights sum to <1 when
+	// not all components are present. Scale up to compensate.
+	totalWeight := 0.0
+	if len(d.HRV) >= minBaseline+2 {
+		totalWeight += wHRV
 	}
-	return s
+	if len(d.RHR) >= minBaseline+2 {
+		totalWeight += wRHR
+	}
+	if len(d.Sleep) >= minBaseline+2 {
+		totalWeight += wSleep
+	}
+	if totalWeight > 0 {
+		totalZ = totalZ / totalWeight
+	}
+
+	s := int(math.Round(zToScore(totalZ)))
+	return s, "", "", s
 }
 
-// ComputeReadinessScore computes a composite 0–100 readiness that blends
-// today's snapshot (60%) with the 7-day trend (40%). This gives a single
-// number that reflects "how am I right now" while accounting for accumulated
-// fatigue or sleep debt from the past week.
+// ComputeReadinessScore is the public API for daily_scores backfill.
+// Takes pre-sorted (most-recent-first) slices.
 func ComputeReadinessScore(hrv, rhr, sleep []float64) int {
 	d := RawMetrics{HRV: hrv, RHR: rhr, Sleep: sleep}
-	trend, _, _, _ := computeReadiness(d)
-	today := computeReadinessToday(d)
-	composite := int(math.Round(float64(today)*0.6 + float64(trend)*0.4))
-	if composite > 100 {
-		composite = 100
-	}
-	if composite < 0 {
-		composite = 0
-	}
-	return composite
+	score, _, _, _ := computeReadiness(d)
+	return score
 }
 
 func readinessLabelTip(score int, ls LangStrings) (label, tip string) {
@@ -275,4 +273,18 @@ func readinessLabelTip(score int, ls LangStrings) (label, tip string) {
 		return ls["readiness_fair"], ls["tip_fair"]
 	}
 	return ls["readiness_low"], ls["tip_low"]
+}
+
+// safeSlice returns s[from:to] clamped to valid indices.
+func safeSlice(s []float64, from, to int) []float64 {
+	if from < 0 {
+		from = 0
+	}
+	if to > len(s) {
+		to = len(s)
+	}
+	if from >= to {
+		return nil
+	}
+	return s[from:to]
 }

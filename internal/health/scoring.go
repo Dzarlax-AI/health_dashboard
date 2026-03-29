@@ -1,7 +1,5 @@
 package health
 
-import "math"
-
 // ComputeBriefing calculates all health scores and insights from pre-fetched raw metrics.
 // It is a pure function — no I/O, all inputs come from RawMetrics.
 // lang selects the output language ("en", "ru", "sr"); defaults to "en".
@@ -47,15 +45,7 @@ func ComputeBriefing(d RawMetrics, lang string) *BriefingResponse {
 }
 
 func computeReadinessScore(d RawMetrics, ls LangStrings) (score int, label, tip string) {
-	trend, _, _, _ := computeReadiness(d)
-	today := computeReadinessToday(d)
-	score = int(math.Round(float64(today)*0.6 + float64(trend)*0.4))
-	if score > 100 {
-		score = 100
-	}
-	if score < 0 {
-		score = 0
-	}
+	score, _, _, _ = computeReadiness(d)
 	label, tip = readinessLabelTip(score, ls)
 	return score, label, tip
 }
