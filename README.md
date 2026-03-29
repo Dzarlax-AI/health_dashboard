@@ -145,7 +145,7 @@ Available at `/` -- password protected if `UI_PASSWORD` is set.
 
 Features:
 - **Dashboard** -- today's metrics with trend vs yesterday, sparklines, and featured 7-day charts
-- **Health Briefing** -- AI-style daily summary with readiness score, sleep analysis, insights, and health alerts
+- **Health Briefing** -- daily summary with z-score readiness, sleep analysis, insights, and health alerts
 - **Metrics view** -- full list of available metrics with latest values; click any to open its chart
 - **Metric charts** -- time series with auto-bucketing (minute / hour / day)
 - **Settings** -- cache status, backfill controls, Telegram notification config, data gap detection, and Apple Health import
@@ -176,8 +176,8 @@ Available tools:
 
 | Tool | Description |
 |---|---|
-| `get_health_briefing` | Full daily health briefing: readiness score, sleep analysis, activity, insights, and health alerts. Best starting point. Supports `lang` (en/ru/sr). |
-| `get_readiness_history` | Daily readiness scores (0-100) for the last N days. |
+| `get_health_briefing` | Daily health briefing: composite readiness score (z-score based), sleep analysis, activity, insights, and alerts. Supports `lang` (en/ru/sr). |
+| `get_readiness_history` | Composite readiness scores (0-100) for the last N days. |
 | `list_metrics` | List all available metrics with record counts and date ranges. |
 | `get_dashboard` | Today's summary with trend vs yesterday. |
 | `get_metric_data` | Time series for a single metric with minute/hour/day buckets. |
@@ -213,13 +213,65 @@ The import streams the XML to avoid memory issues with large files. Percentage m
 
 ## Multi-Device Source Priority
 
-When multiple devices record overlapping data (Apple Watch, iPhone, RingConn), the system uses source priority for SUM metrics (steps, calories, sleep):
+When multiple devices record overlapping data (Apple Watch, iPhone, RingConn), the system selects one source per metric per day:
 
-1. **Apple Watch** (Ultra / Apple Watch) -- preferred source
-2. **iPhone** -- fallback if Watch data unavailable
-3. **Other** (RingConn, etc.) -- last resort
+**Activity metrics** (steps, calories, distance, exercise):
+1. **Apple Watch** (Ultra / Apple Watch) -- preferred
+2. **iPhone** -- fallback
+3. **Other** -- last resort
 
-For chart data, MAX of per-source daily totals is used. For dashboard and daily scores, the preferred source is selected explicitly.
+**Sleep metrics** (sleep_total, sleep_deep, sleep_rem, etc.):
+1. **RingConn** -- preferred (more accurate sleep tracking than Watch)
+2. **Apple Watch** -- fallback
+3. **Other** -- last resort
+
+This priority is applied consistently across dashboard, daily scores, readiness computation, and briefing API. For chart visualizations, MAX of per-source totals is used.
+
+### Apple Health Import & Auto Export Conflict Resolution
+
+When re-importing from Apple Health (e.g. to fill gaps from missed Auto Export days), the system automatically removes Auto Export (`Health dash - Hourly`/`Vitals`) data for overlapping dates. Apple Health export is treated as ground truth. A full cache rebuild (force backfill) runs after each import.
+
+## Readiness Score
+
+A composite 0-100 score reflecting current recovery state, computed from z-scores against a 30-day personal baseline.
+
+### Methodology
+
+Each metric is converted to a **z-score** (standard deviations from personal mean), then blended:
+
+- **Today** (60%) -- immediate reactivity to last night's sleep, current HRV
+- **7-day trend** (40%) -- accumulated fatigue, sleep debt, training load
+
+Component weights:
+
+| Component | Weight | Direction | Reference |
+|-----------|--------|-----------|-----------|
+| HRV | 40% | Higher = better | Plews et al. (2013), Buchheit (2014) |
+| Resting HR | 25% | Lower = better | Buchheit (2014) |
+| Sleep | 35% | Duration + consistency | Walker (2017), Huang et al. (2020) |
+
+Sleep scoring includes:
+- **Duration z-score** vs personal baseline
+- **Absolute penalty** for <6h or >9.5h (U-shaped mortality curve, Li et al. 2025)
+- **Consistency penalty** when 7-day CV >15% (Huang et al. 2020)
+
+Score mapping: `score = 70 + z × 15`, clamped to [0, 100].
+
+| Score | z-score | Meaning |
+|-------|---------|---------|
+| 70 | 0 | Your personal baseline ("normal you") |
+| 85 | +1 | One SD above baseline (good day) |
+| 55 | -1 | One SD below baseline (rough day) |
+| 100 | +2 | Exceptional (capped) |
+
+### References
+
+- Plews et al. (2013). *Training adaptation and heart rate variability in elite endurance athletes.* IJSPP.
+- Buchheit (2014). *Monitoring training status with HR measures.* IJSPP.
+- Bellenger et al. (2016). *HRV-guided training improves performance.* MSSE.
+- Walker (2017). *Why We Sleep.* Scribner.
+- Huang et al. (2020). *Sleep irregularity and cardiovascular disease.* JAHA.
+- Li et al. (2025). *Sleep duration and all-cause mortality.* Sleep Medicine Reviews.
 
 ## Maintenance
 
