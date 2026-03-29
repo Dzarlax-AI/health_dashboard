@@ -501,12 +501,12 @@ func (s *DB) freshDayFromRaw(date string) *dayRow {
 		if sp.isSum {
 			sleepDedup := sleepDedupClause(sp.metric)
 			err = s.pool.QueryRow(ctx, fmt.Sprintf(`
-				SELECT COALESCE(%s, 0) FROM (
-					SELECT source, SUM(qty) AS source_sum
+				WITH source_totals AS (
+					SELECT source, SUM(qty) AS source_total
 					FROM metric_points
 					WHERE metric_name=$1 AND SUBSTRING(date,1,10)=$2 AND qty > 0 %s
 					GROUP BY source
-				) sub`, sumCombineExpr("source_sum"), sleepDedup), sp.metric, date).Scan(&val)
+				) `, sleepDedup)+preferredSourceForMetric(sp.metric), sp.metric, date).Scan(&val)
 		} else {
 			err = s.pool.QueryRow(ctx, `
 				SELECT COALESCE(AVG(qty), 0)
