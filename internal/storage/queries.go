@@ -486,7 +486,7 @@ func (s *DB) GetDashboard() (*DashboardResponse, error) {
 					FROM metric_points
 					WHERE metric_name=$1 AND SUBSTRING(date,1,10)=$2 AND qty > 0 %s
 					GROUP BY source
-				) `, sleepDedup) + preferredSourceSQL
+				) `, sleepDedup) + preferredSourceForMetric(metric)
 			s.pool.QueryRow(ctx, query, metric, day).Scan(&val)
 		} else {
 			s.pool.QueryRow(ctx,
@@ -500,14 +500,13 @@ func (s *DB) GetDashboard() (*DashboardResponse, error) {
 	queryDayCache := func(metric, agg, day string) float64 {
 		var val float64
 		if agg == "SUM" {
-			// Prefer Apple Watch source, fallback to others.
 			s.pool.QueryRow(ctx, `
 				WITH source_totals AS (
 					SELECT source, SUM(avg_val) AS source_total
 					FROM hourly_metrics
 					WHERE metric_name=$1 AND SUBSTRING(hour,1,10)=$2
 					GROUP BY source
-				) `+preferredSourceSQL, metric, day,
+				) `+preferredSourceForMetric(metric), metric, day,
 			).Scan(&val)
 		} else {
 			s.pool.QueryRow(ctx,

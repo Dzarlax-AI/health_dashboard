@@ -232,12 +232,18 @@ func runImport(job *importJob, db *storage.DB, tmpPath, filename string, batchSi
 	}
 	finish(errMsg)
 
-	if backfillFn != nil && minDate != "" {
-		// Invalidate aggregates for the exact date range we imported so that
-		// incremental backfill recomputes them (not just dates after MAX cached date).
+	if minDate != "" {
+		// Remove Auto Export data for imported date range — Apple Health export
+		// is the ground truth and should replace potentially inaccurate Auto Export data.
+		log.Printf("import: removing Auto Export data for %s … %s", minDate, maxDate)
+		db.RemoveAutoExportForRange(minDate, maxDate)
+
+		// Invalidate aggregates and force full rebuild to ensure correctness.
 		log.Printf("import: invalidating aggregates for %s … %s", minDate, maxDate)
 		db.InvalidateDateRangeAggregates(minDate, maxDate)
-		log.Println("import: triggering backfill…")
-		backfillFn(false)
+		if backfillFn != nil {
+			log.Println("import: triggering force backfill…")
+			backfillFn(true)
+		}
 	}
 }

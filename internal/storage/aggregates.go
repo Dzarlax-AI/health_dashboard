@@ -49,6 +49,28 @@ const preferredSourceSQL = `
 		(SELECT MAX(source_total) FROM source_totals)
 	)`
 
+// preferredSleepSourceSQL picks the best source for sleep metrics.
+// Priority: RingConn > Apple Watch > other.
+// RingConn provides more accurate sleep tracking (closer to Apple Health's
+// deduplicated total) than Apple Watch raw fragments.
+const preferredSleepSourceSQL = `
+	SELECT COALESCE(
+		(SELECT source_total FROM source_totals
+		 WHERE source LIKE '%RingConn%'
+		 ORDER BY source_total DESC LIMIT 1),
+		(SELECT source_total FROM source_totals
+		 WHERE source LIKE '%Ultra%' OR source LIKE '%Apple Watch%'
+		 ORDER BY source_total DESC LIMIT 1),
+		(SELECT MAX(source_total) FROM source_totals)
+	)`
+
+func preferredSourceForMetric(metric string) string {
+	if strings.HasPrefix(metric, "sleep_") {
+		return preferredSleepSourceSQL
+	}
+	return preferredSourceSQL
+}
+
 // SumMetrics is the canonical set of metrics that should be SUMmed within a bucket.
 // Exported so the MCP server can use the same classification without duplication.
 var SumMetrics = map[string]bool{
@@ -314,17 +336,30 @@ func (s *DB) buildDailyMetricCol(col, metric string, force bool) error {
 
 	var query string
 	if SumMetrics[metric] {
-		// MAX of per-source daily totals. For single-day queries (dashboard),
-		// source priority is applied separately; for multi-day (charts), MAX is fine.
+		// Pick best source per day using priority (sleep: RingConn > Watch; other: Watch > iPhone).
+		srcPriority := `CASE
+			WHEN source LIKE '%%Ultra%%' OR source LIKE '%%Apple Watch%%' THEN 1
+			WHEN source LIKE '%%iPhone%%' THEN 2
+			ELSE 3 END`
+		if isSleepMetric(metric) {
+			srcPriority = `CASE
+				WHEN source LIKE '%%RingConn%%' THEN 1
+				WHEN source LIKE '%%Ultra%%' OR source LIKE '%%Apple Watch%%' THEN 2
+				ELSE 3 END`
+		}
 		query = fmt.Sprintf(`
-			SELECT day, MAX(source_total) FROM (
-				SELECT SUBSTRING(hour,1,10) AS day, source, SUM(avg_val) AS source_total
-				FROM hourly_metrics
-				WHERE metric_name = $1 %s
-				GROUP BY SUBSTRING(hour,1,10), source
-			) sub
-			GROUP BY day
-			ORDER BY day`, fromClause)
+			SELECT day, source_total FROM (
+				SELECT day, source_total,
+				       ROW_NUMBER() OVER (PARTITION BY day ORDER BY src_rank, source_total DESC) AS rn
+				FROM (
+					SELECT SUBSTRING(hour,1,10) AS day, source, SUM(avg_val) AS source_total,
+					       %s AS src_rank
+					FROM hourly_metrics
+					WHERE metric_name = $1 %s
+					GROUP BY SUBSTRING(hour,1,10), source
+				) sub
+			) ranked WHERE rn = 1
+			ORDER BY day`, srcPriority, fromClause)
 	} else {
 		query = fmt.Sprintf(`
 			SELECT SUBSTRING(hour,1,10), AVG(avg_val)

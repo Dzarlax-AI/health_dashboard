@@ -319,17 +319,25 @@ func (s *DB) computeReadinessHistory(outputDays int) ([]health.ReadinessPoint, e
 		var pgxRows pgx.Rows
 		var err error
 		if isSleep {
+			// Pick best source per day: RingConn > Apple Watch > other
 			r, e := s.pool.Query(ctx, `
-				SELECT d, MAX(source_sum)
-				FROM (
-					SELECT SUBSTRING(date,1,10) AS d, source, SUM(qty) AS source_sum
-					FROM metric_points
-					WHERE metric_name = $1
-					  AND qty > 0
-					  AND SUBSTRING(date,1,10) >= $2
-					GROUP BY d, source
-				) sub
-				GROUP BY d`,
+				SELECT d, source_sum FROM (
+					SELECT d, source_sum,
+					       ROW_NUMBER() OVER (PARTITION BY d ORDER BY src_rank, source_sum DESC) AS rn
+					FROM (
+						SELECT SUBSTRING(date,1,10) AS d, source, SUM(qty) AS source_sum,
+						       CASE
+						           WHEN source LIKE '%RingConn%' THEN 1
+						           WHEN source LIKE '%Ultra%' OR source LIKE '%Apple Watch%' THEN 2
+						           ELSE 3
+						       END AS src_rank
+						FROM metric_points
+						WHERE metric_name = $1
+						  AND qty > 0
+						  AND SUBSTRING(date,1,10) >= $2
+						GROUP BY SUBSTRING(date,1,10), source
+					) sub
+				) ranked WHERE rn = 1`,
 				metric, fromDate)
 			pgxRows = r
 			err = e

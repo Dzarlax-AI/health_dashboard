@@ -165,6 +165,26 @@ func (s *DB) GetDataGaps(minGapDays, minHours int) ([]DataGap, error) {
 	return gaps, nil
 }
 
+// RemoveAutoExportForRange deletes metric_points from Health Auto Export
+// for the given date range. Called before import backfill so that Apple Health
+// export (ground truth) replaces potentially inaccurate Auto Export data.
+func (s *DB) RemoveAutoExportForRange(from, to string) {
+	ctx := context.Background()
+	res, err := s.pool.Exec(ctx, `
+		DELETE FROM metric_points
+		WHERE health_record_id IN (
+			SELECT id FROM health_records
+			WHERE automation_name IN ('Health dash - Hourly', 'Health dash - Vitals')
+		)
+		AND SUBSTRING(date,1,10) >= $1
+		AND SUBSTRING(date,1,10) <= $2`, from, to)
+	if err != nil {
+		log.Printf("remove auto-export [%s,%s]: %v", from, to, err)
+		return
+	}
+	log.Printf("removed %d Auto Export points for %s … %s", res.RowsAffected(), from, to)
+}
+
 // InvalidateDateRangeAggregates deletes all pre-aggregated rows for [from, to]
 // (inclusive, YYYY-MM-DD) so that the next backfill recomputes them from metric_points.
 func (s *DB) InvalidateDateRangeAggregates(from, to string) {
