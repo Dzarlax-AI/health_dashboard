@@ -118,7 +118,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	handler.New(db, apiKey, onNewData).Register(mux)
-	ui.New(db, uiPassword, backfillFn, testNotifyFn, notifyDefaults).Register(mux)
+	ui.New(db, uiPassword, apiKey, backfillFn, testNotifyFn, notifyDefaults).Register(mux)
 	mcpserver.Register(mux, db, baseURL, apiKey)
 
 	logged := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

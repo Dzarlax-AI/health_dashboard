@@ -16,18 +16,19 @@ type Handler struct {
 	db             *storage.DB
 	password       string // empty = no auth
 	token          string // sha256(password), used as cookie value
+	apiKey         string // also allows access via X-API-Key header
 	backfill       func(force bool)
 	testNotify     func(kind string) error
 	notifyDefaults storage.NotifyConfig
 }
 
-func New(db *storage.DB, password string, backfill func(force bool), testNotify func(kind string) error, notifyDefaults storage.NotifyConfig) *Handler {
+func New(db *storage.DB, password, apiKey string, backfill func(force bool), testNotify func(kind string) error, notifyDefaults storage.NotifyConfig) *Handler {
 	var token string
 	if password != "" {
 		h := sha256.Sum256([]byte(password))
 		token = hex.EncodeToString(h[:])
 	}
-	return &Handler{db: db, password: password, token: token, backfill: backfill, testNotify: testNotify, notifyDefaults: notifyDefaults}
+	return &Handler{db: db, password: password, token: token, apiKey: apiKey, backfill: backfill, testNotify: testNotify, notifyDefaults: notifyDefaults}
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
@@ -53,6 +54,15 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 		if h.password == "" {
 			next(w, r)
 			return
+		}
+		// Allow access via API key (X-API-Key header or Authorization: Bearer)
+		if h.apiKey != "" {
+			if key := r.Header.Get("X-API-Key"); key != "" {
+				if subtle.ConstantTimeCompare([]byte(key), []byte(h.apiKey)) == 1 {
+					next(w, r)
+					return
+				}
+			}
 		}
 		cookie, err := r.Cookie("auth")
 		if err != nil || subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(h.token)) != 1 {
