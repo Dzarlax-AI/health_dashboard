@@ -15,7 +15,7 @@ import (
 
 func registerMetricTools(s *server.MCPServer, db *storage.DB) {
 	s.AddTool(mcp.NewTool("get_health_briefing",
-		mcp.WithDescription("Get a full daily health briefing: readiness score (7-day HRV/RHR/sleep vs personal baseline, with oversleep penalty), sleep analysis, recovery, activity, cardio sections, AI-generated insights, and health alerts (respiratory rate, wrist temperature, HRV variability anomalies). Best starting point."),
+		mcp.WithDescription("Get a full daily health briefing: composite readiness score (z-score based: today 60% + 7-day trend 40%, components HRV 40% + RHR 25% + Sleep 35% vs 30-day personal baseline; 70 = your norm, 85 = good, 55 = rough day), sleep analysis with per-source breakdown, recovery, activity, cardio sections, insights, and health alerts. Best starting point."),
 		mcp.WithString("lang", mcp.Description("Response language: en, ru, sr (default: en)")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		lang := req.GetString("lang", "en")
@@ -27,7 +27,7 @@ func registerMetricTools(s *server.MCPServer, db *storage.DB) {
 	})
 
 	s.AddTool(mcp.NewTool("get_readiness_history",
-		mcp.WithDescription("Get daily readiness scores (0–100) for the last N days. Score = HRV×40% + RHR×30% + Sleep×30%, comparing 7-day recent avg vs personal baseline (days 8+). Includes oversleep penalty (≥9h)."),
+		mcp.WithDescription("Get daily composite readiness scores (0–100) for the last N days. Z-score based: today 60% + 7-day trend 40%. Components: HRV 40%, RHR 25%, Sleep 35% (duration + consistency). Score 70 = personal baseline, 85 = 1 SD above, 55 = 1 SD below."),
 		mcp.WithNumber("days", mcp.Description("Number of recent days (default: 30)")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		days := req.GetInt("days", 30)
