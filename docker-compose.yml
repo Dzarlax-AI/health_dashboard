@@ -3,11 +3,30 @@ services:
     image: dzarlax/health_dashboard:latest
     ports:
       - "8080:8080"
-    volumes:
-      - ./data:/app/data
     environment:
-      - DB_PATH=/app/data/health.db
+      - DATABASE_URL=postgres://health:health@postgres:5432/health
       # - API_KEY=your-secret-key
       # - UI_PASSWORD=your-ui-password
+      # - TRUST_FORWARD_AUTH=true  # enable if behind Authentik/ForwardAuth proxy
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: health
+      POSTGRES_USER: health
+      POSTGRES_PASSWORD: health
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     restart: unless-stopped
 
+volumes:
+  pgdata:
