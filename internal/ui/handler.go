@@ -13,22 +13,23 @@ import (
 )
 
 type Handler struct {
-	db             *storage.DB
-	password       string // empty = no auth
-	token          string // sha256(password), used as cookie value
-	apiKey         string // also allows access via X-API-Key header
-	backfill       func(force bool)
-	testNotify     func(kind string) error
-	notifyDefaults storage.NotifyConfig
+	db              *storage.DB
+	password        string // empty = no auth
+	token           string // sha256(password), used as cookie value
+	apiKey          string // also allows access via X-API-Key header
+	trustFwdAuth    bool   // trust X-authentik-username header (set via TRUST_FORWARD_AUTH=true)
+	backfill        func(force bool)
+	testNotify      func(kind string) error
+	notifyDefaults  storage.NotifyConfig
 }
 
-func New(db *storage.DB, password, apiKey string, backfill func(force bool), testNotify func(kind string) error, notifyDefaults storage.NotifyConfig) *Handler {
+func New(db *storage.DB, password, apiKey string, trustFwdAuth bool, backfill func(force bool), testNotify func(kind string) error, notifyDefaults storage.NotifyConfig) *Handler {
 	var token string
 	if password != "" {
 		h := sha256.Sum256([]byte(password))
 		token = hex.EncodeToString(h[:])
 	}
-	return &Handler{db: db, password: password, token: token, apiKey: apiKey, backfill: backfill, testNotify: testNotify, notifyDefaults: notifyDefaults}
+	return &Handler{db: db, password: password, token: token, apiKey: apiKey, trustFwdAuth: trustFwdAuth, backfill: backfill, testNotify: testNotify, notifyDefaults: notifyDefaults}
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
@@ -52,6 +53,11 @@ func (h *Handler) Register(mux *http.ServeMux) {
 func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if h.password == "" {
+			next(w, r)
+			return
+		}
+		// Authentik ForwardAuth: trust X-authentik-username when reverse proxy handles auth
+		if h.trustFwdAuth && r.Header.Get("X-authentik-username") != "" {
 			next(w, r)
 			return
 		}

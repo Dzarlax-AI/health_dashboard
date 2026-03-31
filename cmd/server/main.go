@@ -23,9 +23,10 @@ func main() {
 		log.Fatal("DATABASE_URL environment variable is required")
 	}
 	addr := getEnv("ADDR", ":8080")
-	apiKey     := os.Getenv("API_KEY")
-	uiPassword := os.Getenv("UI_PASSWORD")
-	baseURL    := getEnv("BASE_URL", "http://localhost"+addr)
+	apiKey         := os.Getenv("API_KEY")
+	uiPassword     := os.Getenv("UI_PASSWORD")
+	trustFwdAuth   := os.Getenv("TRUST_FORWARD_AUTH") == "true"
+	baseURL        := getEnv("BASE_URL", "http://localhost"+addr)
 
 	db, err := storage.New(context.Background(), dbURL)
 	if err != nil {
@@ -118,7 +119,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	handler.New(db, apiKey, onNewData).Register(mux)
-	ui.New(db, uiPassword, apiKey, backfillFn, testNotifyFn, notifyDefaults).Register(mux)
+	ui.New(db, uiPassword, apiKey, trustFwdAuth, backfillFn, testNotifyFn, notifyDefaults).Register(mux)
 	mcpserver.Register(mux, db, baseURL, apiKey)
 
 	logged := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
