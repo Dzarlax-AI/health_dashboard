@@ -251,8 +251,8 @@ func extractPoints(metricName, units string, raw json.RawMessage) []storage.Metr
 		if json.Unmarshal(raw, &p) == nil {
 			// Cap sleep values at physiological maximums to guard against
 			// cumulative/inflated summaries from source apps (e.g. Health Auto Export + RingConn).
-			const maxTotal = 14.0 // hours — extreme upper bound for a single night
-			const maxPhase = 10.0 // hours — no single phase should exceed this
+			const maxTotal = 12.0 // hours — extreme upper bound for a single night
+			const maxPhase = 8.0  // hours — no single phase should exceed this
 			p.Deep = capSleep(p.Deep, maxPhase)
 			p.REM = capSleep(p.REM, maxPhase)
 			p.Core = capSleep(p.Core, maxPhase)

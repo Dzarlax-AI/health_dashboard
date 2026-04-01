@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -627,48 +628,77 @@ type SleepNight struct {
 }
 
 // GetSleepSummary returns per-night sleep breakdown for the date range.
-// For each phase it picks MAX(source_sum) across devices to avoid double-counting
-// when two wearables (e.g. Apple Watch + RingConn) both record the same night.
+// Uses preferredSleepSourceSQL (with cross-validation) per metric per night.
 func (s *DB) GetSleepSummary(from, to string) ([]SleepNight, error) {
-	combine := sumCombineExpr("source_sum")
-	// Exclude midnight summaries when real fragments exist.
 	sleepDedup := sleepDedupClause("sleep_total")
+	preferred := preferredSleepSourceSQL
+
+	// Get all per-day, per-metric values using preferred source with cross-validation.
 	rows, err := s.pool.Query(context.Background(), fmt.Sprintf(`
-		SELECT d,
-			MAX(CASE WHEN metric_name='sleep_total' THEN combined ELSE 0 END),
-			MAX(CASE WHEN metric_name='sleep_deep'  THEN combined ELSE 0 END),
-			MAX(CASE WHEN metric_name='sleep_rem'   THEN combined ELSE 0 END),
-			MAX(CASE WHEN metric_name='sleep_core'  THEN combined ELSE 0 END),
-			MAX(CASE WHEN metric_name='sleep_awake' THEN combined ELSE 0 END)
+		SELECT d, metric_name, (
+			WITH source_totals AS (
+				SELECT source, SUM(qty) AS source_total
+				FROM metric_points mp2
+				WHERE mp2.metric_name = sub.metric_name
+				  AND SUBSTRING(mp2.date,1,10) = sub.d
+				  AND mp2.qty > 0 %s
+				GROUP BY source
+			)
+			%s
+		) AS val
 		FROM (
-			SELECT d, metric_name, %s AS combined
-			FROM (
-				SELECT SUBSTRING(date,1,10) AS d, metric_name, source,
-					SUM(qty) AS source_sum
-				FROM metric_points
-				WHERE metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake')
-				  AND SUBSTRING(date,1,10) >= $1 AND SUBSTRING(date,1,10) <= $2 AND qty > 0 %s
-				GROUP BY d, metric_name, source
-			) sub1
-			GROUP BY d, metric_name
-		) sub2
-		GROUP BY d
-		ORDER BY d`, combine, sleepDedup),
+			SELECT DISTINCT SUBSTRING(date,1,10) AS d, metric_name
+			FROM metric_points
+			WHERE metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake')
+			  AND SUBSTRING(date,1,10) >= $1 AND SUBSTRING(date,1,10) <= $2 AND qty > 0
+		) sub
+		ORDER BY d`, sleepDedup, preferred),
 		from, to)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var out []SleepNight
+	nights := map[string]*SleepNight{}
 	for rows.Next() {
-		var n SleepNight
-		if err := rows.Scan(&n.Date, &n.Total, &n.Deep, &n.REM, &n.Core, &n.Awake); err != nil {
+		var d, metric string
+		var val float64
+		if err := rows.Scan(&d, &metric, &val); err != nil {
 			return nil, err
 		}
-		out = append(out, n)
+		n, ok := nights[d]
+		if !ok {
+			n = &SleepNight{Date: d}
+			nights[d] = n
+		}
+		switch metric {
+		case "sleep_total":
+			n.Total = val
+		case "sleep_deep":
+			n.Deep = val
+		case "sleep_rem":
+			n.REM = val
+		case "sleep_core":
+			n.Core = val
+		case "sleep_awake":
+			n.Awake = val
+		}
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Sort by date.
+	dates := make([]string, 0, len(nights))
+	for d := range nights {
+		dates = append(dates, d)
+	}
+	sort.Strings(dates)
+	out := make([]SleepNight, 0, len(dates))
+	for _, d := range dates {
+		out = append(out, *nights[d])
+	}
+	return out, nil
 }
 
 // QueryReadOnly executes an arbitrary SELECT and returns results as []map[string]any.

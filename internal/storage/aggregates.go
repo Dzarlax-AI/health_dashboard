@@ -50,19 +50,28 @@ const preferredSourceSQL = `
 	)`
 
 // preferredSleepSourceSQL picks the best source for sleep metrics.
-// Priority: RingConn > Apple Watch > other.
-// RingConn provides more accurate sleep tracking (closer to Apple Health's
-// deduplicated total) than Apple Watch raw fragments.
+// Priority: Apple Watch > RingConn > other.
+// Apple Watch is better validated against polysomnography; RingConn tends to
+// overestimate deep sleep and occasionally reports wildly inflated totals.
+//
+// Cross-validation: when multiple sources exist and MAX/MIN differ by >40%,
+// the higher value is likely an outlier — take MIN instead of the preferred source.
 const preferredSleepSourceSQL = `
-	SELECT COALESCE(
-		(SELECT source_total FROM source_totals
-		 WHERE source LIKE '%RingConn%'
-		 ORDER BY source_total DESC LIMIT 1),
-		(SELECT source_total FROM source_totals
-		 WHERE source LIKE '%Ultra%' OR source LIKE '%Apple Watch%'
-		 ORDER BY source_total DESC LIMIT 1),
-		(SELECT MAX(source_total) FROM source_totals)
-	)`
+	SELECT CASE
+		WHEN (SELECT COUNT(DISTINCT source) FROM source_totals) > 1
+		 AND (SELECT MAX(source_total) FROM source_totals) >
+		     (SELECT MIN(source_total) FROM source_totals) * 1.4
+		THEN (SELECT MIN(source_total) FROM source_totals)
+		ELSE COALESCE(
+			(SELECT source_total FROM source_totals
+			 WHERE source LIKE '%Ultra%' OR source LIKE '%Apple Watch%'
+			 ORDER BY source_total DESC LIMIT 1),
+			(SELECT source_total FROM source_totals
+			 WHERE source LIKE '%RingConn%'
+			 ORDER BY source_total DESC LIMIT 1),
+			(SELECT MAX(source_total) FROM source_totals)
+		)
+	END`
 
 func preferredSourceForMetric(metric string) string {
 	if strings.HasPrefix(metric, "sleep_") {
