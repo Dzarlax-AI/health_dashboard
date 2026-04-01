@@ -638,19 +638,19 @@ func (s *DB) GetSleepSummary(from, to string) ([]SleepNight, error) {
 		SELECT d, metric_name, (
 			WITH source_totals AS (
 				SELECT source, SUM(qty) AS source_total
-				FROM metric_points mp2
-				WHERE mp2.metric_name = sub.metric_name
-				  AND SUBSTRING(mp2.date,1,10) = sub.d
-				  AND mp2.qty > 0 %s
+				FROM metric_points
+				WHERE metric_points.metric_name = sub.metric_name
+				  AND SUBSTRING(metric_points.date,1,10) = sub.d
+				  AND metric_points.qty > 0 %s
 				GROUP BY source
 			)
 			%s
 		) AS val
 		FROM (
 			SELECT DISTINCT SUBSTRING(date,1,10) AS d, metric_name
-			FROM metric_points
-			WHERE metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake')
-			  AND SUBSTRING(date,1,10) >= $1 AND SUBSTRING(date,1,10) <= $2 AND qty > 0
+			FROM metric_points mp_outer
+			WHERE mp_outer.metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake')
+			  AND SUBSTRING(mp_outer.date,1,10) >= $1 AND SUBSTRING(mp_outer.date,1,10) <= $2 AND mp_outer.qty > 0
 		) sub
 		ORDER BY d`, sleepDedup, preferred),
 		from, to)
