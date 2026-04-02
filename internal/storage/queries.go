@@ -548,13 +548,24 @@ func (s *DB) GetDashboard() (*DashboardResponse, error) {
 		lastUpdatedStr = *lastUpdated
 	}
 
+	// Metrics that are reported infrequently (once per day, often late).
+	// When today's value is missing, fall back to yesterday's so the card is not dropped.
+	slowMetrics := map[string]bool{
+		"resting_heart_rate": true,
+		"wrist_temperature":  true,
+	}
+
 	var result []CardData
 	for _, c := range cards {
 		val := queryDayRaw(c.metric, c.agg, *today)
-		if val == 0 {
-			continue
-		}
 		prev := queryDayCache(c.metric, c.agg, yesterdayStr)
+		if val == 0 {
+			if slowMetrics[c.metric] && prev != 0 {
+				val = prev
+			} else {
+				continue
+			}
+		}
 		result = append(result, CardData{
 			Metric: c.metric, Value: val, Prev: prev,
 			Unit: unitMap[c.metric], Date: *today,
