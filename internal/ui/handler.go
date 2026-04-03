@@ -124,11 +124,11 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.WriteHeader(http.StatusUnauthorized)
-		renderPage(w, "login.html", struct{ Error string }{"Invalid password."})
+		renderPage(w, "login", struct{ Error string }{"Invalid password."})
 		return
 	}
 
-	renderPage(w, "login.html", struct{ Error string }{""})
+	renderPage(w, "login", struct{ Error string }{""})
 }
 
 // ---- Page handlers ----
