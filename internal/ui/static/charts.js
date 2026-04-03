@@ -104,11 +104,8 @@ var corrChart = null;
 function loadCorrelationChart(canvasId, data) {
   if (corrChart) { corrChart.destroy(); corrChart = null; }
   var sorted = data.slice().sort(function(a, b) { return a.date > b.date ? 1 : -1; });
-  var lang = document.documentElement.lang || 'en';
-  var localeCode = lang === 'ru' ? 'ru' : lang === 'sr' ? 'sr-Latn' : 'en';
   var labels = sorted.map(function(p) {
-    var d = new Date(p.date + 'T12:00:00');
-    return d.toLocaleDateString(localeCode, { weekday: 'short', month: 'short', day: 'numeric' });
+    return fmtAxisDate(p.date, true);
   });
   var loadVals = sorted.map(function(p) { return p.load; });
   var hrvVals = sorted.map(function(p) { return p.hrv; });

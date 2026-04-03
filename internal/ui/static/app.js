@@ -36,9 +36,17 @@ function fmtUnit(u) {
   return map[u] || u;
 }
 
-function fmtAxisDate(ts) {
-  var d = new Date(ts);
-  return d.toLocaleDateString(undefined, {month:'short', day:'numeric'});
+function fmtAxisDate(ts, includeWeekday) {
+  var d = new Date(ts.includes('T') ? ts : ts + 'T12:00:00');
+  var now = new Date();
+  var opts = { month: 'short', day: 'numeric' };
+  if (includeWeekday) opts.weekday = 'short';
+  if (d.getFullYear() !== now.getFullYear()) {
+    opts.year = 'numeric';
+  }
+  var lang = document.documentElement.lang || 'en';
+  var localeCode = lang === 'ru' ? 'ru' : lang === 'sr' ? 'sr-Latn' : 'en';
+  return d.toLocaleDateString(localeCode, opts);
 }
 
 // Keyboard shortcuts
