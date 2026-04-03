@@ -147,15 +147,16 @@ func (h *Handler) pageDashboard(w http.ResponseWriter, r *http.Request) {
 
 	data := struct {
 		BasePage
-		ReadinessScore int
-		ReadinessLabel string
-		ReadinessTip   string
-		RecoveryPct    int
-		Cards          []health.MetricCard
-		Alerts         []health.Alert
-		Sleep          *sleepData
-		Insights       []health.Insight
-		Correlation    []health.CorrelationPoint
+		ReadinessScore  int
+		ReadinessLabel  string
+		ReadinessTip    string
+		RecoveryPct     int
+		Cards           []health.MetricCard
+		Alerts          []health.Alert
+		Sections        []health.BriefingSection
+		Sleep           *sleepData
+		Insights        []health.Insight
+		Correlation     []health.CorrelationPoint
 		CorrelationJSON template.JS
 	}{
 		BasePage:        BasePage{Lang: lang, Title: T(lang, "app_title"), ActiveNav: "dashboard"},
@@ -170,6 +171,7 @@ func (h *Handler) pageDashboard(w http.ResponseWriter, r *http.Request) {
 		data.RecoveryPct = br.RecoveryPct
 		data.Cards = br.MetricCards
 		data.Alerts = br.Alerts
+		data.Sections = br.Sections
 		data.Insights = br.Insights
 		data.Correlation = br.Correlation
 

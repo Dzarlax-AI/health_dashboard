@@ -60,35 +60,37 @@
   {{end}}
 
   <!-- Section detail cards -->
+  {{if .Sections}}
   <div id="sections-area">
     <div class="section-title">{{T .Lang "health_sections"}}</div>
     <div id="section-cards">
-      <a href="/recovery" class="section-card" style="text-decoration:none;color:inherit">
-        <div class="section-card-icon" style="color:var(--heart)">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="6" width="18" height="12" rx="2"/><line x1="23" y1="13" x2="23" y2="11"/></svg>
+      {{range .Sections}}
+      <a href="/{{.Key}}" class="insight-card status-{{.Status}}" style="text-decoration:none;color:inherit;cursor:pointer">
+        <div class="insight-header">
+          <div class="insight-title-wrap">
+            <div class="insight-title">{{.Title}}</div>
+            <div class="insight-badge">{{if eq .Status "good"}}{{T $.Lang "status_good"}}{{else if eq .Status "fair"}}{{T $.Lang "status_fair"}}{{else}}{{T $.Lang "status_low"}}{{end}}</div>
+          </div>
+          <svg class="sec-card-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
         </div>
-        <div class="section-card-title">{{T .Lang "recovery"}}</div>
-      </a>
-      <a href="/sleep" class="section-card" style="text-decoration:none;color:inherit">
-        <div class="section-card-icon" style="color:var(--sleep)">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <div class="insight-summary">{{.Summary}}</div>
+        {{if .Details}}
+        <div class="insight-details">
+          {{range .Details}}
+          <div class="insight-detail">
+            <span class="detail-indicator {{.Trend}}"></span>
+            <span class="detail-label">{{.Label}}</span>
+            <span class="detail-value">{{.Value}}</span>
+            {{if .Note}}<span class="detail-note">{{.Note}}</span>{{end}}
+          </div>
+          {{end}}
         </div>
-        <div class="section-card-title">{{T .Lang "sleep_section"}}</div>
+        {{end}}
       </a>
-      <a href="/activity" class="section-card" style="text-decoration:none;color:inherit">
-        <div class="section-card-icon" style="color:var(--activity)">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-        </div>
-        <div class="section-card-title">{{T .Lang "cat_activity"}}</div>
-      </a>
-      <a href="/cardio" class="section-card" style="text-decoration:none;color:inherit">
-        <div class="section-card-icon" style="color:var(--cardio)">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
-        </div>
-        <div class="section-card-title">{{T .Lang "cat_heart"}}</div>
-      </a>
+      {{end}}
     </div>
   </div>
+  {{end}}
 
   <!-- Weekly section -->
   <div id="weekly-section">
