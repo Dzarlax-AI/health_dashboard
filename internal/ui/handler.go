@@ -40,7 +40,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/login", h.login)
 
 	// Page routes (server-rendered)
-	mux.HandleFunc("GET /", h.guard(h.pageDashboard))
+	mux.HandleFunc("GET /{$}", h.guard(h.pageDashboard))
 	mux.HandleFunc("GET /sleep", h.guard(h.pageSleep))
 	mux.HandleFunc("GET /cardio", h.guard(h.pageCardio))
 	mux.HandleFunc("GET /activity", h.guard(h.pageActivity))
