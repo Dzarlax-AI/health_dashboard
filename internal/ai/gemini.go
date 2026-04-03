@@ -75,7 +75,7 @@ func GenerateMorningBriefing(apiKey, model string, maxTokens int, rawMetricsJSON
 		model = defaultModel
 	}
 	if maxTokens <= 0 {
-		maxTokens = 1000
+		maxTokens = 5000
 	}
 
 	url := fmt.Sprintf(

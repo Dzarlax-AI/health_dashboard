@@ -32,7 +32,7 @@ func main() {
 	aiDefaults := storage.AIConfig{
 		APIKey:          os.Getenv("GEMINI_API_KEY"),
 		Model:           getEnv("GEMINI_MODEL", "gemini-2.5-flash"),
-		MaxOutputTokens: getEnvInt("GEMINI_MAX_TOKENS", 1000),
+		MaxOutputTokens: getEnvInt("GEMINI_MAX_TOKENS", 5000),
 	}
 
 	db, err := storage.New(context.Background(), dbURL)
