@@ -96,6 +96,10 @@
               <option value="">— enter API key to load models —</option>
             </select>
           </div>
+          <div class="admin-field-row">
+            <label class="admin-field-label">{{T .Lang "admin_ai_max_tokens"}}</label>
+            <input class="admin-field-input" type="number" id="cfg-gemini-max-tokens" min="200" max="8192" placeholder="1000">
+          </div>
           <div class="admin-settings-actions">
             <button class="admin-btn primary" onclick="saveAISettings()">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
@@ -293,6 +297,7 @@ function loadAdminSettings() {
         $('cfg-gemini-key').value = d.gemini_api_key;
         loadGeminiModels(d.gemini_api_key, d.gemini_model || '');
       }
+      if (d.gemini_max_tokens) $('cfg-gemini-max-tokens').value = d.gemini_max_tokens;
     });
 }
 
@@ -342,7 +347,8 @@ function loadGeminiModels(key, currentModel) {
 function saveAISettings() {
   var body = {
     gemini_api_key: $('cfg-gemini-key').value,
-    gemini_model: $('cfg-gemini-model').value
+    gemini_model: $('cfg-gemini-model').value,
+    gemini_max_tokens: $('cfg-gemini-max-tokens').value
   };
   fetch('/api/admin/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
     .then(function(r){return r.json()})

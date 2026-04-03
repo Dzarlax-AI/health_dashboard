@@ -497,7 +497,7 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 			"timezone": true,
 			"report_morning_weekday": true, "report_morning_weekend": true,
 			"report_evening_weekday": true, "report_evening_weekend": true,
-			"gemini_api_key": true, "gemini_model": true,
+			"gemini_api_key": true, "gemini_model": true, "gemini_max_tokens": true,
 		}
 		clean := make(map[string]string)
 		for k, v := range body {
@@ -528,6 +528,7 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 		"enabled":                 cfg.Enabled(),
 		"gemini_api_key":          aiCfg.APIKey,
 		"gemini_model":            aiCfg.Model,
+		"gemini_max_tokens":       aiCfg.MaxOutputTokens,
 		"gemini_enabled":          aiCfg.Enabled(),
 	})
 }

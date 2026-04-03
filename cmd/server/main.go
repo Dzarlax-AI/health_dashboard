@@ -30,8 +30,9 @@ func main() {
 	trustFwdAuth   := os.Getenv("TRUST_FORWARD_AUTH") == "true"
 	baseURL        := getEnv("BASE_URL", "http://localhost"+addr)
 	aiDefaults := storage.AIConfig{
-		APIKey: os.Getenv("GEMINI_API_KEY"),
-		Model:  getEnv("GEMINI_MODEL", "gemini-2.5-flash"),
+		APIKey:          os.Getenv("GEMINI_API_KEY"),
+		Model:           getEnv("GEMINI_MODEL", "gemini-2.5-flash"),
+		MaxOutputTokens: getEnvInt("GEMINI_MAX_TOKENS", 1000),
 	}
 
 	db, err := storage.New(context.Background(), dbURL)
@@ -346,7 +347,7 @@ func ensureTodayAIInsight(db *storage.DB, aiDefaults storage.AIConfig) string {
 		log.Printf("ensureTodayAIInsight: marshal: %v", err)
 		return ""
 	}
-	insight, err := ai.GenerateMorningBriefing(aiCfg.APIKey, aiCfg.Model, rawJSON)
+	insight, err := ai.GenerateMorningBriefing(aiCfg.APIKey, aiCfg.Model, aiCfg.MaxOutputTokens, rawJSON)
 	if err != nil {
 		log.Printf("ensureTodayAIInsight: gemini: %v", err)
 		return ""

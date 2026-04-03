@@ -66,13 +66,16 @@ func ListModels(apiKey string) ([]Model, error) {
 const defaultModel = "gemini-2.5-flash"
 
 // GenerateMorningBriefing calls the Gemini API to produce a morning health insight.
-// model defaults to gemini-2.5-flash if empty.
-func GenerateMorningBriefing(apiKey, model string, rawMetricsJSON []byte) (string, error) {
+// model defaults to gemini-2.5-flash if empty; maxTokens defaults to 1000 if <= 0.
+func GenerateMorningBriefing(apiKey, model string, maxTokens int, rawMetricsJSON []byte) (string, error) {
 	if apiKey == "" {
 		return "", fmt.Errorf("gemini API key is not configured")
 	}
 	if model == "" {
 		model = defaultModel
+	}
+	if maxTokens <= 0 {
+		maxTokens = 1000
 	}
 
 	url := fmt.Sprintf(
@@ -96,7 +99,7 @@ func GenerateMorningBriefing(apiKey, model string, rawMetricsJSON []byte) (strin
 		},
 		"generationConfig": map[string]any{
 			"temperature":     0.2,
-			"maxOutputTokens": 500,
+			"maxOutputTokens": maxTokens,
 		},
 	}
 
