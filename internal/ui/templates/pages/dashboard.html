@@ -13,7 +13,6 @@
       </div>
     </div>
     <div id="hero-right-block">
-      {{if .AIInsight}}<div id="ai-insight">{{.AIInsight}}</div>{{end}}
       {{if .ReadinessTip}}<div id="readiness-tip">{{.ReadinessTip}}</div>{{end}}
       {{if .RecoveryPct}}
       <div id="readiness-recovery">
@@ -27,11 +26,9 @@
       </div>
       {{end}}
     </div>
-    <div id="hero-sparkline-block">
-      <div id="hero-sparkline-label"><span>{{T .Lang "trend_readiness"}}</span> · 30d</div>
-      <div id="hero-sparkline-wrap"><canvas id="readiness-sparkline"></canvas></div>
-    </div>
   </div>
+
+  {{if .AIInsight}}<div id="ai-insight">{{.AIInsight}}</div>{{end}}
 
   {{if .Cards}}
   <!-- Metric cards -->
@@ -168,9 +165,6 @@ document.addEventListener('DOMContentLoaded', function() {
   }
   if (typeof loadTrendCharts === 'function') {
     loadTrendCharts('trend-charts');
-  }
-  if (typeof loadReadinessSparkline === 'function') {
-    loadReadinessSparkline('readiness-sparkline');
   }
 });
 </script>

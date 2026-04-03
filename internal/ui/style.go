@@ -79,7 +79,7 @@ body {
   position: relative;
   overflow: hidden;
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto 1fr;
   column-gap: 48px;
   align-items: center;
   min-height: 240px;
@@ -106,15 +106,19 @@ body {
 #readiness-status { font-size: 22px; font-weight: 700; opacity: 0.9; }
 #hero-right-block { position: relative; z-index: 2; }
 #ai-insight {
-  font-size: 15px; opacity: 0.9; line-height: 1.6;
-  margin-bottom: 14px; font-style: italic;
-  padding: 10px 14px;
-  background: rgba(255,255,255,0.07);
-  border-left: 3px solid rgba(255,255,255,0.3);
-  border-radius: 6px;
+  font-size: 15px; line-height: 1.6;
+  margin-bottom: 32px; font-style: italic;
+  padding: 16px 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--text);
+  border-radius: 8px;
+  white-space: pre-line;
+  color: var(--text-secondary);
 }
 #readiness-tip {
   font-size: 17px; opacity: 0.85; line-height: 1.5;
+  white-space: pre-line;
   margin-bottom: 28px;
 }
 #readiness-recovery {}
@@ -130,20 +134,6 @@ body {
   height: 100%; background: var(--text); border-radius: 4px;
   transition: width 0.8s cubic-bezier(0.4,0,0.2,1);
 }
-#hero-sparkline-block {
-  cursor: pointer; position: relative; z-index: 2;
-  padding-left: 40px;
-  border-left: 1px solid var(--border);
-  align-self: center;
-}
-#hero-sparkline-label {
-  font-size: 11px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: 1.5px; opacity: 0.55; margin-bottom: 10px;
-}
-#hero-sparkline-wrap {
-  width: 220px; height: 90px; position: relative;
-}
-#readiness-sparkline { display: block; width: 100% !important; height: 100% !important; }
 #hero-date-strip {
   position: absolute; top: 24px; right: 40px; z-index: 2;
   font-size: 13px; opacity: 0.6;
