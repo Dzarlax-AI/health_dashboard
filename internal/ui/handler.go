@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"math"
 	"net/http"
 	"strconv"
@@ -155,7 +156,7 @@ func (h *Handler) pageDashboard(w http.ResponseWriter, r *http.Request) {
 		Sleep          *sleepData
 		Insights       []health.Insight
 		Correlation    []health.CorrelationPoint
-		CorrelationJSON string
+		CorrelationJSON template.JS
 	}{
 		BasePage:        BasePage{Lang: lang, Title: T(lang, "app_title"), ActiveNav: "dashboard"},
 		CorrelationJSON: "null",
@@ -184,7 +185,7 @@ func (h *Handler) pageDashboard(w http.ResponseWriter, r *http.Request) {
 
 		if len(br.Correlation) > 0 {
 			if b, err := json.Marshal(br.Correlation); err == nil {
-				data.CorrelationJSON = string(b)
+				data.CorrelationJSON = template.JS(b)
 			}
 		}
 	}
