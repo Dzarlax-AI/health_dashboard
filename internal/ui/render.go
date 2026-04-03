@@ -75,7 +75,7 @@ func init() {
 func renderPage(w http.ResponseWriter, name string, data any) {
 	tmplName := "base"
 	if name == "login" {
-		tmplName = "login.html"
+		tmplName = "login"
 	}
 
 	t := pageTemplates[name]
