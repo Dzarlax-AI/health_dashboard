@@ -3,22 +3,33 @@ package ui
 const cssStyle = `
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
-  --bg: #f5f4f0;
-  --surface: #ffffff;
-  --surface2: #f0eeea;
-  --border: #e8e5e0;
-  --border-light: #f0eeea;
-  --text: #1a1714;
-  --text-secondary: #6b6560;
-  --muted: #b0aaa4;
-  --accent: #2563eb;
+  --bg: #FCFAF7;
+  --surface: #FFFFFF;
+  --surface2: #E8E6E3;
+  --border: rgba(26,26,30,0.08);
+  --border-light: rgba(26,26,30,0.04);
+  --text: #1A1A1E;
+  --text-secondary: rgba(26, 26, 30, 0.7);
+  --muted: rgba(26, 26, 30, 0.5);
+  --accent: #1A1A1E;
   --good: #16a34a; --good-bg: #f0fdf4;
   --fair: #d97706; --fair-bg: #fffbeb;
   --low: #dc2626;  --low-bg: #fef2f2;
   --heart: #e11d48; --activity: #059669; --sleep: #7c3aed; --cardio: #0284c7;
-  --shadow: 0 2px 8px rgba(0,0,0,0.06);
-  --shadow-lg: 0 8px 32px rgba(0,0,0,0.08);
-  --radius: 24px; --radius-sm: 16px; --radius-xs: 12px;
+  --shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -2px rgba(0,0,0,0.06);
+  --shadow-lg: 0 8px 30px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.06);
+  --radius: 8px; --radius-sm: 4px; --radius-xs: 2px;
+}
+[dark-mode] {
+  --bg: #1A1D21;
+  --surface: #22252A;
+  --surface2: #2A2D32;
+  --border: rgba(255, 255, 255, 0.1);
+  --border-light: rgba(255, 255, 255, 0.05);
+  --text: #F8F9FA;
+  --text-secondary: rgba(255, 255, 255, 0.7);
+  --muted: rgba(255, 255, 255, 0.5);
+  --accent: #E8E6E3;
 }
 body {
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", system-ui, sans-serif;
@@ -59,10 +70,10 @@ body {
 /* ── HERO: Readiness ── */
 #hero-section {
   margin-bottom: 32px;
-  background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 50%, #a855f7 100%);
-  border-radius: 32px;
+  background: var(--text);
+  border-radius: var(--radius);
   padding: 48px 56px;
-  color: #fff;
+  color: var(--bg);
   position: relative;
   overflow: hidden;
   display: grid;
@@ -102,11 +113,11 @@ body {
   font-size: 13px; opacity: 0.7; margin-bottom: 8px; font-weight: 500;
 }
 #recovery-bar-track {
-  width: 100%; height: 8px; background: rgba(255,255,255,0.2);
+  width: 100%; height: 8px; background: rgba(250,250,250,0.2);
   border-radius: 4px; overflow: hidden;
 }
 #recovery-bar-fill {
-  height: 100%; background: #fff; border-radius: 4px;
+  height: 100%; background: var(--bg); border-radius: 4px;
   transition: width 0.8s cubic-bezier(0.4,0,0.2,1);
 }
 #hero-sparkline-block {
@@ -295,10 +306,10 @@ body {
   display: flex; align-items: center; justify-content: center; flex-shrink: 0;
 }
 .insight-title-wrap { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.insight-card[data-key="recovery"] .insight-icon { background: #fef3c7; }
-.insight-card[data-key="sleep"]    .insight-icon { background: #ede9fe; }
-.insight-card[data-key="activity"] .insight-icon { background: #d1fae5; }
-.insight-card[data-key="cardio"]   .insight-icon { background: #dbeafe; }
+.insight-card[data-key="recovery"] .insight-icon { background: var(--surface2); color: var(--text); }
+.insight-card[data-key="sleep"]    .insight-icon { background: var(--surface2); color: var(--text); }
+.insight-card[data-key="activity"] .insight-icon { background: var(--surface2); color: var(--text); }
+.insight-card[data-key="cardio"]   .insight-icon { background: var(--surface2); color: var(--text); }
 .insight-title { font-size: 16px; font-weight: 700; }
 .insight-badge { font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 10px; }
 .status-good .insight-badge { background: var(--good-bg); color: var(--good); }

@@ -39,25 +39,27 @@
   {{end}}
 
   <!-- Charts -->
-  <div class="section-charts">
+  <div class="sec-charts-area">
     {{range .Charts}}
-    <div class="section-chart-card">
-      <div class="section-chart-title">{{.Label}}</div>
-      <div class="section-chart-wrap"><canvas id="{{.ID}}"></canvas></div>
+    <div class="sec-chart-block">
+      <div class="sec-chart-title">{{.Label}}</div>
+      <div class="sec-chart-wrap"><canvas id="{{.ID}}"></canvas></div>
     </div>
     {{end}}
   </div>
 
   {{if .Explains}}
   <!-- How it works -->
-  <div class="section-explain-area">
-    <div class="section-title">{{T .Lang "how_it_works"}}</div>
+  <div class="sec-explain-area">
+    <div class="sec-explain-heading">{{T .Lang "how_it_works"}}</div>
+    <div class="sec-explain-grid">
     {{range .Explains}}
-    <div class="explain-card">
-      <div class="explain-card-title">{{.Title}}</div>
-      <div class="explain-card-body">{{.Body}}</div>
+    <div class="sec-explain-card">
+      <div class="sec-explain-title">{{.Title}}</div>
+      <div class="sec-explain-body">{{.Body}}</div>
     </div>
     {{end}}
+    </div>
   </div>
   {{end}}
 </div>
