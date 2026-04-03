@@ -23,13 +23,15 @@ Single binary HTTP server (`cmd/server/main.go`) that wires together several pac
 
 - **`internal/handler`** — receives health data from the Health Auto Export iOS app via `POST /health`. Parses JSON payload into `[]storage.MetricPoint` and writes to DB. Auth via `X-API-Key` header (env `API_KEY`). After a successful insert, calls `onNewData()` to trigger cache invalidation + debounced backfill.
 
-- **`internal/ui`** — web dashboard SPA at `/`. Password-protected via cookie (env `UI_PASSWORD`). Login page at `/login`. API endpoints: `/api/dashboard`, `/api/metrics`, `/api/metrics/data`, `/api/metrics/latest`, `/api/metrics/range`, `/api/health-briefing`, `/api/readiness-history`, `/api/admin/status`, `/api/admin/backfill`, `/api/admin/settings`, `/api/admin/test-notify`, `/api/admin/gaps`, `/api/admin/import/upload`, `/api/admin/import/status`. The entire frontend is embedded Go strings in `internal/ui/` (template, scripts, styles). Uses Chart.js 4 from CDN.
+- **`internal/ai`** — Gemini API integration. `gemini.go`: `GenerateMorningBriefing(apiKey, model, maxTokens, rawMetricsJSON)` and `ListModels(apiKey)` (for dynamic model dropdown). Prompt embedded from `prompt.txt` via `//go:embed`.
+
+- **`internal/ui`** — web dashboard SPA at `/`. Password-protected via cookie (env `UI_PASSWORD`). Login page at `/login`. API endpoints: `/api/dashboard`, `/api/metrics`, `/api/metrics/data`, `/api/metrics/latest`, `/api/metrics/range`, `/api/health-briefing`, `/api/readiness-history`, `/api/admin/status`, `/api/admin/backfill`, `/api/admin/settings`, `/api/admin/test-notify`, `/api/admin/gaps`, `/api/admin/import/upload`, `/api/admin/import/status`, `/api/admin/ai-models`. The entire frontend is embedded Go strings in `internal/ui/` (template, scripts, styles). Uses Chart.js 4 from CDN.
 
 - **`internal/mcpserver`** — MCP Streamable HTTP server at `/mcp` (mark3labs/mcp-go v0.44.1). Auth via `Authorization: Bearer <key>` or `X-API-Key` header (same `API_KEY` env). Tools: `get_health_briefing`, `get_readiness_history`, `list_metrics`, `get_dashboard`, `get_metric_data`, `summarize_metric`, `compare_periods`, `get_sleep_summary`, `find_anomalies`, `get_weekly_summary`, `get_personal_records`, `sql_query`.
 
 - **`internal/health`** — pure business logic for health analysis (no I/O). Readiness scoring (`scoring.go`, `readiness.go`), health anomaly alerts (`alerts.go`), cardio analysis (`cardio.go`), sleep breakdowns (`sleep.go`), activity analysis (`activity.go`), insights generation (`insights.go`), and i18n (`i18n_en.go`, `i18n_ru.go`, `i18n_sr.go`). Core types in `types.go`.
 
-- **`internal/storage`** — PostgreSQL via `jackc/pgx/v5` connection pool. Tables: `health_records`, `metric_points`, three pre-aggregated cache tables (`minute_metrics`, `hourly_metrics`, `daily_scores`), and `settings` (key-value store for Telegram config). Also includes `admin.go` (data gap detection) and `settings.go` (notification config persistence). Schema managed externally via `init.sql`.
+- **`internal/storage`** — PostgreSQL via `jackc/pgx/v5` connection pool. Tables: `health_records`, `metric_points`, three pre-aggregated cache tables (`minute_metrics`, `hourly_metrics`, `daily_scores`), `settings` (key-value store for Telegram config), and `ai_briefings` (per-day AI insight cache). Also includes `admin.go` (data gap detection), `settings.go` (notification + AI config persistence), and `ai_briefing.go` (AI briefing CRUD + `EnsureAIBriefingsTable`). Schema managed externally via `init.sql` (except `ai_briefings`, auto-created on startup).
 
 - **`internal/notify`** — Telegram notification subsystem. Bot client (`telegram.go`) and report scheduler (`report.go`) with timezone-aware morning/evening scheduling. Config loaded from env vars with DB overrides.
 
@@ -75,6 +77,8 @@ daily_scores       — Level 3 cache: per-day rollups (hrv_avg, rhr_avg,
                      sleep_*, steps, calories, exercise_min, spo2_avg, vo2_avg, resp_avg)
                      + Level 4: readiness score (0–100) with score_version
 settings           — key-value store for Telegram config
+ai_briefings       — per-day AI briefing cache: insight TEXT, created_at, sent_at
+                     Auto-created via EnsureAIBriefingsTable() on startup (not in init.sql)
 ```
 
 **Expression indexes** (critical for performance with 3.7M+ rows in metric_points):
@@ -125,6 +129,9 @@ Defined in `internal/storage/aggregates.go::SumMetrics` (exported):
 | `REPORT_EVENING_WEEKDAY` | `20` | Evening report hour on weekdays |
 | `REPORT_EVENING_WEEKEND` | `21` | Evening report hour on weekends |
 | `REPORT_TZ` | system local | Timezone for report scheduling (e.g. `Europe/Belgrade`) |
+| `GEMINI_API_KEY` | — | Gemini API key; enables AI morning briefing |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini model; overridable in Admin UI |
+| `GEMINI_MAX_TOKENS` | `5000` | Max output tokens for AI briefing; overridable in Admin UI |
 
 ## Readiness Scoring
 

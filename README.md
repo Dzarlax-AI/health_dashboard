@@ -90,6 +90,9 @@ All configuration is via environment variables:
 | `REPORT_EVENING_WEEKDAY` | No | Hour (0-23) for evening day summary on weekdays. Default: `20`. |
 | `REPORT_EVENING_WEEKEND` | No | Hour (0-23) for evening day summary on weekends. Default: `21`. |
 | `REPORT_TZ` | No | Timezone for report scheduling (e.g. `Europe/Belgrade`). Default: system local. |
+| `GEMINI_API_KEY` | No | Gemini API key for AI morning briefing. Get free at [aistudio.google.com](https://aistudio.google.com/apikey). If not set — AI briefing disabled. |
+| `GEMINI_MODEL` | No | Gemini model to use. Default: `gemini-2.5-flash`. Configurable in Admin UI (dropdown fetched from Google API). |
+| `GEMINI_MAX_TOKENS` | No | Max output tokens for AI briefing. Default: `5000`. Configurable in Admin UI. |
 
 ## Health Auto Export Setup
 
@@ -148,7 +151,7 @@ Features:
 - **Health Briefing** -- daily summary with z-score readiness, sleep analysis, insights, and health alerts
 - **Metrics view** -- full list of available metrics with latest values; click any to open its chart
 - **Metric charts** -- time series with auto-bucketing (minute / hour / day)
-- **Settings** -- cache status, backfill controls, Telegram notification config, data gap detection, and Apple Health import
+- **Settings** -- cache status, backfill controls, Telegram notification config, AI morning briefing config (Gemini key, model, max tokens), data gap detection, and Apple Health import
 - URL hash state -- shareable links like `/#metric=heart_rate&from=2026-01-01&to=2026-01-31`
 
 ## MCP Server
@@ -197,6 +200,18 @@ When `TELEGRAM_TOKEN` and `TELEGRAM_CHAT_ID` are set, the server sends two daily
 - **Evening** (weekday 20:00 / weekend 21:00) -- steps, calories, exercise minutes, cardio summary, top insights
 
 Times are configurable per weekday/weekend via env vars or through the Settings panel in the web UI (DB settings take priority). To get your `TELEGRAM_CHAT_ID`, send any message to your bot and call `https://api.telegram.org/bot<TOKEN>/getUpdates`. Test reports can be sent from the Settings panel.
+
+### AI Morning Briefing
+
+When `GEMINI_API_KEY` is set (or configured in the Admin UI), the server automatically generates a personalized morning briefing via Gemini and prepends it to the morning Telegram report.
+
+The briefing is triggered after 05:00 when today's step count exceeds 300 (confirming the user is awake). It is generated once per day and cached — subsequent sends (test button, scheduled fallback) reuse the cached version without calling the API again.
+
+The briefing covers four blocks: sleep quality (phases, fragmentation), yesterday's full day (activity, SpO2, breathing, wrist temperature), recovery (HRV/RHR vs 7-day personal baseline), and a concrete recommendation with specific numbers.
+
+The AI insight also appears in the dashboard hero section. The prompt is in `internal/ai/prompt.txt` and is embedded into the binary at build time.
+
+Key and model are stored in the `settings` table and configurable in Admin UI — the model dropdown is populated dynamically from the Google API (only models supporting `generateContent` are shown). Env vars serve as defaults if DB has no value.
 
 ## Apple Health Import
 

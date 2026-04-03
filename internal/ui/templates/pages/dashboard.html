@@ -14,17 +14,10 @@
     </div>
     <div id="hero-right-block">
       {{if .ReadinessTip}}<div id="readiness-tip">{{.ReadinessTip}}</div>{{end}}
-      {{if .RecoveryPct}}
-      <div id="readiness-recovery">
-        <div id="recovery-bar-labels">
-          <span>{{T .Lang "readiness_trend_label"}}</span>
-          <span id="recovery-pct-label">{{.RecoveryPct}}%</span>
-        </div>
-        <div id="recovery-bar-track">
-          <div id="recovery-bar-fill" style="width:{{.RecoveryPct}}%"></div>
-        </div>
-      </div>
-      {{end}}
+    </div>
+    <div id="hero-sparkline-block">
+      <div id="hero-sparkline-label"><span>{{T .Lang "trend_readiness"}}</span> · 30d</div>
+      <div id="hero-sparkline-wrap"><canvas id="readiness-sparkline"></canvas></div>
     </div>
   </div>
 
@@ -165,6 +158,9 @@ document.addEventListener('DOMContentLoaded', function() {
   }
   if (typeof loadTrendCharts === 'function') {
     loadTrendCharts('trend-charts');
+  }
+  if (typeof loadReadinessSparkline === 'function') {
+    loadReadinessSparkline('readiness-sparkline');
   }
 });
 </script>

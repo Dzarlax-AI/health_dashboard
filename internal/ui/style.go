@@ -79,7 +79,7 @@ body {
   position: relative;
   overflow: hidden;
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: auto 1fr auto;
   column-gap: 48px;
   align-items: center;
   min-height: 240px;
@@ -121,19 +121,20 @@ body {
   white-space: pre-line;
   margin-bottom: 28px;
 }
-#readiness-recovery {}
-#recovery-bar-labels {
-  display: flex; justify-content: space-between;
-  font-size: 13px; opacity: 0.7; margin-bottom: 8px; font-weight: 500;
+#hero-sparkline-block {
+  cursor: pointer; position: relative; z-index: 2;
+  padding-left: 40px;
+  border-left: 1px solid var(--border);
+  align-self: center;
 }
-#recovery-bar-track {
-  width: 100%; height: 8px; background: var(--border);
-  border-radius: 4px; overflow: hidden;
+#hero-sparkline-label {
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 1.5px; opacity: 0.55; margin-bottom: 10px;
 }
-#recovery-bar-fill {
-  height: 100%; background: var(--text); border-radius: 4px;
-  transition: width 0.8s cubic-bezier(0.4,0,0.2,1);
+#hero-sparkline-wrap {
+  width: 220px; height: 90px; position: relative;
 }
+#readiness-sparkline { display: block; width: 100% !important; height: 100% !important; }
 #hero-date-strip {
   position: absolute; top: 24px; right: 40px; z-index: 2;
   font-size: 13px; opacity: 0.6;
