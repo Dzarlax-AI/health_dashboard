@@ -1,19 +1,22 @@
 {{define "metrics-list"}}
 {{if .Categories}}
 {{range .Categories}}
-<div class="metric-category">
-  <div class="metric-category-header" style="color:{{.Color}}">{{.Label}}</div>
-  <div class="metric-category-grid">
+<div class="metrics-cat-section">
+  <div class="metrics-cat-label"><span class="metrics-cat-dot" style="background:{{.Color}}"></span>{{.Label}}</div>
+  <div class="metrics-grid">
     {{range .Metrics}}
-    <a href="/metrics/{{.Name}}" class="metric-item" style="text-decoration:none;color:inherit">
-      <div class="metric-item-name">{{.DisplayName}}</div>
-      {{if .Value}}<div class="metric-item-value">{{.Value}} <span class="metric-item-unit">{{.Unit}}</span></div>{{end}}
+    <a href="/metrics/{{.Name}}" class="metrics-card" style="text-decoration:none;color:inherit">
+      <div class="metrics-card-name">{{.DisplayName}}</div>
+      <div class="metrics-card-bottom">
+        {{if .Value}}<span class="metrics-card-value">{{.Value}}</span><span class="metrics-card-unit">{{.Unit}}</span>
+        {{else}}<span class="metrics-card-empty">—</span>{{end}}
+      </div>
     </a>
     {{end}}
   </div>
 </div>
 {{end}}
 {{else}}
-<div style="color:var(--muted);padding:24px;text-align:center">{{T .Lang "no_metrics_found"}}</div>
+<div class="metrics-empty">{{T .Lang "no_metrics_found"}}</div>
 {{end}}
 {{end}}

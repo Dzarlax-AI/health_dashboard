@@ -401,7 +401,7 @@ body {
 .metrics-empty { padding: 40px; color: var(--muted); text-align: center; font-size: 15px; }
 
 /* ── Chart view ── */
-#chart-view { display: none; }
+#chart-view { }
 #chart-back {
   background: none; border: none; color: var(--accent); cursor: pointer;
   font-size: 15px; font-weight: 600; padding: 0; margin-bottom: 24px;
@@ -552,7 +552,7 @@ select:focus, input[type=date]:focus { outline: none; border-color: var(--accent
 
 
 /* ── Section detail view ── */
-#section-view { display: none; }
+#section-view { }
 #section-back {
   background: none; border: none; color: var(--accent); cursor: pointer;
   font-size: 15px; font-weight: 600; padding: 0; margin-bottom: 24px;
