@@ -92,17 +92,18 @@ func buildHighlights(d RawMetrics, ls LangStrings) []BriefingDetail {
 func buildMetricCards(d RawMetrics) []MetricCard {
 	type cardSpec struct {
 		name    string
+		metric  string
 		unit    string
 		vals    []float64
 		decimal int
 	}
 	var out []MetricCard
 	for _, sp := range []cardSpec{
-		{"Steps", "steps", d.Steps, 0},
-		{"Sleep", "hrs", d.Sleep, 1},
-		{"HRV", "ms", d.HRV, 0},
-		{"Resting HR", "bpm", d.RHR, 0},
-		{"Respiratory Rate", "br/min", d.Resp, 1},
+		{"Steps", "step_count", "steps", d.Steps, 0},
+		{"Sleep", "sleep_total", "hrs", d.Sleep, 1},
+		{"HRV", "heart_rate_variability", "ms", d.HRV, 0},
+		{"Resting HR", "resting_heart_rate", "bpm", d.RHR, 0},
+		{"Respiratory Rate", "respiratory_rate", "br/min", d.Resp, 1},
 	} {
 		if len(sp.vals) == 0 {
 			continue
@@ -114,6 +115,7 @@ func buildMetricCards(d RawMetrics) []MetricCard {
 		tLabel := trend(pct, false)
 		out = append(out, MetricCard{
 			Name:       sp.name,
+			Metric:     sp.metric,
 			Value:      fmtFloat(today, sp.decimal),
 			Unit:       sp.unit,
 			TrendPct:   roundTo1(pct),

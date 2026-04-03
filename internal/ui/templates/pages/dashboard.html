@@ -40,7 +40,7 @@
     <div class="section-title">{{T .Lang "at_a_glance"}}</div>
     <div id="metric-cards-grid">
       {{range .Cards}}
-      <a href="/metrics/{{.Name}}" class="metric-card" style="text-decoration:none;color:inherit">
+      <a href="/metrics/{{.Metric}}" class="metric-card" style="text-decoration:none;color:inherit">
         <div class="metric-card-name">{{.Name}}</div>
         <div class="metric-card-value">{{.Value}} <span class="metric-card-unit">{{.Unit}}</span></div>
         {{if .TrendLabel}}<div class="metric-card-trend">{{.TrendLabel}}</div>{{end}}

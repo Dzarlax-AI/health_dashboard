@@ -75,6 +75,7 @@ type SleepAnalysis struct {
 
 type MetricCard struct {
 	Name       string  `json:"name"`
+	Metric     string  `json:"metric"`
 	Value      string  `json:"value"`
 	Unit       string  `json:"unit"`
 	TrendPct   float64 `json:"trend_pct"`
