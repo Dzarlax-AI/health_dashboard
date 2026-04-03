@@ -743,4 +743,56 @@ select:focus, input[type=date]:focus { outline: none; border-color: var(--accent
 .section-icon-sleep { color: var(--sleep); }
 .section-icon-activity { color: var(--activity); }
 .section-icon-cardio { color: var(--heart); }
+
+/* Editorial Section Layout */
+.editorial-kpi-bar {
+  display: flex; flex-wrap: wrap; 
+  border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+  margin-bottom: 40px; padding: 24px 0;
+}
+.kpi-item {
+  flex: 1; min-width: 150px; 
+  padding: 0 24px;
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.kpi-item:last-child { border-right: none; }
+.kpi-label { font-size: 11px; font-weight: 700; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; gap: 6px; }
+.kpi-indicator { width: 6px; height: 6px; border-radius: 50%; }
+.kpi-indicator.up { background: var(--good); }
+.kpi-indicator.down { background: var(--low); }
+.kpi-indicator.stable { background: var(--muted); }
+.kpi-value { font-size: 32px; font-weight: 800; color: var(--text); letter-spacing: -0.5px; line-height: 1.1; }
+.kpi-note { font-size: 13px; color: var(--muted); }
+
+.editorial-charts {
+  display: grid; grid-template-columns: 1fr; gap: 40px; margin-bottom: 48px;
+}
+.editorial-chart-block {
+  background: transparent; box-shadow: none; padding: 0; border: none;
+  border-top: 2px solid var(--text); border-radius: 0;
+  padding-top: 24px;
+}
+.editorial-chart-title {
+  font-size: 18px; font-weight: 700; letter-spacing: -0.3px; margin-bottom: 16px;
+}
+
+.editorial-explain-area { margin-bottom: 60px; border-top: 1px solid var(--border); padding-top: 32px; }
+.editorial-explain-heading { font-size: 24px; font-weight: 800; letter-spacing: -0.5px; margin-bottom: 32px; }
+.editorial-explain-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 40px;
+}
+.editorial-explain-card {
+  background: transparent; box-shadow: none; padding: 0; border: none;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.editorial-explain-title { font-size: 15px; font-weight: 700; color: var(--text); border-bottom: 1px solid var(--border-light); padding-bottom: 8px; }
+.editorial-explain-body { font-size: 14px; color: var(--text-secondary); line-height: 1.6; }
+
+@media (max-width: 768px) {
+  .editorial-kpi-bar { flex-direction: column; gap: 16px; padding: 16px 0; }
+  .kpi-item { border-right: none; border-bottom: 1px solid var(--border-light); padding: 0 0 16px 0; }
+  .kpi-item:last-child { border-bottom: none; padding-bottom: 0; }
+  .editorial-explain-grid { grid-template-columns: 1fr; gap: 24px; }
+}
 `

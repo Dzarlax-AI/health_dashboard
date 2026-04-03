@@ -5,23 +5,21 @@
     {{T .Lang "back"}}
   </a>
 
-  <div class="section-detail-header">
-    <div class="section-detail-icon section-icon-{{.SectionKey}}">{{.IconSVG}}</div>
-    <h1 class="section-detail-title">{{.SectionTitle}}</h1>
+  <div class="section-detail-header" style="margin-bottom:32px">
+    <h1 class="section-detail-title" style="font-size:48px;font-weight:900;letter-spacing:-1.5px;line-height:1;margin-bottom:12px;border-top:4px solid var(--text);padding-top:24px">{{.SectionTitle}}</h1>
   </div>
 
   {{if .Summary}}
-  <div class="section-detail-summary">{{.Summary}}</div>
+  <div class="section-detail-summary" style="font-size:18px;color:var(--text-secondary);line-height:1.6;margin-bottom:40px;max-width:800px">{{.Summary}}</div>
   {{end}}
 
   {{if .Details}}
-  <div class="section-detail-stats">
+  <div class="editorial-kpi-bar">
     {{range .Details}}
-    <div class="insight-detail">
-      <span class="detail-indicator {{.Trend}}"></span>
-      <span class="detail-label">{{.Label}}</span>
-      <span class="detail-value">{{.Value}}</span>
-      {{if .Note}}<span class="detail-note">{{.Note}}</span>{{end}}
+    <div class="kpi-item">
+      <div class="kpi-label"><span class="kpi-indicator {{.Trend}}"></span>{{.Label}}</div>
+      <div class="kpi-value">{{.Value}}</div>
+      {{if .Note}}<div class="kpi-note">{{.Note}}</div>{{end}}
     </div>
     {{end}}
   </div>
@@ -39,10 +37,10 @@
   {{end}}
 
   <!-- Charts -->
-  <div class="sec-charts-area">
+  <div class="editorial-charts">
     {{range .Charts}}
-    <div class="sec-chart-block">
-      <div class="sec-chart-title">{{.Label}}</div>
+    <div class="editorial-chart-block">
+      <div class="editorial-chart-title">{{.Label}}</div>
       <div class="sec-chart-wrap"><canvas id="{{.ID}}"></canvas></div>
     </div>
     {{end}}
@@ -50,13 +48,13 @@
 
   {{if .Explains}}
   <!-- How it works -->
-  <div class="sec-explain-area">
-    <div class="sec-explain-heading">{{T .Lang "how_it_works"}}</div>
-    <div class="sec-explain-grid">
+  <div class="editorial-explain-area">
+    <div class="editorial-explain-heading">{{T .Lang "how_it_works"}}</div>
+    <div class="editorial-explain-grid">
     {{range .Explains}}
-    <div class="sec-explain-card">
-      <div class="sec-explain-title">{{.Title}}</div>
-      <div class="sec-explain-body">{{.Body}}</div>
+    <div class="editorial-explain-card">
+      <div class="editorial-explain-title">{{.Title}}</div>
+      <div class="editorial-explain-body">{{.Body}}</div>
     </div>
     {{end}}
     </div>
