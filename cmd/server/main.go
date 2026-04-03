@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"health-receiver/internal/ai"
 	"health-receiver/internal/handler"
 	"health-receiver/internal/mcpserver"
 	"health-receiver/internal/notify"
@@ -27,6 +29,10 @@ func main() {
 	uiPassword     := os.Getenv("UI_PASSWORD")
 	trustFwdAuth   := os.Getenv("TRUST_FORWARD_AUTH") == "true"
 	baseURL        := getEnv("BASE_URL", "http://localhost"+addr)
+	aiDefaults := storage.AIConfig{
+		APIKey: os.Getenv("GEMINI_API_KEY"),
+		Model:  getEnv("GEMINI_MODEL", "gemini-2.5-flash"),
+	}
 
 	db, err := storage.New(context.Background(), dbURL)
 	if err != nil {
@@ -35,6 +41,19 @@ func main() {
 	defer db.Close()
 
 	db.EnsureIndexes()
+	db.EnsureAIBriefingsTable()
+
+	// Env-derived defaults for notify config (DB settings take priority at runtime).
+	notifyDefaults := storage.NotifyConfig{
+		Token:              os.Getenv("TELEGRAM_TOKEN"),
+		ChatID:             os.Getenv("TELEGRAM_CHAT_ID"),
+		Lang:               getEnv("REPORT_LANG", "en"),
+		Timezone:           getEnv("REPORT_TZ", ""),
+		MorningWeekdayHour: getEnvInt("REPORT_MORNING_WEEKDAY", 8),
+		MorningWeekendHour: getEnvInt("REPORT_MORNING_WEEKEND", 9),
+		EveningWeekdayHour: getEnvInt("REPORT_EVENING_WEEKDAY", 20),
+		EveningWeekendHour: getEnvInt("REPORT_EVENING_WEEKEND", 21),
+	}
 
 	// Start the backfill scheduler. It runs an initial backfill shortly after
 	// startup and then re-runs whenever new data arrives, debouncing rapid
@@ -56,11 +75,87 @@ func main() {
 		log.Println("startup: cache refresh done")
 	}()
 
+	// maybeFireMorningReport triggers the AI morning briefing when:
+	// • time is after 05:00 in the configured timezone
+	// • today's step count exceeds 300 (user is actually awake and moving)
+	// • no morning report has been sent yet today
+	maybeFireMorningReport := func() {
+		aiCfg := db.GetAIConfig(aiDefaults)
+		if !aiCfg.Enabled() {
+			return // AI briefing disabled — no API key configured
+		}
+		cfg := db.GetNotifyConfig(notifyDefaults)
+		loc := time.Local
+		if cfg.Timezone != "" {
+			if l, err := time.LoadLocation(cfg.Timezone); err == nil {
+				loc = l
+			}
+		}
+		now := time.Now().In(loc)
+		today := now.Format("2006-01-02")
+
+		// Only after 05:00
+		if now.Hour() < 5 {
+			return
+		}
+		// Guard: already sent today
+		if db.HasSentMorningReport(today) {
+			return
+		}
+		// Guard: not enough steps yet
+		if db.GetTodayStepCount(today) < 300 {
+			return
+		}
+
+		log.Println("morning trigger: generating AI briefing…")
+		raw := db.GetRawMetrics()
+		if raw == nil {
+			log.Println("morning trigger: no raw metrics available, skipping")
+			return
+		}
+		rawJSON, err := json.Marshal(raw)
+		if err != nil {
+			log.Printf("morning trigger: marshal raw metrics: %v", err)
+			return
+		}
+		insight, err := ai.GenerateMorningBriefing(aiCfg.APIKey, aiCfg.Model, rawJSON)
+		if err != nil {
+			log.Printf("morning trigger: gemini error: %v", err)
+			return
+		}
+		if err := db.SaveAIBriefing(today, insight); err != nil {
+			log.Printf("morning trigger: save briefing: %v", err)
+			return
+		}
+
+		// Send Telegram morning report (now embeds the AI insight).
+		if cfg.Enabled() {
+			ncfg := notify.Config{
+				Token: cfg.Token, ChatID: cfg.ChatID, Lang: cfg.Lang,
+				Timezone:           cfg.Timezone,
+				MorningWeekdayHour: cfg.MorningWeekdayHour,
+				MorningWeekendHour: cfg.MorningWeekendHour,
+				EveningWeekdayHour: cfg.EveningWeekdayHour,
+				EveningWeekendHour: cfg.EveningWeekendHour,
+			}
+			bot := notify.NewBot(ncfg.Token, ncfg.ChatID)
+			if err := notify.SendMorning(bot, db, ncfg); err != nil {
+				log.Printf("morning trigger: send telegram: %v", err)
+				return
+			}
+		}
+		if err := db.MarkMorningReportSent(today); err != nil {
+			log.Printf("morning trigger: mark sent: %v", err)
+		}
+		log.Printf("morning trigger: done, insight saved for %s", today)
+	}
+
 	onNewData := func() {
 		// Inline cache upsert already happened in the handler (UpsertRecentCache).
 		// The debounced backfill is a safety net that refreshes the last 48h and
 		// recomputes readiness scores — no cache invalidation/deletion needed.
 		sched.schedule()
+		go maybeFireMorningReport()
 	}
 
 	// forceRunning prevents concurrent force-rebuild runs.
@@ -81,18 +176,6 @@ func main() {
 			db.BackfillScores(true)
 			log.Println("force backfill: done")
 		}()
-	}
-
-	// Env-derived defaults for notify config (DB settings take priority at runtime).
-	notifyDefaults := storage.NotifyConfig{
-		Token:              os.Getenv("TELEGRAM_TOKEN"),
-		ChatID:             os.Getenv("TELEGRAM_CHAT_ID"),
-		Lang:               getEnv("REPORT_LANG", "en"),
-		Timezone:           getEnv("REPORT_TZ", ""),
-		MorningWeekdayHour: getEnvInt("REPORT_MORNING_WEEKDAY", 8),
-		MorningWeekendHour: getEnvInt("REPORT_MORNING_WEEKEND", 9),
-		EveningWeekdayHour: getEnvInt("REPORT_EVENING_WEEKDAY", 20),
-		EveningWeekendHour: getEnvInt("REPORT_EVENING_WEEKEND", 21),
 	}
 
 	// Always start scheduler — it re-reads config from DB each iteration.
@@ -121,7 +204,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	handler.New(db, apiKey, onNewData).Register(mux)
-	ui.New(db, uiPassword, apiKey, trustFwdAuth, backfillFn, testNotifyFn, notifyDefaults).Register(mux)
+	ui.New(db, uiPassword, apiKey, trustFwdAuth, backfillFn, testNotifyFn, notifyDefaults, aiDefaults).Register(mux)
 	mcpserver.Register(mux, db, baseURL, apiKey)
 
 	logged := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -227,7 +310,19 @@ func runReportScheduler(db *storage.DB, defaults storage.NotifyConfig) {
 		}
 		bot := notify.NewBot(cfg.Token, cfg.ChatID)
 		if isMorning {
-			log.Println("report scheduler: sending morning report…")
+			// Skip if the smart trigger already sent the morning report today.
+			loc := time.Local
+			if ncfg.Timezone != "" {
+				if l, err := time.LoadLocation(ncfg.Timezone); err == nil {
+					loc = l
+				}
+			}
+			today := time.Now().In(loc).Format("2006-01-02")
+			if db.HasSentMorningReport(today) {
+				log.Println("report scheduler: morning report already sent by smart trigger, skipping")
+				continue
+			}
+			log.Println("report scheduler: sending morning report (fallback)…")
 			if err := notify.SendMorning(bot, db, ncfg); err != nil {
 				log.Printf("report scheduler: morning send error: %v", err)
 			}

@@ -13,6 +13,7 @@
       </div>
     </div>
     <div id="hero-right-block">
+      {{if .AIInsight}}<div id="ai-insight">{{.AIInsight}}</div>{{end}}
       {{if .ReadinessTip}}<div id="readiness-tip">{{.ReadinessTip}}</div>{{end}}
       {{if .RecoveryPct}}
       <div id="readiness-recovery">

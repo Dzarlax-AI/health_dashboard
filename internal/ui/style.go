@@ -105,6 +105,14 @@ body {
 }
 #readiness-status { font-size: 22px; font-weight: 700; opacity: 0.9; }
 #hero-right-block { position: relative; z-index: 2; }
+#ai-insight {
+  font-size: 15px; opacity: 0.9; line-height: 1.6;
+  margin-bottom: 14px; font-style: italic;
+  padding: 10px 14px;
+  background: rgba(255,255,255,0.07);
+  border-left: 3px solid rgba(255,255,255,0.3);
+  border-radius: 6px;
+}
 #readiness-tip {
   font-size: 17px; opacity: 0.85; line-height: 1.5;
   margin-bottom: 28px;

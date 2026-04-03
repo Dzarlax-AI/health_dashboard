@@ -54,6 +54,26 @@ func (s *DB) SaveSettings(kv map[string]string) error {
 	return tx.Commit(ctx)
 }
 
+// AIConfig holds Gemini API credentials.
+type AIConfig struct {
+	APIKey string
+	Model  string
+}
+
+// Enabled returns true when the Gemini API key is configured.
+func (c AIConfig) Enabled() bool {
+	return c.APIKey != ""
+}
+
+// GetAIConfig builds an AIConfig from the settings table,
+// falling back to the supplied env-derived defaults for any unset key.
+func (s *DB) GetAIConfig(defaults AIConfig) AIConfig {
+	return AIConfig{
+		APIKey: s.GetSetting("gemini_api_key", defaults.APIKey),
+		Model:  s.GetSetting("gemini_model", defaults.Model),
+	}
+}
+
 // GetNotifyConfig builds a NotifyConfig from the settings table,
 // falling back to the supplied env-derived defaults for any unset key.
 func (s *DB) GetNotifyConfig(defaults NotifyConfig) NotifyConfig {

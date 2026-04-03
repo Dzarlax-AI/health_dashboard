@@ -12,28 +12,30 @@ import (
 	"strconv"
 	"time"
 
+	"health-receiver/internal/ai"
 	"health-receiver/internal/health"
 	"health-receiver/internal/storage"
 )
 
 type Handler struct {
-	db              *storage.DB
-	password        string // empty = no auth
-	token           string // sha256(password), used as cookie value
-	apiKey          string // also allows access via X-API-Key header
-	trustFwdAuth    bool   // trust X-authentik-username header (set via TRUST_FORWARD_AUTH=true)
-	backfill        func(force bool)
-	testNotify      func(kind string) error
-	notifyDefaults  storage.NotifyConfig
+	db             *storage.DB
+	password       string // empty = no auth
+	token          string // sha256(password), used as cookie value
+	apiKey         string // also allows access via X-API-Key header
+	trustFwdAuth   bool   // trust X-authentik-username header (set via TRUST_FORWARD_AUTH=true)
+	backfill       func(force bool)
+	testNotify     func(kind string) error
+	notifyDefaults storage.NotifyConfig
+	aiDefaults     storage.AIConfig
 }
 
-func New(db *storage.DB, password, apiKey string, trustFwdAuth bool, backfill func(force bool), testNotify func(kind string) error, notifyDefaults storage.NotifyConfig) *Handler {
+func New(db *storage.DB, password, apiKey string, trustFwdAuth bool, backfill func(force bool), testNotify func(kind string) error, notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig) *Handler {
 	var token string
 	if password != "" {
 		h := sha256.Sum256([]byte(password))
 		token = hex.EncodeToString(h[:])
 	}
-	return &Handler{db: db, password: password, token: token, apiKey: apiKey, trustFwdAuth: trustFwdAuth, backfill: backfill, testNotify: testNotify, notifyDefaults: notifyDefaults}
+	return &Handler{db: db, password: password, token: token, apiKey: apiKey, trustFwdAuth: trustFwdAuth, backfill: backfill, testNotify: testNotify, notifyDefaults: notifyDefaults, aiDefaults: aiDefaults}
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
@@ -69,6 +71,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/backfill", h.guard(h.adminBackfill))
 	mux.HandleFunc("/api/admin/test-notify", h.guard(h.adminTestNotify))
 	mux.HandleFunc("/api/admin/settings", h.guard(h.adminSettings))
+	mux.HandleFunc("/api/admin/ai-models", h.guard(h.adminAIModels))
 	mux.HandleFunc("/api/admin/gaps", h.guard(h.adminGaps))
 	h.registerImportRoutes(mux)
 }
@@ -158,10 +161,15 @@ func (h *Handler) pageDashboard(w http.ResponseWriter, r *http.Request) {
 		Insights        []health.Insight
 		Correlation     []health.CorrelationPoint
 		CorrelationJSON template.JS
+		AIInsight       string
 	}{
 		BasePage:        BasePage{Lang: lang, Title: T(lang, "app_title"), ActiveNav: "dashboard"},
 		CorrelationJSON: "null",
 	}
+
+	// Fetch today's AI insight if available.
+	today := time.Now().Format("2006-01-02")
+	data.AIInsight = h.db.GetAIBriefing(today)
 
 	// Fetch briefing (contains readiness, cards, insights, sleep, correlation)
 	if br, err := h.db.GetHealthBriefing(lang); err == nil && br != nil {
@@ -489,6 +497,7 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 			"timezone": true,
 			"report_morning_weekday": true, "report_morning_weekend": true,
 			"report_evening_weekday": true, "report_evening_weekend": true,
+			"gemini_api_key": true, "gemini_model": true,
 		}
 		clean := make(map[string]string)
 		for k, v := range body {
@@ -506,6 +515,7 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 
 	// GET — return current effective config (DB values, falling back to env defaults).
 	cfg := h.db.GetNotifyConfig(h.notifyDefaults)
+	aiCfg := h.db.GetAIConfig(h.aiDefaults)
 	jsonResponse(w, map[string]any{
 		"telegram_token":          cfg.Token,
 		"telegram_chat_id":        cfg.ChatID,
@@ -516,7 +526,24 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 		"report_evening_weekday":  cfg.EveningWeekdayHour,
 		"report_evening_weekend":  cfg.EveningWeekendHour,
 		"enabled":                 cfg.Enabled(),
+		"gemini_api_key":          aiCfg.APIKey,
+		"gemini_model":            aiCfg.Model,
+		"gemini_enabled":          aiCfg.Enabled(),
 	})
+}
+
+func (h *Handler) adminAIModels(w http.ResponseWriter, r *http.Request) {
+	aiCfg := h.db.GetAIConfig(h.aiDefaults)
+	if !aiCfg.Enabled() {
+		http.Error(w, "Gemini API key not configured", http.StatusBadRequest)
+		return
+	}
+	models, err := ai.ListModels(aiCfg.APIKey)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	jsonResponse(w, map[string]any{"models": models})
 }
 
 func (h *Handler) adminTestNotify(w http.ResponseWriter, r *http.Request) {

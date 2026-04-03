@@ -16,6 +16,7 @@ bin/
 # Environment files
 .env
 .env.*
+!.env.example
 docker-compose.override.yml
 
 # macOS

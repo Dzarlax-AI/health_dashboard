@@ -82,6 +82,30 @@
         </div>
       </div>
 
+      <!-- AI briefing settings -->
+      <div class="admin-section" id="admin-ai-section">
+        <div class="section-title">{{T .Lang "admin_ai_title"}}</div>
+        <div class="admin-settings-form">
+          <div class="admin-field-row">
+            <label class="admin-field-label">{{T .Lang "admin_ai_key"}}</label>
+            <input class="admin-field-input" type="password" id="cfg-gemini-key" autocomplete="off" placeholder="AIza..." oninput="onGeminiKeyChange()">
+          </div>
+          <div class="admin-field-row">
+            <label class="admin-field-label">{{T .Lang "admin_ai_model"}}</label>
+            <select class="admin-field-input" id="cfg-gemini-model">
+              <option value="">— enter API key to load models —</option>
+            </select>
+          </div>
+          <div class="admin-settings-actions">
+            <button class="admin-btn primary" onclick="saveAISettings()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+              {{T .Lang "admin_ai_save"}}
+            </button>
+          </div>
+        </div>
+        <div id="admin-ai-msg" style="display:none"></div>
+      </div>
+
       <!-- Telegram settings -->
       <div class="admin-section" id="admin-notify-section">
         <div class="section-title">{{T .Lang "admin_notify_title"}}</div>
@@ -265,6 +289,69 @@ function loadAdminSettings() {
       if (d.report_morning_weekend) $('cfg-morning-weekend').value = d.report_morning_weekend;
       if (d.report_evening_weekday) $('cfg-evening-weekday').value = d.report_evening_weekday;
       if (d.report_evening_weekend) $('cfg-evening-weekend').value = d.report_evening_weekend;
+      if (d.gemini_api_key) {
+        $('cfg-gemini-key').value = d.gemini_api_key;
+        loadGeminiModels(d.gemini_api_key, d.gemini_model || '');
+      }
+    });
+}
+
+var _geminiKeyTimer = null;
+function onGeminiKeyChange() {
+  clearTimeout(_geminiKeyTimer);
+  _geminiKeyTimer = setTimeout(function() {
+    var key = $('cfg-gemini-key').value.trim();
+    if (key.length > 10) loadGeminiModels(key, null);
+  }, 800);
+}
+
+function loadGeminiModels(key, currentModel) {
+  // Temporarily save the key so the endpoint can use it
+  var sel = $('cfg-gemini-model');
+  sel.innerHTML = '<option value="">Loading...</option>';
+  sel.disabled = true;
+
+  // Save key first, then fetch models
+  fetch('/api/admin/settings', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({gemini_api_key: key})
+  })
+  .then(function() { return fetch('/api/admin/ai-models'); })
+  .then(function(r) {
+    if (!r.ok) throw new Error('Failed to load models');
+    return r.json();
+  })
+  .then(function(d) {
+    sel.innerHTML = '';
+    (d.models || []).forEach(function(m) {
+      var opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.display_name ? m.display_name + ' (' + m.id + ')' : m.id;
+      if (m.id === currentModel) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    sel.disabled = false;
+  })
+  .catch(function(e) {
+    sel.innerHTML = '<option value="">— could not load models —</option>';
+    sel.disabled = false;
+  });
+}
+
+function saveAISettings() {
+  var body = {
+    gemini_api_key: $('cfg-gemini-key').value,
+    gemini_model: $('cfg-gemini-model').value
+  };
+  fetch('/api/admin/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
+    .then(function(r){return r.json()})
+    .then(function(d) {
+      var msg = $('admin-ai-msg');
+      msg.textContent = '{{T .Lang "admin_ai_saved"}}';
+      msg.style.display = '';
+      msg.className = 'admin-msg success';
+      setTimeout(function(){ msg.style.display = 'none'; }, 3000);
     });
 }
 

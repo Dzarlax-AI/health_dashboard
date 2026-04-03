@@ -81,12 +81,16 @@ func (c Config) NextEvening(from time.Time) time.Time {
 }
 
 // SendMorning sends the sleep report for the most recent night.
+// If an AI insight has been saved for today it is prepended to the message.
 func SendMorning(bot *Bot, db *storage.DB, cfg Config) error {
 	briefing, err := db.GetHealthBriefing(cfg.Lang)
 	if err != nil {
 		return err
 	}
-	return bot.Send(formatMorning(briefing, cfg.Lang, cfg.location()))
+	loc := cfg.location()
+	today := time.Now().In(loc).Format("2006-01-02")
+	aiInsight := db.GetAIBriefing(today)
+	return bot.Send(formatMorning(briefing, aiInsight, cfg.Lang, loc))
 }
 
 // SendEvening sends the daily activity summary.
@@ -162,13 +166,16 @@ var statusEmoji = map[string]string{
 	"low":  "🔴",
 }
 
-func formatMorning(b *health.BriefingResponse, lang string, loc *time.Location) string {
+func formatMorning(b *health.BriefingResponse, aiInsight, lang string, loc *time.Location) string {
 	hdr := morningHeader[lang]
 	if hdr == "" {
 		hdr = morningHeader["en"]
 	}
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("<b>%s — %s</b>\n\n", hdr, b.Date))
+	if aiInsight != "" {
+		sb.WriteString(fmt.Sprintf("🤖 <i>%s</i>\n\n", aiInsight))
+	}
 
 	// Morning report should show last night's sleep (stored with today's date in Apple Health).
 	// If data is 1+ day old, the phone hasn't synced after waking up yet.
