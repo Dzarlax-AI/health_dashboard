@@ -728,4 +728,8 @@ select:focus, input[type=date]:focus { outline: none; border-color: var(--accent
 .import-progress-bar-track { height: 8px; background: var(--surface); border-radius: 4px; overflow: hidden; margin-bottom: 8px; }
 .import-progress-bar-fill { height: 100%; background: var(--accent); border-radius: 4px; width: 0%; transition: width 0.4s ease; }
 .import-status-text { font-size: 13px; color: var(--muted); }
+.section-icon-recovery { color: var(--heart); }
+.section-icon-sleep { color: var(--sleep); }
+.section-icon-activity { color: var(--activity); }
+.section-icon-cardio { color: var(--heart); }
 `
