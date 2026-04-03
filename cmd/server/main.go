@@ -107,24 +107,8 @@ func main() {
 			return
 		}
 
-		log.Println("morning trigger: generating AI briefing…")
-		raw := db.GetRawMetrics()
-		if raw == nil {
-			log.Println("morning trigger: no raw metrics available, skipping")
-			return
-		}
-		rawJSON, err := json.Marshal(raw)
-		if err != nil {
-			log.Printf("morning trigger: marshal raw metrics: %v", err)
-			return
-		}
-		insight, err := ai.GenerateMorningBriefing(aiCfg.APIKey, aiCfg.Model, rawJSON)
-		if err != nil {
-			log.Printf("morning trigger: gemini error: %v", err)
-			return
-		}
-		if err := db.SaveAIBriefing(today, insight); err != nil {
-			log.Printf("morning trigger: save briefing: %v", err)
+		if insight := ensureTodayAIInsight(db, aiCfg); insight == "" {
+			log.Println("morning trigger: AI insight unavailable, aborting")
 			return
 		}
 
@@ -179,7 +163,7 @@ func main() {
 	}
 
 	// Always start scheduler — it re-reads config from DB each iteration.
-	go runReportScheduler(db, notifyDefaults)
+	go runReportScheduler(db, notifyDefaults, aiDefaults)
 
 	// testNotify reads fresh config from DB on every call.
 	testNotifyFn := func(kind string) error {
@@ -199,6 +183,9 @@ func main() {
 		if kind == "evening" {
 			return notify.SendEvening(bot, db, ncfg)
 		}
+		// For morning test: generate AI insight if not yet done today.
+		// Do NOT mark as sent — test should not block the real morning trigger.
+		ensureTodayAIInsight(db, aiDefaults)
 		return notify.SendMorning(bot, db, ncfg)
 	}
 
@@ -270,7 +257,7 @@ func (s *backfillScheduler) run() {
 // runReportScheduler fires morning and evening Telegram reports on schedule.
 // It re-reads config from DB on every iteration so settings changes take effect
 // without a server restart.
-func runReportScheduler(db *storage.DB, defaults storage.NotifyConfig) {
+func runReportScheduler(db *storage.DB, defaults storage.NotifyConfig, aiDefaults storage.AIConfig) {
 	for {
 		cfg := db.GetNotifyConfig(defaults)
 		if !cfg.Enabled() {
@@ -323,8 +310,11 @@ func runReportScheduler(db *storage.DB, defaults storage.NotifyConfig) {
 				continue
 			}
 			log.Println("report scheduler: sending morning report (fallback)…")
+			ensureTodayAIInsight(db, aiDefaults)
 			if err := notify.SendMorning(bot, db, ncfg); err != nil {
 				log.Printf("report scheduler: morning send error: %v", err)
+			} else {
+				db.MarkMorningReportSent(today)
 			}
 		} else {
 			log.Println("report scheduler: sending evening report…")
@@ -333,6 +323,38 @@ func runReportScheduler(db *storage.DB, defaults storage.NotifyConfig) {
 			}
 		}
 	}
+}
+
+// ensureTodayAIInsight returns today's AI insight, generating and saving it if not yet done.
+// Returns "" if AI is not configured or generation fails.
+func ensureTodayAIInsight(db *storage.DB, aiDefaults storage.AIConfig) string {
+	aiCfg := db.GetAIConfig(aiDefaults)
+	if !aiCfg.Enabled() {
+		return ""
+	}
+	today := time.Now().Format("2006-01-02")
+	if existing := db.GetAIBriefing(today); existing != "" {
+		return existing // already generated today, reuse
+	}
+	raw := db.GetRawMetrics()
+	if raw == nil {
+		log.Println("ensureTodayAIInsight: no raw metrics available")
+		return ""
+	}
+	rawJSON, err := json.Marshal(raw)
+	if err != nil {
+		log.Printf("ensureTodayAIInsight: marshal: %v", err)
+		return ""
+	}
+	insight, err := ai.GenerateMorningBriefing(aiCfg.APIKey, aiCfg.Model, rawJSON)
+	if err != nil {
+		log.Printf("ensureTodayAIInsight: gemini: %v", err)
+		return ""
+	}
+	if err := db.SaveAIBriefing(today, insight); err != nil {
+		log.Printf("ensureTodayAIInsight: save: %v", err)
+	}
+	return insight
 }
 
 func getEnv(key, fallback string) string {
