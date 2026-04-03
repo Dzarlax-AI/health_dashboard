@@ -235,14 +235,20 @@ var SLEEP_PHASES = [
 function loadSleepChart(canvasId, from, to) {
   var el = document.getElementById(canvasId);
   if (!el) return;
+  setLoading(true);
   Promise.all(SLEEP_PHASES.map(function(ph) {
     return fetch('/api/metrics/data?metric=' + ph.metric + '&from=' + from + '&to=' + to + '&bucket=day&agg=AVG')
       .then(function(r){return r.json()});
   })).then(function(results) {
+    setLoading(false);
     var labelSet = new Set();
     results.forEach(function(r) { (r.points || []).forEach(function(p) { labelSet.add(p.date); }); });
     var labels = Array.from(labelSet).sort();
-    if (!labels.length) return;
+    if (!labels.length) {
+      var sr = document.getElementById('stats-row');
+      if (sr) sr.innerHTML = '<div style="color:var(--muted);padding:8px">No sleep data for this range</div>';
+      return;
+    }
     var ptMap = results.map(function(r) {
       var m = {}; (r.points||[]).forEach(function(p) { m[p.date] = p.qty; }); return m;
     });
@@ -268,21 +274,27 @@ function loadSleepChart(canvasId, from, to) {
         }
       }
     });
-  }).catch(function(e) { console.error('loadSleepChart error:', e); });
+  }).catch(function(e) { setLoading(false); console.error('loadSleepChart error:', e); });
 }
 
 // ---- Readiness history chart ----
 function loadReadinessChart(canvasId, from, to) {
   var el = document.getElementById(canvasId);
   if (!el) return;
+  setLoading(true);
   var fromD = new Date(from + 'T12:00:00');
   var toD = new Date(to + 'T12:00:00');
   var days = Math.round((toD - fromD) / 86400000) + 1;
   fetch('/api/readiness-history?days=' + days)
     .then(function(r){return r.json()})
     .then(function(d) {
+      setLoading(false);
       var pts = (d.points || []).filter(function(p){ return p.date >= from && p.date <= to; });
-      if (!pts.length) return;
+      if (!pts.length) {
+        var sr = document.getElementById('stats-row');
+        if (sr) sr.innerHTML = '<div style="color:var(--muted);padding:8px">No data for this range</div>';
+        return;
+      }
       var labels = pts.map(function(p){ return p.date; });
       var vals = pts.map(function(p){ return p.score; });
       _createChart(canvasId, {
@@ -315,7 +327,7 @@ function loadReadinessChart(canvasId, from, to) {
         }
       });
     })
-    .catch(function(e) { console.error('loadReadinessChart error:', e); });
+    .catch(function(e) { setLoading(false); console.error('loadReadinessChart error:', e); });
 }
 
 // ---- Generic metric chart ----
@@ -326,6 +338,7 @@ function loadMetricChart(canvasId, metric, from, to, bucket, agg, opts) {
   var el = document.getElementById(canvasId);
   if (!el) return;
   opts = opts || {};
+  setLoading(true);
   var url = '/api/metrics/data?metric=' + encodeURIComponent(metric) + '&from=' + from + '&to=' + to;
   if (bucket) url += '&bucket=' + bucket;
   if (agg) url += '&agg=' + agg;
@@ -334,12 +347,25 @@ function loadMetricChart(canvasId, metric, from, to, bucket, agg, opts) {
   fetch(url)
     .then(function(r){return r.json()})
     .then(function(data) {
+      setLoading(false);
       var pts = data.points || [];
-      if (!pts.length) return;
+      if (!pts.length) {
+        var sr = document.getElementById('stats-row');
+        if (sr) sr.innerHTML = '<div style="color:var(--muted);padding:8px">No data for this range</div>';
+        if (_chartInstances[canvasId]) { _chartInstances[canvasId].destroy(); delete _chartInstances[canvasId]; }
+        return;
+      }
       var labels = pts.map(function(p){return p.date});
       var vals = pts.map(function(p){return p.qty});
       var isBar = BAR_METRICS.has(metric);
       var lineColor = opts.color || '#2563eb';
+
+      // Stats row
+      var sr = document.getElementById('stats-row');
+      if (sr) {
+        var avgV = vals.reduce(function(a,b){return a+b},0) / vals.length;
+        sr.innerHTML = chip('Points', pts.length, '') + chip('Avg', fmt2(avgV), '') + chip('Min', fmt2(Math.min.apply(null,vals)), '') + chip('Max', fmt2(Math.max.apply(null,vals)), '');
+      }
 
       _createChart(canvasId, {
         type: isBar ? 'bar' : 'line',
@@ -378,7 +404,7 @@ function loadMetricChart(canvasId, metric, from, to, bucket, agg, opts) {
         }
       });
     })
-    .catch(function(e) { console.error('loadMetricChart error:', e); });
+    .catch(function(e) { setLoading(false); console.error('loadMetricChart error:', e); });
 }
 
 // Helper: stat chip
