@@ -104,18 +104,26 @@ func templateKeys() []string {
 	return keys
 }
 
-// renderFragment executes a partial template (no base layout).
+// renderFragment executes a named {{define}} block from any parsed page template.
+// Fragments are defined in partials/ and included in every page template.
 func renderFragment(w http.ResponseWriter, name string, data any) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	t := pageTemplates[name]
-	if t == nil {
-		http.Error(w, "fragment not found: "+name, http.StatusInternalServerError)
-		return
+	// Fragments are available in every page template since partials are parsed with all pages.
+	// Pick any page template to find the fragment.
+	for _, t := range pageTemplates {
+		if frag := t.Lookup(name); frag != nil {
+			var buf bytes.Buffer
+			if err := frag.Execute(&buf, data); err != nil {
+				log.Printf("render fragment %s: %v", name, err)
+				http.Error(w, "render error: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			buf.WriteTo(w)
+			return
+		}
 	}
-	if err := t.ExecuteTemplate(w, name, data); err != nil {
-		log.Printf("render fragment %s: %v", name, err)
-		http.Error(w, "render error", http.StatusInternalServerError)
-	}
+	log.Printf("fragment %s not found in any template", name)
+	http.Error(w, "fragment not found: "+name, http.StatusInternalServerError)
 }
 
 // serveStatic serves embedded JS files.
