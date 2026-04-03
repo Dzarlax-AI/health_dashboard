@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"embed"
 	"html/template"
 	"io"
@@ -70,32 +71,37 @@ func init() {
 }
 
 // renderPage executes a page template by name (e.g., "dashboard", "section", "login").
+// Renders to a buffer first so errors produce a clean 500 instead of partial output.
 func renderPage(w http.ResponseWriter, name string, data any) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-
-	// For login page, execute the template directly (no base layout)
+	tmplName := "base"
 	if name == "login" {
-		t := pageTemplates["login"]
-		if t == nil {
-			http.Error(w, "template not found", http.StatusInternalServerError)
-			return
-		}
-		if err := t.ExecuteTemplate(w, "login.html", data); err != nil {
-			log.Printf("render %s: %v", name, err)
-			http.Error(w, "render error", http.StatusInternalServerError)
-		}
-		return
+		tmplName = "login.html"
 	}
 
 	t := pageTemplates[name]
 	if t == nil {
+		log.Printf("render %s: template not found (available: %v)", name, templateKeys())
 		http.Error(w, "template not found: "+name, http.StatusInternalServerError)
 		return
 	}
-	if err := t.ExecuteTemplate(w, "base", data); err != nil {
+
+	var buf bytes.Buffer
+	if err := t.ExecuteTemplate(&buf, tmplName, data); err != nil {
 		log.Printf("render %s: %v", name, err)
-		http.Error(w, "render error", http.StatusInternalServerError)
+		http.Error(w, "render error: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	buf.WriteTo(w)
+}
+
+func templateKeys() []string {
+	keys := make([]string, 0, len(pageTemplates))
+	for k := range pageTemplates {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 // renderFragment executes a partial template (no base layout).
