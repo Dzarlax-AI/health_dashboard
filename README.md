@@ -13,6 +13,8 @@ flowchart TD
         UI["Web Dashboard"]
         MCP["/mcp MCP Server"]
         BF["Backfill Scheduler (debounced 2 min)"]
+        AI["AI Briefing (internal/ai)"]
+        TG["Telegram Notifier"]
     end
 
     subgraph PG["PostgreSQL (shared instance, schema: health)"]
@@ -20,10 +22,13 @@ flowchart TD
         MP[("metric_points")]
         HM[("hourly_metrics")]
         DS[("daily_scores")]
+        AB[("ai_briefings")]
     end
 
+    Gemini["Gemini API"]
     Claude["Claude / AI"]
     Browser["Browser"]
+    Telegram["Telegram"]
 
     App -->|"POST /health X-API-Key"| H
     H --> HR
@@ -32,6 +37,15 @@ flowchart TD
 
     BF -->|"aggregate"| HM
     HM -->|"rollup"| DS
+
+    DS -->|"raw metrics"| AI
+    AI -->|"generateContent"| Gemini
+    Gemini -->|"briefing text"| AI
+    AI -->|"cache"| AB
+
+    AB -->|"ai insight"| UI
+    AB -->|"prepend to report"| TG
+    TG -->|"morning/evening"| Telegram
 
     Browser -->|"password auth"| UI
     UI -->|"reads"| DS
