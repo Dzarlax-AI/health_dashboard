@@ -56,13 +56,15 @@ func (s *DB) HasSentMorningReport(date string) bool {
 }
 
 // MarkMorningReportSent records that today's morning report was sent.
+// Uses upsert so the guard works even when no AI briefing was generated.
 func (s *DB) MarkMorningReportSent(date string) error {
 	ctx, cancel := queryCtx()
 	defer cancel()
-	_, err := s.pool.Exec(ctx,
-		`UPDATE ai_briefings SET sent_at = NOW() WHERE date = $1`,
-		date,
-	)
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO ai_briefings (date, insight, sent_at)
+		VALUES ($1, '', NOW())
+		ON CONFLICT (date) DO UPDATE SET sent_at = NOW()
+	`, date)
 	return err
 }
 

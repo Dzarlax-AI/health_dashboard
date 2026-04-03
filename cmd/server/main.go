@@ -76,11 +76,21 @@ func main() {
 		log.Println("startup: cache refresh done")
 	}()
 
+	// morningLock prevents concurrent morning-report sends.
+	// Without this, multiple POST /health goroutines can all pass HasSentMorningReport
+	// before any one of them reaches MarkMorningReportSent.
+	var morningLock int32
+
 	// maybeFireMorningReport triggers the AI morning briefing when:
 	// • time is after 05:00 in the configured timezone
 	// • today's step count exceeds 300 (user is actually awake and moving)
 	// • no morning report has been sent yet today
 	maybeFireMorningReport := func() {
+		if !atomic.CompareAndSwapInt32(&morningLock, 0, 1) {
+			return // another goroutine is already in progress
+		}
+		defer atomic.StoreInt32(&morningLock, 0)
+
 		aiCfg := db.GetAIConfig(aiDefaults)
 		if !aiCfg.Enabled() {
 			return // AI briefing disabled — no API key configured
