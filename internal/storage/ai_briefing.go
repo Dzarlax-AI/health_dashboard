@@ -52,7 +52,7 @@ func (s *DB) GetAIBriefing(date, lang string) string {
 	defer cancel()
 	var insight string
 	s.pool.QueryRow(ctx,
-		`SELECT insight FROM ai_briefings WHERE date = $1 AND ($2 = '' OR lang = $2)`,
+		`SELECT insight FROM ai_briefings WHERE date = $1 AND (lang = '' OR lang = $2)`,
 		date, lang).Scan(&insight)
 	return insight
 }
