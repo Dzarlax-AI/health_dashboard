@@ -14,6 +14,7 @@ var ru = LangStrings{
 	"sec_cardio":   "Сердце и лёгкие",
 
 	"lbl_hrv":        "ВСР",
+	"lbl_vs_avg":     "отн. сред.",
 	"lbl_resting_hr": "Пульс покоя",
 	"lbl_duration":   "Продолжительность",
 	"lbl_deep_sleep": "Глубокий сон",

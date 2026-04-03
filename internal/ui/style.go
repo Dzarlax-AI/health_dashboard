@@ -70,10 +70,12 @@ body {
 /* ── HERO: Readiness ── */
 #hero-section {
   margin-bottom: 32px;
-  background: var(--text);
-  border-radius: var(--radius);
+  background: transparent;
+  border-top: 4px solid var(--text);
+  border-bottom: 1px solid var(--text);
+  border-radius: 0;
   padding: 48px 56px;
-  color: var(--bg);
+  color: var(--text);
   position: relative;
   overflow: hidden;
   display: grid;
@@ -113,17 +115,17 @@ body {
   font-size: 13px; opacity: 0.7; margin-bottom: 8px; font-weight: 500;
 }
 #recovery-bar-track {
-  width: 100%; height: 8px; background: rgba(250,250,250,0.2);
+  width: 100%; height: 8px; background: var(--border);
   border-radius: 4px; overflow: hidden;
 }
 #recovery-bar-fill {
-  height: 100%; background: var(--bg); border-radius: 4px;
+  height: 100%; background: var(--text); border-radius: 4px;
   transition: width 0.8s cubic-bezier(0.4,0,0.2,1);
 }
 #hero-sparkline-block {
   cursor: pointer; position: relative; z-index: 2;
   padding-left: 40px;
-  border-left: 1px solid rgba(255,255,255,0.15);
+  border-left: 1px solid var(--border);
   align-self: center;
 }
 #hero-sparkline-label {
@@ -139,7 +141,7 @@ body {
   font-size: 13px; opacity: 0.6;
 }
 .stale-badge {
-  display: inline-block; background: rgba(255,255,255,0.15);
+  display: inline-block; background: var(--border);
   font-size: 12px; font-weight: 600; padding: 3px 10px;
   border-radius: 8px; margin-left: 8px;
 }

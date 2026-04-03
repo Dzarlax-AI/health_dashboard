@@ -1,5 +1,9 @@
 package health
 
+import (
+	"fmt"
+)
+
 // ComputeBriefing calculates all health scores and insights from pre-fetched raw metrics.
 // It is a pure function — no I/O, all inputs come from RawMetrics.
 // lang selects the output language ("en", "ru", "sr"); defaults to "en".
@@ -22,7 +26,7 @@ func ComputeBriefing(d RawMetrics, lang string) *BriefingResponse {
 
 	overall := overallStatus(sections)
 	highlights := buildHighlights(d, ls)
-	metricCards := buildMetricCards(d)
+	metricCards := buildMetricCards(d, ls)
 
 	return &BriefingResponse{
 		Date:           d.LastDate,
@@ -89,7 +93,7 @@ func buildHighlights(d RawMetrics, ls LangStrings) []BriefingDetail {
 	return out
 }
 
-func buildMetricCards(d RawMetrics) []MetricCard {
+func buildMetricCards(d RawMetrics, ls LangStrings) []MetricCard {
 	type cardSpec struct {
 		name    string
 		metric  string
@@ -99,11 +103,11 @@ func buildMetricCards(d RawMetrics) []MetricCard {
 	}
 	var out []MetricCard
 	for _, sp := range []cardSpec{
-		{"Steps", "step_count", "steps", d.Steps, 0},
-		{"Sleep", "sleep_total", "hrs", d.Sleep, 1},
-		{"HRV", "heart_rate_variability", "ms", d.HRV, 0},
-		{"Resting HR", "resting_heart_rate", "bpm", d.RHR, 0},
-		{"Respiratory Rate", "respiratory_rate", "br/min", d.Resp, 1},
+		{ls["lbl_steps"], "step_count", ls["lbl_steps"], d.Steps, 0},
+		{ls["sec_sleep"], "sleep_total", "hrs", d.Sleep, 1},
+		{ls["lbl_hrv"], "heart_rate_variability", "ms", d.HRV, 0},
+		{ls["lbl_resting_hr"], "resting_heart_rate", "bpm", d.RHR, 0},
+		{ls["lbl_resp"], "respiratory_rate", "br/min", d.Resp, 1},
 	} {
 		if len(sp.vals) == 0 {
 			continue
@@ -112,13 +116,23 @@ func buildMetricCards(d RawMetrics) []MetricCard {
 		today := sp.vals[0]
 		baseline := avg(sp.vals)
 		pct := pctChange(today, baseline)
-		tLabel := trend(pct, false)
+		
+		pctR := roundTo1(pct)
+		tLabel := ""
+		if pctR > 0 {
+			tLabel = fmt.Sprintf("+%.0f%% %s", pctR, ls["lbl_vs_avg"])
+		} else if pctR < 0 {
+			tLabel = fmt.Sprintf("%.0f%% %s", pctR, ls["lbl_vs_avg"])
+		} else {
+			tLabel = ls["lbl_vs_avg"]
+		}
+
 		out = append(out, MetricCard{
 			Name:       sp.name,
 			Metric:     sp.metric,
 			Value:      fmtFloat(today, sp.decimal),
 			Unit:       sp.unit,
-			TrendPct:   roundTo1(pct),
+			TrendPct:   pctR,
 			TrendLabel: tLabel,
 		})
 	}

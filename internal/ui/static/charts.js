@@ -72,8 +72,8 @@ function loadReadinessSparkline(canvasId) {
           labels: labels,
           datasets: [{
             data: vals,
-            borderColor: 'rgba(255,255,255,0.9)',
-            backgroundColor: 'rgba(255,255,255,0.12)',
+            borderColor: 'gray',
+            backgroundColor: 'rgba(128,128,128,0.15)',
             fill: true, borderWidth: 2, pointRadius: 0, tension: 0.4
           }]
         },
@@ -83,8 +83,8 @@ function loadReadinessSparkline(canvasId) {
           plugins: {
             legend: { display: false },
             tooltip: {
-              backgroundColor: 'rgba(0,0,0,0.7)',
-              titleColor: '#fff', bodyColor: '#fff', padding: 6,
+              backgroundColor: 'var(--surface)',
+              titleColor: 'var(--text)', bodyColor: 'var(--text)', borderColor: 'var(--border)', borderWidth: 1, padding: 6,
               callbacks: {
                 title: function(items) { return fmtAxisDate(items[0].label); },
                 label: function(ctx) { return ' ' + Math.round(ctx.parsed.y) + '%'; }
@@ -155,12 +155,16 @@ function loadCorrelationChart(canvasId, data) {
 
 // ---- Trend sparklines ----
 var TRENDS = [
-  { metric:'step_count', labelKey:'Steps', color:'#059669', type:'bar' },
-  { metric:'heart_rate', labelKey:'Heart Rate', color:'#e11d48', type:'line' },
-  { metric:'sleep_total', labelKey:'Sleep', color:'#7c3aed', type:'bar' },
-  { metric:'heart_rate_variability', labelKey:'HRV', color:'#d97706', type:'line' },
-  { metric:'readiness', labelKey:'Readiness', color:'#0ea5e9', type:'line', virtual:true }
+  { metric:'step_count', color:'#059669', type:'bar' },
+  { metric:'heart_rate', color:'#e11d48', type:'line' },
+  { metric:'sleep_total', color:'#7c3aed', type:'bar' },
+  { metric:'heart_rate_variability', color:'#d97706', type:'line' },
+  { metric:'readiness', color:'#0ea5e9', type:'line', virtual:true }
 ];
+var TRENDS_I18N = {
+  'en': { 'step_count': 'Steps', 'heart_rate': 'Heart Rate', 'sleep_total': 'Sleep', 'heart_rate_variability': 'HRV', 'readiness': 'Readiness' },
+  'ru': { 'step_count': 'Шаги', 'heart_rate': 'Пульс', 'sleep_total': 'Сон', 'heart_rate_variability': 'ВСР', 'readiness': 'Готовность' }
+};
 var trendCharts = [];
 
 function loadTrendCharts(containerId) {
@@ -190,9 +194,11 @@ function loadTrendCharts(containerId) {
       wrap.style.cursor = 'pointer';
       wrap.onclick = function() { window.location.href = '/metrics/' + f.metric; };
       var vals = pts.map(function(p){return p.qty});
+      var lang = document.documentElement.lang || 'en';
+      var labelName = (TRENDS_I18N[lang] || TRENDS_I18N['en'])[f.metric] || f.metric;
       var latestVal = vals[vals.length-1];
       var displayVal = f.virtual ? (Math.round(latestVal) + '%') : fmtVal(latestVal, '');
-      wrap.innerHTML = '<div class="trend-card-header"><div class="trend-card-title">' + f.labelKey + '</div><div class="trend-card-value">' + displayVal + '</div></div><div class="trend-card-canvas"><canvas></canvas></div>';
+      wrap.innerHTML = '<div class="trend-card-header"><div class="trend-card-title">' + labelName + '</div><div class="trend-card-value">' + displayVal + '</div></div><div class="trend-card-canvas"><canvas></canvas></div>';
       container.appendChild(wrap);
       var canvas = wrap.querySelector('canvas');
       var labels = pts.map(function(p){return fmtAxisDate(p.date)});

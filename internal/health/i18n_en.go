@@ -17,6 +17,7 @@ var en = LangStrings{
 
 	// Detail labels
 	"lbl_hrv":        "HRV",
+	"lbl_vs_avg":     "vs avg",
 	"lbl_resting_hr": "Resting HR",
 	"lbl_duration":   "Duration",
 	"lbl_deep_sleep": "Deep sleep",

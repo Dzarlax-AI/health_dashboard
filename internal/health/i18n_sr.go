@@ -14,6 +14,7 @@ var sr = LangStrings{
 	"sec_cardio":   "Srce i pluća",
 
 	"lbl_hrv":        "HRV",
+	"lbl_vs_avg":     "vs avg",
 	"lbl_resting_hr": "Puls u miru",
 	"lbl_duration":   "Trajanje",
 	"lbl_deep_sleep": "Duboki san",
