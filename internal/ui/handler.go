@@ -186,10 +186,10 @@ func (h *Handler) pageDashboard(w http.ResponseWriter, r *http.Request) {
 		if br.Sleep != nil {
 			s := br.Sleep
 			data.Sleep = &sleepData{
-				Nights:   3,
-				AvgTotal: fmtMinutes(s.DeepAvg + s.REMAvg + s.AwakeAvg),
-				AvgDeep:  fmtMinutes(s.DeepAvg),
-				AvgREM:   fmtMinutes(s.REMAvg),
+				Nights:   s.Nights,
+				AvgTotal: fmtMinutes(s.TotalAvg * 60),
+				AvgDeep:  fmtMinutes(s.DeepAvg * 60),
+				AvgREM:   fmtMinutes(s.REMAvg * 60),
 			}
 		}
 

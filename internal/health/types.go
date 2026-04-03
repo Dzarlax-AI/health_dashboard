@@ -66,6 +66,8 @@ type SleepSourceSummary struct {
 }
 
 type SleepAnalysis struct {
+	Nights     int                  `json:"nights"`
+	TotalAvg   float64              `json:"total_avg"`
 	DeepAvg    float64              `json:"deep_avg"`
 	REMAvg     float64              `json:"rem_avg"`
 	AwakeAvg   float64              `json:"awake_avg"`

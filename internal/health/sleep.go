@@ -138,19 +138,37 @@ func computeSleepAnalysis(d RawMetrics) *SleepAnalysis {
 		return nil
 	}
 	sa := SleepAnalysis{}
-	// Show last night's values, not 3-night averages.
+
+	// Weekly summary: use up to 7 most-recent nights, skip zeros (no data).
+	const window = 7
+	n := min(window, len(d.Sleep))
+	var validNights int
+	var totalSum float64
+	for i := 0; i < n; i++ {
+		if d.Sleep[i] > 0 {
+			validNights++
+			totalSum += d.Sleep[i]
+		}
+	}
+	sa.Nights = validNights
+	if validNights > 0 {
+		sa.TotalAvg = math.Round(totalSum/float64(validNights)*100) / 100
+		if len(d.Deep) > 0 {
+			sa.DeepAvg = math.Round(avg(d.Deep[:min(n, len(d.Deep))])*100) / 100
+		}
+		if len(d.REM) > 0 {
+			sa.REMAvg = math.Round(avg(d.REM[:min(n, len(d.REM))])*100) / 100
+		}
+		if len(d.Awake) > 0 {
+			sa.AwakeAvg = math.Round(avg(d.Awake[:min(n, len(d.Awake))])*100) / 100
+		}
+	}
+
+	// Efficiency based on last night only.
 	todaySleep := d.Sleep[0]
-	if len(d.Deep) > 0 {
-		sa.DeepAvg = math.Round(d.Deep[0]*100) / 100
-	}
-	if len(d.REM) > 0 {
-		sa.REMAvg = math.Round(d.REM[0]*100) / 100
-	}
-	if len(d.Awake) > 0 {
-		sa.AwakeAvg = math.Round(d.Awake[0]*100) / 100
-	}
-	if todaySleep > 0 {
-		sa.Efficiency = math.Round((todaySleep-sa.AwakeAvg)/todaySleep*100*10) / 10
+	if todaySleep > 0 && len(d.Awake) > 0 {
+		awakeTonight := d.Awake[0]
+		sa.Efficiency = math.Round((todaySleep-awakeTonight)/todaySleep*100*10) / 10
 		if sa.Efficiency < 0 {
 			sa.Efficiency = 0
 		}
