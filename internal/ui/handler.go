@@ -5,10 +5,13 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"time"
 
+	"health-receiver/internal/health"
 	"health-receiver/internal/storage"
 )
 
@@ -33,8 +36,27 @@ func New(db *storage.DB, password, apiKey string, trustFwdAuth bool, backfill fu
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
+	// Login
 	mux.HandleFunc("/login", h.login)
-	mux.HandleFunc("/", h.guard(h.page))
+
+	// Page routes (server-rendered)
+	mux.HandleFunc("GET /", h.guard(h.pageDashboard))
+	mux.HandleFunc("GET /sleep", h.guard(h.pageSleep))
+	mux.HandleFunc("GET /cardio", h.guard(h.pageCardio))
+	mux.HandleFunc("GET /activity", h.guard(h.pageActivity))
+	mux.HandleFunc("GET /recovery", h.guard(h.pageRecovery))
+	mux.HandleFunc("GET /metrics", h.guard(h.pageMetrics))
+	mux.HandleFunc("GET /metrics/{name}", h.guard(h.pageMetricDetail))
+	mux.HandleFunc("GET /admin", h.guard(h.pageAdmin))
+
+	// htmx fragments
+	mux.HandleFunc("GET /fragments/metrics-list", h.guard(h.fragmentMetricsList))
+	mux.HandleFunc("GET /fragments/admin-status", h.guard(h.fragmentAdminStatus))
+
+	// Static assets
+	mux.HandleFunc("GET /static/", serveStatic)
+
+	// JSON API (unchanged)
 	mux.HandleFunc("/api/metrics", h.guard(h.listMetrics))
 	mux.HandleFunc("/api/metrics/latest", h.guard(h.latestMetricValues))
 	mux.HandleFunc("/api/metrics/range", h.guard(h.metricRange))
@@ -101,19 +123,186 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, next, http.StatusFound)
 			return
 		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(loginPage("Invalid password.")))
+		renderPage(w, "login.html", struct{ Error string }{"Invalid password."})
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(loginPage("")))
+	renderPage(w, "login.html", struct{ Error string }{""})
 }
 
-func (h *Handler) page(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(indexHTML))
+// ---- Page handlers ----
+
+func (h *Handler) pageDashboard(w http.ResponseWriter, r *http.Request) {
+	lang := langFromRequest(r)
+	setLangCookie(w, r)
+
+	type sleepData struct {
+		Nights   int
+		AvgTotal string
+		AvgDeep  string
+		AvgREM   string
+	}
+
+	data := struct {
+		BasePage
+		ReadinessScore int
+		ReadinessLabel string
+		ReadinessTip   string
+		RecoveryPct    int
+		Cards          []health.MetricCard
+		Alerts         []health.Alert
+		Sleep          *sleepData
+		Insights       []health.Insight
+		Correlation    []health.CorrelationPoint
+		CorrelationJSON string
+	}{
+		BasePage:        BasePage{Lang: lang, Title: T(lang, "app_title"), ActiveNav: "dashboard"},
+		CorrelationJSON: "null",
+	}
+
+	// Fetch briefing (contains readiness, cards, insights, sleep, correlation)
+	if br, err := h.db.GetHealthBriefing(lang); err == nil && br != nil {
+		data.ReadinessScore = br.ReadinessToday
+		data.ReadinessLabel = br.ReadinessTodayLabel
+		data.ReadinessTip = br.ReadinessTip
+		data.RecoveryPct = br.RecoveryPct
+		data.Cards = br.MetricCards
+		data.Alerts = br.Alerts
+		data.Insights = br.Insights
+		data.Correlation = br.Correlation
+
+		if br.Sleep != nil {
+			s := br.Sleep
+			data.Sleep = &sleepData{
+				Nights:   3,
+				AvgTotal: fmtMinutes(s.DeepAvg + s.REMAvg + s.AwakeAvg),
+				AvgDeep:  fmtMinutes(s.DeepAvg),
+				AvgREM:   fmtMinutes(s.REMAvg),
+			}
+		}
+
+		if len(br.Correlation) > 0 {
+			if b, err := json.Marshal(br.Correlation); err == nil {
+				data.CorrelationJSON = string(b)
+			}
+		}
+	}
+
+	renderPage(w, "dashboard", data)
+}
+
+// fmtMinutes formats a duration in minutes as "Xh Ym".
+func fmtMinutes(m float64) string {
+	h := int(math.Floor(m / 60))
+	min := int(math.Round(m)) % 60
+	if h > 0 {
+		return fmt.Sprintf("%dh %dm", h, min)
+	}
+	return fmt.Sprintf("%dm", min)
+}
+
+func (h *Handler) pageSleep(w http.ResponseWriter, r *http.Request) {
+	lang := langFromRequest(r)
+	setLangCookie(w, r)
+	data := h.buildSectionPage("sleep", lang)
+	renderPage(w, "section", data)
+}
+
+func (h *Handler) pageCardio(w http.ResponseWriter, r *http.Request) {
+	lang := langFromRequest(r)
+	setLangCookie(w, r)
+	data := h.buildSectionPage("cardio", lang)
+	renderPage(w, "section", data)
+}
+
+func (h *Handler) pageActivity(w http.ResponseWriter, r *http.Request) {
+	lang := langFromRequest(r)
+	setLangCookie(w, r)
+	data := h.buildSectionPage("activity", lang)
+	renderPage(w, "section", data)
+}
+
+func (h *Handler) pageRecovery(w http.ResponseWriter, r *http.Request) {
+	lang := langFromRequest(r)
+	setLangCookie(w, r)
+	data := h.buildSectionPage("recovery", lang)
+	renderPage(w, "section", data)
+}
+
+func (h *Handler) pageMetrics(w http.ResponseWriter, r *http.Request) {
+	lang := langFromRequest(r)
+	setLangCookie(w, r)
+	query := r.URL.Query().Get("q")
+	data := h.buildMetricsPageData(lang, query)
+	renderPage(w, "metrics", data)
+}
+
+func (h *Handler) fragmentMetricsList(w http.ResponseWriter, r *http.Request) {
+	lang := langFromRequest(r)
+	query := r.URL.Query().Get("q")
+	data := h.buildMetricsPageData(lang, query)
+	renderFragment(w, "metrics-list", data)
+}
+
+func (h *Handler) pageMetricDetail(w http.ResponseWriter, r *http.Request) {
+	lang := langFromRequest(r)
+	setLangCookie(w, r)
+	metricName := r.PathValue("name")
+	data := struct {
+		BasePage
+		MetricName  string
+		MetricLabel string
+	}{
+		BasePage:    BasePage{Lang: lang, Title: MetricName(lang, metricName), ActiveNav: "metrics"},
+		MetricName:  metricName,
+		MetricLabel: MetricName(lang, metricName),
+	}
+	renderPage(w, "metric_detail", data)
+}
+
+func (h *Handler) pageAdmin(w http.ResponseWriter, r *http.Request) {
+	lang := langFromRequest(r)
+	setLangCookie(w, r)
+	renderPage(w, "admin", BasePage{Lang: lang, Title: T(lang, "admin_title"), ActiveNav: "admin"})
+}
+
+func (h *Handler) fragmentAdminStatus(w http.ResponseWriter, r *http.Request) {
+	lang := langFromRequest(r)
+	status, err := h.db.GetCacheStatus()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	data := struct {
+		Lang        string
+		RawCount    int
+		MinuteCount int
+		HourlyCount int
+		DailyCount  int
+		LastSync    string
+	}{
+		Lang:        lang,
+		RawCount:    status.RawPoints.Rows,
+		MinuteCount: status.MinuteCache.Rows,
+		HourlyCount: status.HourlyCache.Rows,
+		DailyCount:  status.DailyScores.Rows,
+		LastSync:    status.LastSync,
+	}
+	renderFragment(w, "admin-status", data)
+}
+
+// setLangCookie persists the language preference when ?lang= is used.
+func setLangCookie(w http.ResponseWriter, r *http.Request) {
+	if q := r.URL.Query().Get("lang"); q == "en" || q == "ru" || q == "sr" {
+		http.SetCookie(w, &http.Cookie{
+			Name:     "lang",
+			Value:    q,
+			Path:     "/",
+			MaxAge:   60 * 60 * 24 * 365,
+			SameSite: http.SameSiteLaxMode,
+		})
+	}
 }
 
 func (h *Handler) listMetrics(w http.ResponseWriter, r *http.Request) {
@@ -364,32 +553,3 @@ func jsonResponse(w http.ResponseWriter, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-func loginPage(errMsg string) string {
-	errHTML := ""
-	if errMsg != "" {
-		errHTML = `<div style="color:#f87171;margin-bottom:12px;font-size:13px">` + errMsg + `</div>`
-	}
-	return `<!DOCTYPE html><html lang="en"><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Health — Login</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0d0f18;color:#e2e8f0;display:flex;align-items:center;justify-content:center;height:100vh}
-.box{background:#13151f;border:1px solid #252836;border-radius:14px;padding:36px 32px;width:100%;max-width:340px}
-h1{font-size:18px;font-weight:700;margin-bottom:24px;text-align:center}
-label{font-size:12px;color:#64748b;display:block;margin-bottom:6px}
-input{width:100%;background:#1a1d2e;border:1px solid #252836;color:#e2e8f0;padding:9px 12px;border-radius:8px;font-size:14px;outline:none}
-input:focus{border-color:#4f8ef7}
-button{margin-top:16px;width:100%;background:#4f8ef7;border:none;color:#fff;padding:10px;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer}
-button:hover{background:#3b7de0}
-</style></head><body>
-<div class="box">
-  <h1>❤ Health</h1>` + errHTML + `
-  <form method="POST">
-    <label>Password</label>
-    <input type="password" name="password" autofocus>
-    <button type="submit">Sign in</button>
-  </form>
-</div>
-</body></html>`
-}

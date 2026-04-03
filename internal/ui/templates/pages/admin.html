@@ -1,0 +1,309 @@
+{{template "base" .}}
+{{define "content"}}
+<div id="admin-view">
+  <div id="admin-header">
+    <a href="/" class="back-btn" style="display:inline-flex;align-items:center;gap:6px;text-decoration:none;color:var(--text-secondary)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+      {{T .Lang "back"}}
+    </a>
+    <span class="view-title">{{T .Lang "admin_title"}}</span>
+  </div>
+  <div id="admin-content">
+    <div id="admin-body">
+
+      <!-- Cache status -->
+      <div class="admin-section">
+        <div class="admin-section-header">
+          <div class="section-title">{{T .Lang "admin_cache_status"}}</div>
+          <button class="admin-btn" hx-get="/fragments/admin-status" hx-target="#admin-cache-table" hx-swap="innerHTML">{{T .Lang "admin_refresh"}}</button>
+        </div>
+        <div id="admin-cache-table" hx-get="/fragments/admin-status" hx-trigger="load" hx-swap="innerHTML">
+          <div class="spinner"></div>
+        </div>
+      </div>
+
+      <!-- Actions -->
+      <div class="admin-section">
+        <div class="section-title">{{T .Lang "admin_actions"}}</div>
+        <div class="admin-actions">
+          <div class="admin-action-card">
+            <div class="admin-action-title">{{T .Lang "admin_incremental_title"}}</div>
+            <div class="admin-action-desc">{{T .Lang "admin_incremental_desc"}}</div>
+            <button class="admin-btn primary" onclick="triggerBackfill(false)" id="btn-backfill">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+              {{T .Lang "admin_run"}}
+            </button>
+          </div>
+          <div class="admin-action-card">
+            <div class="admin-action-title">{{T .Lang "admin_force_title"}}</div>
+            <div class="admin-action-desc">{{T .Lang "admin_force_desc"}}</div>
+            <button class="admin-btn danger" onclick="triggerBackfill(true)" id="btn-backfill-force">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+              {{T .Lang "admin_force_run"}}
+            </button>
+          </div>
+        </div>
+        <div id="admin-msg" style="display:none"></div>
+      </div>
+
+      <!-- Data integrity -->
+      <div class="admin-section">
+        <div class="admin-section-header">
+          <div class="section-title">{{T .Lang "admin_gaps_section_title"}}</div>
+          <button class="admin-btn" onclick="checkDataGaps()">{{T .Lang "admin_gaps_check"}}</button>
+        </div>
+        <div id="admin-gaps-section"></div>
+      </div>
+
+      <!-- Import -->
+      <div class="admin-section" id="admin-import-section">
+        <div class="section-title">{{T .Lang "admin_import_title"}}</div>
+        <div class="admin-import-body">
+          <div class="admin-import-desc">{{T .Lang "admin_import_desc"}}</div>
+          <div class="admin-import-form">
+            <label class="admin-import-file-label" id="import-file-label" for="import-file-input">{{T .Lang "admin_import_choose"}}</label>
+            <input type="file" id="import-file-input" accept=".zip,.xml" style="display:none" onchange="importFileChosen(this)">
+            <div class="admin-import-options">
+              <label class="admin-import-opt-label">
+                <input type="number" id="import-batch" value="500" min="100" max="5000" style="width:70px"> {{T .Lang "admin_import_batch"}}
+              </label>
+              <label class="admin-import-opt-label">
+                <input type="number" id="import-pause" value="150" min="0" max="5000" style="width:70px"> {{T .Lang "admin_import_pause"}}
+              </label>
+            </div>
+            <button class="admin-btn primary" onclick="startImport()" id="btn-import-start" disabled>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              {{T .Lang "admin_import_start"}}
+            </button>
+          </div>
+          <div id="import-progress" style="display:none">
+            <div class="import-progress-bar-track"><div class="import-progress-bar-fill" id="import-bar"></div></div>
+            <div id="import-status-text" class="import-status-text"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Telegram settings -->
+      <div class="admin-section" id="admin-notify-section">
+        <div class="section-title">{{T .Lang "admin_notify_title"}}</div>
+        <div class="admin-settings-form">
+          <div class="admin-field-row">
+            <label class="admin-field-label">{{T .Lang "admin_notify_token"}}</label>
+            <input class="admin-field-input" type="password" id="cfg-telegram-token" autocomplete="off" placeholder="123456:ABC-DEF...">
+          </div>
+          <div class="admin-field-row">
+            <label class="admin-field-label">{{T .Lang "admin_notify_chat_id"}}</label>
+            <input class="admin-field-input" type="text" id="cfg-telegram-chat-id" autocomplete="off" placeholder="123456789">
+          </div>
+          <div class="admin-field-row">
+            <label class="admin-field-label">{{T .Lang "admin_notify_lang"}}</label>
+            <select class="admin-field-input" id="cfg-report-lang">
+              <option value="en">English</option>
+              <option value="ru">Русский</option>
+              <option value="sr">Srpski</option>
+            </select>
+          </div>
+          <div class="admin-field-row">
+            <label class="admin-field-label">{{T .Lang "admin_notify_timezone"}}</label>
+            <input class="admin-field-input" type="text" id="cfg-timezone" autocomplete="off" placeholder="Europe/Belgrade">
+          </div>
+          <div class="admin-field-group-title">{{T .Lang "admin_notify_schedule_morning"}}</div>
+          <div class="admin-field-row-pair">
+            <div class="admin-field-half">
+              <label class="admin-field-label">{{T .Lang "admin_notify_weekday"}}</label>
+              <input class="admin-field-input" type="number" id="cfg-morning-weekday" min="0" max="23" placeholder="8">
+            </div>
+            <div class="admin-field-half">
+              <label class="admin-field-label">{{T .Lang "admin_notify_weekend"}}</label>
+              <input class="admin-field-input" type="number" id="cfg-morning-weekend" min="0" max="23" placeholder="9">
+            </div>
+          </div>
+          <div class="admin-field-group-title">{{T .Lang "admin_notify_schedule_evening"}}</div>
+          <div class="admin-field-row-pair">
+            <div class="admin-field-half">
+              <label class="admin-field-label">{{T .Lang "admin_notify_weekday"}}</label>
+              <input class="admin-field-input" type="number" id="cfg-evening-weekday" min="0" max="23" placeholder="20">
+            </div>
+            <div class="admin-field-half">
+              <label class="admin-field-label">{{T .Lang "admin_notify_weekend"}}</label>
+              <input class="admin-field-input" type="number" id="cfg-evening-weekend" min="0" max="23" placeholder="21">
+            </div>
+          </div>
+          <div class="admin-settings-actions">
+            <button class="admin-btn primary" onclick="saveNotifySettings()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+              {{T .Lang "admin_notify_save"}}
+            </button>
+            <button class="admin-btn" onclick="triggerTestNotify('morning')">
+              {{T .Lang "admin_notify_test_morning"}}
+            </button>
+            <button class="admin-btn" onclick="triggerTestNotify('evening')">
+              {{T .Lang "admin_notify_test_evening"}}
+            </button>
+          </div>
+        </div>
+        <div id="admin-notify-msg" style="display:none"></div>
+      </div>
+
+    </div>
+  </div>
+</div>
+{{end}}
+
+{{define "scripts"}}
+<script>
+// Admin page JS — fetch-based interactions with JSON API
+function triggerBackfill(force) {
+  var btn = force ? $('btn-backfill-force') : $('btn-backfill');
+  btn.disabled = true;
+  fetch('/api/admin/backfill?force=' + (force ? '1' : '0'), {method:'POST'})
+    .then(function(r){return r.json()})
+    .then(function(d) {
+      var msg = $('admin-msg');
+      msg.textContent = d.message || 'Done';
+      msg.style.display = '';
+      msg.className = 'admin-msg success';
+      btn.disabled = false;
+      setTimeout(function(){ msg.style.display = 'none'; }, 5000);
+    })
+    .catch(function(e) { btn.disabled = false; });
+}
+
+function checkDataGaps() {
+  var el = $('admin-gaps-section');
+  el.innerHTML = '<div class="spinner"></div>';
+  fetch('/api/admin/gaps')
+    .then(function(r){return r.json()})
+    .then(function(d) {
+      var gaps = d.gaps || [];
+      if (!gaps.length) {
+        el.innerHTML = '<div style="color:var(--good);padding:8px">No gaps found</div>';
+        return;
+      }
+      var html = '<div class="gaps-list">';
+      gaps.forEach(function(g) {
+        html += '<div class="gap-item"><span>' + g.from + ' — ' + g.to + '</span><span>' + g.days + ' days</span></div>';
+      });
+      html += '</div>';
+      el.innerHTML = html;
+    })
+    .catch(function() { el.innerHTML = '<div style="color:var(--low)">Error checking gaps</div>'; });
+}
+
+function importFileChosen(input) {
+  var label = $('import-file-label');
+  var btn = $('btn-import-start');
+  if (input.files.length) {
+    label.textContent = input.files[0].name;
+    btn.disabled = false;
+  }
+}
+
+function startImport() {
+  var input = document.getElementById('import-file-input');
+  if (!input.files.length) return;
+  var file = input.files[0];
+  var batch = $('import-batch').value || '500';
+  var pause = $('import-pause').value || '150';
+  var btn = $('btn-import-start');
+  btn.disabled = true;
+  btn.textContent = 'Uploading...';
+
+  var formData = new FormData();
+  formData.append('file', file);
+  formData.append('batch_size', batch);
+  formData.append('pause_ms', pause);
+
+  fetch('/api/admin/import/upload', { method: 'POST', body: formData })
+    .then(function(r){return r.json()})
+    .then(function(d) {
+      $('import-progress').style.display = '';
+      btn.textContent = 'Running...';
+      pollImportStatus();
+    })
+    .catch(function(e) {
+      btn.disabled = false;
+      btn.textContent = 'Start import';
+    });
+}
+
+function pollImportStatus() {
+  fetch('/api/admin/import/status')
+    .then(function(r){return r.json()})
+    .then(function(s) {
+      var bar = $('import-bar');
+      var text = $('import-status-text');
+      if (s.total_bytes > 0 && s.bytes_read > 0) {
+        bar.style.width = Math.min(100, (s.bytes_read / s.total_bytes * 100)).toFixed(1) + '%';
+      }
+      if (s.status === 'done') {
+        text.textContent = 'Done: ' + (s.inserted || 0) + ' inserted, ' + (s.skipped || 0) + ' skipped';
+        $('btn-import-start').disabled = false;
+        $('btn-import-start').textContent = 'Start import';
+        return;
+      }
+      if (s.status === 'error') {
+        text.textContent = 'Error: ' + (s.error || 'unknown');
+        $('btn-import-start').disabled = false;
+        $('btn-import-start').textContent = 'Start import';
+        return;
+      }
+      text.textContent = 'Parsed: ' + (s.parsed || 0) + ' · Inserted: ' + (s.inserted || 0);
+      setTimeout(pollImportStatus, 2000);
+    })
+    .catch(function() { setTimeout(pollImportStatus, 3000); });
+}
+
+function loadAdminSettings() {
+  fetch('/api/admin/settings')
+    .then(function(r){return r.json()})
+    .then(function(d) {
+      if (d.telegram_token) $('cfg-telegram-token').value = d.telegram_token;
+      if (d.telegram_chat_id) $('cfg-telegram-chat-id').value = d.telegram_chat_id;
+      if (d.report_lang) $('cfg-report-lang').value = d.report_lang;
+      if (d.timezone) $('cfg-timezone').value = d.timezone;
+      if (d.report_morning_weekday) $('cfg-morning-weekday').value = d.report_morning_weekday;
+      if (d.report_morning_weekend) $('cfg-morning-weekend').value = d.report_morning_weekend;
+      if (d.report_evening_weekday) $('cfg-evening-weekday').value = d.report_evening_weekday;
+      if (d.report_evening_weekend) $('cfg-evening-weekend').value = d.report_evening_weekend;
+    });
+}
+
+function saveNotifySettings() {
+  var body = {
+    telegram_token: $('cfg-telegram-token').value,
+    telegram_chat_id: $('cfg-telegram-chat-id').value,
+    report_lang: $('cfg-report-lang').value,
+    timezone: $('cfg-timezone').value,
+    report_morning_weekday: $('cfg-morning-weekday').value,
+    report_morning_weekend: $('cfg-morning-weekend').value,
+    report_evening_weekday: $('cfg-evening-weekday').value,
+    report_evening_weekend: $('cfg-evening-weekend').value
+  };
+  fetch('/api/admin/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
+    .then(function(r){return r.json()})
+    .then(function(d) {
+      var msg = $('admin-notify-msg');
+      msg.textContent = 'Settings saved';
+      msg.style.display = '';
+      msg.className = 'admin-msg success';
+      setTimeout(function(){ msg.style.display = 'none'; }, 3000);
+    });
+}
+
+function triggerTestNotify(kind) {
+  fetch('/api/admin/test-notify?kind=' + kind, {method:'POST'})
+    .then(function(r){return r.json()})
+    .then(function(d) {
+      var msg = $('admin-notify-msg');
+      msg.textContent = d.message || 'Sent';
+      msg.style.display = '';
+      msg.className = 'admin-msg ' + (d.status === 'ok' ? 'success' : 'error');
+      setTimeout(function(){ msg.style.display = 'none'; }, 5000);
+    });
+}
+
+// Load settings on page load
+document.addEventListener('DOMContentLoaded', loadAdminSettings);
+</script>
+{{end}}

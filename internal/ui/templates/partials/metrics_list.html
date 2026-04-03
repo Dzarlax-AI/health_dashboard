@@ -1,0 +1,19 @@
+{{define "metrics-list"}}
+{{if .Categories}}
+{{range .Categories}}
+<div class="metric-category">
+  <div class="metric-category-header" style="color:{{.Color}}">{{.Label}}</div>
+  <div class="metric-category-grid">
+    {{range .Metrics}}
+    <a href="/metrics/{{.Name}}" class="metric-item" style="text-decoration:none;color:inherit">
+      <div class="metric-item-name">{{.DisplayName}}</div>
+      {{if .Value}}<div class="metric-item-value">{{.Value}} <span class="metric-item-unit">{{.Unit}}</span></div>{{end}}
+    </a>
+    {{end}}
+  </div>
+</div>
+{{end}}
+{{else}}
+<div style="color:var(--muted);padding:24px;text-align:center">{{T .Lang "no_metrics_found"}}</div>
+{{end}}
+{{end}}

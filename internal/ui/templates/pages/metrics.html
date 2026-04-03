@@ -1,0 +1,23 @@
+{{template "base" .}}
+{{define "content"}}
+<div id="metrics-view">
+  <div id="metrics-header">
+    <a href="/" class="back-btn" style="display:inline-flex;align-items:center;gap:6px;text-decoration:none;color:var(--text-secondary)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+      {{T .Lang "back"}}
+    </a>
+    <span id="metrics-title">{{T .Lang "all_metrics"}}</span>
+    <div id="metrics-search-wrap">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input id="metrics-search" type="text" placeholder="{{T .Lang "search_placeholder"}}" autocomplete="off"
+        hx-get="/fragments/metrics-list" hx-trigger="input changed delay:300ms, search" hx-target="#metrics-content"
+        hx-include="[name='q']" name="q">
+    </div>
+  </div>
+  <div id="metrics-content">
+    {{template "metrics-list" .}}
+  </div>
+</div>
+{{end}}
+
+{{define "scripts"}}{{end}}

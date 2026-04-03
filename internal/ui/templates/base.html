@@ -1,0 +1,32 @@
+{{define "base"}}
+<!DOCTYPE html>
+<html lang="{{.Lang}}">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{.Title}} — {{T .Lang "app_title"}}</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<style>{{CSS}}</style>
+{{block "head" .}}{{end}}
+</head>
+<body>
+{{template "nav" .}}
+<div id="app">
+{{block "content" .}}{{end}}
+</div>
+<script src="/static/app.js"></script>
+{{block "scripts" .}}{{end}}
+{{/* Redirect old hash-based URLs to new routes */}}
+<script>
+(function(){
+  if(location.hash&&location.hash.includes('metric=')){
+    var p=new URLSearchParams(location.hash.slice(1));
+    var m=p.get('metric');
+    if(m) window.location.href='/metrics/'+m;
+  }
+})();
+</script>
+</body>
+</html>
+{{end}}

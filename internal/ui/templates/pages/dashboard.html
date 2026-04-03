@@ -1,0 +1,177 @@
+{{template "base" .}}
+{{define "content"}}
+<div id="dashboard-view">
+
+  <!-- Hero: Readiness Score -->
+  <div id="hero-section">
+    <div id="hero-bg-glow-1"></div>
+    <div id="hero-bg-glow-2"></div>
+    <div id="hero-score-block">
+      <div id="readiness-label-top">{{T .Lang "readiness_today_label"}}</div>
+      <div id="readiness-score">{{if .ReadinessScore}}{{.ReadinessScore}}{{else}}--{{end}}</div>
+      <div id="readiness-status">
+        {{if ge .ReadinessScore 70}}{{T .Lang "status_good"}}
+        {{else if ge .ReadinessScore 40}}{{T .Lang "status_fair"}}
+        {{else if gt .ReadinessScore 0}}{{T .Lang "status_low"}}{{end}}
+      </div>
+    </div>
+    <div id="hero-right-block">
+      {{if .ReadinessTip}}<div id="readiness-tip">{{.ReadinessTip}}</div>{{end}}
+      {{if .RecoveryPct}}
+      <div id="readiness-recovery">
+        <div id="recovery-bar-labels">
+          <span>{{T .Lang "readiness_trend_label"}}</span>
+          <span id="recovery-pct-label">{{.RecoveryPct}}%</span>
+        </div>
+        <div id="recovery-bar-track">
+          <div id="recovery-bar-fill" style="width:{{.RecoveryPct}}%"></div>
+        </div>
+      </div>
+      {{end}}
+    </div>
+    <div id="hero-sparkline-block">
+      <div id="hero-sparkline-label"><span>{{T .Lang "trend_readiness"}}</span> · 30d</div>
+      <div id="hero-sparkline-wrap"><canvas id="readiness-sparkline"></canvas></div>
+    </div>
+  </div>
+
+  {{if .Cards}}
+  <!-- Metric cards -->
+  <div id="metric-cards-area">
+    <div class="section-title">{{T .Lang "at_a_glance"}}</div>
+    <div id="metric-cards-grid">
+      {{range .Cards}}
+      <a href="/metrics/{{.Name}}" class="metric-card" style="text-decoration:none;color:inherit">
+        <div class="metric-card-name">{{.Name}}</div>
+        <div class="metric-card-value">{{.Value}} <span class="metric-card-unit">{{.Unit}}</span></div>
+        {{if .TrendLabel}}<div class="metric-card-trend">{{.TrendLabel}}</div>{{end}}
+      </a>
+      {{end}}
+    </div>
+  </div>
+  {{end}}
+
+  {{if .Alerts}}
+  <!-- Health alerts -->
+  <div id="alerts-panel">
+    {{range .Alerts}}
+    <div class="alert-item alert-{{.Severity}}">{{.Text}}</div>
+    {{end}}
+  </div>
+  {{end}}
+
+  <!-- Section detail cards -->
+  <div id="sections-area">
+    <div class="section-title">{{T .Lang "health_sections"}}</div>
+    <div id="section-cards">
+      <a href="/recovery" class="section-card" style="text-decoration:none;color:inherit">
+        <div class="section-card-icon" style="color:var(--heart)">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="6" width="18" height="12" rx="2"/><line x1="23" y1="13" x2="23" y2="11"/></svg>
+        </div>
+        <div class="section-card-title">{{T .Lang "recovery"}}</div>
+      </a>
+      <a href="/sleep" class="section-card" style="text-decoration:none;color:inherit">
+        <div class="section-card-icon" style="color:var(--sleep)">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        </div>
+        <div class="section-card-title">{{T .Lang "sleep_section"}}</div>
+      </a>
+      <a href="/activity" class="section-card" style="text-decoration:none;color:inherit">
+        <div class="section-card-icon" style="color:var(--activity)">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        </div>
+        <div class="section-card-title">{{T .Lang "cat_activity"}}</div>
+      </a>
+      <a href="/cardio" class="section-card" style="text-decoration:none;color:inherit">
+        <div class="section-card-icon" style="color:var(--cardio)">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+        </div>
+        <div class="section-card-title">{{T .Lang "cat_heart"}}</div>
+      </a>
+    </div>
+  </div>
+
+  <!-- Weekly section -->
+  <div id="weekly-section">
+    <div class="section-title">{{T .Lang "this_week"}}</div>
+    <div id="correlation-insights-row">
+      {{if .Correlation}}
+      <div id="correlation-section">
+        <div class="section-header">
+          <div class="section-subtitle">{{T .Lang "activity_vs_recovery"}}</div>
+          <div class="section-sub2">{{T .Lang "activity_recovery_subtitle"}}</div>
+          <div id="corr-legend">
+            <span class="legend-item"><span class="legend-dot" style="background:var(--activity)"></span><span>{{T .Lang "activity_load"}}</span></span>
+            <span class="legend-item"><span class="legend-dot" style="background:var(--heart)"></span>HRV</span>
+          </div>
+        </div>
+        <div id="corr-chart-wrap">
+          <canvas id="corr-chart"></canvas>
+        </div>
+      </div>
+      {{end}}
+      {{if .Insights}}
+      <div id="insights-panel">
+        <ul id="insights-list">
+          {{range .Insights}}
+          <li class="insight-{{.Type}}">{{.Text}}</li>
+          {{end}}
+        </ul>
+      </div>
+      {{end}}
+    </div>
+  </div>
+
+  {{if .Sleep}}
+  <div id="sleep-section">
+    <div class="section-header">
+      <div class="section-subtitle">{{T .Lang "sleep_section"}}</div>
+      <div class="section-sub2">{{T .Lang "sleep_subtitle"}}</div>
+    </div>
+    <div id="sleep-stats-grid">
+      <div class="sleep-stat">
+        <div class="sleep-stat-label">{{T .Lang "nights"}}</div>
+        <div class="sleep-stat-value">{{.Sleep.Nights}}</div>
+      </div>
+      <div class="sleep-stat">
+        <div class="sleep-stat-label">{{T .Lang "avg_total"}}</div>
+        <div class="sleep-stat-value">{{.Sleep.AvgTotal}}</div>
+      </div>
+      <div class="sleep-stat">
+        <div class="sleep-stat-label">{{T .Lang "avg_deep"}}</div>
+        <div class="sleep-stat-value">{{.Sleep.AvgDeep}}</div>
+      </div>
+      <div class="sleep-stat">
+        <div class="sleep-stat-label">{{T .Lang "avg_rem"}}</div>
+        <div class="sleep-stat-value">{{.Sleep.AvgREM}}</div>
+      </div>
+    </div>
+  </div>
+  {{end}}
+
+  <!-- Trend sparklines -->
+  <div id="trends-section">
+    <div class="section-title">{{T .Lang "your_trends"}}</div>
+    <div id="trend-charts"></div>
+  </div>
+
+</div>
+{{end}}
+
+{{define "scripts"}}
+<script src="/static/charts.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  var corrData = {{.CorrelationJSON}};
+  if (corrData && corrData.length > 0 && typeof loadCorrelationChart === 'function') {
+    loadCorrelationChart('corr-chart', corrData);
+  }
+  if (typeof loadTrendCharts === 'function') {
+    loadTrendCharts('trend-charts');
+  }
+  if (typeof loadReadinessSparkline === 'function') {
+    loadReadinessSparkline('readiness-sparkline');
+  }
+});
+</script>
+{{end}}

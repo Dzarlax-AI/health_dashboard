@@ -1,0 +1,83 @@
+{{template "base" .}}
+{{define "content"}}
+<div id="section-view">
+  <a href="/" class="back-btn" style="display:inline-flex;align-items:center;gap:6px;text-decoration:none;color:var(--text-secondary);margin-bottom:16px">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+    {{T .Lang "back"}}
+  </a>
+
+  <div class="section-detail-header">
+    <div class="section-detail-icon" style="color:{{.IconColor}}">{{.IconSVG}}</div>
+    <h1 class="section-detail-title">{{.SectionTitle}}</h1>
+  </div>
+
+  {{if .Summary}}
+  <div class="section-detail-summary">{{.Summary}}</div>
+  {{end}}
+
+  {{if .Details}}
+  <div class="section-detail-stats">
+    {{range .Details}}
+    <div class="insight-detail">
+      <span class="detail-indicator {{.Trend}}"></span>
+      <span class="detail-label">{{.Label}}</span>
+      <span class="detail-value">{{.Value}}</span>
+      {{if .Note}}<span class="detail-note">{{.Note}}</span>{{end}}
+    </div>
+    {{end}}
+  </div>
+  {{end}}
+
+  {{if .SleepStats}}
+  <div id="sleep-stats-grid" style="margin-bottom:20px">
+    {{range .SleepStats}}
+    <div class="sleep-stat">
+      <div class="sleep-stat-label">{{.Label}}</div>
+      <div class="sleep-stat-value{{if .Accent}} accent{{end}}">{{.Value}}</div>
+    </div>
+    {{end}}
+  </div>
+  {{end}}
+
+  <!-- Charts -->
+  <div class="section-charts">
+    {{range .Charts}}
+    <div class="section-chart-card">
+      <div class="section-chart-title">{{.Label}}</div>
+      <div class="section-chart-wrap"><canvas id="{{.ID}}"></canvas></div>
+    </div>
+    {{end}}
+  </div>
+
+  {{if .Explains}}
+  <!-- How it works -->
+  <div class="section-explain-area">
+    <div class="section-title">{{T .Lang "how_it_works"}}</div>
+    {{range .Explains}}
+    <div class="explain-card">
+      <div class="explain-card-title">{{.Title}}</div>
+      <div class="explain-card-body">{{.Body}}</div>
+    </div>
+    {{end}}
+  </div>
+  {{end}}
+</div>
+{{end}}
+
+{{define "scripts"}}
+<script src="/static/charts.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  var from = daysAgoStr(29), to = todayStr();
+  {{range .Charts}}
+  {{if .Stacked}}
+  loadSleepChart('{{.ID}}', from, to);
+  {{else if .Virtual}}
+  loadReadinessChart('{{.ID}}', from, to);
+  {{else}}
+  loadMetricChart('{{.ID}}', '{{.Metric}}', from, to, 'day', '{{.Agg}}', {color:'{{.Color}}'});
+  {{end}}
+  {{end}}
+});
+</script>
+{{end}}

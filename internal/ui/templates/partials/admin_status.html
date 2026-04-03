@@ -1,0 +1,9 @@
+{{define "admin-status"}}
+<table class="admin-cache-table">
+  <tr><th>{{T .Lang "admin_raw"}}</th><td>{{.RawCount}} {{T .Lang "admin_metrics"}}</td></tr>
+  <tr><th>{{T .Lang "admin_minute"}}</th><td>{{if .MinuteCount}}{{.MinuteCount}} {{T .Lang "admin_metrics"}}{{else}}{{T .Lang "admin_empty"}}{{end}}</td></tr>
+  <tr><th>{{T .Lang "admin_hourly"}}</th><td>{{if .HourlyCount}}{{.HourlyCount}} {{T .Lang "admin_metrics"}}{{else}}{{T .Lang "admin_empty"}}{{end}}</td></tr>
+  <tr><th>{{T .Lang "admin_daily"}}</th><td>{{if .DailyCount}}{{.DailyCount}} {{T .Lang "admin_metrics"}}{{else}}{{T .Lang "admin_empty"}}{{end}}</td></tr>
+  <tr><th>{{T .Lang "admin_last_sync"}}</th><td>{{.LastSync}}</td></tr>
+</table>
+{{end}}

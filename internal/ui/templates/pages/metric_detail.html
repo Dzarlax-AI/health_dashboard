@@ -1,0 +1,146 @@
+{{template "base" .}}
+{{define "content"}}
+<div id="chart-view">
+  <a href="/metrics" class="back-btn" style="display:inline-flex;align-items:center;gap:6px;text-decoration:none;color:var(--text-secondary);margin-bottom:8px">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+    {{T .Lang "back"}}
+  </a>
+  <div id="chart-title-row">
+    <span id="chart-metric-name">{{.MetricLabel}}</span>
+    <span id="chart-period"></span>
+  </div>
+  <div id="chart-controls">
+    <div class="presets" id="presets">
+      <button class="preset-btn" onclick="applyPreset(1)">1d</button>
+      <button class="preset-btn" onclick="applyPreset(7)">7d</button>
+      <button class="preset-btn active" onclick="applyPreset(30)">30d</button>
+      <button class="preset-btn" onclick="applyPreset(90)">90d</button>
+      <button class="preset-btn" onclick="applyPreset(365)">1y</button>
+      <button class="preset-btn" onclick="applyPresetAll()">{{T .Lang "preset_all"}}</button>
+    </div>
+    <div class="ctrl-group">
+      <input type="date" id="from" onchange="reloadChart()">
+      <span class="ctrl-label">&mdash;</span>
+      <input type="date" id="to" onchange="reloadChart()">
+    </div>
+    <div class="ctrl-group">
+      <span class="ctrl-label">{{T .Lang "bucket"}}</span>
+      <select id="bucket" onchange="reloadChart()">
+        <option value="">{{T .Lang "auto"}}</option>
+        <option value="minute">{{T .Lang "minute"}}</option>
+        <option value="hour">{{T .Lang "hour"}}</option>
+        <option value="day">{{T .Lang "day"}}</option>
+      </select>
+      <span class="ctrl-label" style="margin-left:4px">{{T .Lang "agg"}}</span>
+      <select id="agg" onchange="reloadChart()">
+        <option value="">{{T .Lang "auto"}}</option>
+        <option value="AVG">{{T .Lang "avg"}}</option>
+        <option value="SUM">{{T .Lang "sum"}}</option>
+        <option value="MAX">{{T .Lang "max"}}</option>
+        <option value="MIN">{{T .Lang "min"}}</option>
+      </select>
+    </div>
+    <div class="ctrl-group">
+      <div class="shift-btns">
+        <button onclick="shiftRange(-1)">&#8249;</button>
+        <button onclick="shiftRange(1)">&#8250;</button>
+      </div>
+      <button id="by-source-btn" class="toolbar-btn" onclick="toggleBySource()">{{T .Lang "by_source"}}</button>
+      <button id="compare-btn" class="toolbar-btn" onclick="toggleCompare()">{{T .Lang "compare"}}</button>
+      <button class="toolbar-btn" onclick="downloadCSV()">CSV</button>
+    </div>
+  </div>
+  <div id="stats-row"></div>
+  <div id="chart-wrap">
+    <div id="chart-loading"><div class="spinner"></div></div>
+    <canvas id="chart"></canvas>
+  </div>
+</div>
+{{end}}
+
+{{define "scripts"}}
+<script src="/static/charts.js"></script>
+<script>
+var currentMetric = '{{.MetricName}}';
+var compareEnabled = false, bySourceEnabled = false;
+
+document.addEventListener('DOMContentLoaded', function() {
+  $('from').value = daysAgoStr(29);
+  $('to').value = todayStr();
+  reloadChart();
+});
+
+function reloadChart() {
+  var from = $('from').value, to = $('to').value;
+  var bucket = $('bucket').value, agg = $('agg').value;
+  if (currentMetric === 'readiness') {
+    loadReadinessChart('chart', from, to);
+    return;
+  }
+  var isSleep = ['sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake'].indexOf(currentMetric) >= 0;
+  if (isSleep && !bucket && !agg) {
+    loadSleepChart('chart', from, to);
+    return;
+  }
+  loadMetricChart('chart', currentMetric, from, to, bucket, agg, {bySource: bySourceEnabled});
+}
+
+function applyPreset(days) {
+  $('from').value = daysAgoStr(days - 1);
+  $('to').value = todayStr();
+  document.querySelectorAll('.preset-btn').forEach(function(b) { b.classList.remove('active'); });
+  event.target.classList.add('active');
+  reloadChart();
+}
+
+function applyPresetAll() {
+  fetch('/api/metrics/range?metric=' + encodeURIComponent(currentMetric))
+    .then(function(r){return r.json()})
+    .then(function(range) {
+      if (range.min) $('from').value = range.min;
+      $('to').value = todayStr();
+      document.querySelectorAll('.preset-btn').forEach(function(b) { b.classList.remove('active'); });
+      reloadChart();
+    });
+}
+
+function shiftRange(dir) {
+  var from = new Date($('from').value + 'T12:00:00');
+  var to = new Date($('to').value + 'T12:00:00');
+  var span = Math.round((to - from) / 86400000) + 1;
+  var shift = Math.max(1, Math.round(span * 0.5));
+  from.setDate(from.getDate() + dir * shift);
+  to.setDate(to.getDate() + dir * shift);
+  $('from').value = from.toISOString().slice(0,10);
+  $('to').value = to.toISOString().slice(0,10);
+  reloadChart();
+}
+
+function toggleCompare() {
+  compareEnabled = !compareEnabled;
+  $('compare-btn').classList.toggle('active', compareEnabled);
+  reloadChart();
+}
+
+function toggleBySource() {
+  bySourceEnabled = !bySourceEnabled;
+  $('by-source-btn').classList.toggle('active', bySourceEnabled);
+  reloadChart();
+}
+
+function downloadCSV() {
+  // TODO: implement CSV export
+}
+
+// Keyboard shortcuts for this page
+document.addEventListener('keydown', function(e) {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (e.key === 'ArrowLeft') shiftRange(-1);
+  if (e.key === 'ArrowRight') shiftRange(1);
+  if (e.key >= '1' && e.key <= '5') {
+    var presets = [1, 7, 30, 90, 365];
+    applyPreset(presets[parseInt(e.key) - 1]);
+  }
+});
+</script>
+{{end}}
