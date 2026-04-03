@@ -116,8 +116,15 @@ func buildMetricCards(d RawMetrics, ls LangStrings) []MetricCard {
 		today := sp.vals[0]
 		baseline := avg(sp.vals)
 		pct := pctChange(today, baseline)
-		
 		pctR := roundTo1(pct)
+		
+		status := "neutral"
+		if sp.metric == "resting_heart_rate" {
+			if pctR < -1 { status = "positive" } else if pctR > 1 { status = "negative" }
+		} else {
+			if pctR > 1 { status = "positive" } else if pctR < -1 { status = "negative" }
+		}
+
 		tLabel := ""
 		if pctR > 0 {
 			tLabel = fmt.Sprintf("+%.0f%% %s", pctR, ls["lbl_vs_avg"])
@@ -134,6 +141,7 @@ func buildMetricCards(d RawMetrics, ls LangStrings) []MetricCard {
 			Unit:       sp.unit,
 			TrendPct:   pctR,
 			TrendLabel: tLabel,
+			TrendStatus: status,
 		})
 	}
 	return out

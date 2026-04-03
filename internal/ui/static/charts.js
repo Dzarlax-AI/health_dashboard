@@ -65,6 +65,19 @@ function loadReadinessSparkline(canvasId) {
       el.parentElement.parentElement.style.display = '';
       var labels = pts.map(function(p){return p.date;});
       var vals = pts.map(function(p){return p.score;});
+      var ptStart = vals[0];
+      var ptEnd = vals[vals.length - 1];
+      var diff = ptEnd - ptStart;
+      var lineColor = 'gray';
+      var fillColor = 'rgba(128,128,128,0.15)';
+      if (diff >= 3) {
+        lineColor = '#059669'; // var(--good)
+        fillColor = 'rgba(5, 150, 105, 0.15)';
+      } else if (diff <= -3) {
+        lineColor = '#e11d48'; // var(--low)
+        fillColor = 'rgba(225, 29, 72, 0.15)';
+      }
+
       if (sparklineChart) { sparklineChart.destroy(); sparklineChart = null; }
       sparklineChart = new Chart(el, {
         type: 'line',
@@ -72,8 +85,8 @@ function loadReadinessSparkline(canvasId) {
           labels: labels,
           datasets: [{
             data: vals,
-            borderColor: 'gray',
-            backgroundColor: 'rgba(128,128,128,0.15)',
+            borderColor: lineColor,
+            backgroundColor: fillColor,
             fill: true, borderWidth: 2, pointRadius: 0, tension: 0.4
           }]
         },

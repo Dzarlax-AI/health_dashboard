@@ -41,7 +41,7 @@
       <a href="/metrics/{{.Metric}}" class="metric-card" style="text-decoration:none;color:inherit">
         <div class="metric-card-name">{{.Name}}</div>
         <div class="metric-card-value">{{.Value}} <span class="metric-card-unit">{{.Unit}}</span></div>
-        {{if .TrendLabel}}<div class="metric-card-trend">{{.TrendLabel}}</div>{{end}}
+        {{if .TrendLabel}}<div class="metric-card-trend {{.TrendStatus}}">{{.TrendLabel}}</div>{{end}}
       </a>
       {{end}}
     </div>

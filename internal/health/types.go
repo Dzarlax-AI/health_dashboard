@@ -80,6 +80,7 @@ type MetricCard struct {
 	Unit       string  `json:"unit"`
 	TrendPct   float64 `json:"trend_pct"`
 	TrendLabel string  `json:"trend_label"`
+	TrendStatus string `json:"trend_status"`
 }
 
 // ReadinessPoint is a single historical readiness data point.
