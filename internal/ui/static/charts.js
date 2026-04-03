@@ -3,6 +3,19 @@
 
 var SOURCE_PALETTE = ['#2563eb','#e11d48','#059669','#d97706','#7c3aed','#06b6d4','#ea580c','#0891b2'];
 
+// Track chart instances per canvas to destroy before reuse
+var _chartInstances = {};
+function _createChart(canvasId, config) {
+  if (_chartInstances[canvasId]) {
+    _chartInstances[canvasId].destroy();
+  }
+  var el = document.getElementById(canvasId);
+  if (!el) return null;
+  var c = new Chart(el.getContext('2d'), config);
+  _chartInstances[canvasId] = c;
+  return c;
+}
+
 // ---- Time bands plugin ----
 var TIME_BANDS = [
   { start:0, end:6, color:'rgba(100,80,140,0.06)', label:'Night' },
@@ -238,7 +251,7 @@ function loadSleepChart(canvasId, from, to) {
                backgroundColor: ph.color + 'cc', borderColor: ph.color, borderWidth: 1,
                stack: 'sleep', borderRadius: 3 };
     });
-    new Chart(el.getContext('2d'), {
+    _createChart(canvasId, {
       type: 'bar',
       data: { labels: labels.map(fmtAxisDate), datasets: datasets },
       options: {
@@ -272,7 +285,7 @@ function loadReadinessChart(canvasId, from, to) {
       if (!pts.length) return;
       var labels = pts.map(function(p){ return p.date; });
       var vals = pts.map(function(p){ return p.score; });
-      new Chart(el, {
+      _createChart(canvasId, {
         type: 'line',
         data: {
           labels: labels,
@@ -328,7 +341,7 @@ function loadMetricChart(canvasId, metric, from, to, bucket, agg, opts) {
       var isBar = BAR_METRICS.has(metric);
       var lineColor = opts.color || '#2563eb';
 
-      new Chart(el.getContext('2d'), {
+      _createChart(canvasId, {
         type: isBar ? 'bar' : 'line',
         data: {
           labels: labels,
