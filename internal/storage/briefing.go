@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"context"
 	"fmt"
 	"sort"
 	"time"
@@ -14,7 +13,8 @@ import (
 // daily_scores cache in a single query. Returns nil if the cache is empty or
 // has no usable rows (cold start).
 func (s *DB) rawMetricsFromDailyScores(lastDate string) *health.RawMetrics {
-	ctx := context.Background()
+	ctx, cancel := queryCtx()
+	defer cancel()
 	rows, err := s.pool.Query(ctx, `
 		SELECT date, hrv_avg, rhr_avg, sleep_total, sleep_deep, sleep_rem,
 		       sleep_core, sleep_awake, steps, calories, exercise_min,
@@ -116,7 +116,8 @@ func (s *DB) rawMetricsFromDailyScores(lastDate string) *health.RawMetrics {
 // rawMetricsFromPoints reads raw metric time-series from metric_points using
 // per-metric queries. This is the fallback path when daily_scores cache is cold.
 func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
-	ctx := context.Background()
+	ctx, cancel := queryCtx()
+	defer cancel()
 
 	getDailyValues := func(metric string, days int, agg string) []float64 {
 		var err error
@@ -156,7 +157,7 @@ func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
 		var vals []float64
 		for rows.Next() {
 			var v float64
-			if rows.Scan(&v) == nil {
+			if err := rows.Scan(&v); err == nil {
 				vals = append(vals, v)
 			}
 		}
@@ -201,7 +202,7 @@ func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
 		var out []health.DatedValue
 		for rows.Next() {
 			var dv health.DatedValue
-			if rows.Scan(&dv.Date, &dv.Val) == nil {
+			if err := rows.Scan(&dv.Date, &dv.Val); err == nil {
 				out = append(out, dv)
 			}
 		}
@@ -232,7 +233,8 @@ func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
 // all scoring and insight computation to the health package.
 // lang selects the output language ("en", "ru", "sr").
 func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
-	ctx := context.Background()
+	ctx, cancel := queryCtx()
+	defer cancel()
 	// Use hourly_metrics for lastDate — avoids full scan of metric_points.
 	var lastDate *string
 	if err := s.pool.QueryRow(ctx, `SELECT MAX(SUBSTRING(hour,1,10)) FROM hourly_metrics`).Scan(&lastDate); err != nil || lastDate == nil {
@@ -302,7 +304,8 @@ func (s *DB) GetReadinessHistory(outputDays int) ([]health.ReadinessPoint, error
 // For each output day D it uses HRV/RHR/sleep data from D-29..D
 // (most-recent-first) and calls health.ComputeReadinessScore.
 func (s *DB) computeReadinessHistory(outputDays int) ([]health.ReadinessPoint, error) {
-	ctx := context.Background()
+	ctx, cancel := queryCtx()
+	defer cancel()
 	window := 30
 	total := outputDays + window
 
@@ -361,7 +364,7 @@ func (s *DB) computeReadinessHistory(outputDays int) ([]health.ReadinessPoint, e
 		for pgxRows.Next() {
 			var d string
 			var v float64
-			if pgxRows.Scan(&d, &v) == nil {
+			if err := pgxRows.Scan(&d, &v); err == nil {
 				m[d] = v
 			}
 		}
@@ -440,7 +443,9 @@ func (s *DB) computeReadinessHistory(outputDays int) ([]health.ReadinessPoint, e
 // fetchDailyMetric reads a single metric's daily values from metric_points.
 // Used for metrics not stored in daily_scores (e.g. wrist_temperature).
 func (s *DB) fetchDailyMetric(metric, lastDate string, days int, agg string) []float64 {
-	rows, err := s.pool.Query(context.Background(), `
+	ctx, cancel := queryCtx()
+	defer cancel()
+	rows, err := s.pool.Query(ctx, `
 		SELECT `+agg+`(qty)
 		FROM metric_points
 		WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND qty > 0
@@ -455,7 +460,7 @@ func (s *DB) fetchDailyMetric(metric, lastDate string, days int, agg string) []f
 	var vals []float64
 	for rows.Next() {
 		var v float64
-		if rows.Scan(&v) == nil {
+		if err := rows.Scan(&v); err == nil {
 			vals = append(vals, v)
 		}
 	}
@@ -472,7 +477,8 @@ type dayRow struct {
 // up-to-date, unlike hourly_metrics which may be stale after cache invalidation).
 // Uses smart combine for SUM metrics (pipe-source aware dedup).
 func (s *DB) freshDayFromRaw(date string) *dayRow {
-	ctx := context.Background()
+	ctx, cancel := queryCtx()
+	defer cancel()
 	type spec struct {
 		metric string
 		dest   **float64

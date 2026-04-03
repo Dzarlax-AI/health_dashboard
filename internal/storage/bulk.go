@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"context"
 	"fmt"
 )
 
@@ -14,7 +13,8 @@ func (s *DB) BulkInsertPoints(description string, points []MetricPoint) (int, er
 		return 0, nil
 	}
 
-	ctx := context.Background()
+	ctx, cancel := longCtx()
+	defer cancel()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return 0, err

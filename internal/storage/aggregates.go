@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -113,7 +112,9 @@ func sleepDedupClause(metric string) string {
 }
 
 func (s *DB) listMetricNames() ([]string, error) {
-	rows, err := s.pool.Query(context.Background(), `SELECT DISTINCT metric_name FROM metric_points ORDER BY metric_name`)
+	ctx, cancel := queryCtx()
+	defer cancel()
+	rows, err := s.pool.Query(ctx, `SELECT DISTINCT metric_name FROM metric_points ORDER BY metric_name`)
 	if err != nil {
 		return nil, err
 	}
@@ -135,6 +136,9 @@ func (s *DB) UpsertRecentCache(dates []string) {
 	if len(dates) == 0 {
 		return
 	}
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+
 	metrics, err := s.listMetricNames()
 	if err != nil {
 		log.Printf("upsert cache: list metrics: %v", err)
@@ -201,7 +205,9 @@ func (s *DB) upsertHourlyForDate(metric, date string) {
 				avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val`, sleepDedup)
 	}
 
-	if _, err := s.pool.Exec(context.Background(), query, metric, date); err != nil {
+	ctx, cancel := longCtx()
+	defer cancel()
+	if _, err := s.pool.Exec(ctx, query, metric, date); err != nil {
 		log.Printf("upsert hourly %s/%s: %v", metric, date, err)
 	}
 }
@@ -229,12 +235,21 @@ func (s *DB) upsertDailyForDate(date string) {
 		{"resp_avg", "respiratory_rate"},
 	}
 
-	ctx := context.Background()
+	ctx, cancel := longCtx()
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		log.Printf("upsertDailyForDate begin tx: %v", err)
+		return
+	}
+	defer tx.Rollback(ctx)
+
 	for _, sp := range specs {
 		var val float64
-		var err error
+		var qErr error
 		if SumMetrics[sp.name] {
-			err = s.pool.QueryRow(ctx, `
+			qErr = tx.QueryRow(ctx, `
 				WITH source_totals AS (
 					SELECT source, SUM(avg_val) AS source_total
 					FROM hourly_metrics
@@ -242,20 +257,25 @@ func (s *DB) upsertDailyForDate(date string) {
 					GROUP BY source
 				) `+preferredSourceSQL, sp.name, date).Scan(&val)
 		} else {
-			err = s.pool.QueryRow(ctx, `
+			qErr = tx.QueryRow(ctx, `
 				SELECT COALESCE(AVG(avg_val), 0)
 				FROM hourly_metrics
 				WHERE metric_name=$1 AND SUBSTRING(hour,1,10)=$2`,
 				sp.name, date).Scan(&val)
 		}
-		if err != nil || val == 0 {
+		if qErr != nil {
 			continue
 		}
-		s.pool.Exec(ctx, fmt.Sprintf(`
+		if _, err := tx.Exec(ctx, fmt.Sprintf(`
 			INSERT INTO daily_scores (date, %s, computed_at)
 			VALUES ($1, $2, NOW()::TEXT)
 			ON CONFLICT(date) DO UPDATE SET %s = excluded.%s, computed_at = excluded.computed_at`,
-			sp.col, sp.col, sp.col), date, val)
+			sp.col, sp.col, sp.col), date, val); err != nil {
+			log.Printf("upsertDailyForDate exec %s/%s: %v", sp.col, date, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		log.Printf("upsertDailyForDate commit: %v", err)
 	}
 }
 
@@ -264,12 +284,25 @@ func (s *DB) upsertDailyForDate(date string) {
 // truncated first; otherwise the last 48h are refreshed (catches re-synced
 // data) and new data is appended.
 func (s *DB) BackfillAggregates(force bool) error {
-	ctx := context.Background()
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+
+	ctx, cancel := longCtx()
+	defer cancel()
 	if force {
+		// Wrap deletion in a transaction so crash doesn't leave empty tables.
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("begin force clear: %w", err)
+		}
 		for _, tbl := range []string{"minute_metrics", "hourly_metrics"} {
-			if _, err := s.pool.Exec(ctx, "DELETE FROM "+tbl); err != nil {
+			if _, err := tx.Exec(ctx, "DELETE FROM "+tbl); err != nil {
+				tx.Rollback(ctx)
 				return fmt.Errorf("clear %s: %w", tbl, err)
 			}
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("commit force clear: %w", err)
 		}
 		log.Println("cache tables cleared")
 	}
@@ -330,16 +363,18 @@ func (s *DB) BuildDailyMetrics(force bool) error {
 }
 
 func (s *DB) buildDailyMetricCol(col, metric string, force bool) error {
-	ctx := context.Background()
+	ctx, cancel := longCtx()
+	defer cancel()
 	var fromClause string
 	if !force {
-		// Refresh last 2 days + fill new dates (catches re-synced data).
+		// Refresh last 7 days + fill new dates (catches late-arriving data
+		// from offline devices like Apple Watch syncing after a week).
 		var maxDate *string
 		s.pool.QueryRow(ctx, `SELECT MAX(SUBSTRING(hour,1,10)) FROM hourly_metrics WHERE metric_name = $1`, metric).Scan(&maxDate)
 		if maxDate == nil {
 			return nil
 		}
-		refreshFrom := subtractDaysStr(*maxDate, 2)
+		refreshFrom := subtractDaysStr(*maxDate, 7)
 		fromClause = fmt.Sprintf("AND SUBSTRING(hour,1,10) >= '%s'", refreshFrom)
 	}
 
@@ -408,16 +443,17 @@ func isSleepMetric(metric string) bool {
 // metric_points (skipping minute_metrics). Uses INSERT ... ON CONFLICT so
 // re-synced data overwrites stale cache values.
 func (s *DB) buildHourlyMetric(metric, agg string, force bool) error {
-	ctx := context.Background()
+	ctx, cancel := longCtx()
+	defer cancel()
 	var fromClause string
 	if !force {
-		// Refresh last 48h + append new data (catches re-synced values).
+		// Refresh last 7 days + append new data (catches late-arriving data).
 		var lastCached *string
 		s.pool.QueryRow(ctx,
 			`SELECT MAX(hour) FROM hourly_metrics WHERE metric_name = $1`, metric,
 		).Scan(&lastCached)
 		if lastCached != nil {
-			refreshFrom := subtractDaysStr((*lastCached)[:10], 2)
+			refreshFrom := subtractDaysStr((*lastCached)[:10], 7)
 			fromClause = fmt.Sprintf("AND SUBSTRING(date,1,10) >= '%s'", refreshFrom)
 		}
 	}

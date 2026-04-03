@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"context"
 	"strconv"
 )
 
@@ -26,7 +25,9 @@ func (c NotifyConfig) Enabled() bool {
 // GetSetting returns the value for key, or fallback if not found.
 func (s *DB) GetSetting(key, fallback string) string {
 	var val *string
-	if err := s.pool.QueryRow(context.Background(), `SELECT value FROM settings WHERE key = $1`, key).Scan(&val); err != nil || val == nil || *val == "" {
+	ctx, cancel := queryCtx()
+	defer cancel()
+	if err := s.pool.QueryRow(ctx, `SELECT value FROM settings WHERE key = $1`, key).Scan(&val); err != nil || val == nil || *val == "" {
 		return fallback
 	}
 	return *val
@@ -34,7 +35,8 @@ func (s *DB) GetSetting(key, fallback string) string {
 
 // SaveSettings upserts a map of key→value pairs into the settings table.
 func (s *DB) SaveSettings(kv map[string]string) error {
-	ctx := context.Background()
+	ctx, cancel := queryCtx()
+	defer cancel()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err

@@ -3,6 +3,8 @@ package storage
 import (
 	"context"
 	"fmt"
+	"log"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -10,14 +12,30 @@ import (
 )
 
 type DB struct {
-	pool *pgxpool.Pool
+	pool    *pgxpool.Pool
+	cacheMu sync.Mutex // protects concurrent writes to hourly_metrics and daily_scores
+}
+
+// queryCtx returns a context with a 30-second timeout for regular queries.
+func queryCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 30*time.Second)
+}
+
+// longCtx returns a context with a 5-minute timeout for heavy operations (backfill, aggregation).
+func longCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 5*time.Minute)
 }
 
 // NeedsForceBackfill returns true when hourly_metrics is empty, meaning
 // caches need a full rebuild.
 func (s *DB) NeedsForceBackfill() bool {
+	ctx, cancel := queryCtx()
+	defer cancel()
 	var cnt int
-	_ = s.pool.QueryRow(context.Background(), `SELECT COUNT(*) FROM hourly_metrics LIMIT 1`).Scan(&cnt)
+	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM hourly_metrics LIMIT 1`).Scan(&cnt); err != nil {
+		log.Printf("NeedsForceBackfill: %v", err)
+		return true
+	}
 	return cnt == 0
 }
 
@@ -73,7 +91,8 @@ type MetricPoint struct {
 }
 
 func (s *DB) Insert(r Record, points []MetricPoint) (int64, error) {
-	ctx := context.Background()
+	ctx, cancel := queryCtx()
+	defer cancel()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return 0, err

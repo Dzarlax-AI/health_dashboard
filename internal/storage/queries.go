@@ -1,8 +1,8 @@
 package storage
 
 import (
-	"context"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -60,6 +60,9 @@ type LatestValue struct {
 // AVG metrics use a simple daily AVG across all sources and hours.
 // Reads from hourly_metrics (fast cache) instead of metric_points (4M+ rows).
 func (s *DB) GetLatestMetricValues() ([]LatestValue, error) {
+	ctx, cancel := queryCtx()
+	defer cancel()
+
 	sumList := make([]string, 0, len(SumMetrics))
 	for m := range SumMetrics {
 		sumList = append(sumList, "'"+m+"'")
@@ -102,7 +105,7 @@ func (s *DB) GetLatestMetricValues() ([]LatestValue, error) {
 		ORDER BY metric_name
 	`, sumIn, sumIn)
 
-	rows, err := s.pool.Query(context.Background(), query)
+	rows, err := s.pool.Query(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -133,7 +136,10 @@ type MetricStats struct {
 }
 
 func (s *DB) ListMetrics() ([]MetricSummary, error) {
-	rows, err := s.pool.Query(context.Background(), `
+	ctx, cancel := queryCtx()
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx, `
 		SELECT metric_name, '', COUNT(*) AS cnt, MIN(SUBSTRING(hour,1,10)), MAX(SUBSTRING(hour,1,10))
 		FROM hourly_metrics
 		GROUP BY metric_name
@@ -177,6 +183,9 @@ func (s *DB) GetMetricData(metric, from, to, bucket, aggFunc string) ([]DataPoin
 // metricDataFromCache reads from a pre-aggregated table (minute_metrics or
 // hourly_metrics), combining per-source rows using the metric's combine function.
 func (s *DB) metricDataFromCache(table, col, metric, from, to string) ([]DataPoint, error) {
+	ctx, cancel := queryCtx()
+	defer cancel()
+
 	var combineVal string
 	if SumMetrics[metric] {
 		combineVal = sumCombineExpr("avg_val")
@@ -190,7 +199,7 @@ func (s *DB) metricDataFromCache(table, col, metric, from, to string) ([]DataPoi
 		GROUP BY %s
 		ORDER BY %s`, col, combineVal, table, col, col, col, col)
 
-	rows, err := s.pool.Query(context.Background(), query, metric, from, to)
+	rows, err := s.pool.Query(ctx, query, metric, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -199,9 +208,11 @@ func (s *DB) metricDataFromCache(table, col, metric, from, to string) ([]DataPoi
 	var out []DataPoint
 	for rows.Next() {
 		var p DataPoint
-		if rows.Scan(&p.Date, &p.Qty, &p.Min, &p.Max) == nil {
+		if err := rows.Scan(&p.Date, &p.Qty, &p.Min, &p.Max); err != nil {
+				log.Printf("scan DataPoint: %v", err)
+				continue
+			}
 			out = append(out, p)
-		}
 	}
 
 	// If cache is empty, fall back to raw data so the UI never returns nothing.
@@ -220,9 +231,12 @@ func (s *DB) metricDataFromCache(table, col, metric, from, to string) ([]DataPoi
 // For any date range not covered by the hourly cache (e.g. historical Apple Health
 // import data), it supplements with raw metric_points so the full history is visible.
 func (s *DB) metricDataDayFromHourly(metric, from, to string) ([]DataPoint, error) {
+	ctx, cancel := queryCtx()
+	defer cancel()
+
 	// Find the earliest hour we have in the cache for this metric.
 	var minHour *string
-	s.pool.QueryRow(context.Background(), `SELECT MIN(hour) FROM hourly_metrics WHERE metric_name = $1`, metric).Scan(&minHour)
+	s.pool.QueryRow(ctx, `SELECT MIN(hour) FROM hourly_metrics WHERE metric_name = $1`, metric).Scan(&minHour)
 
 	var out []DataPoint
 
@@ -285,7 +299,7 @@ func (s *DB) metricDataDayFromHourly(metric, from, to string) ([]DataPoint, erro
 			ORDER BY SUBSTRING(hour,1,10)`
 	}
 
-	rows, err := s.pool.Query(context.Background(), query, metric, hourlyFrom, to)
+	rows, err := s.pool.Query(ctx, query, metric, hourlyFrom, to)
 	if err != nil {
 		return out, err
 	}
@@ -293,9 +307,11 @@ func (s *DB) metricDataDayFromHourly(metric, from, to string) ([]DataPoint, erro
 
 	for rows.Next() {
 		var p DataPoint
-		if rows.Scan(&p.Date, &p.Qty, &p.Min, &p.Max) == nil {
+		if err := rows.Scan(&p.Date, &p.Qty, &p.Min, &p.Max); err != nil {
+				log.Printf("scan DataPoint: %v", err)
+				continue
+			}
 			out = append(out, p)
-		}
 	}
 	return out, rows.Err()
 }
@@ -304,6 +320,9 @@ func (s *DB) metricDataDayFromHourly(metric, from, to string) ([]DataPoint, erro
 // pre-aggregated cache is empty, and for bucket=minute on short ranges before
 // backfill runs.
 func (s *DB) metricDataRaw(metric, from, to, bucket, aggFunc string) ([]DataPoint, error) {
+	ctx, cancel := queryCtx()
+	defer cancel()
+
 	bucketExpr := bucketExpression(bucket)
 	if aggFunc != "SUM" && aggFunc != "MAX" && aggFunc != "MIN" {
 		aggFunc = "AVG"
@@ -333,7 +352,7 @@ func (s *DB) metricDataRaw(metric, from, to, bucket, aggFunc string) ([]DataPoin
 			ORDER BY ` + bucketExpr
 	}
 
-	rows, err := s.pool.Query(context.Background(), query, metric, from, to)
+	rows, err := s.pool.Query(ctx, query, metric, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -407,7 +426,10 @@ func (s *DB) metricDataBySourceRaw(metric, from, to, bucket, aggFunc string) ([]
 }
 
 func (s *DB) scanSourcePoints(query, metric, from, to string) ([]SourceDataPoints, error) {
-	rows, err := s.pool.Query(context.Background(), query, metric, from, to)
+	ctx, cancel := queryCtx()
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx, query, metric, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -439,9 +461,12 @@ func (s *DB) scanSourcePoints(query, metric, from, to string) ([]SourceDataPoint
 }
 
 func (s *DB) GetDashboard() (*DashboardResponse, error) {
+	ctx, cancel := queryCtx()
+	defer cancel()
+
 	// Detect "today" from the descending index on SUBSTRING(date,1,10) — fast index-only scan.
 	var today *string
-	if err := s.pool.QueryRow(context.Background(),
+	if err := s.pool.QueryRow(ctx,
 		`SELECT SUBSTRING(date,1,10) FROM metric_points ORDER BY SUBSTRING(date,1,10) DESC LIMIT 1`,
 	).Scan(&today); err != nil || today == nil {
 		return &DashboardResponse{}, nil
@@ -449,12 +474,12 @@ func (s *DB) GetDashboard() (*DashboardResponse, error) {
 
 	// "yesterday" from hourly_metrics (smaller table, already cached).
 	var yesterday *string
-	s.pool.QueryRow(context.Background(),
+	s.pool.QueryRow(ctx,
 		`SELECT MAX(SUBSTRING(hour,1,10)) FROM hourly_metrics WHERE SUBSTRING(hour,1,10) < $1`, *today,
 	).Scan(&yesterday)
 
 	var lastUpdated *string
-	s.pool.QueryRow(context.Background(), `SELECT MAX(received_at) FROM health_records`).Scan(&lastUpdated)
+	s.pool.QueryRow(ctx, `SELECT MAX(received_at) FROM health_records`).Scan(&lastUpdated)
 
 	type spec struct {
 		metric string
@@ -474,8 +499,6 @@ func (s *DB) GetDashboard() (*DashboardResponse, error) {
 		{"walking_running_distance", "SUM"},
 		{"wrist_temperature", "AVG"},
 	}
-
-	ctx := context.Background()
 
 	queryDayRaw := func(metric, agg, day string) float64 {
 		var val float64
@@ -533,7 +556,7 @@ func (s *DB) GetDashboard() (*DashboardResponse, error) {
 		defer unitRows.Close()
 		for unitRows.Next() {
 			var name, unit string
-			if unitRows.Scan(&name, &unit) == nil {
+			if err := unitRows.Scan(&name, &unit); err == nil {
 				unitMap[name] = unit
 			}
 		}
@@ -619,8 +642,10 @@ func (s *DB) SummarizeMetric(metric string, days int) (*MetricStats, error) {
 	stats.Avg = sum / float64(len(daily))
 
 	// Look up units from metric_points.
+	unitsCtx, unitsCancel := queryCtx()
+	defer unitsCancel()
 	var units *string
-	s.pool.QueryRow(context.Background(), `SELECT units FROM metric_points WHERE metric_name = $1 AND units != '' LIMIT 1`, metric).Scan(&units)
+	s.pool.QueryRow(unitsCtx, `SELECT units FROM metric_points WHERE metric_name = $1 AND units != '' LIMIT 1`, metric).Scan(&units)
 	if units != nil {
 		stats.Units = *units
 	}
@@ -641,11 +666,14 @@ type SleepNight struct {
 // GetSleepSummary returns per-night sleep breakdown for the date range.
 // Uses preferredSleepSourceSQL (with cross-validation) per metric per night.
 func (s *DB) GetSleepSummary(from, to string) ([]SleepNight, error) {
+	ctx, cancel := queryCtx()
+	defer cancel()
+
 	sleepDedup := sleepDedupClause("sleep_total")
 	preferred := preferredSleepSourceSQL
 
 	// Get all per-day, per-metric values using preferred source with cross-validation.
-	rows, err := s.pool.Query(context.Background(), fmt.Sprintf(`
+	rows, err := s.pool.Query(ctx, fmt.Sprintf(`
 		SELECT d, metric_name, (
 			WITH source_totals AS (
 				SELECT source, SUM(qty) AS source_total
@@ -714,11 +742,14 @@ func (s *DB) GetSleepSummary(from, to string) ([]SleepNight, error) {
 
 // QueryReadOnly executes an arbitrary SELECT and returns results as []map[string]any.
 func (s *DB) QueryReadOnly(query string) ([]map[string]any, error) {
+	ctx, cancel := queryCtx()
+	defer cancel()
+
 	q := strings.TrimSpace(strings.ToUpper(query))
 	if !strings.HasPrefix(q, "SELECT") {
 		return nil, fmt.Errorf("only SELECT queries are allowed")
 	}
-	rows, err := s.pool.Query(context.Background(), query)
+	rows, err := s.pool.Query(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -765,8 +796,11 @@ func bucketExpression(bucket string) string {
 // GetMetricDateRange returns the earliest and latest dates for a metric.
 // Returns empty strings (no error) when the metric has no data.
 func (s *DB) GetMetricDateRange(metric string) (min, max string, err error) {
+	ctx, cancel := queryCtx()
+	defer cancel()
+
 	var minN, maxN *string
-	err = s.pool.QueryRow(context.Background(),
+	err = s.pool.QueryRow(ctx,
 		`SELECT SUBSTRING(MIN(date),1,10), SUBSTRING(MAX(date),1,10) FROM metric_points WHERE metric_name = $1`,
 		metric,
 	).Scan(&minN, &maxN)

@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"context"
 	"log"
 	"time"
 )
@@ -50,7 +49,8 @@ func (s *DB) GetDataGaps(minGapDays, minHours int) ([]DataGap, error) {
 	twelveMonthsAgo := time.Now().AddDate(-1, 0, 0).Format("2006-01-02")
 
 	// Fetch all days in the last 12 months with their hour counts.
-	ctx := context.Background()
+	ctx, cancel := queryCtx()
+	defer cancel()
 	rows, err := s.pool.Query(ctx, `
 		SELECT SUBSTRING(hour,1,10) AS day, COUNT(DISTINCT SUBSTRING(hour,1,13)) AS hours
 		FROM hourly_metrics
@@ -69,9 +69,11 @@ func (s *DB) GetDataGaps(minGapDays, minHours int) ([]DataGap, error) {
 	var days []dayInfo
 	for rows.Next() {
 		var di dayInfo
-		if rows.Scan(&di.date, &di.hours) == nil {
+		if err := rows.Scan(&di.date, &di.hours); err != nil {
+				log.Printf("GetDataGaps scan: %v", err)
+				continue
+			}
 			days = append(days, di)
-		}
 	}
 	if len(days) == 0 {
 		return nil, nil
@@ -169,7 +171,8 @@ func (s *DB) GetDataGaps(minGapDays, minHours int) ([]DataGap, error) {
 // for the given date range. Called before import backfill so that Apple Health
 // export (ground truth) replaces potentially inaccurate Auto Export data.
 func (s *DB) RemoveAutoExportForRange(from, to string) {
-	ctx := context.Background()
+	ctx, cancel := queryCtx()
+	defer cancel()
 	res, err := s.pool.Exec(ctx, `
 		DELETE FROM metric_points
 		WHERE health_record_id IN (
@@ -188,7 +191,10 @@ func (s *DB) RemoveAutoExportForRange(from, to string) {
 // InvalidateDateRangeAggregates deletes all pre-aggregated rows for [from, to]
 // (inclusive, YYYY-MM-DD) so that the next backfill recomputes them from metric_points.
 func (s *DB) InvalidateDateRangeAggregates(from, to string) {
-	ctx := context.Background()
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	ctx, cancel := queryCtx()
+	defer cancel()
 	if _, err := s.pool.Exec(ctx,
 		"DELETE FROM hourly_metrics WHERE SUBSTRING(hour,1,10) >= $1 AND SUBSTRING(hour,1,10) <= $2", from, to,
 	); err != nil {
@@ -201,26 +207,34 @@ func (s *DB) InvalidateDateRangeAggregates(from, to string) {
 
 // GetCacheStatus returns row counts and date ranges for all cache tables.
 func (s *DB) GetCacheStatus() (*CacheStatus, error) {
-	ctx := context.Background()
+	ctx, cancel := queryCtx()
+	defer cancel()
 	cs := &CacheStatus{ScoreVersion: ScoreVersion}
 
-	s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM metric_points`).Scan(&cs.RawPoints.Rows)
-	s.pool.QueryRow(ctx, `SELECT COUNT(DISTINCT metric_name) FROM hourly_metrics`).Scan(&cs.RawPoints.Metrics)
+	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM metric_points`).Scan(&cs.RawPoints.Rows); err != nil {
+		log.Printf("GetCacheStatus raw count: %v", err)
+	}
+	if err := s.pool.QueryRow(ctx, `SELECT COUNT(DISTINCT metric_name) FROM hourly_metrics`).Scan(&cs.RawPoints.Metrics); err != nil {
+		log.Printf("GetCacheStatus metric count: %v", err)
+	}
 
-	// minute_metrics is no longer used (reads go to metric_points directly).
-	// Keep the struct field for API compat but leave it zeroed.
-
-	s.pool.QueryRow(ctx,
+	if err := s.pool.QueryRow(ctx,
 		`SELECT COUNT(*), MIN(hour), MAX(hour) FROM hourly_metrics`,
-	).Scan(&cs.HourlyCache.Rows, &cs.HourlyCache.Oldest, &cs.HourlyCache.Newest)
+	).Scan(&cs.HourlyCache.Rows, &cs.HourlyCache.Oldest, &cs.HourlyCache.Newest); err != nil {
+		log.Printf("GetCacheStatus hourly: %v", err)
+	}
 
-	s.pool.QueryRow(ctx,
+	if err := s.pool.QueryRow(ctx,
 		`SELECT COUNT(*), MIN(date), MAX(date) FROM daily_scores`,
-	).Scan(&cs.DailyScores.Rows, &cs.DailyScores.Oldest, &cs.DailyScores.Newest)
+	).Scan(&cs.DailyScores.Rows, &cs.DailyScores.Oldest, &cs.DailyScores.Newest); err != nil {
+		log.Printf("GetCacheStatus daily: %v", err)
+	}
 
-	s.pool.QueryRow(ctx,
+	if err := s.pool.QueryRow(ctx,
 		`SELECT MAX(received_at) FROM health_records`,
-	).Scan(&cs.LastSync)
+	).Scan(&cs.LastSync); err != nil {
+		log.Printf("GetCacheStatus last sync: %v", err)
+	}
 
 	return cs, nil
 }

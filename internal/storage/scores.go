@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"time"
@@ -30,18 +29,25 @@ const ScoreVersion = 2
 // score_version. This means the scoring formula changed since the last backfill
 // and a force rebuild is needed to recompute all readiness scores.
 func (s *DB) HasStaleScores() bool {
-	var cnt int
-	s.pool.QueryRow(context.Background(),
-		`SELECT COUNT(*) FROM daily_scores WHERE score_version IS NOT NULL AND score_version != $1`,
+	ctx, cancel := queryCtx()
+	defer cancel()
+	var exists bool
+	if err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM daily_scores WHERE score_version IS NOT NULL AND score_version != $1 LIMIT 1)`,
 		ScoreVersion,
-	).Scan(&cnt)
-	return cnt > 0
+	).Scan(&exists); err != nil {
+		log.Printf("HasStaleScores: %v", err)
+		return false
+	}
+	return exists
 }
 
 // readinessFromCache returns the most-recent `limit` readiness scores
 // (ascending by date) that match the current ScoreVersion.
 func (s *DB) readinessFromCache(limit int) ([]health.ReadinessPoint, error) {
-	rows, err := s.pool.Query(context.Background(), `
+	ctx, cancel := queryCtx()
+	defer cancel()
+	rows, err := s.pool.Query(ctx, `
 		SELECT date, readiness FROM daily_scores
 		WHERE score_version = $1
 		ORDER BY date DESC
@@ -54,9 +60,11 @@ func (s *DB) readinessFromCache(limit int) ([]health.ReadinessPoint, error) {
 	var pts []health.ReadinessPoint
 	for rows.Next() {
 		var p health.ReadinessPoint
-		if rows.Scan(&p.Date, &p.Score) == nil {
+		if err := rows.Scan(&p.Date, &p.Score); err != nil {
+				log.Printf("readinessFromCache scan: %v", err)
+				continue
+			}
 			pts = append(pts, p)
-		}
 	}
 	// reverse to ascending order
 	for i, j := 0, len(pts)-1; i < j; i, j = i+1, j-1 {
@@ -67,10 +75,19 @@ func (s *DB) readinessFromCache(limit int) ([]health.ReadinessPoint, error) {
 
 // saveReadinessScores upserts readiness scores without touching metric columns.
 func (s *DB) saveReadinessScores(pts []health.ReadinessPoint) {
-	ctx := context.Background()
+	ctx, cancel := longCtx()
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		log.Printf("saveReadinessScores begin tx: %v", err)
+		return
+	}
+	defer tx.Rollback(ctx)
+
 	now := time.Now().Format(time.RFC3339)
 	for _, p := range pts {
-		if _, err := s.pool.Exec(ctx, `
+		if _, err := tx.Exec(ctx, `
 			INSERT INTO daily_scores (date, readiness, score_version, computed_at)
 			VALUES ($1, $2, $3, $4)
 			ON CONFLICT(date) DO UPDATE SET
@@ -80,7 +97,11 @@ func (s *DB) saveReadinessScores(pts []health.ReadinessPoint) {
 			p.Date, p.Score, ScoreVersion, now,
 		); err != nil {
 			log.Printf("save readiness score %s: %v", p.Date, err)
+			return
 		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		log.Printf("saveReadinessScores commit: %v", err)
 	}
 }
 
@@ -100,7 +121,9 @@ func isCacheRecent(pts []health.ReadinessPoint) bool {
 // Safe to call from a goroutine; errors are logged, not returned.
 func (s *DB) InvalidateRecentScores(days int) {
 	cutoff := time.Now().AddDate(0, 0, -days).Format("2006-01-02")
-	if _, err := s.pool.Exec(context.Background(),
+	ctx, cancel := queryCtx()
+	defer cancel()
+	if _, err := s.pool.Exec(ctx,
 		`UPDATE daily_scores SET readiness=NULL, score_version=NULL WHERE date >= $1`, cutoff,
 	); err != nil {
 		log.Printf("invalidate recent scores: %v", err)
@@ -111,14 +134,18 @@ func (s *DB) InvalidateRecentScores(days int) {
 // data.  If force=true the entire cache is cleared first; otherwise only rows
 // with an outdated score_version are removed before computing.
 func (s *DB) BackfillScores(force bool) error {
-	ctx := context.Background()
+	ctx, cancel := longCtx()
+	defer cancel()
 	if force {
-		// Wipe only the readiness columns — metric columns are refilled by
-		// BackfillAggregates and should not be lost here.
+		// Clear readiness columns and rebuild metric columns too
+		// (ensures consistency when scoring or aggregation logic changes).
 		if _, err := s.pool.Exec(ctx, `UPDATE daily_scores SET readiness=NULL, score_version=NULL`); err != nil {
 			return fmt.Errorf("clear readiness cache: %w", err)
 		}
-		log.Println("daily_scores readiness cleared (metric columns preserved)")
+		if err := s.BuildDailyMetrics(true); err != nil {
+			log.Printf("rebuild daily metrics during force score backfill: %v", err)
+		}
+		log.Println("daily_scores fully rebuilt (readiness + metrics)")
 	} else {
 		// NULL out stale-version rows so they get recomputed.
 		if _, err := s.pool.Exec(ctx,

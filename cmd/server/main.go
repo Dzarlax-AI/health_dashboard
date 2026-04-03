@@ -34,6 +34,8 @@ func main() {
 	}
 	defer db.Close()
 
+	db.EnsureIndexes()
+
 	// Start the backfill scheduler. It runs an initial backfill shortly after
 	// startup and then re-runs whenever new data arrives, debouncing rapid
 	// successive syncs into a single pass.
