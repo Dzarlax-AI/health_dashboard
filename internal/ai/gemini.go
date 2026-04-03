@@ -65,9 +65,16 @@ func ListModels(apiKey string) ([]Model, error) {
 
 const defaultModel = "gemini-2.5-flash"
 
+var langNames = map[string]string{
+	"ru": "Russian",
+	"en": "English",
+	"sr": "Serbian",
+}
+
 // GenerateMorningBriefing calls the Gemini API to produce a morning health insight.
-// model defaults to gemini-2.5-flash if empty; maxTokens defaults to 1000 if <= 0.
-func GenerateMorningBriefing(apiKey, model string, maxTokens int, rawMetricsJSON []byte) (string, error) {
+// model defaults to gemini-2.5-flash if empty; maxTokens defaults to 5000 if <= 0.
+// lang controls the response language (en/ru/sr); defaults to "en".
+func GenerateMorningBriefing(apiKey, model string, maxTokens int, rawMetricsJSON []byte, lang string) (string, error) {
 	if apiKey == "" {
 		return "", fmt.Errorf("gemini API key is not configured")
 	}
@@ -83,17 +90,22 @@ func GenerateMorningBriefing(apiKey, model string, maxTokens int, rawMetricsJSON
 		model, apiKey,
 	)
 
+	langName := langNames[lang]
+	if langName == "" {
+		langName = "English"
+	}
+
 	payload := map[string]any{
 		"systemInstruction": map[string]any{
 			"parts": []map[string]any{
-				{"text": systemPrompt},
+				{"text": systemPrompt + "\n\nRESPONSE LANGUAGE: Write the entire response in " + langName + ". All block headers, numbers, and text must be in " + langName + "."},
 			},
 		},
 		"contents": []map[string]any{
 			{
 				"role": "user",
 				"parts": []map[string]any{
-					{"text": "Данные Apple Health (JSON):\n\n" + string(rawMetricsJSON)},
+					{"text": "Apple Health data (JSON):\n\n" + string(rawMetricsJSON)},
 				},
 			},
 		},

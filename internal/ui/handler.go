@@ -169,7 +169,7 @@ func (h *Handler) pageDashboard(w http.ResponseWriter, r *http.Request) {
 
 	// Fetch today's AI insight if available.
 	today := time.Now().Format("2006-01-02")
-	data.AIInsight = h.db.GetAIBriefing(today)
+	data.AIInsight = h.db.GetAIBriefing(today, lang)
 
 	// Fetch briefing (contains readiness, cards, insights, sleep, correlation)
 	if br, err := h.db.GetHealthBriefing(lang); err == nil && br != nil {

@@ -89,7 +89,7 @@ func SendMorning(bot *Bot, db *storage.DB, cfg Config) error {
 	}
 	loc := cfg.location()
 	today := time.Now().In(loc).Format("2006-01-02")
-	aiInsight := db.GetAIBriefing(today)
+	aiInsight := db.GetAIBriefing(today, cfg.Lang)
 	return bot.Send(formatMorning(briefing, aiInsight, cfg.Lang, loc))
 }
 

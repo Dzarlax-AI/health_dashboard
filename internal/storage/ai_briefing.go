@@ -18,37 +18,42 @@ func (s *DB) EnsureAIBriefingsTable() {
 			insight         TEXT NOT NULL,
 			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			sent_at         TIMESTAMPTZ,
-			request_payload JSONB
+			request_payload JSONB,
+			lang            TEXT NOT NULL DEFAULT ''
 		)
 	`)
-	// Add column to existing tables that predate this field.
-	s.pool.Exec(ctx, `
-		ALTER TABLE ai_briefings ADD COLUMN IF NOT EXISTS request_payload JSONB
-	`)
+	// Migrate existing tables that predate these columns.
+	s.pool.Exec(ctx, `ALTER TABLE ai_briefings ADD COLUMN IF NOT EXISTS request_payload JSONB`)
+	s.pool.Exec(ctx, `ALTER TABLE ai_briefings ADD COLUMN IF NOT EXISTS lang TEXT NOT NULL DEFAULT ''`)
 }
 
 // SaveAIBriefing stores (or replaces) the AI-generated insight for the given date.
 // requestPayload is the raw JSON sent to the AI model — stored for auditing and model comparison.
-func (s *DB) SaveAIBriefing(date, insight string, requestPayload []byte) error {
+// lang is the response language (en/ru/sr) — used to invalidate the cache when lang changes.
+func (s *DB) SaveAIBriefing(date, insight string, requestPayload []byte, lang string) error {
 	ctx, cancel := queryCtx()
 	defer cancel()
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO ai_briefings (date, insight, created_at, request_payload)
-		VALUES ($1, $2, NOW(), $3)
+		INSERT INTO ai_briefings (date, insight, created_at, request_payload, lang)
+		VALUES ($1, $2, NOW(), $3, $4)
 		ON CONFLICT (date) DO UPDATE
 			SET insight = excluded.insight,
 			    created_at = NOW(),
-			    request_payload = excluded.request_payload
-	`, date, insight, requestPayload)
+			    request_payload = excluded.request_payload,
+			    lang = excluded.lang
+	`, date, insight, requestPayload, lang)
 	return err
 }
 
-// GetAIBriefing returns the stored AI insight for the given date, or "" if none.
-func (s *DB) GetAIBriefing(date string) string {
+// GetAIBriefing returns the stored AI insight for the given date and language, or "" if none.
+// If lang is empty, any cached insight is returned regardless of language.
+func (s *DB) GetAIBriefing(date, lang string) string {
 	ctx, cancel := queryCtx()
 	defer cancel()
 	var insight string
-	s.pool.QueryRow(ctx, `SELECT insight FROM ai_briefings WHERE date = $1`, date).Scan(&insight)
+	s.pool.QueryRow(ctx,
+		`SELECT insight FROM ai_briefings WHERE date = $1 AND ($2 = '' OR lang = $2)`,
+		date, lang).Scan(&insight)
 	return insight
 }
 

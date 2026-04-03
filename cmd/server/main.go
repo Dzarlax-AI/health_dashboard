@@ -118,7 +118,7 @@ func main() {
 			return
 		}
 
-		if insight := ensureTodayAIInsight(db, aiCfg); insight == "" {
+		if insight := ensureTodayAIInsight(db, aiCfg, cfg.Lang); insight == "" {
 			log.Println("morning trigger: AI insight unavailable, aborting")
 			return
 		}
@@ -196,7 +196,7 @@ func main() {
 		}
 		// For morning test: generate AI insight if not yet done today.
 		// Do NOT mark as sent — test should not block the real morning trigger.
-		ensureTodayAIInsight(db, aiDefaults)
+		ensureTodayAIInsight(db, aiDefaults, scfg.Lang)
 		return notify.SendMorning(bot, db, ncfg)
 	}
 
@@ -321,7 +321,7 @@ func runReportScheduler(db *storage.DB, defaults storage.NotifyConfig, aiDefault
 				continue
 			}
 			log.Println("report scheduler: sending morning report (fallback)…")
-			ensureTodayAIInsight(db, aiDefaults)
+			ensureTodayAIInsight(db, aiDefaults, cfg.Lang)
 			if err := notify.SendMorning(bot, db, ncfg); err != nil {
 				log.Printf("report scheduler: morning send error: %v", err)
 			} else {
@@ -336,16 +336,17 @@ func runReportScheduler(db *storage.DB, defaults storage.NotifyConfig, aiDefault
 	}
 }
 
-// ensureTodayAIInsight returns today's AI insight, generating and saving it if not yet done.
+// ensureTodayAIInsight returns today's AI insight in the requested language,
+// generating and saving it if not yet cached for that language.
 // Returns "" if AI is not configured or generation fails.
-func ensureTodayAIInsight(db *storage.DB, aiDefaults storage.AIConfig) string {
+func ensureTodayAIInsight(db *storage.DB, aiDefaults storage.AIConfig, lang string) string {
 	aiCfg := db.GetAIConfig(aiDefaults)
 	if !aiCfg.Enabled() {
 		return ""
 	}
 	today := time.Now().Format("2006-01-02")
-	if existing := db.GetAIBriefing(today); existing != "" {
-		return existing // already generated today, reuse
+	if existing := db.GetAIBriefing(today, lang); existing != "" {
+		return existing // already generated today in this language, reuse
 	}
 	raw := db.GetRawMetrics()
 	if raw == nil {
@@ -357,12 +358,12 @@ func ensureTodayAIInsight(db *storage.DB, aiDefaults storage.AIConfig) string {
 		log.Printf("ensureTodayAIInsight: marshal: %v", err)
 		return ""
 	}
-	insight, err := ai.GenerateMorningBriefing(aiCfg.APIKey, aiCfg.Model, aiCfg.MaxOutputTokens, rawJSON)
+	insight, err := ai.GenerateMorningBriefing(aiCfg.APIKey, aiCfg.Model, aiCfg.MaxOutputTokens, rawJSON, lang)
 	if err != nil {
 		log.Printf("ensureTodayAIInsight: gemini: %v", err)
 		return ""
 	}
-	if err := db.SaveAIBriefing(today, insight, rawJSON); err != nil {
+	if err := db.SaveAIBriefing(today, insight, rawJSON, lang); err != nil {
 		log.Printf("ensureTodayAIInsight: save: %v", err)
 	}
 	return insight
