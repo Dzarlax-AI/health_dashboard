@@ -362,7 +362,7 @@ func ensureTodayAIInsight(db *storage.DB, aiDefaults storage.AIConfig) string {
 		log.Printf("ensureTodayAIInsight: gemini: %v", err)
 		return ""
 	}
-	if err := db.SaveAIBriefing(today, insight); err != nil {
+	if err := db.SaveAIBriefing(today, insight, rawJSON); err != nil {
 		log.Printf("ensureTodayAIInsight: save: %v", err)
 	}
 	return insight

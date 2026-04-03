@@ -7,30 +7,39 @@ import (
 	"health-receiver/internal/health"
 )
 
-// EnsureAIBriefingsTable creates the ai_briefings table if it doesn't exist.
-// Safe to call on every startup.
+// EnsureAIBriefingsTable creates the ai_briefings table if it doesn't exist
+// and adds any columns introduced in later versions. Safe to call on every startup.
 func (s *DB) EnsureAIBriefingsTable() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	s.pool.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS ai_briefings (
-			date       TEXT PRIMARY KEY,
-			insight    TEXT NOT NULL,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			sent_at    TIMESTAMPTZ
+			date            TEXT PRIMARY KEY,
+			insight         TEXT NOT NULL,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			sent_at         TIMESTAMPTZ,
+			request_payload JSONB
 		)
+	`)
+	// Add column to existing tables that predate this field.
+	s.pool.Exec(ctx, `
+		ALTER TABLE ai_briefings ADD COLUMN IF NOT EXISTS request_payload JSONB
 	`)
 }
 
 // SaveAIBriefing stores (or replaces) the AI-generated insight for the given date.
-func (s *DB) SaveAIBriefing(date, insight string) error {
+// requestPayload is the raw JSON sent to the AI model — stored for auditing and model comparison.
+func (s *DB) SaveAIBriefing(date, insight string, requestPayload []byte) error {
 	ctx, cancel := queryCtx()
 	defer cancel()
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO ai_briefings (date, insight, created_at)
-		VALUES ($1, $2, NOW())
-		ON CONFLICT (date) DO UPDATE SET insight = excluded.insight, created_at = NOW()
-	`, date, insight)
+		INSERT INTO ai_briefings (date, insight, created_at, request_payload)
+		VALUES ($1, $2, NOW(), $3)
+		ON CONFLICT (date) DO UPDATE
+			SET insight = excluded.insight,
+			    created_at = NOW(),
+			    request_payload = excluded.request_payload
+	`, date, insight, requestPayload)
 	return err
 }
 
