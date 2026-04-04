@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 //go:embed prompt.txt
@@ -74,6 +75,7 @@ var langNames = map[string]string{
 // GenerateMorningBriefing calls the Gemini API to produce a morning health insight.
 // model defaults to gemini-2.5-flash if empty; maxTokens defaults to 5000 if <= 0.
 // lang controls the response language (en/ru/sr); defaults to "en".
+// today is injected into the user message so the AI can factor in the day of week.
 func GenerateMorningBriefing(apiKey, model string, maxTokens int, rawMetricsJSON []byte, lang string) (string, error) {
 	if apiKey == "" {
 		return "", fmt.Errorf("gemini API key is not configured")
@@ -105,7 +107,11 @@ func GenerateMorningBriefing(apiKey, model string, maxTokens int, rawMetricsJSON
 			{
 				"role": "user",
 				"parts": []map[string]any{
-					{"text": "Apple Health data (JSON):\n\n" + string(rawMetricsJSON)},
+					{"text": fmt.Sprintf("Today: %s (%s)\n\nApple Health data (JSON):\n\n%s",
+							time.Now().Format("2006-01-02"),
+							time.Now().Weekday().String(),
+							string(rawMetricsJSON),
+						)},
 				},
 			},
 		},
