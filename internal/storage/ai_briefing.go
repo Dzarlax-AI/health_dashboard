@@ -100,12 +100,19 @@ func (s *DB) GetTodayStepCount(date string) float64 {
 
 // GetRawMetrics fetches a 30-day RawMetrics snapshot for use by the AI briefing.
 // Returns nil when there is insufficient data.
+// lastDate is capped at yesterday so the AI always sees complete-day data
+// (today's partial steps/calories would mislead the morning briefing).
 func (s *DB) GetRawMetrics() *health.RawMetrics {
 	ctx, cancel := queryCtx()
 	defer cancel()
 	var lastDate *string
 	if err := s.pool.QueryRow(ctx, `SELECT MAX(SUBSTRING(hour,1,10)) FROM hourly_metrics`).Scan(&lastDate); err != nil || lastDate == nil {
 		return nil
+	}
+	// Cap at yesterday: today's data is partial and should not be index [0].
+	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	if *lastDate > yesterday {
+		lastDate = &yesterday
 	}
 	data := s.rawMetricsFromDailyScores(*lastDate)
 	if data == nil {
