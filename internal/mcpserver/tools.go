@@ -26,6 +26,20 @@ func registerMetricTools(s *server.MCPServer, db *storage.DB) {
 		return jsonResult(briefing)
 	})
 
+	s.AddTool(mcp.NewTool("get_ai_briefing",
+		mcp.WithDescription("Get the AI-generated morning health briefing (text) for a given date. Produced by Gemini based on 30-day health data. Contains SLEEP, YESTERDAY, RECOVERY, and RECOMMENDATION blocks. Returns empty if no briefing was generated for that date."),
+		mcp.WithString("date", mcp.Description("Date YYYY-MM-DD (default: today)")),
+		mcp.WithString("lang", mcp.Description("Language: en, ru, sr (default: en). Returns cached briefing matching this language.")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		date := req.GetString("date", time.Now().Format("2006-01-02"))
+		lang := req.GetString("lang", "en")
+		insight := db.GetAIBriefing(date, lang)
+		if insight == "" {
+			return mcp.NewToolResultText("No AI briefing available for " + date), nil
+		}
+		return jsonResult(map[string]string{"date": date, "lang": lang, "insight": insight})
+	})
+
 	s.AddTool(mcp.NewTool("get_readiness_history",
 		mcp.WithDescription("Get daily composite readiness scores (0–100) for the last N days. Z-score based: today 60% + 7-day trend 40%. Components: HRV 40%, RHR 25%, Sleep 35% (duration + consistency). Score 70 = personal baseline, 85 = 1 SD above, 55 = 1 SD below."),
 		mcp.WithNumber("days", mcp.Description("Number of recent days (default: 30)")),
