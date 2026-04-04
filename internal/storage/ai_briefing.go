@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"health-receiver/internal/health"
@@ -41,7 +42,7 @@ func (s *DB) SaveAIBriefing(date, insight string, requestPayload []byte, lang st
 			    created_at = NOW(),
 			    request_payload = excluded.request_payload,
 			    lang = excluded.lang
-	`, date, insight, requestPayload, lang)
+	`, date, insight, json.RawMessage(requestPayload), lang)
 	return err
 }
 
