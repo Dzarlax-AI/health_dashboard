@@ -358,12 +358,12 @@ func ensureTodayAIInsight(db *storage.DB, aiDefaults storage.AIConfig, lang stri
 		log.Printf("ensureTodayAIInsight: marshal: %v", err)
 		return ""
 	}
-	insight, err := ai.GenerateMorningBriefing(aiCfg.APIKey, aiCfg.Model, aiCfg.MaxOutputTokens, rawJSON, lang)
+	insight, fullPayload, err := ai.GenerateMorningBriefing(aiCfg.APIKey, aiCfg.Model, aiCfg.MaxOutputTokens, rawJSON, lang)
 	if err != nil {
 		log.Printf("ensureTodayAIInsight: gemini: %v", err)
 		return ""
 	}
-	if err := db.SaveAIBriefing(today, insight, rawJSON, lang); err != nil {
+	if err := db.SaveAIBriefing(today, insight, fullPayload, lang); err != nil {
 		log.Printf("ensureTodayAIInsight: save: %v", err)
 	}
 	return insight

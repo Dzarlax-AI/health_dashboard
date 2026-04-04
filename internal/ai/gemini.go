@@ -75,10 +75,10 @@ var langNames = map[string]string{
 // GenerateMorningBriefing calls the Gemini API to produce a morning health insight.
 // model defaults to gemini-2.5-flash if empty; maxTokens defaults to 5000 if <= 0.
 // lang controls the response language (en/ru/sr); defaults to "en".
-// today is injected into the user message so the AI can factor in the day of week.
-func GenerateMorningBriefing(apiKey, model string, maxTokens int, rawMetricsJSON []byte, lang string) (string, error) {
+// Returns the insight text and the full request payload (for auditing).
+func GenerateMorningBriefing(apiKey, model string, maxTokens int, rawMetricsJSON []byte, lang string) (string, []byte, error) {
 	if apiKey == "" {
-		return "", fmt.Errorf("gemini API key is not configured")
+		return "", nil, fmt.Errorf("gemini API key is not configured")
 	}
 	if model == "" {
 		model = defaultModel
@@ -97,7 +97,9 @@ func GenerateMorningBriefing(apiKey, model string, maxTokens int, rawMetricsJSON
 		langName = "English"
 	}
 
+	// Build the payload without the API key — we store it for auditing.
 	payload := map[string]any{
+		"model": model,
 		"systemInstruction": map[string]any{
 			"parts": []map[string]any{
 				{"text": systemPrompt + "\n\nRESPONSE LANGUAGE: Write the entire response in " + langName + ". All block headers, numbers, and text must be in " + langName + "."},
@@ -123,28 +125,28 @@ func GenerateMorningBriefing(apiKey, model string, maxTokens int, rawMetricsJSON
 
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
-		return "", fmt.Errorf("marshal payload: %w", err)
+		return "", nil, fmt.Errorf("marshal payload: %w", err)
 	}
 
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(bodyBytes))
 	if err != nil {
-		return "", fmt.Errorf("new request: %w", err)
+		return "", nil, fmt.Errorf("new request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("do request: %w", err)
+		return "", nil, fmt.Errorf("do request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("read response: %w", err)
+		return "", nil, fmt.Errorf("read response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("gemini error (status %d): %s", resp.StatusCode, string(respBody))
+		return "", bodyBytes, fmt.Errorf("gemini error (status %d): %s", resp.StatusCode, string(respBody))
 	}
 
 	var result struct {
@@ -158,12 +160,12 @@ func GenerateMorningBriefing(apiKey, model string, maxTokens int, rawMetricsJSON
 	}
 
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", fmt.Errorf("unmarshal response: %w (%s)", err, string(respBody))
+		return "", bodyBytes, fmt.Errorf("unmarshal response: %w (%s)", err, string(respBody))
 	}
 
 	if len(result.Candidates) == 0 || len(result.Candidates[0].Content.Parts) == 0 {
-		return "", fmt.Errorf("unexpected gemini response format: %s", string(respBody))
+		return "", bodyBytes, fmt.Errorf("unexpected gemini response format: %s", string(respBody))
 	}
 
-	return result.Candidates[0].Content.Parts[0].Text, nil
+	return result.Candidates[0].Content.Parts[0].Text, bodyBytes, nil
 }

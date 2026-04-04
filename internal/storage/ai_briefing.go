@@ -100,8 +100,10 @@ func (s *DB) GetTodayStepCount(date string) float64 {
 
 // GetRawMetrics fetches a 30-day RawMetrics snapshot for use by the AI briefing.
 // Returns nil when there is insufficient data.
-// lastDate is capped at yesterday so the AI always sees complete-day data
-// (today's partial steps/calories would mislead the morning briefing).
+//
+// Activity metrics (steps, calories, exercise) are capped at yesterday because
+// today's values are partial. Sleep metrics are taken from today if available,
+// since last night's sleep is already complete by the morning briefing.
 func (s *DB) GetRawMetrics() *health.RawMetrics {
 	ctx, cancel := queryCtx()
 	defer cancel()
@@ -109,17 +111,41 @@ func (s *DB) GetRawMetrics() *health.RawMetrics {
 	if err := s.pool.QueryRow(ctx, `SELECT MAX(SUBSTRING(hour,1,10)) FROM hourly_metrics`).Scan(&lastDate); err != nil || lastDate == nil {
 		return nil
 	}
-	// Cap at yesterday: today's data is partial and should not be index [0].
+	today := time.Now().Format("2006-01-02")
 	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
-	if *lastDate > yesterday {
-		lastDate = &yesterday
+	hasTodayData := *lastDate >= today
+
+	// Cap at yesterday for activity metrics (steps/cal/exercise are partial today).
+	activityDate := *lastDate
+	if activityDate > yesterday {
+		activityDate = yesterday
 	}
-	data := s.rawMetricsFromDailyScores(*lastDate)
+
+	data := s.rawMetricsFromDailyScores(activityDate)
 	if data == nil {
-		data = s.rawMetricsFromPoints(*lastDate)
+		data = s.rawMetricsFromPoints(activityDate)
 	}
 	if len(data.WristTemp) == 0 {
-		data.WristTemp = s.fetchDailyMetric("wrist_temperature", *lastDate, 30, "AVG")
+		data.WristTemp = s.fetchDailyMetric("wrist_temperature", activityDate, 30, "AVG")
 	}
+
+	// Prepend today's sleep as index [0] — last night is already complete.
+	if hasTodayData {
+		fresh := s.freshDayFromRaw(today)
+		if fresh != nil && fresh.slp != nil && *fresh.slp > 0 {
+			prependIfPositive := func(dst *[]float64, v *float64) {
+				if v != nil && *v > 0 {
+					*dst = append([]float64{*v}, *dst...)
+				}
+			}
+			prependIfPositive(&data.Sleep, fresh.slp)
+			prependIfPositive(&data.Deep, fresh.deep)
+			prependIfPositive(&data.REM, fresh.rem)
+			prependIfPositive(&data.Awake, fresh.awake)
+			// Update LastDate to today so the AI knows sleep is from last night.
+			data.LastDate = today
+		}
+	}
+
 	return data
 }
