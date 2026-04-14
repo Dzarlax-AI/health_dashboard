@@ -14,12 +14,12 @@
   {{end}}
 
   {{if .Details}}
-  <div class="editorial-kpi-bar">
+  <div class="kpi-bar">
     {{range .Details}}
     <div class="kpi-item">
-      <div class="kpi-label"><span class="kpi-indicator {{.Trend}}"></span>{{.Label}}</div>
-      <div class="kpi-value">{{.Value}}</div>
-      {{if .Note}}<div class="kpi-note">{{.Note}}</div>{{end}}
+      <div class="kpi-item__label"><span class="kpi-indicator {{.Trend}}"></span>{{.Label}}</div>
+      <div class="kpi-item__value">{{.Value}}</div>
+      {{if .Note}}<div class="kpi-item__note">{{.Note}}</div>{{end}}
     </div>
     {{end}}
   </div>

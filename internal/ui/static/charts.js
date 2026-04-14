@@ -425,7 +425,7 @@ function loadMetricChart(canvasId, metric, from, to, bucket, agg, opts) {
 
 // Helper: stat chip
 function chip(label, value, unit) {
-  return '<div class="stat-chip"><div class="s-label">' + label + '</div><div class="s-value">' + value + (unit ? ' <span style="font-size:12px;color:var(--muted)">' + unit + '</span>' : '') + '</div></div>';
+  return '<div class="stat-chip"><div class="stat-chip__label">' + label + '</div><div class="stat-chip__value">' + value + (unit ? ' <span style="font-size:12px;color:var(--text-tertiary)">' + unit + '</span>' : '') + '</div></div>';
 }
 
 // Helper: loading state

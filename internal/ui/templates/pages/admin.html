@@ -14,10 +14,10 @@
       <div class="admin-section">
         <div class="admin-section-header">
           <div class="section-title">{{T .Lang "admin_cache_status"}}</div>
-          <button class="admin-btn" hx-get="/fragments/admin-status" hx-target="#admin-cache-table" hx-swap="innerHTML">{{T .Lang "admin_refresh"}}</button>
+          <button class="btn btn--secondary btn--small" hx-get="/fragments/admin-status" hx-target="#admin-cache-table" hx-swap="innerHTML">{{T .Lang "admin_refresh"}}</button>
         </div>
         <div id="admin-cache-table" hx-get="/fragments/admin-status" hx-trigger="load" hx-swap="innerHTML">
-          <div class="spinner"></div>
+          <div class="spinner spinner--large"></div>
         </div>
       </div>
 
@@ -28,7 +28,7 @@
           <div class="admin-action-card">
             <div class="admin-action-title">{{T .Lang "admin_incremental_title"}}</div>
             <div class="admin-action-desc">{{T .Lang "admin_incremental_desc"}}</div>
-            <button class="admin-btn primary" onclick="triggerBackfill(false)" id="btn-backfill">
+            <button class="btn btn--primary btn--small" onclick="triggerBackfill(false)" id="btn-backfill">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
               {{T .Lang "admin_run"}}
             </button>
@@ -36,7 +36,7 @@
           <div class="admin-action-card">
             <div class="admin-action-title">{{T .Lang "admin_force_title"}}</div>
             <div class="admin-action-desc">{{T .Lang "admin_force_desc"}}</div>
-            <button class="admin-btn danger" onclick="triggerBackfill(true)" id="btn-backfill-force">
+            <button class="btn btn--danger btn--small" onclick="triggerBackfill(true)" id="btn-backfill-force">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
               {{T .Lang "admin_force_run"}}
             </button>
@@ -49,7 +49,7 @@
       <div class="admin-section">
         <div class="admin-section-header">
           <div class="section-title">{{T .Lang "admin_gaps_section_title"}}</div>
-          <button class="admin-btn" onclick="checkDataGaps()">{{T .Lang "admin_gaps_check"}}</button>
+          <button class="btn btn--secondary btn--small" onclick="checkDataGaps()">{{T .Lang "admin_gaps_check"}}</button>
         </div>
         <div id="admin-gaps-section"></div>
       </div>
@@ -70,7 +70,7 @@
                 <input type="number" id="import-pause" value="150" min="0" max="5000" style="width:70px"> {{T .Lang "admin_import_pause"}}
               </label>
             </div>
-            <button class="admin-btn primary" onclick="startImport()" id="btn-import-start" disabled>
+            <button class="btn btn--primary btn--small" onclick="startImport()" id="btn-import-start" disabled>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
               {{T .Lang "admin_import_start"}}
             </button>
@@ -101,7 +101,7 @@
             <input class="admin-field-input" type="number" id="cfg-gemini-max-tokens" min="200" max="8192" placeholder="1000">
           </div>
           <div class="admin-settings-actions">
-            <button class="admin-btn primary" onclick="saveAISettings()">
+            <button class="btn btn--primary btn--small" onclick="saveAISettings()">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
               {{T .Lang "admin_ai_save"}}
             </button>
@@ -157,14 +157,14 @@
             </div>
           </div>
           <div class="admin-settings-actions">
-            <button class="admin-btn primary" onclick="saveNotifySettings()">
+            <button class="btn btn--primary btn--small" onclick="saveNotifySettings()">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
               {{T .Lang "admin_notify_save"}}
             </button>
-            <button class="admin-btn" onclick="triggerTestNotify('morning')">
+            <button class="btn btn--secondary btn--small" onclick="triggerTestNotify('morning')">
               {{T .Lang "admin_notify_test_morning"}}
             </button>
-            <button class="admin-btn" onclick="triggerTestNotify('evening')">
+            <button class="btn btn--secondary btn--small" onclick="triggerTestNotify('evening')">
               {{T .Lang "admin_notify_test_evening"}}
             </button>
           </div>
@@ -189,7 +189,7 @@ function triggerBackfill(force) {
       var msg = $('admin-msg');
       msg.textContent = d.message || 'Done';
       msg.style.display = '';
-      msg.className = 'admin-msg success';
+      msg.className = 'alert alert--success';
       btn.disabled = false;
       setTimeout(function(){ msg.style.display = 'none'; }, 5000);
     })
@@ -198,7 +198,7 @@ function triggerBackfill(force) {
 
 function checkDataGaps() {
   var el = $('admin-gaps-section');
-  el.innerHTML = '<div class="spinner"></div>';
+  el.innerHTML = '<div style="padding:16px"><div class="spinner spinner--large"></div></div>';
   fetch('/api/admin/gaps')
     .then(function(r){return r.json()})
     .then(function(d) {
@@ -356,7 +356,7 @@ function saveAISettings() {
       var msg = $('admin-ai-msg');
       msg.textContent = '{{T .Lang "admin_ai_saved"}}';
       msg.style.display = '';
-      msg.className = 'admin-msg success';
+      msg.className = 'alert alert--success';
       setTimeout(function(){ msg.style.display = 'none'; }, 3000);
     });
 }
@@ -378,7 +378,7 @@ function saveNotifySettings() {
       var msg = $('admin-notify-msg');
       msg.textContent = 'Settings saved';
       msg.style.display = '';
-      msg.className = 'admin-msg success';
+      msg.className = 'alert alert--success';
       setTimeout(function(){ msg.style.display = 'none'; }, 3000);
     });
 }
@@ -390,7 +390,7 @@ function triggerTestNotify(kind) {
       var msg = $('admin-notify-msg');
       msg.textContent = d.message || 'Sent';
       msg.style.display = '';
-      msg.className = 'admin-msg ' + (d.status === 'ok' ? 'success' : 'error');
+      msg.className = 'alert alert--' + (d.status === 'ok' ? 'success' : 'danger');
       setTimeout(function(){ msg.style.display = 'none'; }, 5000);
     });
 }

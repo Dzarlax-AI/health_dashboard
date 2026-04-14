@@ -43,7 +43,7 @@
   <!-- Health alerts -->
   <div id="alerts-panel">
     {{range .Alerts}}
-    <div class="alert-item alert-{{.Severity}}">{{.Text}}</div>
+    <div class="alert alert--{{.Severity}}">{{.Text}}</div>
     {{end}}
   </div>
   {{end}}
