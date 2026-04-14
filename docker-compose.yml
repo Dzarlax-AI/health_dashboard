@@ -1,6 +1,6 @@
 services:
   health-receiver:
-    image: dzarlax/health_dashboard:latest
+    image: ghcr.io/dzarlax-ai/health_dashboard:latest
     ports:
       - "8080:8080"
     environment:
