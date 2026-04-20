@@ -57,11 +57,6 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	points, parseErr := parseMetricPoints(body)
-	if parseErr != nil {
-		log.Printf("parse payload: %v (will still save raw)", parseErr)
-	}
-
 	rec := storage.Record{
 		AutomationName:        r.Header.Get("automation-name"),
 		AutomationID:          r.Header.Get("automation-id"),
@@ -72,36 +67,28 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 		Payload:               string(body),
 	}
 
-	id, err := h.db.Insert(rec, points)
+	id, err := h.db.InsertRaw(rec)
 	if err != nil {
-		log.Printf("insert: %v", err)
+		log.Printf("insert raw: %v", err)
 		http.Error(w, "failed to save record", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("saved record id=%d points=%d", id, len(points))
-
-	// Inline cache upsert: rebuild hourly + daily for affected dates
-	// directly from metric_points. No stale window.
-	dateSet := make(map[string]bool)
-	for _, p := range points {
-		if len(p.Date) >= 10 {
-			dateSet[p.Date[:10]] = true
-		}
-	}
-	if len(dateSet) > 0 {
-		dates := make([]string, 0, len(dateSet))
-		for d := range dateSet {
-			dates = append(dates, d)
-		}
-		go h.db.UpsertRecentCache(dates)
-	}
-
-	if h.onNewData != nil {
-		go h.onNewData()
-	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"status": "ok", "id": id, "points": len(points)})
+	json.NewEncoder(w).Encode(map[string]any{"status": "ok", "id": id})
+
+	go func() {
+		points, parseErr := parseMetricPoints(body)
+		if parseErr != nil {
+			log.Printf("record %d: parse payload: %v", id, parseErr)
+		}
+		if err := h.db.InsertPoints(id, points); err != nil {
+			log.Printf("record %d: insert points: %v", id, err)
+			return
+		}
+		log.Printf("record %d: saved %d points", id, len(points))
+		h.upsertCacheAndNotify(points)
+	}()
 }
 
 // healthFiltered returns a handler that accepts the same payload as /health
@@ -129,20 +116,6 @@ func (h *Handler) healthFiltered(kind string) http.HandlerFunc {
 		}
 		defer r.Body.Close()
 
-		allPoints, parseErr := parseMetricPoints(body)
-		if parseErr != nil {
-			log.Printf("parse payload: %v (will still save raw)", parseErr)
-		}
-
-		// Filter points by metric type.
-		var points []storage.MetricPoint
-		for _, p := range allPoints {
-			isSUM := storage.SumMetrics[p.MetricName]
-			if (kind == "sum" && isSUM) || (kind == "avg" && !isSUM) {
-				points = append(points, p)
-			}
-		}
-
 		rec := storage.Record{
 			AutomationName:        r.Header.Get("automation-name"),
 			AutomationID:          r.Header.Get("automation-id"),
@@ -153,34 +126,54 @@ func (h *Handler) healthFiltered(kind string) http.HandlerFunc {
 			Payload:               string(body),
 		}
 
-		id, err := h.db.Insert(rec, points)
+		id, err := h.db.InsertRaw(rec)
 		if err != nil {
-			log.Printf("insert: %v", err)
+			log.Printf("insert raw: %v", err)
 			http.Error(w, "failed to save record", http.StatusInternalServerError)
 			return
 		}
 
-		log.Printf("saved record id=%d points=%d (filtered %s, dropped %d)", id, len(points), kind, len(allPoints)-len(points))
-
-		dateSet := make(map[string]bool)
-		for _, p := range points {
-			if len(p.Date) >= 10 {
-				dateSet[p.Date[:10]] = true
-			}
-		}
-		if len(dateSet) > 0 {
-			dates := make([]string, 0, len(dateSet))
-			for d := range dateSet {
-				dates = append(dates, d)
-			}
-			go h.db.UpsertRecentCache(dates)
-		}
-
-		if h.onNewData != nil {
-			go h.onNewData()
-		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"status": "ok", "id": id, "points": len(points), "filter": kind, "dropped": len(allPoints) - len(points)})
+		json.NewEncoder(w).Encode(map[string]any{"status": "ok", "id": id, "filter": kind})
+
+		go func() {
+			allPoints, parseErr := parseMetricPoints(body)
+			if parseErr != nil {
+				log.Printf("record %d: parse payload: %v", id, parseErr)
+			}
+			var points []storage.MetricPoint
+			for _, p := range allPoints {
+				isSUM := storage.SumMetrics[p.MetricName]
+				if (kind == "sum" && isSUM) || (kind == "avg" && !isSUM) {
+					points = append(points, p)
+				}
+			}
+			if err := h.db.InsertPoints(id, points); err != nil {
+				log.Printf("record %d: insert points: %v", id, err)
+				return
+			}
+			log.Printf("record %d: saved %d points (filtered %s, dropped %d)", id, len(points), kind, len(allPoints)-len(points))
+			h.upsertCacheAndNotify(points)
+		}()
+	}
+}
+
+func (h *Handler) upsertCacheAndNotify(points []storage.MetricPoint) {
+	dateSet := make(map[string]bool)
+	for _, p := range points {
+		if len(p.Date) >= 10 {
+			dateSet[p.Date[:10]] = true
+		}
+	}
+	if len(dateSet) > 0 {
+		dates := make([]string, 0, len(dateSet))
+		for d := range dateSet {
+			dates = append(dates, d)
+		}
+		h.db.UpsertRecentCache(dates)
+	}
+	if h.onNewData != nil {
+		h.onNewData()
 	}
 }
 

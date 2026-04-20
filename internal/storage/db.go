@@ -90,17 +90,13 @@ type MetricPoint struct {
 	Source     string
 }
 
-func (s *DB) Insert(r Record, points []MetricPoint) (int64, error) {
-	ctx, cancel := longCtx()
+// InsertRaw saves the raw payload to health_records and returns the new record ID.
+// Call InsertPoints in a goroutine afterward to parse and store metric_points.
+func (s *DB) InsertRaw(r Record) (int64, error) {
+	ctx, cancel := queryCtx()
 	defer cancel()
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback(ctx)
-
 	var recordID int64
-	err = tx.QueryRow(ctx,
+	err := s.pool.QueryRow(ctx,
 		`INSERT INTO health_records
 		(automation_name, automation_id, automation_aggregation, automation_period, session_id, content_type, payload)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -108,14 +104,24 @@ func (s *DB) Insert(r Record, points []MetricPoint) (int64, error) {
 		r.AutomationName, r.AutomationID, r.AutomationAggregation,
 		r.AutomationPeriod, r.SessionID, r.ContentType, r.Payload,
 	).Scan(&recordID)
-	if err != nil {
-		return 0, err
-	}
+	return recordID, err
+}
 
-	// For sleep midnight summaries: allow upward corrections up to +30%,
-	// but block larger jumps that indicate Health Auto Export accumulation bug.
-	// This lets partial→full sync through (e.g. 6.3→7.3 = +16%)
-	// while blocking accumulation (e.g. 7.3→10.8 = +48%).
+// InsertPoints upserts parsed metric_points for a previously saved health_record.
+// For sleep midnight summaries: allow upward corrections up to +30%,
+// but block larger jumps that indicate Health Auto Export accumulation bug.
+func (s *DB) InsertPoints(recordID int64, points []MetricPoint) error {
+	if len(points) == 0 {
+		return nil
+	}
+	ctx, cancel := longCtx()
+	defer cancel()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
 	const upsertSQL = `INSERT INTO metric_points
 		(health_record_id, metric_name, units, date, qty, source)
 		VALUES ($1, $2, $3, $4, $5, $6)
@@ -146,13 +152,13 @@ func (s *DB) Insert(r Record, points []MetricPoint) (int64, error) {
 		for _, p := range chunk {
 			if _, err := br.Exec(); err != nil {
 				br.Close()
-				return 0, fmt.Errorf("insert point %s/%s: %w", p.MetricName, p.Date, err)
+				return fmt.Errorf("insert point %s/%s: %w", p.MetricName, p.Date, err)
 			}
 		}
 		if err := br.Close(); err != nil {
-			return 0, fmt.Errorf("batch close: %w", err)
+			return fmt.Errorf("batch close: %w", err)
 		}
 	}
 
-	return recordID, tx.Commit(ctx)
+	return tx.Commit(ctx)
 }
