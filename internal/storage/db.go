@@ -91,7 +91,7 @@ type MetricPoint struct {
 }
 
 func (s *DB) Insert(r Record, points []MetricPoint) (int64, error) {
-	ctx, cancel := queryCtx()
+	ctx, cancel := longCtx()
 	defer cancel()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -131,10 +131,19 @@ func (s *DB) Insert(r Record, points []MetricPoint) (int64, error) {
 			units = excluded.units,
 			health_record_id = excluded.health_record_id`
 
+	batch := &pgx.Batch{}
 	for _, p := range points {
-		if _, err := tx.Exec(ctx, upsertSQL, recordID, p.MetricName, p.Units, p.Date, p.Qty, p.Source); err != nil {
+		batch.Queue(upsertSQL, recordID, p.MetricName, p.Units, p.Date, p.Qty, p.Source)
+	}
+	br := tx.SendBatch(ctx, batch)
+	for _, p := range points {
+		if _, err := br.Exec(); err != nil {
+			br.Close()
 			return 0, fmt.Errorf("insert point %s/%s: %w", p.MetricName, p.Date, err)
 		}
+	}
+	if err := br.Close(); err != nil {
+		return 0, fmt.Errorf("batch close: %w", err)
 	}
 
 	return recordID, tx.Commit(ctx)

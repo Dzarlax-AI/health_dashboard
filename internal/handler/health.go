@@ -94,7 +94,7 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 		for d := range dateSet {
 			dates = append(dates, d)
 		}
-		h.db.UpsertRecentCache(dates)
+		go h.db.UpsertRecentCache(dates)
 	}
 
 	if h.onNewData != nil {
@@ -173,7 +173,7 @@ func (h *Handler) healthFiltered(kind string) http.HandlerFunc {
 			for d := range dateSet {
 				dates = append(dates, d)
 			}
-			h.db.UpsertRecentCache(dates)
+			go h.db.UpsertRecentCache(dates)
 		}
 
 		if h.onNewData != nil {
