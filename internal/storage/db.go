@@ -131,19 +131,27 @@ func (s *DB) Insert(r Record, points []MetricPoint) (int64, error) {
 			units = excluded.units,
 			health_record_id = excluded.health_record_id`
 
-	batch := &pgx.Batch{}
-	for _, p := range points {
-		batch.Queue(upsertSQL, recordID, p.MetricName, p.Units, p.Date, p.Qty, p.Source)
-	}
-	br := tx.SendBatch(ctx, batch)
-	for _, p := range points {
-		if _, err := br.Exec(); err != nil {
-			br.Close()
-			return 0, fmt.Errorf("insert point %s/%s: %w", p.MetricName, p.Date, err)
+	const chunkSize = 500
+	for i := 0; i < len(points); i += chunkSize {
+		end := i + chunkSize
+		if end > len(points) {
+			end = len(points)
 		}
-	}
-	if err := br.Close(); err != nil {
-		return 0, fmt.Errorf("batch close: %w", err)
+		chunk := points[i:end]
+		batch := &pgx.Batch{}
+		for _, p := range chunk {
+			batch.Queue(upsertSQL, recordID, p.MetricName, p.Units, p.Date, p.Qty, p.Source)
+		}
+		br := tx.SendBatch(ctx, batch)
+		for _, p := range chunk {
+			if _, err := br.Exec(); err != nil {
+				br.Close()
+				return 0, fmt.Errorf("insert point %s/%s: %w", p.MetricName, p.Date, err)
+			}
+		}
+		if err := br.Close(); err != nil {
+			return 0, fmt.Errorf("batch close: %w", err)
+		}
 	}
 
 	return recordID, tx.Commit(ctx)
