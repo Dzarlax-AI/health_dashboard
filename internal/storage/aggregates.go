@@ -380,30 +380,48 @@ func (s *DB) buildDailyMetricCol(col, metric string, force bool) error {
 
 	var query string
 	if SumMetrics[metric] {
-		// Pick best source per day using priority (sleep: RingConn > Watch; other: Watch > iPhone).
-		srcPriority := `CASE
-			WHEN source LIKE '%%Ultra%%' OR source LIKE '%%Apple Watch%%' THEN 1
-			WHEN source LIKE '%%iPhone%%' THEN 2
-			ELSE 3 END`
 		if isSleepMetric(metric) {
-			srcPriority = `CASE
-				WHEN source LIKE '%%RingConn%%' THEN 1
-				WHEN source LIKE '%%Ultra%%' OR source LIKE '%%Apple Watch%%' THEN 2
-				ELSE 3 END`
-		}
-		query = fmt.Sprintf(`
-			SELECT day, source_total FROM (
-				SELECT day, source_total,
-				       ROW_NUMBER() OVER (PARTITION BY day ORDER BY src_rank, source_total DESC) AS rn
+			// Sleep: Apple Watch > RingConn, with cross-validation.
+			// If sources diverge by >40%, the higher value is likely an outlier — take MIN.
+			query = fmt.Sprintf(`
+				SELECT day,
+				    CASE
+				        WHEN COUNT(*) > 1 AND MAX(source_total) > MIN(source_total) * 1.4
+				        THEN MIN(source_total)
+				        ELSE COALESCE(
+				            MAX(CASE WHEN source LIKE '%%%%Ultra%%%%' OR source LIKE '%%%%Apple Watch%%%%' THEN source_total END),
+				            MAX(CASE WHEN source LIKE '%%%%RingConn%%%%' THEN source_total END),
+				            MAX(source_total)
+				        )
+				    END AS val
 				FROM (
-					SELECT SUBSTRING(hour,1,10) AS day, source, SUM(avg_val) AS source_total,
-					       %s AS src_rank
-					FROM hourly_metrics
-					WHERE metric_name = $1 %s
-					GROUP BY SUBSTRING(hour,1,10), source
+				    SELECT SUBSTRING(hour,1,10) AS day, source, SUM(avg_val) AS source_total
+				    FROM hourly_metrics
+				    WHERE metric_name = $1 %s
+				    GROUP BY SUBSTRING(hour,1,10), source
 				) sub
-			) ranked WHERE rn = 1
-			ORDER BY day`, srcPriority, fromClause)
+				GROUP BY day
+				ORDER BY day`, fromClause)
+		} else {
+			// Non-sleep SUM metrics: Apple Watch > iPhone > other.
+			srcPriority := `CASE
+				WHEN source LIKE '%%Ultra%%' OR source LIKE '%%Apple Watch%%' THEN 1
+				WHEN source LIKE '%%iPhone%%' THEN 2
+				ELSE 3 END`
+			query = fmt.Sprintf(`
+				SELECT day, source_total FROM (
+					SELECT day, source_total,
+					       ROW_NUMBER() OVER (PARTITION BY day ORDER BY src_rank, source_total DESC) AS rn
+					FROM (
+						SELECT SUBSTRING(hour,1,10) AS day, source, SUM(avg_val) AS source_total,
+						       %s AS src_rank
+						FROM hourly_metrics
+						WHERE metric_name = $1 %s
+						GROUP BY SUBSTRING(hour,1,10), source
+					) sub
+				) ranked WHERE rn = 1
+				ORDER BY day`, srcPriority, fromClause)
+		}
 	} else {
 		query = fmt.Sprintf(`
 			SELECT SUBSTRING(hour,1,10), AVG(avg_val)
