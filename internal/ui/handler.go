@@ -60,6 +60,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /static/", serveStatic)
 
 	// JSON API (unchanged)
+	mux.HandleFunc("/api/sync/checkpoint", h.guard(h.syncCheckpoint))
 	mux.HandleFunc("/api/metrics", h.guard(h.listMetrics))
 	mux.HandleFunc("/api/metrics/latest", h.guard(h.latestMetricValues))
 	mux.HandleFunc("/api/metrics/range", h.guard(h.metricRange))
@@ -337,6 +338,15 @@ func (h *Handler) metricRange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, map[string]string{"min": min, "max": max})
+}
+
+func (h *Handler) syncCheckpoint(w http.ResponseWriter, r *http.Request) {
+	ts, err := h.db.GetLatestMetricDate()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, map[string]int64{"latest_unix": ts})
 }
 
 func (h *Handler) latestMetricValues(w http.ResponseWriter, r *http.Request) {

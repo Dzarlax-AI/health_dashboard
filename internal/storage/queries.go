@@ -838,3 +838,22 @@ func (s *DB) GetMetricDateRange(metric string) (min, max string, err error) {
 	}
 	return
 }
+
+// GetLatestMetricDate returns the latest date across all metric_points as a Unix timestamp.
+// Returns 0 (no error) when the table is empty.
+func (s *DB) GetLatestMetricDate() (int64, error) {
+	ctx, cancel := queryCtx()
+	defer cancel()
+
+	var ts *int64
+	err := s.pool.QueryRow(ctx,
+		`SELECT EXTRACT(EPOCH FROM MAX(date::TIMESTAMPTZ))::BIGINT FROM metric_points`,
+	).Scan(&ts)
+	if err != nil {
+		return 0, err
+	}
+	if ts == nil {
+		return 0, nil
+	}
+	return *ts, nil
+}
