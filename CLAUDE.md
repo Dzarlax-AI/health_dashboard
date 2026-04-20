@@ -21,7 +21,7 @@ Build is pure Go (no CGO). Uses `jackc/pgx/v5` for PostgreSQL. Docker images bui
 
 Single binary HTTP server (`cmd/server/main.go`) that wires together several packages:
 
-- **`internal/handler`** — receives health data from the Health Auto Export iOS app via `POST /health`. Parses JSON payload into `[]storage.MetricPoint` and writes to DB. Auth via `X-API-Key` header (env `API_KEY`). After a successful insert, calls `onNewData()` to trigger cache invalidation + debounced backfill.
+- **`internal/handler`** — receives health data from the Health Auto Export iOS app via `POST /health`, `/health/hourly`, `/health/vitals`. Uses **accept-then-process**: `InsertRaw` saves raw JSON to `health_records` synchronously and responds 200 immediately; a goroutine then parses, calls `InsertPoints` (chunked `pgx.Batch`, 500/chunk), rebuilds cache, and fires `onNewData()`. Auth via `X-API-Key` header (env `API_KEY`).
 
 - **`internal/ai`** — Gemini API integration. `gemini.go`: `GenerateMorningBriefing(apiKey, model, maxTokens, rawMetricsJSON)` and `ListModels(apiKey)` (for dynamic model dropdown). Prompt embedded from `prompt.txt` via `//go:embed`.
 
@@ -44,10 +44,16 @@ Single binary HTTP server (`cmd/server/main.go`) that wires together several pac
 ## Data Flow
 
 ```
-POST /health → health_records + metric_points → [debounced] backfill scheduler
-                                                      ↓
-                         metric_points → minute_metrics → hourly_metrics → daily_scores
+POST /health → InsertRaw → health_records → 200 to client (sync, fast)
+                               ↓ goroutine
+                         InsertPoints (chunked pgx.Batch)
+                               ↓
+                         metric_points → UpsertRecentCache → hourly_metrics → daily_scores
+                                              ↓ [debounced]
+                                         backfill scheduler
 ```
+
+`health_records` is the **source of truth** — metric_points and all cache tables are derived and can be fully rebuilt via backfill.
 
 Reads are cache-first: `daily_scores` → `hourly_metrics` → `minute_metrics` → `metric_points` (fallback).
 
