@@ -277,10 +277,22 @@ func (s *DB) metricDataDayFromHourly(metric, from, to string) ([]DataPoint, erro
 
 	var query string
 	if SumMetrics[metric] {
-		// SUM metrics: per-source daily total, then MAX across sources.
-		// Prevents overcounting when multiple devices report different amounts per hour.
-		query = `
-			SELECT day, MAX(source_total), MIN(source_min), MAX(source_max)
+		var pickExpr string
+		if isSleepMetric(metric) {
+			// Sleep: Apple Watch > RingConn + cross-validation (>40% divergence → take MIN).
+			pickExpr = `CASE
+				WHEN COUNT(*) > 1 AND MAX(source_total) > MIN(source_total) * 1.4
+				THEN MIN(source_total)
+				ELSE COALESCE(
+				    MAX(CASE WHEN source LIKE '%Ultra%' OR source LIKE '%Apple Watch%' THEN source_total END),
+				    MAX(CASE WHEN source LIKE '%RingConn%' THEN source_total END),
+				    MAX(source_total)
+				) END`
+		} else {
+			pickExpr = "MAX(source_total)"
+		}
+		query = fmt.Sprintf(`
+			SELECT day, %s, MIN(source_min), MAX(source_max)
 			FROM (
 				SELECT SUBSTRING(hour,1,10) AS day, source,
 				       SUM(avg_val) AS source_total, MIN(min_val) AS source_min, MAX(max_val) AS source_max
@@ -289,7 +301,7 @@ func (s *DB) metricDataDayFromHourly(metric, from, to string) ([]DataPoint, erro
 				GROUP BY SUBSTRING(hour,1,10), source
 			) sub
 			GROUP BY day
-			ORDER BY day`
+			ORDER BY day`, pickExpr)
 	} else {
 		query = `
 			SELECT SUBSTRING(hour,1,10), AVG(avg_val), MIN(min_val), MAX(max_val)
@@ -330,8 +342,20 @@ func (s *DB) metricDataRaw(metric, from, to, bucket, aggFunc string) ([]DataPoin
 
 	var query string
 	if SumMetrics[metric] {
-		combineVal := sumCombineExpr("source_sum")
 		sleepDedup := sleepDedupClause(metric)
+		var pickExpr string
+		if isSleepMetric(metric) {
+			pickExpr = `CASE
+				WHEN COUNT(*) > 1 AND MAX(source_sum) > MIN(source_sum) * 1.4
+				THEN MIN(source_sum)
+				ELSE COALESCE(
+				    MAX(CASE WHEN source LIKE '%Ultra%' OR source LIKE '%Apple Watch%' THEN source_sum END),
+				    MAX(CASE WHEN source LIKE '%RingConn%' THEN source_sum END),
+				    MAX(source_sum)
+				) END`
+		} else {
+			pickExpr = sumCombineExpr("source_sum")
+		}
 		query = fmt.Sprintf(`SELECT bucket, %s, MIN(source_min), MAX(source_max)
 			FROM (
 				SELECT %s AS bucket, source, SUM(qty) AS source_sum, MIN(qty) AS source_min, MAX(qty) AS source_max
@@ -340,7 +364,7 @@ func (s *DB) metricDataRaw(metric, from, to, bucket, aggFunc string) ([]DataPoin
 				GROUP BY %s, source
 			) sub
 			GROUP BY bucket
-			ORDER BY bucket`, combineVal, bucketExpr, sleepDedup, bucketExpr)
+			ORDER BY bucket`, pickExpr, bucketExpr, sleepDedup, bucketExpr)
 	} else {
 		query = "SELECT " + bucketExpr + " as bucket, " + aggFunc + `(qty), MIN(qty), MAX(qty)
 			FROM metric_points
