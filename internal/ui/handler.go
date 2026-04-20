@@ -60,7 +60,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /static/", serveStatic)
 
 	// JSON API (unchanged)
-	mux.HandleFunc("/api/sync/checkpoint", h.guard(h.syncCheckpoint))
+	mux.HandleFunc("/health/checkpoint", h.guard(h.syncCheckpoint))
 	mux.HandleFunc("/api/metrics", h.guard(h.listMetrics))
 	mux.HandleFunc("/api/metrics/latest", h.guard(h.latestMetricValues))
 	mux.HandleFunc("/api/metrics/range", h.guard(h.metricRange))
