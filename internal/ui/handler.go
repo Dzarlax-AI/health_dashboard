@@ -888,11 +888,12 @@ func (h *Handler) adminUsers(w http.ResponseWriter, r *http.Request) {
 		Username   string `json:"username"`
 		SchemaName string `json:"schema_name"`
 		APIKey     string `json:"api_key"`
+		Email      string `json:"email,omitempty"`
 		IsAdmin    bool   `json:"is_admin"`
 	}
 	out := make([]safeUser, len(users))
 	for i, u := range users {
-		out[i] = safeUser{u.Username, u.SchemaName, u.APIKey, u.IsAdmin}
+		out[i] = safeUser{u.Username, u.SchemaName, u.APIKey, u.Email, u.IsAdmin}
 	}
 	jsonResponse(w, map[string]any{"users": out})
 }
