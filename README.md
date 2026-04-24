@@ -17,12 +17,13 @@ flowchart TD
         TG["Telegram Notifier"]
     end
 
-    subgraph PG["PostgreSQL (shared instance, schema: health)"]
-        HR[("health_records")]
-        MP[("metric_points")]
-        HM[("hourly_metrics")]
-        DS[("daily_scores")]
-        AB[("ai_briefings")]
+    subgraph PG["PostgreSQL (shared instance)"]
+        REG[("health_registry.users")]
+        HR[("health_&lt;user&gt;.health_records")]
+        MP[("health_&lt;user&gt;.metric_points")]
+        HM[("health_&lt;user&gt;.hourly_metrics")]
+        DS[("health_&lt;user&gt;.daily_scores")]
+        AB[("health_&lt;user&gt;.ai_briefings")]
     end
 
     Gemini["Gemini API"]
@@ -156,16 +157,62 @@ The `/health` endpoint (no suffix) still accepts all metrics unfiltered for back
 
 > **Why `/health/hourly` and `/health/vitals`?** Both automations send all metrics, but the server filters: `/health/hourly` keeps only SUM metrics (steps, calories, sleep, distance), `/health/vitals` keeps only AVG metrics (heart rate, HRV, SpO2, temperature). This way you don't need to manually select metrics in the app -- the server handles separation.
 
+## Multi-User Mode
+
+The server supports multiple independent users, each with fully isolated data in their own PostgreSQL schema.
+
+### How It Works
+
+- A `health_registry` schema holds the users table (`health_registry.users`).
+- Each registered user gets their own schema: `health_<username>` (e.g. `health_alice`).
+- All metric data, caches, and settings are isolated per user — no data crosses schema boundaries.
+- The server detects multi-user mode automatically when `health_registry.users` is non-empty.
+
+### Prerequisites
+
+The database role must be able to create schemas:
+
+```sql
+GRANT CREATE ON DATABASE aistack TO health_user;
+```
+
+### First-Time Setup
+
+On first run with an empty registry, the server redirects all traffic to `/setup` — a wizard that creates the first admin user and provisions their schema.
+
+### Adding More Users
+
+Admin users can manage accounts via the **Admin** panel (`/admin` > Users section):
+- Create users with username, optional email, and password
+- Each new user gets an auto-generated API key and an isolated `health_<username>` schema
+
+### Authentication
+
+Three methods are supported, checked in order:
+
+| Method | How |
+|---|---|
+| **Authentik ForwardAuth** | Set `TRUST_FWD_AUTH=true`. Traefik passes `X-authentik-username` / `X-authentik-email` headers. On first request the server also issues a 30-day local cookie, so sessions survive Authentik token expiry. |
+| **Username + password** | Login form at `/login`. Cookie valid for 30 days. |
+| **API key** | `X-API-Key` header (for iOS app sync and MCP). |
+
+### Legacy Single-User Mode
+
+If no `health_registry` schema exists (fresh install without setup wizard), the server falls back to env-var credentials: `API_KEY` + `UI_PASSWORD`. Data lives in the `health` schema. Backward compatible with existing single-user deployments.
+
+---
+
 ## Web Dashboard
 
-Available at `/` -- password protected if `UI_PASSWORD` is set.
+Available at `/` -- authentication required.
 
 Features:
 - **Dashboard** -- today's metrics with trend vs yesterday, sparklines, and featured 7-day charts
 - **Health Briefing** -- daily summary with z-score readiness, sleep analysis, insights, and health alerts
 - **Metrics view** -- full list of available metrics with latest values; click any to open its chart
 - **Metric charts** -- time series with auto-bucketing (minute / hour / day)
-- **Settings** -- cache status, backfill controls, Telegram notification config, AI morning briefing config (Gemini key, model, max tokens), data gap detection, and Apple Health import
+- **Settings** (`/settings`, all users) -- Telegram notification config, Apple Health import
+- **Admin** (`/admin`, admins only) -- cache status, backfill controls, AI briefing config (Gemini key, model, max tokens), data gap detection, user management
 - URL hash state -- shareable links like `/#metric=heart_rate&from=2026-01-01&to=2026-01-31`
 
 ## MCP Server
@@ -318,10 +365,15 @@ Cache tables are rebuilt automatically on server startup (incremental, last 48h)
 
 ## Backups
 
-Data is in PostgreSQL (shared instance). Backup the entire database:
+Data is in PostgreSQL. In multi-user mode each user has their own schema. Backup all health schemas at once:
 
 ```bash
-docker exec infra-postgres-1 pg_dump -U health_user aistack --schema=health > health_backup.sql
+# All schemas (registry + all user schemas)
+docker exec infra-postgres-1 pg_dump -U health_user aistack \
+  --schema=health_registry --schema="health*" > health_backup.sql
+
+# Single user schema
+docker exec infra-postgres-1 pg_dump -U health_user aistack --schema=health_alice > alice_backup.sql
 ```
 
 Or use the unified backup strategy from the personal-ai-stack monorepo (`pg_dumpall`).
