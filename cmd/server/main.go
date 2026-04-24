@@ -124,6 +124,9 @@ func main() {
 			log.Printf("open pool for %s: %v", u.SchemaName, err)
 			continue
 		}
+		if err := db.EnsureAllTables(); err != nil {
+			log.Printf("ensure tables for %s: %v", u.SchemaName, err)
+		}
 		db.EnsureIndexes()
 		db.EnsureAIBriefingsTable()
 		startTenant(ctx, mgr, db, u.SchemaName, envNotifyDefaults, envAIDefaults)
