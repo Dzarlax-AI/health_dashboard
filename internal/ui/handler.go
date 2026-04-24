@@ -133,6 +133,14 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 
 			// Authentik forward auth
 			if h.trustFwdAuth && r.Header.Get("X-authentik-username") != "" {
+				// Issue a local cookie so requests survive Authentik session expiry.
+				if _, err := r.Cookie("auth"); err != nil {
+					http.SetCookie(w, &http.Cookie{
+						Name: "auth", Value: h.mgr.LegacyPasswordHash(), Path: "/",
+						HttpOnly: true, SameSite: http.SameSiteLaxMode,
+						MaxAge: 60 * 60 * 24 * 30,
+					})
+				}
 				next(w, r.WithContext(ctxdb.WithDB(r.Context(), db, "health")))
 				return
 			}
@@ -168,6 +176,24 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r.WithContext(ctx))
 		}
 
+		// setAuthCookie issues a local session cookie so the user stays logged in
+		// even if the Authentik session expires between requests.
+		setAuthCookie := func(username string) {
+			if _, err := r.Cookie("auth"); err == nil {
+				return // cookie already present
+			}
+			if u, err := h.reg.GetByUsername(r.Context(), username); err == nil {
+				http.SetCookie(w, &http.Cookie{
+					Name:     "auth",
+					Value:    u.Username + "|" + u.PasswordHash,
+					Path:     "/",
+					HttpOnly: true,
+					SameSite: http.SameSiteLaxMode,
+					MaxAge:   60 * 60 * 24 * 30,
+				})
+			}
+		}
+
 		// Authentik forward auth: trust X-authentik-username / X-authentik-email headers.
 		if h.trustFwdAuth {
 			authentikUser := r.Header.Get("X-authentik-username")
@@ -175,12 +201,16 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 			if authentikUser != "" || authentikEmail != "" {
 				if authentikUser != "" {
 					if db, schema, isAdmin, ok := h.mgr.DBForUsername(r.Context(), authentikUser); ok {
+						setAuthCookie(authentikUser)
 						inject(db, schema, isAdmin)
 						return
 					}
 				}
 				if authentikEmail != "" {
 					if db, schema, isAdmin, ok := h.mgr.DBForEmail(r.Context(), authentikEmail); ok {
+						if u, err := h.reg.GetByEmail(r.Context(), authentikEmail); err == nil {
+							setAuthCookie(u.Username)
+						}
 						inject(db, schema, isAdmin)
 						return
 					}
