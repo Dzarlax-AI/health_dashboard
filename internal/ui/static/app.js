@@ -40,17 +40,29 @@ function fmtAxisDate(ts, includeWeekday) {
   // Normalize DB timestamps to full ISO 8601 so all browsers (incl. Safari) parse correctly.
   // Inputs: "YYYY-MM-DD HH:MM:SS ±TZ" (raw), "YYYY-MM-DD HH:MM" (hour/minute bucket), "YYYY-MM-DD" (day)
   var base = ts.slice(0, 19).replace(' ', 'T');
+  var hasTime = base.length > 10;
   if (base.length === 16) base += ':00';       // no seconds → add them
   if (base.length === 10) base += 'T12:00:00'; // date-only → noon local
   var d = new Date(base);
+  var lang = document.documentElement.lang || 'en';
+  var localeCode = lang === 'ru' ? 'ru' : lang === 'sr' ? 'sr-Latn' : 'en';
+  // For minute/hour buckets show time; prefix with "Apr 24 " when not today
+  if (hasTime) {
+    var hh = String(d.getHours()).padStart(2, '0');
+    var mm = String(d.getMinutes()).padStart(2, '0');
+    var timeStr = hh + ':' + mm;
+    var now = new Date();
+    var sameDay = d.getFullYear() === now.getFullYear() &&
+                  d.getMonth() === now.getMonth() &&
+                  d.getDate() === now.getDate();
+    if (sameDay) return timeStr;
+    var dateStr = d.toLocaleDateString(localeCode, { month: 'short', day: 'numeric' });
+    return d.getHours() === 0 && d.getMinutes() === 0 ? dateStr : dateStr + ' ' + timeStr;
+  }
   var now = new Date();
   var opts = { month: 'short', day: 'numeric' };
   if (includeWeekday) opts.weekday = 'short';
-  if (d.getFullYear() !== now.getFullYear()) {
-    opts.year = 'numeric';
-  }
-  var lang = document.documentElement.lang || 'en';
-  var localeCode = lang === 'ru' ? 'ru' : lang === 'sr' ? 'sr-Latn' : 'en';
+  if (d.getFullYear() !== now.getFullYear()) opts.year = 'numeric';
   return d.toLocaleDateString(localeCode, opts);
 }
 
