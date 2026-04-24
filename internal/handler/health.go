@@ -30,7 +30,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 func (h *Handler) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		key := r.Header.Get("X-API-Key")
-		db, schema, ok := h.mgr.DBForAPIKey(r.Context(), key)
+		db, schema, _, ok := h.mgr.DBForAPIKey(r.Context(), key)
 		if !ok {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return

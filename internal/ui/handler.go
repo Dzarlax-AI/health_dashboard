@@ -38,6 +38,35 @@ func (h *Handler) OnTenantCreated(fn func(schema string)) {
 	h.onTenantCreated = fn
 }
 
+// adminGuard wraps guard() and additionally requires is_admin.
+func (h *Handler) adminGuard(next http.HandlerFunc) http.HandlerFunc {
+	return h.guard(func(w http.ResponseWriter, r *http.Request) {
+		if !ctxdb.IsAdminFromContext(r.Context()) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		next(w, r)
+	})
+}
+
+// isAdmin reports whether the current request user is an admin.
+func (h *Handler) isAdmin(r *http.Request) bool {
+	if h.mgr.LegacyMode() {
+		return true
+	}
+	return ctxdb.IsAdminFromContext(r.Context())
+}
+
+// basePage builds a BasePage populated with lang, title, nav and isAdmin.
+func (h *Handler) basePage(r *http.Request, title, activeNav string) BasePage {
+	return BasePage{
+		Lang:      langFromRequest(r),
+		Title:     title,
+		ActiveNav: activeNav,
+		IsAdmin:   h.isAdmin(r),
+	}
+}
+
 func (h *Handler) Register(mux *http.ServeMux) {
 	// Auth
 	mux.HandleFunc("/login", h.login)
@@ -51,16 +80,17 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /recovery", h.guard(h.pageRecovery))
 	mux.HandleFunc("GET /metrics", h.guard(h.pageMetrics))
 	mux.HandleFunc("GET /metrics/{name}", h.guard(h.pageMetricDetail))
-	mux.HandleFunc("GET /admin", h.guard(h.pageAdmin))
+	mux.HandleFunc("GET /settings", h.guard(h.pageSettings))
+	mux.HandleFunc("GET /admin", h.adminGuard(h.pageAdmin))
 
 	// htmx fragments
 	mux.HandleFunc("GET /fragments/metrics-list", h.guard(h.fragmentMetricsList))
-	mux.HandleFunc("GET /fragments/admin-status", h.guard(h.fragmentAdminStatus))
+	mux.HandleFunc("GET /fragments/admin-status", h.adminGuard(h.fragmentAdminStatus))
 
 	// Static assets
 	mux.HandleFunc("GET /static/", serveStatic)
 
-	// JSON API
+	// JSON API — available to all authenticated users
 	mux.HandleFunc("/health/checkpoint", h.guard(h.syncCheckpoint))
 	mux.HandleFunc("/api/metrics", h.guard(h.listMetrics))
 	mux.HandleFunc("/api/metrics/latest", h.guard(h.latestMetricValues))
@@ -69,13 +99,18 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/dashboard", h.guard(h.dashboard))
 	mux.HandleFunc("/api/health-briefing", h.guard(h.healthBriefing))
 	mux.HandleFunc("/api/readiness-history", h.guard(h.readinessHistory))
-	mux.HandleFunc("/api/admin/status", h.guard(h.adminStatus))
-	mux.HandleFunc("/api/admin/backfill", h.guard(h.adminBackfill))
-	mux.HandleFunc("/api/admin/test-notify", h.guard(h.adminTestNotify))
-	mux.HandleFunc("/api/admin/settings", h.guard(h.adminSettings))
-	mux.HandleFunc("/api/admin/ai-models", h.guard(h.adminAIModels))
-	mux.HandleFunc("/api/admin/gaps", h.guard(h.adminGaps))
-	mux.HandleFunc("/api/admin/users", h.guard(h.adminUsers))
+	mux.HandleFunc("/api/settings", h.guard(h.userSettings))
+	mux.HandleFunc("/api/settings/test-notify", h.guard(h.adminTestNotify))
+	mux.HandleFunc("/api/import/upload", h.guard(h.adminImportUpload))
+	mux.HandleFunc("/api/import/status", h.guard(h.adminImportStatus))
+
+	// JSON API — admin only
+	mux.HandleFunc("/api/admin/status", h.adminGuard(h.adminStatus))
+	mux.HandleFunc("/api/admin/backfill", h.adminGuard(h.adminBackfill))
+	mux.HandleFunc("/api/admin/gaps", h.adminGuard(h.adminGaps))
+	mux.HandleFunc("/api/admin/settings", h.adminGuard(h.adminAISettings))
+	mux.HandleFunc("/api/admin/ai-models", h.adminGuard(h.adminAIModels))
+	mux.HandleFunc("/api/admin/users", h.adminGuard(h.adminUsers))
 	h.registerImportRoutes(mux)
 }
 
@@ -127,29 +162,32 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
+		inject := func(db *storage.DB, schema string, isAdmin bool) {
+			ctx := ctxdb.WithDB(r.Context(), db, schema)
+			ctx = ctxdb.WithIsAdmin(ctx, isAdmin)
+			next(w, r.WithContext(ctx))
+		}
+
 		// Authentik forward auth: trust X-authentik-username / X-authentik-email headers.
 		if h.trustFwdAuth {
 			authentikUser := r.Header.Get("X-authentik-username")
 			authentikEmail := r.Header.Get("X-authentik-email")
 			if authentikUser != "" || authentikEmail != "" {
-				// 1. Match by username.
 				if authentikUser != "" {
-					if db, schema, ok := h.mgr.DBForUsername(r.Context(), authentikUser); ok {
-						next(w, r.WithContext(ctxdb.WithDB(r.Context(), db, schema)))
+					if db, schema, isAdmin, ok := h.mgr.DBForUsername(r.Context(), authentikUser); ok {
+						inject(db, schema, isAdmin)
 						return
 					}
 				}
-				// 2. Match by email.
 				if authentikEmail != "" {
-					if db, schema, ok := h.mgr.DBForEmail(r.Context(), authentikEmail); ok {
-						next(w, r.WithContext(ctxdb.WithDB(r.Context(), db, schema)))
+					if db, schema, isAdmin, ok := h.mgr.DBForEmail(r.Context(), authentikEmail); ok {
+						inject(db, schema, isAdmin)
 						return
 					}
 				}
-				// 3. Fallback: sole registered user (handles migration where user
-				//    is named 'admin' but Authentik sends a different username/email).
-				if db, schema, ok := h.mgr.DBForSoleUser(r.Context()); ok {
-					next(w, r.WithContext(ctxdb.WithDB(r.Context(), db, schema)))
+				// Fallback: sole registered user (migration case).
+				if db, schema, isAdmin, ok := h.mgr.DBForSoleUser(r.Context()); ok {
+					inject(db, schema, isAdmin)
 					return
 				}
 			}
@@ -157,8 +195,8 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 
 		// API key (for /health/checkpoint called from iOS app).
 		if key := r.Header.Get("X-API-Key"); key != "" {
-			if db, schema, ok := h.mgr.DBForAPIKey(r.Context(), key); ok {
-				next(w, r.WithContext(ctxdb.WithDB(r.Context(), db, schema)))
+			if db, schema, isAdmin, ok := h.mgr.DBForAPIKey(r.Context(), key); ok {
+				inject(db, schema, isAdmin)
 				return
 			}
 		}
@@ -170,8 +208,8 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 				username, hash := parts[0], parts[1]
 				if user, err := h.reg.GetByUsername(r.Context(), username); err == nil {
 					if subtle.ConstantTimeCompare([]byte(hash), []byte(user.PasswordHash)) == 1 {
-						if db, schema, ok := h.mgr.DBForUsername(r.Context(), username); ok {
-							next(w, r.WithContext(ctxdb.WithDB(r.Context(), db, schema)))
+						if db, schema, isAdmin, ok := h.mgr.DBForUsername(r.Context(), username); ok {
+							inject(db, schema, isAdmin)
 							return
 						}
 					}
@@ -324,7 +362,7 @@ func (h *Handler) pageDashboard(w http.ResponseWriter, r *http.Request) {
 		CorrelationJSON template.JS
 		AIInsight       string
 	}{
-		BasePage:        BasePage{Lang: lang, Title: T(lang, "app_title"), ActiveNav: "dashboard"},
+		BasePage:        h.basePage(r, T(lang, "app_title"), "dashboard"),
 		CorrelationJSON: "null",
 	}
 
@@ -376,6 +414,7 @@ func (h *Handler) pageSleep(w http.ResponseWriter, r *http.Request) {
 	lang := langFromRequest(r)
 	setLangCookie(w, r)
 	data := h.buildSectionPage("sleep", lang, db)
+	data.IsAdmin = h.isAdmin(r)
 	renderPage(w, "section", data)
 }
 
@@ -384,6 +423,7 @@ func (h *Handler) pageCardio(w http.ResponseWriter, r *http.Request) {
 	lang := langFromRequest(r)
 	setLangCookie(w, r)
 	data := h.buildSectionPage("cardio", lang, db)
+	data.IsAdmin = h.isAdmin(r)
 	renderPage(w, "section", data)
 }
 
@@ -392,6 +432,7 @@ func (h *Handler) pageActivity(w http.ResponseWriter, r *http.Request) {
 	lang := langFromRequest(r)
 	setLangCookie(w, r)
 	data := h.buildSectionPage("activity", lang, db)
+	data.IsAdmin = h.isAdmin(r)
 	renderPage(w, "section", data)
 }
 
@@ -400,6 +441,7 @@ func (h *Handler) pageRecovery(w http.ResponseWriter, r *http.Request) {
 	lang := langFromRequest(r)
 	setLangCookie(w, r)
 	data := h.buildSectionPage("recovery", lang, db)
+	data.IsAdmin = h.isAdmin(r)
 	renderPage(w, "section", data)
 }
 
@@ -409,6 +451,7 @@ func (h *Handler) pageMetrics(w http.ResponseWriter, r *http.Request) {
 	setLangCookie(w, r)
 	query := r.URL.Query().Get("q")
 	data := h.buildMetricsPageData(lang, query, db)
+	data.IsAdmin = h.isAdmin(r)
 	renderPage(w, "metrics", data)
 }
 
@@ -429,21 +472,25 @@ func (h *Handler) pageMetricDetail(w http.ResponseWriter, r *http.Request) {
 		MetricName  string
 		MetricLabel string
 	}{
-		BasePage:    BasePage{Lang: lang, Title: MetricName(lang, metricName), ActiveNav: "metrics"},
+		BasePage:    h.basePage(r, MetricName(lang, metricName), "metrics"),
 		MetricName:  metricName,
 		MetricLabel: MetricName(lang, metricName),
 	}
 	renderPage(w, "metric_detail", data)
 }
 
+func (h *Handler) pageSettings(w http.ResponseWriter, r *http.Request) {
+	setLangCookie(w, r)
+	renderPage(w, "settings", h.basePage(r, "Settings", "settings"))
+}
+
 func (h *Handler) pageAdmin(w http.ResponseWriter, r *http.Request) {
-	lang := langFromRequest(r)
 	setLangCookie(w, r)
 	renderPage(w, "admin", struct {
 		BasePage
 		MultiUser bool
 	}{
-		BasePage:  BasePage{Lang: lang, Title: T(lang, "admin_title"), ActiveNav: "admin"},
+		BasePage:  h.basePage(r, T(langFromRequest(r), "admin_title"), "admin"),
 		MultiUser: !h.mgr.LegacyMode(),
 	})
 }
@@ -666,7 +713,8 @@ func (h *Handler) adminBackfill(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string]string{"status": "ok", "message": msg})
 }
 
-func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
+// userSettings handles GET/POST /api/settings — Telegram config, available to all users.
+func (h *Handler) userSettings(w http.ResponseWriter, r *http.Request) {
 	db := h.tenantDB(r)
 	schema := h.tenantSchema(r)
 
@@ -681,7 +729,6 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 			"timezone":               true,
 			"report_morning_weekday": true, "report_morning_weekend": true,
 			"report_evening_weekday": true, "report_evening_weekend": true,
-			"gemini_api_key": true, "gemini_model": true, "gemini_max_tokens": true,
 		}
 		clean := make(map[string]string)
 		for k, v := range body {
@@ -698,23 +745,55 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	notifyDefaults := h.mgr.NotifyDefaultsFor(schema)
-	aiDefaults := h.mgr.AIDefaultsFor(schema)
 	cfg := db.GetNotifyConfig(notifyDefaults)
+	jsonResponse(w, map[string]any{
+		"telegram_token":         cfg.Token,
+		"telegram_chat_id":       cfg.ChatID,
+		"report_lang":            cfg.Lang,
+		"timezone":               cfg.Timezone,
+		"report_morning_weekday": cfg.MorningWeekdayHour,
+		"report_morning_weekend": cfg.MorningWeekendHour,
+		"report_evening_weekday": cfg.EveningWeekdayHour,
+		"report_evening_weekend": cfg.EveningWeekendHour,
+		"enabled":                cfg.Enabled(),
+	})
+}
+
+// adminAISettings handles GET/POST /api/admin/settings — Gemini config, admin only.
+func (h *Handler) adminAISettings(w http.ResponseWriter, r *http.Request) {
+	db := h.tenantDB(r)
+	schema := h.tenantSchema(r)
+
+	if r.Method == http.MethodPost {
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
+			return
+		}
+		allowed := map[string]bool{
+			"gemini_api_key": true, "gemini_model": true, "gemini_max_tokens": true,
+		}
+		clean := make(map[string]string)
+		for k, v := range body {
+			if allowed[k] {
+				clean[k] = v
+			}
+		}
+		if err := db.SaveSettings(clean); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		jsonResponse(w, map[string]string{"status": "ok"})
+		return
+	}
+
+	aiDefaults := h.mgr.AIDefaultsFor(schema)
 	aiCfg := db.GetAIConfig(aiDefaults)
 	jsonResponse(w, map[string]any{
-		"telegram_token":          cfg.Token,
-		"telegram_chat_id":        cfg.ChatID,
-		"report_lang":             cfg.Lang,
-		"timezone":                cfg.Timezone,
-		"report_morning_weekday":  cfg.MorningWeekdayHour,
-		"report_morning_weekend":  cfg.MorningWeekendHour,
-		"report_evening_weekday":  cfg.EveningWeekdayHour,
-		"report_evening_weekend":  cfg.EveningWeekendHour,
-		"enabled":                 cfg.Enabled(),
-		"gemini_api_key":          aiCfg.APIKey,
-		"gemini_model":            aiCfg.Model,
-		"gemini_max_tokens":       aiCfg.MaxOutputTokens,
-		"gemini_enabled":          aiCfg.Enabled(),
+		"gemini_api_key":    aiCfg.APIKey,
+		"gemini_model":      aiCfg.Model,
+		"gemini_max_tokens": aiCfg.MaxOutputTokens,
+		"gemini_enabled":    aiCfg.Enabled(),
 	})
 }
 

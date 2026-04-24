@@ -118,57 +118,57 @@ func (m *Manager) GetOrCreate(ctx context.Context, schema string) (*storage.DB, 
 }
 
 // DBForAPIKey looks up a tenant by API key and returns their DB.
-func (m *Manager) DBForAPIKey(ctx context.Context, key string) (*storage.DB, string, bool) {
+func (m *Manager) DBForAPIKey(ctx context.Context, key string) (*storage.DB, string, bool, bool) {
 	if m.LegacyMode() {
 		if key == m.LegacyAPIKey() {
-			return m.LegacyDB(), "health", true
+			return m.LegacyDB(), "health", true, true
 		}
-		return nil, "", false
+		return nil, "", false, false
 	}
 	user, err := m.reg.GetByAPIKey(ctx, key)
 	if err != nil {
-		return nil, "", false
+		return nil, "", false, false
 	}
 	db, err := m.GetOrCreate(ctx, user.SchemaName)
 	if err != nil {
-		return nil, "", false
+		return nil, "", false, false
 	}
-	return db, user.SchemaName, true
+	return db, user.SchemaName, user.IsAdmin, true
 }
 
 // DBForUsername looks up a tenant by username and returns their DB.
-func (m *Manager) DBForUsername(ctx context.Context, username string) (*storage.DB, string, bool) {
+func (m *Manager) DBForUsername(ctx context.Context, username string) (*storage.DB, string, bool, bool) {
 	if m.LegacyMode() {
 		if username == "admin" {
-			return m.LegacyDB(), "health", true
+			return m.LegacyDB(), "health", true, true
 		}
-		return nil, "", false
+		return nil, "", false, false
 	}
 	user, err := m.reg.GetByUsername(ctx, username)
 	if err != nil {
-		return nil, "", false
+		return nil, "", false, false
 	}
 	db, err := m.GetOrCreate(ctx, user.SchemaName)
 	if err != nil {
-		return nil, "", false
+		return nil, "", false, false
 	}
-	return db, user.SchemaName, true
+	return db, user.SchemaName, user.IsAdmin, true
 }
 
 // DBForEmail looks up a tenant by email address and returns their DB.
-func (m *Manager) DBForEmail(ctx context.Context, email string) (*storage.DB, string, bool) {
+func (m *Manager) DBForEmail(ctx context.Context, email string) (*storage.DB, string, bool, bool) {
 	if m.LegacyMode() {
-		return nil, "", false
+		return nil, "", false, false
 	}
 	user, err := m.reg.GetByEmail(ctx, email)
 	if err != nil {
-		return nil, "", false
+		return nil, "", false, false
 	}
 	db, err := m.GetOrCreate(ctx, user.SchemaName)
 	if err != nil {
-		return nil, "", false
+		return nil, "", false, false
 	}
-	return db, user.SchemaName, true
+	return db, user.SchemaName, user.IsAdmin, true
 }
 
 // DBForSoleUser returns the DB for the only registered user.
@@ -176,16 +176,16 @@ func (m *Manager) DBForEmail(ctx context.Context, email string) (*storage.DB, st
 // does not match any registered username (e.g., after migration from env vars
 // where the user was created with username 'admin'). Only succeeds when exactly
 // 1 user is registered — multi-user installs must have matching usernames.
-func (m *Manager) DBForSoleUser(ctx context.Context) (*storage.DB, string, bool) {
+func (m *Manager) DBForSoleUser(ctx context.Context) (*storage.DB, string, bool, bool) {
 	users, err := m.reg.ListUsers(ctx)
 	if err != nil || len(users) != 1 {
-		return nil, "", false
+		return nil, "", false, false
 	}
 	db, err := m.GetOrCreate(ctx, users[0].SchemaName)
 	if err != nil {
-		return nil, "", false
+		return nil, "", false, false
 	}
-	return db, users[0].SchemaName, true
+	return db, users[0].SchemaName, users[0].IsAdmin, true
 }
 
 // BackfillFor returns the backfill trigger for a schema, or nil.

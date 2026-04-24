@@ -4,7 +4,8 @@ package ui
 type BasePage struct {
 	Lang      string
 	Title     string
-	ActiveNav string // "dashboard", "metrics", "admin" — highlights current nav item
+	ActiveNav string // "dashboard", "metrics", "settings", "admin"
+	IsAdmin   bool
 }
 
 // LangOption represents a language choice for the language switcher.

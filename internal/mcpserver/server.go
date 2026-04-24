@@ -17,7 +17,7 @@ import (
 var sumMetrics = storage.SumMetrics
 
 // DBResolver resolves a tenant DB from an API key.
-type DBResolver func(ctx context.Context, key string) (*storage.DB, string, bool)
+type DBResolver func(ctx context.Context, key string) (*storage.DB, string, bool, bool)
 
 // Register mounts MCP Streamable HTTP at /mcp.
 func Register(mux *http.ServeMux, mgr *tenants.Manager, _ string) {
@@ -36,7 +36,7 @@ func withAPIKey(next http.Handler, resolve DBResolver) http.Handler {
 		if key == "" {
 			key = r.Header.Get("X-API-Key")
 		}
-		db, schema, ok := resolve(r.Context(), key)
+		db, schema, _, ok := resolve(r.Context(), key)
 		if !ok {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return

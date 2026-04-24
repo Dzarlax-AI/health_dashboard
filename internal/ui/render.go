@@ -45,6 +45,7 @@ func init() {
 		"templates/pages/metrics.html",
 		"templates/pages/metric_detail.html",
 		"templates/pages/admin.html",
+		"templates/pages/settings.html",
 		"templates/pages/login.html",
 		"templates/pages/setup.html",
 	}
