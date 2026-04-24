@@ -234,10 +234,11 @@ function saveAISettings() {
 function loadUsers() {
   fetch('/api/admin/users')
     .then(function(r){return r.json()})
-    .then(function(users) {
+    .then(function(d) {
       var el = $('admin-users-table');
       if (!el) return;
-      if (!users || users.length === 0) {
+      var users = d.users || [];
+      if (!users.length) {
         el.innerHTML = '<p style="color:var(--text-secondary);font-size:13px">No users yet.</p>';
         return;
       }
