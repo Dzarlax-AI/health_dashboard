@@ -37,7 +37,10 @@ function fmtUnit(u) {
 }
 
 function fmtAxisDate(ts, includeWeekday) {
-  var d = new Date(ts.includes('T') ? ts : ts + 'T12:00:00');
+  // Normalize: "YYYY-MM-DD HH:MM:SS ±TZ" (DB format) or "YYYY-MM-DD" → valid ISO
+  var base = ts.slice(0, 19).replace(' ', 'T');
+  if (base.length === 10) base += 'T12:00:00';
+  var d = new Date(base);
   var now = new Date();
   var opts = { month: 'short', day: 'numeric' };
   if (includeWeekday) opts.weekday = 'short';
