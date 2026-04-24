@@ -172,6 +172,41 @@
         <div id="admin-notify-msg" style="display:none"></div>
       </div>
 
+      {{if .MultiUser}}
+      <!-- Users -->
+      <div class="admin-section">
+        <div class="admin-section-header">
+          <div class="section-title">Users</div>
+          <button class="btn btn--secondary btn--small" onclick="loadUsers()">Refresh</button>
+        </div>
+        <div id="admin-users-table">
+          <div class="spinner spinner--large"></div>
+        </div>
+        <div style="margin-top:16px">
+          <div class="admin-field-group-title">Add user</div>
+          <div class="admin-field-row">
+            <label class="admin-field-label">Username</label>
+            <input class="admin-field-input" type="text" id="new-username" autocomplete="off" placeholder="alice">
+          </div>
+          <div class="admin-field-row">
+            <label class="admin-field-label">Email <span style="font-weight:400;color:var(--text-secondary)">(optional, for SSO)</span></label>
+            <input class="admin-field-input" type="email" id="new-email" autocomplete="off" placeholder="alice@example.com">
+          </div>
+          <div class="admin-field-row">
+            <label class="admin-field-label">Password</label>
+            <input class="admin-field-input" type="password" id="new-password" autocomplete="new-password">
+          </div>
+          <div class="admin-settings-actions" style="margin-top:12px">
+            <button class="btn btn--primary btn--small" onclick="createUser()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>
+              Add user
+            </button>
+          </div>
+          <div id="admin-users-msg" style="display:none;margin-top:8px"></div>
+        </div>
+      </div>
+      {{end}}
+
     </div>
   </div>
 </div>
@@ -395,7 +430,61 @@ function triggerTestNotify(kind) {
     });
 }
 
+function loadUsers() {
+  fetch('/api/admin/users')
+    .then(function(r){return r.json()})
+    .then(function(users) {
+      var el = $('admin-users-table');
+      if (!el) return;
+      if (!users || users.length === 0) {
+        el.innerHTML = '<p style="color:var(--text-secondary);font-size:13px">No users yet.</p>';
+        return;
+      }
+      var rows = users.map(function(u) {
+        return '<tr><td>' + u.username + '</td><td>' + (u.email || '—') + '</td><td style="font-family:monospace;font-size:11px">' + u.api_key + '</td><td>' + (u.is_admin ? 'admin' : 'user') + '</td></tr>';
+      }).join('');
+      el.innerHTML = '<table class="admin-table"><thead><tr><th>Username</th><th>Email</th><th>API Key</th><th>Role</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    });
+}
+
+function createUser() {
+  var username = $('new-username').value.trim();
+  var email = $('new-email').value.trim();
+  var password = $('new-password').value;
+  var msg = $('admin-users-msg');
+  if (!username || !password) {
+    msg.textContent = 'Username and password are required.';
+    msg.className = 'alert alert--danger';
+    msg.style.display = '';
+    return;
+  }
+  fetch('/api/admin/users', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({username: username, email: email, password: password})
+  })
+    .then(function(r){return r.json()})
+    .then(function(d) {
+      if (d.status === 'ok' || d.status === 'partial') {
+        msg.textContent = 'User ' + d.user.username + ' created. API key: ' + d.user.api_key + (d.warning ? ' (warning: ' + d.warning + ')' : '');
+        msg.className = 'alert alert--success';
+        $('new-username').value = '';
+        $('new-email').value = '';
+        $('new-password').value = '';
+        loadUsers();
+      } else {
+        msg.textContent = d.error || 'Error creating user.';
+        msg.className = 'alert alert--danger';
+      }
+      msg.style.display = '';
+      setTimeout(function(){ msg.style.display = 'none'; }, 8000);
+    });
+}
+
 // Load settings on page load
-document.addEventListener('DOMContentLoaded', loadAdminSettings);
+document.addEventListener('DOMContentLoaded', function() {
+  loadAdminSettings();
+  if ($('admin-users-table')) loadUsers();
+});
 </script>
 {{end}}

@@ -439,7 +439,13 @@ func (h *Handler) pageMetricDetail(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) pageAdmin(w http.ResponseWriter, r *http.Request) {
 	lang := langFromRequest(r)
 	setLangCookie(w, r)
-	renderPage(w, "admin", BasePage{Lang: lang, Title: T(lang, "admin_title"), ActiveNav: "admin"})
+	renderPage(w, "admin", struct {
+		BasePage
+		MultiUser bool
+	}{
+		BasePage:  BasePage{Lang: lang, Title: T(lang, "admin_title"), ActiveNav: "admin"},
+		MultiUser: !h.mgr.LegacyMode(),
+	})
 }
 
 func (h *Handler) fragmentAdminStatus(w http.ResponseWriter, r *http.Request) {
