@@ -28,13 +28,13 @@ func (e *ErrNeedsManualSetup) Error() string {
 
 // User represents a registered health dashboard user.
 type User struct {
-	Username     string
-	SchemaName   string
-	APIKey       string
-	PasswordHash string // hex(sha256(password))
-	Email        string // optional; used for Authentik X-authentik-email matching
-	IsAdmin      bool
-	CreatedAt    time.Time
+	Username     string    `json:"username"`
+	SchemaName   string    `json:"schema_name"`
+	APIKey       string    `json:"api_key"`
+	PasswordHash string    `json:"-"`
+	Email        string    `json:"email,omitempty"`
+	IsAdmin      bool      `json:"is_admin"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // Registry manages user accounts stored in the health_registry schema.
