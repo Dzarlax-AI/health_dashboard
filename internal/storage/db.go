@@ -39,6 +39,113 @@ func (s *DB) NeedsForceBackfill() bool {
 	return cnt == 0
 }
 
+// NewWithSchema creates a DB pool that sets search_path to schema on every connection.
+// This makes all unqualified table references resolve to the given schema,
+// allowing the same SQL queries to serve different tenants transparently.
+func NewWithSchema(ctx context.Context, connString, schema string) (*DB, error) {
+	config, err := pgxpool.ParseConfig(connString)
+	if err != nil {
+		return nil, fmt.Errorf("parse pg config: %w", err)
+	}
+	config.MaxConns = 20
+	config.MinConns = 5
+	config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	config.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, "SET search_path = "+schema)
+		return err
+	}
+
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		return nil, fmt.Errorf("connect to pg: %w", err)
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("ping pg: %w", err)
+	}
+	return &DB{pool: pool}, nil
+}
+
+// EnsureAllTables creates all health schema tables if they do not exist.
+// Called when provisioning a new tenant schema.
+func (s *DB) EnsureAllTables() error {
+	ctx, cancel := longCtx()
+	defer cancel()
+
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS health_records (
+			id                     BIGSERIAL PRIMARY KEY,
+			received_at            TIMESTAMPTZ DEFAULT NOW(),
+			automation_name        TEXT,
+			automation_id          TEXT,
+			automation_aggregation TEXT,
+			automation_period      TEXT,
+			session_id             TEXT,
+			content_type           TEXT,
+			payload                TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS metric_points (
+			id               BIGSERIAL PRIMARY KEY,
+			health_record_id BIGINT NOT NULL REFERENCES health_records(id),
+			received_at      TIMESTAMPTZ DEFAULT NOW(),
+			metric_name      TEXT NOT NULL,
+			units            TEXT,
+			date             TEXT NOT NULL,
+			qty              REAL,
+			source           TEXT,
+			UNIQUE(metric_name, date, source)
+		)`,
+		`CREATE TABLE IF NOT EXISTS minute_metrics (
+			metric_name TEXT NOT NULL,
+			minute      TEXT NOT NULL,
+			source      TEXT NOT NULL DEFAULT '',
+			avg_val     REAL NOT NULL DEFAULT 0,
+			min_val     REAL NOT NULL DEFAULT 0,
+			max_val     REAL NOT NULL DEFAULT 0,
+			PRIMARY KEY (metric_name, minute, source)
+		)`,
+		`CREATE TABLE IF NOT EXISTS hourly_metrics (
+			metric_name TEXT NOT NULL,
+			hour        TEXT NOT NULL,
+			source      TEXT NOT NULL DEFAULT '',
+			avg_val     REAL NOT NULL DEFAULT 0,
+			min_val     REAL NOT NULL DEFAULT 0,
+			max_val     REAL NOT NULL DEFAULT 0,
+			PRIMARY KEY (metric_name, hour, source)
+		)`,
+		`CREATE TABLE IF NOT EXISTS daily_scores (
+			date          TEXT PRIMARY KEY,
+			readiness     INTEGER,
+			score_version INTEGER,
+			computed_at   TEXT NOT NULL DEFAULT NOW()::text,
+			hrv_avg       REAL,
+			rhr_avg       REAL,
+			sleep_total   REAL,
+			sleep_deep    REAL,
+			sleep_rem     REAL,
+			sleep_core    REAL,
+			sleep_awake   REAL,
+			steps         REAL,
+			calories      REAL,
+			exercise_min  REAL,
+			spo2_avg      REAL,
+			vo2_avg       REAL,
+			resp_avg      REAL
+		)`,
+		`CREATE TABLE IF NOT EXISTS settings (
+			key        TEXT PRIMARY KEY,
+			value      TEXT NOT NULL DEFAULT '',
+			updated_at TEXT NOT NULL DEFAULT NOW()::text
+		)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := s.pool.Exec(ctx, stmt); err != nil {
+			return fmt.Errorf("ensure table: %w", err)
+		}
+	}
+	return nil
+}
+
 func New(ctx context.Context, connString string) (*DB, error) {
 	config, err := pgxpool.ParseConfig(connString)
 	if err != nil {
@@ -63,6 +170,16 @@ func New(ctx context.Context, connString string) (*DB, error) {
 
 func (s *DB) Close() {
 	s.pool.Close()
+}
+
+// CreateSchema issues CREATE SCHEMA for the given name.
+// Returns an error (which may be *registry-compatible ErrNeedsManualSetup via the caller)
+// if the DB user lacks the necessary privileges.
+func (s *DB) CreateSchema(ctx context.Context, name string) error {
+	ctx, cancel := queryCtx()
+	defer cancel()
+	_, err := s.pool.Exec(ctx, "CREATE SCHEMA "+name)
+	return err
 }
 
 // parseDate parses a YYYY-MM-DD string.

@@ -22,8 +22,15 @@ button:hover{background:#1d4ed8}
   <h1>&#10084; Health</h1>
   {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
   <form method="POST">
+    {{if .MultiUser}}
+    <label>Username</label>
+    <input type="text" name="username" autofocus autocomplete="username">
+    <label>Password</label>
+    <input type="password" name="password" autocomplete="current-password">
+    {{else}}
     <label>Password</label>
     <input type="password" name="password" autofocus>
+    {{end}}
     <button type="submit">Sign in</button>
   </form>
 </div>

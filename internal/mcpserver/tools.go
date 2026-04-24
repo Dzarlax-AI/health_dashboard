@@ -10,16 +10,16 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"health-receiver/internal/storage"
+	"health-receiver/internal/ctxdb"
 )
 
-func registerMetricTools(s *server.MCPServer, db *storage.DB) {
+func registerMetricTools(s *server.MCPServer, _ DBResolver) {
 	s.AddTool(mcp.NewTool("get_health_briefing",
 		mcp.WithDescription("Get a full daily health briefing: composite readiness score (z-score based: today 60% + 7-day trend 40%, components HRV 40% + RHR 25% + Sleep 35% vs 30-day personal baseline; 70 = your norm, 85 = good, 55 = rough day), sleep analysis with per-source breakdown, recovery, activity, cardio sections, insights, and health alerts. Best starting point."),
 		mcp.WithString("lang", mcp.Description("Response language: en, ru, sr (default: en)")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		lang := req.GetString("lang", "en")
-		briefing, err := db.GetHealthBriefing(lang)
+		briefing, err := ctxdb.FromContext(ctx).GetHealthBriefing(lang)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -33,7 +33,7 @@ func registerMetricTools(s *server.MCPServer, db *storage.DB) {
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		date := req.GetString("date", time.Now().Format("2006-01-02"))
 		lang := req.GetString("lang", "en")
-		insight := db.GetAIBriefing(date, lang)
+		insight := ctxdb.FromContext(ctx).GetAIBriefing(date, lang)
 		if insight == "" {
 			return mcp.NewToolResultText("No AI briefing available for " + date), nil
 		}
@@ -45,7 +45,7 @@ func registerMetricTools(s *server.MCPServer, db *storage.DB) {
 		mcp.WithNumber("days", mcp.Description("Number of recent days (default: 30)")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		days := req.GetInt("days", 30)
-		pts, err := db.GetReadinessHistory(days)
+		pts, err := ctxdb.FromContext(ctx).GetReadinessHistory(days)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -56,7 +56,7 @@ func registerMetricTools(s *server.MCPServer, db *storage.DB) {
 	s.AddTool(mcp.NewTool("list_metrics",
 		mcp.WithDescription("List all available health metrics with record counts and date ranges. Call this first to discover what data is available."),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		metrics, err := db.ListMetrics()
+		metrics, err := ctxdb.FromContext(ctx).ListMetrics()
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -66,7 +66,7 @@ func registerMetricTools(s *server.MCPServer, db *storage.DB) {
 	s.AddTool(mcp.NewTool("get_dashboard",
 		mcp.WithDescription("Get today's health summary: steps, calories, heart rate, SpO2, HRV, sleep and more. Includes trend vs yesterday."),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		cards, err := db.GetDashboard()
+		cards, err := ctxdb.FromContext(ctx).GetDashboard()
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -93,7 +93,7 @@ func registerMetricTools(s *server.MCPServer, db *storage.DB) {
 				aggFunc = "AVG"
 			}
 		}
-		points, err := db.GetMetricData(metric, from, to+" 23:59:59", bucket, aggFunc)
+		points, err := ctxdb.FromContext(ctx).GetMetricData(metric, from, to+" 23:59:59", bucket, aggFunc)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -107,7 +107,7 @@ func registerMetricTools(s *server.MCPServer, db *storage.DB) {
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		metric := req.GetString("metric", "")
 		days := req.GetInt("days", 7)
-		stats, err := db.SummarizeMetric(metric, days)
+		stats, err := ctxdb.FromContext(ctx).SummarizeMetric(metric, days)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -155,7 +155,7 @@ Notes:
 		if !strings.HasPrefix(strings.TrimSpace(strings.ToUpper(query)), "SELECT") {
 			return mcp.NewToolResultError("only SELECT queries are allowed"), nil
 		}
-		rows, err := db.QueryReadOnly(query)
+		rows, err := ctxdb.FromContext(ctx).QueryReadOnly(query)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("query error: %v", err)), nil
 		}
@@ -163,7 +163,7 @@ Notes:
 	})
 }
 
-func registerAnalysisTools(s *server.MCPServer, db *storage.DB) {
+func registerAnalysisTools(s *server.MCPServer, _ DBResolver) {
 	s.AddTool(mcp.NewTool("compare_periods",
 		mcp.WithDescription("Compare a metric between two date ranges. Useful for before/after analysis or week-over-week comparisons."),
 		mcp.WithString("metric", mcp.Required(), mcp.Description("Metric name, e.g. heart_rate, step_count")),
@@ -195,7 +195,7 @@ func registerAnalysisTools(s *server.MCPServer, db *storage.DB) {
 		// Use GetMetricData (day bucket) which handles multi-device dedup
 		// correctly for SUM metrics, then aggregate daily values.
 		queryPeriod := func(from, to string) (periodStats, error) {
-			points, err := db.GetMetricData(metric, from, to+" 23:59:59", "day", agg)
+			points, err := ctxdb.FromContext(ctx).GetMetricData(metric, from, to+" 23:59:59", "day", agg)
 			if err != nil {
 				return periodStats{From: from, To: to}, err
 			}
@@ -251,7 +251,7 @@ func registerAnalysisTools(s *server.MCPServer, db *storage.DB) {
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		from := req.GetString("from", "")
 		to := req.GetString("to", "")
-		nights, err := db.GetSleepSummary(from, to)
+		nights, err := ctxdb.FromContext(ctx).GetSleepSummary(from, to)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -274,7 +274,7 @@ func registerAnalysisTools(s *server.MCPServer, db *storage.DB) {
 		if sumMetrics[metric] {
 			agg = "SUM"
 		}
-		points, err := db.GetMetricData(metric, from, to+" 23:59:59", "day", agg)
+		points, err := ctxdb.FromContext(ctx).GetMetricData(metric, from, to+" 23:59:59", "day", agg)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -344,7 +344,7 @@ func registerAnalysisTools(s *server.MCPServer, db *storage.DB) {
 			}
 			// Use GetMetricData which handles multi-device dedup,
 			// then aggregate daily values into weeks in Go.
-			points, err := db.GetMetricData(metric, from, to+" 23:59:59", "day", agg)
+			points, err := ctxdb.FromContext(ctx).GetMetricData(metric, from, to+" 23:59:59", "day", agg)
 			if err != nil {
 				return mcp.NewToolResultError(fmt.Sprintf("%s: %v", metric, err)), nil
 			}
@@ -401,7 +401,7 @@ func registerAnalysisTools(s *server.MCPServer, db *storage.DB) {
 		metric := req.GetString("metric", "")
 
 		// Get list of metrics to process.
-		metrics, err := db.ListMetrics()
+		metrics, err := ctxdb.FromContext(ctx).ListMetrics()
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -420,7 +420,7 @@ func registerAnalysisTools(s *server.MCPServer, db *storage.DB) {
 				continue
 			}
 			// Use GetMetricData with day bucket — handles dedup correctly.
-			minDate, maxDate, rerr := db.GetMetricDateRange(m.Name)
+			minDate, maxDate, rerr := ctxdb.FromContext(ctx).GetMetricDateRange(m.Name)
 			if rerr != nil || minDate == "" {
 				continue
 			}
@@ -428,7 +428,7 @@ func registerAnalysisTools(s *server.MCPServer, db *storage.DB) {
 			if sumMetrics[m.Name] {
 				agg = "SUM"
 			}
-			points, derr := db.GetMetricData(m.Name, minDate, maxDate+" 23:59:59", "day", agg)
+			points, derr := ctxdb.FromContext(ctx).GetMetricData(m.Name, minDate, maxDate+" 23:59:59", "day", agg)
 			if derr != nil || len(points) == 0 {
 				continue
 			}

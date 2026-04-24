@@ -46,6 +46,7 @@ func init() {
 		"templates/pages/metric_detail.html",
 		"templates/pages/admin.html",
 		"templates/pages/login.html",
+		"templates/pages/setup.html",
 	}
 
 	// Partials that some pages need
@@ -74,8 +75,8 @@ func init() {
 // Renders to a buffer first so errors produce a clean 500 instead of partial output.
 func renderPage(w http.ResponseWriter, name string, data any) {
 	tmplName := "base"
-	if name == "login" {
-		tmplName = "login"
+	if name == "login" || name == "setup" {
+		tmplName = name
 	}
 
 	t := pageTemplates[name]

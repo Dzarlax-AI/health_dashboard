@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -8,46 +9,48 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
+	"health-receiver/internal/ctxdb"
 	"health-receiver/internal/storage"
+	"health-receiver/internal/tenants"
 )
 
-// sumMetrics is the canonical SUM vs AVG classification, shared with storage.
 var sumMetrics = storage.SumMetrics
 
+// DBResolver resolves a tenant DB from an API key.
+type DBResolver func(ctx context.Context, key string) (*storage.DB, string, bool)
+
 // Register mounts MCP Streamable HTTP at /mcp.
-func Register(mux *http.ServeMux, db *storage.DB, _ string, apiKey string) {
-	s := buildServer(db)
+func Register(mux *http.ServeMux, mgr *tenants.Manager, _ string) {
+	resolver := DBResolver(mgr.DBForAPIKey)
+	s := buildServer(resolver)
 	h := server.NewStreamableHTTPServer(s)
-	protected := withAPIKey(h, apiKey)
+	protected := withAPIKey(h, resolver)
 	mux.Handle("/mcp", protected)
 	mux.Handle("/mcp/", protected)
 }
 
-func withAPIKey(next http.Handler, apiKey string) http.Handler {
+func withAPIKey(next http.Handler, resolve DBResolver) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if apiKey == "" {
-			next.ServeHTTP(w, r)
-			return
-		}
 		auth := r.Header.Get("Authorization")
 		key := strings.TrimPrefix(auth, "Bearer ")
 		if key == "" {
 			key = r.Header.Get("X-API-Key")
 		}
-		if key != apiKey {
+		db, schema, ok := resolve(r.Context(), key)
+		if !ok {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(ctxdb.WithDB(r.Context(), db, schema)))
 	})
 }
 
-func buildServer(db *storage.DB) *server.MCPServer {
+func buildServer(resolve DBResolver) *server.MCPServer {
 	s := server.NewMCPServer("health-mcp", "1.0.0",
 		server.WithToolCapabilities(true),
 	)
-	registerMetricTools(s, db)
-	registerAnalysisTools(s, db)
+	registerMetricTools(s, resolve)
+	registerAnalysisTools(s, resolve)
 	return s
 }
 

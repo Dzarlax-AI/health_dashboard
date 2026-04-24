@@ -10,39 +10,40 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"health-receiver/internal/ai"
+	"health-receiver/internal/ctxdb"
 	"health-receiver/internal/health"
+	"health-receiver/internal/registry"
 	"health-receiver/internal/storage"
+	"health-receiver/internal/tenants"
 )
 
 type Handler struct {
-	db             *storage.DB
-	password       string // empty = no auth
-	token          string // sha256(password), used as cookie value
-	apiKey         string // also allows access via X-API-Key header
-	trustFwdAuth   bool   // trust X-authentik-username header (set via TRUST_FORWARD_AUTH=true)
-	backfill       func(force bool)
-	testNotify     func(kind string) error
-	notifyDefaults storage.NotifyConfig
-	aiDefaults     storage.AIConfig
+	mgr              *tenants.Manager
+	reg              *registry.Registry
+	trustFwdAuth     bool
+	onTenantCreated  func(schema string)
 }
 
-func New(db *storage.DB, password, apiKey string, trustFwdAuth bool, backfill func(force bool), testNotify func(kind string) error, notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig) *Handler {
-	var token string
-	if password != "" {
-		h := sha256.Sum256([]byte(password))
-		token = hex.EncodeToString(h[:])
-	}
-	return &Handler{db: db, password: password, token: token, apiKey: apiKey, trustFwdAuth: trustFwdAuth, backfill: backfill, testNotify: testNotify, notifyDefaults: notifyDefaults, aiDefaults: aiDefaults}
+func New(mgr *tenants.Manager, reg *registry.Registry, trustFwdAuth bool) *Handler {
+	return &Handler{mgr: mgr, reg: reg, trustFwdAuth: trustFwdAuth}
+}
+
+// OnTenantCreated registers a callback invoked after a new user schema is provisioned.
+// Called from the setup wizard. Can be used to start per-tenant schedulers.
+func (h *Handler) OnTenantCreated(fn func(schema string)) {
+	h.onTenantCreated = fn
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
-	// Login
+	// Auth
 	mux.HandleFunc("/login", h.login)
+	mux.HandleFunc("/setup", h.setup)
 
-	// Page routes (server-rendered)
+	// Page routes
 	mux.HandleFunc("GET /{$}", h.guard(h.pageDashboard))
 	mux.HandleFunc("GET /sleep", h.guard(h.pageSleep))
 	mux.HandleFunc("GET /cardio", h.guard(h.pageCardio))
@@ -59,7 +60,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// Static assets
 	mux.HandleFunc("GET /static/", serveStatic)
 
-	// JSON API (unchanged)
+	// JSON API
 	mux.HandleFunc("/health/checkpoint", h.guard(h.syncCheckpoint))
 	mux.HandleFunc("/api/metrics", h.guard(h.listMetrics))
 	mux.HandleFunc("/api/metrics/latest", h.guard(h.latestMetricValues))
@@ -74,71 +75,230 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/settings", h.guard(h.adminSettings))
 	mux.HandleFunc("/api/admin/ai-models", h.guard(h.adminAIModels))
 	mux.HandleFunc("/api/admin/gaps", h.guard(h.adminGaps))
+	mux.HandleFunc("/api/admin/users", h.guard(h.adminUsers))
 	h.registerImportRoutes(mux)
 }
 
+// tenantDB returns the tenant DB stored in the request context by guard().
+func (h *Handler) tenantDB(r *http.Request) *storage.DB {
+	return ctxdb.FromContext(r.Context())
+}
+
+// tenantSchema returns the tenant schema name from the request context.
+func (h *Handler) tenantSchema(r *http.Request) string {
+	return ctxdb.SchemaFromContext(r.Context())
+}
+
+// guard resolves the tenant from the session and injects the DB into the context.
 func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if h.password == "" {
-			next(w, r)
-			return
-		}
-		// Authentik ForwardAuth: trust X-authentik-username when reverse proxy handles auth
-		if h.trustFwdAuth && r.Header.Get("X-authentik-username") != "" {
-			next(w, r)
-			return
-		}
-		// Allow access via API key (X-API-Key header or Authorization: Bearer)
-		if h.apiKey != "" {
+		// Legacy single-user mode: use env-var credentials.
+		if h.mgr.LegacyMode() {
+			db := h.mgr.LegacyDB()
+
+			// Authentik forward auth
+			if h.trustFwdAuth && r.Header.Get("X-authentik-username") != "" {
+				next(w, r.WithContext(ctxdb.WithDB(r.Context(), db, "health")))
+				return
+			}
+			// API key
 			if key := r.Header.Get("X-API-Key"); key != "" {
-				if subtle.ConstantTimeCompare([]byte(key), []byte(h.apiKey)) == 1 {
-					next(w, r)
+				if subtle.ConstantTimeCompare([]byte(key), []byte(h.mgr.LegacyAPIKey())) == 1 {
+					next(w, r.WithContext(ctxdb.WithDB(r.Context(), db, "health")))
+					return
+				}
+			}
+			// Cookie
+			if cookie, err := r.Cookie("auth"); err == nil {
+				if subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(h.mgr.LegacyPasswordHash())) == 1 {
+					next(w, r.WithContext(ctxdb.WithDB(r.Context(), db, "health")))
+					return
+				}
+			}
+			http.Redirect(w, r, "/login?next="+r.URL.RequestURI(), http.StatusFound)
+			return
+		}
+
+		// Multi-user mode.
+
+		// New install: redirect to setup wizard before anything else.
+		if h.reg != nil && h.reg.IsEmpty(r.Context()) {
+			http.Redirect(w, r, "/setup", http.StatusFound)
+			return
+		}
+
+		// Authentik forward auth: trust X-authentik-username / X-authentik-email headers.
+		if h.trustFwdAuth {
+			authentikUser := r.Header.Get("X-authentik-username")
+			authentikEmail := r.Header.Get("X-authentik-email")
+			if authentikUser != "" || authentikEmail != "" {
+				// 1. Match by username.
+				if authentikUser != "" {
+					if db, schema, ok := h.mgr.DBForUsername(r.Context(), authentikUser); ok {
+						next(w, r.WithContext(ctxdb.WithDB(r.Context(), db, schema)))
+						return
+					}
+				}
+				// 2. Match by email.
+				if authentikEmail != "" {
+					if db, schema, ok := h.mgr.DBForEmail(r.Context(), authentikEmail); ok {
+						next(w, r.WithContext(ctxdb.WithDB(r.Context(), db, schema)))
+						return
+					}
+				}
+				// 3. Fallback: sole registered user (handles migration where user
+				//    is named 'admin' but Authentik sends a different username/email).
+				if db, schema, ok := h.mgr.DBForSoleUser(r.Context()); ok {
+					next(w, r.WithContext(ctxdb.WithDB(r.Context(), db, schema)))
 					return
 				}
 			}
 		}
-		cookie, err := r.Cookie("auth")
-		if err != nil || subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(h.token)) != 1 {
-			http.Redirect(w, r, "/login?next="+r.URL.RequestURI(), http.StatusFound)
-			return
+
+		// API key (for /health/checkpoint called from iOS app).
+		if key := r.Header.Get("X-API-Key"); key != "" {
+			if db, schema, ok := h.mgr.DBForAPIKey(r.Context(), key); ok {
+				next(w, r.WithContext(ctxdb.WithDB(r.Context(), db, schema)))
+				return
+			}
 		}
-		next(w, r)
+
+		// Session cookie: "username|sha256hash"
+		if cookie, err := r.Cookie("auth"); err == nil {
+			parts := strings.SplitN(cookie.Value, "|", 2)
+			if len(parts) == 2 {
+				username, hash := parts[0], parts[1]
+				if user, err := h.reg.GetByUsername(r.Context(), username); err == nil {
+					if subtle.ConstantTimeCompare([]byte(hash), []byte(user.PasswordHash)) == 1 {
+						if db, schema, ok := h.mgr.DBForUsername(r.Context(), username); ok {
+							next(w, r.WithContext(ctxdb.WithDB(r.Context(), db, schema)))
+							return
+						}
+					}
+				}
+			}
+		}
+
+		http.Redirect(w, r, "/login?next="+r.URL.RequestURI(), http.StatusFound)
 	}
 }
 
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
+	// If no users exist yet, redirect to setup wizard.
+	if !h.mgr.LegacyMode() && h.reg != nil && h.reg.IsEmpty(r.Context()) {
+		http.Redirect(w, r, "/setup", http.StatusFound)
+		return
+	}
+
 	next := r.URL.Query().Get("next")
 	if next == "" {
 		next = "/"
 	}
 
 	if r.Method == http.MethodPost {
-		pwd := r.FormValue("password")
-		sum := sha256.Sum256([]byte(pwd))
-		tok := hex.EncodeToString(sum[:])
-		if subtle.ConstantTimeCompare([]byte(tok), []byte(h.token)) == 1 {
-			http.SetCookie(w, &http.Cookie{
-				Name:     "auth",
-				Value:    h.token,
-				Path:     "/",
-				HttpOnly: true,
-				SameSite: http.SameSiteLaxMode,
-				MaxAge:   60 * 60 * 24 * 30, // 30 days
-			})
-			http.Redirect(w, r, next, http.StatusFound)
+		password := r.FormValue("password")
+		sum := sha256.Sum256([]byte(password))
+		hash := hex.EncodeToString(sum[:])
+
+		// Legacy mode: compare against env password hash directly.
+		if h.mgr.LegacyMode() {
+			if subtle.ConstantTimeCompare([]byte(hash), []byte(h.mgr.LegacyPasswordHash())) == 1 {
+				http.SetCookie(w, &http.Cookie{
+					Name: "auth", Value: hash, Path: "/",
+					HttpOnly: true, SameSite: http.SameSiteLaxMode,
+					MaxAge: 60 * 60 * 24 * 30,
+				})
+				http.Redirect(w, r, next, http.StatusFound)
+				return
+			}
+			w.WriteHeader(http.StatusUnauthorized)
+			renderPage(w, "login", struct{ Error string }{"Invalid password."})
 			return
 		}
-		w.WriteHeader(http.StatusUnauthorized)
-		renderPage(w, "login", struct{ Error string }{"Invalid password."})
+
+		// Multi-user mode: require username.
+		username := r.FormValue("username")
+		user, err := h.reg.GetByUsername(r.Context(), username)
+		if err != nil || subtle.ConstantTimeCompare([]byte(hash), []byte(user.PasswordHash)) != 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			renderPage(w, "login", struct{ Error string }{"Invalid username or password."})
+			return
+		}
+
+		cookieVal := username + "|" + hash
+		http.SetCookie(w, &http.Cookie{
+			Name: "auth", Value: cookieVal, Path: "/",
+			HttpOnly: true, SameSite: http.SameSiteLaxMode,
+			MaxAge: 60 * 60 * 24 * 30,
+		})
+		http.Redirect(w, r, next, http.StatusFound)
 		return
 	}
 
-	renderPage(w, "login", struct{ Error string }{""})
+	renderPage(w, "login", struct {
+		Error      string
+		MultiUser  bool
+	}{"", !h.mgr.LegacyMode()})
+}
+
+func (h *Handler) setup(w http.ResponseWriter, r *http.Request) {
+	// Setup is only available before any users exist and not in legacy mode.
+	if h.mgr.LegacyMode() || (h.reg != nil && !h.reg.IsEmpty(r.Context())) {
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
+	}
+
+	if r.Method == http.MethodPost {
+		username := strings.TrimSpace(r.FormValue("username"))
+		password := r.FormValue("password")
+		confirm := r.FormValue("confirm")
+
+		if username == "" || password == "" {
+			renderPage(w, "setup", struct{ Error string }{"Username and password are required."})
+			return
+		}
+		if password != confirm {
+			renderPage(w, "setup", struct{ Error string }{"Passwords do not match."})
+			return
+		}
+
+		user, err := h.reg.CreateUser(r.Context(), registry.CreateUserReq{
+			Username: username,
+			Password: password,
+			Email:    strings.TrimSpace(r.FormValue("email")),
+			IsAdmin:  true,
+		})
+		if err != nil {
+			renderPage(w, "setup", struct{ Error string }{"Failed to create user: " + err.Error()})
+			return
+		}
+
+		if err := h.mgr.CreateUserSchema(r.Context(), user.SchemaName); err != nil {
+			renderPage(w, "setup", struct{ Error string }{"Failed to create schema: " + err.Error()})
+			return
+		}
+		if h.onTenantCreated != nil {
+			h.onTenantCreated(user.SchemaName)
+		}
+
+		// Auto-login the new user.
+		cookieVal := username + "|" + registry.HashPassword(password)
+		http.SetCookie(w, &http.Cookie{
+			Name: "auth", Value: cookieVal, Path: "/",
+			HttpOnly: true, SameSite: http.SameSiteLaxMode,
+			MaxAge: 60 * 60 * 24 * 30,
+		})
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
+	}
+
+	renderPage(w, "setup", struct{ Error string }{""})
 }
 
 // ---- Page handlers ----
 
 func (h *Handler) pageDashboard(w http.ResponseWriter, r *http.Request) {
+	db := h.tenantDB(r)
 	lang := langFromRequest(r)
 	setLangCookie(w, r)
 
@@ -168,12 +328,10 @@ func (h *Handler) pageDashboard(w http.ResponseWriter, r *http.Request) {
 		CorrelationJSON: "null",
 	}
 
-	// Fetch today's AI insight if available.
 	today := time.Now().Format("2006-01-02")
-	data.AIInsight = h.db.GetAIBriefing(today, lang)
+	data.AIInsight = db.GetAIBriefing(today, lang)
 
-	// Fetch briefing (contains readiness, cards, insights, sleep, correlation)
-	if br, err := h.db.GetHealthBriefing(lang); err == nil && br != nil {
+	if br, err := db.GetHealthBriefing(lang); err == nil && br != nil {
 		data.ReadinessScore = br.ReadinessToday
 		data.ReadinessLabel = br.ReadinessTodayLabel
 		data.ReadinessTip = br.ReadinessTip
@@ -204,7 +362,6 @@ func (h *Handler) pageDashboard(w http.ResponseWriter, r *http.Request) {
 	renderPage(w, "dashboard", data)
 }
 
-// fmtMinutes formats a duration in minutes as "Xh Ym".
 func fmtMinutes(m float64) string {
 	h := int(math.Floor(m / 60))
 	min := int(math.Round(m)) % 60
@@ -215,45 +372,51 @@ func fmtMinutes(m float64) string {
 }
 
 func (h *Handler) pageSleep(w http.ResponseWriter, r *http.Request) {
+	db := h.tenantDB(r)
 	lang := langFromRequest(r)
 	setLangCookie(w, r)
-	data := h.buildSectionPage("sleep", lang)
+	data := h.buildSectionPage("sleep", lang, db)
 	renderPage(w, "section", data)
 }
 
 func (h *Handler) pageCardio(w http.ResponseWriter, r *http.Request) {
+	db := h.tenantDB(r)
 	lang := langFromRequest(r)
 	setLangCookie(w, r)
-	data := h.buildSectionPage("cardio", lang)
+	data := h.buildSectionPage("cardio", lang, db)
 	renderPage(w, "section", data)
 }
 
 func (h *Handler) pageActivity(w http.ResponseWriter, r *http.Request) {
+	db := h.tenantDB(r)
 	lang := langFromRequest(r)
 	setLangCookie(w, r)
-	data := h.buildSectionPage("activity", lang)
+	data := h.buildSectionPage("activity", lang, db)
 	renderPage(w, "section", data)
 }
 
 func (h *Handler) pageRecovery(w http.ResponseWriter, r *http.Request) {
+	db := h.tenantDB(r)
 	lang := langFromRequest(r)
 	setLangCookie(w, r)
-	data := h.buildSectionPage("recovery", lang)
+	data := h.buildSectionPage("recovery", lang, db)
 	renderPage(w, "section", data)
 }
 
 func (h *Handler) pageMetrics(w http.ResponseWriter, r *http.Request) {
+	db := h.tenantDB(r)
 	lang := langFromRequest(r)
 	setLangCookie(w, r)
 	query := r.URL.Query().Get("q")
-	data := h.buildMetricsPageData(lang, query)
+	data := h.buildMetricsPageData(lang, query, db)
 	renderPage(w, "metrics", data)
 }
 
 func (h *Handler) fragmentMetricsList(w http.ResponseWriter, r *http.Request) {
+	db := h.tenantDB(r)
 	lang := langFromRequest(r)
 	query := r.URL.Query().Get("q")
-	data := h.buildMetricsPageData(lang, query)
+	data := h.buildMetricsPageData(lang, query, db)
 	renderFragment(w, "metrics-list", data)
 }
 
@@ -280,8 +443,9 @@ func (h *Handler) pageAdmin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) fragmentAdminStatus(w http.ResponseWriter, r *http.Request) {
+	db := h.tenantDB(r)
 	lang := langFromRequest(r)
-	status, err := h.db.GetCacheStatus()
+	status, err := db.GetCacheStatus()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -304,7 +468,6 @@ func (h *Handler) fragmentAdminStatus(w http.ResponseWriter, r *http.Request) {
 	renderFragment(w, "admin-status", data)
 }
 
-// setLangCookie persists the language preference when ?lang= is used.
 func setLangCookie(w http.ResponseWriter, r *http.Request) {
 	if q := r.URL.Query().Get("lang"); q == "en" || q == "ru" || q == "sr" {
 		http.SetCookie(w, &http.Cookie{
@@ -318,7 +481,7 @@ func setLangCookie(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listMetrics(w http.ResponseWriter, r *http.Request) {
-	metrics, err := h.db.ListMetrics()
+	metrics, err := h.tenantDB(r).ListMetrics()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -332,7 +495,7 @@ func (h *Handler) metricRange(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "metric required", http.StatusBadRequest)
 		return
 	}
-	min, max, err := h.db.GetMetricDateRange(metric)
+	min, max, err := h.tenantDB(r).GetMetricDateRange(metric)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -341,7 +504,7 @@ func (h *Handler) metricRange(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) syncCheckpoint(w http.ResponseWriter, r *http.Request) {
-	ts, err := h.db.GetLatestMetricDate()
+	ts, err := h.tenantDB(r).GetLatestMetricDate()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -350,7 +513,7 @@ func (h *Handler) syncCheckpoint(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) latestMetricValues(w http.ResponseWriter, r *http.Request) {
-	vals, err := h.db.GetLatestMetricValues()
+	vals, err := h.tenantDB(r).GetLatestMetricValues()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -359,7 +522,7 @@ func (h *Handler) latestMetricValues(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) dashboard(w http.ResponseWriter, r *http.Request) {
-	resp, err := h.db.GetDashboard()
+	resp, err := h.tenantDB(r).GetDashboard()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -411,8 +574,9 @@ func (h *Handler) metricData(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	db := h.tenantDB(r)
 	if q.Get("by_source") == "1" {
-		sourcePoints, serr := h.db.GetMetricDataBySource(metric, from, to+" 23:59:59", bucket, aggFunc)
+		sourcePoints, serr := db.GetMetricDataBySource(metric, from, to+" 23:59:59", bucket, aggFunc)
 		if serr == nil {
 			jsonResponse(w, map[string]any{
 				"metric":           metric,
@@ -425,7 +589,7 @@ func (h *Handler) metricData(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	points, err := h.db.GetMetricData(metric, from, to+" 23:59:59", bucket, aggFunc)
+	points, err := db.GetMetricData(metric, from, to+" 23:59:59", bucket, aggFunc)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -446,7 +610,7 @@ func (h *Handler) readinessHistory(w http.ResponseWriter, r *http.Request) {
 			days = n
 		}
 	}
-	pts, err := h.db.GetReadinessHistory(days)
+	pts, err := h.tenantDB(r).GetReadinessHistory(days)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -459,7 +623,7 @@ func (h *Handler) healthBriefing(w http.ResponseWriter, r *http.Request) {
 	if lang == "" {
 		lang = "en"
 	}
-	resp, err := h.db.GetHealthBriefing(lang)
+	resp, err := h.tenantDB(r).GetHealthBriefing(lang)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -468,12 +632,12 @@ func (h *Handler) healthBriefing(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) adminStatus(w http.ResponseWriter, r *http.Request) {
-	status, err := h.db.GetCacheStatus()
+	status, err := h.tenantDB(r).GetCacheStatus()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	status.TelegramEnabled = h.testNotify != nil
+	status.TelegramEnabled = h.mgr.TestNotifyFor(h.tenantSchema(r)) != nil
 	jsonResponse(w, status)
 }
 
@@ -482,12 +646,13 @@ func (h *Handler) adminBackfill(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if h.backfill == nil {
+	backfill := h.mgr.BackfillFor(h.tenantSchema(r))
+	if backfill == nil {
 		http.Error(w, "backfill not configured", http.StatusServiceUnavailable)
 		return
 	}
 	force := r.URL.Query().Get("force") == "1"
-	h.backfill(force)
+	backfill(force)
 	msg := "incremental backfill scheduled"
 	if force {
 		msg = "full rebuild started"
@@ -496,6 +661,9 @@ func (h *Handler) adminBackfill(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
+	db := h.tenantDB(r)
+	schema := h.tenantSchema(r)
+
 	if r.Method == http.MethodPost {
 		var body map[string]string
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -504,7 +672,7 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		allowed := map[string]bool{
 			"telegram_token": true, "telegram_chat_id": true, "report_lang": true,
-			"timezone": true,
+			"timezone":               true,
 			"report_morning_weekday": true, "report_morning_weekend": true,
 			"report_evening_weekday": true, "report_evening_weekend": true,
 			"gemini_api_key": true, "gemini_model": true, "gemini_max_tokens": true,
@@ -515,7 +683,7 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 				clean[k] = v
 			}
 		}
-		if err := h.db.SaveSettings(clean); err != nil {
+		if err := db.SaveSettings(clean); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -523,9 +691,10 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// GET — return current effective config (DB values, falling back to env defaults).
-	cfg := h.db.GetNotifyConfig(h.notifyDefaults)
-	aiCfg := h.db.GetAIConfig(h.aiDefaults)
+	notifyDefaults := h.mgr.NotifyDefaultsFor(schema)
+	aiDefaults := h.mgr.AIDefaultsFor(schema)
+	cfg := db.GetNotifyConfig(notifyDefaults)
+	aiCfg := db.GetAIConfig(aiDefaults)
 	jsonResponse(w, map[string]any{
 		"telegram_token":          cfg.Token,
 		"telegram_chat_id":        cfg.ChatID,
@@ -544,7 +713,9 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) adminAIModels(w http.ResponseWriter, r *http.Request) {
-	aiCfg := h.db.GetAIConfig(h.aiDefaults)
+	schema := h.tenantSchema(r)
+	aiDefaults := h.mgr.AIDefaultsFor(schema)
+	aiCfg := h.tenantDB(r).GetAIConfig(aiDefaults)
 	if !aiCfg.Enabled() {
 		http.Error(w, "Gemini API key not configured", http.StatusBadRequest)
 		return
@@ -562,15 +733,16 @@ func (h *Handler) adminTestNotify(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if h.testNotify == nil {
-		jsonResponse(w, map[string]string{"status": "error", "message": "Telegram not configured (TELEGRAM_TOKEN / TELEGRAM_CHAT_ID missing)"})
+	testNotify := h.mgr.TestNotifyFor(h.tenantSchema(r))
+	if testNotify == nil {
+		jsonResponse(w, map[string]string{"status": "error", "message": "Telegram not configured"})
 		return
 	}
-	kind := r.URL.Query().Get("kind") // "morning" or "evening"
+	kind := r.URL.Query().Get("kind")
 	if kind != "morning" && kind != "evening" {
 		kind = "morning"
 	}
-	if err := h.testNotify(kind); err != nil {
+	if err := testNotify(kind); err != nil {
 		jsonResponse(w, map[string]string{"status": "error", "message": err.Error()})
 		return
 	}
@@ -578,7 +750,7 @@ func (h *Handler) adminTestNotify(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) adminGaps(w http.ResponseWriter, r *http.Request) {
-	gaps, err := h.db.GetDataGaps(2, 6)
+	gaps, err := h.tenantDB(r).GetDataGaps(2, 6)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -589,8 +761,58 @@ func (h *Handler) adminGaps(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string]any{"gaps": gaps})
 }
 
+func (h *Handler) adminUsers(w http.ResponseWriter, r *http.Request) {
+	if h.reg == nil {
+		http.Error(w, "registry not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	if r.Method == http.MethodPost {
+		var req registry.CreateUserReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
+			return
+		}
+		user, err := h.reg.CreateUser(r.Context(), req)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := h.mgr.CreateUserSchema(r.Context(), user.SchemaName); err != nil {
+			jsonResponse(w, map[string]any{
+				"status":  "partial",
+				"user":    user,
+				"warning": err.Error(),
+			})
+			return
+		}
+		if h.onTenantCreated != nil {
+			h.onTenantCreated(user.SchemaName)
+		}
+		jsonResponse(w, map[string]any{"status": "ok", "user": user})
+		return
+	}
+
+	users, err := h.reg.ListUsers(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Mask password hashes.
+	type safeUser struct {
+		Username   string `json:"username"`
+		SchemaName string `json:"schema_name"`
+		APIKey     string `json:"api_key"`
+		IsAdmin    bool   `json:"is_admin"`
+	}
+	out := make([]safeUser, len(users))
+	for i, u := range users {
+		out[i] = safeUser{u.Username, u.SchemaName, u.APIKey, u.IsAdmin}
+	}
+	jsonResponse(w, map[string]any{"users": out})
+}
+
 func jsonResponse(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(v)
 }
-

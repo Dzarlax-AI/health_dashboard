@@ -1,6 +1,10 @@
 package ui
 
-import "html/template"
+import (
+	"html/template"
+
+	"health-receiver/internal/storage"
+)
 
 // SectionChart describes a chart to render on a section page.
 type SectionChart struct {
@@ -142,7 +146,7 @@ var sectionExplains = map[string]map[string]SectionExplain{
 }
 
 // buildSectionPage creates a SectionPageData for the given section key.
-func (h *Handler) buildSectionPage(key, lang string) SectionPageData {
+func (h *Handler) buildSectionPage(key, lang string, db *storage.DB) SectionPageData {
 	meta := sectionMeta[key]
 	icon := sectionIcons[key]
 
@@ -187,7 +191,7 @@ func (h *Handler) buildSectionPage(key, lang string) SectionPageData {
 	// Get section details from briefing
 	var summary string
 	var details []SectionDetail
-	if br, err := h.db.GetHealthBriefing(lang); err == nil && br != nil {
+	if br, err := db.GetHealthBriefing(lang); err == nil && br != nil {
 		for _, s := range br.Sections {
 			if s.Key == key {
 				summary = s.Summary

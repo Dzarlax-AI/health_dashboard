@@ -15,7 +15,9 @@ import (
 	"health-receiver/internal/handler"
 	"health-receiver/internal/mcpserver"
 	"health-receiver/internal/notify"
+	"health-receiver/internal/registry"
 	"health-receiver/internal/storage"
+	"health-receiver/internal/tenants"
 	"health-receiver/internal/ui"
 )
 
@@ -25,27 +27,14 @@ func main() {
 		log.Fatal("DATABASE_URL environment variable is required")
 	}
 	addr := getEnv("ADDR", ":8080")
-	apiKey         := os.Getenv("API_KEY")
-	uiPassword     := os.Getenv("UI_PASSWORD")
-	trustFwdAuth   := os.Getenv("TRUST_FORWARD_AUTH") == "true"
-	baseURL        := getEnv("BASE_URL", "http://localhost"+addr)
-	aiDefaults := storage.AIConfig{
-		APIKey:          os.Getenv("GEMINI_API_KEY"),
-		Model:           getEnv("GEMINI_MODEL", "gemini-2.5-flash"),
-		MaxOutputTokens: getEnvInt("GEMINI_MAX_TOKENS", 5000),
-	}
+	apiKey := os.Getenv("API_KEY")
+	uiPassword := os.Getenv("UI_PASSWORD")
+	adminEmail := os.Getenv("ADMIN_EMAIL")
+	trustFwdAuth := os.Getenv("TRUST_FORWARD_AUTH") == "true"
+	baseURL := getEnv("BASE_URL", "http://localhost"+addr)
 
-	db, err := storage.New(context.Background(), dbURL)
-	if err != nil {
-		log.Fatalf("init db: %v", err)
-	}
-	defer db.Close()
-
-	db.EnsureIndexes()
-	db.EnsureAIBriefingsTable()
-
-	// Env-derived defaults for notify config (DB settings take priority at runtime).
-	notifyDefaults := storage.NotifyConfig{
+	// Env-level defaults for the first/only tenant.
+	envNotifyDefaults := storage.NotifyConfig{
 		Token:              os.Getenv("TELEGRAM_TOKEN"),
 		ChatID:             os.Getenv("TELEGRAM_CHAT_ID"),
 		Lang:               getEnv("REPORT_LANG", "en"),
@@ -55,13 +44,145 @@ func main() {
 		EveningWeekdayHour: getEnvInt("REPORT_EVENING_WEEKDAY", 20),
 		EveningWeekendHour: getEnvInt("REPORT_EVENING_WEEKEND", 21),
 	}
+	envAIDefaults := storage.AIConfig{
+		APIKey:          os.Getenv("GEMINI_API_KEY"),
+		Model:           getEnv("GEMINI_MODEL", "gemini-2.5-flash"),
+		MaxOutputTokens: getEnvInt("GEMINI_MAX_TOKENS", 5000),
+	}
 
-	// Start the backfill scheduler. It runs an initial backfill shortly after
-	// startup and then re-runs whenever new data arrives, debouncing rapid
-	// successive syncs into a single pass.
-	// Force-rebuild only when caches are empty (first import). Otherwise
-	// incremental: refreshes last 48h and recomputes stale readiness scores.
-	// Use `cmd/backfill --force` for a manual full rebuild if needed.
+	ctx := context.Background()
+
+	// --- Registry ---
+	reg, err := registry.New(ctx, dbURL)
+	if err != nil {
+		log.Fatalf("init registry: %v", err)
+	}
+	defer reg.Close()
+
+	mgr := tenants.New(reg, dbURL)
+	defer mgr.Close()
+
+	// Attempt to create health_registry schema and users table.
+	schemaErr := reg.EnsureSchema(ctx)
+	if schemaErr != nil {
+		log.Printf("⚠️  MULTI-USER SETUP REQUIRED")
+		log.Printf("    %v", schemaErr)
+		log.Printf("    After running that SQL, restart the server.")
+		log.Printf("    Falling back to single-user mode using API_KEY / UI_PASSWORD env vars.")
+
+		// Fall back to single-user mode: use the DATABASE_URL schema directly.
+		legacyDB, err := storage.New(ctx, dbURL)
+		if err != nil {
+			log.Fatalf("init db: %v", err)
+		}
+		legacyDB.EnsureIndexes()
+		legacyDB.EnsureAIBriefingsTable()
+
+		passwordHash := ""
+		if uiPassword != "" {
+			passwordHash = registry.HashPassword(uiPassword)
+		}
+		mgr.SetLegacyMode(legacyDB, apiKey, passwordHash)
+
+		runSingleTenant(ctx, addr, baseURL, trustFwdAuth, apiKey, mgr, nil,
+			legacyDB, "health", envNotifyDefaults, envAIDefaults)
+		return
+	}
+
+	// Seed admin from env vars when the registry is empty and credentials are configured.
+	// Covers two cases:
+	//   1. Upgrade from single-user mode (health.metric_points exists, no users yet)
+	//   2. Fresh install with credentials pre-set in .env / docker-compose environment
+	// When neither API_KEY nor UI_PASSWORD is set, the setup wizard handles first-run.
+	if reg.IsEmpty(ctx) && (apiKey != "" || uiPassword != "") {
+		log.Println("Registry empty — seeding admin user from API_KEY / UI_PASSWORD env vars…")
+		passwordHash := ""
+		if uiPassword != "" {
+			passwordHash = registry.HashPassword(uiPassword)
+		}
+		const adminSchema = "health"
+		if err := reg.MigrateFromEnv(ctx, apiKey, passwordHash, adminSchema, adminEmail); err != nil {
+			log.Printf("seed admin: %v", err)
+		} else {
+			// Create schema + tables if this is a fresh install (legacy upgrade already has them).
+			if err := mgr.CreateUserSchema(ctx, adminSchema); err != nil {
+				log.Printf("ensure schema for admin: %v", err)
+			}
+			log.Printf("Admin user created (username: admin, schema: %s)", adminSchema)
+		}
+	}
+
+	// Load all registered users and initialise their DB pools.
+	users, err := reg.ListUsers(ctx)
+	if err != nil {
+		log.Fatalf("list users: %v", err)
+	}
+
+	for _, u := range users {
+		db, err := mgr.GetOrCreate(ctx, u.SchemaName)
+		if err != nil {
+			log.Printf("open pool for %s: %v", u.SchemaName, err)
+			continue
+		}
+		db.EnsureIndexes()
+		db.EnsureAIBriefingsTable()
+		startTenant(ctx, mgr, db, u.SchemaName, envNotifyDefaults, envAIDefaults)
+	}
+
+	if len(users) == 0 {
+		log.Println("No users registered. Visit /setup to create your account.")
+	}
+
+	mux := http.NewServeMux()
+
+	onNewData := func(db *storage.DB) {
+		// The tenant schema is encoded in the DB pool's search_path.
+		// We rely on the manager to find the right backfill scheduler.
+		for schema, tdb := range mgr.AllDBs() {
+			if tdb == db {
+				if fn := mgr.BackfillFor(schema); fn != nil {
+					fn(false)
+				}
+				break
+			}
+		}
+	}
+
+	handler.New(mgr, onNewData).Register(mux)
+
+	uiHandler := ui.New(mgr, reg, trustFwdAuth)
+	uiHandler.OnTenantCreated(func(schema string) {
+		db, err := mgr.GetOrCreate(ctx, schema)
+		if err != nil {
+			log.Printf("onTenantCreated: open pool for %s: %v", schema, err)
+			return
+		}
+		db.EnsureIndexes()
+		db.EnsureAIBriefingsTable()
+		startTenant(ctx, mgr, db, schema, envNotifyDefaults, envAIDefaults)
+	})
+	uiHandler.Register(mux)
+	mcpserver.Register(mux, mgr, baseURL)
+
+	logged := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		mux.ServeHTTP(w, r)
+		log.Printf("%s %s %s %v", r.RemoteAddr, r.Method, r.URL.Path, time.Since(start).Round(time.Millisecond))
+	})
+
+	log.Printf("listening on %s (multi-user mode, %d user(s))", addr, len(users))
+	log.Printf("MCP endpoint: %s/mcp", baseURL)
+	if err := http.ListenAndServe(addr, logged); err != nil {
+		log.Fatalf("server: %v", err)
+	}
+}
+
+// runSingleTenant runs the server in legacy single-user mode.
+func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth bool, apiKey string,
+	mgr *tenants.Manager, reg *registry.Registry,
+	db *storage.DB, schema string,
+	notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig) {
+
 	sched := newBackfillScheduler(db, 2*time.Minute)
 	go func() {
 		time.Sleep(5 * time.Second)
@@ -76,24 +197,132 @@ func main() {
 		log.Println("startup: cache refresh done")
 	}()
 
-	// morningLock prevents concurrent morning-report sends.
-	// Without this, multiple POST /health goroutines can all pass HasSentMorningReport
-	// before any one of them reaches MarkMorningReportSent.
 	var morningLock int32
+	maybeFireMorningReport := makeMorningTrigger(db, &morningLock, aiDefaults, notifyDefaults)
+	onNewData := func(_ *storage.DB) {
+		sched.schedule()
+		go maybeFireMorningReport()
+	}
 
-	// maybeFireMorningReport triggers the AI morning briefing when:
-	// • time is after 05:00 in the configured timezone
-	// • today's step count exceeds 300 (user is actually awake and moving)
-	// • no morning report has been sent yet today
-	maybeFireMorningReport := func() {
-		if !atomic.CompareAndSwapInt32(&morningLock, 0, 1) {
-			return // another goroutine is already in progress
+	backfillFn := makeBackfillFn(db, sched)
+	testNotifyFn := makeTestNotifyFn(db, notifyDefaults, aiDefaults)
+
+	mgr.RegisterCallbacks(schema, tenants.TenantCallbacks{
+		Backfill:       backfillFn,
+		TestNotify:     testNotifyFn,
+		NotifyDefaults: notifyDefaults,
+		AIDefaults:     aiDefaults,
+	})
+
+	go runReportScheduler(db, notifyDefaults, aiDefaults)
+
+	mux := http.NewServeMux()
+	handler.New(mgr, onNewData).Register(mux)
+	ui.New(mgr, reg, trustFwdAuth).Register(mux)
+	mcpserver.Register(mux, mgr, baseURL)
+
+	logged := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		mux.ServeHTTP(w, r)
+		log.Printf("%s %s %s %v", r.RemoteAddr, r.Method, r.URL.Path, time.Since(start).Round(time.Millisecond))
+	})
+
+	log.Printf("listening on %s (single-user legacy mode)", addr)
+	log.Printf("MCP endpoint: %s/mcp", baseURL)
+	if err := http.ListenAndServe(addr, logged); err != nil {
+		log.Fatalf("server: %v", err)
+	}
+}
+
+// startTenant launches backfill scheduler and report scheduler for one tenant.
+func startTenant(ctx context.Context, mgr *tenants.Manager, db *storage.DB, schema string,
+	notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig) {
+
+	sched := newBackfillScheduler(db, 2*time.Minute)
+	go func() {
+		time.Sleep(5 * time.Second)
+		force := db.NeedsForceBackfill()
+		if force {
+			log.Printf("[%s] startup: caches empty, rebuilding all…", schema)
+		} else {
+			log.Printf("[%s] startup: incremental cache refresh…", schema)
 		}
-		defer atomic.StoreInt32(&morningLock, 0)
+		db.BackfillAggregates(force)
+		db.BackfillScores(force)
+		log.Printf("[%s] startup: cache refresh done", schema)
+	}()
+
+	var morningLock int32
+	maybeFireMorningReport := makeMorningTrigger(db, &morningLock, aiDefaults, notifyDefaults)
+
+	backfillFn := makeBackfillFn(db, sched)
+	testNotifyFn := makeTestNotifyFn(db, notifyDefaults, aiDefaults)
+
+	mgr.RegisterCallbacks(schema, tenants.TenantCallbacks{
+		Backfill:   backfillFn,
+		TestNotify: testNotifyFn,
+		NotifyDefaults: notifyDefaults,
+		AIDefaults:     aiDefaults,
+	})
+
+	_ = maybeFireMorningReport // triggered via onNewData in main mux
+	go runReportScheduler(db, notifyDefaults, aiDefaults)
+}
+
+func makeBackfillFn(db *storage.DB, sched *backfillScheduler) func(bool) {
+	var forceRunning int32
+	return func(force bool) {
+		if !force {
+			sched.schedule()
+			return
+		}
+		if !atomic.CompareAndSwapInt32(&forceRunning, 0, 1) {
+			log.Println("force backfill already running, skipping")
+			return
+		}
+		go func() {
+			defer atomic.StoreInt32(&forceRunning, 0)
+			log.Println("force backfill: starting full rebuild…")
+			db.BackfillAggregates(true)
+			db.BackfillScores(true)
+			log.Println("force backfill: done")
+		}()
+	}
+}
+
+func makeTestNotifyFn(db *storage.DB, notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig) func(string) error {
+	return func(kind string) error {
+		scfg := db.GetNotifyConfig(notifyDefaults)
+		if !scfg.Enabled() {
+			return fmt.Errorf("Telegram not configured: set TELEGRAM_TOKEN and TELEGRAM_CHAT_ID")
+		}
+		ncfg := notify.Config{
+			Token: scfg.Token, ChatID: scfg.ChatID, Lang: scfg.Lang,
+			Timezone:           scfg.Timezone,
+			MorningWeekdayHour: scfg.MorningWeekdayHour,
+			MorningWeekendHour: scfg.MorningWeekendHour,
+			EveningWeekdayHour: scfg.EveningWeekdayHour,
+			EveningWeekendHour: scfg.EveningWeekendHour,
+		}
+		bot := notify.NewBot(ncfg.Token, ncfg.ChatID)
+		if kind == "evening" {
+			return notify.SendEvening(bot, db, ncfg)
+		}
+		ensureTodayAIInsight(db, aiDefaults, scfg.Lang)
+		return notify.SendMorning(bot, db, ncfg)
+	}
+}
+
+func makeMorningTrigger(db *storage.DB, lock *int32, aiDefaults storage.AIConfig, notifyDefaults storage.NotifyConfig) func() {
+	return func() {
+		if !atomic.CompareAndSwapInt32(lock, 0, 1) {
+			return
+		}
+		defer atomic.StoreInt32(lock, 0)
 
 		aiCfg := db.GetAIConfig(aiDefaults)
 		if !aiCfg.Enabled() {
-			return // AI briefing disabled — no API key configured
+			return
 		}
 		cfg := db.GetNotifyConfig(notifyDefaults)
 		loc := time.Local
@@ -105,15 +334,12 @@ func main() {
 		now := time.Now().In(loc)
 		today := now.Format("2006-01-02")
 
-		// Only after 05:00
 		if now.Hour() < 5 {
 			return
 		}
-		// Guard: already sent today
 		if db.HasSentMorningReport(today) {
 			return
 		}
-		// Guard: not enough steps yet
 		if db.GetTodayStepCount(today) < 300 {
 			return
 		}
@@ -123,7 +349,6 @@ func main() {
 			return
 		}
 
-		// Send Telegram morning report (now embeds the AI insight).
 		if cfg.Enabled() {
 			ncfg := notify.Config{
 				Token: cfg.Token, ChatID: cfg.ChatID, Lang: cfg.Lang,
@@ -144,82 +369,8 @@ func main() {
 		}
 		log.Printf("morning trigger: done, insight saved for %s", today)
 	}
-
-	onNewData := func() {
-		// Inline cache upsert already happened in the handler (UpsertRecentCache).
-		// The debounced backfill is a safety net that refreshes the last 48h and
-		// recomputes readiness scores — no cache invalidation/deletion needed.
-		sched.schedule()
-		go maybeFireMorningReport()
-	}
-
-	// forceRunning prevents concurrent force-rebuild runs.
-	var forceRunning int32
-	backfillFn := func(force bool) {
-		if !force {
-			sched.schedule()
-			return
-		}
-		if !atomic.CompareAndSwapInt32(&forceRunning, 0, 1) {
-			log.Println("force backfill already running, skipping")
-			return
-		}
-		go func() {
-			defer atomic.StoreInt32(&forceRunning, 0)
-			log.Println("force backfill: starting full rebuild…")
-			db.BackfillAggregates(true)
-			db.BackfillScores(true)
-			log.Println("force backfill: done")
-		}()
-	}
-
-	// Always start scheduler — it re-reads config from DB each iteration.
-	go runReportScheduler(db, notifyDefaults, aiDefaults)
-
-	// testNotify reads fresh config from DB on every call.
-	testNotifyFn := func(kind string) error {
-		scfg := db.GetNotifyConfig(notifyDefaults)
-		if !scfg.Enabled() {
-			return fmt.Errorf("Telegram not configured: set TELEGRAM_TOKEN and TELEGRAM_CHAT_ID")
-		}
-		ncfg := notify.Config{
-			Token: scfg.Token, ChatID: scfg.ChatID, Lang: scfg.Lang,
-			Timezone:           scfg.Timezone,
-			MorningWeekdayHour: scfg.MorningWeekdayHour,
-			MorningWeekendHour: scfg.MorningWeekendHour,
-			EveningWeekdayHour: scfg.EveningWeekdayHour,
-			EveningWeekendHour: scfg.EveningWeekendHour,
-		}
-		bot := notify.NewBot(ncfg.Token, ncfg.ChatID)
-		if kind == "evening" {
-			return notify.SendEvening(bot, db, ncfg)
-		}
-		// For morning test: generate AI insight if not yet done today.
-		// Do NOT mark as sent — test should not block the real morning trigger.
-		ensureTodayAIInsight(db, aiDefaults, scfg.Lang)
-		return notify.SendMorning(bot, db, ncfg)
-	}
-
-	mux := http.NewServeMux()
-	handler.New(db, apiKey, onNewData).Register(mux)
-	ui.New(db, uiPassword, apiKey, trustFwdAuth, backfillFn, testNotifyFn, notifyDefaults, aiDefaults).Register(mux)
-	mcpserver.Register(mux, db, baseURL, apiKey)
-
-	logged := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		mux.ServeHTTP(w, r)
-		log.Printf("%s %s %s %v", r.RemoteAddr, r.Method, r.URL.Path, time.Since(start).Round(time.Millisecond))
-	})
-
-	log.Printf("listening on %s", addr)
-	log.Printf("MCP endpoint: %s/mcp", baseURL)
-	if err := http.ListenAndServe(addr, logged); err != nil {
-		log.Fatalf("server: %v", err)
-	}
 }
 
-// backfillScheduler debounces backfill triggers so that multiple POST /health
-// requests within `delay` collapse into a single backfill run.
 type backfillScheduler struct {
 	db      *storage.DB
 	delay   time.Duration
@@ -236,26 +387,16 @@ func newBackfillScheduler(db *storage.DB, delay time.Duration) *backfillSchedule
 	return s
 }
 
-// schedule queues a backfill. If one is already queued, this is a no-op.
 func (s *backfillScheduler) schedule() {
 	select {
 	case s.trigger <- struct{}{}:
-	default: // already queued
+	default:
 	}
-}
-
-// scheduleAfter queues a backfill to start after the given duration.
-func (s *backfillScheduler) scheduleAfter(d time.Duration) {
-	go func() {
-		time.Sleep(d)
-		s.schedule()
-	}()
 }
 
 func (s *backfillScheduler) run() {
 	for range s.trigger {
 		time.Sleep(s.delay)
-		// Drain any additional triggers that arrived during the delay.
 		for len(s.trigger) > 0 {
 			<-s.trigger
 		}
@@ -265,14 +406,11 @@ func (s *backfillScheduler) run() {
 	}
 }
 
-// runReportScheduler fires morning and evening Telegram reports on schedule.
-// It re-reads config from DB on every iteration so settings changes take effect
-// without a server restart.
 func runReportScheduler(db *storage.DB, defaults storage.NotifyConfig, aiDefaults storage.AIConfig) {
 	for {
 		cfg := db.GetNotifyConfig(defaults)
 		if !cfg.Enabled() {
-			time.Sleep(5 * time.Minute) // retry when credentials are configured
+			time.Sleep(5 * time.Minute)
 			continue
 		}
 
@@ -301,14 +439,12 @@ func runReportScheduler(db *storage.DB, defaults storage.NotifyConfig, aiDefault
 
 		time.Sleep(time.Until(next))
 
-		// Re-read config after sleep — credentials may have changed.
 		cfg = db.GetNotifyConfig(defaults)
 		if !cfg.Enabled() {
 			continue
 		}
 		bot := notify.NewBot(cfg.Token, cfg.ChatID)
 		if isMorning {
-			// Skip if the smart trigger already sent the morning report today.
 			loc := time.Local
 			if ncfg.Timezone != "" {
 				if l, err := time.LoadLocation(ncfg.Timezone); err == nil {
@@ -336,9 +472,6 @@ func runReportScheduler(db *storage.DB, defaults storage.NotifyConfig, aiDefault
 	}
 }
 
-// ensureTodayAIInsight returns today's AI insight in the requested language,
-// generating and saving it if not yet cached for that language.
-// Returns "" if AI is not configured or generation fails.
 func ensureTodayAIInsight(db *storage.DB, aiDefaults storage.AIConfig, lang string) string {
 	aiCfg := db.GetAIConfig(aiDefaults)
 	if !aiCfg.Enabled() {
@@ -346,7 +479,7 @@ func ensureTodayAIInsight(db *storage.DB, aiDefaults storage.AIConfig, lang stri
 	}
 	today := time.Now().Format("2006-01-02")
 	if existing := db.GetAIBriefing(today, lang); existing != "" {
-		return existing // already generated today in this language, reuse
+		return existing
 	}
 	raw := db.GetRawMetrics()
 	if raw == nil {

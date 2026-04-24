@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"health-receiver/internal/storage"
 	"fmt"
 	"strings"
 )
@@ -43,7 +44,7 @@ var categories = []struct {
 	{"cat_nutrition", "#f97316", "nutrition", []string{"dietary_energy", "dietary_protein", "dietary_carbs", "dietary_fat", "dietary_fat_saturated", "dietary_fat_monounsaturated", "dietary_fat_polyunsaturated", "dietary_water", "dietary_fiber", "dietary_sugar", "dietary_sodium", "dietary_caffeine", "dietary_calcium", "dietary_iron", "dietary_cholesterol", "dietary_potassium", "dietary_magnesium", "dietary_phosphorus", "dietary_zinc", "dietary_copper", "dietary_manganese", "dietary_selenium", "dietary_iodine", "dietary_molybdenum", "dietary_folate", "dietary_biotin", "dietary_vitamin_a", "dietary_vitamin_c", "dietary_vitamin_d", "dietary_vitamin_e", "dietary_vitamin_k", "dietary_vitamin_b6", "dietary_vitamin_b12", "dietary_niacin", "dietary_riboflavin", "dietary_thiamin", "dietary_pantothenic_acid", "alcoholic_beverages"}},
 }
 
-func (h *Handler) buildMetricsPageData(lang, query string) MetricsPageData {
+func (h *Handler) buildMetricsPageData(lang, query string, db *storage.DB) MetricsPageData {
 	query = strings.ToLower(strings.TrimSpace(query))
 
 	// Fetch latest values to show on the list
@@ -51,7 +52,7 @@ func (h *Handler) buildMetricsPageData(lang, query string) MetricsPageData {
 		Value float64
 		Unit  string
 	}{}
-	if vals, err := h.db.GetLatestMetricValues(); err == nil {
+	if vals, err := db.GetLatestMetricValues(); err == nil {
 		for _, v := range vals {
 			latestMap[v.Metric] = struct {
 				Value float64
@@ -62,7 +63,7 @@ func (h *Handler) buildMetricsPageData(lang, query string) MetricsPageData {
 
 	// Also fetch the list of available metrics to only show ones with data
 	availableMetrics := map[string]bool{}
-	if metrics, err := h.db.ListMetrics(); err == nil {
+	if metrics, err := db.ListMetrics(); err == nil {
 		for _, m := range metrics {
 			availableMetrics[m.Name] = true
 		}

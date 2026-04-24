@@ -64,10 +64,10 @@ type importStatus struct {
 	Err        string `json:"error,omitempty"`
 }
 
-// global singleton job (only one import at a time)
+// per-schema import jobs (one at a time per tenant)
 var (
-	currentJob   *importJob
-	currentJobMu sync.Mutex
+	currentJobs   = map[string]*importJob{}
+	currentJobsMu sync.Mutex
 )
 
 func (h *Handler) registerImportRoutes(mux *http.ServeMux) {
@@ -76,9 +76,10 @@ func (h *Handler) registerImportRoutes(mux *http.ServeMux) {
 }
 
 func (h *Handler) adminImportStatus(w http.ResponseWriter, r *http.Request) {
-	currentJobMu.Lock()
-	job := currentJob
-	currentJobMu.Unlock()
+	schema := h.tenantSchema(r)
+	currentJobsMu.Lock()
+	job := currentJobs[schema]
+	currentJobsMu.Unlock()
 
 	if job == nil {
 		jsonResponse(w, importStatus{})
@@ -94,9 +95,11 @@ func (h *Handler) adminImportUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Only one import at a time.
-	currentJobMu.Lock()
-	if currentJob != nil && currentJob.running {
-		currentJobMu.Unlock()
+	schema := h.tenantSchema(r)
+	db := h.tenantDB(r)
+	currentJobsMu.Lock()
+	if currentJobs[schema] != nil && currentJobs[schema].running {
+		currentJobsMu.Unlock()
 		jsonResponse(w, map[string]string{"status": "error", "message": "import already running"})
 		return
 	}
@@ -123,7 +126,7 @@ func (h *Handler) adminImportUpload(w http.ResponseWriter, r *http.Request) {
 	// Stream upload to a temp file so we can close the HTTP request quickly.
 	tmp, err := os.CreateTemp("", "health-import-*.zip")
 	if err != nil {
-		currentJobMu.Unlock()
+		currentJobsMu.Unlock()
 		http.Error(w, "failed to create temp file", http.StatusInternalServerError)
 		return
 	}
@@ -132,7 +135,7 @@ func (h *Handler) adminImportUpload(w http.ResponseWriter, r *http.Request) {
 	filename := r.URL.Query().Get("filename")
 
 	if _, err := io.Copy(tmp, r.Body); err != nil {
-		currentJobMu.Unlock()
+		currentJobsMu.Unlock()
 		tmp.Close()
 		os.Remove(tmp.Name())
 		http.Error(w, "failed to receive file", http.StatusInternalServerError)
@@ -141,10 +144,11 @@ func (h *Handler) adminImportUpload(w http.ResponseWriter, r *http.Request) {
 	tmp.Close()
 
 	job := &importJob{running: true, startedAt: time.Now(), totalBytes: fileSize}
-	currentJob = job
-	currentJobMu.Unlock()
+	currentJobs[schema] = job
+	currentJobsMu.Unlock()
 
-	go runImport(job, h.db, tmp.Name(), filename, batchSize, time.Duration(pauseMs)*time.Millisecond, h.backfill)
+	backfill := h.mgr.BackfillFor(schema)
+	go runImport(job, db, tmp.Name(), filename, batchSize, time.Duration(pauseMs)*time.Millisecond, backfill)
 
 	jsonResponse(w, map[string]string{"status": "ok", "message": "import started"})
 }

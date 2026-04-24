@@ -6,35 +6,36 @@ import (
 	"log"
 	"net/http"
 
+	"health-receiver/internal/ctxdb"
 	"health-receiver/internal/storage"
+	"health-receiver/internal/tenants"
 )
 
 type Handler struct {
-	db        *storage.DB
-	apiKey    string
-	onNewData func() // called in a goroutine after a successful insert; may be nil
+	mgr       *tenants.Manager
+	onNewData func(db *storage.DB) // called after a successful insert; may be nil
 }
 
-func New(db *storage.DB, apiKey string, onNewData func()) *Handler {
-	return &Handler{db: db, apiKey: apiKey, onNewData: onNewData}
+func New(mgr *tenants.Manager, onNewData func(db *storage.DB)) *Handler {
+	return &Handler{mgr: mgr, onNewData: onNewData}
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/health", h.auth(h.health))
-	// Filtered endpoints: accept all metrics but keep only SUM or AVG types.
-	// This allows two Health Auto Export automations with identical "All Metrics"
-	// but different Time Grouping (Hour vs Default) to hit different endpoints.
 	mux.HandleFunc("/health/hourly", h.auth(h.healthFiltered("sum")))
 	mux.HandleFunc("/health/vitals", h.auth(h.healthFiltered("avg")))
 }
 
+// auth resolves the tenant DB from X-API-Key and injects it into the context.
 func (h *Handler) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if h.apiKey != "" && r.Header.Get("X-API-Key") != h.apiKey {
+		key := r.Header.Get("X-API-Key")
+		db, schema, ok := h.mgr.DBForAPIKey(r.Context(), key)
+		if !ok {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		next(w, r)
+		next(w, r.WithContext(ctxdb.WithDB(r.Context(), db, schema)))
 	}
 }
 
@@ -57,6 +58,7 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
+	db := ctxdb.FromContext(r.Context())
 	rec := storage.Record{
 		AutomationName:        r.Header.Get("automation-name"),
 		AutomationID:          r.Header.Get("automation-id"),
@@ -67,7 +69,7 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 		Payload:               string(body),
 	}
 
-	id, err := h.db.InsertRaw(rec)
+	id, err := db.InsertRaw(rec)
 	if err != nil {
 		log.Printf("insert raw: %v", err)
 		http.Error(w, "failed to save record", http.StatusInternalServerError)
@@ -82,20 +84,15 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 		if parseErr != nil {
 			log.Printf("record %d: parse payload: %v", id, parseErr)
 		}
-		if err := h.db.InsertPoints(id, points); err != nil {
+		if err := db.InsertPoints(id, points); err != nil {
 			log.Printf("record %d: insert points: %v", id, err)
 			return
 		}
 		log.Printf("record %d: saved %d points", id, len(points))
-		h.upsertCacheAndNotify(points)
+		h.upsertCacheAndNotify(db, points)
 	}()
 }
 
-// healthFiltered returns a handler that accepts the same payload as /health
-// but keeps only metrics of the given kind ("sum" or "avg").
-// "sum" keeps SUM metrics (steps, calories, sleep, distance, etc.)
-// "avg" keeps everything else (heart rate, HRV, SpO2, temperature, etc.)
-// Unknown/new metrics default to "avg".
 func (h *Handler) healthFiltered(kind string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
@@ -116,6 +113,7 @@ func (h *Handler) healthFiltered(kind string) http.HandlerFunc {
 		}
 		defer r.Body.Close()
 
+		db := ctxdb.FromContext(r.Context())
 		rec := storage.Record{
 			AutomationName:        r.Header.Get("automation-name"),
 			AutomationID:          r.Header.Get("automation-id"),
@@ -126,7 +124,7 @@ func (h *Handler) healthFiltered(kind string) http.HandlerFunc {
 			Payload:               string(body),
 		}
 
-		id, err := h.db.InsertRaw(rec)
+		id, err := db.InsertRaw(rec)
 		if err != nil {
 			log.Printf("insert raw: %v", err)
 			http.Error(w, "failed to save record", http.StatusInternalServerError)
@@ -148,17 +146,17 @@ func (h *Handler) healthFiltered(kind string) http.HandlerFunc {
 					points = append(points, p)
 				}
 			}
-			if err := h.db.InsertPoints(id, points); err != nil {
+			if err := db.InsertPoints(id, points); err != nil {
 				log.Printf("record %d: insert points: %v", id, err)
 				return
 			}
 			log.Printf("record %d: saved %d points (filtered %s, dropped %d)", id, len(points), kind, len(allPoints)-len(points))
-			h.upsertCacheAndNotify(points)
+			h.upsertCacheAndNotify(db, points)
 		}()
 	}
 }
 
-func (h *Handler) upsertCacheAndNotify(points []storage.MetricPoint) {
+func (h *Handler) upsertCacheAndNotify(db *storage.DB, points []storage.MetricPoint) {
 	dateSet := make(map[string]bool)
 	for _, p := range points {
 		if len(p.Date) >= 10 {
@@ -170,10 +168,10 @@ func (h *Handler) upsertCacheAndNotify(points []storage.MetricPoint) {
 		for d := range dateSet {
 			dates = append(dates, d)
 		}
-		h.db.UpsertRecentCache(dates)
+		db.UpsertRecentCache(dates)
 	}
 	if h.onNewData != nil {
-		h.onNewData()
+		h.onNewData(db)
 	}
 }
 
@@ -206,8 +204,6 @@ func parseMetricPoints(body []byte) ([]storage.MetricPoint, error) {
 	return points, nil
 }
 
-// metricAliases maps Health Auto Export metric names to canonical names
-// used by the dashboard. Add entries here when upstream changes naming.
 var metricAliases = map[string]string{
 	"weight_body_mass": "body_mass",
 }
@@ -242,20 +238,18 @@ func extractPoints(metricName, units string, raw json.RawMessage) []storage.Metr
 			TotalSleep float64 `json:"totalSleep"`
 		}
 		if json.Unmarshal(raw, &p) == nil {
-			// Cap sleep values at physiological maximums to guard against
-			// cumulative/inflated summaries from source apps (e.g. Health Auto Export + RingConn).
-			const maxTotal = 12.0 // hours — extreme upper bound for a single night
-			const maxPhase = 8.0  // hours — no single phase should exceed this
+			const maxTotal = 12.0
+			const maxPhase = 8.0
 			p.Deep = capSleep(p.Deep, maxPhase)
 			p.REM = capSleep(p.REM, maxPhase)
 			p.Core = capSleep(p.Core, maxPhase)
 			p.Awake = capSleep(p.Awake, maxPhase)
 			p.TotalSleep = capSleep(p.TotalSleep, maxTotal)
 			return []storage.MetricPoint{
-				{MetricName: "sleep_deep",  Units: "hr", Date: base.Date, Qty: p.Deep,       Source: base.Source},
-				{MetricName: "sleep_rem",   Units: "hr", Date: base.Date, Qty: p.REM,        Source: base.Source},
-				{MetricName: "sleep_core",  Units: "hr", Date: base.Date, Qty: p.Core,       Source: base.Source},
-				{MetricName: "sleep_awake", Units: "hr", Date: base.Date, Qty: p.Awake,      Source: base.Source},
+				{MetricName: "sleep_deep", Units: "hr", Date: base.Date, Qty: p.Deep, Source: base.Source},
+				{MetricName: "sleep_rem", Units: "hr", Date: base.Date, Qty: p.REM, Source: base.Source},
+				{MetricName: "sleep_core", Units: "hr", Date: base.Date, Qty: p.Core, Source: base.Source},
+				{MetricName: "sleep_awake", Units: "hr", Date: base.Date, Qty: p.Awake, Source: base.Source},
 				{MetricName: "sleep_total", Units: "hr", Date: base.Date, Qty: p.TotalSleep, Source: base.Source},
 			}
 		}
@@ -265,7 +259,6 @@ func extractPoints(metricName, units string, raw json.RawMessage) []storage.Metr
 	return []storage.MetricPoint{pt(metricName, p.Qty)}
 }
 
-// capSleep returns v capped at max; negative values become 0.
 func capSleep(v, max float64) float64 {
 	if v < 0 {
 		return 0
