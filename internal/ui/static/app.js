@@ -37,9 +37,11 @@ function fmtUnit(u) {
 }
 
 function fmtAxisDate(ts, includeWeekday) {
-  // Normalize: "YYYY-MM-DD HH:MM:SS ±TZ" (DB format) or "YYYY-MM-DD" → valid ISO
+  // Normalize DB timestamps to full ISO 8601 so all browsers (incl. Safari) parse correctly.
+  // Inputs: "YYYY-MM-DD HH:MM:SS ±TZ" (raw), "YYYY-MM-DD HH:MM" (hour/minute bucket), "YYYY-MM-DD" (day)
   var base = ts.slice(0, 19).replace(' ', 'T');
-  if (base.length === 10) base += 'T12:00:00';
+  if (base.length === 16) base += ':00';       // no seconds → add them
+  if (base.length === 10) base += 'T12:00:00'; // date-only → noon local
   var d = new Date(base);
   var now = new Date();
   var opts = { month: 'short', day: 'numeric' };
