@@ -396,9 +396,10 @@ func (s *DB) BackfillAggregates(force bool) error {
 	log.Printf("backfill aggregates: %d metrics", len(metrics))
 
 	// Parallel per-metric hourly rebuild. Bounded at backfillConcurrency so
-	// we don't exhaust the shared Postgres pool (max_connections=50, our
-	// pool MaxConns=20). Each worker holds 1 conn at a time → safe at 4.
-	const backfillConcurrency = 4
+	// we don't exhaust the shared Postgres pool. With 2 tenants × 8-conn
+	// pool × 2 workers = 32 in-flight at peak, comfortably below the
+	// shared 50-conn ceiling (leaves room for authentik + others).
+	const backfillConcurrency = 2
 	sem := make(chan struct{}, backfillConcurrency)
 	var wg sync.WaitGroup
 	for _, m := range metrics {
@@ -446,7 +447,7 @@ func (s *DB) BuildDailyMetrics(force bool) error {
 		{"resp_avg", "respiratory_rate"},
 	}
 
-	const dailyConcurrency = 4
+	const dailyConcurrency = 2
 	sem := make(chan struct{}, dailyConcurrency)
 	var wg sync.WaitGroup
 	for _, sp := range specs {

@@ -47,8 +47,13 @@ func NewWithSchema(ctx context.Context, connString, schema string) (*DB, error) 
 	if err != nil {
 		return nil, fmt.Errorf("parse pg config: %w", err)
 	}
-	config.MaxConns = 20
-	config.MinConns = 5
+	// Pool budget per tenant — see "Pool budget" note below. With 2 tenants
+	// this caps us at 2 × 8 = 16 connections from this service even under
+	// peak (force backfill + busy ingest), leaving headroom for authentik
+	// and the rest of the stack on a shared 50-conn Postgres.
+	config.MaxConns = 8
+	config.MinConns = 2
+	config.MaxConnIdleTime = 5 * time.Minute
 	config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 	config.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
 		_, err := conn.Exec(ctx, "SET search_path = "+schema)
@@ -151,8 +156,12 @@ func New(ctx context.Context, connString string) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse pg config: %w", err)
 	}
-	config.MaxConns = 20
-	config.MinConns = 5
+	// Pool budget — see NewWithSchema for the rationale. Single-tenant
+	// gets a slightly larger budget (no second pool eating into the
+	// shared 50-conn Postgres ceiling).
+	config.MaxConns = 12
+	config.MinConns = 2
+	config.MaxConnIdleTime = 5 * time.Minute
 	// Disable automatic prepared statement caching — it causes lock contention
 	// when multiple goroutines prepare the same statement concurrently.
 	config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
