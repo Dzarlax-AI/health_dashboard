@@ -24,6 +24,14 @@
       <!-- Actions -->
       <div class="admin-section">
         <div class="section-title">{{T .Lang "admin_actions"}}</div>
+        {{if .MultiUser}}
+        <div class="admin-field-row" style="margin-bottom:12px">
+          <label class="admin-field-label" for="backfill-target">Target user</label>
+          <select class="admin-field-input" id="backfill-target">
+            <option value="">— current user —</option>
+          </select>
+        </div>
+        {{end}}
         <div class="admin-actions">
           <div class="admin-action-card">
             <div class="admin-action-title">{{T .Lang "admin_incremental_title"}}</div>
@@ -127,7 +135,10 @@
 function triggerBackfill(force) {
   var btn = force ? $('btn-backfill-force') : $('btn-backfill');
   btn.disabled = true;
-  fetch('/api/admin/backfill?force=' + (force ? '1' : '0'), {method:'POST'})
+  var url = '/api/admin/backfill?force=' + (force ? '1' : '0');
+  var sel = $('backfill-target');
+  if (sel && sel.value) url += '&schema=' + encodeURIComponent(sel.value);
+  fetch(url, {method:'POST'})
     .then(function(r){return r.json()})
     .then(function(d) {
       var msg = $('admin-msg');
@@ -246,6 +257,18 @@ function loadUsers() {
         return '<tr><td>' + u.username + '</td><td>' + (u.email || '—') + '</td><td style="font-family:monospace;font-size:11px">' + u.api_key + '</td><td>' + (u.is_admin ? 'admin' : 'user') + '</td></tr>';
       }).join('');
       el.innerHTML = '<table class="admin-table"><thead><tr><th>Username</th><th>Email</th><th>API Key</th><th>Role</th></tr></thead><tbody>' + rows + '</tbody></table>';
+      var sel = $('backfill-target');
+      if (sel) {
+        var prev = sel.value;
+        sel.innerHTML = '<option value="">— current user —</option>';
+        users.forEach(function(u) {
+          var opt = document.createElement('option');
+          opt.value = u.schema_name;
+          opt.textContent = u.username + ' (' + u.schema_name + ')';
+          if (u.schema_name === prev) opt.selected = true;
+          sel.appendChild(opt);
+        });
+      }
     });
 }
 
