@@ -495,10 +495,15 @@ func (s *DB) buildDailyMetricCol(col, metric string, force bool) error {
 		if isSleepMetric(metric) {
 			// Sleep: Apple Watch > RingConn, with cross-validation.
 			// If sources diverge by >40%, the higher value is likely an outlier — take MIN.
+			// Cross-validation is gated on MIN > 1.0 so RingConn daily-summary
+			// stubs (0.x-hour records on days the user only wore the watch)
+			// don't satisfy the trigger and clobber a real Apple Watch night.
+			// Mirrors the gate in preferredSleepSourceSQL (PR #8).
 			query = fmt.Sprintf(`
 				SELECT day,
 				    CASE
-				        WHEN COUNT(*) > 1 AND MAX(source_total) > MIN(source_total) * 1.4
+				        WHEN COUNT(*) > 1 AND MIN(source_total) > 1.0
+				         AND MAX(source_total) > MIN(source_total) * 1.4
 				        THEN MIN(source_total)
 				        ELSE COALESCE(
 				            MAX(CASE WHEN source LIKE '%%%%Ultra%%%%' OR source LIKE '%%%%Apple Watch%%%%' THEN source_total END),
