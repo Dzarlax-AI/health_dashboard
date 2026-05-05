@@ -392,7 +392,8 @@ func (s *DB) computeReadinessHistory(outputDays int) ([]health.ReadinessPoint, e
 			r, e := s.pool.Query(ctx, `
 				SELECT d,
 				    CASE
-				        WHEN COUNT(*) > 1 AND MAX(source_sum) > MIN(source_sum) * 1.4
+				        WHEN COUNT(*) > 1 AND MIN(source_sum) > 1.0
+				         AND MAX(source_sum) > MIN(source_sum) * 1.4
 				        THEN MIN(source_sum)
 				        ELSE COALESCE(
 				            MAX(CASE WHEN source LIKE '%Ultra%' OR source LIKE '%Apple Watch%' THEN source_sum END),
