@@ -240,6 +240,57 @@ function loadTrendCharts(containerId) {
   });
 }
 
+// ---- Metric card mini-sparklines (Bevel-style) ----
+// Replaces the standalone Trends section. Each metric card carries
+// `<canvas data-metric="...">`; we fetch 14 days of data and render a
+// tiny in-card chart so the snapshot + history sit side-by-side.
+var METRIC_SPARKLINE_COLORS = {
+  'step_count':              '#059669',
+  'sleep_total':             '#7c3aed',
+  'heart_rate_variability':  '#d97706',
+  'resting_heart_rate':      '#e11d48',
+  'respiratory_rate':        '#0ea5e9'
+};
+var metricCardCharts = [];
+
+function loadMetricCardSparklines() {
+  var canvases = document.querySelectorAll('.metric-card-sparkline canvas[data-metric]');
+  if (!canvases.length) return;
+  metricCardCharts.forEach(function(c) { c.destroy(); });
+  metricCardCharts.length = 0;
+  var from = daysAgoStr(13), to = todayStr();
+  canvases.forEach(function(canvas) {
+    var metric = canvas.getAttribute('data-metric');
+    if (!metric) return;
+    fetch('/api/metrics/data?metric=' + encodeURIComponent(metric) + '&from=' + from + '&to=' + to + '&bucket=day')
+      .then(function(r){return r.json()})
+      .then(function(d) {
+        var pts = (d.points || []).filter(function(p){ return p.qty > 0; });
+        if (pts.length < 2) return;
+        var color = METRIC_SPARKLINE_COLORS[metric] || '#6b7280';
+        var c = new Chart(canvas, {
+          type: 'line',
+          data: {
+            labels: pts.map(function(p){ return p.date; }),
+            datasets: [{
+              data: pts.map(function(p){ return p.qty; }),
+              borderColor: color, backgroundColor: color + '20',
+              fill: true, tension: 0.35, borderWidth: 1.5, pointRadius: 0
+            }]
+          },
+          options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false }, tooltip: { enabled: false } },
+            scales: { x: { display: false }, y: { display: false } },
+            elements: { point: { radius: 0 } }
+          }
+        });
+        metricCardCharts.push(c);
+      })
+      .catch(function() { /* silent — sparkline is decorative */ });
+  });
+}
+
 // ---- Sleep stacked chart ----
 var SLEEP_PHASES = [
   { metric:'sleep_deep', label:'Deep', color:'#6366f1' },

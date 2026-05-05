@@ -81,6 +81,7 @@ var translations = map[string]map[string]string{
 		"trend_sleep": "Sleep",
 		"trend_hrv": "HRV",
 		"trend_readiness": "Readiness",
+		"ai_insight_title": "Detailed AI briefing",
 		"teps": "Steps",
 		"leep": "Sleep",
 		"ate": "Respiratory Rate",
@@ -187,6 +188,25 @@ var translations = map[string]map[string]string{
 		"how_it_works": "How it works",
 		"health_sections": "Health overview",
 		"at_a_glance": "At a glance",
+
+		// Dual-baseline trend chips on metric cards
+		"trend_vs_7d":  "vs 7d",
+		"trend_vs_30d": "vs 30d",
+
+		// Energy Bank widget (Bevel-inspired prescriptive verdict)
+		"energy_label":          "Energy Bank",
+		"energy_capacity_label": "Today's capacity",
+		"energy_current_label":  "Available now",
+		"energy_drain_label":    "Used so far",
+		"energy_verdict_push_hard":       "Push hard",
+		"energy_verdict_moderate":        "Moderate day",
+		"energy_verdict_active_recovery": "Active recovery only",
+		"energy_verdict_rest":            "Rest day",
+		"energy_component_morning_capacity": "Morning capacity",
+		"energy_component_activity_load":    "Activity load (today vs 28-day chronic)",
+		"energy_component_autonomic_stress": "Autonomic stress (RHR / HRV)",
+		"details": "Details",
+
 		"admin_title": "Settings",
 		"admin_cache_status": "Cache status",
 		"admin_refresh": "Refresh",
@@ -315,6 +335,7 @@ var translations = map[string]map[string]string{
 		"trend_sleep": "Сон",
 		"trend_hrv": "ВСР",
 		"trend_readiness": "Готовность",
+		"ai_insight_title": "Развёрнутый AI-отчёт",
 		"teps": "Шаги",
 		"leep": "Сон",
 		"ate": "ЧДД",
@@ -421,6 +442,25 @@ var translations = map[string]map[string]string{
 		"how_it_works": "Как это работает",
 		"health_sections": "Обзор здоровья",
 		"at_a_glance": "Сегодня",
+
+		// Dual-baseline trend chips on metric cards
+		"trend_vs_7d":  "к 7д",
+		"trend_vs_30d": "к 30д",
+
+		// Energy Bank widget (Bevel-inspired prescriptive verdict)
+		"energy_label":          "Энергетический банк",
+		"energy_capacity_label": "Капасити на сегодня",
+		"energy_current_label":  "Сейчас доступно",
+		"energy_drain_label":    "Потрачено",
+		"energy_verdict_push_hard":       "Можно жёстко",
+		"energy_verdict_moderate":        "Умеренный день",
+		"energy_verdict_active_recovery": "Только активное восстановление",
+		"energy_verdict_rest":            "День отдыха",
+		"energy_component_morning_capacity": "Утренняя капасити",
+		"energy_component_activity_load":    "Нагрузка (сегодня vs 28-дн норма)",
+		"energy_component_autonomic_stress": "Автономный стресс (RHR / HRV)",
+		"details": "Детали",
+
 		"admin_title": "Настройки",
 		"admin_cache_status": "Состояние кэша",
 		"admin_refresh": "Обновить",
@@ -549,6 +589,7 @@ var translations = map[string]map[string]string{
 		"trend_sleep": "San",
 		"trend_hrv": "HRV",
 		"trend_readiness": "Spremnost",
+		"ai_insight_title": "Detaljan AI izveštaj",
 		"teps": "Koraci",
 		"leep": "San",
 		"ate": "Respiratorni ritam",
@@ -655,6 +696,24 @@ var translations = map[string]map[string]string{
 		"how_it_works": "Kako to radi",
 		"health_sections": "Pregled zdravlja",
 		"at_a_glance": "Danas",
+
+		// Dual-baseline trend chips on metric cards
+		"trend_vs_7d":  "vs 7d",
+		"trend_vs_30d": "vs 30d",
+
+		// Energy Bank widget (Bevel-inspired prescriptive verdict)
+		"energy_label":          "Energetski bank",
+		"energy_capacity_label": "Današnji kapacitet",
+		"energy_current_label":  "Dostupno sada",
+		"energy_drain_label":    "Potrošeno",
+		"energy_verdict_push_hard":       "Slobodno tvrdo",
+		"energy_verdict_moderate":        "Umeren dan",
+		"energy_verdict_active_recovery": "Samo aktivni oporavak",
+		"energy_verdict_rest":            "Dan odmora",
+		"energy_component_morning_capacity": "Jutarnji kapacitet",
+		"energy_component_activity_load":    "Opterećenje (danas vs 28d hronični)",
+		"energy_component_autonomic_stress": "Autonomni stres (RHR / HRV)",
+		"details": "Detalji",
 		"admin_notify_title": "Telegram izveštaji",
 		"admin_notify_morning_title": "Jutarnji izveštaj",
 		"admin_notify_morning_desc": "Pošalji test san sada.",

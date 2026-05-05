@@ -45,23 +45,30 @@ body { min-height: 100vh; font-size: 15px; }
 /* ── App container ── */
 #app { max-width: 1400px; margin: 0 auto; padding: 0 40px 80px; }
 
-/* ── HERO: Readiness ── */
+/* ── HERO / TODAY ribbon ──
+   Single hero band that combines the readiness score, the cross-metric
+   Headline (chip + detail), the Energy Bank verdict + battery, and the
+   30-day sparkline. Severity colour is signalled by the top border only —
+   keeps the page calm vs full-band tinting. */
 #hero-section {
   margin-bottom: 32px;
   background: transparent;
   border-top: 4px solid var(--text);
   border-bottom: 1px solid var(--text);
   border-radius: 0;
-  padding: 48px 56px;
+  padding: 36px 48px;
   color: var(--text);
   position: relative;
   overflow: hidden;
   display: grid;
-  grid-template-columns: auto 1fr auto;
-  column-gap: 48px;
-  align-items: center;
-  min-height: 240px;
+  grid-template-columns: auto minmax(0, 1fr) minmax(260px, auto);
+  column-gap: 40px;
+  align-items: stretch;
+  min-height: 220px;
 }
+#hero-section.headline--warning  { border-top-color: var(--fair); }
+#hero-section.headline--positive { border-top-color: var(--good); }
+#hero-section.headline--info     { border-top-color: var(--text); }
 #hero-bg-glow-1 {
   position: absolute; top: -60px; right: 80px;
   width: 300px; height: 300px; border-radius: 50%;
@@ -72,45 +79,108 @@ body { min-height: 100vh; font-size: 15px; }
   width: 400px; height: 400px; border-radius: 50%;
   background: rgba(255,255,255,0.05); pointer-events: none;
 }
-#hero-score-block { position: relative; z-index: 2; }
+#hero-score-block { position: relative; z-index: 2; align-self: center; }
 #readiness-label-top {
   font-size: 12px; font-weight: 700; text-transform: uppercase;
   letter-spacing: 2px; opacity: 0.65; margin-bottom: 8px;
 }
 #readiness-score {
-  font-size: 96px; font-weight: 900; line-height: 1;
-  letter-spacing: -4px; margin-bottom: 4px;
+  font-size: 88px; font-weight: 900; line-height: 1;
+  letter-spacing: -3px; margin-bottom: 4px;
 }
-#readiness-status { font-size: 22px; font-weight: 700; opacity: 0.9; }
-#hero-right-block { position: relative; z-index: 2; }
-#ai-insight {
-  font-size: 15px; line-height: 1.6;
-  margin-bottom: 32px; font-style: italic;
-  padding: 16px 20px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-left: 4px solid var(--text);
-  border-radius: 8px;
+#readiness-status { font-size: 20px; font-weight: 700; opacity: 0.9; }
+
+/* Hero column 2: narrative — chip with headline title, detail paragraph,
+   tip (only when there's no headline so they don't fight each other),
+   and a verdict pill + reason from Energy Bank. */
+#hero-narrative-block {
+  position: relative; z-index: 2;
+  display: flex; flex-direction: column; gap: 12px;
+  align-self: center;
+  padding: 0 24px;
+  border-left: 1px solid var(--border);
+  min-width: 0;
+}
+.hero-headline-chip {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 13px; font-weight: 700;
+  padding: 4px 12px; border-radius: 999px;
+  background: var(--surface2); color: var(--text);
+  align-self: flex-start;
+}
+.hero-headline-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+.headline--warning .hero-headline-chip  { background: var(--fair-bg); color: var(--fair); }
+.headline--warning .hero-headline-dot   { background: var(--fair); }
+.headline--positive .hero-headline-chip { background: var(--good-bg); color: var(--good); }
+.headline--positive .hero-headline-dot  { background: var(--good); }
+.headline--info .hero-headline-dot      { background: var(--muted); }
+.hero-headline-detail {
+  font-size: 15px; line-height: 1.55; color: var(--text);
   white-space: pre-line;
-  color: var(--text-secondary);
 }
 #readiness-tip {
-  font-size: 17px; opacity: 0.85; line-height: 1.5;
+  font-size: 13px; color: var(--text-secondary); opacity: 0.85; line-height: 1.5;
   white-space: pre-line;
-  margin-bottom: 28px;
 }
-#hero-sparkline-block {
-  cursor: pointer; position: relative; z-index: 2;
-  padding-left: 40px;
-  border-left: 1px solid var(--border);
+.hero-verdict-row {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+.hero-verdict-reason {
+  font-size: 13px; color: var(--text-secondary); line-height: 1.45; flex: 1;
+}
+
+/* Hero column 3: visual — Energy Bank battery on top, readiness sparkline
+   on the bottom. Components drilldown sits beneath the battery (hidden
+   in <details>). */
+#hero-visual-block {
+  position: relative; z-index: 2;
+  display: flex; flex-direction: column; gap: 18px;
   align-self: center;
+  padding-left: 24px;
+  border-left: 1px solid var(--border);
+}
+.hero-energy { display: flex; flex-direction: column; gap: 6px; }
+.hero-energy-header {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+}
+.hero-energy-label {
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 1.5px; opacity: 0.55;
+}
+.hero-energy-numbers { font-size: 18px; font-weight: 800; letter-spacing: -0.5px; }
+.hero-energy-details { font-size: 12px; color: var(--text-secondary); }
+.hero-energy-details summary { cursor: pointer; color: var(--muted); }
+.hero-energy-details ul { list-style: none; padding-left: 0; margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
+
+#hero-sparkline-block {
+  cursor: pointer; position: relative;
 }
 #hero-sparkline-label {
   font-size: 11px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: 1.5px; opacity: 0.55; margin-bottom: 10px;
+  letter-spacing: 1.5px; opacity: 0.55; margin-bottom: 6px;
 }
 #hero-sparkline-wrap {
-  width: 220px; height: 90px; position: relative;
+  width: 100%; min-width: 220px; height: 64px; position: relative;
+}
+
+/* AI Insight: collapsed by default (closed <details>). */
+#ai-insight-wrap {
+  margin-bottom: 32px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface);
+}
+#ai-insight-wrap > summary {
+  cursor: pointer; padding: 12px 20px;
+  font-size: 14px; font-weight: 600; color: var(--text);
+}
+#ai-insight {
+  font-size: 15px; line-height: 1.6;
+  font-style: italic;
+  padding: 0 20px 16px;
+  white-space: pre-line;
+  color: var(--text-secondary);
 }
 #readiness-sparkline { display: block; width: 100% !important; height: 100% !important; }
 #hero-date-strip {
@@ -168,42 +238,15 @@ body { min-height: 100vh; font-size: 15px; }
 .metric-card-trend.neutral { background: var(--surface2); color: var(--muted); }
 .metric-card-trends { display: flex; flex-wrap: wrap; gap: 6px; }
 .metric-card-trend--secondary { opacity: 0.85; font-size: 11px; padding: 2px 8px; }
+.metric-card-sparkline {
+  height: 36px; margin: 6px 0 8px; position: relative;
+}
+.metric-card-sparkline canvas { width: 100% !important; height: 100% !important; }
 
-/* ── Headline banner (cross-metric signal of the day) ── */
-#headline-banner {
-  margin-bottom: 24px; padding: 16px 20px; border-radius: var(--radius);
-  border-left: 4px solid var(--muted); background: var(--surface);
-  box-shadow: var(--shadow);
-}
-.headline--warning  { border-left-color: var(--fair); background: var(--fair-bg); }
-.headline--positive { border-left-color: var(--good); background: var(--good-bg); }
-.headline--info     { border-left-color: var(--muted); background: var(--surface2); }
-.headline-title  { font-size: 16px; font-weight: 700; margin-bottom: 4px; }
-.headline-detail { font-size: 14px; color: var(--text-secondary); line-height: 1.5; }
-.headline-metrics { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-.headline-chip {
-  font-size: 12px; padding: 3px 10px; border-radius: 20px;
-  background: var(--surface); border: 1px solid var(--border);
-}
-.headline-chip-base { color: var(--muted); margin-left: 4px; }
-
-/* ── Energy Bank widget (Bevel-inspired, prescriptive) ── */
-.energy-card {
-  background: var(--surface); border-radius: var(--radius);
-  padding: 24px; box-shadow: var(--shadow); margin-bottom: 32px;
-}
-.energy-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-.energy-title  { font-size: 16px; font-weight: 700; letter-spacing: -0.2px; }
-.energy-verdict {
-  font-size: 13px; font-weight: 700; padding: 5px 14px; border-radius: 20px;
-}
-.energy-verdict--push_hard       { background: var(--good-bg); color: var(--good); }
-.energy-verdict--moderate        { background: var(--fair-bg); color: var(--fair); }
-.energy-verdict--active_recovery { background: var(--warn-bg, var(--fair-bg)); color: var(--warn, var(--fair)); }
-.energy-verdict--rest            { background: var(--low-bg);  color: var(--low); }
+/* ── Energy Bank shared chips (used inline in #hero-narrative-block) ── */
 .energy-bar {
-  position: relative; height: 18px; border-radius: 9px;
-  background: var(--surface2); overflow: hidden; margin-bottom: 16px;
+  position: relative; height: 14px; border-radius: 7px;
+  background: var(--surface2); overflow: hidden;
 }
 .energy-bar-fill {
   height: 100%; transition: width 0.4s ease;
@@ -213,14 +256,14 @@ body { min-height: 100vh; font-size: 15px; }
   position: absolute; top: -2px; bottom: -2px; width: 2px;
   background: var(--text); opacity: 0.6;
 }
-.energy-stats { display: flex; gap: 32px; flex-wrap: wrap; margin-bottom: 16px; }
-.energy-stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); }
-.energy-stat-value { font-size: 24px; font-weight: 800; }
-.energy-stat-unit  { font-size: 14px; color: var(--muted); margin-left: 2px; }
-.energy-reason { font-size: 14px; color: var(--text-secondary); line-height: 1.55; }
-.energy-components { margin-top: 14px; font-size: 13px; color: var(--text-secondary); }
-.energy-components summary { cursor: pointer; color: var(--muted); font-size: 12px; }
-.energy-components ul { list-style: none; padding-left: 0; margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.energy-verdict {
+  font-size: 12px; font-weight: 700; padding: 4px 12px; border-radius: 999px;
+  display: inline-block;
+}
+.energy-verdict--push_hard       { background: var(--good-bg); color: var(--good); }
+.energy-verdict--moderate        { background: var(--fair-bg); color: var(--fair); }
+.energy-verdict--active_recovery { background: var(--warn-bg, var(--fair-bg)); color: var(--warn, var(--fair)); }
+.energy-verdict--rest            { background: var(--low-bg);  color: var(--low); }
 .muted { color: var(--muted); }
 
 
@@ -276,28 +319,7 @@ body { min-height: 100vh; font-size: 15px; }
 .alert--critical { background: var(--danger-bg); color: #991b1b; border-color: #fca5a5; }
 [dark-mode] .alert--critical { color: var(--danger); }
 
-/* ── Sleep section (full width) ── */
-#sleep-section {
-  background: var(--surface); border-radius: var(--radius);
-  padding: 32px; box-shadow: var(--shadow); margin-bottom: 20px;
-}
-#sleep-section .section-header { margin-bottom: 20px; }
-#sleep-body {
-  display: grid; grid-template-columns: 1fr auto;
-  gap: 40px; align-items: center;
-}
-#sleep-stats-grid {
-  display: grid; grid-template-columns: repeat(4, 1fr);
-  gap: 0; border-top: 1px solid var(--border-light); margin-top: 20px;
-  padding-top: 20px;
-}
-.sleep-stat { text-align: center; }
-.sleep-stat + .sleep-stat { border-left: 1px solid var(--border-light); }
-.sleep-stat-label { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
-.sleep-stat-value { font-size: 28px; font-weight: 800; color: var(--text); letter-spacing: -0.5px; }
-.sleep-stat-value.accent { color: var(--good); }
-
-/* ── Sleep source comparison ── */
+/* ── Sleep source comparison (used on /sleep page, not the dashboard) ── */
 #sleep-sources { margin-top: 20px; }
 .sleep-sources-header { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); margin-bottom: 10px; }
 .sleep-src-table { display: flex; flex-direction: column; gap: 4px; }
@@ -373,21 +395,6 @@ body { min-height: 100vh; font-size: 15px; }
 /* ── Section detail cards header ── */
 #sections-area { margin-bottom: 32px; }
 #sections-area > .section-title { font-size: 20px; font-weight: 700; letter-spacing: -0.4px; margin-bottom: 20px; }
-
-/* ── Trend sparklines ── */
-#trends-section { margin-bottom: 32px; }
-#trends-section > .section-title { font-size: 20px; font-weight: 700; letter-spacing: -0.4px; margin-bottom: 20px; }
-#trend-charts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
-.trend-card {
-  background: var(--surface); border-radius: var(--radius-sm);
-  padding: 24px; box-shadow: var(--shadow); cursor: pointer; transition: all 0.18s;
-}
-.trend-card:hover { box-shadow: var(--shadow-lg); transform: translateY(-2px); }
-.trend-card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; }
-.trend-card-title { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
-.trend-card-value { font-size: 24px; font-weight: 800; letter-spacing: -0.5px; }
-.trend-card-canvas { height: 80px; overflow: hidden; position: relative; }
-.trend-card-canvas canvas { max-width: 100%; }
 
 /* ── Metrics view ── */
 #metrics-view { padding-top: 8px; }
@@ -497,28 +504,33 @@ select:focus, input[type=date]:focus { outline: none; border-color: var(--accent
 
 /* ── Responsive ── */
 @media (max-width: 1100px) {
-  #trend-charts { grid-template-columns: repeat(2, 1fr); }
+  /* Hero column 3 (visual) drops to a row beneath, narrative still flexes */
+  #hero-section { grid-template-columns: auto minmax(0, 1fr); column-gap: 32px; row-gap: 20px; }
+  #hero-visual-block { grid-column: 1 / -1; padding-left: 0; border-left: none; padding-top: 16px; border-top: 1px solid var(--border); flex-direction: row; gap: 24px; align-items: center; }
+  #hero-visual-block > * { flex: 1; min-width: 0; }
   #metric-cards-grid { grid-template-columns: repeat(3, 1fr); }
   #correlation-insights-row { grid-template-columns: 1fr; }
-  #sleep-stats-grid { grid-template-columns: repeat(4, 1fr); }
 }
 @media (max-width: 768px) {
   #app { padding: 0 16px 48px; }
   #top-bar { padding: 14px 16px; }
 
-  /* Hero */
+  /* Hero — stack all three columns vertically */
   #hero-section {
-    grid-template-columns: 1fr; gap: 24px; padding: 32px 24px;
-    border-radius: 24px; min-height: auto;
+    grid-template-columns: 1fr; gap: 20px; padding: 28px 22px;
+    border-radius: 0; min-height: auto;
   }
+  #hero-narrative-block { padding: 0; border-left: none; }
+  #hero-visual-block { padding-left: 0; border-left: none; padding-top: 16px; border-top: 1px solid var(--border); flex-direction: column; }
   #hero-date-strip { position: static; margin-top: 8px; font-size: 13px; opacity: 0.7; }
-  #readiness-score { font-size: 72px; }
-  #readiness-tip { font-size: 15px; margin-bottom: 20px; }
+  #readiness-score { font-size: 64px; }
+  #readiness-tip { font-size: 15px; }
 
   /* Metrics */
   #metric-cards-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
   .metric-card { padding: 18px 14px; }
   .metric-card-value { font-size: 26px; }
+  .metric-card-sparkline { height: 32px; }
 
   /* Sections */
   .section-title { font-size: 17px; }
@@ -526,18 +538,10 @@ select:focus, input[type=date]:focus { outline: none; border-color: var(--accent
   #metric-cards-area > .section-title { font-size: 17px; }
   #weekly-section > .section-title { font-size: 17px; }
   #sections-area > .section-title { font-size: 17px; }
-  #trends-section > .section-title { font-size: 17px; }
-  #trend-charts { grid-template-columns: 1fr 1fr; }
 
   /* Insight details */
   .detail-note { display: none; }
   .insight-card { padding: 20px; }
-
-  /* Sleep */
-  #sleep-stats-grid { grid-template-columns: repeat(2, 1fr); gap: 12px; border-top: none; padding-top: 0; }
-  .sleep-stat { padding: 12px; background: var(--surface2); border-radius: var(--radius-xs); }
-  .sleep-stat + .sleep-stat { border-left: none; }
-  .sleep-stat-value { font-size: 22px; }
 
   /* Chart controls: scroll horizontally */
   #chart-controls { overflow-x: auto; flex-wrap: nowrap; padding-bottom: 4px; gap: 6px; -webkit-overflow-scrolling: touch; }
@@ -557,8 +561,8 @@ select:focus, input[type=date]:focus { outline: none; border-color: var(--accent
 @media (max-width: 480px) {
   #app { padding: 0 12px 40px; }
   #top-bar { padding: 12px; }
-  #hero-section { padding: 24px 18px; border-radius: 20px; }
-  #readiness-score { font-size: 60px; letter-spacing: -3px; }
+  #hero-section { padding: 22px 16px; }
+  #readiness-score { font-size: 56px; letter-spacing: -2px; }
   #readiness-status { font-size: 18px; }
   #readiness-label-top { font-size: 11px; }
 
@@ -569,16 +573,11 @@ select:focus, input[type=date]:focus { outline: none; border-color: var(--accent
   .metric-card-unit { font-size: 11px; }
   .metric-card-trend { font-size: 10px; padding: 2px 7px; }
 
-  #trend-charts { grid-template-columns: 1fr; }
-
   .metrics-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
   .metrics-card { padding: 12px; }
   .metrics-card-value { font-size: 20px; }
   #metrics-title { font-size: 20px; }
   #metrics-search-wrap { min-width: 0; width: 100%; }
-
-  #sleep-stats-grid { grid-template-columns: 1fr 1fr; }
-  .sleep-stat-value { font-size: 20px; }
 }
 
 
