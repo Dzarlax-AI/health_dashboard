@@ -733,18 +733,44 @@ func (h *Handler) adminBackfill(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	backfill := h.mgr.BackfillFor(h.tenantSchema(r))
+	schema := h.tenantSchema(r)
+	if target := strings.TrimSpace(r.URL.Query().Get("schema")); target != "" && target != schema {
+		// Admin-only override (route already gated by adminGuard). Validate the
+		// target belongs to a registered user before triggering backfill.
+		if h.reg == nil {
+			http.Error(w, "registry not available", http.StatusServiceUnavailable)
+			return
+		}
+		users, err := h.reg.ListUsers(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		known := false
+		for _, u := range users {
+			if u.SchemaName == target {
+				known = true
+				break
+			}
+		}
+		if !known {
+			http.Error(w, "unknown schema", http.StatusBadRequest)
+			return
+		}
+		schema = target
+	}
+	backfill := h.mgr.BackfillFor(schema)
 	if backfill == nil {
 		http.Error(w, "backfill not configured", http.StatusServiceUnavailable)
 		return
 	}
 	force := r.URL.Query().Get("force") == "1"
 	backfill(force)
-	msg := "incremental backfill scheduled"
+	msg := "incremental backfill scheduled for " + schema
 	if force {
-		msg = "full rebuild started"
+		msg = "full rebuild started for " + schema
 	}
-	jsonResponse(w, map[string]string{"status": "ok", "message": msg})
+	jsonResponse(w, map[string]string{"status": "ok", "message": msg, "schema": schema})
 }
 
 // userSettings handles GET/POST /api/settings — Telegram config, available to all users.

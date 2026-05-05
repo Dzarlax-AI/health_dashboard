@@ -65,7 +65,7 @@ func affectsReadiness(points []storage.MetricPoint) bool {
 
 type Handler struct {
 	mgr       *tenants.Manager
-	onNewData func(db *storage.DB) // called after a successful insert; may be nil
+	onNewData func(db *storage.DB, dates []string) // called after a successful insert; may be nil
 
 	jobs chan func()
 
@@ -73,7 +73,7 @@ type Handler struct {
 	sessions map[string]*syncSession
 }
 
-func New(mgr *tenants.Manager, onNewData func(db *storage.DB)) *Handler {
+func New(mgr *tenants.Manager, onNewData func(db *storage.DB, dates []string)) *Handler {
 	h := &Handler{
 		mgr:       mgr,
 		onNewData: onNewData,
@@ -109,7 +109,7 @@ func (h *Handler) flushDates(db *storage.DB, dates []string, recomputeReadiness 
 	}
 	db.UpsertRecentCache(dates, recomputeReadiness)
 	if h.onNewData != nil {
-		h.onNewData(db)
+		h.onNewData(db, dates)
 	}
 }
 
