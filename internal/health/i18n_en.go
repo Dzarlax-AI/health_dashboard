@@ -145,4 +145,30 @@ var en = LangStrings{
 	"headline_dev_sleep_total_below_baseline":            "Slept less than usual",
 	"headline_dev_generic":                               "Notable deviation from baseline",
 	"headline_dev_detail":                                "%.1f%s — %+.1f%% from your average %.1f%s.",
+
+	// Energy Bank (action prescription)
+	"energy_label":          "Energy Bank",
+	"energy_capacity_label": "Today's capacity",
+	"energy_current_label":  "Available now",
+	"energy_drain_label":    "Used so far",
+	"trend_vs_7d":           "vs 7d",
+	"trend_vs_30d":          "vs 30d",
+
+	"energy_verdict_push_hard":       "Push hard",
+	"energy_verdict_moderate":        "Moderate day",
+	"energy_verdict_active_recovery": "Active recovery only",
+	"energy_verdict_rest":            "Rest day",
+
+	"energy_reason_full_capacity": "%d%% capacity left and HRV is at or above your norm — green light for a hard session.",
+	"energy_reason_optimal":       "%d%% capacity left and stress markers are clean — a normal training day is fine.",
+	"energy_reason_low_capacity":  "Only %d%% capacity left after today's load — keep intensity light.",
+	"energy_reason_high_stress":   "HRV %.1f SD off baseline and stress score %d — autonomic load is elevated.",
+	"energy_reason_acwr_spike":    "Today's load is already %.0f%% of your 28-day average — a hard session would push the spike further.",
+
+	"energy_note_capacity":              "morning capacity carried over from sleep %.1fh + recovery markers",
+	"energy_component_morning_capacity": "Morning capacity",
+	"energy_component_activity_load":    "Activity load (today vs 28-day chronic)",
+	"energy_component_autonomic_stress": "Autonomic stress (RHR / HRV)",
+
+	"details": "Details",
 }

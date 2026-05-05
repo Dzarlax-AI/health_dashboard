@@ -125,4 +125,30 @@ var ru = LangStrings{
 	"headline_dev_sleep_total_below_baseline":            "Сегодня спали меньше обычного",
 	"headline_dev_generic":                               "Заметное отклонение от baseline",
 	"headline_dev_detail":                                "%.1f%s — %+.1f%% от вашего среднего %.1f%s.",
+
+	// Energy Bank (action prescription)
+	"energy_label":          "Энергетический банк",
+	"energy_capacity_label": "Капасити на сегодня",
+	"energy_current_label":  "Сейчас доступно",
+	"energy_drain_label":    "Потрачено",
+	"trend_vs_7d":           "к 7д",
+	"trend_vs_30d":          "к 30д",
+
+	"energy_verdict_push_hard":       "Можно жёстко",
+	"energy_verdict_moderate":        "Умеренный день",
+	"energy_verdict_active_recovery": "Только активное восстановление",
+	"energy_verdict_rest":            "День отдыха",
+
+	"energy_reason_full_capacity": "Осталось %d%% капасити, HRV выше или на уровне нормы — зелёный свет для жёсткой тренировки.",
+	"energy_reason_optimal":       "Осталось %d%% капасити, маркеры стресса чистые — нормальный тренировочный день ок.",
+	"energy_reason_low_capacity":  "Осталось всего %d%% капасити после сегодняшней нагрузки — держите интенсивность лёгкой.",
+	"energy_reason_high_stress":   "HRV %.1f SD от baseline, индекс стресса %d — автономная нагрузка повышена.",
+	"energy_reason_acwr_spike":    "Сегодняшняя нагрузка уже %.0f%% от 28-дневной нормы — жёсткая сессия сильно увеличит spike.",
+
+	"energy_note_capacity":              "утренняя капасити = сон %.1fч + маркеры восстановления",
+	"energy_component_morning_capacity": "Утренняя капасити",
+	"energy_component_activity_load":    "Нагрузка (сегодня vs 28-дн норма)",
+	"energy_component_autonomic_stress": "Автономный стресс (RHR / HRV)",
+
+	"details": "Детали",
 }
