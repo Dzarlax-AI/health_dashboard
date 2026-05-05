@@ -127,7 +127,17 @@ func detectSleepDebt(d RawMetrics, ls LangStrings) *HeadlineSignal {
 	if len(d.Sleep) == 0 || d.Sleep[0] >= sleepDebtThresholdH || d.Sleep[0] <= 0 {
 		return nil
 	}
-	delta, _ := metricDelta(d.Sleep, "sleep_total", "h")
+	// Same guard as in detectStressSignals: emit a baseline-relative delta
+	// only when there's enough history to compute one, otherwise fall back
+	// to a Value-only delta so we don't ship zero-baseline garbage.
+	delta := HeadlineMetricDelta{
+		Metric: "sleep_total",
+		Value:  d.Sleep[0],
+		Unit:   "h",
+	}
+	if md, ok := metricDelta(d.Sleep, "sleep_total", "h"); ok {
+		delta = md
+	}
 	return &HeadlineSignal{
 		Key:      "sleep_debt",
 		Severity: "warning",
