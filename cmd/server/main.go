@@ -186,7 +186,6 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	db *storage.DB, schema string,
 	notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig) {
 
-	sched := newBackfillScheduler(db, 2*time.Minute)
 	go func() {
 		time.Sleep(5 * time.Second)
 		force := db.NeedsForceBackfill()
@@ -203,11 +202,10 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	var morningLock int32
 	maybeFireMorningReport := makeMorningTrigger(db, &morningLock, aiDefaults, notifyDefaults)
 	onNewData := func(_ *storage.DB) {
-		sched.schedule()
 		go maybeFireMorningReport()
 	}
 
-	backfillFn := makeBackfillFn(db, sched)
+	backfillFn := makeBackfillFn(db)
 	testNotifyFn := makeTestNotifyFn(db, notifyDefaults, aiDefaults)
 
 	mgr.RegisterCallbacks(schema, tenants.TenantCallbacks{
@@ -237,11 +235,11 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	}
 }
 
-// startTenant launches backfill scheduler and report scheduler for one tenant.
+// startTenant launches the report scheduler for one tenant and runs a one-shot
+// startup cache refresh.
 func startTenant(ctx context.Context, mgr *tenants.Manager, db *storage.DB, schema string,
 	notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig) {
 
-	sched := newBackfillScheduler(db, 2*time.Minute)
 	go func() {
 		time.Sleep(5 * time.Second)
 		force := db.NeedsForceBackfill()
@@ -258,7 +256,7 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, db *storage.DB, sche
 	var morningLock int32
 	maybeFireMorningReport := makeMorningTrigger(db, &morningLock, aiDefaults, notifyDefaults)
 
-	backfillFn := makeBackfillFn(db, sched)
+	backfillFn := makeBackfillFn(db)
 	testNotifyFn := makeTestNotifyFn(db, notifyDefaults, aiDefaults)
 
 	mgr.RegisterCallbacks(schema, tenants.TenantCallbacks{
@@ -272,11 +270,23 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, db *storage.DB, sche
 	go runReportScheduler(db, notifyDefaults, aiDefaults)
 }
 
-func makeBackfillFn(db *storage.DB, sched *backfillScheduler) func(bool) {
-	var forceRunning int32
+// makeBackfillFn returns the admin/import callback that recomputes caches.
+// Per-POST cache work is now inline (storage.UpsertRecentCache + readiness
+// recompute), so this is only invoked from the admin UI button or post-import.
+func makeBackfillFn(db *storage.DB) func(bool) {
+	var forceRunning, incrRunning int32
 	return func(force bool) {
 		if !force {
-			sched.schedule()
+			if !atomic.CompareAndSwapInt32(&incrRunning, 0, 1) {
+				log.Println("incremental backfill already running, skipping")
+				return
+			}
+			go func() {
+				defer atomic.StoreInt32(&incrRunning, 0)
+				log.Println("incremental backfill: starting…")
+				db.RunIncrementalBackfill()
+				log.Println("incremental backfill: done")
+			}()
 			return
 		}
 		if !atomic.CompareAndSwapInt32(&forceRunning, 0, 1) {
@@ -371,41 +381,6 @@ func makeMorningTrigger(db *storage.DB, lock *int32, aiDefaults storage.AIConfig
 			log.Printf("morning trigger: mark sent: %v", err)
 		}
 		log.Printf("morning trigger: done, insight saved for %s", today)
-	}
-}
-
-type backfillScheduler struct {
-	db      *storage.DB
-	delay   time.Duration
-	trigger chan struct{}
-}
-
-func newBackfillScheduler(db *storage.DB, delay time.Duration) *backfillScheduler {
-	s := &backfillScheduler{
-		db:      db,
-		delay:   delay,
-		trigger: make(chan struct{}, 1),
-	}
-	go s.run()
-	return s
-}
-
-func (s *backfillScheduler) schedule() {
-	select {
-	case s.trigger <- struct{}{}:
-	default:
-	}
-}
-
-func (s *backfillScheduler) run() {
-	for range s.trigger {
-		time.Sleep(s.delay)
-		for len(s.trigger) > 0 {
-			<-s.trigger
-		}
-		log.Println("scheduler: running incremental backfill…")
-		s.db.RunIncrementalBackfill()
-		log.Println("scheduler: done")
 	}
 }
 

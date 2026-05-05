@@ -19,6 +19,44 @@ func (s *DB) RunIncrementalBackfill() {
 	}
 }
 
+// RecomputeReadinessSince re-runs the sliding-window readiness computation for
+// every output day from `fromDate` (YYYY-MM-DD) to the latest day with data.
+// Cheap when fromDate is recent; equivalent to a full BackfillScores when it
+// reaches the start of recorded history.
+//
+// Called inline after UpsertRecentCache so per-POST data appears with a fresh
+// readiness score without waiting for a scheduled job.
+func (s *DB) RecomputeReadinessSince(fromDate string) {
+	ctx, cancel := queryCtx()
+	defer cancel()
+	var latest *string
+	if err := s.pool.QueryRow(ctx,
+		`SELECT MAX(SUBSTRING(hour,1,10)) FROM hourly_metrics`).Scan(&latest); err != nil || latest == nil {
+		return
+	}
+	tFrom, err := time.Parse("2006-01-02", fromDate)
+	if err != nil {
+		log.Printf("recompute readiness: parse fromDate %q: %v", fromDate, err)
+		return
+	}
+	tLatest, err := time.Parse("2006-01-02", *latest)
+	if err != nil {
+		log.Printf("recompute readiness: parse latest %q: %v", *latest, err)
+		return
+	}
+	days := int(tLatest.Sub(tFrom).Hours()/24) + 1
+	if days <= 0 {
+		days = 1
+	}
+	pts, err := s.computeReadinessHistory(days)
+	if err != nil {
+		log.Printf("recompute readiness from %s: %v", fromDate, err)
+		return
+	}
+	s.saveReadinessScores(pts)
+	log.Printf("recomputed readiness for %d days (from %s)", len(pts), fromDate)
+}
+
 // ScoreVersion identifies the readiness formula revision.
 // Bump this constant whenever the scoring logic changes —
 // rows with an older version will be ignored by the cache

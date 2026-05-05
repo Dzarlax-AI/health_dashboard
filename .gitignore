@@ -9,6 +9,8 @@ bin/
 /migrate
 /downsample
 /server
+/backfill
+/import
 
 # Claude Code
 .claude/
