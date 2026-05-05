@@ -248,6 +248,20 @@ func (s *DB) InsertPoints(recordID int64, points []MetricPoint) error {
 	}
 	defer tx.Rollback(ctx)
 
+	// Two guards on the sleep_% UPDATE branch — both protect the cached
+	// per-night aggregate from being clobbered by garbage records that share
+	// the same (metric_name, date, source) key:
+	//
+	//   1. Watch midnight-summary inflation: ignore a new value that is more
+	//      than 30% larger than the existing one when both are non-trivial.
+	//      Catches the RingConn 14h-night outlier pattern.
+	//
+	//   2. Zero-payload overwrite: a per-day chunked re-sync from iOS may
+	//      emit `qty=0` for a source that has only `.inBed` / late-evening
+	//      samples in the chunk's window (the actual sleep block started
+	//      the prior evening and falls outside the chunk). The client now
+	//      widens the sleep predicate, but as a belt-and-suspenders we keep
+	//      the existing positive value if the incoming one is zero.
 	const upsertSQL = `INSERT INTO metric_points
 		(health_record_id, metric_name, units, date, qty, source)
 		VALUES ($1, $2, $3, $4, $5, $6)
@@ -257,6 +271,10 @@ func (s *DB) InsertPoints(recordID int64, points []MetricPoint) error {
 				  AND SUBSTRING(metric_points.date, 12, 8) = '00:00:00'
 				  AND metric_points.qty > 1.0
 				  AND excluded.qty > metric_points.qty * 1.3
+				THEN metric_points.qty
+				WHEN metric_points.metric_name LIKE 'sleep_%'
+				  AND metric_points.qty > 0
+				  AND excluded.qty = 0
 				THEN metric_points.qty
 				ELSE excluded.qty
 			END,
