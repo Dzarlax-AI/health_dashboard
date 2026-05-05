@@ -40,9 +40,10 @@ var en = LangStrings{
 	"rhr_note_high":   "elevated — may indicate stress or poor recovery",
 
 	// Recovery section summaries
-	"rec_summary_good": "You're well recovered. Your body's ready for activity.",
-	"rec_summary_fair": "Recovery is moderate. Listen to your body today.",
-	"rec_summary_low":  "Your body needs more rest. Take it easy if you can.",
+	"rec_summary_good":        "You're well recovered. Your body's ready for activity.",
+	"rec_summary_fair":        "Recovery is moderate. Listen to your body today.",
+	"rec_summary_low":         "Your body needs more rest. Take it easy if you can.",
+	"rec_summary_fair_stress": "HRV/RHR look ok individually, but other markers point to accumulated stress — see headline above.",
 
 	// Sleep duration detail notes
 	"sleep_dur_stable": "consistent with your pattern",
@@ -124,4 +125,24 @@ var en = LangStrings{
 	"alert_rr_anomaly":         "Respiratory rate deviates significantly from your baseline. This can be an early sign of illness or stress.",
 	"alert_wrist_temp_anomaly": "Wrist temperature deviates significantly from your baseline. This may indicate fever, inflammation, or hormonal changes.",
 	"alert_hrv_cv_high":        "Your 7-day HRV variability is high (CV %.0f%%), suggesting inconsistent recovery. Consider reviewing sleep quality and stress levels.",
+
+	// Headline (cross-metric signal of the day)
+	"headline_stress_title":         "Recovery debt building up",
+	"headline_stress_detail":        "Several markers point in the same direction: %s. Consider lighter training today.",
+	"headline_part_rhr":             "RHR %.0f bpm (+%.0f vs your norm)",
+	"headline_part_hrv":             "HRV %.0f ms (z=%.1f)",
+	"headline_part_sleep":           "sleep %.1fh",
+	"headline_part_awake":           "wake time %.1fh",
+	"headline_sleep_debt_title":     "Sleep debt",
+	"headline_sleep_debt_detail":    "%.1fh last night is below the 7h target. One short night is fine; watch that it doesn't become a pattern.",
+	"headline_stable_title":         "Everything in range",
+	"headline_stable_detail":        "All key metrics close to your personal baseline.",
+	"headline_dev_heart_rate_variability_above_baseline": "HRV above your norm",
+	"headline_dev_heart_rate_variability_below_baseline": "HRV below your norm",
+	"headline_dev_resting_heart_rate_above_baseline":     "Resting HR elevated",
+	"headline_dev_resting_heart_rate_below_baseline":     "Resting HR below your norm",
+	"headline_dev_sleep_total_above_baseline":            "Slept more than usual",
+	"headline_dev_sleep_total_below_baseline":            "Slept less than usual",
+	"headline_dev_generic":                               "Notable deviation from baseline",
+	"headline_dev_detail":                                "%.1f%s — %+.1f%% from your average %.1f%s.",
 }

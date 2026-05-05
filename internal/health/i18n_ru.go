@@ -34,9 +34,10 @@ var ru = LangStrings{
 	"rhr_note_low":    "ниже обычного — хорошо отдохнули",
 	"rhr_note_high":   "повышен — возможен стресс или плохое восстановление",
 
-	"rec_summary_good": "Вы хорошо восстановились. Тело готово к активности.",
-	"rec_summary_fair": "Восстановление умеренное. Прислушивайтесь к своему телу.",
-	"rec_summary_low":  "Телу нужно больше отдыха. Не перегружайтесь.",
+	"rec_summary_good":        "Вы хорошо восстановились. Тело готово к активности.",
+	"rec_summary_fair":        "Восстановление умеренное. Прислушивайтесь к своему телу.",
+	"rec_summary_low":         "Телу нужно больше отдыха. Не перегружайтесь.",
+	"rec_summary_fair_stress": "HRV/RHR в норме, но другие маркеры указывают на накопленный стресс — см. заголовок выше.",
 
 	"sleep_dur_stable": "соответствует вашему паттерну",
 	"sleep_dur_more":   "больше обычного — отлично",
@@ -104,4 +105,24 @@ var ru = LangStrings{
 	"alert_rr_anomaly":         "Частота дыхания значительно отклоняется от вашей нормы. Это может быть ранним признаком болезни или стресса.",
 	"alert_wrist_temp_anomaly": "Температура запястья значительно отклоняется от вашей нормы. Возможны лихорадка, воспаление или гормональные изменения.",
 	"alert_hrv_cv_high":        "Вариабельность HRV за 7 дней повышена (CV %.0f%%), что указывает на нестабильное восстановление. Проверьте качество сна и уровень стресса.",
+
+	// Headline (cross-metric signal of the day)
+	"headline_stress_title":         "Накопленный стресс восстановления",
+	"headline_stress_detail":        "Несколько маркеров одновременно указывают на нагрузку: %s. Рекомендуется снизить интенсивность сегодня.",
+	"headline_part_rhr":             "RHR %.0f bpm (+%.0f от вашей нормы)",
+	"headline_part_hrv":             "HRV %.0f ms (z=%.1f)",
+	"headline_part_sleep":           "сон %.1fч",
+	"headline_part_awake":           "пробуждения %.1fч",
+	"headline_sleep_debt_title":     "Дефицит сна",
+	"headline_sleep_debt_detail":    "Вчерашние %.1fч ниже целевых 7ч. Одна короткая ночь — норма; следите, чтобы не превратилось в паттерн.",
+	"headline_stable_title":         "Сегодня всё в норме",
+	"headline_stable_detail":        "Все ключевые показатели близко к вашему персональному baseline.",
+	"headline_dev_heart_rate_variability_above_baseline": "HRV выше обычного",
+	"headline_dev_heart_rate_variability_below_baseline": "HRV ниже обычного",
+	"headline_dev_resting_heart_rate_above_baseline":     "Пульс покоя повышен",
+	"headline_dev_resting_heart_rate_below_baseline":     "Пульс покоя ниже обычного",
+	"headline_dev_sleep_total_above_baseline":            "Сегодня спали больше обычного",
+	"headline_dev_sleep_total_below_baseline":            "Сегодня спали меньше обычного",
+	"headline_dev_generic":                               "Заметное отклонение от baseline",
+	"headline_dev_detail":                                "%.1f%s — %+.1f%% от вашего среднего %.1f%s.",
 }
