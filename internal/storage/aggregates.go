@@ -54,11 +54,19 @@ const preferredSourceSQL = `
 // Apple Watch is better validated against polysomnography; RingConn tends to
 // overestimate deep sleep and occasionally reports wildly inflated totals.
 //
-// Cross-validation: when multiple sources exist and MAX/MIN differ by >40%,
-// the higher value is likely an outlier — take MIN instead of the preferred source.
+// Cross-validation: when multiple sources exist AND each registered a
+// non-trivial sleep total (MIN > 1h), AND MAX/MIN differ by >40%, the higher
+// value is likely an outlier — take MIN instead of the preferred source.
+//
+// The MIN > 1h gate is critical: without it, a RingConn daily-summary record
+// of 0.13h (essentially a stub) would always satisfy "MAX > MIN*1.4" and the
+// CASE would return that 0.13h, throwing away Apple Watch's valid 7+h night.
+// Cross-validation only makes sense when both sources have legitimate data
+// to compare — otherwise fall through to the source-priority COALESCE.
 const preferredSleepSourceSQL = `
 	SELECT CASE
 		WHEN (SELECT COUNT(DISTINCT source) FROM source_totals) > 1
+		 AND (SELECT MIN(source_total) FROM source_totals) > 1.0
 		 AND (SELECT MAX(source_total) FROM source_totals) >
 		     (SELECT MIN(source_total) FROM source_totals) * 1.4
 		THEN (SELECT MIN(source_total) FROM source_totals)
