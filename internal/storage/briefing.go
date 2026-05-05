@@ -230,11 +230,12 @@ func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
 }
 
 // intradayPartialSum returns today's accumulated total for a SUM metric
-// (steps, active_energy) read from hourly_metrics, picking the
-// PREFERRED source (Apple Watch > iPhone > best other) — matches the
-// dedup logic used by buildDailyMetricCol so the intraday numerator
+// (steps, active_energy) read from hourly_metrics. Source dedup picks the
+// PREFERRED source for the day — Apple Watch first, then iPhone, falling
+// back to the source with the highest daily total when neither is present.
+// This mirrors buildDailyMetricCol exactly, so the intraday numerator
 // stays consistent with the chronic denominator computed via daily_scores.
-// Returns 0 when no data is present yet.
+// Returns 0 when no data is present yet (e.g. early morning before any sync).
 func (s *DB) intradayPartialSum(date, metric string) float64 {
 	ctx, cancel := queryCtx()
 	defer cancel()
@@ -273,7 +274,9 @@ func (s *DB) chronicAvg(lastDate, col string) float64 {
 	var v *float64
 	q := fmt.Sprintf(`
 		SELECT AVG(%s) FROM daily_scores
-		WHERE date >= $1 AND date <= $2 AND %s IS NOT NULL AND %s > 0`,
+		WHERE SUBSTRING(date, 1, 10) >= $1
+		  AND SUBSTRING(date, 1, 10) <= $2
+		  AND %s IS NOT NULL AND %s > 0`,
 		col, col, col)
 	err := s.pool.QueryRow(ctx, q,
 		subtractDays(lastDate, 28), subtractDays(lastDate, 1)).Scan(&v)
