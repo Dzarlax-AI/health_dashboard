@@ -34,6 +34,39 @@ func sumCombineExpr(valCol string) string {
 	return "MAX(" + valCol + ")"
 }
 
+// sleepCrossValidationPickExpr returns a SQL `CASE … END` expression that
+// picks the best source's per-day total for sleep metrics from a subquery
+// that exposes a `source` column and a per-source value column named
+// `valCol` (typically `source_total` or `source_sum`).
+//
+// Priority: Apple Watch > RingConn > anything else.
+//
+// Cross-validation: when MULTIPLE sources both registered a non-trivial
+// sleep total (MIN > 1h) AND they disagree by >40%, the higher value is
+// likely an outlier — take MIN to be conservative. This catches RingConn
+// occasionally reporting a wildly inflated 14h-night while the watch
+// shows 7h, but excludes the much more common "RingConn wrote a 0.x-hour
+// daily-summary stub on a watch-only night" case where MIN is just noise
+// and the priority-COALESCE branch should pick Watch instead.
+//
+// Used in five places: preferredSleepSourceSQL constant (uses table
+// `source_totals`), buildDailyMetricCol, metricDataDayFromHourly,
+// metricDataRaw, and briefing.go's fetch helper. Keep them in sync via
+// this helper rather than five hand-edited copies — five separate fixes
+// shipped over PRs #8, #9, #10 before all paths were guarded.
+func sleepCrossValidationPickExpr(valCol string) string {
+	return `CASE
+		WHEN COUNT(*) > 1 AND MIN(` + valCol + `) > 1.0
+		 AND MAX(` + valCol + `) > MIN(` + valCol + `) * 1.4
+		THEN MIN(` + valCol + `)
+		ELSE COALESCE(
+		    MAX(CASE WHEN source LIKE '%Ultra%' OR source LIKE '%Apple Watch%' THEN ` + valCol + ` END),
+		    MAX(CASE WHEN source LIKE '%RingConn%' THEN ` + valCol + ` END),
+		    MAX(` + valCol + `)
+		)
+	END`
+}
+
 // preferredSourceSQL returns a SQL snippet that picks the best source's daily
 // total from a subquery with (source, source_total) columns.
 // Priority: Apple Watch ("Ultra") > iPhone > other (e.g. RingConn).
@@ -493,32 +526,19 @@ func (s *DB) buildDailyMetricCol(col, metric string, force bool) error {
 	var query string
 	if SumMetrics[metric] {
 		if isSleepMetric(metric) {
-			// Sleep: Apple Watch > RingConn, with cross-validation.
-			// If sources diverge by >40%, the higher value is likely an outlier — take MIN.
-			// Cross-validation is gated on MIN > 1.0 so RingConn daily-summary
-			// stubs (0.x-hour records on days the user only wore the watch)
-			// don't satisfy the trigger and clobber a real Apple Watch night.
-			// Mirrors the gate in preferredSleepSourceSQL (PR #8).
-			query = fmt.Sprintf(`
-				SELECT day,
-				    CASE
-				        WHEN COUNT(*) > 1 AND MIN(source_total) > 1.0
-				         AND MAX(source_total) > MIN(source_total) * 1.4
-				        THEN MIN(source_total)
-				        ELSE COALESCE(
-				            MAX(CASE WHEN source LIKE '%%%%Ultra%%%%' OR source LIKE '%%%%Apple Watch%%%%' THEN source_total END),
-				            MAX(CASE WHEN source LIKE '%%%%RingConn%%%%' THEN source_total END),
-				            MAX(source_total)
-				        )
-				    END AS val
+			// Use shared helper (Apple Watch > RingConn with MIN > 1h-gated
+			// cross-validation). Concatenate rather than fmt.Sprintf to avoid
+			// having to double-escape `%` literals in the helper's LIKE clauses.
+			query = `
+				SELECT day, ` + sleepCrossValidationPickExpr("source_total") + ` AS val
 				FROM (
 				    SELECT SUBSTRING(hour,1,10) AS day, source, SUM(avg_val) AS source_total
 				    FROM hourly_metrics
-				    WHERE metric_name = $1 %s
+				    WHERE metric_name = $1 ` + fromClause + `
 				    GROUP BY SUBSTRING(hour,1,10), source
 				) sub
 				GROUP BY day
-				ORDER BY day`, fromClause)
+				ORDER BY day`
 		} else {
 			// Non-sleep SUM metrics: Apple Watch > iPhone > other.
 			srcPriority := `CASE

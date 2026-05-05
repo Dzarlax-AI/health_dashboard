@@ -279,20 +279,7 @@ func (s *DB) metricDataDayFromHourly(metric, from, to string) ([]DataPoint, erro
 	if SumMetrics[metric] {
 		var pickExpr string
 		if isSleepMetric(metric) {
-			// Sleep: Apple Watch > RingConn + cross-validation (>40% divergence → take MIN).
-			// Cross-validation gated on MIN > 1.0 — RingConn daily-summary stubs
-			// (0.x-hour records on watch-only days) shouldn't satisfy the trigger
-			// and clobber the real Apple Watch night. Mirrors the gate in
-			// preferredSleepSourceSQL (PR #8) and buildDailyMetricCol (PR #9).
-			pickExpr = `CASE
-				WHEN COUNT(*) > 1 AND MIN(source_total) > 1.0
-				 AND MAX(source_total) > MIN(source_total) * 1.4
-				THEN MIN(source_total)
-				ELSE COALESCE(
-				    MAX(CASE WHEN source LIKE '%Ultra%' OR source LIKE '%Apple Watch%' THEN source_total END),
-				    MAX(CASE WHEN source LIKE '%RingConn%' THEN source_total END),
-				    MAX(source_total)
-				) END`
+			pickExpr = sleepCrossValidationPickExpr("source_total")
 		} else {
 			pickExpr = "MAX(source_total)"
 		}
@@ -350,16 +337,7 @@ func (s *DB) metricDataRaw(metric, from, to, bucket, aggFunc string) ([]DataPoin
 		sleepDedup := sleepDedupClause(metric)
 		var pickExpr string
 		if isSleepMetric(metric) {
-			// Cross-validation gated on MIN > 1.0 — see preferredSleepSourceSQL.
-			pickExpr = `CASE
-				WHEN COUNT(*) > 1 AND MIN(source_sum) > 1.0
-				 AND MAX(source_sum) > MIN(source_sum) * 1.4
-				THEN MIN(source_sum)
-				ELSE COALESCE(
-				    MAX(CASE WHEN source LIKE '%Ultra%' OR source LIKE '%Apple Watch%' THEN source_sum END),
-				    MAX(CASE WHEN source LIKE '%RingConn%' THEN source_sum END),
-				    MAX(source_sum)
-				) END`
+			pickExpr = sleepCrossValidationPickExpr("source_sum")
 		} else {
 			pickExpr = sumCombineExpr("source_sum")
 		}

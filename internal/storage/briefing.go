@@ -387,20 +387,10 @@ func (s *DB) computeReadinessHistory(outputDays int) ([]health.ReadinessPoint, e
 		var pgxRows pgx.Rows
 		var err error
 		if isSleep {
-			// Pick best source per day: Apple Watch > RingConn, with cross-validation.
-			// If sources diverge by >40%, take MIN to reject outliers (e.g. RingConn accumulation bug).
+			// Pick best source per day via shared helper (Apple Watch > RingConn
+			// with MIN > 1h-gated cross-validation).
 			r, e := s.pool.Query(ctx, `
-				SELECT d,
-				    CASE
-				        WHEN COUNT(*) > 1 AND MIN(source_sum) > 1.0
-				         AND MAX(source_sum) > MIN(source_sum) * 1.4
-				        THEN MIN(source_sum)
-				        ELSE COALESCE(
-				            MAX(CASE WHEN source LIKE '%Ultra%' OR source LIKE '%Apple Watch%' THEN source_sum END),
-				            MAX(CASE WHEN source LIKE '%RingConn%' THEN source_sum END),
-				            MAX(source_sum)
-				        )
-				    END AS val
+				SELECT d, `+sleepCrossValidationPickExpr("source_sum")+` AS val
 				FROM (
 				    SELECT SUBSTRING(date,1,10) AS d, source, SUM(qty) AS source_sum
 				    FROM metric_points
