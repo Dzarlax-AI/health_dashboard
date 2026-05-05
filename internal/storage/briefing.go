@@ -229,6 +229,47 @@ func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
 	}
 }
 
+// intradayPartialSum returns today's accumulated total for a SUM metric
+// (steps, active_energy) read from hourly_metrics, source-deduplicated by
+// taking MAX-per-hour across devices. Returns 0 when no data is present yet
+// (e.g. early morning before any sync from a wearable).
+func (s *DB) intradayPartialSum(date, metric string) float64 {
+	ctx, cancel := queryCtx()
+	defer cancel()
+	var v *float64
+	err := s.pool.QueryRow(ctx, `
+		SELECT SUM(hourly_max) FROM (
+			SELECT hour, MAX(avg_val) AS hourly_max
+			FROM hourly_metrics
+			WHERE metric_name = $1 AND SUBSTRING(hour, 1, 10) = $2 AND avg_val > 0
+			GROUP BY hour
+		) sub`, metric, date).Scan(&v)
+	if err != nil || v == nil {
+		return 0
+	}
+	return *v
+}
+
+// chronicAvg returns the 28-day average daily total of a daily_scores column
+// (e.g. "steps", "calories"), excluding today so the chronic baseline is not
+// biased by an active morning. Used as ACWR denominator in Energy Bank
+// (Gabbett 2016 acute:chronic workload ratio).
+func (s *DB) chronicAvg(lastDate, col string) float64 {
+	ctx, cancel := queryCtx()
+	defer cancel()
+	var v *float64
+	q := fmt.Sprintf(`
+		SELECT AVG(%s) FROM daily_scores
+		WHERE date >= $1 AND date <= $2 AND %s IS NOT NULL AND %s > 0`,
+		col, col, col)
+	err := s.pool.QueryRow(ctx, q,
+		subtractDays(lastDate, 28), subtractDays(lastDate, 1)).Scan(&v)
+	if err != nil || v == nil {
+		return 0
+	}
+	return *v
+}
+
 // GetHealthBriefing fetches raw metric time series from the DB and delegates
 // all scoring and insight computation to the health package.
 // lang selects the output language ("en", "ru", "sr").
@@ -252,6 +293,14 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 	if len(data.WristTemp) == 0 {
 		data.WristTemp = s.fetchDailyMetric("wrist_temperature", *lastDate, 30, "AVG")
 	}
+
+	// Intraday partial-day sums + chronic 28-day baselines for Energy Bank.
+	// Source-deduplicated via MAX-per-hour across devices (same pattern as
+	// SumMetrics dedup documented in SCORING.md).
+	data.StepsToday = s.intradayPartialSum(*lastDate, "step_count")
+	data.ActiveEnergyToday = s.intradayPartialSum(*lastDate, "active_energy")
+	data.StepsChronic28d = s.chronicAvg(*lastDate, "steps")
+	data.ActiveEnergyChronic28d = s.chronicAvg(*lastDate, "calories")
 
 	resp := health.ComputeBriefing(*data, lang)
 

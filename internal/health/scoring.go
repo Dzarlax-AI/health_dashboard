@@ -55,6 +55,11 @@ func ComputeBriefing(d RawMetrics, lang string) *BriefingResponse {
 	applyCoherencePass(resp, ls)
 	resp.Overall = overallStatus(resp.Sections) // re-derive after coherence
 
+	// Energy Bank runs *after* the coherence pass so a stress-capped readiness
+	// flows in as morning capacity, and so the verdict can downgrade
+	// `push_hard` when a stress headline is present.
+	resp.EnergyBank = computeEnergyBank(d, resp.ReadinessScore, headline, ls)
+
 	return resp
 }
 
@@ -122,37 +127,64 @@ func buildMetricCards(d RawMetrics, ls LangStrings) []MetricCard {
 		if len(sp.vals) == 0 {
 			continue
 		}
-		// Show today's value (index 0), trend vs 30-day baseline.
+		// Today's value (index 0). Two baselines: 7-day acute and 30-day chronic.
 		today := sp.vals[0]
-		baseline := avg(sp.vals)
-		pct := pctChange(today, baseline)
-		pctR := roundTo1(pct)
-		
-		status := "neutral"
-		if sp.metric == "resting_heart_rate" {
-			if pctR < -1 { status = "positive" } else if pctR > 1 { status = "negative" }
-		} else {
-			if pctR > 1 { status = "positive" } else if pctR < -1 { status = "negative" }
-		}
+		baseline7 := avg(safeSlice(sp.vals, 0, 7))
+		baseline30 := avg(sp.vals)
 
-		tLabel := ""
-		if pctR > 0 {
-			tLabel = fmt.Sprintf("+%.0f%% %s", pctR, ls["lbl_vs_avg"])
-		} else if pctR < 0 {
-			tLabel = fmt.Sprintf("%.0f%% %s", pctR, ls["lbl_vs_avg"])
-		} else {
-			tLabel = ls["lbl_vs_avg"]
-		}
+		invertBetter := sp.metric == "resting_heart_rate"
+		pct7, label7, status7 := formatTrend(today, baseline7, invertBetter, ls["trend_vs_7d"])
+		pct30, label30, status30 := formatTrend(today, baseline30, invertBetter, ls["trend_vs_30d"])
 
 		out = append(out, MetricCard{
-			Name:       sp.name,
-			Metric:     sp.metric,
-			Value:      fmtFloat(today, sp.decimal),
-			Unit:       sp.unit,
-			TrendPct:   pctR,
-			TrendLabel: tLabel,
-			TrendStatus: status,
+			Name:   sp.name,
+			Metric: sp.metric,
+			Value:  fmtFloat(today, sp.decimal),
+			Unit:   sp.unit,
+			// Legacy single-baseline fields — kept pointing at the 30-day
+			// baseline so existing template renders stay correct.
+			TrendPct:    pct30,
+			TrendLabel:  label30,
+			TrendStatus: status30,
+			// New Bevel-style dual baseline view.
+			Trend7dPct:     pct7,
+			Trend7dLabel:   label7,
+			Trend7dStatus:  status7,
+			Trend30dPct:    pct30,
+			Trend30dLabel:  label30,
+			Trend30dStatus: status30,
 		})
 	}
 	return out
+}
+
+// formatTrend converts a (today, baseline) pair into a rounded pct, a label
+// like "+13% vs last 7d", and a positive/negative/neutral status.
+// `invertBetter=true` for metrics where lower is better (RHR).
+func formatTrend(today, baseline float64, invertBetter bool, suffix string) (float64, string, string) {
+	pct := roundTo1(pctChange(today, baseline))
+	if baseline == 0 {
+		return 0, "", "neutral"
+	}
+	directional := pct
+	if invertBetter {
+		directional = -pct
+	}
+	status := "neutral"
+	switch {
+	case directional > 1:
+		status = "positive"
+	case directional < -1:
+		status = "negative"
+	}
+	var label string
+	switch {
+	case pct > 0:
+		label = fmt.Sprintf("+%.0f%% %s", pct, suffix)
+	case pct < 0:
+		label = fmt.Sprintf("%.0f%% %s", pct, suffix)
+	default:
+		label = suffix
+	}
+	return pct, label, status
 }

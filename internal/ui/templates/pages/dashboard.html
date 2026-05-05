@@ -1,6 +1,26 @@
 {{define "content"}}
 <div id="dashboard-view">
 
+  {{if .Headline}}
+  <!-- Cross-metric Headline (PR #1) — surfaces the day's most notable signal -->
+  <div id="headline-banner" class="headline headline--{{.Headline.Severity}}">
+    <div class="headline-body">
+      <div class="headline-title">{{.Headline.Title}}</div>
+      {{if .Headline.Detail}}<div class="headline-detail">{{.Headline.Detail}}</div>{{end}}
+      {{if .Headline.Metrics}}
+      <div class="headline-metrics">
+        {{range .Headline.Metrics}}
+        <span class="headline-chip">
+          <strong>{{printf "%.1f%s" .Value .Unit}}</strong>
+          {{if .Baseline}}<span class="headline-chip-base">vs {{printf "%.1f%s" .Baseline .Unit}}</span>{{end}}
+        </span>
+        {{end}}
+      </div>
+      {{end}}
+    </div>
+  </div>
+  {{end}}
+
   <!-- Hero: Readiness Score -->
   <div id="hero-section">
     <div id="hero-score-block">
@@ -32,10 +52,52 @@
       <a href="/metrics/{{.Metric}}" class="metric-card" style="text-decoration:none;color:inherit">
         <div class="metric-card-name">{{.Name}}</div>
         <div class="metric-card-value">{{.Value}} <span class="metric-card-unit">{{.Unit}}</span></div>
-        {{if .TrendLabel}}<div class="metric-card-trend {{.TrendStatus}}">{{.TrendLabel}}</div>{{end}}
+        <div class="metric-card-trends">
+          {{if .Trend7dLabel}}<div class="metric-card-trend {{.Trend7dStatus}}">{{.Trend7dLabel}}</div>{{end}}
+          {{if .Trend30dLabel}}<div class="metric-card-trend metric-card-trend--secondary {{.Trend30dStatus}}">{{.Trend30dLabel}}</div>{{end}}
+        </div>
       </a>
       {{end}}
     </div>
+  </div>
+  {{end}}
+
+  {{if .EnergyBank}}
+  <!-- Energy Bank: prescriptive verdict for today (Bevel-inspired, evidence-anchored) -->
+  <div id="energy-bank-area" class="energy-card">
+    <div class="energy-header">
+      <div class="energy-title">{{T .Lang "energy_label"}}</div>
+      <div class="energy-verdict energy-verdict--{{.EnergyBank.ActionVerdict}}">{{T .Lang (printf "energy_verdict_%s" .EnergyBank.ActionVerdict)}}</div>
+    </div>
+    <div class="energy-bar" aria-label="{{T .Lang "energy_capacity_label"}}">
+      <div class="energy-bar-fill" style="width: {{.EnergyBank.Current}}%"></div>
+      {{if lt .EnergyBank.Capacity 100}}<div class="energy-bar-marker" style="left: {{.EnergyBank.Capacity}}%" title="{{T .Lang "energy_capacity_label"}}: {{.EnergyBank.Capacity}}"></div>{{end}}
+    </div>
+    <div class="energy-stats">
+      <div class="energy-stat">
+        <div class="energy-stat-label">{{T .Lang "energy_current_label"}}</div>
+        <div class="energy-stat-value">{{.EnergyBank.Current}}<span class="energy-stat-unit">/100</span></div>
+      </div>
+      <div class="energy-stat">
+        <div class="energy-stat-label">{{T .Lang "energy_drain_label"}}</div>
+        <div class="energy-stat-value">{{.EnergyBank.DrainSoFar}}</div>
+      </div>
+      <div class="energy-stat">
+        <div class="energy-stat-label">{{T .Lang "energy_capacity_label"}}</div>
+        <div class="energy-stat-value">{{.EnergyBank.Capacity}}</div>
+      </div>
+    </div>
+    <div class="energy-reason">{{.EnergyBank.VerdictReason}}</div>
+    {{if .EnergyBank.Components}}
+    <details class="energy-components">
+      <summary>{{T .Lang "details"}}</summary>
+      <ul>
+        {{range .EnergyBank.Components}}
+        <li><strong>{{T $.Lang (printf "energy_component_%s" .Name)}}:</strong> {{.Value}} <span class="muted">({{.Note}})</span></li>
+        {{end}}
+      </ul>
+    </details>
+    {{end}}
   </div>
   {{end}}
 

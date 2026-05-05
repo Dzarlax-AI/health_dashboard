@@ -383,6 +383,8 @@ func (h *Handler) pageDashboard(w http.ResponseWriter, r *http.Request) {
 		ReadinessLabel  string
 		ReadinessTip    string
 		RecoveryPct     int
+		Headline        *health.HeadlineSignal
+		EnergyBank      *health.EnergyBank
 		Cards           []health.MetricCard
 		Alerts          []health.Alert
 		Sections        []health.BriefingSection
@@ -404,6 +406,8 @@ func (h *Handler) pageDashboard(w http.ResponseWriter, r *http.Request) {
 		data.ReadinessLabel = br.ReadinessTodayLabel
 		data.ReadinessTip = br.ReadinessTip
 		data.RecoveryPct = br.RecoveryPct
+		data.Headline = br.Headline
+		data.EnergyBank = br.EnergyBank
 		data.Cards = br.MetricCards
 		data.Alerts = br.Alerts
 		data.Sections = br.Sections

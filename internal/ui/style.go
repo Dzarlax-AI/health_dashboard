@@ -166,6 +166,62 @@ body { min-height: 100vh; font-size: 15px; }
 .metric-card-trend.positive { background: var(--good-bg); color: var(--good); }
 .metric-card-trend.negative { background: var(--low-bg); color: var(--low); }
 .metric-card-trend.neutral { background: var(--surface2); color: var(--muted); }
+.metric-card-trends { display: flex; flex-wrap: wrap; gap: 6px; }
+.metric-card-trend--secondary { opacity: 0.85; font-size: 11px; padding: 2px 8px; }
+
+/* ── Headline banner (cross-metric signal of the day) ── */
+#headline-banner {
+  margin-bottom: 24px; padding: 16px 20px; border-radius: var(--radius);
+  border-left: 4px solid var(--muted); background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.headline--warning  { border-left-color: var(--fair); background: var(--fair-bg); }
+.headline--positive { border-left-color: var(--good); background: var(--good-bg); }
+.headline--info     { border-left-color: var(--muted); background: var(--surface2); }
+.headline-title  { font-size: 16px; font-weight: 700; margin-bottom: 4px; }
+.headline-detail { font-size: 14px; color: var(--text-secondary); line-height: 1.5; }
+.headline-metrics { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.headline-chip {
+  font-size: 12px; padding: 3px 10px; border-radius: 20px;
+  background: var(--surface); border: 1px solid var(--border);
+}
+.headline-chip-base { color: var(--muted); margin-left: 4px; }
+
+/* ── Energy Bank widget (Bevel-inspired, prescriptive) ── */
+.energy-card {
+  background: var(--surface); border-radius: var(--radius);
+  padding: 24px; box-shadow: var(--shadow); margin-bottom: 32px;
+}
+.energy-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.energy-title  { font-size: 16px; font-weight: 700; letter-spacing: -0.2px; }
+.energy-verdict {
+  font-size: 13px; font-weight: 700; padding: 5px 14px; border-radius: 20px;
+}
+.energy-verdict--push_hard       { background: var(--good-bg); color: var(--good); }
+.energy-verdict--moderate        { background: var(--fair-bg); color: var(--fair); }
+.energy-verdict--active_recovery { background: var(--warn-bg, var(--fair-bg)); color: var(--warn, var(--fair)); }
+.energy-verdict--rest            { background: var(--low-bg);  color: var(--low); }
+.energy-bar {
+  position: relative; height: 18px; border-radius: 9px;
+  background: var(--surface2); overflow: hidden; margin-bottom: 16px;
+}
+.energy-bar-fill {
+  height: 100%; transition: width 0.4s ease;
+  background: linear-gradient(to right, var(--low) 0%, var(--fair) 35%, var(--good) 65%);
+}
+.energy-bar-marker {
+  position: absolute; top: -2px; bottom: -2px; width: 2px;
+  background: var(--text); opacity: 0.6;
+}
+.energy-stats { display: flex; gap: 32px; flex-wrap: wrap; margin-bottom: 16px; }
+.energy-stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); }
+.energy-stat-value { font-size: 24px; font-weight: 800; }
+.energy-stat-unit  { font-size: 14px; color: var(--muted); margin-left: 2px; }
+.energy-reason { font-size: 14px; color: var(--text-secondary); line-height: 1.55; }
+.energy-components { margin-top: 14px; font-size: 13px; color: var(--text-secondary); }
+.energy-components summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.energy-components ul { list-style: none; padding-left: 0; margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.muted { color: var(--muted); }
 
 
 /* ── Two-column section: Correlation + Insights ── */

@@ -371,6 +371,100 @@ the headline with section verdicts so the briefing is **internally consistent**:
 
 ---
 
+## Energy Bank (action prescription)
+
+Computed in `internal/health/energy.go::computeEnergyBank`, returned in
+`response.energy_bank`. Where the Headline answers *"what's notable today?"*,
+the Energy Bank answers *"what should you do?"* — a prescriptive verdict that
+rolls capacity, observed activity load, and autonomic stress into a single
+plain-language action ("push_hard", "moderate", "active_recovery", "rest").
+
+### Pipeline
+
+1. **Capacity** (0–100, fixed at briefing time) = readiness score, which
+   already blends sleep + HRV + RHR with the U-shaped duration penalty
+   (Watson 2015 [[8]](#ref-8), Plews 2014 [[18]](#ref-18), Walker 2017).
+   We re-use the readiness number rather than deriving an analogous one — at
+   morning they should be the same, and any drift between them would be more
+   confusing than helpful.
+
+2. **Strain** (0–100) — ACWR-flavoured load (Gabbett 2016 [[36]](#ref-36)):
+   ```
+   strain = clamp01( 0.5 * (steps_today / steps_chronic_28d)
+                   + 0.5 * (active_energy_today / kcal_chronic_28d) ) * 100
+   ```
+   Today's partial sums come from `hourly_metrics` (source-deduplicated
+   MAX-per-hour); chronic 28d denominator from `daily_scores` excluding today
+   (so an active morning doesn't bias its own baseline). Ratio 0.8–1.3 is the
+   classic "sweet spot" Gabbett ties to lower injury risk; >1.5 is the spike
+   zone. The codebase deliberately stops short of an injury-prediction claim —
+   ACWR is a *vocabulary* for verdict gating, not a prediction model
+   (Impellizzeri 2023 critique).
+
+3. **Stress** (0–100) — one-sided z-scores of RHR (positive only) and HRV
+   (negative only) against personal baseline:
+   ```
+   rhr_z   = max(0,  zScore(rhr_today, baseline, sd))
+   hrv_z   = max(0, -zScore(hrv_today, baseline, sd))
+   stress  = clamp01( (rhr_z + hrv_z) / 2 ) * 100
+   ```
+   Only the *bad* direction of each axis matters — a low RHR or high HRV is a
+   recovery signal, not stress. Z-score normalisation against personal
+   baseline is the consensus approach for individualised wearable analytics
+   (Beattie 2024 [[6]](#ref-6), Dial 2025 [[31]](#ref-31)).
+
+4. **Drain** with allostatic-load multiplier:
+   ```
+   drain   = strain * (1 + 0.5 * stress/100)        # up to 1.5x at stress=100
+   current = max(0, capacity - drain)
+   ```
+   The same active day costs more when autonomics are already taxed — this
+   is the McEwen 1998 / 2024 PNAS allostatic-load shape [[38]](#ref-38),
+   conservatively parameterised. Without intraday HR we cannot model
+   parasympathetic *refill*; the system therefore monotonically drains
+   through the day. Documented as `// TODO(v2)` in `energy.go`.
+
+### Verdict thresholds (Plews / Vesterinen smallest-worthwhile-change band)
+
+The verdict gates primarily on the *raw* HRV z-score; the bank balance acts as
+a secondary clamp.
+
+| Condition | Verdict |
+|---|---|
+| `hrv_z ≤ -1.0` OR `current ≤ 25` | `rest` |
+| `hrv_z ≤ -0.5` OR `current ≤ 45` | `active_recovery` |
+| `hrv_z ≥ +0.5` AND `current ≥ 60` | `push_hard` |
+| otherwise | `moderate` |
+
+> **Why ±0.5 SD?** Plews 2014 [[18]](#ref-18), Vesterinen 2016 [[37]](#ref-37)
+> and Düking 2023 [[39]](#ref-39) all use a ±0.5 SD "smallest worthwhile
+> change" band as the decision boundary for HRV-guided training prescription.
+> Within ±0.5 SD a wearable HRV reading isn't reliably distinguishable from
+> normal day-to-day noise; outside it, the deviation is large enough to
+> warrant adjusting load. The −1.0 SD rest threshold matches
+> Vesterinen's overreaching-prevention rule.
+
+### Coherence with the Headline
+
+When a stress headline fires (≥ 2 converging stress markers, see "Headline
+signal" above), `push_hard` is forced down to `active_recovery` regardless of
+the numeric verdict. This mirrors the headline → recovery-section coherence
+pattern: a multi-signal converging-evidence verdict (Meeusen 2013 [[16]](#ref-16))
+is stronger than any single-marker green light.
+
+### Edge cases
+
+- **< 9 days of HRV/sleep** → returns `nil`, the briefing simply omits the
+  field. UI hides the widget via `omitempty`. Same gate as readiness.
+- **No partial-day activity yet** (early morning before any wearable sync)
+  → `strain = 0`; verdict is then driven by capacity and stress alone.
+- **Single huge workout** that pushes ratio > 3 → `strain` clamps to 100;
+  verdict ends up at `rest` via the `current ≤ 25` clamp. Correct outcome.
+- **Stale data** (`d.Sleep[0] <= 0` despite ≥ 9 days history) → returns
+  `nil`. Better to show nothing than a verdict from yesterday's data.
+
+---
+
 ## Overall status
 
 Aggregates the statuses of all available sections.
@@ -608,3 +702,13 @@ The CV of the 7-day rolling average is a strong indicator of maladaptation to tr
 <a id="ref-33"></a>[33] *Sleep Regularity and Mortality: A Prospective Analysis in the UK Biobank* (eLife 2025). — n ≈ 88 000 adults; SRI=41 (5th percentile) → HR 1.53 vs median; SRI=75 (95th percentile) → HR 0.90. Provides the percentile-based tier thresholds for the planned SRI implementation (Этап 2). [eLife 88359](https://elifesciences.org/articles/88359)
 
 <a id="ref-34"></a>[34] *Comparison of Sleep Regularity Index scores calculated by open-source packages and implications for outcomes research: rationale and design of the RIRI statement* (Sleep journal 2026, zsaf299). — Two widely used SRI implementations diverge enough on the same data to flip clinical conclusions; RIRI is a 14-item reporting standard. Implementing SRI here will pin to the Phillips & Czeisler 2017 original formula and document accordingly. [Sleep journal](https://academic.oup.com/sleep/article-abstract/49/4/zsaf299/8265987)
+
+<a id="ref-35"></a>[35] Banister EW (1991). *Modeling elite athletic performance.* In Physiological Testing of the High-Performance Athlete (Human Kinetics). — Original TRIMP (Training Impulse) framework; load = duration × HR-reserve weight. Foundation of all modern training-load metrics. [Reference](https://us.humankinetics.com/products/physiological-testing-of-the-high-performance-athlete-2nd-edition)
+
+<a id="ref-36"></a>[36] Gabbett TJ (2016). *The training–injury prevention paradox: should athletes be training smarter and harder?* *British Journal of Sports Medicine*, 50(5), 273–280. — Acute:Chronic Workload Ratio: today's load (acute) ÷ rolling 4-week chronic average. Sweet spot 0.8–1.3, danger > 1.5. Source for the 28-day chronic denominator in Energy Bank's strain calculation. [PMC7047972](https://pmc.ncbi.nlm.nih.gov/articles/PMC7047972/)
+
+<a id="ref-37"></a>[37] Vesterinen V et al. (2016). *Individual endurance training prescription with heart rate variability.* *Med Sci Sports Exerc*, 48(7), 1347–1354. — RCT: HRV-guided prescription (drop intensity when HRV is below personal baseline) outperforms predefined-block training. Foundation for the verdict thresholds gated on HRV z-score. [PubMed](https://pubmed.ncbi.nlm.nih.gov/26909527/)
+
+<a id="ref-38"></a>[38] McEwen BS (1998). *Stress, adaptation, and disease: Allostasis and allostatic load.* *Annals NYAS*, 840(1), 33–44. Updated as McEwen et al. (2024) in *PNAS*, *Allostatic load: a 30-year review* — same physiological response costs more when the system is already taxed. Source for the stress-amplifies-strain multiplier in Energy Bank drain. [DOI](https://doi.org/10.1111/j.1749-6632.1998.tb09546.x)
+
+<a id="ref-39"></a>[39] Düking P et al. (2023). *Heart Rate Variability-Guided Endurance Training: A Systematic Review and Meta-Analysis.* *Sports Med — Open*, 9, 67. — Updated meta-analysis confirms moderate effect for HRV-guided training vs predefined; ±0.5 SD smallest-worthwhile-change band remains the recommended threshold. [DOI](https://doi.org/10.1186/s40798-023-00614-3)

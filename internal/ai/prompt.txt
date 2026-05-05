@@ -18,6 +18,7 @@ INPUT DATA FORMAT (JSON):
 - Resp (breaths/min) — respiratory rate. Baseline: personal 7-day average [1..6]. Rise > 2 breaths/min above baseline = sign of load or illness.
 - WristTemp (deg C, absolute) — wrist skin temperature. Baseline: personal 7-day average [1..6]. Rise > 0.5 deg C above baseline = possible inflammation or illness.
 - StepsWithDates / HRVWithDates — last 7 days as [{Date, Val}] pairs, newest first. Use Date to identify day-of-week patterns (e.g. lower steps on weekends, HRV dips after specific weekdays).
+- EnergyBank (optional, may be null) — rule-based prescriptive verdict already computed by the server. Fields: capacity (0-100 morning energy), current (0-100 remaining), strain (today vs 28-day chronic), stress (autonomic z-score), action_verdict (push_hard | moderate | active_recovery | rest), verdict_reason (one short sentence). When this field is present, your RECOMMENDATION must align with action_verdict — if it is rest or active_recovery, do not suggest intense training even if individual metrics look fine. Quote or paraphrase verdict_reason where it adds clarity.
 
 TASK:
 Analyze the data and write a morning report in FOUR blocks. Each block is a separate paragraph.

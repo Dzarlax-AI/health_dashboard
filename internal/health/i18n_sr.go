@@ -125,4 +125,30 @@ var sr = LangStrings{
 	"headline_dev_sleep_total_below_baseline":            "Spavali manje nego obično",
 	"headline_dev_generic":                               "Značajno odstupanje od baseline",
 	"headline_dev_detail":                                "%.1f%s — %+.1f%% od vašeg proseka %.1f%s.",
+
+	// Energy Bank (action prescription)
+	"energy_label":          "Energetski bank",
+	"energy_capacity_label": "Današnji kapacitet",
+	"energy_current_label":  "Dostupno sada",
+	"energy_drain_label":    "Potrošeno",
+	"trend_vs_7d":           "vs 7d",
+	"trend_vs_30d":          "vs 30d",
+
+	"energy_verdict_push_hard":       "Slobodno tvrdo",
+	"energy_verdict_moderate":        "Umeren dan",
+	"energy_verdict_active_recovery": "Samo aktivni oporavak",
+	"energy_verdict_rest":            "Dan odmora",
+
+	"energy_reason_full_capacity": "Ostalo %d%% kapaciteta, HRV iznad ili na normi — zeleno svetlo za tvrdu sesiju.",
+	"energy_reason_optimal":       "Ostalo %d%% kapaciteta, markeri stresa su čisti — normalan trening dan je ok.",
+	"energy_reason_low_capacity":  "Ostalo samo %d%% kapaciteta nakon današnjeg opterećenja — držite intenzitet lakim.",
+	"energy_reason_high_stress":   "HRV %.1f SD od baseline, stres indeks %d — autonomna opterećenja su povišena.",
+	"energy_reason_acwr_spike":    "Današnje opterećenje je već %.0f%% od 28-dnevne norme — tvrda sesija bi gurnula spike dalje.",
+
+	"energy_note_capacity":              "jutarnji kapacitet iz sna %.1fh i markera oporavka",
+	"energy_component_morning_capacity": "Jutarnji kapacitet",
+	"energy_component_activity_load":    "Opterećenje (danas vs 28d hronični)",
+	"energy_component_autonomic_stress": "Autonomni stres (RHR / HRV)",
+
+	"details": "Detalji",
 }

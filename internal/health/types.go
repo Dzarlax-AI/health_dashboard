@@ -21,6 +21,16 @@ type RawMetrics struct {
 	// For correlation chart
 	StepsWithDates []DatedValue
 	HRVWithDates   []DatedValue
+
+	// Intraday partial-day totals — used by Energy Bank to drain capacity in
+	// proportion to today's accumulating activity. Read from hourly_metrics
+	// where SUBSTRING(hour,1,10) = today, source-deduplicated.
+	StepsToday        float64
+	ActiveEnergyToday float64
+	// Chronic 28-day averages (excluding today) — denominators for ACWR-style
+	// load ratio (Gabbett 2016). Read from daily_scores.
+	StepsChronic28d        float64
+	ActiveEnergyChronic28d float64
 }
 
 // DatedValue is a single metric data point paired with its calendar date.
@@ -80,9 +90,20 @@ type MetricCard struct {
 	Metric     string  `json:"metric"`
 	Value      string  `json:"value"`
 	Unit       string  `json:"unit"`
-	TrendPct   float64 `json:"trend_pct"`
-	TrendLabel string  `json:"trend_label"`
-	TrendStatus string `json:"trend_status"`
+	// Existing single-baseline trend (vs full 30-day average) — kept for
+	// backwards-compatibility with the current dashboard template.
+	TrendPct    float64 `json:"trend_pct"`
+	TrendLabel  string  `json:"trend_label"`
+	TrendStatus string  `json:"trend_status"`
+	// Bevel-style dual baseline view: short-term (7d) and long-term (30d)
+	// deltas displayed side-by-side so users see both acute response and
+	// longer-term drift (Altini 2021, Beattie 2024).
+	Trend7dPct     float64 `json:"trend_7d_pct"`
+	Trend7dLabel   string  `json:"trend_7d_label,omitempty"`
+	Trend7dStatus  string  `json:"trend_7d_status,omitempty"`
+	Trend30dPct    float64 `json:"trend_30d_pct"`
+	Trend30dLabel  string  `json:"trend_30d_label,omitempty"`
+	Trend30dStatus string  `json:"trend_30d_status,omitempty"`
 }
 
 // ReadinessPoint is a single historical readiness data point.
@@ -111,6 +132,33 @@ type HeadlineSignal struct {
 	Title    string                 `json:"title"`    // short one-liner
 	Detail   string                 `json:"detail"`   // 1-2 sentence explanation citing concrete numbers
 	Metrics  []HeadlineMetricDelta  `json:"metrics,omitempty"` // contributing deltas
+}
+
+// EnergyBank is a Bevel-inspired prescriptive metric: the user's "energy
+// budget" for the day. Capacity is set at briefing time from sleep + recovery
+// scores, drains throughout the day from observed activity (ACWR-style ratio
+// vs 28-day chronic) and autonomic stress (one-sided HRV/RHR z-scores), and
+// maps to a plain-language action verdict via Plews-style HRV-guided thresholds.
+//
+// Headline answers "what's notable today?"; EnergyBank answers "what should
+// you do?". Intentionally a separate field so the two signals stay legible.
+type EnergyBank struct {
+	Capacity      int                   `json:"capacity"`        // 0-100, set at briefing time
+	Current       int                   `json:"current"`         // 0-100, capacity - drain
+	DrainSoFar    int                   `json:"drain_so_far"`    // 0-100, total accumulated drain
+	Strain        int                   `json:"strain"`          // 0-100, ACWR-flavoured activity load
+	Stress        int                   `json:"stress"`          // 0-100, autonomic z-score deviation
+	ActionVerdict string                `json:"action_verdict"`  // enum: push_hard|moderate|active_recovery|rest
+	VerdictReason string                `json:"verdict_reason"`  // localised one-sentence rationale
+	Components    []EnergyBankComponent `json:"components,omitempty"`
+}
+
+// EnergyBankComponent breaks down the capacity/strain/stress numbers so the
+// dashboard and AI briefing can show *why* the verdict is what it is.
+type EnergyBankComponent struct {
+	Name  string `json:"name"`  // morning_capacity | activity_load | autonomic_stress
+	Value int    `json:"value"`
+	Note  string `json:"note"`  // free-form provenance ("steps 8200 vs 28d avg 7400")
 }
 
 // HeadlineMetricDelta carries the concrete number behind a headline:
@@ -144,4 +192,5 @@ type BriefingResponse struct {
 	Alerts         []Alert            `json:"alerts,omitempty"`
 	Sleep          *SleepAnalysis     `json:"sleep"`
 	MetricCards    []MetricCard       `json:"metric_cards"`
+	EnergyBank     *EnergyBank        `json:"energy_bank,omitempty"`
 }
