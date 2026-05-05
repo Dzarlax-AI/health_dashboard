@@ -1,28 +1,12 @@
 {{define "content"}}
 <div id="dashboard-view">
 
-  {{if .Headline}}
-  <!-- Cross-metric Headline (PR #1) — surfaces the day's most notable signal -->
-  <div id="headline-banner" class="headline headline--{{.Headline.Severity}}">
-    <div class="headline-body">
-      <div class="headline-title">{{.Headline.Title}}</div>
-      {{if .Headline.Detail}}<div class="headline-detail">{{.Headline.Detail}}</div>{{end}}
-      {{if .Headline.Metrics}}
-      <div class="headline-metrics">
-        {{range .Headline.Metrics}}
-        <span class="headline-chip">
-          <strong>{{printf "%.1f%s" .Value .Unit}}</strong>
-          {{if .Baseline}}<span class="headline-chip-base">vs {{printf "%.1f%s" .Baseline .Unit}}</span>{{end}}
-        </span>
-        {{end}}
-      </div>
-      {{end}}
-    </div>
-  </div>
-  {{end}}
-
-  <!-- Hero: Readiness Score -->
-  <div id="hero-section">
+  <!-- TODAY ribbon: score | narrative | visual.
+       Combines the readiness score, cross-metric Headline (PR #1), and
+       Energy Bank (PR #2) into a single hero band so the dashboard
+       opens with one consolidated "where am I today" snapshot rather
+       than three competing headers. -->
+  <div id="hero-section" class="status-{{if ge .ReadinessScore 70}}good{{else if ge .ReadinessScore 40}}fair{{else}}low{{end}}{{if .Headline}} headline--{{.Headline.Severity}}{{end}}">
     <div id="hero-score-block">
       <div id="readiness-label-top">{{T .Lang "readiness_today_label"}}</div>
       <div id="readiness-score">{{if .ReadinessScore}}{{.ReadinessScore}}{{else}}--{{end}}</div>
@@ -32,19 +16,56 @@
         {{else if gt .ReadinessScore 0}}{{T .Lang "status_low"}}{{end}}
       </div>
     </div>
-    <div id="hero-right-block">
+
+    <div id="hero-narrative-block">
+      {{if .Headline}}
+      <div class="hero-headline-chip">
+        <span class="hero-headline-dot"></span>
+        <span class="hero-headline-title">{{.Headline.Title}}</span>
+      </div>
+      {{if .Headline.Detail}}<div class="hero-headline-detail">{{.Headline.Detail}}</div>{{end}}
+      {{end}}
       {{if .ReadinessTip}}<div id="readiness-tip">{{.ReadinessTip}}</div>{{end}}
+      {{if .EnergyBank}}
+      <div class="hero-verdict-row">
+        <span class="energy-verdict energy-verdict--{{.EnergyBank.ActionVerdict}}">{{T .Lang (printf "energy_verdict_%s" .EnergyBank.ActionVerdict)}}</span>
+        <span class="hero-verdict-reason">{{.EnergyBank.VerdictReason}}</span>
+      </div>
+      {{end}}
     </div>
-    <div id="hero-sparkline-block">
-      <div id="hero-sparkline-label"><span>{{T .Lang "trend_readiness"}}</span> · 30d</div>
-      <div id="hero-sparkline-wrap"><canvas id="readiness-sparkline"></canvas></div>
+
+    <div id="hero-visual-block">
+      {{if .EnergyBank}}
+      <div class="hero-energy">
+        <div class="hero-energy-header">
+          <span class="hero-energy-label">{{T .Lang "energy_label"}}</span>
+          <span class="hero-energy-numbers">{{.EnergyBank.Current}}<span class="muted">/{{.EnergyBank.Capacity}}</span></span>
+        </div>
+        <div class="energy-bar" aria-label="{{T .Lang "energy_capacity_label"}}">
+          <div class="energy-bar-fill" style="width: {{.EnergyBank.Current}}%"></div>
+          {{if lt .EnergyBank.Capacity 100}}<div class="energy-bar-marker" style="left: {{.EnergyBank.Capacity}}%" title="{{T .Lang "energy_capacity_label"}}: {{.EnergyBank.Capacity}}"></div>{{end}}
+        </div>
+        {{if .EnergyBank.Components}}
+        <details class="hero-energy-details">
+          <summary>{{T .Lang "details"}}</summary>
+          <ul>
+            {{range .EnergyBank.Components}}
+            <li><strong>{{T $.Lang (printf "energy_component_%s" .Name)}}:</strong> {{.Value}} <span class="muted">({{.Note}})</span></li>
+            {{end}}
+          </ul>
+        </details>
+        {{end}}
+      </div>
+      {{end}}
+      <div id="hero-sparkline-block">
+        <div id="hero-sparkline-label"><span>{{T .Lang "trend_readiness"}}</span> · 30d</div>
+        <div id="hero-sparkline-wrap"><canvas id="readiness-sparkline"></canvas></div>
+      </div>
     </div>
   </div>
 
-  {{if .AIInsight}}<div id="ai-insight">{{.AIInsight}}</div>{{end}}
-
   {{if .Cards}}
-  <!-- Metric cards -->
+  <!-- Metric cards with embedded mini-sparklines (replaces standalone Trends section) -->
   <div id="metric-cards-area">
     <div class="section-title">{{T .Lang "at_a_glance"}}</div>
     <div id="metric-cards-grid">
@@ -52,6 +73,7 @@
       <a href="/metrics/{{.Metric}}" class="metric-card" style="text-decoration:none;color:inherit">
         <div class="metric-card-name">{{.Name}}</div>
         <div class="metric-card-value">{{.Value}} <span class="metric-card-unit">{{.Unit}}</span></div>
+        <div class="metric-card-sparkline"><canvas data-metric="{{.Metric}}"></canvas></div>
         <div class="metric-card-trends">
           {{if .Trend7dLabel}}<div class="metric-card-trend {{.Trend7dStatus}}">{{.Trend7dLabel}}</div>{{end}}
           {{if .Trend30dLabel}}<div class="metric-card-trend metric-card-trend--secondary {{.Trend30dStatus}}">{{.Trend30dLabel}}</div>{{end}}
@@ -62,45 +84,6 @@
   </div>
   {{end}}
 
-  {{if .EnergyBank}}
-  <!-- Energy Bank: prescriptive verdict for today (Bevel-inspired, evidence-anchored) -->
-  <div id="energy-bank-area" class="energy-card">
-    <div class="energy-header">
-      <div class="energy-title">{{T .Lang "energy_label"}}</div>
-      <div class="energy-verdict energy-verdict--{{.EnergyBank.ActionVerdict}}">{{T .Lang (printf "energy_verdict_%s" .EnergyBank.ActionVerdict)}}</div>
-    </div>
-    <div class="energy-bar" aria-label="{{T .Lang "energy_capacity_label"}}">
-      <div class="energy-bar-fill" style="width: {{.EnergyBank.Current}}%"></div>
-      {{if lt .EnergyBank.Capacity 100}}<div class="energy-bar-marker" style="left: {{.EnergyBank.Capacity}}%" title="{{T .Lang "energy_capacity_label"}}: {{.EnergyBank.Capacity}}"></div>{{end}}
-    </div>
-    <div class="energy-stats">
-      <div class="energy-stat">
-        <div class="energy-stat-label">{{T .Lang "energy_current_label"}}</div>
-        <div class="energy-stat-value">{{.EnergyBank.Current}}<span class="energy-stat-unit">/100</span></div>
-      </div>
-      <div class="energy-stat">
-        <div class="energy-stat-label">{{T .Lang "energy_drain_label"}}</div>
-        <div class="energy-stat-value">{{.EnergyBank.DrainSoFar}}</div>
-      </div>
-      <div class="energy-stat">
-        <div class="energy-stat-label">{{T .Lang "energy_capacity_label"}}</div>
-        <div class="energy-stat-value">{{.EnergyBank.Capacity}}</div>
-      </div>
-    </div>
-    <div class="energy-reason">{{.EnergyBank.VerdictReason}}</div>
-    {{if .EnergyBank.Components}}
-    <details class="energy-components">
-      <summary>{{T .Lang "details"}}</summary>
-      <ul>
-        {{range .EnergyBank.Components}}
-        <li><strong>{{T $.Lang (printf "energy_component_%s" .Name)}}:</strong> {{.Value}} <span class="muted">({{.Note}})</span></li>
-        {{end}}
-      </ul>
-    </details>
-    {{end}}
-  </div>
-  {{end}}
-
   {{if .Alerts}}
   <!-- Health alerts -->
   <div id="alerts-panel">
@@ -108,6 +91,14 @@
     <div class="alert alert--{{.Severity}}">{{.Text}}</div>
     {{end}}
   </div>
+  {{end}}
+
+  {{if .AIInsight}}
+  <!-- AI Insight collapsed by default — keeps the snapshot above the fold -->
+  <details id="ai-insight-wrap">
+    <summary>{{T .Lang "ai_insight_title"}}</summary>
+    <div id="ai-insight">{{.AIInsight}}</div>
+  </details>
   {{end}}
 
   <!-- Section detail cards -->
@@ -174,39 +165,6 @@
     </div>
   </div>
 
-  {{if .Sleep}}
-  <div id="sleep-section">
-    <div class="section-header">
-      <div class="section-subtitle">{{T .Lang "sleep_section"}}</div>
-      <div class="section-sub2">{{T .Lang "sleep_subtitle"}}</div>
-    </div>
-    <div id="sleep-stats-grid">
-      <div class="sleep-stat">
-        <div class="sleep-stat-label">{{T .Lang "nights"}}</div>
-        <div class="sleep-stat-value">{{.Sleep.Nights}}</div>
-      </div>
-      <div class="sleep-stat">
-        <div class="sleep-stat-label">{{T .Lang "avg_total"}}</div>
-        <div class="sleep-stat-value">{{.Sleep.AvgTotal}}</div>
-      </div>
-      <div class="sleep-stat">
-        <div class="sleep-stat-label">{{T .Lang "avg_deep"}}</div>
-        <div class="sleep-stat-value">{{.Sleep.AvgDeep}}</div>
-      </div>
-      <div class="sleep-stat">
-        <div class="sleep-stat-label">{{T .Lang "avg_rem"}}</div>
-        <div class="sleep-stat-value">{{.Sleep.AvgREM}}</div>
-      </div>
-    </div>
-  </div>
-  {{end}}
-
-  <!-- Trend sparklines -->
-  <div id="trends-section">
-    <div class="section-title">{{T .Lang "your_trends"}}</div>
-    <div id="trend-charts"></div>
-  </div>
-
 </div>
 {{end}}
 
@@ -218,8 +176,8 @@ document.addEventListener('DOMContentLoaded', function() {
   if (corrData && corrData.length > 0 && typeof loadCorrelationChart === 'function') {
     loadCorrelationChart('corr-chart', corrData);
   }
-  if (typeof loadTrendCharts === 'function') {
-    loadTrendCharts('trend-charts');
+  if (typeof loadMetricCardSparklines === 'function') {
+    loadMetricCardSparklines();
   }
   if (typeof loadReadinessSparkline === 'function') {
     loadReadinessSparkline('readiness-sparkline');
