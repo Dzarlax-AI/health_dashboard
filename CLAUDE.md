@@ -95,9 +95,14 @@ ai_briefings       — per-day AI briefing cache: insight TEXT, created_at, sent
 - `idx_hm_day_desc` — `(SUBSTRING(hour, 1, 10) DESC)`
 
 **pgx specifics**:
-- Connection pool: MaxConns=20, MinConns=5
+- Connection pool **per tenant** (one pool per schema in multi-tenant mode):
+  - Multi-tenant: `MaxConns=8, MinConns=2`
+  - Single-tenant legacy: `MaxConns=12, MinConns=2`
+  - `MaxConnIdleTime=5min` so transient burst conns release promptly
+- Pool budget rationale: shared Postgres has `max_connections=50` and is used by authentik + other services. Each tenant's pool is sized so that `tenants × MaxConns + concurrency overhead` stays under ~30, leaving headroom for the rest of the stack. Bumping MaxConns has historically starved authentik (incidents 2026-05-05 morning + afternoon) — change with care.
 - SimpleProtocol mode (avoids prepared statement lock contention)
 - All SQL uses `SUBSTRING()` (not `substr()`), `$1/$2/$3` placeholders (not `?`)
+- Backfill parallelism (`backfillConcurrency`, `dailyConcurrency` in aggregates.go) is `2` to fit the per-tenant budget — raise only after raising MaxConns
 
 ## Aggregation Rules
 
