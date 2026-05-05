@@ -26,9 +26,9 @@
         <div class="section-title">{{T .Lang "admin_actions"}}</div>
         {{if .MultiUser}}
         <div class="admin-field-row" style="margin-bottom:12px">
-          <label class="admin-field-label" for="backfill-target">Target user</label>
-          <select class="admin-field-input" id="backfill-target">
-            <option value="">— current user —</option>
+          <label class="admin-field-label" for="backfill-target">{{T .Lang "admin_target_user"}}</label>
+          <select class="admin-field-input" id="backfill-target" data-current-label="{{T .Lang "admin_target_user_current"}}">
+            <option value="">{{T .Lang "admin_target_user_current"}}</option>
           </select>
         </div>
         {{end}}
@@ -260,7 +260,12 @@ function loadUsers() {
       var sel = $('backfill-target');
       if (sel) {
         var prev = sel.value;
-        sel.innerHTML = '<option value="">— current user —</option>';
+        var currentLabel = sel.getAttribute('data-current-label') || '';
+        sel.innerHTML = '';
+        var defaultOpt = document.createElement('option');
+        defaultOpt.value = '';
+        defaultOpt.textContent = currentLabel;
+        sel.appendChild(defaultOpt);
         users.forEach(function(u) {
           var opt = document.createElement('option');
           opt.value = u.schema_name;
