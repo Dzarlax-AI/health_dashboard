@@ -34,9 +34,10 @@ var sr = LangStrings{
 	"rhr_note_low":    "niže nego obično — dobro ste se odmorili",
 	"rhr_note_high":   "povišen — moguć stres ili loš oporavak",
 
-	"rec_summary_good": "Dobro ste se oporavili. Telo je spremno za aktivnost.",
-	"rec_summary_fair": "Oporavak je umjeren. Slušajte svoje telo danas.",
-	"rec_summary_low":  "Telu je potrebno više odmora. Ne preopterećujte se.",
+	"rec_summary_good":        "Dobro ste se oporavili. Telo je spremno za aktivnost.",
+	"rec_summary_fair":        "Oporavak je umjeren. Slušajte svoje telo danas.",
+	"rec_summary_low":         "Telu je potrebno više odmora. Ne preopterećujte se.",
+	"rec_summary_fair_stress": "HRV/RHR pojedinačno izgledaju u redu, ali drugi markeri ukazuju na nakupljeni stres — vidi naslov iznad.",
 
 	"sleep_dur_stable": "u skladu s vašim obrascem",
 	"sleep_dur_more":   "više nego obično — odlično",
@@ -104,4 +105,24 @@ var sr = LangStrings{
 	"alert_rr_anomaly":         "Respiratorni ritam značajno odstupa od vaše norme. To može biti rani znak bolesti ili stresa.",
 	"alert_wrist_temp_anomaly": "Temperatura zgloba značajno odstupa od vaše norme. Mogući uzroci: groznica, upala ili hormonske promjene.",
 	"alert_hrv_cv_high":        "Varijabilnost HRV-a za 7 dana je povišena (CV %.0f%%), što ukazuje na nekonzistentan oporavak. Provjerite kvalitetu sna i nivo stresa.",
+
+	// Headline (cross-metric signal of the day)
+	"headline_stress_title":         "Nakupljeni stres oporavka",
+	"headline_stress_detail":        "Više markera istovremeno ukazuje na opterećenje: %s. Preporučuje se smanjenje intenziteta.",
+	"headline_part_rhr":             "RHR %.0f bpm (+%.0f od norme)",
+	"headline_part_hrv":             "HRV %.0f ms (z=%.1f)",
+	"headline_part_sleep":           "san %.1fh",
+	"headline_part_awake":           "buđenja %.1fh",
+	"headline_sleep_debt_title":     "Manjak sna",
+	"headline_sleep_debt_detail":    "%.1fh je ispod ciljne 7h. Jedna kratka noć je ok; pratite da ne postane obrazac.",
+	"headline_stable_title":         "Sve je u normi",
+	"headline_stable_detail":        "Svi ključni pokazatelji blizu vaše lične baseline.",
+	"headline_dev_heart_rate_variability_above_baseline": "HRV iznad norme",
+	"headline_dev_heart_rate_variability_below_baseline": "HRV ispod norme",
+	"headline_dev_resting_heart_rate_above_baseline":     "Puls u mirovanju povišen",
+	"headline_dev_resting_heart_rate_below_baseline":     "Puls u mirovanju ispod norme",
+	"headline_dev_sleep_total_above_baseline":            "Spavali više nego obično",
+	"headline_dev_sleep_total_below_baseline":            "Spavali manje nego obično",
+	"headline_dev_generic":                               "Značajno odstupanje od baseline",
+	"headline_dev_detail":                                "%.1f%s — %+.1f%% od vašeg proseka %.1f%s.",
 }

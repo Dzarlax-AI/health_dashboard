@@ -98,10 +98,39 @@ type Alert struct {
 	Metric   string `json:"metric"`   // "respiratory_rate", "wrist_temperature", "hrv_cv"
 }
 
+// HeadlineSignal is the most notable cross-metric signal of the day.
+// Surfaced at the top of the briefing so a single insight doesn't get
+// buried among "all good" section cards. Built on the converging-evidence
+// principle (Meeusen 2013, Plews 2014, MDPI HF 2025): single-metric "good"
+// in the presence of multiple stress signals is clinically misleading.
+type HeadlineSignal struct {
+	// Semantic key for UI: "stress", "sleep_debt", "elevated_rhr",
+	// "depressed_hrv", "good_recovery", "stable" (or empty if no headline).
+	Key      string                 `json:"key"`
+	Severity string                 `json:"severity"` // "warning", "info", "positive"
+	Title    string                 `json:"title"`    // short one-liner
+	Detail   string                 `json:"detail"`   // 1-2 sentence explanation citing concrete numbers
+	Metrics  []HeadlineMetricDelta  `json:"metrics,omitempty"` // contributing deltas
+}
+
+// HeadlineMetricDelta carries the concrete number behind a headline:
+// metric name, today's value, baseline, and the deviation expressed
+// both as absolute and as z-score (preferred per Plews 2014, Dial 2025).
+type HeadlineMetricDelta struct {
+	Metric   string  `json:"metric"`
+	Value    float64 `json:"value"`
+	Baseline float64 `json:"baseline"`
+	DeltaAbs float64 `json:"delta_abs"` // value - baseline, in metric's native unit
+	DeltaPct float64 `json:"delta_pct"`
+	ZScore   float64 `json:"z_score"`
+	Unit     string  `json:"unit"`
+}
+
 type BriefingResponse struct {
 	Date           string             `json:"date"`
 	Greeting       string             `json:"greeting"`
 	Overall        string             `json:"overall"` // "good", "fair", "low"
+	Headline       *HeadlineSignal    `json:"headline,omitempty"`
 	Sections       []BriefingSection  `json:"sections"`
 	Highlights     []BriefingDetail   `json:"highlights"`
 	ReadinessScore int                `json:"readiness_score"`      // 7-day sliding window

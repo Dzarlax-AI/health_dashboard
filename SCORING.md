@@ -3,6 +3,8 @@
 All calculations run server-side in `internal/health/scoring.go → ComputeBriefing()`.
 Data is fetched by `internal/storage/briefing.go → GetHealthBriefing()`.
 
+> **Why open-source the scoring?** A 2025 review of consumer wearable readiness scores found that proprietary algorithms (Oura, Whoop, Garmin) routinely differ by 20+ points on the same night's data — readiness/recovery is computed in opaque black boxes that lack independent validation [[29]](#ref-29). Every threshold here is sourced from published research and documented below; users (and Claude) can inspect, dispute, and improve it.
+
 ---
 
 ## Data window
@@ -289,6 +291,86 @@ Max possible: 6 points.
 
 ---
 
+## Headline signal (cross-metric)
+
+The briefing surfaces **one** prominent signal at the top of the response in
+`response.headline`. Single-metric "all good" verdicts in the presence of
+multiple stress signals are a known clinical failure mode (Meeusen 2013
+[[16]](#ref-16), Plews 2014 [[18]](#ref-18)) — the headline forces the
+multi-signal convergence to be visible.
+
+Computed in `internal/health/headline.go::computeHeadline`. Priority order:
+
+### Priority 1 — Stress (multi-signal converging evidence)
+
+Fires when **≥ 2** of the following stress markers are simultaneously true:
+
+| Signal | Threshold | Evidence |
+|---|---|---|
+| RHR elevation | today − baseline ≥ **+5 bpm** | Wearable HF decompensation 2025 [[30]](#ref-30): nocturnal RHR rise > 5 bpm doubled CV hospitalisation/mortality risk. Below this is dominated by device noise (Dial 2025 [[31]](#ref-31)). |
+| Sleep debt | today < **6.5 h** | Functional debt zone — below AASM ≥ 7 h [[8]](#ref-8) but above U-curve worst-case (< 5 h) [[20]](#ref-20). |
+| HRV depression | z-score ≤ **−1.0** vs personal baseline | 1 SD below baseline; matches the dynamic-threshold approach already used in `scoreRecovery` (Beattie 2024 [[6]](#ref-6), Plews 2014 [[18]](#ref-18)). |
+| Sleep fragmentation | awake_today > **0.5 h** | Same threshold used by `scoreSleep` for the consolidated-sleep bonus. |
+
+> **Why ≥ 2 signals?** Single-marker triggers have too many benign explanations
+> (alcohol, late workout, stressful day at work). Two or more *simultaneous*
+> markers is the recognised early-overreaching / early-illness pattern
+> (Mishra 2024 [[21]](#ref-21), persistent COVID changes 2025 [[32]](#ref-32)).
+
+When a stress headline fires, the **coherence pass** (see below) downgrades a
+"good" Recovery section to "fair" with an explanatory summary, and caps
+Readiness label at "Fair" (max 65) regardless of the numeric score from the
+weighted formula.
+
+### Priority 2 — Sleep debt (single signal)
+
+Fires when sleep < 6.5 h but no other stress markers — purely informational
+("watch that this doesn't become a pattern"). Coherence pass caps Readiness
+at 65: per Walker 2017 and Watson 2015 [[8]](#ref-8) sleep debt cannot be
+"erased" by one good HRV/RHR night, so an Optimal verdict is unwarranted.
+
+### Priority 3 — Largest single |z-score| deviation
+
+When nothing rises to "stress" or "sleep_debt", the headline shows the metric
+that deviates most from personal baseline. Mapping:
+
+| |z-score| range | Severity |
+|---|---|
+| ≥ 1.5 | warning |
+| 0.5 – 1.5 | info |
+| < 0.5 | "stable" headline (positive framing) |
+
+Direction sets `severity = positive` for HRV↑ / RHR↓ / sleep↑.
+
+### Headline payload
+
+Every headline carries `metrics: HeadlineMetricDelta[]` with concrete numbers
+(today's value, baseline, absolute Δ, percent Δ, z-score, unit) so the UI and
+AI briefing can render specific phrases like *"RHR 68 bpm, +6 vs your norm 62"*
+instead of *"in normal range"* (Altini 2021 [[4]](#ref-4): personal-baseline
+deltas are the recommended display).
+
+---
+
+## Coherence pass
+
+After all sections + readiness are computed, `applyCoherencePass` reconciles
+the headline with section verdicts so the briefing is **internally consistent**:
+
+| Headline | Action |
+|---|---|
+| `stress` | Recovery `good` → `fair` with `rec_summary_fair_stress`. Readiness label capped at "Fair" (score ≤ 65). |
+| `sleep_debt` | Readiness label capped at "Fair" (score ≤ 65). |
+| `single_deviation` / `stable` | No changes. |
+
+> **Why cap, not zero out?** A capped score retains useful gradation between
+> "borderline" and "very bad" while preventing the dashboard from declaring
+> Optimal during converging stress. This is the explicit recommendation of
+> Plews 2014 [[18]](#ref-18) for HRV-guided training decisions: when multi-marker
+> signals diverge, defer to the conservative interpretation.
+
+---
+
 ## Overall status
 
 Aggregates the statuses of all available sections.
@@ -514,3 +596,15 @@ The CV of the 7-day rolling average is a strong indicator of maladaptation to tr
 <a id="ref-27"></a>[27] Choe S et al. (2025). Apple Watch Accuracy in Monitoring Health Metrics: A Systematic Review and Meta-Analysis. *Physiol Meas*, 46(4). — Comprehensive accuracy assessment across metrics. [PubMed](https://pubmed.ncbi.nlm.nih.gov/40199339/)
 
 <a id="ref-28"></a>[28] Zhang D et al. (2017). Resting Heart Rate and All-Cause, Cardiovascular, and Cancer Mortality: A Systematic Review and Dose–Response Meta-Analysis. *Nutr Metab Cardiovasc Dis*, 27(6):504–517. — 87 studies: each 10 bpm RHR increase → 17% higher all-cause mortality. [PubMed](https://pubmed.ncbi.nlm.nih.gov/28552551/)
+
+<a id="ref-29"></a>[29] *Apple Watch vs WHOOP vs Oura vs Garmin: What the Science Actually Says* (2025 review of consumer wearable readiness scores). — Proprietary readiness/recovery algorithms differ by 20+ points on identical input data; lack independent validation across devices. Underpins this codebase's choice to keep every threshold open and research-cited. [Medium](https://medium.com/@CuriousCatalyst/apple-watch-vs-whoop-vs-oura-vs-garmin-what-the-science-actually-says-76055e9de930)
+
+<a id="ref-30"></a>[30] *Non-Invasive Wearable Technology to Predict Heart Failure Decompensation* (2025), MDPI *J Clin Med*, 14(20):7423. — ZOLL LifeVest cohort: nocturnal RHR rise > 5 bpm more than doubled CV hospitalisation and mortality risk. Source for the +5 bpm absolute threshold in the cross-metric stress flag. [DOI](https://doi.org/10.3390/jcm14207423)
+
+<a id="ref-31"></a>[31] Dial MB et al. (2025). Validation of nocturnal resting heart rate and heart rate variability in consumer wearables. *Physiological Reports*, e70527. — ECG-validation across Garmin Fenix 6, Oura Gen 3 / 4, Polar Grit X Pro, Whoop 4.0. Oura highest accuracy for both RHR and HRV; Whoop moderate; Polar/Garmin poor. Establishes the device noise floor that motivates absolute (not just %) RHR thresholds. [PMC12367097](https://pmc.ncbi.nlm.nih.gov/articles/PMC12367097/)
+
+<a id="ref-32"></a>[32] *Automatic detection of persistent physiological changes after COVID infection via wearable devices* (2025). *Scientific Reports* (Nature). — Multi-signal pattern (elevated nightly HR + reduced HRV) detects long-COVID at the population level; reinforces the converging-evidence rule used in the headline. [DOI](https://doi.org/10.1038/s41598-025-15208-0)
+
+<a id="ref-33"></a>[33] *Sleep Regularity and Mortality: A Prospective Analysis in the UK Biobank* (eLife 2025). — n ≈ 88 000 adults; SRI=41 (5th percentile) → HR 1.53 vs median; SRI=75 (95th percentile) → HR 0.90. Provides the percentile-based tier thresholds for the planned SRI implementation (Этап 2). [eLife 88359](https://elifesciences.org/articles/88359)
+
+<a id="ref-34"></a>[34] *Comparison of Sleep Regularity Index scores calculated by open-source packages and implications for outcomes research: rationale and design of the RIRI statement* (Sleep journal 2026, zsaf299). — Two widely used SRI implementations diverge enough on the same data to flip clinical conclusions; RIRI is a 14-item reporting standard. Implementing SRI here will pin to the Phillips & Czeisler 2017 original formula and document accordingly. [Sleep journal](https://academic.oup.com/sleep/article-abstract/49/4/zsaf299/8265987)

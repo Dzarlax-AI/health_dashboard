@@ -27,25 +27,35 @@ func ComputeBriefing(d RawMetrics, lang string) *BriefingResponse {
 	overall := overallStatus(sections)
 	highlights := buildHighlights(d, ls)
 	metricCards := buildMetricCards(d, ls)
+	headline := computeHeadline(d, ls)
 
-	return &BriefingResponse{
-		Date:           d.LastDate,
-		Greeting:       "Here's your health summary",
-		Overall:        overall,
-		Sections:       sections,
-		Highlights:     highlights,
+	resp := &BriefingResponse{
+		Date:                d.LastDate,
+		Greeting:            "Here's your health summary",
+		Overall:             overall,
+		Headline:            headline,
+		Sections:            sections,
+		Highlights:          highlights,
 		ReadinessScore:      readinessScore,
 		ReadinessLabel:      label,
 		ReadinessTip:        tip,
 		RecoveryPct:         readinessScore,
 		ReadinessToday:      readinessScore,
 		ReadinessTodayLabel: label,
-		Correlation:    buildCorrelation(d),
-		Insights:       computeInsights(d, activitySec, readinessScore, ls),
-		Alerts:         computeAlerts(d, ls),
-		Sleep:          computeSleepAnalysis(d),
-		MetricCards:    metricCards,
+		Correlation:         buildCorrelation(d),
+		Insights:            computeInsights(d, activitySec, readinessScore, ls),
+		Alerts:              computeAlerts(d, ls),
+		Sleep:               computeSleepAnalysis(d),
+		MetricCards:         metricCards,
 	}
+
+	// Coherence pass: when a stress headline fires, downgrade conflicting
+	// "good" verdicts so the briefing doesn't say "stress" up top and
+	// "all good" in section cards (converging-evidence rule, Meeusen 2013).
+	applyCoherencePass(resp, ls)
+	resp.Overall = overallStatus(resp.Sections) // re-derive after coherence
+
+	return resp
 }
 
 func computeReadinessScore(d RawMetrics, ls LangStrings) (score int, label, tip string) {
