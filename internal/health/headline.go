@@ -75,21 +75,27 @@ func detectStressSignals(d RawMetrics) (bool, []HeadlineMetricDelta) {
 		}
 	}
 
-	// Sleep: today < 6.5h (functional debt zone)
+	// Sleep: today < 6.5h (functional debt zone, absolute threshold per Watson 2015).
+	// The signal fires from the absolute value alone; baseline-relative fields
+	// are only populated when there's enough history to compute them, so we
+	// don't ship a delta with a fake `baseline=0`.
 	if len(d.Sleep) > 0 && d.Sleep[0] > 0 && d.Sleep[0] < sleepDebtThresholdH {
-		base := 0.0
-		if len(d.Sleep) >= minBaseline+2 {
-			base = avg(safeSlice(d.Sleep, 7, len(d.Sleep)))
+		delta := HeadlineMetricDelta{
+			Metric: "sleep_total",
+			Value:  d.Sleep[0],
+			Unit:   "h",
 		}
-		signals = append(signals, HeadlineMetricDelta{
-			Metric:   "sleep_total",
-			Value:    d.Sleep[0],
-			Baseline: base,
-			DeltaAbs: d.Sleep[0] - base,
-			DeltaPct: pctChange(d.Sleep[0], base),
-			ZScore:   zScoreSafe(d.Sleep, true),
-			Unit:     "h",
-		})
+		if len(d.Sleep) >= minBaseline+2 {
+			base := avg(safeSlice(d.Sleep, 7, len(d.Sleep)))
+			if base > 0 {
+				sd := stddev(safeSlice(d.Sleep, 7, len(d.Sleep)))
+				delta.Baseline = base
+				delta.DeltaAbs = d.Sleep[0] - base
+				delta.DeltaPct = pctChange(d.Sleep[0], base)
+				delta.ZScore = zScore(d.Sleep[0], base, sd)
+			}
+		}
+		signals = append(signals, delta)
 	}
 
 	// HRV: z-score ≤ -1 (1 SD below personal baseline)
@@ -101,14 +107,14 @@ func detectStressSignals(d RawMetrics) (bool, []HeadlineMetricDelta) {
 		}
 	}
 
-	// Awake: > 0.5h fragmented sleep
+	// Awake: > 0.5h fragmented sleep. awakeFragmentedH here is a clinical
+	// threshold, not a personal baseline — we keep Baseline at zero rather
+	// than misrepresent the threshold as the user's "norm".
 	if len(d.Awake) > 0 && d.Awake[0] > awakeFragmentedH {
 		signals = append(signals, HeadlineMetricDelta{
-			Metric:   "sleep_awake",
-			Value:    d.Awake[0],
-			Baseline: awakeFragmentedH,
-			DeltaAbs: d.Awake[0] - awakeFragmentedH,
-			Unit:     "h",
+			Metric: "sleep_awake",
+			Value:  d.Awake[0],
+			Unit:   "h",
 		})
 	}
 
@@ -139,30 +145,31 @@ func detectMaxDeviation(d RawMetrics, ls LangStrings) *HeadlineSignal {
 		name string
 		unit string
 		vals []float64
-		// flipSign: when lower-is-better (RHR), invert z so positive Δ = bad
-		flipSign bool
 	}{
-		{"heart_rate_variability", "ms", d.HRV, false},
-		{"resting_heart_rate", "bpm", d.RHR, true},
-		{"sleep_total", "h", d.Sleep, false},
+		{"heart_rate_variability", "ms", d.HRV},
+		{"resting_heart_rate", "bpm", d.RHR},
+		{"sleep_total", "h", d.Sleep},
 	}
 
 	var best HeadlineMetricDelta
 	bestKey := ""
 	bestAbsZ := 0.0
+	evaluated := false // becomes true the moment any candidate produces a valid delta
 	for _, c := range candidates {
 		delta, ok := metricDelta(c.vals, c.name, c.unit)
 		if !ok {
 			continue
 		}
-		signed := delta.ZScore
-		if c.flipSign {
-			signed = -signed
-		}
-		if math.Abs(signed) > bestAbsZ {
-			bestAbsZ = math.Abs(signed)
+		evaluated = true
+		// Pick the metric with the largest deviation from baseline regardless
+		// of direction. The "good vs bad" classification (severity = positive
+		// vs warning) happens below using per-metric semantics — here we just
+		// rank by magnitude of |z-score|.
+		absZ := math.Abs(delta.ZScore)
+		if absZ > bestAbsZ {
+			bestAbsZ = absZ
 			best = delta
-			if signed > 0 {
+			if delta.ZScore > 0 {
 				bestKey = "above_baseline"
 			} else {
 				bestKey = "below_baseline"
@@ -170,6 +177,11 @@ func detectMaxDeviation(d RawMetrics, ls LangStrings) *HeadlineSignal {
 		}
 	}
 
+	if !evaluated {
+		// No candidate had enough history to compute a baseline at all —
+		// don't fabricate a "stable" verdict from the absence of evidence.
+		return nil
+	}
 	if bestAbsZ < 0.5 {
 		// Nothing meaningfully deviates → "stable" headline (positive framing).
 		return &HeadlineSignal{
@@ -223,17 +235,6 @@ func metricDelta(vals []float64, metric, unit string) (HeadlineMetricDelta, bool
 		ZScore:   z,
 		Unit:     unit,
 	}, true
-}
-
-// zScoreSafe is a convenience wrapper for one-shot z-score against the
-// 7d/day8+ baseline split, returning 0 when data is insufficient.
-func zScoreSafe(vals []float64, todayIs0 bool) float64 {
-	if len(vals) < minBaseline+2 || vals[0] <= 0 {
-		return 0
-	}
-	base := avg(safeSlice(vals, 7, len(vals)))
-	sd := stddev(safeSlice(vals, 7, len(vals)))
-	return zScore(vals[0], base, sd)
 }
 
 func formatStressDetail(signals []HeadlineMetricDelta, ls LangStrings) string {
