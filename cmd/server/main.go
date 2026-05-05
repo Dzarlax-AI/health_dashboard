@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -138,13 +139,13 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	onNewData := func(db *storage.DB) {
+	onNewData := func(db *storage.DB, dates []string) {
 		// The tenant schema is encoded in the DB pool's search_path.
 		// We rely on the manager to find the right backfill scheduler.
 		for schema, tdb := range mgr.AllDBs() {
 			if tdb == db {
-				if fn := mgr.BackfillFor(schema); fn != nil {
-					fn(false)
+				if fn := mgr.BackfillDatesFor(schema); fn != nil {
+					fn(dates)
 				}
 				break
 			}
@@ -201,7 +202,9 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 
 	var morningLock int32
 	maybeFireMorningReport := makeMorningTrigger(db, &morningLock, aiDefaults, notifyDefaults)
-	onNewData := func(_ *storage.DB) {
+	backfillDatesFn := makeBackfillDatesFn(db, schema)
+	onNewData := func(_ *storage.DB, dates []string) {
+		backfillDatesFn(dates)
 		go maybeFireMorningReport()
 	}
 
@@ -210,6 +213,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 
 	mgr.RegisterCallbacks(schema, tenants.TenantCallbacks{
 		Backfill:       backfillFn,
+		BackfillDates:  backfillDatesFn,
 		TestNotify:     testNotifyFn,
 		NotifyDefaults: notifyDefaults,
 		AIDefaults:     aiDefaults,
@@ -257,11 +261,13 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, db *storage.DB, sche
 	maybeFireMorningReport := makeMorningTrigger(db, &morningLock, aiDefaults, notifyDefaults)
 
 	backfillFn := makeBackfillFn(db)
+	backfillDatesFn := makeBackfillDatesFn(db, schema)
 	testNotifyFn := makeTestNotifyFn(db, notifyDefaults, aiDefaults)
 
 	mgr.RegisterCallbacks(schema, tenants.TenantCallbacks{
-		Backfill:   backfillFn,
-		TestNotify: testNotifyFn,
+		Backfill:       backfillFn,
+		BackfillDates:  backfillDatesFn,
+		TestNotify:     testNotifyFn,
 		NotifyDefaults: notifyDefaults,
 		AIDefaults:     aiDefaults,
 	})
@@ -300,6 +306,57 @@ func makeBackfillFn(db *storage.DB) func(bool) {
 			db.BackfillScores(true)
 			log.Println("force backfill: done")
 		}()
+	}
+}
+
+// backfillDatesDebounce is the window over which incoming POST dates are
+// accumulated before the safety-net rebuild fires. Long enough to absorb a
+// full chunked iOS sync (typically tens of seconds), short enough that a
+// failed inline UpsertRecentCache is repaired quickly.
+const backfillDatesDebounce = 60 * time.Second
+
+// makeBackfillDatesFn returns a debounced trigger that accumulates the union
+// of dates reported by POST /health bursts and rebuilds caches for exactly
+// that set after the burst settles. Replaces the old "last 7 days" safety net
+// so backfills cover the actual dates that came in, not a fixed window.
+func makeBackfillDatesFn(db *storage.DB, schema string) func([]string) {
+	var (
+		mu      sync.Mutex
+		pending = make(map[string]struct{})
+		timer   *time.Timer
+	)
+	flush := func() {
+		mu.Lock()
+		dates := make([]string, 0, len(pending))
+		for d := range pending {
+			dates = append(dates, d)
+		}
+		pending = make(map[string]struct{})
+		timer = nil
+		mu.Unlock()
+		if len(dates) == 0 {
+			return
+		}
+		log.Printf("[%s] backfill (date-aware): rebuilding %d date(s)", schema, len(dates))
+		db.RunIncrementalBackfillForDates(dates)
+		log.Printf("[%s] backfill (date-aware): done", schema)
+	}
+	return func(dates []string) {
+		if len(dates) == 0 {
+			return
+		}
+		mu.Lock()
+		for _, d := range dates {
+			if len(d) >= 10 {
+				pending[d[:10]] = struct{}{}
+			}
+		}
+		if timer == nil {
+			timer = time.AfterFunc(backfillDatesDebounce, flush)
+		} else {
+			timer.Reset(backfillDatesDebounce)
+		}
+		mu.Unlock()
 	}
 }
 

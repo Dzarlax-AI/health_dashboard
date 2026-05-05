@@ -19,6 +19,18 @@ func (s *DB) RunIncrementalBackfill() {
 	}
 }
 
+// RunIncrementalBackfillForDates rebuilds caches for an explicit date set
+// (YYYY-MM-DD) instead of the rolling "last 7 days" window. Used as the
+// debounced safety net after POST /health bursts — the dates are exactly
+// those reported by the iOS payloads, so nothing older silently slips
+// through the cracks.
+func (s *DB) RunIncrementalBackfillForDates(dates []string) {
+	if len(dates) == 0 {
+		return
+	}
+	s.UpsertRecentCache(dates, true)
+}
+
 // RecomputeReadinessSince re-runs the sliding-window readiness computation for
 // every output day from `fromDate` (YYYY-MM-DD) to the latest day with data.
 // Cheap when fromDate is recent; equivalent to a full BackfillScores when it

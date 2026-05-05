@@ -12,6 +12,7 @@ import (
 // TenantCallbacks holds per-tenant lifecycle functions registered by main.
 type TenantCallbacks struct {
 	Backfill       func(force bool)
+	BackfillDates  func(dates []string)
 	TestNotify     func(kind string) error
 	NotifyDefaults storage.NotifyConfig
 	AIDefaults     storage.AIConfig
@@ -194,6 +195,19 @@ func (m *Manager) BackfillFor(schema string) func(bool) {
 	defer m.mu.RUnlock()
 	if e, ok := m.tenants[schema]; ok && e.callbacks != nil {
 		return e.callbacks.Backfill
+	}
+	return nil
+}
+
+// BackfillDatesFor returns the date-aware backfill trigger for a schema, or nil.
+// Caller passes the explicit set of YYYY-MM-DD dates that need to be rebuilt;
+// the implementation typically debounces and runs UpsertRecentCache over the
+// union after a short window.
+func (m *Manager) BackfillDatesFor(schema string) func([]string) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if e, ok := m.tenants[schema]; ok && e.callbacks != nil {
+		return e.callbacks.BackfillDates
 	}
 	return nil
 }
