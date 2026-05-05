@@ -128,9 +128,12 @@ func buildMetricCards(d RawMetrics, ls LangStrings) []MetricCard {
 			continue
 		}
 		// Today's value (index 0). Two baselines: 7-day acute and 30-day chronic.
+		// Both baselines exclude today so the comparison is "today vs prior" —
+		// matches the `chronicAvg` convention used by Energy Bank's strain
+		// (Gabbett 2016 ACWR: today / prior chronic mean).
 		today := sp.vals[0]
-		baseline7 := avg(safeSlice(sp.vals, 0, 7))
-		baseline30 := avg(sp.vals)
+		baseline7 := avg(safeSlice(sp.vals, 1, 8))
+		baseline30 := avg(safeSlice(sp.vals, 1, len(sp.vals)))
 
 		invertBetter := sp.metric == "resting_heart_rate"
 		pct7, label7, status7 := formatTrend(today, baseline7, invertBetter, ls["trend_vs_7d"])

@@ -389,21 +389,23 @@ plain-language action ("push_hard", "moderate", "active_recovery", "rest").
    confusing than helpful.
 
 2. **Strain** (0–100) — ACWR-flavoured load (Gabbett 2016 [[36]](#ref-36)):
-   ```
+   ```text
    strain = clamp01( 0.5 * (steps_today / steps_chronic_28d)
                    + 0.5 * (active_energy_today / kcal_chronic_28d) ) * 100
    ```
-   Today's partial sums come from `hourly_metrics` (source-deduplicated
-   MAX-per-hour); chronic 28d denominator from `daily_scores` excluding today
-   (so an active morning doesn't bias its own baseline). Ratio 0.8–1.3 is the
-   classic "sweet spot" Gabbett ties to lower injury risk; >1.5 is the spike
-   zone. The codebase deliberately stops short of an injury-prediction claim —
-   ACWR is a *vocabulary* for verdict gating, not a prediction model
+   Today's partial sums come from `hourly_metrics` using the same
+   preferred-source pick (Apple Watch > iPhone > best other) as
+   `buildDailyMetricCol`, so the intraday numerator stays consistent with the
+   chronic denominator computed over `daily_scores`. Chronic 28d excludes
+   today (so an active morning doesn't bias its own baseline). Ratio 0.8–1.3
+   is the classic "sweet spot" Gabbett ties to lower injury risk; >1.5 is the
+   spike zone. The codebase deliberately stops short of an injury-prediction
+   claim — ACWR is a *vocabulary* for verdict gating, not a prediction model
    (Impellizzeri 2023 critique).
 
 3. **Stress** (0–100) — one-sided z-scores of RHR (positive only) and HRV
    (negative only) against personal baseline:
-   ```
+   ```text
    rhr_z   = max(0,  zScore(rhr_today, baseline, sd))
    hrv_z   = max(0, -zScore(hrv_today, baseline, sd))
    stress  = clamp01( (rhr_z + hrv_z) / 2 ) * 100
@@ -414,7 +416,7 @@ plain-language action ("push_hard", "moderate", "active_recovery", "rest").
    (Beattie 2024 [[6]](#ref-6), Dial 2025 [[31]](#ref-31)).
 
 4. **Drain** with allostatic-load multiplier:
-   ```
+   ```text
    drain   = strain * (1 + 0.5 * stress/100)        # up to 1.5x at stress=100
    current = max(0, capacity - drain)
    ```

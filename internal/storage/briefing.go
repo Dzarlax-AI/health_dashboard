@@ -230,20 +230,33 @@ func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
 }
 
 // intradayPartialSum returns today's accumulated total for a SUM metric
-// (steps, active_energy) read from hourly_metrics, source-deduplicated by
-// taking MAX-per-hour across devices. Returns 0 when no data is present yet
-// (e.g. early morning before any sync from a wearable).
+// (steps, active_energy) read from hourly_metrics, picking the
+// PREFERRED source (Apple Watch > iPhone > best other) — matches the
+// dedup logic used by buildDailyMetricCol so the intraday numerator
+// stays consistent with the chronic denominator computed via daily_scores.
+// Returns 0 when no data is present yet.
 func (s *DB) intradayPartialSum(date, metric string) float64 {
 	ctx, cancel := queryCtx()
 	defer cancel()
 	var v *float64
 	err := s.pool.QueryRow(ctx, `
-		SELECT SUM(hourly_max) FROM (
-			SELECT hour, MAX(avg_val) AS hourly_max
+		WITH source_totals AS (
+			SELECT source, SUM(avg_val) AS source_total
 			FROM hourly_metrics
-			WHERE metric_name = $1 AND SUBSTRING(hour, 1, 10) = $2 AND avg_val > 0
-			GROUP BY hour
-		) sub`, metric, date).Scan(&v)
+			WHERE metric_name = $1
+			  AND SUBSTRING(hour, 1, 10) = $2
+			  AND avg_val > 0
+			GROUP BY source
+		)
+		SELECT COALESCE(
+			(SELECT source_total FROM source_totals
+			  WHERE source LIKE '%Ultra%' OR source LIKE '%Apple Watch%'
+			  ORDER BY source_total DESC LIMIT 1),
+			(SELECT source_total FROM source_totals
+			  WHERE source LIKE '%iPhone%'
+			  ORDER BY source_total DESC LIMIT 1),
+			(SELECT MAX(source_total) FROM source_totals)
+		)`, metric, date).Scan(&v)
 	if err != nil || v == nil {
 		return 0
 	}
