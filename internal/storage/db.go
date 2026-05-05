@@ -248,7 +248,7 @@ func (s *DB) InsertPoints(recordID int64, points []MetricPoint) error {
 	}
 	defer tx.Rollback(ctx)
 
-	// Two guards on the sleep_% UPDATE branch — both protect the cached
+	// Three guards on the sleep_% UPDATE branch — all protect the cached
 	// per-night aggregate from being clobbered by garbage records that share
 	// the same (metric_name, date, source) key:
 	//
@@ -262,6 +262,15 @@ func (s *DB) InsertPoints(recordID int64, points []MetricPoint) error {
 	//      the prior evening and falls outside the chunk). The client now
 	//      widens the sleep predicate, but as a belt-and-suspenders we keep
 	//      the existing positive value if the incoming one is zero.
+	//
+	//   3. Significant deflation (≥50% drop) on an established record:
+	//      symmetric to (1). Concrete miss observed during a 30-day chunked
+	//      re-sync — chunk_K's 12h-overlap window saw the FULL ~8h night for
+	//      wake-up date K, then chunk_K+1's window saw only a 1h afternoon
+	//      nap whose wake-up also landed on date K, and the latter UPSERT
+	//      replaced 8.14h with 1.08h. Real night-to-night swings exceed 50%
+	//      vanishingly rarely — when they do happen the next sync run will
+	//      converge naturally.
 	const upsertSQL = `INSERT INTO metric_points
 		(health_record_id, metric_name, units, date, qty, source)
 		VALUES ($1, $2, $3, $4, $5, $6)
@@ -275,6 +284,11 @@ func (s *DB) InsertPoints(recordID int64, points []MetricPoint) error {
 				WHEN metric_points.metric_name LIKE 'sleep_%'
 				  AND metric_points.qty > 0
 				  AND excluded.qty = 0
+				THEN metric_points.qty
+				WHEN metric_points.metric_name LIKE 'sleep_%'
+				  AND metric_points.qty > 1.0
+				  AND excluded.qty > 0
+				  AND excluded.qty < metric_points.qty * 0.5
 				THEN metric_points.qty
 				ELSE excluded.qty
 			END,
