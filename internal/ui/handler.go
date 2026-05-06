@@ -781,9 +781,12 @@ func (h *Handler) sectionAPI(w http.ResponseWriter, r *http.Request) {
 	data := h.buildSectionPage(key, lang, h.tenantDB(r))
 
 	out := sectionAPIResponse{
-		Key:     data.SectionKey,
-		Title:   data.SectionTitle,
-		Summary: data.Summary,
+		Key:      data.SectionKey,
+		Title:    data.SectionTitle,
+		Summary:  data.Summary,
+		Details:  []sectionAPIDetail{},  // never nil — clients prefer [] over null
+		Charts:   []sectionAPIChart{},
+		Explains: []sectionAPIExplain{},
 	}
 	for _, d := range data.Details {
 		out.Details = append(out.Details, sectionAPIDetail{
