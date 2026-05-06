@@ -813,6 +813,7 @@ func (h *Handler) healthBriefing(w http.ResponseWriter, r *http.Request) {
 		lang = "en"
 	}
 	db := h.tenantDB(r)
+	schema := h.tenantSchema(r)
 	resp, err := db.GetHealthBriefing(lang)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -824,6 +825,29 @@ func (h *Handler) healthBriefing(w http.ResponseWriter, r *http.Request) {
 	if resp != nil {
 		today := time.Now().Format("2006-01-02")
 		resp.AIInsight = db.GetAIBriefing(today, lang)
+		// Lazy regen: if cache is empty and AI is now configured (e.g. admin
+		// just populated global_settings mid-day), generate inline so the
+		// user sees today's insight without waiting for tomorrow's morning
+		// trigger. Synchronous — keeps logic simple at the cost of a few
+		// seconds on the cold-cache request; iOS already shows a spinner.
+		if resp.AIInsight == "" {
+			aiDefaults := h.mgr.AIDefaultsFor(schema)
+			aiCfg := db.GetAIConfig(aiDefaults)
+			if aiCfg.Enabled() {
+				if raw := db.GetRawMetrics(); raw != nil {
+					if rawJSON, jerr := json.Marshal(raw); jerr == nil {
+						insight, payload, gerr := ai.GenerateMorningBriefing(
+							aiCfg.APIKey, aiCfg.Model, aiCfg.MaxOutputTokens,
+							rawJSON, lang,
+						)
+						if gerr == nil && insight != "" {
+							_ = db.SaveAIBriefing(today, insight, payload, lang)
+							resp.AIInsight = insight
+						}
+					}
+				}
+			}
+		}
 	}
 	jsonResponse(w, resp)
 }
