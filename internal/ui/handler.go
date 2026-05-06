@@ -930,11 +930,21 @@ func (h *Handler) userSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 // adminAISettings handles GET/POST /api/admin/settings — Gemini config, admin only.
+//
+// Gemini config is now installation-wide: writes go to
+// `health_registry.global_settings`, reads layer that on top of env
+// defaults (see Manager.AIDefaultsFor). Per-tenant overrides in
+// `<schema>.settings` still win, but the admin UI no longer creates new
+// per-tenant entries — one save reaches every tenant whose own config is
+// blank, including non-admin users like Maria.
 func (h *Handler) adminAISettings(w http.ResponseWriter, r *http.Request) {
-	db := h.tenantDB(r)
 	schema := h.tenantSchema(r)
 
 	if r.Method == http.MethodPost {
+		if h.reg == nil {
+			http.Error(w, "registry unavailable", http.StatusInternalServerError)
+			return
+		}
 		var body map[string]string
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "invalid JSON", http.StatusBadRequest)
@@ -949,7 +959,7 @@ func (h *Handler) adminAISettings(w http.ResponseWriter, r *http.Request) {
 				clean[k] = v
 			}
 		}
-		if err := db.SaveSettings(clean); err != nil {
+		if err := h.reg.SaveGlobalSettings(r.Context(), clean); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -957,8 +967,11 @@ func (h *Handler) adminAISettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// AIDefaultsFor already overlays global on env, and GetAIConfig overlays
+	// the admin's own tenant on that — so the form keeps showing the
+	// effective values the admin currently sees.
 	aiDefaults := h.mgr.AIDefaultsFor(schema)
-	aiCfg := db.GetAIConfig(aiDefaults)
+	aiCfg := h.tenantDB(r).GetAIConfig(aiDefaults)
 	jsonResponse(w, map[string]any{
 		"gemini_api_key":    aiCfg.APIKey,
 		"gemini_model":      aiCfg.Model,
