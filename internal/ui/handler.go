@@ -1015,8 +1015,11 @@ func (h *Handler) adminAISettings(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) adminAIModels(w http.ResponseWriter, r *http.Request) {
 	schema := h.tenantSchema(r)
-	aiDefaults := h.mgr.AIDefaultsFor(r.Context(), schema)
-	aiCfg := h.tenantDB(r).GetAIConfig(aiDefaults)
+	// Use the installation-wide config (global + env), same source as
+	// /api/admin/settings GET. Layering the admin's tenant override here
+	// would make model discovery use a different API key than what the
+	// admin just saved on the settings page.
+	aiCfg := h.mgr.AIDefaultsFor(r.Context(), schema)
 	if !aiCfg.Enabled() {
 		http.Error(w, "Gemini API key not configured", http.StatusBadRequest)
 		return
