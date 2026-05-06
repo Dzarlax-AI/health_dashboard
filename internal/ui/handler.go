@@ -99,6 +99,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/metrics/data", h.guard(h.metricData))
 	mux.HandleFunc("/api/dashboard", h.guard(h.dashboard))
 	mux.HandleFunc("/api/health-briefing", h.guard(h.healthBriefing))
+	mux.HandleFunc("GET /api/section/{key}", h.guard(h.sectionAPI))
 	mux.HandleFunc("/api/readiness-history", h.guard(h.readinessHistory))
 	mux.HandleFunc("/api/settings", h.guard(h.userSettings))
 	mux.HandleFunc("/api/settings/test-notify", h.guard(h.adminTestNotify))
@@ -730,6 +731,77 @@ func (h *Handler) readinessHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, map[string]any{"points": pts})
+}
+
+// sectionAPIResponse is the JSON-friendly subset of SectionPageData. It
+// drops template-only fields (HTML icons, BasePage chrome) so native
+// clients consume only what they render.
+type sectionAPIResponse struct {
+	Key      string                 `json:"key"`
+	Title    string                 `json:"title"`
+	Summary  string                 `json:"summary"`
+	Details  []sectionAPIDetail     `json:"details"`
+	Charts   []sectionAPIChart      `json:"charts"`
+	Explains []sectionAPIExplain    `json:"explains"`
+}
+
+type sectionAPIDetail struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
+	Trend string `json:"trend"`
+	Note  string `json:"note,omitempty"`
+}
+
+type sectionAPIChart struct {
+	Metric  string `json:"metric,omitempty"`
+	Agg     string `json:"agg,omitempty"`
+	Label   string `json:"label"`
+	Unit    string `json:"unit,omitempty"`
+	Color   string `json:"color,omitempty"`
+	Type    string `json:"type,omitempty"`
+	Stacked bool   `json:"stacked,omitempty"`
+	Virtual bool   `json:"virtual,omitempty"`
+}
+
+type sectionAPIExplain struct {
+	Title string `json:"title"`
+	Body  string `json:"body"`
+}
+
+func (h *Handler) sectionAPI(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("key")
+	if _, ok := sectionMeta[key]; !ok {
+		http.Error(w, "unknown section", http.StatusNotFound)
+		return
+	}
+	lang := r.URL.Query().Get("lang")
+	if lang != "ru" && lang != "sr" {
+		lang = "en"
+	}
+	data := h.buildSectionPage(key, lang, h.tenantDB(r))
+
+	out := sectionAPIResponse{
+		Key:     data.SectionKey,
+		Title:   data.SectionTitle,
+		Summary: data.Summary,
+	}
+	for _, d := range data.Details {
+		out.Details = append(out.Details, sectionAPIDetail{
+			Label: d.Label, Value: d.Value, Trend: d.Trend, Note: d.Note,
+		})
+	}
+	for _, c := range data.Charts {
+		out.Charts = append(out.Charts, sectionAPIChart{
+			Metric: c.Metric, Agg: c.Agg, Label: c.Label, Unit: c.Unit,
+			Color: c.Color, Type: c.Type, Stacked: c.Stacked, Virtual: c.Virtual,
+		})
+	}
+	for _, e := range data.Explains {
+		out.Explains = append(out.Explains, sectionAPIExplain{
+			Title: e.Title, Body: e.Body,
+		})
+	}
+	jsonResponse(w, out)
 }
 
 func (h *Handler) healthBriefing(w http.ResponseWriter, r *http.Request) {
