@@ -774,10 +774,10 @@ func (h *Handler) sectionAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown section", http.StatusNotFound)
 		return
 	}
-	lang := r.URL.Query().Get("lang")
-	if lang != "ru" && lang != "sr" {
-		lang = "en"
-	}
+	// Use the same resolver the HTML section pages use so /cardio and
+	// /api/section/cardio agree on locale even when the lang comes from
+	// the cookie rather than the query (CodeRabbit, PR #15).
+	lang := langFromRequest(r)
 	data := h.buildSectionPage(key, lang, h.tenantDB(r))
 
 	out := sectionAPIResponse{
