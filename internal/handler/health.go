@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"health-receiver/internal/ctxdb"
+	"health-receiver/internal/health"
 	"health-receiver/internal/storage"
 	"health-receiver/internal/tenants"
 )
@@ -354,10 +355,35 @@ func parseMetricPoints(body []byte) ([]storage.MetricPoint, error) {
 	var points []storage.MetricPoint
 	for _, m := range p.Data.Metrics {
 		for _, raw := range m.Data {
-			points = append(points, extractPoints(m.Name, m.Units, raw)...)
+			points = append(points, filterImpossible(extractPoints(m.Name, m.Units, raw))...)
 		}
 	}
 	return points, nil
+}
+
+// filterImpossible drops points whose values fall outside the configured
+// physiological range for the metric (see internal/health/quality.go). Logged
+// at WARN so we can spot misbehaving sources, but rate-limited to one line per
+// (metric,source) combination per call to avoid log floods on a stuck device.
+func filterImpossible(in []storage.MetricPoint) []storage.MetricPoint {
+	if len(in) == 0 {
+		return in
+	}
+	out := in[:0]
+	logged := map[string]bool{}
+	for _, pt := range in {
+		if !health.IsImpossible(pt.MetricName, float64(pt.Qty)) {
+			out = append(out, pt)
+			continue
+		}
+		key := pt.MetricName + "|" + pt.Source
+		if !logged[key] {
+			log.Printf("[QUALITY] drop %s=%v (source=%q date=%q): outside physiological range",
+				pt.MetricName, pt.Qty, pt.Source, pt.Date)
+			logged[key] = true
+		}
+	}
+	return out
 }
 
 var metricAliases = map[string]string{

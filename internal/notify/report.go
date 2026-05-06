@@ -23,6 +23,13 @@ type Config struct {
 	// Hour (0–23) at which to send the evening day summary.
 	EveningWeekdayHour int
 	EveningWeekendHour int
+
+	// Smart-retry deadline. The morning trigger keeps deferring until sleep
+	// data settles (see storage.SleepSettled); past this hour it force-sends
+	// with a banner. Caller is responsible for picking a sensible default
+	// (typically MorningHour + 4, floor 11). Zero means "no cap" — use with
+	// care; can lead to no morning report on watch-off days.
+	MorningCapHour int
 }
 
 // Enabled returns true when Telegram credentials are configured.
@@ -67,6 +74,26 @@ func (c Config) NextMorning(from time.Time) time.Time {
 	return t
 }
 
+// MorningCapTime returns the deadline timestamp for today's morning report.
+// Past this time the smart-retry loop force-sends. Falls back to a sensible
+// default (morning hour + 4, never earlier than 11:00) if MorningCapHour is
+// unset, so a brand-new install with no override still has a deadline.
+func (c Config) MorningCapTime(now time.Time) time.Time {
+	loc := c.location()
+	now = now.In(loc)
+	cap := c.MorningCapHour
+	if cap <= 0 {
+		cap = c.morningHour(now.Weekday()) + 4
+		if cap < 11 {
+			cap = 11
+		}
+	}
+	if cap > 23 {
+		cap = 23
+	}
+	return time.Date(now.Year(), now.Month(), now.Day(), cap, 0, 0, 0, loc)
+}
+
 // NextEvening returns the next time the evening report should fire (in configured tz).
 func (c Config) NextEvening(from time.Time) time.Time {
 	loc := c.location()
@@ -83,17 +110,46 @@ func (c Config) NextEvening(from time.Time) time.Time {
 // SendMorning sends the sleep report for the most recent night.
 // If an AI insight has been saved for today it is prepended to the message.
 func SendMorning(bot *Bot, db *storage.DB, cfg Config) error {
-	briefing, err := db.GetHealthBriefing(cfg.Lang)
-	if err != nil {
-		return err
-	}
-	loc := cfg.location()
-	today := time.Now().In(loc).Format("2006-01-02")
-	aiInsight := db.GetAIBriefing(today, cfg.Lang)
-	return bot.Send(formatMorning(briefing, aiInsight, cfg.Lang, loc))
+	_, _, err := SendMorningSmart(bot, db, cfg, true)
+	return err
 }
 
-// SendEvening sends the daily activity summary.
+// SendMorningSmart is the smart-retry-aware morning sender. When force is
+// false, it only sends if sleep data has settled (see storage.SleepSettled);
+// otherwise returns sent=false with a non-"ok" reason so the caller can retry
+// later. When force is true, it sends regardless and prepends a banner
+// explaining why the data is incomplete.
+//
+// Returns (sent, reason, error). reason is the SleepSettleStatus.Reason —
+// "ok" when settled, otherwise "no_data" / "recent_segment" / "still_writing".
+func SendMorningSmart(bot *Bot, db *storage.DB, cfg Config, force bool) (bool, string, error) {
+	loc := cfg.location()
+	today := time.Now().In(loc).Format("2006-01-02")
+
+	status := db.SleepSettled(today)
+	if !status.Settled && !force {
+		return false, status.Reason, nil
+	}
+
+	briefing, err := db.GetHealthBriefing(cfg.Lang)
+	if err != nil {
+		return false, status.Reason, err
+	}
+	aiInsight := db.GetAIBriefing(today, cfg.Lang)
+	fresh := computeFreshness(db, time.Now())
+	msg := formatMorning(briefing, aiInsight, cfg.Lang, loc, fresh)
+
+	if !status.Settled {
+		if banner := tr(cfg.Lang, "tg_stale_"+status.Reason); banner != "" && banner != "tg_stale_"+status.Reason {
+			msg = banner + "\n\n" + msg
+		}
+	}
+	return true, status.Reason, bot.Send(msg)
+}
+
+// SendEvening sends a "today so far" snapshot. Activity bullets are intentionally
+// omitted because the briefing's activity/cardio sections describe yesterday —
+// users get the full retrospective in the morning report.
 func SendEvening(bot *Bot, db *storage.DB, cfg Config) error {
 	briefing, err := db.GetHealthBriefing(cfg.Lang)
 	if err != nil {
@@ -103,31 +159,139 @@ func SendEvening(bot *Bot, db *storage.DB, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	return bot.Send(formatEvening(briefing, dash, cfg.Lang, cfg.location()))
+	fresh := computeFreshness(db, time.Now())
+	return bot.Send(formatEvening(briefing, dash, cfg.Lang, cfg.location(), fresh))
 }
 
-// ── formatters ───────────────────────────────────────────────────────────────
+// ── helpers ──────────────────────────────────────────────────────────────────
 
-var morningHeader = map[string]string{
-	"en": "🌅 Morning report",
-	"ru": "🌅 Утренний отчёт",
-	"sr": "🌅 Jutarnji izveštaj",
+// Per-metric silence thresholds for the "device off" banners. Tuned to be
+// forgiving — a 24h gap is "phone in airplane mode for the day", a 36h gap
+// is "watch wasn't worn last night either". Beyond that we replace the
+// section with a banner instead of pretending to have data.
+const (
+	silenceSleep = 36 * time.Hour
+	silenceWatch = 36 * time.Hour
+	silencePhone = 24 * time.Hour
+)
+
+// freshness summarises per-metric-group silence durations for the report
+// formatter. Computed once per send (one DB query), passed to both
+// formatMorning and formatEvening so they don't duplicate the lookup.
+type freshness struct {
+	sleep, watch, phone time.Duration
+	// known flags distinguish "no data ever recorded" (e.g. user just signed
+	// up) from "data exists but it's old". For the banners we treat both the
+	// same — but logging is clearer this way.
+	sleepKnown, watchKnown, phoneKnown bool
 }
 
-var staleWarning = map[string]string{
-	"en": "⚠️ <i>Data is %d day(s) old — Apple Health may not have synced yet.</i>\n\n",
-	"ru": "⚠️ <i>Данные устарели на %d дн. — возможно, синхронизация ещё не прошла.</i>\n\n",
-	"sr": "⚠️ <i>Podaci su stari %d dan(a) — sinhronizacija možda još nije završena.</i>\n\n",
+// computeFreshness queries the storage layer for last-seen times of the four
+// metrics that gate the morning report's main sections. Watch presence is the
+// MIN age across HRV and RHR — if either was recorded recently, the watch was
+// on. Phone presence uses step_count, which is written by both iPhone and
+// Apple Watch, so it stays fresh as long as either device is moving.
+func computeFreshness(db *storage.DB, now time.Time) freshness {
+	seen := db.MetricsLastSeen(
+		"sleep_total",
+		"heart_rate_variability",
+		"resting_heart_rate",
+		"step_count",
+	)
+	f := freshness{}
+	age := func(metric string) (time.Duration, bool) {
+		t, ok := seen[metric]
+		if !ok {
+			return 0, false
+		}
+		d := now.Sub(t)
+		if d < 0 {
+			d = 0
+		}
+		return d, true
+	}
+	f.sleep, f.sleepKnown = age("sleep_total")
+	hrv, hrvK := age("heart_rate_variability")
+	rhr, rhrK := age("resting_heart_rate")
+	if hrvK || rhrK {
+		f.watchKnown = true
+		// Use the freshest of the two — watch is "on" if either sensor wrote
+		// recently. Default the missing sensor to a huge value so MIN works.
+		if !hrvK {
+			hrv = 9999 * time.Hour
+		}
+		if !rhrK {
+			rhr = 9999 * time.Hour
+		}
+		f.watch = hrv
+		if rhr < hrv {
+			f.watch = rhr
+		}
+	}
+	f.phone, f.phoneKnown = age("step_count")
+	return f
 }
-var noSleepWarning = map[string]string{
-	"en": "😴 <i>No sleep data for last night yet — phone may not have synced after waking up.</i>\n\n",
-	"ru": "😴 <i>Данных о сне прошлой ночи пока нет — возможно, телефон ещё не синхронизировался.</i>\n\n",
-	"sr": "😴 <i>Nema podataka o snu za prošlu noć — telefon možda još nije sinhronizovan.</i>\n\n",
+
+func (f freshness) sleepStale() bool { return !f.sleepKnown || f.sleep > silenceSleep }
+func (f freshness) watchOff() bool   { return !f.watchKnown || f.watch > silenceWatch }
+func (f freshness) phoneOff() bool   { return !f.phoneKnown || f.phone > silencePhone }
+
+// fmtSilence renders a duration as "Nh" or "N days" via the configured lang.
+// Switches to days at the 48h mark — "73h ago" reads worse than "3 days ago".
+func fmtSilence(d time.Duration, lang string) string {
+	h := int(d / time.Hour)
+	if h >= 48 {
+		return fmt.Sprintf(tr(lang, "tg_dur_days"), h/24)
+	}
+	if h < 1 {
+		h = 1 // round up tiny gaps so banners don't say "0h ago"
+	}
+	return fmt.Sprintf(tr(lang, "tg_dur_hours"), h)
 }
-var noActivityWarning = map[string]string{
-	"en": "📭 <i>No activity data for today yet.</i>\n\n",
-	"ru": "📭 <i>Данных об активности за сегодня пока нет.</i>\n\n",
-	"sr": "📭 <i>Nema podataka o aktivnosti za danas.</i>\n\n",
+
+func tr(lang, key string) string {
+	if v, ok := health.GetStrings(lang)[key]; ok {
+		return v
+	}
+	if v, ok := health.GetStrings("en")[key]; ok {
+		return v
+	}
+	return key
+}
+
+var statusEmoji = map[string]string{
+	"good": "🟢",
+	"fair": "🟡",
+	"low":  "🔴",
+}
+
+func headlineEmoji(severity string) string {
+	switch severity {
+	case "warning":
+		return "🚨"
+	case "positive":
+		return "✅"
+	default:
+		return "💡"
+	}
+}
+
+func alertEmoji(severity string) string {
+	if severity == "critical" {
+		return "🔴"
+	}
+	return "⚠️"
+}
+
+func readinessEmoji(score int) string {
+	switch {
+	case score < 60:
+		return statusEmoji["low"]
+	case score < 75:
+		return statusEmoji["fair"]
+	default:
+		return statusEmoji["good"]
+	}
 }
 
 // staleDays returns how many calendar days ago dataDate is relative to today in loc.
@@ -145,199 +309,288 @@ func staleDays(dataDate string, loc *time.Location) int {
 	return int(today.Sub(dataDay).Hours() / 24)
 }
 
-func warnMsg(m map[string]string, lang string, args ...any) string {
-	tpl, ok := m[lang]
-	if !ok {
-		tpl = m["en"]
+// isBoringNote suppresses parenthetical notes that just restate "all is normal".
+// These add visual noise without information; the section status emoji already
+// conveys "fine". Notes carrying numerical signal (digits, ±, %, SD, z=) are
+// always kept.
+func isBoringNote(note string) bool {
+	if note == "" {
+		return true
 	}
-	if len(args) > 0 {
-		return fmt.Sprintf(tpl, args...)
+	if strings.ContainsAny(note, "0123456789±%") {
+		return false
 	}
-	return tpl
-}
-var eveningHeader = map[string]string{
-	"en": "🌆 Day summary",
-	"ru": "🌆 Итоги дня",
-	"sr": "🌆 Pregled dana",
-}
-var statusEmoji = map[string]string{
-	"good": "🟢",
-	"fair": "🟡",
-	"low":  "🔴",
+	low := strings.ToLower(note)
+	// Phrases that mean "nothing to flag here" across en/ru/sr.
+	boring := []string{
+		"stable", "well rested", "consistent with", "good ratio", "healthy range",
+		"on par", "meeting the daily",
+		"стабильно", "хорош", "соответств", "в рамках", "в пределах нормы", "выполня",
+		"stabil", "konzist", "zdrav",
+	}
+	for _, b := range boring {
+		if strings.Contains(low, b) {
+			return true
+		}
+	}
+	return false
 }
 
-func formatMorning(b *health.BriefingResponse, aiInsight, lang string, loc *time.Location) string {
-	hdr := morningHeader[lang]
-	if hdr == "" {
-		hdr = morningHeader["en"]
+func findSection(b *health.BriefingResponse, key string) *health.BriefingSection {
+	for i := range b.Sections {
+		if b.Sections[i].Key == key {
+			return &b.Sections[i]
+		}
 	}
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("<b>%s — %s</b>\n\n", hdr, b.Date))
-	if aiInsight != "" {
-		sb.WriteString(fmt.Sprintf("🤖 <i>%s</i>\n\n", aiInsight))
-	}
+	return nil
+}
 
-	// Morning report should show last night's sleep (stored with today's date in Apple Health).
-	// If data is 1+ day old, the phone hasn't synced after waking up yet.
-	if d := staleDays(b.Date, loc); d >= 1 {
-		sb.WriteString(warnMsg(staleWarning, lang, d))
+// renderSectionBullets renders the section header + filtered bullet list.
+// Rule-based output is the source of truth (medical-literature-backed); the AI
+// take, when present, is layered underneath as commentary, not a replacement —
+// so a Gemini hallucination can be cross-checked against the bullets above it.
+func renderSectionBullets(sb *strings.Builder, sec *health.BriefingSection) {
+	if sec == nil {
+		return
 	}
+	fmt.Fprintf(sb, "%s <b>%s</b> — %s\n", statusEmoji[sec.Status], sec.Title, sec.Summary)
+	for _, d := range sec.Details {
+		fmt.Fprintf(sb, "  • %s: %s", d.Label, d.Value)
+		if d.Note != "" && !isBoringNote(d.Note) {
+			fmt.Fprintf(sb, " <i>(%s)</i>", d.Note)
+		}
+		sb.WriteByte('\n')
+	}
+}
 
-	// Sleep section
-	if b.Sleep == nil {
-		sb.WriteString(warnMsg(noSleepWarning, lang))
+// renderAITake prints the AI prose for a section underneath rule-based bullets.
+// Marked with 🤖 so the user immediately sees this is the LLM layer, not the
+// scoring engine. Empty body is a no-op.
+func renderAITake(sb *strings.Builder, body string) {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return
+	}
+	fmt.Fprintf(sb, "  🤖 <i>%s</i>\n", body)
+}
+
+func renderHeadline(sb *strings.Builder, h *health.HeadlineSignal) {
+	if h == nil || h.Title == "" {
+		return
+	}
+	// "stable" / "good_recovery" headlines are good news — keep them concise.
+	fmt.Fprintf(sb, "%s <b>%s</b>\n", headlineEmoji(h.Severity), h.Title)
+	if h.Detail != "" {
+		fmt.Fprintf(sb, "<i>%s</i>\n", h.Detail)
+	}
+	sb.WriteByte('\n')
+}
+
+func renderEnergyBank(sb *strings.Builder, eb *health.EnergyBank, lang string) {
+	if eb == nil || eb.Capacity == 0 {
+		return
+	}
+	verdict := tr(lang, "energy_verdict_"+eb.ActionVerdict)
+	if verdict == "energy_verdict_"+eb.ActionVerdict {
+		verdict = eb.ActionVerdict // fallback to enum if key missing
+	}
+	fmt.Fprintf(sb, "⚡ <b>%s: %d/%d</b> — %s\n",
+		tr(lang, "tg_energy"), eb.Current, eb.Capacity, verdict)
+	if eb.VerdictReason != "" {
+		fmt.Fprintf(sb, "<i>%s</i>\n", eb.VerdictReason)
+	}
+	sb.WriteByte('\n')
+}
+
+func renderReadiness(sb *strings.Builder, b *health.BriefingResponse, lang string) {
+	today := b.ReadinessToday
+	trend := b.ReadinessScore
+	collapsed := abs(today-trend) <= 2
+
+	if collapsed {
+		fmt.Fprintf(sb, "%s <b>%s: %d/100</b> — %s\n",
+			readinessEmoji(today), tr(lang, "tg_readiness"), today, b.ReadinessTodayLabel)
 	} else {
-		// Find the sleep section for its details
-		for _, sec := range b.Sections {
-			if sec.Key != "sleep" {
-				continue
-			}
-			sb.WriteString(fmt.Sprintf("%s <b>%s</b> — %s\n", statusEmoji[sec.Status], sec.Title, sec.Summary))
-			for _, d := range sec.Details {
-				sb.WriteString(fmt.Sprintf("  • %s: %s", d.Label, d.Value))
-				if d.Note != "" {
-					sb.WriteString(fmt.Sprintf(" <i>(%s)</i>", d.Note))
-				}
-				sb.WriteString("\n")
-			}
-			sb.WriteString("\n")
-		}
-
-		// Per-source breakdown if multiple devices
-		if len(b.Sleep.Sources) > 1 {
-			sb.WriteString("📱 <i>Sources:</i>\n")
-			for _, src := range b.Sleep.Sources {
-				sb.WriteString(fmt.Sprintf("  %s — %.1fh\n", src.Source, src.Total))
-			}
-			sb.WriteString("\n")
-		}
+		fmt.Fprintf(sb, "%s <b>%s %s: %d/100</b> — %s\n",
+			readinessEmoji(today), tr(lang, "tg_readiness"), tr(lang, "tg_readiness_today"),
+			today, b.ReadinessTodayLabel)
+		fmt.Fprintf(sb, "📈 %s: %d/100 — %s\n",
+			tr(lang, "tg_readiness_trend"), trend, b.ReadinessLabel)
 	}
-
-	// Readiness: show both today and 7-day trend
-	todayEmoji := statusEmoji["good"]
-	if b.ReadinessToday < 60 {
-		todayEmoji = statusEmoji["low"]
-	} else if b.ReadinessToday < 75 {
-		todayEmoji = statusEmoji["fair"]
-	}
-	sb.WriteString(fmt.Sprintf("%s <b>Readiness today: %d/100</b> — %s\n", todayEmoji, b.ReadinessToday, b.ReadinessTodayLabel))
-	sb.WriteString(fmt.Sprintf("📈 7-day trend: %d/100 — %s\n", b.ReadinessScore, b.ReadinessLabel))
 	if b.ReadinessTip != "" {
-		sb.WriteString(fmt.Sprintf("<i>%s</i>\n", b.ReadinessTip))
+		fmt.Fprintf(sb, "<i>%s</i>\n", b.ReadinessTip)
 	}
-	sb.WriteString("\n")
-
-	// Recovery section (HRV / RHR)
-	for _, sec := range b.Sections {
-		if sec.Key != "recovery" {
-			continue
-		}
-		sb.WriteString(fmt.Sprintf("%s <b>%s</b> — %s\n", statusEmoji[sec.Status], sec.Title, sec.Summary))
-		for _, d := range sec.Details {
-			sb.WriteString(fmt.Sprintf("  • %s: %s", d.Label, d.Value))
-			if d.Note != "" {
-				sb.WriteString(fmt.Sprintf(" <i>(%s)</i>", d.Note))
-			}
-			sb.WriteString("\n")
-		}
-	}
-
-	return sb.String()
+	sb.WriteByte('\n')
 }
 
-func formatEvening(b *health.BriefingResponse, dash *storage.DashboardResponse, lang string, loc *time.Location) string {
-	hdr := eveningHeader[lang]
-	if hdr == "" {
-		hdr = eveningHeader["en"]
+func renderAlerts(sb *strings.Builder, alerts []health.Alert, lang string) {
+	if len(alerts) == 0 {
+		return
 	}
+	fmt.Fprintf(sb, "⚠️ <b>%s</b>\n", tr(lang, "tg_alerts"))
+	for _, a := range alerts {
+		fmt.Fprintf(sb, "  %s %s\n", alertEmoji(a.Severity), a.Text)
+	}
+	sb.WriteByte('\n')
+}
+
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+// ── morning ──────────────────────────────────────────────────────────────────
+
+func formatMorning(b *health.BriefingResponse, aiInsight, lang string, loc *time.Location, f freshness) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("<b>%s — %s</b>\n\n", hdr, b.Date))
+	fmt.Fprintf(&sb, "<b>🌅 %s — %s</b>\n\n", tr(lang, "tg_morning_header"), b.Date)
 
-	// Evening report shows today's activity. If data is 1+ day old, it's stale.
 	if d := staleDays(b.Date, loc); d >= 1 {
-		sb.WriteString(warnMsg(staleWarning, lang, d))
+		fmt.Fprintf(&sb, tr(lang, "tg_warn_stale")+"\n\n", d)
 	}
 
-	// Check if dashboard has no data for today specifically.
+	// Headline first — sets the frame for everything below ("see headline above"
+	// references in section summaries now actually resolve).
+	renderHeadline(&sb, b.Headline)
+
+	ai := parseAIInsight(aiInsight)
+	// If AI text exists but no headers parsed, surface it as a single block under
+	// the date so we still benefit from the analysis.
+	if aiInsight != "" && !ai.hasAnyBlock() {
+		fmt.Fprintf(&sb, "🤖 <i>%s</i>\n\n", strings.TrimSpace(ai.Raw))
+	}
+
+	renderEnergyBank(&sb, b.EnergyBank, lang)
+	renderReadiness(&sb, b, lang)
+	renderAlerts(&sb, b.Alerts, lang)
+
+	// Sleep — rule-based bullets always; AI take layered underneath. If sleep
+	// data is silent for ≥36h, the briefing is from a stale night and the
+	// section misleads — replace with banner.
+	switch {
+	case f.sleepStale() && f.sleepKnown:
+		fmt.Fprintf(&sb, tr(lang, "tg_sleep_silence")+"\n\n", fmtSilence(f.sleep, lang))
+	case b.Sleep == nil:
+		sb.WriteString(tr(lang, "tg_warn_no_sleep") + "\n\n")
+	default:
+		renderSectionBullets(&sb, findSection(b, "sleep"))
+		if len(b.Sleep.Sources) > 1 {
+			fmt.Fprintf(&sb, "📱 <i>%s:</i>\n", tr(lang, "tg_sources"))
+			for _, src := range b.Sleep.Sources {
+				fmt.Fprintf(&sb, "  %s — %.1fh\n", src.Source, src.Total)
+			}
+		}
+		renderAITake(&sb, ai.Sleep)
+		sb.WriteByte('\n')
+	}
+
+	// Yesterday — activity + cardio as the rule-based retrospective. Phone-off
+	// (no step data ≥24h) collapses the whole block into a banner.
+	if f.phoneOff() && f.phoneKnown {
+		fmt.Fprintf(&sb, tr(lang, "tg_phone_off")+"\n\n", fmtSilence(f.phone, lang))
+	} else {
+		actSec := findSection(b, "activity")
+		cardioSec := findSection(b, "cardio")
+		if actSec != nil || cardioSec != nil || ai.Yesterday != "" {
+			fmt.Fprintf(&sb, "📅 <b>%s</b>\n", tr(lang, "tg_yesterday"))
+			if actSec != nil {
+				renderSectionBullets(&sb, actSec)
+			}
+			if cardioSec != nil {
+				renderSectionBullets(&sb, cardioSec)
+			}
+			renderAITake(&sb, ai.Yesterday)
+			sb.WriteByte('\n')
+		}
+	}
+
+	// Recovery — watch off (HRV+RHR both silent ≥36h) collapses to a banner.
+	// Without HRV/RHR the section's numbers are days-old and would mislead.
+	if f.watchOff() && f.watchKnown {
+		fmt.Fprintf(&sb, tr(lang, "tg_watch_off")+"\n\n", fmtSilence(f.watch, lang))
+	} else if recSec := findSection(b, "recovery"); recSec != nil {
+		renderSectionBullets(&sb, recSec)
+		renderAITake(&sb, ai.Recovery)
+		sb.WriteByte('\n')
+	}
+
+	// Recommendation — actionable closer. AI-only; rule-based equivalent is
+	// already covered by EnergyBank.VerdictReason and ReadinessTip rendered above.
+	if ai.Recommendation != "" {
+		fmt.Fprintf(&sb, "🎯 <b>%s</b>\n%s\n", tr(lang, "tg_recommendation"), strings.TrimSpace(ai.Recommendation))
+	}
+
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+// ── evening ──────────────────────────────────────────────────────────────────
+
+func formatEvening(b *health.BriefingResponse, dash *storage.DashboardResponse, lang string, loc *time.Location, f freshness) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "<b>🌆 %s — %s</b>\n\n", tr(lang, "tg_evening_header"), b.Date)
+
+	if d := staleDays(b.Date, loc); d >= 1 {
+		fmt.Fprintf(&sb, tr(lang, "tg_warn_stale")+"\n\n", d)
+	}
+
 	now := time.Now().In(loc)
 	today := fmt.Sprintf("%d-%02d-%02d", now.Year(), int(now.Month()), now.Day())
-	if dash == nil || dash.Date != today || len(dash.Cards) == 0 {
-		sb.WriteString(warnMsg(noActivityWarning, lang))
-	}
+	hasDash := dash != nil && dash.Date == today && len(dash.Cards) > 0
 
-	// Activity section
-	for _, sec := range b.Sections {
-		if sec.Key != "activity" {
-			continue
-		}
-		sb.WriteString(fmt.Sprintf("%s <b>%s</b> — %s\n", statusEmoji[sec.Status], sec.Title, sec.Summary))
-		for _, d := range sec.Details {
-			sb.WriteString(fmt.Sprintf("  • %s: %s", d.Label, d.Value))
-			if d.Note != "" {
-				sb.WriteString(fmt.Sprintf(" <i>(%s)</i>", d.Note))
-			}
-			sb.WriteString("\n")
-		}
-		sb.WriteString("\n")
-	}
-
-	// Cardio section
-	for _, sec := range b.Sections {
-		if sec.Key != "cardio" {
-			continue
-		}
-		sb.WriteString(fmt.Sprintf("%s <b>%s</b> — %s\n", statusEmoji[sec.Status], sec.Title, sec.Summary))
-		for _, d := range sec.Details {
-			sb.WriteString(fmt.Sprintf("  • %s: %s", d.Label, d.Value))
-			if d.Note != "" {
-				sb.WriteString(fmt.Sprintf(" <i>(%s)</i>", d.Note))
-			}
-			sb.WriteString("\n")
-		}
-		sb.WriteString("\n")
-	}
-
-	// Today's dashboard values (steps, calories, exercise)
-	if dash != nil {
-		dashMap := make(map[string]storage.CardData)
+	switch {
+	case f.phoneOff() && f.phoneKnown:
+		// Steps haven't arrived in ≥24h — phone or watch silent. The dashboard
+		// "today" cards would all be 0/missing, so collapse to a banner.
+		fmt.Fprintf(&sb, tr(lang, "tg_phone_off")+"\n\n", fmtSilence(f.phone, lang))
+	case !hasDash:
+		sb.WriteString(tr(lang, "tg_warn_no_activity") + "\n\n")
+	default:
+		fmt.Fprintf(&sb, "📊 <b>%s</b>\n", tr(lang, "tg_today"))
+		dashMap := make(map[string]storage.CardData, len(dash.Cards))
 		for _, c := range dash.Cards {
 			dashMap[c.Metric] = c
 		}
-		sb.WriteString("📊 <b>Today</b>\n")
-		for _, metric := range []string{"step_count", "active_energy", "apple_exercise_time"} {
-			if c, ok := dashMap[metric]; ok && c.Value > 0 {
-				icon := map[string]string{
-					"step_count":          "👟",
-					"active_energy":       "🔥",
-					"apple_exercise_time": "🏃",
-				}[metric]
-				trend := ""
-				if c.Prev > 0 {
-					pct := (c.Value - c.Prev) / c.Prev * 100
-					if pct > 5 {
-						trend = fmt.Sprintf(" <i>(+%.0f%% vs yesterday)</i>", pct)
-					} else if pct < -5 {
-						trend = fmt.Sprintf(" <i>(%.0f%% vs yesterday)</i>", pct)
-					}
-				}
-				sb.WriteString(fmt.Sprintf("  %s %.0f %s%s\n", icon, c.Value, c.Unit, trend))
-			}
+		icons := map[string]string{
+			"step_count":          "👟",
+			"active_energy":       "🔥",
+			"apple_exercise_time": "🏃",
 		}
-		sb.WriteString("\n")
+		for _, metric := range []string{"step_count", "active_energy", "apple_exercise_time"} {
+			c, ok := dashMap[metric]
+			if !ok || c.Value <= 0 {
+				continue
+			}
+			trend := ""
+			if c.Prev > 0 {
+				pct := (c.Value - c.Prev) / c.Prev * 100
+				switch {
+				case pct > 5:
+					trend = " <i>(" + fmt.Sprintf(tr(lang, "tg_vs_yesterday_up"), pct) + ")</i>"
+				case pct < -5:
+					trend = " <i>(" + fmt.Sprintf(tr(lang, "tg_vs_yesterday_down"), pct) + ")</i>"
+				}
+			}
+			fmt.Fprintf(&sb, "  %s %.0f %s%s\n", icons[metric], c.Value, c.Unit, trend)
+		}
+		sb.WriteByte('\n')
 	}
 
-	// Readiness
-	emoji := statusEmoji["good"]
-	if b.ReadinessScore < 60 {
-		emoji = statusEmoji["low"]
-	} else if b.ReadinessScore < 75 {
-		emoji = statusEmoji["fair"]
-	}
-	sb.WriteString(fmt.Sprintf("%s <b>Readiness: %d/100</b> — %s\n\n", emoji, b.ReadinessScore, b.ReadinessLabel))
+	// Energy Bank — most useful evening signal: shows how much capacity drained
+	// since morning, which directly answers "should I still train tonight?".
+	renderEnergyBank(&sb, b.EnergyBank, lang)
 
-	// Top insights
+	// Readiness — current 7-day trend (today's score is morning-based and stale by evening).
+	emoji := readinessEmoji(b.ReadinessScore)
+	fmt.Fprintf(&sb, "%s <b>%s: %d/100</b> — %s\n\n",
+		emoji, tr(lang, "tg_readiness"), b.ReadinessScore, b.ReadinessLabel)
+
+	// Alerts that surfaced during the day still matter at evening.
+	renderAlerts(&sb, b.Alerts, lang)
+
 	if len(b.Insights) > 0 {
-		sb.WriteString("💡 <b>Insights</b>\n")
+		fmt.Fprintf(&sb, "💡 <b>%s</b>\n", tr(lang, "tg_insights"))
 		for i, ins := range b.Insights {
 			if i >= 3 {
 				break
@@ -346,9 +599,9 @@ func formatEvening(b *health.BriefingResponse, dash *storage.DashboardResponse, 
 			if ins.Type == "warning" {
 				icon = "⚠️"
 			}
-			sb.WriteString(fmt.Sprintf("  %s %s\n", icon, ins.Text))
+			fmt.Fprintf(&sb, "  %s %s\n", icon, ins.Text)
 		}
 	}
 
-	return sb.String()
+	return strings.TrimRight(sb.String(), "\n")
 }

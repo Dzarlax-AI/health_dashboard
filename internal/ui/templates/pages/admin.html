@@ -62,6 +62,20 @@
         <div id="admin-gaps-section"></div>
       </div>
 
+      <!-- Data quality audit -->
+      <div class="admin-section">
+        <div class="admin-section-header">
+          <div class="section-title">{{T .Lang "admin_quality_title"}}</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn btn--secondary btn--small" onclick="runQualityAudit()">{{T .Lang "admin_quality_run"}}</button>
+            <button class="btn btn--secondary btn--small" onclick="runQualityFix()">{{T .Lang "admin_quality_fix"}}</button>
+            <button class="btn btn--secondary btn--small" onclick="runQualityDigest()">{{T .Lang "admin_quality_digest"}}</button>
+          </div>
+        </div>
+        <div id="admin-quality-section"></div>
+        <div id="admin-quality-msg" style="display:none;margin-top:8px"></div>
+      </div>
+
       <!-- AI briefing settings -->
       <div class="admin-section" id="admin-ai-section">
         <div class="section-title">{{T .Lang "admin_ai_title"}}</div>
@@ -170,6 +184,116 @@ function checkDataGaps() {
       el.innerHTML = html;
     })
     .catch(function() { el.innerHTML = '<div style="color:var(--low)">Error checking gaps</div>'; });
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, function(c) {
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
+
+function runQualityAudit() {
+  var el = $('admin-quality-section');
+  el.innerHTML = '<div style="padding:16px"><div class="spinner spinner--large"></div></div>';
+  fetch('/api/admin/quality-audit')
+    .then(function(r){return r.json()})
+    .then(function(d) {
+      el.innerHTML = renderQualityAudit(d);
+    })
+    .catch(function() { el.innerHTML = '<div style="color:var(--low)">Error</div>'; });
+}
+
+function renderQualityAudit(d) {
+  var entries = d.entries || [];
+  var weekly = d.weekly || {};
+  var html = '';
+
+  // Out-of-range table (cumulative).
+  if (entries.length === 0) {
+    html += '<div style="color:var(--good);padding:8px">{{T .Lang "admin_quality_clean"}}</div>';
+  } else {
+    html += '<table class="admin-table" style="width:100%;border-collapse:collapse;margin-top:8px">';
+    html += '<thead><tr>'
+         +  '<th style="text-align:left;padding:6px 8px">{{T .Lang "admin_quality_metric"}}</th>'
+         +  '<th style="text-align:left;padding:6px 8px">{{T .Lang "admin_quality_range"}}</th>'
+         +  '<th style="text-align:right;padding:6px 8px">{{T .Lang "admin_quality_bad"}}</th>'
+         +  '<th style="text-align:right;padding:6px 8px">{{T .Lang "admin_quality_total"}}</th>'
+         +  '<th style="text-align:right;padding:6px 8px">{{T .Lang "admin_quality_sample"}}</th>'
+         +  '</tr></thead><tbody>';
+    entries.forEach(function(e) {
+      html += '<tr>'
+           +  '<td style="padding:6px 8px"><code>' + escapeHtml(e.metric) + '</code></td>'
+           +  '<td style="padding:6px 8px">' + e.min + ' … ' + e.max + '</td>'
+           +  '<td style="padding:6px 8px;text-align:right;color:var(--low);font-weight:600">' + e.bad_count + '</td>'
+           +  '<td style="padding:6px 8px;text-align:right;color:var(--text-secondary)">' + e.total_rows + '</td>'
+           +  '<td style="padding:6px 8px;text-align:right">' + e.sample + '</td>'
+           +  '</tr>';
+    });
+    html += '</tbody></table>';
+  }
+
+  // Weekly summary.
+  var imp = weekly.impossible || {};
+  var sus = weekly.suspect || {};
+  var missed = weekly.missed_nights || [];
+  var hasWeekly = Object.keys(imp).length || Object.keys(sus).length || missed.length || (weekly.watch_off_hours || 0) > 0;
+  if (hasWeekly) {
+    html += '<div style="margin-top:16px"><div class="admin-field-group-title">{{T .Lang "admin_quality_week"}}</div>';
+    if (Object.keys(imp).length) {
+      html += '<div style="margin-top:6px">{{T .Lang "admin_quality_impossible"}}: ';
+      html += Object.keys(imp).map(function(k){return escapeHtml(k)+' '+imp[k];}).join(', ');
+      html += '</div>';
+    }
+    if (Object.keys(sus).length) {
+      html += '<div style="margin-top:6px">{{T .Lang "admin_quality_suspect"}}: ';
+      html += Object.keys(sus).map(function(k){return escapeHtml(k)+' '+sus[k];}).join(', ');
+      html += '</div>';
+    }
+    if (missed.length) {
+      html += '<div style="margin-top:6px">{{T .Lang "admin_quality_missed"}}: ' + missed.map(escapeHtml).join(', ') + '</div>';
+    }
+    html += '</div>';
+  }
+  return html;
+}
+
+function runQualityFix() {
+  var msg = $('admin-quality-msg');
+  msg.style.display = '';
+  msg.className = 'alert';
+  msg.textContent = '...';
+  fetch('/api/admin/quality-fix', {method:'POST'})
+    .then(function(r){return r.json()})
+    .then(function(d) {
+      msg.className = 'alert alert--success';
+      msg.textContent = '{{T .Lang "admin_quality_fixed"}}'.replace('%d', d.impossible_flagged).replace('%d', d.suspect_flagged);
+      runQualityAudit();
+    })
+    .catch(function(e) {
+      msg.className = 'alert alert--error';
+      msg.textContent = String(e);
+    });
+}
+
+function runQualityDigest() {
+  var msg = $('admin-quality-msg');
+  msg.style.display = '';
+  msg.className = 'alert';
+  msg.textContent = '...';
+  fetch('/api/admin/quality-digest', {method:'POST'})
+    .then(function(r) {
+      if (!r.ok) return r.text().then(function(t){ throw new Error(t); });
+      return r.json();
+    })
+    .then(function() {
+      msg.className = 'alert alert--success';
+      msg.textContent = 'Sent';
+      setTimeout(function(){ msg.style.display = 'none'; }, 3000);
+    })
+    .catch(function(e) {
+      msg.className = 'alert alert--error';
+      msg.textContent = String(e);
+    });
 }
 
 function loadAdminSettings() {

@@ -171,4 +171,47 @@ var en = LangStrings{
 	"energy_component_autonomic_stress": "Autonomic stress (RHR / HRV)",
 
 	"details": "Details",
+
+	// Telegram report sections
+	"tg_morning_header":      "Morning report",
+	"tg_evening_header":      "Day so far",
+	"tg_readiness":           "Readiness",
+	"tg_readiness_today":     "today",
+	"tg_readiness_trend":     "7-day trend",
+	"tg_today":               "Today so far",
+	"tg_yesterday":           "Yesterday",
+	"tg_recommendation":      "Plan for today",
+	"tg_alerts":              "Alerts",
+	"tg_insights":            "Insights",
+	"tg_sources":             "Sources",
+	"tg_energy":              "Energy",
+	"tg_no_data":             "No fresh data yet.",
+	"tg_warn_stale":          "<i>Data is %d day(s) old — Apple Health may not have synced yet.</i>",
+	"tg_warn_no_sleep":       "<i>No sleep data for last night yet — phone may not have synced after waking up.</i>",
+	"tg_warn_no_activity":    "<i>No activity data for today yet.</i>",
+	"tg_vs_yesterday_up":     "+%.0f%% vs yesterday",
+	"tg_vs_yesterday_down":   "%.0f%% vs yesterday",
+
+	// Smart-retry stale-data banners (prepended when the morning report fires
+	// past the deadline without complete sleep data).
+	"tg_stale_no_data":        "⏰ <i>Morning deadline reached, but no sleep data arrived from your watch — open the Health app or check your Apple Watch sync.</i>",
+	"tg_stale_recent_segment": "⏰ <i>Morning deadline reached, but the watch is still recording sleep — values below may be incomplete.</i>",
+	"tg_stale_still_writing":  "⏰ <i>Morning deadline reached, but sleep fragments are still arriving — values below may be incomplete.</i>",
+
+	// Per-metric "device off" banners. %s is the localised duration ("36h",
+	// "2 days") computed at render time.
+	"tg_watch_off":     "🔕 <b>Apple Watch off</b> — last HRV/RHR was %s ago. Recovery section skipped.",
+	"tg_phone_off":     "📵 <b>Phone not syncing</b> — no step data for %s. Activity skipped.",
+	"tg_sleep_silence": "😴 <b>No sleep recorded</b> — last night with sleep data was %s ago.",
+	"tg_dur_hours":     "%dh",
+	"tg_dur_days":      "%d days",
+
+	// Weekly data-quality digest
+	"tg_digest_header":      "🔬 Weekly data quality",
+	"tg_digest_clean":       "All clean — no anomalies in the last %d days.",
+	"tg_digest_impossible":  "🚫 <b>Impossible values</b> (sensor errors)",
+	"tg_digest_suspect":     "⚠️ <b>Suspect values</b> (>3σ from your baseline)",
+	"tg_digest_missed":      "😴 <b>Nights with no sleep data</b>",
+	"tg_digest_watch_off":   "🔕 <b>Watch off:</b> roughly %dh in this window",
+	"tg_digest_more_in_ui":  "<i>Open the admin page for full per-row details.</i>",
 }

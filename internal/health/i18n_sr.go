@@ -151,4 +151,45 @@ var sr = LangStrings{
 	"energy_component_autonomic_stress": "Autonomni stres (RHR / HRV)",
 
 	"details": "Detalji",
+
+	// Telegram report sections
+	"tg_morning_header":      "Jutarnji izveštaj",
+	"tg_evening_header":      "Dan dosad",
+	"tg_readiness":           "Spremnost",
+	"tg_readiness_today":     "danas",
+	"tg_readiness_trend":     "trend 7 dana",
+	"tg_today":               "Danas dosad",
+	"tg_yesterday":           "Juče",
+	"tg_recommendation":      "Plan za danas",
+	"tg_alerts":              "Anomalije",
+	"tg_insights":            "Uvidi",
+	"tg_sources":             "Izvori",
+	"tg_energy":              "Energija",
+	"tg_no_data":             "Još nema svežih podataka.",
+	"tg_warn_stale":          "<i>Podaci su stari %d dan(a) — sinhronizacija možda još nije završena.</i>",
+	"tg_warn_no_sleep":       "<i>Nema podataka o snu za prošlu noć — telefon možda još nije sinhronizovan.</i>",
+	"tg_warn_no_activity":    "<i>Nema podataka o aktivnosti za danas.</i>",
+	"tg_vs_yesterday_up":     "+%.0f%% u odnosu na juče",
+	"tg_vs_yesterday_down":   "%.0f%% u odnosu na juče",
+
+	// Smart-retry stale-data banners
+	"tg_stale_no_data":        "⏰ <i>Rok je prošao, ali podaci o snu sa sata nisu stigli — otvori Health ili proveri sinhronizaciju Apple Watch-a.</i>",
+	"tg_stale_recent_segment": "⏰ <i>Rok je prošao, ali sat još uvek beleži san — vrednosti ispod mogu biti nepotpune.</i>",
+	"tg_stale_still_writing":  "⏰ <i>Rok je prošao, ali fragmenti sna i dalje pristižu — vrednosti ispod mogu biti nepotpune.</i>",
+
+	// Per-metric "device off" banners
+	"tg_watch_off":     "🔕 <b>Apple Watch nije na ruci</b> — poslednji HRV/RHR pre %s. Oporavak preskočen.",
+	"tg_phone_off":     "📵 <b>Telefon ne sinhronizuje</b> — nema podataka o koracima %s. Aktivnost preskočena.",
+	"tg_sleep_silence": "😴 <b>San nije zabeležen</b> — poslednja noć sa podacima bila je pre %s.",
+	"tg_dur_hours":     "%dh",
+	"tg_dur_days":      "%d dana",
+
+	// Weekly data-quality digest
+	"tg_digest_header":      "🔬 Kvalitet podataka za nedelju",
+	"tg_digest_clean":       "Sve čisto — u poslednjih %d dana nema anomalija.",
+	"tg_digest_impossible":  "🚫 <b>Nemoguće vrednosti</b> (greške senzora)",
+	"tg_digest_suspect":     "⚠️ <b>Sumnjive vrednosti</b> (>3σ od tvoje norme)",
+	"tg_digest_missed":      "😴 <b>Noći bez podataka o snu</b>",
+	"tg_digest_watch_off":   "🔕 <b>Sat skinut:</b> oko %dh u ovom periodu",
+	"tg_digest_more_in_ui":  "<i>Detalji po redovima — u admin stranici.</i>",
 }

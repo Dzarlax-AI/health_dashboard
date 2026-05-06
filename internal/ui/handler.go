@@ -16,6 +16,7 @@ import (
 	"health-receiver/internal/ai"
 	"health-receiver/internal/ctxdb"
 	"health-receiver/internal/health"
+	"health-receiver/internal/notify"
 	"health-receiver/internal/registry"
 	"health-receiver/internal/storage"
 	"health-receiver/internal/tenants"
@@ -108,6 +109,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/status", h.adminGuard(h.adminStatus))
 	mux.HandleFunc("/api/admin/backfill", h.adminGuard(h.adminBackfill))
 	mux.HandleFunc("/api/admin/gaps", h.adminGuard(h.adminGaps))
+	mux.HandleFunc("/api/admin/quality-audit", h.adminGuard(h.adminQualityAudit))
+	mux.HandleFunc("/api/admin/quality-fix", h.adminGuard(h.adminQualityFix))
+	mux.HandleFunc("/api/admin/quality-digest", h.adminGuard(h.adminQualityDigest))
 	mux.HandleFunc("/api/admin/settings", h.adminGuard(h.adminAISettings))
 	mux.HandleFunc("/api/admin/ai-models", h.adminGuard(h.adminAIModels))
 	mux.HandleFunc("/api/admin/users", h.adminGuard(h.adminUsers))
@@ -904,6 +908,83 @@ func (h *Handler) adminGaps(w http.ResponseWriter, r *http.Request) {
 		gaps = []storage.DataGap{}
 	}
 	jsonResponse(w, map[string]any{"gaps": gaps})
+}
+
+// adminQualityAudit returns a per-metric count of values currently in the
+// metric_points table that fall outside the physiological ranges defined in
+// internal/health/quality.go, plus this week's quality stats. Diagnostic only
+// — does not modify any data.
+func (h *Handler) adminQualityAudit(w http.ResponseWriter, r *http.Request) {
+	db := h.tenantDB(r)
+	entries, err := db.AuditImpossibleValues()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if entries == nil {
+		entries = []storage.QualityAuditEntry{}
+	}
+	weekly, _ := db.WeeklyQualityReport(7)
+	jsonResponse(w, map[string]any{
+		"entries": entries,
+		"weekly":  weekly,
+	})
+}
+
+// adminQualityFix runs MarkExistingImpossible + MarkSuspectPoints. POST only.
+// Idempotent: re-running over already-flagged data is a no-op.
+func (h *Handler) adminQualityFix(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	db := h.tenantDB(r)
+	impossible, err := db.MarkExistingImpossible()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	suspectPerMetric, err := db.MarkSuspectPoints(7, 3)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	suspectTotal := 0
+	for _, n := range suspectPerMetric {
+		suspectTotal += n
+	}
+	jsonResponse(w, map[string]any{
+		"impossible_flagged": impossible,
+		"suspect_flagged":    suspectTotal,
+		"per_metric":         suspectPerMetric,
+	})
+}
+
+// adminQualityDigest sends the weekly digest immediately as a test. POST only.
+// Useful to verify Telegram formatting without waiting for Monday.
+func (h *Handler) adminQualityDigest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	db := h.tenantDB(r)
+	cfg := db.GetNotifyConfig(storage.NotifyConfig{})
+	if !cfg.Enabled() {
+		http.Error(w, "Telegram not configured", http.StatusBadRequest)
+		return
+	}
+	bot := notify.NewBot(cfg.Token, cfg.ChatID)
+	ncfg := notify.Config{
+		Token:    cfg.Token,
+		ChatID:   cfg.ChatID,
+		Lang:     cfg.Lang,
+		Timezone: cfg.Timezone,
+	}
+	if err := notify.SendWeeklyDigestForce(bot, db, ncfg, 7); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, map[string]any{"ok": true})
 }
 
 func (h *Handler) adminUsers(w http.ResponseWriter, r *http.Request) {

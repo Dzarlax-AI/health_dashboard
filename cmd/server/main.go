@@ -44,6 +44,7 @@ func main() {
 		MorningWeekendHour: getEnvInt("REPORT_MORNING_WEEKEND", 9),
 		EveningWeekdayHour: getEnvInt("REPORT_EVENING_WEEKDAY", 20),
 		EveningWeekendHour: getEnvInt("REPORT_EVENING_WEEKEND", 21),
+		MorningCapHour:     getEnvInt("REPORT_MORNING_CAP", 0),
 	}
 	envAIDefaults := storage.AIConfig{
 		APIKey:          os.Getenv("GEMINI_API_KEY"),
@@ -360,20 +361,30 @@ func makeBackfillDatesFn(db *storage.DB, schema string) func([]string) {
 	}
 }
 
+// buildNotifyCfg copies storage NotifyConfig (DB-backed) into notify.Config
+// (consumed by the bot). Centralised so adding a new field doesn't require
+// finding all three call sites.
+func buildNotifyCfg(c storage.NotifyConfig) notify.Config {
+	return notify.Config{
+		Token:              c.Token,
+		ChatID:             c.ChatID,
+		Lang:               c.Lang,
+		Timezone:           c.Timezone,
+		MorningWeekdayHour: c.MorningWeekdayHour,
+		MorningWeekendHour: c.MorningWeekendHour,
+		EveningWeekdayHour: c.EveningWeekdayHour,
+		EveningWeekendHour: c.EveningWeekendHour,
+		MorningCapHour:     c.MorningCapHour,
+	}
+}
+
 func makeTestNotifyFn(db *storage.DB, notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig) func(string) error {
 	return func(kind string) error {
 		scfg := db.GetNotifyConfig(notifyDefaults)
 		if !scfg.Enabled() {
 			return fmt.Errorf("Telegram not configured: set TELEGRAM_TOKEN and TELEGRAM_CHAT_ID")
 		}
-		ncfg := notify.Config{
-			Token: scfg.Token, ChatID: scfg.ChatID, Lang: scfg.Lang,
-			Timezone:           scfg.Timezone,
-			MorningWeekdayHour: scfg.MorningWeekdayHour,
-			MorningWeekendHour: scfg.MorningWeekendHour,
-			EveningWeekdayHour: scfg.EveningWeekdayHour,
-			EveningWeekendHour: scfg.EveningWeekendHour,
-		}
+		ncfg := buildNotifyCfg(scfg)
 		bot := notify.NewBot(ncfg.Token, ncfg.ChatID)
 		if kind == "evening" {
 			return notify.SendEvening(bot, db, ncfg)
@@ -383,6 +394,23 @@ func makeTestNotifyFn(db *storage.DB, notifyDefaults storage.NotifyConfig, aiDef
 	}
 }
 
+// makeMorningTrigger returns the opportunistic, ingest-driven morning report
+// trigger. Fires from onNewData on every batch of incoming health data; bails
+// quickly when conditions aren't met so it's safe to call frequently.
+//
+// Gates (in order):
+//   1. AI configured (otherwise no insight to layer on top — we still want the
+//      user to see something, but the rule-based path is the fallback scheduler's
+//      job; this opportunistic trigger is the "AI is ready" path).
+//   2. Past the morning floor (05:00 in tz) — don't ping at 3 a.m.
+//   3. Not already sent today.
+//   4. Today's step count > 300 — proxy for "user is up and moving". Without
+//      this, the trigger could fire at 5:01 because the watch did a sync.
+//   5. Sleep data has settled (storage.SleepSettled). This is the new gate:
+//      previously we relied on the AI-insight check + step count, which let
+//      the report fire while the watch was still recording the second half
+//      of a wake-walk-sleep-again cycle. Now we wait for the watch to stop
+//      writing.
 func makeMorningTrigger(db *storage.DB, lock *int32, aiDefaults storage.AIConfig, notifyDefaults storage.NotifyConfig) func() {
 	return func() {
 		if !atomic.CompareAndSwapInt32(lock, 0, 1) {
@@ -419,25 +447,24 @@ func makeMorningTrigger(db *storage.DB, lock *int32, aiDefaults storage.AIConfig
 			return
 		}
 
-		if cfg.Enabled() {
-			ncfg := notify.Config{
-				Token: cfg.Token, ChatID: cfg.ChatID, Lang: cfg.Lang,
-				Timezone:           cfg.Timezone,
-				MorningWeekdayHour: cfg.MorningWeekdayHour,
-				MorningWeekendHour: cfg.MorningWeekendHour,
-				EveningWeekdayHour: cfg.EveningWeekdayHour,
-				EveningWeekendHour: cfg.EveningWeekendHour,
-			}
-			bot := notify.NewBot(ncfg.Token, ncfg.ChatID)
-			if err := notify.SendMorning(bot, db, ncfg); err != nil {
-				log.Printf("morning trigger: send telegram: %v", err)
-				return
-			}
+		if !cfg.Enabled() {
+			return
+		}
+		ncfg := buildNotifyCfg(cfg)
+		bot := notify.NewBot(ncfg.Token, ncfg.ChatID)
+		sent, reason, err := notify.SendMorningSmart(bot, db, ncfg, false)
+		if err != nil {
+			log.Printf("morning trigger: send telegram: %v", err)
+			return
+		}
+		if !sent {
+			log.Printf("morning trigger: deferring — %s", reason)
+			return
 		}
 		if err := db.MarkMorningReportSent(today); err != nil {
 			log.Printf("morning trigger: mark sent: %v", err)
 		}
-		log.Printf("morning trigger: done, insight saved for %s", today)
+		log.Printf("morning trigger: sent (reason=%s) for %s", reason, today)
 	}
 }
 
@@ -449,14 +476,7 @@ func runReportScheduler(db *storage.DB, defaults storage.NotifyConfig, aiDefault
 			continue
 		}
 
-		ncfg := notify.Config{
-			Token: cfg.Token, ChatID: cfg.ChatID, Lang: cfg.Lang,
-			Timezone:           cfg.Timezone,
-			MorningWeekdayHour: cfg.MorningWeekdayHour,
-			MorningWeekendHour: cfg.MorningWeekendHour,
-			EveningWeekdayHour: cfg.EveningWeekdayHour,
-			EveningWeekendHour: cfg.EveningWeekendHour,
-		}
+		ncfg := buildNotifyCfg(cfg)
 
 		now := time.Now()
 		nextMorning := ncfg.NextMorning(now)
@@ -478,32 +498,72 @@ func runReportScheduler(db *storage.DB, defaults storage.NotifyConfig, aiDefault
 		if !cfg.Enabled() {
 			continue
 		}
+		ncfg = buildNotifyCfg(cfg)
 		bot := notify.NewBot(cfg.Token, cfg.ChatID)
 		if isMorning {
-			loc := time.Local
-			if ncfg.Timezone != "" {
-				if l, err := time.LoadLocation(ncfg.Timezone); err == nil {
-					loc = l
-				}
-			}
-			today := time.Now().In(loc).Format("2006-01-02")
-			if db.HasSentMorningReport(today) {
-				log.Println("report scheduler: morning report already sent by smart trigger, skipping")
-				continue
-			}
-			log.Println("report scheduler: sending morning report (fallback)…")
-			ensureTodayAIInsight(db, aiDefaults, cfg.Lang)
-			if err := notify.SendMorning(bot, db, ncfg); err != nil {
-				log.Printf("report scheduler: morning send error: %v", err)
-			} else {
-				db.MarkMorningReportSent(today)
-			}
+			runMorningSmartRetry(bot, db, ncfg, aiDefaults)
 		} else {
 			log.Println("report scheduler: sending evening report…")
 			if err := notify.SendEvening(bot, db, ncfg); err != nil {
 				log.Printf("report scheduler: evening send error: %v", err)
 			}
 		}
+	}
+}
+
+// runMorningSmartRetry implements the scheduler-side smart-retry loop. It is
+// entered at the configured morning hour and ticks every 15 minutes until
+// either the report has been sent (by this loop, or by the opportunistic
+// ingest trigger) or the cap time is reached. At the cap, it force-sends with
+// a stale-data banner so we never go a day without a morning report.
+func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, ncfg notify.Config, aiDefaults storage.AIConfig) {
+	const tick = 15 * time.Minute
+
+	loc := time.Local
+	if ncfg.Timezone != "" {
+		if l, err := time.LoadLocation(ncfg.Timezone); err == nil {
+			loc = l
+		}
+	}
+	cap := ncfg.MorningCapTime(time.Now())
+	log.Printf("morning smart-retry: window until %s", cap.Format("15:04"))
+
+	// Weekly data-quality digest — fires once on the configured day-of-week
+	// (default Monday). Sent before the morning report so it lands in its own
+	// notification rather than mingling with sleep numbers.
+	notify.MaybeSendWeeklyDigest(bot, db, ncfg)
+
+	for {
+		today := time.Now().In(loc).Format("2006-01-02")
+		if db.HasSentMorningReport(today) {
+			log.Println("morning smart-retry: already sent (likely by ingest trigger), exiting loop")
+			return
+		}
+
+		// Try to (re)generate AI insight on each tick — cheap if cached.
+		ensureTodayAIInsight(db, aiDefaults, ncfg.Lang)
+
+		past := time.Now().After(cap)
+		sent, reason, err := notify.SendMorningSmart(bot, db, ncfg, past)
+		if err != nil {
+			log.Printf("morning smart-retry: send error: %v", err)
+		}
+		if sent {
+			if perr := db.MarkMorningReportSent(today); perr != nil {
+				log.Printf("morning smart-retry: mark sent: %v", perr)
+			}
+			log.Printf("morning smart-retry: sent (reason=%s, forced=%v)", reason, past)
+			return
+		}
+		if past {
+			// Force-send returned not-sent without an error — only happens when
+			// the bot is somehow disabled mid-loop. Bail to avoid spinning.
+			log.Printf("morning smart-retry: past cap but not sent (reason=%s), giving up", reason)
+			return
+		}
+
+		log.Printf("morning smart-retry: deferring (reason=%s), retry in %s", reason, tick)
+		time.Sleep(tick)
 	}
 }
 
