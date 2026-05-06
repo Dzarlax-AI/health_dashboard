@@ -577,7 +577,30 @@ func (h *Handler) listMetrics(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	jsonResponse(w, metrics)
+	lang := r.URL.Query().Get("lang")
+	if lang != "ru" && lang != "sr" {
+		lang = "en"
+	}
+	type metricItem struct {
+		Name        string `json:"name"`
+		DisplayName string `json:"display_name"`
+		Units       string `json:"units"`
+		Count       int    `json:"count"`
+		Min         string `json:"min"`
+		Max         string `json:"max"`
+	}
+	out := make([]metricItem, 0, len(metrics))
+	for _, m := range metrics {
+		out = append(out, metricItem{
+			Name:        m.Name,
+			DisplayName: MetricName(lang, m.Name),
+			Units:       m.Units,
+			Count:       m.Count,
+			Min:         m.Min,
+			Max:         m.Max,
+		})
+	}
+	jsonResponse(w, out)
 }
 
 func (h *Handler) metricRange(w http.ResponseWriter, r *http.Request) {
