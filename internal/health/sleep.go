@@ -56,15 +56,20 @@ func scoreSleep(d RawMetrics, ls LangStrings) *BriefingSection {
 	// Display values use today (index 0); scoring uses 3-day avg above.
 	todaySleep := d.Sleep[0]
 
-	if score >= 5 {
+	// Status floor: never claim "good" when the 3-day average is under 6h, even
+	// if deep%/regularity points pile up. Otherwise the summary ("you're sleeping
+	// well") contradicts the duration bullet ("less than usual") and the
+	// objective number.
+	switch {
+	case score >= 5 && recent >= 6.0:
 		sec.Status = "good"
-		sec.Summary = fmt.Sprintf(ls["sleep_summary_good"], todaySleep)
-	} else if score >= 3 {
+		sec.Summary = fmt.Sprintf(ls["sleep_summary_good"], recent)
+	case score >= 3 || recent >= 5.0:
 		sec.Status = "fair"
-		sec.Summary = fmt.Sprintf(ls["sleep_summary_fair"], todaySleep)
-	} else {
+		sec.Summary = fmt.Sprintf(ls["sleep_summary_fair"], recent)
+	default:
 		sec.Status = "low"
-		sec.Summary = fmt.Sprintf(ls["sleep_summary_low"], todaySleep)
+		sec.Summary = fmt.Sprintf(ls["sleep_summary_low"], recent)
 	}
 
 	t := trend(pct, false)

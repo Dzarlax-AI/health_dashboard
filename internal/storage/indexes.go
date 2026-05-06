@@ -2,13 +2,33 @@ package storage
 
 import "log"
 
-// EnsureIndexes creates expression indexes that speed up common queries.
-// Safe to call on every startup — uses IF NOT EXISTS.
+// EnsureIndexes creates expression indexes that speed up common queries and
+// applies schema migrations that aren't part of init.sql. Safe to call on
+// every startup — uses IF NOT EXISTS.
 func (s *DB) EnsureIndexes() {
 	ctx, cancel := longCtx()
 	defer cancel()
 
+	// Schema migrations. Kept here (not in init.sql) so existing deployments
+	// pick them up without manual intervention. ADD COLUMN IF NOT EXISTS is a
+	// metadata-only change in Postgres ≥ 11 — fast even on the 3.7M-row table.
+	migrations := []string{
+		// quality flag for soft-suspect / hard-impossible filtering. Default
+		// 'ok' so existing rows behave identically until something flips them.
+		`ALTER TABLE metric_points ADD COLUMN IF NOT EXISTS quality TEXT NOT NULL DEFAULT 'ok'`,
+	}
+	for _, ddl := range migrations {
+		if _, err := s.pool.Exec(ctx, ddl); err != nil {
+			log.Printf("migrate: %v (query: %.80s)", err, ddl)
+		}
+	}
+
 	indexes := []string{
+		// Partial index covers the hot path — baseline reads filter quality='ok'.
+		// Defined inline (not in the migration block) because it depends on the
+		// quality column existing first.
+		`CREATE INDEX IF NOT EXISTS idx_points_quality_metric ON metric_points (metric_name, SUBSTRING(date,1,10)) WHERE quality = 'ok'`,
+
 		// Speeds up GROUP BY / ORDER BY on the date part of hourly_metrics.hour
 		`CREATE INDEX IF NOT EXISTS idx_hourly_date ON hourly_metrics (SUBSTRING(hour,1,10))`,
 

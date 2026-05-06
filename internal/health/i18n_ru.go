@@ -151,4 +151,45 @@ var ru = LangStrings{
 	"energy_component_autonomic_stress": "Автономный стресс (RHR / HRV)",
 
 	"details": "Детали",
+
+	// Telegram report sections
+	"tg_morning_header":      "Утренний отчёт",
+	"tg_evening_header":      "Что накопилось за день",
+	"tg_readiness":           "Готовность",
+	"tg_readiness_today":     "сегодня",
+	"tg_readiness_trend":     "тренд 7 дней",
+	"tg_today":               "Сегодня",
+	"tg_yesterday":           "Вчера",
+	"tg_recommendation":      "План на сегодня",
+	"tg_alerts":              "Аномалии",
+	"tg_insights":            "Инсайты",
+	"tg_sources":             "Источники",
+	"tg_energy":              "Энергия",
+	"tg_no_data":             "Свежих данных пока нет.",
+	"tg_warn_stale":          "<i>Данные устарели на %d дн. — возможно, синхронизация ещё не прошла.</i>",
+	"tg_warn_no_sleep":       "<i>Данных о сне прошлой ночи пока нет — возможно, телефон ещё не синхронизировался.</i>",
+	"tg_warn_no_activity":    "<i>Данных об активности за сегодня пока нет.</i>",
+	"tg_vs_yesterday_up":     "+%.0f%% ко вчера",
+	"tg_vs_yesterday_down":   "%.0f%% ко вчера",
+
+	// Smart-retry stale-data banners
+	"tg_stale_no_data":        "⏰ <i>Дедлайн наступил, но данных о сне с часов так и не пришло — открой Health или проверь синхронизацию Apple Watch.</i>",
+	"tg_stale_recent_segment": "⏰ <i>Дедлайн наступил, но часы всё ещё пишут сон — числа ниже могут быть неполными.</i>",
+	"tg_stale_still_writing":  "⏰ <i>Дедлайн наступил, но фрагменты сна продолжают приходить — числа ниже могут быть неполными.</i>",
+
+	// Per-metric "device off" banners
+	"tg_watch_off":     "🔕 <b>Apple Watch не на руке</b> — последние HRV/RHR были %s назад. Восстановление не оценить.",
+	"tg_phone_off":     "📵 <b>Телефон не синкает</b> — данных о шагах нет уже %s. Активность пропущена.",
+	"tg_sleep_silence": "😴 <b>Сон не записан</b> — последняя ночь с данными была %s назад.",
+	"tg_dur_hours":     "%dч",
+	"tg_dur_days":      "%d дн.",
+
+	// Weekly data-quality digest
+	"tg_digest_header":      "🔬 Качество данных за неделю",
+	"tg_digest_clean":       "Всё чисто — за последние %d дней аномалий нет.",
+	"tg_digest_impossible":  "🚫 <b>Невозможные значения</b> (ошибки сенсора)",
+	"tg_digest_suspect":     "⚠️ <b>Подозрительные значения</b> (>3σ от твоей нормы)",
+	"tg_digest_missed":      "😴 <b>Ночи без данных о сне</b>",
+	"tg_digest_watch_off":   "🔕 <b>Часы сняты:</b> около %dч за период",
+	"tg_digest_more_in_ui":  "<i>Подробности по строкам — в админке.</i>",
 }

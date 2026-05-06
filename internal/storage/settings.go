@@ -15,6 +15,11 @@ type NotifyConfig struct {
 	MorningWeekendHour int
 	EveningWeekdayHour int
 	EveningWeekendHour int
+	// MorningCapHour is the deadline (24h clock, in Timezone) for the smart-retry
+	// loop. Past this hour the morning report fires regardless of whether sleep
+	// data has settled, with a stale-data banner. Defaults to MorningHour+4 with
+	// a floor of 11 if unset.
+	MorningCapHour int
 }
 
 // Enabled returns true when Telegram credentials are present.
@@ -88,7 +93,14 @@ func (s *DB) GetNotifyConfig(defaults NotifyConfig) NotifyConfig {
 		MorningWeekendHour: getSettingInt(s, "report_morning_weekend", defaults.MorningWeekendHour),
 		EveningWeekdayHour: getSettingInt(s, "report_evening_weekday", defaults.EveningWeekdayHour),
 		EveningWeekendHour: getSettingInt(s, "report_evening_weekend", defaults.EveningWeekendHour),
+		MorningCapHour:     getSettingInt(s, "report_morning_cap", defaults.MorningCapHour),
 	}
+}
+
+// GetSettingInt is the exported variant of getSettingInt for callers outside
+// this package (notify/digest.go uses it for weekly-digest day-of-week).
+func (s *DB) GetSettingInt(key string, fallback int) int {
+	return getSettingInt(s, key, fallback)
 }
 
 func getSettingInt(s *DB, key string, fallback int) int {

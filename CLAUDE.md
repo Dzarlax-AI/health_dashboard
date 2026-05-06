@@ -123,6 +123,12 @@ Defined in `internal/storage/aggregates.go::SumMetrics` (exported):
 
 `sleepDedupClause()` in `aggregates.go` excludes midnight summary records (00:00:00) when real sleep fragments exist for the same day+source. Applied to all sleep_* metrics in raw queries and hourly cache building.
 
+## Sleep Source Cross-Validation
+
+Sleep cross-validation SQL (Apple Watch > RingConn with MIN > 1h-gated take-MIN-when-divergent rule) lives in helper `sleepCrossValidationPickExpr(valCol string)` in `internal/storage/aggregates.go`. **Never copy this SQL inline** — there were five parallel copies that drifted apart over PRs #8 → #9 → #10 (point-fix per copy). New read/write paths for sleep_* metrics MUST call the helper. The MIN > 1h gate is critical: without it, a RingConn 0.x-hour daily-summary stub satisfies "MAX > MIN×1.4" and clobbers Apple Watch's real 7+h night.
+
+Helper is called from: `buildDailyMetricCol` (force-backfill writes), `metricDataDayFromHourly` and `metricDataRaw` (read paths for /api/metrics/data), and `briefing.go::fetch` (look-back fetcher for AI briefing + readiness). Plus a separately-shaped CTE constant `preferredSleepSourceSQL` for source_totals CTE callers — that one runs against pre-CTE'd subselects rather than GROUP BY aggregates, so it didn't merge cleanly into the helper.
+
 ## Environment Variables
 
 | Variable | Default | Purpose |

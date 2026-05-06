@@ -9,9 +9,9 @@ func scoreActivity(d RawMetrics, ls LangStrings) *BriefingSection {
 	sec := &BriefingSection{Key: "activity", Title: ls["sec_activity"], Icon: "activity"}
 	score, maxScore := 0, 0
 
-	var stepsToday float64
+	var stepsToday, stepsRecent float64
 	if len(d.Steps) >= 3 {
-		stepsRecent := avg(d.Steps[:min(3, len(d.Steps))])
+		stepsRecent = avg(d.Steps[:min(3, len(d.Steps))])
 		stepsBase := avg(d.Steps)
 		pct := pctChange(stepsRecent, stepsBase)
 		maxScore += 2
@@ -84,9 +84,17 @@ func scoreActivity(d RawMetrics, ls LangStrings) *BriefingSection {
 
 	if maxScore > 0 {
 		ratio := float64(score) / float64(maxScore)
-		stepsLabel := fmt.Sprintf("%.0f", stepsToday)
-		if stepsToday >= 1000 {
-			stepsLabel = formatNumber(int(stepsToday))
+		// Summary text says "averaging X steps" — feed it the 3-day average,
+		// not today's count. Falls back to today only if we never set stepsRecent
+		// (no steps data was available, which can't happen here since maxScore>0
+		// implies at least one branch ran, but guard anyway).
+		stepsForLabel := stepsRecent
+		if stepsForLabel == 0 {
+			stepsForLabel = stepsToday
+		}
+		stepsLabel := fmt.Sprintf("%.0f", stepsForLabel)
+		if stepsForLabel >= 1000 {
+			stepsLabel = formatNumber(int(stepsForLabel))
 		}
 		if ratio >= 0.7 {
 			sec.Status = "good"
