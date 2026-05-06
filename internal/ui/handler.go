@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"log"
 	"math"
 	"net/http"
 	"strconv"
@@ -813,6 +814,7 @@ func (h *Handler) healthBriefing(w http.ResponseWriter, r *http.Request) {
 		lang = "en"
 	}
 	db := h.tenantDB(r)
+	schema := h.tenantSchema(r)
 	resp, err := db.GetHealthBriefing(lang)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -824,6 +826,35 @@ func (h *Handler) healthBriefing(w http.ResponseWriter, r *http.Request) {
 	if resp != nil {
 		today := time.Now().Format("2006-01-02")
 		resp.AIInsight = db.GetAIBriefing(today, lang)
+		// Lazy regen: if cache is empty and AI is now configured (e.g. admin
+		// just populated global_settings mid-day), generate inline so the
+		// user sees today's insight without waiting for tomorrow's morning
+		// trigger. Synchronous — keeps logic simple at the cost of a few
+		// seconds on the cold-cache request; iOS already shows a spinner.
+		if resp.AIInsight == "" {
+			aiDefaults := h.mgr.AIDefaultsFor(r.Context(), schema)
+			aiCfg := db.GetAIConfig(aiDefaults)
+			if aiCfg.Enabled() {
+				if raw := db.GetRawMetrics(); raw != nil {
+					if rawJSON, jerr := json.Marshal(raw); jerr == nil {
+						insight, payload, gerr := ai.GenerateMorningBriefing(
+							aiCfg.APIKey, aiCfg.Model, aiCfg.MaxOutputTokens,
+							rawJSON, lang,
+						)
+						if gerr == nil && strings.TrimSpace(insight) != "" {
+							if serr := db.SaveAIBriefing(today, insight, payload, lang); serr != nil {
+								// Surface storage faults — silently swallowing
+								// would have us re-hit Gemini on every read.
+								log.Printf("healthBriefing: lazy-regen save: %v", serr)
+							}
+							resp.AIInsight = insight
+						} else if gerr != nil {
+							log.Printf("healthBriefing: lazy-regen gemini: %v", gerr)
+						}
+					}
+				}
+			}
+		}
 	}
 	jsonResponse(w, resp)
 }
@@ -930,11 +961,21 @@ func (h *Handler) userSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 // adminAISettings handles GET/POST /api/admin/settings — Gemini config, admin only.
+//
+// Gemini config is now installation-wide: writes go to
+// `health_registry.global_settings`, reads layer that on top of env
+// defaults (see Manager.AIDefaultsFor). Per-tenant overrides in
+// `<schema>.settings` still win, but the admin UI no longer creates new
+// per-tenant entries — one save reaches every tenant whose own config is
+// blank, including non-admin users like Maria.
 func (h *Handler) adminAISettings(w http.ResponseWriter, r *http.Request) {
-	db := h.tenantDB(r)
 	schema := h.tenantSchema(r)
 
 	if r.Method == http.MethodPost {
+		if h.reg == nil {
+			http.Error(w, "registry unavailable", http.StatusInternalServerError)
+			return
+		}
 		var body map[string]string
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "invalid JSON", http.StatusBadRequest)
@@ -949,7 +990,7 @@ func (h *Handler) adminAISettings(w http.ResponseWriter, r *http.Request) {
 				clean[k] = v
 			}
 		}
-		if err := db.SaveSettings(clean); err != nil {
+		if err := h.reg.SaveGlobalSettings(r.Context(), clean); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -957,8 +998,13 @@ func (h *Handler) adminAISettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	aiDefaults := h.mgr.AIDefaultsFor(schema)
-	aiCfg := db.GetAIConfig(aiDefaults)
+	// Show the installation-wide value (global + env), NOT the admin's own
+	// tenant override. Otherwise saving a new global key and refreshing
+	// would re-display whatever legacy `<schema>.settings.gemini_*` row the
+	// admin has — making the form look like the save didn't take. The
+	// settings page exists to manage the global default; tenant overrides
+	// are deliberately invisible here.
+	aiCfg := h.mgr.AIDefaultsFor(r.Context(), schema)
 	jsonResponse(w, map[string]any{
 		"gemini_api_key":    aiCfg.APIKey,
 		"gemini_model":      aiCfg.Model,
@@ -969,8 +1015,11 @@ func (h *Handler) adminAISettings(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) adminAIModels(w http.ResponseWriter, r *http.Request) {
 	schema := h.tenantSchema(r)
-	aiDefaults := h.mgr.AIDefaultsFor(schema)
-	aiCfg := h.tenantDB(r).GetAIConfig(aiDefaults)
+	// Use the installation-wide config (global + env), same source as
+	// /api/admin/settings GET. Layering the admin's tenant override here
+	// would make model discovery use a different API key than what the
+	// admin just saved on the settings page.
+	aiCfg := h.mgr.AIDefaultsFor(r.Context(), schema)
 	if !aiCfg.Enabled() {
 		http.Error(w, "Gemini API key not configured", http.StatusBadRequest)
 		return

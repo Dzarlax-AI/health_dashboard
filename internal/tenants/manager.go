@@ -3,6 +3,7 @@ package tenants
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
 
 	"health-receiver/internal/registry"
@@ -232,14 +233,44 @@ func (m *Manager) NotifyDefaultsFor(schema string) storage.NotifyConfig {
 	return storage.NotifyConfig{}
 }
 
-// AIDefaultsFor returns the AI config defaults for a schema.
-func (m *Manager) AIDefaultsFor(schema string) storage.AIConfig {
+// AIDefaultsFor returns the AI config defaults for a schema, layering
+// installation-wide global_settings on top of env-derived defaults so a
+// single admin-managed key reaches every tenant whose own settings are
+// blank. Per-tenant overrides (in each schema's `settings` table) still
+// win — global is a fallback, not a force.
+//
+// `ctx` is propagated into the registry lookup so request-scoped cancel
+// / deadline shut down the DB query along with the HTTP request.
+func (m *Manager) AIDefaultsFor(ctx context.Context, schema string) storage.AIConfig {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
+	base := storage.AIConfig{}
 	if e, ok := m.tenants[schema]; ok && e.callbacks != nil {
-		return e.callbacks.AIDefaults
+		base = e.callbacks.AIDefaults
 	}
-	return storage.AIConfig{}
+	m.mu.RUnlock()
+
+	if m.reg == nil {
+		return base
+	}
+	// Comma-ok presence check (not !=""): a row written by the admin with
+	// an empty value should clear the env default, otherwise the precedence
+	// `tenant.settings -> global -> env` is broken (an explicit blank in
+	// global would silently fall through to env).
+	g := m.reg.GetAllGlobalSettings(ctx)
+	if v, ok := g["gemini_api_key"]; ok {
+		base.APIKey = v
+	}
+	if v, ok := g["gemini_model"]; ok {
+		base.Model = v
+	}
+	if v, ok := g["gemini_max_tokens"]; ok {
+		if v == "" {
+			base.MaxOutputTokens = 0 // gemini.go treats <=0 as "use default 5000"
+		} else if n, err := strconv.Atoi(v); err == nil {
+			base.MaxOutputTokens = n
+		}
+	}
+	return base
 }
 
 // CreateUserSchema creates a new PostgreSQL schema and initialises all tables.

@@ -108,7 +108,71 @@ func (r *Registry) EnsureSchema(ctx context.Context) error {
 	}
 	// Add email column to existing installations that predate this field.
 	_, _ = r.pool.Exec(ctx, `ALTER TABLE health_registry.users ADD COLUMN IF NOT EXISTS email TEXT UNIQUE`)
+
+	// global_settings holds installation-wide config (e.g. shared Gemini API
+	// key) that admins manage once for all tenants. Per-tenant overrides in
+	// each schema's settings table still win — global is a fallback layered
+	// on top of env defaults.
+	_, err = r.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS health_registry.global_settings (
+			key        TEXT PRIMARY KEY,
+			value      TEXT NOT NULL DEFAULT '',
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("create global_settings table: %w", err)
+	}
 	return nil
+}
+
+// GetGlobalSetting returns the stored value for `key`, or "" when unset.
+func (r *Registry) GetGlobalSetting(ctx context.Context, key string) string {
+	var v string
+	_ = r.pool.QueryRow(ctx,
+		`SELECT value FROM health_registry.global_settings WHERE key = $1`, key,
+	).Scan(&v)
+	return v
+}
+
+// GetAllGlobalSettings returns every key/value pair from global_settings.
+func (r *Registry) GetAllGlobalSettings(ctx context.Context) map[string]string {
+	out := make(map[string]string)
+	rows, err := r.pool.Query(ctx, `SELECT key, value FROM health_registry.global_settings`)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err == nil {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// SaveGlobalSettings upserts the supplied keys atomically.
+func (r *Registry) SaveGlobalSettings(ctx context.Context, kv map[string]string) error {
+	if len(kv) == 0 {
+		return nil
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	for k, v := range kv {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO health_registry.global_settings (key, value, updated_at)
+			VALUES ($1, $2, NOW())
+			ON CONFLICT (key) DO UPDATE
+			SET value = EXCLUDED.value, updated_at = NOW()
+		`, k, v); err != nil {
+			return fmt.Errorf("save %q: %w", k, err)
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 // IsEmpty reports whether the users table has no rows.

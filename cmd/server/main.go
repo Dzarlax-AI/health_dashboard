@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -589,6 +590,14 @@ func ensureTodayAIInsight(db *storage.DB, aiDefaults storage.AIConfig, lang stri
 	insight, fullPayload, err := ai.GenerateMorningBriefing(aiCfg.APIKey, aiCfg.Model, aiCfg.MaxOutputTokens, rawJSON, lang)
 	if err != nil {
 		log.Printf("ensureTodayAIInsight: gemini: %v", err)
+		return ""
+	}
+	// Don't poison the cache with an empty (or whitespace-only) insight —
+	// Gemini occasionally returns success with empty content (content
+	// filter, max-tokens too low, …); we want the next tick to retry
+	// rather than treat the blank row as "done".
+	if strings.TrimSpace(insight) == "" {
+		log.Println("ensureTodayAIInsight: gemini returned empty content, not caching")
 		return ""
 	}
 	if err := db.SaveAIBriefing(today, insight, fullPayload, lang); err != nil {
