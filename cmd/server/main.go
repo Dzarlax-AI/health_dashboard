@@ -15,6 +15,7 @@ import (
 
 	"health-receiver/internal/ai"
 	"health-receiver/internal/handler"
+	"health-receiver/internal/health"
 	"health-receiver/internal/mcpserver"
 	"health-receiver/internal/notify"
 	"health-receiver/internal/registry"
@@ -53,6 +54,13 @@ func main() {
 		MaxOutputTokens: getEnvInt("GEMINI_MAX_TOKENS", 5000),
 	}
 
+	// HR zones for /health/workouts time-in-zone computation. Optional —
+	// when unset, hr_z*_sec columns stay NULL and ingest still succeeds.
+	hrZones, err := health.ParseHRZones(os.Getenv("HEALTH_HR_ZONES_BPM"))
+	if err != nil {
+		log.Printf("HEALTH_HR_ZONES_BPM: %v (workouts will ingest without zone breakdown)", err)
+	}
+
 	ctx := context.Background()
 
 	// --- Registry ---
@@ -88,7 +96,7 @@ func main() {
 		mgr.SetLegacyMode(legacyDB, apiKey, passwordHash)
 
 		runSingleTenant(ctx, addr, baseURL, trustFwdAuth, apiKey, mgr, nil,
-			legacyDB, "health", envNotifyDefaults, envAIDefaults)
+			legacyDB, "health", envNotifyDefaults, envAIDefaults, hrZones)
 		return
 	}
 
@@ -154,7 +162,7 @@ func main() {
 		}
 	}
 
-	handler.New(mgr, onNewData).Register(mux)
+	handler.New(mgr, onNewData, hrZones).Register(mux)
 
 	uiHandler := ui.New(mgr, reg, trustFwdAuth)
 	uiHandler.OnTenantCreated(func(schema string) {
@@ -187,7 +195,7 @@ func main() {
 func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth bool, apiKey string,
 	mgr *tenants.Manager, reg *registry.Registry,
 	db *storage.DB, schema string,
-	notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig) {
+	notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig, hrZones health.HRZones) {
 
 	go func() {
 		time.Sleep(5 * time.Second)
@@ -224,7 +232,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	go runReportScheduler(db, notifyDefaults, aiDefaults)
 
 	mux := http.NewServeMux()
-	handler.New(mgr, onNewData).Register(mux)
+	handler.New(mgr, onNewData, hrZones).Register(mux)
 	ui.New(mgr, reg, trustFwdAuth).Register(mux)
 	mcpserver.Register(mux, mgr, baseURL)
 

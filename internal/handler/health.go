@@ -68,16 +68,21 @@ type Handler struct {
 	mgr       *tenants.Manager
 	onNewData func(db *storage.DB, dates []string) // called after a successful insert; may be nil
 
+	hrZones health.HRZones // optional; zero value disables HR-zone computation on /health/workouts
+
 	jobs chan func()
 
 	sessMu   sync.Mutex
 	sessions map[string]*syncSession
 }
 
-func New(mgr *tenants.Manager, onNewData func(db *storage.DB, dates []string)) *Handler {
+// New constructs a handler. zones may be the zero value (HRZones{}) to leave
+// HR-zone columns NULL on workout ingest; configure via HEALTH_HR_ZONES_BPM.
+func New(mgr *tenants.Manager, onNewData func(db *storage.DB, dates []string), zones health.HRZones) *Handler {
 	h := &Handler{
 		mgr:       mgr,
 		onNewData: onNewData,
+		hrZones:   zones,
 		jobs:      make(chan func(), jobQueueSize),
 		sessions:  make(map[string]*syncSession),
 	}
@@ -180,6 +185,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/health", h.auth(h.health))
 	mux.HandleFunc("/health/hourly", h.auth(h.healthFiltered("sum")))
 	mux.HandleFunc("/health/vitals", h.auth(h.healthFiltered("avg")))
+	mux.HandleFunc("/health/workouts", h.auth(h.workouts))
 }
 
 // auth resolves the tenant DB from X-API-Key and injects it into the context.
