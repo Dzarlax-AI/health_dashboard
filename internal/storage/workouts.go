@@ -42,6 +42,16 @@ type Workout struct {
 	HRZ5Sec *int `json:"hr_z5_sec,omitempty"`
 }
 
+// WorkoutTypeCount is one row of ListWorkoutTypes — how many workouts of a
+// given name are stored, plus the date range. Used by the discovery tool
+// that lets Claude find the exact name string before filtering.
+type WorkoutTypeCount struct {
+	Name      string    `json:"name"`
+	Count     int       `json:"count"`
+	FirstSeen time.Time `json:"first_seen"`
+	LastSeen  time.Time `json:"last_seen"`
+}
+
 // WorkoutStats is the rollup returned by WorkoutStats.
 type WorkoutStats struct {
 	Count            int      `json:"count"`
@@ -193,6 +203,32 @@ func (s *DB) GetWorkout(externalID string) (*Workout, error) {
 		return nil, fmt.Errorf("get workout %s: %w", externalID, err)
 	}
 	return &w, nil
+}
+
+// ListWorkoutTypes returns distinct workout names with counts and the date
+// range observed for each. Order: most-frequent first.
+func (s *DB) ListWorkoutTypes() ([]WorkoutTypeCount, error) {
+	ctx, cancel := queryCtx()
+	defer cancel()
+	rows, err := s.pool.Query(ctx, `
+		SELECT name, COUNT(*) AS cnt, MIN(start_time), MAX(start_time)
+		FROM workouts
+		GROUP BY name
+		ORDER BY cnt DESC, name`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list workout types: %w", err)
+	}
+	defer rows.Close()
+	var out []WorkoutTypeCount
+	for rows.Next() {
+		var t WorkoutTypeCount
+		if err := rows.Scan(&t.Name, &t.Count, &t.FirstSeen, &t.LastSeen); err != nil {
+			return nil, fmt.Errorf("scan workout type: %w", err)
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }
 
 // WorkoutStats returns aggregate counters for workouts in [from, to],

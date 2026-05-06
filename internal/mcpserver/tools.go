@@ -136,6 +136,16 @@ Schema:
 
   health_records(id, received_at DATETIME, automation_name TEXT, session_id TEXT)
 
+  workouts(id, external_id TEXT UNIQUE,  -- HAE workout UUID
+    name TEXT,                            -- activity, e.g. 'Outdoor Run'
+    start_time TIMESTAMPTZ, end_time TIMESTAMPTZ, duration_sec DOUBLE PRECISION,
+    is_indoor BOOL, location TEXT,
+    avg_hr_bpm, max_hr_bpm, energy_kcal, intensity,
+    distance_km, avg_speed_kmh, max_speed_kmh, elevation_up_m,
+    step_count_total INT, step_cadence_spm,
+    temperature_c, humidity_pct,
+    hr_z1_sec INT .. hr_z5_sec INT)       -- time-in-HR-zone, Z1=recovery, Z5=VO2max
+
 Key metrics: heart_rate, resting_heart_rate, heart_rate_variability, blood_oxygen_saturation,
   step_count, active_energy, basal_energy_burned, walking_running_distance, apple_exercise_time,
   sleep_total, sleep_deep, sleep_rem, sleep_core, sleep_awake,
