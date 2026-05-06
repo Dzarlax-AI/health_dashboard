@@ -193,4 +193,8 @@ type BriefingResponse struct {
 	Sleep          *SleepAnalysis     `json:"sleep"`
 	MetricCards    []MetricCard       `json:"metric_cards"`
 	EnergyBank     *EnergyBank        `json:"energy_bank,omitempty"`
+	// AIInsight is the Gemini-generated narrative cached in `ai_briefings`.
+	// Populated by the API handler (not by GetHealthBriefing), so it stays
+	// optional and doesn't pollute internal-use callers of BriefingResponse.
+	AIInsight      string             `json:"ai_insight,omitempty"`
 }

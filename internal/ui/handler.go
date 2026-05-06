@@ -737,10 +737,18 @@ func (h *Handler) healthBriefing(w http.ResponseWriter, r *http.Request) {
 	if lang == "" {
 		lang = "en"
 	}
-	resp, err := h.tenantDB(r).GetHealthBriefing(lang)
+	db := h.tenantDB(r)
+	resp, err := db.GetHealthBriefing(lang)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	// Attach the Gemini narrative the dashboard HTML already shows.
+	// Cached server-side in `ai_briefings` (per day, per lang); empty when
+	// the day's briefing hasn't been generated yet or AI is disabled.
+	if resp != nil {
+		today := time.Now().Format("2006-01-02")
+		resp.AIInsight = db.GetAIBriefing(today, lang)
 	}
 	jsonResponse(w, resp)
 }
