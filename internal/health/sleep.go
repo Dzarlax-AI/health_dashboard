@@ -12,7 +12,6 @@ func scoreSleep(d RawMetrics, ls LangStrings) *BriefingSection {
 	sec := &BriefingSection{Key: "sleep", Title: ls["sec_sleep"], Icon: "moon"}
 	recent := avg(d.Sleep[:min(3, len(d.Sleep))])
 	baseline := avg(d.Sleep)
-	pct := pctChange(recent, baseline)
 
 	score := 0
 	if recent >= 7 {
@@ -72,15 +71,19 @@ func scoreSleep(d RawMetrics, ls LangStrings) *BriefingSection {
 		sec.Summary = fmt.Sprintf(ls["sleep_summary_low"], recent)
 	}
 
-	t := trend(pct, false)
+	// Note describes today's value vs baseline — same horizon as the displayed
+	// number. Using `pct` (3-day avg vs baseline) here produced contradictions
+	// like "7.0h/night (less than usual)" when today (7.0) > 3d-avg (6.7).
+	todayPct := pctChange(todaySleep, baseline)
 	durationNote := ls["sleep_dur_stable"]
-	if pct > 5 {
+	if todayPct > 5 {
 		durationNote = ls["sleep_dur_more"]
-	} else if pct < -5 {
+	} else if todayPct < -5 {
 		durationNote = ls["sleep_dur_less"]
 	}
 	sec.Details = append(sec.Details, BriefingDetail{
-		Label: ls["lbl_duration"], Value: fmt.Sprintf(ls["unit_hrs_night"], todaySleep), Note: durationNote, Trend: t,
+		Label: ls["lbl_duration"], Value: fmt.Sprintf(ls["unit_hrs_night"], todaySleep),
+		Note: durationNote, Trend: trend(todayPct, false),
 	})
 
 	// Deep/REM percentages: today's values relative to today's total.
