@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"log"
 	"math"
 	"net/http"
 	"strconv"
@@ -840,9 +841,15 @@ func (h *Handler) healthBriefing(w http.ResponseWriter, r *http.Request) {
 							aiCfg.APIKey, aiCfg.Model, aiCfg.MaxOutputTokens,
 							rawJSON, lang,
 						)
-						if gerr == nil && insight != "" {
-							_ = db.SaveAIBriefing(today, insight, payload, lang)
+						if gerr == nil && strings.TrimSpace(insight) != "" {
+							if serr := db.SaveAIBriefing(today, insight, payload, lang); serr != nil {
+								// Surface storage faults — silently swallowing
+								// would have us re-hit Gemini on every read.
+								log.Printf("healthBriefing: lazy-regen save: %v", serr)
+							}
 							resp.AIInsight = insight
+						} else if gerr != nil {
+							log.Printf("healthBriefing: lazy-regen gemini: %v", gerr)
 						}
 					}
 				}
