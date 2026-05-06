@@ -108,6 +108,7 @@ All configuration is via environment variables:
 | `GEMINI_API_KEY` | No | Gemini API key for AI morning briefing. Get free at [aistudio.google.com](https://aistudio.google.com/apikey). If not set — AI briefing disabled. |
 | `GEMINI_MODEL` | No | Gemini model to use. Default: `gemini-2.5-flash`. Configurable in Admin UI (dropdown fetched from Google API). |
 | `GEMINI_MAX_TOKENS` | No | Max output tokens for AI briefing. Default: `5000`. Configurable in Admin UI. |
+| `HEALTH_HR_ZONES_BPM` | No | Four ascending BPM borders defining the five HR training zones (Z1<B1, Z2<B2, Z3<B3, Z4<B4, Z5≥B4), e.g. `116,135,154,173`. When set, `/health/workouts` ingest computes time-in-zone per workout. When unset, the `hr_z*_sec` columns stay NULL and ingest still succeeds. |
 
 ## Health Auto Export Setup
 
@@ -150,6 +151,23 @@ Ready-to-import automation files are in the [`automations/`](automations/) folde
    - **Summarize Data: ON**
    - **Time Grouping: `Default`** (minute-level granularity for heart rate)
 6. **Sync Cadence**: Quantity `5`, Interval `Minutes`
+
+### Automation 3 -- Workouts (optional)
+
+If you want individual workouts (runs, rides, strength sessions) ingested into the `workouts` table — for "how much did I run last month" or "time in Z4 last week" questions — add a third automation. This is independent of Automations 1 and 2: those handle metric points (steps, sleep, HR), this one handles per-workout summaries.
+
+1. Create another automation
+2. Set **URL**: `http://your-server:8080/health/workouts`
+3. Same **Header**: `X-API-Key: your-secret-key`
+4. **Export Type**: `Workouts` (not `Health Metrics`)
+5. **Export Settings**:
+   - Export Format: `JSON`
+   - Date Range: `Since Last Sync`
+6. **Sync Cadence**: e.g. `1 Hour` (workouts don't need minute-level freshness)
+
+The endpoint stores summary fields only (duration, distance, energy, average / max HR, etc.) — per-second route polylines and per-minute HR samples are intentionally **not** persisted, since the goal is text-mode analysis, not map rendering. Re-uploads of the same workout are upserted by the workout's stable UUID, so it's safe to re-send the same range.
+
+If `HEALTH_HR_ZONES_BPM` is configured, the ingest path also computes time-in-zone (Z1..Z5) from the per-minute HR samples in the payload and stores five integer columns per workout. Pick zone borders that match your physiology — the Karvonen (HR Reserve) method using observed MaxHR and resting HR is more accurate than the textbook `220 - age` formula.
 
 The `/health` endpoint (no suffix) still accepts all metrics unfiltered for backward compatibility.
 
@@ -251,6 +269,9 @@ Available tools:
 | `find_anomalies` | Days where a metric was statistically unusual. |
 | `get_weekly_summary` | Week-by-week aggregates for one or more metrics. |
 | `get_personal_records` | All-time best and worst values per metric. |
+| `list_workouts` | List Apple Health workouts (runs, rides, strength) in a date range with summary fields and time-in-HR-zone. Optional name filter. |
+| `get_workout` | One workout by its HAE UUID. |
+| `workout_stats` | Aggregate counters for workouts in a range: count, total duration, distance, energy, avg/max HR, total time-in-HR-zone. |
 | `sql_query` | Run any read-only SQL SELECT on the PostgreSQL database. |
 
 ## Telegram Reports
