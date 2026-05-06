@@ -238,7 +238,10 @@ func (m *Manager) NotifyDefaultsFor(schema string) storage.NotifyConfig {
 // single admin-managed key reaches every tenant whose own settings are
 // blank. Per-tenant overrides (in each schema's `settings` table) still
 // win — global is a fallback, not a force.
-func (m *Manager) AIDefaultsFor(schema string) storage.AIConfig {
+//
+// `ctx` is propagated into the registry lookup so request-scoped cancel
+// / deadline shut down the DB query along with the HTTP request.
+func (m *Manager) AIDefaultsFor(ctx context.Context, schema string) storage.AIConfig {
 	m.mu.RLock()
 	base := storage.AIConfig{}
 	if e, ok := m.tenants[schema]; ok && e.callbacks != nil {
@@ -249,15 +252,21 @@ func (m *Manager) AIDefaultsFor(schema string) storage.AIConfig {
 	if m.reg == nil {
 		return base
 	}
-	g := m.reg.GetAllGlobalSettings(context.Background())
-	if v := g["gemini_api_key"]; v != "" {
+	// Comma-ok presence check (not !=""): a row written by the admin with
+	// an empty value should clear the env default, otherwise the precedence
+	// `tenant.settings -> global -> env` is broken (an explicit blank in
+	// global would silently fall through to env).
+	g := m.reg.GetAllGlobalSettings(ctx)
+	if v, ok := g["gemini_api_key"]; ok {
 		base.APIKey = v
 	}
-	if v := g["gemini_model"]; v != "" {
+	if v, ok := g["gemini_model"]; ok {
 		base.Model = v
 	}
-	if v := g["gemini_max_tokens"]; v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+	if v, ok := g["gemini_max_tokens"]; ok {
+		if v == "" {
+			base.MaxOutputTokens = 0 // gemini.go treats <=0 as "use default 5000"
+		} else if n, err := strconv.Atoi(v); err == nil {
 			base.MaxOutputTokens = n
 		}
 	}

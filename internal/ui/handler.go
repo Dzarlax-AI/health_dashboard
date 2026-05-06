@@ -831,7 +831,7 @@ func (h *Handler) healthBriefing(w http.ResponseWriter, r *http.Request) {
 		// trigger. Synchronous — keeps logic simple at the cost of a few
 		// seconds on the cold-cache request; iOS already shows a spinner.
 		if resp.AIInsight == "" {
-			aiDefaults := h.mgr.AIDefaultsFor(schema)
+			aiDefaults := h.mgr.AIDefaultsFor(r.Context(), schema)
 			aiCfg := db.GetAIConfig(aiDefaults)
 			if aiCfg.Enabled() {
 				if raw := db.GetRawMetrics(); raw != nil {
@@ -991,11 +991,13 @@ func (h *Handler) adminAISettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// AIDefaultsFor already overlays global on env, and GetAIConfig overlays
-	// the admin's own tenant on that — so the form keeps showing the
-	// effective values the admin currently sees.
-	aiDefaults := h.mgr.AIDefaultsFor(schema)
-	aiCfg := h.tenantDB(r).GetAIConfig(aiDefaults)
+	// Show the installation-wide value (global + env), NOT the admin's own
+	// tenant override. Otherwise saving a new global key and refreshing
+	// would re-display whatever legacy `<schema>.settings.gemini_*` row the
+	// admin has — making the form look like the save didn't take. The
+	// settings page exists to manage the global default; tenant overrides
+	// are deliberately invisible here.
+	aiCfg := h.mgr.AIDefaultsFor(r.Context(), schema)
 	jsonResponse(w, map[string]any{
 		"gemini_api_key":    aiCfg.APIKey,
 		"gemini_model":      aiCfg.Model,
@@ -1006,7 +1008,7 @@ func (h *Handler) adminAISettings(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) adminAIModels(w http.ResponseWriter, r *http.Request) {
 	schema := h.tenantSchema(r)
-	aiDefaults := h.mgr.AIDefaultsFor(schema)
+	aiDefaults := h.mgr.AIDefaultsFor(r.Context(), schema)
 	aiCfg := h.tenantDB(r).GetAIConfig(aiDefaults)
 	if !aiCfg.Enabled() {
 		http.Error(w, "Gemini API key not configured", http.StatusBadRequest)
