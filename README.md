@@ -269,6 +269,7 @@ Available tools:
 | `find_anomalies` | Days where a metric was statistically unusual. |
 | `get_weekly_summary` | Week-by-week aggregates for one or more metrics. |
 | `get_personal_records` | All-time best and worst values per metric. |
+| `list_workout_types` | Discover the distinct workout activity names recorded (e.g. "Outdoor Run", "Indoor Cycling") with counts and date ranges — call before `list_workouts` / `workout_stats` to find the exact name to filter on. |
 | `list_workouts` | List Apple Health workouts (runs, rides, strength) in a date range with summary fields and time-in-HR-zone. Optional name filter. |
 | `get_workout` | One workout by its HAE UUID. |
 | `workout_stats` | Aggregate counters for workouts in a range: count, total duration, distance, energy, avg/max HR, total time-in-HR-zone. |
