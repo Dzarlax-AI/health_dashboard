@@ -33,7 +33,7 @@ func registerMetricTools(s *server.MCPServer, _ DBResolver) {
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		date := req.GetString("date", time.Now().Format("2006-01-02"))
 		lang := req.GetString("lang", "en")
-		insight := ctxdb.FromContext(ctx).GetAIBriefing(date, lang)
+		insight := ctxdb.FromContext(ctx).GetAIInsightCombined(date, lang)
 		if insight == "" {
 			return mcp.NewToolResultText("No AI briefing available for " + date), nil
 		}

@@ -129,7 +129,7 @@ func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
 				FROM (
 					SELECT SUBSTRING(date,1,10) AS d, source, SUM(qty) AS source_sum
 					FROM metric_points
-					WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND qty > 0 %s
+					WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND qty > 0 AND quality = 'ok' %s
 					GROUP BY d, source
 				) sub
 				GROUP BY d
@@ -142,7 +142,7 @@ func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
 			r, e := s.pool.Query(ctx, `
 				SELECT `+agg+`(qty)
 				FROM metric_points
-				WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND qty > 0
+				WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND qty > 0 AND quality = 'ok'
 				GROUP BY SUBSTRING(date,1,10)
 				ORDER BY SUBSTRING(date,1,10) DESC
 				LIMIT $3`,
@@ -174,7 +174,7 @@ func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
 				FROM (
 					SELECT SUBSTRING(date,1,10) AS d, source, SUM(qty) AS source_sum
 					FROM metric_points
-					WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND qty > 0 %s
+					WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND qty > 0 AND quality = 'ok' %s
 					GROUP BY d, source
 				) sub
 				GROUP BY d
@@ -187,7 +187,7 @@ func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
 			r, e := s.pool.Query(ctx, `
 				SELECT SUBSTRING(date,1,10), `+agg+`(qty)
 				FROM metric_points
-				WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND qty > 0
+				WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND qty > 0 AND quality = 'ok'
 				GROUP BY SUBSTRING(date,1,10)
 				ORDER BY SUBSTRING(date,1,10) DESC
 				LIMIT $3`,
@@ -396,6 +396,7 @@ func (s *DB) computeReadinessHistory(outputDays int) ([]health.ReadinessPoint, e
 				    FROM metric_points
 				    WHERE metric_name = $1
 				      AND qty > 0
+				      AND quality = 'ok'
 				      AND SUBSTRING(date,1,10) >= $2
 				    GROUP BY SUBSTRING(date,1,10), source
 				) sub
@@ -409,6 +410,7 @@ func (s *DB) computeReadinessHistory(outputDays int) ([]health.ReadinessPoint, e
 				FROM metric_points
 				WHERE metric_name = $1
 				  AND qty > 0
+				  AND quality = 'ok'
 				  AND SUBSTRING(date,1,10) >= $2
 				GROUP BY SUBSTRING(date,1,10)`,
 				metric, fromDate)
@@ -507,7 +509,7 @@ func (s *DB) fetchDailyMetric(metric, lastDate string, days int, agg string) []f
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+agg+`(qty)
 		FROM metric_points
-		WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND qty > 0
+		WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND qty > 0 AND quality = 'ok'
 		GROUP BY SUBSTRING(date,1,10)
 		ORDER BY SUBSTRING(date,1,10) DESC
 		LIMIT $3`,
@@ -569,14 +571,14 @@ func (s *DB) freshDayFromRaw(date string) *dayRow {
 				WITH source_totals AS (
 					SELECT source, SUM(qty) AS source_total
 					FROM metric_points
-					WHERE metric_name=$1 AND SUBSTRING(date,1,10)=$2 AND qty > 0 %s
+					WHERE metric_name=$1 AND SUBSTRING(date,1,10)=$2 AND qty > 0 AND quality = 'ok' %s
 					GROUP BY source
 				) `, sleepDedup)+preferredSourceForMetric(sp.metric), sp.metric, date).Scan(&val)
 		} else {
 			err = s.pool.QueryRow(ctx, `
 				SELECT COALESCE(AVG(qty), 0)
 				FROM metric_points
-				WHERE metric_name=$1 AND SUBSTRING(date,1,10)=$2 AND qty > 0`,
+				WHERE metric_name=$1 AND SUBSTRING(date,1,10)=$2 AND qty > 0 AND quality = 'ok'`,
 				sp.metric, date).Scan(&val)
 		}
 		if err == nil && val > 0 {

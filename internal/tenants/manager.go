@@ -306,6 +306,7 @@ func (m *Manager) CreateUserSchema(ctx context.Context, schemaName string) error
 	}
 	db.EnsureIndexes()
 	db.EnsureAIBriefingsTable()
+	db.EnsureAIBriefingBlocksTable()
 	return nil
 }
 
