@@ -960,9 +960,11 @@ func (h *Handler) userSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	// Identity: who the caller is logged in as. Lets native clients show
 	// "Logged in as X · Tenant Y" without a separate /api/me round-trip,
-	// and helps catch mis-configured API keys early. Lookup is best-effort
-	// (legacy single-user mode and registry outages are silent).
-	if h.reg != nil {
+	// and helps catch mis-configured API keys early. Skipped in legacy
+	// single-user mode where there's no registry concept of users; that
+	// keeps the documented "legacy omits identity fields" contract from
+	// drifting if registry behaviour ever changes.
+	if h.reg != nil && !h.mgr.LegacyMode() {
 		if u, err := h.reg.GetBySchema(r.Context(), schema); err == nil && u != nil {
 			out["username"] = u.Username
 			out["tenant"] = u.SchemaName
