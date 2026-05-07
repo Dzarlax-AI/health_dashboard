@@ -219,6 +219,16 @@ func (r *Registry) GetByEmail(ctx context.Context, email string) (*User, error) 
 	`, email)
 }
 
+// GetBySchema looks up a user by their tenant schema name. Used by request
+// handlers that have already resolved a tenant schema and want the owning
+// user's identity (username) without re-running the original auth lookup.
+func (r *Registry) GetBySchema(ctx context.Context, schema string) (*User, error) {
+	return r.getUser(ctx, `
+		SELECT username, schema_name, api_key, password_hash, email, is_admin, created_at
+		FROM health_registry.users WHERE schema_name = $1
+	`, schema)
+}
+
 func (r *Registry) getUser(ctx context.Context, query string, arg string) (*User, error) {
 	var u User
 	var email *string
