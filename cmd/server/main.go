@@ -129,6 +129,14 @@ func main() {
 		log.Fatalf("list users: %v", err)
 	}
 
+	// One-time backfill of installation-wide Gemini config for installs
+	// that pre-date PR #16 (where AI settings were per-tenant). When the
+	// global table is empty but an admin tenant already has gemini_* rows,
+	// copy them up so non-admin tenants (Maria-style accounts) inherit.
+	if err := migrateGlobalAIIfNeeded(ctx, reg, mgr, users); err != nil {
+		log.Printf("global AI migration: %v", err)
+	}
+
 	for _, u := range users {
 		db, err := mgr.GetOrCreate(ctx, u.SchemaName)
 		if err != nil {
@@ -211,7 +219,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	}()
 
 	var morningLock int32
-	maybeFireMorningReport := makeMorningTrigger(db, &morningLock, aiDefaults, notifyDefaults)
+	maybeFireMorningReport := makeMorningTrigger(db, &morningLock, mgr, schema, notifyDefaults)
 	backfillDatesFn := makeBackfillDatesFn(db, schema)
 	onNewData := func(_ *storage.DB, dates []string) {
 		backfillDatesFn(dates)
@@ -219,7 +227,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	}
 
 	backfillFn := makeBackfillFn(db)
-	testNotifyFn := makeTestNotifyFn(db, notifyDefaults, aiDefaults)
+	testNotifyFn := makeTestNotifyFn(db, mgr, schema, notifyDefaults)
 
 	mgr.RegisterCallbacks(schema, tenants.TenantCallbacks{
 		Backfill:       backfillFn,
@@ -229,7 +237,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 		AIDefaults:     aiDefaults,
 	})
 
-	go runReportScheduler(db, notifyDefaults, aiDefaults)
+	go runReportScheduler(db, mgr, schema, notifyDefaults)
 
 	mux := http.NewServeMux()
 	handler.New(mgr, onNewData, hrZones).Register(mux)
@@ -268,11 +276,11 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, db *storage.DB, sche
 	}()
 
 	var morningLock int32
-	maybeFireMorningReport := makeMorningTrigger(db, &morningLock, aiDefaults, notifyDefaults)
+	maybeFireMorningReport := makeMorningTrigger(db, &morningLock, mgr, schema, notifyDefaults)
 
 	backfillFn := makeBackfillFn(db)
 	backfillDatesFn := makeBackfillDatesFn(db, schema)
-	testNotifyFn := makeTestNotifyFn(db, notifyDefaults, aiDefaults)
+	testNotifyFn := makeTestNotifyFn(db, mgr, schema, notifyDefaults)
 
 	mgr.RegisterCallbacks(schema, tenants.TenantCallbacks{
 		Backfill:       backfillFn,
@@ -283,7 +291,7 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, db *storage.DB, sche
 	})
 
 	_ = maybeFireMorningReport // triggered via onNewData in main mux
-	go runReportScheduler(db, notifyDefaults, aiDefaults)
+	go runReportScheduler(db, mgr, schema, notifyDefaults)
 }
 
 // makeBackfillFn returns the admin/import callback that recomputes caches.
@@ -387,7 +395,7 @@ func buildNotifyCfg(c storage.NotifyConfig) notify.Config {
 	}
 }
 
-func makeTestNotifyFn(db *storage.DB, notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig) func(string) error {
+func makeTestNotifyFn(db *storage.DB, mgr *tenants.Manager, schema string, notifyDefaults storage.NotifyConfig) func(string) error {
 	return func(kind string) error {
 		scfg := db.GetNotifyConfig(notifyDefaults)
 		if !scfg.Enabled() {
@@ -398,7 +406,9 @@ func makeTestNotifyFn(db *storage.DB, notifyDefaults storage.NotifyConfig, aiDef
 		if kind == "evening" {
 			return notify.SendEvening(bot, db, ncfg)
 		}
-		ensureTodayAIInsight(db, aiDefaults, scfg.Lang)
+		// Resolve AI defaults fresh — picks up admin's global config
+		// even if the env was empty at process start.
+		ensureTodayAIInsight(db, mgr.AIDefaultsFor(context.Background(), schema), scfg.Lang)
 		return notify.SendMorning(bot, db, ncfg)
 	}
 }
@@ -420,13 +430,16 @@ func makeTestNotifyFn(db *storage.DB, notifyDefaults storage.NotifyConfig, aiDef
 //      the report fire while the watch was still recording the second half
 //      of a wake-walk-sleep-again cycle. Now we wait for the watch to stop
 //      writing.
-func makeMorningTrigger(db *storage.DB, lock *int32, aiDefaults storage.AIConfig, notifyDefaults storage.NotifyConfig) func() {
+func makeMorningTrigger(db *storage.DB, lock *int32, mgr *tenants.Manager, schema string, notifyDefaults storage.NotifyConfig) func() {
 	return func() {
 		if !atomic.CompareAndSwapInt32(lock, 0, 1) {
 			return
 		}
 		defer atomic.StoreInt32(lock, 0)
 
+		// AIDefaultsFor on each tick so the admin's installation-wide
+		// Gemini key is honoured even if it was set after process start.
+		aiDefaults := mgr.AIDefaultsFor(context.Background(), schema)
 		aiCfg := db.GetAIConfig(aiDefaults)
 		if !aiCfg.Enabled() {
 			return
@@ -477,7 +490,7 @@ func makeMorningTrigger(db *storage.DB, lock *int32, aiDefaults storage.AIConfig
 	}
 }
 
-func runReportScheduler(db *storage.DB, defaults storage.NotifyConfig, aiDefaults storage.AIConfig) {
+func runReportScheduler(db *storage.DB, mgr *tenants.Manager, schema string, defaults storage.NotifyConfig) {
 	for {
 		cfg := db.GetNotifyConfig(defaults)
 		if !cfg.Enabled() {
@@ -510,7 +523,7 @@ func runReportScheduler(db *storage.DB, defaults storage.NotifyConfig, aiDefault
 		ncfg = buildNotifyCfg(cfg)
 		bot := notify.NewBot(cfg.Token, cfg.ChatID)
 		if isMorning {
-			runMorningSmartRetry(bot, db, ncfg, aiDefaults)
+			runMorningSmartRetry(bot, db, mgr, schema, ncfg)
 		} else {
 			log.Println("report scheduler: sending evening report…")
 			if err := notify.SendEvening(bot, db, ncfg); err != nil {
@@ -525,7 +538,7 @@ func runReportScheduler(db *storage.DB, defaults storage.NotifyConfig, aiDefault
 // either the report has been sent (by this loop, or by the opportunistic
 // ingest trigger) or the cap time is reached. At the cap, it force-sends with
 // a stale-data banner so we never go a day without a morning report.
-func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, ncfg notify.Config, aiDefaults storage.AIConfig) {
+func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager, schema string, ncfg notify.Config) {
 	const tick = 15 * time.Minute
 
 	loc := time.Local
@@ -550,7 +563,9 @@ func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, ncfg notify.Config, a
 		}
 
 		// Try to (re)generate AI insight on each tick — cheap if cached.
-		ensureTodayAIInsight(db, aiDefaults, ncfg.Lang)
+		// Resolve AI defaults fresh per-tick so admin-managed global
+		// config is honoured even when it was set mid-day.
+		ensureTodayAIInsight(db, mgr.AIDefaultsFor(context.Background(), schema), ncfg.Lang)
 
 		past := time.Now().After(cap)
 		sent, reason, err := notify.SendMorningSmart(bot, db, ncfg, past)
@@ -612,6 +627,55 @@ func ensureTodayAIInsight(db *storage.DB, aiDefaults storage.AIConfig, lang stri
 		log.Printf("ensureTodayAIInsight: save: %v", err)
 	}
 	return insight
+}
+
+// migrateGlobalAIIfNeeded copies an admin tenant's per-tenant Gemini
+// settings into installation-wide global_settings on first startup after
+// the global-config switchover (PR #16). No-op when global already has
+// a key (idempotent), when there's no admin user, or when the admin's
+// own tenant has no gemini_api_key. Picks the first admin in
+// creation order so the choice is deterministic.
+func migrateGlobalAIIfNeeded(
+	ctx context.Context, reg *registry.Registry, mgr *tenants.Manager, users []registry.User,
+) error {
+	if reg == nil {
+		return nil
+	}
+	g := reg.GetAllGlobalSettings(ctx)
+	if g["gemini_api_key"] != "" {
+		return nil // already migrated or set explicitly
+	}
+	var admin *registry.User
+	for i, u := range users {
+		if u.IsAdmin {
+			admin = &users[i]
+			break
+		}
+	}
+	if admin == nil {
+		return nil
+	}
+	db, err := mgr.GetOrCreate(ctx, admin.SchemaName)
+	if err != nil {
+		return fmt.Errorf("open admin pool: %w", err)
+	}
+	apiKey := db.GetSetting("gemini_api_key", "")
+	if apiKey == "" {
+		return nil
+	}
+	out := map[string]string{"gemini_api_key": apiKey}
+	if v := db.GetSetting("gemini_model", ""); v != "" {
+		out["gemini_model"] = v
+	}
+	if v := db.GetSetting("gemini_max_tokens", ""); v != "" {
+		out["gemini_max_tokens"] = v
+	}
+	if err := reg.SaveGlobalSettings(ctx, out); err != nil {
+		return fmt.Errorf("save global: %w", err)
+	}
+	log.Printf("global AI migration: copied %d gemini_* keys from %s tenant",
+		len(out), admin.SchemaName)
+	return nil
 }
 
 func getEnv(key, fallback string) string {
