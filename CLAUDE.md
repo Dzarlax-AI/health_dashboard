@@ -145,10 +145,36 @@ Helper is called from: `buildDailyMetricCol` (force-backfill writes), `metricDat
 | `REPORT_MORNING_WEEKEND` | `9` | Morning report hour on weekends |
 | `REPORT_EVENING_WEEKDAY` | `20` | Evening report hour on weekdays |
 | `REPORT_EVENING_WEEKEND` | `21` | Evening report hour on weekends |
+| `REPORT_MORNING_CAP` | `morningHour+4` (floor 11) | Smart-retry deadline for morning report — past this hour the report force-sends with a stale-data banner regardless of `SleepSettled`. Override via env or `report_morning_cap` setting |
 | `REPORT_TZ` | system local | Timezone for report scheduling (e.g. `Europe/Belgrade`) |
 | `GEMINI_API_KEY` | — | Gemini API key; enables AI morning briefing |
 | `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini model; overridable in Admin UI |
 | `GEMINI_MAX_TOKENS` | `5000` | Max output tokens for AI briefing; overridable in Admin UI |
+
+## Telegram Report Layout
+
+Morning + evening reports built in `internal/notify/report.go` (`formatMorning` / `formatEvening`). Two design rules that have been hard-won — don't break them without conscious reason:
+
+- **Rule-based bullets are authoritative; AI complements, never replaces.** The numeric bullets (from `internal/health/scoreSleep`/`scoreActivity`/`scoreRecovery`/`scoreCardio`) come from medical-literature heuristics. Gemini's prose is layered underneath as `🤖 <i>...</i>` italic. If AI hallucinates, the user can sanity-check against the bullets above. Applies to all sections; `🎯 Recommendation` is AI-only because there's no rule-based equivalent.
+- **AI insight gets parsed by block, not pasted as a single blob.** `internal/notify/aiparse.go` splits Gemini's `SLEEP / YESTERDAY / RECOVERY / RECOMMENDATION` headers (case-insensitive across en/ru/sr — `СОН/ВЧЕРА/ВОССТАНОВЛЕНИЕ/РЕКОМЕНДАЦИЯ`, `SAN/JUČE/OPORAVAK/PREPORUKA`). Each block lands under its matching rule-based section. If parsing fails, full text falls through as a single italic blob (graceful degradation).
+
+Morning order: Header → Headline → stale warning → EnergyBank → Readiness → Alerts → Sleep → Yesterday (activity+cardio) → Recovery → Recommendation. Evening is intentionally slimmer: dashboard cards (today so far) → EnergyBank (drained capacity) → Readiness → Alerts → Insights. The evening report does NOT show activity/cardio sections — those describe yesterday and would duplicate the morning report.
+
+**Smart-retry gate** (`internal/storage/sleep_settled.go::SleepSettled`): morning report only fires when last night's sleep data is "settled" — record exists for today, last segment ended ≥45min ago (handles wake-walk-dog-sleep-again), no fragments ingested in last 20min. Two paths in `cmd/server/main.go`: opportunistic ingest-driven trigger uses `force=false` (defers and waits for next ingest); scheduler poll loop ticks every 15min until `MorningCapHour`, then force-sends with a localised banner. Dedup via `db.HasSentMorningReport(today)`.
+
+**Per-metric freshness banners** (`internal/notify/report.go::computeFreshness` + `internal/storage/freshness.go::MetricsLastSeen`): when sensor data is stale, replace whole sections with banners instead of showing days-old numbers. Thresholds: sleep silence ≥36h → 😴 banner; HRV+RHR both silent ≥36h → 🔕 watch-off banner; step_count silent ≥24h → 📵 phone-off banner.
+
+## Quality Validation
+
+Three layers of data-quality safety on `metric_points`:
+
+1. **Hard-impossible drop on ingest.** `internal/health/quality.go` defines per-metric physiological ranges (HRV 4–300ms, RHR 28–150bpm, SpO2 70–100%, etc). `internal/handler/health.go::filterImpossible` drops out-of-range points before insert with rate-limited logging (`[QUALITY] drop ...`). Metrics without a configured range pass through unvalidated.
+2. **`quality` column flag** on `metric_points` (`TEXT NOT NULL DEFAULT 'ok'`, added via ALTER in `internal/storage/indexes.go::EnsureIndexes`). Values: `ok` | `impossible` | `suspect`. Partial index `idx_points_quality_metric` covers the hot path `WHERE quality='ok'`.
+3. **Soft-suspect z-score sweep** (`internal/storage/quality_audit.go::MarkSuspectPoints`): for autonomic metrics only (HRV, RHR, SpO2, Resp, wrist_temperature, VO2, body_mass), flags points >3σ from a 30-day baseline as `suspect`. Behavioural metrics (steps, calories, exercise) are excluded — their bimodal rest/active distribution makes z-score noisy. Legacy cleanup: `MarkExistingImpossible` retroactively flags points outside ranges.
+
+**Important: baseline reads do NOT yet filter `quality='ok'`.** The column and `Mark*` helpers exist; scoring (in `aggregates.go` / `briefing.go`) still reads all rows. Wiring the filter in is its own change and requires bumping `ScoreVersion` to invalidate cached daily scores. Until then, suspect flags are informational (visible in admin UI + weekly digest, but don't affect readiness).
+
+Admin UI section "Data quality audit" on `/admin` exposes three buttons: `GET /api/admin/quality-audit` (read-only), `POST /api/admin/quality-fix` (runs MarkExistingImpossible + MarkSuspectPoints), `POST /api/admin/quality-digest` (force-sends weekly Telegram digest). Weekly digest auto-fires on the configured day-of-week (`weekly_digest_dow` setting, default Monday=1) before the morning report; suppressed when there are no findings.
 
 ## Readiness Scoring
 
