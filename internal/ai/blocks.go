@@ -156,7 +156,14 @@ func HashRecovery(r *health.RawMetrics, eb *health.EnergyBank, readiness *float6
 // push_hard to active_recovery at noon" as well as the more common
 // "leaf changed -> recommendation must change". Other EnergyBank fields are
 // intentionally excluded (they rotate intra-day, see RecoveryInputs).
-func HashRecommendation(sleepText, yesterdayText, recoveryText string, eb *health.EnergyBank) string {
+//
+// `verdictHistory` is the EOD verdict sequence over the last ~7 days
+// (oldest→newest, e.g. ["rest","rest","moderate"]). Past verdicts are
+// frozen once a day rolls over so they're safe to hash — unlike intra-day
+// EnergyBank fields. Passing the sequence lets RECOMMENDATION pick up
+// patterns like "3 rest days in a row" without re-hitting Gemini just
+// because today's verdict is unchanged.
+func HashRecommendation(sleepText, yesterdayText, recoveryText string, eb *health.EnergyBank, verdictHistory []string) string {
 	verdict := ""
 	if eb != nil {
 		verdict = eb.ActionVerdict
@@ -164,8 +171,9 @@ func HashRecommendation(sleepText, yesterdayText, recoveryText string, eb *healt
 	type rec struct {
 		Sleep, Yesterday, Recovery string
 		ActionVerdict              string
+		VerdictHistory             []string
 	}
-	return hashInputs(rec{sleepText, yesterdayText, recoveryText, verdict})
+	return hashInputs(rec{sleepText, yesterdayText, recoveryText, verdict, verdictHistory})
 }
 
 // ─── orchestrator ─────────────────────────────────────────────────────────
@@ -213,12 +221,22 @@ func GenerateLeafBlocks(apiKey, model string, maxTokens int, rawMetricsJSON []by
 // as part of rawMetricsJSON) so the model sees the leaf prose alongside the
 // raw metrics — useful when EnergyBank.action_verdict says "rest" but the
 // leaves note one positive signal that the recommendation must override.
+//
+// `verdictHistory` is the EOD verdict sequence over the last ~7 days
+// (oldest→newest), surfaced to the model so it can recognise multi-day
+// patterns like "3 rest days in a row → accumulated fatigue, push for
+// proper rest" instead of treating each day in isolation. Empty slice
+// is fine — the line is simply omitted from the prompt context.
 func GenerateRecommendation(apiKey, model string, maxTokens int, rawMetricsJSON []byte, lang string,
-	sleepText, yesterdayText, recoveryText string) (string, error) {
+	sleepText, yesterdayText, recoveryText string, verdictHistory []string) (string, error) {
 	prompt := BuildBlockPrompt(BlockRecommendation)
 	leafSummary := fmt.Sprintf(
 		"\n\nLEAF BLOCKS (already generated for the user):\n\nSLEEP\n%s\n\nYESTERDAY\n%s\n\nRECOVERY\n%s",
 		sleepText, yesterdayText, recoveryText)
+	if len(verdictHistory) > 0 {
+		leafSummary += "\n\nENERGYBANK_VERDICT_HISTORY (oldest→newest, last 7 EOD snapshots): " +
+			strings.Join(verdictHistory, ", ")
+	}
 	text, _, err := generateWithPrompt(apiKey, model, maxTokens, prompt, append(rawMetricsJSON, []byte(leafSummary)...), lang)
 	return text, err
 }

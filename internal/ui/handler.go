@@ -103,6 +103,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/ai-briefing", h.guard(h.aiBriefing))
 	mux.HandleFunc("GET /api/section/{key}", h.guard(h.sectionAPI))
 	mux.HandleFunc("/api/readiness-history", h.guard(h.readinessHistory))
+	mux.HandleFunc("/api/energy-history", h.guard(h.energyHistory))
 	mux.HandleFunc("/api/settings", h.guard(h.userSettings))
 	mux.HandleFunc("/api/settings/test-notify", h.guard(h.adminTestNotify))
 	mux.HandleFunc("/api/import/upload", h.guard(h.adminImportUpload))
@@ -731,6 +732,27 @@ func (h *Handler) readinessHistory(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	jsonResponse(w, map[string]any{"points": pts})
+}
+
+// energyHistory returns up to ?days= EOD EnergyBank snapshots (default 14).
+// Empty array when persistence is fresh — the UI falls through to hiding
+// the sparkline rather than rendering a flat line over zero data.
+func (h *Handler) energyHistory(w http.ResponseWriter, r *http.Request) {
+	days := 14
+	if d := r.URL.Query().Get("days"); d != "" {
+		if n, err := strconv.Atoi(d); err == nil && n > 0 && n <= 365 {
+			days = n
+		}
+	}
+	pts, err := h.tenantDB(r).GetEnergyHistory(days)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if pts == nil {
+		pts = []storage.EnergyHistoryPoint{}
 	}
 	jsonResponse(w, map[string]any{"points": pts})
 }

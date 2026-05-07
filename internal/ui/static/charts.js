@@ -112,6 +112,68 @@ function loadReadinessSparkline(canvasId) {
     .catch(function(){});
 }
 
+// ---- Energy Bank EOD sparkline (14d) ----
+//
+// Lives next to the live energy bar in the hero block. Hidden when fewer
+// than 3 historical snapshots exist — a flat 1-2 point line tells the user
+// nothing and pre-persistence days won't have rows yet. Verdict colours
+// the line so e.g. a stretch of "rest" days reads at a glance.
+var energySparklineChart = null;
+function loadEnergySparkline(canvasId) {
+  fetch('/api/energy-history?days=14')
+    .then(function(r){return r.json()})
+    .then(function(d) {
+      var pts = d.points || [];
+      if (pts.length < 3) return;
+      var el = document.getElementById(canvasId);
+      if (!el) return;
+      var wrap = document.getElementById('energy-sparkline-wrap');
+      if (wrap) wrap.hidden = false;
+      var labels = pts.map(function(p){return p.date;});
+      var vals = pts.map(function(p){return p.current_eod;});
+      var lastVerdict = pts[pts.length - 1].verdict;
+      var verdictColors = {
+        rest:            { line: '#e11d48', fill: 'rgba(225,29,72,0.15)' },
+        active_recovery: { line: '#f59e0b', fill: 'rgba(245,158,11,0.15)' },
+        moderate:        { line: '#0ea5e9', fill: 'rgba(14,165,233,0.15)' },
+        push_hard:       { line: '#059669', fill: 'rgba(5,150,105,0.15)' }
+      };
+      var c = verdictColors[lastVerdict] || verdictColors.moderate;
+
+      if (energySparklineChart) { energySparklineChart.destroy(); energySparklineChart = null; }
+      energySparklineChart = new Chart(el, {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [{
+            data: vals,
+            borderColor: c.line,
+            backgroundColor: c.fill,
+            fill: true, borderWidth: 2, pointRadius: 0, tension: 0.4
+          }]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          animation: { duration: 600 },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              backgroundColor: 'var(--surface)',
+              titleColor: 'var(--text)', bodyColor: 'var(--text)', borderColor: 'var(--border)', borderWidth: 1, padding: 6,
+              callbacks: {
+                title: function(items) { return fmtAxisDate(items[0].label); },
+                label: function(ctx) { return ' ' + Math.round(ctx.parsed.y); }
+              }
+            }
+          },
+          scales: { x: { display: false }, y: { display: false, min: 0, max: 100 } },
+          elements: { point: { radius: 0, hoverRadius: 4 } }
+        }
+      });
+    })
+    .catch(function(){});
+}
+
 // ---- Correlation chart (activity load vs HRV) ----
 var corrChart = null;
 function loadCorrelationChart(canvasId, data) {

@@ -16,6 +16,14 @@ func (s *DB) EnsureIndexes() {
 		// quality flag for soft-suspect / hard-impossible filtering. Default
 		// 'ok' so existing rows behave identically until something flips them.
 		`ALTER TABLE metric_points ADD COLUMN IF NOT EXISTS quality TEXT NOT NULL DEFAULT 'ok'`,
+		// EnergyBank EOD snapshot columns. Capacity / current / drain are 0–100;
+		// verdict is "rest" / "active_recovery" / "moderate" / "push_hard" (matches
+		// EnergyBank.ActionVerdict). NULL means no snapshot was taken — the row
+		// pre-dates the persistence wiring or briefing didn't run that day.
+		`ALTER TABLE daily_scores ADD COLUMN IF NOT EXISTS energy_capacity INTEGER`,
+		`ALTER TABLE daily_scores ADD COLUMN IF NOT EXISTS energy_eod_current INTEGER`,
+		`ALTER TABLE daily_scores ADD COLUMN IF NOT EXISTS energy_drain INTEGER`,
+		`ALTER TABLE daily_scores ADD COLUMN IF NOT EXISTS energy_verdict TEXT`,
 	}
 	for _, ddl := range migrations {
 		if _, err := s.pool.Exec(ctx, ddl); err != nil {

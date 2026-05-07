@@ -270,6 +270,8 @@ body { min-height: 100vh; font-size: 15px; }
 .energy-verdict--moderate        { background: var(--fair-bg); color: var(--fair); }
 .energy-verdict--active_recovery { background: var(--warn-bg, var(--fair-bg)); color: var(--warn, var(--fair)); }
 .energy-verdict--rest            { background: var(--low-bg);  color: var(--low); }
+#energy-sparkline-wrap { height: 36px; margin-top: 6px; }
+#energy-sparkline-wrap canvas { width: 100% !important; height: 100% !important; }
 .muted { color: var(--muted); }
 
 
