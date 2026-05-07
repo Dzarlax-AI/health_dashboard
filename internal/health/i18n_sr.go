@@ -19,6 +19,7 @@ var sr = LangStrings{
 	"lbl_duration":   "Trajanje",
 	"lbl_deep_sleep": "Duboki san",
 	"lbl_rem":        "REM",
+	"lbl_nap_badge":  "+%dm dremke",
 	"lbl_steps":      "Koraci",
 	"lbl_active_cal": "Akt. kalorije",
 	"lbl_exercise":   "Vježbanje",

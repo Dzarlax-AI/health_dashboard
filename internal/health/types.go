@@ -11,6 +11,15 @@ type RawMetrics struct {
 	Deep     []float64
 	REM      []float64
 	Awake    []float64
+	// NightSleep and Nap are written by the iOS client (health-sync) when
+	// it can decompose sessions into one main night vs. naps. Only the
+	// most-recent day is consumed today (dashboard sleep card override +
+	// nap badge); slice form is kept consistent with the other sleep
+	// fields so future trend uses fall in naturally. Empty when the iOS
+	// app hasn't synced new-format data yet — caller must fall back to
+	// `Sleep` in that case.
+	NightSleep []float64
+	Nap        []float64
 	Steps    []float64
 	Cal      []float64
 	Exercise []float64
@@ -90,6 +99,10 @@ type MetricCard struct {
 	Metric     string  `json:"metric"`
 	Value      string  `json:"value"`
 	Unit       string  `json:"unit"`
+	// Badge is an optional small annotation rendered next to the value —
+	// e.g. "+45m nap" on the sleep card when the user napped today.
+	// Empty string means no badge.
+	Badge      string  `json:"badge,omitempty"`
 	// Existing single-baseline trend (vs full 30-day average) — kept for
 	// backwards-compatibility with the current dashboard template.
 	TrendPct    float64 `json:"trend_pct"`

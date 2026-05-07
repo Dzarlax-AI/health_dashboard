@@ -162,6 +162,10 @@ var SumMetrics = map[string]bool{
 	// sleep phases are SUM'd per source, then MAX'd across sources
 	"sleep_total": true, "sleep_deep": true, "sleep_rem": true,
 	"sleep_core": true, "sleep_awake": true,
+	// New-format split written by health-sync iOS — same SUM semantics
+	// as sleep_total. Treated as plain time-series; not yet cached in
+	// daily_scores (read directly from metric_points by briefing.go).
+	"night_sleep_total": true, "nap_total": true,
 }
 
 // sleepDedupClause returns a SQL WHERE clause that excludes midnight summary

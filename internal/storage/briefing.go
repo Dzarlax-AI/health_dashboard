@@ -110,7 +110,48 @@ func (s *DB) rawMetricsFromDailyScores(lastDate string) *health.RawMetrics {
 		}
 	}
 
+	// night_sleep_total / nap_total live in metric_points only (no
+	// daily_scores column yet), so the cached path needs a separate
+	// fetch. Empty slices when iOS hasn't synced new-format data —
+	// callers fall back to d.Sleep.
+	d.NightSleep = s.metricPointDailySums("night_sleep_total", lastDate, 30)
+	d.Nap = s.metricPointDailySums("nap_total", lastDate, 30)
+
 	return d
+}
+
+// metricPointDailySums returns up to `days` per-day SUM totals (most-recent
+// first) for a single metric, read directly from metric_points with the
+// standard preferred-source aggregation (MAX of per-source SUM). Used for
+// metrics that are not yet cached in daily_scores — currently
+// night_sleep_total and nap_total.
+func (s *DB) metricPointDailySums(metric, lastDate string, days int) []float64 {
+	ctx, cancel := queryCtx()
+	defer cancel()
+	rows, err := s.pool.Query(ctx, `
+		SELECT MAX(source_sum)
+		FROM (
+			SELECT SUBSTRING(date,1,10) AS d, source, SUM(qty) AS source_sum
+			FROM metric_points
+			WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND qty > 0 AND quality = 'ok'
+			GROUP BY d, source
+		) sub
+		GROUP BY d
+		ORDER BY d DESC
+		LIMIT $3`,
+		metric, subtractDays(lastDate, days), days)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []float64
+	for rows.Next() {
+		var v float64
+		if err := rows.Scan(&v); err == nil {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // rawMetricsFromPoints reads raw metric time-series from metric_points using
@@ -217,6 +258,9 @@ func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
 		Deep:           getDailyValues("sleep_deep", 30, "SUM"),
 		REM:            getDailyValues("sleep_rem", 30, "SUM"),
 		Awake:          getDailyValues("sleep_awake", 30, "SUM"),
+		// New-format split written by health-sync iOS — see RawMetrics doc.
+		NightSleep:     getDailyValues("night_sleep_total", 30, "SUM"),
+		Nap:            getDailyValues("nap_total", 30, "SUM"),
 		Steps:          getDailyValues("step_count", 30, "SUM"),
 		Cal:            getDailyValues("active_energy", 30, "SUM"),
 		Exercise:       getDailyValues("apple_exercise_time", 30, "SUM"),
