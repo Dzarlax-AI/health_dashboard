@@ -14,6 +14,21 @@ import (
 type DB struct {
 	pool    *pgxpool.Pool
 	cacheMu sync.Mutex // protects concurrent writes to hourly_metrics and daily_scores
+
+	// aiRegenInFlight dedupes concurrent EnsureTodayAIInsight calls so
+	// concurrent pollers (and overlapping sync callers — morning smart-retry,
+	// test-notify, opportunistic ingest trigger) don't multiply Gemini calls.
+	// Keyed by "<date>|<lang>". The LoadOrStore happens inside
+	// EnsureTodayAIInsight using its own derived `today`, so the key always
+	// matches the date being generated (no midnight-rollover race).
+	aiRegenInFlight sync.Map
+
+	// aiRegenLastFailAt records the wall-clock time of the last failed
+	// EnsureTodayAIInsight (zero blocks saved). Keyed by "<date>|<lang>".
+	// When set, the next ~5 min of regen attempts return the (still empty)
+	// cache instead of hitting Gemini again — avoids per-minute pollers
+	// hammering the API during a sustained Gemini outage.
+	aiRegenLastFailAt sync.Map
 }
 
 // queryCtx returns a context with a 30-second timeout for regular queries.

@@ -93,13 +93,13 @@
   </div>
   {{end}}
 
-  {{if .AIInsight}}
-  <!-- AI Insight collapsed by default — keeps the snapshot above the fold -->
-  <details id="ai-insight-wrap">
-    <summary>{{T .Lang "ai_insight_title"}}</summary>
-    <div id="ai-insight">{{.AIInsight}}</div>
+  <!-- AI Insight: server may have rendered it inline above; if cache was
+       cold, the wrapper still emits and JS polls /api/ai-briefing until
+       text arrives. Hidden when there is nothing yet. -->
+  <details id="ai-insight-wrap"{{if not .AIInsight}} hidden{{end}}>
+    <summary>{{T .Lang "ai_insight_title"}}<span id="ai-insight-spark" style="display:none">&nbsp;✨</span></summary>
+    <div id="ai-insight" data-lang="{{.Lang}}">{{.AIInsight}}</div>
   </details>
-  {{end}}
 
   <!-- Section detail cards -->
   {{if .Sections}}
@@ -182,6 +182,68 @@ document.addEventListener('DOMContentLoaded', function() {
   if (typeof loadReadinessSparkline === 'function') {
     loadReadinessSparkline('readiness-sparkline');
   }
+
+  // AI insight: poll /api/ai-briefing while the tab is visible and the
+  // cache is cold. Server kicks off async regen, so this loop is the only
+  // path the UI gets fresh text without a full page reload. Stops polling
+  // when AI is disabled or after the text has been stable for a while —
+  // there is no point hammering the endpoint for a warm, unchanged cache.
+  (function pollAI() {
+    var el = document.getElementById('ai-insight');
+    var wrap = document.getElementById('ai-insight-wrap');
+    var spark = document.getElementById('ai-insight-spark');
+    if (!el || !wrap) return;
+    var lang = el.dataset.lang || 'en';
+    var rendered = el.textContent.trim();
+    var intervalId = null;
+    var sparkTimer = null;
+    var stableTicks = 0;       // consecutive ticks where insight didn't change
+    var inFlight = false;
+    function stop() {
+      if (intervalId !== null) { clearInterval(intervalId); intervalId = null; }
+    }
+    function tick() {
+      if (document.visibilityState !== 'visible' || inFlight) return;
+      inFlight = true;
+      fetch('/api/ai-briefing?lang=' + encodeURIComponent(lang))
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .finally(function() { inFlight = false; })
+        .then(function(data) {
+          if (!data) return;
+          if (data.disabled) { stop(); return; }
+          var fresh = data.insight ? String(data.insight).trim() : '';
+          if (fresh && fresh !== rendered) {
+            var hadPrev = rendered.length > 0;
+            el.textContent = fresh;
+            wrap.removeAttribute('hidden');
+            rendered = fresh;
+            stableTicks = 0;
+            if (hadPrev && spark) {
+              if (sparkTimer !== null) clearTimeout(sparkTimer);
+              spark.style.display = '';
+              sparkTimer = setTimeout(function() {
+                spark.style.display = 'none';
+                sparkTimer = null;
+              }, 60000);
+            }
+            return;
+          }
+          // Warm cache stable for ~10 ticks (10 min) -> stop polling.
+          // visibilitychange will resume by re-running pollAI on focus.
+          if (rendered.length > 0 && !data.generating) {
+            if (++stableTicks >= 10) stop();
+          }
+        })
+        .catch(function() { /* swallow — try again next tick */ });
+    }
+    function start() {
+      if (intervalId === null) { tick(); intervalId = setInterval(tick, 60000); }
+    }
+    start();
+    document.addEventListener('visibilitychange', function() {
+      if (document.visibilityState === 'visible') start();
+    });
+  })();
 });
 </script>
 {{end}}

@@ -99,6 +99,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/metrics/data", h.guard(h.metricData))
 	mux.HandleFunc("/api/dashboard", h.guard(h.dashboard))
 	mux.HandleFunc("/api/health-briefing", h.guard(h.healthBriefing))
+	mux.HandleFunc("/api/ai-briefing", h.guard(h.aiBriefing))
 	mux.HandleFunc("GET /api/section/{key}", h.guard(h.sectionAPI))
 	mux.HandleFunc("/api/readiness-history", h.guard(h.readinessHistory))
 	mux.HandleFunc("/api/settings", h.guard(h.userSettings))
@@ -807,11 +808,19 @@ func (h *Handler) sectionAPI(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, out)
 }
 
-func (h *Handler) healthBriefing(w http.ResponseWriter, r *http.Request) {
-	lang := r.URL.Query().Get("lang")
-	if lang == "" {
-		lang = "en"
+// supportedLang clamps untrusted query input to the en/ru/sr whitelist.
+// Any other value (including unknown locales like "fr") falls back to "en"
+// so junk values can't pollute the AI cache or trigger Gemini regen on
+// dead-data languages.
+func supportedLang(q string) string {
+	if q == "en" || q == "ru" || q == "sr" {
+		return q
 	}
+	return "en"
+}
+
+func (h *Handler) healthBriefing(w http.ResponseWriter, r *http.Request) {
+	lang := supportedLang(r.URL.Query().Get("lang"))
 	db := h.tenantDB(r)
 	schema := h.tenantSchema(r)
 	resp, err := db.GetHealthBriefing(lang)
@@ -819,23 +828,50 @@ func (h *Handler) healthBriefing(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Attach the Gemini narrative the dashboard HTML already shows.
-	// Cached server-side in `ai_briefings` (per day, per lang); empty when
-	// the day's briefing hasn't been generated yet or AI is disabled.
+	// Briefing returns immediately. AIInsight is read from cache only — never
+	// blocks on Gemini. If empty, kick off async regen so the next poll on
+	// /api/ai-briefing returns content. Clients should fetch the AI narrative
+	// from /api/ai-briefing separately and update their UI when it arrives,
+	// instead of waiting on this endpoint.
 	if resp != nil {
 		today := time.Now().Format("2006-01-02")
 		resp.AIInsight = db.GetAIInsightCombined(today, lang)
-		// Lazy regen: if cache is empty and AI is now configured (e.g. admin
-		// just populated global_settings mid-day), generate inline so the
-		// user sees today's insight without waiting for tomorrow's morning
-		// trigger. Synchronous — keeps logic simple at the cost of a few
-		// seconds on the cold-cache request; iOS already shows a spinner.
 		if resp.AIInsight == "" {
 			aiDefaults := h.mgr.AIDefaultsFor(r.Context(), schema)
-			resp.AIInsight = db.EnsureTodayAIInsight(db.GetAIConfig(aiDefaults), lang)
+			db.EnsureTodayAIInsightAsync(db.GetAIConfig(aiDefaults), lang)
 		}
 	}
 	jsonResponse(w, resp)
+}
+
+// aiBriefing serves the per-block AI narrative for today. Polled by the web
+// dashboard and the iOS client so a cold cache doesn't block the rest of the
+// UI. Returns blocks + a generating flag so clients can distinguish "cache
+// empty, regen running" from "cache empty, AI disabled".
+func (h *Handler) aiBriefing(w http.ResponseWriter, r *http.Request) {
+	lang := supportedLang(r.URL.Query().Get("lang"))
+	db := h.tenantDB(r)
+	schema := h.tenantSchema(r)
+	today := time.Now().Format("2006-01-02")
+
+	aiDefaults := h.mgr.AIDefaultsFor(r.Context(), schema)
+	aiCfg := db.GetAIConfig(aiDefaults)
+
+	blocks := db.GetAIBlocks(today, lang)
+	combined := db.GetAIInsightCombined(today, lang)
+
+	if combined == "" && aiCfg.Enabled() {
+		db.EnsureTodayAIInsightAsync(aiCfg, lang)
+	}
+
+	jsonResponse(w, map[string]any{
+		"date":       today,
+		"lang":       lang,
+		"insight":    combined,
+		"blocks":     blocks,
+		"generating": db.AIRegenInFlight(lang),
+		"disabled":   !aiCfg.Enabled(),
+	})
 }
 
 func (h *Handler) adminStatus(w http.ResponseWriter, r *http.Request) {
