@@ -289,6 +289,7 @@ func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
 		// New-format split written by health-sync iOS — see RawMetrics doc.
 		NightSleep:     getDailyValues("night_sleep_total", 30, "SUM"),
 		Nap:            getDailyValues("nap_total", 30, "SUM"),
+		NapToday:       s.metricPointDailyPoint("nap_total", lastDate),
 		Steps:          getDailyValues("step_count", 30, "SUM"),
 		Cal:            getDailyValues("active_energy", 30, "SUM"),
 		Exercise:       getDailyValues("apple_exercise_time", 30, "SUM"),
