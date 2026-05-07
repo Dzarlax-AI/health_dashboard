@@ -30,6 +30,14 @@ type Config struct {
 	// (typically MorningHour + 4, floor 11). Zero means "no cap" — use with
 	// care; can lead to no morning report on watch-off days.
 	MorningCapHour int
+
+	// Adaptive cap from the user's typical wake-time (median over recent
+	// days, +60min). When TypicalWakeOK is true these override MorningCapHour
+	// so the deadline tracks late-rising days. Populated by the scheduler
+	// from storage.GetTypicalWakeTime; zero when not enough segment data.
+	TypicalWakeHour   int
+	TypicalWakeMinute int
+	TypicalWakeOK     bool
 }
 
 // Enabled returns true when Telegram credentials are configured.
@@ -81,6 +89,14 @@ func (c Config) NextMorning(from time.Time) time.Time {
 func (c Config) MorningCapTime(now time.Time) time.Time {
 	loc := c.location()
 	now = now.In(loc)
+	if c.TypicalWakeOK {
+		t := time.Date(now.Year(), now.Month(), now.Day(),
+			c.TypicalWakeHour, c.TypicalWakeMinute, 0, 0, loc).Add(60 * time.Minute)
+		if t.Hour() > 23 {
+			t = time.Date(now.Year(), now.Month(), now.Day(), 23, 0, 0, 0, loc)
+		}
+		return t
+	}
 	cap := c.MorningCapHour
 	if cap <= 0 {
 		cap = c.morningHour(now.Weekday()) + 4
@@ -135,9 +151,9 @@ func SendMorningSmart(bot *Bot, db *storage.DB, cfg Config, force bool) (bool, s
 	if err != nil {
 		return false, status.Reason, err
 	}
-	aiInsight := db.GetAIBriefing(today, cfg.Lang)
+	aiBlocks := db.GetAIBlocks(today, cfg.Lang)
 	fresh := computeFreshness(db, time.Now())
-	msg := formatMorning(briefing, aiInsight, cfg.Lang, loc, fresh)
+	msg := formatMorning(briefing, aiBlocks, cfg.Lang, loc, fresh)
 
 	if !status.Settled {
 		if banner := tr(cfg.Lang, "tg_stale_"+status.Reason); banner != "" && banner != "tg_stale_"+status.Reason {
@@ -443,7 +459,7 @@ func abs(x int) int {
 
 // ── morning ──────────────────────────────────────────────────────────────────
 
-func formatMorning(b *health.BriefingResponse, aiInsight, lang string, loc *time.Location, f freshness) string {
+func formatMorning(b *health.BriefingResponse, aiBlocks map[string]string, lang string, loc *time.Location, f freshness) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "<b>🌅 %s — %s</b>\n\n", tr(lang, "tg_morning_header"), b.Date)
 
@@ -455,11 +471,12 @@ func formatMorning(b *health.BriefingResponse, aiInsight, lang string, loc *time
 	// references in section summaries now actually resolve).
 	renderHeadline(&sb, b.Headline)
 
-	ai := parseAIInsight(aiInsight)
-	// If AI text exists but no headers parsed, surface it as a single block under
-	// the date so we still benefit from the analysis.
-	if aiInsight != "" && !ai.hasAnyBlock() {
-		fmt.Fprintf(&sb, "🤖 <i>%s</i>\n\n", strings.TrimSpace(ai.Raw))
+	// AI blocks come pre-split from ai_briefing_blocks; no parsing needed.
+	ai := struct{ Sleep, Yesterday, Recovery, Recommendation string }{
+		Sleep:          aiBlocks["SLEEP"],
+		Yesterday:      aiBlocks["YESTERDAY"],
+		Recovery:       aiBlocks["RECOVERY"],
+		Recommendation: aiBlocks["RECOMMENDATION"],
 	}
 
 	renderEnergyBank(&sb, b.EnergyBank, lang)

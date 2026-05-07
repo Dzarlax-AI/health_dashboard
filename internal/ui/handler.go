@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
-	"log"
 	"math"
 	"net/http"
 	"strconv"
@@ -405,7 +404,7 @@ func (h *Handler) pageDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	today := time.Now().Format("2006-01-02")
-	data.AIInsight = db.GetAIBriefing(today, lang)
+	data.AIInsight = db.GetAIInsightCombined(today, lang)
 
 	if br, err := db.GetHealthBriefing(lang); err == nil && br != nil {
 		data.ReadinessScore = br.ReadinessToday
@@ -825,7 +824,7 @@ func (h *Handler) healthBriefing(w http.ResponseWriter, r *http.Request) {
 	// the day's briefing hasn't been generated yet or AI is disabled.
 	if resp != nil {
 		today := time.Now().Format("2006-01-02")
-		resp.AIInsight = db.GetAIBriefing(today, lang)
+		resp.AIInsight = db.GetAIInsightCombined(today, lang)
 		// Lazy regen: if cache is empty and AI is now configured (e.g. admin
 		// just populated global_settings mid-day), generate inline so the
 		// user sees today's insight without waiting for tomorrow's morning
@@ -833,27 +832,7 @@ func (h *Handler) healthBriefing(w http.ResponseWriter, r *http.Request) {
 		// seconds on the cold-cache request; iOS already shows a spinner.
 		if resp.AIInsight == "" {
 			aiDefaults := h.mgr.AIDefaultsFor(r.Context(), schema)
-			aiCfg := db.GetAIConfig(aiDefaults)
-			if aiCfg.Enabled() {
-				if raw := db.GetRawMetrics(); raw != nil {
-					if rawJSON, jerr := json.Marshal(raw); jerr == nil {
-						insight, payload, gerr := ai.GenerateMorningBriefing(
-							aiCfg.APIKey, aiCfg.Model, aiCfg.MaxOutputTokens,
-							rawJSON, lang,
-						)
-						if gerr == nil && strings.TrimSpace(insight) != "" {
-							if serr := db.SaveAIBriefing(today, insight, payload, lang); serr != nil {
-								// Surface storage faults — silently swallowing
-								// would have us re-hit Gemini on every read.
-								log.Printf("healthBriefing: lazy-regen save: %v", serr)
-							}
-							resp.AIInsight = insight
-						} else if gerr != nil {
-							log.Printf("healthBriefing: lazy-regen gemini: %v", gerr)
-						}
-					}
-				}
-			}
+			resp.AIInsight = db.EnsureTodayAIInsight(db.GetAIConfig(aiDefaults), lang)
 		}
 	}
 	jsonResponse(w, resp)

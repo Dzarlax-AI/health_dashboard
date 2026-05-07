@@ -72,11 +72,12 @@ var langNames = map[string]string{
 	"sr": "Serbian",
 }
 
-// GenerateMorningBriefing calls the Gemini API to produce a morning health insight.
-// model defaults to gemini-2.5-flash if empty; maxTokens defaults to 5000 if <= 0.
-// lang controls the response language (en/ru/sr); defaults to "en".
-// Returns the insight text and the full request payload (for auditing).
-func GenerateMorningBriefing(apiKey, model string, maxTokens int, rawMetricsJSON []byte, lang string) (string, []byte, error) {
+// generateWithPrompt is the shared HTTP path for any Gemini call. Callers
+// supply the system prompt (per-block templates inject block-specific
+// instructions before calling this) and the user-facing payload bytes.
+//
+//nolint:revive // keep arg order stable for the orchestrator callsite
+func generateWithPrompt(apiKey, model string, maxTokens int, prompt string, userPayload []byte, lang string) (string, []byte, error) {
 	if apiKey == "" {
 		return "", nil, fmt.Errorf("gemini API key is not configured")
 	}
@@ -102,7 +103,7 @@ func GenerateMorningBriefing(apiKey, model string, maxTokens int, rawMetricsJSON
 		"model": model,
 		"systemInstruction": map[string]any{
 			"parts": []map[string]any{
-				{"text": systemPrompt + "\n\nRESPONSE LANGUAGE: Write the entire response in " + langName + ". All block headers, numbers, and text must be in " + langName + "."},
+				{"text": prompt + "\n\nRESPONSE LANGUAGE: Write the entire response in " + langName + ". All numbers and text must be in " + langName + "."},
 			},
 		},
 		"contents": []map[string]any{
@@ -112,7 +113,7 @@ func GenerateMorningBriefing(apiKey, model string, maxTokens int, rawMetricsJSON
 					{"text": fmt.Sprintf("Today: %s (%s)\n\nApple Health data (JSON):\n\n%s",
 							time.Now().Format("2006-01-02"),
 							time.Now().Weekday().String(),
-							string(rawMetricsJSON),
+							string(userPayload),
 						)},
 				},
 			},
@@ -169,3 +170,4 @@ func GenerateMorningBriefing(apiKey, model string, maxTokens int, rawMetricsJSON
 
 	return result.Candidates[0].Content.Parts[0].Text, bodyBytes, nil
 }
+

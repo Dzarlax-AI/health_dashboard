@@ -73,7 +73,7 @@ func (s *DB) RecomputeReadinessSince(fromDate string) {
 // Bump this constant whenever the scoring logic changes —
 // rows with an older version will be ignored by the cache
 // and recomputed on the next request or backfill run.
-const ScoreVersion = 2
+const ScoreVersion = 3
 
 // HasStaleScores returns true if daily_scores contains rows with an outdated
 // score_version. This means the scoring formula changed since the last backfill

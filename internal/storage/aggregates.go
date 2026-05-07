@@ -219,6 +219,7 @@ func (s *DB) upsertHourlyAvgForDate(date string) {
 		FROM metric_points
 		WHERE SUBSTRING(date,1,10) = $1
 		  AND qty > 0
+		  AND quality = 'ok'
 		  AND metric_name NOT LIKE 'sleep\_%' ESCAPE '\'
 		  AND metric_name <> ALL($2::text[])
 		GROUP BY metric_name, SUBSTRING(date, 1, 13) || ':00', source
@@ -246,6 +247,7 @@ func (s *DB) upsertHourlySumForDate(date string) {
 			FROM metric_points
 			WHERE SUBSTRING(date,1,10) = $1
 			  AND qty > 0
+			  AND quality = 'ok'
 			  AND metric_name = ANY($2::text[])
 			  AND metric_name NOT LIKE 'sleep\_%' ESCAPE '\'
 			GROUP BY metric_name, source,
@@ -277,6 +279,7 @@ func (s *DB) upsertHourlySleepForDate(date string) {
 			FROM metric_points mp
 			WHERE SUBSTRING(mp.date,1,10) = $1
 			  AND mp.qty > 0
+			  AND mp.quality = 'ok'
 			  AND mp.metric_name LIKE 'sleep\_%' ESCAPE '\'
 			  AND NOT (
 			      SUBSTRING(mp.date, 12, 8) = '00:00:00'
@@ -640,7 +643,7 @@ func (s *DB) buildHourlyMetric(metric, agg string, force bool) error {
 				       SUBSTRING(date, 1, 16) AS minute,
 				       MAX(qty) AS minute_max, MIN(qty) AS minute_min
 				FROM metric_points
-				WHERE metric_name = $1 AND qty > 0 %s %s
+				WHERE metric_name = $1 AND qty > 0 AND quality = 'ok' %s %s
 				GROUP BY metric_name, source, SUBSTRING(date, 1, 13) || ':00', SUBSTRING(date, 1, 16)
 			) sub
 			GROUP BY metric_name, hour, source
@@ -654,7 +657,7 @@ func (s *DB) buildHourlyMetric(metric, agg string, force bool) error {
 			       source,
 			       AVG(qty), MIN(qty), MAX(qty)
 			FROM metric_points
-			WHERE metric_name = $1 AND qty > 0 %s %s
+			WHERE metric_name = $1 AND qty > 0 AND quality = 'ok' %s %s
 			GROUP BY metric_name, SUBSTRING(date, 1, 13) || ':00', source
 			ON CONFLICT (metric_name, hour, source) DO UPDATE SET
 				avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val`, sleepDedup, fromClause)

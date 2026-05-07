@@ -2,18 +2,15 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"health-receiver/internal/ai"
 	"health-receiver/internal/handler"
 	"health-receiver/internal/health"
 	"health-receiver/internal/mcpserver"
@@ -88,6 +85,7 @@ func main() {
 		}
 		legacyDB.EnsureIndexes()
 		legacyDB.EnsureAIBriefingsTable()
+		legacyDB.EnsureAIBriefingBlocksTable()
 
 		passwordHash := ""
 		if uiPassword != "" {
@@ -148,6 +146,7 @@ func main() {
 		}
 		db.EnsureIndexes()
 		db.EnsureAIBriefingsTable()
+		db.EnsureAIBriefingBlocksTable()
 		startTenant(ctx, mgr, db, u.SchemaName, envNotifyDefaults, envAIDefaults)
 	}
 
@@ -181,6 +180,7 @@ func main() {
 		}
 		db.EnsureIndexes()
 		db.EnsureAIBriefingsTable()
+		db.EnsureAIBriefingBlocksTable()
 		startTenant(ctx, mgr, db, schema, envNotifyDefaults, envAIDefaults)
 	})
 	uiHandler.Register(mux)
@@ -238,6 +238,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	})
 
 	go runReportScheduler(db, mgr, schema, notifyDefaults)
+	go runDailyQualityScan(db, schema, notifyDefaults)
 
 	mux := http.NewServeMux()
 	handler.New(mgr, onNewData, hrZones).Register(mux)
@@ -292,6 +293,7 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, db *storage.DB, sche
 
 	_ = maybeFireMorningReport // triggered via onNewData in main mux
 	go runReportScheduler(db, mgr, schema, notifyDefaults)
+	go runDailyQualityScan(db, schema, notifyDefaults)
 }
 
 // makeBackfillFn returns the admin/import callback that recomputes caches.
@@ -381,8 +383,8 @@ func makeBackfillDatesFn(db *storage.DB, schema string) func([]string) {
 // buildNotifyCfg copies storage NotifyConfig (DB-backed) into notify.Config
 // (consumed by the bot). Centralised so adding a new field doesn't require
 // finding all three call sites.
-func buildNotifyCfg(c storage.NotifyConfig) notify.Config {
-	return notify.Config{
+func buildNotifyCfg(db *storage.DB, c storage.NotifyConfig) notify.Config {
+	cfg := notify.Config{
 		Token:              c.Token,
 		ChatID:             c.ChatID,
 		Lang:               c.Lang,
@@ -393,6 +395,12 @@ func buildNotifyCfg(c storage.NotifyConfig) notify.Config {
 		EveningWeekendHour: c.EveningWeekendHour,
 		MorningCapHour:     c.MorningCapHour,
 	}
+	if h, m, ok := db.GetTypicalWakeTime(14); ok {
+		cfg.TypicalWakeHour = h
+		cfg.TypicalWakeMinute = m
+		cfg.TypicalWakeOK = true
+	}
+	return cfg
 }
 
 func makeTestNotifyFn(db *storage.DB, mgr *tenants.Manager, schema string, notifyDefaults storage.NotifyConfig) func(string) error {
@@ -401,7 +409,7 @@ func makeTestNotifyFn(db *storage.DB, mgr *tenants.Manager, schema string, notif
 		if !scfg.Enabled() {
 			return fmt.Errorf("Telegram not configured: set TELEGRAM_TOKEN and TELEGRAM_CHAT_ID")
 		}
-		ncfg := buildNotifyCfg(scfg)
+		ncfg := buildNotifyCfg(db, scfg)
 		bot := notify.NewBot(ncfg.Token, ncfg.ChatID)
 		if kind == "evening" {
 			return notify.SendEvening(bot, db, ncfg)
@@ -472,7 +480,7 @@ func makeMorningTrigger(db *storage.DB, lock *int32, mgr *tenants.Manager, schem
 		if !cfg.Enabled() {
 			return
 		}
-		ncfg := buildNotifyCfg(cfg)
+		ncfg := buildNotifyCfg(db, cfg)
 		bot := notify.NewBot(ncfg.Token, ncfg.ChatID)
 		sent, reason, err := notify.SendMorningSmart(bot, db, ncfg, false)
 		if err != nil {
@@ -498,7 +506,7 @@ func runReportScheduler(db *storage.DB, mgr *tenants.Manager, schema string, def
 			continue
 		}
 
-		ncfg := buildNotifyCfg(cfg)
+		ncfg := buildNotifyCfg(db, cfg)
 
 		now := time.Now()
 		nextMorning := ncfg.NextMorning(now)
@@ -520,7 +528,7 @@ func runReportScheduler(db *storage.DB, mgr *tenants.Manager, schema string, def
 		if !cfg.Enabled() {
 			continue
 		}
-		ncfg = buildNotifyCfg(cfg)
+		ncfg = buildNotifyCfg(db, cfg)
 		bot := notify.NewBot(cfg.Token, cfg.ChatID)
 		if isMorning {
 			runMorningSmartRetry(bot, db, mgr, schema, ncfg)
@@ -591,42 +599,47 @@ func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager,
 	}
 }
 
+// runDailyQualityScan ticks once per day at 03:00 (REPORT_TZ or system local)
+// and calls MarkSuspectPoints to flag z-score outliers in the last 7 days of
+// autonomic metrics. Cheap (~one query per metric) and idempotent — re-running
+// only flips quality='ok' rows whose deviation exceeds 3σ.
+func runDailyQualityScan(db *storage.DB, schema string, defaults storage.NotifyConfig) {
+	loc := time.Local
+	if tz := defaults.Timezone; tz != "" {
+		if l, err := time.LoadLocation(tz); err == nil {
+			loc = l
+		}
+	}
+	for {
+		now := time.Now().In(loc)
+		next := time.Date(now.Year(), now.Month(), now.Day(), 3, 0, 0, 0, loc)
+		if !next.After(now) {
+			next = next.Add(24 * time.Hour)
+		}
+		log.Printf("[%s] daily quality scan: next run at %s", schema, next.Format("2006-01-02 15:04 MST"))
+		time.Sleep(time.Until(next))
+
+		flagged, err := db.MarkSuspectPoints(7, 3)
+		if err != nil {
+			log.Printf("[%s] daily quality scan: %v", schema, err)
+			continue
+		}
+		total := 0
+		for _, n := range flagged {
+			total += n
+		}
+		if total == 0 {
+			log.Printf("[%s] daily quality scan: no suspect points", schema)
+		} else {
+			log.Printf("[%s] daily quality scan: flagged %d points across %d metrics: %v", schema, total, len(flagged), flagged)
+		}
+	}
+}
+
+// ensureTodayAIInsight is a thin wrapper around storage.DB.EnsureTodayAIInsight
+// kept for caller convenience.
 func ensureTodayAIInsight(db *storage.DB, aiDefaults storage.AIConfig, lang string) string {
-	aiCfg := db.GetAIConfig(aiDefaults)
-	if !aiCfg.Enabled() {
-		return ""
-	}
-	today := time.Now().Format("2006-01-02")
-	if existing := db.GetAIBriefing(today, lang); existing != "" {
-		return existing
-	}
-	raw := db.GetRawMetrics()
-	if raw == nil {
-		log.Println("ensureTodayAIInsight: no raw metrics available")
-		return ""
-	}
-	rawJSON, err := json.Marshal(raw)
-	if err != nil {
-		log.Printf("ensureTodayAIInsight: marshal: %v", err)
-		return ""
-	}
-	insight, fullPayload, err := ai.GenerateMorningBriefing(aiCfg.APIKey, aiCfg.Model, aiCfg.MaxOutputTokens, rawJSON, lang)
-	if err != nil {
-		log.Printf("ensureTodayAIInsight: gemini: %v", err)
-		return ""
-	}
-	// Don't poison the cache with an empty (or whitespace-only) insight —
-	// Gemini occasionally returns success with empty content (content
-	// filter, max-tokens too low, …); we want the next tick to retry
-	// rather than treat the blank row as "done".
-	if strings.TrimSpace(insight) == "" {
-		log.Println("ensureTodayAIInsight: gemini returned empty content, not caching")
-		return ""
-	}
-	if err := db.SaveAIBriefing(today, insight, fullPayload, lang); err != nil {
-		log.Printf("ensureTodayAIInsight: save: %v", err)
-	}
-	return insight
+	return db.EnsureTodayAIInsight(db.GetAIConfig(aiDefaults), lang)
 }
 
 // migrateGlobalAIIfNeeded copies an admin tenant's per-tenant Gemini
