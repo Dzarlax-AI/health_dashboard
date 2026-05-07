@@ -325,12 +325,16 @@ func (s *DB) upsertDailyForDate(date string) {
 
 	// Per-metric resolution rule:
 	//   AVG metrics  → AVG(avg_val) across sources
-	//   SUM (sleep)  → cross-validated source pick (Apple Watch > RingConn,
-	//                  fall back to MIN if sources diverge >40%)
+	//   SUM (sleep)  → ONE source picked once for the night via sleep_total
+	//                  cross-validation; all five sleep_* stages then come
+	//                  from that same source (see sleep_picked CTE below).
 	//   SUM (other)  → preferred source pick (Apple Watch > iPhone > MAX)
 	//
-	// We compute all three resolved values per (metric, day) in one CTE and
-	// project the right one per metric column with a CASE.
+	// Why pick the source once for sleep: resolving each phase independently
+	// can mix Apple Watch's REM with RingConn's sleep_total (when cross-
+	// validation picks MIN), producing physically impossible ratios such as
+	// REM/Total > 100%. Latent today (single source — Apple Watch only) but
+	// would resurface immediately if RingConn is re-enabled.
 	const q = `
 WITH per_source AS (
     SELECT metric_name, source,
@@ -339,6 +343,38 @@ WITH per_source AS (
     FROM hourly_metrics
     WHERE SUBSTRING(hour,1,10) = $1
     GROUP BY metric_name, source
+),
+-- Pick ONE source for tonight from sleep_total totals across sources,
+-- mirroring sleepCrossValidationPickExpr but returning the SOURCE name
+-- (not the value) so the rest of the sleep stages can be filtered to it.
+sleep_picked AS (
+    SELECT (
+      CASE
+        WHEN COUNT(*) > 1 AND MIN(sum_val) > 1.0
+             AND MAX(sum_val) > MIN(sum_val) * 1.4
+        THEN (
+          -- divergent: MIN-rule — source whose total = MIN wins
+          SELECT source FROM per_source
+          WHERE metric_name = 'sleep_total'
+          ORDER BY sum_val ASC LIMIT 1
+        )
+        ELSE COALESCE(
+          (SELECT source FROM per_source
+            WHERE metric_name = 'sleep_total'
+              AND (source LIKE '%Ultra%' OR source LIKE '%Apple Watch%')
+            ORDER BY sum_val DESC LIMIT 1),
+          (SELECT source FROM per_source
+            WHERE metric_name = 'sleep_total'
+              AND source LIKE '%RingConn%'
+            ORDER BY sum_val DESC LIMIT 1),
+          (SELECT source FROM per_source
+            WHERE metric_name = 'sleep_total'
+            ORDER BY sum_val DESC LIMIT 1)
+        )
+      END
+    ) AS src
+    FROM per_source
+    WHERE metric_name = 'sleep_total'
 ),
 agg AS (
     SELECT
@@ -350,17 +386,10 @@ agg AS (
         MAX(sum_val) FILTER (WHERE source LIKE '%iPhone%'),
         MAX(sum_val)
       ) AS sum_preferred,
-      -- sleep cross-validation: if sources diverge >40%, take MIN
-      CASE
-        WHEN COUNT(DISTINCT source) > 1
-             AND MAX(sum_val) > MIN(sum_val) * 1.4
-        THEN MIN(sum_val)
-        ELSE COALESCE(
-          MAX(sum_val) FILTER (WHERE source LIKE '%Ultra%' OR source LIKE '%Apple Watch%'),
-          MAX(sum_val) FILTER (WHERE source LIKE '%RingConn%'),
-          MAX(sum_val)
-        )
-      END AS sum_sleep_resolved
+      -- sleep: take the picked source's value only (NULL if that source
+      -- didn't record this stage — ON CONFLICT COALESCE preserves the
+      -- prior value rather than mixing sources)
+      MAX(sum_val) FILTER (WHERE source = (SELECT src FROM sleep_picked)) AS sum_sleep_resolved
     FROM per_source
     GROUP BY metric_name
 )
