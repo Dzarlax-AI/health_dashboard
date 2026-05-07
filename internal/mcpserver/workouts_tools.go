@@ -11,10 +11,13 @@ import (
 	"health-receiver/internal/ctxdb"
 )
 
-// dateRange parses YYYY-MM-DD strings into a [start-of-day, end-of-day] range
-// in UTC. The DB stores start_time as TIMESTAMPTZ so the comparison works
-// regardless of the original recording timezone — workouts that started on
-// the requested day in any TZ are included.
+// dateRange parses YYYY-MM-DD strings into a [start-of-day, end-of-day]
+// range. Boundaries are interpreted in UTC. A workout started at 23:30
+// local on the "to" date in a UTC+N timezone has its start_time in UTC
+// on the next day and would fall just outside the window. AI Q&A using
+// day-bucket dates is tolerant of this edge case in practice; a future
+// revision should accept an explicit timezone parameter for strict
+// locale-aware filtering.
 func dateRange(fromStr, toStr string) (time.Time, time.Time, error) {
 	from, err := time.Parse("2006-01-02", fromStr)
 	if err != nil {

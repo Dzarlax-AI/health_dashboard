@@ -240,12 +240,21 @@ func convertHAEWorkout(hw haeWorkout, zones health.HRZones) (storage.Workout, er
 	}
 	if zones.IsConfigured() && len(hw.HeartRateData) > 0 {
 		samples := make([]health.HRSample, 0, len(hw.HeartRateData))
+		var skipped int
 		for _, s := range hw.HeartRateData {
 			t, err := time.Parse(haeTimeLayout, s.Date)
 			if err != nil {
+				skipped++
 				continue
 			}
 			samples = append(samples, health.HRSample{Time: t, Avg: s.Avg})
+		}
+		// One log line per workout when timestamps don't parse — silent
+		// continue would hide a future HAE format change. Capped at the
+		// loop level (one workout = one log entry).
+		if skipped > 0 {
+			log.Printf("workout %s: %d/%d heart-rate samples have unparseable timestamps (skipped)",
+				hw.ID, skipped, len(hw.HeartRateData))
 		}
 		secs := health.ComputeTimeInZones(samples, end, zones)
 		z1, z2, z3, z4, z5 := secs[0], secs[1], secs[2], secs[3], secs[4]

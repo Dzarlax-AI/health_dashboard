@@ -1,9 +1,11 @@
 package storage
 
 import (
+	"errors"
 	"fmt"
-	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // Workout is the persisted summary of one Apple Health workout. Pointer
@@ -197,7 +199,10 @@ func (s *DB) GetWorkout(externalID string) (*Workout, error) {
 		&w.HRZ1Sec, &w.HRZ2Sec, &w.HRZ3Sec, &w.HRZ4Sec, &w.HRZ5Sec,
 	)
 	if err != nil {
-		if strings.Contains(err.Error(), "no rows") {
+		// pgx surfaces a sentinel for empty rows — match it explicitly so
+		// the not-found path doesn't depend on the wording of the driver's
+		// error message.
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("get workout %s: %w", externalID, err)
