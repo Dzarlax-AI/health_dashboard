@@ -33,6 +33,7 @@ flowchart TD
         HM[("health_&lt;user&gt;.hourly_metrics")]
         DS[("health_&lt;user&gt;.daily_scores")]
         AB[("health_&lt;user&gt;.ai_briefings")]
+        ABB[("health_&lt;user&gt;.ai_briefing_blocks")]
     end
 
     Gemini["Gemini API"]
@@ -302,13 +303,13 @@ Times are configurable per weekday/weekend via env vars or through the Settings 
 
 ### AI Morning Briefing
 
-When `GEMINI_API_KEY` is set (or configured in the Admin UI), the server automatically generates a personalized morning briefing via Gemini. The response is parsed into four blocks (`SLEEP`/`YESTERDAY`/`RECOVERY`/`RECOMMENDATION`, recognised across en/ru/sr) and each block is laid under its matching rule-based section in the Telegram report.
+When `GEMINI_API_KEY` is set (or configured in the Admin UI), the server generates a personalized morning briefing via Gemini. The four blocks — `SLEEP` / `YESTERDAY` / `RECOVERY` / `RECOMMENDATION` — are produced **per-block in parallel** (3 leaves) plus a recommendation root that consumes the leaf texts. Each block is cached in `ai_briefing_blocks` keyed by an `inputs_hash` over the metric subset that drove it, so a late HRV update only invalidates the blocks that read HRV (RECOVERY + RECOMMENDATION). SLEEP / YESTERDAY stay cached until their own inputs change.
 
-The briefing is triggered after 05:00 when today's step count exceeds 300 (confirming the user is awake). It is generated once per day and cached — subsequent sends (test button, scheduled fallback) reuse the cached version without calling the API again.
+The briefing is triggered after 05:00 when today's step count exceeds 300 (confirming the user is awake). Smart-retry runs every 15 min until `MorningCapHour` is reached (or the adaptive cap from `GetTypicalWakeTime + 60min` when ≥7 days of per-segment sleep data are present); each tick re-resolves block hashes and only the leaves whose hashes changed hit Gemini.
 
 The briefing covers four blocks: sleep quality (phases, fragmentation), yesterday's full day (activity, SpO2, breathing, wrist temperature), recovery (HRV/RHR vs 7-day personal baseline), and a concrete recommendation with specific numbers.
 
-The AI insight also appears in the dashboard hero section. The prompt is in `internal/ai/prompt.txt` and is embedded into the binary at build time.
+The AI insight also appears in the dashboard hero section, served by a dedicated `/api/ai-briefing` endpoint (returns `{insight, blocks, generating, disabled}`) so a cold cache never blocks `/api/health-briefing`. The web dashboard polls every 60s while the cache is warming and surfaces a ✨ marker on fresh updates. The prompt template is in `internal/ai/prompt.txt`; per-block instructions live in `internal/ai/blocks.go::blockInstructions`.
 
 Key and model are stored in the `settings` table and configurable in Admin UI — the model dropdown is populated dynamically from the Google API (only models supporting `generateContent` are shown). Env vars serve as defaults if DB has no value.
 
