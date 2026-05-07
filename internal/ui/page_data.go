@@ -6,6 +6,7 @@ type BasePage struct {
 	Title     string
 	ActiveNav string // "dashboard", "metrics", "settings", "admin"
 	IsAdmin   bool
+	StaticVer string // build hash for /static/*.js cache busting
 }
 
 // LangOption represents a language choice for the language switcher.

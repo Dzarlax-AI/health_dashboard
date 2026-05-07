@@ -65,6 +65,7 @@ func (h *Handler) basePage(r *http.Request, title, activeNav string) BasePage {
 		Title:     title,
 		ActiveNav: activeNav,
 		IsAdmin:   h.isAdmin(r),
+		StaticVer: StaticVer(),
 	}
 }
 
