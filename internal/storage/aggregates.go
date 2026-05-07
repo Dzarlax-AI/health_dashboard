@@ -389,6 +389,20 @@ sleep_total_per_source AS (
 sleep_picked AS (
     SELECT ` + sleepCrossValidationPickSourceExpr("sleep_total_per_source", "sum_val") + ` AS src
 ),
+-- Atomicity gate: only commit the picked source's stages when ALL five
+-- are present. Otherwise (e.g. RingConn writes a sleep_total row but no
+-- phases) we'd write a NULL for the missing stages, and ON CONFLICT
+-- COALESCE would preserve a prior row's stages — recreating exactly the
+-- mixed-source row this PR is trying to eliminate. By forcing every
+-- stage to NULL when incomplete, COALESCE preserves the previous block
+-- as a unit instead of column-by-column.
+sleep_picked_complete AS (
+    SELECT (
+      SELECT COUNT(DISTINCT metric_name) FROM per_source
+       WHERE source = (SELECT src FROM sleep_picked)
+         AND metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake')
+    ) = 5 AS ok
+),
 agg AS (
     SELECT
       metric_name,
@@ -399,10 +413,13 @@ agg AS (
         MAX(sum_val) FILTER (WHERE source LIKE '%iPhone%'),
         MAX(sum_val)
       ) AS sum_preferred,
-      -- sleep: take the picked source's value only (NULL if that source
-      -- didn't record this stage — ON CONFLICT COALESCE preserves the
-      -- prior value rather than mixing sources)
-      MAX(sum_val) FILTER (WHERE source = (SELECT src FROM sleep_picked)) AS sum_sleep_resolved
+      -- sleep: only when picked source covers all five stages. Otherwise
+      -- emit NULL for every stage so the existing COALESCE in ON CONFLICT
+      -- preserves the prior block atomically (no per-column drift).
+      CASE WHEN (SELECT ok FROM sleep_picked_complete)
+           THEN MAX(sum_val) FILTER (WHERE source = (SELECT src FROM sleep_picked))
+           ELSE NULL
+      END AS sum_sleep_resolved
     FROM per_source
     GROUP BY metric_name
 )
