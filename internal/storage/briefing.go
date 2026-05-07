@@ -391,6 +391,17 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 	data.StepsChronic28d = s.chronicAvg(*lastDate, "steps")
 	data.ActiveEnergyChronic28d = s.chronicAvg(*lastDate, "calories")
 
+	// Sleep Regularity Index (Phillips & Czeisler 2017) over a 14-day rolling
+	// window of minute-level sleep state. ComputeSRI returns ok=false when
+	// the user has fewer than 7 calendar days of per-segment sleep data
+	// (HAE midnight-summary nights cannot drive this — only iOS pushes can).
+	// scoreSleep falls back to the legacy stddev display in that case.
+	if sri, n, ok := s.ComputeSRI(14); ok {
+		v := sri
+		data.SleepRegularityIndex = &v
+		data.SleepRegularityNights = n
+	}
+
 	resp := health.ComputeBriefing(*data, lang)
 
 	// Attach per-source sleep breakdown for the most recent night.
