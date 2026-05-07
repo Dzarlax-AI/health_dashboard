@@ -49,11 +49,16 @@ func sumCombineExpr(valCol string) string {
 // daily-summary stub on a watch-only night" case where MIN is just noise
 // and the priority-COALESCE branch should pick Watch instead.
 //
-// Used in five places: preferredSleepSourceSQL constant (uses table
-// `source_totals`), buildDailyMetricCol, metricDataDayFromHourly,
-// metricDataRaw, and briefing.go's fetch helper. Keep them in sync via
-// this helper rather than five hand-edited copies — five separate fixes
-// shipped over PRs #8, #9, #10 before all paths were guarded.
+// Used in four read paths: preferredSleepSourceSQL constant (uses table
+// `source_totals`), metricDataDayFromHourly, metricDataRaw, and
+// briefing.go's fetch helper. Keep them in sync via this helper rather
+// than hand-edited copies — five separate fixes shipped over PRs #8/#9/#10
+// before all paths were guarded.
+//
+// Daily-write paths use the source-twin sleepCrossValidationPickSourceExpr
+// (single-day, in upsertDailyForDate) and an inlined multi-day variant
+// in buildDailySleepBlock; both must keep the 1.0h floor and 1.4×
+// divergence threshold in lockstep with this helper.
 func sleepCrossValidationPickExpr(valCol string) string {
 	return `CASE
 		WHEN COUNT(*) > 1 AND MIN(` + valCol + `) > 1.0
@@ -65,6 +70,47 @@ func sleepCrossValidationPickExpr(valCol string) string {
 		    MAX(` + valCol + `)
 		)
 	END`
+}
+
+// sleepCrossValidationPickSourceExpr is the source-name twin of
+// sleepCrossValidationPickExpr: same priority and cross-validation rules,
+// but returns the SOURCE that wins rather than its value. Used when
+// downstream queries need to pull multiple stages from a single device
+// (e.g. upsertDailyForDate picks the source by sleep_total totals, then
+// reads sleep_deep / sleep_rem / sleep_core / sleep_awake from that same
+// device so phase ratios stay physically consistent).
+//
+// `table` must be a pre-filtered relation (CTE / subquery) exposing a
+// `source` column and the value column named `valCol`. Caller is
+// responsible for filtering to one metric (typically `sleep_total`).
+//
+// Keep the thresholds (MIN > 1.0, 1.4× divergence) in lockstep with
+// sleepCrossValidationPickExpr — that is the whole point of having a
+// shared helper instead of ad-hoc inline CASEs.
+func sleepCrossValidationPickSourceExpr(table, valCol string) string {
+	// Tiebreak by `source ASC` so two rows with identical totals always
+	// resolve to the same pick across reruns. Without this, Postgres can
+	// return either row when sums tie, and the picked source flips
+	// between backfills — causing daily_scores.sleep_* to drift even
+	// with no new data.
+	return `(
+		CASE
+			WHEN (SELECT COUNT(*) FROM ` + table + `) > 1
+			 AND (SELECT MIN(` + valCol + `) FROM ` + table + `) > 1.0
+			 AND (SELECT MAX(` + valCol + `) FROM ` + table + `) >
+			     (SELECT MIN(` + valCol + `) FROM ` + table + `) * 1.4
+			THEN (SELECT source FROM ` + table + ` ORDER BY ` + valCol + ` ASC, source ASC LIMIT 1)
+			ELSE COALESCE(
+				(SELECT source FROM ` + table + `
+				  WHERE source LIKE '%Ultra%' OR source LIKE '%Apple Watch%'
+				  ORDER BY ` + valCol + ` DESC, source ASC LIMIT 1),
+				(SELECT source FROM ` + table + `
+				  WHERE source LIKE '%RingConn%'
+				  ORDER BY ` + valCol + ` DESC, source ASC LIMIT 1),
+				(SELECT source FROM ` + table + ` ORDER BY ` + valCol + ` DESC, source ASC LIMIT 1)
+			)
+		END
+	)`
 }
 
 // preferredSourceSQL returns a SQL snippet that picks the best source's daily
@@ -82,37 +128,22 @@ const preferredSourceSQL = `
 		(SELECT MAX(source_total) FROM source_totals)
 	)`
 
-// preferredSleepSourceSQL picks the best source for sleep metrics.
-// Priority: Apple Watch > RingConn > other.
-// Apple Watch is better validated against polysomnography; RingConn tends to
-// overestimate deep sleep and occasionally reports wildly inflated totals.
+// preferredSleepSourceSQL picks the best source for sleep metrics from a
+// `source_totals` CTE in the calling query (columns: source, source_total).
+// Priority: Apple Watch > RingConn > other. Cross-validation: when multiple
+// sources exist AND each registered a non-trivial total (MIN > 1h), AND MAX/MIN
+// differ by >40%, the higher value is likely an outlier — take MIN instead.
 //
-// Cross-validation: when multiple sources exist AND each registered a
-// non-trivial sleep total (MIN > 1h), AND MAX/MIN differ by >40%, the higher
-// value is likely an outlier — take MIN instead of the preferred source.
+// Implementation: wrap sleepCrossValidationPickExpr in a scalar SELECT against
+// source_totals so the helper's aggregate form (no GROUP BY → single group)
+// produces a scalar value. This keeps the thresholds (1.0h floor, 1.4×) and
+// source priority in the helper, not duplicated here. Previously this was a
+// hand-rolled CASE tree; consolidated per CodeRabbit on PR #26.
 //
-// The MIN > 1h gate is critical: without it, a RingConn daily-summary record
-// of 0.13h (essentially a stub) would always satisfy "MAX > MIN*1.4" and the
-// CASE would return that 0.13h, throwing away Apple Watch's valid 7+h night.
-// Cross-validation only makes sense when both sources have legitimate data
-// to compare — otherwise fall through to the source-priority COALESCE.
-const preferredSleepSourceSQL = `
-	SELECT CASE
-		WHEN (SELECT COUNT(DISTINCT source) FROM source_totals) > 1
-		 AND (SELECT MIN(source_total) FROM source_totals) > 1.0
-		 AND (SELECT MAX(source_total) FROM source_totals) >
-		     (SELECT MIN(source_total) FROM source_totals) * 1.4
-		THEN (SELECT MIN(source_total) FROM source_totals)
-		ELSE COALESCE(
-			(SELECT source_total FROM source_totals
-			 WHERE source LIKE '%Ultra%' OR source LIKE '%Apple Watch%'
-			 ORDER BY source_total DESC LIMIT 1),
-			(SELECT source_total FROM source_totals
-			 WHERE source LIKE '%RingConn%'
-			 ORDER BY source_total DESC LIMIT 1),
-			(SELECT MAX(source_total) FROM source_totals)
-		)
-	END`
+// `var` (not `const`) because the value depends on a function call. Caller
+// inserts this inside a `(WITH source_totals AS (...) %s)` scalar subquery,
+// so it must be a bare `SELECT … FROM source_totals` (no outer parens).
+var preferredSleepSourceSQL = `SELECT ` + sleepCrossValidationPickExpr("source_total") + ` FROM source_totals`
 
 func preferredSourceForMetric(metric string) string {
 	if strings.HasPrefix(metric, "sleep_") {
@@ -325,13 +356,17 @@ func (s *DB) upsertDailyForDate(date string) {
 
 	// Per-metric resolution rule:
 	//   AVG metrics  → AVG(avg_val) across sources
-	//   SUM (sleep)  → cross-validated source pick (Apple Watch > RingConn,
-	//                  fall back to MIN if sources diverge >40%)
+	//   SUM (sleep)  → ONE source picked once for the night via sleep_total
+	//                  cross-validation; all five sleep_* stages then come
+	//                  from that same source (see sleep_picked CTE below).
 	//   SUM (other)  → preferred source pick (Apple Watch > iPhone > MAX)
 	//
-	// We compute all three resolved values per (metric, day) in one CTE and
-	// project the right one per metric column with a CASE.
-	const q = `
+	// Why pick the source once for sleep: resolving each phase independently
+	// can mix Apple Watch's REM with RingConn's sleep_total (when cross-
+	// validation picks MIN), producing physically impossible ratios such as
+	// REM/Total > 100%. Latent today (single source — Apple Watch only) but
+	// would resurface immediately if RingConn is re-enabled.
+	q := `
 WITH per_source AS (
     SELECT metric_name, source,
            AVG(avg_val) AS avg_val,
@@ -339,6 +374,29 @@ WITH per_source AS (
     FROM hourly_metrics
     WHERE SUBSTRING(hour,1,10) = $1
     GROUP BY metric_name, source
+),
+sleep_total_per_source AS (
+    SELECT source, sum_val FROM per_source WHERE metric_name = 'sleep_total'
+),
+-- Pick ONE source for tonight from sleep_total totals; all five sleep_*
+-- stages will be filtered to this source so phase ratios stay physically
+-- consistent. Helper keeps thresholds in lockstep with the value-twin.
+sleep_picked AS (
+    SELECT ` + sleepCrossValidationPickSourceExpr("sleep_total_per_source", "sum_val") + ` AS src
+),
+-- Atomicity gate: only commit the picked source's stages when ALL five
+-- are present. Otherwise (e.g. RingConn writes a sleep_total row but no
+-- phases) we'd write a NULL for the missing stages, and ON CONFLICT
+-- COALESCE would preserve a prior row's stages — recreating exactly the
+-- mixed-source row this PR is trying to eliminate. By forcing every
+-- stage to NULL when incomplete, COALESCE preserves the previous block
+-- as a unit instead of column-by-column.
+sleep_picked_complete AS (
+    SELECT (
+      SELECT COUNT(DISTINCT metric_name) FROM per_source
+       WHERE source = (SELECT src FROM sleep_picked)
+         AND metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake')
+    ) = 5 AS ok
 ),
 agg AS (
     SELECT
@@ -350,16 +408,12 @@ agg AS (
         MAX(sum_val) FILTER (WHERE source LIKE '%iPhone%'),
         MAX(sum_val)
       ) AS sum_preferred,
-      -- sleep cross-validation: if sources diverge >40%, take MIN
-      CASE
-        WHEN COUNT(DISTINCT source) > 1
-             AND MAX(sum_val) > MIN(sum_val) * 1.4
-        THEN MIN(sum_val)
-        ELSE COALESCE(
-          MAX(sum_val) FILTER (WHERE source LIKE '%Ultra%' OR source LIKE '%Apple Watch%'),
-          MAX(sum_val) FILTER (WHERE source LIKE '%RingConn%'),
-          MAX(sum_val)
-        )
+      -- sleep: only when picked source covers all five stages. Otherwise
+      -- emit NULL for every stage so the existing COALESCE in ON CONFLICT
+      -- preserves the prior block atomically (no per-column drift).
+      CASE WHEN (SELECT ok FROM sleep_picked_complete)
+           THEN MAX(sum_val) FILTER (WHERE source = (SELECT src FROM sleep_picked))
+           ELSE NULL
       END AS sum_sleep_resolved
     FROM per_source
     GROUP BY metric_name
@@ -470,6 +524,12 @@ func (s *DB) BackfillAggregates(force bool) error {
 
 // BuildDailyMetrics fills the metric columns of daily_scores from hourly_metrics.
 // Existing readiness/score_version columns are not touched.
+//
+// Sleep stages are handled by a dedicated atomic block (buildDailySleepBlock)
+// so all five phases come from one source per night and never drift across
+// columns. The parallel per-column path is kept for AVG metrics and non-sleep
+// SUM metrics, where mixing sources per metric does not produce nonsensical
+// ratios.
 func (s *DB) BuildDailyMetrics(force bool) error {
 	type spec struct {
 		col  string
@@ -478,11 +538,6 @@ func (s *DB) BuildDailyMetrics(force bool) error {
 	specs := []spec{
 		{"hrv_avg", "heart_rate_variability"},
 		{"rhr_avg", "resting_heart_rate"},
-		{"sleep_total", "sleep_total"},
-		{"sleep_deep", "sleep_deep"},
-		{"sleep_rem", "sleep_rem"},
-		{"sleep_core", "sleep_core"},
-		{"sleep_awake", "sleep_awake"},
 		{"steps", "step_count"},
 		{"calories", "active_energy"},
 		{"exercise_min", "apple_exercise_time"},
@@ -506,7 +561,15 @@ func (s *DB) BuildDailyMetrics(force bool) error {
 		}(sp)
 	}
 	wg.Wait()
-	log.Printf("daily metrics filled (%d columns)", len(specs))
+
+	if err := s.buildDailySleepBlock(force); err != nil {
+		// This path is the sole backfill writer for the sleep block now,
+		// so a silent log would leave daily_scores.sleep_* stale without
+		// the operator noticing. Fail the rebuild and let upstream retry.
+		return fmt.Errorf("daily sleep block: %w", err)
+	}
+
+	log.Printf("daily metrics filled (%d columns + sleep block)", len(specs))
 	return nil
 }
 
@@ -514,6 +577,7 @@ func (s *DB) buildDailyMetricCol(col, metric string, force bool) error {
 	ctx, cancel := longCtx()
 	defer cancel()
 	var fromClause string
+	args := []any{metric}
 	if !force {
 		// Refresh last 7 days + fill new dates (catches late-arriving data
 		// from offline devices like Apple Watch syncing after a week).
@@ -523,45 +587,37 @@ func (s *DB) buildDailyMetricCol(col, metric string, force bool) error {
 			return nil
 		}
 		refreshFrom := subtractDaysStr(*maxDate, 7)
-		fromClause = fmt.Sprintf("AND SUBSTRING(hour,1,10) >= '%s'", refreshFrom)
+		fromClause = "AND SUBSTRING(hour,1,10) >= $2"
+		args = append(args, refreshFrom)
+	}
+
+	if isSleepMetric(metric) {
+		// Sleep stages are handled atomically per night by
+		// buildDailySleepBlock — should never reach this per-column path.
+		log.Printf("buildDailyMetricCol called for sleep metric %s; ignoring (handled by buildDailySleepBlock)", metric)
+		return nil
 	}
 
 	var query string
 	if SumMetrics[metric] {
-		if isSleepMetric(metric) {
-			// Use shared helper (Apple Watch > RingConn with MIN > 1h-gated
-			// cross-validation). Concatenate rather than fmt.Sprintf to avoid
-			// having to double-escape `%` literals in the helper's LIKE clauses.
-			query = `
-				SELECT day, ` + sleepCrossValidationPickExpr("source_total") + ` AS val
+		// Non-sleep SUM metrics: Apple Watch > iPhone > other.
+		srcPriority := `CASE
+			WHEN source LIKE '%%Ultra%%' OR source LIKE '%%Apple Watch%%' THEN 1
+			WHEN source LIKE '%%iPhone%%' THEN 2
+			ELSE 3 END`
+		query = fmt.Sprintf(`
+			SELECT day, source_total FROM (
+				SELECT day, source_total,
+				       ROW_NUMBER() OVER (PARTITION BY day ORDER BY src_rank, source_total DESC) AS rn
 				FROM (
-				    SELECT SUBSTRING(hour,1,10) AS day, source, SUM(avg_val) AS source_total
-				    FROM hourly_metrics
-				    WHERE metric_name = $1 ` + fromClause + `
-				    GROUP BY SUBSTRING(hour,1,10), source
+					SELECT SUBSTRING(hour,1,10) AS day, source, SUM(avg_val) AS source_total,
+					       %s AS src_rank
+					FROM hourly_metrics
+					WHERE metric_name = $1 %s
+					GROUP BY SUBSTRING(hour,1,10), source
 				) sub
-				GROUP BY day
-				ORDER BY day`
-		} else {
-			// Non-sleep SUM metrics: Apple Watch > iPhone > other.
-			srcPriority := `CASE
-				WHEN source LIKE '%%Ultra%%' OR source LIKE '%%Apple Watch%%' THEN 1
-				WHEN source LIKE '%%iPhone%%' THEN 2
-				ELSE 3 END`
-			query = fmt.Sprintf(`
-				SELECT day, source_total FROM (
-					SELECT day, source_total,
-					       ROW_NUMBER() OVER (PARTITION BY day ORDER BY src_rank, source_total DESC) AS rn
-					FROM (
-						SELECT SUBSTRING(hour,1,10) AS day, source, SUM(avg_val) AS source_total,
-						       %s AS src_rank
-						FROM hourly_metrics
-						WHERE metric_name = $1 %s
-						GROUP BY SUBSTRING(hour,1,10), source
-					) sub
-				) ranked WHERE rn = 1
-				ORDER BY day`, srcPriority, fromClause)
-		}
+			) ranked WHERE rn = 1
+			ORDER BY day`, srcPriority, fromClause)
 	} else {
 		query = fmt.Sprintf(`
 			SELECT SUBSTRING(hour,1,10), AVG(avg_val)
@@ -570,7 +626,7 @@ func (s *DB) buildDailyMetricCol(col, metric string, force bool) error {
 			GROUP BY SUBSTRING(hour,1,10)`, fromClause)
 	}
 
-	rows, err := s.pool.Query(ctx, query, metric)
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return err
 	}
@@ -595,6 +651,133 @@ func (s *DB) buildDailyMetricCol(col, metric string, force bool) error {
 // summary record and individual fragment records from different data sources.
 func isSleepMetric(metric string) bool {
 	return strings.HasPrefix(metric, "sleep_")
+}
+
+// buildDailySleepBlock writes the five sleep_* columns of daily_scores
+// atomically per night: pick ONE source per day (driven by sleep_total
+// totals + cross-validation rule), and only commit all five stages if
+// the picked source covers the full set. Otherwise emit NULL for every
+// stage so the existing ON CONFLICT COALESCE preserves the prior block
+// as a unit. This mirrors upsertDailyForDate's logic but operates on a
+// date range so the force-backfill path doesn't reopen the mixed-source
+// row this whole subsystem is trying to eliminate.
+//
+// `force=true` rebuilds every day in hourly_metrics; otherwise the last
+// 7 days from the most recent sleep_total day are refreshed (matches the
+// per-column buildDailyMetricCol cadence so late-arriving Apple Watch
+// fragments still land on the right night).
+func (s *DB) buildDailySleepBlock(force bool) error {
+	ctx, cancel := longCtx()
+	defer cancel()
+
+	var fromClause string
+	var args []any
+	if !force {
+		var maxDate *string
+		s.pool.QueryRow(ctx,
+			`SELECT MAX(SUBSTRING(hour,1,10)) FROM hourly_metrics WHERE metric_name = 'sleep_total'`,
+		).Scan(&maxDate)
+		if maxDate == nil {
+			return nil
+		}
+		refreshFrom := subtractDaysStr(*maxDate, 7)
+		fromClause = "AND SUBSTRING(hour,1,10) >= $1"
+		args = append(args, refreshFrom)
+	}
+
+	// Multi-day variant of upsertDailyForDate's sleep block. Note: the
+	// per-day source pick is inlined rather than calling
+	// sleepCrossValidationPickSourceExpr because the helper assumes a
+	// flat (source, value) table — multi-day needs GROUP BY day. Threshold
+	// constants (1.0h floor, 1.4× divergence) and source priority
+	// (Apple Watch > RingConn > MAX) are duplicated here; keep them in
+	// lockstep with the helper above. (Rule: any threshold change touches
+	// both this function AND sleepCrossValidationPickSourceExpr.)
+	q := `
+WITH per_source AS (
+    SELECT SUBSTRING(hour,1,10) AS day, metric_name, source,
+           SUM(avg_val) AS sum_val
+    FROM hourly_metrics
+    WHERE metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake')
+      ` + fromClause + `
+    GROUP BY SUBSTRING(hour,1,10), metric_name, source
+),
+sleep_total_per_day AS (
+    SELECT day, source, sum_val FROM per_source WHERE metric_name = 'sleep_total'
+),
+day_stats AS (
+    SELECT day,
+           COUNT(*)        AS n_sources,
+           MIN(sum_val)    AS min_total,
+           MAX(sum_val)    AS max_total
+    FROM sleep_total_per_day
+    GROUP BY day
+),
+-- Both pickers add source ASC as a stable tiebreaker so equal totals
+-- always resolve to the same row across reruns; without it, DISTINCT ON
+-- can return either matching row and daily_scores would drift.
+priority_pick AS (
+    SELECT DISTINCT ON (day) day, source
+    FROM sleep_total_per_day
+    ORDER BY day,
+        CASE WHEN source LIKE '%Ultra%' OR source LIKE '%Apple Watch%' THEN 0
+             WHEN source LIKE '%RingConn%'                              THEN 1
+             ELSE                                                            2 END,
+        sum_val DESC,
+        source ASC
+),
+min_pick AS (
+    SELECT DISTINCT ON (day) day, source
+    FROM sleep_total_per_day
+    ORDER BY day, sum_val ASC, source ASC
+),
+sleep_picked AS (
+    SELECT s.day,
+        CASE WHEN s.n_sources > 1 AND s.min_total > 1.0
+                  AND s.max_total > s.min_total * 1.4
+             THEN m.source
+             ELSE p.source
+        END AS src
+    FROM day_stats s
+    LEFT JOIN priority_pick p ON p.day = s.day
+    LEFT JOIN min_pick      m ON m.day = s.day
+),
+sleep_complete AS (
+    SELECT sp.day, sp.src, (
+      SELECT COUNT(DISTINCT metric_name) FROM per_source
+       WHERE day = sp.day AND source = sp.src
+         AND metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake')
+    ) = 5 AS ok
+    FROM sleep_picked sp
+),
+day_metric AS (
+    SELECT p.day, p.metric_name,
+        CASE WHEN sc.ok AND p.source = sc.src THEN p.sum_val END AS val
+    FROM per_source p
+    JOIN sleep_complete sc ON sc.day = p.day
+)
+INSERT INTO daily_scores (date, sleep_total, sleep_deep, sleep_rem, sleep_core, sleep_awake, computed_at)
+SELECT day,
+    MAX(val) FILTER (WHERE metric_name = 'sleep_total'),
+    MAX(val) FILTER (WHERE metric_name = 'sleep_deep'),
+    MAX(val) FILTER (WHERE metric_name = 'sleep_rem'),
+    MAX(val) FILTER (WHERE metric_name = 'sleep_core'),
+    MAX(val) FILTER (WHERE metric_name = 'sleep_awake'),
+    NOW()::TEXT
+FROM day_metric
+GROUP BY day
+ON CONFLICT(date) DO UPDATE SET
+    sleep_total = COALESCE(EXCLUDED.sleep_total, daily_scores.sleep_total),
+    sleep_deep  = COALESCE(EXCLUDED.sleep_deep,  daily_scores.sleep_deep),
+    sleep_rem   = COALESCE(EXCLUDED.sleep_rem,   daily_scores.sleep_rem),
+    sleep_core  = COALESCE(EXCLUDED.sleep_core,  daily_scores.sleep_core),
+    sleep_awake = COALESCE(EXCLUDED.sleep_awake, daily_scores.sleep_awake),
+    computed_at = EXCLUDED.computed_at`
+
+	if _, err := s.pool.Exec(ctx, q, args...); err != nil {
+		return fmt.Errorf("daily sleep block: %w", err)
+	}
+	return nil
 }
 
 // buildHourlyMetric fills hourly_metrics for one metric directly from

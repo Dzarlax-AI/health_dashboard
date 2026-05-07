@@ -134,9 +134,14 @@ Defined in `internal/storage/aggregates.go::SumMetrics` (exported):
 
 ## Sleep Source Cross-Validation
 
-Sleep cross-validation SQL (Apple Watch > RingConn with MIN > 1h-gated take-MIN-when-divergent rule) lives in helper `sleepCrossValidationPickExpr(valCol string)` in `internal/storage/aggregates.go`. **Never copy this SQL inline** — there were five parallel copies that drifted apart over PRs #8 → #9 → #10 (point-fix per copy). New read/write paths for sleep_* metrics MUST call the helper. The MIN > 1h gate is critical: without it, a RingConn 0.x-hour daily-summary stub satisfies "MAX > MIN×1.4" and clobbers Apple Watch's real 7+h night.
+Sleep cross-validation SQL (Apple Watch > RingConn with MIN > 1h-gated take-MIN-when-divergent rule) lives in helper `sleepCrossValidationPickExpr(valCol string)` in `internal/storage/aggregates.go`. **Never copy this SQL inline** — there were five parallel copies that drifted apart over PRs #8 → #9 → #10 (point-fix per copy). The MIN > 1h gate is critical: without it, a RingConn 0.x-hour daily-summary stub satisfies "MAX > MIN×1.4" and clobbers Apple Watch's real 7+h night.
 
-Helper is called from: `buildDailyMetricCol` (force-backfill writes), `metricDataDayFromHourly` and `metricDataRaw` (read paths for /api/metrics/data), and `briefing.go::fetch` (look-back fetcher for AI briefing + readiness). Plus a separately-shaped CTE constant `preferredSleepSourceSQL` for source_totals CTE callers — that one runs against pre-CTE'd subselects rather than GROUP BY aggregates, so it didn't merge cleanly into the helper.
+Three callsites for the rule, by SQL shape:
+- `sleepCrossValidationPickExpr(valCol)` (value-twin, aggregate over GROUP BY): used by **read paths** — `metricDataDayFromHourly`, `metricDataRaw`, `briefing.go::fetch`, plus the separately-shaped `preferredSleepSourceSQL` CTE constant for `source_totals` callers.
+- `sleepCrossValidationPickSourceExpr(table, valCol)` (source-twin, scalar subquery): used by `upsertDailyForDate` — picks ONE source per night so all five sleep_* stages come from the same device, with a `sleep_picked_complete` gate so the block is written atomically (all-or-nothing) to avoid mixing sources across reruns.
+- `buildDailySleepBlock` (multi-day, force/backfill writes): mirrors the source-twin's logic but inlined because the multi-day GROUP BY shape doesn't fit the helper's flat-table assumption. **Threshold and source-priority constants (1.0h floor, 1.4× divergence, Apple Watch > RingConn > MAX) MUST be kept in lockstep with both helpers above** — comment in `buildDailySleepBlock` is a load-bearing reminder.
+
+`buildDailyMetricCol` no longer handles sleep_* — it short-circuits with a log line if asked. All daily sleep writes go through `upsertDailyForDate` (single-day inline) or `buildDailySleepBlock` (multi-day backfill).
 
 ## Environment Variables
 
