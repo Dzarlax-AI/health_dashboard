@@ -67,6 +67,42 @@ func sleepCrossValidationPickExpr(valCol string) string {
 	END`
 }
 
+// sleepCrossValidationPickSourceExpr is the source-name twin of
+// sleepCrossValidationPickExpr: same priority and cross-validation rules,
+// but returns the SOURCE that wins rather than its value. Used when
+// downstream queries need to pull multiple stages from a single device
+// (e.g. upsertDailyForDate picks the source by sleep_total totals, then
+// reads sleep_deep / sleep_rem / sleep_core / sleep_awake from that same
+// device so phase ratios stay physically consistent).
+//
+// `table` must be a pre-filtered relation (CTE / subquery) exposing a
+// `source` column and the value column named `valCol`. Caller is
+// responsible for filtering to one metric (typically `sleep_total`).
+//
+// Keep the thresholds (MIN > 1.0, 1.4× divergence) in lockstep with
+// sleepCrossValidationPickExpr — that is the whole point of having a
+// shared helper instead of ad-hoc inline CASEs.
+func sleepCrossValidationPickSourceExpr(table, valCol string) string {
+	return `(
+		CASE
+			WHEN (SELECT COUNT(*) FROM ` + table + `) > 1
+			 AND (SELECT MIN(` + valCol + `) FROM ` + table + `) > 1.0
+			 AND (SELECT MAX(` + valCol + `) FROM ` + table + `) >
+			     (SELECT MIN(` + valCol + `) FROM ` + table + `) * 1.4
+			THEN (SELECT source FROM ` + table + ` ORDER BY ` + valCol + ` ASC LIMIT 1)
+			ELSE COALESCE(
+				(SELECT source FROM ` + table + `
+				  WHERE source LIKE '%Ultra%' OR source LIKE '%Apple Watch%'
+				  ORDER BY ` + valCol + ` DESC LIMIT 1),
+				(SELECT source FROM ` + table + `
+				  WHERE source LIKE '%RingConn%'
+				  ORDER BY ` + valCol + ` DESC LIMIT 1),
+				(SELECT source FROM ` + table + ` ORDER BY ` + valCol + ` DESC LIMIT 1)
+			)
+		END
+	)`
+}
+
 // preferredSourceSQL returns a SQL snippet that picks the best source's daily
 // total from a subquery with (source, source_total) columns.
 // Priority: Apple Watch ("Ultra") > iPhone > other (e.g. RingConn).
@@ -335,7 +371,7 @@ func (s *DB) upsertDailyForDate(date string) {
 	// validation picks MIN), producing physically impossible ratios such as
 	// REM/Total > 100%. Latent today (single source — Apple Watch only) but
 	// would resurface immediately if RingConn is re-enabled.
-	const q = `
+	q := `
 WITH per_source AS (
     SELECT metric_name, source,
            AVG(avg_val) AS avg_val,
@@ -344,37 +380,14 @@ WITH per_source AS (
     WHERE SUBSTRING(hour,1,10) = $1
     GROUP BY metric_name, source
 ),
--- Pick ONE source for tonight from sleep_total totals across sources,
--- mirroring sleepCrossValidationPickExpr but returning the SOURCE name
--- (not the value) so the rest of the sleep stages can be filtered to it.
+sleep_total_per_source AS (
+    SELECT source, sum_val FROM per_source WHERE metric_name = 'sleep_total'
+),
+-- Pick ONE source for tonight from sleep_total totals; all five sleep_*
+-- stages will be filtered to this source so phase ratios stay physically
+-- consistent. Helper keeps thresholds in lockstep with the value-twin.
 sleep_picked AS (
-    SELECT (
-      CASE
-        WHEN COUNT(*) > 1 AND MIN(sum_val) > 1.0
-             AND MAX(sum_val) > MIN(sum_val) * 1.4
-        THEN (
-          -- divergent: MIN-rule — source whose total = MIN wins
-          SELECT source FROM per_source
-          WHERE metric_name = 'sleep_total'
-          ORDER BY sum_val ASC LIMIT 1
-        )
-        ELSE COALESCE(
-          (SELECT source FROM per_source
-            WHERE metric_name = 'sleep_total'
-              AND (source LIKE '%Ultra%' OR source LIKE '%Apple Watch%')
-            ORDER BY sum_val DESC LIMIT 1),
-          (SELECT source FROM per_source
-            WHERE metric_name = 'sleep_total'
-              AND source LIKE '%RingConn%'
-            ORDER BY sum_val DESC LIMIT 1),
-          (SELECT source FROM per_source
-            WHERE metric_name = 'sleep_total'
-            ORDER BY sum_val DESC LIMIT 1)
-        )
-      END
-    ) AS src
-    FROM per_source
-    WHERE metric_name = 'sleep_total'
+    SELECT ` + sleepCrossValidationPickSourceExpr("sleep_total_per_source", "sum_val") + ` AS src
 ),
 agg AS (
     SELECT
