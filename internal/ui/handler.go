@@ -947,7 +947,7 @@ func (h *Handler) userSettings(w http.ResponseWriter, r *http.Request) {
 
 	notifyDefaults := h.mgr.NotifyDefaultsFor(schema)
 	cfg := db.GetNotifyConfig(notifyDefaults)
-	jsonResponse(w, map[string]any{
+	out := map[string]any{
 		"telegram_token":         cfg.Token,
 		"telegram_chat_id":       cfg.ChatID,
 		"report_lang":            cfg.Lang,
@@ -957,7 +957,21 @@ func (h *Handler) userSettings(w http.ResponseWriter, r *http.Request) {
 		"report_evening_weekday": cfg.EveningWeekdayHour,
 		"report_evening_weekend": cfg.EveningWeekendHour,
 		"enabled":                cfg.Enabled(),
-	})
+	}
+	// Identity: who the caller is logged in as. Lets native clients show
+	// "Logged in as X · Tenant Y" without a separate /api/me round-trip,
+	// and helps catch mis-configured API keys early. Skipped in legacy
+	// single-user mode where there's no registry concept of users; that
+	// keeps the documented "legacy omits identity fields" contract from
+	// drifting if registry behaviour ever changes.
+	if h.reg != nil && !h.mgr.LegacyMode() {
+		if u, err := h.reg.GetBySchema(r.Context(), schema); err == nil && u != nil {
+			out["username"] = u.Username
+			out["tenant"] = u.SchemaName
+			out["is_admin"] = u.IsAdmin
+		}
+	}
+	jsonResponse(w, out)
 }
 
 // adminAISettings handles GET/POST /api/admin/settings — Gemini config, admin only.
