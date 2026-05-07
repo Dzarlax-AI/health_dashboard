@@ -88,21 +88,26 @@ func sleepCrossValidationPickExpr(valCol string) string {
 // sleepCrossValidationPickExpr — that is the whole point of having a
 // shared helper instead of ad-hoc inline CASEs.
 func sleepCrossValidationPickSourceExpr(table, valCol string) string {
+	// Tiebreak by `source ASC` so two rows with identical totals always
+	// resolve to the same pick across reruns. Without this, Postgres can
+	// return either row when sums tie, and the picked source flips
+	// between backfills — causing daily_scores.sleep_* to drift even
+	// with no new data.
 	return `(
 		CASE
 			WHEN (SELECT COUNT(*) FROM ` + table + `) > 1
 			 AND (SELECT MIN(` + valCol + `) FROM ` + table + `) > 1.0
 			 AND (SELECT MAX(` + valCol + `) FROM ` + table + `) >
 			     (SELECT MIN(` + valCol + `) FROM ` + table + `) * 1.4
-			THEN (SELECT source FROM ` + table + ` ORDER BY ` + valCol + ` ASC LIMIT 1)
+			THEN (SELECT source FROM ` + table + ` ORDER BY ` + valCol + ` ASC, source ASC LIMIT 1)
 			ELSE COALESCE(
 				(SELECT source FROM ` + table + `
 				  WHERE source LIKE '%Ultra%' OR source LIKE '%Apple Watch%'
-				  ORDER BY ` + valCol + ` DESC LIMIT 1),
+				  ORDER BY ` + valCol + ` DESC, source ASC LIMIT 1),
 				(SELECT source FROM ` + table + `
 				  WHERE source LIKE '%RingConn%'
-				  ORDER BY ` + valCol + ` DESC LIMIT 1),
-				(SELECT source FROM ` + table + ` ORDER BY ` + valCol + ` DESC LIMIT 1)
+				  ORDER BY ` + valCol + ` DESC, source ASC LIMIT 1),
+				(SELECT source FROM ` + table + ` ORDER BY ` + valCol + ` DESC, source ASC LIMIT 1)
 			)
 		END
 	)`
@@ -572,6 +577,7 @@ func (s *DB) buildDailyMetricCol(col, metric string, force bool) error {
 	ctx, cancel := longCtx()
 	defer cancel()
 	var fromClause string
+	args := []any{metric}
 	if !force {
 		// Refresh last 7 days + fill new dates (catches late-arriving data
 		// from offline devices like Apple Watch syncing after a week).
@@ -581,7 +587,8 @@ func (s *DB) buildDailyMetricCol(col, metric string, force bool) error {
 			return nil
 		}
 		refreshFrom := subtractDaysStr(*maxDate, 7)
-		fromClause = fmt.Sprintf("AND SUBSTRING(hour,1,10) >= '%s'", refreshFrom)
+		fromClause = "AND SUBSTRING(hour,1,10) >= $2"
+		args = append(args, refreshFrom)
 	}
 
 	if isSleepMetric(metric) {
@@ -619,7 +626,7 @@ func (s *DB) buildDailyMetricCol(col, metric string, force bool) error {
 			GROUP BY SUBSTRING(hour,1,10)`, fromClause)
 	}
 
-	rows, err := s.pool.Query(ctx, query, metric)
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return err
 	}
@@ -664,6 +671,7 @@ func (s *DB) buildDailySleepBlock(force bool) error {
 	defer cancel()
 
 	var fromClause string
+	var args []any
 	if !force {
 		var maxDate *string
 		s.pool.QueryRow(ctx,
@@ -673,7 +681,8 @@ func (s *DB) buildDailySleepBlock(force bool) error {
 			return nil
 		}
 		refreshFrom := subtractDaysStr(*maxDate, 7)
-		fromClause = fmt.Sprintf("AND SUBSTRING(hour,1,10) >= '%s'", refreshFrom)
+		fromClause = "AND SUBSTRING(hour,1,10) >= $1"
+		args = append(args, refreshFrom)
 	}
 
 	// Multi-day variant of upsertDailyForDate's sleep block. Note: the
@@ -704,6 +713,9 @@ day_stats AS (
     FROM sleep_total_per_day
     GROUP BY day
 ),
+-- Both pickers add source ASC as a stable tiebreaker so equal totals
+-- always resolve to the same row across reruns; without it, DISTINCT ON
+-- can return either matching row and daily_scores would drift.
 priority_pick AS (
     SELECT DISTINCT ON (day) day, source
     FROM sleep_total_per_day
@@ -711,12 +723,13 @@ priority_pick AS (
         CASE WHEN source LIKE '%Ultra%' OR source LIKE '%Apple Watch%' THEN 0
              WHEN source LIKE '%RingConn%'                              THEN 1
              ELSE                                                            2 END,
-        sum_val DESC
+        sum_val DESC,
+        source ASC
 ),
 min_pick AS (
     SELECT DISTINCT ON (day) day, source
     FROM sleep_total_per_day
-    ORDER BY day, sum_val ASC
+    ORDER BY day, sum_val ASC, source ASC
 ),
 sleep_picked AS (
     SELECT s.day,
@@ -761,7 +774,7 @@ ON CONFLICT(date) DO UPDATE SET
     sleep_awake = COALESCE(EXCLUDED.sleep_awake, daily_scores.sleep_awake),
     computed_at = EXCLUDED.computed_at`
 
-	if _, err := s.pool.Exec(ctx, q); err != nil {
+	if _, err := s.pool.Exec(ctx, q, args...); err != nil {
 		return fmt.Errorf("daily sleep block: %w", err)
 	}
 	return nil
