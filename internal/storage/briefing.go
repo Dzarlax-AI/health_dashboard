@@ -116,8 +116,36 @@ func (s *DB) rawMetricsFromDailyScores(lastDate string) *health.RawMetrics {
 	// callers fall back to d.Sleep.
 	d.NightSleep = s.metricPointDailySums("night_sleep_total", lastDate, 30)
 	d.Nap = s.metricPointDailySums("nap_total", lastDate, 30)
+	// NapToday is point-in-time (today only) so the dashboard badge
+	// can't latch onto a prior day's nap. Slice filters qty>0 → its
+	// index 0 is the latest day someone napped, not necessarily today.
+	d.NapToday = s.metricPointDailyPoint("nap_total", lastDate)
 
 	return d
+}
+
+// metricPointDailyPoint returns the per-source-MAX daily SUM for a single
+// metric on a specific date (`date` = YYYY-MM-DD). Returns 0 when there is
+// no row — callers use this for "today only" badges where falling back to
+// the most-recent prior day would be wrong (e.g. the nap badge on the
+// dashboard sleep card).
+func (s *DB) metricPointDailyPoint(metric, date string) float64 {
+	ctx, cancel := queryCtx()
+	defer cancel()
+	var v *float64
+	err := s.pool.QueryRow(ctx, `
+		SELECT MAX(source_sum)
+		FROM (
+			SELECT source, SUM(qty) AS source_sum
+			FROM metric_points
+			WHERE metric_name = $1 AND SUBSTRING(date,1,10) = $2 AND qty > 0 AND quality = 'ok'
+			GROUP BY source
+		) sub`,
+		metric, date).Scan(&v)
+	if err != nil || v == nil {
+		return 0
+	}
+	return *v
 }
 
 // metricPointDailySums returns up to `days` per-day SUM totals (most-recent

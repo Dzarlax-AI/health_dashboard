@@ -172,11 +172,19 @@ func buildMetricCards(d RawMetrics, ls LangStrings) []MetricCard {
 			Trend30dStatus: status30,
 		}
 		// Nap badge: append "+%dm nap" to the sleep card when the user
-		// took at least one detectable daytime sleep today.
-		if sp.metric == "night_sleep_total" && len(d.Nap) > 0 && d.Nap[0] > 0 {
-			napMin := int(d.Nap[0]*60 + 0.5)
+		// took at least one detectable daytime sleep TODAY. Use
+		// d.NapToday (point-in-time) rather than d.Nap[0] — the latter
+		// is the most recent day someone napped, which would latch a
+		// stale yesterday-nap onto today's card.
+		if sp.metric == "night_sleep_total" && d.NapToday > 0 {
+			napMin := int(d.NapToday*60 + 0.5)
 			if napMin > 0 {
-				card.Badge = fmt.Sprintf(ls["lbl_nap_badge"], napMin)
+				// Guard against missing translation key — fmt.Sprintf
+				// on an empty format with arguments emits "%!(EXTRA …)"
+				// garbage. Skip the badge silently in that case.
+				if fmtStr := ls["lbl_nap_badge"]; fmtStr != "" {
+					card.Badge = fmt.Sprintf(fmtStr, napMin)
+				}
 			}
 		}
 		out = append(out, card)
