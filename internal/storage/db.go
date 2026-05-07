@@ -142,6 +142,45 @@ func (s *DB) EnsureAllTables() error {
 			value      TEXT NOT NULL DEFAULT '',
 			updated_at TEXT NOT NULL DEFAULT NOW()::text
 		)`,
+		// One row per Apple Health workout. We store summary fields only —
+		// timeseries (route, per-minute HR, per-second energy) are large
+		// (3000+ points for an outdoor run) and are not used by any text
+		// analysis path, so they are dropped on ingest. Time-in-HR-zone is
+		// pre-computed on ingest from heartRateData[] when zones are
+		// configured (HEALTH_HR_ZONES_BPM env var) and stored as five
+		// integer columns.
+		`CREATE TABLE IF NOT EXISTS workouts (
+			id                BIGSERIAL PRIMARY KEY,
+			received_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			health_record_id  BIGINT REFERENCES health_records(id),
+			external_id       TEXT UNIQUE NOT NULL,
+			name              TEXT NOT NULL,
+			start_time        TIMESTAMPTZ NOT NULL,
+			end_time          TIMESTAMPTZ NOT NULL,
+			duration_sec      DOUBLE PRECISION NOT NULL,
+			is_indoor         BOOLEAN NOT NULL DEFAULT FALSE,
+			location          TEXT,
+			avg_hr_bpm        DOUBLE PRECISION,
+			max_hr_bpm        DOUBLE PRECISION,
+			energy_kcal       DOUBLE PRECISION,
+			intensity         DOUBLE PRECISION,
+			distance_km       DOUBLE PRECISION,
+			avg_speed_kmh     DOUBLE PRECISION,
+			max_speed_kmh     DOUBLE PRECISION,
+			elevation_up_m    DOUBLE PRECISION,
+			step_count_total  INTEGER,
+			step_cadence_spm  DOUBLE PRECISION,
+			temperature_c     DOUBLE PRECISION,
+			humidity_pct      DOUBLE PRECISION,
+			hr_z1_sec         INTEGER,
+			hr_z2_sec         INTEGER,
+			hr_z3_sec         INTEGER,
+			hr_z4_sec         INTEGER,
+			hr_z5_sec         INTEGER,
+			CONSTRAINT chk_workout_times CHECK (end_time >= start_time)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_workouts_start_time ON workouts (start_time DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_workouts_name ON workouts (name)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.pool.Exec(ctx, stmt); err != nil {

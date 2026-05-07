@@ -51,6 +51,7 @@ func buildServer(resolve DBResolver) *server.MCPServer {
 	)
 	registerMetricTools(s, resolve)
 	registerAnalysisTools(s, resolve)
+	registerWorkoutTools(s, resolve)
 	return s
 }
 
