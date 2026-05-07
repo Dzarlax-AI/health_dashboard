@@ -755,14 +755,15 @@ type sectionAPIDetail struct {
 }
 
 type sectionAPIChart struct {
-	Metric  string `json:"metric,omitempty"`
-	Agg     string `json:"agg,omitempty"`
-	Label   string `json:"label"`
-	Unit    string `json:"unit,omitempty"`
-	Color   string `json:"color,omitempty"`
-	Type    string `json:"type,omitempty"`
-	Stacked bool   `json:"stacked,omitempty"`
-	Virtual bool   `json:"virtual,omitempty"`
+	Metric    string `json:"metric,omitempty"`
+	Agg       string `json:"agg,omitempty"`
+	Label     string `json:"label"`
+	Unit      string `json:"unit,omitempty"`
+	Color     string `json:"color,omitempty"`
+	ColorDark string `json:"color_dark,omitempty"`
+	Type      string `json:"type,omitempty"`
+	Stacked   bool   `json:"stacked,omitempty"`
+	Virtual   bool   `json:"virtual,omitempty"`
 }
 
 type sectionAPIExplain struct {
@@ -798,7 +799,8 @@ func (h *Handler) sectionAPI(w http.ResponseWriter, r *http.Request) {
 	for _, c := range data.Charts {
 		out.Charts = append(out.Charts, sectionAPIChart{
 			Metric: c.Metric, Agg: c.Agg, Label: c.Label, Unit: c.Unit,
-			Color: c.Color, Type: c.Type, Stacked: c.Stacked, Virtual: c.Virtual,
+			Color: c.Color, ColorDark: c.ColorDark,
+			Type: c.Type, Stacked: c.Stacked, Virtual: c.Virtual,
 		})
 	}
 	for _, e := range data.Explains {
