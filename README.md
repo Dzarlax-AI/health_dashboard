@@ -1,6 +1,15 @@
 # Health Dashboard
 
-Self-hosted server that receives data from the [Health Auto Export](https://www.healthyapps.dev) iOS app, stores it in PostgreSQL, and provides a web dashboard and MCP server for AI-assisted analysis.
+Self-hosted server that receives Apple Health data, stores it in PostgreSQL, and provides a web dashboard and MCP server for AI-assisted analysis.
+
+## Clients
+
+Two iOS clients can stream data into this server:
+
+- **[health-sync](https://github.com/Dzarlax-AI/health-sync)** — first-party native client (Swift / SwiftUI). Sends 100+ HealthKit metrics in the background, includes a built-in read-only dashboard (Today / Sleep / Trends / Metrics) backed by the server's JSON API, and supports en / ru / sr UI locales.
+- **[Health Auto Export](https://www.healthyapps.dev)** — third-party app, original integration path. Still fully supported via `/health`, `/health/hourly`, `/health/vitals`, `/health/workouts`.
+
+Pick one — both write to the same tables and either can be used in isolation. The server doesn't care which client is talking to it as long as the `X-API-Key` header is right.
 
 ## How It Works
 
