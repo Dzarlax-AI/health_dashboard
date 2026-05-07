@@ -26,7 +26,7 @@
 <div id="app">
 {{block "content" .}}{{end}}
 </div>
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v={{.StaticVer}}"></script>
 {{block "scripts" .}}{{end}}
 {{/* Redirect old hash-based URLs to new routes */}}
 <script>

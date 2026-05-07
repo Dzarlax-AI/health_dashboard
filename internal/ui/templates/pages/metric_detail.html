@@ -58,7 +58,7 @@
 {{end}}
 
 {{define "scripts"}}
-<script src="/static/charts.js"></script>
+<script src="/static/charts.js?v={{.StaticVer}}"></script>
 <script>
 var currentMetric = '{{.MetricName}}';
 var compareEnabled = false, bySourceEnabled = false;

@@ -2,9 +2,12 @@ package ui
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"html/template"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"strings"
@@ -15,6 +18,14 @@ var templateFS embed.FS
 
 //go:embed static/*.js
 var staticFS embed.FS
+
+// staticVer is a short content hash over all embedded static files.
+// Used as ?v=<hash> in template URLs so each deploy invalidates the
+// browser cache without forcing a hard-refresh.
+var staticVer string
+
+// StaticVer is exposed for BasePage and tests.
+func StaticVer() string { return staticVer }
 
 // pageTemplates maps page names to parsed templates.
 // Each page template is parsed with the shared base.html and nav.html.
@@ -30,6 +41,7 @@ var funcMap = template.FuncMap{
 }
 
 func init() {
+	staticVer = computeStaticVer()
 	pageTemplates = make(map[string]*template.Template)
 
 	// Shared templates that every page needs
@@ -129,6 +141,12 @@ func renderFragment(w http.ResponseWriter, name string, data any) {
 }
 
 // serveStatic serves embedded JS files.
+//
+// Templates render URLs as `/static/app.js?v=<hash>`; query params are
+// already separated from r.URL.Path by net/http, so the path lookup
+// against the embed FS works untouched. When a `?v=` matches the current
+// build hash we send long-lived immutable caching; otherwise (no version
+// or stale version after deploy) fall back to the previous 1h policy.
 func serveStatic(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/")
 	data, err := staticFS.ReadFile(path)
@@ -137,6 +155,39 @@ func serveStatic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
-	w.Header().Set("Cache-Control", "public, max-age=3600")
+	if v := r.URL.Query().Get("v"); v != "" && v == staticVer {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+	}
 	io.WriteString(w, string(data))
+}
+
+// computeStaticVer hashes the contents of every embedded static file
+// (sorted by name for determinism) and returns the first 8 hex chars.
+func computeStaticVer() string {
+	h := sha256.New()
+	entries, err := fs.ReadDir(staticFS, "static")
+	if err != nil {
+		log.Printf("static cache-bust: read dir: %v", err)
+		return "dev"
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+	// fs.ReadDir returns entries sorted by name; rely on that for determinism.
+	for _, name := range names {
+		data, err := staticFS.ReadFile("static/" + name)
+		if err != nil {
+			log.Printf("static cache-bust: read %s: %v", name, err)
+			return "dev"
+		}
+		h.Write([]byte(name))
+		h.Write([]byte{0})
+		h.Write(data)
+	}
+	return hex.EncodeToString(h.Sum(nil))[:8]
 }
