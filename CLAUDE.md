@@ -143,6 +143,8 @@ Three callsites for the rule, by SQL shape:
 
 `buildDailyMetricCol` no longer handles sleep_* — it short-circuits with a log line if asked. All daily sleep writes go through `upsertDailyForDate` (single-day inline) or `buildDailySleepBlock` (multi-day backfill).
 
+The atomicity gate (require all 5 stages from picked source) only fires when ≥2 sources contributed `sleep_total` for the night — single-source nights trust the source as-is. This is intentional: HAE Apple Watch nights with `sleep_awake = 0` get the awake row filtered out by `qty > 0` upstream in `buildHourlyMetric`, leaving only 4 of 5 stages in `hourly_metrics`. A strict 5-stage requirement would erase those nights entirely (PR #28). Mixing risk only exists with multiple sources, so the gate scopes to that case.
+
 ## Environment Variables
 
 | Variable | Default | Purpose |
