@@ -23,15 +23,17 @@ Single binary HTTP server (`cmd/server/main.go`) that wires together several pac
 
 - **`internal/handler`** — receives health data from the Health Auto Export iOS app via `POST /health`, `/health/hourly`, `/health/vitals`. Uses **accept-then-process**: `InsertRaw` saves raw JSON to `health_records` synchronously and responds 200 immediately; a goroutine then parses, calls `InsertPoints` (chunked `pgx.Batch`, 500/chunk), rebuilds cache, and fires `onNewData()`. Auth via `X-API-Key` header (env `API_KEY`).
 
-- **`internal/ai`** — Gemini API integration. `gemini.go`: `GenerateMorningBriefing(apiKey, model, maxTokens, rawMetricsJSON)` and `ListModels(apiKey)` (for dynamic model dropdown). Prompt embedded from `prompt.txt` via `//go:embed`.
+- **`internal/ai`** — Gemini API integration. `gemini.go::generateWithPrompt` is the shared HTTP path (60s client timeout); `blocks.go` orchestrates per-block generation: `GenerateLeafBlocks` runs SLEEP/YESTERDAY/RECOVERY in parallel via `sync.WaitGroup`, then `GenerateRecommendation` consumes their texts. Each block has its own `inputs_hash` (sha256 over its metric subset) so a late HRV update only invalidates blocks that read HRV. `prompt.txt` is a single template with `{{BLOCK_INSTRUCTIONS}}` placeholder; per-block fragments live in `blockInstructions` map. `ListModels(apiKey)` powers the admin model dropdown.
 
-- **`internal/ui`** — web dashboard SPA at `/`. Auth: Authentik ForwardAuth (headers `X-authentik-username`/`X-authentik-email`) or username+password cookie. `guard()` in `handler.go` checks ForwardAuth first, then API key, then session cookie. On ForwardAuth success, issues a 30-day local `auth` cookie (`username|passwordHash`) so sessions survive Authentik token expiry. Login page at `/login`. `/settings` (all users): Telegram config, import. `/admin` (admin-only): cache/backfill, Gemini config, user management. API endpoints: `/api/dashboard`, `/api/metrics`, `/api/metrics/data`, `/api/metrics/latest`, `/api/metrics/range`, `/api/health-briefing`, `/api/readiness-history`, `/api/settings`, `/api/import/upload`, `/api/import/status`, `/api/admin/status`, `/api/admin/backfill`, `/api/admin/settings`, `/api/admin/gaps`, `/api/admin/ai-models`, `/api/admin/users`. The entire frontend is embedded Go strings in `internal/ui/` (template, scripts, styles). Uses Chart.js 4 from CDN. **Static assets** (`static/app.js`, `static/charts.js`) embedded via `embed.FS`, served with `Cache-Control: max-age=3600` — no cache-busting by URL yet; after deploys users need hard-refresh (Cmd+Shift+R).
+- **`internal/ui`** — web dashboard SPA at `/`. Auth: Authentik ForwardAuth (headers `X-authentik-username`/`X-authentik-email`) or username+password cookie. `guard()` in `handler.go` checks ForwardAuth first, then API key, then session cookie. On ForwardAuth success, issues a 30-day local `auth` cookie (`username|passwordHash`) so sessions survive Authentik token expiry. Login page at `/login`. `/settings` (all users): Telegram config, import. `/admin` (admin-only): cache/backfill, Gemini config, user management. API endpoints: `/api/dashboard`, `/api/metrics`, `/api/metrics/data`, `/api/metrics/latest`, `/api/metrics/range`, `/api/health-briefing`, `/api/ai-briefing`, `/api/readiness-history`, `/api/settings`, `/api/import/upload`, `/api/import/status`, `/api/admin/status`, `/api/admin/backfill`, `/api/admin/settings`, `/api/admin/gaps`, `/api/admin/ai-models`, `/api/admin/users`. The entire frontend is embedded Go strings in `internal/ui/` (template, scripts, styles). Uses Chart.js 4 from CDN. **Static assets** (`static/app.js`, `static/charts.js`) embedded via `embed.FS`, served with `Cache-Control: max-age=3600` — no cache-busting by URL yet; after deploys users need hard-refresh (Cmd+Shift+R). All `lang` query inputs are clamped to `en/ru/sr` via `supportedLang()` so junk values cannot pollute caches.
+
+  **`/api/ai-briefing` is non-blocking by design.** Returns `{insight, blocks, generating, disabled}` and kicks `EnsureTodayAIInsightAsync` on cold cache; `/api/health-briefing` reads AI text from cache only and never waits on Gemini. The web dashboard polls `/api/ai-briefing` every 60s while the tab is visible and the cache is cold (sparkle ✨ marks fresh updates), stops on `disabled` or after the cache is stable for ~10 min.
 
 - **`internal/mcpserver`** — MCP Streamable HTTP server at `/mcp` (mark3labs/mcp-go v0.44.1). Auth via `Authorization: Bearer <key>` or `X-API-Key` header (same `API_KEY` env). Tools: `get_health_briefing`, `get_readiness_history`, `list_metrics`, `get_dashboard`, `get_metric_data`, `summarize_metric`, `compare_periods`, `get_sleep_summary`, `find_anomalies`, `get_weekly_summary`, `get_personal_records`, `sql_query`.
 
 - **`internal/health`** — pure business logic for health analysis (no I/O). Readiness scoring (`scoring.go`, `readiness.go`), health anomaly alerts (`alerts.go`), cardio analysis (`cardio.go`), sleep breakdowns (`sleep.go`), activity analysis (`activity.go`), insights generation (`insights.go`), and i18n (`i18n_en.go`, `i18n_ru.go`, `i18n_sr.go`). Core types in `types.go`.
 
-- **`internal/storage`** — PostgreSQL via `jackc/pgx/v5` connection pool. Tables: `health_records`, `metric_points`, three pre-aggregated cache tables (`minute_metrics`, `hourly_metrics`, `daily_scores`), `settings` (key-value store for Telegram config), and `ai_briefings` (per-day AI insight cache). Also includes `admin.go` (data gap detection), `settings.go` (notification + AI config persistence), and `ai_briefing.go` (AI briefing CRUD + `EnsureAIBriefingsTable`). Schema managed externally via `init.sql` (except `ai_briefings`, auto-created on startup).
+- **`internal/storage`** — PostgreSQL via `jackc/pgx/v5` connection pool. Tables: `health_records`, `metric_points`, three pre-aggregated cache tables (`minute_metrics`, `hourly_metrics`, `daily_scores`), `settings` (key-value store for Telegram config), `ai_briefing_blocks` (per-block AI cache: SLEEP/YESTERDAY/RECOVERY/RECOMMENDATION × lang × date with `inputs_hash`), and `ai_briefings` (kept as the morning-report `sent_at` lock only — content lives in `ai_briefing_blocks`). Also includes `admin.go` (data gap detection), `settings.go` (notification + AI config persistence), `ai_briefing.go` (legacy `sent_at` CRUD), `ai_briefing_blocks.go` (per-block CRUD + idempotent migration from legacy `ai_briefings.insight`), `ai_orchestrator.go` (`EnsureTodayAIInsight` + `EnsureTodayAIInsightAsync` with single-flight `aiRegenInFlight sync.Map` and 5-min failure backoff `aiRegenLastFailAt`), and `typical_wake.go` (`GetTypicalWakeTime` for adaptive `MorningCapTime`). Schema managed externally via `init.sql` (except `ai_briefings` and `ai_briefing_blocks`, auto-created on startup).
 
 - **`internal/notify`** — Telegram notification subsystem. Bot client (`telegram.go`) and report scheduler (`report.go`) with timezone-aware morning/evening scheduling. Config loaded from env vars with DB overrides.
 
@@ -83,8 +85,15 @@ daily_scores       — Level 3 cache: per-day rollups (hrv_avg, rhr_avg,
                      sleep_*, steps, calories, exercise_min, spo2_avg, vo2_avg, resp_avg)
                      + Level 4: readiness score (0–100) with score_version
 settings           — key-value store for Telegram config
-ai_briefings       — per-day AI briefing cache: insight TEXT, created_at, sent_at
-                     Auto-created via EnsureAIBriefingsTable() on startup (not in init.sql)
+ai_briefings       — sent_at lock for HasSentMorningReport (insight column
+                     deprecated; content moved to ai_briefing_blocks). Auto-
+                     created via EnsureAIBriefingsTable() on startup.
+ai_briefing_blocks — per-block AI cache, PRIMARY KEY (date, lang, block).
+                     blocks: SLEEP / YESTERDAY / RECOVERY / RECOMMENDATION.
+                     inputs_hash = sha256 over the metric subset that drove
+                     the block; 'legacy' marker on rows migrated from the
+                     old ai_briefings.insight blob. Auto-created via
+                     EnsureAIBriefingBlocksTable() on startup.
 ```
 
 **Expression indexes** (critical for performance with 3.7M+ rows in metric_points):
@@ -116,7 +125,7 @@ Defined in `internal/storage/aggregates.go::SumMetrics` (exported):
 
 - **On startup**: incremental backfill (refreshes last 48h). Only force-rebuilds when caches are empty (first import). Use `cmd/backfill --force` for manual full rebuild.
 - **After `POST /health`**: inline `UpsertRecentCache()` rebuilds hourly+daily for affected dates directly from metric_points (no stale window). Debounced backfill (2 min) runs as safety net to refresh last 48h.
-- **ScoreVersion** constant in `scores.go` (currently 2): bump to invalidate all cached readiness scores on next run
+- **ScoreVersion** constant in `scores.go` (currently 3): bump to invalidate all cached readiness scores on next run
 - **Force rebuild**: wipes cache tables, recomputes everything from `metric_points`
 
 ## Sleep Dedup
@@ -145,7 +154,7 @@ Helper is called from: `buildDailyMetricCol` (force-backfill writes), `metricDat
 | `REPORT_MORNING_WEEKEND` | `9` | Morning report hour on weekends |
 | `REPORT_EVENING_WEEKDAY` | `20` | Evening report hour on weekdays |
 | `REPORT_EVENING_WEEKEND` | `21` | Evening report hour on weekends |
-| `REPORT_MORNING_CAP` | `morningHour+4` (floor 11) | Smart-retry deadline for morning report — past this hour the report force-sends with a stale-data banner regardless of `SleepSettled`. Override via env or `report_morning_cap` setting |
+| `REPORT_MORNING_CAP` | `morningHour+4` (floor 11) | Smart-retry deadline for morning report — past this hour the report force-sends with a stale-data banner regardless of `SleepSettled`. Server prefers an adaptive cap from `GetTypicalWakeTime(14) + 60min` when ≥7 days of per-segment sleep data are available; falls back to this env value otherwise. Override via env or `report_morning_cap` setting |
 | `REPORT_TZ` | system local | Timezone for report scheduling (e.g. `Europe/Belgrade`) |
 | `GEMINI_API_KEY` | — | Gemini API key; enables AI morning briefing |
 | `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini model; overridable in Admin UI |
@@ -156,7 +165,7 @@ Helper is called from: `buildDailyMetricCol` (force-backfill writes), `metricDat
 Morning + evening reports built in `internal/notify/report.go` (`formatMorning` / `formatEvening`). Two design rules that have been hard-won — don't break them without conscious reason:
 
 - **Rule-based bullets are authoritative; AI complements, never replaces.** The numeric bullets (from `internal/health/scoreSleep`/`scoreActivity`/`scoreRecovery`/`scoreCardio`) come from medical-literature heuristics. Gemini's prose is layered underneath as `🤖 <i>...</i>` italic. If AI hallucinates, the user can sanity-check against the bullets above. Applies to all sections; `🎯 Recommendation` is AI-only because there's no rule-based equivalent.
-- **AI insight gets parsed by block, not pasted as a single blob.** `internal/notify/aiparse.go` splits Gemini's `SLEEP / YESTERDAY / RECOVERY / RECOMMENDATION` headers (case-insensitive across en/ru/sr — `СОН/ВЧЕРА/ВОССТАНОВЛЕНИЕ/РЕКОМЕНДАЦИЯ`, `SAN/JUČE/OPORAVAK/PREPORUKA`). Each block lands under its matching rule-based section. If parsing fails, full text falls through as a single italic blob (graceful degradation).
+- **AI insight is generated and stored per block, not as a single blob.** `internal/ai/blocks.go` runs SLEEP/YESTERDAY/RECOVERY in parallel and RECOMMENDATION afterwards; each block lands as its own row in `ai_briefing_blocks` keyed by `inputs_hash`. `formatMorning` reads the four blocks via `db.GetAIBlocks(today, lang)` — no parser needed. Each block lands under its matching rule-based section.
 
 Morning order: Header → Headline → stale warning → EnergyBank → Readiness → Alerts → Sleep → Yesterday (activity+cardio) → Recovery → Recommendation. Evening is intentionally slimmer: dashboard cards (today so far) → EnergyBank (drained capacity) → Readiness → Alerts → Insights. The evening report does NOT show activity/cardio sections — those describe yesterday and would duplicate the morning report.
 
@@ -172,7 +181,7 @@ Three layers of data-quality safety on `metric_points`:
 2. **`quality` column flag** on `metric_points` (`TEXT NOT NULL DEFAULT 'ok'`, added via ALTER in `internal/storage/indexes.go::EnsureIndexes`). Values: `ok` | `impossible` | `suspect`. Partial index `idx_points_quality_metric` covers the hot path `WHERE quality='ok'`.
 3. **Soft-suspect z-score sweep** (`internal/storage/quality_audit.go::MarkSuspectPoints`): for autonomic metrics only (HRV, RHR, SpO2, Resp, wrist_temperature, VO2, body_mass), flags points >3σ from a 30-day baseline as `suspect`. Behavioural metrics (steps, calories, exercise) are excluded — their bimodal rest/active distribution makes z-score noisy. Legacy cleanup: `MarkExistingImpossible` retroactively flags points outside ranges.
 
-**Important: baseline reads do NOT yet filter `quality='ok'`.** The column and `Mark*` helpers exist; scoring (in `aggregates.go` / `briefing.go`) still reads all rows. Wiring the filter in is its own change and requires bumping `ScoreVersion` to invalidate cached daily scores. Until then, suspect flags are informational (visible in admin UI + weekly digest, but don't affect readiness).
+Baseline reads filter `quality='ok'` (5 sites in `aggregates.go`, 9 in `briefing.go`); suspect/impossible flags exclude points from scoring. `ScoreVersion=3` was bumped when this filter was wired in to force cached `daily_scores` to be rebuilt cleanly. `runDailyQualityScan` goroutine (started per-tenant in `cmd/server/main.go`) ticks at 03:00 in the tenant's `REPORT_TZ` and calls `MarkSuspectPoints(7, 3)` so flags accumulate without manual `/admin` button presses.
 
 Admin UI section "Data quality audit" on `/admin` exposes three buttons: `GET /api/admin/quality-audit` (read-only), `POST /api/admin/quality-fix` (runs MarkExistingImpossible + MarkSuspectPoints), `POST /api/admin/quality-digest` (force-sends weekly Telegram digest). Weekly digest auto-fires on the configured day-of-week (`weekly_digest_dow` setting, default Monday=1) before the morning report; suppressed when there are no findings.
 
