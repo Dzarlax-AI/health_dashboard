@@ -19,6 +19,7 @@ var ru = LangStrings{
 	"lbl_duration":   "Продолжительность",
 	"lbl_deep_sleep": "Глубокий сон",
 	"lbl_rem":        "REM",
+	"lbl_nap_badge":  "+%d мин днём",
 	"lbl_steps":      "Шаги",
 	"lbl_active_cal": "Акт. калории",
 	"lbl_exercise":   "Упражнения",

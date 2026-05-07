@@ -22,6 +22,7 @@ var en = LangStrings{
 	"lbl_duration":   "Duration",
 	"lbl_deep_sleep": "Deep sleep",
 	"lbl_rem":        "REM",
+	"lbl_nap_badge":  "+%dm nap",
 	"lbl_steps":      "Steps",
 	"lbl_active_cal": "Active calories",
 	"lbl_exercise":   "Exercise",

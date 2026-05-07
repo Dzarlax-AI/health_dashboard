@@ -116,10 +116,24 @@ func buildMetricCards(d RawMetrics, ls LangStrings) []MetricCard {
 		vals    []float64
 		decimal int
 	}
+	// Sleep card: prefer night_sleep_total when the iOS client has synced
+	// new-format data — it filters out daytime naps so the displayed
+	// "today" value reflects actual nightly recovery rather than total
+	// time-in-bed across naps. Fall back to d.Sleep for older data.
+	// Trends still use whichever series is in `vals`, so going forward
+	// trend math stays consistent with the displayed value. Readiness
+	// scoring (separate code path) is intentionally untouched in this
+	// change — it still uses d.Sleep so historical scores stay stable.
+	sleepVals := d.Sleep
+	sleepMetric := "sleep_total"
+	if len(d.NightSleep) > 0 {
+		sleepVals = d.NightSleep
+		sleepMetric = "night_sleep_total"
+	}
 	var out []MetricCard
 	for _, sp := range []cardSpec{
 		{ls["lbl_steps"], "step_count", ls["lbl_steps"], d.Steps, 0},
-		{ls["sec_sleep"], "sleep_total", "hrs", d.Sleep, 1},
+		{ls["sec_sleep"], sleepMetric, "hrs", sleepVals, 1},
 		{ls["lbl_hrv"], "heart_rate_variability", "ms", d.HRV, 0},
 		{ls["lbl_resting_hr"], "resting_heart_rate", "bpm", d.RHR, 0},
 		{ls["lbl_resp"], "respiratory_rate", "br/min", d.Resp, 1},
@@ -139,7 +153,7 @@ func buildMetricCards(d RawMetrics, ls LangStrings) []MetricCard {
 		pct7, label7, status7 := formatTrend(today, baseline7, invertBetter, ls["trend_vs_7d"])
 		pct30, label30, status30 := formatTrend(today, baseline30, invertBetter, ls["trend_vs_30d"])
 
-		out = append(out, MetricCard{
+		card := MetricCard{
 			Name:   sp.name,
 			Metric: sp.metric,
 			Value:  fmtFloat(today, sp.decimal),
@@ -156,7 +170,24 @@ func buildMetricCards(d RawMetrics, ls LangStrings) []MetricCard {
 			Trend30dPct:    pct30,
 			Trend30dLabel:  label30,
 			Trend30dStatus: status30,
-		})
+		}
+		// Nap badge: append "+%dm nap" to the sleep card when the user
+		// took at least one detectable daytime sleep TODAY. Use
+		// d.NapToday (point-in-time) rather than d.Nap[0] — the latter
+		// is the most recent day someone napped, which would latch a
+		// stale yesterday-nap onto today's card.
+		if sp.metric == "night_sleep_total" && d.NapToday > 0 {
+			napMin := int(d.NapToday*60 + 0.5)
+			if napMin > 0 {
+				// Guard against missing translation key — fmt.Sprintf
+				// on an empty format with arguments emits "%!(EXTRA …)"
+				// garbage. Skip the badge silently in that case.
+				if fmtStr := ls["lbl_nap_badge"]; fmtStr != "" {
+					card.Badge = fmt.Sprintf(fmtStr, napMin)
+				}
+			}
+		}
+		out = append(out, card)
 	}
 	return out
 }

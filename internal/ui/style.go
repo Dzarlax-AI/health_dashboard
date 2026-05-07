@@ -229,6 +229,12 @@ body { min-height: 100vh; font-size: 15px; }
   letter-spacing: -1px; line-height: 1; margin-bottom: 4px;
 }
 .metric-card-unit { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+.metric-card-badge {
+  font-size: 11px; font-weight: 600; color: var(--muted);
+  background: var(--surface-2, rgba(127,127,127,0.12));
+  padding: 2px 8px; border-radius: 10px; margin-left: 4px;
+  letter-spacing: 0; vertical-align: middle;
+}
 .metric-card-trend {
   font-size: 12px; font-weight: 700; padding: 3px 10px;
   border-radius: 20px; display: inline-block;
