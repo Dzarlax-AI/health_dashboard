@@ -66,26 +66,18 @@ func (s *DB) migrateLegacyAIBriefings(ctx context.Context) {
 	}
 	rows.Close()
 
-	migrated := 0
 	for _, r := range batch {
 		blocks := splitLegacyBriefing(r.insight)
 		for block, text := range blocks {
 			if text == "" {
 				continue
 			}
-			tag, err := s.pool.Exec(ctx, `
+			s.pool.Exec(ctx, `
 				INSERT INTO ai_briefing_blocks (date, lang, block, text, inputs_hash, created_at)
 				VALUES ($1, $2, $3, $4, 'legacy', NOW())
 				ON CONFLICT (date, lang, block) DO NOTHING`,
 				r.date, r.lang, block, text)
-			if err == nil && tag.RowsAffected() > 0 {
-				migrated++
-			}
 		}
-	}
-	if migrated > 0 {
-		// Logged via the pool's default logger, not log package, to keep this
-		// file independent of the import order.
 	}
 }
 
@@ -176,21 +168,37 @@ func (s *DB) SaveAIBlock(date, lang, block, text, inputsHash string) error {
 }
 
 // GetAIBlocks returns all cached blocks for (date, lang) keyed by block name.
+// Text-only view, used by Telegram formatter and the joined UI/MCP getter.
+// For the orchestrator (which also needs inputs_hash to decide regeneration)
+// see GetAIBlocksFull.
 func (s *DB) GetAIBlocks(date, lang string) map[string]string {
+	full := s.GetAIBlocksFull(date, lang)
+	out := make(map[string]string, len(full))
+	for k, v := range full {
+		out[k] = v.Text
+	}
+	return out
+}
+
+// GetAIBlocksFull is the orchestrator-facing variant: returns AIBlock structs
+// (text + inputs_hash) so callers can decide per-block regeneration without
+// re-querying for each block. Always returns an initialized map (empty on
+// query error) so callers can write into it without nil-map panics.
+func (s *DB) GetAIBlocksFull(date, lang string) map[string]*AIBlock {
+	out := make(map[string]*AIBlock)
 	ctx, cancel := queryCtx()
 	defer cancel()
 	rows, err := s.pool.Query(ctx,
-		`SELECT block, text FROM ai_briefing_blocks WHERE date = $1 AND lang = $2`,
+		`SELECT block, text, inputs_hash FROM ai_briefing_blocks WHERE date = $1 AND lang = $2`,
 		date, lang)
 	if err != nil {
-		return nil
+		return out
 	}
 	defer rows.Close()
-	out := make(map[string]string)
 	for rows.Next() {
-		var k, v string
-		if err := rows.Scan(&k, &v); err == nil {
-			out[k] = v
+		b := &AIBlock{}
+		if err := rows.Scan(&b.Block, &b.Text, &b.InputsHash); err == nil {
+			out[b.Block] = b
 		}
 	}
 	return out

@@ -86,16 +86,22 @@ type YesterdayInputs struct {
 	HRVWithDates   []health.DatedValue
 }
 
-// RecoveryInputs covers autonomic recovery markers + EnergyBank verdict. HRV
-// changes invalidate this block; SLEEP and YESTERDAY are unaffected.
+// RecoveryInputs covers autonomic recovery markers. HRV changes invalidate
+// this block; SLEEP and YESTERDAY are unaffected.
+//
+// Note: EnergyBank is deliberately NOT in the hash. Its intra-day fields
+// (Current, DrainSoFar, Strain, Components.Note) rotate as steps accumulate
+// during the morning, which would invalidate the cache on every smart-retry
+// tick even when HRV/RHR/VO2/Sleep are unchanged — defeating the per-block
+// design. The RECOVERY prompt itself focuses on autonomic trajectories and
+// does not reference EnergyBank.
 type RecoveryInputs struct {
-	LastDate    string
-	HRV         []float64
-	RHR         []float64
-	VO2         []float64
-	Sleep       []float64
-	EnergyBank  *health.EnergyBank
-	Readiness   *float64
+	LastDate  string
+	HRV       []float64
+	RHR       []float64
+	VO2       []float64
+	Sleep     []float64
+	Readiness *float64
 }
 
 // HashSleep / HashYesterday / HashRecovery extract and hash per-block subsets.
@@ -133,27 +139,33 @@ func HashRecovery(r *health.RawMetrics, eb *health.EnergyBank, readiness *float6
 	if r == nil {
 		return ""
 	}
+	_ = eb // see RecoveryInputs doc — intra-day fields would defeat the cache
 	return hashInputs(RecoveryInputs{
-		LastDate:   r.LastDate,
-		HRV:        r.HRV,
-		RHR:        r.RHR,
-		VO2:        r.VO2,
-		Sleep:      r.Sleep,
-		EnergyBank: eb,
-		Readiness:  readiness,
+		LastDate:  r.LastDate,
+		HRV:       r.HRV,
+		RHR:       r.RHR,
+		VO2:       r.VO2,
+		Sleep:     r.Sleep,
+		Readiness: readiness,
 	})
 }
 
 // HashRecommendation derives the recommendation hash from the three leaf
 // texts (which themselves rotate when their underlying metrics change) plus
-// the EnergyBank verdict — covers "leaves stable but verdict changed at noon"
-// as well as the more common "leaf changed -> recommendation must change".
+// EnergyBank.ActionVerdict — covers "leaves stable but verdict flipped from
+// push_hard to active_recovery at noon" as well as the more common
+// "leaf changed -> recommendation must change". Other EnergyBank fields are
+// intentionally excluded (they rotate intra-day, see RecoveryInputs).
 func HashRecommendation(sleepText, yesterdayText, recoveryText string, eb *health.EnergyBank) string {
+	verdict := ""
+	if eb != nil {
+		verdict = eb.ActionVerdict
+	}
 	type rec struct {
 		Sleep, Yesterday, Recovery string
-		EnergyBank                 *health.EnergyBank
+		ActionVerdict              string
 	}
-	return hashInputs(rec{sleepText, yesterdayText, recoveryText, eb})
+	return hashInputs(rec{sleepText, yesterdayText, recoveryText, verdict})
 }
 
 // ─── orchestrator ─────────────────────────────────────────────────────────

@@ -604,13 +604,16 @@ func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager,
 // autonomic metrics. Cheap (~one query per metric) and idempotent — re-running
 // only flips quality='ok' rows whose deviation exceeds 3σ.
 func runDailyQualityScan(db *storage.DB, schema string, defaults storage.NotifyConfig) {
-	loc := time.Local
-	if tz := defaults.Timezone; tz != "" {
-		if l, err := time.LoadLocation(tz); err == nil {
-			loc = l
-		}
-	}
 	for {
+		// Resolve tz per iteration so per-tenant settings.timezone overrides
+		// the env default — same pattern as runReportScheduler.
+		cfg := db.GetNotifyConfig(defaults)
+		loc := time.Local
+		if tz := cfg.Timezone; tz != "" {
+			if l, err := time.LoadLocation(tz); err == nil {
+				loc = l
+			}
+		}
 		now := time.Now().In(loc)
 		next := time.Date(now.Year(), now.Month(), now.Day(), 3, 0, 0, 0, loc)
 		if !next.After(now) {

@@ -5,10 +5,17 @@ import (
 )
 
 // GetTypicalWakeTime returns the median wake-time-of-day computed from the
-// last `days` calendar days of sleep_* records. wake_time per day = MAX(date)
-// across sleep_* metrics, restricted to records whose time-of-day is not
-// '00:00:00' (HAE-style daily summaries carry no wake info) and is after
-// 04:00 (filters short night-time naps that would skew toward early morning).
+// last `days` calendar days of sleep_* records.
+//
+// Sleep records are written with the segment START timestamp
+// (internal/applehealth/parse.go: Apple HealthKit semantics), so a single
+// calendar day D contains BOTH the early-morning wake segments (00:00-07:00,
+// continuation of the night that started D-1 22:00) AND the evening bedtime
+// segments (22:00-23:59 of the next night). A naive MAX(HH:MM) per day picks
+// the bedtime, not the wake. We bound the upper end at 13:00 so evening
+// bedtime starts are excluded from the per-day MAX; the >= 04:00 floor
+// excludes short night-time naps. This window also tolerates moderate
+// late risers without distorting the median.
 //
 // Returns (hour, minute, ok=true) when at least 7 valid days are available;
 // otherwise (0, 0, false) so callers can fall back to a static cap. Threshold
@@ -27,6 +34,7 @@ func (s *DB) GetTypicalWakeTime(days int) (int, int, bool) {
 		   AND quality = 'ok'
 		   AND SUBSTRING(date, 12, 8) <> '00:00:00'
 		   AND SUBSTRING(date, 12, 5) >= '04:00'
+		   AND SUBSTRING(date, 12, 5) <= '13:00'
 		   AND SUBSTRING(date, 1, 10) >= TO_CHAR(NOW() - INTERVAL '1 day' * $1, 'YYYY-MM-DD')
 		 GROUP BY SUBSTRING(date, 1, 10)`, days)
 	if err != nil {

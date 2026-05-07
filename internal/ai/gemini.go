@@ -66,6 +66,12 @@ func ListModels(apiKey string) ([]Model, error) {
 
 const defaultModel = "gemini-2.5-flash"
 
+// geminiClient bounds Gemini calls so a hung remote can't pin a goroutine
+// forever. With per-block parallelism we can have 4 in flight per tenant per
+// tick — an indefinite hang would balloon the pool until process restart.
+// 60s is generous: typical end-to-end is 2–8 s for flash, 10–25 s for pro.
+var geminiClient = &http.Client{Timeout: 60 * time.Second}
+
 var langNames = map[string]string{
 	"ru": "Russian",
 	"en": "English",
@@ -135,7 +141,7 @@ func generateWithPrompt(apiKey, model string, maxTokens int, prompt string, user
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := geminiClient.Do(req)
 	if err != nil {
 		return "", nil, fmt.Errorf("do request: %w", err)
 	}

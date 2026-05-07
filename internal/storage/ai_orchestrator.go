@@ -61,10 +61,10 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 		ai.BlockRecovery:  ai.HashRecovery(raw, eb, readiness),
 	}
 
-	cached := s.GetAIBlocks(today, lang)
+	cached := s.GetAIBlocksFull(today, lang)
 
 	skip := func(block string) bool {
-		row := s.GetAIBlock(today, lang, block)
+		row := cached[block]
 		return row != nil && row.InputsHash == hashes[block] && strings.TrimSpace(row.Text) != ""
 	}
 
@@ -82,14 +82,20 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 			log.Printf("EnsureTodayAIInsight: save %s: %v", r.Block, err)
 			continue
 		}
-		cached[r.Block] = r.Text
+		cached[r.Block] = &AIBlock{Block: r.Block, Text: r.Text, InputsHash: hashes[r.Block]}
 	}
 
-	sleepText := cached[ai.BlockSleep]
-	yesterdayText := cached[ai.BlockYesterday]
-	recoveryText := cached[ai.BlockRecovery]
+	textOf := func(block string) string {
+		if b := cached[block]; b != nil {
+			return b.Text
+		}
+		return ""
+	}
+	sleepText := textOf(ai.BlockSleep)
+	yesterdayText := textOf(ai.BlockYesterday)
+	recoveryText := textOf(ai.BlockRecovery)
 	recHash := ai.HashRecommendation(sleepText, yesterdayText, recoveryText, eb)
-	recRow := s.GetAIBlock(today, lang, ai.BlockRecommendation)
+	recRow := cached[ai.BlockRecommendation]
 	if recRow == nil || recRow.InputsHash != recHash || strings.TrimSpace(recRow.Text) == "" {
 		recText, err := ai.GenerateRecommendation(aiCfg.APIKey, aiCfg.Model, aiCfg.MaxOutputTokens, rawJSON, lang,
 			sleepText, yesterdayText, recoveryText)

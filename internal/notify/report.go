@@ -92,7 +92,10 @@ func (c Config) MorningCapTime(now time.Time) time.Time {
 	if c.TypicalWakeOK {
 		t := time.Date(now.Year(), now.Month(), now.Day(),
 			c.TypicalWakeHour, c.TypicalWakeMinute, 0, 0, loc).Add(60 * time.Minute)
-		if t.Hour() > 23 {
+		// Adding 60 min can roll the timestamp into tomorrow (e.g. typical wake
+		// 23:30 -> cap 00:30 next day, which would defer the morning report
+		// indefinitely). Detect via date components and clamp to today 23:00.
+		if t.Year() != now.Year() || t.Month() != now.Month() || t.Day() != now.Day() {
 			t = time.Date(now.Year(), now.Month(), now.Day(), 23, 0, 0, 0, loc)
 		}
 		return t
