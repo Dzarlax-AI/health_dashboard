@@ -808,11 +808,19 @@ func (h *Handler) sectionAPI(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, out)
 }
 
-func (h *Handler) healthBriefing(w http.ResponseWriter, r *http.Request) {
-	lang := r.URL.Query().Get("lang")
-	if lang == "" {
-		lang = "en"
+// supportedLang clamps untrusted query input to the en/ru/sr whitelist.
+// Any other value (including unknown locales like "fr") falls back to "en"
+// so junk values can't pollute the AI cache or trigger Gemini regen on
+// dead-data languages.
+func supportedLang(q string) string {
+	if q == "en" || q == "ru" || q == "sr" {
+		return q
 	}
+	return "en"
+}
+
+func (h *Handler) healthBriefing(w http.ResponseWriter, r *http.Request) {
+	lang := supportedLang(r.URL.Query().Get("lang"))
 	db := h.tenantDB(r)
 	schema := h.tenantSchema(r)
 	resp, err := db.GetHealthBriefing(lang)
@@ -841,10 +849,7 @@ func (h *Handler) healthBriefing(w http.ResponseWriter, r *http.Request) {
 // UI. Returns blocks + a generating flag so clients can distinguish "cache
 // empty, regen running" from "cache empty, AI disabled".
 func (h *Handler) aiBriefing(w http.ResponseWriter, r *http.Request) {
-	lang := r.URL.Query().Get("lang")
-	if lang == "" {
-		lang = "en"
-	}
+	lang := supportedLang(r.URL.Query().Get("lang"))
 	db := h.tenantDB(r)
 	schema := h.tenantSchema(r)
 	today := time.Now().Format("2006-01-02")

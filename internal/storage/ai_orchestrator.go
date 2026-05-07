@@ -10,6 +10,11 @@ import (
 	"health-receiver/internal/health"
 )
 
+// aiRegenFailBackoff is how long we wait after a failed regen before
+// retrying. Keeps a sustained Gemini outage from amplifying into one
+// regen attempt per polling tick.
+const aiRegenFailBackoff = 5 * time.Minute
+
 // EnsureTodayAIInsight regenerates the four AI blocks (SLEEP, YESTERDAY,
 // RECOVERY, RECOMMENDATION) selectively: each leaf is keyed by an
 // inputs_hash over the metrics it depends on, so a late HRV update only
@@ -21,11 +26,34 @@ import (
 // current data are skipped, and only the leaves whose hashes diverged hit
 // the Gemini API. RECOMMENDATION re-runs whenever any leaf text changes
 // or when EnergyBank.action_verdict has rotated.
+//
+// Concurrency: only one EnsureTodayAIInsight per (date, lang) runs at a
+// time across the process. Concurrent calls (sync morning-retry vs async
+// poller-driven regen) return the current cache instead of duplicating
+// Gemini work. After a failure, retries are throttled to once per
+// aiRegenFailBackoff so a Gemini outage doesn't compound.
 func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 	if !aiCfg.Enabled() {
 		return ""
 	}
 	today := time.Now().Format("2006-01-02")
+	key := today + "|" + lang
+
+	// Single-flight gate. If another caller is already regenerating, return
+	// the (possibly empty) cache rather than fanning out. Caller will see
+	// the cache populate on the next /api/ai-briefing poll.
+	if _, loaded := s.aiRegenInFlight.LoadOrStore(key, true); loaded {
+		return s.GetAIInsightCombined(today, lang)
+	}
+	defer s.aiRegenInFlight.Delete(key)
+
+	// Failure backoff: skip regen for `aiRegenFailBackoff` after the last
+	// run produced zero usable blocks (Gemini outage / quota / auth fail).
+	if v, ok := s.aiRegenLastFailAt.Load(key); ok {
+		if t, ok := v.(time.Time); ok && time.Since(t) < aiRegenFailBackoff {
+			return s.GetAIInsightCombined(today, lang)
+		}
+	}
 
 	raw := s.GetRawMetrics()
 	if raw == nil {
@@ -68,6 +96,7 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 		return row != nil && row.InputsHash == hashes[block] && strings.TrimSpace(row.Text) != ""
 	}
 
+	saved := 0
 	results := ai.GenerateLeafBlocks(aiCfg.APIKey, aiCfg.Model, aiCfg.MaxOutputTokens, rawJSON, lang, skip)
 	for _, r := range results {
 		if r.Err != nil {
@@ -83,6 +112,7 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 			continue
 		}
 		cached[r.Block] = &AIBlock{Block: r.Block, Text: r.Text, InputsHash: hashes[r.Block]}
+		saved++
 	}
 
 	textOf := func(block string) string {
@@ -105,29 +135,38 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 			log.Println("EnsureTodayAIInsight: gemini RECOMMENDATION returned empty content, not caching")
 		} else if err := s.SaveAIBlock(today, lang, ai.BlockRecommendation, recText, recHash); err != nil {
 			log.Printf("EnsureTodayAIInsight: save RECOMMENDATION: %v", err)
+		} else {
+			saved++
 		}
+	}
+
+	// Track sustained failures so the next aiRegenFailBackoff window short-
+	// circuits Gemini calls. On success, clear the timestamp.
+	if saved == 0 {
+		s.aiRegenLastFailAt.Store(key, time.Now())
+	} else {
+		s.aiRegenLastFailAt.Delete(key)
 	}
 
 	return s.GetAIInsightCombined(today, lang)
 }
 
-// EnsureTodayAIInsightAsync fires EnsureTodayAIInsight in a goroutine and
-// dedupes concurrent calls per (date, lang). Returns true when the caller's
-// invocation actually started a regen (caller can use this to log / set a
-// "generating" flag in the response). False means a regen is already running
-// from another caller; the cache will populate when that one finishes.
+// EnsureTodayAIInsightAsync fires EnsureTodayAIInsight in a goroutine.
+// The single-flight gate (and failure backoff) lives inside
+// EnsureTodayAIInsight, so concurrent callers — including sync ones from
+// the morning-retry / test-notify / opportunistic-trigger paths — share
+// the same dedup. Returns true when this call likely started a regen
+// (best-effort signal for logging; not authoritative because the inner
+// gate races with this fast-path Load).
 func (s *DB) EnsureTodayAIInsightAsync(aiCfg AIConfig, lang string) bool {
 	if !aiCfg.Enabled() {
 		return false
 	}
 	key := time.Now().Format("2006-01-02") + "|" + lang
-	if _, loaded := s.aiRegenInFlight.LoadOrStore(key, true); loaded {
+	if _, ok := s.aiRegenInFlight.Load(key); ok {
 		return false
 	}
-	go func() {
-		defer s.aiRegenInFlight.Delete(key)
-		s.EnsureTodayAIInsight(aiCfg, lang)
-	}()
+	go s.EnsureTodayAIInsight(aiCfg, lang)
 	return true
 }
 
