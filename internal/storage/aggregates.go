@@ -809,6 +809,7 @@ func (s *DB) buildHourlyMetric(metric, agg string, force bool) error {
 	ctx, cancel := longCtx()
 	defer cancel()
 	var fromClause string
+	args := []any{metric}
 	if !force {
 		// Refresh last 7 days + append new data (catches late-arriving data).
 		var lastCached *string
@@ -817,7 +818,8 @@ func (s *DB) buildHourlyMetric(metric, agg string, force bool) error {
 		).Scan(&lastCached)
 		if lastCached != nil {
 			refreshFrom := subtractDaysStr((*lastCached)[:10], 7)
-			fromClause = fmt.Sprintf("AND SUBSTRING(date,1,10) >= '%s'", refreshFrom)
+			fromClause = "AND SUBSTRING(date,1,10) >= $2"
+			args = append(args, refreshFrom)
 		}
 	}
 
@@ -868,7 +870,7 @@ func (s *DB) buildHourlyMetric(metric, agg string, force bool) error {
 				avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val`, sleepDedup, fromClause)
 	}
 
-	_, err := s.pool.Exec(ctx, query, metric)
+	_, err := s.pool.Exec(ctx, query, args...)
 	return err
 }
 
