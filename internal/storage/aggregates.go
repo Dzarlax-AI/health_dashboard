@@ -123,37 +123,22 @@ const preferredSourceSQL = `
 		(SELECT MAX(source_total) FROM source_totals)
 	)`
 
-// preferredSleepSourceSQL picks the best source for sleep metrics.
-// Priority: Apple Watch > RingConn > other.
-// Apple Watch is better validated against polysomnography; RingConn tends to
-// overestimate deep sleep and occasionally reports wildly inflated totals.
+// preferredSleepSourceSQL picks the best source for sleep metrics from a
+// `source_totals` CTE in the calling query (columns: source, source_total).
+// Priority: Apple Watch > RingConn > other. Cross-validation: when multiple
+// sources exist AND each registered a non-trivial total (MIN > 1h), AND MAX/MIN
+// differ by >40%, the higher value is likely an outlier — take MIN instead.
 //
-// Cross-validation: when multiple sources exist AND each registered a
-// non-trivial sleep total (MIN > 1h), AND MAX/MIN differ by >40%, the higher
-// value is likely an outlier — take MIN instead of the preferred source.
+// Implementation: wrap sleepCrossValidationPickExpr in a scalar SELECT against
+// source_totals so the helper's aggregate form (no GROUP BY → single group)
+// produces a scalar value. This keeps the thresholds (1.0h floor, 1.4×) and
+// source priority in the helper, not duplicated here. Previously this was a
+// hand-rolled CASE tree; consolidated per CodeRabbit on PR #26.
 //
-// The MIN > 1h gate is critical: without it, a RingConn daily-summary record
-// of 0.13h (essentially a stub) would always satisfy "MAX > MIN*1.4" and the
-// CASE would return that 0.13h, throwing away Apple Watch's valid 7+h night.
-// Cross-validation only makes sense when both sources have legitimate data
-// to compare — otherwise fall through to the source-priority COALESCE.
-const preferredSleepSourceSQL = `
-	SELECT CASE
-		WHEN (SELECT COUNT(DISTINCT source) FROM source_totals) > 1
-		 AND (SELECT MIN(source_total) FROM source_totals) > 1.0
-		 AND (SELECT MAX(source_total) FROM source_totals) >
-		     (SELECT MIN(source_total) FROM source_totals) * 1.4
-		THEN (SELECT MIN(source_total) FROM source_totals)
-		ELSE COALESCE(
-			(SELECT source_total FROM source_totals
-			 WHERE source LIKE '%Ultra%' OR source LIKE '%Apple Watch%'
-			 ORDER BY source_total DESC LIMIT 1),
-			(SELECT source_total FROM source_totals
-			 WHERE source LIKE '%RingConn%'
-			 ORDER BY source_total DESC LIMIT 1),
-			(SELECT MAX(source_total) FROM source_totals)
-		)
-	END`
+// `var` (not `const`) because the value depends on a function call. Caller
+// inserts this inside a `(WITH source_totals AS (...) %s)` scalar subquery,
+// so it must be a bare `SELECT … FROM source_totals` (no outer parens).
+var preferredSleepSourceSQL = `SELECT ` + sleepCrossValidationPickExpr("source_total") + ` FROM source_totals`
 
 func preferredSourceForMetric(metric string) string {
 	if strings.HasPrefix(metric, "sleep_") {
@@ -573,7 +558,10 @@ func (s *DB) BuildDailyMetrics(force bool) error {
 	wg.Wait()
 
 	if err := s.buildDailySleepBlock(force); err != nil {
-		log.Printf("  daily sleep block: %v", err)
+		// This path is the sole backfill writer for the sleep block now,
+		// so a silent log would leave daily_scores.sleep_* stale without
+		// the operator noticing. Fail the rebuild and let upstream retry.
+		return fmt.Errorf("daily sleep block: %w", err)
 	}
 
 	log.Printf("daily metrics filled (%d columns + sleep block)", len(specs))
