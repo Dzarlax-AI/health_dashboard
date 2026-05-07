@@ -388,19 +388,25 @@ sleep_total_per_source AS (
 sleep_picked AS (
     SELECT ` + sleepCrossValidationPickSourceExpr("sleep_total_per_source", "sum_val") + ` AS src
 ),
--- Atomicity gate: only commit the picked source's stages when ALL five
--- are present. Otherwise (e.g. RingConn writes a sleep_total row but no
--- phases) we'd write a NULL for the missing stages, and ON CONFLICT
--- COALESCE would preserve a prior row's stages — recreating exactly the
--- mixed-source row this PR is trying to eliminate. By forcing every
--- stage to NULL when incomplete, COALESCE preserves the previous block
--- as a unit instead of column-by-column.
+-- Atomicity gate: prevent mixed-source writes when MULTIPLE sources
+-- contribute sleep_total for the night. With a single source there is
+-- no mixing risk, and a strict 5-stage requirement would erase a real
+-- night just because one stage happened to be 0 (e.g. a HAE-fed Apple
+-- Watch night with sleep_awake = 0 — buildHourlyMetric filters qty>0
+-- so the awake row never reaches hourly_metrics, completeness fails,
+-- and all five sleep_* columns get NULL instead of the four real ones).
+-- Therefore: when n_sources <= 1, trust the only source as-is.
+-- When n_sources > 1, require ALL five stages from picked source so we
+-- don't COALESCE-preserve a prior row's stage from a different device.
 sleep_picked_complete AS (
     SELECT (
-      SELECT COUNT(DISTINCT metric_name) FROM per_source
-       WHERE source = (SELECT src FROM sleep_picked)
-         AND metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake')
-    ) = 5 AS ok
+        (SELECT COUNT(DISTINCT source) FROM sleep_total_per_source) <= 1
+        OR (
+          SELECT COUNT(DISTINCT metric_name) FROM per_source
+           WHERE source = (SELECT src FROM sleep_picked)
+             AND metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake')
+        ) = 5
+    ) AS ok
 ),
 agg AS (
     SELECT
@@ -746,12 +752,24 @@ sleep_picked AS (
     LEFT JOIN priority_pick p ON p.day = s.day
     LEFT JOIN min_pick      m ON m.day = s.day
 ),
+-- Atomicity gate: when MULTIPLE sources contributed sleep_total for the
+-- night, demand the picked source has all five stages so we don't write
+-- a NULL stage that ON CONFLICT COALESCE then fills from a prior row
+-- with a DIFFERENT source (the mixing bug PR #26 closed). With a single
+-- source there is no mixing risk, so trust it as-is — strict completeness
+-- would erase a real night just because one stage happened to be 0
+-- (HAE Apple Watch nights with sleep_awake = 0 hit this: hourly_metrics
+-- filter qty > 0 drops the awake row, so the source has only 4 of 5
+-- stages even though the night is fully recorded).
 sleep_complete AS (
     SELECT sp.day, sp.src, (
-      SELECT COUNT(DISTINCT metric_name) FROM per_source
-       WHERE day = sp.day AND source = sp.src
-         AND metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake')
-    ) = 5 AS ok
+        (SELECT COUNT(DISTINCT source) FROM sleep_total_per_day WHERE day = sp.day) <= 1
+        OR (
+          SELECT COUNT(DISTINCT metric_name) FROM per_source
+           WHERE day = sp.day AND source = sp.src
+             AND metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake')
+        ) = 5
+    ) AS ok
     FROM sleep_picked sp
 ),
 day_metric AS (
