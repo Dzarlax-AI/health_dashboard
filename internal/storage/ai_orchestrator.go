@@ -110,3 +110,32 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 
 	return s.GetAIInsightCombined(today, lang)
 }
+
+// EnsureTodayAIInsightAsync fires EnsureTodayAIInsight in a goroutine and
+// dedupes concurrent calls per (date, lang). Returns true when the caller's
+// invocation actually started a regen (caller can use this to log / set a
+// "generating" flag in the response). False means a regen is already running
+// from another caller; the cache will populate when that one finishes.
+func (s *DB) EnsureTodayAIInsightAsync(aiCfg AIConfig, lang string) bool {
+	if !aiCfg.Enabled() {
+		return false
+	}
+	key := time.Now().Format("2006-01-02") + "|" + lang
+	if _, loaded := s.aiRegenInFlight.LoadOrStore(key, true); loaded {
+		return false
+	}
+	go func() {
+		defer s.aiRegenInFlight.Delete(key)
+		s.EnsureTodayAIInsight(aiCfg, lang)
+	}()
+	return true
+}
+
+// AIRegenInFlight reports whether a regen is currently running for (today, lang).
+// Used by the /api/ai-briefing handler to set a "generating" flag in the
+// response when the cache is still warming up.
+func (s *DB) AIRegenInFlight(lang string) bool {
+	key := time.Now().Format("2006-01-02") + "|" + lang
+	_, ok := s.aiRegenInFlight.Load(key)
+	return ok
+}

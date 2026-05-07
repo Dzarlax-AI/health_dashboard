@@ -14,6 +14,11 @@ import (
 type DB struct {
 	pool    *pgxpool.Pool
 	cacheMu sync.Mutex // protects concurrent writes to hourly_metrics and daily_scores
+
+	// aiRegenInFlight dedupes concurrent EnsureTodayAIInsight goroutines so
+	// concurrent /api/ai-briefing pollers don't multiply Gemini calls. Keyed
+	// by "<date>|<lang>". Cleared when the regen goroutine returns.
+	aiRegenInFlight sync.Map
 }
 
 // queryCtx returns a context with a 30-second timeout for regular queries.

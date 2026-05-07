@@ -93,13 +93,13 @@
   </div>
   {{end}}
 
-  {{if .AIInsight}}
-  <!-- AI Insight collapsed by default — keeps the snapshot above the fold -->
-  <details id="ai-insight-wrap">
-    <summary>{{T .Lang "ai_insight_title"}}</summary>
-    <div id="ai-insight">{{.AIInsight}}</div>
+  <!-- AI Insight: server may have rendered it inline above; if cache was
+       cold, the wrapper still emits and JS polls /api/ai-briefing until
+       text arrives. Hidden when there is nothing yet. -->
+  <details id="ai-insight-wrap"{{if not .AIInsight}} hidden{{end}}>
+    <summary>{{T .Lang "ai_insight_title"}}<span id="ai-insight-spark" style="display:none">&nbsp;✨</span></summary>
+    <div id="ai-insight" data-lang="{{.Lang}}">{{.AIInsight}}</div>
   </details>
-  {{end}}
 
   <!-- Section detail cards -->
   {{if .Sections}}
@@ -182,6 +182,46 @@ document.addEventListener('DOMContentLoaded', function() {
   if (typeof loadReadinessSparkline === 'function') {
     loadReadinessSparkline('readiness-sparkline');
   }
+
+  // AI insight: poll /api/ai-briefing every 60s while the tab is visible and
+  // the cached text differs from what is rendered. Server kicks off async
+  // regen on cold cache, so this loop is the only path the UI gets fresh
+  // text without a full page reload. Sparkle marker fires when the rendered
+  // text changes from a non-empty value.
+  (function pollAI() {
+    var el = document.getElementById('ai-insight');
+    var wrap = document.getElementById('ai-insight-wrap');
+    var spark = document.getElementById('ai-insight-spark');
+    if (!el || !wrap) return;
+    var lang = el.dataset.lang || 'en';
+    var rendered = el.textContent.trim();
+    function tick() {
+      if (document.visibilityState !== 'visible') return;
+      fetch('/api/ai-briefing?lang=' + encodeURIComponent(lang))
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(data) {
+          if (!data || !data.insight) return;
+          var fresh = String(data.insight).trim();
+          if (fresh && fresh !== rendered) {
+            var hadPrev = rendered.length > 0;
+            el.textContent = fresh;
+            wrap.removeAttribute('hidden');
+            rendered = fresh;
+            if (hadPrev && spark) {
+              spark.style.display = '';
+              setTimeout(function() { spark.style.display = 'none'; }, 60000);
+            }
+          }
+        })
+        .catch(function() { /* swallow — try again next tick */ });
+    }
+    // First tick on load (if cache was cold), then every 60s.
+    tick();
+    setInterval(tick, 60000);
+    document.addEventListener('visibilitychange', function() {
+      if (document.visibilityState === 'visible') tick();
+    });
+  })();
 });
 </script>
 {{end}}
