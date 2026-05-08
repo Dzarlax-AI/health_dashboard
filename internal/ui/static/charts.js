@@ -193,13 +193,19 @@ function loadEnergySparkline(canvasId) {
 // story when it flips the dashboard's source of truth from v1 to v2.
 var energyHourlyChart = null;
 function loadEnergyHourlyChart(canvasId) {
+  // Guard before fetch: when the server renders the dashboard for a
+  // tenant without an EnergyBank (fresh user, no metric data yet), the
+  // entire hero-energy block including this canvas is omitted from the
+  // template. Skipping the network call here avoids a wasted round
+  // trip + needless server log line on every dashboard load for those
+  // tenants.
+  var el = document.getElementById(canvasId);
+  if (!el) return;
   fetch('/api/energy-history?granularity=hour&hours=72')
     .then(function(r) { return r.json(); })
     .then(function(d) {
       var pts = d.points || [];
       if (pts.length < 3) return;
-      var el = document.getElementById(canvasId);
-      if (!el) return;
       var wrap = document.getElementById('energy-hourly-wrap');
       if (wrap) wrap.hidden = false;
 
