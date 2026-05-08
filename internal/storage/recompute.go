@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -45,11 +46,17 @@ type TenantRecompute struct {
 // without spawning anything — the running worker will re-run once it
 // finishes its current pass.
 //
+// `ctx` controls worker lifecycle: when cancelled, the worker exits
+// cleanly between passes (or during the debounce sleep) instead of
+// blocking shutdown for up to one debounce window. A pending dirty flag
+// at cancellation time is dropped — recompute is event-driven and the
+// next ingest after restart will re-trigger naturally.
+//
 // `work` must be safe to call concurrently across tenants but is
 // guaranteed to be serialised within a single TenantRecompute. It must
 // be idempotent: a recompute that observes the same source data twice
 // must produce the same result.
-func (t *TenantRecompute) Trigger(work func()) {
+func (t *TenantRecompute) Trigger(ctx context.Context, work func()) {
 	if !t.mu.TryLock() {
 		t.dirty.Store(true)
 		return
@@ -57,12 +64,19 @@ func (t *TenantRecompute) Trigger(work func()) {
 	go func() {
 		defer t.mu.Unlock()
 		for {
+			if ctx.Err() != nil {
+				return
+			}
 			t.dirty.Store(false)
 			work()
 			if !t.dirty.Load() {
 				return
 			}
-			time.Sleep(recomputeDebounce)
+			select {
+			case <-time.After(recomputeDebounce):
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 }

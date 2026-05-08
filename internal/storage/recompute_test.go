@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -36,7 +37,7 @@ func TestTenantRecompute_RunsOnce(t *testing.T) {
 	shortDebounce(t)
 	var rc TenantRecompute
 	var calls atomic.Int32
-	rc.Trigger(func() { calls.Add(1) })
+	rc.Trigger(context.Background(), func() { calls.Add(1) })
 	waitFor(t, time.Second, func() bool { return calls.Load() == 1 })
 	// Give a beat for any rogue extra pass; should stay at 1.
 	time.Sleep(20 * time.Millisecond)
@@ -46,9 +47,9 @@ func TestTenantRecompute_RunsOnce(t *testing.T) {
 }
 
 // TestTenantRecompute_CollapsesBurst: many concurrent triggers fired
-// while a worker is busy collapse into at-most-one extra rerun. The
-// exact count is implementation-defined (1 or 2 calls depending on
-// timing) but MUST NOT scale with the trigger count.
+// while a worker is busy collapse into exactly one extra rerun (total
+// of 2 work calls). The count MUST NOT scale with the trigger count —
+// that's the entire point of the primitive.
 func TestTenantRecompute_CollapsesBurst(t *testing.T) {
 	shortDebounce(t)
 	var rc TenantRecompute
@@ -67,7 +68,7 @@ func TestTenantRecompute_CollapsesBurst(t *testing.T) {
 		}
 	}
 
-	rc.Trigger(work)
+	rc.Trigger(context.Background(), work)
 	<-started // worker is parked inside pass #1
 
 	// Fire a burst of triggers while the worker is busy. They MUST
@@ -79,7 +80,7 @@ func TestTenantRecompute_CollapsesBurst(t *testing.T) {
 	for i := 0; i < burst; i++ {
 		go func() {
 			defer wg.Done()
-			rc.Trigger(work)
+			rc.Trigger(context.Background(), work)
 		}()
 	}
 	wg.Wait()
@@ -89,8 +90,7 @@ func TestTenantRecompute_CollapsesBurst(t *testing.T) {
 	// Drain any in-flight rerun.
 	time.Sleep(20 * time.Millisecond)
 
-	got := calls.Load()
-	if got < 2 || got > 2 {
+	if got := calls.Load(); got != 2 {
 		t.Fatalf("expected exactly 2 calls (initial + 1 collapsed rerun), got %d", got)
 	}
 }
@@ -103,10 +103,58 @@ func TestTenantRecompute_TriggerAfterIdle(t *testing.T) {
 	var rc TenantRecompute
 	var calls atomic.Int32
 
-	rc.Trigger(func() { calls.Add(1) })
+	rc.Trigger(context.Background(), func() { calls.Add(1) })
 	waitFor(t, time.Second, func() bool { return calls.Load() == 1 })
 
-	rc.Trigger(func() { calls.Add(1) })
+	rc.Trigger(context.Background(), func() { calls.Add(1) })
 	waitFor(t, time.Second, func() bool { return calls.Load() == 2 })
+}
+
+// TestTenantRecompute_ContextCancelStopsRerun: when ctx is cancelled
+// while the worker is in the debounce window, it exits cleanly without
+// running another pass. A pending dirty flag is dropped — recompute is
+// event-driven, the next ingest after restart will re-trigger.
+func TestTenantRecompute_ContextCancelStopsRerun(t *testing.T) {
+	// Long debounce so the cancel reliably catches the worker mid-sleep.
+	prev := recomputeDebounce
+	recomputeDebounce = 500 * time.Millisecond
+	t.Cleanup(func() { recomputeDebounce = prev })
+
+	var rc TenantRecompute
+	var calls atomic.Int32
+	ctx, cancel := context.WithCancel(context.Background())
+
+	started := make(chan struct{})
+	holdPass1 := make(chan struct{})
+	work := func() {
+		// Pass 1 holds the worker inside work() until the test has had
+		// a chance to set dirty via a second Trigger. Without this gate
+		// the worker can race to dirty.Load() before the test sets it,
+		// completing pass 1 and starting a fresh pass 2 that bumps
+		// calls to 2 — masking what the cancel was supposed to prevent.
+		if calls.Add(1) == 1 {
+			close(started)
+			<-holdPass1
+		}
+	}
+
+	rc.Trigger(ctx, work)
+	<-started
+	// Pile a trigger while pass 1 is parked → dirty=true.
+	rc.Trigger(ctx, work)
+	// Release pass 1; worker now checks dirty (true) and enters the
+	// debounce select.
+	close(holdPass1)
+	// Cancel inside the debounce window. The select must pick ctx.Done
+	// instead of time.After.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	// After the debounce window has fully elapsed, calls should still be
+	// 1 — the rerun was preempted.
+	time.Sleep(recomputeDebounce + 100*time.Millisecond)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("expected worker to exit at 1 call, got %d", got)
+	}
 }
 

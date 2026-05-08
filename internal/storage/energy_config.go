@@ -55,13 +55,24 @@ func DefaultEnergyConfig() EnergyConfig {
 // GetEnergyConfig reads the EnergyBank v2 configuration from the
 // settings table, falling back to DefaultEnergyConfig() for any key
 // that is missing or unparseable. Safe to call on a fresh schema.
+//
+// AlphaFactorSource is whitelisted: a typo or stale value left in the
+// settings table cannot silently break the authority order
+// (manual > auto > default) the v2.5 calibrator depends on. Anything
+// outside the whitelist falls back to the default.
 func (s *DB) GetEnergyConfig() EnergyConfig {
 	d := DefaultEnergyConfig()
+	src := s.GetSetting("energy.alpha_factor_source", d.AlphaFactorSource)
+	switch src {
+	case "default", "auto", "manual":
+	default:
+		src = d.AlphaFactorSource
+	}
 	return EnergyConfig{
 		Alpha:             getSettingFloat(s, "energy.alpha", d.Alpha),
 		Beta:              getSettingFloat(s, "energy.beta", d.Beta),
 		AlphaFactor:       getSettingFloat(s, "energy.alpha_factor", d.AlphaFactor),
-		AlphaFactorSource: s.GetSetting("energy.alpha_factor_source", d.AlphaFactorSource),
+		AlphaFactorSource: src,
 		FormulaVersion:    getSettingInt(s, "energy.formula_version", d.FormulaVersion),
 	}
 }
