@@ -30,6 +30,12 @@ import (
 // Persisting seed state would just lock in floating-point noise.
 
 // BankResult is the read-side projection of today's EnergyBank v2 state.
+//
+// TodayDrain and TodayRestore feed energy_snapshots.drain_delta and
+// restore_delta respectively. v2.0 integrates the formula on a daily
+// granularity, so the per-day deltas and the per-5-min-bucket deltas
+// are the same value within a day; if v2.1 moves to true intra-day
+// integration these become per-bucket and the schema doesn't change.
 type BankResult struct {
 	// Bank is the signed bank, clamped to [-50, 100]. Stored signed in
 	// the DB so the AI prompt can frame a sustained deficit ("you're
@@ -54,6 +60,12 @@ type BankResult struct {
 	// AlphaUsed is the effective drain coefficient (base * factor) for
 	// debugging. Zero when the bank was not actually computed (stale).
 	AlphaUsed float64
+	// TodayDrain and TodayRestore are the per-day drain and restore
+	// magnitudes for today's iteration step, rounded to int. Populated
+	// for non-stale results; zero when stale (we suppress all
+	// numerical signal in that case).
+	TodayDrain   int
+	TodayRestore int
 	// Components is an optional audit trail. Currently exposes today's
 	// raw inputs so the dashboard `<details>` view can show "what the
 	// formula saw"; nil when unavailable.
@@ -205,11 +217,19 @@ func computeBankFromDays(days []dailyInputs, cfg EnergyConfig) BankResult {
 
 	// Forward-iterate the bank. clampSignedBank lives in the math
 	// kernel; we lift the result to int after the loop so intermediate
-	// drift stays in float64.
+	// drift stays in float64. Snapshot today's restore (cap −
+	// bank_before) and drain so the persisted energy_snapshots row
+	// can carry meaningful per-day deltas.
 	bank := energySeed
+	var todayRestore, todayDrain float64
 	for i := energyIterStart; i < energyWindowDays; i++ {
-		cap := health.AsymptoticCapacity(bank, sq[i])
+		bankBefore := bank
+		cap := health.AsymptoticCapacity(bankBefore, sq[i])
 		bank = health.ClampSignedBank(cap - drain[i])
+		if i == energyWindowDays-1 {
+			todayRestore = cap - bankBefore
+			todayDrain = drain[i]
+		}
 	}
 
 	state := trustState(imputedSleep, imputedActivity)
@@ -223,11 +243,14 @@ func computeBankFromDays(days []dailyInputs, cfg EnergyConfig) BankResult {
 		FormulaVersion: cfg.FormulaVersion,
 		AlphaUsed:      cfg.EffectiveAlpha(),
 	}
-	// Today's audit trail is exposed only when we actually rendered a
-	// number — "stale" suppresses the bank, so showing components
-	// would lie about what the formula consumed.
+	// Today's audit trail and per-day deltas are exposed only when we
+	// actually rendered a number — "stale" suppresses the bank, so
+	// showing components or deltas would lie about what the formula
+	// consumed.
 	if state != "stale" {
 		res.Components = todayComponents(days[energyWindowDays-1], sq[energyWindowDays-1], drain[energyWindowDays-1])
+		res.TodayDrain = int(math.Round(todayDrain))
+		res.TodayRestore = int(math.Round(todayRestore))
 	}
 	return res
 }

@@ -158,6 +158,11 @@ func main() {
 
 	mux := http.NewServeMux()
 
+	// EnergyBank v2 orchestrator: runs in parallel with the v1
+	// dashboard rendering. Snapshots accumulate silently for
+	// observation; PR8 will flip the UI over once v2 is validated.
+	energyV2 := storage.NewEnergyV2Orchestrator()
+
 	onNewData := func(db *storage.DB, dates []string) {
 		// The tenant schema is encoded in the DB pool's search_path.
 		// We rely on the manager to find the right backfill scheduler.
@@ -166,6 +171,8 @@ func main() {
 				if fn := mgr.BackfillDatesFor(schema); fn != nil {
 					fn(dates)
 				}
+				tz := db.GetNotifyConfig(envNotifyDefaults).Timezone
+				energyV2.Trigger(ctx, db, schema, tz)
 				break
 			}
 		}
@@ -224,8 +231,13 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	var morningLock int32
 	maybeFireMorningReport := makeMorningTrigger(db, &morningLock, mgr, schema, notifyDefaults)
 	backfillDatesFn := makeBackfillDatesFn(db, schema)
+	// EnergyBank v2 orchestrator: same role as in multi-tenant mode —
+	// passive snapshot accumulation alongside the live v1 dashboard.
+	energyV2 := storage.NewEnergyV2Orchestrator()
 	onNewData := func(_ *storage.DB, dates []string) {
 		backfillDatesFn(dates)
+		tz := db.GetNotifyConfig(notifyDefaults).Timezone
+		energyV2.Trigger(ctx, db, schema, tz)
 		go maybeFireMorningReport()
 	}
 
