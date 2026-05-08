@@ -30,12 +30,20 @@ func (s *DB) UpsertEnergySnapshot(ctx context.Context, tz string, res BankResult
 		flags = []string{}
 	}
 
-	var componentsJSON []byte
+	// pgx v5 encodes a plain []byte as bytea, not jsonb — that's how
+	// the production deploy first surfaced this bug
+	// ("invalid input syntax for type json"). Wrapping in
+	// json.RawMessage is the existing project convention (see
+	// ai_briefing.go::SaveAIBriefing for the same pattern). A nil
+	// RawMessage is encoded as SQL NULL, matching the JSONB column's
+	// nullable definition.
+	var components json.RawMessage
 	if res.Components != nil {
-		componentsJSON, err = json.Marshal(res.Components)
+		raw, err := json.Marshal(res.Components)
 		if err != nil {
 			return err
 		}
+		components = raw
 	}
 
 	_, err = s.pool.Exec(ctx, `
@@ -54,6 +62,6 @@ func (s *DB) UpsertEnergySnapshot(ctx context.Context, tz string, res BankResult
 			flags           = EXCLUDED.flags,
 			computed_at     = NOW()`,
 		tsBucket, dateStr, res.Bank, res.TodayDrain, res.TodayRestore,
-		res.FormulaVersion, componentsJSON, flags)
+		res.FormulaVersion, components, flags)
 	return err
 }
