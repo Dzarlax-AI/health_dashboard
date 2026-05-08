@@ -11,6 +11,18 @@ import (
 	"sync/atomic"
 	"time"
 
+	// Embed the IANA timezone database directly in the binary. The
+	// build is CGO_ENABLED=0 and the alpine runtime image does not
+	// install the `tzdata` package, so without this import every
+	// time.LoadLocation("Europe/Belgrade") (and friends) fails with
+	// "unknown time zone …" and falls back to UTC. That broke the
+	// EnergyBank v2 orchestrator (PR #38) on the first deploy and
+	// silently makes report scheduling, morning-cap timing, and
+	// energy_snapshots.date all run under UTC across the whole
+	// codebase. Adds ~450KB to the binary; cheaper and more portable
+	// than installing tzdata into the runtime image.
+	_ "time/tzdata"
+
 	"health-receiver/internal/handler"
 	"health-receiver/internal/health"
 	"health-receiver/internal/mcpserver"
