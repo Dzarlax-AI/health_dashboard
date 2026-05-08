@@ -192,6 +192,40 @@ func TestComputeBank_PerfectSleepPinsHigh(t *testing.T) {
 	}
 }
 
+// TestComputeBank_PartialSleepRowImputed: a row with sleep_total but
+// missing stage columns (deep/rem/awake = nil) must be treated as
+// imputed rather than fed zero stages into the formula. Feeding zeros
+// would falsely apply the structure penalty on a night that almost
+// certainly had real stages — the iOS sensor stack sometimes writes
+// partial rows during sync hiccups.
+func TestComputeBank_PartialSleepRowImputed(t *testing.T) {
+	missingStagesAt := 14
+	days := makeDays(
+		func(i int) (totalH, deepH, remH, awakeH *float64) {
+			if i == missingStagesAt {
+				// total present, stages absent — partial row.
+				return fp(7.5), nil, nil, nil
+			}
+			return goodNight(i)
+		},
+		modestActivity,
+	)
+	r := computeBankFromDays(days, defaultCfg())
+
+	// State stays fresh (single imputed day in last 7 is fine), but
+	// the bank should match a fully-clean window because the partial
+	// day got imputed from the clean trailing average — NOT penalised
+	// by a structure-factor hit on phantom-zero stages.
+	if r.State != "fresh" {
+		t.Fatalf("state: got %q, want fresh", r.State)
+	}
+	clean := computeBankFromDays(makeDays(goodNight, modestActivity), defaultCfg())
+	if r.Bank != clean.Bank {
+		t.Fatalf("partial-stage row should impute to a clean-equivalent bank, got %d vs clean %d",
+			r.Bank, clean.Bank)
+	}
+}
+
 // TestComputeBank_TodayMissingFlaggedNotState: today's metric missing,
 // rest of window clean → flags=[imputed_sleep] BUT state stays fresh
 // (one-day gap is below the threshold).

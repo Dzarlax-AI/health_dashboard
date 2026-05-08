@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"sort"
 	"time"
@@ -93,10 +94,18 @@ const (
 // Tenant TZ comes from the same source as the energy_snapshots writer
 // (PR1): caller passes it explicitly so this function stays a pure
 // computation over inputs.
+//
+// A bad TZ is propagated as an error rather than silently coerced to
+// UTC — the bank is materially time-sensitive (off-by-one-day on
+// midnight boundaries) and a misconfigured tenant should fail loud
+// rather than report yesterday's number as today's. This is the
+// opposite policy from the energy_snapshots writer, which falls back
+// to UTC because writing yesterday's snapshot under a UTC date is
+// recoverable next ingest.
 func (s *DB) ComputeBankForToday(ctx context.Context, tz string) (BankResult, error) {
 	loc, err := time.LoadLocation(tz)
 	if err != nil {
-		loc = time.UTC
+		return BankResult{}, fmt.Errorf("load tenant TZ %q: %w", tz, err)
 	}
 	today := time.Now().In(loc).Format("2006-01-02")
 	startDate := subtractDays(today, energyWindowDays-1)
@@ -156,11 +165,18 @@ func computeBankFromDays(days []dailyInputs, cfg EnergyConfig) BankResult {
 
 	for i := 0; i < energyWindowDays; i++ {
 		d := days[i]
-		if d.SleepTotal != nil && *d.SleepTotal > 0 {
-			deep := zeroIfNil(d.SleepDeep)
-			rem := zeroIfNil(d.SleepRem)
-			awake := zeroIfNil(d.SleepAwake)
-			sq[i] = health.SleepQuality(*d.SleepTotal, deep, rem, awake)
+		// Require ALL stage columns present, not just sleep_total. A
+		// partial row (total recorded but stages absent) would feed
+		// zeros into health.SleepQuality, falsely tripping the
+		// structure penalty (deep_pct=0 → shortfall=0.15) on a night
+		// that almost certainly had real deep/REM the sensor stack
+		// just failed to write. Better to mark imputed and pull a
+		// trailing average — the formula's response to partial data
+		// should match its response to fully-missing data, not a
+		// pessimistic interpretation of "stages were really zero".
+		if d.SleepTotal != nil && *d.SleepTotal > 0 &&
+			d.SleepDeep != nil && d.SleepRem != nil && d.SleepAwake != nil {
+			sq[i] = health.SleepQuality(*d.SleepTotal, *d.SleepDeep, *d.SleepRem, *d.SleepAwake)
 		} else {
 			imputedSleep[i] = true
 		}
