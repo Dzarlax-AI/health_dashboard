@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"fmt"
 	"log"
 
 	"health-receiver/internal/health"
@@ -58,6 +59,9 @@ func (s *DB) GetEnergyHistory(days int) ([]EnergyHistoryPoint, error) {
 	if days <= 0 {
 		days = 14
 	}
+	if days > 365 {
+		days = 365
+	}
 	ctx, cancel := queryCtx()
 	defer cancel()
 	rows, err := s.pool.Query(ctx, `
@@ -77,7 +81,7 @@ func (s *DB) GetEnergyHistory(days int) ([]EnergyHistoryPoint, error) {
 		var capPtr, curPtr, drainPtr *int
 		var verdict *string
 		if err := rows.Scan(&p.Date, &capPtr, &curPtr, &drainPtr, &verdict); err != nil {
-			continue
+			return nil, fmt.Errorf("scan energy history row: %w", err)
 		}
 		if capPtr != nil {
 			p.Capacity = *capPtr
