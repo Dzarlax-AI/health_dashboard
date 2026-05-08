@@ -2,6 +2,7 @@ package storage
 
 import (
 	"fmt"
+	"log"
 	"sort"
 	"time"
 
@@ -404,12 +405,81 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 
 	resp := health.ComputeBriefing(*data, lang)
 
-	// Persist today's EnergyBank EOD snapshot. Briefing is the single
-	// entry point through which the bank gets recomputed (no scheduled
-	// EOD job exists), so each call rewrites the row for *lastDate. The
-	// last call before midnight effectively becomes the EOD snapshot —
-	// once the day rolls over no further computes target this date and
-	// the row freezes. Best-effort: errors are logged inside the helper.
+	// EnergyBank v2 half-cutover (PR #43): when a v2 snapshot exists
+	// for `lastDate`, override the displayed bank/capacity/drain with
+	// the v2 numbers but leave ActionVerdict + VerdictReason on the
+	// v1 readiness-derived path. Reasoning: we have <1 week of v2
+	// distribution data, so the v1 verdict thresholds [25, 45, 60]
+	// can't be safely re-applied to the v2 [0, 100] scale yet; mixing
+	// half-calibrated verdicts into AI/Telegram outputs would degrade
+	// the recommendations. Components are dropped — they describe v1
+	// inputs and would visibly contradict the new numbers in the
+	// dashboard <details>. The v2 hourly chart (PR #42) provides the
+	// new breakdown via `components` JSONB.
+	//
+	// Final cutover (verdict thresholds re-tuned on real distribution)
+	// tracked in Todoist 6gc2R6692674v3Gf.
+	//
+	// `lastDate` (NOT today-in-TZ) is the lookup key, deliberately —
+	// when HAE is mid-sync and today has no data yet, the briefing's
+	// whole frame is yesterday, and the override should match that
+	// frame. Looking up "today" instead would split frame and override
+	// across day boundaries.
+	if resp.EnergyBank != nil && lastDate != nil {
+		ctxSnap, cancelSnap := queryCtx()
+		snap, err := s.GetLatestEnergySnapshotForDate(ctxSnap, *lastDate)
+		cancelSnap()
+		if err != nil {
+			// Don't break the briefing on a transient pool/scan error;
+			// fall through to v1 numbers, but surface so an operator
+			// can investigate sustained failures.
+			log.Printf("[ENERGY_V2] briefing override read (date=%s): %v", *lastDate, err)
+		}
+		if err == nil && snap != nil {
+			display := snap.Bank
+			if display < 0 {
+				display = 0
+			}
+			if display > 100 {
+				display = 100
+			}
+			// Defensive drain floor: PR3 floors α and kcal so
+			// DrainDelta is non-negative by construction, but a
+			// future formula tweak or a manual settings override
+			// could break that. Floor here so the drain badge can't
+			// surface a nonsense "-5" and so capacity stays ≥ current
+			// (bar-fill invariant).
+			drain := snap.DrainDelta
+			if drain < 0 {
+				drain = 0
+			}
+			capacity := display + drain
+			if capacity > 100 {
+				capacity = 100
+			}
+			resp.EnergyBank.Current = display
+			resp.EnergyBank.Capacity = capacity
+			resp.EnergyBank.DrainSoFar = drain
+			resp.EnergyBank.Components = nil
+		}
+	}
+
+	// Persist EnergyBank EOD snapshot AFTER the v2 override applies.
+	// Persisting the v1 numbers here would lock guaranteed-wrong values
+	// (saturated capacity on typical days, no multi-day carryover —
+	// exactly the bug v2 was built to fix) into daily_scores, where
+	// the legacy 14d sparkline reads them. Persisting the overridden
+	// values means the sparkline starts showing v2 from the cutover
+	// day forward; existing pre-cutover rows decay out of the window
+	// over ~14 days and the chart becomes fully v2. The visible
+	// discontinuity on cutover day is intentional — it's the cutover.
+	//
+	// Briefing is the single entry point through which the bank gets
+	// recomputed (no scheduled EOD job exists), so each call rewrites
+	// the row for *lastDate. The last call before midnight effectively
+	// becomes the EOD snapshot — once the day rolls over no further
+	// computes target this date and the row freezes. Best-effort:
+	// errors logged inside the helper.
 	if resp.EnergyBank != nil {
 		go s.SaveEnergyBankSnapshot(*lastDate, resp.EnergyBank)
 	}
