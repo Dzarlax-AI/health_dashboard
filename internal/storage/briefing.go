@@ -410,8 +410,54 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 	// last call before midnight effectively becomes the EOD snapshot —
 	// once the day rolls over no further computes target this date and
 	// the row freezes. Best-effort: errors are logged inside the helper.
+	//
+	// We persist the v1 numbers here (NOT the v2-overridden ones below)
+	// so the legacy 14d sparkline reading from daily_scores stays
+	// internally consistent across the cutover boundary. The half-
+	// cutover override only affects the live response.
 	if resp.EnergyBank != nil {
-		go s.SaveEnergyBankSnapshot(*lastDate, resp.EnergyBank)
+		ebCopy := *resp.EnergyBank
+		go s.SaveEnergyBankSnapshot(*lastDate, &ebCopy)
+	}
+
+	// EnergyBank v2 half-cutover (PR #43): when a v2 snapshot exists
+	// for `lastDate`, override the displayed bank/capacity/drain with
+	// the v2 numbers but leave ActionVerdict + VerdictReason on the
+	// v1 readiness-derived path. Reasoning: we have <1 week of v2
+	// distribution data, so the v1 verdict thresholds [25, 45, 60]
+	// can't be safely re-applied to the v2 [0, 100] scale yet; mixing
+	// half-calibrated verdicts into AI/Telegram outputs would degrade
+	// the recommendations. Components are dropped — they describe v1
+	// inputs and would visibly contradict the new numbers in the
+	// dashboard <details>. The v2 hourly chart (PR #42) provides the
+	// new breakdown via `components` JSONB.
+	//
+	// Final cutover (verdict thresholds re-tuned on real distribution)
+	// tracked in Todoist 6gc2R6692674v3Gf.
+	if resp.EnergyBank != nil && lastDate != nil {
+		ctxSnap, cancelSnap := queryCtx()
+		snap, err := s.GetLatestEnergySnapshotForDate(ctxSnap, *lastDate)
+		cancelSnap()
+		if err == nil && snap != nil {
+			display := snap.Bank
+			if display < 0 {
+				display = 0
+			}
+			if display > 100 {
+				display = 100
+			}
+			capacity := display + snap.DrainDelta
+			if capacity < 0 {
+				capacity = 0
+			}
+			if capacity > 100 {
+				capacity = 100
+			}
+			resp.EnergyBank.Current = display
+			resp.EnergyBank.Capacity = capacity
+			resp.EnergyBank.DrainSoFar = snap.DrainDelta
+			resp.EnergyBank.Components = nil
+		}
 	}
 
 	// Attach per-source sleep breakdown for the most recent night.
