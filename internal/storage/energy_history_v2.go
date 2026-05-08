@@ -83,8 +83,20 @@ func (s *DB) GetEnergyHistoryV2(ctx context.Context, tz string, hours int) ([]En
 		if p.Flags == nil {
 			p.Flags = []string{}
 		}
+		// JSONB column rejects invalid JSON at write time, so this
+		// branch is theoretical insurance. But the type docstring
+		// promises a malformed row renders as null rather than
+		// crashing the response, and json.RawMessage is passed
+		// through verbatim by encoder/json — without json.Valid
+		// here, an invalid blob would surface as an encoding error
+		// in jsonResponse, breaking the whole batch instead of just
+		// one point. Cheap, defensive, matches the promise.
 		if len(components) > 0 {
-			p.Components = json.RawMessage(components)
+			if json.Valid(components) {
+				p.Components = json.RawMessage(components)
+			} else {
+				p.Components = json.RawMessage("null")
+			}
 		}
 		out = append(out, p)
 	}
