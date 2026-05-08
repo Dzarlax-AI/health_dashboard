@@ -393,6 +393,16 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 
 	resp := health.ComputeBriefing(*data, lang)
 
+	// Persist today's EnergyBank EOD snapshot. Briefing is the single
+	// entry point through which the bank gets recomputed (no scheduled
+	// EOD job exists), so each call rewrites the row for *lastDate. The
+	// last call before midnight effectively becomes the EOD snapshot —
+	// once the day rolls over no further computes target this date and
+	// the row freezes. Best-effort: errors are logged inside the helper.
+	if resp.EnergyBank != nil {
+		go s.SaveEnergyBankSnapshot(*lastDate, resp.EnergyBank)
+	}
+
 	// Attach per-source sleep breakdown for the most recent night.
 	// Query hourly_metrics (indexed by hour) instead of metric_points.
 	if resp.Sleep != nil {

@@ -45,6 +45,7 @@
           <div class="energy-bar-fill" style="width: {{.EnergyBank.Current}}%"></div>
           {{if lt .EnergyBank.Capacity 100}}<div class="energy-bar-marker" style="left: {{.EnergyBank.Capacity}}%" title="{{T .Lang "energy_capacity_label"}}: {{.EnergyBank.Capacity}}"></div>{{end}}
         </div>
+        <div id="energy-sparkline-wrap" hidden><canvas id="energy-sparkline" height="36"></canvas></div>
         {{if .EnergyBank.Components}}
         <details class="hero-energy-details">
           <summary>{{T .Lang "details"}}</summary>
@@ -181,6 +182,9 @@ document.addEventListener('DOMContentLoaded', function() {
   }
   if (typeof loadReadinessSparkline === 'function') {
     loadReadinessSparkline('readiness-sparkline');
+  }
+  if (typeof loadEnergySparkline === 'function') {
+    loadEnergySparkline('energy-sparkline');
   }
 
   // AI insight: poll /api/ai-briefing while the tab is visible and the

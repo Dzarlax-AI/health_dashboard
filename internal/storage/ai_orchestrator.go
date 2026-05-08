@@ -124,11 +124,24 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 	sleepText := textOf(ai.BlockSleep)
 	yesterdayText := textOf(ai.BlockYesterday)
 	recoveryText := textOf(ai.BlockRecovery)
-	recHash := ai.HashRecommendation(sleepText, yesterdayText, recoveryText, eb)
+	// Pull the last 7 EOD verdict snapshots so RECOMMENDATION can pick up
+	// multi-day patterns ("3 rest days in a row -> push for proper rest")
+	// instead of treating each day in isolation. Frozen past values are
+	// safe to hash — see HashRecommendation doc on why intra-day EnergyBank
+	// fields are excluded.
+	verdictHistory := []string{}
+	if hist, herr := s.GetEnergyHistory(7); herr == nil {
+		for _, p := range hist {
+			if p.Verdict != "" {
+				verdictHistory = append(verdictHistory, p.Verdict)
+			}
+		}
+	}
+	recHash := ai.HashRecommendation(sleepText, yesterdayText, recoveryText, eb, verdictHistory)
 	recRow := cached[ai.BlockRecommendation]
 	if recRow == nil || recRow.InputsHash != recHash || strings.TrimSpace(recRow.Text) == "" {
 		recText, err := ai.GenerateRecommendation(aiCfg.APIKey, aiCfg.Model, aiCfg.MaxOutputTokens, rawJSON, lang,
-			sleepText, yesterdayText, recoveryText)
+			sleepText, yesterdayText, recoveryText, verdictHistory)
 		if err != nil {
 			log.Printf("EnsureTodayAIInsight: gemini RECOMMENDATION: %v", err)
 		} else if strings.TrimSpace(recText) == "" {
