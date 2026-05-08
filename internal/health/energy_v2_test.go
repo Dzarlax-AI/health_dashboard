@@ -189,6 +189,12 @@ func TestDrainV2(t *testing.T) {
 		{"negative_kcal_floored", -500, 0.08, 0},
 		{"high_load_athlete", 2000, 0.08, 160},
 		{"alpha_zero_disables_drain", 1500, 0, 0},
+		// Negative alpha would invert the formula and credit the bank
+		// for high-kcal days. Floored at 0 — the symmetry of the kcal
+		// floor matters more than letting a calibrator bug propagate.
+		{"negative_alpha_floored", 1500, -0.08, 0},
+		// Both negative: still 0; defence in depth.
+		{"both_negative_floored", -1500, -0.08, 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -235,7 +241,9 @@ func TestEndToEndOneDay(t *testing.T) {
 	approxEq(t, "sq", sq, 0.875, eps)
 	approxEq(t, "capacity", cap, 91.875, eps)
 	approxEq(t, "drain", drain, 56, eps)
-	if bankToday < 0 || bankToday > 100 {
-		t.Fatalf("bank out of plausible day-1 range: %v", bankToday)
-	}
+	// Pin the exact final value: 91.875 - 56 = 35.875, well inside
+	// [-50, 100] so the clamp is a no-op. A wiring mistake (e.g.,
+	// applying drain to the pre-clamp bank, or flipping a sign) would
+	// shift this number well outside the eps tolerance.
+	approxEq(t, "bank_today", bankToday, 35.875, eps)
 }

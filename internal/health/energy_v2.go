@@ -65,11 +65,18 @@ func SleepQuality(totalH, deepH, remH, awakeH float64) float64 {
 // ENERGY_BANK.md § Validation for the empirical derivation on 31 days
 // of historical data.
 //
-// Negative inputs (sensor errors) are floored at 0; we don't want a
-// glitched −500 kcal reading to credit the bank.
+// Both inputs are floored at 0. Negative kcal would come from sensor
+// glitches; negative alpha would come from a calibrator bug or a manual
+// settings override gone wrong. Either would invert the formula's
+// semantics — drain becomes credit, "you exercised hard" becomes "have
+// some free energy" — so we refuse to integrate either sign and just
+// return 0.
 func DrainV2(activeKcal float64, alpha float64) float64 {
 	if activeKcal < 0 {
 		activeKcal = 0
+	}
+	if alpha < 0 {
+		alpha = 0
 	}
 	return alpha * activeKcal
 }
