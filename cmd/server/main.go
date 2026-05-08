@@ -158,6 +158,11 @@ func main() {
 
 	mux := http.NewServeMux()
 
+	// EnergyBank v2 orchestrator: runs in parallel with the v1
+	// dashboard rendering. Snapshots accumulate silently for
+	// observation; PR8 will flip the UI over once v2 is validated.
+	energyV2 := storage.NewEnergyV2Orchestrator()
+
 	onNewData := func(db *storage.DB, dates []string) {
 		// The tenant schema is encoded in the DB pool's search_path.
 		// We rely on the manager to find the right backfill scheduler.
@@ -166,6 +171,8 @@ func main() {
 				if fn := mgr.BackfillDatesFor(schema); fn != nil {
 					fn(dates)
 				}
+				energyV2.Trigger(ctx, db, schema,
+					tenantTZOrUTC(db, envNotifyDefaults, schema))
 				break
 			}
 		}
@@ -224,8 +231,12 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	var morningLock int32
 	maybeFireMorningReport := makeMorningTrigger(db, &morningLock, mgr, schema, notifyDefaults)
 	backfillDatesFn := makeBackfillDatesFn(db, schema)
+	// EnergyBank v2 orchestrator: same role as in multi-tenant mode —
+	// passive snapshot accumulation alongside the live v1 dashboard.
+	energyV2 := storage.NewEnergyV2Orchestrator()
 	onNewData := func(_ *storage.DB, dates []string) {
 		backfillDatesFn(dates)
+		energyV2.Trigger(ctx, db, schema, tenantTZOrUTC(db, notifyDefaults, schema))
 		go maybeFireMorningReport()
 	}
 
@@ -342,6 +353,31 @@ const backfillDatesDebounce = 60 * time.Second
 // of dates reported by POST /health bursts and rebuilds caches for exactly
 // that set after the burst settles. Replaces the old "last 7 days" safety net
 // so backfills cover the actual dates that came in, not a fixed window.
+// tenantTZOrUTC resolves the tenant's report timezone, falling back to
+// "UTC" (and warning once on first observation) when neither the
+// tenant's settings nor envNotifyDefaults supply one. The fallback
+// keeps EnergyBank v2 functional on tenants that haven't configured a
+// TZ yet — running under UTC is a defensible default — while the
+// warning surfaces the misconfiguration so an operator can fix it.
+//
+// Used at the EnergyBank v2 trigger boundary in onNewData. Both
+// downstream consumers (ComputeBankForToday and UpsertEnergySnapshot)
+// call time.LoadLocation, which silently coerces "" to UTC; the
+// boundary normalisation here makes that coercion explicit and
+// auditable rather than implicit.
+var tenantTZWarned sync.Map // schema → struct{}, "warned about empty TZ already"
+
+func tenantTZOrUTC(db *storage.DB, defaults storage.NotifyConfig, schema string) string {
+	tz := db.GetNotifyConfig(defaults).Timezone
+	if tz != "" {
+		return tz
+	}
+	if _, loaded := tenantTZWarned.LoadOrStore(schema, struct{}{}); !loaded {
+		log.Printf("[ENERGY_V2] schema=%s timezone unset (no settings.timezone, no REPORT_TZ env) — falling back to UTC", schema)
+	}
+	return "UTC"
+}
+
 func makeBackfillDatesFn(db *storage.DB, schema string) func([]string) {
 	var (
 		mu      sync.Mutex

@@ -192,6 +192,42 @@ func TestComputeBank_PerfectSleepPinsHigh(t *testing.T) {
 	}
 }
 
+// TestComputeBank_TodayDeltasPopulated: TodayDrain and TodayRestore
+// reflect the last iteration step, are zero on stale results, and
+// roughly satisfy `Bank ≈ prevBank + restore − drain` (rounded). These
+// feed energy_snapshots.{drain_delta, restore_delta} so getting them
+// wrong here corrupts the persisted history downstream.
+func TestComputeBank_TodayDeltasPopulated(t *testing.T) {
+	t.Run("populated_for_fresh_window", func(t *testing.T) {
+		days := makeDays(goodNight, modestActivity)
+		r := computeBankFromDays(days, defaultCfg())
+		if r.TodayDrain != 40 {
+			t.Errorf("drain: got %d, want 40 (500 kcal × 0.08)", r.TodayDrain)
+		}
+		// Restore is (100 − bankBefore)·sq with sq=0.875 and steady
+		// state bank ≈ 54. So restore ≈ 46·0.875 ≈ 40 — same as drain
+		// at steady state, which is exactly the equilibrium condition.
+		if r.TodayRestore < 35 || r.TodayRestore > 50 {
+			t.Errorf("restore: got %d, want roughly drain at steady state", r.TodayRestore)
+		}
+	})
+
+	t.Run("zero_for_stale", func(t *testing.T) {
+		days := makeDays(
+			func(_ int) (totalH, deepH, remH, awakeH *float64) { return nil, nil, nil, nil },
+			func(_ int) *float64 { return nil },
+		)
+		r := computeBankFromDays(days, defaultCfg())
+		if r.State != "stale" {
+			t.Fatalf("expected stale, got %q", r.State)
+		}
+		if r.TodayDrain != 0 || r.TodayRestore != 0 {
+			t.Fatalf("stale must zero deltas, got drain=%d restore=%d",
+				r.TodayDrain, r.TodayRestore)
+		}
+	})
+}
+
 // TestComputeBank_PartialSleepRowImputed: a row with sleep_total but
 // missing stage columns (deep/rem/awake = nil) must be treated as
 // imputed rather than fed zero stages into the formula. Feeding zeros
