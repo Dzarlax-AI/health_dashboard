@@ -129,6 +129,7 @@ var ru = LangStrings{
 
 	// Energy Bank (action prescription)
 	"energy_label":          "Энергетический банк",
+	"energy_hourly_label":   "Последние 72 часа",
 	"energy_capacity_label": "Капасити на сегодня",
 	"energy_current_label":  "Сейчас доступно",
 	"energy_drain_label":    "Потрачено",

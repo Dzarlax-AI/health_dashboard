@@ -149,6 +149,7 @@ var en = LangStrings{
 
 	// Energy Bank (action prescription)
 	"energy_label":          "Energy Bank",
+	"energy_hourly_label":   "Last 72 hours",
 	"energy_capacity_label": "Today's capacity",
 	"energy_current_label":  "Available now",
 	"energy_drain_label":    "Used so far",
