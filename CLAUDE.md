@@ -94,6 +94,19 @@ ai_briefing_blocks — per-block AI cache, PRIMARY KEY (date, lang, block).
                      the block; 'legacy' marker on rows migrated from the
                      old ai_briefings.insight blob. Auto-created via
                      EnsureAIBriefingBlocksTable() on startup.
+energy_snapshots   — EnergyBank v2 state-machine snapshots, PRIMARY KEY
+                     (ts_bucket TIMESTAMPTZ, 5-min buckets). Stores signed
+                     bank [-50,100], drain_delta, restore_delta,
+                     formula_version, components JSONB (input audit trail),
+                     flags TEXT[] (imputed_sleep, imputed_activity,
+                     recovering, bootstrap_tail). `date TEXT` is computed
+                     in Go at write time using the tenant's REPORT_TZ —
+                     NOT a Postgres GENERATED column (would force a
+                     hardcoded TZ in DDL, wrong for multi-tenant).
+                     Indexes: idx_energy_snapshots_date,
+                     idx_energy_snapshots_ts, idx_energy_snapshots_flags
+                     (GIN). Auto-created via EnsureEnergySnapshotsTable()
+                     on startup. Full design: ENERGY_BANK.md.
 ```
 
 **Expression indexes** (critical for performance with 3.7M+ rows in metric_points):
