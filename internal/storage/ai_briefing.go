@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"time"
 
 	"health-receiver/internal/health"
@@ -13,19 +14,24 @@ import (
 func (s *DB) EnsureAIBriefingsTable() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	s.pool.Exec(ctx, `
-		CREATE TABLE IF NOT EXISTS ai_briefings (
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS ai_briefings (
 			date            TEXT PRIMARY KEY,
 			insight         TEXT NOT NULL,
 			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			sent_at         TIMESTAMPTZ,
 			request_payload JSONB,
 			lang            TEXT NOT NULL DEFAULT ''
-		)
-	`)
-	// Migrate existing tables that predate these columns.
-	s.pool.Exec(ctx, `ALTER TABLE ai_briefings ADD COLUMN IF NOT EXISTS request_payload JSONB`)
-	s.pool.Exec(ctx, `ALTER TABLE ai_briefings ADD COLUMN IF NOT EXISTS lang TEXT NOT NULL DEFAULT ''`)
+		)`,
+		// Migrate existing tables that predate these columns.
+		`ALTER TABLE ai_briefings ADD COLUMN IF NOT EXISTS request_payload JSONB`,
+		`ALTER TABLE ai_briefings ADD COLUMN IF NOT EXISTS lang TEXT NOT NULL DEFAULT ''`,
+	}
+	for _, q := range stmts {
+		if _, err := s.pool.Exec(ctx, q); err != nil {
+			log.Printf("EnsureAIBriefingsTable: %v", err)
+		}
+	}
 }
 
 // SaveAIBriefing stores (or replaces) the AI-generated insight for the given date.

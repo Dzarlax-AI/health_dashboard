@@ -394,6 +394,11 @@ Score mapping: `score = 70 + z × 15`, clamped to [0, 100].
 - Huang et al. (2020). *Sleep irregularity and cardiovascular disease.* JAHA.
 - Li et al. (2025). *Sleep duration and all-cause mortality.* Sleep Medicine Reviews.
 
+### See also
+
+- [`SCORING.md`](./SCORING.md) — full methodology for all scores (Readiness, Sleep, Activity, Cardio, Energy Bank), with thresholds, references, and per-section calculation logic.
+- [`ENERGY_BANK.md`](./ENERGY_BANK.md) — design spec for Energy Bank v2 (asymptotic state machine, cross-user validation methodology, personalization roadmap).
+
 ## Maintenance
 
 ```bash

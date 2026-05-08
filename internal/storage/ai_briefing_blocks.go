@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -31,7 +32,7 @@ type AIBlock struct {
 func (s *DB) EnsureAIBriefingBlocksTable() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	s.pool.Exec(ctx, `
+	if _, err := s.pool.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS ai_briefing_blocks (
 			date         TEXT NOT NULL,
 			lang         TEXT NOT NULL,
@@ -41,7 +42,9 @@ func (s *DB) EnsureAIBriefingBlocksTable() {
 			created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (date, lang, block)
 		)
-	`)
+	`); err != nil {
+		log.Printf("EnsureAIBriefingBlocksTable: %v", err)
+	}
 	s.migrateLegacyAIBriefings(ctx)
 }
 

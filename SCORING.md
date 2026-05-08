@@ -385,7 +385,9 @@ the headline with section verdicts so the briefing is **internally consistent**:
 
 ---
 
-## Energy Bank (action prescription)
+## Energy Bank v1 (shipping — to be replaced by v2)
+
+> **Status:** v1 is what currently runs in `internal/health/energy.go`. Cross-user empirical validation revealed structural problems (saturation on typical days, no multi-day carryover, formula squashing); a redesign — Energy Bank v2 — is documented in `ENERGY_BANK.md` and summarised in the next section. v1 stays here as the operational reference until v2 ships.
 
 Computed in `internal/health/energy.go::computeEnergyBank`, returned in
 `response.energy_bank`. Where the Headline answers *"what's notable today?"*,
@@ -478,6 +480,219 @@ is stronger than any single-marker green light.
   verdict ends up at `rest` via the `current ≤ 25` clamp. Correct outcome.
 - **Stale data** (`d.Sleep[0] <= 0` despite ≥ 9 days history) → returns
   `nil`. Better to show nothing than a verdict from yesterday's data.
+
+---
+
+## Energy Bank v2 (design — pending implementation)
+
+> Full specification: [`ENERGY_BANK.md`](./ENERGY_BANK.md). This section captures
+> the methodology and the empirically-derived design principles; the spec doc
+> carries the implementation detail (schema, concurrency, rollout phases).
+
+Three structural problems with v1 were discovered through an empirical
+prototype run on 90 days of real data, on **two distinct users** (one
+sedentary with clean data, one mixed-source with frequent sync gaps):
+
+| v1 problem | Symptom on real data | Root cause |
+|---|---|---|
+| **Saturation / squashing** | `capacity` pinned at 100 on 28/31 typical days; `bank_eod` never below 18 | `clamp01(today_load / 28d_chronic) × 100` treats a typical day as maximum strain. Ratio = 1.0 → strain = 100. |
+| **No multi-day carryover** | A 5-night sleep deficit gets fully erased by one good night because v1 has no state across days | Capacity is set fresh from readiness each morning — yesterday's residual is discarded |
+| **Linear restore overshoots** | Even after `bank_eod = 3` (real bad day), one normal night returns user to ~100 the next morning | `restore = sleep_total × efficiency × quality_weight` is additive in absolute units; saturates at the ceiling |
+
+### Core model — asymptotic restore (Garmin Body Battery family)
+
+Replaces the additive `capacity = bank_yesterday + restore` with a
+contraction-mapping form:
+
+```
+sleep_quality ∈ [0, 1] = duration_factor · efficiency_factor · structure_factor
+   duration_factor   = clamp01(sleep_total_h / 8)
+   efficiency_factor = sleep_total / (sleep_total + sleep_awake)
+   structure_factor  = max(0.5, 1.0 − max(0, 0.15 − deep_pct)
+                                    − max(0, 0.20 − rem_pct))   # ≤ 1.0
+
+capacity_today = bank_yesterday + (100 − bank_yesterday) · sleep_quality
+bank_eod       = clamp(capacity_today − drain_today, −50, 100)
+```
+
+Three properties this gives that the additive form did not:
+
+1. **Multi-night sleep deficit accumulates.** A 3-night stretch of poor sleep
+   drags the bank down progressively because each morning starts from a lower
+   asymptotic anchor. Validated empirically: a single bad night (5.4 h, drain
+   62) keeps the bank capped at 73/100 the next morning even after a normal
+   7.1 h sleep.
+
+2. **Capacity never pins at the ceiling.** Across 90 simulated days, capacity
+   hit 100 zero times (v1 pinned 28/31). The bank distribution gains a real
+   lower tail — p10 = 17 vs 35 in additive — making the chart actually
+   informative.
+
+3. **`structure_factor` only penalises, never rewards above 1.0.** The
+   asymptote already provides the upper bound; bonus weights would just chase
+   a ceiling that already exists. The `[0.5, 1.0]` range is intentional, not
+   a clamp artefact.
+
+### Drain — additive, calorie-only at v2.0
+
+```
+drain = α · active_energy_kcal     # α ≈ 0.08 at v2.0 launch
+      + β · max(0, HR_avg − RHR_baseline) · duration_min   # β = 0 in v2.0
+```
+
+The `β`-term schema is reserved from day one (lives in `components` JSONB)
+because it covers the *illness/stress* signal kcal misses: high RHR with
+normal calories (fever, acute stress) should drain. Activated in v2.2 when
+HR-per-hour reads land. v2.0 ships with calories alone — sufficient for
+non-athletic profiles per the prototype.
+
+### Signed bank with floor at −50
+
+The bank in DB is stored signed (so AI receives "you're 15 in the hole"
+distinguishable from "you're at 0") but rendered clamped to `[0, 100]` in
+the API. The signed floor is `−50`: beyond that the integration is noise,
+not signal. The cross-user prototype confirmed this — one tenant's bank
+ran to −54 during a missing-data cascade, validating the need for a
+symmetric clamp.
+
+### Bootstrap — seed-erasing forward iteration
+
+Asymptotic restore is a contraction mapping; any seed gets exponentially
+forgotten through the `(100 − bank) · sleep_quality` factor. Empirically,
+seeds {10, 50, 90} converge to within 0.005 by day 7 and bit-identical by
+day 9. This means **no seed state is persisted**: on every recompute,
+walk forward through the last 14 days of history starting from
+`bank = 50.0`. By the time iteration reaches "today", the seed is
+mathematically forgotten.
+
+This single mechanism handles every edge case cleanly: new user
+post-warmup, existing user at v2.0 launch, formula-version bump,
+short/medium data gaps, and recovery from `stale` state — no
+special-case branches in code.
+
+### Missing-data handling — trailing-average imputation
+
+Cross-user prototype revealed that `sq=0` on missing-sleep days causes
+catastrophic bank collapse (drain still applies, restore is suppressed —
+intermediate days integrate to deep negative territory). Fix:
+
+```
+if sleep_metrics missing for day d:
+   sq[d] = avg(sleep_quality over last 7 days with valid, NON-IMPUTED data)
+   flags |= 'imputed_sleep'
+```
+
+The **non-imputed-only** lookback is critical — without it, after a few
+imputed days the trailing average is computed mostly from previously
+imputed values, creating a feedback loop that drifts the bank to a
+constant. Imputation tracks the validity flag through the iteration.
+
+### Three-state trust model
+
+Imputation isn't all-or-nothing. The signal degrades smoothly with gap
+size, and so should user trust:
+
+| State | Trigger | Render | AI usage |
+|---|---|---|---|
+| `fresh` | ≤ 1 imputed day in last 7 | normal, no flags | Used in RECOMMENDATION |
+| `estimated` | 2–4 consecutive imputed days **or** 2–4 in 14d window | dotted-line graph + "estimated" badge | Used with prompt hedge "based on 7d trailing pattern" |
+| `stale` | ≥ 5 consecutive imputed days **or** > 7 in 14d window | bank not rendered; "No recent data" placeholder | Not used; AI pivots to "sync your watch" advice |
+
+Two parallel triggers (`consecutive` and `proportion`) catch two
+different failure modes: a clean stretch of bad sync vs scattered gaps
+that accumulate (one tenant in the prototype had 23 % scattered gaps —
+a single-threshold rule wouldn't have caught it).
+
+After exiting `stale`, the bank enters a 3-day `recovering` state computed
+via fresh forward-iteration with `seed = 50`, ignoring frozen pre-stale
+snapshots. 5+ days without data could mean illness, travel, burnout or
+sensor failure — re-bootstrap is safer than blind continuation.
+
+### Personalisation methodology (v2.5)
+
+v2.5 adds per-user `α_factor` calibration. The mechanism is principled
+rather than gradient-based: any tuning of the formula based on its own
+output is overfitting. We need an **external signal the formula doesn't
+see** — *next-morning HRV at lag = +1*. If the formula is calibrated
+for a user, `bank_eod[d]` should correlate positively with `hrv[d+1]`
+(low bank → poor recovery → tomorrow's autonomic markers reflect it).
+
+```
+on a 30-day rolling window:
+   r = pearson(bank_eod[d], hrv[d+1])
+   
+   data-quality preflight:
+     if missing_data_pct > 10%: skip calibration, alert "check sensor sync"
+   
+   sign requirement:
+     if r < 0: alert "formula doesn't fit this user", do NOT auto-tune
+   
+   magnitude rubric:
+     r < 0.2  → wait, do not auto-tune
+     0.2..0.3 → narrow tune: α_factor ∈ [0.8, 1.2]   ← prevents edge-solution
+     0.3..0.5 → full grid:   α_factor ∈ [0.5, 1.5]
+     ≥ 0.5    → strong signal: α_factor ∈ [0.4, 1.7]
+```
+
+**Three guardrails** caught silently in the prototype:
+
+1. **RHR sign-flip on daily aggregates.** The original v2.5 plan included
+   RHR as a second signal; on real data the sign was inverted (low bank
+   correlated with *low* next-day RHR — vagal rebound after exertion +
+   Apple Watch's retrospective RHR aggregation timing). Dropped from
+   personalisation; reintroduction requires morning-only RHR from
+   `metric_points`, not the daily aggregate.
+
+2. **Edge-solution defence.** Unconstrained grid search on this user's
+   data preferred α = 0.04 (half of base), gaining Δr = 0.019. Edge
+   solutions in optimisation almost always indicate misspecification, not
+   personalisation. The narrow-tune band `[0.8, 1.2]` clamps marginal-r
+   tunes so a tiny statistical signal can't trigger a large formula
+   shift. Only when r ≥ 0.3 does the full search range open.
+
+3. **Data-quality preflight separates two failure modes.** "Formula
+   doesn't fit this user" (model issue, alert and review) and "We lack
+   the data to know" (sensor issue, alert user) both produce weak
+   correlations but require different actions. Conflating them is the
+   default rubric mistake.
+
+### Validation methodology — empirical, cross-user, pre-implementation
+
+The full v2 design was validated against real data **before any code was
+committed**. The validation rule is: every architectural decision must
+be defensible against at least two distinct user profiles. Six bugs
+were caught and design-changed pre-commit:
+
+| Bug | Caught by |
+|---|---|
+| Squashing (v1 ceiling pin) | 31-day Lyosha simulation |
+| Missing multi-day carryover | 31-day simulation showed only 2-day declines; 90-day produced 15 cascades up to 5 days deep |
+| RHR sign-flip in personalisation | Lyosha proto-personalisation with both signals |
+| Unconstrained grid search edge solution | Lyosha grid showing optimum at α = 0.04 boundary |
+| Missing-data formula collapse | Mariia 90-day simulation (21/90 missing-sleep days produced 19 false "battery=0" verdicts) |
+| Single-threshold staleness misses scattered gaps | Mariia gaps scattered, not consecutive — a `consecutive`-only rule wouldn't have caught 23 % missing-data rate |
+
+The cross-user pattern is the load-bearing methodology choice. A formula
+that works on one well-behaved dataset always works "on paper". Only a
+second user with different physiology and different data quality
+exposes the assumptions the first user happened to satisfy. This
+methodology is to be repeated for every future Energy Bank revision.
+
+### References (v2-specific)
+
+- **Garmin Body Battery** (2018+) — popularised the asymptotic
+  state-machine design where rest charges by `(100 − current) · rate`.
+  No formal whitepaper, but the mechanism is reverse-engineerable from
+  Garmin's documentation and is the canonical implementation of the
+  pattern adopted here.
+- **Banach fixed-point theorem** — formal basis for the
+  contraction-mapping property used in seed-erasing bootstrap. The
+  empirical convergence test (3 seeds, exponential gap decay) is the
+  applied validation of this theorem on real data.
+- **HRV residual analysis as personalisation signal** — Plews 2014
+  [[18]](#ref-18) and Vesterinen 2016 [[37]](#ref-37) underpin the
+  use of HRV deviation against personal baseline as the gold-standard
+  external-signal residual for adaptive training prescription.
 
 ---
 
