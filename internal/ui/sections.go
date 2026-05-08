@@ -7,16 +7,26 @@ import (
 )
 
 // SectionChart describes a chart to render on a section page.
+//
+// Color is the light-theme hex (#rrggbb); ColorDark is the dark-theme
+// counterpart. Native clients (health-sync iOS) pick by current color
+// scheme; the web dashboard reads Color only and lets CSS handle theme
+// switches separately. Keep both fields in lockstep — every entry that
+// sets Color must also set ColorDark, otherwise iOS renders chart lines
+// in dsAccent on dark mode (parseColor fallback). Picking conventions:
+// Tailwind 500/600 for light, 400 family for dark (better contrast on
+// dark cards while staying recognisably the same hue).
 type SectionChart struct {
-	ID      string
-	Metric  string
-	Agg     string
-	Label   string
-	Unit    string
-	Color   string
-	Type    string // "line" or "bar"
-	Stacked bool
-	Virtual bool
+	ID        string
+	Metric    string
+	Agg       string
+	Label     string
+	Unit      string
+	Color     string
+	ColorDark string
+	Type      string // "line" or "bar"
+	Stacked   bool
+	Virtual   bool
 }
 
 // SectionExplain is a "How it works" card.
@@ -61,9 +71,9 @@ var sectionMeta = map[string]struct {
 }{
 	"recovery": {
 		Charts: []SectionChart{
-			{ID: "sc-hrv", Metric: "heart_rate_variability", Agg: "AVG", Label: "HRV", Unit: "ms", Color: "#e11d48", Type: "line"},
-			{ID: "sc-rhr", Metric: "resting_heart_rate", Agg: "AVG", Label: "Resting HR", Unit: "bpm", Color: "#f97316", Type: "line"},
-			{ID: "sc-ready", Virtual: true, Label: "Readiness", Unit: "%", Color: "#0ea5e9", Type: "line"},
+			{ID: "sc-hrv", Metric: "heart_rate_variability", Agg: "AVG", Label: "HRV", Unit: "ms", Color: "#e11d48", ColorDark: "#fb7185", Type: "line"},
+			{ID: "sc-rhr", Metric: "resting_heart_rate", Agg: "AVG", Label: "Resting HR", Unit: "bpm", Color: "#f97316", ColorDark: "#fb923c", Type: "line"},
+			{ID: "sc-ready", Virtual: true, Label: "Readiness", Unit: "%", Color: "#0ea5e9", ColorDark: "#38bdf8", Type: "line"},
 		},
 		ExplainKeys: []string{"explain_hrv", "explain_rhr", "explain_readiness_score"},
 	},
@@ -75,17 +85,17 @@ var sectionMeta = map[string]struct {
 	},
 	"activity": {
 		Charts: []SectionChart{
-			{ID: "sc-steps", Metric: "step_count", Agg: "SUM", Label: "Steps", Unit: "", Color: "#059669", Type: "bar"},
-			{ID: "sc-cal", Metric: "active_energy", Agg: "SUM", Label: "Active Energy", Unit: "kcal", Color: "#d97706", Type: "bar"},
-			{ID: "sc-ex", Metric: "apple_exercise_time", Agg: "SUM", Label: "Exercise", Unit: "min", Color: "#2563eb", Type: "bar"},
+			{ID: "sc-steps", Metric: "step_count", Agg: "SUM", Label: "Steps", Unit: "", Color: "#059669", ColorDark: "#34d399", Type: "bar"},
+			{ID: "sc-cal", Metric: "active_energy", Agg: "SUM", Label: "Active Energy", Unit: "kcal", Color: "#d97706", ColorDark: "#fbbf24", Type: "bar"},
+			{ID: "sc-ex", Metric: "apple_exercise_time", Agg: "SUM", Label: "Exercise", Unit: "min", Color: "#2563eb", ColorDark: "#60a5fa", Type: "bar"},
 		},
 		ExplainKeys: []string{"explain_steps", "explain_exercise"},
 	},
 	"cardio": {
 		Charts: []SectionChart{
-			{ID: "sc-spo2", Metric: "blood_oxygen_saturation", Agg: "AVG", Label: "SpO₂", Unit: "%", Color: "#06b6d4", Type: "line"},
-			{ID: "sc-vo2", Metric: "vo2_max", Agg: "AVG", Label: "VO₂ Max", Unit: "ml/kg/min", Color: "#8b5cf6", Type: "line"},
-			{ID: "sc-resp", Metric: "respiratory_rate", Agg: "AVG", Label: "Respiratory Rate", Unit: "br/min", Color: "#0ea5e9", Type: "line"},
+			{ID: "sc-spo2", Metric: "blood_oxygen_saturation", Agg: "AVG", Label: "SpO₂", Unit: "%", Color: "#06b6d4", ColorDark: "#22d3ee", Type: "line"},
+			{ID: "sc-vo2", Metric: "vo2_max", Agg: "AVG", Label: "VO₂ Max", Unit: "ml/kg/min", Color: "#8b5cf6", ColorDark: "#a78bfa", Type: "line"},
+			{ID: "sc-resp", Metric: "respiratory_rate", Agg: "AVG", Label: "Respiratory Rate", Unit: "br/min", Color: "#0ea5e9", ColorDark: "#38bdf8", Type: "line"},
 		},
 		ExplainKeys: []string{"explain_spo2", "explain_vo2", "explain_resp"},
 	},
