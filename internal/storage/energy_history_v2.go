@@ -13,12 +13,18 @@ import (
 // have to do their own TZ math), and Components is exposed as
 // json.RawMessage so a malformed legacy row can't fail the entire
 // response — it just renders as null.
+//
+// FormulaVersion is loaded for every row (so the handler can pick the
+// freshest one for the response envelope) but suppressed in JSON via
+// json:"-" — it's redundant once the envelope carries it, and avoiding
+// per-point repetition trims a non-trivial number of bytes off a
+// max-size response (8640 buckets × ≈18 bytes per "formula_version":1).
 type EnergySnapshotPoint struct {
 	TS             time.Time       `json:"ts"`
 	Bank           int             `json:"bank"`
 	DrainDelta     int             `json:"drain_delta"`
 	RestoreDelta   int             `json:"restore_delta"`
-	FormulaVersion int             `json:"formula_version"`
+	FormulaVersion int             `json:"-"`
 	Flags          []string        `json:"flags"`
 	Components     json.RawMessage `json:"components,omitempty"`
 }
@@ -47,6 +53,12 @@ func (s *DB) GetEnergyHistoryV2(ctx context.Context, tz string, hours int) ([]En
 		return nil, err
 	}
 
+	// `since` is in UTC; ts_bucket is TIMESTAMPTZ. PG converts both
+	// to UTC internally for the comparison, so subtracting `hours`
+	// from server-now matches subtracting `hours` from tenant-local-now
+	// — they're the same instant in absolute time. The TZ only
+	// matters for *rendering* the output (p.TS = ts.In(loc) below),
+	// not for the range filter.
 	since := time.Now().Add(-time.Duration(hours) * time.Hour)
 	rows, err := s.pool.Query(ctx, `
 		SELECT ts_bucket, bank, drain_delta, restore_delta, formula_version, flags, components

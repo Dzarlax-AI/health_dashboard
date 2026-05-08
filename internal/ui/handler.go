@@ -790,8 +790,12 @@ func (h *Handler) energyHistory(w http.ResponseWriter, r *http.Request) {
 		// Resolve TZ at request time so a tenant who edits
 		// /settings.timezone sees the new offset immediately, without
 		// a server restart. Empty TZ falls back to UTC silently — the
-		// orchestrator already warns operators about that case at
-		// ingest time, no need to surface it again here.
+		// orchestrator's tenantTZOrUTC helper (cmd/server/main.go)
+		// already log-warns about the misconfiguration on every
+		// ingest for this same tenant, so doubling that warning here
+		// would only spam the logs without telling an operator
+		// anything new. Intentionally simpler than the writer path,
+		// not an oversight.
 		tz := h.tenantDB(r).GetNotifyConfig(storage.NotifyConfig{}).Timezone
 		if tz == "" {
 			tz = "UTC"
