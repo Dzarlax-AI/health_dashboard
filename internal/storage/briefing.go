@@ -443,21 +443,23 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 			if display > 100 {
 				display = 100
 			}
-			capacity := display + snap.DrainDelta
+			// Defensive drain floor: PR3 floors α and kcal so
+			// DrainDelta is non-negative by construction, but a
+			// future formula tweak or a manual settings override
+			// could break that. Floor here so the drain badge can't
+			// surface a nonsense "-5" and so capacity stays ≥ current
+			// (bar-fill invariant).
+			drain := snap.DrainDelta
+			if drain < 0 {
+				drain = 0
+			}
+			capacity := display + drain
 			if capacity > 100 {
 				capacity = 100
 			}
-			// Defensive floor: PR3 floors α and kcal so DrainDelta is
-			// non-negative by construction, but a future formula tweak
-			// or a manual settings override could break that. Without
-			// this clamp a negative drain would let capacity dip below
-			// current, breaking the bar fill invariant.
-			if capacity < display {
-				capacity = display
-			}
 			resp.EnergyBank.Current = display
 			resp.EnergyBank.Capacity = capacity
-			resp.EnergyBank.DrainSoFar = snap.DrainDelta
+			resp.EnergyBank.DrainSoFar = drain
 			resp.EnergyBank.Components = nil
 		}
 	}
