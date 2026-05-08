@@ -736,25 +736,83 @@ func (h *Handler) readinessHistory(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string]any{"points": pts})
 }
 
-// energyHistory returns up to ?days= EOD EnergyBank snapshots (default 14).
-// Empty array when persistence is fresh — the UI falls through to hiding
-// the sparkline rather than rendering a flat line over zero data.
+// energyHistory serves the EnergyBank trend chart in two modes:
+//
+//	?granularity=day  (default) — legacy v1 behaviour, reads EOD
+//	                              snapshots from daily_scores. Kept for
+//	                              backward compatibility with existing
+//	                              dashboard sparkline callers; will be
+//	                              retired in PR8 once the UI flips to
+//	                              v2.
+//	?granularity=hour            — v2 behaviour, reads 5-min buckets
+//	                              from energy_snapshots over the last
+//	                              ?hours= hours.
+//
+// Response shapes differ between modes (different data sources, no
+// way to lossless-merge pre-v2 days into v2 buckets), so the
+// `granularity` field in the response identifies which schema the
+// `points` array uses. Empty `points` is the correct response for a
+// fresh tenant where v2 hasn't accumulated yet — the UI hides the
+// sparkline instead of rendering a flat line over no data.
 func (h *Handler) energyHistory(w http.ResponseWriter, r *http.Request) {
-	days := 14
-	if d := r.URL.Query().Get("days"); d != "" {
-		if n, err := strconv.Atoi(d); err == nil && n > 0 && n <= 365 {
-			days = n
+	gran := r.URL.Query().Get("granularity")
+	if gran == "" {
+		gran = "day"
+	}
+
+	switch gran {
+	case "day":
+		days := 14
+		if d := r.URL.Query().Get("days"); d != "" {
+			if n, err := strconv.Atoi(d); err == nil && n > 0 && n <= 365 {
+				days = n
+			}
 		}
+		pts, err := h.tenantDB(r).GetEnergyHistory(days)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if pts == nil {
+			pts = []storage.EnergyHistoryPoint{}
+		}
+		jsonResponse(w, map[string]any{
+			"granularity": "day",
+			"points":      pts,
+		})
+	case "hour":
+		hours := 72
+		if hq := r.URL.Query().Get("hours"); hq != "" {
+			if n, err := strconv.Atoi(hq); err == nil && n > 0 && n <= 720 {
+				hours = n
+			}
+		}
+		// Resolve TZ at request time so a tenant who edits
+		// /settings.timezone sees the new offset immediately, without
+		// a server restart. Empty TZ falls back to UTC silently — the
+		// orchestrator already warns operators about that case at
+		// ingest time, no need to surface it again here.
+		tz := h.tenantDB(r).GetNotifyConfig(storage.NotifyConfig{}).Timezone
+		if tz == "" {
+			tz = "UTC"
+		}
+		pts, err := h.tenantDB(r).GetEnergyHistoryV2(r.Context(), tz, hours)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		formulaVersion := 0
+		if len(pts) > 0 {
+			formulaVersion = pts[len(pts)-1].FormulaVersion
+		}
+		jsonResponse(w, map[string]any{
+			"granularity":     "hour",
+			"formula_version": formulaVersion,
+			"points":          pts,
+		})
+	default:
+		http.Error(w, "granularity must be 'day' or 'hour'", http.StatusBadRequest)
 	}
-	pts, err := h.tenantDB(r).GetEnergyHistory(days)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if pts == nil {
-		pts = []storage.EnergyHistoryPoint{}
-	}
-	jsonResponse(w, map[string]any{"points": pts})
 }
 
 // sectionAPIResponse is the JSON-friendly subset of SectionPageData. It
