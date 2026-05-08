@@ -188,12 +188,26 @@ duration-based point scale, not the ratio model.
 |---|---|
 | < 0.5 h | +1 |
 
-**Sleep regularity bonus** (≥ 7 days required) [[10]](#ref-10):
+**Sleep regularity bonus** (≥ 7 days required) [[10]](#ref-10) [[33]](#ref-33) [[34]](#ref-34):
 
-| stddev(sleep_duration over window) | Points |
-|---|---|
-| ≤ 0.5 h | +1 |
-| > 0.5 h | +0 |
+Two paths, in priority order:
+
+1. **Sleep Regularity Index (SRI)** — primary, used when ≥ 7 calendar days of per-segment minute-level sleep data are available (iOS health-sync per-segment pushes; HAE midnight-summary nights alone cannot drive this).
+
+   Formula (Phillips & Czeisler 2017): `SRI = 200 × p − 100`, where `p` is the fraction of (minute, day) pairs whose sleep/wake state matches the same minute on the previous day, computed over a 14-day rolling window.
+
+   | SRI | Points | Tier (UK Biobank 2025 [[33]](#ref-33)) |
+   |---|---|---|
+   | ≥ 75 | +1 | protective (HR 0.90 mortality) |
+   | 50–75 | +0 | neutral |
+   | < 50 | +0 | clinically irregular (HR 1.53 mortality) |
+
+2. **stddev fallback** — when per-segment data is sparse:
+
+   | stddev(sleep_duration over window) | Points |
+   |---|---|
+   | ≤ 0.5 h | +1 |
+   | > 0.5 h | +0 |
 
 Max possible: 7 points.
 
@@ -203,15 +217,15 @@ Max possible: 7 points.
 | ≥ 3 | fair |
 | < 3 | low |
 
-> **Why sleep regularity?** A 2024 meta-analysis (PMC10782501, n ≈ 60 000) found the Sleep Regularity Index predicts all-cause and cardiovascular mortality more strongly than mean sleep duration (HR 0.97 vs 0.99 per SD improvement) [[10]](#ref-10). Irregular sleep schedules disrupt circadian rhythm independent of total duration.
+> **Why SRI over stddev?** stddev of nightly duration is a coarse proxy — it ignores *when* the user slept, only *how long*. Two people both averaging 7±0.5h can have wildly different circadian regularity (e.g. 23:00→06:30 vs nightly 02:00→09:30 vs erratic 21:00→04:00 / 02:00→09:00). SRI directly measures pairwise consistency at the minute level. UK Biobank 2025 (n ≈ 88 000) gives the concrete percentile thresholds used above. RIRI 2026 [[34]](#ref-34) shows alternative SRI formulations diverge enough at the tails to flip clinical conclusions, so we pin the original Phillips & Czeisler 2017 algorithm rather than re-deriving.
 
 **REM display** (not scored, shown for info):
 - Ideal: ≥ 20% of total sleep
 - Formula: `recent_rem / recent_total × 100`
 
-**Consistency display** (shown when ≥ 7 days of data):
-- Value: `±Xh` (standard deviation of sleep duration)
-- Trend: up if ≤ 0.5h SD, down if > 1.0h SD, stable otherwise
+**Consistency display:**
+- When SRI is available: `SRI N` (or `SRI N (n=k)` if fewer than 14 days contributed). Trend: up if ≥ 75, down if < 50, stable otherwise.
+- Otherwise: `±Xh` legacy stddev. Trend: up if ≤ 0.5h SD, down if > 1.0h SD, stable otherwise.
 
 ---
 

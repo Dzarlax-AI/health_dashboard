@@ -45,6 +45,20 @@ type RawMetrics struct {
 	// load ratio (Gabbett 2016). Read from daily_scores.
 	StepsChronic28d        float64
 	ActiveEnergyChronic28d float64
+
+	// SleepRegularityIndex (Phillips & Czeisler 2017) over a rolling 14-day
+	// window of minute-level sleep state. Range 0–100 (negative theoretically
+	// possible but practically unseen). Higher = more consistent sleep/wake
+	// times. Nil when the user does not yet have ≥7 days of per-segment
+	// sleep data (HAE midnight-summary nights cannot drive this — only iOS
+	// per-segment pushes can — see Todoist 6gXg6hFjPwmJXchf for the iOS
+	// task). Tier mapping per UK Biobank 2025 (ref 33 in SCORING.md): >75
+	// green, 50–75 amber, <50 red.
+	SleepRegularityIndex *float64
+	// SleepRegularityNights is the number of distinct calendar days that
+	// contributed minute-level state to the SRI computation. Surfaced so
+	// the section detail can render "(n=12)" when partial.
+	SleepRegularityNights int
 }
 
 // DatedValue is a single metric data point paired with its calendar date.

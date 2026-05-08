@@ -40,12 +40,26 @@ func scoreSleep(d RawMetrics, ls LangStrings) *BriefingSection {
 		}
 	}
 
-	// Sleep regularity: stddev of nightly duration over available window.
-	// Low variability (≤0.5h SD) earns +1 point.
-	// Motivated by PMC10782501 (2024): sleep regularity predicts all-cause
-	// mortality more strongly than mean duration.
+	// Sleep regularity. Two paths:
+	//
+	//   - Primary: Sleep Regularity Index (SRI, Phillips & Czeisler 2017).
+	//     0–100, higher = more consistent sleep/wake times. Tier mapping
+	//     per UK Biobank 2025 (SCORING.md ref 33): >75 protective (+1),
+	//     50–75 neutral, <50 clinically irregular. Computed in storage
+	//     from per-segment minute-level data (14-day rolling window).
+	//
+	//   - Fallback: stddev of nightly duration. Used when SRI cannot be
+	//     computed (HAE midnight-summary nights only — see Todoist
+	//     6gXg6hFjPwmJXchf for the iOS task to push per-segment data).
+	//     Threshold (≤0.5h SD = +1) was the legacy heuristic; kept only so
+	//     long-time HAE users without iOS pushes still get a regularity
+	//     read.
 	sleepSD := 0.0
-	if len(d.Sleep) >= 7 {
+	if d.SleepRegularityIndex != nil {
+		if *d.SleepRegularityIndex >= 75 {
+			score++
+		}
+	} else if len(d.Sleep) >= 7 {
 		sleepSD = stddev(d.Sleep)
 		if sleepSD <= 0.5 {
 			score++
@@ -123,7 +137,28 @@ func scoreSleep(d RawMetrics, ls LangStrings) *BriefingSection {
 		})
 	}
 
-	if len(d.Sleep) >= 7 {
+	if d.SleepRegularityIndex != nil {
+		// Tier per UK Biobank 2025 (SCORING.md ref 33).
+		sri := *d.SleepRegularityIndex
+		regNote := ls["sleep_reg_moderate"]
+		regTrend := "stable"
+		switch {
+		case sri >= 75:
+			regNote = ls["sleep_reg_regular"]
+			regTrend = "up"
+		case sri < 50:
+			regNote = ls["sleep_reg_irregular"]
+			regTrend = "down"
+		}
+		val := fmt.Sprintf("SRI %.0f", sri)
+		if d.SleepRegularityNights > 0 && d.SleepRegularityNights < 14 {
+			val = fmt.Sprintf("SRI %.0f (n=%d)", sri, d.SleepRegularityNights)
+		}
+		sec.Details = append(sec.Details, BriefingDetail{
+			Label: ls["lbl_sleep_regularity"], Value: val,
+			Note: regNote, Trend: regTrend,
+		})
+	} else if len(d.Sleep) >= 7 {
 		regNote := ls["sleep_reg_moderate"]
 		regTrend := "stable"
 		if sleepSD <= 0.5 {
