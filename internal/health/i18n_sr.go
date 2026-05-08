@@ -129,6 +129,7 @@ var sr = LangStrings{
 
 	// Energy Bank (action prescription)
 	"energy_label":          "Energetski bank",
+	"energy_hourly_label":   "Poslednja 72 sata",
 	"energy_capacity_label": "Današnji kapacitet",
 	"energy_current_label":  "Dostupno sada",
 	"energy_drain_label":    "Potrošeno",

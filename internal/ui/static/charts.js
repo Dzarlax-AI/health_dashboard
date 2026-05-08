@@ -174,6 +174,127 @@ function loadEnergySparkline(canvasId) {
     .catch(function(){});
 }
 
+// ---- Energy Bank v2 hourly chart (72h) ----
+//
+// Lives inside the hero <details> next to the v1 EOD sparkline. Reads
+// the new /api/energy-history?granularity=hour endpoint (PR #41) which
+// returns 5-minute buckets with bank, drain_delta, restore_delta,
+// flags. Rendered as a continuous line with imputed segments dashed
+// — visualises the trust-state distinction between sensor-backed and
+// trailing-average-imputed buckets per ENERGY_BANK.md.
+//
+// Hidden when fewer than 3 points exist — same convention as the v1
+// sparkline; a fresh tenant or a tenant that just had a stale-state
+// gap shouldn't see a flat 1-2-point line.
+//
+// Verdict colouring intentionally NOT applied here: the v2 endpoint
+// doesn't expose per-bucket verdict (it's a derived property of the
+// iteration, not a stored column). PR8 will reconcile the colour
+// story when it flips the dashboard's source of truth from v1 to v2.
+var energyHourlyChart = null;
+function loadEnergyHourlyChart(canvasId) {
+  fetch('/api/energy-history?granularity=hour&hours=72')
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      var pts = d.points || [];
+      if (pts.length < 3) return;
+      var el = document.getElementById(canvasId);
+      if (!el) return;
+      var wrap = document.getElementById('energy-hourly-wrap');
+      if (wrap) wrap.hidden = false;
+
+      // Imputed flag is per-point. Chart.js segment styling uses
+      // borderDash on a SEGMENT (the line between two points), and
+      // we mark the segment as imputed when EITHER endpoint is
+      // imputed — so a single imputed bucket produces dashes both
+      // entering and leaving it. Matches the ENERGY_BANK.md UX rule
+      // ("dotted-line rendering for imputed buckets").
+      var imputed = pts.map(function(p) {
+        var f = p.flags || [];
+        return f.indexOf('imputed_sleep') !== -1 || f.indexOf('imputed_activity') !== -1;
+      });
+
+      if (energyHourlyChart) { energyHourlyChart.destroy(); energyHourlyChart = null; }
+      energyHourlyChart = new Chart(el, {
+        type: 'line',
+        data: {
+          labels: pts.map(function(p) { return p.ts; }),
+          datasets: [{
+            data: pts.map(function(p) { return p.bank; }),
+            borderColor: '#0ea5e9',
+            backgroundColor: 'rgba(14,165,233,0.10)',
+            fill: true, borderWidth: 2, pointRadius: 0, tension: 0.35,
+            segment: {
+              borderDash: function(ctx) {
+                if (imputed[ctx.p0DataIndex] || imputed[ctx.p1DataIndex]) return [4, 3];
+                return undefined;
+              }
+            }
+          }]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          animation: { duration: 400 },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              backgroundColor: 'var(--surface)',
+              titleColor: 'var(--text)', bodyColor: 'var(--text)',
+              borderColor: 'var(--border)', borderWidth: 1, padding: 8,
+              callbacks: {
+                title: function(items) {
+                  var ts = items[0].label;
+                  var d = new Date(ts);
+                  if (isNaN(d.getTime())) return ts;
+                  return d.toLocaleString(undefined, {
+                    month: 'short', day: 'numeric',
+                    hour: '2-digit', minute: '2-digit'
+                  });
+                },
+                label: function(ctx) {
+                  var p = pts[ctx.dataIndex] || {};
+                  var lines = ['bank ' + p.bank];
+                  if (typeof p.drain_delta === 'number') lines.push('drain ' + p.drain_delta);
+                  if (typeof p.restore_delta === 'number') lines.push('restore ' + p.restore_delta);
+                  if (p.flags && p.flags.length) lines.push('flags: ' + p.flags.join(', '));
+                  return lines;
+                }
+              }
+            }
+          },
+          scales: {
+            x: {
+              ticks: {
+                maxRotation: 0, autoSkip: true, maxTicksLimit: 6,
+                color: 'var(--muted)', font: { size: 10 },
+                callback: function(value) {
+                  var label = this.getLabelForValue(value);
+                  var d = new Date(label);
+                  if (isNaN(d.getTime())) return label;
+                  // Show day/hour at midnight, just hour otherwise —
+                  // a 72h chart spans 3 calendar boundaries, makes
+                  // them easy to spot.
+                  if (d.getHours() === 0) {
+                    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+                  }
+                  return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+                }
+              },
+              grid: { display: false }
+            },
+            y: {
+              min: 0, max: 100,
+              ticks: { color: 'var(--muted)', font: { size: 10 }, stepSize: 25 },
+              grid: { color: 'rgba(120,113,108,0.12)' }
+            }
+          },
+          elements: { point: { radius: 0, hoverRadius: 4 } }
+        }
+      });
+    })
+    .catch(function() {});
+}
+
 // ---- Correlation chart (activity load vs HRV) ----
 var corrChart = null;
 function loadCorrelationChart(canvasId, data) {

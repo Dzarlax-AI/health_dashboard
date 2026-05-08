@@ -153,6 +153,17 @@ body { min-height: 100vh; font-size: 15px; }
 .hero-energy-details { font-size: 12px; color: var(--text-secondary); }
 .hero-energy-details summary { cursor: pointer; color: var(--muted); }
 .hero-energy-details ul { list-style: none; padding-left: 0; margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
+#energy-hourly-wrap {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.energy-hourly-label {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 1.5px; opacity: 0.55; margin-bottom: 6px;
+  color: var(--muted);
+}
+#energy-hourly-chart { width: 100% !important; max-height: 140px; }
 
 #hero-sparkline-block {
   cursor: pointer; position: relative;
