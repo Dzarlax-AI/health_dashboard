@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"time"
 )
 
@@ -37,6 +38,14 @@ type EnergySnapshotPoint struct {
 // [1, 720] (30 days) — past that, hourly granularity is wasted bytes
 // and the day endpoint should be used instead.
 //
+// An invalid TZ falls back to UTC with a warning log — opposite of
+// ComputeBankForToday's strict policy, deliberately. This is a
+// read-only chart endpoint: a midnight-boundary off-by-one only shifts
+// axis labels by an hour, while in the compute path the same slip
+// would persist a wrong "today" bank. Fail-soft on the chart, fail-
+// loud on the compute. With tzdata embedded in the binary (PR #39)
+// this branch is essentially insurance against tenant TZ typos.
+//
 // State is NOT a column on energy_snapshots — it's a derived property
 // of the iteration that produced each snapshot. We don't backfill it
 // per-row; the API's top-level "state" comes from the freshest row
@@ -50,7 +59,8 @@ func (s *DB) GetEnergyHistoryV2(ctx context.Context, tz string, hours int) ([]En
 	}
 	loc, err := time.LoadLocation(tz)
 	if err != nil {
-		return nil, err
+		log.Printf("[ENERGY_V2] history: invalid TZ %q, falling back to UTC: %v", tz, err)
+		loc = time.UTC
 	}
 
 	// `since` is in UTC; ts_bucket is TIMESTAMPTZ. PG converts both
