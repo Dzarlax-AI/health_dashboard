@@ -98,14 +98,13 @@ func (s *DB) ComputeSRI(days int) (sri float64, nights int, ok bool) {
 	// sleepCrossValidationPickExpr (Apple Watch > RingConn > anything else).
 	bestSource := map[string]string{}
 	for d, srcMap := range totalsBySrc {
-		var watchSrc, watchTotal string
+		var watchSrc string
 		var fallbackSrc string
 		var fallbackTotal float64
 		for src, total := range srcMap {
 			if (strings.Contains(src, "Ultra") || strings.Contains(src, "Apple Watch")) && total > 1.0 {
 				if watchSrc == "" || total > srcMap[watchSrc] {
 					watchSrc = src
-					watchTotal = src
 				}
 			}
 			if total > fallbackTotal {
@@ -113,7 +112,6 @@ func (s *DB) ComputeSRI(days int) (sri float64, nights int, ok bool) {
 				fallbackSrc = src
 			}
 		}
-		_ = watchTotal
 		if watchSrc != "" {
 			bestSource[d] = watchSrc
 		} else {
