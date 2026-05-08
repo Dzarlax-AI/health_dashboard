@@ -36,13 +36,17 @@
 
     <div id="hero-visual-block">
       {{if .EnergyBank}}
-      <div class="hero-energy">
+      <div class="hero-energy hero-energy--{{.EnergyBank.Level}}">
         <div class="hero-energy-header">
           <span class="hero-energy-label">{{T .Lang "energy_label"}}</span>
           <span class="hero-energy-numbers">{{.EnergyBank.Current}}<span class="muted">/{{.EnergyBank.Capacity}}</span></span>
         </div>
+        <div class="hero-energy-state">
+          <span class="hero-energy-state-tag hero-energy-state-tag--{{.EnergyBank.Level}}">{{T .Lang (printf "energy_state_%s_title" .EnergyBank.Level)}}</span>
+          <span class="hero-energy-state-desc">{{T .Lang (printf "energy_state_%s_desc" .EnergyBank.Level)}}</span>
+        </div>
         <div class="energy-bar" aria-label="{{T .Lang "energy_capacity_label"}}">
-          <div class="energy-bar-fill" style="width: {{.EnergyBank.Current}}%"></div>
+          <div class="energy-bar-fill energy-bar-fill--{{.EnergyBank.Level}}" style="width: {{.EnergyBank.Current}}%"></div>
           {{if lt .EnergyBank.Capacity 100}}<div class="energy-bar-marker" style="left: {{.EnergyBank.Capacity}}%" title="{{T .Lang "energy_capacity_label"}}: {{.EnergyBank.Capacity}}"></div>{{end}}
         </div>
         <div id="energy-sparkline-wrap" hidden><canvas id="energy-sparkline" height="36"></canvas></div>

@@ -185,6 +185,27 @@ type EnergyBank struct {
 	Components    []EnergyBankComponent `json:"components,omitempty"`
 }
 
+// Level buckets Current into critical/low/medium/good so the dashboard can
+// pick a colour and a plain-language explanation without duplicating the
+// thresholds in every template. Aligned with the readiness palette
+// (good ≥70, medium ≥40) and splits the low band at 20 so a near-empty tank
+// renders red while a merely "low" reading stays amber.
+func (e *EnergyBank) Level() string {
+	if e == nil {
+		return ""
+	}
+	switch {
+	case e.Current >= 70:
+		return "good"
+	case e.Current >= 40:
+		return "medium"
+	case e.Current >= 20:
+		return "low"
+	default:
+		return "critical"
+	}
+}
+
 // EnergyBankComponent breaks down the capacity/strain/stress numbers so the
 // dashboard and AI briefing can show *why* the verdict is what it is.
 type EnergyBankComponent struct {

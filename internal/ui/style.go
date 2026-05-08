@@ -266,13 +266,33 @@ body { min-height: 100vh; font-size: 15px; }
   background: var(--surface2); overflow: hidden;
 }
 .energy-bar-fill {
-  height: 100%; transition: width 0.4s ease;
+  height: 100%; transition: width 0.4s ease, background 0.4s ease;
   background: linear-gradient(to right, var(--low) 0%, var(--fair) 35%, var(--good) 65%);
 }
+/* Per-level fill colours: discrete bands (red→amber→yellow→green) so the
+   bar's colour itself signals the state, independent of the numeric label.
+   Aligned with EnergyBank.Level() thresholds in internal/health/types.go. */
+.energy-bar-fill--critical { background: var(--low); }
+.energy-bar-fill--low      { background: linear-gradient(to right, var(--low), var(--warn, var(--fair))); }
+.energy-bar-fill--medium   { background: linear-gradient(to right, var(--warn, var(--fair)), var(--fair)); }
+.energy-bar-fill--good     { background: linear-gradient(to right, var(--fair), var(--good)); }
 .energy-bar-marker {
   position: absolute; top: -2px; bottom: -2px; width: 2px;
   background: var(--text); opacity: 0.6;
 }
+.hero-energy-state {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 8px;
+  font-size: 12px; line-height: 1.4; margin: 2px 0 4px;
+}
+.hero-energy-state-tag {
+  font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+  text-transform: uppercase; letter-spacing: 0.4px;
+}
+.hero-energy-state-tag--good     { background: var(--good-bg); color: var(--good); }
+.hero-energy-state-tag--medium   { background: var(--fair-bg); color: var(--fair); }
+.hero-energy-state-tag--low      { background: var(--warn-bg, var(--fair-bg)); color: var(--warn, var(--fair)); }
+.hero-energy-state-tag--critical { background: var(--low-bg);  color: var(--low); }
+.hero-energy-state-desc { color: var(--text-secondary); }
 .energy-verdict {
   font-size: 12px; font-weight: 700; padding: 4px 12px; border-radius: 999px;
   display: inline-block;
