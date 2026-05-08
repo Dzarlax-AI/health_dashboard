@@ -306,25 +306,35 @@ func (s *DB) InsertPoints(recordID int64, points []MetricPoint) error {
 	// per-night aggregate from being clobbered by garbage records that share
 	// the same (metric_name, date, source) key:
 	//
-	//   1. Watch midnight-summary inflation: ignore a new value that is more
-	//      than 30% larger than the existing one when both are non-trivial.
-	//      Catches the RingConn 14h-night outlier pattern.
+	//   1. RingConn midnight-summary inflation (recent nights only):
+	//      ignore a new value that is more than 30% larger than the existing
+	//      one when both are non-trivial AND the existing row is from
+	//      RingConn AND the night is within the last 3 days. Catches the
+	//      RingConn 14h-night outlier pattern in real time, while still
+	//      allowing free upward normalisation on older "stuck" rows after
+	//      iOS-side bug fixes (legitimate factor-of-7 corrections were
+	//      blocked by the original 1.3× / 30-day / all-source guard — see
+	//      Todoist 6gXCG8Qgpc73J4J7 for the incident log).
 	//
 	//   2. Zero-payload overwrite: a per-day chunked re-sync from iOS may
 	//      emit `qty=0` for a source that has only `.inBed` / late-evening
 	//      samples in the chunk's window (the actual sleep block started
 	//      the prior evening and falls outside the chunk). The client now
 	//      widens the sleep predicate, but as a belt-and-suspenders we keep
-	//      the existing positive value if the incoming one is zero.
+	//      the existing positive value if the incoming one is zero. Applies
+	//      to all sleep_* metrics (zero is never a legitimate update).
 	//
-	//   3. Significant deflation (≥50% drop) on an established record:
-	//      symmetric to (1). Concrete miss observed during a 30-day chunked
-	//      re-sync — chunk_K's 12h-overlap window saw the FULL ~8h night for
-	//      wake-up date K, then chunk_K+1's window saw only a 1h afternoon
-	//      nap whose wake-up also landed on date K, and the latter UPSERT
-	//      replaced 8.14h with 1.08h. Real night-to-night swings exceed 50%
-	//      vanishingly rarely — when they do happen the next sync run will
-	//      converge naturally.
+	//   3. sleep_total deflation (≥50% drop) on an established record:
+	//      symmetric to (1) but scoped to integral sleep_total only.
+	//      Per-stage drops (sleep_deep / sleep_rem) of >50% can be a
+	//      legitimate "bad night" reading — blocking those would lock in
+	//      stale stage breakdowns. Concrete miss observed during a 30-day
+	//      chunked re-sync — chunk_K's 12h-overlap window saw the FULL ~8h
+	//      night for wake-up date K, then chunk_K+1's window saw only a 1h
+	//      afternoon nap whose wake-up also landed on date K, and the
+	//      latter UPSERT replaced 8.14h with 1.08h. Real total swings
+	//      exceed 50% vanishingly rarely — when they do, the next sync run
+	//      converges naturally.
 	const upsertSQL = `INSERT INTO metric_points
 		(health_record_id, metric_name, units, date, qty, source)
 		VALUES ($1, $2, $3, $4, $5, $6)
@@ -332,6 +342,8 @@ func (s *DB) InsertPoints(recordID int64, points []MetricPoint) error {
 			qty = CASE
 				WHEN metric_points.metric_name LIKE 'sleep_%'
 				  AND SUBSTRING(metric_points.date, 12, 8) = '00:00:00'
+				  AND metric_points.source LIKE '%RingConn%'
+				  AND SUBSTRING(metric_points.date, 1, 10) >= TO_CHAR(NOW() - INTERVAL '3 days', 'YYYY-MM-DD')
 				  AND metric_points.qty > 1.0
 				  AND excluded.qty > metric_points.qty * 1.3
 				THEN metric_points.qty
@@ -339,7 +351,7 @@ func (s *DB) InsertPoints(recordID int64, points []MetricPoint) error {
 				  AND metric_points.qty > 0
 				  AND excluded.qty = 0
 				THEN metric_points.qty
-				WHEN metric_points.metric_name LIKE 'sleep_%'
+				WHEN metric_points.metric_name = 'sleep_total'
 				  AND metric_points.qty > 1.0
 				  AND excluded.qty > 0
 				  AND excluded.qty < metric_points.qty * 0.5
