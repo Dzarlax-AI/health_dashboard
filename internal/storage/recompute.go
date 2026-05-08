@@ -17,6 +17,14 @@ import (
 // code.
 var recomputeDebounce = 2 * time.Second
 
+// preUnlockHook is invoked by the worker after observing dirty=false
+// but BEFORE releasing the mutex. Test-only injection point used to
+// deterministically reproduce the unlock-race (a Trigger that fires
+// between our dirty.Load and our Unlock must not lose its recompute
+// request). Production code leaves this nil. atomic.Pointer so test
+// setup/cleanup writes don't race the worker's read.
+var preUnlockHook atomic.Pointer[func()]
+
 // TenantRecompute serialises event-driven recompute work for a single
 // tenant. At most one worker goroutine runs at a time; concurrent
 // triggers that arrive while it is busy set a "rerun needed" flag and
@@ -50,7 +58,11 @@ type TenantRecompute struct {
 // cleanly between passes (or during the debounce sleep) instead of
 // blocking shutdown for up to one debounce window. A pending dirty flag
 // at cancellation time is dropped — recompute is event-driven and the
-// next ingest after restart will re-trigger naturally.
+// next ingest after restart will re-trigger naturally. The worker
+// binds to the ctx of the Trigger that won TryLock; later Triggers'
+// ctx values are not honoured. Callers MUST pass a stable per-tenant
+// ctx (the same one used to start the tenant's other background
+// routines).
 //
 // `work` must be safe to call concurrently across tenants but is
 // guaranteed to be serialised within a single TenantRecompute. It must
@@ -62,19 +74,39 @@ func (t *TenantRecompute) Trigger(ctx context.Context, work func()) {
 		return
 	}
 	go func() {
-		defer t.mu.Unlock()
 		for {
 			if ctx.Err() != nil {
+				t.mu.Unlock()
 				return
 			}
 			t.dirty.Store(false)
 			work()
+			if t.dirty.Load() {
+				select {
+				case <-time.After(recomputeDebounce):
+				case <-ctx.Done():
+					t.mu.Unlock()
+					return
+				}
+				continue
+			}
+			// Closing the unlock-race: between our dirty.Load() above
+			// (false) and the Unlock below, a racing Trigger may
+			// TryLock-fail and Store(dirty=true). That Trigger does NOT
+			// spawn its own worker, so a naive `defer Unlock; return`
+			// here would silently lose the recompute request. After
+			// unlocking, re-read dirty: if true, attempt to reacquire
+			// and run another pass. If reacquire fails, a Trigger that
+			// arrived AFTER our Unlock has already spawned a fresh
+			// worker — we can safely exit.
+			if h := preUnlockHook.Load(); h != nil {
+				(*h)()
+			}
+			t.mu.Unlock()
 			if !t.dirty.Load() {
 				return
 			}
-			select {
-			case <-time.After(recomputeDebounce):
-			case <-ctx.Done():
+			if !t.mu.TryLock() {
 				return
 			}
 		}

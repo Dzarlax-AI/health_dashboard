@@ -110,6 +110,44 @@ func TestTenantRecompute_TriggerAfterIdle(t *testing.T) {
 	waitFor(t, time.Second, func() bool { return calls.Load() == 2 })
 }
 
+// TestTenantRecompute_NoLossOnUnlockRace: regression for the race
+// between dirty.Load()=false and mu.Unlock(). A Trigger that fires in
+// that window must not lose its recompute request. We use the
+// preUnlockHook injection point to deterministically fire the racing
+// Trigger at the exact moment the worker is about to exit.
+func TestTenantRecompute_NoLossOnUnlockRace(t *testing.T) {
+	shortDebounce(t)
+	var rc TenantRecompute
+	var calls atomic.Int32
+	ctx := context.Background()
+
+	// Restore on cleanup so other tests don't see a stale hook.
+	t.Cleanup(func() { preUnlockHook.Store(nil) })
+
+	var once atomic.Bool
+	hook := func() {
+		if !once.CompareAndSwap(false, true) {
+			return
+		}
+		// Worker still holds the mutex here (hook runs BEFORE Unlock).
+		// This Trigger will TryLock-fail and Store(dirty=true). Without
+		// the recheck-after-unlock branch, the worker would Unlock and
+		// return, losing this recompute request.
+		rc.Trigger(ctx, func() { calls.Add(1) })
+	}
+	preUnlockHook.Store(&hook)
+
+	rc.Trigger(ctx, func() { calls.Add(1) })
+
+	// Expect: pass 1 + reacquire pass 2 = 2 calls. Without the fix,
+	// only the initial pass runs and calls stays at 1.
+	waitFor(t, time.Second, func() bool { return calls.Load() == 2 })
+	time.Sleep(20 * time.Millisecond)
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("unlock race lost a recompute: expected 2 calls, got %d", got)
+	}
+}
+
 // TestTenantRecompute_ContextCancelStopsRerun: when ctx is cancelled
 // while the worker is in the debounce window, it exits cleanly without
 // running another pass. A pending dirty flag is dropped — recompute is
