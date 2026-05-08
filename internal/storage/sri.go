@@ -49,7 +49,7 @@ func (s *DB) ComputeSRI(days int) (sri float64, nights int, ok bool) {
 		  AND qty > 0
 		  AND quality = 'ok'
 		  AND SUBSTRING(date, 12, 8) != '00:00:00'
-		  AND SUBSTRING(date, 1, 10) >= TO_CHAR(NOW() - ($1 || ' days')::INTERVAL, 'YYYY-MM-DD')
+		  AND SUBSTRING(date, 1, 10) >= TO_CHAR(NOW() - INTERVAL '1 day' * $1, 'YYYY-MM-DD')
 		ORDER BY date ASC`,
 		days+1)
 	if err != nil {
