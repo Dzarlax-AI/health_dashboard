@@ -120,13 +120,32 @@ func (s *DB) ComputeBankForToday(ctx context.Context, tz string) (BankResult, er
 		return BankResult{}, fmt.Errorf("load tenant TZ %q: %w", tz, err)
 	}
 	today := time.Now().In(loc).Format("2006-01-02")
-	startDate := subtractDays(today, energyWindowDays-1)
+	return s.ComputeBankForDate(ctx, tz, today)
+}
+
+// ComputeBankForDate runs the v2 iteration ending at `asOfDate`
+// (YYYY-MM-DD in tenant TZ). Shared by the live orchestrator (with
+// today's date) and the cmd/energy_backfill CLI (with historical
+// dates). Pure read against daily_scores — no writes.
+//
+// The `tz` arg is parsed only to validate it loud-fails on a typo,
+// matching ComputeBankForToday's "fail loud on bad TZ" policy. The
+// 21-day window arithmetic happens on the date string directly via
+// subtractDays so DST shifts and leap seconds don't drift the lookback.
+func (s *DB) ComputeBankForDate(ctx context.Context, tz, asOfDate string) (BankResult, error) {
+	if _, err := time.LoadLocation(tz); err != nil {
+		return BankResult{}, fmt.Errorf("load tenant TZ %q: %w", tz, err)
+	}
+	if _, err := time.Parse("2006-01-02", asOfDate); err != nil {
+		return BankResult{}, fmt.Errorf("parse asOfDate %q: %w", asOfDate, err)
+	}
+	startDate := subtractDays(asOfDate, energyWindowDays-1)
 
 	rows, err := s.pool.Query(ctx, `
 		SELECT date, sleep_total, sleep_deep, sleep_rem, sleep_awake, calories
 		FROM daily_scores
 		WHERE date >= $1 AND date <= $2`,
-		startDate, today)
+		startDate, asOfDate)
 	if err != nil {
 		return BankResult{}, err
 	}
@@ -150,7 +169,7 @@ func (s *DB) ComputeBankForToday(ctx context.Context, tz string) (BankResult, er
 
 	days := make([]dailyInputs, energyWindowDays)
 	for i := 0; i < energyWindowDays; i++ {
-		date := subtractDays(today, energyWindowDays-1-i)
+		date := subtractDays(asOfDate, energyWindowDays-1-i)
 		days[i] = byDate[date]
 	}
 

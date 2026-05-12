@@ -9,6 +9,8 @@ DATABASE_URL=postgres://... make dev       # run server locally
 DATABASE_URL=postgres://... make build     # pure Go binary → bin/server (no CGO)
 DATABASE_URL=postgres://... make backfill  # rebuild pre-aggregated caches incrementally
 DATABASE_URL=postgres://... make backfill-force  # wipe and fully rebuild all caches
+DATABASE_URL=postgres://... make energy-backfill TZ=Europe/Belgrade FROM=2025-01-01 TO=2026-05-11  # one-shot retrospective EnergyBank v2 EOD snapshots
+DATABASE_URL=postgres://... make energy-backfill-dry TZ=Europe/Belgrade  # same, dry-run (no writes)
 make docker-up        # docker compose up -d --build
 make docker-down      # docker compose down
 make test             # send a test POST to localhost:8080/health
@@ -107,6 +109,20 @@ energy_snapshots   — EnergyBank v2 state-machine snapshots, PRIMARY KEY
                      idx_energy_snapshots_ts, idx_energy_snapshots_flags
                      (GIN). Auto-created via EnsureEnergySnapshotsTable()
                      on startup. Full design: ENERGY_BANK.md.
+
+                     Retrospective seeding via `cmd/energy_backfill`:
+                     replays the v2 iteration over historical daily_scores
+                     and writes one EOD snapshot per date (23:55 local in
+                     tenant TZ). Idempotent on (ts_bucket); rows tagged
+                     `backfilled` so calibration queries can filter live
+                     vs synthetic. Useful before the v1→v2 verdict-
+                     threshold cutover (need ≥30 EOD points to set bands
+                     honestly) and for new installs with months of
+                     pre-existing Apple Health data. Skips dates where
+                     the formula returns `state="stale"` (insufficient
+                     21-day lookback — always the case for the first ~14
+                     days of any history). Live intraday snapshots live
+                     in different 5-min buckets and are never touched.
 ```
 
 **Expression indexes** (critical for performance with 3.7M+ rows in metric_points):
