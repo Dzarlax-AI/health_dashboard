@@ -1,4 +1,4 @@
-.PHONY: dev build backfill backfill-force import docker-up docker-down test
+.PHONY: dev build backfill backfill-force energy-backfill energy-backfill-dry import docker-up docker-down test
 
 ADDR ?= :8080
 
@@ -13,6 +13,23 @@ backfill:
 
 backfill-force:
 	DATABASE_URL=$(DATABASE_URL) go run ./cmd/backfill --force
+
+# One-shot retrospective backfill for EnergyBank v2 snapshots. Optional
+# vars: TZ (defaults to REPORT_TZ or UTC), FROM, TO, SCHEMA. See
+# cmd/energy_backfill/main.go for the full flag set.
+energy-backfill:
+	DATABASE_URL=$(DATABASE_URL) go run ./cmd/energy_backfill \
+		$(if $(TZ),--tz $(TZ),) \
+		$(if $(FROM),--from $(FROM),) \
+		$(if $(TO),--to $(TO),) \
+		$(if $(SCHEMA),--schema $(SCHEMA),)
+
+energy-backfill-dry:
+	DATABASE_URL=$(DATABASE_URL) go run ./cmd/energy_backfill --dry-run \
+		$(if $(TZ),--tz $(TZ),) \
+		$(if $(FROM),--from $(FROM),) \
+		$(if $(TO),--to $(TO),) \
+		$(if $(SCHEMA),--schema $(SCHEMA),)
 
 import:
 	DATABASE_URL=$(DATABASE_URL) go run ./cmd/import --file $(FILE) --batch 500 --pause 150ms

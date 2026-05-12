@@ -461,6 +461,19 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 			resp.EnergyBank.Capacity = capacity
 			resp.EnergyBank.DrainSoFar = drain
 			resp.EnergyBank.Components = nil
+			// VerdictReason is built from v1 `current` (readiness −
+			// allostatic drain) and embeds that percentage in the
+			// localised template (e.g. "Only 25% capacity left after
+			// today's load"). After the override, the displayed bar
+			// shows v2 `display` instead — a number that often differs
+			// from v1 current by 20-40 points. Leaving the v1-derived
+			// reason visible next to the v2 bar produces a confusing
+			// mismatch ("bar shows 59%, text says 25%"). Clear it
+			// until the final cutover swaps both verdict and reason
+			// onto the v2 numbers; the verdict itself stays (it still
+			// gates AI/Telegram rendering and is structural rather
+			// than user-visible prose).
+			resp.EnergyBank.VerdictReason = ""
 		}
 	}
 

@@ -18,11 +18,20 @@ import (
 // halves would produce snapshots whose date doesn't line up with the
 // data they reflect.
 func (s *DB) UpsertEnergySnapshot(ctx context.Context, tz string, res BankResult) error {
+	return s.UpsertEnergySnapshotAt(ctx, tz, time.Now(), res)
+}
+
+// UpsertEnergySnapshotAt is the bucket-parameterised core of
+// UpsertEnergySnapshot. Live ingest passes time.Now(); cmd/energy_backfill
+// passes an explicit EOD timestamp per historical date so retrospective
+// rows land in dedicated 23:55-local buckets and never collide with live
+// intraday snapshots.
+func (s *DB) UpsertEnergySnapshotAt(ctx context.Context, tz string, ts time.Time, res BankResult) error {
 	loc, err := time.LoadLocation(tz)
 	if err != nil {
 		return err
 	}
-	tsBucket := time.Now().In(loc).Truncate(5 * time.Minute)
+	tsBucket := ts.In(loc).Truncate(5 * time.Minute)
 	dateStr := tsBucket.Format("2006-01-02")
 
 	flags := res.Flags
