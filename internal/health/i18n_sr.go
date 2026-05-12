@@ -141,9 +141,9 @@ var sr = LangStrings{
 	"energy_verdict_active_recovery": "Samo aktivni oporavak",
 	"energy_verdict_rest":            "Dan odmora",
 
-	"energy_reason_full_capacity": "Ostalo %d%% kapaciteta, HRV iznad ili na normi — zeleno svetlo za tvrdu sesiju.",
-	"energy_reason_optimal":       "Ostalo %d%% kapaciteta, markeri stresa su čisti — normalan trening dan je ok.",
-	"energy_reason_low_capacity":  "Ostalo samo %d%% kapaciteta nakon današnjeg opterećenja — držite intenzitet lakim.",
+	"energy_reason_full_capacity": "Rezerva puna, HRV iznad ili na normi — zeleno svetlo za tvrdu sesiju.",
+	"energy_reason_optimal":       "Rezerva solidna, markeri stresa su čisti — normalan trening dan je ok.",
+	"energy_reason_low_capacity":  "Rezerva niska nakon današnjeg opterećenja — držite intenzitet lakim.",
 	"energy_reason_high_stress":   "HRV %.1f SD od baseline, stres indeks %d — autonomna opterećenja su povišena.",
 	"energy_reason_acwr_spike":    "Današnje opterećenje je već %.0f%% od 28-dnevne norme — tvrda sesija bi gurnula spike dalje.",
 
