@@ -37,6 +37,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"time"
@@ -96,53 +97,79 @@ func main() {
 		from, to, *tzFlag, *schemaFlag, *dryRun)
 
 	var ok, skipped, errs int
-	for d := from; d <= to; d = addDay(d) {
+	for d := from; d <= to; {
 		res, err := db.ComputeBankForDate(ctx, *tzFlag, d)
 		if err != nil {
 			log.Printf("  %s: compute: %v", d, err)
 			errs++
-			continue
-		}
-		if res.State == "stale" {
+		} else if res.State == "stale" {
 			// Insufficient inputs in the 21-day window leading up to
 			// `d`. Common near the start of the import; the first ~14
 			// days of any user's history are unavoidably stale because
 			// the iteration needs lookback that doesn't exist yet.
 			skipped++
-			continue
-		}
-		// Mark before write so calibration queries can filter cleanly.
-		res.Flags = append(res.Flags, "backfilled")
+		} else {
+			// Mark before write so calibration queries can filter cleanly.
+			res.Flags = append(res.Flags, "backfilled")
 
-		// EOD bucket in tenant TZ. 23:55 (not 23:59) keeps a small buffer
-		// from midnight rollover and stays within the date's 5-min grid.
-		ts, _ := time.ParseInLocation("2006-01-02 15:04", d+" 23:55", loc)
+			// EOD bucket in tenant TZ. 23:55 (not 23:59) keeps a small buffer
+			// from midnight rollover and stays within the date's 5-min grid.
+			// resolveDateRange has already validated `d` parses as a date,
+			// so ParseInLocation cannot fail here on malformed input — but
+			// we still surface the error to catch DST-transition edge cases
+			// where the constructed local time doesn't exist (e.g. 02:30
+			// during a forward DST jump; 23:55 is well outside that window
+			// but the check is cheap and future-proofs the buffer choice).
+			ts, parseErr := time.ParseInLocation("2006-01-02 15:04", d+" 23:55", loc)
+			if parseErr != nil {
+				log.Printf("  %s: build EOD timestamp: %v", d, parseErr)
+				errs++
+			} else if *dryRun {
+				log.Printf("  %s: bank=%d state=%s drain=%d restore=%d flags=%v (dry-run)",
+					d, res.Bank, res.State, res.TodayDrain, res.TodayRestore, res.Flags)
+				ok++
+			} else if err := db.UpsertEnergySnapshotAt(ctx, *tzFlag, ts, res); err != nil {
+				log.Printf("  %s: write: %v", d, err)
+				errs++
+			} else {
+				ok++
+			}
+		}
 
-		if *dryRun {
-			log.Printf("  %s: bank=%d state=%s drain=%d restore=%d flags=%v (dry-run)",
-				d, res.Bank, res.State, res.TodayDrain, res.TodayRestore, res.Flags)
-			ok++
-			continue
+		// Advance via real date arithmetic. addDay returns an error rather
+		// than swallowing time.Parse failures because a bad `d` here would
+		// silently fall back to year 0001 and the lexicographic loop
+		// guard `d <= to` would then iterate ~700k times against the DB.
+		// resolveDateRange validates user input on entry, so the only way
+		// to reach this branch is a bug — log and stop.
+		next, err := addDay(d)
+		if err != nil {
+			log.Fatalf("advance date %q: %v (internal invariant violated; aborting to avoid runaway loop)", d, err)
 		}
-		if err := db.UpsertEnergySnapshotAt(ctx, *tzFlag, ts, res); err != nil {
-			log.Printf("  %s: write: %v", d, err)
-			errs++
-			continue
-		}
-		ok++
+		d = next
 	}
 	log.Printf("done: ok=%d skipped=%d errs=%d", ok, skipped, errs)
 }
 
-// resolveDateRange picks defaults for --from and --to. Empty --from
-// returns ("", to, nil) when daily_scores has no complete rows; main
-// treats that as "nothing to do".
+// resolveDateRange picks defaults for --from and --to and validates
+// user-provided values. Empty --from returns ("", to, nil) when
+// daily_scores has no complete rows; main treats that as "nothing to do".
+//
+// Validation is critical here, not optional: the iteration loop advances
+// via string-formatted dates and uses a lexicographic `d <= to` guard.
+// A malformed user input (e.g. `--from oct31` or `--from 2024/01/01`)
+// that slipped through would parse as Go's zero time (year 0001) inside
+// addDay, and "0001-01-02" <= "2026-05-11" is true — the loop would
+// then iterate every day from year 1 to the target year, ~700k DB
+// queries. Reject up front.
 func resolveDateRange(ctx context.Context, db *storage.DB, loc *time.Location, from, to string) (string, string, error) {
 	if to == "" {
 		// Yesterday in tenant TZ — today is the live orchestrator's
 		// domain. Clobbering today's intraday buckets with one synthetic
 		// 23:55 row would erase the user's live drain curve.
 		to = time.Now().In(loc).AddDate(0, 0, -1).Format("2006-01-02")
+	} else if _, err := time.Parse("2006-01-02", to); err != nil {
+		return "", "", fmt.Errorf("--to %q: must be YYYY-MM-DD: %w", to, err)
 	}
 	if from == "" {
 		earliest, err := db.EarliestCompleteDailyScore(ctx)
@@ -150,13 +177,21 @@ func resolveDateRange(ctx context.Context, db *storage.DB, loc *time.Location, f
 			return "", "", err
 		}
 		from = earliest
+	} else if _, err := time.Parse("2006-01-02", from); err != nil {
+		return "", "", fmt.Errorf("--from %q: must be YYYY-MM-DD: %w", from, err)
+	}
+	if from != "" && from > to {
+		return "", "", fmt.Errorf("--from %s is after --to %s", from, to)
 	}
 	return from, to, nil
 }
 
-func addDay(d string) string {
-	t, _ := time.Parse("2006-01-02", d)
-	return t.AddDate(0, 0, 1).Format("2006-01-02")
+func addDay(d string) (string, error) {
+	t, err := time.Parse("2006-01-02", d)
+	if err != nil {
+		return "", err
+	}
+	return t.AddDate(0, 0, 1).Format("2006-01-02"), nil
 }
 
 func envOr(k, def string) string {
