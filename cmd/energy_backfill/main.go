@@ -149,6 +149,13 @@ func main() {
 		d = next
 	}
 	log.Printf("done: ok=%d skipped=%d errs=%d", ok, skipped, errs)
+	// Surface partial failures as a non-zero exit so CI / cron / ops
+	// automation can detect them. Summary line stays at log.Printf level
+	// (not Fatal) so the structured ok/skipped/errs counts are still the
+	// last thing in stdout — useful for parsing by wrappers.
+	if errs > 0 {
+		os.Exit(1)
+	}
 }
 
 // resolveDateRange picks defaults for --from and --to and validates
