@@ -60,7 +60,7 @@ func (s *DB) ComputeUserVerdictBands(ctx context.Context) (health.VerdictBands, 
 		WITH eligible AS (
 			SELECT LEAST(GREATEST(bank, 0), 100) AS bank
 			FROM energy_snapshots
-			WHERE date >= (CURRENT_DATE - INTERVAL '180 days')::text
+			WHERE date >= (CURRENT_DATE - make_interval(days => $1))::text
 			  AND NOT ('imputed_sleep' = ANY(flags))
 			  AND NOT ('imputed_activity' = ANY(flags))
 			  AND NOT ('bootstrap_tail' = ANY(flags))
@@ -70,7 +70,7 @@ func (s *DB) ComputeUserVerdictBands(ctx context.Context) (health.VerdictBands, 
 			percentile_cont(0.50) WITHIN GROUP (ORDER BY bank),
 			percentile_cont(0.80) WITHIN GROUP (ORDER BY bank),
 			COUNT(*)
-		FROM eligible`).Scan(&p20, &p50, &p80, &n)
+		FROM eligible`, energyBandsWindowDays).Scan(&p20, &p50, &p80, &n)
 	if err != nil {
 		return health.VerdictBands{}, err
 	}
