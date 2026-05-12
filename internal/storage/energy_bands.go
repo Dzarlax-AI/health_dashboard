@@ -46,9 +46,19 @@ const energyBandsWindowDays = 180
 func (s *DB) ComputeUserVerdictBands(ctx context.Context) (health.VerdictBands, error) {
 	var p20, p50, p80 *float64
 	var n int
+	// Percentiles run against the *display* bank (clamped to [0, 100])
+	// — the same scale ChooseVerdictV2 consumes. The underlying column
+	// stores signed bank [-50, 100] (per ENERGY_BANK.md, kept signed
+	// so the AI prompt can frame a sustained deficit). Computing
+	// percentiles from raw signed values would let p20 slide negative
+	// for users with frequent deficit days, making the bank-rest
+	// cutoff (`display <= bands.Rest`) unreachable from the display
+	// scale: a clamped display value in [0, 100] can never satisfy
+	// `<= -5`. Clamp here so band thresholds and the consumer scale
+	// agree end-to-end.
 	err := s.pool.QueryRow(ctx, `
 		WITH eligible AS (
-			SELECT bank
+			SELECT LEAST(GREATEST(bank, 0), 100) AS bank
 			FROM energy_snapshots
 			WHERE date >= (CURRENT_DATE - INTERVAL '180 days')::text
 			  AND NOT ('imputed_sleep' = ANY(flags))
