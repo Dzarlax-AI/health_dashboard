@@ -183,6 +183,35 @@ type EnergyBank struct {
 	ActionVerdict string                `json:"action_verdict"`  // enum: push_hard|moderate|active_recovery|rest
 	VerdictReason string                `json:"verdict_reason"`  // localised one-sentence rationale
 	Components    []EnergyBankComponent `json:"components,omitempty"`
+	// HRVZRaw is today's HRV z-score against personal baseline (negative =
+	// vagal depression = parasympathetic underactivity). Exposed because
+	// downstream consumers — the storage-layer v2 override block, the AI
+	// prompt path — re-evaluate the verdict on different bank inputs
+	// (v1 current vs v2 bank) and need the same HRV gate the energy
+	// kernel used. Persisting it on the struct keeps "what HRV state
+	// drove this verdict" auditable instead of recomputing it from raw
+	// HRV in every caller.
+	HRVZRaw float64 `json:"hrv_z_raw"`
+}
+
+// VerdictBands holds the per-user calibrated thresholds for translating
+// the EnergyBank "current" (v1) or "bank" (v2) score into an action
+// verdict. Personal bands are derived from the user's own
+// energy_snapshots percentile distribution once enough data exists;
+// before then the formula falls back to documented defaults derived
+// from a single reference user's 459-day distribution (see
+// DefaultV2VerdictBands).
+//
+// Source records which calibration produced the bands so the UI can
+// badge "calibrating" vs "personalized" without a separate query. The
+// caller is free to inspect NDataPoints if it wants to distinguish
+// "barely-personalized 35 days" from "deeply-personalized 365 days".
+type VerdictBands struct {
+	Rest        int    `json:"rest"`         // ≤ this → rest
+	Recovery    int    `json:"recovery"`     // ≤ this → active_recovery
+	PushHard    int    `json:"push_hard"`    // ≥ this AND HRV gate → push_hard
+	Source      string `json:"source"`       // "personal" | "default" | "manual"
+	NDataPoints int    `json:"n_data_points"`
 }
 
 // Level buckets Current into critical/low/medium/good so the dashboard can

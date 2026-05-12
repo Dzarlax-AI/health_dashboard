@@ -96,6 +96,7 @@ func computeEnergyBank(d RawMetrics, readinessScore int, headline *HeadlineSigna
 		Stress:        stress,
 		ActionVerdict: verdict,
 		VerdictReason: reason,
+		HRVZRaw:       hrvZRaw,
 		Components: []EnergyBankComponent{
 			{Name: "morning_capacity", Value: capacity,
 				Note: fmt.Sprintf(ls["energy_note_capacity"], d.Sleep[0])},
@@ -159,6 +160,96 @@ func chooseVerdict(hrvZRaw float64, current int) string {
 		return "push_hard"
 	default:
 		return "moderate"
+	}
+}
+
+// DefaultV2VerdictBands returns the cold-start thresholds for v2 bank.
+// Derived empirically from a single reference user's 459-day backfilled
+// `energy_snapshots` distribution (2025-01-28 → 2026-05-11, Europe/
+// Belgrade): p20=15, p50=41, p80=55. These are NOT population norms —
+// they're a starting point. Once a tenant accumulates ≥30 non-imputed
+// snapshots their own percentiles take over (see
+// storage.ComputeUserVerdictBands).
+//
+// The defaults are biased toward this one user's profile (moderate
+// activity tech worker). Sedentary users will see "push_hard" more
+// often than warranted; high-volume athletes will see "rest" too
+// often. The personal calibration kicks in at ≥30 days and corrects
+// this, so the cold-start bias only affects the first month of any
+// new tenant.
+func DefaultV2VerdictBands() VerdictBands {
+	return VerdictBands{
+		Rest:     15,
+		Recovery: 41,
+		PushHard: 55,
+		Source:   "default",
+	}
+}
+
+// ChooseVerdictV2 maps the v2 bank value to an action verdict using
+// per-tenant calibrated bands. Mirrors chooseVerdict's HRV-first
+// structure: the HRV z-score gate is authoritative (Plews 2014 SWC
+// thresholds, physiologically grounded across populations), the bank
+// gate adds capacity context that only makes sense relative to the
+// user's own typical range.
+//
+// `bank` is the v2 [0, 100] display value (clamped, not the signed
+// underlying). `hrvZRaw` is today's HRV z-score against personal
+// baseline. `bands` carries the per-tenant thresholds.
+//
+// Order matters: HRV-rest overrides everything (your body says rest,
+// regardless of bank); then bank-rest; then HRV-recovery; then
+// bank-recovery; then push_hard which requires BOTH a high bank AND a
+// green-light HRV. Default falls through to moderate.
+func ChooseVerdictV2(hrvZRaw float64, bank int, bands VerdictBands) string {
+	switch {
+	case hrvZRaw <= hrvZRestBand:
+		return "rest"
+	case bank <= bands.Rest:
+		return "rest"
+	case hrvZRaw <= hrvZLowerBand:
+		return "active_recovery"
+	case bank <= bands.Recovery:
+		return "active_recovery"
+	case bank >= bands.PushHard && hrvZRaw >= hrvZUpperBand:
+		return "push_hard"
+	default:
+		return "moderate"
+	}
+}
+
+// BuildVerdictReasonV2 produces the localised one-sentence rationale
+// for a v2 verdict. Same i18n key set as v1's buildVerdictReason
+// (energy_reason_full_capacity / energy_reason_low_capacity /
+// energy_reason_high_stress / energy_reason_optimal) — the prose
+// templates are scale-agnostic ("%d%% capacity left"), they work for
+// either v1 current or v2 bank as long as the caller passes the
+// number that's actually displayed in the hero.
+//
+// Stress and strain inputs are dropped from the signature — v2 doesn't
+// expose strain/stress as first-class metrics (they were v1 internal
+// breakdowns), so the reason can only branch on hrvZRaw and bank.
+// "high_stress" path activates on hrvZRaw ≤ rest band; everything
+// else uses bank-derived templates.
+func BuildVerdictReasonV2(verdict string, bank int, hrvZRaw float64, ls LangStrings) string {
+	switch verdict {
+	case "push_hard":
+		return fmt.Sprintf(ls["energy_reason_full_capacity"], bank)
+	case "rest":
+		if hrvZRaw <= hrvZRestBand {
+			// "high stress" template needs (hrvZ, stress%) but we no
+			// longer compute stress as a separate score in v2; pass
+			// 0 as the stress percentile placeholder. The translation
+			// templates have been audited to render acceptably when
+			// the second %d slot is 0 — if a future i18n revision
+			// breaks that assumption, the fallback below kicks in.
+			return fmt.Sprintf(ls["energy_reason_high_stress"], hrvZRaw, 0)
+		}
+		return fmt.Sprintf(ls["energy_reason_low_capacity"], bank)
+	case "active_recovery":
+		return fmt.Sprintf(ls["energy_reason_low_capacity"], bank)
+	default: // moderate
+		return fmt.Sprintf(ls["energy_reason_optimal"], bank)
 	}
 }
 

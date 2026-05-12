@@ -461,19 +461,37 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 			resp.EnergyBank.Capacity = capacity
 			resp.EnergyBank.DrainSoFar = drain
 			resp.EnergyBank.Components = nil
-			// VerdictReason is built from v1 `current` (readiness −
-			// allostatic drain) and embeds that percentage in the
-			// localised template (e.g. "Only 25% capacity left after
-			// today's load"). After the override, the displayed bar
-			// shows v2 `display` instead — a number that often differs
-			// from v1 current by 20-40 points. Leaving the v1-derived
-			// reason visible next to the v2 bar produces a confusing
-			// mismatch ("bar shows 59%, text says 25%"). Clear it
-			// until the final cutover swaps both verdict and reason
-			// onto the v2 numbers; the verdict itself stays (it still
-			// gates AI/Telegram rendering and is structural rather
-			// than user-visible prose).
-			resp.EnergyBank.VerdictReason = ""
+			// v1→v2 verdict cutover (PR #47): recompute ActionVerdict
+			// and VerdictReason against the v2 bank using personal
+			// percentile bands instead of v1's hardcoded
+			// readiness-scale thresholds. The v1 path was degenerate
+			// in production — its current=readiness−drain calculation
+			// almost always landed below the 25-cutoff, producing
+			// "rest" on every day regardless of actual recovery state.
+			//
+			// Bands are derived from the tenant's own backfilled
+			// energy_snapshots (≥30 non-imputed days) or fall back to
+			// documented defaults below that threshold; see
+			// ComputeUserVerdictBands. HRV gate (Plews 2014 SWC
+			// thresholds) is preserved across the cutover — it's the
+			// physiologically-grounded "your body says rest" override
+			// that doesn't depend on bank scale.
+			//
+			// On bands-fetch error: log and fall through to defaults
+			// rather than failing the briefing. Verdict produced from
+			// defaults is degraded but not wrong; failing the whole
+			// /api/dashboard call would be worse UX.
+			bandsCtx, cancelBands := queryCtx()
+			bands, bandsErr := s.ComputeUserVerdictBands(bandsCtx)
+			cancelBands()
+			if bandsErr != nil {
+				log.Printf("[ENERGY_V2] compute verdict bands (date=%s): %v — falling back to defaults", *lastDate, bandsErr)
+				bands = health.DefaultV2VerdictBands()
+			}
+			ls := health.GetStrings(lang)
+			newVerdict := health.ChooseVerdictV2(resp.EnergyBank.HRVZRaw, display, bands)
+			resp.EnergyBank.ActionVerdict = newVerdict
+			resp.EnergyBank.VerdictReason = health.BuildVerdictReasonV2(newVerdict, display, resp.EnergyBank.HRVZRaw, ls)
 		}
 	}
 
