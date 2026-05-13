@@ -94,12 +94,22 @@ var (
 // the notification file's init() so it's wired up before any code
 // path tries to fire.
 //
-// Duplicate names are NOT detected — the caller is responsible for
-// uniqueness, since accidental duplicates would silently share the
-// same persistence key and step on each other's "last sent" date.
+// Duplicate names panic. Two rules sharing a Name would both read
+// and write `proactive_<name>_last_sent`, silently breaking each
+// other's cadence — a "rule A fired today, rule B thinks it also
+// fired" failure mode that produces no logs and no visible
+// symptom until a user reports a missing nudge. Since Register is
+// called from init(), the panic surfaces as "program won't start",
+// which is the right escalation for a programming error in static
+// configuration.
 func Register(p ProactiveNotification) {
 	registryMu.Lock()
 	defer registryMu.Unlock()
+	for _, existing := range registry {
+		if existing.Name == p.Name {
+			panic("notify.Register: duplicate proactive notification name: " + p.Name)
+		}
+	}
 	registry = append(registry, p)
 }
 

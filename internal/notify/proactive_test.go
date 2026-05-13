@@ -59,6 +59,22 @@ func TestProactiveSentKey_Format(t *testing.T) {
 	}
 }
 
+// Register must panic on duplicate name so the "silent cadence
+// collision" failure mode (two rules sharing a persistence key)
+// is caught at program-start time, not discovered weeks later via
+// "why didn't my nudge fire?". CodeRabbit caught the missing
+// guard during PR #50 review.
+func TestRegister_PanicsOnDuplicateName(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on duplicate registration, got none")
+		}
+	}()
+	// `weekly_digest` is registered by the package init() — any
+	// re-Register of that name must panic.
+	Register(ProactiveNotification{Name: "weekly_digest"})
+}
+
 func namesSlice(m map[string]bool) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

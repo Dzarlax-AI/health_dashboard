@@ -3,7 +3,9 @@ package notify
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"health-receiver/internal/storage"
@@ -123,11 +125,28 @@ func init() {
 	})
 }
 
+// weeklyDigestDOWWarn fires once per process per invalid-dow value.
+// Without this, a typo'd setting (e.g. dow=7) would log on every
+// morning tick across every tenant — sync.Map keyed on the bad
+// value rate-limits cleanly without coordinating across goroutines.
+var weeklyDigestDOWWarn sync.Map
+
 func weeklyDigestEligible(ctx context.Context, db *storage.DB, cfg Config) (bool, string) {
 	loc := cfg.location()
 	now := time.Now().In(loc)
 
 	dow := db.GetSettingInt("weekly_digest_dow", 1) // Monday default
+	// Out-of-range values silently broke the pre-framework path —
+	// `int(now.Weekday()) != dow` is always true for dow=7 or
+	// negative, so the digest never fires. Clamp + warn once.
+	// Valid range is [0, 6] per Go's time.Weekday convention
+	// (Sunday=0 … Saturday=6).
+	if dow < 0 || dow > 6 {
+		if _, loaded := weeklyDigestDOWWarn.LoadOrStore(dow, struct{}{}); !loaded {
+			log.Printf("weekly_digest: invalid weekly_digest_dow=%d (must be 0..6), falling back to 1 (Monday)", dow)
+		}
+		dow = 1
+	}
 	if int(now.Weekday()) != dow {
 		return false, "wrong_dow"
 	}
