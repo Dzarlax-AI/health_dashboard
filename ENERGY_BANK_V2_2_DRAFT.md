@@ -89,7 +89,7 @@ New storage method (proposed):
 // readings) — caller treats that as "no HR signal, drain falls back
 // to v2.0 (kcal only)".
 func (s *DB) HourlyHROvershoot(ctx context.Context, date string, rhr float64) (float64, error)
-```text
+```
 
 Update `DrainV2` signature:
 

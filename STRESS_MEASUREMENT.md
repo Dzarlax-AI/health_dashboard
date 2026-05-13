@@ -247,7 +247,9 @@ metric_points overnight RHR samples on every recompute pass").
 ```text
 hr_shift[d]       = (today_awake_hr_avg − baseline_hr_awake[d]) / sd_hr_awake[d]
 rhr_shift[d]      = (today_overnight_rhr − baseline_hr_overnight[d]) / sd_hr_overnight[d]
-                    // overnight RHR (median of 03:00–06:00 HR per §4.1),
+                    // overnight RHR per §4.1 (last 3h of main sleep
+                    // segment; fallback 03:00–06:00 only when sleep
+                    // data is imputed/stale for that night),
                     // floored sd same as hr_awake (SD_FLOOR_HR = 3.0 bpm)
 hrv_drop[d]       = (baseline_hrv[d] − today_overnight_hrv) / sd_hrv[d]   // higher = worse
 resp_shift[d]     = (today_resp_avg − baseline_resp[d]) / sd_resp[d]
@@ -554,14 +556,18 @@ Decoupled from ENERGY_BANK cutover work — can ship independently.
 
 1. ~~**What's the "awake window"?**~~ **Resolved → see §0 blocker 2.**
    Awake window derives from `sleep_analysis` segments for the
-   specific date d: end of last `asleep` segment before noon defines
-   wake_time; start of first `asleep` segment after noon defines
-   sleep_onset. Fallback to `07:00–22:00` only when sleep data is
-   `imputed_sleep` or stale. Existing
+   specific date d using the §0 blocker 2 rule: pick the **longest
+   continuous asleep segment** whose midpoint falls within ±6 hours
+   of local midnight for date d, set `wake_time[d]` to its end;
+   `sleep_onset[d]` is the start of the next qualifying segment
+   (midpoint within ±6h of midnight for d+1). Fallback to
+   `07:00–22:00` only when sleep data is `imputed_sleep` or stale,
+   AND emit `imputed_awake_window` flag. Existing
    `internal/storage/typical_wake.go::GetTypicalWakeTime(days)` returns
    an *average* across N days — wrong shape; v2.2 needs a new
    per-date helper `WakeTimeForDate(date)`. See §0 blocker 2 for
-   the implementation note.
+   why the "last asleep before noon" simplification breaks on
+   siestas, night-shift, and jet-lag.
 
 2. **HRV during deep sleep specifically vs whole-night?** Apple sample
    timestamps don't tell us sleep stage. Cross-reference with

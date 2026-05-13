@@ -31,7 +31,7 @@ CREATE TABLE energy_snapshots (
 CREATE INDEX idx_energy_snapshots_date ON energy_snapshots (date DESC);
 CREATE INDEX idx_energy_snapshots_ts ON energy_snapshots (ts_bucket DESC);
 CREATE INDEX idx_energy_snapshots_flags ON energy_snapshots USING GIN (flags);
-```text
+```
 
 **`date` is computed in Go at write time, NOT a Postgres `GENERATED` column.** Reason: a generated column expression must be `IMMUTABLE`, which forces the timezone to be hardcoded in DDL — wrong for a per-tenant multi-tenant system. The tenant's TZ comes from `REPORT_TZ` (env var per tenant) or `settings.report_tz` (DB override, future v3.0). On write:
 
