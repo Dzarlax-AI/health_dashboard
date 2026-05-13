@@ -9,63 +9,75 @@ import (
 	"health-receiver/internal/storage"
 )
 
-// energyBackfillNudgeSentKey stores the date the last EnergyBank
-// backfill nudge was sent. Date string (YYYY-MM-DD), not timestamp,
-// for the same reason `digestSentSettingKey` uses one: we re-prompt
-// at most once per day, and a stale clock or NTP jitter shouldn't
-// fire two nudges in one morning.
-const energyBackfillNudgeSentKey = "energy_backfill_nudge_last_sent"
+// Pre-framework persistence key (string used directly, since the
+// internal `energyBackfillNudgeSentKey` constant no longer exists).
+// Kept as a LegacyKey on the registered notification so the first
+// post-deploy tick respects the date the pre-framework code wrote
+// — without it Maria's already-sent nudge would re-fire after deploy.
+const legacyEnergyBackfillNudgeKey = "energy_backfill_nudge_last_sent"
 
-// energyBackfillNudgeMinCompleteDays is the threshold below which the
-// nudge stays silent. Imported users with <30 days of complete history
-// can run backfill but the personal verdict bands won't kick in (see
-// energyBandsMinPoints in storage/energy_bands.go), so the value
-// proposition isn't there yet. Above 30, calibration starts paying
-// off the moment the backfill finishes.
-const energyBackfillNudgeMinCompleteDays = 30
+// Gate thresholds. See the eligibility function below for the
+// rationale on each value.
+const (
+	energyBackfillNudgeMinCompleteDays = 30
+	energyBackfillNudgeMaxBackfilled   = 10
+)
 
-// energyBackfillNudgeMaxBackfilled is the upper bound: once a tenant
-// has >=10 backfilled snapshots, they've already pressed the button
-// (live ingest writes ~12 snapshots/day, but those aren't flagged
-// `backfilled` — only retrospective runs are). Stop nudging once
-// some history is in place even if it's not the full available range.
-const energyBackfillNudgeMaxBackfilled = 10
+func init() {
+	// Weekly nudge for users who imported Apple Health data but
+	// haven't pressed the "Compute historical EnergyBank" button.
+	// Without backfill, their per-user verdict bands fall back to
+	// cold-start defaults (see storage.energyBandsMinPoints), so
+	// Telegram rest/moderate/push_hard recommendations are biased
+	// against their actual fitness.
+	Register(ProactiveNotification{
+		Name:      "energy_backfill",
+		Cadence:   7 * 24 * time.Hour,
+		HourOfDay: -1, // any morning tick
+		LegacyKey: legacyEnergyBackfillNudgeKey,
+		Eligible:  energyBackfillNudgeEligible,
+		Render:    energyBackfillNudgeRender,
+	})
+}
 
-// SendEnergyBackfillNudge composes and sends the one-time-per-day
-// Telegram nudge urging the user to run retrospective EnergyBank
-// backfill. Returns sent=false, reason="not_needed" when the
-// preconditions don't apply (TZ not set, too little data, already
-// backfilled), sent=false, reason="not_enabled" when Telegram is off.
-//
-// Caller should mark the date-sent setting after a successful send;
-// MaybeSendEnergyBackfillNudge does this automatically.
-func SendEnergyBackfillNudge(bot *Bot, db *storage.DB, cfg Config, baseURL string) (sent bool, reason string, err error) {
-	if !cfg.Enabled() {
-		return false, "not_enabled", nil
-	}
-	// A TZ-less tenant can't compute backfill EOD timestamps
-	// correctly (see /api/settings/energy-backfill precondition).
-	// Don't nudge them to press a button that will reject them —
-	// the in-app TZ guidance handles that case.
+func energyBackfillNudgeEligible(ctx context.Context, db *storage.DB, cfg Config) (bool, string) {
+	// TZ is required because the backfill button rejects without
+	// one (see /api/settings/energy-backfill precondition). Don't
+	// nudge a user to press a button that will reject them — the
+	// in-app TZ guidance handles that case.
 	if cfg.Timezone == "" {
-		return false, "no_tz", nil
+		return false, "no_tz"
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
 	complete, backfilled, err := db.EnergyBackfillCoverage(ctx)
 	if err != nil {
-		return false, "query_error", err
+		return false, "query_error"
 	}
 	if complete < energyBackfillNudgeMinCompleteDays {
-		return false, "not_enough_data", nil
+		// Below this, personal verdict bands wouldn't activate
+		// even after backfill — nudging is premature.
+		return false, "not_enough_data"
 	}
 	if backfilled >= energyBackfillNudgeMaxBackfilled {
-		return false, "already_backfilled", nil
+		// User clearly already pressed the button. Live ingest writes
+		// ~12 snapshots/day too, but those aren't flagged `backfilled`
+		// — so >=10 here means a real retrospective run happened.
+		return false, "already_backfilled"
 	}
+	return true, ""
+}
 
-	msg := formatEnergyBackfillNudge(complete, backfilled, cfg.Lang, baseURL)
-	return true, "sent", bot.Send(msg)
+func energyBackfillNudgeRender(ctx context.Context, db *storage.DB, cfg Config, baseURL string) (string, error) {
+	// Re-query here rather than threading the counts from
+	// Eligible() — the framework calls Eligible+Render back-to-back
+	// inside one ctx, so the extra query is microseconds and the
+	// signature simplification is worth it. If we ever needed
+	// Eligible→Render value passing we'd evolve the framework, not
+	// hack this one notification.
+	complete, backfilled, err := db.EnergyBackfillCoverage(ctx)
+	if err != nil {
+		return "", err
+	}
+	return formatEnergyBackfillNudge(complete, backfilled, cfg.Lang, baseURL), nil
 }
 
 func formatEnergyBackfillNudge(complete, backfilled int, lang, baseURL string) string {
@@ -81,43 +93,4 @@ func formatEnergyBackfillNudge(complete, backfilled int, lang, baseURL string) s
 	link := strings.TrimSuffix(baseURL, "/") + "/settings"
 	fmt.Fprintf(&sb, `<a href="%s">%s</a>`, link, tr(lang, "tg_energy_backfill_nudge_cta"))
 	return sb.String()
-}
-
-// reNudgeInterval is the minimum gap between two nudges. The intent
-// is "remind weekly while preconditions hold, then go silent on
-// success". 7 days mirrors the weekly digest cadence; users who
-// dismiss the first nudge get a second one the following week and
-// no more after that round of backfill completes.
-const reNudgeInterval = 7 * 24 * time.Hour
-
-// MaybeSendEnergyBackfillNudge sends the nudge if preconditions hold
-// AND we haven't sent one in the last 7 days. Idempotent. Safe to
-// call from the morning scheduler tick.
-//
-// baseURL is the install's public URL (without trailing slash) so
-// the link in the Telegram message points at the right host. The
-// caller (cmd/server/main.go) reads it from the BASE_URL env var
-// the same way the MCP server endpoint does.
-func MaybeSendEnergyBackfillNudge(bot *Bot, db *storage.DB, cfg Config, baseURL string) {
-	loc := cfg.location()
-	now := time.Now().In(loc)
-	today := now.Format("2006-01-02")
-
-	if last := db.GetSetting(energyBackfillNudgeSentKey, ""); last != "" {
-		// Date parses are forgiving — if a previous version wrote
-		// something else, just treat it as "long ago".
-		if t, err := time.ParseInLocation("2006-01-02", last, loc); err == nil {
-			if now.Sub(t) < reNudgeInterval {
-				return
-			}
-		}
-	}
-
-	sent, _, err := SendEnergyBackfillNudge(bot, db, cfg, baseURL)
-	if err != nil {
-		return
-	}
-	if sent {
-		db.SaveSettings(map[string]string{energyBackfillNudgeSentKey: today})
-	}
 }

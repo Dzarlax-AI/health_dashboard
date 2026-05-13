@@ -611,18 +611,19 @@ func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager,
 	cap := ncfg.MorningCapTime(time.Now())
 	log.Printf("morning smart-retry: window until %s", cap.Format("15:04"))
 
-	// Weekly data-quality digest — fires once on the configured day-of-week
-	// (default Monday). Sent before the morning report so it lands in its own
-	// notification rather than mingling with sleep numbers.
-	notify.MaybeSendWeeklyDigest(bot, db, ncfg)
-
-	// EnergyBank onboarding nudge — fires at most once per 7 days while
-	// the tenant has ≥30 days of complete daily_scores but <10
-	// backfilled snapshots. Sent before the morning report so it
-	// lands in its own message rather than mingling with sleep
-	// numbers, and so the user is more likely to act on it during
-	// their morning routine. Silent no-op once preconditions clear.
-	notify.MaybeSendEnergyBackfillNudge(bot, db, ncfg, baseURL)
+	// Proactive notifications — registered at init() time by each
+	// rule's own file (weekly digest, EnergyBank backfill nudge,
+	// future illness / HRV crash / streak rules). MaybeFireAll
+	// walks the registry, honours per-rule cadence + eligibility,
+	// and never bubbles errors so a misbehaving rule can't break
+	// the morning report path. Sent before the morning report so
+	// each lands in its own Telegram notification rather than
+	// mingling with sleep numbers.
+	//
+	// See internal/notify/proactive.go for the registration
+	// contract and the migration story (LegacyKey field is the
+	// "don't re-fire today" lifeline for pre-framework data).
+	notify.MaybeFireAll(bot, db, ncfg, baseURL)
 
 	for {
 		today := time.Now().In(loc).Format("2006-01-02")
