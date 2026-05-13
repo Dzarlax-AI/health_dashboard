@@ -1,4 +1,4 @@
-# Stress Measurement — methodology (DRAFT, not committed)
+# Stress Measurement — methodology
 
 Status: methodology design draft. **Canonical source** for the v2.2
 autonomic-load drain term and stratified stress flags. Companion to
@@ -19,8 +19,10 @@ methodology read isn't blocked on chasing them from other files:
    heart_rate, not a resting baseline. v2.2 must NOT consume this
    column as `RHR_baseline`. Either (a) fix the column to compute
    from overnight low-HR windows, or (b) introduce a separate
-   `baseline_hr_overnight` (median of 03:00–06:00 HR, see §4.1) and
-   route v2.2 to it. Pick one path, do not run both in parallel.
+   `baseline_hr_overnight` (median HR over the last 3 hours of the
+   main sleep segment, with `03:00–06:00` fallback only when sleep
+   data is imputed/stale; see §4.1) and route v2.2 to it. Pick one
+   path, do not run both in parallel.
 2. **Awake window definition.** Default `07:00–22:00` is a stopgap.
    Real awake window must derive from `sleep_analysis` **for the
    specific date d**. Algorithm — NOT "first asleep segment after
