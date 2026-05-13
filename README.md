@@ -332,6 +332,8 @@ DATABASE_URL=postgres://... go run ./cmd/import --file path/to/export.zip
 
 The import streams the XML to avoid memory issues with large files. Percentage metrics (SpO2, body fat, walking asymmetry, etc.) are automatically normalized from Apple Health's fraction format (0.96) to percentage scale (96%).
 
+After import, run `make energy-backfill` (CLI) or open **Settings → Historical EnergyBank** (web UI) to compute retrospective EnergyBank snapshots from the imported daily scores. This unlocks per-user verdict band calibration; without it, the cold-start defaults are used until the live orchestrator has accumulated 30+ days of snapshots on its own.
+
 ## Multi-Device Source Priority
 
 When multiple devices record overlapping data (Apple Watch, iPhone, RingConn), the system selects one source per metric per day:
