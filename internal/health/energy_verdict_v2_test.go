@@ -91,13 +91,24 @@ func TestChooseVerdictV2_PersonalBandsShiftOutcome(t *testing.T) {
 	}
 }
 
-func TestBuildVerdictReasonV2_EmbedsBankNotV1Current(t *testing.T) {
+func TestBuildVerdictReasonV2_RendersQualitative(t *testing.T) {
+	// v1→v2 cutover removed numeric embeds from the templates because
+	// they conflicted with the "bank/capacity" pair on the hero bar
+	// (e.g. "bar shows 55/83, text says 55% capacity" reads as a
+	// math error). Templates are now qualitative; the bar carries the
+	// number. Sanity-check that the reason renders non-empty and
+	// doesn't accidentally still embed a stray %d (Sprintf with
+	// unmatched arg leaves "%!(EXTRA int=...)" trail).
 	ls := GetStrings("en")
 	reason := BuildVerdictReasonV2("active_recovery", 47, 0.0, ls)
-	// "47%" must appear since active_recovery uses energy_reason_low_capacity
-	// which is "Only %d%% capacity left after today's load".
-	if !contains(reason, "47") {
-		t.Errorf("reason should embed v2 bank value 47, got: %q", reason)
+	if reason == "" {
+		t.Errorf("reason should be non-empty for active_recovery")
+	}
+	if contains(reason, "%!") {
+		t.Errorf("reason contains Sprintf leftover, template/caller mismatch: %q", reason)
+	}
+	if contains(reason, "47") {
+		t.Errorf("reason should not embed numeric bank value 47 (qualitative templates only), got: %q", reason)
 	}
 }
 

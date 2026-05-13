@@ -232,24 +232,29 @@ func ChooseVerdictV2(hrvZRaw float64, bank int, bands VerdictBands) string {
 // "high_stress" path activates on hrvZRaw ≤ rest band; everything
 // else uses bank-derived templates.
 func BuildVerdictReasonV2(verdict string, bank int, hrvZRaw float64, ls LangStrings) string {
+	// `bank` retained on the signature for forward compatibility —
+	// future templates may reintroduce a numeric reference once the
+	// hero bar's layout is reworked, and removing the parameter now
+	// would force a downstream churn revert. The current templates
+	// are qualitative; the bar carries the number.
+	_ = bank
 	switch verdict {
 	case "push_hard":
-		return fmt.Sprintf(ls["energy_reason_full_capacity"], bank)
+		return ls["energy_reason_full_capacity"]
 	case "rest":
 		if hrvZRaw <= hrvZRestBand {
-			// "high stress" template needs (hrvZ, stress%) but we no
-			// longer compute stress as a separate score in v2; pass
-			// 0 as the stress percentile placeholder. The translation
-			// templates have been audited to render acceptably when
-			// the second %d slot is 0 — if a future i18n revision
-			// breaks that assumption, the fallback below kicks in.
+			// high_stress template still takes (HRV SD, stress score).
+			// v2 doesn't compute stress as a separate percentile yet
+			// (see STRESS_MEASUREMENT.md §4.3 for the planned shape);
+			// pass 0 until v2.2 fills it in. Templates render
+			// acceptably with stress=0 (audited en/ru/sr).
 			return fmt.Sprintf(ls["energy_reason_high_stress"], hrvZRaw, 0)
 		}
-		return fmt.Sprintf(ls["energy_reason_low_capacity"], bank)
+		return ls["energy_reason_low_capacity"]
 	case "active_recovery":
-		return fmt.Sprintf(ls["energy_reason_low_capacity"], bank)
+		return ls["energy_reason_low_capacity"]
 	default: // moderate
-		return fmt.Sprintf(ls["energy_reason_optimal"], bank)
+		return ls["energy_reason_optimal"]
 	}
 }
 
@@ -259,14 +264,25 @@ func buildVerdictReason(
 	verdict string, current, capacity, strain, stress int, hrvZRaw float64,
 	ls LangStrings,
 ) string {
+	// `current` and `capacity` no longer feed the reason text — the v1
+	// → v2 cutover removed the "%d%% capacity" numbers from the
+	// energy_reason_* templates because they conflicted with the
+	// "bank / capacity" pair already rendered in the hero bar
+	// ("55/83" vs "55% capacity left" reads as a math error).
+	// Templates are now qualitative ("Reserve is low") and the
+	// quantitative state lives on the bar where users expect it.
+	// strain/stress still appear in the high-stress and acwr-spike
+	// branches because those numbers don't surface elsewhere.
+	_ = current
+	_ = capacity
 	switch verdict {
 	case "push_hard":
-		return fmt.Sprintf(ls["energy_reason_full_capacity"], current)
+		return ls["energy_reason_full_capacity"]
 	case "rest":
 		if hrvZRaw <= hrvZRestBand {
 			return fmt.Sprintf(ls["energy_reason_high_stress"], hrvZRaw, stress)
 		}
-		return fmt.Sprintf(ls["energy_reason_low_capacity"], current)
+		return ls["energy_reason_low_capacity"]
 	case "active_recovery":
 		if stress >= 50 {
 			return fmt.Sprintf(ls["energy_reason_high_stress"], hrvZRaw, stress)
@@ -274,8 +290,8 @@ func buildVerdictReason(
 		if strain >= 80 {
 			return fmt.Sprintf(ls["energy_reason_acwr_spike"], float64(strain))
 		}
-		return fmt.Sprintf(ls["energy_reason_low_capacity"], current)
+		return ls["energy_reason_low_capacity"]
 	default: // moderate
-		return fmt.Sprintf(ls["energy_reason_optimal"], current)
+		return ls["energy_reason_optimal"]
 	}
 }

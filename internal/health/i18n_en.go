@@ -161,9 +161,9 @@ var en = LangStrings{
 	"energy_verdict_active_recovery": "Active recovery only",
 	"energy_verdict_rest":            "Rest day",
 
-	"energy_reason_full_capacity": "%d%% capacity left and HRV is at or above your norm — green light for a hard session.",
-	"energy_reason_optimal":       "%d%% capacity left and stress markers are clean — a normal training day is fine.",
-	"energy_reason_low_capacity":  "Only %d%% capacity left after today's load — keep intensity light.",
+	"energy_reason_full_capacity": "Plenty in the tank and HRV is at or above your norm — green light for a hard session.",
+	"energy_reason_optimal":       "Reserve is solid and stress markers are clean — a normal training day is fine.",
+	"energy_reason_low_capacity":  "Reserve is low after today's load — keep intensity light.",
 	"energy_reason_high_stress":   "HRV %.1f SD off baseline and stress score %d — autonomic load is elevated.",
 	"energy_reason_acwr_spike":    "Today's load is already %.0f%% of your 28-day average — a hard session would push the spike further.",
 

@@ -120,6 +120,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/ai-models", h.adminGuard(h.adminAIModels))
 	mux.HandleFunc("/api/admin/users", h.adminGuard(h.adminUsers))
 	h.registerImportRoutes(mux)
+	h.registerEnergyBackfillRoutes(mux)
 }
 
 // tenantDB returns the tenant DB stored in the request context by guard().

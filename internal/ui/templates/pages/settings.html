@@ -59,8 +59,12 @@
             </select>
           </div>
           <div class="admin-field-row">
-            <label class="admin-field-label">{{T .Lang "admin_notify_timezone"}}</label>
+            <label class="admin-field-label">
+              {{T .Lang "admin_notify_timezone"}}
+              <span id="cfg-tz-required" style="display:none;color:var(--bad);font-weight:600;font-size:12px;margin-left:6px">*</span>
+            </label>
             <input class="admin-field-input" type="text" id="cfg-timezone" autocomplete="off" placeholder="Europe/Belgrade">
+            <div id="cfg-tz-hint" class="admin-field-hint" style="font-size:12px;color:var(--text-secondary);margin-top:4px">{{T .Lang "admin_notify_timezone_hint"}}</div>
           </div>
           <div class="admin-field-group-title">{{T .Lang "admin_notify_schedule_morning"}}</div>
           <div class="admin-field-row-pair">
@@ -98,6 +102,25 @@
           </div>
         </div>
         <div id="admin-notify-msg" style="display:none"></div>
+      </div>
+
+      <!-- Historical EnergyBank backfill -->
+      <div class="admin-section" id="admin-energy-backfill-section">
+        <div class="section-title">{{T .Lang "admin_energy_backfill_title"}}</div>
+        <div class="admin-import-body">
+          <div class="admin-import-desc">{{T .Lang "admin_energy_backfill_desc"}}</div>
+          <div id="energy-backfill-summary" class="admin-field-hint" style="font-size:13px;color:var(--text-secondary);margin:8px 0">{{T .Lang "admin_energy_backfill_loading"}}</div>
+          <div class="admin-settings-actions">
+            <button class="btn btn--primary btn--small" onclick="runEnergyBackfill()" id="btn-energy-backfill" disabled>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 12a9 9 0 1 0 9-9"/><polyline points="3 4 3 10 9 10"/></svg>
+              {{T .Lang "admin_energy_backfill_run"}}
+            </button>
+          </div>
+          <div id="energy-backfill-progress" style="display:none;margin-top:12px">
+            <div class="import-progress-bar-track"><div class="import-progress-bar-fill" id="energy-backfill-bar"></div></div>
+            <div id="energy-backfill-status-text" class="import-status-text"></div>
+          </div>
+        </div>
       </div>
 
     </div>
@@ -167,12 +190,38 @@ function loadSettings() {
       if (d.telegram_token) $('cfg-telegram-token').value = d.telegram_token;
       if (d.telegram_chat_id) $('cfg-telegram-chat-id').value = d.telegram_chat_id;
       if (d.report_lang) $('cfg-report-lang').value = d.report_lang;
-      if (d.timezone) $('cfg-timezone').value = d.timezone;
+      if (d.timezone) {
+        $('cfg-timezone').value = d.timezone;
+      } else {
+        // No TZ set yet — prefill the input with the browser's
+        // detected zone so the user can save it with one click. We
+        // don't auto-save: the user might be configuring Maria's
+        // account from his own browser, in which case the detected
+        // zone is wrong. Showing it as a placeholder-like default
+        // value is the cheapest way to nudge the right answer
+        // without overriding deliberate choices.
+        try {
+          var detected = Intl.DateTimeFormat().resolvedOptions().timeZone;
+          if (detected) $('cfg-timezone').value = detected;
+        } catch(e) { /* old browser, skip */ }
+      }
       if (d.report_morning_weekday) $('cfg-morning-weekday').value = d.report_morning_weekday;
       if (d.report_morning_weekend) $('cfg-morning-weekend').value = d.report_morning_weekend;
       if (d.report_evening_weekday) $('cfg-evening-weekday').value = d.report_evening_weekday;
       if (d.report_evening_weekend) $('cfg-evening-weekend').value = d.report_evening_weekend;
+      updateTZRequired();
     });
+}
+
+function updateTZRequired() {
+  // Show the red "*" marker beside the TZ label whenever the field
+  // is empty. The backfill button gates on this — it's the only
+  // cross-section dependency in /settings, surface it explicitly so
+  // users don't have to scroll up and down hunting for what's
+  // blocking them.
+  var hasTZ = !!$('cfg-timezone').value.trim();
+  $('cfg-tz-required').style.display = hasTZ ? 'none' : '';
+  refreshEnergyBackfillButton();
 }
 
 function saveNotifySettings() {
@@ -209,6 +258,145 @@ function triggerTestNotify(kind) {
     });
 }
 
-document.addEventListener('DOMContentLoaded', loadSettings);
+// --- Historical EnergyBank backfill ---
+
+var energyBackfillState = {
+  tz: '',
+  earliest: '',
+  yesterday: '',
+  complete: 0,
+  backfilled: 0,
+  running: false
+};
+
+function loadEnergyBackfillSummary() {
+  fetch('/api/settings/energy-backfill/summary')
+    .then(function(r){return r.json()})
+    .then(function(d) {
+      energyBackfillState.tz = d.tz || '';
+      energyBackfillState.earliest = d.earliest_complete || '';
+      energyBackfillState.yesterday = d.yesterday_in_tz || '';
+      energyBackfillState.complete = d.complete_daily_scores || 0;
+      energyBackfillState.backfilled = d.backfilled_snapshots || 0;
+      renderEnergyBackfillSummary();
+      refreshEnergyBackfillButton();
+    })
+    .catch(function() {
+      $('energy-backfill-summary').textContent = '{{T .Lang "admin_energy_backfill_load_error"}}';
+    });
+  // Also check if a job is already running (e.g. user reloaded
+  // the page while it was in flight) so the UI hydrates correctly.
+  fetch('/api/settings/energy-backfill/status')
+    .then(function(r){return r.json()})
+    .then(function(s) {
+      if (s.running) {
+        energyBackfillState.running = true;
+        $('energy-backfill-progress').style.display = '';
+        renderEnergyBackfillProgress(s);
+        pollEnergyBackfillStatus();
+      }
+    });
+}
+
+function renderEnergyBackfillSummary() {
+  var s = energyBackfillState;
+  var msg = '{{T .Lang "admin_energy_backfill_summary"}}'
+    .replace('{complete}', s.complete)
+    .replace('{backfilled}', s.backfilled)
+    .replace('{earliest}', s.earliest || '—')
+    .replace('{to}', s.yesterday || '—');
+  $('energy-backfill-summary').textContent = msg;
+}
+
+function refreshEnergyBackfillButton() {
+  var btn = $('btn-energy-backfill');
+  if (!btn) return;
+  var hasTZ = !!$('cfg-timezone').value.trim();
+  var hasData = energyBackfillState.complete > 0;
+  if (energyBackfillState.running) {
+    btn.disabled = true;
+    btn.title = '{{T .Lang "admin_energy_backfill_running"}}';
+  } else if (!hasTZ) {
+    btn.disabled = true;
+    btn.title = '{{T .Lang "admin_energy_backfill_need_tz"}}';
+  } else if (!hasData) {
+    btn.disabled = true;
+    btn.title = '{{T .Lang "admin_energy_backfill_no_data"}}';
+  } else {
+    btn.disabled = false;
+    btn.title = '';
+  }
+}
+
+function runEnergyBackfill() {
+  if (!confirm('{{T .Lang "admin_energy_backfill_confirm"}}')) return;
+  energyBackfillState.running = true;
+  refreshEnergyBackfillButton();
+  $('energy-backfill-progress').style.display = '';
+  $('energy-backfill-status-text').textContent = '{{T .Lang "admin_energy_backfill_starting"}}';
+  fetch('/api/settings/energy-backfill', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'})
+    .then(function(r){
+      if (!r.ok && r.status !== 409) {
+        return r.text().then(function(t){ throw new Error(t); });
+      }
+      return r.json();
+    })
+    .then(function(s) {
+      renderEnergyBackfillProgress(s);
+      pollEnergyBackfillStatus();
+    })
+    .catch(function(e) {
+      energyBackfillState.running = false;
+      $('energy-backfill-status-text').textContent = 'Error: ' + e.message;
+      refreshEnergyBackfillButton();
+    });
+}
+
+function pollEnergyBackfillStatus() {
+  fetch('/api/settings/energy-backfill/status')
+    .then(function(r){return r.json()})
+    .then(function(s) {
+      renderEnergyBackfillProgress(s);
+      if (s.done || !s.running) {
+        energyBackfillState.running = false;
+        loadEnergyBackfillSummary();  // refresh counts after completion
+        return;
+      }
+      setTimeout(pollEnergyBackfillStatus, 1500);
+    })
+    .catch(function() { setTimeout(pollEnergyBackfillStatus, 3000); });
+}
+
+function renderEnergyBackfillProgress(s) {
+  var p = s.progress || {};
+  var bar = $('energy-backfill-bar');
+  if (p.total > 0) {
+    bar.style.width = Math.min(100, (p.done / p.total * 100)).toFixed(1) + '%';
+  }
+  var text = $('energy-backfill-status-text');
+  if (s.done) {
+    var msg = '{{T .Lang "admin_energy_backfill_done"}}'
+      .replace('{ok}', p.ok || 0)
+      .replace('{skipped}', p.skipped || 0)
+      .replace('{errors}', p.errors || 0);
+    if (s.error) msg += ' · ' + s.error;
+    text.textContent = msg;
+  } else {
+    var msg = '{{T .Lang "admin_energy_backfill_progress"}}'
+      .replace('{done}', p.done || 0)
+      .replace('{total}', p.total || 0)
+      .replace('{ok}', p.ok || 0);
+    text.textContent = msg;
+  }
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  loadSettings();
+  loadEnergyBackfillSummary();
+  // Re-check the button state whenever the TZ input changes,
+  // so the user sees the gate clear without saving first.
+  var tzInput = document.getElementById('cfg-timezone');
+  if (tzInput) tzInput.addEventListener('input', updateTZRequired);
+});
 </script>
 {{end}}
