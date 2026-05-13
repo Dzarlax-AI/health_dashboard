@@ -4,7 +4,7 @@ Status: design, not implemented. v1 (current `internal/health/energy.go`) is a s
 
 ## Model
 
-```
+```text
 bank[t] = bank[t−1] + restore(t−1 → t) − drain(t−1 → t)
 ```
 
@@ -50,7 +50,7 @@ Project convention elsewhere is `date TEXT`; v2 keeps the column for query ergon
 
 Initial flag set for v2.0:
 
-```
+```text
 imputed_sleep      — SQ came from 7d trailing average (sensor data missing)
 imputed_activity   — drain came from 7d trailing average
 recovering         — within 3 days of stale-state recovery, computed via re-bootstrap
@@ -82,20 +82,36 @@ Hooked into the existing ingest path (`onNewData()` in `cmd/server/main.go`). No
 
 ## Drain & restore — formulas
 
-### Drain — additive (kcal + HR-baseline term)
+### Drain — additive (kcal + autonomic load term)
 
-```
+**Paradigm shift from v1.** `internal/health/energy.go` (v1, legacy)
+treats stress as a *multiplier* on physical strain:
+`drain = strain · (1 + 0.5 · stress/100)`. v2 abandons this:
+autonomic load is its **own additive expense** alongside calories,
+not a tax on movement. The consequence — a stressful sedentary day
+with `active_kcal ≈ 0` produces **non-zero drain in v2** but
+near-zero drain in v1, because v1 multiplies a small number by a
+factor and stays small. This is the central methodological reason
+v2 exists; reviewers migrating logic from v1 should expect different
+distributions per category of day, not just "the same numbers
+shifted".
+
+
+
+```text
 drain(Δt) = α · active_energy_kcal[Δt]
-          + β · max(0, HR_avg[Δt] − RHR_baseline) · duration_min[Δt]
+          + β · sustained_hr_load[Δt]      # v2.2, off by default
 ```
 
-In v2.0 launch ship with `α ≈ 0.08, β = 0` — calories alone are sufficient for non-athletic profiles, and validated by simulation against 31 days of historical data (`/tmp/calibrate_v2.py`, see Validation section). The `β`-term schema stays in `components JSONB` from day one because it covers the *illness/stress* signal kcal misses: high RHR with normal calories (fever, acute stress) should drain. Activated in v2.2 when HR-per-hour reads are wired in.
+In v2.0 launch ship with `α ≈ 0.08, β = 0` — calories alone are sufficient for non-athletic profiles, and validated by simulation against 31 days of historical data (`/tmp/calibrate_v2.py`, see Validation section). The `β`-term schema stays in `components JSONB` from day one because it covers the *autonomic load* signal kcal misses: elevated daytime HR with normal calories (sustained stress, illness onset, acute anxiety) should drain.
+
+Activated in v2.2. The exact shape of `sustained_hr_load` — hourly z-shift integration against a personal MAD-based awake baseline, with a coverage gate — is **defined in [STRESS_MEASUREMENT.md](STRESS_MEASUREMENT.md) §4.4**. This file does not duplicate that definition; the components JSONB carries both the canonical `sustained_hr_load_z` value used for drain and a parallel `hr_overshoot_bpm_hours` for human-readable audit ("HR ran ~8 bpm above your normal for 4 hours"). Raw `HR − RHR` is **not** the canonical signal — see the superseded `ENERGY_BANK_V2_2_DRAFT.md` for the historical proposal and why it was replaced.
 
 ### Restore — asymptotic (Garmin Body Battery style)
 
 **Not** an additive `capacity = bank_yesterday + restore_units`. Sleep refills the bank toward 100 as an asymptote — the closer to full, the smaller the dose:
 
-```
+```text
 sleep_quality ∈ [0, 1] = duration_factor · efficiency_factor · structure_factor
    duration_factor   = clamp01(sleep_total_h / 8)
    efficiency_factor = sleep_total / (sleep_total + sleep_awake)
@@ -117,7 +133,7 @@ The asymptotic restore is a contraction mapping: any seed gets exponentially for
 
 This means **no seed state needs to be persisted**. On every recompute, walk forward through the last 14 days of history starting from a hard-coded `bank = 50`:
 
-```
+```text
 function compute_today_bank():
     bank = 50.0                              # convergence-erased seed
     for day in metric_points.last_14_days:
@@ -142,7 +158,7 @@ A 90-day cross-user prototype run (two tenants: `health` and `health_mariia`) re
 
 **Fix: trailing-average imputation when input is missing.**
 
-```
+```text
 if sleep_metrics missing for day d:
    sq[d] = avg(sleep_quality over last 7 days with valid, NON-IMPUTED data)
    snapshot.flags |= 'imputed_sleep'
@@ -176,7 +192,7 @@ Note: `stale` here (5-day threshold) is intentionally tighter than RHR baseline 
 
 The same cross-user run also exposed a gap in the v2.5 calibration rubric. On tenant 2, HRV correlation was r=+0.017 across all alpha values (flat) — rubric correctly returned "do not auto-tune", but the *cause* was data gaps, not a calibration mismatch. These are different diagnoses requiring different actions.
 
-```
+```text
 preflight inside the v2.5 weekly calibrator:
   if missing_sleep_days_in_window / 30 > 0.1
      OR missing_activity_days_in_window / 30 > 0.1:
@@ -197,11 +213,11 @@ Distribution of `bank_eod` under asymptotic restore: min=3, p10=17, p25=34, medi
 
 **v2.0 — skeleton.** Schema + event-driven recompute + sleep-only restore + UI hourly chart in hero `<details>` + live read with compute-on-read. Constants set to plausible starting values, calibration deferred. Old `EnergyBank` formula and verdict thresholds stay live until v2.0 is validated; AI orchestrator continues reading the daily snapshot field.
 
-**v2.1 — calibration.** Run for 7+ days; tune α/β/quality_weight against the personal bank_eod histogram. Verdict thresholds (currently 25/45/60) re-derived from new distribution percentiles.
+**v2.1 — calibration.** Run for 7+ days; tune α and `quality_weight` against the personal bank_eod histogram. Verdict thresholds (currently 25/45/60) re-derived from new distribution percentiles. β stays at 0 (the autonomic-load term is a v2.2 piece, not v2.1) — tuning it here against pre-rubric data would fit it to whatever the bank already does, defeating the validation in STRESS_MEASUREMENT.md §4.5.
 
-**v2.2 — historical modulation.** ACWR (acute 7d / chronic 28d) multiplier on drain. HRV z-score amplifier on stress cost.
+**v2.2 — autonomic load drain term.** Adds the `β · sustained_hr_load` term to the drain formula — captures "stressful sedentary days" that `α · kcal` alone misses. Methodology, formula, and validation plan are owned by **[STRESS_MEASUREMENT.md](STRESS_MEASUREMENT.md)** (canonical); this file carries only the storage/integration shape. Ships behind feature flag `energy.stress_drain_enabled`, default off. Illness, recovery-debt, and acute-stress flags computed in the same pass but route to the **verdict layer**, not drain (no double-counting). Earlier v2.2 proposal — ACWR (acute 7d / chronic 28d) multiplier and HRV z-score amplifier — is deferred to v2.5+; multiplicative modulators on top of an uncalibrated additive base are premature.
 
-**v2.3 — daytime restore.** Low-HR / parasympathetic-dominant intervals restore bank in waking hours.
+**v2.3 — daytime restore + day-tagging.** Low-HR / parasympathetic-dominant intervals restore bank in waking hours. Adds `/admin` day-tagging UI (`alcohol`, `caffeine_high`, `illness_confirmed`, `travel`, `menstrual`) — tags do **not** modify drain (30d personal baseline already absorbs habitual intake; one-off events correctly read as deviation) but reshape verdict narrative ("elevated HR likely from alcohol metabolism, not sustained stress").
 
 **v2.4 — actionable hooks.** Once verdict shape is trustworthy, gate real behaviors (workout-type suggestion in morning report, calendar slot blocking, etc.).
 
@@ -209,7 +225,7 @@ Distribution of `bank_eod` under asymptotic restore: min=3, p10=17, p25=34, medi
 
 Original v2.5 design also planned to use next-day RHR as a second signal, but a 90-day prototype run on real data showed RHR sign-flips physiologically (vagal rebound after high load → next-morning RHR drops, not rises) and `daily_scores.rhr_avg` is an Apple Watch retrospective aggregate with timing lag. **Drop RHR from the personalization signal**; HRV alone is the cleaner residual. RHR may be reintroduced in v3.0 if a true *morning-only* RHR (first 2 hours after wake, from `metric_points`) is wired in as a separate metric.
 
-```
+```text
 for each user, on a 30-day rolling window:
    pairs = { (bank_eod[d], hrv[d+1]) for d in window }   # lag=+1, validated empirically as the signal peak
    r = pearson(pairs)
@@ -229,7 +245,7 @@ for each user, on a 30-day rolling window:
 
 **Storage shape — leaves slot for manual override without shipping it.** Two `settings` keys, not one:
 
-```
+```text
 energy.alpha_factor           NUMERIC  -- always read; default 1.0
 energy.alpha_factor_source    TEXT     -- 'default' | 'auto' | 'manual'
 ```
@@ -248,7 +264,7 @@ With one parameter and 30 observations against an external physiological signal,
 
 ## Out of scope for v2.0
 
-- **Per-user calibration tuning** at launch (everyone gets same starting α/β/quality_weight) — but constants live in `settings` table from day one, not as Go consts, so v2.1 can tune per-user without schema migration. "Athlete profile" preset becomes a v2.1+ feature.
+- **Per-user calibration tuning** at launch (everyone gets same starting α/β/quality_weight/z_threshold) — but constants live in `settings` table from day one, not as Go consts, so v2.1 can tune per-user without schema migration. β reserves the setting slot but stays at 0 effective until v2.2 ships and the §4.5 validation rubric passes; same for `z_threshold` and `stress_drain_enabled`. "Athlete profile" preset becomes a v2.1+ feature.
 - Workout-type detection (drain is HR/kcal driven, not exercise-class aware)
 - Real-time push notifications when bank drops below threshold
 - Migration of `daily_scores.energy_*` rows — left in place as-is; v2 starts writing alongside; `daily_scores` becomes a derived view of v2 snapshots in v2.1
@@ -297,3 +313,5 @@ These don't block v2.0 design but need resolution during build:
     ```
 
     `dirty` MUST be `atomic.Bool` (race detector will catch a plain `bool`). The 2s sleep is between passes, not before the first pass — first recompute is immediate, only repeats are debounced. Recompute is idempotent over source data (`onNewData()` fires after `InsertPoints` commit, so a parallel event sees the same or fresher `metric_points`); the dirty flag closes the microsecond race where an ingest commits after the current pass started reading. **Not a job queue** — queues add state, failure modes, and backpressure risk we don't need.
+
+    **HAE fragmented-burst caveat.** Health Auto Export occasionally syncs backlogs as 5–15 small POSTs spaced 3–8 seconds apart (typical pattern: phone reconnects to Wi-Fi after a few hours offline, HAE replays the buffered chunks one metric type at a time). With a 2s debounce, the worker can finish pass N, then 4s later pass N+1 fires on a partial-backlog state, then pass N+2 fires again. This is *correct* (each pass sees fresher data and the last one is authoritative) but wasteful — N extra recomputes per burst. Mitigation: bump debounce to **5s** if production telemetry shows >3 recomputes/burst on a typical HAE backlog sync, OR add an "ingest-burst-active" hint from `InsertPoints` that extends the sleep to 10s while the burst is in flight. Not pre-optimising — measure first; the worst case under 2s is still bounded (one recompute per actual data delta) and the bank value converges either way.
