@@ -467,9 +467,27 @@ func makeTestNotifyFn(db *storage.DB, mgr *tenants.Manager, schema string, notif
 		if kind == "evening" {
 			return notify.SendEvening(bot, db, ncfg)
 		}
-		// Resolve AI defaults fresh — picks up admin's global config
-		// even if the env was empty at process start.
-		ensureTodayAIInsight(db, mgr.AIDefaultsFor(context.Background(), schema), scfg.Lang)
+		// Test-notify renders the morning report from whatever AI
+		// blocks are already cached for today — no Gemini call.
+		//
+		// Before the v2 verdict cutover (PR #47) the recommendation
+		// hash was stable (action_verdict was always "rest" in v1's
+		// degenerate state), so calling ensureTodayAIInsight here
+		// was a near-free no-op. Post-cutover, action_verdict
+		// realistically rotates 1-3 times per day as bank crosses
+		// personal-band thresholds — and ensureTodayAIInsight then
+		// regenerates the recommendation block on every test click.
+		// That burned Gemini quota for what users reasonably expect
+		// to be a free "preview the morning report" button.
+		//
+		// The live morning scheduler still calls EnsureTodayAIInsight
+		// on its own tick (runMorningSmartRetry in this file), so the
+		// real morning report still gets the freshest AI blocks. The
+		// /api/ai-briefing endpoint also still drives async regen
+		// when the dashboard polls a cold cache. The "what's my
+		// state right now" query path (planned, not yet built) will
+		// regenerate intentionally. Only the explicit "test"
+		// admin button is now cache-only.
 		return notify.SendMorning(bot, db, ncfg)
 	}
 }
