@@ -194,4 +194,9 @@ var sr = LangStrings{
 	"tg_digest_missed":      "😴 <b>Noći bez podataka o snu</b>",
 	"tg_digest_watch_off":   "🔕 <b>Sat skinut:</b> oko %dh u ovom periodu",
 	"tg_digest_more_in_ui":  "<i>Detalji po redovima — u admin stranici.</i>",
+
+	// Onboarding nudge
+	"tg_energy_backfill_nudge_header": "📊 Istorijski EnergyBank te čeka",
+	"tg_energy_backfill_nudge_body":   "Imaš {complete} kompletnih dana istorije, ali samo {backfilled} backfilled snapshot-ova EnergyBank-a. Dok ne pokreneš backfill, pragovi verdikta (rest / moderate / push hard) koriste default vrednosti umesto tvoje lične distribucije — preporuke su pristrasne, Telegram izveštaji nedokalibrisani.",
+	"tg_energy_backfill_nudge_cta":    "Otvori Podešavanja → Istorijski EnergyBank",
 }
