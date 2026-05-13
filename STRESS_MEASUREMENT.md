@@ -80,7 +80,7 @@ Two implications for design:
    composite obscures which physiological process is loaded. The
    wearable-evaluation literature [[degruyter-2025]] is unanimous on
    this:
-   > Raw HRV and RHR показали significant associations с validated
+   > Raw HRV and RHR showed significant associations with validated
    > stress measures. **Proprietary composite algorithms lack
    > transparency and independent validation**. Composite scores add
    > questionable value over raw signals.
