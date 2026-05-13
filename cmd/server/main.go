@@ -161,7 +161,7 @@ func main() {
 		db.EnsureAIBriefingsTable()
 		db.EnsureAIBriefingBlocksTable()
 		db.EnsureEnergySnapshotsTable()
-		startTenant(ctx, mgr, db, u.SchemaName, envNotifyDefaults, envAIDefaults)
+		startTenant(ctx, mgr, db, u.SchemaName, envNotifyDefaults, envAIDefaults, baseURL)
 	}
 
 	if len(users) == 0 {
@@ -203,7 +203,7 @@ func main() {
 		db.EnsureAIBriefingsTable()
 		db.EnsureAIBriefingBlocksTable()
 		db.EnsureEnergySnapshotsTable()
-		startTenant(ctx, mgr, db, schema, envNotifyDefaults, envAIDefaults)
+		startTenant(ctx, mgr, db, schema, envNotifyDefaults, envAIDefaults, baseURL)
 	})
 	uiHandler.Register(mux)
 	mcpserver.Register(mux, mgr, baseURL)
@@ -263,7 +263,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 		AIDefaults:     aiDefaults,
 	})
 
-	go runReportScheduler(db, mgr, schema, notifyDefaults)
+	go runReportScheduler(db, mgr, schema, notifyDefaults, baseURL)
 	go runDailyQualityScan(db, schema, notifyDefaults)
 
 	mux := http.NewServeMux()
@@ -285,9 +285,11 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 }
 
 // startTenant launches the report scheduler for one tenant and runs a one-shot
-// startup cache refresh.
+// startup cache refresh. baseURL is plumbed through to the scheduler so
+// the EnergyBank-backfill onboarding nudge can embed a clickable
+// link back to the tenant's /settings page.
 func startTenant(ctx context.Context, mgr *tenants.Manager, db *storage.DB, schema string,
-	notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig) {
+	notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig, baseURL string) {
 
 	go func() {
 		time.Sleep(5 * time.Second)
@@ -318,7 +320,7 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, db *storage.DB, sche
 	})
 
 	_ = maybeFireMorningReport // triggered via onNewData in main mux
-	go runReportScheduler(db, mgr, schema, notifyDefaults)
+	go runReportScheduler(db, mgr, schema, notifyDefaults, baseURL)
 	go runDailyQualityScan(db, schema, notifyDefaults)
 }
 
@@ -549,7 +551,7 @@ func makeMorningTrigger(db *storage.DB, lock *int32, mgr *tenants.Manager, schem
 	}
 }
 
-func runReportScheduler(db *storage.DB, mgr *tenants.Manager, schema string, defaults storage.NotifyConfig) {
+func runReportScheduler(db *storage.DB, mgr *tenants.Manager, schema string, defaults storage.NotifyConfig, baseURL string) {
 	for {
 		cfg := db.GetNotifyConfig(defaults)
 		if !cfg.Enabled() {
@@ -582,7 +584,7 @@ func runReportScheduler(db *storage.DB, mgr *tenants.Manager, schema string, def
 		ncfg = buildNotifyCfg(db, cfg)
 		bot := notify.NewBot(cfg.Token, cfg.ChatID)
 		if isMorning {
-			runMorningSmartRetry(bot, db, mgr, schema, ncfg)
+			runMorningSmartRetry(bot, db, mgr, schema, ncfg, baseURL)
 		} else {
 			log.Println("report scheduler: sending evening report…")
 			if err := notify.SendEvening(bot, db, ncfg); err != nil {
@@ -597,7 +599,7 @@ func runReportScheduler(db *storage.DB, mgr *tenants.Manager, schema string, def
 // either the report has been sent (by this loop, or by the opportunistic
 // ingest trigger) or the cap time is reached. At the cap, it force-sends with
 // a stale-data banner so we never go a day without a morning report.
-func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager, schema string, ncfg notify.Config) {
+func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager, schema string, ncfg notify.Config, baseURL string) {
 	const tick = 15 * time.Minute
 
 	loc := time.Local
@@ -613,6 +615,14 @@ func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager,
 	// (default Monday). Sent before the morning report so it lands in its own
 	// notification rather than mingling with sleep numbers.
 	notify.MaybeSendWeeklyDigest(bot, db, ncfg)
+
+	// EnergyBank onboarding nudge — fires at most once per 7 days while
+	// the tenant has ≥30 days of complete daily_scores but <10
+	// backfilled snapshots. Sent before the morning report so it
+	// lands in its own message rather than mingling with sleep
+	// numbers, and so the user is more likely to act on it during
+	// their morning routine. Silent no-op once preconditions clear.
+	notify.MaybeSendEnergyBackfillNudge(bot, db, ncfg, baseURL)
 
 	for {
 		today := time.Now().In(loc).Format("2006-01-02")

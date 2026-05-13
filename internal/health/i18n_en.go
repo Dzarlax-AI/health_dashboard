@@ -216,4 +216,10 @@ var en = LangStrings{
 	"tg_digest_missed":      "😴 <b>Nights with no sleep data</b>",
 	"tg_digest_watch_off":   "🔕 <b>Watch off:</b> roughly %dh in this window",
 	"tg_digest_more_in_ui":  "<i>Open the admin page for full per-row details.</i>",
+
+	// Onboarding nudge — sent once per week while a tenant has ≥30 days
+	// of complete daily_scores but <10 backfilled energy_snapshots.
+	"tg_energy_backfill_nudge_header": "📊 Historical EnergyBank is waiting",
+	"tg_energy_backfill_nudge_body":   "You have {complete} days of complete health history but only {backfilled} EnergyBank snapshots from retrospective backfill. Until you run it, the verdict thresholds for rest / moderate / push hard use generic defaults instead of your personal distribution — meaning recommendations are biased and Telegram reports under-tune to your real fitness.",
+	"tg_energy_backfill_nudge_cta":    "Open Settings → Historical EnergyBank",
 }

@@ -194,4 +194,9 @@ var ru = LangStrings{
 	"tg_digest_missed":      "😴 <b>Ночи без данных о сне</b>",
 	"tg_digest_watch_off":   "🔕 <b>Часы сняты:</b> около %dч за период",
 	"tg_digest_more_in_ui":  "<i>Подробности по строкам — в админке.</i>",
+
+	// Onboarding nudge
+	"tg_energy_backfill_nudge_header": "📊 Исторический EnergyBank ждёт",
+	"tg_energy_backfill_nudge_body":   "У тебя {complete} полных дней истории, но всего {backfilled} backfilled-снимков EnergyBank. Пока не запустишь backfill, пороги вердикта (rest / moderate / push hard) работают на дефолтных значениях, а не на твоей личной шкале — рекомендации смещены, отчёты в Telegram недокалиброваны под твою реальную физиологию.",
+	"tg_energy_backfill_nudge_cta":    "Открыть Настройки → Исторический EnergyBank",
 }
