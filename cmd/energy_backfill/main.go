@@ -100,7 +100,7 @@ func main() {
 		// Trace every 10th date plus the final to keep stdout readable
 		// on long backfills (650+ days). Skipped/errored dates still
 		// surface via the per-row log lines inside the function.
-		if p.Done == p.Total || p.Done%10 == 1 {
+		if p.Done == p.Total || p.Done%10 == 0 {
 			log.Printf("  %d/%d  ok=%d skipped=%d errs=%d", p.Done, p.Total, p.OK, p.Skipped, p.Errors)
 		}
 	})

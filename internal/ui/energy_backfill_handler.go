@@ -5,11 +5,34 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
 	"health-receiver/internal/storage"
 )
+
+// backfillTimeout returns the per-job context cap. Configurable via
+// HEALTH_BACKFILL_TIMEOUT_MINUTES env var (default 60, clamp [1, 720]).
+// Separate function so the value is fresh on each job — operators can
+// raise it without restarting after tuning, the next kicked job sees
+// the new env. (Setting env vars in a running container is unusual but
+// the indirection costs nothing.)
+func backfillTimeout() time.Duration {
+	const def = 60
+	const maxMin = 720 // 12h hard ceiling — past that, run cmd/energy_backfill
+	v := os.Getenv("HEALTH_BACKFILL_TIMEOUT_MINUTES")
+	if v == "" {
+		return time.Duration(def) * time.Minute
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 || n > maxMin {
+		log.Printf("HEALTH_BACKFILL_TIMEOUT_MINUTES=%q ignored (must be int in [1, %d]); using %dm", v, maxMin, def)
+		return time.Duration(def) * time.Minute
+	}
+	return time.Duration(n) * time.Minute
+}
 
 // energyBackfillJob is the per-tenant running state of a backfill
 // triggered from the settings UI. Mirrors importJob's pattern in
@@ -131,6 +154,19 @@ func (h *Handler) energyBackfillStatus(w http.ResponseWriter, r *http.Request) {
 	schema := h.tenantSchema(r)
 	currentBackfillJobsMu.Lock()
 	job := currentBackfillJobs[schema]
+	// Opportunistic GC: drop job records that finished more than a
+	// day ago. The map is bounded by tenant count so the leak is
+	// small, but the UI hits this endpoint on every page load and a
+	// long-running server accumulates stale snapshots — the status
+	// payload then surfaces a "finished 30 days ago" panel that's
+	// indistinguishable from a fresh run from the front end's
+	// point of view. Deleting under the lock is safe because the
+	// running goroutine has long returned by the time `done=true`
+	// is set.
+	if job != nil && job.done && time.Since(job.finishedAt) > 24*time.Hour {
+		delete(currentBackfillJobs, schema)
+		job = nil
+	}
 	currentBackfillJobsMu.Unlock()
 	if job == nil {
 		jsonResponse(w, energyBackfillStatus{})
@@ -212,10 +248,17 @@ func (h *Handler) energyBackfillRun(w http.ResponseWriter, r *http.Request) {
 
 func runBackfillJob(db *storage.DB, schema, tz, from, to string, job *energyBackfillJob) {
 	// Use a context detached from the HTTP request so the goroutine
-	// outlives the connection that started it. 1h cap is plenty for
-	// the longest realistic backfill (~10 years × 1 query/day ≈ 3600
-	// queries, ~5ms each ≈ 18s wall) but bounds runaway loops.
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Hour)
+	// outlives the connection that started it.
+	//
+	// Default 1h cap is plenty for typical backfills (~10 years × 1
+	// query/day ≈ 3600 queries, ~5ms each ≈ 18s wall). Operators with
+	// multi-decade histories or congested DB pools can raise it via
+	// HEALTH_BACKFILL_TIMEOUT_MINUTES (parsed as integer minutes,
+	// clamped to [1, 720]). Out-of-range / unparseable values fall
+	// back to the default — better to start the job on a sane
+	// timeout than to fail loud over an env typo.
+	timeout := backfillTimeout()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	progress, err := db.BackfillEnergyRange(ctx, tz, from, to, false, func(p storage.EnergyBackfillProgress) {
