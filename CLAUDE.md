@@ -19,6 +19,10 @@ DATABASE_URL=postgres://... make import FILE=export.zip  # import Apple Health e
 
 Build is pure Go (no CGO). Uses `jackc/pgx/v5` for PostgreSQL. Docker images built via GitHub Actions.
 
+**Time zones:** the binary builds with `CGO_ENABLED=0` and the alpine runtime image has no system tzdata. `cmd/server/main.go` imports `_ "time/tzdata"` to embed the IANA database (~450KB). **Don't remove this import** — every TZ-aware feature (report scheduler, smart-retry timing, freshness banners, `energy_snapshots.date`) silently coerces to UTC without it, and most callers fall back to UTC on `LoadLocation` error so the breakage is invisible until you query a specific time-of-day-sensitive output.
+
+**JSONB writes via pgx:** wrap parameters in `json.RawMessage` (see `ai_briefing.go::SaveAIBriefing` for the canonical pattern). pgx v5 encodes a plain `[]byte` parameter as `bytea`, not `jsonb`, and Postgres rejects with `invalid input syntax for type json (SQLSTATE 22P02)`.
+
 ## Architecture
 
 Single binary HTTP server (`cmd/server/main.go`) that wires together several packages:
