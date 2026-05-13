@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -8,30 +9,11 @@ import (
 	"health-receiver/internal/storage"
 )
 
-// SendWeeklyDigest builds and sends the data-quality digest. Called from the
-// morning scheduler on a cadence (default Monday). No-op when there's nothing
-// to report — we don't want to train the user to ignore digest pings.
-//
-// Returns sent=false, reason="empty" when there are no findings, sent=false,
-// reason="not_enabled" when Telegram isn't configured.
-func SendWeeklyDigest(bot *Bot, db *storage.DB, cfg Config, days int) (bool, string, error) {
-	if !cfg.Enabled() {
-		return false, "not_enabled", nil
-	}
-	stats, err := db.WeeklyQualityReport(days)
-	if err != nil {
-		return false, "query_error", err
-	}
-	if !stats.HasFindings() {
-		return false, "empty", nil
-	}
-	msg := formatWeeklyDigest(stats, cfg.Lang)
-	return true, "sent", bot.Send(msg)
-}
-
 // SendWeeklyDigestForce sends regardless of findings — used by the admin
 // "send test digest" button. When stats are empty, an "all clean" message is
-// produced so the user sees the button worked.
+// produced so the user sees the button worked. The scheduled / cadence-aware
+// path lives in weeklyDigestRender (registered with the proactive framework
+// in init() below) — only the forced admin button calls in here directly.
 func SendWeeklyDigestForce(bot *Bot, db *storage.DB, cfg Config, days int) error {
 	if !cfg.Enabled() {
 		return fmt.Errorf("Telegram not configured")
@@ -114,36 +96,67 @@ func prettyMetric(m string) string {
 
 // ── scheduling ──────────────────────────────────────────────────────────────
 
-// digestSentSettingKey stores the date the last digest was sent. Date string,
-// not bool, so we can implement "weekly cadence" without a separate cron.
-const digestSentSettingKey = "weekly_digest_last_sent"
+// Pre-framework persistence key. Kept as the registered notification's
+// LegacyKey so a tenant that received this week's digest before the
+// framework rollout doesn't get a duplicate on the next morning tick.
+const legacyDigestSentKey = "weekly_digest_last_sent"
 
-// MaybeSendWeeklyDigest sends the digest if today is the configured day-of-week
-// and we haven't sent it yet today. Idempotent — safe to call from the morning
-// scheduler tick. The day-of-week is configurable via `weekly_digest_dow`
-// setting (0=Sunday … 6=Saturday); default Monday (1).
-func MaybeSendWeeklyDigest(bot *Bot, db *storage.DB, cfg Config) {
+// digestLookbackDays mirrors the value the pre-framework code passed
+// to SendWeeklyDigest. Hard-coded; if anyone ever wants it
+// configurable, push it into a setting rather than hop through env.
+const digestLookbackDays = 7
+
+func init() {
+	// Day-of-week is read at eligibility time so it can be tuned
+	// in the settings table without a restart. Cadence is 6 days
+	// (not 7) so a tenant who toggled their `weekly_digest_dow`
+	// mid-week still sees the digest on the new day — strict 7d
+	// would skip them if the new dow lands within the 7d window
+	// of the last send.
+	Register(ProactiveNotification{
+		Name:      "weekly_digest",
+		Cadence:   6 * 24 * time.Hour,
+		HourOfDay: -1,
+		LegacyKey: legacyDigestSentKey,
+		Eligible:  weeklyDigestEligible,
+		Render:    weeklyDigestRender,
+	})
+}
+
+func weeklyDigestEligible(ctx context.Context, db *storage.DB, cfg Config) (bool, string) {
 	loc := cfg.location()
 	now := time.Now().In(loc)
 
 	dow := db.GetSettingInt("weekly_digest_dow", 1) // Monday default
 	if int(now.Weekday()) != dow {
-		return
+		return false, "wrong_dow"
 	}
-	today := now.Format("2006-01-02")
-	if last := db.GetSetting(digestSentSettingKey, ""); last == today {
-		return
-	}
+	return true, ""
+}
 
-	sent, reason, err := SendWeeklyDigest(bot, db, cfg, 7)
+func weeklyDigestRender(ctx context.Context, db *storage.DB, cfg Config, baseURL string) (string, error) {
+	stats, err := db.WeeklyQualityReport(digestLookbackDays)
 	if err != nil {
-		// Log via caller's logger — return silently so the morning report
-		// flow isn't disrupted by a digest hiccup.
-		return
+		return "", err
 	}
-	if sent || reason == "empty" {
-		// Mark sent in both cases — "empty" still counts as "we did our weekly
-		// check today" so we don't keep retrying every tick.
-		db.SaveSettings(map[string]string{digestSentSettingKey: today})
+	if !stats.HasFindings() {
+		// Empty digest: don't message the user, but DO let the
+		// framework mark "sent" for the cadence. The pre-framework
+		// code did the same — preserves "we ran our weekly check
+		// today" semantics so we don't retry every tick.
+		//
+		// Implementation note: framework treats empty-string return
+		// from Render as "skip with no persist", but we want "skip
+		// the SEND but persist". The clean answer is to special-case
+		// empty findings here by sending a *no-op marker*: persist
+		// the date manually and return empty.
+		//
+		// Trade-off rejected: adding a third return value
+		// (sentBool) to Render polyfills every notification with a
+		// concept they don't need. Better to handle the digest's
+		// special case inline.
+		_ = db.SaveSettings(map[string]string{proactiveSentKey("weekly_digest"): time.Now().In(cfg.location()).Format("2006-01-02")})
+		return "", nil
 	}
+	return formatWeeklyDigest(stats, cfg.Lang), nil
 }

@@ -39,6 +39,21 @@ Single binary HTTP server (`cmd/server/main.go`) that wires together several pac
 
 - **`internal/notify`** — Telegram notification subsystem. Bot client (`telegram.go`) and report scheduler (`report.go`) with timezone-aware morning/evening scheduling. Config loaded from env vars with DB overrides.
 
+  **Proactive notifications** (one-off Telegram messages outside the morning/evening report cadence — onboarding nudges, illness flags, streak congrats, etc.) register via the framework in `proactive.go`:
+  ```go
+  func init() {
+      notify.Register(notify.ProactiveNotification{
+          Name:     "my_thing",                       // → settings key proactive_my_thing_last_sent
+          Cadence:  7 * 24 * time.Hour,
+          HourOfDay: -1,                              // -1 = any tick, 0..23 = specific hour-in-tenant-TZ
+          LegacyKey: "old_key_for_migration",         // optional, omit for new rules
+          Eligible:  func(ctx, db, cfg) (bool, string) { ... },
+          Render:    func(ctx, db, cfg, baseURL) (string, error) { ... },
+      })
+  }
+  ```
+  `MaybeFireAll` is called from the morning scheduler tick (see `runMorningSmartRetry` in `cmd/server/main.go`). It honours per-rule cadence + eligibility and never bubbles errors — a misbehaving rule cannot block the morning report path. Render returning `""` is treated as "skip with no persist" (idiomatic when the render itself re-evaluates a condition). See `digest.go` and `energy_nudge.go` for production examples.
+
 - **`internal/applehealth`** — streaming XML parser for Apple Health export files (`export.xml` or `.zip`). Memory-efficient, maps 100+ HK metric types to internal metric names. Normalizes fraction-based percentage metrics (SpO₂, body fat, etc.) to 0–100 scale during import.
 
 - **`cmd/backfill`** — standalone CLI to rebuild caches. Flags: `--force` / `-f`.
