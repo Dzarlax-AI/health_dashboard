@@ -92,7 +92,7 @@ Two implications for design:
 
 Sample counts as of 2026-05-12:
 
-```
+```text
 heart_rate              1 916 248 samples   2015-01-11 → present   high-density continuous (every few min)
 respiratory_rate           35 954 samples   2021-09-24 → present   ~daily aggregates
 blood_oxygen_saturation    32 830 samples   2020-12-31 → present
@@ -180,7 +180,7 @@ the baselines and validate them.
 
 For each user, compute daily:
 
-```
+```text
 baseline_hr_awake[d]     = median of hourly_metrics.heart_rate.avg_val
                            for hour-of-day ∈ awake_window[d]
                            over days [d−30, d−1]
@@ -244,7 +244,7 @@ metric_points overnight RHR samples on every recompute pass").
 
 ### 4.2. Daily deviations (per-day z-scores)
 
-```
+```text
 hr_shift[d]       = (today_awake_hr_avg − baseline_hr_awake[d]) / sd_hr_awake[d]
 rhr_shift[d]      = (today_overnight_rhr − baseline_hr_overnight[d]) / sd_hr_overnight[d]
                     // overnight RHR (median of 03:00–06:00 HR per §4.1),
@@ -271,7 +271,7 @@ defined in §4.4, not on a daily-average `hr_shift`. The daily
 UI / Telegram one-liners; flag logic must read the hourly array to
 distinguish "one 30-min spike" from "sustained 4h elevation".
 
-```
+```text
 acute_stress[d]       = exists window <2h where hr_z_hour[h] > +2
 sustained_load[d]     = hr_z_hour[h] > +1 sustained ≥4h consecutive
 illness_signature[d]  = (temp_shift > +1) AND (resp_shift > +1)
@@ -308,7 +308,7 @@ Each flag drives **distinct downstream behaviour**:
 
 Drain formula becomes:
 
-```
+```text
 drain_v22[d] = α · active_energy_kcal[d]
              + β · sustained_hr_load[d]
 
@@ -441,7 +441,7 @@ upload — pure internal automaton over the user's own history):
 |---|---|---|
 | `r ≤ −0.3` | At least one of {RHR, sleep} agrees in sign | **Validated** — β may be tuned per §6 Q3 calibration |
 | `−0.3 < r < −0.1` | At least two channels agree in sign | **Weak signal** — β stays at placeholder, surface `calibration_weak` flag, recheck weekly |
-| `|r| < 0.1` on channel 1 | — | **Inconclusive** — likely data sparsity (HRV samples < 15 in window) or low-variance lifestyle; β stays at 0, `data_quality_warn` flag |
+| `\|r\| < 0.1` on channel 1 | — | **Inconclusive** — likely data sparsity (HRV samples < 15 in window) or low-variance lifestyle; β stays at 0, `data_quality_warn` flag |
 | `r > 0` on channel 1 | — | **Wrong-direction** — formula isn't capturing this user's physiology; β suppressed, log diagnostic, escalate to manual review. Matches the `r < 0` (sign-flip) suppression in ENERGY_BANK.md §v2.5. |
 
 **HRV sparsity preflight.** Channel 1 requires a minimum sample

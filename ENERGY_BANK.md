@@ -4,7 +4,7 @@ Status: design, not implemented. v1 (current `internal/health/energy.go`) is a s
 
 ## Model
 
-```
+```text
 bank[t] = bank[t−1] + restore(t−1 → t) − drain(t−1 → t)
 ```
 
@@ -31,7 +31,7 @@ CREATE TABLE energy_snapshots (
 CREATE INDEX idx_energy_snapshots_date ON energy_snapshots (date DESC);
 CREATE INDEX idx_energy_snapshots_ts ON energy_snapshots (ts_bucket DESC);
 CREATE INDEX idx_energy_snapshots_flags ON energy_snapshots USING GIN (flags);
-```
+```text
 
 **`date` is computed in Go at write time, NOT a Postgres `GENERATED` column.** Reason: a generated column expression must be `IMMUTABLE`, which forces the timezone to be hardcoded in DDL — wrong for a per-tenant multi-tenant system. The tenant's TZ comes from `REPORT_TZ` (env var per tenant) or `settings.report_tz` (DB override, future v3.0). On write:
 
@@ -50,7 +50,7 @@ Project convention elsewhere is `date TEXT`; v2 keeps the column for query ergon
 
 Initial flag set for v2.0:
 
-```
+```text
 imputed_sleep      — SQ came from 7d trailing average (sensor data missing)
 imputed_activity   — drain came from 7d trailing average
 recovering         — within 3 days of stale-state recovery, computed via re-bootstrap
@@ -98,7 +98,7 @@ shifted".
 
 
 
-```
+```text
 drain(Δt) = α · active_energy_kcal[Δt]
           + β · sustained_hr_load[Δt]      # v2.2, off by default
 ```
@@ -111,7 +111,7 @@ Activated in v2.2. The exact shape of `sustained_hr_load` — hourly z-shift int
 
 **Not** an additive `capacity = bank_yesterday + restore_units`. Sleep refills the bank toward 100 as an asymptote — the closer to full, the smaller the dose:
 
-```
+```text
 sleep_quality ∈ [0, 1] = duration_factor · efficiency_factor · structure_factor
    duration_factor   = clamp01(sleep_total_h / 8)
    efficiency_factor = sleep_total / (sleep_total + sleep_awake)
@@ -133,7 +133,7 @@ The asymptotic restore is a contraction mapping: any seed gets exponentially for
 
 This means **no seed state needs to be persisted**. On every recompute, walk forward through the last 14 days of history starting from a hard-coded `bank = 50`:
 
-```
+```text
 function compute_today_bank():
     bank = 50.0                              # convergence-erased seed
     for day in metric_points.last_14_days:
@@ -158,7 +158,7 @@ A 90-day cross-user prototype run (two tenants: `health` and `health_mariia`) re
 
 **Fix: trailing-average imputation when input is missing.**
 
-```
+```text
 if sleep_metrics missing for day d:
    sq[d] = avg(sleep_quality over last 7 days with valid, NON-IMPUTED data)
    snapshot.flags |= 'imputed_sleep'
@@ -192,7 +192,7 @@ Note: `stale` here (5-day threshold) is intentionally tighter than RHR baseline 
 
 The same cross-user run also exposed a gap in the v2.5 calibration rubric. On tenant 2, HRV correlation was r=+0.017 across all alpha values (flat) — rubric correctly returned "do not auto-tune", but the *cause* was data gaps, not a calibration mismatch. These are different diagnoses requiring different actions.
 
-```
+```text
 preflight inside the v2.5 weekly calibrator:
   if missing_sleep_days_in_window / 30 > 0.1
      OR missing_activity_days_in_window / 30 > 0.1:
@@ -225,7 +225,7 @@ Distribution of `bank_eod` under asymptotic restore: min=3, p10=17, p25=34, medi
 
 Original v2.5 design also planned to use next-day RHR as a second signal, but a 90-day prototype run on real data showed RHR sign-flips physiologically (vagal rebound after high load → next-morning RHR drops, not rises) and `daily_scores.rhr_avg` is an Apple Watch retrospective aggregate with timing lag. **Drop RHR from the personalization signal**; HRV alone is the cleaner residual. RHR may be reintroduced in v3.0 if a true *morning-only* RHR (first 2 hours after wake, from `metric_points`) is wired in as a separate metric.
 
-```
+```text
 for each user, on a 30-day rolling window:
    pairs = { (bank_eod[d], hrv[d+1]) for d in window }   # lag=+1, validated empirically as the signal peak
    r = pearson(pairs)
@@ -245,7 +245,7 @@ for each user, on a 30-day rolling window:
 
 **Storage shape — leaves slot for manual override without shipping it.** Two `settings` keys, not one:
 
-```
+```text
 energy.alpha_factor           NUMERIC  -- always read; default 1.0
 energy.alpha_factor_source    TEXT     -- 'default' | 'auto' | 'manual'
 ```

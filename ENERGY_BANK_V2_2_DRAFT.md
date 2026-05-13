@@ -49,7 +49,7 @@ The bank doesn't move on these days, so a user can wake up with a "fresh" 70 aft
 
 ## v2.2 formula
 
-```
+```text
 drain_total = α · active_kcal + β · ∫ max(0, HR(t) − RHR) dt
 ```
 
@@ -59,7 +59,7 @@ Reserved in code comment ([energy_v2.go:57-61](internal/health/energy_v2.go)) bu
 
 Integration step (hourly):
 
-```
+```text
 hr_overshoot_hours = Σ_h max(0, HR_avg[h] − RHR_baseline) / 60   # bpm·hours
 drain_hr           = β · hr_overshoot_hours
 ```
@@ -89,7 +89,7 @@ New storage method (proposed):
 // readings) — caller treats that as "no HR signal, drain falls back
 // to v2.0 (kcal only)".
 func (s *DB) HourlyHROvershoot(ctx context.Context, date string, rhr float64) (float64, error)
-```
+```text
 
 Update `DrainV2` signature:
 
