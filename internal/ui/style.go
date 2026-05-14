@@ -151,7 +151,46 @@ body { min-height: 100vh; font-size: 15px; }
   font-size: 11px; font-weight: 600;
   padding: 2px 8px; border-radius: 10px;
   line-height: 1.5;
-  cursor: help;
+  cursor: pointer;
+  border: none;
+  font-family: inherit;
+}
+.stress-flag:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 1px;
+}
+.stress-flag--active {
+  box-shadow: 0 0 0 2px var(--text);
+}
+
+/* Detail card revealed when a chip is tapped. Pre-renders all
+   flag details inline (hidden); toggle handler swaps which one
+   is visible. Section headings (h5) come from the i18n HTML
+   block per flag. */
+.stress-flag-detail {
+  margin-top: 8px;
+  padding: 12px 14px;
+  background: var(--bg-secondary, rgba(0,0,0,0.03));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.stress-flag-detail h5 {
+  margin: 10px 0 2px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.stress-flag-detail h5:first-child {
+  margin-top: 0;
+}
+.stress-flag-detail p {
+  margin: 0 0 4px;
+}
+.stress-flag-detail p:last-child {
+  margin-bottom: 0;
 }
 .stress-flag--illness_signature { background: var(--low-bg);  color: var(--low); }
 .stress-flag--recovery_debt     { background: var(--fair-bg); color: var(--fair); }
