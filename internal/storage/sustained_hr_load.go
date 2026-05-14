@@ -68,36 +68,57 @@ func (s *DB) ComputeSustainedHRLoadForDate(
 	// the awake window to compute a trustworthy sustained-load
 	// integral. Flag and short-circuit before the heavier baseline
 	// query.
+	// HR coverage / baseline / series gates short-circuit the
+	// sustained_hr_load integral path. The §4.3 multi-channel flags
+	// (illness_signature, recovery_debt, parasympathetic_rebound)
+	// MUST still run on those days — temp/resp/HRV/overnight-RHR
+	// channels have their own §4.1 calibration state machines and
+	// shouldn't be silenced by an HR-only gate. Stash the gated flag
+	// and fall through to the shared multi-channel call below.
+	gated := ""
 	coverage, ok := s.HRCoverageHours(date, loc)
 	if !ok {
 		// Hard DB error — log already done by HRCoverageHours.
 		// Treat as "no data" rather than failing the orchestrator.
-		res.Flags = append(res.Flags, "stale_stress")
-		return res, true
+		gated = "stale_stress"
 	}
-	if coverage < health.MinHRCoverageHours {
-		res.Flags = append(res.Flags, "stale_stress")
-		return res, true
+	if gated == "" && coverage < health.MinHRCoverageHours {
+		gated = "stale_stress"
 	}
 
 	// Personal baseline (§4.1). Cold state (<3 samples) gates the
 	// channel; warmup state passes through with a flag so PR-9
 	// verdict layer softens the narrative.
-	bl, blOK := s.PersonalBaseline(date, ChannelHRAwake, 30, loc)
-	if !blOK {
-		res.Flags = append(res.Flags, "stale_stress")
-		return res, true
-	}
-	if bl.State == CalibrationWarmup {
-		res.Flags = append(res.Flags, "calibration_warmup")
+	var bl PersonalBaselineResult
+	if gated == "" {
+		var blOK bool
+		bl, blOK = s.PersonalBaseline(date, ChannelHRAwake, 30, loc)
+		if !blOK {
+			gated = "stale_stress"
+		} else if bl.State == CalibrationWarmup {
+			res.Flags = append(res.Flags, "calibration_warmup")
+		}
 	}
 
 	// Per-hour HR series over the awake window. WakeTimeForDate is
 	// invoked inside; imputed window → still works against fixed
 	// 07:00-22:00 fallback.
-	series, ok := s.HourlyHRSeriesForAwakeWindow(date, loc)
-	if !ok || len(series) == 0 {
-		res.Flags = append(res.Flags, "stale_stress")
+	var series []HourlyHRStat
+	if gated == "" {
+		series, ok = s.HourlyHRSeriesForAwakeWindow(date, loc)
+		if !ok || len(series) == 0 {
+			gated = "stale_stress"
+		}
+	}
+
+	if gated != "" {
+		res.Flags = append(res.Flags, gated)
+		// Multi-channel flags still apply — they read independent
+		// autonomic channels. Pass nil hourZ; meanFiniteHourZ
+		// returns ok=false on empty so parasympathetic_rebound is
+		// naturally skipped, while illness_signature / recovery_debt
+		// can still fire from temp/resp/HRV/overnight-RHR.
+		res.Flags = s.appendMultiChannelStressFlags(date, loc, nil, res.Flags)
 		return res, true
 	}
 
