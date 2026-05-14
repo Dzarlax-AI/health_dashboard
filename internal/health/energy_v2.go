@@ -54,31 +54,46 @@ func SleepQuality(totalH, deepH, remH, awakeH float64) float64 {
 	return durationFactor * efficiencyFactor * structureFactor
 }
 
-// DrainV2 computes the day's energy drain. v2.0 ships with the
-// calorie-only term active (alpha · active_kcal); the β · max(0, HR −
-// RHR) · duration term is reserved for v2.2 once HR-per-hour reads are
-// wired in. Keeping the signature stable now means later PRs add
-// inputs without breaking callers.
+// DrainV2 computes the day's energy drain.
 //
-// alpha is the personalised drain coefficient (EnergyConfig.EffectiveAlpha
-// in the storage layer). For v2.0 launch the default is 0.08 — see
-// ENERGY_BANK.md § Validation for the empirical derivation on 31 days
-// of historical data.
+//	drain = alpha · active_kcal  +  beta · sustained_hr_load
 //
-// Both inputs are floored at 0. Negative kcal would come from sensor
-// glitches; negative alpha would come from a calibrator bug or a manual
-// settings override gone wrong. Either would invert the formula's
-// semantics — drain becomes credit, "you exercised hard" becomes "have
-// some free energy" — so we refuse to integrate either sign and just
-// return 0.
-func DrainV2(activeKcal float64, alpha float64) float64 {
-	if activeKcal < 0 {
-		activeKcal = 0
+// The first term (v2.0) is the calorie-only baseline that has been
+// shipping since launch — α default 0.08 per ENERGY_BANK.md
+// § Validation. The second term (v2.2, STRESS_MEASUREMENT.md §4.4) is
+// the autonomic-load drain: integral of per-hour HR z-scores above
+// threshold over the awake window. Callers compute it via
+// `storage.ComputeSustainedHRLoadForDate` (or read the cached
+// `daily_scores.sustained_hr_load` column) and pass the z-load here.
+//
+// Both terms are gated on their respective effective coefficients.
+// The caller is responsible for passing `EnergyConfig.EffectiveBeta()`
+// (NOT raw Beta) — that helper returns 0 when StressDrainEnabled is
+// false, so v2.2 stays dormant for tenants whose §4.5 validation
+// rubric hasn't cleared yet (per §6 Q3). With beta=0 the formula
+// reduces exactly to v2.0, so bumping FormulaVersion 1→2 doesn't
+// change any user's bank values until they enable stress drain.
+//
+// All four inputs are floored at 0 AND NaN-tolerant. Negative
+// activeKcal / sustainedHRLoad would come from sensor glitches; a
+// negative alpha / beta would come from a calibrator bug or a manual
+// settings override gone wrong. Either path would invert the
+// formula's semantics — drain becomes credit, "you exercised hard"
+// becomes "have some free energy" — so we refuse to integrate either
+// sign and just drop that term to 0. NaN gets the same treatment
+// ("couldn't measure" must not become "give the user free energy").
+func DrainV2(activeKcal, sustainedHRLoad, alpha, beta float64) float64 {
+	kcalTerm := 0.0
+	if !math.IsNaN(activeKcal) && !math.IsInf(activeKcal, 0) && activeKcal > 0 &&
+		!math.IsNaN(alpha) && !math.IsInf(alpha, 0) && alpha > 0 {
+		kcalTerm = alpha * activeKcal
 	}
-	if alpha < 0 {
-		alpha = 0
+	hrTerm := 0.0
+	if !math.IsNaN(sustainedHRLoad) && !math.IsInf(sustainedHRLoad, 0) && sustainedHRLoad > 0 &&
+		!math.IsNaN(beta) && !math.IsInf(beta, 0) && beta > 0 {
+		hrTerm = beta * sustainedHRLoad
 	}
-	return alpha * activeKcal
+	return kcalTerm + hrTerm
 }
 
 // AsymptoticCapacity is the restore step: yesterday's residual bank

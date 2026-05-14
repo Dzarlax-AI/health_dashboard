@@ -31,6 +31,15 @@ func (s *DB) EnsureIndexes() {
 		// see STRESS_MEASUREMENT.md §0 blocker 1). NULL until the
 		// `upsertBaselineHROvernightForDate` writer runs for the date.
 		`ALTER TABLE daily_scores ADD COLUMN IF NOT EXISTS baseline_hr_overnight REAL`,
+
+		// v2.2 sustained_hr_load — §4.4 z-load integral over the awake
+		// window. Per-day cache so ComputeBankForDate's 21-day SELECT
+		// stays one query instead of 21·(WakeTime+Coverage+Baseline+
+		// HourlySeries) round-trips. NULL when coverage gate fails
+		// (<8h HR-covered awake) or baselines are still in
+		// calibration; in either case DrainV2's β term contributes 0
+		// for that day and falls back to v2.0 (kcal-only) drain.
+		`ALTER TABLE daily_scores ADD COLUMN IF NOT EXISTS sustained_hr_load REAL`,
 	}
 	for _, ddl := range migrations {
 		if _, err := s.pool.Exec(ctx, ddl); err != nil {

@@ -223,6 +223,18 @@ func ParasympatheticRebound(dayHRShift, hrvDrop float64) bool {
 		hrvDrop < reboundHRVThreshold
 }
 
+// MinHRCoverageHours is the §4.4 MIN_COVERAGE gate: below this many
+// hours of HR-covered awake time, the day's sustained_hr_load is
+// unreliable (watch off charger, sync gap) and DrainV2 falls back to
+// v2.0 (kcal-only) drain with a stale_stress flag.
+//
+// Lives here in `internal/health` because both the storage-side
+// orchestrator (sustained_hr_load.go) and any future verdict-layer
+// consumer should reference the same named constant. 8 hours is the
+// spec default and pinned by intent — change requires touching
+// STRESS_MEASUREMENT.md § too.
+const MinHRCoverageHours = 8
+
 // Threshold constants from STRESS_MEASUREMENT.md §4.3. Held as
 // named constants so callers and tests reference them by meaning, not
 // by magic numbers. v2.5 cohort study may tune these; pinned in

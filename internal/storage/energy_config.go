@@ -88,7 +88,15 @@ func DefaultEnergyConfig() EnergyConfig {
 		StressDrainEnabled: false,
 		AlphaFactor:        1.0,
 		AlphaFactorSource:  "default",
-		FormulaVersion:     1,
+		// FormulaVersion 2 = DrainV2 accepts the v2.2
+		// sustained_hr_load term. Bank values are identical to
+		// FormulaVersion 1 when StressDrainEnabled=false (β=0 zeroes
+		// the new term), so the bump doesn't shift history for
+		// tenants who haven't enabled stress drain. The version
+		// stamp lets calibration tooling (PR-11) distinguish "this
+		// snapshot was computed by a formula that COULD apply β"
+		// from "this snapshot pre-dates the v2.2 audit trail".
+		FormulaVersion: 2,
 	}
 }
 

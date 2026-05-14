@@ -180,25 +180,52 @@ func TestAsymptoticCapacity_MultiNightAccumulation(t *testing.T) {
 }
 
 func TestDrainV2(t *testing.T) {
+	// Cases written in long form (kcal, sustained, alpha, beta) to
+	// document the new four-input shape. v2.2 default deployments
+	// pass beta=0 (StressDrainEnabled=false gates EffectiveBeta to
+	// 0), so the kcal-only behaviour from v2.0 is the dominant
+	// code path — first half of the cases proves equivalence.
 	cases := []struct {
-		name              string
-		kcal, alpha, want float64
+		name                          string
+		kcal, sustained, alpha, beta  float64
+		want                          float64
 	}{
-		{"v2_default_alpha_typical_day", 500, 0.08, 40},
-		{"zero_kcal", 0, 0.08, 0},
-		{"negative_kcal_floored", -500, 0.08, 0},
-		{"high_load_athlete", 2000, 0.08, 160},
-		{"alpha_zero_disables_drain", 1500, 0, 0},
-		// Negative alpha would invert the formula and credit the bank
-		// for high-kcal days. Floored at 0 — the symmetry of the kcal
-		// floor matters more than letting a calibrator bug propagate.
-		{"negative_alpha_floored", 1500, -0.08, 0},
-		// Both negative: still 0; defence in depth.
-		{"both_negative_floored", -1500, -0.08, 0},
+		// v2.0 equivalent path (beta=0): same numbers the legacy
+		// TestDrainV2 pinned, proving FormulaVersion bump 1→2 doesn't
+		// shift bank values for tenants who haven't enabled stress.
+		{"v2_default_alpha_typical_day", 500, 0, 0.08, 0, 40},
+		{"zero_kcal", 0, 0, 0.08, 0, 0},
+		{"negative_kcal_floored", -500, 0, 0.08, 0, 0},
+		{"high_load_athlete", 2000, 0, 0.08, 0, 160},
+		{"alpha_zero_disables_drain", 1500, 0, 0, 0, 0},
+		{"negative_alpha_floored", 1500, 0, -0.08, 0, 0},
+		{"both_negative_floored", -1500, 0, -0.08, 0, 0},
+
+		// v2.2 stress term: hr-load contributes only when beta > 0
+		// AND sustained_hr_load > 0.
+		{"stress_disabled_beta_zero", 500, 7.5, 0.08, 0, 40},  // β=0 → kcal-only
+		{"stress_enabled_anxious_day", 500, 7.5, 0.08, 0.8, 46}, // 40 + 0.8·7.5 = 46
+		{"stress_enabled_calm_day", 500, 0, 0.08, 0.8, 40},      // load=0 → kcal-only
+		{"stress_only_no_kcal", 0, 7.5, 0.08, 0.8, 6},           // 0.8·7.5
+		// Negative β would credit the bank for stressful days —
+		// same kind of inversion the negative-α guard catches.
+		{"negative_beta_floored", 500, 7.5, 0.08, -0.8, 40},
+		// Negative load (sensor glitch) shouldn't credit either.
+		{"negative_load_floored", 500, -1, 0.08, 0.8, 40},
+
+		// NaN tolerance — important because the orchestrator passes
+		// NaN-marked hours (failed per-hour coverage) into
+		// SustainedHRLoad, and any downstream NaN must drop the
+		// term, not propagate.
+		{"nan_kcal_dropped", math.NaN(), 7.5, 0.08, 0.8, 6},
+		{"nan_load_dropped", 500, math.NaN(), 0.08, 0.8, 40},
+		{"nan_alpha_dropped", 500, 7.5, math.NaN(), 0.8, 6},
+		{"nan_beta_dropped", 500, 7.5, 0.08, math.NaN(), 40},
+		{"inf_kcal_dropped", math.Inf(1), 7.5, 0.08, 0.8, 6},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			approxEq(t, c.name, DrainV2(c.kcal, c.alpha), c.want, eps)
+			approxEq(t, c.name, DrainV2(c.kcal, c.sustained, c.alpha, c.beta), c.want, eps)
 		})
 	}
 }
@@ -235,7 +262,7 @@ func TestEndToEndOneDay(t *testing.T) {
 	// (above 0.20). Both shortfalls are 0 → structure=1. SQ=7/8=0.875.
 	sq := SleepQuality(7.0, 1.1, 1.5, 0.0)
 	cap := AsymptoticCapacity(bankYesterday, sq) // 35 + 65·0.875 = 91.875
-	drain := DrainV2(700, 0.08)                  // 56
+	drain := DrainV2(700, 0, 0.08, 0)            // 56 — v2.0-equivalent (β=0)
 	bankToday := ClampSignedBank(cap - drain)    // 35.875
 
 	approxEq(t, "sq", sq, 0.875, eps)
