@@ -300,6 +300,47 @@ var translations = map[string]map[string]string{
 		"admin_energy_effective_beta":  "Effective β (live)",
 		"admin_energy_save":            "Save",
 		"admin_energy_saved":           "Energy settings saved",
+		"admin_help_summary":           "What is this and when to change?",
+		"admin_energy_help_html": `<h4 style="margin:8px 0 4px">β — stress-drain coefficient</h4>
+<p>Multiplier that converts <code>sustained_hr_load_z</code> into drain points. Formula: <code>drain = α·active_kcal + <strong>β</strong>·load_z</code>.</p>
+<p><strong>Default 0.8</strong> (spec §6 Q3 placeholder). Adjust within 0.4–1.2 once the validation rubric below clears, depending on how aggressively you want the bar to react to sustained autonomic load.</p>
+<h4 style="margin:12px 0 4px">z-threshold — per-hour floor</h4>
+<p>Only hours where HR runs more than this many SDs above your awake baseline contribute to the load integral.</p>
+<p><strong>Default 0.5.</strong> Raise to 0.7–0.8 if you have a sedentary lifestyle and HR sits at z≈0.5 systematically without real stress (false positives from mental activation, not autonomic load).</p>
+<h4 style="margin:12px 0 4px">Stress drain enabled — master switch</h4>
+<p>When OFF (default), <code>sustained_hr_load_z</code> still computes and lands in the <code>components</code> JSONB audit trail, but never multiplies into the bank — β_effective = 0.</p>
+<p><strong>Only switch ON after the validation rubric below returns <code>validated</code>.</strong> Flipping it earlier means drain will react to noise.</p>
+<h4 style="margin:12px 0 4px">Workflow</h4>
+<ol style="margin:4px 0 0 18px;padding:0">
+  <li>Run the validation rubric (button below).</li>
+  <li>Verdict ≠ validated → keep β at 0, don't change anything. Monthly Telegram nudge will fire when verdict transitions.</li>
+  <li>Verdict = validated → flip Stress drain enabled ON, set β=0.8.</li>
+  <li>After ~2 weeks, if drain feels too aggressive, dial β down to 0.4–0.5. Re-run rubric monthly.</li>
+</ol>`,
+		"admin_stress_validation_help_html": `<h4 style="margin:8px 0 4px">What the rubric measures</h4>
+<p>Pearson r on a rolling 30-day window between <code>sustained_hr_load[d]</code> and three independent next-morning recovery signals. Logic: if the formula really catches stress, a high-load day predicts degraded autonomic markers the next morning.</p>
+<h4 style="margin:12px 0 4px">Channels</h4>
+<dl style="margin:4px 0">
+  <dt><strong>Channel 1 — HRV next-morning (primary, anchor)</strong></dt>
+  <dd>Correlation of load[d] with overnight HRV[d+1]. Expected sign: <strong>negative</strong> (high load → depressed HRV).</dd>
+  <dt style="margin-top:6px"><strong>Channel 2 — RHR next-morning shift (secondary)</strong></dt>
+  <dd>load[d] vs (overnight RHR[d+1] − 30d baseline). Expected sign: <strong>positive</strong>. Cross-check.</dd>
+  <dt style="margin-top:6px"><strong>Channel 3 — sleep architecture (tertiary)</strong></dt>
+  <dd>Vote across 3 sub-correlations: sleep_awake (+), onset latency (+), deep% (−). Each votes when |r|≥0.10 in expected direction; channel "agrees" at ≥2 votes.</dd>
+</dl>
+<h4 style="margin:12px 0 4px">Verdicts</h4>
+<ul style="margin:4px 0 0 18px;padding:0">
+  <li><strong style="color:var(--good)">validated</strong> — r ≤ −0.30 on channel 1 AND at least one cross-channel agrees. Safe to flip <code>Stress drain enabled</code>.</li>
+  <li><strong style="color:var(--fair)">weak</strong> — −0.30 &lt; r &lt; −0.10. β stays at 0. Re-check next month.</li>
+  <li><strong style="color:var(--low)">inconclusive</strong> — |r| &lt; 0.10 on channel 1, or fewer than 15 HRV samples (sparsity fallback). Acquire more nightly HRV (Breathe sessions on Apple Watch help).</li>
+  <li><strong style="color:var(--low)">wrong_direction</strong> — r &gt; 0. Formula isn't capturing this user's physiology — escalate to manual review.</li>
+</ul>
+<h4 style="margin:12px 0 4px">When to run</h4>
+<ul style="margin:4px 0 0 18px;padding:0">
+  <li>After any major data ingest (Apple Health import, sleep restore).</li>
+  <li>Once a month as routine. Monthly Telegram nudge auto-fires when verdict newly transitions to <strong>validated</strong>.</li>
+  <li>Before flipping <code>Stress drain enabled</code> ON above.</li>
+</ul>`,
 		"admin_stress_validation_title":        "Stress validation rubric (§4.5)",
 		"admin_stress_validation_desc":         "Runs Pearson r over the rolling 30-day window: HRV next-morning (primary), RHR next-morning shift, sleep architecture. Read-only — does NOT auto-flip stress_drain_enabled. Operator decision after reviewing the verdict.",
 		"admin_stress_validation_run":          "Run validation",
@@ -615,6 +656,47 @@ var translations = map[string]map[string]string{
 		"admin_energy_effective_beta":  "Effective β (live)",
 		"admin_energy_save":            "Сохранить",
 		"admin_energy_saved":           "Настройки сохранены",
+		"admin_help_summary":           "Что это и когда менять?",
+		"admin_energy_help_html": `<h4 style="margin:8px 0 4px">β — коэффициент stress-drain</h4>
+<p>Множитель, переводящий <code>sustained_hr_load_z</code> в очки drain. Формула: <code>drain = α·active_kcal + <strong>β</strong>·load_z</code>.</p>
+<p><strong>Default 0.8</strong> (placeholder из §6 Q3). Когда validation rubric ниже вернёт <code>validated</code> — подкручивать в диапазоне 0.4–1.2, в зависимости от того насколько резво хочется чтобы бар реагировал на длительную автономную нагрузку.</p>
+<h4 style="margin:12px 0 4px">z-threshold — порог по часу</h4>
+<p>В load integral идут только часы, где HR выше дневного baseline более чем на это число SD.</p>
+<p><strong>Default 0.5.</strong> Поднять до 0.7–0.8 если сидячая работа и HR сидит на z≈0.5 систематически без реального стресса (mental activation ≠ автономная нагрузка → false positives).</p>
+<h4 style="margin:12px 0 4px">Stress drain enabled — мастер-переключатель</h4>
+<p>Когда ВЫКЛ (default), <code>sustained_hr_load_z</code> всё равно считается и пишется в <code>components</code> JSONB для audit, но в bank не идёт — β_effective = 0.</p>
+<p><strong>Включать ТОЛЬКО когда validation rubric ниже вернула <code>validated</code>.</strong> Включишь раньше — drain будет реагировать на шум.</p>
+<h4 style="margin:12px 0 4px">Workflow</h4>
+<ol style="margin:4px 0 0 18px;padding:0">
+  <li>Прогнать validation rubric (кнопка ниже).</li>
+  <li>Verdict ≠ validated → β=0, ничего не трогать. Monthly Telegram nudge придёт сам когда verdict перейдёт.</li>
+  <li>Verdict = validated → включить Stress drain enabled, β=0.8.</li>
+  <li>Через ~2 недели — если drain слишком агрессивен, уменьшить β до 0.4–0.5. Перепрогонять rubric раз в месяц.</li>
+</ol>`,
+		"admin_stress_validation_help_html": `<h4 style="margin:8px 0 4px">Что считает rubric</h4>
+<p>Pearson r на скользящем 30-дневном окне между <code>sustained_hr_load[d]</code> и тремя независимыми next-morning сигналами восстановления. Логика: если формула реально ловит стресс — высокий load сегодня предсказывает деградацию autonomic-маркеров утром.</p>
+<h4 style="margin:12px 0 4px">Каналы</h4>
+<dl style="margin:4px 0">
+  <dt><strong>Channel 1 — утренний HRV (primary, анкер)</strong></dt>
+  <dd>Корреляция load[d] с overnight HRV[d+1]. Ожидаемый знак: <strong>отрицательный</strong> (high load → low HRV).</dd>
+  <dt style="margin-top:6px"><strong>Channel 2 — сдвиг утреннего RHR (secondary)</strong></dt>
+  <dd>load[d] vs (overnight RHR[d+1] − 30d baseline). Ожидаемый знак: <strong>положительный</strong>. Cross-check.</dd>
+  <dt style="margin-top:6px"><strong>Channel 3 — архитектура сна (tertiary)</strong></dt>
+  <dd>Голосование 3 sub-correlations: sleep_awake (+), onset latency (+), deep% (−). Sub-signal голосует если |r|≥0.10 в ожидаемом направлении; channel "agrees" при ≥2 голосах.</dd>
+</dl>
+<h4 style="margin:12px 0 4px">Вердикты</h4>
+<ul style="margin:4px 0 0 18px;padding:0">
+  <li><strong style="color:var(--good)">validated</strong> — r ≤ −0.30 на channel 1 И хотя бы один cross-channel согласен. Можно включать <code>Stress drain enabled</code>.</li>
+  <li><strong style="color:var(--fair)">weak</strong> — −0.30 &lt; r &lt; −0.10. β=0. Recheck через месяц.</li>
+  <li><strong style="color:var(--low)">inconclusive</strong> — |r| &lt; 0.10 на channel 1, или меньше 15 HRV образцов (sparsity fallback). Нужно больше ночного HRV (Breathe sessions на Apple Watch помогают).</li>
+  <li><strong style="color:var(--low)">wrong_direction</strong> — r &gt; 0. Формула не ловит физиологию этого пользователя — manual review.</li>
+</ul>
+<h4 style="margin:12px 0 4px">Когда запускать</h4>
+<ul style="margin:4px 0 0 18px;padding:0">
+  <li>После major data ingest (импорт Apple Health, восстановление sleep).</li>
+  <li>Раз в месяц как routine. Monthly Telegram nudge придёт сам когда verdict перейдёт в <strong>validated</strong>.</li>
+  <li>Перед включением <code>Stress drain enabled</code> выше.</li>
+</ul>`,
 		"admin_stress_validation_title":        "Валидация stress-формулы (§4.5)",
 		"admin_stress_validation_desc":         "Pearson r на скользящем 30-дневном окне: утренний HRV (основной), сдвиг утреннего RHR, архитектура сна. Только чтение — НЕ переключает stress_drain_enabled автоматически. Решение оператора после ознакомления с вердиктом.",
 		"admin_stress_validation_run":          "Запустить",
@@ -911,6 +993,47 @@ var translations = map[string]map[string]string{
 		"admin_energy_effective_beta":  "Effective β (uživo)",
 		"admin_energy_save":            "Sačuvaj",
 		"admin_energy_saved":           "Postavke sačuvane",
+		"admin_help_summary":           "Šta je ovo i kada menjati?",
+		"admin_energy_help_html": `<h4 style="margin:8px 0 4px">β — koeficijent stres-drain</h4>
+<p>Množilac koji pretvara <code>sustained_hr_load_z</code> u drain poene. Formula: <code>drain = α·active_kcal + <strong>β</strong>·load_z</code>.</p>
+<p><strong>Default 0.8</strong> (placeholder iz §6 Q3). Kada validation rubric ispod vrati <code>validated</code> — podesi u opsegu 0.4–1.2, u zavisnosti od toga koliko agresivno želiš da bar reaguje na trajno autonomno opterećenje.</p>
+<h4 style="margin:12px 0 4px">z-threshold — prag po satu</h4>
+<p>U load integral idu samo sati gde je HR viši od dnevnog baseline-a za više od ovog broja SD.</p>
+<p><strong>Default 0.5.</strong> Podigni na 0.7–0.8 ako imaš sedentarni stil i HR sistematski stoji na z≈0.5 bez stvarnog stresa (mental activation ≠ autonomno opterećenje → false positives).</p>
+<h4 style="margin:12px 0 4px">Stress drain enabled — master prekidač</h4>
+<p>Kada je ISKLJUČEN (default), <code>sustained_hr_load_z</code> i dalje računa i piše se u <code>components</code> JSONB za audit, ali ne ulazi u bank — β_effective = 0.</p>
+<p><strong>Uključi SAMO kada validation rubric ispod vrati <code>validated</code>.</strong> Uključiš ranije — drain će reagovati na šum.</p>
+<h4 style="margin:12px 0 4px">Workflow</h4>
+<ol style="margin:4px 0 0 18px;padding:0">
+  <li>Pokreni validation rubric (dugme ispod).</li>
+  <li>Verdict ≠ validated → β=0, ne diraj ništa. Monthly Telegram nudge će stići sam kada verdict pređe.</li>
+  <li>Verdict = validated → uključi Stress drain enabled, β=0.8.</li>
+  <li>Nakon ~2 nedelje — ako je drain previše agresivan, smanji β na 0.4–0.5. Pokreni rubric mesečno.</li>
+</ol>`,
+		"admin_stress_validation_help_html": `<h4 style="margin:8px 0 4px">Šta meri rubric</h4>
+<p>Pearson r na rotirajućem 30-dnevnom prozoru između <code>sustained_hr_load[d]</code> i tri nezavisna next-morning signala oporavka. Logika: ako formula stvarno hvata stres — visok load danas predviđa degradaciju autonomnih markera ujutru.</p>
+<h4 style="margin:12px 0 4px">Kanali</h4>
+<dl style="margin:4px 0">
+  <dt><strong>Kanal 1 — jutarnji HRV (primary, anchor)</strong></dt>
+  <dd>Korelacija load[d] sa overnight HRV[d+1]. Očekivani znak: <strong>negativan</strong> (high load → low HRV).</dd>
+  <dt style="margin-top:6px"><strong>Kanal 2 — pomeraj jutarnjeg RHR (secondary)</strong></dt>
+  <dd>load[d] vs (overnight RHR[d+1] − 30d baseline). Očekivani znak: <strong>pozitivan</strong>. Cross-check.</dd>
+  <dt style="margin-top:6px"><strong>Kanal 3 — arhitektura sna (tertiary)</strong></dt>
+  <dd>Glasanje 3 sub-korelacije: sleep_awake (+), onset latency (+), deep% (−). Sub-signal glasa ako |r|≥0.10 u očekivanom smeru; kanal "se slaže" sa ≥2 glasa.</dd>
+</dl>
+<h4 style="margin:12px 0 4px">Verdikti</h4>
+<ul style="margin:4px 0 0 18px;padding:0">
+  <li><strong style="color:var(--good)">validated</strong> — r ≤ −0.30 na kanalu 1 I bar jedan cross-channel se slaže. Možeš uključiti <code>Stress drain enabled</code>.</li>
+  <li><strong style="color:var(--fair)">weak</strong> — −0.30 &lt; r &lt; −0.10. β=0. Recheck za mesec.</li>
+  <li><strong style="color:var(--low)">inconclusive</strong> — |r| &lt; 0.10 na kanalu 1, ili manje od 15 HRV uzoraka (sparsity fallback). Treba više noćnog HRV-a (Breathe sesije na Apple Watch-u pomažu).</li>
+  <li><strong style="color:var(--low)">wrong_direction</strong> — r &gt; 0. Formula ne hvata fiziologiju ovog korisnika — manual review.</li>
+</ul>
+<h4 style="margin:12px 0 4px">Kada pokrenuti</h4>
+<ul style="margin:4px 0 0 18px;padding:0">
+  <li>Posle major data ingest-a (Apple Health uvoz, obnova sna).</li>
+  <li>Jednom mesečno kao routine. Monthly Telegram nudge dolazi sam kada verdict pređe u <strong>validated</strong>.</li>
+  <li>Pre nego što uključiš <code>Stress drain enabled</code> iznad.</li>
+</ul>`,
 		"admin_stress_validation_title":        "Validacija stres-formule (§4.5)",
 		"admin_stress_validation_desc":         "Pearson r na rotirajućem 30-dnevnom prozoru: jutarnji HRV (osnovni), pomeraj jutarnjeg RHR, arhitektura sna. Samo čitanje — NE prebacuje stress_drain_enabled automatski. Operator odlučuje nakon pregleda verdikta.",
 		"admin_stress_validation_run":          "Pokreni",
