@@ -219,12 +219,23 @@ func (s *DB) UpsertRecentCache(dates []string, recomputeReadiness bool) {
 	if len(dates) == 0 {
 		return
 	}
+	// Tenant TZ is read once per UpsertRecentCache pass and reused for
+	// every date — REPORT_TZ doesn't change mid-process, and
+	// `time.LoadLocation` allocates ~5 KB per call which adds up over a
+	// 48-hour incremental window. Fallback to UTC inside
+	// reportTZLocation matches energy_compute.go convention.
+	loc := reportTZLocation()
 	s.cacheMu.Lock()
 	for _, date := range dates {
 		s.upsertHourlyAvgForDate(date)
 		s.upsertHourlySumForDate(date)
 		s.upsertHourlySleepForDate(date)
 		s.upsertDailyForDate(date)
+		// Must run AFTER upsertDailyForDate — the latter creates the
+		// daily_scores row that the baseline UPDATE targets. Cheap
+		// enough to run inside the same critical section (one
+		// percentile query + one UPDATE per date).
+		s.upsertBaselineHROvernightForDate(date, loc)
 	}
 	s.cacheMu.Unlock()
 
@@ -579,8 +590,56 @@ func (s *DB) BuildDailyMetrics(force bool) error {
 		return fmt.Errorf("daily sleep block: %w", err)
 	}
 
-	log.Printf("daily metrics filled (%d columns + sleep block)", len(specs))
+	// v2.2 baseline_hr_overnight backfill. Runs AFTER the sleep block so
+	// `WakeTimeForDate` sees the freshest per-segment data. Per-date Go
+	// helper rather than a single SQL because the window resolution
+	// (longest asleep segment ±6h from midnight, last 3h) doesn't fit
+	// cleanly into SQL without recursive CTEs. The buildBaselineHROvernightAll
+	// helper logs+continues on individual-date errors — one bad night
+	// shouldn't fail a months-long backfill.
+	s.buildBaselineHROvernightAll(force)
+
+	log.Printf("daily metrics filled (%d columns + sleep block + baseline_hr_overnight)", len(specs))
 	return nil
+}
+
+// buildBaselineHROvernightAll iterates over distinct dates present in
+// daily_scores and (re)computes baseline_hr_overnight for each. Called
+// from BackfillAggregates after the sleep block lands. With ~100k days
+// across all tenants this is a few minutes of percentile_cont queries;
+// most call sites use the per-date `upsertBaselineHROvernightForDate`
+// from `UpsertRecentCache` instead.
+//
+// `force` is ignored for now — every call recomputes every row,
+// because the column is small (REAL = 4 bytes) and a stale-detection
+// gate would add complexity without a real win. Revisit if we ever
+// see this loop dominate backfill time.
+func (s *DB) buildBaselineHROvernightAll(force bool) {
+	_ = force
+	ctx, cancel := longCtx()
+	defer cancel()
+	rows, err := s.pool.Query(ctx, `SELECT date FROM daily_scores ORDER BY date`)
+	if err != nil {
+		log.Printf("baseline_hr_overnight list: %v", err)
+		return
+	}
+	var dates []string
+	for rows.Next() {
+		var d string
+		if err := rows.Scan(&d); err != nil {
+			continue
+		}
+		dates = append(dates, d)
+	}
+	rows.Close()
+	if len(dates) == 0 {
+		return
+	}
+	loc := reportTZLocation()
+	for _, d := range dates {
+		s.upsertBaselineHROvernightForDate(d, loc)
+	}
+	log.Printf("baseline_hr_overnight filled for %d dates", len(dates))
 }
 
 func (s *DB) buildDailyMetricCol(col, metric string, force bool) error {
