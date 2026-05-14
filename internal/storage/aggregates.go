@@ -641,6 +641,15 @@ func (s *DB) buildBaselineHROvernightAll(force bool) {
 		}
 		dates = append(dates, d)
 	}
+	if err := rows.Err(); err != nil {
+		// Cursor / transport failure mid-iteration. Partial dates
+		// slice would silently produce a misleading
+		// "filled for N dates" log without the whole history
+		// touched. Bail with the error logged instead.
+		rows.Close()
+		log.Printf("baseline_hr_overnight iter: %v", err)
+		return
+	}
 	rows.Close()
 	if len(dates) == 0 {
 		return
