@@ -344,12 +344,21 @@ function loadAdminSettings() {
 
 function loadEnergySettings() {
   fetch('/api/admin/energy-settings')
-    .then(function(r){return r.json()})
+    .then(function(r){
+      if (!r.ok) return r.text().then(function(t){ throw new Error(t || 'Failed to load energy settings'); });
+      return r.json();
+    })
     .then(function(d) {
       $('cfg-energy-stress-enabled').checked = !!d['energy.stress_drain_enabled'];
       $('cfg-energy-beta').value = d['energy.beta'];
       $('cfg-energy-z-threshold').value = d['energy.z_threshold'];
       $('cfg-energy-effective-beta').textContent = d.effective_beta;
+    })
+    .catch(function(e) {
+      var msg = $('admin-energy-msg');
+      msg.textContent = String(e.message || e);
+      msg.style.display = '';
+      msg.className = 'alert alert--error';
     });
 }
 
@@ -360,7 +369,10 @@ function saveEnergySettings() {
     'energy.stress_drain_enabled': $('cfg-energy-stress-enabled').checked ? 'true' : 'false'
   };
   fetch('/api/admin/energy-settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
-    .then(function(r){return r.json()})
+    .then(function(r){
+      if (!r.ok) return r.text().then(function(t){ throw new Error(t || 'Failed to save energy settings'); });
+      return r.json();
+    })
     .then(function() {
       var msg = $('admin-energy-msg');
       msg.textContent = '{{T .Lang "admin_energy_saved"}}';
@@ -369,6 +381,12 @@ function saveEnergySettings() {
       setTimeout(function(){ msg.style.display = 'none'; }, 3000);
       // Reload to update effective_beta display
       loadEnergySettings();
+    })
+    .catch(function(e) {
+      var msg = $('admin-energy-msg');
+      msg.textContent = String(e.message || e);
+      msg.style.display = '';
+      msg.className = 'alert alert--error';
     });
 }
 

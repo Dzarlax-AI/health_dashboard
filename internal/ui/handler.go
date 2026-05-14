@@ -1153,6 +1153,35 @@ func (h *Handler) adminEnergySettings(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid JSON", http.StatusBadRequest)
 			return
 		}
+		// Validate each v2.2 stress-drain knob before persisting.
+		// Whitelist alone wasn't enough — someone POSTing
+		// `energy.beta=-1` or `=100` would silently break the bank
+		// once StressDrainEnabled is flipped on. Bounds match the
+		// `min`/`max` attributes on the admin.html inputs so the
+		// UI and server agree on what's reasonable; tightening
+		// upper bounds later (e.g. when cohort study clamps β to
+		// a narrow range) only requires updating these two checks.
+		// Flagged by CodeRabbit on PR #60.
+		if v, ok := body["energy.beta"]; ok {
+			beta, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+			if err != nil || beta < 0 || beta > 5 {
+				http.Error(w, "energy.beta must be a number in [0, 5]", http.StatusBadRequest)
+				return
+			}
+		}
+		if v, ok := body["energy.z_threshold"]; ok {
+			z, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+			if err != nil || z < 0 || z > 3 {
+				http.Error(w, "energy.z_threshold must be a number in [0, 3]", http.StatusBadRequest)
+				return
+			}
+		}
+		if v, ok := body["energy.stress_drain_enabled"]; ok {
+			if _, err := strconv.ParseBool(strings.TrimSpace(v)); err != nil {
+				http.Error(w, "energy.stress_drain_enabled must be true/false", http.StatusBadRequest)
+				return
+			}
+		}
 		// Whitelist the three v2.2 keys — Alpha / AlphaFactor /
 		// FormulaVersion stay out of the admin UI for now (they're
 		// either tuned by the v2.5 calibrator or set deliberately by
