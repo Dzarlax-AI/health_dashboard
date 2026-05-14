@@ -73,12 +73,19 @@ func (s *DB) BackfillStressRange(
 	// classifyResult applies the same OK / Skipped gate to both
 	// dry-run and production paths so the tallies the CLI prints
 	// agree across modes. "Skipped" = the day computed cleanly but
-	// every prerequisite gated (stale_stress / calibration_warmup
-	// fired AND the load itself ended up zero). Anything that
-	// produced a non-zero load OR no gate flags is "OK".
+	// a GATING flag (stale_stress / calibration_warmup) fired AND
+	// the load itself ended up zero. Multi-channel diagnostic flags
+	// (illness_signature, recovery_debt, parasympathetic_rebound,
+	// acute_stress, sustained_load) don't gate the integral — those
+	// days are valid OK even when the bank-side load is zero.
 	classifyResult := func(res SustainedHRLoadResult) string {
-		if len(res.Flags) > 0 && res.SustainedHRLoadZ == 0 {
-			return "skipped"
+		if res.SustainedHRLoadZ != 0 {
+			return "ok"
+		}
+		for _, f := range res.Flags {
+			if f == "stale_stress" || f == "calibration_warmup" {
+				return "skipped"
+			}
 		}
 		return "ok"
 	}
@@ -172,6 +179,12 @@ func (s *DB) ComputeStressDistributionStats(
 	}
 	if _, err := time.Parse("2006-01-02", to); err != nil {
 		return StressDistributionStats{}, fmt.Errorf("parse to %q: %w", to, err)
+	}
+	// Reject inverted ranges the same way BackfillStressRange does
+	// — otherwise a typo (from=05-10, to=05-01) silently returns an
+	// empty-stats struct that looks like a "no data found" answer.
+	if from > to {
+		return StressDistributionStats{}, fmt.Errorf("from %s is after to %s", from, to)
 	}
 
 	rows, err := s.pool.Query(ctx, `
