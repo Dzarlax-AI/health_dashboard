@@ -165,15 +165,23 @@ func HashRecovery(r *health.RawMetrics, eb *health.EnergyBank, readiness *float6
 // because today's verdict is unchanged.
 func HashRecommendation(sleepText, yesterdayText, recoveryText string, eb *health.EnergyBank, verdictHistory []string) string {
 	verdict := ""
+	var flags []string
 	if eb != nil {
 		verdict = eb.ActionVerdict
+		flags = eb.Flags
 	}
 	type rec struct {
 		Sleep, Yesterday, Recovery string
 		ActionVerdict              string
 		VerdictHistory             []string
+		// StressFlags invalidates the recommendation cache when the
+		// §4.3 multi-channel signals flip — e.g. illness_signature
+		// firing partway through the day must re-run RECOMMENDATION
+		// to surface the rest guidance, even if leaf texts and the
+		// verdict label are unchanged.
+		StressFlags []string
 	}
-	return hashInputs(rec{sleepText, yesterdayText, recoveryText, verdict, verdictHistory})
+	return hashInputs(rec{sleepText, yesterdayText, recoveryText, verdict, verdictHistory, flags})
 }
 
 // ─── orchestrator ─────────────────────────────────────────────────────────
@@ -228,7 +236,7 @@ func GenerateLeafBlocks(apiKey, model string, maxTokens int, rawMetricsJSON []by
 // proper rest" instead of treating each day in isolation. Empty slice
 // is fine — the line is simply omitted from the prompt context.
 func GenerateRecommendation(apiKey, model string, maxTokens int, rawMetricsJSON []byte, lang string,
-	sleepText, yesterdayText, recoveryText string, verdictHistory []string) (string, error) {
+	sleepText, yesterdayText, recoveryText string, verdictHistory []string, stressFlags []string) (string, error) {
 	prompt := BuildBlockPrompt(BlockRecommendation)
 	leafSummary := fmt.Sprintf(
 		"\n\nLEAF BLOCKS (already generated for the user):\n\nSLEEP\n%s\n\nYESTERDAY\n%s\n\nRECOVERY\n%s",
@@ -236,6 +244,25 @@ func GenerateRecommendation(apiKey, model string, maxTokens int, rawMetricsJSON 
 	if len(verdictHistory) > 0 {
 		leafSummary += "\n\nENERGYBANK_VERDICT_HISTORY (oldest→newest, last 7 EOD snapshots): " +
 			strings.Join(verdictHistory, ", ")
+	}
+	// v2.2 §4.3 hard guard for the recommendation prose — the model
+	// has a known failure mode where verdict=active_recovery but the
+	// prose still says "you can push if you feel up to it". When
+	// physiology contraindicates intensity, inject an explicit
+	// instruction. Flags also surfaced for context so the model can
+	// reference them ("body fighting infection — rest aligns").
+	if health.AISuppressPushHard(stressFlags) {
+		leafSummary += "\n\nSTRESS_FLAGS (active multi-channel signals): " +
+			strings.Join(stressFlags, ", ") +
+			"\nINSTRUCTION: Physiology indicates illness or recovery debt. " +
+			"Recommend rest or light active recovery only. " +
+			"Do NOT recommend high-intensity training, intervals, or push_hard sessions today."
+	} else if len(stressFlags) > 0 {
+		// Non-suppressive flags (parasympathetic_rebound, acute_stress
+		// — interpretation flags) still surface to the model for
+		// context but without the hard guardrail.
+		leafSummary += "\n\nSTRESS_FLAGS (active multi-channel signals): " +
+			strings.Join(stressFlags, ", ")
 	}
 	text, _, err := generateWithPrompt(apiKey, model, maxTokens, prompt, append(rawMetricsJSON, []byte(leafSummary)...), lang)
 	return text, err

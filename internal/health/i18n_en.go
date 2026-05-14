@@ -167,6 +167,28 @@ var en = LangStrings{
 	"energy_reason_high_stress":   "HRV %.1f SD off baseline and stress score %d — autonomic load is elevated.",
 	"energy_reason_acwr_spike":    "Today's load is already %.0f%% of your 28-day average — a hard session would push the spike further.",
 
+	// v2.2 stress-flag verdict overrides — STRESS_MEASUREMENT.md §4.3.
+	"energy_reason_illness_signature": "Temperature, breathing rate and HRV all point to your body fighting something — rest is the recovery move today.",
+	"energy_reason_recovery_debt":     "Yesterday's load showed up overnight (HRV down, RHR up) — keep today light to clear the debt before pushing again.",
+	"energy_reason_rebound_addon":     "Note: HR was elevated but HRV is also above baseline — that's a recovery-phase pattern, not acute stress.",
+
+	// v2.2 hero-row stress-flag chips.
+	"stress_flags_aria":                       "Stress signal flags",
+	"stress_flag_illness_signature_label":     "Illness signs",
+	"stress_flag_illness_signature_desc":      "Temp, breathing rate and HRV all diverging in the illness direction. Rest aligns with the physiology.",
+	"stress_flag_recovery_debt_label":         "Recovery debt",
+	"stress_flag_recovery_debt_desc":          "Overnight HRV down and RHR up — yesterday's load caught up. Keep today light.",
+	"stress_flag_parasympathetic_rebound_label": "Vagal rebound",
+	"stress_flag_parasympathetic_rebound_desc":  "HR elevated but HRV is also above baseline — recovery-phase pattern, not acute stress.",
+	"stress_flag_acute_stress_label":          "Acute spike",
+	"stress_flag_acute_stress_desc":           "One hour with HR > 2 SD above your awake baseline. Transient, no action needed.",
+	"stress_flag_sustained_load_label":        "Sustained load",
+	"stress_flag_sustained_load_desc":         "4+ consecutive hours with HR > 1 SD above your awake baseline. Real autonomic load.",
+	"stress_flag_stale_stress_label":          "Stress data stale",
+	"stress_flag_stale_stress_desc":           "Less than 8h of HR samples in the awake window — sustained-load drain disabled for this day.",
+	"stress_flag_calibration_warmup_label":    "Calibrating",
+	"stress_flag_calibration_warmup_desc":     "Personal baseline still in warmup (3-6 samples). Flag thresholds may be conservative.",
+
 	"energy_note_capacity":              "morning capacity carried over from sleep %.1fh + recovery markers",
 	"energy_component_morning_capacity": "Morning capacity",
 	"energy_component_activity_load":    "Activity load (today vs 28-day chronic)",
