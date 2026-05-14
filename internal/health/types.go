@@ -192,6 +192,21 @@ type EnergyBank struct {
 	// drove this verdict" auditable instead of recomputing it from raw
 	// HRV in every caller.
 	HRVZRaw float64 `json:"hrv_z_raw"`
+	// Flags is the v2.0 imputed-data set plus the §4.3 v2.2 stress
+	// flags computed by the storage orchestrator. Currently populated:
+	//   - imputed_sleep        (v2.0)
+	//   - imputed_activity     (v2.0)
+	//   - stale_stress         (§0 blocker 3 — HR coverage < 8h awake)
+	//   - calibration_warmup   (§4.1 — PersonalBaseline still in 3-6 sample range)
+	//   - acute_stress         (§4.3 — any hour z>+2 in awake window)
+	//   - sustained_load       (§4.3 — ≥4h consecutive z>+1)
+	//
+	// Multi-channel flags (illness_signature, recovery_debt,
+	// parasympathetic_rebound) land in a follow-up PR. Hero UI
+	// renders this list as a single colour-coded indicator with
+	// expand-on-tap detail; AI verdict layer reads it to override
+	// push_hard recommendation on illness_signature.
+	Flags []string `json:"flags,omitempty"`
 }
 
 // VerdictBands holds the per-user calibrated thresholds for translating
