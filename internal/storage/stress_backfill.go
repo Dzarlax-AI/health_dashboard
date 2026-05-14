@@ -70,27 +70,51 @@ func (s *DB) BackfillStressRange(
 	}
 	p := StressBackfillProgress{From: from, To: to, TZ: tz, Total: total}
 
+	// classifyResult applies the same OK / Skipped gate to both
+	// dry-run and production paths so the tallies the CLI prints
+	// agree across modes. "Skipped" = the day computed cleanly but
+	// every prerequisite gated (stale_stress / calibration_warmup
+	// fired AND the load itself ended up zero). Anything that
+	// produced a non-zero load OR no gate flags is "OK".
+	classifyResult := func(res SustainedHRLoadResult) string {
+		if len(res.Flags) > 0 && res.SustainedHRLoadZ == 0 {
+			return "skipped"
+		}
+		return "ok"
+	}
+
 	for d := from; d <= to; {
+		// Honour caller cancellation so long-running backfills (650+
+		// days across multiple tenants) can be aborted via context
+		// timeout / signal handler. Returns current progress so
+		// partial work is surfaced to the operator.
+		select {
+		case <-ctx.Done():
+			return p, ctx.Err()
+		default:
+		}
+
 		res, ok := s.ComputeSustainedHRLoadForDate(d, loc)
 		switch {
 		case !ok:
+			// Compute-failure (unparseable date). The up-front
+			// validation already caught the from/to boundaries, so
+			// this only fires if a per-date subroutine somehow
+			// rejected its input — surface as an error.
 			p.Errors++
-		case dryRun:
-			// Count as OK so the dry-run / live tallies agree on the
-			// "how many days were valid" line. The DB row stays
-			// untouched.
-			if len(res.Flags) > 0 {
+		case !dryRun:
+			if err := s.writeSustainedHRLoadRow(d, res); err != nil {
+				p.Errors++
+			} else if classifyResult(res) == "skipped" {
 				p.Skipped++
 			} else {
 				p.OK++
 			}
 		default:
-			// Re-invoke the production path so the UPDATE matches
-			// what the live orchestrator writes. The exported
-			// wrapper logs its own errors internally; we infer
-			// success / skip from the result shape.
-			s.UpsertSustainedHRLoadForDate(d, loc)
-			if len(res.Flags) > 0 && res.SustainedHRLoadZ == 0 {
+			// Dry-run: classify the in-memory result without touching
+			// the DB. Tallies agree with the live path because both
+			// use classifyResult on the same `res` shape.
+			if classifyResult(res) == "skipped" {
 				p.Skipped++
 			} else {
 				p.OK++

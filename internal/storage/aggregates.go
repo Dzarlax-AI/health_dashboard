@@ -239,7 +239,7 @@ func (s *DB) UpsertRecentCache(dates []string, recomputeReadiness bool) {
 		// v2.2 sustained_hr_load — depends on baseline_hr_overnight
 		// being current AND on the personal HR baseline being
 		// readable, so runs last in the per-date chain.
-		s.upsertSustainedHRLoadForDate(date, loc)
+		_, _ = s.upsertSustainedHRLoadForDate(date, loc)
 	}
 	s.cacheMu.Unlock()
 

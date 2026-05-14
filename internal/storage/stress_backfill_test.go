@@ -38,22 +38,7 @@ func TestStressDistributionStats_Percentiles(t *testing.T) {
 	}
 }
 
-func TestStressDistributionStats_EmptyHandlesGracefully(t *testing.T) {
-	// Zero loads slice — the stats struct should report zeros for
-	// load percentiles instead of NaN / panic. Mirrors what the
-	// CLI prints when the date range is empty.
-	var loads []float64
-	if len(loads) > 0 {
-		t.Fatal("test precondition: loads must be empty")
-	}
-	res := StressDistributionStats{
-		FlagCounts: map[string]int{},
-	}
-	if len(loads) > 0 {
-		// guarded by the same len-check as production code
-		t.Fatal("unreachable")
-	}
-	if res.LoadMean != 0 || res.LoadMedian != 0 || res.LoadP90 != 0 || res.LoadMax != 0 {
-		t.Errorf("expected zero percentiles on empty input, got %+v", res)
-	}
-}
+// (The empty-range path through ComputeStressDistributionStats
+// requires a *DB and is exercised by integration. Removing the
+// previous unit test that just asserted struct-literal zero values —
+// it didn't validate the actual code path per CodeRabbit feedback.)
