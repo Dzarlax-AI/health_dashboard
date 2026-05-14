@@ -131,6 +131,43 @@ body { min-height: 100vh; font-size: 15px; }
   font-size: 13px; color: var(--text-secondary); line-height: 1.45; flex: 1;
 }
 
+/* v2.2 §4.3 stress-flag chips. Rendered as a tight row of inline tags
+   under hero-verdict-row; colour-coded by severity so the eye gets the
+   "anything red?" answer in <1 second.
+
+     red  — illness_signature (safety-critical, forces rest verdict)
+     yellow — recovery_debt (suppresses push_hard)
+     blue — parasympathetic_rebound (interpretation, not a correction)
+     gray — acute_stress / sustained_load (HR-derived diagnostics)
+     muted — stale_stress / calibration_warmup (operational state)
+
+   Hover tooltip carries the long-form description from i18n. */
+.stress-flags-row {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  padding-top: 4px;
+}
+.stress-flag {
+  display: inline-block;
+  font-size: 11px; font-weight: 600;
+  padding: 2px 8px; border-radius: 10px;
+  line-height: 1.5;
+  cursor: help;
+}
+.stress-flag--illness_signature { background: var(--low-bg);  color: var(--low); }
+.stress-flag--recovery_debt     { background: var(--fair-bg); color: var(--fair); }
+.stress-flag--parasympathetic_rebound {
+  background: var(--info-bg, var(--good-bg)); color: var(--info, var(--good));
+}
+.stress-flag--acute_stress,
+.stress-flag--sustained_load {
+  background: var(--bg-secondary, #f0f0f0); color: var(--text-secondary);
+}
+.stress-flag--stale_stress,
+.stress-flag--calibration_warmup {
+  background: transparent; color: var(--text-secondary); opacity: 0.7;
+  border: 1px dashed var(--border);
+}
+
 /* Hero column 3: visual — Energy Bank battery on top, readiness sparkline
    on the bottom. Components drilldown sits beneath the battery (hidden
    in <details>). */

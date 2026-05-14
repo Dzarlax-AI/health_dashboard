@@ -498,8 +498,19 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 			}
 			ls := health.GetStrings(lang)
 			newVerdict := health.ChooseVerdictV2(resp.EnergyBank.HRVZRaw, display, bands)
+			newReason := health.BuildVerdictReasonV2(newVerdict, display, resp.EnergyBank.HRVZRaw, ls)
+			// §4.3 stress-flag overrides: illness_signature forces
+			// rest, recovery_debt suppresses push_hard,
+			// parasympathetic_rebound enriches reason text. Snapshot
+			// flags are the authoritative carrier — populated by
+			// ComputeBankForDate from daily_scores.stress_flags so
+			// the same data drives the bank, the verdict, and the AI
+			// prompt.
+			newVerdict, newReason, _ = health.ApplyStressFlagVerdictOverride(
+				newVerdict, newReason, snap.Flags, ls,
+			)
 			resp.EnergyBank.ActionVerdict = newVerdict
-			resp.EnergyBank.VerdictReason = health.BuildVerdictReasonV2(newVerdict, display, resp.EnergyBank.HRVZRaw, ls)
+			resp.EnergyBank.VerdictReason = newReason
 		}
 	}
 

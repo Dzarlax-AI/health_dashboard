@@ -147,6 +147,28 @@ var ru = LangStrings{
 	"energy_reason_high_stress":   "HRV %.1f SD от baseline, индекс стресса %d — автономная нагрузка повышена.",
 	"energy_reason_acwr_spike":    "Сегодняшняя нагрузка уже %.0f%% от 28-дневной нормы — жёсткая сессия сильно увеличит spike.",
 
+	// v2.2 stress-flag verdict overrides — STRESS_MEASUREMENT.md §4.3.
+	"energy_reason_illness_signature": "Температура, частота дыхания и HRV — все три указывают, что тело борется с инфекцией. Сегодня покой лучше тренировки.",
+	"energy_reason_recovery_debt":     "Вчерашняя нагрузка догнала ночью (HRV ↓, RHR ↑) — держите день лёгким, чтобы вернуть долг.",
+	"energy_reason_rebound_addon":     "Примечание: пульс был повышен, но HRV выше нормы — это паттерн фазы восстановления, не острый стресс.",
+
+	// v2.2 hero-row stress-flag chips.
+	"stress_flags_aria":                       "Флаги стресс-сигналов",
+	"stress_flag_illness_signature_label":     "Признаки болезни",
+	"stress_flag_illness_signature_desc":      "Температура, ЧД и HRV — все три в illness-направлении. Покой соответствует физиологии.",
+	"stress_flag_recovery_debt_label":         "Долг восстановления",
+	"stress_flag_recovery_debt_desc":          "Ночью HRV ↓, RHR ↑ — вчерашняя нагрузка догнала. Сегодня держите легко.",
+	"stress_flag_parasympathetic_rebound_label": "Вагус-rebound",
+	"stress_flag_parasympathetic_rebound_desc":  "Пульс повышен, но HRV выше нормы — паттерн восстановления, не острый стресс.",
+	"stress_flag_acute_stress_label":          "Острый всплеск",
+	"stress_flag_acute_stress_desc":           "Один час с ЧСС > 2 SD выше дневной нормы. Транзиторно, действия не требуется.",
+	"stress_flag_sustained_load_label":        "Длительная нагрузка",
+	"stress_flag_sustained_load_desc":         "4+ часа подряд с ЧСС > 1 SD выше дневной нормы. Реальная автономная нагрузка.",
+	"stress_flag_stale_stress_label":          "Стресс-данные неполные",
+	"stress_flag_stale_stress_desc":           "Менее 8ч HR-данных в бодрствующем окне — sustained-load drain отключён на этот день.",
+	"stress_flag_calibration_warmup_label":    "Калибровка",
+	"stress_flag_calibration_warmup_desc":     "Персональный baseline ещё в warmup (3-6 образцов). Пороги флагов могут быть консервативными.",
+
 	"energy_note_capacity":              "утренняя капасити = сон %.1fч + маркеры восстановления",
 	"energy_component_morning_capacity": "Утренняя капасити",
 	"energy_component_activity_load":    "Нагрузка (сегодня vs 28-дн норма)",

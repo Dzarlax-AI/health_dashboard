@@ -147,6 +147,28 @@ var sr = LangStrings{
 	"energy_reason_high_stress":   "HRV %.1f SD od baseline, stres indeks %d — autonomna opterećenja su povišena.",
 	"energy_reason_acwr_spike":    "Današnje opterećenje je već %.0f%% od 28-dnevne norme — tvrda sesija bi gurnula spike dalje.",
 
+	// v2.2 stress-flag verdict overrides — STRESS_MEASUREMENT.md §4.3.
+	"energy_reason_illness_signature": "Temperatura, frekvencija disanja i HRV — sve tri govore da telo bori infekciju. Danas je odmor pravi izbor.",
+	"energy_reason_recovery_debt":     "Jučerašnje opterećenje stiglo je noću (HRV ↓, RHR ↑) — držite danas lakim da se vrati dug pre nego što opet pritisnete.",
+	"energy_reason_rebound_addon":     "Napomena: HR je bio povišen, ali je HRV iznad norme — to je obrazac faze oporavka, ne akutni stres.",
+
+	// v2.2 hero-row stress-flag chips.
+	"stress_flags_aria":                       "Oznake stres signala",
+	"stress_flag_illness_signature_label":     "Znaci bolesti",
+	"stress_flag_illness_signature_desc":      "Temperatura, frekvencija disanja i HRV — sve tri u smeru bolesti. Odmor je u skladu sa fiziologijom.",
+	"stress_flag_recovery_debt_label":         "Dug oporavka",
+	"stress_flag_recovery_debt_desc":          "Noću HRV ↓, RHR ↑ — jučerašnje opterećenje stiglo. Danas držite lakim.",
+	"stress_flag_parasympathetic_rebound_label": "Vagalni rebound",
+	"stress_flag_parasympathetic_rebound_desc":  "HR povišen ali HRV iznad norme — obrazac oporavka, ne akutni stres.",
+	"stress_flag_acute_stress_label":          "Akutni skok",
+	"stress_flag_acute_stress_desc":           "Jedan sat sa HR > 2 SD iznad dnevne norme. Tranzitorno, akcija nije potrebna.",
+	"stress_flag_sustained_load_label":        "Trajno opterećenje",
+	"stress_flag_sustained_load_desc":         "4+ uzastopnih sati sa HR > 1 SD iznad dnevne norme. Stvarno autonomno opterećenje.",
+	"stress_flag_stale_stress_label":          "Podaci stresa zastareli",
+	"stress_flag_stale_stress_desc":           "Manje od 8h HR podataka u budnom prozoru — sustained-load drain isključen za ovaj dan.",
+	"stress_flag_calibration_warmup_label":    "Kalibracija",
+	"stress_flag_calibration_warmup_desc":     "Lični baseline još u warmup-u (3-6 uzoraka). Pragovi oznaka mogu biti konzervativni.",
+
 	"energy_note_capacity":              "jutarnji kapacitet iz sna %.1fh i markera oporavka",
 	"energy_component_morning_capacity": "Jutarnji kapacitet",
 	"energy_component_activity_load":    "Opterećenje (danas vs 28d hronični)",

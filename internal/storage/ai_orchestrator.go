@@ -140,8 +140,12 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 	recHash := ai.HashRecommendation(sleepText, yesterdayText, recoveryText, eb, verdictHistory)
 	recRow := cached[ai.BlockRecommendation]
 	if recRow == nil || recRow.InputsHash != recHash || strings.TrimSpace(recRow.Text) == "" {
+		var stressFlags []string
+		if eb != nil {
+			stressFlags = eb.Flags
+		}
 		recText, err := ai.GenerateRecommendation(aiCfg.APIKey, aiCfg.Model, aiCfg.MaxOutputTokens, rawJSON, lang,
-			sleepText, yesterdayText, recoveryText, verdictHistory)
+			sleepText, yesterdayText, recoveryText, verdictHistory, stressFlags)
 		if err != nil {
 			log.Printf("EnsureTodayAIInsight: gemini RECOMMENDATION: %v", err)
 		} else if strings.TrimSpace(recText) == "" {

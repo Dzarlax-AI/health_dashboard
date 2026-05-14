@@ -31,6 +31,15 @@
         <span class="energy-verdict energy-verdict--{{.EnergyBank.ActionVerdict}}">{{T .Lang (printf "energy_verdict_%s" .EnergyBank.ActionVerdict)}}</span>
         <span class="hero-verdict-reason">{{.EnergyBank.VerdictReason}}</span>
       </div>
+      {{if .EnergyBank.Flags}}
+      <div class="stress-flags-row" aria-label="{{T .Lang "stress_flags_aria"}}">
+        {{range .EnergyBank.Flags}}
+          {{if not (eq . "imputed_sleep")}}{{if not (eq . "imputed_activity")}}
+            <span class="stress-flag stress-flag--{{.}}" title="{{T $.Lang (printf "stress_flag_%s_desc" .)}}">{{T $.Lang (printf "stress_flag_%s_label" .)}}</span>
+          {{end}}{{end}}
+        {{end}}
+      </div>
+      {{end}}
       {{end}}
     </div>
 
