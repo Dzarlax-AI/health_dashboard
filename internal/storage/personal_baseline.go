@@ -150,14 +150,26 @@ func (s *DB) PersonalBaseline(
 		return PersonalBaselineResult{}, false
 	}
 
-	now := time.Now().In(loc)
-	state := classifyState(len(samples), newest, now)
+	// Staleness anchor is the day being scored, not the wall
+	// clock. For live "today" calls this matches time.Now(), but
+	// for backfill of historical dates it prevents every old day
+	// from being flagged calibration_warmup just because the
+	// scored date is years in the past — the spec's intent ("does
+	// the baseline still describe physiology AS OF the scored
+	// day") was masked by the wall-clock anchor pre-2026-05.
+	//
+	// Live recompute calls (TenantRecompute / morning report)
+	// still pass today's date here, so behaviour is unchanged in
+	// production scoring; only backfill / validation now sees the
+	// correct steady-vs-warmup classification.
+	asOf := until
+	state := classifyState(len(samples), newest, asOf)
 
 	if state == CalibrationCold {
 		return PersonalBaselineResult{
 			SampleCount: len(samples),
 			State:       state,
-			NewestAge:   ageOf(newest, now),
+			NewestAge:   ageOf(newest, asOf),
 		}, false
 	}
 	// Wrist temp tighter gate: even at warmup state, fewer than 14
@@ -166,7 +178,7 @@ func (s *DB) PersonalBaseline(
 		return PersonalBaselineResult{
 			SampleCount: len(samples),
 			State:       CalibrationCold,
-			NewestAge:   ageOf(newest, now),
+			NewestAge:   ageOf(newest, asOf),
 		}, false
 	}
 
@@ -180,7 +192,7 @@ func (s *DB) PersonalBaseline(
 		Median:      median,
 		MADSD:       sd,
 		SampleCount: len(samples),
-		NewestAge:   ageOf(newest, now),
+		NewestAge:   ageOf(newest, asOf),
 		State:       state,
 	}, true
 }
