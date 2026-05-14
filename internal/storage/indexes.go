@@ -24,6 +24,13 @@ func (s *DB) EnsureIndexes() {
 		`ALTER TABLE daily_scores ADD COLUMN IF NOT EXISTS energy_eod_current INTEGER`,
 		`ALTER TABLE daily_scores ADD COLUMN IF NOT EXISTS energy_drain INTEGER`,
 		`ALTER TABLE daily_scores ADD COLUMN IF NOT EXISTS energy_verdict TEXT`,
+
+		// v2.2 stress methodology — median HR over the last 3h of the
+		// main sleep segment ending on this date. NOT to be confused
+		// with `rhr_avg` (which is a per-day average of heart_rate —
+		// see STRESS_MEASUREMENT.md §0 blocker 1). NULL until the
+		// `upsertBaselineHROvernightForDate` writer runs for the date.
+		`ALTER TABLE daily_scores ADD COLUMN IF NOT EXISTS baseline_hr_overnight REAL`,
 	}
 	for _, ddl := range migrations {
 		if _, err := s.pool.Exec(ctx, ddl); err != nil {

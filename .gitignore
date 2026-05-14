@@ -27,4 +27,4 @@ export.zip
 pass
 
 # Health Auto Export automation configs (contain API keys in headers)
-hae_*.json
+hae_*.json.git.broken/
