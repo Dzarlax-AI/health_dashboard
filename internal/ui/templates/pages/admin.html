@@ -76,6 +76,39 @@
         <div id="admin-quality-msg" style="display:none;margin-top:8px"></div>
       </div>
 
+      <!-- v2.2 EnergyBank stress-drain settings -->
+      <div class="admin-section" id="admin-energy-section">
+        <div class="section-title">{{T .Lang "admin_energy_title"}}</div>
+        <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
+          {{T .Lang "admin_energy_warning"}}
+        </p>
+        <div class="admin-settings-form">
+          <div class="admin-field-row">
+            <label class="admin-field-label">{{T .Lang "admin_energy_stress_enabled"}}</label>
+            <input class="admin-field-input" type="checkbox" id="cfg-energy-stress-enabled" style="width:auto">
+          </div>
+          <div class="admin-field-row">
+            <label class="admin-field-label">{{T .Lang "admin_energy_beta"}}</label>
+            <input class="admin-field-input" type="number" id="cfg-energy-beta" step="0.01" min="0" max="5" placeholder="0.8">
+          </div>
+          <div class="admin-field-row">
+            <label class="admin-field-label">{{T .Lang "admin_energy_z_threshold"}}</label>
+            <input class="admin-field-input" type="number" id="cfg-energy-z-threshold" step="0.05" min="0" max="3" placeholder="0.5">
+          </div>
+          <div class="admin-field-row">
+            <label class="admin-field-label">{{T .Lang "admin_energy_effective_beta"}}</label>
+            <div id="cfg-energy-effective-beta" style="font-family:monospace;color:var(--text-secondary)">—</div>
+          </div>
+          <div class="admin-settings-actions">
+            <button class="btn btn--primary btn--small" onclick="saveEnergySettings()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+              {{T .Lang "admin_energy_save"}}
+            </button>
+          </div>
+        </div>
+        <div id="admin-energy-msg" style="display:none"></div>
+      </div>
+
       <!-- AI briefing settings -->
       <div class="admin-section" id="admin-ai-section">
         <div class="section-title">{{T .Lang "admin_ai_title"}}</div>
@@ -305,6 +338,37 @@ function loadAdminSettings() {
         loadGeminiModels(d.gemini_api_key, d.gemini_model || '');
       }
       if (d.gemini_max_tokens) $('cfg-gemini-max-tokens').value = d.gemini_max_tokens;
+    });
+  loadEnergySettings();
+}
+
+function loadEnergySettings() {
+  fetch('/api/admin/energy-settings')
+    .then(function(r){return r.json()})
+    .then(function(d) {
+      $('cfg-energy-stress-enabled').checked = !!d['energy.stress_drain_enabled'];
+      $('cfg-energy-beta').value = d['energy.beta'];
+      $('cfg-energy-z-threshold').value = d['energy.z_threshold'];
+      $('cfg-energy-effective-beta').textContent = d.effective_beta;
+    });
+}
+
+function saveEnergySettings() {
+  var body = {
+    'energy.beta': $('cfg-energy-beta').value,
+    'energy.z_threshold': $('cfg-energy-z-threshold').value,
+    'energy.stress_drain_enabled': $('cfg-energy-stress-enabled').checked ? 'true' : 'false'
+  };
+  fetch('/api/admin/energy-settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
+    .then(function(r){return r.json()})
+    .then(function() {
+      var msg = $('admin-energy-msg');
+      msg.textContent = '{{T .Lang "admin_energy_saved"}}';
+      msg.style.display = '';
+      msg.className = 'alert alert--success';
+      setTimeout(function(){ msg.style.display = 'none'; }, 3000);
+      // Reload to update effective_beta display
+      loadEnergySettings();
     });
 }
 

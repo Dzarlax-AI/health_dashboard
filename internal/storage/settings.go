@@ -113,3 +113,21 @@ func getSettingInt(s *DB, key string, fallback int) int {
 	}
 	return fallback
 }
+
+// getSettingBool reads a boolean setting. Accepts the standard
+// `strconv.ParseBool` set ("true"/"false", "1"/"0", "TRUE"/"FALSE",
+// etc.) — same flexibility as the rest of the Go toolchain. Falls
+// back to the supplied `fallback` on missing key or unparseable
+// value, NOT to zero-bool — important because callers like
+// StressDrainEnabled default to false but other future bool flags
+// might default to true.
+func getSettingBool(s *DB, key string, fallback bool) bool {
+	v := s.GetSetting(key, "")
+	if v == "" {
+		return fallback
+	}
+	if b, err := strconv.ParseBool(v); err == nil {
+		return b
+	}
+	return fallback
+}
