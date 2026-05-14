@@ -118,6 +118,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/quality-digest", h.adminGuard(h.adminQualityDigest))
 	mux.HandleFunc("/api/admin/settings", h.adminGuard(h.adminAISettings))
 	mux.HandleFunc("/api/admin/ai-models", h.adminGuard(h.adminAIModels))
+	mux.HandleFunc("/api/admin/energy-settings", h.adminGuard(h.adminEnergySettings))
 	mux.HandleFunc("/api/admin/users", h.adminGuard(h.adminUsers))
 	h.registerImportRoutes(mux)
 	h.registerEnergyBackfillRoutes(mux)
@@ -1127,6 +1128,90 @@ func (h *Handler) adminAISettings(w http.ResponseWriter, r *http.Request) {
 		"gemini_model":      aiCfg.Model,
 		"gemini_max_tokens": aiCfg.MaxOutputTokens,
 		"gemini_enabled":    aiCfg.Enabled(),
+	})
+}
+
+// adminEnergySettings handles GET/POST /api/admin/energy-settings —
+// v2.2 stress-drain coefficients (Beta, ZThreshold, StressDrainEnabled).
+// Per-tenant (writes to <schema>.settings, not the global registry)
+// because the §4.5 validation rubric clears these independently per
+// user; tying them to a global setting would either over-restrict
+// (one user's failing rubric blocks all) or leak (one user's tuned
+// β applies to everyone). Admin-only to keep the non-production
+// placeholder default (β=0.8) from being flipped on without an
+// operator who understands the validation gate.
+func (h *Handler) adminEnergySettings(w http.ResponseWriter, r *http.Request) {
+	db := h.tenantDB(r)
+	if db == nil {
+		http.Error(w, "tenant DB unavailable", http.StatusInternalServerError)
+		return
+	}
+
+	if r.Method == http.MethodPost {
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
+			return
+		}
+		// Validate each v2.2 stress-drain knob before persisting.
+		// Whitelist alone wasn't enough — someone POSTing
+		// `energy.beta=-1` or `=100` would silently break the bank
+		// once StressDrainEnabled is flipped on. Bounds match the
+		// `min`/`max` attributes on the admin.html inputs so the
+		// UI and server agree on what's reasonable; tightening
+		// upper bounds later (e.g. when cohort study clamps β to
+		// a narrow range) only requires updating these two checks.
+		// Flagged by CodeRabbit on PR #60.
+		if v, ok := body["energy.beta"]; ok {
+			beta, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+			if err != nil || beta < 0 || beta > 5 {
+				http.Error(w, "energy.beta must be a number in [0, 5]", http.StatusBadRequest)
+				return
+			}
+		}
+		if v, ok := body["energy.z_threshold"]; ok {
+			z, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+			if err != nil || z < 0 || z > 3 {
+				http.Error(w, "energy.z_threshold must be a number in [0, 3]", http.StatusBadRequest)
+				return
+			}
+		}
+		if v, ok := body["energy.stress_drain_enabled"]; ok {
+			if _, err := strconv.ParseBool(strings.TrimSpace(v)); err != nil {
+				http.Error(w, "energy.stress_drain_enabled must be true/false", http.StatusBadRequest)
+				return
+			}
+		}
+		// Whitelist the three v2.2 keys — Alpha / AlphaFactor /
+		// FormulaVersion stay out of the admin UI for now (they're
+		// either tuned by the v2.5 calibrator or set deliberately by
+		// `make energy-backfill`). A wider settings page can wire
+		// them later without changing this whitelist's intent.
+		allowed := map[string]bool{
+			"energy.beta":                 true,
+			"energy.z_threshold":          true,
+			"energy.stress_drain_enabled": true,
+		}
+		clean := make(map[string]string)
+		for k, v := range body {
+			if allowed[k] {
+				clean[k] = v
+			}
+		}
+		if err := db.SaveSettings(clean); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		jsonResponse(w, map[string]string{"status": "ok"})
+		return
+	}
+
+	cfg := db.GetEnergyConfig()
+	jsonResponse(w, map[string]any{
+		"energy.beta":                 cfg.Beta,
+		"energy.z_threshold":          cfg.ZThreshold,
+		"energy.stress_drain_enabled": cfg.StressDrainEnabled,
+		"effective_beta":              cfg.EffectiveBeta(),
 	})
 }
 
