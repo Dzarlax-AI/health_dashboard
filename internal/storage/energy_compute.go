@@ -77,11 +77,16 @@ type BankResult struct {
 // that day; the iteration interprets nil as "needs imputation" (or
 // "skip" for days outside the iteration range).
 type dailyInputs struct {
-	SleepTotal *float64 // hours
-	SleepDeep  *float64 // hours
-	SleepRem   *float64 // hours
-	SleepAwake *float64 // hours
-	ActiveKcal *float64 // kcal
+	SleepTotal      *float64 // hours
+	SleepDeep       *float64 // hours
+	SleepRem        *float64 // hours
+	SleepAwake      *float64 // hours
+	ActiveKcal      *float64 // kcal
+	SustainedHRLoad *float64 // §4.4 z-load, cached in daily_scores; NULL means
+	// the coverage / calibration gates fired for the day. zeroIfNil
+	// in computeBankFromDays converts that to 0 so DrainV2's β term
+	// contributes 0 (same shape as a low-stress day) — falls back
+	// cleanly to v2.0 drain without flagging the day as imputed.
 }
 
 const (
@@ -142,7 +147,8 @@ func (s *DB) ComputeBankForDate(ctx context.Context, tz, asOfDate string) (BankR
 	startDate := subtractDays(asOfDate, energyWindowDays-1)
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT date, sleep_total, sleep_deep, sleep_rem, sleep_awake, calories
+		SELECT date, sleep_total, sleep_deep, sleep_rem, sleep_awake, calories,
+		       sustained_hr_load
 		FROM daily_scores
 		WHERE date >= $1 AND date <= $2`,
 		startDate, asOfDate)
@@ -154,13 +160,13 @@ func (s *DB) ComputeBankForDate(ctx context.Context, tz, asOfDate string) (BankR
 	byDate := make(map[string]dailyInputs, energyWindowDays)
 	for rows.Next() {
 		var date string
-		var st, sd, sr, sa, kcal *float64
-		if err := rows.Scan(&date, &st, &sd, &sr, &sa, &kcal); err != nil {
+		var st, sd, sr, sa, kcal, shl *float64
+		if err := rows.Scan(&date, &st, &sd, &sr, &sa, &kcal, &shl); err != nil {
 			return BankResult{}, err
 		}
 		byDate[date] = dailyInputs{
 			SleepTotal: st, SleepDeep: sd, SleepRem: sr, SleepAwake: sa,
-			ActiveKcal: kcal,
+			ActiveKcal: kcal, SustainedHRLoad: shl,
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -212,7 +218,18 @@ func computeBankFromDays(days []dailyInputs, cfg EnergyConfig) BankResult {
 			imputedSleep[i] = true
 		}
 		if d.ActiveKcal != nil && *d.ActiveKcal >= 0 {
-			drain[i] = health.DrainV2(*d.ActiveKcal, cfg.EffectiveAlpha())
+			// v2.2: pass the per-day sustained_hr_load cached in
+			// daily_scores.sustained_hr_load by the
+			// upsertSustainedHRLoadForDate writer. NULL → 0 here;
+			// the EffectiveBeta gate keeps β=0 until the §4.5
+			// validation rubric clears the tenant, so the new
+			// term contributes 0 regardless of the load value.
+			drain[i] = health.DrainV2(
+				*d.ActiveKcal,
+				zeroIfNil(d.SustainedHRLoad),
+				cfg.EffectiveAlpha(),
+				cfg.EffectiveBeta(),
+			)
 		} else {
 			imputedActivity[i] = true
 		}
@@ -384,6 +401,16 @@ func todayComponents(d dailyInputs, sq, drain float64) map[string]float64 {
 	}
 	if d.ActiveKcal != nil {
 		c["active_kcal"] = *d.ActiveKcal
+	}
+	// v2.2 audit trail — ALWAYS write the z-load when the cache has
+	// it, even when EffectiveBeta=0 keeps the term out of drain.
+	// Per STRESS_MEASUREMENT.md §6 Q3: "compute sustained_hr_load_z
+	// into `components` for audit, but β_effective = 0 and the
+	// bank does not move on the new term". This is how the
+	// future calibration UI (PR-11) reads a tenant's z-load
+	// history without having to re-run the orchestrator.
+	if d.SustainedHRLoad != nil {
+		c["sustained_hr_load_z"] = *d.SustainedHRLoad
 	}
 	return c
 }

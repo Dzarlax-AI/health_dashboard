@@ -236,6 +236,10 @@ func (s *DB) UpsertRecentCache(dates []string, recomputeReadiness bool) {
 		// enough to run inside the same critical section (one
 		// percentile query + one UPDATE per date).
 		s.upsertBaselineHROvernightForDate(date, loc)
+		// v2.2 sustained_hr_load — depends on baseline_hr_overnight
+		// being current AND on the personal HR baseline being
+		// readable, so runs last in the per-date chain.
+		s.upsertSustainedHRLoadForDate(date, loc)
 	}
 	s.cacheMu.Unlock()
 
@@ -599,7 +603,13 @@ func (s *DB) BuildDailyMetrics(force bool) error {
 	// shouldn't fail a months-long backfill.
 	s.buildBaselineHROvernightAll(force)
 
-	log.Printf("daily metrics filled (%d columns + sleep block + baseline_hr_overnight)", len(specs))
+	// v2.2 sustained_hr_load backfill. Reads everything the previous
+	// passes wrote (sleep block for WakeTimeForDate's awake window,
+	// baseline_hr_overnight is independent but recomputed for
+	// consistency), so MUST run last in the chain.
+	s.buildSustainedHRLoadAll(force)
+
+	log.Printf("daily metrics filled (%d columns + sleep block + baseline_hr_overnight + sustained_hr_load)", len(specs))
 	return nil
 }
 
