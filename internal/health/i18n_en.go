@@ -244,4 +244,11 @@ var en = LangStrings{
 	"tg_energy_backfill_nudge_header": "📊 Historical EnergyBank is waiting",
 	"tg_energy_backfill_nudge_body":   "You have {complete} days of complete health history but only {backfilled} EnergyBank snapshots from retrospective backfill. Until you run it, the verdict thresholds for rest / moderate / push hard use generic defaults instead of your personal distribution — meaning recommendations are biased and Telegram reports under-tune to your real fitness.",
 	"tg_energy_backfill_nudge_cta":    "Open Settings → Historical EnergyBank",
+
+	// Monthly stress-validation nudge — fires once when the §4.5
+	// rubric verdict transitions to "validated". Surfaces the
+	// actionable signal that β may now be tuned per §6 Q3.
+	"tg_stress_validation_header": "🎯 Stress-formula validated",
+	"tg_stress_validation_body":   "The §4.5 four-channel rubric just returned <b>{verdict}</b> for your tenant. {reason} You may now flip <code>settings.energy.stress_drain_enabled</code> on if you want EnergyBank drain to react to sustained autonomic load.",
+	"tg_stress_validation_cta":    "Open /admin → Stress validation",
 }

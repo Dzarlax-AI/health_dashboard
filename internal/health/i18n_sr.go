@@ -221,4 +221,9 @@ var sr = LangStrings{
 	"tg_energy_backfill_nudge_header": "📊 Istorijski EnergyBank te čeka",
 	"tg_energy_backfill_nudge_body":   "Imaš {complete} kompletnih dana istorije, ali samo {backfilled} backfilled snapshot-ova EnergyBank-a. Dok ne pokreneš backfill, pragovi verdikta (rest / moderate / push hard) koriste default vrednosti umesto tvoje lične distribucije — preporuke su pristrasne, Telegram izveštaji nedokalibrisani.",
 	"tg_energy_backfill_nudge_cta":    "Otvori Podešavanja → Istorijski EnergyBank",
+
+	// Monthly stress-validation nudge — STRESS_MEASUREMENT.md §4.5.
+	"tg_stress_validation_header": "🎯 Stres-formula validirana",
+	"tg_stress_validation_body":   "§4.5 4-kanalna rubric je vratila <b>{verdict}</b> za tvoju instancu. {reason} Možeš uključiti <code>settings.energy.stress_drain_enabled</code> ako želiš da EnergyBank drain reaguje na trajno autonomno opterećenje.",
+	"tg_stress_validation_cta":    "Otvori /admin → Validacija stres-formule",
 }
