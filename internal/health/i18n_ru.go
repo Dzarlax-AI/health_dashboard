@@ -221,4 +221,9 @@ var ru = LangStrings{
 	"tg_energy_backfill_nudge_header": "📊 Исторический EnergyBank ждёт",
 	"tg_energy_backfill_nudge_body":   "У тебя {complete} полных дней истории, но всего {backfilled} backfilled-снимков EnergyBank. Пока не запустишь backfill, пороги вердикта (rest / moderate / push hard) работают на дефолтных значениях, а не на твоей личной шкале — рекомендации смещены, отчёты в Telegram недокалиброваны под твою реальную физиологию.",
 	"tg_energy_backfill_nudge_cta":    "Открыть Настройки → Исторический EnergyBank",
+
+	// Monthly stress-validation nudge — STRESS_MEASUREMENT.md §4.5.
+	"tg_stress_validation_header": "🎯 Stress-формула валидирована",
+	"tg_stress_validation_body":   "§4.5 4-канальная rubric вернула <b>{verdict}</b> для тебя. {reason} Можно включать <code>settings.energy.stress_drain_enabled</code>, если хочешь чтобы EnergyBank drain реагировал на длительную автономную нагрузку.",
+	"tg_stress_validation_cta":    "Открыть /admin → Валидация stress-формулы",
 }
