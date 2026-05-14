@@ -27,4 +27,8 @@ export.zip
 pass
 
 # Health Auto Export automation configs (contain API keys in headers)
-hae_*.json.git.broken/
+hae_*.json
+
+# Recovered-from-broken local git state, preserved on disk so it can
+# be inspected / rsynced if a future op needs the old reflog.
+.git.broken/
