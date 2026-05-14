@@ -120,6 +120,25 @@ func (s *DB) ComputeSustainedHRLoadForDate(
 	cfg := s.GetEnergyConfig()
 	res.SustainedHRLoadZ = health.SustainedHRLoad(hourZ, cfg.ZThreshold)
 
+	// §4.3 HR-z-derived flags. Both feed PR-9 verdict layer:
+	//
+	//   acute_stress  — single hour z>+2 in the awake window. Per
+	//                   spec, drives no behaviour ("no action —
+	//                   transient"), but surfaces in components for
+	//                   diagnostic UI.
+	//   sustained_load — ≥4h consecutive z>+1. Real autonomic load
+	//                   day; pairs with the quantitative
+	//                   sustained_hr_load_z above. Distinct flag
+	//                   even when SustainedHRLoadZ > 0 (a single
+	//                   z=2 hour produces load but doesn't fire
+	//                   the run flag).
+	if health.AcuteStress(hourZ) {
+		res.Flags = append(res.Flags, "acute_stress")
+	}
+	if health.SustainedLoadFlag(hourZ) {
+		res.Flags = append(res.Flags, "sustained_load")
+	}
+
 	// HROvershootBpmHours: raw bpm·hours for the same hours that
 	// contributed to the z-load. Keeps the audit-trail line in
 	// human units so a future briefing can say "HR ran +8 bpm above
@@ -142,29 +161,40 @@ func (s *DB) ComputeSustainedHRLoadForDate(
 }
 
 // upsertSustainedHRLoadForDate computes the v2.2 sustained-load value
-// and writes it to daily_scores.sustained_hr_load. NULL when the
-// orchestrator returns ok=false; the conditional UPDATE never
-// overwrites a valid prior value with NULL.
+// AND the §4.3 HR-driven stress flags and writes both to
+// daily_scores. NULL/empty when the orchestrator returns ok=false;
+// the conditional UPDATE never overwrites a valid prior value with
+// NULL.
 //
-// Stress flags from ComputeSustainedHRLoadForDate are NOT persisted on
-// daily_scores — they go into energy_snapshots.flags + components JSONB
-// per the v2 design (energy_snapshot_write.go is the canonical write
-// site for both columns). This function only handles the per-day
-// scalar cache.
+// The stress_flags column is updated together with sustained_hr_load
+// because both come from the same orchestrator run — splitting them
+// would require duplicate compute work or stale flags during the
+// brief window between two UPDATEs. `flags` always written even when
+// the load itself is gated to zero (e.g. stale_stress flag fires
+// AND empty load → ([stale_stress], 0)).
 func (s *DB) upsertSustainedHRLoadForDate(date string, loc *time.Location) {
 	res, ok := s.ComputeSustainedHRLoadForDate(date, loc)
 	if !ok {
 		return
 	}
-	if !isFiniteFloat(res.SustainedHRLoadZ) {
-		return
+	flags := res.Flags
+	if flags == nil {
+		flags = []string{}
+	}
+	// Sentinel for the SustainedHRLoadZ scalar — only update when
+	// finite. Flags update independently of load validity.
+	var load *float64
+	if isFiniteFloat(res.SustainedHRLoadZ) {
+		v := res.SustainedHRLoadZ
+		load = &v
 	}
 	ctx, cancel := queryCtx()
 	defer cancel()
 	if _, err := s.pool.Exec(ctx, `
 		UPDATE daily_scores
-		   SET sustained_hr_load = $2
-		 WHERE date = $1`, date, res.SustainedHRLoadZ); err != nil {
+		   SET sustained_hr_load = COALESCE($2, sustained_hr_load),
+		       stress_flags      = $3
+		 WHERE date = $1`, date, load, flags); err != nil {
 		log.Printf("upsertSustainedHRLoadForDate %s: %v", date, err)
 	}
 }

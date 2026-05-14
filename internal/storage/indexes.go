@@ -40,6 +40,15 @@ func (s *DB) EnsureIndexes() {
 		// calibration; in either case DrainV2's β term contributes 0
 		// for that day and falls back to v2.0 (kcal-only) drain.
 		`ALTER TABLE daily_scores ADD COLUMN IF NOT EXISTS sustained_hr_load REAL`,
+
+		// v2.2 stress_flags — §4.3 stratified flags computed alongside
+		// sustained_hr_load. Currently surfaces the HR-z-derived
+		// flags only: stale_stress (coverage gate fired) /
+		// calibration_warmup / acute_stress (z>+2 hour exists) /
+		// sustained_load (≥4h run at z>+1). Multi-channel flags
+		// (illness_signature / recovery_debt /
+		// parasympathetic_rebound) land in a follow-up PR.
+		`ALTER TABLE daily_scores ADD COLUMN IF NOT EXISTS stress_flags TEXT[]`,
 	}
 	for _, ddl := range migrations {
 		if _, err := s.pool.Exec(ctx, ddl); err != nil {

@@ -461,6 +461,14 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 			resp.EnergyBank.Capacity = capacity
 			resp.EnergyBank.DrainSoFar = drain
 			resp.EnergyBank.Components = nil
+			// v2.2 stress flags: surface the §4.3 set (acute_stress,
+			// sustained_load, calibration_warmup, stale_stress) plus the
+			// v2.0 imputed_* set from the snapshot. computeBankFromDays
+			// merges today's StressFlags into BankResult.Flags before the
+			// snapshot is written, so snap.Flags is the authoritative
+			// "today's flags" carrier — read it here instead of going
+			// back to daily_scores.stress_flags.
+			resp.EnergyBank.Flags = snap.Flags
 			// v1→v2 verdict cutover (PR #47): recompute ActionVerdict
 			// and VerdictReason against the v2 bank using personal
 			// percentile bands instead of v1's hardcoded

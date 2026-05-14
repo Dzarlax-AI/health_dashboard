@@ -87,6 +87,13 @@ type dailyInputs struct {
 	// in computeBankFromDays converts that to 0 so DrainV2's β term
 	// contributes 0 (same shape as a low-stress day) — falls back
 	// cleanly to v2.0 drain without flagging the day as imputed.
+	StressFlags []string // §4.3 stratified flags, cached in
+	// daily_scores.stress_flags. Currently the HR-z-derived subset:
+	// stale_stress / calibration_warmup / acute_stress /
+	// sustained_load. Multi-channel flags (illness_signature,
+	// recovery_debt, parasympathetic_rebound) land in a follow-up
+	// PR. Surfaced into BankResult.Flags for *today only* by
+	// computeBankFromDays.
 }
 
 const (
@@ -148,7 +155,7 @@ func (s *DB) ComputeBankForDate(ctx context.Context, tz, asOfDate string) (BankR
 
 	rows, err := s.pool.Query(ctx, `
 		SELECT date, sleep_total, sleep_deep, sleep_rem, sleep_awake, calories,
-		       sustained_hr_load
+		       sustained_hr_load, stress_flags
 		FROM daily_scores
 		WHERE date >= $1 AND date <= $2`,
 		startDate, asOfDate)
@@ -161,12 +168,13 @@ func (s *DB) ComputeBankForDate(ctx context.Context, tz, asOfDate string) (BankR
 	for rows.Next() {
 		var date string
 		var st, sd, sr, sa, kcal, shl *float64
-		if err := rows.Scan(&date, &st, &sd, &sr, &sa, &kcal, &shl); err != nil {
+		var sf []string
+		if err := rows.Scan(&date, &st, &sd, &sr, &sa, &kcal, &shl, &sf); err != nil {
 			return BankResult{}, err
 		}
 		byDate[date] = dailyInputs{
 			SleepTotal: st, SleepDeep: sd, SleepRem: sr, SleepAwake: sa,
-			ActiveKcal: kcal, SustainedHRLoad: shl,
+			ActiveKcal: kcal, SustainedHRLoad: shl, StressFlags: sf,
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -270,6 +278,14 @@ func computeBankFromDays(days []dailyInputs, cfg EnergyConfig) BankResult {
 
 	state := trustState(imputedSleep, imputedActivity)
 	flags := todayFlags(imputedSleep, imputedActivity)
+	// Surface today's §4.3 stress flags alongside the v2.0 imputed
+	// flags. Both feed the same energy_snapshots.flags TEXT[]
+	// column, so consumers (briefing.go, future verdict layer)
+	// read them with one query. Cached on daily_scores by the
+	// orchestrator — no recompute at read time.
+	if today := days[energyWindowDays-1].StressFlags; len(today) > 0 {
+		flags = append(flags, today...)
+	}
 
 	res := BankResult{
 		Bank:           int(math.Round(bank)),
