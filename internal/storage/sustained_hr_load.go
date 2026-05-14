@@ -202,11 +202,33 @@ func (s *DB) ComputeSustainedHRLoadForDate(
 // brief window between two UPDATEs. `flags` always written even when
 // the load itself is gated to zero (e.g. stale_stress flag fires
 // AND empty load → ([stale_stress], 0)).
-func (s *DB) upsertSustainedHRLoadForDate(date string, loc *time.Location) {
+// upsertSustainedHRLoadForDate returns the computed result and a
+// write error (if any). The internal callers (aggregates.go,
+// buildSustainedHRLoadAll) discard the return values — they already
+// log-and-continue on individual-date failures. The exported wrapper
+// surfaces both so cmd/energy_backfill --include-stress can count
+// write errors into its progress tally instead of silently treating
+// a failed UPDATE as success.
+//
+// Returns ok=false from ComputeSustainedHRLoadForDate → returns
+// (zero-value, nil): no compute → no write → no error. Compute
+// succeeded but write failed → returns (res, err).
+func (s *DB) upsertSustainedHRLoadForDate(date string, loc *time.Location) (SustainedHRLoadResult, error) {
 	res, ok := s.ComputeSustainedHRLoadForDate(date, loc)
 	if !ok {
-		return
+		return SustainedHRLoadResult{}, nil
 	}
+	return res, s.writeSustainedHRLoadRow(date, res)
+}
+
+// writeSustainedHRLoadRow is the UPDATE half of
+// upsertSustainedHRLoadForDate, factored out so cmd/energy_backfill
+// --include-stress can drive compute + write separately and count
+// each kind of failure into its tally without a double-compute.
+//
+// Always called with a non-nil res; callers handle the "no compute"
+// path themselves.
+func (s *DB) writeSustainedHRLoadRow(date string, res SustainedHRLoadResult) error {
 	flags := res.Flags
 	if flags == nil {
 		flags = []string{}
@@ -225,16 +247,18 @@ func (s *DB) upsertSustainedHRLoadForDate(date string, loc *time.Location) {
 		   SET sustained_hr_load = COALESCE($2, sustained_hr_load),
 		       stress_flags      = $3
 		 WHERE date = $1`, date, load, flags); err != nil {
-		log.Printf("upsertSustainedHRLoadForDate %s: %v", date, err)
+		log.Printf("writeSustainedHRLoadRow %s: %v", date, err)
+		return err
 	}
+	return nil
 }
 
 // UpsertSustainedHRLoadForDate is the exported wrapper, mirroring the
-// PR-2 UpsertBaselineHROvernightForDate pattern. Used by any future
-// one-off cmd that wants to recompute a specific date without rerunning
-// the full BackfillAggregates pass.
-func (s *DB) UpsertSustainedHRLoadForDate(date string, loc *time.Location) {
-	s.upsertSustainedHRLoadForDate(date, loc)
+// PR-2 UpsertBaselineHROvernightForDate pattern. Returns the computed
+// result and any write error so backfill callers can distinguish
+// compute-failed (ok=false-style) from write-failed cases.
+func (s *DB) UpsertSustainedHRLoadForDate(date string, loc *time.Location) (SustainedHRLoadResult, error) {
+	return s.upsertSustainedHRLoadForDate(date, loc)
 }
 
 // buildSustainedHRLoadAll backfills daily_scores.sustained_hr_load for
@@ -277,7 +301,11 @@ func (s *DB) buildSustainedHRLoadAll(force bool) {
 	}
 	loc := reportTZLocation()
 	for _, d := range dates {
-		s.upsertSustainedHRLoadForDate(d, loc)
+		// log-and-continue: individual-date failures are already
+		// logged inside; the backfill summary line below is "filled
+		// for N dates" regardless. cmd/energy_backfill --include-
+		// stress is the path that wants per-date error counts.
+		_, _ = s.upsertSustainedHRLoadForDate(d, loc)
 	}
 	log.Printf("sustained_hr_load filled for %d dates", len(dates))
 }
