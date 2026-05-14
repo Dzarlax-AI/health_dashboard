@@ -199,29 +199,18 @@ func (s *DB) fetchValidationPairs(
 // Per-source downweighting (full per-night picked-source lookup)
 // stays out of this PR.
 func computeSleepChannel(pairs []validationPair) health.SleepChannel {
-	var loads, latencies, awakes, deeps []float64
+	// N counts days with non-null load; the per-sub-signal NULL
+	// filters live inside alignPairs below. Previously this loop
+	// also pre-built per-signal slices but they were unused —
+	// alignPairs rebuilds them anyway. SA4010 was flagging the
+	// dead writes.
+	loadCount := 0
 	for _, p := range pairs {
-		if p.Load == nil {
-			continue
-		}
-		// Approximated onset latency: sleep_awake when sleep_total > 0.
-		// Real latency requires per-segment timestamps (deferred).
-		if p.SleepAwake != nil && p.SleepTotal != nil && *p.SleepTotal > 0 {
-			loads = append(loads, *p.Load)
-			latencies = append(latencies, *p.SleepAwake)
-		}
-		if p.SleepAwake != nil {
-			awakes = append(awakes, *p.SleepAwake)
-		}
-		if p.SleepDeep != nil && p.SleepTotal != nil && *p.SleepTotal > 0 {
-			// deep_pct as a fraction. "First third" approximation
-			// not available without per-segment data — use
-			// whole-night deep_pct, sign of correlation is the
-			// vote.
-			deeps = append(deeps, *p.SleepDeep / *p.SleepTotal)
+		if p.Load != nil {
+			loadCount++
 		}
 	}
-	out := health.SleepChannel{N: len(loads)}
+	out := health.SleepChannel{N: loadCount}
 
 	// Build paired slices for each sub-correlation. We use the
 	// `loads` slice as the x-axis and re-traverse pairs to keep

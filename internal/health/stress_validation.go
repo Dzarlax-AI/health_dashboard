@@ -210,7 +210,12 @@ func RubricDecide(r *ValidationReport) {
 		// to downgrade. The presence of a cross-check that's
 		// uncomputable (nil R) counts as neither agree nor
 		// disagree — fall back on whatever else is present.
-		bothDisagree := !rhrAgrees && !sleepAgrees && c2.R != nil
+		// `c3.N > 0` mirrors the `c2.R != nil` check: a channel
+		// with no data counts as neither agree nor disagree.
+		// Without the guard, an empty channel 3 would silently
+		// downgrade a strong HRV signal whenever channel 2 also
+		// disagreed.
+		bothDisagree := !rhrAgrees && !sleepAgrees && c2.R != nil && c3.N > 0
 		if agreeCount >= 1 && !bothDisagree {
 			r.Verdict = "validated"
 			r.Reason = fmt.Sprintf(
