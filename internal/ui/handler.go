@@ -119,6 +119,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/settings", h.adminGuard(h.adminAISettings))
 	mux.HandleFunc("/api/admin/ai-models", h.adminGuard(h.adminAIModels))
 	mux.HandleFunc("/api/admin/energy-settings", h.adminGuard(h.adminEnergySettings))
+	mux.HandleFunc("/api/admin/stress-validation", h.adminGuard(h.adminStressValidation))
 	mux.HandleFunc("/api/admin/users", h.adminGuard(h.adminUsers))
 	h.registerImportRoutes(mux)
 	h.registerEnergyBackfillRoutes(mux)
@@ -1213,6 +1214,71 @@ func (h *Handler) adminEnergySettings(w http.ResponseWriter, r *http.Request) {
 		"energy.stress_drain_enabled": cfg.StressDrainEnabled,
 		"effective_beta":              cfg.EffectiveBeta(),
 	})
+}
+
+// adminStressValidation handles GET /api/admin/stress-validation —
+// runs the STRESS_MEASUREMENT.md §4.5 four-channel rubric against
+// the tenant's own history and returns the verdict + per-channel
+// coefficients.
+//
+// Query params:
+//   - window: rolling window in days (default 30, min 7, max 90)
+//   - as_of:  end date YYYY-MM-DD (default today in REPORT_TZ)
+//
+// Admin-only because the response surface includes raw per-channel
+// Pearson coefficients that we don't want to expose to regular
+// users (a low r doesn't mean "you're not stressed", it means "the
+// formula isn't capturing your physiology" — that's an operator
+// concept, not a user-facing one).
+//
+// Read-only — does NOT flip settings.energy.stress_drain_enabled
+// based on the verdict. Per §6 Q3, that flip is a manual operator
+// decision after reviewing the rubric output. The endpoint exists
+// to surface evidence, not to automate the gate.
+func (h *Handler) adminStressValidation(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	db := h.tenantDB(r)
+	if db == nil {
+		http.Error(w, "tenant DB unavailable", http.StatusInternalServerError)
+		return
+	}
+
+	window := 30
+	if v := r.URL.Query().Get("window"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 7 || n > 90 {
+			http.Error(w, "window must be an integer in [7, 90]", http.StatusBadRequest)
+			return
+		}
+		window = n
+	}
+	asOf := r.URL.Query().Get("as_of")
+	if asOf != "" {
+		if _, err := time.Parse("2006-01-02", asOf); err != nil {
+			http.Error(w, "as_of must be YYYY-MM-DD", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Tenant TZ resolution mirrors the energy backfill handler —
+	// settings.timezone if set, env REPORT_TZ default, "UTC"
+	// otherwise. Empty string into time.LoadLocation = UTC; safe
+	// fallback that produces sane day boundaries even on a fresh
+	// install without a configured tenant TZ.
+	schema := h.tenantSchema(r)
+	tz := db.GetNotifyConfig(h.mgr.NotifyDefaultsFor(schema)).Timezone
+	if tz == "" {
+		tz = "UTC"
+	}
+	report, err := db.ComputeStressValidationReport(r.Context(), tz, asOf, window)
+	if err != nil {
+		http.Error(w, "stress-validation: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, report)
 }
 
 func (h *Handler) adminAIModels(w http.ResponseWriter, r *http.Request) {
