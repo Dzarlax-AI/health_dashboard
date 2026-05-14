@@ -411,7 +411,20 @@ function saveEnergySettings() {
 // §6 Q3 that's a manual operator decision after reviewing this.
 function runStressValidation() {
   var out = $('admin-stress-validation-out');
-  out.innerHTML = '<div style="color:var(--text-secondary);font-size:13px">Running rubric over rolling 30-day window…</div>';
+  // i18n strings injected at template render time so RU/SR users
+  // don't see mixed-language UI in this new flow.
+  var i18n = {
+    loading:    '{{T .Lang "admin_stress_validation_loading"}}',
+    sparse:     '{{T .Lang "admin_stress_validation_sparse"}}',
+    noData:     '{{T .Lang "admin_stress_validation_no_data"}}',
+    flagsLabel: '{{T .Lang "admin_stress_validation_flags_label"}}',
+    ch1:        '{{T .Lang "admin_stress_validation_ch1"}}',
+    ch2:        '{{T .Lang "admin_stress_validation_ch2"}}',
+    ch3:        '{{T .Lang "admin_stress_validation_ch3"}}',
+    votes:      '{{T .Lang "admin_stress_validation_votes"}}',
+    windowFmt:  '{{T .Lang "admin_stress_validation_window_fmt"}}'
+  };
+  out.innerHTML = '<div style="color:var(--text-secondary);font-size:13px">'+i18n.loading+'</div>';
   fetch('/api/admin/stress-validation?window=30')
     .then(function(r){
       if (!r.ok) return r.text().then(function(t){ throw new Error(t || 'stress-validation failed'); });
@@ -424,27 +437,38 @@ function runStressValidation() {
       };
       var color = verdictColors[d.verdict] || 'low';
       var fmt = function(c){
-        if (c.sparse) return '<span class="muted">sparse (n='+c.n+')</span>';
-        if (c.r == null) return '<span class="muted">no data</span>';
+        if (c.sparse) return '<span class="muted">'+i18n.sparse+' (n='+c.n+')</span>';
+        if (c.r == null) return '<span class="muted">'+i18n.noData+'</span>';
         return '<strong>r = '+c.r.toFixed(3)+'</strong> <span class="muted">(n='+c.n+')</span>';
       };
       var sleep = d.channel_3_sleep || {};
-      var sleepLine = '<span class="muted">votes '+(sleep.agreement_votes||0)+'/3, n='+(sleep.n||0)+'</span>';
-      var flagsHtml = (d.flags && d.flags.length)
-        ? '<div style="margin-top:6px"><span class="muted">flags:</span> '+d.flags.map(function(f){return '<span class="stress-flag stress-flag--'+f+'" style="margin-right:4px">'+f+'</span>';}).join('')+'</div>'
+      var sleepLine = '<span class="muted">'+i18n.votes+' '+(sleep.agreement_votes||0)+'/3, n='+(sleep.n||0)+'</span>';
+      // Whitelist + escape — `d.flags` is server-controlled today
+      // but the JSON surface could grow new flag names; safer to
+      // refuse anything that wouldn't match a CSS class we ship.
+      var allowedFlags = { calibration_weak: true, data_quality_warn: true };
+      var safeFlags = Array.isArray(d.flags) ? d.flags.filter(function(f){ return allowedFlags[f]; }) : [];
+      var flagsHtml = safeFlags.length
+        ? '<div style="margin-top:6px"><span class="muted">'+i18n.flagsLabel+'</span> ' +
+          safeFlags.map(function(f){
+            return '<span class="stress-flag stress-flag--' + f + '" style="margin-right:4px">' + escapeHtml(f) + '</span>';
+          }).join('') + '</div>'
         : '';
+      // Whitelist verdict for class composition + display text.
+      var verdictKey = ({validated:1,weak:1,inconclusive:1,wrong_direction:1})[d.verdict] ? d.verdict : 'inconclusive';
+      var windowLine = i18n.windowFmt
+        .replace('{window}', d.window_days)
+        .replace('{days}', d.days);
       out.innerHTML =
         '<div class="alert alert--'+color+'" style="margin-bottom:8px">'+
-          '<strong>'+d.verdict.toUpperCase()+'</strong> — '+escapeHtml(d.reason)+
+          '<strong>'+escapeHtml(verdictKey.toUpperCase())+'</strong> — '+escapeHtml(d.reason || '')+
         '</div>'+
         '<table style="width:100%;font-size:13px;border-collapse:collapse">'+
-          '<tr><td style="padding:4px 8px 4px 0;color:var(--text-secondary)">Channel 1 (HRV next-morning)</td><td>'+fmt(d.channel_1_hrv)+'</td></tr>'+
-          '<tr><td style="padding:4px 8px 4px 0;color:var(--text-secondary)">Channel 2 (RHR next-morning shift)</td><td>'+fmt(d.channel_2_rhr)+'</td></tr>'+
-          '<tr><td style="padding:4px 8px 4px 0;color:var(--text-secondary)">Channel 3 (sleep architecture)</td><td>'+sleepLine+'</td></tr>'+
+          '<tr><td style="padding:4px 8px 4px 0;color:var(--text-secondary)">'+i18n.ch1+'</td><td>'+fmt(d.channel_1_hrv || {})+'</td></tr>'+
+          '<tr><td style="padding:4px 8px 4px 0;color:var(--text-secondary)">'+i18n.ch2+'</td><td>'+fmt(d.channel_2_rhr || {})+'</td></tr>'+
+          '<tr><td style="padding:4px 8px 4px 0;color:var(--text-secondary)">'+i18n.ch3+'</td><td>'+sleepLine+'</td></tr>'+
         '</table>'+
-        '<div style="margin-top:6px;color:var(--text-secondary);font-size:12px">'+
-          'window '+d.window_days+' days, '+d.days+' days with data'+
-        '</div>'+
+        '<div style="margin-top:6px;color:var(--text-secondary);font-size:12px">'+escapeHtml(windowLine)+'</div>'+
         flagsHtml;
     })
     .catch(function(e){
