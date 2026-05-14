@@ -38,6 +38,12 @@ var funcMap = template.FuncMap{
 	"LangOptions": LangOptions,
 	"HasPrefix":   strings.HasPrefix,
 	"ToLower":     strings.ToLower,
+	// SafeHTML wraps a known-safe i18n string so html/template's
+	// auto-escape doesn't strip the inline <code>/<strong>/<ul>
+	// markup we use in /admin help blocks. Only use with values
+	// from i18n maps (in-process literals) — NEVER with anything
+	// from user input or DB.
+	"SafeHTML": func(s string) template.HTML { return template.HTML(s) },
 }
 
 func init() {

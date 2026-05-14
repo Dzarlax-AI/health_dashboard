@@ -107,6 +107,16 @@
           </div>
         </div>
         <div id="admin-energy-msg" style="display:none"></div>
+
+        <!-- Inline help: what each knob means, when to change it. -->
+        <details class="admin-help" style="margin-top:12px">
+          <summary style="cursor:pointer;color:var(--text-secondary);font-size:13px">
+            {{T .Lang "admin_help_summary"}}
+          </summary>
+          <div class="admin-help-body" style="margin-top:8px;font-size:13px;line-height:1.5;color:var(--text-secondary)">
+            {{SafeHTML (T .Lang "admin_energy_help_html")}}
+          </div>
+        </details>
       </div>
 
       <!-- Stress validation rubric (STRESS_MEASUREMENT.md §4.5) -->
@@ -122,6 +132,15 @@
           </button>
         </div>
         <div id="admin-stress-validation-out" style="margin-top:12px"></div>
+
+        <details class="admin-help" style="margin-top:12px">
+          <summary style="cursor:pointer;color:var(--text-secondary);font-size:13px">
+            {{T .Lang "admin_help_summary"}}
+          </summary>
+          <div class="admin-help-body" style="margin-top:8px;font-size:13px;line-height:1.5;color:var(--text-secondary)">
+            {{SafeHTML (T .Lang "admin_stress_validation_help_html")}}
+          </div>
+        </details>
       </div>
 
       <!-- AI briefing settings -->
