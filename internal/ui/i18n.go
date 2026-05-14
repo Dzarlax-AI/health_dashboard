@@ -363,20 +363,68 @@ var translations = map[string]map[string]string{
 		// internal/health/i18n_en.go because dashboard.html uses
 		// ui.T (this map), not health.LangStrings.
 		"stress_flags_aria":                         "Stress signal flags",
-		"stress_flag_illness_signature_label":       "Illness signs",
-		"stress_flag_illness_signature_desc":        "Temp, breathing rate and HRV all diverging in the illness direction. Rest aligns with the physiology.",
-		"stress_flag_recovery_debt_label":           "Recovery debt",
-		"stress_flag_recovery_debt_desc":            "Overnight HRV down and RHR up — yesterday's load caught up. Keep today light.",
-		"stress_flag_parasympathetic_rebound_label": "Vagal rebound",
-		"stress_flag_parasympathetic_rebound_desc":  "HR elevated but HRV is also above baseline — recovery-phase pattern, not acute stress.",
-		"stress_flag_acute_stress_label":            "Acute spike",
-		"stress_flag_acute_stress_desc":             "One hour with HR > 2 SD above your awake baseline. Transient, no action needed.",
-		"stress_flag_sustained_load_label":          "Sustained load",
-		"stress_flag_sustained_load_desc":           "4+ consecutive hours with HR > 1 SD above your awake baseline. Real autonomic load.",
-		"stress_flag_stale_stress_label":            "Stress data stale",
-		"stress_flag_stale_stress_desc":             "Less than 8h of HR samples in the awake window — sustained-load drain disabled for this day.",
-		"stress_flag_calibration_warmup_label":      "Calibrating",
-		"stress_flag_calibration_warmup_desc":       "Personal baseline still in warmup (3-6 samples). Flag thresholds may be conservative.",
+		// Section labels shared by every flag's detail block.
+		"stress_detail_what":   "What it is",
+		"stress_detail_cause":  "What caused it",
+		"stress_detail_risk":   "Why it matters",
+		"stress_detail_action": "What to do",
+		// Per-flag chip labels (short) + detail HTML (4 sections
+		// for the 5 health flags, 2 for operational state).
+		"stress_flag_acute_stress_label": "HR spike",
+		"stress_flag_acute_stress_detail_html": `<h5>What it is</h5>
+<p>Your heart rate jumped sharply above your normal for one hour today.</p>
+<h5>What caused it</h5>
+<p>Coffee, an unexpected call, pre-meeting nerves, a startle, a brief conflict — any short sympathetic-nervous-system activation.</p>
+<h5>Why it matters</h5>
+<p>It doesn't, on its own. An isolated spike doesn't load the system — this is a normal reaction.</p>
+<h5>What to do</h5>
+<p>Nothing. The flag exists for diagnostics — so you can see it was a one-off, not chronic stress.</p>`,
+		"stress_flag_sustained_load_label": "Sustained HR",
+		"stress_flag_sustained_load_detail_html": `<h5>What it is</h5>
+<p>Your heart rate stayed above your normal for at least 4 hours in a row today.</p>
+<h5>What caused it</h5>
+<p>A long stressful day (deadline, negotiations), a hard workout with slow recovery, the start of an illness, dehydration, sleep deprivation.</p>
+<h5>Why it matters</h5>
+<p>Real load on the autonomic nervous system. A few days like this in a row and energy debt accumulates — recovery slows. EnergyBank already factored this in: the bar drained more than usual today.</p>
+<h5>What to do</h5>
+<p>Tonight: early bed, no alcohol or caffeine after lunch. Tomorrow: light activity, don't repeat the load.</p>`,
+		"stress_flag_illness_signature_label": "Possible illness",
+		"stress_flag_illness_signature_detail_html": `<h5>What it is</h5>
+<p>Body temperature, breathing rate and HRV all moved away from your normal in the "illness" direction together.</p>
+<h5>What caused it</h5>
+<p>Most often a viral infection in its early stage. Less often — serious overtraining with a depressed immune system.</p>
+<h5>Why it matters</h5>
+<p>Pushing a hard workout through this usually drags the illness out by 3-5 extra days. Your immune system is working off the infection; loading it with sport on top is double duty.</p>
+<h5>What to do</h5>
+<p>Sleep today. Skip the workout or make it minimal (a slow walk). Water, warm food. Check again tomorrow — if the flag is gone, ramp back up gradually.</p>`,
+		"stress_flag_recovery_debt_label": "Not recovered",
+		"stress_flag_recovery_debt_detail_html": `<h5>What it is</h5>
+<p>Overnight HRV dropped below your normal, and resting heart rate rose above it. Sleep didn't clear yesterday's load.</p>
+<h5>What caused it</h5>
+<p>Yesterday's hard training or work day, a late meal, alcohol, late bedtime, emotional stress.</p>
+<h5>Why it matters</h5>
+<p>You're not in optimal form today. Ignoring this and going hard raises the overtraining risk and the chance of a minor injury.</p>
+<h5>What to do</h5>
+<p>Easy day: walking, mobility, yoga. Eat well, go to bed early. The flag should clear by tomorrow — if not, two easy days in a row beat earning a real overtraining hole.</p>`,
+		"stress_flag_parasympathetic_rebound_label": "Recovering",
+		"stress_flag_parasympathetic_rebound_detail_html": `<h5>What it is</h5>
+<p>Heart rate was elevated, but HRV was also elevated. The parasympathetic nervous system is active — that's a recovery mode, not stress.</p>
+<h5>What caused it</h5>
+<p>Usually after a hard workout or intense day. The body spent resources and is now actively rebuilding.</p>
+<h5>Why it matters</h5>
+<p>It doesn't — this is a healthy reaction. <strong>Don't mistake it for acute stress</strong>: heart rate looks high, but the physiology is entirely different.</p>
+<h5>What to do</h5>
+<p>Give the body time: easy day, normal sleep. Training is fine, just not at the limit.</p>`,
+		"stress_flag_stale_stress_label": "Low data",
+		"stress_flag_stale_stress_detail_html": `<h5>What it is</h5>
+<p>Less than 8 hours of heart-rate data were collected during your waking hours today. The stress formula doesn't compute for this day.</p>
+<h5>What to do</h5>
+<p>Wear the watch more consistently. Check that iPhone sync is working. No action for today's numbers — the flag clears automatically as soon as there's >8 hours of data.</p>`,
+		"stress_flag_calibration_warmup_label": "Calibrating",
+		"stress_flag_calibration_warmup_detail_html": `<h5>What it is</h5>
+<p>Your personal baseline (HRV, heart rate, breathing) is still being learned — needs about a week of consistent data. Stress-flag thresholds stay conservative for now.</p>
+<h5>What to do</h5>
+<p>Just keep wearing the watch. The flag clears automatically after a few more days.</p>`,
 		"admin_import_uploading": "Uploadingâ¦",
 		"admin_import_running": "Import runningâ¦",
 	},
@@ -734,21 +782,66 @@ var translations = map[string]map[string]string{
 		"admin_import_pause": "мс пауза",
 		"admin_import_start": "Начать импорт",
 		// v2.2 hero-row stress-flag chips.
-		"stress_flags_aria":                         "Флаги стресс-сигналов",
-		"stress_flag_illness_signature_label":       "Признаки болезни",
-		"stress_flag_illness_signature_desc":        "Температура, ЧД и HRV — все три в illness-направлении. Покой соответствует физиологии.",
-		"stress_flag_recovery_debt_label":           "Долг восстановления",
-		"stress_flag_recovery_debt_desc":            "Ночью HRV ↓, RHR ↑ — вчерашняя нагрузка догнала. Сегодня держите легко.",
-		"stress_flag_parasympathetic_rebound_label": "Вагус-rebound",
-		"stress_flag_parasympathetic_rebound_desc":  "Пульс повышен, но HRV выше нормы — паттерн восстановления, не острый стресс.",
-		"stress_flag_acute_stress_label":            "Острый всплеск",
-		"stress_flag_acute_stress_desc":             "Один час с ЧСС > 2 SD выше дневной нормы. Транзиторно, действия не требуется.",
-		"stress_flag_sustained_load_label":          "Длительная нагрузка",
-		"stress_flag_sustained_load_desc":           "4+ часа подряд с ЧСС > 1 SD выше дневной нормы. Реальная автономная нагрузка.",
-		"stress_flag_stale_stress_label":            "Стресс-данные неполные",
-		"stress_flag_stale_stress_desc":             "Менее 8ч HR-данных в бодрствующем окне — sustained-load drain отключён на этот день.",
-		"stress_flag_calibration_warmup_label":      "Калибровка",
-		"stress_flag_calibration_warmup_desc":       "Персональный baseline ещё в warmup (3-6 образцов). Пороги флагов могут быть консервативными.",
+		"stress_flags_aria":    "Сигналы стресса",
+		"stress_detail_what":   "Что это",
+		"stress_detail_cause":  "Что вызвало",
+		"stress_detail_risk":   "Чем важно",
+		"stress_detail_action": "Что делать",
+		"stress_flag_acute_stress_label": "Скачок пульса",
+		"stress_flag_acute_stress_detail_html": `<h5>Что это</h5>
+<p>Один час за день пульс резко подскочил выше вашей нормы.</p>
+<h5>Что вызвало</h5>
+<p>Кофе, неожиданный звонок, нервы перед встречей, испуг, кратковременный конфликт — любая короткая активация симпатической нервной системы.</p>
+<h5>Чем важно</h5>
+<p>Само по себе — ничем. Изолированный пик за день не нагружает систему, это нормальная реакция организма.</p>
+<h5>Что делать</h5>
+<p>Ничего. Флаг показан для диагностики — чтобы было видно, что это разовое событие, а не хронический стресс.</p>`,
+		"stress_flag_sustained_load_label": "Долгий рост пульса",
+		"stress_flag_sustained_load_detail_html": `<h5>Что это</h5>
+<p>Пульс держался выше вашей нормы как минимум 4 часа подряд сегодня.</p>
+<h5>Что вызвало</h5>
+<p>Длинный стрессовый день (deadline, переговоры), тяжёлая тренировка с долгим восстановлением, начало болезни, обезвоживание, недосып.</p>
+<h5>Чем важно</h5>
+<p>Реальная нагрузка на автономную нервную систему. Несколько таких дней подряд — расход энергии накапливается, восстановление замедляется. EnergyBank уже учёл это: бар сегодня сел больше обычного.</p>
+<h5>Что делать</h5>
+<p>Вечером — ранний отбой, без алкоголя и кофеина после обеда. Завтра — лёгкая активность, не повторять нагрузку.</p>`,
+		"stress_flag_illness_signature_label": "Похоже на болезнь",
+		"stress_flag_illness_signature_detail_html": `<h5>Что это</h5>
+<p>Температура тела, частота дыхания и HRV — все три отклонились от вашей нормы в "болезненную" сторону одновременно.</p>
+<h5>Что вызвало</h5>
+<p>Чаще всего — вирусная инфекция в начальной стадии. Реже — серьёзная перетренированность с подсаженным иммунитетом.</p>
+<h5>Чем важно</h5>
+<p>Жёсткая тренировка на этом фоне обычно затягивает простуду на лишние 3-5 дней. Иммунка работает на отбой инфекции — занимать её спортом сверху значит давать организму двойную нагрузку.</p>
+<h5>Что делать</h5>
+<p>Сегодня — спать. Тренировку отменить или сделать максимально лёгкой (медленная прогулка). Вода, тёплая еда. Завтра проверить состояние: если флаг ушёл, можно постепенно возвращаться к плану.</p>`,
+		"stress_flag_recovery_debt_label": "Не восстановились",
+		"stress_flag_recovery_debt_detail_html": `<h5>Что это</h5>
+<p>Ночью HRV упал ниже вашей нормы, а пульс покоя — поднялся выше. Сон не сбросил вчерашнюю нагрузку.</p>
+<h5>Что вызвало</h5>
+<p>Вчерашняя интенсивная тренировка или рабочий день, поздний приём пищи, алкоголь, поздний отбой, эмоциональный стресс.</p>
+<h5>Чем важно</h5>
+<p>Сегодня вы уже не в оптимальной форме. Если игнорировать и пойти на жёсткую тренировку — растёт риск перетренироваться, и шансы получить мелкую травму выше обычного.</p>
+<h5>Что делать</h5>
+<p>Лёгкий день: прогулка, мобилка, йога. Хорошо поесть, рано лечь. Завтра флаг должен уйти — если нет, два лёгких дня подряд лучше, чем заработать настоящий перетрен.</p>`,
+		"stress_flag_parasympathetic_rebound_label": "Восстановление",
+		"stress_flag_parasympathetic_rebound_detail_html": `<h5>Что это</h5>
+<p>Пульс был выше нормы, но HRV тоже был выше нормы. Парасимпатическая нервная система активна — это режим восстановления, не стресс.</p>
+<h5>Что вызвало</h5>
+<p>Обычно — после тяжёлой тренировки или интенсивного дня. Тело потратило ресурс и теперь активно его восстанавливает.</p>
+<h5>Чем важно</h5>
+<p>Ничем плохим — это здоровая реакция. <strong>Не путать с острым стрессом</strong>: внешне пульс высокий, но физиология совсем другая.</p>
+<h5>Что делать</h5>
+<p>Дать организму время: лёгкий день, нормальный сон. Можно тренироваться, но не на пределе.</p>`,
+		"stress_flag_stale_stress_label": "Мало данных",
+		"stress_flag_stale_stress_detail_html": `<h5>Что это</h5>
+<p>За день собрано меньше 8 часов записей пульса в часы, когда вы не спали. Стресс-формула на этот день не считается.</p>
+<h5>Что делать</h5>
+<p>Стабильнее носить часы. Проверить, что синхронизация с iPhone работает. Для цифр сегодня ничего делать не нужно — флаг уйдёт автоматически, как только данных станет больше 8 часов.</p>`,
+		"stress_flag_calibration_warmup_label": "Учим норму",
+		"stress_flag_calibration_warmup_detail_html": `<h5>Что это</h5>
+<p>Личная норма (HRV, пульс, дыхание) ещё учится — нужно около недели непрерывных данных. Пороги стресс-флагов пока консервативные.</p>
+<h5>Что делать</h5>
+<p>Просто носить часы. Через несколько дней флаг уйдёт автоматически.</p>`,
 		"admin_import_uploading": "Загрузка…",
 		"admin_import_running": "Импорт выполняется…",
 	},
@@ -1087,21 +1180,66 @@ var translations = map[string]map[string]string{
 		"admin_import_pause": "ms pauza",
 		"admin_import_start": "Pokreni uvoz",
 		// v2.2 hero-row stress-flag chips.
-		"stress_flags_aria":                         "Oznake stres signala",
-		"stress_flag_illness_signature_label":       "Znaci bolesti",
-		"stress_flag_illness_signature_desc":        "Temperatura, frekvencija disanja i HRV — sve tri u smeru bolesti. Odmor je u skladu sa fiziologijom.",
-		"stress_flag_recovery_debt_label":           "Dug oporavka",
-		"stress_flag_recovery_debt_desc":            "Noću HRV ↓, RHR ↑ — jučerašnje opterećenje stiglo. Danas držite lakim.",
-		"stress_flag_parasympathetic_rebound_label": "Vagalni rebound",
-		"stress_flag_parasympathetic_rebound_desc":  "HR povišen ali HRV iznad norme — obrazac oporavka, ne akutni stres.",
-		"stress_flag_acute_stress_label":            "Akutni skok",
-		"stress_flag_acute_stress_desc":             "Jedan sat sa HR > 2 SD iznad dnevne norme. Tranzitorno, akcija nije potrebna.",
-		"stress_flag_sustained_load_label":          "Trajno opterećenje",
-		"stress_flag_sustained_load_desc":           "4+ uzastopnih sati sa HR > 1 SD iznad dnevne norme. Stvarno autonomno opterećenje.",
-		"stress_flag_stale_stress_label":            "Podaci stresa zastareli",
-		"stress_flag_stale_stress_desc":             "Manje od 8h HR podataka u budnom prozoru — sustained-load drain isključen za ovaj dan.",
-		"stress_flag_calibration_warmup_label":      "Kalibracija",
-		"stress_flag_calibration_warmup_desc":       "Lični baseline još u warmup-u (3-6 uzoraka). Pragovi oznaka mogu biti konzervativni.",
+		"stress_flags_aria":    "Signali stresa",
+		"stress_detail_what":   "Šta je",
+		"stress_detail_cause":  "Šta je izazvalo",
+		"stress_detail_risk":   "Zašto je važno",
+		"stress_detail_action": "Šta raditi",
+		"stress_flag_acute_stress_label": "Skok pulsa",
+		"stress_flag_acute_stress_detail_html": `<h5>Šta je</h5>
+<p>Vaš puls je naglo skočio iznad vaše norme jedan sat danas.</p>
+<h5>Šta je izazvalo</h5>
+<p>Kafa, neočekivan poziv, nervi pred sastanak, iznenađenje, kratki konflikt — bilo koja kratka aktivacija simpatičkog nervnog sistema.</p>
+<h5>Zašto je važno</h5>
+<p>Samo po sebi — ničim. Izolovani skok ne opterećuje sistem, to je normalna reakcija organizma.</p>
+<h5>Šta raditi</h5>
+<p>Ništa. Oznaka služi za dijagnostiku — da se vidi da je bio jednokratan događaj, ne hronični stres.</p>`,
+		"stress_flag_sustained_load_label": "Dug rast pulsa",
+		"stress_flag_sustained_load_detail_html": `<h5>Šta je</h5>
+<p>Vaš puls je stajao iznad vaše norme bar 4 sata zaredom danas.</p>
+<h5>Šta je izazvalo</h5>
+<p>Dug stresan dan (deadline, pregovori), težak trening sa sporim oporavkom, početak bolesti, dehidracija, nedovoljno sna.</p>
+<h5>Zašto je važno</h5>
+<p>Stvarno opterećenje za autonomni nervni sistem. Više takvih dana zaredom — dug energije se gomila, oporavak usporava. EnergyBank je već uračunao ovo: bar se danas više potrošio nego obično.</p>
+<h5>Šta raditi</h5>
+<p>Veče: rano u krevet, bez alkohola i kofeina posle ručka. Sutra: laka aktivnost, ne ponavljati opterećenje.</p>`,
+		"stress_flag_illness_signature_label": "Možda bolest",
+		"stress_flag_illness_signature_detail_html": `<h5>Šta je</h5>
+<p>Telesna temperatura, frekvencija disanja i HRV — sve tri su se pomerile od vaše norme u "bolesnom" smeru istovremeno.</p>
+<h5>Šta je izazvalo</h5>
+<p>Najčešće virusna infekcija u ranoj fazi. Ređe — ozbiljan pretrening sa već oslabljenim imunitetom.</p>
+<h5>Zašto je važno</h5>
+<p>Težak trening na ovoj pozadini obično odugovlači prehladu za dodatnih 3-5 dana. Imunitet radi na odbijanju infekcije; opterećivati ga sportom = dvostruko opterećenje za organizam.</p>
+<h5>Šta raditi</h5>
+<p>Danas: spavanje. Trening otkazati ili maksimalno olakšati (spora šetnja). Voda, topla hrana. Sutra proveriti stanje: ako je oznaka nestala, postepeno se vraćati u plan.</p>`,
+		"stress_flag_recovery_debt_label": "Niste se oporavili",
+		"stress_flag_recovery_debt_detail_html": `<h5>Šta je</h5>
+<p>Tokom noći HRV je pao ispod vaše norme, a puls u mirovanju je porastao. San nije skinuo jučerašnje opterećenje.</p>
+<h5>Šta je izazvalo</h5>
+<p>Jučerašnji intenzivan trening ili radni dan, kasan obrok, alkohol, kasno spavanje, emocionalni stres.</p>
+<h5>Zašto je važno</h5>
+<p>Danas niste u optimalnoj formi. Ako ignorišete i ipak idete na težak trening — raste rizik od pretreniranosti i šanse za sitnu povredu.</p>
+<h5>Šta raditi</h5>
+<p>Lak dan: šetnja, mobilnost, joga. Dobro pojesti, rano u krevet. Sutra oznaka treba da nestane — ako ne, dva laka dana zaredom su bolja od ozbiljnog pretreninga.</p>`,
+		"stress_flag_parasympathetic_rebound_label": "Oporavak",
+		"stress_flag_parasympathetic_rebound_detail_html": `<h5>Šta je</h5>
+<p>Puls je bio povišen, ali je HRV takođe bio iznad norme. Parasimpatički nervni sistem je aktivan — to je režim oporavka, ne stres.</p>
+<h5>Šta je izazvalo</h5>
+<p>Obično posle teškog treninga ili intenzivnog dana. Telo je potrošilo resurs i sad ga aktivno obnavlja.</p>
+<h5>Zašto je važno</h5>
+<p>Ničim lošim — to je zdrava reakcija. <strong>Ne brkati sa akutnim stresom</strong>: spolja puls izgleda visok, ali je fiziologija sasvim drugačija.</p>
+<h5>Šta raditi</h5>
+<p>Dati telu vreme: lak dan, normalan san. Trening je u redu, samo ne do krajnjih granica.</p>`,
+		"stress_flag_stale_stress_label": "Malo podataka",
+		"stress_flag_stale_stress_detail_html": `<h5>Šta je</h5>
+<p>Manje od 8 sati podataka o pulsu prikupljeno tokom budnih sati danas. Formula stresa se ne računa za ovaj dan.</p>
+<h5>Šta raditi</h5>
+<p>Stabilnije nositi sat. Proveriti da li sinhronizacija sa iPhone-om radi. Za današnje brojke akcija nije potrebna — oznaka nestaje automatski čim podataka bude više od 8 sati.</p>`,
+		"stress_flag_calibration_warmup_label": "Kalibracija",
+		"stress_flag_calibration_warmup_detail_html": `<h5>Šta je</h5>
+<p>Lična norma (HRV, puls, disanje) se još uči — treba oko nedelju dana neprekidnih podataka. Pragovi oznaka stresa za sada ostaju konzervativni.</p>
+<h5>Šta raditi</h5>
+<p>Samo nosite sat. Nakon nekoliko dana oznaka nestaje sama.</p>`,
 		"admin_import_uploading": "Otpremanje…",
 		"admin_import_running": "Uvoz u toku…",
 	},
