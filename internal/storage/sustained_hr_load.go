@@ -24,8 +24,9 @@ import (
 //     above your normal for ~4 hours" without back-converting z-units.
 //
 //   - Flags: subset of {stale_stress, calibration_warmup,
-//     no_per_segment_sleep} — surfaces why the day was skipped/derated
-//     to PR-9's verdict layer. Empty when everything is steady.
+//     acute_stress, sustained_load, illness_signature, recovery_debt,
+//     parasympathetic_rebound} — §4.3 stratified flags surfaced to
+//     PR-9's verdict layer. Empty when everything is steady.
 //
 // Returns ok=false on hard DB error or unparseable date — caller writes
 // NULL to daily_scores.sustained_hr_load. ok=true with Z=0 happens when
@@ -138,6 +139,14 @@ func (s *DB) ComputeSustainedHRLoadForDate(
 	if health.SustainedLoadFlag(hourZ) {
 		res.Flags = append(res.Flags, "sustained_load")
 	}
+
+	// §4.3 multi-channel flags — read autonomic channels (HRV, temp,
+	// resp, overnight RHR) and derive illness_signature /
+	// recovery_debt / parasympathetic_rebound. Independent of the HR
+	// coverage gate above: a day with stale_stress for HR can still
+	// flag illness_signature when the other three channels break
+	// baseline together.
+	res.Flags = s.appendMultiChannelStressFlags(date, loc, hourZ, res.Flags)
 
 	// HROvershootBpmHours: raw bpm·hours for the same hours that
 	// contributed to the z-load. Keeps the audit-trail line in

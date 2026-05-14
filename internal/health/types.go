@@ -198,13 +198,14 @@ type EnergyBank struct {
 	//   - imputed_activity     (v2.0)
 	//   - stale_stress         (§0 blocker 3 — HR coverage < 8h awake)
 	//   - calibration_warmup   (§4.1 — PersonalBaseline still in 3-6 sample range)
-	//   - acute_stress         (§4.3 — any hour z>+2 in awake window)
-	//   - sustained_load       (§4.3 — ≥4h consecutive z>+1)
+	//   - acute_stress             (§4.3 — any hour z>+2 in awake window)
+	//   - sustained_load           (§4.3 — ≥4h consecutive z>+1)
+	//   - illness_signature        (§4.3 — temp ↑ AND resp ↑ AND HRV ↓, each >1 SD)
+	//   - recovery_debt            (§4.3 — overnight HRV ↓ >1 SD AND overnight RHR ↑ >0.5 SD)
+	//   - parasympathetic_rebound  (§4.3 — daily HR ↑ >1 SD AND HRV ABOVE baseline >1 SD)
 	//
-	// Multi-channel flags (illness_signature, recovery_debt,
-	// parasympathetic_rebound) land in a follow-up PR. Hero UI
-	// renders this list as a single colour-coded indicator with
-	// expand-on-tap detail; AI verdict layer reads it to override
+	// Hero UI renders this list as a single colour-coded indicator
+	// with expand-on-tap detail; AI verdict layer reads it to override
 	// push_hard recommendation on illness_signature.
 	Flags []string `json:"flags,omitempty"`
 }
