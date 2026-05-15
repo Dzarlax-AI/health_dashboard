@@ -13,6 +13,18 @@ var translations = map[string]map[string]string{
 		"readiness": "Readiness",
 		"recovery": "Recovery",
 		"readiness_today_label": "Today",
+
+		// Section catalogue (GET /api/sections) — stable list of detail
+		// pages with localized title + subtitle for native clients that
+		// want a navigation list without hardcoding strings. See
+		// sectionCatalogue in handler.go.
+		"section_cardio_title":      "Cardio",
+		"section_cardio_subtitle":   "RHR · HRV · VO2 · respiratory",
+		"section_activity_title":    "Activity",
+		"section_activity_subtitle": "Steps · energy · exercise · distance",
+		"section_recovery_title":    "Recovery",
+		"section_recovery_subtitle": "Sleep summary · HRV CV · wrist temp",
+
 		"readiness_trend_label": "7-day trend",
 		"back": "Back",
 		"compare": "Compare",
@@ -437,6 +449,15 @@ var translations = map[string]map[string]string{
 		"readiness": "Готовность",
 		"recovery": "Восстановление",
 		"readiness_today_label": "Сегодня",
+
+		// Section catalogue — see handler.go::sectionCatalogue.
+		"section_cardio_title":      "Сердце и лёгкие",
+		"section_cardio_subtitle":   "Пульс покоя · HRV · VO2 · дыхание",
+		"section_activity_title":    "Активность",
+		"section_activity_subtitle": "Шаги · калории · упражнения · расстояние",
+		"section_recovery_title":    "Восстановление",
+		"section_recovery_subtitle": "Сон · CV HRV · температура запястья",
+
 		"readiness_trend_label": "Тренд 7д",
 		"back": "Назад",
 		"compare": "Сравнить",
@@ -856,6 +877,15 @@ var translations = map[string]map[string]string{
 		"readiness": "Spremnost",
 		"recovery": "Oporavak",
 		"readiness_today_label": "Danas",
+
+		// Section catalogue — see handler.go::sectionCatalogue.
+		"section_cardio_title":      "Srce i pluća",
+		"section_cardio_subtitle":   "Puls u miru · HRV · VO2 · disanje",
+		"section_activity_title":    "Aktivnost",
+		"section_activity_subtitle": "Koraci · kalorije · vežbanje · razdaljina",
+		"section_recovery_title":    "Oporavak",
+		"section_recovery_subtitle": "San · HRV CV · temperatura zgloba",
+
 		"readiness_trend_label": "7-dnevni trend",
 		"back": "Nazad",
 		"compare": "Uporedi",
