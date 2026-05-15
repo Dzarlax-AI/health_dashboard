@@ -427,6 +427,18 @@ sleep_picked_complete AS (
     -- Without the second clause, multi-source nights where MIN-pick lands
     -- on a RingConn-only source (2 metrics) would fall through to NULL
     -- writes and the prior block would survive untouched.
+    --
+    -- KNOWN LIMITATION (Issue #77): a multi-source night where the picked
+    -- source emits ONLY sleep_total (no stages, no sleep_unspecified) does
+    -- not match either branch — the gate fails, the prior daily_scores row
+    -- is preserved, and that source's contribution is silently dropped for
+    -- this night. Deliberate choice rather than oversight: accepting a
+    -- single-metric pick would let a malformed third-party importer wipe
+    -- a real staged night by writing only sleep_total. The v2.3 iOS
+    -- client always pairs sleep_total with sleep_unspecified for coarse
+    -- sources, and the HK XML importer in internal/applehealth/parse.go
+    -- maps both AsleepUnspecified and bare Asleep to sleep_unspecified,
+    -- so natively-imported data cannot hit this corner.
     SELECT (
         (SELECT COUNT(DISTINCT source) FROM sleep_total_per_source) <= 1
         OR (
@@ -874,6 +886,10 @@ sleep_complete AS (
     --   single source                              → trust as-is
     --   multi-source + all 5 stages from picked    → complete (stage-tracking device)
     --   multi-source + total + unspecified picked  → complete (coarse-only device)
+    -- KNOWN LIMITATION (Issue #77): a picked source emitting ONLY sleep_total
+    -- (no stages, no unspecified) fails this gate by design — see the matching
+    -- comment in upsertDailyForDate's sleep_picked_complete CTE for the
+    -- reasoning. Both gates must stay in lockstep on this corner.
     SELECT sp.day, sp.src, (
         (SELECT COUNT(DISTINCT source) FROM sleep_total_per_day WHERE day = sp.day) <= 1
         OR (

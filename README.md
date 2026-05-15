@@ -442,6 +442,8 @@ DATABASE_URL="host=... search_path=health_bob ..." go run ./cmd/migrate_sleep_un
 
 (Single-tenant legacy installs keep using the `health` schema and run once.)
 
+**Edge case** ([#76](https://github.com/Dzarlax-AI/health_dashboard/issues/76)): the `±1 calendar day` window protects cross-midnight Apple Watch nights, but as a side effect, if a source ever emitted any `sleep_deep` / `sleep_rem` fragments — even on a single night — then `±1 day` around those nights stays in `sleep_core` regardless of whether those specific rows are coarse. Re-running the script does not retry these. False negatives are silent. For an external operator who wants a stricter pass after a clean re-import, a `--strict-same-day` flag may be added later; the current loose predicate is sized for the common case (Apple Health export + iOS sync).
+
 ## Backups
 
 Data is in PostgreSQL. In multi-user mode each user has their own schema. Backup all health schemas at once:
