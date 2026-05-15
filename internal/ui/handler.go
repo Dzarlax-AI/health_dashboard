@@ -954,13 +954,25 @@ func (h *Handler) aiBriefing(w http.ResponseWriter, r *http.Request) {
 		db.EnsureTodayAIInsightAsync(aiCfg, lang)
 	}
 
+	// Top-level lowercase fields parallel to `blocks` make the JSON
+	// shape friendlier for static-typed consumers (especially iOS):
+	// they can decode directly into a struct with four `string` fields
+	// instead of round-tripping through a `[String:String]` map and
+	// then looking up the four well-known keys. The legacy `blocks`
+	// map (uppercase keys) and `insight` (combined text) stay for
+	// backward compat — older iOS builds and the web dashboard still
+	// consume them. Issue #83 item #5.
 	jsonResponse(w, map[string]any{
-		"date":       today,
-		"lang":       lang,
-		"insight":    combined,
-		"blocks":     blocks,
-		"generating": db.AIRegenInFlight(lang),
-		"disabled":   !aiCfg.Enabled(),
+		"date":           today,
+		"lang":           lang,
+		"insight":        combined,
+		"sleep":          blocks["SLEEP"],
+		"yesterday":      blocks["YESTERDAY"],
+		"recovery":       blocks["RECOVERY"],
+		"recommendation": blocks["RECOMMENDATION"],
+		"blocks":         blocks,
+		"generating":     db.AIRegenInFlight(lang),
+		"disabled":       !aiCfg.Enabled(),
 	})
 }
 
