@@ -162,6 +162,34 @@ func main() {
 	}
 	log.Printf("rebuilding cache for %d affected dates", len(dates))
 
+	// Clear stale sleep_* rows from hourly_metrics for affected dates
+	// before the targeted rebuild. The rebuild path
+	// (upsertHourlySleepForDate) uses INSERT ... ON CONFLICT DO UPDATE,
+	// which only touches rows for metric_names that still exist in
+	// metric_points; it never removes a row whose metric_name has
+	// disappeared. After the UPDATE above, source S's old sleep_core
+	// hourly row would survive next to the new sleep_unspecified row,
+	// leaving per_source with three sleep_* metric_names — neither the
+	// 5-stage branch nor the (total + unspecified) branch of
+	// sleep_picked_complete fires, the atomicity gate fails, and
+	// daily_scores.sleep_unspecified ends up NULL via COALESCE preserve.
+	// Flagged by Codex on PR #75 — the original implementation only
+	// worked because the operator was told to run `make backfill --force`,
+	// which truncates hourly_metrics outright.
+	//
+	// Scope is per-DATE not per-(date, source): UpsertRecentCache rebuilds
+	// every source's sleep rows for that date from metric_points anyway,
+	// so deleting them upfront is free; per-source filtering would just
+	// be more SQL for no benefit.
+	tag2, err := conn.Exec(ctx, `
+		DELETE FROM hourly_metrics
+		 WHERE metric_name LIKE 'sleep\_%' ESCAPE '\'
+		   AND SUBSTRING(hour,1,10) = ANY($1::text[])`, dates)
+	if err != nil {
+		log.Fatalf("clear stale hourly sleep rows: %v", err)
+	}
+	log.Printf("cleared %d stale hourly_metrics sleep rows", tag2.RowsAffected())
+
 	// storage.DB so we can call the same per-date cache rebuild path the
 	// server uses on every /health POST. This is orders of magnitude
 	// faster than `cmd/backfill --force` which DELETEs all of
