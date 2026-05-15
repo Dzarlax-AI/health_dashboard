@@ -144,9 +144,16 @@ type MetricCard struct {
 }
 
 // ReadinessPoint is a single historical readiness data point.
+// Band is the same stable enum key used on BriefingResponse — exposed
+// here too so consumers of /api/readiness-history (and the MCP
+// `get_readiness_history` tool) don't have to reapply the threshold
+// logic locally. Per-call cost is negligible (one ReadinessBand()
+// switch per row), and it keeps the "single source of truth" property
+// from drifting between endpoints.
 type ReadinessPoint struct {
 	Date  string `json:"date"`
 	Score int    `json:"score"`
+	Band  string `json:"band,omitempty"`
 }
 
 // Alert is a health anomaly notification (not a score component).
@@ -319,10 +326,19 @@ type BriefingResponse struct {
 	Sections       []BriefingSection  `json:"sections"`
 	Highlights     []BriefingDetail   `json:"highlights"`
 	ReadinessScore int                `json:"readiness_score"`      // 7-day sliding window
+	// ReadinessBand is the stable enum key ("optimal" / "fair" / "low")
+	// derived from ReadinessScore via the canonical ReadinessBand()
+	// helper. Surfaced server-side so iOS / other consumers don't
+	// reimplement the thresholds locally (which drift — see issue #83
+	// item #4). ReadinessLabel is the language-specific rendering of
+	// the same band; clients pick one or both.
+	ReadinessBand  string             `json:"readiness_band"`
 	ReadinessLabel string             `json:"readiness_label"`
 	ReadinessTip   string             `json:"readiness_tip"`
 	RecoveryPct    int                `json:"recovery_pct"`
 	ReadinessToday int                `json:"readiness_today"`      // today only vs baseline
+	// ReadinessTodayBand mirrors ReadinessBand for the today-only score.
+	ReadinessTodayBand  string        `json:"readiness_today_band"`
 	ReadinessTodayLabel string        `json:"readiness_today_label"`
 	Correlation    []CorrelationPoint `json:"correlation"`
 	Insights       []Insight          `json:"insights"`
