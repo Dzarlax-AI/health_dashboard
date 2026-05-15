@@ -425,11 +425,10 @@ The v2.3 split routes coarse-asleep time (RingConn, iPhone Sleep Schedule, older
 
 ```bash
 DATABASE_URL=postgres://... go run ./cmd/migrate_sleep_unspecified --dry-run  # count candidates
-DATABASE_URL=postgres://... go run ./cmd/migrate_sleep_unspecified            # apply + invalidate affected daily_scores
-DATABASE_URL=postgres://... make backfill                                     # repopulate daily_scores cleanly
+DATABASE_URL=postgres://... go run ./cmd/migrate_sleep_unspecified            # apply + targeted cache rebuild
 ```
 
-Idempotent — the UPDATE only touches `sleep_core` rows that lack any sibling `sleep_deep` / `sleep_rem` for the same `(day, source)`. Skip the script entirely if you'd rather keep old days "as-they-were" and only have new days correct.
+The script does the full job: UPDATE the `metric_points` rows in place, then rebuild **only** the affected `hourly_metrics` and `daily_scores` rows via the same per-date code path the server uses on every `/health` ingest. No `make backfill` step needed — and crucially no `--force` rebuild of the whole history, which would take hours for the sake of a few thousand sleep rows. Predicate widens "no stage siblings" to a **±1 calendar day** window per source so Apple Watch staged nights crossing midnight are correctly recognised and left alone. Idempotent — re-running after a successful pass is a no-op. Skip it entirely if you'd rather keep old days "as-they-were" and only have new days correct.
 
 ## Backups
 
