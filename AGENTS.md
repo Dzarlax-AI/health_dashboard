@@ -66,7 +66,7 @@ Single binary HTTP server (`cmd/server/main.go`) that wires together several pac
 
 ## Data Flow
 
-```
+```text
 POST /health → InsertRaw → health_records → 200 to client (sync, fast)
                                ↓ goroutine
                          InsertPoints (chunked pgx.Batch)
@@ -96,7 +96,7 @@ Special metric handling in `internal/handler/health.go::extractPoints`:
 
 Schema managed by `init.sql` (not by the application). Tables:
 
-```
+```text
 health_records     — raw JSON payloads, never modified
 metric_points      — parsed time series, append-only, UNIQUE(metric_name, date, source)
                      date stored as TEXT (YYYY-MM-DD HH:MM:SS ±TZ)
