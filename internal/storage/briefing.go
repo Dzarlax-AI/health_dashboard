@@ -561,6 +561,14 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 			}
 		}
 	}
+
+	// Surface server-localized labels for the enum fields iOS / other
+	// non-template consumers would otherwise mirror in their own i18n
+	// tables (issue #83). Called last so labels reflect the final
+	// values — section statuses are settled by ComputeBriefing, verdict
+	// + flags by the v2 override block above.
+	health.EnrichLabels(resp, health.GetStrings(lang))
+
 	return resp, nil
 }
 
