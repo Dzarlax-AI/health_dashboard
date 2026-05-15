@@ -87,7 +87,7 @@ Payload structure from Health Auto Export:
 
 Special metric handling in `internal/handler/health.go::extractPoints`:
 - `heart_rate` → reads `Avg` field (not `qty`)
-- `sleep_analysis` → expands to 5 metrics: `sleep_deep`, `sleep_rem`, `sleep_core`, `sleep_awake`, `sleep_total`
+- `sleep_analysis` → expands to 5 metrics: `sleep_deep`, `sleep_rem`, `sleep_core`, `sleep_awake`, `sleep_total`. v2.3 adds `sleep_unspecified` as a separate top-level metric (coarse asleep from sources without stage tracking — RingConn, iPhone Sleep Schedule, older Apple Watch); it is **not** part of the `sleep_analysis` payload expansion and arrives as its own `MetricData` entry from the v2.3 iOS client.
 - All others → read `qty` field
 
 ## Database
@@ -164,7 +164,7 @@ energy_snapshots   — EnergyBank v2 state-machine snapshots, PRIMARY KEY
 ## Aggregation Rules
 
 Defined in `internal/storage/aggregates.go::SumMetrics` (exported):
-- **SUM metrics**: step_count, active_energy, basal_energy_burned, apple_exercise_time, apple_stand_time, flights_climbed, walking_running_distance, time_in_daylight, apple_stand_hour, sleep_total, sleep_deep, sleep_rem, sleep_core, sleep_awake
+- **SUM metrics**: step_count, active_energy, basal_energy_burned, apple_exercise_time, apple_stand_time, flights_climbed, walking_running_distance, time_in_daylight, apple_stand_hour, sleep_total, sleep_deep, sleep_rem, sleep_core, sleep_unspecified, sleep_awake
 - **Source priority**: Apple Watch (Ultra) > iPhone > other (RingConn). For dashboard and daily_scores, preferred source is selected via `preferredSourceSQL`. Falls back to MAX(source_total) if no Apple device present.
 - **Multi-device dedup (charts)**: MAX(per-source daily sum) across sources
 - **All others**: AVG
@@ -192,6 +192,10 @@ Three callsites for the rule, by SQL shape:
 `buildDailyMetricCol` no longer handles sleep_* — it short-circuits with a log line if asked. All daily sleep writes go through `upsertDailyForDate` (single-day inline) or `buildDailySleepBlock` (multi-day backfill).
 
 The atomicity gate (require all 5 stages from picked source) only fires when ≥2 sources contributed `sleep_total` for the night — single-source nights trust the source as-is. This is intentional: HAE Apple Watch nights with `sleep_awake = 0` get the awake row filtered out by `qty > 0` upstream in `buildHourlyMetric`, leaving only 4 of 5 stages in `hourly_metrics`. A strict 5-stage requirement would erase those nights entirely (PR #28). Mixing risk only exists with multiple sources, so the gate scopes to that case.
+
+The gate has a **second pass** for sources that emit `sleep_unspecified` only (no stages): if the picked source covers `sleep_total + sleep_unspecified`, that also satisfies the gate. Without this branch, a multi-source night where the MIN-pick lands on a coarse-only device (RingConn-only, iPhone-only) would fall through to NULL writes and the prior block would survive untouched. Both branches are kept in lockstep between `upsertDailyForDate` and `buildDailySleepBlock`.
+
+**Historical migration:** `cmd/migrate_sleep_unspecified` retroactively moves pre-v2.3 `sleep_core` rows that have no sibling `sleep_deep` / `sleep_rem` for the same `(day, source)` to `sleep_unspecified`. Idempotent UPDATE-in-place; clears affected `daily_scores` rows so the next `make backfill` repopulates them via `buildDailySleepBlock`. README has a `--dry-run` + apply recipe; opt-in for external users.
 
 ## Environment Variables
 

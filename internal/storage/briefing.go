@@ -539,13 +539,14 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 	if resp.Sleep != nil {
 		sleepRows, qErr := s.pool.Query(ctx, `
 			SELECT source,
-				SUM(CASE WHEN metric_name='sleep_total' THEN avg_val ELSE 0 END),
-				SUM(CASE WHEN metric_name='sleep_deep'  THEN avg_val ELSE 0 END),
-				SUM(CASE WHEN metric_name='sleep_rem'   THEN avg_val ELSE 0 END),
-				SUM(CASE WHEN metric_name='sleep_core'  THEN avg_val ELSE 0 END),
-				SUM(CASE WHEN metric_name='sleep_awake' THEN avg_val ELSE 0 END)
+				SUM(CASE WHEN metric_name='sleep_total'       THEN avg_val ELSE 0 END),
+				SUM(CASE WHEN metric_name='sleep_deep'        THEN avg_val ELSE 0 END),
+				SUM(CASE WHEN metric_name='sleep_rem'         THEN avg_val ELSE 0 END),
+				SUM(CASE WHEN metric_name='sleep_core'        THEN avg_val ELSE 0 END),
+				SUM(CASE WHEN metric_name='sleep_unspecified' THEN avg_val ELSE 0 END),
+				SUM(CASE WHEN metric_name='sleep_awake'       THEN avg_val ELSE 0 END)
 			FROM hourly_metrics
-			WHERE metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake')
+			WHERE metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_unspecified','sleep_awake')
 			  AND SUBSTRING(hour,1,10) = $1
 			GROUP BY source
 			ORDER BY SUM(CASE WHEN metric_name='sleep_total' THEN avg_val ELSE 0 END) DESC`,
@@ -554,7 +555,7 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 			defer sleepRows.Close()
 			for sleepRows.Next() {
 				var ss health.SleepSourceSummary
-				if sErr := sleepRows.Scan(&ss.Source, &ss.Total, &ss.Deep, &ss.REM, &ss.Core, &ss.Awake); sErr == nil && ss.Total > 0 {
+				if sErr := sleepRows.Scan(&ss.Source, &ss.Total, &ss.Deep, &ss.REM, &ss.Core, &ss.Unspecified, &ss.Awake); sErr == nil && ss.Total > 0 {
 					resp.Sleep.Sources = append(resp.Sleep.Sources, ss)
 				}
 			}

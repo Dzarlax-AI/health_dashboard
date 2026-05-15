@@ -48,6 +48,7 @@ var qualityRanges = map[string]qualityRange{
 	"sleep_deep":             {Min: 0, Max: 8},
 	"sleep_rem":              {Min: 0, Max: 8},
 	"sleep_core":             {Min: 0, Max: 12},
+	"sleep_unspecified":      {Min: 0, Max: 14}, // coarse asleep total — sources without stages
 	"sleep_awake":            {Min: 0, Max: 6},
 	"night_sleep_total":      {Min: 0, Max: 14}, // matches sleep_total
 	"nap_total":              {Min: 0, Max: 8},  // pathological if >8h of naps

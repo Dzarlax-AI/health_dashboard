@@ -22,8 +22,9 @@ import (
 // SRI is undefined because we don't know *when* sleep occurred.
 //
 // Implementation notes:
-//   - Loads sleep_total, sleep_deep, sleep_rem, sleep_core fragments (any
-//     "asleep" stage). sleep_awake fragments do NOT count as asleep.
+//   - Loads sleep_total, sleep_deep, sleep_rem, sleep_core, sleep_unspecified
+//     fragments (any "asleep" stage). sleep_awake fragments do NOT count
+//     as asleep.
 //   - Source priority: same as sleep dedup elsewhere (Apple Watch > RingConn).
 //     Single source per night, picked by total duration in the window.
 //   - Each segment expands to a [start, start+qty hours] minute interval
@@ -45,7 +46,7 @@ func (s *DB) ComputeSRI(days int) (sri float64, nights int, ok bool) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT date, qty, source, metric_name
 		FROM metric_points
-		WHERE metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core')
+		WHERE metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_unspecified')
 		  AND qty > 0
 		  AND quality = 'ok'
 		  AND SUBSTRING(date, 12, 8) != '00:00:00'

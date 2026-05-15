@@ -664,12 +664,13 @@ func (s *DB) SummarizeMetric(metric string, days int) (*MetricStats, error) {
 
 // SleepNight holds per-night sleep phase totals, deduplicated across devices.
 type SleepNight struct {
-	Date  string  `json:"date"`
-	Total float64 `json:"total"`
-	Deep  float64 `json:"deep"`
-	REM   float64 `json:"rem"`
-	Core  float64 `json:"core"`
-	Awake float64 `json:"awake"`
+	Date        string  `json:"date"`
+	Total       float64 `json:"total"`
+	Deep        float64 `json:"deep"`
+	REM         float64 `json:"rem"`
+	Core        float64 `json:"core"`
+	Unspecified float64 `json:"unspecified,omitempty"`
+	Awake       float64 `json:"awake"`
 }
 
 // GetSleepSummary returns per-night sleep breakdown for the date range.
@@ -697,7 +698,7 @@ func (s *DB) GetSleepSummary(from, to string) ([]SleepNight, error) {
 		FROM (
 			SELECT DISTINCT SUBSTRING(date,1,10) AS d, metric_name
 			FROM metric_points mp_outer
-			WHERE mp_outer.metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake')
+			WHERE mp_outer.metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_unspecified','sleep_awake')
 			  AND SUBSTRING(mp_outer.date,1,10) >= $1 AND SUBSTRING(mp_outer.date,1,10) <= $2 AND mp_outer.qty > 0
 		) sub
 		ORDER BY d`, sleepDedup, preferred),
@@ -728,6 +729,8 @@ func (s *DB) GetSleepSummary(from, to string) ([]SleepNight, error) {
 			n.REM = val
 		case "sleep_core":
 			n.Core = val
+		case "sleep_unspecified":
+			n.Unspecified = val
 		case "sleep_awake":
 			n.Awake = val
 		}

@@ -13,7 +13,7 @@ import (
 // for v2.2 stress methodology, see STRESS_MEASUREMENT.md §0 blocker 2).
 //
 // Algorithm (per STRESS_MEASUREMENT.md §0 blocker 2):
-//  1. Pull asleep-state segments (sleep_deep, sleep_rem, sleep_core) for
+//  1. Pull asleep-state segments (sleep_deep, sleep_rem, sleep_core, sleep_unspecified) for
 //     a wide window around date d. sleep_awake is wake, not asleep, and
 //     sleep_total is an aggregate that double-counts — neither is loaded.
 //  2. Pick the winning source for the period (Apple Watch family >
@@ -123,7 +123,7 @@ func (s *DB) fetchAsleepSegments(winStart, winEnd time.Time) ([]sleepSegment, er
 	rows, err := s.pool.Query(ctx, `
 		SELECT date, qty, source
 		  FROM metric_points
-		 WHERE metric_name IN ('sleep_deep','sleep_rem','sleep_core')
+		 WHERE metric_name IN ('sleep_deep','sleep_rem','sleep_core','sleep_unspecified')
 		   AND qty > 0
 		   AND quality = 'ok'
 		   AND SUBSTRING(date, 12, 8) != '00:00:00'

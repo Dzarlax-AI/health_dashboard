@@ -588,7 +588,7 @@ function loadReadinessChart(canvasId, from, to) {
 
 // ---- Generic metric chart ----
 var BAR_METRICS = new Set(['step_count','active_energy','basal_energy_burned','apple_exercise_time','apple_stand_time','flights_climbed','walking_running_distance','time_in_daylight','apple_stand_hour','breathing_disturbances']);
-var SLEEP_METRICS = new Set(['sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake']);
+var SLEEP_METRICS = new Set(['sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_unspecified','sleep_awake']);
 
 function loadMetricChart(canvasId, metric, from, to, bucket, agg, opts) {
   var el = document.getElementById(canvasId);
