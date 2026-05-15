@@ -429,7 +429,21 @@ DATABASE_URL=postgres://... go run ./cmd/migrate_sleep_unspecified            # 
 DATABASE_URL=postgres://... make backfill                                     # repopulate daily_scores cleanly
 ```
 
-Idempotent — the UPDATE only touches `sleep_core` rows that lack any sibling `sleep_deep` / `sleep_rem` for the same `(day, source)`. Skip the script entirely if you'd rather keep old days "as-they-were" and only have new days correct.
+The predicate widens "no stage siblings" to a **±1 calendar day** window per source — an Apple Watch staged night with `sleep_core` before midnight and `sleep_deep`/`sleep_rem` after midnight is correctly recognised as a staged night and left alone. Idempotent — re-running after a successful pass is a no-op. Skip it entirely if you'd rather keep old days "as-they-were" and only have new days correct.
+
+**Multi-user installs:** the script touches the single schema resolved from `search_path` in `DATABASE_URL`. Run it once per tenant — point `search_path` at each `health_<user>` schema in turn:
+
+```bash
+# tenant 1
+DATABASE_URL="host=... search_path=health_alice ..." go run ./cmd/migrate_sleep_unspecified
+DATABASE_URL="host=... search_path=health_alice ..." make backfill-force
+
+# tenant 2
+DATABASE_URL="host=... search_path=health_bob ..." go run ./cmd/migrate_sleep_unspecified
+DATABASE_URL="host=... search_path=health_bob ..." make backfill-force
+```
+
+(Single-tenant legacy installs keep using the `health` schema and run once.)
 
 ## Backups
 
