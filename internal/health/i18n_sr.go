@@ -8,6 +8,13 @@ var sr = LangStrings{
 	"tip_fair":          "Malo odstupanje od vaše norme. Umjerena aktivnost je dobar izbor.",
 	"tip_low":           "Fokusirajte se na oporavak: hidratacija, odmor i izbjegavanje intenzivnog vježbanja.",
 
+	// Per-section status labels (BriefingSection.Status) — surfaced via
+	// EnrichLabels so iOS / web consumers don't maintain a parallel i18n
+	// table for the good/fair/low enum.
+	"section_status_good": "Dobro",
+	"section_status_fair": "Srednje",
+	"section_status_low":  "Nisko",
+
 	"sec_recovery": "Oporavak",
 	"sec_sleep":    "San",
 	"sec_activity": "Aktivnost",

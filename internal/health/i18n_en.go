@@ -9,6 +9,13 @@ var en = LangStrings{
 	"tip_fair":          "Some deviation from your norm. Moderate activity is a good choice.",
 	"tip_low":           "Focus on recovery: hydrate, rest, and avoid intense exercise.",
 
+	// Per-section status labels (BriefingSection.Status) — surfaced via
+	// EnrichLabels (internal/health/labels.go) so iOS / other consumers
+	// don't maintain a parallel i18n table for the good/fair/low enum.
+	"section_status_good": "Good",
+	"section_status_fair": "Fair",
+	"section_status_low":  "Low",
+
 	// Section titles
 	"sec_recovery": "Recovery",
 	"sec_sleep":    "Sleep",

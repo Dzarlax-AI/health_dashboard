@@ -79,8 +79,12 @@ type BriefingSection struct {
 	Title   string           `json:"title"`
 	Icon    string           `json:"icon"`
 	Status  string           `json:"status"` // "good", "fair", "low"
-	Summary string           `json:"summary"`
-	Details []BriefingDetail `json:"details"`
+	// StatusLabel is the localized rendering of Status for clients
+	// (especially iOS) that should not maintain a parallel i18n table
+	// for server enums. Populated by EnrichLabels at briefing time.
+	StatusLabel string           `json:"status_label,omitempty"`
+	Summary     string           `json:"summary"`
+	Details     []BriefingDetail `json:"details"`
 }
 
 type CorrelationPoint struct {
@@ -182,6 +186,10 @@ type EnergyBank struct {
 	Strain        int                   `json:"strain"`          // 0-100, ACWR-flavoured activity load
 	Stress        int                   `json:"stress"`          // 0-100, autonomic z-score deviation
 	ActionVerdict string                `json:"action_verdict"`  // enum: push_hard|moderate|active_recovery|rest
+	// VerdictLabel is the localized short rendering of ActionVerdict.
+	// Populated by EnrichLabels so iOS / other consumers don't need a
+	// parallel i18n map for energy_verdict_<verdict>.
+	VerdictLabel  string                `json:"verdict_label,omitempty"`
 	VerdictReason string                `json:"verdict_reason"`  // localised one-sentence rationale
 	Components    []EnergyBankComponent `json:"components,omitempty"`
 	// HRVZRaw is today's HRV z-score against personal baseline (negative =
@@ -209,6 +217,23 @@ type EnergyBank struct {
 	// with expand-on-tap detail; AI verdict layer reads it to override
 	// push_hard recommendation on illness_signature.
 	Flags []string `json:"flags,omitempty"`
+	// FlagDetails is the localized rendering of Flags for consumers that
+	// shouldn't maintain a parallel i18n table. One entry per flag; the
+	// stable Key matches the corresponding entry in Flags. Label and
+	// Description are empty strings for flags without a localization
+	// (e.g. imputed_* or future server-only flags) so clients can
+	// detect "no localization yet" without rendering a missing tile.
+	FlagDetails []FlagDetail `json:"flag_details,omitempty"`
+}
+
+// FlagDetail carries the stable key alongside its localized rendering so
+// downstream UIs can render a chip without needing a parallel i18n map.
+// Built by EnrichLabels from the EnergyBank.Flags list; consumers that
+// need raw enum values keep reading Flags.
+type FlagDetail struct {
+	Key         string `json:"key"`
+	Label       string `json:"label"`
+	Description string `json:"description"`
 }
 
 // VerdictBands holds the per-user calibrated thresholds for translating

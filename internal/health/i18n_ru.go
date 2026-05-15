@@ -8,6 +8,13 @@ var ru = LangStrings{
 	"tip_fair":          "Небольшое отклонение от нормы. Умеренная активность — хороший выбор.",
 	"tip_low":           "Сосредоточьтесь на восстановлении: пейте воду, отдыхайте, избегайте интенсивных нагрузок.",
 
+	// Per-section status labels (BriefingSection.Status) — surfaced via
+	// EnrichLabels so iOS / web consumers don't maintain a parallel i18n
+	// table for the good/fair/low enum.
+	"section_status_good": "Хорошо",
+	"section_status_fair": "Средне",
+	"section_status_low":  "Низко",
+
 	"sec_recovery": "Восстановление",
 	"sec_sleep":    "Сон",
 	"sec_activity": "Активность",
