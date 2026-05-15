@@ -15,6 +15,19 @@ var en = LangStrings{
 	"sec_activity": "Activity",
 	"sec_cardio":   "Heart & Lungs",
 
+	// AI block headers — surfaced on /api/ai-briefing as the `header`
+	// field of each entry in `sections[]` so iOS / other JSON consumers
+	// don't maintain a parallel localization table. Per-block keys
+	// rather than reusing `sec_*` because the briefing section names
+	// (Sleep, Recovery) overlap with two of the four AI blocks but
+	// not the other two (Yesterday, Plan for today) — keeping the
+	// vocabularies independent avoids accidental drift when one of
+	// the four AI block keys gets renamed.
+	"ai_block_sleep_header":          "Sleep",
+	"ai_block_yesterday_header":      "Yesterday",
+	"ai_block_recovery_header":       "Recovery",
+	"ai_block_recommendation_header": "Plan for today",
+
 	// Detail labels
 	"lbl_hrv":        "HRV",
 	"lbl_vs_avg":     "vs avg",

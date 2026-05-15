@@ -13,6 +13,13 @@ var ru = LangStrings{
 	"sec_activity": "Активность",
 	"sec_cardio":   "Сердце и лёгкие",
 
+	// AI block headers — see i18n_en.go for the rationale on keeping
+	// these independent of the sec_* section names.
+	"ai_block_sleep_header":          "Сон",
+	"ai_block_yesterday_header":      "Вчера",
+	"ai_block_recovery_header":       "Восстановление",
+	"ai_block_recommendation_header": "План на сегодня",
+
 	"lbl_hrv":        "ВСР",
 	"lbl_vs_avg":     "отн. сред.",
 	"lbl_resting_hr": "Пульс покоя",
