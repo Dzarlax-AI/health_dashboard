@@ -954,10 +954,51 @@ func (h *Handler) aiBriefing(w http.ResponseWriter, r *http.Request) {
 		db.EnsureTodayAIInsightAsync(aiCfg, lang)
 	}
 
+	// `sections[]` is the canonical shape going forward: ordered array
+	// of `{key, header, body}` entries with the localized header
+	// inline. iOS decodes the array directly and renders each entry
+	// without per-block lookup. Crucially, a new AI block added
+	// server-side (e.g. a `nutrition` chunk) appears in the array
+	// automatically — iOS picks it up with zero code change because
+	// the header ships in the response. Closed extensibility (issue
+	// #83 item #5 clarification).
+	//
+	// The legacy `blocks` map (uppercase keys) and `insight` (combined
+	// text) stay for backward compat: older iOS builds depend on them
+	// and the web dashboard pre-renders `insight` template-side.
+	ls := health.GetStrings(lang)
+	type aiSection struct {
+		Key    string `json:"key"`
+		Header string `json:"header"`
+		Body   string `json:"body"`
+	}
+	// Canonical block order matches the morning report (notify/report.go)
+	// so the dashboard, Telegram, and iOS all render the same sequence.
+	type blockSpec struct{ wireKey, dbKey, headerKey string }
+	blockOrder := []blockSpec{
+		{"sleep", "SLEEP", "ai_block_sleep_header"},
+		{"yesterday", "YESTERDAY", "ai_block_yesterday_header"},
+		{"recovery", "RECOVERY", "ai_block_recovery_header"},
+		{"recommendation", "RECOMMENDATION", "ai_block_recommendation_header"},
+	}
+	sections := make([]aiSection, 0, len(blockOrder))
+	for _, b := range blockOrder {
+		body := blocks[b.dbKey]
+		if body == "" {
+			continue
+		}
+		sections = append(sections, aiSection{
+			Key:    b.wireKey,
+			Header: ls[b.headerKey],
+			Body:   body,
+		})
+	}
+
 	jsonResponse(w, map[string]any{
 		"date":       today,
 		"lang":       lang,
 		"insight":    combined,
+		"sections":   sections,
 		"blocks":     blocks,
 		"generating": db.AIRegenInFlight(lang),
 		"disabled":   !aiCfg.Enabled(),

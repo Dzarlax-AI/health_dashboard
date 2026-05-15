@@ -20,6 +20,13 @@ var sr = LangStrings{
 	"sec_activity": "Aktivnost",
 	"sec_cardio":   "Srce i pluća",
 
+	// AI block headers — see i18n_en.go for the rationale on keeping
+	// these independent of the sec_* section names.
+	"ai_block_sleep_header":          "San",
+	"ai_block_yesterday_header":      "Juče",
+	"ai_block_recovery_header":       "Oporavak",
+	"ai_block_recommendation_header": "Plan za danas",
+
 	"lbl_hrv":        "HRV",
 	"lbl_vs_avg":     "vs avg",
 	"lbl_resting_hr": "Puls u miru",
