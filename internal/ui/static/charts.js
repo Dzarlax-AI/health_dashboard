@@ -488,6 +488,21 @@ function loadMetricCardSparklines() {
 // the Core band, so a "Core-only" night was a lie about what was measured.
 // Neutral grey-blue colour distinguishes it from both stage colours and
 // the warm Awake tone.
+//
+// `label` is the English fallback. The page template (metric_detail.html)
+// injects `window.SLEEP_PHASE_LABELS` keyed by metric name for the active
+// language; _sleepLabel() reads that map at chart-build time and falls
+// back to the literal here when the page hasn't bridged i18n (older
+// renders, embedded charts in third-party tools). Same pattern for the
+// tooltip hint via `window.CHART_SLEEP_UNSPECIFIED_HINT`. Issue #80.
+function _sleepLabel(metric, fallback) {
+  var m = window.SLEEP_PHASE_LABELS;
+  return (m && m[metric]) || fallback;
+}
+function _sleepUnspecifiedHint() {
+  return window.CHART_SLEEP_UNSPECIFIED_HINT
+    || 'source did not report deep/REM/core breakdown';
+}
 var SLEEP_PHASES = [
   { metric:'sleep_deep',        label:'Deep',              color:'#6366f1' },
   { metric:'sleep_rem',         label:'REM',               color:'#a78bfa' },
@@ -517,7 +532,11 @@ function loadSleepChart(canvasId, from, to) {
       var m = {}; (r.points||[]).forEach(function(p) { m[p.date] = p.qty; }); return m;
     });
     var datasets = SLEEP_PHASES.map(function(ph, i) {
-      return { label: ph.label, data: labels.map(function(l) { return ptMap[i][l] || 0; }),
+      return { label: _sleepLabel(ph.metric, ph.label),
+               // Stash the stable metric key so the tooltip afterLabel
+               // hook can check by enum instead of by localized label.
+               metric: ph.metric,
+               data: labels.map(function(l) { return ptMap[i][l] || 0; }),
                backgroundColor: ph.color + 'cc', borderColor: ph.color, borderWidth: 1,
                stack: 'sleep', borderRadius: 3 };
     });
@@ -534,9 +553,11 @@ function loadSleepChart(canvasId, from, to) {
               label: function(ctx) { return ' ' + ctx.dataset.label + ': ' + fmt2(ctx.parsed.y) + ' h'; },
               // Hint about what "no stages" means — appears only on the
               // sleep_unspecified band so existing tooltips stay quiet.
+              // Check by stable metric key, not localized label, so the
+              // hint fires correctly in every language (issue #80).
               afterLabel: function(ctx) {
-                if (ctx.dataset.label === 'Asleep (no stages)' && ctx.parsed.y > 0) {
-                  return '  (source did not report deep/REM/core breakdown)';
+                if (ctx.dataset.metric === 'sleep_unspecified' && ctx.parsed.y > 0) {
+                  return '  (' + _sleepUnspecifiedHint() + ')';
                 }
                 return null;
               }

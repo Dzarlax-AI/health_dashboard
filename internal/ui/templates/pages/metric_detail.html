@@ -63,6 +63,19 @@
 var currentMetric = '{{.MetricName}}';
 var compareEnabled = false, bySourceEnabled = false;
 
+// Sleep-chart i18n bridge — populates the band labels + tooltip hint
+// in the caller's language. charts.js reads `window.SLEEP_PHASE_LABELS`
+// and `window.CHART_SLEEP_UNSPECIFIED_HINT`; the in-script fallbacks
+// stay in English for pages that don't define these.
+window.SLEEP_PHASE_LABELS = {
+  sleep_deep:        '{{T .Lang "metric_sleep_deep"}}',
+  sleep_rem:         '{{T .Lang "metric_sleep_rem"}}',
+  sleep_core:        '{{T .Lang "metric_sleep_core"}}',
+  sleep_unspecified: '{{T .Lang "metric_sleep_unspecified"}}',
+  sleep_awake:       '{{T .Lang "metric_sleep_awake"}}'
+};
+window.CHART_SLEEP_UNSPECIFIED_HINT = '{{T .Lang "chart_sleep_unspecified_hint"}}';
+
 document.addEventListener('DOMContentLoaded', function() {
   $('from').value = daysAgoStr(29);
   $('to').value = todayStr();
