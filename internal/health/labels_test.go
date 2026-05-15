@@ -114,6 +114,67 @@ func TestEnrichLabels_NilResp(t *testing.T) {
 	// no panic = pass
 }
 
+func TestFlagSeverity_Mapping(t *testing.T) {
+	cases := map[string]string{
+		"illness_signature":       SeverityCritical,
+		"recovery_debt":           SeverityWarning,
+		"parasympathetic_rebound": SeverityInfo,
+		"acute_stress":            SeverityNeutral,
+		"sustained_load":          SeverityNeutral,
+		"stale_stress":            SeverityPending,
+		"calibration_warmup":      SeverityPending,
+		"unknown_future_flag":     "",
+		"":                        "",
+	}
+	for key, want := range cases {
+		if got := FlagSeverity(key); got != want {
+			t.Errorf("FlagSeverity(%q) = %q, want %q", key, got, want)
+		}
+	}
+}
+
+func TestVerdictSeverity_Mapping(t *testing.T) {
+	cases := map[string]string{
+		"push_hard":              SeverityGood,
+		"moderate":               SeverityNeutral,
+		"active_recovery":        SeverityWarning,
+		"rest":                   SeverityCritical,
+		"unknown_future_verdict": "",
+		"":                       "",
+	}
+	for verdict, want := range cases {
+		if got := VerdictSeverity(verdict); got != want {
+			t.Errorf("VerdictSeverity(%q) = %q, want %q", verdict, got, want)
+		}
+	}
+}
+
+func TestBuildFlagDetails_PopulatesSeverity(t *testing.T) {
+	got := BuildFlagDetails([]string{"illness_signature", "stale_stress", "unknown_xyz"}, GetStrings("en"))
+	if len(got) != 3 {
+		t.Fatalf("want 3 entries, got %d", len(got))
+	}
+	if got[0].Severity != SeverityCritical {
+		t.Errorf("illness_signature severity = %q, want %q", got[0].Severity, SeverityCritical)
+	}
+	if got[1].Severity != SeverityPending {
+		t.Errorf("stale_stress severity = %q, want %q", got[1].Severity, SeverityPending)
+	}
+	if got[2].Severity != "" {
+		t.Errorf("unknown flag severity should be empty, got %q", got[2].Severity)
+	}
+}
+
+func TestEnrichLabels_PopulatesVerdictSeverity(t *testing.T) {
+	resp := &BriefingResponse{
+		EnergyBank: &EnergyBank{ActionVerdict: "rest"},
+	}
+	EnrichLabels(resp, GetStrings("en"))
+	if resp.EnergyBank.VerdictSeverity != SeverityCritical {
+		t.Errorf("rest verdict should be critical, got %q", resp.EnergyBank.VerdictSeverity)
+	}
+}
+
 func TestEnrichLabels_RussianAndSerbian(t *testing.T) {
 	for _, lang := range []string{"ru", "sr"} {
 		resp := &BriefingResponse{

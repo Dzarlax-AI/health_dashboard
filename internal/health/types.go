@@ -189,8 +189,14 @@ type EnergyBank struct {
 	// VerdictLabel is the localized short rendering of ActionVerdict.
 	// Populated by EnrichLabels so iOS / other consumers don't need a
 	// parallel i18n map for energy_verdict_<verdict>.
-	VerdictLabel  string                `json:"verdict_label,omitempty"`
-	VerdictReason string                `json:"verdict_reason"`  // localised one-sentence rationale
+	VerdictLabel string `json:"verdict_label,omitempty"`
+	// VerdictSeverity is the closed-vocabulary classification of the
+	// verdict (one of: critical|warning|info|neutral|pending|good).
+	// Same vocabulary as FlagDetail.Severity so iOS uses a single
+	// severity → DS token map across both surfaces. Empty when the
+	// verdict has no mapping (treated as neutral by clients).
+	VerdictSeverity string                `json:"verdict_severity,omitempty"`
+	VerdictReason   string                `json:"verdict_reason"`  // localised one-sentence rationale
 	Components    []EnergyBankComponent `json:"components,omitempty"`
 	// HRVZRaw is today's HRV z-score against personal baseline (negative =
 	// vagal depression = parasympathetic underactivity). Exposed because
@@ -234,6 +240,13 @@ type FlagDetail struct {
 	Key         string `json:"key"`
 	Label       string `json:"label"`
 	Description string `json:"description"`
+	// Severity is a closed-vocabulary classification (one of:
+	// critical|warning|info|neutral|pending|good) so iOS maps
+	// severity → DS colour token instead of key → token. A new
+	// server-side flag automatically renders with the correct
+	// visual emphasis without an iOS update. Empty when the flag
+	// has no mapping yet (treated as default neutral by clients).
+	Severity string `json:"severity,omitempty"`
 }
 
 // VerdictBands holds the per-user calibrated thresholds for translating

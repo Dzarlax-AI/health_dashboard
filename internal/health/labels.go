@@ -19,10 +19,10 @@ package health
 // and ship in separate PRs.
 
 // EnrichLabels walks a fully-built BriefingResponse and populates the
-// optional *Label / *Details fields that mirror server enums in the
-// caller's language. Called once at the end of the briefing path,
-// after every override layer that can change verdicts / statuses /
-// flags has settled. Safe to call on nil input — no-ops.
+// optional *Label / *Details / *Severity fields that mirror server
+// enums in the caller's language. Called once at the end of the
+// briefing path, after every override layer that can change verdicts
+// / statuses / flags has settled. Safe to call on nil input — no-ops.
 func EnrichLabels(resp *BriefingResponse, ls LangStrings) {
 	if resp == nil || ls == nil {
 		return
@@ -32,8 +32,67 @@ func EnrichLabels(resp *BriefingResponse, ls LangStrings) {
 	}
 	if resp.EnergyBank != nil {
 		resp.EnergyBank.VerdictLabel = BuildVerdictLabel(resp.EnergyBank.ActionVerdict, ls)
+		resp.EnergyBank.VerdictSeverity = VerdictSeverity(resp.EnergyBank.ActionVerdict)
 		resp.EnergyBank.FlagDetails = BuildFlagDetails(resp.EnergyBank.Flags, ls)
 	}
+}
+
+// SeverityCritical / Warning / Info / Neutral / Pending / Good are the
+// closed vocabulary used for the *_severity fields on the wire. iOS
+// and other UIs map these six tokens to DS colours, so adding a new
+// flag or verdict server-side only requires picking one of these
+// values — no client update needed. Keep the list closed; extending
+// it requires syncing every consumer.
+const (
+	SeverityCritical = "critical"
+	SeverityWarning  = "warning"
+	SeverityInfo     = "info"
+	SeverityNeutral  = "neutral"
+	SeverityPending  = "pending"
+	SeverityGood     = "good"
+)
+
+// FlagSeverity maps a stress-flag key to its severity classification.
+// Unknown keys (future server-only flags, imputed_*) return "" so
+// clients fall back to their default rendering instead of inheriting
+// an arbitrary severity. Mappings:
+//   - illness_signature             → critical (rest is medically advised)
+//   - recovery_debt                 → warning  (yesterday's load caught up)
+//   - parasympathetic_rebound       → info     (recovery-phase pattern)
+//   - acute_stress / sustained_load → neutral  (noted, no action needed)
+//   - stale_stress / calibration_warmup → pending (data-quality state)
+func FlagSeverity(key string) string {
+	switch key {
+	case "illness_signature":
+		return SeverityCritical
+	case "recovery_debt":
+		return SeverityWarning
+	case "parasympathetic_rebound":
+		return SeverityInfo
+	case "acute_stress", "sustained_load":
+		return SeverityNeutral
+	case "stale_stress", "calibration_warmup":
+		return SeverityPending
+	}
+	return ""
+}
+
+// VerdictSeverity maps an EnergyBank action verdict to its severity
+// classification. Same closed vocabulary as FlagSeverity. Unknown
+// verdicts return "" — a new verdict added server-side renders with
+// the client's neutral default until consumers pick up the new value.
+func VerdictSeverity(verdict string) string {
+	switch verdict {
+	case "push_hard":
+		return SeverityGood
+	case "moderate":
+		return SeverityNeutral
+	case "active_recovery":
+		return SeverityWarning
+	case "rest":
+		return SeverityCritical
+	}
+	return ""
 }
 
 // BuildStatusLabel looks up "section_status_<status>" in the language
@@ -76,6 +135,7 @@ func BuildFlagDetails(flags []string, ls LangStrings) []FlagDetail {
 			Key:         key,
 			Label:       ls["stress_flag_"+key+"_label"],
 			Description: ls["stress_flag_"+key+"_desc"],
+			Severity:    FlagSeverity(key),
 		})
 	}
 	return out
