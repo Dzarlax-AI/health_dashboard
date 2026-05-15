@@ -140,9 +140,16 @@ type MetricCard struct {
 }
 
 // ReadinessPoint is a single historical readiness data point.
+// Band is the same stable enum key used on BriefingResponse — exposed
+// here too so consumers of /api/readiness-history (and the MCP
+// `get_readiness_history` tool) don't have to reapply the threshold
+// logic locally. Per-call cost is negligible (one ReadinessBand()
+// switch per row), and it keeps the "single source of truth" property
+// from drifting between endpoints.
 type ReadinessPoint struct {
 	Date  string `json:"date"`
 	Score int    `json:"score"`
+	Band  string `json:"band,omitempty"`
 }
 
 // Alert is a health anomaly notification (not a score component).

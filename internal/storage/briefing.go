@@ -570,6 +570,7 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 func (s *DB) GetReadinessHistory(outputDays int) ([]health.ReadinessPoint, error) {
 	cached, err := s.readinessFromCache(outputDays)
 	if err == nil && isCacheRecent(cached) {
+		fillReadinessBands(cached)
 		return cached, nil
 	}
 	pts, err := s.computeReadinessHistory(outputDays)
@@ -577,7 +578,20 @@ func (s *DB) GetReadinessHistory(outputDays int) ([]health.ReadinessPoint, error
 		return nil, err
 	}
 	go s.saveReadinessScores(pts)
+	fillReadinessBands(pts)
 	return pts, nil
+}
+
+// fillReadinessBands populates the Band field for every point using
+// the same threshold logic the briefing path uses. Cheap (one switch
+// per point) and means /api/readiness-history carries the same
+// canonical band as /api/health-briefing, so clients (iOS especially)
+// don't have to maintain a parallel band-from-score mapping for the
+// sparkline path. See issue #83 item #4.
+func fillReadinessBands(pts []health.ReadinessPoint) {
+	for i := range pts {
+		pts[i].Band = health.ReadinessBand(pts[i].Score)
+	}
 }
 
 // computeReadinessHistory is the raw sliding-window computation (no caching).
