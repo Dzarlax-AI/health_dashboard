@@ -53,6 +53,7 @@ var scoreRelevantMetrics = map[string]bool{
 	"sleep_rem":              true,
 	"sleep_core":             true,
 	"sleep_awake":            true,
+	"sleep_unspecified":      true,
 }
 
 func affectsReadiness(points []storage.MetricPoint) bool {

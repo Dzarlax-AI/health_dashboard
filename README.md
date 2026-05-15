@@ -343,10 +343,12 @@ When multiple devices record overlapping data (Apple Watch, iPhone, RingConn), t
 2. **iPhone** -- fallback
 3. **Other** -- last resort
 
-**Sleep metrics** (sleep_total, sleep_deep, sleep_rem, etc.):
+**Sleep metrics** (sleep_total, sleep_deep, sleep_rem, sleep_core, sleep_unspecified, sleep_awake):
 1. **RingConn** -- preferred (more accurate sleep tracking than Watch)
 2. **Apple Watch** -- fallback
 3. **Other** -- last resort
+
+Sources that report classified stages (Apple Watch with sleep tracking on) emit `sleep_deep` / `sleep_rem` / `sleep_core`. Sources without stage tracking (iPhone Sleep Schedule, older Apple Watch, RingConn before firmware Y) emit `sleep_unspecified` instead — coarse "just asleep" time that pre-rollout used to inflate `sleep_core`. Stacked sleep charts render `sleep_unspecified` as its own 5th band so a "Core" row only ever means actual Core Sleep stage time.
 
 This priority is applied consistently across dashboard, daily scores, readiness computation, and briefing API. For chart visualizations, MAX of per-source totals is used.
 
@@ -414,6 +416,20 @@ make docker-down      # stop all services
 ```
 
 Cache tables are rebuilt automatically on server startup (incremental, last 48h) and after each sync (debounced, 2-minute delay). Use `make backfill-force` only after code changes to aggregation logic.
+
+Schema migrations (new columns on `daily_scores`, etc.) auto-apply on startup via `EnsureIndexes()` — uses `ADD COLUMN IF NOT EXISTS`, so existing deployments pick them up without manual SQL. Fresh installs get the full schema from `CREATE TABLE IF NOT EXISTS` paths in `internal/storage/db.go`.
+
+### One-off: backfill historical `sleep_unspecified`
+
+The v2.3 split routes coarse-asleep time (RingConn, iPhone Sleep Schedule, older Apple Watch) into a dedicated `sleep_unspecified` metric instead of inflating `sleep_core`. New data lands correctly automatically once the v2.3 iOS client (or `cmd/import` with the updated XML mapping) is in use. **Historical rows imported before v2.3 still sit under `sleep_core`** — to retroactively split them:
+
+```bash
+DATABASE_URL=postgres://... go run ./cmd/migrate_sleep_unspecified --dry-run  # count candidates
+DATABASE_URL=postgres://... go run ./cmd/migrate_sleep_unspecified            # apply + invalidate affected daily_scores
+DATABASE_URL=postgres://... make backfill                                     # repopulate daily_scores cleanly
+```
+
+Idempotent — the UPDATE only touches `sleep_core` rows that lack any sibling `sleep_deep` / `sleep_rem` for the same `(day, source)`. Skip the script entirely if you'd rather keep old days "as-they-were" and only have new days correct.
 
 ## Backups
 

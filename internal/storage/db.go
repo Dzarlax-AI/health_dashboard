@@ -144,6 +144,7 @@ func (s *DB) EnsureAllTables() error {
 			sleep_deep        REAL,
 			sleep_rem         REAL,
 			sleep_core        REAL,
+			sleep_unspecified REAL,
 			sleep_awake       REAL,
 			steps             REAL,
 			calories          REAL,

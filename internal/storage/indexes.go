@@ -49,6 +49,13 @@ func (s *DB) EnsureIndexes() {
 		// (illness_signature / recovery_debt /
 		// parasympathetic_rebound) land in a follow-up PR.
 		`ALTER TABLE daily_scores ADD COLUMN IF NOT EXISTS stress_flags TEXT[]`,
+
+		// sleep_unspecified — coarse asleep time from sources without a
+		// deep/REM/core breakdown (RingConn, iPhone-only, older Apple
+		// Watch). Splits the lie out of sleep_core, which used to absorb
+		// it. NULL on rows that pre-date the iOS split; aggregator
+		// treats NULL as 0 in sleep_total.
+		`ALTER TABLE daily_scores ADD COLUMN IF NOT EXISTS sleep_unspecified REAL`,
 	}
 	for _, ddl := range migrations {
 		if _, err := s.pool.Exec(ctx, ddl); err != nil {

@@ -30,7 +30,7 @@ func (s *DB) GetTypicalWakeTime(days int) (int, int, bool) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT MAX(SUBSTRING(date, 12, 5)) AS wake_hhmm
 		  FROM metric_points
-		 WHERE metric_name IN ('sleep_total','sleep_core','sleep_rem','sleep_deep','sleep_awake')
+		 WHERE metric_name IN ('sleep_total','sleep_core','sleep_rem','sleep_deep','sleep_unspecified','sleep_awake')
 		   AND quality = 'ok'
 		   AND SUBSTRING(date, 12, 8) <> '00:00:00'
 		   AND SUBSTRING(date, 12, 5) >= '04:00'

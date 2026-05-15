@@ -125,7 +125,12 @@ var sleepValueMap = map[string]string{
 	"HKCategoryValueSleepAnalysisAsleepREM":         "sleep_rem",
 	"HKCategoryValueSleepAnalysisAsleepCore":        "sleep_core",
 	"HKCategoryValueSleepAnalysisAwake":             "sleep_awake",
-	"HKCategoryValueSleepAnalysisAsleepUnspecified": "sleep_core", // treat as core for older data
+	// Coarse asleep without stage breakdown (iPhone Sleep Schedule,
+	// older Apple Watch). Routed to a dedicated metric so it stops
+	// inflating sleep_core. Pre-rollout imports landed in sleep_core;
+	// see cmd/migrate_sleep_unspecified to move historical rows.
+	"HKCategoryValueSleepAnalysisAsleepUnspecified": "sleep_unspecified",
+	"HKCategoryValueSleepAnalysisAsleep":            "sleep_unspecified",
 }
 
 // ParseZip opens the zip at path, finds apple_health_export/export.xml inside,

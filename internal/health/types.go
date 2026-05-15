@@ -95,12 +95,13 @@ type Insight struct {
 }
 
 type SleepSourceSummary struct {
-	Source string  `json:"source"`
-	Total  float64 `json:"total"`
-	Deep   float64 `json:"deep"`
-	REM    float64 `json:"rem"`
-	Core   float64 `json:"core"`
-	Awake  float64 `json:"awake"`
+	Source      string  `json:"source"`
+	Total       float64 `json:"total"`
+	Deep        float64 `json:"deep"`
+	REM         float64 `json:"rem"`
+	Core        float64 `json:"core"`
+	Unspecified float64 `json:"unspecified,omitempty"`
+	Awake       float64 `json:"awake"`
 }
 
 type SleepAnalysis struct {

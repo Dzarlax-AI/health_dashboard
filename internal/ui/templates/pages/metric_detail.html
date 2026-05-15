@@ -76,7 +76,7 @@ function reloadChart() {
     loadReadinessChart('chart', from, to);
     return;
   }
-  var isSleep = ['sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake'].indexOf(currentMetric) >= 0;
+  var isSleep = ['sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_unspecified','sleep_awake'].indexOf(currentMetric) >= 0;
   if (isSleep && !bucket && !agg) {
     loadSleepChart('chart', from, to);
     return;

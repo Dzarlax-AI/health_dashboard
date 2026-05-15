@@ -162,6 +162,12 @@ var SumMetrics = map[string]bool{
 	// sleep phases are SUM'd per source, then MAX'd across sources
 	"sleep_total": true, "sleep_deep": true, "sleep_rem": true,
 	"sleep_core": true, "sleep_awake": true,
+	// sleep_unspecified — coarse asleep total from sources without a
+	// deep/REM/core breakdown (RingConn, iPhone-only, older Apple Watch).
+	// SUM like the other stages; mutually exclusive with deep/rem/core
+	// per source. After iOS PR #X, RingConn-only nights land here
+	// instead of inflating sleep_core.
+	"sleep_unspecified": true,
 	// New-format split written by health-sync iOS — same SUM semantics
 	// as sleep_total. Treated as plain time-series; not yet cached in
 	// daily_scores (read directly from metric_points by briefing.go).
@@ -414,6 +420,13 @@ sleep_picked AS (
 -- When n_sources > 1, require ALL five stages from picked source so we
 -- don't COALESCE-preserve a prior row's stage from a different device.
 sleep_picked_complete AS (
+    -- Conditional gate (option B per SLEEP_UNSPECIFIED_ROLLOUT.md):
+    --   single source     → trust as-is
+    --   multi-source + picked has all 5 traditional stages → complete (stage-tracking device)
+    --   multi-source + picked has sleep_total + sleep_unspecified → complete (coarse-only device)
+    -- Without the second clause, multi-source nights where MIN-pick lands
+    -- on a RingConn-only source (2 metrics) would fall through to NULL
+    -- writes and the prior block would survive untouched.
     SELECT (
         (SELECT COUNT(DISTINCT source) FROM sleep_total_per_source) <= 1
         OR (
@@ -421,6 +434,11 @@ sleep_picked_complete AS (
            WHERE source = (SELECT src FROM sleep_picked)
              AND metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake')
         ) = 5
+        OR (
+          SELECT COUNT(DISTINCT metric_name) FROM per_source
+           WHERE source = (SELECT src FROM sleep_picked)
+             AND metric_name IN ('sleep_total','sleep_unspecified')
+        ) = 2
     ) AS ok
 ),
 agg AS (
@@ -445,8 +463,8 @@ agg AS (
 )
 INSERT INTO daily_scores
     (date, hrv_avg, rhr_avg, sleep_total, sleep_deep, sleep_rem, sleep_core,
-     sleep_awake, steps, calories, exercise_min, spo2_avg, vo2_avg, resp_avg,
-     computed_at)
+     sleep_awake, sleep_unspecified, steps, calories, exercise_min, spo2_avg,
+     vo2_avg, resp_avg, computed_at)
 SELECT $1,
     MAX(avg_across_sources)  FILTER (WHERE metric_name='heart_rate_variability'),
     MAX(avg_across_sources)  FILTER (WHERE metric_name='resting_heart_rate'),
@@ -455,6 +473,7 @@ SELECT $1,
     MAX(sum_sleep_resolved)  FILTER (WHERE metric_name='sleep_rem'),
     MAX(sum_sleep_resolved)  FILTER (WHERE metric_name='sleep_core'),
     MAX(sum_sleep_resolved)  FILTER (WHERE metric_name='sleep_awake'),
+    MAX(sum_sleep_resolved)  FILTER (WHERE metric_name='sleep_unspecified'),
     MAX(sum_preferred)       FILTER (WHERE metric_name='step_count'),
     MAX(sum_preferred)       FILTER (WHERE metric_name='active_energy'),
     MAX(sum_preferred)       FILTER (WHERE metric_name='apple_exercise_time'),
@@ -471,6 +490,7 @@ ON CONFLICT(date) DO UPDATE SET
     sleep_rem    = COALESCE(EXCLUDED.sleep_rem,    daily_scores.sleep_rem),
     sleep_core   = COALESCE(EXCLUDED.sleep_core,   daily_scores.sleep_core),
     sleep_awake  = COALESCE(EXCLUDED.sleep_awake,  daily_scores.sleep_awake),
+    sleep_unspecified = COALESCE(EXCLUDED.sleep_unspecified, daily_scores.sleep_unspecified),
     steps        = COALESCE(EXCLUDED.steps,        daily_scores.steps),
     calories     = COALESCE(EXCLUDED.calories,     daily_scores.calories),
     exercise_min = COALESCE(EXCLUDED.exercise_min, daily_scores.exercise_min),
@@ -786,7 +806,7 @@ WITH per_source AS (
     SELECT SUBSTRING(hour,1,10) AS day, metric_name, source,
            SUM(avg_val) AS sum_val
     FROM hourly_metrics
-    WHERE metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake')
+    WHERE metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake','sleep_unspecified')
       ` + fromClause + `
     GROUP BY SUBSTRING(hour,1,10), metric_name, source
 ),
@@ -840,6 +860,10 @@ sleep_picked AS (
 -- filter qty > 0 drops the awake row, so the source has only 4 of 5
 -- stages even though the night is fully recorded).
 sleep_complete AS (
+    -- Conditional gate (mirrors upsertDailyForDate):
+    --   single source                              → trust as-is
+    --   multi-source + all 5 stages from picked    → complete (stage-tracking device)
+    --   multi-source + total + unspecified picked  → complete (coarse-only device)
     SELECT sp.day, sp.src, (
         (SELECT COUNT(DISTINCT source) FROM sleep_total_per_day WHERE day = sp.day) <= 1
         OR (
@@ -847,6 +871,11 @@ sleep_complete AS (
            WHERE day = sp.day AND source = sp.src
              AND metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake')
         ) = 5
+        OR (
+          SELECT COUNT(DISTINCT metric_name) FROM per_source
+           WHERE day = sp.day AND source = sp.src
+             AND metric_name IN ('sleep_total','sleep_unspecified')
+        ) = 2
     ) AS ok
     FROM sleep_picked sp
 ),
@@ -856,23 +885,25 @@ day_metric AS (
     FROM per_source p
     JOIN sleep_complete sc ON sc.day = p.day
 )
-INSERT INTO daily_scores (date, sleep_total, sleep_deep, sleep_rem, sleep_core, sleep_awake, computed_at)
+INSERT INTO daily_scores (date, sleep_total, sleep_deep, sleep_rem, sleep_core, sleep_awake, sleep_unspecified, computed_at)
 SELECT day,
     MAX(val) FILTER (WHERE metric_name = 'sleep_total'),
     MAX(val) FILTER (WHERE metric_name = 'sleep_deep'),
     MAX(val) FILTER (WHERE metric_name = 'sleep_rem'),
     MAX(val) FILTER (WHERE metric_name = 'sleep_core'),
     MAX(val) FILTER (WHERE metric_name = 'sleep_awake'),
+    MAX(val) FILTER (WHERE metric_name = 'sleep_unspecified'),
     NOW()::TEXT
 FROM day_metric
 GROUP BY day
 ON CONFLICT(date) DO UPDATE SET
-    sleep_total = COALESCE(EXCLUDED.sleep_total, daily_scores.sleep_total),
-    sleep_deep  = COALESCE(EXCLUDED.sleep_deep,  daily_scores.sleep_deep),
-    sleep_rem   = COALESCE(EXCLUDED.sleep_rem,   daily_scores.sleep_rem),
-    sleep_core  = COALESCE(EXCLUDED.sleep_core,  daily_scores.sleep_core),
-    sleep_awake = COALESCE(EXCLUDED.sleep_awake, daily_scores.sleep_awake),
-    computed_at = EXCLUDED.computed_at`
+    sleep_total       = COALESCE(EXCLUDED.sleep_total,       daily_scores.sleep_total),
+    sleep_deep        = COALESCE(EXCLUDED.sleep_deep,        daily_scores.sleep_deep),
+    sleep_rem         = COALESCE(EXCLUDED.sleep_rem,         daily_scores.sleep_rem),
+    sleep_core        = COALESCE(EXCLUDED.sleep_core,        daily_scores.sleep_core),
+    sleep_awake       = COALESCE(EXCLUDED.sleep_awake,       daily_scores.sleep_awake),
+    sleep_unspecified = COALESCE(EXCLUDED.sleep_unspecified, daily_scores.sleep_unspecified),
+    computed_at       = EXCLUDED.computed_at`
 
 	if _, err := s.pool.Exec(ctx, q, args...); err != nil {
 		return fmt.Errorf("daily sleep block: %w", err)

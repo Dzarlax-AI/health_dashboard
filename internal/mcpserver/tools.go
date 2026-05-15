@@ -126,6 +126,7 @@ Schema:
     readiness INTEGER,                 -- 0-100 readiness score
     hrv_avg REAL, rhr_avg REAL,
     sleep_total REAL, sleep_deep REAL, sleep_rem REAL, sleep_core REAL, sleep_awake REAL,
+    sleep_unspecified REAL,            -- coarse asleep total for sources without stage breakdown
     steps REAL, calories REAL, exercise_min REAL,
     spo2_avg REAL, vo2_avg REAL, resp_avg REAL)
 
@@ -148,7 +149,7 @@ Schema:
 
 Key metrics: heart_rate, resting_heart_rate, heart_rate_variability, blood_oxygen_saturation,
   step_count, active_energy, basal_energy_burned, walking_running_distance, apple_exercise_time,
-  sleep_total, sleep_deep, sleep_rem, sleep_core, sleep_awake,
+  sleep_total, sleep_deep, sleep_rem, sleep_core, sleep_unspecified, sleep_awake,
   respiratory_rate, wrist_temperature, vo2_max
 
 Notes:
@@ -157,7 +158,7 @@ Notes:
   - Date comparison on metric_points: use substr(date,1,10) >= '2026-01-01' (NOT strftime — TZ offset breaks it)
   - SUM metrics: step_count, active_energy, basal_energy_burned, apple_exercise_time,
       apple_stand_time, flights_climbed, walking_running_distance, time_in_daylight,
-      sleep_total, sleep_deep, sleep_rem, sleep_core, sleep_awake
+      sleep_total, sleep_deep, sleep_rem, sleep_core, sleep_unspecified, sleep_awake
   - All others use AVG`),
 		mcp.WithString("query", mcp.Required(), mcp.Description("SQL SELECT query")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
