@@ -305,10 +305,12 @@ func applyCoherencePass(resp *BriefingResponse, ls LangStrings) {
 		// the numeric score from any single component looks fine.
 		if resp.ReadinessScore > 65 {
 			resp.ReadinessScore = 65
+			resp.ReadinessBand = ReadinessBand(65)
 			resp.ReadinessLabel = ls["readiness_fair"]
 			resp.ReadinessTip = ls["tip_fair"]
 			resp.RecoveryPct = 65
 			resp.ReadinessToday = 65
+			resp.ReadinessTodayBand = ReadinessBand(65)
 			resp.ReadinessTodayLabel = ls["readiness_fair"]
 		}
 	case "sleep_debt":
@@ -316,10 +318,12 @@ func applyCoherencePass(resp *BriefingResponse, ls LangStrings) {
 		// Walker 2017): one good HRV/RHR night doesn't pay off slept-debt.
 		if resp.ReadinessScore > 65 {
 			resp.ReadinessScore = 65
+			resp.ReadinessBand = ReadinessBand(65)
 			resp.ReadinessLabel = ls["readiness_fair"]
 			resp.ReadinessTip = ls["tip_fair"]
 			resp.RecoveryPct = 65
 			resp.ReadinessToday = 65
+			resp.ReadinessTodayBand = ReadinessBand(65)
 			resp.ReadinessTodayLabel = ls["readiness_fair"]
 		}
 	}

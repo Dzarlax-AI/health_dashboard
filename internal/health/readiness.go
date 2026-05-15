@@ -265,14 +265,41 @@ func ComputeReadinessScore(hrv, rhr, sleep []float64) int {
 	return score
 }
 
-func readinessLabelTip(score int, ls LangStrings) (label, tip string) {
+// ReadinessBand returns the stable band key (optimal / fair / low) for a
+// 0-100 readiness score. Single source of truth for the band thresholds;
+// callers that need the localized label go through readinessLabelTip,
+// which now reads the band first and then looks up the matching i18n key.
+//
+// Exposed (capital R) so iOS and other JSON consumers receive the band
+// in /api/dashboard / /api/health-briefing payloads and don't need to
+// reimplement the threshold logic locally — issue #83 item #4 surfaced
+// that iOS was hardcoding `>=70 Good, >=40 Fair, else Low`, which both
+// drifts from the server's actual cutoffs (80 / 50) AND uses different
+// English wording, producing dashboards that disagree with the briefing.
+//
+// Thresholds:
+//   - optimal: score >= 80
+//   - fair:    score >= 50
+//   - low:     score <  50
+func ReadinessBand(score int) string {
 	if score >= 80 {
-		return ls["readiness_optimal"], ls["tip_optimal"]
+		return "optimal"
 	}
 	if score >= 50 {
-		return ls["readiness_fair"], ls["tip_fair"]
+		return "fair"
 	}
-	return ls["readiness_low"], ls["tip_low"]
+	return "low"
+}
+
+func readinessLabelTip(score int, ls LangStrings) (label, tip string) {
+	switch ReadinessBand(score) {
+	case "optimal":
+		return ls["readiness_optimal"], ls["tip_optimal"]
+	case "fair":
+		return ls["readiness_fair"], ls["tip_fair"]
+	default:
+		return ls["readiness_low"], ls["tip_low"]
+	}
 }
 
 // safeSlice returns s[from:to] clamped to valid indices.
