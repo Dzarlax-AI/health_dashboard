@@ -481,11 +481,19 @@ function loadMetricCardSparklines() {
 }
 
 // ---- Sleep stacked chart ----
+// Stack order (bottom → top): deep → rem → core → unspecified → awake.
+// `sleep_unspecified` (5th band, v2.3) sits between core and awake — it is
+// real asleep time from sources that don't classify into stages (RingConn,
+// iPhone Sleep Schedule, older Apple Watch). Pre-v2.3 this time inflated
+// the Core band, so a "Core-only" night was a lie about what was measured.
+// Neutral grey-blue colour distinguishes it from both stage colours and
+// the warm Awake tone.
 var SLEEP_PHASES = [
-  { metric:'sleep_deep', label:'Deep', color:'#6366f1' },
-  { metric:'sleep_rem',  label:'REM',  color:'#a78bfa' },
-  { metric:'sleep_core', label:'Core', color:'#93c5fd' },
-  { metric:'sleep_awake',label:'Awake',color:'#fbbf24' }
+  { metric:'sleep_deep',        label:'Deep',              color:'#6366f1' },
+  { metric:'sleep_rem',         label:'REM',               color:'#a78bfa' },
+  { metric:'sleep_core',        label:'Core',              color:'#93c5fd' },
+  { metric:'sleep_unspecified', label:'Asleep (no stages)',color:'#9ba3b0' },
+  { metric:'sleep_awake',       label:'Awake',             color:'#fbbf24' }
 ];
 
 function loadSleepChart(canvasId, from, to) {
@@ -522,7 +530,17 @@ function loadSleepChart(canvasId, from, to) {
         plugins: {
           legend: { display: true, labels: { color:'#78716c', boxWidth: 12, font: { size: 12 } } },
           tooltip: { backgroundColor:'#fff', borderColor:'#e7e5e4', borderWidth:1, titleColor:'#78716c', bodyColor:'#1c1917',
-            callbacks: { label: function(ctx) { return ' ' + ctx.dataset.label + ': ' + fmt2(ctx.parsed.y) + ' h'; } } }
+            callbacks: {
+              label: function(ctx) { return ' ' + ctx.dataset.label + ': ' + fmt2(ctx.parsed.y) + ' h'; },
+              // Hint about what "no stages" means — appears only on the
+              // sleep_unspecified band so existing tooltips stay quiet.
+              afterLabel: function(ctx) {
+                if (ctx.dataset.label === 'Asleep (no stages)' && ctx.parsed.y > 0) {
+                  return '  (source did not report deep/REM/core breakdown)';
+                }
+                return null;
+              }
+            } }
         },
         scales: {
           x: { stacked:true, ticks:{ color:'#78716c', font:{size:11} }, grid:{ color:'#f0efed' } },
