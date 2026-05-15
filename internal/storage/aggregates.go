@@ -439,6 +439,12 @@ sleep_picked_complete AS (
     -- sources, and the HK XML importer in internal/applehealth/parse.go
     -- maps both AsleepUnspecified and bare Asleep to sleep_unspecified,
     -- so natively-imported data cannot hit this corner.
+    --
+    -- Regression coverage: internal/storage/sleep_gate.go mirrors this
+    -- logic as a pure Go function (EvaluateSleepPickedComplete) so unit
+    -- tests can exercise all four scenarios without a live Postgres.
+    -- When changing the gate here, mirror the change in sleep_gate.go
+    -- (and vice versa) — see sleep_gate_test.go for the expectations.
     SELECT (
         (SELECT COUNT(DISTINCT source) FROM sleep_total_per_source) <= 1
         OR (
@@ -890,6 +896,9 @@ sleep_complete AS (
     -- (no stages, no unspecified) fails this gate by design — see the matching
     -- comment in upsertDailyForDate's sleep_picked_complete CTE for the
     -- reasoning. Both gates must stay in lockstep on this corner.
+    --
+    -- Regression coverage: see sleep_gate.go::EvaluateSleepPickedComplete
+    -- — pure Go twin exercised by sleep_gate_test.go.
     SELECT sp.day, sp.src, (
         (SELECT COUNT(DISTINCT source) FROM sleep_total_per_day WHERE day = sp.day) <= 1
         OR (
