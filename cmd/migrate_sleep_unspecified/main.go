@@ -46,20 +46,37 @@ func main() {
 	}
 	defer conn.Close(ctx)
 
-	// "coarse-only" predicate: same (day, source) has no stage-tracking
-	// rows (sleep_deep / sleep_rem). sleep_core alone is the tell — every
-	// stage-tracking device emits all three; coarse-only devices emit
-	// just core (pre-rollout) or just sleep_total + (post-rollout) the
-	// new sleep_unspecified.
+	// "coarse-only" predicate: same source has no stage-tracking rows
+	// (sleep_deep / sleep_rem) within ±1 calendar day of this fragment.
+	//
+	// Why a window instead of strict same-day: HK fragments are stored
+	// under their startDate, so a normal Apple Watch staged night that
+	// crosses midnight can park a sleep_core fragment on day N (before
+	// midnight) while the deep / REM fragments land on day N+1 (after
+	// midnight). A strict same-day NOT EXISTS would mis-classify those
+	// legitimate Watch core fragments as coarse and corrupt historical
+	// stage data — flagged by CodeRabbit on PR #73 after a baseline
+	// audit showed Apple Watch, Withings, RingConn, and Pillow all
+	// emitting BOTH coarse-only and staged nights from the same source.
+	//
+	// ±1 day catches cross-midnight pairs and tolerates fragments
+	// recorded with slightly skewed timestamps; sources that genuinely
+	// never report stages (Zepp Life, SleepWatch, Sleep Cycle in this
+	// install) still match the predicate cleanly. A row whose source
+	// has any deep/REM fragment within the window stays put — better
+	// to leave a handful of legit-coarse rows behind than to corrupt
+	// real stage data on reimport.
 	const candidateSQL = `
 		SELECT COUNT(*), COUNT(DISTINCT source)
 		FROM metric_points c
 		WHERE c.metric_name = 'sleep_core'
 		  AND NOT EXISTS (
 			SELECT 1 FROM metric_points x
-			WHERE SUBSTRING(x.date,1,10) = SUBSTRING(c.date,1,10)
-			  AND x.source = c.source
+			WHERE x.source = c.source
 			  AND x.metric_name IN ('sleep_deep','sleep_rem')
+			  AND SUBSTRING(x.date,1,10)::date BETWEEN
+			      SUBSTRING(c.date,1,10)::date - INTERVAL '1 day'
+			  AND SUBSTRING(c.date,1,10)::date + INTERVAL '1 day'
 		  )`
 
 	var rowCount, sourceCount int
@@ -85,9 +102,11 @@ func main() {
 		WHERE metric_name = 'sleep_core'
 		  AND NOT EXISTS (
 			SELECT 1 FROM metric_points x
-			WHERE SUBSTRING(x.date,1,10) = SUBSTRING(metric_points.date,1,10)
-			  AND x.source = metric_points.source
+			WHERE x.source = metric_points.source
 			  AND x.metric_name IN ('sleep_deep','sleep_rem')
+			  AND SUBSTRING(x.date,1,10)::date BETWEEN
+			      SUBSTRING(metric_points.date,1,10)::date - INTERVAL '1 day'
+			  AND SUBSTRING(metric_points.date,1,10)::date + INTERVAL '1 day'
 		  )`
 	tag, err := conn.Exec(ctx, updateSQL)
 	if err != nil {

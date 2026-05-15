@@ -165,8 +165,8 @@ var SumMetrics = map[string]bool{
 	// sleep_unspecified — coarse asleep total from sources without a
 	// deep/REM/core breakdown (RingConn, iPhone-only, older Apple Watch).
 	// SUM like the other stages; mutually exclusive with deep/rem/core
-	// per source. After iOS PR #X, RingConn-only nights land here
-	// instead of inflating sleep_core.
+	// per source. Once the v2.3 iOS client ships, RingConn-only nights
+	// land here instead of inflating sleep_core.
 	"sleep_unspecified": true,
 	// New-format split written by health-sync iOS — same SUM semantics
 	// as sleep_total. Treated as plain time-series; not yet cached in
@@ -485,12 +485,22 @@ FROM agg
 ON CONFLICT(date) DO UPDATE SET
     hrv_avg      = COALESCE(EXCLUDED.hrv_avg,      daily_scores.hrv_avg),
     rhr_avg      = COALESCE(EXCLUDED.rhr_avg,      daily_scores.rhr_avg),
-    sleep_total  = COALESCE(EXCLUDED.sleep_total,  daily_scores.sleep_total),
-    sleep_deep   = COALESCE(EXCLUDED.sleep_deep,   daily_scores.sleep_deep),
-    sleep_rem    = COALESCE(EXCLUDED.sleep_rem,    daily_scores.sleep_rem),
-    sleep_core   = COALESCE(EXCLUDED.sleep_core,   daily_scores.sleep_core),
-    sleep_awake  = COALESCE(EXCLUDED.sleep_awake,  daily_scores.sleep_awake),
-    sleep_unspecified = COALESCE(EXCLUDED.sleep_unspecified, daily_scores.sleep_unspecified),
+    -- Sleep block writes are all-or-nothing per the atomicity gate
+    -- (sleep_picked_complete). When the gate passes, EXCLUDED.sleep_total
+    -- is non-NULL and we overwrite every stage column — even those that
+    -- legitimately become NULL because the picked source is coarse-only
+    -- (total + unspecified, no deep/rem/core/awake). Without this, a row
+    -- previously populated from a staged device would keep its Apple
+    -- Watch deep/REM next to RingConn coarse total — reintroducing the
+    -- mixed-source corruption the gate is designed to prevent
+    -- (CodeRabbit PR #73). Gate fails ⇒ EXCLUDED.sleep_total IS NULL
+    -- ⇒ preserve the prior row as a whole.
+    sleep_total       = CASE WHEN EXCLUDED.sleep_total IS NOT NULL THEN EXCLUDED.sleep_total       ELSE daily_scores.sleep_total       END,
+    sleep_deep        = CASE WHEN EXCLUDED.sleep_total IS NOT NULL THEN EXCLUDED.sleep_deep        ELSE daily_scores.sleep_deep        END,
+    sleep_rem         = CASE WHEN EXCLUDED.sleep_total IS NOT NULL THEN EXCLUDED.sleep_rem         ELSE daily_scores.sleep_rem         END,
+    sleep_core        = CASE WHEN EXCLUDED.sleep_total IS NOT NULL THEN EXCLUDED.sleep_core        ELSE daily_scores.sleep_core        END,
+    sleep_awake       = CASE WHEN EXCLUDED.sleep_total IS NOT NULL THEN EXCLUDED.sleep_awake       ELSE daily_scores.sleep_awake       END,
+    sleep_unspecified = CASE WHEN EXCLUDED.sleep_total IS NOT NULL THEN EXCLUDED.sleep_unspecified ELSE daily_scores.sleep_unspecified END,
     steps        = COALESCE(EXCLUDED.steps,        daily_scores.steps),
     calories     = COALESCE(EXCLUDED.calories,     daily_scores.calories),
     exercise_min = COALESCE(EXCLUDED.exercise_min, daily_scores.exercise_min),
@@ -897,12 +907,18 @@ SELECT day,
 FROM day_metric
 GROUP BY day
 ON CONFLICT(date) DO UPDATE SET
-    sleep_total       = COALESCE(EXCLUDED.sleep_total,       daily_scores.sleep_total),
-    sleep_deep        = COALESCE(EXCLUDED.sleep_deep,        daily_scores.sleep_deep),
-    sleep_rem         = COALESCE(EXCLUDED.sleep_rem,         daily_scores.sleep_rem),
-    sleep_core        = COALESCE(EXCLUDED.sleep_core,        daily_scores.sleep_core),
-    sleep_awake       = COALESCE(EXCLUDED.sleep_awake,       daily_scores.sleep_awake),
-    sleep_unspecified = COALESCE(EXCLUDED.sleep_unspecified, daily_scores.sleep_unspecified),
+    -- Atomic overwrite when the gate passed (EXCLUDED.sleep_total IS NOT
+    -- NULL); preserve prior row as a whole otherwise. Mirrors the same
+    -- pattern in upsertDailyForDate — coarse-only picks must clear
+    -- stale stage columns from a prior staged-source write or we
+    -- re-create the mixed-source row the gate exists to prevent
+    -- (CodeRabbit PR #73).
+    sleep_total       = CASE WHEN EXCLUDED.sleep_total IS NOT NULL THEN EXCLUDED.sleep_total       ELSE daily_scores.sleep_total       END,
+    sleep_deep        = CASE WHEN EXCLUDED.sleep_total IS NOT NULL THEN EXCLUDED.sleep_deep        ELSE daily_scores.sleep_deep        END,
+    sleep_rem         = CASE WHEN EXCLUDED.sleep_total IS NOT NULL THEN EXCLUDED.sleep_rem         ELSE daily_scores.sleep_rem         END,
+    sleep_core        = CASE WHEN EXCLUDED.sleep_total IS NOT NULL THEN EXCLUDED.sleep_core        ELSE daily_scores.sleep_core        END,
+    sleep_awake       = CASE WHEN EXCLUDED.sleep_total IS NOT NULL THEN EXCLUDED.sleep_awake       ELSE daily_scores.sleep_awake       END,
+    sleep_unspecified = CASE WHEN EXCLUDED.sleep_total IS NOT NULL THEN EXCLUDED.sleep_unspecified ELSE daily_scores.sleep_unspecified END,
     computed_at       = EXCLUDED.computed_at`
 
 	if _, err := s.pool.Exec(ctx, q, args...); err != nil {

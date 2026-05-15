@@ -256,7 +256,7 @@ func registerAnalysisTools(s *server.MCPServer, _ DBResolver) {
 	})
 
 	s.AddTool(mcp.NewTool("get_sleep_summary",
-		mcp.WithDescription("Get sleep breakdown by phase (deep, REM, core, awake, total) per night for a date range. Values are deduplicated across devices (e.g. Apple Watch + RingConn)."),
+		mcp.WithDescription("Get sleep breakdown by phase (deep, REM, core, unspecified, awake, total) per night for a date range. `unspecified` is coarse asleep time from sources without per-stage tracking (RingConn, iPhone Sleep Schedule, older Apple Watch) and is 0 on Apple Watch nights with stage data. Values are deduplicated across devices."),
 		mcp.WithString("from", mcp.Required(), mcp.Description("Start date YYYY-MM-DD")),
 		mcp.WithString("to", mcp.Required(), mcp.Description("End date YYYY-MM-DD")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
