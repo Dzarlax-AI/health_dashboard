@@ -425,22 +425,19 @@ The v2.3 split routes coarse-asleep time (RingConn, iPhone Sleep Schedule, older
 
 ```bash
 DATABASE_URL=postgres://... go run ./cmd/migrate_sleep_unspecified --dry-run  # count candidates
-DATABASE_URL=postgres://... go run ./cmd/migrate_sleep_unspecified            # apply + invalidate affected daily_scores
-DATABASE_URL=postgres://... make backfill                                     # repopulate daily_scores cleanly
+DATABASE_URL=postgres://... go run ./cmd/migrate_sleep_unspecified            # apply + targeted cache rebuild
 ```
 
-The predicate widens "no stage siblings" to a **±1 calendar day** window per source — an Apple Watch staged night with `sleep_core` before midnight and `sleep_deep`/`sleep_rem` after midnight is correctly recognised as a staged night and left alone. Idempotent — re-running after a successful pass is a no-op. Skip it entirely if you'd rather keep old days "as-they-were" and only have new days correct.
+The script does the full job: UPDATE the `metric_points` rows in place, then rebuild **only** the affected `hourly_metrics` and `daily_scores` rows via the same per-date code path the server uses on every `/health` ingest. No `make backfill` step needed — and crucially no `--force` rebuild of the whole history, which would take hours for the sake of a few thousand sleep rows. Predicate widens "no stage siblings" to a **±1 calendar day** window per source so Apple Watch staged nights crossing midnight are correctly recognised and left alone. Idempotent — re-running after a successful pass is a no-op. Skip it entirely if you'd rather keep old days "as-they-were" and only have new days correct.
 
 **Multi-user installs:** the script touches the single schema resolved from `search_path` in `DATABASE_URL`. Run it once per tenant — point `search_path` at each `health_<user>` schema in turn:
 
 ```bash
 # tenant 1
 DATABASE_URL="host=... search_path=health_alice ..." go run ./cmd/migrate_sleep_unspecified
-DATABASE_URL="host=... search_path=health_alice ..." make backfill-force
 
 # tenant 2
 DATABASE_URL="host=... search_path=health_bob ..." go run ./cmd/migrate_sleep_unspecified
-DATABASE_URL="host=... search_path=health_bob ..." make backfill-force
 ```
 
 (Single-tenant legacy installs keep using the `health` schema and run once.)
