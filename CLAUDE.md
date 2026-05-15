@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **Twin file:** `AGENTS.md` is a Codex-equivalent of this file (auto-created by the codex CLI). When making substantive content changes here — gate semantics, migration caveats, architecture notes — mirror them in `AGENTS.md` too, otherwise the next Codex review reads stale docs. Only the opening "guidance to Claude/Codex" line differs between the two; the rest stays in lockstep.
+
 ## Commands
 
 ```bash

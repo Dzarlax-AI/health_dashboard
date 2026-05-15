@@ -2,6 +2,8 @@
 
 This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
+> **Twin file:** `CLAUDE.md` is the Claude-equivalent of this file. When making substantive content changes here — gate semantics, migration caveats, architecture notes — mirror them in `CLAUDE.md` too, otherwise the next Claude session reads stale docs. Only the opening "guidance to Codex/Claude" line differs between the two; the rest stays in lockstep.
+
 ## Commands
 
 ```bash

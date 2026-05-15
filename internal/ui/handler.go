@@ -102,6 +102,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/health-briefing", h.guard(h.healthBriefing))
 	mux.HandleFunc("/api/ai-briefing", h.guard(h.aiBriefing))
 	mux.HandleFunc("GET /api/section/{key}", h.guard(h.sectionAPI))
+	mux.HandleFunc("GET /api/sections", h.guard(h.sectionsCatalogue))
 	mux.HandleFunc("/api/readiness-history", h.guard(h.readinessHistory))
 	mux.HandleFunc("/api/energy-history", h.guard(h.energyHistory))
 	mux.HandleFunc("/api/settings", h.guard(h.userSettings))
@@ -856,6 +857,50 @@ type sectionAPIChart struct {
 type sectionAPIExplain struct {
 	Title string `json:"title"`
 	Body  string `json:"body"`
+}
+
+// sectionCatalogueEntry is one row in the stable section catalogue
+// returned by GET /api/sections. iOS / other native clients render
+// it as a navigation row; the abstract `Icon` token (e.g. "heart")
+// is mapped to a platform-specific symbol by the client.
+type sectionCatalogueEntry struct {
+	Key      string `json:"key"`
+	Title    string `json:"title"`
+	Subtitle string `json:"subtitle"`
+	Icon     string `json:"icon"`
+}
+
+// sectionCatalogue is the source of truth for which detail pages
+// exist on the server. Adding a new section means appending an
+// entry here AND providing the matching i18n keys
+// (section_<key>_title / section_<key>_subtitle) plus the
+// sectionMeta entry handled by sectionAPI. New entries appear on
+// iOS automatically without an App Store release (issue #89).
+//
+// Sleep intentionally omitted: it has its own dedicated card on
+// the Today screen rather than a Trends navigation row. If a
+// future iOS surface needs the sleep entry too, add it here.
+var sectionCatalogue = []struct {
+	Key  string
+	Icon string
+}{
+	{"cardio", "heart"},
+	{"activity", "activity"},
+	{"recovery", "leaf"},
+}
+
+func (h *Handler) sectionsCatalogue(w http.ResponseWriter, r *http.Request) {
+	lang := supportedLang(r.URL.Query().Get("lang"))
+	out := make([]sectionCatalogueEntry, 0, len(sectionCatalogue))
+	for _, s := range sectionCatalogue {
+		out = append(out, sectionCatalogueEntry{
+			Key:      s.Key,
+			Title:    T(lang, "section_"+s.Key+"_title"),
+			Subtitle: T(lang, "section_"+s.Key+"_subtitle"),
+			Icon:     s.Icon,
+		})
+	}
+	jsonResponse(w, map[string]any{"sections": out})
 }
 
 func (h *Handler) sectionAPI(w http.ResponseWriter, r *http.Request) {
