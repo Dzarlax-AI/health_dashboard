@@ -497,14 +497,240 @@ Any predictive model proposed in Phase 2 must clear all three:
 
 R² alone is not a success criterion.
 
-## 6. Phase 2 — Models, calibration, UI
+## 6. Phase 2 — Operationalisation of the naive layer
 
-Out of scope for this plan in detail. The shape:
+**Direction set after Phase 1 closed (PRs #100, #101, #102, #103, #104,
+#105).** Linear feasibility on the five active targets and the GBM
+signal-probe on `chronic_label` all closed onto naive baselines. The
+deployable answer for the current data is:
 
-- One model per active sub-score (Recovery Stability, Passive Efficiency, Acute Risk first; Chronic Load may stay rule-based).
-- `predictions` table mirroring `target_snapshots` for forward calibration.
-- Daily calibration job comparing predictions vs observed; per-model residual dashboards.
-- UI: chips + decision layer. No composite number.
+- continuous targets (Passive, Recovery): `ewma_45d`
+- classifier targets (Chronic acute_density, Chronic label, Acute Risk
+  event_t1_t3): `event_base_rate`
+- silent diagnostic only: `event_strict_t1_t3` until ≥30 positives
+- deferred until workout XML import: `athletic_readiness`
+
+The first priority is to make this a real product layer before
+reopening any model or feature search. The five tracks below are
+ordered — finish each before starting the next. Feature work returns
+in §6.5, but only after the operational baseline holds.
+
+### 6.1 Naive layer operational contract
+
+The user-facing contract for what we actually show, what stays
+silent, and what `unknown` means. No composite score. Status: **in
+this iteration of the plan**; subsequent code-side PRs hang off this
+contract.
+
+**Data source for the chip — `naive_baselines`, not `target_snapshots`.**
+This distinction is the whole correctness story for forward-window
+targets:
+
+- `target_snapshots.target_value` is the *observed outcome* over a
+  forward window (e.g. `rolling_3d` averages t+1..t+3,
+  `chronic_label` looks at t+1..t+14). It is a **label**, only known
+  after that window closes.
+- `naive_baselines.predicted_value` is the *prediction the
+  deployable layer would have produced on date t* using information
+  available strictly up to t (`ewma_45d` for continuous targets,
+  `event_base_rate` rolling positive rate for classifier targets).
+
+Rendering `target_value` would either pin today's chip on `unknown`
+until the future window closes, or — worse — leak observed future
+labels into historical chips. Both are wrong. The chip renders
+`predicted_value` from `naive_baselines`. `target_snapshots` stays
+the authoritative label store for analysis / monitoring / future
+feasibility scripts only.
+
+**What is visible per sub-score.** Each sub-score surfaces at most one
+of three states on a given day:
+
+| state | when it is shown | label payload |
+|---|---|---|
+| `value` | `naive_baselines.predicted_value IS NOT NULL` for that day, sub_score, the sub-score's primary `target_kind`, and the deployable `baseline_kind` (see table below) | the baseline's `predicted_value` rendered through that sub-score's own scale |
+| `unknown` | no `naive_baselines` row for that (date, sub_score, primary target_kind, baseline_kind) yet, OR `predicted_value IS NULL` (warmup not met, source_epoch boundary, etc.) | explicit "no reading today" UI affordance; not zero, not last-known |
+| `hidden` | the entire sub-score has not been calibrated on this tenant (see §8.5) OR the target is in `silent diagnostic only` mode | not rendered at all; analytics may still aggregate it server-side |
+
+`unknown` is **a first-class state, not an error**. The authoritative
+reason on the chip comes from the **baseline side**, not the target
+side — the two writers run with different eligibility conditions and
+can disagree on a given date:
+
+- `ewma_45d` needs sufficient trailing in-epoch observations strictly
+  before `t`. It can be NULL on dates where the forward target is
+  `eligible = TRUE` (e.g. a backfilled day where t+1..t+3 already
+  exists but the date sits too close to a `source_epoch` boundary
+  for a trailing 45-day window).
+- `rolling_3d` / `chronic_label` / `event_t1_t3` are forward-window
+  targets and can be `eligible = TRUE` regardless of how much
+  trailing history exists.
+
+Using `target_snapshots.eligibility_reason` as the chip reason would
+therefore render `unknown: ok` on cases where the baseline really is
+unavailable. The chip reason rules instead:
+
+- No `naive_baselines` row for that (date, sub_score, primary
+  target_kind, baseline_kind) → `pending` (the writer has not yet
+  reached this date).
+- Row exists, `predicted_value IS NULL` → baseline-side reason such
+  as `baseline_warmup` (insufficient trailing history) or
+  `baseline_source_epoch_boundary`. Concrete enum values are
+  defined when `naive_baselines.reason` lands as a schema change
+  (open follow-up — see "Deliverable" below).
+- `target_snapshots.eligibility_reason` for the same (date,
+  sub_score, target_kind) is still surfaced, but only as a
+  **secondary diagnostic** in admin UI / tooltips. It is not the
+  chip's primary reason.
+
+Until `naive_baselines.reason` is added, the chip falls back to
+`baseline_unavailable` as a single catch-all reason; admin tooling
+shows both that and the target-side `eligibility_reason` so an
+operator can distinguish "baseline missing despite eligible target"
+from "everything ineligible" without guessing.
+
+**Primary target_kind + baseline_kind per sub-score (what the chip renders):**
+
+| sub-score | primary target_kind | deployable baseline_kind | rendering |
+|---|---|---|---|
+| Recovery Stability | `rolling_3d` (sleep_efficiency 3d) | `ewma_45d` | continuous % from `naive_baselines.predicted_value` |
+| Passive Efficiency | `rolling_3d` (walking_heart_rate_average 3d) | `ewma_45d` | continuous bpm from `naive_baselines.predicted_value` |
+| Chronic Load | `chronic_label` (boolean rule, forward window t+1..t+14) | `event_base_rate` | binary chip thresholded on `naive_baselines.predicted_value` |
+| Acute Risk | `event_t1_t3` (OR-event in t+1..t+3) | `event_base_rate` | binary chip thresholded on `naive_baselines.predicted_value` |
+
+Binary-chip thresholding rule for the two classifier rows is fixed in
+the next code-side PR on this track (currently the chip would render
+the predicted positive *rate* — calibration of that rate into a
+hi/lo chip needs an explicit decision and ROC look at the tenant's
+data, not a hardcoded 0.5 cutoff).
+
+**What is silent (server-side only):**
+
+- `acute_risk / event_strict_t1_t3` — too few positives for stable
+  display; tracked in `target_snapshots` and surfaced only in admin
+  diagnostics until the threshold in §10 row is met.
+- `chronic_load / chronic_acute_density` — closed: linear model below
+  floor with non-overlapping CIs. Snapshot kept for diagnostics but
+  no user-visible chip; the sub-score's chip is driven by
+  `chronic_label` only.
+
+**No aggregate readiness score.** The product layer renders the four
+chips and a per-sub-score explanation. There is no single 0–100
+composite number on top of the chips — that was the original failure
+mode being fixed (SCORING.md → §0). Aggregation across sub-scores is
+explicitly out of scope for Phase 2 and is **not** an "open question
+to revisit" without first generating evidence that a composite has
+forward predictive value the chips don't.
+
+**Stale and missing data display rules:**
+
+- If `naive_baselines` has no row for `today` for the sub-score's
+  primary `(target_kind, baseline_kind)` yet, render `unknown` with
+  reason `pending`. Do not fall back to yesterday's `predicted_value`.
+- If the most recent `naive_baselines` row for today is on a
+  different `source_epoch` than today's active epoch (e.g. user
+  re-imported a HK archive mid-day and the epoch boundary shifted),
+  render `unknown` with reason `source_epoch_change` until the
+  writer re-evaluates.
+- If `predicted_value IS NULL`, render `unknown` with the
+  baseline-side reason. Until `naive_baselines.reason` is added as
+  a schema change, the chip uses `baseline_unavailable` as a
+  single catch-all and admin tooling shows
+  `target_snapshots.eligibility_reason` for the same (date,
+  sub_score, primary target_kind) as a secondary diagnostic.
+
+**Deliverable shape for the next code PR on this track:**
+
+1. A single markdown file `READINESS_REDESIGN_OPERATIONAL_CONTRACT.md`
+   (or the relevant section in `SCORING.md`) that the UI
+   implementation can be written against.
+2. Admin-page schema surfacing per day per sub-score:
+   `naive_baselines.predicted_value` (chip value),
+   the chip's effective reason (currently `baseline_unavailable`),
+   and `target_snapshots.eligibility_reason` (secondary
+   diagnostic).
+
+**Schema follow-up (separate PR, queued):** add a `reason TEXT NULL`
+column to `naive_baselines` populated by each baseline writer with
+its own ineligibility cause (`baseline_warmup`,
+`baseline_source_epoch_boundary`, …) so the chip stops needing the
+`baseline_unavailable` catch-all. Until that lands, the contract
+above is correct but the chip reason resolution is coarse.
+
+### 6.2 Tenant calibration
+
+Move tenant-specific count thresholds out of Go consts into per-schema
+configuration before backfilling a second tenant's Chronic labels. See
+§8.5 — the system is multi-tenant *capable* but not multi-tenant
+*calibrated* on these specific knobs:
+
+- `chronic_load.min_acute_density` (currently const `7` after v2
+  retune in PR #97)
+- `chronic_load.min_breach_days` (currently const `5`)
+
+**Approach** (option B from §8.5): per-schema `settings` table key
+with documented defaults inherited from the `health` tenant. Sigma-
+based thresholds elsewhere in the writers scale automatically and do
+**not** move into settings. A small runbook needs to land alongside
+the change describing what to set, what to verify in
+`naive_baselines` before treating a tenant's labels as load-bearing,
+and what minimum window of positives is required.
+
+### 6.3 Serving / freshness
+
+The `target_snapshots` and `naive_baselines` writers currently fire as
+part of the existing backfill cadence; the operational layer needs an
+explicit story for:
+
+- when snapshots get re-computed after late-arriving ingest
+- what the maximum latency from `metric_points` insert to a chip
+  refreshing is, on both single-tenant and multi-tenant pools
+- what happens at midnight in the tenant's `REPORT_TZ` — concretely,
+  is the chip for "today" shown as `unknown` until the writer
+  produces its first eligible snapshot of the day, and at what hour
+  is that expected on a healthy ingest stream
+- what the chip renders when `source_epoch` transitions mid-day
+
+### 6.4 Monitoring
+
+Drift and coverage on the **naive layer**, not just on the writers:
+
+- target coverage per sub_score per day (% of days with
+  `eligible = TRUE` rolling 14d) — alert below tenant-specific floor
+- positive-rate drift on classifier targets (rolling 30d vs the
+  90d `event_base_rate` baseline window) — alert on >2σ deviation
+- source_epoch gap detector — alert when active epoch's
+  `end_date` is reached without a successor row in `source_epochs`
+- `unknown` rate per sub-score — alert when it spikes above the
+  rolling baseline, which usually means an ingest source went silent
+  rather than a real physiology change
+
+### 6.5 Feature work — only after the operational baseline holds
+
+Re-opens a target's Phase 1 verdict, NOT the model. Each feature
+attempt follows the §3 rules: predeclared physiological hypothesis,
+predeclared metric and stop rule, single PR per attempt.
+
+Candidate hypotheses worth queuing (in suggested order; not yet
+authorised):
+
+1. Sleep-architecture features into Recovery Stability and Chronic
+   Load — WASO, sleep fragmentation index. Hypothesis: the EWMA45
+   floor on Recovery is capturing the level but not the
+   *architecture* of sleep, and chronic deterioration of sleep
+   architecture precedes the chronic_label flip.
+2. Cross-sub_score acute lag features into Chronic and Acute targets
+   — using each sub-score's own prior z-scores as features in the
+   other's classifier. Explicit hypothesis required before this
+   moves out of the queue, since this is the most fishing-prone
+   feature class.
+3. Workout-derived features into Passive Efficiency once the XML
+   workout import gap closes — Walking HR residual conditional on
+   distance / grade / weather. This is the path that re-opens
+   `athletic_readiness` too.
+
+Each reopens its target's §10 row with a new feasibility script
+(phase8+ directory), single PR, same evaluation harness as
+phase4-phase7.
 
 ## 7. EnergyBank — open question
 
