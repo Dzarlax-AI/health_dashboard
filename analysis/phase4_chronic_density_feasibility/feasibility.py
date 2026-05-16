@@ -554,7 +554,9 @@ def render(primary: dict, sensitivity: dict, n_dropped: int) -> str:
     out.append("### Decision")
     out.append("")
     model_lo = primary['model']['ci'][0]
+    model_hi = primary['model']['ci'][1]
     model_p = primary['model']['precision']
+    floor_lo = primary['floor']['ci'][0]
     floor_hi = primary['floor']['ci'][1]
     floor_p = primary['floor']['precision']
     if model_p is None or floor_p is None:
@@ -567,15 +569,25 @@ def render(primary: dict, sensitivity: dict, n_dropped: int) -> str:
             f"Model precision@R=0.5 lower CI ({fmt(model_lo, 3)}) > floor precision@R=0.5 upper CI ({fmt(floor_hi, 3)}). Intervals do not overlap. "
             f"This is a candidate for further evaluation."
         )
+    elif model_hi < floor_lo:
+        out.append(
+            f"**Verdict: model significantly worse than floor; no production model.** "
+            f"Model CI [{fmt(model_lo, 3)}, {fmt(model_hi, 3)}] lies entirely below floor CI [{fmt(floor_lo, 3)}, {fmt(floor_hi, 3)}] — intervals do not overlap. "
+            f"This is the opposite of a candidate: the linear model ranks worse than the calibrated base rate at recall = 0.5. "
+            f"Possible next steps before escalating: cross-sub_score features (acute event lag features, recovery deterioration counts), "
+            f"different threshold for chronic_acute_density, or accept event_base_rate as the deployable layer."
+        )
     else:
         out.append(
             f"**Verdict: no production model yet.** "
-            f"Model precision@R=0.5 point estimate {fmt(model_p, 3)} (CI [{fmt(model_lo, 3)}, {fmt(primary['model']['ci'][1], 3)}]) "
-            f"vs floor point {fmt(floor_p, 3)} (CI [{fmt(primary['floor']['ci'][0], 3)}, {fmt(floor_hi, 3)}]). "
+            f"Model precision@R=0.5 point estimate {fmt(model_p, 3)} (CI [{fmt(model_lo, 3)}, {fmt(model_hi, 3)}]) "
+            f"vs floor point {fmt(floor_p, 3)} (CI [{fmt(floor_lo, 3)}, {fmt(floor_hi, 3)}]). "
             f"CIs overlap. Per the agreed criterion (model lower CI must exceed floor upper CI), this is not a candidate. "
             f"Possible next steps before escalating: cross-sub_score features (acute event lag features, recovery deterioration counts), "
             f"different threshold for chronic_acute_density, or accept event_base_rate as the deployable layer."
         )
+    out.append("")
+    out.append("**Scope of the failure.** This verdict is about the **current chronological tail** (2026-01-18 → 2026-05-05, only 3 positives), not a claim that the `chronic_acute_density` label is globally useless. The walk-forward table below shows precision@R=0.5 of 0.30–0.80 on earlier months when n_pos ≥ 7, which suggests **seasonality or regime dependence** in when chronic acute-density events cluster. The production decision is still \"no model\" because the primary chronological split is the governance criterion — a model is only deployable if it beats the floor on the most recent data the production system would actually score. Revisit naturally when more positives accumulate in the recent tail.")
     out.append("")
 
     if "error" in sensitivity:
