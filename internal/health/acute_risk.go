@@ -40,8 +40,16 @@ type AutonomicRow struct {
 // because the writer's gate is on paired availability — splitting into
 // per-channel reasons does not change the eligibility outcome.
 const (
-	AcuteRiskEligibilityOK              = "ok"
-	AcuteRiskEligibilityBaselineWarmup  = "baseline_warmup"
+	AcuteRiskEligibilityOK                     = "ok"
+	AcuteRiskEligibilityBaselineWarmup         = "baseline_warmup"
+	// AcuteRiskEligibilityEventWindowDataMissing fires when any day in
+	// the t+1..t+3 window has no observable autonomic signal at all
+	// (both HRV and RHR NULL). The negative label cannot be written
+	// honestly in that case — a missed breach on the unobserved day
+	// would be silently coded as "no breach". Recovery and Passive
+	// writers use the same all-three-days-observable rule for their
+	// rolling targets.
+	AcuteRiskEligibilityEventWindowDataMissing = "event_window_data_missing"
 )
 
 // AcuteRiskHRVZThreshold — z-score below which a day counts as an HRV

@@ -362,6 +362,96 @@ func TestAcuteRisk_Integration_FeaturesAlwaysWritten(t *testing.T) {
 	}
 }
 
+func TestAcuteRisk_Integration_WindowDataMissingBlocksLabel(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	// Warmup met (60 paired days). Window t+1..t+3 has a fully-missing
+	// middle day — t+2 has neither HRV nor RHR. Honest behaviour: mark
+	// both target rows ineligible with reason event_window_data_missing,
+	// not silently emit event=0. The bleeding edge of any backfill
+	// (last 3 dates of a run against today) hits this same gate.
+	seedSteadyHistory(t, db, "2026-04-19", 60)
+	hrv0, rhr0 := 45.0, 60.0
+	seedAutonomicRow(t, db, "2026-04-20", &hrv0, &rhr0)
+	seedAutonomicRow(t, db, "2026-04-21", &hrv0, &rhr0) // t+1 has data
+	// t+2 (2026-04-22) intentionally NOT seeded — full gap.
+	seedAutonomicRow(t, db, "2026-04-23", &hrv0, &rhr0) // t+3 has data
+
+	if _, err := db.BackfillAcuteRiskSnapshots("2026-04-20", "2026-04-20"); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	rows, err := db.pool.Query(context.Background(), `
+		SELECT target_kind, eligible, eligibility_reason, target_value, data_coverage::text
+		  FROM target_snapshots
+		 WHERE date = $1 AND sub_score = $2
+		 ORDER BY target_kind
+	`, "2026-04-20", SubScoreAcuteRisk)
+	if err != nil {
+		t.Fatalf("read targets: %v", err)
+	}
+	defer rows.Close()
+	gotCount := 0
+	for rows.Next() {
+		var tk, reason, cov string
+		var eligible bool
+		var val *float32
+		if err := rows.Scan(&tk, &eligible, &reason, &val, &cov); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if eligible {
+			t.Errorf("%s expected ineligible on missing window day, got eligible=true", tk)
+		}
+		if reason != health.AcuteRiskEligibilityEventWindowDataMissing {
+			t.Errorf("%s expected reason=event_window_data_missing, got %q", tk, reason)
+		}
+		if val != nil {
+			t.Errorf("%s expected NULL target_value when ineligible, got %v", tk, *val)
+		}
+		if !strings.Contains(cov, "2026-04-22") {
+			t.Errorf("%s coverage should flag missing 2026-04-22, got: %s", tk, cov)
+		}
+		gotCount++
+	}
+	if gotCount != 2 {
+		t.Errorf("expected 2 target rows (OR + strict), got %d", gotCount)
+	}
+}
+
+func TestAcuteRisk_Integration_BleedingEdgeIneligible(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	// Backfill ends at the most recent date that has data. The last
+	// row in the range has no t+1..t+3 future to observe — Acute Risk
+	// must mark it ineligible.
+	seedSteadyHistory(t, db, "2026-04-19", 60)
+	hrv0, rhr0 := 45.0, 60.0
+	// Only seed up to and including 2026-04-20. Nothing for t+1..t+3.
+	seedAutonomicRow(t, db, "2026-04-20", &hrv0, &rhr0)
+
+	if _, err := db.BackfillAcuteRiskSnapshots("2026-04-20", "2026-04-20"); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	var reason string
+	var eligible bool
+	if err := db.pool.QueryRow(context.Background(), `
+		SELECT eligible, eligibility_reason
+		  FROM target_snapshots
+		 WHERE date = $1 AND sub_score = $2 AND target_kind = $3
+	`, "2026-04-20", SubScoreAcuteRisk, TargetKindEventT1T3).Scan(&eligible, &reason); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if eligible {
+		t.Error("bleeding-edge row expected ineligible (no future data); got eligible=true")
+	}
+	if reason != health.AcuteRiskEligibilityEventWindowDataMissing {
+		t.Errorf("expected reason=event_window_data_missing, got %q", reason)
+	}
+}
+
 func TestAcuteRisk_Integration_IdempotentRerun(t *testing.T) {
 	db, cleanup := testDB(t)
 	defer cleanup()

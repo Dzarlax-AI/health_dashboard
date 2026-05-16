@@ -91,6 +91,12 @@ const (
 	EligibilityNoWalkingSegments            = "no_walking_segments"
 	EligibilityNoWalkingHR                  = "no_walking_hr"
 	EligibilityWalkingHROutOfRange          = "walking_hr_out_of_range"
+	// EligibilityEventWindowDataMissing fires when a forward-looking
+	// event-classifier target (Acute Risk) cannot honestly write a
+	// negative label because at least one day in the t+1..t+3 window
+	// has no observable signal. Otherwise a sensor gap would be
+	// silently coded as "no breach".
+	EligibilityEventWindowDataMissing       = "event_window_data_missing"
 	EligibilityValueOutOfRange              = "value_out_of_range"
 	EligibilityHRVSparse                    = "hrv_sparse"
 	EligibilityBaselineWarmup               = "baseline_warmup"

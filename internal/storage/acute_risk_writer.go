@@ -106,11 +106,14 @@ func (s *DB) BackfillAcuteRiskSnapshots(from, to string) (int, error) {
 	hrvLookup := autonomicHRVLookup(rowByDate)
 	rhrLookup := autonomicRHRLookup(rowByDate)
 
-	// Pre-load prior event labels in the (from-90, from-1) range so the
-	// naive event_base_rate baseline has history to average over for the
-	// first dates in the run. Within the iteration we fill the map as
-	// new labels are computed; idempotent re-runs see consistent state.
-	eventByDate, err := s.loadPriorEventLabels(fromT)
+	// Pre-load prior event labels (BOTH or-event and strict-event) in
+	// the (from-90, from-1) range so the naive event_base_rate baselines
+	// have history to average over for the first dates in the run.
+	// Strict labels must be loaded separately because the strict event
+	// distribution is sparser than the OR event distribution; using OR
+	// labels to compute a "strict base rate" would systematically
+	// overestimate strict frequency (Codex review comment, PR #93).
+	orEventByDate, strictEventByDate, err := s.loadPriorEventLabels(fromT)
 	if err != nil {
 		return 0, err
 	}
@@ -119,7 +122,7 @@ func (s *DB) BackfillAcuteRiskSnapshots(from, to string) (int, error) {
 	var firstErr error
 	for d := fromT; !d.After(toT); d = d.AddDate(0, 0, 1) {
 		date := d.Format(isoDate)
-		if err := s.writeAcuteRiskRow(context.Background(), d, date, rowByDate, hrvLookup, rhrLookup, eventByDate); err != nil {
+		if err := s.writeAcuteRiskRow(context.Background(), d, date, rowByDate, hrvLookup, rhrLookup, orEventByDate, strictEventByDate); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -136,7 +139,7 @@ func (s *DB) writeAcuteRiskRow(
 	date string,
 	rowByDate map[string]health.AutonomicRow,
 	hrvLookup, rhrLookup DailyValueLookup,
-	eventByDate map[string]int,
+	orEventByDate, strictEventByDate map[string]int,
 ) error {
 	_ = ctx
 	epoch, err := s.ResolveSourceEpoch(date)
@@ -191,6 +194,52 @@ func (s *DB) writeAcuteRiskRow(
 		t.AddDate(0, 0, 2),
 		t.AddDate(0, 0, 3),
 	}
+
+	// Window-observability gate: every day in the window must have at
+	// least one observable channel (HRV or RHR non-nil) before we can
+	// honestly emit a negative label. A fully-missing day could have
+	// hidden a breach we'd then silently miscode as event=0. The
+	// bleeding edge of every backfill (the last 3 dates) and any
+	// intra-window sensor gap hit this gate. Codex review comment, PR #93.
+	var missingWindowDays []string
+	for _, c := range candidates {
+		ds := c.Format(isoDate)
+		row, present := rowByDate[ds]
+		if !present || (row.HRV == nil && row.RHR == nil) {
+			missingWindowDays = append(missingWindowDays, ds)
+		}
+	}
+	if len(missingWindowDays) > 0 {
+		cov := mustMarshal(map[string]any{
+			"window_dates": []string{
+				candidates[0].Format(isoDate),
+				candidates[1].Format(isoDate),
+				candidates[2].Format(isoDate),
+			},
+			"missing_window_days": missingWindowDays,
+			"paired_count":        pairedCount,
+			"reason_detail":       "at least one day in t+1..t+3 has no observable autonomic signal",
+		})
+		for _, tk := range []string{TargetKindEventT1T3, TargetKindEventStrictT1T3} {
+			if err := s.SaveTargetSnapshot(TargetSnapshot{
+				Date:              date,
+				SubScore:          SubScoreAcuteRisk,
+				TargetKind:        tk,
+				Eligible:          false,
+				EligibilityReason: health.AcuteRiskEligibilityEventWindowDataMissing,
+				DataCoverage:      cov,
+				SourceEpoch:       epoch,
+				FormulaVersion:    acuteRiskFormulaVersion,
+			}); err != nil {
+				return fmt.Errorf("save window-missing %s/%s: %w", date, tk, err)
+			}
+		}
+		// Feature snapshot still emitted so the (date, sub_score) PK is
+		// covered. warmupMet=true because the gate did pass; the window
+		// gate fired downstream of warmup.
+		return s.saveAcuteRiskFeatures(date, t, epoch, epochStart, rowByDate, hrvLookup, rhrLookup, pairedCount, true)
+	}
+
 	type dayBreach struct {
 		Date     string   `json:"date"`
 		HRVValue *float64 `json:"hrv,omitempty"`
@@ -286,25 +335,34 @@ func (s *DB) writeAcuteRiskRow(
 		return fmt.Errorf("save event_strict_t1_t3 %s: %w", date, err)
 	}
 
-	// Remember this date's OR label so the in-memory base-rate
-	// baseline computation for later dates in the same run can see it.
-	eventByDate[date] = int(orVal)
+	// Remember this date's labels (both OR and strict) so the in-memory
+	// base-rate baselines for later dates in the same run can see them.
+	// Two maps — strict baseline must NOT be computed from OR labels
+	// because strict events are sparser (Codex review comment, PR #93).
+	orEventByDate[date] = int(orVal)
+	strictEventByDate[date] = int(strictVal)
 
-	// Naive event base rate over the prior 90 days (eligible labels
-	// only). Computed from eventByDate which combines pre-loaded
-	// labels with labels written earlier in this run.
-	baseRate := priorEventBaseRate(t, 90, eventByDate)
-	for _, tk := range []string{TargetKindEventT1T3, TargetKindEventStrictT1T3} {
+	// Naive event base rates over the prior 90 days, computed
+	// independently per target_kind from its own label history.
+	orBaseRate := priorEventBaseRate(t, 90, orEventByDate)
+	strictBaseRate := priorEventBaseRate(t, 90, strictEventByDate)
+	for _, b := range []struct {
+		tk   string
+		rate *float64
+	}{
+		{TargetKindEventT1T3, orBaseRate},
+		{TargetKindEventStrictT1T3, strictBaseRate},
+	} {
 		if err := s.SaveNaiveBaseline(NaiveBaseline{
 			Date:           date,
 			SubScore:       SubScoreAcuteRisk,
-			TargetKind:     tk,
+			TargetKind:     b.tk,
 			BaselineKind:   BaselineKindEventBaseRate,
-			PredictedValue: baseRate,
+			PredictedValue: b.rate,
 			SourceEpoch:    epoch,
 			FormulaVersion: acuteRiskFormulaVersion,
 		}); err != nil {
-			return fmt.Errorf("save base-rate baseline %s/%s: %w", date, tk, err)
+			return fmt.Errorf("save base-rate baseline %s/%s: %w", date, b.tk, err)
 		}
 	}
 
@@ -448,42 +506,54 @@ func boolToFloat(b bool) float64 {
 	return 0
 }
 
-// loadPriorEventLabels reads previously-written event_t1_t3 labels in
-// the 90 days before `fromT` so the naive base-rate baseline for the
-// first dates in a backfill has history to average over. Returns an
-// empty map (not an error) when no rows exist — the in-run iteration
-// then fills the map starting from `fromT`.
-func (s *DB) loadPriorEventLabels(fromT time.Time) (map[string]int, error) {
+// loadPriorEventLabels reads previously-written OR-event and
+// strict-event labels in the 90 days before `fromT` so the naive
+// base-rate baselines for the first dates in a backfill have history
+// to average over. Returns empty maps (not an error) when no rows
+// exist — the in-run iteration then fills both maps starting from
+// `fromT`.
+//
+// Loaded as a single query keyed on the target_kind column; the two
+// maps are partitioned in Go so strict baseline cannot be computed
+// from OR labels (Codex review comment, PR #93).
+func (s *DB) loadPriorEventLabels(fromT time.Time) (orMap, strictMap map[string]int, err error) {
 	ctx, cancel := queryCtx()
 	defer cancel()
 	priorFrom := fromT.AddDate(0, 0, -90).Format(isoDate)
 	priorTo := fromT.AddDate(0, 0, -1).Format(isoDate)
-	rows, err := s.pool.Query(ctx, `
-		SELECT date, target_value
+	rows, qErr := s.pool.Query(ctx, `
+		SELECT date, target_kind, target_value
 		  FROM target_snapshots
-		 WHERE sub_score = $1 AND target_kind = $2
+		 WHERE sub_score = $1
+		   AND target_kind IN ($2, $3)
 		   AND eligible = TRUE
 		   AND target_value IS NOT NULL
-		   AND date BETWEEN $3 AND $4
-	`, SubScoreAcuteRisk, TargetKindEventT1T3, priorFrom, priorTo)
-	if err != nil {
-		return nil, fmt.Errorf("loadPriorEventLabels: %w", err)
+		   AND date BETWEEN $4 AND $5
+	`, SubScoreAcuteRisk, TargetKindEventT1T3, TargetKindEventStrictT1T3, priorFrom, priorTo)
+	if qErr != nil {
+		return nil, nil, fmt.Errorf("loadPriorEventLabels: %w", qErr)
 	}
 	defer rows.Close()
-	out := make(map[string]int)
+	orMap = make(map[string]int)
+	strictMap = make(map[string]int)
 	for rows.Next() {
-		var date string
+		var date, kind string
 		var v float32
-		if err := rows.Scan(&date, &v); err != nil {
-			return nil, fmt.Errorf("loadPriorEventLabels scan: %w", err)
+		if scanErr := rows.Scan(&date, &kind, &v); scanErr != nil {
+			return nil, nil, fmt.Errorf("loadPriorEventLabels scan: %w", scanErr)
 		}
+		val := 0
 		if v >= 0.5 {
-			out[date] = 1
-		} else {
-			out[date] = 0
+			val = 1
+		}
+		switch kind {
+		case TargetKindEventT1T3:
+			orMap[date] = val
+		case TargetKindEventStrictT1T3:
+			strictMap[date] = val
 		}
 	}
-	return out, rows.Err()
+	return orMap, strictMap, rows.Err()
 }
 
 // priorEventBaseRate averages the eligible event labels for the
