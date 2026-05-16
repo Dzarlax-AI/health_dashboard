@@ -522,30 +522,59 @@ silent, and what `unknown` means. No composite score. Status: **in
 this iteration of the plan**; subsequent code-side PRs hang off this
 contract.
 
+**Data source for the chip — `naive_baselines`, not `target_snapshots`.**
+This distinction is the whole correctness story for forward-window
+targets:
+
+- `target_snapshots.target_value` is the *observed outcome* over a
+  forward window (e.g. `rolling_3d` averages t+1..t+3,
+  `chronic_label` looks at t+1..t+14). It is a **label**, only known
+  after that window closes.
+- `naive_baselines.predicted_value` is the *prediction the
+  deployable layer would have produced on date t* using information
+  available strictly up to t (`ewma_45d` for continuous targets,
+  `event_base_rate` rolling positive rate for classifier targets).
+
+Rendering `target_value` would either pin today's chip on `unknown`
+until the future window closes, or — worse — leak observed future
+labels into historical chips. Both are wrong. The chip renders
+`predicted_value` from `naive_baselines`. `target_snapshots` stays
+the authoritative label store for analysis / monitoring / future
+feasibility scripts only.
+
 **What is visible per sub-score.** Each sub-score surfaces at most one
 of three states on a given day:
 
 | state | when it is shown | label payload |
 |---|---|---|
-| `value` | `target_snapshots.eligible = TRUE` for that day, sub_score, and target_kind matches the user-visible kind (see "primary target kind" below) | the snapshot's `target_value` rendered through that sub-score's own scale |
-| `unknown` | the sub-score's primary target for that day is `eligible = FALSE` OR no snapshot exists yet (writer hasn't reached this date) | explicit "no reading today" UI affordance; not zero, not last-known |
+| `value` | `naive_baselines.predicted_value IS NOT NULL` for that day, sub_score, the sub-score's primary `target_kind`, and the deployable `baseline_kind` (see table below) | the baseline's `predicted_value` rendered through that sub-score's own scale |
+| `unknown` | no `naive_baselines` row for that (date, sub_score, primary target_kind, baseline_kind) yet, OR `predicted_value IS NULL` (warmup not met, source_epoch boundary, etc.) | explicit "no reading today" UI affordance; not zero, not last-known |
 | `hidden` | the entire sub-score has not been calibrated on this tenant (see §8.5) OR the target is in `silent diagnostic only` mode | not rendered at all; analytics may still aggregate it server-side |
 
-`unknown` is **a first-class state, not an error**. It carries the
-`eligibility_reason` from `target_snapshots` so the UI can explain
-*why* a day is blank (e.g. `insufficient_paired_observations`,
+`unknown` is **a first-class state, not an error**. The reason
+attached to it comes from `target_snapshots.eligibility_reason` for
+the same (date, sub_score, primary target_kind) — the two writers
+share eligibility logic, so when the baseline writer produces a
+NULL `predicted_value`, the target writer's `eligibility_reason`
+explains why (e.g. `insufficient_paired_observations`,
 `source_epoch_gap`, `warmup_not_met`). Past `eligibility_reason`
 values are documented as an open enum in
 `internal/storage/readiness_redesign.go`.
 
-**Primary target kind per sub-score (what the chip renders):**
+**Primary target_kind + baseline_kind per sub-score (what the chip renders):**
 
-| sub-score | primary target_kind | rendering |
-|---|---|---|
-| Recovery Stability | `rolling_3d` (sleep_efficiency 3d) | continuous % via EWMA45 baseline |
-| Passive Efficiency | `rolling_3d` (walking_heart_rate_average 3d) | continuous bpm via EWMA45 baseline |
-| Chronic Load | `chronic_label` (boolean rule) | binary chip via `event_base_rate` |
-| Acute Risk | `event_t1_t3` (OR-event in t+1..t+3) | binary chip via `event_base_rate` |
+| sub-score | primary target_kind | deployable baseline_kind | rendering |
+|---|---|---|---|
+| Recovery Stability | `rolling_3d` (sleep_efficiency 3d) | `ewma_45d` | continuous % from `naive_baselines.predicted_value` |
+| Passive Efficiency | `rolling_3d` (walking_heart_rate_average 3d) | `ewma_45d` | continuous bpm from `naive_baselines.predicted_value` |
+| Chronic Load | `chronic_label` (boolean rule, forward window t+1..t+14) | `event_base_rate` | binary chip thresholded on `naive_baselines.predicted_value` |
+| Acute Risk | `event_t1_t3` (OR-event in t+1..t+3) | `event_base_rate` | binary chip thresholded on `naive_baselines.predicted_value` |
+
+Binary-chip thresholding rule for the two classifier rows is fixed in
+the next code-side PR on this track (currently the chip would render
+the predicted positive *rate* — calibration of that rate into a
+hi/lo chip needs an explicit decision and ROC look at the tenant's
+data, not a hardcoded 0.5 cutoff).
 
 **What is silent (server-side only):**
 
@@ -567,22 +596,26 @@ forward predictive value the chips don't.
 
 **Stale and missing data display rules:**
 
-- If the sub-score writer has not produced a snapshot for `today`
-  yet, render `unknown` with reason `pending`. Do not fall back to
-  yesterday's value.
-- If the most recent snapshot is from a different `source_epoch`
-  than today's expected epoch (e.g. user re-imported a HK archive
-  mid-day and the epoch boundary shifted), render `unknown` with
-  reason `source_epoch_change` until the writer re-evaluates.
-- If `eligibility_reason` is one of the data-coverage reasons,
-  render `unknown` with the reason exposed in a tooltip.
+- If `naive_baselines` has no row for `today` for the sub-score's
+  primary `(target_kind, baseline_kind)` yet, render `unknown` with
+  reason `pending`. Do not fall back to yesterday's `predicted_value`.
+- If the most recent `naive_baselines` row for today is on a
+  different `source_epoch` than today's active epoch (e.g. user
+  re-imported a HK archive mid-day and the epoch boundary shifted),
+  render `unknown` with reason `source_epoch_change` until the
+  writer re-evaluates.
+- If `predicted_value IS NULL`, render `unknown` with the reason
+  pulled from `target_snapshots.eligibility_reason` for the same
+  (date, sub_score, primary target_kind) and exposed in a tooltip.
 
 **Deliverable shape for the next code PR on this track:** a single
 markdown file `READINESS_REDESIGN_OPERATIONAL_CONTRACT.md` (or the
 relevant section in `SCORING.md`) that the UI implementation can be
-written against, plus admin-page schema for surfacing
-`eligibility_reason` per day per sub-score so we can validate the
-contract is being honoured before any chip ships.
+written against, plus admin-page schema for surfacing both
+`naive_baselines.predicted_value` (chip value) and
+`target_snapshots.eligibility_reason` (chip reason) per day per
+sub-score so we can validate the contract is being honoured before
+any chip ships.
 
 ### 6.2 Tenant calibration
 
