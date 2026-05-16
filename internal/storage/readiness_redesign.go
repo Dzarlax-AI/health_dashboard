@@ -109,6 +109,29 @@ const (
 	EligibilityNoStructuredWorkouts         = "no_structured_workouts"
 )
 
+// BaselineReason values — chip-facing explanation when a
+// `naive_baselines.predicted_value` is NULL. Authoritative for the
+// per-sub-score chip's `unknown` state in §6.1 of the plan (the chip
+// does NOT fall back to target_snapshots.eligibility_reason; the two
+// writers have different eligibility conditions).
+//
+// The enum is open: writers can introduce new reasons as long as they
+// appear here. Empty string is reserved for "predicted_value present"
+// rows — readers MUST treat reason as meaningful only when the value
+// is NULL.
+const (
+	// BaselineReasonWarmup — the trailing window has no eligible
+	// observations yet, but it lies fully inside the current
+	// source_epoch. Will eventually clear as data accumulates.
+	BaselineReasonWarmup = "baseline_warmup"
+	// BaselineReasonSourceEpochBoundary — the trailing window starts
+	// before the current `source_epoch.start_date`, so the baseline
+	// computation has been clipped to (possibly) zero observations.
+	// Different from warmup because operator intervention (epoch
+	// catalogue) shaped this, not just time-since-onboarding.
+	BaselineReasonSourceEpochBoundary = "baseline_source_epoch_boundary"
+)
+
 // SourceEpochKind separates ingest/source epochs from user-side
 // physiology regime changes.
 const (
@@ -238,6 +261,13 @@ func (s *DB) EnsureReadinessRedesignTables() {
 			computed_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (date, sub_score, target_kind, baseline_kind)
 		)`,
+		// `reason` lands after the initial schema (Phase 2 track 3 of
+		// the operationalisation plan). Idempotent ALTER so re-running
+		// EnsureReadinessRedesignTables on a fresh tenant just gets the
+		// column up-front. Pre-existing rows from before this PR keep
+		// `reason` NULL — which is the same semantic as "value
+		// present, no explanation needed".
+		`ALTER TABLE naive_baselines ADD COLUMN IF NOT EXISTS reason TEXT`,
 		`CREATE INDEX IF NOT EXISTS idx_naive_baselines_sub_kind_base_date
 			ON naive_baselines (sub_score, target_kind, baseline_kind, date DESC)`,
 	}
@@ -375,6 +405,12 @@ type NaiveBaseline struct {
 	TargetKind     string
 	BaselineKind   string
 	PredictedValue *float64 // nil for ineligible / not-applicable
+	// Reason explains a NULL PredictedValue for chip rendering. Must
+	// be one of the BaselineReason* constants when PredictedValue is
+	// nil, and empty string when PredictedValue is non-nil. The two
+	// are joint state; readers MUST NOT interpret reason without
+	// first checking the value.
+	Reason         string
 	SourceEpoch    string
 	FormulaVersion int
 }
@@ -394,22 +430,37 @@ func (s *DB) SaveNaiveBaseline(b NaiveBaseline) error {
 	if b.SourceEpoch == "" {
 		return fmt.Errorf("SaveNaiveBaseline: source_epoch must be non-empty")
 	}
+	// Joint-state guard: reason is meaningful only when value is NULL.
+	// Production callers shouldn't trip this, but it catches future
+	// regressions where a writer accidentally fills in both fields.
+	if b.PredictedValue != nil && b.Reason != "" {
+		return fmt.Errorf("SaveNaiveBaseline: reason %q set on non-nil predicted_value", b.Reason)
+	}
+
+	// reason is stored as NULL when empty so historical rows from
+	// before this column existed remain semantically identical to
+	// freshly-written value-present rows.
+	var reason any
+	if b.Reason != "" {
+		reason = b.Reason
+	}
 
 	ctx, cancel := queryCtx()
 	defer cancel()
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO naive_baselines
 			(date, sub_score, target_kind, baseline_kind, predicted_value,
-			 source_epoch, formula_version, computed_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+			 reason, source_epoch, formula_version, computed_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
 		ON CONFLICT (date, sub_score, target_kind, baseline_kind) DO UPDATE SET
 			predicted_value = excluded.predicted_value,
+			reason = excluded.reason,
 			source_epoch = excluded.source_epoch,
 			formula_version = excluded.formula_version,
 			computed_at = NOW()
 	`,
 		b.Date, b.SubScore, b.TargetKind, b.BaselineKind,
-		b.PredictedValue, b.SourceEpoch, b.FormulaVersion,
+		b.PredictedValue, reason, b.SourceEpoch, b.FormulaVersion,
 	)
 	return err
 }

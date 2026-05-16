@@ -131,3 +131,34 @@ func windowEWMA(t time.Time, windowN int, epochStart string, lookup DailyValueLo
 	}
 	return &ewma, n
 }
+
+// classifyBaselineNullReason picks the chip-facing reason enum for a
+// nil baseline value. Centralised so every build*NaiveBaselines call
+// site applies the same rule.
+//
+// Rule:
+//   - If `epochStart` is set AND the trailing window's earliest day
+//     falls before `epochStart`, the window is clipped by the current
+//     source_epoch → `BaselineReasonSourceEpochBoundary`. Operator
+//     intervention (epoch catalogue) shaped this, not just time-since-
+//     onboarding.
+//   - Otherwise the window lies fully inside the epoch but has no
+//     eligible observations yet → `BaselineReasonWarmup`. Clears as
+//     data accumulates.
+//
+// `windowDays` follows the same convention as windowMean: the window
+// is `[t-windowDays+1, t]` inclusive. For persistence_yesterday the
+// caller passes `1` (the lookback is just t itself).
+func classifyBaselineNullReason(t time.Time, windowDays int, epochStart string) string {
+	if epochStart == "" {
+		return BaselineReasonWarmup
+	}
+	if windowDays < 1 {
+		windowDays = 1
+	}
+	windowStart := t.AddDate(0, 0, -(windowDays - 1)).Format(isoDate)
+	if windowStart < epochStart {
+		return BaselineReasonSourceEpochBoundary
+	}
+	return BaselineReasonWarmup
+}

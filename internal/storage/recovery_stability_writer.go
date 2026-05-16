@@ -248,6 +248,7 @@ func (s *DB) writeRecoveryStabilityRow(
 			TargetKind:     b.TargetKind,
 			BaselineKind:   b.BaselineKind,
 			PredictedValue: b.Value,
+			Reason:         b.Reason,
 			SourceEpoch:    epoch,
 			FormulaVersion: recoveryStabilityFormulaVersion,
 		}
@@ -483,6 +484,10 @@ type naiveBaselineRow struct {
 	TargetKind   string
 	BaselineKind string
 	Value        *float64
+	// Reason explains Value == nil. Empty when Value != nil. Must
+	// be one of the BaselineReason* enum values otherwise — see
+	// classifyBaselineNullReason for the rule that picks it.
+	Reason string
 }
 
 func buildRecoveryNaiveBaselines(t time.Time, epochStart string, eff map[string]health.SleepEfficiencyResult) []naiveBaselineRow {
@@ -495,36 +500,38 @@ func buildRecoveryNaiveBaselines(t time.Time, epochStart string, eff map[string]
 	if e, ok := eff[t.Format(isoDate)]; ok && e.Eligible && e.Efficiency != nil {
 		persist = ptrFloat(*e.Efficiency)
 	}
-	out = append(out,
-		naiveBaselineRow{TargetKindDailyPoint, BaselineKindPersistenceYesterday, persist},
-		naiveBaselineRow{TargetKindRolling3d, BaselineKindPersistenceYesterday, persist},
-	)
+	out = append(out, appendBaselinePair(TargetKindDailyPoint, TargetKindRolling3d,
+		BaselineKindPersistenceYesterday, persist, classifyBaselineNullReason(t, 1, epochStart))...)
 
 	lookup := sleepEfficiencyLookup(eff)
 
-	// 7d mean — single value applied to both target_kinds.
 	mean7, _ := windowMean(t, 7, epochStart, lookup)
-	out = append(out,
-		naiveBaselineRow{TargetKindDailyPoint, BaselineKindRolling7dMean, mean7},
-		naiveBaselineRow{TargetKindRolling3d, BaselineKindRolling7dMean, mean7},
-	)
+	out = append(out, appendBaselinePair(TargetKindDailyPoint, TargetKindRolling3d,
+		BaselineKindRolling7dMean, mean7, classifyBaselineNullReason(t, 7, epochStart))...)
 
-	// 30d mean — added per the reviewer's "если функция общая и не
-	// усложняет" — reuses windowMean.
 	mean30, _ := windowMean(t, 30, epochStart, lookup)
-	out = append(out,
-		naiveBaselineRow{TargetKindDailyPoint, BaselineKindRolling30dMean, mean30},
-		naiveBaselineRow{TargetKindRolling3d, BaselineKindRolling30dMean, mean30},
-	)
+	out = append(out, appendBaselinePair(TargetKindDailyPoint, TargetKindRolling3d,
+		BaselineKindRolling30dMean, mean30, classifyBaselineNullReason(t, 30, epochStart))...)
 
-	// EWMA45 adaptive baseline.
 	ewma45, _ := windowEWMA(t, ewmaWindowAdaptive, epochStart, lookup)
-	out = append(out,
-		naiveBaselineRow{TargetKindDailyPoint, BaselineKindEWMA45d, ewma45},
-		naiveBaselineRow{TargetKindRolling3d, BaselineKindEWMA45d, ewma45},
-	)
+	out = append(out, appendBaselinePair(TargetKindDailyPoint, TargetKindRolling3d,
+		BaselineKindEWMA45d, ewma45, classifyBaselineNullReason(t, ewmaWindowAdaptive, epochStart))...)
 
 	return out
+}
+
+// appendBaselinePair emits the same value/reason pair for two target
+// kinds. Centralises the "reason only when value is nil" rule so the
+// individual callers stay tabular.
+func appendBaselinePair(tk1, tk2, baselineKind string, val *float64, nullReason string) []naiveBaselineRow {
+	reason := ""
+	if val == nil {
+		reason = nullReason
+	}
+	return []naiveBaselineRow{
+		{TargetKind: tk1, BaselineKind: baselineKind, Value: val, Reason: reason},
+		{TargetKind: tk2, BaselineKind: baselineKind, Value: val, Reason: reason},
+	}
 }
 
 // --- Helpers -----------------------------------------------------------

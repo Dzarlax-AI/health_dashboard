@@ -343,9 +343,13 @@ func (s *DB) writeAcuteRiskRow(
 	strictEventByDate[date] = int(strictVal)
 
 	// Naive event base rates over the prior 90 days, computed
-	// independently per target_kind from its own label history.
+	// independently per target_kind from its own label history. Reason
+	// uses the same 90-day window passed into priorEventBaseRate so
+	// the source_epoch_boundary check matches what the baseline
+	// actually looked at.
 	orBaseRate := priorEventBaseRate(t, 90, orEventByDate)
 	strictBaseRate := priorEventBaseRate(t, 90, strictEventByDate)
+	nullReason := classifyBaselineNullReason(t, 90, epochStart)
 	for _, b := range []struct {
 		tk   string
 		rate *float64
@@ -353,12 +357,17 @@ func (s *DB) writeAcuteRiskRow(
 		{TargetKindEventT1T3, orBaseRate},
 		{TargetKindEventStrictT1T3, strictBaseRate},
 	} {
+		reason := ""
+		if b.rate == nil {
+			reason = nullReason
+		}
 		if err := s.SaveNaiveBaseline(NaiveBaseline{
 			Date:           date,
 			SubScore:       SubScoreAcuteRisk,
 			TargetKind:     b.tk,
 			BaselineKind:   BaselineKindEventBaseRate,
 			PredictedValue: b.rate,
+			Reason:         reason,
 			SourceEpoch:    epoch,
 			FormulaVersion: acuteRiskFormulaVersion,
 		}); err != nil {
