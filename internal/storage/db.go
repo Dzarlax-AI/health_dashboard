@@ -70,8 +70,15 @@ func NewWithSchema(ctx context.Context, connString, schema string) (*DB, error) 
 	config.MinConns = 2
 	config.MaxConnIdleTime = 5 * time.Minute
 	config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	// Quote the schema identifier via pgx.Identifier rather than raw
+	// concatenation. Production callers pass `health` / `health_mariia`
+	// where this doesn't matter, but the same code path also runs from
+	// test setup with synthesised names — keep the quoting consistent
+	// with CreateSchema / DropSchema so the rule is "all DDL with a
+	// dynamic name goes through Identifier.Sanitize()".
+	quotedSchema := pgx.Identifier{schema}.Sanitize()
 	config.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
-		_, err := conn.Exec(ctx, "SET search_path = "+schema)
+		_, err := conn.Exec(ctx, "SET search_path = "+quotedSchema)
 		return err
 	}
 
@@ -243,10 +250,28 @@ func (s *DB) Close() {
 // CreateSchema issues CREATE SCHEMA for the given name.
 // Returns an error (which may be *registry-compatible ErrNeedsManualSetup via the caller)
 // if the DB user lacks the necessary privileges.
+//
+// `name` is run through pgx.Identifier.Sanitize() so an attacker-controlled
+// identifier (or a malformed one from a misconfigured caller) cannot
+// inject additional DDL. Production tenants use plain ASCII names
+// (`health`, `health_mariia`) where quoting is a no-op semantically, so
+// this is a defence-in-depth change, not a behaviour change.
 func (s *DB) CreateSchema(ctx context.Context, name string) error {
 	ctx, cancel := queryCtx()
 	defer cancel()
-	_, err := s.pool.Exec(ctx, "CREATE SCHEMA "+name)
+	_, err := s.pool.Exec(ctx, "CREATE SCHEMA "+pgx.Identifier{name}.Sanitize())
+	return err
+}
+
+// DropSchema issues DROP SCHEMA … CASCADE. Exposed for test teardown
+// where the pool used to create the schema is not the same pool that
+// needs to drop it (the schema-pinned pool can't reach across packages).
+// Production code does not call this; tenant teardown goes through
+// registry.RemoveUser. Same Identifier.Sanitize() guard as CreateSchema.
+func (s *DB) DropSchema(ctx context.Context, name string) error {
+	ctx, cancel := queryCtx()
+	defer cancel()
+	_, err := s.pool.Exec(ctx, "DROP SCHEMA IF EXISTS "+pgx.Identifier{name}.Sanitize()+" CASCADE")
 	return err
 }
 

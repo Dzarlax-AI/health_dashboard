@@ -664,3 +664,109 @@ func TestChronicLoad_Integration_IdempotentRerun(t *testing.T) {
 		t.Errorf("row count drift on rerun: first=%d second=%d", n1, n2)
 	}
 }
+
+// TestChronicLoad_Integration_PerTenantThresholdOverride proves that
+// `settings.chronic_load.min_acute_density` actually flips the writer's
+// labelling on a row where the default threshold (7) would not. With
+// override = 3 and exactly 4 acute OR events planted in the window:
+//
+//   - default writer ⇒ acute_count < 7 ⇒ chronic_acute_density = 0
+//   - override writer ⇒ acute_count >= 3 ⇒ chronic_acute_density = 1
+//
+// This is the load-bearing test for per-tenant calibration in §6.2.
+// If it ever fails, a second tenant's labels are silently calibrated
+// against the `health` distribution.
+func TestChronicLoad_Integration_PerTenantThresholdOverride(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	// Set tenant override BEFORE the writer runs so the loader picks
+	// it up. Writer reads cfg once per BackfillChronicLoadSnapshots
+	// call.
+	if err := db.SaveSettings(map[string]string{
+		SettingChronicLoadMinAcuteDensity: "3",
+	}); err != nil {
+		t.Fatalf("SaveSettings: %v", err)
+	}
+
+	// Echo back through LoadChronicLoadConfig to make sure the status
+	// struct used by the admin endpoint reflects the override before we
+	// rely on it.
+	cfg, status := db.LoadChronicLoadConfig()
+	if cfg.MinAcuteDensity != 3 {
+		t.Fatalf("effective MinAcuteDensity = %d, want 3", cfg.MinAcuteDensity)
+	}
+	if status.MatchesDefaults {
+		t.Fatal("status.MatchesDefaults = true after override; expected false")
+	}
+	if status.CorrectedToDef {
+		t.Fatal("status.CorrectedToDef = true on valid override")
+	}
+
+	seedRecoveryHistory(t, db, "2026-04-19", 60, 0.93, InitialSourceEpoch)
+	baseHealthy := 0.93
+	seedRecoveryRolling3d(t, db, "2026-04-20", &baseHealthy, InitialSourceEpoch)
+	for i := 1; i <= 14; i++ {
+		date := time.Date(2026, 4, 20+i, 0, 0, 0, 0, time.UTC).Format(isoDate)
+		seedRecoveryRolling3d(t, db, date, &baseHealthy, InitialSourceEpoch)
+	}
+	// Plant 4 OR=1 events. Under the default threshold (7) this would
+	// be ineligible (4 < 7 and missing days = 0, so max_possible = 4 < 7
+	// — eligible-negative, label = 0). Under override threshold 3,
+	// 4 >= 3 ⇒ label = 1, eligible.
+	positiveDays := map[int]bool{2: true, 5: true, 9: true, 13: true}
+	for i := 1; i <= 14; i++ {
+		date := time.Date(2026, 4, 20+i, 0, 0, 0, 0, time.UTC).Format(isoDate)
+		var v float64
+		if positiveDays[i] {
+			v = 1
+		}
+		seedAcuteOrEvent(t, db, date, v, InitialSourceEpoch)
+	}
+
+	if _, err := db.BackfillChronicLoadSnapshots("2026-04-20", "2026-04-20"); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	var val float32
+	var eligible bool
+	var covJSON []byte
+	if err := db.pool.QueryRow(context.Background(), `
+		SELECT target_value, eligible, data_coverage::text
+		  FROM target_snapshots
+		 WHERE date = $1 AND sub_score = $2 AND target_kind = $3
+	`, "2026-04-20", SubScoreChronicLoad, TargetKindChronicAcuteDensity).Scan(&val, &eligible, &covJSON); err != nil {
+		t.Fatalf("read chronic_acute_density: %v", err)
+	}
+	if !eligible {
+		t.Fatal("override row not eligible; expected eligible-positive at threshold 3")
+	}
+	if val != 1 {
+		t.Errorf("chronic_acute_density = %v, want 1 (override threshold 3, 4 OR events planted)", val)
+	}
+	// data_coverage must echo the effective threshold the writer used,
+	// not the default. This is how analysis scripts know they are
+	// looking at override-flipped labels.
+	// data_coverage is marshalled via encoding/json which leaves a
+	// single space after the colon; check for both shapes to stay
+	// resilient to a future compact-encoder swap.
+	covStr := string(covJSON)
+	if !contains(covStr, "\"acute_density_threshold\":3") && !contains(covStr, "\"acute_density_threshold\": 3") {
+		t.Errorf("data_coverage missing override threshold: %s", covStr)
+	}
+}
+
+// contains is a small substring check kept local so the test file does
+// not pull in strings just for this one assertion.
+func contains(haystack, needle string) bool {
+	return len(needle) == 0 || (len(haystack) >= len(needle) && indexOf(haystack, needle) >= 0)
+}
+
+func indexOf(s, substr string) int {
+	for i := 0; i+len(substr) <= len(s); i++ {
+		if s[i:i+len(substr)] == substr {
+			return i
+		}
+	}
+	return -1
+}
