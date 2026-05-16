@@ -72,29 +72,29 @@ Best naive baseline (highest precision@recall=0.5): **`persistence_yesterday (in
 
 ### chronic_load / chronic_label
 
-Eligible test rows: **382**, positives: **78**, base rate: **0.2042**
+Eligible test rows: **349**, positives: **78**, base rate: **0.2235**
 
 Metric: precision at recall = 0.5, with lift over base rate at the same recall.
 
 | baseline_kind | n paired | precision@R=0.5 | lift | AUC | precision 95% CI | captured pos |
 |---|---|---|---|---|---|---|
-| event_base_rate | 382 | 0.364 | 1.79 | 0.565 | [0.174, 0.433] | 39 |
-| persistence_yesterday (inline) | 377 | 0.935 | 4.58 | 0.965 | [0.881, 0.986] | 72 |
+| event_base_rate | 349 | 0.415 | 1.86 | 0.574 | [0.191, 0.549] | 39 |
+| persistence_yesterday (inline) | 341 | 0.947 | 4.24 | 0.979 | [0.900, 0.987] | 72 |
 
-Best naive baseline (highest precision@recall=0.5): **`persistence_yesterday (inline)`** at precision = 0.935 (lift 4.58× over base rate).
+Best naive baseline (highest precision@recall=0.5): **`persistence_yesterday (inline)`** at precision = 0.947 (lift 4.24× over base rate).
 
 ### chronic_load / chronic_acute_density
 
-Eligible test rows: **386**, positives: **295**, base rate: **0.7642**
+Eligible test rows: **398**, positives: **98**, base rate: **0.2462**
 
 Metric: precision at recall = 0.5, with lift over base rate at the same recall.
 
 | baseline_kind | n paired | precision@R=0.5 | lift | AUC | precision 95% CI | captured pos |
 |---|---|---|---|---|---|---|
-| event_base_rate | 385 | 0.742 | 0.97 | 0.453 | [0.704, 0.794] | 164 |
-| persistence_yesterday (inline) | 384 | 0.969 | 1.27 | 0.936 | [0.950, 0.986] | 286 |
+| event_base_rate | 397 | 0.368 | 1.49 | 0.676 | [0.323, 0.435] | 50 |
+| persistence_yesterday (inline) | 396 | 0.918 | 3.73 | 0.951 | [0.867, 0.967] | 90 |
 
-Best naive baseline (highest precision@recall=0.5): **`persistence_yesterday (inline)`** at precision = 0.969 (lift 1.27× over base rate).
+Best naive baseline (highest precision@recall=0.5): **`persistence_yesterday (inline)`** at precision = 0.918 (lift 3.73× over base rate).
 
 ## Slice: `test_all_post_train`
 
@@ -156,29 +156,29 @@ Best naive baseline (highest precision@recall=0.5): **`persistence_yesterday (in
 
 ### chronic_load / chronic_label
 
-Eligible test rows: **382**, positives: **78**, base rate: **0.2042**
+Eligible test rows: **349**, positives: **78**, base rate: **0.2235**
 
 Metric: precision at recall = 0.5, with lift over base rate at the same recall.
 
 | baseline_kind | n paired | precision@R=0.5 | lift | AUC | precision 95% CI | captured pos |
 |---|---|---|---|---|---|---|
-| event_base_rate | 382 | 0.364 | 1.79 | 0.565 | [0.174, 0.433] | 39 |
-| persistence_yesterday (inline) | 377 | 0.935 | 4.58 | 0.965 | [0.881, 0.986] | 72 |
+| event_base_rate | 349 | 0.415 | 1.86 | 0.574 | [0.191, 0.549] | 39 |
+| persistence_yesterday (inline) | 341 | 0.947 | 4.24 | 0.979 | [0.900, 0.987] | 72 |
 
-Best naive baseline (highest precision@recall=0.5): **`persistence_yesterday (inline)`** at precision = 0.935 (lift 4.58× over base rate).
+Best naive baseline (highest precision@recall=0.5): **`persistence_yesterday (inline)`** at precision = 0.947 (lift 4.24× over base rate).
 
 ### chronic_load / chronic_acute_density
 
-Eligible test rows: **386**, positives: **295**, base rate: **0.7642**
+Eligible test rows: **398**, positives: **98**, base rate: **0.2462**
 
 Metric: precision at recall = 0.5, with lift over base rate at the same recall.
 
 | baseline_kind | n paired | precision@R=0.5 | lift | AUC | precision 95% CI | captured pos |
 |---|---|---|---|---|---|---|
-| event_base_rate | 385 | 0.742 | 0.97 | 0.453 | [0.704, 0.794] | 164 |
-| persistence_yesterday (inline) | 384 | 0.969 | 1.27 | 0.936 | [0.950, 0.986] | 286 |
+| event_base_rate | 397 | 0.368 | 1.49 | 0.676 | [0.323, 0.435] | 50 |
+| persistence_yesterday (inline) | 396 | 0.918 | 3.73 | 0.951 | [0.867, 0.967] | 90 |
 
-Best naive baseline (highest precision@recall=0.5): **`persistence_yesterday (inline)`** at precision = 0.969 (lift 1.27× over base rate).
+Best naive baseline (highest precision@recall=0.5): **`persistence_yesterday (inline)`** at precision = 0.918 (lift 3.73× over base rate).
 
 ## Interpretation note: `persistence_yesterday` for classification is a window-overlap artifact, not a real floor
 
@@ -200,8 +200,8 @@ Floors a future model must beat on the **`test_2025_current`** slice. For classi
 | passive_efficiency / rolling_3d | continuous | `ewma_45d` | MAE 3.1911 | ±0.268 | **low (close to noise floor)** — model needs MAE materially below CI lower bound, target SD 4.226 |
 | acute_risk / event_t1_t3 | binary | `event_base_rate` | precision 0.328, lift 1.08× | ±0.036 | **low** — AUC 0.557; 122 positives in 401 rows |
 | acute_risk / event_strict_t1_t3 | binary | `event_base_rate` | precision 0.024, lift 1.07× | ±0.032 | **insufficient evidence** — AUC 0.563; 9 positives in 401 rows |
-| chronic_load / chronic_label | binary | `event_base_rate` | precision 0.364, lift 1.79× | ±0.130 | **low** — AUC 0.565; 78 positives in 382 rows |
-| chronic_load / chronic_acute_density | binary | `event_base_rate` | precision 0.742, lift 0.97× | ±0.045 | **none (label likely mis-tuned)** — AUC 0.453; 295 positives in 386 rows |
+| chronic_load / chronic_label | binary | `event_base_rate` | precision 0.415, lift 1.86× | ±0.179 | **low** — AUC 0.574; 78 positives in 349 rows |
+| chronic_load / chronic_acute_density | binary | `event_base_rate` | precision 0.368, lift 1.49× | ±0.056 | **modest** — AUC 0.676; 98 positives in 398 rows |
 
 Headroom verdicts derived programmatically:
 - Continuous: by MAE / target SD ratio (`<0.4` potentially significant, `<0.7` modest, otherwise low).
