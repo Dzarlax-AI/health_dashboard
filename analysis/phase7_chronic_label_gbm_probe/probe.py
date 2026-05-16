@@ -339,6 +339,16 @@ def primary_split_and_evaluate(rows: list[Row], baseline_map: dict[date, float])
     X_val = X[inner_cut:cut]
     y_val = y[inner_cut:cut]
 
+    # GBM requires both classes in the training fold. With sparse-positive
+    # targets and a chronological inner split, a single-class window is
+    # not pathological — it can happen on early backfills before positives
+    # accumulate. Fail with an explanatory error rather than letting
+    # sklearn raise mid-grid.
+    if len(set(y_inner_train.tolist())) < 2:
+        return {"error": f"inner train fold has only one class (n={inner_cut}); cannot fit GBM grid"}
+    if len(set(y_train.tolist())) < 2:
+        return {"error": f"full train fold has only one class (n={cut}); cannot refit chosen cell"}
+
     cell_val: list[tuple[dict, float | None, float | None]] = []
     for cell in GBM_GRID:
         model = fit_gbm(X_inner_train, y_inner_train, cell)
@@ -460,6 +470,11 @@ def walk_forward(rows: list[Row], baseline_map: dict[date, float]) -> dict:
         y_inner_train = y_train[:inner_cut]
         X_val = X_train[inner_cut:]
         y_val = y_train[inner_cut:]
+        # Skip months where the chronological cumulative train or its
+        # inner-train slice is single-class — GBM can't fit, and these
+        # are inherently uninformative folds rather than errors.
+        if len(set(y_inner_train.tolist())) < 2 or len(set(y_train.tolist())) < 2:
+            continue
 
         cell_val_local = []
         for cell in GBM_GRID:
