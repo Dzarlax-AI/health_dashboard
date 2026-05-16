@@ -531,6 +531,98 @@ already cover the operational use cases EnergyBank was reaching for.
 - Imputing missing physiology in Phase 0 was rejected. Missingness is a state,
   not a gap.
 
+## 8.5. Multi-tenant calibration status
+
+Discovered after Phase 1 step 1 (PR #97), surfaced explicitly when the
+operator asked "we've been calibrating against me — what about other
+tenants?". The honest answer:
+
+**The system is multi-tenant capable but not multi-tenant calibrated.**
+
+### What is tenant-universal (architecture)
+
+These mechanics are correct for any tenant without further work:
+
+- The four redesign tables and their PKs.
+- All four writers and their eligibility decision trees.
+- The admin endpoint and its tenant-resolution path.
+- All sigma-based thresholds — Acute Risk HRV/RHR z-score cutoffs,
+  Chronic Load deterioration z-score cutoff. Sigma is computed from
+  the *personal* baseline (`windowStatsBefore` reads only that
+  tenant's rolling_3d history), so the threshold automatically scales
+  to the tenant's distribution.
+- EWMA windows (45d adaptive, 180d slow). Window size is universal;
+  the baseline it produces is per-tenant.
+- Source-epoch catalogue — `source_epochs` is per-schema. Each tenant
+  has their own `initial` row from `EnsureReadinessRedesignTables`;
+  additional epochs are added manually as data anomalies are
+  discovered.
+
+### What was calibrated against a single tenant
+
+Three constants in code:
+
+| constant | value | calibration source | risk for other tenants |
+|---|---|---|---|
+| `ChronicLoadMinAcuteDensity` | 7 events / 14 days | empirical distribution on `health` schema (PR #97) | other tenants with different Acute OR base rate will get a misaligned positive rate; label may not discriminate |
+| `ChronicLoadMinBreachDays` | 5 days / 14 days | plan-level guess, never empirically calibrated | same class of risk — depends on tenant's Recovery rolling_3d stability |
+| Bootstrap source epoch (`initial`) covering 2014-01-01..NULL | hard-coded into the migration | universal — every tenant gets the same bootstrap row | safe; the start date is far enough back that no real tenant has older data |
+
+The third row is safe. The first two are count-based thresholds that
+do NOT scale with tenant-specific data distributions the way
+sigma-based thresholds do.
+
+### Operational impact
+
+`health_mariia` (the second tenant) has empty `target_snapshots` for
+the redesign sub-scores as of the date this section was written. No
+labels yet to be miscalibrated. The risk materialises when their data
+is backfilled — chronic_load labels will be written using the `health`-
+tenant-calibrated thresholds, and the resulting positive rate may
+sit outside the operationally-useful 15–30% band.
+
+### Backlog item — tenant-configurable thresholds via `settings`
+
+The chosen path (operator decision, option B in the calibration
+discussion):
+
+- Move `ChronicLoadMinAcuteDensity` and `ChronicLoadMinBreachDays`
+  into the existing per-schema `settings` table:
+  - `chronic_load.min_acute_density` (default `7`)
+  - `chronic_load.min_breach_days` (default `5`)
+- The writer reads thresholds at write time via the existing config
+  path used by Telegram/Gemini settings, falling back to the code
+  defaults when the keys are absent.
+- Each Chronic Load `data_coverage` JSON records the threshold values
+  actually used for that row, so labels remain audit-able and a future
+  recalibration does not silently change historical labels' meaning.
+- `analysis/phase1_floors/floors.py` should print a recommended
+  threshold per tenant (derived from that tenant's Acute OR event
+  count distribution) but must NOT change anything automatically —
+  the operator approves the change explicitly.
+- Defaults documented in code as "calibrated against the `health`
+  schema on 2026-05-16; other tenants should run floors and retune
+  before interpreting Chronic Load labels."
+
+Why not adaptive (percentile-derived) thresholds: that becomes an
+automatic calibration system, and Phase 1 hasn't yet shown which
+labels actually carry signal worth automating. Premature.
+
+Why not "single-tenant calibration as design": the system would work
+technically for the second tenant but produce silently-broken Chronic
+Load labels with no operator signal. A configurable default with a
+floors-driven recommendation surfaces the problem instead of hiding
+it.
+
+### Until the backlog item lands
+
+- Passive Efficiency, Recovery Stability, Acute Risk are
+  personal-baseline-based and unaffected. Feasibility work on those
+  proceeds without blocker.
+- Chronic Load labels on tenants other than `health` are flagged
+  "default calibrated, not tenant-retuned" in any downstream
+  interpretation. Documented; not silently treated as authoritative.
+
 ## 9. Open questions to revisit
 
 Decisions previously parked here and now closed (kept in source for
