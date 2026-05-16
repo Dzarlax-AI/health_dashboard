@@ -208,9 +208,16 @@ def block_bootstrap_mae(
     iterations: int = BOOTSTRAP_ITERATIONS,
     seed: int = BOOTSTRAP_SEED,
 ) -> tuple[float, float]:
-    """Block bootstrap MAE 95% CI. Resamples contiguous date-aligned
+    """Block bootstrap MAE 95% CI. Resamples contiguous CALENDAR-day
     blocks (default 14 days) with replacement until the sample length
     matches the original, then recomputes MAE.
+
+    Blocks are defined in calendar-day space, not row space. Every
+    row index is a potential block start; the block ends at the last
+    row whose date is ≤ start_date + block_days - 1. This handles
+    discontinuous date series correctly: a "14-day block" might
+    contain anywhere from a few rows (sparse window) to ~14 rows
+    (dense window), but always represents the same calendar span.
 
     This preserves autocorrelation that a shuffled bootstrap would
     destroy — Passive walking_hr is autocorrelated (3-day rolling
@@ -219,20 +226,20 @@ def block_bootstrap_mae(
     if residuals.size == 0 or not dates:
         return math.nan, math.nan
     n = residuals.size
-    # Build block start positions: every `block_days` along the date axis.
-    # Since `dates` is sorted ascending, slice by index window of size
-    # equal to the number of rows in a block. Block size in rows varies
-    # slightly because the dates are not perfectly contiguous (some days
-    # missing), so we use index windows of width `block_days` rows as a
-    # reasonable approximation.
     rng = random.Random(seed)
-    starts = list(range(0, n, block_days))
+    starts = list(range(n))
     results = []
     for _ in range(iterations):
         sample: list[float] = []
         while len(sample) < n:
             s = rng.choice(starts)
-            block = residuals[s : s + block_days]
+            end_date = dates[s] + timedelta(days=block_days - 1)
+            e = s
+            while e < n and dates[e] <= end_date:
+                e += 1
+            block = residuals[s:e]
+            if block.size == 0:
+                continue
             sample.extend(block.tolist())
         sample = sample[:n]
         results.append(float(np.abs(np.asarray(sample)).mean()))
@@ -248,7 +255,7 @@ def primary_split_and_evaluate(rows: list[Row]) -> dict:
     X, y, dates = to_matrix(rows)
     n = len(dates)
     cut = int(round(PRIMARY_SPLIT_RATIO * n))
-    if cut < 5 or n - cut < 5:
+    if cut < 10 or n - cut < 5:
         return {"error": f"not enough rows for primary split: n={n}, cut={cut}"}
 
     train_idx = slice(0, cut)
@@ -258,6 +265,31 @@ def primary_split_and_evaluate(rows: list[Row]) -> dict:
     train_dates = dates[:cut]
     test_dates = dates[cut:]
 
+    # Inner train/val split for alpha selection — Codex P2 fix.
+    # Picking the Ridge alpha on the primary test set leaks evaluation
+    # labels into hyperparameter selection. Instead, choose alpha
+    # chronologically inside the train period: train' = first 80% of
+    # train rows, val = last 20%. Refit the chosen alpha on the FULL
+    # train period before evaluating once on the primary test set.
+    inner_cut = int(round(0.8 * cut))
+    if inner_cut < 5 or cut - inner_cut < 5:
+        return {"error": f"not enough rows for inner train/val split: cut={cut}, inner_cut={inner_cut}"}
+    X_train_inner = X[:inner_cut]
+    y_train_inner = y[:inner_cut]
+    X_val = X[inner_cut:cut]
+    y_val = y[inner_cut:cut]
+
+    # Standardise on inner train' only, apply to val.
+    X_train_inner_s, X_val_s, _, _ = standardize_train_apply(X_train_inner, X_val)
+    alpha_val_maes: dict[float, float] = {}
+    for alpha in RIDGE_ALPHAS:
+        coef = fit_ridge(X_train_inner_s, y_train_inner, alpha)
+        pred = predict(coef, X_val_s)
+        alpha_val_maes[alpha] = mae(y_val - pred)
+    chosen_alpha = min(alpha_val_maes.keys(), key=lambda a: alpha_val_maes[a])
+
+    # Now standardise on the FULL train period (re-fit scaler) and apply
+    # to test. OLS and the chosen-alpha Ridge are scored ONCE on test.
     X_train_s, X_test_s, _, _ = standardize_train_apply(X_train, X_test)
 
     # OLS.
@@ -267,17 +299,14 @@ def primary_split_and_evaluate(rows: list[Row]) -> dict:
     ols_mae = mae(ols_resid)
     ols_ci = block_bootstrap_mae(ols_resid, test_dates)
 
-    # Ridge over alpha grid.
-    ridge_runs = []
-    for alpha in RIDGE_ALPHAS:
-        coef = fit_ridge(X_train_s, y_train, alpha)
-        pred = predict(coef, X_test_s)
-        resid = y_test - pred
-        m = mae(resid)
-        ridge_runs.append({"alpha": alpha, "mae": m, "residuals": resid})
-
-    best_ridge = min(ridge_runs, key=lambda r: r["mae"])
-    best_ridge_ci = block_bootstrap_mae(best_ridge["residuals"], test_dates)
+    # Ridge — chosen alpha is the only one scored on test; the rest are
+    # reported as a sanity context table (val MAE per alpha) but never
+    # selected post-hoc.
+    chosen_coef = fit_ridge(X_train_s, y_train, chosen_alpha)
+    chosen_pred = predict(chosen_coef, X_test_s)
+    chosen_resid = y_test - chosen_pred
+    chosen_mae = mae(chosen_resid)
+    chosen_ci = block_bootstrap_mae(chosen_resid, test_dates)
 
     # Baseline reuse: use the existing ewma_45d naive baseline already
     # in the DB for this row range so the comparison is apples-to-apples
@@ -301,14 +330,15 @@ def primary_split_and_evaluate(rows: list[Row]) -> dict:
         "test_range": (test_dates[0], test_dates[-1]),
         "n_train": cut,
         "n_test": n - cut,
+        "inner_train_size": inner_cut,
+        "inner_val_size": cut - inner_cut,
+        "alpha_val_maes": alpha_val_maes,
+        "chosen_alpha": chosen_alpha,
         "ols": {"mae": ols_mae, "ci": ols_ci},
-        "ridge_runs": [
-            {"alpha": r["alpha"], "mae": r["mae"]} for r in ridge_runs
-        ],
-        "best_ridge": {
-            "alpha": best_ridge["alpha"],
-            "mae": best_ridge["mae"],
-            "ci": best_ridge_ci,
+        "chosen_ridge": {
+            "alpha": chosen_alpha,
+            "mae": chosen_mae,
+            "ci": chosen_ci,
         },
         "naive_ewma_45d_on_same_split": {"mae": naive_mae, "ci": naive_ci},
     }
@@ -423,25 +453,25 @@ def render(primary: dict, sensitivity: dict, n_dropped: int) -> str:
     out.append("")
     out.append("## Methodology")
     out.append("")
-    out.append(f"- **Target**: `passive_efficiency / rolling_3d`")
+    out.append("- **Target**: `passive_efficiency / rolling_3d`")
     out.append(f"- **Test slice**: `source_2025_current` only (`{TEST_START}` → `{TEST_END}`)")
-    out.append(f"- **Features**: Passive own-features from `feature_snapshots` (no cross-sub_score signals on this iteration).")
+    out.append("- **Features**: Passive own-features from `feature_snapshots` (no cross-sub_score signals on this iteration).")
     out.append(f"- **Models**: OLS + Ridge over alpha grid {RIDGE_ALPHAS}. No Lasso, no trees.")
     out.append(f"- **Primary split**: chronological {int(PRIMARY_SPLIT_RATIO*100)}/{100-int(PRIMARY_SPLIT_RATIO*100)}.")
-    out.append(f"- **Sensitivity**: expanding walk-forward monthly blocks.")
+    out.append("- **Sensitivity**: expanding walk-forward monthly blocks.")
     out.append(f"- **Bootstrap**: block bootstrap with {BLOCK_BOOTSTRAP_BLOCK_DAYS}-day contiguous blocks, {BOOTSTRAP_ITERATIONS} iterations. Preserves autocorrelation that a shuffled bootstrap would destroy.")
-    out.append(f"- **Standardisation**: per-feature z-score, fitted on train and applied to test (no leakage).")
+    out.append("- **Standardisation**: per-feature z-score, fitted on train and applied to test (no leakage).")
     out.append("")
     out.append(f"- **Floor to beat**: `ewma_45d` MAE point {EWMA45_FLOOR_MAE:.4f} bpm, **lower CI bound {EWMA45_FLOOR_CI_LO:.4f}** (from floors report on full test slice).")
     out.append(f"- **Success criterion**: model MAE on primary test must beat **{EWMA45_FLOOR_CI_LO:.4f} bpm** — the lower CI bound, NOT the point estimate. Beating the point estimate but not the CI lower bound is statistical noise.")
     out.append("")
 
     if "error" in primary:
-        out.append(f"## Primary 70/30 split — could not run")
+        out.append("## Primary 70/30 split — could not run")
         out.append("")
-        out.append(f"```")
+        out.append("```")
         out.append(primary["error"])
-        out.append(f"```")
+        out.append("```")
         return "\n".join(out)
 
     out.append("## Primary 70/30 split")
@@ -450,22 +480,30 @@ def render(primary: dict, sensitivity: dict, n_dropped: int) -> str:
     out.append(f"- Train: {primary['n_train']} rows, {primary['train_range'][0]} → {primary['train_range'][1]}")
     out.append(f"- Test:  {primary['n_test']} rows, {primary['test_range'][0]} → {primary['test_range'][1]}")
     out.append("")
-    out.append("### Model results on test")
+    out.append("### Inner train/val for alpha selection (no test leakage)")
+    out.append("")
+    out.append(f"Train period split chronologically 80/20: train' = {primary['inner_train_size']} rows, val = {primary['inner_val_size']} rows.")
+    out.append("Validation MAE per alpha — chosen alpha is the one that minimises val MAE; refit on the full train period and scored ONCE on test:")
+    out.append("")
+    out.append("| Ridge α | val MAE | chosen |")
+    out.append("|---|---|---|")
+    for alpha, val_mae in primary['alpha_val_maes'].items():
+        marker = " ✓" if alpha == primary['chosen_alpha'] else ""
+        out.append(f"| {alpha} | {fmt(val_mae)} | {marker} |")
+    out.append("")
+    out.append("### Model results on primary test (single evaluation each)")
     out.append("")
     out.append("| model | MAE (bpm) | 95% block-bootstrap CI |")
     out.append("|---|---|---|")
     out.append(f"| EWMA45 baseline (on same split) | {fmt(primary['naive_ewma_45d_on_same_split']['mae'])} | [{fmt(primary['naive_ewma_45d_on_same_split']['ci'][0])}, {fmt(primary['naive_ewma_45d_on_same_split']['ci'][1])}] |")
     out.append(f"| OLS | {fmt(primary['ols']['mae'])} | [{fmt(primary['ols']['ci'][0])}, {fmt(primary['ols']['ci'][1])}] |")
-    for r in primary['ridge_runs']:
-        marker = " (best)" if r['alpha'] == primary['best_ridge']['alpha'] else ""
-        out.append(f"| Ridge α={r['alpha']}{marker} | {fmt(r['mae'])} | — |")
-    out.append(f"| Ridge α={primary['best_ridge']['alpha']} (best, with CI) | {fmt(primary['best_ridge']['mae'])} | [{fmt(primary['best_ridge']['ci'][0])}, {fmt(primary['best_ridge']['ci'][1])}] |")
+    out.append(f"| Ridge α={primary['chosen_ridge']['alpha']} (chosen via val) | {fmt(primary['chosen_ridge']['mae'])} | [{fmt(primary['chosen_ridge']['ci'][0])}, {fmt(primary['chosen_ridge']['ci'][1])}] |")
     out.append("")
     out.append("### Decision")
     out.append("")
-    best_model_mae = min(primary['ols']['mae'], primary['best_ridge']['mae'])
-    best_model_name = "OLS" if primary['ols']['mae'] <= primary['best_ridge']['mae'] else f"Ridge α={primary['best_ridge']['alpha']}"
-    best_model_ci_hi = primary['ols']['ci'][1] if best_model_name == "OLS" else primary['best_ridge']['ci'][1]
+    best_model_mae = min(primary['ols']['mae'], primary['chosen_ridge']['mae'])
+    best_model_name = "OLS" if primary['ols']['mae'] <= primary['chosen_ridge']['mae'] else f"Ridge α={primary['chosen_ridge']['alpha']}"
+    best_model_ci_hi = primary['ols']['ci'][1] if best_model_name == "OLS" else primary['chosen_ridge']['ci'][1]
 
     out.append(f"Best linear model on primary test: **{best_model_name}** with MAE = {best_model_mae:.4f} bpm, upper CI = {best_model_ci_hi:.4f}.")
     out.append("")
@@ -513,7 +551,7 @@ def render(primary: dict, sensitivity: dict, n_dropped: int) -> str:
             best_ridge_mae = min(r["ridge_mae_per_alpha"].values())
             out.append(f"| {r['test_month']} | {r['n_train']} | {r['n_test']} | {fmt(r['ols_mae'])} | {fmt(best_ridge_mae)} |")
         out.append("")
-        out.append(f"Across all monthly tests:")
+        out.append("Across all monthly tests:")
         out.append(f"- OLS mean MAE: {fmt(sensitivity['ols_mean_mae'])}, median MAE: {fmt(sensitivity['ols_median_mae'])}")
         for alpha, mean_mae in sensitivity['ridge_mean_mae_per_alpha'].items():
             out.append(f"- Ridge α={alpha} mean MAE: {fmt(mean_mae)}")
