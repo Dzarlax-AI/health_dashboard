@@ -253,28 +253,38 @@ func (s *DB) writeChronicLoadRow(
 	// Evaluate forward window t+1..t+14. Each candidate day `d` is
 	// scored against EWMA45 baseline computed from Recovery rolling_3d
 	// values for dates strictly before `d` (windowStatsBefore excludes
-	// the candidate). Missing days contribute nothing to the breach
-	// count or the acute density count.
+	// the candidate). Missing days contribute nothing to the breach or
+	// acute counts — they are tracked separately so the per-target
+	// observability gate below can decide whether a negative label is
+	// honest or whether the unobserved days could have flipped it.
 	type dayCell struct {
-		Date       string   `json:"date"`
-		Recovery   *float64 `json:"recovery_3d,omitempty"`
-		BaselineM  *float64 `json:"baseline_mean,omitempty"`
-		BaselineSD *float64 `json:"baseline_sd,omitempty"`
-		Z          *float64 `json:"z,omitempty"`
-		Breach     bool     `json:"breach"`
-		AcuteOR    int      `json:"acute_or"`
+		Date              string   `json:"date"`
+		Recovery          *float64 `json:"recovery_3d,omitempty"`
+		BaselineM         *float64 `json:"baseline_mean,omitempty"`
+		BaselineSD        *float64 `json:"baseline_sd,omitempty"`
+		Z                 *float64 `json:"z,omitempty"`
+		Breach            bool     `json:"breach"`
+		RecoveryObserved  bool     `json:"recovery_observed"`
+		AcuteOR           int      `json:"acute_or"`
+		AcuteObserved     bool     `json:"acute_observed"`
 	}
 	cells := make([]dayCell, 0, health.ChronicLoadForwardWindowDays)
 	var breachCount, acuteCount int
+	var observedRecoveryDays, observedAcuteDays int
 
 	for i := 1; i <= health.ChronicLoadForwardWindowDays; i++ {
 		c := t.AddDate(0, 0, i)
 		ds := c.Format(isoDate)
 		cell := dayCell{Date: ds}
 
-		// Acute density contribution.
+		// Acute density contribution. A row in acuteOrByDate means
+		// Acute Risk eligibly evaluated that day (LoadAcuteOrEventRows
+		// filters to eligible=TRUE), so its presence is enough to
+		// count the day as "observed" regardless of the 0/1 label.
 		if v, ok := acuteOrByDate[ds]; ok {
 			cell.AcuteOR = v
+			cell.AcuteObserved = true
+			observedAcuteDays++
 			if v == 1 {
 				acuteCount++
 			}
@@ -286,6 +296,8 @@ func (s *DB) writeChronicLoadRow(
 			cells = append(cells, cell)
 			continue
 		}
+		cell.RecoveryObserved = true
+		observedRecoveryDays++
 		cell.Recovery = ptrFloat(*row.Value)
 		mean, sd, _ := windowStatsBefore(c, health.ChronicLoadBaselineWindowDays, epochStart, recoveryLookup)
 		cell.BaselineM = mean
@@ -300,71 +312,120 @@ func (s *DB) writeChronicLoadRow(
 		cells = append(cells, cell)
 	}
 
+	// Per-target observability gate: a NEGATIVE label is only honest
+	// when enough days in the window were observed to rule out a flip.
+	// chronic_label: need ≥ (window − minBreach + 1) = 10 observed
+	// Recovery days, since fewer could hide ≥5 breaches.
+	// chronic_acute_density: need ≥ (window − minDensity + 1) = 12
+	// observed Acute days, since fewer could hide ≥3 events.
+	// A POSITIVE label is unconditional — observed evidence suffices
+	// regardless of how many days were missing. Mirrors the Acute
+	// Risk window gate (Codex review, PR #94).
+	requiredRecoveryDays := health.ChronicLoadForwardWindowDays - health.ChronicLoadMinBreachDays + 1
+	requiredAcuteDays := health.ChronicLoadForwardWindowDays - health.ChronicLoadMinAcuteDensity + 1
+
 	chronicLabel := boolToFloat(breachCount >= health.ChronicLoadMinBreachDays)
 	acuteDensityLabel := boolToFloat(acuteCount >= health.ChronicLoadMinAcuteDensity)
 
+	chronicLabelEligible := breachCount >= health.ChronicLoadMinBreachDays || observedRecoveryDays >= requiredRecoveryDays
+	acuteDensityEligible := acuteCount >= health.ChronicLoadMinAcuteDensity || observedAcuteDays >= requiredAcuteDays
+
 	cov := mustMarshal(map[string]any{
-		"forward_window_days":      health.ChronicLoadForwardWindowDays,
-		"breach_count":             breachCount,
-		"breach_threshold":         health.ChronicLoadMinBreachDays,
-		"breach_z_threshold":       health.ChronicLoadDeteriorationZThreshold,
-		"acute_or_count":           acuteCount,
-		"acute_density_threshold":  health.ChronicLoadMinAcuteDensity,
-		"per_day":                  cells,
+		"forward_window_days":       health.ChronicLoadForwardWindowDays,
+		"breach_count":              breachCount,
+		"breach_threshold":          health.ChronicLoadMinBreachDays,
+		"breach_z_threshold":        health.ChronicLoadDeteriorationZThreshold,
+		"observed_recovery_days":    observedRecoveryDays,
+		"required_recovery_days":    requiredRecoveryDays,
+		"acute_or_count":            acuteCount,
+		"acute_density_threshold":   health.ChronicLoadMinAcuteDensity,
+		"observed_acute_days":       observedAcuteDays,
+		"required_acute_days":       requiredAcuteDays,
+		"per_day":                   cells,
 	})
 
-	if err := s.SaveTargetSnapshot(TargetSnapshot{
-		Date:              date,
-		SubScore:          SubScoreChronicLoad,
-		TargetKind:        TargetKindChronicLabel,
-		TargetValue:       &chronicLabel,
-		Eligible:          true,
-		EligibilityReason: health.ChronicLoadEligibilityOK,
-		DataCoverage:      cov,
-		SourceEpoch:       epoch,
-		FormulaVersion:    chronicLoadFormulaVersion,
-	}); err != nil {
+	// Primary chronic_label: gated independently on Recovery observability.
+	chronicLabelRow := TargetSnapshot{
+		Date:           date,
+		SubScore:       SubScoreChronicLoad,
+		TargetKind:     TargetKindChronicLabel,
+		DataCoverage:   cov,
+		SourceEpoch:    epoch,
+		FormulaVersion: chronicLoadFormulaVersion,
+	}
+	if chronicLabelEligible {
+		chronicLabelRow.TargetValue = &chronicLabel
+		chronicLabelRow.Eligible = true
+		chronicLabelRow.EligibilityReason = health.ChronicLoadEligibilityOK
+	} else {
+		chronicLabelRow.Eligible = false
+		chronicLabelRow.EligibilityReason = EligibilityEventWindowDataMissing
+	}
+	if err := s.SaveTargetSnapshot(chronicLabelRow); err != nil {
 		return fmt.Errorf("save chronic_label %s: %w", date, err)
 	}
-	if err := s.SaveTargetSnapshot(TargetSnapshot{
-		Date:              date,
-		SubScore:          SubScoreChronicLoad,
-		TargetKind:        TargetKindChronicAcuteDensity,
-		TargetValue:       &acuteDensityLabel,
-		Eligible:          true,
-		EligibilityReason: health.ChronicLoadEligibilityOK,
-		DataCoverage:      cov,
-		SourceEpoch:       epoch,
-		FormulaVersion:    chronicLoadFormulaVersion,
-	}); err != nil {
+
+	// Secondary chronic_acute_density: gated independently on Acute observability.
+	acuteDensityRow := TargetSnapshot{
+		Date:           date,
+		SubScore:       SubScoreChronicLoad,
+		TargetKind:     TargetKindChronicAcuteDensity,
+		DataCoverage:   cov,
+		SourceEpoch:    epoch,
+		FormulaVersion: chronicLoadFormulaVersion,
+	}
+	if acuteDensityEligible {
+		acuteDensityRow.TargetValue = &acuteDensityLabel
+		acuteDensityRow.Eligible = true
+		acuteDensityRow.EligibilityReason = health.ChronicLoadEligibilityOK
+	} else {
+		acuteDensityRow.Eligible = false
+		acuteDensityRow.EligibilityReason = EligibilityEventWindowDataMissing
+	}
+	if err := s.SaveTargetSnapshot(acuteDensityRow); err != nil {
 		return fmt.Errorf("save chronic_acute_density %s: %w", date, err)
 	}
 
 	// Update prior-label maps with this date so the naive base-rate
-	// baselines for later iterations have access. Per-target_kind to
-	// keep distributions honest (mirrors the Acute Risk P2 lesson).
-	priorChronic[date] = int(chronicLabel)
-	priorAcuteDensity[date] = int(acuteDensityLabel)
+	// baselines for later iterations have access. Only update from
+	// rows that were eligibly labelled — ineligible rows have no
+	// meaningful predictand to feed forward into the base rate.
+	if chronicLabelEligible {
+		priorChronic[date] = int(chronicLabel)
+	}
+	if acuteDensityEligible {
+		priorAcuteDensity[date] = int(acuteDensityLabel)
+	}
 
-	chronicBaseRate := priorEventBaseRate(t, 90, priorChronic)
-	acuteDensityBaseRate := priorEventBaseRate(t, 90, priorAcuteDensity)
-	for _, b := range []struct {
-		tk   string
-		rate *float64
-	}{
-		{TargetKindChronicLabel, chronicBaseRate},
-		{TargetKindChronicAcuteDensity, acuteDensityBaseRate},
-	} {
+	// Naive base-rate baselines per target_kind. Only written for
+	// eligible target rows — `predicted_value` is meaningless when the
+	// observed label is itself unknown.
+	if chronicLabelEligible {
+		rate := priorEventBaseRate(t, 90, priorChronic)
 		if err := s.SaveNaiveBaseline(NaiveBaseline{
 			Date:           date,
 			SubScore:       SubScoreChronicLoad,
-			TargetKind:     b.tk,
+			TargetKind:     TargetKindChronicLabel,
 			BaselineKind:   BaselineKindEventBaseRate,
-			PredictedValue: b.rate,
+			PredictedValue: rate,
 			SourceEpoch:    epoch,
 			FormulaVersion: chronicLoadFormulaVersion,
 		}); err != nil {
-			return fmt.Errorf("save chronic base-rate %s/%s: %w", date, b.tk, err)
+			return fmt.Errorf("save chronic base-rate %s/chronic_label: %w", date, err)
+		}
+	}
+	if acuteDensityEligible {
+		rate := priorEventBaseRate(t, 90, priorAcuteDensity)
+		if err := s.SaveNaiveBaseline(NaiveBaseline{
+			Date:           date,
+			SubScore:       SubScoreChronicLoad,
+			TargetKind:     TargetKindChronicAcuteDensity,
+			BaselineKind:   BaselineKindEventBaseRate,
+			PredictedValue: rate,
+			SourceEpoch:    epoch,
+			FormulaVersion: chronicLoadFormulaVersion,
+		}); err != nil {
+			return fmt.Errorf("save chronic base-rate %s/chronic_acute_density: %w", date, err)
 		}
 	}
 

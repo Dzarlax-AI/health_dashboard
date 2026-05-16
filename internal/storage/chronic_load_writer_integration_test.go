@@ -228,23 +228,88 @@ func TestChronicLoad_Integration_AcuteDensityDoesNotTriggerOnTwoORs(t *testing.T
 		date := time.Date(2026, 4, 20+i, 0, 0, 0, 0, time.UTC).Format(isoDate)
 		seedRecoveryRolling3d(t, db, date, &baseHealthy, InitialSourceEpoch)
 	}
-	// Only 2 OR events — below the threshold of 3.
-	seedAcuteOrEvent(t, db, "2026-04-22", 1, InitialSourceEpoch)
-	seedAcuteOrEvent(t, db, "2026-05-02", 1, InitialSourceEpoch)
+	// Seed all 14 forward days with Acute rows (mostly zeros) so the
+	// observability gate (≥12 observed Acute days) is met. Plant 2
+	// OR=1 events, the rest as OR=0. Label should be 0 with eligible=true.
+	for i := 1; i <= 14; i++ {
+		date := time.Date(2026, 4, 20+i, 0, 0, 0, 0, time.UTC).Format(isoDate)
+		var v float64
+		if i == 2 || i == 12 { // 2 events
+			v = 1
+		}
+		seedAcuteOrEvent(t, db, date, v, InitialSourceEpoch)
+	}
 
 	if _, err := db.BackfillChronicLoadSnapshots("2026-04-20", "2026-04-20"); err != nil {
 		t.Fatalf("backfill: %v", err)
 	}
 
 	var val float32
+	var eligible bool
 	if err := db.pool.QueryRow(context.Background(), `
-		SELECT target_value FROM target_snapshots
+		SELECT target_value, eligible FROM target_snapshots
 		 WHERE date = $1 AND sub_score = $2 AND target_kind = $3
-	`, "2026-04-20", SubScoreChronicLoad, TargetKindChronicAcuteDensity).Scan(&val); err != nil {
+	`, "2026-04-20", SubScoreChronicLoad, TargetKindChronicAcuteDensity).Scan(&val, &eligible); err != nil {
 		t.Fatalf("read chronic_acute_density: %v", err)
+	}
+	if !eligible {
+		t.Fatal("expected eligible (14 observed Acute days >= 12 threshold)")
 	}
 	if val != 0 {
 		t.Errorf("chronic_acute_density = %v, want 0 (only 2 OR events)", val)
+	}
+}
+
+func TestChronicLoad_Integration_WindowDataMissingBlocksNegativeLabel(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	// Bleeding-edge scenario: warmup met but the forward window has
+	// NO Recovery or Acute rows downstream (they haven't been
+	// backfilled past t). The writer must NOT emit eligible=0 labels
+	// — that would silently encode missing-data as "no chronic
+	// pattern". Both target rows must be ineligible with
+	// event_window_data_missing.
+	seedRecoveryHistory(t, db, "2026-04-19", 60, 0.93, InitialSourceEpoch)
+	baseHealthy := 0.93
+	seedRecoveryRolling3d(t, db, "2026-04-20", &baseHealthy, InitialSourceEpoch)
+	// Deliberately seed NOTHING for t+1..t+14.
+
+	if _, err := db.BackfillChronicLoadSnapshots("2026-04-20", "2026-04-20"); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	rows, err := db.pool.Query(context.Background(), `
+		SELECT target_kind, eligible, eligibility_reason, target_value
+		  FROM target_snapshots
+		 WHERE date = $1 AND sub_score = $2
+		 ORDER BY target_kind
+	`, "2026-04-20", SubScoreChronicLoad)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	defer rows.Close()
+	gotCount := 0
+	for rows.Next() {
+		var tk, reason string
+		var eligible bool
+		var val *float32
+		if err := rows.Scan(&tk, &eligible, &reason, &val); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if eligible {
+			t.Errorf("%s expected ineligible on empty forward window, got eligible=true target_value=%v", tk, val)
+		}
+		if reason != EligibilityEventWindowDataMissing {
+			t.Errorf("%s expected reason=event_window_data_missing, got %q", tk, reason)
+		}
+		if val != nil {
+			t.Errorf("%s expected NULL target_value when ineligible, got %v", tk, *val)
+		}
+		gotCount++
+	}
+	if gotCount != 2 {
+		t.Errorf("expected 2 target rows, got %d", gotCount)
 	}
 }
 
