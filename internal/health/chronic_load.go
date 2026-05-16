@@ -66,7 +66,25 @@ const ChronicLoadForwardWindowDays = 14
 // ChronicLoadMinAcuteDensity — secondary label fires when the count
 // of Acute Risk OR-events (eligible event_t1_t3 = 1) inside the
 // forward window is at least this many.
-const ChronicLoadMinAcuteDensity = 3
+//
+// Calibration threshold, NOT a physiological constant.
+//
+// `7` was chosen empirically from the Phase 1 floor distribution on
+// the production test slice (`source_2025_current`, 2025-01-01 →
+// 2026-05-15). The Acute OR base rate of ~27.5% gives an expected
+// event count of ~3.85 in a 14-day window, so threshold = 3
+// (formula_version 1) produced positive rate ~76% — the label barely
+// discriminated. The empirical cumulative distribution showed:
+//
+//   threshold ≥7 → 25.4% positive (98 positives on the test slice)
+//   threshold ≥8 → 18.9% positive (73 positives)
+//
+// `7` lands at the top of the operational 15–30% band and keeps more
+// positives for any Phase 1 model evaluation. Revisit when the
+// underlying Acute OR distribution shifts (new source_epoch, new
+// thresholds, retrained acute classifier). Versioned via
+// `chronicLoadFormulaVersion`.
+const ChronicLoadMinAcuteDensity = 7
 
 // ChronicLoadBaselineWindowDays — trailing window for the EWMA45
 // baseline against which each candidate day's Recovery rolling_3d is

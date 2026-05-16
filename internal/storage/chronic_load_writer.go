@@ -38,7 +38,23 @@ import (
 	"health-receiver/internal/health"
 )
 
-const chronicLoadFormulaVersion = 1
+// chronicLoadFormulaVersion bumps when label semantics change.
+//
+// Version history:
+//
+//   1 — initial release. chronic_acute_density used ChronicLoadMinAcuteDensity = 3
+//       events / 14d, producing ~76% positive rate on the test slice
+//       (Acute OR base rate ~27.5%, expected events ~3.85 — threshold
+//       below expectation). Phase 1 floors showed event_base_rate AUC
+//       below random, label barely discriminated.
+//   2 — calibration retune (Phase 1 step 1).
+//       ChronicLoadMinAcuteDensity raised from 3 to 7 based on the
+//       Phase 1 floor distribution; new positive rate ~25%. The
+//       window-observability gate `requiredAcuteDays` now equals
+//       14 − 7 + 1 = 8 (was 12 at the v1 threshold). chronic_label
+//       semantics unchanged; the v2 stamp covers all writer rows
+//       written under the same writer pass.
+const chronicLoadFormulaVersion = 2
 const chronicLoadFeatureVersion = 1
 
 // recoveryRolling3dRow is the minimal Recovery rolling_3d view Chronic
