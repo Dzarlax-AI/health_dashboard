@@ -35,7 +35,16 @@ import (
 // recoveryStabilityFormulaVersion bumps when the eligibility tree or
 // target value formula changes. Reading code can use this to invalidate
 // or compare old snapshots.
-const recoveryStabilityFormulaVersion = 1
+//
+// Version history:
+//   1 — initial release. `sleep_total_out_of_range` covered both
+//       Total==nil (no source row) and present-but-implausible values.
+//   2 — split nil-Total into the new `sleep_data_missing` reason so
+//       data gaps are operationally distinguishable from short/long
+//       nights. Eligibility outcome (eligible bool) is unchanged
+//       between v1 and v2; only the `eligibility_reason` text differs
+//       for the affected rows.
+const recoveryStabilityFormulaVersion = 2
 
 // recoveryStabilityFeatureVersion bumps when the feature set changes.
 // Separate from formula_version because feature surface and target

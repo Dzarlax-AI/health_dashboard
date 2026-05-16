@@ -81,6 +81,11 @@ const (
 	EligibilityOKAwakeStructuralZero        = "ok_awake_structural_zero"
 	EligibilityMissingAwakeUnknown          = "missing_awake_unknown"
 	EligibilitySleepTotalOutOfRange         = "sleep_total_out_of_range"
+	// EligibilitySleepDataMissing splits the old "out_of_range" bucket
+	// for nights with no source row at all (Total==NULL). Introduced in
+	// recovery_stability formula_version 2 so re-backfilled rows can be
+	// distinguished from rows written under the v1 over-broad reason.
+	EligibilitySleepDataMissing             = "sleep_data_missing"
 	EligibilityCoarseOnlySource             = "coarse_only_source"
 	EligibilityNoWalkingSegments            = "no_walking_segments"
 	EligibilityNoWalkingHR                  = "no_walking_hr"

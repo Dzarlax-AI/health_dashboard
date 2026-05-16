@@ -44,6 +44,14 @@ const (
 	SleepEligibilityMissingAwakeUnknown      = "missing_awake_unknown"
 	SleepEligibilitySleepTotalOutOfRange     = "sleep_total_out_of_range"
 	SleepEligibilityCoarseOnlySource         = "coarse_only_source"
+	// SleepEligibilityDataMissing distinguishes nights where the sleep
+	// row is entirely absent from the source (no metric_points entries
+	// for `sleep_total`) from physiologically out-of-range short or
+	// long nights. Both are ineligible, but their operational meaning
+	// differs: data_missing → device off / sync gap / pre-sync period;
+	// out_of_range → real but unusable short sleep (nap, all-nighter).
+	// Introduced in formula_version 2.
+	SleepEligibilityDataMissing              = "sleep_data_missing"
 )
 
 // Sleep eligibility thresholds. Documented in plan §4.2.
@@ -94,7 +102,18 @@ type SleepEfficiencyResult struct {
 // tree to one SleepRow and returns the verdict. Pure function — no
 // state, no I/O. Tested directly in recovery_stability_test.go.
 func ComputeSleepEfficiency(r SleepRow) SleepEfficiencyResult {
-	total := safeFloat(r.Total)
+	// Absent sleep_total row = no data was recorded for the night.
+	// Distinct from a present-but-unusable value (handled below) — the
+	// former usually means device off / sync gap / pre-tracking period,
+	// the latter means real sleep that was too short or too long for
+	// efficiency to be meaningful.
+	if r.Total == nil {
+		return SleepEfficiencyResult{
+			Eligible:          false,
+			EligibilityReason: SleepEligibilityDataMissing,
+		}
+	}
+	total := *r.Total
 	if total <= 0 || total < sleepTotalMinHours || total > sleepTotalMaxHours {
 		return SleepEfficiencyResult{
 			Eligible:          false,
