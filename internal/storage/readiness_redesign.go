@@ -57,9 +57,10 @@ const (
 	TargetKindRolling3d    = "rolling_3d"     // 3-day rolling target (primary for Recovery/Passive)
 	TargetKindDailyPoint   = "daily_point"    // single-day value (secondary)
 	TargetKindEventT1T3       = "event_t1_t3"        // OR-event in t+1..t+3 (Acute Risk primary): any day in window with HRV drop ≥1.5σ OR RHR spike ≥1.5σ
-	TargetKindEventStrictT1T3 = "event_strict_t1_t3" // AND-event in t+1..t+3 (Acute Risk secondary): some day in window with HRV drop AND RHR spike same day
-	TargetKindWoResidual      = "wo_residual"        // per-workout HR residual (Athletic, dormant)
-	TargetKindChronicLabel    = "chronic_label"      // sustained-deterioration binary label (Chronic Load)
+	TargetKindEventStrictT1T3     = "event_strict_t1_t3"     // AND-event in t+1..t+3 (Acute Risk secondary): some day in window with HRV drop AND RHR spike same day
+	TargetKindWoResidual          = "wo_residual"            // per-workout HR residual (Athletic, dormant)
+	TargetKindChronicLabel        = "chronic_label"          // sustained-deterioration binary label (Chronic Load primary): ≥5 of 14 forward days breach Recovery 3d-roll EWMA45 by >1σ
+	TargetKindChronicAcuteDensity = "chronic_acute_density"  // analysis label (Chronic Load secondary): ≥3 Acute Risk OR-events in t+1..t+14 forward window
 )
 
 // BaselineKind identifiers — naive predictors written alongside targets
@@ -141,6 +142,7 @@ var validTargetKinds = map[string]struct{}{
 	TargetKindRolling3d: {}, TargetKindDailyPoint: {},
 	TargetKindEventT1T3: {}, TargetKindEventStrictT1T3: {},
 	TargetKindWoResidual: {}, TargetKindChronicLabel: {},
+	TargetKindChronicAcuteDensity: {},
 }
 
 var validBaselineKinds = map[string]struct{}{
