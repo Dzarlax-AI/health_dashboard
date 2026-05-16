@@ -152,7 +152,7 @@ each is a Phase 1 retune candidate.
 | Signal | Observed | Concern |
 |---|---|---|
 | Acute Risk OR base rate | 27.5% across full history | Stable across years (except 2024 gap) at ~27–30%. Reasonable for "daily HRV/RHR fluctuation" but probably too noisy for a "did something acute happen?" alert. |
-| Acute Risk strict base rate | 2.3% | Sparse enough to be operationally informative. Calibration for precision@fixed-recall is hard at this rate — needs stratified bootstrap when Phase 1 evaluates models. |
+| Acute Risk strict base rate | 2.3% | Sparse enough to be operationally informative. Calibration for precision@fixed-recall is hard at this rate — requires stratified bootstrapping when Phase 1 evaluates models. |
 | Chronic density positive rate | **76.4% of eligible days** | Threshold ≥3 acute OR-events in a 14-day window is too low given the 27.5% OR base rate. Expected events per window = 14 × 0.275 = 3.85, above threshold by construction. Phase 1 should retune to ≥5–6 events. |
 | Chronic label positive rate | 17.5% | Plausible for a sustained-deterioration signal. Hold for Phase 1 floors before retuning. |
 | 2022 strict event rate | 5.7% vs. 1–2% in other years | Possibly real physiological pattern (illness/stress period) worth investigating. Not a Phase 0 fix — flag for Phase 1 narrative review. |
@@ -179,9 +179,9 @@ each is a Phase 1 retune candidate.
    add them.
 
 4. **2022 strict spike investigation.** 5.7% strict-event rate that
-   year vs. 1–2% elsewhere. Could be illness cluster, lifestyle
-   change, or sensor artifact. Worth a manual narrative review before
-   feeding into trained models.
+   year vs. 1–2% elsewhere. This could reflect an illness cluster,
+   lifestyle change, or sensor artifact. Worth a manual narrative
+   review before feeding into trained models.
 
 5. **`event_window_data_missing` at bleeding edges.** Every daily
    backfill leaves the last 3-14 dates ineligible because future
