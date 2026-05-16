@@ -242,18 +242,19 @@ func TestAcuteRisk_Integration_NoLeakageFromOwnDayIntoLabel(t *testing.T) {
 	db, cleanup := testDB(t)
 	defer cleanup()
 
-	// Construct a window where the candidate day's value would skew its
-	// own baseline if included. Plant 60 days of steady values (HRV=45,
-	// SD ≈ 0). t+1 has a single extreme HRV value. If the writer were
-	// to compute baseline INCLUDING t+1, the singleton would be its own
-	// mean and the z-score would be 0 (no breach). The honest label
-	// uses history strictly before t+1 — where SD is ~0 and the
-	// extreme value sits many σ away.
+	// Active test of the per-candidate baseline rule: t+1 carries an
+	// extreme HRV (10) against history that hovers around 45 ± 2.
 	//
-	// Because we seed exactly constant history, prior SD = 0 and the
-	// z calc returns nil (zScoreOrNil guards). The day-breach therefore
-	// can't fire and OR=0. We verify the absence of a *false* breach
-	// (no leakage of "0 sigma against self"-based 1-label).
+	//   • Honest behaviour (windowStatsBefore excludes the candidate):
+	//     baseline mean ≈ 45, SD ≈ 2, z ≈ −17.5 — far below the −1.5
+	//     threshold. OR-event MUST fire: orVal == 1.
+	//
+	//   • Leaky behaviour (candidate included in own baseline): a
+	//     single extreme value drags the mean toward itself and
+	//     inflates SD, pushing z close to zero. The breach would
+	//     silently disappear: orVal == 0.
+	//
+	// Asserting orVal == 1 therefore directly fails on label leakage.
 	seedSteadyHistory(t, db, "2026-04-19", 60)
 	hrv0, rhr0 := 45.0, 60.0
 	seedAutonomicRow(t, db, "2026-04-20", &hrv0, &rhr0)
@@ -274,9 +275,9 @@ func TestAcuteRisk_Integration_NoLeakageFromOwnDayIntoLabel(t *testing.T) {
 	`, "2026-04-20", SubScoreAcuteRisk, TargetKindEventT1T3).Scan(&orVal, &cov); err != nil {
 		t.Fatalf("read or: %v", err)
 	}
-	// Coverage JSON should expose per-day evaluation. We don't pin the
-	// exact value (depends on whether SD=0 prevents z) but the row
-	// MUST exist and reference t+1.
+	if orVal != 1 {
+		t.Errorf("event_t1_t3 = %v, want 1 — extreme HRV at t+1 must trigger breach against prior-only baseline. If 0, candidate value is leaking into its own baseline.", orVal)
+	}
 	if !strings.Contains(cov, "2026-04-21") {
 		t.Errorf("coverage should reference candidate t+1 (2026-04-21); got: %s", cov)
 	}
