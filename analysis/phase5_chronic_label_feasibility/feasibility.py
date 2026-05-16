@@ -6,7 +6,7 @@ Chronic Load own-features beat the `event_base_rate` naive floor on
 the `source_2025_current` test slice, measured at precision @
 recall = 0.5?
 
-First classifier feasibility — methodology differs from the continuous
+Classifier feasibility — methodology differs from the continuous
 scripts (`phase2_passive_feasibility`, `phase3_recovery_feasibility`)
 in three places. Each difference is intentional:
 
@@ -435,7 +435,21 @@ def primary_split_and_evaluate(rows: list[Row], baseline_map: dict[date, float])
 
 # -------- expanding walk-forward sensitivity ---------------------------
 
-def walk_forward(rows: list[Row]) -> dict:
+def walk_forward(rows: list[Row], baseline_map: dict[date, float]) -> dict:
+    """Expanding walk-forward by month.
+
+    Two methodology notes worth keeping in mind here:
+
+    1. **Alpha is selected on an inner val split inside the train
+       window, NOT on the test month.** Previously the table reported
+       the best alpha *on the held-out month*, which is test-set model
+       selection and inflates the headline precision. Per-month inner
+       train/val (chronological 80/20) keeps the comparison honest.
+    2. **Floor precision is reported alongside model precision on the
+       same month.** Without this, an apparent "model ≈ 1.0 in early
+       months" claim could mask the fact that the base-rate floor also
+       scored ≈ 1.0 there.
+    """
     X, y, dates = to_matrix(rows)
     if not dates:
         return {"error": "no rows"}
@@ -455,35 +469,74 @@ def walk_forward(rows: list[Row]) -> dict:
         test_idx = by_month[test_month]
         if len(train_idx) < 30 or len(test_idx) < 5:
             continue
+        test_dates_month = [dates[i] for i in test_idx]
+        # Restrict month to rows with floor predictions — identical-row
+        # comparison rule from the primary split applies here too.
+        keep = [j for j, d in enumerate(test_dates_month) if baseline_map.get(d) is not None]
+        if len(keep) < 5:
+            continue
+        test_idx = [test_idx[j] for j in keep]
+        test_dates_month = [test_dates_month[j] for j in keep]
         X_train, y_train = X[train_idx], y[train_idx]
         X_test, y_test = X[test_idx], y[test_idx]
         if y_test.sum() == 0 or y_test.sum() == len(y_test):
             continue  # no positives or no negatives; precision undefined
-        X_train_s, X_test_s = standardize_train_apply(X_train, X_test)
-        per_alpha = {}
+
+        # Inner train/val on the cumulative-train window to pick alpha.
+        inner_cut = int(round(0.8 * len(train_idx)))
+        if inner_cut < 10 or len(train_idx) - inner_cut < 5:
+            continue
+        X_inner_train_s, X_val_s = standardize_train_apply(X_train[:inner_cut], X_train[inner_cut:])
+        y_inner_train = y_train[:inner_cut]
+        y_val = y_train[inner_cut:]
+        alpha_val: dict[float, float | None] = {}
         for alpha in L2_ALPHAS:
-            coef = fit_logistic_l2(X_train_s, y_train, alpha)
-            probs = predict_proba(coef, X_test_s)
-            pa = list(zip(probs.tolist(), y_test.tolist()))
+            coef = fit_logistic_l2(X_inner_train_s, y_inner_train, alpha)
+            probs = predict_proba(coef, X_val_s)
+            pa = list(zip(probs.tolist(), y_val.tolist()))
             prec, _ = precision_at_recall(pa)
-            per_alpha[alpha] = prec
+            alpha_val[alpha] = prec
+        valid = {a: p for a, p in alpha_val.items() if p is not None}
+        if not valid:
+            # Fall back to most-regularised alpha when val gives no
+            # decidable signal (no positives in val window).
+            chosen_alpha = L2_ALPHAS[-1]
+        else:
+            chosen_alpha = max(valid, key=lambda a: valid[a])
+
+        # Refit chosen alpha on the full cumulative train, score the month.
+        X_train_s, X_test_s = standardize_train_apply(X_train, X_test)
+        coef = fit_logistic_l2(X_train_s, y_train, chosen_alpha)
+        probs = predict_proba(coef, X_test_s)
+        model_pa = list(zip(probs.tolist(), y_test.tolist()))
+        model_prec, _ = precision_at_recall(model_pa)
+
+        # Floor on the same month using the same rows.
+        floor_pa = [(baseline_map[d], int(y_test[i])) for i, d in enumerate(test_dates_month)]
+        floor_prec, _ = precision_at_recall(floor_pa)
+
         results.append({
             "test_month": test_month,
             "n_train": len(train_idx),
             "n_test": len(test_idx),
             "n_test_positives": int(y_test.sum()),
-            "per_alpha": per_alpha,
+            "chosen_alpha": chosen_alpha,
+            "model_precision": model_prec,
+            "floor_precision": floor_prec,
         })
 
     if not results:
         return {"error": "no valid monthly folds"}
 
-    mean_per_alpha = {}
-    for alpha in L2_ALPHAS:
-        vals = [r["per_alpha"][alpha] for r in results if r["per_alpha"][alpha] is not None]
-        mean_per_alpha[alpha] = float(np.mean(vals)) if vals else math.nan
+    def _mean(key: str) -> float:
+        vals = [r[key] for r in results if r[key] is not None]
+        return float(np.mean(vals)) if vals else math.nan
 
-    return {"monthly": results, "mean_per_alpha": mean_per_alpha}
+    return {
+        "monthly": results,
+        "mean_model_precision": _mean("model_precision"),
+        "mean_floor_precision": _mean("floor_precision"),
+    }
 
 
 # -------- rendering ----------------------------------------------------
@@ -620,24 +673,19 @@ def render(primary: dict, sensitivity: dict, n_dropped: int) -> str:
         out.append("")
         out.append("Sanity check against the single primary split. Each row trains on every month strictly before `test_month`, evaluates on that month.")
         out.append("")
-        out.append("| test_month | n_train | n_test | n_pos | best α | best precision@R=0.5 |")
-        out.append("|---|---|---|---|---|---|")
-        for r in sensitivity["monthly"]:
-            valid = {a: p for a, p in r["per_alpha"].items() if p is not None}
-            if valid:
-                best_a = max(valid, key=lambda a: valid[a])
-                best_p = valid[best_a]
-            else:
-                best_a = "—"
-                best_p = None
-            out.append(f"| {r['test_month']} | {r['n_train']} | {r['n_test']} | {r['n_test_positives']} | {best_a} | {fmt(best_p, 3)} |")
+        out.append("Alpha is selected per month via an inner train/val split inside the cumulative-train window — never on the held-out month. Floor precision@R=0.5 is reported on the same month rows as the model so the two columns are directly comparable.")
         out.append("")
-        out.append("Mean precision@R=0.5 across monthly tests, per alpha:")
-        for alpha, mean_p in sensitivity['mean_per_alpha'].items():
-            out.append(f"- L2 α={alpha}: {fmt(mean_p, 3)}")
+        out.append("| test_month | n_train | n_test | n_pos | chosen α | model precision@R=0.5 | floor precision@R=0.5 |")
+        out.append("|---|---|---|---|---|---|---|")
+        for r in sensitivity["monthly"]:
+            out.append(
+                f"| {r['test_month']} | {r['n_train']} | {r['n_test']} | {r['n_test_positives']} | {r['chosen_alpha']} | "
+                f"{fmt(r['model_precision'], 3)} | {fmt(r['floor_precision'], 3)} |"
+            )
+        out.append("")
+        out.append(f"Mean across monthly tests — model: {fmt(sensitivity['mean_model_precision'], 3)}, floor: {fmt(sensitivity['mean_floor_precision'], 3)}.")
         out.append("")
         out.append("Materially different from the primary split would indicate the 70/30 caught an unusually favourable/unfavourable test tail.")
-    out.append("")
     return "\n".join(out)
 
 
@@ -652,7 +700,7 @@ def main():
     X, y, dates = to_matrix(rows)
     n_dropped = len(rows) - len(dates)
     primary = primary_split_and_evaluate(rows, baseline_map)
-    sensitivity = walk_forward(rows)
+    sensitivity = walk_forward(rows, baseline_map)
     print(render(primary, sensitivity, n_dropped))
 
 

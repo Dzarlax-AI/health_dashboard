@@ -52,23 +52,19 @@ Train period split chronologically 80/20: train' = 180 rows, val = 45 rows. Vali
 
 Sanity check against the single primary split. Each row trains on every month strictly before `test_month`, evaluates on that month.
 
-| test_month | n_train | n_test | n_pos | best α | best precision@R=0.5 |
-|---|---|---|---|---|---|
-| 2025-06 | 64 | 8 | 2 | 1.0 | 0.167 |
-| 2025-07 | 72 | 27 | 8 | 0.01 | 1.000 |
-| 2025-08 | 99 | 22 | 3 | 10.0 | 1.000 |
-| 2025-09 | 121 | 15 | 2 | 0.01 | 1.000 |
-| 2025-12 | 191 | 21 | 3 | 0.01 | 1.000 |
-| 2026-01 | 212 | 20 | 15 | 0.01 | 0.800 |
-| 2026-03 | 260 | 31 | 13 | 0.1 | 1.000 |
-| 2026-04 | 291 | 30 | 13 | 0.01 | 1.000 |
+Alpha is selected per month via an inner train/val split inside the cumulative-train window — never on the held-out month. Floor precision@R=0.5 is reported on the same month rows as the model so the two columns are directly comparable.
 
-Mean precision@R=0.5 across monthly tests, per alpha:
-- L2 α=0.01: 0.745
-- L2 α=0.1: 0.760
-- L2 α=1.0: 0.762
-- L2 α=10.0: 0.871
-- L2 α=100.0: 0.811
+| test_month | n_train | n_test | n_pos | chosen α | model precision@R=0.5 | floor precision@R=0.5 |
+|---|---|---|---|---|---|---|
+| 2025-06 | 64 | 8 | 2 | 100.0 | 0.143 | 1.000 |
+| 2025-07 | 72 | 27 | 8 | 0.01 | 1.000 | 0.174 |
+| 2025-08 | 99 | 22 | 3 | 0.01 | 0.143 | 1.000 |
+| 2025-09 | 121 | 15 | 2 | 100.0 | 1.000 | 0.333 |
+| 2025-12 | 191 | 21 | 3 | 100.0 | 0.667 | 0.286 |
+| 2026-01 | 212 | 20 | 15 | 0.01 | 0.800 | 0.727 |
+| 2026-03 | 260 | 31 | 13 | 0.01 | 0.875 | 1.000 |
+| 2026-04 | 291 | 30 | 13 | 0.1 | 1.000 | 0.909 |
+
+Mean across monthly tests — model: 0.703, floor: 0.679.
 
 Materially different from the primary split would indicate the 70/30 caught an unusually favourable/unfavourable test tail.
-
