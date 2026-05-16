@@ -38,7 +38,23 @@ import (
 	"health-receiver/internal/health"
 )
 
-const chronicLoadFormulaVersion = 1
+// chronicLoadFormulaVersion bumps when label semantics change.
+//
+// Version history:
+//
+//   1 — initial release. chronic_acute_density used ChronicLoadMinAcuteDensity = 3
+//       events / 14d, producing ~76% positive rate on the test slice
+//       (Acute OR base rate ~27.5%, expected events ~3.85 — threshold
+//       below expectation). Phase 1 floors showed event_base_rate AUC
+//       below random, label barely discriminated.
+//   2 — calibration retune (Phase 1 step 1).
+//       ChronicLoadMinAcuteDensity raised from 3 to 7 based on the
+//       Phase 1 floor distribution; new positive rate ~25%. The
+//       window-observability gate `requiredAcuteDays` now equals
+//       14 − 7 + 1 = 8 (was 12 at the v1 threshold). chronic_label
+//       semantics unchanged; the v2 stamp covers all writer rows
+//       written under the same writer pass.
+const chronicLoadFormulaVersion = 2
 const chronicLoadFeatureVersion = 1
 
 // recoveryRolling3dRow is the minimal Recovery rolling_3d view Chronic
@@ -312,36 +328,50 @@ func (s *DB) writeChronicLoadRow(
 		cells = append(cells, cell)
 	}
 
-	// Per-target observability gate: a NEGATIVE label is only honest
-	// when enough days in the window were observed to rule out a flip.
-	// chronic_label: need ≥ (window − minBreach + 1) = 10 observed
-	// Recovery days, since fewer could hide ≥5 breaches.
-	// chronic_acute_density: need ≥ (window − minDensity + 1) = 12
-	// observed Acute days, since fewer could hide ≥3 events.
-	// A POSITIVE label is unconditional — observed evidence suffices
-	// regardless of how many days were missing. Mirrors the Acute
-	// Risk window gate (Codex review, PR #94).
-	requiredRecoveryDays := health.ChronicLoadForwardWindowDays - health.ChronicLoadMinBreachDays + 1
-	requiredAcuteDays := health.ChronicLoadForwardWindowDays - health.ChronicLoadMinAcuteDensity + 1
+	// Per-target observability gate. The rule is bidirectional: a
+	// label is honest only when the missing days could not flip it.
+	//
+	//   - Positive label honest: observed_positive_count >= threshold,
+	//     regardless of how many days are missing.
+	//   - Negative label honest: even if every missing day turned out
+	//     to be a positive, the total still wouldn't hit threshold.
+	//     i.e. observed_positive_count + missing_days < threshold.
+	//   - Otherwise: ineligible; missing days could flip the label.
+	//
+	// The earlier formulation `observed_days >= window - threshold + 1`
+	// was only correct in the worst case `observed_positives == 0`.
+	// When observed positives were already close to the threshold, a
+	// few missing days could push the true label over without the
+	// gate noticing. Codex review on PR #97 caught the near-threshold
+	// corruption; the fix replaces the old constant requirement with
+	// the bidirectional max-possible check.
+	missingRecoveryDays := health.ChronicLoadForwardWindowDays - observedRecoveryDays
+	missingAcuteDays := health.ChronicLoadForwardWindowDays - observedAcuteDays
+	maxPossibleBreaches := breachCount + missingRecoveryDays
+	maxPossibleAcuteEvents := acuteCount + missingAcuteDays
 
 	chronicLabel := boolToFloat(breachCount >= health.ChronicLoadMinBreachDays)
 	acuteDensityLabel := boolToFloat(acuteCount >= health.ChronicLoadMinAcuteDensity)
 
-	chronicLabelEligible := breachCount >= health.ChronicLoadMinBreachDays || observedRecoveryDays >= requiredRecoveryDays
-	acuteDensityEligible := acuteCount >= health.ChronicLoadMinAcuteDensity || observedAcuteDays >= requiredAcuteDays
+	chronicLabelEligible := breachCount >= health.ChronicLoadMinBreachDays ||
+		maxPossibleBreaches < health.ChronicLoadMinBreachDays
+	acuteDensityEligible := acuteCount >= health.ChronicLoadMinAcuteDensity ||
+		maxPossibleAcuteEvents < health.ChronicLoadMinAcuteDensity
 
 	cov := mustMarshal(map[string]any{
-		"forward_window_days":       health.ChronicLoadForwardWindowDays,
-		"breach_count":              breachCount,
-		"breach_threshold":          health.ChronicLoadMinBreachDays,
-		"breach_z_threshold":        health.ChronicLoadDeteriorationZThreshold,
-		"observed_recovery_days":    observedRecoveryDays,
-		"required_recovery_days":    requiredRecoveryDays,
-		"acute_or_count":            acuteCount,
-		"acute_density_threshold":   health.ChronicLoadMinAcuteDensity,
-		"observed_acute_days":       observedAcuteDays,
-		"required_acute_days":       requiredAcuteDays,
-		"per_day":                   cells,
+		"forward_window_days":         health.ChronicLoadForwardWindowDays,
+		"breach_count":                breachCount,
+		"breach_threshold":            health.ChronicLoadMinBreachDays,
+		"breach_z_threshold":          health.ChronicLoadDeteriorationZThreshold,
+		"observed_recovery_days":      observedRecoveryDays,
+		"missing_recovery_days":       missingRecoveryDays,
+		"max_possible_breaches":       maxPossibleBreaches,
+		"acute_or_count":              acuteCount,
+		"acute_density_threshold":     health.ChronicLoadMinAcuteDensity,
+		"observed_acute_days":         observedAcuteDays,
+		"missing_acute_days":          missingAcuteDays,
+		"max_possible_acute_events":   maxPossibleAcuteEvents,
+		"per_day":                     cells,
 	})
 
 	// Primary chronic_label: gated independently on Recovery observability.
