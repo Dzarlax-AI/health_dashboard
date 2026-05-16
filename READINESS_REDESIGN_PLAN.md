@@ -551,15 +551,42 @@ of three states on a given day:
 | `unknown` | no `naive_baselines` row for that (date, sub_score, primary target_kind, baseline_kind) yet, OR `predicted_value IS NULL` (warmup not met, source_epoch boundary, etc.) | explicit "no reading today" UI affordance; not zero, not last-known |
 | `hidden` | the entire sub-score has not been calibrated on this tenant (see §8.5) OR the target is in `silent diagnostic only` mode | not rendered at all; analytics may still aggregate it server-side |
 
-`unknown` is **a first-class state, not an error**. The reason
-attached to it comes from `target_snapshots.eligibility_reason` for
-the same (date, sub_score, primary target_kind) — the two writers
-share eligibility logic, so when the baseline writer produces a
-NULL `predicted_value`, the target writer's `eligibility_reason`
-explains why (e.g. `insufficient_paired_observations`,
-`source_epoch_gap`, `warmup_not_met`). Past `eligibility_reason`
-values are documented as an open enum in
-`internal/storage/readiness_redesign.go`.
+`unknown` is **a first-class state, not an error**. The authoritative
+reason on the chip comes from the **baseline side**, not the target
+side — the two writers run with different eligibility conditions and
+can disagree on a given date:
+
+- `ewma_45d` needs sufficient trailing in-epoch observations strictly
+  before `t`. It can be NULL on dates where the forward target is
+  `eligible = TRUE` (e.g. a backfilled day where t+1..t+3 already
+  exists but the date sits too close to a `source_epoch` boundary
+  for a trailing 45-day window).
+- `rolling_3d` / `chronic_label` / `event_t1_t3` are forward-window
+  targets and can be `eligible = TRUE` regardless of how much
+  trailing history exists.
+
+Using `target_snapshots.eligibility_reason` as the chip reason would
+therefore render `unknown: ok` on cases where the baseline really is
+unavailable. The chip reason rules instead:
+
+- No `naive_baselines` row for that (date, sub_score, primary
+  target_kind, baseline_kind) → `pending` (the writer has not yet
+  reached this date).
+- Row exists, `predicted_value IS NULL` → baseline-side reason such
+  as `baseline_warmup` (insufficient trailing history) or
+  `baseline_source_epoch_boundary`. Concrete enum values are
+  defined when `naive_baselines.reason` lands as a schema change
+  (open follow-up — see "Deliverable" below).
+- `target_snapshots.eligibility_reason` for the same (date,
+  sub_score, target_kind) is still surfaced, but only as a
+  **secondary diagnostic** in admin UI / tooltips. It is not the
+  chip's primary reason.
+
+Until `naive_baselines.reason` is added, the chip falls back to
+`baseline_unavailable` as a single catch-all reason; admin tooling
+shows both that and the target-side `eligibility_reason` so an
+operator can distinguish "baseline missing despite eligible target"
+from "everything ineligible" without guessing.
 
 **Primary target_kind + baseline_kind per sub-score (what the chip renders):**
 
@@ -604,18 +631,30 @@ forward predictive value the chips don't.
   re-imported a HK archive mid-day and the epoch boundary shifted),
   render `unknown` with reason `source_epoch_change` until the
   writer re-evaluates.
-- If `predicted_value IS NULL`, render `unknown` with the reason
-  pulled from `target_snapshots.eligibility_reason` for the same
-  (date, sub_score, primary target_kind) and exposed in a tooltip.
+- If `predicted_value IS NULL`, render `unknown` with the
+  baseline-side reason. Until `naive_baselines.reason` is added as
+  a schema change, the chip uses `baseline_unavailable` as a
+  single catch-all and admin tooling shows
+  `target_snapshots.eligibility_reason` for the same (date,
+  sub_score, primary target_kind) as a secondary diagnostic.
 
-**Deliverable shape for the next code PR on this track:** a single
-markdown file `READINESS_REDESIGN_OPERATIONAL_CONTRACT.md` (or the
-relevant section in `SCORING.md`) that the UI implementation can be
-written against, plus admin-page schema for surfacing both
-`naive_baselines.predicted_value` (chip value) and
-`target_snapshots.eligibility_reason` (chip reason) per day per
-sub-score so we can validate the contract is being honoured before
-any chip ships.
+**Deliverable shape for the next code PR on this track:**
+
+1. A single markdown file `READINESS_REDESIGN_OPERATIONAL_CONTRACT.md`
+   (or the relevant section in `SCORING.md`) that the UI
+   implementation can be written against.
+2. Admin-page schema surfacing per day per sub-score:
+   `naive_baselines.predicted_value` (chip value),
+   the chip's effective reason (currently `baseline_unavailable`),
+   and `target_snapshots.eligibility_reason` (secondary
+   diagnostic).
+
+**Schema follow-up (separate PR, queued):** add a `reason TEXT NULL`
+column to `naive_baselines` populated by each baseline writer with
+its own ineligibility cause (`baseline_warmup`,
+`baseline_source_epoch_boundary`, …) so the chip stops needing the
+`baseline_unavailable` catch-all. Until that lands, the contract
+above is correct but the chip reason resolution is coarse.
 
 ### 6.2 Tenant calibration
 
