@@ -109,11 +109,11 @@ const ChronicLoadWarmupMinPaired = 30
 // `settings` table; an unset key falls back to the default.
 type ChronicLoadConfig struct {
 	// MinBreachDays — primary `chronic_label` threshold. Default 5.
-	MinBreachDays int
+	MinBreachDays int `json:"min_breach_days"`
 	// MinAcuteDensity — secondary `chronic_acute_density` threshold.
 	// Default 7. NOT a physiological constant; calibrates on Acute OR
 	// base rate which is tenant-specific.
-	MinAcuteDensity int
+	MinAcuteDensity int `json:"min_acute_density"`
 }
 
 // DefaultChronicLoadConfig returns the values calibrated against the

@@ -250,6 +250,18 @@ func (s *DB) CreateSchema(ctx context.Context, name string) error {
 	return err
 }
 
+// DropSchema issues DROP SCHEMA … CASCADE. Exposed for test teardown
+// where the pool used to create the schema is not the same pool that
+// needs to drop it (the schema-pinned pool can't reach across packages).
+// Production code does not call this; tenant teardown goes through
+// registry.RemoveUser.
+func (s *DB) DropSchema(ctx context.Context, name string) error {
+	ctx, cancel := queryCtx()
+	defer cancel()
+	_, err := s.pool.Exec(ctx, "DROP SCHEMA IF EXISTS "+name+" CASCADE")
+	return err
+}
+
 // parseDate parses a YYYY-MM-DD string.
 func parseDate(s string) (time.Time, error) {
 	return time.Parse("2006-01-02", s)
