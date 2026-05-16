@@ -64,11 +64,13 @@ func TestComputeSleepEfficiency_MissingAwakeUnknown(t *testing.T) {
 }
 
 func TestComputeSleepEfficiency_SleepTotalOutOfRange(t *testing.T) {
+	// Present-but-implausible values. `nil total` lives in
+	// TestComputeSleepEfficiency_SleepDataMissing now — formula_version 2
+	// split the old over-broad reason into two distinct ones.
 	cases := []struct {
 		name  string
 		total *float64
 	}{
-		{"nil total", nil},
 		{"zero total", fp(0)},
 		{"negative total", fp(-1)},
 		{"under floor", fp(3.5)},
@@ -91,6 +93,36 @@ func TestComputeSleepEfficiency_SleepTotalOutOfRange(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestComputeSleepEfficiency_SleepDataMissing(t *testing.T) {
+	// Empirical case from the full-history backfill: source row entirely
+	// absent for the date, all fields NULL. Should resolve to
+	// sleep_data_missing — distinct from a present-but-short night.
+	t.Run("all fields nil", func(t *testing.T) {
+		r := SleepRow{Date: "2026-05-15"}
+		got := ComputeSleepEfficiency(r)
+		if got.Eligible || got.EligibilityReason != SleepEligibilityDataMissing {
+			t.Fatalf("expected sleep_data_missing for fully-nil row, got %+v", got)
+		}
+		if got.Efficiency != nil {
+			t.Error("expected nil efficiency when ineligible")
+		}
+	})
+	// Defensive variant: total nil but staged fields somehow present.
+	// Real-world this shouldn't happen (sleep_total drives the ingest),
+	// but if it does we still classify as data_missing because efficiency
+	// cannot be computed without a total.
+	t.Run("nil total with staged fields", func(t *testing.T) {
+		r := SleepRow{
+			Date: "2026-05-15",
+			Deep: fp(1.5), REM: fp(1.5), Core: fp(4.0),
+		}
+		got := ComputeSleepEfficiency(r)
+		if got.Eligible || got.EligibilityReason != SleepEligibilityDataMissing {
+			t.Fatalf("expected sleep_data_missing for nil-Total even with stages, got %+v", got)
+		}
+	})
 }
 
 func TestComputeSleepEfficiency_CoarseOnlySource(t *testing.T) {
