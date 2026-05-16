@@ -1281,19 +1281,28 @@ func (h *Handler) adminReadinessRedesignBackfill(w http.ResponseWriter, r *http.
 	})
 }
 
-// adminReadinessRedesignConfig returns the effective Chronic Load
-// calibration config for the requesting (or admin-overridden) tenant,
-// without running a backfill. Useful as a runbook step: before
-// backfilling a non-`health` tenant, an operator hits this endpoint
-// to confirm the per-schema settings resolved to the values they
-// expected (or fell back to defaults).
+// adminReadinessRedesignConfig handles GET/POST
+// /api/admin/readiness-redesign/config — inspect (GET) or override
+// (POST) the Chronic Load calibration thresholds on a per-tenant
+// basis. Admin only.
 //
-// GET /api/admin/readiness-redesign/config?schema=<tenant_schema>
+// GET — returns the effective config without running a backfill.
+// Schema selectable via `?schema=<tenant_schema>`. Useful as a runbook
+// step before backfilling a non-`health` tenant.
 //
-// Response mirrors the `chronic_load_config` field in the backfill
-// response so a single shape is consumed downstream.
+// POST — body is `{"chronic_load.min_acute_density": <int>,
+// "chronic_load.min_breach_days": <int>}` (either or both keys).
+// Writes to the tenant's `<schema>.settings` table directly, not
+// the global registry — the two are separate stores and the chronic
+// thresholds are intentionally per-tenant.
+//
+// The general /api/admin/settings endpoint deliberately does NOT
+// accept these keys: it routes to the global registry and silently
+// drops anything outside the gemini_* allow-list, which would look
+// like success from the operator's side. This endpoint is the
+// supported way to apply the override.
 func (h *Handler) adminReadinessRedesignConfig(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -1333,6 +1342,49 @@ func (h *Handler) adminReadinessRedesignConfig(w http.ResponseWriter, r *http.Re
 		http.Error(w, "no tenant DB available", http.StatusServiceUnavailable)
 		return
 	}
+
+	if r.Method == http.MethodPost {
+		// Strongly-typed body: only positive ints, only the two keys.
+		// Reject everything else explicitly so a typo in a key name
+		// produces a 400 instead of a silent no-op.
+		var body map[string]int
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid JSON: expected object of {key: int}", http.StatusBadRequest)
+			return
+		}
+		if len(body) == 0 {
+			http.Error(w, "body is empty; expected at least one of "+
+				storage.SettingChronicLoadMinAcuteDensity+", "+
+				storage.SettingChronicLoadMinBreachDays, http.StatusBadRequest)
+			return
+		}
+		allowed := map[string]bool{
+			storage.SettingChronicLoadMinAcuteDensity: true,
+			storage.SettingChronicLoadMinBreachDays:   true,
+		}
+		toSave := make(map[string]string, len(body))
+		for k, v := range body {
+			if !allowed[k] {
+				http.Error(w, "unknown key "+k+"; allowed: "+
+					storage.SettingChronicLoadMinAcuteDensity+", "+
+					storage.SettingChronicLoadMinBreachDays, http.StatusBadRequest)
+				return
+			}
+			if v <= 0 {
+				http.Error(w, k+" must be a positive integer; got "+strconv.Itoa(v),
+					http.StatusBadRequest)
+				return
+			}
+			toSave[k] = strconv.Itoa(v)
+		}
+		if err := db.SaveSettings(toSave); err != nil {
+			http.Error(w, "save settings: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// Echo the post-write effective config so the operator confirms
+		// in one round-trip that the override took.
+	}
+
 	_, status := db.LoadChronicLoadConfig()
 	jsonResponse(w, map[string]any{
 		"schema":              schema,

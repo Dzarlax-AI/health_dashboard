@@ -682,19 +682,28 @@ Storage entry points:
 Admin surfacing:
 
 - `GET /api/admin/readiness-redesign/config?schema=<tenant>` —
-  inspect effective config without running a backfill. Returns the
-  same `chronic_load_config` shape that backfill responses now carry.
+  inspect effective config without running a backfill.
+- `POST /api/admin/readiness-redesign/config?schema=<tenant>` — apply
+  per-tenant override. Body is JSON `{"chronic_load.min_acute_density":
+  <int>, "chronic_load.min_breach_days": <int>}` (either or both
+  keys); writes to `<schema>.settings` and echoes the effective
+  config. Unknown keys / non-positive values are rejected with 400 —
+  no silent drop.
 - `POST /api/admin/readiness-redesign/backfill?…` — response now
   includes `chronic_load_config`, so the operator sees what the run
   actually used.
 
+The general `/api/admin/settings` endpoint **cannot** be used here:
+it routes to the global registry and only accepts the gemini_* keys.
+Anything else is silently dropped from the request — exactly the
+silent failure mode this track removes.
+
 **Runbook (calibrating a new tenant before backfill):**
 
-1. Connect to the tenant's schema (psql or admin route).
-2. Hit `GET /api/admin/readiness-redesign/config?schema=<tenant>`.
+1. Hit `GET /api/admin/readiness-redesign/config?schema=<tenant>`.
    Confirm response shows `matches_defaults: true` — fresh tenants
    start on the `health` defaults.
-3. Compute the Acute OR base rate on this tenant's source_2025_current
+2. Compute the Acute OR base rate on this tenant's source_2025_current
    slice (or whatever the active epoch is). The default
    `min_acute_density = 7` was calibrated against the `health` tenant's
    ~27% Acute OR base rate; positive rate at threshold 7 is ~25%, which
@@ -702,21 +711,33 @@ Admin surfacing:
    rate is materially different (e.g. <20% or >35%), retune
    `min_acute_density` to keep the resulting `chronic_acute_density`
    positive rate in the 15–30% band.
-4. Apply override via `POST /api/admin/settings` (admin-only) or
-   directly: `INSERT INTO <schema>.settings(key, value) VALUES
-   ('chronic_load.min_acute_density', '<n>') ON CONFLICT (key) DO
-   UPDATE SET value = EXCLUDED.value`. The same shape applies to
-   `chronic_load.min_breach_days` if the recovery-deterioration regime
-   is also materially different (rarer; usually leave at default 5).
-5. Re-fetch `GET /api/admin/readiness-redesign/config?…`. Confirm
+3. Apply override:
+   ```
+   POST /api/admin/readiness-redesign/config?schema=<tenant>
+   Content-Type: application/json
+
+   {"chronic_load.min_acute_density": <n>}
+   ```
+   The same body shape extends to `chronic_load.min_breach_days` if
+   the recovery-deterioration regime is also materially different
+   (rarer; usually leave at default 5). The response echoes the
+   post-write effective config so the operator confirms the override
+   took in one round-trip.
+
+   For ops without an HTTP path (e.g. mid-incident, sandbox restore),
+   the direct SQL fallback is `INSERT INTO <schema>.settings(key, value)
+   VALUES ('chronic_load.min_acute_density', '<n>') ON CONFLICT (key)
+   DO UPDATE SET value = EXCLUDED.value` — same destination, same
+   effective result, no validation.
+4. Re-fetch `GET /api/admin/readiness-redesign/config?…`. Confirm
    `effective` reflects the override, `matches_defaults: false`, and
    `corrected_to_defaults: false`.
-6. Run Phase 0 backfill in dependency order
+5. Run Phase 0 backfill in dependency order
    (Recovery → Passive → Acute → Chronic). For Chronic, verify the
    backfill response's `chronic_load_config.effective` matches the
    override and check a sampled `target_snapshots.data_coverage` row
    carries the new threshold values.
-7. Before treating the tenant's `chronic_label` / `chronic_acute_density`
+6. Before treating the tenant's `chronic_label` / `chronic_acute_density`
    labels as load-bearing for analysis, require ≥30 positives in the
    test slice (same threshold as `event_strict_t1_t3` per §10) — that's
    the floor for stable `event_base_rate` baselines.
