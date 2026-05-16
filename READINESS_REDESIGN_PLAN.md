@@ -697,17 +697,21 @@ as feasibility experiments complete. "Closed" verdicts are not
 permanent — each row carries a revisit trigger that, if observed,
 re-opens the target.
 
-The first two `closed` entries (Passive and Recovery rolling_3d)
-share the same pattern: best linear model effectively collapsed onto
-the `ewma_45d` baseline, MAE upper CI overlapped the floor's lower
-CI. This is methodology success: a calibrated naive baseline that
-already does the job, not a forced ML model.
+All five active targets are now `closed` — the two continuous targets
+(Passive, Recovery) onto `ewma_45d`, and the three classifier targets
+(Chronic acute_density, Chronic label, Acute Risk event_t1_t3) onto
+`event_base_rate`. The pattern is consistent across both metric
+families: trained linear models either collapse onto the calibrated
+naive baseline or do not clear the success CI by the predeclared
+criterion. This is a methodological finding, not failure — it sets
+the bar that any non-linear escalation (e.g. GBM) must clear before
+being deployable.
 
 | target | status | floor | best linear MAE | verdict | revisit trigger |
 |---|---|---|---|---|---|
 | `passive_efficiency / rolling_3d` | **closed: EWMA45 production layer** | `ewma_45d` MAE 3.0978, lower CI 2.9263 (split-local) | Ridge α=100 MAE 3.0783 | linear ≈ EWMA45; CI overlap; PR #100 | new signals — real walking segments, weather, route/grade, additional tenant distributions that change the autocorrelation profile |
 | `recovery_stability / rolling_3d` | **closed: EWMA45 production layer** | `ewma_45d` MAE 0.0255, lower CI 0.0231 (split-local) | Ridge α=100 MAE 0.0246 | linear ≈ EWMA45; CI overlap with floor; PR after #100 | sleep-stage architecture features (WASO, fragmentation), cross-sub_score features once another classifier shows lift |
-| `acute_risk / event_t1_t3` | pending Phase 1 feasibility | `event_base_rate` precision@R=0.5 = 0.328, lift 1.08× | — | last remaining classifier target on the queue | linear feasibility queued |
+| `acute_risk / event_t1_t3` | **closed: event_base_rate production layer** | `event_base_rate` precision@R=0.5 = 0.273 (split-local), CI [0.193, 0.394] | L2 logistic α=0.1 precision@R=0.5 = 0.229, CI [0.200, 0.750], AUC 0.657 vs floor AUC 0.612 | Floor wins on point estimate at predeclared R=0.5; CIs overlap. AUC advantage is small (+0.045) compared to chronic_label (+0.14) — modest ranking signal at best. Walk-forward mean model 0.515 vs floor 0.420, model wins on average but not significantly. | re-evaluate at a different operating point or accumulate more positives in the test tail |
 | `acute_risk / event_strict_t1_t3` | **silent diagnostic only** | n/a | — | 9 positives in test slice; CIs uselessly wide | 30+ positives accumulate, OR strict criterion relaxed to ±1.0σ |
 | `chronic_load / chronic_label` | **closed: event_base_rate production layer** | `event_base_rate` precision@R=0.5 = 0.850 (split-local), CI [0.682, 1.000] | L2 logistic α=0.01 precision@R=0.5 = 0.750, CI [0.593, 1.000], AUC 0.936 vs floor AUC 0.794 | AUC shows the model has global ranking signal, but on the **predeclared precision@R=0.5 operating point** the calibrated `event_base_rate` floor is already at least as good. Model lower CI below floor upper CI; CIs overlap. (Walk-forward comparison now reports model and floor precision side-by-side per month — see report.) | re-evaluate at a different operating point (lower target recall, or top-k precision) where the AUC advantage may translate into a precision lift over the floor |
 | `chronic_load / chronic_acute_density` | **closed: event_base_rate production layer** | `event_base_rate` precision@R=0.5 = 0.042 (split-local), CI [0.037, 0.049] | L2 logistic α=0.01 precision@R=0.5 = 0.020, CI [0.020, 0.031] | model significantly below floor with non-overlapping CIs (only 3 positives in 104-row test tail; walk-forward more favourable but primary split governs) | additional positive events accumulate (≥30 in test slice), cross-sub_score acute lag features |
