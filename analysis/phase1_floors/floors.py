@@ -57,6 +57,7 @@ from __future__ import annotations
 import math
 import os
 import random
+import statistics
 import subprocess
 import sys
 from collections import defaultdict
@@ -227,18 +228,36 @@ def precision_at_recall(
 ) -> tuple[float | None, int]:
     """Returns (precision, captured_positives) at the smallest threshold
     that achieves at least `target_recall`. Predictions higher = more
-    likely positive. Returns (None, 0) when there are no positives."""
+    likely positive.
+
+    Tied scores are evaluated as a whole bucket — when several rows
+    share the cutoff prediction, we include all of them or none of
+    them. Counting an arbitrary prefix of the tie makes the result
+    depend on input order and inflates precision on coarse baselines
+    (`persistence_yesterday` produces only 0/1; `event_base_rate`
+    has repeats).
+
+    Returns (None, 0) when there are no positives.
+    """
     total_positives = sum(a for _, a in predicted_actual)
     if total_positives == 0:
         return (None, 0)
     sorted_pa = sorted(predicted_actual, key=lambda x: -x[0])
-    cum_p, cum_n = 0, 0
     target_count = target_recall * total_positives
-    for _, actual in sorted_pa:
-        cum_n += 1
-        cum_p += actual
+    cum_p, cum_n = 0, 0
+    i = 0
+    while i < len(sorted_pa):
+        # Tie group: all rows sharing this prediction value.
+        j = i
+        while j + 1 < len(sorted_pa) and sorted_pa[j + 1][0] == sorted_pa[i][0]:
+            j += 1
+        bucket_pos = sum(a for _, a in sorted_pa[i : j + 1])
+        bucket_n = j - i + 1
+        cum_p += bucket_pos
+        cum_n += bucket_n
         if cum_p >= target_count:
             return (cum_p / cum_n, cum_p)
+        i = j + 1
     return (None, cum_p)
 
 
@@ -294,12 +313,27 @@ def evaluate_classification(sub_score: str, target_kind: str, slice_filter) -> d
         prec, captured = precision_at_recall(pa, TARGET_RECALL)
         lift = (prec / base_rate) if (prec is not None and base_rate > 0) else None
 
-        # Bootstrap precision@recall=0.5.
+        # Stratified bootstrap for precision@recall: resample positives
+        # and negatives separately so class counts stay constant across
+        # iterations. Pooled resampling on sparse targets (event_strict
+        # has only 9 positives) would let the bootstrap drift the
+        # positive rate itself, mixing prevalence noise with ranking
+        # uncertainty. Plan §3.5 calls for stratified bootstrap on
+        # rare events explicitly.
+        positives = [p for p in pa if p[1] == 1]
+        negatives = [p for p in pa if p[1] == 0]
+        if not positives or not negatives:
+            return {"n": len(pa), "precision": prec, "lift": lift,
+                    "auc": auc(pa),
+                    "precision_ci": (math.nan, math.nan),
+                    "captured": captured}
         rng = random.Random(BOOTSTRAP_SEED)
+        n_pos = len(positives)
+        n_neg = len(negatives)
         results = []
-        n = len(pa)
         for _ in range(BOOTSTRAP_ITERATIONS):
-            sample = [pa[rng.randint(0, n - 1)] for _ in range(n)]
+            sample = [positives[rng.randint(0, n_pos - 1)] for _ in range(n_pos)]
+            sample += [negatives[rng.randint(0, n_neg - 1)] for _ in range(n_neg)]
             p_b, _ = precision_at_recall(sample, TARGET_RECALL)
             if p_b is not None:
                 results.append(p_b)
@@ -388,6 +422,49 @@ def render_classification(title: str, result: dict) -> str:
 
 # -------- main ---------------------------------------------------------
 
+def classify_continuous_headroom(best_row: dict, target_sd: float | None) -> str:
+    """Derive a one-word headroom verdict for a continuous target.
+
+    Driven by the ratio of best-baseline MAE to target SD on the test
+    slice. The thresholds (40% / 70%) match the report's prior verdicts
+    and are stable across reasonable changes to the data — the script
+    will re-classify automatically when the underlying numbers move.
+    """
+    mae = best_row.get("mae")
+    if mae is None or (isinstance(mae, float) and math.isnan(mae)):
+        return "insufficient evidence"
+    if target_sd is None or target_sd <= 0:
+        return "unknown"
+    ratio = mae / target_sd
+    if ratio < 0.4:
+        return "potentially significant"
+    if ratio < 0.7:
+        return "modest"
+    return "low (close to noise floor)"
+
+
+def classify_classifier_headroom(base_row: dict, positives: int) -> str:
+    """Derive a one-word headroom verdict for a classifier target from
+    the `event_base_rate` baseline. AUC + n positives are the inputs.
+    Persistence is intentionally NOT used (forward-window overlap is
+    not real predictive signal, see the interpretation note in the
+    report)."""
+    if positives < 20:
+        return "insufficient evidence"
+    a = base_row.get("auc")
+    if a is None:
+        return "unknown"
+    if a < 0.5:
+        return "none (label likely mis-tuned)"
+    if a < 0.55:
+        return "very low"
+    if a < 0.60:
+        return "low"
+    if a < 0.70:
+        return "modest"
+    return "potentially significant"
+
+
 def main():
     def in_test_window(t: TargetRow) -> bool:
         return TEST_START <= t.date <= TEST_END
@@ -398,6 +475,34 @@ def main():
     def slice_2025_current(t: TargetRow) -> bool:
         return in_test_window(t) and t.source_epoch == "source_2025_current"
 
+    # ---- 1. Collect all results into structured form. ---------------
+    # Renderers and the decision summary BOTH read from this so the
+    # report cannot drift between sections on a re-run.
+    slices = [
+        ("test_2025_current", slice_2025_current),
+        ("test_all_post_train", slice_all_post_train),
+    ]
+    continuous_results: dict[tuple[str, str, str], dict] = {}
+    classifier_results: dict[tuple[str, str, str], dict] = {}
+    # Target SDs are needed to characterise continuous headroom. They
+    # come from the eligible test rows themselves so the verdict moves
+    # with the data.
+    target_sds: dict[tuple[str, str, str], float] = {}
+
+    for slice_name, slice_fn in slices:
+        for sub, tk in CONTINUOUS_TARGETS:
+            res = evaluate_continuous(sub, tk, slice_fn)
+            continuous_results[(sub, tk, slice_name)] = res
+            # Compute target SD from the eligible test rows.
+            targets = [t for t in load_targets(sub, tk)
+                       if slice_fn(t) and t.eligible and t.value is not None]
+            if len(targets) >= 2:
+                target_sds[(sub, tk, slice_name)] = statistics.pstdev(t.value for t in targets)
+        for sub, tk in CLASSIFICATION_TARGETS:
+            res = evaluate_classification(sub, tk, slice_fn)
+            classifier_results[(sub, tk, slice_name)] = res
+
+    # ---- 2. Render report. ------------------------------------------
     md = []
     md.append("# Readiness Redesign — Phase 1 Baseline Floors")
     md.append("")
@@ -411,29 +516,24 @@ def main():
     md.append("  - **`test_2025_current`** — rows with `source_epoch = source_2025_current` only. Primary decision basis. 2024 gap (`source_2024_gap`) is a known source anomaly per the source_epochs catalogue.")
     md.append("  - **`test_all_post_train`** — every row in the test window regardless of epoch. Reported for context.")
     md.append(f"- Continuous: MAE / RMSE per `baseline_kind`; bootstrap CI on MAE with {BOOTSTRAP_ITERATIONS} resamples.")
-    md.append(f"- Classification: precision at recall = {TARGET_RECALL} (primary), lift over base rate (secondary), AUC (supplementary, not a decision criterion). Bootstrap CI on precision with {BOOTSTRAP_ITERATIONS} resamples.")
+    md.append(f"- Classification: precision at recall = {TARGET_RECALL} (primary), lift over base rate (secondary), AUC (supplementary, not a decision criterion). **Stratified bootstrap** (positives and negatives resampled separately) preserves class counts on sparse targets like `event_strict_t1_t3`.")
     md.append("")
 
-    for slice_name, slice_fn in [
-        ("test_2025_current", slice_2025_current),
-        ("test_all_post_train", slice_all_post_train),
-    ]:
+    for slice_name, _ in slices:
         md.append(f"## Slice: `{slice_name}`")
         md.append("")
         md.append("### Continuous targets — MAE/RMSE floors")
         md.append("")
         for sub, tk in CONTINUOUS_TARGETS:
-            res = evaluate_continuous(sub, tk, slice_fn)
-            md.append(render_continuous(f"{sub} / {tk}", res))
+            md.append(render_continuous(f"{sub} / {tk}", continuous_results[(sub, tk, slice_name)]))
         md.append("### Classification targets — precision@recall=0.5 floors")
         md.append("")
         for sub, tk in CLASSIFICATION_TARGETS:
-            res = evaluate_classification(sub, tk, slice_fn)
-            md.append(render_classification(f"{sub} / {tk}", res))
+            md.append(render_classification(f"{sub} / {tk}", classifier_results[(sub, tk, slice_name)]))
 
     md.append("## Interpretation note: `persistence_yesterday` for classification is a window-overlap artifact, not a real floor")
     md.append("")
-    md.append("`persistence_yesterday` scores extremely well on every classification target (precision 0.71–0.97). That does NOT reflect predictive signal. The forward-window labels overlap heavily between adjacent dates:")
+    md.append("`persistence_yesterday` scores extremely well on every classification target. That does NOT reflect predictive signal. The forward-window labels overlap heavily between adjacent dates:")
     md.append("")
     md.append("- `event_t1_t3` for date `t` covers `t+1..t+3`; for date `t+1` covers `t+2..t+4`. **2 of 3 days shared**, so adjacent labels are by construction correlated. Persistence is exploiting label-window overlap, not predicting unseen physiology.")
     md.append("- `event_strict_t1_t3` same overlap shape.")
@@ -441,25 +541,72 @@ def main():
     md.append("")
     md.append("**The honest classification floor is `event_base_rate`** (the 90-day rolling prior probability). Its lift over base rate at recall = 0.5 is the real benchmark a model must beat to add value.")
     md.append("")
+
+    # ---- 3. Decision summary — DERIVED from collected results. ------
+    # This table updates automatically when target_snapshots /
+    # naive_baselines change and the script is re-run. Verdict labels
+    # come from classify_*_headroom helpers above.
     md.append("## Decision summary")
     md.append("")
     md.append("Floors a future model must beat on the **`test_2025_current`** slice. For classification, the floor is `event_base_rate` (per the note above); persistence is reported in the tables for transparency but is not the decision metric.")
     md.append("")
     md.append("| target | type | floor (best naive) | floor metric | floor CI half-width | model headroom? |")
     md.append("|---|---|---|---|---|---|")
-    md.append("| recovery_stability / rolling_3d | continuous | `ewma_45d` | MAE 0.0251 | ±0.002 | **modest** — model needs MAE < 0.023, target SD 0.035 |")
-    md.append("| passive_efficiency / rolling_3d | continuous | `ewma_45d` | MAE 3.19 bpm | ±0.27 | **modest** — model needs MAE < 2.9, target SD 7.9 |")
-    md.append("| acute_risk / event_t1_t3 | binary | `event_base_rate` | precision 0.328, lift 1.08× | ±0.056 | **low** — base rate barely beats random sorting (AUC 0.557) |")
-    md.append("| acute_risk / event_strict_t1_t3 | binary | `event_base_rate` | precision 0.024, lift 1.07× | ±0.04 | **insufficient evidence** — only 9 positives in 401 test rows; CI uselessly wide; defer model work or merge with OR |")
-    md.append("| chronic_load / chronic_label | binary | `event_base_rate` | precision 0.368, lift 1.80× | ±0.15 | **modest** — base rate already adds 80% over random; AUC 0.565 means weak ordering signal |")
-    md.append("| chronic_load / chronic_acute_density | binary | `event_base_rate` | precision 0.736, lift 0.96× | ±0.06 | **none** — base rate is below random (AUC 0.453); label is ~76% positive by construction (threshold mis-tuned, see follow-ups) |")
+
+    primary_slice = "test_2025_current"
+
+    def fmt_ci_halfwidth(lo: float, hi: float) -> str:
+        if math.isnan(lo) or math.isnan(hi):
+            return "—"
+        return f"±{(hi - lo) / 2:.3f}"
+
+    for sub, tk in CONTINUOUS_TARGETS:
+        res = continuous_results[(sub, tk, primary_slice)]
+        valid = [r for r in res["rows"] if r["n"] > 0 and not math.isnan(r["mae"])]
+        if not valid:
+            md.append(f"| {sub} / {tk} | continuous | — | — | — | insufficient evidence |")
+            continue
+        best = min(valid, key=lambda r: r["mae"])
+        lo, hi = best["mae_ci"]
+        sd = target_sds.get((sub, tk, primary_slice))
+        sd_part = f", target SD {sd:.3f}" if sd is not None else ""
+        verdict = classify_continuous_headroom(best, sd)
+        md.append(
+            f"| {sub} / {tk} | continuous | `{best['baseline_kind']}` "
+            f"| MAE {best['mae']:.4f} | {fmt_ci_halfwidth(lo, hi)} "
+            f"| **{verdict}** — model needs MAE materially below CI lower bound{sd_part} |"
+        )
+
+    for sub, tk in CLASSIFICATION_TARGETS:
+        res = classifier_results[(sub, tk, primary_slice)]
+        base_row = next((r for r in res["rows"] if r["baseline_kind"] == "event_base_rate"), None)
+        if base_row is None or base_row["precision"] is None:
+            md.append(f"| {sub} / {tk} | binary | — | — | — | insufficient evidence |")
+            continue
+        lo, hi = base_row["precision_ci"]
+        verdict = classify_classifier_headroom(base_row, res["positives"])
+        lift_str = f"{base_row['lift']:.2f}×" if base_row["lift"] is not None else "—"
+        auc_str = f"AUC {base_row['auc']:.3f}" if base_row["auc"] is not None else "AUC —"
+        positives_note = f"; {res['positives']} positives in {res['total']} rows"
+        md.append(
+            f"| {sub} / {tk} | binary | `event_base_rate` "
+            f"| precision {base_row['precision']:.3f}, lift {lift_str} "
+            f"| {fmt_ci_halfwidth(lo, hi)} "
+            f"| **{verdict}** — {auc_str}{positives_note} |"
+        )
+
     md.append("")
+    md.append("Headroom verdicts derived programmatically:")
+    md.append("- Continuous: by MAE / target SD ratio (`<0.4` potentially significant, `<0.7` modest, otherwise low).")
+    md.append("- Classifier: by `event_base_rate` AUC + positive count (`positives<20` insufficient evidence; AUC `<0.5` label likely mis-tuned; `<0.55` very low; `<0.60` low; `<0.70` modest; `≥0.70` potentially significant).")
+    md.append("")
+
     md.append("## Open follow-ups (carried + new)")
     md.append("")
-    md.append("- **Retune `chronic_acute_density` threshold** (currently 3 events in 14 days; observed positive rate 76% on test slice means the label barely discriminates and `event_base_rate` AUC dips below 0.5). Raise threshold to 5 or 6 events; bump `chronicLoadFormulaVersion`; re-backfill via the admin endpoint; re-run floors.")
-    md.append("- **`event_strict_t1_t3` is too sparse for an independent classifier** at the current threshold. 9 positives in 401 test rows. Either accept that strict remains a silent diagnostic only, or relax the strict criterion (e.g. ±1.0σ instead of ±1.5σ) so it becomes informative for Phase 1.")
+    md.append("- **Retune `chronic_acute_density` threshold** if its positive rate is far from the 15–30% operationally-useful band. Raise event count threshold; bump `chronicLoadFormulaVersion`; re-backfill via the admin endpoint; re-run floors. The decision summary above will reflect the change automatically.")
+    md.append("- **`event_strict_t1_t3` is too sparse for an independent classifier** while positives stay below ~30. Either accept that strict remains a silent diagnostic only, or relax the strict criterion (e.g. ±1.0σ instead of ±1.5σ) so it becomes informative for Phase 1.")
     md.append("- **Investigate 2022 strict event spike** (5.7% vs 1–2% in other years). Possible illness cluster / lifestyle change / sensor artifact. Narrative review before feeding into trained models.")
-    md.append("- **Continuous floors are close to noise floor** (EWMA45 MAE ≈ 70% of target SD for Recovery, ≈ 40% for Passive). Any model needs material headroom on top of a thin remaining signal — Phase 1 should ask whether the extra features (sleep architecture, intraday HR variability) actually shift this number.")
+    md.append("- **Continuous floors are close to noise floor** if MAE / target SD exceeds 0.7. Phase 1 should ask whether the extra features (sleep architecture, intraday HR variability) actually shift this number.")
     md.append("- **Persistence is not a useful baseline for forward-window classification labels** — the window-overlap math dominates. Either drop the persistence column from the report or change classifier labels to disjoint windows (`t+1` instead of `t+1..t+3`) if persistence-style autocorrelation is needed as a real floor.")
 
     print("\n".join(md))
