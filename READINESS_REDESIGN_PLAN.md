@@ -658,22 +658,68 @@ above is correct but the chip reason resolution is coarse.
 
 ### 6.2 Tenant calibration
 
-Move tenant-specific count thresholds out of Go consts into per-schema
-configuration before backfilling a second tenant's Chronic labels. See
-§8.5 — the system is multi-tenant *capable* but not multi-tenant
-*calibrated* on these specific knobs:
+**Status: shipped.** Per-schema `settings` table now drives the two
+Chronic Load calibration thresholds; Go consts retained only as
+defaults inherited from the `health` tenant:
 
-- `chronic_load.min_acute_density` (currently const `7` after v2
-  retune in PR #97)
-- `chronic_load.min_breach_days` (currently const `5`)
+- `chronic_load.min_acute_density` — default `7` (PR #97 v2 retune)
+- `chronic_load.min_breach_days` — default `5`
 
-**Approach** (option B from §8.5): per-schema `settings` table key
-with documented defaults inherited from the `health` tenant. Sigma-
-based thresholds elsewhere in the writers scale automatically and do
-**not** move into settings. A small runbook needs to land alongside
-the change describing what to set, what to verify in
-`naive_baselines` before treating a tenant's labels as load-bearing,
-and what minimum window of positives is required.
+Sigma-based thresholds elsewhere in the writers (z-score deteriora-
+tion, baseline SD windows) scale automatically per tenant via per-day
+baselines and are intentionally **not** moved into settings.
+
+Storage entry points:
+
+- `(*DB).LoadChronicLoadConfig()` returns the effective
+  `health.ChronicLoadConfig` plus a `ChronicLoadConfigStatus`
+  carrying defaults / raw settings / a `corrected_to_defaults` flag
+  (for cases where someone wrote `0` into a settings row).
+- `BackfillChronicLoadSnapshots` resolves config once per run; every
+  row's `data_coverage.breach_threshold` and `acute_density_threshold`
+  now echo the effective values the writer used.
+
+Admin surfacing:
+
+- `GET /api/admin/readiness-redesign/config?schema=<tenant>` —
+  inspect effective config without running a backfill. Returns the
+  same `chronic_load_config` shape that backfill responses now carry.
+- `POST /api/admin/readiness-redesign/backfill?…` — response now
+  includes `chronic_load_config`, so the operator sees what the run
+  actually used.
+
+**Runbook (calibrating a new tenant before backfill):**
+
+1. Connect to the tenant's schema (psql or admin route).
+2. Hit `GET /api/admin/readiness-redesign/config?schema=<tenant>`.
+   Confirm response shows `matches_defaults: true` — fresh tenants
+   start on the `health` defaults.
+3. Compute the Acute OR base rate on this tenant's source_2025_current
+   slice (or whatever the active epoch is). The default
+   `min_acute_density = 7` was calibrated against the `health` tenant's
+   ~27% Acute OR base rate; positive rate at threshold 7 is ~25%, which
+   lands inside the 15–30% operational band. If the new tenant's base
+   rate is materially different (e.g. <20% or >35%), retune
+   `min_acute_density` to keep the resulting `chronic_acute_density`
+   positive rate in the 15–30% band.
+4. Apply override via `POST /api/admin/settings` (admin-only) or
+   directly: `INSERT INTO <schema>.settings(key, value) VALUES
+   ('chronic_load.min_acute_density', '<n>') ON CONFLICT (key) DO
+   UPDATE SET value = EXCLUDED.value`. The same shape applies to
+   `chronic_load.min_breach_days` if the recovery-deterioration regime
+   is also materially different (rarer; usually leave at default 5).
+5. Re-fetch `GET /api/admin/readiness-redesign/config?…`. Confirm
+   `effective` reflects the override, `matches_defaults: false`, and
+   `corrected_to_defaults: false`.
+6. Run Phase 0 backfill in dependency order
+   (Recovery → Passive → Acute → Chronic). For Chronic, verify the
+   backfill response's `chronic_load_config.effective` matches the
+   override and check a sampled `target_snapshots.data_coverage` row
+   carries the new threshold values.
+7. Before treating the tenant's `chronic_label` / `chronic_acute_density`
+   labels as load-bearing for analysis, require ≥30 positives in the
+   test slice (same threshold as `event_strict_t1_t3` per §10) — that's
+   the floor for stable `event_base_rate` baselines.
 
 ### 6.3 Serving / freshness
 
@@ -807,47 +853,46 @@ is backfilled — chronic_load labels will be written using the `health`-
 tenant-calibrated thresholds, and the resulting positive rate may
 sit outside the operationally-useful 15–30% band.
 
-### Backlog item — tenant-configurable thresholds via `settings`
+### Backlog item — shipped under §6.2
 
-The chosen path (operator decision, option B in the calibration
-discussion):
+The backlog item below was shipped in the PR that wired Phase 2 track
+6.2 (per-schema settings for Chronic Load thresholds). Original
+text retained for reference; current implementation status and the
+new-tenant runbook live in §6.2.
 
-- Move `ChronicLoadMinAcuteDensity` and `ChronicLoadMinBreachDays`
-  into the existing per-schema `settings` table:
-  - `chronic_load.min_acute_density` (default `7`)
-  - `chronic_load.min_breach_days` (default `5`)
-- The writer reads thresholds at write time via the existing config
-  path used by Telegram/Gemini settings, falling back to the code
-  defaults when the keys are absent.
+- `ChronicLoadMinAcuteDensity` and `ChronicLoadMinBreachDays` are now
+  read at write time from per-schema settings keys
+  `chronic_load.min_acute_density` and `chronic_load.min_breach_days`,
+  falling back to package consts (`7` / `5` — the `health` tenant
+  calibration from PR #97) when the keys are absent.
 - Each Chronic Load `data_coverage` JSON records the threshold values
   actually used for that row, so labels remain audit-able and a future
   recalibration does not silently change historical labels' meaning.
-- `analysis/phase1_floors/floors.py` should print a recommended
-  threshold per tenant (derived from that tenant's Acute OR event
-  count distribution) but must NOT change anything automatically —
-  the operator approves the change explicitly.
-- Defaults documented in code as "calibrated against the `health`
-  schema on 2026-05-16; other tenants should run floors and retune
-  before interpreting Chronic Load labels."
+- The admin path surfaces the effective config via
+  `GET /api/admin/readiness-redesign/config` and on every backfill
+  response.
+- Floors-driven recommendation (per-tenant percentile derivation) is
+  intentionally NOT automated — Phase 1 closed on naive baselines, so
+  there is no model whose calibration would change. Operator approves
+  the override explicitly per runbook in §6.2.
 
 Why not adaptive (percentile-derived) thresholds: that becomes an
-automatic calibration system, and Phase 1 hasn't yet shown which
-labels actually carry signal worth automating. Premature.
+automatic calibration system, and Phase 1 closed without a model that
+would benefit from one. Premature.
 
 Why not "single-tenant calibration as design": the system would work
 technically for the second tenant but produce silently-broken Chronic
-Load labels with no operator signal. A configurable default with a
-floors-driven recommendation surfaces the problem instead of hiding
-it.
+Load labels with no operator signal. The configurable default with a
+mandatory runbook check surfaces the problem instead of hiding it.
 
-### Until the backlog item lands
+### Now that the backlog item has landed
 
-- Passive Efficiency, Recovery Stability, Acute Risk are
-  personal-baseline-based and unaffected. Feasibility work on those
-  proceeds without blocker.
-- Chronic Load labels on tenants other than `health` are flagged
-  "default calibrated, not tenant-retuned" in any downstream
-  interpretation. Documented; not silently treated as authoritative.
+- Passive Efficiency, Recovery Stability, Acute Risk remain
+  personal-baseline-based and unaffected.
+- Chronic Load on a new tenant follows the §6.2 runbook before any
+  label is treated as load-bearing. Defaults still mark non-`health`
+  tenants' labels as "default calibrated, not tenant-retuned" until
+  the runbook step 3 (base-rate check + retune if needed) is done.
 
 ## 9. Open questions to revisit
 

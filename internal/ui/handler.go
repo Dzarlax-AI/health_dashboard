@@ -114,6 +114,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/status", h.adminGuard(h.adminStatus))
 	mux.HandleFunc("/api/admin/backfill", h.adminGuard(h.adminBackfill))
 	mux.HandleFunc("/api/admin/readiness-redesign/backfill", h.adminGuard(h.adminReadinessRedesignBackfill))
+	mux.HandleFunc("/api/admin/readiness-redesign/config", h.adminGuard(h.adminReadinessRedesignConfig))
 	mux.HandleFunc("/api/admin/gaps", h.adminGuard(h.adminGaps))
 	mux.HandleFunc("/api/admin/quality-audit", h.adminGuard(h.adminQualityAudit))
 	mux.HandleFunc("/api/admin/quality-fix", h.adminGuard(h.adminQualityFix))
@@ -1261,14 +1262,81 @@ func (h *Handler) adminReadinessRedesignBackfill(w http.ResponseWriter, r *http.
 		schemaHealth = storage.RedesignStorageStatus{Healthy: false, Error: err.Error()}
 	}
 
+	// Echo the effective chronic_load config the writer actually used,
+	// so an operator backfilling a non-`health` tenant can confirm at a
+	// glance whether the run used per-tenant overrides or fell back to
+	// the calibrated defaults. Always populated, even when wantChronic
+	// is false — useful when chaining backfills.
+	_, chronicCfg := db.LoadChronicLoadConfig()
+
 	jsonResponse(w, map[string]any{
-		"schema":        schema,
-		"from":          from,
-		"to":            to,
-		"days":          days,
-		"force":         force,
+		"schema":              schema,
+		"from":                from,
+		"to":                  to,
+		"days":                days,
+		"force":               force,
+		"chronic_load_config": chronicCfg,
 		"sub_scores":    results,
 		"schema_health": schemaHealth,
+	})
+}
+
+// adminReadinessRedesignConfig returns the effective Chronic Load
+// calibration config for the requesting (or admin-overridden) tenant,
+// without running a backfill. Useful as a runbook step: before
+// backfilling a non-`health` tenant, an operator hits this endpoint
+// to confirm the per-schema settings resolved to the values they
+// expected (or fell back to defaults).
+//
+// GET /api/admin/readiness-redesign/config?schema=<tenant_schema>
+//
+// Response mirrors the `chronic_load_config` field in the backfill
+// response so a single shape is consumed downstream.
+func (h *Handler) adminReadinessRedesignConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	schema := h.tenantSchema(r)
+	db := h.tenantDB(r)
+	if target := strings.TrimSpace(r.URL.Query().Get("schema")); target != "" && target != schema {
+		if h.reg == nil {
+			http.Error(w, "registry not available", http.StatusServiceUnavailable)
+			return
+		}
+		users, err := h.reg.ListUsers(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		known := false
+		for _, u := range users {
+			if u.SchemaName == target {
+				known = true
+				break
+			}
+		}
+		if !known {
+			http.Error(w, "unknown schema", http.StatusBadRequest)
+			return
+		}
+		all := h.mgr.AllDBs()
+		got, ok := all[target]
+		if !ok || got == nil {
+			http.Error(w, "tenant DB pool not initialised", http.StatusServiceUnavailable)
+			return
+		}
+		db = got
+		schema = target
+	}
+	if db == nil {
+		http.Error(w, "no tenant DB available", http.StatusServiceUnavailable)
+		return
+	}
+	_, status := db.LoadChronicLoadConfig()
+	jsonResponse(w, map[string]any{
+		"schema":              schema,
+		"chronic_load_config": status,
 	})
 }
 

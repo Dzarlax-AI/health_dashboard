@@ -57,6 +57,52 @@ import (
 const chronicLoadFormulaVersion = 2
 const chronicLoadFeatureVersion = 1
 
+// Per-tenant settings keys for Chronic Load calibration. Both default
+// to the values calibrated on the `health` tenant in PR #97; other
+// tenants override via the `settings` table without touching Go code.
+// See plan §6.2.
+const (
+	SettingChronicLoadMinAcuteDensity = "chronic_load.min_acute_density"
+	SettingChronicLoadMinBreachDays   = "chronic_load.min_breach_days"
+)
+
+// LoadChronicLoadConfig reads the per-tenant calibration thresholds
+// from this DB's settings, falling back to the package-level defaults
+// when a key is unset, empty, or non-numeric. Negative or zero
+// overrides are also rejected by `Sanitize` — they would mark every
+// day positive or never eligible.
+//
+// Returned config is always safe to use; the second return value is
+// the raw settings echo plus a `defaults_used` flag so callers
+// (admin status, writers) can surface what was actually applied.
+func (s *DB) LoadChronicLoadConfig() (health.ChronicLoadConfig, ChronicLoadConfigStatus) {
+	defaults := health.DefaultChronicLoadConfig()
+	raw := health.ChronicLoadConfig{
+		MinBreachDays:   s.GetSettingInt(SettingChronicLoadMinBreachDays, defaults.MinBreachDays),
+		MinAcuteDensity: s.GetSettingInt(SettingChronicLoadMinAcuteDensity, defaults.MinAcuteDensity),
+	}
+	cfg, corrected := raw.Sanitize()
+	return cfg, ChronicLoadConfigStatus{
+		Effective:       cfg,
+		RawSettings:     raw,
+		Defaults:        defaults,
+		CorrectedToDef:  corrected,
+		MatchesDefaults: cfg == defaults,
+	}
+}
+
+// ChronicLoadConfigStatus is the admin-facing echo of which thresholds
+// the writer will actually use on this tenant. Lives next to the
+// loader so the admin handler doesn't need to duplicate the
+// "defaults vs override vs corrected" logic.
+type ChronicLoadConfigStatus struct {
+	Effective       health.ChronicLoadConfig `json:"effective"`
+	RawSettings     health.ChronicLoadConfig `json:"raw_settings"`
+	Defaults        health.ChronicLoadConfig `json:"defaults"`
+	CorrectedToDef  bool                     `json:"corrected_to_defaults"`
+	MatchesDefaults bool                     `json:"matches_defaults"`
+}
+
 // recoveryRolling3dRow is the minimal Recovery rolling_3d view Chronic
 // Load needs: target value (NULL when ineligible), eligibility flag,
 // and the source_epoch the row was written under.
@@ -164,6 +210,11 @@ func (s *DB) BackfillChronicLoadSnapshots(from, to string) (int, error) {
 		return 0, fmt.Errorf("BackfillChronicLoadSnapshots: to %q before from %q", to, from)
 	}
 
+	// Resolve per-tenant calibration once for the whole run. Storing it
+	// in data_coverage on every row is what lets analysis read the
+	// actual thresholds the writer used, not the package defaults.
+	cfg, _ := s.LoadChronicLoadConfig()
+
 	loadFrom := fromT.AddDate(0, 0, -ewmaWindowSlow).Format(isoDate)
 	loadTo := toT.AddDate(0, 0, health.ChronicLoadForwardWindowDays).Format(isoDate)
 
@@ -195,7 +246,7 @@ func (s *DB) BackfillChronicLoadSnapshots(from, to string) (int, error) {
 	for d := fromT; !d.After(toT); d = d.AddDate(0, 0, 1) {
 		date := d.Format(isoDate)
 		if err := s.writeChronicLoadRow(context.Background(), d, date,
-			recoveryByDate, recoveryLookup, acute,
+			cfg, recoveryByDate, recoveryLookup, acute,
 			priorChronic, priorAcuteDensity); err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -211,6 +262,7 @@ func (s *DB) writeChronicLoadRow(
 	ctx context.Context,
 	t time.Time,
 	date string,
+	cfg health.ChronicLoadConfig,
 	recoveryByDate map[string]recoveryRolling3dRow,
 	recoveryLookup DailyValueLookup,
 	acuteOrByDate map[string]int,
@@ -350,28 +402,28 @@ func (s *DB) writeChronicLoadRow(
 	maxPossibleBreaches := breachCount + missingRecoveryDays
 	maxPossibleAcuteEvents := acuteCount + missingAcuteDays
 
-	chronicLabel := boolToFloat(breachCount >= health.ChronicLoadMinBreachDays)
-	acuteDensityLabel := boolToFloat(acuteCount >= health.ChronicLoadMinAcuteDensity)
+	chronicLabel := boolToFloat(breachCount >= cfg.MinBreachDays)
+	acuteDensityLabel := boolToFloat(acuteCount >= cfg.MinAcuteDensity)
 
-	chronicLabelEligible := breachCount >= health.ChronicLoadMinBreachDays ||
-		maxPossibleBreaches < health.ChronicLoadMinBreachDays
-	acuteDensityEligible := acuteCount >= health.ChronicLoadMinAcuteDensity ||
-		maxPossibleAcuteEvents < health.ChronicLoadMinAcuteDensity
+	chronicLabelEligible := breachCount >= cfg.MinBreachDays ||
+		maxPossibleBreaches < cfg.MinBreachDays
+	acuteDensityEligible := acuteCount >= cfg.MinAcuteDensity ||
+		maxPossibleAcuteEvents < cfg.MinAcuteDensity
 
 	cov := mustMarshal(map[string]any{
-		"forward_window_days":         health.ChronicLoadForwardWindowDays,
-		"breach_count":                breachCount,
-		"breach_threshold":            health.ChronicLoadMinBreachDays,
-		"breach_z_threshold":          health.ChronicLoadDeteriorationZThreshold,
-		"observed_recovery_days":      observedRecoveryDays,
-		"missing_recovery_days":       missingRecoveryDays,
-		"max_possible_breaches":       maxPossibleBreaches,
-		"acute_or_count":              acuteCount,
-		"acute_density_threshold":     health.ChronicLoadMinAcuteDensity,
-		"observed_acute_days":         observedAcuteDays,
-		"missing_acute_days":          missingAcuteDays,
-		"max_possible_acute_events":   maxPossibleAcuteEvents,
-		"per_day":                     cells,
+		"forward_window_days":       health.ChronicLoadForwardWindowDays,
+		"breach_count":              breachCount,
+		"breach_threshold":          cfg.MinBreachDays,
+		"breach_z_threshold":        health.ChronicLoadDeteriorationZThreshold,
+		"observed_recovery_days":    observedRecoveryDays,
+		"missing_recovery_days":     missingRecoveryDays,
+		"max_possible_breaches":     maxPossibleBreaches,
+		"acute_or_count":            acuteCount,
+		"acute_density_threshold":   cfg.MinAcuteDensity,
+		"observed_acute_days":       observedAcuteDays,
+		"missing_acute_days":        missingAcuteDays,
+		"max_possible_acute_events": maxPossibleAcuteEvents,
+		"per_day":                   cells,
 	})
 
 	// Primary chronic_label: gated independently on Recovery observability.

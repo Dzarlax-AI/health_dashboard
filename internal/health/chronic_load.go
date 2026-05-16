@@ -97,3 +97,50 @@ const ChronicLoadBaselineWindowDays = 45
 // 30 matches the rolling-baseline-warmup convention used by Acute
 // Risk and elsewhere in scoring.go.
 const ChronicLoadWarmupMinPaired = 30
+
+// ChronicLoadConfig holds the two calibration thresholds that are
+// tenant-specific by physiology (positive-rate distribution depends on
+// the user's Acute OR base rate and Recovery deterioration profile).
+// Sigma-based thresholds elsewhere in this file stay package consts —
+// they scale automatically per tenant via per-day baselines.
+//
+// Per plan §6.2: defaults come from the v2 retune calibrated on the
+// `health` tenant (PR #97). Other tenants override via the per-schema
+// `settings` table; an unset key falls back to the default.
+type ChronicLoadConfig struct {
+	// MinBreachDays — primary `chronic_label` threshold. Default 5.
+	MinBreachDays int
+	// MinAcuteDensity — secondary `chronic_acute_density` threshold.
+	// Default 7. NOT a physiological constant; calibrates on Acute OR
+	// base rate which is tenant-specific.
+	MinAcuteDensity int
+}
+
+// DefaultChronicLoadConfig returns the values calibrated against the
+// `health` tenant in PR #97. Callers without per-tenant settings access
+// (legacy tests, isolated unit tests on health package) use these
+// directly; the storage writer overlays per-schema settings on top.
+func DefaultChronicLoadConfig() ChronicLoadConfig {
+	return ChronicLoadConfig{
+		MinBreachDays:   ChronicLoadMinBreachDays,
+		MinAcuteDensity: ChronicLoadMinAcuteDensity,
+	}
+}
+
+// Sanitize replaces non-positive overrides with the defaults. Used to
+// keep a misconfigured settings row from producing nonsense labels
+// (threshold=0 would mark every day positive). Returns true when any
+// field was corrected so the caller can surface a warning.
+func (c ChronicLoadConfig) Sanitize() (ChronicLoadConfig, bool) {
+	out := c
+	corrected := false
+	if out.MinBreachDays <= 0 {
+		out.MinBreachDays = ChronicLoadMinBreachDays
+		corrected = true
+	}
+	if out.MinAcuteDensity <= 0 {
+		out.MinAcuteDensity = ChronicLoadMinAcuteDensity
+		corrected = true
+	}
+	return out, corrected
+}
