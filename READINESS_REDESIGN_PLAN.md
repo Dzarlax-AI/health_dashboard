@@ -1,6 +1,6 @@
 # Readiness Redesign — Plan
 
-Status: planning. No code changes yet. This document is the agreed scope before Phase 0 begins.
+Status: active. Phase 0 (storage + writers) and Phase 1 (feasibility on five active targets, plus the GBM signal-probe on `chronic_label`) are complete and closed on naive baselines. Phase 2 is now shipping incrementally — see per-section statuses in §6.x.
 
 ## 0. Why this document exists
 
