@@ -40,9 +40,14 @@ hypothesis "non-linear signal exists" is least supported there.
 
 Deps: numpy + scikit-learn (sklearn introduced here for the probe; the
 linear scripts in phase2-6 stayed pure-numpy by design and that
-convention is unchanged for them).
+convention is unchanged for them). Version pins live next to this
+file in `requirements.txt` — install them before the first run, the
+default analysis Python on this machine does not carry sklearn.
 
 ## Running
+
+    # one-time setup in this analysis subdir's venv / interpreter:
+    python -m pip install -r analysis/phase7_chronic_label_gbm_probe/requirements.txt
 
     PSQL=/path/to/psql.exe PYTHONUTF8=1 python \\
         analysis/phase7_chronic_label_gbm_probe/probe.py \\
