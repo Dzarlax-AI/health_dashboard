@@ -707,10 +707,10 @@ already does the job, not a forced ML model.
 |---|---|---|---|---|---|
 | `passive_efficiency / rolling_3d` | **closed: EWMA45 production layer** | `ewma_45d` MAE 3.0978, lower CI 2.9263 (split-local) | Ridge α=100 MAE 3.0783 | linear ≈ EWMA45; CI overlap; PR #100 | new signals — real walking segments, weather, route/grade, additional tenant distributions that change the autocorrelation profile |
 | `recovery_stability / rolling_3d` | **closed: EWMA45 production layer** | `ewma_45d` MAE 0.0255, lower CI 0.0231 (split-local) | Ridge α=100 MAE 0.0246 | linear ≈ EWMA45; CI overlap with floor; PR after #100 | sleep-stage architecture features (WASO, fragmentation), cross-sub_score features once another classifier shows lift |
-| `acute_risk / event_t1_t3` | pending Phase 1 feasibility | `event_base_rate` precision@R=0.5 = 0.328, lift 1.08× | — | — | linear feasibility queued |
+| `acute_risk / event_t1_t3` | pending Phase 1 feasibility | `event_base_rate` precision@R=0.5 = 0.328, lift 1.08× | — | — | linear feasibility queued **after** `chronic_label` |
 | `acute_risk / event_strict_t1_t3` | **silent diagnostic only** | n/a | — | 9 positives in test slice; CIs uselessly wide | 30+ positives accumulate, OR strict criterion relaxed to ±1.0σ |
-| `chronic_load / chronic_label` | pending Phase 1 feasibility | `event_base_rate` precision@R=0.5 = 0.415, AUC 0.574 | — | modest signal post-v2 retune | classifier feasibility queued after acute |
-| `chronic_load / chronic_acute_density` | pending Phase 1 feasibility | `event_base_rate` precision@R=0.5 = 0.368, AUC 0.676 | — | label now informative after v2 retune (PR #97) | classifier feasibility queued |
+| `chronic_load / chronic_label` | pending Phase 1 feasibility | `event_base_rate` precision@R=0.5 = 0.415, AUC 0.574 | — | modest signal post-v2 retune; **next in queue** (stays inside Chronic writer family and floor lift exceeds Acute OR) | classifier feasibility runs after #102 merges |
+| `chronic_load / chronic_acute_density` | **closed: event_base_rate production layer** | `event_base_rate` precision@R=0.5 = 0.042 (split-local), CI [0.037, 0.049] | L2 logistic α=0.01 precision@R=0.5 = 0.020, CI [0.020, 0.031] | model significantly below floor with non-overlapping CIs (only 3 positives in 104-row test tail; walk-forward more favourable but primary split governs) | additional positive events accumulate (≥30 in test slice), cross-sub_score acute lag features |
 | `athletic_readiness` | **deferred** | n/a | — | XML import gap; Walking-only volume even after fix | structured Run / Cycle workouts logged at scale (≥ ~200 per type) |
 
 Notes that apply to both closed continuous targets:
