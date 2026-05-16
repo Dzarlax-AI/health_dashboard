@@ -703,9 +703,20 @@ All five active targets are now `closed` — the two continuous targets
 `event_base_rate`. The pattern is consistent across both metric
 families: trained linear models either collapse onto the calibrated
 naive baseline or do not clear the success CI by the predeclared
-criterion. This is a methodological finding, not failure — it sets
-the bar that any non-linear escalation (e.g. GBM) must clear before
-being deployable.
+criterion. This is a methodological finding, not failure.
+
+A single non-linear escalation was attempted as a signal-probe on the
+strongest linear-AUC target (`chronic_label`, PR after #104) — frozen
+16-cell GBM grid, inner-val hyperparameter selection, one-shot test,
+no operating-point fishing. Result: GBM precision@R=0.5 = 0.714 (CI
+[0.577, 0.889]) vs floor 0.850 (CI [0.682, 1.000]); CIs overlap.
+Secondary metrics (precision@R=0.25, top-5/10/20) also favour the
+floor, so the result is not a wrong-operating-point story.
+**Per the pre-fixed stop rule, Phase 1 closes here.** No GBM is run
+on `chronic_acute_density` or `acute_risk / event_t1_t3` — both had
+weaker linear AUC lift, the non-linear hypothesis is least supported
+there. `event_base_rate` is the Phase 1 production layer for all
+three classifier targets; `ewma_45d` for both continuous targets.
 
 | target | status | floor | best linear result | verdict | revisit trigger |
 |---|---|---|---|---|---|
@@ -713,7 +724,7 @@ being deployable.
 | `recovery_stability / rolling_3d` | **closed: EWMA45 production layer** | `ewma_45d` MAE 0.0255, lower CI 0.0231 (split-local) | Ridge α=100 MAE 0.0246 | linear ≈ EWMA45; CI overlap with floor; PR after #100 | sleep-stage architecture features (WASO, fragmentation), cross-sub_score features once another classifier shows lift |
 | `acute_risk / event_t1_t3` | **closed: event_base_rate production layer** | `event_base_rate` precision@R=0.5 = 0.273 (split-local), CI [0.193, 0.394] | L2 logistic α=0.1 precision@R=0.5 = 0.229, CI [0.200, 0.750], AUC 0.657 vs floor AUC 0.612 | Floor wins on point estimate at predeclared R=0.5; CIs overlap. AUC advantage is small (+0.045) compared to chronic_label (+0.14) — modest ranking signal at best. Walk-forward mean model 0.515 vs floor 0.420, model wins on average but not significantly. | re-evaluate at a different operating point or accumulate more positives in the test tail |
 | `acute_risk / event_strict_t1_t3` | **silent diagnostic only** | n/a | — | 9 positives in test slice; CIs uselessly wide | 30+ positives accumulate, OR strict criterion relaxed to ±1.0σ |
-| `chronic_load / chronic_label` | **closed: event_base_rate production layer** | `event_base_rate` precision@R=0.5 = 0.850 (split-local), CI [0.682, 1.000] | L2 logistic α=0.01 precision@R=0.5 = 0.750, CI [0.593, 1.000], AUC 0.936 vs floor AUC 0.794 | AUC shows the model has global ranking signal, but on the **predeclared precision@R=0.5 operating point** the calibrated `event_base_rate` floor is already at least as good. Model lower CI below floor upper CI; CIs overlap. (Walk-forward comparison now reports model and floor precision side-by-side per month — see report.) | re-evaluate at a different operating point (lower target recall, or top-k precision) where the AUC advantage may translate into a precision lift over the floor |
+| `chronic_load / chronic_label` | **closed: event_base_rate production layer** (GBM probe also missed) | `event_base_rate` precision@R=0.5 = 0.850 (split-local), CI [0.682, 1.000] | L2 logistic α=0.01: 0.750, CI [0.593, 1.000], AUC 0.936. GBM probe: 0.714, CI [0.577, 0.889], AUC 0.915, top-5/10/20 = 0.8/0.8/0.7 (all below floor). | Two attempts (linear + non-linear) both failed to clear the predeclared criterion. Operating-point rescue ruled out: GBM lost on precision@R=0.25 and top-k as well. The high-prevalence base-rate floor is not just hard to beat at R=0.5 — it dominates the upper part of the ranking. | new feature class with explicit physiological hypothesis (cross-sub_score acute lag features, sleep architecture). NOT another model swap on these features. |
 | `chronic_load / chronic_acute_density` | **closed: event_base_rate production layer** | `event_base_rate` precision@R=0.5 = 0.042 (split-local), CI [0.037, 0.049] | L2 logistic α=0.01 precision@R=0.5 = 0.020, CI [0.020, 0.031] | model significantly below floor with non-overlapping CIs (only 3 positives in 104-row test tail; walk-forward more favourable but primary split governs) | additional positive events accumulate (≥30 in test slice), cross-sub_score acute lag features |
 | `athletic_readiness` | **deferred** | n/a | — | XML import gap; Walking-only volume even after fix | structured Run / Cycle workouts logged at scale (≥ ~200 per type) |
 
@@ -759,6 +770,9 @@ being deployable.
   meaningful linear lift on its own features, AND (b) we have a
   reason to believe cross-pollination from this continuous target
   would help that classifier.
-- GBM not attempted. The rule remains: only as a signal-probe after
-  at least one target shows meaningful linear / cross-feature
-  evidence.
+- GBM was attempted exactly once, on `chronic_label` (the strongest
+  linear-AUC target), as a one-shot signal-probe with a frozen 16-cell
+  grid and stop-rule-on-miss. It did not clear the floor — secondary
+  metrics also favoured the floor, ruling out the wrong-operating-
+  point hypothesis. Phase 1 closes; no GBM is run on weaker-AUC
+  targets per the pre-fixed contract.
