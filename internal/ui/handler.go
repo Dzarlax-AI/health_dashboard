@@ -1171,8 +1171,9 @@ func (h *Handler) adminReadinessRedesignBackfill(w http.ResponseWriter, r *http.
 	}
 	wantRecovery := requested == "all" || requested == storage.SubScoreRecoveryStability
 	wantPassive := requested == "all" || requested == storage.SubScorePassiveEfficiency
-	if !wantRecovery && !wantPassive {
-		http.Error(w, "sub_score must be one of: recovery_stability, passive_efficiency, all",
+	wantAcute := requested == "all" || requested == storage.SubScoreAcuteRisk
+	if !wantRecovery && !wantPassive && !wantAcute {
+		http.Error(w, "sub_score must be one of: recovery_stability, passive_efficiency, acute_risk, all",
 			http.StatusBadRequest)
 		return
 	}
@@ -1236,6 +1237,14 @@ func (h *Handler) adminReadinessRedesignBackfill(w http.ResponseWriter, r *http.
 			res.Error = err.Error()
 		}
 		results[storage.SubScorePassiveEfficiency] = res
+	}
+	if wantAcute {
+		n, err := db.BackfillAcuteRiskSnapshots(from, to)
+		res := runResult{Written: n}
+		if err != nil {
+			res.Error = err.Error()
+		}
+		results[storage.SubScoreAcuteRisk] = res
 	}
 
 	schemaHealth := storage.RedesignStorageStatus{Healthy: true}

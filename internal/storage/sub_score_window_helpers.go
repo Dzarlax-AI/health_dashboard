@@ -14,7 +14,10 @@
 
 package storage
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 // DailyValueLookup returns the value to include in a window for a given
 // date and whether the date is eligible. Lookups for absent dates
@@ -49,6 +52,45 @@ func windowMean(t time.Time, windowDays int, epochStart string, lookup DailyValu
 	}
 	mean := sum / float64(n)
 	return &mean, n
+}
+
+// windowStatsBefore returns the arithmetic mean and sample standard
+// deviation of eligible values over a trailing window ending the day
+// BEFORE `d` (exclusive). Used by event-label classifiers (Acute Risk)
+// where the label for day `d` must be measured against history known
+// strictly before `d` — including `d` itself in the baseline would let
+// the candidate value bias its own threshold.
+//
+// Walks i = 1..windowDays and looks at `d - i`. The reference day `d`
+// is never read. Returns (nil, nil, n) when fewer than 2 eligible
+// observations fall in the window (sample SD undefined).
+func windowStatsBefore(d time.Time, windowDays int, epochStart string, lookup DailyValueLookup) (mean, sd *float64, n int) {
+	var sum, sumSq float64
+	for i := 1; i <= windowDays; i++ {
+		ds := d.AddDate(0, 0, -i).Format(isoDate)
+		if epochStart != "" && ds < epochStart {
+			continue
+		}
+		v, ok := lookup(ds)
+		if !ok || v == nil {
+			continue
+		}
+		sum += *v
+		sumSq += (*v) * (*v)
+		n++
+	}
+	if n < 2 {
+		return nil, nil, n
+	}
+	m := sum / float64(n)
+	// Sample variance: (Σx² − n·μ²) / (n − 1). Clamp at 0 for FP safety
+	// when the population is effectively constant.
+	variance := (sumSq - float64(n)*m*m) / float64(n-1)
+	if variance < 0 {
+		variance = 0
+	}
+	s := math.Sqrt(variance)
+	return &m, &s, n
 }
 
 // windowEWMA returns the exponentially-weighted moving average over the
