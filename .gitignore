@@ -11,6 +11,7 @@ bin/
 /server
 /backfill
 /import
+*.exe
 
 # Claude Code
 .claude/

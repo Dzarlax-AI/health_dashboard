@@ -113,6 +113,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// JSON API — admin only
 	mux.HandleFunc("/api/admin/status", h.adminGuard(h.adminStatus))
 	mux.HandleFunc("/api/admin/backfill", h.adminGuard(h.adminBackfill))
+	mux.HandleFunc("/api/admin/readiness-redesign/backfill", h.adminGuard(h.adminReadinessRedesignBackfill))
 	mux.HandleFunc("/api/admin/gaps", h.adminGuard(h.adminGaps))
 	mux.HandleFunc("/api/admin/quality-audit", h.adminGuard(h.adminQualityAudit))
 	mux.HandleFunc("/api/admin/quality-fix", h.adminGuard(h.adminQualityFix))
@@ -1103,6 +1104,154 @@ func (h *Handler) adminBackfill(w http.ResponseWriter, r *http.Request) {
 		msg = "full rebuild started for " + schema
 	}
 	jsonResponse(w, map[string]string{"status": "ok", "message": msg, "schema": schema})
+}
+
+// adminReadinessRedesignBackfill runs the Phase 0 sub-score writers
+// (Recovery Stability, Passive Efficiency) against [from, to].
+//
+// Query params:
+//   from        YYYY-MM-DD (required)
+//   to          YYYY-MM-DD (required, ≥ from)
+//   sub_score   recovery_stability | passive_efficiency | all   (default: all)
+//   force       "1" to lift the 90-day soft cap up to ~5 years
+//   schema      tenant schema override (admin cross-tenant only)
+//
+// Execution is synchronous: returns when both writers finish. With a
+// large range this can take tens of seconds; idempotent on every PK
+// so retries are safe. Schema health is reported in the response so
+// the operator can confirm Phase 0 storage is intact after the run.
+func (h *Handler) adminReadinessRedesignBackfill(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	q := r.URL.Query()
+	from := strings.TrimSpace(q.Get("from"))
+	to := strings.TrimSpace(q.Get("to"))
+	if from == "" || to == "" {
+		http.Error(w, "from and to are required (YYYY-MM-DD)", http.StatusBadRequest)
+		return
+	}
+	fromT, err := time.Parse("2006-01-02", from)
+	if err != nil {
+		http.Error(w, "from must be YYYY-MM-DD", http.StatusBadRequest)
+		return
+	}
+	toT, err := time.Parse("2006-01-02", to)
+	if err != nil {
+		http.Error(w, "to must be YYYY-MM-DD", http.StatusBadRequest)
+		return
+	}
+	if toT.Before(fromT) {
+		http.Error(w, "to must be on or after from", http.StatusBadRequest)
+		return
+	}
+
+	// Range guard. Soft cap 90 days protects against accidental
+	// full-history runs. force=1 lifts it to 5 years (1825 days) —
+	// beyond that, the operator should chunk the run.
+	const softCapDays = 90
+	const hardCapDays = 1825
+	force := q.Get("force") == "1"
+	days := int(toT.Sub(fromT).Hours()/24) + 1
+	cap := softCapDays
+	if force {
+		cap = hardCapDays
+	}
+	if days > cap {
+		http.Error(w, fmt.Sprintf("range of %d days exceeds cap of %d days (pass force=1 for up to %d)",
+			days, cap, hardCapDays), http.StatusBadRequest)
+		return
+	}
+
+	requested := strings.TrimSpace(q.Get("sub_score"))
+	if requested == "" {
+		requested = "all"
+	}
+	wantRecovery := requested == "all" || requested == storage.SubScoreRecoveryStability
+	wantPassive := requested == "all" || requested == storage.SubScorePassiveEfficiency
+	if !wantRecovery && !wantPassive {
+		http.Error(w, "sub_score must be one of: recovery_stability, passive_efficiency, all",
+			http.StatusBadRequest)
+		return
+	}
+
+	// Tenant resolution — mirror adminBackfill's schema= override path.
+	schema := h.tenantSchema(r)
+	db := h.tenantDB(r)
+	if target := strings.TrimSpace(q.Get("schema")); target != "" && target != schema {
+		if h.reg == nil {
+			http.Error(w, "registry not available", http.StatusServiceUnavailable)
+			return
+		}
+		users, err := h.reg.ListUsers(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		known := false
+		for _, u := range users {
+			if u.SchemaName == target {
+				known = true
+				break
+			}
+		}
+		if !known {
+			http.Error(w, "unknown schema", http.StatusBadRequest)
+			return
+		}
+		all := h.mgr.AllDBs()
+		got, ok := all[target]
+		if !ok || got == nil {
+			http.Error(w, "tenant DB pool not initialised", http.StatusServiceUnavailable)
+			return
+		}
+		db = got
+		schema = target
+	}
+	if db == nil {
+		http.Error(w, "no tenant DB available", http.StatusServiceUnavailable)
+		return
+	}
+
+	type runResult struct {
+		Written int    `json:"written"`
+		Error   string `json:"error,omitempty"`
+	}
+	results := map[string]runResult{}
+
+	if wantRecovery {
+		n, err := db.BackfillRecoveryStabilitySnapshots(from, to)
+		res := runResult{Written: n}
+		if err != nil {
+			res.Error = err.Error()
+		}
+		results[storage.SubScoreRecoveryStability] = res
+	}
+	if wantPassive {
+		n, err := db.BackfillPassiveEfficiencySnapshots(from, to)
+		res := runResult{Written: n}
+		if err != nil {
+			res.Error = err.Error()
+		}
+		results[storage.SubScorePassiveEfficiency] = res
+	}
+
+	schemaHealth := storage.RedesignStorageStatus{Healthy: true}
+	if err := db.VerifyReadinessRedesignSchema(); err != nil {
+		schemaHealth = storage.RedesignStorageStatus{Healthy: false, Error: err.Error()}
+	}
+
+	jsonResponse(w, map[string]any{
+		"schema":        schema,
+		"from":          from,
+		"to":            to,
+		"days":          days,
+		"force":         force,
+		"sub_scores":    results,
+		"schema_health": schemaHealth,
+	})
 }
 
 // userSettings handles GET/POST /api/settings — Telegram config, available to all users.

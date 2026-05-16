@@ -15,13 +15,23 @@ type TableStat struct {
 
 // CacheStatus is returned by GetCacheStatus and shown in the admin panel.
 type CacheStatus struct {
-	ScoreVersion    int       `json:"score_version"`
-	LastSync        string    `json:"last_sync,omitempty"`
-	RawPoints       TableStat `json:"raw_points"`
-	MinuteCache     TableStat `json:"minute_cache"`
-	HourlyCache     TableStat `json:"hourly_cache"`
-	DailyScores     TableStat `json:"daily_scores"`
-	TelegramEnabled bool      `json:"telegram_enabled"`
+	ScoreVersion    int                   `json:"score_version"`
+	LastSync        string                `json:"last_sync,omitempty"`
+	RawPoints       TableStat             `json:"raw_points"`
+	MinuteCache     TableStat             `json:"minute_cache"`
+	HourlyCache     TableStat             `json:"hourly_cache"`
+	DailyScores     TableStat             `json:"daily_scores"`
+	TelegramEnabled bool                  `json:"telegram_enabled"`
+	RedesignStorage RedesignStorageStatus `json:"redesign_storage"`
+}
+
+// RedesignStorageStatus surfaces the readiness-redesign schema health to
+// admin tooling. Populated by GetCacheStatus via VerifyReadinessRedesignSchema.
+// Phase 0 storage failures (missing tables, missing initial epoch) appear
+// here so an operator can spot a broken provisioning without grepping logs.
+type RedesignStorageStatus struct {
+	Healthy bool   `json:"healthy"`
+	Error   string `json:"error,omitempty"`
 }
 
 // DataGap represents a contiguous range of dates with missing or incomplete health data.
@@ -234,6 +244,12 @@ func (s *DB) GetCacheStatus() (*CacheStatus, error) {
 		`SELECT MAX(received_at) FROM health_records`,
 	).Scan(&cs.LastSync); err != nil {
 		log.Printf("GetCacheStatus last sync: %v", err)
+	}
+
+	if err := s.VerifyReadinessRedesignSchema(); err != nil {
+		cs.RedesignStorage = RedesignStorageStatus{Healthy: false, Error: err.Error()}
+	} else {
+		cs.RedesignStorage = RedesignStorageStatus{Healthy: true}
 	}
 
 	return cs, nil

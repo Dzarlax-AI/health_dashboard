@@ -144,7 +144,52 @@ energy_snapshots   — EnergyBank v2 state-machine snapshots, PRIMARY KEY
                      21-day lookback — always the case for the first ~14
                      days of any history). Live intraday snapshots live
                      in different 5-min buckets and are never touched.
+
+target_snapshots   — Readiness redesign Phase 0 daily target writes,
+                     PRIMARY KEY (date, sub_score, target_kind). Stores
+                     target_value (nullable when ineligible), eligible
+                     bool + eligibility_reason TEXT (open enum, see
+                     internal/storage/readiness_redesign.go), data_coverage
+                     JSONB, source_epoch TEXT, formula_version. `date TEXT`
+                     computed in Go under tenant REPORT_TZ — same
+                     convention as daily_scores and energy_snapshots.
+                     Indexes: idx_target_snapshots_sub_kind_date,
+                     idx_target_snapshots_source_epoch. Auto-created via
+                     EnsureReadinessRedesignTables() on startup. See
+                     READINESS_REDESIGN_PLAN.md §4.1.
+feature_snapshots  — Readiness redesign Phase 0 feature payload per
+                     (date, sub_score), PRIMARY KEY (date, sub_score).
+                     features JSONB, source_epoch, feature_version. One
+                     canonical snapshot per day; feature_version bump
+                     overwrites via upsert (no parallel versions —
+                     decided in plan §9). Index:
+                     idx_feature_snapshots_sub_date.
+naive_baselines    — Readiness redesign Phase 0 naive baseline
+                     predictions per (date, sub_score, target_kind,
+                     baseline_kind) — the floor that Phase 1 models must
+                     beat. predicted_value nullable, source_epoch,
+                     formula_version. Index:
+                     idx_naive_baselines_sub_kind_base_date.
+source_epochs      — Small catalogue of ingest + physiology epochs,
+                     PRIMARY KEY epoch_id TEXT. Baselines reset at epoch
+                     boundaries (see plan §3.4) so distribution shifts
+                     in source/method don't masquerade as physiology.
+                     Bootstrap row `initial` covers 2014-01-01..NULL so
+                     ResolveSourceEpoch never falls through to
+                     SentinelSourceEpoch in practice. UNIQUE (kind,
+                     start_date); idx_source_epochs_active (partial
+                     WHERE end_date IS NULL).
 ```
+
+**Readiness redesign admin endpoint:** `POST /api/admin/readiness-redesign/backfill?from=YYYY-MM-DD&to=YYYY-MM-DD&sub_score=all|recovery_stability|passive_efficiency&force=1&schema=…`. Synchronous; runs both writers sequentially and returns per-writer `{written, error}` plus `schema_health` from VerifyReadinessRedesignSchema. Soft cap 90 days, hard cap 1825 days with `force=1`. Schema override for cross-tenant admin use; default is the requesting tenant's schema. Idempotent — safe to retry on partial failure.
+
+**Readiness redesign storage API** (`internal/storage/readiness_redesign.go`):
+all Save* methods upsert idempotently on their composite PKs. Enum
+values are Go constants (SubScore*, TargetKind*, BaselineKind*,
+Eligibility*, SourceEpochKind*, DetectedBy*) validated at the Go layer;
+DB columns are plain TEXT — adding a new enum value does NOT require a
+schema migration. JSONB payloads MUST be passed as `[]byte` to Save*
+struct fields; the writers wrap them in `json.RawMessage` internally.
 
 **Expression indexes** (critical for performance with 3.7M+ rows in metric_points):
 - `idx_mp_name_day` — `(metric_name, SUBSTRING(date, 1, 10))`
