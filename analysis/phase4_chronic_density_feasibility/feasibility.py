@@ -120,7 +120,9 @@ def load_rows() -> list[Row]:
                f.features::text
           FROM target_snapshots t
           JOIN feature_snapshots f
-            ON f.date = t.date AND f.sub_score = t.sub_score
+            ON f.date = t.date
+           AND f.sub_score = t.sub_score
+           AND f.source_epoch = t.source_epoch
          WHERE t.sub_score = '{SUB_SCORE}'
            AND t.target_kind = '{TARGET_KIND}'
            AND t.eligible = TRUE
@@ -375,34 +377,43 @@ def primary_split_and_evaluate(rows: list[Row], baseline_map: dict[date, float])
             default=L2_ALPHAS[-1],
         )
 
-    # Refit on full train, score once on test.
+    # Refit on full train, score on test. Restrict to test rows that
+    # ALSO have a floor prediction — model and floor must be evaluated
+    # on identical rows, otherwise precision/AUC/lift are not comparable
+    # and the decision branch can flip on different denominators.
     X_train_s, X_test_s = standardize_train_apply(X_train, X_test)
     chosen_coef = fit_logistic_l2(X_train_s, y_train, chosen_alpha)
-    test_probs = predict_proba(chosen_coef, X_test_s)
-    test_pa = list(zip(test_probs.tolist(), y_test.tolist()))
+    test_probs_all = predict_proba(chosen_coef, X_test_s)
+
+    eval_mask = np.array([baseline_map.get(d) is not None for d in test_dates])
+    if eval_mask.sum() == 0:
+        return {"error": "no test rows with floor predictions; cannot compare"}
+    dropped_for_floor = int((~eval_mask).sum())
+
+    test_probs = test_probs_all[eval_mask]
+    y_test_eval = y_test[eval_mask]
+    test_dates_eval = [d for d, keep in zip(test_dates, eval_mask) if keep]
+    test_pa = list(zip(test_probs.tolist(), y_test_eval.tolist()))
     model_prec, model_captured = precision_at_recall(test_pa)
     model_auc = auc(test_pa)
     model_ci = stratified_bootstrap_precision(test_pa)
 
-    # Floor — event_base_rate on the same test rows.
-    baseline_pa = [
-        (baseline_map[d], int(y_test[i]))
-        for i, d in enumerate(test_dates)
-        if baseline_map.get(d) is not None
-    ]
+    baseline_pa = [(baseline_map[d], int(y_test_eval[i]))
+                   for i, d in enumerate(test_dates_eval)]
     floor_prec, floor_captured = precision_at_recall(baseline_pa)
     floor_auc = auc(baseline_pa)
     floor_ci = stratified_bootstrap_precision(baseline_pa)
 
-    test_positives = int(y_test.sum())
-    test_base_rate = test_positives / len(y_test) if len(y_test) else math.nan
+    test_positives = int(y_test_eval.sum())
+    test_base_rate = test_positives / len(y_test_eval) if len(y_test_eval) else math.nan
 
     return {
         "n_total": n,
         "train_range": (train_dates[0], train_dates[-1]),
-        "test_range": (test_dates[0], test_dates[-1]),
+        "test_range": (test_dates_eval[0], test_dates_eval[-1]),
         "n_train": cut,
-        "n_test": n - cut,
+        "n_test": int(eval_mask.sum()),
+        "n_test_dropped_for_floor": dropped_for_floor,
         "test_positives": test_positives,
         "test_base_rate": test_base_rate,
         "inner_train_size": inner_cut,
@@ -516,7 +527,9 @@ def render(primary: dict, sensitivity: dict, n_dropped: int) -> str:
     out.append("")
     out.append(f"- Total eligible rows: {primary['n_total']} (after dropping {n_dropped} with missing features)")
     out.append(f"- Train: {primary['n_train']} rows, {primary['train_range'][0]} → {primary['train_range'][1]}")
-    out.append(f"- Test:  {primary['n_test']} rows, {primary['test_range'][0]} → {primary['test_range'][1]}")
+    dropped = primary.get('n_test_dropped_for_floor', 0)
+    drop_suffix = f" (dropped {dropped} rows missing event_base_rate so model and floor share identical rows)" if dropped else ""
+    out.append(f"- Test:  {primary['n_test']} rows, {primary['test_range'][0]} → {primary['test_range'][1]}{drop_suffix}")
     out.append(f"- Test positives: {primary['test_positives']} ({fmt(primary['test_base_rate'], 3)} base rate)")
     out.append("")
     out.append("### Inner train/val for alpha selection")
