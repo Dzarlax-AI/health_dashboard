@@ -272,6 +272,114 @@ func TestChronicLoad_Integration_AcuteDensityDoesNotTriggerOnSixORs(t *testing.T
 	}
 }
 
+func TestChronicLoad_Integration_NearThresholdIncompleteWindowIsIneligible_AcuteDensity(t *testing.T) {
+	// Codex review on PR #97 caught this class: when observed positives
+	// sit close to the threshold and several window days are missing,
+	// the old `requiredAcuteDays = window - threshold + 1` gate let
+	// such windows through as `eligible=true, target_value=0`. The
+	// fix replaces that with the bidirectional rule — a negative
+	// label is honest only when `observed_positives + missing_days <
+	// threshold`.
+	//
+	// Scenario under v2 threshold=7: plant 6 observed OR=1 days, 2
+	// observed OR=0 days, and 6 missing days. Max possible positives
+	// = 6 (observed) + 6 (missing) = 12, well above the threshold of
+	// 7. Any single missing day flipping to 1 would meet the
+	// threshold, so the negative label cannot be honestly emitted —
+	// the row must be ineligible.
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	seedRecoveryHistory(t, db, "2026-04-19", 60, 0.93, InitialSourceEpoch)
+	baseHealthy := 0.93
+	seedRecoveryRolling3d(t, db, "2026-04-20", &baseHealthy, InitialSourceEpoch)
+	for i := 1; i <= 14; i++ {
+		date := time.Date(2026, 4, 20+i, 0, 0, 0, 0, time.UTC).Format(isoDate)
+		seedRecoveryRolling3d(t, db, date, &baseHealthy, InitialSourceEpoch)
+	}
+	// 6 days OR=1, 2 days OR=0, 6 days completely missing (no row).
+	positiveDays := map[int]bool{1: true, 2: true, 3: true, 4: true, 5: true, 6: true}
+	zeroDays := map[int]bool{7: true, 8: true}
+	for i := 1; i <= 14; i++ {
+		date := time.Date(2026, 4, 20+i, 0, 0, 0, 0, time.UTC).Format(isoDate)
+		if positiveDays[i] {
+			seedAcuteOrEvent(t, db, date, 1, InitialSourceEpoch)
+		} else if zeroDays[i] {
+			seedAcuteOrEvent(t, db, date, 0, InitialSourceEpoch)
+		}
+		// other days intentionally not seeded
+	}
+
+	if _, err := db.BackfillChronicLoadSnapshots("2026-04-20", "2026-04-20"); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	var eligible bool
+	var reason string
+	var val *float32
+	if err := db.pool.QueryRow(context.Background(), `
+		SELECT eligible, eligibility_reason, target_value FROM target_snapshots
+		 WHERE date = $1 AND sub_score = $2 AND target_kind = $3
+	`, "2026-04-20", SubScoreChronicLoad, TargetKindChronicAcuteDensity).Scan(&eligible, &reason, &val); err != nil {
+		t.Fatalf("read chronic_acute_density: %v", err)
+	}
+	if eligible {
+		t.Errorf("near-threshold incomplete window: expected ineligible (6 observed positives + 6 missing days = max-possible 12 >= threshold 7), got eligible=true target_value=%v", val)
+	}
+	if reason != EligibilityEventWindowDataMissing {
+		t.Errorf("expected reason=event_window_data_missing, got %q", reason)
+	}
+}
+
+func TestChronicLoad_Integration_NearThresholdIncompleteWindowIsIneligible_ChronicLabel(t *testing.T) {
+	// Same bug class for the chronic_label target (threshold = 5
+	// breaches in 14d). Plant 4 breaching Recovery days and 5 missing
+	// Recovery days. Max possible = 4 + 5 = 9, above threshold 5; any
+	// single missing day flipping to a breach hits 5 — negative label
+	// cannot be honestly emitted.
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	seedRecoveryHistory(t, db, "2026-04-19", 60, 0.93, InitialSourceEpoch)
+	baseHealthy := 0.93
+	deteriorated := 0.78
+	seedRecoveryRolling3d(t, db, "2026-04-20", &baseHealthy, InitialSourceEpoch)
+	// 4 deteriorated days, 5 healthy days, 5 days completely missing.
+	breachDays := map[int]bool{1: true, 2: true, 3: true, 4: true}
+	healthyDays := map[int]bool{5: true, 6: true, 7: true, 8: true, 9: true}
+	for i := 1; i <= 14; i++ {
+		date := time.Date(2026, 4, 20+i, 0, 0, 0, 0, time.UTC).Format(isoDate)
+		switch {
+		case breachDays[i]:
+			seedRecoveryRolling3d(t, db, date, &deteriorated, InitialSourceEpoch)
+		case healthyDays[i]:
+			seedRecoveryRolling3d(t, db, date, &baseHealthy, InitialSourceEpoch)
+		default:
+			// missing: no row at all
+		}
+	}
+
+	if _, err := db.BackfillChronicLoadSnapshots("2026-04-20", "2026-04-20"); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	var eligible bool
+	var reason string
+	var val *float32
+	if err := db.pool.QueryRow(context.Background(), `
+		SELECT eligible, eligibility_reason, target_value FROM target_snapshots
+		 WHERE date = $1 AND sub_score = $2 AND target_kind = $3
+	`, "2026-04-20", SubScoreChronicLoad, TargetKindChronicLabel).Scan(&eligible, &reason, &val); err != nil {
+		t.Fatalf("read chronic_label: %v", err)
+	}
+	if eligible {
+		t.Errorf("near-threshold incomplete window: expected ineligible (4 observed breaches + 5 missing days = max-possible 9 >= threshold 5), got eligible=true target_value=%v", val)
+	}
+	if reason != EligibilityEventWindowDataMissing {
+		t.Errorf("expected reason=event_window_data_missing, got %q", reason)
+	}
+}
+
 func TestChronicLoad_Integration_WindowDataMissingBlocksNegativeLabel(t *testing.T) {
 	db, cleanup := testDB(t)
 	defer cleanup()

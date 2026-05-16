@@ -328,36 +328,50 @@ func (s *DB) writeChronicLoadRow(
 		cells = append(cells, cell)
 	}
 
-	// Per-target observability gate: a NEGATIVE label is only honest
-	// when enough days in the window were observed to rule out a flip.
-	// chronic_label: need ≥ (window − minBreach + 1) = 10 observed
-	// Recovery days, since fewer could hide ≥5 breaches.
-	// chronic_acute_density: need ≥ (window − minDensity + 1) = 12
-	// observed Acute days, since fewer could hide ≥3 events.
-	// A POSITIVE label is unconditional — observed evidence suffices
-	// regardless of how many days were missing. Mirrors the Acute
-	// Risk window gate (Codex review, PR #94).
-	requiredRecoveryDays := health.ChronicLoadForwardWindowDays - health.ChronicLoadMinBreachDays + 1
-	requiredAcuteDays := health.ChronicLoadForwardWindowDays - health.ChronicLoadMinAcuteDensity + 1
+	// Per-target observability gate. The rule is bidirectional: a
+	// label is honest only when the missing days could not flip it.
+	//
+	//   - Positive label honest: observed_positive_count >= threshold,
+	//     regardless of how many days are missing.
+	//   - Negative label honest: even if every missing day turned out
+	//     to be a positive, the total still wouldn't hit threshold.
+	//     i.e. observed_positive_count + missing_days < threshold.
+	//   - Otherwise: ineligible; missing days could flip the label.
+	//
+	// The earlier formulation `observed_days >= window - threshold + 1`
+	// was only correct in the worst case `observed_positives == 0`.
+	// When observed positives were already close to the threshold, a
+	// few missing days could push the true label over without the
+	// gate noticing. Codex review on PR #97 caught the near-threshold
+	// corruption; the fix replaces the old constant requirement with
+	// the bidirectional max-possible check.
+	missingRecoveryDays := health.ChronicLoadForwardWindowDays - observedRecoveryDays
+	missingAcuteDays := health.ChronicLoadForwardWindowDays - observedAcuteDays
+	maxPossibleBreaches := breachCount + missingRecoveryDays
+	maxPossibleAcuteEvents := acuteCount + missingAcuteDays
 
 	chronicLabel := boolToFloat(breachCount >= health.ChronicLoadMinBreachDays)
 	acuteDensityLabel := boolToFloat(acuteCount >= health.ChronicLoadMinAcuteDensity)
 
-	chronicLabelEligible := breachCount >= health.ChronicLoadMinBreachDays || observedRecoveryDays >= requiredRecoveryDays
-	acuteDensityEligible := acuteCount >= health.ChronicLoadMinAcuteDensity || observedAcuteDays >= requiredAcuteDays
+	chronicLabelEligible := breachCount >= health.ChronicLoadMinBreachDays ||
+		maxPossibleBreaches < health.ChronicLoadMinBreachDays
+	acuteDensityEligible := acuteCount >= health.ChronicLoadMinAcuteDensity ||
+		maxPossibleAcuteEvents < health.ChronicLoadMinAcuteDensity
 
 	cov := mustMarshal(map[string]any{
-		"forward_window_days":       health.ChronicLoadForwardWindowDays,
-		"breach_count":              breachCount,
-		"breach_threshold":          health.ChronicLoadMinBreachDays,
-		"breach_z_threshold":        health.ChronicLoadDeteriorationZThreshold,
-		"observed_recovery_days":    observedRecoveryDays,
-		"required_recovery_days":    requiredRecoveryDays,
-		"acute_or_count":            acuteCount,
-		"acute_density_threshold":   health.ChronicLoadMinAcuteDensity,
-		"observed_acute_days":       observedAcuteDays,
-		"required_acute_days":       requiredAcuteDays,
-		"per_day":                   cells,
+		"forward_window_days":         health.ChronicLoadForwardWindowDays,
+		"breach_count":                breachCount,
+		"breach_threshold":            health.ChronicLoadMinBreachDays,
+		"breach_z_threshold":          health.ChronicLoadDeteriorationZThreshold,
+		"observed_recovery_days":      observedRecoveryDays,
+		"missing_recovery_days":       missingRecoveryDays,
+		"max_possible_breaches":       maxPossibleBreaches,
+		"acute_or_count":              acuteCount,
+		"acute_density_threshold":     health.ChronicLoadMinAcuteDensity,
+		"observed_acute_days":         observedAcuteDays,
+		"missing_acute_days":          missingAcuteDays,
+		"max_possible_acute_events":   maxPossibleAcuteEvents,
+		"per_day":                     cells,
 	})
 
 	// Primary chronic_label: gated independently on Recovery observability.
