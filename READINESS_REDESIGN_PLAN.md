@@ -689,3 +689,47 @@ Still open:
    missing record stream in the export, an importer filter, or an
    upstream Apple change. This decides whether 2024 is a recoverable
    `source_epoch` or a permanently degraded one.
+
+## 10. Phase 1 status per target
+
+Active record of each sub_score / target_kind's Phase 1 state. Updated
+as feasibility experiments complete. "Closed" verdicts are not
+permanent — each row carries a revisit trigger that, if observed,
+re-opens the target.
+
+The first two `closed` entries (Passive and Recovery rolling_3d)
+share the same pattern: best linear model effectively collapsed onto
+the `ewma_45d` baseline, MAE upper CI overlapped the floor's lower
+CI. This is methodology success: a calibrated naive baseline that
+already does the job, not a forced ML model.
+
+| target | status | floor | best linear MAE | verdict | revisit trigger |
+|---|---|---|---|---|---|
+| `passive_efficiency / rolling_3d` | **closed: EWMA45 production layer** | `ewma_45d` MAE 3.0978, lower CI 2.9263 (split-local) | Ridge α=100 MAE 3.0783 | linear ≈ EWMA45; CI overlap; PR #100 | new signals — real walking segments, weather, route/grade, additional tenant distributions that change the autocorrelation profile |
+| `recovery_stability / rolling_3d` | **closed: EWMA45 production layer** | `ewma_45d` MAE 0.0255, lower CI 0.0231 (split-local) | Ridge α=100 MAE 0.0246 | linear ≈ EWMA45; CI overlap with floor; PR after #100 | sleep-stage architecture features (WASO, fragmentation), cross-sub_score features once another classifier shows lift |
+| `acute_risk / event_t1_t3` | pending Phase 1 feasibility | `event_base_rate` precision@R=0.5 = 0.328, lift 1.08× | — | — | linear feasibility queued |
+| `acute_risk / event_strict_t1_t3` | **silent diagnostic only** | n/a | — | 9 positives in test slice; CIs uselessly wide | 30+ positives accumulate, OR strict criterion relaxed to ±1.0σ |
+| `chronic_load / chronic_label` | pending Phase 1 feasibility | `event_base_rate` precision@R=0.5 = 0.415, AUC 0.574 | — | modest signal post-v2 retune | classifier feasibility queued after acute |
+| `chronic_load / chronic_acute_density` | pending Phase 1 feasibility | `event_base_rate` precision@R=0.5 = 0.368, AUC 0.676 | — | label now informative after v2 retune (PR #97) | classifier feasibility queued |
+| `athletic_readiness` | **deferred** | n/a | — | XML import gap; Walking-only volume even after fix | structured Run / Cycle workouts logged at scale (≥ ~200 per type) |
+
+Notes that apply to both closed continuous targets:
+- The "floor" column shows the split-local EWMA45 MAE (re-computed on
+  the same 70/30 chronological hold-out used for the model
+  evaluation), not the full-test-slice floor from
+  `READINESS_REDESIGN_PHASE1_FLOORS.md`. The success criterion uses
+  the full-slice lower CI bound from the floors report (Passive
+  2.9263, Recovery 0.0231), because that's the broader statistical
+  claim a model would have to clear to be a candidate.
+- Heavy regularisation was required just to recover
+  EWMA45-equivalent performance. OLS overfits on the small feature
+  set; walk-forward early folds confirm.
+- Cross-sub_score features were NOT tried per Phase 1 sequencing rule
+  ("no feature fishing without an explicit physiological hypothesis").
+  This option stays in reserve only if (a) a classifier target shows
+  meaningful linear lift on its own features, AND (b) we have a
+  reason to believe cross-pollination from this continuous target
+  would help that classifier.
+- GBM not attempted. The rule remains: only as a signal-probe after
+  at least one target shows meaningful linear / cross-feature
+  evidence.
