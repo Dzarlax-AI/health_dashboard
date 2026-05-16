@@ -46,6 +46,8 @@ Train period split chronologically 80/20: train' = 195 rows, val = 49 rows. Vali
 
 **Verdict: no production model yet.** Model precision@R=0.5 point estimate 0.020 (CI [0.020, 0.031]) vs floor point 0.042 (CI [0.037, 0.049]). CIs overlap. Per the agreed criterion (model lower CI must exceed floor upper CI), this is not a candidate. Possible next steps before escalating: cross-sub_score features (acute event lag features, recovery deterioration counts), different threshold for chronic_acute_density, or accept event_base_rate as the deployable layer.
 
+**Scope of the failure.** This verdict is about the **current chronological tail** (2026-01-18 → 2026-05-05, only 3 positives), not a claim that the `chronic_acute_density` label is globally useless. The walk-forward table below shows precision@R=0.5 of 0.30–0.80 on earlier months when n_pos ≥ 7, which suggests **seasonality or regime dependence** in when chronic acute-density events cluster. The production decision is still "no model" because the primary chronological split is the governance criterion — a model is only deployable if it beats the floor on the most recent data the production system would actually score. Revisit naturally when more positives accumulate in the recent tail.
+
 ## Sensitivity — expanding walk-forward, monthly blocks
 
 Sanity check against the single primary split. Each row trains on every month strictly before `test_month`, evaluates on that month.
