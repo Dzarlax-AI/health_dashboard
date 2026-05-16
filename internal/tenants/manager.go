@@ -307,6 +307,15 @@ func (m *Manager) CreateUserSchema(ctx context.Context, schemaName string) error
 	db.EnsureIndexes()
 	db.EnsureAIBriefingsTable()
 	db.EnsureAIBriefingBlocksTable()
+	db.EnsureEnergySnapshotsTable()
+	db.EnsureReadinessRedesignTables()
+	// Verify the readiness-redesign schema landed cleanly. Ensure is
+	// log-and-continue so startup never blocks, but a new tenant must
+	// not be handed back to the caller with broken Phase 0 storage —
+	// downstream writers would fail later with less obvious errors.
+	if err := db.VerifyReadinessRedesignSchema(); err != nil {
+		return fmt.Errorf("verify readiness redesign schema for %s: %w", schemaName, err)
+	}
 	return nil
 }
 

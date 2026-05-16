@@ -99,6 +99,7 @@ func main() {
 		legacyDB.EnsureAIBriefingsTable()
 		legacyDB.EnsureAIBriefingBlocksTable()
 		legacyDB.EnsureEnergySnapshotsTable()
+		legacyDB.EnsureReadinessRedesignTables()
 
 		passwordHash := ""
 		if uiPassword != "" {
@@ -161,6 +162,7 @@ func main() {
 		db.EnsureAIBriefingsTable()
 		db.EnsureAIBriefingBlocksTable()
 		db.EnsureEnergySnapshotsTable()
+		db.EnsureReadinessRedesignTables()
 		startTenant(ctx, mgr, db, u.SchemaName, envNotifyDefaults, envAIDefaults, baseURL)
 	}
 
@@ -203,6 +205,7 @@ func main() {
 		db.EnsureAIBriefingsTable()
 		db.EnsureAIBriefingBlocksTable()
 		db.EnsureEnergySnapshotsTable()
+		db.EnsureReadinessRedesignTables()
 		startTenant(ctx, mgr, db, schema, envNotifyDefaults, envAIDefaults, baseURL)
 	})
 	uiHandler.Register(mux)
