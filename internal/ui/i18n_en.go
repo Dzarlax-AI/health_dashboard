@@ -546,7 +546,7 @@ var translationsEn = map[string]string{
 	"wiz_step5_threshold_load_err": "Failed to load the echo:",
 	"wiz_step5_threshold_no_rows":  "No eligible chronic rows yet — run Step 4 first, then come back.",
 	"wiz_step5_field":              "field",
-	"wiz_step5_sampled_from":       "sampled (from",
+	"wiz_step5_sampled_from":       "sampled from",
 	"wiz_step5_effective_config":   "effective config",
 	"wiz_step5_match":              "✓",
 	"wiz_step5_mismatch":           "✗ mismatch",

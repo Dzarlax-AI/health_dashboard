@@ -528,7 +528,7 @@ var translationsRu = map[string]string{
 	"wiz_step5_threshold_load_err": "Не удалось прочитать эхо:",
 	"wiz_step5_threshold_no_rows":  "Eligible chronic-строк пока нет — сначала пройди Шаг 4, потом вернись сюда.",
 	"wiz_step5_field":              "поле",
-	"wiz_step5_sampled_from":       "сэмпл (от",
+	"wiz_step5_sampled_from":       "сэмпл от",
 	"wiz_step5_effective_config":   "effective config",
 	"wiz_step5_match":              "✓",
 	"wiz_step5_mismatch":           "✗ расхождение",
