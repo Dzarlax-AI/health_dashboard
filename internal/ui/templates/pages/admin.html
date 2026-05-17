@@ -42,14 +42,15 @@
         <div class="admin-section">
           <div class="admin-section-header">
             <div class="section-title">{{T .Lang "admin_quality_title"}}</div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap">
-              <button class="btn btn--secondary btn--small" onclick="runQualityAudit()">{{T .Lang "admin_quality_run"}}</button>
-              <button class="btn btn--secondary btn--small" onclick="runQualityFix()">{{T .Lang "admin_quality_fix"}}</button>
-              <button class="btn btn--secondary btn--small" onclick="runQualityDigest()">{{T .Lang "admin_quality_digest"}}</button>
-            </div>
+            <button class="btn btn--secondary btn--small" onclick="runQualityAudit()">{{T .Lang "admin_quality_run"}}</button>
           </div>
+          <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
+            Read-only audit: lists points the writers would flag as impossible /
+            suspect. The maintenance actions (Fix / Digest) live in
+            <strong>Operations</strong> below — they're not read-only and shouldn't
+            be one click away from a refresh.
+          </p>
           <div id="admin-quality-section"></div>
-          <div id="admin-quality-msg" style="display:none;margin-top:8px"></div>
         </div>
 
         <!-- Stress validation rubric (STRESS_MEASUREMENT.md §4.5) -->
@@ -172,6 +173,43 @@
             </div>
           </div>
           <div id="admin-chip-calibration-msg" style="color:var(--text-secondary);font-size:12px;margin-top:12px"></div>
+        </div>
+
+        <!-- Data quality maintenance -->
+        <div class="admin-section">
+          <div class="section-title">Data quality maintenance</div>
+          <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
+            Maintenance actions that mutate <code>metric_points.quality</code> or
+            send a Telegram digest. The read-only audit lives in
+            <strong>Status &amp; diagnostics</strong> above; click that first to
+            see what the actions will affect.
+          </p>
+          <div class="admin-actions">
+            <div class="admin-action-card">
+              <div class="admin-action-title">{{T .Lang "admin_quality_fix"}}</div>
+              <div class="admin-action-desc">
+                Mark out-of-range points as <code>impossible</code> and z-score
+                outliers as <code>suspect</code> so they're excluded from
+                downstream scoring.
+              </div>
+              <button class="btn btn--primary btn--small" onclick="runQualityFix()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                {{T .Lang "admin_quality_fix"}}
+              </button>
+            </div>
+            <div class="admin-action-card">
+              <div class="admin-action-title">{{T .Lang "admin_quality_digest"}}</div>
+              <div class="admin-action-desc">
+                Force-send the weekly quality digest to the configured Telegram
+                chat right now (normally runs on the digest day-of-week).
+              </div>
+              <button class="btn btn--secondary btn--small" onclick="runQualityDigest()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+                {{T .Lang "admin_quality_digest"}}
+              </button>
+            </div>
+          </div>
+          <div id="admin-quality-msg" style="display:none;margin-top:8px"></div>
         </div>
       </div>
 
