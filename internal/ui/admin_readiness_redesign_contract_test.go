@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"health-receiver/internal/ctxdb"
 	"health-receiver/internal/storage"
@@ -23,6 +24,15 @@ import (
 func adminContext(db *storage.DB, schema string) context.Context {
 	ctx := ctxdb.WithDB(context.Background(), db, schema)
 	return ctxdb.WithIsAdmin(ctx, true)
+}
+
+// daysAgoUTC returns a YYYY-MM-DD string `n` days before `time.Now()`
+// in UTC. The handler helper resolves to UTC when h.mgr is nil
+// (which is the case in these tests built with a bare Handler{}),
+// so seeding relative to UTC `now` keeps the test independent of
+// the calendar date it runs on.
+func daysAgoUTC(n int) string {
+	return time.Now().UTC().AddDate(0, 0, -n).Format("2006-01-02")
 }
 
 func seedRecoveryBaseline(t *testing.T, db *storage.DB, date string, value *float64, reason string) {
@@ -46,9 +56,15 @@ func TestAdminReadinessRedesignOperationalContract_JSONShape(t *testing.T) {
 	db, schema, cleanup := testTenantDB(t)
 	defer cleanup()
 
+	// Seed relative to "now" so the test isn't pinned to a calendar
+	// date — the handler's default 14-day window is anchored on
+	// time.Now(), and a fixed 2026-05-10 seed would silently drop out
+	// of range once enough wall-clock time passes.
+	valueDate := daysAgoUTC(3)
+	unknownDate := daysAgoUTC(2)
 	v := 0.91
-	seedRecoveryBaseline(t, db, "2026-05-10", &v, "")
-	seedRecoveryBaseline(t, db, "2026-05-11", nil, storage.BaselineReasonWarmup)
+	seedRecoveryBaseline(t, db, valueDate, &v, "")
+	seedRecoveryBaseline(t, db, unknownDate, nil, storage.BaselineReasonWarmup)
 
 	h := &Handler{}
 	w := httptest.NewRecorder()
@@ -91,16 +107,16 @@ func TestAdminReadinessRedesignOperationalContract_JSONShape(t *testing.T) {
 			got[row.Date] = cell{val: row.PredictedValue, reason: row.BaselineReason}
 		}
 	}
-	if c := got["2026-05-10"]; c.val == nil || *c.val < 0.90 || *c.val > 0.92 {
+	if c := got[valueDate]; c.val == nil || *c.val < 0.90 || *c.val > 0.92 {
 		t.Errorf("value-date predicted_value = %v, want ~0.91", c.val)
 	}
-	if c := got["2026-05-10"]; c.reason != nil {
+	if c := got[valueDate]; c.reason != nil {
 		t.Errorf("value-date baseline_reason = %q, want NULL", *c.reason)
 	}
-	if c := got["2026-05-11"]; c.val != nil {
+	if c := got[unknownDate]; c.val != nil {
 		t.Errorf("unknown-date predicted_value = %v, want NULL", *c.val)
 	}
-	if c := got["2026-05-11"]; c.reason == nil || *c.reason != storage.BaselineReasonWarmup {
+	if c := got[unknownDate]; c.reason == nil || *c.reason != storage.BaselineReasonWarmup {
 		t.Errorf("unknown-date baseline_reason = %v, want %q", c.reason, storage.BaselineReasonWarmup)
 	}
 }
@@ -210,16 +226,17 @@ func TestFragmentAdminReadinessContract_RendersValueAndUnknown(t *testing.T) {
 	db, schema, cleanup := testTenantDB(t)
 	defer cleanup()
 
+	// Same relative-to-`now` shape as the JSON test — the previous
+	// 2026-05-10 / 11 literals went stale once enough wall-clock
+	// passed for them to fall outside the default 14-day window.
 	v := 0.91
-	seedRecoveryBaseline(t, db, "2026-05-10", &v, "")
-	seedRecoveryBaseline(t, db, "2026-05-11", nil, storage.BaselineReasonWarmup)
+	seedRecoveryBaseline(t, db, daysAgoUTC(3), &v, "")
+	seedRecoveryBaseline(t, db, daysAgoUTC(2), nil, storage.BaselineReasonWarmup)
 
 	h := &Handler{}
 	w := httptest.NewRecorder()
-	// `days=90` pads the window enough to cover both seeded dates
-	// regardless of when the test runs.
 	r := httptest.NewRequest(http.MethodGet,
-		"/fragments/admin-readiness-contract?days=90", nil).
+		"/fragments/admin-readiness-contract?days=14", nil).
 		WithContext(adminContext(db, schema))
 	h.fragmentAdminReadinessContract(w, r)
 	if w.Code != http.StatusOK {
