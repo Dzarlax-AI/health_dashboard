@@ -198,34 +198,27 @@ func TestRecomputeChipCalibrations_Integration_RejectsCrossEpochLabels(t *testin
 			`DELETE FROM source_epochs WHERE epoch_id = 'new_epoch'`)
 	})
 
-	// Predictions in new_epoch.
+	// Predictions in new_epoch + target labels on the same dates
+	// tagged as `initial` — the leak the join must reject.
+	baselines := make([]NaiveBaseline, 0, 120)
+	labels := make([]targetSnapshotSeed, 0, 120)
+	pred := 0.4
+	one := 1.0
 	for i := 0; i < 120; i++ {
 		d := today.AddDate(0, 0, -i).Format(isoDate)
-		pred := 0.4
-		if err := db.SaveNaiveBaseline(NaiveBaseline{
+		baselines = append(baselines, NaiveBaseline{
 			Date: d, SubScore: SubScoreChronicLoad, TargetKind: TargetKindChronicLabel,
 			BaselineKind: BaselineKindEventBaseRate, PredictedValue: &pred,
 			SourceEpoch: "new_epoch", FormulaVersion: 1,
-		}); err != nil {
-			t.Fatalf("seed baseline %s: %v", d, err)
-		}
+		})
+		labels = append(labels, targetSnapshotSeed{
+			Date: d, SubScore: SubScoreChronicLoad, TargetKind: TargetKindChronicLabel,
+			TargetValue: &one, Eligible: true, EligibilityReason: "ok",
+			SourceEpoch: InitialSourceEpoch, FormulaVersion: 1,
+		})
 	}
-	// Target LABELS on the same dates but tagged as `initial` — the
-	// leak the join must reject. eligible=TRUE so they would
-	// otherwise match.
-	for i := 0; i < 120; i++ {
-		d := today.AddDate(0, 0, -i).Format(isoDate)
-		if _, err := db.pool.Exec(ctx, `
-			INSERT INTO target_snapshots
-				(date, sub_score, target_kind, target_value, eligible,
-				 eligibility_reason, source_epoch, formula_version, computed_at)
-			VALUES ($1, $2, $3, 1.0, TRUE, 'ok', $4, 1, NOW())
-			ON CONFLICT (date, sub_score, target_kind) DO UPDATE SET
-				target_value = excluded.target_value, source_epoch = excluded.source_epoch
-		`, d, SubScoreChronicLoad, TargetKindChronicLabel, InitialSourceEpoch); err != nil {
-			t.Fatalf("seed cross-epoch target %s: %v", d, err)
-		}
-	}
+	seedNaiveBaselinesBulk(t, db, baselines)
+	seedTargetSnapshotsBulk(t, db, labels)
 
 	results, err := db.RecomputeChipCalibrations(today.Format(isoDate))
 	if err != nil {
@@ -266,43 +259,38 @@ func TestRecomputeChipCalibrations_Integration_RejectsCrossEpochLabels(t *testin
 func TestRecomputeChipCalibrations_Integration_PercentileP80(t *testing.T) {
 	db, cleanup := testDB(t)
 	defer cleanup()
-	ctx := context.Background()
 
 	// Seed 120 days ending today with monotonically-increasing
 	// `predicted_value` for chronic_label so p80 is predictable.
 	// Label = 1 on every fourth day → positive rate 25%, well above
 	// the 10-positive minimum.
 	today := time.Now().UTC()
+	baselines := make([]NaiveBaseline, 0, 120)
+	labels := make([]targetSnapshotSeed, 0, 120)
 	for i := 0; i < 120; i++ {
 		d := today.AddDate(0, 0, -i).Format(isoDate)
 		pred := 0.1 + 0.005*float64(i) // ranges 0.1 to 0.695
-		if err := db.SaveNaiveBaseline(NaiveBaseline{
-			Date: d,
-			SubScore: SubScoreChronicLoad,
+		labelVal := 0.0
+		if i%4 == 0 {
+			labelVal = 1.0
+		}
+		baselines = append(baselines, NaiveBaseline{
+			Date: d, SubScore: SubScoreChronicLoad,
 			TargetKind: TargetKindChronicLabel,
 			BaselineKind: BaselineKindEventBaseRate,
 			PredictedValue: &pred,
-			SourceEpoch: InitialSourceEpoch,
-			FormulaVersion: 1,
-		}); err != nil {
-			t.Fatalf("seed baseline %s: %v", d, err)
-		}
-		label := 0.0
-		if i%4 == 0 {
-			label = 1.0
-		}
-		if _, err := db.pool.Exec(ctx, `
-			INSERT INTO target_snapshots
-				(date, sub_score, target_kind, target_value, eligible,
-				 eligibility_reason, source_epoch, formula_version, computed_at)
-			VALUES ($1, $2, $3, $4, TRUE, 'ok', $5, 1, NOW())
-			ON CONFLICT (date, sub_score, target_kind) DO UPDATE SET
-				target_value = excluded.target_value,
-				eligible = TRUE
-		`, d, SubScoreChronicLoad, TargetKindChronicLabel, label, InitialSourceEpoch); err != nil {
-			t.Fatalf("seed target %s: %v", d, err)
-		}
+			SourceEpoch: InitialSourceEpoch, FormulaVersion: 1,
+		})
+		lv := labelVal
+		labels = append(labels, targetSnapshotSeed{
+			Date: d, SubScore: SubScoreChronicLoad,
+			TargetKind: TargetKindChronicLabel,
+			TargetValue: &lv, Eligible: true, EligibilityReason: "ok",
+			SourceEpoch: InitialSourceEpoch, FormulaVersion: 1,
+		})
 	}
+	seedNaiveBaselinesBulk(t, db, baselines)
+	seedTargetSnapshotsBulk(t, db, labels)
 
 	results, err := db.RecomputeChipCalibrations(today.Format(isoDate))
 	if err != nil {
@@ -368,60 +356,51 @@ func TestRecomputeChipCalibrations_Integration_PercentileP80(t *testing.T) {
 func TestRecomputeChipCalibrations_Integration_InsufficientData(t *testing.T) {
 	db, cleanup := testDB(t)
 	defer cleanup()
-	ctx := context.Background()
 
-	// Acute Risk: only 50 days of paired data (< 90 minimum).
 	today := time.Now().UTC()
+	zero := 0.0
+
+	// Acute Risk: only 50 days of paired data (< 90 minimum). All
+	// targets are zero so the writer would have nothing to flag
+	// even if eligibility passed.
+	acuteBaselines := make([]NaiveBaseline, 0, 50)
+	acuteLabels := make([]targetSnapshotSeed, 0, 50)
 	for i := 0; i < 50; i++ {
 		d := today.AddDate(0, 0, -i).Format(isoDate)
 		pred := 0.3
-		if err := db.SaveNaiveBaseline(NaiveBaseline{
-			Date: d,
-			SubScore: SubScoreAcuteRisk,
-			TargetKind: TargetKindEventT1T3,
-			BaselineKind: BaselineKindEventBaseRate,
-			PredictedValue: &pred,
-			SourceEpoch: InitialSourceEpoch,
-			FormulaVersion: 1,
-		}); err != nil {
-			t.Fatalf("seed baseline %s: %v", d, err)
-		}
-		if _, err := db.pool.Exec(ctx, `
-			INSERT INTO target_snapshots
-				(date, sub_score, target_kind, target_value, eligible,
-				 eligibility_reason, source_epoch, formula_version, computed_at)
-			VALUES ($1, $2, $3, $4, TRUE, 'ok', $5, 1, NOW())
-		`, d, SubScoreAcuteRisk, TargetKindEventT1T3, 0.0, InitialSourceEpoch); err != nil {
-			t.Fatalf("seed target %s: %v", d, err)
-		}
+		acuteBaselines = append(acuteBaselines, NaiveBaseline{
+			Date: d, SubScore: SubScoreAcuteRisk, TargetKind: TargetKindEventT1T3,
+			BaselineKind: BaselineKindEventBaseRate, PredictedValue: &pred,
+			SourceEpoch: InitialSourceEpoch, FormulaVersion: 1,
+		})
+		acuteLabels = append(acuteLabels, targetSnapshotSeed{
+			Date: d, SubScore: SubScoreAcuteRisk, TargetKind: TargetKindEventT1T3,
+			TargetValue: &zero, Eligible: true, EligibilityReason: "ok",
+			SourceEpoch: InitialSourceEpoch, FormulaVersion: 1,
+		})
 	}
+	seedNaiveBaselinesBulk(t, db, acuteBaselines)
+	seedTargetSnapshotsBulk(t, db, acuteLabels)
 
 	// Chronic Load: 120 eligible days but zero positives.
+	chronicBaselines := make([]NaiveBaseline, 0, 120)
+	chronicLabels := make([]targetSnapshotSeed, 0, 120)
 	for i := 0; i < 120; i++ {
 		d := today.AddDate(0, 0, -i).Format(isoDate)
 		pred := 0.2
-		if err := db.SaveNaiveBaseline(NaiveBaseline{
-			Date: d,
-			SubScore: SubScoreChronicLoad,
-			TargetKind: TargetKindChronicLabel,
-			BaselineKind: BaselineKindEventBaseRate,
-			PredictedValue: &pred,
-			SourceEpoch: InitialSourceEpoch,
-			FormulaVersion: 1,
-		}); err != nil {
-			t.Fatalf("seed chronic baseline %s: %v", d, err)
-		}
-		if _, err := db.pool.Exec(ctx, `
-			INSERT INTO target_snapshots
-				(date, sub_score, target_kind, target_value, eligible,
-				 eligibility_reason, source_epoch, formula_version, computed_at)
-			VALUES ($1, $2, $3, $4, TRUE, 'ok', $5, 1, NOW())
-			ON CONFLICT (date, sub_score, target_kind) DO UPDATE SET
-				target_value = excluded.target_value
-		`, d, SubScoreChronicLoad, TargetKindChronicLabel, 0.0, InitialSourceEpoch); err != nil {
-			t.Fatalf("seed chronic target %s: %v", d, err)
-		}
+		chronicBaselines = append(chronicBaselines, NaiveBaseline{
+			Date: d, SubScore: SubScoreChronicLoad, TargetKind: TargetKindChronicLabel,
+			BaselineKind: BaselineKindEventBaseRate, PredictedValue: &pred,
+			SourceEpoch: InitialSourceEpoch, FormulaVersion: 1,
+		})
+		chronicLabels = append(chronicLabels, targetSnapshotSeed{
+			Date: d, SubScore: SubScoreChronicLoad, TargetKind: TargetKindChronicLabel,
+			TargetValue: &zero, Eligible: true, EligibilityReason: "ok",
+			SourceEpoch: InitialSourceEpoch, FormulaVersion: 1,
+		})
 	}
+	seedNaiveBaselinesBulk(t, db, chronicBaselines)
+	seedTargetSnapshotsBulk(t, db, chronicLabels)
 
 	results, err := db.RecomputeChipCalibrations(today.Format(isoDate))
 	if err != nil {

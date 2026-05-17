@@ -791,7 +791,23 @@ select:focus, input[type=date]:focus { outline: none; border-color: var(--accent
 #admin-header .back-btn:hover { text-decoration: underline; }
 #admin-header .view-title { font-size: 24px; font-weight: 800; letter-spacing: -0.5px; }
 #admin-loading { display: flex; justify-content: center; padding: 40px; }
-.admin-section { margin-bottom: 32px; }
+.admin-section { margin-bottom: 24px; }
+/* Admin page groups — added in the /admin reorg PR. Each group
+   wraps related sections under one heading so the page scans as
+   four concerns (Status, Operations, Configuration, Users) instead
+   of nine flat sections. */
+.admin-group { margin-bottom: 40px; }
+.admin-group-header {
+  font-size: 11px; font-weight: 700; letter-spacing: 1px;
+  text-transform: uppercase; color: var(--text-tertiary);
+  padding: 0 0 8px 0; margin-bottom: 16px;
+  border-bottom: 1px solid var(--card-border);
+}
+.admin-group-desc { font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; }
+/* Tenant selector at the top of the Operations group becomes the
+   single source of truth for every per-tenant action below it. */
+.admin-operations-scope { margin-bottom: 16px; }
+.admin-operations-scope .admin-field-row { margin-bottom: 0; }
 .admin-stat-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 12px; margin-bottom: 16px;

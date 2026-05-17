@@ -52,18 +52,24 @@ func seedAutonomicRow(t *testing.T, db *DB, date string, hrv, rhr *float64) {
 // (correctly) refuses to z-score, blocking breach detection on
 // isolated breach days in tests. The pattern keeps the mean stable so
 // breach values like HRV=35 / RHR=75 sit many σ away from baseline.
+//
+// Batched into a single multi-VALUES INSERT to avoid the per-row
+// round-trip cost — 60 days at ~50ms RTT was ~3s of pure network
+// before this refactor.
 func seedSteadyHistory(t *testing.T, db *DB, endDate string, days int) {
 	t.Helper()
 	end, err := time.Parse(isoDate, endDate)
 	if err != nil {
 		t.Fatalf("parse endDate: %v", err)
 	}
+	rows := make([]autonomicSeed, 0, days)
 	for i := range days {
 		d := end.AddDate(0, 0, -i).Format(isoDate)
 		hrv := 45.0 + float64((i%7)-3) // 42..48, mean ≈ 45
 		rhr := 60.0 + float64((i%5)-2) // 58..62, mean ≈ 60
-		seedAutonomicRow(t, db, d, &hrv, &rhr)
+		rows = append(rows, autonomicSeed{Date: d, HRV: &hrv, RHR: &rhr})
 	}
+	seedAutonomicRowsBulk(t, db, rows)
 }
 
 func TestAcuteRisk_Integration_OREventCaughtAtTPlus2(t *testing.T) {
@@ -478,13 +484,15 @@ func TestAcuteRisk_Integration_BaselinesPopulatedAfterPriorLabels(t *testing.T) 
 	// t+1=05-01 ok, t+2=05-02 missing, t+3=05-03 ok).
 	hrv0, rhr0 := 45.0, 60.0
 	skipMay2 := time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC).Format(isoDate)
+	seeds := make([]autonomicSeed, 0, 32)
 	for i := 1; i <= 33; i++ {
 		date := time.Date(2026, 4, i, 0, 0, 0, 0, time.UTC).Format(isoDate)
 		if date == skipMay2 {
 			continue
 		}
-		seedAutonomicRow(t, db, date, &hrv0, &rhr0)
+		seeds = append(seeds, autonomicSeed{Date: date, HRV: &hrv0, RHR: &rhr0})
 	}
+	seedAutonomicRowsBulk(t, db, seeds)
 
 	if _, err := db.BackfillAcuteRiskSnapshots("2026-04-01", "2026-04-30"); err != nil {
 		t.Fatalf("backfill: %v", err)
