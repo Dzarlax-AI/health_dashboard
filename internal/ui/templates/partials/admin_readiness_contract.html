@@ -2,26 +2,31 @@
 {{if not .Rows}}
 <div class="admin-empty-state">{{.EmptyMsg}}</div>
 {{else}}
+{{if .From}}
+<div style="color:var(--text-secondary);font-size:12px;margin-bottom:8px">
+  Window: {{.From}} → {{.To}} (per-tenant local TZ)
+</div>
+{{end}}
 <table class="admin-cache-table">
   <thead>
     <tr>
+      <th>tenant</th>
       <th>date</th>
-      <th>sub_score</th>
-      <th>value</th>
-      <th>baseline_reason</th>
-      <th>target_eligibility_reason</th>
-      <th>source_epoch</th>
+      <th>recovery</th>
+      <th>passive</th>
+      <th>chronic</th>
+      <th>acute</th>
     </tr>
   </thead>
   <tbody>
     {{range .Rows}}
     <tr>
+      <td>{{.Tenant}}</td>
       <td>{{.Date}}</td>
-      <td>{{.SubScoreLabel}}</td>
-      <td>{{.ValueCell}}</td>
-      <td>{{.BaselineReasonCell}}</td>
-      <td>{{.TargetEligCell}}</td>
-      <td>{{.SourceEpochCell}}</td>
+      <td{{if .Recovery.Title}} title="{{.Recovery.Title}}"{{end}}>{{.Recovery.Text}}</td>
+      <td{{if .Passive.Title}} title="{{.Passive.Title}}"{{end}}>{{.Passive.Text}}</td>
+      <td{{if .Chronic.Title}} title="{{.Chronic.Title}}"{{end}}>{{.Chronic.Text}}</td>
+      <td{{if .Acute.Title}} title="{{.Acute.Title}}"{{end}}>{{.Acute.Text}}</td>
     </tr>
     {{end}}
   </tbody>

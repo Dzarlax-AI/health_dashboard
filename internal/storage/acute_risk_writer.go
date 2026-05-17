@@ -182,8 +182,22 @@ func (s *DB) writeAcuteRiskRow(
 		if err := s.saveAcuteRiskFeatures(date, t, epoch, epochStart, rowByDate, hrvLookup, rhrLookup, pairedCount, false); err != nil {
 			return err
 		}
-		// No naive baseline written for ineligible — predicted_value
-		// has no meaningful target to predict.
+		// Baselines write even when paired-warmup hasn't been met. The
+		// `event_base_rate` looks at prior labels strictly before t
+		// and is independent of HRV/RHR pair availability for this
+		// epoch. On day-zero of a fresh epoch this yields
+		// (NULL, baseline_source_epoch_boundary) — operator sees the
+		// pre-warmup state instead of a blank row.
+		if err := s.saveEventBaseRateBaseline(
+			t, date, SubScoreAcuteRisk, TargetKindEventT1T3,
+			orEventByDate, epoch, epochStart, acuteRiskFormulaVersion); err != nil {
+			return fmt.Errorf("save warmup-ineligible baseline %s/event_t1_t3: %w", date, err)
+		}
+		if err := s.saveEventBaseRateBaseline(
+			t, date, SubScoreAcuteRisk, TargetKindEventStrictT1T3,
+			strictEventByDate, epoch, epochStart, acuteRiskFormulaVersion); err != nil {
+			return fmt.Errorf("save warmup-ineligible baseline %s/event_strict_t1_t3: %w", date, err)
+		}
 		return nil
 	}
 
@@ -233,6 +247,22 @@ func (s *DB) writeAcuteRiskRow(
 			}); err != nil {
 				return fmt.Errorf("save window-missing %s/%s: %w", date, tk, err)
 			}
+		}
+		// Baselines write regardless of forward-window observability.
+		// `event_base_rate` is computed from prior labels strictly
+		// before t — it does not depend on whether t+1..t+3 is closed.
+		// Without this, the chip on the bleeding edge of every backfill
+		// (the last 3 dates) renders as `pending` forever, hiding a
+		// deployable prediction the user could otherwise see.
+		if err := s.saveEventBaseRateBaseline(
+			t, date, SubScoreAcuteRisk, TargetKindEventT1T3,
+			orEventByDate, epoch, epochStart, acuteRiskFormulaVersion); err != nil {
+			return fmt.Errorf("save window-missing baseline %s/event_t1_t3: %w", date, err)
+		}
+		if err := s.saveEventBaseRateBaseline(
+			t, date, SubScoreAcuteRisk, TargetKindEventStrictT1T3,
+			strictEventByDate, epoch, epochStart, acuteRiskFormulaVersion); err != nil {
+			return fmt.Errorf("save window-missing baseline %s/event_strict_t1_t3: %w", date, err)
 		}
 		// Feature snapshot still emitted so the (date, sub_score) PK is
 		// covered. warmupMet=true because the gate did pass; the window
@@ -343,38 +373,18 @@ func (s *DB) writeAcuteRiskRow(
 	strictEventByDate[date] = int(strictVal)
 
 	// Naive event base rates over the prior 90 days, computed
-	// independently per target_kind from its own label history.
-	// priorEventBaseRate walks i=1..90 *strictly before* t, so the
-	// earliest day touched is t-90. Pass that same offset to the
-	// classifier — earliestOffsetDays uses the same "days before t"
-	// convention — so source_epoch_boundary fires exactly when the
-	// 90-day prior window crosses the epoch start.
-	orBaseRate := priorEventBaseRate(t, 90, orEventByDate)
-	strictBaseRate := priorEventBaseRate(t, 90, strictEventByDate)
-	nullReason := classifyBaselineNullReason(t, 90, epochStart)
-	for _, b := range []struct {
-		tk   string
-		rate *float64
-	}{
-		{TargetKindEventT1T3, orBaseRate},
-		{TargetKindEventStrictT1T3, strictBaseRate},
-	} {
-		reason := ""
-		if b.rate == nil {
-			reason = nullReason
-		}
-		if err := s.SaveNaiveBaseline(NaiveBaseline{
-			Date:           date,
-			SubScore:       SubScoreAcuteRisk,
-			TargetKind:     b.tk,
-			BaselineKind:   BaselineKindEventBaseRate,
-			PredictedValue: b.rate,
-			Reason:         reason,
-			SourceEpoch:    epoch,
-			FormulaVersion: acuteRiskFormulaVersion,
-		}); err != nil {
-			return fmt.Errorf("save base-rate baseline %s/%s: %w", date, b.tk, err)
-		}
+	// independently per target_kind from its own label history. Same
+	// helper as the event_window_data_missing branch — see
+	// saveEventBaseRateBaseline's docstring for the offset/reason rule.
+	if err := s.saveEventBaseRateBaseline(
+		t, date, SubScoreAcuteRisk, TargetKindEventT1T3,
+		orEventByDate, epoch, epochStart, acuteRiskFormulaVersion); err != nil {
+		return fmt.Errorf("save base-rate baseline %s/event_t1_t3: %w", date, err)
+	}
+	if err := s.saveEventBaseRateBaseline(
+		t, date, SubScoreAcuteRisk, TargetKindEventStrictT1T3,
+		strictEventByDate, epoch, epochStart, acuteRiskFormulaVersion); err != nil {
+		return fmt.Errorf("save base-rate baseline %s/event_strict_t1_t3: %w", date, err)
 	}
 
 	return s.saveAcuteRiskFeatures(date, t, epoch, epochStart, rowByDate, hrvLookup, rhrLookup, pairedCount, true)
@@ -567,13 +577,58 @@ func (s *DB) loadPriorEventLabels(fromT time.Time) (orMap, strictMap map[string]
 	return orMap, strictMap, rows.Err()
 }
 
+// saveEventBaseRateBaseline writes one event_base_rate naive_baselines
+// row for the given (date, sub_score, target_kind), computing the rate
+// from `eventByDate` over the 90 prior days. Centralised because the
+// baseline is independent of the forward target window — every writer
+// branch (eligible target, event_window_data_missing, warmup not met)
+// emits one of these rows so the chip can render even on the bleeding
+// edge of the backfill where the future label window hasn't closed
+// yet.
+//
+// When the rate is nil (no prior labels in window), reason is set
+// from classifyBaselineNullReason(t, 90, epochStart); on a value, it
+// stays empty. The 90-day offset matches priorEventBaseRate's
+// strictly-before-t walk.
+func (s *DB) saveEventBaseRateBaseline(
+	t time.Time,
+	date string,
+	subScore, targetKind string,
+	eventByDate map[string]int,
+	epoch, epochStart string,
+	formulaVersion int,
+) error {
+	rate := priorEventBaseRate(t, 90, epochStart, eventByDate)
+	reason := ""
+	if rate == nil {
+		reason = classifyBaselineNullReason(t, 90, epochStart)
+	}
+	return s.SaveNaiveBaseline(NaiveBaseline{
+		Date:           date,
+		SubScore:       subScore,
+		TargetKind:     targetKind,
+		BaselineKind:   BaselineKindEventBaseRate,
+		PredictedValue: rate,
+		Reason:         reason,
+		SourceEpoch:    epoch,
+		FormulaVersion: formulaVersion,
+	})
+}
+
 // priorEventBaseRate averages the eligible event labels for the
-// `windowDays` dates strictly before `t`. Returns nil when no eligible
-// labels fall in the window (start of history before warmup completes).
-func priorEventBaseRate(t time.Time, windowDays int, eventByDate map[string]int) *float64 {
+// `windowDays` dates strictly before `t`. Dates older than
+// `epochStart` (when non-empty) are skipped so the baseline resets
+// at every source_epoch boundary — without this, the now-unconditional
+// classifier baseline writes (since #110) would leak labels from a
+// previous epoch into the first ~90 days of a new one. Returns nil
+// when no eligible labels fall in the (clipped) window.
+func priorEventBaseRate(t time.Time, windowDays int, epochStart string, eventByDate map[string]int) *float64 {
 	var sum, n int
 	for i := 1; i <= windowDays; i++ {
 		ds := t.AddDate(0, 0, -i).Format(isoDate)
+		if epochStart != "" && ds < epochStart {
+			continue
+		}
 		v, ok := eventByDate[ds]
 		if !ok {
 			continue

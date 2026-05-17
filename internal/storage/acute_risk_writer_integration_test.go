@@ -418,6 +418,229 @@ func TestAcuteRisk_Integration_WindowDataMissingBlocksLabel(t *testing.T) {
 	if gotCount != 2 {
 		t.Errorf("expected 2 target rows (OR + strict), got %d", gotCount)
 	}
+
+	// Baselines must be written even when the forward target window is
+	// unobservable — the chip on the bleeding edge of every backfill
+	// depends on this. Single-day backfill on a fresh tenant has no
+	// prior labels accumulated, so cold-start state is value=NULL with
+	// a valid reason. The point of this assertion is row presence and
+	// the joint-state invariant; a separate test exercises the
+	// value-populated case once prior labels exist.
+	baselineRows, err := db.pool.Query(context.Background(), `
+		SELECT target_kind, predicted_value, reason
+		  FROM naive_baselines
+		 WHERE date = $1 AND sub_score = $2 AND baseline_kind = $3
+		 ORDER BY target_kind
+	`, "2026-04-20", SubScoreAcuteRisk, BaselineKindEventBaseRate)
+	if err != nil {
+		t.Fatalf("read baselines: %v", err)
+	}
+	defer baselineRows.Close()
+	baselineCount := 0
+	for baselineRows.Next() {
+		var tk string
+		var val *float32
+		var reason *string
+		if err := baselineRows.Scan(&tk, &val, &reason); err != nil {
+			t.Fatalf("scan baseline: %v", err)
+		}
+		// Joint state: either value present (reason NULL) or value
+		// NULL with a valid reason.
+		if val != nil && reason != nil {
+			t.Errorf("%s: both value=%v and reason=%q set (joint-state)", tk, *val, *reason)
+		}
+		if val == nil && reason == nil {
+			t.Errorf("%s: both value and reason NULL — chip would render unknown without explanation", tk)
+		}
+		baselineCount++
+	}
+	if baselineCount != 2 {
+		t.Errorf("expected 2 baseline rows (OR + strict) on window-missing date, got %d", baselineCount)
+	}
+}
+
+// TestAcuteRisk_Integration_BaselinesPopulatedAfterPriorLabels exercises
+// the value-populated path: a multi-day backfill where earlier dates
+// populate orEventByDate/strictEventByDate, and a later date that hits
+// the window-missing gate (because t+1..t+3 has a hole) still gets a
+// non-NULL event_base_rate from the accumulated history.
+func TestAcuteRisk_Integration_BaselinesPopulatedAfterPriorLabels(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	// 60 days of steady history → warmup met. Then 30 days of
+	// observable target rows (full t+1..t+3 each) so the writer
+	// accumulates a labels-by-date map. The 31st backfill date has a
+	// hole in its forward window, triggering event_window_data_missing.
+	seedSteadyHistory(t, db, "2026-03-31", 60)
+	// Seed observable days April 1..May 3 EXCEPT for May 2 (the hole
+	// that triggers window-missing on the backfill date 2026-04-30:
+	// t+1=05-01 ok, t+2=05-02 missing, t+3=05-03 ok).
+	hrv0, rhr0 := 45.0, 60.0
+	skipMay2 := time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC).Format(isoDate)
+	for i := 1; i <= 33; i++ {
+		date := time.Date(2026, 4, i, 0, 0, 0, 0, time.UTC).Format(isoDate)
+		if date == skipMay2 {
+			continue
+		}
+		seedAutonomicRow(t, db, date, &hrv0, &rhr0)
+	}
+
+	if _, err := db.BackfillAcuteRiskSnapshots("2026-04-01", "2026-04-30"); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	// Confirm the last day was target-ineligible (window-missing) and
+	// that its event_base_rate baseline still got a populated value
+	// from the prior 29 days of accumulated labels.
+	var eligible bool
+	var reason string
+	if err := db.pool.QueryRow(context.Background(), `
+		SELECT eligible, eligibility_reason FROM target_snapshots
+		 WHERE date = $1 AND sub_score = $2 AND target_kind = $3
+	`, "2026-04-30", SubScoreAcuteRisk, TargetKindEventT1T3).Scan(&eligible, &reason); err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if eligible {
+		t.Errorf("expected target ineligible on window-missing date, got eligible=true")
+	}
+	if reason != health.AcuteRiskEligibilityEventWindowDataMissing {
+		t.Errorf("target reason = %q, want event_window_data_missing", reason)
+	}
+
+	var baseVal *float32
+	var baseReason *string
+	if err := db.pool.QueryRow(context.Background(), `
+		SELECT predicted_value, reason
+		  FROM naive_baselines
+		 WHERE date = $1 AND sub_score = $2 AND target_kind = $3 AND baseline_kind = $4
+	`, "2026-04-30", SubScoreAcuteRisk, TargetKindEventT1T3, BaselineKindEventBaseRate).Scan(&baseVal, &baseReason); err != nil {
+		t.Fatalf("read baseline: %v", err)
+	}
+	if baseVal == nil {
+		t.Errorf("expected event_base_rate populated from prior 29 days of labels on window-missing date, got NULL (chip would show pending)")
+	}
+	if baseReason != nil {
+		t.Errorf("baseline reason = %q on populated value (joint-state invariant)", *baseReason)
+	}
+}
+
+// TestAcuteRisk_Integration_BaselineEpochClippingPreventsLeak proves
+// that `priorEventBaseRate` resets at source_epoch boundaries. Without
+// the clip, the now-unconditional baseline writes (since #110) would
+// leak labels from the previous epoch into the first ~90 days of the
+// new one — which violates plan §3.4.
+//
+// Setup is direct so the test actually exercises the leak path:
+//
+//  1. Insert 28 eligible OR-event target_snapshots rows for Feb 2026
+//     under the bootstrap `initial` epoch — these populate
+//     `target_snapshots` so the next `loadPriorEventLabels` call (run
+//     by BackfillAcuteRiskSnapshots) finds them in the prior window.
+//     Writing through the full backfill pipeline would require
+//     warmup-met paired-observation history that has nothing to do
+//     with what's under test, so we skip that and seed rows directly.
+//  2. Close `initial` on 2026-03-31 and open `boundary_test` from
+//     2026-04-01.
+//  3. Seed autonomic rows so the 2026-04-02 candidate's warmup and
+//     t+1..t+3 window are satisfied — we want the eligible-target
+//     branch's baseline write to be the one under test, not the
+//     warmup or window-missing branches.
+//  4. Backfill 2026-04-02 alone.
+//
+// Expectation: the `event_base_rate` baseline for 2026-04-02 must
+// have `predicted_value=NULL` and `reason=baseline_source_epoch_boundary`.
+// Pre-fix, the rate would have been 1.0 (28 of 28 Feb labels were
+// positive); the clip is what enforces the reset.
+func TestAcuteRisk_Integration_BaselineEpochClippingPreventsLeak(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// Step 1 — pre-boundary labels in the `initial` epoch. All-1
+	// values so a leak would produce a rate of exactly 1.0, easy to
+	// spot if it slips through. eligible=TRUE so `loadPriorEventLabels`
+	// includes them.
+	for i := 1; i <= 28; i++ {
+		date := time.Date(2026, 2, i, 0, 0, 0, 0, time.UTC).Format(isoDate)
+		for _, tk := range []string{TargetKindEventT1T3, TargetKindEventStrictT1T3} {
+			if _, err := db.pool.Exec(ctx, `
+				INSERT INTO target_snapshots
+					(date, sub_score, target_kind, target_value, eligible,
+					 eligibility_reason, source_epoch, formula_version, computed_at)
+				VALUES ($1, $2, $3, $4, TRUE, 'ok', $5, 1, NOW())
+				ON CONFLICT (date, sub_score, target_kind) DO UPDATE SET
+					target_value = excluded.target_value,
+					eligible = TRUE,
+					source_epoch = excluded.source_epoch
+			`, date, SubScoreAcuteRisk, tk, 1.0, InitialSourceEpoch); err != nil {
+				t.Fatalf("seed prior label %s/%s: %v", date, tk, err)
+			}
+		}
+	}
+
+	// Step 2 — close initial, open boundary_test from 2026-04-01.
+	if _, err := db.pool.Exec(ctx,
+		"UPDATE source_epochs SET end_date = '2026-03-31' WHERE epoch_id = $1",
+		InitialSourceEpoch); err != nil {
+		t.Fatalf("close initial epoch: %v", err)
+	}
+	if err := db.UpsertSourceEpoch(SourceEpoch{
+		EpochID: "boundary_test", StartDate: "2026-04-01", Kind: SourceEpochKindIngest,
+		Description: "epoch-leak regression", DetectedBy: DetectedByManual, Confirmed: true,
+	}); err != nil {
+		t.Fatalf("upsert new epoch: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.pool.Exec(context.Background(),
+			`UPDATE source_epochs SET end_date = NULL WHERE epoch_id = $1`, InitialSourceEpoch)
+		_, _ = db.pool.Exec(context.Background(),
+			`DELETE FROM source_epochs WHERE epoch_id = 'boundary_test'`)
+	})
+
+	// Step 3 — autonomic rows on 2026-04-01..2026-04-06. The new epoch
+	// is one day old, so paired in-epoch observations sit well below
+	// AcuteRiskWarmupMinPaired (30) and the candidate 2026-04-02 will
+	// route through the **warmup-not-met branch**. That branch writes
+	// baselines via the same helper as the eligible and window-missing
+	// branches — the epoch-clip rule applies identically across all
+	// three. The assertion below is about the clip, not about which
+	// branch carried the write.
+	hrv0, rhr0 := 45.0, 60.0
+	for i := 1; i <= 6; i++ {
+		date := time.Date(2026, 4, i, 0, 0, 0, 0, time.UTC).Format(isoDate)
+		seedAutonomicRow(t, db, date, &hrv0, &rhr0)
+	}
+
+	// Step 4 — backfill the single new-epoch candidate. The writer
+	// will hit warmup-not-met (only ~2 paired in-epoch days), enter
+	// the warmup branch, and write baselines via the helper.
+	if _, err := db.BackfillAcuteRiskSnapshots("2026-04-02", "2026-04-02"); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	// Assert both target_kinds clip identically. Pre-fix, the rate
+	// would be 1.0 from the 28 Feb labels. With the clip, the 90-day
+	// prior window earliest day (2026-01-02) sits well before the
+	// new epoch start (2026-04-01), so `classifyBaselineNullReason`
+	// returns source_epoch_boundary.
+	for _, tk := range []string{TargetKindEventT1T3, TargetKindEventStrictT1T3} {
+		var baseVal *float32
+		var baseReason *string
+		if err := db.pool.QueryRow(ctx, `
+			SELECT predicted_value, reason
+			  FROM naive_baselines
+			 WHERE date = $1 AND sub_score = $2 AND target_kind = $3 AND baseline_kind = $4
+		`, "2026-04-02", SubScoreAcuteRisk, tk, BaselineKindEventBaseRate).Scan(&baseVal, &baseReason); err != nil {
+			t.Fatalf("read baseline %s: %v", tk, err)
+		}
+		if baseVal != nil {
+			t.Errorf("%s: baseline leaked across epoch boundary: predicted_value = %v, want NULL", tk, *baseVal)
+		}
+		if baseReason == nil || *baseReason != BaselineReasonSourceEpochBoundary {
+			t.Errorf("%s: baseline reason = %v, want %q", tk, baseReason, BaselineReasonSourceEpochBoundary)
+		}
+	}
 }
 
 func TestAcuteRisk_Integration_BleedingEdgeIneligible(t *testing.T) {

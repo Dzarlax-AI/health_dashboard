@@ -652,28 +652,41 @@ forward predictive value the chips don't.
 **Deliverable status:**
 
 1. **Shipped** — admin page section "Readiness redesign —
-   operational contract preview" renders one row per
-   (date, sub-score) with the chip value (`naive_baselines.predicted_value`),
-   the chip's authoritative reason on NULL
-   (`naive_baselines.reason`), and the secondary diagnostic
-   (`target_snapshots.eligibility_reason`). Default window 14 days,
-   capped at 90.
+   operational contract preview" renders a **pivot table**: rows are
+   `(tenant, date)`, columns are the four deployable chip kinds
+   (Recovery, Passive, Chronic, Acute). Each cell carries the chip
+   value (or `unknown` / `pending`) and a hover title with
+   `baseline=…`, `target=…`, `epoch=…` so the operator can scan a
+   date for disagreements between baseline-side and target-side
+   reasons at a glance. Default window 14 days, capped at 90.
    - JSON: `GET /api/admin/readiness-redesign/operational-contract?days=N&schema=…`
+     — schema omitted or `all` aggregates across all registered
+     tenants in sorted schema order; the response carries a
+     `tenants` list plus per-row `tenant` field.
    - HTML fragment: `GET /fragments/admin-readiness-contract?days=N`
    - Both endpoints read through the same
-     `(*DB).LoadOperationalContractRows(from, to)` so they cannot
-     drift in shape or filtering. Only the four deployable chip
+     `(*DB).LoadOperationalContractRows(from, to)` per tenant so they
+     cannot drift in shape or filtering. Only the four deployable chip
      configurations from the §6.1 table are surfaced; other
      baselines are filtered server-side.
-   - Window anchored on the tenant's `REPORT_TZ` (settings.timezone
-     → env `REPORT_TZ` → UTC), same resolution path as the stress-
-     validation and energy handlers. Near local midnight in non-UTC
-     tenants the preview shows the right local day rather than a
-     stale UTC day.
+   - Window anchored on each tenant's `REPORT_TZ`
+     (settings.timezone → env `REPORT_TZ` → UTC), same resolution
+     path as the stress-validation and energy handlers. Different
+     tenants can sit in different time zones — each gets its own
+     local-day window.
    - Pending state (writer has reached this date for one chip but
      not yet for another) is **always** surfaced as a NULL/NULL row
      so the operator can spot writer-cadence gaps. The query does
      not filter out empty LEFT JOIN pairs.
+   - Classifier baselines (`event_base_rate` on Chronic + Acute) are
+     written by the writers **independently of forward target
+     eligibility**, so the bleeding edge (last 14 days for Chronic,
+     last 3 days for Acute, where the forward window can't close)
+     renders chip values rather than `pending`. See
+     `saveEventBaseRateBaseline` and the regression tests
+     `TestAcuteRisk_Integration_WindowDataMissingBlocksLabel` /
+     `TestAcuteRisk_Integration_BaselinesPopulatedAfterPriorLabels` /
+     `TestChronicLoad_Integration_WarmupGateBlocksLabel`.
 2. **Deferred** — a separate `READINESS_REDESIGN_OPERATIONAL_CONTRACT.md`
    spec for an external UI implementation. The plan section above is
    the contract for the in-tree dashboard work; if/when an external
