@@ -1614,13 +1614,19 @@ var chipCalibrationConfigs = []struct{ SubScore, TargetKind string }{
 // "Deliverable" — operator preview of what each chip would render,
 // validated against the contract, before any UI ships.
 //
-// GET /api/admin/readiness-redesign/operational-contract?days=14&schema=<tenant>
+// GET /api/admin/readiness-redesign/operational-contract?days=14&schema=<tenant|all>
 //
-// `days` defaults to 14, capped at 90. `schema` filters to one
-// tenant; without it (or with `all`) the response aggregates across
-// every registered tenant — needed to validate the contract on a
-// second tenant after a config retune without flipping between admin
-// views.
+// `days` defaults to 14, capped at 90.
+//
+// Tenant scope (read-only, same resolver as the chip-calibrations
+// GET path):
+//
+//   - omitted     → request tenant only (safe default)
+//   - `<name>`    → that tenant
+//   - `all`       → every registered tenant (admin pivot view —
+//                   needed to validate the contract across tenants
+//                   after a config retune without flipping admin
+//                   sessions)
 func (h *Handler) adminReadinessRedesignOperationalContract(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

@@ -738,10 +738,11 @@ forward predictive value the chips don't.
    `baseline=…`, `target=…`, `epoch=…` so the operator can scan a
    date for disagreements between baseline-side and target-side
    reasons at a glance. Default window 14 days, capped at 90.
-   - JSON: `GET /api/admin/readiness-redesign/operational-contract?days=N&schema=…`
-     — schema omitted or `all` aggregates across all registered
-     tenants in sorted schema order; the response carries a
-     `tenants` list plus per-row `tenant` field.
+   - JSON: `GET /api/admin/readiness-redesign/operational-contract?days=N&schema=<tenant|all>`
+     — schema omitted defaults to the request tenant (safe default);
+     `schema=all` opts into aggregation across every registered
+     tenant in sorted schema order; the response carries a `tenants`
+     list plus per-row `tenant` field.
    - HTML fragment: `GET /fragments/admin-readiness-contract?days=N`
    - Both endpoints read through the same
      `(*DB).LoadOperationalContractRows(from, to)` per tenant so they
