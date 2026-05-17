@@ -1501,16 +1501,26 @@ func (h *Handler) adminReadinessRedesignConfig(w http.ResponseWriter, r *http.Re
 // adminReadinessRedesignChipCalibrations is the read + recompute
 // surface for the per-tenant binary-chip cutoffs (§6.1). GET returns
 // the current `chip_calibrations` rows without touching them; POST
-// runs `RecomputeChipCalibrations` for the resolved tenant(s), then
+// runs `RecomputeChipCalibrations` for the resolved tenant, then
 // returns the post-write state.
 //
-//   GET  /api/admin/readiness-redesign/chip-calibrations?schema=<tenant>
+//   GET  /api/admin/readiness-redesign/chip-calibrations?schema=<tenant|all>
 //   POST /api/admin/readiness-redesign/chip-calibrations?schema=<tenant>
 //
-// `schema` omitted (or `all`) aggregates across every registered
-// tenant — same resolution rule as the operational-contract surface.
+// Tenant scope rules:
+//
+//   - GET: `schema` omitted → request tenant; `schema=<name>` → that
+//     tenant; `schema=all` → every registered tenant (read-only
+//     aggregation, useful for the admin pivot view).
+//   - POST: `schema` omitted → request tenant; `schema=<name>` → that
+//     tenant; `schema=all` is **rejected with 400** — recompute is a
+//     destructive write on storage and must not cascade across every
+//     tenant from a single click. An operator wanting to recompute
+//     every tenant has to do it explicitly per tenant, with the
+//     selector switched between each call.
 //
 // Response shape:
+//
 //   {
 //     "tenants": ["health", ...],
 //     "rows": [
@@ -1527,8 +1537,17 @@ func (h *Handler) adminReadinessRedesignChipCalibrations(w http.ResponseWriter, 
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	scopes, scopeErr := h.resolveOperationalContractTenants(r,
-		strings.TrimSpace(r.URL.Query().Get("schema")))
+	scoped := strings.TrimSpace(r.URL.Query().Get("schema"))
+	// `schema=all` is read-only — never let it expand to a multi-
+	// tenant recompute. The UI button passes the explicit selector
+	// value (or nothing); a curl caller posting ?schema=all could
+	// otherwise cascade across every tenant by accident.
+	if r.Method == http.MethodPost && scoped == "all" {
+		http.Error(w, "schema=all is not allowed on POST: recompute is per-tenant; pick one explicitly",
+			http.StatusBadRequest)
+		return
+	}
+	scopes, scopeErr := h.resolveOperationalContractTenants(r, scoped)
 	if scopeErr != nil {
 		http.Error(w, scopeErr.Error(), scopeErr.code)
 		return

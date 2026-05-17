@@ -673,15 +673,21 @@ Recomputed by `(*DB).RecomputeChipCalibrations()` invoked from the
 admin endpoint or on a future scheduled job.
 
 **Admin surface**:
-- `GET /api/admin/readiness-redesign/chip-calibrations?schema=…` —
-  current state without recompute.
-- `POST /api/admin/readiness-redesign/chip-calibrations?schema=…` —
+- `GET /api/admin/readiness-redesign/chip-calibrations?schema=<tenant|all>` —
+  current state without recompute. `schema=all` aggregates across
+  every registered tenant for the read-only pivot view.
+- `POST /api/admin/readiness-redesign/chip-calibrations?schema=<tenant>` —
   recompute then return state (per-target results echo what landed).
+  **`schema=all` is rejected with 400** — recompute is a destructive
+  write on storage and must not cascade across every tenant from one
+  click. To recompute every tenant the operator runs the request
+  per tenant, switching the selector between calls.
 - `/admin` operational-contract preview renders chip state
   (`ok` / `elevated` / `calibrating` / `unknown` / `pending`) using
   the cutoff joined into each row, with a "Recompute chip
-  calibrations" button that triggers the writer and refreshes the
-  preview.
+  calibrations" button that triggers the writer for the **selected
+  tenant only** (or the current one when the selector is on
+  "Current") and refreshes the preview.
 
 `chronic_load / chronic_acute_density` stays silent (no chip, no
 calibration row) per the rule below.
