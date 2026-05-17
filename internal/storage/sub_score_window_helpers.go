@@ -104,7 +104,7 @@ func windowStatsBefore(d time.Time, windowDays int, epochStart string, lookup Da
 // skipped. Returns nil when no eligible observation falls in the span.
 func windowEWMA(t time.Time, windowN int, epochStart string, lookup DailyValueLookup) (*float64, int) {
 	alpha := 2.0 / (float64(windowN) + 1.0)
-	maxLookback := max(windowN*3, 90)
+	maxLookback := ewmaLookbackDays(windowN)
 	start := t.AddDate(0, 0, -maxLookback)
 	var ewma float64
 	var initialised bool
@@ -130,4 +130,65 @@ func windowEWMA(t time.Time, windowN int, epochStart string, lookup DailyValueLo
 		return nil, 0
 	}
 	return &ewma, n
+}
+
+// ewmaLookbackDays — actual span (in calendar days strictly before
+// `t`-inclusive) walked by windowEWMA for the given effective window N.
+// Centralised so callers wanting to detect whether the EWMA touches a
+// source-epoch boundary don't have to re-derive the formula and get the
+// reason wrong (which is what happened in the initial cut of
+// classifyBaselineNullReason).
+//
+// Definition matches the loop in windowEWMA:
+//
+//	maxLookback := max(windowN*3, 90)
+//	start := t.AddDate(0, 0, -maxLookback)
+//	for d := start; !d.After(t); ...
+//
+// So earliest considered calendar day = `t - ewmaLookbackDays(N)`.
+func ewmaLookbackDays(windowN int) int {
+	if windowN*3 > 90 {
+		return windowN * 3
+	}
+	return 90
+}
+
+// classifyBaselineNullReason picks the chip-facing reason enum for a
+// nil baseline value. Centralised so every build*NaiveBaselines call
+// site applies the same rule.
+//
+// `earliestOffsetDays` is **how many calendar days before `t` the
+// baseline's lookback reaches** — i.e. the earliest day considered is
+// `t - earliestOffsetDays`. Picking this number per baseline kind is
+// the caller's responsibility because each helper walks a different
+// span:
+//
+//   - persistence_yesterday: 0 (looks only at `t` itself)
+//   - rolling_7d_mean → windowMean(t, 7): 6  (window [t-6..t])
+//   - rolling_30d_mean → windowMean(t, 30): 29
+//   - ewma_45d → windowEWMA(t, 45): ewmaLookbackDays(45) = 135
+//     (NOT 44 — windowEWMA reaches back max(N*3, 90) days, not N)
+//   - event_base_rate → priorEventBaseRate(t, 90): 90
+//     (the helper walks i=1..90 strictly before `t`, earliest = t-90)
+//
+// Rule:
+//   - If `epochStart` is set AND the earliest considered calendar day
+//     falls before `epochStart`, the window is clipped by the current
+//     source_epoch → `BaselineReasonSourceEpochBoundary`. Operator
+//     intervention (epoch catalogue) shaped this, not just time-since-
+//     onboarding.
+//   - Otherwise the window lies fully inside the epoch but has no
+//     eligible observations yet → `BaselineReasonWarmup`.
+func classifyBaselineNullReason(t time.Time, earliestOffsetDays int, epochStart string) string {
+	if epochStart == "" {
+		return BaselineReasonWarmup
+	}
+	if earliestOffsetDays < 0 {
+		earliestOffsetDays = 0
+	}
+	windowStart := t.AddDate(0, 0, -earliestOffsetDays).Format(isoDate)
+	if windowStart < epochStart {
+		return BaselineReasonSourceEpochBoundary
+	}
+	return BaselineReasonWarmup
 }

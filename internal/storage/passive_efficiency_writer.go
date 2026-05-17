@@ -202,6 +202,7 @@ func (s *DB) writePassiveEfficiencyRow(
 			TargetKind:     b.TargetKind,
 			BaselineKind:   b.BaselineKind,
 			PredictedValue: b.Value,
+			Reason:         b.Reason,
 			SourceEpoch:    epoch,
 			FormulaVersion: passiveEfficiencyFormulaVersion,
 		}
@@ -423,27 +424,23 @@ func buildPassiveEfficiencyNaiveBaselines(t time.Time, epochStart string, verdic
 	if v, ok := verdict[t.Format(isoDate)]; ok && v.Eligible && v.Value != nil {
 		persist = ptrFloat(*v.Value)
 	}
-	out = append(out,
-		naiveBaselineRow{TargetKindDailyPoint, BaselineKindPersistenceYesterday, persist},
-		naiveBaselineRow{TargetKindRolling3d, BaselineKindPersistenceYesterday, persist},
-	)
+	// Each classifier call passes the actual earliest-day offset for
+	// that baseline's lookback — see classifyBaselineNullReason's
+	// docstring for the per-baseline numbers.
+	out = append(out, appendBaselinePair(TargetKindDailyPoint, TargetKindRolling3d,
+		BaselineKindPersistenceYesterday, persist, classifyBaselineNullReason(t, 0, epochStart))...)
 
 	mean7, _ := windowMean(t, 7, epochStart, lookup)
-	out = append(out,
-		naiveBaselineRow{TargetKindDailyPoint, BaselineKindRolling7dMean, mean7},
-		naiveBaselineRow{TargetKindRolling3d, BaselineKindRolling7dMean, mean7},
-	)
+	out = append(out, appendBaselinePair(TargetKindDailyPoint, TargetKindRolling3d,
+		BaselineKindRolling7dMean, mean7, classifyBaselineNullReason(t, 6, epochStart))...)
 
 	mean30, _ := windowMean(t, 30, epochStart, lookup)
-	out = append(out,
-		naiveBaselineRow{TargetKindDailyPoint, BaselineKindRolling30dMean, mean30},
-		naiveBaselineRow{TargetKindRolling3d, BaselineKindRolling30dMean, mean30},
-	)
+	out = append(out, appendBaselinePair(TargetKindDailyPoint, TargetKindRolling3d,
+		BaselineKindRolling30dMean, mean30, classifyBaselineNullReason(t, 29, epochStart))...)
 
 	ewma45, _ := windowEWMA(t, ewmaWindowAdaptive, epochStart, lookup)
-	out = append(out,
-		naiveBaselineRow{TargetKindDailyPoint, BaselineKindEWMA45d, ewma45},
-		naiveBaselineRow{TargetKindRolling3d, BaselineKindEWMA45d, ewma45},
-	)
+	out = append(out, appendBaselinePair(TargetKindDailyPoint, TargetKindRolling3d,
+		BaselineKindEWMA45d, ewma45,
+		classifyBaselineNullReason(t, ewmaLookbackDays(ewmaWindowAdaptive), epochStart))...)
 	return out
 }

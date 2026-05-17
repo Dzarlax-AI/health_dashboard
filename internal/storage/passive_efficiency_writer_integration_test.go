@@ -267,6 +267,127 @@ func TestPassiveEfficiency_Integration_NaiveBaselinesExist(t *testing.T) {
 	}
 }
 
+// TestPassiveEfficiency_Integration_NaiveBaselineReason proves that
+// the §6.1 chip's `unknown` reason wiring works end-to-end on a real
+// schema:
+//
+//   1. When a baseline returns NULL because no trailing observations
+//      exist within the current epoch, `naive_baselines.reason` is
+//      `baseline_warmup`.
+//   2. When a baseline returns NULL because the trailing window
+//      straddles a source_epoch boundary, `reason` is
+//      `baseline_source_epoch_boundary`.
+//   3. When a baseline returns a value, `reason` is NULL (joint state
+//      invariant from SaveNaiveBaseline).
+//
+// The chip consumes `ewma_45d` for the deployable continuous layer,
+// so the assertions key off that row specifically.
+func TestPassiveEfficiency_Integration_NaiveBaselineReason(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	// Case 1: completely empty walking_hr history → ewma_45d is NULL,
+	// no source_epoch override (the bootstrap `initial` epoch starts at
+	// 2014-01-01 which is well before any 45d window in 2026), so
+	// reason must be `baseline_warmup`.
+	if _, err := db.BackfillPassiveEfficiencySnapshots("2026-04-15", "2026-04-15"); err != nil {
+		t.Fatalf("warmup backfill: %v", err)
+	}
+	var reason *string
+	var val *float64
+	if err := db.pool.QueryRow(context.Background(), `
+		SELECT predicted_value, reason
+		  FROM naive_baselines
+		 WHERE date = $1 AND sub_score = $2 AND target_kind = $3 AND baseline_kind = $4
+	`, "2026-04-15", SubScorePassiveEfficiency, TargetKindRolling3d, BaselineKindEWMA45d).Scan(&val, &reason); err != nil {
+		t.Fatalf("read warmup baseline: %v", err)
+	}
+	if val != nil {
+		t.Errorf("warmup case: predicted_value = %v, want nil", *val)
+	}
+	if reason == nil || *reason != BaselineReasonWarmup {
+		t.Errorf("warmup case: reason = %v, want %q", reason, BaselineReasonWarmup)
+	}
+
+	// Case 2: insert a custom source_epoch starting two days before the
+	// candidate, so the 45-day EWMA window is clipped to a 3-day slice
+	// — even if observations exist, the *window itself* straddles the
+	// epoch boundary. Seed 35 observations inside the new epoch so the
+	// 45-day window has eligible data but is clipped at the lower end.
+	ctx := context.Background()
+	if _, err := db.pool.Exec(ctx, `
+		INSERT INTO source_epochs(epoch_id, start_date, end_date, kind, description, detected_by, confirmed)
+		VALUES ('boundary_test', '2026-05-10', NULL, 'source_epoch', 'epoch-boundary integration test', 'manual', TRUE)
+		ON CONFLICT (epoch_id) DO UPDATE SET start_date = EXCLUDED.start_date
+	`); err != nil {
+		t.Fatalf("seed epoch: %v", err)
+	}
+	// Close the initial epoch the day before so 2026-05-10..NULL maps
+	// to boundary_test.
+	if _, err := db.pool.Exec(ctx, `
+		UPDATE source_epochs SET end_date = '2026-05-09'
+		 WHERE epoch_id = $1
+	`, InitialSourceEpoch); err != nil {
+		t.Fatalf("close initial epoch: %v", err)
+	}
+	t.Cleanup(func() {
+		dropCtx, dropCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer dropCancel()
+		_, _ = db.pool.Exec(dropCtx, `UPDATE source_epochs SET end_date = NULL WHERE epoch_id = $1`, InitialSourceEpoch)
+		_, _ = db.pool.Exec(dropCtx, `DELETE FROM source_epochs WHERE epoch_id = 'boundary_test'`)
+	})
+
+	// Candidate date 2026-05-12 with no observations in the new epoch.
+	// 45-day window from 2026-05-12 reaches back to 2026-03-29, but the
+	// epoch start clips it to 2026-05-10..2026-05-12 (3 days). With
+	// zero observations seeded, value is NULL — but because the window
+	// straddled the boundary, reason must be source_epoch_boundary, not
+	// warmup.
+	if _, err := db.BackfillPassiveEfficiencySnapshots("2026-05-12", "2026-05-12"); err != nil {
+		t.Fatalf("boundary backfill: %v", err)
+	}
+	val = nil
+	reason = nil
+	if err := db.pool.QueryRow(ctx, `
+		SELECT predicted_value, reason
+		  FROM naive_baselines
+		 WHERE date = $1 AND sub_score = $2 AND target_kind = $3 AND baseline_kind = $4
+	`, "2026-05-12", SubScorePassiveEfficiency, TargetKindRolling3d, BaselineKindEWMA45d).Scan(&val, &reason); err != nil {
+		t.Fatalf("read boundary baseline: %v", err)
+	}
+	if val != nil {
+		t.Errorf("boundary case: predicted_value = %v, want nil", *val)
+	}
+	if reason == nil || *reason != BaselineReasonSourceEpochBoundary {
+		t.Errorf("boundary case: reason = %v, want %q", reason, BaselineReasonSourceEpochBoundary)
+	}
+
+	// Case 3: a date with observations available → value populated,
+	// reason MUST be NULL (joint-state invariant).
+	for i := range 35 {
+		date := time.Date(2026, 6, 1+i, 0, 0, 0, 0, time.UTC).Format(isoDate)
+		seedWalkingHRRow(t, db, date, 100)
+	}
+	if _, err := db.BackfillPassiveEfficiencySnapshots("2026-06-25", "2026-06-25"); err != nil {
+		t.Fatalf("value-present backfill: %v", err)
+	}
+	val = nil
+	reason = nil
+	if err := db.pool.QueryRow(ctx, `
+		SELECT predicted_value, reason
+		  FROM naive_baselines
+		 WHERE date = $1 AND sub_score = $2 AND target_kind = $3 AND baseline_kind = $4
+	`, "2026-06-25", SubScorePassiveEfficiency, TargetKindRolling3d, BaselineKindEWMA45d).Scan(&val, &reason); err != nil {
+		t.Fatalf("read value-present baseline: %v", err)
+	}
+	if val == nil {
+		t.Errorf("value-present case: predicted_value nil, expected non-nil")
+	}
+	if reason != nil {
+		t.Errorf("value-present case: reason = %q, want NULL", *reason)
+	}
+}
+
 func TestPassiveEfficiency_Integration_IdempotentRerun(t *testing.T) {
 	db, cleanup := testDB(t)
 	defer cleanup()

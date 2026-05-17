@@ -571,22 +571,32 @@ unavailable. The chip reason rules instead:
 
 - No `naive_baselines` row for that (date, sub_score, primary
   target_kind, baseline_kind) → `pending` (the writer has not yet
-  reached this date).
-- Row exists, `predicted_value IS NULL` → baseline-side reason such
-  as `baseline_warmup` (insufficient trailing history) or
-  `baseline_source_epoch_boundary`. Concrete enum values are
-  defined when `naive_baselines.reason` lands as a schema change
-  (open follow-up — see "Deliverable" below).
+  reached this date). This is a UI-side state — `pending` is not
+  written to the table.
+- Row exists, `predicted_value IS NULL` → read
+  `naive_baselines.reason`. The column is populated by every writer
+  as of the schema-add PR; values are:
+  - `baseline_warmup` — trailing window lies fully inside the
+    current `source_epoch` but has no eligible observations yet.
+    Clears as data accumulates.
+  - `baseline_source_epoch_boundary` — window's earliest day falls
+    before `source_epoch.start_date`. Operator intervention (epoch
+    catalogue) shaped this, not just time-since-onboarding.
+- Row exists, `predicted_value IS NOT NULL` → `reason IS NULL`. The
+  two are joint state; readers MUST NOT interpret `reason` without
+  first checking the value (the writer rejects rows where both are
+  set).
 - `target_snapshots.eligibility_reason` for the same (date,
   sub_score, target_kind) is still surfaced, but only as a
   **secondary diagnostic** in admin UI / tooltips. It is not the
   chip's primary reason.
 
-Until `naive_baselines.reason` is added, the chip falls back to
-`baseline_unavailable` as a single catch-all reason; admin tooling
-shows both that and the target-side `eligibility_reason` so an
-operator can distinguish "baseline missing despite eligible target"
-from "everything ineligible" without guessing.
+The earlier `baseline_unavailable` catch-all is retired now that
+`naive_baselines.reason` carries the per-row explanation. Admin
+tooling continues to show the target-side `eligibility_reason`
+alongside the baseline-side `reason` so an operator can tell
+"baseline missing despite eligible target" from "everything
+ineligible" without guessing.
 
 **Primary target_kind + baseline_kind per sub-score (what the chip renders):**
 
@@ -631,12 +641,13 @@ forward predictive value the chips don't.
   re-imported a HK archive mid-day and the epoch boundary shifted),
   render `unknown` with reason `source_epoch_change` until the
   writer re-evaluates.
-- If `predicted_value IS NULL`, render `unknown` with the
-  baseline-side reason. Until `naive_baselines.reason` is added as
-  a schema change, the chip uses `baseline_unavailable` as a
-  single catch-all and admin tooling shows
-  `target_snapshots.eligibility_reason` for the same (date,
-  sub_score, primary target_kind) as a secondary diagnostic.
+- If `predicted_value IS NULL`, render `unknown` with the value of
+  `naive_baselines.reason` — `baseline_warmup` or
+  `baseline_source_epoch_boundary`. Admin tooling additionally
+  surfaces `target_snapshots.eligibility_reason` for the same
+  (date, sub_score, primary target_kind) as a secondary
+  diagnostic so operators can tell "baseline missing despite
+  eligible target" from "everything ineligible" without guessing.
 
 **Deliverable shape for the next code PR on this track:**
 
@@ -645,16 +656,9 @@ forward predictive value the chips don't.
    implementation can be written against.
 2. Admin-page schema surfacing per day per sub-score:
    `naive_baselines.predicted_value` (chip value),
-   the chip's effective reason (currently `baseline_unavailable`),
+   `naive_baselines.reason` (chip's authoritative reason on NULL),
    and `target_snapshots.eligibility_reason` (secondary
    diagnostic).
-
-**Schema follow-up (separate PR, queued):** add a `reason TEXT NULL`
-column to `naive_baselines` populated by each baseline writer with
-its own ineligibility cause (`baseline_warmup`,
-`baseline_source_epoch_boundary`, …) so the chip stops needing the
-`baseline_unavailable` catch-all. Until that lands, the contract
-above is correct but the chip reason resolution is coarse.
 
 ### 6.2 Tenant calibration
 

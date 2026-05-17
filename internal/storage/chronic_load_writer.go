@@ -481,15 +481,24 @@ func (s *DB) writeChronicLoadRow(
 
 	// Naive base-rate baselines per target_kind. Only written for
 	// eligible target rows — `predicted_value` is meaningless when the
-	// observed label is itself unknown.
+	// observed label is itself unknown. priorEventBaseRate walks
+	// i=1..90 *strictly before* t, so the earliest day touched is
+	// t-90 (matches the earliestOffsetDays convention used by the
+	// classifier).
+	chronicReason := classifyBaselineNullReason(t, 90, epochStart)
 	if chronicLabelEligible {
 		rate := priorEventBaseRate(t, 90, priorChronic)
+		reason := ""
+		if rate == nil {
+			reason = chronicReason
+		}
 		if err := s.SaveNaiveBaseline(NaiveBaseline{
 			Date:           date,
 			SubScore:       SubScoreChronicLoad,
 			TargetKind:     TargetKindChronicLabel,
 			BaselineKind:   BaselineKindEventBaseRate,
 			PredictedValue: rate,
+			Reason:         reason,
 			SourceEpoch:    epoch,
 			FormulaVersion: chronicLoadFormulaVersion,
 		}); err != nil {
@@ -498,12 +507,17 @@ func (s *DB) writeChronicLoadRow(
 	}
 	if acuteDensityEligible {
 		rate := priorEventBaseRate(t, 90, priorAcuteDensity)
+		reason := ""
+		if rate == nil {
+			reason = chronicReason
+		}
 		if err := s.SaveNaiveBaseline(NaiveBaseline{
 			Date:           date,
 			SubScore:       SubScoreChronicLoad,
 			TargetKind:     TargetKindChronicAcuteDensity,
 			BaselineKind:   BaselineKindEventBaseRate,
 			PredictedValue: rate,
+			Reason:         reason,
 			SourceEpoch:    epoch,
 			FormulaVersion: chronicLoadFormulaVersion,
 		}); err != nil {

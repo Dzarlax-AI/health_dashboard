@@ -34,9 +34,12 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // --- Enums (Phase 0 vocabulary) -----------------------------------------
@@ -109,6 +112,29 @@ const (
 	EligibilityNoStructuredWorkouts         = "no_structured_workouts"
 )
 
+// BaselineReason values — chip-facing explanation when a
+// `naive_baselines.predicted_value` is NULL. Authoritative for the
+// per-sub-score chip's `unknown` state in §6.1 of the plan (the chip
+// does NOT fall back to target_snapshots.eligibility_reason; the two
+// writers have different eligibility conditions).
+//
+// The enum is open: writers can introduce new reasons as long as they
+// appear here. Empty string is reserved for "predicted_value present"
+// rows — readers MUST treat reason as meaningful only when the value
+// is NULL.
+const (
+	// BaselineReasonWarmup — the trailing window has no eligible
+	// observations yet, but it lies fully inside the current
+	// source_epoch. Will eventually clear as data accumulates.
+	BaselineReasonWarmup = "baseline_warmup"
+	// BaselineReasonSourceEpochBoundary — the trailing window starts
+	// before the current `source_epoch.start_date`, so the baseline
+	// computation has been clipped to (possibly) zero observations.
+	// Different from warmup because operator intervention (epoch
+	// catalogue) shaped this, not just time-since-onboarding.
+	BaselineReasonSourceEpochBoundary = "baseline_source_epoch_boundary"
+)
+
 // SourceEpochKind separates ingest/source epochs from user-side
 // physiology regime changes.
 const (
@@ -152,6 +178,15 @@ var validBaselineKinds = map[string]struct{}{
 	BaselineKindRecencyDecay: {},
 }
 
+// validBaselineReasons gates SaveNaiveBaseline so the chip can rely on
+// `reason` being one of a known enum value when `predicted_value IS
+// NULL`. Same pattern as validBaselineKinds — DB column is plain TEXT,
+// new enum values don't need a schema migration.
+var validBaselineReasons = map[string]struct{}{
+	BaselineReasonWarmup:              {},
+	BaselineReasonSourceEpochBoundary: {},
+}
+
 // IsSubScoreValid returns true for the five sub-scores defined in §2.
 func IsSubScoreValid(s string) bool { _, ok := validSubScores[s]; return ok }
 
@@ -160,6 +195,10 @@ func IsTargetKindValid(s string) bool { _, ok := validTargetKinds[s]; return ok 
 
 // IsBaselineKindValid returns true for the recognised baseline_kind values.
 func IsBaselineKindValid(s string) bool { _, ok := validBaselineKinds[s]; return ok }
+
+// IsBaselineReasonValid returns true for the recognised baseline_reason
+// enum values used on NULL `predicted_value` rows.
+func IsBaselineReasonValid(s string) bool { _, ok := validBaselineReasons[s]; return ok }
 
 // --- Migration ----------------------------------------------------------
 
@@ -238,6 +277,13 @@ func (s *DB) EnsureReadinessRedesignTables() {
 			computed_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (date, sub_score, target_kind, baseline_kind)
 		)`,
+		// `reason` lands after the initial schema (Phase 2 track 3 of
+		// the operationalisation plan). Idempotent ALTER so re-running
+		// EnsureReadinessRedesignTables on a fresh tenant just gets the
+		// column up-front. Pre-existing rows from before this PR keep
+		// `reason` NULL — which is the same semantic as "value
+		// present, no explanation needed".
+		`ALTER TABLE naive_baselines ADD COLUMN IF NOT EXISTS reason TEXT`,
 		`CREATE INDEX IF NOT EXISTS idx_naive_baselines_sub_kind_base_date
 			ON naive_baselines (sub_score, target_kind, baseline_kind, date DESC)`,
 	}
@@ -375,6 +421,12 @@ type NaiveBaseline struct {
 	TargetKind     string
 	BaselineKind   string
 	PredictedValue *float64 // nil for ineligible / not-applicable
+	// Reason explains a NULL PredictedValue for chip rendering. Must
+	// be one of the BaselineReason* constants when PredictedValue is
+	// nil, and empty string when PredictedValue is non-nil. The two
+	// are joint state; readers MUST NOT interpret reason without
+	// first checking the value.
+	Reason         string
 	SourceEpoch    string
 	FormulaVersion int
 }
@@ -394,22 +446,50 @@ func (s *DB) SaveNaiveBaseline(b NaiveBaseline) error {
 	if b.SourceEpoch == "" {
 		return fmt.Errorf("SaveNaiveBaseline: source_epoch must be non-empty")
 	}
+	// Joint-state guard. The chip-facing contract (§6.1) is that
+	// `reason` is meaningful **iff** `predicted_value IS NULL`. Anything
+	// else (both set, both empty, unknown reason value) would either
+	// contradict the row itself or leave the chip without a usable
+	// `unknown` explanation — both produce hard-to-debug UI bugs once
+	// downstream consumers ship.
+	switch {
+	case b.PredictedValue != nil:
+		if b.Reason != "" {
+			return fmt.Errorf("SaveNaiveBaseline: reason %q set on non-nil predicted_value", b.Reason)
+		}
+	default: // predicted_value IS NULL
+		if b.Reason == "" {
+			return fmt.Errorf("SaveNaiveBaseline: reason must be set when predicted_value is nil")
+		}
+		if !IsBaselineReasonValid(b.Reason) {
+			return fmt.Errorf("SaveNaiveBaseline: invalid reason %q", b.Reason)
+		}
+	}
+
+	// reason is stored as NULL when empty so historical rows from
+	// before this column existed remain semantically identical to
+	// freshly-written value-present rows.
+	var reason any
+	if b.Reason != "" {
+		reason = b.Reason
+	}
 
 	ctx, cancel := queryCtx()
 	defer cancel()
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO naive_baselines
 			(date, sub_score, target_kind, baseline_kind, predicted_value,
-			 source_epoch, formula_version, computed_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+			 reason, source_epoch, formula_version, computed_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
 		ON CONFLICT (date, sub_score, target_kind, baseline_kind) DO UPDATE SET
 			predicted_value = excluded.predicted_value,
+			reason = excluded.reason,
 			source_epoch = excluded.source_epoch,
 			formula_version = excluded.formula_version,
 			computed_at = NOW()
 	`,
 		b.Date, b.SubScore, b.TargetKind, b.BaselineKind,
-		b.PredictedValue, b.SourceEpoch, b.FormulaVersion,
+		b.PredictedValue, reason, b.SourceEpoch, b.FormulaVersion,
 	)
 	return err
 }
@@ -537,6 +617,51 @@ func (s *DB) VerifyReadinessRedesignSchema() error {
 	}
 	if !hasInitial {
 		return fmt.Errorf("VerifyReadinessRedesignSchema: bootstrap %q epoch missing from source_epochs", InitialSourceEpoch)
+	}
+
+	// Per-column checks for migrations applied via ALTER (not part of
+	// the initial CREATE TABLE). EnsureReadinessRedesignTables logs and
+	// continues on ALTER failures, so without these assertions a
+	// missing or drifted column would only surface as a
+	// SaveNaiveBaseline 500 at write time.
+	//
+	// We assert the full contract for each column — data type and
+	// nullability — because SaveNaiveBaseline depends on reason being
+	// nullable TEXT (NOT NULL would block every value-present row;
+	// non-TEXT would break the reason-enum write path). information_
+	// _schema.columns reports `text` as the canonical type name for
+	// Postgres TEXT (other variants like character varying would
+	// surface differently and we'd want to know).
+	requiredColumns := []struct {
+		table, column, wantType string
+		wantNullable            bool
+	}{
+		{"naive_baselines", "reason", "text", true},
+	}
+	for _, rc := range requiredColumns {
+		var dataType, isNullable string
+		err := s.pool.QueryRow(ctx, `
+			SELECT data_type, is_nullable
+			  FROM information_schema.columns
+			 WHERE table_schema = current_schema()
+			   AND table_name = $1
+			   AND column_name = $2
+		`, rc.table, rc.column).Scan(&dataType, &isNullable)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("VerifyReadinessRedesignSchema: column %s.%s is missing", rc.table, rc.column)
+		}
+		if err != nil {
+			return fmt.Errorf("VerifyReadinessRedesignSchema: probe %s.%s: %w", rc.table, rc.column, err)
+		}
+		if dataType != rc.wantType {
+			return fmt.Errorf("VerifyReadinessRedesignSchema: column %s.%s data_type = %q, want %q",
+				rc.table, rc.column, dataType, rc.wantType)
+		}
+		nullable := isNullable == "YES"
+		if nullable != rc.wantNullable {
+			return fmt.Errorf("VerifyReadinessRedesignSchema: column %s.%s is_nullable = %q, want nullable=%v",
+				rc.table, rc.column, isNullable, rc.wantNullable)
+		}
 	}
 	return nil
 }
