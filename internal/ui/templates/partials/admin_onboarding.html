@@ -129,12 +129,15 @@
             hx-post="/fragments/admin-readiness-onboarding/step-4-run?schema={{.Schema}}"
             hx-target="#onboarding-step-4-body"
             hx-swap="innerHTML"
+            hx-disabled-elt="this"
+            hx-on::before-request="document.getElementById('onboarding-step-4-body').innerHTML='<div style=&quot;padding:10px;color:var(--text-secondary)&quot;><span class=&quot;spinner&quot;></span> Running Phase 0 backfill — synchronous, typically 1–2 min per tenant. Keep this tab open.</div>'"
             hx-on::after-request="htmx.trigger('#onboarding-step-5-body', 'reload'); htmx.trigger('#onboarding-step-7-body', 'reload')">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
       Run backfill
     </button>
     <span style="margin-left:8px;color:var(--text-secondary);font-size:12px">
-      Synchronous — keep the tab open until results render.
+      Synchronous — keep the tab open until results render. Button stays
+      disabled while a backfill is in flight.
     </span>
   </div>
 </div>
