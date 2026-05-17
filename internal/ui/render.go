@@ -72,6 +72,7 @@ func init() {
 	partials := []string{
 		"templates/partials/metrics_list.html",
 		"templates/partials/admin_status.html",
+		"templates/partials/admin_readiness_contract.html",
 	}
 
 	for _, page := range pages {

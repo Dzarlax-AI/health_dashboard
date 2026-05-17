@@ -1,0 +1,30 @@
+{{define "admin-readiness-contract"}}
+{{if not .Rows}}
+<div class="admin-empty-state">{{.EmptyMsg}}</div>
+{{else}}
+<table class="admin-cache-table">
+  <thead>
+    <tr>
+      <th>date</th>
+      <th>sub_score</th>
+      <th>value</th>
+      <th>baseline_reason</th>
+      <th>target_eligibility_reason</th>
+      <th>source_epoch</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Rows}}
+    <tr>
+      <td>{{.Date}}</td>
+      <td>{{.SubScoreLabel}}</td>
+      <td>{{.ValueCell}}</td>
+      <td>{{.BaselineReasonCell}}</td>
+      <td>{{.TargetEligCell}}</td>
+      <td>{{.SourceEpochCell}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{end}}
+{{end}}

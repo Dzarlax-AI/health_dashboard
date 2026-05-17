@@ -88,6 +88,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// htmx fragments
 	mux.HandleFunc("GET /fragments/metrics-list", h.guard(h.fragmentMetricsList))
 	mux.HandleFunc("GET /fragments/admin-status", h.adminGuard(h.fragmentAdminStatus))
+	mux.HandleFunc("GET /fragments/admin-readiness-contract", h.adminGuard(h.fragmentAdminReadinessContract))
 
 	// Static assets
 	mux.HandleFunc("GET /static/", serveStatic)
@@ -115,6 +116,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/backfill", h.adminGuard(h.adminBackfill))
 	mux.HandleFunc("/api/admin/readiness-redesign/backfill", h.adminGuard(h.adminReadinessRedesignBackfill))
 	mux.HandleFunc("/api/admin/readiness-redesign/config", h.adminGuard(h.adminReadinessRedesignConfig))
+	mux.HandleFunc("/api/admin/readiness-redesign/operational-contract", h.adminGuard(h.adminReadinessRedesignOperationalContract))
 	mux.HandleFunc("/api/admin/gaps", h.adminGuard(h.adminGaps))
 	mux.HandleFunc("/api/admin/quality-audit", h.adminGuard(h.adminQualityAudit))
 	mux.HandleFunc("/api/admin/quality-fix", h.adminGuard(h.adminQualityFix))
@@ -567,6 +569,93 @@ func (h *Handler) fragmentAdminStatus(w http.ResponseWriter, r *http.Request) {
 		LastSync:    status.LastSync,
 	}
 	renderFragment(w, "admin-status", data)
+}
+
+// fragmentAdminReadinessContract renders the operational-contract
+// preview table (§6.1) as an HTML fragment. Reads from the same
+// `LoadOperationalContractRows` storage method as the JSON API
+// counterpart so the two views can never drift.
+//
+// Each row is mapped to display strings here rather than in the
+// template so the conditional rendering (pending / unknown / value /
+// reason fallbacks) lives in one Go-testable place, with the
+// template purely structural.
+func (h *Handler) fragmentAdminReadinessContract(w http.ResponseWriter, r *http.Request) {
+	db := h.tenantDB(r)
+	if db == nil {
+		http.Error(w, "no tenant DB available", http.StatusServiceUnavailable)
+		return
+	}
+	schema := h.tenantSchema(r)
+	days, err := parseOperationalContractDays(r.URL.Query().Get("days"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	from, to := operationalContractWindow(h, db, schema, days)
+	rows, err := db.LoadOperationalContractRows(from, to)
+	if err != nil {
+		http.Error(w, "load rows: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	type viewRow struct {
+		Date               string
+		SubScoreLabel      string
+		ValueCell          string
+		BaselineReasonCell string
+		TargetEligCell     string
+		SourceEpochCell    string
+	}
+	subScoreLabels := map[string]string{
+		storage.SubScoreRecoveryStability: "recovery",
+		storage.SubScorePassiveEfficiency: "passive",
+		storage.SubScoreChronicLoad:       "chronic",
+		storage.SubScoreAcuteRisk:         "acute",
+	}
+	view := make([]viewRow, 0, len(rows))
+	for _, r := range rows {
+		vr := viewRow{Date: r.Date, SubScoreLabel: subScoreLabels[r.SubScore]}
+		// Value cell — chip's primary output. § 6.1 mapping:
+		//   predicted_value != nil → render the number;
+		//   no naive_baselines row at all (predicted_value nil AND
+		//     reason nil) → `pending` (writer hasn't reached date yet);
+		//   predicted_value nil, reason set → `unknown`.
+		if r.PredictedValue != nil {
+			vr.ValueCell = fmt.Sprintf("%.3f", *r.PredictedValue)
+		} else if r.BaselineReason == nil {
+			vr.ValueCell = "pending"
+		} else {
+			vr.ValueCell = "unknown"
+		}
+		if r.BaselineReason != nil {
+			vr.BaselineReasonCell = *r.BaselineReason
+		} else {
+			vr.BaselineReasonCell = "—"
+		}
+		if r.TargetEligibilityReason != nil {
+			vr.TargetEligCell = *r.TargetEligibilityReason
+		} else {
+			vr.TargetEligCell = "—"
+		}
+		if r.SourceEpoch != nil {
+			vr.SourceEpochCell = *r.SourceEpoch
+		} else {
+			vr.SourceEpochCell = "—"
+		}
+		view = append(view, vr)
+	}
+
+	data := struct {
+		Lang     string
+		Rows     []viewRow
+		EmptyMsg string
+	}{
+		Lang:     langFromRequest(r),
+		Rows:     view,
+		EmptyMsg: "no rows yet — run the readiness-redesign backfill first",
+	}
+	renderFragment(w, "admin-readiness-contract", data)
 }
 
 func setLangCookie(w http.ResponseWriter, r *http.Request) {
@@ -1390,6 +1479,130 @@ func (h *Handler) adminReadinessRedesignConfig(w http.ResponseWriter, r *http.Re
 		"schema":              schema,
 		"chronic_load_config": status,
 	})
+}
+
+// adminReadinessRedesignOperationalContract returns one row per
+// (date, chip_config) for the last N days, joining
+// `naive_baselines.predicted_value` / `reason` with
+// `target_snapshots.eligibility_reason`. Implements the §6.1
+// "Deliverable" — operator preview of what each chip would render,
+// validated against the contract, before any UI ships.
+//
+// GET /api/admin/readiness-redesign/operational-contract?days=14&schema=<tenant>
+//
+// `days` defaults to 14, capped at 90. `schema` selects a cross-tenant
+// override consistent with the other admin endpoints in this file.
+func (h *Handler) adminReadinessRedesignOperationalContract(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	schema := h.tenantSchema(r)
+	db := h.tenantDB(r)
+	if target := strings.TrimSpace(r.URL.Query().Get("schema")); target != "" && target != schema {
+		if h.reg == nil {
+			http.Error(w, "registry not available", http.StatusServiceUnavailable)
+			return
+		}
+		users, err := h.reg.ListUsers(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		known := false
+		for _, u := range users {
+			if u.SchemaName == target {
+				known = true
+				break
+			}
+		}
+		if !known {
+			http.Error(w, "unknown schema", http.StatusBadRequest)
+			return
+		}
+		all := h.mgr.AllDBs()
+		got, ok := all[target]
+		if !ok || got == nil {
+			http.Error(w, "tenant DB pool not initialised", http.StatusServiceUnavailable)
+			return
+		}
+		db = got
+		schema = target
+	}
+	if db == nil {
+		http.Error(w, "no tenant DB available", http.StatusServiceUnavailable)
+		return
+	}
+
+	days, err := parseOperationalContractDays(r.URL.Query().Get("days"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	from, to := operationalContractWindow(h, db, schema, days)
+
+	rows, loadErr := db.LoadOperationalContractRows(from, to)
+	if loadErr != nil {
+		http.Error(w, "load rows: "+loadErr.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, map[string]any{
+		"schema": schema,
+		"from":   from,
+		"to":     to,
+		"days":   days,
+		"rows":   rows,
+	})
+}
+
+// parseOperationalContractDays validates the `days` query parameter
+// for both the JSON and fragment surfaces. Empty → 14 (default).
+// Returns (clampedDays, nil) on success, (0, err) on invalid input.
+// Clamps at 90 — anything larger should go through the backfill
+// endpoint or direct SQL, this surface is for at-a-glance validation.
+func parseOperationalContractDays(raw string) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 14, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("days must be a positive integer")
+	}
+	if n > 90 {
+		n = 90
+	}
+	return n, nil
+}
+
+// operationalContractWindow computes (from, to) date strings for the
+// preview, anchored in the tenant's REPORT_TZ rather than UTC. Near
+// midnight in non-UTC tenants this is the difference between showing
+// the correct local day vs a stale UTC day.
+//
+// Resolution order: settings.timezone → env REPORT_TZ default → UTC.
+// Same as the stress-validation and energy handlers.
+func operationalContractWindow(h *Handler, db *storage.DB, schema string, days int) (from, to string) {
+	var tz string
+	// h.mgr is non-nil in production but may be nil in some tests
+	// that build a bare Handler{}. Skip the per-tenant lookup in
+	// that case rather than panicking.
+	if h.mgr != nil {
+		tz = db.GetNotifyConfig(h.mgr.NotifyDefaultsFor(schema)).Timezone
+	}
+	if tz == "" {
+		tz = "UTC"
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		// Unknown TZ name falls back to UTC rather than failing the
+		// request — operator can see the data, the date-window edge
+		// case is the only loss.
+		loc = time.UTC
+	}
+	toT := time.Now().In(loc)
+	fromT := toT.AddDate(0, 0, -(days - 1))
+	return fromT.Format("2006-01-02"), toT.Format("2006-01-02")
 }
 
 // userSettings handles GET/POST /api/settings — Telegram config, available to all users.
