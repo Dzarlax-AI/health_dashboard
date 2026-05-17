@@ -80,18 +80,14 @@
         <!-- Readiness redesign — operational contract preview (§6.1) -->
         <div class="admin-section">
           <div class="admin-section-header">
-            <div class="section-title">Readiness redesign — operational contract preview</div>
+            <div class="section-title">{{T .Lang "admin_contract_title"}}</div>
             <button class="btn btn--secondary btn--small"
                     hx-get="/fragments/admin-readiness-contract?days=14&schema=all"
                     hx-target="#admin-readiness-contract-table"
                     hx-swap="innerHTML">{{T .Lang "admin_refresh"}}</button>
           </div>
           <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
-            Per-day per-sub-score pivot of what each chip would render. Binary chips
-            (Acute, Chronic) read their cutoff from <code>chip_calibrations</code>; the
-            "Recompute chip calibrations" action lives in the Operations group below.
-            Hover any cell to see <code>value · cutoff · calibration · baseline · target · epoch</code>.
-            See plan §6.1.
+            {{SafeHTML (T .Lang "admin_contract_desc")}}
           </p>
           <div id="admin-readiness-contract-table"
                hx-get="/fragments/admin-readiness-contract?days=14&schema=all"
@@ -109,11 +105,12 @@
       <!-- action below should read a different selector.                -->
       <!-- ============================================================ -->
       <div class="admin-group">
-        <div class="admin-group-header">Operations</div>
+        <div class="admin-group-header">{{T .Lang "admin_ops_group"}}</div>
         {{if .MultiUser}}
         <div class="admin-group-desc">
-          Actions in this group target the tenant selected below. Leave it on
-          <strong>{{T .Lang "admin_target_user_current"}}</strong> to act on your own tenant.
+          {{T .Lang "admin_ops_group_desc_prefix"}}
+          <strong>{{T .Lang "admin_target_user_current"}}</strong>
+          {{T .Lang "admin_ops_group_desc_suffix"}}
         </div>
         <div class="admin-operations-scope">
           <div class="admin-field-row">
@@ -151,24 +148,19 @@
 
         <!-- Readiness redesign operations -->
         <div class="admin-section">
-          <div class="section-title">Readiness redesign</div>
+          <div class="section-title">{{T .Lang "admin_ops_redesign_title"}}</div>
           <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
-            Per-tenant chip thresholds are derived from rolling 180-day history.
-            Click <strong>Recompute</strong> to update them after a config change or
-            a fresh Phase 0 backfill. Output appears in the Operational contract
-            preview above.
+            {{SafeHTML (T .Lang "admin_ops_redesign_desc")}}
           </p>
           <div class="admin-actions">
             <div class="admin-action-card">
-              <div class="admin-action-title">Recompute chip calibrations</div>
+              <div class="admin-action-title">{{T .Lang "admin_chip_recompute_title"}}</div>
               <div class="admin-action-desc">
-                Reads the last 180 eligible days, computes p80 + base-rate guard
-                per binary chip, writes the result to <code>chip_calibrations</code>.
-                Targets the tenant selected above.
+                {{SafeHTML (T .Lang "admin_chip_recompute_desc")}}
               </div>
               <button class="btn btn--primary btn--small" onclick="triggerChipCalibrationRecompute()">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-                Recompute
+                {{T .Lang "admin_chip_recompute_btn"}}
               </button>
             </div>
           </div>
@@ -177,20 +169,15 @@
 
         <!-- Data quality maintenance -->
         <div class="admin-section">
-          <div class="section-title">Data quality maintenance</div>
+          <div class="section-title">{{T .Lang "admin_quality_maintenance_title"}}</div>
           <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
-            Maintenance actions that mutate <code>metric_points.quality</code> or
-            send a Telegram digest. The read-only audit lives in
-            <strong>Status &amp; diagnostics</strong> above; click that first to
-            see what the actions will affect.
+            {{SafeHTML (T .Lang "admin_quality_maintenance_desc")}}
           </p>
           <div class="admin-actions">
             <div class="admin-action-card">
               <div class="admin-action-title">{{T .Lang "admin_quality_fix"}}</div>
               <div class="admin-action-desc">
-                Mark out-of-range points as <code>impossible</code> and z-score
-                outliers as <code>suspect</code> so they're excluded from
-                downstream scoring.
+                {{SafeHTML (T .Lang "admin_quality_fix_desc")}}
               </div>
               <button class="btn btn--primary btn--small" onclick="runQualityFix()">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
@@ -200,8 +187,7 @@
             <div class="admin-action-card">
               <div class="admin-action-title">{{T .Lang "admin_quality_digest"}}</div>
               <div class="admin-action-desc">
-                Force-send the weekly quality digest to the configured Telegram
-                chat right now (normally runs on the digest day-of-week).
+                {{T .Lang "admin_quality_digest_desc"}}
               </div>
               <button class="btn btn--secondary btn--small" onclick="runQualityDigest()">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
@@ -214,33 +200,28 @@
 
         <!-- Readiness redesign onboarding wizard (§6.2 runbook). -->
         <details class="admin-section" id="admin-onboarding-section">
-          <summary class="section-title" style="cursor:pointer">Readiness redesign — tenant onboarding wizard</summary>
+          <summary class="section-title" style="cursor:pointer">{{T .Lang "admin_wizard_title"}}</summary>
           <p style="color:var(--text-secondary);font-size:13px;margin:12px 0">
-            Guided 7-step flow for a new (or freshly retuned) tenant. Each step
-            re-derives its state from the database, so you can close the page
-            and come back: nothing here is stored in cookies. Pick the tenant
-            in the Operations selector above; the wizard rejects
-            <code>schema=all</code> on every mutating step. To re-render any
-            step, click its <em>Refresh</em> button.
+            {{SafeHTML (T .Lang "admin_wizard_desc")}}
           </p>
           <button class="btn btn--secondary btn--small"
                   onclick="onboardingRefreshAll()"
-                  style="margin-bottom:12px">Load / refresh wizard for selected tenant</button>
+                  style="margin-bottom:12px">{{T .Lang "admin_wizard_load_all"}}</button>
 
           <div class="onboarding-step" id="onboarding-step-1">
             <div class="onboarding-step-header">
               <span class="onboarding-step-num">1</span>
-              <span class="onboarding-step-title">Tenant check</span>
-              <button class="btn btn--secondary btn--small" onclick="onboardingRefreshStep('step-1')">Refresh</button>
+              <span class="onboarding-step-title">{{T .Lang "admin_wizard_step1_title"}}</span>
+              <button class="btn btn--secondary btn--small" onclick="onboardingRefreshStep('step-1')">{{T .Lang "admin_wizard_refresh"}}</button>
             </div>
-            <div id="onboarding-step-1-body" class="onboarding-empty">Pick a tenant and click <em>Load</em>.</div>
+            <div id="onboarding-step-1-body" class="onboarding-empty">{{SafeHTML (T .Lang "admin_wizard_pick_tenant")}}</div>
           </div>
 
           <div class="onboarding-step" id="onboarding-step-2">
             <div class="onboarding-step-header">
               <span class="onboarding-step-num">2</span>
-              <span class="onboarding-step-title">Chronic load config</span>
-              <button class="btn btn--secondary btn--small" onclick="onboardingRefreshStep('step-2')">Refresh</button>
+              <span class="onboarding-step-title">{{T .Lang "admin_wizard_step2_title"}}</span>
+              <button class="btn btn--secondary btn--small" onclick="onboardingRefreshStep('step-2')">{{T .Lang "admin_wizard_refresh"}}</button>
             </div>
             <div id="onboarding-step-2-body" class="onboarding-empty">—</div>
           </div>
@@ -248,8 +229,8 @@
           <div class="onboarding-step" id="onboarding-step-3">
             <div class="onboarding-step-header">
               <span class="onboarding-step-num">3</span>
-              <span class="onboarding-step-title">Coverage &amp; base-rate preview</span>
-              <button class="btn btn--secondary btn--small" onclick="onboardingRefreshStep('step-3')">Refresh</button>
+              <span class="onboarding-step-title">{{T .Lang "admin_wizard_step3_title"}}</span>
+              <button class="btn btn--secondary btn--small" onclick="onboardingRefreshStep('step-3')">{{T .Lang "admin_wizard_refresh"}}</button>
             </div>
             <div id="onboarding-step-3-body" class="onboarding-empty">—</div>
           </div>
@@ -257,8 +238,8 @@
           <div class="onboarding-step" id="onboarding-step-4">
             <div class="onboarding-step-header">
               <span class="onboarding-step-num">4</span>
-              <span class="onboarding-step-title">Phase 0 backfill</span>
-              <button class="btn btn--secondary btn--small" onclick="onboardingRefreshStep('step-4-plan')">Show plan</button>
+              <span class="onboarding-step-title">{{T .Lang "admin_wizard_step4_title"}}</span>
+              <button class="btn btn--secondary btn--small" onclick="onboardingRefreshStep('step-4-plan')">{{T .Lang "admin_wizard_show_plan"}}</button>
             </div>
             <div id="onboarding-step-4-body" class="onboarding-empty">—</div>
           </div>
@@ -266,40 +247,39 @@
           <div class="onboarding-step" id="onboarding-step-5">
             <div class="onboarding-step-header">
               <span class="onboarding-step-num">5</span>
-              <span class="onboarding-step-title">Verify</span>
-              <button class="btn btn--secondary btn--small" onclick="onboardingRefreshStep('step-5')">Refresh</button>
+              <span class="onboarding-step-title">{{T .Lang "admin_wizard_step5_title"}}</span>
+              <button class="btn btn--secondary btn--small" onclick="onboardingRefreshStep('step-5')">{{T .Lang "admin_wizard_refresh"}}</button>
             </div>
             <div id="onboarding-step-5-body" class="onboarding-empty"
                  hx-get="/fragments/admin-readiness-onboarding/step-5"
                  hx-trigger="reload"
                  hx-swap="innerHTML"
-                 hx-vals="js:{schema: onboardingSchema()}">—</div>
+                 hx-vals="js:{schema: onboardingSchema(), lang: onboardingLang()}">—</div>
           </div>
 
           <div class="onboarding-step" id="onboarding-step-6">
             <div class="onboarding-step-header">
               <span class="onboarding-step-num">6</span>
-              <span class="onboarding-step-title">Recompute chip calibrations</span>
-              <button class="btn btn--primary btn--small"
-                      onclick="onboardingRunStep6()">Recompute</button>
+              <span class="onboarding-step-title">{{T .Lang "admin_wizard_step6_title"}}</span>
+              <button class="btn btn--primary btn--small" id="onboarding-step-6-btn"
+                      onclick="onboardingRunStep6()">{{T .Lang "admin_wizard_recompute"}}</button>
             </div>
             <div id="onboarding-step-6-body" class="onboarding-empty">
-              Once Step 4 has run and Step 5 looks healthy, click <em>Recompute</em>
-              to derive chip cutoffs.
+              {{SafeHTML (T .Lang "admin_wizard_step6_intro")}}
             </div>
           </div>
 
           <div class="onboarding-step" id="onboarding-step-7">
             <div class="onboarding-step-header">
               <span class="onboarding-step-num">7</span>
-              <span class="onboarding-step-title">Final preview (last 7 days)</span>
-              <button class="btn btn--secondary btn--small" onclick="onboardingRefreshStep('step-7')">Refresh</button>
+              <span class="onboarding-step-title">{{T .Lang "admin_wizard_step7_title"}}</span>
+              <button class="btn btn--secondary btn--small" onclick="onboardingRefreshStep('step-7')">{{T .Lang "admin_wizard_refresh"}}</button>
             </div>
             <div id="onboarding-step-7-body" class="onboarding-empty"
                  hx-get="/fragments/admin-readiness-onboarding/step-7"
                  hx-trigger="reload"
                  hx-swap="innerHTML"
-                 hx-vals="js:{schema: onboardingSchema()}">—</div>
+                 hx-vals="js:{schema: onboardingSchema(), lang: onboardingLang()}">—</div>
           </div>
         </details>
       </div>
@@ -391,33 +371,40 @@
       <!-- ============================================================ -->
       {{if .MultiUser}}
       <div class="admin-group">
-        <div class="admin-group-header">Users</div>
+        <div class="admin-group-header">{{T .Lang "admin_group_users"}}</div>
         <div class="admin-section">
           <div class="admin-section-header">
-            <div class="section-title">Registered users</div>
-            <button class="btn btn--secondary btn--small" onclick="loadUsers()">Refresh</button>
+            <div class="section-title">{{T .Lang "admin_users_title"}}</div>
+            <button class="btn btn--secondary btn--small" onclick="loadUsers()">{{T .Lang "admin_refresh"}}</button>
           </div>
-          <div id="admin-users-table">
+          <div id="admin-users-table"
+               data-col-username="{{T .Lang "admin_users_col_username"}}"
+               data-col-email="{{T .Lang "admin_users_col_email"}}"
+               data-col-api-key="{{T .Lang "admin_users_col_api_key"}}"
+               data-col-role="{{T .Lang "admin_users_col_role"}}"
+               data-role-admin="{{T .Lang "admin_users_role_admin"}}"
+               data-role-user="{{T .Lang "admin_users_role_user"}}"
+               data-empty="{{T .Lang "admin_users_empty"}}">
             <div class="spinner spinner--large"></div>
           </div>
           <div style="margin-top:16px">
-            <div class="admin-field-group-title">Add user</div>
+            <div class="admin-field-group-title">{{T .Lang "admin_users_add_title"}}</div>
             <div class="admin-field-row">
-              <label class="admin-field-label">Username</label>
+              <label class="admin-field-label">{{T .Lang "admin_users_username"}}</label>
               <input class="admin-field-input" type="text" id="new-username" autocomplete="off" placeholder="alice">
             </div>
             <div class="admin-field-row">
-              <label class="admin-field-label">Email <span style="font-weight:400;color:var(--text-secondary)">(optional, for SSO)</span></label>
+              <label class="admin-field-label">{{T .Lang "admin_users_email"}} <span style="font-weight:400;color:var(--text-secondary)">{{T .Lang "admin_users_email_hint"}}</span></label>
               <input class="admin-field-input" type="email" id="new-email" autocomplete="off" placeholder="alice@example.com">
             </div>
             <div class="admin-field-row">
-              <label class="admin-field-label">Password</label>
+              <label class="admin-field-label">{{T .Lang "admin_users_password"}}</label>
               <input class="admin-field-input" type="password" id="new-password" autocomplete="new-password">
             </div>
             <div class="admin-settings-actions" style="margin-top:12px">
               <button class="btn btn--primary btn--small" onclick="createUser()">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>
-                Add user
+                {{T .Lang "admin_users_add_btn"}}
               </button>
             </div>
             <div id="admin-users-msg" style="display:none;margin-top:8px"></div>
@@ -492,6 +479,26 @@ function onboardingSchema() {
   return (sel && sel.value) ? sel.value : '';
 }
 
+// onboardingLang reads the active UI language so wizard fragments
+// can be re-rendered in the same language as the parent page. We
+// look at the page's `?lang=` query param (set by the language
+// toggle) and validate against the en/ru/sr whitelist so junk
+// values can't slip through to the server.
+function onboardingLang() {
+  var m = /[?&]lang=([^&]+)/.exec(window.location.search);
+  if (!m) return '';
+  var v = decodeURIComponent(m[1]);
+  return (v === 'en' || v === 'ru' || v === 'sr') ? v : '';
+}
+
+function onboardingQuery(schema) {
+  var parts = [];
+  if (schema) parts.push('schema=' + encodeURIComponent(schema));
+  var lang = onboardingLang();
+  if (lang) parts.push('lang=' + encodeURIComponent(lang));
+  return parts.length ? '?' + parts.join('&') : '';
+}
+
 function onboardingRefreshStep(step) {
   var schema = onboardingSchema();
   // Empty schema is intentional — server falls back to request tenant
@@ -504,8 +511,7 @@ function onboardingRefreshStep(step) {
   var target = $('onboarding-' + targetStep + '-body');
   if (!target) return;
   target.innerHTML = '<div class="spinner"></div>';
-  var url = '/fragments/admin-readiness-onboarding/' + step;
-  if (schema) url += '?schema=' + encodeURIComponent(schema);
+  var url = '/fragments/admin-readiness-onboarding/' + step + onboardingQuery(schema);
   fetch(url)
     .then(function(r){ return r.text().then(function(t){ return {ok:r.ok, text:t}; }); })
     .then(function(p){
@@ -531,8 +537,7 @@ function onboardingRunStep6() {
   // onboardingRefreshStep — don't block the legacy single-tenant
   // and "Current" paths on the client.
   body.innerHTML = '<div class="spinner"></div>';
-  var url = '/fragments/admin-readiness-onboarding/step-6-run';
-  if (schema) url += '?schema=' + encodeURIComponent(schema);
+  var url = '/fragments/admin-readiness-onboarding/step-6-run' + onboardingQuery(schema);
   fetch(url, {method:'POST'})
     .then(function(r){ return r.text().then(function(t){ return {ok:r.ok, text:t}; }); })
     .then(function(p){
@@ -873,14 +878,26 @@ function loadUsers() {
       var el = $('admin-users-table');
       if (!el) return;
       var users = d.users || [];
+      // Pull localized labels from data-* attributes so this loop
+      // stays language-agnostic — the template fills the attrs once.
+      var lblUsername = el.getAttribute('data-col-username') || 'Username';
+      var lblEmail    = el.getAttribute('data-col-email')    || 'Email';
+      var lblApiKey   = el.getAttribute('data-col-api-key')  || 'API key';
+      var lblRole     = el.getAttribute('data-col-role')     || 'Role';
+      var lblAdmin    = el.getAttribute('data-role-admin')   || 'admin';
+      var lblUser     = el.getAttribute('data-role-user')    || 'user';
+      var lblEmpty    = el.getAttribute('data-empty')        || 'No users yet.';
       if (!users.length) {
-        el.innerHTML = '<p style="color:var(--text-secondary);font-size:13px">No users yet.</p>';
+        el.innerHTML = '<p style="color:var(--text-secondary);font-size:13px">' + escapeHtml(lblEmpty) + '</p>';
         return;
       }
       var rows = users.map(function(u) {
-        return '<tr><td>' + u.username + '</td><td>' + (u.email || '—') + '</td><td style="font-family:monospace;font-size:11px">' + u.api_key + '</td><td>' + (u.is_admin ? 'admin' : 'user') + '</td></tr>';
+        return '<tr><td>' + escapeHtml(u.username) + '</td><td>' + escapeHtml(u.email || '—') + '</td><td style="font-family:monospace;font-size:11px">' + escapeHtml(u.api_key) + '</td><td>' + (u.is_admin ? escapeHtml(lblAdmin) : escapeHtml(lblUser)) + '</td></tr>';
       }).join('');
-      el.innerHTML = '<table class="admin-table"><thead><tr><th>Username</th><th>Email</th><th>API Key</th><th>Role</th></tr></thead><tbody>' + rows + '</tbody></table>';
+      el.innerHTML = '<table class="admin-table"><thead><tr><th>' +
+        escapeHtml(lblUsername) + '</th><th>' + escapeHtml(lblEmail) + '</th><th>' +
+        escapeHtml(lblApiKey) + '</th><th>' + escapeHtml(lblRole) +
+        '</th></tr></thead><tbody>' + rows + '</tbody></table>';
       var sel = $('backfill-target');
       if (sel) {
         var prev = sel.value;
