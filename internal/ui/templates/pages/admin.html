@@ -280,7 +280,7 @@
             <div class="onboarding-step-header">
               <span class="onboarding-step-num">6</span>
               <span class="onboarding-step-title">Recompute chip calibrations</span>
-              <button class="btn btn--primary btn--small"
+              <button class="btn btn--primary btn--small" id="onboarding-step-6-btn"
                       onclick="onboardingRunStep6()">Recompute</button>
             </div>
             <div id="onboarding-step-6-body" class="onboarding-empty">
@@ -527,10 +527,14 @@ function onboardingRefreshAll() {
 function onboardingRunStep6() {
   var schema = onboardingSchema();
   var body = $('onboarding-step-6-body');
+  var btn = $('onboarding-step-6-btn');
   // Empty schema → server uses request tenant. Same rationale as
   // onboardingRefreshStep — don't block the legacy single-tenant
   // and "Current" paths on the client.
-  body.innerHTML = '<div class="spinner"></div>';
+  // Spam-click guard: bail if a request is already in flight.
+  if (btn && btn.disabled) return;
+  if (btn) btn.disabled = true;
+  body.innerHTML = '<div style="padding:10px;color:var(--text-secondary)"><span class="spinner"></span> Recomputing chip calibrations — usually under a second per tenant.</div>';
   var url = '/fragments/admin-readiness-onboarding/step-6-run';
   if (schema) url += '?schema=' + encodeURIComponent(schema);
   fetch(url, {method:'POST'})
@@ -542,7 +546,8 @@ function onboardingRunStep6() {
         htmx.trigger('#onboarding-step-7-body', 'reload');
       }
     })
-    .catch(function(e){ body.innerHTML = '<span style="color:var(--bad)">' + e + '</span>'; });
+    .catch(function(e){ body.innerHTML = '<span style="color:var(--bad)">' + e + '</span>'; })
+    .finally(function(){ if (btn) btn.disabled = false; });
 }
 
 function checkDataGaps() {
