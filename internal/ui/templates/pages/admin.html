@@ -510,6 +510,12 @@ function onboardingRefreshStep(step) {
     .then(function(r){ return r.text().then(function(t){ return {ok:r.ok, text:t}; }); })
     .then(function(p){
       target.innerHTML = p.ok ? p.text : ('<span style="color:var(--bad)">' + p.text + '</span>');
+      // Fragments include htmx attributes (e.g. the Step 4 "Run
+      // backfill" button is hx-post). Raw innerHTML assignment does
+      // not bind them — htmx only scans content it swapped itself.
+      // Process the subtree manually so injected hx-* attrs become
+      // live.
+      if (window.htmx && p.ok) htmx.process(target);
     })
     .catch(function(e){ target.innerHTML = '<span style="color:var(--bad)">' + e + '</span>'; });
 }
@@ -531,7 +537,10 @@ function onboardingRunStep6() {
     .then(function(r){ return r.text().then(function(t){ return {ok:r.ok, text:t}; }); })
     .then(function(p){
       body.innerHTML = p.ok ? p.text : ('<span style="color:var(--bad)">' + p.text + '</span>');
-      if (p.ok) htmx.trigger('#onboarding-step-7-body', 'reload');
+      if (window.htmx && p.ok) {
+        htmx.process(body);
+        htmx.trigger('#onboarding-step-7-body', 'reload');
+      }
     })
     .catch(function(e){ body.innerHTML = '<span style="color:var(--bad)">' + e + '</span>'; });
 }
