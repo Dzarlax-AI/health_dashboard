@@ -80,20 +80,32 @@
       <div class="admin-section">
         <div class="admin-section-header">
           <div class="section-title">Readiness redesign — operational contract preview</div>
-          <button class="btn btn--secondary btn--small"
-                  hx-get="/fragments/admin-readiness-contract?days=14"
-                  hx-target="#admin-readiness-contract-table"
-                  hx-swap="innerHTML">{{T .Lang "admin_refresh"}}</button>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn btn--secondary btn--small"
+                    hx-get="/fragments/admin-readiness-contract?days=14"
+                    hx-target="#admin-readiness-contract-table"
+                    hx-swap="innerHTML">{{T .Lang "admin_refresh"}}</button>
+            <button class="btn btn--secondary btn--small"
+                    hx-post="/api/admin/readiness-redesign/chip-calibrations"
+                    hx-target="#admin-chip-calibration-msg"
+                    hx-swap="innerHTML"
+                    hx-on::after-request="htmx.trigger('#admin-readiness-contract-table', 'reload')"
+                    title="Recompute per-tenant chip cutoffs from rolling 180-day history">
+              Recompute chip calibrations
+            </button>
+          </div>
         </div>
         <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
-          Per-day per-sub-score preview of what each chip would render. Value comes from
-          <code>naive_baselines.predicted_value</code>; <code>baseline_reason</code> is the chip's
-          authoritative <code>unknown</code> explanation; <code>target_eligibility_reason</code> is the
-          secondary diagnostic. See plan §6.1.
+          Per-day per-sub-score preview of what each chip would render. Binary chips
+          (Acute, Chronic) read their cutoff from <code>chip_calibrations</code> — recomputed on
+          demand from rolling 180-day personal history (no manual threshold). Hover any cell
+          to see <code>value · cutoff · calibration · baseline · target · epoch</code>.
+          See plan §6.1.
         </p>
+        <div id="admin-chip-calibration-msg" style="color:var(--text-secondary);font-size:12px;margin-bottom:8px"></div>
         <div id="admin-readiness-contract-table"
              hx-get="/fragments/admin-readiness-contract?days=14"
-             hx-trigger="load"
+             hx-trigger="load, reload"
              hx-swap="innerHTML">
           <div class="spinner spinner--large"></div>
         </div>

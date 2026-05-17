@@ -607,11 +607,84 @@ ineligible" without guessing.
 | Chronic Load | `chronic_label` (boolean rule, forward window t+1..t+14) | `event_base_rate` | binary chip thresholded on `naive_baselines.predicted_value` |
 | Acute Risk | `event_t1_t3` (OR-event in t+1..t+3) | `event_base_rate` | binary chip thresholded on `naive_baselines.predicted_value` |
 
-Binary-chip thresholding rule for the two classifier rows is fixed in
-the next code-side PR on this track (currently the chip would render
-the predicted positive *rate* — calibration of that rate into a
-hi/lo chip needs an explicit decision and ROC look at the tenant's
-data, not a hardcoded 0.5 cutoff).
+Binary-chip thresholding rule for the two classifier rows: chip shows
+`elevated` when `predicted_value >= cutoff`, where `cutoff` is
+auto-derived per tenant per source_epoch by the
+`RecomputeChipCalibrations` writer (storage layer). **No operator
+picks a number.**
+
+The writer's policy:
+
+- Window: rolling 180 days of eligible `(predicted_value, label)`
+  pairs inside the current `source_epoch`.
+- Method: `cutoff = max(p80, base_rate)`. The 80th percentile of
+  `naive_baselines.predicted_value` is the primary rule — chip
+  shows elevated on the top ~20% of personal risk days. The
+  `base_rate` floor is a safety net for the degenerate case where
+  p80 < base_rate; without it the chip could mark more than the
+  base-rate's share of days elevated.
+- Audit: both `p80` and `base_rate` persist alongside the final
+  `cutoff` in `chip_calibrations` so an operator can tell which
+  guard fired without re-running the writer.
+
+Guards (richer status enum so an operator can tell which one fired):
+
+| status | meaning | chip rendering |
+|---|---|---|
+| `active` | calibration valid | `ok` / `elevated` from value vs cutoff |
+| `insufficient_eligible` | <90 paired rows in window | `calibrating` |
+| `insufficient_positives` | <10 positive labels in window | `calibrating` |
+| `no_current_epoch` | epoch resolution failed for today | `calibrating` |
+
+**Why percentile, not ROC-by-hand.** ROC/PR curves are useful for
+diagnostics but still demand an operator-picked operating point.
+A percentile policy expresses an unambiguous product contract:
+"elevated means today is in the top 20% of your calibrated risk
+days for this source epoch." It transfers between tenants
+automatically — a tenant with 15% acute base rate and one with 35%
+get different cutoffs, but the same "top 20% of your own history"
+semantics.
+
+**User-facing copy** (the framing the UI ships, separately from the
+technical layer above):
+
+- Acute → "Острый сигнал" / "Acute signal";
+  states: `обычно` / `выше обычного` / `калибруется`.
+- Chronic → "Накопленная нагрузка" / "Chronic load";
+  states: `обычно` / `выше обычного` / `калибруется`.
+- Tooltip / help text:
+  > Порог настраивается автоматически по вашей истории. "Выше
+  > обычного" означает верхние ~20% ваших дней по этому показателю.
+  > Если данных мало или сменился источник данных, статус временно
+  > не показывается.
+- For `calibrating`:
+  > Пока недостаточно вашей истории, чтобы честно определить личный
+  > порог. Мы продолжим считать показатель в фоне.
+
+Key copy principles: "compare with you, not with population",
+"threshold updates automatically", "elevated = unusual for you,
+not a diagnosis", "if data is sparse, prefer no signal over
+guessing."
+
+**Storage shape**: `chip_calibrations(sub_score, target_kind,
+source_epoch, status, method, cutoff, p80, base_rate,
+calibration_window_days, n_eligible, n_positives, computed_at)`.
+Recomputed by `(*DB).RecomputeChipCalibrations()` invoked from the
+admin endpoint or on a future scheduled job.
+
+**Admin surface**:
+- `GET /api/admin/readiness-redesign/chip-calibrations?schema=…` —
+  current state without recompute.
+- `POST /api/admin/readiness-redesign/chip-calibrations?schema=…` —
+  recompute then return state (per-target results echo what landed).
+- `/admin` operational-contract preview renders chip state
+  (`ok` / `elevated` / `calibrating` / `unknown` / `pending`) using
+  the cutoff joined into each row, with a "Recompute chip
+  calibrations" button that triggers the writer and refreshes the
+  preview.
+
+`chronic_load / chronic_acute_density` stays silent (no chip, no
+calibration row) per the rule below.
 
 **What is silent (server-side only):**
 

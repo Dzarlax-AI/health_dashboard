@@ -118,6 +118,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/readiness-redesign/backfill", h.adminGuard(h.adminReadinessRedesignBackfill))
 	mux.HandleFunc("/api/admin/readiness-redesign/config", h.adminGuard(h.adminReadinessRedesignConfig))
 	mux.HandleFunc("/api/admin/readiness-redesign/operational-contract", h.adminGuard(h.adminReadinessRedesignOperationalContract))
+	mux.HandleFunc("/api/admin/readiness-redesign/chip-calibrations", h.adminGuard(h.adminReadinessRedesignChipCalibrations))
 	mux.HandleFunc("/api/admin/gaps", h.adminGuard(h.adminGaps))
 	mux.HandleFunc("/api/admin/quality-audit", h.adminGuard(h.adminQualityAudit))
 	mux.HandleFunc("/api/admin/quality-fix", h.adminGuard(h.adminQualityFix))
@@ -1497,6 +1498,91 @@ func (h *Handler) adminReadinessRedesignConfig(w http.ResponseWriter, r *http.Re
 	})
 }
 
+// adminReadinessRedesignChipCalibrations is the read + recompute
+// surface for the per-tenant binary-chip cutoffs (§6.1). GET returns
+// the current `chip_calibrations` rows without touching them; POST
+// runs `RecomputeChipCalibrations` for the resolved tenant(s), then
+// returns the post-write state.
+//
+//   GET  /api/admin/readiness-redesign/chip-calibrations?schema=<tenant>
+//   POST /api/admin/readiness-redesign/chip-calibrations?schema=<tenant>
+//
+// `schema` omitted (or `all`) aggregates across every registered
+// tenant — same resolution rule as the operational-contract surface.
+//
+// Response shape:
+//   {
+//     "tenants": ["health", ...],
+//     "rows": [
+//       {"tenant":"health", "sub_score":"acute_risk", ...},
+//       ...
+//     ]
+//   }
+//
+// On POST the response also carries `recompute_results` per tenant
+// (one entry per chip target) so an operator sees what happened in
+// one round-trip without re-querying.
+func (h *Handler) adminReadinessRedesignChipCalibrations(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	scopes, scopeErr := h.resolveOperationalContractTenants(r,
+		strings.TrimSpace(r.URL.Query().Get("schema")))
+	if scopeErr != nil {
+		http.Error(w, scopeErr.Error(), scopeErr.code)
+		return
+	}
+
+	type calRow struct {
+		Tenant string `json:"tenant"`
+		storage.ChipCalibration
+	}
+	type tenantRecompute struct {
+		Tenant  string                                    `json:"tenant"`
+		Results []storage.ChipCalibrationRecomputeResult `json:"results"`
+	}
+
+	resp := map[string]any{
+		"tenants": tenantSchemas(scopes),
+	}
+	if r.Method == http.MethodPost {
+		recompute := make([]tenantRecompute, 0, len(scopes))
+		for _, scope := range scopes {
+			results, err := scope.db.RecomputeChipCalibrations()
+			if err != nil {
+				http.Error(w, "recompute "+scope.schema+": "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			recompute = append(recompute, tenantRecompute{Tenant: scope.schema, Results: results})
+		}
+		resp["recompute_results"] = recompute
+	}
+
+	allRows := make([]calRow, 0, len(scopes)*len(chipCalibrationConfigs))
+	for _, scope := range scopes {
+		rows, err := scope.db.ListChipCalibrations()
+		if err != nil {
+			http.Error(w, "list "+scope.schema+": "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		for _, c := range rows {
+			allRows = append(allRows, calRow{Tenant: scope.schema, ChipCalibration: c})
+		}
+	}
+	resp["rows"] = allRows
+	jsonResponse(w, resp)
+}
+
+// chipCalibrationConfigs is a UI-side hint of how many rows to
+// pre-allocate per tenant. Storage defines the same list but at
+// package-private scope; duplicating two constants here is cheaper
+// than exporting writer internals.
+var chipCalibrationConfigs = []struct{ SubScore, TargetKind string }{
+	{storage.SubScoreAcuteRisk, storage.TargetKindEventT1T3},
+	{storage.SubScoreChronicLoad, storage.TargetKindChronicLabel},
+}
+
 // adminReadinessRedesignOperationalContract returns one row per
 // (tenant, date, chip_config) for the last N days, joining
 // `naive_baselines.predicted_value` / `reason` with
@@ -1629,34 +1715,61 @@ type chipCell struct {
 	Title string
 }
 
+// isBinaryChip reports whether the sub-score uses the chip-
+// calibration threshold rule (acute_risk + chronic_load). Continuous
+// chips (recovery_stability, passive_efficiency) render their value
+// directly without an elevated/ok decision.
+func isBinaryChip(subScore string) bool {
+	return subScore == storage.SubScoreAcuteRisk ||
+		subScore == storage.SubScoreChronicLoad
+}
+
 // buildChipCell turns one storage row into the cell shown in the
-// pivot table: a short text representation of the chip value
-// (number / "unknown" / "pending") and a hover title carrying both
-// the baseline-side reason (authoritative for the chip's `unknown`
-// state) and the target-side eligibility_reason (secondary
-// diagnostic — useful to operators because it can disagree with the
-// baseline reason on the same date).
+// pivot table. The text follows a four-step decision tree:
 //
-// Format:
-//   - value present → "0.918"
-//   - value nil, baseline_reason set → "unknown" (title: reason details)
-//   - value nil, baseline_reason nil → "pending" (writer hasn't reached date)
+//  1. PredictedValue nil → "unknown" (baseline reason set) or
+//     "pending" (no naive_baselines row).
+//  2. Binary chip, no calibration row → "calibrating" — the writer
+//     hasn't built up enough history yet (see chip_calibrations
+//     status enum).
+//  3. Binary chip, calibration active → "elevated" when value >=
+//     cutoff, "ok" otherwise.
+//  4. Continuous chip (Recovery / Passive) → render the raw value.
 //
-// Title always shows both reasons when populated, formatted as
-// `baseline=X · target=Y`, so the operator can scan a date for
-// disagreements between baseline-side and target-side reasons at a
-// glance.
+// Title always carries baseline=… · target=… · epoch=… so an
+// operator can read the supporting reasons on hover, plus the
+// `cutoff=…` audit field on binary chips so the threshold the
+// system actually used is one mouseover away.
 func buildChipCell(row storage.OperationalContractRow) chipCell {
 	cell := chipCell{}
 	switch {
-	case row.PredictedValue != nil:
-		cell.Text = fmt.Sprintf("%.3f", *row.PredictedValue)
-	case row.BaselineReason != nil:
+	case row.PredictedValue == nil && row.BaselineReason != nil:
 		cell.Text = "unknown"
-	default:
+	case row.PredictedValue == nil:
 		cell.Text = "pending"
+	case isBinaryChip(row.SubScore):
+		if row.Cutoff == nil ||
+			(row.CalibrationStatus != nil && *row.CalibrationStatus != storage.ChipCalibrationStatusActive) {
+			cell.Text = "calibrating"
+		} else if *row.PredictedValue >= *row.Cutoff {
+			cell.Text = "elevated"
+		} else {
+			cell.Text = "ok"
+		}
+	default:
+		cell.Text = fmt.Sprintf("%.3f", *row.PredictedValue)
 	}
+
 	var parts []string
+	if row.PredictedValue != nil {
+		parts = append(parts, fmt.Sprintf("value=%.3f", *row.PredictedValue))
+	}
+	if row.Cutoff != nil {
+		parts = append(parts, fmt.Sprintf("cutoff=%.3f", *row.Cutoff))
+	}
+	if row.CalibrationStatus != nil {
+		parts = append(parts, "calibration="+*row.CalibrationStatus)
+	}
 	if row.BaselineReason != nil {
 		parts = append(parts, "baseline="+*row.BaselineReason)
 	}
