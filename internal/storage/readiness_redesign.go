@@ -112,6 +112,24 @@ const (
 	EligibilityNoStructuredWorkouts         = "no_structured_workouts"
 )
 
+// ChipCalibrationStatus values — populated by the auto-calibration
+// writer when it tries to derive a binary-chip cutoff per (sub_score,
+// target_kind, source_epoch). Richer than a single "insufficient_data"
+// bucket so an operator can tell "too few rows" from "too few
+// positives" without spelunking; the UI collapses any non-`active`
+// status into a single "calibrating" state.
+const (
+	ChipCalibrationStatusActive               = "active"
+	ChipCalibrationStatusInsufficientEligible = "insufficient_eligible"
+	ChipCalibrationStatusInsufficientPositive = "insufficient_positives"
+	ChipCalibrationStatusNoCurrentEpoch       = "no_current_epoch"
+)
+
+// ChipCalibrationMethodPercentileP80 is the only method shipped so
+// far. Stored as a column so future methods (e.g. constant override,
+// adaptive percentile) don't need a schema migration.
+const ChipCalibrationMethodPercentileP80 = "percentile_p80"
+
 // BaselineReason values — chip-facing explanation when a
 // `naive_baselines.predicted_value` is NULL. Authoritative for the
 // per-sub-score chip's `unknown` state in §6.1 of the plan (the chip
@@ -178,6 +196,23 @@ var validBaselineKinds = map[string]struct{}{
 	BaselineKindRecencyDecay: {},
 }
 
+// validChipCalibrationStatuses gates SaveChipCalibration. Same pattern
+// as validBaselineKinds — DB column is plain TEXT; new statuses don't
+// require a schema migration.
+var validChipCalibrationStatuses = map[string]struct{}{
+	ChipCalibrationStatusActive:               {},
+	ChipCalibrationStatusInsufficientEligible: {},
+	ChipCalibrationStatusInsufficientPositive: {},
+	ChipCalibrationStatusNoCurrentEpoch:       {},
+}
+
+// validChipCalibrationMethods — same shape. Lone method right now;
+// listed so future writers can land additional methods without
+// regenerating the enum check downstream.
+var validChipCalibrationMethods = map[string]struct{}{
+	ChipCalibrationMethodPercentileP80: {},
+}
+
 // validBaselineReasons gates SaveNaiveBaseline so the chip can rely on
 // `reason` being one of a known enum value when `predicted_value IS
 // NULL`. Same pattern as validBaselineKinds — DB column is plain TEXT,
@@ -199,6 +234,20 @@ func IsBaselineKindValid(s string) bool { _, ok := validBaselineKinds[s]; return
 // IsBaselineReasonValid returns true for the recognised baseline_reason
 // enum values used on NULL `predicted_value` rows.
 func IsBaselineReasonValid(s string) bool { _, ok := validBaselineReasons[s]; return ok }
+
+// IsChipCalibrationStatusValid returns true for the recognised
+// chip_calibrations.status enum values.
+func IsChipCalibrationStatusValid(s string) bool {
+	_, ok := validChipCalibrationStatuses[s]
+	return ok
+}
+
+// IsChipCalibrationMethodValid returns true for the recognised
+// chip_calibrations.method enum values.
+func IsChipCalibrationMethodValid(s string) bool {
+	_, ok := validChipCalibrationMethods[s]
+	return ok
+}
 
 // --- Migration ----------------------------------------------------------
 
@@ -286,6 +335,31 @@ func (s *DB) EnsureReadinessRedesignTables() {
 		`ALTER TABLE naive_baselines ADD COLUMN IF NOT EXISTS reason TEXT`,
 		`CREATE INDEX IF NOT EXISTS idx_naive_baselines_sub_kind_base_date
 			ON naive_baselines (sub_score, target_kind, baseline_kind, date DESC)`,
+
+		// chip_calibrations — Phase 2 §6.1: cutoff that maps a binary
+		// chip's predicted_value to elevated vs ok, per tenant per
+		// source_epoch. Recomputed by RecomputeChipCalibrations on a
+		// rolling 180-day window; one row per (sub_score, target_kind,
+		// source_epoch). Audit fields (p80, base_rate) are persisted
+		// alongside the final cutoff so operators can tell which guard
+		// fired without re-running the writer.
+		`CREATE TABLE IF NOT EXISTS chip_calibrations (
+			sub_score                TEXT NOT NULL,
+			target_kind              TEXT NOT NULL,
+			source_epoch             TEXT NOT NULL,
+			status                   TEXT NOT NULL,
+			method                   TEXT NOT NULL,
+			cutoff                   REAL,
+			p80                      REAL,
+			base_rate                REAL,
+			calibration_window_days  INTEGER NOT NULL,
+			n_eligible               INTEGER NOT NULL,
+			n_positives              INTEGER NOT NULL,
+			computed_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (sub_score, target_kind, source_epoch)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_chip_calibrations_sub_kind
+			ON chip_calibrations (sub_score, target_kind, computed_at DESC)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.pool.Exec(ctx, q); err != nil {
@@ -514,6 +588,16 @@ type OperationalContractRow struct {
 	SourceEpoch             *string
 	TargetEligible          *bool
 	TargetEligibilityReason *string
+	// Cutoff + CalibrationStatus carry the per-tenant chip threshold
+	// for binary chips (Acute, Chronic). Joined from
+	// `chip_calibrations` on (sub_score, target_kind, source_epoch);
+	// both are NULL on continuous chips (Recovery, Passive — no
+	// calibration concept) and on dates whose source_epoch hasn't
+	// been calibrated yet. Readers decide chip state from the
+	// (PredictedValue, Cutoff, CalibrationStatus) triple — see
+	// chipCellStateFromRow in the admin handler.
+	Cutoff             *float64
+	CalibrationStatus  *string
 }
 
 // chipConfigs lists the (sub_score, target_kind, baseline_kind)
@@ -559,6 +643,13 @@ func (s *DB) LoadOperationalContractRows(from, to string) ([]OperationalContract
 	// sees a `pending` cell when one writer lags behind another on the
 	// same calendar day. The earlier WHERE filter discarded those
 	// pending rows and made the gap invisible (Codex review on PR #109).
+	// LEFT JOIN onto chip_calibrations brings the per-tenant cutoff
+	// into the same row the chip would render — keyed on
+	// (sub_score, target_kind, source_epoch). Continuous chips
+	// (Recovery, Passive) don't have calibration rows and end up
+	// with NULL cutoff/status. The handler distinguishes "no
+	// calibration concept" (continuous chip) from "not yet
+	// calibrated" (binary chip with NULL row) by checking sub_score.
 	const stmt = `
 		SELECT
 			d.date,
@@ -569,7 +660,9 @@ func (s *DB) LoadOperationalContractRows(from, to string) ([]OperationalContract
 			n.reason AS baseline_reason,
 			COALESCE(n.source_epoch, t.source_epoch) AS source_epoch,
 			t.eligible,
-			t.eligibility_reason
+			t.eligibility_reason,
+			cc.cutoff,
+			cc.status
 		FROM (
 			SELECT DISTINCT date FROM naive_baselines
 			 WHERE date BETWEEN $4 AND $5
@@ -582,6 +675,9 @@ func (s *DB) LoadOperationalContractRows(from, to string) ([]OperationalContract
 		   AND n.target_kind = $2 AND n.baseline_kind = $3
 		LEFT JOIN target_snapshots t
 			ON t.date = d.date AND t.sub_score = $1 AND t.target_kind = $2
+		LEFT JOIN chip_calibrations cc
+			ON cc.sub_score = $1 AND cc.target_kind = $2
+		   AND cc.source_epoch = COALESCE(n.source_epoch, t.source_epoch)
 		ORDER BY d.date DESC
 	`
 
@@ -595,10 +691,12 @@ func (s *DB) LoadOperationalContractRows(from, to string) ([]OperationalContract
 		for pgRows.Next() {
 			var r OperationalContractRow
 			var predicted *float32
+			var cutoff *float32
 			if err := pgRows.Scan(
 				&r.Date, &r.SubScore, &r.TargetKind, &r.BaselineKind,
 				&predicted, &r.BaselineReason, &r.SourceEpoch,
 				&r.TargetEligible, &r.TargetEligibilityReason,
+				&cutoff, &r.CalibrationStatus,
 			); err != nil {
 				pgRows.Close()
 				return nil, fmt.Errorf("LoadOperationalContractRows: scan: %w", err)
@@ -606,6 +704,10 @@ func (s *DB) LoadOperationalContractRows(from, to string) ([]OperationalContract
 			if predicted != nil {
 				v := float64(*predicted)
 				r.PredictedValue = &v
+			}
+			if cutoff != nil {
+				v := float64(*cutoff)
+				r.Cutoff = &v
 			}
 			rowsByDate[r.Date] = append(rowsByDate[r.Date], r)
 		}
@@ -648,6 +750,206 @@ func (s *DB) LoadOperationalContractRows(from, to string) ([]OperationalContract
 		out = append(out, group...)
 	}
 	return out, nil
+}
+
+// ChipCalibration is one row in chip_calibrations — the auto-derived
+// cutoff that maps a binary chip's `predicted_value` to elevated vs
+// ok, for a given (sub_score, target_kind, source_epoch).
+//
+// Audit fields (`P80`, `BaseRate`) record what the percentile rule
+// and the base-rate floor produced before the final `Cutoff` was
+// chosen (`max(p80, base_rate)`), so an operator reviewing the table
+// can tell which guard fired without re-running the writer.
+//
+// `Cutoff`, `P80`, `BaseRate` follow a strict joint contract enforced
+// by SaveChipCalibration:
+//   - Status == `active`             → all three MUST be non-nil
+//   - Status == any insufficient_*   → all three MUST be nil
+//
+// Readers MUST check Status before consuming the numeric fields.
+type ChipCalibration struct {
+	SubScore              string
+	TargetKind            string
+	SourceEpoch           string
+	Status                string   // ChipCalibrationStatus*
+	Method                string   // ChipCalibrationMethod*
+	Cutoff                *float64 // NULL on insufficient_*
+	P80                   *float64 // raw percentile result, NULL on insufficient_*
+	BaseRate              *float64 // observed positive rate, NULL on no_current_epoch
+	CalibrationWindowDays int
+	NEligible             int
+	NPositives            int
+}
+
+// SaveChipCalibration upserts a single row keyed on
+// (sub_score, target_kind, source_epoch). Idempotent — a recompute
+// pass overwrites the previous row in place.
+//
+// Joint-state guards: Status must be a known enum; cutoff/p80/
+// base_rate MUST be nil when Status is one of the insufficient_*
+// values (the row has no calibration to consume); cutoff MUST be
+// populated when Status is `active` (otherwise the chip read path
+// would render `calibrating` despite a "we're done" status).
+func (s *DB) SaveChipCalibration(c ChipCalibration) error {
+	if !IsSubScoreValid(c.SubScore) {
+		return fmt.Errorf("SaveChipCalibration: invalid sub_score %q", c.SubScore)
+	}
+	if !IsTargetKindValid(c.TargetKind) {
+		return fmt.Errorf("SaveChipCalibration: invalid target_kind %q", c.TargetKind)
+	}
+	if c.SourceEpoch == "" {
+		return fmt.Errorf("SaveChipCalibration: source_epoch must be non-empty")
+	}
+	if !IsChipCalibrationStatusValid(c.Status) {
+		return fmt.Errorf("SaveChipCalibration: invalid status %q", c.Status)
+	}
+	if !IsChipCalibrationMethodValid(c.Method) {
+		return fmt.Errorf("SaveChipCalibration: invalid method %q", c.Method)
+	}
+	if c.Status == ChipCalibrationStatusActive {
+		// All three numeric fields must be populated. Cutoff is the
+		// deployable threshold the chip reads; p80 and base_rate are
+		// the audit trail (which guard picked the cutoff). Allowing
+		// active rows without the audit fields breaks the contract
+		// the admin surface advertises ("see which guard fired
+		// without re-running the writer").
+		if c.Cutoff == nil {
+			return fmt.Errorf("SaveChipCalibration: active status requires non-nil cutoff")
+		}
+		if c.P80 == nil {
+			return fmt.Errorf("SaveChipCalibration: active status requires non-nil p80 (audit field)")
+		}
+		if c.BaseRate == nil {
+			return fmt.Errorf("SaveChipCalibration: active status requires non-nil base_rate (audit field)")
+		}
+	}
+	if c.Status != ChipCalibrationStatusActive {
+		// All three derived numeric fields must be nil on
+		// insufficient-data statuses. The struct comment spells out
+		// this contract; enforcing it at the boundary stops a future
+		// writer bug from persisting stale `p80`/`base_rate` from a
+		// previous run and showing misleading audit fields in the
+		// admin surface.
+		if c.Cutoff != nil {
+			return fmt.Errorf("SaveChipCalibration: cutoff set on non-active status %q", c.Status)
+		}
+		if c.P80 != nil {
+			return fmt.Errorf("SaveChipCalibration: p80 set on non-active status %q", c.Status)
+		}
+		if c.BaseRate != nil {
+			return fmt.Errorf("SaveChipCalibration: base_rate set on non-active status %q", c.Status)
+		}
+	}
+
+	ctx, cancel := queryCtx()
+	defer cancel()
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO chip_calibrations
+			(sub_score, target_kind, source_epoch, status, method,
+			 cutoff, p80, base_rate, calibration_window_days,
+			 n_eligible, n_positives, computed_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
+		ON CONFLICT (sub_score, target_kind, source_epoch) DO UPDATE SET
+			status = excluded.status,
+			method = excluded.method,
+			cutoff = excluded.cutoff,
+			p80 = excluded.p80,
+			base_rate = excluded.base_rate,
+			calibration_window_days = excluded.calibration_window_days,
+			n_eligible = excluded.n_eligible,
+			n_positives = excluded.n_positives,
+			computed_at = NOW()
+	`,
+		c.SubScore, c.TargetKind, c.SourceEpoch, c.Status, c.Method,
+		c.Cutoff, c.P80, c.BaseRate, c.CalibrationWindowDays,
+		c.NEligible, c.NPositives,
+	)
+	return err
+}
+
+// LoadChipCalibration returns the single row for the given key, or
+// (nil, nil) when no row exists. Used by the chip read path on
+// every preview render.
+func (s *DB) LoadChipCalibration(subScore, targetKind, sourceEpoch string) (*ChipCalibration, error) {
+	ctx, cancel := queryCtx()
+	defer cancel()
+	var c ChipCalibration
+	var cutoff, p80, baseRate *float32
+	err := s.pool.QueryRow(ctx, `
+		SELECT sub_score, target_kind, source_epoch, status, method,
+		       cutoff, p80, base_rate, calibration_window_days,
+		       n_eligible, n_positives
+		  FROM chip_calibrations
+		 WHERE sub_score = $1 AND target_kind = $2 AND source_epoch = $3
+	`, subScore, targetKind, sourceEpoch).Scan(
+		&c.SubScore, &c.TargetKind, &c.SourceEpoch, &c.Status, &c.Method,
+		&cutoff, &p80, &baseRate, &c.CalibrationWindowDays,
+		&c.NEligible, &c.NPositives,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("LoadChipCalibration: %w", err)
+	}
+	if cutoff != nil {
+		v := float64(*cutoff)
+		c.Cutoff = &v
+	}
+	if p80 != nil {
+		v := float64(*p80)
+		c.P80 = &v
+	}
+	if baseRate != nil {
+		v := float64(*baseRate)
+		c.BaseRate = &v
+	}
+	return &c, nil
+}
+
+// ListChipCalibrations returns every row in the table, newest
+// `computed_at` first. Used by the admin endpoint that shows the
+// current calibration state across all configs without recomputing.
+func (s *DB) ListChipCalibrations() ([]ChipCalibration, error) {
+	ctx, cancel := queryCtx()
+	defer cancel()
+	rows, err := s.pool.Query(ctx, `
+		SELECT sub_score, target_kind, source_epoch, status, method,
+		       cutoff, p80, base_rate, calibration_window_days,
+		       n_eligible, n_positives
+		  FROM chip_calibrations
+		 ORDER BY computed_at DESC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("ListChipCalibrations: %w", err)
+	}
+	defer rows.Close()
+	var out []ChipCalibration
+	for rows.Next() {
+		var c ChipCalibration
+		var cutoff, p80, baseRate *float32
+		if scanErr := rows.Scan(
+			&c.SubScore, &c.TargetKind, &c.SourceEpoch, &c.Status, &c.Method,
+			&cutoff, &p80, &baseRate, &c.CalibrationWindowDays,
+			&c.NEligible, &c.NPositives,
+		); scanErr != nil {
+			return nil, fmt.Errorf("ListChipCalibrations scan: %w", scanErr)
+		}
+		if cutoff != nil {
+			v := float64(*cutoff)
+			c.Cutoff = &v
+		}
+		if p80 != nil {
+			v := float64(*p80)
+			c.P80 = &v
+		}
+		if baseRate != nil {
+			v := float64(*baseRate)
+			c.BaseRate = &v
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 // SourceEpoch is one row from the source_epochs catalogue. Returned by
@@ -743,6 +1045,7 @@ func (s *DB) VerifyReadinessRedesignSchema() error {
 
 	required := []string{
 		"source_epochs", "target_snapshots", "feature_snapshots", "naive_baselines",
+		"chip_calibrations",
 	}
 	var missing []string
 	for _, t := range required {
@@ -793,6 +1096,15 @@ func (s *DB) VerifyReadinessRedesignSchema() error {
 		wantNullable            bool
 	}{
 		{"naive_baselines", "reason", "text", true},
+		// chip_calibrations audit fields — cutoff/p80/base_rate are
+		// nullable because insufficient-data statuses leave them
+		// unpopulated; the read path joins on these and would silently
+		// degrade if a future ALTER drifted them to NOT NULL.
+		{"chip_calibrations", "cutoff", "real", true},
+		{"chip_calibrations", "p80", "real", true},
+		{"chip_calibrations", "base_rate", "real", true},
+		{"chip_calibrations", "status", "text", false},
+		{"chip_calibrations", "method", "text", false},
 	}
 	for _, rc := range requiredColumns {
 		var dataType, isNullable string

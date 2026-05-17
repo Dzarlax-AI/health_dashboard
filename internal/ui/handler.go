@@ -118,6 +118,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/readiness-redesign/backfill", h.adminGuard(h.adminReadinessRedesignBackfill))
 	mux.HandleFunc("/api/admin/readiness-redesign/config", h.adminGuard(h.adminReadinessRedesignConfig))
 	mux.HandleFunc("/api/admin/readiness-redesign/operational-contract", h.adminGuard(h.adminReadinessRedesignOperationalContract))
+	mux.HandleFunc("/api/admin/readiness-redesign/chip-calibrations", h.adminGuard(h.adminReadinessRedesignChipCalibrations))
 	mux.HandleFunc("/api/admin/gaps", h.adminGuard(h.adminGaps))
 	mux.HandleFunc("/api/admin/quality-audit", h.adminGuard(h.adminQualityAudit))
 	mux.HandleFunc("/api/admin/quality-fix", h.adminGuard(h.adminQualityFix))
@@ -1497,6 +1498,115 @@ func (h *Handler) adminReadinessRedesignConfig(w http.ResponseWriter, r *http.Re
 	})
 }
 
+// adminReadinessRedesignChipCalibrations is the read + recompute
+// surface for the per-tenant binary-chip cutoffs (§6.1). GET returns
+// the current `chip_calibrations` rows without touching them; POST
+// runs `RecomputeChipCalibrations` for the resolved tenant, then
+// returns the post-write state.
+//
+//   GET  /api/admin/readiness-redesign/chip-calibrations?schema=<tenant|all>
+//   POST /api/admin/readiness-redesign/chip-calibrations?schema=<tenant>
+//
+// Tenant scope rules:
+//
+//   - GET: `schema` omitted → request tenant; `schema=<name>` → that
+//     tenant; `schema=all` → every registered tenant (read-only
+//     aggregation, useful for the admin pivot view).
+//   - POST: `schema` omitted → request tenant; `schema=<name>` → that
+//     tenant; `schema=all` is **rejected with 400** — recompute is a
+//     destructive write on storage and must not cascade across every
+//     tenant from a single click. An operator wanting to recompute
+//     every tenant has to do it explicitly per tenant, with the
+//     selector switched between each call.
+//
+// Response shape:
+//
+//   {
+//     "tenants": ["health", ...],
+//     "rows": [
+//       {"tenant":"health", "sub_score":"acute_risk", ...},
+//       ...
+//     ]
+//   }
+//
+// On POST the response also carries `recompute_results` per tenant
+// (one entry per chip target) so an operator sees what happened in
+// one round-trip without re-querying.
+func (h *Handler) adminReadinessRedesignChipCalibrations(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	scoped := strings.TrimSpace(r.URL.Query().Get("schema"))
+	// `schema=all` is read-only — never let it expand to a multi-
+	// tenant recompute. The UI button passes the explicit selector
+	// value (or nothing); a curl caller posting ?schema=all could
+	// otherwise cascade across every tenant by accident.
+	if r.Method == http.MethodPost && scoped == "all" {
+		http.Error(w, "schema=all is not allowed on POST: recompute is per-tenant; pick one explicitly",
+			http.StatusBadRequest)
+		return
+	}
+	scopes, scopeErr := h.resolveOperationalContractTenants(r, scoped)
+	if scopeErr != nil {
+		http.Error(w, scopeErr.Error(), scopeErr.code)
+		return
+	}
+
+	type calRow struct {
+		Tenant string `json:"tenant"`
+		storage.ChipCalibration
+	}
+	type tenantRecompute struct {
+		Tenant  string                                    `json:"tenant"`
+		Results []storage.ChipCalibrationRecomputeResult `json:"results"`
+	}
+
+	resp := map[string]any{
+		"tenants": tenantSchemas(scopes),
+	}
+	if r.Method == http.MethodPost {
+		recompute := make([]tenantRecompute, 0, len(scopes))
+		for _, scope := range scopes {
+			// Anchor on each tenant's local today so the calibration
+			// window selects the correct edge day at the local
+			// midnight boundary — tenants in different time zones
+			// resolve to different dates, and that's intentional.
+			asOf := tenantLocalToday(h, scope.db, scope.schema)
+			results, err := scope.db.RecomputeChipCalibrations(asOf)
+			if err != nil {
+				http.Error(w, "recompute "+scope.schema+": "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			recompute = append(recompute, tenantRecompute{Tenant: scope.schema, Results: results})
+		}
+		resp["recompute_results"] = recompute
+	}
+
+	allRows := make([]calRow, 0, len(scopes)*len(chipCalibrationConfigs))
+	for _, scope := range scopes {
+		rows, err := scope.db.ListChipCalibrations()
+		if err != nil {
+			http.Error(w, "list "+scope.schema+": "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		for _, c := range rows {
+			allRows = append(allRows, calRow{Tenant: scope.schema, ChipCalibration: c})
+		}
+	}
+	resp["rows"] = allRows
+	jsonResponse(w, resp)
+}
+
+// chipCalibrationConfigs is a UI-side hint of how many rows to
+// pre-allocate per tenant. Storage defines the same list but at
+// package-private scope; duplicating two constants here is cheaper
+// than exporting writer internals.
+var chipCalibrationConfigs = []struct{ SubScore, TargetKind string }{
+	{storage.SubScoreAcuteRisk, storage.TargetKindEventT1T3},
+	{storage.SubScoreChronicLoad, storage.TargetKindChronicLabel},
+}
+
 // adminReadinessRedesignOperationalContract returns one row per
 // (tenant, date, chip_config) for the last N days, joining
 // `naive_baselines.predicted_value` / `reason` with
@@ -1504,13 +1614,19 @@ func (h *Handler) adminReadinessRedesignConfig(w http.ResponseWriter, r *http.Re
 // "Deliverable" — operator preview of what each chip would render,
 // validated against the contract, before any UI ships.
 //
-// GET /api/admin/readiness-redesign/operational-contract?days=14&schema=<tenant>
+// GET /api/admin/readiness-redesign/operational-contract?days=14&schema=<tenant|all>
 //
-// `days` defaults to 14, capped at 90. `schema` filters to one
-// tenant; without it (or with `all`) the response aggregates across
-// every registered tenant — needed to validate the contract on a
-// second tenant after a config retune without flipping between admin
-// views.
+// `days` defaults to 14, capped at 90.
+//
+// Tenant scope (read-only, same resolver as the chip-calibrations
+// GET path):
+//
+//   - omitted     → request tenant only (safe default)
+//   - `<name>`    → that tenant
+//   - `all`       → every registered tenant (admin pivot view —
+//                   needed to validate the contract across tenants
+//                   after a config retune without flipping admin
+//                   sessions)
 func (h *Handler) adminReadinessRedesignOperationalContract(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1582,44 +1698,57 @@ type operationalContractHTTPError struct {
 func (e *operationalContractHTTPError) Error() string { return e.msg }
 
 // resolveOperationalContractTenants picks the set of (schema, db)
-// pairs the surface should query: a single tenant when `?schema=X`
-// names one, all registered tenants otherwise. Schemas are returned
-// in sorted order so the admin table render is stable across reloads.
+// pairs the surface should query. Default is **the request's own
+// tenant** — multi-tenant aggregation must be opted into explicitly
+// via `?schema=all`, so a Recompute click without a tenant selector
+// can't accidentally cascade across every registered tenant. The
+// preview surface in admin.html opts in by passing `?schema=all`
+// in its hx-get URL when no tenant is selected.
+//
+// Schemas returned in sorted order so the admin table render is
+// stable across reloads.
 func (h *Handler) resolveOperationalContractTenants(r *http.Request, scoped string) ([]operationalContractScope, *operationalContractHTTPError) {
-	// h.mgr is non-nil in production but may be nil in handler tests
-	// that construct a bare Handler{}. Treat nil mgr identically to
-	// "no registered tenants" — fall back to the request's tenant DB
-	// from context.
 	var all map[string]*storage.DB
 	if h.mgr != nil {
 		all = h.mgr.AllDBs()
 	}
-	if scoped != "" && scoped != "all" {
+	if scoped == "all" {
+		if len(all) == 0 {
+			// Legacy / test fallback — no tenants registered, use
+			// request context.
+			db := h.tenantDB(r)
+			if db == nil {
+				return nil, &operationalContractHTTPError{code: http.StatusServiceUnavailable, msg: "no tenant DB available"}
+			}
+			return []operationalContractScope{{schema: h.tenantSchema(r), db: db}}, nil
+		}
+		schemas := make([]string, 0, len(all))
+		for s := range all {
+			schemas = append(schemas, s)
+		}
+		sort.Strings(schemas)
+		out := make([]operationalContractScope, 0, len(schemas))
+		for _, s := range schemas {
+			out = append(out, operationalContractScope{schema: s, db: all[s]})
+		}
+		return out, nil
+	}
+	if scoped != "" {
 		got, ok := all[scoped]
 		if !ok || got == nil {
 			return nil, &operationalContractHTTPError{code: http.StatusBadRequest, msg: "unknown schema"}
 		}
 		return []operationalContractScope{{schema: scoped, db: got}}, nil
 	}
-	if len(all) == 0 {
-		// Fall back to the request's own tenant DB — single-tenant
-		// legacy mode or handler test.
-		db := h.tenantDB(r)
-		if db == nil {
-			return nil, &operationalContractHTTPError{code: http.StatusServiceUnavailable, msg: "no tenant DB available"}
-		}
-		return []operationalContractScope{{schema: h.tenantSchema(r), db: db}}, nil
+	// Default: request tenant only. Safe for both GET (admin sees
+	// their own tenant by default) and POST (recompute targets the
+	// admin's own tenant, not everyone). Multi-tenant aggregation
+	// requires the explicit `all` opt-in above.
+	db := h.tenantDB(r)
+	if db == nil {
+		return nil, &operationalContractHTTPError{code: http.StatusServiceUnavailable, msg: "no tenant DB available"}
 	}
-	schemas := make([]string, 0, len(all))
-	for s := range all {
-		schemas = append(schemas, s)
-	}
-	sort.Strings(schemas)
-	out := make([]operationalContractScope, 0, len(schemas))
-	for _, s := range schemas {
-		out = append(out, operationalContractScope{schema: s, db: all[s]})
-	}
-	return out, nil
+	return []operationalContractScope{{schema: h.tenantSchema(r), db: db}}, nil
 }
 
 // chipCell is one rendered cell in the operational-contract pivot
@@ -1629,34 +1758,61 @@ type chipCell struct {
 	Title string
 }
 
+// isBinaryChip reports whether the sub-score uses the chip-
+// calibration threshold rule (acute_risk + chronic_load). Continuous
+// chips (recovery_stability, passive_efficiency) render their value
+// directly without an elevated/ok decision.
+func isBinaryChip(subScore string) bool {
+	return subScore == storage.SubScoreAcuteRisk ||
+		subScore == storage.SubScoreChronicLoad
+}
+
 // buildChipCell turns one storage row into the cell shown in the
-// pivot table: a short text representation of the chip value
-// (number / "unknown" / "pending") and a hover title carrying both
-// the baseline-side reason (authoritative for the chip's `unknown`
-// state) and the target-side eligibility_reason (secondary
-// diagnostic — useful to operators because it can disagree with the
-// baseline reason on the same date).
+// pivot table. The text follows a four-step decision tree:
 //
-// Format:
-//   - value present → "0.918"
-//   - value nil, baseline_reason set → "unknown" (title: reason details)
-//   - value nil, baseline_reason nil → "pending" (writer hasn't reached date)
+//  1. PredictedValue nil → "unknown" (baseline reason set) or
+//     "pending" (no naive_baselines row).
+//  2. Binary chip, no calibration row → "calibrating" — the writer
+//     hasn't built up enough history yet (see chip_calibrations
+//     status enum).
+//  3. Binary chip, calibration active → "elevated" when value >=
+//     cutoff, "ok" otherwise.
+//  4. Continuous chip (Recovery / Passive) → render the raw value.
 //
-// Title always shows both reasons when populated, formatted as
-// `baseline=X · target=Y`, so the operator can scan a date for
-// disagreements between baseline-side and target-side reasons at a
-// glance.
+// Title always carries baseline=… · target=… · epoch=… so an
+// operator can read the supporting reasons on hover, plus the
+// `cutoff=…` audit field on binary chips so the threshold the
+// system actually used is one mouseover away.
 func buildChipCell(row storage.OperationalContractRow) chipCell {
 	cell := chipCell{}
 	switch {
-	case row.PredictedValue != nil:
-		cell.Text = fmt.Sprintf("%.3f", *row.PredictedValue)
-	case row.BaselineReason != nil:
+	case row.PredictedValue == nil && row.BaselineReason != nil:
 		cell.Text = "unknown"
-	default:
+	case row.PredictedValue == nil:
 		cell.Text = "pending"
+	case isBinaryChip(row.SubScore):
+		if row.Cutoff == nil ||
+			(row.CalibrationStatus != nil && *row.CalibrationStatus != storage.ChipCalibrationStatusActive) {
+			cell.Text = "calibrating"
+		} else if *row.PredictedValue >= *row.Cutoff {
+			cell.Text = "elevated"
+		} else {
+			cell.Text = "ok"
+		}
+	default:
+		cell.Text = fmt.Sprintf("%.3f", *row.PredictedValue)
 	}
+
 	var parts []string
+	if row.PredictedValue != nil {
+		parts = append(parts, fmt.Sprintf("value=%.3f", *row.PredictedValue))
+	}
+	if row.Cutoff != nil {
+		parts = append(parts, fmt.Sprintf("cutoff=%.3f", *row.Cutoff))
+	}
+	if row.CalibrationStatus != nil {
+		parts = append(parts, "calibration="+*row.CalibrationStatus)
+	}
 	if row.BaselineReason != nil {
 		parts = append(parts, "baseline="+*row.BaselineReason)
 	}
@@ -1698,18 +1854,17 @@ func parseOperationalContractDays(raw string) (int, error) {
 	return n, nil
 }
 
-// operationalContractWindow computes (from, to) date strings for the
-// preview, anchored in the tenant's REPORT_TZ rather than UTC. Near
-// midnight in non-UTC tenants this is the difference between showing
-// the correct local day vs a stale UTC day.
+// tenantLocalToday returns today's YYYY-MM-DD date in the tenant's
+// REPORT_TZ. Resolution: settings.timezone → env REPORT_TZ → UTC.
+// Used by every readiness-redesign admin surface so date-based
+// operations (preview window, chip recompute, etc.) anchor on the
+// same local calendar as the writers — fixes the same class of
+// midnight-boundary bug closed in #109.
 //
-// Resolution order: settings.timezone → env REPORT_TZ default → UTC.
-// Same as the stress-validation and energy handlers.
-func operationalContractWindow(h *Handler, db *storage.DB, schema string, days int) (from, to string) {
+// h.mgr may be nil in tests that build a bare Handler{}; we fall
+// back to UTC rather than panicking.
+func tenantLocalToday(h *Handler, db *storage.DB, schema string) string {
 	var tz string
-	// h.mgr is non-nil in production but may be nil in some tests
-	// that build a bare Handler{}. Skip the per-tenant lookup in
-	// that case rather than panicking.
 	if h.mgr != nil {
 		tz = db.GetNotifyConfig(h.mgr.NotifyDefaultsFor(schema)).Timezone
 	}
@@ -1718,14 +1873,25 @@ func operationalContractWindow(h *Handler, db *storage.DB, schema string, days i
 	}
 	loc, err := time.LoadLocation(tz)
 	if err != nil {
-		// Unknown TZ name falls back to UTC rather than failing the
-		// request — operator can see the data, the date-window edge
-		// case is the only loss.
 		loc = time.UTC
 	}
-	toT := time.Now().In(loc)
+	return time.Now().In(loc).Format("2006-01-02")
+}
+
+// operationalContractWindow computes (from, to) date strings for the
+// preview, anchored on the tenant's local today via tenantLocalToday.
+func operationalContractWindow(h *Handler, db *storage.DB, schema string, days int) (from, to string) {
+	to = tenantLocalToday(h, db, schema)
+	toT, err := time.Parse("2006-01-02", to)
+	if err != nil {
+		// Cannot fail in practice — tenantLocalToday only emits valid
+		// YYYY-MM-DD. Guard for defence-in-depth: fall back to UTC
+		// now so the preview still loads.
+		toT = time.Now().UTC()
+		to = toT.Format("2006-01-02")
+	}
 	fromT := toT.AddDate(0, 0, -(days - 1))
-	return fromT.Format("2006-01-02"), toT.Format("2006-01-02")
+	return fromT.Format("2006-01-02"), to
 }
 
 // userSettings handles GET/POST /api/settings — Telegram config, available to all users.

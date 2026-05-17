@@ -267,3 +267,52 @@ func TestFragmentAdminReadinessContract_RendersValueAndUnknown(t *testing.T) {
 		t.Errorf("fragment missing tenant column with schema %q: %s", schema, body)
 	}
 }
+
+// TestAdminReadinessRedesignChipCalibrations_RejectsPOSTSchemaAll proves
+// the safety contract: `POST ?schema=all` returns 400 even though the
+// admin UI doesn't generate that request. A curl caller posting it
+// must not cascade recompute across every registered tenant; the
+// only way to recompute all tenants is to do it explicitly per tenant
+// (selector switched between calls). GET ?schema=all stays valid for
+// the read-only pivot.
+func TestAdminReadinessRedesignChipCalibrations_RejectsPOSTSchemaAll(t *testing.T) {
+	db, schema, cleanup := testTenantDB(t)
+	defer cleanup()
+
+	h := &Handler{}
+
+	// POST ?schema=all must 400 with a message that names the rule.
+	postW := httptest.NewRecorder()
+	postR := httptest.NewRequest(http.MethodPost,
+		"/api/admin/readiness-redesign/chip-calibrations?schema=all", nil).
+		WithContext(adminContext(db, schema))
+	h.adminReadinessRedesignChipCalibrations(postW, postR)
+	if postW.Code != http.StatusBadRequest {
+		t.Fatalf("POST schema=all: status = %d, want 400; body=%s", postW.Code, postW.Body.String())
+	}
+	if !strings.Contains(postW.Body.String(), "schema=all") ||
+		!strings.Contains(postW.Body.String(), "per-tenant") {
+		t.Errorf("POST schema=all error body should reference the rule, got: %s", postW.Body.String())
+	}
+
+	// GET ?schema=all still works — read-only aggregation.
+	getW := httptest.NewRecorder()
+	getR := httptest.NewRequest(http.MethodGet,
+		"/api/admin/readiness-redesign/chip-calibrations?schema=all", nil).
+		WithContext(adminContext(db, schema))
+	h.adminReadinessRedesignChipCalibrations(getW, getR)
+	if getW.Code != http.StatusOK {
+		t.Errorf("GET schema=all: status = %d, want 200; body=%s", getW.Code, getW.Body.String())
+	}
+
+	// POST without schema (or explicit ?schema=<name>) targets a
+	// single tenant — proves the safe path still works.
+	okW := httptest.NewRecorder()
+	okR := httptest.NewRequest(http.MethodPost,
+		"/api/admin/readiness-redesign/chip-calibrations", nil).
+		WithContext(adminContext(db, schema))
+	h.adminReadinessRedesignChipCalibrations(okW, okR)
+	if okW.Code != http.StatusOK {
+		t.Errorf("POST without schema: status = %d, want 200; body=%s", okW.Code, okW.Body.String())
+	}
+}
