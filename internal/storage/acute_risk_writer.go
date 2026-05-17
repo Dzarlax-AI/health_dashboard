@@ -182,8 +182,22 @@ func (s *DB) writeAcuteRiskRow(
 		if err := s.saveAcuteRiskFeatures(date, t, epoch, epochStart, rowByDate, hrvLookup, rhrLookup, pairedCount, false); err != nil {
 			return err
 		}
-		// No naive baseline written for ineligible — predicted_value
-		// has no meaningful target to predict.
+		// Baselines write even when paired-warmup hasn't been met. The
+		// `event_base_rate` looks at prior labels strictly before t
+		// and is independent of HRV/RHR pair availability for this
+		// epoch. On day-zero of a fresh epoch this yields
+		// (NULL, baseline_source_epoch_boundary) — operator sees the
+		// pre-warmup state instead of a blank row.
+		if err := s.saveEventBaseRateBaseline(
+			t, date, SubScoreAcuteRisk, TargetKindEventT1T3,
+			orEventByDate, epoch, epochStart, acuteRiskFormulaVersion); err != nil {
+			return fmt.Errorf("save warmup-ineligible baseline %s/event_t1_t3: %w", date, err)
+		}
+		if err := s.saveEventBaseRateBaseline(
+			t, date, SubScoreAcuteRisk, TargetKindEventStrictT1T3,
+			strictEventByDate, epoch, epochStart, acuteRiskFormulaVersion); err != nil {
+			return fmt.Errorf("save warmup-ineligible baseline %s/event_strict_t1_t3: %w", date, err)
+		}
 		return nil
 	}
 
@@ -584,7 +598,7 @@ func (s *DB) saveEventBaseRateBaseline(
 	epoch, epochStart string,
 	formulaVersion int,
 ) error {
-	rate := priorEventBaseRate(t, 90, eventByDate)
+	rate := priorEventBaseRate(t, 90, epochStart, eventByDate)
 	reason := ""
 	if rate == nil {
 		reason = classifyBaselineNullReason(t, 90, epochStart)
@@ -602,12 +616,19 @@ func (s *DB) saveEventBaseRateBaseline(
 }
 
 // priorEventBaseRate averages the eligible event labels for the
-// `windowDays` dates strictly before `t`. Returns nil when no eligible
-// labels fall in the window (start of history before warmup completes).
-func priorEventBaseRate(t time.Time, windowDays int, eventByDate map[string]int) *float64 {
+// `windowDays` dates strictly before `t`. Dates older than
+// `epochStart` (when non-empty) are skipped so the baseline resets
+// at every source_epoch boundary — without this, the now-unconditional
+// classifier baseline writes (since #110) would leak labels from a
+// previous epoch into the first ~90 days of a new one. Returns nil
+// when no eligible labels fall in the (clipped) window.
+func priorEventBaseRate(t time.Time, windowDays int, epochStart string, eventByDate map[string]int) *float64 {
 	var sum, n int
 	for i := 1; i <= windowDays; i++ {
 		ds := t.AddDate(0, 0, -i).Format(isoDate)
+		if epochStart != "" && ds < epochStart {
+			continue
+		}
 		v, ok := eventByDate[ds]
 		if !ok {
 			continue

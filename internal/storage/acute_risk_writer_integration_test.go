@@ -525,6 +525,93 @@ func TestAcuteRisk_Integration_BaselinesPopulatedAfterPriorLabels(t *testing.T) 
 	}
 }
 
+// TestAcuteRisk_Integration_BaselineEpochClippingPreventsLeak proves
+// that `priorEventBaseRate` resets at source_epoch boundaries. Without
+// the clip, the now-unconditional baseline writes (since #110) would
+// leak labels from the previous epoch into the first ~90 days of the
+// new one — which violates plan §3.4. Operator review on the PR
+// flagged this as the load-bearing case after the writer was
+// decoupled from forward target eligibility.
+//
+// Setup:
+//   - Old epoch (initial, ends 2026-03-31): 60 days of observable
+//     labels. Acute writer accumulates an orEventByDate map for these.
+//   - New epoch (`boundary_test`, starts 2026-04-01): the very next
+//     date 2026-04-02 has no in-epoch prior labels.
+//
+// Expectation on 2026-04-02:
+//   - `event_base_rate` baseline must be NULL with reason
+//     `baseline_source_epoch_boundary` — the 90-day prior window's
+//     earliest day (2026-01-02) sits well before the new epoch start.
+func TestAcuteRisk_Integration_BaselineEpochClippingPreventsLeak(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	// Close the bootstrap initial epoch on 2026-03-31 and open a new
+	// one starting 2026-04-01.
+	if _, err := db.pool.Exec(ctx,
+		"UPDATE source_epochs SET end_date = '2026-03-31' WHERE epoch_id = $1",
+		InitialSourceEpoch); err != nil {
+		t.Fatalf("close initial epoch: %v", err)
+	}
+	if err := db.UpsertSourceEpoch(SourceEpoch{
+		EpochID: "boundary_test", StartDate: "2026-04-01", Kind: SourceEpochKindIngest,
+		Description: "epoch-leak regression", DetectedBy: DetectedByManual, Confirmed: true,
+	}); err != nil {
+		t.Fatalf("upsert new epoch: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.pool.Exec(context.Background(),
+			`UPDATE source_epochs SET end_date = NULL WHERE epoch_id = $1`, InitialSourceEpoch)
+		_, _ = db.pool.Exec(context.Background(),
+			`DELETE FROM source_epochs WHERE epoch_id = 'boundary_test'`)
+	})
+
+	// 60 contiguous observable days in the OLD epoch (Feb–Mar 2026).
+	// These produce label rows in orEventByDate when the writer runs.
+	seedSteadyHistory(t, db, "2026-01-31", 60)
+	hrv0, rhr0 := 45.0, 60.0
+	for i := 1; i <= 31; i++ {
+		date := time.Date(2026, 2, i, 0, 0, 0, 0, time.UTC).Format(isoDate)
+		seedAutonomicRow(t, db, date, &hrv0, &rhr0)
+	}
+	for i := 1; i <= 31; i++ {
+		date := time.Date(2026, 3, i, 0, 0, 0, 0, time.UTC).Format(isoDate)
+		seedAutonomicRow(t, db, date, &hrv0, &rhr0)
+	}
+	// Single date in NEW epoch with its t+1..t+3 observable, so we
+	// don't trip event_window_data_missing — we want the eligible-target
+	// branch's baseline write to be the one under test.
+	for i := 2; i <= 6; i++ {
+		date := time.Date(2026, 4, i, 0, 0, 0, 0, time.UTC).Format(isoDate)
+		seedAutonomicRow(t, db, date, &hrv0, &rhr0)
+	}
+
+	// Backfill across the boundary. Writer pre-loads labels by date
+	// (across epochs); the in-helper clip is what must keep the new-
+	// epoch baseline NULL.
+	if _, err := db.BackfillAcuteRiskSnapshots("2026-04-02", "2026-04-02"); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	var baseVal *float32
+	var baseReason *string
+	if err := db.pool.QueryRow(ctx, `
+		SELECT predicted_value, reason
+		  FROM naive_baselines
+		 WHERE date = $1 AND sub_score = $2 AND target_kind = $3 AND baseline_kind = $4
+	`, "2026-04-02", SubScoreAcuteRisk, TargetKindEventT1T3, BaselineKindEventBaseRate).Scan(&baseVal, &baseReason); err != nil {
+		t.Fatalf("read baseline: %v", err)
+	}
+	if baseVal != nil {
+		t.Errorf("baseline leaked across epoch boundary: predicted_value = %v, want NULL", *baseVal)
+	}
+	if baseReason == nil || *baseReason != BaselineReasonSourceEpochBoundary {
+		t.Errorf("baseline reason = %v, want %q", baseReason, BaselineReasonSourceEpochBoundary)
+	}
+}
+
 func TestAcuteRisk_Integration_BleedingEdgeIneligible(t *testing.T) {
 	db, cleanup := testDB(t)
 	defer cleanup()
