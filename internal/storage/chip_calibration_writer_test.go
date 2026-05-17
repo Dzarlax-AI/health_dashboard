@@ -72,8 +72,30 @@ func TestSaveChipCalibration_JointStateGuard(t *testing.T) {
 			mutate: func(c *ChipCalibration) {
 				c.Status = ChipCalibrationStatusActive
 				c.Cutoff = nil
+				c.P80 = &v
+				c.BaseRate = &v
 			},
 			wantSub: "active status requires non-nil cutoff",
+		},
+		{
+			name: "active without p80 — rejected (audit invariant)",
+			mutate: func(c *ChipCalibration) {
+				c.Status = ChipCalibrationStatusActive
+				c.Cutoff = &v
+				c.P80 = nil
+				c.BaseRate = &v
+			},
+			wantSub: "active status requires non-nil p80",
+		},
+		{
+			name: "active without base_rate — rejected (audit invariant)",
+			mutate: func(c *ChipCalibration) {
+				c.Status = ChipCalibrationStatusActive
+				c.Cutoff = &v
+				c.P80 = &v
+				c.BaseRate = nil
+			},
+			wantSub: "active status requires non-nil base_rate",
 		},
 		{
 			name: "insufficient_eligible with cutoff — rejected",

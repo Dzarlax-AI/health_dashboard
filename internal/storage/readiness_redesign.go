@@ -761,8 +761,12 @@ func (s *DB) LoadOperationalContractRows(from, to string) ([]OperationalContract
 // chosen (`max(p80, base_rate)`), so an operator reviewing the table
 // can tell which guard fired without re-running the writer.
 //
-// `Cutoff`, `P80`, `BaseRate` are nullable on insufficient-data
-// statuses — readers MUST check Status before consuming them.
+// `Cutoff`, `P80`, `BaseRate` follow a strict joint contract enforced
+// by SaveChipCalibration:
+//   - Status == `active`             → all three MUST be non-nil
+//   - Status == any insufficient_*   → all three MUST be nil
+//
+// Readers MUST check Status before consuming the numeric fields.
 type ChipCalibration struct {
 	SubScore              string
 	TargetKind            string
@@ -802,8 +806,22 @@ func (s *DB) SaveChipCalibration(c ChipCalibration) error {
 	if !IsChipCalibrationMethodValid(c.Method) {
 		return fmt.Errorf("SaveChipCalibration: invalid method %q", c.Method)
 	}
-	if c.Status == ChipCalibrationStatusActive && c.Cutoff == nil {
-		return fmt.Errorf("SaveChipCalibration: active status requires non-nil cutoff")
+	if c.Status == ChipCalibrationStatusActive {
+		// All three numeric fields must be populated. Cutoff is the
+		// deployable threshold the chip reads; p80 and base_rate are
+		// the audit trail (which guard picked the cutoff). Allowing
+		// active rows without the audit fields breaks the contract
+		// the admin surface advertises ("see which guard fired
+		// without re-running the writer").
+		if c.Cutoff == nil {
+			return fmt.Errorf("SaveChipCalibration: active status requires non-nil cutoff")
+		}
+		if c.P80 == nil {
+			return fmt.Errorf("SaveChipCalibration: active status requires non-nil p80 (audit field)")
+		}
+		if c.BaseRate == nil {
+			return fmt.Errorf("SaveChipCalibration: active status requires non-nil base_rate (audit field)")
+		}
 	}
 	if c.Status != ChipCalibrationStatusActive {
 		// All three derived numeric fields must be nil on
