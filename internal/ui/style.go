@@ -617,6 +617,21 @@ select:focus, input[type=date]:focus { outline: none; border-color: var(--accent
 .loading-dots::after { content: ''; animation: dots 1.5s steps(4,end) infinite; }
 @keyframes dots { 0% { content: ''; } 25% { content: '.'; } 50% { content: '..'; } 75% { content: '...'; } }
 
+/* Inline spinner used by the onboarding wizard while Step 4 backfill /
+   Step 6 calibration are running. Pairs with a status line so the
+   operator sees the request is in flight (the button is also disabled
+   for the duration). */
+.spinner {
+  display: inline-block;
+  width: 14px; height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spinner-rotate 0.7s linear infinite;
+  vertical-align: -2px; margin-right: 6px;
+}
+@keyframes spinner-rotate { to { transform: rotate(360deg); } }
+
 /* ── Responsive ── */
 @media (max-width: 1100px) {
   /* Hero column 3 (visual) drops to a row beneath, narrative still flexes */
