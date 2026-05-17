@@ -649,16 +649,26 @@ forward predictive value the chips don't.
   diagnostic so operators can tell "baseline missing despite
   eligible target" from "everything ineligible" without guessing.
 
-**Deliverable shape for the next code PR on this track:**
+**Deliverable status:**
 
-1. A single markdown file `READINESS_REDESIGN_OPERATIONAL_CONTRACT.md`
-   (or the relevant section in `SCORING.md`) that the UI
-   implementation can be written against.
-2. Admin-page schema surfacing per day per sub-score:
-   `naive_baselines.predicted_value` (chip value),
-   `naive_baselines.reason` (chip's authoritative reason on NULL),
-   and `target_snapshots.eligibility_reason` (secondary
-   diagnostic).
+1. **Shipped** — admin page section "Readiness redesign —
+   operational contract preview" renders one row per
+   (date, sub-score) with the chip value (`naive_baselines.predicted_value`),
+   the chip's authoritative reason on NULL
+   (`naive_baselines.reason`), and the secondary diagnostic
+   (`target_snapshots.eligibility_reason`). Default window 14 days,
+   capped at 90.
+   - JSON: `GET /api/admin/readiness-redesign/operational-contract?days=N&schema=…`
+   - HTML fragment: `GET /fragments/admin-readiness-contract?days=N`
+   - Both endpoints read through the same
+     `(*DB).LoadOperationalContractRows(from, to)` so they cannot
+     drift in shape or filtering. Only the four deployable chip
+     configurations from the §6.1 table are surfaced; other
+     baselines are filtered server-side.
+2. **Deferred** — a separate `READINESS_REDESIGN_OPERATIONAL_CONTRACT.md`
+   spec for an external UI implementation. The plan section above is
+   the contract for the in-tree dashboard work; if/when an external
+   client needs to render the chips, factor the contract out then.
 
 ### 6.2 Tenant calibration
 

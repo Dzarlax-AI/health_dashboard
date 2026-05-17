@@ -76,6 +76,29 @@
         <div id="admin-quality-msg" style="display:none;margin-top:8px"></div>
       </div>
 
+      <!-- Readiness redesign — operational contract preview (§6.1) -->
+      <div class="admin-section">
+        <div class="admin-section-header">
+          <div class="section-title">Readiness redesign — operational contract preview</div>
+          <button class="btn btn--secondary btn--small"
+                  hx-get="/fragments/admin-readiness-contract?days=14"
+                  hx-target="#admin-readiness-contract-table"
+                  hx-swap="innerHTML">{{T .Lang "admin_refresh"}}</button>
+        </div>
+        <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
+          Per-day per-sub-score preview of what each chip would render. Value comes from
+          <code>naive_baselines.predicted_value</code>; <code>baseline_reason</code> is the chip's
+          authoritative <code>unknown</code> explanation; <code>target_eligibility_reason</code> is the
+          secondary diagnostic. See plan §6.1.
+        </p>
+        <div id="admin-readiness-contract-table"
+             hx-get="/fragments/admin-readiness-contract?days=14"
+             hx-trigger="load"
+             hx-swap="innerHTML">
+          <div class="spinner spinner--large"></div>
+        </div>
+      </div>
+
       <!-- v2.2 EnergyBank stress-drain settings -->
       <div class="admin-section" id="admin-energy-section">
         <div class="section-title">{{T .Lang "admin_energy_title"}}</div>

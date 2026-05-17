@@ -74,6 +74,10 @@ func testTenantDB(t *testing.T) (*storage.DB, string, func()) {
 		db.Close()
 		t.Fatalf("EnsureAllTables: %v", err)
 	}
+	// Phase 0 redesign tables are created lazily by their own helper
+	// — call it here so handler tests can reach naive_baselines /
+	// target_snapshots without each test seeding the schema itself.
+	db.EnsureReadinessRedesignTables()
 
 	cleanup := func() {
 		db.Close()

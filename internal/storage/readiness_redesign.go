@@ -494,6 +494,158 @@ func (s *DB) SaveNaiveBaseline(b NaiveBaseline) error {
 	return err
 }
 
+// OperationalContractRow is one (date, sub_score) cell as it would
+// render on the chip — used by the admin operational-contract preview
+// endpoint to validate §6.1 of the plan before any UI chip ships.
+//
+// Each row joins the deployable `naive_baselines` row (chip value +
+// authoritative reason on NULL) with its sibling `target_snapshots`
+// row (secondary diagnostic reason). Either side may be NULL when the
+// writer has not reached this date yet, which is the §6.1 "pending"
+// state — the handler renders that explicitly so an operator can spot
+// gaps.
+type OperationalContractRow struct {
+	Date                    string
+	SubScore                string
+	TargetKind              string
+	BaselineKind            string
+	PredictedValue          *float64
+	BaselineReason          *string
+	SourceEpoch             *string
+	TargetEligible          *bool
+	TargetEligibilityReason *string
+}
+
+// chipConfigs lists the (sub_score, target_kind, baseline_kind)
+// triples that drive the chip — see plan §6.1 "Primary target_kind +
+// baseline_kind per sub-score" table. The order is the chip render
+// order on the dashboard (Recovery, Passive, Chronic, Acute) so
+// downstream consumers can group by date and trust the slot ordering.
+var chipConfigs = []struct {
+	SubScore     string
+	TargetKind   string
+	BaselineKind string
+}{
+	{SubScoreRecoveryStability, TargetKindRolling3d, BaselineKindEWMA45d},
+	{SubScorePassiveEfficiency, TargetKindRolling3d, BaselineKindEWMA45d},
+	{SubScoreChronicLoad, TargetKindChronicLabel, BaselineKindEventBaseRate},
+	{SubScoreAcuteRisk, TargetKindEventT1T3, BaselineKindEventBaseRate},
+}
+
+// LoadOperationalContractRows returns one row per (date, chip_config)
+// for the inclusive date range, joined across `naive_baselines` and
+// `target_snapshots`. Missing rows on either side surface as NULL
+// fields — the consumer (admin page) renders that as `pending` or
+// `unknown` per §6.1 rules.
+//
+// Sort order: date DESC, then chip render order (Recovery → Passive
+// → Chronic → Acute). That matches both the admin table layout and
+// the dashboard chip slot order.
+func (s *DB) LoadOperationalContractRows(from, to string) ([]OperationalContractRow, error) {
+	ctx, cancel := queryCtx()
+	defer cancel()
+
+	// One SELECT per (sub_score, target_kind, baseline_kind) triple
+	// keeps the query simple (no values-CTE plumbing or
+	// generate_series). The whole result set is bounded by
+	// `len(chipConfigs) * days` — at the admin default of 14 days
+	// that's 56 rows, well under any concern. Each LEFT JOIN binds
+	// to a single chip configuration so the result rows can be
+	// distinguished without grouping.
+	const stmt = `
+		SELECT
+			d.date,
+			$1::text AS sub_score,
+			$2::text AS target_kind,
+			$3::text AS baseline_kind,
+			n.predicted_value,
+			n.reason AS baseline_reason,
+			COALESCE(n.source_epoch, t.source_epoch) AS source_epoch,
+			t.eligible,
+			t.eligibility_reason
+		FROM (
+			SELECT DISTINCT date FROM naive_baselines
+			 WHERE date BETWEEN $4 AND $5
+			UNION
+			SELECT DISTINCT date FROM target_snapshots
+			 WHERE date BETWEEN $4 AND $5
+		) d
+		LEFT JOIN naive_baselines n
+			ON n.date = d.date AND n.sub_score = $1
+		   AND n.target_kind = $2 AND n.baseline_kind = $3
+		LEFT JOIN target_snapshots t
+			ON t.date = d.date AND t.sub_score = $1 AND t.target_kind = $2
+		WHERE n.predicted_value IS NOT NULL
+		   OR n.reason IS NOT NULL
+		   OR t.eligible IS NOT NULL
+		ORDER BY d.date DESC
+	`
+
+	rowsByDate := make(map[string][]OperationalContractRow)
+	for _, c := range chipConfigs {
+		pgRows, err := s.pool.Query(ctx, stmt, c.SubScore, c.TargetKind, c.BaselineKind, from, to)
+		if err != nil {
+			return nil, fmt.Errorf("LoadOperationalContractRows: query %s/%s/%s: %w",
+				c.SubScore, c.TargetKind, c.BaselineKind, err)
+		}
+		for pgRows.Next() {
+			var r OperationalContractRow
+			var predicted *float32
+			if err := pgRows.Scan(
+				&r.Date, &r.SubScore, &r.TargetKind, &r.BaselineKind,
+				&predicted, &r.BaselineReason, &r.SourceEpoch,
+				&r.TargetEligible, &r.TargetEligibilityReason,
+			); err != nil {
+				pgRows.Close()
+				return nil, fmt.Errorf("LoadOperationalContractRows: scan: %w", err)
+			}
+			if predicted != nil {
+				v := float64(*predicted)
+				r.PredictedValue = &v
+			}
+			rowsByDate[r.Date] = append(rowsByDate[r.Date], r)
+		}
+		if err := pgRows.Err(); err != nil {
+			pgRows.Close()
+			return nil, fmt.Errorf("LoadOperationalContractRows: rows: %w", err)
+		}
+		pgRows.Close()
+	}
+
+	// Flatten with the documented sort order: date DESC, then chip
+	// render order from chipConfigs.
+	dates := make([]string, 0, len(rowsByDate))
+	for d := range rowsByDate {
+		dates = append(dates, d)
+	}
+	// Descending lexicographic equals descending chronological for
+	// YYYY-MM-DD strings, so a plain reverse sort works without
+	// parsing.
+	for i := 0; i < len(dates); i++ {
+		for j := i + 1; j < len(dates); j++ {
+			if dates[j] > dates[i] {
+				dates[i], dates[j] = dates[j], dates[i]
+			}
+		}
+	}
+	chipOrder := make(map[string]int, len(chipConfigs))
+	for i, c := range chipConfigs {
+		chipOrder[c.SubScore] = i
+	}
+	out := make([]OperationalContractRow, 0, len(rowsByDate)*len(chipConfigs))
+	for _, d := range dates {
+		group := rowsByDate[d]
+		// Stable sort by chip order; small N so insertion sort is fine.
+		for i := 1; i < len(group); i++ {
+			for j := i; j > 0 && chipOrder[group[j].SubScore] < chipOrder[group[j-1].SubScore]; j-- {
+				group[j], group[j-1] = group[j-1], group[j]
+			}
+		}
+		out = append(out, group...)
+	}
+	return out, nil
+}
+
 // SourceEpoch is one row from the source_epochs catalogue. Returned by
 // resolution and listing helpers below.
 type SourceEpoch struct {
