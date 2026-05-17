@@ -175,6 +175,15 @@ var validBaselineKinds = map[string]struct{}{
 	BaselineKindRecencyDecay: {},
 }
 
+// validBaselineReasons gates SaveNaiveBaseline so the chip can rely on
+// `reason` being one of a known enum value when `predicted_value IS
+// NULL`. Same pattern as validBaselineKinds — DB column is plain TEXT,
+// new enum values don't need a schema migration.
+var validBaselineReasons = map[string]struct{}{
+	BaselineReasonWarmup:              {},
+	BaselineReasonSourceEpochBoundary: {},
+}
+
 // IsSubScoreValid returns true for the five sub-scores defined in §2.
 func IsSubScoreValid(s string) bool { _, ok := validSubScores[s]; return ok }
 
@@ -183,6 +192,10 @@ func IsTargetKindValid(s string) bool { _, ok := validTargetKinds[s]; return ok 
 
 // IsBaselineKindValid returns true for the recognised baseline_kind values.
 func IsBaselineKindValid(s string) bool { _, ok := validBaselineKinds[s]; return ok }
+
+// IsBaselineReasonValid returns true for the recognised baseline_reason
+// enum values used on NULL `predicted_value` rows.
+func IsBaselineReasonValid(s string) bool { _, ok := validBaselineReasons[s]; return ok }
 
 // --- Migration ----------------------------------------------------------
 
@@ -430,11 +443,24 @@ func (s *DB) SaveNaiveBaseline(b NaiveBaseline) error {
 	if b.SourceEpoch == "" {
 		return fmt.Errorf("SaveNaiveBaseline: source_epoch must be non-empty")
 	}
-	// Joint-state guard: reason is meaningful only when value is NULL.
-	// Production callers shouldn't trip this, but it catches future
-	// regressions where a writer accidentally fills in both fields.
-	if b.PredictedValue != nil && b.Reason != "" {
-		return fmt.Errorf("SaveNaiveBaseline: reason %q set on non-nil predicted_value", b.Reason)
+	// Joint-state guard. The chip-facing contract (§6.1) is that
+	// `reason` is meaningful **iff** `predicted_value IS NULL`. Anything
+	// else (both set, both empty, unknown reason value) would either
+	// contradict the row itself or leave the chip without a usable
+	// `unknown` explanation — both produce hard-to-debug UI bugs once
+	// downstream consumers ship.
+	switch {
+	case b.PredictedValue != nil:
+		if b.Reason != "" {
+			return fmt.Errorf("SaveNaiveBaseline: reason %q set on non-nil predicted_value", b.Reason)
+		}
+	default: // predicted_value IS NULL
+		if b.Reason == "" {
+			return fmt.Errorf("SaveNaiveBaseline: reason must be set when predicted_value is nil")
+		}
+		if !IsBaselineReasonValid(b.Reason) {
+			return fmt.Errorf("SaveNaiveBaseline: invalid reason %q", b.Reason)
+		}
 	}
 
 	// reason is stored as NULL when empty so historical rows from
@@ -588,6 +614,31 @@ func (s *DB) VerifyReadinessRedesignSchema() error {
 	}
 	if !hasInitial {
 		return fmt.Errorf("VerifyReadinessRedesignSchema: bootstrap %q epoch missing from source_epochs", InitialSourceEpoch)
+	}
+
+	// Per-column checks for migrations applied via ALTER (not part of
+	// the initial CREATE TABLE). EnsureReadinessRedesignTables logs and
+	// continues on ALTER failures, so without this assertion a missing
+	// column would only surface as a SaveNaiveBaseline 500 at write
+	// time. List shape: (table, column).
+	requiredColumns := []struct{ table, column string }{
+		{"naive_baselines", "reason"},
+	}
+	for _, rc := range requiredColumns {
+		var present bool
+		if err := s.pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM information_schema.columns
+				 WHERE table_schema = current_schema()
+				   AND table_name = $1
+				   AND column_name = $2
+			)
+		`, rc.table, rc.column).Scan(&present); err != nil {
+			return fmt.Errorf("VerifyReadinessRedesignSchema: probe %s.%s: %w", rc.table, rc.column, err)
+		}
+		if !present {
+			return fmt.Errorf("VerifyReadinessRedesignSchema: column %s.%s is missing", rc.table, rc.column)
+		}
 	}
 	return nil
 }

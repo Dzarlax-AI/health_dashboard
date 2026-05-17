@@ -1,5 +1,8 @@
 // Unit-level test for the baseline-null-reason classifier. Integration
-// tests downstream prove the writers wire it in; this file nails:
+// tests at the bottom of the file additionally cover the DB round-trip
+// of a valid nil+reason row and the verify-schema check.
+//
+// This file nails:
 //
 //  1. the per-baseline earliest-offset semantics — explicitly include
 //     the EWMA case (lookback = max(N*3, 90), NOT N), which was the
@@ -148,23 +151,129 @@ func TestClassifyBaselineNullReason(t *testing.T) {
 	}
 }
 
-func TestSaveNaiveBaseline_RejectsReasonOnNonNilValue(t *testing.T) {
+// SaveNaiveBaseline's joint-state guard rejects every combination
+// that would leave the chip's `unknown` state ambiguous. All four
+// rejection paths are pure validation logic (no DB round-trip) —
+// `db.pool` is nil and we expect to error before any SQL fires.
+func TestSaveNaiveBaseline_JointStateGuard(t *testing.T) {
 	v := 0.5
-	db := &DB{}
+	base := NaiveBaseline{
+		Date:           "2026-05-16",
+		SubScore:       SubScoreRecoveryStability,
+		TargetKind:     TargetKindRolling3d,
+		BaselineKind:   BaselineKindEWMA45d,
+		SourceEpoch:    InitialSourceEpoch,
+		FormulaVersion: 1,
+	}
+	cases := []struct {
+		name       string
+		mutate     func(*NaiveBaseline)
+		wantSubstr string
+	}{
+		{
+			name: "value set, reason set — rejects (existing rule)",
+			mutate: func(nb *NaiveBaseline) {
+				nb.PredictedValue = &v
+				nb.Reason = BaselineReasonWarmup
+			},
+			wantSubstr: "reason \"baseline_warmup\" set on non-nil",
+		},
+		{
+			name: "value nil, reason empty — rejects (chip would lack explanation)",
+			mutate: func(nb *NaiveBaseline) {
+				nb.PredictedValue = nil
+				nb.Reason = ""
+			},
+			wantSubstr: "reason must be set when predicted_value is nil",
+		},
+		{
+			name: "value nil, reason unknown enum — rejects",
+			mutate: func(nb *NaiveBaseline) {
+				nb.PredictedValue = nil
+				nb.Reason = "something_freeform"
+			},
+			wantSubstr: "invalid reason",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			nb := base
+			tc.mutate(&nb)
+			db := &DB{}
+			err := db.SaveNaiveBaseline(nb)
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !contains(err.Error(), tc.wantSubstr) {
+				t.Errorf("error %q should contain %q", err.Error(), tc.wantSubstr)
+			}
+		})
+	}
+}
+
+// Integration: SaveNaiveBaseline accepts the valid nil-value + valid
+// reason path and the row round-trips through Postgres with `reason`
+// populated. Complements TestSaveNaiveBaseline_JointStateGuard's
+// pure-validation rejections.
+func TestSaveNaiveBaseline_NilValueWithValidReasonPersists(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
 	err := db.SaveNaiveBaseline(NaiveBaseline{
 		Date:           "2026-05-16",
 		SubScore:       SubScoreRecoveryStability,
 		TargetKind:     TargetKindRolling3d,
 		BaselineKind:   BaselineKindEWMA45d,
-		PredictedValue: &v,
-		Reason:         BaselineReasonWarmup,
+		PredictedValue: nil,
+		Reason:         BaselineReasonSourceEpochBoundary,
 		SourceEpoch:    InitialSourceEpoch,
 		FormulaVersion: 1,
 	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	if err != nil {
+		t.Fatalf("SaveNaiveBaseline: %v", err)
 	}
-	if !contains(err.Error(), "reason") {
-		t.Errorf("error message should mention 'reason', got: %v", err)
+
+	var val *float64
+	var reason *string
+	if err := db.pool.QueryRow(t.Context(), `
+		SELECT predicted_value, reason
+		  FROM naive_baselines
+		 WHERE date = $1 AND sub_score = $2 AND target_kind = $3 AND baseline_kind = $4
+	`, "2026-05-16", SubScoreRecoveryStability, TargetKindRolling3d, BaselineKindEWMA45d).Scan(&val, &reason); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if val != nil {
+		t.Errorf("predicted_value = %v, want nil", *val)
+	}
+	if reason == nil || *reason != BaselineReasonSourceEpochBoundary {
+		t.Errorf("reason = %v, want %q", reason, BaselineReasonSourceEpochBoundary)
+	}
+}
+
+// Integration: VerifyReadinessRedesignSchema must fail if the reason
+// column is missing — the existing health probe only checked table
+// existence, so a failed ALTER in EnsureReadinessRedesignTables would
+// have surfaced as a SaveNaiveBaseline 500 at write time instead of a
+// startup health failure. Drop the column manually to simulate.
+func TestVerifyReadinessRedesignSchema_FailsWhenReasonColumnMissing(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	// Baseline: with the column present, verify passes.
+	if err := db.VerifyReadinessRedesignSchema(); err != nil {
+		t.Fatalf("baseline verify (column present) failed: %v", err)
+	}
+
+	if _, err := db.pool.Exec(t.Context(),
+		"ALTER TABLE naive_baselines DROP COLUMN reason"); err != nil {
+		t.Fatalf("drop reason column: %v", err)
+	}
+
+	err := db.VerifyReadinessRedesignSchema()
+	if err == nil {
+		t.Fatal("expected verify error after dropping reason, got nil")
+	}
+	if !contains(err.Error(), "naive_baselines.reason") {
+		t.Errorf("verify error should mention naive_baselines.reason, got: %v", err)
 	}
 }
