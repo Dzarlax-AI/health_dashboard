@@ -665,6 +665,15 @@ forward predictive value the chips don't.
      drift in shape or filtering. Only the four deployable chip
      configurations from the §6.1 table are surfaced; other
      baselines are filtered server-side.
+   - Window anchored on the tenant's `REPORT_TZ` (settings.timezone
+     → env `REPORT_TZ` → UTC), same resolution path as the stress-
+     validation and energy handlers. Near local midnight in non-UTC
+     tenants the preview shows the right local day rather than a
+     stale UTC day.
+   - Pending state (writer has reached this date for one chip but
+     not yet for another) is **always** surfaced as a NULL/NULL row
+     so the operator can spot writer-cadence gaps. The query does
+     not filter out empty LEFT JOIN pairs.
 2. **Deferred** — a separate `READINESS_REDESIGN_OPERATIONAL_CONTRACT.md`
    spec for an external UI implementation. The plan section above is
    the contract for the in-tree dashboard work; if/when an external

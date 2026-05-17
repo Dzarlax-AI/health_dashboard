@@ -156,6 +156,56 @@ func TestAdminReadinessRedesignOperationalContract_CapsDaysAt90(t *testing.T) {
 	}
 }
 
+// TestParseOperationalContractDays exercises the input-validation
+// rules shared by the JSON and fragment surfaces. Pure unit test,
+// no DB.
+func TestParseOperationalContractDays(t *testing.T) {
+	cases := []struct {
+		name    string
+		raw     string
+		wantN   int
+		wantErr bool
+	}{
+		{"empty defaults to 14", "", 14, false},
+		{"valid value", "7", 7, false},
+		{"caps at 90", "365", 90, false},
+		{"non-numeric", "abc", 0, true},
+		{"zero", "0", 0, true},
+		{"negative", "-5", 0, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			n, err := parseOperationalContractDays(tc.raw)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("err = %v, wantErr = %v", err, tc.wantErr)
+			}
+			if !tc.wantErr && n != tc.wantN {
+				t.Errorf("n = %d, want %d", n, tc.wantN)
+			}
+		})
+	}
+}
+
+func TestFragmentAdminReadinessContract_RejectsBadDays(t *testing.T) {
+	db, schema, cleanup := testTenantDB(t)
+	defer cleanup()
+
+	h := &Handler{}
+	cases := []string{"abc", "0", "-5"}
+	for _, days := range cases {
+		t.Run("days="+days, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodGet,
+				"/fragments/admin-readiness-contract?days="+days, nil).
+				WithContext(adminContext(db, schema))
+			h.fragmentAdminReadinessContract(w, r)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("days=%q: status = %d, want 400; body=%s", days, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
 func TestFragmentAdminReadinessContract_RendersValueAndUnknown(t *testing.T) {
 	db, schema, cleanup := testTenantDB(t)
 	defer cleanup()

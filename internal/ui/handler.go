@@ -586,18 +586,14 @@ func (h *Handler) fragmentAdminReadinessContract(w http.ResponseWriter, r *http.
 		http.Error(w, "no tenant DB available", http.StatusServiceUnavailable)
 		return
 	}
-	days := 14
-	if raw := strings.TrimSpace(r.URL.Query().Get("days")); raw != "" {
-		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
-			if n > 90 {
-				n = 90
-			}
-			days = n
-		}
+	schema := h.tenantSchema(r)
+	days, err := parseOperationalContractDays(r.URL.Query().Get("days"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
-	toT := time.Now().UTC()
-	fromT := toT.AddDate(0, 0, -(days - 1))
-	rows, err := db.LoadOperationalContractRows(fromT.Format("2006-01-02"), toT.Format("2006-01-02"))
+	from, to := operationalContractWindow(h, db, schema, days)
+	rows, err := db.LoadOperationalContractRows(from, to)
 	if err != nil {
 		http.Error(w, "load rows: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -1538,29 +1534,16 @@ func (h *Handler) adminReadinessRedesignOperationalContract(w http.ResponseWrite
 		return
 	}
 
-	days := 14
-	if raw := strings.TrimSpace(r.URL.Query().Get("days")); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil || n <= 0 {
-			http.Error(w, "days must be a positive integer", http.StatusBadRequest)
-			return
-		}
-		// Cap at 90 days. Anything larger should go through the
-		// backfill endpoint or a direct SQL query; this surface is for
-		// at-a-glance contract validation, not bulk export.
-		if n > 90 {
-			n = 90
-		}
-		days = n
-	}
-	toT := time.Now().UTC()
-	fromT := toT.AddDate(0, 0, -(days - 1))
-	to := toT.Format("2006-01-02")
-	from := fromT.Format("2006-01-02")
-
-	rows, err := db.LoadOperationalContractRows(from, to)
+	days, err := parseOperationalContractDays(r.URL.Query().Get("days"))
 	if err != nil {
-		http.Error(w, "load rows: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	from, to := operationalContractWindow(h, db, schema, days)
+
+	rows, loadErr := db.LoadOperationalContractRows(from, to)
+	if loadErr != nil {
+		http.Error(w, "load rows: "+loadErr.Error(), http.StatusInternalServerError)
 		return
 	}
 	jsonResponse(w, map[string]any{
@@ -1570,6 +1553,56 @@ func (h *Handler) adminReadinessRedesignOperationalContract(w http.ResponseWrite
 		"days":   days,
 		"rows":   rows,
 	})
+}
+
+// parseOperationalContractDays validates the `days` query parameter
+// for both the JSON and fragment surfaces. Empty → 14 (default).
+// Returns (clampedDays, nil) on success, (0, err) on invalid input.
+// Clamps at 90 — anything larger should go through the backfill
+// endpoint or direct SQL, this surface is for at-a-glance validation.
+func parseOperationalContractDays(raw string) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 14, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("days must be a positive integer")
+	}
+	if n > 90 {
+		n = 90
+	}
+	return n, nil
+}
+
+// operationalContractWindow computes (from, to) date strings for the
+// preview, anchored in the tenant's REPORT_TZ rather than UTC. Near
+// midnight in non-UTC tenants this is the difference between showing
+// the correct local day vs a stale UTC day.
+//
+// Resolution order: settings.timezone → env REPORT_TZ default → UTC.
+// Same as the stress-validation and energy handlers.
+func operationalContractWindow(h *Handler, db *storage.DB, schema string, days int) (from, to string) {
+	var tz string
+	// h.mgr is non-nil in production but may be nil in some tests
+	// that build a bare Handler{}. Skip the per-tenant lookup in
+	// that case rather than panicking.
+	if h.mgr != nil {
+		tz = db.GetNotifyConfig(h.mgr.NotifyDefaultsFor(schema)).Timezone
+	}
+	if tz == "" {
+		tz = "UTC"
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		// Unknown TZ name falls back to UTC rather than failing the
+		// request — operator can see the data, the date-window edge
+		// case is the only loss.
+		loc = time.UTC
+	}
+	toT := time.Now().In(loc)
+	fromT := toT.AddDate(0, 0, -(days - 1))
+	return fromT.Format("2006-01-02"), toT.Format("2006-01-02")
 }
 
 // userSettings handles GET/POST /api/settings — Telegram config, available to all users.

@@ -236,3 +236,86 @@ func TestLoadOperationalContractRows_OrderingAndScope(t *testing.T) {
 
 	_ = time.Now // keep time import in case the helper grows date-relative logic later
 }
+
+// TestLoadOperationalContractRows_PendingChipOnSharedDate proves the
+// Codex-flagged regression: when one chip has data for a date but
+// another chip is still pending on the same date, the pending chip
+// must still surface as a NULL/NULL row so the operator sees the gap.
+//
+// The earlier filter (`WHERE n.predicted_value IS NOT NULL OR
+// n.reason IS NOT NULL OR t.eligible IS NOT NULL`) silently dropped
+// these rows, leaving the admin table with fewer than 4 chips on the
+// affected dates — exactly the failure mode this surface is meant to
+// surface.
+func TestLoadOperationalContractRows_PendingChipOnSharedDate(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	// Recovery has both a baseline and a target row — one fully
+	// populated chip cell. No other chip has anything on this date.
+	const sharedDate = "2026-05-10"
+	v := 0.91
+	if err := db.SaveNaiveBaseline(NaiveBaseline{
+		Date:           sharedDate,
+		SubScore:       SubScoreRecoveryStability,
+		TargetKind:     TargetKindRolling3d,
+		BaselineKind:   BaselineKindEWMA45d,
+		PredictedValue: &v,
+		SourceEpoch:    InitialSourceEpoch,
+		FormulaVersion: 1,
+	}); err != nil {
+		t.Fatalf("seed recovery baseline: %v", err)
+	}
+	if _, err := db.pool.Exec(context.Background(), `
+		INSERT INTO target_snapshots
+			(date, sub_score, target_kind, target_value, eligible,
+			 eligibility_reason, source_epoch, formula_version, computed_at)
+		VALUES ($1, $2, $3, $4, TRUE, 'ok', $5, 1, NOW())
+	`, sharedDate, SubScoreRecoveryStability, TargetKindRolling3d, 0.92, InitialSourceEpoch); err != nil {
+		t.Fatalf("seed recovery target: %v", err)
+	}
+
+	rows, err := db.LoadOperationalContractRows(sharedDate, sharedDate)
+	if err != nil {
+		t.Fatalf("LoadOperationalContractRows: %v", err)
+	}
+
+	// Must surface ALL four chip configs for this date — three of
+	// them as pending NULL/NULL rows.
+	if len(rows) != len(chipConfigs) {
+		t.Fatalf("expected %d chip rows for the shared date (one per chip, pending counted), got %d: %+v",
+			len(chipConfigs), len(rows), rows)
+	}
+
+	bySub := map[string]OperationalContractRow{}
+	for _, r := range rows {
+		bySub[r.SubScore] = r
+	}
+
+	// Recovery is populated.
+	if r := bySub[SubScoreRecoveryStability]; r.PredictedValue == nil {
+		t.Errorf("recovery chip: predicted_value nil, expected ~0.91")
+	}
+	// The other three chips must be present-but-empty (pending) — no
+	// predicted_value, no baseline_reason, no target_eligibility_reason.
+	for _, sub := range []string{
+		SubScorePassiveEfficiency,
+		SubScoreChronicLoad,
+		SubScoreAcuteRisk,
+	} {
+		r, ok := bySub[sub]
+		if !ok {
+			t.Errorf("chip %s missing from result; pending row was filtered out", sub)
+			continue
+		}
+		if r.PredictedValue != nil {
+			t.Errorf("chip %s: predicted_value = %v, want NULL (pending)", sub, *r.PredictedValue)
+		}
+		if r.BaselineReason != nil {
+			t.Errorf("chip %s: baseline_reason = %q, want NULL (pending)", sub, *r.BaselineReason)
+		}
+		if r.TargetEligibilityReason != nil {
+			t.Errorf("chip %s: target_eligibility_reason = %q, want NULL (pending)", sub, *r.TargetEligibilityReason)
+		}
+	}
+}

@@ -552,6 +552,13 @@ func (s *DB) LoadOperationalContractRows(from, to string) ([]OperationalContract
 	// that's 56 rows, well under any concern. Each LEFT JOIN binds
 	// to a single chip configuration so the result rows can be
 	// distinguished without grouping.
+	// Date subquery yields every date in the range where ANY chip
+	// configuration has at least one row in either table. Per-chip
+	// rows for that date are then LEFT-JOINed in — including
+	// configurations that have neither side populated, so the operator
+	// sees a `pending` cell when one writer lags behind another on the
+	// same calendar day. The earlier WHERE filter discarded those
+	// pending rows and made the gap invisible (Codex review on PR #109).
 	const stmt = `
 		SELECT
 			d.date,
@@ -575,9 +582,6 @@ func (s *DB) LoadOperationalContractRows(from, to string) ([]OperationalContract
 		   AND n.target_kind = $2 AND n.baseline_kind = $3
 		LEFT JOIN target_snapshots t
 			ON t.date = d.date AND t.sub_score = $1 AND t.target_kind = $2
-		WHERE n.predicted_value IS NOT NULL
-		   OR n.reason IS NOT NULL
-		   OR t.eligible IS NOT NULL
 		ORDER BY d.date DESC
 	`
 
