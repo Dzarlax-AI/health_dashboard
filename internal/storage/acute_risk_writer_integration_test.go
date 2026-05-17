@@ -598,26 +598,14 @@ func TestAcuteRisk_Integration_BaselineEpochClippingPreventsLeak(t *testing.T) {
 			`DELETE FROM source_epochs WHERE epoch_id = 'boundary_test'`)
 	})
 
-	// Step 3 — autonomic history so 2026-04-02 hits the eligible
-	// branch. We need 30+ paired in-epoch observations so the
-	// AcuteRiskWarmupMinPaired gate passes. seedSteadyHistory(...,30)
-	// reaches back 30 days from 2026-04-01 (Mar 3 onwards). But those
-	// dates sit in the OLD epoch — they don't count toward
-	// `countPairedObservations` which is epoch-clipped.
-	//
-	// So we instead seed *just enough* observations on or after
-	// 2026-04-01 to make the warmup check pass when the candidate is
-	// 2026-04-02. AcuteRiskWarmupMinPaired is 30 by default — seed
-	// April 1 with one observation, plus the candidate itself, plus
-	// the forward window. That's 5 rows — well below 30. The test
-	// can't satisfy warmup honestly inside a 1-day-old epoch.
-	//
-	// To exercise the eligible-target path without bending the
-	// physics, we lower the candidate's expectation: warmup will fail
-	// → it goes through the **warmup-not-met branch**. That branch
-	// now writes baselines too (the second part of this PR), and the
-	// epoch-clip rule applies identically there. So the assertion
-	// stays the same; we just clarify the branch in the comment.
+	// Step 3 — autonomic rows on 2026-04-01..2026-04-06. The new epoch
+	// is one day old, so paired in-epoch observations sit well below
+	// AcuteRiskWarmupMinPaired (30) and the candidate 2026-04-02 will
+	// route through the **warmup-not-met branch**. That branch writes
+	// baselines via the same helper as the eligible and window-missing
+	// branches — the epoch-clip rule applies identically across all
+	// three. The assertion below is about the clip, not about which
+	// branch carried the write.
 	hrv0, rhr0 := 45.0, 60.0
 	for i := 1; i <= 6; i++ {
 		date := time.Date(2026, 4, i, 0, 0, 0, 0, time.UTC).Format(isoDate)
