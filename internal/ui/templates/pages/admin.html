@@ -10,232 +10,327 @@
   <div id="admin-content">
     <div id="admin-body">
 
-      <!-- Cache status -->
-      <div class="admin-section">
-        <div class="admin-section-header">
-          <div class="section-title">{{T .Lang "admin_cache_status"}}</div>
-          <button class="btn btn--secondary btn--small" hx-get="/fragments/admin-status" hx-target="#admin-cache-table" hx-swap="innerHTML">{{T .Lang "admin_refresh"}}</button>
-        </div>
-        <div id="admin-cache-table" hx-get="/fragments/admin-status" hx-trigger="load" hx-swap="innerHTML">
-          <div class="spinner spinner--large"></div>
-        </div>
-      </div>
+      <!-- ============================================================ -->
+      <!-- GROUP A — STATUS                                              -->
+      <!-- Read-only diagnostics. Each section has a refresh / run       -->
+      <!-- button and renders results inline. No state mutation here.   -->
+      <!-- ============================================================ -->
+      <div class="admin-group">
+        <div class="admin-group-header">Status &amp; diagnostics</div>
 
-      <!-- Actions -->
-      <div class="admin-section">
-        <div class="section-title">{{T .Lang "admin_actions"}}</div>
-        {{if .MultiUser}}
-        <div class="admin-field-row" style="margin-bottom:12px">
-          <label class="admin-field-label" for="backfill-target">{{T .Lang "admin_target_user"}}</label>
-          <select class="admin-field-input" id="backfill-target" data-current-label="{{T .Lang "admin_target_user_current"}}">
-            <option value="">{{T .Lang "admin_target_user_current"}}</option>
-          </select>
-        </div>
-        {{end}}
-        <div class="admin-actions">
-          <div class="admin-action-card">
-            <div class="admin-action-title">{{T .Lang "admin_incremental_title"}}</div>
-            <div class="admin-action-desc">{{T .Lang "admin_incremental_desc"}}</div>
-            <button class="btn btn--primary btn--small" onclick="triggerBackfill(false)" id="btn-backfill">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-              {{T .Lang "admin_run"}}
-            </button>
+        <!-- Cache status -->
+        <div class="admin-section">
+          <div class="admin-section-header">
+            <div class="section-title">{{T .Lang "admin_cache_status"}}</div>
+            <button class="btn btn--secondary btn--small" hx-get="/fragments/admin-status" hx-target="#admin-cache-table" hx-swap="innerHTML">{{T .Lang "admin_refresh"}}</button>
           </div>
-          <div class="admin-action-card">
-            <div class="admin-action-title">{{T .Lang "admin_force_title"}}</div>
-            <div class="admin-action-desc">{{T .Lang "admin_force_desc"}}</div>
-            <button class="btn btn--danger btn--small" onclick="triggerBackfill(true)" id="btn-backfill-force">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
-              {{T .Lang "admin_force_run"}}
-            </button>
+          <div id="admin-cache-table" hx-get="/fragments/admin-status" hx-trigger="load" hx-swap="innerHTML">
+            <div class="spinner spinner--large"></div>
           </div>
         </div>
-        <div id="admin-msg" style="display:none"></div>
-      </div>
 
-      <!-- Data integrity -->
-      <div class="admin-section">
-        <div class="admin-section-header">
-          <div class="section-title">{{T .Lang "admin_gaps_section_title"}}</div>
-          <button class="btn btn--secondary btn--small" onclick="checkDataGaps()">{{T .Lang "admin_gaps_check"}}</button>
+        <!-- Data integrity (gaps) -->
+        <div class="admin-section">
+          <div class="admin-section-header">
+            <div class="section-title">{{T .Lang "admin_gaps_section_title"}}</div>
+            <button class="btn btn--secondary btn--small" onclick="checkDataGaps()">{{T .Lang "admin_gaps_check"}}</button>
+          </div>
+          <div id="admin-gaps-section"></div>
         </div>
-        <div id="admin-gaps-section"></div>
-      </div>
 
-      <!-- Data quality audit -->
-      <div class="admin-section">
-        <div class="admin-section-header">
-          <div class="section-title">{{T .Lang "admin_quality_title"}}</div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <!-- Data quality audit -->
+        <div class="admin-section">
+          <div class="admin-section-header">
+            <div class="section-title">{{T .Lang "admin_quality_title"}}</div>
             <button class="btn btn--secondary btn--small" onclick="runQualityAudit()">{{T .Lang "admin_quality_run"}}</button>
-            <button class="btn btn--secondary btn--small" onclick="runQualityFix()">{{T .Lang "admin_quality_fix"}}</button>
-            <button class="btn btn--secondary btn--small" onclick="runQualityDigest()">{{T .Lang "admin_quality_digest"}}</button>
           </div>
+          <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
+            Read-only audit: lists points the writers would flag as impossible /
+            suspect. The maintenance actions (Fix / Digest) live in
+            <strong>Operations</strong> below — they're not read-only and shouldn't
+            be one click away from a refresh.
+          </p>
+          <div id="admin-quality-section"></div>
         </div>
-        <div id="admin-quality-section"></div>
-        <div id="admin-quality-msg" style="display:none;margin-top:8px"></div>
-      </div>
 
-      <!-- Readiness redesign — operational contract preview (§6.1) -->
-      <div class="admin-section">
-        <div class="admin-section-header">
-          <div class="section-title">Readiness redesign — operational contract preview</div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <!-- Stress validation rubric (STRESS_MEASUREMENT.md §4.5) -->
+        <div class="admin-section" id="admin-stress-validation-section">
+          <div class="section-title">{{T .Lang "admin_stress_validation_title"}}</div>
+          <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
+            {{T .Lang "admin_stress_validation_desc"}}
+          </p>
+          <div class="admin-settings-actions">
+            <button class="btn btn--primary btn--small" onclick="runStressValidation()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="9"/><polyline points="9 11 12 14 17 8"/></svg>
+              {{T .Lang "admin_stress_validation_run"}}
+            </button>
+          </div>
+          <div id="admin-stress-validation-out" style="margin-top:12px"></div>
+
+          <details class="admin-help" style="margin-top:12px">
+            <summary style="cursor:pointer;color:var(--text-secondary);font-size:13px">
+              {{T .Lang "admin_help_summary"}}
+            </summary>
+            <div class="admin-help-body" style="margin-top:8px;font-size:13px;line-height:1.5;color:var(--text-secondary)">
+              {{SafeHTML (T .Lang "admin_stress_validation_help_html")}}
+            </div>
+          </details>
+        </div>
+
+        <!-- Readiness redesign — operational contract preview (§6.1) -->
+        <div class="admin-section">
+          <div class="admin-section-header">
+            <div class="section-title">Readiness redesign — operational contract preview</div>
             <button class="btn btn--secondary btn--small"
                     hx-get="/fragments/admin-readiness-contract?days=14&schema=all"
                     hx-target="#admin-readiness-contract-table"
                     hx-swap="innerHTML">{{T .Lang "admin_refresh"}}</button>
-            <button class="btn btn--secondary btn--small"
-                    onclick="triggerChipCalibrationRecompute()"
-                    title="Recompute chip cutoffs from rolling 180-day history for the selected tenant (or the current one)">
-              Recompute chip calibrations
-            </button>
           </div>
-        </div>
-        <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
-          Per-day per-sub-score preview of what each chip would render. Binary chips
-          (Acute, Chronic) read their cutoff from <code>chip_calibrations</code> — recomputed on
-          demand from rolling 180-day personal history (no manual threshold). Hover any cell
-          to see <code>value · cutoff · calibration · baseline · target · epoch</code>.
-          Recompute respects the <strong>Target user</strong> selector above —
-          leaving it on "Current" recomputes just your tenant, not everyone.
-          See plan §6.1.
-        </p>
-        <div id="admin-chip-calibration-msg" style="color:var(--text-secondary);font-size:12px;margin-bottom:8px"></div>
-        <div id="admin-readiness-contract-table"
-             hx-get="/fragments/admin-readiness-contract?days=14&schema=all"
-             hx-trigger="load, reload"
-             hx-swap="innerHTML">
-          <div class="spinner spinner--large"></div>
+          <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
+            Per-day per-sub-score pivot of what each chip would render. Binary chips
+            (Acute, Chronic) read their cutoff from <code>chip_calibrations</code>; the
+            "Recompute chip calibrations" action lives in the Operations group below.
+            Hover any cell to see <code>value · cutoff · calibration · baseline · target · epoch</code>.
+            See plan §6.1.
+          </p>
+          <div id="admin-readiness-contract-table"
+               hx-get="/fragments/admin-readiness-contract?days=14&schema=all"
+               hx-trigger="load, reload"
+               hx-swap="innerHTML">
+            <div class="spinner spinner--large"></div>
+          </div>
         </div>
       </div>
 
-      <!-- v2.2 EnergyBank stress-drain settings -->
-      <div class="admin-section" id="admin-energy-section">
-        <div class="section-title">{{T .Lang "admin_energy_title"}}</div>
-        <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
-          {{T .Lang "admin_energy_warning"}}
-        </p>
-        <div class="admin-settings-form">
-          <div class="admin-field-row">
-            <label class="admin-field-label">{{T .Lang "admin_energy_stress_enabled"}}</label>
-            <input class="admin-field-input" type="checkbox" id="cfg-energy-stress-enabled" style="width:auto">
-          </div>
-          <div class="admin-field-row">
-            <label class="admin-field-label">{{T .Lang "admin_energy_beta"}}</label>
-            <input class="admin-field-input" type="number" id="cfg-energy-beta" step="0.01" min="0" max="5" placeholder="0.8">
-          </div>
-          <div class="admin-field-row">
-            <label class="admin-field-label">{{T .Lang "admin_energy_z_threshold"}}</label>
-            <input class="admin-field-input" type="number" id="cfg-energy-z-threshold" step="0.05" min="0" max="3" placeholder="0.5">
-          </div>
-          <div class="admin-field-row">
-            <label class="admin-field-label">{{T .Lang "admin_energy_effective_beta"}}</label>
-            <div id="cfg-energy-effective-beta" style="font-family:monospace;color:var(--text-secondary)">—</div>
-          </div>
-          <div class="admin-settings-actions">
-            <button class="btn btn--primary btn--small" onclick="saveEnergySettings()">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
-              {{T .Lang "admin_energy_save"}}
-            </button>
-          </div>
+      <!-- ============================================================ -->
+      <!-- GROUP B — OPERATIONS                                          -->
+      <!-- Per-tenant write actions. Single tenant selector at the top   -->
+      <!-- is the source of truth for every action in this group; no    -->
+      <!-- action below should read a different selector.                -->
+      <!-- ============================================================ -->
+      <div class="admin-group">
+        <div class="admin-group-header">Operations</div>
+        {{if .MultiUser}}
+        <div class="admin-group-desc">
+          Actions in this group target the tenant selected below. Leave it on
+          <strong>{{T .Lang "admin_target_user_current"}}</strong> to act on your own tenant.
         </div>
-        <div id="admin-energy-msg" style="display:none"></div>
-
-        <!-- Inline help: what each knob means, when to change it. -->
-        <details class="admin-help" style="margin-top:12px">
-          <summary style="cursor:pointer;color:var(--text-secondary);font-size:13px">
-            {{T .Lang "admin_help_summary"}}
-          </summary>
-          <div class="admin-help-body" style="margin-top:8px;font-size:13px;line-height:1.5;color:var(--text-secondary)">
-            {{SafeHTML (T .Lang "admin_energy_help_html")}}
-          </div>
-        </details>
-      </div>
-
-      <!-- Stress validation rubric (STRESS_MEASUREMENT.md §4.5) -->
-      <div class="admin-section" id="admin-stress-validation-section">
-        <div class="section-title">{{T .Lang "admin_stress_validation_title"}}</div>
-        <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
-          {{T .Lang "admin_stress_validation_desc"}}
-        </p>
-        <div class="admin-settings-actions">
-          <button class="btn btn--primary btn--small" onclick="runStressValidation()">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="9"/><polyline points="9 11 12 14 17 8"/></svg>
-            {{T .Lang "admin_stress_validation_run"}}
-          </button>
-        </div>
-        <div id="admin-stress-validation-out" style="margin-top:12px"></div>
-
-        <details class="admin-help" style="margin-top:12px">
-          <summary style="cursor:pointer;color:var(--text-secondary);font-size:13px">
-            {{T .Lang "admin_help_summary"}}
-          </summary>
-          <div class="admin-help-body" style="margin-top:8px;font-size:13px;line-height:1.5;color:var(--text-secondary)">
-            {{SafeHTML (T .Lang "admin_stress_validation_help_html")}}
-          </div>
-        </details>
-      </div>
-
-      <!-- AI briefing settings -->
-      <div class="admin-section" id="admin-ai-section">
-        <div class="section-title">{{T .Lang "admin_ai_title"}}</div>
-        <div class="admin-settings-form">
+        <div class="admin-operations-scope">
           <div class="admin-field-row">
-            <label class="admin-field-label">{{T .Lang "admin_ai_key"}}</label>
-            <input class="admin-field-input" type="password" id="cfg-gemini-key" autocomplete="off" placeholder="AIza..." oninput="onGeminiKeyChange()">
-          </div>
-          <div class="admin-field-row">
-            <label class="admin-field-label">{{T .Lang "admin_ai_model"}}</label>
-            <select class="admin-field-input" id="cfg-gemini-model">
-              <option value="">— enter API key to load models —</option>
+            <label class="admin-field-label" for="backfill-target">{{T .Lang "admin_target_user"}}</label>
+            <select class="admin-field-input" id="backfill-target" data-current-label='{{T .Lang "admin_target_user_current"}}'>
+              <option value="">{{T .Lang "admin_target_user_current"}}</option>
             </select>
           </div>
-          <div class="admin-field-row">
-            <label class="admin-field-label">{{T .Lang "admin_ai_max_tokens"}}</label>
-            <input class="admin-field-input" type="number" id="cfg-gemini-max-tokens" min="200" max="8192" placeholder="1000">
-          </div>
-          <div class="admin-settings-actions">
-            <button class="btn btn--primary btn--small" onclick="saveAISettings()">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
-              {{T .Lang "admin_ai_save"}}
-            </button>
-          </div>
         </div>
-        <div id="admin-ai-msg" style="display:none"></div>
+        {{end}}
+
+        <!-- Cache backfill -->
+        <div class="admin-section">
+          <div class="section-title">{{T .Lang "admin_actions"}}</div>
+          <div class="admin-actions">
+            <div class="admin-action-card">
+              <div class="admin-action-title">{{T .Lang "admin_incremental_title"}}</div>
+              <div class="admin-action-desc">{{T .Lang "admin_incremental_desc"}}</div>
+              <button class="btn btn--primary btn--small" onclick="triggerBackfill(false)" id="btn-backfill">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                {{T .Lang "admin_run"}}
+              </button>
+            </div>
+            <div class="admin-action-card">
+              <div class="admin-action-title">{{T .Lang "admin_force_title"}}</div>
+              <div class="admin-action-desc">{{T .Lang "admin_force_desc"}}</div>
+              <button class="btn btn--danger btn--small" onclick="triggerBackfill(true)" id="btn-backfill-force">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+                {{T .Lang "admin_force_run"}}
+              </button>
+            </div>
+          </div>
+          <div id="admin-msg" style="display:none"></div>
+        </div>
+
+        <!-- Readiness redesign operations -->
+        <div class="admin-section">
+          <div class="section-title">Readiness redesign</div>
+          <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
+            Per-tenant chip thresholds are derived from rolling 180-day history.
+            Click <strong>Recompute</strong> to update them after a config change or
+            a fresh Phase 0 backfill. Output appears in the Operational contract
+            preview above.
+          </p>
+          <div class="admin-actions">
+            <div class="admin-action-card">
+              <div class="admin-action-title">Recompute chip calibrations</div>
+              <div class="admin-action-desc">
+                Reads the last 180 eligible days, computes p80 + base-rate guard
+                per binary chip, writes the result to <code>chip_calibrations</code>.
+                Targets the tenant selected above.
+              </div>
+              <button class="btn btn--primary btn--small" onclick="triggerChipCalibrationRecompute()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                Recompute
+              </button>
+            </div>
+          </div>
+          <div id="admin-chip-calibration-msg" style="color:var(--text-secondary);font-size:12px;margin-top:12px"></div>
+        </div>
+
+        <!-- Data quality maintenance -->
+        <div class="admin-section">
+          <div class="section-title">Data quality maintenance</div>
+          <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
+            Maintenance actions that mutate <code>metric_points.quality</code> or
+            send a Telegram digest. The read-only audit lives in
+            <strong>Status &amp; diagnostics</strong> above; click that first to
+            see what the actions will affect.
+          </p>
+          <div class="admin-actions">
+            <div class="admin-action-card">
+              <div class="admin-action-title">{{T .Lang "admin_quality_fix"}}</div>
+              <div class="admin-action-desc">
+                Mark out-of-range points as <code>impossible</code> and z-score
+                outliers as <code>suspect</code> so they're excluded from
+                downstream scoring.
+              </div>
+              <button class="btn btn--primary btn--small" onclick="runQualityFix()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                {{T .Lang "admin_quality_fix"}}
+              </button>
+            </div>
+            <div class="admin-action-card">
+              <div class="admin-action-title">{{T .Lang "admin_quality_digest"}}</div>
+              <div class="admin-action-desc">
+                Force-send the weekly quality digest to the configured Telegram
+                chat right now (normally runs on the digest day-of-week).
+              </div>
+              <button class="btn btn--secondary btn--small" onclick="runQualityDigest()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+                {{T .Lang "admin_quality_digest"}}
+              </button>
+            </div>
+          </div>
+          <div id="admin-quality-msg" style="display:none;margin-top:8px"></div>
+        </div>
       </div>
 
+      <!-- ============================================================ -->
+      <!-- GROUP C — CONFIGURATION                                       -->
+      <!-- Persistent settings. Collapsed by default since these are    -->
+      <!-- "set and forget" — operator opens the relevant <details> on -->
+      <!-- the rare occasions when a knob actually needs changing.       -->
+      <!-- ============================================================ -->
+      <div class="admin-group">
+        <div class="admin-group-header">Configuration</div>
+
+        <!-- v2.2 EnergyBank stress-drain settings.
+             <details>/<summary> collapses the form by default — these knobs
+             are touched rarely; the closed state keeps Configuration scannable. -->
+        <details class="admin-section" id="admin-energy-section">
+          <summary class="section-title" style="cursor:pointer">{{T .Lang "admin_energy_title"}}</summary>
+          <p style="color:var(--text-secondary);font-size:13px;margin:12px 0">
+            {{T .Lang "admin_energy_warning"}}
+          </p>
+          <div class="admin-settings-form">
+            <div class="admin-field-row">
+              <label class="admin-field-label">{{T .Lang "admin_energy_stress_enabled"}}</label>
+              <input class="admin-field-input" type="checkbox" id="cfg-energy-stress-enabled" style="width:auto">
+            </div>
+            <div class="admin-field-row">
+              <label class="admin-field-label">{{T .Lang "admin_energy_beta"}}</label>
+              <input class="admin-field-input" type="number" id="cfg-energy-beta" step="0.01" min="0" max="5" placeholder="0.8">
+            </div>
+            <div class="admin-field-row">
+              <label class="admin-field-label">{{T .Lang "admin_energy_z_threshold"}}</label>
+              <input class="admin-field-input" type="number" id="cfg-energy-z-threshold" step="0.05" min="0" max="3" placeholder="0.5">
+            </div>
+            <div class="admin-field-row">
+              <label class="admin-field-label">{{T .Lang "admin_energy_effective_beta"}}</label>
+              <div id="cfg-energy-effective-beta" style="font-family:monospace;color:var(--text-secondary)">—</div>
+            </div>
+            <div class="admin-settings-actions">
+              <button class="btn btn--primary btn--small" onclick="saveEnergySettings()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                {{T .Lang "admin_energy_save"}}
+              </button>
+            </div>
+          </div>
+          <div id="admin-energy-msg" style="display:none"></div>
+
+          <details class="admin-help" style="margin-top:12px">
+            <summary style="cursor:pointer;color:var(--text-secondary);font-size:13px">
+              {{T .Lang "admin_help_summary"}}
+            </summary>
+            <div class="admin-help-body" style="margin-top:8px;font-size:13px;line-height:1.5;color:var(--text-secondary)">
+              {{SafeHTML (T .Lang "admin_energy_help_html")}}
+            </div>
+          </details>
+        </details>
+
+        <!-- AI briefing settings -->
+        <details class="admin-section" id="admin-ai-section">
+          <summary class="section-title" style="cursor:pointer">{{T .Lang "admin_ai_title"}}</summary>
+          <div class="admin-settings-form" style="margin-top:12px">
+            <div class="admin-field-row">
+              <label class="admin-field-label">{{T .Lang "admin_ai_key"}}</label>
+              <input class="admin-field-input" type="password" id="cfg-gemini-key" autocomplete="off" placeholder="AIza..." oninput="onGeminiKeyChange()">
+            </div>
+            <div class="admin-field-row">
+              <label class="admin-field-label">{{T .Lang "admin_ai_model"}}</label>
+              <select class="admin-field-input" id="cfg-gemini-model">
+                <option value="">— enter API key to load models —</option>
+              </select>
+            </div>
+            <div class="admin-field-row">
+              <label class="admin-field-label">{{T .Lang "admin_ai_max_tokens"}}</label>
+              <input class="admin-field-input" type="number" id="cfg-gemini-max-tokens" min="200" max="8192" placeholder="1000">
+            </div>
+            <div class="admin-settings-actions">
+              <button class="btn btn--primary btn--small" onclick="saveAISettings()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                {{T .Lang "admin_ai_save"}}
+              </button>
+            </div>
+          </div>
+          <div id="admin-ai-msg" style="display:none"></div>
+        </details>
+      </div>
+
+      <!-- ============================================================ -->
+      <!-- GROUP D — USERS (multi-tenant admin only)                     -->
+      <!-- ============================================================ -->
       {{if .MultiUser}}
-      <!-- Users -->
-      <div class="admin-section">
-        <div class="admin-section-header">
-          <div class="section-title">Users</div>
-          <button class="btn btn--secondary btn--small" onclick="loadUsers()">Refresh</button>
-        </div>
-        <div id="admin-users-table">
-          <div class="spinner spinner--large"></div>
-        </div>
-        <div style="margin-top:16px">
-          <div class="admin-field-group-title">Add user</div>
-          <div class="admin-field-row">
-            <label class="admin-field-label">Username</label>
-            <input class="admin-field-input" type="text" id="new-username" autocomplete="off" placeholder="alice">
+      <div class="admin-group">
+        <div class="admin-group-header">Users</div>
+        <div class="admin-section">
+          <div class="admin-section-header">
+            <div class="section-title">Registered users</div>
+            <button class="btn btn--secondary btn--small" onclick="loadUsers()">Refresh</button>
           </div>
-          <div class="admin-field-row">
-            <label class="admin-field-label">Email <span style="font-weight:400;color:var(--text-secondary)">(optional, for SSO)</span></label>
-            <input class="admin-field-input" type="email" id="new-email" autocomplete="off" placeholder="alice@example.com">
+          <div id="admin-users-table">
+            <div class="spinner spinner--large"></div>
           </div>
-          <div class="admin-field-row">
-            <label class="admin-field-label">Password</label>
-            <input class="admin-field-input" type="password" id="new-password" autocomplete="new-password">
+          <div style="margin-top:16px">
+            <div class="admin-field-group-title">Add user</div>
+            <div class="admin-field-row">
+              <label class="admin-field-label">Username</label>
+              <input class="admin-field-input" type="text" id="new-username" autocomplete="off" placeholder="alice">
+            </div>
+            <div class="admin-field-row">
+              <label class="admin-field-label">Email <span style="font-weight:400;color:var(--text-secondary)">(optional, for SSO)</span></label>
+              <input class="admin-field-input" type="email" id="new-email" autocomplete="off" placeholder="alice@example.com">
+            </div>
+            <div class="admin-field-row">
+              <label class="admin-field-label">Password</label>
+              <input class="admin-field-input" type="password" id="new-password" autocomplete="new-password">
+            </div>
+            <div class="admin-settings-actions" style="margin-top:12px">
+              <button class="btn btn--primary btn--small" onclick="createUser()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>
+                Add user
+              </button>
+            </div>
+            <div id="admin-users-msg" style="display:none;margin-top:8px"></div>
           </div>
-          <div class="admin-settings-actions" style="margin-top:12px">
-            <button class="btn btn--primary btn--small" onclick="createUser()">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>
-              Add user
-            </button>
-          </div>
-          <div id="admin-users-msg" style="display:none;margin-top:8px"></div>
         </div>
       </div>
       {{end}}
