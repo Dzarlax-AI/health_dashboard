@@ -563,4 +563,24 @@ var translationsRu = map[string]string{
 	"admin_group_status":         "Статус и диагностика",
 	"admin_group_configuration":  "Конфигурация",
 	"admin_group_users":          "Пользователи",
+
+	// ─── Admin: read-only quality audit blurb ───────────────────────
+	"admin_quality_audit_desc": "Только чтение: показывает точки, которые писатели пометили бы как impossible / suspect. Действия по чистке (Fix / Digest) — в группе <strong>Operations</strong> ниже, чтобы они не были «в одном клике» от read-only кнопки обновления.",
+
+	// ─── Admin: operational-contract preview fragment ───────────────
+	"admin_contract_window_label":  "Окно",
+	"admin_contract_window_suffix": "локальная TZ тенанта",
+	"admin_contract_col_tenant":    "тенант",
+	"admin_contract_col_date":      "дата",
+	"admin_contract_col_recovery":  "recovery",
+	"admin_contract_col_passive":   "passive",
+	"admin_contract_col_chronic":   "chronic",
+	"admin_contract_col_acute":     "acute",
+	"admin_contract_empty":         "пока ничего нет — сначала запусти readiness redesign backfill",
+
+	// ─── Admin: user-management JS feedback messages ────────────────
+	"admin_users_msg_required":      "Логин и пароль обязательны.",
+	"admin_users_msg_created":       "Пользователь {username} создан. API-ключ: {apiKey}",
+	"admin_users_msg_created_warn":  "Пользователь {username} создан. API-ключ: {apiKey} (предупреждение: {warning})",
+	"admin_users_msg_error_generic": "Не удалось создать пользователя.",
 }

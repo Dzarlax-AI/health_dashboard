@@ -581,4 +581,24 @@ var translationsEn = map[string]string{
 	"admin_group_status":         "Status & diagnostics",
 	"admin_group_configuration":  "Configuration",
 	"admin_group_users":          "Users",
+
+	// ─── Admin: read-only quality audit blurb ───────────────────────
+	"admin_quality_audit_desc": "Read-only audit: lists points the writers would flag as impossible / suspect. The maintenance actions (Fix / Digest) live in <strong>Operations</strong> below — they're not read-only and shouldn't be one click away from a refresh.",
+
+	// ─── Admin: operational-contract preview fragment ───────────────
+	"admin_contract_window_label":  "Window",
+	"admin_contract_window_suffix": "per-tenant local TZ",
+	"admin_contract_col_tenant":    "tenant",
+	"admin_contract_col_date":      "date",
+	"admin_contract_col_recovery":  "recovery",
+	"admin_contract_col_passive":   "passive",
+	"admin_contract_col_chronic":   "chronic",
+	"admin_contract_col_acute":     "acute",
+	"admin_contract_empty":         "no rows yet — run the readiness redesign backfill first",
+
+	// ─── Admin: user-management JS feedback messages ────────────────
+	"admin_users_msg_required":      "Username and password are required.",
+	"admin_users_msg_created":       "User {username} created. API key: {apiKey}",
+	"admin_users_msg_created_warn":  "User {username} created. API key: {apiKey} (warning: {warning})",
+	"admin_users_msg_error_generic": "Error creating user.",
 }

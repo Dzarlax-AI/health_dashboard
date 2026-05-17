@@ -16,7 +16,7 @@
       <!-- button and renders results inline. No state mutation here.   -->
       <!-- ============================================================ -->
       <div class="admin-group">
-        <div class="admin-group-header">Status &amp; diagnostics</div>
+        <div class="admin-group-header">{{T .Lang "admin_group_status"}}</div>
 
         <!-- Cache status -->
         <div class="admin-section">
@@ -45,10 +45,7 @@
             <button class="btn btn--secondary btn--small" onclick="runQualityAudit()">{{T .Lang "admin_quality_run"}}</button>
           </div>
           <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
-            Read-only audit: lists points the writers would flag as impossible /
-            suspect. The maintenance actions (Fix / Digest) live in
-            <strong>Operations</strong> below — they're not read-only and shouldn't
-            be one click away from a refresh.
+            {{SafeHTML (T .Lang "admin_quality_audit_desc")}}
           </p>
           <div id="admin-quality-section"></div>
         </div>
@@ -291,7 +288,7 @@
       <!-- the rare occasions when a knob actually needs changing.       -->
       <!-- ============================================================ -->
       <div class="admin-group">
-        <div class="admin-group-header">Configuration</div>
+        <div class="admin-group-header">{{T .Lang "admin_group_configuration"}}</div>
 
         <!-- v2.2 EnergyBank stress-drain settings.
              <details>/<summary> collapses the form by default — these knobs
@@ -407,7 +404,11 @@
                 {{T .Lang "admin_users_add_btn"}}
               </button>
             </div>
-            <div id="admin-users-msg" style="display:none;margin-top:8px"></div>
+            <div id="admin-users-msg" style="display:none;margin-top:8px"
+                 data-msg-required="{{T .Lang "admin_users_msg_required"}}"
+                 data-msg-created="{{T .Lang "admin_users_msg_created"}}"
+                 data-msg-created-warn="{{T .Lang "admin_users_msg_created_warn"}}"
+                 data-msg-error-generic="{{T .Lang "admin_users_msg_error_generic"}}"></div>
           </div>
         </div>
       </div>
@@ -923,8 +924,15 @@ function createUser() {
   var email = $('new-email').value.trim();
   var password = $('new-password').value;
   var msg = $('admin-users-msg');
+  // Pull localized templates from data-* attributes so this stays
+  // language-agnostic. {username}/{apiKey}/{warning} placeholders
+  // are substituted at use site.
+  var tplRequired   = msg.getAttribute('data-msg-required')      || 'Username and password are required.';
+  var tplCreated    = msg.getAttribute('data-msg-created')       || 'User {username} created. API key: {apiKey}';
+  var tplCreatedW   = msg.getAttribute('data-msg-created-warn')  || 'User {username} created. API key: {apiKey} (warning: {warning})';
+  var tplErrGeneric = msg.getAttribute('data-msg-error-generic') || 'Error creating user.';
   if (!username || !password) {
-    msg.textContent = 'Username and password are required.';
+    msg.textContent = tplRequired;
     msg.className = 'alert alert--danger';
     msg.style.display = '';
     return;
@@ -937,14 +945,18 @@ function createUser() {
     .then(function(r){return r.json()})
     .then(function(d) {
       if (d.status === 'ok' || d.status === 'partial') {
-        msg.textContent = 'User ' + d.user.username + ' created. API key: ' + d.user.api_key + (d.warning ? ' (warning: ' + d.warning + ')' : '');
+        var tpl = d.warning ? tplCreatedW : tplCreated;
+        msg.textContent = tpl
+          .replace('{username}', d.user.username)
+          .replace('{apiKey}',   d.user.api_key)
+          .replace('{warning}',  d.warning || '');
         msg.className = 'alert alert--success';
         $('new-username').value = '';
         $('new-email').value = '';
         $('new-password').value = '';
         loadUsers();
       } else {
-        msg.textContent = d.error || 'Error creating user.';
+        msg.textContent = d.error || tplErrGeneric;
         msg.className = 'alert alert--danger';
       }
       msg.style.display = '';
