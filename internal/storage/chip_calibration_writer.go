@@ -186,12 +186,19 @@ func (s *DB) loadChipCalibrationPairs(subScore, targetKind, epoch string, asOf t
 	defer cancel()
 	to := asOf
 	from := to.AddDate(0, 0, -(windowDays - 1))
+	// The JOIN constrains `t.source_epoch = n.source_epoch` so a
+	// target row written in a previous epoch can't pair with a
+	// prediction from the current epoch — same class of cross-epoch
+	// leak fixed for naive_baselines reads in #102 and §3.4 of the
+	// plan. With baseline writers epoch-clipped (PRs #108, #110) this
+	// is the last cross-epoch join that touched calibration data.
 	rows, err := s.pool.Query(ctx, `
 		SELECT n.predicted_value, t.target_value
 		  FROM naive_baselines n
 		  JOIN target_snapshots t
 		    ON t.date = n.date AND t.sub_score = n.sub_score
 		       AND t.target_kind = n.target_kind
+		       AND t.source_epoch = n.source_epoch
 		 WHERE n.sub_score = $1
 		   AND n.target_kind = $2
 		   AND n.baseline_kind = $3

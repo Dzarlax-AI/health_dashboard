@@ -1673,44 +1673,57 @@ type operationalContractHTTPError struct {
 func (e *operationalContractHTTPError) Error() string { return e.msg }
 
 // resolveOperationalContractTenants picks the set of (schema, db)
-// pairs the surface should query: a single tenant when `?schema=X`
-// names one, all registered tenants otherwise. Schemas are returned
-// in sorted order so the admin table render is stable across reloads.
+// pairs the surface should query. Default is **the request's own
+// tenant** — multi-tenant aggregation must be opted into explicitly
+// via `?schema=all`, so a Recompute click without a tenant selector
+// can't accidentally cascade across every registered tenant. The
+// preview surface in admin.html opts in by passing `?schema=all`
+// in its hx-get URL when no tenant is selected.
+//
+// Schemas returned in sorted order so the admin table render is
+// stable across reloads.
 func (h *Handler) resolveOperationalContractTenants(r *http.Request, scoped string) ([]operationalContractScope, *operationalContractHTTPError) {
-	// h.mgr is non-nil in production but may be nil in handler tests
-	// that construct a bare Handler{}. Treat nil mgr identically to
-	// "no registered tenants" — fall back to the request's tenant DB
-	// from context.
 	var all map[string]*storage.DB
 	if h.mgr != nil {
 		all = h.mgr.AllDBs()
 	}
-	if scoped != "" && scoped != "all" {
+	if scoped == "all" {
+		if len(all) == 0 {
+			// Legacy / test fallback — no tenants registered, use
+			// request context.
+			db := h.tenantDB(r)
+			if db == nil {
+				return nil, &operationalContractHTTPError{code: http.StatusServiceUnavailable, msg: "no tenant DB available"}
+			}
+			return []operationalContractScope{{schema: h.tenantSchema(r), db: db}}, nil
+		}
+		schemas := make([]string, 0, len(all))
+		for s := range all {
+			schemas = append(schemas, s)
+		}
+		sort.Strings(schemas)
+		out := make([]operationalContractScope, 0, len(schemas))
+		for _, s := range schemas {
+			out = append(out, operationalContractScope{schema: s, db: all[s]})
+		}
+		return out, nil
+	}
+	if scoped != "" {
 		got, ok := all[scoped]
 		if !ok || got == nil {
 			return nil, &operationalContractHTTPError{code: http.StatusBadRequest, msg: "unknown schema"}
 		}
 		return []operationalContractScope{{schema: scoped, db: got}}, nil
 	}
-	if len(all) == 0 {
-		// Fall back to the request's own tenant DB — single-tenant
-		// legacy mode or handler test.
-		db := h.tenantDB(r)
-		if db == nil {
-			return nil, &operationalContractHTTPError{code: http.StatusServiceUnavailable, msg: "no tenant DB available"}
-		}
-		return []operationalContractScope{{schema: h.tenantSchema(r), db: db}}, nil
+	// Default: request tenant only. Safe for both GET (admin sees
+	// their own tenant by default) and POST (recompute targets the
+	// admin's own tenant, not everyone). Multi-tenant aggregation
+	// requires the explicit `all` opt-in above.
+	db := h.tenantDB(r)
+	if db == nil {
+		return nil, &operationalContractHTTPError{code: http.StatusServiceUnavailable, msg: "no tenant DB available"}
 	}
-	schemas := make([]string, 0, len(all))
-	for s := range all {
-		schemas = append(schemas, s)
-	}
-	sort.Strings(schemas)
-	out := make([]operationalContractScope, 0, len(schemas))
-	for _, s := range schemas {
-		out = append(out, operationalContractScope{schema: s, db: all[s]})
-	}
-	return out, nil
+	return []operationalContractScope{{schema: h.tenantSchema(r), db: db}}, nil
 }
 
 // chipCell is one rendered cell in the operational-contract pivot

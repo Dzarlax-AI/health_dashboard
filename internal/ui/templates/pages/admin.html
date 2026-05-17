@@ -82,15 +82,12 @@
           <div class="section-title">Readiness redesign — operational contract preview</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button class="btn btn--secondary btn--small"
-                    hx-get="/fragments/admin-readiness-contract?days=14"
+                    hx-get="/fragments/admin-readiness-contract?days=14&schema=all"
                     hx-target="#admin-readiness-contract-table"
                     hx-swap="innerHTML">{{T .Lang "admin_refresh"}}</button>
             <button class="btn btn--secondary btn--small"
-                    hx-post="/api/admin/readiness-redesign/chip-calibrations"
-                    hx-target="#admin-chip-calibration-msg"
-                    hx-swap="innerHTML"
-                    hx-on::after-request="htmx.trigger('#admin-readiness-contract-table', 'reload')"
-                    title="Recompute per-tenant chip cutoffs from rolling 180-day history">
+                    onclick="triggerChipCalibrationRecompute()"
+                    title="Recompute chip cutoffs from rolling 180-day history for the selected tenant (or the current one)">
               Recompute chip calibrations
             </button>
           </div>
@@ -100,11 +97,13 @@
           (Acute, Chronic) read their cutoff from <code>chip_calibrations</code> — recomputed on
           demand from rolling 180-day personal history (no manual threshold). Hover any cell
           to see <code>value · cutoff · calibration · baseline · target · epoch</code>.
+          Recompute respects the <strong>Target user</strong> selector above —
+          leaving it on "Current" recomputes just your tenant, not everyone.
           See plan §6.1.
         </p>
         <div id="admin-chip-calibration-msg" style="color:var(--text-secondary);font-size:12px;margin-bottom:8px"></div>
         <div id="admin-readiness-contract-table"
-             hx-get="/fragments/admin-readiness-contract?days=14"
+             hx-get="/fragments/admin-readiness-contract?days=14&schema=all"
              hx-trigger="load, reload"
              hx-swap="innerHTML">
           <div class="spinner spinner--large"></div>
@@ -265,6 +264,36 @@ function triggerBackfill(force) {
       setTimeout(function(){ msg.style.display = 'none'; }, 5000);
     })
     .catch(function(e) { btn.disabled = false; });
+}
+
+function triggerChipCalibrationRecompute() {
+  var msg = $('admin-chip-calibration-msg');
+  msg.textContent = 'Recomputing…';
+  var url = '/api/admin/readiness-redesign/chip-calibrations';
+  // Mirror triggerBackfill's tenant-selector convention: empty
+  // selector → current tenant (server default), explicit value →
+  // that tenant. There's no "all tenants" recompute path on
+  // purpose — clicking the button must not cascade across every
+  // registered tenant without an explicit operator decision.
+  var sel = $('backfill-target');
+  if (sel && sel.value) url += '?schema=' + encodeURIComponent(sel.value);
+  fetch(url, {method:'POST'})
+    .then(function(r){ return r.json(); })
+    .then(function(d) {
+      // Summarize: tenant — N targets active / M calibrating
+      var tenants = (d.recompute_results || []).map(function(t) {
+        var rs = t.results || [];
+        var active = rs.filter(function(r){ return r.saved && r.saved.Status === 'active'; }).length;
+        var other = rs.length - active;
+        return t.tenant + ': ' + active + ' active, ' + other + ' calibrating';
+      });
+      msg.textContent = tenants.length ? 'Recomputed — ' + tenants.join(' · ') : 'Recomputed';
+      htmx.trigger('#admin-readiness-contract-table', 'reload');
+      setTimeout(function(){ msg.textContent = ''; }, 8000);
+    })
+    .catch(function(e) {
+      msg.textContent = 'Error: ' + e;
+    });
 }
 
 function checkDataGaps() {

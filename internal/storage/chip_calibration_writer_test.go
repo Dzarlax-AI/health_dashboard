@@ -163,6 +163,103 @@ func TestSaveChipCalibration_JointStateGuard(t *testing.T) {
 	}
 }
 
+// Integration: cross-epoch leak guard. Seeds predictions in the
+// CURRENT epoch and target labels at the same dates but tagged as
+// the OLD epoch — the join in loadChipCalibrationPairs must reject
+// the cross-epoch pair, so the writer reports insufficient_eligible
+// instead of treating the leak as valid calibration data. Without
+// the `AND t.source_epoch = n.source_epoch` join condition this
+// test fails: the writer pairs 120 leaked labels with predictions
+// and computes a (wrong) cutoff.
+func TestRecomputeChipCalibrations_Integration_RejectsCrossEpochLabels(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// Close `initial` on a date in the past, open `new_epoch` starting
+	// 120 days ago — so today's date resolves to `new_epoch`.
+	today := time.Now().UTC()
+	epochStart := today.AddDate(0, 0, -119).Format(isoDate)
+	if _, err := db.pool.Exec(ctx,
+		"UPDATE source_epochs SET end_date = $1 WHERE epoch_id = $2",
+		today.AddDate(0, 0, -120).Format(isoDate), InitialSourceEpoch); err != nil {
+		t.Fatalf("close initial: %v", err)
+	}
+	if err := db.UpsertSourceEpoch(SourceEpoch{
+		EpochID: "new_epoch", StartDate: epochStart, Kind: SourceEpochKindIngest,
+		Description: "cross-epoch leak guard test", DetectedBy: DetectedByManual, Confirmed: true,
+	}); err != nil {
+		t.Fatalf("upsert new_epoch: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.pool.Exec(context.Background(),
+			`UPDATE source_epochs SET end_date = NULL WHERE epoch_id = $1`, InitialSourceEpoch)
+		_, _ = db.pool.Exec(context.Background(),
+			`DELETE FROM source_epochs WHERE epoch_id = 'new_epoch'`)
+	})
+
+	// Predictions in new_epoch.
+	for i := 0; i < 120; i++ {
+		d := today.AddDate(0, 0, -i).Format(isoDate)
+		pred := 0.4
+		if err := db.SaveNaiveBaseline(NaiveBaseline{
+			Date: d, SubScore: SubScoreChronicLoad, TargetKind: TargetKindChronicLabel,
+			BaselineKind: BaselineKindEventBaseRate, PredictedValue: &pred,
+			SourceEpoch: "new_epoch", FormulaVersion: 1,
+		}); err != nil {
+			t.Fatalf("seed baseline %s: %v", d, err)
+		}
+	}
+	// Target LABELS on the same dates but tagged as `initial` — the
+	// leak the join must reject. eligible=TRUE so they would
+	// otherwise match.
+	for i := 0; i < 120; i++ {
+		d := today.AddDate(0, 0, -i).Format(isoDate)
+		if _, err := db.pool.Exec(ctx, `
+			INSERT INTO target_snapshots
+				(date, sub_score, target_kind, target_value, eligible,
+				 eligibility_reason, source_epoch, formula_version, computed_at)
+			VALUES ($1, $2, $3, 1.0, TRUE, 'ok', $4, 1, NOW())
+			ON CONFLICT (date, sub_score, target_kind) DO UPDATE SET
+				target_value = excluded.target_value, source_epoch = excluded.source_epoch
+		`, d, SubScoreChronicLoad, TargetKindChronicLabel, InitialSourceEpoch); err != nil {
+			t.Fatalf("seed cross-epoch target %s: %v", d, err)
+		}
+	}
+
+	results, err := db.RecomputeChipCalibrations(today.Format(isoDate))
+	if err != nil {
+		t.Fatalf("RecomputeChipCalibrations: %v", err)
+	}
+	var chronic *ChipCalibrationRecomputeResult
+	for i := range results {
+		if results[i].SubScore == SubScoreChronicLoad &&
+			results[i].TargetKind == TargetKindChronicLabel {
+			chronic = &results[i]
+		}
+	}
+	if chronic == nil || chronic.Saved == nil {
+		t.Fatal("missing chronic_label result")
+	}
+	if chronic.Saved.SourceEpoch != "new_epoch" {
+		t.Errorf("calibration written under epoch %q, want new_epoch", chronic.Saved.SourceEpoch)
+	}
+	// All 120 labels are cross-epoch, so the join must yield zero
+	// pairs → insufficient_eligible. A regression on the join
+	// condition would instead see all 120 pairs and produce
+	// `active` with a populated cutoff.
+	if chronic.Saved.Status != ChipCalibrationStatusInsufficientEligible {
+		t.Errorf("status = %q, want insufficient_eligible (cross-epoch labels must be rejected by the join)",
+			chronic.Saved.Status)
+	}
+	if chronic.Saved.NEligible != 0 {
+		t.Errorf("n_eligible = %d, want 0 (cross-epoch pair leak detected)", chronic.Saved.NEligible)
+	}
+	if chronic.Saved.Cutoff != nil {
+		t.Errorf("cutoff = %v, want NULL on insufficient_eligible", *chronic.Saved.Cutoff)
+	}
+}
+
 // Integration: end-to-end recompute. Seeds eligible
 // (predicted_value, label) pairs over the calibration window and
 // asserts the produced row has the expected status + audit fields.
