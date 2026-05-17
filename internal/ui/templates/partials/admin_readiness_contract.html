@@ -4,18 +4,18 @@
 {{else}}
 {{if .From}}
 <div style="color:var(--text-secondary);font-size:12px;margin-bottom:8px">
-  Window: {{.From}} → {{.To}} (per-tenant local TZ)
+  {{T .Lang "admin_contract_window_label"}}: {{.From}} → {{.To}} ({{T .Lang "admin_contract_window_suffix"}})
 </div>
 {{end}}
 <table class="admin-cache-table">
   <thead>
     <tr>
-      <th>tenant</th>
-      <th>date</th>
-      <th>recovery</th>
-      <th>passive</th>
-      <th>chronic</th>
-      <th>acute</th>
+      <th>{{T .Lang "admin_contract_col_tenant"}}</th>
+      <th>{{T .Lang "admin_contract_col_date"}}</th>
+      <th>{{T .Lang "admin_contract_col_recovery"}}</th>
+      <th>{{T .Lang "admin_contract_col_passive"}}</th>
+      <th>{{T .Lang "admin_contract_col_chronic"}}</th>
+      <th>{{T .Lang "admin_contract_col_acute"}}</th>
     </tr>
   </thead>
   <tbody>

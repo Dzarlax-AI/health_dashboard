@@ -678,7 +678,7 @@ func (h *Handler) fragmentAdminReadinessContract(w http.ResponseWriter, r *http.
 		Rows:     view,
 		From:     from,
 		To:       to,
-		EmptyMsg: "no rows yet — run the readiness-redesign backfill first",
+		EmptyMsg: T(langFromRequest(r), "admin_contract_empty"),
 	}
 	renderFragment(w, "admin-readiness-contract", data)
 }

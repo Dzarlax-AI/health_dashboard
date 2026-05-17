@@ -76,10 +76,12 @@ func (h *Handler) fragmentOnboardingStep1(w http.ResponseWriter, r *http.Request
 		return
 	}
 	renderFragment(w, "admin-onboarding-step-1", struct {
-		Schema string
-		Status *storage.OnboardingTenantStatus
+		Lang    string
+		Schema  string
+		Status  *storage.OnboardingTenantStatus
 		AnyRows bool
 	}{
+		Lang:    langFromRequest(r),
 		Schema:  scope.schema,
 		Status:  status,
 		AnyRows: anySubScoreHasRows(status.SubScoreCounts),
@@ -104,9 +106,10 @@ func (h *Handler) fragmentOnboardingStep2(w http.ResponseWriter, r *http.Request
 	}
 	_, status := scope.db.LoadChronicLoadConfig()
 	renderFragment(w, "admin-onboarding-step-2", struct {
+		Lang   string
 		Schema string
 		Config storage.ChronicLoadConfigStatus
-	}{Schema: scope.schema, Config: status})
+	}{Lang: langFromRequest(r), Schema: scope.schema, Config: status})
 }
 
 // ---- Step 3 — Coverage / base-rate preview --------------------------------
@@ -123,6 +126,7 @@ func (h *Handler) fragmentOnboardingStep3(w http.ResponseWriter, r *http.Request
 		return
 	}
 	renderFragment(w, "admin-onboarding-step-3", struct {
+		Lang    string
 		Schema  string
 		Summary *storage.OnboardingCoverageSummary
 		// Per §6.2: the 15–30% Acute OR base rate band is the
@@ -132,6 +136,7 @@ func (h *Handler) fragmentOnboardingStep3(w http.ResponseWriter, r *http.Request
 		BaseRateInBand   bool
 		BaseRateHasValue bool
 	}{
+		Lang:             langFromRequest(r),
 		Schema:           scope.schema,
 		Summary:          summary,
 		BaseRatePct:      formatBaseRatePct(summary.AcuteORBaseRate),
@@ -163,6 +168,7 @@ func (h *Handler) fragmentOnboardingStep4Plan(w http.ResponseWriter, r *http.Req
 	}
 	to := tenantLocalToday(h, scope.db, scope.schema)
 	plan := buildOnboardingBackfillPlan(scope.schema, to)
+	plan.Lang = langFromRequest(r)
 	renderFragment(w, "admin-onboarding-step-4-plan", plan)
 }
 
@@ -173,6 +179,7 @@ func (h *Handler) fragmentOnboardingStep4Run(w http.ResponseWriter, r *http.Requ
 	}
 	to := tenantLocalToday(h, scope.db, scope.schema)
 	plan := buildOnboardingBackfillPlan(scope.schema, to)
+	plan.Lang = langFromRequest(r)
 
 	type subRes struct {
 		SubScore string `json:"sub_score"`
@@ -207,10 +214,11 @@ func (h *Handler) fragmentOnboardingStep4Run(w http.ResponseWriter, r *http.Requ
 	}
 
 	renderFragment(w, "admin-onboarding-step-4-result", struct {
+		Lang    string
 		Schema  string
 		Plan    onboardingBackfillPlan
 		Results []subRes
-	}{Schema: scope.schema, Plan: plan, Results: results})
+	}{Lang: langFromRequest(r), Schema: scope.schema, Plan: plan, Results: results})
 }
 
 // onboardingBackfillPlan is the read-only summary the wizard renders
@@ -218,6 +226,7 @@ func (h *Handler) fragmentOnboardingStep4Run(w http.ResponseWriter, r *http.Requ
 // date range, day count, force flag, and sub_score list is the
 // "no magical button" requirement from the PR contract.
 type onboardingBackfillPlan struct {
+	Lang      string
 	Schema    string
 	From      string
 	To        string
@@ -283,13 +292,15 @@ func (h *Handler) fragmentOnboardingStep5(w http.ResponseWriter, r *http.Request
 	echo, echoErr := scope.db.LoadChronicThresholdEcho(status.ActiveEpochID)
 	_, cfg := scope.db.LoadChronicLoadConfig()
 	renderFragment(w, "admin-onboarding-step-5", struct {
-		Schema          string
-		Status          *storage.OnboardingTenantStatus
-		Config          storage.ChronicLoadConfigStatus
-		Echo            *storage.ChronicThresholdEcho
-		EchoError       string
-		ThresholdMatch  bool
+		Lang           string
+		Schema         string
+		Status         *storage.OnboardingTenantStatus
+		Config         storage.ChronicLoadConfigStatus
+		Echo           *storage.ChronicThresholdEcho
+		EchoError      string
+		ThresholdMatch bool
 	}{
+		Lang:           langFromRequest(r),
 		Schema:         scope.schema,
 		Status:         status,
 		Config:         cfg,
@@ -357,9 +368,10 @@ func (h *Handler) fragmentOnboardingStep6Run(w http.ResponseWriter, r *http.Requ
 		views = append(views, v)
 	}
 	renderFragment(w, "admin-onboarding-step-6-result", struct {
+		Lang    string
 		Schema  string
 		Results []resultView
-	}{Schema: scope.schema, Results: views})
+	}{Lang: langFromRequest(r), Schema: scope.schema, Results: views})
 }
 
 func formatNullableFloat(p *float64) string {
