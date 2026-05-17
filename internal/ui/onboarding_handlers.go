@@ -29,20 +29,26 @@ import (
 )
 
 // onboardingScope resolves and validates the tenant the wizard is
-// targeting. Every wizard endpoint requires `?schema=<tenant>`
-// **non-empty and non-`all`** — the wizard works on one tenant at
-// a time, full stop. Returns the resolved scope or writes a 400 /
-// 503 directly and returns nil.
+// targeting. The wizard works on one tenant at a time:
+//
+//   - `schema=all` is rejected with 400 (mutating and read-only).
+//   - `schema=<name>` is accepted if it resolves.
+//   - missing schema → fall back to the request's own tenant
+//     (admin user's tenant). This is the safe default for both
+//     legacy single-tenant mode and the multi-user "Current"
+//     selector option whose value is the empty string.
+//
+// Returns the resolved scope or writes the relevant 4xx/5xx and
+// returns nil.
 func (h *Handler) onboardingScope(w http.ResponseWriter, r *http.Request) *operationalContractScope {
 	schema := strings.TrimSpace(r.URL.Query().Get("schema"))
-	if schema == "" {
-		http.Error(w, "schema parameter is required (pick a tenant in the Operations selector)", http.StatusBadRequest)
-		return nil
-	}
 	if schema == "all" {
 		http.Error(w, "schema=all is not allowed in the onboarding wizard: one tenant at a time", http.StatusBadRequest)
 		return nil
 	}
+	// Empty schema means "use the request's own tenant" — same shape
+	// as adminBackfill's default. resolveOperationalContractTenants
+	// handles this path: scoped == "" → request tenant DB from ctx.
 	scopes, scopeErr := h.resolveOperationalContractTenants(r, schema)
 	if scopeErr != nil {
 		http.Error(w, scopeErr.Error(), scopeErr.code)
@@ -224,17 +230,22 @@ func buildOnboardingBackfillPlan(schema, to string) onboardingBackfillPlan {
 	// Default window: full eligible history from the §1 audit slice
 	// start. Operators run this once per tenant onboarding; the
 	// existing `/api/admin/readiness-redesign/backfill` endpoint
-	// caps at 1825 days with `force=1`. We pick a sensible 365-day
+	// caps at 1825 days with `force=1`. We pick ~1 year as a sensible
 	// default (much shorter than the cap) so the first run isn't a
 	// surprise multi-hour job. Operators wanting deeper history can
 	// re-run the backfill endpoint directly with force=1.
 	toT, _ := time.Parse(isoDate, to)
 	fromT := toT.AddDate(-1, 0, 0)
+	// Inclusive day count — covers leap-year edges where AddDate(-1,0,0)
+	// produces a 366-day span. The Step 4-plan UI is the operator's
+	// "no surprise" preview, so this number must match what the
+	// backfill writer will actually iterate over.
+	days := int(toT.Sub(fromT).Hours()/24) + 1
 	return onboardingBackfillPlan{
 		Schema: schema,
 		From:   fromT.Format(isoDate),
 		To:     to,
-		Days:   365,
+		Days:   days,
 		Force:  true,
 		SubScores: []string{
 			storage.SubScoreRecoveryStability,
@@ -259,10 +270,40 @@ func (h *Handler) fragmentOnboardingStep5(w http.ResponseWriter, r *http.Request
 		http.Error(w, "load verify status: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Threshold echo verification — the load-bearing silent-failure
+	// check from §6.2. The chronic writer stamps the breach +
+	// acute_density thresholds it actually used onto every row's
+	// `data_coverage`; sampling one row and comparing to the effective
+	// config catches "operator changed settings but the writer used
+	// defaults" (a class of bug that otherwise stays silent until a
+	// chip-calibration recompute weeks later produces nonsense).
+	// Scope the echo to the active epoch — see LoadChronicThresholdEcho
+	// docs for why this matters. status.ActiveEpochID comes from the
+	// same resolve call so the two stay consistent.
+	echo, echoErr := scope.db.LoadChronicThresholdEcho(status.ActiveEpochID)
+	_, cfg := scope.db.LoadChronicLoadConfig()
 	renderFragment(w, "admin-onboarding-step-5", struct {
-		Schema string
-		Status *storage.OnboardingTenantStatus
-	}{Schema: scope.schema, Status: status})
+		Schema          string
+		Status          *storage.OnboardingTenantStatus
+		Config          storage.ChronicLoadConfigStatus
+		Echo            *storage.ChronicThresholdEcho
+		EchoError       string
+		ThresholdMatch  bool
+	}{
+		Schema:         scope.schema,
+		Status:         status,
+		Config:         cfg,
+		Echo:           echo,
+		EchoError:      errString(echoErr),
+		ThresholdMatch: echo.MatchesConfig(cfg.Effective),
+	})
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // ---- Step 6 — Recompute chip calibrations ---------------------------------
@@ -278,10 +319,54 @@ func (h *Handler) fragmentOnboardingStep6Run(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "recompute: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Pre-format the nullable float fields here rather than in the
+	// template. `printf "%.3f"` on a `*float64` renders the literal
+	// pointer goo (`%!f(*float64=0x...)`), and template helpers that
+	// dereference would still need a nil-guard, so it's clearer to
+	// fold the formatting into a view struct and keep the template
+	// dumb.
+	type savedView struct {
+		Status       string
+		Method       string
+		CutoffFmt    string
+		P80Fmt       string
+		BaseRateFmt  string
+		NEligible    int
+		NPositives   int
+	}
+	type resultView struct {
+		SubScore   string
+		TargetKind string
+		Saved      *savedView
+		Error      string
+	}
+	views := make([]resultView, 0, len(results))
+	for _, r := range results {
+		v := resultView{SubScore: r.SubScore, TargetKind: r.TargetKind, Error: r.Error}
+		if r.Saved != nil {
+			v.Saved = &savedView{
+				Status:      r.Saved.Status,
+				Method:      r.Saved.Method,
+				CutoffFmt:   formatNullableFloat(r.Saved.Cutoff),
+				P80Fmt:      formatNullableFloat(r.Saved.P80),
+				BaseRateFmt: formatNullableFloat(r.Saved.BaseRate),
+				NEligible:   r.Saved.NEligible,
+				NPositives:  r.Saved.NPositives,
+			}
+		}
+		views = append(views, v)
+	}
 	renderFragment(w, "admin-onboarding-step-6-result", struct {
 		Schema  string
-		Results []storage.ChipCalibrationRecomputeResult
-	}{Schema: scope.schema, Results: results})
+		Results []resultView
+	}{Schema: scope.schema, Results: views})
+}
+
+func formatNullableFloat(p *float64) string {
+	if p == nil {
+		return "—"
+	}
+	return fmt.Sprintf("%.3f", *p)
 }
 
 // ---- Step 7 — Final pivot preview ----------------------------------------

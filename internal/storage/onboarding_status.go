@@ -14,8 +14,14 @@
 package storage
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"health-receiver/internal/health"
 )
 
 // OnboardingSubScoreRowCounts is one row per sub_score in the
@@ -45,6 +51,30 @@ type OnboardingTenantStatus struct {
 	UnknownEpochRows   int                           `json:"unknown_epoch_rows"`
 	ActiveEpochID      string                        `json:"active_epoch_id"`
 	ActiveEpochStart   string                        `json:"active_epoch_start"`
+}
+
+// ChronicThresholdEcho is the per-row audit pulled from a sampled
+// chronic target's `data_coverage` JSON. The chronic writer echoes
+// the thresholds it actually used onto every row it produces (since
+// §6.2). Comparing this echo to the effective `ChronicLoadConfig`
+// is the load-bearing verification step — a silent miscalibration
+// "operator overrode settings but the writer used defaults" only
+// surfaces here.
+type ChronicThresholdEcho struct {
+	SampledDate         string `json:"sampled_date"`
+	SampledTargetKind   string `json:"sampled_target_kind"`
+	BreachThreshold     int    `json:"breach_threshold"`
+	AcuteDensityThresh  int    `json:"acute_density_threshold"`
+}
+
+// MatchesConfig reports whether the threshold echo agrees with the
+// effective ChronicLoadConfig. Wizard Step 5 surfaces a mismatch as
+// a hard warning.
+func (e *ChronicThresholdEcho) MatchesConfig(cfg health.ChronicLoadConfig) bool {
+	if e == nil {
+		return false
+	}
+	return e.BreachThreshold == cfg.MinBreachDays && e.AcuteDensityThresh == cfg.MinAcuteDensity
 }
 
 // OnboardingCoverageSummary is the Step 3 payload — minimum slice
@@ -143,6 +173,61 @@ func (s *DB) loadOnboardingRowCounts() ([]OnboardingSubScoreRowCounts, error) {
 		out = append(out, c)
 	}
 	return out, nil
+}
+
+// LoadChronicThresholdEcho samples the most recent eligible chronic
+// target row **within the given source_epoch** and parses its
+// `data_coverage` JSON to read the thresholds the writer used.
+// Returns nil (no error) when no chronic rows exist yet in this
+// epoch — Step 5 handles that as "verify thresholds after running
+// Step 4".
+//
+// Epoch scoping is load-bearing: without it, a fresh onboarding
+// where Step 4 has not yet written chronic rows in the current epoch
+// would silently surface a row from an older epoch and either falsely
+// confirm or falsely contradict the current effective config. The
+// wizard's threshold comparison is only meaningful for the epoch the
+// operator is onboarding right now.
+//
+// Sampling one row is enough: every chronic row in the same writer
+// pass carries the same threshold values (the writer reads them
+// once and threads them through), so any single eligible row in the
+// current epoch tells the operator what the last backfill wrote for
+// that epoch.
+func (s *DB) LoadChronicThresholdEcho(sourceEpoch string) (*ChronicThresholdEcho, error) {
+	ctx, cancel := queryCtx()
+	defer cancel()
+	var date, targetKind string
+	var coverageJSON []byte
+	err := s.pool.QueryRow(ctx, `
+		SELECT date, target_kind, data_coverage::text
+		  FROM target_snapshots
+		 WHERE sub_score = $1
+		   AND eligible = TRUE
+		   AND data_coverage IS NOT NULL
+		   AND source_epoch = $2
+		 ORDER BY date DESC
+		 LIMIT 1
+	`, SubScoreChronicLoad, sourceEpoch).Scan(&date, &targetKind, &coverageJSON)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("LoadChronicThresholdEcho: %w", err)
+	}
+	var dc struct {
+		BreachThreshold        int `json:"breach_threshold"`
+		AcuteDensityThreshold  int `json:"acute_density_threshold"`
+	}
+	if err := json.Unmarshal(coverageJSON, &dc); err != nil {
+		return nil, fmt.Errorf("LoadChronicThresholdEcho: parse data_coverage on %s: %w", date, err)
+	}
+	return &ChronicThresholdEcho{
+		SampledDate:        date,
+		SampledTargetKind:  targetKind,
+		BreachThreshold:    dc.BreachThreshold,
+		AcuteDensityThresh: dc.AcuteDensityThreshold,
+	}, nil
 }
 
 // LoadOnboardingCoverageSummary computes Step 3 state — just the

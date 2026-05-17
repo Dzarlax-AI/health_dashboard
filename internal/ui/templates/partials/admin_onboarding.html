@@ -191,6 +191,47 @@
       {{end}}
     </tbody>
   </table>
+  <div style="margin-top:12px">
+    <strong>Chronic threshold echo</strong>
+    <div style="font-size:12px;color:var(--text-secondary);margin-bottom:6px">
+      Compares thresholds the chronic writer stamped onto a sampled row's
+      <code>data_coverage</code> against the effective config from Step 2.
+      A mismatch means the writer ran with stale settings — rerun Step 4.
+    </div>
+    {{if .EchoError}}
+      <div style="color:var(--bad)">load echo failed: {{.EchoError}}</div>
+    {{else if not .Echo}}
+      <div style="color:var(--text-secondary)">
+        No eligible chronic rows yet — run Step 4 first, then revisit.
+      </div>
+    {{else}}
+      <table class="admin-cache-table">
+        <thead>
+          <tr><th>field</th><th>sampled (from {{.Echo.SampledDate}})</th><th>effective config</th><th></th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>breach_threshold</td>
+            <td>{{.Echo.BreachThreshold}}</td>
+            <td>{{.Config.Effective.MinBreachDays}}</td>
+            <td>{{if eq .Echo.BreachThreshold .Config.Effective.MinBreachDays}}<span style="color:var(--good)">✓</span>{{else}}<span style="color:var(--bad)">✗ mismatch</span>{{end}}</td>
+          </tr>
+          <tr>
+            <td>acute_density_threshold</td>
+            <td>{{.Echo.AcuteDensityThresh}}</td>
+            <td>{{.Config.Effective.MinAcuteDensity}}</td>
+            <td>{{if eq .Echo.AcuteDensityThresh .Config.Effective.MinAcuteDensity}}<span style="color:var(--good)">✓</span>{{else}}<span style="color:var(--bad)">✗ mismatch</span>{{end}}</td>
+          </tr>
+        </tbody>
+      </table>
+      {{if not .ThresholdMatch}}
+      <div style="margin-top:6px;color:var(--bad);font-size:13px">
+        ⚠ Writer used different thresholds than the current config. Rerun
+        Step 4 to bring chronic rows in line, then return here.
+      </div>
+      {{end}}
+    {{end}}
+  </div>
 </div>
 {{end}}
 
@@ -205,9 +246,9 @@
         <td>{{.TargetKind}}</td>
         {{if .Saved}}
           <td>{{.Saved.Status}}</td>
-          <td>{{if .Saved.Cutoff}}{{printf "%.3f" .Saved.Cutoff}}{{else}}—{{end}}</td>
-          <td>{{if .Saved.P80}}{{printf "%.3f" .Saved.P80}}{{else}}—{{end}}</td>
-          <td>{{if .Saved.BaseRate}}{{printf "%.3f" .Saved.BaseRate}}{{else}}—{{end}}</td>
+          <td>{{.Saved.CutoffFmt}}</td>
+          <td>{{.Saved.P80Fmt}}</td>
+          <td>{{.Saved.BaseRateFmt}}</td>
           <td>{{.Saved.NEligible}}</td>
           <td>{{.Saved.NPositives}}</td>
         {{else}}
