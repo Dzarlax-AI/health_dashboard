@@ -485,6 +485,7 @@ var translationsRu = map[string]string{
 	"wiz_col_w_value":        "со значением",
 	"wiz_col_features":       "features",
 	"wiz_col_latest":         "последняя",
+	"wiz_col_target_kind":    "target_kind",
 	"wiz_step1_have_rows":    "Строки Phase 0 есть — иди на <strong>Шаг 2</strong>. Если цифры выглядят устаревшими, Шаг 4 (backfill) обновит их.",
 	"wiz_step1_no_rows":      "Phase 0 строк у этого тенанта пока нет. Следующее действие — <strong>Шаг 4 backfill</strong>; Шаги 2–3 будут показывать дефолты / пустое покрытие пока не пройдёт Шаг 4.",
 

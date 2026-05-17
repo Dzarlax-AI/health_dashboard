@@ -503,6 +503,7 @@ var translationsEn = map[string]string{
 	"wiz_col_w_value":        "with value",
 	"wiz_col_features":       "features",
 	"wiz_col_latest":         "latest",
+	"wiz_col_target_kind":    "target_kind",
 	"wiz_step1_have_rows":    "Phase 0 rows are present — go to <strong>Step 2</strong>. If the counts look stale, Step 4 (backfill) will refresh them.",
 	"wiz_step1_no_rows":      "No Phase 0 rows for this tenant yet. <strong>Step 4 backfill</strong> is the next thing to run; Steps 2–3 will show defaults / empty coverage until then.",
 
