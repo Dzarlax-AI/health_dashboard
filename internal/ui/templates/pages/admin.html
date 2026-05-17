@@ -494,11 +494,9 @@ function onboardingSchema() {
 
 function onboardingRefreshStep(step) {
   var schema = onboardingSchema();
-  if (!schema) {
-    var body = $('onboarding-' + step.replace('-plan', '').replace('-run', '') + '-body');
-    if (body) body.innerHTML = '<span style="color:var(--warn)">Pick a tenant in the Operations selector first.</span>';
-    return;
-  }
+  // Empty schema is intentional — server falls back to request tenant
+  // (single-tenant mode, or the "Current" option in multi-tenant
+  // mode). Don't short-circuit on the client.
   // step-4-plan renders into onboarding-step-4-body (without the
   // -plan suffix); the result of step-4-run also renders into the
   // same target.
@@ -506,7 +504,9 @@ function onboardingRefreshStep(step) {
   var target = $('onboarding-' + targetStep + '-body');
   if (!target) return;
   target.innerHTML = '<div class="spinner"></div>';
-  fetch('/fragments/admin-readiness-onboarding/' + step + '?schema=' + encodeURIComponent(schema))
+  var url = '/fragments/admin-readiness-onboarding/' + step;
+  if (schema) url += '?schema=' + encodeURIComponent(schema);
+  fetch(url)
     .then(function(r){ return r.text().then(function(t){ return {ok:r.ok, text:t}; }); })
     .then(function(p){
       target.innerHTML = p.ok ? p.text : ('<span style="color:var(--bad)">' + p.text + '</span>');
@@ -521,12 +521,13 @@ function onboardingRefreshAll() {
 function onboardingRunStep6() {
   var schema = onboardingSchema();
   var body = $('onboarding-step-6-body');
-  if (!schema) {
-    body.innerHTML = '<span style="color:var(--warn)">Pick a tenant first.</span>';
-    return;
-  }
+  // Empty schema → server uses request tenant. Same rationale as
+  // onboardingRefreshStep — don't block the legacy single-tenant
+  // and "Current" paths on the client.
   body.innerHTML = '<div class="spinner"></div>';
-  fetch('/fragments/admin-readiness-onboarding/step-6-run?schema=' + encodeURIComponent(schema), {method:'POST'})
+  var url = '/fragments/admin-readiness-onboarding/step-6-run';
+  if (schema) url += '?schema=' + encodeURIComponent(schema);
+  fetch(url, {method:'POST'})
     .then(function(r){ return r.text().then(function(t){ return {ok:r.ok, text:t}; }); })
     .then(function(p){
       body.innerHTML = p.ok ? p.text : ('<span style="color:var(--bad)">' + p.text + '</span>');

@@ -112,8 +112,14 @@ func (s *DB) LoadOnboardingTenantStatus(asOfDate string) (*OnboardingTenantStatu
 	}
 	out := &OnboardingTenantStatus{SchemaHealthy: true}
 	if err := s.VerifyReadinessRedesignSchema(); err != nil {
+		// Schema is unhealthy or missing — every downstream query
+		// (row counts, sentinel-epoch probe) reads tables that may
+		// not exist, so we'd flip a soft "schema_healthy=false"
+		// payload into a 500. Return the partial status now and let
+		// Step 1 render the schema_error block as a hard block.
 		out.SchemaHealthy = false
 		out.SchemaError = err.Error()
+		return out, nil
 	}
 
 	// Resolve today's epoch — Step 1 surfaces "no active epoch" as a
