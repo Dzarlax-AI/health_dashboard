@@ -343,10 +343,12 @@ func (s *DB) writeAcuteRiskRow(
 	strictEventByDate[date] = int(strictVal)
 
 	// Naive event base rates over the prior 90 days, computed
-	// independently per target_kind from its own label history. Reason
-	// uses the same 90-day window passed into priorEventBaseRate so
-	// the source_epoch_boundary check matches what the baseline
-	// actually looked at.
+	// independently per target_kind from its own label history.
+	// priorEventBaseRate walks i=1..90 *strictly before* t, so the
+	// earliest day touched is t-90. Pass that same offset to the
+	// classifier — earliestOffsetDays uses the same "days before t"
+	// convention — so source_epoch_boundary fires exactly when the
+	// 90-day prior window crosses the epoch start.
 	orBaseRate := priorEventBaseRate(t, 90, orEventByDate)
 	strictBaseRate := priorEventBaseRate(t, 90, strictEventByDate)
 	nullReason := classifyBaselineNullReason(t, 90, epochStart)

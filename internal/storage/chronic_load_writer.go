@@ -481,9 +481,10 @@ func (s *DB) writeChronicLoadRow(
 
 	// Naive base-rate baselines per target_kind. Only written for
 	// eligible target rows — `predicted_value` is meaningless when the
-	// observed label is itself unknown. When the 90d prior-label
-	// window produces a NULL rate (cold start, fresh epoch), the
-	// reason matches what Acute Risk uses for its own event_base_rate.
+	// observed label is itself unknown. priorEventBaseRate walks
+	// i=1..90 *strictly before* t, so the earliest day touched is
+	// t-90 (matches the earliestOffsetDays convention used by the
+	// classifier).
 	chronicReason := classifyBaselineNullReason(t, 90, epochStart)
 	if chronicLabelEligible {
 		rate := priorEventBaseRate(t, 90, priorChronic)

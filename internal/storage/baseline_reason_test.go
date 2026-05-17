@@ -1,6 +1,13 @@
-// Unit-level test for the baseline-null-reason classifier. The
-// integration tests downstream prove the writers wire it in; this
-// file just nails the decision logic.
+// Unit-level test for the baseline-null-reason classifier. Integration
+// tests downstream prove the writers wire it in; this file nails:
+//
+//  1. the per-baseline earliest-offset semantics — explicitly include
+//     the EWMA case (lookback = max(N*3, 90), NOT N), which was the
+//     original off-by-axis bug;
+//  2. the strictly-before-t event_base_rate case (earliest = t-N), which
+//     is one day further back than the inclusive [t-N+1..t] case;
+//  3. the joint-state guard in SaveNaiveBaseline (reason set on a
+//     non-nil value must return an error).
 
 package storage
 
@@ -9,93 +16,138 @@ import (
 	"time"
 )
 
+func TestEwmaLookbackDays(t *testing.T) {
+	cases := []struct {
+		windowN int
+		want    int
+	}{
+		{45, 135}, // 45*3 = 135 > 90 — adaptive EWMA the writers use
+		{30, 90},  // 30*3 = 90, equal floor
+		{10, 90},  // 10*3 = 30, floored to 90
+		{0, 90},   // edge — formula floor still applies
+		{180, 540},
+	}
+	for _, tc := range cases {
+		if got := ewmaLookbackDays(tc.windowN); got != tc.want {
+			t.Errorf("ewmaLookbackDays(%d) = %d, want %d", tc.windowN, got, tc.want)
+		}
+	}
+}
+
 func TestClassifyBaselineNullReason(t *testing.T) {
 	// Anchor day: 2026-05-16.
 	anchor := time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC)
 
 	cases := []struct {
-		name        string
-		windowDays  int
-		epochStart  string
-		wantReason  string
+		name                string
+		earliestOffsetDays  int
+		epochStart          string
+		wantReason          string
 	}{
+		// --- no epoch ---
 		{
-			name:       "no epoch set means warmup",
-			windowDays: 7,
-			epochStart: "",
-			wantReason: BaselineReasonWarmup,
+			name:               "no epoch set means warmup",
+			earliestOffsetDays: 6,
+			epochStart:         "",
+			wantReason:         BaselineReasonWarmup,
+		},
+
+		// --- rolling_7d_mean: earliest = t-6 ---
+		{
+			name:               "rolling7d: epoch starts before earliest day means warmup",
+			earliestOffsetDays: 6,
+			epochStart:         "2026-05-01",
+			wantReason:         BaselineReasonWarmup,
 		},
 		{
-			name:       "epoch starts before window earliest day means warmup",
-			windowDays: 7,
-			epochStart: "2026-05-01", // window earliest = 2026-05-10, post-epoch
-			wantReason: BaselineReasonWarmup,
+			name:               "rolling7d: epoch equals earliest day still means warmup",
+			earliestOffsetDays: 6,
+			epochStart:         "2026-05-10", // earliest = t-6 = 2026-05-10
+			wantReason:         BaselineReasonWarmup,
 		},
 		{
-			name:       "epoch starts at window earliest day still means warmup",
-			windowDays: 7,
-			epochStart: "2026-05-10", // window earliest = 2026-05-10, equal
-			wantReason: BaselineReasonWarmup,
+			name:               "rolling7d: epoch starts after earliest day means source_epoch_boundary",
+			earliestOffsetDays: 6,
+			epochStart:         "2026-05-11", // earliest 2026-05-10 < 2026-05-11
+			wantReason:         BaselineReasonSourceEpochBoundary,
+		},
+
+		// --- persistence_yesterday: earliest = t itself ---
+		{
+			name:               "persistence: epoch on candidate day means warmup",
+			earliestOffsetDays: 0,
+			epochStart:         "2026-05-16",
+			wantReason:         BaselineReasonWarmup,
 		},
 		{
-			name:       "epoch starts inside window means source_epoch_boundary",
-			windowDays: 7,
-			epochStart: "2026-05-12", // window = 2026-05-10..16; epochStart clips earliest 2 days
+			name:               "persistence: epoch tomorrow means source_epoch_boundary",
+			earliestOffsetDays: 0,
+			epochStart:         "2026-05-17",
+			wantReason:         BaselineReasonSourceEpochBoundary,
+		},
+
+		// --- ewma_45d: earliest = t - ewmaLookbackDays(45) = t - 135 ---
+		{
+			name:               "ewma45: epoch 1 day before window-start means source_epoch_boundary (regression test)",
+			earliestOffsetDays: 135, // ewmaLookbackDays(45)
+			epochStart:         "2026-02-01",
+			// t-135 = 2026-01-01 < 2026-02-01 → boundary. The previous
+			// classifier passed 45 here and incorrectly returned warmup
+			// because it thought earliest = t-44 = 2026-04-02 > epoch.
 			wantReason: BaselineReasonSourceEpochBoundary,
 		},
 		{
-			name:       "epoch starts after candidate day still means source_epoch_boundary",
-			windowDays: 7,
-			epochStart: "2026-06-01",
+			name:               "ewma45: epoch before t-135 means warmup",
+			earliestOffsetDays: 135,
+			epochStart:         "2024-01-01",
+			wantReason:         BaselineReasonWarmup,
+		},
+		{
+			name:               "ewma45: epoch at exact t-135 (2026-01-01) still warmup",
+			earliestOffsetDays: 135,
+			epochStart:         "2026-01-01",
+			wantReason:         BaselineReasonWarmup,
+		},
+
+		// --- event_base_rate strictly-before window: earliest = t-90 ---
+		{
+			name:               "event_base_rate: epoch 1 day before earliest means source_epoch_boundary (regression test)",
+			earliestOffsetDays: 90,
+			epochStart:         "2026-02-16", // t-90 = 2026-02-15, < epoch
+			// Old classifier passed 90 but used inclusive semantics
+			// (earliest = t-89), so earliest was 2026-02-16, equal to
+			// epoch → warmup. New semantics: earliest = t-90 < epoch →
+			// boundary. The chip now correctly says the prior window
+			// has been clipped by the new epoch.
 			wantReason: BaselineReasonSourceEpochBoundary,
 		},
 		{
-			name:       "persistence_yesterday window=1 with epoch tomorrow boundaries",
-			windowDays: 1,
-			epochStart: "2026-05-17", // window = {2026-05-16}, epochStart > candidate
-			wantReason: BaselineReasonSourceEpochBoundary,
+			name:               "event_base_rate: epoch at exact t-90 (2026-02-15) means warmup",
+			earliestOffsetDays: 90,
+			epochStart:         "2026-02-15",
+			wantReason:         BaselineReasonWarmup,
 		},
+
+		// --- guards ---
 		{
-			name:       "persistence_yesterday window=1 with epoch on candidate day means warmup",
-			windowDays: 1,
-			epochStart: "2026-05-16", // window = {2026-05-16}, epochStart matches
-			wantReason: BaselineReasonWarmup,
-		},
-		{
-			name:       "ewma_45d window with epoch deep in window",
-			windowDays: 45,
-			epochStart: "2026-05-01", // 45-day window earliest = 2026-04-02
-			wantReason: BaselineReasonSourceEpochBoundary,
-		},
-		{
-			name:       "ewma_45d window with epoch well before window means warmup",
-			windowDays: 45,
-			epochStart: "2024-01-01",
-			wantReason: BaselineReasonWarmup,
-		},
-		{
-			name:       "zero windowDays clamped to 1",
-			windowDays: 0,
-			epochStart: "2026-05-17",
-			wantReason: BaselineReasonSourceEpochBoundary,
+			name:               "negative offset clamped to 0 (defensive)",
+			earliestOffsetDays: -3,
+			epochStart:         "2026-05-17",
+			wantReason:         BaselineReasonSourceEpochBoundary,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := classifyBaselineNullReason(anchor, tc.windowDays, tc.epochStart)
+			got := classifyBaselineNullReason(anchor, tc.earliestOffsetDays, tc.epochStart)
 			if got != tc.wantReason {
-				t.Errorf("classifyBaselineNullReason(window=%d, epochStart=%q) = %q, want %q",
-					tc.windowDays, tc.epochStart, got, tc.wantReason)
+				t.Errorf("classifyBaselineNullReason(offset=%d, epochStart=%q) = %q, want %q",
+					tc.earliestOffsetDays, tc.epochStart, got, tc.wantReason)
 			}
 		})
 	}
 }
 
-// SaveNaiveBaseline rejects rows where a reason is set but the value
-// is non-nil — this catches a future writer regression where both
-// fields would silently disagree. Pure validation logic, no DB round
-// trip.
 func TestSaveNaiveBaseline_RejectsReasonOnNonNilValue(t *testing.T) {
 	v := 0.5
 	db := &DB{}
