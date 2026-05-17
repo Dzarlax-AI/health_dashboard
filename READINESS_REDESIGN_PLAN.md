@@ -607,11 +607,38 @@ ineligible" without guessing.
 | Chronic Load | `chronic_label` (boolean rule, forward window t+1..t+14) | `event_base_rate` | binary chip thresholded on `naive_baselines.predicted_value` |
 | Acute Risk | `event_t1_t3` (OR-event in t+1..t+3) | `event_base_rate` | binary chip thresholded on `naive_baselines.predicted_value` |
 
-Binary-chip thresholding rule for the two classifier rows is fixed in
-the next code-side PR on this track (currently the chip would render
-the predicted positive *rate* — calibration of that rate into a
-hi/lo chip needs an explicit decision and ROC look at the tenant's
-data, not a hardcoded 0.5 cutoff).
+Binary-chip thresholding rule for the two classifier rows is the
+**top-15% rule**: chip shows `elevated` when `predicted_value >= p85`
+of the in-slice distribution (i.e. >= 85th percentile). Per-tenant
+adaptive — rebuilds when the underlying base rate shifts.
+
+Tenant-specific thresholds for the `health` tenant, derived in the
+calibration report
+(`READINESS_REDESIGN_PHASE2_CHIP_THRESHOLD_CALIBRATION.md`):
+
+| target | threshold (p85) | elevated rate | precision | recall |
+|---|---|---|---|---|
+| `acute_risk / event_t1_t3` | 0.403 | 16.0% | 0.422 | 0.221 |
+| `chronic_load / chronic_label` | 0.329 | 15.1% | 0.491 | 0.333 |
+
+Both targets converged on the top-15% rule independently; for
+`chronic_label`, `base_rate × 1.5` lands within 0.005 of p85, so the
+top-quantile cutoff is also approximately a relative-to-base-rate
+cutoff there. For `acute_risk`, the distribution is squished
+(max 0.469) so `base_rate × 1.5` would be too aggressive (~p99) —
+top-15% is the right shape.
+
+`chronic_load / chronic_acute_density` stays silent per §6.1; its
+chip is not rendered.
+
+**Insufficient-data rule**: fewer than 30 eligible (predicted_value,
+label) pairs in the current epoch → chip stays `unknown` regardless
+of threshold. Same shape as the warmup gates upstream.
+
+These thresholds live in tenant `settings` (similar to
+`chronic_load.min_acute_density` from §6.2) so other tenants
+override after running the calibration script on their own data.
+The follow-up code PR wires the settings → UI chip read path.
 
 **What is silent (server-side only):**
 
