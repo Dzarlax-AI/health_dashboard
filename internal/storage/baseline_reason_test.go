@@ -250,30 +250,71 @@ func TestSaveNaiveBaseline_NilValueWithValidReasonPersists(t *testing.T) {
 	}
 }
 
-// Integration: VerifyReadinessRedesignSchema must fail if the reason
-// column is missing — the existing health probe only checked table
-// existence, so a failed ALTER in EnsureReadinessRedesignTables would
-// have surfaced as a SaveNaiveBaseline 500 at write time instead of a
-// startup health failure. Drop the column manually to simulate.
-func TestVerifyReadinessRedesignSchema_FailsWhenReasonColumnMissing(t *testing.T) {
-	db, cleanup := testDB(t)
-	defer cleanup()
-
-	// Baseline: with the column present, verify passes.
-	if err := db.VerifyReadinessRedesignSchema(); err != nil {
-		t.Fatalf("baseline verify (column present) failed: %v", err)
+// Integration: VerifyReadinessRedesignSchema must fail on the full
+// contract for the reason column — missing, drifted to a non-TEXT
+// type, or drifted to NOT NULL. Without these checks a failed ALTER
+// (or a manual ops mistake on a tenant DB) would only surface as a
+// SaveNaiveBaseline 500 at write time instead of a startup health
+// failure. Each subtest mutates the column then asserts verify
+// errors with the right marker.
+func TestVerifyReadinessRedesignSchema_DetectsReasonColumnDrift(t *testing.T) {
+	cases := []struct {
+		name       string
+		mutate     string
+		wantSubstr string
+	}{
+		{
+			name:       "column missing",
+			mutate:     "ALTER TABLE naive_baselines DROP COLUMN reason",
+			wantSubstr: "is missing",
+		},
+		{
+			name: "column drifted to non-TEXT (INTEGER)",
+			// USING NULL — every reason cell is NULL in a fresh schema, so
+			// the cast can't lose data here. Cast to INTEGER so data_type
+			// no longer matches "text".
+			mutate:     "ALTER TABLE naive_baselines ALTER COLUMN reason TYPE INTEGER USING NULL",
+			wantSubstr: "data_type",
+		},
+		{
+			name: "column drifted to NOT NULL",
+			// First seed a non-null row so the NOT NULL ALTER succeeds.
+			// We piggy-back on the existing test by writing one explicit
+			// reason row, then flipping the column constraint.
+			mutate: `INSERT INTO naive_baselines
+					(date, sub_score, target_kind, baseline_kind, predicted_value,
+					 reason, source_epoch, formula_version)
+				 VALUES
+					('2026-05-16', 'recovery_stability', 'rolling_3d', 'ewma_45d',
+					 NULL, 'baseline_warmup', 'initial', 1);
+				 ALTER TABLE naive_baselines ALTER COLUMN reason SET NOT NULL`,
+			wantSubstr: "is_nullable",
+		},
 	}
 
-	if _, err := db.pool.Exec(t.Context(),
-		"ALTER TABLE naive_baselines DROP COLUMN reason"); err != nil {
-		t.Fatalf("drop reason column: %v", err)
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db, cleanup := testDB(t)
+			defer cleanup()
 
-	err := db.VerifyReadinessRedesignSchema()
-	if err == nil {
-		t.Fatal("expected verify error after dropping reason, got nil")
-	}
-	if !contains(err.Error(), "naive_baselines.reason") {
-		t.Errorf("verify error should mention naive_baselines.reason, got: %v", err)
+			if err := db.VerifyReadinessRedesignSchema(); err != nil {
+				t.Fatalf("baseline verify (pristine schema) failed: %v", err)
+			}
+
+			if _, err := db.pool.Exec(t.Context(), tc.mutate); err != nil {
+				t.Fatalf("apply drift mutation: %v", err)
+			}
+
+			err := db.VerifyReadinessRedesignSchema()
+			if err == nil {
+				t.Fatal("expected verify error after drift, got nil")
+			}
+			if !contains(err.Error(), "naive_baselines.reason") {
+				t.Errorf("verify error should mention naive_baselines.reason, got: %v", err)
+			}
+			if !contains(err.Error(), tc.wantSubstr) {
+				t.Errorf("verify error should mention %q, got: %v", tc.wantSubstr, err)
+			}
+		})
 	}
 }

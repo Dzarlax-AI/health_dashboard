@@ -34,9 +34,12 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // --- Enums (Phase 0 vocabulary) -----------------------------------------
@@ -618,26 +621,46 @@ func (s *DB) VerifyReadinessRedesignSchema() error {
 
 	// Per-column checks for migrations applied via ALTER (not part of
 	// the initial CREATE TABLE). EnsureReadinessRedesignTables logs and
-	// continues on ALTER failures, so without this assertion a missing
-	// column would only surface as a SaveNaiveBaseline 500 at write
-	// time. List shape: (table, column).
-	requiredColumns := []struct{ table, column string }{
-		{"naive_baselines", "reason"},
+	// continues on ALTER failures, so without these assertions a
+	// missing or drifted column would only surface as a
+	// SaveNaiveBaseline 500 at write time.
+	//
+	// We assert the full contract for each column — data type and
+	// nullability — because SaveNaiveBaseline depends on reason being
+	// nullable TEXT (NOT NULL would block every value-present row;
+	// non-TEXT would break the reason-enum write path). information_
+	// _schema.columns reports `text` as the canonical type name for
+	// Postgres TEXT (other variants like character varying would
+	// surface differently and we'd want to know).
+	requiredColumns := []struct {
+		table, column, wantType string
+		wantNullable            bool
+	}{
+		{"naive_baselines", "reason", "text", true},
 	}
 	for _, rc := range requiredColumns {
-		var present bool
-		if err := s.pool.QueryRow(ctx, `
-			SELECT EXISTS (
-				SELECT 1 FROM information_schema.columns
-				 WHERE table_schema = current_schema()
-				   AND table_name = $1
-				   AND column_name = $2
-			)
-		`, rc.table, rc.column).Scan(&present); err != nil {
+		var dataType, isNullable string
+		err := s.pool.QueryRow(ctx, `
+			SELECT data_type, is_nullable
+			  FROM information_schema.columns
+			 WHERE table_schema = current_schema()
+			   AND table_name = $1
+			   AND column_name = $2
+		`, rc.table, rc.column).Scan(&dataType, &isNullable)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("VerifyReadinessRedesignSchema: column %s.%s is missing", rc.table, rc.column)
+		}
+		if err != nil {
 			return fmt.Errorf("VerifyReadinessRedesignSchema: probe %s.%s: %w", rc.table, rc.column, err)
 		}
-		if !present {
-			return fmt.Errorf("VerifyReadinessRedesignSchema: column %s.%s is missing", rc.table, rc.column)
+		if dataType != rc.wantType {
+			return fmt.Errorf("VerifyReadinessRedesignSchema: column %s.%s data_type = %q, want %q",
+				rc.table, rc.column, dataType, rc.wantType)
+		}
+		nullable := isNullable == "YES"
+		if nullable != rc.wantNullable {
+			return fmt.Errorf("VerifyReadinessRedesignSchema: column %s.%s is_nullable = %q, want nullable=%v",
+				rc.table, rc.column, isNullable, rc.wantNullable)
 		}
 	}
 	return nil
