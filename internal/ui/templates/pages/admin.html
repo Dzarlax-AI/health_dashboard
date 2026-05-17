@@ -211,6 +211,97 @@
           </div>
           <div id="admin-quality-msg" style="display:none;margin-top:8px"></div>
         </div>
+
+        <!-- Readiness redesign onboarding wizard (§6.2 runbook). -->
+        <details class="admin-section" id="admin-onboarding-section">
+          <summary class="section-title" style="cursor:pointer">Readiness redesign — tenant onboarding wizard</summary>
+          <p style="color:var(--text-secondary);font-size:13px;margin:12px 0">
+            Guided 7-step flow for a new (or freshly retuned) tenant. Each step
+            re-derives its state from the database, so you can close the page
+            and come back: nothing here is stored in cookies. Pick the tenant
+            in the Operations selector above; the wizard rejects
+            <code>schema=all</code> on every mutating step. To re-render any
+            step, click its <em>Refresh</em> button.
+          </p>
+          <button class="btn btn--secondary btn--small"
+                  onclick="onboardingRefreshAll()"
+                  style="margin-bottom:12px">Load / refresh wizard for selected tenant</button>
+
+          <div class="onboarding-step" id="onboarding-step-1">
+            <div class="onboarding-step-header">
+              <span class="onboarding-step-num">1</span>
+              <span class="onboarding-step-title">Tenant check</span>
+              <button class="btn btn--secondary btn--small" onclick="onboardingRefreshStep('step-1')">Refresh</button>
+            </div>
+            <div id="onboarding-step-1-body" class="onboarding-empty">Pick a tenant and click <em>Load</em>.</div>
+          </div>
+
+          <div class="onboarding-step" id="onboarding-step-2">
+            <div class="onboarding-step-header">
+              <span class="onboarding-step-num">2</span>
+              <span class="onboarding-step-title">Chronic load config</span>
+              <button class="btn btn--secondary btn--small" onclick="onboardingRefreshStep('step-2')">Refresh</button>
+            </div>
+            <div id="onboarding-step-2-body" class="onboarding-empty">—</div>
+          </div>
+
+          <div class="onboarding-step" id="onboarding-step-3">
+            <div class="onboarding-step-header">
+              <span class="onboarding-step-num">3</span>
+              <span class="onboarding-step-title">Coverage &amp; base-rate preview</span>
+              <button class="btn btn--secondary btn--small" onclick="onboardingRefreshStep('step-3')">Refresh</button>
+            </div>
+            <div id="onboarding-step-3-body" class="onboarding-empty">—</div>
+          </div>
+
+          <div class="onboarding-step" id="onboarding-step-4">
+            <div class="onboarding-step-header">
+              <span class="onboarding-step-num">4</span>
+              <span class="onboarding-step-title">Phase 0 backfill</span>
+              <button class="btn btn--secondary btn--small" onclick="onboardingRefreshStep('step-4-plan')">Show plan</button>
+            </div>
+            <div id="onboarding-step-4-body" class="onboarding-empty">—</div>
+          </div>
+
+          <div class="onboarding-step" id="onboarding-step-5">
+            <div class="onboarding-step-header">
+              <span class="onboarding-step-num">5</span>
+              <span class="onboarding-step-title">Verify</span>
+              <button class="btn btn--secondary btn--small" onclick="onboardingRefreshStep('step-5')">Refresh</button>
+            </div>
+            <div id="onboarding-step-5-body" class="onboarding-empty"
+                 hx-get="/fragments/admin-readiness-onboarding/step-5"
+                 hx-trigger="reload"
+                 hx-swap="innerHTML"
+                 hx-vals="js:{schema: onboardingSchema()}">—</div>
+          </div>
+
+          <div class="onboarding-step" id="onboarding-step-6">
+            <div class="onboarding-step-header">
+              <span class="onboarding-step-num">6</span>
+              <span class="onboarding-step-title">Recompute chip calibrations</span>
+              <button class="btn btn--primary btn--small"
+                      onclick="onboardingRunStep6()">Recompute</button>
+            </div>
+            <div id="onboarding-step-6-body" class="onboarding-empty">
+              Once Step 4 has run and Step 5 looks healthy, click <em>Recompute</em>
+              to derive chip cutoffs.
+            </div>
+          </div>
+
+          <div class="onboarding-step" id="onboarding-step-7">
+            <div class="onboarding-step-header">
+              <span class="onboarding-step-num">7</span>
+              <span class="onboarding-step-title">Final preview (last 7 days)</span>
+              <button class="btn btn--secondary btn--small" onclick="onboardingRefreshStep('step-7')">Refresh</button>
+            </div>
+            <div id="onboarding-step-7-body" class="onboarding-empty"
+                 hx-get="/fragments/admin-readiness-onboarding/step-7"
+                 hx-trigger="reload"
+                 hx-swap="innerHTML"
+                 hx-vals="js:{schema: onboardingSchema()}">—</div>
+          </div>
+        </details>
       </div>
 
       <!-- ============================================================ -->
@@ -389,6 +480,60 @@ function triggerChipCalibrationRecompute() {
     .catch(function(e) {
       msg.textContent = 'Error: ' + e;
     });
+}
+
+// Readiness onboarding wizard helpers. Wizard is stateless — every
+// step re-derives its state from the DB on render, so these helpers
+// are thin wrappers around the fragment endpoints. `onboardingSchema()`
+// is exposed to htmx `hx-vals="js:..."` blocks on Steps 5 and 7 so
+// they can refresh themselves after the mutating Steps 4 and 6.
+function onboardingSchema() {
+  var sel = $('backfill-target');
+  return (sel && sel.value) ? sel.value : '';
+}
+
+function onboardingRefreshStep(step) {
+  var schema = onboardingSchema();
+  // Empty schema is intentional — server falls back to request tenant
+  // (single-tenant mode, or the "Current" option in multi-tenant
+  // mode). Don't short-circuit on the client.
+  // step-4-plan renders into onboarding-step-4-body (without the
+  // -plan suffix); the result of step-4-run also renders into the
+  // same target.
+  var targetStep = step.replace('-plan', '').replace('-run', '');
+  var target = $('onboarding-' + targetStep + '-body');
+  if (!target) return;
+  target.innerHTML = '<div class="spinner"></div>';
+  var url = '/fragments/admin-readiness-onboarding/' + step;
+  if (schema) url += '?schema=' + encodeURIComponent(schema);
+  fetch(url)
+    .then(function(r){ return r.text().then(function(t){ return {ok:r.ok, text:t}; }); })
+    .then(function(p){
+      target.innerHTML = p.ok ? p.text : ('<span style="color:var(--bad)">' + p.text + '</span>');
+    })
+    .catch(function(e){ target.innerHTML = '<span style="color:var(--bad)">' + e + '</span>'; });
+}
+
+function onboardingRefreshAll() {
+  ['step-1', 'step-2', 'step-3', 'step-4-plan', 'step-5', 'step-7'].forEach(onboardingRefreshStep);
+}
+
+function onboardingRunStep6() {
+  var schema = onboardingSchema();
+  var body = $('onboarding-step-6-body');
+  // Empty schema → server uses request tenant. Same rationale as
+  // onboardingRefreshStep — don't block the legacy single-tenant
+  // and "Current" paths on the client.
+  body.innerHTML = '<div class="spinner"></div>';
+  var url = '/fragments/admin-readiness-onboarding/step-6-run';
+  if (schema) url += '?schema=' + encodeURIComponent(schema);
+  fetch(url, {method:'POST'})
+    .then(function(r){ return r.text().then(function(t){ return {ok:r.ok, text:t}; }); })
+    .then(function(p){
+      body.innerHTML = p.ok ? p.text : ('<span style="color:var(--bad)">' + p.text + '</span>');
+      if (p.ok) htmx.trigger('#onboarding-step-7-body', 'reload');
+    })
+    .catch(function(e){ body.innerHTML = '<span style="color:var(--bad)">' + e + '</span>'; });
 }
 
 function checkDataGaps() {

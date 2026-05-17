@@ -1,0 +1,266 @@
+{{define "admin-onboarding-step-1"}}
+<div class="onboarding-step-body">
+  <div class="onboarding-meta">
+    <span><strong>Schema:</strong> {{.Schema}}</span>
+    <span><strong>Active epoch:</strong> {{.Status.ActiveEpochID}}{{if .Status.ActiveEpochStart}} (from {{.Status.ActiveEpochStart}}){{end}}</span>
+    <span>
+      <strong>Schema health:</strong>
+      {{if .Status.SchemaHealthy}}<span style="color:var(--good)">✓ ok</span>
+      {{else}}<span style="color:var(--bad)">✗ {{.Status.SchemaError}}</span>{{end}}
+    </span>
+  </div>
+  {{if gt .Status.UnknownEpochRows 0}}
+  <div style="color:var(--warn);margin:8px 0">
+    ⚠ {{.Status.UnknownEpochRows}} rows tagged with the sentinel <code>unknown</code> epoch.
+    Resolve them before running calibration — the writers fell through to the sentinel,
+    which means something is off in the source_epochs catalogue.
+  </div>
+  {{end}}
+  <table class="admin-cache-table" style="margin-top:8px">
+    <thead>
+      <tr><th>sub_score</th><th>targets</th><th>eligible</th><th>baselines</th><th>w/ value</th><th>features</th><th>latest</th></tr>
+    </thead>
+    <tbody>
+      {{range .Status.SubScoreCounts}}
+      <tr>
+        <td>{{.SubScore}}</td>
+        <td>{{.TargetSnapshots}}</td>
+        <td>{{.EligibleTargets}}</td>
+        <td>{{.NaiveBaselines}}</td>
+        <td>{{.BaselinesWithValue}}</td>
+        <td>{{.FeatureSnapshots}}</td>
+        <td>{{if .LatestDate}}{{.LatestDate}}{{else}}—{{end}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  <div style="margin-top:8px;font-size:13px;color:var(--text-secondary)">
+    {{if .AnyRows}}
+      Phase 0 rows present — proceed to <strong>Step 2</strong>. If counts look stale,
+      Step 4 (backfill) will refresh them.
+    {{else}}
+      No Phase 0 rows for this tenant yet. <strong>Step 4 backfill</strong> is the
+      next concrete action; Steps 2–3 will show defaults / zero coverage until then.
+    {{end}}
+  </div>
+</div>
+{{end}}
+
+{{define "admin-onboarding-step-2"}}
+<div class="onboarding-step-body">
+  <table class="admin-cache-table">
+    <thead>
+      <tr><th></th><th>min_acute_density</th><th>min_breach_days</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>effective</td>
+        <td>{{.Config.Effective.MinAcuteDensity}}</td>
+        <td>{{.Config.Effective.MinBreachDays}}</td>
+      </tr>
+      <tr>
+        <td>defaults</td>
+        <td>{{.Config.Defaults.MinAcuteDensity}}</td>
+        <td>{{.Config.Defaults.MinBreachDays}}</td>
+      </tr>
+    </tbody>
+  </table>
+  <div style="margin-top:8px;font-size:13px;color:var(--text-secondary)">
+    {{if .Config.MatchesDefaults}}
+      Using defaults calibrated against the <code>health</code> tenant (PR #97).
+      If <strong>Step 3</strong>'s Acute OR base rate sits outside 15–30%, retune
+      <code>min_acute_density</code> via the
+      <code>/api/admin/readiness-redesign/config</code> endpoint before running
+      Step 4. Otherwise defaults are safe.
+    {{else}}
+      Per-tenant overrides applied. Confirm they still make sense given Step 3
+      base rate before backfilling.
+    {{end}}
+    {{if .Config.CorrectedToDef}}
+      <br>⚠ <code>corrected_to_defaults=true</code>: a settings row had a
+      non-positive value and was clamped. Inspect <code>settings</code> rows
+      before proceeding.
+    {{end}}
+  </div>
+</div>
+{{end}}
+
+{{define "admin-onboarding-step-3"}}
+<div class="onboarding-step-body">
+  <div class="onboarding-meta">
+    <span><strong>Acute eligible rows (current epoch):</strong> {{.Summary.AcuteEligibleN}}</span>
+    <span><strong>Acute OR base rate:</strong> {{.BaseRatePct}}</span>
+    <span><strong>Chronic eligible rows:</strong> {{.Summary.ChronicEligibleN}}</span>
+  </div>
+  <div style="margin-top:8px;font-size:13px;color:var(--text-secondary)">
+    {{if not .BaseRateHasValue}}
+      No eligible Acute OR rows yet in the current epoch. Step 4 backfill will
+      produce them; revisit this step afterwards to read the rate.
+    {{else if .BaseRateInBand}}
+      Acute OR base rate is inside the operational 15–30% band — defaults from
+      Step 2 are appropriate, no retune needed.
+    {{else}}
+      ⚠ Acute OR base rate is <strong>outside the 15–30% band</strong>.
+      Consider retuning <code>min_acute_density</code> via
+      <code>POST /api/admin/readiness-redesign/config</code> before Step 4,
+      otherwise <code>chronic_acute_density</code> labels may sit at &lt;15% or
+      &gt;30% positive rate and won't discriminate usefully.
+    {{end}}
+  </div>
+</div>
+{{end}}
+
+{{define "admin-onboarding-step-4-plan"}}
+<div class="onboarding-step-body">
+  <div class="onboarding-meta">
+    <span><strong>Tenant:</strong> {{.Schema}}</span>
+    <span><strong>From:</strong> {{.From}}</span>
+    <span><strong>To:</strong> {{.To}} (tenant local)</span>
+    <span><strong>Days:</strong> {{.Days}}</span>
+    <span><strong>Force:</strong> {{.Force}}</span>
+  </div>
+  <div style="margin-top:6px;font-size:13px;color:var(--text-secondary)">
+    Sub-scores: {{range $i, $s := .SubScores}}{{if $i}}, {{end}}<code>{{$s}}</code>{{end}}.
+    Runs in dependency order Recovery → Passive → Acute → Chronic. Idempotent
+    on the row PKs, so reruns are safe.
+  </div>
+  <div style="margin-top:12px">
+    <button class="btn btn--primary btn--small"
+            hx-post="/fragments/admin-readiness-onboarding/step-4-run?schema={{.Schema}}"
+            hx-target="#onboarding-step-4-body"
+            hx-swap="innerHTML"
+            hx-on::after-request="htmx.trigger('#onboarding-step-5-body', 'reload'); htmx.trigger('#onboarding-step-7-body', 'reload')">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+      Run backfill
+    </button>
+    <span style="margin-left:8px;color:var(--text-secondary);font-size:12px">
+      Synchronous — keep the tab open until results render.
+    </span>
+  </div>
+</div>
+{{end}}
+
+{{define "admin-onboarding-step-4-result"}}
+<div class="onboarding-step-body">
+  <div class="onboarding-meta">
+    <span><strong>Tenant:</strong> {{.Schema}}</span>
+    <span><strong>Range:</strong> {{.Plan.From}} → {{.Plan.To}}</span>
+  </div>
+  <table class="admin-cache-table" style="margin-top:8px">
+    <thead><tr><th>sub_score</th><th>written</th><th>error</th></tr></thead>
+    <tbody>
+      {{range .Results}}
+      <tr>
+        <td>{{.SubScore}}</td>
+        <td>{{.Written}}</td>
+        <td>{{if .Error}}<span style="color:var(--bad)">{{.Error}}</span>{{else}}<span style="color:var(--good)">✓</span>{{end}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  <div style="margin-top:8px;font-size:13px;color:var(--text-secondary)">
+    Step 5 (verify) and Step 7 (preview) refreshed automatically. Step 6
+    (recompute chip calibrations) is the next action.
+  </div>
+</div>
+{{end}}
+
+{{define "admin-onboarding-step-5"}}
+<div class="onboarding-step-body">
+  {{if gt .Status.UnknownEpochRows 0}}
+  <div style="color:var(--warn);margin-bottom:8px">
+    ⚠ {{.Status.UnknownEpochRows}} rows tagged with <code>unknown</code> epoch
+    remain. Investigate <code>source_epochs</code> before trusting the chip
+    cells in Step 7.
+  </div>
+  {{end}}
+  <table class="admin-cache-table">
+    <thead>
+      <tr><th>sub_score</th><th>targets</th><th>eligible</th><th>baselines</th><th>w/ value</th><th>latest</th></tr>
+    </thead>
+    <tbody>
+      {{range .Status.SubScoreCounts}}
+      <tr>
+        <td>{{.SubScore}}</td>
+        <td>{{.TargetSnapshots}}</td>
+        <td>{{.EligibleTargets}}</td>
+        <td>{{.NaiveBaselines}}</td>
+        <td>{{.BaselinesWithValue}}</td>
+        <td>{{if .LatestDate}}{{.LatestDate}}{{else}}—{{end}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  <div style="margin-top:12px">
+    <strong>Chronic threshold echo</strong>
+    <div style="font-size:12px;color:var(--text-secondary);margin-bottom:6px">
+      Compares thresholds the chronic writer stamped onto a sampled row's
+      <code>data_coverage</code> against the effective config from Step 2.
+      A mismatch means the writer ran with stale settings — rerun Step 4.
+    </div>
+    {{if .EchoError}}
+      <div style="color:var(--bad)">load echo failed: {{.EchoError}}</div>
+    {{else if not .Echo}}
+      <div style="color:var(--text-secondary)">
+        No eligible chronic rows yet — run Step 4 first, then revisit.
+      </div>
+    {{else}}
+      <table class="admin-cache-table">
+        <thead>
+          <tr><th>field</th><th>sampled (from {{.Echo.SampledDate}})</th><th>effective config</th><th></th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>breach_threshold</td>
+            <td>{{.Echo.BreachThreshold}}</td>
+            <td>{{.Config.Effective.MinBreachDays}}</td>
+            <td>{{if eq .Echo.BreachThreshold .Config.Effective.MinBreachDays}}<span style="color:var(--good)">✓</span>{{else}}<span style="color:var(--bad)">✗ mismatch</span>{{end}}</td>
+          </tr>
+          <tr>
+            <td>acute_density_threshold</td>
+            <td>{{.Echo.AcuteDensityThresh}}</td>
+            <td>{{.Config.Effective.MinAcuteDensity}}</td>
+            <td>{{if eq .Echo.AcuteDensityThresh .Config.Effective.MinAcuteDensity}}<span style="color:var(--good)">✓</span>{{else}}<span style="color:var(--bad)">✗ mismatch</span>{{end}}</td>
+          </tr>
+        </tbody>
+      </table>
+      {{if not .ThresholdMatch}}
+      <div style="margin-top:6px;color:var(--bad);font-size:13px">
+        ⚠ Writer used different thresholds than the current config. Rerun
+        Step 4 to bring chronic rows in line, then return here.
+      </div>
+      {{end}}
+    {{end}}
+  </div>
+</div>
+{{end}}
+
+{{define "admin-onboarding-step-6-result"}}
+<div class="onboarding-step-body">
+  <table class="admin-cache-table">
+    <thead><tr><th>sub_score</th><th>target_kind</th><th>status</th><th>cutoff</th><th>p80</th><th>base_rate</th><th>n_eligible</th><th>n_pos</th></tr></thead>
+    <tbody>
+      {{range .Results}}
+      <tr>
+        <td>{{.SubScore}}</td>
+        <td>{{.TargetKind}}</td>
+        {{if .Saved}}
+          <td>{{.Saved.Status}}</td>
+          <td>{{.Saved.CutoffFmt}}</td>
+          <td>{{.Saved.P80Fmt}}</td>
+          <td>{{.Saved.BaseRateFmt}}</td>
+          <td>{{.Saved.NEligible}}</td>
+          <td>{{.Saved.NPositives}}</td>
+        {{else}}
+          <td colspan="6" style="color:var(--bad)">{{.Error}}</td>
+        {{end}}
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  <div style="margin-top:8px;font-size:13px;color:var(--text-secondary)">
+    Step 7 (final preview) refreshed automatically. Hover any chip cell there
+    to see the cutoff and reason chain.
+  </div>
+</div>
+{{end}}

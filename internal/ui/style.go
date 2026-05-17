@@ -808,6 +808,16 @@ select:focus, input[type=date]:focus { outline: none; border-color: var(--accent
    single source of truth for every per-tenant action below it. */
 .admin-operations-scope { margin-bottom: 16px; }
 .admin-operations-scope .admin-field-row { margin-bottom: 0; }
+/* Onboarding wizard step cards. Each step is one row with a small
+   numbered chip and a refresh / action button on the right. */
+.onboarding-step { border: 1px solid var(--card-border); border-radius: 12px; padding: 12px 14px; margin-bottom: 12px; background: var(--card-bg); }
+.onboarding-step-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.onboarding-step-num { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: white; font-size: 12px; font-weight: 700; }
+.onboarding-step-title { font-size: 14px; font-weight: 700; flex: 1; min-width: 0; }
+.onboarding-step-body { font-size: 13px; color: var(--text-secondary); }
+.onboarding-empty { font-size: 13px; color: var(--text-tertiary); font-style: italic; }
+.onboarding-meta { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; }
+.onboarding-meta strong { color: var(--fg); margin-right: 4px; }
 .admin-stat-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 12px; margin-bottom: 16px;
