@@ -1549,7 +1549,12 @@ func (h *Handler) adminReadinessRedesignChipCalibrations(w http.ResponseWriter, 
 	if r.Method == http.MethodPost {
 		recompute := make([]tenantRecompute, 0, len(scopes))
 		for _, scope := range scopes {
-			results, err := scope.db.RecomputeChipCalibrations()
+			// Anchor on each tenant's local today so the calibration
+			// window selects the correct edge day at the local
+			// midnight boundary — tenants in different time zones
+			// resolve to different dates, and that's intentional.
+			asOf := tenantLocalToday(h, scope.db, scope.schema)
+			results, err := scope.db.RecomputeChipCalibrations(asOf)
 			if err != nil {
 				http.Error(w, "recompute "+scope.schema+": "+err.Error(), http.StatusInternalServerError)
 				return
@@ -1811,18 +1816,17 @@ func parseOperationalContractDays(raw string) (int, error) {
 	return n, nil
 }
 
-// operationalContractWindow computes (from, to) date strings for the
-// preview, anchored in the tenant's REPORT_TZ rather than UTC. Near
-// midnight in non-UTC tenants this is the difference between showing
-// the correct local day vs a stale UTC day.
+// tenantLocalToday returns today's YYYY-MM-DD date in the tenant's
+// REPORT_TZ. Resolution: settings.timezone → env REPORT_TZ → UTC.
+// Used by every readiness-redesign admin surface so date-based
+// operations (preview window, chip recompute, etc.) anchor on the
+// same local calendar as the writers — fixes the same class of
+// midnight-boundary bug closed in #109.
 //
-// Resolution order: settings.timezone → env REPORT_TZ default → UTC.
-// Same as the stress-validation and energy handlers.
-func operationalContractWindow(h *Handler, db *storage.DB, schema string, days int) (from, to string) {
+// h.mgr may be nil in tests that build a bare Handler{}; we fall
+// back to UTC rather than panicking.
+func tenantLocalToday(h *Handler, db *storage.DB, schema string) string {
 	var tz string
-	// h.mgr is non-nil in production but may be nil in some tests
-	// that build a bare Handler{}. Skip the per-tenant lookup in
-	// that case rather than panicking.
 	if h.mgr != nil {
 		tz = db.GetNotifyConfig(h.mgr.NotifyDefaultsFor(schema)).Timezone
 	}
@@ -1831,14 +1835,25 @@ func operationalContractWindow(h *Handler, db *storage.DB, schema string, days i
 	}
 	loc, err := time.LoadLocation(tz)
 	if err != nil {
-		// Unknown TZ name falls back to UTC rather than failing the
-		// request — operator can see the data, the date-window edge
-		// case is the only loss.
 		loc = time.UTC
 	}
-	toT := time.Now().In(loc)
+	return time.Now().In(loc).Format("2006-01-02")
+}
+
+// operationalContractWindow computes (from, to) date strings for the
+// preview, anchored on the tenant's local today via tenantLocalToday.
+func operationalContractWindow(h *Handler, db *storage.DB, schema string, days int) (from, to string) {
+	to = tenantLocalToday(h, db, schema)
+	toT, err := time.Parse("2006-01-02", to)
+	if err != nil {
+		// Cannot fail in practice — tenantLocalToday only emits valid
+		// YYYY-MM-DD. Guard for defence-in-depth: fall back to UTC
+		// now so the preview still loads.
+		toT = time.Now().UTC()
+		to = toT.Format("2006-01-02")
+	}
 	fromT := toT.AddDate(0, 0, -(days - 1))
-	return fromT.Format("2006-01-02"), toT.Format("2006-01-02")
+	return fromT.Format("2006-01-02"), to
 }
 
 // userSettings handles GET/POST /api/settings — Telegram config, available to all users.

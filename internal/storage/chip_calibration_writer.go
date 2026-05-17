@@ -81,16 +81,28 @@ type ChipCalibrationRecomputeResult struct {
 // chip target on this DB's tenant. Always writes one row per target
 // (even on insufficient-data outcomes) so a single Load query later
 // can tell `calibrating` apart from `never computed`.
-func (s *DB) RecomputeChipCalibrations() ([]ChipCalibrationRecomputeResult, error) {
-	today := time.Now().UTC().Format(isoDate)
-	epoch, err := s.ResolveSourceEpoch(today)
+//
+// `asOfDate` is the tenant-local YYYY-MM-DD date the calibration
+// anchors on. The caller resolves it from the tenant's REPORT_TZ
+// (`settings.timezone` → env `REPORT_TZ` → UTC) so date arithmetic
+// here uses the same calendar the writers and the operational-contract
+// preview use. Passing UTC's current date for a non-UTC tenant near
+// local midnight is the exact class of bug fixed in #109 for the
+// preview surface; we avoid replaying it here by taking the date as
+// an explicit argument.
+func (s *DB) RecomputeChipCalibrations(asOfDate string) ([]ChipCalibrationRecomputeResult, error) {
+	asOf, err := time.Parse(isoDate, asOfDate)
 	if err != nil {
-		return nil, fmt.Errorf("RecomputeChipCalibrations: resolve epoch for %s: %w", today, err)
+		return nil, fmt.Errorf("RecomputeChipCalibrations: parse asOfDate %q: %w", asOfDate, err)
+	}
+	epoch, err := s.ResolveSourceEpoch(asOfDate)
+	if err != nil {
+		return nil, fmt.Errorf("RecomputeChipCalibrations: resolve epoch for %s: %w", asOfDate, err)
 	}
 	out := make([]ChipCalibrationRecomputeResult, 0, len(chipCalibrationTargets))
 	for _, target := range chipCalibrationTargets {
 		res := ChipCalibrationRecomputeResult{SubScore: target.SubScore, TargetKind: target.TargetKind}
-		cal, recomputeErr := s.recomputeOneChipCalibration(target.SubScore, target.TargetKind, epoch)
+		cal, recomputeErr := s.recomputeOneChipCalibration(target.SubScore, target.TargetKind, epoch, asOf)
 		if recomputeErr != nil {
 			res.Error = recomputeErr.Error()
 			out = append(out, res)
@@ -115,7 +127,7 @@ func (s *DB) RecomputeChipCalibrations() ([]ChipCalibrationRecomputeResult, erro
 	return out, nil
 }
 
-func (s *DB) recomputeOneChipCalibration(subScore, targetKind, epoch string) (*ChipCalibration, error) {
+func (s *DB) recomputeOneChipCalibration(subScore, targetKind, epoch string, asOf time.Time) (*ChipCalibration, error) {
 	if epoch == "" || epoch == SentinelSourceEpoch {
 		return &ChipCalibration{
 			SubScore: subScore, TargetKind: targetKind, SourceEpoch: epoch,
@@ -125,7 +137,7 @@ func (s *DB) recomputeOneChipCalibration(subScore, targetKind, epoch string) (*C
 		}, nil
 	}
 
-	preds, labels, err := s.loadChipCalibrationPairs(subScore, targetKind, epoch, ChipCalibrationWindowDays)
+	preds, labels, err := s.loadChipCalibrationPairs(subScore, targetKind, epoch, asOf, ChipCalibrationWindowDays)
 	if err != nil {
 		return nil, err
 	}
@@ -164,14 +176,15 @@ func (s *DB) recomputeOneChipCalibration(subScore, targetKind, epoch string) (*C
 }
 
 // loadChipCalibrationPairs returns (predictions, labels) over the
-// last `windowDays` calendar days inside the given source_epoch.
-// Joins naive_baselines with target_snapshots on the same row keys
-// the chip read path uses; filters to eligible target rows with
-// populated predictions on both sides.
-func (s *DB) loadChipCalibrationPairs(subScore, targetKind, epoch string, windowDays int) ([]float64, []int, error) {
+// last `windowDays` calendar days inside the given source_epoch,
+// anchored on `asOf` (tenant-local "today"). Joins naive_baselines
+// with target_snapshots on the same row keys the chip read path
+// uses; filters to eligible target rows with populated predictions
+// on both sides.
+func (s *DB) loadChipCalibrationPairs(subScore, targetKind, epoch string, asOf time.Time, windowDays int) ([]float64, []int, error) {
 	ctx, cancel := queryCtx()
 	defer cancel()
-	to := time.Now().UTC()
+	to := asOf
 	from := to.AddDate(0, 0, -(windowDays - 1))
 	rows, err := s.pool.Query(ctx, `
 		SELECT n.predicted_value, t.target_value

@@ -84,6 +84,22 @@ func TestSaveChipCalibration_JointStateGuard(t *testing.T) {
 			wantSub: "cutoff set on non-active",
 		},
 		{
+			name: "insufficient_eligible with p80 — rejected",
+			mutate: func(c *ChipCalibration) {
+				c.Status = ChipCalibrationStatusInsufficientEligible
+				c.P80 = &v
+			},
+			wantSub: "p80 set on non-active",
+		},
+		{
+			name: "insufficient_positives with base_rate — rejected",
+			mutate: func(c *ChipCalibration) {
+				c.Status = ChipCalibrationStatusInsufficientPositive
+				c.BaseRate = &v
+			},
+			wantSub: "base_rate set on non-active",
+		},
+		{
 			name: "unknown status string — rejected",
 			mutate: func(c *ChipCalibration) {
 				c.Status = "something_made_up"
@@ -169,7 +185,7 @@ func TestRecomputeChipCalibrations_Integration_PercentileP80(t *testing.T) {
 		}
 	}
 
-	results, err := db.RecomputeChipCalibrations()
+	results, err := db.RecomputeChipCalibrations(today.Format(isoDate))
 	if err != nil {
 		t.Fatalf("RecomputeChipCalibrations: %v", err)
 	}
@@ -288,7 +304,7 @@ func TestRecomputeChipCalibrations_Integration_InsufficientData(t *testing.T) {
 		}
 	}
 
-	results, err := db.RecomputeChipCalibrations()
+	results, err := db.RecomputeChipCalibrations(today.Format(isoDate))
 	if err != nil {
 		t.Fatalf("RecomputeChipCalibrations: %v", err)
 	}

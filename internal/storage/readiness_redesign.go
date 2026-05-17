@@ -805,8 +805,22 @@ func (s *DB) SaveChipCalibration(c ChipCalibration) error {
 	if c.Status == ChipCalibrationStatusActive && c.Cutoff == nil {
 		return fmt.Errorf("SaveChipCalibration: active status requires non-nil cutoff")
 	}
-	if c.Status != ChipCalibrationStatusActive && c.Cutoff != nil {
-		return fmt.Errorf("SaveChipCalibration: cutoff set on non-active status %q", c.Status)
+	if c.Status != ChipCalibrationStatusActive {
+		// All three derived numeric fields must be nil on
+		// insufficient-data statuses. The struct comment spells out
+		// this contract; enforcing it at the boundary stops a future
+		// writer bug from persisting stale `p80`/`base_rate` from a
+		// previous run and showing misleading audit fields in the
+		// admin surface.
+		if c.Cutoff != nil {
+			return fmt.Errorf("SaveChipCalibration: cutoff set on non-active status %q", c.Status)
+		}
+		if c.P80 != nil {
+			return fmt.Errorf("SaveChipCalibration: p80 set on non-active status %q", c.Status)
+		}
+		if c.BaseRate != nil {
+			return fmt.Errorf("SaveChipCalibration: base_rate set on non-active status %q", c.Status)
+		}
 	}
 
 	ctx, cancel := queryCtx()
