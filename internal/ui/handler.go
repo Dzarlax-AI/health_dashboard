@@ -9,6 +9,7 @@ import (
 	"html/template"
 	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -581,78 +582,93 @@ func (h *Handler) fragmentAdminStatus(w http.ResponseWriter, r *http.Request) {
 // reason fallbacks) lives in one Go-testable place, with the
 // template purely structural.
 func (h *Handler) fragmentAdminReadinessContract(w http.ResponseWriter, r *http.Request) {
-	db := h.tenantDB(r)
-	if db == nil {
-		http.Error(w, "no tenant DB available", http.StatusServiceUnavailable)
-		return
-	}
-	schema := h.tenantSchema(r)
 	days, err := parseOperationalContractDays(r.URL.Query().Get("days"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	from, to := operationalContractWindow(h, db, schema, days)
-	rows, err := db.LoadOperationalContractRows(from, to)
-	if err != nil {
-		http.Error(w, "load rows: "+err.Error(), http.StatusInternalServerError)
+	scoped := strings.TrimSpace(r.URL.Query().Get("schema"))
+	scopes, scopeErr := h.resolveOperationalContractTenants(r, scoped)
+	if scopeErr != nil {
+		http.Error(w, scopeErr.Error(), scopeErr.code)
 		return
 	}
 
-	type viewRow struct {
-		Date               string
-		SubScoreLabel      string
-		ValueCell          string
-		BaselineReasonCell string
-		TargetEligCell     string
-		SourceEpochCell    string
+	// Pivot the result: rows = (tenant, date), columns = the four
+	// chip kinds (recovery, passive, chronic, acute). One cell per
+	// chip per row, rendered as the chip value with the
+	// baseline/target reason in a hover title — same data the chip
+	// would expose in a tooltip on the user-facing dashboard.
+	type pivotRow struct {
+		Tenant   string
+		Date     string
+		Recovery chipCell
+		Passive  chipCell
+		Chronic  chipCell
+		Acute    chipCell
 	}
-	subScoreLabels := map[string]string{
-		storage.SubScoreRecoveryStability: "recovery",
-		storage.SubScorePassiveEfficiency: "passive",
-		storage.SubScoreChronicLoad:       "chronic",
-		storage.SubScoreAcuteRisk:         "acute",
+	chipSlot := map[string]func(*pivotRow, chipCell){
+		storage.SubScoreRecoveryStability: func(p *pivotRow, c chipCell) { p.Recovery = c },
+		storage.SubScorePassiveEfficiency: func(p *pivotRow, c chipCell) { p.Passive = c },
+		storage.SubScoreChronicLoad:       func(p *pivotRow, c chipCell) { p.Chronic = c },
+		storage.SubScoreAcuteRisk:         func(p *pivotRow, c chipCell) { p.Acute = c },
 	}
-	view := make([]viewRow, 0, len(rows))
-	for _, r := range rows {
-		vr := viewRow{Date: r.Date, SubScoreLabel: subScoreLabels[r.SubScore]}
-		// Value cell — chip's primary output. § 6.1 mapping:
-		//   predicted_value != nil → render the number;
-		//   no naive_baselines row at all (predicted_value nil AND
-		//     reason nil) → `pending` (writer hasn't reached date yet);
-		//   predicted_value nil, reason set → `unknown`.
-		if r.PredictedValue != nil {
-			vr.ValueCell = fmt.Sprintf("%.3f", *r.PredictedValue)
-		} else if r.BaselineReason == nil {
-			vr.ValueCell = "pending"
-		} else {
-			vr.ValueCell = "unknown"
+
+	// Tenant/date → pivot row. Map keyed on `tenant\x00date` so iteration
+	// order can come from a sorted slice afterwards.
+	byKey := map[string]*pivotRow{}
+	order := make([]string, 0, len(scopes)*days)
+
+	from, to := "", ""
+	for _, scope := range scopes {
+		tf, tt := operationalContractWindow(h, scope.db, scope.schema, days)
+		if from == "" {
+			from, to = tf, tt
 		}
-		if r.BaselineReason != nil {
-			vr.BaselineReasonCell = *r.BaselineReason
-		} else {
-			vr.BaselineReasonCell = "—"
+		rows, err := scope.db.LoadOperationalContractRows(tf, tt)
+		if err != nil {
+			http.Error(w, "load rows for "+scope.schema+": "+err.Error(), http.StatusInternalServerError)
+			return
 		}
-		if r.TargetEligibilityReason != nil {
-			vr.TargetEligCell = *r.TargetEligibilityReason
-		} else {
-			vr.TargetEligCell = "—"
+		for _, row := range rows {
+			key := scope.schema + "\x00" + row.Date
+			pr, ok := byKey[key]
+			if !ok {
+				pr = &pivotRow{Tenant: scope.schema, Date: row.Date}
+				byKey[key] = pr
+				order = append(order, key)
+			}
+			cell := buildChipCell(row)
+			if set := chipSlot[row.SubScore]; set != nil {
+				set(pr, cell)
+			}
 		}
-		if r.SourceEpoch != nil {
-			vr.SourceEpochCell = *r.SourceEpoch
-		} else {
-			vr.SourceEpochCell = "—"
+	}
+
+	// Sort: tenant ASC, then date DESC (within tenant, most recent first).
+	sort.SliceStable(order, func(i, j int) bool {
+		a, b := byKey[order[i]], byKey[order[j]]
+		if a.Tenant != b.Tenant {
+			return a.Tenant < b.Tenant
 		}
-		view = append(view, vr)
+		return a.Date > b.Date
+	})
+	view := make([]pivotRow, 0, len(order))
+	for _, k := range order {
+		view = append(view, *byKey[k])
 	}
 
 	data := struct {
 		Lang     string
-		Rows     []viewRow
+		Rows     []pivotRow
 		EmptyMsg string
+		From     string
+		To       string
 	}{
 		Lang:     langFromRequest(r),
 		Rows:     view,
+		From:     from,
+		To:       to,
 		EmptyMsg: "no rows yet — run the readiness-redesign backfill first",
 	}
 	renderFragment(w, "admin-readiness-contract", data)
@@ -1482,7 +1498,7 @@ func (h *Handler) adminReadinessRedesignConfig(w http.ResponseWriter, r *http.Re
 }
 
 // adminReadinessRedesignOperationalContract returns one row per
-// (date, chip_config) for the last N days, joining
+// (tenant, date, chip_config) for the last N days, joining
 // `naive_baselines.predicted_value` / `reason` with
 // `target_snapshots.eligibility_reason`. Implements the §6.1
 // "Deliverable" — operator preview of what each chip would render,
@@ -1490,47 +1506,14 @@ func (h *Handler) adminReadinessRedesignConfig(w http.ResponseWriter, r *http.Re
 //
 // GET /api/admin/readiness-redesign/operational-contract?days=14&schema=<tenant>
 //
-// `days` defaults to 14, capped at 90. `schema` selects a cross-tenant
-// override consistent with the other admin endpoints in this file.
+// `days` defaults to 14, capped at 90. `schema` filters to one
+// tenant; without it (or with `all`) the response aggregates across
+// every registered tenant — needed to validate the contract on a
+// second tenant after a config retune without flipping between admin
+// views.
 func (h *Handler) adminReadinessRedesignOperationalContract(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	schema := h.tenantSchema(r)
-	db := h.tenantDB(r)
-	if target := strings.TrimSpace(r.URL.Query().Get("schema")); target != "" && target != schema {
-		if h.reg == nil {
-			http.Error(w, "registry not available", http.StatusServiceUnavailable)
-			return
-		}
-		users, err := h.reg.ListUsers(r.Context())
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		known := false
-		for _, u := range users {
-			if u.SchemaName == target {
-				known = true
-				break
-			}
-		}
-		if !known {
-			http.Error(w, "unknown schema", http.StatusBadRequest)
-			return
-		}
-		all := h.mgr.AllDBs()
-		got, ok := all[target]
-		if !ok || got == nil {
-			http.Error(w, "tenant DB pool not initialised", http.StatusServiceUnavailable)
-			return
-		}
-		db = got
-		schema = target
-	}
-	if db == nil {
-		http.Error(w, "no tenant DB available", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -1539,20 +1522,160 @@ func (h *Handler) adminReadinessRedesignOperationalContract(w http.ResponseWrite
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	from, to := operationalContractWindow(h, db, schema, days)
 
-	rows, loadErr := db.LoadOperationalContractRows(from, to)
-	if loadErr != nil {
-		http.Error(w, "load rows: "+loadErr.Error(), http.StatusInternalServerError)
+	scoped := strings.TrimSpace(r.URL.Query().Get("schema"))
+	tenants, scopeErr := h.resolveOperationalContractTenants(r, scoped)
+	if scopeErr != nil {
+		http.Error(w, scopeErr.Error(), scopeErr.code)
 		return
 	}
+
+	type rowOut struct {
+		Tenant string `json:"tenant"`
+		storage.OperationalContractRow
+	}
+	out := make([]rowOut, 0, len(tenants)*days*4)
+	from, to := "", ""
+	for _, ten := range tenants {
+		// Each tenant gets its own TZ-aware window. Different tenants
+		// can sit in different time zones, so the date set isn't
+		// shared — the response carries each tenant's window via the
+		// rows themselves (date col); `from`/`to` echo the first
+		// tenant's window for the operator's at-a-glance reference.
+		tf, tt := operationalContractWindow(h, ten.db, ten.schema, days)
+		if from == "" {
+			from, to = tf, tt
+		}
+		rows, loadErr := ten.db.LoadOperationalContractRows(tf, tt)
+		if loadErr != nil {
+			http.Error(w, "load rows for "+ten.schema+": "+loadErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		for _, r := range rows {
+			out = append(out, rowOut{Tenant: ten.schema, OperationalContractRow: r})
+		}
+	}
+
 	jsonResponse(w, map[string]any{
-		"schema": schema,
-		"from":   from,
-		"to":     to,
-		"days":   days,
-		"rows":   rows,
+		"from":    from,
+		"to":      to,
+		"days":    days,
+		"tenants": tenantSchemas(tenants),
+		"rows":    out,
 	})
+}
+
+// operationalContractScope is one tenant resolved for the
+// operational-contract surface.
+type operationalContractScope struct {
+	schema string
+	db     *storage.DB
+}
+
+// operationalContractHTTPError carries a status code with the error so
+// the handler can surface specific 400 / 503 paths cleanly.
+type operationalContractHTTPError struct {
+	code int
+	msg  string
+}
+
+func (e *operationalContractHTTPError) Error() string { return e.msg }
+
+// resolveOperationalContractTenants picks the set of (schema, db)
+// pairs the surface should query: a single tenant when `?schema=X`
+// names one, all registered tenants otherwise. Schemas are returned
+// in sorted order so the admin table render is stable across reloads.
+func (h *Handler) resolveOperationalContractTenants(r *http.Request, scoped string) ([]operationalContractScope, *operationalContractHTTPError) {
+	// h.mgr is non-nil in production but may be nil in handler tests
+	// that construct a bare Handler{}. Treat nil mgr identically to
+	// "no registered tenants" — fall back to the request's tenant DB
+	// from context.
+	var all map[string]*storage.DB
+	if h.mgr != nil {
+		all = h.mgr.AllDBs()
+	}
+	if scoped != "" && scoped != "all" {
+		got, ok := all[scoped]
+		if !ok || got == nil {
+			return nil, &operationalContractHTTPError{code: http.StatusBadRequest, msg: "unknown schema"}
+		}
+		return []operationalContractScope{{schema: scoped, db: got}}, nil
+	}
+	if len(all) == 0 {
+		// Fall back to the request's own tenant DB — single-tenant
+		// legacy mode or handler test.
+		db := h.tenantDB(r)
+		if db == nil {
+			return nil, &operationalContractHTTPError{code: http.StatusServiceUnavailable, msg: "no tenant DB available"}
+		}
+		return []operationalContractScope{{schema: h.tenantSchema(r), db: db}}, nil
+	}
+	schemas := make([]string, 0, len(all))
+	for s := range all {
+		schemas = append(schemas, s)
+	}
+	sort.Strings(schemas)
+	out := make([]operationalContractScope, 0, len(schemas))
+	for _, s := range schemas {
+		out = append(out, operationalContractScope{schema: s, db: all[s]})
+	}
+	return out, nil
+}
+
+// chipCell is one rendered cell in the operational-contract pivot
+// table: short text plus a hover title.
+type chipCell struct {
+	Text  string
+	Title string
+}
+
+// buildChipCell turns one storage row into the cell shown in the
+// pivot table: a short text representation of the chip value
+// (number / "unknown" / "pending") and a hover title carrying both
+// the baseline-side reason (authoritative for the chip's `unknown`
+// state) and the target-side eligibility_reason (secondary
+// diagnostic — useful to operators because it can disagree with the
+// baseline reason on the same date).
+//
+// Format:
+//   - value present → "0.918"
+//   - value nil, baseline_reason set → "unknown" (title: reason details)
+//   - value nil, baseline_reason nil → "pending" (writer hasn't reached date)
+//
+// Title always shows both reasons when populated, formatted as
+// `baseline=X · target=Y`, so the operator can scan a date for
+// disagreements between baseline-side and target-side reasons at a
+// glance.
+func buildChipCell(row storage.OperationalContractRow) chipCell {
+	cell := chipCell{}
+	switch {
+	case row.PredictedValue != nil:
+		cell.Text = fmt.Sprintf("%.3f", *row.PredictedValue)
+	case row.BaselineReason != nil:
+		cell.Text = "unknown"
+	default:
+		cell.Text = "pending"
+	}
+	var parts []string
+	if row.BaselineReason != nil {
+		parts = append(parts, "baseline="+*row.BaselineReason)
+	}
+	if row.TargetEligibilityReason != nil {
+		parts = append(parts, "target="+*row.TargetEligibilityReason)
+	}
+	if row.SourceEpoch != nil && *row.SourceEpoch != "" {
+		parts = append(parts, "epoch="+*row.SourceEpoch)
+	}
+	cell.Title = strings.Join(parts, " · ")
+	return cell
+}
+
+func tenantSchemas(scopes []operationalContractScope) []string {
+	out := make([]string, 0, len(scopes))
+	for _, s := range scopes {
+		out = append(out, s.schema)
+	}
+	return out
 }
 
 // parseOperationalContractDays validates the `days` query parameter

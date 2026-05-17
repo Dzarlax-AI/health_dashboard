@@ -484,6 +484,45 @@ func TestChronicLoad_Integration_WarmupGateBlocksLabel(t *testing.T) {
 	if gotCount != 2 {
 		t.Errorf("expected 2 target rows, got %d", gotCount)
 	}
+
+	// Baselines must be written even when warmup gates the target row.
+	// `event_base_rate` looks at prior labels strictly before t and is
+	// independent of whether Recovery warmup is met — without this
+	// behaviour the chip on cold-start days would render `pending`
+	// forever. With zero prior chronic_label history seeded, both
+	// baselines have predicted_value=NULL and reason=baseline_warmup
+	// (the 90-day prior window has no labels in it yet — distinct
+	// from the target-side `baseline_warmup` which is about Recovery
+	// rolling_3d paired count).
+	baselineRows, err := db.pool.Query(context.Background(), `
+		SELECT target_kind, predicted_value, reason
+		  FROM naive_baselines
+		 WHERE date = $1 AND sub_score = $2 AND baseline_kind = $3
+		 ORDER BY target_kind
+	`, "2026-04-20", SubScoreChronicLoad, BaselineKindEventBaseRate)
+	if err != nil {
+		t.Fatalf("read baselines: %v", err)
+	}
+	defer baselineRows.Close()
+	baselineCount := 0
+	for baselineRows.Next() {
+		var tk string
+		var val *float32
+		var reason *string
+		if err := baselineRows.Scan(&tk, &val, &reason); err != nil {
+			t.Fatalf("scan baseline: %v", err)
+		}
+		if val != nil {
+			t.Errorf("%s: predicted_value = %v on cold start, want NULL", tk, *val)
+		}
+		if reason == nil || *reason != BaselineReasonWarmup {
+			t.Errorf("%s: reason = %v, want %q", tk, reason, BaselineReasonWarmup)
+		}
+		baselineCount++
+	}
+	if baselineCount != 2 {
+		t.Errorf("expected 2 baseline rows (chronic_label + chronic_acute_density) on warmup-gated date, got %d", baselineCount)
+	}
 }
 
 func TestChronicLoad_Integration_EpochClippingPreventsLeakage(t *testing.T) {

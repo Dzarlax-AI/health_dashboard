@@ -77,9 +77,10 @@ func TestAdminReadinessRedesignOperationalContract_JSONShape(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
 	}
 	var resp struct {
-		Schema string `json:"schema"`
-		Days   int    `json:"days"`
-		Rows   []struct {
+		Tenants []string `json:"tenants"`
+		Days    int      `json:"days"`
+		Rows    []struct {
+			Tenant                  string   `json:"tenant"`
 			Date                    string   `json:"Date"`
 			SubScore                string   `json:"SubScore"`
 			PredictedValue          *float64 `json:"PredictedValue"`
@@ -90,8 +91,8 @@ func TestAdminReadinessRedesignOperationalContract_JSONShape(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v; body=%s", err, w.Body.String())
 	}
-	if resp.Schema != schema {
-		t.Errorf("schema = %q, want %q", resp.Schema, schema)
+	if len(resp.Tenants) != 1 || resp.Tenants[0] != schema {
+		t.Errorf("tenants = %v, want [%q]", resp.Tenants, schema)
 	}
 	if resp.Days != 14 {
 		t.Errorf("days = %d, want 14", resp.Days)
@@ -103,6 +104,9 @@ func TestAdminReadinessRedesignOperationalContract_JSONShape(t *testing.T) {
 	}
 	got := map[string]cell{}
 	for _, row := range resp.Rows {
+		if row.Tenant != schema {
+			t.Errorf("row tenant = %q, want %q", row.Tenant, schema)
+		}
 		if row.SubScore == storage.SubScoreRecoveryStability {
 			got[row.Date] = cell{val: row.PredictedValue, reason: row.BaselineReason}
 		}
@@ -243,13 +247,23 @@ func TestFragmentAdminReadinessContract_RendersValueAndUnknown(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
 	}
 	body := w.Body.String()
+	// Pivot table: value rendered as text in a chip cell.
 	if !strings.Contains(body, "0.910") {
 		t.Errorf("fragment missing value cell '0.910': %s", body)
 	}
+	// nil-value, reason-set chip renders the word "unknown" in its
+	// cell text.
 	if !strings.Contains(body, "unknown") {
 		t.Errorf("fragment missing 'unknown' marker: %s", body)
 	}
-	if !strings.Contains(body, storage.BaselineReasonWarmup) {
-		t.Errorf("fragment missing baseline_warmup label: %s", body)
+	// Baseline reason now lives in the cell's title= attribute as
+	// part of "baseline=… · target=… · epoch=…" tooltip — confirm
+	// it's the value-side label, not just the cell text.
+	if !strings.Contains(body, `title="baseline=`+storage.BaselineReasonWarmup) {
+		t.Errorf("fragment missing baseline_warmup title attribute: %s", body)
+	}
+	// Pivot includes tenant column with the schema name.
+	if !strings.Contains(body, schema) {
+		t.Errorf("fragment missing tenant column with schema %q: %s", schema, body)
 	}
 }

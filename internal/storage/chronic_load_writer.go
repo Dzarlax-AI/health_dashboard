@@ -309,6 +309,23 @@ func (s *DB) writeChronicLoadRow(
 				return fmt.Errorf("save warmup-ineligible %s/%s: %w", date, tk, err)
 			}
 		}
+		// Baselines write regardless of target warmup state. The
+		// `event_base_rate` baseline is computed from prior labels
+		// strictly before t; it does not depend on whether the forward
+		// 14-day window is observable or whether the Recovery warmup
+		// has been met. Without these, the bleeding edge of every
+		// backfill (last 14 days, where the forward window can't close)
+		// would render the chip as `pending` indefinitely.
+		if err := s.saveEventBaseRateBaseline(
+			t, date, SubScoreChronicLoad, TargetKindChronicLabel,
+			priorChronic, epoch, epochStart, chronicLoadFormulaVersion); err != nil {
+			return fmt.Errorf("save warmup-ineligible baseline %s/chronic_label: %w", date, err)
+		}
+		if err := s.saveEventBaseRateBaseline(
+			t, date, SubScoreChronicLoad, TargetKindChronicAcuteDensity,
+			priorAcuteDensity, epoch, epochStart, chronicLoadFormulaVersion); err != nil {
+			return fmt.Errorf("save warmup-ineligible baseline %s/chronic_acute_density: %w", date, err)
+		}
 		return s.SaveFeatureSnapshot(FeatureSnapshot{
 			Date:           date,
 			SubScore:       SubScoreChronicLoad,
@@ -479,50 +496,21 @@ func (s *DB) writeChronicLoadRow(
 		priorAcuteDensity[date] = int(acuteDensityLabel)
 	}
 
-	// Naive base-rate baselines per target_kind. Only written for
-	// eligible target rows — `predicted_value` is meaningless when the
-	// observed label is itself unknown. priorEventBaseRate walks
-	// i=1..90 *strictly before* t, so the earliest day touched is
-	// t-90 (matches the earliestOffsetDays convention used by the
-	// classifier).
-	chronicReason := classifyBaselineNullReason(t, 90, epochStart)
-	if chronicLabelEligible {
-		rate := priorEventBaseRate(t, 90, priorChronic)
-		reason := ""
-		if rate == nil {
-			reason = chronicReason
-		}
-		if err := s.SaveNaiveBaseline(NaiveBaseline{
-			Date:           date,
-			SubScore:       SubScoreChronicLoad,
-			TargetKind:     TargetKindChronicLabel,
-			BaselineKind:   BaselineKindEventBaseRate,
-			PredictedValue: rate,
-			Reason:         reason,
-			SourceEpoch:    epoch,
-			FormulaVersion: chronicLoadFormulaVersion,
-		}); err != nil {
-			return fmt.Errorf("save chronic base-rate %s/chronic_label: %w", date, err)
-		}
+	// Naive base-rate baselines per target_kind. Written
+	// unconditionally — `event_base_rate` looks at prior labels
+	// strictly before t and does not depend on whether the forward
+	// 14-day window has closed for this date. The previous gating on
+	// per-target eligibility hid deployable predictions on the
+	// bleeding edge where the future label window can't close yet.
+	if err := s.saveEventBaseRateBaseline(
+		t, date, SubScoreChronicLoad, TargetKindChronicLabel,
+		priorChronic, epoch, epochStart, chronicLoadFormulaVersion); err != nil {
+		return fmt.Errorf("save chronic base-rate %s/chronic_label: %w", date, err)
 	}
-	if acuteDensityEligible {
-		rate := priorEventBaseRate(t, 90, priorAcuteDensity)
-		reason := ""
-		if rate == nil {
-			reason = chronicReason
-		}
-		if err := s.SaveNaiveBaseline(NaiveBaseline{
-			Date:           date,
-			SubScore:       SubScoreChronicLoad,
-			TargetKind:     TargetKindChronicAcuteDensity,
-			BaselineKind:   BaselineKindEventBaseRate,
-			PredictedValue: rate,
-			Reason:         reason,
-			SourceEpoch:    epoch,
-			FormulaVersion: chronicLoadFormulaVersion,
-		}); err != nil {
-			return fmt.Errorf("save chronic base-rate %s/chronic_acute_density: %w", date, err)
-		}
+	if err := s.saveEventBaseRateBaseline(
+		t, date, SubScoreChronicLoad, TargetKindChronicAcuteDensity,
+		priorAcuteDensity, epoch, epochStart, chronicLoadFormulaVersion); err != nil {
+		return fmt.Errorf("save chronic base-rate %s/chronic_acute_density: %w", date, err)
 	}
 
 	return s.SaveFeatureSnapshot(FeatureSnapshot{

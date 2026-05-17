@@ -418,6 +418,111 @@ func TestAcuteRisk_Integration_WindowDataMissingBlocksLabel(t *testing.T) {
 	if gotCount != 2 {
 		t.Errorf("expected 2 target rows (OR + strict), got %d", gotCount)
 	}
+
+	// Baselines must be written even when the forward target window is
+	// unobservable — the chip on the bleeding edge of every backfill
+	// depends on this. Single-day backfill on a fresh tenant has no
+	// prior labels accumulated, so cold-start state is value=NULL with
+	// a valid reason. The point of this assertion is row presence and
+	// the joint-state invariant; a separate test exercises the
+	// value-populated case once prior labels exist.
+	baselineRows, err := db.pool.Query(context.Background(), `
+		SELECT target_kind, predicted_value, reason
+		  FROM naive_baselines
+		 WHERE date = $1 AND sub_score = $2 AND baseline_kind = $3
+		 ORDER BY target_kind
+	`, "2026-04-20", SubScoreAcuteRisk, BaselineKindEventBaseRate)
+	if err != nil {
+		t.Fatalf("read baselines: %v", err)
+	}
+	defer baselineRows.Close()
+	baselineCount := 0
+	for baselineRows.Next() {
+		var tk string
+		var val *float32
+		var reason *string
+		if err := baselineRows.Scan(&tk, &val, &reason); err != nil {
+			t.Fatalf("scan baseline: %v", err)
+		}
+		// Joint state: either value present (reason NULL) or value
+		// NULL with a valid reason.
+		if val != nil && reason != nil {
+			t.Errorf("%s: both value=%v and reason=%q set (joint-state)", tk, *val, *reason)
+		}
+		if val == nil && reason == nil {
+			t.Errorf("%s: both value and reason NULL — chip would render unknown without explanation", tk)
+		}
+		baselineCount++
+	}
+	if baselineCount != 2 {
+		t.Errorf("expected 2 baseline rows (OR + strict) on window-missing date, got %d", baselineCount)
+	}
+}
+
+// TestAcuteRisk_Integration_BaselinesPopulatedAfterPriorLabels exercises
+// the value-populated path: a multi-day backfill where earlier dates
+// populate orEventByDate/strictEventByDate, and a later date that hits
+// the window-missing gate (because t+1..t+3 has a hole) still gets a
+// non-NULL event_base_rate from the accumulated history.
+func TestAcuteRisk_Integration_BaselinesPopulatedAfterPriorLabels(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	// 60 days of steady history → warmup met. Then 30 days of
+	// observable target rows (full t+1..t+3 each) so the writer
+	// accumulates a labels-by-date map. The 31st backfill date has a
+	// hole in its forward window, triggering event_window_data_missing.
+	seedSteadyHistory(t, db, "2026-03-31", 60)
+	// Seed observable days April 1..May 3 EXCEPT for May 2 (the hole
+	// that triggers window-missing on the backfill date 2026-04-30:
+	// t+1=05-01 ok, t+2=05-02 missing, t+3=05-03 ok).
+	hrv0, rhr0 := 45.0, 60.0
+	skipMay2 := time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC).Format(isoDate)
+	for i := 1; i <= 33; i++ {
+		date := time.Date(2026, 4, i, 0, 0, 0, 0, time.UTC).Format(isoDate)
+		if date == skipMay2 {
+			continue
+		}
+		seedAutonomicRow(t, db, date, &hrv0, &rhr0)
+	}
+
+	if _, err := db.BackfillAcuteRiskSnapshots("2026-04-01", "2026-04-30"); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	// Confirm the last day was target-ineligible (window-missing) and
+	// that its event_base_rate baseline still got a populated value
+	// from the prior 29 days of accumulated labels.
+	var eligible bool
+	var reason string
+	if err := db.pool.QueryRow(context.Background(), `
+		SELECT eligible, eligibility_reason FROM target_snapshots
+		 WHERE date = $1 AND sub_score = $2 AND target_kind = $3
+	`, "2026-04-30", SubScoreAcuteRisk, TargetKindEventT1T3).Scan(&eligible, &reason); err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if eligible {
+		t.Errorf("expected target ineligible on window-missing date, got eligible=true")
+	}
+	if reason != health.AcuteRiskEligibilityEventWindowDataMissing {
+		t.Errorf("target reason = %q, want event_window_data_missing", reason)
+	}
+
+	var baseVal *float32
+	var baseReason *string
+	if err := db.pool.QueryRow(context.Background(), `
+		SELECT predicted_value, reason
+		  FROM naive_baselines
+		 WHERE date = $1 AND sub_score = $2 AND target_kind = $3 AND baseline_kind = $4
+	`, "2026-04-30", SubScoreAcuteRisk, TargetKindEventT1T3, BaselineKindEventBaseRate).Scan(&baseVal, &baseReason); err != nil {
+		t.Fatalf("read baseline: %v", err)
+	}
+	if baseVal == nil {
+		t.Errorf("expected event_base_rate populated from prior 29 days of labels on window-missing date, got NULL (chip would show pending)")
+	}
+	if baseReason != nil {
+		t.Errorf("baseline reason = %q on populated value (joint-state invariant)", *baseReason)
+	}
 }
 
 func TestAcuteRisk_Integration_BleedingEdgeIneligible(t *testing.T) {
