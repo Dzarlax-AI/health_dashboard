@@ -90,6 +90,14 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /fragments/metrics-list", h.guard(h.fragmentMetricsList))
 	mux.HandleFunc("GET /fragments/admin-status", h.adminGuard(h.fragmentAdminStatus))
 	mux.HandleFunc("GET /fragments/admin-readiness-contract", h.adminGuard(h.fragmentAdminReadinessContract))
+	mux.HandleFunc("GET /fragments/admin-readiness-onboarding/step-1", h.adminGuard(h.fragmentOnboardingStep1))
+	mux.HandleFunc("GET /fragments/admin-readiness-onboarding/step-2", h.adminGuard(h.fragmentOnboardingStep2))
+	mux.HandleFunc("GET /fragments/admin-readiness-onboarding/step-3", h.adminGuard(h.fragmentOnboardingStep3))
+	mux.HandleFunc("GET /fragments/admin-readiness-onboarding/step-4-plan", h.adminGuard(h.fragmentOnboardingStep4Plan))
+	mux.HandleFunc("POST /fragments/admin-readiness-onboarding/step-4-run", h.adminGuard(h.fragmentOnboardingStep4Run))
+	mux.HandleFunc("GET /fragments/admin-readiness-onboarding/step-5", h.adminGuard(h.fragmentOnboardingStep5))
+	mux.HandleFunc("POST /fragments/admin-readiness-onboarding/step-6-run", h.adminGuard(h.fragmentOnboardingStep6Run))
+	mux.HandleFunc("GET /fragments/admin-readiness-onboarding/step-7", h.adminGuard(h.fragmentOnboardingStep7))
 
 	// Static assets
 	mux.HandleFunc("GET /static/", serveStatic)
@@ -1734,11 +1742,20 @@ func (h *Handler) resolveOperationalContractTenants(r *http.Request, scoped stri
 		return out, nil
 	}
 	if scoped != "" {
-		got, ok := all[scoped]
-		if !ok || got == nil {
-			return nil, &operationalContractHTTPError{code: http.StatusBadRequest, msg: "unknown schema"}
+		if got, ok := all[scoped]; ok && got != nil {
+			return []operationalContractScope{{schema: scoped, db: got}}, nil
 		}
-		return []operationalContractScope{{schema: scoped, db: got}}, nil
+		// Fallback for legacy / handler-test contexts where the
+		// manager isn't populated but the request's own tenant DB
+		// matches the requested schema. Keeps `?schema=<own>` working
+		// in single-tenant mode and in tests that build a bare
+		// Handler{} but inject one tenant via ctxdb.
+		if h.tenantSchema(r) == scoped {
+			if db := h.tenantDB(r); db != nil {
+				return []operationalContractScope{{schema: scoped, db: db}}, nil
+			}
+		}
+		return nil, &operationalContractHTTPError{code: http.StatusBadRequest, msg: "unknown schema"}
 	}
 	// Default: request tenant only. Safe for both GET (admin sees
 	// their own tenant by default) and POST (recompute targets the

@@ -814,6 +814,29 @@ it routes to the global registry and only accepts the gemini_* keys.
 Anything else is silently dropped from the request — exactly the
 silent failure mode this track removes.
 
+**Onboarding wizard (`/admin` UI).** The runbook below is the
+operational spec for what each step must check; the
+**Operations → Readiness redesign tenant onboarding wizard**
+section on `/admin` walks an operator through it without curl. Each
+of the wizard's 7 steps reads its state from the database on every
+render (stateless re-entry) and rejects `schema=all` on every
+mutating step — recompute and backfill are per-tenant by design.
+Steps:
+
+1. Tenant check — schema health, Phase 0 row counts, active epoch.
+2. Chronic load config — effective vs defaults vs overrides.
+3. Coverage / base-rate preview — eligible row counts and Acute OR
+   base rate with a "is it in the 15–30% band" hint.
+4. Phase 0 backfill — shows the plan (tenant, from/to, days,
+   force, sub_score list) before a confirmation click.
+5. Verify — re-renders the Step 1 row counts after backfill.
+6. Recompute chip calibrations — reuses the existing endpoint.
+7. Final preview — the operational-contract pivot scoped to this
+   tenant for the last 7 days.
+
+Operators wanting to invoke the underlying endpoints directly can
+still follow the runbook below; the wizard composes the same calls.
+
 **Runbook (calibrating a new tenant before backfill):**
 
 1. Hit `GET /api/admin/readiness-redesign/config?schema=<tenant>`.

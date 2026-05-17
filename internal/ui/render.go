@@ -73,6 +73,7 @@ func init() {
 		"templates/partials/metrics_list.html",
 		"templates/partials/admin_status.html",
 		"templates/partials/admin_readiness_contract.html",
+		"templates/partials/admin_onboarding.html",
 	}
 
 	for _, page := range pages {
