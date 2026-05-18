@@ -174,21 +174,35 @@ var SumMetrics = map[string]bool{
 	"night_sleep_total": true, "nap_total": true,
 }
 
-// sleepDedupClause returns a SQL WHERE clause that excludes midnight summary
-// records (00:00:00) when real sleep fragments exist for the same day+source.
+// sleepDedupClause returns a SQL WHERE clause that excludes per-segment sleep
+// fragments when a midnight summary (00:00:00) exists for the same day+source.
 // Returns empty string for non-sleep metrics.
+//
+// Policy: prefer the device's midnight summary because it represents the
+// source's own reconciled answer for "the night that ended at 00:00".
+// Per-segment fragments are the underlying detection events and tend to
+// double-count: pairs at 1-second offset (e.g. sleep_deep 02:48:17 +
+// 02:48:18), daytime "core sleep" segments while the user was still,
+// overlapping summaries when a session is re-emitted. Falling back to
+// fragments only when no summary exists preserves the Round 1 fix
+// (PR #3, days where the summary went missing).
+//
+// Invariant this enforces: for Apple Watch (which emits both formats),
+// sleep_total ≈ sleep_deep + sleep_rem + sleep_core per night per source.
+// sleep_awake is separate (time awake within the sleep period), not part
+// of sleep_total.
 func sleepDedupClause(metric string) string {
 	if !isSleepMetric(metric) {
 		return ""
 	}
 	return `AND NOT (
-		SUBSTRING(date, 12, 8) = '00:00:00'
+		SUBSTRING(date, 12, 8) != '00:00:00'
 		AND EXISTS (
 			SELECT 1 FROM metric_points p2
 			WHERE p2.metric_name = metric_points.metric_name
 			  AND SUBSTRING(p2.date, 1, 10) = SUBSTRING(metric_points.date, 1, 10)
 			  AND p2.source = metric_points.source
-			  AND SUBSTRING(p2.date, 12, 8) != '00:00:00'
+			  AND SUBSTRING(p2.date, 12, 8) = '00:00:00'
 			  AND p2.qty > 0
 		)
 	)`
@@ -319,7 +333,8 @@ func (s *DB) upsertHourlySumForDate(date string) {
 }
 
 // upsertHourlySleepForDate handles the 5 sleep_* metrics with the dedup clause.
-// One SQL statement using a NOT EXISTS subquery for midnight-summary dedup.
+// One SQL statement using a NOT EXISTS subquery for the prefer-summary dedup
+// (see sleepDedupClause for the policy rationale).
 func (s *DB) upsertHourlySleepForDate(date string) {
 	ctx, cancel := longCtx()
 	defer cancel()
@@ -338,13 +353,13 @@ func (s *DB) upsertHourlySleepForDate(date string) {
 			  AND mp.quality = 'ok'
 			  AND mp.metric_name LIKE 'sleep\_%' ESCAPE '\'
 			  AND NOT (
-			      SUBSTRING(mp.date, 12, 8) = '00:00:00'
+			      SUBSTRING(mp.date, 12, 8) <> '00:00:00'
 			      AND EXISTS (
 			          SELECT 1 FROM metric_points p2
 			          WHERE p2.metric_name = mp.metric_name
 			            AND SUBSTRING(p2.date,1,10) = SUBSTRING(mp.date,1,10)
 			            AND p2.source = mp.source
-			            AND SUBSTRING(p2.date,12,8) <> '00:00:00'
+			            AND SUBSTRING(p2.date,12,8) = '00:00:00'
 			            AND p2.qty > 0
 			      )
 			  )
