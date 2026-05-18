@@ -142,6 +142,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// JSON API — admin only
 	mux.HandleFunc("/api/admin/status", h.adminGuard(h.adminStatus))
 	mux.HandleFunc("/api/admin/backfill", h.adminGuard(h.adminBackfill))
+	mux.HandleFunc("/api/webhook-status", h.guard(h.webhookStatus))
+	mux.HandleFunc("/api/webhook-status/retry", h.adminGuard(h.webhookStatusRetry))
 	mux.HandleFunc("/api/admin/readiness-redesign/backfill", h.adminGuard(h.adminReadinessRedesignBackfill))
 	mux.HandleFunc("/api/admin/readiness-redesign/config", h.adminGuard(h.adminReadinessRedesignConfig))
 	mux.HandleFunc("/api/admin/readiness-redesign/operational-contract", h.adminGuard(h.adminReadinessRedesignOperationalContract))

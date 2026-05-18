@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"log"
+	"net/http"
 
 	"health-receiver/internal/notify"
 	"health-receiver/internal/registry"
@@ -86,3 +87,88 @@ func (h *Handler) runWebhookRegistrar(schema string, diff notify.TelegramDiff, u
 	}
 	log.Printf("dispatchWebhookDiff: %s → %s", schema, finalState)
 }
+
+// webhookStatus handles GET /api/webhook-status — returns the current
+// per-tenant webhook registration status as JSON. Available to all
+// users (badge is per-tenant, no cross-tenant disclosure: we only
+// read the caller's own schema).
+func (h *Handler) webhookStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.reg == nil {
+		// Legacy bootstrap without registry — webhook integration
+		// unavailable. Reply with a soft "unknown" rather than 500.
+		jsonResponse(w, map[string]any{
+			"state":      registry.StateUnknown,
+			"reason":     "",
+			"updated_at": nil,
+		})
+		return
+	}
+	schema := h.tenantSchema(r)
+	st := h.reg.GetWebhookStatus(r.Context(), schema)
+	resp := map[string]any{
+		"state":  st.State,
+		"reason": st.Reason,
+	}
+	if !st.UpdatedAt.IsZero() {
+		resp["updated_at"] = st.UpdatedAt
+	} else {
+		resp["updated_at"] = nil
+	}
+	jsonResponse(w, resp)
+}
+
+// webhookStatusRetry handles POST /api/webhook-status/retry — admin-only
+// trigger to re-run the registrar for the caller's tenant. Used by
+// the Retry button in the badge UI when status is failed.
+//
+// Builds a synthetic diff from (empty, currentCfg) when the tenant
+// currently HAS a token (re-register) or (currentCfg, empty) when it
+// doesn't (we have nothing to do). Both arms reuse the same async
+// path as dispatchWebhookDiff so the badge transitions through
+// pending → ok/failed identically.
+func (h *Handler) webhookStatusRetry(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.webhookRegistrar == nil || h.reg == nil {
+		http.Error(w, "webhook not configured", http.StatusServiceUnavailable)
+		return
+	}
+	schema := h.tenantSchema(r)
+	db := h.tenantDB(r)
+	if db == nil {
+		http.Error(w, "tenant DB unavailable", http.StatusInternalServerError)
+		return
+	}
+	cfg := db.GetNotifyConfig(h.mgr.NotifyDefaultsFor(schema))
+	if cfg.Token == "" {
+		// No token configured for this tenant — nothing to register.
+		// Mark deleted (or leave alone if already deleted/unknown).
+		jsonResponse(w, map[string]string{"status": "noop", "reason": "no token configured"})
+		return
+	}
+
+	if err := h.reg.SetWebhookStatus(r.Context(), schema, registry.StatePending, ""); err != nil {
+		log.Printf("webhookStatusRetry: set pending for %s: %v", schema, err)
+	}
+	secret := h.reg.GetGlobalSetting(r.Context(), "webhook_secret")
+	tokenHeader := h.reg.GetGlobalSetting(r.Context(), "webhook_token_header")
+	url := h.webhookBaseURL + "/api/telegram/webhook/" + secret
+
+	// Synthetic register-only diff: we're re-running setWebhook on the
+	// current token. OldToken is empty because there's nothing to
+	// clean up — this path only fires when the operator explicitly
+	// asked to retry on a tenant that DOES have a token.
+	go h.runWebhookRegistrar(schema, notify.TelegramDiff{NeedsRegister: true, NewToken: cfg.Token}, url, tokenHeader)
+
+	jsonResponse(w, map[string]string{"status": "pending"})
+}
+
+// silence unused-import warnings during stepwise development.
+var _ = storage.NotifyConfig{}
+
