@@ -10,6 +10,32 @@ import (
 	"health-receiver/internal/storage"
 )
 
+// shouldFirstClearDelete decides whether to synthesize a delete diff
+// against the env/default-effective old token. Pure function so the
+// branch policy is exercised by table-driven tests without spinning
+// up a DB or registrar.
+//
+// Returns true iff ALL of:
+//   - tokenPosted=true: the client explicitly included telegram_token
+//     in the POST body. Partial saves that omit the field must NOT
+//     trigger a delete — the operator hasn't expressed any intent
+//     about the token on this request.
+//   - oldTokenRowExists=false: the row was absent before save, i.e.
+//     the bot was sourced from env/default fallback, not from a
+//     per-tenant override the operator previously set.
+//   - newRawToken=="": after save, the stored row is empty — the
+//     operator's intent on THIS request is "no per-tenant token".
+//   - oldEffectiveToken!="": env/default actually provided a token
+//     before the save — there's something to clean up Telegram-side.
+//
+// All four matter. Dropping tokenPosted is the bug PR #122 round 3
+// review caught: a partial POST of unrelated fields (e.g. only
+// timezone) on an env-backed tenant would silently trip the delete
+// branch and unregister the env bot's webhook.
+func shouldFirstClearDelete(tokenPosted, oldTokenRowExists bool, newRawToken, oldEffectiveToken string) bool {
+	return tokenPosted && !oldTokenRowExists && newRawToken == "" && oldEffectiveToken != ""
+}
+
 // dispatchWebhookDiffRaw is the service-layer side effect that follows
 // a successful settings write. Bridges storage (clean, synchronous,
 // deterministic) and Telegram HTTP (best-effort, async, may fail).

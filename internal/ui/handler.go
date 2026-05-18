@@ -1957,6 +1957,14 @@ func (h *Handler) userSettings(w http.ResponseWriter, r *http.Request) {
 				clean[k] = v
 			}
 		}
+		// Distinguish "client explicitly posted telegram_token" from
+		// "client omitted the field on a partial POST". Without this
+		// signal, partial saves that touch only timezone (or any
+		// other non-token field) would trip the first-clear-delete
+		// branch on env-backed tenants and silently unregister the
+		// env bot's webhook. UI today sends every field, but the API
+		// is partial-friendly and external clients exist.
+		_, tokenPosted := clean["telegram_token"]
 
 		// Snapshot RAW + EXISTENCE of the per-tenant Telegram fields
 		// before the write. Three pieces of state matter for the
@@ -1973,7 +1981,8 @@ func (h *Handler) userSettings(w http.ResponseWriter, r *http.Request) {
 		// The first-clear transition (operator clears the field on a
 		// tenant that was env-fallback'd) collapses oldRawToken ==
 		// newRawToken == "" with GetSetting, so the plain raw diff
-		// misses it. We catch that explicitly below.
+		// misses it. shouldFirstClearDelete catches that — its policy
+		// is unit-tested in webhook_dispatch_test.go.
 		notifyDefaults := h.mgr.NotifyDefaultsFor(schema)
 		oldRawToken := db.GetSetting("telegram_token", "")
 		oldRawChat := db.GetSetting("telegram_chat_id", "")
@@ -1991,19 +2000,11 @@ func (h *Handler) userSettings(w http.ResponseWriter, r *http.Request) {
 		newRawToken := db.GetSetting("telegram_token", "")
 		newRawChat := db.GetSetting("telegram_chat_id", "")
 
-		// First-clear special case: row didn't exist before save, now
-		// it does (SaveSettings just inserted it), and the new value
-		// is empty. The operator's intent is "stop using the bot the
-		// system was using" — which, before this save, was the env
-		// fallback. Without this branch, raw==raw==""→ no-op and the
-		// env bot's webhook stays pointing at us even though the
-		// operator told us to stop.
-		//
-		// Subsequent saves with an empty field on the same tenant
-		// (row already exists with "") fall through to the plain raw
-		// diff and yield no-op — no idempotent re-delete spam.
+		// First-clear special case (see shouldFirstClearDelete doc).
+		// All four conditions matter — partial POST, prior row state,
+		// post-save raw, and env fallback presence.
 		oldForDiff := oldRawToken
-		if !oldTokenRowExists && newRawToken == "" && oldEffectiveToken != "" {
+		if shouldFirstClearDelete(tokenPosted, oldTokenRowExists, newRawToken, oldEffectiveToken) {
 			oldForDiff = oldEffectiveToken
 		}
 
