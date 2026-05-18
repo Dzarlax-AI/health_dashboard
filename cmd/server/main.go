@@ -214,32 +214,7 @@ func main() {
 	uiHandler.Register(mux)
 	mcpserver.Register(mux, mgr, baseURL)
 
-	// Telegram check-in webhook. Path: /api/telegram/webhook/<secret>.
-	// Secret is read from env TELEGRAM_WEBHOOK_SECRET. When unset, the
-	// webhook is not registered — no-Telegram tenants are unaffected
-	// and the morning-flow proceeds as before.
-	if secret := os.Getenv("TELEGRAM_WEBHOOK_SECRET"); secret != "" {
-		tokenHeader := os.Getenv("TELEGRAM_WEBHOOK_TOKEN_HEADER")
-		notifyDefaults := envNotifyDefaults
-		mux.HandleFunc("/api/telegram/webhook/", notify.NewWebhookHandler(notify.WebhookConfig{
-			Secret:      secret,
-			TokenHeader: tokenHeader,
-			TenantFinder: func(chat string) (notify.CheckinTenant, bool) {
-				db, schema, ok := mgr.DBForTelegramChatID(context.Background(), notifyDefaults, chat)
-				if !ok {
-					return notify.CheckinTenant{}, false
-				}
-				cfg := db.GetNotifyConfig(notifyDefaults)
-				bot := notify.NewBot(cfg.Token, cfg.ChatID)
-				return notify.CheckinTenant{
-					Schema: schema,
-					Lang:   cfg.Lang,
-					Router: &liveCheckinRouter{db: db, bot: bot, triggerReport: makeReportTrigger(mgr, schema, notifyDefaults)},
-				}, true
-			},
-		}))
-		log.Printf("Telegram webhook registered at /api/telegram/webhook/<secret> (token header: %v)", tokenHeader != "")
-	}
+	registerCheckinWebhook(mux, mgr, envNotifyDefaults)
 
 	logged := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -303,6 +278,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	handler.New(mgr, onNewData, hrZones).Register(mux)
 	ui.New(mgr, reg, trustFwdAuth).Register(mux)
 	mcpserver.Register(mux, mgr, baseURL)
+	registerCheckinWebhook(mux, mgr, notifyDefaults)
 
 	logged := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -542,6 +518,41 @@ func makeTestNotifyFn(db *storage.DB, mgr *tenants.Manager, schema string, notif
 //      the report fire while the watch was still recording the second half
 //      of a wake-walk-sleep-again cycle. Now we wait for the watch to stop
 //      writing.
+
+// registerCheckinWebhook mounts the Telegram callback handler on mux
+// when TELEGRAM_WEBHOOK_SECRET is set. Used from both runSingleTenant
+// (legacy mode) and the multi-tenant mux build so neither path falls
+// through silently with the env set.
+func registerCheckinWebhook(mux *http.ServeMux, mgr *tenants.Manager, notifyDefaults storage.NotifyConfig) {
+	secret := os.Getenv("TELEGRAM_WEBHOOK_SECRET")
+	if secret == "" {
+		return
+	}
+	tokenHeader := os.Getenv("TELEGRAM_WEBHOOK_TOKEN_HEADER")
+	mux.HandleFunc("/api/telegram/webhook/", notify.NewWebhookHandler(notify.WebhookConfig{
+		Secret:      secret,
+		TokenHeader: tokenHeader,
+		TenantFinder: func(chat string) (notify.CheckinTenant, bool) {
+			db, schema, ok := mgr.DBForTelegramChatID(context.Background(), notifyDefaults, chat)
+			if !ok {
+				return notify.CheckinTenant{}, false
+			}
+			cfg := db.GetNotifyConfig(notifyDefaults)
+			loc := time.Local
+			if l, err := time.LoadLocation(cfg.Timezone); err == nil && cfg.Timezone != "" {
+				loc = l
+			}
+			bot := notify.NewBot(cfg.Token, cfg.ChatID)
+			return notify.CheckinTenant{
+				Schema:    schema,
+				Lang:      cfg.Lang,
+				TodayInTZ: time.Now().In(loc).Format("2006-01-02"),
+				Router:    &liveCheckinRouter{db: db, bot: bot, triggerReport: makeReportTrigger(mgr, schema, notifyDefaults)},
+			}, true
+		},
+	}))
+	log.Printf("Telegram webhook registered at /api/telegram/webhook/<secret> (token header: %v)", tokenHeader != "")
+}
 
 // liveCheckinRouter is the production notify.CheckinAnswerRouter for
 // one tenant. Created per inbound webhook update by the TenantFinder

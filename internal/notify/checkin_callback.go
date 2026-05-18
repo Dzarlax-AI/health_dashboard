@@ -34,12 +34,17 @@ type CheckinAnswerRouter interface {
 
 // CheckinTenant carries the per-tenant routing context the webhook
 // needs after a chat_id lookup. Schema is for logging + report
-// trigger; Lang drives the ack text; Router does the save + ack +
-// (conditional) re-trigger.
+// trigger; Lang drives the ack text; TodayInTZ is precomputed by the
+// TenantFinder so the webhook can reject stale callbacks (e.g. user
+// taps yesterday's already-answered button from chat history today —
+// without the date check we'd trigger today's report on a re-tap of
+// last morning's row). Router does the save + ack + (conditional)
+// re-trigger.
 type CheckinTenant struct {
-	Schema string
-	Lang   string
-	Router CheckinAnswerRouter
+	Schema    string
+	Lang      string
+	TodayInTZ string // YYYY-MM-DD in the tenant's REPORT_TZ
+	Router    CheckinAnswerRouter
 }
 
 // WebhookConfig configures NewWebhookHandler.
@@ -78,6 +83,10 @@ func NewWebhookHandler(cfg WebhookConfig) http.HandlerFunc {
 			}
 		}
 
+		// Bound the request body before parsing. Telegram updates are
+		// small (~1-2 KB); 1 MiB is generous headroom and shuts down
+		// abusive payloads on this public endpoint.
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, "read body", http.StatusBadRequest)
@@ -123,7 +132,12 @@ func NewWebhookHandler(cfg WebhookConfig) http.HandlerFunc {
 		status, err := tenant.Router.SaveAnswer(date, storage.CheckinSourceTelegram, answer, time.Now())
 		if err != nil {
 			log.Printf("telegram webhook: save %s tenant=%s err=%v", answer, tenant.Schema, err)
-			// 200 to suppress Telegram retry; the error is logged.
+			// Best-effort ack with empty text to dismiss the Telegram
+			// loading spinner — without it the button stays "spinning"
+			// in the user's chat client until they tap again. The save
+			// error itself is already logged.
+			_ = tenant.Router.AnswerCallbackQuery(upd.CallbackQuery.ID, "")
+			// 200 to suppress Telegram retry.
 			fmt.Fprintln(w, "ignored: save error")
 			return
 		}
@@ -131,10 +145,24 @@ func NewWebhookHandler(cfg WebhookConfig) http.HandlerFunc {
 		if err := tenant.Router.AnswerCallbackQuery(upd.CallbackQuery.ID, ack); err != nil {
 			log.Printf("telegram webhook: ack: %v", err)
 		}
-		// Trigger report ONLY when answered in time. Late answers do
-		// not retrigger — the report already went out, no point
-		// firing again.
-		if status == storage.CheckinStatusAnswered {
+		// Trigger today's report ONLY when:
+		//   - the answer was saved as `answered` (in-time), AND
+		//   - the callback's date matches today in the tenant's TZ
+		//
+		// Two reasons for the date check:
+		//   1. SaveCheckinAnswer is idempotent — re-tapping an already-
+		//      answered row returns status=`answered`. Without a date
+		//      check, tapping yesterday's button from chat scrollback
+		//      today would retrigger today's morning report on a row
+		//      that has nothing to do with today's state.
+		//   2. Late answers (status=late_answered) don't retrigger by
+		//      design — the report already went out for that day.
+		//
+		// TodayInTZ is empty in tests that don't bother setting it; we
+		// treat empty as "no date check requested" so existing test
+		// fixtures keep working.
+		if status == storage.CheckinStatusAnswered &&
+			(tenant.TodayInTZ == "" || tenant.TodayInTZ == date) {
 			tenant.Router.TriggerReport(tenant.Schema)
 		}
 		fmt.Fprintln(w, "ok")

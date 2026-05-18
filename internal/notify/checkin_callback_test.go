@@ -3,6 +3,7 @@ package notify
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -191,7 +192,69 @@ func TestWebhook_RejectsMalformedCallback(t *testing.T) {
 	if router.saveCalls > 0 {
 		t.Fatalf("router invoked on malformed callback")
 	}
+	// The body's "ignored: ..." marker is part of the contract — log
+	// readers grep for it. Assert, don't just log.
 	if !strings.Contains(rec.Body.String(), "ignored") {
-		t.Logf("body: %s", rec.Body.String())
+		t.Errorf("body should contain 'ignored' marker; got: %s", rec.Body.String())
+	}
+}
+
+// Tapping yesterday's already-answered button from chat history
+// returns status=answered (idempotent re-save), but the date in
+// callback_data is not today. Trigger must be suppressed — the
+// report for THAT day already went out, and today's row hasn't
+// been touched.
+func TestWebhook_StaleDateDoesNotTrigger(t *testing.T) {
+	router := &fakeRouter{saveStatus: "answered"} // idempotent re-save returns "answered"
+	h := NewWebhookHandler(WebhookConfig{
+		Secret: "good",
+		TenantFinder: func(chat string) (CheckinTenant, bool) {
+			return CheckinTenant{
+				Schema:    "health",
+				Lang:      "ru",
+				TodayInTZ: "2026-05-18",
+				Router:    router,
+			}, true
+		},
+	})
+	// Callback for yesterday's date.
+	req := httptest.NewRequest("POST", "/api/telegram/webhook/good", bytes.NewReader(buildUpdateBody(t, "111", "checkin:great:2026-05-17")))
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rec.Code)
+	}
+	if router.saveCalls != 1 {
+		t.Fatalf("save should still run (idempotent on old row): got %d", router.saveCalls)
+	}
+	if router.ackCalls != 1 {
+		t.Fatalf("ack should still run to dismiss spinner: got %d", router.ackCalls)
+	}
+	if len(router.triggers) != 0 {
+		t.Fatalf("stale date must NOT retrigger today's report; got triggers=%v", router.triggers)
+	}
+}
+
+// Save errors must still dismiss the Telegram spinner via an empty
+// ack, otherwise the user's button stays "loading" indefinitely.
+func TestWebhook_SaveErrorStillAcks(t *testing.T) {
+	router := &fakeRouter{saveErr: errors.New("boom")}
+	h := NewWebhookHandler(WebhookConfig{
+		Secret: "good",
+		TenantFinder: func(chat string) (CheckinTenant, bool) {
+			return CheckinTenant{Schema: "health", Lang: "ru", Router: router}, true
+		},
+	})
+	req := httptest.NewRequest("POST", "/api/telegram/webhook/good", bytes.NewReader(buildUpdateBody(t, "111", "checkin:great:2026-05-18")))
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200 (Telegram retry suppressed), got %d", rec.Code)
+	}
+	if router.ackCalls != 1 {
+		t.Fatalf("ack must fire even on save error to kill the spinner; got %d", router.ackCalls)
+	}
+	if len(router.triggers) != 0 {
+		t.Fatalf("save error must NOT trigger report; got triggers=%v", router.triggers)
 	}
 }

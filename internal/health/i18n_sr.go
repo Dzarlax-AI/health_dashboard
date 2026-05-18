@@ -194,7 +194,7 @@ var sr = LangStrings{
 	"checkin_ack_great":    "Zabeleženo: Odlično. Lep dan.",
 	"checkin_ack_ok":       "Zabeleženo: Normalno.",
 	"checkin_ack_meh":      "Zabeleženo: Onako. Štedite se danas.",
-	"checkin_ack_sick":     "Zabeleženo: Bolestan. Odmarajte.",
+	"checkin_ack_sick":     "Zabeleženo: Bolestan(a). Odmarajte.",
 	"checkin_ack_late":     "Zabeleženo posle izveštaja — ide u analitiku.",
 	"checkin_expired_note": "<i>Želite da izveštaj bolje odražava vaše stanje? Odgovorite jednim dodirom sutra.</i>",
 

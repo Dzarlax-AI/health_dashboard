@@ -2,11 +2,20 @@ package notify
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
+
+// telegramHTTPTimeout caps every outbound API call. Telegram itself
+// usually responds in well under a second; anything longer is a
+// network stall and we'd rather fail the send and let the caller's
+// retry/backoff path decide than block the scheduler or webhook
+// handler indefinitely.
+const telegramHTTPTimeout = 5 * time.Second
 
 // Bot is a minimal Telegram bot client.
 type Bot struct {
@@ -18,6 +27,20 @@ func NewBot(token, chatID string) *Bot {
 	return &Bot{token: token, chatID: chatID}
 }
 
+// postJSON is the shared http.Post-with-timeout used by every Bot
+// method. Wraps the payload in a request bound to a context so a
+// stalled connection fails fast.
+func postJSON(url string, payload []byte) (*http.Response, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), telegramHTTPTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return http.DefaultClient.Do(req)
+}
+
 // Send sends an HTML-formatted message to the configured chat.
 func (b *Bot) Send(text string) error {
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", b.token)
@@ -26,7 +49,7 @@ func (b *Bot) Send(text string) error {
 		"text":       text,
 		"parse_mode": "HTML",
 	})
-	resp, err := http.Post(url, "application/json", bytes.NewReader(payload))
+	resp, err := postJSON(url, payload)
 	if err != nil {
 		return fmt.Errorf("telegram send: %w", err)
 	}
@@ -66,7 +89,7 @@ func (b *Bot) SendInlineKeyboard(text string, rows [][]InlineButton) (int64, err
 	if err != nil {
 		return 0, err
 	}
-	resp, err := http.Post(url, "application/json", bytes.NewReader(payload))
+	resp, err := postJSON(url, payload)
 	if err != nil {
 		return 0, fmt.Errorf("telegram send: %w", err)
 	}
@@ -94,6 +117,11 @@ func (b *Bot) SendInlineKeyboard(text string, rows [][]InlineButton) (int64, err
 // user's Telegram client stops showing the "loading" spinner on the
 // button. `text` is shown as a toast (or alert when alert=true; we
 // always pass false in MVP — toast is less intrusive).
+//
+// Telegram returns HTTP 200 even on logical errors (e.g. "query is
+// too old"), so we decode the body and check ok=false the same way
+// SendInlineKeyboard does. Without that, a 200-with-ok-false would
+// be silently treated as success.
 func (b *Bot) AnswerCallbackQuery(callbackQueryID, text string) error {
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/answerCallbackQuery", b.token)
 	payload, _ := json.Marshal(map[string]any{
@@ -101,13 +129,24 @@ func (b *Bot) AnswerCallbackQuery(callbackQueryID, text string) error {
 		"text":              text,
 		"show_alert":        false,
 	})
-	resp, err := http.Post(url, "application/json", bytes.NewReader(payload))
+	resp, err := postJSON(url, payload)
 	if err != nil {
 		return fmt.Errorf("telegram answerCallbackQuery: %w", err)
 	}
 	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("telegram API: status %d", resp.StatusCode)
+		return fmt.Errorf("telegram API: status %d body=%s", resp.StatusCode, body)
+	}
+	var parsed struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return fmt.Errorf("telegram response decode: %w", err)
+	}
+	if !parsed.OK {
+		return fmt.Errorf("telegram API: ok=false description=%q", parsed.Description)
 	}
 	return nil
 }
