@@ -802,7 +802,10 @@ func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager,
 
 		case notify.MorningActionForce, notify.MorningActionSendReport:
 			past := action == notify.MorningActionForce || action == notify.MorningActionExpireAndForce
-			sent, reason, err := notify.SendMorningSmart(bot, db, ncfg, past)
+			sent, reason, err := notify.SendMorningSmartOpts(bot, db, ncfg, notify.MorningSendOpts{
+				Force:          past,
+				CheckinExpired: action == notify.MorningActionExpireAndForce,
+			})
 			if err != nil {
 				log.Printf("morning smart-retry: send error: %v", err)
 			}
