@@ -230,6 +230,30 @@ var translationsEn = map[string]string{
 	"energy_state_critical_desc":        "Tank near empty — rest is the highest-yield choice today.",
 	"details":                           "Details",
 
+	// Methodology status badges — surface the honest provenance of each
+	// score on the dashboard. Manus methodology review (2026-05-17)
+	// recommends labelling scores as heuristic / validated_floor /
+	// experimental / labeling-framework so users can distinguish
+	// expert-tuned formulae from leakage-aware floors. Mapping:
+	//   readiness v1     -> heuristic_personalized
+	//   energy_bank v1   -> heuristic_prescriptive
+	//   energy_bank v2   -> experimental_formula
+	//   recovery floor   -> validated_floor_candidate
+	//   acute risk       -> labeling_framework_ready
+	//   chronic load     -> experimental_not_production
+	"methodology_status_heuristic_personalized":       "Heuristic",
+	"methodology_status_heuristic_personalized_desc":  "Expert-tuned formula using your personal baselines. Not a validated forecasting model.",
+	"methodology_status_heuristic_prescriptive":       "Heuristic",
+	"methodology_status_heuristic_prescriptive_desc":  "Rule-based advice from heuristic capacity and drain. Not yet validated against subjective state.",
+	"methodology_status_experimental_formula":         "Experimental",
+	"methodology_status_experimental_formula_desc":    "Formula kernel under evaluation. Not the production decision layer yet.",
+	"methodology_status_validated_floor_candidate":    "Validated floor",
+	"methodology_status_validated_floor_candidate_desc": "Leakage-aware target with a feasibility-checked baseline floor (EWMA45). Production-grade plumbing; no learned model on top yet.",
+	"methodology_status_labeling_framework_ready":     "Labeling framework",
+	"methodology_status_labeling_framework_ready_desc": "Leakage-free event labels ready for downstream models. The label itself is the deliverable.",
+	"methodology_status_experimental_not_production":  "Experimental",
+	"methodology_status_experimental_not_production_desc": "Under evaluation. Do not act on this score as if it were validated.",
+
 	// ─── Admin: basic settings + cache ──────────────────────────
 	"admin_title":              "Settings",
 	"admin_cache_status":       "Cache status",

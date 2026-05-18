@@ -223,6 +223,20 @@ var translationsRu = map[string]string{
 	"energy_state_critical_desc":        "Бак почти пуст — отдых принесёт больше всего пользы.",
 	"details":                           "Детали",
 
+	// Methodology status badges (see i18n_en.go for the full mapping).
+	"methodology_status_heuristic_personalized":            "Эвристика",
+	"methodology_status_heuristic_personalized_desc":       "Экспертная формула на персональных baseline. Не валидированная предсказательная модель.",
+	"methodology_status_heuristic_prescriptive":            "Эвристика",
+	"methodology_status_heuristic_prescriptive_desc":       "Предписания по правилам поверх эвристики capacity/drain. Пока не валидировано против субъективного состояния.",
+	"methodology_status_experimental_formula":              "Экспериментально",
+	"methodology_status_experimental_formula_desc":         "Формула на проверке. Пока не production-уровень принятия решений.",
+	"methodology_status_validated_floor_candidate":         "Проверенная база",
+	"methodology_status_validated_floor_candidate_desc":    "Целевой показатель без утечек данных, с проверенной базовой линией (EWMA45). Production-инфраструктура; обученной модели поверх ещё нет.",
+	"methodology_status_labeling_framework_ready":          "Готовые метки",
+	"methodology_status_labeling_framework_ready_desc":     "Размеченные события без утечек данных, готовые для будущих моделей. Сама метка и есть результат.",
+	"methodology_status_experimental_not_production":       "Экспериментально",
+	"methodology_status_experimental_not_production_desc":  "На проверке. Не воспринимай этот score как валидированный.",
+
 	"admin_title":              "Настройки",
 	"admin_cache_status":       "Состояние кэша",
 	"admin_refresh":            "Обновить",

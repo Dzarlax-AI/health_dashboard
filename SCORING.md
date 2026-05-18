@@ -7,6 +7,37 @@ Data is fetched by `internal/storage/briefing.go → GetHealthBriefing()`.
 
 ---
 
+## Methodology Status
+
+Not every score in this system carries the same evidential weight. Some are
+expert-tuned formulae on personal baselines; some are leakage-aware floors
+that survived feasibility analysis; some are still under evaluation. Each
+score on the dashboard is tagged with one of the statuses below so the
+reader can calibrate their trust accordingly. The UI surfaces a short badge
+on the hero card; the table here is the authoritative mapping.
+
+| Score / module | Status | What that means |
+|---|---|---|
+| Readiness v1 | `heuristic_personalized` | Expert-tuned ratio formula on personal baselines (HRV 40% / RHR 30% / Sleep 30%). Not a validated forecasting model — weights are literature-anchored, not learned from outcome data. |
+| Energy Bank v1 (live) | `heuristic_prescriptive` | Rule-based daily verdict (rest / active recovery / moderate / push hard) layered on top of Readiness + activity load + stress amplifiers. Not yet validated against subjective state. |
+| Energy Bank v2 (in progress) | `experimental_formula` | Separated sleep-quality restore, drain, signed bank, calibrated verdict bands, multi-channel stress overrides. Kernel under evaluation; not yet the production decision layer. See `ENERGY_BANK.md`. |
+| Recovery Stability sub-score | `validated_floor_candidate` | Leakage-aware forward target with eligibility tree, source-epoch clipping and EWMA45 baseline floor. Phase 1 feasibility (PR #101) confirmed Ridge ≈ EWMA45 — production layer is the baseline floor; no learned model on top yet. See `READINESS_REDESIGN_PHASE1_RECOVERY_FEASIBILITY.md`. |
+| Passive Efficiency sub-score | `validated_floor_candidate` | Same shape as Recovery; Phase 1 feasibility (PR #100) closed — EWMA45 wins. |
+| Acute Risk labels | `labeling_framework_ready` | Leakage-free `t+1..t+3` event labels with per-candidate baselines (strict + OR variants). The labels are the deliverable; the downstream classifier is a separate, queued layer. |
+| Chronic Load labels | `experimental_not_production` | Forward 14-day deterioration label. Useful as a research target; defaults (`MinAcuteDensity=7`, `MinBreachDays=5`) are calibrated on the `health` tenant in PR #97, and per-tenant overrides are wired via the `settings` table (`chronic_load.min_acute_density`, `chronic_load.min_breach_days`) read by `LoadChronicLoadConfig()`. Other tenants still need a runbook retune + backfill before their chronic labels can be trusted. |
+| Stress flags (illness / recovery debt / rebound) | `heuristic_prescriptive` | Multi-channel z-shift detectors on 30-day personal baselines. Physiologically plausible warning signals; precision/recall against external labels not yet measured. |
+| Headline / Coherence pass | `heuristic_prescriptive` | UX-safety layer that prevents contradictory cards (e.g. "stress" + "optimal recovery") rather than a score in its own right. |
+
+**How statuses move**:
+
+- `heuristic_personalized` → `validated_floor_candidate` requires a leakage-aware target, feasibility report that beats a baseline floor's lower CI bound, and subjective-label validation.
+- `validated_floor_candidate` → production model requires a learned model that beats the floor's lower CI bound on a held-out window with pre-registered decision metric.
+- `experimental_not_production` → anything else requires both an honest baseline and the multi-tenant calibration story closed (constants live in `settings`, not in Go).
+
+Adapted from the methodology review by Manus AI (2026-05-17).
+
+---
+
 ## Data window
 
 Every metric is fetched for the **last 30 days** relative to the most recent date that has any data in the DB (not today's date — data can be stale).

@@ -90,6 +90,31 @@ body { min-height: 100vh; font-size: 15px; }
 }
 #readiness-status { font-size: 20px; font-weight: 700; opacity: 0.9; }
 
+/* Methodology status badge — surfaces the honest provenance of a score
+   (heuristic / experimental / validated floor / labeling framework).
+   Intentionally muted so it never competes with the actual score or
+   verdict pill; tooltip on hover carries the full explanation. */
+.methodology-badge {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-left: 6px;
+  vertical-align: middle;
+  background: var(--surface2);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  cursor: help;
+  white-space: nowrap;
+}
+.methodology-badge--heuristic         { background: var(--surface2); color: var(--muted); }
+.methodology-badge--experimental      { background: var(--fair-bg);  color: var(--fair); border-color: transparent; }
+.methodology-badge--validated         { background: var(--good-bg);  color: var(--good); border-color: transparent; }
+.methodology-badge--labeling          { background: var(--surface2); color: var(--text-secondary); }
+
 /* Hero column 2: narrative — chip with headline title, detail paragraph,
    tip (only when there's no headline so they don't fight each other),
    and a verdict pill + reason from Energy Bank. */
