@@ -8,7 +8,12 @@
        than three competing headers. -->
   <div id="hero-section" class="status-{{if ge .ReadinessScore 70}}good{{else if ge .ReadinessScore 40}}fair{{else}}low{{end}}{{if .Headline}} headline--{{.Headline.Severity}}{{end}}">
     <div id="hero-score-block">
-      <div id="readiness-label-top">{{T .Lang "readiness_today_label"}}</div>
+      <div id="readiness-label-top">
+        {{T .Lang "readiness_today_label"}}
+        <span class="methodology-badge methodology-badge--heuristic"
+              title="{{T .Lang "methodology_status_heuristic_personalized_desc"}}"
+              aria-label="{{T .Lang "methodology_status_heuristic_personalized_desc"}}">{{T .Lang "methodology_status_heuristic_personalized"}}</span>
+      </div>
       <div id="readiness-score">{{if .ReadinessScore}}{{.ReadinessScore}}{{else}}--{{end}}</div>
       <div id="readiness-status">
         {{if ge .ReadinessScore 70}}{{T .Lang "status_good"}}
@@ -64,7 +69,12 @@
       {{if .EnergyBank}}
       <div class="hero-energy hero-energy--{{.EnergyBank.Level}}">
         <div class="hero-energy-header">
-          <span class="hero-energy-label">{{T .Lang "energy_label"}}</span>
+          <span class="hero-energy-label">
+            {{T .Lang "energy_label"}}
+            <span class="methodology-badge methodology-badge--heuristic"
+                  title="{{T .Lang "methodology_status_heuristic_prescriptive_desc"}}"
+                  aria-label="{{T .Lang "methodology_status_heuristic_prescriptive_desc"}}">{{T .Lang "methodology_status_heuristic_prescriptive"}}</span>
+          </span>
           <span class="hero-energy-numbers">{{.EnergyBank.Current}}<span class="muted">/{{.EnergyBank.Capacity}}</span></span>
         </div>
         <div class="hero-energy-state">

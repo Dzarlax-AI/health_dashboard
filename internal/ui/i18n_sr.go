@@ -225,6 +225,20 @@ var translationsSr = map[string]string{
 	"energy_state_critical_desc":        "Rezervoar gotovo prazan — odmor je danas najbolji izbor.",
 	"details":                           "Detalji",
 
+	// Methodology status badges (see i18n_en.go for the full mapping).
+	"methodology_status_heuristic_personalized":            "Heuristika",
+	"methodology_status_heuristic_personalized_desc":       "Ekspertska formula na ličnim baseline-ima. Nije validiran prediktivni model.",
+	"methodology_status_heuristic_prescriptive":            "Heuristika",
+	"methodology_status_heuristic_prescriptive_desc":       "Pravila preko heurističkog capacity/drain. Još nije validirano protiv subjektivnog stanja.",
+	"methodology_status_experimental_formula":              "Eksperimentalno",
+	"methodology_status_experimental_formula_desc":         "Formula u proveri. Još nije production sloj odlučivanja.",
+	"methodology_status_validated_floor_candidate":         "Validated floor",
+	"methodology_status_validated_floor_candidate_desc":    "Leakage-aware target sa proverenim baseline floor (EWMA45). Production infrastruktura; nema učenog modela iznad.",
+	"methodology_status_labeling_framework_ready":          "Labeling framework",
+	"methodology_status_labeling_framework_ready_desc":     "Leakage-free event labels spremni za buduće modele. Sam label je rezultat.",
+	"methodology_status_experimental_not_production":       "Eksperimentalno",
+	"methodology_status_experimental_not_production_desc":  "U proveri. Ne tretiraj kao validiran score.",
+
 	"admin_notify_title":           "Telegram izveštaji",
 	"admin_notify_morning_title":   "Jutarnji izveštaj",
 	"admin_notify_morning_desc":    "Pošalji test san sada.",
