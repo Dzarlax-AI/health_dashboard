@@ -758,11 +758,18 @@ func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager,
 			log.Printf("morning smart-retry: read checkin: %v", rerr)
 			row = nil
 		}
+		// Check-in is feature-flagged by the webhook secret. When unset
+		// the webhook is not registered and the user cannot answer a
+		// prompt — so we must bypass the prompt+wait path. Read once per
+		// tick (cheap; honours an admin who flipped the env after start).
+		checkinEnabled := os.Getenv("TELEGRAM_WEBHOOK_SECRET") != ""
+
 		inputs := notify.MorningGateInputs{
-			Now:          now,
-			Cap:          cap,
-			SleepSettled: settled,
-			HasCheckin:   row != nil,
+			Now:            now,
+			Cap:            cap,
+			SleepSettled:   settled,
+			HasCheckin:     row != nil,
+			CheckinEnabled: checkinEnabled,
 		}
 		if row != nil {
 			inputs.CheckinStatus = row.Status

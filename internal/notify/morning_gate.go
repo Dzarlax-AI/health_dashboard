@@ -29,6 +29,15 @@ type MorningGateInputs struct {
 	HasCheckin        bool
 	CheckinStatus     string
 	ReportAlreadySent bool
+
+	// CheckinEnabled is the feature-flag input. False = the webhook is
+	// not registered (no TELEGRAM_WEBHOOK_SECRET in env), so the user
+	// cannot answer a prompt. In that case the gate must bypass the
+	// prompt+wait path entirely and behave exactly like the pre-PR
+	// scheduler: try SendMorningSmart, force-send at cap. Otherwise we
+	// would prompt every morning and never get an answer, blocking the
+	// report until cap on every day.
+	CheckinEnabled bool
 }
 
 // DecideMorningAction is the pure decision table. Lives separately
@@ -51,6 +60,16 @@ func DecideMorningAction(in MorningGateInputs) MorningAction {
 		return MorningActionNoop
 	}
 	past := !in.Now.Before(in.Cap)
+
+	// Feature-flag bypass: when check-in is disabled we mirror the
+	// pre-PR scheduler exactly — past cap → force-send, before cap →
+	// SendReport (which itself defers when sleep isn't settled).
+	if !in.CheckinEnabled {
+		if past {
+			return MorningActionForce
+		}
+		return MorningActionSendReport
+	}
 
 	if past {
 		// At/after cap. The check-in answer state determines whether

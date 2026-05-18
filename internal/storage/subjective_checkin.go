@@ -197,29 +197,38 @@ func (s *DB) SaveCheckinAnswer(date, source, answer string, answeredAt time.Time
 // ExpireCheckin transitions a `prompted` row to `expired` when cap has
 // passed. No-op (returns "", nil) if the row is already answered /
 // late_answered / expired — caller can ignore the return.
+//
+// Implementation: a single conditional UPDATE with the policy encoded
+// in WHERE. Postgres takes a row-level lock for the duration of the
+// statement, so a racing SaveCheckinAnswer (which itself runs FOR
+// UPDATE inside a tx) cannot interleave: whichever statement acquires
+// the lock first commits its transition, the other sees the new
+// status and its WHERE clause filters the row out.
+//
+// Encoded policy (mirrors nextCheckinStatus's "expire" branch):
+//   - status must still be `prompted`
+//   - expires_at must have been reached
+//
+// nextCheckinStatus stays as the canonical Go-side policy doc and is
+// exercised by TestNextCheckinStatus; ExpireCheckin re-encodes the
+// same rules in SQL for atomicity. Both must change together.
 func (s *DB) ExpireCheckin(date, source string, now time.Time) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	var status string
-	var expiresAt time.Time
-	if err := s.pool.QueryRow(ctx, `
-		SELECT status, expires_at FROM subjective_checkins
-		WHERE date = $1 AND source = $2`, date, source).Scan(&status, &expiresAt); err != nil {
-		return "", err
-	}
-	if status != CheckinStatusPrompted {
-		return "", nil
-	}
-	nextStatus, err := nextCheckinStatus(status, "expire", expiresAt, now)
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE subjective_checkins
+		   SET status = $3
+		 WHERE date = $1 AND source = $2
+		   AND status = $4
+		   AND expires_at <= $5`,
+		date, source, CheckinStatusExpired, CheckinStatusPrompted, now)
 	if err != nil {
 		return "", err
 	}
-	if _, err := s.pool.Exec(ctx, `
-		UPDATE subjective_checkins SET status = $3 WHERE date = $1 AND source = $2`,
-		date, source, nextStatus); err != nil {
-		return "", err
+	if tag.RowsAffected() == 0 {
+		return "", nil
 	}
-	return nextStatus, nil
+	return CheckinStatusExpired, nil
 }
 
 // GetTodayCheckin returns the row for (date, source). Returns
