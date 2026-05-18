@@ -111,6 +111,23 @@ body { min-height: 100vh; font-size: 15px; }
   white-space: nowrap;
 }
 .methodology-badge--heuristic         { background: var(--surface2); color: var(--muted); }
+
+/* Subjective morning check-in confirmation line. Rendered right under
+   the hero section when the user has tapped a Telegram check-in
+   button. Intentionally low-key — single muted line, no chips, no
+   icons; the dashboard does not need a fifth verdict pill. */
+.subjective-checkin-line {
+  margin: 8px 0 16px 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.subjective-checkin-label {
+  margin-right: 6px;
+}
+.subjective-checkin-answer {
+  font-weight: 600;
+  color: var(--text);
+}
 .methodology-badge--experimental      { background: var(--fair-bg);  color: var(--fair); border-color: transparent; }
 .methodology-badge--validated         { background: var(--good-bg);  color: var(--good); border-color: transparent; }
 .methodology-badge--labeling          { background: var(--surface2); color: var(--text-secondary); }

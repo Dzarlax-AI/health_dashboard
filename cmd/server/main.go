@@ -100,6 +100,7 @@ func main() {
 		legacyDB.EnsureAIBriefingBlocksTable()
 		legacyDB.EnsureEnergySnapshotsTable()
 		legacyDB.EnsureReadinessRedesignTables()
+		legacyDB.EnsureSubjectiveCheckinsTable()
 
 		passwordHash := ""
 		if uiPassword != "" {
@@ -163,6 +164,7 @@ func main() {
 		db.EnsureAIBriefingBlocksTable()
 		db.EnsureEnergySnapshotsTable()
 		db.EnsureReadinessRedesignTables()
+		db.EnsureSubjectiveCheckinsTable()
 		startTenant(ctx, mgr, db, u.SchemaName, envNotifyDefaults, envAIDefaults, baseURL)
 	}
 
@@ -206,10 +208,13 @@ func main() {
 		db.EnsureAIBriefingBlocksTable()
 		db.EnsureEnergySnapshotsTable()
 		db.EnsureReadinessRedesignTables()
+		db.EnsureSubjectiveCheckinsTable()
 		startTenant(ctx, mgr, db, schema, envNotifyDefaults, envAIDefaults, baseURL)
 	})
 	uiHandler.Register(mux)
 	mcpserver.Register(mux, mgr, baseURL)
+
+	registerCheckinWebhook(mux, mgr, envNotifyDefaults)
 
 	logged := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -273,6 +278,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	handler.New(mgr, onNewData, hrZones).Register(mux)
 	ui.New(mgr, reg, trustFwdAuth).Register(mux)
 	mcpserver.Register(mux, mgr, baseURL)
+	registerCheckinWebhook(mux, mgr, notifyDefaults)
 
 	logged := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -512,6 +518,100 @@ func makeTestNotifyFn(db *storage.DB, mgr *tenants.Manager, schema string, notif
 //      the report fire while the watch was still recording the second half
 //      of a wake-walk-sleep-again cycle. Now we wait for the watch to stop
 //      writing.
+
+// registerCheckinWebhook mounts the Telegram callback handler on mux
+// when TELEGRAM_WEBHOOK_SECRET is set. Used from both runSingleTenant
+// (legacy mode) and the multi-tenant mux build so neither path falls
+// through silently with the env set.
+func registerCheckinWebhook(mux *http.ServeMux, mgr *tenants.Manager, notifyDefaults storage.NotifyConfig) {
+	secret := os.Getenv("TELEGRAM_WEBHOOK_SECRET")
+	if secret == "" {
+		return
+	}
+	tokenHeader := os.Getenv("TELEGRAM_WEBHOOK_TOKEN_HEADER")
+	mux.HandleFunc("/api/telegram/webhook/", notify.NewWebhookHandler(notify.WebhookConfig{
+		Secret:      secret,
+		TokenHeader: tokenHeader,
+		TenantFinder: func(chat string) (notify.CheckinTenant, bool) {
+			db, schema, ok := mgr.DBForTelegramChatID(context.Background(), notifyDefaults, chat)
+			if !ok {
+				return notify.CheckinTenant{}, false
+			}
+			cfg := db.GetNotifyConfig(notifyDefaults)
+			loc := time.Local
+			if l, err := time.LoadLocation(cfg.Timezone); err == nil && cfg.Timezone != "" {
+				loc = l
+			}
+			bot := notify.NewBot(cfg.Token, cfg.ChatID)
+			return notify.CheckinTenant{
+				Schema:    schema,
+				Lang:      cfg.Lang,
+				TodayInTZ: time.Now().In(loc).Format("2006-01-02"),
+				Router:    &liveCheckinRouter{db: db, bot: bot, triggerReport: makeReportTrigger(mgr, schema, notifyDefaults)},
+			}, true
+		},
+	}))
+	log.Printf("Telegram webhook registered at /api/telegram/webhook/<secret> (token header: %v)", tokenHeader != "")
+}
+
+// liveCheckinRouter is the production notify.CheckinAnswerRouter for
+// one tenant. Created per inbound webhook update by the TenantFinder
+// closure so each instance binds the right DB + Bot + report trigger.
+type liveCheckinRouter struct {
+	db            *storage.DB
+	bot           *notify.Bot
+	triggerReport func()
+}
+
+func (r *liveCheckinRouter) SaveAnswer(date, source, answer string, answeredAt time.Time) (string, error) {
+	return r.db.SaveCheckinAnswer(date, source, answer, answeredAt)
+}
+func (r *liveCheckinRouter) AnswerCallbackQuery(qid, text string) error {
+	return r.bot.AnswerCallbackQuery(qid, text)
+}
+func (r *liveCheckinRouter) TriggerReport(_ string) {
+	if r.triggerReport != nil {
+		go r.triggerReport()
+	}
+}
+
+// makeReportTrigger captures the dependencies needed to (re)run the
+// morning trigger for a tenant. Used by the webhook router to fire
+// the report async after a successful in-time answer.
+func makeReportTrigger(mgr *tenants.Manager, schema string, defaults storage.NotifyConfig) func() {
+	return func() {
+		db, err := mgr.GetOrCreate(context.Background(), schema)
+		if err != nil || db == nil {
+			return
+		}
+		scfg := db.GetNotifyConfig(defaults)
+		if !scfg.Enabled() {
+			return
+		}
+		loc := time.Local
+		if l, lerr := time.LoadLocation(scfg.Timezone); lerr == nil && scfg.Timezone != "" {
+			loc = l
+		}
+		today := time.Now().In(loc).Format("2006-01-02")
+		if db.HasSentMorningReport(today) {
+			return
+		}
+		ncfg := buildNotifyCfg(db, scfg)
+		bot := notify.NewBot(ncfg.Token, ncfg.ChatID)
+		sent, reason, err := notify.SendMorningSmart(bot, db, ncfg, false)
+		if err != nil {
+			log.Printf("checkin-trigger: send: %v", err)
+			return
+		}
+		if sent {
+			if perr := db.MarkMorningReportSent(today); perr != nil {
+				log.Printf("checkin-trigger: mark sent: %v", perr)
+			}
+			log.Printf("checkin-trigger: sent (reason=%s) for %s", reason, today)
+		}
+	}
+}
+
 func makeMorningTrigger(db *storage.DB, lock *int32, mgr *tenants.Manager, schema string, notifyDefaults storage.NotifyConfig) func() {
 	return func() {
 		if !atomic.CompareAndSwapInt32(lock, 0, 1) {
@@ -649,7 +749,7 @@ func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager,
 	for {
 		today := time.Now().In(loc).Format("2006-01-02")
 		if db.HasSentMorningReport(today) {
-			log.Println("morning smart-retry: already sent (likely by ingest trigger), exiting loop")
+			log.Println("morning smart-retry: already sent (likely by ingest trigger or webhook), exiting loop")
 			return
 		}
 
@@ -658,27 +758,85 @@ func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager,
 		// config is honoured even when it was set mid-day.
 		ensureTodayAIInsight(db, mgr.AIDefaultsFor(context.Background(), schema), ncfg.Lang)
 
-		past := time.Now().After(cap)
-		sent, reason, err := notify.SendMorningSmart(bot, db, ncfg, past)
-		if err != nil {
-			log.Printf("morning smart-retry: send error: %v", err)
+		// Resolve all the per-tick state the gate consults. The check-in
+		// row lookup tolerates "no row" via GetTodayCheckin returning
+		// (nil, nil); any DB error is logged and treated as "no row" so
+		// the scheduler doesn't get stuck.
+		now := time.Now()
+		settled := db.SleepSettled(today).Settled
+		row, rerr := db.GetTodayCheckin(today, storage.CheckinSourceTelegram)
+		if rerr != nil {
+			log.Printf("morning smart-retry: read checkin: %v", rerr)
+			row = nil
 		}
-		if sent {
-			if perr := db.MarkMorningReportSent(today); perr != nil {
-				log.Printf("morning smart-retry: mark sent: %v", perr)
-			}
-			log.Printf("morning smart-retry: sent (reason=%s, forced=%v)", reason, past)
-			return
-		}
-		if past {
-			// Force-send returned not-sent without an error — only happens when
-			// the bot is somehow disabled mid-loop. Bail to avoid spinning.
-			log.Printf("morning smart-retry: past cap but not sent (reason=%s), giving up", reason)
-			return
-		}
+		// Check-in is feature-flagged by the webhook secret. When unset
+		// the webhook is not registered and the user cannot answer a
+		// prompt — so we must bypass the prompt+wait path. Read once per
+		// tick (cheap; honours an admin who flipped the env after start).
+		checkinEnabled := os.Getenv("TELEGRAM_WEBHOOK_SECRET") != ""
 
-		log.Printf("morning smart-retry: deferring (reason=%s), retry in %s", reason, tick)
-		time.Sleep(tick)
+		inputs := notify.MorningGateInputs{
+			Now:            now,
+			Cap:            cap,
+			SleepSettled:   settled,
+			HasCheckin:     row != nil,
+			CheckinEnabled: checkinEnabled,
+		}
+		if row != nil {
+			inputs.CheckinStatus = row.Status
+		}
+		action := notify.DecideMorningAction(inputs)
+		log.Printf("morning smart-retry: action=%s settled=%v checkin_status=%q", action, settled, inputs.CheckinStatus)
+
+		switch action {
+		case notify.MorningActionNoop:
+			return
+
+		case notify.MorningActionWait:
+			time.Sleep(tick)
+			continue
+
+		case notify.MorningActionPrompt:
+			if err := notify.SendCheckinPrompt(bot, db, ncfg.Lang, today, now, cap); err != nil {
+				log.Printf("morning smart-retry: prompt: %v", err)
+			} else {
+				log.Printf("morning smart-retry: check-in prompt sent for %s", today)
+			}
+			time.Sleep(tick)
+			continue
+
+		case notify.MorningActionExpireAndForce:
+			if _, err := db.ExpireCheckin(today, storage.CheckinSourceTelegram, now); err != nil {
+				log.Printf("morning smart-retry: expire checkin: %v", err)
+			}
+			fallthrough
+
+		case notify.MorningActionForce, notify.MorningActionSendReport:
+			past := action == notify.MorningActionForce || action == notify.MorningActionExpireAndForce
+			sent, reason, err := notify.SendMorningSmartOpts(bot, db, ncfg, notify.MorningSendOpts{
+				Force:          past,
+				CheckinExpired: action == notify.MorningActionExpireAndForce,
+			})
+			if err != nil {
+				log.Printf("morning smart-retry: send error: %v", err)
+			}
+			if sent {
+				if perr := db.MarkMorningReportSent(today); perr != nil {
+					log.Printf("morning smart-retry: mark sent: %v", perr)
+				}
+				log.Printf("morning smart-retry: sent (reason=%s, forced=%v, action=%s)", reason, past, action)
+				return
+			}
+			if past {
+				// Force-send returned not-sent without an error — only happens when
+				// the bot is somehow disabled mid-loop. Bail to avoid spinning.
+				log.Printf("morning smart-retry: past cap but not sent (reason=%s), giving up", reason)
+				return
+			}
+			// SendMorningSmart deferred (e.g. sleep not yet settled). Retry next tick.
+			log.Printf("morning smart-retry: deferring (reason=%s), retry in %s", reason, tick)
+			time.Sleep(tick)
+		}
 	}
 }
 

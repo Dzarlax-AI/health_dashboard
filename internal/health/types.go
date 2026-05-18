@@ -347,8 +347,21 @@ type BriefingResponse struct {
 	Sleep          *SleepAnalysis     `json:"sleep"`
 	MetricCards    []MetricCard       `json:"metric_cards"`
 	EnergyBank     *EnergyBank        `json:"energy_bank,omitempty"`
+	// SubjectiveCheckin is the morning self-report (Telegram one-tap).
+	// Populated from subjective_checkins when a row exists for today
+	// in the tenant's REPORT_TZ. nil when no row — dashboard renders
+	// nothing in that case (silence-is-good convention matches the
+	// stress-flags row).
+	SubjectiveCheckin *SubjectiveCheckinSummary `json:"subjective_checkin,omitempty"`
 	// AIInsight is the Gemini-generated narrative cached in `ai_briefings`.
 	// Populated by the API handler (not by GetHealthBriefing), so it stays
 	// optional and doesn't pollute internal-use callers of BriefingResponse.
 	AIInsight      string             `json:"ai_insight,omitempty"`
+}
+
+// SubjectiveCheckinSummary is the read-shape rendered into the
+// dashboard hero. nil when no check-in row exists for today.
+type SubjectiveCheckinSummary struct {
+	Status string `json:"status"`           // prompted | answered | expired | late_answered
+	Answer string `json:"answer,omitempty"` // great | ok | meh | sick (empty when status=prompted/expired)
 }

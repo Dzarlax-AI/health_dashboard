@@ -225,6 +225,13 @@ var translationsSr = map[string]string{
 	"energy_state_critical_desc":        "Rezervoar gotovo prazan — odmor je danas najbolji izbor.",
 	"details":                           "Detalji",
 
+	// Subjective morning check-in confirmation on the dashboard hero.
+	"checkin_today_label":  "Vaš jutarnji odgovor:",
+	"checkin_answer_great": "Odlično",
+	"checkin_answer_ok":    "Normalno",
+	"checkin_answer_meh":   "Onako",
+	"checkin_answer_sick":  "Bolestan(a)",
+
 	// Methodology status badges (see i18n_en.go for the full mapping).
 	"methodology_status_heuristic_personalized":            "Heuristika",
 	"methodology_status_heuristic_personalized_desc":       "Ekspertska formula na ličnim baseline-ima. Nije validiran prediktivni model.",

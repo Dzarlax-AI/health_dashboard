@@ -133,20 +133,40 @@ func SendMorning(bot *Bot, db *storage.DB, cfg Config) error {
 	return err
 }
 
+// MorningSendOpts configures the morning report send. Existing callers
+// continue to use SendMorningSmart(force) which builds a default opts;
+// runMorningSmartRetry passes CheckinExpired=true on the expire-and-
+// force path so formatMorning appends the soft "answer tomorrow" note.
+type MorningSendOpts struct {
+	Force          bool
+	CheckinExpired bool
+}
+
 // SendMorningSmart is the smart-retry-aware morning sender. When force is
 // false, it only sends if sleep data has settled (see storage.SleepSettled);
 // otherwise returns sent=false with a non-"ok" reason so the caller can retry
 // later. When force is true, it sends regardless and prepends a banner
 // explaining why the data is incomplete.
 //
+// Thin wrapper over SendMorningSmartOpts that preserves the historical
+// signature for the two non-cap call sites (ingest trigger + webhook
+// retrigger) — neither of those knows about check-in expiry.
+//
 // Returns (sent, reason, error). reason is the SleepSettleStatus.Reason —
 // "ok" when settled, otherwise "no_data" / "recent_segment" / "still_writing".
 func SendMorningSmart(bot *Bot, db *storage.DB, cfg Config, force bool) (bool, string, error) {
+	return SendMorningSmartOpts(bot, db, cfg, MorningSendOpts{Force: force})
+}
+
+// SendMorningSmartOpts is the configurable variant. Callers that know
+// extra context (e.g. cap-path saw a prompted check-in expire) pass it
+// via MorningSendOpts so formatMorning can render the right copy.
+func SendMorningSmartOpts(bot *Bot, db *storage.DB, cfg Config, opts MorningSendOpts) (bool, string, error) {
 	loc := cfg.location()
 	today := time.Now().In(loc).Format("2006-01-02")
 
 	status := db.SleepSettled(today)
-	if !status.Settled && !force {
+	if !status.Settled && !opts.Force {
 		return false, status.Reason, nil
 	}
 
@@ -156,7 +176,7 @@ func SendMorningSmart(bot *Bot, db *storage.DB, cfg Config, force bool) (bool, s
 	}
 	aiBlocks := db.GetAIBlocks(today, cfg.Lang)
 	fresh := computeFreshness(db, time.Now())
-	msg := formatMorning(briefing, aiBlocks, cfg.Lang, loc, fresh)
+	msg := formatMorning(briefing, aiBlocks, cfg.Lang, loc, fresh, opts.CheckinExpired)
 
 	if !status.Settled {
 		if banner := tr(cfg.Lang, "tg_stale_"+status.Reason); banner != "" && banner != "tg_stale_"+status.Reason {
@@ -462,7 +482,7 @@ func abs(x int) int {
 
 // ── morning ──────────────────────────────────────────────────────────────────
 
-func formatMorning(b *health.BriefingResponse, aiBlocks map[string]string, lang string, loc *time.Location, f freshness) string {
+func formatMorning(b *health.BriefingResponse, aiBlocks map[string]string, lang string, loc *time.Location, f freshness, checkinExpired bool) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "<b>🌅 %s — %s</b>\n\n", tr(lang, "tg_morning_header"), b.Date)
 
@@ -540,6 +560,19 @@ func formatMorning(b *health.BriefingResponse, aiBlocks map[string]string, lang 
 	// already covered by EnergyBank.VerdictReason and ReadinessTip rendered above.
 	if ai.Recommendation != "" {
 		fmt.Fprintf(&sb, "🎯 <b>%s</b>\n%s\n", tr(lang, "tg_recommendation"), strings.TrimSpace(ai.Recommendation))
+	}
+
+	// Soft footer: when the cap-path forced the report after the user
+	// didn't tap the check-in button in time, append a one-line italic
+	// nudge. Drives the next morning's engagement without scolding —
+	// "want the report to reflect your state better? answer tomorrow".
+	// Only the cap-path passes checkinExpired=true; ingest trigger and
+	// webhook-retrigger paths skip the note (it would be misleading
+	// when the user did answer or was never prompted).
+	if checkinExpired {
+		if note := tr(lang, "checkin_expired_note"); note != "" && note != "checkin_expired_note" {
+			fmt.Fprintf(&sb, "\n%s\n", note)
+		}
 	}
 
 	return strings.TrimRight(sb.String(), "\n")
