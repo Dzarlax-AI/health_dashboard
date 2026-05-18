@@ -174,22 +174,37 @@ var SumMetrics = map[string]bool{
 	"night_sleep_total": true, "nap_total": true,
 }
 
-// sleepDedupClause returns a SQL WHERE clause that excludes midnight summary
-// records (00:00:00) when real sleep fragments exist for the same day+source.
+// sleepDedupClause returns a SQL WHERE clause that excludes per-segment sleep
+// fragments when a midnight summary (00:00:00) exists for the same day+source.
 // Returns empty string for non-sleep metrics.
+//
+// Policy: prefer the device's midnight summary because it represents the
+// source's own reconciled answer for "the night that ended at 00:00".
+// Per-segment fragments are the underlying detection events and tend to
+// double-count: pairs at 1-second offset (e.g. sleep_deep 02:48:17 +
+// 02:48:18), daytime "core sleep" segments while the user was still,
+// overlapping summaries when a session is re-emitted. Falling back to
+// fragments only when no summary exists preserves the Round 1 fix
+// (PR #3, days where the summary went missing).
+//
+// Invariant this enforces: for Apple Watch (which emits both formats),
+// sleep_total ≈ sleep_deep + sleep_rem + sleep_core per night per source.
+// sleep_awake is separate (time awake within the sleep period), not part
+// of sleep_total.
 func sleepDedupClause(metric string) string {
 	if !isSleepMetric(metric) {
 		return ""
 	}
 	return `AND NOT (
-		SUBSTRING(date, 12, 8) = '00:00:00'
+		SUBSTRING(date, 12, 8) != '00:00:00'
 		AND EXISTS (
 			SELECT 1 FROM metric_points p2
 			WHERE p2.metric_name = metric_points.metric_name
 			  AND SUBSTRING(p2.date, 1, 10) = SUBSTRING(metric_points.date, 1, 10)
 			  AND p2.source = metric_points.source
-			  AND SUBSTRING(p2.date, 12, 8) != '00:00:00'
+			  AND SUBSTRING(p2.date, 12, 8) = '00:00:00'
 			  AND p2.qty > 0
+			  AND p2.quality = 'ok'
 		)
 	)`
 }
@@ -319,44 +334,70 @@ func (s *DB) upsertHourlySumForDate(date string) {
 }
 
 // upsertHourlySleepForDate handles the 5 sleep_* metrics with the dedup clause.
-// One SQL statement using a NOT EXISTS subquery for midnight-summary dedup.
+// Delegates the dedup rule to sleepDedupClause — single source of truth
+// shared with the live ingest path (per-metric callers) and the force-
+// rebuild path (buildHourlyMetric). The clause body is metric-independent
+// for sleep metrics; any sleep metric name passed to sleepDedupClause
+// returns the same SQL fragment.
+//
+// Note: the query drops table aliases because sleepDedupClause's
+// correlated EXISTS subquery references the bare `metric_points` columns
+// (e.g. `metric_points.metric_name`).
+//
+// The DELETE before INSERT is load-bearing: the prior dedup policy wrote
+// per-hour fragment rows (one per sleep segment), and the new policy
+// writes a single 00:00 summary row. ON CONFLICT only updates the row
+// keyed by (metric_name, hour, source), so without the DELETE the old
+// fragment rows for this date would survive and upsertDailyForDate
+// would sum them with the new summary — double counting the night.
 func (s *DB) upsertHourlySleepForDate(date string) {
 	ctx, cancel := longCtx()
 	defer cancel()
-	const q = `
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		log.Printf("upsert hourly sleep %s: begin tx: %v", date, err)
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM hourly_metrics
+		WHERE SUBSTRING(hour,1,10) = $1
+		  AND metric_name LIKE 'sleep\_%' ESCAPE '\'`, date); err != nil {
+		log.Printf("upsert hourly sleep %s: delete stale: %v", date, err)
+		return
+	}
+
+	q := `
 		INSERT INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val)
 		SELECT metric_name, hour, source,
 		       SUM(minute_max), MIN(minute_min), MAX(minute_max)
 		FROM (
-			SELECT mp.metric_name, mp.source,
-			       SUBSTRING(mp.date, 1, 13) || ':00' AS hour,
-			       SUBSTRING(mp.date, 1, 16) AS minute,
-			       MAX(mp.qty) AS minute_max, MIN(mp.qty) AS minute_min
-			FROM metric_points mp
-			WHERE SUBSTRING(mp.date,1,10) = $1
-			  AND mp.qty > 0
-			  AND mp.quality = 'ok'
-			  AND mp.metric_name LIKE 'sleep\_%' ESCAPE '\'
-			  AND NOT (
-			      SUBSTRING(mp.date, 12, 8) = '00:00:00'
-			      AND EXISTS (
-			          SELECT 1 FROM metric_points p2
-			          WHERE p2.metric_name = mp.metric_name
-			            AND SUBSTRING(p2.date,1,10) = SUBSTRING(mp.date,1,10)
-			            AND p2.source = mp.source
-			            AND SUBSTRING(p2.date,12,8) <> '00:00:00'
-			            AND p2.qty > 0
-			      )
-			  )
-			GROUP BY mp.metric_name, mp.source,
-			         SUBSTRING(mp.date, 1, 13) || ':00',
-			         SUBSTRING(mp.date, 1, 16)
+			SELECT metric_name, source,
+			       SUBSTRING(date, 1, 13) || ':00' AS hour,
+			       SUBSTRING(date, 1, 16) AS minute,
+			       MAX(qty) AS minute_max, MIN(qty) AS minute_min
+			FROM metric_points
+			WHERE SUBSTRING(date,1,10) = $1
+			  AND qty > 0
+			  AND quality = 'ok'
+			  AND metric_name LIKE 'sleep\_%' ESCAPE '\'
+			  ` + sleepDedupClause("sleep_total") + `
+			GROUP BY metric_name, source,
+			         SUBSTRING(date, 1, 13) || ':00',
+			         SUBSTRING(date, 1, 16)
 		) sub
 		GROUP BY metric_name, hour, source
 		ON CONFLICT (metric_name, hour, source) DO UPDATE SET
 			avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val`
-	if _, err := s.pool.Exec(ctx, q, date); err != nil {
-		log.Printf("upsert hourly sleep %s: %v", date, err)
+	if _, err := tx.Exec(ctx, q, date); err != nil {
+		log.Printf("upsert hourly sleep %s: insert: %v", date, err)
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		log.Printf("upsert hourly sleep %s: commit: %v", date, err)
 	}
 }
 
@@ -955,10 +996,20 @@ ON CONFLICT(date) DO UPDATE SET
 // buildHourlyMetric fills hourly_metrics for one metric directly from
 // metric_points (skipping minute_metrics). Uses INSERT ... ON CONFLICT so
 // re-synced data overwrites stale cache values.
+//
+// Sleep metrics get a DELETE-before-INSERT pass inside a transaction:
+// the prior dedup policy emitted per-hour fragments and the new policy
+// emits a single 00:00 summary row. ON CONFLICT only updates the row at
+// the same (metric, hour, source) key, so without the DELETE the
+// pre-existing fragment rows would survive and upsertDailyForDate would
+// sum them with the new summary — double counting the night. The DELETE
+// is scoped to the same date window as the INSERT (full history for
+// force, last 7 days otherwise) so non-sleep refreshes are unaffected.
 func (s *DB) buildHourlyMetric(metric, agg string, force bool) error {
 	ctx, cancel := longCtx()
 	defer cancel()
 	var fromClause string
+	var refreshFromOpt string
 	args := []any{metric}
 	if !force {
 		// Refresh last 7 days + append new data (catches late-arriving data).
@@ -967,26 +1018,16 @@ func (s *DB) buildHourlyMetric(metric, agg string, force bool) error {
 			`SELECT MAX(hour) FROM hourly_metrics WHERE metric_name = $1`, metric,
 		).Scan(&lastCached)
 		if lastCached != nil {
-			refreshFrom := subtractDaysStr((*lastCached)[:10], 7)
+			refreshFromOpt = subtractDaysStr((*lastCached)[:10], 7)
 			fromClause = "AND SUBSTRING(date,1,10) >= $2"
-			args = append(args, refreshFrom)
+			args = append(args, refreshFromOpt)
 		}
 	}
 
-	sleepDedup := ""
-	if isSleepMetric(metric) {
-		sleepDedup = `AND NOT (
-			SUBSTRING(date, 12, 8) = '00:00:00'
-			AND EXISTS (
-				SELECT 1 FROM metric_points p2
-				WHERE p2.metric_name = metric_points.metric_name
-				  AND SUBSTRING(p2.date, 1, 10) = SUBSTRING(metric_points.date, 1, 10)
-				  AND p2.source = metric_points.source
-				  AND SUBSTRING(p2.date, 12, 8) != '00:00:00'
-				  AND p2.qty > 0
-			)
-		)`
-	}
+	// Reuse the canonical clause so the force-rebuild path can't drift
+	// from the live ingest path. sleepDedupClause returns "" for
+	// non-sleep metrics, which preserves the previous behaviour.
+	sleepDedup := sleepDedupClause(metric)
 
 	var query string
 	if agg == "SUM" {
@@ -1020,8 +1061,31 @@ func (s *DB) buildHourlyMetric(metric, agg string, force bool) error {
 				avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val`, sleepDedup, fromClause)
 	}
 
-	_, err := s.pool.Exec(ctx, query, args...)
-	return err
+	if !isSleepMetric(metric) {
+		_, err := s.pool.Exec(ctx, query, args...)
+		return err
+	}
+
+	// Sleep path: DELETE same window + INSERT in one transaction.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	delArgs := []any{metric}
+	delWhere := ""
+	if refreshFromOpt != "" {
+		delArgs = append(delArgs, refreshFromOpt)
+		delWhere = " AND SUBSTRING(hour,1,10) >= $2"
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM hourly_metrics WHERE metric_name = $1`+delWhere, delArgs...); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, query, args...); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // subtractDaysStr subtracts N days from a YYYY-MM-DD string.
