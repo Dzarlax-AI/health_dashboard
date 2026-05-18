@@ -214,7 +214,7 @@ func main() {
 	uiHandler.Register(mux)
 	mcpserver.Register(mux, mgr, baseURL)
 
-	registerCheckinWebhook(mux, mgr, envNotifyDefaults)
+	registerCheckinWebhook(mux, mgr, reg, envNotifyDefaults)
 
 	logged := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -278,7 +278,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	handler.New(mgr, onNewData, hrZones).Register(mux)
 	ui.New(mgr, reg, trustFwdAuth).Register(mux)
 	mcpserver.Register(mux, mgr, baseURL)
-	registerCheckinWebhook(mux, mgr, notifyDefaults)
+	registerCheckinWebhook(mux, mgr, reg, notifyDefaults)
 
 	logged := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -519,16 +519,39 @@ func makeTestNotifyFn(db *storage.DB, mgr *tenants.Manager, schema string, notif
 //      of a wake-walk-sleep-again cycle. Now we wait for the watch to stop
 //      writing.
 
-// registerCheckinWebhook mounts the Telegram callback handler on mux
-// when TELEGRAM_WEBHOOK_SECRET is set. Used from both runSingleTenant
-// (legacy mode) and the multi-tenant mux build so neither path falls
-// through silently with the env set.
-func registerCheckinWebhook(mux *http.ServeMux, mgr *tenants.Manager, notifyDefaults storage.NotifyConfig) {
-	secret := os.Getenv("TELEGRAM_WEBHOOK_SECRET")
-	if secret == "" {
+// registerCheckinWebhook mounts the Telegram callback handler on mux.
+// Three-step secret lookup via registry.ResolveOrGenerateWebhookSecrets:
+//   1. health_registry.global_settings (persisted from previous boot)
+//   2. env (TELEGRAM_WEBHOOK_SECRET / TELEGRAM_WEBHOOK_TOKEN_HEADER)
+//   3. generate fresh pair and persist
+//
+// When reg is nil (legacy bootstrap without registry — e.g. forced
+// single-user mode), falls back to env-only: webhook stays disabled
+// if env not set, preserving the previous behaviour.
+//
+// Used from both runSingleTenant (legacy mode) and the multi-tenant
+// mux build so neither path falls through silently.
+func registerCheckinWebhook(mux *http.ServeMux, mgr *tenants.Manager, reg *registry.Registry, notifyDefaults storage.NotifyConfig) {
+	envSecret := os.Getenv("TELEGRAM_WEBHOOK_SECRET")
+	envToken := os.Getenv("TELEGRAM_WEBHOOK_TOKEN_HEADER")
+
+	var secret, tokenHeader, source string
+	if reg != nil {
+		secret, tokenHeader, source = reg.ResolveOrGenerateWebhookSecrets(context.Background(), envSecret, envToken)
+	} else {
+		// Legacy bootstrap path: registry unavailable. Use env only;
+		// no auto-generation (we have nowhere to persist generated
+		// values). When env not set, webhook stays disabled.
+		secret, tokenHeader, source = envSecret, envToken, "env"
+		if secret == "" || tokenHeader == "" {
+			return
+		}
+	}
+	if secret == "" || tokenHeader == "" {
+		log.Printf("registerCheckinWebhook: secrets unavailable (source=%s); webhook disabled", source)
 		return
 	}
-	tokenHeader := os.Getenv("TELEGRAM_WEBHOOK_TOKEN_HEADER")
+
 	mux.HandleFunc("/api/telegram/webhook/", notify.NewWebhookHandler(notify.WebhookConfig{
 		Secret:      secret,
 		TokenHeader: tokenHeader,
@@ -551,7 +574,7 @@ func registerCheckinWebhook(mux *http.ServeMux, mgr *tenants.Manager, notifyDefa
 			}, true
 		},
 	}))
-	log.Printf("Telegram webhook registered at /api/telegram/webhook/<secret> (token header: %v)", tokenHeader != "")
+	log.Printf("Telegram webhook registered at /api/telegram/webhook/<secret> (source=%s)", source)
 }
 
 // liveCheckinRouter is the production notify.CheckinAnswerRouter for
