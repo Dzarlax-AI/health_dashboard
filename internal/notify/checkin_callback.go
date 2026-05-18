@@ -129,6 +129,29 @@ func NewWebhookHandler(cfg WebhookConfig) http.HandlerFunc {
 			fmt.Fprintln(w, "ignored: malformed callback")
 			return
 		}
+		// Stale-date guard: reject callbacks whose date doesn't match
+		// today in the tenant's TZ BEFORE touching storage.
+		//
+		// SaveCheckinAnswer is not strictly idempotent — it overwrites
+		// `answer` and `answered_at` even on a row that's already
+		// `answered`. So tapping yesterday's button from chat scrollback
+		// today would silently mutate yesterday's outcome row (e.g. flip
+		// last morning's "ok" to "sick" and stamp today's timestamp).
+		// That corrupts the validation dataset PR 3 will read.
+		//
+		// Today's late answers (date == TodayInTZ, past cap) still flow
+		// through SaveCheckinAnswer below — that's the intended
+		// late_answered path. Only cross-day taps are rejected here.
+		//
+		// TodayInTZ is empty in tests that don't bother setting it; we
+		// treat empty as "no date check requested" so older test
+		// fixtures keep working without churning every case.
+		if tenant.TodayInTZ != "" && date != tenant.TodayInTZ {
+			log.Printf("telegram webhook: stale callback for date=%s today=%s tenant=%s; acking without save", date, tenant.TodayInTZ, tenant.Schema)
+			_ = tenant.Router.AnswerCallbackQuery(upd.CallbackQuery.ID, "")
+			fmt.Fprintln(w, "ignored: stale date")
+			return
+		}
 		status, err := tenant.Router.SaveAnswer(date, storage.CheckinSourceTelegram, answer, time.Now())
 		if err != nil {
 			log.Printf("telegram webhook: save %s tenant=%s err=%v", answer, tenant.Schema, err)
@@ -145,24 +168,13 @@ func NewWebhookHandler(cfg WebhookConfig) http.HandlerFunc {
 		if err := tenant.Router.AnswerCallbackQuery(upd.CallbackQuery.ID, ack); err != nil {
 			log.Printf("telegram webhook: ack: %v", err)
 		}
-		// Trigger today's report ONLY when:
-		//   - the answer was saved as `answered` (in-time), AND
-		//   - the callback's date matches today in the tenant's TZ
-		//
-		// Two reasons for the date check:
-		//   1. SaveCheckinAnswer is idempotent — re-tapping an already-
-		//      answered row returns status=`answered`. Without a date
-		//      check, tapping yesterday's button from chat scrollback
-		//      today would retrigger today's morning report on a row
-		//      that has nothing to do with today's state.
-		//   2. Late answers (status=late_answered) don't retrigger by
-		//      design — the report already went out for that day.
-		//
-		// TodayInTZ is empty in tests that don't bother setting it; we
-		// treat empty as "no date check requested" so existing test
-		// fixtures keep working.
-		if status == storage.CheckinStatusAnswered &&
-			(tenant.TodayInTZ == "" || tenant.TodayInTZ == date) {
+		// Trigger today's report ONLY when the row transitioned to
+		// `answered` (in-time response to today's prompt). Late answers
+		// (status=late_answered) skip the trigger by design — the report
+		// already went out. Cross-day taps were rejected by the stale-
+		// date guard above, so any `date` reaching this point is today's
+		// in the tenant's TZ.
+		if status == storage.CheckinStatusAnswered {
 			tenant.Router.TriggerReport(tenant.Schema)
 		}
 		fmt.Fprintln(w, "ok")

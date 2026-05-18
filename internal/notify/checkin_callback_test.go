@@ -199,13 +199,14 @@ func TestWebhook_RejectsMalformedCallback(t *testing.T) {
 	}
 }
 
-// Tapping yesterday's already-answered button from chat history
-// returns status=answered (idempotent re-save), but the date in
-// callback_data is not today. Trigger must be suppressed — the
-// report for THAT day already went out, and today's row hasn't
-// been touched.
-func TestWebhook_StaleDateDoesNotTrigger(t *testing.T) {
-	router := &fakeRouter{saveStatus: "answered"} // idempotent re-save returns "answered"
+// Tapping yesterday's button from chat history today: SaveCheckinAnswer
+// is not strictly idempotent (it overwrites answer/answered_at on
+// already-answered rows), so the webhook MUST reject stale callbacks
+// before touching storage — otherwise the user can silently corrupt
+// past outcome rows by tapping old buttons. Today's late answers
+// (date == TodayInTZ, past cap) still flow through SaveCheckinAnswer.
+func TestWebhook_StaleDateRejectedBeforeSave(t *testing.T) {
+	router := &fakeRouter{saveStatus: "answered"} // wouldn't matter — save shouldn't run
 	h := NewWebhookHandler(WebhookConfig{
 		Secret: "good",
 		TenantFinder: func(chat string) (CheckinTenant, bool) {
@@ -224,14 +225,17 @@ func TestWebhook_StaleDateDoesNotTrigger(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d", rec.Code)
 	}
-	if router.saveCalls != 1 {
-		t.Fatalf("save should still run (idempotent on old row): got %d", router.saveCalls)
+	if router.saveCalls != 0 {
+		t.Fatalf("stale-date callback must NOT touch storage; got saveCalls=%d", router.saveCalls)
 	}
 	if router.ackCalls != 1 {
-		t.Fatalf("ack should still run to dismiss spinner: got %d", router.ackCalls)
+		t.Fatalf("ack must still fire to dismiss the Telegram spinner; got ackCalls=%d", router.ackCalls)
 	}
 	if len(router.triggers) != 0 {
 		t.Fatalf("stale date must NOT retrigger today's report; got triggers=%v", router.triggers)
+	}
+	if !strings.Contains(rec.Body.String(), "stale date") {
+		t.Errorf("body should mark the rejection reason; got: %s", rec.Body.String())
 	}
 }
 
