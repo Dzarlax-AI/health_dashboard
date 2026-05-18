@@ -217,6 +217,21 @@ func main() {
 
 	registerCheckinWebhook(mux, mgr, reg, envNotifyDefaults)
 
+	// Crash-recovery: any webhook_status rows still in `pending` were
+	// left there by a previous process that died (kill -9 / OOM /
+	// container restart) before the registrar goroutine could
+	// finalise. Transition those to failed:restart_interrupted so the
+	// operator sees a clear badge + Retry button. Best-effort —
+	// malformed rows are left untouched and logged; we never crash
+	// startup on bad data.
+	if reg != nil {
+		if reset, skipped, err := reg.ResetPendingOnStartup(ctx); err != nil {
+			log.Printf("webhook recovery: %v (continuing)", err)
+		} else {
+			log.Printf("webhook recovery: reset=%d skipped=%d", reset, skipped)
+		}
+	}
+
 	logged := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		mux.ServeHTTP(w, r)
@@ -282,6 +297,15 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	legacyUI.Register(mux)
 	mcpserver.Register(mux, mgr, baseURL)
 	registerCheckinWebhook(mux, mgr, reg, notifyDefaults)
+
+	// Crash-recovery (legacy path mirrors multi-tenant — see main()).
+	if reg != nil {
+		if reset, skipped, err := reg.ResetPendingOnStartup(ctx); err != nil {
+			log.Printf("webhook recovery: %v (continuing)", err)
+		} else {
+			log.Printf("webhook recovery: reset=%d skipped=%d", reset, skipped)
+		}
+	}
 
 	logged := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
