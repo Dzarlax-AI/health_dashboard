@@ -12,17 +12,20 @@ import (
 // Production binds to a real HTTP client; tests use a fake to assert
 // "what would have been sent" without touching the Telegram API.
 //
-// Methods return (reason, err):
-//   - On success: reason="" and err=nil.
+// Methods return (reason, description, err):
+//   - On success: reason="" description="" err=nil.
 //   - On failure: reason is a short stable token (e.g. "unauthorized",
-//     "timeout", "telegram_5xx") suitable for the WebhookStatus badge,
-//     and err is the full wrapped error for the log line.
+//     "telegram_5xx") for filtering/badging; description is the raw
+//     Telegram API error text (e.g. "Bad Request: bad webhook: An
+//     HTTPS URL must be provided") for operator-actionable UI; err
+//     is the full wrapped error for the log line.
 //
-// Keeping reason separate from err means the service layer doesn't
-// have to parse error strings to populate the badge.
+// The split between reason and description is load-bearing: the
+// reason gives the badge a tight colour-coded chip, the description
+// usually names the exact fix.
 type WebhookRegistrar interface {
-	Register(token, url, secretToken string) (reason string, err error)
-	Delete(token string) (reason string, err error)
+	Register(token, url, secretToken string) (reason, description string, err error)
+	Delete(token string) (reason, description string, err error)
 }
 
 // telegramWebhookRegistrar is the production implementation. Reuses
@@ -39,7 +42,7 @@ func NewTelegramWebhookRegistrar() WebhookRegistrar { return &telegramWebhookReg
 // twice returns success both times. allowed_updates is pinned to
 // ["callback_query"] to match what the webhook handler actually
 // reads; allowing more update types would invite payloads we ignore.
-func (telegramWebhookRegistrar) Register(token, url, secretToken string) (string, error) {
+func (telegramWebhookRegistrar) Register(token, url, secretToken string) (string, string, error) {
 	api := fmt.Sprintf("https://api.telegram.org/bot%s/setWebhook", token)
 	payload, _ := json.Marshal(map[string]any{
 		"url":             url,
@@ -54,21 +57,22 @@ func (telegramWebhookRegistrar) Register(token, url, secretToken string) (string
 // the new token is a different bot, the old bot's webhook becomes
 // orphaned naturally, and trying to deleteWebhook on it would
 // require API access we no longer have or care about.
-func (telegramWebhookRegistrar) Delete(token string) (string, error) {
+func (telegramWebhookRegistrar) Delete(token string) (string, string, error) {
 	api := fmt.Sprintf("https://api.telegram.org/bot%s/deleteWebhook", token)
 	payload, _ := json.Marshal(map[string]any{})
 	return execAndCheck(api, payload)
 }
 
 // execAndCheck wraps postJSON + Telegram-style response decoding into
-// a (reason, error) result. On success: ("", nil). On failure: a
-// short stable reason token + the full error for logs.
-func execAndCheck(api string, payload []byte) (string, error) {
+// a (reason, description, error) result. On success: ("", "", nil).
+// On failure: a short stable reason token + the raw Telegram
+// description for operator-actionable UI + the full error for logs.
+func execAndCheck(api string, payload []byte) (string, string, error) {
 	resp, err := postJSON(api, payload)
 	if err != nil {
 		// Network/timeout failure — postJSON's context already capped
 		// at 5s. Treat as a transient reason.
-		return "network", fmt.Errorf("network: %w", err)
+		return "network", "", fmt.Errorf("network: %w", err)
 	}
 	defer resp.Body.Close()
 	body, readErr := io.ReadAll(resp.Body)
@@ -76,7 +80,7 @@ func execAndCheck(api string, payload []byte) (string, error) {
 		// Treat as a network-class failure: we don't know what
 		// Telegram actually responded, so don't pretend by trying to
 		// classify by status code alone.
-		return "network", fmt.Errorf("read response body: %w (status=%d)", readErr, resp.StatusCode)
+		return "network", "", fmt.Errorf("read response body: %w (status=%d)", readErr, resp.StatusCode)
 	}
 	var parsed struct {
 		OK          bool   `json:"ok"`
@@ -85,13 +89,13 @@ func execAndCheck(api string, payload []byte) (string, error) {
 	// Decode failures count as bad_response — Telegram returning
 	// non-JSON is unusual but possible (e.g. a CDN error page).
 	if jerr := json.Unmarshal(body, &parsed); jerr != nil {
-		return "bad_response", fmt.Errorf("bad response: %v body=%q", jerr, body)
+		return "bad_response", "", fmt.Errorf("bad response: %v body=%q", jerr, body)
 	}
 	if resp.StatusCode == 200 && parsed.OK {
-		return "", nil
+		return "", "", nil
 	}
 	reason := classifyTelegramAPIError(resp.StatusCode, parsed.OK, parsed.Description)
-	return reason, fmt.Errorf("telegram API failed: status=%d ok=%v desc=%q",
+	return reason, parsed.Description, fmt.Errorf("telegram API failed: status=%d ok=%v desc=%q",
 		resp.StatusCode, parsed.OK, parsed.Description)
 }
 
