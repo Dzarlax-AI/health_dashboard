@@ -1,6 +1,9 @@
 package storage
 
 import (
+	"os"
+	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -60,6 +63,47 @@ func TestSleepDedupClause_PrefersMidnightSummary(t *testing.T) {
 		}
 		if !strings.Contains(clause, `SUBSTRING(p2.date, 12, 8) = '00:00:00'`) {
 			t.Errorf("%s: inner EXISTS must require a midnight summary row; got: %s", metric, clause)
+		}
+	}
+}
+
+// TestSleepDedup_NoInlineCopies catches stale inline copies of the
+// old "drop midnight when fragments exist" SQL rule. The canonical
+// version lives in sleepDedupClause; any other occurrence in
+// storage/*.go means a write path will drift on the next backfill,
+// reintroducing the inflation this fix removed.
+//
+// Caught by Codex review on PR #120 — buildHourlyMetric was still
+// running the old rule on `make backfill-force`, so the planned
+// rebuild would have recreated the inflated sleep_core values.
+//
+// The fingerprint is the inner EXISTS predicate of the OLD rule:
+// "p2.date" with "!= '00:00:00'" (or `<>`). The NEW rule's inner
+// EXISTS uses `= '00:00:00'`, so the !=/<> form is the smoking gun.
+func TestSleepDedup_NoInlineCopies(t *testing.T) {
+	// Match either "!= '00:00:00'" or "<> '00:00:00'" with arbitrary
+	// whitespace around the operator. Anchored to p2.date so we don't
+	// flag the outer predicate of the canonical clause (which targets
+	// the row being filtered, not the correlated row).
+	re := regexp.MustCompile(`p2\.date[^,)]*?(!=|<>)\s*'00:00:00'`)
+
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read storage dir: %v", err)
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		path := filepath.Join(".", name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if loc := re.FindIndex(data); loc != nil {
+			line := strings.Count(string(data[:loc[0]]), "\n") + 1
+			t.Errorf("%s:%d looks like an inline copy of the OLD sleep dedup rule (p2.date != '00:00:00'). Use sleepDedupClause() instead — see TestSleepDedupClause_PrefersMidnightSummary for the canonical shape.", path, line)
 		}
 	}
 }

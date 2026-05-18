@@ -333,39 +333,36 @@ func (s *DB) upsertHourlySumForDate(date string) {
 }
 
 // upsertHourlySleepForDate handles the 5 sleep_* metrics with the dedup clause.
-// One SQL statement using a NOT EXISTS subquery for the prefer-summary dedup
-// (see sleepDedupClause for the policy rationale).
+// Delegates the dedup rule to sleepDedupClause — single source of truth
+// shared with the live ingest path (per-metric callers) and the force-
+// rebuild path (buildHourlyMetric). The clause body is metric-independent
+// for sleep metrics; any sleep metric name passed to sleepDedupClause
+// returns the same SQL fragment.
+//
+// Note: the query drops table aliases because sleepDedupClause's
+// correlated EXISTS subquery references the bare `metric_points` columns
+// (e.g. `metric_points.metric_name`).
 func (s *DB) upsertHourlySleepForDate(date string) {
 	ctx, cancel := longCtx()
 	defer cancel()
-	const q = `
+	q := `
 		INSERT INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val)
 		SELECT metric_name, hour, source,
 		       SUM(minute_max), MIN(minute_min), MAX(minute_max)
 		FROM (
-			SELECT mp.metric_name, mp.source,
-			       SUBSTRING(mp.date, 1, 13) || ':00' AS hour,
-			       SUBSTRING(mp.date, 1, 16) AS minute,
-			       MAX(mp.qty) AS minute_max, MIN(mp.qty) AS minute_min
-			FROM metric_points mp
-			WHERE SUBSTRING(mp.date,1,10) = $1
-			  AND mp.qty > 0
-			  AND mp.quality = 'ok'
-			  AND mp.metric_name LIKE 'sleep\_%' ESCAPE '\'
-			  AND NOT (
-			      SUBSTRING(mp.date, 12, 8) <> '00:00:00'
-			      AND EXISTS (
-			          SELECT 1 FROM metric_points p2
-			          WHERE p2.metric_name = mp.metric_name
-			            AND SUBSTRING(p2.date,1,10) = SUBSTRING(mp.date,1,10)
-			            AND p2.source = mp.source
-			            AND SUBSTRING(p2.date,12,8) = '00:00:00'
-			            AND p2.qty > 0
-			      )
-			  )
-			GROUP BY mp.metric_name, mp.source,
-			         SUBSTRING(mp.date, 1, 13) || ':00',
-			         SUBSTRING(mp.date, 1, 16)
+			SELECT metric_name, source,
+			       SUBSTRING(date, 1, 13) || ':00' AS hour,
+			       SUBSTRING(date, 1, 16) AS minute,
+			       MAX(qty) AS minute_max, MIN(qty) AS minute_min
+			FROM metric_points
+			WHERE SUBSTRING(date,1,10) = $1
+			  AND qty > 0
+			  AND quality = 'ok'
+			  AND metric_name LIKE 'sleep\_%' ESCAPE '\'
+			  ` + sleepDedupClause("sleep_total") + `
+			GROUP BY metric_name, source,
+			         SUBSTRING(date, 1, 13) || ':00',
+			         SUBSTRING(date, 1, 16)
 		) sub
 		GROUP BY metric_name, hour, source
 		ON CONFLICT (metric_name, hour, source) DO UPDATE SET
@@ -988,20 +985,10 @@ func (s *DB) buildHourlyMetric(metric, agg string, force bool) error {
 		}
 	}
 
-	sleepDedup := ""
-	if isSleepMetric(metric) {
-		sleepDedup = `AND NOT (
-			SUBSTRING(date, 12, 8) = '00:00:00'
-			AND EXISTS (
-				SELECT 1 FROM metric_points p2
-				WHERE p2.metric_name = metric_points.metric_name
-				  AND SUBSTRING(p2.date, 1, 10) = SUBSTRING(metric_points.date, 1, 10)
-				  AND p2.source = metric_points.source
-				  AND SUBSTRING(p2.date, 12, 8) != '00:00:00'
-				  AND p2.qty > 0
-			)
-		)`
-	}
+	// Reuse the canonical clause so the force-rebuild path can't drift
+	// from the live ingest path. sleepDedupClause returns "" for
+	// non-sleep metrics, which preserves the previous behaviour.
+	sleepDedup := sleepDedupClause(metric)
 
 	var query string
 	if agg == "SUM" {
