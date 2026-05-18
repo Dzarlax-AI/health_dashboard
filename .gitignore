@@ -33,3 +33,8 @@ hae_*.json
 # Recovered-from-broken local git state, preserved on disk so it can
 # be inspected / rsynced if a future op needs the old reflog.
 .git.broken/
+
+# Superpowers brainstorm/runtime caches (HTML drafts, pid files,
+# session state). The /docs/superpowers/plans/*.md artefacts are
+# tracked; everything else is per-session scratch.
+.superpowers/
