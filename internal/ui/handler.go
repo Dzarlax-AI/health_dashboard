@@ -28,10 +28,29 @@ type Handler struct {
 	reg              *registry.Registry
 	trustFwdAuth     bool
 	onTenantCreated  func(schema string)
+
+	// Webhook integration (optional). When configured, settings POST
+	// paths that change Telegram config trigger an async registrar
+	// call to setWebhook/deleteWebhook and persist a status badge.
+	// Nil registrar disables the side effect entirely — the settings
+	// save still succeeds, just no Telegram-side update.
+	webhookRegistrar notify.WebhookRegistrar
+	webhookBaseURL   string
 }
 
 func New(mgr *tenants.Manager, reg *registry.Registry, trustFwdAuth bool) *Handler {
 	return &Handler{mgr: mgr, reg: reg, trustFwdAuth: trustFwdAuth}
+}
+
+// ConfigureWebhook plugs the Telegram webhook registrar into the
+// settings write path. Called once at server boot from main.go with
+// the production registrar + base URL. Idempotent — overwrites any
+// previous registration. Leaving this uncalled keeps the side effect
+// disabled (legacy behaviour: settings save without Telegram-side
+// re-registration).
+func (h *Handler) ConfigureWebhook(registrar notify.WebhookRegistrar, baseURL string) {
+	h.webhookRegistrar = registrar
+	h.webhookBaseURL = baseURL
 }
 
 // OnTenantCreated registers a callback invoked after a new user schema is provisioned.
@@ -1936,10 +1955,26 @@ func (h *Handler) userSettings(w http.ResponseWriter, r *http.Request) {
 				clean[k] = v
 			}
 		}
+
+		// Snapshot pre-write Telegram config so we can detect whether
+		// the save touched anything the webhook cares about. Reading
+		// before writing is the only way to know the OLD token value
+		// for the diff (DetectTelegramDiff). The notify defaults are
+		// applied so an "empty in DB but set in env" case still
+		// reflects what the bot actually uses today.
+		notifyDefaults := h.mgr.NotifyDefaultsFor(schema)
+		oldCfg := db.GetNotifyConfig(notifyDefaults)
+
 		if err := db.SaveSettings(clean); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		// Best-effort webhook re-registration. Settings save has
+		// already succeeded — Telegram-side outcome lives in a
+		// separate badge. See dispatchWebhookDiff for the contract.
+		h.dispatchWebhookDiff(r.Context(), db, schema, oldCfg, notifyDefaults)
+
 		jsonResponse(w, map[string]string{"status": "ok"})
 		return
 	}

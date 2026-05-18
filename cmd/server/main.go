@@ -197,6 +197,7 @@ func main() {
 	handler.New(mgr, onNewData, hrZones).Register(mux)
 
 	uiHandler := ui.New(mgr, reg, trustFwdAuth)
+	uiHandler.ConfigureWebhook(notify.NewTelegramWebhookRegistrar(), baseURL)
 	uiHandler.OnTenantCreated(func(schema string) {
 		db, err := mgr.GetOrCreate(ctx, schema)
 		if err != nil {
@@ -276,7 +277,9 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 
 	mux := http.NewServeMux()
 	handler.New(mgr, onNewData, hrZones).Register(mux)
-	ui.New(mgr, reg, trustFwdAuth).Register(mux)
+	legacyUI := ui.New(mgr, reg, trustFwdAuth)
+	legacyUI.ConfigureWebhook(notify.NewTelegramWebhookRegistrar(), baseURL)
+	legacyUI.Register(mux)
 	mcpserver.Register(mux, mgr, baseURL)
 	registerCheckinWebhook(mux, mgr, reg, notifyDefaults)
 
