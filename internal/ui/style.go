@@ -133,6 +133,17 @@ body { min-height: 100vh; font-size: 15px; }
 .webhook-status-age {
   font-size: 12px; color: var(--text-secondary);
 }
+/* Description: raw Telegram API error text under the badge on failed.
+   The reason chip is short and stable; the description is the actual
+   "what went wrong" string — often names the fix (HTTPS, token typo).
+   Muted so it reads as supporting info, not a second badge. */
+.webhook-status-description {
+  margin-top: 6px;
+  font-size: 12px; color: var(--text-secondary);
+  font-style: italic;
+  max-width: 480px;
+  line-height: 1.4;
+}
 .admin-btn--small {
   padding: 2px 10px; font-size: 12px;
 }

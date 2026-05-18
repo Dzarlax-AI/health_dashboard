@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -215,7 +216,7 @@ func main() {
 	uiHandler.Register(mux)
 	mcpserver.Register(mux, mgr, baseURL)
 
-	registerCheckinWebhook(mux, mgr, reg, envNotifyDefaults)
+	registerCheckinWebhook(mux, mgr, reg, envNotifyDefaults, baseURL)
 
 	// Crash-recovery: any webhook_status rows still in `pending` were
 	// left there by a previous process that died (kill -9 / OOM /
@@ -296,7 +297,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	legacyUI.ConfigureWebhook(notify.NewTelegramWebhookRegistrar(), baseURL)
 	legacyUI.Register(mux)
 	mcpserver.Register(mux, mgr, baseURL)
-	registerCheckinWebhook(mux, mgr, reg, notifyDefaults)
+	registerCheckinWebhook(mux, mgr, reg, notifyDefaults, baseURL)
 
 	// Crash-recovery (legacy path mirrors multi-tenant — see main()).
 	if reg != nil {
@@ -556,9 +557,15 @@ func makeTestNotifyFn(db *storage.DB, mgr *tenants.Manager, schema string, notif
 // single-user mode), falls back to env-only: webhook stays disabled
 // if env not set, preserving the previous behaviour.
 //
+// baseURL is the publicly-reachable scheme+host the webhook URL is
+// constructed from. If it's not HTTPS we log a startup warning —
+// Telegram setWebhook will reject every Register call, and surfacing
+// this at boot beats letting the operator discover it on their first
+// failed save.
+//
 // Used from both runSingleTenant (legacy mode) and the multi-tenant
 // mux build so neither path falls through silently.
-func registerCheckinWebhook(mux *http.ServeMux, mgr *tenants.Manager, reg *registry.Registry, notifyDefaults storage.NotifyConfig) {
+func registerCheckinWebhook(mux *http.ServeMux, mgr *tenants.Manager, reg *registry.Registry, notifyDefaults storage.NotifyConfig, baseURL string) {
 	envSecret := os.Getenv("TELEGRAM_WEBHOOK_SECRET")
 	envToken := os.Getenv("TELEGRAM_WEBHOOK_TOKEN_HEADER")
 
@@ -577,6 +584,17 @@ func registerCheckinWebhook(mux *http.ServeMux, mgr *tenants.Manager, reg *regis
 	if secret == "" || tokenHeader == "" {
 		log.Printf("registerCheckinWebhook: secrets unavailable (source=%s); webhook disabled", source)
 		return
+	}
+
+	// Defensive: Telegram setWebhook rejects non-HTTPS URLs. If the
+	// operator's BASE_URL isn't https://, the handler still mounts
+	// (so cleanup deleteWebhook calls keep working — those don't
+	// need a URL), but the registrar will fail every Register call
+	// with reason=bad_request. Surface this at startup so the
+	// operator sees it without waiting for the first save → failed
+	// → log dig.
+	if !strings.HasPrefix(baseURL, "https://") {
+		log.Printf("WARN registerCheckinWebhook: BASE_URL=%q is not HTTPS — Telegram setWebhook will reject Register calls. Set BASE_URL=https://<your-domain> in env. (Webhook handler still mounted; existing registrations work, but rotation/new-token saves will fail until BASE_URL is fixed.)", baseURL)
 	}
 
 	mux.HandleFunc("/api/telegram/webhook/", notify.NewWebhookHandler(notify.WebhookConfig{

@@ -52,7 +52,10 @@
           </div>
           <!-- Webhook status badge — populated by JS via /api/webhook-status.
                Hidden until the polling loop fetches a real state. Retry
-               button is shown only when state=failed. -->
+               button is shown only when state=failed AND user is admin.
+               Description line (Telegram API error text) is shown when
+               present — usually names the exact fix, e.g. "HTTPS URL
+               must be provided" hints at BASE_URL config. -->
           <div class="admin-field-row" id="webhook-status-row" hidden>
             <label class="admin-field-label">{{T .Lang "admin_notify_webhook_label"}}</label>
             <div class="webhook-status-line">
@@ -60,6 +63,7 @@
               <span id="webhook-status-age" class="webhook-status-age"></span>
               <button id="webhook-retry-btn" type="button" class="admin-btn admin-btn--small" hidden>{{T .Lang "admin_notify_webhook_retry"}}</button>
             </div>
+            <div id="webhook-status-description" class="webhook-status-description" hidden></div>
           </div>
           <div class="admin-field-row">
             <label class="admin-field-label">{{T .Lang "admin_notify_lang"}}</label>
@@ -307,6 +311,21 @@ function renderWebhookStatus(d) {
   // 'failed: 401 unauthorized' inline rather than having to hover.
   if (d.state === 'failed' && d.reason) label = label + ': ' + d.reason;
   badge.textContent = label;
+
+  // Description (raw Telegram API error text) — usually names the
+  // exact fix, e.g. 'Bad Request: bad webhook: An HTTPS URL must be
+  // provided' tells the operator BASE_URL needs to be https. Render
+  // under the badge only on failed; success states have empty desc.
+  var descEl = $('webhook-status-description');
+  if (descEl) {
+    if (d.state === 'failed' && d.description) {
+      descEl.textContent = d.description;
+      descEl.hidden = false;
+    } else {
+      descEl.textContent = '';
+      descEl.hidden = true;
+    }
+  }
 
   // updated_at → "Xm ago" relative.
   if (d.updated_at) {

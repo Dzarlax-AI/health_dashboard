@@ -34,10 +34,17 @@ const ReasonRestartInterrupted = "restart_interrupted"
 // updated_at is the wall-clock of the last state transition. Critical
 // for UI ("3m ago" vs "2h ago") so the operator can tell "still
 // running" from "stuck for hours".
+//
+// Description is the raw Telegram API error text on failures —
+// e.g. "Bad Request: bad webhook: An HTTPS URL must be provided".
+// The Reason is a short stable token for filtering/badging; the
+// Description is the operator-actionable detail that frequently
+// names the exact fix (HTTPS, token format, etc.).
 type WebhookStatus struct {
-	State     string    `json:"state"`
-	Reason    string    `json:"reason,omitempty"`
-	UpdatedAt time.Time `json:"updated_at"`
+	State       string    `json:"state"`
+	Reason      string    `json:"reason,omitempty"`
+	Description string    `json:"description,omitempty"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // validStates is the closed set parseWebhookStatus accepts. Anything
@@ -149,7 +156,14 @@ func (r *Registry) GetWebhookStatus(ctx context.Context, schema string) WebhookS
 // current wall clock. Always serialised via json.Marshal — caller
 // never assembles a raw string. Use from registrar success/failure
 // callbacks and from service-layer "started pending" transitions.
-func (r *Registry) SetWebhookStatus(ctx context.Context, schema, state, reason string) error {
+//
+// description is the raw Telegram API error text (or "" for success
+// transitions). Stored verbatim so the UI can render the actual
+// "what went wrong" string rather than just the short reason token —
+// e.g. operator sees "Bad Request: bad webhook: An HTTPS URL must be
+// provided" instead of just "bad_request", with the fix usually
+// staring back from the description itself.
+func (r *Registry) SetWebhookStatus(ctx context.Context, schema, state, reason, description string) error {
 	key := webhookStatusKey(schema)
 	if key == "" {
 		return errors.New("empty schema")
@@ -158,9 +172,10 @@ func (r *Registry) SetWebhookStatus(ctx context.Context, schema, state, reason s
 		return fmt.Errorf("invalid state %q", state)
 	}
 	raw, err := serialiseWebhookStatus(WebhookStatus{
-		State:     state,
-		Reason:    reason,
-		UpdatedAt: time.Now().UTC(),
+		State:       state,
+		Reason:      reason,
+		Description: description,
+		UpdatedAt:   time.Now().UTC(),
 	})
 	if err != nil {
 		return err
@@ -224,6 +239,9 @@ func (r *Registry) ResetPendingOnStartup(ctx context.Context) (reset, skipped in
 		State:     StateFailed,
 		Reason:    ReasonRestartInterrupted,
 		UpdatedAt: time.Now().UTC(),
+		// No Description: this isn't a Telegram failure, it's a
+		// recovery transition. The reason token alone tells the
+		// operator what happened.
 	})
 	for _, key := range toReset {
 		if _, uerr := r.pool.Exec(ctx, `

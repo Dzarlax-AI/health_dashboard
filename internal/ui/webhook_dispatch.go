@@ -72,7 +72,7 @@ func (h *Handler) dispatchWebhookDiffRaw(ctx context.Context, schema string, old
 	// Mark pending synchronously so the UI badge flips before the
 	// goroutine starts. The poll-while-pending loop will pick this
 	// up immediately on the next refresh.
-	if err := h.reg.SetWebhookStatus(ctx, schema, registry.StatePending, ""); err != nil {
+	if err := h.reg.SetWebhookStatus(ctx, schema, registry.StatePending, "", ""); err != nil {
 		log.Printf("dispatchWebhookDiff: set pending for %s: %v (proceeding with registrar call anyway)", schema, err)
 	}
 
@@ -105,25 +105,25 @@ func (h *Handler) runWebhookRegistrar(schema string, diff notify.TelegramDiff, u
 	// with Register on the new bot (Telegram processes per-bot, so
 	// order doesn't matter for correctness, just for log readability).
 	if diff.NeedsRegister && diff.NeedsDelete && diff.OldToken != "" {
-		if rsn, derr := h.webhookRegistrar.Delete(diff.OldToken); derr != nil {
-			log.Printf("dispatchWebhookDiff: %s old-bot cleanup failed: reason=%s err=%v (ignoring, proceeding with Register)", schema, rsn, derr)
+		if rsn, desc, derr := h.webhookRegistrar.Delete(diff.OldToken); derr != nil {
+			log.Printf("dispatchWebhookDiff: %s old-bot cleanup failed: reason=%s desc=%q err=%v (ignoring, proceeding with Register)", schema, rsn, desc, derr)
 		} else {
 			log.Printf("dispatchWebhookDiff: %s old-bot webhook deleted", schema)
 		}
 	}
 
-	var reason string
+	var reason, description string
 	var err error
 	switch {
 	case diff.NeedsRegister:
-		reason, err = h.webhookRegistrar.Register(diff.NewToken, url, tokenHeader)
+		reason, description, err = h.webhookRegistrar.Register(diff.NewToken, url, tokenHeader)
 	case diff.NeedsDelete:
-		reason, err = h.webhookRegistrar.Delete(diff.OldToken)
+		reason, description, err = h.webhookRegistrar.Delete(diff.OldToken)
 	}
 
 	if err != nil {
-		log.Printf("dispatchWebhookDiff: %s registrar failed: reason=%s err=%v", schema, reason, err)
-		if perr := h.reg.SetWebhookStatus(bg, schema, registry.StateFailed, reason); perr != nil {
+		log.Printf("dispatchWebhookDiff: %s registrar failed: reason=%s desc=%q err=%v", schema, reason, description, err)
+		if perr := h.reg.SetWebhookStatus(bg, schema, registry.StateFailed, reason, description); perr != nil {
 			log.Printf("dispatchWebhookDiff: persist failed-status for %s: %v", schema, perr)
 		}
 		return
@@ -135,7 +135,7 @@ func (h *Handler) runWebhookRegistrar(schema string, diff notify.TelegramDiff, u
 		// reuses StateOK because the *new* bot is registered.
 		finalState = registry.StateDeleted
 	}
-	if perr := h.reg.SetWebhookStatus(bg, schema, finalState, ""); perr != nil {
+	if perr := h.reg.SetWebhookStatus(bg, schema, finalState, "", ""); perr != nil {
 		log.Printf("dispatchWebhookDiff: persist final status for %s: %v", schema, perr)
 		return
 	}
@@ -164,8 +164,9 @@ func (h *Handler) webhookStatus(w http.ResponseWriter, r *http.Request) {
 	schema := h.tenantSchema(r)
 	st := h.reg.GetWebhookStatus(r.Context(), schema)
 	resp := map[string]any{
-		"state":  st.State,
-		"reason": st.Reason,
+		"state":       st.State,
+		"reason":      st.Reason,
+		"description": st.Description,
 	}
 	if !st.UpdatedAt.IsZero() {
 		resp["updated_at"] = st.UpdatedAt
@@ -207,7 +208,7 @@ func (h *Handler) webhookStatusRetry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.reg.SetWebhookStatus(r.Context(), schema, registry.StatePending, ""); err != nil {
+	if err := h.reg.SetWebhookStatus(r.Context(), schema, registry.StatePending, "", ""); err != nil {
 		log.Printf("webhookStatusRetry: set pending for %s: %v", schema, err)
 	}
 	secret := h.reg.GetGlobalSetting(r.Context(), "webhook_secret")
