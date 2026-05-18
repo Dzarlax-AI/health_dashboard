@@ -83,7 +83,7 @@ func (s *DB) BackfillStressRange(
 			return "ok"
 		}
 		for _, f := range res.Flags {
-			if f == "stale_stress" || f == "calibration_warmup" {
+			if f == "stale_stress" || f == "calibration_warmup" || f == "data_accruing" {
 				return "skipped"
 			}
 		}

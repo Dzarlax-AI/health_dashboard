@@ -178,8 +178,10 @@ var sr = LangStrings{
 	"stress_flag_acute_stress_desc":           "Jedan sat sa HR > 2 SD iznad dnevne norme. Tranzitorno, akcija nije potrebna.",
 	"stress_flag_sustained_load_label":        "Trajno opterećenje",
 	"stress_flag_sustained_load_desc":         "4+ uzastopnih sati sa HR > 1 SD iznad dnevne norme. Stvarno autonomno opterećenje.",
-	"stress_flag_stale_stress_label":          "Podaci stresa zastareli",
-	"stress_flag_stale_stress_desc":           "Manje od 8h HR podataka u budnom prozoru — sustained-load drain isključen za ovaj dan.",
+	"stress_flag_stale_stress_label":          "Podaci stresa nepotpuni",
+	"stress_flag_stale_stress_desc":           "Dan je završen, u budnom prozoru manje od 8h HR podataka (sat skinut / sync gap) — sustained-load drain isključen za ovaj dan.",
+	"stress_flag_data_accruing_label":         "Skupljamo podatke",
+	"stress_flag_data_accruing_desc":          "Dan je u toku: potrebno je ≥8h HR podataka u budnom prozoru za procenu trajnog opterećenja srca. Metrika će se pojaviti kad se nakupi dovoljno sati.",
 	"stress_flag_calibration_warmup_label":    "Kalibracija",
 	"stress_flag_calibration_warmup_desc":     "Lični baseline još u warmup-u (3-6 uzoraka). Pragovi oznaka mogu biti konzervativni.",
 

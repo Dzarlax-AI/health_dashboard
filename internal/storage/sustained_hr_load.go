@@ -23,10 +23,13 @@ import (
 //     z-load in components JSONB so users can hear "HR ran ~8 bpm
 //     above your normal for ~4 hours" without back-converting z-units.
 //
-//   - Flags: subset of {stale_stress, calibration_warmup,
+//   - Flags: subset of {stale_stress, data_accruing, calibration_warmup,
 //     acute_stress, sustained_load, illness_signature, recovery_debt,
 //     parasympathetic_rebound} — §4.3 stratified flags surfaced to
 //     PR-9's verdict layer. Empty when everything is steady.
+//     stale_stress fires only when the day ended with coverage < 8h;
+//     intraday gating uses data_accruing instead so the UI can carry
+//     the "still gathering" connotation rather than "sensor broken".
 //
 // Returns ok=false on hard DB error or unparseable date — caller writes
 // NULL to daily_scores.sustained_hr_load. ok=true with Z=0 happens when
@@ -83,7 +86,16 @@ func (s *DB) ComputeSustainedHRLoadForDate(
 		gated = "stale_stress"
 	}
 	if gated == "" && coverage < health.MinHRCoverageHours {
+		// Distinguish the in-progress case (day still has hours to
+		// accumulate HR) from the post-hoc case (day ended with a real
+		// coverage gap — watch off, sync break). Same gate behaviour
+		// either way (sustained-load drain falls back to v2.0 kcal),
+		// but the verdict layer and UI carry very different
+		// connotations: "still gathering" vs "sensor problem".
 		gated = "stale_stress"
+		if _, awakeEnd, okBounds := s.AwakeWindowBounds(date, loc); okBounds && time.Now().In(loc).Before(awakeEnd) {
+			gated = "data_accruing"
+		}
 	}
 
 	// Personal baseline (§4.1). Cold state (<3 samples) gates the

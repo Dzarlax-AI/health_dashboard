@@ -204,8 +204,10 @@ var en = LangStrings{
 	"stress_flag_acute_stress_desc":           "One hour with HR > 2 SD above your awake baseline. Transient, no action needed.",
 	"stress_flag_sustained_load_label":        "Sustained load",
 	"stress_flag_sustained_load_desc":         "4+ consecutive hours with HR > 1 SD above your awake baseline. Real autonomic load.",
-	"stress_flag_stale_stress_label":          "Stress data stale",
-	"stress_flag_stale_stress_desc":           "Less than 8h of HR samples in the awake window — sustained-load drain disabled for this day.",
+	"stress_flag_stale_stress_label":          "Stress data incomplete",
+	"stress_flag_stale_stress_desc":           "Day ended with <8h of HR samples in the awake window (watch off / sync gap) — sustained-load drain disabled for this day.",
+	"stress_flag_data_accruing_label":         "Gathering data",
+	"stress_flag_data_accruing_desc":          "Day still in progress: need ≥8h of HR samples in the awake window to score sustained cardiovascular load. The metric will appear once enough hours accumulate.",
 	"stress_flag_calibration_warmup_label":    "Calibrating",
 	"stress_flag_calibration_warmup_desc":     "Personal baseline still in warmup (3-6 samples). Flag thresholds may be conservative.",
 

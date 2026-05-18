@@ -417,11 +417,20 @@ var translationsSr = map[string]string{
 <p>Ničim lošim — to je zdrava reakcija. <strong>Ne brkati sa akutnim stresom</strong>: spolja puls izgleda visok, ali je fiziologija sasvim drugačija.</p>
 <h5>Šta raditi</h5>
 <p>Dati telu vreme: lak dan, normalan san. Trening je u redu, samo ne do krajnjih granica.</p>`,
-	"stress_flag_stale_stress_label": "Malo podataka",
+	"stress_flag_stale_stress_label": "Praznina u podacima",
 	"stress_flag_stale_stress_detail_html": `<h5>Šta je</h5>
-<p>Manje od 8 sati podataka o pulsu prikupljeno tokom budnih sati danas. Formula stresa se ne računa za ovaj dan.</p>
+<p>Dan je završen, a u budnom prozoru je prikupljeno manje od 8 sati podataka o pulsu. Procena trajnog opterećenja srca se za ovaj dan ne računa.</p>
+<h5>Šta se dogodilo</h5>
+<p>Najverovatnije je sat dugo stajao van ruke ili je bila pauza u sinhronizaciji sa iPhone-om.</p>
 <h5>Šta raditi</h5>
-<p>Stabilnije nositi sat. Proveriti da li sinhronizacija sa iPhone-om radi. Za današnje brojke akcija nije potrebna — oznaka nestaje automatski čim podataka bude više od 8 sati.</p>`,
+<p>Stabilnije nositi sat i proveriti sinhronizaciju. Današnji brojevi se neće preračunati — prošle dane ne prepisujemo.</p>`,
+	"stress_flag_data_accruing_label": "Skupljamo podatke",
+	"stress_flag_data_accruing_detail_html": `<h5>Šta je</h5>
+<p>Dan je još u toku. Za procenu trajnog opterećenja srca potrebno je najmanje 8 sati podataka o pulsu u budnom prozoru, a još nije skupljeno dovoljno sati.</p>
+<h5>Zašto je tako</h5>
+<p>Score odgovara na pitanje "da li je puls bio povišen tokom realnog dela dana?". Taj odgovor ima smisla tek kada je sam dan već prošao realan deo. Prikazivati broj ujutru bilo bi obmanjujuće.</p>
+<h5>Šta raditi</h5>
+<p>Ništa — samo nositi sat tokom uobičajenog dana. Oznaka nestaje automatski čim se skupi dovoljno sati.</p>`,
 	"stress_flag_calibration_warmup_label": "Kalibracija",
 	"stress_flag_calibration_warmup_detail_html": `<h5>Šta je</h5>
 <p>Lična norma (HRV, puls, disanje) se još uči — treba oko nedelju dana neprekidnih podataka. Pragovi oznaka stresa za sada ostaju konzervativni.</p>

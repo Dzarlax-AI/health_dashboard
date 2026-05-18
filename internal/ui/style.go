@@ -164,7 +164,7 @@ body { min-height: 100vh; font-size: 15px; }
      yellow — recovery_debt (suppresses push_hard)
      blue — parasympathetic_rebound (interpretation, not a correction)
      gray — acute_stress / sustained_load (HR-derived diagnostics)
-     muted — stale_stress / calibration_warmup (operational state)
+     muted — stale_stress / calibration_warmup / data_accruing (operational state)
 
    Hover tooltip carries the long-form description from i18n. */
 .stress-flags-row {
@@ -227,7 +227,8 @@ body { min-height: 100vh; font-size: 15px; }
   background: var(--bg-secondary, #f0f0f0); color: var(--text-secondary);
 }
 .stress-flag--stale_stress,
-.stress-flag--calibration_warmup {
+.stress-flag--calibration_warmup,
+.stress-flag--data_accruing {
   background: transparent; color: var(--text-secondary); opacity: 0.7;
   border: 1px dashed var(--border);
 }
