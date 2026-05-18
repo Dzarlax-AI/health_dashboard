@@ -28,10 +28,29 @@ type Handler struct {
 	reg              *registry.Registry
 	trustFwdAuth     bool
 	onTenantCreated  func(schema string)
+
+	// Webhook integration (optional). When configured, settings POST
+	// paths that change Telegram config trigger an async registrar
+	// call to setWebhook/deleteWebhook and persist a status badge.
+	// Nil registrar disables the side effect entirely — the settings
+	// save still succeeds, just no Telegram-side update.
+	webhookRegistrar notify.WebhookRegistrar
+	webhookBaseURL   string
 }
 
 func New(mgr *tenants.Manager, reg *registry.Registry, trustFwdAuth bool) *Handler {
 	return &Handler{mgr: mgr, reg: reg, trustFwdAuth: trustFwdAuth}
+}
+
+// ConfigureWebhook plugs the Telegram webhook registrar into the
+// settings write path. Called once at server boot from main.go with
+// the production registrar + base URL. Idempotent — overwrites any
+// previous registration. Leaving this uncalled keeps the side effect
+// disabled (legacy behaviour: settings save without Telegram-side
+// re-registration).
+func (h *Handler) ConfigureWebhook(registrar notify.WebhookRegistrar, baseURL string) {
+	h.webhookRegistrar = registrar
+	h.webhookBaseURL = baseURL
 }
 
 // OnTenantCreated registers a callback invoked after a new user schema is provisioned.
@@ -123,6 +142,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// JSON API — admin only
 	mux.HandleFunc("/api/admin/status", h.adminGuard(h.adminStatus))
 	mux.HandleFunc("/api/admin/backfill", h.adminGuard(h.adminBackfill))
+	mux.HandleFunc("/api/webhook-status", h.guard(h.webhookStatus))
+	mux.HandleFunc("/api/webhook-status/retry", h.adminGuard(h.webhookStatusRetry))
 	mux.HandleFunc("/api/admin/readiness-redesign/backfill", h.adminGuard(h.adminReadinessRedesignBackfill))
 	mux.HandleFunc("/api/admin/readiness-redesign/config", h.adminGuard(h.adminReadinessRedesignConfig))
 	mux.HandleFunc("/api/admin/readiness-redesign/operational-contract", h.adminGuard(h.adminReadinessRedesignOperationalContract))
@@ -1936,10 +1957,64 @@ func (h *Handler) userSettings(w http.ResponseWriter, r *http.Request) {
 				clean[k] = v
 			}
 		}
+		// Distinguish "client explicitly posted telegram_token" from
+		// "client omitted the field on a partial POST". Without this
+		// signal, partial saves that touch only timezone (or any
+		// other non-token field) would trip the first-clear-delete
+		// branch on env-backed tenants and silently unregister the
+		// env bot's webhook. UI today sends every field, but the API
+		// is partial-friendly and external clients exist.
+		_, tokenPosted := clean["telegram_token"]
+
+		// Snapshot RAW + EXISTENCE of the per-tenant Telegram fields
+		// before the write. Three pieces of state matter for the
+		// webhook diff:
+		//   1. oldRawToken: stored value (or "" if absent or empty)
+		//   2. oldTokenRowExists: row present in settings table at
+		//      all — distinguishes "operator never touched" (row
+		//      absent, env fallback active) from "operator previously
+		//      cleared" (row='').
+		//   3. notifyDefaults.Token: env/default fallback that
+		//      GetNotifyConfig would have used — i.e. the bot that
+		//      the system has been effectively addressing.
+		//
+		// The first-clear transition (operator clears the field on a
+		// tenant that was env-fallback'd) collapses oldRawToken ==
+		// newRawToken == "" with GetSetting, so the plain raw diff
+		// misses it. shouldFirstClearDelete catches that — its policy
+		// is unit-tested in webhook_dispatch_test.go.
+		notifyDefaults := h.mgr.NotifyDefaultsFor(schema)
+		oldRawToken := db.GetSetting("telegram_token", "")
+		oldRawChat := db.GetSetting("telegram_chat_id", "")
+		oldTokenRowExists := db.GetSettingExists("telegram_token")
+		oldEffectiveToken := oldRawToken
+		if oldEffectiveToken == "" {
+			oldEffectiveToken = notifyDefaults.Token
+		}
+
 		if err := db.SaveSettings(clean); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		newRawToken := db.GetSetting("telegram_token", "")
+		newRawChat := db.GetSetting("telegram_chat_id", "")
+
+		// First-clear special case (see shouldFirstClearDelete doc).
+		// All four conditions matter — partial POST, prior row state,
+		// post-save raw, and env fallback presence.
+		oldForDiff := oldRawToken
+		if shouldFirstClearDelete(tokenPosted, oldTokenRowExists, newRawToken, oldEffectiveToken) {
+			oldForDiff = oldEffectiveToken
+		}
+
+		// Best-effort webhook re-registration. Settings save has
+		// already succeeded — Telegram-side outcome lives in a
+		// separate badge. See dispatchWebhookDiffRaw for the contract.
+		h.dispatchWebhookDiffRaw(r.Context(), schema,
+			storage.NotifyConfig{Token: oldForDiff, ChatID: oldRawChat},
+			storage.NotifyConfig{Token: newRawToken, ChatID: newRawChat})
+
 		jsonResponse(w, map[string]string{"status": "ok"})
 		return
 	}

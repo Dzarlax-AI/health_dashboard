@@ -165,7 +165,7 @@ func main() {
 		db.EnsureEnergySnapshotsTable()
 		db.EnsureReadinessRedesignTables()
 		db.EnsureSubjectiveCheckinsTable()
-		startTenant(ctx, mgr, db, u.SchemaName, envNotifyDefaults, envAIDefaults, baseURL)
+		startTenant(ctx, mgr, reg, db, u.SchemaName, envNotifyDefaults, envAIDefaults, baseURL)
 	}
 
 	if len(users) == 0 {
@@ -197,6 +197,7 @@ func main() {
 	handler.New(mgr, onNewData, hrZones).Register(mux)
 
 	uiHandler := ui.New(mgr, reg, trustFwdAuth)
+	uiHandler.ConfigureWebhook(notify.NewTelegramWebhookRegistrar(), baseURL)
 	uiHandler.OnTenantCreated(func(schema string) {
 		db, err := mgr.GetOrCreate(ctx, schema)
 		if err != nil {
@@ -209,12 +210,27 @@ func main() {
 		db.EnsureEnergySnapshotsTable()
 		db.EnsureReadinessRedesignTables()
 		db.EnsureSubjectiveCheckinsTable()
-		startTenant(ctx, mgr, db, schema, envNotifyDefaults, envAIDefaults, baseURL)
+		startTenant(ctx, mgr, reg, db, schema, envNotifyDefaults, envAIDefaults, baseURL)
 	})
 	uiHandler.Register(mux)
 	mcpserver.Register(mux, mgr, baseURL)
 
-	registerCheckinWebhook(mux, mgr, envNotifyDefaults)
+	registerCheckinWebhook(mux, mgr, reg, envNotifyDefaults)
+
+	// Crash-recovery: any webhook_status rows still in `pending` were
+	// left there by a previous process that died (kill -9 / OOM /
+	// container restart) before the registrar goroutine could
+	// finalise. Transition those to failed:restart_interrupted so the
+	// operator sees a clear badge + Retry button. Best-effort —
+	// malformed rows are left untouched and logged; we never crash
+	// startup on bad data.
+	if reg != nil {
+		if reset, skipped, err := reg.ResetPendingOnStartup(ctx); err != nil {
+			log.Printf("webhook recovery: %v (continuing)", err)
+		} else {
+			log.Printf("webhook recovery: reset=%d skipped=%d", reset, skipped)
+		}
+	}
 
 	logged := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -271,14 +287,25 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 		AIDefaults:     aiDefaults,
 	})
 
-	go runReportScheduler(db, mgr, schema, notifyDefaults, baseURL)
+	go runReportScheduler(db, mgr, reg, schema, notifyDefaults, baseURL)
 	go runDailyQualityScan(db, schema, notifyDefaults)
 
 	mux := http.NewServeMux()
 	handler.New(mgr, onNewData, hrZones).Register(mux)
-	ui.New(mgr, reg, trustFwdAuth).Register(mux)
+	legacyUI := ui.New(mgr, reg, trustFwdAuth)
+	legacyUI.ConfigureWebhook(notify.NewTelegramWebhookRegistrar(), baseURL)
+	legacyUI.Register(mux)
 	mcpserver.Register(mux, mgr, baseURL)
-	registerCheckinWebhook(mux, mgr, notifyDefaults)
+	registerCheckinWebhook(mux, mgr, reg, notifyDefaults)
+
+	// Crash-recovery (legacy path mirrors multi-tenant — see main()).
+	if reg != nil {
+		if reset, skipped, err := reg.ResetPendingOnStartup(ctx); err != nil {
+			log.Printf("webhook recovery: %v (continuing)", err)
+		} else {
+			log.Printf("webhook recovery: reset=%d skipped=%d", reset, skipped)
+		}
+	}
 
 	logged := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -297,7 +324,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 // startup cache refresh. baseURL is plumbed through to the scheduler so
 // the EnergyBank-backfill onboarding nudge can embed a clickable
 // link back to the tenant's /settings page.
-func startTenant(ctx context.Context, mgr *tenants.Manager, db *storage.DB, schema string,
+func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Registry, db *storage.DB, schema string,
 	notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig, baseURL string) {
 
 	go func() {
@@ -329,7 +356,7 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, db *storage.DB, sche
 	})
 
 	_ = maybeFireMorningReport // triggered via onNewData in main mux
-	go runReportScheduler(db, mgr, schema, notifyDefaults, baseURL)
+	go runReportScheduler(db, mgr, reg, schema, notifyDefaults, baseURL)
 	go runDailyQualityScan(db, schema, notifyDefaults)
 }
 
@@ -519,16 +546,39 @@ func makeTestNotifyFn(db *storage.DB, mgr *tenants.Manager, schema string, notif
 //      of a wake-walk-sleep-again cycle. Now we wait for the watch to stop
 //      writing.
 
-// registerCheckinWebhook mounts the Telegram callback handler on mux
-// when TELEGRAM_WEBHOOK_SECRET is set. Used from both runSingleTenant
-// (legacy mode) and the multi-tenant mux build so neither path falls
-// through silently with the env set.
-func registerCheckinWebhook(mux *http.ServeMux, mgr *tenants.Manager, notifyDefaults storage.NotifyConfig) {
-	secret := os.Getenv("TELEGRAM_WEBHOOK_SECRET")
-	if secret == "" {
+// registerCheckinWebhook mounts the Telegram callback handler on mux.
+// Three-step secret lookup via registry.ResolveOrGenerateWebhookSecrets:
+//   1. health_registry.global_settings (persisted from previous boot)
+//   2. env (TELEGRAM_WEBHOOK_SECRET / TELEGRAM_WEBHOOK_TOKEN_HEADER)
+//   3. generate fresh pair and persist
+//
+// When reg is nil (legacy bootstrap without registry — e.g. forced
+// single-user mode), falls back to env-only: webhook stays disabled
+// if env not set, preserving the previous behaviour.
+//
+// Used from both runSingleTenant (legacy mode) and the multi-tenant
+// mux build so neither path falls through silently.
+func registerCheckinWebhook(mux *http.ServeMux, mgr *tenants.Manager, reg *registry.Registry, notifyDefaults storage.NotifyConfig) {
+	envSecret := os.Getenv("TELEGRAM_WEBHOOK_SECRET")
+	envToken := os.Getenv("TELEGRAM_WEBHOOK_TOKEN_HEADER")
+
+	var secret, tokenHeader, source string
+	if reg != nil {
+		secret, tokenHeader, source = reg.ResolveOrGenerateWebhookSecrets(context.Background(), envSecret, envToken)
+	} else {
+		// Legacy bootstrap path: registry unavailable. Use env only;
+		// no auto-generation (we have nowhere to persist generated
+		// values). When env not set, webhook stays disabled.
+		secret, tokenHeader, source = envSecret, envToken, "env"
+		if secret == "" || tokenHeader == "" {
+			return
+		}
+	}
+	if secret == "" || tokenHeader == "" {
+		log.Printf("registerCheckinWebhook: secrets unavailable (source=%s); webhook disabled", source)
 		return
 	}
-	tokenHeader := os.Getenv("TELEGRAM_WEBHOOK_TOKEN_HEADER")
+
 	mux.HandleFunc("/api/telegram/webhook/", notify.NewWebhookHandler(notify.WebhookConfig{
 		Secret:      secret,
 		TokenHeader: tokenHeader,
@@ -551,7 +601,7 @@ func registerCheckinWebhook(mux *http.ServeMux, mgr *tenants.Manager, notifyDefa
 			}, true
 		},
 	}))
-	log.Printf("Telegram webhook registered at /api/telegram/webhook/<secret> (token header: %v)", tokenHeader != "")
+	log.Printf("Telegram webhook registered at /api/telegram/webhook/<secret> (source=%s)", source)
 }
 
 // liveCheckinRouter is the production notify.CheckinAnswerRouter for
@@ -672,7 +722,7 @@ func makeMorningTrigger(db *storage.DB, lock *int32, mgr *tenants.Manager, schem
 	}
 }
 
-func runReportScheduler(db *storage.DB, mgr *tenants.Manager, schema string, defaults storage.NotifyConfig, baseURL string) {
+func runReportScheduler(db *storage.DB, mgr *tenants.Manager, reg *registry.Registry, schema string, defaults storage.NotifyConfig, baseURL string) {
 	for {
 		cfg := db.GetNotifyConfig(defaults)
 		if !cfg.Enabled() {
@@ -705,7 +755,7 @@ func runReportScheduler(db *storage.DB, mgr *tenants.Manager, schema string, def
 		ncfg = buildNotifyCfg(db, cfg)
 		bot := notify.NewBot(cfg.Token, cfg.ChatID)
 		if isMorning {
-			runMorningSmartRetry(bot, db, mgr, schema, ncfg, baseURL)
+			runMorningSmartRetry(bot, db, mgr, reg, schema, ncfg, baseURL)
 		} else {
 			log.Println("report scheduler: sending evening report…")
 			if err := notify.SendEvening(bot, db, ncfg); err != nil {
@@ -720,7 +770,7 @@ func runReportScheduler(db *storage.DB, mgr *tenants.Manager, schema string, def
 // either the report has been sent (by this loop, or by the opportunistic
 // ingest trigger) or the cap time is reached. At the cap, it force-sends with
 // a stale-data banner so we never go a day without a morning report.
-func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager, schema string, ncfg notify.Config, baseURL string) {
+func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager, reg *registry.Registry, schema string, ncfg notify.Config, baseURL string) {
 	const tick = 15 * time.Minute
 
 	loc := time.Local
@@ -769,11 +819,25 @@ func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager,
 			log.Printf("morning smart-retry: read checkin: %v", rerr)
 			row = nil
 		}
-		// Check-in is feature-flagged by the webhook secret. When unset
-		// the webhook is not registered and the user cannot answer a
-		// prompt — so we must bypass the prompt+wait path. Read once per
-		// tick (cheap; honours an admin who flipped the env after start).
-		checkinEnabled := os.Getenv("TELEGRAM_WEBHOOK_SECRET") != ""
+		// Check-in is feature-flagged by webhook secrets being available.
+		// Source of truth mirrors registerCheckinWebhook's:
+		//   - With registry: health_registry.global_settings is the
+		//     authoritative source (lazy-init at startup writes there).
+		//   - Without registry (legacy single-user fallback after
+		//     EnsureSchema failure): env vars are the only source the
+		//     handler could have used. Match that here so the gate
+		//     doesn't silently disable check-in in env-only mode.
+		var checkinEnabled bool
+		switch {
+		case reg != nil:
+			checkinEnabled = reg.GetGlobalSetting(context.Background(), "webhook_secret") != "" &&
+				reg.GetGlobalSetting(context.Background(), "webhook_token_header") != ""
+		default:
+			// reg==nil legacy fallback path — registerCheckinWebhook
+			// reads env in this mode, so we mirror it.
+			checkinEnabled = os.Getenv("TELEGRAM_WEBHOOK_SECRET") != "" &&
+				os.Getenv("TELEGRAM_WEBHOOK_TOKEN_HEADER") != ""
+		}
 
 		inputs := notify.MorningGateInputs{
 			Now:            now,

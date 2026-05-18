@@ -112,6 +112,31 @@ body { min-height: 100vh; font-size: 15px; }
 }
 .methodology-badge--heuristic         { background: var(--surface2); color: var(--muted); }
 
+/* Webhook status badge on the settings page. Live-updates every 5s
+   while state=pending; static otherwise. Colour-coded by state so the
+   operator can scan a row of tenants and spot the failed one without
+   reading text. */
+.webhook-status-line {
+  display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.webhook-badge {
+  display: inline-block;
+  font-size: 12px; font-weight: 600;
+  padding: 2px 8px; border-radius: 4px;
+  letter-spacing: 0.2px;
+}
+.webhook-badge--ok       { background: var(--good-bg); color: var(--good); }
+.webhook-badge--pending  { background: var(--fair-bg); color: var(--fair); }
+.webhook-badge--failed   { background: var(--low-bg);  color: var(--low); }
+.webhook-badge--deleted  { background: var(--surface2); color: var(--muted); }
+.webhook-badge--unknown  { background: var(--surface2); color: var(--muted); }
+.webhook-status-age {
+  font-size: 12px; color: var(--text-secondary);
+}
+.admin-btn--small {
+  padding: 2px 10px; font-size: 12px;
+}
+
 /* Subjective morning check-in confirmation line. Rendered right under
    the hero section when the user has tapped a Telegram check-in
    button. Intentionally low-key — single muted line, no chips, no

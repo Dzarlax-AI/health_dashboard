@@ -50,6 +50,17 @@
             <label class="admin-field-label">{{T .Lang "admin_notify_chat_id"}}</label>
             <input class="admin-field-input" type="text" id="cfg-telegram-chat-id" autocomplete="off" placeholder="123456789">
           </div>
+          <!-- Webhook status badge — populated by JS via /api/webhook-status.
+               Hidden until the polling loop fetches a real state. Retry
+               button is shown only when state=failed. -->
+          <div class="admin-field-row" id="webhook-status-row" hidden>
+            <label class="admin-field-label">{{T .Lang "admin_notify_webhook_label"}}</label>
+            <div class="webhook-status-line">
+              <span id="webhook-status-badge" class="webhook-badge webhook-badge--unknown">—</span>
+              <span id="webhook-status-age" class="webhook-status-age"></span>
+              <button id="webhook-retry-btn" type="button" class="admin-btn admin-btn--small" hidden>{{T .Lang "admin_notify_webhook_retry"}}</button>
+            </div>
+          </div>
           <div class="admin-field-row">
             <label class="admin-field-label">{{T .Lang "admin_notify_lang"}}</label>
             <select class="admin-field-input" id="cfg-report-lang">
@@ -187,6 +198,12 @@ function loadSettings() {
   fetch('/api/settings')
     .then(function(r){return r.json()})
     .then(function(d) {
+      // is_admin is omitted in legacy mode and for non-admins; default
+      // (true) covers the legacy case, the field gates the Retry
+      // button visibility in multi-user mode.
+      if (Object.prototype.hasOwnProperty.call(d, 'is_admin')) {
+        canRetryWebhook = !!d.is_admin;
+      }
       if (d.telegram_token) $('cfg-telegram-token').value = d.telegram_token;
       if (d.telegram_chat_id) $('cfg-telegram-chat-id').value = d.telegram_chat_id;
       if (d.report_lang) $('cfg-report-lang').value = d.report_lang;
@@ -244,6 +261,103 @@ function saveNotifySettings() {
       msg.className = 'alert alert--success';
       setTimeout(function(){ msg.style.display = 'none'; }, 3000);
     });
+}
+
+// --- Webhook status badge ---
+//
+// Loads the per-tenant webhook status on settings page open, then polls
+// every 5s WHILE state=pending. Stops polling on terminal states so we
+// don't hammer the endpoint. Retry button is visible only on failed
+// AND only for admins (the retry endpoint is admin-only; non-admins
+// would see a button that 403s silently).
+//
+// Three pieces map to the design contract:
+//   - badge text + class come from a state→label table.
+//   - "Xm ago" age is rendered from updated_at when present.
+//   - Retry calls /api/webhook-status/retry which spawns a fresh
+//     registrar goroutine; we then flip back to polling.
+
+var webhookStatusPollTimer = null;
+// canRetryWebhook is set from /api/settings response (is_admin field).
+// Default true keeps legacy single-user mode working — that path has
+// no registry concept of users and treats every request as admin.
+var canRetryWebhook = true;
+
+function renderWebhookStatus(d) {
+  var row = $('webhook-status-row');
+  var badge = $('webhook-status-badge');
+  var ageEl = $('webhook-status-age');
+  var btn = $('webhook-retry-btn');
+  if (!row || !badge) return;
+
+  // Show the whole row once we've fetched at least once.
+  row.hidden = false;
+
+  // Reset classes.
+  badge.className = 'webhook-badge webhook-badge--' + (d.state || 'unknown');
+  var label = ({
+    ok:            '{{T .Lang "webhook_badge_ok"}}',
+    pending:       '{{T .Lang "webhook_badge_pending"}}',
+    failed:        '{{T .Lang "webhook_badge_failed"}}',
+    deleted:       '{{T .Lang "webhook_badge_deleted"}}',
+    unknown:       '{{T .Lang "webhook_badge_unknown"}}'
+  })[d.state] || d.state || '—';
+
+  // Append reason to the badge when failed so the operator sees
+  // 'failed: 401 unauthorized' inline rather than having to hover.
+  if (d.state === 'failed' && d.reason) label = label + ': ' + d.reason;
+  badge.textContent = label;
+
+  // updated_at → "Xm ago" relative.
+  if (d.updated_at) {
+    var t = new Date(d.updated_at);
+    var diff = Math.max(0, Date.now() - t.getTime());
+    var mins = Math.floor(diff / 60000);
+    var ageText;
+    if (mins < 1)      ageText = 'just now';
+    else if (mins < 60) ageText = mins + 'm ago';
+    else if (mins < 24*60) ageText = Math.floor(mins/60) + 'h ago';
+    else                ageText = Math.floor(mins/(60*24)) + 'd ago';
+    ageEl.textContent = '(' + ageText + ')';
+  } else {
+    ageEl.textContent = '';
+  }
+
+  // Retry only on failed AND only for admins (endpoint is admin-only).
+  btn.hidden = d.state !== 'failed' || !canRetryWebhook;
+
+  // Poll while pending, stop otherwise.
+  if (d.state === 'pending') {
+    if (!webhookStatusPollTimer) {
+      webhookStatusPollTimer = setInterval(loadWebhookStatus, 5000);
+    }
+  } else if (webhookStatusPollTimer) {
+    clearInterval(webhookStatusPollTimer);
+    webhookStatusPollTimer = null;
+  }
+}
+
+function loadWebhookStatus() {
+  fetch('/api/webhook-status')
+    .then(function(r){return r.ok ? r.json() : null;})
+    .then(function(d){ if (d) renderWebhookStatus(d); });
+}
+
+function retryWebhook() {
+  fetch('/api/webhook-status/retry', {method:'POST'})
+    .then(function(r){
+      // 403 (non-admin clicked despite hidden button), 503 (registrar
+      // not configured), 405 (method) — all surface as a no-op refresh
+      // rather than a silent fail. The badge re-renders with the
+      // current state, which still says 'failed' so the operator
+      // knows the click didn't recover.
+      if (!r.ok) {
+        console.warn('retryWebhook: ' + r.status + ' ' + r.statusText);
+      }
+      return r.ok ? r.json() : null;
+    })
+    .then(function(){ loadWebhookStatus(); })
+    .catch(function(e){ console.warn('retryWebhook: ' + e); loadWebhookStatus(); });
 }
 
 function triggerTestNotify(kind) {
@@ -393,6 +507,9 @@ function renderEnergyBackfillProgress(s) {
 document.addEventListener('DOMContentLoaded', function() {
   loadSettings();
   loadEnergyBackfillSummary();
+  loadWebhookStatus();
+  var retryBtn = document.getElementById('webhook-retry-btn');
+  if (retryBtn) retryBtn.addEventListener('click', retryWebhook);
   // Re-check the button state whenever the TZ input changes,
   // so the user sees the gate clear without saving first.
   var tzInput = document.getElementById('cfg-timezone');
