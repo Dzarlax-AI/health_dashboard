@@ -185,6 +185,19 @@ var ru = LangStrings{
 	"stress_flag_calibration_warmup_label":    "Калибровка",
 	"stress_flag_calibration_warmup_desc":     "Персональный baseline ещё в warmup (3-6 образцов). Пороги флагов могут быть консервативными.",
 
+	// Subjective morning check-in (Telegram inline keyboard).
+	"checkin_prompt_text":  "Как вы себя чувствуете этим утром?",
+	"checkin_btn_great":    "Отлично",
+	"checkin_btn_ok":       "Нормально",
+	"checkin_btn_meh":      "Не очень",
+	"checkin_btn_sick":     "Болен(а)",
+	"checkin_ack_great":    "Записал: Отлично. Хорошего дня.",
+	"checkin_ack_ok":       "Записал: Нормально.",
+	"checkin_ack_meh":      "Записал: Не очень. Поберегите себя.",
+	"checkin_ack_sick":     "Записал: Болен. Отдыхайте.",
+	"checkin_ack_late":     "Записал после отчёта — пойдёт в аналитику.",
+	"checkin_expired_note": "<i>Хотите чтобы отчёт точнее отражал ваше состояние? Ответьте одним нажатием на утренний вопрос завтра.</i>",
+
 	"energy_note_capacity":              "утренняя капасити = сон %.1fч + маркеры восстановления",
 	"energy_component_morning_capacity": "Утренняя капасити",
 	"energy_component_activity_load":    "Нагрузка (сегодня vs 28-дн норма)",

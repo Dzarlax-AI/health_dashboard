@@ -211,6 +211,19 @@ var en = LangStrings{
 	"stress_flag_calibration_warmup_label":    "Calibrating",
 	"stress_flag_calibration_warmup_desc":     "Personal baseline still in warmup (3-6 samples). Flag thresholds may be conservative.",
 
+	// Subjective morning check-in (Telegram inline keyboard).
+	"checkin_prompt_text":  "How are you feeling this morning?",
+	"checkin_btn_great":    "Great",
+	"checkin_btn_ok":       "OK",
+	"checkin_btn_meh":      "Meh",
+	"checkin_btn_sick":     "Sick",
+	"checkin_ack_great":    "Logged: Great. Have a good one.",
+	"checkin_ack_ok":       "Logged: OK.",
+	"checkin_ack_meh":      "Logged: Meh. Take it easy today.",
+	"checkin_ack_sick":     "Logged: Sick. Rest up.",
+	"checkin_ack_late":     "Logged after the morning report — saved for analytics.",
+	"checkin_expired_note": "<i>Want the report to reflect your state better? Answer the one-tap morning question tomorrow.</i>",
+
 	"energy_note_capacity":              "morning capacity carried over from sleep %.1fh + recovery markers",
 	"energy_component_morning_capacity": "Morning capacity",
 	"energy_component_activity_load":    "Activity load (today vs 28-day chronic)",

@@ -185,6 +185,19 @@ var sr = LangStrings{
 	"stress_flag_calibration_warmup_label":    "Kalibracija",
 	"stress_flag_calibration_warmup_desc":     "Lični baseline još u warmup-u (3-6 uzoraka). Pragovi oznaka mogu biti konzervativni.",
 
+	// Subjective morning check-in (Telegram inline keyboard).
+	"checkin_prompt_text":  "Kako se osećate jutros?",
+	"checkin_btn_great":    "Odlično",
+	"checkin_btn_ok":       "Normalno",
+	"checkin_btn_meh":      "Onako",
+	"checkin_btn_sick":     "Bolestan(a)",
+	"checkin_ack_great":    "Zabeleženo: Odlično. Lep dan.",
+	"checkin_ack_ok":       "Zabeleženo: Normalno.",
+	"checkin_ack_meh":      "Zabeleženo: Onako. Štedite se danas.",
+	"checkin_ack_sick":     "Zabeleženo: Bolestan. Odmarajte.",
+	"checkin_ack_late":     "Zabeleženo posle izveštaja — ide u analitiku.",
+	"checkin_expired_note": "<i>Želite da izveštaj bolje odražava vaše stanje? Odgovorite jednim dodirom sutra.</i>",
+
 	"energy_note_capacity":              "jutarnji kapacitet iz sna %.1fh i markera oporavka",
 	"energy_component_morning_capacity": "Jutarnji kapacitet",
 	"energy_component_activity_load":    "Opterećenje (danas vs 28d hronični)",

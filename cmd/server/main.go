@@ -214,6 +214,33 @@ func main() {
 	uiHandler.Register(mux)
 	mcpserver.Register(mux, mgr, baseURL)
 
+	// Telegram check-in webhook. Path: /api/telegram/webhook/<secret>.
+	// Secret is read from env TELEGRAM_WEBHOOK_SECRET. When unset, the
+	// webhook is not registered — no-Telegram tenants are unaffected
+	// and the morning-flow proceeds as before.
+	if secret := os.Getenv("TELEGRAM_WEBHOOK_SECRET"); secret != "" {
+		tokenHeader := os.Getenv("TELEGRAM_WEBHOOK_TOKEN_HEADER")
+		notifyDefaults := envNotifyDefaults
+		mux.HandleFunc("/api/telegram/webhook/", notify.NewWebhookHandler(notify.WebhookConfig{
+			Secret:      secret,
+			TokenHeader: tokenHeader,
+			TenantFinder: func(chat string) (notify.CheckinTenant, bool) {
+				db, schema, ok := mgr.DBForTelegramChatID(context.Background(), notifyDefaults, chat)
+				if !ok {
+					return notify.CheckinTenant{}, false
+				}
+				cfg := db.GetNotifyConfig(notifyDefaults)
+				bot := notify.NewBot(cfg.Token, cfg.ChatID)
+				return notify.CheckinTenant{
+					Schema: schema,
+					Lang:   cfg.Lang,
+					Router: &liveCheckinRouter{db: db, bot: bot, triggerReport: makeReportTrigger(mgr, schema, notifyDefaults)},
+				}, true
+			},
+		}))
+		log.Printf("Telegram webhook registered at /api/telegram/webhook/<secret> (token header: %v)", tokenHeader != "")
+	}
+
 	logged := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		mux.ServeHTTP(w, r)
@@ -515,6 +542,65 @@ func makeTestNotifyFn(db *storage.DB, mgr *tenants.Manager, schema string, notif
 //      the report fire while the watch was still recording the second half
 //      of a wake-walk-sleep-again cycle. Now we wait for the watch to stop
 //      writing.
+
+// liveCheckinRouter is the production notify.CheckinAnswerRouter for
+// one tenant. Created per inbound webhook update by the TenantFinder
+// closure so each instance binds the right DB + Bot + report trigger.
+type liveCheckinRouter struct {
+	db            *storage.DB
+	bot           *notify.Bot
+	triggerReport func()
+}
+
+func (r *liveCheckinRouter) SaveAnswer(date, source, answer string, answeredAt time.Time) (string, error) {
+	return r.db.SaveCheckinAnswer(date, source, answer, answeredAt)
+}
+func (r *liveCheckinRouter) AnswerCallbackQuery(qid, text string) error {
+	return r.bot.AnswerCallbackQuery(qid, text)
+}
+func (r *liveCheckinRouter) TriggerReport(_ string) {
+	if r.triggerReport != nil {
+		go r.triggerReport()
+	}
+}
+
+// makeReportTrigger captures the dependencies needed to (re)run the
+// morning trigger for a tenant. Used by the webhook router to fire
+// the report async after a successful in-time answer.
+func makeReportTrigger(mgr *tenants.Manager, schema string, defaults storage.NotifyConfig) func() {
+	return func() {
+		db, err := mgr.GetOrCreate(context.Background(), schema)
+		if err != nil || db == nil {
+			return
+		}
+		scfg := db.GetNotifyConfig(defaults)
+		if !scfg.Enabled() {
+			return
+		}
+		loc := time.Local
+		if l, lerr := time.LoadLocation(scfg.Timezone); lerr == nil && scfg.Timezone != "" {
+			loc = l
+		}
+		today := time.Now().In(loc).Format("2006-01-02")
+		if db.HasSentMorningReport(today) {
+			return
+		}
+		ncfg := buildNotifyCfg(db, scfg)
+		bot := notify.NewBot(ncfg.Token, ncfg.ChatID)
+		sent, reason, err := notify.SendMorningSmart(bot, db, ncfg, false)
+		if err != nil {
+			log.Printf("checkin-trigger: send: %v", err)
+			return
+		}
+		if sent {
+			if perr := db.MarkMorningReportSent(today); perr != nil {
+				log.Printf("checkin-trigger: mark sent: %v", perr)
+			}
+			log.Printf("checkin-trigger: sent (reason=%s) for %s", reason, today)
+		}
+	}
+}
+
 func makeMorningTrigger(db *storage.DB, lock *int32, mgr *tenants.Manager, schema string, notifyDefaults storage.NotifyConfig) func() {
 	return func() {
 		if !atomic.CompareAndSwapInt32(lock, 0, 1) {

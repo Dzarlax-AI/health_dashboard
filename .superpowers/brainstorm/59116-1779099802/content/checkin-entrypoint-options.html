@@ -1,0 +1,62 @@
+<h2>Subjective check-in MVP: where should it live first?</h2>
+<p class="subtitle">Pick the entry point that should define the first version. The rest can come later, but one surface should own the habit.</p>
+
+<div class="cards">
+  <div class="card" data-choice="telegram-first" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">Telegram morning prompt</div>
+        <div class="mockup-body">
+          <div class="placeholder">How do you feel today?</div>
+          <button class="mock-button">Great</button>
+          <button class="mock-button">Okay</button>
+          <button class="mock-button">Low</button>
+          <button class="mock-button">Sick</button>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A. Telegram-first</h3>
+      <p>Best for habit formation: one tap in the place where morning reports already arrive. UI dashboard reads the result afterwards.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="dashboard-first" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">Dashboard hero widget</div>
+        <div class="mockup-body">
+          <div class="placeholder">Today: readiness 73 · energy 61</div>
+          <button class="mock-button">Add how I feel</button>
+          <div class="placeholder">Mood · energy · soreness · sickness</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B. Dashboard-first</h3>
+      <p>Best for context: you see the score and then add your real-world outcome. Weaker if you do not open the dashboard daily.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="hybrid" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">One backend, two thin surfaces</div>
+        <div class="mockup-body">
+          <div class="placeholder">Telegram: quick tap</div>
+          <div class="placeholder">Dashboard: edit / add notes</div>
+          <div class="placeholder">Storage: one row per tenant/date</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C. Hybrid MVP</h3>
+      <p>Best long-term shape, but bigger first PR. Telegram captures the habit; dashboard gives review/edit and makes the data visible.</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>My recommendation</h3>
+  <p><strong>A for the first slice, designed so C is easy next.</strong> Start with Telegram capture + storage + admin/read API. Add dashboard editing once the habit and data shape are proven.</p>
+</div>
