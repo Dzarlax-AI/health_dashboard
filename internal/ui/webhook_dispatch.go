@@ -84,11 +84,33 @@ func (h *Handler) dispatchWebhookDiffRaw(ctx context.Context, schema string, old
 }
 
 // runWebhookRegistrar is the goroutine body for the actual HTTP call.
-// Isolated from dispatchWebhookDiff so the synchronous bookkeeping
+// Isolated from dispatchWebhookDiffRaw so the synchronous bookkeeping
 // stays readable. Detached context (Background) so the originating
 // HTTP request canceling doesn't kill mid-call.
+//
+// Three branch shapes match the TelegramDiff combinations:
+//   - NeedsRegister only: token added. Single Register call.
+//   - NeedsDelete only:   token removed. Single Delete call.
+//   - Both true:          rotation. Best-effort Delete on old token,
+//                         then Register on new. Old-bot cleanup is
+//                         best-effort — its failure is logged but
+//                         doesn't flip the badge. The badge tracks
+//                         the *new* bot's registration outcome since
+//                         that's what affects future callbacks.
 func (h *Handler) runWebhookRegistrar(schema string, diff notify.TelegramDiff, url, tokenHeader string) {
 	bg := context.Background()
+
+	// Rotation cleanup: best-effort delete on the old bot. Run before
+	// Register so a quick double-tap save by an operator doesn't race
+	// with Register on the new bot (Telegram processes per-bot, so
+	// order doesn't matter for correctness, just for log readability).
+	if diff.NeedsRegister && diff.NeedsDelete && diff.OldToken != "" {
+		if rsn, derr := h.webhookRegistrar.Delete(diff.OldToken); derr != nil {
+			log.Printf("dispatchWebhookDiff: %s old-bot cleanup failed: reason=%s err=%v (ignoring, proceeding with Register)", schema, rsn, derr)
+		} else {
+			log.Printf("dispatchWebhookDiff: %s old-bot webhook deleted", schema)
+		}
+	}
 
 	var reason string
 	var err error
@@ -108,7 +130,9 @@ func (h *Handler) runWebhookRegistrar(schema string, diff notify.TelegramDiff, u
 	}
 
 	finalState := registry.StateOK
-	if diff.NeedsDelete {
+	if diff.NeedsDelete && !diff.NeedsRegister {
+		// Pure delete (no rotation). Badge becomes "deleted". Rotation
+		// reuses StateOK because the *new* bot is registered.
 		finalState = registry.StateDeleted
 	}
 	if perr := h.reg.SetWebhookStatus(bg, schema, finalState, ""); perr != nil {

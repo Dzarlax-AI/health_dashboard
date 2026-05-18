@@ -39,10 +39,16 @@ func TestDetectTelegramDiff(t *testing.T) {
 			wantNewToken: "abc",
 		},
 		{
-			name:     "token changed (rotation)",
+			// Rotation: both Register AND Delete fire so the old bot's
+			// webhook is cleaned up rather than left dangling. Old
+			// design rationale ("we don't control old bot") was wrong:
+			// the old token is still our API key, deleteWebhook on it
+			// is straightforward.
+			name:     "token changed (rotation) — register new + delete old",
 			oldToken: "abc", oldChat: "111",
 			newToken: "xyz", newChat: "111",
 			wantRegister: true,
+			wantDelete:   true,
 			wantOldToken: "abc",
 			wantNewToken: "xyz",
 		},
@@ -63,6 +69,7 @@ func TestDetectTelegramDiff(t *testing.T) {
 			oldToken: "abc", oldChat: "111",
 			newToken: "xyz", newChat: "222",
 			wantRegister: true,
+			wantDelete:   true,
 			wantOldToken: "abc",
 			wantNewToken: "xyz",
 		},
@@ -92,14 +99,10 @@ func TestDetectTelegramDiff(t *testing.T) {
 			if diff.NewToken != tc.wantNewToken {
 				t.Errorf("NewToken = %q, want %q", diff.NewToken, tc.wantNewToken)
 			}
-			// Register and Delete are mutually exclusive — a single transition
-			// is either "we have a new token to register" or "we have an old
-			// token to clean up", never both. Token rotation is "register
-			// new"; the old bot's webhook on Telegram side is implicitly
-			// invalidated because it's a different bot now.
-			if diff.NeedsRegister && diff.NeedsDelete {
-				t.Errorf("NeedsRegister and NeedsDelete must be mutually exclusive")
-			}
+			// Register and Delete can BOTH fire on rotation (old token
+			// non-empty, new token non-empty, both different). Both
+			// false means "nothing to do" (chat_id-only change). The
+			// service layer dispatches whichever combination is set.
 		})
 	}
 }

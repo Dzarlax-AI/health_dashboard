@@ -71,7 +71,13 @@ func execAndCheck(api string, payload []byte) (string, error) {
 		return "network", fmt.Errorf("network: %w", err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		// Treat as a network-class failure: we don't know what
+		// Telegram actually responded, so don't pretend by trying to
+		// classify by status code alone.
+		return "network", fmt.Errorf("read response body: %w (status=%d)", readErr, resp.StatusCode)
+	}
 	var parsed struct {
 		OK          bool   `json:"ok"`
 		Description string `json:"description"`

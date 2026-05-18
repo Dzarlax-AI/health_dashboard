@@ -184,9 +184,15 @@ func (r *Registry) SetWebhookStatus(ctx context.Context, schema, state, reason s
 // Survives malformed rows: TestClassifyPendingRows_SurvivesMalformedRows
 // pins the contract.
 func (r *Registry) ResetPendingOnStartup(ctx context.Context) (reset, skipped int, err error) {
+	// Escape underscores in the LIKE pattern: '_' is a single-char
+	// wildcard in SQL LIKE, so 'webhook_status_%' would also match
+	// 'webhookXstatusX...' for any single chars X. Use ESCAPE to make
+	// the underscores literal — without this we could accidentally
+	// reset unrelated global_settings rows if any future key shares
+	// the prefix shape by coincidence.
 	rows, err := r.pool.Query(ctx, `
 		SELECT key, value FROM health_registry.global_settings
-		 WHERE key LIKE 'webhook_status_%'`)
+		 WHERE key LIKE 'webhook\_status\_%' ESCAPE '\'`)
 	if err != nil {
 		return 0, 0, fmt.Errorf("query webhook_status keys: %w", err)
 	}

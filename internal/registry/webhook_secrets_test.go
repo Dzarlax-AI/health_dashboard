@@ -56,18 +56,28 @@ func TestResolveWebhookSecretsDecision(t *testing.T) {
 			wantTokenFromEnv:  true,
 		},
 		{
-			name:                 "half-set env (secret only) — ignored, fall to global",
-			globalSecret:         "g_secret",
-			globalToken:          "g_token",
-			envSecret:            "e_secret",
-			envToken:             "",
-			wantSource:           "global",
-			wantPersist:          false,
-			wantSecretFromGlobal: true,
-			wantFromGlobal:       true,
+			// Pre-PR backward compat: deployments running with only
+			// TELEGRAM_WEBHOOK_SECRET set (no TOKEN_HEADER, since
+			// secret_token is optional in Telegram's setWebhook) were
+			// a valid config. Lazy-init must preserve them — treating
+			// half-set env as 'not set' would silently regenerate
+			// secrets and break Telegram-side webhook on first boot
+			// after upgrade.
+			name:              "env SECRET only (no TOKEN_HEADER) — env wins, env wins, persist",
+			globalSecret:      "g_secret",
+			globalToken:       "g_token",
+			envSecret:         "e_secret",
+			envToken:          "",
+			wantSource:        "env",
+			wantPersist:       true,
+			wantSecretFromEnv: true,
+			wantTokenFromEnv:  true,
 		},
 		{
-			name:        "half-set env, no global — generate",
+			// Inverse of above: env TOKEN_HEADER alone is meaningless
+			// without a URL-path secret to gate the endpoint. Fall to
+			// global if set, else generate.
+			name:        "env TOKEN_HEADER only, no SECRET, no global — generate",
 			envSecret:   "",
 			envToken:    "e_token",
 			wantSource:  "generate",
@@ -118,8 +128,12 @@ func TestGenerateRandomSecret_HexShape(t *testing.T) {
 		}
 	}
 	// Two consecutive calls must not collide — sanity check on the
-	// randomness source.
-	s2, _ := generateRandomSecret()
+	// randomness source. Surface RNG failures as Fatal so we don't
+	// misreport an entropy issue as a collision-logic problem.
+	s2, err := generateRandomSecret()
+	if err != nil {
+		t.Fatalf("generate second secret: %v", err)
+	}
 	if s == s2 {
 		t.Errorf("two generated secrets collided: %q", s)
 	}

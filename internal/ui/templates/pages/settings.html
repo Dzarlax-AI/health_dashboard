@@ -198,6 +198,12 @@ function loadSettings() {
   fetch('/api/settings')
     .then(function(r){return r.json()})
     .then(function(d) {
+      // is_admin is omitted in legacy mode and for non-admins; default
+      // (true) covers the legacy case, the field gates the Retry
+      // button visibility in multi-user mode.
+      if (Object.prototype.hasOwnProperty.call(d, 'is_admin')) {
+        canRetryWebhook = !!d.is_admin;
+      }
       if (d.telegram_token) $('cfg-telegram-token').value = d.telegram_token;
       if (d.telegram_chat_id) $('cfg-telegram-chat-id').value = d.telegram_chat_id;
       if (d.report_lang) $('cfg-report-lang').value = d.report_lang;
@@ -261,7 +267,9 @@ function saveNotifySettings() {
 //
 // Loads the per-tenant webhook status on settings page open, then polls
 // every 5s WHILE state=pending. Stops polling on terminal states so we
-// don't hammer the endpoint. Retry button is visible only on failed.
+// don't hammer the endpoint. Retry button is visible only on failed
+// AND only for admins (the retry endpoint is admin-only; non-admins
+// would see a button that 403s silently).
 //
 // Three pieces map to the design contract:
 //   - badge text + class come from a state→label table.
@@ -270,6 +278,10 @@ function saveNotifySettings() {
 //     registrar goroutine; we then flip back to polling.
 
 var webhookStatusPollTimer = null;
+// canRetryWebhook is set from /api/settings response (is_admin field).
+// Default true keeps legacy single-user mode working — that path has
+// no registry concept of users and treats every request as admin.
+var canRetryWebhook = true;
 
 function renderWebhookStatus(d) {
   var row = $('webhook-status-row');
@@ -311,8 +323,8 @@ function renderWebhookStatus(d) {
     ageEl.textContent = '';
   }
 
-  // Retry only on failed.
-  btn.hidden = d.state !== 'failed';
+  // Retry only on failed AND only for admins (endpoint is admin-only).
+  btn.hidden = d.state !== 'failed' || !canRetryWebhook;
 
   // Poll while pending, stop otherwise.
   if (d.state === 'pending') {
@@ -333,8 +345,19 @@ function loadWebhookStatus() {
 
 function retryWebhook() {
   fetch('/api/webhook-status/retry', {method:'POST'})
-    .then(function(r){return r.json()})
-    .then(function(){ loadWebhookStatus(); });
+    .then(function(r){
+      // 403 (non-admin clicked despite hidden button), 503 (registrar
+      // not configured), 405 (method) — all surface as a no-op refresh
+      // rather than a silent fail. The badge re-renders with the
+      // current state, which still says 'failed' so the operator
+      // knows the click didn't recover.
+      if (!r.ok) {
+        console.warn('retryWebhook: ' + r.status + ' ' + r.statusText);
+      }
+      return r.ok ? r.json() : null;
+    })
+    .then(function(){ loadWebhookStatus(); })
+    .catch(function(e){ console.warn('retryWebhook: ' + e); loadWebhookStatus(); });
 }
 
 function triggerTestNotify(kind) {

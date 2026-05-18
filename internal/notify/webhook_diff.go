@@ -3,22 +3,23 @@ package notify
 import "health-receiver/internal/storage"
 
 // TelegramDiff is the pure-function output of DetectTelegramDiff. The
-// service layer uses it to pick exactly one webhook action (or none)
+// service layer uses it to pick which webhook actions to perform
 // after writing new tenant config.
 //
-// NeedsRegister and NeedsDelete are mutually exclusive:
-//   - NeedsRegister=true: token was added or rotated; call
-//     webhookRegistrar.Register(NewToken). When rotating, the previous
-//     bot's webhook on Telegram side is implicitly invalidated because
-//     the new token belongs to a different bot — no separate
-//     deleteWebhook call needed (and would be wasted, since we don't
-//     control the old bot's API surface anymore).
-//   - NeedsDelete=true: token was removed; call
-//     webhookRegistrar.Delete(OldToken) to clean up the registration.
+// The flag combinations expressible:
+//   - both false           → no webhook impact (e.g. chat_id-only change)
+//   - NeedsRegister only   → token added (old was empty)
+//   - NeedsDelete only     → token removed (new is empty)
+//   - both true (rotation) → register new + delete old; OldToken and
+//                            NewToken both non-empty
 //
-// Both false: nothing changed that affects the webhook. This includes
-// the chat_id-changed-but-token-same case — Telegram's webhook is
-// bot-scoped, not chat-scoped.
+// The previous design treated rotation as register-only (skipping the
+// old-bot cleanup with the argument that we don't control the old
+// bot's API surface). That was wrong — the OLD token IS the API key,
+// and we still hold it long enough to call deleteWebhook on it. Not
+// cleaning up leaves the old bot configured to keep posting callbacks
+// to our endpoint until someone else takes over the bot or it's
+// re-registered manually. Best-effort delete fixes that.
 type TelegramDiff struct {
 	NeedsRegister bool
 	NeedsDelete   bool
@@ -39,9 +40,18 @@ func DetectTelegramDiff(old, new storage.NotifyConfig) TelegramDiff {
 	case new.Token == "":
 		// Token was removed. Clean up the old bot's webhook.
 		return TelegramDiff{NeedsDelete: true, OldToken: old.Token}
+	case old.Token == "":
+		// Token added (old was empty). Register the new bot only.
+		return TelegramDiff{NeedsRegister: true, NewToken: new.Token}
 	default:
-		// Token added (old=="") or rotated (old!=new && both non-empty).
-		// In both cases the action is the same: register the new bot.
-		return TelegramDiff{NeedsRegister: true, OldToken: old.Token, NewToken: new.Token}
+		// Rotation: old and new both non-empty and different. Register
+		// the new bot AND delete the old bot's webhook — both actions
+		// are independent and run best-effort in the dispatcher.
+		return TelegramDiff{
+			NeedsRegister: true,
+			NeedsDelete:   true,
+			OldToken:      old.Token,
+			NewToken:      new.Token,
+		}
 	}
 }

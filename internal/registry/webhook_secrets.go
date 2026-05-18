@@ -21,23 +21,24 @@ const (
 //   - persist: whether the caller should write to global_settings
 //
 // Contract:
-//   - Both env vars set → env wins. Operator intent always overrides
-//     cached values, so we persist forward (rotation works).
-//   - Env empty/partial AND both global vars set → use global.
-//   - Otherwise → generate. The half-set env case (only one var) is
-//     treated as not-set so we don't run with a mismatched pair.
+//   - env SECRET set → env wins (with whatever token_header it has,
+//     including empty). TOKEN_HEADER is an OPTIONAL second-layer
+//     protection; pre-PR deployments running with only SECRET set
+//     were a valid config and lazy-init must preserve them rather
+//     than regenerate.
+//   - env SECRET empty AND global SECRET set → use global.
+//   - Otherwise → generate. We still require a SECRET on the URL
+//     path because without it the webhook endpoint has no way to
+//     authenticate Telegram; token_header alone is meaningless.
 //
 // Pinned by TestResolveWebhookSecretsDecision.
 func resolveWebhookSecretsDecision(globalSecret, globalToken, envSecret, envToken string) (
 	secret, token, source string, persist bool,
 ) {
-	envBothSet := envSecret != "" && envToken != ""
-	globalBothSet := globalSecret != "" && globalToken != ""
-
 	switch {
-	case envBothSet:
+	case envSecret != "":
 		return envSecret, envToken, "env", true
-	case globalBothSet:
+	case globalSecret != "":
 		return globalSecret, globalToken, "global", false
 	default:
 		return "", "", "generate", true
