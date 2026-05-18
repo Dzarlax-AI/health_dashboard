@@ -820,18 +820,24 @@ func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager,
 			row = nil
 		}
 		// Check-in is feature-flagged by webhook secrets being available.
-		// Source of truth is health_registry.global_settings — the
-		// lazy-init at startup (registerCheckinWebhook → registry.
-		// ResolveOrGenerateWebhookSecrets) bootstraps secrets from
-		// env/global/generate and persists them, so a non-empty global
-		// row reliably means "webhook handler is registered and a
-		// Telegram bot is ready to deliver callbacks". Reading env
-		// directly here was a P1 bug: after PR #122 fresh installs
-		// have generated secrets in global_settings but no env vars,
-		// and the old code silently disabled check-in.
-		checkinEnabled := reg != nil &&
-			reg.GetGlobalSetting(context.Background(), "webhook_secret") != "" &&
-			reg.GetGlobalSetting(context.Background(), "webhook_token_header") != ""
+		// Source of truth mirrors registerCheckinWebhook's:
+		//   - With registry: health_registry.global_settings is the
+		//     authoritative source (lazy-init at startup writes there).
+		//   - Without registry (legacy single-user fallback after
+		//     EnsureSchema failure): env vars are the only source the
+		//     handler could have used. Match that here so the gate
+		//     doesn't silently disable check-in in env-only mode.
+		var checkinEnabled bool
+		switch {
+		case reg != nil:
+			checkinEnabled = reg.GetGlobalSetting(context.Background(), "webhook_secret") != "" &&
+				reg.GetGlobalSetting(context.Background(), "webhook_token_header") != ""
+		default:
+			// reg==nil legacy fallback path — registerCheckinWebhook
+			// reads env in this mode, so we mirror it.
+			checkinEnabled = os.Getenv("TELEGRAM_WEBHOOK_SECRET") != "" &&
+				os.Getenv("TELEGRAM_WEBHOOK_TOKEN_HEADER") != ""
+		}
 
 		inputs := notify.MorningGateInputs{
 			Now:            now,

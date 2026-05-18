@@ -27,6 +27,23 @@ func (c NotifyConfig) Enabled() bool {
 	return c.Token != "" && c.ChatID != ""
 }
 
+// GetSettingExists reports whether a row for `key` exists in the
+// settings table — regardless of whether the stored value is empty.
+// Use when you need to distinguish "never set, fallback active" from
+// "explicitly cleared to empty". The plain GetSetting helper collapses
+// both into the fallback return, which is wrong for transitions where
+// the empty-vs-absent distinction is the operator's intent (e.g.
+// clearing a Telegram token that was sourced from env).
+func (s *DB) GetSettingExists(key string) bool {
+	var exists bool
+	ctx, cancel := queryCtx()
+	defer cancel()
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM settings WHERE key = $1)`, key).Scan(&exists); err != nil {
+		return false
+	}
+	return exists
+}
+
 // GetSetting returns the value for key, or fallback if not found.
 func (s *DB) GetSetting(key, fallback string) string {
 	var val *string

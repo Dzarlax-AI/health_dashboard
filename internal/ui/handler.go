@@ -1958,23 +1958,30 @@ func (h *Handler) userSettings(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Snapshot RAW stored Telegram fields (no env/default fallback)
-		// before the write. Diff is computed on raw values, not the
-		// effective config, so an operator clearing their per-tenant
-		// telegram_token reliably triggers deleteWebhook even when an
-		// env fallback would still resolve to a token. The reverse —
-		// per-tenant blank to set — also gets the right NeedsRegister
-		// without env masking the transition.
+		// Snapshot RAW + EXISTENCE of the per-tenant Telegram fields
+		// before the write. Three pieces of state matter for the
+		// webhook diff:
+		//   1. oldRawToken: stored value (or "" if absent or empty)
+		//   2. oldTokenRowExists: row present in settings table at
+		//      all — distinguishes "operator never touched" (row
+		//      absent, env fallback active) from "operator previously
+		//      cleared" (row='').
+		//   3. notifyDefaults.Token: env/default fallback that
+		//      GetNotifyConfig would have used — i.e. the bot that
+		//      the system has been effectively addressing.
 		//
-		// GetSetting(key, "") returns "" for both "row absent" and
-		// "row=''" — both mean "no per-tenant override", which is the
-		// distinction the webhook diff cares about. The env-only
-		// install corner case (no per-tenant token, env provides one)
-		// stays handled out-of-band: operator must POST through
-		// settings UI at least once to push the env token into stored
-		// form, after which subsequent edits flow through this hook.
+		// The first-clear transition (operator clears the field on a
+		// tenant that was env-fallback'd) collapses oldRawToken ==
+		// newRawToken == "" with GetSetting, so the plain raw diff
+		// misses it. We catch that explicitly below.
+		notifyDefaults := h.mgr.NotifyDefaultsFor(schema)
 		oldRawToken := db.GetSetting("telegram_token", "")
 		oldRawChat := db.GetSetting("telegram_chat_id", "")
+		oldTokenRowExists := db.GetSettingExists("telegram_token")
+		oldEffectiveToken := oldRawToken
+		if oldEffectiveToken == "" {
+			oldEffectiveToken = notifyDefaults.Token
+		}
 
 		if err := db.SaveSettings(clean); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1984,11 +1991,27 @@ func (h *Handler) userSettings(w http.ResponseWriter, r *http.Request) {
 		newRawToken := db.GetSetting("telegram_token", "")
 		newRawChat := db.GetSetting("telegram_chat_id", "")
 
+		// First-clear special case: row didn't exist before save, now
+		// it does (SaveSettings just inserted it), and the new value
+		// is empty. The operator's intent is "stop using the bot the
+		// system was using" — which, before this save, was the env
+		// fallback. Without this branch, raw==raw==""→ no-op and the
+		// env bot's webhook stays pointing at us even though the
+		// operator told us to stop.
+		//
+		// Subsequent saves with an empty field on the same tenant
+		// (row already exists with "") fall through to the plain raw
+		// diff and yield no-op — no idempotent re-delete spam.
+		oldForDiff := oldRawToken
+		if !oldTokenRowExists && newRawToken == "" && oldEffectiveToken != "" {
+			oldForDiff = oldEffectiveToken
+		}
+
 		// Best-effort webhook re-registration. Settings save has
 		// already succeeded — Telegram-side outcome lives in a
-		// separate badge. See dispatchWebhookDiff for the contract.
+		// separate badge. See dispatchWebhookDiffRaw for the contract.
 		h.dispatchWebhookDiffRaw(r.Context(), schema,
-			storage.NotifyConfig{Token: oldRawToken, ChatID: oldRawChat},
+			storage.NotifyConfig{Token: oldForDiff, ChatID: oldRawChat},
 			storage.NotifyConfig{Token: newRawToken, ChatID: newRawChat})
 
 		jsonResponse(w, map[string]string{"status": "ok"})
