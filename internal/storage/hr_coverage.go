@@ -75,6 +75,27 @@ func (s *DB) HRCoverageHours(date string, loc *time.Location) (int, bool) {
 	return int(hours.Int64), true
 }
 
+// AwakeWindowBounds resolves the absolute [start, end) timestamps for
+// the awake window of `date` in the tenant's TZ. Same wake/onset
+// resolution as HRCoverageHours, exposed so callers can ask "is this
+// day still in progress?" (`time.Now().In(loc).Before(end)`) without
+// re-parsing the date or re-running WakeTimeForDate.
+//
+// Returns ok=false on unparseable date — caller decides the
+// degraded-data response.
+func (s *DB) AwakeWindowBounds(date string, loc *time.Location) (start, end time.Time, ok bool) {
+	if loc == nil {
+		loc = time.UTC
+	}
+	d, err := time.ParseInLocation("2006-01-02", date, loc)
+	if err != nil {
+		return time.Time{}, time.Time{}, false
+	}
+	wakeHour, onsetHour, _, _ := s.WakeTimeForDate(date, loc)
+	start, end = resolveAwakeBounds(d, wakeHour, onsetHour, loc)
+	return start, end, true
+}
+
 // resolveAwakeBounds turns the [wakeHour, onsetHour) hour-of-day pair
 // returned by WakeTimeForDate into absolute [start, end) timestamps
 // for date d. Handles the cross-midnight case (onset < wake → onset

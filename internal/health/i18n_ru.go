@@ -179,7 +179,9 @@ var ru = LangStrings{
 	"stress_flag_sustained_load_label":        "Длительная нагрузка",
 	"stress_flag_sustained_load_desc":         "4+ часа подряд с ЧСС > 1 SD выше дневной нормы. Реальная автономная нагрузка.",
 	"stress_flag_stale_stress_label":          "Стресс-данные неполные",
-	"stress_flag_stale_stress_desc":           "Менее 8ч HR-данных в бодрствующем окне — sustained-load drain отключён на этот день.",
+	"stress_flag_stale_stress_desc":           "День закончился, в бодрствующем окне меньше 8ч HR-данных (часы сняты / sync-провал) — sustained-load drain отключён на этот день.",
+	"stress_flag_data_accruing_label":         "Накапливаем данные",
+	"stress_flag_data_accruing_desc":          "День ещё идёт: нужно ≥8ч HR-данных в дневное окно, чтобы оценить накопленную нагрузку сердца. Метрика появится, когда наберётся достаточно часов.",
 	"stress_flag_calibration_warmup_label":    "Калибровка",
 	"stress_flag_calibration_warmup_desc":     "Персональный baseline ещё в warmup (3-6 образцов). Пороги флагов могут быть консервативными.",
 

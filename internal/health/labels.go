@@ -60,7 +60,7 @@ const (
 //   - recovery_debt                 → warning  (yesterday's load caught up)
 //   - parasympathetic_rebound       → info     (recovery-phase pattern)
 //   - acute_stress / sustained_load → neutral  (noted, no action needed)
-//   - stale_stress / calibration_warmup → pending (data-quality state)
+//   - stale_stress / calibration_warmup / data_accruing → pending (data-quality state)
 func FlagSeverity(key string) string {
 	switch key {
 	case "illness_signature":
@@ -71,7 +71,7 @@ func FlagSeverity(key string) string {
 		return SeverityInfo
 	case "acute_stress", "sustained_load":
 		return SeverityNeutral
-	case "stale_stress", "calibration_warmup":
+	case "stale_stress", "calibration_warmup", "data_accruing":
 		return SeverityPending
 	}
 	return ""

@@ -123,6 +123,7 @@ func TestFlagSeverity_Mapping(t *testing.T) {
 		"sustained_load":          SeverityNeutral,
 		"stale_stress":            SeverityPending,
 		"calibration_warmup":      SeverityPending,
+		"data_accruing":           SeverityPending,
 		"unknown_future_flag":     "",
 		"":                        "",
 	}

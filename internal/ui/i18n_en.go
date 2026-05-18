@@ -466,11 +466,20 @@ var translationsEn = map[string]string{
 <p>It doesn't — this is a healthy reaction. <strong>Don't mistake it for acute stress</strong>: heart rate looks high, but the physiology is entirely different.</p>
 <h5>What to do</h5>
 <p>Give the body time: easy day, normal sleep. Training is fine, just not at the limit.</p>`,
-	"stress_flag_stale_stress_label": "Low data",
+	"stress_flag_stale_stress_label": "Coverage gap",
 	"stress_flag_stale_stress_detail_html": `<h5>What it is</h5>
-<p>Less than 8 hours of heart-rate data were collected during your waking hours today. The stress formula doesn't compute for this day.</p>
+<p>The day ended with less than 8 hours of heart-rate data in your waking window. The sustained-load drain disabled for this day.</p>
+<h5>What caused it</h5>
+<p>Most likely the watch was off the wrist for an extended stretch, or there was a sync gap with iPhone.</p>
 <h5>What to do</h5>
-<p>Wear the watch more consistently. Check that iPhone sync is working. No action for today's numbers — the flag clears automatically as soon as there's >8 hours of data.</p>`,
+<p>Wear the watch more consistently and check that iPhone sync is working. No action for today's numbers — past days are not recomputed.</p>`,
+	"stress_flag_data_accruing_label": "Gathering data",
+	"stress_flag_data_accruing_detail_html": `<h5>What it is</h5>
+<p>Your day is still in progress. The sustained-load score needs at least 8 hours of heart-rate samples across your waking window before it can compute, and not enough hours have accumulated yet.</p>
+<h5>Why it matters</h5>
+<p>The score is asking the question "did your heart run elevated for a real chunk of the day?" That answer only makes sense once a real chunk of the day has actually happened. Showing a number early would be misleading.</p>
+<h5>What to do</h5>
+<p>Nothing — keep wearing the watch through your usual day. The flag clears automatically once enough hours have been collected.</p>`,
 	"stress_flag_calibration_warmup_label": "Calibrating",
 	"stress_flag_calibration_warmup_detail_html": `<h5>What it is</h5>
 <p>Your personal baseline (HRV, heart rate, breathing) is still being learned — needs about a week of consistent data. Stress-flag thresholds stay conservative for now.</p>
