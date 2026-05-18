@@ -230,6 +230,14 @@ var translationsEn = map[string]string{
 	"energy_state_critical_desc":        "Tank near empty — rest is the highest-yield choice today.",
 	"details":                           "Details",
 
+	// Subjective morning check-in confirmation on the dashboard hero.
+	// Empty answer (status=prompted/expired) → line is not rendered.
+	"checkin_today_label":  "Your morning answer:",
+	"checkin_answer_great": "Great",
+	"checkin_answer_ok":    "OK",
+	"checkin_answer_meh":   "Meh",
+	"checkin_answer_sick":  "Sick",
+
 	// Methodology status badges — surface the honest provenance of each
 	// score on the dashboard. Manus methodology review (2026-05-17)
 	// recommends labelling scores as heuristic / validated_floor /

@@ -113,6 +113,16 @@
     </div>
   </div>
 
+  {{if .SubjectiveCheckin}}{{if .SubjectiveCheckin.Answer}}
+  <!-- Subjective morning check-in confirmation. Only rendered when the
+       user answered (status=answered or late_answered); silence is
+       intentional otherwise (silence-is-good convention). -->
+  <div class="subjective-checkin-line">
+    <span class="subjective-checkin-label">{{T .Lang "checkin_today_label"}}</span>
+    <span class="subjective-checkin-answer">{{T .Lang (printf "checkin_answer_%s" .SubjectiveCheckin.Answer)}}</span>
+  </div>
+  {{end}}{{end}}
+
   {{if .Cards}}
   <!-- Metric cards with embedded mini-sparklines (replaces standalone Trends section) -->
   <div id="metric-cards-area">

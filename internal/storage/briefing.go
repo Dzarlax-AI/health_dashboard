@@ -534,6 +534,17 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 		go s.SaveEnergyBankSnapshot(*lastDate, resp.EnergyBank)
 	}
 
+	// Subjective check-in (Telegram one-tap). Only populated when a
+	// row exists for the briefing date — nil otherwise. GetTodayCheckin
+	// returns (nil, nil) on no-row, so the dashboard simply doesn't
+	// render the confirmation line until the user answers.
+	if row, cerr := s.GetTodayCheckin(*lastDate, CheckinSourceTelegram); cerr == nil && row != nil {
+		resp.SubjectiveCheckin = &health.SubjectiveCheckinSummary{
+			Status: row.Status,
+			Answer: row.Answer,
+		}
+	}
+
 	// Attach per-source sleep breakdown for the most recent night.
 	// Query hourly_metrics (indexed by hour) instead of metric_points.
 	if resp.Sleep != nil {

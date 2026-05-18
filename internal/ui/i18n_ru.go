@@ -223,6 +223,13 @@ var translationsRu = map[string]string{
 	"energy_state_critical_desc":        "Бак почти пуст — отдых принесёт больше всего пользы.",
 	"details":                           "Детали",
 
+	// Subjective morning check-in confirmation on the dashboard hero.
+	"checkin_today_label":  "Ваш утренний ответ:",
+	"checkin_answer_great": "Отлично",
+	"checkin_answer_ok":    "Нормально",
+	"checkin_answer_meh":   "Не очень",
+	"checkin_answer_sick":  "Болен(а)",
+
 	// Methodology status badges (see i18n_en.go for the full mapping).
 	"methodology_status_heuristic_personalized":            "Эвристика",
 	"methodology_status_heuristic_personalized_desc":       "Экспертная формула на персональных baseline. Не валидированная предсказательная модель.",
