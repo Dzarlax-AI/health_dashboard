@@ -738,7 +738,7 @@ func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager,
 	for {
 		today := time.Now().In(loc).Format("2006-01-02")
 		if db.HasSentMorningReport(today) {
-			log.Println("morning smart-retry: already sent (likely by ingest trigger), exiting loop")
+			log.Println("morning smart-retry: already sent (likely by ingest trigger or webhook), exiting loop")
 			return
 		}
 
@@ -747,27 +747,75 @@ func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager,
 		// config is honoured even when it was set mid-day.
 		ensureTodayAIInsight(db, mgr.AIDefaultsFor(context.Background(), schema), ncfg.Lang)
 
-		past := time.Now().After(cap)
-		sent, reason, err := notify.SendMorningSmart(bot, db, ncfg, past)
-		if err != nil {
-			log.Printf("morning smart-retry: send error: %v", err)
+		// Resolve all the per-tick state the gate consults. The check-in
+		// row lookup tolerates "no row" via GetTodayCheckin returning
+		// (nil, nil); any DB error is logged and treated as "no row" so
+		// the scheduler doesn't get stuck.
+		now := time.Now()
+		settled := db.SleepSettled(today).Settled
+		row, rerr := db.GetTodayCheckin(today, storage.CheckinSourceTelegram)
+		if rerr != nil {
+			log.Printf("morning smart-retry: read checkin: %v", rerr)
+			row = nil
 		}
-		if sent {
-			if perr := db.MarkMorningReportSent(today); perr != nil {
-				log.Printf("morning smart-retry: mark sent: %v", perr)
-			}
-			log.Printf("morning smart-retry: sent (reason=%s, forced=%v)", reason, past)
-			return
+		inputs := notify.MorningGateInputs{
+			Now:          now,
+			Cap:          cap,
+			SleepSettled: settled,
+			HasCheckin:   row != nil,
 		}
-		if past {
-			// Force-send returned not-sent without an error — only happens when
-			// the bot is somehow disabled mid-loop. Bail to avoid spinning.
-			log.Printf("morning smart-retry: past cap but not sent (reason=%s), giving up", reason)
-			return
+		if row != nil {
+			inputs.CheckinStatus = row.Status
 		}
+		action := notify.DecideMorningAction(inputs)
+		log.Printf("morning smart-retry: action=%s settled=%v checkin_status=%q", action, settled, inputs.CheckinStatus)
 
-		log.Printf("morning smart-retry: deferring (reason=%s), retry in %s", reason, tick)
-		time.Sleep(tick)
+		switch action {
+		case notify.MorningActionNoop:
+			return
+
+		case notify.MorningActionWait:
+			time.Sleep(tick)
+			continue
+
+		case notify.MorningActionPrompt:
+			if err := notify.SendCheckinPrompt(bot, db, ncfg.Lang, today, now, cap); err != nil {
+				log.Printf("morning smart-retry: prompt: %v", err)
+			} else {
+				log.Printf("morning smart-retry: check-in prompt sent for %s", today)
+			}
+			time.Sleep(tick)
+			continue
+
+		case notify.MorningActionExpireAndForce:
+			if _, err := db.ExpireCheckin(today, storage.CheckinSourceTelegram, now); err != nil {
+				log.Printf("morning smart-retry: expire checkin: %v", err)
+			}
+			fallthrough
+
+		case notify.MorningActionForce, notify.MorningActionSendReport:
+			past := action == notify.MorningActionForce || action == notify.MorningActionExpireAndForce
+			sent, reason, err := notify.SendMorningSmart(bot, db, ncfg, past)
+			if err != nil {
+				log.Printf("morning smart-retry: send error: %v", err)
+			}
+			if sent {
+				if perr := db.MarkMorningReportSent(today); perr != nil {
+					log.Printf("morning smart-retry: mark sent: %v", perr)
+				}
+				log.Printf("morning smart-retry: sent (reason=%s, forced=%v, action=%s)", reason, past, action)
+				return
+			}
+			if past {
+				// Force-send returned not-sent without an error — only happens when
+				// the bot is somehow disabled mid-loop. Bail to avoid spinning.
+				log.Printf("morning smart-retry: past cap but not sent (reason=%s), giving up", reason)
+				return
+			}
+			// SendMorningSmart deferred (e.g. sleep not yet settled). Retry next tick.
+			log.Printf("morning smart-retry: deferring (reason=%s), retry in %s", reason, tick)
+			time.Sleep(tick)
+		}
 	}
 }
 
