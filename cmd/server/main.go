@@ -165,7 +165,7 @@ func main() {
 		db.EnsureEnergySnapshotsTable()
 		db.EnsureReadinessRedesignTables()
 		db.EnsureSubjectiveCheckinsTable()
-		startTenant(ctx, mgr, db, u.SchemaName, envNotifyDefaults, envAIDefaults, baseURL)
+		startTenant(ctx, mgr, reg, db, u.SchemaName, envNotifyDefaults, envAIDefaults, baseURL)
 	}
 
 	if len(users) == 0 {
@@ -210,7 +210,7 @@ func main() {
 		db.EnsureEnergySnapshotsTable()
 		db.EnsureReadinessRedesignTables()
 		db.EnsureSubjectiveCheckinsTable()
-		startTenant(ctx, mgr, db, schema, envNotifyDefaults, envAIDefaults, baseURL)
+		startTenant(ctx, mgr, reg, db, schema, envNotifyDefaults, envAIDefaults, baseURL)
 	})
 	uiHandler.Register(mux)
 	mcpserver.Register(mux, mgr, baseURL)
@@ -287,7 +287,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 		AIDefaults:     aiDefaults,
 	})
 
-	go runReportScheduler(db, mgr, schema, notifyDefaults, baseURL)
+	go runReportScheduler(db, mgr, reg, schema, notifyDefaults, baseURL)
 	go runDailyQualityScan(db, schema, notifyDefaults)
 
 	mux := http.NewServeMux()
@@ -324,7 +324,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 // startup cache refresh. baseURL is plumbed through to the scheduler so
 // the EnergyBank-backfill onboarding nudge can embed a clickable
 // link back to the tenant's /settings page.
-func startTenant(ctx context.Context, mgr *tenants.Manager, db *storage.DB, schema string,
+func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Registry, db *storage.DB, schema string,
 	notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig, baseURL string) {
 
 	go func() {
@@ -356,7 +356,7 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, db *storage.DB, sche
 	})
 
 	_ = maybeFireMorningReport // triggered via onNewData in main mux
-	go runReportScheduler(db, mgr, schema, notifyDefaults, baseURL)
+	go runReportScheduler(db, mgr, reg, schema, notifyDefaults, baseURL)
 	go runDailyQualityScan(db, schema, notifyDefaults)
 }
 
@@ -722,7 +722,7 @@ func makeMorningTrigger(db *storage.DB, lock *int32, mgr *tenants.Manager, schem
 	}
 }
 
-func runReportScheduler(db *storage.DB, mgr *tenants.Manager, schema string, defaults storage.NotifyConfig, baseURL string) {
+func runReportScheduler(db *storage.DB, mgr *tenants.Manager, reg *registry.Registry, schema string, defaults storage.NotifyConfig, baseURL string) {
 	for {
 		cfg := db.GetNotifyConfig(defaults)
 		if !cfg.Enabled() {
@@ -755,7 +755,7 @@ func runReportScheduler(db *storage.DB, mgr *tenants.Manager, schema string, def
 		ncfg = buildNotifyCfg(db, cfg)
 		bot := notify.NewBot(cfg.Token, cfg.ChatID)
 		if isMorning {
-			runMorningSmartRetry(bot, db, mgr, schema, ncfg, baseURL)
+			runMorningSmartRetry(bot, db, mgr, reg, schema, ncfg, baseURL)
 		} else {
 			log.Println("report scheduler: sending evening report…")
 			if err := notify.SendEvening(bot, db, ncfg); err != nil {
@@ -770,7 +770,7 @@ func runReportScheduler(db *storage.DB, mgr *tenants.Manager, schema string, def
 // either the report has been sent (by this loop, or by the opportunistic
 // ingest trigger) or the cap time is reached. At the cap, it force-sends with
 // a stale-data banner so we never go a day without a morning report.
-func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager, schema string, ncfg notify.Config, baseURL string) {
+func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager, reg *registry.Registry, schema string, ncfg notify.Config, baseURL string) {
 	const tick = 15 * time.Minute
 
 	loc := time.Local
@@ -819,11 +819,19 @@ func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager,
 			log.Printf("morning smart-retry: read checkin: %v", rerr)
 			row = nil
 		}
-		// Check-in is feature-flagged by the webhook secret. When unset
-		// the webhook is not registered and the user cannot answer a
-		// prompt — so we must bypass the prompt+wait path. Read once per
-		// tick (cheap; honours an admin who flipped the env after start).
-		checkinEnabled := os.Getenv("TELEGRAM_WEBHOOK_SECRET") != ""
+		// Check-in is feature-flagged by webhook secrets being available.
+		// Source of truth is health_registry.global_settings — the
+		// lazy-init at startup (registerCheckinWebhook → registry.
+		// ResolveOrGenerateWebhookSecrets) bootstraps secrets from
+		// env/global/generate and persists them, so a non-empty global
+		// row reliably means "webhook handler is registered and a
+		// Telegram bot is ready to deliver callbacks". Reading env
+		// directly here was a P1 bug: after PR #122 fresh installs
+		// have generated secrets in global_settings but no env vars,
+		// and the old code silently disabled check-in.
+		checkinEnabled := reg != nil &&
+			reg.GetGlobalSetting(context.Background(), "webhook_secret") != "" &&
+			reg.GetGlobalSetting(context.Background(), "webhook_token_header") != ""
 
 		inputs := notify.MorningGateInputs{
 			Now:            now,

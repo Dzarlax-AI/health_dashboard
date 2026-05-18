@@ -10,10 +10,15 @@ import (
 	"health-receiver/internal/storage"
 )
 
-// dispatchWebhookDiff is the service-layer side effect that follows a
-// successful settings write. It's the bridge between storage (clean,
-// synchronous, deterministic) and Telegram HTTP (best-effort, async,
-// rate-limited, may fail).
+// dispatchWebhookDiffRaw is the service-layer side effect that follows
+// a successful settings write. Bridges storage (clean, synchronous,
+// deterministic) and Telegram HTTP (best-effort, async, may fail).
+//
+// Inputs are the RAW pre/post per-tenant settings (no env/default
+// fallback applied). Diffing on raw values means an explicit clear of
+// a per-tenant token triggers deleteWebhook even when env provides a
+// fallback that would otherwise mask the transition. See the comment
+// in userSettings POST for the env-only corner-case caveat.
 //
 // Contract:
 //   - Settings save has ALREADY completed by the time this runs.
@@ -29,11 +34,10 @@ import (
 //     mid-call to Telegram.
 //   - Reg or registrar nil disables the side effect cleanly. Tests
 //     and the legacy bootstrap path leave this disabled.
-func (h *Handler) dispatchWebhookDiff(ctx context.Context, db *storage.DB, schema string, oldCfg storage.NotifyConfig, notifyDefaults storage.NotifyConfig) {
+func (h *Handler) dispatchWebhookDiffRaw(ctx context.Context, schema string, oldCfg, newCfg storage.NotifyConfig) {
 	if h.webhookRegistrar == nil || h.reg == nil {
 		return
 	}
-	newCfg := db.GetNotifyConfig(notifyDefaults)
 	diff := notify.DetectTelegramDiff(oldCfg, newCfg)
 	if !diff.NeedsRegister && !diff.NeedsDelete {
 		return
@@ -169,6 +173,4 @@ func (h *Handler) webhookStatusRetry(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string]string{"status": "pending"})
 }
 
-// silence unused-import warnings during stepwise development.
-var _ = storage.NotifyConfig{}
 

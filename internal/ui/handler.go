@@ -1958,24 +1958,38 @@ func (h *Handler) userSettings(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Snapshot pre-write Telegram config so we can detect whether
-		// the save touched anything the webhook cares about. Reading
-		// before writing is the only way to know the OLD token value
-		// for the diff (DetectTelegramDiff). The notify defaults are
-		// applied so an "empty in DB but set in env" case still
-		// reflects what the bot actually uses today.
-		notifyDefaults := h.mgr.NotifyDefaultsFor(schema)
-		oldCfg := db.GetNotifyConfig(notifyDefaults)
+		// Snapshot RAW stored Telegram fields (no env/default fallback)
+		// before the write. Diff is computed on raw values, not the
+		// effective config, so an operator clearing their per-tenant
+		// telegram_token reliably triggers deleteWebhook even when an
+		// env fallback would still resolve to a token. The reverse —
+		// per-tenant blank to set — also gets the right NeedsRegister
+		// without env masking the transition.
+		//
+		// GetSetting(key, "") returns "" for both "row absent" and
+		// "row=''" — both mean "no per-tenant override", which is the
+		// distinction the webhook diff cares about. The env-only
+		// install corner case (no per-tenant token, env provides one)
+		// stays handled out-of-band: operator must POST through
+		// settings UI at least once to push the env token into stored
+		// form, after which subsequent edits flow through this hook.
+		oldRawToken := db.GetSetting("telegram_token", "")
+		oldRawChat := db.GetSetting("telegram_chat_id", "")
 
 		if err := db.SaveSettings(clean); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
+		newRawToken := db.GetSetting("telegram_token", "")
+		newRawChat := db.GetSetting("telegram_chat_id", "")
+
 		// Best-effort webhook re-registration. Settings save has
 		// already succeeded — Telegram-side outcome lives in a
 		// separate badge. See dispatchWebhookDiff for the contract.
-		h.dispatchWebhookDiff(r.Context(), db, schema, oldCfg, notifyDefaults)
+		h.dispatchWebhookDiffRaw(r.Context(), schema,
+			storage.NotifyConfig{Token: oldRawToken, ChatID: oldRawChat},
+			storage.NotifyConfig{Token: newRawToken, ChatID: newRawChat})
 
 		jsonResponse(w, map[string]string{"status": "ok"})
 		return
