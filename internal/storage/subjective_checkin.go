@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // Status enum for subjective_checkins.status. Stored as plain TEXT in
@@ -236,11 +238,7 @@ func (s *DB) GetTodayCheckin(date, source string) (*CheckinRow, error) {
 		 WHERE date = $1 AND source = $2`, date, source).
 		Scan(&row.Status, &answer, &msgID, &row.PromptedAt, &answeredAt, &row.ExpiresAt)
 	if err != nil {
-		// Distinguish "no row" from real errors. pgx exposes ErrNoRows
-		// but we don't import pgx at this call site; string-match is
-		// fragile but matches the pattern other helpers in this file
-		// use (see briefing.go for precedent).
-		if err.Error() == "no rows in result set" {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
