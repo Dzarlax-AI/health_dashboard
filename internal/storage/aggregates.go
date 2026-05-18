@@ -204,6 +204,7 @@ func sleepDedupClause(metric string) string {
 			  AND p2.source = metric_points.source
 			  AND SUBSTRING(p2.date, 12, 8) = '00:00:00'
 			  AND p2.qty > 0
+			  AND p2.quality = 'ok'
 		)
 	)`
 }
@@ -342,9 +343,32 @@ func (s *DB) upsertHourlySumForDate(date string) {
 // Note: the query drops table aliases because sleepDedupClause's
 // correlated EXISTS subquery references the bare `metric_points` columns
 // (e.g. `metric_points.metric_name`).
+//
+// The DELETE before INSERT is load-bearing: the prior dedup policy wrote
+// per-hour fragment rows (one per sleep segment), and the new policy
+// writes a single 00:00 summary row. ON CONFLICT only updates the row
+// keyed by (metric_name, hour, source), so without the DELETE the old
+// fragment rows for this date would survive and upsertDailyForDate
+// would sum them with the new summary — double counting the night.
 func (s *DB) upsertHourlySleepForDate(date string) {
 	ctx, cancel := longCtx()
 	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		log.Printf("upsert hourly sleep %s: begin tx: %v", date, err)
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM hourly_metrics
+		WHERE SUBSTRING(hour,1,10) = $1
+		  AND metric_name LIKE 'sleep\_%' ESCAPE '\'`, date); err != nil {
+		log.Printf("upsert hourly sleep %s: delete stale: %v", date, err)
+		return
+	}
+
 	q := `
 		INSERT INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val)
 		SELECT metric_name, hour, source,
@@ -367,8 +391,13 @@ func (s *DB) upsertHourlySleepForDate(date string) {
 		GROUP BY metric_name, hour, source
 		ON CONFLICT (metric_name, hour, source) DO UPDATE SET
 			avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val`
-	if _, err := s.pool.Exec(ctx, q, date); err != nil {
-		log.Printf("upsert hourly sleep %s: %v", date, err)
+	if _, err := tx.Exec(ctx, q, date); err != nil {
+		log.Printf("upsert hourly sleep %s: insert: %v", date, err)
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		log.Printf("upsert hourly sleep %s: commit: %v", date, err)
 	}
 }
 
@@ -967,10 +996,20 @@ ON CONFLICT(date) DO UPDATE SET
 // buildHourlyMetric fills hourly_metrics for one metric directly from
 // metric_points (skipping minute_metrics). Uses INSERT ... ON CONFLICT so
 // re-synced data overwrites stale cache values.
+//
+// Sleep metrics get a DELETE-before-INSERT pass inside a transaction:
+// the prior dedup policy emitted per-hour fragments and the new policy
+// emits a single 00:00 summary row. ON CONFLICT only updates the row at
+// the same (metric, hour, source) key, so without the DELETE the
+// pre-existing fragment rows would survive and upsertDailyForDate would
+// sum them with the new summary — double counting the night. The DELETE
+// is scoped to the same date window as the INSERT (full history for
+// force, last 7 days otherwise) so non-sleep refreshes are unaffected.
 func (s *DB) buildHourlyMetric(metric, agg string, force bool) error {
 	ctx, cancel := longCtx()
 	defer cancel()
 	var fromClause string
+	var refreshFromOpt string
 	args := []any{metric}
 	if !force {
 		// Refresh last 7 days + append new data (catches late-arriving data).
@@ -979,9 +1018,9 @@ func (s *DB) buildHourlyMetric(metric, agg string, force bool) error {
 			`SELECT MAX(hour) FROM hourly_metrics WHERE metric_name = $1`, metric,
 		).Scan(&lastCached)
 		if lastCached != nil {
-			refreshFrom := subtractDaysStr((*lastCached)[:10], 7)
+			refreshFromOpt = subtractDaysStr((*lastCached)[:10], 7)
 			fromClause = "AND SUBSTRING(date,1,10) >= $2"
-			args = append(args, refreshFrom)
+			args = append(args, refreshFromOpt)
 		}
 	}
 
@@ -1022,8 +1061,31 @@ func (s *DB) buildHourlyMetric(metric, agg string, force bool) error {
 				avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val`, sleepDedup, fromClause)
 	}
 
-	_, err := s.pool.Exec(ctx, query, args...)
-	return err
+	if !isSleepMetric(metric) {
+		_, err := s.pool.Exec(ctx, query, args...)
+		return err
+	}
+
+	// Sleep path: DELETE same window + INSERT in one transaction.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	delArgs := []any{metric}
+	delWhere := ""
+	if refreshFromOpt != "" {
+		delArgs = append(delArgs, refreshFromOpt)
+		delWhere = " AND SUBSTRING(hour,1,10) >= $2"
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM hourly_metrics WHERE metric_name = $1`+delWhere, delArgs...); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, query, args...); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // subtractDaysStr subtracts N days from a YYYY-MM-DD string.
