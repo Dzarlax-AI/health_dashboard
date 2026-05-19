@@ -764,6 +764,19 @@ func makeMorningTrigger(db *storage.DB, sendMu *sync.Mutex, mgr *tenants.Manager
 			return
 
 		case notify.MorningActionPrompt:
+			// Serialise prompt sends across concurrent ingest goroutines
+			// (multiple POST /health within seconds) and with the
+			// scheduler. SendCheckinPrompt POSTs to Telegram BEFORE the
+			// SaveCheckinPrompted upsert, so a parallel goroutine that
+			// also read row==nil would dup the Telegram message before
+			// either save commits. Re-read inside the lock to drop the
+			// loser of the race.
+			sendMu.Lock()
+			defer sendMu.Unlock()
+			if r2, _ := db.GetTodayCheckin(today, storage.CheckinSourceTelegram); r2 != nil {
+				log.Println("morning trigger: prompt already sent by other path, skipping")
+				return
+			}
 			if err := notify.SendCheckinPrompt(bot, db, ncfg.Lang, today, now, cap); err != nil {
 				log.Printf("morning trigger: prompt: %v", err)
 				return
@@ -887,7 +900,16 @@ func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager,
 	// retain the original lock-free behaviour (single-sender path
 	// only). Both code paths grab it before the HasSent re-check.
 	sendMu := mgr.MorningSendMuFor(schema)
-	log.Printf("morning smart-retry: window until %s", ncfg.MorningCapTime(time.Now()).Format("15:04"))
+	// entryCap is computed ONCE at scheduler entry and reused across
+	// every tick. Per-tick MorningCapTime would slide forward each
+	// iteration when no checkin row exists (MinPromptWindow floor
+	// always pushes cap = now + 60min), so the force-send branch
+	// would never see past=true and the loop would never terminate
+	// on watch-off days. Fixed entry cap lets the gate hit past=true
+	// at exactly the moment the user-promised deadline elapses.
+	// Pinned by codex review on PR #124.
+	entryCap := ncfg.MorningCapTime(time.Now())
+	log.Printf("morning smart-retry: window until %s", entryCap.Format("15:04"))
 
 	// Proactive notifications — registered at init() time by each
 	// rule's own file (weekly digest, EnergyBank backfill nudge,
@@ -926,10 +948,14 @@ func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager,
 			log.Printf("morning smart-retry: read checkin: %v", rerr)
 			row = nil
 		}
-		// Per-tick cap: prefers row.ExpiresAt over the freshly-computed
-		// (and potentially floored) MorningCapTime so an ingest-saved
-		// prompt deadline isn't silently extended. See notify.EffectiveMorningCap.
-		effectiveCap := notify.EffectiveMorningCap(ncfg.MorningCapTime(now), row)
+		// Per-tick cap: prefers row.ExpiresAt over the FIXED entryCap
+		// (computed once at scheduler entry, never recomputed). The
+		// nil-row case falls through to entryCap so the force-send
+		// branch can actually fire when sleep never settles — a per-
+		// tick MorningCapTime call would re-floor cap to now+60min
+		// every iteration, deferring the loop indefinitely. See
+		// notify.EffectiveMorningCap.
+		effectiveCap := notify.EffectiveMorningCap(entryCap, row)
 		checkinEnabled := morningCheckinEnabled(reg)
 
 		inputs := notify.MorningGateInputs{
@@ -954,7 +980,30 @@ func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager,
 			continue
 
 		case notify.MorningActionPrompt:
-			if err := notify.SendCheckinPrompt(bot, db, ncfg.Lang, today, now, effectiveCap); err != nil {
+			// Serialise prompt sends with the ingest trigger so we
+			// don't deliver two Telegram prompts when concurrent
+			// goroutines both saw row==nil. Re-read the row INSIDE
+			// the mutex; SendCheckinPrompt POSTs to Telegram before
+			// SaveCheckinPrompted writes the row, so without the
+			// double-check the second sender would also POST before
+			// the first sender's SaveCheckinPrompted commits.
+			if sendMu != nil {
+				sendMu.Lock()
+			}
+			r2, _ := db.GetTodayCheckin(today, storage.CheckinSourceTelegram)
+			if r2 != nil {
+				if sendMu != nil {
+					sendMu.Unlock()
+				}
+				log.Println("morning smart-retry: prompt already sent by other path, skipping")
+				time.Sleep(tick)
+				continue
+			}
+			err := notify.SendCheckinPrompt(bot, db, ncfg.Lang, today, now, effectiveCap)
+			if sendMu != nil {
+				sendMu.Unlock()
+			}
+			if err != nil {
 				log.Printf("morning smart-retry: prompt: %v", err)
 			} else {
 				log.Printf("morning smart-retry: check-in prompt sent for %s", today)
