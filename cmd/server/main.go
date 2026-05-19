@@ -656,6 +656,12 @@ func (r *liveCheckinRouter) TriggerReport(_ string) {
 // makeReportTrigger captures the dependencies needed to (re)run the
 // morning trigger for a tenant. Used by the webhook router to fire
 // the report async after a successful in-time answer.
+//
+// Acquires the same per-tenant sendMu as the scheduler + ingest paths
+// so the three-way race (webhook answer arriving while scheduler is
+// mid-tick while a fresh ingest fires) can't produce duplicate sends.
+// Sendmu nil → no other senders exist (legacy single-mode), original
+// lock-free behaviour preserved.
 func makeReportTrigger(mgr *tenants.Manager, schema string, defaults storage.NotifyConfig) func() {
 	return func() {
 		db, err := mgr.GetOrCreate(context.Background(), schema)
@@ -671,11 +677,17 @@ func makeReportTrigger(mgr *tenants.Manager, schema string, defaults storage.Not
 			loc = l
 		}
 		today := time.Now().In(loc).Format("2006-01-02")
+		ncfg := buildNotifyCfg(db, scfg)
+		bot := notify.NewBot(ncfg.Token, ncfg.ChatID)
+
+		sendMu := mgr.MorningSendMuFor(schema)
+		if sendMu != nil {
+			sendMu.Lock()
+			defer sendMu.Unlock()
+		}
 		if db.HasSentMorningReport(today) {
 			return
 		}
-		ncfg := buildNotifyCfg(db, scfg)
-		bot := notify.NewBot(ncfg.Token, ncfg.ChatID)
 		sent, reason, err := notify.SendMorningSmart(bot, db, ncfg, false)
 		if err != nil {
 			log.Printf("checkin-trigger: send: %v", err)
