@@ -6,6 +6,25 @@ import (
 	"health-receiver/internal/storage"
 )
 
+// EffectiveMorningCap honours an outstanding prompt's stored ExpiresAt
+// over a freshly-computed MorningCapTime. Without this preference an
+// ingest-driven prompt sent before morning_hour saves expires_at at
+// the original (unfloored) cap; a later scheduler tick recomputes
+// cap, MorningCapTime's floor pushes it to now+MinPromptWindow, and
+// the gate sees the prompted row as "before cap" instead of expiring
+// it on schedule. Callers pass the row that GetTodayCheckin returned
+// — nil or non-prompted rows fall through to the freshly-computed
+// cap unchanged. Pinned by TestEffectiveMorningCap.
+func EffectiveMorningCap(computed time.Time, row *storage.CheckinRow) time.Time {
+	if row == nil || row.Status != storage.CheckinStatusPrompted {
+		return computed
+	}
+	if row.ExpiresAt.IsZero() {
+		return computed
+	}
+	return row.ExpiresAt
+}
+
 // MorningAction enumerates the scheduler decisions for one tick of
 // runMorningSmartRetry.
 type MorningAction string
