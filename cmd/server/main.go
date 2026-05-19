@@ -190,6 +190,14 @@ func main() {
 				}
 				energyV2.Trigger(ctx, db, schema,
 					tenantTZOrUTC(db, envNotifyDefaults, schema))
+				// Ingest-driven morning report trigger: fires earlier
+				// than the scheduled morning hour when fresh sleep +
+				// activity data arrives, mirroring the single-tenant
+				// path in runSingleTenant.onNewData. Goroutine so a
+				// slow Telegram send never blocks the 200-response.
+				if trigger := mgr.MorningTriggerFor(schema); trigger != nil {
+					go trigger()
+				}
 				break
 			}
 		}
@@ -266,7 +274,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	}()
 
 	var morningLock int32
-	maybeFireMorningReport := makeMorningTrigger(db, &morningLock, mgr, schema, notifyDefaults)
+	maybeFireMorningReport := makeMorningTrigger(db, &morningLock, mgr, reg, schema, notifyDefaults)
 	backfillDatesFn := makeBackfillDatesFn(db, schema)
 	// EnergyBank v2 orchestrator: same role as in multi-tenant mode —
 	// passive snapshot accumulation alongside the live v1 dashboard.
@@ -342,7 +350,7 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Regist
 	}()
 
 	var morningLock int32
-	maybeFireMorningReport := makeMorningTrigger(db, &morningLock, mgr, schema, notifyDefaults)
+	maybeFireMorningReport := makeMorningTrigger(db, &morningLock, mgr, reg, schema, notifyDefaults)
 
 	backfillFn := makeBackfillFn(db)
 	backfillDatesFn := makeBackfillDatesFn(db, schema)
@@ -351,12 +359,12 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Regist
 	mgr.RegisterCallbacks(schema, tenants.TenantCallbacks{
 		Backfill:       backfillFn,
 		BackfillDates:  backfillDatesFn,
+		MorningTrigger: maybeFireMorningReport,
 		TestNotify:     testNotifyFn,
 		NotifyDefaults: notifyDefaults,
 		AIDefaults:     aiDefaults,
 	})
 
-	_ = maybeFireMorningReport // triggered via onNewData in main mux
 	go runReportScheduler(db, mgr, reg, schema, notifyDefaults, baseURL)
 	go runDailyQualityScan(db, schema, notifyDefaults)
 }
@@ -680,7 +688,7 @@ func makeReportTrigger(mgr *tenants.Manager, schema string, defaults storage.Not
 	}
 }
 
-func makeMorningTrigger(db *storage.DB, lock *int32, mgr *tenants.Manager, schema string, notifyDefaults storage.NotifyConfig) func() {
+func makeMorningTrigger(db *storage.DB, lock *int32, mgr *tenants.Manager, reg *registry.Registry, schema string, notifyDefaults storage.NotifyConfig) func() {
 	return func() {
 		if !atomic.CompareAndSwapInt32(lock, 0, 1) {
 			return
@@ -724,20 +732,89 @@ func makeMorningTrigger(db *storage.DB, lock *int32, mgr *tenants.Manager, schem
 		}
 		ncfg := buildNotifyCfg(db, cfg)
 		bot := notify.NewBot(ncfg.Token, ncfg.ChatID)
-		sent, reason, err := notify.SendMorningSmart(bot, db, ncfg, false)
-		if err != nil {
-			log.Printf("morning trigger: send telegram: %v", err)
+
+		// Route through the same check-in gate as the scheduler so an
+		// ingest-driven send doesn't bypass the subjective prompt path.
+		// Single-shot: if the gate picks Wait, we return and let the
+		// next ingest (or the scheduler at morning_hour) retry. Cap is
+		// computed via MorningCapTime — its floor guarantees a non-zero
+		// prompt window even when the adaptive cap is already past.
+		cap := ncfg.MorningCapTime(now)
+		settled := db.SleepSettled(today).Settled
+		row, rerr := db.GetTodayCheckin(today, storage.CheckinSourceTelegram)
+		if rerr != nil {
+			log.Printf("morning trigger: read checkin: %v", rerr)
+			row = nil
+		}
+		checkinEnabled := morningCheckinEnabled(reg)
+
+		inputs := notify.MorningGateInputs{
+			Now:            now,
+			Cap:            cap,
+			SleepSettled:   settled,
+			HasCheckin:     row != nil,
+			CheckinEnabled: checkinEnabled,
+		}
+		if row != nil {
+			inputs.CheckinStatus = row.Status
+		}
+		action := notify.DecideMorningAction(inputs)
+		log.Printf("morning trigger: action=%s settled=%v checkin_status=%q", action, settled, inputs.CheckinStatus)
+
+		switch action {
+		case notify.MorningActionNoop, notify.MorningActionWait:
 			return
-		}
-		if !sent {
-			log.Printf("morning trigger: deferring — %s", reason)
+
+		case notify.MorningActionPrompt:
+			if err := notify.SendCheckinPrompt(bot, db, ncfg.Lang, today, now, cap); err != nil {
+				log.Printf("morning trigger: prompt: %v", err)
+				return
+			}
+			log.Printf("morning trigger: check-in prompt sent for %s", today)
 			return
+
+		case notify.MorningActionExpireAndForce:
+			if _, err := db.ExpireCheckin(today, storage.CheckinSourceTelegram, now); err != nil {
+				log.Printf("morning trigger: expire checkin: %v", err)
+			}
+			fallthrough
+
+		case notify.MorningActionForce, notify.MorningActionSendReport:
+			force := action == notify.MorningActionForce || action == notify.MorningActionExpireAndForce
+			sent, reason, err := notify.SendMorningSmartOpts(bot, db, ncfg, notify.MorningSendOpts{
+				Force:          force,
+				CheckinExpired: action == notify.MorningActionExpireAndForce,
+			})
+			if err != nil {
+				log.Printf("morning trigger: send telegram: %v", err)
+				return
+			}
+			if !sent {
+				log.Printf("morning trigger: deferring — %s", reason)
+				return
+			}
+			if err := db.MarkMorningReportSent(today); err != nil {
+				log.Printf("morning trigger: mark sent: %v", err)
+			}
+			log.Printf("morning trigger: sent (reason=%s, forced=%v, action=%s)", reason, force, action)
 		}
-		if err := db.MarkMorningReportSent(today); err != nil {
-			log.Printf("morning trigger: mark sent: %v", err)
-		}
-		log.Printf("morning trigger: sent (reason=%s) for %s", reason, today)
 	}
+}
+
+// morningCheckinEnabled mirrors the feature-flag check in
+// runMorningSmartRetry exactly. Source of truth depends on whether the
+// registry is initialised: when reg != nil, health_registry.global_settings
+// is authoritative (lazy-init at startup writes there); otherwise env
+// vars are the only source the webhook registrar could have used.
+// Drift between the two callers silently disables check-in, so the
+// implementation lives in one place.
+func morningCheckinEnabled(reg *registry.Registry) bool {
+	if reg != nil {
+		return reg.GetGlobalSetting(context.Background(), "webhook_secret") != "" &&
+			reg.GetGlobalSetting(context.Background(), "webhook_token_header") != ""
+	}
+	return os.Getenv("TELEGRAM_WEBHOOK_SECRET") != "" &&
+		os.Getenv("TELEGRAM_WEBHOOK_TOKEN_HEADER") != ""
 }
 
 func runReportScheduler(db *storage.DB, mgr *tenants.Manager, reg *registry.Registry, schema string, defaults storage.NotifyConfig, baseURL string) {
@@ -837,25 +914,7 @@ func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager,
 			log.Printf("morning smart-retry: read checkin: %v", rerr)
 			row = nil
 		}
-		// Check-in is feature-flagged by webhook secrets being available.
-		// Source of truth mirrors registerCheckinWebhook's:
-		//   - With registry: health_registry.global_settings is the
-		//     authoritative source (lazy-init at startup writes there).
-		//   - Without registry (legacy single-user fallback after
-		//     EnsureSchema failure): env vars are the only source the
-		//     handler could have used. Match that here so the gate
-		//     doesn't silently disable check-in in env-only mode.
-		var checkinEnabled bool
-		switch {
-		case reg != nil:
-			checkinEnabled = reg.GetGlobalSetting(context.Background(), "webhook_secret") != "" &&
-				reg.GetGlobalSetting(context.Background(), "webhook_token_header") != ""
-		default:
-			// reg==nil legacy fallback path — registerCheckinWebhook
-			// reads env in this mode, so we mirror it.
-			checkinEnabled = os.Getenv("TELEGRAM_WEBHOOK_SECRET") != "" &&
-				os.Getenv("TELEGRAM_WEBHOOK_TOKEN_HEADER") != ""
-		}
+		checkinEnabled := morningCheckinEnabled(reg)
 
 		inputs := notify.MorningGateInputs{
 			Now:            now,

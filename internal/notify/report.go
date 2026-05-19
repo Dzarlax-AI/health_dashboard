@@ -82,13 +82,40 @@ func (c Config) NextMorning(from time.Time) time.Time {
 	return t
 }
 
+// MinPromptWindow is the minimum stretch between the moment
+// runMorningSmartRetry enters and MorningCapTime, so the gate always
+// has time to send a check-in prompt and wait for an answer before the
+// cap-driven force-send fires. Without this floor, an adaptive cap
+// (typical_wake + 60min) earlier than the configured morning_hour
+// collapses the prompt window to zero and the gate jumps straight to
+// MorningActionForce on entry, silently disabling check-in. Pinned
+// by TestMorningCapTime_FloorsPastCapsToPromptWindow.
+const MinPromptWindow = 60 * time.Minute
+
 // MorningCapTime returns the deadline timestamp for today's morning report.
 // Past this time the smart-retry loop force-sends. Falls back to a sensible
 // default (morning hour + 4, never earlier than 11:00) if MorningCapHour is
 // unset, so a brand-new install with no override still has a deadline.
+//
+// Floors the result to now + MinPromptWindow when the computed cap is
+// already in the past at call time. Adaptive cap (typical_wake + 60min)
+// can land BEFORE the configured morning_hour for users whose schedule
+// puts the morning report well after their typical wake — without the
+// floor the smart-retry loop enters past cap and skips the check-in
+// prompt entirely.
 func (c Config) MorningCapTime(now time.Time) time.Time {
 	loc := c.location()
 	now = now.In(loc)
+	cap := c.computeMorningCap(now, loc)
+	if !cap.After(now) {
+		cap = now.Add(MinPromptWindow)
+	}
+	return cap
+}
+
+// computeMorningCap is the pre-floor cap calculation. Split from
+// MorningCapTime so the floor is the single place it gets applied.
+func (c Config) computeMorningCap(now time.Time, loc *time.Location) time.Time {
 	if c.TypicalWakeOK {
 		t := time.Date(now.Year(), now.Month(), now.Day(),
 			c.TypicalWakeHour, c.TypicalWakeMinute, 0, 0, loc).Add(60 * time.Minute)

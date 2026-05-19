@@ -12,8 +12,15 @@ import (
 
 // TenantCallbacks holds per-tenant lifecycle functions registered by main.
 type TenantCallbacks struct {
-	Backfill       func(force bool)
-	BackfillDates  func(dates []string)
+	Backfill      func(force bool)
+	BackfillDates func(dates []string)
+	// MorningTrigger is the opportunistic ingest-driven morning-report
+	// trigger for this tenant. Called by the shared mux's onNewData hook
+	// when fresh health data lands so the report can fire earlier than
+	// the scheduled morning hour once SleepSettled. nil means the tenant
+	// does not participate in ingest-driven sends (e.g. legacy single-
+	// user mode wires the call directly without going through callbacks).
+	MorningTrigger func()
 	TestNotify     func(kind string) error
 	NotifyDefaults storage.NotifyConfig
 	AIDefaults     storage.AIConfig
@@ -219,6 +226,20 @@ func (m *Manager) TestNotifyFor(schema string) func(string) error {
 	defer m.mu.RUnlock()
 	if e, ok := m.tenants[schema]; ok && e.callbacks != nil {
 		return e.callbacks.TestNotify
+	}
+	return nil
+}
+
+// MorningTriggerFor returns the ingest-driven morning report trigger
+// for a schema, or nil when the tenant did not register one (legacy
+// single-user mode wires the call directly in its own onNewData).
+// Callers should goroutine-dispatch the result so a slow Telegram
+// send never blocks the ingest 200-response path.
+func (m *Manager) MorningTriggerFor(schema string) func() {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if e, ok := m.tenants[schema]; ok && e.callbacks != nil {
+		return e.callbacks.MorningTrigger
 	}
 	return nil
 }
