@@ -21,6 +21,13 @@ type TenantCallbacks struct {
 	// does not participate in ingest-driven sends (e.g. legacy single-
 	// user mode wires the call directly without going through callbacks).
 	MorningTrigger func()
+	// MorningSendMu serialises the "check HasSentMorningReport → send →
+	// MarkMorningReportSent" critical section across the scheduler loop
+	// and the ingest-driven trigger. Without it the two paths can each
+	// observe HasSent=false within the same narrow window and produce
+	// duplicate Telegram messages (TOCTOU). nil means single-user legacy
+	// mode where only one sender path exists.
+	MorningSendMu  *sync.Mutex
 	TestNotify     func(kind string) error
 	NotifyDefaults storage.NotifyConfig
 	AIDefaults     storage.AIConfig
@@ -240,6 +247,21 @@ func (m *Manager) MorningTriggerFor(schema string) func() {
 	defer m.mu.RUnlock()
 	if e, ok := m.tenants[schema]; ok && e.callbacks != nil {
 		return e.callbacks.MorningTrigger
+	}
+	return nil
+}
+
+// MorningSendMuFor returns the per-tenant send-dedup mutex registered
+// at startup. Both the scheduler loop and the ingest trigger must lock
+// it around their "HasSentMorningReport → send → Mark" sequence so the
+// two callers never race and produce a duplicate Telegram report.
+// Returns nil for tenants without a registered mutex; callers must
+// treat nil as "no dedup needed" (legacy single-sender mode).
+func (m *Manager) MorningSendMuFor(schema string) *sync.Mutex {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if e, ok := m.tenants[schema]; ok && e.callbacks != nil {
+		return e.callbacks.MorningSendMu
 	}
 	return nil
 }

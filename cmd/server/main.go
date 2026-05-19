@@ -273,8 +273,8 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 		log.Println("startup: cache refresh done")
 	}()
 
-	var morningLock int32
-	maybeFireMorningReport := makeMorningTrigger(db, &morningLock, mgr, reg, schema, notifyDefaults)
+	var morningSendMu sync.Mutex
+	maybeFireMorningReport := makeMorningTrigger(db, &morningSendMu, mgr, reg, schema, notifyDefaults)
 	backfillDatesFn := makeBackfillDatesFn(db, schema)
 	// EnergyBank v2 orchestrator: same role as in multi-tenant mode —
 	// passive snapshot accumulation alongside the live v1 dashboard.
@@ -291,6 +291,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	mgr.RegisterCallbacks(schema, tenants.TenantCallbacks{
 		Backfill:       backfillFn,
 		BackfillDates:  backfillDatesFn,
+		MorningSendMu:  &morningSendMu,
 		TestNotify:     testNotifyFn,
 		NotifyDefaults: notifyDefaults,
 		AIDefaults:     aiDefaults,
@@ -349,8 +350,8 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Regist
 		log.Printf("[%s] startup: cache refresh done", schema)
 	}()
 
-	var morningLock int32
-	maybeFireMorningReport := makeMorningTrigger(db, &morningLock, mgr, reg, schema, notifyDefaults)
+	var morningSendMu sync.Mutex
+	maybeFireMorningReport := makeMorningTrigger(db, &morningSendMu, mgr, reg, schema, notifyDefaults)
 
 	backfillFn := makeBackfillFn(db)
 	backfillDatesFn := makeBackfillDatesFn(db, schema)
@@ -360,6 +361,7 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Regist
 		Backfill:       backfillFn,
 		BackfillDates:  backfillDatesFn,
 		MorningTrigger: maybeFireMorningReport,
+		MorningSendMu:  &morningSendMu,
 		TestNotify:     testNotifyFn,
 		NotifyDefaults: notifyDefaults,
 		AIDefaults:     aiDefaults,
@@ -688,13 +690,8 @@ func makeReportTrigger(mgr *tenants.Manager, schema string, defaults storage.Not
 	}
 }
 
-func makeMorningTrigger(db *storage.DB, lock *int32, mgr *tenants.Manager, reg *registry.Registry, schema string, notifyDefaults storage.NotifyConfig) func() {
+func makeMorningTrigger(db *storage.DB, sendMu *sync.Mutex, mgr *tenants.Manager, reg *registry.Registry, schema string, notifyDefaults storage.NotifyConfig) func() {
 	return func() {
-		if !atomic.CompareAndSwapInt32(lock, 0, 1) {
-			return
-		}
-		defer atomic.StoreInt32(lock, 0)
-
 		// AIDefaultsFor on each tick so the admin's installation-wide
 		// Gemini key is honoured even if it was set after process start.
 		aiDefaults := mgr.AIDefaultsFor(context.Background(), schema)
@@ -737,15 +734,16 @@ func makeMorningTrigger(db *storage.DB, lock *int32, mgr *tenants.Manager, reg *
 		// ingest-driven send doesn't bypass the subjective prompt path.
 		// Single-shot: if the gate picks Wait, we return and let the
 		// next ingest (or the scheduler at morning_hour) retry. Cap is
-		// computed via MorningCapTime — its floor guarantees a non-zero
-		// prompt window even when the adaptive cap is already past.
-		cap := ncfg.MorningCapTime(now)
+		// notify.EffectiveMorningCap — honours row.ExpiresAt over a freshly-
+		// floored cap so an ingest-saved prompt deadline isn't silently
+		// extended on later ticks.
 		settled := db.SleepSettled(today).Settled
 		row, rerr := db.GetTodayCheckin(today, storage.CheckinSourceTelegram)
 		if rerr != nil {
 			log.Printf("morning trigger: read checkin: %v", rerr)
 			row = nil
 		}
+		cap := notify.EffectiveMorningCap(ncfg.MorningCapTime(now), row)
 		checkinEnabled := morningCheckinEnabled(reg)
 
 		inputs := notify.MorningGateInputs{
@@ -781,6 +779,15 @@ func makeMorningTrigger(db *storage.DB, lock *int32, mgr *tenants.Manager, reg *
 
 		case notify.MorningActionForce, notify.MorningActionSendReport:
 			force := action == notify.MorningActionForce || action == notify.MorningActionExpireAndForce
+			// Critical section: serialise the HasSent re-check + Send +
+			// MarkSent triple with the scheduler so the two paths can't
+			// both observe HasSent=false in the narrow window between
+			// the outer check and the actual Telegram POST.
+			sendMu.Lock()
+			defer sendMu.Unlock()
+			if db.HasSentMorningReport(today) {
+				return
+			}
 			sent, reason, err := notify.SendMorningSmartOpts(bot, db, ncfg, notify.MorningSendOpts{
 				Force:          force,
 				CheckinExpired: action == notify.MorningActionExpireAndForce,
@@ -800,6 +807,7 @@ func makeMorningTrigger(db *storage.DB, lock *int32, mgr *tenants.Manager, reg *
 		}
 	}
 }
+
 
 // morningCheckinEnabled mirrors the feature-flag check in
 // runMorningSmartRetry exactly. Source of truth depends on whether the
@@ -874,8 +882,12 @@ func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager,
 			loc = l
 		}
 	}
-	cap := ncfg.MorningCapTime(time.Now())
-	log.Printf("morning smart-retry: window until %s", cap.Format("15:04"))
+	// sendMu is the per-tenant TOCTOU lock shared with the ingest
+	// trigger. nil for tenants without a registered mutex — those
+	// retain the original lock-free behaviour (single-sender path
+	// only). Both code paths grab it before the HasSent re-check.
+	sendMu := mgr.MorningSendMuFor(schema)
+	log.Printf("morning smart-retry: window until %s", ncfg.MorningCapTime(time.Now()).Format("15:04"))
 
 	// Proactive notifications — registered at init() time by each
 	// rule's own file (weekly digest, EnergyBank backfill nudge,
@@ -914,11 +926,15 @@ func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager,
 			log.Printf("morning smart-retry: read checkin: %v", rerr)
 			row = nil
 		}
+		// Per-tick cap: prefers row.ExpiresAt over the freshly-computed
+		// (and potentially floored) MorningCapTime so an ingest-saved
+		// prompt deadline isn't silently extended. See notify.EffectiveMorningCap.
+		effectiveCap := notify.EffectiveMorningCap(ncfg.MorningCapTime(now), row)
 		checkinEnabled := morningCheckinEnabled(reg)
 
 		inputs := notify.MorningGateInputs{
 			Now:            now,
-			Cap:            cap,
+			Cap:            effectiveCap,
 			SleepSettled:   settled,
 			HasCheckin:     row != nil,
 			CheckinEnabled: checkinEnabled,
@@ -938,7 +954,7 @@ func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager,
 			continue
 
 		case notify.MorningActionPrompt:
-			if err := notify.SendCheckinPrompt(bot, db, ncfg.Lang, today, now, cap); err != nil {
+			if err := notify.SendCheckinPrompt(bot, db, ncfg.Lang, today, now, effectiveCap); err != nil {
 				log.Printf("morning smart-retry: prompt: %v", err)
 			} else {
 				log.Printf("morning smart-retry: check-in prompt sent for %s", today)
@@ -954,17 +970,42 @@ func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager,
 
 		case notify.MorningActionForce, notify.MorningActionSendReport:
 			past := action == notify.MorningActionForce || action == notify.MorningActionExpireAndForce
-			sent, reason, err := notify.SendMorningSmartOpts(bot, db, ncfg, notify.MorningSendOpts{
-				Force:          past,
-				CheckinExpired: action == notify.MorningActionExpireAndForce,
-			})
+			// TOCTOU critical section: re-check HasSent inside the
+			// per-tenant mutex so the ingest goroutine can't slip a
+			// second send between the loop-top check and the actual
+			// Telegram POST. Manual lock/unlock (not defer) because
+			// the surrounding for-loop accumulates defers per iter.
+			// sendMu nil → single-sender legacy mode, skip locking.
+			if sendMu != nil {
+				sendMu.Lock()
+			}
+			alreadySent := db.HasSentMorningReport(today)
+			var sent bool
+			var reason string
+			var err error
+			if !alreadySent {
+				sent, reason, err = notify.SendMorningSmartOpts(bot, db, ncfg, notify.MorningSendOpts{
+					Force:          past,
+					CheckinExpired: action == notify.MorningActionExpireAndForce,
+				})
+				if err == nil && sent {
+					if perr := db.MarkMorningReportSent(today); perr != nil {
+						log.Printf("morning smart-retry: mark sent: %v", perr)
+					}
+				}
+			}
+			if sendMu != nil {
+				sendMu.Unlock()
+			}
+
+			if alreadySent {
+				log.Println("morning smart-retry: already sent by other path between tick start and lock, exiting")
+				return
+			}
 			if err != nil {
 				log.Printf("morning smart-retry: send error: %v", err)
 			}
 			if sent {
-				if perr := db.MarkMorningReportSent(today); perr != nil {
-					log.Printf("morning smart-retry: mark sent: %v", perr)
-				}
 				log.Printf("morning smart-retry: sent (reason=%s, forced=%v, action=%s)", reason, past, action)
 				return
 			}
