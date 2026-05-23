@@ -724,7 +724,7 @@ function renderCheckinCoverage(d) {
   }).join(' · ');
 
   var html = '<div class="checkin-kpis">'
-    + '<div class="checkin-kpi"><span>' + escapeHtml(labels.total) + '</span><strong>' + (s.total_days || d.days || 0) + '</strong></div>'
+    + '<div class="checkin-kpi"><span>' + escapeHtml(labels.total) + '</span><strong>' + (s.total_days == null ? (d.days || 0) : s.total_days) + '</strong></div>'
     + '<div class="checkin-kpi"><span>' + escapeHtml(labels.promptedCoverage) + '</span><strong>' + (s.prompted_coverage_percent || 0) + '%</strong></div>'
     + '<div class="checkin-kpi"><span>' + escapeHtml(labels.answeredCoverage) + '</span><strong>' + (s.answered_coverage_percent || 0) + '%</strong></div>'
     + '<div class="checkin-kpi"><span>' + escapeHtml(labels.avgResponse) + '</span><strong>' + (s.average_response_seconds == null ? escapeHtml(labels.noResponse) : escapeHtml(fmtDuration(s.average_response_seconds))) + '</strong></div>'
