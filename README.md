@@ -221,7 +221,7 @@ Three methods are supported, checked in order:
 
 | Method | How |
 |---|---|
-| **Authentik ForwardAuth** | Set `TRUST_FORWARD_AUTH=true` (legacy alias: `TRUST_FWD_AUTH=true`). Traefik passes `X-authentik-username` / `X-authentik-email` headers. By default those headers are trusted only from loopback/private proxy addresses; set `TRUSTED_FORWARD_AUTH_NETWORK=<cidr>[,<cidr>...]` when the trusted proxy is outside those ranges. The proxy must strip any client-supplied `X-authentik-*` headers before forwarding. On first request the server also issues a 30-day local cookie, so sessions survive Authentik token expiry. |
+| **Authentik ForwardAuth** | Set `TRUST_FORWARD_AUTH=true` (legacy alias: `TRUST_FWD_AUTH=true`). Traefik passes `X-authentik-username` / `X-authentik-email` headers. By default those headers are trusted only from loopback/private proxy addresses; set `TRUSTED_FORWARD_AUTH_NETWORK=<cidr>[,<cidr>...]` or `TRUSTED_FORWARD_AUTH_NETWORKS=<cidr>[,<cidr>...]` when the trusted proxy is outside those ranges. The proxy must strip any client-supplied `X-authentik-*` headers before forwarding. On first request the server also issues a 30-day local cookie, so sessions survive Authentik token expiry. |
 | **Username + password** | Login form at `/login`. Cookie valid for 30 days. |
 | **API key** | `X-API-Key` header (for iOS app sync and MCP). |
 

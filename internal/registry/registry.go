@@ -20,8 +20,12 @@ import (
 var ErrUserNotFound = errors.New("user not found")
 
 var (
-	usernameRE = regexp.MustCompile(`^[a-z][a-z0-9_]{0,30}$`)
-	schemaRE   = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
+	usernameRE          = regexp.MustCompile(`^[a-z][a-z0-9_]{0,30}$`)
+	schemaRE            = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
+	reservedSchemaNames = map[string]struct{}{
+		"health_registry":    {},
+		"information_schema": {},
+	}
 )
 
 // ErrNeedsManualSetup is returned when the database user lacks privileges to
@@ -306,6 +310,12 @@ func ValidateUsername(username string) error {
 func ValidateSchemaName(schema string) error {
 	if !schemaRE.MatchString(schema) {
 		return fmt.Errorf("schema_name must match %s", schemaRE.String())
+	}
+	if strings.HasPrefix(schema, "pg_") {
+		return fmt.Errorf("schema_name %q is reserved", schema)
+	}
+	if _, ok := reservedSchemaNames[schema]; ok {
+		return fmt.Errorf("schema_name %q is reserved", schema)
 	}
 	return nil
 }

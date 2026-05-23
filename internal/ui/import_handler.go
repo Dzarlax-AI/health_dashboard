@@ -102,7 +102,6 @@ func (h *Handler) adminImportUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxImportBytes)
 
-	// Only one import at a time.
 	scope, scopeErr := h.resolveAdminTenantScope(r)
 	if scopeErr != nil {
 		writeStatusError(w, scopeErr)
@@ -110,12 +109,6 @@ func (h *Handler) adminImportUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	schema := scope.Schema
 	db := scope.DB
-	currentJobsMu.Lock()
-	if currentJobs[schema] != nil && currentJobs[schema].running {
-		currentJobsMu.Unlock()
-		jsonResponse(w, map[string]string{"status": "error", "message": "import already running"})
-		return
-	}
 
 	batchSize := 500
 	if v := r.URL.Query().Get("batch"); v != "" {
@@ -136,9 +129,23 @@ func (h *Handler) adminImportUpload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Only one import at a time. Reserve the slot before streaming so a
+	// second request cannot start another large upload for the same tenant.
+	job := &importJob{running: true, startedAt: time.Now(), totalBytes: fileSize}
+	currentJobsMu.Lock()
+	if currentJobs[schema] != nil && currentJobs[schema].running {
+		currentJobsMu.Unlock()
+		jsonResponse(w, map[string]string{"status": "error", "message": "import already running"})
+		return
+	}
+	currentJobs[schema] = job
+	currentJobsMu.Unlock()
+
 	// Stream upload to a temp file so we can close the HTTP request quickly.
 	tmp, err := os.CreateTemp("", "health-import-*.zip")
 	if err != nil {
+		currentJobsMu.Lock()
+		delete(currentJobs, schema)
 		currentJobsMu.Unlock()
 		http.Error(w, "failed to create temp file", http.StatusInternalServerError)
 		return
@@ -148,6 +155,8 @@ func (h *Handler) adminImportUpload(w http.ResponseWriter, r *http.Request) {
 	filename := r.URL.Query().Get("filename")
 
 	if _, err := io.Copy(tmp, r.Body); err != nil {
+		currentJobsMu.Lock()
+		delete(currentJobs, schema)
 		currentJobsMu.Unlock()
 		tmp.Close()
 		os.Remove(tmp.Name())
@@ -160,10 +169,6 @@ func (h *Handler) adminImportUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tmp.Close()
-
-	job := &importJob{running: true, startedAt: time.Now(), totalBytes: fileSize}
-	currentJobs[schema] = job
-	currentJobsMu.Unlock()
 
 	backfill := h.mgr.BackfillFor(schema)
 	go runImport(job, db, tmp.Name(), filename, batchSize, time.Duration(pauseMs)*time.Millisecond, backfill)

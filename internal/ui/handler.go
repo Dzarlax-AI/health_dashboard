@@ -272,7 +272,8 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 			db := h.mgr.LegacyDB()
 
 			// Authentik forward auth
-			if h.forwardAuthTrusted(r) && r.Header.Get("X-authentik-username") != "" {
+			if h.forwardAuthTrusted(r) &&
+				(r.Header.Get("X-authentik-username") != "" || r.Header.Get("X-authentik-email") != "") {
 				// Issue a local cookie so requests survive Authentik session expiry.
 				if _, err := r.Cookie("auth"); err != nil {
 					http.SetCookie(w, &http.Cookie{
@@ -2577,12 +2578,12 @@ func (h *Handler) adminUsers(w http.ResponseWriter, r *http.Request) {
 		req.Username = strings.TrimSpace(req.Username)
 		req.SchemaName = strings.TrimSpace(req.SchemaName)
 		if err := registry.ValidateUsername(req.Username); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			jsonError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		if req.SchemaName != "" {
 			if err := registry.ValidateSchemaName(req.SchemaName); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
+				jsonError(w, err.Error(), http.StatusBadRequest)
 				return
 			}
 		}
@@ -2629,4 +2630,10 @@ func (h *Handler) adminUsers(w http.ResponseWriter, r *http.Request) {
 func jsonResponse(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(v)
+}
+
+func jsonError(w http.ResponseWriter, msg string, status int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
