@@ -43,7 +43,7 @@ func main() {
 	apiKey := os.Getenv("API_KEY")
 	uiPassword := os.Getenv("UI_PASSWORD")
 	adminEmail := os.Getenv("ADMIN_EMAIL")
-	trustFwdAuth := os.Getenv("TRUST_FORWARD_AUTH") == "true"
+	trustFwdAuth := os.Getenv("TRUST_FORWARD_AUTH") == "true" || os.Getenv("TRUST_FWD_AUTH") == "true"
 	baseURL := getEnv("BASE_URL", "http://localhost"+addr)
 
 	// Env-level defaults for the first/only tenant.
@@ -206,6 +206,7 @@ func main() {
 	handler.New(mgr, onNewData, hrZones).Register(mux)
 
 	uiHandler := ui.New(mgr, reg, trustFwdAuth)
+	configureTrustedForwardAuth(uiHandler)
 	uiHandler.ConfigureWebhook(notify.NewTelegramWebhookRegistrar(), baseURL)
 	uiHandler.OnTenantCreated(func(schema string) {
 		db, err := mgr.GetOrCreate(ctx, schema)
@@ -303,6 +304,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	mux := http.NewServeMux()
 	handler.New(mgr, onNewData, hrZones).Register(mux)
 	legacyUI := ui.New(mgr, reg, trustFwdAuth)
+	configureTrustedForwardAuth(legacyUI)
 	legacyUI.ConfigureWebhook(notify.NewTelegramWebhookRegistrar(), baseURL)
 	legacyUI.Register(mux)
 	mcpserver.Register(mux, mgr, baseURL)
@@ -559,9 +561,9 @@ func makeTestNotifyFn(db *storage.DB, mgr *tenants.Manager, schema string, notif
 
 // registerCheckinWebhook mounts the Telegram callback handler on mux.
 // Three-step secret lookup via registry.ResolveOrGenerateWebhookSecrets:
-//   1. health_registry.global_settings (persisted from previous boot)
-//   2. env (TELEGRAM_WEBHOOK_SECRET / TELEGRAM_WEBHOOK_TOKEN_HEADER)
-//   3. generate fresh pair and persist
+//  1. health_registry.global_settings (persisted from previous boot)
+//  2. env (TELEGRAM_WEBHOOK_SECRET / TELEGRAM_WEBHOOK_TOKEN_HEADER)
+//  3. generate fresh pair and persist
 //
 // When reg is nil (legacy bootstrap without registry — e.g. forced
 // single-user mode), falls back to env-only: webhook stays disabled
@@ -832,7 +834,6 @@ func makeMorningTrigger(db *storage.DB, sendMu *sync.Mutex, mgr *tenants.Manager
 		}
 	}
 }
-
 
 // morningCheckinEnabled mirrors the feature-flag check in
 // runMorningSmartRetry exactly. Source of truth depends on whether the
@@ -1183,6 +1184,19 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func configureTrustedForwardAuth(h *ui.Handler) {
+	raw := strings.TrimSpace(os.Getenv("TRUSTED_FORWARD_AUTH_NETWORK"))
+	if raw == "" {
+		raw = strings.TrimSpace(os.Getenv("TRUSTED_FORWARD_AUTH_NETWORKS"))
+	}
+	if raw == "" {
+		return
+	}
+	if err := h.SetTrustedForwardAuthNetworks(raw); err != nil {
+		log.Fatalf("invalid TRUSTED_FORWARD_AUTH_NETWORK: %v", err)
+	}
 }
 
 func getEnvInt(key string, fallback int) int {

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -17,6 +18,15 @@ import (
 
 // ErrUserNotFound is returned when a registry lookup matches no user.
 var ErrUserNotFound = errors.New("user not found")
+
+var (
+	usernameRE          = regexp.MustCompile(`^[a-z][a-z0-9_]{0,30}$`)
+	schemaRE            = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
+	reservedSchemaNames = map[string]struct{}{
+		"health_registry":    {},
+		"information_schema": {},
+	}
+)
 
 // ErrNeedsManualSetup is returned when the database user lacks privileges to
 // create the health_registry schema. The caller should log SQL and continue
@@ -285,11 +295,44 @@ type CreateUserReq struct {
 	IsAdmin    bool
 }
 
+// ValidateUsername enforces the registry username policy. Usernames become
+// part of derived tenant schema names, so keep the accepted set narrow and
+// predictable even though dynamic SQL identifiers are quoted separately.
+func ValidateUsername(username string) error {
+	if !usernameRE.MatchString(username) {
+		return fmt.Errorf("username must match %s", usernameRE.String())
+	}
+	return nil
+}
+
+// ValidateSchemaName enforces a PostgreSQL-safe tenant schema name shape.
+// This is a policy check; dynamic SQL still quotes identifiers separately.
+func ValidateSchemaName(schema string) error {
+	if !schemaRE.MatchString(schema) {
+		return fmt.Errorf("schema_name must match %s", schemaRE.String())
+	}
+	if strings.HasPrefix(schema, "pg_") {
+		return fmt.Errorf("schema_name %q is reserved", schema)
+	}
+	if _, ok := reservedSchemaNames[schema]; ok {
+		return fmt.Errorf("schema_name %q is reserved", schema)
+	}
+	return nil
+}
+
 // CreateUser inserts a new user. Generates an API key automatically.
 // Returns the created user (with APIKey populated).
 func (r *Registry) CreateUser(ctx context.Context, req CreateUserReq) (*User, error) {
+	req.Username = strings.TrimSpace(req.Username)
+	req.SchemaName = strings.TrimSpace(req.SchemaName)
+	if err := ValidateUsername(req.Username); err != nil {
+		return nil, err
+	}
 	if req.SchemaName == "" {
 		req.SchemaName = "health_" + strings.ToLower(req.Username)
+	}
+	if err := ValidateSchemaName(req.SchemaName); err != nil {
+		return nil, err
 	}
 	apiKey, err := generateAPIKey()
 	if err != nil {
