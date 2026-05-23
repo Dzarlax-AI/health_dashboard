@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -94,11 +96,11 @@ func ValidateCheckinAnswer(ans string) error {
 //
 // Actions:
 //   - "tap"    — user pressed an inline-keyboard button. Before
-//                expires_at → answered (primary validation pool).
-//                At/after expires_at → late_answered (analytics-only).
-//                Already answered → idempotent re-tap, stay answered.
+//     expires_at → answered (primary validation pool).
+//     At/after expires_at → late_answered (analytics-only).
+//     Already answered → idempotent re-tap, stay answered.
 //   - "expire" — scheduler decided the cap has passed. Only valid
-//                from prompted, and only when expires_at is reached.
+//     from prompted, and only when expires_at is reached.
 //
 // Returns ("", err) when the transition is not valid (e.g. expire
 // called before cap).
@@ -130,12 +132,52 @@ type CheckinRow struct {
 	Date            string
 	Source          string
 	Status          string
-	Answer          string    // "" when NULL
-	PromptMessageID int64     // 0 when NULL
+	Answer          string // "" when NULL
+	PromptMessageID int64  // 0 when NULL
 	PromptedAt      time.Time
 	AnsweredAt      time.Time // zero when NULL
 	ExpiresAt       time.Time
 }
+
+// CheckinCoverage is the admin read model for the morning check-in
+// coverage table. It includes the latest N subjective_checkins rows.
+// It intentionally does not synthesize pre-rollout "missing" rows:
+// during the first two weeks after launch, calendar-day coverage would
+// make a perfectly healthy rollout look mostly broken.
+type CheckinCoverage struct {
+	From    string                 `json:"from"`
+	To      string                 `json:"to"`
+	Days    int                    `json:"days"`
+	Source  string                 `json:"source"`
+	Summary CheckinCoverageSummary `json:"summary"`
+	Rows    []CheckinCoverageRow   `json:"rows"`
+}
+
+type CheckinCoverageSummary struct {
+	TotalDays               int            `json:"total_days"`
+	Prompted                int            `json:"prompted"`
+	Answered                int            `json:"answered"`
+	LateAnswered            int            `json:"late_answered"`
+	Expired                 int            `json:"expired"`
+	Missing                 int            `json:"missing"`
+	AnswerCounts            map[string]int `json:"answer_counts"`
+	AverageResponseSeconds  *int64         `json:"average_response_seconds,omitempty"`
+	AnsweredCoveragePercent int            `json:"answered_coverage_percent"`
+	PromptedCoveragePercent int            `json:"prompted_coverage_percent"`
+}
+
+type CheckinCoverageRow struct {
+	Date                   string     `json:"date"`
+	Source                 string     `json:"source"`
+	Status                 string     `json:"status"`
+	Answer                 string     `json:"answer,omitempty"`
+	PromptedAt             *time.Time `json:"prompted_at,omitempty"`
+	AnsweredAt             *time.Time `json:"answered_at,omitempty"`
+	ExpiresAt              *time.Time `json:"expires_at,omitempty"`
+	ResponseLatencySeconds *int64     `json:"response_latency_seconds,omitempty"`
+}
+
+const CheckinStatusMissing = "missing"
 
 // SaveCheckinPrompted upserts a `prompted` row for (date, source).
 // Idempotent on retry: a second prompt for the same date overwrites
@@ -262,4 +304,147 @@ func (s *DB) GetTodayCheckin(date, source string) (*CheckinRow, error) {
 		row.AnsweredAt = *answeredAt
 	}
 	return row, nil
+}
+
+// GetCheckinCoverage returns the latest N check-in rows up to today.
+// `today` must be YYYY-MM-DD in the tenant's REPORT_TZ; callers own
+// timezone resolution so this storage method stays pure SQL + date
+// arithmetic.
+func (s *DB) GetCheckinCoverage(today, source string, days int) (*CheckinCoverage, error) {
+	if days < 1 {
+		days = 1
+	}
+	if days > 90 {
+		days = 90
+	}
+	if _, err := time.Parse("2006-01-02", today); err != nil {
+		return nil, fmt.Errorf("today must be YYYY-MM-DD: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	rows, err := s.pool.Query(ctx, `
+		SELECT date, source, status, answer, prompt_message_id, prompted_at, answered_at, expires_at
+		  FROM subjective_checkins
+		 WHERE source = $1
+		   AND date <= $2
+		 ORDER BY date DESC
+		 LIMIT $3`, source, today, days)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []CheckinRow
+	for rows.Next() {
+		row := CheckinRow{}
+		var answer *string
+		var msgID *int64
+		var answeredAt *time.Time
+		if err := rows.Scan(&row.Date, &row.Source, &row.Status, &answer, &msgID, &row.PromptedAt, &answeredAt, &row.ExpiresAt); err != nil {
+			return nil, err
+		}
+		if answer != nil {
+			row.Answer = *answer
+		}
+		if msgID != nil {
+			row.PromptMessageID = *msgID
+		}
+		if answeredAt != nil {
+			row.AnsweredAt = *answeredAt
+		}
+		entries = append(entries, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return buildCheckinCoverage(today, source, days, entries)
+}
+
+func buildCheckinCoverage(today, source string, days int, entries []CheckinRow) (*CheckinCoverage, error) {
+	if days < 1 {
+		days = 1
+	}
+	if _, err := time.Parse("2006-01-02", today); err != nil {
+		return nil, fmt.Errorf("today must be YYYY-MM-DD: %w", err)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Date > entries[j].Date })
+	if len(entries) > days {
+		entries = entries[:days]
+	}
+
+	out := &CheckinCoverage{
+		From:   "",
+		To:     today,
+		Days:   days,
+		Source: source,
+		Summary: CheckinCoverageSummary{
+			TotalDays:    len(entries),
+			AnswerCounts: map[string]int{},
+		},
+		Rows: make([]CheckinCoverageRow, 0, len(entries)),
+	}
+	if len(entries) > 0 {
+		out.From = entries[len(entries)-1].Date
+		out.To = entries[0].Date
+	}
+
+	var latencySum int64
+	var latencyN int64
+	promptedDays := 0
+	for _, entry := range entries {
+		promptedAt := entry.PromptedAt
+		expiresAt := entry.ExpiresAt
+		row := CheckinCoverageRow{
+			Date:       entry.Date,
+			Source:     entry.Source,
+			Status:     entry.Status,
+			Answer:     entry.Answer,
+			PromptedAt: &promptedAt,
+			ExpiresAt:  &expiresAt,
+		}
+		if !entry.AnsweredAt.IsZero() {
+			answeredAt := entry.AnsweredAt
+			row.AnsweredAt = &answeredAt
+			latency := int64(answeredAt.Sub(promptedAt).Seconds())
+			if latency < 0 {
+				latency = 0
+			}
+			row.ResponseLatencySeconds = &latency
+			latencySum += latency
+			latencyN++
+		}
+		switch entry.Status {
+		case CheckinStatusPrompted:
+			out.Summary.Prompted++
+		case CheckinStatusAnswered:
+			out.Summary.Answered++
+		case CheckinStatusLateAnswered:
+			out.Summary.LateAnswered++
+		case CheckinStatusExpired:
+			out.Summary.Expired++
+		default:
+			// Preserve unknown statuses in rows without folding them into a
+			// known bucket. Prompted coverage below still counts the row.
+		}
+		promptedDays++
+		if entry.Answer != "" {
+			out.Summary.AnswerCounts[entry.Answer]++
+		}
+		out.Rows = append(out.Rows, row)
+	}
+	if latencyN > 0 {
+		avg := latencySum / latencyN
+		out.Summary.AverageResponseSeconds = &avg
+	}
+	out.Summary.AnsweredCoveragePercent = percent(out.Summary.Answered, len(entries))
+	out.Summary.PromptedCoveragePercent = percent(promptedDays, len(entries))
+	return out, nil
+}
+
+func percent(n, total int) int {
+	if total <= 0 {
+		return 0
+	}
+	return int(math.Round(float64(n) * 100 / float64(total)))
 }

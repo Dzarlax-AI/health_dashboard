@@ -82,3 +82,77 @@ func TestValidateAnswer(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildCheckinCoverage(t *testing.T) {
+	prompted := time.Date(2026, 5, 23, 8, 0, 0, 0, time.UTC)
+	answered := prompted.Add(45 * time.Second)
+	coverage, err := buildCheckinCoverage("2026-05-23", CheckinSourceTelegram, 4, []CheckinRow{
+		{
+			Date:       "2026-05-23",
+			Source:     CheckinSourceTelegram,
+			Status:     CheckinStatusAnswered,
+			Answer:     CheckinAnswerGreat,
+			PromptedAt: prompted,
+			AnsweredAt: answered,
+			ExpiresAt:  prompted.Add(time.Hour),
+		},
+		{
+			Date:       "2026-05-21",
+			Source:     CheckinSourceTelegram,
+			Status:     CheckinStatusExpired,
+			PromptedAt: prompted.AddDate(0, 0, -2),
+			ExpiresAt:  prompted.AddDate(0, 0, -2).Add(time.Hour),
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildCheckinCoverage: %v", err)
+	}
+	if coverage.From != "2026-05-21" || coverage.To != "2026-05-23" {
+		t.Fatalf("window = %s..%s, want 2026-05-21..2026-05-23", coverage.From, coverage.To)
+	}
+	if len(coverage.Rows) != 2 {
+		t.Fatalf("rows = %d, want 2", len(coverage.Rows))
+	}
+	if coverage.Rows[0].Date != "2026-05-23" || coverage.Rows[0].Status != CheckinStatusAnswered {
+		t.Fatalf("row0 = %+v, want 2026-05-23 answered", coverage.Rows[0])
+	}
+	if coverage.Rows[1].Date != "2026-05-21" || coverage.Rows[1].Status != CheckinStatusExpired {
+		t.Fatalf("row1 = %+v, want 2026-05-21 expired", coverage.Rows[1])
+	}
+	if coverage.Summary.TotalDays != 2 ||
+		coverage.Summary.Answered != 1 ||
+		coverage.Summary.Expired != 1 ||
+		coverage.Summary.Missing != 0 {
+		t.Fatalf("summary = %+v, want answered=1 expired=1 missing=0 total=2", coverage.Summary)
+	}
+	if coverage.Summary.AnswerCounts[CheckinAnswerGreat] != 1 {
+		t.Fatalf("answer_counts = %+v, want great=1", coverage.Summary.AnswerCounts)
+	}
+	if coverage.Summary.AverageResponseSeconds == nil || *coverage.Summary.AverageResponseSeconds != 45 {
+		t.Fatalf("avg latency = %v, want 45", coverage.Summary.AverageResponseSeconds)
+	}
+	if coverage.Summary.AnsweredCoveragePercent != 50 {
+		t.Fatalf("answered coverage = %d, want 50", coverage.Summary.AnsweredCoveragePercent)
+	}
+	if coverage.Summary.PromptedCoveragePercent != 100 {
+		t.Fatalf("prompted coverage = %d, want 100", coverage.Summary.PromptedCoveragePercent)
+	}
+}
+
+func TestBuildCheckinCoverage_LimitsToLatestRows(t *testing.T) {
+	prompted := time.Date(2026, 5, 23, 8, 0, 0, 0, time.UTC)
+	coverage, err := buildCheckinCoverage("2026-05-23", CheckinSourceTelegram, 2, []CheckinRow{
+		{Date: "2026-05-20", Source: CheckinSourceTelegram, Status: CheckinStatusAnswered, Answer: CheckinAnswerGreat, PromptedAt: prompted, AnsweredAt: prompted.Add(time.Second), ExpiresAt: prompted.Add(time.Hour)},
+		{Date: "2026-05-23", Source: CheckinSourceTelegram, Status: CheckinStatusAnswered, Answer: CheckinAnswerOK, PromptedAt: prompted, AnsweredAt: prompted.Add(time.Second), ExpiresAt: prompted.Add(time.Hour)},
+		{Date: "2026-05-21", Source: CheckinSourceTelegram, Status: CheckinStatusAnswered, Answer: CheckinAnswerMeh, PromptedAt: prompted, AnsweredAt: prompted.Add(time.Second), ExpiresAt: prompted.Add(time.Hour)},
+	})
+	if err != nil {
+		t.Fatalf("buildCheckinCoverage: %v", err)
+	}
+	if got := []string{coverage.Rows[0].Date, coverage.Rows[1].Date}; got[0] != "2026-05-23" || got[1] != "2026-05-21" {
+		t.Fatalf("row dates = %v, want latest two [2026-05-23 2026-05-21]", got)
+	}
+	if coverage.Summary.TotalDays != 2 || coverage.Summary.Answered != 2 {
+		t.Fatalf("summary = %+v, want total=2 answered=2", coverage.Summary)
+	}
+}

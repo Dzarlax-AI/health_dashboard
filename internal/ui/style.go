@@ -930,6 +930,30 @@ select:focus, input[type=date]:focus { outline: none; border-color: var(--accent
   display: flex; gap: 24px; font-size: 13px; color: var(--muted); padding: 0 4px;
 }
 .admin-meta-row strong { color: var(--fg); }
+.checkin-kpis {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px; margin-bottom: 10px;
+}
+.checkin-kpi {
+  background: var(--card-bg); border: 1px solid var(--card-border);
+  border-radius: 8px; padding: 10px 12px;
+}
+.checkin-kpi span {
+  display: block; font-size: 11px; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 3px;
+}
+.checkin-kpi strong { font-size: 18px; color: var(--fg); }
+.checkin-answer-line { font-size: 13px; margin: 8px 0 12px; color: var(--text-secondary); }
+.checkin-table td, .checkin-table th { padding: 7px 8px; }
+.checkin-status {
+  display: inline-block; font-size: 11px; font-weight: 700;
+  padding: 2px 8px; border-radius: 999px;
+}
+.checkin-status--answered { background: var(--good-bg); color: var(--good); }
+.checkin-status--late_answered { background: var(--fair-bg); color: var(--fair); }
+.checkin-status--prompted { background: var(--surface2); color: var(--text-secondary); }
+.checkin-status--expired { background: var(--low-bg); color: var(--low); }
+.checkin-status--missing { background: transparent; color: var(--text-tertiary); border: 1px dashed var(--border); }
 .admin-actions { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
 .admin-action-card {
   background: var(--card-bg); border: 1px solid var(--card-border);

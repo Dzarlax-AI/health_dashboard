@@ -50,6 +50,20 @@
           <div id="admin-quality-section"></div>
         </div>
 
+        <!-- Subjective check-in coverage -->
+        <div class="admin-section">
+          <div class="admin-section-header">
+            <div class="section-title">{{T .Lang "admin_checkin_coverage_title"}}</div>
+            <button class="btn btn--secondary btn--small" onclick="loadCheckinCoverage()">{{T .Lang "admin_refresh"}}</button>
+          </div>
+          <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
+            {{T .Lang "admin_checkin_coverage_desc"}}
+          </p>
+          <div id="admin-checkin-coverage-section">
+            <div class="spinner spinner--large"></div>
+          </div>
+        </div>
+
         <!-- Stress validation rubric (STRESS_MEASUREMENT.md §4.5) -->
         <div class="admin-section" id="admin-stress-validation-section">
           <div class="section-title">{{T .Lang "admin_stress_validation_title"}}</div>
@@ -654,6 +668,94 @@ function renderQualityAudit(d) {
   return html;
 }
 
+function loadCheckinCoverage() {
+  var el = $('admin-checkin-coverage-section');
+  if (!el) return;
+  el.innerHTML = '<div style="padding:16px"><div class="spinner spinner--large"></div></div>';
+  fetch('/api/admin/checkin-coverage?days=14')
+    .then(function(r){
+      if (!r.ok) return r.text().then(function(t){ throw new Error(t || 'Failed to load check-in coverage'); });
+      return r.json();
+    })
+    .then(function(d) { el.innerHTML = renderCheckinCoverage(d); })
+    .catch(function(e) { el.innerHTML = '<div class="alert alert--low">' + escapeHtml(String(e.message || e)) + '</div>'; });
+}
+
+function renderCheckinCoverage(d) {
+  var s = d.summary || {};
+  var rows = d.rows || [];
+  var labels = {
+    total: '{{T .Lang "admin_checkin_total"}}',
+    promptedCoverage: '{{T .Lang "admin_checkin_prompted_coverage"}}',
+    answeredCoverage: '{{T .Lang "admin_checkin_answered_coverage"}}',
+    avgResponse: '{{T .Lang "admin_checkin_avg_response"}}',
+    noResponse: '{{T .Lang "admin_checkin_no_response"}}',
+    answers: '{{T .Lang "admin_checkin_answers"}}',
+    date: '{{T .Lang "admin_checkin_date"}}',
+    status: '{{T .Lang "admin_checkin_status"}}',
+    answer: '{{T .Lang "admin_checkin_answer"}}',
+    latency: '{{T .Lang "admin_checkin_latency"}}'
+  };
+  var statusLabels = {
+    prompted: '{{T .Lang "admin_checkin_status_prompted"}}',
+    answered: '{{T .Lang "admin_checkin_status_answered"}}',
+    late_answered: '{{T .Lang "admin_checkin_status_late"}}',
+    expired: '{{T .Lang "admin_checkin_status_expired"}}',
+    missing: '{{T .Lang "admin_checkin_status_missing"}}'
+  };
+  var answerLabels = {
+    great: '{{T .Lang "checkin_answer_great"}}',
+    ok: '{{T .Lang "checkin_answer_ok"}}',
+    meh: '{{T .Lang "checkin_answer_meh"}}',
+    sick: '{{T .Lang "checkin_answer_sick"}}'
+  };
+  var fmtDuration = function(seconds) {
+    if (seconds == null) return '—';
+    var n = Number(seconds);
+    if (!isFinite(n)) return '—';
+    if (n < 60) return Math.round(n) + 's';
+    var min = Math.floor(n / 60);
+    var sec = Math.round(n % 60);
+    return min + 'm ' + sec + 's';
+  };
+  var answerCounts = s.answer_counts || {};
+  var answerLine = ['great', 'ok', 'meh', 'sick'].map(function(k) {
+    return escapeHtml(answerLabels[k] || k) + ' ' + (answerCounts[k] || 0);
+  }).join(' · ');
+
+  var html = '<div class="checkin-kpis">'
+    + '<div class="checkin-kpi"><span>' + escapeHtml(labels.total) + '</span><strong>' + (s.total_days == null ? (d.days || 0) : s.total_days) + '</strong></div>'
+    + '<div class="checkin-kpi"><span>' + escapeHtml(labels.promptedCoverage) + '</span><strong>' + (s.prompted_coverage_percent || 0) + '%</strong></div>'
+    + '<div class="checkin-kpi"><span>' + escapeHtml(labels.answeredCoverage) + '</span><strong>' + (s.answered_coverage_percent || 0) + '%</strong></div>'
+    + '<div class="checkin-kpi"><span>' + escapeHtml(labels.avgResponse) + '</span><strong>' + (s.average_response_seconds == null ? escapeHtml(labels.noResponse) : escapeHtml(fmtDuration(s.average_response_seconds))) + '</strong></div>'
+    + '</div>'
+    + '<div class="checkin-answer-line"><span class="muted">' + escapeHtml(labels.answers) + '</span> ' + answerLine + '</div>';
+
+  html += '<table class="admin-table checkin-table"><thead><tr>'
+    + '<th>' + escapeHtml(labels.date) + '</th>'
+    + '<th>' + escapeHtml(labels.status) + '</th>'
+    + '<th>' + escapeHtml(labels.answer) + '</th>'
+    + '<th style="text-align:right">' + escapeHtml(labels.latency) + '</th>'
+    + '</tr></thead><tbody>';
+  var allowedStatusClass = {
+    prompted: true, answered: true, late_answered: true, expired: true, missing: true
+  };
+  rows.forEach(function(row) {
+    var status = row.status || 'missing';
+    var statusClass = allowedStatusClass[status] ? status : 'missing';
+    var statusText = statusLabels[status] || status;
+    var answer = row.answer ? (answerLabels[row.answer] || row.answer) : '—';
+    html += '<tr>'
+      + '<td><code>' + escapeHtml(row.date || '') + '</code></td>'
+      + '<td><span class="checkin-status checkin-status--' + statusClass + '">' + escapeHtml(statusText) + '</span></td>'
+      + '<td>' + escapeHtml(answer) + '</td>'
+      + '<td style="text-align:right">' + escapeHtml(fmtDuration(row.response_latency_seconds)) + '</td>'
+      + '</tr>';
+  });
+  html += '</tbody></table>';
+  return html;
+}
+
 function runQualityFix() {
   var msg = $('admin-quality-msg');
   msg.style.display = '';
@@ -977,6 +1079,7 @@ function createUser() {
 
 document.addEventListener('DOMContentLoaded', function() {
   loadAdminSettings();
+  loadCheckinCoverage();
   if ($('admin-users-table')) loadUsers();
 });
 </script>
