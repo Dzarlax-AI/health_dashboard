@@ -398,6 +398,12 @@ var translationsSr = map[string]string{
 	"admin_import_uploading": "Otpremanje…",
 	"admin_import_running":   "Uvoz u toku…",
 
+	"admin_tab_general":        "Opšta podešavanja",
+	"admin_tab_current_user":   "Trenutni korisnik",
+	"admin_user_scope_label":   "Opseg korisnika",
+	"admin_user_scope_desc":    "Radnje u ovoj kartici utiču samo na tenant šemu ovog korisnika.",
+	"admin_general_scope_desc": "Ova podešavanja utiču na celu Health Dashboard instalaciju.",
+
 	"stress_flags_aria":              "Signali stresa",
 	"stress_detail_what":             "Šta je",
 	"stress_detail_cause":            "Šta je izazvalo",

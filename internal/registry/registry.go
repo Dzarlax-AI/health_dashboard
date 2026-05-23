@@ -15,6 +15,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// ErrUserNotFound is returned when a registry lookup matches no user.
+var ErrUserNotFound = errors.New("user not found")
+
 // ErrNeedsManualSetup is returned when the database user lacks privileges to
 // create the health_registry schema. The caller should log SQL and continue
 // in legacy single-user mode.
@@ -237,7 +240,7 @@ func (r *Registry) getUser(ctx context.Context, query string, arg string) (*User
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, fmt.Errorf("user not found")
+			return nil, ErrUserNotFound
 		}
 		return nil, err
 	}

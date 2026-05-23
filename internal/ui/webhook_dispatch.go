@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"strings"
 
 	"health-receiver/internal/notify"
 	"health-receiver/internal/registry"
@@ -92,11 +93,11 @@ func (h *Handler) dispatchWebhookDiffRaw(ctx context.Context, schema string, old
 //   - NeedsRegister only: token added. Single Register call.
 //   - NeedsDelete only:   token removed. Single Delete call.
 //   - Both true:          rotation. Best-effort Delete on old token,
-//                         then Register on new. Old-bot cleanup is
-//                         best-effort — its failure is logged but
-//                         doesn't flip the badge. The badge tracks
-//                         the *new* bot's registration outcome since
-//                         that's what affects future callbacks.
+//     then Register on new. Old-bot cleanup is
+//     best-effort — its failure is logged but
+//     doesn't flip the badge. The badge tracks
+//     the *new* bot's registration outcome since
+//     that's what affects future callbacks.
 func (h *Handler) runWebhookRegistrar(schema string, diff notify.TelegramDiff, url, tokenHeader string) {
 	bg := context.Background()
 
@@ -144,8 +145,8 @@ func (h *Handler) runWebhookRegistrar(schema string, diff notify.TelegramDiff, u
 
 // webhookStatus handles GET /api/webhook-status — returns the current
 // per-tenant webhook registration status as JSON. Available to all
-// users (badge is per-tenant, no cross-tenant disclosure: we only
-// read the caller's own schema).
+// users. Admins may pass schema= to inspect another registered tenant
+// from the tabbed admin page.
 func (h *Handler) webhookStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -162,6 +163,14 @@ func (h *Handler) webhookStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	schema := h.tenantSchema(r)
+	if target := strings.TrimSpace(r.URL.Query().Get("schema")); target != "" && target != schema {
+		scope, scopeErr := h.resolveAdminTenantSchemaScope(r)
+		if scopeErr != nil {
+			writeStatusError(w, scopeErr)
+			return
+		}
+		schema = scope.Schema
+	}
 	st := h.reg.GetWebhookStatus(r.Context(), schema)
 	resp := map[string]any{
 		"state":       st.State,
@@ -194,12 +203,13 @@ func (h *Handler) webhookStatusRetry(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "webhook not configured", http.StatusServiceUnavailable)
 		return
 	}
-	schema := h.tenantSchema(r)
-	db := h.tenantDB(r)
-	if db == nil {
-		http.Error(w, "tenant DB unavailable", http.StatusInternalServerError)
+	scope, scopeErr := h.resolveAdminTenantScope(r)
+	if scopeErr != nil {
+		writeStatusError(w, scopeErr)
 		return
 	}
+	schema := scope.Schema
+	db := scope.DB
 	cfg := db.GetNotifyConfig(h.mgr.NotifyDefaultsFor(schema))
 	if cfg.Token == "" {
 		// No token configured for this tenant — nothing to register.
@@ -223,5 +233,3 @@ func (h *Handler) webhookStatusRetry(w http.ResponseWriter, r *http.Request) {
 
 	jsonResponse(w, map[string]string{"status": "pending"})
 }
-
-
