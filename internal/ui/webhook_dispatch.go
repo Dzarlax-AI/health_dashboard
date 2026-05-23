@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strings"
 
-	"health-receiver/internal/ctxdb"
 	"health-receiver/internal/notify"
 	"health-receiver/internal/registry"
 	"health-receiver/internal/storage"
@@ -94,11 +93,11 @@ func (h *Handler) dispatchWebhookDiffRaw(ctx context.Context, schema string, old
 //   - NeedsRegister only: token added. Single Register call.
 //   - NeedsDelete only:   token removed. Single Delete call.
 //   - Both true:          rotation. Best-effort Delete on old token,
-//                         then Register on new. Old-bot cleanup is
-//                         best-effort — its failure is logged but
-//                         doesn't flip the badge. The badge tracks
-//                         the *new* bot's registration outcome since
-//                         that's what affects future callbacks.
+//     then Register on new. Old-bot cleanup is
+//     best-effort — its failure is logged but
+//     doesn't flip the badge. The badge tracks
+//     the *new* bot's registration outcome since
+//     that's what affects future callbacks.
 func (h *Handler) runWebhookRegistrar(schema string, diff notify.TelegramDiff, url, tokenHeader string) {
 	bg := context.Background()
 
@@ -165,11 +164,7 @@ func (h *Handler) webhookStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	schema := h.tenantSchema(r)
 	if target := strings.TrimSpace(r.URL.Query().Get("schema")); target != "" && target != schema {
-		if !ctxdb.IsAdminFromContext(r.Context()) {
-			http.Error(w, "admin required for schema override", http.StatusForbidden)
-			return
-		}
-		scope, scopeErr := h.resolveAdminTenantScope(r)
+		scope, scopeErr := h.resolveAdminTenantSchemaScope(r)
 		if scopeErr != nil {
 			writeStatusError(w, scopeErr)
 			return

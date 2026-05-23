@@ -156,7 +156,7 @@ func (h *Handler) energyBackfillSummary(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *Handler) energyBackfillStatus(w http.ResponseWriter, r *http.Request) {
-	scope, scopeErr := h.resolveAdminTenantScope(r)
+	scope, scopeErr := h.resolveAdminTenantSchemaScope(r)
 	if scopeErr != nil {
 		writeStatusError(w, scopeErr)
 		return

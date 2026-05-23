@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"math"
@@ -178,6 +179,11 @@ type adminTenantScope struct {
 	Username string
 }
 
+type adminTenantSchemaScope struct {
+	Schema   string
+	Username string
+}
+
 type httpStatusError struct {
 	status int
 	msg    string
@@ -194,6 +200,30 @@ func (h *Handler) resolveAdminTenantScope(r *http.Request) (adminTenantScope, *h
 		return adminTenantScope{}, &httpStatusError{status: http.StatusServiceUnavailable, msg: "tenant DB unavailable"}
 	}
 
+	schemaScope, scopeErr := h.resolveAdminTenantSchemaScope(r)
+	if scopeErr != nil {
+		return adminTenantScope{}, scopeErr
+	}
+	if schemaScope.Schema == schema {
+		return adminTenantScope{DB: db, Schema: schema, Username: schemaScope.Username}, nil
+	}
+
+	targetDB, err := h.mgr.GetOrCreate(r.Context(), schemaScope.Schema)
+	if err != nil || targetDB == nil {
+		return adminTenantScope{}, &httpStatusError{status: http.StatusServiceUnavailable, msg: "tenant DB pool not initialised"}
+	}
+	return adminTenantScope{DB: targetDB, Schema: schemaScope.Schema, Username: schemaScope.Username}, nil
+}
+
+// resolveAdminTenantSchemaScope validates the request tenant or admin-selected
+// schema= override without opening the tenant DB. Use this for in-memory or
+// registry-only status endpoints that must remain visible during tenant outages.
+func (h *Handler) resolveAdminTenantSchemaScope(r *http.Request) (adminTenantSchemaScope, *httpStatusError) {
+	schema := h.tenantSchema(r)
+	if schema == "" {
+		return adminTenantSchemaScope{}, &httpStatusError{status: http.StatusServiceUnavailable, msg: "tenant schema unavailable"}
+	}
+
 	target := strings.TrimSpace(r.URL.Query().Get("schema"))
 	if target == "" || target == schema {
 		username := ""
@@ -202,26 +232,28 @@ func (h *Handler) resolveAdminTenantScope(r *http.Request) (adminTenantScope, *h
 				username = u.Username
 			}
 		}
-		return adminTenantScope{DB: db, Schema: schema, Username: username}, nil
+		return adminTenantSchemaScope{Schema: schema, Username: username}, nil
 	}
 
 	if !ctxdb.IsAdminFromContext(r.Context()) {
-		return adminTenantScope{}, &httpStatusError{status: http.StatusForbidden, msg: "forbidden"}
+		return adminTenantSchemaScope{}, &httpStatusError{status: http.StatusForbidden, msg: "forbidden"}
 	}
 
 	if h.reg == nil {
-		return adminTenantScope{}, &httpStatusError{status: http.StatusServiceUnavailable, msg: "registry not available"}
+		return adminTenantSchemaScope{}, &httpStatusError{status: http.StatusServiceUnavailable, msg: "registry not available"}
 	}
 
 	user, err := h.reg.GetBySchema(r.Context(), target)
-	if err != nil || user == nil {
-		return adminTenantScope{}, &httpStatusError{status: http.StatusBadRequest, msg: "unknown schema"}
+	if errors.Is(err, registry.ErrUserNotFound) {
+		return adminTenantSchemaScope{}, &httpStatusError{status: http.StatusBadRequest, msg: "unknown schema"}
 	}
-	targetDB, err := h.mgr.GetOrCreate(r.Context(), user.SchemaName)
-	if err != nil || targetDB == nil {
-		return adminTenantScope{}, &httpStatusError{status: http.StatusServiceUnavailable, msg: "tenant DB pool not initialised"}
+	if err != nil {
+		return adminTenantSchemaScope{}, &httpStatusError{status: http.StatusServiceUnavailable, msg: "registry lookup failed"}
 	}
-	return adminTenantScope{DB: targetDB, Schema: user.SchemaName, Username: user.Username}, nil
+	if user == nil {
+		return adminTenantSchemaScope{}, &httpStatusError{status: http.StatusBadRequest, msg: "unknown schema"}
+	}
+	return adminTenantSchemaScope{Schema: user.SchemaName, Username: user.Username}, nil
 }
 
 func writeStatusError(w http.ResponseWriter, err *httpStatusError) {

@@ -76,7 +76,7 @@ func (h *Handler) registerImportRoutes(mux *http.ServeMux) {
 }
 
 func (h *Handler) adminImportStatus(w http.ResponseWriter, r *http.Request) {
-	scope, scopeErr := h.resolveAdminTenantScope(r)
+	scope, scopeErr := h.resolveAdminTenantSchemaScope(r)
 	if scopeErr != nil {
 		writeStatusError(w, scopeErr)
 		return
