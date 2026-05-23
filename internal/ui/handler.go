@@ -205,6 +205,10 @@ func (h *Handler) resolveAdminTenantScope(r *http.Request) (adminTenantScope, *h
 		return adminTenantScope{DB: db, Schema: schema, Username: username}, nil
 	}
 
+	if !ctxdb.IsAdminFromContext(r.Context()) {
+		return adminTenantScope{}, &httpStatusError{status: http.StatusForbidden, msg: "forbidden"}
+	}
+
 	if h.reg == nil {
 		return adminTenantScope{}, &httpStatusError{status: http.StatusServiceUnavailable, msg: "registry not available"}
 	}

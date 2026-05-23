@@ -29,6 +29,7 @@ func TestResolveAdminTenantScope_RejectsSchemaOverrideWithoutRegistry(t *testing
 	h := &Handler{}
 	req := httptest.NewRequest("GET", "/api/admin/gaps?schema=health_mariia", nil)
 	req = req.WithContext(ctxdb.WithDB(req.Context(), &storage.DB{}, "health"))
+	req = req.WithContext(ctxdb.WithIsAdmin(req.Context(), true))
 
 	_, err := h.resolveAdminTenantScope(req)
 	if err == nil {
@@ -39,10 +40,25 @@ func TestResolveAdminTenantScope_RejectsSchemaOverrideWithoutRegistry(t *testing
 	}
 }
 
+func TestResolveAdminTenantScope_RejectsSchemaOverrideForNonAdmin(t *testing.T) {
+	h := &Handler{}
+	req := httptest.NewRequest("GET", "/api/settings/energy-backfill?schema=health_mariia", nil)
+	req = req.WithContext(ctxdb.WithDB(req.Context(), &storage.DB{}, "health"))
+
+	_, err := h.resolveAdminTenantScope(req)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if err.status != 403 {
+		t.Fatalf("status = %d, want 403", err.status)
+	}
+}
+
 func TestAdminGaps_RejectsSchemaOverrideWithoutRegistry(t *testing.T) {
 	h := &Handler{}
 	req := httptest.NewRequest("GET", "/api/admin/gaps?schema=missing", nil)
 	req = req.WithContext(ctxdb.WithDB(req.Context(), &storage.DB{}, "health"))
+	req = req.WithContext(ctxdb.WithIsAdmin(req.Context(), true))
 	w := httptest.NewRecorder()
 
 	h.adminGaps(w, req)
