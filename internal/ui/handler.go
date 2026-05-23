@@ -24,10 +24,10 @@ import (
 )
 
 type Handler struct {
-	mgr              *tenants.Manager
-	reg              *registry.Registry
-	trustFwdAuth     bool
-	onTenantCreated  func(schema string)
+	mgr             *tenants.Manager
+	reg             *registry.Registry
+	trustFwdAuth    bool
+	onTenantCreated func(schema string)
 
 	// Webhook integration (optional). When configured, settings POST
 	// paths that change Telegram config trigger an async registrar
@@ -152,6 +152,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/quality-audit", h.adminGuard(h.adminQualityAudit))
 	mux.HandleFunc("/api/admin/quality-fix", h.adminGuard(h.adminQualityFix))
 	mux.HandleFunc("/api/admin/quality-digest", h.adminGuard(h.adminQualityDigest))
+	mux.HandleFunc("/api/admin/checkin-coverage", h.adminGuard(h.adminCheckinCoverage))
 	mux.HandleFunc("/api/admin/settings", h.adminGuard(h.adminAISettings))
 	mux.HandleFunc("/api/admin/ai-models", h.adminGuard(h.adminAIModels))
 	mux.HandleFunc("/api/admin/energy-settings", h.adminGuard(h.adminEnergySettings))
@@ -351,8 +352,8 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	renderPage(w, "login", struct {
-		Error      string
-		MultiUser  bool
+		Error     string
+		MultiUser bool
 	}{"", !h.mgr.LegacyMode()})
 }
 
@@ -966,12 +967,12 @@ func (h *Handler) energyHistory(w http.ResponseWriter, r *http.Request) {
 // drops template-only fields (HTML icons, BasePage chrome) so native
 // clients consume only what they render.
 type sectionAPIResponse struct {
-	Key      string                 `json:"key"`
-	Title    string                 `json:"title"`
-	Summary  string                 `json:"summary"`
-	Details  []sectionAPIDetail     `json:"details"`
-	Charts   []sectionAPIChart      `json:"charts"`
-	Explains []sectionAPIExplain    `json:"explains"`
+	Key      string              `json:"key"`
+	Title    string              `json:"title"`
+	Summary  string              `json:"summary"`
+	Details  []sectionAPIDetail  `json:"details"`
+	Charts   []sectionAPIChart   `json:"charts"`
+	Explains []sectionAPIExplain `json:"explains"`
 }
 
 type sectionAPIDetail struct {
@@ -1058,7 +1059,7 @@ func (h *Handler) sectionAPI(w http.ResponseWriter, r *http.Request) {
 		Key:      data.SectionKey,
 		Title:    data.SectionTitle,
 		Summary:  data.Summary,
-		Details:  []sectionAPIDetail{},  // never nil — clients prefer [] over null
+		Details:  []sectionAPIDetail{}, // never nil — clients prefer [] over null
 		Charts:   []sectionAPIChart{},
 		Explains: []sectionAPIExplain{},
 	}
@@ -1413,8 +1414,8 @@ func (h *Handler) adminReadinessRedesignBackfill(w http.ResponseWriter, r *http.
 		"days":                days,
 		"force":               force,
 		"chronic_load_config": chronicCfg,
-		"sub_scores":    results,
-		"schema_health": schemaHealth,
+		"sub_scores":          results,
+		"schema_health":       schemaHealth,
 	})
 }
 
@@ -1589,7 +1590,7 @@ func (h *Handler) adminReadinessRedesignChipCalibrations(w http.ResponseWriter, 
 		storage.ChipCalibration
 	}
 	type tenantRecompute struct {
-		Tenant  string                                    `json:"tenant"`
+		Tenant  string                                   `json:"tenant"`
 		Results []storage.ChipCalibrationRecomputeResult `json:"results"`
 	}
 
@@ -2377,6 +2378,34 @@ func (h *Handler) adminQualityDigest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, map[string]any{"ok": true})
+}
+
+func (h *Handler) adminCheckinCoverage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	days := 14
+	if v := strings.TrimSpace(r.URL.Query().Get("days")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 90 {
+			http.Error(w, "days must be an integer in [1, 90]", http.StatusBadRequest)
+			return
+		}
+		days = n
+	}
+	db := h.tenantDB(r)
+	if db == nil {
+		http.Error(w, "tenant DB unavailable", http.StatusInternalServerError)
+		return
+	}
+	today := tenantLocalToday(h, db, h.tenantSchema(r))
+	coverage, err := db.GetCheckinCoverage(today, storage.CheckinSourceTelegram, days)
+	if err != nil {
+		http.Error(w, "checkin coverage: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, coverage)
 }
 
 func (h *Handler) adminUsers(w http.ResponseWriter, r *http.Request) {
