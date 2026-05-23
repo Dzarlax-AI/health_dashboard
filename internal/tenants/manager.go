@@ -187,23 +187,6 @@ func (m *Manager) DBForEmail(ctx context.Context, email string) (*storage.DB, st
 	return db, user.SchemaName, user.IsAdmin, true
 }
 
-// DBForSoleUser returns the DB for the only registered user.
-// Used as a fallback when TRUST_FORWARD_AUTH=true and the Authentik username
-// does not match any registered username (e.g., after migration from env vars
-// where the user was created with username 'admin'). Only succeeds when exactly
-// 1 user is registered — multi-user installs must have matching usernames.
-func (m *Manager) DBForSoleUser(ctx context.Context) (*storage.DB, string, bool, bool) {
-	users, err := m.reg.ListUsers(ctx)
-	if err != nil || len(users) != 1 {
-		return nil, "", false, false
-	}
-	db, err := m.GetOrCreate(ctx, users[0].SchemaName)
-	if err != nil {
-		return nil, "", false, false
-	}
-	return db, users[0].SchemaName, users[0].IsAdmin, true
-}
-
 // BackfillFor returns the backfill trigger for a schema, or nil.
 func (m *Manager) BackfillFor(schema string) func(bool) {
 	m.mu.RLock()

@@ -8,6 +8,7 @@ services:
       # - API_KEY=your-secret-key
       # - UI_PASSWORD=your-ui-password
       # - TRUST_FORWARD_AUTH=true  # enable if behind Authentik/ForwardAuth proxy
+      # - TRUSTED_FORWARD_AUTH_NETWORK=172.16.0.0/12  # proxy CIDR if not using the default private/loopback trust rule
     restart: unless-stopped
     depends_on:
       postgres:

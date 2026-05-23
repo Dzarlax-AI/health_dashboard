@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -13,6 +14,8 @@ import (
 	"health-receiver/internal/applehealth"
 	"health-receiver/internal/storage"
 )
+
+const maxImportBytes int64 = 2 * 1024 * 1024 * 1024
 
 // importJob tracks the state of a running or completed import.
 type importJob struct {
@@ -70,11 +73,6 @@ var (
 	currentJobsMu sync.Mutex
 )
 
-func (h *Handler) registerImportRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/api/admin/import/upload", h.guard(h.adminImportUpload))
-	mux.HandleFunc("/api/admin/import/status", h.guard(h.adminImportStatus))
-}
-
 func (h *Handler) adminImportStatus(w http.ResponseWriter, r *http.Request) {
 	scope, scopeErr := h.resolveAdminTenantSchemaScope(r)
 	if scopeErr != nil {
@@ -98,6 +96,11 @@ func (h *Handler) adminImportUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if r.ContentLength > maxImportBytes {
+		http.Error(w, "import upload too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxImportBytes)
 
 	// Only one import at a time.
 	scope, scopeErr := h.resolveAdminTenantScope(r)
@@ -148,6 +151,11 @@ func (h *Handler) adminImportUpload(w http.ResponseWriter, r *http.Request) {
 		currentJobsMu.Unlock()
 		tmp.Close()
 		os.Remove(tmp.Name())
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, "import upload too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "failed to receive file", http.StatusInternalServerError)
 		return
 	}

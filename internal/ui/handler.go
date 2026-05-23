@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"html/template"
 	"math"
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -25,10 +26,11 @@ import (
 )
 
 type Handler struct {
-	mgr             *tenants.Manager
-	reg             *registry.Registry
-	trustFwdAuth    bool
-	onTenantCreated func(schema string)
+	mgr                *tenants.Manager
+	reg                *registry.Registry
+	trustFwdAuth       bool
+	trustedFwdAuthNets []*net.IPNet
+	onTenantCreated    func(schema string)
 
 	// Webhook integration (optional). When configured, settings POST
 	// paths that change Telegram config trigger an async registrar
@@ -159,7 +161,6 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/energy-settings", h.adminGuard(h.adminEnergySettings))
 	mux.HandleFunc("/api/admin/stress-validation", h.adminGuard(h.adminStressValidation))
 	mux.HandleFunc("/api/admin/users", h.adminGuard(h.adminUsers))
-	h.registerImportRoutes(mux)
 	h.registerEnergyBackfillRoutes(mux)
 }
 
@@ -271,7 +272,7 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 			db := h.mgr.LegacyDB()
 
 			// Authentik forward auth
-			if h.trustFwdAuth && r.Header.Get("X-authentik-username") != "" {
+			if h.forwardAuthTrusted(r) && r.Header.Get("X-authentik-username") != "" {
 				// Issue a local cookie so requests survive Authentik session expiry.
 				if _, err := r.Cookie("auth"); err != nil {
 					http.SetCookie(w, &http.Cookie{
@@ -334,7 +335,7 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		// Authentik forward auth: trust X-authentik-username / X-authentik-email headers.
-		if h.trustFwdAuth {
+		if h.forwardAuthTrusted(r) {
 			authentikUser := r.Header.Get("X-authentik-username")
 			authentikEmail := r.Header.Get("X-authentik-email")
 			if authentikUser != "" || authentikEmail != "" {
@@ -353,11 +354,6 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 						inject(db, schema, isAdmin)
 						return
 					}
-				}
-				// Fallback: sole registered user (migration case).
-				if db, schema, isAdmin, ok := h.mgr.DBForSoleUser(r.Context()); ok {
-					inject(db, schema, isAdmin)
-					return
 				}
 			}
 		}
@@ -2577,6 +2573,18 @@ func (h *Handler) adminUsers(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid JSON", http.StatusBadRequest)
 			return
+		}
+		req.Username = strings.TrimSpace(req.Username)
+		req.SchemaName = strings.TrimSpace(req.SchemaName)
+		if err := registry.ValidateUsername(req.Username); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.SchemaName != "" {
+			if err := registry.ValidateSchemaName(req.SchemaName); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
 		}
 		user, err := h.reg.CreateUser(r.Context(), req)
 		if err != nil {
