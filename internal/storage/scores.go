@@ -25,10 +25,15 @@ func (s *DB) RunIncrementalBackfill() {
 // those reported by the iOS payloads, so nothing older silently slips
 // through the cracks.
 func (s *DB) RunIncrementalBackfillForDates(dates []string) {
+	s.RunIncrementalBackfillForDatesAt(dates, time.Now())
+}
+
+func (s *DB) RunIncrementalBackfillForDatesAt(dates []string, today time.Time) {
 	if len(dates) == 0 {
 		return
 	}
 	s.UpsertRecentCache(dates, true)
+	s.RunReadinessRedesignBackfillForDatesAt(dates, today)
 }
 
 // RecomputeReadinessSince re-runs the sliding-window readiness computation for

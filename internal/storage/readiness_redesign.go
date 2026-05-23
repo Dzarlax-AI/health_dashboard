@@ -153,6 +153,8 @@ const (
 	BaselineReasonSourceEpochBoundary = "baseline_source_epoch_boundary"
 )
 
+const ChipReasonSourceEpochChange = "source_epoch_change"
+
 // SourceEpochKind separates ingest/source epochs from user-side
 // physiology regime changes.
 const (
@@ -588,6 +590,8 @@ type OperationalContractRow struct {
 	SourceEpoch             *string
 	TargetEligible          *bool
 	TargetEligibilityReason *string
+	CurrentSourceEpoch      *string
+	SourceEpochChanged      bool
 	// Cutoff + CalibrationStatus carry the per-tenant chip threshold
 	// for binary chips (Acute, Chronic). Joined from
 	// `chip_calibrations` on (sub_score, target_kind, source_epoch);
@@ -596,8 +600,8 @@ type OperationalContractRow struct {
 	// been calibrated yet. Readers decide chip state from the
 	// (PredictedValue, Cutoff, CalibrationStatus) triple — see
 	// chipCellStateFromRow in the admin handler.
-	Cutoff             *float64
-	CalibrationStatus  *string
+	Cutoff            *float64
+	CalibrationStatus *string
 }
 
 // chipConfigs lists the (sub_score, target_kind, baseline_kind)
@@ -682,6 +686,7 @@ func (s *DB) LoadOperationalContractRows(from, to string) ([]OperationalContract
 	`
 
 	rowsByDate := make(map[string][]OperationalContractRow)
+	currentEpochByDate := make(map[string]string)
 	for _, c := range chipConfigs {
 		pgRows, err := s.pool.Query(ctx, stmt, c.SubScore, c.TargetKind, c.BaselineKind, from, to)
 		if err != nil {
@@ -708,6 +713,19 @@ func (s *DB) LoadOperationalContractRows(from, to string) ([]OperationalContract
 			if cutoff != nil {
 				v := float64(*cutoff)
 				r.Cutoff = &v
+			}
+			currentEpoch, ok := currentEpochByDate[r.Date]
+			if !ok {
+				currentEpoch, err = s.ResolveSourceEpoch(r.Date)
+				if err != nil {
+					pgRows.Close()
+					return nil, fmt.Errorf("LoadOperationalContractRows: resolve source_epoch for %s: %w", r.Date, err)
+				}
+				currentEpochByDate[r.Date] = currentEpoch
+			}
+			r.CurrentSourceEpoch = &currentEpoch
+			if r.SourceEpoch != nil && *r.SourceEpoch != "" && *r.SourceEpoch != currentEpoch {
+				r.SourceEpochChanged = true
 			}
 			rowsByDate[r.Date] = append(rowsByDate[r.Date], r)
 		}

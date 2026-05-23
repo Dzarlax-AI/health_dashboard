@@ -883,18 +883,144 @@ still follow the runbook below; the wizard composes the same calls.
 
 ### 6.3 Serving / freshness
 
-The `target_snapshots` and `naive_baselines` writers currently fire as
-part of the existing backfill cadence; the operational layer needs an
-explicit story for:
+**Design contract (approved direction, implementation pending).**
+Phase 0 serving freshness rides on the existing ingest safety-net path,
+not on the synchronous `POST /health` response path. After
+`InsertPoints` succeeds, the handler still runs the existing inline
+cache refresh (`UpsertRecentCache`) so `hourly_metrics`, `daily_scores`,
+and the legacy readiness score stay fast and current. The
+`target_snapshots` / `naive_baselines` writers run from the debounced
+date-aware backfill that already accumulates Health Auto Export bursts
+for 60 seconds.
 
-- when snapshots get re-computed after late-arriving ingest
-- what the maximum latency from `metric_points` insert to a chip
-  refreshing is, on both single-tenant and multi-tenant pools
-- what happens at midnight in the tenant's `REPORT_TZ` — concretely,
-  is the chip for "today" shown as `unknown` until the writer
-  produces its first eligible snapshot of the day, and at what hour
-  is that expected on a healthy ingest stream
-- what the chip renders when `source_epoch` transitions mid-day
+Storage entry point:
+
+```go
+RunReadinessRedesignBackfillForDates(dates []string)
+```
+
+The function is a method on the tenant-bound `*storage.DB`; it does not
+take a `schema` argument because the pool already points at exactly one
+tenant schema. The `dates` argument is the tenant-local affected date
+set reported by that tenant's ingest/import path. The function expands
+those dates to the minimal routine-ingest recomputation window and runs
+the Phase 0 writers **sequentially** in dependency order:
+
+1. Recovery Stability
+2. Passive Efficiency
+3. Acute Risk
+4. Chronic Load
+
+Writers stay idempotent and continue to upsert on their existing
+primary keys. The orchestrator only decides **which dates** to revisit;
+each writer still owns its internal lookback/forward data load. The
+writers must not fan out in parallel inside one tenant: the shared
+Postgres instance has a fixed connection budget, and this path must
+stay inside the same bounded per-tenant pool discipline as the existing
+date-aware cache backfill.
+
+**Window expansion.**
+
+Late-arriving data for day `d` can change forward-looking labels for
+earlier row dates because targets are defined over future windows:
+
+- Recovery Stability / Passive Efficiency: `rolling_3d` reads
+  `t+1..t+3`.
+- Acute Risk: `event_t1_t3` reads `t+1..t+3`.
+- Chronic Load: `chronic_label` and `chronic_acute_density` read up to
+  `t+1..t+14`.
+
+Therefore the external recompute window expands the affected range
+backward by 14 days. The upper bound is the tenant-local maximum of the
+affected dates and "today"; the writers' own load windows already fetch
+the additional 180-day baseline history and forward target rows they
+need. The orchestrator must not full-history backfill on routine ingest.
+
+This 14-day expansion is the routine serving window, not a universal
+historical repair mechanism. A late row can still perturb long baseline
+history for dates outside the serving window; routine ingest deliberately
+does not chase that through the full timeline. Operators use the manual
+`POST /api/admin/readiness-redesign/backfill` path for larger
+baseline-shift or historical-repair runs.
+
+**Freshness SLA.**
+
+For routine ingest, the chip freshness target is:
+
+```text
+metric_points INSERT
+  → inline aggregate/readiness cache refresh
+  → ≤60s date-aware debounce
+  → Phase 0 writer pass for the expanded window
+```
+
+Single-tenant and multi-tenant deployments share this contract. In
+multi-tenant mode the work runs against that tenant's pool and uses the
+same bounded per-tenant connection budget as the existing date-aware
+backfill path; no cross-tenant recompute is triggered by one tenant's
+ingest. The operational contract preview may aggregate `schema=all`,
+but writes remain per tenant.
+
+Concrete hook point: `cmd/server/main.go::makeBackfillDatesFn` collects
+the affected tenant-local dates for one schema, waits
+`backfillDatesDebounce` (currently 60 seconds), then calls
+`(*storage.DB).RunIncrementalBackfillForDates(dates)`. The Phase 0
+orchestrator runs from `internal/storage/scores.go` immediately after
+that function's existing `UpsertRecentCache(dates, true)` call.
+
+This means chips are not real-time. A dashboard read immediately after
+an ingest burst may still show the previous chip state until the
+debounced writer pass completes. That is acceptable for these
+predictive chips; the synchronous path is reserved for source-of-truth
+ingest and the legacy readiness cache.
+
+**Midnight behavior.**
+
+All chip dates are tenant-local dates resolved through the same
+`REPORT_TZ` path as the existing operational-contract preview
+(`settings.timezone` → env `REPORT_TZ` → UTC). At local midnight,
+"today" is allowed to render `pending` / `unknown` until the first
+post-midnight ingest or scheduled/import backfill produces the first
+row for that date. There is no fallback to yesterday: a stale chip is
+worse than an explicit unknown state. On a healthy ingest stream,
+today's chip is expected after the first post-midnight Health Auto
+Export delivery plus the 60-second debounce and writer runtime.
+
+A daily scheduled re-stamp also runs per tenant after the 03:00 local
+quality scan window. It invokes the same Phase 0 orchestrator for the
+tenant-local recent serving window (`today-14d..today`) even if no new
+ingest arrived. This gives midnight rows and source-epoch restamps a
+bounded recovery path when devices are offline. Larger historical epoch
+repairs still go through the manual admin backfill endpoint.
+
+**Source-epoch transitions.**
+
+Rows store `source_epoch` at write time. If a new confirmed
+`source_epoch` starts mid-day, existing rows for that date may still
+carry the previous epoch until the next writer pass re-stamps them. The
+serving layer must compare the row's stored epoch with the currently
+resolved epoch for that row date. On mismatch, render `unknown` with
+reason `source_epoch_change` instead of using the old prediction. The
+next ingest-triggered or manual Phase 0 backfill clears the state by
+rewriting rows under the active epoch.
+
+**Implementation checklist.**
+
+- Add the storage orchestrator and call it from
+  `internal/storage/scores.go::RunIncrementalBackfillForDates` after
+  `UpsertRecentCache`.
+- Call the same orchestrator from the per-tenant daily scheduled
+  re-stamp after the 03:00 quality scan window.
+- Keep manual `POST /api/admin/readiness-redesign/backfill` behavior as
+  the explicit operator override for larger ranges.
+- Add tests for window expansion, dependency order, and bounded
+  routine-ingest recompute.
+- Add tests for midnight behavior: pre-midnight row remains explicit
+  unknown/pending, post-midnight ingest creates/re-stamps today after
+  the debounce path, and no yesterday fallback is used.
+- Add contract/render coverage for `source_epoch_change`.
+- Update any operator-facing copy only after the runtime behavior
+  matches this contract.
 
 ### 6.4 Monitoring
 
