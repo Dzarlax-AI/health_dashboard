@@ -172,6 +172,61 @@ func (h *Handler) tenantSchema(r *http.Request) string {
 	return ctxdb.SchemaFromContext(r.Context())
 }
 
+type adminTenantScope struct {
+	DB       *storage.DB
+	Schema   string
+	Username string
+}
+
+type httpStatusError struct {
+	status int
+	msg    string
+}
+
+func (e httpStatusError) Error() string { return e.msg }
+
+// resolveAdminTenantScope returns the request tenant by default, or an
+// admin-selected schema= override after validating it against the registry.
+func (h *Handler) resolveAdminTenantScope(r *http.Request) (adminTenantScope, *httpStatusError) {
+	db := h.tenantDB(r)
+	schema := h.tenantSchema(r)
+	if db == nil || schema == "" {
+		return adminTenantScope{}, &httpStatusError{status: http.StatusServiceUnavailable, msg: "tenant DB unavailable"}
+	}
+
+	target := strings.TrimSpace(r.URL.Query().Get("schema"))
+	if target == "" || target == schema {
+		username := ""
+		if h.reg != nil && !h.mgr.LegacyMode() {
+			if u, err := h.reg.GetBySchema(r.Context(), schema); err == nil && u != nil {
+				username = u.Username
+			}
+		}
+		return adminTenantScope{DB: db, Schema: schema, Username: username}, nil
+	}
+
+	if h.reg == nil {
+		return adminTenantScope{}, &httpStatusError{status: http.StatusServiceUnavailable, msg: "registry not available"}
+	}
+
+	user, err := h.reg.GetBySchema(r.Context(), target)
+	if err != nil || user == nil {
+		return adminTenantScope{}, &httpStatusError{status: http.StatusBadRequest, msg: "unknown schema"}
+	}
+	targetDB, err := h.mgr.GetOrCreate(r.Context(), user.SchemaName)
+	if err != nil || targetDB == nil {
+		return adminTenantScope{}, &httpStatusError{status: http.StatusServiceUnavailable, msg: "tenant DB pool not initialised"}
+	}
+	return adminTenantScope{DB: targetDB, Schema: user.SchemaName, Username: user.Username}, nil
+}
+
+func writeStatusError(w http.ResponseWriter, err *httpStatusError) {
+	if err == nil {
+		return
+	}
+	http.Error(w, err.msg, err.status)
+}
+
 // guard resolves the tenant from the session and injects the DB into the context.
 func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -570,19 +625,54 @@ func (h *Handler) pageSettings(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) pageAdmin(w http.ResponseWriter, r *http.Request) {
 	setLangCookie(w, r)
-	renderPage(w, "admin", struct {
-		BasePage
-		MultiUser bool
-	}{
-		BasePage:  h.basePage(r, T(langFromRequest(r), "admin_title"), "admin"),
-		MultiUser: !h.mgr.LegacyMode(),
-	})
+	data := adminPageData{
+		BasePage:      h.basePage(r, T(langFromRequest(r), "admin_title"), "admin"),
+		MultiUser:     !h.mgr.LegacyMode(),
+		CurrentSchema: h.tenantSchema(r),
+	}
+	if h.reg != nil && !h.mgr.LegacyMode() {
+		users, err := h.reg.ListUsers(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		data.UserTabs = make([]adminUserTab, 0, len(users))
+		for _, u := range users {
+			data.UserTabs = append(data.UserTabs, adminUserTab{
+				Username:   u.Username,
+				SchemaName: u.SchemaName,
+				Email:      u.Email,
+				IsAdmin:    u.IsAdmin,
+				Current:    u.SchemaName == data.CurrentSchema,
+			})
+		}
+	}
+	renderPage(w, "admin", data)
+}
+
+type adminUserTab struct {
+	Username   string
+	SchemaName string
+	Email      string
+	IsAdmin    bool
+	Current    bool
+}
+
+type adminPageData struct {
+	BasePage
+	MultiUser     bool
+	CurrentSchema string
+	UserTabs      []adminUserTab
 }
 
 func (h *Handler) fragmentAdminStatus(w http.ResponseWriter, r *http.Request) {
-	db := h.tenantDB(r)
+	scope, scopeErr := h.resolveAdminTenantScope(r)
+	if scopeErr != nil {
+		writeStatusError(w, scopeErr)
+		return
+	}
 	lang := langFromRequest(r)
-	status, err := db.GetCacheStatus()
+	status, err := scope.DB.GetCacheStatus()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1191,12 +1281,17 @@ func (h *Handler) aiBriefing(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) adminStatus(w http.ResponseWriter, r *http.Request) {
-	status, err := h.tenantDB(r).GetCacheStatus()
+	scope, scopeErr := h.resolveAdminTenantScope(r)
+	if scopeErr != nil {
+		writeStatusError(w, scopeErr)
+		return
+	}
+	status, err := scope.DB.GetCacheStatus()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	status.TelegramEnabled = h.mgr.TestNotifyFor(h.tenantSchema(r)) != nil
+	status.TelegramEnabled = h.mgr.TestNotifyFor(scope.Schema) != nil
 	jsonResponse(w, status)
 }
 
@@ -1205,55 +1300,35 @@ func (h *Handler) adminBackfill(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	schema := h.tenantSchema(r)
-	if target := strings.TrimSpace(r.URL.Query().Get("schema")); target != "" && target != schema {
-		// Admin-only override (route already gated by adminGuard). Validate the
-		// target belongs to a registered user before triggering backfill.
-		if h.reg == nil {
-			http.Error(w, "registry not available", http.StatusServiceUnavailable)
-			return
-		}
-		users, err := h.reg.ListUsers(r.Context())
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		known := false
-		for _, u := range users {
-			if u.SchemaName == target {
-				known = true
-				break
-			}
-		}
-		if !known {
-			http.Error(w, "unknown schema", http.StatusBadRequest)
-			return
-		}
-		schema = target
+	scope, scopeErr := h.resolveAdminTenantScope(r)
+	if scopeErr != nil {
+		writeStatusError(w, scopeErr)
+		return
 	}
-	backfill := h.mgr.BackfillFor(schema)
+	backfill := h.mgr.BackfillFor(scope.Schema)
 	if backfill == nil {
 		http.Error(w, "backfill not configured", http.StatusServiceUnavailable)
 		return
 	}
 	force := r.URL.Query().Get("force") == "1"
 	backfill(force)
-	msg := "incremental backfill scheduled for " + schema
+	msg := "incremental backfill scheduled for " + scope.Schema
 	if force {
-		msg = "full rebuild started for " + schema
+		msg = "full rebuild started for " + scope.Schema
 	}
-	jsonResponse(w, map[string]string{"status": "ok", "message": msg, "schema": schema})
+	jsonResponse(w, map[string]string{"status": "ok", "message": msg, "schema": scope.Schema})
 }
 
 // adminReadinessRedesignBackfill runs the Phase 0 sub-score writers
 // (Recovery Stability, Passive Efficiency) against [from, to].
 //
 // Query params:
-//   from        YYYY-MM-DD (required)
-//   to          YYYY-MM-DD (required, ≥ from)
-//   sub_score   recovery_stability | passive_efficiency | all   (default: all)
-//   force       "1" to lift the 90-day soft cap up to ~5 years
-//   schema      tenant schema override (admin cross-tenant only)
+//
+//	from        YYYY-MM-DD (required)
+//	to          YYYY-MM-DD (required, ≥ from)
+//	sub_score   recovery_stability | passive_efficiency | all   (default: all)
+//	force       "1" to lift the 90-day soft cap up to ~5 years
+//	schema      tenant schema override (admin cross-tenant only)
 //
 // Execution is synchronous: returns when both writers finish. With a
 // large range this can take tens of seconds; idempotent on every PK
@@ -1536,8 +1611,8 @@ func (h *Handler) adminReadinessRedesignConfig(w http.ResponseWriter, r *http.Re
 // runs `RecomputeChipCalibrations` for the resolved tenant, then
 // returns the post-write state.
 //
-//   GET  /api/admin/readiness-redesign/chip-calibrations?schema=<tenant|all>
-//   POST /api/admin/readiness-redesign/chip-calibrations?schema=<tenant>
+//	GET  /api/admin/readiness-redesign/chip-calibrations?schema=<tenant|all>
+//	POST /api/admin/readiness-redesign/chip-calibrations?schema=<tenant>
 //
 // Tenant scope rules:
 //
@@ -1553,13 +1628,13 @@ func (h *Handler) adminReadinessRedesignConfig(w http.ResponseWriter, r *http.Re
 //
 // Response shape:
 //
-//   {
-//     "tenants": ["health", ...],
-//     "rows": [
-//       {"tenant":"health", "sub_score":"acute_risk", ...},
-//       ...
-//     ]
-//   }
+//	{
+//	  "tenants": ["health", ...],
+//	  "rows": [
+//	    {"tenant":"health", "sub_score":"acute_risk", ...},
+//	    ...
+//	  ]
+//	}
 //
 // On POST the response also carries `recompute_results` per tenant
 // (one entry per chip target) so an operator sees what happened in
@@ -1656,9 +1731,9 @@ var chipCalibrationConfigs = []struct{ SubScore, TargetKind string }{
 //   - omitted     → request tenant only (safe default)
 //   - `<name>`    → that tenant
 //   - `all`       → every registered tenant (admin pivot view —
-//                   needed to validate the contract across tenants
-//                   after a config retune without flipping admin
-//                   sessions)
+//     needed to validate the contract across tenants
+//     after a config retune without flipping admin
+//     sessions)
 func (h *Handler) adminReadinessRedesignOperationalContract(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1939,6 +2014,19 @@ func operationalContractWindow(h *Handler, db *storage.DB, schema string, days i
 func (h *Handler) userSettings(w http.ResponseWriter, r *http.Request) {
 	db := h.tenantDB(r)
 	schema := h.tenantSchema(r)
+	if target := strings.TrimSpace(r.URL.Query().Get("schema")); target != "" && target != schema {
+		if !ctxdb.IsAdminFromContext(r.Context()) {
+			http.Error(w, "admin required for schema override", http.StatusForbidden)
+			return
+		}
+		scope, scopeErr := h.resolveAdminTenantScope(r)
+		if scopeErr != nil {
+			writeStatusError(w, scopeErr)
+			return
+		}
+		db = scope.DB
+		schema = scope.Schema
+	}
 
 	if r.Method == http.MethodPost {
 		var body map[string]string
@@ -2112,11 +2200,12 @@ func (h *Handler) adminAISettings(w http.ResponseWriter, r *http.Request) {
 // placeholder default (β=0.8) from being flipped on without an
 // operator who understands the validation gate.
 func (h *Handler) adminEnergySettings(w http.ResponseWriter, r *http.Request) {
-	db := h.tenantDB(r)
-	if db == nil {
-		http.Error(w, "tenant DB unavailable", http.StatusInternalServerError)
+	scope, scopeErr := h.resolveAdminTenantScope(r)
+	if scopeErr != nil {
+		writeStatusError(w, scopeErr)
 		return
 	}
+	db := scope.DB
 
 	if r.Method == http.MethodPost {
 		var body map[string]string
@@ -2183,6 +2272,7 @@ func (h *Handler) adminEnergySettings(w http.ResponseWriter, r *http.Request) {
 		"energy.z_threshold":          cfg.ZThreshold,
 		"energy.stress_drain_enabled": cfg.StressDrainEnabled,
 		"effective_beta":              cfg.EffectiveBeta(),
+		"schema":                      scope.Schema,
 	})
 }
 
@@ -2210,9 +2300,9 @@ func (h *Handler) adminStressValidation(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	db := h.tenantDB(r)
-	if db == nil {
-		http.Error(w, "tenant DB unavailable", http.StatusInternalServerError)
+	scope, scopeErr := h.resolveAdminTenantScope(r)
+	if scopeErr != nil {
+		writeStatusError(w, scopeErr)
 		return
 	}
 
@@ -2238,12 +2328,11 @@ func (h *Handler) adminStressValidation(w http.ResponseWriter, r *http.Request) 
 	// otherwise. Empty string into time.LoadLocation = UTC; safe
 	// fallback that produces sane day boundaries even on a fresh
 	// install without a configured tenant TZ.
-	schema := h.tenantSchema(r)
-	tz := db.GetNotifyConfig(h.mgr.NotifyDefaultsFor(schema)).Timezone
+	tz := scope.DB.GetNotifyConfig(h.mgr.NotifyDefaultsFor(scope.Schema)).Timezone
 	if tz == "" {
 		tz = "UTC"
 	}
-	report, err := db.ComputeStressValidationReport(r.Context(), tz, asOf, window)
+	report, err := scope.DB.ComputeStressValidationReport(r.Context(), tz, asOf, window)
 	if err != nil {
 		http.Error(w, "stress-validation: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -2275,7 +2364,20 @@ func (h *Handler) adminTestNotify(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	testNotify := h.mgr.TestNotifyFor(h.tenantSchema(r))
+	schema := h.tenantSchema(r)
+	if target := strings.TrimSpace(r.URL.Query().Get("schema")); target != "" && target != schema {
+		if !ctxdb.IsAdminFromContext(r.Context()) {
+			http.Error(w, "admin required for schema override", http.StatusForbidden)
+			return
+		}
+		scope, scopeErr := h.resolveAdminTenantScope(r)
+		if scopeErr != nil {
+			writeStatusError(w, scopeErr)
+			return
+		}
+		schema = scope.Schema
+	}
+	testNotify := h.mgr.TestNotifyFor(schema)
 	if testNotify == nil {
 		jsonResponse(w, map[string]string{"status": "error", "message": "Telegram not configured"})
 		return
@@ -2292,7 +2394,12 @@ func (h *Handler) adminTestNotify(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) adminGaps(w http.ResponseWriter, r *http.Request) {
-	gaps, err := h.tenantDB(r).GetDataGaps(2, 6)
+	scope, scopeErr := h.resolveAdminTenantScope(r)
+	if scopeErr != nil {
+		writeStatusError(w, scopeErr)
+		return
+	}
+	gaps, err := scope.DB.GetDataGaps(2, 6)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -2308,7 +2415,12 @@ func (h *Handler) adminGaps(w http.ResponseWriter, r *http.Request) {
 // internal/health/quality.go, plus this week's quality stats. Diagnostic only
 // — does not modify any data.
 func (h *Handler) adminQualityAudit(w http.ResponseWriter, r *http.Request) {
-	db := h.tenantDB(r)
+	scope, scopeErr := h.resolveAdminTenantScope(r)
+	if scopeErr != nil {
+		writeStatusError(w, scopeErr)
+		return
+	}
+	db := scope.DB
 	entries, err := db.AuditImpossibleValues()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -2331,7 +2443,12 @@ func (h *Handler) adminQualityFix(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
-	db := h.tenantDB(r)
+	scope, scopeErr := h.resolveAdminTenantScope(r)
+	if scopeErr != nil {
+		writeStatusError(w, scopeErr)
+		return
+	}
+	db := scope.DB
 	impossible, err := db.MarkExistingImpossible()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -2360,7 +2477,12 @@ func (h *Handler) adminQualityDigest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
-	db := h.tenantDB(r)
+	scope, scopeErr := h.resolveAdminTenantScope(r)
+	if scopeErr != nil {
+		writeStatusError(w, scopeErr)
+		return
+	}
+	db := scope.DB
 	cfg := db.GetNotifyConfig(storage.NotifyConfig{})
 	if !cfg.Enabled() {
 		http.Error(w, "Telegram not configured", http.StatusBadRequest)
@@ -2394,13 +2516,13 @@ func (h *Handler) adminCheckinCoverage(w http.ResponseWriter, r *http.Request) {
 		}
 		days = n
 	}
-	db := h.tenantDB(r)
-	if db == nil {
-		http.Error(w, "tenant DB unavailable", http.StatusInternalServerError)
+	scope, scopeErr := h.resolveAdminTenantScope(r)
+	if scopeErr != nil {
+		writeStatusError(w, scopeErr)
 		return
 	}
-	today := tenantLocalToday(h, db, h.tenantSchema(r))
-	coverage, err := db.GetCheckinCoverage(today, storage.CheckinSourceTelegram, days)
+	today := tenantLocalToday(h, scope.DB, scope.Schema)
+	coverage, err := scope.DB.GetCheckinCoverage(today, storage.CheckinSourceTelegram, days)
 	if err != nil {
 		http.Error(w, "checkin coverage: "+err.Error(), http.StatusInternalServerError)
 		return

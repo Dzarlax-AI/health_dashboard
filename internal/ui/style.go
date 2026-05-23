@@ -886,6 +886,24 @@ select:focus, input[type=date]:focus { outline: none; border-color: var(--accent
 #admin-header .view-title { font-size: 24px; font-weight: 800; letter-spacing: -0.5px; }
 #admin-loading { display: flex; justify-content: center; padding: 40px; }
 .admin-section { margin-bottom: 24px; }
+.admin-tabs {
+  display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 18px;
+}
+.admin-tab {
+  border: 1px solid var(--border); background: var(--surface);
+  color: var(--text-secondary); border-radius: 8px; padding: 8px 12px;
+  font-size: 13px; cursor: pointer;
+}
+.admin-tab.active {
+  border-color: var(--accent); background: var(--surface-2); color: var(--text);
+}
+.admin-tab-panel[hidden] { display: none; }
+.admin-scope-banner {
+  border: 1px solid var(--card-border); background: var(--surface-2);
+  border-radius: 8px; padding: 12px 14px; margin-bottom: 18px;
+  color: var(--text-secondary); font-size: 13px;
+}
+.admin-scope-banner code { color: var(--text); }
 /* Admin page groups — added in the /admin reorg PR. Each group
    wraps related sections under one heading so the page scans as
    four concerns (Status, Operations, Configuration, Users) instead

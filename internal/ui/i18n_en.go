@@ -647,6 +647,11 @@ var translationsEn = map[string]string{
 	"admin_group_status":        "Status & diagnostics",
 	"admin_group_configuration": "Configuration",
 	"admin_group_users":         "Users",
+	"admin_tab_general":         "General settings",
+	"admin_tab_current_user":    "Current user",
+	"admin_user_scope_label":    "User scope",
+	"admin_user_scope_desc":     "Actions in this tab affect only this user's tenant schema.",
+	"admin_general_scope_desc":  "These settings affect the whole Health Dashboard installation.",
 
 	// ─── Admin: read-only quality audit blurb ───────────────────────
 	"admin_quality_audit_desc": "Read-only audit: lists points the writers would flag as impossible / suspect. The maintenance actions (Fix / Digest) live in <strong>Operations</strong> below — they're not read-only and shouldn't be one click away from a refresh.",

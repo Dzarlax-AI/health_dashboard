@@ -618,6 +618,11 @@ var translationsRu = map[string]string{
 	"admin_group_status":        "Статус и диагностика",
 	"admin_group_configuration": "Конфигурация",
 	"admin_group_users":         "Пользователи",
+	"admin_tab_general":         "Общие настройки",
+	"admin_tab_current_user":    "Текущий пользователь",
+	"admin_user_scope_label":    "Область пользователя",
+	"admin_user_scope_desc":     "Действия в этой вкладке затрагивают только tenant-схему этого пользователя.",
+	"admin_general_scope_desc":  "Эти настройки влияют на всю установку Health Dashboard.",
 
 	// ─── Admin: read-only quality audit blurb ───────────────────────
 	"admin_quality_audit_desc": "Только чтение: показывает точки, которые писатели пометили бы как impossible / suspect. Действия по чистке (Fix / Digest) — в группе <strong>Operations</strong> ниже, чтобы они не были «в одном клике» от read-only кнопки обновления.",

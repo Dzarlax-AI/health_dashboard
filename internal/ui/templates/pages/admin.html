@@ -9,6 +9,23 @@
   </div>
   <div id="admin-content">
     <div id="admin-body">
+      {{if .MultiUser}}
+      <div class="admin-tabs" role="tablist" aria-label="Admin scope">
+        <button type="button" class="admin-tab active" role="tab" aria-selected="true" data-admin-tab="general" onclick="switchAdminTab('general')">{{T .Lang "admin_tab_general"}}</button>
+        {{range .UserTabs}}
+        <button type="button" class="admin-tab" role="tab" aria-selected="false" data-admin-tab="{{.SchemaName}}" data-admin-username="{{.Username}}" onclick="switchAdminTab('{{.SchemaName}}')">{{.Username}}</button>
+        {{end}}
+      </div>
+      {{end}}
+
+      <div class="admin-tab-panel" data-admin-panel="tenant" {{if .MultiUser}}hidden{{end}}>
+      <div class="admin-scope-banner" id="admin-user-scope-banner" {{if .MultiUser}}{{else}}hidden{{end}}>
+        <strong>{{T .Lang "admin_user_scope_label"}}:</strong>
+        <span id="admin-active-user-label">{{T .Lang "admin_tab_current_user"}}</span>
+        <span class="muted">·</span>
+        <code id="admin-active-schema-label">{{.CurrentSchema}}</code>
+        <div>{{T .Lang "admin_user_scope_desc"}}</div>
+      </div>
 
       <!-- ============================================================ -->
       <!-- GROUP A — STATUS                                              -->
@@ -348,7 +365,15 @@
             </div>
           </details>
         </details>
+      </div>
 
+      <div class="admin-tab-panel" data-admin-panel="general">
+        <div class="admin-scope-banner">
+          {{T .Lang "admin_general_scope_desc"}}
+        </div>
+
+      <div class="admin-group">
+        <div class="admin-group-header">{{T .Lang "admin_group_configuration"}}</div>
         <!-- AI briefing settings -->
         <details class="admin-section" id="admin-ai-section">
           <summary class="section-title" style="cursor:pointer">{{T .Lang "admin_ai_title"}}</summary>
@@ -428,6 +453,7 @@
         </div>
       </div>
       {{end}}
+      </div>
 
     </div>
   </div>
@@ -436,12 +462,70 @@
 
 {{define "scripts"}}
 <script>
+var activeAdminSchema = '';
+
+function fetchWithAdminSchema(url, options) {
+  if (!activeAdminSchema) return fetch(url, options);
+  var sep = url.indexOf('?') === -1 ? '?' : '&';
+  return fetch(url + sep + 'schema=' + encodeURIComponent(activeAdminSchema), options);
+}
+
+function setTenantHTMX(urlBase) {
+  var cache = $('admin-cache-table');
+  var cacheBtn = document.querySelector('[hx-target="#admin-cache-table"]');
+  var cacheURL = '/fragments/admin-status' + urlBase;
+  if (cache) cache.setAttribute('hx-get', cacheURL);
+  if (cacheBtn) cacheBtn.setAttribute('hx-get', cacheURL);
+
+  var contract = $('admin-readiness-contract-table');
+  var contractBtn = document.querySelector('[hx-target="#admin-readiness-contract-table"]');
+  var contractURL = '/fragments/admin-readiness-contract?days=14' + (activeAdminSchema ? '&schema=' + encodeURIComponent(activeAdminSchema) : '&schema=all');
+  if (contract) contract.setAttribute('hx-get', contractURL);
+  if (contractBtn) contractBtn.setAttribute('hx-get', contractURL);
+}
+
+function refreshTenantPanel() {
+  setTenantHTMX(activeAdminSchema ? ('?schema=' + encodeURIComponent(activeAdminSchema)) : '');
+  if (window.htmx) {
+    htmx.trigger('#admin-cache-table', 'load');
+    htmx.trigger('#admin-readiness-contract-table', 'reload');
+  }
+  checkDataGaps();
+  runQualityAudit();
+  loadCheckinCoverage();
+  loadEnergySettings();
+}
+
+function switchAdminTab(tab) {
+  activeAdminSchema = tab === 'general' ? '' : tab;
+  document.querySelectorAll('[data-admin-tab]').forEach(function(btn) {
+    var active = btn.getAttribute('data-admin-tab') === tab;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  document.querySelectorAll('[data-admin-panel]').forEach(function(panel) {
+    var panelName = panel.getAttribute('data-admin-panel');
+    panel.hidden = tab === 'general' ? panelName !== 'general' : panelName !== 'tenant';
+  });
+  var sel = $('backfill-target');
+  if (sel) sel.value = activeAdminSchema;
+  var btn = document.querySelector('[data-admin-tab="' + activeAdminSchema + '"]');
+  if (btn) {
+    var userLabel = $('admin-active-user-label');
+    var schemaLabel = $('admin-active-schema-label');
+    if (userLabel) userLabel.textContent = btn.getAttribute('data-admin-username') || btn.textContent || activeAdminSchema;
+    if (schemaLabel) schemaLabel.textContent = activeAdminSchema;
+  }
+  if (tab !== 'general') refreshTenantPanel();
+}
+
 function triggerBackfill(force) {
   var btn = force ? $('btn-backfill-force') : $('btn-backfill');
   btn.disabled = true;
   var url = '/api/admin/backfill?force=' + (force ? '1' : '0');
   var sel = $('backfill-target');
-  if (sel && sel.value) url += '&schema=' + encodeURIComponent(sel.value);
+  var schema = activeAdminSchema || (sel && sel.value ? sel.value : '');
+  if (schema) url += '&schema=' + encodeURIComponent(schema);
   fetch(url, {method:'POST'})
     .then(function(r){return r.json()})
     .then(function(d) {
@@ -465,7 +549,8 @@ function triggerChipCalibrationRecompute() {
   // purpose — clicking the button must not cascade across every
   // registered tenant without an explicit operator decision.
   var sel = $('backfill-target');
-  if (sel && sel.value) url += '?schema=' + encodeURIComponent(sel.value);
+  var schema = activeAdminSchema || (sel && sel.value ? sel.value : '');
+  if (schema) url += '?schema=' + encodeURIComponent(schema);
   fetch(url, {method:'POST'})
     .then(function(r){ return r.json(); })
     .then(function(d) {
@@ -491,8 +576,7 @@ function triggerChipCalibrationRecompute() {
 // is exposed to htmx `hx-vals="js:..."` blocks on Steps 5 and 7 so
 // they can refresh themselves after the mutating Steps 4 and 6.
 function onboardingSchema() {
-  var sel = $('backfill-target');
-  return (sel && sel.value) ? sel.value : '';
+  return activeAdminSchema || (($('backfill-target') && $('backfill-target').value) ? $('backfill-target').value : '');
 }
 
 // onboardingLang reads the active UI language so wizard fragments
@@ -579,7 +663,7 @@ function onboardingRunStep6() {
 function checkDataGaps() {
   var el = $('admin-gaps-section');
   el.innerHTML = '<div style="padding:16px"><div class="spinner spinner--large"></div></div>';
-  fetch('/api/admin/gaps')
+  fetchWithAdminSchema('/api/admin/gaps')
     .then(function(r){return r.json()})
     .then(function(d) {
       var gaps = d.gaps || [];
@@ -606,7 +690,7 @@ function escapeHtml(s) {
 function runQualityAudit() {
   var el = $('admin-quality-section');
   el.innerHTML = '<div style="padding:16px"><div class="spinner spinner--large"></div></div>';
-  fetch('/api/admin/quality-audit')
+  fetchWithAdminSchema('/api/admin/quality-audit')
     .then(function(r){return r.json()})
     .then(function(d) {
       el.innerHTML = renderQualityAudit(d);
@@ -672,7 +756,7 @@ function loadCheckinCoverage() {
   var el = $('admin-checkin-coverage-section');
   if (!el) return;
   el.innerHTML = '<div style="padding:16px"><div class="spinner spinner--large"></div></div>';
-  fetch('/api/admin/checkin-coverage?days=14')
+  fetchWithAdminSchema('/api/admin/checkin-coverage?days=14')
     .then(function(r){
       if (!r.ok) return r.text().then(function(t){ throw new Error(t || 'Failed to load check-in coverage'); });
       return r.json();
@@ -761,7 +845,7 @@ function runQualityFix() {
   msg.style.display = '';
   msg.className = 'alert';
   msg.textContent = '...';
-  fetch('/api/admin/quality-fix', {method:'POST'})
+  fetchWithAdminSchema('/api/admin/quality-fix', {method:'POST'})
     .then(function(r){return r.json()})
     .then(function(d) {
       msg.className = 'alert alert--success';
@@ -779,7 +863,7 @@ function runQualityDigest() {
   msg.style.display = '';
   msg.className = 'alert';
   msg.textContent = '...';
-  fetch('/api/admin/quality-digest', {method:'POST'})
+  fetchWithAdminSchema('/api/admin/quality-digest', {method:'POST'})
     .then(function(r) {
       if (!r.ok) return r.text().then(function(t){ throw new Error(t); });
       return r.json();
@@ -809,7 +893,7 @@ function loadAdminSettings() {
 }
 
 function loadEnergySettings() {
-  fetch('/api/admin/energy-settings')
+  fetchWithAdminSchema('/api/admin/energy-settings')
     .then(function(r){
       if (!r.ok) return r.text().then(function(t){ throw new Error(t || 'Failed to load energy settings'); });
       return r.json();
@@ -834,7 +918,7 @@ function saveEnergySettings() {
     'energy.z_threshold': $('cfg-energy-z-threshold').value,
     'energy.stress_drain_enabled': $('cfg-energy-stress-enabled').checked ? 'true' : 'false'
   };
-  fetch('/api/admin/energy-settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
+  fetchWithAdminSchema('/api/admin/energy-settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
     .then(function(r){
       if (!r.ok) return r.text().then(function(t){ throw new Error(t || 'Failed to save energy settings'); });
       return r.json();
@@ -876,7 +960,7 @@ function runStressValidation() {
     windowFmt:  '{{T .Lang "admin_stress_validation_window_fmt"}}'
   };
   out.innerHTML = '<div style="color:var(--text-secondary);font-size:13px">'+i18n.loading+'</div>';
-  fetch('/api/admin/stress-validation?window=30')
+  fetchWithAdminSchema('/api/admin/stress-validation?window=30')
     .then(function(r){
       if (!r.ok) return r.text().then(function(t){ throw new Error(t || 'stress-validation failed'); });
       return r.json();
@@ -1014,7 +1098,7 @@ function loadUsers() {
         '</th></tr></thead><tbody>' + rows + '</tbody></table>';
       var sel = $('backfill-target');
       if (sel) {
-        var prev = sel.value;
+        var prev = activeAdminSchema || sel.value;
         var currentLabel = sel.getAttribute('data-current-label') || '';
         sel.innerHTML = '';
         var defaultOpt = document.createElement('option');
@@ -1028,6 +1112,7 @@ function loadUsers() {
           if (u.schema_name === prev) opt.selected = true;
           sel.appendChild(opt);
         });
+        if (prev) sel.value = prev;
       }
     });
 }

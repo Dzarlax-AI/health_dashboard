@@ -76,7 +76,12 @@ func (h *Handler) registerImportRoutes(mux *http.ServeMux) {
 }
 
 func (h *Handler) adminImportStatus(w http.ResponseWriter, r *http.Request) {
-	schema := h.tenantSchema(r)
+	scope, scopeErr := h.resolveAdminTenantScope(r)
+	if scopeErr != nil {
+		writeStatusError(w, scopeErr)
+		return
+	}
+	schema := scope.Schema
 	currentJobsMu.Lock()
 	job := currentJobs[schema]
 	currentJobsMu.Unlock()
@@ -95,8 +100,13 @@ func (h *Handler) adminImportUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Only one import at a time.
-	schema := h.tenantSchema(r)
-	db := h.tenantDB(r)
+	scope, scopeErr := h.resolveAdminTenantScope(r)
+	if scopeErr != nil {
+		writeStatusError(w, scopeErr)
+		return
+	}
+	schema := scope.Schema
+	db := scope.DB
 	currentJobsMu.Lock()
 	if currentJobs[schema] != nil && currentJobs[schema].running {
 		currentJobsMu.Unlock()

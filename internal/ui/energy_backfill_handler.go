@@ -110,8 +110,13 @@ func (h *Handler) registerEnergyBackfillRoutes(mux *http.ServeMux) {
 // against the current tenant TZ. Used by the settings page to render
 // the status line and gray out the button when there's nothing to do.
 func (h *Handler) energyBackfillSummary(w http.ResponseWriter, r *http.Request) {
-	db := h.tenantDB(r)
-	schema := h.tenantSchema(r)
+	scope, scopeErr := h.resolveAdminTenantScope(r)
+	if scopeErr != nil {
+		writeStatusError(w, scopeErr)
+		return
+	}
+	db := scope.DB
+	schema := scope.Schema
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -151,7 +156,12 @@ func (h *Handler) energyBackfillSummary(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *Handler) energyBackfillStatus(w http.ResponseWriter, r *http.Request) {
-	schema := h.tenantSchema(r)
+	scope, scopeErr := h.resolveAdminTenantScope(r)
+	if scopeErr != nil {
+		writeStatusError(w, scopeErr)
+		return
+	}
+	schema := scope.Schema
 	currentBackfillJobsMu.Lock()
 	job := currentBackfillJobs[schema]
 	// Opportunistic GC: drop job records that finished more than a
@@ -186,8 +196,13 @@ func (h *Handler) energyBackfillRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	db := h.tenantDB(r)
-	schema := h.tenantSchema(r)
+	scope, scopeErr := h.resolveAdminTenantScope(r)
+	if scopeErr != nil {
+		writeStatusError(w, scopeErr)
+		return
+	}
+	db := scope.DB
+	schema := scope.Schema
 	tz := db.GetNotifyConfig(h.mgr.NotifyDefaultsFor(schema)).Timezone
 	if tz == "" {
 		// The UI gates the button on tz being set, so this is a
