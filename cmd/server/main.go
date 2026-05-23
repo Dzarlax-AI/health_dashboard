@@ -276,7 +276,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 
 	var morningSendMu sync.Mutex
 	maybeFireMorningReport := makeMorningTrigger(db, &morningSendMu, mgr, reg, schema, notifyDefaults)
-	backfillDatesFn := makeBackfillDatesFn(db, schema)
+	backfillDatesFn := makeBackfillDatesFn(db, schema, notifyDefaults)
 	// EnergyBank v2 orchestrator: same role as in multi-tenant mode —
 	// passive snapshot accumulation alongside the live v1 dashboard.
 	energyV2 := storage.NewEnergyV2Orchestrator()
@@ -356,7 +356,7 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Regist
 	maybeFireMorningReport := makeMorningTrigger(db, &morningSendMu, mgr, reg, schema, notifyDefaults)
 
 	backfillFn := makeBackfillFn(db)
-	backfillDatesFn := makeBackfillDatesFn(db, schema)
+	backfillDatesFn := makeBackfillDatesFn(db, schema, notifyDefaults)
 	testNotifyFn := makeTestNotifyFn(db, mgr, schema, notifyDefaults)
 
 	mgr.RegisterCallbacks(schema, tenants.TenantCallbacks{
@@ -441,7 +441,7 @@ func tenantTZOrUTC(db *storage.DB, defaults storage.NotifyConfig, schema string)
 	return "UTC"
 }
 
-func makeBackfillDatesFn(db *storage.DB, schema string) func([]string) {
+func makeBackfillDatesFn(db *storage.DB, schema string, defaults storage.NotifyConfig) func([]string) {
 	var (
 		mu      sync.Mutex
 		pending = make(map[string]struct{})
@@ -460,7 +460,7 @@ func makeBackfillDatesFn(db *storage.DB, schema string) func([]string) {
 			return
 		}
 		log.Printf("[%s] backfill (date-aware): rebuilding %d date(s)", schema, len(dates))
-		db.RunIncrementalBackfillForDates(dates)
+		db.RunIncrementalBackfillForDatesAt(dates, tenantLocalNow(db, defaults))
 		log.Printf("[%s] backfill (date-aware): done", schema)
 	}
 	return func(dates []string) {
@@ -480,6 +480,17 @@ func makeBackfillDatesFn(db *storage.DB, schema string) func([]string) {
 		}
 		mu.Unlock()
 	}
+}
+
+func tenantLocalNow(db *storage.DB, defaults storage.NotifyConfig) time.Time {
+	cfg := db.GetNotifyConfig(defaults)
+	loc := time.Local
+	if tz := cfg.Timezone; tz != "" {
+		if l, err := time.LoadLocation(tz); err == nil {
+			loc = l
+		}
+	}
+	return time.Now().In(loc)
 }
 
 // buildNotifyCfg copies storage NotifyConfig (DB-backed) into notify.Config
@@ -1110,17 +1121,21 @@ func runDailyQualityScan(db *storage.DB, schema string, defaults storage.NotifyC
 		flagged, err := db.MarkSuspectPoints(7, 3)
 		if err != nil {
 			log.Printf("[%s] daily quality scan: %v", schema, err)
-			continue
-		}
-		total := 0
-		for _, n := range flagged {
-			total += n
-		}
-		if total == 0 {
-			log.Printf("[%s] daily quality scan: no suspect points", schema)
 		} else {
-			log.Printf("[%s] daily quality scan: flagged %d points across %d metrics: %v", schema, total, len(flagged), flagged)
+			total := 0
+			for _, n := range flagged {
+				total += n
+			}
+			if total == 0 {
+				log.Printf("[%s] daily quality scan: no suspect points", schema)
+			} else {
+				log.Printf("[%s] daily quality scan: flagged %d points across %d metrics: %v", schema, total, len(flagged), flagged)
+			}
 		}
+
+		now = time.Now().In(loc)
+		today := now.Format("2006-01-02")
+		db.RunReadinessRedesignBackfillForDatesAt([]string{today}, now)
 	}
 }
 

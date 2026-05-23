@@ -1935,6 +1935,8 @@ func isBinaryChip(subScore string) bool {
 func buildChipCell(row storage.OperationalContractRow) chipCell {
 	cell := chipCell{}
 	switch {
+	case row.SourceEpochChanged:
+		cell.Text = "unknown"
 	case row.PredictedValue == nil && row.BaselineReason != nil:
 		cell.Text = "unknown"
 	case row.PredictedValue == nil:
@@ -1965,11 +1967,17 @@ func buildChipCell(row storage.OperationalContractRow) chipCell {
 	if row.BaselineReason != nil {
 		parts = append(parts, "baseline="+*row.BaselineReason)
 	}
+	if row.SourceEpochChanged {
+		parts = append(parts, "baseline="+storage.ChipReasonSourceEpochChange)
+	}
 	if row.TargetEligibilityReason != nil {
 		parts = append(parts, "target="+*row.TargetEligibilityReason)
 	}
 	if row.SourceEpoch != nil && *row.SourceEpoch != "" {
 		parts = append(parts, "epoch="+*row.SourceEpoch)
+	}
+	if row.CurrentSourceEpoch != nil && *row.CurrentSourceEpoch != "" && row.SourceEpochChanged {
+		parts = append(parts, "current_epoch="+*row.CurrentSourceEpoch)
 	}
 	cell.Title = strings.Join(parts, " · ")
 	return cell

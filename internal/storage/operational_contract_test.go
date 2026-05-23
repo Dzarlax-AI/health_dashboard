@@ -319,3 +319,59 @@ func TestLoadOperationalContractRows_PendingChipOnSharedDate(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadOperationalContractRows_FlagsSourceEpochChange(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	const date = "2026-05-10"
+	v := 0.91
+	if err := db.SaveNaiveBaseline(NaiveBaseline{
+		Date:           date,
+		SubScore:       SubScoreRecoveryStability,
+		TargetKind:     TargetKindRolling3d,
+		BaselineKind:   BaselineKindEWMA45d,
+		PredictedValue: &v,
+		SourceEpoch:    InitialSourceEpoch,
+		FormulaVersion: 1,
+	}); err != nil {
+		t.Fatalf("seed baseline: %v", err)
+	}
+
+	if _, err := db.pool.Exec(context.Background(),
+		`UPDATE source_epochs SET end_date = '2026-05-09' WHERE epoch_id = $1`,
+		InitialSourceEpoch); err != nil {
+		t.Fatalf("close initial epoch: %v", err)
+	}
+	if err := db.UpsertSourceEpoch(SourceEpoch{
+		EpochID:     "source_epoch_change_test",
+		StartDate:   date,
+		Kind:        SourceEpochKindIngest,
+		Description: "source epoch change contract test",
+		DetectedBy:  DetectedByManual,
+		Confirmed:   true,
+	}); err != nil {
+		t.Fatalf("seed new epoch: %v", err)
+	}
+
+	rows, err := db.LoadOperationalContractRows(date, date)
+	if err != nil {
+		t.Fatalf("LoadOperationalContractRows: %v", err)
+	}
+	var got *OperationalContractRow
+	for i := range rows {
+		if rows[i].SubScore == SubScoreRecoveryStability {
+			got = &rows[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("missing recovery row")
+	}
+	if !got.SourceEpochChanged {
+		t.Fatalf("SourceEpochChanged = false, want true")
+	}
+	if got.CurrentSourceEpoch == nil || *got.CurrentSourceEpoch != "source_epoch_change_test" {
+		t.Fatalf("CurrentSourceEpoch = %v, want source_epoch_change_test", got.CurrentSourceEpoch)
+	}
+}

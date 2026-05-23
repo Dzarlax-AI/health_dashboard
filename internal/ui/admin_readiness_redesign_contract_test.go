@@ -268,6 +268,33 @@ func TestFragmentAdminReadinessContract_RendersValueAndUnknown(t *testing.T) {
 	}
 }
 
+func TestBuildChipCell_SourceEpochChangeRendersUnknown(t *testing.T) {
+	stored := storage.InitialSourceEpoch
+	current := "source_epoch_change_test"
+	v := 0.91
+
+	cell := buildChipCell(storage.OperationalContractRow{
+		Date:               daysAgoUTC(1),
+		SubScore:           storage.SubScoreRecoveryStability,
+		TargetKind:         storage.TargetKindRolling3d,
+		BaselineKind:       storage.BaselineKindEWMA45d,
+		PredictedValue:     &v,
+		SourceEpoch:        &stored,
+		CurrentSourceEpoch: &current,
+		SourceEpochChanged: true,
+	})
+
+	if cell.Text != "unknown" {
+		t.Fatalf("Text = %q, want unknown", cell.Text)
+	}
+	if !strings.Contains(cell.Title, "baseline="+storage.ChipReasonSourceEpochChange) {
+		t.Fatalf("Title = %q, want source_epoch_change reason", cell.Title)
+	}
+	if !strings.Contains(cell.Title, "epoch="+stored) || !strings.Contains(cell.Title, "current_epoch="+current) {
+		t.Fatalf("Title = %q, want stored/current epoch audit fields", cell.Title)
+	}
+}
+
 // TestAdminReadinessRedesignChipCalibrations_RejectsPOSTSchemaAll proves
 // the safety contract: `POST ?schema=all` returns 400 even though the
 // admin UI doesn't generate that request. A curl caller posting it
