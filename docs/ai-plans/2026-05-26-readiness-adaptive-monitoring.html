@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Readiness Adaptive Monitoring Plan</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f7f8fb;
+      --panel: #ffffff;
+      --text: #172033;
+      --muted: #5d667a;
+      --border: #d8dde8;
+      --accent: #2463eb;
+      --warn: #9a5b00;
+      --ok: #14743b;
+      --code: #eef2f8;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111827;
+        --panel: #182233;
+        --text: #eef3ff;
+        --muted: #aeb8cc;
+        --border: #314057;
+        --accent: #79a7ff;
+        --warn: #f2bd62;
+        --ok: #65d58b;
+        --code: #223048;
+      }
+    }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 32px 18px 56px;
+    }
+    header, section {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 22px;
+      margin: 0 0 16px;
+    }
+    h1, h2 {
+      margin: 0 0 10px;
+      line-height: 1.2;
+    }
+    h1 { font-size: 28px; }
+    h2 { font-size: 19px; }
+    p { margin: 0 0 12px; }
+    ul, ol { margin: 0 0 0 22px; padding: 0; }
+    li { margin: 6px 0; }
+    code {
+      background: var(--code);
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: 0.92em;
+    }
+    pre {
+      background: var(--code);
+      border-radius: 6px;
+      overflow-x: auto;
+      padding: 14px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+    }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: var(--code); }
+    .meta {
+      color: var(--muted);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 18px;
+      margin-top: 12px;
+    }
+    .badge {
+      display: inline-block;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 2px 9px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .ok { color: var(--ok); }
+    .warn { color: var(--warn); }
+    .gate {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Readiness Adaptive Monitoring Plan</h1>
+    <p>
+      Make the naive-layer readiness monitoring adapt to tenant-specific input freshness without hiding real data gaps.
+      This is the implementation approval gate for the adaptive monitoring change.
+    </p>
+    <div class="meta">
+      <span class="badge">Date: 2026-05-26</span>
+      <span class="badge">Repo: health_processing</span>
+      <span class="badge">Scope: admin monitoring, read-only</span>
+      <span class="badge">Status: awaiting approval</span>
+    </div>
+  </header>
+
+  <section>
+    <h2>Task Summary</h2>
+    <p>
+      The current monitoring flags <code>event_window_data_missing</code> for forward-looking targets because recent
+      labels need future days to mature. A fixed mature-window shift improves this, but it is still not tenant-aware.
+      The next change should compute a defensible coverage window per tenant and target using target contract lag plus
+      observed upstream input freshness.
+    </p>
+  </section>
+
+  <section>
+    <h2>Current Behavior</h2>
+    <ul>
+      <li>Coverage currently reports over a 14-day window.</li>
+      <li>Forward-looking labels have expected lag: Acute Risk uses <code>t+1..t+3</code>; Chronic Load uses <code>t+1..t+14</code>.</li>
+      <li>A fixed mature-window branch now shifts acute by 3 days and chronic by 14 days.</li>
+      <li>Live SQL showed the fixed shift removes expected chronic warnings for <code>health</code> and <code>health_mariia/chronic_acute_density</code>.</li>
+      <li><code>health_mariia/chronic_label</code> stays warning because the mature upstream Recovery window has real sleep-related gaps.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <pre><code>contract_end = as_of_date - target_contract_lag_days
+input_stable_end = latest date where upstream inputs are stable enough
+coverage_end = min(contract_end, input_stable_end)
+coverage_start = coverage_end - 13 days</code></pre>
+    <p>
+      Monitoring should also emit a stale-input signal when <code>input_stable_end</code> falls too far behind
+      <code>contract_end</code>. That keeps freshness problems visible instead of silently shifting the window backward.
+    </p>
+  </section>
+
+  <section>
+    <h2>Assumptions</h2>
+    <ul>
+      <li>Target writer semantics remain authoritative; monitoring must not reinterpret labels.</li>
+      <li>Target contract lag is deterministic and not user-specific.</li>
+      <li>Tenant-specific adaptation belongs in input freshness, not in target definitions.</li>
+      <li>First implementation can use constants for stale thresholds.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Target Contracts</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Sub-score</th>
+          <th>Target kind</th>
+          <th>Contract lag</th>
+          <th>Input stability source</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>recovery_stability</td><td>daily_point</td><td>0 days</td><td>own target rows</td></tr>
+        <tr><td>recovery_stability</td><td>rolling_3d</td><td>0 days</td><td>own target rows</td></tr>
+        <tr><td>passive_efficiency</td><td>daily_point</td><td>0 days</td><td>own target rows</td></tr>
+        <tr><td>passive_efficiency</td><td>rolling_3d</td><td>0 days</td><td>own target rows</td></tr>
+        <tr><td>acute_risk</td><td>event_t1_t3</td><td>3 days</td><td>own target rows</td></tr>
+        <tr><td>acute_risk</td><td>event_strict_t1_t3</td><td>3 days</td><td>own target rows</td></tr>
+        <tr><td>chronic_load</td><td>chronic_label</td><td>14 days</td><td>recovery_stability/rolling_3d</td></tr>
+        <tr><td>chronic_load</td><td>chronic_acute_density</td><td>14 days</td><td>acute_risk/event_t1_t3</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Likely File Changes</h2>
+    <ul>
+      <li><code>internal/storage/readiness_redesign_monitoring.go</code>: target contract metadata, input-stability resolution, stale-input status.</li>
+      <li><code>internal/storage/readiness_redesign_monitoring_test.go</code>: coverage, stale-input, and mature-window regressions.</li>
+      <li><code>internal/ui/templates/partials/admin_readiness_monitoring.html</code>: show evaluated window and freshness note.</li>
+      <li><code>internal/ui/admin_readiness_redesign_monitoring_test.go</code>: fragment rendering checks.</li>
+      <li>Potentially <code>internal/ui/i18n_*.go</code> if new labels need localization.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation Steps</h2>
+    <ol>
+      <li>Add explicit target contract metadata: floor, contract lag, and input-stability source.</li>
+      <li>Extend <code>ReadinessCoverageRow</code> with window and stale-input fields.</li>
+      <li>Implement <code>inputStableEnd</code> helpers per source type.</li>
+      <li>Compute coverage over <code>min(contract_end, input_stable_end)</code>.</li>
+      <li>Add stale-input status thresholds: ok 0-2 days, warn 3-7 days, critical over 7 days or no stable date in 30 days.</li>
+      <li>Update overall status to include stale-input status.</li>
+      <li>Render evaluated window and stale-input note in the admin monitoring table.</li>
+      <li>Run targeted and full test suites.</li>
+      <li>Update this plan with actual changes and checks after implementation.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <ul>
+      <li><code>go test ./internal/storage -run ReadinessMonitoring</code></li>
+      <li><code>go test ./internal/ui -run ReadinessRedesignMonitoring</code></li>
+      <li><code>go test ./...</code></li>
+      <li>Live SQL sanity check against <code>health</code> and <code>health_mariia</code> after implementation.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Manual QA Checklist</h2>
+    <ul>
+      <li>Admin monitoring table shows evaluated window per row.</li>
+      <li>Fresh-edge chronic labels no longer dominate coverage warnings.</li>
+      <li>Maria's real <code>chronic_label</code> issue remains visible if upstream Recovery rows are sparse.</li>
+      <li>Stale-input warnings are distinguishable from coverage warnings.</li>
+      <li>Tenant tab behavior remains scoped to the selected tenant.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Risks</h2>
+    <ul>
+      <li>Over-adaptation could hide stale pipelines if stale-input warnings are too weak.</li>
+      <li>Input stability may duplicate writer assumptions if implemented too deeply.</li>
+      <li>UI could become noisy if every row shows too much metadata.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <p>
+      Revert the monitoring storage/UI commit. No schema changes or data mutations are planned, so rollback is a code-only revert.
+    </p>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Should stale-input status be folded into coverage rows, or shown as separate rows?</li>
+      <li>Should the first implementation keep stale thresholds as constants, then promote them to settings later if needed?</li>
+    </ul>
+    <p>
+      Recommendation: fold stale-input status into coverage rows and keep thresholds as constants for the first implementation.
+    </p>
+  </section>
+
+  <section class="gate">
+    <h2>Approval Gate</h2>
+    <p>
+      Production code for adaptive monitoring should not be changed until this plan is approved. After approval, implement on the current
+      readiness monitoring branch, update this plan with actual changes and verification, then prepare the normal PR or merge path.
+    </p>
+  </section>
+</main>
+</body>
+</html>
