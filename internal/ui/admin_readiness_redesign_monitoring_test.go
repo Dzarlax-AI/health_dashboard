@@ -45,9 +45,13 @@ func TestAdminReadinessRedesignMonitoring_JSONShape(t *testing.T) {
 			Tenant        string `json:"tenant"`
 			OverallStatus string `json:"OverallStatus"`
 			CoverageRows  []struct {
-				SubScore   string `json:"SubScore"`
-				TargetKind string `json:"TargetKind"`
-				Status     string `json:"Status"`
+				SubScore             string `json:"SubScore"`
+				TargetKind           string `json:"TargetKind"`
+				Status               string `json:"Status"`
+				WindowFrom           string `json:"WindowFrom"`
+				WindowTo             string `json:"WindowTo"`
+				InputStableTo        string `json:"InputStableTo"`
+				InputStalenessStatus string `json:"InputStalenessStatus"`
 			} `json:"CoverageRows"`
 		} `json:"rows"`
 	}
@@ -63,6 +67,18 @@ func TestAdminReadinessRedesignMonitoring_JSONShape(t *testing.T) {
 	if len(resp.Rows[0].CoverageRows) == 0 {
 		t.Fatalf("CoverageRows empty")
 	}
+	for _, row := range resp.Rows[0].CoverageRows {
+		if row.SubScore == storage.SubScoreRecoveryStability && row.TargetKind == storage.TargetKindRolling3d {
+			if row.WindowFrom == "" || row.WindowTo == "" {
+				t.Fatalf("coverage row missing window fields: %+v", row)
+			}
+			if row.InputStalenessStatus == "" {
+				t.Fatalf("coverage row missing input staleness status: %+v", row)
+			}
+			return
+		}
+	}
+	t.Fatalf("missing recovery rolling_3d coverage row")
 }
 
 func TestFragmentAdminReadinessMonitoring_Renders(t *testing.T) {
@@ -95,7 +111,7 @@ func TestFragmentAdminReadinessMonitoring_Renders(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
 	}
 	body := w.Body.String()
-	for _, want := range []string{schema, "coverage", storage.SubScoreRecoveryStability} {
+	for _, want := range []string{schema, "coverage", storage.SubScoreRecoveryStability, "window", "inputs stable through"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("fragment missing %q; body=%s", want, body)
 		}

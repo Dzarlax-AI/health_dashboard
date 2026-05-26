@@ -845,7 +845,9 @@ func (h *Handler) fragmentAdminReadinessMonitoring(w http.ResponseWriter, r *htt
 		TargetKind  string
 		Status      string
 		Coverage    string
+		Window      string
 		Floor       string
+		Freshness   string
 		TopReason   string
 		ReasonTitle string
 	}
@@ -873,6 +875,7 @@ func (h *Handler) fragmentAdminReadinessMonitoring(w http.ResponseWriter, r *htt
 		SourceEpochAlerts []storage.ReadinessSourceEpochAlert
 	}
 
+	lang := langFromRequest(r)
 	view := make([]tenantView, 0, len(scopes))
 	for _, scope := range scopes {
 		asOf := tenantLocalToday(h, scope.db, scope.schema)
@@ -893,7 +896,9 @@ func (h *Handler) fragmentAdminReadinessMonitoring(w http.ResponseWriter, r *htt
 				TargetKind:  row.TargetKind,
 				Status:      row.Status,
 				Coverage:    fmt.Sprintf("%d/%d eligible, %d/%d rows (%s)", row.Eligible, row.Rows, row.Rows, row.ExpectedRows, formatMonitoringPct(row.EligiblePct)),
+				Window:      row.WindowFrom + ".." + row.WindowTo,
 				Floor:       formatMonitoringPct(row.FloorPct),
+				Freshness:   monitoringFreshnessNote(lang, row),
 				TopReason:   row.TopReason,
 				ReasonTitle: monitoringReasonTitle(row.ReasonCounts),
 			})
@@ -923,7 +928,7 @@ func (h *Handler) fragmentAdminReadinessMonitoring(w http.ResponseWriter, r *htt
 		Lang string
 		Rows []tenantView
 	}{
-		Lang: langFromRequest(r),
+		Lang: lang,
 		Rows: view,
 	}
 	renderFragment(w, "admin-readiness-monitoring", data)
@@ -2141,6 +2146,20 @@ func monitoringReasonTitle(reasons map[string]int) string {
 		parts = append(parts, fmt.Sprintf("%s=%d", k, reasons[k]))
 	}
 	return strings.Join(parts, " · ")
+}
+
+func monitoringFreshnessNote(lang string, row storage.ReadinessCoverageRow) string {
+	if row.InputStalenessStatus == "" || row.InputStalenessStatus == storage.MonitoringStatusOK {
+		if row.InputStableTo == "" {
+			return ""
+		}
+		return fmt.Sprintf(T(lang, "admin_monitoring_inputs_stable_through"), row.InputStableTo)
+	}
+	if row.InputStableTo == "" {
+		return fmt.Sprintf(T(lang, "admin_monitoring_inputs_stale_reason"), row.InputStalenessStatus, row.InputStalenessReason)
+	}
+	return fmt.Sprintf(T(lang, "admin_monitoring_inputs_stale_by"),
+		row.InputStalenessStatus, row.InputStalenessDays, row.InputStableTo)
 }
 
 func tenantSchemas(scopes []operationalContractScope) []string {
