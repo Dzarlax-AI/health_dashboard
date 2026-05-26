@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"sort"
@@ -18,6 +19,10 @@ const (
 	ReadinessMonitoringWindowDays = 14
 	ReadinessMonitoringDriftDays  = 30
 	ReadinessMonitoringBaseDays   = 90
+	ReadinessMonitoringStableDays = 30
+
+	ReadinessMonitoringStaleWarnDays     = 3
+	ReadinessMonitoringStaleCriticalDays = 8
 )
 
 type ReadinessMonitoringSummary struct {
@@ -33,18 +38,25 @@ type ReadinessMonitoringSummary struct {
 }
 
 type ReadinessCoverageRow struct {
-	SubScore      string
-	TargetKind    string
-	ExpectedRows  int
-	Rows          int
-	MissingRows   int
-	Eligible      int
-	EligiblePct   float64
-	FloorPct      float64
-	Status        string
-	ReasonCounts  map[string]int
-	TopReason     string
-	TopReasonRows int
+	SubScore             string
+	TargetKind           string
+	WindowFrom           string
+	WindowTo             string
+	ContractLagDays      int
+	InputStableTo        string
+	InputStalenessDays   int
+	InputStalenessStatus string
+	InputStalenessReason string
+	ExpectedRows         int
+	Rows                 int
+	MissingRows          int
+	Eligible             int
+	EligiblePct          float64
+	FloorPct             float64
+	Status               string
+	ReasonCounts         map[string]int
+	TopReason            string
+	TopReasonRows        int
 }
 
 type ReadinessDriftRow struct {
@@ -85,18 +97,44 @@ type monitoringTarget struct {
 	SubScore        string
 	TargetKind      string
 	FloorPct        float64
-	CoverageLagDays int
+	ContractLagDays int
+	InputSubScore   string
+	InputTargetKind string
 }
 
 var readinessMonitoringTargets = []monitoringTarget{
-	{SubScore: SubScoreRecoveryStability, TargetKind: TargetKindDailyPoint, FloorPct: 0.70},
-	{SubScore: SubScoreRecoveryStability, TargetKind: TargetKindRolling3d, FloorPct: 0.70},
-	{SubScore: SubScorePassiveEfficiency, TargetKind: TargetKindDailyPoint, FloorPct: 0.60},
-	{SubScore: SubScorePassiveEfficiency, TargetKind: TargetKindRolling3d, FloorPct: 0.60},
-	{SubScore: SubScoreAcuteRisk, TargetKind: TargetKindEventT1T3, FloorPct: 0.70, CoverageLagDays: 3},
-	{SubScore: SubScoreAcuteRisk, TargetKind: TargetKindEventStrictT1T3, FloorPct: 0.70, CoverageLagDays: 3},
-	{SubScore: SubScoreChronicLoad, TargetKind: TargetKindChronicLabel, FloorPct: 0.10, CoverageLagDays: health.ChronicLoadForwardWindowDays},
-	{SubScore: SubScoreChronicLoad, TargetKind: TargetKindChronicAcuteDensity, FloorPct: 0.10, CoverageLagDays: health.ChronicLoadForwardWindowDays},
+	{
+		SubScore: SubScoreRecoveryStability, TargetKind: TargetKindDailyPoint, FloorPct: 0.70,
+		InputSubScore: SubScoreRecoveryStability, InputTargetKind: TargetKindDailyPoint,
+	},
+	{
+		SubScore: SubScoreRecoveryStability, TargetKind: TargetKindRolling3d, FloorPct: 0.70,
+		InputSubScore: SubScoreRecoveryStability, InputTargetKind: TargetKindRolling3d,
+	},
+	{
+		SubScore: SubScorePassiveEfficiency, TargetKind: TargetKindDailyPoint, FloorPct: 0.60,
+		InputSubScore: SubScorePassiveEfficiency, InputTargetKind: TargetKindDailyPoint,
+	},
+	{
+		SubScore: SubScorePassiveEfficiency, TargetKind: TargetKindRolling3d, FloorPct: 0.60,
+		InputSubScore: SubScorePassiveEfficiency, InputTargetKind: TargetKindRolling3d,
+	},
+	{
+		SubScore: SubScoreAcuteRisk, TargetKind: TargetKindEventT1T3, FloorPct: 0.70, ContractLagDays: 3,
+		InputSubScore: SubScoreAcuteRisk, InputTargetKind: TargetKindEventT1T3,
+	},
+	{
+		SubScore: SubScoreAcuteRisk, TargetKind: TargetKindEventStrictT1T3, FloorPct: 0.70, ContractLagDays: 3,
+		InputSubScore: SubScoreAcuteRisk, InputTargetKind: TargetKindEventStrictT1T3,
+	},
+	{
+		SubScore: SubScoreChronicLoad, TargetKind: TargetKindChronicLabel, FloorPct: 0.10, ContractLagDays: health.ChronicLoadForwardWindowDays,
+		InputSubScore: SubScoreRecoveryStability, InputTargetKind: TargetKindRolling3d,
+	},
+	{
+		SubScore: SubScoreChronicLoad, TargetKind: TargetKindChronicAcuteDensity, FloorPct: 0.10, ContractLagDays: health.ChronicLoadForwardWindowDays,
+		InputSubScore: SubScoreAcuteRisk, InputTargetKind: TargetKindEventT1T3,
+	},
 }
 
 var readinessMonitoringClassifierTargets = []struct {
@@ -156,23 +194,35 @@ func (s *DB) loadReadinessCoverageRows(asOf time.Time) ([]ReadinessCoverageRow, 
 	out := make([]ReadinessCoverageRow, 0, len(readinessMonitoringTargets))
 	for _, target := range readinessMonitoringTargets {
 		row := ReadinessCoverageRow{
-			SubScore:     target.SubScore,
-			TargetKind:   target.TargetKind,
-			ExpectedRows: ReadinessMonitoringWindowDays,
-			MissingRows:  ReadinessMonitoringWindowDays,
-			FloorPct:     target.FloorPct,
-			Status:       MonitoringStatusInsufficient,
-			ReasonCounts: map[string]int{},
+			SubScore:             target.SubScore,
+			TargetKind:           target.TargetKind,
+			ContractLagDays:      target.ContractLagDays,
+			ExpectedRows:         ReadinessMonitoringWindowDays,
+			MissingRows:          ReadinessMonitoringWindowDays,
+			FloorPct:             target.FloorPct,
+			Status:               MonitoringStatusInsufficient,
+			InputStalenessStatus: MonitoringStatusInsufficient,
+			ReasonCounts:         map[string]int{},
 		}
 
-		from, to := monitoringCoverageWindow(asOf, target)
+		window, err := s.monitoringCoverageWindow(ctx, asOf, target)
+		if err != nil {
+			return nil, err
+		}
+		row.WindowFrom = window.from
+		row.WindowTo = window.to
+		row.InputStableTo = window.inputStableTo
+		row.InputStalenessDays = window.inputStalenessDays
+		row.InputStalenessStatus = window.inputStalenessStatus
+		row.InputStalenessReason = window.inputStalenessReason
+
 		rows, err := s.pool.Query(ctx, `
 			SELECT eligible, eligibility_reason
 			  FROM target_snapshots
 			 WHERE sub_score = $1
 			   AND target_kind = $2
 			   AND date BETWEEN $3 AND $4
-		`, target.SubScore, target.TargetKind, from, to)
+		`, target.SubScore, target.TargetKind, row.WindowFrom, row.WindowTo)
 		if err != nil {
 			return nil, fmt.Errorf("loadReadinessCoverageRows %s/%s: %w",
 				target.SubScore, target.TargetKind, err)
@@ -218,16 +268,85 @@ func (s *DB) loadReadinessCoverageRows(asOf time.Time) ([]ReadinessCoverageRow, 
 				row.Status = MonitoringStatusWarn
 			}
 		}
+		row.Status = maxMonitoringStatus(row.Status, row.InputStalenessStatus)
 		row.TopReason, row.TopReasonRows = topReason(row.ReasonCounts)
 		out = append(out, row)
 	}
 	return out, nil
 }
 
-func monitoringCoverageWindow(asOf time.Time, target monitoringTarget) (from, to string) {
-	windowEnd := asOf.AddDate(0, 0, -target.CoverageLagDays)
+type monitoringWindow struct {
+	from                 string
+	to                   string
+	inputStableTo        string
+	inputStalenessDays   int
+	inputStalenessStatus string
+	inputStalenessReason string
+}
+
+func (s *DB) monitoringCoverageWindow(ctx context.Context, asOf time.Time, target monitoringTarget) (monitoringWindow, error) {
+	contractEnd := asOf.AddDate(0, 0, -target.ContractLagDays)
+	stable, ok, err := s.latestMonitoringStableDate(ctx, asOf, target)
+	if err != nil {
+		return monitoringWindow{}, err
+	}
+
+	windowEnd := contractEnd
+	out := monitoringWindow{
+		inputStalenessStatus: MonitoringStatusOK,
+	}
+	if !ok {
+		out.inputStalenessStatus = MonitoringStatusCritical
+		out.inputStalenessReason = "no stable input in monitoring lookback"
+	} else {
+		out.inputStableTo = stable.Format(isoDate)
+		if stable.Before(contractEnd) {
+			out.inputStalenessDays = int(contractEnd.Sub(stable).Hours() / 24)
+			windowEnd = stable
+		}
+		switch {
+		case out.inputStalenessDays >= ReadinessMonitoringStaleCriticalDays:
+			out.inputStalenessStatus = MonitoringStatusCritical
+			out.inputStalenessReason = "input pipeline stale"
+		case out.inputStalenessDays >= ReadinessMonitoringStaleWarnDays:
+			out.inputStalenessStatus = MonitoringStatusWarn
+			out.inputStalenessReason = "input pipeline lagging"
+		default:
+			out.inputStalenessStatus = MonitoringStatusOK
+		}
+	}
+
 	windowStart := windowEnd.AddDate(0, 0, -(ReadinessMonitoringWindowDays - 1))
-	return windowStart.Format(isoDate), windowEnd.Format(isoDate)
+	out.from = windowStart.Format(isoDate)
+	out.to = windowEnd.Format(isoDate)
+	return out, nil
+}
+
+func (s *DB) latestMonitoringStableDate(ctx context.Context, asOf time.Time, target monitoringTarget) (time.Time, bool, error) {
+	contractEnd := asOf.AddDate(0, 0, -target.ContractLagDays)
+	lookbackFrom := contractEnd.AddDate(0, 0, -(ReadinessMonitoringStableDays - 1)).Format(isoDate)
+	lookbackTo := asOf.Format(isoDate)
+	var date *string
+	if err := s.pool.QueryRow(ctx, `
+		SELECT MAX(date)
+		  FROM target_snapshots
+		 WHERE sub_score = $1
+		   AND target_kind = $2
+		   AND eligible = TRUE
+		   AND target_value IS NOT NULL
+		   AND date BETWEEN $3 AND $4
+	`, target.InputSubScore, target.InputTargetKind, lookbackFrom, lookbackTo).Scan(&date); err != nil {
+		return time.Time{}, false, fmt.Errorf("latestMonitoringStableDate %s/%s via %s/%s: %w",
+			target.SubScore, target.TargetKind, target.InputSubScore, target.InputTargetKind, err)
+	}
+	if date == nil || *date == "" {
+		return time.Time{}, false, nil
+	}
+	t, err := time.Parse(isoDate, *date)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("latestMonitoringStableDate parse %q: %w", *date, err)
+	}
+	return t, true, nil
 }
 
 func (s *DB) loadReadinessDriftRows(asOf time.Time) ([]ReadinessDriftRow, error) {

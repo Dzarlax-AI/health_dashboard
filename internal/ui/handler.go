@@ -845,7 +845,9 @@ func (h *Handler) fragmentAdminReadinessMonitoring(w http.ResponseWriter, r *htt
 		TargetKind  string
 		Status      string
 		Coverage    string
+		Window      string
 		Floor       string
+		Freshness   string
 		TopReason   string
 		ReasonTitle string
 	}
@@ -893,7 +895,9 @@ func (h *Handler) fragmentAdminReadinessMonitoring(w http.ResponseWriter, r *htt
 				TargetKind:  row.TargetKind,
 				Status:      row.Status,
 				Coverage:    fmt.Sprintf("%d/%d eligible, %d/%d rows (%s)", row.Eligible, row.Rows, row.Rows, row.ExpectedRows, formatMonitoringPct(row.EligiblePct)),
+				Window:      row.WindowFrom + ".." + row.WindowTo,
 				Floor:       formatMonitoringPct(row.FloorPct),
+				Freshness:   monitoringFreshnessNote(row),
 				TopReason:   row.TopReason,
 				ReasonTitle: monitoringReasonTitle(row.ReasonCounts),
 			})
@@ -2141,6 +2145,20 @@ func monitoringReasonTitle(reasons map[string]int) string {
 		parts = append(parts, fmt.Sprintf("%s=%d", k, reasons[k]))
 	}
 	return strings.Join(parts, " · ")
+}
+
+func monitoringFreshnessNote(row storage.ReadinessCoverageRow) string {
+	if row.InputStalenessStatus == "" || row.InputStalenessStatus == storage.MonitoringStatusOK {
+		if row.InputStableTo == "" {
+			return ""
+		}
+		return "inputs stable through " + row.InputStableTo
+	}
+	if row.InputStableTo == "" {
+		return row.InputStalenessStatus + ": " + row.InputStalenessReason
+	}
+	return fmt.Sprintf("%s: inputs stale by %dd, last stable %s",
+		row.InputStalenessStatus, row.InputStalenessDays, row.InputStableTo)
 }
 
 func tenantSchemas(scopes []operationalContractScope) []string {

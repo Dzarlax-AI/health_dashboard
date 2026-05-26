@@ -117,7 +117,7 @@
       <span class="badge">Date: 2026-05-26</span>
       <span class="badge">Repo: health_processing</span>
       <span class="badge">Scope: admin monitoring, read-only</span>
-      <span class="badge">Status: awaiting approval</span>
+      <span class="badge">Status: implemented</span>
     </div>
   </header>
 
@@ -265,9 +265,40 @@ coverage_start = coverage_end - 13 days</code></pre>
   <section class="gate">
     <h2>Approval Gate</h2>
     <p>
-      Production code for adaptive monitoring should not be changed until this plan is approved. After approval, implement on the current
-      readiness monitoring branch, update this plan with actual changes and verification, then prepare the normal PR or merge path.
+      Approved in-thread on 2026-05-26. Production code was changed on the readiness monitoring branch after approval.
+      The notes below record the actual implementation and verification.
     </p>
+  </section>
+
+  <section>
+    <h2>Implementation Result</h2>
+    <ul>
+      <li>Added per-target contract lag and input-stability source metadata in <code>internal/storage/readiness_redesign_monitoring.go</code>.</li>
+      <li>Extended <code>ReadinessCoverageRow</code> with evaluated window, contract lag, input stable date, staleness days, staleness status, and staleness reason.</li>
+      <li>Coverage now evaluates <code>min(contract_end, input_stable_end)</code> and promotes stale-input status into each coverage row's effective status.</li>
+      <li>Chronic targets use upstream inputs for stability: <code>chronic_label</code> reads <code>recovery_stability/rolling_3d</code>; <code>chronic_acute_density</code> reads <code>acute_risk/event_t1_t3</code>.</li>
+      <li>The admin monitoring fragment now renders the evaluated window and input freshness note.</li>
+      <li>Regression tests cover mature chronic windows, stale input warnings, JSON window fields, and fragment freshness rendering.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Verification</h2>
+    <ul>
+      <li><code>go test ./internal/storage -run ReadinessMonitoring</code> passed.</li>
+      <li><code>go test ./internal/ui -run ReadinessRedesignMonitoring</code> passed.</li>
+      <li><code>go test ./...</code> passed.</li>
+      <li>Live SQL sanity check against <code>health</code> and <code>health_mariia</code> confirmed chronic fresh-edge warnings are suppressed while Maria's mature <code>chronic_label</code> issue remains visible.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Known Limitations</h2>
+    <ul>
+      <li>Stale thresholds are constants for now: warning starts at 3 days, critical starts at 8 days.</li>
+      <li>Freshness labels are currently plain English strings in the admin fragment; they can be localized in a follow-up if this surface becomes user-facing beyond operator diagnostics.</li>
+      <li>The live DB sanity check used SQL equivalent to the storage logic rather than calling the HTTP endpoint against a running deployed server.</li>
+    </ul>
   </section>
 </main>
 </body>
