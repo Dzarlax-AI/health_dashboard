@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"health-receiver/internal/health"
 )
 
 func TestLoadReadinessMonitoringSummary_CoverageAndDrift(t *testing.T) {
@@ -183,4 +185,66 @@ func TestLoadReadinessMonitoringSummary_SparseCoverageCannotBeOK(t *testing.T) {
 		}
 	}
 	t.Fatalf("missing recovery daily_point coverage row")
+}
+
+func TestLoadReadinessMonitoringSummary_CoverageUsesMatureWindows(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	v := 0.0
+	asOf := time.Date(2026, 5, 26, 0, 0, 0, 0, time.UTC)
+
+	// Fresh-edge chronic rows are expected to be ineligible because
+	// their t+1..t+14 label window has not fully matured yet. They
+	// should not drive the monitoring coverage warning.
+	for i := 0; i < ReadinessMonitoringWindowDays; i++ {
+		date := asOf.AddDate(0, 0, -i).Format(isoDate)
+		if err := db.SaveTargetSnapshot(TargetSnapshot{
+			Date:              date,
+			SubScore:          SubScoreChronicLoad,
+			TargetKind:        TargetKindChronicAcuteDensity,
+			Eligible:          false,
+			EligibilityReason: EligibilityEventWindowDataMissing,
+			SourceEpoch:       InitialSourceEpoch,
+			FormulaVersion:    1,
+		}); err != nil {
+			t.Fatalf("seed fresh chronic target %s: %v", date, err)
+		}
+	}
+
+	// The mature window ending at asOf-14d is complete and eligible.
+	for i := 0; i < ReadinessMonitoringWindowDays; i++ {
+		date := asOf.AddDate(0, 0, -health.ChronicLoadForwardWindowDays-i).Format(isoDate)
+		if err := db.SaveTargetSnapshot(TargetSnapshot{
+			Date:              date,
+			SubScore:          SubScoreChronicLoad,
+			TargetKind:        TargetKindChronicAcuteDensity,
+			TargetValue:       &v,
+			Eligible:          true,
+			EligibilityReason: EligibilityOK,
+			SourceEpoch:       InitialSourceEpoch,
+			FormulaVersion:    1,
+		}); err != nil {
+			t.Fatalf("seed mature chronic target %s: %v", date, err)
+		}
+	}
+
+	summary, err := db.LoadReadinessMonitoringSummary("2026-05-26")
+	if err != nil {
+		t.Fatalf("LoadReadinessMonitoringSummary: %v", err)
+	}
+	for _, row := range summary.CoverageRows {
+		if row.SubScore == SubScoreChronicLoad && row.TargetKind == TargetKindChronicAcuteDensity {
+			if row.Status != MonitoringStatusOK {
+				t.Fatalf("chronic coverage status = %q for %+v; want ok", row.Status, row)
+			}
+			if row.Rows != ReadinessMonitoringWindowDays || row.Eligible != ReadinessMonitoringWindowDays {
+				t.Fatalf("chronic mature counts = %d/%d, want %d/%d",
+					row.Eligible, row.Rows,
+					ReadinessMonitoringWindowDays, ReadinessMonitoringWindowDays)
+			}
+			return
+		}
+	}
+	t.Fatalf("missing chronic acute-density coverage row")
 }

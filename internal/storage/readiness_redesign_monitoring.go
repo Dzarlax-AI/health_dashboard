@@ -5,6 +5,8 @@ import (
 	"math"
 	"sort"
 	"time"
+
+	"health-receiver/internal/health"
 )
 
 const (
@@ -80,20 +82,21 @@ type ReadinessSourceEpochAlert struct {
 }
 
 type monitoringTarget struct {
-	SubScore   string
-	TargetKind string
-	FloorPct   float64
+	SubScore        string
+	TargetKind      string
+	FloorPct        float64
+	CoverageLagDays int
 }
 
 var readinessMonitoringTargets = []monitoringTarget{
-	{SubScoreRecoveryStability, TargetKindDailyPoint, 0.70},
-	{SubScoreRecoveryStability, TargetKindRolling3d, 0.70},
-	{SubScorePassiveEfficiency, TargetKindDailyPoint, 0.60},
-	{SubScorePassiveEfficiency, TargetKindRolling3d, 0.60},
-	{SubScoreAcuteRisk, TargetKindEventT1T3, 0.70},
-	{SubScoreAcuteRisk, TargetKindEventStrictT1T3, 0.70},
-	{SubScoreChronicLoad, TargetKindChronicLabel, 0.10},
-	{SubScoreChronicLoad, TargetKindChronicAcuteDensity, 0.10},
+	{SubScore: SubScoreRecoveryStability, TargetKind: TargetKindDailyPoint, FloorPct: 0.70},
+	{SubScore: SubScoreRecoveryStability, TargetKind: TargetKindRolling3d, FloorPct: 0.70},
+	{SubScore: SubScorePassiveEfficiency, TargetKind: TargetKindDailyPoint, FloorPct: 0.60},
+	{SubScore: SubScorePassiveEfficiency, TargetKind: TargetKindRolling3d, FloorPct: 0.60},
+	{SubScore: SubScoreAcuteRisk, TargetKind: TargetKindEventT1T3, FloorPct: 0.70, CoverageLagDays: 3},
+	{SubScore: SubScoreAcuteRisk, TargetKind: TargetKindEventStrictT1T3, FloorPct: 0.70, CoverageLagDays: 3},
+	{SubScore: SubScoreChronicLoad, TargetKind: TargetKindChronicLabel, FloorPct: 0.10, CoverageLagDays: health.ChronicLoadForwardWindowDays},
+	{SubScore: SubScoreChronicLoad, TargetKind: TargetKindChronicAcuteDensity, FloorPct: 0.10, CoverageLagDays: health.ChronicLoadForwardWindowDays},
 }
 
 var readinessMonitoringClassifierTargets = []struct {
@@ -118,10 +121,7 @@ func (s *DB) LoadReadinessMonitoringSummary(asOfDate string) (*ReadinessMonitori
 		BaselineDays:  ReadinessMonitoringBaseDays,
 		OverallStatus: MonitoringStatusOK,
 	}
-	from14 := asOf.AddDate(0, 0, -(ReadinessMonitoringWindowDays - 1)).Format(isoDate)
-	to := asOf.Format(isoDate)
-
-	coverage, err := s.loadReadinessCoverageRows(from14, to)
+	coverage, err := s.loadReadinessCoverageRows(asOf)
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +139,7 @@ func (s *DB) LoadReadinessMonitoringSummary(asOfDate string) (*ReadinessMonitori
 	}
 	out.UnknownRateRows = unknown
 
-	alerts, err := s.loadReadinessSourceEpochAlerts(to)
+	alerts, err := s.loadReadinessSourceEpochAlerts(asOf.Format(isoDate))
 	if err != nil {
 		return nil, err
 	}
@@ -149,55 +149,12 @@ func (s *DB) LoadReadinessMonitoringSummary(asOfDate string) (*ReadinessMonitori
 	return out, nil
 }
 
-func (s *DB) loadReadinessCoverageRows(from, to string) ([]ReadinessCoverageRow, error) {
+func (s *DB) loadReadinessCoverageRows(asOf time.Time) ([]ReadinessCoverageRow, error) {
 	ctx, cancel := queryCtx()
 	defer cancel()
 
-	rows, err := s.pool.Query(ctx, `
-		SELECT sub_score, target_kind, eligible, eligibility_reason
-		  FROM target_snapshots
-		 WHERE date BETWEEN $1 AND $2
-	`, from, to)
-	if err != nil {
-		return nil, fmt.Errorf("loadReadinessCoverageRows: %w", err)
-	}
-	defer rows.Close()
-
-	type acc struct {
-		rows    int
-		elig    int
-		reasons map[string]int
-	}
-	byKey := map[string]*acc{}
-	for rows.Next() {
-		var subScore, targetKind, reason string
-		var eligible bool
-		if err := rows.Scan(&subScore, &targetKind, &eligible, &reason); err != nil {
-			return nil, fmt.Errorf("loadReadinessCoverageRows scan: %w", err)
-		}
-		key := subScore + "\x00" + targetKind
-		a := byKey[key]
-		if a == nil {
-			a = &acc{reasons: map[string]int{}}
-			byKey[key] = a
-		}
-		a.rows++
-		if eligible {
-			a.elig++
-		}
-		if reason == "" {
-			reason = "unknown"
-		}
-		a.reasons[reason]++
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("loadReadinessCoverageRows rows: %w", err)
-	}
-
 	out := make([]ReadinessCoverageRow, 0, len(readinessMonitoringTargets))
 	for _, target := range readinessMonitoringTargets {
-		key := target.SubScore + "\x00" + target.TargetKind
-		a := byKey[key]
 		row := ReadinessCoverageRow{
 			SubScore:     target.SubScore,
 			TargetKind:   target.TargetKind,
@@ -207,31 +164,70 @@ func (s *DB) loadReadinessCoverageRows(from, to string) ([]ReadinessCoverageRow,
 			Status:       MonitoringStatusInsufficient,
 			ReasonCounts: map[string]int{},
 		}
-		if a != nil {
-			row.Rows = a.rows
-			if row.Rows < row.ExpectedRows {
-				row.MissingRows = row.ExpectedRows - row.Rows
-				a.reasons["missing_rows"] = row.MissingRows
-			} else {
-				row.MissingRows = 0
-			}
-			row.Eligible = a.elig
-			row.ReasonCounts = a.reasons
-			if a.rows > 0 {
-				row.EligiblePct = float64(a.elig) / float64(a.rows)
-				row.Status = MonitoringStatusOK
-				if row.MissingRows > 0 {
-					row.Status = MonitoringStatusInsufficient
-				}
-				if row.EligiblePct < target.FloorPct {
-					row.Status = MonitoringStatusWarn
-				}
-			}
-			row.TopReason, row.TopReasonRows = topReason(a.reasons)
+
+		from, to := monitoringCoverageWindow(asOf, target)
+		rows, err := s.pool.Query(ctx, `
+			SELECT eligible, eligibility_reason
+			  FROM target_snapshots
+			 WHERE sub_score = $1
+			   AND target_kind = $2
+			   AND date BETWEEN $3 AND $4
+		`, target.SubScore, target.TargetKind, from, to)
+		if err != nil {
+			return nil, fmt.Errorf("loadReadinessCoverageRows %s/%s: %w",
+				target.SubScore, target.TargetKind, err)
 		}
+
+		for rows.Next() {
+			var reason string
+			var eligible bool
+			if err := rows.Scan(&eligible, &reason); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("loadReadinessCoverageRows scan %s/%s: %w",
+					target.SubScore, target.TargetKind, err)
+			}
+			row.Rows++
+			if eligible {
+				row.Eligible++
+			}
+			if reason == "" {
+				reason = "unknown"
+			}
+			row.ReasonCounts[reason]++
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("loadReadinessCoverageRows rows %s/%s: %w",
+				target.SubScore, target.TargetKind, err)
+		}
+		rows.Close()
+
+		if row.Rows < row.ExpectedRows {
+			row.MissingRows = row.ExpectedRows - row.Rows
+			row.ReasonCounts["missing_rows"] = row.MissingRows
+		} else {
+			row.MissingRows = 0
+		}
+		if row.Rows > 0 {
+			row.EligiblePct = float64(row.Eligible) / float64(row.Rows)
+			row.Status = MonitoringStatusOK
+			if row.MissingRows > 0 {
+				row.Status = MonitoringStatusInsufficient
+			}
+			if row.EligiblePct < target.FloorPct {
+				row.Status = MonitoringStatusWarn
+			}
+		}
+		row.TopReason, row.TopReasonRows = topReason(row.ReasonCounts)
 		out = append(out, row)
 	}
 	return out, nil
+}
+
+func monitoringCoverageWindow(asOf time.Time, target monitoringTarget) (from, to string) {
+	windowEnd := asOf.AddDate(0, 0, -target.CoverageLagDays)
+	windowStart := windowEnd.AddDate(0, 0, -(ReadinessMonitoringWindowDays - 1))
+	return windowStart.Format(isoDate), windowEnd.Format(isoDate)
 }
 
 func (s *DB) loadReadinessDriftRows(asOf time.Time) ([]ReadinessDriftRow, error) {
