@@ -49,7 +49,7 @@ const recoveryStabilityFormulaVersion = 2
 // recoveryStabilityFeatureVersion bumps when the feature set changes.
 // Separate from formula_version because feature surface and target
 // formula evolve independently.
-const recoveryStabilityFeatureVersion = 1
+const recoveryStabilityFeatureVersion = 2
 
 // recoveryStabilityPersonalSleepTargetH is the constant target nightly
 // sleep duration used by the sleep-debt feature. Hard-coded for Phase 0
@@ -144,6 +144,11 @@ func (s *DB) BackfillRecoveryStabilitySnapshots(from, to string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	archLoadFrom := fromT.AddDate(0, 0, -14).Format(isoDate)
+	archByDate, err := s.LoadSleepArchitectureDays(archLoadFrom, to)
+	if err != nil {
+		return 0, err
+	}
 
 	// Index rows by date for O(1) lookups during feature/target gather.
 	byDate := make(map[string]health.SleepRow, len(rows))
@@ -157,7 +162,7 @@ func (s *DB) BackfillRecoveryStabilitySnapshots(from, to string) (int, error) {
 	var firstErr error
 	for d := fromT; !d.After(toT); d = d.AddDate(0, 0, 1) {
 		date := d.Format(isoDate)
-		if err := s.writeRecoveryStabilityRow(context.Background(), d, date, byDate, effByDate); err != nil {
+		if err := s.writeRecoveryStabilityRow(context.Background(), d, date, byDate, effByDate, archByDate); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -174,6 +179,7 @@ func (s *DB) writeRecoveryStabilityRow(
 	date string,
 	byDate map[string]health.SleepRow,
 	effByDate map[string]health.SleepEfficiencyResult,
+	archByDate map[string]SleepArchitectureDay,
 ) error {
 	_ = ctx // reserved for future use; all storage helpers below use their own queryCtx
 
@@ -193,7 +199,7 @@ func (s *DB) writeRecoveryStabilityRow(
 	rollingTarget := rolling3dTarget(t, effByDate, byDate)
 
 	// --- Feature payload: data strictly ≤ end of day `t` ---
-	features := buildRecoveryFeatures(t, epochStart, byDate, effByDate)
+	features := buildRecoveryFeatures(t, epochStart, byDate, effByDate, archByDate)
 	featuresJSON, err := json.Marshal(features)
 	if err != nil {
 		return fmt.Errorf("marshal features %s: %w", date, err)
@@ -362,9 +368,9 @@ func rolling3dTarget(
 // definitive blocker.
 func firstBlockingReason(reasons []string) string {
 	priority := map[string]int{
-		health.SleepEligibilitySleepTotalOutOfRange: 4,
-		health.SleepEligibilityMissingAwakeUnknown:  3,
-		health.SleepEligibilityCoarseOnlySource:     2,
+		health.SleepEligibilitySleepTotalOutOfRange:  4,
+		health.SleepEligibilityMissingAwakeUnknown:   3,
+		health.SleepEligibilityCoarseOnlySource:      2,
 		health.SleepEligibilityOKAwakeStructuralZero: 1,
 		health.SleepEligibilityOK:                    0,
 	}
@@ -389,6 +395,7 @@ func firstBlockingReason(reasons []string) string {
 // --- Features ----------------------------------------------------------
 
 type recoveryFeatures struct {
+	SleepArchitectureFeatureFields
 	PrevEfficiency     *float64 `json:"prev_efficiency,omitempty"`
 	Mean7d             *float64 `json:"sleep_eff_mean_7d,omitempty"`
 	EWMA45             *float64 `json:"sleep_eff_ewma_45d,omitempty"`
@@ -406,8 +413,10 @@ func buildRecoveryFeatures(
 	epochStart string,
 	byDate map[string]health.SleepRow,
 	effByDate map[string]health.SleepEfficiencyResult,
+	archByDate map[string]SleepArchitectureDay,
 ) recoveryFeatures {
 	var out recoveryFeatures
+	out.SleepArchitectureFeatureFields = BuildSleepArchitectureFeatureFields(t, archByDate)
 
 	// Previous eff: eligibility result for daily_scores row dated `t`
 	// itself (the most recent completed sleep). Plan §3.2: features for

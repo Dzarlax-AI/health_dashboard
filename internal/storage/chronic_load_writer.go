@@ -55,7 +55,7 @@ import (
 //       semantics unchanged; the v2 stamp covers all writer rows
 //       written under the same writer pass.
 const chronicLoadFormulaVersion = 2
-const chronicLoadFeatureVersion = 1
+const chronicLoadFeatureVersion = 2
 
 // Per-tenant settings keys for Chronic Load calibration. Both default
 // to the values calibrated on the `health` tenant in PR #97; other
@@ -226,6 +226,11 @@ func (s *DB) BackfillChronicLoadSnapshots(from, to string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	archLoadFrom := fromT.AddDate(0, 0, -14).Format(isoDate)
+	archByDate, err := s.LoadSleepArchitectureDays(archLoadFrom, to)
+	if err != nil {
+		return 0, err
+	}
 
 	recoveryByDate := make(map[string]recoveryRolling3dRow, len(recovery))
 	for _, r := range recovery {
@@ -247,7 +252,7 @@ func (s *DB) BackfillChronicLoadSnapshots(from, to string) (int, error) {
 		date := d.Format(isoDate)
 		if err := s.writeChronicLoadRow(context.Background(), d, date,
 			cfg, recoveryByDate, recoveryLookup, acute,
-			priorChronic, priorAcuteDensity); err != nil {
+			priorChronic, priorAcuteDensity, archByDate); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -267,6 +272,7 @@ func (s *DB) writeChronicLoadRow(
 	recoveryLookup DailyValueLookup,
 	acuteOrByDate map[string]int,
 	priorChronic, priorAcuteDensity map[string]int,
+	archByDate map[string]SleepArchitectureDay,
 ) error {
 	_ = ctx
 	epoch, err := s.ResolveSourceEpoch(date)
@@ -283,7 +289,7 @@ func (s *DB) writeChronicLoadRow(
 
 	// Feature snapshot is emitted in all cases (eligible or not) so the
 	// (date, sub_score) PK contract holds. Build it once and reuse.
-	features := buildChronicLoadFeatures(t, epochStart, recoveryByDate, recoveryLookup, pairedCount, warmupMet)
+	features := buildChronicLoadFeatures(t, epochStart, recoveryByDate, recoveryLookup, pairedCount, warmupMet, archByDate)
 	featuresJSON, err := json.Marshal(features)
 	if err != nil {
 		return fmt.Errorf("marshal chronic features %s: %w", date, err)
@@ -343,15 +349,15 @@ func (s *DB) writeChronicLoadRow(
 	// observability gate below can decide whether a negative label is
 	// honest or whether the unobserved days could have flipped it.
 	type dayCell struct {
-		Date              string   `json:"date"`
-		Recovery          *float64 `json:"recovery_3d,omitempty"`
-		BaselineM         *float64 `json:"baseline_mean,omitempty"`
-		BaselineSD        *float64 `json:"baseline_sd,omitempty"`
-		Z                 *float64 `json:"z,omitempty"`
-		Breach            bool     `json:"breach"`
-		RecoveryObserved  bool     `json:"recovery_observed"`
-		AcuteOR           int      `json:"acute_or"`
-		AcuteObserved     bool     `json:"acute_observed"`
+		Date             string   `json:"date"`
+		Recovery         *float64 `json:"recovery_3d,omitempty"`
+		BaselineM        *float64 `json:"baseline_mean,omitempty"`
+		BaselineSD       *float64 `json:"baseline_sd,omitempty"`
+		Z                *float64 `json:"z,omitempty"`
+		Breach           bool     `json:"breach"`
+		RecoveryObserved bool     `json:"recovery_observed"`
+		AcuteOR          int      `json:"acute_or"`
+		AcuteObserved    bool     `json:"acute_observed"`
 	}
 	cells := make([]dayCell, 0, health.ChronicLoadForwardWindowDays)
 	var breachCount, acuteCount int
@@ -525,16 +531,17 @@ func (s *DB) writeChronicLoadRow(
 // --- Features ----------------------------------------------------------
 
 type chronicLoadFeatures struct {
-	RecoveryToday      *float64 `json:"recovery_3d_today,omitempty"`
-	BaselineMean45     *float64 `json:"recovery_3d_baseline_mean_45d,omitempty"`
-	BaselineSD45       *float64 `json:"recovery_3d_baseline_sd_45d,omitempty"`
-	BaselineZToday     *float64 `json:"recovery_3d_z_today,omitempty"`
-	EligibleCount45    int      `json:"recovery_eligible_count_45d"`
-	EligibleCount180   int      `json:"recovery_eligible_count_180d"`
-	PairedCountToT     int      `json:"paired_count_to_t"`
-	WarmupMet          bool     `json:"warmup_met"`
-	WarmupComplete45   bool     `json:"warmup_complete_45d"`
-	WarmupComplete180  bool     `json:"warmup_complete_180d"`
+	SleepArchitectureFeatureFields
+	RecoveryToday     *float64 `json:"recovery_3d_today,omitempty"`
+	BaselineMean45    *float64 `json:"recovery_3d_baseline_mean_45d,omitempty"`
+	BaselineSD45      *float64 `json:"recovery_3d_baseline_sd_45d,omitempty"`
+	BaselineZToday    *float64 `json:"recovery_3d_z_today,omitempty"`
+	EligibleCount45   int      `json:"recovery_eligible_count_45d"`
+	EligibleCount180  int      `json:"recovery_eligible_count_180d"`
+	PairedCountToT    int      `json:"paired_count_to_t"`
+	WarmupMet         bool     `json:"warmup_met"`
+	WarmupComplete45  bool     `json:"warmup_complete_45d"`
+	WarmupComplete180 bool     `json:"warmup_complete_180d"`
 }
 
 func buildChronicLoadFeatures(
@@ -544,11 +551,13 @@ func buildChronicLoadFeatures(
 	recoveryLookup DailyValueLookup,
 	pairedCount int,
 	warmupMet bool,
+	archByDate map[string]SleepArchitectureDay,
 ) chronicLoadFeatures {
 	out := chronicLoadFeatures{
 		PairedCountToT: pairedCount,
 		WarmupMet:      warmupMet,
 	}
+	out.SleepArchitectureFeatureFields = BuildSleepArchitectureFeatureFields(t, archByDate)
 	// Today's Recovery 3d-roll, when eligible.
 	if r, ok := recoveryByDate[t.Format(isoDate)]; ok && r.Eligible && r.Value != nil {
 		out.RecoveryToday = ptrFloat(*r.Value)
