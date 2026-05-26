@@ -1042,14 +1042,21 @@ Re-opens a target's Phase 1 verdict, NOT the model. Each feature
 attempt follows the §3 rules: predeclared physiological hypothesis,
 predeclared metric and stop rule, single PR per attempt.
 
-Candidate hypotheses worth queuing (in suggested order; not yet
-authorised):
+Candidate hypotheses worth queuing / executing:
 
-1. Sleep-architecture features into Recovery Stability and Chronic
+1. **In progress as an evidence PR.** Sleep-architecture features into Recovery Stability and Chronic
    Load — WASO, sleep fragmentation index. Hypothesis: the EWMA45
    floor on Recovery is capturing the level but not the
    *architecture* of sleep, and chronic deterioration of sleep
-   architecture precedes the chronic_label flip.
+   architecture precedes the chronic_label flip. Primary decision
+   point is Recovery `rolling_3d`; Chronic `chronic_label` is
+   secondary/exploratory because sample size and precision are
+   noisier. Stop rule: Recovery must improve MAE by ≥3% versus
+   EWMA45 on the pooled split with no tenant regressing by >1% MAE.
+   Chronic is promotion-eligible only with ≥+5pp precision@R=0.5
+   and no worse top-k precision. The first PR adds feature payloads
+   and a read-only probe only — no chip, baseline, Telegram, or
+   dashboard verdict behavior changes.
 2. Cross-sub_score acute lag features into Chronic and Acute targets
    — using each sub-score's own prior z-scores as features in the
    other's classifier. Explicit hypothesis required before this

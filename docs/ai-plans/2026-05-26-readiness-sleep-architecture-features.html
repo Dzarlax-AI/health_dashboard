@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Implementation Plan: Readiness Sleep Architecture Features</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #1f2937; line-height: 1.5; }
+    main { max-width: 1120px; margin: 0 auto; padding: 32px; }
+    section { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin: 16px 0; }
+    h1, h2, h3 { line-height: 1.2; margin-top: 0; }
+    code { background: #f3f4f6; padding: 2px 5px; border-radius: 4px; }
+    ul, ol { padding-left: 24px; }
+    li { margin: 6px 0; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #e5e7eb; font-size: 12px; font-weight: 600; }
+    .callout { border-left: 4px solid #2563eb; }
+    .risk { border-left: 4px solid #dc2626; }
+    .approval { border-left: 4px solid #d97706; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+    .card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 14px; background: #fbfdff; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Implementation Plan: Readiness Sleep Architecture Features</h1>
+  <p class="badge">Approval required before implementation</p>
+
+  <section>
+    <h2>Task Summary</h2>
+    <p>
+      Implement the next Readiness redesign backlog item:
+      <code>§6.5: sleep-architecture features -&gt; Recovery / Chronic</code>.
+      The hypothesis is that the current EWMA45 floor captures sleep level
+      through efficiency, but not sleep architecture: wake after sleep onset
+      (WASO), wake-bout fragmentation, and sleep continuity may explain
+      future <code>recovery_stability/rolling_3d</code> and
+      <code>chronic_load/chronic_label</code> outcomes.
+    </p>
+  </section>
+
+  <section class="callout">
+    <h2>Recommended Approach</h2>
+    <p>
+      Ship this as an evidence PR, not as a chip/model behavior change.
+      Add segment-derived sleep architecture fields to
+      <code>feature_snapshots</code> for Recovery and Chronic, and add a
+      read-only feasibility probe with predeclared metrics. Do not change
+      <code>target_snapshots</code>, <code>naive_baselines</code>, chip
+      thresholds, Telegram copy, or dashboard verdicts in this PR.
+    </p>
+    <p>
+      Primary decision point: Recovery <code>rolling_3d</code>. Chronic
+      <code>chronic_label</code> remains secondary/exploratory because it has
+      fewer events and noisier tenant-level precision.
+      Rationale: prior Phase 1 attempts closed on naive baselines. A new
+      feature class needs evidence before replacing the production floor.
+      This also keeps rollback simple: feature payloads can be overwritten
+      by feature-version rollback without changing user-facing behavior.
+    </p>
+  </section>
+
+  <section>
+    <h2>Current Behavior</h2>
+    <ul>
+      <li><code>internal/storage/recovery_stability_writer.go</code> reads sleep from <code>daily_scores</code> only.</li>
+      <li>Recovery targets are future labels: <code>daily_point = night t+1</code>, <code>rolling_3d = mean(t+1..t+3)</code>.</li>
+      <li>Recovery features currently include previous efficiency, 7-day mean, EWMA45, EWMA180, sleep debt, and eligible counts.</li>
+      <li><code>internal/storage/chronic_load_writer.go</code> consumes Recovery <code>rolling_3d</code> outputs for <code>chronic_label</code>.</li>
+      <li>Existing segment helpers already parse and merge sleep segments in <code>wake_time_for_date.go</code> and <code>sri.go</code>, but they are shaped for wake time / SRI, not per-date architecture features.</li>
+      <li>Live DB check on 2026-05-26: last 90 days have segment data on both tenants, but source/stage double-counting makes raw sums unsafe without the existing winning-source logic.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <ul>
+      <li>For each feature date <code>t</code>, compute architecture only from sleep segments available by end of day <code>t</code>.</li>
+      <li>Persist Recovery feature payload version 2 with new trailing-window fields such as <code>waso_hours_7d</code>, <code>explicit_wake_bouts_7d</code>, <code>gap_inferred_wake_bouts_7d</code>, <code>fragmentation_index_7d</code>, and coverage/confidence counters.</li>
+      <li>Persist Chronic feature payload version 2 with 7-day and 14-day sleep architecture summaries before <code>t</code>; Chronic labels still use the existing future Recovery window.</li>
+      <li>Add a read-only feasibility command/report that compares architecture-augmented probes against the existing floors.</li>
+      <li>Keep production baselines and chip behavior unchanged unless the probe passes the predeclared stop rule and the operator approves a follow-up PR.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Predeclared Metrics and Stop Rule</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>Recovery rolling_3d</h3>
+        <p>
+          Compare an architecture-augmented linear probe against
+          <code>EWMA45</code> on <code>recovery_stability/rolling_3d</code>.
+          Primary metric: MAE on the same leakage-safe split convention used
+          in the readiness plan. Secondary: directional hit rate for
+          below-baseline deterioration.
+          Pass rule: pooled MAE improves by at least 3% versus EWMA45, and
+          no tenant regresses by more than 1% MAE.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Chronic label</h3>
+        <p>
+          Compare an architecture-augmented classifier against
+          <code>event_base_rate</code> on <code>chronic_load/chronic_label</code>.
+          Primary metric: precision at the existing operating point
+          (<code>R=0.5</code>). Secondary: AUC and top-k precision.
+          Promotion rule: precision@R=0.5 improves by at least +5pp with no
+          worse top-k precision. Otherwise Chronic remains exploratory even
+          if Recovery passes.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Stop Rule</h3>
+        <p>
+          Any inconclusive, mixed, or below-threshold result stops after the
+          read-only feature/probe PR. Do not tune thresholds, swap models, or
+          ship user-facing behavior changes from weak evidence.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Files Likely to Change</h2>
+    <ul>
+      <li><code>internal/storage/sleep_architecture.go</code> - new per-date segment architecture loader and calculator.</li>
+      <li><code>internal/storage/sleep_architecture_test.go</code> - unit tests for source picking, WASO, bout counting, and fragmentation edge cases.</li>
+      <li><code>internal/storage/recovery_stability_writer.go</code> - bump feature version and add architecture summaries to Recovery features.</li>
+      <li><code>internal/storage/recovery_stability_writer_integration_test.go</code> - verify feature payload v2 writes the new fields without changing targets.</li>
+      <li><code>internal/storage/chronic_load_writer.go</code> - bump feature version and add prior-window architecture summaries to Chronic features.</li>
+      <li><code>internal/storage/chronic_load_writer_integration_test.go</code> - verify Chronic target semantics remain unchanged while feature payload expands.</li>
+      <li><code>cmd/readiness_sleep_architecture_probe/main.go</code> - new read-only feasibility probe over existing snapshots.</li>
+      <li><code>READINESS_REDESIGN_PLAN.md</code> - record this §6.5 attempt, metrics, and decision result after implementation.</li>
+      <li><code>docs/ai-plans/2026-05-26-readiness-sleep-architecture-features.html</code> - update after implementation with actual results.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation Steps</h2>
+    <ol>
+      <li>Create a fresh feature branch from <code>origin/main</code> for implementation after this plan is approved.</li>
+      <li>Add a focused sleep architecture calculator that uses one winning source per night and segment rows only.</li>
+      <li>Compute daily architecture fields: asleep duration, WASO hours, explicit wake-bout count, gap-inferred wake-bout count, longest wake bout, fragmentation index, source, confidence, and coverage reason.</li>
+      <li>Add rolling summary helpers for <code>[t-6,t]</code>, <code>[t-13,t]</code>, and optional <code>[t-44,t]</code> windows with explicit eligible counts.</li>
+      <li>Extend Recovery feature snapshots to version 2; keep target and baseline formula versions unchanged.</li>
+      <li>Extend Chronic feature snapshots to version 2 using only data at or before <code>t</code>.</li>
+      <li>Add the read-only feasibility probe in the same PR and run it on both <code>health</code> and <code>health_mariia</code>.</li>
+      <li>Update the plan with measured results and a recommendation: stop, collect more data, or open a separate behavior-changing PR.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Feature Payload Contract</h2>
+    <ul>
+      <li>Explicit wake and inferred gaps are separate: <code>explicit_wake_bouts_*</code> comes only from <code>sleep_awake</code>; <code>gap_inferred_wake_bouts_*</code> comes only from gaps between asleep segments.</li>
+      <li>Each architecture window carries first-class quality fields: <code>architecture_eligible_days_*</code>, <code>architecture_source_days_*</code>, <code>architecture_missing_reason_counts_*</code>, and <code>architecture_confidence_*</code>.</li>
+      <li>Low-confidence or coarse-only nights should not emit zero-valued architecture metrics that a probe could misread as healthy sleep.</li>
+      <li>Feature payloads must identify whether architecture metrics are explicit, inferred, mixed, or unavailable.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Leakage Contract</h2>
+    <ul>
+      <li>Feature row for date <code>t</code> may use only sleep segments whose end timestamp is at or before end of tenant-local day <code>t</code>.</li>
+      <li>Recovery labels may look at <code>t+1..t+3</code>; Chronic labels may look at <code>t+1..t+14</code>; feature builders must never read those forward windows.</li>
+      <li>Tests must prove that adding sleep segments on <code>t+1</code> does not change Recovery features for <code>t</code>.</li>
+      <li>Tests must prove that adding Recovery/segment data inside <code>t+1..t+14</code> does not change Chronic features for <code>t</code>.</li>
+      <li>Probe input building must ignore or reject any feature whose availability date is after the row date.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Data and API Impact</h2>
+    <ul>
+      <li>No schema migration expected; <code>feature_snapshots.features</code> is JSONB and designed for feature-version bumps.</li>
+      <li>No user-facing API contract changes expected in this PR.</li>
+      <li>No Telegram, dashboard chip, or readiness score copy changes expected.</li>
+      <li>Backfill will overwrite Recovery and Chronic <code>feature_snapshots</code> with higher <code>feature_version</code>; target and baseline rows should remain semantically identical.</li>
+      <li>Probe command is read-only against production data unless explicitly run alongside a backfill.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <ul>
+      <li><code>go test ./internal/storage -run "SleepArchitecture|RecoveryStability|ChronicLoad"</code></li>
+      <li><code>go test ./internal/health ./internal/storage</code></li>
+      <li><code>go test ./...</code></li>
+      <li>Read-only live check: run the probe against <code>health</code> and <code>health_mariia</code> using <code>~/.health-db</code>, record sample sizes and floor comparison.</li>
+      <li>Regression SQL after a test backfill: confirm <code>target_snapshots</code> counts and positive rates do not change unexpectedly for Recovery/Chronic.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks and Edge Cases</h2>
+    <ul>
+      <li>Double-counting sleep stages across sources or overlapping stage rows would fabricate WASO/fragmentation. The calculator must pick one source before deriving features.</li>
+      <li><code>sleep_awake</code> may be absent for true zero-awake Apple Watch nights; absence must not be treated as evidence of zero WASO unless staged rows cover the main sleep.</li>
+      <li>Coarse-only sources can provide <code>sleep_unspecified</code> but not architecture. They should produce explicit coverage reasons, not zero-valued architecture features.</li>
+      <li>Same-window leakage is the main failure mode: Chronic features for <code>t</code> must not inspect <code>t+1..t+14</code>, even though the label does.</li>
+      <li>Small tenant sample sizes may make the feasibility result inconclusive. In that case, stop and leave the feature payload available for future accumulation.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Manual QA Checklist</h2>
+    <ul>
+      <li>Open admin monitoring after backfill and verify Recovery/Chronic coverage did not regress.</li>
+      <li>Inspect several feature payloads for both tenants: fields are present, counts are plausible, and coverage reasons are explicit.</li>
+      <li>Check deploy logs for startup backfill errors and slow query spikes.</li>
+      <li>Confirm UI chip behavior is unchanged after deploy.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <p>
+      Revert the code commit and redeploy. If feature rows were backfilled,
+      rerun the previous main build's readiness backfill to overwrite
+      <code>feature_snapshots</code> back to version 1. Because this plan does
+      not change target or baseline semantics, no destructive data migration
+      should be required.
+    </p>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Should the first implementation PR include the feasibility probe, or should it only write feature snapshots and run analysis ad hoc from SQL/Go tests?</li>
+      <li>What minimum sample size should be required before accepting a Chronic result as actionable for Maria's tenant?</li>
+      <li>Should true WASO require explicit <code>sleep_awake</code> segments, or can long gaps between asleep segments count as wake bouts when <code>sleep_awake</code> is absent?</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval Gate</h2>
+    <p>
+      Implementation must not start until this plan is explicitly approved.
+      Approval means the next step is a code PR that adds sleep architecture
+      features and a read-only feasibility probe, while leaving production
+      chips and baselines unchanged.
+    </p>
+  </section>
+
+  <section>
+    <h2>Implementation Update</h2>
+    <ul>
+      <li>Added <code>internal/storage/sleep_architecture.go</code> with one-source-per-night architecture calculation, explicit wake bouts, gap-inferred bouts, WASO, fragmentation index, coverage reasons, and confidence fields.</li>
+      <li>Bumped Recovery and Chronic <code>feature_version</code> to 2 and embedded flattened architecture fields plus <code>architecture_available_through</code>.</li>
+      <li>Added leakage regression tests proving Recovery/Chronic features for <code>t</code> do not change when future-window architecture data is added.</li>
+      <li>Added <code>cmd/readiness_sleep_architecture_probe</code>, a read-only probe comparing Recovery against EWMA45 and Chronic against event_base_rate.</li>
+      <li>Read-only production probe before deploying/backfilling v2 rows returned <code>inconclusive</code> for both tenants because current prod has zero v2 architecture feature samples. This is expected before the new writer version runs.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Verification Run</h2>
+    <ul>
+      <li><code>go test ./cmd/readiness_sleep_architecture_probe</code></li>
+      <li><code>go test ./internal/storage -run "SleepArchitecture|RecoveryStability|ChronicLoad"</code></li>
+      <li><code>go test ./...</code></li>
+      <li><code>go run ./cmd/readiness_sleep_architecture_probe --schema health,health_mariia --min-samples 20</code> returned four inconclusive rows due to missing v2 feature samples on current prod.</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>
