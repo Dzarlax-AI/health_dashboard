@@ -112,6 +112,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /fragments/metrics-list", h.guard(h.fragmentMetricsList))
 	mux.HandleFunc("GET /fragments/admin-status", h.adminGuard(h.fragmentAdminStatus))
 	mux.HandleFunc("GET /fragments/admin-readiness-contract", h.adminGuard(h.fragmentAdminReadinessContract))
+	mux.HandleFunc("GET /fragments/admin-readiness-monitoring", h.adminGuard(h.fragmentAdminReadinessMonitoring))
 	mux.HandleFunc("GET /fragments/admin-readiness-onboarding/step-1", h.adminGuard(h.fragmentOnboardingStep1))
 	mux.HandleFunc("GET /fragments/admin-readiness-onboarding/step-2", h.adminGuard(h.fragmentOnboardingStep2))
 	mux.HandleFunc("GET /fragments/admin-readiness-onboarding/step-3", h.adminGuard(h.fragmentOnboardingStep3))
@@ -151,6 +152,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/readiness-redesign/config", h.adminGuard(h.adminReadinessRedesignConfig))
 	mux.HandleFunc("/api/admin/readiness-redesign/operational-contract", h.adminGuard(h.adminReadinessRedesignOperationalContract))
 	mux.HandleFunc("/api/admin/readiness-redesign/chip-calibrations", h.adminGuard(h.adminReadinessRedesignChipCalibrations))
+	mux.HandleFunc("/api/admin/readiness-redesign/monitoring", h.adminGuard(h.adminReadinessRedesignMonitoring))
 	mux.HandleFunc("/api/admin/gaps", h.adminGuard(h.adminGaps))
 	mux.HandleFunc("/api/admin/quality-audit", h.adminGuard(h.adminQualityAudit))
 	mux.HandleFunc("/api/admin/quality-fix", h.adminGuard(h.adminQualityFix))
@@ -828,6 +830,103 @@ func (h *Handler) fragmentAdminReadinessContract(w http.ResponseWriter, r *http.
 		EmptyMsg: T(langFromRequest(r), "admin_contract_empty"),
 	}
 	renderFragment(w, "admin-readiness-contract", data)
+}
+
+func (h *Handler) fragmentAdminReadinessMonitoring(w http.ResponseWriter, r *http.Request) {
+	scoped := strings.TrimSpace(r.URL.Query().Get("schema"))
+	scopes, scopeErr := h.resolveOperationalContractTenants(r, scoped)
+	if scopeErr != nil {
+		http.Error(w, scopeErr.Error(), scopeErr.code)
+		return
+	}
+
+	type coverageView struct {
+		SubScore    string
+		TargetKind  string
+		Status      string
+		Coverage    string
+		Floor       string
+		TopReason   string
+		ReasonTitle string
+	}
+	type driftView struct {
+		SubScore   string
+		TargetKind string
+		Status     string
+		Recent     string
+		Baseline   string
+		Delta      string
+	}
+	type unknownView struct {
+		SubScore string
+		Status   string
+		Recent   string
+		Baseline string
+	}
+	type tenantView struct {
+		Tenant            string
+		AsOf              string
+		Status            string
+		Coverage          []coverageView
+		Drift             []driftView
+		Unknown           []unknownView
+		SourceEpochAlerts []storage.ReadinessSourceEpochAlert
+	}
+
+	view := make([]tenantView, 0, len(scopes))
+	for _, scope := range scopes {
+		asOf := tenantLocalToday(h, scope.db, scope.schema)
+		summary, err := scope.db.LoadReadinessMonitoringSummary(asOf)
+		if err != nil {
+			http.Error(w, "load monitoring for "+scope.schema+": "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		tv := tenantView{
+			Tenant:            scope.schema,
+			AsOf:              summary.AsOfDate,
+			Status:            summary.OverallStatus,
+			SourceEpochAlerts: summary.SourceEpochAlerts,
+		}
+		for _, row := range summary.CoverageRows {
+			tv.Coverage = append(tv.Coverage, coverageView{
+				SubScore:    row.SubScore,
+				TargetKind:  row.TargetKind,
+				Status:      row.Status,
+				Coverage:    fmt.Sprintf("%d/%d eligible, %d/%d rows (%s)", row.Eligible, row.Rows, row.Rows, row.ExpectedRows, formatMonitoringPct(row.EligiblePct)),
+				Floor:       formatMonitoringPct(row.FloorPct),
+				TopReason:   row.TopReason,
+				ReasonTitle: monitoringReasonTitle(row.ReasonCounts),
+			})
+		}
+		for _, row := range summary.DriftRows {
+			tv.Drift = append(tv.Drift, driftView{
+				SubScore:   row.SubScore,
+				TargetKind: row.TargetKind,
+				Status:     row.Status,
+				Recent:     fmt.Sprintf("%d/%d (%s)", row.RecentPositives, row.RecentEligible, formatMonitoringPct(row.RecentRate)),
+				Baseline:   fmt.Sprintf("%d/%d (%s)", row.BaselinePositives, row.BaselineEligible, formatMonitoringPct(row.BaselineRate)),
+				Delta:      formatSignedMonitoringPct(row.Delta),
+			})
+		}
+		for _, row := range summary.UnknownRateRows {
+			tv.Unknown = append(tv.Unknown, unknownView{
+				SubScore: row.SubScore,
+				Status:   row.Status,
+				Recent:   fmt.Sprintf("%d/%d (%s)", row.RecentUnknown, row.RecentRows, formatMonitoringPct(row.RecentRate)),
+				Baseline: fmt.Sprintf("%d/%d (%s)", row.BaselineUnknown, row.BaselineRows, formatMonitoringPct(row.BaselineRate)),
+			})
+		}
+		view = append(view, tv)
+	}
+
+	data := struct {
+		Lang string
+		Rows []tenantView
+	}{
+		Lang: langFromRequest(r),
+		Rows: view,
+	}
+	renderFragment(w, "admin-readiness-monitoring", data)
 }
 
 func setLangCookie(w http.ResponseWriter, r *http.Request) {
@@ -1821,6 +1920,43 @@ func (h *Handler) adminReadinessRedesignOperationalContract(w http.ResponseWrite
 	})
 }
 
+// adminReadinessRedesignMonitoring returns a read-only per-tenant
+// summary for plan §6.4: target coverage, classifier positive-rate
+// drift, source-epoch gaps, and chip unknown/pending rates.
+//
+// GET /api/admin/readiness-redesign/monitoring?schema=<tenant|all>
+func (h *Handler) adminReadinessRedesignMonitoring(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	scoped := strings.TrimSpace(r.URL.Query().Get("schema"))
+	scopes, scopeErr := h.resolveOperationalContractTenants(r, scoped)
+	if scopeErr != nil {
+		http.Error(w, scopeErr.Error(), scopeErr.code)
+		return
+	}
+
+	type tenantSummary struct {
+		Tenant string `json:"tenant"`
+		*storage.ReadinessMonitoringSummary
+	}
+	rows := make([]tenantSummary, 0, len(scopes))
+	for _, scope := range scopes {
+		asOf := tenantLocalToday(h, scope.db, scope.schema)
+		summary, err := scope.db.LoadReadinessMonitoringSummary(asOf)
+		if err != nil {
+			http.Error(w, "load monitoring for "+scope.schema+": "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		rows = append(rows, tenantSummary{Tenant: scope.schema, ReadinessMonitoringSummary: summary})
+	}
+	jsonResponse(w, map[string]any{
+		"tenants": tenantSchemas(scopes),
+		"rows":    rows,
+	})
+}
+
 // operationalContractScope is one tenant resolved for the
 // operational-contract surface.
 type operationalContractScope struct {
@@ -1981,6 +2117,30 @@ func buildChipCell(row storage.OperationalContractRow) chipCell {
 	}
 	cell.Title = strings.Join(parts, " · ")
 	return cell
+}
+
+func formatMonitoringPct(v float64) string {
+	return fmt.Sprintf("%.0f%%", v*100)
+}
+
+func formatSignedMonitoringPct(v float64) string {
+	return fmt.Sprintf("%+.0f%%", v*100)
+}
+
+func monitoringReasonTitle(reasons map[string]int) string {
+	if len(reasons) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(reasons))
+	for k := range reasons {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%d", k, reasons[k]))
+	}
+	return strings.Join(parts, " · ")
 }
 
 func tenantSchemas(scopes []operationalContractScope) []string {

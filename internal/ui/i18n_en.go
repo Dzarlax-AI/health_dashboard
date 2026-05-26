@@ -667,6 +667,21 @@ var translationsEn = map[string]string{
 	"admin_contract_col_acute":     "acute",
 	"admin_contract_empty":         "no rows yet — run the readiness redesign backfill first",
 
+	// ─── Admin: readiness naive-layer monitoring fragment ───────────
+	"admin_monitoring_title":           "Readiness naive-layer monitoring",
+	"admin_monitoring_desc":            "Read-only §6.4 checks over target coverage, classifier drift, source epochs, and chip unknown rates.",
+	"admin_monitoring_empty":           "no monitoring rows yet",
+	"admin_monitoring_as_of":           "as of",
+	"admin_monitoring_col_signal":      "signal",
+	"admin_monitoring_col_target":      "target",
+	"admin_monitoring_col_status":      "status",
+	"admin_monitoring_col_value":       "value",
+	"admin_monitoring_col_reference":   "reference",
+	"admin_monitoring_signal_coverage": "coverage",
+	"admin_monitoring_signal_drift":    "positive-rate drift",
+	"admin_monitoring_signal_unknown":  "unknown rate",
+	"admin_monitoring_floor":           "floor",
+
 	// ─── Admin: user-management JS feedback messages ────────────────
 	"admin_users_msg_required":      "Username and password are required.",
 	"admin_users_msg_created":       "User {username} created. API key: {apiKey}",

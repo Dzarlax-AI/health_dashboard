@@ -972,6 +972,12 @@ select:focus, input[type=date]:focus { outline: none; border-color: var(--accent
 .checkin-status--prompted { background: var(--surface2); color: var(--text-secondary); }
 .checkin-status--expired { background: var(--low-bg); color: var(--low); }
 .checkin-status--missing { background: transparent; color: var(--text-tertiary); border: 1px dashed var(--border); }
+.admin-monitoring-block { margin-bottom: 16px; }
+.admin-monitoring-head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  font-size: 13px; color: var(--text-secondary); margin-bottom: 8px;
+}
+.admin-monitoring-head strong { color: var(--fg); font-size: 14px; }
 .admin-actions { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
 .admin-action-card {
   background: var(--card-bg); border: 1px solid var(--card-border);
