@@ -638,6 +638,21 @@ var translationsRu = map[string]string{
 	"admin_contract_col_acute":     "acute",
 	"admin_contract_empty":         "пока ничего нет — сначала запусти readiness redesign backfill",
 
+	// ─── Admin: readiness naive-layer monitoring fragment ───────────
+	"admin_monitoring_title":           "Мониторинг naive-layer readiness",
+	"admin_monitoring_desc":            "Read-only проверки §6.4: покрытие target rows, drift classifier-меток, source epochs и доля unknown chip-состояний.",
+	"admin_monitoring_empty":           "пока нет строк мониторинга",
+	"admin_monitoring_as_of":           "на дату",
+	"admin_monitoring_col_signal":      "сигнал",
+	"admin_monitoring_col_target":      "target",
+	"admin_monitoring_col_status":      "статус",
+	"admin_monitoring_col_value":       "значение",
+	"admin_monitoring_col_reference":   "сравнение",
+	"admin_monitoring_signal_coverage": "coverage",
+	"admin_monitoring_signal_drift":    "positive-rate drift",
+	"admin_monitoring_signal_unknown":  "unknown rate",
+	"admin_monitoring_floor":           "floor",
+
 	// ─── Admin: user-management JS feedback messages ────────────────
 	"admin_users_msg_required":      "Логин и пароль обязательны.",
 	"admin_users_msg_created":       "Пользователь {username} создан. API-ключ: {apiKey}",

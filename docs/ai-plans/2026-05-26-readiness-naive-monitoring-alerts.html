@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Implementation Plan: Readiness Naive-Layer Monitoring and Alerts</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #1f2937; line-height: 1.5; }
+    main { max-width: 1120px; margin: 0 auto; padding: 32px; }
+    section { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin: 16px 0; }
+    h1, h2, h3 { line-height: 1.2; }
+    h1 { margin-bottom: 8px; }
+    code { background: #f3f4f6; padding: 2px 5px; border-radius: 4px; }
+    ul, ol { padding-left: 22px; }
+    li { margin: 6px 0; }
+    table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 14px; }
+    th, td { border: 1px solid #e5e7eb; padding: 8px; text-align: left; vertical-align: top; }
+    th { background: #f9fafb; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #e5e7eb; font-size: 12px; font-weight: 600; }
+    .note { border-left: 4px solid #2563eb; }
+    .risk { border-left: 4px solid #dc2626; }
+    .approval { border-left: 4px solid #d97706; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Implementation Plan: Readiness Naive-Layer Monitoring and Alerts</h1>
+  <p class="badge">Approval required before implementation</p>
+
+  <section>
+    <h2>Task Summary</h2>
+    <p>
+      Implement Readiness redesign plan §6.4: monitoring and operator alerts for the naive layer
+      backed by <code>target_snapshots</code>, <code>naive_baselines</code>, <code>source_epochs</code>,
+      and <code>chip_calibrations</code>. The goal is to catch data/source failures and baseline drift
+      before they silently make dashboard chips look trustworthy.
+    </p>
+  </section>
+
+  <section>
+    <h2>Current Behavior</h2>
+    <ul>
+      <li><code>RunIncrementalBackfillForDatesAt</code> already runs readiness-redesign writers after aggregate cache refresh.</li>
+      <li>The admin API already exposes read-only operational contract rows via <code>/api/admin/readiness-redesign/operational-contract</code>.</li>
+      <li>Binary chip cutoffs are stored in <code>chip_calibrations</code> and can be recomputed per tenant.</li>
+      <li>The admin UI can preview chip state, but it does not summarize health of the naive layer or flag coverage/drift failures.</li>
+      <li>Live DB check on 2026-05-26 showed current rows through 2026-05-26, but uneven recent coverage: recovery rolling_3d 80%, passive rolling_3d 60%, chronic_label 13.3%, chronic_acute_density 0% over the recent 15-row window.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <p>
+      Add a bounded, read-only monitoring surface that summarizes the naive layer per tenant and highlights
+      only actionable states. It should distinguish ordinary forward-window warmup from real failures.
+    </p>
+    <table>
+      <thead>
+        <tr><th>Signal</th><th>Purpose</th><th>Initial behavior</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Target coverage</td>
+          <td>Detect missing eligible rows by sub_score/target_kind over rolling 14 days.</td>
+          <td>Warn below configured/default floor, with reason breakdown.</td>
+        </tr>
+        <tr>
+          <td>Positive-rate drift</td>
+          <td>Detect classifier label distribution shifts versus a 90-day baseline.</td>
+          <td>Warn when 30-day rate deviates by more than 2 standard errors from the 90-day baseline, only when sample size is sufficient.</td>
+        </tr>
+        <tr>
+          <td>Source epoch gap</td>
+          <td>Detect an active epoch with an ended range and no successor.</td>
+          <td>Critical alert in admin summary.</td>
+        </tr>
+        <tr>
+          <td>Unknown / pending chip rate</td>
+          <td>Detect when chip-facing rows turn unknown or pending unusually often.</td>
+          <td>Warn when recent unknown/pending rate is elevated versus rolling baseline.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Recommended Approach</h2>
+    <p>
+      Build one storage read model and one admin endpoint first. Render it in the existing admin tenant panel.
+      Do not send Telegram alerts in the first PR unless the read-only surface proves the thresholds are sane.
+    </p>
+    <p>
+      This avoids creating a noisy alerting loop before we can see how the metrics behave across <code>health</code>
+      and <code>health_mariia</code>. The endpoint response can later feed a Telegram digest or proactive notification
+      without changing the SQL semantics.
+    </p>
+  </section>
+
+  <section>
+    <h2>Assumptions and Unknowns</h2>
+    <ul>
+      <li>Default threshold floors should be conservative and per-target, not one global percentage.</li>
+      <li>Forward-window targets may be legitimately ineligible near the right edge; the summary must expose eligibility reasons before declaring failure.</li>
+      <li>Open question: should the first implementation include Telegram notifications, or only admin UI warnings?</li>
+      <li>Open question: should thresholds be hardcoded constants initially or stored in settings for tenant overrides?</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Files Likely to Change</h2>
+    <ul>
+      <li><code>internal/storage/readiness_redesign_monitoring.go</code> - new read model and SQL for coverage/drift/source-epoch checks.</li>
+      <li><code>internal/storage/readiness_redesign_monitoring_test.go</code> - unit/integration tests for warning classification and edge cases.</li>
+      <li><code>internal/ui/handler.go</code> - new admin endpoint, likely <code>GET /api/admin/readiness-redesign/monitoring</code>.</li>
+      <li><code>internal/ui/admin_readiness_redesign_monitoring_test.go</code> - handler-level tests for schema scoping and response shape.</li>
+      <li><code>internal/ui/templates/pages/admin.html</code> - compact monitoring panel in the existing tenant admin area.</li>
+      <li><code>internal/ui/i18n_en.go</code>, <code>internal/ui/i18n_ru.go</code>, <code>internal/ui/i18n_sr.go</code> - labels and warning copy.</li>
+      <li><code>AGENTS.md</code> and <code>CLAUDE.md</code> - only if the implementation adds durable operational semantics worth documenting.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation Steps</h2>
+    <ol>
+      <li>Define storage structs for per-tenant monitoring summary, per-target coverage rows, drift rows, source-epoch alerts, and unknown-rate rows.</li>
+      <li>Add SQL helpers that operate in the tenant-bound schema and take an explicit <code>asOfDate</code> plus window sizes.</li>
+      <li>Compute coverage over 14 days with reason breakdown from <code>target_snapshots.eligibility_reason</code>.</li>
+      <li>Compute classifier positive-rate drift for <code>event_t1_t3</code>, <code>event_strict_t1_t3</code>, <code>chronic_label</code>, and <code>chronic_acute_density</code> when sample size is sufficient.</li>
+      <li>Detect source-epoch catalogue gaps from <code>source_epochs</code>.</li>
+      <li>Compute chip unknown/pending rate by reusing or mirroring <code>LoadOperationalContractRows</code> state semantics.</li>
+      <li>Add the admin JSON endpoint with the same tenant scoping conventions as operational-contract: current tenant by default, explicit schema, and read-only <code>schema=all</code>.</li>
+      <li>Add a compact admin UI panel with status chips, reason breakdowns, and last computed timestamp.</li>
+      <li>Run tests and live read-only SQL checks against both tenants before considering any proactive notification follow-up.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Impact</h2>
+    <ul>
+      <li><strong>Data model:</strong> no migration expected for the first PR; it reads existing tables.</li>
+      <li><strong>API:</strong> one new admin-only read endpoint.</li>
+      <li><strong>Auth:</strong> use existing <code>adminGuard</code>; no public exposure.</li>
+      <li><strong>Deployment:</strong> normal Go deploy; no external services.</li>
+      <li><strong>UX:</strong> admin-only diagnostic panel; no dashboard user-facing chip changes.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <ul>
+      <li><code>go test ./internal/storage -run ReadinessRedesignMonitoring</code></li>
+      <li><code>go test ./internal/ui -run ReadinessRedesignMonitoring</code></li>
+      <li><code>go test ./...</code></li>
+      <li>Live read-only verification via <code>psql</code> using <code>~/.health-db</code>: compare endpoint output to direct aggregate queries over <code>target_snapshots</code>, <code>naive_baselines</code>, and <code>source_epochs</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Manual QA Checklist</h2>
+    <ul>
+      <li>Admin page loads for the current tenant.</li>
+      <li>Tenant selector refreshes monitoring without mixing schemas.</li>
+      <li><code>schema=all</code> works as read-only aggregation.</li>
+      <li>Warnings show reason breakdowns, not just red labels.</li>
+      <li>Forward-window ineligibility near today's date is not mislabeled as an ingest outage.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks and Edge Cases</h2>
+    <ul>
+      <li>Noisy thresholds could create false urgency; start read-only and conservative.</li>
+      <li>Chronic targets have legitimate forward-window lag; coverage floors must account for target type.</li>
+      <li>Small positive counts can make drift math meaningless; suppress drift warnings below minimum sample sizes.</li>
+      <li>Multi-tenant timezone differences mean all windows must anchor on tenant-local dates, not UTC.</li>
+      <li>Existing operational-contract state logic must not drift from the new unknown-rate calculation.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <p>
+      Because the first PR is read-only, rollback is a normal code revert: remove the endpoint, storage read model,
+      UI panel, and tests. No data migration or cleanup should be required.
+    </p>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Should the first PR include Telegram alerts, or should alerts wait until the admin panel has been observed for a few days?</li>
+      <li>Should initial threshold floors be constants in Go, or tenant settings surfaced in admin?</li>
+      <li>Which targets should count as actionable for same-day alerts versus informational diagnostics only?</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval Gate</h2>
+    <p>
+      Implementation must not start until the user explicitly approves this plan. Approval should also answer whether
+      PR 1 is read-only admin monitoring only, or includes Telegram/proactive notifications.
+    </p>
+  </section>
+
+  <section>
+    <h2>Actual Implementation</h2>
+    <p>
+      Implemented after approval on branch <code>codex/readiness-naive-monitoring</code>. The first PR stays read-only:
+      no Telegram/proactive notifications, no migrations, and no writes outside existing test-created temporary schemas.
+    </p>
+    <ul>
+      <li>Added storage monitoring summary for coverage, classifier positive-rate drift, source-epoch gaps, and chip unknown/pending rates.</li>
+      <li>Added <code>GET /api/admin/readiness-redesign/monitoring</code> with the same tenant scoping conventions as operational-contract.</li>
+      <li>Added <code>GET /fragments/admin-readiness-monitoring</code> and a compact admin Status & diagnostics panel.</li>
+      <li>Added English, Russian, and Serbian UI labels.</li>
+      <li>Added storage and handler tests for the new monitoring surface.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Verification Run</h2>
+    <ul>
+      <li><code>go test ./internal/storage -run ReadinessMonitoring</code> - passed.</li>
+      <li><code>go test ./internal/ui -run ReadinessRedesignMonitoring</code> - passed.</li>
+      <li><code>go test ./...</code> - passed.</li>
+      <li><code>go test ./internal/storage -run ReadinessMonitoring -count=1 -v</code> with <code>~/.health-db</code> - passed against a temporary Postgres schema.</li>
+      <li><code>go test ./internal/ui -run ReadinessRedesignMonitoring -count=1 -v</code> with <code>~/.health-db</code> - passed against a temporary Postgres schema.</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>

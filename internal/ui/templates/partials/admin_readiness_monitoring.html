@@ -1,0 +1,64 @@
+{{define "admin-readiness-monitoring"}}
+{{if not .Rows}}
+<div class="admin-empty-state">{{T .Lang "admin_monitoring_empty"}}</div>
+{{else}}
+{{range .Rows}}
+<div class="admin-monitoring-block">
+  <div class="admin-monitoring-head">
+    <strong>{{.Tenant}}</strong>
+    <span class="checkin-status checkin-status--{{if eq .Status "ok"}}answered{{else if eq .Status "critical"}}expired{{else if eq .Status "warn"}}late_answered{{else}}prompted{{end}}">{{.Status}}</span>
+    <span class="muted">{{T $.Lang "admin_monitoring_as_of"}} {{.AsOf}}</span>
+  </div>
+
+  {{if .SourceEpochAlerts}}
+  <div class="alert alert--danger" style="margin:8px 0">
+    {{range .SourceEpochAlerts}}
+    <div>{{.Kind}}/{{.EpochID}}: {{.Message}} ({{.EndDate}})</div>
+    {{end}}
+  </div>
+  {{end}}
+
+  <table class="admin-cache-table">
+    <thead>
+      <tr>
+        <th>{{T $.Lang "admin_monitoring_col_signal"}}</th>
+        <th>{{T $.Lang "admin_monitoring_col_target"}}</th>
+        <th>{{T $.Lang "admin_monitoring_col_status"}}</th>
+        <th>{{T $.Lang "admin_monitoring_col_value"}}</th>
+        <th>{{T $.Lang "admin_monitoring_col_reference"}}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Coverage}}
+      <tr>
+        <td>{{T $.Lang "admin_monitoring_signal_coverage"}}</td>
+        <td><code>{{.SubScore}}/{{.TargetKind}}</code></td>
+        <td>{{.Status}}</td>
+        <td title="{{.ReasonTitle}}">{{.Coverage}}{{if .TopReason}} · {{.TopReason}}{{end}}</td>
+        <td>{{T $.Lang "admin_monitoring_floor"}} {{.Floor}}</td>
+      </tr>
+      {{end}}
+      {{range .Drift}}
+      <tr>
+        <td>{{T $.Lang "admin_monitoring_signal_drift"}}</td>
+        <td><code>{{.SubScore}}/{{.TargetKind}}</code></td>
+        <td>{{.Status}}</td>
+        <td>{{.Recent}} · {{.Delta}}</td>
+        <td>{{.Baseline}}</td>
+      </tr>
+      {{end}}
+      {{range .Unknown}}
+      <tr>
+        <td>{{T $.Lang "admin_monitoring_signal_unknown"}}</td>
+        <td><code>{{.SubScore}}</code></td>
+        <td>{{.Status}}</td>
+        <td>{{.Recent}}</td>
+        <td>{{.Baseline}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+{{end}}
+{{end}}
