@@ -173,8 +173,11 @@ func loadRecoverySamples(ctx context.Context, conn *pgxpool.Conn) ([]sample, err
 		   AND ts.target_value IS NOT NULL
 		   AND nb.predicted_value IS NOT NULL
 		   AND fs.feature_version >= 2
-		   AND fs.features ? 'architecture_eligible_days_7d'
-		   AND fs.features ? 'waso_hours_7d'
+		   AND fs.features->>'waso_hours_7d' IS NOT NULL
+		   AND fs.features->>'explicit_wake_bouts_7d' IS NOT NULL
+		   AND fs.features->>'gap_inferred_wake_bouts_7d' IS NOT NULL
+		   AND fs.features->>'fragmentation_index_7d' IS NOT NULL
+		   AND fs.features->>'architecture_eligible_days_7d' IS NOT NULL
 		   AND COALESCE(fs.features->>'architecture_available_through', ts.date) <= ts.date
 		 ORDER BY ts.date ASC`)
 	if err != nil {
@@ -219,8 +222,11 @@ func loadChronicSamples(ctx context.Context, conn *pgxpool.Conn) ([]sample, erro
 		   AND ts.target_value IS NOT NULL
 		   AND nb.predicted_value IS NOT NULL
 		   AND fs.feature_version >= 2
-		   AND fs.features ? 'architecture_eligible_days_14d'
-		   AND fs.features ? 'waso_hours_14d'
+		   AND fs.features->>'waso_hours_14d' IS NOT NULL
+		   AND fs.features->>'explicit_wake_bouts_14d' IS NOT NULL
+		   AND fs.features->>'gap_inferred_wake_bouts_14d' IS NOT NULL
+		   AND fs.features->>'fragmentation_index_14d' IS NOT NULL
+		   AND fs.features->>'architecture_eligible_days_14d' IS NOT NULL
 		   AND COALESCE(fs.features->>'architecture_available_through', ts.date) <= ts.date
 		 ORDER BY ts.date ASC`)
 	if err != nil {
