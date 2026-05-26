@@ -178,15 +178,19 @@ func computeSleepArchitectureDay(date string, segs []architectureSegment) SleepA
 		return missingArchitectureDay(date, SleepArchitectureReasonMissingSegments)
 	}
 
-	sourceHours := map[string]float64{}
-	for _, s := range segs {
-		if isArchitectureAsleepMetric(s.Metric) {
-			sourceHours[s.Source] += s.End.Sub(s.Start).Hours()
-		}
-	}
-	source := pickWinningSource(sourceHours)
+	nightAsleep, source := architectureNightAsleepSegments(date, segs)
 	if source == "" {
 		return missingArchitectureDay(date, SleepArchitectureReasonMissingSegments)
+	}
+
+	var nightStart, nightEnd time.Time
+	for i, s := range nightAsleep {
+		if i == 0 || s.Start.Before(nightStart) {
+			nightStart = s.Start
+		}
+		if i == 0 || s.End.After(nightEnd) {
+			nightEnd = s.End
+		}
 	}
 
 	var asleep, explicitWake []sleepSegment
@@ -197,6 +201,9 @@ func computeSleepArchitectureDay(date string, segs []architectureSegment) SleepA
 		}
 		switch {
 		case isArchitectureAsleepMetric(s.Metric):
+			if !architectureSegmentInList(s, nightAsleep) {
+				continue
+			}
 			h := s.End.Sub(s.Start).Hours()
 			asleepHours += h
 			if s.Metric != "sleep_unspecified" {
@@ -204,6 +211,9 @@ func computeSleepArchitectureDay(date string, segs []architectureSegment) SleepA
 			}
 			asleep = append(asleep, sleepSegment{Start: s.Start, End: s.End})
 		case s.Metric == "sleep_awake":
+			if !s.End.After(nightStart) || !s.Start.Before(nightEnd) {
+				continue
+			}
 			explicitWake = append(explicitWake, sleepSegment{Start: s.Start, End: s.End})
 		}
 	}
@@ -235,6 +245,56 @@ func computeSleepArchitectureDay(date string, segs []architectureSegment) SleepA
 		Reason:               SleepArchitectureReasonOK,
 		Confidence:           SleepArchitectureConfidenceHigh,
 	}
+}
+
+func architectureNightAsleepSegments(date string, segs []architectureSegment) ([]architectureSegment, string) {
+	if len(segs) == 0 {
+		return nil, ""
+	}
+	loc := segs[0].End.Location()
+	refMidnight, err := time.ParseInLocation(isoDate, date, loc)
+	if err != nil {
+		return nil, ""
+	}
+	sourceHours := map[string]float64{}
+	candidates := make([]architectureSegment, 0, len(segs))
+	for _, s := range segs {
+		if !isArchitectureAsleepMetric(s.Metric) {
+			continue
+		}
+		if absDuration(s.Start.Add(s.End.Sub(s.Start)/2).Sub(refMidnight)) > midnightWindow {
+			continue
+		}
+		candidates = append(candidates, s)
+		sourceHours[s.Source] += s.End.Sub(s.Start).Hours()
+	}
+	source := pickWinningSource(sourceHours)
+	if source == "" {
+		return nil, ""
+	}
+	out := make([]architectureSegment, 0, len(candidates))
+	for _, s := range candidates {
+		if s.Source == source {
+			out = append(out, s)
+		}
+	}
+	return out, source
+}
+
+func architectureSegmentInList(target architectureSegment, list []architectureSegment) bool {
+	for _, s := range list {
+		if s == target {
+			return true
+		}
+	}
+	return false
+}
+
+func absDuration(d time.Duration) time.Duration {
+	if d < 0 {
+		return -d
+	}
+	return d
 }
 
 func missingArchitectureDay(date, reason string) SleepArchitectureDay {

@@ -74,6 +74,29 @@ func TestComputeSleepArchitectureDays_CoarseOnlyIsUnavailableNotZero(t *testing.
 	}
 }
 
+func TestComputeSleepArchitectureDays_ExcludesDaytimeNapFromNightArchitecture(t *testing.T) {
+	rows := []SleepArchitectureRawSegment{
+		archSeg("2026-05-01 23:00:00 +0000", "sleep_core", "Apple Watch", 3.0),
+		archSeg("2026-05-02 02:45:00 +0000", "sleep_rem", "Apple Watch", 3.0),
+		archSeg("2026-05-02 14:00:00 +0000", "sleep_core", "Apple Watch", 1.0),
+		archSeg("2026-05-02 14:30:00 +0000", "sleep_awake", "Apple Watch", 0.25),
+	}
+
+	got := ComputeSleepArchitectureDays(rows)["2026-05-02"]
+	if !got.Eligible {
+		t.Fatalf("night should be eligible, got %+v", got)
+	}
+	if got.GapInferredWakeBouts != 1 {
+		t.Fatalf("gap inferred wake bouts = %d, want 1 from the overnight gap only", got.GapInferredWakeBouts)
+	}
+	if got.ExplicitWakeBouts != 0 {
+		t.Fatalf("explicit wake bouts = %d, want 0 because nap wake row is outside main night", got.ExplicitWakeBouts)
+	}
+	if got.AsleepHours != 6 {
+		t.Fatalf("asleep hours = %v, want 6 without the daytime nap", got.AsleepHours)
+	}
+}
+
 func TestBuildSleepArchitectureWindow_ReportsCoverageAndConfidence(t *testing.T) {
 	days := ComputeSleepArchitectureDays([]SleepArchitectureRawSegment{
 		archSeg("2026-05-01 23:00:00 +0000", "sleep_core", "Apple Watch", 7.0),
