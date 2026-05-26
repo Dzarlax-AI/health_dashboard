@@ -7,10 +7,14 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      build_amd64:
+        description: "Build AMD64 image"
+        type: boolean
+        default: true
       build_arm64:
         description: "Build ARM64 image"
         type: boolean
-        default: true
+        default: false
 
 env:
   REGISTRY: ghcr.io
@@ -52,7 +56,10 @@ jobs:
     name: Docker Build & Push (amd64)
     needs: build
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: >
+      github.ref == 'refs/heads/main' &&
+      github.event_name != 'pull_request' &&
+      (github.event_name != 'workflow_dispatch' || inputs.build_amd64)
     permissions:
       contents: read
       packages: write
