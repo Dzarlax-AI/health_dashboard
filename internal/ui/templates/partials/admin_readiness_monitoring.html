@@ -36,7 +36,7 @@
         <td>{{.Status}}</td>
         <td title="{{.ReasonTitle}}">
           {{.Coverage}}{{if .TopReason}} · {{.TopReason}}{{end}}
-          <div class="muted">window {{.Window}}</div>
+          <div class="muted">{{T $.Lang "admin_monitoring_window"}} {{.Window}}</div>
           {{if .Freshness}}<div class="muted">{{.Freshness}}</div>{{end}}
         </td>
         <td>{{T $.Lang "admin_monitoring_floor"}} {{.Floor}}</td>
