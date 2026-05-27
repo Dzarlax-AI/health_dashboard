@@ -275,11 +275,7 @@ func architectureNightAsleepSegments(date string, segs []architectureSegment) ([
 	if source == "" {
 		return nil, ""
 	}
-	out := make([]architectureSegment, 0, len(bySource[source]))
-	for _, s := range bySource[source] {
-		out = append(out, s)
-	}
-	return out, source
+	return append([]architectureSegment(nil), bySource[source]...), source
 }
 
 func architectureSegmentInList(target architectureSegment, list []architectureSegment) bool {
