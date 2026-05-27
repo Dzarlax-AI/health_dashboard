@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Implementation Plan: Recovery Candidate 2-of-3 Evidence</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #1f2937; line-height: 1.5; }
+    main { max-width: 1060px; margin: 0 auto; padding: 32px; }
+    section { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin: 16px 0; }
+    h1, h2, h3 { line-height: 1.2; }
+    code { background: #f3f4f6; padding: 2px 5px; border-radius: 4px; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #e5e7eb; font-size: 12px; font-weight: 600; }
+    .risk { border-left: 4px solid #dc2626; }
+    .approval { border-left: 4px solid #d97706; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Implementation Plan: Recovery Candidate 2-of-3 Evidence</h1>
+  <p class="badge">Evidence-only PR</p>
+
+  <section>
+    <h2>Task Summary</h2>
+    <p>
+      Add a separate Recovery Stability candidate target that evaluates
+      <code>rolling_3d</code> with a <code>2-of-3</code> eligible-night rule.
+      The current strict <code>rolling_3d</code> target remains unchanged and
+      continues to feed Chronic Load and any product surfaces.
+    </p>
+  </section>
+
+  <section>
+    <h2>Current Behavior</h2>
+    <ul>
+      <li><code>recovery_stability/rolling_3d</code> requires all three forward nights <code>t+1..t+3</code> to be eligible.</li>
+      <li>Sleep capture confidence is already written to Recovery feature payloads and target coverage JSONB.</li>
+      <li>The live May probe after deploy showed <code>health_mariia</code> strict coverage at <code>12/26</code> but candidate <code>2-of-3</code> at <code>24/26</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <ul>
+      <li>Add a new target kind, <code>rolling_3d_candidate_2of3</code>, for Recovery only.</li>
+      <li>Candidate target is eligible when at least two of the three forward nights are eligible; value is the mean of eligible nights.</li>
+      <li>Coverage JSONB records strict eligibility, candidate eligible count, missing dates, per-day reasons, and per-day capture classes.</li>
+      <li>Naive EWMA45 and other Recovery baselines are written for the candidate target so the probe can compare candidate target MAE against the same floor family.</li>
+      <li>No user-visible readiness chip, Telegram copy, dashboard verdict, Chronic target dependency, or production threshold changes.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Files Likely to Change</h2>
+    <ul>
+      <li><code>internal/storage/readiness_redesign.go</code> - add target-kind enum value.</li>
+      <li><code>internal/storage/recovery_stability_writer.go</code> - write candidate target and candidate baselines.</li>
+      <li><code>internal/storage/recovery_stability_writer_integration_test.go</code> - prove strict target remains blocked while candidate target is eligible.</li>
+      <li><code>cmd/readiness_sleep_capture_probe/main.go</code> - read candidate target rows when present and report candidate MAE vs EWMA45.</li>
+      <li><code>docs/ai-plans/2026-05-27-recovery-candidate-2of3-evidence.html</code> - update after implementation with checks and live probe output.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation Steps</h2>
+    <ol>
+      <li>Add <code>TargetKindRolling3dCandidate2of3</code> as a text enum constant only. No schema migration is required.</li>
+      <li>Refactor Recovery rolling target construction enough to share the same per-day coverage fields between strict and candidate outputs.</li>
+      <li>Save the new candidate target alongside daily and strict rolling targets.</li>
+      <li>Extend Recovery naive baseline writing so candidate target receives the same floor predictions as strict rolling.</li>
+      <li>Extend the sleep capture probe to report persisted candidate target coverage and MAE against <code>ewma_45d</code>.</li>
+      <li>Run targeted tests, full tests, and a read-only probe against <code>health</code> and <code>health_mariia</code>.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <ul>
+      <li><code>go test ./internal/storage -run RecoveryStability -count=1</code></li>
+      <li><code>go test ./internal/storage -run "RecoveryStability|ReadinessMonitoring" -count=1</code></li>
+      <li><code>go build ./cmd/readiness_sleep_capture_probe</code></li>
+      <li><code>go test ./...</code></li>
+      <li>After deploy/backfill: run <code>go run ./cmd/readiness_sleep_capture_probe --schema health,health_mariia --from 2026-05-01 --to 2026-05-26</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Impact</h2>
+    <ul>
+      <li>Data model: adds new rows in existing <code>target_snapshots</code> and <code>naive_baselines</code>.</li>
+      <li>API/UI: no new endpoint and no user-visible behavior change.</li>
+      <li>Deployment: requires a Recovery backfill for target dates that should receive candidate rows.</li>
+      <li>Rollback: reverting the code stops writing candidate rows; existing rows are inert because no product path reads them.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks and Edge Cases</h2>
+    <ul>
+      <li>If downstream code accidentally starts using all Recovery rolling target kinds, candidate rows could pollute product logic. The PR must leave Chronic explicitly pinned to <code>rolling_3d</code>.</li>
+      <li>A 2-night mean is noisier than a 3-night mean. The probe must report MAE, not just rescued coverage.</li>
+      <li>Missing future days near the fresh edge should remain ineligible until the same 3-day maturity window has passed.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>What MAE threshold is good enough to promote candidate 2-of-3 later? This PR records evidence but does not promote.</li>
+      <li>Should the candidate target later use capture confidence as a weight? Not in this PR; mean of eligible nights keeps the first evidence path explainable.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval Gate</h2>
+    <p>
+      The user approved proceeding with the evidence-only candidate path in chat
+      after the deployed capture-confidence results. Implementation must stay
+      inside this plan's non-product scope.
+    </p>
+  </section>
+
+  <section>
+    <h2>Implementation Update</h2>
+    <ul>
+      <li>Added <code>TargetKindRolling3dCandidate2of3</code> as <code>rolling_3d_candidate_2of3</code>.</li>
+      <li>Recovery writer now saves the candidate target alongside the existing strict <code>rolling_3d</code> row.</li>
+      <li>Candidate target is eligible with at least two eligible forward nights and stores the mean of those eligible nights.</li>
+      <li>Candidate target now requires the full <code>t+1..t+3</code> window to be mature against the latest observed sleep row, so a missing <code>t+3</code> near the fresh edge cannot be treated as the allowed dropped night.</li>
+      <li>Strict <code>rolling_3d</code> remains unchanged and still requires all three nights.</li>
+      <li>Recovery naive baselines are written for daily, strict rolling, and candidate rolling target kinds.</li>
+      <li><code>cmd/readiness_sleep_capture_probe</code> now reports persisted EWMA45 MAE for strict rows and, after backfill, candidate rows.</li>
+    </ul>
+
+    <h3>Checks Run</h3>
+    <ul>
+      <li><code>go test ./internal/storage -run RecoveryStability -count=1</code> - passed.</li>
+      <li><code>go build ./cmd/readiness_sleep_capture_probe</code> - passed.</li>
+      <li><code>go test ./...</code> - passed.</li>
+      <li><code>go run ./cmd/readiness_sleep_capture_probe --schema health,health_mariia --from 2026-05-01 --to 2026-05-26</code> - passed against the current prod DB.</li>
+    </ul>
+
+    <h3>Current Live Probe Before Candidate Backfill</h3>
+    <ul>
+      <li><code>health</code>: rows=26, strict=24/26, mature-window computed candidate=24/26, rescued=0, strict EWMA45 MAE=0.0203 over 24 rows.</li>
+      <li><code>health_mariia</code>: rows=26, strict=12/26, mature-window computed candidate=23/26, rescued=11, strict EWMA45 MAE=0.0277 over 12 rows.</li>
+    </ul>
+    <p>
+      Persisted candidate MAE is intentionally absent until the new code is
+      deployed and Recovery backfill writes <code>rolling_3d_candidate_2of3</code>
+      target rows.
+    </p>
+  </section>
+</main>
+</body>
+</html>

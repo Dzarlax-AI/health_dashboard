@@ -47,23 +47,24 @@ import (
 // SubScore identifiers — matches the five-member family in
 // READINESS_REDESIGN_PLAN.md §2.
 const (
-	SubScoreRecoveryStability  = "recovery_stability"
-	SubScorePassiveEfficiency  = "passive_efficiency"
-	SubScoreAcuteRisk          = "acute_risk"
-	SubScoreChronicLoad        = "chronic_load"
-	SubScoreAthleticReadiness  = "athletic_readiness"
+	SubScoreRecoveryStability = "recovery_stability"
+	SubScorePassiveEfficiency = "passive_efficiency"
+	SubScoreAcuteRisk         = "acute_risk"
+	SubScoreChronicLoad       = "chronic_load"
+	SubScoreAthleticReadiness = "athletic_readiness"
 )
 
 // TargetKind identifiers — the shape of a target_snapshots row's value.
 // Multiple shapes can coexist per (date, sub_score); see §4.2 and §9.5.
 const (
-	TargetKindRolling3d    = "rolling_3d"     // 3-day rolling target (primary for Recovery/Passive)
-	TargetKindDailyPoint   = "daily_point"    // single-day value (secondary)
-	TargetKindEventT1T3       = "event_t1_t3"        // OR-event in t+1..t+3 (Acute Risk primary): any day in window with HRV drop ≥1.5σ OR RHR spike ≥1.5σ
-	TargetKindEventStrictT1T3     = "event_strict_t1_t3"     // AND-event in t+1..t+3 (Acute Risk secondary): some day in window with HRV drop AND RHR spike same day
-	TargetKindWoResidual          = "wo_residual"            // per-workout HR residual (Athletic, dormant)
-	TargetKindChronicLabel        = "chronic_label"          // sustained-deterioration binary label (Chronic Load primary): ≥5 of 14 forward days breach Recovery 3d-roll EWMA45 by >1σ
-	TargetKindChronicAcuteDensity = "chronic_acute_density"  // analysis label (Chronic Load secondary): ≥3 Acute Risk OR-events in t+1..t+14 forward window
+	TargetKindRolling3d              = "rolling_3d"                // 3-day rolling target (primary for Recovery/Passive)
+	TargetKindRolling3dCandidate2of3 = "rolling_3d_candidate_2of3" // Recovery evidence target: mean over eligible nights when at least 2 of t+1..t+3 are eligible
+	TargetKindDailyPoint             = "daily_point"               // single-day value (secondary)
+	TargetKindEventT1T3              = "event_t1_t3"               // OR-event in t+1..t+3 (Acute Risk primary): any day in window with HRV drop ≥1.5σ OR RHR spike ≥1.5σ
+	TargetKindEventStrictT1T3        = "event_strict_t1_t3"        // AND-event in t+1..t+3 (Acute Risk secondary): some day in window with HRV drop AND RHR spike same day
+	TargetKindWoResidual             = "wo_residual"               // per-workout HR residual (Athletic, dormant)
+	TargetKindChronicLabel           = "chronic_label"             // sustained-deterioration binary label (Chronic Load primary): ≥5 of 14 forward days breach Recovery 3d-roll EWMA45 by >1σ
+	TargetKindChronicAcuteDensity    = "chronic_acute_density"     // analysis label (Chronic Load secondary): ≥3 Acute Risk OR-events in t+1..t+14 forward window
 )
 
 // BaselineKind identifiers — naive predictors written alongside targets
@@ -82,34 +83,34 @@ const (
 // open: writers can introduce new reasons as long as they appear here.
 // See §3.1, §4.2, §4.2.1 of the plan.
 const (
-	EligibilityOK                           = "ok"
-	EligibilityOKAwakeStructuralZero        = "ok_awake_structural_zero"
-	EligibilityMissingAwakeUnknown          = "missing_awake_unknown"
-	EligibilitySleepTotalOutOfRange         = "sleep_total_out_of_range"
+	EligibilityOK                    = "ok"
+	EligibilityOKAwakeStructuralZero = "ok_awake_structural_zero"
+	EligibilityMissingAwakeUnknown   = "missing_awake_unknown"
+	EligibilitySleepTotalOutOfRange  = "sleep_total_out_of_range"
 	// EligibilitySleepDataMissing splits the old "out_of_range" bucket
 	// for nights with no source row at all (Total==NULL). Introduced in
 	// recovery_stability formula_version 2 so re-backfilled rows can be
 	// distinguished from rows written under the v1 over-broad reason.
-	EligibilitySleepDataMissing             = "sleep_data_missing"
-	EligibilityCoarseOnlySource             = "coarse_only_source"
-	EligibilityNoWalkingSegments            = "no_walking_segments"
-	EligibilityNoWalkingHR                  = "no_walking_hr"
-	EligibilityWalkingHROutOfRange          = "walking_hr_out_of_range"
+	EligibilitySleepDataMissing    = "sleep_data_missing"
+	EligibilityCoarseOnlySource    = "coarse_only_source"
+	EligibilityNoWalkingSegments   = "no_walking_segments"
+	EligibilityNoWalkingHR         = "no_walking_hr"
+	EligibilityWalkingHROutOfRange = "walking_hr_out_of_range"
 	// EligibilityEventWindowDataMissing fires when a forward-looking
 	// event-classifier target (Acute Risk) cannot honestly write a
 	// negative label because at least one day in the t+1..t+3 window
 	// has no observable signal. Otherwise a sensor gap would be
 	// silently coded as "no breach".
-	EligibilityEventWindowDataMissing       = "event_window_data_missing"
-	EligibilityValueOutOfRange              = "value_out_of_range"
-	EligibilityHRVSparse                    = "hrv_sparse"
-	EligibilityBaselineWarmup               = "baseline_warmup"
-	EligibilityImporterGap                  = "importer_gap"
-	EligibilityWalkingOnly                  = "walking_only"
-	EligibilityWASORequiresSegments         = "waso_requires_segments"
+	EligibilityEventWindowDataMissing        = "event_window_data_missing"
+	EligibilityValueOutOfRange               = "value_out_of_range"
+	EligibilityHRVSparse                     = "hrv_sparse"
+	EligibilityBaselineWarmup                = "baseline_warmup"
+	EligibilityImporterGap                   = "importer_gap"
+	EligibilityWalkingOnly                   = "walking_only"
+	EligibilityWASORequiresSegments          = "waso_requires_segments"
 	EligibilityFragmentationRequiresSegments = "fragmentation_requires_segments"
-	EligibilityDataAnomaly2024              = "data_anomaly_2024"
-	EligibilityNoStructuredWorkouts         = "no_structured_workouts"
+	EligibilityDataAnomaly2024               = "data_anomaly_2024"
+	EligibilityNoStructuredWorkouts          = "no_structured_workouts"
 )
 
 // ChipCalibrationStatus values — populated by the auto-calibration
@@ -185,7 +186,7 @@ var validSubScores = map[string]struct{}{
 }
 
 var validTargetKinds = map[string]struct{}{
-	TargetKindRolling3d: {}, TargetKindDailyPoint: {},
+	TargetKindRolling3d: {}, TargetKindRolling3dCandidate2of3: {}, TargetKindDailyPoint: {},
 	TargetKindEventT1T3: {}, TargetKindEventStrictT1T3: {},
 	TargetKindWoResidual: {}, TargetKindChronicLabel: {},
 	TargetKindChronicAcuteDensity: {},

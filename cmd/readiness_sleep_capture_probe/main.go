@@ -24,15 +24,21 @@ type targetRow struct {
 }
 
 type probeResult struct {
-	Schema             string
-	Rows               int
-	StrictEligible     int
-	Candidate2of3      int
-	Rescued2of3        int
-	LowCaptureRows     int
-	PartialShortRows   int
-	MissingCaptureRows int
-	SampleDates        []string
+	Schema                     string
+	Rows                       int
+	StrictEligible             int
+	Candidate2of3              int
+	Rescued2of3                int
+	LowCaptureRows             int
+	PartialShortRows           int
+	MissingCaptureRows         int
+	StrictMAERows              int
+	StrictMAE                  *float64
+	PersistedCandidateRows     int
+	PersistedCandidateEligible int
+	PersistedCandidateMAERows  int
+	PersistedCandidateMAE      *float64
+	SampleDates                []string
 }
 
 func main() {
@@ -138,7 +144,7 @@ func runProbe(ctx context.Context, conn *pgxpool.Conn, schema, from, to string) 
 	if err != nil {
 		return probeResult{}, err
 	}
-	sleepRows, err := loadSleepRows(ctx, conn, loadFrom, loadTo)
+	sleepRows, latestObservedSleepDate, err := loadSleepRows(ctx, conn, loadFrom, loadTo)
 	if err != nil {
 		return probeResult{}, err
 	}
@@ -175,7 +181,7 @@ func runProbe(ctx context.Context, conn *pgxpool.Conn, schema, from, to string) 
 				missingCapture = true
 			}
 		}
-		candidate := eligibleCount >= 2
+		candidate := eligibleCount >= 2 && datesMature(days, latestObservedSleepDate)
 		if candidate {
 			res.Candidate2of3++
 		}
@@ -195,7 +201,72 @@ func runProbe(ctx context.Context, conn *pgxpool.Conn, schema, from, to string) 
 			res.MissingCaptureRows++
 		}
 	}
+	if err := loadPersistedTargetMetrics(ctx, conn, from, to, &res); err != nil {
+		return probeResult{}, err
+	}
 	return res, nil
+}
+
+func loadPersistedTargetMetrics(ctx context.Context, conn *pgxpool.Conn, from, to string, res *probeResult) error {
+	where := []string{
+		"ts.sub_score = 'recovery_stability'",
+		"ts.target_kind IN ('rolling_3d', 'rolling_3d_candidate_2of3')",
+	}
+	args := []any{}
+	if from != "" {
+		args = append(args, from)
+		where = append(where, fmt.Sprintf("ts.date >= $%d", len(args)))
+	}
+	if to != "" {
+		args = append(args, to)
+		where = append(where, fmt.Sprintf("ts.date <= $%d", len(args)))
+	}
+	rows, err := conn.Query(ctx, `
+		SELECT ts.target_kind,
+		       count(*)::int,
+		       count(*) FILTER (WHERE ts.eligible)::int,
+		       count(*) FILTER (
+		         WHERE ts.eligible
+		           AND ts.target_value IS NOT NULL
+		           AND nb.predicted_value IS NOT NULL
+		       )::int,
+		       avg(abs(ts.target_value::float8 - nb.predicted_value::float8)) FILTER (
+		         WHERE ts.eligible
+		           AND ts.target_value IS NOT NULL
+		           AND nb.predicted_value IS NOT NULL
+		       )::float8
+		  FROM target_snapshots ts
+		  LEFT JOIN naive_baselines nb
+		    ON nb.date = ts.date
+		   AND nb.sub_score = ts.sub_score
+		   AND nb.target_kind = ts.target_kind
+		   AND nb.baseline_kind = 'ewma_45d'
+		 WHERE `+strings.Join(where, " AND ")+`
+		 GROUP BY ts.target_kind
+	`, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var targetKind string
+		var rowsCount, eligibleCount, maeRows int
+		var mae *float64
+		if err := rows.Scan(&targetKind, &rowsCount, &eligibleCount, &maeRows, &mae); err != nil {
+			return err
+		}
+		switch targetKind {
+		case "rolling_3d":
+			res.StrictMAERows = maeRows
+			res.StrictMAE = mae
+		case "rolling_3d_candidate_2of3":
+			res.PersistedCandidateRows = rowsCount
+			res.PersistedCandidateEligible = eligibleCount
+			res.PersistedCandidateMAERows = maeRows
+			res.PersistedCandidateMAE = mae
+		}
+	}
+	return rows.Err()
 }
 
 func loadTargets(ctx context.Context, conn *pgxpool.Conn, from, to string) ([]targetRow, error) {
@@ -242,7 +313,7 @@ func sleepLoadRange(targets []targetRow) (string, string, error) {
 	return first.AddDate(0, 0, 1).Format(isoDate), last.AddDate(0, 0, 3).Format(isoDate), nil
 }
 
-func loadSleepRows(ctx context.Context, conn *pgxpool.Conn, from, to string) (map[string]health.SleepRow, error) {
+func loadSleepRows(ctx context.Context, conn *pgxpool.Conn, from, to string) (map[string]health.SleepRow, string, error) {
 	rows, err := conn.Query(ctx, `
 		SELECT date, sleep_total, sleep_deep, sleep_rem, sleep_core, sleep_awake, sleep_unspecified
 		  FROM daily_scores
@@ -250,15 +321,16 @@ func loadSleepRows(ctx context.Context, conn *pgxpool.Conn, from, to string) (ma
 		 ORDER BY date ASC
 	`, from, to)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer rows.Close()
 	out := map[string]health.SleepRow{}
+	latestObservedSleepDate := ""
 	for rows.Next() {
 		var r health.SleepRow
 		var total, deep, rem, core, awake, unsp *float32
 		if err := rows.Scan(&r.Date, &total, &deep, &rem, &core, &awake, &unsp); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		r.Total = liftFloat(total)
 		r.Deep = liftFloat(deep)
@@ -267,8 +339,11 @@ func loadSleepRows(ctx context.Context, conn *pgxpool.Conn, from, to string) (ma
 		r.Awake = liftFloat(awake)
 		r.Unspecified = liftFloat(unsp)
 		out[r.Date] = r
+		if r.Date > latestObservedSleepDate {
+			latestObservedSleepDate = r.Date
+		}
 	}
-	return out, rows.Err()
+	return out, latestObservedSleepDate, rows.Err()
 }
 
 func liftFloat(p *float32) *float64 {
@@ -289,6 +364,18 @@ func forwardDates(date string) ([]string, error) {
 		t.AddDate(0, 0, 2).Format(isoDate),
 		t.AddDate(0, 0, 3).Format(isoDate),
 	}, nil
+}
+
+func datesMature(dates []string, latestObservedDate string) bool {
+	if latestObservedDate == "" {
+		return false
+	}
+	for _, d := range dates {
+		if d > latestObservedDate {
+			return false
+		}
+	}
+	return true
 }
 
 func resolveSchemas(ctx context.Context, pool *pgxpool.Pool, raw string) ([]string, error) {
@@ -343,6 +430,19 @@ func printResult(r probeResult) {
 		r.StrictEligible, r.Rows, strictPct,
 		r.Candidate2of3, r.Rows, candidatePct,
 		r.Rescued2of3, r.LowCaptureRows, r.PartialShortRows, r.MissingCaptureRows)
+	if r.StrictMAE != nil {
+		fmt.Printf("\tstrict_ewma45_mae=%.4f/%d", *r.StrictMAE, r.StrictMAERows)
+	}
+	if r.PersistedCandidateRows > 0 {
+		fmt.Printf("\tpersisted_candidate=%d/%d", r.PersistedCandidateEligible, r.PersistedCandidateRows)
+		if r.PersistedCandidateMAE != nil {
+			fmt.Printf("\tcandidate_ewma45_mae=%.4f/%d", *r.PersistedCandidateMAE, r.PersistedCandidateMAERows)
+			if r.StrictMAE != nil && *r.StrictMAE > 0 {
+				delta := (*r.StrictMAE - *r.PersistedCandidateMAE) / *r.StrictMAE * 100
+				fmt.Printf("\tcandidate_mae_delta=%.1f%%", delta)
+			}
+		}
+	}
 	if len(r.SampleDates) > 0 {
 		sort.Strings(r.SampleDates)
 		fmt.Printf("\trescued_samples=%s", strings.Join(r.SampleDates, ","))
