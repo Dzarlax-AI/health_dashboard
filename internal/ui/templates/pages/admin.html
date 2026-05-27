@@ -110,7 +110,7 @@
           <div class="admin-section-header">
             <div class="section-title">{{T .Lang "admin_contract_title"}}</div>
             <button class="btn btn--secondary btn--small"
-                    hx-get="/fragments/admin-readiness-contract?days=14&schema=all"
+                    hx-get="/fragments/admin-readiness-contract?days=14"
                     hx-target="#admin-readiness-contract-table"
                     hx-swap="innerHTML">{{T .Lang "admin_refresh"}}</button>
           </div>
@@ -118,7 +118,7 @@
             {{SafeHTML (T .Lang "admin_contract_desc")}}
           </p>
           <div id="admin-readiness-contract-table"
-               hx-get="/fragments/admin-readiness-contract?days=14&schema=all"
+               hx-get="/fragments/admin-readiness-contract?days=14"
                hx-trigger="load, reload"
                hx-swap="innerHTML">
             <div class="spinner spinner--large"></div>
@@ -130,7 +130,7 @@
           <div class="admin-section-header">
             <div class="section-title">{{T .Lang "admin_monitoring_title"}}</div>
             <button class="btn btn--secondary btn--small"
-                    hx-get="/fragments/admin-readiness-monitoring?schema=all"
+                    hx-get="/fragments/admin-readiness-monitoring"
                     hx-target="#admin-readiness-monitoring-table"
                     hx-swap="innerHTML">{{T .Lang "admin_refresh"}}</button>
           </div>
@@ -138,7 +138,7 @@
             {{T .Lang "admin_monitoring_desc"}}
           </p>
           <div id="admin-readiness-monitoring-table"
-               hx-get="/fragments/admin-readiness-monitoring?schema=all"
+               hx-get="/fragments/admin-readiness-monitoring"
                hx-trigger="load, reload"
                hx-swap="innerHTML">
             <div class="spinner spinner--large"></div>
@@ -500,13 +500,13 @@ function setTenantHTMX(urlBase) {
 
   var contract = $('admin-readiness-contract-table');
   var contractBtn = document.querySelector('[hx-target="#admin-readiness-contract-table"]');
-  var contractURL = '/fragments/admin-readiness-contract?days=14' + (activeAdminSchema ? '&schema=' + encodeURIComponent(activeAdminSchema) : '&schema=all');
+  var contractURL = '/fragments/admin-readiness-contract?days=14' + (activeAdminSchema ? '&schema=' + encodeURIComponent(activeAdminSchema) : '');
   if (contract) contract.setAttribute('hx-get', contractURL);
   if (contractBtn) contractBtn.setAttribute('hx-get', contractURL);
 
   var monitoring = $('admin-readiness-monitoring-table');
   var monitoringBtn = document.querySelector('[hx-target="#admin-readiness-monitoring-table"]');
-  var monitoringURL = '/fragments/admin-readiness-monitoring' + (activeAdminSchema ? '?schema=' + encodeURIComponent(activeAdminSchema) : '?schema=all');
+  var monitoringURL = '/fragments/admin-readiness-monitoring' + (activeAdminSchema ? '?schema=' + encodeURIComponent(activeAdminSchema) : '');
   if (monitoring) monitoring.setAttribute('hx-get', monitoringURL);
   if (monitoringBtn) monitoringBtn.setAttribute('hx-get', monitoringURL);
 }

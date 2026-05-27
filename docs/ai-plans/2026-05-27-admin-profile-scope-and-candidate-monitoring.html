@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Implementation Plan: Admin Profile Scope and Candidate Monitoring</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #1f2937; line-height: 1.5; }
+    main { max-width: 1080px; margin: 0 auto; padding: 32px; }
+    section { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin: 16px 0; }
+    h1, h2 { line-height: 1.2; }
+    code { background: #f3f4f6; padding: 2px 5px; border-radius: 4px; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #e5e7eb; font-size: 12px; font-weight: 600; }
+    .risk { border-left: 4px solid #dc2626; }
+    .approval { border-left: 4px solid #d97706; }
+    li { margin: 6px 0; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Implementation Plan: Admin Profile Scope and Candidate Monitoring</h1>
+  <p class="badge">Approval required before implementation</p>
+
+  <section>
+    <h2>Task Summary</h2>
+    <p>Fix the multi-user admin page so profile tabs are truly tenant-scoped, then expose the evidence-only Recovery <code>rolling_3d_candidate_2of3</code> target in admin readiness monitoring. This PR must not change dashboard verdicts, Telegram copy, chips, scoring, or production behavior outside admin/evidence surfaces.</p>
+  </section>
+
+  <section>
+    <h2>Current Behavior</h2>
+    <p>The backend already has the right default for readiness admin fragments: omitted <code>schema</code> means the request tenant, explicit <code>schema=&lt;tenant&gt;</code> means one tenant, and explicit <code>schema=all</code> means read-only aggregation.</p>
+    <p>The leak is in <code>internal/ui/templates/pages/admin.html</code>: the tenant panel initializes readiness contract and monitoring with <code>schema=all</code>, and <code>setTenantHTMX</code> also falls back to <code>schema=all</code> when <code>activeAdminSchema</code> is empty. Hidden HTMX load triggers can therefore render all tenants inside the reused tenant panel.</p>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <ul>
+      <li><code>General</code> remains the place for global configuration and can keep all-tenant read-only surfaces when explicitly added there.</li>
+      <li>Each user/profile tab must load tenant panel fragments with that profile's schema only.</li>
+      <li>The tenant panel must never use <code>schema=all</code> as a fallback for readiness contract or monitoring.</li>
+      <li>Recovery candidate coverage should appear as an evidence-only monitoring row: <code>recovery_stability / rolling_3d_candidate_2of3</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Files Likely to Change</h2>
+    <ul>
+      <li><code>internal/ui/templates/pages/admin.html</code> - remove <code>schema=all</code> fallback from the tenant panel and keep profile refreshes schema-specific.</li>
+      <li><code>internal/storage/readiness_redesign_monitoring.go</code> - add candidate target coverage to monitoring.</li>
+      <li><code>internal/storage/readiness_redesign_monitoring_test.go</code> - pin candidate target coverage and its 3-day maturity lag.</li>
+      <li><code>internal/ui/admin_*_test.go</code> - add or adjust tests so scoped monitoring remains one tenant by default and template URLs do not regress.</li>
+      <li>This HTML plan - update with actual changes and verification results after implementation.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation Steps</h2>
+    <ol>
+      <li>Change static tenant-panel HTMX URLs for readiness contract and monitoring from <code>schema=all</code> to tenant-default URLs.</li>
+      <li>Change <code>setTenantHTMX</code> so tenant refreshes append <code>schema=&lt;active profile&gt;</code> only when a profile tab is active, and otherwise use server tenant default.</li>
+      <li>Keep all mutating admin actions per-tenant; do not introduce any all-tenant write path.</li>
+      <li>Add <code>rolling_3d_candidate_2of3</code> to readiness monitoring coverage with the same 3-day maturity lag as strict <code>rolling_3d</code>.</li>
+      <li>Add focused regression tests for the template/monitoring behavior.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Impact</h2>
+    <ul>
+      <li>Data/API: no schema migration and no new endpoint.</li>
+      <li>Auth/permissions: no new permissions; existing admin schema override rules stay in force.</li>
+      <li>UX: profile tabs become isolated. General configuration stays separate from per-profile operational diagnostics.</li>
+      <li>Product behavior: no user-visible readiness behavior changes outside admin.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <ul>
+      <li><code>go test ./internal/storage -run ReadinessMonitoring -count=1</code></li>
+      <li><code>go test ./internal/ui -run "AdminReadiness|TenantScope|AdminTemplate" -count=1</code></li>
+      <li><code>go test ./...</code></li>
+      <li>After deploy, verify read-only monitoring with <code>schema=health</code>, <code>schema=health_mariia</code>, and <code>schema=all</code> returns the expected tenant sets.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks and Edge Cases</h2>
+    <ul>
+      <li>Hidden HTMX elements may still fire load triggers; the safe default must therefore be tenant-scoped, not all-tenant.</li>
+      <li>Adding candidate monitoring rows can change admin overall status if the candidate target is sparse. This is acceptable only if the row is evidence-only and uses the same mature-window contract.</li>
+      <li>General all-tenant views should stay read-only. No write action should accept <code>schema=all</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <p>Revert the admin template URL changes and remove the candidate monitoring target entry. No database rollback is required because this PR only reads existing target snapshots and changes template/monitoring logic.</p>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Should General later include an explicit all-tenant readiness overview section, separate from the tenant panel? This PR can leave that out to keep the scope tight.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval Gate</h2>
+    <p>Implementation must not start until this plan is approved. The intended approval scope is limited to admin tenant scoping plus evidence-only candidate monitoring visibility.</p>
+  </section>
+
+  <section>
+    <h2>Implemented Changes</h2>
+    <ul>
+      <li>Tenant-panel readiness contract and monitoring HTMX URLs now default to the request tenant instead of <code>schema=all</code>.</li>
+      <li><code>setTenantHTMX</code> now appends <code>schema=&lt;active profile&gt;</code> only for an active profile tab and does not use all-tenant fallback.</li>
+      <li>Readiness monitoring now includes <code>recovery_stability / rolling_3d_candidate_2of3</code> as an evidence-only coverage target with a 3-day mature-window lag.</li>
+      <li>Added a template regression test that fails if tenant-panel readiness fragments default back to all schemas.</li>
+      <li>Extended storage monitoring tests so the candidate target is pinned to the same maturity behavior as strict <code>rolling_3d</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Verification Results</h2>
+    <ul>
+      <li><code>go test ./internal/storage -run ReadinessMonitoring -count=1</code> - passed.</li>
+      <li><code>go test ./internal/ui -run "AdminReadiness|TenantScope|AdminTemplate" -count=1</code> - passed.</li>
+      <li><code>go test ./...</code> - passed.</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>
