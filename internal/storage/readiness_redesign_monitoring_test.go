@@ -16,11 +16,13 @@ func TestLoadReadinessMonitoringSummary_CoverageAndDrift(t *testing.T) {
 	asOf := time.Date(2026, 5, 26, 0, 0, 0, 0, time.UTC)
 	v := 0.5
 
-	// Recovery rolling_3d recent coverage: 4 eligible, 6 missing in
-	// the 14-day window. This should warn against the 70% floor and
-	// surface sleep_data_missing as the dominant reason.
+	// Recovery rolling_3d recent coverage: 4 eligible, 6 ineligible,
+	// and 4 missing in the mature 14-day window ending at asOf-3.
+	// This should warn against the 70% floor and surface
+	// sleep_data_missing as the dominant reason.
+	recoveryWindowEnd := asOf.AddDate(0, 0, -3)
 	for i := 0; i < 10; i++ {
-		date := asOf.AddDate(0, 0, -i).Format(isoDate)
+		date := recoveryWindowEnd.AddDate(0, 0, -i).Format(isoDate)
 		eligible := i < 4
 		reason := EligibilitySleepDataMissing
 		if eligible {
@@ -105,6 +107,16 @@ func TestLoadReadinessMonitoringSummary_CoverageAndDrift(t *testing.T) {
 	}
 	if recovery.TopReason != EligibilitySleepDataMissing {
 		t.Errorf("recovery top reason = %q, want %q", recovery.TopReason, EligibilitySleepDataMissing)
+	}
+	if recovery.WindowTo != "2026-05-23" || recovery.InputStableTo != "2026-05-23" {
+		t.Errorf("recovery window/stable = %s/%s, want 2026-05-23/2026-05-23",
+			recovery.WindowTo, recovery.InputStableTo)
+	}
+	if len(recovery.IssueSamples) == 0 {
+		t.Fatalf("recovery issue samples empty; want concrete warning dates")
+	}
+	if got := recovery.IssueSamples[0]; got.Reason != EligibilitySleepDataMissing || got.Date != "2026-05-14" {
+		t.Fatalf("first recovery issue = %+v, want 2026-05-14/%s", got, EligibilitySleepDataMissing)
 	}
 
 	var acute *ReadinessDriftRow
@@ -263,6 +275,87 @@ func TestLoadReadinessMonitoringSummary_CoverageUsesMatureWindows(t *testing.T) 
 		}
 	}
 	t.Fatalf("missing chronic acute-density coverage row")
+}
+
+func TestLoadReadinessMonitoringSummary_RollingTargetsUseThreeDayLag(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	v := 0.5
+	asOf := time.Date(2026, 5, 26, 0, 0, 0, 0, time.UTC)
+	matureEnd := asOf.AddDate(0, 0, -3)
+
+	for _, subScore := range []string{SubScoreRecoveryStability, SubScorePassiveEfficiency} {
+		// Fresh-edge rows are not yet contract-mature for rolling_3d and
+		// must not affect the monitoring window.
+		for i := 0; i < 3; i++ {
+			date := asOf.AddDate(0, 0, -i).Format(isoDate)
+			if err := db.SaveTargetSnapshot(TargetSnapshot{
+				Date:              date,
+				SubScore:          subScore,
+				TargetKind:        TargetKindRolling3d,
+				Eligible:          false,
+				EligibilityReason: EligibilityEventWindowDataMissing,
+				SourceEpoch:       InitialSourceEpoch,
+				FormulaVersion:    1,
+			}); err != nil {
+				t.Fatalf("seed fresh rolling target %s/%s: %v", subScore, date, err)
+			}
+		}
+
+		for i := 0; i < ReadinessMonitoringWindowDays; i++ {
+			date := matureEnd.AddDate(0, 0, -i).Format(isoDate)
+			if err := db.SaveTargetSnapshot(TargetSnapshot{
+				Date:              date,
+				SubScore:          subScore,
+				TargetKind:        TargetKindRolling3d,
+				TargetValue:       &v,
+				Eligible:          true,
+				EligibilityReason: EligibilityOK,
+				SourceEpoch:       InitialSourceEpoch,
+				FormulaVersion:    1,
+			}); err != nil {
+				t.Fatalf("seed mature rolling target %s/%s: %v", subScore, date, err)
+			}
+		}
+	}
+
+	summary, err := db.LoadReadinessMonitoringSummary("2026-05-26")
+	if err != nil {
+		t.Fatalf("LoadReadinessMonitoringSummary: %v", err)
+	}
+
+	for _, subScore := range []string{SubScoreRecoveryStability, SubScorePassiveEfficiency} {
+		var row *ReadinessCoverageRow
+		for i := range summary.CoverageRows {
+			candidate := &summary.CoverageRows[i]
+			if candidate.SubScore == subScore && candidate.TargetKind == TargetKindRolling3d {
+				row = candidate
+				break
+			}
+		}
+		if row == nil {
+			t.Fatalf("missing %s rolling_3d coverage row", subScore)
+		}
+		if row.ContractLagDays != 3 {
+			t.Fatalf("%s contract lag = %d, want 3", subScore, row.ContractLagDays)
+		}
+		if row.WindowTo != "2026-05-23" || row.InputStableTo != "2026-05-23" {
+			t.Fatalf("%s window/stable = %s/%s, want 2026-05-23/2026-05-23",
+				subScore, row.WindowTo, row.InputStableTo)
+		}
+		if row.Status != MonitoringStatusOK {
+			t.Fatalf("%s rolling status = %q for %+v, want ok", subScore, row.Status, *row)
+		}
+		if row.Rows != ReadinessMonitoringWindowDays || row.Eligible != ReadinessMonitoringWindowDays || row.MissingRows != 0 {
+			t.Fatalf("%s rolling counts = eligible:%d rows:%d missing:%d, want %d/%d/0",
+				subScore, row.Eligible, row.Rows, row.MissingRows,
+				ReadinessMonitoringWindowDays, ReadinessMonitoringWindowDays)
+		}
+		if len(row.IssueSamples) != 0 {
+			t.Fatalf("%s rolling issue samples = %+v, want none", subScore, row.IssueSamples)
+		}
+	}
 }
 
 func TestLoadReadinessMonitoringSummary_StaleInputWarnsSeparately(t *testing.T) {
