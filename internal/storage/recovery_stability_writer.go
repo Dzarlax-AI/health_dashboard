@@ -155,17 +155,21 @@ func (s *DB) BackfillRecoveryStabilitySnapshots(from, to string) (int, error) {
 	byDate := make(map[string]health.SleepRow, len(rows))
 	effByDate := make(map[string]health.SleepEfficiencyResult, len(rows))
 	captureByDate := make(map[string]health.SleepCaptureConfidenceResult, len(rows))
+	latestObservedSleepDate := ""
 	for _, r := range rows {
 		byDate[r.Date] = r
 		effByDate[r.Date] = health.ComputeSleepEfficiency(r)
 		captureByDate[r.Date] = health.ComputeSleepCaptureConfidence(r)
+		if r.Date > latestObservedSleepDate {
+			latestObservedSleepDate = r.Date
+		}
 	}
 
 	written := 0
 	var firstErr error
 	for d := fromT; !d.After(toT); d = d.AddDate(0, 0, 1) {
 		date := d.Format(isoDate)
-		if err := s.writeRecoveryStabilityRow(context.Background(), d, date, byDate, effByDate, captureByDate, archByDate); err != nil {
+		if err := s.writeRecoveryStabilityRow(context.Background(), d, date, byDate, effByDate, captureByDate, archByDate, latestObservedSleepDate); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -184,6 +188,7 @@ func (s *DB) writeRecoveryStabilityRow(
 	effByDate map[string]health.SleepEfficiencyResult,
 	captureByDate map[string]health.SleepCaptureConfidenceResult,
 	archByDate map[string]SleepArchitectureDay,
+	latestObservedSleepDate string,
 ) error {
 	_ = ctx // reserved for future use; all storage helpers below use their own queryCtx
 
@@ -201,7 +206,7 @@ func (s *DB) writeRecoveryStabilityRow(
 
 	// --- Rolling 3-day target: mean of eff(t+1), eff(t+2), eff(t+3) ---
 	rollingTarget := rolling3dTarget(t, effByDate, byDate, captureByDate)
-	candidateRollingTarget := rolling3dCandidate2of3Target(t, effByDate, byDate, captureByDate)
+	candidateRollingTarget := rolling3dCandidate2of3Target(t, effByDate, byDate, captureByDate, latestObservedSleepDate)
 
 	// --- Feature payload: data strictly ≤ end of day `t` ---
 	features := buildRecoveryFeatures(t, epochStart, byDate, effByDate, captureByDate, archByDate)
@@ -427,6 +432,7 @@ func rolling3dCandidate2of3Target(
 	effByDate map[string]health.SleepEfficiencyResult,
 	byDate map[string]health.SleepRow,
 	captureByDate map[string]health.SleepCaptureConfidenceResult,
+	latestObservedSleepDate string,
 ) targetWriteSpec {
 	dates := []string{
 		t.AddDate(0, 0, 1).Format(isoDate),
@@ -475,6 +481,15 @@ func rolling3dCandidate2of3Target(
 		"candidate_2of3_eligible_count": len(values),
 		"candidate_2of3_eligible":       len(values) >= 2,
 		"candidate_2of3_value_days":     len(values),
+		"candidate_2of3_window_mature":  windowMature(dates, latestObservedSleepDate),
+		"latest_observed_sleep_date":    latestObservedSleepDate,
+	}
+	if !windowMature(dates, latestObservedSleepDate) {
+		return targetWriteSpec{
+			Eligible: false,
+			Reason:   EligibilitySleepDataMissing,
+			Coverage: mustMarshal(coverage),
+		}
 	}
 	if len(values) < 2 {
 		return targetWriteSpec{
@@ -494,6 +509,18 @@ func rolling3dCandidate2of3Target(
 		Reason:   health.SleepEligibilityOK,
 		Coverage: mustMarshal(coverage),
 	}
+}
+
+func windowMature(dates []string, latestObservedDate string) bool {
+	if latestObservedDate == "" {
+		return false
+	}
+	for _, d := range dates {
+		if d > latestObservedDate {
+			return false
+		}
+	}
+	return true
 }
 
 // firstBlockingReason picks the most informative reason to surface as

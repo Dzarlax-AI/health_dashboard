@@ -126,6 +126,7 @@
       <li>Added <code>TargetKindRolling3dCandidate2of3</code> as <code>rolling_3d_candidate_2of3</code>.</li>
       <li>Recovery writer now saves the candidate target alongside the existing strict <code>rolling_3d</code> row.</li>
       <li>Candidate target is eligible with at least two eligible forward nights and stores the mean of those eligible nights.</li>
+      <li>Candidate target now requires the full <code>t+1..t+3</code> window to be mature against the latest observed sleep row, so a missing <code>t+3</code> near the fresh edge cannot be treated as the allowed dropped night.</li>
       <li>Strict <code>rolling_3d</code> remains unchanged and still requires all three nights.</li>
       <li>Recovery naive baselines are written for daily, strict rolling, and candidate rolling target kinds.</li>
       <li><code>cmd/readiness_sleep_capture_probe</code> now reports persisted EWMA45 MAE for strict rows and, after backfill, candidate rows.</li>
@@ -141,8 +142,8 @@
 
     <h3>Current Live Probe Before Candidate Backfill</h3>
     <ul>
-      <li><code>health</code>: rows=26, strict=24/26, computed candidate=25/26, rescued=1, strict EWMA45 MAE=0.0203 over 24 rows.</li>
-      <li><code>health_mariia</code>: rows=26, strict=12/26, computed candidate=24/26, rescued=12, strict EWMA45 MAE=0.0277 over 12 rows.</li>
+      <li><code>health</code>: rows=26, strict=24/26, mature-window computed candidate=24/26, rescued=0, strict EWMA45 MAE=0.0203 over 24 rows.</li>
+      <li><code>health_mariia</code>: rows=26, strict=12/26, mature-window computed candidate=23/26, rescued=11, strict EWMA45 MAE=0.0277 over 12 rows.</li>
     </ul>
     <p>
       Persisted candidate MAE is intentionally absent until the new code is

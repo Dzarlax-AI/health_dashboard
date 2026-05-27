@@ -144,7 +144,7 @@ func runProbe(ctx context.Context, conn *pgxpool.Conn, schema, from, to string) 
 	if err != nil {
 		return probeResult{}, err
 	}
-	sleepRows, err := loadSleepRows(ctx, conn, loadFrom, loadTo)
+	sleepRows, latestObservedSleepDate, err := loadSleepRows(ctx, conn, loadFrom, loadTo)
 	if err != nil {
 		return probeResult{}, err
 	}
@@ -181,7 +181,7 @@ func runProbe(ctx context.Context, conn *pgxpool.Conn, schema, from, to string) 
 				missingCapture = true
 			}
 		}
-		candidate := eligibleCount >= 2
+		candidate := eligibleCount >= 2 && datesMature(days, latestObservedSleepDate)
 		if candidate {
 			res.Candidate2of3++
 		}
@@ -313,7 +313,7 @@ func sleepLoadRange(targets []targetRow) (string, string, error) {
 	return first.AddDate(0, 0, 1).Format(isoDate), last.AddDate(0, 0, 3).Format(isoDate), nil
 }
 
-func loadSleepRows(ctx context.Context, conn *pgxpool.Conn, from, to string) (map[string]health.SleepRow, error) {
+func loadSleepRows(ctx context.Context, conn *pgxpool.Conn, from, to string) (map[string]health.SleepRow, string, error) {
 	rows, err := conn.Query(ctx, `
 		SELECT date, sleep_total, sleep_deep, sleep_rem, sleep_core, sleep_awake, sleep_unspecified
 		  FROM daily_scores
@@ -321,15 +321,16 @@ func loadSleepRows(ctx context.Context, conn *pgxpool.Conn, from, to string) (ma
 		 ORDER BY date ASC
 	`, from, to)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer rows.Close()
 	out := map[string]health.SleepRow{}
+	latestObservedSleepDate := ""
 	for rows.Next() {
 		var r health.SleepRow
 		var total, deep, rem, core, awake, unsp *float32
 		if err := rows.Scan(&r.Date, &total, &deep, &rem, &core, &awake, &unsp); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		r.Total = liftFloat(total)
 		r.Deep = liftFloat(deep)
@@ -338,8 +339,11 @@ func loadSleepRows(ctx context.Context, conn *pgxpool.Conn, from, to string) (ma
 		r.Awake = liftFloat(awake)
 		r.Unspecified = liftFloat(unsp)
 		out[r.Date] = r
+		if r.Date > latestObservedSleepDate {
+			latestObservedSleepDate = r.Date
+		}
 	}
-	return out, rows.Err()
+	return out, latestObservedSleepDate, rows.Err()
 }
 
 func liftFloat(p *float32) *float64 {
@@ -360,6 +364,18 @@ func forwardDates(date string) ([]string, error) {
 		t.AddDate(0, 0, 2).Format(isoDate),
 		t.AddDate(0, 0, 3).Format(isoDate),
 	}, nil
+}
+
+func datesMature(dates []string, latestObservedDate string) bool {
+	if latestObservedDate == "" {
+		return false
+	}
+	for _, d := range dates {
+		if d > latestObservedDate {
+			return false
+		}
+	}
+	return true
 }
 
 func resolveSchemas(ctx context.Context, pool *pgxpool.Pool, raw string) ([]string, error) {

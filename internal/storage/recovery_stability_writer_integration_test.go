@@ -290,6 +290,56 @@ func TestRecoveryStability_Integration_Rolling3dBlocksOnOneIneligible(t *testing
 	}
 }
 
+func TestRecoveryStability_Integration_Candidate2of3WaitsForMatureWindow(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	seedSleepRow(t, db, "2026-05-01", fp(7.5), fp(1.5), fp(1.8), fp(4.2), fp(0.5), nil)
+	seedSleepRow(t, db, "2026-05-02", fp(7.5), fp(1.5), fp(1.8), fp(4.2), fp(0.5), nil)
+	seedSleepRow(t, db, "2026-05-03", fp(7.5), fp(1.5), fp(1.8), fp(4.2), fp(0.5), nil)
+	// Do not seed 2026-05-04. The candidate target for 2026-05-01
+	// must not mature early just because t+1 and t+2 are already good.
+
+	if _, err := db.BackfillRecoveryStabilitySnapshots("2026-05-01", "2026-05-01"); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	var val *float64
+	var eligible bool
+	var reason string
+	var coverage []byte
+	err := db.pool.QueryRow(context.Background(), `
+		SELECT target_value, eligible, eligibility_reason, data_coverage::text
+		  FROM target_snapshots
+		 WHERE date = $1 AND sub_score = $2 AND target_kind = $3
+	`, "2026-05-01", SubScoreRecoveryStability, TargetKindRolling3dCandidate2of3).Scan(&val, &eligible, &reason, &coverage)
+	if err != nil {
+		t.Fatalf("read rolling_3d_candidate_2of3: %v", err)
+	}
+	if eligible {
+		t.Fatalf("rolling_3d_candidate_2of3 expected ineligible before t+3 matures, got val=%v", val)
+	}
+	if val != nil {
+		t.Fatalf("rolling_3d_candidate_2of3 target_value = %v, want nil before t+3 matures", *val)
+	}
+	if reason != EligibilitySleepDataMissing {
+		t.Fatalf("rolling_3d_candidate_2of3 reason = %q, want %q", reason, EligibilitySleepDataMissing)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(coverage, &parsed); err != nil {
+		t.Fatalf("parse candidate coverage JSON: %v", err)
+	}
+	if got := parsed["candidate_2of3_eligible_count"]; got != float64(2) {
+		t.Fatalf("candidate_2of3_eligible_count = %#v, want 2", got)
+	}
+	if got := parsed["candidate_2of3_window_mature"]; got != false {
+		t.Fatalf("candidate_2of3_window_mature = %#v, want false", got)
+	}
+	if got := parsed["latest_observed_sleep_date"]; got != "2026-05-03" {
+		t.Fatalf("latest_observed_sleep_date = %#v, want 2026-05-03", got)
+	}
+}
+
 func TestRecoveryStability_Integration_FeaturesDoNotLeakFromTplus1(t *testing.T) {
 	db, cleanup := testDB(t)
 	defer cleanup()
