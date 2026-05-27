@@ -289,21 +289,29 @@ func TestLoadReadinessMonitoringSummary_RollingTargetsUseThreeDayLag(t *testing.
 	asOf := time.Date(2026, 5, 26, 0, 0, 0, 0, time.UTC)
 	matureEnd := asOf.AddDate(0, 0, -3)
 
-	for _, subScore := range []string{SubScoreRecoveryStability, SubScorePassiveEfficiency} {
+	targets := []struct {
+		subScore   string
+		targetKind string
+	}{
+		{SubScoreRecoveryStability, TargetKindRolling3d},
+		{SubScoreRecoveryStability, TargetKindRolling3dCandidate2of3},
+		{SubScorePassiveEfficiency, TargetKindRolling3d},
+	}
+	for _, target := range targets {
 		// Fresh-edge rows are not yet contract-mature for rolling_3d and
 		// must not affect the monitoring window.
 		for i := 0; i < 3; i++ {
 			date := asOf.AddDate(0, 0, -i).Format(isoDate)
 			if err := db.SaveTargetSnapshot(TargetSnapshot{
 				Date:              date,
-				SubScore:          subScore,
-				TargetKind:        TargetKindRolling3d,
+				SubScore:          target.subScore,
+				TargetKind:        target.targetKind,
 				Eligible:          false,
 				EligibilityReason: EligibilityEventWindowDataMissing,
 				SourceEpoch:       InitialSourceEpoch,
 				FormulaVersion:    1,
 			}); err != nil {
-				t.Fatalf("seed fresh rolling target %s/%s: %v", subScore, date, err)
+				t.Fatalf("seed fresh rolling target %s/%s/%s: %v", target.subScore, target.targetKind, date, err)
 			}
 		}
 
@@ -311,15 +319,15 @@ func TestLoadReadinessMonitoringSummary_RollingTargetsUseThreeDayLag(t *testing.
 			date := matureEnd.AddDate(0, 0, -i).Format(isoDate)
 			if err := db.SaveTargetSnapshot(TargetSnapshot{
 				Date:              date,
-				SubScore:          subScore,
-				TargetKind:        TargetKindRolling3d,
+				SubScore:          target.subScore,
+				TargetKind:        target.targetKind,
 				TargetValue:       &v,
 				Eligible:          true,
 				EligibilityReason: EligibilityOK,
 				SourceEpoch:       InitialSourceEpoch,
 				FormulaVersion:    1,
 			}); err != nil {
-				t.Fatalf("seed mature rolling target %s/%s: %v", subScore, date, err)
+				t.Fatalf("seed mature rolling target %s/%s/%s: %v", target.subScore, target.targetKind, date, err)
 			}
 		}
 	}
@@ -329,35 +337,35 @@ func TestLoadReadinessMonitoringSummary_RollingTargetsUseThreeDayLag(t *testing.
 		t.Fatalf("LoadReadinessMonitoringSummary: %v", err)
 	}
 
-	for _, subScore := range []string{SubScoreRecoveryStability, SubScorePassiveEfficiency} {
+	for _, target := range targets {
 		var row *ReadinessCoverageRow
 		for i := range summary.CoverageRows {
 			candidate := &summary.CoverageRows[i]
-			if candidate.SubScore == subScore && candidate.TargetKind == TargetKindRolling3d {
+			if candidate.SubScore == target.subScore && candidate.TargetKind == target.targetKind {
 				row = candidate
 				break
 			}
 		}
 		if row == nil {
-			t.Fatalf("missing %s rolling_3d coverage row", subScore)
+			t.Fatalf("missing %s/%s coverage row", target.subScore, target.targetKind)
 		}
 		if row.ContractLagDays != 3 {
-			t.Fatalf("%s contract lag = %d, want 3", subScore, row.ContractLagDays)
+			t.Fatalf("%s/%s contract lag = %d, want 3", target.subScore, target.targetKind, row.ContractLagDays)
 		}
 		if row.WindowTo != "2026-05-23" || row.InputStableTo != "2026-05-23" {
-			t.Fatalf("%s window/stable = %s/%s, want 2026-05-23/2026-05-23",
-				subScore, row.WindowTo, row.InputStableTo)
+			t.Fatalf("%s/%s window/stable = %s/%s, want 2026-05-23/2026-05-23",
+				target.subScore, target.targetKind, row.WindowTo, row.InputStableTo)
 		}
 		if row.Status != MonitoringStatusOK {
-			t.Fatalf("%s rolling status = %q for %+v, want ok", subScore, row.Status, *row)
+			t.Fatalf("%s/%s status = %q for %+v, want ok", target.subScore, target.targetKind, row.Status, *row)
 		}
 		if row.Rows != ReadinessMonitoringWindowDays || row.Eligible != ReadinessMonitoringWindowDays || row.MissingRows != 0 {
-			t.Fatalf("%s rolling counts = eligible:%d rows:%d missing:%d, want %d/%d/0",
-				subScore, row.Eligible, row.Rows, row.MissingRows,
+			t.Fatalf("%s/%s counts = eligible:%d rows:%d missing:%d, want %d/%d/0",
+				target.subScore, target.targetKind, row.Eligible, row.Rows, row.MissingRows,
 				ReadinessMonitoringWindowDays, ReadinessMonitoringWindowDays)
 		}
 		if len(row.IssueSamples) != 0 {
-			t.Fatalf("%s rolling issue samples = %+v, want none", subScore, row.IssueSamples)
+			t.Fatalf("%s/%s issue samples = %+v, want none", target.subScore, target.targetKind, row.IssueSamples)
 		}
 	}
 }

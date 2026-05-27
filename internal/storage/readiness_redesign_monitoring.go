@@ -122,6 +122,10 @@ var readinessMonitoringTargets = []monitoringTarget{
 		InputSubScore: SubScoreRecoveryStability, InputTargetKind: TargetKindRolling3d,
 	},
 	{
+		SubScore: SubScoreRecoveryStability, TargetKind: TargetKindRolling3dCandidate2of3, FloorPct: 0.70, ContractLagDays: 3,
+		InputSubScore: SubScoreRecoveryStability, InputTargetKind: TargetKindRolling3dCandidate2of3,
+	},
+	{
 		SubScore: SubScorePassiveEfficiency, TargetKind: TargetKindDailyPoint, FloorPct: 0.60,
 		InputSubScore: SubScorePassiveEfficiency, InputTargetKind: TargetKindDailyPoint,
 	},
