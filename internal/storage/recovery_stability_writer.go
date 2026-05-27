@@ -201,6 +201,7 @@ func (s *DB) writeRecoveryStabilityRow(
 
 	// --- Rolling 3-day target: mean of eff(t+1), eff(t+2), eff(t+3) ---
 	rollingTarget := rolling3dTarget(t, effByDate, byDate, captureByDate)
+	candidateRollingTarget := rolling3dCandidate2of3Target(t, effByDate, byDate, captureByDate)
 
 	// --- Feature payload: data strictly ≤ end of day `t` ---
 	features := buildRecoveryFeatures(t, epochStart, byDate, effByDate, captureByDate, archByDate)
@@ -239,6 +240,20 @@ func (s *DB) writeRecoveryStabilityRow(
 		FormulaVersion:    recoveryStabilityFormulaVersion,
 	}); err != nil {
 		return fmt.Errorf("save rolling_3d target %s: %w", date, err)
+	}
+
+	if err := s.SaveTargetSnapshot(TargetSnapshot{
+		Date:              date,
+		SubScore:          SubScoreRecoveryStability,
+		TargetKind:        TargetKindRolling3dCandidate2of3,
+		TargetValue:       candidateRollingTarget.Value,
+		Eligible:          candidateRollingTarget.Eligible,
+		EligibilityReason: candidateRollingTarget.Reason,
+		DataCoverage:      candidateRollingTarget.Coverage,
+		SourceEpoch:       epoch,
+		FormulaVersion:    recoveryStabilityFormulaVersion,
+	}); err != nil {
+		return fmt.Errorf("save rolling_3d_candidate_2of3 target %s: %w", date, err)
 	}
 
 	if err := s.SaveFeatureSnapshot(FeatureSnapshot{
@@ -400,6 +415,84 @@ func rolling3dTarget(
 		Eligible: true,
 		Reason:   health.SleepEligibilityOK,
 		Coverage: cov,
+	}
+}
+
+// rolling3dCandidate2of3Target is an evidence-only Recovery target.
+// It keeps the same forward label window as strict rolling_3d, but
+// allows one ineligible night and averages the eligible nights when at
+// least two are present. No product path should read this target kind.
+func rolling3dCandidate2of3Target(
+	t time.Time,
+	effByDate map[string]health.SleepEfficiencyResult,
+	byDate map[string]health.SleepRow,
+	captureByDate map[string]health.SleepCaptureConfidenceResult,
+) targetWriteSpec {
+	dates := []string{
+		t.AddDate(0, 0, 1).Format(isoDate),
+		t.AddDate(0, 0, 2).Format(isoDate),
+		t.AddDate(0, 0, 3).Format(isoDate),
+	}
+	values := make([]float64, 0, 3)
+	reasons := make([]string, 0, 3)
+	missing := make([]string, 0, 3)
+	captureClasses := make([]string, 0, 3)
+	captureReasons := make([]string, 0, 3)
+	captureConfidences := make([]float64, 0, 3)
+	lowConfidenceCount := 0
+	for _, d := range dates {
+		capture := sleepCaptureForDate(captureByDate, d)
+		captureClasses = append(captureClasses, capture.Class)
+		captureReasons = append(captureReasons, capture.Reason)
+		captureConfidences = append(captureConfidences, capture.Confidence)
+		if capture.LowConfidence {
+			lowConfidenceCount++
+		}
+		row, ok := byDate[d]
+		if !ok || row.Date == "" {
+			missing = append(missing, d)
+			reasons = append(reasons, health.SleepEligibilitySleepTotalOutOfRange)
+			continue
+		}
+		e := effByDate[d]
+		reasons = append(reasons, e.EligibilityReason)
+		if !e.Eligible || e.Efficiency == nil {
+			continue
+		}
+		values = append(values, *e.Efficiency)
+	}
+
+	coverage := map[string]any{
+		"target_dates":                  dates,
+		"missing_dates":                 missing,
+		"per_day_reason":                reasons,
+		"eligible_count":                len(values),
+		"per_day_capture_class":         captureClasses,
+		"per_day_capture_reason":        captureReasons,
+		"per_day_capture_confidence":    captureConfidences,
+		"low_capture_confidence_count":  lowConfidenceCount,
+		"strict_rolling_eligibility":    len(values) == 3,
+		"candidate_2of3_eligible_count": len(values),
+		"candidate_2of3_eligible":       len(values) >= 2,
+		"candidate_2of3_value_days":     len(values),
+	}
+	if len(values) < 2 {
+		return targetWriteSpec{
+			Eligible: false,
+			Reason:   firstBlockingReason(reasons),
+			Coverage: mustMarshal(coverage),
+		}
+	}
+	var sum float64
+	for _, v := range values {
+		sum += v
+	}
+	mean := sum / float64(len(values))
+	return targetWriteSpec{
+		Value:    &mean,
+		Eligible: true,
+		Reason:   health.SleepEligibilityOK,
+		Coverage: mustMarshal(coverage),
 	}
 }
 
@@ -578,7 +671,7 @@ type naiveBaselineRow struct {
 }
 
 func buildRecoveryNaiveBaselines(t time.Time, epochStart string, eff map[string]health.SleepEfficiencyResult) []naiveBaselineRow {
-	out := make([]naiveBaselineRow, 0, 8)
+	out := make([]naiveBaselineRow, 0, 12)
 
 	// Persistence — yesterday's efficiency predicts tomorrow's. For
 	// daily_point at t+1 this is eff(t). For rolling_3d at t+1..t+3
@@ -590,23 +683,23 @@ func buildRecoveryNaiveBaselines(t time.Time, epochStart string, eff map[string]
 	// Each classifier call passes the actual earliest-day offset for
 	// that baseline's lookback — see classifyBaselineNullReason's
 	// docstring for the per-baseline numbers.
-	out = append(out, appendBaselinePair(TargetKindDailyPoint, TargetKindRolling3d,
-		BaselineKindPersistenceYesterday, persist, classifyBaselineNullReason(t, 0, epochStart))...)
+	out = append(out, appendBaselineSet(BaselineKindPersistenceYesterday, persist, classifyBaselineNullReason(t, 0, epochStart),
+		TargetKindDailyPoint, TargetKindRolling3d, TargetKindRolling3dCandidate2of3)...)
 
 	lookup := sleepEfficiencyLookup(eff)
 
 	mean7, _ := windowMean(t, 7, epochStart, lookup)
-	out = append(out, appendBaselinePair(TargetKindDailyPoint, TargetKindRolling3d,
-		BaselineKindRolling7dMean, mean7, classifyBaselineNullReason(t, 6, epochStart))...)
+	out = append(out, appendBaselineSet(BaselineKindRolling7dMean, mean7, classifyBaselineNullReason(t, 6, epochStart),
+		TargetKindDailyPoint, TargetKindRolling3d, TargetKindRolling3dCandidate2of3)...)
 
 	mean30, _ := windowMean(t, 30, epochStart, lookup)
-	out = append(out, appendBaselinePair(TargetKindDailyPoint, TargetKindRolling3d,
-		BaselineKindRolling30dMean, mean30, classifyBaselineNullReason(t, 29, epochStart))...)
+	out = append(out, appendBaselineSet(BaselineKindRolling30dMean, mean30, classifyBaselineNullReason(t, 29, epochStart),
+		TargetKindDailyPoint, TargetKindRolling3d, TargetKindRolling3dCandidate2of3)...)
 
 	ewma45, _ := windowEWMA(t, ewmaWindowAdaptive, epochStart, lookup)
-	out = append(out, appendBaselinePair(TargetKindDailyPoint, TargetKindRolling3d,
-		BaselineKindEWMA45d, ewma45,
-		classifyBaselineNullReason(t, ewmaLookbackDays(ewmaWindowAdaptive), epochStart))...)
+	out = append(out, appendBaselineSet(BaselineKindEWMA45d, ewma45,
+		classifyBaselineNullReason(t, ewmaLookbackDays(ewmaWindowAdaptive), epochStart),
+		TargetKindDailyPoint, TargetKindRolling3d, TargetKindRolling3dCandidate2of3)...)
 
 	return out
 }
@@ -615,14 +708,26 @@ func buildRecoveryNaiveBaselines(t time.Time, epochStart string, eff map[string]
 // kinds. Centralises the "reason only when value is nil" rule so the
 // individual callers stay tabular.
 func appendBaselinePair(tk1, tk2, baselineKind string, val *float64, nullReason string) []naiveBaselineRow {
+	return appendBaselineSet(baselineKind, val, nullReason, tk1, tk2)
+}
+
+// appendBaselineSet emits the same value/reason pair for every listed
+// target kind.
+func appendBaselineSet(baselineKind string, val *float64, nullReason string, targetKinds ...string) []naiveBaselineRow {
 	reason := ""
 	if val == nil {
 		reason = nullReason
 	}
-	return []naiveBaselineRow{
-		{TargetKind: tk1, BaselineKind: baselineKind, Value: val, Reason: reason},
-		{TargetKind: tk2, BaselineKind: baselineKind, Value: val, Reason: reason},
+	out := make([]naiveBaselineRow, 0, len(targetKinds))
+	for _, tk := range targetKinds {
+		out = append(out, naiveBaselineRow{
+			TargetKind:   tk,
+			BaselineKind: baselineKind,
+			Value:        val,
+			Reason:       reason,
+		})
 	}
+	return out
 }
 
 // --- Helpers -----------------------------------------------------------

@@ -16,8 +16,10 @@
 //     nights are eligible
 //   - one ineligible night in the t+1..t+3 window flips rolling_3d to
 //     ineligible with no partial average
+//   - rolling_3d_candidate_2of3 stays eligible when two forward nights
+//     are eligible, without changing strict rolling_3d
 //   - feature snapshot for `t` does not include eff(t+1)
-//   - naive baselines exist for both target_kinds
+//   - naive baselines exist for all Recovery target_kinds
 //   - rerun is idempotent (no duplicate rows, computed_at refreshes)
 
 package storage
@@ -253,6 +255,39 @@ func TestRecoveryStability_Integration_Rolling3dBlocksOnOneIneligible(t *testing
 	if parsedCoverage["strict_rolling_eligibility"] != false {
 		t.Fatalf("strict_rolling_eligibility = %#v, want false", parsedCoverage["strict_rolling_eligibility"])
 	}
+
+	var candidateVal float64
+	var candidateEligible bool
+	var candidateReason string
+	var candidateCoverage []byte
+	err = db.pool.QueryRow(context.Background(), `
+		SELECT target_value, eligible, eligibility_reason, data_coverage::text
+		  FROM target_snapshots
+		 WHERE date = $1 AND sub_score = $2 AND target_kind = $3
+	`, "2026-05-01", SubScoreRecoveryStability, TargetKindRolling3dCandidate2of3).Scan(
+		&candidateVal, &candidateEligible, &candidateReason, &candidateCoverage)
+	if err != nil {
+		t.Fatalf("read rolling_3d_candidate_2of3: %v", err)
+	}
+	if !candidateEligible {
+		t.Fatalf("rolling_3d_candidate_2of3 expected eligible, got reason=%q", candidateReason)
+	}
+	if candidateReason != "ok" {
+		t.Errorf("rolling_3d_candidate_2of3 reason = %q, want ok", candidateReason)
+	}
+	if want := 7.5 / 8.0; absDiff(candidateVal, want) > 1e-6 {
+		t.Errorf("rolling_3d_candidate_2of3 value = %v, want %v", candidateVal, want)
+	}
+	var candidateParsed map[string]any
+	if err := json.Unmarshal(candidateCoverage, &candidateParsed); err != nil {
+		t.Fatalf("parse candidate coverage JSON: %v", err)
+	}
+	if got := candidateParsed["candidate_2of3_eligible"]; got != true {
+		t.Fatalf("candidate_2of3_eligible = %#v, want true", got)
+	}
+	if got := candidateParsed["candidate_2of3_value_days"]; got != float64(2) {
+		t.Fatalf("candidate_2of3_value_days = %#v, want 2", got)
+	}
 }
 
 func TestRecoveryStability_Integration_FeaturesDoNotLeakFromTplus1(t *testing.T) {
@@ -343,9 +378,9 @@ func TestRecoveryStability_Integration_NaiveBaselinesExist(t *testing.T) {
 		t.Fatalf("rows: %v", err)
 	}
 
-	// Expect 4 baselines × 2 target_kinds = 8 rows.
-	if len(got) != 8 {
-		t.Fatalf("expected 8 baseline rows, got %d: %+v", len(got), got)
+	// Expect 4 baselines × 3 target_kinds = 12 rows.
+	if len(got) != 12 {
+		t.Fatalf("expected 12 baseline rows, got %d: %+v", len(got), got)
 	}
 
 	// Every baseline should be ≈ 0.9375 since all nights are identical.
