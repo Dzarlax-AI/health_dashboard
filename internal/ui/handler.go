@@ -850,6 +850,7 @@ func (h *Handler) fragmentAdminReadinessMonitoring(w http.ResponseWriter, r *htt
 		Freshness   string
 		TopReason   string
 		ReasonTitle string
+		Issues      string
 	}
 	type driftView struct {
 		SubScore   string
@@ -901,6 +902,7 @@ func (h *Handler) fragmentAdminReadinessMonitoring(w http.ResponseWriter, r *htt
 				Freshness:   monitoringFreshnessNote(lang, row),
 				TopReason:   row.TopReason,
 				ReasonTitle: monitoringReasonTitle(row.ReasonCounts),
+				Issues:      monitoringIssueSamples(row.IssueSamples),
 			})
 		}
 		for _, row := range summary.DriftRows {
@@ -2144,6 +2146,20 @@ func monitoringReasonTitle(reasons map[string]int) string {
 	parts := make([]string, 0, len(keys))
 	for _, k := range keys {
 		parts = append(parts, fmt.Sprintf("%s=%d", k, reasons[k]))
+	}
+	return strings.Join(parts, " · ")
+}
+
+func monitoringIssueSamples(samples []storage.ReadinessCoverageIssue) string {
+	if len(samples) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(samples))
+	for _, sample := range samples {
+		if sample.Reason == "" {
+			sample.Reason = "unknown"
+		}
+		parts = append(parts, sample.Date+" "+sample.Reason)
 	}
 	return strings.Join(parts, " · ")
 }

@@ -14,7 +14,7 @@ func TestAdminReadinessRedesignMonitoring_JSONShape(t *testing.T) {
 	db, schema, cleanup := testTenantDB(t)
 	defer cleanup()
 
-	date := daysAgoUTC(1)
+	date := daysAgoUTC(3)
 	v := 0.5
 	if err := db.SaveTargetSnapshot(storage.TargetSnapshot{
 		Date:              date,
@@ -52,6 +52,11 @@ func TestAdminReadinessRedesignMonitoring_JSONShape(t *testing.T) {
 				WindowTo             string `json:"WindowTo"`
 				InputStableTo        string `json:"InputStableTo"`
 				InputStalenessStatus string `json:"InputStalenessStatus"`
+				ContractLagDays      int    `json:"ContractLagDays"`
+				IssueSamples         []struct {
+					Date   string `json:"Date"`
+					Reason string `json:"Reason"`
+				} `json:"IssueSamples"`
 			} `json:"CoverageRows"`
 		} `json:"rows"`
 	}
@@ -75,6 +80,12 @@ func TestAdminReadinessRedesignMonitoring_JSONShape(t *testing.T) {
 			if row.InputStalenessStatus == "" {
 				t.Fatalf("coverage row missing input staleness status: %+v", row)
 			}
+			if row.ContractLagDays != 3 {
+				t.Fatalf("coverage row contract lag = %d, want 3", row.ContractLagDays)
+			}
+			if len(row.IssueSamples) == 0 || row.IssueSamples[0].Reason != storage.EligibilitySleepDataMissing {
+				t.Fatalf("coverage row issue samples = %+v, want sleep_data_missing sample", row.IssueSamples)
+			}
 			return
 		}
 	}
@@ -85,15 +96,15 @@ func TestFragmentAdminReadinessMonitoring_Renders(t *testing.T) {
 	db, schema, cleanup := testTenantDB(t)
 	defer cleanup()
 
-	date := daysAgoUTC(1)
+	date := daysAgoUTC(0)
 	v := 0.5
 	if err := db.SaveTargetSnapshot(storage.TargetSnapshot{
 		Date:              date,
 		SubScore:          storage.SubScoreRecoveryStability,
-		TargetKind:        storage.TargetKindRolling3d,
+		TargetKind:        storage.TargetKindDailyPoint,
 		TargetValue:       &v,
-		Eligible:          true,
-		EligibilityReason: storage.EligibilityOK,
+		Eligible:          false,
+		EligibilityReason: storage.EligibilitySleepDataMissing,
 		SourceEpoch:       storage.InitialSourceEpoch,
 		FormulaVersion:    1,
 	}); err != nil {
@@ -111,7 +122,7 @@ func TestFragmentAdminReadinessMonitoring_Renders(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
 	}
 	body := w.Body.String()
-	for _, want := range []string{schema, "coverage", storage.SubScoreRecoveryStability, "window", "inputs stable through"} {
+	for _, want := range []string{schema, "coverage", storage.SubScoreRecoveryStability, "window", "inputs stable through", date + " " + storage.EligibilitySleepDataMissing} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("fragment missing %q; body=%s", want, body)
 		}

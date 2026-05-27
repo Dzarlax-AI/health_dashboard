@@ -38,6 +38,7 @@
           {{.Coverage}}{{if .TopReason}} · {{.TopReason}}{{end}}
           <div class="muted">{{T $.Lang "admin_monitoring_window"}} {{.Window}}</div>
           {{if .Freshness}}<div class="muted">{{.Freshness}}</div>{{end}}
+          {{if .Issues}}<div class="muted">{{.Issues}}</div>{{end}}
         </td>
         <td>{{T $.Lang "admin_monitoring_floor"}} {{.Floor}}</td>
       </tr>

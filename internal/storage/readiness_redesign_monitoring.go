@@ -20,6 +20,7 @@ const (
 	ReadinessMonitoringDriftDays  = 30
 	ReadinessMonitoringBaseDays   = 90
 	ReadinessMonitoringStableDays = 30
+	ReadinessMonitoringIssueLimit = 5
 
 	ReadinessMonitoringStaleWarnDays     = 3
 	ReadinessMonitoringStaleCriticalDays = 8
@@ -57,6 +58,13 @@ type ReadinessCoverageRow struct {
 	ReasonCounts         map[string]int
 	TopReason            string
 	TopReasonRows        int
+	IssueSamples         []ReadinessCoverageIssue
+}
+
+type ReadinessCoverageIssue struct {
+	Date     string
+	Eligible bool
+	Reason   string
 }
 
 type ReadinessDriftRow struct {
@@ -108,7 +116,7 @@ var readinessMonitoringTargets = []monitoringTarget{
 		InputSubScore: SubScoreRecoveryStability, InputTargetKind: TargetKindDailyPoint,
 	},
 	{
-		SubScore: SubScoreRecoveryStability, TargetKind: TargetKindRolling3d, FloorPct: 0.70,
+		SubScore: SubScoreRecoveryStability, TargetKind: TargetKindRolling3d, FloorPct: 0.70, ContractLagDays: 3,
 		InputSubScore: SubScoreRecoveryStability, InputTargetKind: TargetKindRolling3d,
 	},
 	{
@@ -116,7 +124,7 @@ var readinessMonitoringTargets = []monitoringTarget{
 		InputSubScore: SubScorePassiveEfficiency, InputTargetKind: TargetKindDailyPoint,
 	},
 	{
-		SubScore: SubScorePassiveEfficiency, TargetKind: TargetKindRolling3d, FloorPct: 0.60,
+		SubScore: SubScorePassiveEfficiency, TargetKind: TargetKindRolling3d, FloorPct: 0.60, ContractLagDays: 3,
 		InputSubScore: SubScorePassiveEfficiency, InputTargetKind: TargetKindRolling3d,
 	},
 	{
@@ -217,25 +225,29 @@ func (s *DB) loadReadinessCoverageRows(asOf time.Time) ([]ReadinessCoverageRow, 
 		row.InputStalenessReason = window.inputStalenessReason
 
 		rows, err := s.pool.Query(ctx, `
-			SELECT eligible, eligibility_reason
+			SELECT date, eligible, eligibility_reason
 			  FROM target_snapshots
 			 WHERE sub_score = $1
 			   AND target_kind = $2
 			   AND date BETWEEN $3 AND $4
+			 ORDER BY date ASC
 		`, target.SubScore, target.TargetKind, row.WindowFrom, row.WindowTo)
 		if err != nil {
 			return nil, fmt.Errorf("loadReadinessCoverageRows %s/%s: %w",
 				target.SubScore, target.TargetKind, err)
 		}
 
+		seenDates := map[string]struct{}{}
 		for rows.Next() {
+			var date string
 			var reason string
 			var eligible bool
-			if err := rows.Scan(&eligible, &reason); err != nil {
+			if err := rows.Scan(&date, &eligible, &reason); err != nil {
 				rows.Close()
 				return nil, fmt.Errorf("loadReadinessCoverageRows scan %s/%s: %w",
 					target.SubScore, target.TargetKind, err)
 			}
+			seenDates[date] = struct{}{}
 			row.Rows++
 			if eligible {
 				row.Eligible++
@@ -244,6 +256,13 @@ func (s *DB) loadReadinessCoverageRows(asOf time.Time) ([]ReadinessCoverageRow, 
 				reason = "unknown"
 			}
 			row.ReasonCounts[reason]++
+			if (!eligible || reason != EligibilityOK) && len(row.IssueSamples) < ReadinessMonitoringIssueLimit {
+				row.IssueSamples = append(row.IssueSamples, ReadinessCoverageIssue{
+					Date:     date,
+					Eligible: eligible,
+					Reason:   reason,
+				})
+			}
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
@@ -255,6 +274,7 @@ func (s *DB) loadReadinessCoverageRows(asOf time.Time) ([]ReadinessCoverageRow, 
 		if row.Rows < row.ExpectedRows {
 			row.MissingRows = row.ExpectedRows - row.Rows
 			row.ReasonCounts["missing_rows"] = row.MissingRows
+			addMissingCoverageSamples(&row, seenDates)
 		} else {
 			row.MissingRows = 0
 		}
@@ -273,6 +293,26 @@ func (s *DB) loadReadinessCoverageRows(asOf time.Time) ([]ReadinessCoverageRow, 
 		out = append(out, row)
 	}
 	return out, nil
+}
+
+func addMissingCoverageSamples(row *ReadinessCoverageRow, seenDates map[string]struct{}) {
+	if len(row.IssueSamples) >= ReadinessMonitoringIssueLimit {
+		return
+	}
+	from, err := time.Parse(isoDate, row.WindowFrom)
+	if err != nil {
+		return
+	}
+	for i := 0; i < row.ExpectedRows && len(row.IssueSamples) < ReadinessMonitoringIssueLimit; i++ {
+		date := from.AddDate(0, 0, i).Format(isoDate)
+		if _, ok := seenDates[date]; ok {
+			continue
+		}
+		row.IssueSamples = append(row.IssueSamples, ReadinessCoverageIssue{
+			Date:   date,
+			Reason: "missing_rows",
+		})
+	}
 }
 
 type monitoringWindow struct {
