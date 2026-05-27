@@ -208,3 +208,62 @@ func TestComputeSleepEfficiency_StagedExceedsToleranceFails(t *testing.T) {
 		t.Fatalf("expected missing_awake_unknown beyond tolerance, got %+v", got)
 	}
 }
+
+func TestComputeSleepCaptureConfidence_GoodCapture(t *testing.T) {
+	got := ComputeSleepCaptureConfidence(SleepRow{
+		Date:  "2026-05-15",
+		Total: fp(7.5),
+		Deep:  fp(1.5), REM: fp(1.8), Core: fp(4.2),
+		Awake: fp(0.5),
+	})
+	if got.Class != SleepCaptureGood || got.LowConfidence {
+		t.Fatalf("capture = %+v, want good high-confidence capture", got)
+	}
+	if got.Confidence < 0.9 {
+		t.Fatalf("confidence = %v, want high confidence", got.Confidence)
+	}
+}
+
+func TestComputeSleepCaptureConfidence_PartialShortCapture(t *testing.T) {
+	got := ComputeSleepCaptureConfidence(SleepRow{
+		Date:  "2026-05-15",
+		Total: fp(3.99),
+		Deep:  fp(1.0), REM: fp(1.0), Core: fp(1.99),
+		Awake: fp(0.1),
+	})
+	if got.Class != SleepCapturePartialShort || !got.LowConfidence {
+		t.Fatalf("capture = %+v, want partial short low-confidence capture", got)
+	}
+	if got.Reason != SleepCaptureReasonShortWithStages {
+		t.Fatalf("reason = %q, want %q", got.Reason, SleepCaptureReasonShortWithStages)
+	}
+}
+
+func TestComputeSleepCaptureConfidence_MissingCapture(t *testing.T) {
+	got := ComputeSleepCaptureConfidence(SleepRow{Date: "2026-05-15"})
+	if got.Class != SleepCaptureMissing || !got.LowConfidence || got.Confidence != 0 {
+		t.Fatalf("capture = %+v, want missing zero-confidence capture", got)
+	}
+}
+
+func TestComputeSleepCaptureConfidence_CoarseOnlyCapture(t *testing.T) {
+	got := ComputeSleepCaptureConfidence(SleepRow{
+		Date:        "2026-05-15",
+		Total:       fp(7.2),
+		Unspecified: fp(7.2),
+	})
+	if got.Class != SleepCaptureCoarseOnly || !got.LowConfidence {
+		t.Fatalf("capture = %+v, want coarse-only low-confidence capture", got)
+	}
+}
+
+func TestComputeSleepCaptureConfidence_StageMismatch(t *testing.T) {
+	got := ComputeSleepCaptureConfidence(SleepRow{
+		Date:  "2026-05-15",
+		Total: fp(8.0),
+		Deep:  fp(1.0), REM: fp(1.0), Core: fp(1.0),
+	})
+	if got.Class != SleepCaptureStageMismatch || !got.LowConfidence {
+		t.Fatalf("capture = %+v, want stage-mismatch low-confidence capture", got)
+	}
+}

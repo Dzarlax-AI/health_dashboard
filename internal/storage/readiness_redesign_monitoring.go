@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
@@ -62,9 +63,10 @@ type ReadinessCoverageRow struct {
 }
 
 type ReadinessCoverageIssue struct {
-	Date     string
-	Eligible bool
-	Reason   string
+	Date         string
+	Eligible     bool
+	Reason       string
+	CaptureClass string
 }
 
 type ReadinessDriftRow struct {
@@ -225,7 +227,7 @@ func (s *DB) loadReadinessCoverageRows(asOf time.Time) ([]ReadinessCoverageRow, 
 		row.InputStalenessReason = window.inputStalenessReason
 
 		rows, err := s.pool.Query(ctx, `
-			SELECT date, eligible, eligibility_reason
+			SELECT date, eligible, eligibility_reason, data_coverage
 			  FROM target_snapshots
 			 WHERE sub_score = $1
 			   AND target_kind = $2
@@ -242,7 +244,8 @@ func (s *DB) loadReadinessCoverageRows(asOf time.Time) ([]ReadinessCoverageRow, 
 			var date string
 			var reason string
 			var eligible bool
-			if err := rows.Scan(&date, &eligible, &reason); err != nil {
+			var coverage []byte
+			if err := rows.Scan(&date, &eligible, &reason, &coverage); err != nil {
 				rows.Close()
 				return nil, fmt.Errorf("loadReadinessCoverageRows scan %s/%s: %w",
 					target.SubScore, target.TargetKind, err)
@@ -258,9 +261,10 @@ func (s *DB) loadReadinessCoverageRows(asOf time.Time) ([]ReadinessCoverageRow, 
 			row.ReasonCounts[reason]++
 			if (!eligible || reason != EligibilityOK) && len(row.IssueSamples) < ReadinessMonitoringIssueLimit {
 				row.IssueSamples = append(row.IssueSamples, ReadinessCoverageIssue{
-					Date:     date,
-					Eligible: eligible,
-					Reason:   reason,
+					Date:         date,
+					Eligible:     eligible,
+					Reason:       reason,
+					CaptureClass: coverageCaptureClass(coverage),
 				})
 			}
 		}
@@ -313,6 +317,47 @@ func addMissingCoverageSamples(row *ReadinessCoverageRow, seenDates map[string]s
 			Reason: "missing_rows",
 		})
 	}
+}
+
+func coverageCaptureClass(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var payload struct {
+		SleepCaptureClass  string   `json:"sleep_capture_class"`
+		PerDayCaptureClass []string `json:"per_day_capture_class"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return ""
+	}
+	if payload.SleepCaptureClass != "" {
+		return payload.SleepCaptureClass
+	}
+	counts := map[string]int{}
+	for _, class := range payload.PerDayCaptureClass {
+		if class == "" || class == health.SleepCaptureGood {
+			continue
+		}
+		counts[class]++
+	}
+	if len(counts) == 0 {
+		return ""
+	}
+	type pair struct {
+		class string
+		n     int
+	}
+	ordered := make([]pair, 0, len(counts))
+	for class, n := range counts {
+		ordered = append(ordered, pair{class: class, n: n})
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].n == ordered[j].n {
+			return ordered[i].class < ordered[j].class
+		}
+		return ordered[i].n > ordered[j].n
+	})
+	return ordered[0].class
 }
 
 type monitoringWindow struct {
