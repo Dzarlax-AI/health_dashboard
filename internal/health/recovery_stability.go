@@ -39,11 +39,11 @@ import "math"
 // depend on internal/storage (storage imports health, not the other
 // way around).
 const (
-	SleepEligibilityOK                       = "ok"
-	SleepEligibilityOKAwakeStructuralZero    = "ok_awake_structural_zero"
-	SleepEligibilityMissingAwakeUnknown      = "missing_awake_unknown"
-	SleepEligibilitySleepTotalOutOfRange     = "sleep_total_out_of_range"
-	SleepEligibilityCoarseOnlySource         = "coarse_only_source"
+	SleepEligibilityOK                    = "ok"
+	SleepEligibilityOKAwakeStructuralZero = "ok_awake_structural_zero"
+	SleepEligibilityMissingAwakeUnknown   = "missing_awake_unknown"
+	SleepEligibilitySleepTotalOutOfRange  = "sleep_total_out_of_range"
+	SleepEligibilityCoarseOnlySource      = "coarse_only_source"
 	// SleepEligibilityDataMissing distinguishes nights where the sleep
 	// row is entirely absent from the source (no metric_points entries
 	// for `sleep_total`) from physiologically out-of-range short or
@@ -51,7 +51,28 @@ const (
 	// differs: data_missing → device off / sync gap / pre-sync period;
 	// out_of_range → real but unusable short sleep (nap, all-nighter).
 	// Introduced in formula_version 2.
-	SleepEligibilityDataMissing              = "sleep_data_missing"
+	SleepEligibilityDataMissing = "sleep_data_missing"
+)
+
+// Sleep capture classes describe whether the sleep source appears usable
+// as evidence. They deliberately do not change Recovery target eligibility;
+// storage writes them next to targets/features as diagnostics.
+const (
+	SleepCaptureGood                  = "good_capture"
+	SleepCapturePartialShort          = "partial_capture_short"
+	SleepCaptureMissing               = "missing_capture"
+	SleepCaptureCoarseOnly            = "coarse_only_capture"
+	SleepCaptureStageMismatch         = "stage_mismatch_capture"
+	SleepCaptureInvalidTotal          = "invalid_total_capture"
+	SleepCaptureRealShortCandidate    = "real_short_sleep_candidate"
+	SleepCaptureLateSleepPending      = "late_sleep_pending"
+	SleepCaptureReasonOK              = "ok"
+	SleepCaptureReasonNoTotal         = "no_sleep_total"
+	SleepCaptureReasonShortWithStages = "short_total_with_stages"
+	SleepCaptureReasonShortCoarseOnly = "short_total_coarse_only"
+	SleepCaptureReasonNoStages        = "no_staged_sleep"
+	SleepCaptureReasonStageMismatch   = "stage_total_mismatch"
+	SleepCaptureReasonInvalidTotal    = "invalid_sleep_total"
 )
 
 // Sleep eligibility thresholds. Documented in plan §4.2.
@@ -96,6 +117,13 @@ type SleepEfficiencyResult struct {
 	Eligible          bool
 	EligibilityReason string
 	Efficiency        *float64 // nil when ineligible
+}
+
+type SleepCaptureConfidenceResult struct {
+	Class         string
+	Confidence    float64
+	Reason        string
+	LowConfidence bool
 }
 
 // ComputeSleepEfficiency applies the plan §4.2.1 eligibility decision
@@ -190,6 +218,91 @@ func ComputeSleepEfficiency(r SleepRow) SleepEfficiencyResult {
 		Eligible:          true,
 		EligibilityReason: SleepEligibilityOK,
 		Efficiency:        &eff,
+	}
+}
+
+func ComputeSleepCaptureConfidence(r SleepRow) SleepCaptureConfidenceResult {
+	if r.Total == nil {
+		return SleepCaptureConfidenceResult{
+			Class:         SleepCaptureMissing,
+			Confidence:    0,
+			Reason:        SleepCaptureReasonNoTotal,
+			LowConfidence: true,
+		}
+	}
+	total := *r.Total
+	if total <= 0 || total > sleepTotalMaxHours {
+		return SleepCaptureConfidenceResult{
+			Class:         SleepCaptureInvalidTotal,
+			Confidence:    0.05,
+			Reason:        SleepCaptureReasonInvalidTotal,
+			LowConfidence: true,
+		}
+	}
+
+	deep := safeFloat(r.Deep)
+	rem := safeFloat(r.REM)
+	core := safeFloat(r.Core)
+	staged := deep + rem + core
+	unspecified := safeFloat(r.Unspecified)
+	hasStaged := staged > 0
+
+	if total < sleepTotalMinHours {
+		if hasStaged {
+			return SleepCaptureConfidenceResult{
+				Class:         SleepCapturePartialShort,
+				Confidence:    0.35,
+				Reason:        SleepCaptureReasonShortWithStages,
+				LowConfidence: true,
+			}
+		}
+		if unspecified > 0 {
+			return SleepCaptureConfidenceResult{
+				Class:         SleepCaptureCoarseOnly,
+				Confidence:    0.25,
+				Reason:        SleepCaptureReasonShortCoarseOnly,
+				LowConfidence: true,
+			}
+		}
+		return SleepCaptureConfidenceResult{
+			Class:         SleepCaptureRealShortCandidate,
+			Confidence:    0.20,
+			Reason:        SleepCaptureReasonInvalidTotal,
+			LowConfidence: true,
+		}
+	}
+
+	if !hasStaged {
+		if unspecified > 0 {
+			return SleepCaptureConfidenceResult{
+				Class:         SleepCaptureCoarseOnly,
+				Confidence:    0.55,
+				Reason:        SleepCaptureReasonNoStages,
+				LowConfidence: true,
+			}
+		}
+		return SleepCaptureConfidenceResult{
+			Class:         SleepCaptureMissing,
+			Confidence:    0.15,
+			Reason:        SleepCaptureReasonNoStages,
+			LowConfidence: true,
+		}
+	}
+
+	rel := math.Abs(staged-total) / total
+	if rel > 0.25 {
+		return SleepCaptureConfidenceResult{
+			Class:         SleepCaptureStageMismatch,
+			Confidence:    0.50,
+			Reason:        SleepCaptureReasonStageMismatch,
+			LowConfidence: true,
+		}
+	}
+	return SleepCaptureConfidenceResult{
+		Class:         SleepCaptureGood,
+		Confidence:    0.95,
+		Reason:        SleepCaptureReasonOK,
+		LowConfidence: false,
 	}
 }
 

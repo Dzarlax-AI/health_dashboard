@@ -239,6 +239,20 @@ func TestRecoveryStability_Integration_Rolling3dBlocksOnOneIneligible(t *testing
 	if !strings.Contains(string(coverage), "2026-05-03") {
 		t.Errorf("expected coverage JSON to reference 2026-05-03, got %s", coverage)
 	}
+	var parsedCoverage map[string]any
+	if err := json.Unmarshal(coverage, &parsedCoverage); err != nil {
+		t.Fatalf("parse coverage JSON: %v", err)
+	}
+	classes, ok := parsedCoverage["per_day_capture_class"].([]any)
+	if !ok || len(classes) != 3 {
+		t.Fatalf("per_day_capture_class = %#v, want 3 entries", parsedCoverage["per_day_capture_class"])
+	}
+	if classes[1] != "partial_capture_short" {
+		t.Fatalf("capture class for short middle night = %#v, want partial_capture_short", classes[1])
+	}
+	if parsedCoverage["strict_rolling_eligibility"] != false {
+		t.Fatalf("strict_rolling_eligibility = %#v, want false", parsedCoverage["strict_rolling_eligibility"])
+	}
 }
 
 func TestRecoveryStability_Integration_FeaturesDoNotLeakFromTplus1(t *testing.T) {
@@ -277,6 +291,15 @@ func TestRecoveryStability_Integration_FeaturesDoNotLeakFromTplus1(t *testing.T)
 	wantPrev := 7.5 / 8.0
 	if absDiff(prev, wantPrev) > 1e-9 {
 		t.Errorf("prev_efficiency = %v, want %v (= eff of day t, not t+1)", prev, wantPrev)
+	}
+	if got := parsed["sleep_capture_class"]; got != "good_capture" {
+		t.Fatalf("sleep_capture_class = %#v, want good_capture", got)
+	}
+	if got := parsed["sleep_capture_low"]; got != false {
+		t.Fatalf("sleep_capture_low = %#v, want false", got)
+	}
+	if got := parsed["sleep_capture_class_counts_7d"]; got == nil {
+		t.Fatalf("sleep_capture_class_counts_7d missing from features: %#v", parsed)
 	}
 }
 

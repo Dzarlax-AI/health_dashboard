@@ -37,19 +37,20 @@ import (
 // or compare old snapshots.
 //
 // Version history:
-//   1 — initial release. `sleep_total_out_of_range` covered both
-//       Total==nil (no source row) and present-but-implausible values.
-//   2 — split nil-Total into the new `sleep_data_missing` reason so
-//       data gaps are operationally distinguishable from short/long
-//       nights. Eligibility outcome (eligible bool) is unchanged
-//       between v1 and v2; only the `eligibility_reason` text differs
-//       for the affected rows.
+//
+//	1 — initial release. `sleep_total_out_of_range` covered both
+//	    Total==nil (no source row) and present-but-implausible values.
+//	2 — split nil-Total into the new `sleep_data_missing` reason so
+//	    data gaps are operationally distinguishable from short/long
+//	    nights. Eligibility outcome (eligible bool) is unchanged
+//	    between v1 and v2; only the `eligibility_reason` text differs
+//	    for the affected rows.
 const recoveryStabilityFormulaVersion = 2
 
 // recoveryStabilityFeatureVersion bumps when the feature set changes.
 // Separate from formula_version because feature surface and target
 // formula evolve independently.
-const recoveryStabilityFeatureVersion = 2
+const recoveryStabilityFeatureVersion = 3
 
 // recoveryStabilityPersonalSleepTargetH is the constant target nightly
 // sleep duration used by the sleep-debt feature. Hard-coded for Phase 0
@@ -153,16 +154,18 @@ func (s *DB) BackfillRecoveryStabilitySnapshots(from, to string) (int, error) {
 	// Index rows by date for O(1) lookups during feature/target gather.
 	byDate := make(map[string]health.SleepRow, len(rows))
 	effByDate := make(map[string]health.SleepEfficiencyResult, len(rows))
+	captureByDate := make(map[string]health.SleepCaptureConfidenceResult, len(rows))
 	for _, r := range rows {
 		byDate[r.Date] = r
 		effByDate[r.Date] = health.ComputeSleepEfficiency(r)
+		captureByDate[r.Date] = health.ComputeSleepCaptureConfidence(r)
 	}
 
 	written := 0
 	var firstErr error
 	for d := fromT; !d.After(toT); d = d.AddDate(0, 0, 1) {
 		date := d.Format(isoDate)
-		if err := s.writeRecoveryStabilityRow(context.Background(), d, date, byDate, effByDate, archByDate); err != nil {
+		if err := s.writeRecoveryStabilityRow(context.Background(), d, date, byDate, effByDate, captureByDate, archByDate); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -179,6 +182,7 @@ func (s *DB) writeRecoveryStabilityRow(
 	date string,
 	byDate map[string]health.SleepRow,
 	effByDate map[string]health.SleepEfficiencyResult,
+	captureByDate map[string]health.SleepCaptureConfidenceResult,
 	archByDate map[string]SleepArchitectureDay,
 ) error {
 	_ = ctx // reserved for future use; all storage helpers below use their own queryCtx
@@ -193,13 +197,13 @@ func (s *DB) writeRecoveryStabilityRow(
 
 	// --- Daily-point target: night t+1 (i.e., daily_scores row for t+1) ---
 	tp1 := t.AddDate(0, 0, 1).Format(isoDate)
-	dailyTarget := targetFromEff(effByDate[tp1], byDate[tp1])
+	dailyTarget := targetFromEff(effByDate[tp1], byDate[tp1], sleepCaptureForDate(captureByDate, tp1))
 
 	// --- Rolling 3-day target: mean of eff(t+1), eff(t+2), eff(t+3) ---
-	rollingTarget := rolling3dTarget(t, effByDate, byDate)
+	rollingTarget := rolling3dTarget(t, effByDate, byDate, captureByDate)
 
 	// --- Feature payload: data strictly ≤ end of day `t` ---
-	features := buildRecoveryFeatures(t, epochStart, byDate, effByDate, archByDate)
+	features := buildRecoveryFeatures(t, epochStart, byDate, effByDate, captureByDate, archByDate)
 	featuresJSON, err := json.Marshal(features)
 	if err != nil {
 		return fmt.Errorf("marshal features %s: %w", date, err)
@@ -276,7 +280,11 @@ type targetWriteSpec struct {
 
 // targetFromEff turns a single-night SleepEfficiencyResult into the
 // target spec for `daily_point`.
-func targetFromEff(eff health.SleepEfficiencyResult, row health.SleepRow) targetWriteSpec {
+func targetFromEff(
+	eff health.SleepEfficiencyResult,
+	row health.SleepRow,
+	capture health.SleepCaptureConfidenceResult,
+) targetWriteSpec {
 	// If the row simply isn't in daily_scores at all, eff is the zero
 	// value; mark that explicitly so we don't write a spurious eligible
 	// row when both eff.Efficiency and row.Total are nil.
@@ -284,14 +292,24 @@ func targetFromEff(eff health.SleepEfficiencyResult, row health.SleepRow) target
 		return targetWriteSpec{
 			Eligible: false,
 			Reason:   health.SleepEligibilitySleepTotalOutOfRange,
-			Coverage: mustMarshal(map[string]any{"reason_detail": "daily_scores row missing for target date"}),
+			Coverage: mustMarshal(map[string]any{
+				"reason_detail":            "daily_scores row missing for target date",
+				"sleep_capture_class":      capture.Class,
+				"sleep_capture_confidence": capture.Confidence,
+				"sleep_capture_reason":     capture.Reason,
+				"sleep_capture_low":        capture.LowConfidence,
+			}),
 		}
 	}
 	cov := mustMarshal(map[string]any{
-		"sleep_total":       row.Total,
-		"sleep_awake":       row.Awake,
-		"sleep_unspecified": row.Unspecified,
-		"staged_present":    row.Deep != nil || row.REM != nil || row.Core != nil,
+		"sleep_total":              row.Total,
+		"sleep_awake":              row.Awake,
+		"sleep_unspecified":        row.Unspecified,
+		"staged_present":           row.Deep != nil || row.REM != nil || row.Core != nil,
+		"sleep_capture_class":      capture.Class,
+		"sleep_capture_confidence": capture.Confidence,
+		"sleep_capture_reason":     capture.Reason,
+		"sleep_capture_low":        capture.LowConfidence,
 	})
 	return targetWriteSpec{
 		Value:    eff.Efficiency,
@@ -310,6 +328,7 @@ func rolling3dTarget(
 	t time.Time,
 	effByDate map[string]health.SleepEfficiencyResult,
 	byDate map[string]health.SleepRow,
+	captureByDate map[string]health.SleepCaptureConfidenceResult,
 ) targetWriteSpec {
 	dates := []string{
 		t.AddDate(0, 0, 1).Format(isoDate),
@@ -319,7 +338,18 @@ func rolling3dTarget(
 	values := make([]float64, 0, 3)
 	reasons := make([]string, 0, 3)
 	missing := make([]string, 0, 3)
+	captureClasses := make([]string, 0, 3)
+	captureReasons := make([]string, 0, 3)
+	captureConfidences := make([]float64, 0, 3)
+	lowConfidenceCount := 0
 	for _, d := range dates {
+		capture := sleepCaptureForDate(captureByDate, d)
+		captureClasses = append(captureClasses, capture.Class)
+		captureReasons = append(captureReasons, capture.Reason)
+		captureConfidences = append(captureConfidences, capture.Confidence)
+		if capture.LowConfidence {
+			lowConfidenceCount++
+		}
 		row, ok := byDate[d]
 		if !ok || row.Date == "" {
 			missing = append(missing, d)
@@ -336,10 +366,16 @@ func rolling3dTarget(
 
 	if len(values) < 3 {
 		cov := mustMarshal(map[string]any{
-			"target_dates":   dates,
-			"missing_dates":  missing,
-			"per_day_reason": reasons,
-			"eligible_count": len(values),
+			"target_dates":                  dates,
+			"missing_dates":                 missing,
+			"per_day_reason":                reasons,
+			"eligible_count":                len(values),
+			"per_day_capture_class":         captureClasses,
+			"per_day_capture_reason":        captureReasons,
+			"per_day_capture_confidence":    captureConfidences,
+			"low_capture_confidence_count":  lowConfidenceCount,
+			"strict_rolling_eligibility":    false,
+			"candidate_2of3_eligible_count": len(values),
 		})
 		return targetWriteSpec{
 			Eligible: false,
@@ -349,9 +385,15 @@ func rolling3dTarget(
 	}
 	mean := (values[0] + values[1] + values[2]) / 3.0
 	cov := mustMarshal(map[string]any{
-		"target_dates":   dates,
-		"per_day_reason": reasons,
-		"eligible_count": 3,
+		"target_dates":                  dates,
+		"per_day_reason":                reasons,
+		"eligible_count":                3,
+		"per_day_capture_class":         captureClasses,
+		"per_day_capture_reason":        captureReasons,
+		"per_day_capture_confidence":    captureConfidences,
+		"low_capture_confidence_count":  lowConfidenceCount,
+		"strict_rolling_eligibility":    true,
+		"candidate_2of3_eligible_count": 3,
 	})
 	return targetWriteSpec{
 		Value:    &mean,
@@ -396,16 +438,23 @@ func firstBlockingReason(reasons []string) string {
 
 type recoveryFeatures struct {
 	SleepArchitectureFeatureFields
-	PrevEfficiency     *float64 `json:"prev_efficiency,omitempty"`
-	Mean7d             *float64 `json:"sleep_eff_mean_7d,omitempty"`
-	EWMA45             *float64 `json:"sleep_eff_ewma_45d,omitempty"`
-	EWMA180            *float64 `json:"sleep_eff_ewma_180d,omitempty"`
-	SleepDebt7dHours   *float64 `json:"sleep_debt_7d_hours,omitempty"`
-	EligibleCount7d    int      `json:"eligible_count_7d"`
-	EligibleCount45d   int      `json:"eligible_count_45d"`
-	EligibleCount180d  int      `json:"eligible_count_180d"`
-	WarmupComplete45d  bool     `json:"warmup_complete_45d"`
-	WarmupComplete180d bool     `json:"warmup_complete_180d"`
+	PrevEfficiency               *float64       `json:"prev_efficiency,omitempty"`
+	Mean7d                       *float64       `json:"sleep_eff_mean_7d,omitempty"`
+	EWMA45                       *float64       `json:"sleep_eff_ewma_45d,omitempty"`
+	EWMA180                      *float64       `json:"sleep_eff_ewma_180d,omitempty"`
+	SleepDebt7dHours             *float64       `json:"sleep_debt_7d_hours,omitempty"`
+	SleepCaptureClass            string         `json:"sleep_capture_class,omitempty"`
+	SleepCaptureConfidence       *float64       `json:"sleep_capture_confidence,omitempty"`
+	SleepCaptureReason           string         `json:"sleep_capture_reason,omitempty"`
+	SleepCaptureLow              bool           `json:"sleep_capture_low"`
+	SleepCaptureClassCounts7d    map[string]int `json:"sleep_capture_class_counts_7d"`
+	SleepCaptureLowDays7d        int            `json:"sleep_capture_low_days_7d"`
+	SleepCaptureMeanConfidence7d *float64       `json:"sleep_capture_mean_confidence_7d,omitempty"`
+	EligibleCount7d              int            `json:"eligible_count_7d"`
+	EligibleCount45d             int            `json:"eligible_count_45d"`
+	EligibleCount180d            int            `json:"eligible_count_180d"`
+	WarmupComplete45d            bool           `json:"warmup_complete_45d"`
+	WarmupComplete180d           bool           `json:"warmup_complete_180d"`
 }
 
 func buildRecoveryFeatures(
@@ -413,10 +462,12 @@ func buildRecoveryFeatures(
 	epochStart string,
 	byDate map[string]health.SleepRow,
 	effByDate map[string]health.SleepEfficiencyResult,
+	captureByDate map[string]health.SleepCaptureConfidenceResult,
 	archByDate map[string]SleepArchitectureDay,
 ) recoveryFeatures {
 	var out recoveryFeatures
 	out.SleepArchitectureFeatureFields = BuildSleepArchitectureFeatureFields(t, archByDate)
+	out.SleepCaptureClassCounts7d = map[string]int{}
 
 	// Previous eff: eligibility result for daily_scores row dated `t`
 	// itself (the most recent completed sleep). Plan §3.2: features for
@@ -426,6 +477,11 @@ func buildRecoveryFeatures(
 	if eff, ok := effByDate[t.Format(isoDate)]; ok && eff.Eligible && eff.Efficiency != nil {
 		out.PrevEfficiency = ptrFloat(*eff.Efficiency)
 	}
+	capture := sleepCaptureForDate(captureByDate, t.Format(isoDate))
+	out.SleepCaptureClass = capture.Class
+	out.SleepCaptureConfidence = ptrFloat(capture.Confidence)
+	out.SleepCaptureReason = capture.Reason
+	out.SleepCaptureLow = capture.LowConfidence
 
 	lookup := sleepEfficiencyLookup(effByDate)
 
@@ -452,10 +508,19 @@ func buildRecoveryFeatures(
 	// the eligible_count_7d feature lets downstream see how complete
 	// the window was.
 	var totalSlept float64
+	var confidenceSum float64
+	var confidenceDays int
 	for i := range 7 {
 		d := t.AddDate(0, 0, -i).Format(isoDate)
 		if epochStart != "" && d < epochStart {
 			continue
+		}
+		capture := sleepCaptureForDate(captureByDate, d)
+		out.SleepCaptureClassCounts7d[capture.Class]++
+		confidenceSum += capture.Confidence
+		confidenceDays++
+		if capture.LowConfidence {
+			out.SleepCaptureLowDays7d++
 		}
 		row, ok := byDate[d]
 		if !ok || row.Total == nil {
@@ -467,10 +532,23 @@ func buildRecoveryFeatures(
 		}
 		totalSlept += *row.Total
 	}
+	if confidenceDays > 0 {
+		out.SleepCaptureMeanConfidence7d = ptrFloat(confidenceSum / float64(confidenceDays))
+	}
 	debt := recoveryStabilityPersonalSleepTargetH*7 - totalSlept
 	out.SleepDebt7dHours = ptrFloat(debt)
 
 	return out
+}
+
+func sleepCaptureForDate(
+	captureByDate map[string]health.SleepCaptureConfidenceResult,
+	date string,
+) health.SleepCaptureConfidenceResult {
+	if capture, ok := captureByDate[date]; ok && capture.Class != "" {
+		return capture
+	}
+	return health.ComputeSleepCaptureConfidence(health.SleepRow{Date: date})
 }
 
 // sleepEfficiencyLookup adapts a map of SleepEfficiencyResult to the

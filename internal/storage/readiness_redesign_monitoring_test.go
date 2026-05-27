@@ -35,6 +35,7 @@ func TestLoadReadinessMonitoringSummary_CoverageAndDrift(t *testing.T) {
 			TargetValue:       &v,
 			Eligible:          eligible,
 			EligibilityReason: reason,
+			DataCoverage:      []byte(`{"per_day_capture_class":["good_capture","partial_capture_short","good_capture"]}`),
 			SourceEpoch:       InitialSourceEpoch,
 			FormulaVersion:    1,
 		}); err != nil {
@@ -117,6 +118,9 @@ func TestLoadReadinessMonitoringSummary_CoverageAndDrift(t *testing.T) {
 	}
 	if got := recovery.IssueSamples[0]; got.Reason != EligibilitySleepDataMissing || got.Date != "2026-05-14" {
 		t.Fatalf("first recovery issue = %+v, want 2026-05-14/%s", got, EligibilitySleepDataMissing)
+	}
+	if got := recovery.IssueSamples[0].CaptureClass; got != "partial_capture_short" {
+		t.Fatalf("first recovery issue capture class = %q, want partial_capture_short", got)
 	}
 
 	var acute *ReadinessDriftRow

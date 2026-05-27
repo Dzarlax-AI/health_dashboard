@@ -45,8 +45,8 @@ func TestRecoveryFeatures_DoNotReadFutureArchitectureSegments(t *testing.T) {
 		},
 	}
 
-	a := buildRecoveryFeatures(date, "", map[string]health.SleepRow{}, map[string]health.SleepEfficiencyResult{}, withoutFuture)
-	b := buildRecoveryFeatures(date, "", map[string]health.SleepRow{}, map[string]health.SleepEfficiencyResult{}, withFuture)
+	a := buildRecoveryFeatures(date, "", map[string]health.SleepRow{}, map[string]health.SleepEfficiencyResult{}, map[string]health.SleepCaptureConfidenceResult{}, withoutFuture)
+	b := buildRecoveryFeatures(date, "", map[string]health.SleepRow{}, map[string]health.SleepEfficiencyResult{}, map[string]health.SleepCaptureConfidenceResult{}, withFuture)
 	if !reflect.DeepEqual(a.SleepArchitectureFeatureFields, b.SleepArchitectureFeatureFields) {
 		t.Fatalf("Recovery features for t changed after adding t+1 architecture:\nwithout=%+v\nwith=%+v",
 			a.SleepArchitectureFeatureFields, b.SleepArchitectureFeatureFields)

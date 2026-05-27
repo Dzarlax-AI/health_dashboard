@@ -2159,7 +2159,11 @@ func monitoringIssueSamples(samples []storage.ReadinessCoverageIssue) string {
 		if sample.Reason == "" {
 			sample.Reason = "unknown"
 		}
-		parts = append(parts, sample.Date+" "+sample.Reason)
+		detail := sample.Date + " " + sample.Reason
+		if sample.CaptureClass != "" {
+			detail += " (" + sample.CaptureClass + ")"
+		}
+		parts = append(parts, detail)
 	}
 	return strings.Join(parts, " · ")
 }

@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Implementation Plan: Readiness Sleep Capture Confidence</title>
+  <style>
+    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.55; margin: 0; color: #202124; background: #f7f8fa; }
+    main { max-width: 980px; margin: 0 auto; padding: 32px 24px 64px; background: #fff; }
+    h1, h2, h3 { line-height: 1.2; }
+    h1 { margin-top: 0; font-size: 30px; }
+    h2 { margin-top: 32px; padding-top: 18px; border-top: 1px solid #dde2ea; font-size: 22px; }
+    h3 { margin-top: 22px; font-size: 17px; }
+    code { background: #eef2f7; padding: 1px 4px; border-radius: 4px; }
+    table { border-collapse: collapse; width: 100%; margin: 14px 0; }
+    th, td { border: 1px solid #d8dee7; padding: 8px 10px; vertical-align: top; }
+    th { background: #f0f4f8; text-align: left; }
+    .summary { background: #eef7ff; border-left: 4px solid #2f80ed; padding: 12px 16px; }
+    .guard { background: #fff7e6; border-left: 4px solid #f2994a; padding: 12px 16px; }
+    .approval { background: #f1f8f4; border-left: 4px solid #27ae60; padding: 12px 16px; }
+    .risk { background: #fff2f2; border-left: 4px solid #eb5757; padding: 12px 16px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Readiness Sleep Capture Confidence Plan</h1>
+
+  <section class="summary">
+    <h2>Summary</h2>
+    <p>
+      Add a read-only sleep capture reliability layer for Recovery Stability so
+      partial Apple Watch sleep recordings are distinguished from physiologically
+      meaningful poor recovery. The first PR should classify capture quality,
+      expose confidence in feature/target payloads and monitoring, and run a
+      probe on existing tenants. It should not change readiness chips, dashboard
+      verdicts, Telegram copy, production baselines, or user-visible scoring.
+    </p>
+  </section>
+
+  <section>
+    <h2>Why This Exists</h2>
+    <p>
+      The monitoring contract cleanup fixed a false warning class by applying
+      the correct 3-day maturity lag to <code>rolling_3d</code>. After deploy,
+      remaining Maria warnings are real data-quality warnings, not monitoring
+      bugs.
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th>Tenant</th>
+          <th>Signal</th>
+          <th>Window</th>
+          <th>Observed Result</th>
+          <th>Dominant Reason</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>health</code></td>
+          <td><code>recovery_stability/rolling_3d</code></td>
+          <td>2026-05-11..2026-05-24</td>
+          <td>14/14 eligible, ok</td>
+          <td>none</td>
+        </tr>
+        <tr>
+          <td><code>health_mariia</code></td>
+          <td><code>recovery_stability/rolling_3d</code></td>
+          <td>2026-05-11..2026-05-24</td>
+          <td>6/14 eligible, warn</td>
+          <td><code>sleep_total_out_of_range</code></td>
+        </tr>
+        <tr>
+          <td><code>health_mariia</code></td>
+          <td><code>chronic_load/chronic_label</code></td>
+          <td>2026-04-30..2026-05-13</td>
+          <td>0/14 eligible, warn</td>
+          <td><code>event_window_data_missing</code> downstream of invalid Recovery rows</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>
+      Raw inspection showed that Maria has a late sleep schedule, with many
+      sleep segments starting around 03:00-05:00 and ending around 09:00-13:00.
+      The immediate failing rows are short captured totals rather than missing
+      rows: 2026-05-15 = 3.99h, 2026-05-18 = 1.37h, 2026-05-20 = 3.35h. Under
+      the current strict rule, any night under 4h is ineligible, and any one
+      ineligible night makes multiple 3-day rolling labels ineligible.
+    </p>
+  </section>
+
+  <section>
+    <h2>Current Behavior</h2>
+    <ul>
+      <li><code>health.ComputeSleepEfficiency</code> treats <code>sleep_total &lt; 4h</code> as <code>sleep_total_out_of_range</code>.</li>
+      <li><code>rolling3dTarget</code> requires all three future nights to be individually eligible.</li>
+      <li>A partial capture night and a real short-sleep night are collapsed into the same ineligible reason.</li>
+      <li>Downstream Chronic labels see missing Recovery rolling rows and surface <code>event_window_data_missing</code>.</li>
+      <li>Monitoring now shows concrete issue dates, but it does not yet classify whether the issue is a behavior signal or a sensor/capture reliability signal.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <ul>
+      <li>Classify sleep capture quality separately from sleep efficiency.</li>
+      <li>Preserve strict Recovery target semantics in the first PR unless evidence supports changing them.</li>
+      <li>Expose confidence fields next to Recovery features and coverage data so operators can see when bad labels are caused by partial capture.</li>
+      <li>Run a read-only probe comparing current strict rolling eligibility with confidence-aware alternatives.</li>
+      <li>Keep product behavior unchanged until we have evidence that a fallback improves stability without hiding real poor sleep.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Proposed Classification</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Class</th>
+          <th>Candidate Conditions</th>
+          <th>Meaning</th>
+          <th>Initial Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>good_capture</code></td>
+          <td><code>sleep_total</code> in [4h, 14h], staged components present, plausible awake/stage consistency</td>
+          <td>Normal Recovery input</td>
+          <td>Keep current target eligibility</td>
+        </tr>
+        <tr>
+          <td><code>partial_capture_short</code></td>
+          <td><code>sleep_total</code> in (0h, 4h), staged fragments present, late-start or truncated-looking segment pattern</td>
+          <td>Likely watch/source captured only part of the night</td>
+          <td>Mark low confidence; do not promote to product score yet</td>
+        </tr>
+        <tr>
+          <td><code>missing_capture</code></td>
+          <td>No <code>sleep_total</code> row for the target night</td>
+          <td>Device off, sync gap, or no sleep tracking</td>
+          <td>Keep ineligible; surface as data gap</td>
+        </tr>
+        <tr>
+          <td><code>coarse_only_capture</code></td>
+          <td><code>sleep_total</code> plus <code>sleep_unspecified</code>, no real stages</td>
+          <td>Source has sleep duration but no architecture</td>
+          <td>Keep separate from staged Recovery evidence</td>
+        </tr>
+        <tr>
+          <td><code>stage_mismatch_capture</code></td>
+          <td><code>sleep_total</code> in range, staged components present, but staged sum differs materially from total</td>
+          <td>Captured data is internally inconsistent enough to reduce confidence</td>
+          <td>Mark low confidence; keep current target eligibility semantics</td>
+        </tr>
+        <tr>
+          <td><code>invalid_total_capture</code></td>
+          <td><code>sleep_total</code> is non-positive or above the plausible nightly ceiling</td>
+          <td>Invalid source total, not a meaningful Recovery label</td>
+          <td>Mark very low confidence and keep ineligible</td>
+        </tr>
+        <tr>
+          <td><code>real_short_sleep_candidate</code></td>
+          <td>Short total without staged or coarse context that can explain it as partial capture</td>
+          <td>Potential real recovery stressor</td>
+          <td>Probe only; do not change chips without evidence</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>
+      <code>late_sleep_pending</code> remains a reserved concept for future
+      report/readiness timing work; the first implementation does not emit it.
+    </p>
+  </section>
+
+  <section>
+    <h2>Likely File Changes</h2>
+    <ul>
+      <li><code>internal/health/recovery_stability.go</code> - add pure capture-confidence classification helpers and tests.</li>
+      <li><code>internal/storage/recovery_stability_writer.go</code> - attach capture confidence to Recovery feature and target coverage payloads.</li>
+      <li><code>internal/storage/sleep_capture_probe.go</code> or a new command under <code>cmd/</code> - read-only report comparing strict versus confidence-aware rolling coverage.</li>
+      <li><code>internal/storage/readiness_redesign_monitoring.go</code> - optionally aggregate capture-confidence reasons in monitoring rows.</li>
+      <li><code>internal/ui/templates/partials/admin_readiness_monitoring.html</code> - optionally render compact capture-confidence context if storage exposes it.</li>
+      <li><code>docs/ai-plans/2026-05-27-readiness-sleep-capture-confidence.html</code> - update with implementation results after approval.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation Steps</h2>
+    <ol>
+      <li>Add pure health-layer types for capture class, confidence score, and reason codes.</li>
+      <li>Build classifier from already available daily sleep rows first; avoid schema changes.</li>
+      <li>Optionally enrich classifier with segment-derived architecture fields already produced by the sleep architecture layer.</li>
+      <li>Write unit tests for short capture, missing capture, coarse-only capture, valid capture, and late-schedule examples.</li>
+      <li>Extend Recovery feature/coverage JSONB payloads with capture fields, bump feature version if the feature payload changes.</li>
+      <li>Add a read-only probe for <code>health</code> and <code>health_mariia</code>: strict eligibility, confidence-aware 2-of-3 alternative, and reasons by date.</li>
+      <li>Do not change target eligibility or product surfaces until probe results are reviewed.</li>
+    </ol>
+  </section>
+
+  <section class="guard">
+    <h2>Scope Guard</h2>
+    <ul>
+      <li>No schema migration; use JSONB feature/coverage payloads.</li>
+      <li>No changes to current readiness chips, dashboard verdicts, Telegram copy, or production baselines in the first PR.</li>
+      <li>No silent promotion of <code>&lt;4h</code> nights to eligible Recovery labels.</li>
+      <li>No tenant-specific hardcode for Maria; late-schedule handling must be data-driven.</li>
+      <li>No change to daily_scores sleep aggregation until we separately prove the day-boundary or source-pick logic is wrong.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <ul>
+      <li><code>go test ./internal/health -run SleepCapture</code></li>
+      <li><code>go test ./internal/storage -run "RecoveryStability|SleepCapture|ReadinessMonitoring"</code></li>
+      <li><code>go test ./internal/ui -run ReadinessRedesignMonitoring</code> if monitoring UI changes.</li>
+      <li><code>go test ./...</code></li>
+      <li>Read-only probe against <code>health</code> and <code>health_mariia</code>; include results in the PR body.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Manual QA Checklist</h2>
+    <ul>
+      <li>Confirm Maria's short nights are surfaced as low-capture-confidence, not silently treated as normal recovery labels.</li>
+      <li>Confirm existing valid Recovery rows keep the same target values and eligibility reasons.</li>
+      <li>Confirm monitoring still reports concrete issue dates and does not hide real missing data.</li>
+      <li>Confirm no user-visible readiness copy changes in dashboard or Telegram.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks</h2>
+    <ul>
+      <li>Over-correcting partial capture could hide real short sleep and make Recovery too optimistic.</li>
+      <li>Keeping strict <code>3/3</code> rolling eligibility may continue to produce sparse labels for users with poor watch discipline.</li>
+      <li>Late-schedule handling can become tenant-specific if not based on observed sleep timing distributions.</li>
+      <li>Daily bucket logic may still need a separate follow-up if we find nights crossing local-day boundaries.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <p>
+      Revert the code-only PR. Because the first PR should only add JSONB payload
+      fields, monitoring details, tests, and read-only probe output, rollback is
+      code-only and does not require data cleanup.
+    </p>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Should <code>partial_capture_short</code> remain ineligible but count as a different monitoring bucket, or should a later PR allow <code>2/3</code> rolling eligibility with low confidence?</li>
+      <li>What confidence threshold is acceptable before product surfaces can use fallback Recovery values?</li>
+      <li>Should late sleepers get a tenant-level adaptive report readiness delay based on observed wake times?</li>
+      <li>Should Chronic labels ignore low-confidence Recovery rows differently from missing Recovery rows?</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation Update</h2>
+    <ul>
+      <li>Added pure <code>ComputeSleepCaptureConfidence</code> classification in <code>internal/health</code>.</li>
+      <li>Recovery Stability now writes capture class, confidence, reason, and low-confidence flags into target coverage JSONB and feature snapshots.</li>
+      <li>Recovery feature payload moved to <code>feature_version=3</code> because the feature surface changed.</li>
+      <li>Rolling 3-day targets remain strict: all three nights must still be eligible. The new fields are diagnostic only.</li>
+      <li>Readiness monitoring now surfaces capture class in issue samples when target coverage contains it.</li>
+      <li>Added <code>cmd/readiness_sleep_capture_probe</code>, a read-only command that compares current strict Recovery rolling eligibility with a candidate 2-of-3 coverage alternative.</li>
+    </ul>
+
+    <h3>Checks Run</h3>
+    <ul>
+      <li><code>go test ./internal/health -run SleepCapture -count=1</code> - passed.</li>
+      <li><code>go test ./internal/storage -run "RecoveryStability|SleepCapture|ReadinessMonitoring" -count=1</code> - passed.</li>
+      <li><code>go test ./internal/ui -run ReadinessRedesignMonitoring -count=1</code> - passed.</li>
+      <li><code>go build ./cmd/readiness_sleep_capture_probe</code> - passed.</li>
+      <li><code>go test ./...</code> - passed.</li>
+    </ul>
+
+    <h3>Read-Only Probe Result</h3>
+    <p>
+      Probe command:
+      <code>go run ./cmd/readiness_sleep_capture_probe --schema health,health_mariia --from 2026-05-01 --to 2026-05-24</code>
+    </p>
+    <p>
+      <code>Low Capture</code> is a confidence flag, not an exclusive class. It
+      can overlap with <code>Partial Short</code>, <code>Missing Capture</code>,
+      <code>Coarse Only</code>, or <code>Stage Mismatch</code>, so it may be
+      non-zero even when the partial/missing class columns are zero.
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th>Tenant</th>
+          <th>Rows</th>
+          <th>Strict 3/3</th>
+          <th>Candidate 2/3</th>
+          <th>Rescued</th>
+          <th>Low Capture</th>
+          <th>Partial Short</th>
+          <th>Missing Capture</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>health</code></td>
+          <td>24</td>
+          <td>24/24 (100.0%)</td>
+          <td>24/24 (100.0%)</td>
+          <td>0</td>
+          <td>6</td>
+          <td>0</td>
+          <td>0</td>
+        </tr>
+        <tr>
+          <td><code>health_mariia</code></td>
+          <td>24</td>
+          <td>12/24 (50.0%)</td>
+          <td>23/24 (95.8%)</td>
+          <td>11</td>
+          <td>12</td>
+          <td>8</td>
+          <td>4</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>
+      This supports the product hypothesis: Maria's sparse Recovery rolling labels
+      are mostly capture-reliability failures. The PR still stops at evidence and
+      diagnostics; promoting a 2-of-3 fallback requires a separate decision.
+    </p>
+  </section>
+
+  <section class="approval">
+    <h2>Approval Gate</h2>
+    <p>
+      Implementation must not start until this plan is explicitly approved.
+      Approval means the next PR may add sleep capture confidence fields, tests,
+      monitoring diagnostics, and read-only probe tooling only. It must not
+      change user-visible readiness behavior or promote low-confidence short
+      sleep rows to eligible production labels without a separate approval.
+    </p>
+  </section>
+</main>
+</body>
+</html>
