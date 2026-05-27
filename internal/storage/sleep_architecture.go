@@ -256,29 +256,26 @@ func architectureNightAsleepSegments(date string, segs []architectureSegment) ([
 	if err != nil {
 		return nil, ""
 	}
+	windowStart := refMidnight.Add(-midnightWindow)
+	windowEnd := refMidnight.Add(12 * time.Hour)
+	bySource := map[string][]architectureSegment{}
 	sourceHours := map[string]float64{}
-	candidates := make([]architectureSegment, 0, len(segs))
 	for _, s := range segs {
 		if !isArchitectureAsleepMetric(s.Metric) {
 			continue
 		}
-		if absDuration(s.Start.Add(s.End.Sub(s.Start)/2).Sub(refMidnight)) > midnightWindow {
+		if !s.End.After(windowStart) || !s.Start.Before(windowEnd) {
 			continue
 		}
-		candidates = append(candidates, s)
+		bySource[s.Source] = append(bySource[s.Source], s)
 		sourceHours[s.Source] += s.End.Sub(s.Start).Hours()
 	}
+
 	source := pickWinningSource(sourceHours)
 	if source == "" {
 		return nil, ""
 	}
-	out := make([]architectureSegment, 0, len(candidates))
-	for _, s := range candidates {
-		if s.Source == source {
-			out = append(out, s)
-		}
-	}
-	return out, source
+	return append([]architectureSegment(nil), bySource[source]...), source
 }
 
 func architectureSegmentInList(target architectureSegment, list []architectureSegment) bool {

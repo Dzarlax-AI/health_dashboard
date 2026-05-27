@@ -97,6 +97,27 @@ func TestComputeSleepArchitectureDays_ExcludesDaytimeNapFromNightArchitecture(t 
 	}
 }
 
+func TestComputeSleepArchitectureDays_KeepsLateMorningFragmentsInMainNight(t *testing.T) {
+	rows := []SleepArchitectureRawSegment{
+		archSeg("2026-05-01 23:30:00 +0000", "sleep_core", "Apple Watch", 2.0),
+		archSeg("2026-05-02 02:15:00 +0000", "sleep_deep", "Apple Watch", 2.0),
+		archSeg("2026-05-02 05:00:00 +0000", "sleep_rem", "Apple Watch", 2.0),
+		archSeg("2026-05-02 07:45:00 +0000", "sleep_core", "Apple Watch", 0.75),
+		archSeg("2026-05-02 22:45:00 +0000", "sleep_core", "Apple Watch", 1.0),
+	}
+
+	got := ComputeSleepArchitectureDays(rows)["2026-05-02"]
+	if !got.Eligible {
+		t.Fatalf("night should be eligible, got %+v", got)
+	}
+	if got.AsleepHours != 6.75 {
+		t.Fatalf("asleep hours = %v, want 6.75 from the full overnight window", got.AsleepHours)
+	}
+	if got.GapInferredWakeBouts != 3 {
+		t.Fatalf("gap inferred wake bouts = %d, want 3 within the overnight run only", got.GapInferredWakeBouts)
+	}
+}
+
 func TestBuildSleepArchitectureWindow_ReportsCoverageAndConfidence(t *testing.T) {
 	days := ComputeSleepArchitectureDays([]SleepArchitectureRawSegment{
 		archSeg("2026-05-01 23:00:00 +0000", "sleep_core", "Apple Watch", 7.0),
