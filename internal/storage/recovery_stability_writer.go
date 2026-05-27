@@ -477,12 +477,11 @@ func buildRecoveryFeatures(
 	if eff, ok := effByDate[t.Format(isoDate)]; ok && eff.Eligible && eff.Efficiency != nil {
 		out.PrevEfficiency = ptrFloat(*eff.Efficiency)
 	}
-	if capture, ok := captureByDate[t.Format(isoDate)]; ok {
-		out.SleepCaptureClass = capture.Class
-		out.SleepCaptureConfidence = ptrFloat(capture.Confidence)
-		out.SleepCaptureReason = capture.Reason
-		out.SleepCaptureLow = capture.LowConfidence
-	}
+	capture := sleepCaptureForDate(captureByDate, t.Format(isoDate))
+	out.SleepCaptureClass = capture.Class
+	out.SleepCaptureConfidence = ptrFloat(capture.Confidence)
+	out.SleepCaptureReason = capture.Reason
+	out.SleepCaptureLow = capture.LowConfidence
 
 	lookup := sleepEfficiencyLookup(effByDate)
 
@@ -516,13 +515,12 @@ func buildRecoveryFeatures(
 		if epochStart != "" && d < epochStart {
 			continue
 		}
-		if capture, ok := captureByDate[d]; ok {
-			out.SleepCaptureClassCounts7d[capture.Class]++
-			confidenceSum += capture.Confidence
-			confidenceDays++
-			if capture.LowConfidence {
-				out.SleepCaptureLowDays7d++
-			}
+		capture := sleepCaptureForDate(captureByDate, d)
+		out.SleepCaptureClassCounts7d[capture.Class]++
+		confidenceSum += capture.Confidence
+		confidenceDays++
+		if capture.LowConfidence {
+			out.SleepCaptureLowDays7d++
 		}
 		row, ok := byDate[d]
 		if !ok || row.Total == nil {

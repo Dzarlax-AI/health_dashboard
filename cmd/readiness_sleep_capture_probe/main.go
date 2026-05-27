@@ -49,25 +49,31 @@ func main() {
 		fmt.Fprintln(os.Stderr, "DATABASE_URL is required")
 		os.Exit(2)
 	}
-	if err := validateDateFlag("from", from); err != nil {
+	fromDate, err := parseDateFlag("from", from)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	if err := validateDateFlag("to", to); err != nil {
+	toDate, err := parseDateFlag("to", to)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	if fromDate != nil && toDate != nil && fromDate.After(*toDate) {
+		fmt.Fprintf(os.Stderr, "from date %q must not be after to date %q\n", from, to)
 		os.Exit(2)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	pool, err := pgxpool.New(ctx, dbURL)
+	pool, err := pgxpool.New(context.Background(), dbURL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "connect: %v\n", err)
 		os.Exit(2)
 	}
 	defer pool.Close()
 
-	schemas, err := resolveSchemas(ctx, pool, schemaFlag)
+	schemaCtx, schemaCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	schemas, err := resolveSchemas(schemaCtx, pool, schemaFlag)
+	schemaCancel()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "schemas: %v\n", err)
 		os.Exit(2)
@@ -78,20 +84,24 @@ func main() {
 
 	var failed bool
 	for _, schema := range schemas {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		conn, err := pool.Acquire(ctx)
 		if err != nil {
+			cancel()
 			fmt.Fprintf(os.Stderr, "schema %q acquire: %v\n", schema, err)
 			failed = true
 			continue
 		}
 		if err := setReadOnlySearchPath(ctx, conn, schema); err != nil {
 			conn.Release()
+			cancel()
 			fmt.Fprintf(os.Stderr, "schema %q: %v\n", schema, err)
 			failed = true
 			continue
 		}
 		res, err := runProbe(ctx, conn, schemaName(schema), from, to)
 		conn.Release()
+		cancel()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "schema %q probe: %v\n", schema, err)
 			failed = true
@@ -104,14 +114,15 @@ func main() {
 	}
 }
 
-func validateDateFlag(name, value string) error {
+func parseDateFlag(name, value string) (*time.Time, error) {
 	if value == "" {
-		return nil
+		return nil, nil
 	}
-	if _, err := time.Parse(isoDate, value); err != nil {
-		return fmt.Errorf("%s: parse %q: %w", name, value, err)
+	parsed, err := time.Parse(isoDate, value)
+	if err != nil {
+		return nil, fmt.Errorf("%s: parse %q: %w", name, value, err)
 	}
-	return nil
+	return &parsed, nil
 }
 
 func runProbe(ctx context.Context, conn *pgxpool.Conn, schema, from, to string) (probeResult, error) {

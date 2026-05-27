@@ -147,19 +147,29 @@
           <td>Keep separate from staged Recovery evidence</td>
         </tr>
         <tr>
-          <td><code>late_sleep_pending</code></td>
-          <td>Recent day near report/run time where late schedule means sleep may still sync later</td>
-          <td>Premature evaluation risk</td>
-          <td>Monitoring/report freshness signal only in first PR</td>
+          <td><code>stage_mismatch_capture</code></td>
+          <td><code>sleep_total</code> in range, staged components present, but staged sum differs materially from total</td>
+          <td>Captured data is internally inconsistent enough to reduce confidence</td>
+          <td>Mark low confidence; keep current target eligibility semantics</td>
+        </tr>
+        <tr>
+          <td><code>invalid_total_capture</code></td>
+          <td><code>sleep_total</code> is non-positive or above the plausible nightly ceiling</td>
+          <td>Invalid source total, not a meaningful Recovery label</td>
+          <td>Mark very low confidence and keep ineligible</td>
         </tr>
         <tr>
           <td><code>real_short_sleep_candidate</code></td>
-          <td>Short total with supporting context that sleep was likely actually short, not merely truncated</td>
+          <td>Short total without staged or coarse context that can explain it as partial capture</td>
           <td>Potential real recovery stressor</td>
           <td>Probe only; do not change chips without evidence</td>
         </tr>
       </tbody>
     </table>
+    <p>
+      <code>late_sleep_pending</code> remains a reserved concept for future
+      report/readiness timing work; the first implementation does not emit it.
+    </p>
   </section>
 
   <section>
@@ -272,6 +282,12 @@
     <p>
       Probe command:
       <code>go run ./cmd/readiness_sleep_capture_probe --schema health,health_mariia --from 2026-05-01 --to 2026-05-24</code>
+    </p>
+    <p>
+      <code>Low Capture</code> is a confidence flag, not an exclusive class. It
+      can overlap with <code>Partial Short</code>, <code>Missing Capture</code>,
+      <code>Coarse Only</code>, or <code>Stage Mismatch</code>, so it may be
+      non-zero even when the partial/missing class columns are zero.
     </p>
     <table>
       <thead>

@@ -106,6 +106,7 @@ func TestFragmentAdminReadinessMonitoring_Renders(t *testing.T) {
 		TargetValue:       &v,
 		Eligible:          false,
 		EligibilityReason: storage.EligibilitySleepDataMissing,
+		DataCoverage:      []byte(`{"sleep_capture_class":"partial_capture_short"}`),
 		SourceEpoch:       storage.InitialSourceEpoch,
 		FormulaVersion:    1,
 	}); err != nil {
