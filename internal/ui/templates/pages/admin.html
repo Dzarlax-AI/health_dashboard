@@ -148,25 +148,15 @@
 
       <!-- ============================================================ -->
       <!-- GROUP B — OPERATIONS                                          -->
-      <!-- Per-tenant write actions. Single tenant selector at the top   -->
-      <!-- is the source of truth for every action in this group; no    -->
-      <!-- action below should read a different selector.                -->
+      <!-- Per-tenant write actions. The active profile tab is the       -->
+      <!-- source of truth for every action in this group; no action    -->
+      <!-- below should read a different selector.                       -->
       <!-- ============================================================ -->
       <div class="admin-group">
         <div class="admin-group-header">{{T .Lang "admin_ops_group"}}</div>
         {{if .MultiUser}}
         <div class="admin-group-desc">
-          {{T .Lang "admin_ops_group_desc_prefix"}}
-          <strong>{{T .Lang "admin_target_user_current"}}</strong>
-          {{T .Lang "admin_ops_group_desc_suffix"}}
-        </div>
-        <div class="admin-operations-scope">
-          <div class="admin-field-row">
-            <label class="admin-field-label" for="backfill-target">{{T .Lang "admin_target_user"}}</label>
-            <select class="admin-field-input" id="backfill-target" data-current-label='{{T .Lang "admin_target_user_current"}}'>
-              <option value="">{{T .Lang "admin_target_user_current"}}</option>
-            </select>
-          </div>
+          {{T .Lang "admin_ops_group_desc"}}
         </div>
         {{end}}
 
@@ -535,8 +525,6 @@ function switchAdminTab(tab) {
     var panelName = panel.getAttribute('data-admin-panel');
     panel.hidden = tab === 'general' ? panelName !== 'general' : panelName !== 'tenant';
   });
-  var sel = $('backfill-target');
-  if (sel) sel.value = activeAdminSchema;
   var btn = document.querySelector('[data-admin-tab="' + activeAdminSchema + '"]');
   if (btn) {
     var userLabel = $('admin-active-user-label');
@@ -551,9 +539,7 @@ function triggerBackfill(force) {
   var btn = force ? $('btn-backfill-force') : $('btn-backfill');
   btn.disabled = true;
   var url = '/api/admin/backfill?force=' + (force ? '1' : '0');
-  var sel = $('backfill-target');
-  var schema = activeAdminSchema || (sel && sel.value ? sel.value : '');
-  if (schema) url += '&schema=' + encodeURIComponent(schema);
+  if (activeAdminSchema) url += '&schema=' + encodeURIComponent(activeAdminSchema);
   fetch(url, {method:'POST'})
     .then(function(r){return r.json()})
     .then(function(d) {
@@ -571,14 +557,11 @@ function triggerChipCalibrationRecompute() {
   var msg = $('admin-chip-calibration-msg');
   msg.textContent = 'Recomputing…';
   var url = '/api/admin/readiness-redesign/chip-calibrations';
-  // Mirror triggerBackfill's tenant-selector convention: empty
-  // selector → current tenant (server default), explicit value →
-  // that tenant. There's no "all tenants" recompute path on
-  // purpose — clicking the button must not cascade across every
-  // registered tenant without an explicit operator decision.
-  var sel = $('backfill-target');
-  var schema = activeAdminSchema || (sel && sel.value ? sel.value : '');
-  if (schema) url += '?schema=' + encodeURIComponent(schema);
+  // Mirror triggerBackfill's profile-tab convention: no profile tab
+  // means the request tenant (server default), while an active
+  // profile tab pins the operation to that tenant. There is no
+  // "all tenants" recompute path on purpose.
+  if (activeAdminSchema) url += '?schema=' + encodeURIComponent(activeAdminSchema);
   fetch(url, {method:'POST'})
     .then(function(r){ return r.json(); })
     .then(function(d) {
@@ -604,7 +587,7 @@ function triggerChipCalibrationRecompute() {
 // is exposed to htmx `hx-vals="js:..."` blocks on Steps 5 and 7 so
 // they can refresh themselves after the mutating Steps 4 and 6.
 function onboardingSchema() {
-  return activeAdminSchema || (($('backfill-target') && $('backfill-target').value) ? $('backfill-target').value : '');
+  return activeAdminSchema;
 }
 
 // onboardingLang reads the active UI language so wizard fragments
@@ -1124,24 +1107,6 @@ function loadUsers() {
         escapeHtml(lblUsername) + '</th><th>' + escapeHtml(lblEmail) + '</th><th>' +
         escapeHtml(lblApiKey) + '</th><th>' + escapeHtml(lblRole) +
         '</th></tr></thead><tbody>' + rows + '</tbody></table>';
-      var sel = $('backfill-target');
-      if (sel) {
-        var prev = activeAdminSchema || sel.value;
-        var currentLabel = sel.getAttribute('data-current-label') || '';
-        sel.innerHTML = '';
-        var defaultOpt = document.createElement('option');
-        defaultOpt.value = '';
-        defaultOpt.textContent = currentLabel;
-        sel.appendChild(defaultOpt);
-        users.forEach(function(u) {
-          var opt = document.createElement('option');
-          opt.value = u.schema_name;
-          opt.textContent = u.username + ' (' + u.schema_name + ')';
-          if (u.schema_name === prev) opt.selected = true;
-          sel.appendChild(opt);
-        });
-        if (prev) sel.value = prev;
-      }
     });
 }
 

@@ -494,14 +494,13 @@ var translationsRu = map[string]string{
 	"admin_contract_desc":  "Таблица по дням: что покажет каждая плашка readiness. Бинарные плашки (Acute, Chronic) берут порог из <code>chip_calibrations</code> — обновить можно кнопкой «Пересчитать калибровки плашек» в группе Operations ниже. Наведи на ячейку, чтобы увидеть значение, порог, baseline, цель и эпоху.",
 
 	// ─── Admin: Operations group ────────────────────────────────────
-	"admin_ops_group":             "Операции",
-	"admin_ops_group_desc_prefix": "Действия из этой группы выполняются над тенантом, выбранным ниже. Оставь",
-	"admin_ops_group_desc_suffix": "чтобы работать в своём тенанте.",
-	"admin_ops_redesign_title":    "Readiness redesign",
-	"admin_ops_redesign_desc":     "Пороги плашек для каждого тенанта считаются по последним 180 дням. Нажми <strong>Пересчитать</strong> после смены конфигурации или свежего backfill. Результат отразится в предпросмотре контракта выше.",
-	"admin_chip_recompute_title":  "Пересчитать калибровки плашек",
-	"admin_chip_recompute_desc":   "Берёт последние 180 подходящих дней, считает порог и страховку по base rate для каждой бинарной плашки, пишет в <code>chip_calibrations</code>. Применяется к выбранному выше тенанту.",
-	"admin_chip_recompute_btn":    "Пересчитать",
+	"admin_ops_group":            "Операции",
+	"admin_ops_group_desc":       "Действия из этой группы выполняются только над активной вкладкой профиля.",
+	"admin_ops_redesign_title":   "Readiness redesign",
+	"admin_ops_redesign_desc":    "Пороги плашек для каждого тенанта считаются по последним 180 дням. Нажми <strong>Пересчитать</strong> после смены конфигурации или свежего backfill. Результат отразится в предпросмотре контракта выше.",
+	"admin_chip_recompute_title": "Пересчитать калибровки плашек",
+	"admin_chip_recompute_desc":  "Берёт последние 180 подходящих дней, считает порог и страховку по base rate для каждой бинарной плашки, пишет в <code>chip_calibrations</code>. Применяется только к активной вкладке профиля.",
+	"admin_chip_recompute_btn":   "Пересчитать",
 
 	"admin_quality_maintenance_title": "Чистка качества данных",
 	"admin_quality_maintenance_desc":  "Эти кнопки меняют флаги в <code>metric_points.quality</code> или отправляют дайджест в Telegram. Read-only аудит лежит в <strong>Status &amp; diagnostics</strong> выше — открой сначала там, чтобы увидеть, что поменяется.",
@@ -510,9 +509,9 @@ var translationsRu = map[string]string{
 
 	// ─── Admin: Onboarding wizard — page shell ──────────────────────
 	"admin_wizard_title":       "Readiness redesign — мастер онбординга тенанта",
-	"admin_wizard_desc":        "7 шагов для нового (или заново перенастроенного) тенанта. Каждый шаг каждый раз заново читает состояние из базы — можно закрыть страницу и вернуться, ничего не теряется (нет ни сессий, ни кук). Тенант выбирается в селекторе Operations выше; на шагах с записью <code>schema=all</code> запрещён. Чтобы перерисовать любой шаг, нажми его <em>Обновить</em>.",
-	"admin_wizard_load_all":    "Загрузить мастер для выбранного тенанта",
-	"admin_wizard_pick_tenant": "Выбери тенанта и нажми <em>Загрузить</em>.",
+	"admin_wizard_desc":        "7 шагов для активной вкладки профиля. Каждый шаг каждый раз заново читает состояние из базы — можно закрыть страницу и вернуться, ничего не теряется (нет ни сессий, ни кук). На шагах с записью <code>schema=all</code> запрещён. Чтобы перерисовать любой шаг, нажми его <em>Обновить</em>.",
+	"admin_wizard_load_all":    "Загрузить мастер для активного профиля",
+	"admin_wizard_pick_tenant": "Открой вкладку профиля и нажми <em>Загрузить</em>.",
 	"admin_wizard_refresh":     "Обновить",
 	"admin_wizard_show_plan":   "Показать план",
 	"admin_wizard_recompute":   "Пересчитать",

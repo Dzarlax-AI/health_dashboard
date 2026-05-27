@@ -916,10 +916,6 @@ select:focus, input[type=date]:focus { outline: none; border-color: var(--accent
   border-bottom: 1px solid var(--card-border);
 }
 .admin-group-desc { font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; }
-/* Tenant selector at the top of the Operations group becomes the
-   single source of truth for every per-tenant action below it. */
-.admin-operations-scope { margin-bottom: 16px; }
-.admin-operations-scope .admin-field-row { margin-bottom: 0; }
 /* Onboarding wizard step cards. Each step is one row with a small
    numbered chip and a refresh / action button on the right. */
 .onboarding-step { border: 1px solid var(--card-border); border-radius: 12px; padding: 12px 14px; margin-bottom: 12px; background: var(--card-bg); }

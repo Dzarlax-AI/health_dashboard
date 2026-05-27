@@ -23,3 +23,21 @@ func TestAdminTemplateTenantPanelDoesNotDefaultReadinessToAllSchemas(t *testing.
 		}
 	}
 }
+
+func TestAdminTemplateOperationsDoNotExposeTenantSelectorInsideProfileTabs(t *testing.T) {
+	raw, err := os.ReadFile("templates/pages/admin.html")
+	if err != nil {
+		t.Fatalf("read admin template: %v", err)
+	}
+	body := string(raw)
+	for _, forbidden := range []string{
+		`id="backfill-target"`,
+		`admin-operations-scope`,
+		`admin_ops_group_desc_prefix`,
+		`admin_ops_group_desc_suffix`,
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("admin operations should be scoped by the active profile tab only; found %q", forbidden)
+		}
+	}
+}

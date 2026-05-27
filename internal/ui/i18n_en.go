@@ -523,14 +523,13 @@ var translationsEn = map[string]string{
 	"admin_contract_desc":  "Day-by-day table of what each readiness chip would show. The two binary chips (Acute, Chronic) read their cutoff from <code>chip_calibrations</code>; use the \"Recompute chip calibrations\" button in Operations below to refresh them. Hover any cell to see the underlying value, cutoff, baseline, target and epoch.",
 
 	// ─── Admin: Operations group ────────────────────────────────────
-	"admin_ops_group":             "Operations",
-	"admin_ops_group_desc_prefix": "Actions in this group affect the tenant you pick below. Leave it on",
-	"admin_ops_group_desc_suffix": "to act on your own tenant.",
-	"admin_ops_redesign_title":    "Readiness redesign",
-	"admin_ops_redesign_desc":     "Per-tenant chip thresholds are derived from the last 180 days of data. Click <strong>Recompute</strong> after a config change or a fresh backfill. The result shows up in the contract preview above.",
-	"admin_chip_recompute_title":  "Recompute chip calibrations",
-	"admin_chip_recompute_desc":   "Reads the last 180 eligible days, computes the cutoff and base-rate guard for each binary chip, and writes them to <code>chip_calibrations</code>. Affects the tenant selected above.",
-	"admin_chip_recompute_btn":    "Recompute",
+	"admin_ops_group":            "Operations",
+	"admin_ops_group_desc":       "Actions in this group affect the active profile tab only.",
+	"admin_ops_redesign_title":   "Readiness redesign",
+	"admin_ops_redesign_desc":    "Per-tenant chip thresholds are derived from the last 180 days of data. Click <strong>Recompute</strong> after a config change or a fresh backfill. The result shows up in the contract preview above.",
+	"admin_chip_recompute_title": "Recompute chip calibrations",
+	"admin_chip_recompute_desc":  "Reads the last 180 eligible days, computes the cutoff and base-rate guard for each binary chip, and writes them to <code>chip_calibrations</code>. Affects the active profile tab only.",
+	"admin_chip_recompute_btn":   "Recompute",
 
 	"admin_quality_maintenance_title": "Data quality maintenance",
 	"admin_quality_maintenance_desc":  "These buttons change <code>metric_points.quality</code> flags or send a Telegram digest. The read-only audit lives in <strong>Status &amp; diagnostics</strong> above — open that first to see what would change.",
@@ -539,9 +538,9 @@ var translationsEn = map[string]string{
 
 	// ─── Admin: Onboarding wizard — page shell ──────────────────────
 	"admin_wizard_title":       "Readiness redesign — tenant onboarding wizard",
-	"admin_wizard_desc":        "A 7-step guided flow for a new (or freshly retuned) tenant. Every step reads the latest state from the database, so you can close the page and come back — nothing here is stored in cookies. Pick a tenant in the Operations selector above; <code>schema=all</code> is rejected on every step that writes data. Use a step's <em>Refresh</em> button to re-render it.",
-	"admin_wizard_load_all":    "Load wizard for selected tenant",
-	"admin_wizard_pick_tenant": "Pick a tenant and click <em>Load</em>.",
+	"admin_wizard_desc":        "A 7-step guided flow for the active profile tab. Every step reads the latest state from the database, so you can close the page and come back — nothing here is stored in cookies. <code>schema=all</code> is rejected on every step that writes data. Use a step's <em>Refresh</em> button to re-render it.",
+	"admin_wizard_load_all":    "Load wizard for active profile",
+	"admin_wizard_pick_tenant": "Open a profile tab and click <em>Load</em>.",
 	"admin_wizard_refresh":     "Refresh",
 	"admin_wizard_show_plan":   "Show plan",
 	"admin_wizard_recompute":   "Recompute",

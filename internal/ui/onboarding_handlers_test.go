@@ -5,9 +5,8 @@
 //     read-only). The wizard is per-tenant by design.
 //   - Missing schema is **accepted** and falls back to the request's
 //     own tenant — same shape as adminBackfill's default. This lets
-//     the "Current" option in the Operations selector work (value="")
-//     and the wizard be usable in legacy single-tenant mode where
-//     the selector isn't rendered at all.
+//     the wizard stay usable in legacy single-tenant mode and when
+//     a multi-tenant admin profile tab has not supplied a schema.
 
 package ui
 
