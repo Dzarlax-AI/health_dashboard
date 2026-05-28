@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation Plan: Startup DDL Noise Reduction</title>
+  <style>
+    body {
+      margin: 0;
+      background: #f6f7f9;
+      color: #1f2937;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 32px;
+    }
+    section {
+      background: #fff;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 18px 20px;
+      margin: 16px 0;
+    }
+    h1, h2, h3 {
+      line-height: 1.2;
+      margin-top: 0;
+    }
+    p {
+      margin: 8px 0;
+    }
+    code {
+      background: #f1f5f9;
+      border-radius: 4px;
+      padding: 2px 5px;
+      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      font-size: 0.95em;
+    }
+    ul, ol {
+      padding-left: 22px;
+    }
+    li {
+      margin: 6px 0;
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: #fef3c7;
+      color: #92400e;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .card {
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 12px;
+      background: #f8fafc;
+    }
+    .evidence {
+      border-left: 4px solid #2563eb;
+    }
+    .risk {
+      border-left: 4px solid #dc2626;
+    }
+    .approval {
+      border-left: 4px solid #d97706;
+    }
+    @media (max-width: 760px) {
+      main { padding: 18px; }
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Implementation Plan: Startup DDL Noise Reduction</h1>
+  <p class="badge">Approval required before implementation</p>
+
+  <section>
+    <h2>Task Summary</h2>
+    <p>Reduce noisy production startup logs from idempotent schema/index checks such as <code>ALTER TABLE ... ADD COLUMN IF NOT EXISTS</code> and <code>CREATE INDEX IF NOT EXISTS</code> when the schema is already current.</p>
+    <p>The goal is not to hide real migration failures. The goal is to avoid taking heavy DDL locks on every restart when catalog metadata already proves the column or index exists.</p>
+  </section>
+
+  <section class="evidence">
+    <h2>Observed Production Evidence</h2>
+    <ul>
+      <li>After deploy, the container started and served traffic, but logged multiple <code>context deadline exceeded</code> lines from <code>EnsureIndexes</code>.</li>
+      <li>Follow-up catalog checks confirmed all logged columns and indexes already exist in both <code>health</code> and <code>health_mariia</code>.</li>
+      <li><code>pg_stat_activity</code> showed a long-running diagnostic <code>psql</code> query touching <code>metric_points</code>. That query could hold an <code>AccessShare</code> lock, while <code>ALTER TABLE</code> needs <code>AccessExclusive</code>.</li>
+      <li><code>internal/storage/indexes.go</code> currently uses one shared <code>longCtx()</code> for all migrations and index checks, so after one blocked DDL waits until deadline, later statements inherit the canceled context and log immediately.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Current Behavior</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>Startup Path</h3>
+        <p><code>cmd/server/main.go</code> calls <code>db.EnsureIndexes()</code> for each tenant during startup and when a tenant is created.</p>
+      </div>
+      <div class="card">
+        <h3>EnsureIndexes</h3>
+        <p><code>internal/storage/indexes.go</code> always executes every listed <code>ALTER TABLE ... IF NOT EXISTS</code> and every <code>CREATE INDEX IF NOT EXISTS</code>.</p>
+      </div>
+      <div class="card">
+        <h3>Timeout Shape</h3>
+        <p>All statements share the same 5-minute <code>longCtx()</code>. One lock wait can consume the whole context and turn the remaining statements into follow-on noise.</p>
+      </div>
+      <div class="card">
+        <h3>Fresh Installs</h3>
+        <p><code>EnsureAllTables()</code> already creates many current columns for new tenants, but <code>EnsureIndexes()</code> still carries older compatibility migrations.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <ul>
+      <li>If a required column already exists, skip its <code>ALTER TABLE</code> entirely.</li>
+      <li>If a required index already exists, skip its <code>CREATE INDEX</code> entirely.</li>
+      <li>If a column or index is missing, still create it automatically.</li>
+      <li>Use a fresh context per DDL statement so one lock wait does not poison the rest of startup.</li>
+      <li>Use a bounded PostgreSQL <code>lock_timeout</code> around startup DDL so blocked migrations fail fast with a clear log instead of holding startup for minutes.</li>
+      <li>Keep real missing-schema failures visible and actionable.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Files Likely to Change</h2>
+    <ul>
+      <li><code>internal/storage/indexes.go</code> - replace unconditional DDL loops with catalog-aware column/index checks and per-statement contexts.</li>
+      <li><code>internal/storage/indexes_test.go</code> - add unit tests for skip-vs-create decision logic, likely via small pure helper functions instead of requiring a live Postgres instance.</li>
+      <li><code>docs/ai-plans/2026-05-28-startup-ddl-noise-reduction.html</code> - update with implementation results and verification.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Proposed Implementation</h2>
+    <ol>
+      <li>Introduce small metadata structs for required columns and indexes in <code>indexes.go</code>.</li>
+      <li>Add helpers that query <code>information_schema.columns</code> and <code>pg_indexes</code> under the tenant's current <code>search_path</code>.</li>
+      <li>For each migration, run <code>columnExists(table, column)</code>; execute <code>ALTER TABLE</code> only when missing.</li>
+      <li>For each index, run <code>indexExists(indexName)</code>; execute <code>CREATE INDEX</code> only when missing.</li>
+      <li>Wrap each DDL execution in its own context and transaction with local <code>lock_timeout</code>, for example <code>SET LOCAL lock_timeout = '5s'</code>, then execute the DDL.</li>
+      <li>Log skipped checks at most in a low-noise aggregate line, or do not log skips at all. Log missing-and-created and failed-created paths with the table/index name.</li>
+      <li>Keep <code>EnsureIndexes()</code> best-effort for startup compatibility, matching current behavior, but make failures more specific.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Data and Deployment Impact</h2>
+    <ul>
+      <li>No data model change is proposed. This changes how existing migrations are checked and applied.</li>
+      <li>Fresh installs and newly created tenants still get automatic columns and indexes.</li>
+      <li>Existing production tenants should skip most DDL on startup after catalog checks.</li>
+      <li>If a real migration is missing but blocked by active traffic, startup should continue with a concise warning rather than a cascade of timeout logs.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <ul>
+      <li><code>go test ./internal/storage -run TestEnsureIndexes -count=1</code> for focused helper coverage if tests are added there.</li>
+      <li><code>go test ./internal/storage -count=1</code> to protect storage package behavior.</li>
+      <li><code>go test ./cmd/server ./internal/storage -count=1</code> for startup-adjacent compile and tests.</li>
+      <li><code>go test ./...</code> before PR, unless a platform/environment issue blocks it.</li>
+      <li>After deploy: check <code>docker compose logs --since 5m</code> and confirm no cascade of <code>migrate:</code> / <code>ensure index:</code> deadline logs on a normal restart.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Manual QA Checklist</h2>
+    <ul>
+      <li>Restart the service in dev or prod-like environment.</li>
+      <li>Confirm <code>/api/dashboard</code> and <code>/api/readiness-history</code> still respond after startup.</li>
+      <li>Confirm <code>metric_points.quality</code>, <code>daily_scores.sleep_unspecified</code>, and key expression indexes are present.</li>
+      <li>Confirm today's <code>target_snapshots</code>, <code>feature_snapshots</code>, and <code>naive_baselines</code> still write for both tenants after ingest/cache refresh.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks and Edge Cases</h2>
+    <ul>
+      <li>Catalog checks must respect tenant <code>search_path</code>; hardcoding <code>health</code> would break <code>health_mariia</code> and future tenants.</li>
+      <li>Index names are schema-local in Postgres, so checks should include the current schema or use <code>to_regclass</code> safely under search_path.</li>
+      <li>Skipping DDL based on name alone could miss a wrong index definition. For this pass, index-name existence likely matches current <code>IF NOT EXISTS</code> semantics, which also does not validate index definition.</li>
+      <li>A very short <code>lock_timeout</code> can defer a genuinely needed migration until the next restart. This is acceptable only because startup currently treats these checks as best-effort and logs failures instead of aborting.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <p>Revert the PR. The old startup behavior is noisy but known to continue booting when DDL times out. No data rollback is needed because the change only gates whether existing idempotent DDL statements are attempted.</p>
+  </section>
+
+  <section class="evidence">
+    <h2>Implementation Result</h2>
+    <ul>
+      <li><code>internal/storage/indexes.go</code> now models startup column migrations and expression indexes as metadata with table/column or index names.</li>
+      <li><code>EnsureIndexes()</code> performs tenant-scoped catalog checks via <code>current_schema()</code> and skips DDL that is already present in the current tenant schema.</li>
+      <li>Column DDL that is genuinely missing still runs with a 15-second context and transaction-local <code>lock_timeout=5s</code>.</li>
+      <li>Index DDL keeps a longer 5-minute statement context so a legitimate missing expression index can build on a large existing table after it acquires the lock.</li>
+      <li>If catalog checks fail, the old best-effort behavior remains as a fallback: the idempotent DDL list is attempted and failures are logged.</li>
+      <li><code>internal/storage/indexes_test.go</code> adds focused tests for the skip-vs-create decision logic.</li>
+    </ul>
+  </section>
+
+  <section class="evidence">
+    <h2>Verification Run</h2>
+    <ul>
+      <li><code>go test ./internal/storage -run TestPending -count=1</code> - passed.</li>
+      <li><code>go test ./internal/storage -count=1</code> - passed.</li>
+      <li><code>go test ./cmd/server ./internal/storage -count=1</code> - passed.</li>
+      <li><code>go test ./...</code> - passed.</li>
+      <li><code>go vet ./...</code> - passed.</li>
+      <li><code>go test ./internal/storage -run TestEnsureIndexesIntegration_CreatesAndSkipsTenantDDL -count=1 -v</code> with <code>~/.health-db</code> env - passed against live Postgres using a throwaway schema.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Resolved for this pass: missing column/index failures remain best-effort, matching existing startup behavior.</li>
+      <li>Resolved for this pass: use <code>lock_timeout=5s</code> and avoid healthy-path summary logs, so normal restarts stay quiet.</li>
+      <li>After deploy, confirm a normal restart no longer emits the cascade of <code>migrate:</code> / <code>ensure index:</code> timeout logs.</li>
+      <li>Separate follow-up: create a persistent review/screenshot tenant with curated seed data. This PR only adds a throwaway integration schema so DDL stability is verified without leaving database state behind.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval Gate</h2>
+    <p>Implementation must not start until this plan is explicitly approved. After approval, update this file with the actual code changes, verification commands, deploy notes, and any remaining production observations.</p>
+  </section>
+</main>
+</body>
+</html>
