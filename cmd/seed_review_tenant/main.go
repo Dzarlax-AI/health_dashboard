@@ -188,6 +188,9 @@ func run(cfg seedConfig) error {
 	if err := backfillEnergy(ctx, db, cfg.timezone, from.Format(isoDate), to.Format(isoDate)); err != nil {
 		return err
 	}
+	if err := syncDailyEnergySnapshots(ctx, seedPool, from.Format(isoDate), to.Format(isoDate)); err != nil {
+		return err
+	}
 
 	counts, err := loadCounts(ctx, seedPool)
 	if err != nil {
@@ -516,6 +519,31 @@ func backfillEnergy(ctx context.Context, db *storage.DB, tz, from, to string) er
 		return err
 	}
 	fmt.Printf("energy backfill: ok=%d skipped=%d errors=%d\n", progress.OK, progress.Skipped, progress.Errors)
+	return nil
+}
+
+func syncDailyEnergySnapshots(ctx context.Context, pool *pgxpool.Pool, from, to string) error {
+	tag, err := pool.Exec(ctx, `
+		UPDATE daily_scores ds
+		SET
+			energy_capacity = 100,
+			energy_eod_current = es.bank,
+			energy_drain = es.drain_delta,
+			energy_verdict = CASE
+				WHEN es.bank <= 15 THEN 'rest'
+				WHEN es.bank <= 41 THEN 'active_recovery'
+				WHEN es.bank >= 55 THEN 'push_hard'
+				ELSE 'moderate'
+			END,
+			computed_at = NOW()::TEXT
+		FROM energy_snapshots es
+		WHERE ds.date = es.date
+		  AND ds.date BETWEEN $1 AND $2
+		  AND 'backfilled' = ANY(es.flags)`, from, to)
+	if err != nil {
+		return fmt.Errorf("sync daily energy snapshots: %w", err)
+	}
+	fmt.Printf("daily energy rows synced: %d\n", tag.RowsAffected())
 	return nil
 }
 
