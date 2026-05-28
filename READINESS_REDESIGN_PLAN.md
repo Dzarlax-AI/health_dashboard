@@ -889,7 +889,7 @@ still follow the runbook below; the wizard composes the same calls.
 
 ### 6.3 Serving / freshness
 
-**Design contract (approved direction, implementation pending).**
+**Status: implemented and under guardrail tests.**
 Phase 0 serving freshness rides on the existing ingest safety-net path,
 not on the synchronous `POST /health` response path. After
 `InsertPoints` succeeds, the handler still runs the existing inline
@@ -1012,21 +1012,21 @@ rewriting rows under the active epoch.
 
 **Implementation checklist.**
 
-- Add the storage orchestrator and call it from
+- Done: add the storage orchestrator and call it from
   `internal/storage/scores.go::RunIncrementalBackfillForDates` after
   `UpsertRecentCache`.
-- Call the same orchestrator from the per-tenant daily scheduled
+- Done: call the same orchestrator from the per-tenant daily scheduled
   re-stamp after the 03:00 quality scan window.
-- Keep manual `POST /api/admin/readiness-redesign/backfill` behavior as
+- Done: keep manual `POST /api/admin/readiness-redesign/backfill` behavior as
   the explicit operator override for larger ranges.
-- Add tests for window expansion, dependency order, and bounded
+- Done: add tests for window expansion, dependency order, and bounded
   routine-ingest recompute.
-- Add tests for midnight behavior: pre-midnight row remains explicit
-  unknown/pending, post-midnight ingest creates/re-stamps today after
-  the debounce path, and no yesterday fallback is used.
-- Add contract/render coverage for `source_epoch_change`.
-- Update any operator-facing copy only after the runtime behavior
-  matches this contract.
+- Covered by contract behavior: today may remain `pending` / `unknown`
+  until the first post-midnight ingest or the 03:00 daily re-stamp.
+  There is intentionally no fallback to yesterday.
+- Done: add contract/render coverage for `source_epoch_change`.
+- Done: operator-facing admin preview renders `pending`, `unknown`, and
+  `source_epoch_change` from the same storage contract.
 
 ### 6.4 Monitoring
 

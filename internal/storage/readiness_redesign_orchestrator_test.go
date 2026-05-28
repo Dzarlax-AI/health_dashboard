@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"errors"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -70,4 +72,37 @@ func TestRunReadinessRedesignBackfillForDates_EmptyInputNoops(t *testing.T) {
 
 	db.RunReadinessRedesignBackfillForDates(nil)
 	db.RunReadinessRedesignBackfillForDates([]string{"", "bad"})
+}
+
+func TestRunReadinessRedesignWriters_OrderAndContinueOnError(t *testing.T) {
+	var got []string
+	makeWriter := func(name string, err error) readinessRedesignWriter {
+		return readinessRedesignWriter{
+			name: name,
+			run: func(from, to string) (int, error) {
+				if from != "2026-05-01" || to != "2026-05-15" {
+					t.Fatalf("%s got window %s..%s", name, from, to)
+				}
+				got = append(got, name)
+				return 1, err
+			},
+		}
+	}
+
+	runReadinessRedesignWriters("2026-05-01", "2026-05-15", []readinessRedesignWriter{
+		makeWriter("recovery_stability", nil),
+		makeWriter("passive_efficiency", errors.New("boom")),
+		makeWriter("acute_risk", nil),
+		makeWriter("chronic_load", nil),
+	})
+
+	want := []string{
+		"recovery_stability",
+		"passive_efficiency",
+		"acute_risk",
+		"chronic_load",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("writer order = %v, want %v", got, want)
+	}
 }

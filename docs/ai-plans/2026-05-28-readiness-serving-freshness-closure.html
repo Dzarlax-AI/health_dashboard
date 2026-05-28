@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation Plan: Readiness Serving/Freshness Closure</title>
+  <style>
+    body {
+      margin: 0;
+      background: #f6f7f9;
+      color: #1f2937;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 32px;
+    }
+    section {
+      background: #fff;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 18px 20px;
+      margin: 16px 0;
+    }
+    h1, h2, h3 {
+      line-height: 1.2;
+      margin-top: 0;
+    }
+    h1 {
+      margin-bottom: 8px;
+    }
+    p {
+      margin: 8px 0;
+    }
+    code {
+      background: #f1f5f9;
+      border-radius: 4px;
+      padding: 2px 5px;
+      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      font-size: 0.95em;
+    }
+    ul, ol {
+      padding-left: 22px;
+    }
+    li {
+      margin: 6px 0;
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: #fef3c7;
+      color: #92400e;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .card {
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 12px;
+      background: #f8fafc;
+    }
+    .ok {
+      border-left: 4px solid #15803d;
+    }
+    .todo {
+      border-left: 4px solid #2563eb;
+    }
+    .risk {
+      border-left: 4px solid #dc2626;
+    }
+    .approval {
+      border-left: 4px solid #d97706;
+    }
+    @media (max-width: 780px) {
+      main {
+        padding: 20px;
+      }
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Implementation Plan: Readiness Serving/Freshness Closure</h1>
+  <p class="badge">Approval required before implementation</p>
+
+  <section>
+    <h2>Task Summary</h2>
+    <p>
+      Close the Readiness redesign §6.3 serving/freshness roadmap item by turning
+      the already-implemented runtime hooks into an explicitly verified contract.
+      This is not a ground-up implementation: inspection shows the orchestrator,
+      ingest hook, daily restamp, and source-epoch rendering already exist on
+      <code>main</code>.
+    </p>
+    <p>
+      The remaining work should be narrowly scoped to documentation cleanup,
+      missing guardrail tests, and live/manual verification notes. Production
+      behavior should change only if a test exposes a real contract gap.
+    </p>
+  </section>
+
+  <section>
+    <h2>Current Behavior From Inspection</h2>
+    <div class="grid">
+      <div class="card ok">
+        <h3>Already present</h3>
+        <ul>
+          <li><code>internal/storage/readiness_redesign_orchestrator.go</code> expands affected dates back 14 days and caps at tenant-local today.</li>
+          <li><code>internal/storage/scores.go</code> calls <code>RunReadinessRedesignBackfillForDatesAt</code> after <code>UpsertRecentCache</code>.</li>
+          <li><code>cmd/server/main.go</code> calls the same orchestrator after the daily 03:00 quality scan.</li>
+          <li><code>source_epoch_change</code> is represented in storage rows and renders as <code>unknown</code> in admin chip cells.</li>
+        </ul>
+      </div>
+      <div class="card ok">
+        <h3>Verified now</h3>
+        <ul>
+          <li>Focused tests passed for storage, UI, and server compile paths.</li>
+          <li>Relevant existing tests include window expansion, invalid/future date no-ops, source epoch mismatch, and chip rendering.</li>
+          <li>Production logs from the previous Data Trust check show readiness redesign backfill running after today&apos;s ingest.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <ul>
+      <li>The §6.3 plan text should no longer say <q>implementation pending</q> where the runtime contract is already implemented.</li>
+      <li>The orchestrator should have a direct guardrail for writer execution order, not only window calculation tests.</li>
+      <li>The daily/ingest serving contract should remain bounded: no full-history repair on routine ingest, no cross-tenant recompute, no parallel writer fan-out inside a tenant.</li>
+      <li>The Todoist §6.3 task should be closable after the focused tests and live sanity checks pass.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Assumptions And Unknowns</h2>
+    <ul>
+      <li>Assumption: current production behavior is acceptable because logs show post-ingest readiness redesign backfill completing today.</li>
+      <li>Assumption: no API or schema changes are needed; the tables and admin endpoint already exist.</li>
+      <li>Unknown: whether to add a direct unit test for daily 03:00 restamp wiring. The current function is loop/timer based, so a useful test may require refactoring that is not worth the risk for this closure PR.</li>
+      <li>Unknown: whether the old <code>docs/superpowers/plans/2026-05-23-readiness-freshness.md</code> should be edited. It is a historical execution plan, so prefer leaving it as history unless it actively misleads current readers.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Files Likely To Change</h2>
+    <ul>
+      <li><code>READINESS_REDESIGN_PLAN.md</code> - update §6.3 status from pending to implemented/verified, and record any remaining known limitation.</li>
+      <li><code>internal/storage/readiness_redesign_orchestrator.go</code> - only if needed to expose a small internal seam for order testing.</li>
+      <li><code>internal/storage/readiness_redesign_orchestrator_test.go</code> - add dependency-order or contract tests for the orchestrator.</li>
+      <li><code>docs/ai-plans/2026-05-28-readiness-serving-freshness-closure.html</code> - update after implementation with actual changes and verification results.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Proposed Implementation Steps</h2>
+    <ol>
+      <li>Run the focused test set again from a fresh branch to confirm the current baseline.</li>
+      <li>Add the smallest useful orchestrator guardrail test. Preferred approach: extract a tiny internal writer-plan seam so the test can assert Recovery → Passive → Acute → Chronic order without running real DB writers.</li>
+      <li>Update <code>READINESS_REDESIGN_PLAN.md</code> §6.3 to reflect that the runtime hook is implemented, while keeping the freshness SLA and manual admin backfill boundaries clear.</li>
+      <li>Optionally run a direct DB sanity query for today&apos;s <code>target_snapshots</code>, <code>feature_snapshots</code>, and <code>naive_baselines</code> on both tenants after recent ingest.</li>
+      <li>Update this HTML plan with what changed, checks run, and any skipped checks.</li>
+      <li>If all checks pass, update/close the Todoist §6.3 task with evidence and move to the next roadmap item.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Data, API, Migration, Auth, Deployment, UX Impact</h2>
+    <ul>
+      <li><strong>Data:</strong> no schema migration planned. Verification may read existing readiness-redesign tables.</li>
+      <li><strong>API:</strong> no endpoint contract changes planned.</li>
+      <li><strong>Auth/permissions:</strong> no changes.</li>
+      <li><strong>Deployment:</strong> docs/test-only PR unless the guardrail test exposes a real code gap.</li>
+      <li><strong>UX:</strong> admin operational-contract semantics stay the same: source epoch mismatch renders <code>unknown</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <ul>
+      <li><code>go test ./internal/storage ./internal/ui ./cmd/server -run "Test(ReadinessRedesignRoutineWindow|RunReadinessRedesignBackfillForDates|LoadOperationalContractRows|BuildChipCell|AdminReadinessRedesign)" -count=1</code></li>
+      <li><code>go test ./internal/storage -run "TestReadinessRedesign" -count=1</code></li>
+      <li><code>go test ./internal/storage ./internal/ui ./cmd/server -count=1</code></li>
+      <li><code>go test ./...</code> before PR if the change touches production code or shared test helpers.</li>
+      <li><code>git diff --check</code> and review the changed file list.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Manual QA Checklist</h2>
+    <ul>
+      <li>Confirm recent production logs include <code>readiness redesign backfill: done</code> after health ingest.</li>
+      <li>Confirm recent tenant rows exist for the serving window in readiness-redesign tables.</li>
+      <li>Confirm the admin operational-contract preview still renders source-epoch mismatches as <code>unknown</code> in tests.</li>
+      <li>Do not manually trigger broad historical backfill unless investigation finds stale production rows.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks And Edge Cases</h2>
+    <ul>
+      <li>Over-scoping this into a runtime rewrite could destabilize an already-working path.</li>
+      <li>Testing dependency order by running real writers would be slow and brittle; prefer a small injected internal seam or skip if it becomes invasive.</li>
+      <li>Daily 03:00 restamp is timer-loop code; forcing a unit test may require an unrelated scheduler refactor.</li>
+      <li>Historical execution plans may remain stale by design. Update the living plan, not every historical artifact.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <p>
+      If the closure PR only changes documentation and tests, rollback is a normal
+      git revert. If a tiny orchestrator seam is added for testing and causes any
+      concern, revert that code change and keep only the documentation update.
+      No database rollback should be needed.
+    </p>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Should the historical <code>docs/superpowers/plans/2026-05-23-readiness-freshness.md</code> be marked as executed, or left untouched as an archival plan?</li>
+      <li>Is a dependency-order test worth a tiny internal seam, or is current production/log evidence plus window/source-epoch tests enough?</li>
+      <li>After closure, should the next roadmap item be Readiness monitoring consolidation or EnergyBank convergence guard?</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation Result</h2>
+    <p>
+      Implemented on 2026-05-28 after approval. The runtime behavior was already
+      present, so the code change stayed deliberately small.
+    </p>
+    <ul>
+      <li>Added a small internal writer seam in <code>internal/storage/readiness_redesign_orchestrator.go</code>.</li>
+      <li>Added <code>TestRunReadinessRedesignWriters_OrderAndContinueOnError</code> to pin writer order and error-continuation behavior.</li>
+      <li>Updated <code>READINESS_REDESIGN_PLAN.md</code> §6.3 from <q>implementation pending</q> to implemented/guarded status.</li>
+      <li>Left the historical <code>docs/superpowers/plans/2026-05-23-readiness-freshness.md</code> untouched as an archival execution plan.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Verification Run</h2>
+    <ul>
+      <li><code>go test ./internal/storage -run "Test(ReadinessRedesignRoutineWindow|RunReadinessRedesignBackfillForDates|RunReadinessRedesignWriters)" -count=1</code> passed.</li>
+      <li><code>go test ./internal/storage ./internal/ui ./cmd/server -run "Test(ReadinessRedesignRoutineWindow|RunReadinessRedesignBackfillForDates|RunReadinessRedesignWriters|LoadOperationalContractRows|BuildChipCell|AdminReadinessRedesign)" -count=1</code> passed.</li>
+      <li><code>go test ./internal/storage ./internal/ui ./cmd/server -count=1</code> passed.</li>
+      <li><code>go test ./...</code> passed.</li>
+      <li>DB sanity for <code>2026-05-14..2026-05-28</code> found rows in <code>target_snapshots</code>, <code>feature_snapshots</code>, and <code>naive_baselines</code> for both <code>health</code> and <code>health_mariia</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Known Limitations After Closure</h2>
+    <ul>
+      <li>Daily 03:00 restamp remains timer-loop behavior covered by compile/runtime evidence, not a direct unit test.</li>
+      <li>Routine ingest intentionally recomputes only the bounded serving window; historical repairs remain manual admin backfill work.</li>
+      <li>Labels in Todoist cannot be edited by the current task tool, so the §6.3 task may not appear in <code>@health</code> filters even after closure.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval Gate</h2>
+    <p>
+      Approved and executed. Any further production changes should use a new
+      plan or a tightly scoped follow-up task.
+    </p>
+  </section>
+</main>
+</body>
+</html>
