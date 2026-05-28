@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Implementation Plan: Admin UI Cleanup</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f6f7f9;
+      color: #1f2937;
+      line-height: 1.5;
+    }
+    main { max-width: 1100px; margin: 0 auto; padding: 32px; }
+    section {
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 20px;
+      margin: 16px 0;
+    }
+    h1, h2, h3 { line-height: 1.2; margin-top: 0; }
+    code { background: #f3f4f6; padding: 2px 5px; border-radius: 4px; }
+    ul, ol { padding-left: 22px; }
+    li { margin: 6px 0; }
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: #fef3c7;
+      color: #92400e;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .risk { border-left: 4px solid #dc2626; }
+    .approval { border-left: 4px solid #d97706; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+    .card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 14px; background: #fafafa; }
+    .muted { color: #6b7280; }
+    .mockup {
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      background: #fbfbfc;
+      padding: 16px;
+      margin: 14px 0;
+      font-size: 14px;
+    }
+    .mock-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+    .mock-pill {
+      border: 1px solid #d1d5db;
+      border-radius: 999px;
+      padding: 6px 10px;
+      background: #fff;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .mock-pill.active { border-color: #111827; color: #111827; }
+    .mock-status {
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      background: #fff;
+      padding: 10px;
+      min-width: 150px;
+      flex: 1;
+    }
+    .mock-section {
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      background: #fff;
+      padding: 10px 12px;
+      margin: 8px 0;
+    }
+    .mock-section strong { display: block; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Implementation Plan: Admin UI Cleanup</h1>
+  <p class="badge">Approval required before implementation</p>
+
+  <section>
+    <h2>Task Summary</h2>
+    <p>
+      Rework the Health Dashboard admin page so it reads as a practical operator console instead of a long list of unrelated checks.
+      The change should also fix the concrete review findings already identified: legacy-mode AI settings breakage, buttons inside
+      <code>&lt;summary&gt;</code> toggling sections, full API key exposure, inconsistent left alignment, and the page title still saying
+      “Settings”.
+    </p>
+  </section>
+
+  <section>
+    <h2>Current Behavior</h2>
+    <ul>
+      <li><code>/admin</code> renders the title from <code>admin_title</code>, currently “Settings” / “Настройки”.</li>
+      <li>Multi-user mode shows one flat tab row: global admin/settings tabs mixed with user profile tabs.</li>
+      <li>The tenant panel has many peer-level checks: cache, gaps, quality, check-in, stress validation, readiness contract, readiness monitoring, operations, onboarding, and energy config.</li>
+      <li>Most sections were converted to <code>&lt;details&gt;</code>, but nested margins and summary arrows create uneven left edges.</li>
+      <li>Some action buttons sit inside <code>&lt;summary&gt;</code>, so clicking them can also open or close the section.</li>
+      <li>AI settings are multi-user-only in the template, while <code>loadAdminSettings()</code> still runs in all modes.</li>
+      <li><code>/api/admin/users</code> returns full API keys and the UI renders them directly.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>Operator Overview</h3>
+        <p class="muted">The tenant tab starts with a compact status strip: cache/sync, gaps, data quality, check-in, readiness pipeline. Each item has a simple state and direct action.</p>
+      </div>
+      <div class="card">
+        <h3>Clear Scope</h3>
+        <p class="muted">Global controls are visually separated from profile tabs. Tenant actions make the active schema obvious.</p>
+      </div>
+      <div class="card">
+        <h3>Readiness Group</h3>
+        <p class="muted">Readiness diagnostics and operations become a profile sub-tab, not multiple top-level page sections.</p>
+      </div>
+      <div class="card">
+        <h3>EnergyBank Group</h3>
+        <p class="muted">EnergyBank status and stress-drain settings become a profile sub-tab, separate from generic diagnostics.</p>
+      </div>
+      <div class="card">
+        <h3>Consistent Grid</h3>
+        <p class="muted">All section titles, descriptions, forms, tables, and action cards share one left edge. No nested visual drift.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Mockups and Layout Plan</h2>
+    <p>
+      These are structural mockups, not final pixels. They show the intended information hierarchy and alignment before implementation.
+      The implementation should preserve the current design-system tokens and avoid decorative UI.
+    </p>
+
+    <h3>1. Top Scope Selector</h3>
+    <div class="mockup">
+      <div class="mock-row">
+        <span class="mock-pill active">Global: Admin</span>
+        <span class="mock-pill">Global: AI settings</span>
+      </div>
+      <div class="mock-row">
+        <span class="mock-pill active">Profile: admin</span>
+        <span class="mock-pill">Profile: mariia</span>
+      </div>
+      <p class="muted">
+        Global tabs and profile tabs should no longer look like the same kind of object.
+        Profile tabs drive tenant-scoped actions; global tabs manage installation-wide settings and users.
+      </p>
+    </div>
+
+    <h3>2. Tenant Operator Overview</h3>
+    <div class="mockup">
+      <div class="mock-row">
+        <div class="mock-status"><strong>Sync/cache</strong><span class="muted">Healthy · Refresh</span></div>
+        <div class="mock-status"><strong>Data gaps</strong><span class="muted">No blocking gaps · Check</span></div>
+        <div class="mock-status"><strong>Quality</strong><span class="muted">2 suspect metrics · Review</span></div>
+        <div class="mock-status"><strong>Check-in</strong><span class="muted">71% answered · Open</span></div>
+      </div>
+      <p class="muted">
+        The overview is the first visible answer to “what needs attention?” It should summarize, not duplicate every diagnostic table.
+      </p>
+    </div>
+
+    <h3>3. Profile Sub-tabs</h3>
+    <div class="mockup">
+      <div class="mock-row">
+        <span class="mock-pill active">Diagnostics</span>
+        <span class="mock-pill">Readiness</span>
+        <span class="mock-pill">EnergyBank</span>
+      </div>
+      <p class="muted">
+        These sub-tabs live inside the active profile. They do not change global scope; they only switch between profile-specific tool areas.
+      </p>
+    </div>
+
+    <h3>4. Tenant Diagnostics Grouping</h3>
+    <div class="mockup">
+      <div class="mock-section"><strong>Data diagnostics</strong><span class="muted">Cache status, gaps, quality audit, check-in coverage.</span></div>
+      <div class="mock-section"><strong>Data maintenance</strong><span class="muted">Backfill, quality fix, quality digest.</span></div>
+      <p class="muted">
+        Each group gets one left edge. Section action buttons should sit in the content/action row, not inside the clickable summary label.
+      </p>
+    </div>
+
+    <h3>5. Readiness Profile Sub-tab</h3>
+    <div class="mockup">
+      <div class="mock-section"><strong>Status</strong><span class="muted">Operational contract and naive-layer monitoring summary.</span></div>
+      <div class="mock-section"><strong>Actions</strong><span class="muted">Chip calibration recompute and scoped backfill controls.</span></div>
+      <div class="mock-section"><strong>Onboarding</strong><span class="muted">Seven-step wizard stays nested inside this block.</span></div>
+      <p class="muted">
+        Readiness remains discoverable for development work, but it stops competing with basic admin operations as several top-level sections.
+      </p>
+    </div>
+
+    <h3>6. EnergyBank Profile Sub-tab</h3>
+    <div class="mockup">
+      <div class="mock-section"><strong>Status</strong><span class="muted">Current EnergyBank state and calibration context when available.</span></div>
+      <div class="mock-section"><strong>Stress validation</strong><span class="muted">Rubric output and evidence for stress-drain decisions.</span></div>
+      <div class="mock-section"><strong>Configuration</strong><span class="muted">Stress-drain enabled, beta, z-threshold, effective beta, and help text.</span></div>
+      <p class="muted">
+        EnergyBank gets its own profile area because it mixes status, validation, and tuning. Keeping it separate reduces noise in generic diagnostics.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Assumptions and Unknowns</h2>
+    <ul>
+      <li>Keep the existing Go template architecture and embedded JS; do not introduce a frontend framework.</li>
+      <li>Keep htmx for existing fragments where it already works.</li>
+      <li>Do not change database schema or tenant isolation rules.</li>
+      <li>Assume the dev server remains available through Docker Compose at <code>http://localhost:18080</code>.</li>
+      <li>API keys must remain accessible after creation because an operator may need to view one again to configure an MCP server.</li>
+      <li>Global AI settings must be available in single-user mode as well as multi-user mode.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Files Likely to Change</h2>
+    <ul>
+      <li><code>internal/ui/templates/pages/admin.html</code> - restructure tabs, tenant overview, section grouping, readiness block, button placement, and JS guards.</li>
+      <li><code>internal/ui/style.go</code> - define a stricter admin layout grid, overview cards, tab grouping, section spacing, and left-edge alignment.</li>
+      <li><code>internal/ui/i18n_en.go</code>, <code>internal/ui/i18n_ru.go</code>, <code>internal/ui/i18n_sr.go</code> - rename admin title and add labels for the new overview/grouping.</li>
+      <li><code>internal/ui/handler.go</code> - mask user API keys in <code>adminUsers</code> and optionally expose only last characters.</li>
+      <li><code>internal/ui/admin_page_test.go</code>, <code>internal/ui/admin_template_scope_test.go</code> - update template and user API tests for the new structure and key masking.</li>
+      <li>Possibly add or update a small focused UI test file if existing tests do not cover summary button placement or legacy AI settings.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Proposed Implementation Steps</h2>
+    <ol>
+      <li>Rename the admin page title from “Settings” to “Admin” / localized equivalents, while leaving the user settings page unchanged.</li>
+      <li>Split the tab row visually into global tabs and profile tabs. Keep the existing tab mechanics but style them as two grouped zones.</li>
+      <li>Add a tenant overview strip at the top of profile tabs. Use existing fragment/API data where practical; avoid adding new expensive backend aggregation unless necessary.</li>
+      <li>Collapse top-level tenant diagnostics to generic data health and maintenance groups.</li>
+      <li>Add profile sub-tabs for <code>Diagnostics</code>, <code>Readiness</code>, and <code>EnergyBank</code>.</li>
+      <li>Move readiness contract, monitoring, chip recompute, and onboarding under the <code>Readiness</code> profile sub-tab.</li>
+      <li>Move EnergyBank stress validation and stress-drain configuration under the <code>EnergyBank</code> profile sub-tab.</li>
+      <li>Move all buttons out of clickable <code>&lt;summary&gt;</code> toggles, or add an explicit helper that stops summary propagation for section-action buttons.</li>
+      <li>Replace ad-hoc inline margins with shared admin layout classes so section content starts on one consistent left edge.</li>
+      <li>Make <code>loadAdminSettings()</code> safe when AI settings controls are absent, and decide whether global AI settings should be visible in legacy mode.</li>
+      <li>Mask API keys in the default user table, but add an explicit admin-only reveal/copy path so full keys remain available when needed.</li>
+      <li>Update tests and run UI checks in desktop and mobile widths.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>UX Impact</h2>
+    <ul>
+      <li>The first admin screen should answer “is anything broken?” before exposing detailed tools.</li>
+      <li>Routine operations should require fewer scrolls and fewer similarly weighted choices.</li>
+      <li>Experimental readiness work remains accessible but stops dominating the main admin surface.</li>
+      <li>Profile-specific actions remain scoped to the active tenant schema.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Security and Permission Impact</h2>
+    <ul>
+      <li>No auth or role model changes are planned.</li>
+      <li>Admin-only user management remains admin-only.</li>
+      <li>Full API keys should not be returned by the default list users endpoint.</li>
+      <li>Add an explicit admin-only reveal endpoint or action for a selected user key, because operators need to retrieve keys for MCP server setup.</li>
+      <li>Admin session auth is sufficient for API key reveal/copy; no extra password confirmation is required.</li>
+      <li>Regeneration is optional and can be deferred; reveal/copy is required for this pass.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <ul>
+      <li>Run <code>go test ./internal/ui</code>.</li>
+      <li>Run <code>go test ./internal/registry ./internal/tenants</code> if user-list or registry response shape changes.</li>
+      <li>Run <code>go test ./...</code> if handler contracts or shared types change beyond UI-only behavior.</li>
+      <li>Use the Docker Compose dev server and inspect <code>http://localhost:18080/admin</code>.</li>
+      <li>Check browser console for JS errors after loading admin, switching global/profile tabs, and opening readiness sections.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Manual QA Checklist</h2>
+    <ul>
+      <li>Admin page title says “Admin” / localized equivalent, not “Settings”.</li>
+      <li>Global tabs and profile tabs are visually distinct.</li>
+      <li>All admin section content starts on a consistent left edge.</li>
+      <li>Clicking Refresh/Run buttons does not unexpectedly collapse a section.</li>
+      <li>The profile tab for <code>admin</code> and <code>mariia</code> sends schema-scoped requests correctly.</li>
+      <li>Readiness tools are findable under the active profile's <code>Readiness</code> sub-tab, not scattered across the page.</li>
+      <li>EnergyBank tools are findable under the active profile's <code>EnergyBank</code> sub-tab.</li>
+      <li>User table does not display full API keys by default.</li>
+      <li>An admin can explicitly reveal or copy a user's full API key when configuring an MCP server.</li>
+      <li>Desktop and mobile layouts do not overlap, overflow, or hide primary actions.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks and Edge Cases</h2>
+    <ul>
+      <li>Moving htmx targets can silently break fragment reloads if <code>hx-get</code> URLs are not updated with the active schema.</li>
+      <li>Masking API keys without a reveal path would break MCP setup workflows; this pass must include explicit key reveal/copy.</li>
+      <li>A new overview strip can become another noisy surface if it duplicates every diagnostic rather than summarizing states.</li>
+      <li>Legacy single-user mode is easy to miss because current dev data is multi-user.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <p>
+      The changes are limited to Go templates, CSS, i18n strings, UI handlers, and tests. Rollback is a normal git revert of the admin UI cleanup commit.
+      No database migrations or data backfills are planned.
+    </p>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Resolved: API keys must be revealable/copyable later, not only immediately after user creation.</li>
+      <li>Resolved: Readiness and EnergyBank should be separate profile sub-tabs.</li>
+      <li>Resolved: global AI settings should appear in single-user mode.</li>
+      <li>Resolved: admin session auth is sufficient for API key reveal/copy; no password confirmation is needed.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation Notes</h2>
+    <ul>
+      <li>Implemented on 2026-05-28 after approval in the current branch.</li>
+      <li>The admin page now has separate global and profile scope groups. Global contains admin user management and general AI settings; profiles contain tenant-scoped operational panels.</li>
+      <li>Each profile now has three sub-tabs: Diagnostics, Readiness, and EnergyBank. Readiness and EnergyBank controls were moved out of the general diagnostics flow.</li>
+      <li>Profile diagnostics now starts with a small operator overview linking to cache status, data gaps, quality audit, and check-in coverage.</li>
+      <li>Action buttons were moved out of section summaries where practical, and admin section content now uses shared left-aligned layout rules.</li>
+      <li>User API keys are masked in the default users table. A new admin-only reveal endpoint returns the full key for a selected user when an operator needs to configure MCP.</li>
+      <li>Global AI settings are rendered in the single-user path as well as the multi-user path; the JS loaders are guarded so absent controls do not crash older layouts.</li>
+      <li>The users table now has explicit table styles, mobile containment, and clipped API key display so revealing a long key does not stretch the admin page.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Checks Run</h2>
+    <ul>
+      <li><code>go test ./internal/ui</code> - passed.</li>
+      <li><code>go test ./internal/registry ./internal/tenants</code> - passed.</li>
+      <li><code>go test ./...</code> - passed.</li>
+      <li>Restarted dev container <code>health_processing-health-dev-1</code> and verified <code>GET /admin</code>, <code>GET /api/admin/users</code>, and <code>GET /api/admin/users/admin/api-key</code>.</li>
+      <li>Browser QA covered desktop admin load, global settings tab, profile Diagnostics/Readiness/EnergyBank tabs, explicit API key reveal, and console errors.</li>
+      <li>Mobile QA at 390px width found the users table overflow; CSS was updated so table overflow stays inside the users table container.</li>
+      <li>Mobile header QA at 390px width verified the burger menu opens without page-level horizontal overflow.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Known Limitations</h2>
+    <ul>
+      <li>The three-level tab structure is clearer than the previous mixed admin surface, but it still feels visually heavy. A later polish pass should consider a left rail or compact segmented scope control.</li>
+      <li>The mobile header was changed to a burger dropdown in this PR; a later polish pass can still refine the visual style, but the page-level horizontal overflow is gone.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval Gate</h2>
+    <p>
+      Approved by the user before implementation. This file has been updated with the actual implementation notes,
+      checks run, known limitations, and follow-up recommendations.
+    </p>
+  </section>
+</main>
+</body>
+</html>

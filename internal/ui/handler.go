@@ -162,6 +162,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/ai-models", h.adminGuard(h.adminAIModels))
 	mux.HandleFunc("/api/admin/energy-settings", h.adminGuard(h.adminEnergySettings))
 	mux.HandleFunc("/api/admin/stress-validation", h.adminGuard(h.adminStressValidation))
+	mux.HandleFunc("GET /api/admin/users/{username}/api-key", h.adminGuard(h.adminUserAPIKey))
 	mux.HandleFunc("/api/admin/users", h.adminGuard(h.adminUsers))
 	h.registerEnergyBackfillRoutes(mux)
 }
@@ -418,7 +419,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			w.WriteHeader(http.StatusUnauthorized)
-			renderPage(w, "login", struct{ Error string }{"Invalid password."})
+			renderPage(w, "login", loginPageData{Error: "Invalid password.", MultiUser: false})
 			return
 		}
 
@@ -427,7 +428,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		user, err := h.reg.GetByUsername(r.Context(), username)
 		if err != nil || subtle.ConstantTimeCompare([]byte(hash), []byte(user.PasswordHash)) != 1 {
 			w.WriteHeader(http.StatusUnauthorized)
-			renderPage(w, "login", struct{ Error string }{"Invalid username or password."})
+			renderPage(w, "login", loginPageData{Error: "Invalid username or password.", MultiUser: true})
 			return
 		}
 
@@ -441,10 +442,12 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	renderPage(w, "login", struct {
-		Error     string
-		MultiUser bool
-	}{"", !h.mgr.LegacyMode()})
+	renderPage(w, "login", loginPageData{MultiUser: !h.mgr.LegacyMode()})
+}
+
+type loginPageData struct {
+	Error     string
+	MultiUser bool
 }
 
 func (h *Handler) setup(w http.ResponseWriter, r *http.Request) {
@@ -671,6 +674,7 @@ func (h *Handler) pageAdmin(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		sortUsersForAdminTabs(users, data.CurrentSchema)
 		data.UserTabs = make([]adminUserTab, 0, len(users))
 		for _, u := range users {
 			data.UserTabs = append(data.UserTabs, adminUserTab{
@@ -683,6 +687,17 @@ func (h *Handler) pageAdmin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	renderPage(w, "admin", data)
+}
+
+func sortUsersForAdminTabs(users []registry.User, currentSchema string) {
+	sort.SliceStable(users, func(i, j int) bool {
+		iCurrent := users[i].SchemaName == currentSchema
+		jCurrent := users[j].SchemaName == currentSchema
+		if iCurrent != jCurrent {
+			return iCurrent
+		}
+		return false
+	})
 }
 
 type adminUserTab struct {
@@ -2823,15 +2838,50 @@ func (h *Handler) adminUsers(w http.ResponseWriter, r *http.Request) {
 	type safeUser struct {
 		Username   string `json:"username"`
 		SchemaName string `json:"schema_name"`
-		APIKey     string `json:"api_key"`
+		APIKey     string `json:"api_key_masked"`
 		Email      string `json:"email,omitempty"`
 		IsAdmin    bool   `json:"is_admin"`
 	}
 	out := make([]safeUser, len(users))
 	for i, u := range users {
-		out[i] = safeUser{u.Username, u.SchemaName, u.APIKey, u.Email, u.IsAdmin}
+		out[i] = safeUser{u.Username, u.SchemaName, maskAPIKey(u.APIKey), u.Email, u.IsAdmin}
 	}
 	jsonResponse(w, map[string]any{"users": out})
+}
+
+func (h *Handler) adminUserAPIKey(w http.ResponseWriter, r *http.Request) {
+	if h.reg == nil {
+		http.Error(w, "registry not available", http.StatusServiceUnavailable)
+		return
+	}
+	username := strings.TrimSpace(r.PathValue("username"))
+	if err := registry.ValidateUsername(username); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	user, err := h.reg.GetByUsername(r.Context(), username)
+	if errors.Is(err, registry.ErrUserNotFound) {
+		jsonError(w, "user not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+	jsonResponse(w, map[string]string{
+		"username": user.Username,
+		"api_key":  user.APIKey,
+	})
+}
+
+func maskAPIKey(key string) string {
+	if len(key) <= 8 {
+		return "********"
+	}
+	return "..." + key[len(key)-8:]
 }
 
 func jsonResponse(w http.ResponseWriter, v any) {

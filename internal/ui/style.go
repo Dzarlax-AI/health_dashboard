@@ -25,6 +25,13 @@ body { min-height: 100vh; font-size: 15px; }
 #top-bar-left { display: flex; align-items: center; gap: 10px; }
 #top-bar-left svg { color: var(--heart); }
 #top-bar-title { font-size: 17px; font-weight: 700; letter-spacing: -0.3px; }
+#top-menu-toggle {
+  display: none; align-items: center; justify-content: center;
+  width: 42px; height: 42px; border: 1px solid var(--border);
+  border-radius: var(--radius-xs); background: var(--surface);
+  color: var(--text-secondary); box-shadow: var(--shadow); cursor: pointer;
+}
+#top-menu-toggle:hover { background: var(--surface2); color: var(--text); }
 .top-btn {
   background: var(--surface); border: 1px solid var(--border); color: var(--text-secondary);
   padding: 8px 18px; border-radius: var(--radius-xs); cursor: pointer; font-size: 13px;
@@ -32,6 +39,7 @@ body { min-height: 100vh; font-size: 15px; }
   box-shadow: var(--shadow);
 }
 .top-btn:hover { background: var(--surface2); color: var(--text); }
+.top-admin-label { display: none; }
 #top-bar-right { display: flex; align-items: center; gap: 8px; }
 #top-bar-right::before { content: ''; display: block; }
 .lang-toggle {
@@ -769,7 +777,31 @@ select:focus, input[type=date]:focus { outline: none; border-color: var(--accent
 }
 @media (max-width: 480px) {
   #app { padding: 0 12px 40px; }
-  #top-bar { padding: 12px; }
+  #top-bar {
+    position: relative; padding: 12px; gap: 10px; flex-wrap: wrap;
+    align-items: center; max-width: none; width: 100%;
+  }
+  #top-bar-left { min-width: 0; flex: 1; }
+  #top-bar-left a { min-width: 0; }
+  #top-bar-left span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #top-menu-toggle { display: inline-flex; flex-shrink: 0; }
+  #top-bar-right {
+    display: none; position: absolute; z-index: 20; top: calc(100% - 4px); left: 12px; right: 12px;
+    flex-direction: column; align-items: stretch; gap: 6px; padding: 8px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: var(--shadow); max-width: calc(100vw - 24px);
+  }
+  #top-bar-right.open { display: flex; }
+  #top-bar-right::before { display: none; }
+  #top-bar-right .top-btn {
+    width: 100%; min-height: 40px; justify-content: flex-start; box-shadow: none;
+    border-radius: 6px; padding: 9px 12px;
+  }
+  .top-admin-label { display: inline; }
+  #top-bar-right .lang-toggle {
+    width: auto; display: inline-flex; justify-content: center; min-height: 32px;
+    padding: 6px 10px; margin-left: 0; border: 1px solid var(--border);
+  }
   #hero-section { padding: 22px 16px; }
   #readiness-score { font-size: 56px; letter-spacing: -2px; }
   #readiness-status { font-size: 18px; }
@@ -885,10 +917,19 @@ select:focus, input[type=date]:focus { outline: none; border-color: var(--accent
 #admin-header .back-btn:hover { text-decoration: underline; }
 #admin-header .view-title { font-size: 24px; font-weight: 800; letter-spacing: -0.5px; }
 #admin-loading { display: flex; justify-content: center; padding: 40px; }
-.admin-section { margin-bottom: 24px; }
-.admin-tabs {
-  display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 18px;
+.admin-section { margin-bottom: 14px; }
+.admin-scope-switcher {
+  display: flex; flex-direction: column; gap: 12px; margin: 0 0 18px;
 }
+.admin-scope-group {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+}
+.admin-scope-label {
+  width: 72px; flex: 0 0 72px;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--text-tertiary);
+}
+.admin-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 18px; }
 .admin-tab {
   border: 1px solid var(--border); background: var(--surface);
   color: var(--text-secondary); border-radius: 8px; padding: 8px 12px;
@@ -904,11 +945,74 @@ select:focus, input[type=date]:focus { outline: none; border-color: var(--accent
   color: var(--text-secondary); font-size: 13px;
 }
 .admin-scope-banner code { color: var(--text); }
+details.admin-section {
+  border: 1px solid var(--card-border); border-radius: 8px;
+  padding: 0; background: var(--card-bg); overflow: hidden;
+}
+details.admin-section > summary {
+  list-style: none; cursor: pointer; padding: 14px 44px 14px 16px;
+  display: flex; align-items: center; justify-content: flex-start;
+  gap: 8px; text-align: left; position: relative;
+}
+details.admin-section > summary.admin-section-header { margin-bottom: 0; }
+details.admin-section > summary::-webkit-details-marker { display: none; }
+details.admin-section > summary::before {
+  content: "›"; display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; color: var(--text-tertiary);
+  transition: transform 120ms ease;
+  position: absolute; right: 16px; top: 50%; margin-top: -9px;
+}
+details.admin-section > summary .section-title,
+details.admin-section > summary.section-title {
+  margin: 0; text-align: left;
+}
+details.admin-section > summary.admin-section-header .section-title {
+  flex: 1; min-width: 0;
+}
+details.admin-section[open] > summary::before { transform: rotate(90deg); }
+details.admin-section > summary + * { margin-top: 0; }
+details.admin-section[open] { padding-bottom: 16px; }
+details.admin-section[open] > :not(summary) { margin-left: 16px; margin-right: 16px; }
+.admin-section-actions {
+  display: flex; justify-content: flex-start; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.admin-profile-tabs {
+  display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 18px;
+  padding-bottom: 12px; border-bottom: 1px solid var(--card-border);
+}
+.admin-profile-tab {
+  border: 1px solid transparent; background: transparent;
+  color: var(--text-secondary); border-radius: 8px; padding: 7px 10px;
+  font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.admin-profile-tab:hover { background: var(--surface-2); color: var(--text); }
+.admin-profile-tab.active {
+  border-color: var(--accent); background: var(--surface-2); color: var(--text);
+}
+.admin-profile-panel[hidden] { display: none; }
+.admin-overview-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px; margin: 0 0 22px;
+}
+.admin-overview-card {
+  border: 1px solid var(--card-border); background: var(--card-bg);
+  border-radius: 8px; padding: 12px 14px; text-align: left;
+  cursor: pointer; color: var(--text); min-height: 78px;
+}
+.admin-overview-card:hover { border-color: var(--accent); background: var(--surface-2); }
+.admin-overview-card span {
+  display: block; font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--text-tertiary); margin-bottom: 6px;
+}
+.admin-overview-card strong {
+  display: block; font-size: 13px; line-height: 1.35; color: var(--text);
+}
 /* Admin page groups — added in the /admin reorg PR. Each group
    wraps related sections under one heading so the page scans as
    four concerns (Status, Operations, Configuration, Users) instead
    of nine flat sections. */
-.admin-group { margin-bottom: 40px; }
+.admin-group { margin-bottom: 34px; }
 .admin-group-header {
   font-size: 11px; font-weight: 700; letter-spacing: 1px;
   text-transform: uppercase; color: var(--text-tertiary);
@@ -916,10 +1020,6 @@ select:focus, input[type=date]:focus { outline: none; border-color: var(--accent
   border-bottom: 1px solid var(--card-border);
 }
 .admin-group-desc { font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; }
-/* Tenant selector at the top of the Operations group becomes the
-   single source of truth for every per-tenant action below it. */
-.admin-operations-scope { margin-bottom: 16px; }
-.admin-operations-scope .admin-field-row { margin-bottom: 0; }
 /* Onboarding wizard step cards. Each step is one row with a small
    numbered chip and a refresh / action button on the right. */
 .onboarding-step { border: 1px solid var(--card-border); border-radius: 12px; padding: 12px 14px; margin-bottom: 12px; background: var(--card-bg); }
@@ -981,7 +1081,7 @@ select:focus, input[type=date]:focus { outline: none; border-color: var(--accent
 .admin-actions { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
 .admin-action-card {
   background: var(--card-bg); border: 1px solid var(--card-border);
-  border-radius: 14px; padding: 18px 20px;
+  border-radius: 8px; padding: 18px 20px;
 }
 .admin-action-title { font-size: 15px; font-weight: 700; margin-bottom: 6px; }
 .admin-action-desc { font-size: 13px; color: var(--muted); margin-bottom: 14px; line-height: 1.5; }
@@ -1015,6 +1115,17 @@ select:focus, input[type=date]:focus { outline: none; border-color: var(--accent
 .admin-field-input:focus { border-color: var(--accent); }
 .admin-field-group-title { font-size: 12px; font-weight: 600; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 6px; }
 .admin-settings-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.admin-table { width: 100%; border-collapse: collapse; }
+.admin-table th,
+.admin-table td { padding: 10px 12px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+.admin-table th { color: var(--text-tertiary); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+#admin-users-table { max-width: 100%; overflow-x: auto; }
+#admin-users-table .admin-table { min-width: 640px; }
+#admin-users-table td:nth-child(3) { min-width: 210px; }
+.admin-api-key {
+  display: inline-block; max-width: min(340px, 58vw); overflow: hidden;
+  text-overflow: ellipsis; vertical-align: middle; font-size: 11px; margin-right: 8px;
+}
 .admin-import-body { display: flex; flex-direction: column; gap: 14px; }
 .admin-import-desc { font-size: 13px; color: var(--muted); }
 .admin-import-form { display: flex; flex-direction: column; gap: 10px; }
