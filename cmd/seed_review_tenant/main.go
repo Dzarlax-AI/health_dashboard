@@ -526,13 +526,13 @@ func syncDailyEnergySnapshots(ctx context.Context, pool *pgxpool.Pool, from, to 
 	tag, err := pool.Exec(ctx, `
 		UPDATE daily_scores ds
 		SET
-			energy_capacity = 100,
-			energy_eod_current = es.bank,
-			energy_drain = es.drain_delta,
+			energy_capacity = LEAST(GREATEST(es.bank, 0) + GREATEST(es.drain_delta, 0), 100),
+			energy_eod_current = LEAST(GREATEST(es.bank, 0), 100),
+			energy_drain = GREATEST(es.drain_delta, 0),
 			energy_verdict = CASE
-				WHEN es.bank <= 15 THEN 'rest'
-				WHEN es.bank <= 41 THEN 'active_recovery'
-				WHEN es.bank >= 55 THEN 'push_hard'
+				WHEN LEAST(GREATEST(es.bank, 0), 100) <= 15 THEN 'rest'
+				WHEN LEAST(GREATEST(es.bank, 0), 100) <= 41 THEN 'active_recovery'
+				WHEN LEAST(GREATEST(es.bank, 0), 100) >= 55 THEN 'push_hard'
 				ELSE 'moderate'
 			END,
 			computed_at = NOW()::TEXT
