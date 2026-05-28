@@ -532,7 +532,6 @@ func syncDailyEnergySnapshots(ctx context.Context, pool *pgxpool.Pool, from, to 
 			energy_verdict = CASE
 				WHEN LEAST(GREATEST(es.bank, 0), 100) <= 15 THEN 'rest'
 				WHEN LEAST(GREATEST(es.bank, 0), 100) <= 41 THEN 'active_recovery'
-				WHEN LEAST(GREATEST(es.bank, 0), 100) >= 55 THEN 'push_hard'
 				ELSE 'moderate'
 			END,
 			computed_at = NOW()::TEXT
