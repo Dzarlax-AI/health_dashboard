@@ -6,6 +6,9 @@
       <span>{{T .Lang "app_title"}}</span>
     </a>
   </div>
+  <button id="top-menu-toggle" type="button" aria-label="Menu" aria-expanded="false" aria-controls="top-bar-right" onclick="toggleTopMenu()">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>
+  </button>
   <div id="top-bar-right">
     <a href="/metrics" class="top-btn{{if eq .ActiveNav "metrics"}} active{{end}}">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -18,11 +21,21 @@
     {{if .IsAdmin}}
     <a href="/admin" class="top-btn{{if eq .ActiveNav "admin"}} active{{end}}" title="{{T .Lang "admin_title"}}">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      <span class="top-admin-label">{{T .Lang "admin_title"}}</span>
     </a>
     {{end}}
     {{range LangOptions .Lang}}
     <a href="?lang={{.Code}}" class="top-btn lang-toggle{{if .Active}} active{{end}}" onclick="document.cookie='lang={{.Code}};path=/;max-age=31536000'">{{.Label}}</a>
     {{end}}
   </div>
+  <script>
+    function toggleTopMenu() {
+      var nav = document.getElementById('top-bar-right');
+      var btn = document.getElementById('top-menu-toggle');
+      if (!nav || !btn) return;
+      var open = nav.classList.toggle('open');
+      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+  </script>
 </header>
 {{end}}

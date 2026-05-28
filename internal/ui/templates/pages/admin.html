@@ -10,11 +10,18 @@
   <div id="admin-content">
     <div id="admin-body">
       {{if .MultiUser}}
-      <div class="admin-tabs" role="tablist" aria-label="Admin scope">
-        <button type="button" class="admin-tab active" role="tab" aria-selected="true" data-admin-tab="general" onclick="switchAdminTab('general')">{{T .Lang "admin_tab_general"}}</button>
+      <div class="admin-scope-switcher">
+        <div class="admin-scope-group" role="tablist" aria-label="Global admin scope">
+          <div class="admin-scope-label">{{T .Lang "admin_scope_global"}}</div>
+          <button type="button" class="admin-tab active" role="tab" aria-selected="true" data-admin-tab="admin" onclick="switchAdminTab('admin')">{{T .Lang "admin_tab_admin"}}</button>
+          <button type="button" class="admin-tab" role="tab" aria-selected="false" data-admin-tab="settings" onclick="switchAdminTab('settings')">{{T .Lang "admin_tab_general"}}</button>
+        </div>
+        <div class="admin-scope-group" role="tablist" aria-label="Profile admin scope">
+          <div class="admin-scope-label">{{T .Lang "admin_scope_profiles"}}</div>
         {{range .UserTabs}}
-        <button type="button" class="admin-tab" role="tab" aria-selected="false" data-admin-tab="{{.SchemaName}}" data-admin-username="{{.Username}}" onclick="switchAdminTab('{{.SchemaName}}')">{{.Username}}</button>
+          <button type="button" class="admin-tab" role="tab" aria-selected="false" data-admin-tab="{{.SchemaName}}" data-admin-username="{{.Username}}" onclick="switchAdminTab('{{.SchemaName}}')">{{.Username}}</button>
         {{end}}
+        </div>
       </div>
       {{end}}
 
@@ -27,50 +34,85 @@
         <div>{{T .Lang "admin_user_scope_desc"}}</div>
       </div>
 
+      <div class="admin-profile-tabs" role="tablist" aria-label="Profile admin area">
+        <button type="button" class="admin-profile-tab active" data-profile-tab="diagnostics" onclick="switchProfileTab('diagnostics')">{{T .Lang "admin_profile_diagnostics"}}</button>
+        <button type="button" class="admin-profile-tab" data-profile-tab="readiness" onclick="switchProfileTab('readiness')">{{T .Lang "admin_profile_readiness"}}</button>
+        <button type="button" class="admin-profile-tab" data-profile-tab="energy" onclick="switchProfileTab('energy')">{{T .Lang "admin_profile_energy"}}</button>
+      </div>
+
+      <div class="admin-profile-panel" data-profile-panel="diagnostics">
+
       <!-- ============================================================ -->
-      <!-- GROUP A — STATUS                                              -->
+      <!-- GROUP A — DIAGNOSTICS                                         -->
       <!-- Read-only diagnostics. Each section has a refresh / run       -->
       <!-- button and renders results inline. No state mutation here.   -->
       <!-- ============================================================ -->
+      <div class="admin-overview-grid">
+        <button type="button" class="admin-overview-card" onclick="adminOpenSection('admin-cache-section')">
+          <span>{{T .Lang "admin_cache_status"}}</span>
+          <strong>{{T .Lang "admin_overview_cache_desc"}}</strong>
+        </button>
+        <button type="button" class="admin-overview-card" onclick="adminOpenSection('admin-gaps-section-wrap'); checkDataGaps()">
+          <span>{{T .Lang "admin_gaps_section_title"}}</span>
+          <strong>{{T .Lang "admin_overview_gaps_desc"}}</strong>
+        </button>
+        <button type="button" class="admin-overview-card" onclick="adminOpenSection('admin-quality-audit-section'); runQualityAudit()">
+          <span>{{T .Lang "admin_quality_title"}}</span>
+          <strong>{{T .Lang "admin_overview_quality_desc"}}</strong>
+        </button>
+        <button type="button" class="admin-overview-card" onclick="adminOpenSection('admin-checkin-section'); loadCheckinCoverage()">
+          <span>{{T .Lang "admin_checkin_coverage_title"}}</span>
+          <strong>{{T .Lang "admin_overview_checkin_desc"}}</strong>
+        </button>
+      </div>
+
       <div class="admin-group">
         <div class="admin-group-header">{{T .Lang "admin_group_status"}}</div>
 
         <!-- Cache status -->
-        <div class="admin-section">
-          <div class="admin-section-header">
+        <details class="admin-section" id="admin-cache-section" open>
+          <summary class="admin-section-header">
             <div class="section-title">{{T .Lang "admin_cache_status"}}</div>
+          </summary>
+          <div class="admin-section-actions">
             <button class="btn btn--secondary btn--small" hx-get="/fragments/admin-status" hx-target="#admin-cache-table" hx-swap="innerHTML">{{T .Lang "admin_refresh"}}</button>
           </div>
           <div id="admin-cache-table" hx-get="/fragments/admin-status" hx-trigger="load" hx-swap="innerHTML">
             <div class="spinner spinner--large"></div>
           </div>
-        </div>
+        </details>
 
         <!-- Data integrity (gaps) -->
-        <div class="admin-section">
-          <div class="admin-section-header">
+        <details class="admin-section" id="admin-gaps-section-wrap">
+          <summary class="admin-section-header">
             <div class="section-title">{{T .Lang "admin_gaps_section_title"}}</div>
+          </summary>
+          <div class="admin-section-actions">
             <button class="btn btn--secondary btn--small" onclick="checkDataGaps()">{{T .Lang "admin_gaps_check"}}</button>
           </div>
           <div id="admin-gaps-section"></div>
-        </div>
+        </details>
 
         <!-- Data quality audit -->
-        <div class="admin-section">
-          <div class="admin-section-header">
+        <details class="admin-section" id="admin-quality-audit-section">
+          <summary class="admin-section-header">
             <div class="section-title">{{T .Lang "admin_quality_title"}}</div>
+          </summary>
+          <div class="admin-section-actions">
             <button class="btn btn--secondary btn--small" onclick="runQualityAudit()">{{T .Lang "admin_quality_run"}}</button>
           </div>
           <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
             {{SafeHTML (T .Lang "admin_quality_audit_desc")}}
           </p>
           <div id="admin-quality-section"></div>
-        </div>
+        </details>
 
         <!-- Subjective check-in coverage -->
-        <div class="admin-section">
-          <div class="admin-section-header">
+        <details class="admin-section" id="admin-checkin-section">
+          <summary class="admin-section-header">
             <div class="section-title">{{T .Lang "admin_checkin_coverage_title"}}</div>
+          </summary>
+          <div class="admin-section-actions">
             <button class="btn btn--secondary btn--small" onclick="loadCheckinCoverage()">{{T .Lang "admin_refresh"}}</button>
           </div>
           <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
@@ -79,75 +121,11 @@
           <div id="admin-checkin-coverage-section">
             <div class="spinner spinner--large"></div>
           </div>
-        </div>
-
-        <!-- Stress validation rubric (STRESS_MEASUREMENT.md §4.5) -->
-        <div class="admin-section" id="admin-stress-validation-section">
-          <div class="section-title">{{T .Lang "admin_stress_validation_title"}}</div>
-          <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
-            {{T .Lang "admin_stress_validation_desc"}}
-          </p>
-          <div class="admin-settings-actions">
-            <button class="btn btn--primary btn--small" onclick="runStressValidation()">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="9"/><polyline points="9 11 12 14 17 8"/></svg>
-              {{T .Lang "admin_stress_validation_run"}}
-            </button>
-          </div>
-          <div id="admin-stress-validation-out" style="margin-top:12px"></div>
-
-          <details class="admin-help" style="margin-top:12px">
-            <summary style="cursor:pointer;color:var(--text-secondary);font-size:13px">
-              {{T .Lang "admin_help_summary"}}
-            </summary>
-            <div class="admin-help-body" style="margin-top:8px;font-size:13px;line-height:1.5;color:var(--text-secondary)">
-              {{SafeHTML (T .Lang "admin_stress_validation_help_html")}}
-            </div>
-          </details>
-        </div>
-
-        <!-- Readiness redesign — operational contract preview (§6.1) -->
-        <div class="admin-section">
-          <div class="admin-section-header">
-            <div class="section-title">{{T .Lang "admin_contract_title"}}</div>
-            <button class="btn btn--secondary btn--small"
-                    hx-get="/fragments/admin-readiness-contract?days=14"
-                    hx-target="#admin-readiness-contract-table"
-                    hx-swap="innerHTML">{{T .Lang "admin_refresh"}}</button>
-          </div>
-          <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
-            {{SafeHTML (T .Lang "admin_contract_desc")}}
-          </p>
-          <div id="admin-readiness-contract-table"
-               hx-get="/fragments/admin-readiness-contract?days=14"
-               hx-trigger="load, reload"
-               hx-swap="innerHTML">
-            <div class="spinner spinner--large"></div>
-          </div>
-        </div>
-
-        <!-- Readiness redesign — naive-layer monitoring (§6.4) -->
-        <div class="admin-section">
-          <div class="admin-section-header">
-            <div class="section-title">{{T .Lang "admin_monitoring_title"}}</div>
-            <button class="btn btn--secondary btn--small"
-                    hx-get="/fragments/admin-readiness-monitoring"
-                    hx-target="#admin-readiness-monitoring-table"
-                    hx-swap="innerHTML">{{T .Lang "admin_refresh"}}</button>
-          </div>
-          <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
-            {{T .Lang "admin_monitoring_desc"}}
-          </p>
-          <div id="admin-readiness-monitoring-table"
-               hx-get="/fragments/admin-readiness-monitoring"
-               hx-trigger="load, reload"
-               hx-swap="innerHTML">
-            <div class="spinner spinner--large"></div>
-          </div>
-        </div>
+        </details>
       </div>
 
       <!-- ============================================================ -->
-      <!-- GROUP B — OPERATIONS                                          -->
+      <!-- GROUP B — DATA MAINTENANCE                                    -->
       <!-- Per-tenant write actions. The active profile tab is the       -->
       <!-- source of truth for every action in this group; no action    -->
       <!-- below should read a different selector.                       -->
@@ -161,8 +139,8 @@
         {{end}}
 
         <!-- Cache backfill -->
-        <div class="admin-section">
-          <div class="section-title">{{T .Lang "admin_actions"}}</div>
+        <details class="admin-section">
+          <summary class="section-title">{{T .Lang "admin_actions"}}</summary>
           <div class="admin-actions">
             <div class="admin-action-card">
               <div class="admin-action-title">{{T .Lang "admin_incremental_title"}}</div>
@@ -182,32 +160,11 @@
             </div>
           </div>
           <div id="admin-msg" style="display:none"></div>
-        </div>
-
-        <!-- Readiness redesign operations -->
-        <div class="admin-section">
-          <div class="section-title">{{T .Lang "admin_ops_redesign_title"}}</div>
-          <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
-            {{SafeHTML (T .Lang "admin_ops_redesign_desc")}}
-          </p>
-          <div class="admin-actions">
-            <div class="admin-action-card">
-              <div class="admin-action-title">{{T .Lang "admin_chip_recompute_title"}}</div>
-              <div class="admin-action-desc">
-                {{SafeHTML (T .Lang "admin_chip_recompute_desc")}}
-              </div>
-              <button class="btn btn--primary btn--small" onclick="triggerChipCalibrationRecompute()">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-                {{T .Lang "admin_chip_recompute_btn"}}
-              </button>
-            </div>
-          </div>
-          <div id="admin-chip-calibration-msg" style="color:var(--text-secondary);font-size:12px;margin-top:12px"></div>
-        </div>
+        </details>
 
         <!-- Data quality maintenance -->
-        <div class="admin-section">
-          <div class="section-title">{{T .Lang "admin_quality_maintenance_title"}}</div>
+        <details class="admin-section">
+          <summary class="section-title">{{T .Lang "admin_quality_maintenance_title"}}</summary>
           <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
             {{SafeHTML (T .Lang "admin_quality_maintenance_desc")}}
           </p>
@@ -234,7 +191,78 @@
             </div>
           </div>
           <div id="admin-quality-msg" style="display:none;margin-top:8px"></div>
-        </div>
+        </details>
+      </div>
+      </div>
+
+      <div class="admin-profile-panel" data-profile-panel="readiness" hidden>
+      <div class="admin-group">
+        <div class="admin-group-header">{{T .Lang "admin_profile_readiness"}}</div>
+
+        <!-- Readiness redesign — operational contract preview (§6.1) -->
+        <details class="admin-section" open>
+          <summary class="admin-section-header">
+            <div class="section-title">{{T .Lang "admin_contract_title"}}</div>
+          </summary>
+          <div class="admin-section-actions">
+            <button class="btn btn--secondary btn--small"
+                    hx-get="/fragments/admin-readiness-contract?days=14"
+                    hx-target="#admin-readiness-contract-table"
+                    hx-swap="innerHTML">{{T .Lang "admin_refresh"}}</button>
+          </div>
+          <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
+            {{SafeHTML (T .Lang "admin_contract_desc")}}
+          </p>
+          <div id="admin-readiness-contract-table"
+               hx-get="/fragments/admin-readiness-contract?days=14"
+               hx-trigger="reload"
+               hx-swap="innerHTML">
+            <p class="onboarding-empty">{{T .Lang "admin_open_and_refresh"}}</p>
+          </div>
+        </details>
+
+        <!-- Readiness redesign — naive-layer monitoring (§6.4) -->
+        <details class="admin-section">
+          <summary class="admin-section-header">
+            <div class="section-title">{{T .Lang "admin_monitoring_title"}}</div>
+          </summary>
+          <div class="admin-section-actions">
+            <button class="btn btn--secondary btn--small"
+                    hx-get="/fragments/admin-readiness-monitoring"
+                    hx-target="#admin-readiness-monitoring-table"
+                    hx-swap="innerHTML">{{T .Lang "admin_refresh"}}</button>
+          </div>
+          <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
+            {{T .Lang "admin_monitoring_desc"}}
+          </p>
+          <div id="admin-readiness-monitoring-table"
+               hx-get="/fragments/admin-readiness-monitoring"
+               hx-trigger="reload"
+               hx-swap="innerHTML">
+            <p class="onboarding-empty">{{T .Lang "admin_open_and_refresh"}}</p>
+          </div>
+        </details>
+
+        <!-- Readiness redesign operations -->
+        <details class="admin-section">
+          <summary class="section-title">{{T .Lang "admin_ops_redesign_title"}}</summary>
+          <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
+            {{SafeHTML (T .Lang "admin_ops_redesign_desc")}}
+          </p>
+          <div class="admin-actions">
+            <div class="admin-action-card">
+              <div class="admin-action-title">{{T .Lang "admin_chip_recompute_title"}}</div>
+              <div class="admin-action-desc">
+                {{SafeHTML (T .Lang "admin_chip_recompute_desc")}}
+              </div>
+              <button class="btn btn--primary btn--small" onclick="triggerChipCalibrationRecompute()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                {{T .Lang "admin_chip_recompute_btn"}}
+              </button>
+            </div>
+          </div>
+          <div id="admin-chip-calibration-msg" style="color:var(--text-secondary);font-size:12px;margin-top:12px"></div>
+        </details>
 
         <!-- Readiness redesign onboarding wizard (§6.2 runbook). -->
         <details class="admin-section" id="admin-onboarding-section">
@@ -322,15 +350,35 @@
           </div>
         </details>
       </div>
+      </div>
 
-      <!-- ============================================================ -->
-      <!-- GROUP C — CONFIGURATION                                       -->
-      <!-- Persistent settings. Collapsed by default since these are    -->
-      <!-- "set and forget" — operator opens the relevant <details> on -->
-      <!-- the rare occasions when a knob actually needs changing.       -->
-      <!-- ============================================================ -->
+      <div class="admin-profile-panel" data-profile-panel="energy" hidden>
       <div class="admin-group">
-        <div class="admin-group-header">{{T .Lang "admin_group_configuration"}}</div>
+        <div class="admin-group-header">{{T .Lang "admin_profile_energy"}}</div>
+
+        <!-- Stress validation rubric (STRESS_MEASUREMENT.md §4.5) -->
+        <details class="admin-section" id="admin-stress-validation-section" open>
+          <summary class="section-title">{{T .Lang "admin_stress_validation_title"}}</summary>
+          <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
+            {{T .Lang "admin_stress_validation_desc"}}
+          </p>
+          <div class="admin-settings-actions">
+            <button class="btn btn--primary btn--small" onclick="runStressValidation()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="9"/><polyline points="9 11 12 14 17 8"/></svg>
+              {{T .Lang "admin_stress_validation_run"}}
+            </button>
+          </div>
+          <div id="admin-stress-validation-out" style="margin-top:12px"></div>
+
+          <details class="admin-help" style="margin-top:12px">
+            <summary style="cursor:pointer;color:var(--text-secondary);font-size:13px">
+              {{T .Lang "admin_help_summary"}}
+            </summary>
+            <div class="admin-help-body" style="margin-top:8px;font-size:13px;line-height:1.5;color:var(--text-secondary)">
+              {{SafeHTML (T .Lang "admin_stress_validation_help_html")}}
+            </div>
+          </details>
+        </details>
 
         <!-- v2.2 EnergyBank stress-drain settings.
              <details>/<summary> collapses the form by default — these knobs
@@ -377,8 +425,9 @@
         </details>
       </div>
       </div>
+      </div>
 
-      <div class="admin-tab-panel" data-admin-panel="general">
+      <div class="admin-tab-panel" data-admin-panel="settings" {{if .MultiUser}}hidden{{end}}>
         <div class="admin-scope-banner">
           {{T .Lang "admin_general_scope_desc"}}
         </div>
@@ -413,11 +462,16 @@
           <div id="admin-ai-msg" style="display:none"></div>
         </details>
       </div>
+      </div>
 
+      {{if .MultiUser}}
       <!-- ============================================================ -->
       <!-- GROUP D — USERS (multi-tenant admin only)                     -->
       <!-- ============================================================ -->
-      {{if .MultiUser}}
+      <div class="admin-tab-panel" data-admin-panel="admin">
+        <div class="admin-scope-banner">
+          {{T .Lang "admin_admin_scope_desc"}}
+        </div>
       <div class="admin-group">
         <div class="admin-group-header">{{T .Lang "admin_group_users"}}</div>
         <div class="admin-section">
@@ -432,6 +486,7 @@
                data-col-role="{{T .Lang "admin_users_col_role"}}"
                data-role-admin="{{T .Lang "admin_users_role_admin"}}"
                data-role-user="{{T .Lang "admin_users_role_user"}}"
+               data-action-reveal="{{T .Lang "admin_users_reveal_key"}}"
                data-empty="{{T .Lang "admin_users_empty"}}">
             <div class="spinner spinner--large"></div>
           </div>
@@ -462,6 +517,7 @@
                  data-msg-error-generic="{{T .Lang "admin_users_msg_error_generic"}}"></div>
           </div>
         </div>
+      </div>
       </div>
       {{end}}
       </div>
@@ -505,8 +561,6 @@ function refreshTenantPanel() {
   setTenantHTMX(activeAdminSchema ? ('?schema=' + encodeURIComponent(activeAdminSchema)) : '');
   if (window.htmx) {
     htmx.trigger('#admin-cache-table', 'load');
-    htmx.trigger('#admin-readiness-contract-table', 'reload');
-    htmx.trigger('#admin-readiness-monitoring-table', 'reload');
   }
   checkDataGaps();
   runQualityAudit();
@@ -514,8 +568,31 @@ function refreshTenantPanel() {
   loadEnergySettings();
 }
 
+function switchProfileTab(tab) {
+  document.querySelectorAll('[data-profile-tab]').forEach(function(btn) {
+    var active = btn.getAttribute('data-profile-tab') === tab;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  document.querySelectorAll('[data-profile-panel]').forEach(function(panel) {
+    panel.hidden = panel.getAttribute('data-profile-panel') !== tab;
+  });
+  if (tab === 'readiness' && window.htmx) {
+    htmx.trigger('#admin-readiness-contract-table', 'reload');
+    htmx.trigger('#admin-readiness-monitoring-table', 'reload');
+  }
+  if (tab === 'energy') loadEnergySettings();
+}
+
+function adminOpenSection(id) {
+  var el = $(id);
+  if (!el) return;
+  el.open = true;
+  el.scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
 function switchAdminTab(tab) {
-  activeAdminSchema = tab === 'general' ? '' : tab;
+  activeAdminSchema = (tab === 'admin' || tab === 'settings') ? '' : tab;
   document.querySelectorAll('[data-admin-tab]').forEach(function(btn) {
     var active = btn.getAttribute('data-admin-tab') === tab;
     btn.classList.toggle('active', active);
@@ -523,7 +600,11 @@ function switchAdminTab(tab) {
   });
   document.querySelectorAll('[data-admin-panel]').forEach(function(panel) {
     var panelName = panel.getAttribute('data-admin-panel');
-    panel.hidden = tab === 'general' ? panelName !== 'general' : panelName !== 'tenant';
+    if (tab === 'admin' || tab === 'settings') {
+      panel.hidden = panelName !== tab;
+    } else {
+      panel.hidden = panelName !== 'tenant';
+    }
   });
   var btn = document.querySelector('[data-admin-tab="' + activeAdminSchema + '"]');
   if (btn) {
@@ -532,7 +613,10 @@ function switchAdminTab(tab) {
     if (userLabel) userLabel.textContent = btn.getAttribute('data-admin-username') || btn.textContent || activeAdminSchema;
     if (schemaLabel) schemaLabel.textContent = activeAdminSchema;
   }
-  if (tab !== 'general') refreshTenantPanel();
+  if (activeAdminSchema) {
+    switchProfileTab('diagnostics');
+    refreshTenantPanel();
+  }
 }
 
 function triggerBackfill(force) {
@@ -613,8 +697,8 @@ function onboardingQuery(schema) {
 function onboardingRefreshStep(step) {
   var schema = onboardingSchema();
   // Empty schema is intentional — server falls back to request tenant
-  // (single-tenant mode, or the "Current" option in multi-tenant
-  // mode). Don't short-circuit on the client.
+  // (single-tenant mode, or a multi-tenant admin screen with no
+  // active profile tab). Don't short-circuit on the client.
   // step-4-plan renders into onboarding-step-4-body (without the
   // -plan suffix); the result of step-4-run also renders into the
   // same target.
@@ -646,8 +730,8 @@ function onboardingRunStep6() {
   var body = $('onboarding-step-6-body');
   var btn = $('onboarding-step-6-btn');
   // Empty schema → server uses request tenant. Same rationale as
-  // onboardingRefreshStep — don't block the legacy single-tenant
-  // and "Current" paths on the client.
+  // onboardingRefreshStep — don't block legacy single-tenant mode
+  // on the client.
   // Spam-click guard: bail if a request is already in flight (PR #116).
   if (btn && btn.disabled) return;
   if (btn) btn.disabled = true;
@@ -891,16 +975,23 @@ function runQualityDigest() {
 }
 
 function loadAdminSettings() {
+  var keyInput = $('cfg-gemini-key');
+  var tokenInput = $('cfg-gemini-max-tokens');
   fetch('/api/admin/settings')
     .then(function(r){return r.json()})
     .then(function(d) {
-      if (d.gemini_api_key) {
-        $('cfg-gemini-key').value = d.gemini_api_key;
+      if (d.gemini_api_key && keyInput) {
+        keyInput.value = d.gemini_api_key;
         loadGeminiModels(d.gemini_api_key, d.gemini_model || '');
       }
-      if (d.gemini_max_tokens) $('cfg-gemini-max-tokens').value = d.gemini_max_tokens;
+      if (d.gemini_max_tokens && tokenInput) tokenInput.value = d.gemini_max_tokens;
     });
-  loadEnergySettings();
+  if (tenantPanelVisible()) loadEnergySettings();
+}
+
+function tenantPanelVisible() {
+  var panel = document.querySelector('[data-admin-panel="tenant"]');
+  return !!panel && !panel.hidden;
 }
 
 function loadEnergySettings() {
@@ -1096,17 +1187,46 @@ function loadUsers() {
       var lblAdmin    = el.getAttribute('data-role-admin')   || 'admin';
       var lblUser     = el.getAttribute('data-role-user')    || 'user';
       var lblEmpty    = el.getAttribute('data-empty')        || 'No users yet.';
+      var lblReveal   = el.getAttribute('data-action-reveal') || 'Reveal';
       if (!users.length) {
         el.innerHTML = '<p style="color:var(--text-secondary);font-size:13px">' + escapeHtml(lblEmpty) + '</p>';
         return;
       }
       var rows = users.map(function(u) {
-        return '<tr><td>' + escapeHtml(u.username) + '</td><td>' + escapeHtml(u.email || '—') + '</td><td style="font-family:monospace;font-size:11px">' + escapeHtml(u.api_key) + '</td><td>' + (u.is_admin ? escapeHtml(lblAdmin) : escapeHtml(lblUser)) + '</td></tr>';
+        return '<tr><td>' + escapeHtml(u.username) + '</td><td>' + escapeHtml(u.email || '—') + '</td>'
+          + '<td><code id="api-key-' + escapeHtml(u.username) + '" class="admin-api-key">' + escapeHtml(u.api_key_masked || '—') + '</code> '
+          + '<button type="button" class="btn btn--secondary btn--small admin-btn--small" data-reveal-user="' + escapeHtml(u.username) + '">' + escapeHtml(lblReveal) + '</button></td>'
+          + '<td>' + (u.is_admin ? escapeHtml(lblAdmin) : escapeHtml(lblUser)) + '</td></tr>';
       }).join('');
       el.innerHTML = '<table class="admin-table"><thead><tr><th>' +
         escapeHtml(lblUsername) + '</th><th>' + escapeHtml(lblEmail) + '</th><th>' +
         escapeHtml(lblApiKey) + '</th><th>' + escapeHtml(lblRole) +
         '</th></tr></thead><tbody>' + rows + '</tbody></table>';
+      el.querySelectorAll('[data-reveal-user]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          revealAPIKey(btn.getAttribute('data-reveal-user') || '');
+        });
+      });
+    });
+}
+
+function revealAPIKey(username) {
+  fetch('/api/admin/users/' + encodeURIComponent(username) + '/api-key')
+    .then(function(r) {
+      if (!r.ok) return r.text().then(function(t){ throw new Error(t || 'Failed to reveal API key'); });
+      return r.json();
+    })
+    .then(function(d) {
+      var keyEl = $('api-key-' + username);
+      if (keyEl) keyEl.textContent = d.api_key || '';
+      if (navigator.clipboard && d.api_key) navigator.clipboard.writeText(d.api_key).catch(function(){});
+    })
+    .catch(function(e) {
+      var msg = $('admin-users-msg');
+      if (!msg) return;
+      msg.textContent = String(e.message || e);
+      msg.className = 'alert alert--danger';
+      msg.style.display = '';
     });
 }
 
@@ -1157,7 +1277,7 @@ function createUser() {
 
 document.addEventListener('DOMContentLoaded', function() {
   loadAdminSettings();
-  loadCheckinCoverage();
+  if (tenantPanelVisible()) loadCheckinCoverage();
   if ($('admin-users-table')) loadUsers();
 });
 </script>

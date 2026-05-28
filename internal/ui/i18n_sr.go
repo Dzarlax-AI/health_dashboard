@@ -22,7 +22,7 @@ var translationsSr = map[string]string{
 	"readiness_trend_label":      "7-dnevni trend",
 	"back":                       "Nazad",
 	"compare":                    "Uporedi",
-	"all_metrics":                "Sve metrike",
+	"all_metrics":                "Metrike",
 	"nav_settings":               "Podešavanja",
 	"your_trends":                "Vaši trendovi",
 	"search_placeholder":         "Pretraži metrike...",
@@ -399,10 +399,13 @@ var translationsSr = map[string]string{
 	"admin_import_running":   "Uvoz u toku…",
 
 	"admin_tab_general":        "Opšta podešavanja",
+	"admin_tab_admin":          "Admin",
 	"admin_tab_current_user":   "Trenutni korisnik",
 	"admin_user_scope_label":   "Opseg korisnika",
 	"admin_user_scope_desc":    "Radnje u ovoj kartici utiču samo na tenant šemu ovog korisnika.",
 	"admin_general_scope_desc": "Ova podešavanja utiču na celu Health Dashboard instalaciju.",
+	"admin_admin_scope_desc":   "Upravljanje korisnicima za celu Health Dashboard instalaciju.",
+	"admin_open_and_refresh":   "Otvori ovu sekciju i klikni Osveži da učitaš tabelu.",
 
 	"admin_contract_window_label":  "Prozor",
 	"admin_contract_window_suffix": "lokalna TZ tenanta",
