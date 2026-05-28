@@ -1,0 +1,854 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Health Product Roadmap</title>
+  <link rel="icon" href="data:,">
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f8;
+      --ink: #1f2933;
+      --muted: #64707d;
+      --line: #d7dde3;
+      --panel: #ffffff;
+      --panel-soft: #f9fafb;
+      --green: #2f7d57;
+      --blue: #286db6;
+      --amber: #a15c12;
+      --red: #b33a3a;
+      --gray: #697386;
+      --purple: #7453a6;
+      --shadow: 0 1px 3px rgba(31, 41, 51, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.45;
+    }
+
+    main {
+      width: min(1480px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 28px 0 40px;
+    }
+
+    header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 24px;
+      align-items: end;
+      margin-bottom: 22px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 30px;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: 15px;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 0;
+    }
+
+    .subtitle {
+      max-width: 920px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .date-pill {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 13px;
+      color: var(--muted);
+      box-shadow: var(--shadow);
+      white-space: nowrap;
+    }
+
+    .north-star {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+
+    .vision,
+    .outcomes {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 16px;
+      box-shadow: var(--shadow);
+    }
+
+    .eyebrow {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .vision strong {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 22px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    .vision p,
+    .outcomes p {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .outcomes ul,
+    .value-card ul {
+      margin: 10px 0 0;
+      padding-left: 18px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .outcomes li,
+    .value-card li {
+      margin-bottom: 6px;
+    }
+
+    .value-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+
+    .value-card {
+      min-height: 156px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 12px;
+      box-shadow: var(--shadow);
+    }
+
+    .value-card h2 {
+      margin-bottom: 7px;
+    }
+
+    .stages {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 18px;
+    }
+
+    .stage {
+      min-height: 104px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 12px;
+      box-shadow: var(--shadow);
+    }
+
+    .stage-num {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      margin-bottom: 8px;
+      border-radius: 999px;
+      background: var(--ink);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .stage strong {
+      display: block;
+      margin-bottom: 5px;
+      font-size: 13px;
+    }
+
+    .stage span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .principles {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      margin: 0 0 18px;
+    }
+
+    .principle {
+      min-height: 86px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 12px;
+      box-shadow: var(--shadow);
+    }
+
+    .principle strong {
+      display: block;
+      margin-bottom: 5px;
+      font-size: 13px;
+    }
+
+    .principle span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .progress-board {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      margin-bottom: 18px;
+      overflow: hidden;
+    }
+
+    .progress-title {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel-soft);
+    }
+
+    .progress-title span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+    }
+
+    .status-cell {
+      min-height: 108px;
+      padding: 12px;
+      border-right: 1px solid var(--line);
+    }
+
+    .status-cell:last-child {
+      border-right: 0;
+    }
+
+    .lane-label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+      font-weight: 700;
+      font-size: 13px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      color: #fff;
+      white-space: nowrap;
+    }
+
+    .stable { background: var(--green); }
+    .active { background: var(--blue); }
+    .blocked { background: var(--red); }
+    .queued { background: var(--gray); }
+    .gated { background: var(--amber); }
+    .parked { background: var(--purple); }
+
+    .status-cell p {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .dependency {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 18px;
+    }
+
+    .dependency-step {
+      position: relative;
+      min-height: 88px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 12px;
+      box-shadow: var(--shadow);
+    }
+
+    .dependency-step:not(:last-child)::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      right: -8px;
+      width: 8px;
+      border-top: 2px solid var(--line);
+    }
+
+    .dependency-step strong {
+      display: block;
+      margin-bottom: 5px;
+      font-size: 13px;
+    }
+
+    .dependency-step span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .swimlanes {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(220px, 1fr));
+      gap: 10px;
+      align-items: start;
+    }
+
+    .lane {
+      min-width: 0;
+      border: 1px solid var(--line);
+      background: var(--panel-soft);
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+
+    .lane-header {
+      min-height: 84px;
+      padding: 12px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    .lane-header h2 {
+      margin-bottom: 6px;
+    }
+
+    .lane-header p {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .cards {
+      display: grid;
+      gap: 8px;
+      padding: 10px;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 10px;
+    }
+
+    .card-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 7px;
+    }
+
+    .card-type {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .task-id {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 2px 6px;
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      font-size: 10px;
+      white-space: nowrap;
+    }
+
+    .card h3 {
+      margin: 0 0 6px;
+      font-size: 13px;
+      line-height: 1.3;
+      letter-spacing: 0;
+    }
+
+    .card p {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .field {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--line);
+    }
+
+    .field strong {
+      display: block;
+      margin-bottom: 3px;
+      color: var(--ink);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .field span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .card.now { border-left: 4px solid var(--blue); }
+    .card.next { border-left: 4px solid var(--green); }
+    .card.blocked-card { border-left: 4px solid var(--red); }
+    .card.gated-card { border-left: 4px solid var(--amber); }
+    .card.parked-card { border-left: 4px solid var(--purple); }
+
+    footer {
+      margin-top: 18px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    @media (max-width: 1180px) {
+      .principles {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .north-star,
+      .value-grid,
+      .stages {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .status-grid,
+      .swimlanes {
+        grid-template-columns: repeat(3, minmax(220px, 1fr));
+      }
+
+      .dependency {
+        grid-template-columns: 1fr;
+      }
+
+      .dependency-step:not(:last-child)::after {
+        display: none;
+      }
+    }
+
+    @media (max-width: 760px) {
+      main {
+        width: min(100vw - 20px, 680px);
+        padding-top: 18px;
+      }
+
+      header {
+        grid-template-columns: 1fr;
+        gap: 12px;
+      }
+
+      .principles,
+      .north-star,
+      .value-grid,
+      .stages,
+      .status-grid,
+      .swimlanes {
+        grid-template-columns: 1fr;
+      }
+
+      .status-cell {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .status-cell:last-child {
+        border-bottom: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>Health Product Roadmap</h1>
+        <p class="subtitle">
+          Product-level coordination for Health: what is unreliable today, what
+          user value each stream creates, and what the system should become.
+          Todoist remains the execution log for concrete tasks.
+        </p>
+      </div>
+      <div class="date-pill">Status date: 2026-05-28</div>
+    </header>
+
+    <section class="north-star" aria-label="North star and outcomes">
+      <div class="vision">
+        <span class="eyebrow">North star</span>
+        <strong>Health becomes a personal decision layer, not only a metric dashboard.</strong>
+        <p>
+          The product should answer practical daily questions: can I push today,
+          should I recover, is my energy actually depleted, are the signals fresh
+          enough to trust, and did the recommendation match how I felt later?
+        </p>
+      </div>
+      <div class="outcomes">
+        <span class="eyebrow">What we get when this roadmap lands</span>
+        <ul>
+          <li>Readiness says fresh, stale, or low-confidence instead of pretending all inputs are equal.</li>
+          <li>EnergyBank is a separate user-facing capacity indicator with calibrated verdicts.</li>
+          <li>Feature candidates only ship when they beat naive baselines on real tenant data.</li>
+          <li>Subjective check-ins become a validation loop, not a premature auto-tuning system.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="value-grid" aria-label="Current value gaps">
+      <div class="value-card">
+        <span class="eyebrow">Gap 1</span>
+        <h2>Data can be accepted but not trusted yet</h2>
+        <p class="subtitle">Raw ingest is safe, but async derived writes still need a clear failure/reconciliation story.</p>
+        <ul>
+          <li>User risk: dashboard and recommendations can lag behind reality.</li>
+          <li>Value target: Health knows when derived data is complete.</li>
+        </ul>
+      </div>
+      <div class="value-card">
+        <span class="eyebrow">Gap 2</span>
+        <h2>Readiness lacks a serving contract</h2>
+        <p class="subtitle">Targets and features exist, but freshness, backfill, and source-epoch behavior are not yet productized.</p>
+        <ul>
+          <li>User risk: a score looks authoritative when inputs are stale.</li>
+          <li>Value target: readiness includes trust state, not just a number.</li>
+        </ul>
+      </div>
+      <div class="value-card">
+        <span class="eyebrow">Gap 3</span>
+        <h2>EnergyBank is useful but not fully calibrated</h2>
+        <p class="subtitle">It is a separate capacity signal, but v2 verdict thresholds still need distribution evidence.</p>
+        <ul>
+          <li>User risk: the label may be too aggressive or too cautious.</li>
+          <li>Value target: energy verdicts match real depletion and recovery patterns.</li>
+        </ul>
+      </div>
+      <div class="value-card">
+        <span class="eyebrow">Gap 4</span>
+        <h2>Feature search can overfit noise</h2>
+        <p class="subtitle">§6.5 is tempting, but without monitoring it can promote clever-looking false signal.</p>
+        <ul>
+          <li>User risk: recommendations change for reasons we cannot defend.</li>
+          <li>Value target: every promoted feature beats a simple baseline.</li>
+        </ul>
+      </div>
+      <div class="value-card">
+        <span class="eyebrow">Gap 5</span>
+        <h2>Feedback is sparse</h2>
+        <p class="subtitle">Subjective check-ins are the right outcome layer, but the data is not mature enough yet.</p>
+        <ul>
+          <li>User risk: tuning against too few labels bakes in randomness.</li>
+          <li>Value target: recommendations improve against real felt outcomes.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="stages" aria-label="Roadmap stages">
+      <div class="stage">
+        <span class="stage-num">1</span>
+        <strong>Trust the data</strong>
+        <span>Ingest, derived writes, and reconciliation are observable and recoverable.</span>
+      </div>
+      <div class="stage">
+        <span class="stage-num">2</span>
+        <strong>Trust the serving layer</strong>
+        <span>Readiness and EnergyBank expose freshness, confidence, and source-change behavior.</span>
+      </div>
+      <div class="stage">
+        <span class="stage-num">3</span>
+        <strong>Trust the recommendations</strong>
+        <span>Verdicts and feature candidates are calibrated against baselines and distributions.</span>
+      </div>
+      <div class="stage">
+        <span class="stage-num">4</span>
+        <strong>Personalize with feedback</strong>
+        <span>Subjective answers validate or challenge the model after enough labels exist.</span>
+      </div>
+    </section>
+
+    <section class="principles" aria-label="Operating principles">
+      <div class="principle">
+        <strong>Evidence before behavior</strong>
+        <span>Promote scoring changes only after they beat the current baseline on real data.</span>
+      </div>
+      <div class="principle">
+        <strong>Baseline before features</strong>
+        <span>Freshness, serving, backfill, and monitoring come before richer predictors.</span>
+      </div>
+      <div class="principle">
+        <strong>Missingness is visible</strong>
+        <span>Show freshness and confidence states instead of silently implying certainty.</span>
+      </div>
+      <div class="principle">
+        <strong>Verify on Postgres</strong>
+        <span>Use real database checks before treating a Health hypothesis as actionable.</span>
+      </div>
+      <div class="principle">
+        <strong>Todoist is execution</strong>
+        <span>This file explains ordering; Todoist owns concrete open tasks.</span>
+      </div>
+    </section>
+
+    <section class="progress-board" aria-label="Stream progress">
+      <div class="progress-title">
+        <h2>Stream Progress</h2>
+        <span>Discrete status only; no fabricated completion percentages.</span>
+      </div>
+      <div class="status-grid">
+        <div class="status-cell">
+          <div class="lane-label">Reliability <span class="badge active">Now</span></div>
+          <p>Ingest/data-integrity investigation is the first blocker to clear.</p>
+        </div>
+        <div class="status-cell">
+          <div class="lane-label">Readiness <span class="badge active">In progress</span></div>
+          <p>Phase 0/1 and calibration shipped; serving/freshness is next.</p>
+        </div>
+        <div class="status-cell">
+          <div class="lane-label">EnergyBank <span class="badge gated">Data gated</span></div>
+          <p>Cutover and cleanup depend on enough v2 history and stability.</p>
+        </div>
+        <div class="status-cell">
+          <div class="lane-label">Subjective <span class="badge gated">Data gated</span></div>
+          <p>Validation waits for at least 30 answered check-in days.</p>
+        </div>
+        <div class="status-cell">
+          <div class="lane-label">Security/Ops <span class="badge queued">Queued</span></div>
+          <p>Auth hardening is important, but should not interrupt the current baseline work.</p>
+        </div>
+        <div class="status-cell">
+          <div class="lane-label">Tests <span class="badge active">In progress</span></div>
+          <p>CI already runs go test; next value is focused coverage around active streams.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="dependency" aria-label="Critical dependency chain">
+      <div class="dependency-step">
+        <strong>1. Fix ingest risk</strong>
+        <span>Investigate postgres conn closed on async health inserts.</span>
+      </div>
+      <div class="dependency-step">
+        <strong>2. Ship Readiness §6.3</strong>
+        <span>Serving/freshness orchestrator, restamp, source epoch handling, tests.</span>
+      </div>
+      <div class="dependency-step">
+        <strong>3. Consolidate monitoring</strong>
+        <span>Coverage, drift, missingness, and freshness against the naive layer.</span>
+      </div>
+      <div class="dependency-step">
+        <strong>4. Reopen §6.5 carefully</strong>
+        <span>Only with a new predeclared hypothesis and stop rule.</span>
+      </div>
+      <div class="dependency-step">
+        <strong>5. Promote product behavior</strong>
+        <span>Only after the candidate beats the baseline across tenant checks.</span>
+      </div>
+    </section>
+
+    <section class="swimlanes" aria-label="Roadmap swimlanes">
+      <article class="lane">
+        <div class="lane-header">
+          <h2>Data Trust</h2>
+          <p>User value: the app knows whether its health facts are complete enough to act on.</p>
+        </div>
+        <div class="cards">
+          <div class="card now">
+            <div class="card-top"><span class="card-type">Now</span><span class="task-id">6gQgp9hMV2q63XM7</span></div>
+            <h3>Investigate postgres conn closed on health inserts</h3>
+            <p>Raw rows are safe, but background metric parsing may silently miss metric_points until backfill.</p>
+            <div class="field"><strong>Done means</strong><span>We know whether this is timeout, proxy, pool, or goroutine behavior, and we either retry or reconcile.</span></div>
+          </div>
+          <div class="card next">
+            <div class="card-top"><span class="card-type">Next</span></div>
+            <h3>Decide retry or reconciliation path</h3>
+            <p>Pick based on DB timeout/proxy evidence, not static assumptions.</p>
+            <div class="field"><strong>User outcome</strong><span>No silent gap between accepted health export and dashboard/recommendation state.</span></div>
+          </div>
+        </div>
+      </article>
+
+      <article class="lane">
+        <div class="lane-header">
+          <h2>Readiness</h2>
+          <p>User value: a defensible daily recovery signal with visible freshness and confidence.</p>
+        </div>
+        <div class="cards">
+          <div class="card now">
+            <div class="card-top"><span class="card-type">Now</span><span class="task-id">6gjXHq5q9rhjmCj7</span></div>
+            <h3>§6.3 serving/freshness operational baseline</h3>
+            <p>Writer orchestration, incremental backfill hook, daily restamp, source_epoch_change, and tests.</p>
+            <div class="field"><strong>Problem</strong><span>A score without freshness semantics can look precise when inputs changed or lagged.</span></div>
+            <div class="field"><strong>Done means</strong><span>Readiness can serve value, stale state, low-confidence state, and source-change context consistently.</span></div>
+          </div>
+          <div class="card next">
+            <div class="card-top"><span class="card-type">Next</span></div>
+            <h3>Monitoring consolidation</h3>
+            <p>Make coverage, drift, missingness, and freshness visible before judging new candidates.</p>
+            <div class="field"><strong>User outcome</strong><span>Recommendations are backed by a monitored signal, not one-off analysis.</span></div>
+          </div>
+          <div class="card blocked-card">
+            <div class="card-top"><span class="card-type">Blocked</span><span class="task-id">6gg6Vf7pc9Vjx3Wf</span></div>
+            <h3>§6.5 sleep architecture features</h3>
+            <p>Current probe is no-go. Reopen only after §6.3/§6.4 with a new hypothesis and stop rule.</p>
+            <div class="field"><strong>Why blocked</strong><span>The current feature family does not yet improve the user's recovery signal versus the simple baseline.</span></div>
+          </div>
+        </div>
+      </article>
+
+      <article class="lane">
+        <div class="lane-header">
+          <h2>EnergyBank</h2>
+          <p>User value: a separate capacity indicator for “how much can I spend today?”</p>
+        </div>
+        <div class="cards">
+          <div class="card now">
+            <div class="card-top"><span class="card-type">Now</span><span class="task-id">6gf7F5PRH9gPx5w7</span></div>
+            <h3>TestBankConvergence CI guard</h3>
+            <p>Pin bootstrap convergence so alpha/beta tuning cannot regress silently.</p>
+            <div class="field"><strong>Problem</strong><span>If the bank drifts from tuning changes, the user sees capacity changes that are model artifacts.</span></div>
+          </div>
+          <div class="card gated-card">
+            <div class="card-top"><span class="card-type">Data gated</span><span class="task-id">6gc2R6692674v3Gf</span></div>
+            <h3>Final v2 cutover and verdict retune</h3>
+            <p>Requires enough v2 snapshot history to compare distributions and adjust thresholds honestly.</p>
+            <div class="field"><strong>Done means</strong><span>EnergyBank verdicts are calibrated against real bank distribution, not copied from readiness thresholds.</span></div>
+          </div>
+          <div class="card gated-card">
+            <div class="card-top"><span class="card-type">Stability gated</span><span class="task-id">6gXwvQ4w835JV76f</span></div>
+            <h3>Cleanup v1 code and finalize docs</h3>
+            <p>Only after one to two stable weeks after the v2 cutover.</p>
+            <div class="field"><strong>User outcome</strong><span>One clear energy signal remains, with less duplicated logic and fewer conflicting explanations.</span></div>
+          </div>
+        </div>
+      </article>
+
+      <article class="lane">
+        <div class="lane-header">
+          <h2>Subjective Validation</h2>
+          <p>User value: close the loop between what the system predicts and how the user actually feels.</p>
+        </div>
+        <div class="cards">
+          <div class="card gated-card">
+            <div class="card-top"><span class="card-type">Data gated</span><span class="task-id">6ggCQ5RJwgM2rwff</span></div>
+            <h3>Validation report</h3>
+            <p>Wait for at least 30 answered days, then compare readiness, energy, stress flags, and answers.</p>
+            <div class="field"><strong>Done means</strong><span>We know which product signals correlate with felt state, and which ones should stay descriptive.</span></div>
+          </div>
+          <div class="card parked-card">
+            <div class="card-top"><span class="card-type">Not in scope</span></div>
+            <h3>No automatic threshold tuning yet</h3>
+            <p>Default decision after the report is no score change unless the signal is strong and reviewed.</p>
+            <div class="field"><strong>Why</strong><span>Sparse labels are useful for validation, but dangerous as an automatic calibration source.</span></div>
+          </div>
+        </div>
+      </article>
+
+      <article class="lane">
+        <div class="lane-header">
+          <h2>Security/Ops</h2>
+          <p>User value: the dashboard remains safe and operable while product signals mature.</p>
+        </div>
+        <div class="cards">
+          <div class="card next">
+            <div class="card-top"><span class="card-type">Queued</span><span class="task-id">6gfX7qr8CrWvwx9f</span></div>
+            <h3>Password and session rewrite</h3>
+            <p>Bcrypt password hashes and opaque session IDs after the current readiness baseline settles.</p>
+            <div class="field"><strong>Done means</strong><span>A leaked database hash is not also a reusable browser session.</span></div>
+          </div>
+          <div class="card parked-card">
+            <div class="card-top"><span class="card-type">Parked</span><span class="task-id">6gc2gh9HrPJjXjw7</span></div>
+            <h3>Shutdown flush for snapshot goroutine</h3>
+            <p>Operational cleanup; keep below ingest reliability and scoring baseline work.</p>
+            <div class="field"><strong>Why parked</strong><span>Useful hardening, but lower user impact than current data trust gaps.</span></div>
+          </div>
+        </div>
+      </article>
+
+      <article class="lane">
+        <div class="lane-header">
+          <h2>Tests</h2>
+          <p>User value: prevent silent regressions in the signals that drive daily guidance.</p>
+        </div>
+        <div class="cards">
+          <div class="card now">
+            <div class="card-top"><span class="card-type">Now</span><span class="task-id">6gXx28jj8fMPMfvf</span></div>
+            <h3>i18n smoke</h3>
+            <p>Catch missing en/ru/sr keys with a cheap CI test.</p>
+            <div class="field"><strong>Done means</strong><span>New report/dashboard copy cannot ship in one language while silently missing in another.</span></div>
+          </div>
+          <div class="card next">
+            <div class="card-top"><span class="card-type">Next</span><span class="task-id">6gXx28R8VmMPX8wf</span></div>
+            <h3>internal/health pure math tests</h3>
+            <p>Score, readiness, energy, sleep, cardio, activity, and alert invariants.</p>
+            <div class="field"><strong>User outcome</strong><span>Formula changes surface as deliberate diffs instead of accidental behavior changes.</span></div>
+          </div>
+          <div class="card next">
+            <div class="card-top"><span class="card-type">Next</span><span class="task-id">6gXx294gxC5R3P9f</span></div>
+            <h3>Apple Health parser fixture</h3>
+            <p>Protect HK mapping, percentage normalization, sleep expansion, and XML edge cases.</p>
+            <div class="field"><strong>User outcome</strong><span>Imports preserve the meaning of sensor data before it reaches scoring.</span></div>
+          </div>
+          <div class="card parked-card">
+            <div class="card-top"><span class="card-type">Policy follow-up</span><span class="task-id">6gXx27hCrmF558Rf</span></div>
+            <h3>Race detector / branch protection</h3>
+            <p>CI already runs go test; decide separately whether CGO=1 race coverage is worth the cost.</p>
+            <div class="field"><strong>Why separate</strong><span>This is CI policy, not the next missing product guardrail.</span></div>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <footer>
+      Source of truth: this file explains dependency order; Todoist owns task state.
+      Update both when a roadmap decision changes execution order.
+    </footer>
+  </main>
+</body>
+</html>
