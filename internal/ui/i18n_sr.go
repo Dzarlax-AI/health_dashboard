@@ -406,6 +406,17 @@ var translationsSr = map[string]string{
 	"admin_general_scope_desc": "Ova podešavanja utiču na celu Health Dashboard instalaciju.",
 	"admin_admin_scope_desc":   "Upravljanje korisnicima za celu Health Dashboard instalaciju.",
 	"admin_open_and_refresh":   "Otvori ovu sekciju i klikni Osveži da učitaš tabelu.",
+	"admin_users_reveal_key":   "Prikaži",
+
+	"admin_scope_global":          "Globalno",
+	"admin_scope_profiles":        "Profili",
+	"admin_profile_diagnostics":   "Dijagnostika",
+	"admin_profile_readiness":     "Readiness",
+	"admin_profile_energy":        "EnergyBank",
+	"admin_overview_cache_desc":   "Sinhronizacija i svežina keša",
+	"admin_overview_gaps_desc":    "Proveri dane koji nedostaju u ingestu",
+	"admin_overview_quality_desc": "Pregled impossible/suspect tačaka",
+	"admin_overview_checkin_desc": "Pokrivenost jutarnjih Telegram check-in pitanja",
 
 	"admin_contract_window_label":  "Prozor",
 	"admin_contract_window_suffix": "lokalna TZ tenanta",

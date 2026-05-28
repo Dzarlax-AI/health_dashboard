@@ -1172,11 +1172,14 @@ function saveAISettings() {
 }
 
 function loadUsers() {
+  var el = $('admin-users-table');
+  if (!el) return;
   fetch('/api/admin/users')
-    .then(function(r){return r.json()})
+    .then(function(r){
+      if (!r.ok) return r.text().then(function(t){ throw new Error(t || 'Failed to load users'); });
+      return r.json();
+    })
     .then(function(d) {
-      var el = $('admin-users-table');
-      if (!el) return;
       var users = d.users || [];
       // Pull localized labels from data-* attributes so this loop
       // stays language-agnostic — the template fills the attrs once.
@@ -1207,6 +1210,10 @@ function loadUsers() {
           revealAPIKey(btn.getAttribute('data-reveal-user') || '');
         });
       });
+    })
+    .catch(function(e) {
+      console.error('loadUsers failed', e);
+      el.innerHTML = '<div class="alert alert--danger">' + escapeHtml(String(e.message || e)) + '</div>';
     });
 }
 

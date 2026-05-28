@@ -344,10 +344,11 @@
     <ul>
       <li><code>go test ./internal/ui</code> - passed.</li>
       <li><code>go test ./internal/registry ./internal/tenants</code> - passed.</li>
-      <li><code>go test ./...</code> - passed before the final mobile-table CSS polish; final full-suite rerun is still required before completion.</li>
+      <li><code>go test ./...</code> - passed.</li>
       <li>Restarted dev container <code>health_processing-health-dev-1</code> and verified <code>GET /admin</code>, <code>GET /api/admin/users</code>, and <code>GET /api/admin/users/admin/api-key</code>.</li>
       <li>Browser QA covered desktop admin load, global settings tab, profile Diagnostics/Readiness/EnergyBank tabs, explicit API key reveal, and console errors.</li>
       <li>Mobile QA at 390px width found the users table overflow; CSS was updated so table overflow stays inside the users table container.</li>
+      <li>Mobile header QA at 390px width verified the burger menu opens without page-level horizontal overflow.</li>
     </ul>
   </section>
 
@@ -355,8 +356,7 @@
     <h2>Known Limitations</h2>
     <ul>
       <li>The three-level tab structure is clearer than the previous mixed admin surface, but it still feels visually heavy. A later polish pass should consider a left rail or compact segmented scope control.</li>
-      <li>The mobile header still has pre-existing horizontal overflow outside the admin content. This pass did not change the global header/navigation.</li>
-      <li>Serbian labels for newly added admin grouping strings currently fall back through the existing i18n behavior rather than adding a full Serbian translation pass.</li>
+      <li>The mobile header was changed to a burger dropdown in this PR; a later polish pass can still refine the visual style, but the page-level horizontal overflow is gone.</li>
     </ul>
   </section>
 

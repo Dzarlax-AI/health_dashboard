@@ -52,3 +52,10 @@ func TestMaskAPIKeyDoesNotExposeShortKeys(t *testing.T) {
 		t.Fatalf("maskAPIKey(short) = %q, want full mask", got)
 	}
 }
+
+func TestMaskAPIKeyEightCharsBoundary(t *testing.T) {
+	got := maskAPIKey("12345678")
+	if got != "********" {
+		t.Fatalf("maskAPIKey(8 chars) = %q, want full mask", got)
+	}
+}

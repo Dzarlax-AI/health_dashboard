@@ -2868,6 +2868,9 @@ func (h *Handler) adminUserAPIKey(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
 	jsonResponse(w, map[string]string{
 		"username": user.Username,
 		"api_key":  user.APIKey,
