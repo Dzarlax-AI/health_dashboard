@@ -445,6 +445,17 @@ Cache tables are rebuilt automatically on server startup (incremental, last 48h)
 
 Schema migrations (new columns on `daily_scores`, etc.) auto-apply on startup via `EnsureIndexes()` — uses `ADD COLUMN IF NOT EXISTS`, so existing deployments pick them up without manual SQL. Fresh installs get the full schema from `CREATE TABLE IF NOT EXISTS` paths in `internal/storage/db.go`.
 
+### One-off: seed the persistent review tenant
+
+Use `cmd/seed_review_tenant` to provision the local review/screenshot tenant (`review` / `health_review`) with synthetic-only data. The seed is anchored to tenant-local today by default, keeps a rolling 120-day window so today and the previous month are always populated, and rebuilds the derived review tables after inserting points.
+
+```bash
+DATABASE_URL=postgres://... go run ./cmd/seed_review_tenant --dry-run
+DATABASE_URL=postgres://... go run ./cmd/seed_review_tenant --days 120 --anchor today --reset-window
+```
+
+The command refuses non-review usernames/schemas, does not enable Telegram or AI settings, and prints rollback SQL after a successful run.
+
 ### One-off: backfill historical `sleep_unspecified`
 
 The v2.3 split routes coarse-asleep time (RingConn, iPhone Sleep Schedule, older Apple Watch) into a dedicated `sleep_unspecified` metric instead of inflating `sleep_core`. New data lands correctly automatically once the v2.3 iOS client (or `cmd/import` with the updated XML mapping) is in use. **Historical rows imported before v2.3 still sit under `sleep_core`** — to retroactively split them:

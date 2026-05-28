@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation Plan: Persistent Review Tenant</title>
+  <style>
+    body {
+      margin: 0;
+      background: #f6f7f9;
+      color: #1f2937;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 32px;
+    }
+    section {
+      background: #fff;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 18px 20px;
+      margin: 16px 0;
+    }
+    h1, h2, h3 {
+      line-height: 1.2;
+      margin-top: 0;
+    }
+    p {
+      margin: 8px 0;
+    }
+    code {
+      background: #f1f5f9;
+      border-radius: 4px;
+      padding: 2px 5px;
+      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      font-size: 0.95em;
+    }
+    ul, ol {
+      padding-left: 22px;
+    }
+    li {
+      margin: 6px 0;
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: #fef3c7;
+      color: #92400e;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .card {
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 12px;
+      background: #f8fafc;
+    }
+    .evidence {
+      border-left: 4px solid #2563eb;
+    }
+    .risk {
+      border-left: 4px solid #dc2626;
+    }
+    .approval {
+      border-left: 4px solid #d97706;
+    }
+    @media (max-width: 760px) {
+      main { padding: 18px; }
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Implementation Plan: Persistent Review Tenant</h1>
+  <p class="badge">Approved and implemented</p>
+
+  <section>
+    <h2>Task Summary</h2>
+    <p>Create a persistent, non-personal tenant for UI review, screenshots, demos, and safe dashboard regression checks. The tenant should behave like a normal multi-user account, but contain only synthetic health data.</p>
+    <p>This is separate from the throwaway integration schema added in the startup DDL PR. The throwaway schema proves DDL safety; the persistent review tenant gives us stable browser-visible data for future product work.</p>
+  </section>
+
+  <section class="evidence">
+    <h2>Current System Facts</h2>
+    <ul>
+      <li>Users live in <code>health_registry.users</code>; each user maps to an isolated tenant schema.</li>
+      <li><code>registry.CreateUser</code> generates an API key and derives schema names as <code>health_&lt;username&gt;</code> unless explicitly supplied.</li>
+      <li><code>tenants.Manager.CreateUserSchema</code> creates the schema and calls <code>EnsureAllTables</code>, <code>EnsureIndexes</code>, <code>EnsureAIBriefingsTable</code>, <code>EnsureAIBriefingBlocksTable</code>, <code>EnsureEnergySnapshotsTable</code>, and <code>EnsureReadinessRedesignTables</code>.</li>
+      <li>Admin UI already has <code>POST /api/admin/users</code>, but scripted provisioning is better for repeatable screenshots and seed-data refreshes.</li>
+      <li>Readiness redesign writers can be run over date ranges after daily seed data exists.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <ul>
+      <li>A stable review user, proposed username <code>review</code>, schema <code>health_review</code>.</li>
+      <li>No real personal data, no copied raw payloads, no Telegram notifications, no Gemini generation requirement.</li>
+      <li>Deterministic seed data for at least 90 days ending near the current date, so dashboard cards, charts, readiness history, EnergyBank, freshness/confidence states, and admin previews have useful content.</li>
+      <li>Rolling seed window: every seed refresh should anchor on tenant-local today so the review tenant always has data for today, the previous month, and the full baseline window.</li>
+      <li>Seeder should be idempotent: safe to rerun to refresh the review tenant.</li>
+      <li>Seeder should be opt-in and explicit, not part of normal server startup.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Proposed Scope</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>Provisioning</h3>
+        <p>Add a small CLI command that ensures the review user and schema exist through the same registry/tenant APIs used by production account creation.</p>
+      </div>
+      <div class="card">
+        <h3>Seed Data</h3>
+        <p>Insert deterministic synthetic <code>daily_scores</code> rows plus enough <code>metric_points</code> / <code>hourly_metrics</code> for dashboard and chart surfaces that depend on raw-ish metrics.</p>
+      </div>
+      <div class="card">
+        <h3>Derived Layers</h3>
+        <p>Run relevant cache/readiness writers so <code>target_snapshots</code>, <code>feature_snapshots</code>, and <code>naive_baselines</code> exist for review dates.</p>
+      </div>
+      <div class="card">
+        <h3>Safety</h3>
+        <p>Keep the command behind an explicit name and require <code>DATABASE_URL</code>. Never infer or mutate real tenants.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Likely File Changes</h2>
+    <ul>
+      <li><code>cmd/seed_review_tenant/main.go</code> - new opt-in CLI for provisioning and deterministic seed refresh.</li>
+      <li><code>internal/storage</code> - possibly a tiny helper only if direct SQL in the CLI becomes too repetitive; prefer keeping seed-only logic in the command.</li>
+      <li><code>README.md</code> or a small docs section - document how to run the seed command and how to log in/use the tenant for screenshots.</li>
+      <li><code>docs/ai-plans/2026-05-28-persistent-review-tenant.html</code> - update with implementation result and verification.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Seed Data Shape</h2>
+    <ul>
+      <li>90 to 120 days of synthetic data ending at tenant-local today, regenerated as a moving window rather than fixed calendar dates.</li>
+      <li>Default refresh should keep at least today + the previous 30 days fully populated, with older synthetic history retained or regenerated to preserve mature baselines.</li>
+      <li>Sleep: normal nights, short nights, fragmented nights, and a few missing/stale windows for confidence UI.</li>
+      <li>Recovery: HRV/RHR variation with readable good/poor recovery periods.</li>
+      <li>Activity: steps, calories, exercise minutes, and some low/high days.</li>
+      <li>Vitals: SpO2, respiratory rate, VO2 where useful for cards and anomaly surfaces.</li>
+      <li>EnergyBank: enough inputs or snapshots to render trend and capacity states.</li>
+      <li>Readiness redesign: run Phase 0 writers after seeding so review surfaces show target/features/baselines.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation Steps</h2>
+    <ol>
+      <li>Inspect exact dashboard/API read paths that must look populated for screenshot review.</li>
+      <li>Create <code>cmd/seed_review_tenant</code> with flags such as <code>--username review</code>, <code>--schema health_review</code>, <code>--days 120</code>, <code>--anchor today</code>, <code>--reset-window</code>, and <code>--dry-run</code>.</li>
+      <li>Provision the registry user if absent, using <code>registry.CreateUser</code>; create schema through the existing schema creation path.</li>
+      <li>Disable notification settings for the review schema explicitly by leaving Telegram settings blank and documenting that this tenant must not receive reports.</li>
+      <li>Seed deterministic daily and metric rows in a controlled rolling date range. Use clear synthetic source labels such as <code>ReviewSeed</code>.</li>
+      <li>Run cache/readiness derivation for the seeded range.</li>
+      <li>Print the generated API key and a one-time local password only to the operator console; do not commit credentials.</li>
+      <li>Verify via DB queries and browser/API checks.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <ul>
+      <li><code>go test ./cmd/seed_review_tenant ./internal/storage ./internal/registry ./internal/tenants -count=1</code> if command-level tests are practical.</li>
+      <li><code>go test ./...</code> before PR.</li>
+      <li>Live dry-run against <code>~/.health-db</code> to confirm the command reports intended changes without writing.</li>
+      <li>Live apply against <code>health_review</code>, then query row counts in <code>health_registry.users</code>, <code>daily_scores</code>, <code>metric_points</code>, <code>target_snapshots</code>, <code>feature_snapshots</code>, and <code>naive_baselines</code>.</li>
+      <li>Run the seeder with a shifted anchor date in a temporary schema and verify the populated window moves forward while preserving today's rows and the previous month.</li>
+      <li>Browser smoke: log in as review user and capture dashboard/admin screenshots at desktop and mobile widths.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks and Edge Cases</h2>
+    <ul>
+      <li>Do not seed from real <code>health</code> or <code>health_mariia</code> data. Synthetic-only data is a hard requirement.</li>
+      <li>Do not make the review user admin unless there is a specific screenshot need for admin-only pages. Safer default is non-admin.</li>
+      <li>Do not enable Telegram or AI generation by default; screenshots should not trigger real notifications or model calls.</li>
+      <li>Seeded synthetic data can drift from real product behavior if it bypasses too many normal write paths. Prefer normal storage writers where feasible.</li>
+      <li>Rolling refresh must avoid unbounded growth: old synthetic rows should either be replaced inside the configured window or clearly retained as archived synthetic history.</li>
+      <li>Reset mode must only allow the configured review schema, never arbitrary schema names without validation.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <p>Delete the review user from <code>health_registry.users</code> and drop only the <code>health_review</code> schema. The command should print the exact rollback SQL after provisioning. No production tenant data is touched.</p>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Should the review tenant be non-admin only, or do we also need an admin-review account for admin screenshots?</li>
+      <li>Should screenshots use local/dev only, or is a production-hosted <code>review</code> login desirable?</li>
+      <li>Should seed data include intentionally stale/missing data windows for the upcoming confidence UI work?</li>
+      <li>Should the rolling refresh run manually before screenshot sessions, or should we add a scheduled automation after the first version is proven?</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval Gate</h2>
+    <p>Approved in-session on 2026-05-28. Implementation results and verification are recorded below.</p>
+  </section>
+
+  <section class="evidence">
+    <h2>Implementation Result</h2>
+    <ul>
+      <li>Added <code>cmd/seed_review_tenant</code>, an explicit opt-in CLI for provisioning and refreshing <code>review</code> / <code>health_review</code>.</li>
+      <li>The command refuses non-review username/schema combinations, supports <code>--dry-run</code>, <code>--days</code>, <code>--anchor today</code>, <code>--tz</code>, and <code>--reset-window</code>.</li>
+      <li>Seed data is deterministic and synthetic-only: 120 tenant-local days by default, sourced as <code>ReviewSeed Apple Watch</code> and <code>ReviewSeed iPhone</code>.</li>
+      <li>Refresh clears prior ReviewSeed points, generated raw seed records, daily rows, readiness redesign rows, and backfilled EnergyBank snapshots in the rolling window before reseeding.</li>
+      <li>After insertion, the command rebuilds caches, recomputes readiness, runs readiness redesign Phase 0 writers, and backfills EnergyBank EOD snapshots.</li>
+      <li>Added README maintenance documentation for dry-run and apply usage.</li>
+    </ul>
+  </section>
+
+  <section class="evidence">
+    <h2>Verification</h2>
+    <ul>
+      <li><code>go test ./cmd/seed_review_tenant</code> passed.</li>
+      <li><code>go test ./...</code> passed.</li>
+      <li><code>go vet ./...</code> passed.</li>
+      <li><code>git diff --check</code> passed.</li>
+      <li>Dry-run against <code>~/.health-db</code> reported window <code>2026-01-29..2026-05-28</code>, 120 days, and approximately 2640 generated points.</li>
+      <li>Live apply against <code>health_review</code> completed end-to-end with <code>energy backfill: ok=114 skipped=6 errors=0</code>.</li>
+      <li>Direct SQL verification: registry user <code>review</code> maps to <code>health_review</code>; <code>metric_points=2640</code> for <code>2026-01-29..2026-05-28</code>; <code>daily_scores=120</code> for <code>2026-01-29..2026-05-28</code>; readiness exists for all 120 daily rows.</li>
+      <li>Direct SQL verification: <code>target_snapshots=1206</code>, <code>feature_snapshots=536</code>, and <code>naive_baselines=3216</code> for the writer lookback window <code>2026-01-15..2026-05-28</code>.</li>
+      <li>Direct SQL verification: <code>energy_snapshots=114</code> for <code>2026-02-04..2026-05-28</code>; the first six days are expected bootstrap/lookback skips.</li>
+      <li>Direct SQL verification: <code>raw_seed_24h=1</code> after reset, confirming repeat runs do not accumulate ReviewSeed raw records.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Known Limitations</h2>
+    <ul>
+      <li>Browser screenshot smoke was not run in this implementation pass; the tenant is prepared in the database for the next UI review session.</li>
+      <li>The review password is only used when creating the user. If the existing <code>review</code> user already has a different password, the seeder does not rotate it.</li>
+      <li>Readiness redesign backfill expands the seed range with lookback dates, so derived rows start earlier than <code>daily_scores</code>. This is expected and keeps target/baseline calculations mature.</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>
