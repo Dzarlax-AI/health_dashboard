@@ -45,7 +45,10 @@ import (
 //	    nights. Eligibility outcome (eligible bool) is unchanged
 //	    between v1 and v2; only the `eligibility_reason` text differs
 //	    for the affected rows.
-const recoveryStabilityFormulaVersion = 2
+//	3 — add a narrow 3.95h tolerance around the nominal 4.0h minimum
+//	    nightly sleep cutoff. This is a numerical boundary fix for
+//	    source-rounded values such as 3.99h, not a model change.
+const recoveryStabilityFormulaVersion = 3
 
 // recoveryStabilityFeatureVersion bumps when the feature set changes.
 // Separate from formula_version because feature surface and target

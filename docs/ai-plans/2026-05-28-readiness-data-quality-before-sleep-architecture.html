@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Implementation Plan: Readiness Data Quality Gate Before Sleep Architecture</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #1f2937; line-height: 1.5; }
+    main { max-width: 1120px; margin: 0 auto; padding: 32px; }
+    section { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin: 16px 0; }
+    h1, h2, h3 { line-height: 1.2; margin-top: 0; }
+    code { background: #f3f4f6; padding: 2px 5px; border-radius: 4px; }
+    pre { background: #111827; color: #f9fafb; padding: 14px; border-radius: 8px; overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+    th, td { border: 1px solid #d1d5db; padding: 8px 10px; text-align: left; vertical-align: top; }
+    th { background: #f3f4f6; }
+    ul, ol { padding-left: 24px; }
+    li { margin: 6px 0; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #e5e7eb; font-size: 12px; font-weight: 600; }
+    .callout { border-left: 4px solid #2563eb; }
+    .risk { border-left: 4px solid #dc2626; }
+    .approval { border-left: 4px solid #d97706; }
+    .ok { border-left: 4px solid #059669; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Implementation Plan: Readiness Data Quality Gate Before Sleep Architecture</h1>
+  <p class="badge">Approval required before production changes</p>
+
+  <section>
+    <h2>Task Summary</h2>
+    <p>
+      Treat <code>Health: continue data-quality work after admin profile-scope PR</code>
+      as the gate before <code>Readiness redesign §6.5: sleep-architecture features</code>.
+      The immediate work is evidence-only: verify admin tenant scoping, read current
+      monitoring, run read-only DB probes, and decide whether sleep architecture
+      contains usable signal or mostly capture/wear noise.
+    </p>
+    <p>
+      No Telegram, dashboard, chip, scoring, or baseline behavior should change
+      from this plan. If the probes show useful signal, a follow-up approved plan
+      can promote the calculations into code or product behavior. If the probes
+      look noisy, production behavior stays unchanged.
+    </p>
+  </section>
+
+  <section class="callout">
+    <h2>Current State From Inspection</h2>
+    <ul>
+      <li>Current local branch is <code>codex/admin-operations-profile-scope</code>; its PR is already merged as <code>#137 Clean up admin operations UI</code>.</li>
+      <li>The working tree has existing local changes and untracked admin/debug artifacts from the previous session; this plan does not modify or revert them.</li>
+      <li>Local dev compose is running when invoked with <code>--env-file .env.dev.local</code>: <code>health_processing-health-dev-1</code> on port <code>18080</code>.</li>
+      <li><code>docker compose -f docker-compose.dev.yml ps</code> without the env file fails because <code>DATABASE_URL</code> is intentionally required from <code>.env.dev.local</code>.</li>
+      <li>The repo already contains diagnostic code for this area: <code>cmd/readiness_sleep_capture_probe</code>, <code>cmd/readiness_sleep_architecture_probe</code>, <code>internal/storage/sleep_architecture.go</code>, and the existing plans from 2026-05-26/27.</li>
+      <li>The older sleep architecture plan already implemented feature payloads and a read-only probe, but the first production probe was inconclusive before v2 feature rows existed.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Probe Results Captured On 2026-05-28</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Probe</th>
+          <th>Tenant</th>
+          <th>Result</th>
+          <th>Interpretation</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>readiness_sleep_capture_probe</code></td>
+          <td><code>health</code></td>
+          <td>27 rows; strict 25/27; candidate 2-of-3 25/27; MAE unchanged at 0.0204</td>
+          <td>Main tenant is mostly healthy; 2-of-3 does not add value here.</td>
+        </tr>
+        <tr>
+          <td><code>readiness_sleep_capture_probe</code></td>
+          <td>secondary tenant</td>
+          <td>27 rows; strict 11/27; candidate 2-of-3 22/27; 11 rescued; low_capture 16; partial_short 12; missing_capture 6; candidate MAE 1.7% worse</td>
+          <td>Coverage problem is real and strongly capture-related, but the candidate fallback is not automatically better as a predictor.</td>
+        </tr>
+        <tr>
+          <td><code>readiness_sleep_architecture_probe</code></td>
+          <td><code>health</code></td>
+          <td>Recovery fail: 90 samples, floor 0.0205, architecture model 0.0233, delta -13.8%</td>
+          <td>Architecture features currently underperform EWMA45 for Recovery.</td>
+        </tr>
+        <tr>
+          <td><code>readiness_sleep_architecture_probe</code></td>
+          <td>secondary tenant</td>
+          <td>Recovery fail: 35 samples, floor 0.0314, architecture model 0.0503, delta -60.0%; Chronic inconclusive with 6 samples</td>
+          <td>Do not promote sleep architecture. Secondary-tenant data needs capture/wear handling first.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="ok">
+    <h2>90-Day Follow-Up: Tolerance Hypothesis</h2>
+    <p>
+      The May-only check was not enough; the tenant already has about 90 days
+      of history. A second read-only SQL simulation was run across the latest
+      90-day secondary-tenant window. It compared the current strict
+      4.0h Recovery cutoff with a tiny numerical tolerance at 3.95h, staged-sum
+      substitution, and the evidence-only 2-of-3 target.
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th>Scenario</th>
+          <th>Rows</th>
+          <th>Eligible</th>
+          <th>MAE vs existing EWMA45</th>
+          <th>Decision</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>strict_3of3_base</code></td>
+          <td>87</td>
+          <td>35</td>
+          <td>0.0255</td>
+          <td>current baseline</td>
+        </tr>
+        <tr>
+          <td><code>strict_3of3_tolerance_3_95h</code></td>
+          <td>87</td>
+          <td>38</td>
+          <td>0.0250</td>
+          <td>small positive signal</td>
+        </tr>
+        <tr>
+          <td><code>strict_3of3_staged_sub</code></td>
+          <td>87</td>
+          <td>35</td>
+          <td>0.0255</td>
+          <td>no value</td>
+        </tr>
+        <tr>
+          <td><code>candidate_2of3_base</code></td>
+          <td>87</td>
+          <td>77</td>
+          <td>0.0276</td>
+          <td>coverage rescue, worse MAE</td>
+        </tr>
+        <tr>
+          <td><code>candidate_2of3_tolerance_3_95h</code></td>
+          <td>87</td>
+          <td>77</td>
+          <td>0.0273</td>
+          <td>still worse than strict</td>
+        </tr>
+        <tr>
+          <td><code>candidate_2of3_staged_sub</code></td>
+          <td>87</td>
+          <td>80</td>
+          <td>0.0275</td>
+          <td>still worse than strict</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>
+      The 3.95h tolerance rescues exactly three strict rolling rows in the
+      90-day window, all caused by one borderline source-rounded night just
+      below 4h. This is not broad model work; it is numerical stability around
+      a hard cutoff. The result is small but clean enough to justify a minimal
+      tolerance PR if approved.
+    </p>
+    <p>
+      The same 90-day simulation on the primary <code>health</code> tenant is
+      a no-op: every scenario has <code>87/87</code> eligible rows and
+      <code>0.0245</code> MAE. There are zero <code>sleep_total &lt; 4h</code>
+      days, zero borderline <code>[3.95h,4.0h)</code> days, and zero rescued
+      strict rows. This lowers the blast-radius risk for the tolerance fix.
+    </p>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <ul>
+      <li>The operator can inspect tenant-specific admin monitoring for the primary tenant, a secondary tenant, and explicit <code>schema=all</code> without profile leakage.</li>
+      <li>Secondary-tenant sparse Recovery labels are treated as a data-quality/wear-discipline problem before any model or feature promotion.</li>
+      <li>Sleep architecture remains evidence-only unless it beats the predeclared floor. The current 2026-05-28 probe says it does not.</li>
+      <li>The next decision is framed as one of: keep strict labels, gather more data, add better capture diagnostics, or design a separate fallback target. It is not framed as "ship architecture features".</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Recommended Approach</h2>
+    <h3>Approach A: Minimal threshold tolerance PR (recommended after 90-day check)</h3>
+    <p>
+      Keep §6.5 sleep architecture blocked, keep 2-of-3 evidence-only, and
+      open a tiny PR that treats sleep totals in the narrow band
+      <code>[3.95h, 4.0h)</code> as eligible for Recovery efficiency. This is
+      justified as threshold tolerance, not as a physiology/model change. The
+      PR must include tests proving a synthetic source-rounded <code>3.99h</code> night becomes eligible while
+      true short sleeps such as <code>3.60h</code> and <code>3.94h</code>
+      remain ineligible.
+    </p>
+    <h3>Approach B: Evidence gate only</h3>
+    <p>
+      Stop after recording the DB evidence and make no code change. This is
+      still valid, because the measured improvement is small and comes from
+      one borderline night. It leaves a known brittle threshold in place.
+    </p>
+    <h3>Approach C: Implement a product fallback now</h3>
+    <p>
+      Promote <code>rolling_3d_candidate_2of3</code> or low-confidence handling into product paths.
+      This improves coverage but risks hiding real short sleep and currently has weak MAE evidence.
+      Not recommended.
+    </p>
+    <h3>Approach D: Continue architecture feature engineering</h3>
+    <p>
+      Add or tune more architecture features. This is fishing-prone after a clear fail result.
+      Only revisit after capture quality is cleaner or after a new physiological hypothesis is
+      predeclared with a different stop rule.
+    </p>
+  </section>
+
+  <section>
+    <h2>Likely File Changes If Approved</h2>
+    <ul>
+      <li><code>docs/ai-plans/2026-05-28-readiness-data-quality-before-sleep-architecture.html</code> - update with actual evidence and decision.</li>
+      <li><code>READINESS_REDESIGN_PLAN.md</code> - document that §6.5 sleep architecture is currently blocked/failed by the 2026-05-28 probe, if the operator approves recording this in the long-lived plan.</li>
+      <li><code>docs/ai-plans/2026-05-26-readiness-sleep-architecture-features.html</code> - optionally append a follow-up result section pointing to this gate.</li>
+      <li><code>internal/health/recovery_stability.go</code> - if the tolerance PR is approved, change the Recovery sleep minimum from a hard 4.0h cutoff to a narrow 3.95h tolerance while keeping the documented target concept at 4h.</li>
+      <li><code>internal/health/recovery_stability_test.go</code> - add boundary tests for 3.99h, 3.94h, and clearly short sleep.</li>
+      <li><code>READINESS_REDESIGN_PLAN.md</code> or <code>SCORING.md</code> - document the tolerance as numerical stability if the code change lands.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Execution Steps</h2>
+    <ol>
+      <li>Confirm the merged admin PR is deployed before relying on admin UI checks. If deployment status is unknown, verify live service version or deployment logs first.</li>
+      <li>Use the local dev compose with <code>docker compose --env-file .env.dev.local -f docker-compose.dev.yml ps</code> when testing local admin flows.</li>
+      <li>Open local dev admin at <code>http://localhost:18080</code> and verify profile tabs: General remains global/config; each tenant tab is tenant-specific.</li>
+      <li>Query <code>/api/admin/readiness-redesign/monitoring</code> for the primary tenant, a secondary tenant, and <code>schema=all</code>; confirm returned tenant sets match the requested scope.</li>
+      <li>Run <code>readiness_sleep_capture_probe</code> over a recent mature window and record strict vs candidate coverage, rescued rows, capture classes, and EWMA45 MAE.</li>
+      <li>Run <code>readiness_sleep_architecture_probe</code> with a minimum sample threshold and record whether architecture beats or loses to the floor by tenant.</li>
+      <li>Run the 90-day tolerance simulation before deciding whether the May-only result is representative.</li>
+      <li>If the operator approves the tolerance PR, make only the threshold-tolerance change and tests. Do not promote sleep architecture or 2-of-3 fallback.</li>
+      <li>If a future architecture probe unexpectedly passes later, create a new implementation plan before changing production paths.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Concrete Commands</h2>
+    <pre><code>docker compose --env-file .env.dev.local -f docker-compose.dev.yml ps
+
+# PowerShell: set DATABASE_URL from ~/.health-db without printing secrets, then run probes.
+$vars=@{}; Get-Content $env:USERPROFILE\.health-db | ForEach-Object {
+  if ($_ -match '^export\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)$') {
+    $vars[$matches[1]]=$matches[2].Trim('"').Trim("'")
+  }
+}
+$user=[uri]::EscapeDataString($vars['PGUSER'])
+$pass=[uri]::EscapeDataString($vars['PGPASSWORD'])
+$port=if($vars['PGPORT']){$vars['PGPORT']}else{'5432'}
+$env:DATABASE_URL="postgres://$user`:$pass@$($vars['PGHOST'])`:$port/$($vars['PGDATABASE'])"
+
+go run ./cmd/readiness_sleep_capture_probe --schema primary,secondary --from YYYY-MM-DD --to YYYY-MM-DD
+go run ./cmd/readiness_sleep_architecture_probe --schema primary,secondary --min-samples 20
+
+# 90-day tolerance simulation was run directly in psql.
+# Private tenant-specific row output is intentionally not committed.</code></pre>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <ul>
+      <li><code>go test ./cmd/readiness_sleep_capture_probe</code></li>
+      <li><code>go test ./cmd/readiness_sleep_architecture_probe</code></li>
+      <li><code>go test ./internal/storage -run "SleepArchitecture|RecoveryStability|ReadinessMonitoring" -count=1</code></li>
+      <li><code>go test ./internal/ui -run "AdminReadiness|TenantScope|AdminTemplate" -count=1</code></li>
+      <li>Read-only probe checks above against primary and secondary tenants.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks and Edge Cases</h2>
+    <ul>
+      <li>Candidate 2-of-3 improves coverage but may dilute the target; current secondary-tenant MAE is slightly worse on candidate rows.</li>
+      <li>Architecture features may encode device wear and capture gaps rather than physiology; current probes support this concern.</li>
+      <li>The tolerance improvement is small and comes from one borderline night. The PR should be framed as numerical robustness, not as a model-quality improvement.</li>
+      <li>A tolerance wider than 3.95h would become a behavior change and needs a separate evidence pass.</li>
+      <li>Live DB checks are drift-prone. Re-run probes after deployment/backfill and before any product decision.</li>
+      <li>Current local branch is already merged and dirty; do not build follow-up production work on it. Use a fresh branch from <code>origin/main</code> after cleaning or preserving local artifacts.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <p>
+      For the evidence-only phase, rollback is documentation-only: revert this plan update
+      and any long-lived doc note if the operator disagrees with the framing. No database
+      writes or production behavior changes are part of this plan.
+    </p>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Should the tolerance PR also update long-lived methodology docs immediately, or should docs wait until after tests and review?</li>
+      <li>Should <code>READINESS_REDESIGN_PLAN.md</code> record sleep architecture as a current no-go now, or wait until after the tolerance PR?</li>
+    </ul>
+  </section>
+
+  <section class="ok">
+    <h2>Implementation Update</h2>
+    <ul>
+      <li>Implemented the minimal tolerance fix in <code>internal/health/recovery_stability.go</code>: Recovery sleep eligibility now uses <code>3.95h</code> as a narrow numerical lower bound around the nominal 4.0h cutoff.</li>
+      <li>A synthetic <code>3.99h</code> source-rounded row with staged sleep and awake data is now eligible and classed as good capture.</li>
+      <li>Clearly short rows such as <code>3.60h</code> and <code>3.94h</code> remain ineligible / partial-short capture.</li>
+      <li>Cross-checked the same 90-day SQL on the primary <code>health</code> tenant; the tolerance is a no-op there.</li>
+      <li>Bumped <code>recoveryStabilityFormulaVersion</code> from 2 to 3 because target eligibility can change on re-backfill.</li>
+      <li>Updated <code>READINESS_REDESIGN_PLAN.md</code> to document <code>[3.95,4.0)</code> as numerical tolerance, not a model or policy change.</li>
+      <li>No sleep architecture, 2-of-3 product fallback, Telegram, dashboard, or chip behavior was promoted in this implementation.</li>
+    </ul>
+    <h3>Checks Run</h3>
+    <ul>
+      <li><code>go test ./internal/health -run "SleepEfficiency|SleepCapture" -count=1</code> - passed.</li>
+      <li><code>go test ./internal/storage -run RecoveryStability -count=1</code> - passed.</li>
+      <li><code>go test ./...</code> - passed.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval Gate</h2>
+    <p>
+      Implementation must not start until the operator explicitly approves a follow-up.
+      Approval of this plan means: proceed only with a minimal Recovery sleep
+      threshold-tolerance PR, keep sleep architecture blocked, and do not
+      promote the 2-of-3 fallback or any model behavior unless a later approved
+      plan says to do so.
+    </p>
+  </section>
+</main>
+</body>
+</html>

@@ -8,7 +8,7 @@
 //
 // Eligibility patterns implemented (plan §4.2.1):
 //
-//   normal               → sleep_total ∈ [4,14], staged > 0, awake > 0
+//   normal               → sleep_total ∈ [3.95,14], staged > 0, awake > 0
 //                          → eff = total / (total + awake)
 //   ok_awake_structural_zero
 //                        → staged > 0, awake row absent, staged ≈ total
@@ -17,7 +17,7 @@
 //                        → staged > 0, awake row absent, but staged
 //                          inconsistent with total → ineligible
 //   sleep_total_out_of_range
-//                        → total NULL, ≤0, or ∉ [4,14] → ineligible
+//                        → total NULL, ≤0, or ∉ [3.95,14] → ineligible
 //   coarse_only_source   → no staged time (deep+rem+core all NULL/0),
 //                          unspecified may be present → ineligible for
 //                          efficiency primary target
@@ -77,11 +77,18 @@ const (
 
 // Sleep eligibility thresholds. Documented in plan §4.2.
 const (
+	// sleepTotalNominalMinHours is the methodology cutoff. The
+	// eligibility code applies sleepTotalMinHours below as a narrow
+	// numerical tolerance around this hard threshold; 3.99h should not
+	// be treated differently from 4.000h solely because of source
+	// rounding, while clearly short nights remain ineligible.
+	sleepTotalNominalMinHours = 4.0
+
 	// sleepTotalMinHours / sleepTotalMaxHours bound the physiologically
 	// plausible nightly sleep range used for eligibility (narrower than
 	// the [0,14] range in quality.go because efficiency on extreme
 	// outliers is meaningless).
-	sleepTotalMinHours = 4.0
+	sleepTotalMinHours = 3.95
 	sleepTotalMaxHours = 14.0
 
 	// structuralZeroTolerance is the relative gap allowed between

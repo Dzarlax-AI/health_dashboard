@@ -74,6 +74,7 @@ func TestComputeSleepEfficiency_SleepTotalOutOfRange(t *testing.T) {
 		{"zero total", fp(0)},
 		{"negative total", fp(-1)},
 		{"under floor", fp(3.5)},
+		{"under tolerance floor", fp(3.94)},
 		{"over ceiling", fp(15)},
 	}
 	for _, c := range cases {
@@ -93,6 +94,38 @@ func TestComputeSleepEfficiency_SleepTotalOutOfRange(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestComputeSleepEfficiency_BorderlineMinimumTolerance(t *testing.T) {
+	t.Run("source rounded just below nominal 4h is eligible", func(t *testing.T) {
+		r := SleepRow{
+			Date:  "2026-01-15",
+			Total: fp(3.99),
+			Deep:  fp(1.0), REM: fp(1.0), Core: fp(1.99),
+			Awake: fp(0.10),
+		}
+		got := ComputeSleepEfficiency(r)
+		if !got.Eligible || got.EligibilityReason != SleepEligibilityOK {
+			t.Fatalf("expected borderline tolerance to be eligible, got %+v", got)
+		}
+		want := 3.99 / (3.99 + 0.10)
+		if got.Efficiency == nil || math.Abs(*got.Efficiency-want) > 1e-9 {
+			t.Fatalf("efficiency = %+v, want %v", got.Efficiency, want)
+		}
+	})
+
+	t.Run("clearly below tolerance stays ineligible", func(t *testing.T) {
+		r := SleepRow{
+			Date:  "2026-01-16",
+			Total: fp(3.60),
+			Deep:  fp(0.9), REM: fp(0.7), Core: fp(2.0),
+			Awake: fp(0.05),
+		}
+		got := ComputeSleepEfficiency(r)
+		if got.Eligible || got.EligibilityReason != SleepEligibilitySleepTotalOutOfRange {
+			t.Fatalf("expected clearly short sleep to remain ineligible, got %+v", got)
+		}
+	})
 }
 
 func TestComputeSleepEfficiency_SleepDataMissing(t *testing.T) {
@@ -227,8 +260,8 @@ func TestComputeSleepCaptureConfidence_GoodCapture(t *testing.T) {
 func TestComputeSleepCaptureConfidence_PartialShortCapture(t *testing.T) {
 	got := ComputeSleepCaptureConfidence(SleepRow{
 		Date:  "2026-05-15",
-		Total: fp(3.99),
-		Deep:  fp(1.0), REM: fp(1.0), Core: fp(1.99),
+		Total: fp(3.94),
+		Deep:  fp(1.0), REM: fp(1.0), Core: fp(1.94),
 		Awake: fp(0.1),
 	})
 	if got.Class != SleepCapturePartialShort || !got.LowConfidence {
@@ -236,6 +269,18 @@ func TestComputeSleepCaptureConfidence_PartialShortCapture(t *testing.T) {
 	}
 	if got.Reason != SleepCaptureReasonShortWithStages {
 		t.Fatalf("reason = %q, want %q", got.Reason, SleepCaptureReasonShortWithStages)
+	}
+}
+
+func TestComputeSleepCaptureConfidence_BorderlineToleranceIsNotPartial(t *testing.T) {
+	got := ComputeSleepCaptureConfidence(SleepRow{
+		Date:  "2026-01-15",
+		Total: fp(3.99),
+		Deep:  fp(1.0), REM: fp(1.0), Core: fp(1.99),
+		Awake: fp(0.10),
+	})
+	if got.Class != SleepCaptureGood || got.LowConfidence {
+		t.Fatalf("capture = %+v, want good capture for borderline tolerance row", got)
 	}
 }
 

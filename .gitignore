@@ -22,6 +22,16 @@ bin/
 !.env.example
 docker-compose.override.yml
 
+# Local admin/dev scratch files (not part of PRs)
+.air.toml
+Dockerfile.dev
+docker-compose.dev.yml
+.dev-cache/
+.dev-cache-*
+.playwright-mcp/
+admin-*.png
+admin-*.txt
+
 # macOS
 .DS_Store
 export.zip
