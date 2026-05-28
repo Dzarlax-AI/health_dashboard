@@ -26,6 +26,8 @@ This project keeps the raw data under your control, stores it in PostgreSQL, and
 
 The product direction is deliberately conservative: raw data is preserved, derived tables can be rebuilt, missing or stale inputs are surfaced instead of hidden, and new readiness features are promoted only when they beat simple baselines on real data.
 
+For the product and methodology story behind the project, see the [Health Dashboard article series](https://dzarlax.dev/series/health-dashboard/): an 8-part build log covering how the Apple Health receiver evolved into a dashboard that refuses to fabricate numbers when inputs are missing.
+
 ## Clients
 
 Two iOS clients can stream data into this server:
