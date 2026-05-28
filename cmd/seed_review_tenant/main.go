@@ -224,8 +224,8 @@ func ensureReviewTenant(ctx context.Context, cfg seedConfig) error {
 		if err != nil {
 			return fmt.Errorf("create review user: %w", err)
 		}
-		fmt.Printf("created review user: username=%s schema=%s api_key=%s password=%s\n",
-			user.Username, user.SchemaName, user.APIKey, cfg.password)
+		fmt.Printf("created review user: username=%s schema=%s api_key=%s password=<redacted>\n",
+			user.Username, user.SchemaName, maskSecret(user.APIKey))
 	} else {
 		return fmt.Errorf("lookup review user: %w", err)
 	}
@@ -291,14 +291,14 @@ func resetSeedWindow(ctx context.Context, pool *pgxpool.Pool, from, to string) e
 		sql  string
 		args []any
 	}{
-		{`DELETE FROM energy_snapshots WHERE date BETWEEN $1 AND $2 AND $3 = ANY(flags)`, []any{from, to, "backfilled"}},
-		{`DELETE FROM target_snapshots WHERE date BETWEEN $1 AND $2`, []any{from, to}},
-		{`DELETE FROM feature_snapshots WHERE date BETWEEN $1 AND $2`, []any{from, to}},
-		{`DELETE FROM naive_baselines WHERE date BETWEEN $1 AND $2`, []any{from, to}},
-		{`DELETE FROM hourly_metrics WHERE SUBSTRING(hour,1,10) BETWEEN $1 AND $2 AND source LIKE 'ReviewSeed%'`, []any{from, to}},
-		{`DELETE FROM metric_points WHERE SUBSTRING(date,1,10) BETWEEN $1 AND $2 AND source LIKE 'ReviewSeed%'`, []any{from, to}},
+		{`DELETE FROM energy_snapshots WHERE $1 = ANY(flags)`, []any{"backfilled"}},
+		{`DELETE FROM target_snapshots`, nil},
+		{`DELETE FROM feature_snapshots`, nil},
+		{`DELETE FROM naive_baselines`, nil},
+		{`DELETE FROM hourly_metrics WHERE source LIKE 'ReviewSeed%'`, nil},
+		{`DELETE FROM metric_points WHERE source LIKE 'ReviewSeed%'`, nil},
 		{`DELETE FROM health_records WHERE automation_name = $1`, []any{reviewRecordPayload}},
-		{`DELETE FROM daily_scores WHERE date BETWEEN $1 AND $2`, []any{from, to}},
+		{`DELETE FROM daily_scores`, nil},
 	}
 	for _, stmt := range stmts {
 		if _, err := pool.Exec(ctx, stmt.sql, stmt.args...); err != nil {
