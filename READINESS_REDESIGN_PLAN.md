@@ -377,11 +377,17 @@ Recovery Stability eligibility must distinguish these two cases:
 
 | Pattern | Interpretation | eligibility_reason | Target |
 |---|---|---|---|
-| `sleep_total ∈ [4,14]` AND `sleep_asleep > 0` AND `sleep_awake > 0` | normal night | `ok` | `asleep / (asleep + awake)` |
-| `sleep_total ∈ [4,14]` AND `sleep_asleep > 0` AND `sleep_awake` row **absent** AND source is `Apple Watch` (or HAE Apple Watch ingest fingerprint) AND `asleep ≈ sleep_total` within tolerance | structural zero — no waking detected by Watch | `ok_awake_structural_zero` | `1.0` (efficiency = 1) |
-| `sleep_total ∈ [4,14]` AND `sleep_asleep > 0` AND `sleep_awake` row absent AND source is **not** Apple Watch, OR `asleep` and `sleep_total` disagree | genuinely unknown awake | `missing_awake_unknown` | NULL (ineligible) |
-| `sleep_total ∉ [4,14]` | physiologically implausible or missing | `sleep_total_out_of_range` | NULL (ineligible) |
+| `sleep_total ∈ [3.95,14]` AND `sleep_asleep > 0` AND `sleep_awake > 0` | normal night; `[3.95,4.0)` is a numerical tolerance around the nominal 4h cutoff | `ok` | `asleep / (asleep + awake)` |
+| `sleep_total ∈ [3.95,14]` AND `sleep_asleep > 0` AND `sleep_awake` row **absent** AND source is `Apple Watch` (or HAE Apple Watch ingest fingerprint) AND `asleep ≈ sleep_total` within tolerance | structural zero — no waking detected by Watch | `ok_awake_structural_zero` | `1.0` (efficiency = 1) |
+| `sleep_total ∈ [3.95,14]` AND `sleep_asleep > 0` AND `sleep_awake` row absent AND source is **not** Apple Watch, OR `asleep` and `sleep_total` disagree | genuinely unknown awake | `missing_awake_unknown` | NULL (ineligible) |
+| `sleep_total ∉ [3.95,14]` | physiologically implausible or missing | `sleep_total_out_of_range` | NULL (ineligible) |
 | `sleep_asleep = 0` AND `sleep_total > 0` | coarse-only source (no staging) | `coarse_only_source` | NULL (ineligible for primary efficiency; secondary targets may still apply) |
+
+The nominal lower cutoff remains 4h. The implemented lower bound is 3.95h
+as a narrow numerical tolerance for source-rounded Apple Watch values (for
+example `3.99h`). It is not a policy change that treats clearly short sleep as
+normal; rows like `3.60h` remain ineligible. This change bumped Recovery
+Stability `formula_version` to 3.
 
 The `awake_structural_zero` branch can only collapse to `eligible=ok` when
 we are confident the missing awake row is a filter artifact and not a
