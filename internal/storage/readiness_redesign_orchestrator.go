@@ -7,6 +7,11 @@ import (
 
 const readinessRedesignRoutineLookbackDays = 14
 
+type readinessRedesignWriter struct {
+	name string
+	run  func(from, to string) (int, error)
+}
+
 func readinessRedesignRoutineWindow(dates []string, today time.Time) (string, string, bool) {
 	var minDate, maxDate string
 	for _, raw := range dates {
@@ -51,18 +56,25 @@ func (s *DB) RunReadinessRedesignBackfillForDatesAt(dates []string, today time.T
 	if !ok {
 		return
 	}
+	s.runReadinessRedesignBackfillRange(from, to)
+}
+
+func (s *DB) runReadinessRedesignBackfillRange(from, to string) {
+	writers := []readinessRedesignWriter{
+		{name: "recovery_stability", run: s.BackfillRecoveryStabilitySnapshots},
+		{name: "passive_efficiency", run: s.BackfillPassiveEfficiencySnapshots},
+		{name: "acute_risk", run: s.BackfillAcuteRiskSnapshots},
+		{name: "chronic_load", run: s.BackfillChronicLoadSnapshots},
+	}
+	runReadinessRedesignWriters(from, to, writers)
+}
+
+func runReadinessRedesignWriters(from, to string, writers []readinessRedesignWriter) {
 	log.Printf("readiness redesign backfill: starting %s..%s", from, to)
-	if n, err := s.BackfillRecoveryStabilitySnapshots(from, to); err != nil {
-		log.Printf("readiness redesign backfill recovery_stability: wrote=%d err=%v", n, err)
-	}
-	if n, err := s.BackfillPassiveEfficiencySnapshots(from, to); err != nil {
-		log.Printf("readiness redesign backfill passive_efficiency: wrote=%d err=%v", n, err)
-	}
-	if n, err := s.BackfillAcuteRiskSnapshots(from, to); err != nil {
-		log.Printf("readiness redesign backfill acute_risk: wrote=%d err=%v", n, err)
-	}
-	if n, err := s.BackfillChronicLoadSnapshots(from, to); err != nil {
-		log.Printf("readiness redesign backfill chronic_load: wrote=%d err=%v", n, err)
+	for _, w := range writers {
+		if n, err := w.run(from, to); err != nil {
+			log.Printf("readiness redesign backfill %s: wrote=%d err=%v", w.name, n, err)
+		}
 	}
 	log.Printf("readiness redesign backfill: done %s..%s", from, to)
 }

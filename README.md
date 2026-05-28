@@ -1,6 +1,32 @@
 # Health Dashboard
 
-Self-hosted server that receives Apple Health data, stores it in PostgreSQL, and provides a web dashboard and MCP server for AI-assisted analysis.
+Health Dashboard is a self-hosted personal health intelligence system built around Apple Health / HealthKit data. It combines this Go server with the first-party iOS app, [health-sync](https://github.com/Dzarlax-AI/health-sync), which streams HealthKit metrics in the background and provides a lightweight native dashboard.
+
+It is not just a charting dashboard. The goal is to turn raw sensor history into a daily decision layer for recovery, energy, sleep, stress, activity, and long-term trends.
+
+Apple Health is excellent at collecting data, but it is weak at answering operational questions:
+
+- Is today's data fresh enough to trust?
+- Am I recovered enough to train, or should I back off?
+- Is my energy capacity actually low, or am I just looking at a noisy readiness score?
+- Did last night's sleep improve recovery, or only increase time in bed?
+- Are stress signals sustained, acute, or just a missing-data artifact?
+- How do today's signals compare with my own baseline, not a generic population average?
+- Can an AI assistant answer questions from my real health history without sending everything to a third-party wellness app?
+
+This project keeps the raw data under your control, stores it in PostgreSQL, and builds derived layers on top of it:
+
+- **Readiness** — a recovery-oriented signal based on HRV, resting heart rate, sleep, and data freshness.
+- **EnergyBank** — a separate capacity indicator for how much load you can reasonably spend today.
+- **Sleep and recovery analysis** — staged sleep, coarse sleep sources, wake timing, and recovery stability.
+- **Stress and anomaly detection** — respiratory rate, wrist temperature, HRV variability, sustained load, and illness-style flags.
+- **Daily briefings** — Telegram morning/evening reports with rule-based metrics plus optional AI interpretation.
+- **Web dashboard** — private browser UI for metrics, trends, admin tools, imports, and calibration.
+- **MCP server** — an AI-agent interface for asking questions against your own health database.
+
+The product direction is deliberately conservative: raw data is preserved, derived tables can be rebuilt, missing or stale inputs are surfaced instead of hidden, and new readiness features are promoted only when they beat simple baselines on real data.
+
+For the product and methodology story behind the project, see the [Health Dashboard article series](https://dzarlax.dev/series/health-dashboard/): an 8-part build log covering how the Apple Health receiver evolved into a dashboard that refuses to fabricate numbers when inputs are missing.
 
 ## Clients
 
