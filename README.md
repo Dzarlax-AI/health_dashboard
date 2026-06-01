@@ -267,7 +267,7 @@ Three methods are supported, checked in order:
 | Method | How |
 |---|---|
 | **Authentik ForwardAuth** | Set `TRUST_FORWARD_AUTH=true` (legacy alias: `TRUST_FWD_AUTH=true`). Traefik passes `X-authentik-username` / `X-authentik-email` headers. By default those headers are trusted only from loopback/private proxy addresses; set `TRUSTED_FORWARD_AUTH_NETWORK=<cidr>[,<cidr>...]` or `TRUSTED_FORWARD_AUTH_NETWORKS=<cidr>[,<cidr>...]` when the trusted proxy is outside those ranges. The proxy must strip any client-supplied `X-authentik-*` headers before forwarding. On first request the server also issues a 30-day local cookie, so sessions survive Authentik token expiry. |
-| **Username + password** | Login form at `/login`. Passwords are stored with bcrypt. Browser cookies contain opaque 30-day session tokens, not password hashes. |
+| **Username + password** | Login form at `/login`. Passwords are stored with bcrypt. Browser cookies contain opaque 30-day session tokens, not password hashes. Passwords must fit bcrypt's 72-byte input limit. |
 | **API key** | `X-API-Key` header (for iOS app sync and MCP). |
 
 Existing installs that predate bcrypt keep working: the first successful password login upgrades that user's legacy SHA-256 password hash to bcrypt. Existing browser cookies from older releases are intentionally invalidated once; log in again after deployment.

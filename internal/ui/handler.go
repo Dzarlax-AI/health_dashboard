@@ -112,7 +112,7 @@ func (h *Handler) authCookieSecure(r *http.Request) bool {
 	if r.TLS != nil {
 		return true
 	}
-	if !h.forwardAuthTrusted(r) {
+	if !h.trustedProxy(r) {
 		return false
 	}
 	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
@@ -530,6 +530,11 @@ func (h *Handler) setup(w http.ResponseWriter, r *http.Request) {
 			IsAdmin:  true,
 		})
 		if err != nil {
+			if registry.IsPasswordTooLong(err) {
+				w.WriteHeader(http.StatusBadRequest)
+				renderPage(w, "setup", struct{ Error string }{"Password is too long; bcrypt accepts at most 72 bytes."})
+				return
+			}
 			renderPage(w, "setup", struct{ Error string }{"Failed to create user: " + err.Error()})
 			return
 		}
@@ -2905,6 +2910,10 @@ func (h *Handler) adminUsers(w http.ResponseWriter, r *http.Request) {
 		}
 		user, err := h.reg.CreateUser(r.Context(), req)
 		if err != nil {
+			if registry.IsPasswordTooLong(err) {
+				jsonError(w, "password is too long; bcrypt accepts at most 72 bytes", http.StatusBadRequest)
+				return
+			}
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

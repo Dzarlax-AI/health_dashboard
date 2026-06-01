@@ -37,6 +37,18 @@ func TestForwardAuthTrustedDefaultsToLocalAndPrivateAddresses(t *testing.T) {
 	}
 }
 
+func TestTrustedProxyDoesNotRequireForwardAuth(t *testing.T) {
+	h := &Handler{}
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "10.0.0.8:1234"
+	if !h.trustedProxy(r) {
+		t.Fatal("private proxy should be trusted for proxy-derived metadata")
+	}
+	if h.forwardAuthTrusted(r) {
+		t.Fatal("ForwardAuth identity headers should still require TRUST_FORWARD_AUTH")
+	}
+}
+
 func TestForwardAuthTrustedCIDROverride(t *testing.T) {
 	h := &Handler{trustFwdAuth: true}
 	if err := h.SetTrustedForwardAuthNetworks("100.64.0.0/10, 203.0.113.4/32"); err != nil {

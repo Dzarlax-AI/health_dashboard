@@ -40,6 +40,9 @@ func TestHashPasswordReturnsErrorForOverlongPassword(t *testing.T) {
 	if err == nil {
 		t.Fatalf("HashPassword accepted overlong bcrypt password")
 	}
+	if !IsPasswordTooLong(err) {
+		t.Fatalf("HashPassword error = %v, want password-too-long", err)
+	}
 }
 
 func TestGenerateSessionTokenUsesExpectedEntropyShape(t *testing.T) {

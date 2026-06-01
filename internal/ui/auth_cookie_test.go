@@ -24,7 +24,6 @@ func TestAuthCookieSecurePolicy(t *testing.T) {
 	trusted := httptest.NewRequest("GET", "http://example.test/", nil)
 	trusted.RemoteAddr = "10.0.0.10:1234"
 	trusted.Header.Set("X-Forwarded-Proto", "https")
-	h.trustFwdAuth = true
 	if !h.authCookieSecure(trusted) {
 		t.Fatalf("trusted X-Forwarded-Proto=https request not marked secure")
 	}

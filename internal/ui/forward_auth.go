@@ -37,6 +37,10 @@ func (h *Handler) forwardAuthTrusted(r *http.Request) bool {
 	if !h.trustFwdAuth {
 		return false
 	}
+	return h.trustedProxy(r)
+}
+
+func (h *Handler) trustedProxy(r *http.Request) bool {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr

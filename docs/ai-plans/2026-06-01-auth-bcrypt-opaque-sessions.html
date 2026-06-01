@@ -195,6 +195,8 @@
       <li>Added <code>/logout</code> to delete the current server-side session and expire the browser cookie.</li>
       <li>Added README notes for bcrypt, opaque sessions, one-time relogin, and single-user session support.</li>
       <li>Addressed PR review hardening: <code>HashPassword</code> now returns errors instead of panicking, cookie <code>Secure</code> only trusts <code>X-Forwarded-Proto</code> from trusted proxies, and logout is POST-only.</li>
+      <li>Split trusted-proxy detection from ForwardAuth identity trust so TLS-terminating proxy deployments can still receive <code>Secure</code> cookies without enabling <code>X-authentik-*</code> header trust.</li>
+      <li>Returned explicit client errors for bcrypt's 72-byte password limit in setup/admin user creation, with README documentation.</li>
     </ul>
     <h3>Checks Run</h3>
     <ul>

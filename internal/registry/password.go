@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"errors"
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
@@ -18,6 +19,10 @@ func HashPassword(password string) (string, error) {
 
 func HashPasswordForStorage(password string) (string, error) {
 	return hashPassword(password)
+}
+
+func IsPasswordTooLong(err error) bool {
+	return errors.Is(err, bcrypt.ErrPasswordTooLong)
 }
 
 func hashPassword(password string) (string, error) {
