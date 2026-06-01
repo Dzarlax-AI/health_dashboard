@@ -183,7 +183,7 @@
 
   <section class="ok">
     <h2>Implementation Update</h2>
-    <p>Implemented after approval on 2026-06-01.</p>
+    <p>Implemented after approval on 2026-06-01 in PR <code>#171</code>. The PR closes issue <code>#156</code>.</p>
     <ul>
       <li>Added bcrypt password hashing with legacy SHA-256 verification and rehash-on-login support.</li>
       <li>Pinned <code>golang.org/x/crypto</code> to the currently latest verified release, <code>v0.52.0</code>, with refreshed vendored dependencies.</li>
@@ -204,13 +204,16 @@
       <li><code>go test ./... -count=1</code></li>
       <li><code>go vet ./...</code></li>
       <li><code>go build ./...</code></li>
+      <li><code>git diff --check</code></li>
       <li>Focused review-follow-up tests for overlong bcrypt input, trusted forwarded-proto handling, and non-POST logout rejection.</li>
+      <li>GitHub CI <code>Build, Vet &amp; Test</code> passed on PR head <code>9f05e66</code>. Docker publish jobs were skipped for the pull-request event.</li>
     </ul>
     <h3>Known Limitations</h3>
     <ul>
       <li>Session management remains internal; there is no admin UI for listing or revoking all active sessions.</li>
       <li><code>X-API-Key</code> remains a broad bearer credential by design in this PR. Narrowing dashboard API-key access should be a separate compatibility decision.</li>
       <li>Rollback after multi-user accounts rehash to bcrypt still requires either restoring this auth code or resetting affected passwords.</li>
+      <li>The PR keeps vendored module updates because current CI/Docker builds use <code>-mod=vendor</code>. Issue <code>#170</code> tracks a separate OSS-oriented no-vendor migration.</li>
     </ul>
   </section>
 
