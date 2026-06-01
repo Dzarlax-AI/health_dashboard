@@ -28,6 +28,12 @@ The product direction is deliberately conservative: raw data is preserved, deriv
 
 For the product and methodology story behind the project, see the [Health Dashboard article series](https://dzarlax.dev/series/health-dashboard/): an 8-part build log covering how the Apple Health receiver evolved into a dashboard that refuses to fabricate numbers when inputs are missing.
 
+Project direction and maintainer context:
+
+- [Roadmap](ROADMAP.md) — current priorities, later work, and explicit non-goals.
+- [Architecture](docs/ARCHITECTURE.md) — system boundaries, data layers, scoring methodology, and privacy model.
+- [Contributing](CONTRIBUTING.md) — development workflow, testing, and privacy expectations.
+
 ## Why This Matters for OSS
 
 Most consumer health apps keep the interesting derived metrics behind closed algorithms and cloud accounts. Health Dashboard takes the opposite route:

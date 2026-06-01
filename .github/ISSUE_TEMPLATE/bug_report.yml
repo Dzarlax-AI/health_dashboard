@@ -1,0 +1,70 @@
+name: Bug report
+description: Report incorrect behavior or a regression.
+title: "[Bug]: "
+labels: ["type:bug", "status:needs-plan"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include real personal health values, raw exports, API keys, tenant names, schema names, or screenshots with identifiable health history.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What is wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why this matters
+      description: What user-facing trust, scoring, import, or operations problem does this cause?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Include endpoint, command, page, or workflow. Use anonymized dates/ranges where possible.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized evidence
+      description: Logs, SQL snippets, response excerpts, or screenshots with private values removed.
+      render: text
+  - type: textarea
+    id: privacy
+    attributes:
+      label: Privacy / evidence boundary
+      description: Confirm what was anonymized and what must not be inferred from missing data.
+      placeholder: "No raw personal health data included."
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Commit SHA, deployment mode, single/multi-user mode, client, browser, or OS where relevant.
+      placeholder: |
+        Commit:
+        Deployment:
+        Client:
+        Browser/OS:

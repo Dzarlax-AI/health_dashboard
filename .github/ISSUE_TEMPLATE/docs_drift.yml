@@ -1,0 +1,44 @@
+name: Documentation or methodology drift
+description: Report docs that no longer match code, deployed behavior, or methodology.
+title: "[Docs]: "
+labels: ["type:docs", "area:docs", "status:needs-plan"]
+body:
+  - type: textarea
+    id: drift
+    attributes:
+      label: What is drifting?
+      description: Which document and which current behavior disagree?
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why this matters
+      description: What trust, operator, contributor, or methodology problem does the drift create?
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: Which files or sections should be updated?
+    validations:
+      required: true
+  - type: textarea
+    id: non_goals
+    attributes:
+      label: Non-goals
+      description: Confirm whether this is docs-only or if code behavior is also in scope.
+      placeholder: "Do not change formulas in this issue."
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      placeholder: |
+        - Weights/statuses match code.
+        - Missing-data behavior is documented.
+        - Experimental vs shipped status is explicit.
+    validations:
+      required: true

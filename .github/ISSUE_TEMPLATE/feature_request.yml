@@ -1,0 +1,52 @@
+name: Feature or enhancement
+description: Propose a scoped product, API, UI, or operational improvement.
+title: "[Feature]: "
+labels: ["enhancement", "status:needs-plan"]
+body:
+  - type: textarea
+    id: why
+    attributes:
+      label: Why this matters
+      description: What user, operator, or maintainer problem does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What should change?
+      placeholder: |
+        - ...
+        - ...
+    validations:
+      required: true
+  - type: textarea
+    id: non_goals
+    attributes:
+      label: Non-goals
+      description: What should explicitly stay out of this issue?
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Concrete checks that make this done.
+      placeholder: |
+        - ...
+        - ...
+    validations:
+      required: true
+  - type: textarea
+    id: test_plan
+    attributes:
+      label: Test plan
+      description: Unit, integration, manual QA, deploy smoke, or data verification expected.
+    validations:
+      required: true
+  - type: textarea
+    id: privacy
+    attributes:
+      label: Privacy / evidence boundary
+      description: What data must remain private? What should the system refuse to infer?
+      placeholder: "Use anonymized profile labels and avoid raw health values."
