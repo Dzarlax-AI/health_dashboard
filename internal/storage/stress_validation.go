@@ -46,8 +46,7 @@ func (s *DB) ComputeStressValidationReport(
 			return health.ValidationReport{}, fmt.Errorf("parse asOfDate %q: %w", asOfDate, err)
 		}
 	}
-	from := d.AddDate(0, 0, -windowDays).Format("2006-01-02")
-	to := d.Format("2006-01-02")
+	from, to := stressValidationDateRange(d, windowDays)
 
 	pairs, err := s.fetchValidationPairs(ctx, from, to)
 	if err != nil {
@@ -101,6 +100,14 @@ func (s *DB) ComputeStressValidationReport(
 
 	health.RubricDecide(&report)
 	return report, nil
+}
+
+func stressValidationDateRange(asOf time.Time, windowDays int) (from, to string) {
+	if windowDays <= 0 {
+		windowDays = 30
+	}
+	return asOf.AddDate(0, 0, -(windowDays - 1)).Format("2006-01-02"),
+		asOf.Format("2006-01-02")
 }
 
 // validationPair carries one row of the day-d / day-(d+1) join.
