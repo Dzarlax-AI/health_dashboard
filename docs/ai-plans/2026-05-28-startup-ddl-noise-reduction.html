@@ -226,6 +226,19 @@
     </ul>
   </section>
 
+  <section class="evidence">
+    <h2>Production Verification</h2>
+    <ul>
+      <li>PR #141 was merged on 2026-05-28 and deployed to production.</li>
+      <li>Production container restarted on <code>ghcr.io/dzarlax-ai/health_dashboard:latest</code> and served traffic on <code>:8080</code>.</li>
+      <li><code>https://health.dzarlax.dev/login</code> responded through the expected Authentik redirect flow.</li>
+      <li>Startup logs no longer showed the previous cascade of <code>migrate:</code> / <code>ensure index:</code> <code>context deadline exceeded</code> messages.</li>
+      <li>Both tenants completed startup cache refresh: <code>[health_mariia] startup: cache refresh done</code> and <code>[health] startup: cache refresh done</code>.</li>
+      <li>Database freshness check showed <code>daily_scores</code>, <code>target_snapshots</code>, and <code>naive_baselines</code> current through <code>2026-05-28</code> for both <code>health</code> and <code>health_mariia</code>.</li>
+      <li><code>pg_stat_activity</code> showed no active <code>health_user</code> queries older than two minutes after startup settled.</li>
+    </ul>
+  </section>
+
   <section>
     <h2>Open Questions</h2>
     <ul>
