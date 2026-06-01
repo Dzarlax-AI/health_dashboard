@@ -24,10 +24,10 @@ type RawMetrics struct {
 	// from Nap[0] because the slice filters qty>0 — the latest entry can
 	// be from any prior day someone napped, which would mis-attribute the
 	// dashboard nap badge to today.
-	NapToday float64
-	Steps    []float64
-	Cal      []float64
-	Exercise []float64
+	NapToday  float64
+	Steps     []float64
+	Cal       []float64
+	Exercise  []float64
 	SpO2      []float64
 	VO2       []float64
 	Resp      []float64
@@ -75,10 +75,10 @@ type BriefingDetail struct {
 }
 
 type BriefingSection struct {
-	Key     string           `json:"key"`
-	Title   string           `json:"title"`
-	Icon    string           `json:"icon"`
-	Status  string           `json:"status"` // "good", "fair", "low"
+	Key    string `json:"key"`
+	Title  string `json:"title"`
+	Icon   string `json:"icon"`
+	Status string `json:"status"` // "good", "fair", "low"
 	// StatusLabel is the localized rendering of Status for clients
 	// (especially iOS) that should not maintain a parallel i18n table
 	// for server enums. Populated by EnrichLabels at briefing time.
@@ -119,14 +119,14 @@ type SleepAnalysis struct {
 }
 
 type MetricCard struct {
-	Name       string  `json:"name"`
-	Metric     string  `json:"metric"`
-	Value      string  `json:"value"`
-	Unit       string  `json:"unit"`
+	Name   string `json:"name"`
+	Metric string `json:"metric"`
+	Value  string `json:"value"`
+	Unit   string `json:"unit"`
 	// Badge is an optional small annotation rendered next to the value —
 	// e.g. "+45m nap" on the sleep card when the user napped today.
 	// Empty string means no badge.
-	Badge      string  `json:"badge,omitempty"`
+	Badge string `json:"badge,omitempty"`
 	// Existing single-baseline trend (vs full 30-day average) — kept for
 	// backwards-compatibility with the current dashboard template.
 	TrendPct    float64 `json:"trend_pct"`
@@ -171,11 +171,11 @@ type Alert struct {
 type HeadlineSignal struct {
 	// Semantic key for UI: "stress", "sleep_debt", "elevated_rhr",
 	// "depressed_hrv", "good_recovery", "stable" (or empty if no headline).
-	Key      string                 `json:"key"`
-	Severity string                 `json:"severity"` // "warning", "info", "positive"
-	Title    string                 `json:"title"`    // short one-liner
-	Detail   string                 `json:"detail"`   // 1-2 sentence explanation citing concrete numbers
-	Metrics  []HeadlineMetricDelta  `json:"metrics,omitempty"` // contributing deltas
+	Key      string                `json:"key"`
+	Severity string                `json:"severity"`          // "warning", "info", "positive"
+	Title    string                `json:"title"`             // short one-liner
+	Detail   string                `json:"detail"`            // 1-2 sentence explanation citing concrete numbers
+	Metrics  []HeadlineMetricDelta `json:"metrics,omitempty"` // contributing deltas
 }
 
 // EnergyBank is a Bevel-inspired prescriptive metric: the user's "energy
@@ -187,12 +187,12 @@ type HeadlineSignal struct {
 // Headline answers "what's notable today?"; EnergyBank answers "what should
 // you do?". Intentionally a separate field so the two signals stay legible.
 type EnergyBank struct {
-	Capacity      int                   `json:"capacity"`        // 0-100, set at briefing time
-	Current       int                   `json:"current"`         // 0-100, capacity - drain
-	DrainSoFar    int                   `json:"drain_so_far"`    // 0-100, total accumulated drain
-	Strain        int                   `json:"strain"`          // 0-100, ACWR-flavoured activity load
-	Stress        int                   `json:"stress"`          // 0-100, autonomic z-score deviation
-	ActionVerdict string                `json:"action_verdict"`  // enum: push_hard|moderate|active_recovery|rest
+	Capacity      int    `json:"capacity"`       // 0-100, set at briefing time
+	Current       int    `json:"current"`        // 0-100, capacity - drain
+	DrainSoFar    int    `json:"drain_so_far"`   // 0-100, total accumulated drain
+	Strain        int    `json:"strain"`         // 0-100, ACWR-flavoured activity load
+	Stress        int    `json:"stress"`         // 0-100, autonomic z-score deviation
+	ActionVerdict string `json:"action_verdict"` // enum: push_hard|moderate|active_recovery|rest
 	// VerdictLabel is the localized short rendering of ActionVerdict.
 	// Populated by EnrichLabels so iOS / other consumers don't need a
 	// parallel i18n map for energy_verdict_<verdict>.
@@ -203,8 +203,8 @@ type EnergyBank struct {
 	// severity → DS token map across both surfaces. Empty when the
 	// verdict has no mapping (treated as neutral by clients).
 	VerdictSeverity string                `json:"verdict_severity,omitempty"`
-	VerdictReason   string                `json:"verdict_reason"`  // localised one-sentence rationale
-	Components    []EnergyBankComponent `json:"components,omitempty"`
+	VerdictReason   string                `json:"verdict_reason"` // localised one-sentence rationale
+	Components      []EnergyBankComponent `json:"components,omitempty"`
 	// HRVZRaw is today's HRV z-score against personal baseline (negative =
 	// vagal depression = parasympathetic underactivity). Exposed because
 	// downstream consumers — the storage-layer v2 override block, the AI
@@ -265,16 +265,23 @@ type FlagDetail struct {
 // from a single reference user's 459-day distribution (see
 // DefaultV2VerdictBands).
 //
-// Source records which calibration produced the bands so the UI can
-// badge "calibrating" vs "personalized" without a separate query. The
-// caller is free to inspect NDataPoints if it wants to distinguish
-// "barely-personalized 35 days" from "deeply-personalized 365 days".
+// Source records the broad calibration family for backward-compatible
+// clients. CalibrationMode carries the precise mode so mixed-formula
+// warmup and default warmup are not hidden behind the legacy "personal"
+// / "default" labels. NDataPoints is retained for compatibility and
+// means distinct eligible local dates used for returned non-default
+// bands, never raw snapshot rows. In default modes it stays zero; use
+// LatestFormulaDays and CompatibleFormulaDays for warmup diagnostics.
 type VerdictBands struct {
-	Rest        int    `json:"rest"`         // ≤ this → rest
-	Recovery    int    `json:"recovery"`     // ≤ this → active_recovery
-	PushHard    int    `json:"push_hard"`    // ≥ this AND HRV gate → push_hard
-	Source      string `json:"source"`       // "personal" | "default" | "manual"
-	NDataPoints int    `json:"n_data_points"`
+	Rest                  int    `json:"rest"`                    // ≤ this → rest
+	Recovery              int    `json:"recovery"`                // ≤ this → active_recovery
+	PushHard              int    `json:"push_hard"`               // ≥ this AND HRV gate → push_hard
+	Source                string `json:"source"`                  // "personal" | "default" | "manual"
+	NDataPoints           int    `json:"n_data_points"`           // distinct eligible dates used for non-default bands
+	CalibrationMode       string `json:"calibration_mode"`        // personal_latest_formula | personal_mixed_formula_warmup | default_warmup | default
+	UsedDays              int    `json:"used_days"`               // distinct eligible dates used for returned non-default bands
+	LatestFormulaDays     int    `json:"latest_formula_days"`     // distinct eligible dates for current formula
+	CompatibleFormulaDays int    `json:"compatible_formula_days"` // distinct eligible dates after compatibility whitelist
 }
 
 // Level buckets Current into critical/low/medium/good so the dashboard can
@@ -301,9 +308,9 @@ func (e *EnergyBank) Level() string {
 // EnergyBankComponent breaks down the capacity/strain/stress numbers so the
 // dashboard and AI briefing can show *why* the verdict is what it is.
 type EnergyBankComponent struct {
-	Name  string `json:"name"`  // morning_capacity | activity_load | autonomic_stress
+	Name  string `json:"name"` // morning_capacity | activity_load | autonomic_stress
 	Value int    `json:"value"`
-	Note  string `json:"note"`  // free-form provenance ("steps 8200 vs 28d avg 7400")
+	Note  string `json:"note"` // free-form provenance ("steps 8200 vs 28d avg 7400")
 }
 
 // HeadlineMetricDelta carries the concrete number behind a headline:
@@ -320,33 +327,33 @@ type HeadlineMetricDelta struct {
 }
 
 type BriefingResponse struct {
-	Date           string             `json:"date"`
-	Greeting       string             `json:"greeting"`
-	Overall        string             `json:"overall"` // "good", "fair", "low"
-	Headline       *HeadlineSignal    `json:"headline,omitempty"`
-	Sections       []BriefingSection  `json:"sections"`
-	Highlights     []BriefingDetail   `json:"highlights"`
-	ReadinessScore int                `json:"readiness_score"`      // 7-day sliding window
+	Date           string            `json:"date"`
+	Greeting       string            `json:"greeting"`
+	Overall        string            `json:"overall"` // "good", "fair", "low"
+	Headline       *HeadlineSignal   `json:"headline,omitempty"`
+	Sections       []BriefingSection `json:"sections"`
+	Highlights     []BriefingDetail  `json:"highlights"`
+	ReadinessScore int               `json:"readiness_score"` // 7-day sliding window
 	// ReadinessBand is the stable enum key ("optimal" / "fair" / "low")
 	// derived from ReadinessScore via the canonical ReadinessBand()
 	// helper. Surfaced server-side so iOS / other consumers don't
 	// reimplement the thresholds locally (which drift — see issue #83
 	// item #4). ReadinessLabel is the language-specific rendering of
 	// the same band; clients pick one or both.
-	ReadinessBand  string             `json:"readiness_band"`
-	ReadinessLabel string             `json:"readiness_label"`
-	ReadinessTip   string             `json:"readiness_tip"`
-	RecoveryPct    int                `json:"recovery_pct"`
-	ReadinessToday int                `json:"readiness_today"`      // today only vs baseline
+	ReadinessBand  string `json:"readiness_band"`
+	ReadinessLabel string `json:"readiness_label"`
+	ReadinessTip   string `json:"readiness_tip"`
+	RecoveryPct    int    `json:"recovery_pct"`
+	ReadinessToday int    `json:"readiness_today"` // today only vs baseline
 	// ReadinessTodayBand mirrors ReadinessBand for the today-only score.
-	ReadinessTodayBand  string        `json:"readiness_today_band"`
-	ReadinessTodayLabel string        `json:"readiness_today_label"`
-	Correlation    []CorrelationPoint `json:"correlation"`
-	Insights       []Insight          `json:"insights"`
-	Alerts         []Alert            `json:"alerts,omitempty"`
-	Sleep          *SleepAnalysis     `json:"sleep"`
-	MetricCards    []MetricCard       `json:"metric_cards"`
-	EnergyBank     *EnergyBank        `json:"energy_bank,omitempty"`
+	ReadinessTodayBand  string             `json:"readiness_today_band"`
+	ReadinessTodayLabel string             `json:"readiness_today_label"`
+	Correlation         []CorrelationPoint `json:"correlation"`
+	Insights            []Insight          `json:"insights"`
+	Alerts              []Alert            `json:"alerts,omitempty"`
+	Sleep               *SleepAnalysis     `json:"sleep"`
+	MetricCards         []MetricCard       `json:"metric_cards"`
+	EnergyBank          *EnergyBank        `json:"energy_bank,omitempty"`
 	// SubjectiveCheckin is the morning self-report (Telegram one-tap).
 	// Populated from subjective_checkins when a row exists for today
 	// in the tenant's REPORT_TZ. nil when no row — dashboard renders
@@ -356,7 +363,7 @@ type BriefingResponse struct {
 	// AIInsight is the Gemini-generated narrative cached in `ai_briefings`.
 	// Populated by the API handler (not by GetHealthBriefing), so it stays
 	// optional and doesn't pollute internal-use callers of BriefingResponse.
-	AIInsight      string             `json:"ai_insight,omitempty"`
+	AIInsight string `json:"ai_insight,omitempty"`
 }
 
 // SubjectiveCheckinSummary is the read-shape rendered into the
