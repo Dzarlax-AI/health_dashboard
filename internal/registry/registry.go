@@ -3,7 +3,6 @@ package registry
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -136,6 +135,20 @@ func (r *Registry) EnsureSchema(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("create global_settings table: %w", err)
 	}
+	_, err = r.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS health_registry.sessions (
+			id_hash     TEXT PRIMARY KEY,
+			username    TEXT NOT NULL REFERENCES health_registry.users(username) ON DELETE CASCADE,
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			expires_at  TIMESTAMPTZ NOT NULL,
+			last_seen_at TIMESTAMPTZ
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("create sessions table: %w", err)
+	}
+	_, _ = r.pool.Exec(ctx, `CREATE INDEX IF NOT EXISTS idx_registry_sessions_user ON health_registry.sessions (username)`)
+	_, _ = r.pool.Exec(ctx, `CREATE INDEX IF NOT EXISTS idx_registry_sessions_expires ON health_registry.sessions (expires_at)`)
 	return nil
 }
 
@@ -338,7 +351,10 @@ func (r *Registry) CreateUser(ctx context.Context, req CreateUserReq) (*User, er
 	if err != nil {
 		return nil, fmt.Errorf("generate api key: %w", err)
 	}
-	hash := hashPassword(req.Password)
+	hash, err := hashPassword(req.Password)
+	if err != nil {
+		return nil, fmt.Errorf("hash password: %w", err)
+	}
 
 	var emailPtr *string
 	if req.Email != "" {
@@ -393,19 +409,18 @@ func (r *Registry) DeleteUser(ctx context.Context, username string) error {
 	return err
 }
 
+// UpdatePasswordHash replaces a user's stored password hash after a verified
+// legacy login or an explicit password reset.
+func (r *Registry) UpdatePasswordHash(ctx context.Context, username, passwordHash string) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE health_registry.users SET password_hash = $2 WHERE username = $1
+	`, username, passwordHash)
+	return err
+}
+
 // Close releases the connection pool.
 func (r *Registry) Close() {
 	r.pool.Close()
-}
-
-// HashPassword returns hex(sha256(password)), matching the cookie auth format.
-func HashPassword(password string) string {
-	return hashPassword(password)
-}
-
-func hashPassword(password string) string {
-	sum := sha256.Sum256([]byte(password))
-	return hex.EncodeToString(sum[:])
 }
 
 func generateAPIKey() (string, error) {

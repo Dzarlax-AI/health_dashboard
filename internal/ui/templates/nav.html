@@ -27,6 +27,11 @@
     {{range LangOptions .Lang}}
     <a href="?lang={{.Code}}" class="top-btn lang-toggle{{if .Active}} active{{end}}" onclick="document.cookie='lang={{.Code}};path=/;max-age=31536000'">{{.Label}}</a>
     {{end}}
+    <form method="POST" action="/logout" style="display:inline">
+      <button type="submit" class="top-btn" title="{{T .Lang "nav_logout"}}">
+        <span>{{T .Lang "nav_logout"}}</span>
+      </button>
+    </form>
   </div>
   <script>
     function toggleTopMenu() {

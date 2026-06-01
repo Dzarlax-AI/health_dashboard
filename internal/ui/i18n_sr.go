@@ -24,6 +24,7 @@ var translationsSr = map[string]string{
 	"compare":                    "Uporedi",
 	"all_metrics":                "Metrike",
 	"nav_settings":               "Podešavanja",
+	"nav_logout":                 "Odjava",
 	"your_trends":                "Vaši trendovi",
 	"search_placeholder":         "Pretraži metrike...",
 	"esc_hint":                   "ESC — zatvori",

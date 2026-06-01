@@ -27,6 +27,7 @@ var translationsEn = map[string]string{
 	"compare":                    "Compare",
 	"all_metrics":                "Metrics",
 	"nav_settings":               "Settings",
+	"nav_logout":                 "Logout",
 	"your_trends":                "Your trends",
 	"search_placeholder":         "Search metrics...",
 	"esc_hint":                   "ESC to close",

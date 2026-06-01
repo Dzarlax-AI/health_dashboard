@@ -102,10 +102,14 @@ func main() {
 		legacyDB.EnsureEnergySnapshotsTable()
 		legacyDB.EnsureReadinessRedesignTables()
 		legacyDB.EnsureSubjectiveCheckinsTable()
+		legacyDB.EnsureAuthSessionsTable()
 
 		passwordHash := ""
 		if uiPassword != "" {
-			passwordHash = registry.HashPassword(uiPassword)
+			passwordHash, err = registry.HashPassword(uiPassword)
+			if err != nil {
+				log.Fatalf("hash UI_PASSWORD: %v", err)
+			}
 		}
 		mgr.SetLegacyMode(legacyDB, apiKey, passwordHash)
 
@@ -123,7 +127,10 @@ func main() {
 		log.Println("Registry empty — seeding admin user from API_KEY / UI_PASSWORD env vars…")
 		passwordHash := ""
 		if uiPassword != "" {
-			passwordHash = registry.HashPassword(uiPassword)
+			passwordHash, err = registry.HashPassword(uiPassword)
+			if err != nil {
+				log.Fatalf("hash UI_PASSWORD: %v", err)
+			}
 		}
 		const adminSchema = "health"
 		if err := reg.MigrateFromEnv(ctx, apiKey, passwordHash, adminSchema, adminEmail); err != nil {
@@ -166,6 +173,7 @@ func main() {
 		db.EnsureEnergySnapshotsTable()
 		db.EnsureReadinessRedesignTables()
 		db.EnsureSubjectiveCheckinsTable()
+		db.EnsureAuthSessionsTable()
 		startTenant(ctx, mgr, reg, db, u.SchemaName, envNotifyDefaults, envAIDefaults, baseURL)
 	}
 
@@ -220,6 +228,7 @@ func main() {
 		db.EnsureEnergySnapshotsTable()
 		db.EnsureReadinessRedesignTables()
 		db.EnsureSubjectiveCheckinsTable()
+		db.EnsureAuthSessionsTable()
 		startTenant(ctx, mgr, reg, db, schema, envNotifyDefaults, envAIDefaults, baseURL)
 	})
 	uiHandler.Register(mux)
