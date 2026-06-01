@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<HealthData locale="en_US">
+  <Record type="HKQuantityTypeIdentifierStepCount" sourceName="Synthetic Watch" unit="count" creationDate="2026-01-02 10:00:00 +0000" startDate="2026-01-02 10:00:00 +0000" endDate="2026-01-02 10:05:00 +0000" value="42"/>
+  <Record type="HKQuantityTypeIdentifierHeartRateVariabilitySDNN" sourceName="Synthetic Watch" unit="ms" creationDate="2026-01-02 06:00:00 +0000" startDate="2026-01-02 06:00:00 +0000" endDate="2026-01-02 06:01:00 +0000" value="55"/>
+  <Record type="HKQuantityTypeIdentifierOxygenSaturation" sourceName="Synthetic Watch" unit="%" creationDate="2026-01-02 06:02:00 +0000" startDate="2026-01-02 06:02:00 +0000" endDate="2026-01-02 06:03:00 +0000" value="0.97"/>
+  <Record type="HKQuantityTypeIdentifierBodyFatPercentage" sourceName="Synthetic Scale" unit="%" creationDate="2026-01-02 07:00:00 +0000" startDate="2026-01-02 07:00:00 +0000" endDate="2026-01-02 07:01:00 +0000" value="0.215"/>
+  <Record type="HKCategoryTypeIdentifierSleepAnalysis" sourceName="Synthetic Watch" creationDate="2026-01-02 06:30:00 +0000" startDate="2026-01-01 23:00:00 +0000" endDate="2026-01-02 01:00:00 +0000" value="HKCategoryValueSleepAnalysisAsleepCore"/>
+  <Record type="HKCategoryTypeIdentifierSleepAnalysis" sourceName="Synthetic Watch" creationDate="2026-01-02 06:30:00 +0000" startDate="2026-01-02 01:00:00 +0000" endDate="2026-01-02 01:30:00 +0000" value="HKCategoryValueSleepAnalysisAsleepDeep"/>
+  <Record type="HKCategoryTypeIdentifierSleepAnalysis" sourceName="Synthetic Watch" creationDate="2026-01-02 06:30:00 +0000" startDate="2026-01-02 01:30:00 +0000" endDate="2026-01-02 02:00:00 +0000" value="HKCategoryValueSleepAnalysisAsleepREM"/>
+  <Record type="HKCategoryTypeIdentifierSleepAnalysis" sourceName="Synthetic Watch" creationDate="2026-01-02 06:30:00 +0000" startDate="2026-01-02 02:00:00 +0000" endDate="2026-01-02 02:15:00 +0000" value="HKCategoryValueSleepAnalysisAwake"/>
+  <Record type="HKCategoryTypeIdentifierSleepAnalysis" sourceName="Synthetic Phone" creationDate="2026-01-03 07:00:00 +0000" startDate="2026-01-02 23:30:00 +0000" endDate="2026-01-03 05:30:00 +0000" value="HKCategoryValueSleepAnalysisAsleep"/>
+</HealthData>
