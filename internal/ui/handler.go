@@ -84,33 +84,36 @@ func (h *Handler) isAdmin(r *http.Request) bool {
 	return ctxdb.IsAdminFromContext(r.Context())
 }
 
-func setAuthCookie(w http.ResponseWriter, r *http.Request, token string) {
+func (h *Handler) setAuthCookie(w http.ResponseWriter, r *http.Request, token string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     authCookieName,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   authCookieSecure(r),
+		Secure:   h.authCookieSecure(r),
 		MaxAge:   int(authSessionTTL.Seconds()),
 	})
 }
 
-func expireAuthCookie(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) expireAuthCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     authCookieName,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   authCookieSecure(r),
+		Secure:   h.authCookieSecure(r),
 		MaxAge:   -1,
 	})
 }
 
-func authCookieSecure(r *http.Request) bool {
+func (h *Handler) authCookieSecure(r *http.Request) bool {
 	if r.TLS != nil {
 		return true
+	}
+	if !h.forwardAuthTrusted(r) {
+		return false
 	}
 	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
@@ -129,7 +132,7 @@ func (h *Handler) basePage(r *http.Request, title, activeNav string) BasePage {
 func (h *Handler) Register(mux *http.ServeMux) {
 	// Auth
 	mux.HandleFunc("/login", h.login)
-	mux.HandleFunc("/logout", h.logout)
+	mux.HandleFunc("POST /logout", h.logout)
 	mux.HandleFunc("/setup", h.setup)
 
 	// Page routes
@@ -319,7 +322,7 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 				// Issue a local cookie so requests survive Authentik session expiry.
 				if cookie, err := r.Cookie(authCookieName); err != nil || !db.AuthSessionValid(cookie.Value) {
 					if token, err := db.CreateAuthSession(authSessionTTL); err == nil {
-						setAuthCookie(w, r, token)
+						h.setAuthCookie(w, r, token)
 					}
 				}
 				inject()
@@ -364,7 +367,7 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 				}
 			}
 			if token, err := h.reg.CreateSession(r.Context(), username, authSessionTTL); err == nil {
-				setAuthCookie(w, r, token)
+				h.setAuthCookie(w, r, token)
 			}
 		}
 
@@ -437,7 +440,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 					http.Error(w, "create session", http.StatusServiceUnavailable)
 					return
 				}
-				setAuthCookie(w, r, token)
+				h.setAuthCookie(w, r, token)
 				http.Redirect(w, r, next, http.StatusFound)
 				return
 			}
@@ -470,7 +473,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "create session", http.StatusServiceUnavailable)
 			return
 		}
-		setAuthCookie(w, r, token)
+		h.setAuthCookie(w, r, token)
 		http.Redirect(w, r, next, http.StatusFound)
 		return
 	}
@@ -479,6 +482,10 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	if cookie, err := r.Cookie(authCookieName); err == nil {
 		if h.mgr.LegacyMode() {
 			_ = h.mgr.LegacyDB().DeleteAuthSession(cookie.Value)
@@ -486,7 +493,7 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 			_ = h.reg.DeleteSession(r.Context(), cookie.Value)
 		}
 	}
-	expireAuthCookie(w, r)
+	h.expireAuthCookie(w, r)
 	http.Redirect(w, r, "/login", http.StatusFound)
 }
 
@@ -537,7 +544,7 @@ func (h *Handler) setup(w http.ResponseWriter, r *http.Request) {
 
 		// Auto-login the new user.
 		if token, err := h.reg.CreateSession(r.Context(), user.Username, authSessionTTL); err == nil {
-			setAuthCookie(w, r, token)
+			h.setAuthCookie(w, r, token)
 		}
 		http.Redirect(w, r, "/", http.StatusFound)
 		return

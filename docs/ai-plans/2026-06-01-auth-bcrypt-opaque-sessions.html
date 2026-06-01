@@ -194,6 +194,7 @@
       <li>Updated trusted ForwardAuth handling to issue/replace local opaque sessions instead of copying password hashes.</li>
       <li>Added <code>/logout</code> to delete the current server-side session and expire the browser cookie.</li>
       <li>Added README notes for bcrypt, opaque sessions, one-time relogin, and single-user session support.</li>
+      <li>Addressed PR review hardening: <code>HashPassword</code> now returns errors instead of panicking, cookie <code>Secure</code> only trusts <code>X-Forwarded-Proto</code> from trusted proxies, and logout is POST-only.</li>
     </ul>
     <h3>Checks Run</h3>
     <ul>
@@ -201,6 +202,7 @@
       <li><code>go test ./... -count=1</code></li>
       <li><code>go vet ./...</code></li>
       <li><code>go build ./...</code></li>
+      <li>Focused review-follow-up tests for overlong bcrypt input, trusted forwarded-proto handling, and non-POST logout rejection.</li>
     </ul>
     <h3>Known Limitations</h3>
     <ul>

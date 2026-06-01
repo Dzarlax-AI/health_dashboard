@@ -35,6 +35,13 @@ func TestVerifyPasswordAcceptsLegacySHA256AndRequestsRehash(t *testing.T) {
 	}
 }
 
+func TestHashPasswordReturnsErrorForOverlongPassword(t *testing.T) {
+	_, err := HashPassword(string(make([]byte, 73)))
+	if err == nil {
+		t.Fatalf("HashPassword accepted overlong bcrypt password")
+	}
+}
+
 func TestGenerateSessionTokenUsesExpectedEntropyShape(t *testing.T) {
 	a, err := generateSessionToken()
 	if err != nil {

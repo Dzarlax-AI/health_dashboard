@@ -12,12 +12,8 @@ import (
 const bcryptCost = 12
 
 // HashPassword returns a bcrypt password hash for new credentials.
-func HashPassword(password string) string {
-	hash, err := hashPassword(password)
-	if err != nil {
-		panic(err)
-	}
-	return hash
+func HashPassword(password string) (string, error) {
+	return hashPassword(password)
 }
 
 func HashPasswordForStorage(password string) (string, error) {
