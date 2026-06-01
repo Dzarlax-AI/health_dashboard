@@ -1,6 +1,7 @@
 package applehealth
 
 import (
+	"bytes"
 	"os"
 	"strings"
 	"testing"
@@ -61,7 +62,7 @@ func parseXMLFixture(path string, emit func([]storage.MetricPoint)) error {
 	if err != nil {
 		return err
 	}
-	return ParseXML(strings.NewReader(string(data)), emit)
+	return ParseXML(bytes.NewReader(data), emit)
 }
 
 func assertPoint(t *testing.T, points []storage.MetricPoint, metric, units, date, source string, qty float64) {
