@@ -37,19 +37,20 @@
   <section class="callout">
     <h2>Anonymized Live Evidence</h2>
     <p>
-      A production-like profile reported acute symptoms on <code>2026-06-01</code>. The database contained acute
-      evidence that the current briefing mostly under-surfaced.
+      A production-like profile reported acute symptoms on an evaluated day. The database contained acute
+      evidence that the current briefing mostly under-surfaced. Values below are rounded and generalized
+      as an anonymized validation pattern, not a literal health diary.
     </p>
     <table>
       <thead>
         <tr><th>Signal</th><th>Observed</th><th>Baseline</th><th>Deviation</th><th>Current behavior</th></tr>
       </thead>
       <tbody>
-        <tr><td>SpO2 daily average</td><td>95.3%</td><td>96.4%</td><td>-2.69 SD</td><td>Only cardio note; no illness alert</td></tr>
-        <tr><td>SpO2 low readings</td><td>min 91%, several 92-93%</td><td>n/a</td><td>clustered lows</td><td>Not modeled</td></tr>
-        <tr><td>Respiratory rate</td><td>18.0 br/min</td><td>16.8 br/min</td><td>+2.18 SD</td><td>7-day alert smoothing hides acute day</td></tr>
-        <tr><td>Daytime heart rate load</td><td><code>sustained_hr_load_z=1.92</code></td><td>personal baseline</td><td>elevated</td><td>EnergyBank uses it for drain, not illness evidence</td></tr>
-        <tr><td>Readiness / HRV / RHR</td><td>readiness 70, HRV near baseline, RHR slightly high</td><td>personal baseline</td><td>not severe</td><td>System says broadly moderate/fair</td></tr>
+        <tr><td>SpO2 daily average</td><td>about 1 percentage point below baseline</td><td>personal baseline</td><td>below -2 SD</td><td>Only cardio note; no illness alert</td></tr>
+        <tr><td>SpO2 low readings</td><td>repeated low-90s readings</td><td>n/a</td><td>clustered lows</td><td>Not modeled</td></tr>
+        <tr><td>Respiratory rate</td><td>elevated versus baseline</td><td>personal baseline</td><td>above +2 SD</td><td>7-day alert smoothing hides acute day</td></tr>
+        <tr><td>Daytime heart rate load</td><td>elevated sustained HR load</td><td>personal baseline</td><td>near +2 z</td><td>EnergyBank uses it for drain, not illness evidence</td></tr>
+        <tr><td>Readiness / HRV / RHR</td><td>readiness near personal norm, HRV near baseline, RHR slightly high</td><td>personal baseline</td><td>not severe</td><td>System says broadly moderate/fair</td></tr>
       </tbody>
     </table>
     <p class="muted">
@@ -63,6 +64,7 @@
       <li><code>internal/mcpserver/tools.go</code> returns <code>GetHealthBriefing()</code> directly for <code>get_health_briefing</code>; MCP does not calculate illness evidence itself.</li>
       <li><code>internal/health/alerts.go</code> calculates respiratory and wrist-temperature alerts over a 7-day recent average versus baseline. This is useful for sustained drift but can miss a single acute day.</li>
       <li><code>SpO2</code> is present in <code>RawMetrics</code>, daily cache, dashboard cards, and cardio section, but it is not part of anomaly alerts.</li>
+      <li><code>RawMetrics</code> is slice-based and compressed by available values. Same-day illness evidence must not infer date alignment from parallel slice indexes alone.</li>
       <li><code>EnergyBank.Flags</code> documents an <code>illness_signature</code> flag, but the live case had no flags because the existing signature is narrower than this respiratory/SpO2 pattern.</li>
       <li>The generic MCP <code>find_anomalies</code> tool can detect metric-level anomalies only when the agent already knows which metric/date range to query.</li>
     </ul>
@@ -84,10 +86,10 @@
     <h2>Likely File Changes</h2>
     <ul>
       <li><code>internal/health/types.go</code> - add <code>IllnessSuspicion</code> and signal structs to the response contract.</li>
-      <li><code>internal/health/alerts.go</code> or new <code>internal/health/illness.go</code> - compute acute illness evidence from <code>RawMetrics</code> plus storage-supplied acute evidence fields.</li>
+      <li><code>internal/health/alerts.go</code> or new <code>internal/health/illness.go</code> - compute acute illness evidence from a date-aligned input object, not compressed <code>RawMetrics</code> slices alone.</li>
       <li><code>internal/health/scoring.go</code> - attach illness suspicion during <code>ComputeBriefing</code>.</li>
       <li><code>internal/health/i18n_*.go</code> - add localized labels/reasons if surfaced in UI/Telegram.</li>
-      <li><code>internal/storage/briefing.go</code> - fetch same-day SpO2 low-count/min/source context and pass existing sustained HR load / stress flags into the canonical evidence object.</li>
+      <li><code>internal/storage/briefing.go</code> - build a date-aligned illness evidence input for the briefing date, including same-day SpO2 low-count/min/source context and existing sustained HR load / stress flags.</li>
       <li><code>internal/mcpserver/tools.go</code> - update tool descriptions and possibly add <code>get_illness_suspicion</code>.</li>
       <li><code>internal/ui/*</code> and <code>internal/notify/report.go</code> - optional first UI/Telegram surface, depending on approved scope.</li>
       <li><code>internal/health/*_test.go</code>, <code>internal/mcpserver/*_test.go</code> - add acute-day and MCP contract tests.</li>
@@ -97,7 +99,7 @@
   <section>
     <h2>Implementation Steps</h2>
     <ol>
-      <li>Add pure health-domain types for illness suspicion and evidence signals.</li>
+      <li>Add pure health-domain types for illness suspicion, evidence signals, and a date-aligned <code>IllnessEvidenceInput</code>.</li>
       <li>Implement same-day versus baseline evidence using the existing <code>PersonalBaseline</code> median/MAD policy where available; avoid introducing a second incompatible z-score method.</li>
       <li>Add SpO2-specific evidence: average drop, low minimum, and low-reading cluster when raw same-day points are available, with source-aware safeguards.</li>
       <li>Keep existing <code>computeAlerts</code> behavior intact; add illness suspicion as a separate field to avoid breaking clients that consume <code>alerts</code>.</li>
@@ -107,6 +109,33 @@
       <li>Leave symptom-tag expansion and UI/Telegram rendering out of the first PR unless explicitly re-approved after validation.</li>
       <li>Update this plan with actual implementation notes and verification results after approval.</li>
     </ol>
+  </section>
+
+  <section>
+    <h2>Date-Aligned Input Contract</h2>
+    <p>
+      Same-day illness evidence must be computed from an explicit per-date input object. Do not infer acute
+      evidence by comparing <code>RawMetrics.SpO2[0]</code>, <code>RawMetrics.Resp[0]</code>, and
+      <code>RawMetrics.RHR[0]</code>; those slices are most-recent-first per metric and can lose date alignment
+      when one channel is missing.
+    </p>
+    <pre><code>type IllnessEvidenceInput struct {
+    Date string
+    RespiratoryRate *MetricEvidenceInput
+    SpO2Average     *MetricEvidenceInput
+    SpO2LowCluster  *SpO2ClusterEvidence
+    RHR             *MetricEvidenceInput
+    HRV             *MetricEvidenceInput
+    SleepDisruption *MetricEvidenceInput
+    SustainedHRLoad *MetricEvidenceInput
+    StressFlags []string
+    SubjectiveCheckin *SubjectiveCheckinSummary
+}</code></pre>
+    <ul>
+      <li>Storage owns date alignment for the evaluated briefing date.</li>
+      <li>Health-domain code owns scoring the already-aligned evidence object.</li>
+      <li>MCP must read the canonical object from the briefing/storage path and must not recompute illness logic independently.</li>
+    </ul>
   </section>
 
   <section>
@@ -137,6 +166,33 @@
   </section>
 
   <section>
+    <h2>V0 Confidence Thresholds</h2>
+    <p>
+      These thresholds are conservative heuristic contracts for implementation and tests. They are not medical
+      diagnostic thresholds and can be tuned later with more validation data.
+    </p>
+    <table>
+      <thead><tr><th>Signal</th><th>Mild</th><th>Strong</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td>Respiratory rate</td><td>&ge; +1.5 z</td><td>&ge; +2.0 z</td><td>Primary respiratory evidence.</td></tr>
+        <tr><td>SpO2 average</td><td>&le; -1.5 z or &ge; 0.7 percentage point below baseline</td><td>&le; -2.0 z or &ge; 1.0 percentage point below baseline</td><td>Never diagnostic alone.</td></tr>
+        <tr><td>SpO2 low cluster</td><td>Repeated lows below 94%</td><td>Repeated lows below 92%</td><td>Never high confidence by itself.</td></tr>
+        <tr><td>Sustained HR load</td><td>&ge; +1.5 z</td><td>&ge; +2.0 z</td><td>Support signal unless paired with respiratory/SpO2 evidence.</td></tr>
+        <tr><td>RHR</td><td>&ge; +1.0 z</td><td>&ge; +1.5 z</td><td>Support signal.</td></tr>
+        <tr><td>HRV</td><td>&le; -1.0 z</td><td>&le; -1.5 z</td><td>Support signal.</td></tr>
+        <tr><td>Sleep disruption</td><td>material drop vs baseline</td><td>n/a</td><td>Support signal only, not primary illness evidence.</td></tr>
+      </tbody>
+    </table>
+    <ul>
+      <li><code>none</code>: no objective signals.</li>
+      <li><code>low</code>: one mild objective signal.</li>
+      <li><code>moderate</code>: two compatible objective signals, or one strong objective signal plus subjective <code>sick</code>.</li>
+      <li><code>high</code>: existing <code>illness_signature</code>, or at least three converging objective signals including respiratory rate or SpO2.</li>
+      <li><code>high</code> must never come from a single SpO2 minimum or one isolated wearable reading.</li>
+    </ul>
+  </section>
+
+  <section>
     <h2>SpO2 Source Policy</h2>
     <ul>
       <li>A single low wearable reading must not produce high confidence by itself.</li>
@@ -144,6 +200,22 @@
       <li>Return source summaries when available: source name, count, minimum, average, and whether lows came from sleep window or daytime.</li>
       <li>Prefer not to hard-code one device as always authoritative; expose source evidence so downstream agents and UI can explain mixed-source cases.</li>
       <li>High-confidence SpO2 contribution should require either repeated lows, agreement with respiratory-rate elevation, or a strong drop from personal baseline.</li>
+      <li>Allowed wording: "signals consistent with respiratory stress or illness, but this is not a diagnosis."</li>
+      <li>Disallowed wording: "you may have low oxygen", "you are likely sick", or any claim that a wearable reading diagnoses hypoxia or illness.</li>
+      <li>Document device limitations in MCP/tool descriptions: readings can be affected by circulation, skin pigmentation, skin thickness, skin temperature, tobacco use, nail polish, sensor fit, and consumer wellness devices may not be evaluated for clinical decision-making. This wording follows FDA pulse oximeter consumer guidance.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>First Implementation PR Scope</h2>
+    <ul>
+      <li>Add <code>BriefingResponse.illness_suspicion</code>.</li>
+      <li>Add canonical health-domain calculation over <code>IllnessEvidenceInput</code>.</li>
+      <li>Add storage date-aligned evidence collection for the evaluated briefing date.</li>
+      <li>Update <code>get_health_briefing</code> description so MCP clients know the field is evidence-bound and non-diagnostic.</li>
+      <li>Optionally add a thin <code>get_illness_suspicion</code> tool that returns the same canonical object.</li>
+      <li>Add tests for acute, normal, high-activity, missing-data, warmup, and stress-flag cases.</li>
+      <li>No dashboard card, no Telegram/report rendering, no symptom tags, no new <code>stress_flags</code> promotion, and no EnergyBank verdict changes.</li>
     </ul>
   </section>
 
@@ -169,7 +241,7 @@
         </tr>
       </tbody>
     </table>
-    <p><strong>Recommendation:</strong> add the field to <code>get_health_briefing</code> and add a thin <code>get_illness_suspicion</code> MCP tool that returns the same computed object. The tool may accept <code>include_debug=true</code>; default output should be compact and privacy-conscious.</p>
+    <p><strong>Recommendation:</strong> add the field to <code>get_health_briefing</code> and add a thin <code>get_illness_suspicion</code> MCP tool that returns the same computed object. The tool may accept <code>include_debug=true</code>; default output should be compact and privacy-conscious. Default MCP output must not include raw timestamped readings. Debug output may include aggregate baselines, z-scores, methods, low-counts, and source summaries.</p>
   </section>
 
   <section>
@@ -178,6 +250,10 @@
       <li><code>go test ./internal/health</code> - acute respiratory + SpO2 anomaly, no diagnosis wording, no false positive on single mild metric.</li>
       <li><code>go test ./internal/storage</code> - briefing attaches illness evidence with fresh-day overrides, existing stress flags, and raw SpO2 low-count/source data.</li>
       <li><code>go test ./internal/mcpserver</code> if the MCP tool has local unit coverage; otherwise run package-level tests that compile the tool registration.</li>
+      <li>Health tests: single mild respiratory signal caps at <code>low</code>; single low SpO2 minimum never reaches <code>high</code>; repeated SpO2 lows plus respiratory z &gt; 2 reaches <code>moderate</code>; existing <code>illness_signature</code> reaches <code>high</code>.</li>
+      <li>Health tests: missing SpO2 is <code>missing</code>, warmup baseline is <code>warmup</code>, high-activity day with normal respiratory/SpO2 does not become moderate/high, evaluated date is excluded from baseline, and no NaN/Inf is emitted.</li>
+      <li>Storage tests: same-day SpO2 min/count/avg are date-aligned to the briefing date, source summaries are aggregate-only, fresh-day override is used when daily cache is stale, and no raw timestamp dumps appear in the default response.</li>
+      <li>MCP tests: <code>get_health_briefing</code> includes <code>illness_suspicion</code>; <code>get_illness_suspicion</code> returns the canonical object, compact by default and richer with <code>include_debug=true</code>.</li>
       <li><code>go test ./...</code> before PR.</li>
       <li>Production-like read-only verification via direct <code>psql</code> on anonymized Profile A and Profile B patterns: acute day, normal day, high-activity non-illness day, and days with existing <code>stress_flags</code>.</li>
     </ul>
@@ -201,6 +277,7 @@
     <ul>
       <li>SpO2 wearable readings can be noisy; use cluster/count and source context rather than a single minimum alone.</li>
       <li>Exercise, alcohol, altitude, poor sensor fit, or sleep apnea patterns can mimic illness signals.</li>
+      <li>Consumer wearable SpO2 readings have device and physiology limitations; tool output must present them as evidence, not clinical conclusions.</li>
       <li>Subjective symptoms are private and should not be stored or exposed beyond existing check-in semantics unless explicitly designed.</li>
       <li>New response fields must be additive so mobile, MCP, and browser clients keep working.</li>
       <li>Do not make EnergyBank automatically force <code>rest</code> from weak illness suspicion without a high-confidence threshold.</li>
@@ -220,9 +297,8 @@
   <section>
     <h2>Open Questions</h2>
     <ul>
-      <li>What exact confidence thresholds should ship after Profile A/Profile B validation?</li>
-      <li>Should high-confidence illness suspicion ever promote into a new <code>stress_flags</code> value, or should promotion only happen through the existing <code>illness_signature</code> path?</li>
-      <li>Should subjective check-in expand from <code>great|ok|meh|sick</code> into symptom tags such as cough/headache/fever in a later PR?</li>
+      <li>None before first implementation. V0 thresholds are defined above, UI/Telegram are out of scope, symptom tags are deferred, and no new <code>stress_flags</code> promotion happens in this PR.</li>
+      <li>Later PR question: should subjective check-in expand from <code>great|ok|meh|sick</code> into symptom tags such as cough/headache/fever?</li>
     </ul>
   </section>
 
@@ -230,9 +306,10 @@
     <h2>Approval Gate</h2>
     <p>
       Implementation must not start until this plan is explicitly approved or revised. Recommended first scope:
-      add the response field, add a focused MCP tool with compact default output and optional debug mode, add tests,
-      validate on anonymized Profile A and Profile B patterns, and leave UI/Telegram rendering plus symptom-tag
-      expansion as follow-up work.
+      add the response field, compute from a date-aligned evidence input, add a focused MCP tool with compact default
+      output and optional aggregate debug mode, add tests, validate on anonymized Profile A and Profile B patterns,
+      and leave UI/Telegram rendering, symptom-tag expansion, new stress flags, and EnergyBank verdict changes as
+      follow-up work.
     </p>
   </section>
 </main>
