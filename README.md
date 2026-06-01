@@ -28,6 +28,19 @@ The product direction is deliberately conservative: raw data is preserved, deriv
 
 For the product and methodology story behind the project, see the [Health Dashboard article series](https://dzarlax.dev/series/health-dashboard/): an 8-part build log covering how the Apple Health receiver evolved into a dashboard that refuses to fabricate numbers when inputs are missing.
 
+## Why This Matters for OSS
+
+Most consumer health apps keep the interesting derived metrics behind closed algorithms and cloud accounts. Health Dashboard takes the opposite route:
+
+Health Dashboard is designed to make personal health analytics auditable: every score should be traceable to raw inputs, formula version, confidence label, and human-readable explanation.
+
+- **Self-hosted Apple Health / HealthKit analytics** — ingest your own data into your own PostgreSQL database.
+- **Privacy-first operation** — the server can run without sending raw health history to a third-party wellness platform.
+- **Reproducible derived metrics** — caches, daily scores, EnergyBank snapshots, and readiness redesign tables are rebuildable from stored inputs.
+- **Evidence-based methodology** — scoring and calibration choices are documented in `SCORING.md`, `ENERGY_BANK.md`, and `STRESS_MEASUREMENT.md`.
+- **Explicit missing-data states** — stale, imputed, and low-coverage inputs are surfaced instead of being silently turned into confident scores.
+- **MCP interface** — AI assistants can query your health database through authenticated tools without needing a separate export workflow.
+
 ## Clients
 
 Two iOS clients can stream data into this server:

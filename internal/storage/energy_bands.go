@@ -24,6 +24,13 @@ import (
 // flapping regime.
 const energyBandsMinPoints = 30
 
+// energyBandsProvisionalMinPoints is the lower confidence gate for an
+// explicitly marked warmup mode. It exists only to avoid overly
+// permissive cold-start defaults for tenants with enough compatible
+// history to be directionally useful, but not enough for mature
+// personal calibration.
+const energyBandsProvisionalMinPoints = 20
+
 // energyBandsWindowDays is the rolling window over which percentiles
 // are computed. 180 days balances two concerns: long enough to span
 // seasonal variation in activity (winter sedentary, summer active),
@@ -69,6 +76,11 @@ func (s *DB) ComputeUserVerdictBands(ctx context.Context) (health.VerdictBands, 
 	}
 	if compatible.n >= energyBandsMinPoints && compatible.complete() {
 		return verdictBandsFromSample(compatible, "personal_mixed_formula_warmup", latest.n, compatible.n), nil
+	}
+	if compatible.n >= energyBandsProvisionalMinPoints && compatible.complete() {
+		if bands, ok := provisionalVerdictBandsFromSample(compatible, latest.n, compatible.n); ok {
+			return bands, nil
+		}
 	}
 
 	def := health.DefaultV2VerdictBands()
@@ -211,6 +223,18 @@ func verdictBandsFromSample(sample verdictBandSample, mode string, latestDays, c
 	}
 }
 
+func provisionalVerdictBandsFromSample(sample verdictBandSample, latestDays, compatibleDays int) (health.VerdictBands, bool) {
+	bands := verdictBandsFromSample(sample, "provisional_compatible_formula_warmup", latestDays, compatibleDays)
+	defaults := health.DefaultV2VerdictBands()
+	bands.Rest = maxInt(bands.Rest, defaults.Rest)
+	bands.Recovery = maxInt(bands.Recovery, defaults.Recovery)
+	bands.PushHard = maxInt(bands.PushHard, defaults.PushHard)
+	if bands.Rest > bands.Recovery || bands.Recovery >= bands.PushHard {
+		return health.VerdictBands{}, false
+	}
+	return bands, true
+}
+
 func (s verdictBandSample) complete() bool {
 	return s.p20 != nil && s.p50 != nil && s.p80 != nil
 }
@@ -224,4 +248,11 @@ func mapKeys(m map[int]bool) []int {
 	}
 	sort.Ints(keys)
 	return keys
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
