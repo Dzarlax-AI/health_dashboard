@@ -2561,7 +2561,11 @@ func (h *Handler) adminStressObservability(w http.ResponseWriter, r *http.Reques
 			return
 		}
 	}
-	tz := scope.DB.GetNotifyConfig(h.mgr.NotifyDefaultsFor(scope.Schema)).Timezone
+	defaults := storage.NotifyConfig{}
+	if h.mgr != nil {
+		defaults = h.mgr.NotifyDefaultsFor(scope.Schema)
+	}
+	tz := scope.DB.GetNotifyConfig(defaults).Timezone
 	if tz == "" {
 		tz = "UTC"
 	}

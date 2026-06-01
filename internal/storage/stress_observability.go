@@ -57,7 +57,7 @@ func (s *DB) ComputeStressObservabilitySummary(
 			return StressObservabilitySummary{}, fmt.Errorf("parse asOfDate %q: %w", asOfDate, err)
 		}
 	}
-	from := asOf.AddDate(0, 0, -windowDays).Format("2006-01-02")
+	from := asOf.AddDate(0, 0, -(windowDays - 1)).Format("2006-01-02")
 	to := asOf.Format("2006-01-02")
 
 	dist, err := s.ComputeStressDistributionStats(ctx, from, to)

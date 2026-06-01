@@ -36,6 +36,9 @@ func TestComputeStressObservabilitySummary_ReadOnlyAndEffectiveBetaGated(t *test
 	if got.Mode != "observed_only" {
 		t.Fatalf("Mode = %q, want observed_only", got.Mode)
 	}
+	if got.From != "2026-05-24" || got.To != "2026-05-30" {
+		t.Fatalf("window = %s..%s, want 7 inclusive dates ending at as_of", got.From, got.To)
+	}
 	if got.Distribution.Days != 2 {
 		t.Fatalf("Distribution.Days = %d, want 2", got.Distribution.Days)
 	}
