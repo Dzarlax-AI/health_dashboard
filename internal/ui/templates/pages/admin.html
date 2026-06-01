@@ -356,6 +356,15 @@
       <div class="admin-group">
         <div class="admin-group-header">{{T .Lang "admin_profile_energy"}}</div>
 
+        <!-- Read-only EnergyBank stress observability. Safe on page load. -->
+        <details class="admin-section" id="admin-stress-observability-section" open>
+          <summary class="section-title">{{T .Lang "admin_stress_observability_title"}}</summary>
+          <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
+            {{T .Lang "admin_stress_observability_desc"}}
+          </p>
+          <div id="admin-stress-observability-out" style="margin-top:12px"></div>
+        </details>
+
         <!-- Stress validation rubric (STRESS_MEASUREMENT.md §4.5) -->
         <details class="admin-section" id="admin-stress-validation-section" open>
           <summary class="section-title">{{T .Lang "admin_stress_validation_title"}}</summary>
@@ -986,7 +995,10 @@ function loadAdminSettings() {
       }
       if (d.gemini_max_tokens && tokenInput) tokenInput.value = d.gemini_max_tokens;
     });
-  if (tenantPanelVisible()) loadEnergySettings();
+  if (tenantPanelVisible()) {
+    loadEnergySettings();
+    loadStressObservability();
+  }
 }
 
 function tenantPanelVisible() {
@@ -1014,6 +1026,57 @@ function loadEnergySettings() {
     });
 }
 
+function loadStressObservability() {
+  var out = $('admin-stress-observability-out');
+  if (!out) return;
+  var i18n = {
+    loading: '{{T .Lang "admin_stress_observability_loading"}}',
+    loadError: '{{T .Lang "admin_stress_observability_load_error"}}',
+    observedOnly: '{{T .Lang "admin_stress_observability_observed_only"}}',
+    applied: '{{T .Lang "admin_stress_observability_applied"}}',
+    window: '{{T .Lang "admin_stress_observability_window"}}',
+    loadStats: '{{T .Lang "admin_stress_observability_load_stats"}}',
+    flagCounts: '{{T .Lang "admin_stress_observability_flag_counts"}}',
+    validation: '{{T .Lang "admin_stress_observability_validation"}}',
+    effectiveBeta: '{{T .Lang "admin_stress_observability_effective_beta"}}',
+    noFlags: '{{T .Lang "admin_stress_observability_no_flags"}}'
+  };
+  out.innerHTML = '<div style="color:var(--text-secondary);font-size:13px">'+i18n.loading+'</div>';
+  fetchWithAdminSchema('/api/admin/stress-observability?window=30')
+    .then(function(r){
+      if (!r.ok) return r.text().then(function(t){ throw new Error(t || i18n.loadError); });
+      return r.json();
+    })
+    .then(function(d) {
+      var dist = d.distribution || {};
+      var validation = d.validation || {};
+      var flags = dist.flag_counts || {};
+      var flagKeys = Object.keys(flags).sort();
+      var flagHtml = flagKeys.length
+        ? flagKeys.map(function(k){ return '<span class="stress-flag stress-flag--'+escapeHtml(k)+'" style="margin-right:4px">'+escapeHtml(k)+': '+escapeHtml(String(flags[k]))+'</span>'; }).join('')
+        : '<span class="muted">'+i18n.noFlags+'</span>';
+      var modeText = d.applied ? i18n.applied : i18n.observedOnly;
+      var modeClass = d.applied ? 'alert--fair' : 'alert--info';
+      out.innerHTML =
+        '<div class="alert '+modeClass+'" style="margin-bottom:8px">'+escapeHtml(modeText)+'</div>'+
+        '<table style="width:100%;font-size:13px;border-collapse:collapse">'+
+          '<tr><td style="padding:4px 8px 4px 0;color:var(--text-secondary)">'+i18n.window+'</td><td>'+escapeHtml(d.from || '')+' → '+escapeHtml(d.to || '')+' ('+escapeHtml(String(d.window_days || 0))+'d)</td></tr>'+
+          '<tr><td style="padding:4px 8px 4px 0;color:var(--text-secondary)">'+i18n.effectiveBeta+'</td><td><code>'+escapeHtml(String(d.effective_beta))+'</code> <span class="muted">β='+escapeHtml(String(d.beta))+', z='+escapeHtml(String(d.z_threshold))+'</span></td></tr>'+
+          '<tr><td style="padding:4px 8px 4px 0;color:var(--text-secondary)">'+i18n.loadStats+'</td><td>days='+escapeHtml(String(dist.days || 0))+', empty='+escapeHtml(String(dist.empty || 0))+', median='+fmtNum(dist.load_median)+', p90='+fmtNum(dist.load_p90)+', max='+fmtNum(dist.load_max)+'</td></tr>'+
+          '<tr><td style="padding:4px 8px 4px 0;color:var(--text-secondary)">'+i18n.validation+'</td><td><strong>'+escapeHtml((validation.verdict || 'inconclusive').toUpperCase())+'</strong> <span class="muted">'+escapeHtml(validation.reason || '')+'</span></td></tr>'+
+          '<tr><td style="padding:4px 8px 4px 0;color:var(--text-secondary)">'+i18n.flagCounts+'</td><td>'+flagHtml+'</td></tr>'+
+        '</table>';
+    })
+    .catch(function(e) {
+      out.innerHTML = '<div class="alert alert--low">'+escapeHtml(String(e.message || e))+'</div>';
+    });
+}
+
+function fmtNum(v) {
+  if (v == null || isNaN(Number(v))) return '—';
+  return Number(v).toFixed(2);
+}
+
 function saveEnergySettings() {
   var body = {
     'energy.beta': $('cfg-energy-beta').value,
@@ -1033,6 +1096,7 @@ function saveEnergySettings() {
       setTimeout(function(){ msg.style.display = 'none'; }, 3000);
       // Reload to update effective_beta display
       loadEnergySettings();
+      loadStressObservability();
     })
     .catch(function(e) {
       var msg = $('admin-energy-msg');

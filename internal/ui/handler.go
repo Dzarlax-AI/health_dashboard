@@ -161,6 +161,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/settings", h.adminGuard(h.adminAISettings))
 	mux.HandleFunc("/api/admin/ai-models", h.adminGuard(h.adminAIModels))
 	mux.HandleFunc("/api/admin/energy-settings", h.adminGuard(h.adminEnergySettings))
+	mux.HandleFunc("/api/admin/stress-observability", h.adminGuard(h.adminStressObservability))
 	mux.HandleFunc("/api/admin/stress-validation", h.adminGuard(h.adminStressValidation))
 	mux.HandleFunc("GET /api/admin/users/{username}/api-key", h.adminGuard(h.adminUserAPIKey))
 	mux.HandleFunc("/api/admin/users", h.adminGuard(h.adminUsers))
@@ -2529,6 +2530,47 @@ func (h *Handler) adminEnergySettings(w http.ResponseWriter, r *http.Request) {
 		"effective_beta":              cfg.EffectiveBeta(),
 		"schema":                      scope.Schema,
 	})
+}
+
+// adminStressObservability handles GET /api/admin/stress-observability.
+// It is deliberately read-only and suitable for admin page load: no
+// setting writes, no backfill trigger, no validation cache refresh.
+func (h *Handler) adminStressObservability(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	scope, scopeErr := h.resolveAdminTenantScope(r)
+	if scopeErr != nil {
+		writeStatusError(w, scopeErr)
+		return
+	}
+	window := 30
+	if v := r.URL.Query().Get("window"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 7 || n > 90 {
+			http.Error(w, "window must be an integer in [7, 90]", http.StatusBadRequest)
+			return
+		}
+		window = n
+	}
+	asOf := r.URL.Query().Get("as_of")
+	if asOf != "" {
+		if _, err := time.Parse("2006-01-02", asOf); err != nil {
+			http.Error(w, "as_of must be YYYY-MM-DD", http.StatusBadRequest)
+			return
+		}
+	}
+	tz := scope.DB.GetNotifyConfig(h.mgr.NotifyDefaultsFor(scope.Schema)).Timezone
+	if tz == "" {
+		tz = "UTC"
+	}
+	summary, err := scope.DB.ComputeStressObservabilitySummary(r.Context(), tz, asOf, window)
+	if err != nil {
+		http.Error(w, "stress-observability: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, summary)
 }
 
 // adminStressValidation handles GET /api/admin/stress-validation —

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"health-receiver/internal/health"
 )
 
 func TestComputeUserVerdictBands_UsesOneLatestEligibleRowPerDate(t *testing.T) {
@@ -130,14 +132,142 @@ func TestComputeUserVerdictBands_CountsOneDateAcrossCompatibleFormulas(t *testin
 	if err != nil {
 		t.Fatalf("ComputeUserVerdictBands: %v", err)
 	}
+	if bands.CalibrationMode != "provisional_compatible_formula_warmup" {
+		t.Fatalf("CalibrationMode = %q, want provisional_compatible_formula_warmup because compatible sample has 25 dates", bands.CalibrationMode)
+	}
+	if bands.NDataPoints != 25 || bands.UsedDays != 25 {
+		t.Fatalf("provisional counts = n:%d used:%d, want 25/25", bands.NDataPoints, bands.UsedDays)
+	}
+	if bands.LatestFormulaDays != 15 || bands.CompatibleFormulaDays != 25 {
+		t.Fatalf("diagnostic counts = latest:%d compatible:%d, want 15/25", bands.LatestFormulaDays, bands.CompatibleFormulaDays)
+	}
+}
+
+func TestComputeUserVerdictBands_ProvisionalDoesNotActivateAt19CompatibleDays(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	db.EnsureEnergySnapshotsTable()
+
+	for i := 0; i < energyBandsProvisionalMinPoints-1; i++ {
+		insertEnergySnapshot(t, db, bandTestDate(i), 20, 70+i, 2, nil)
+	}
+
+	bands, err := db.ComputeUserVerdictBands(context.Background())
+	if err != nil {
+		t.Fatalf("ComputeUserVerdictBands: %v", err)
+	}
 	if bands.CalibrationMode != "default_warmup" {
-		t.Fatalf("CalibrationMode = %q, want default_warmup because compatible sample has 25 dates", bands.CalibrationMode)
+		t.Fatalf("CalibrationMode = %q, want default_warmup below provisional threshold", bands.CalibrationMode)
 	}
 	if bands.NDataPoints != 0 || bands.UsedDays != 0 {
 		t.Fatalf("default warmup counts = n:%d used:%d, want 0/0", bands.NDataPoints, bands.UsedDays)
 	}
-	if bands.LatestFormulaDays != 15 || bands.CompatibleFormulaDays != 25 {
-		t.Fatalf("diagnostic counts = latest:%d compatible:%d, want 15/25", bands.LatestFormulaDays, bands.CompatibleFormulaDays)
+	if bands.CompatibleFormulaDays != energyBandsProvisionalMinPoints-1 {
+		t.Fatalf("CompatibleFormulaDays = %d, want %d", bands.CompatibleFormulaDays, energyBandsProvisionalMinPoints-1)
+	}
+}
+
+func TestComputeUserVerdictBands_UsesProvisionalCompatibleWarmupAt20Days(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	db.EnsureEnergySnapshotsTable()
+
+	for i := 0; i < 10; i++ {
+		insertEnergySnapshot(t, db, bandTestDate(i), 20, 70+i, 2, nil)
+	}
+	for i := 10; i < energyBandsProvisionalMinPoints; i++ {
+		insertEnergySnapshot(t, db, bandTestDate(i), 20, 40+i, 1, nil)
+	}
+
+	bands, err := db.ComputeUserVerdictBands(context.Background())
+	if err != nil {
+		t.Fatalf("ComputeUserVerdictBands: %v", err)
+	}
+	if bands.CalibrationMode != "provisional_compatible_formula_warmup" {
+		t.Fatalf("CalibrationMode = %q, want provisional_compatible_formula_warmup", bands.CalibrationMode)
+	}
+	if bands.UsedDays != energyBandsProvisionalMinPoints || bands.NDataPoints != energyBandsProvisionalMinPoints ||
+		bands.LatestFormulaDays != 10 || bands.CompatibleFormulaDays != energyBandsProvisionalMinPoints {
+		t.Fatalf("counts = n:%d used:%d latest:%d compatible:%d, want 20/20/10/20",
+			bands.NDataPoints, bands.UsedDays, bands.LatestFormulaDays, bands.CompatibleFormulaDays)
+	}
+}
+
+func TestComputeUserVerdictBands_ProvisionalClampsAllBoundariesToDefaults(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	db.EnsureEnergySnapshotsTable()
+
+	for i := 0; i < energyBandsProvisionalMinPoints; i++ {
+		insertEnergySnapshot(t, db, bandTestDate(i), 20, i, 2, nil)
+	}
+
+	bands, err := db.ComputeUserVerdictBands(context.Background())
+	if err != nil {
+		t.Fatalf("ComputeUserVerdictBands: %v", err)
+	}
+	defaults := health.DefaultV2VerdictBands()
+	if bands.CalibrationMode != "provisional_compatible_formula_warmup" {
+		t.Fatalf("CalibrationMode = %q, want provisional_compatible_formula_warmup", bands.CalibrationMode)
+	}
+	if bands.Rest != defaults.Rest || bands.Recovery != defaults.Recovery || bands.PushHard != defaults.PushHard {
+		t.Fatalf("bands = %+v, want component-wise clamp to defaults %+v", bands, defaults)
+	}
+}
+
+func TestComputeUserVerdictBands_ProvisionalFallsBackWhenClampBreaksMonotonicity(t *testing.T) {
+	sample := verdictBandSample{
+		p20: floatPtr(80),
+		p50: floatPtr(80),
+		p80: floatPtr(80),
+		n:   energyBandsProvisionalMinPoints,
+	}
+	if bands, ok := provisionalVerdictBandsFromSample(sample, 10, energyBandsProvisionalMinPoints); ok {
+		t.Fatalf("provisional ok=true with non-strict recovery/push monotonicity, bands=%+v", bands)
+	}
+}
+
+func TestComputeUserVerdictBands_MatureCompatibleStillWinsAt30Days(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	db.EnsureEnergySnapshotsTable()
+
+	for i := 0; i < 10; i++ {
+		insertEnergySnapshot(t, db, bandTestDate(i), 20, 70+i, 2, nil)
+	}
+	for i := 10; i < energyBandsMinPoints; i++ {
+		insertEnergySnapshot(t, db, bandTestDate(i), 20, 40+i, 1, nil)
+	}
+
+	bands, err := db.ComputeUserVerdictBands(context.Background())
+	if err != nil {
+		t.Fatalf("ComputeUserVerdictBands: %v", err)
+	}
+	if bands.CalibrationMode != "personal_mixed_formula_warmup" {
+		t.Fatalf("CalibrationMode = %q, want mature compatible warmup at 30 compatible days", bands.CalibrationMode)
+	}
+}
+
+func TestComputeUserVerdictBands_ProvisionalUsesConfiguredWindowOnly(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	db.EnsureEnergySnapshotsTable()
+
+	for i := 0; i < energyBandsProvisionalMinPoints-1; i++ {
+		insertEnergySnapshot(t, db, bandTestDate(i), 20, 70+i, 2, nil)
+	}
+	oldDate := time.Now().AddDate(0, 0, -(energyBandsWindowDays + 5)).Format("2006-01-02")
+	insertEnergySnapshot(t, db, oldDate, 20, 100, 2, nil)
+
+	bands, err := db.ComputeUserVerdictBands(context.Background())
+	if err != nil {
+		t.Fatalf("ComputeUserVerdictBands: %v", err)
+	}
+	if bands.CalibrationMode != "default_warmup" {
+		t.Fatalf("CalibrationMode = %q, want old row outside 180d window ignored", bands.CalibrationMode)
+	}
+	if bands.CompatibleFormulaDays != energyBandsProvisionalMinPoints-1 {
+		t.Fatalf("CompatibleFormulaDays = %d, want old row outside window ignored", bands.CompatibleFormulaDays)
 	}
 }
 
@@ -162,6 +292,30 @@ func TestComputeUserVerdictBands_UnknownFormulaExcludedFromWarmup(t *testing.T) 
 	}
 	if bands.CompatibleFormulaDays != 10 {
 		t.Fatalf("CompatibleFormulaDays = %d, want only current formula dates", bands.CompatibleFormulaDays)
+	}
+}
+
+func TestComputeUserVerdictBands_UnknownFormulaExcludedFromProvisionalWarmup(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	db.EnsureEnergySnapshotsTable()
+
+	for i := 0; i < 10; i++ {
+		insertEnergySnapshot(t, db, bandTestDate(i), 20, 70+i, 2, nil)
+	}
+	for i := 10; i < energyBandsProvisionalMinPoints; i++ {
+		insertEnergySnapshot(t, db, bandTestDate(i), 20, 40+i, 9, nil)
+	}
+
+	bands, err := db.ComputeUserVerdictBands(context.Background())
+	if err != nil {
+		t.Fatalf("ComputeUserVerdictBands: %v", err)
+	}
+	if bands.CalibrationMode != "default_warmup" {
+		t.Fatalf("CalibrationMode = %q, want default_warmup", bands.CalibrationMode)
+	}
+	if bands.CompatibleFormulaDays != 10 {
+		t.Fatalf("CompatibleFormulaDays = %d, want unknown formula excluded", bands.CompatibleFormulaDays)
 	}
 }
 
@@ -293,4 +447,8 @@ func insertEnergySnapshotAt(t *testing.T, db *DB, date string, hour, bank, formu
 		t.Fatalf("insert energy snapshot date=%s hour=%d bank=%d version=%d flags=%v: %v",
 			date, hour, bank, formulaVersion, flags, err)
 	}
+}
+
+func floatPtr(v float64) *float64 {
+	return &v
 }

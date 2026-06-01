@@ -278,7 +278,7 @@ type VerdictBands struct {
 	PushHard              int    `json:"push_hard"`               // ≥ this AND HRV gate → push_hard
 	Source                string `json:"source"`                  // "personal" | "default" | "manual"
 	NDataPoints           int    `json:"n_data_points"`           // distinct eligible dates used for non-default bands
-	CalibrationMode       string `json:"calibration_mode"`        // personal_latest_formula | personal_mixed_formula_warmup | default_warmup | default
+	CalibrationMode       string `json:"calibration_mode"`        // personal_latest_formula | personal_mixed_formula_warmup | provisional_compatible_formula_warmup | default_warmup | default
 	UsedDays              int    `json:"used_days"`               // distinct eligible dates used for returned non-default bands
 	LatestFormulaDays     int    `json:"latest_formula_days"`     // distinct eligible dates for current formula
 	CompatibleFormulaDays int    `json:"compatible_formula_days"` // distinct eligible dates after compatibility whitelist

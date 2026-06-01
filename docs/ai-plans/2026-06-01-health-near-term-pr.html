@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation Plan: Health Near-Term PR</title>
+  <style>
+    body {
+      margin: 0;
+      background: #f6f7f9;
+      color: #1f2937;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 32px;
+    }
+    section {
+      background: #fff;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 18px 20px;
+      margin: 16px 0;
+    }
+    h1, h2, h3 {
+      line-height: 1.2;
+      margin-top: 0;
+    }
+    code {
+      background: #f1f5f9;
+      border-radius: 4px;
+      padding: 2px 5px;
+      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      font-size: 0.95em;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0;
+      font-size: 14px;
+    }
+    th, td {
+      border: 1px solid #e2e8f0;
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #f8fafc;
+    }
+    ul, ol {
+      padding-left: 22px;
+    }
+    li {
+      margin: 6px 0;
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: #fef3c7;
+      color: #92400e;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .card {
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 12px;
+      background: #f8fafc;
+    }
+    .ok { border-left: 4px solid #15803d; }
+    .todo { border-left: 4px solid #2563eb; }
+    .risk { border-left: 4px solid #dc2626; }
+    .approval { border-left: 4px solid #d97706; }
+    @media (max-width: 860px) {
+      main { padding: 18px; }
+      .grid { grid-template-columns: 1fr; }
+      table { font-size: 13px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Health Near-Term PR Plan</h1>
+    <p><span class="badge">Implemented after approval</span></p>
+
+    <section>
+      <h2>Task Summary</h2>
+      <p>
+        Bundle the three urgent Health tasks into one focused PR that moves EnergyBank and scoring reliability forward
+        without starting the larger Readiness redesign workstream.
+      </p>
+      <p>
+        This is intentionally a borderline bundle. It is acceptable only with strict separation of concerns: EnergyBank
+        calibration changes must not depend on stress observability UI, stress observability must not change beta/drain
+        behavior, and invariant tests must not force production refactors.
+      </p>
+      <ol>
+        <li>Add EnergyBank stress observability before any beta-term enablement.</li>
+        <li>Add focused pure-math invariant tests for <code>internal/health</code>.</li>
+        <li>Add a conservative provisional mixed warmup policy for EnergyBank verdict bands when compatible history has 20-29 days.</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>Todoist Scope</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Task</th>
+            <th>Status</th>
+            <th>Due</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>6gcvqGcCq2HMW3Mf</code> EnergyBank Stress: add observability section before enabling beta term</td>
+            <td>Existing task</td>
+            <td>2026-06-06</td>
+          </tr>
+          <tr>
+            <td><code>6gXx28R8VmMPX8wf</code> Health Tests: internal/health pure-math invariants</td>
+            <td>Existing task</td>
+            <td>2026-06-07</td>
+          </tr>
+          <tr>
+            <td><code>6gmVpR6r33p8Hwwf</code> EnergyBank v2 - provisional mixed warmup for 20-29 compatible days</td>
+            <td>Created for this PR</td>
+            <td>2026-06-08</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Current Behavior</h2>
+      <ul>
+        <li><code>ComputeUserVerdictBands</code> currently requires at least 30 distinct eligible days before returning personal latest-formula or mixed compatible-formula bands.</li>
+        <li>When both latest and compatible samples are below 30 days, it returns <code>default_warmup</code> and exposes diagnostic day counts.</li>
+        <li>Stress drain is gated by <code>settings.energy.stress_drain_enabled</code>; with the default config, <code>EffectiveBeta()</code> is zero.</li>
+        <li>Stress load and flags are computed and stored in <code>daily_scores.sustained_hr_load</code> / <code>stress_flags</code>, and admin validation exists, but the dashboard/admin surface does not yet give a compact operational view for "is beta safe to enable".</li>
+        <li><code>internal/health</code> already has tests for stress flags, labels, v2 verdicts, and some scoring helpers; coverage is still scattered rather than framed as formula invariants.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Experiment Result</h2>
+      <p>
+        Read-only experiments were run against two anonymized tenant patterns after the day-level calibration fix.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Profile</th>
+            <th>Window / mode</th>
+            <th>Eligible days</th>
+            <th>Bands</th>
+            <th>Verdict impact on latest-formula days</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Profile A</td>
+            <td>180d compatible</td>
+            <td>178 compatible, 19 latest</td>
+            <td>34.0 / 43.5 / 52.6</td>
+            <td>6 rest, 6 active recovery, 4 moderate, 3 push hard</td>
+          </tr>
+          <tr>
+            <td>Profile A</td>
+            <td>365d or all compatible</td>
+            <td>357-458 compatible, 19 latest</td>
+            <td>Lower rest band than 180d</td>
+            <td>3 rest, 9 active recovery, 4 moderate, 3 push hard</td>
+          </tr>
+          <tr>
+            <td>Profile B</td>
+            <td>180d / 365d / all compatible</td>
+            <td>22 compatible, 17 latest</td>
+            <td>46.2 / 54.5 / 67.8</td>
+            <td>6 rest, 4 active recovery, 5 moderate, 2 push hard</td>
+          </tr>
+          <tr>
+            <td>Profile B</td>
+            <td>Default warmup</td>
+            <td>17 latest</td>
+            <td>15 / 41 / 55</td>
+            <td>2 rest, 5 active recovery, 6 moderate, 4 push hard</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>
+        Interpretation: Profile A should stay on the existing 180-day policy because longer history mainly softens the low-bank rest cutoff. Profile B does not gain more days from a larger window, but the 22-day compatible sample looks less permissive than defaults. That supports a provisional 20-29 day mode if it is explicitly marked and guarded.
+      </p>
+    </section>
+
+    <section>
+      <h2>Desired Behavior</h2>
+      <div class="grid">
+        <div class="card todo">
+          <h3>Stress Observability</h3>
+          <p>
+            Add a read-only summary that shows recent stress-load coverage, gating flags, distribution stats, and validation verdict so beta remains disabled until evidence says otherwise.
+          </p>
+        </div>
+        <div class="card todo">
+          <h3>Health Invariants</h3>
+          <p>
+            Add targeted tests around pure formulas: readiness boundaries, EnergyBank v2 verdict ordering, stress coherence, strain/stress math, and invalid/missing input behavior.
+          </p>
+        </div>
+        <div class="card todo">
+          <h3>Provisional Warmup</h3>
+          <p>
+            Allow a separately named provisional band mode only for 20-29 compatible days, with metadata that prevents confusing it with mature personal calibration.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Provisional Warmup Policy</h2>
+      <ul>
+        <li>Keep <code>energyBandsMinPoints = 30</code> for mature personal modes.</li>
+        <li>Add a lower provisional threshold, proposed as <code>energyBandsProvisionalMinPoints = 20</code>.</li>
+        <li>Use the same <code>energyBandsWindowDays = 180</code> window as mature bands. Do not extend the window for sparse tenants in this PR.</li>
+        <li>Use provisional mode only for compatible-formula samples, not unknown formula versions.</li>
+        <li>Mode name: <code>provisional_compatible_formula_warmup</code>. This avoids implying the sample is always mixed; the compatible sample may contain only the latest formula.</li>
+        <li><code>Source</code> remains <code>personal</code> for compatibility, but <code>CalibrationMode</code> carries the precise semantics.</li>
+        <li><code>UsedDays</code> and <code>NDataPoints</code> mean the provisional compatible distinct-date count.</li>
+        <li>Guardrail: provisional bands must not be more permissive than defaults at any decision boundary.</li>
+        <li>Clamp component-wise: <code>Rest=max(computed.Rest, default.Rest)</code>, <code>Recovery=max(computed.Recovery, default.Recovery)</code>, <code>PushHard=max(computed.PushHard, default.PushHard)</code>.</li>
+        <li>Guardrail: preserve monotonic bands after clamping: <code>Rest &lt;= Recovery &lt;= PushHard</code>. If monotonicity breaks, fall back to <code>default_warmup</code>.</li>
+        <li>Do not change <code>ChooseVerdictV2</code> or stress-flag override behavior in this PR.</li>
+        <li>Dashboard may consume provisional bands for verdict calculation, but main UI does not need a new badge in this PR.</li>
+        <li>Admin/API must expose <code>CalibrationMode</code>, <code>UsedDays</code>, <code>LatestFormulaDays</code>, and <code>CompatibleFormulaDays</code>.</li>
+        <li>Verdict text must not claim mature personal calibration when <code>CalibrationMode</code> starts with <code>provisional_</code>.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Stress Observability Scope</h2>
+      <p>
+        This PR should not enable beta and should not change the EnergyBank drain formula. It should make the existing
+        stress data operationally inspectable.
+      </p>
+      <ul>
+        <li>Add a storage-level summary method over the recent stress window, likely reusing <code>ComputeStressDistributionStats</code> and existing validation read paths where possible.</li>
+        <li>Expose read-only admin JSON containing: window, dates with non-null load, empty days, load mean/median/p90/max, flag counts, validation verdict, and effective beta state.</li>
+        <li>Render a compact admin section near the existing stress validation and EnergyBank settings.</li>
+        <li>Clearly state when <code>energy.stress_drain_enabled=false</code> means beta is observed only, not applied.</li>
+        <li>Admin observability <code>GET</code> must not write, trigger backfill, recompute-and-cache validation, or mutate settings.</li>
+        <li>The endpoint may read existing validation cache. If fresh validation recomputation writes cache, keep it behind an explicit refresh action outside this PR or behind a separate non-GET endpoint.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Likely File Changes</h2>
+      <ul>
+        <li><code>internal/storage/energy_bands.go</code> - add provisional threshold, policy helper, and guardrails.</li>
+        <li><code>internal/storage/energy_bands_test.go</code> - add provisional-mode and guardrail tests.</li>
+        <li><code>internal/health/types.go</code> - update <code>VerdictBands.CalibrationMode</code> comment if needed.</li>
+        <li><code>internal/health/*_test.go</code> - add focused pure-math invariant tests, probably in existing test files rather than a broad new harness.</li>
+        <li><code>internal/storage/stress_observability.go</code> - add read-only observability summary. Do not place observability code in <code>stress_backfill.go</code>.</li>
+        <li><code>internal/ui/handler.go</code> and admin template/static JS - expose and render the read-only stress observability section.</li>
+        <li><code>STRESS_MEASUREMENT.md</code>, <code>ENERGY_BANK.md</code>, or <code>SCORING.md</code> - document the operational guardrails after implementation.</li>
+        <li>This plan file - update with implementation notes, checks, limitations, and follow-up recommendations.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Implementation Steps</h2>
+      <ol>
+        <li>Add failing storage tests proving provisional mode does not activate at 19 compatible days.</li>
+        <li>Add failing storage tests proving provisional mode activates at exactly 20 compatible days and returns <code>provisional_compatible_formula_warmup</code>.</li>
+        <li>Add failing storage tests proving unknown versions and stress/alpha-incompatible versions still do not contribute to provisional warmup.</li>
+        <li>Add tests proving mature compatible mode still wins at 30 compatible days, and mature latest mode still wins at 30 latest days.</li>
+        <li>Add tests proving provisional mode uses the existing 180-day window only.</li>
+        <li>Add component-wise guardrail tests: <code>Rest</code>, <code>Recovery</code>, and <code>PushHard</code> cannot become more permissive than defaults, and broken monotonic bands fall back to <code>default_warmup</code>.</li>
+        <li>Add tests proving provisional <code>CalibrationMode</code> is distinct from <code>personal_mixed_formula_warmup</code>, and <code>default_warmup</code> keeps <code>NDataPoints=0</code>.</li>
+        <li>Implement the provisional warmup helper and keep the mature 30-day path unchanged.</li>
+        <li>Add pure-math invariant tests in <code>internal/health</code> for verdict precedence, readiness clamping/bands, stress coherence, and missing-input nil behavior.</li>
+        <li>Add a read-only storage summary for stress observability, preferring composition of existing stress distribution and validation functions over duplicate SQL.</li>
+        <li>Add a read-only admin API endpoint and compact admin UI section.</li>
+        <li>Add tests or a focused smoke check proving admin observability <code>GET</code> does not write and does not trigger backfill.</li>
+        <li>Add a focused check proving <code>stress_drain_enabled=false</code> still yields <code>EffectiveBeta=0</code> after rendering/admin observability.</li>
+        <li>Update docs with the exact mode names and the fact that observability does not enable beta.</li>
+        <li>Run focused tests, full tests, and a read-only production smoke after merge/deploy.</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>Test Plan</h2>
+      <ul>
+        <li><code>go test ./internal/storage -run 'TestComputeUserVerdictBands|TestStress' -count=1</code></li>
+        <li><code>go test ./internal/health -count=1</code></li>
+        <li><code>go test ./internal/ui -count=1</code> if UI handler/template tests exist or are added.</li>
+        <li><code>go test ./... -count=1</code></li>
+        <li>Read-only SQL or admin API check against production after deploy: confirm Profile B-style data reports provisional mode only when compatible days are in 20-29 range.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Manual QA Checklist</h2>
+      <ul>
+        <li>Open admin page and confirm the stress observability section renders without enabling stress drain and without writing cache/settings rows.</li>
+        <li>Confirm EnergyBank settings still show <code>effective_beta=0</code> while <code>stress_drain_enabled=false</code>.</li>
+        <li>Check dashboard EnergyBank verdicts for both anonymized profiles after deploy.</li>
+        <li>Confirm <code>default_warmup</code>, mature personal, and provisional modes are distinguishable in API JSON metadata.</li>
+        <li>Confirm no schema migration is required and no backfill is triggered by viewing admin.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Risks</h2>
+      <ul>
+        <li>Bundling three tasks can make the PR harder to review. Mitigation: enforce no cross-coupling, keep commits/file groups separated by concern, and split before implementation if the diff grows beyond the boundaries above.</li>
+        <li>Provisional 20-29 day bands can still be noisy. Mitigation: explicit mode, guardrails, and no claim of mature personal calibration.</li>
+        <li>Admin UI can accidentally imply beta is safe to enable. Mitigation: wording and API fields must distinguish observed stress load from applied drain.</li>
+        <li>Pure-math tests can overfit current constants. Mitigation: test invariants and precedence rules, not every exact output unless the constant is intentional API behavior.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Rollback Plan</h2>
+      <ul>
+        <li>Disable provisional warmup by raising the provisional threshold back to 30 or returning <code>default_warmup</code> from the provisional branch.</li>
+        <li>Leave pure-math tests in place unless they encode an incorrect invariant.</li>
+        <li>Remove or hide the admin observability section without changing storage tables or EnergyBank computation.</li>
+        <li>No database rollback is expected.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Open Questions</h2>
+      <ul>
+        <li>None before implementation. Window policy is closed at 180 days, admin observability <code>GET</code> is strictly read-only, and dashboard badges are out of scope while API/admin metadata remains explicit.</li>
+      </ul>
+    </section>
+
+    <section class="approval">
+      <h2>Approval Gate</h2>
+      <p>
+        Approved by the operator and implemented on branch <code>codex/health-near-term-plan</code>.
+      </p>
+    </section>
+
+    <section class="ok">
+      <h2>Implementation Update</h2>
+      <ul>
+        <li>Added <code>provisional_compatible_formula_warmup</code> for 20-29 compatible distinct eligible days while keeping mature personal threshold at 30 days.</li>
+        <li>Kept the 180-day calibration window for provisional and mature modes.</li>
+        <li>Clamped provisional <code>Rest</code>, <code>Recovery</code>, and <code>PushHard</code> component-wise against defaults, then validated monotonicity before returning provisional bands.</li>
+        <li>Preserved mature precedence: latest-formula personal bands win at 30 latest days, compatible mature warmup wins at 30 compatible days when latest is immature.</li>
+        <li>Added <code>internal/health</code> pure-math invariant tests for readiness bounds, readiness bands, EnergyBank missing inputs, strain clamp, autonomic stress, verdict precedence, and stress-headline push veto.</li>
+        <li>Added read-only stress observability via <code>internal/storage/stress_observability.go</code> and <code>GET /api/admin/stress-observability</code>.</li>
+        <li>Rendered a compact admin Energy panel showing observed-only vs applied mode, effective beta, stress-load distribution, flag counts, and validation verdict.</li>
+        <li>Documented provisional calibration semantics in <code>ENERGY_BANK.md</code>.</li>
+      </ul>
+    </section>
+
+    <section class="ok">
+      <h2>Verification Run</h2>
+      <ul>
+        <li><code>go test ./internal/health -count=1</code>: passed.</li>
+        <li><code>go test ./internal/ui -count=1</code>: passed.</li>
+        <li><code>go test ./internal/storage -run "TestComputeUserVerdictBands|TestComputeStressObservabilitySummary" -count=1 -v</code> with libpq env from <code>~/.health-db</code>: passed against throwaway schemas.</li>
+        <li><code>go test ./... -count=1</code>: passed. DB-backed integration tests skip in this plain-env run, matching existing suite behavior.</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>
