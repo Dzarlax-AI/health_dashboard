@@ -32,6 +32,8 @@ For the product and methodology story behind the project, see the [Health Dashbo
 
 Most consumer health apps keep the interesting derived metrics behind closed algorithms and cloud accounts. Health Dashboard takes the opposite route:
 
+Health Dashboard is designed to make personal health analytics auditable: every score should be traceable to raw inputs, formula version, confidence label, and human-readable explanation.
+
 - **Self-hosted Apple Health / HealthKit analytics** — ingest your own data into your own PostgreSQL database.
 - **Privacy-first operation** — the server can run without sending raw health history to a third-party wellness platform.
 - **Reproducible derived metrics** — caches, daily scores, EnergyBank snapshots, and readiness redesign tables are rebuildable from stored inputs.
