@@ -49,9 +49,9 @@ const (
 	hrvZRestBand  = -1.0 // ≤ -1.0 SD → rest day
 
 	// Bank-balance clamp thresholds (secondary gate).
-	currentRestCutoff       = 25 // ≤ this → rest regardless of HRV
-	currentRecoveryCutoff   = 45 // ≤ this → at most active recovery
-	currentPushHardMin      = 60 // need this and HRV green to push hard
+	currentRestCutoff     = 25 // ≤ this → rest regardless of HRV
+	currentRecoveryCutoff = 45 // ≤ this → at most active recovery
+	currentPushHardMin    = 60 // need this and HRV green to push hard
 )
 
 // computeEnergyBank produces the day's prescriptive verdict. Returns nil when
@@ -168,7 +168,7 @@ func chooseVerdict(hrvZRaw float64, current int) string {
 // `energy_snapshots` distribution (2025-01-28 → 2026-05-11, Europe/
 // Belgrade): p20=15, p50=41, p80=55. These are NOT population norms —
 // they're a starting point. Once a tenant accumulates ≥30 non-imputed
-// snapshots their own percentiles take over (see
+// distinct eligible local dates their own percentiles take over (see
 // storage.ComputeUserVerdictBands).
 //
 // The defaults are biased toward this one user's profile (moderate
@@ -179,10 +179,11 @@ func chooseVerdict(hrvZRaw float64, current int) string {
 // new tenant.
 func DefaultV2VerdictBands() VerdictBands {
 	return VerdictBands{
-		Rest:     15,
-		Recovery: 41,
-		PushHard: 55,
-		Source:   "default",
+		Rest:            15,
+		Recovery:        41,
+		PushHard:        55,
+		Source:          "default",
+		CalibrationMode: "default",
 	}
 }
 

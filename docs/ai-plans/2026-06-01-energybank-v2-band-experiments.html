@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation Plan: EnergyBank v2 Band Experiments</title>
+  <style>
+    body {
+      margin: 0;
+      background: #f6f7f9;
+      color: #1f2937;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 32px;
+    }
+    section {
+      background: #fff;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 18px 20px;
+      margin: 16px 0;
+    }
+    h1, h2, h3 {
+      line-height: 1.2;
+      margin-top: 0;
+    }
+    code {
+      background: #f1f5f9;
+      border-radius: 4px;
+      padding: 2px 5px;
+      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      font-size: 0.95em;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0;
+      font-size: 14px;
+    }
+    th, td {
+      border: 1px solid #e2e8f0;
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #f8fafc;
+    }
+    ul, ol {
+      padding-left: 22px;
+    }
+    li {
+      margin: 6px 0;
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: #fef3c7;
+      color: #92400e;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .card {
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 12px;
+      background: #f8fafc;
+    }
+    .risk { border-left: 4px solid #dc2626; }
+    .ok { border-left: 4px solid #15803d; }
+    .todo { border-left: 4px solid #2563eb; }
+    .approval { border-left: 4px solid #d97706; }
+    @media (max-width: 760px) {
+      main { padding: 18px; }
+      .grid { grid-template-columns: 1fr; }
+      table { font-size: 13px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>EnergyBank v2 Band Experiments</h1>
+    <p><span class="badge">Implemented after approval</span></p>
+
+    <section>
+      <h2>Task Summary</h2>
+      <p>
+        Correct the EnergyBank v2 verdict-band calibration path using read-only experiments on two anonymized tenant
+        patterns. The goal is to decide how personal bands should be sampled before changing production code.
+      </p>
+      <p>
+        This plan intentionally does not contain tenant names, schema names, or personal identifiers. Profiles are
+        labelled <code>Profile A</code> and <code>Profile B</code>.
+      </p>
+    </section>
+
+    <section>
+      <h2>Previous Behavior</h2>
+      <ul>
+        <li><code>GetHealthBriefing</code> builds a legacy v1 EnergyBank, then overrides it from v2 snapshots when a snapshot exists for the requested date.</li>
+        <li>The v2 override calls <code>ComputeUserVerdictBands</code>, <code>ChooseVerdictV2</code>, <code>BuildVerdictReasonV2</code>, then stress-flag overrides.</li>
+        <li><code>ComputeUserVerdictBands</code> computed percentiles over eligible <code>energy_snapshots</code> rows directly.</li>
+        <li>Because multiple intraday snapshots exist for the same local date, active/live days can count many times in the percentile distribution.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Experiment Setup</h2>
+      <ul>
+        <li>Read-only SQL against production snapshots.</li>
+        <li>Window: last 180 days, matching <code>energyBandsWindowDays</code>.</li>
+        <li>Eligible rows exclude <code>imputed_sleep</code>, <code>imputed_activity</code>, and <code>bootstrap_tail</code>.</li>
+        <li>Compared four sampling strategies: row-weighted all formulas, latest-row-per-day all formulas, row-weighted latest formula, latest-row-per-day latest formula.</li>
+        <li>Backtest verdicts used the same HRV gate order as <code>ChooseVerdictV2</code>, with HRV z-scores reconstructed from daily HRV against a trailing baseline.</li>
+        <li>Verdict-impact tables are <strong>pre-stress-override</strong>: they do not apply illness/recovery-debt/rebound overrides from <code>ApplyStressFlagVerdictOverride</code>.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Anonymized Band Results</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Profile</th>
+            <th>Scenario</th>
+            <th>n</th>
+            <th>p20 / rest</th>
+            <th>p50 / recovery</th>
+            <th>p80 / push</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Profile A</td>
+            <td>Row-weighted, all formulas</td>
+            <td>651 rows</td>
+            <td>44.0</td>
+            <td>59.0</td>
+            <td>72.0</td>
+          </tr>
+          <tr>
+            <td>Profile A</td>
+            <td>Latest row per day, all formulas</td>
+            <td>178 days</td>
+            <td>34.0</td>
+            <td>43.5</td>
+            <td>52.6</td>
+          </tr>
+          <tr>
+            <td>Profile A</td>
+            <td>Row-weighted, latest formula</td>
+            <td>369 rows</td>
+            <td>53.0</td>
+            <td>64.0</td>
+            <td>73.0</td>
+          </tr>
+          <tr>
+            <td>Profile A</td>
+            <td>Latest row per day, latest formula</td>
+            <td>19 days</td>
+            <td>35.2</td>
+            <td>45.0</td>
+            <td>54.0</td>
+          </tr>
+          <tr>
+            <td>Profile B</td>
+            <td>Row-weighted, all formulas</td>
+            <td>263 rows</td>
+            <td>54.4</td>
+            <td>70.0</td>
+            <td>81.0</td>
+          </tr>
+          <tr>
+            <td>Profile B</td>
+            <td>Latest row per day, all formulas</td>
+            <td>22 days</td>
+            <td>46.2</td>
+            <td>54.5</td>
+            <td>67.8</td>
+          </tr>
+          <tr>
+            <td>Profile B</td>
+            <td>Row-weighted, latest formula</td>
+            <td>206 rows</td>
+            <td>53.0</td>
+            <td>70.0</td>
+            <td>81.0</td>
+          </tr>
+          <tr>
+            <td>Profile B</td>
+            <td>Latest row per day, latest formula</td>
+            <td>17 days</td>
+            <td>38.0</td>
+            <td>54.0</td>
+            <td>68.8</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Anonymized Verdict Impact</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Profile</th>
+            <th>Scenario</th>
+            <th>Days</th>
+            <th>Rest</th>
+            <th>Active recovery</th>
+            <th>Moderate</th>
+            <th>Push hard</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Profile A</td>
+            <td>Current row-weighted bands</td>
+            <td>19</td>
+            <td>11</td>
+            <td>7</td>
+            <td>1</td>
+            <td>0</td>
+          </tr>
+          <tr>
+            <td>Profile A</td>
+            <td>Latest-formula day-level bands</td>
+            <td>19</td>
+            <td>6</td>
+            <td>7</td>
+            <td>4</td>
+            <td>2</td>
+          </tr>
+          <tr>
+            <td>Profile A</td>
+            <td>Default bands</td>
+            <td>19</td>
+            <td>3</td>
+            <td>9</td>
+            <td>6</td>
+            <td>1</td>
+          </tr>
+          <tr>
+            <td>Profile B</td>
+            <td>Current row-weighted bands</td>
+            <td>17</td>
+            <td>10</td>
+            <td>5</td>
+            <td>2</td>
+            <td>0</td>
+          </tr>
+          <tr>
+            <td>Profile B</td>
+            <td>Latest-formula day-level bands</td>
+            <td>17</td>
+            <td>5</td>
+            <td>6</td>
+            <td>5</td>
+            <td>1</td>
+          </tr>
+          <tr>
+            <td>Profile B</td>
+            <td>Default bands</td>
+            <td>17</td>
+            <td>3</td>
+            <td>4</td>
+            <td>6</td>
+            <td>4</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>
+        Interpretation: row-weighted bands are materially stricter for both profiles. They suppress <code>push_hard</code>
+        completely and move many day-level moderate/recovery days into rest or active recovery.
+      </p>
+    </section>
+
+    <section>
+      <h2>Experiment Takeaways</h2>
+      <div class="grid">
+        <div class="card risk">
+          <h3>Intraday overweighting is real</h3>
+          <p>
+            Row-weighted sampling raises thresholds sharply in both profiles. The effect is not profile-specific.
+          </p>
+        </div>
+        <div class="card ok">
+          <h3>Profiles differ</h3>
+          <p>
+            Profile B has a higher day-level push threshold than Profile A, so personal bands still matter after fixing the sampling unit.
+          </p>
+        </div>
+        <div class="card risk">
+          <h3>Latest formula is immature</h3>
+          <p>
+            Latest-formula day counts are 19 and 17, below the current documented 30-day gate.
+          </p>
+        </div>
+        <div class="card todo">
+          <h3>Defaults are not neutral</h3>
+          <p>
+            Default bands produce more <code>push_hard</code>, especially in Profile B, so strict fallback may be too permissive during warmup.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Recommended Decision</h2>
+      <p>
+        Fix the sampling unit first: one local <code>date</code> should count as one data point, using the latest eligible
+        snapshot for that date. Do not keep row-weighted bands.
+      </p>
+      <p>
+        For formula-version handling, use a conservative hybrid rule:
+      </p>
+      <ol>
+        <li>Prefer latest-formula day-level bands when latest formula has at least 30 distinct eligible days.</li>
+        <li>Before 30 latest-formula days, use <strong>compatible-formula</strong> day-level bands only if there are at least 30 distinct eligible days and those formula versions are explicitly whitelisted as comparable for warmup.</li>
+        <li>If neither condition holds, fall back to defaults with <code>CalibrationMode=default_warmup</code>. Do not let <code>NDataPoints</code> or <code>UsedDays</code> imply the default bands were computed from those days.</li>
+      </ol>
+      <p>
+        This avoids the current row-weighting bug while also avoiding a too-permissive default-only warmup for profiles whose real day-level distribution is higher than defaults.
+      </p>
+    </section>
+
+    <section>
+      <h2>Formula Compatibility Policy</h2>
+      <ul>
+        <li>Compatible formula versions must be explicitly listed in code.</li>
+        <li>Unknown, empty, or unlisted <code>formula_version</code> values are not compatible by default.</li>
+        <li>The current formula version is always compatible with itself.</li>
+        <li>Mixed warmup is allowed only across versions whose bank distributions are expected to be comparable.</li>
+        <li>The compatibility list must be updated intentionally whenever formula behavior changes.</li>
+      </ul>
+      <p>
+        Implementation should make this policy visible in a small helper or whitelist rather than relying on broad
+        numeric comparisons such as "all versions less than current".
+      </p>
+      <p>
+        Approved initial compatibility: <code>formula_version=1</code> may warm up <code>formula_version=2</code> only
+        under the current non-stress-drain configuration where <code>StressDrainEnabled=false</code> and
+        <code>EffectiveBeta()==0</code>, and only while the effective alpha coefficient still matches the default
+        v1/v2-compatible coefficient. This is conditional compatibility, not a permanent <code>{1,2}</code> whitelist.
+        If stress drain becomes active, or formula parameters change bank distribution materially, version 1 must
+        stop contributing to version 2 warmup.
+      </p>
+      <p>
+        Suggested helper shape:
+      </p>
+      <pre><code>compatible := map[int]bool{
+    cfg.FormulaVersion: true,
+}
+
+if cfg.FormulaVersion == 2 &amp;&amp;
+    !cfg.StressDrainEnabled &amp;&amp;
+    cfg.EffectiveBeta() == 0 &amp;&amp;
+    cfg.EffectiveAlpha() == DefaultEnergyConfig().EffectiveAlpha() {
+    compatible[1] = true
+}</code></pre>
+    </section>
+
+    <section>
+      <h2>Calibration Metadata Semantics</h2>
+      <p>
+        The implementation should not hide mixed-formula warmup behind ordinary <code>personal</code> source semantics.
+        Explicit metadata is part of the fix, not optional documentation:
+      </p>
+      <ul>
+        <li><code>CalibrationMode</code>: <code>personal_latest_formula</code>, <code>personal_mixed_formula_warmup</code>, <code>default_warmup</code>, or <code>default</code>.</li>
+        <li><code>UsedDays</code>: distinct eligible local dates actually used to compute the returned bands.</li>
+        <li><code>LatestFormulaDays</code>: distinct eligible local dates available for the current/latest formula.</li>
+        <li><code>CompatibleFormulaDays</code>: distinct eligible local dates available after applying the compatibility whitelist.</li>
+      </ul>
+      <p>
+        If <code>NDataPoints</code> is retained for compatibility, it must mean distinct eligible dates used for returned
+        non-default bands, never raw snapshot rows. In default modes, <code>UsedDays</code> should not imply that defaults
+        were computed from local data; expose <code>LatestFormulaDays</code> and <code>CompatibleFormulaDays</code> separately
+        for debugging.
+      </p>
+    </section>
+
+    <section>
+      <h2>Likely File Changes</h2>
+      <ul>
+        <li><code>internal/storage/energy_bands.go</code> - change band sampling to latest eligible row per date and add formula-version warmup policy.</li>
+        <li><code>internal/storage/energy_bands_test.go</code> - add storage tests for row-vs-day weighting, formula-version warmup, imputed/bootstrap exclusions, and source/count reporting.</li>
+        <li><code>internal/health/types.go</code> - extend <code>VerdictBands</code> metadata with calibration mode/count fields.</li>
+        <li><code>internal/storage/briefing.go</code> - update comments only; v2 override code path already exists.</li>
+        <li><code>ENERGY_BANK.md</code> or <code>SCORING.md</code> - document band-sampling semantics after approval.</li>
+        <li>This plan file - update with actual implementation notes and verification.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Implementation Steps</h2>
+      <ol>
+        <li>Add tests that fail under row-weighted sampling: many intraday rows for one date must count as one datapoint.</li>
+        <li>Add tests for latest-formula <code>&lt;30</code> days with compatible-formula day-level fallback.</li>
+        <li>Add tests proving imputed/bootstrap rows are excluded <strong>before</strong> per-date latest-row selection.</li>
+        <li>Add a same-date, cross-formula test proving mixed warmup still counts one date once, not once per formula.</li>
+        <li>Add a latest-formula-wins test: when latest formula has at least 30 dates, do not use mixed warmup even if compatible history is larger.</li>
+        <li>Add a default-warmup test: when latest and compatible samples are both below 30 distinct dates, return defaults and mark warmup clearly.</li>
+        <li>Add an unknown-formula test: rows from unknown or unlisted formula versions are excluded from compatible-formula warmup.</li>
+        <li>Add count/source tests: date counts must never equal raw row counts when multiple snapshots exist for one date.</li>
+        <li>Add a display-clamp test: percentiles must use bank values clamped to <code>[0,100]</code>.</li>
+        <li>Implement day-level sampling using latest eligible <code>ts_bucket</code> per <code>date</code>.</li>
+        <li>Return metadata that distinguishes <code>personal_latest_formula</code>, <code>personal_mixed_formula_warmup</code>, and <code>default_warmup</code>.</li>
+        <li>Run focused storage tests and full <code>go test ./...</code>.</li>
+        <li>After approval and implementation, run the same anonymized experiment query again to confirm row weighting is gone.</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>Test Plan</h2>
+      <ul>
+        <li><code>go test ./internal/storage -run TestComputeUserVerdictBands</code></li>
+        <li><code>go test ./internal/health</code></li>
+        <li><code>go test ./...</code></li>
+        <li>Read-only DB verification: compare sampled <code>n</code> to distinct-date counts for both anonymized profile patterns.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Manual QA Checklist</h2>
+      <ul>
+        <li>Check that dashboard EnergyBank still renders when a v2 snapshot exists.</li>
+        <li>Check that verdict text remains localized through <code>BuildVerdictReasonV2</code>.</li>
+        <li>Check one recent day per profile where row-weighted and day-level verdicts differ, and confirm the new pre-stress-override verdict is explainable.</li>
+        <li>Check whether stress-flag overrides would change that final production verdict.</li>
+        <li>Confirm no production writes are needed for the verification query.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Risks</h2>
+      <ul>
+        <li>Using compatible-formula day-level warmup may still mix distributions across formula versions if compatibility is over-declared.</li>
+        <li>Using defaults only may over-permit <code>push_hard</code> for profiles whose real distribution sits above defaults.</li>
+        <li>Changing <code>VerdictBands.Source</code> strings can affect downstream consumers if they assume a closed enum.</li>
+        <li>Small latest-formula samples can still be noisy; avoid interpreting 17-19 days as final calibration.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Rollback Plan</h2>
+      <ul>
+        <li>Revert <code>ComputeUserVerdictBands</code> to default-only fallback if mixed-formula warmup behaves poorly.</li>
+        <li>Keep the day-level sampling fix even if formula-version policy changes; row-weighted calibration should not return.</li>
+        <li>No schema rollback is expected.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Open Questions</h2>
+      <ul>
+        <li>Do we want a UI/admin badge for "personal bands warming up" before exposing this to users?</li>
+      </ul>
+    </section>
+
+    <section class="ok">
+      <h2>Implementation Update</h2>
+      <p>
+        Implemented after approval. <code>ComputeUserVerdictBands</code> now samples one latest eligible snapshot per
+        local date, filters imputed/bootstrap rows before per-date selection, prefers current-formula personal bands
+        at 30 distinct days, and falls back to compatible-formula warmup only through an explicit compatibility helper.
+      </p>
+      <ul>
+        <li><code>formula_version=1</code> warms up <code>formula_version=2</code> only when <code>StressDrainEnabled=false</code>, <code>EffectiveBeta()==0</code>, and the effective alpha matches the default v1/v2-compatible coefficient.</li>
+        <li>Unknown or unlisted formula versions are excluded from compatible warmup.</li>
+        <li><code>VerdictBands</code> now exposes <code>CalibrationMode</code>, <code>UsedDays</code>, <code>LatestFormulaDays</code>, and <code>CompatibleFormulaDays</code>.</li>
+        <li><code>NDataPoints</code> now means distinct eligible dates used for returned non-default bands; default warmup returns <code>NDataPoints=0</code>.</li>
+        <li>Legacy <code>Source</code> remains <code>personal</code> or <code>default</code> for compatibility; precise semantics live in <code>CalibrationMode</code>.</li>
+      </ul>
+    </section>
+
+    <section class="ok">
+      <h2>Verification Run</h2>
+      <ul>
+        <li><code>go test ./internal/storage -run TestComputeUserVerdictBands -count=1 -v</code> with <code>~/.health-db</code> libpq env: passed against throwaway Postgres schemas.</li>
+        <li><code>go test ./internal/health -count=1</code>: passed.</li>
+        <li><code>go test ./... -count=1</code>: passed. DB-backed integration tests skip in this plain-env run, matching existing suite behavior.</li>
+      </ul>
+    </section>
+
+    <section class="approval">
+      <h2>Decision</h2>
+      <p>
+        Approved and implemented. Recommended implementation was applied: day-level sampling first, compatible-formula
+        day-level warmup only when latest-formula days are below 30 and compatible day-level sample is at least 30, and
+        compatible-formula warmup is not reported as ordinary personal calibration.
+      </p>
+    </section>
+  </main>
+</body>
+</html>
