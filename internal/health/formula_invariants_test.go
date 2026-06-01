@@ -27,6 +27,41 @@ func TestReadinessScore_Invariants(t *testing.T) {
 	}
 }
 
+func TestReadinessScore_MinimumDataGateAndZeroVariance(t *testing.T) {
+	if got := ComputeReadinessScore(repeatFloat(40, minBaseline+1), repeatFloat(55, minBaseline+1), repeatFloat(7.5, minBaseline+1)); got != 70 {
+		t.Fatalf("readiness with insufficient baseline = %d, want neutral 70", got)
+	}
+
+	got := ComputeReadinessScore(
+		repeatFloat(40, minBaseline+2),
+		repeatFloat(55, minBaseline+2),
+		repeatFloat(7.5, minBaseline+2),
+	)
+	if got != 70 {
+		t.Fatalf("readiness with zero-variance baseline = %d, want neutral 70", got)
+	}
+}
+
+func TestReadinessScore_DirectionalMonotonicity(t *testing.T) {
+	baselineHRV := alternatingFloat(39, 41, 14)
+	baselineRHR := alternatingFloat(54, 56, 14)
+	baselineSleep := alternatingFloat(7.1, 7.3, 14)
+
+	strong := ComputeReadinessScore(
+		prependFloat(52, append(repeatFloat(48, 6), baselineHRV...)),
+		prependFloat(48, append(repeatFloat(50, 6), baselineRHR...)),
+		prependFloat(8.0, append(repeatFloat(7.8, 6), baselineSleep...)),
+	)
+	weak := ComputeReadinessScore(
+		prependFloat(28, append(repeatFloat(32, 6), baselineHRV...)),
+		prependFloat(70, append(repeatFloat(66, 6), baselineRHR...)),
+		prependFloat(5.2, append(repeatFloat(5.6, 6), baselineSleep...)),
+	)
+	if strong <= weak {
+		t.Fatalf("strong readiness = %d, weak readiness = %d, want strong > weak", strong, weak)
+	}
+}
+
 func TestReadinessBand_MonotonicBoundaries(t *testing.T) {
 	cases := []struct {
 		score int
@@ -43,6 +78,58 @@ func TestReadinessBand_MonotonicBoundaries(t *testing.T) {
 		if got := ReadinessBand(c.score); got != c.want {
 			t.Fatalf("ReadinessBand(%d) = %q, want %q", c.score, got, c.want)
 		}
+	}
+}
+
+func TestScoreSleep_StatusFloorPreventsShortSleepGood(t *testing.T) {
+	sri := 82.0
+	sec := scoreSleep(RawMetrics{
+		Sleep:                 []float64{5.8, 5.9, 5.7, 7.4, 7.5, 7.4, 7.5},
+		Deep:                  []float64{1.5, 1.4, 1.4},
+		Awake:                 []float64{0.1, 0.1, 0.1},
+		SleepRegularityIndex:  &sri,
+		SleepRegularityNights: 14,
+	}, GetStrings("en"))
+	if sec == nil {
+		t.Fatalf("scoreSleep returned nil")
+	}
+	if sec.Status == "good" {
+		t.Fatalf("short sleep status = %q, want not good", sec.Status)
+	}
+	if sec.Status != "fair" {
+		t.Fatalf("short sleep status = %q, want fair", sec.Status)
+	}
+}
+
+func TestComputeSleepAnalysis_IgnoresZeroNightsAndClampsEfficiency(t *testing.T) {
+	got := computeSleepAnalysis(RawMetrics{
+		Sleep: []float64{5, 0, 7},
+		Deep:  []float64{1, 0, 1.4},
+		REM:   []float64{1, 0, 1.5},
+		Awake: []float64{6, 0, 0.2},
+	})
+	if got == nil {
+		t.Fatalf("computeSleepAnalysis returned nil")
+	}
+	if got.Nights != 2 {
+		t.Fatalf("Nights = %d, want 2", got.Nights)
+	}
+	if got.TotalAvg != 6 {
+		t.Fatalf("TotalAvg = %v, want 6", got.TotalAvg)
+	}
+	if got.Efficiency != 0 {
+		t.Fatalf("Efficiency = %v, want clamp to 0", got.Efficiency)
+	}
+}
+
+func TestComputeAlerts_RequiresBaselineVariance(t *testing.T) {
+	alerts := computeAlerts(RawMetrics{
+		Resp:      repeatFloat(18, minBaseline+2),
+		WristTemp: repeatFloat(36.8, minBaseline+2),
+		HRV:       repeatFloat(40, minBaseline+2),
+	}, GetStrings("en"))
+	if len(alerts) != 0 {
+		t.Fatalf("alerts with zero-variance baselines = %+v, want none", alerts)
 	}
 }
 
