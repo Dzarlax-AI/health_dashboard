@@ -158,6 +158,54 @@
   </section>
 
   <section>
+    <h2>Product Benchmark</h2>
+    <p>
+      Oura and WHOOP are useful current product references for this feature, but they should be treated as UX and
+      product-contract benchmarks, not as scientific validation by themselves. The implementation should borrow the
+      conservative framing and personal-baseline pattern while keeping Health Dashboard's own auditable evidence model.
+    </p>
+    <table>
+      <thead>
+        <tr><th>Product</th><th>Relevant behavior</th><th>Design implication for Health Dashboard</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Oura Symptom Radar</td>
+          <td>
+            Oura describes Symptom Radar as looking for body strain using average body temperature, respiratory rate,
+            resting heart rate, HRV, and inactive time. It uses a three-level estimate: no signs, minor signs, and major
+            signs. Oura also states that the ring is not a medical device and is not intended to diagnose, treat, cure,
+            monitor, or prevent medical conditions or illnesses
+            (<a href="https://support.ouraring.com/hc/en-us/articles/35593651188115-Symptom-Radar">Oura Member Care</a>).
+          </td>
+          <td>
+            Match the non-diagnostic "signs of strain" framing, expose contributing biometrics, and keep confidence
+            levels coarse rather than over-precise.
+          </td>
+        </tr>
+        <tr>
+          <td>WHOOP Health Monitor</td>
+          <td>
+            WHOOP Health Monitor surfaces HRV, respiratory rate, blood oxygen, skin temperature, and related vitals
+            against a member's personalized normal range. WHOOP also supports shareable 30-day and 180-day health
+            reports
+            (<a href="https://support.whoop.com/s/article/WHOOP-Health-Monitor-Report?language=en_US">WHOOP Support</a>).
+          </td>
+          <td>
+            Keep the output personal-baseline driven, show which metrics are outside normal range, and preserve
+            aggregate/debug evidence suitable for MCP and admin review.
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <ul>
+      <li>Do not copy proprietary scoring or claim equivalence with Oura/WHOOP.</li>
+      <li>Use them to validate user expectations: personal baselines, coarse confidence, explicit contributing metrics, and recovery/rest-oriented wording.</li>
+      <li>Health Dashboard should go further on auditability: every signal should expose method, baseline, status, and source summary when available.</li>
+    </ul>
+  </section>
+
+  <section>
     <h2>Likely File Changes</h2>
     <ul>
       <li><code>internal/health/types.go</code> - add <code>IllnessSuspicion</code> and signal structs to the response contract.</li>
