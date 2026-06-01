@@ -1,9 +1,7 @@
 package ui
 
 import (
-	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +21,11 @@ import (
 	"health-receiver/internal/registry"
 	"health-receiver/internal/storage"
 	"health-receiver/internal/tenants"
+)
+
+const (
+	authCookieName = "auth"
+	authSessionTTL = 30 * 24 * time.Hour
 )
 
 type Handler struct {
@@ -81,6 +84,37 @@ func (h *Handler) isAdmin(r *http.Request) bool {
 	return ctxdb.IsAdminFromContext(r.Context())
 }
 
+func setAuthCookie(w http.ResponseWriter, r *http.Request, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     authCookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   authCookieSecure(r),
+		MaxAge:   int(authSessionTTL.Seconds()),
+	})
+}
+
+func expireAuthCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     authCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   authCookieSecure(r),
+		MaxAge:   -1,
+	})
+}
+
+func authCookieSecure(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
 // basePage builds a BasePage populated with lang, title, nav and isAdmin.
 func (h *Handler) basePage(r *http.Request, title, activeNav string) BasePage {
 	return BasePage{
@@ -95,6 +129,7 @@ func (h *Handler) basePage(r *http.Request, title, activeNav string) BasePage {
 func (h *Handler) Register(mux *http.ServeMux) {
 	// Auth
 	mux.HandleFunc("/login", h.login)
+	mux.HandleFunc("/logout", h.logout)
 	mux.HandleFunc("/setup", h.setup)
 
 	// Page routes
@@ -274,34 +309,33 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 		// Legacy single-user mode: use env-var credentials.
 		if h.mgr.LegacyMode() {
 			db := h.mgr.LegacyDB()
+			inject := func() {
+				next(w, r.WithContext(ctxdb.WithDB(r.Context(), db, "health")))
+			}
 
 			// Authentik forward auth
 			if h.forwardAuthTrusted(r) &&
 				(r.Header.Get("X-authentik-username") != "" || r.Header.Get("X-authentik-email") != "") {
 				// Issue a local cookie so requests survive Authentik session expiry.
-				if _, err := r.Cookie("auth"); err != nil {
-					http.SetCookie(w, &http.Cookie{
-						Name: "auth", Value: h.mgr.LegacyPasswordHash(), Path: "/",
-						HttpOnly: true, SameSite: http.SameSiteLaxMode,
-						MaxAge: 60 * 60 * 24 * 30,
-					})
+				if cookie, err := r.Cookie(authCookieName); err != nil || !db.AuthSessionValid(cookie.Value) {
+					if token, err := db.CreateAuthSession(authSessionTTL); err == nil {
+						setAuthCookie(w, r, token)
+					}
 				}
-				next(w, r.WithContext(ctxdb.WithDB(r.Context(), db, "health")))
+				inject()
 				return
 			}
 			// API key
 			if key := r.Header.Get("X-API-Key"); key != "" {
 				if subtle.ConstantTimeCompare([]byte(key), []byte(h.mgr.LegacyAPIKey())) == 1 {
-					next(w, r.WithContext(ctxdb.WithDB(r.Context(), db, "health")))
+					inject()
 					return
 				}
 			}
 			// Cookie
-			if cookie, err := r.Cookie("auth"); err == nil {
-				if subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(h.mgr.LegacyPasswordHash())) == 1 {
-					next(w, r.WithContext(ctxdb.WithDB(r.Context(), db, "health")))
-					return
-				}
+			if cookie, err := r.Cookie(authCookieName); err == nil && db.AuthSessionValid(cookie.Value) {
+				inject()
+				return
 			}
 			http.Redirect(w, r, "/login?next="+r.URL.RequestURI(), http.StatusFound)
 			return
@@ -321,21 +355,16 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r.WithContext(ctx))
 		}
 
-		// setAuthCookie issues a local session cookie so the user stays logged in
+		// issueForwardAuthSession issues a local session cookie so the user stays logged in
 		// even if the Authentik session expires between requests.
-		setAuthCookie := func(username string) {
-			if _, err := r.Cookie("auth"); err == nil {
-				return // cookie already present
+		issueForwardAuthSession := func(username string) {
+			if cookie, err := r.Cookie(authCookieName); err == nil {
+				if u, err := h.reg.GetSessionUser(r.Context(), cookie.Value); err == nil && u.Username == username {
+					return
+				}
 			}
-			if u, err := h.reg.GetByUsername(r.Context(), username); err == nil {
-				http.SetCookie(w, &http.Cookie{
-					Name:     "auth",
-					Value:    u.Username + "|" + u.PasswordHash,
-					Path:     "/",
-					HttpOnly: true,
-					SameSite: http.SameSiteLaxMode,
-					MaxAge:   60 * 60 * 24 * 30,
-				})
+			if token, err := h.reg.CreateSession(r.Context(), username, authSessionTTL); err == nil {
+				setAuthCookie(w, r, token)
 			}
 		}
 
@@ -346,7 +375,7 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 			if authentikUser != "" || authentikEmail != "" {
 				if authentikUser != "" {
 					if db, schema, isAdmin, ok := h.mgr.DBForUsername(r.Context(), authentikUser); ok {
-						setAuthCookie(authentikUser)
+						issueForwardAuthSession(authentikUser)
 						inject(db, schema, isAdmin)
 						return
 					}
@@ -354,7 +383,7 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 				if authentikEmail != "" {
 					if db, schema, isAdmin, ok := h.mgr.DBForEmail(r.Context(), authentikEmail); ok {
 						if u, err := h.reg.GetByEmail(r.Context(), authentikEmail); err == nil {
-							setAuthCookie(u.Username)
+							issueForwardAuthSession(u.Username)
 						}
 						inject(db, schema, isAdmin)
 						return
@@ -371,18 +400,12 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 			}
 		}
 
-		// Session cookie: "username|sha256hash"
-		if cookie, err := r.Cookie("auth"); err == nil {
-			parts := strings.SplitN(cookie.Value, "|", 2)
-			if len(parts) == 2 {
-				username, hash := parts[0], parts[1]
-				if user, err := h.reg.GetByUsername(r.Context(), username); err == nil {
-					if subtle.ConstantTimeCompare([]byte(hash), []byte(user.PasswordHash)) == 1 {
-						if db, schema, isAdmin, ok := h.mgr.DBForUsername(r.Context(), username); ok {
-							inject(db, schema, isAdmin)
-							return
-						}
-					}
+		// Session cookie: opaque random token, backed by health_registry.sessions.
+		if cookie, err := r.Cookie(authCookieName); err == nil {
+			if user, err := h.reg.GetSessionUser(r.Context(), cookie.Value); err == nil {
+				if db, schema, isAdmin, ok := h.mgr.DBForUsername(r.Context(), user.Username); ok {
+					inject(db, schema, isAdmin)
+					return
 				}
 			}
 		}
@@ -405,17 +428,16 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodPost {
 		password := r.FormValue("password")
-		sum := sha256.Sum256([]byte(password))
-		hash := hex.EncodeToString(sum[:])
 
 		// Legacy mode: compare against env password hash directly.
 		if h.mgr.LegacyMode() {
-			if subtle.ConstantTimeCompare([]byte(hash), []byte(h.mgr.LegacyPasswordHash())) == 1 {
-				http.SetCookie(w, &http.Cookie{
-					Name: "auth", Value: hash, Path: "/",
-					HttpOnly: true, SameSite: http.SameSiteLaxMode,
-					MaxAge: 60 * 60 * 24 * 30,
-				})
+			if ok, _ := registry.VerifyPassword(h.mgr.LegacyPasswordHash(), password); ok {
+				token, err := h.mgr.LegacyDB().CreateAuthSession(authSessionTTL)
+				if err != nil {
+					http.Error(w, "create session", http.StatusServiceUnavailable)
+					return
+				}
+				setAuthCookie(w, r, token)
 				http.Redirect(w, r, next, http.StatusFound)
 				return
 			}
@@ -427,23 +449,45 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		// Multi-user mode: require username.
 		username := r.FormValue("username")
 		user, err := h.reg.GetByUsername(r.Context(), username)
-		if err != nil || subtle.ConstantTimeCompare([]byte(hash), []byte(user.PasswordHash)) != 1 {
+		if err != nil {
 			w.WriteHeader(http.StatusUnauthorized)
 			renderPage(w, "login", loginPageData{Error: "Invalid username or password.", MultiUser: true})
 			return
 		}
-
-		cookieVal := username + "|" + hash
-		http.SetCookie(w, &http.Cookie{
-			Name: "auth", Value: cookieVal, Path: "/",
-			HttpOnly: true, SameSite: http.SameSiteLaxMode,
-			MaxAge: 60 * 60 * 24 * 30,
-		})
+		ok, needsRehash := registry.VerifyPassword(user.PasswordHash, password)
+		if !ok {
+			w.WriteHeader(http.StatusUnauthorized)
+			renderPage(w, "login", loginPageData{Error: "Invalid username or password.", MultiUser: true})
+			return
+		}
+		if needsRehash {
+			if newHash, err := registry.HashPasswordForStorage(password); err == nil {
+				_ = h.reg.UpdatePasswordHash(r.Context(), user.Username, newHash)
+			}
+		}
+		token, err := h.reg.CreateSession(r.Context(), user.Username, authSessionTTL)
+		if err != nil {
+			http.Error(w, "create session", http.StatusServiceUnavailable)
+			return
+		}
+		setAuthCookie(w, r, token)
 		http.Redirect(w, r, next, http.StatusFound)
 		return
 	}
 
 	renderPage(w, "login", loginPageData{MultiUser: !h.mgr.LegacyMode()})
+}
+
+func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
+	if cookie, err := r.Cookie(authCookieName); err == nil {
+		if h.mgr.LegacyMode() {
+			_ = h.mgr.LegacyDB().DeleteAuthSession(cookie.Value)
+		} else if h.reg != nil {
+			_ = h.reg.DeleteSession(r.Context(), cookie.Value)
+		}
+	}
+	expireAuthCookie(w, r)
+	http.Redirect(w, r, "/login", http.StatusFound)
 }
 
 type loginPageData struct {
@@ -492,12 +536,9 @@ func (h *Handler) setup(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Auto-login the new user.
-		cookieVal := username + "|" + registry.HashPassword(password)
-		http.SetCookie(w, &http.Cookie{
-			Name: "auth", Value: cookieVal, Path: "/",
-			HttpOnly: true, SameSite: http.SameSiteLaxMode,
-			MaxAge: 60 * 60 * 24 * 30,
-		})
+		if token, err := h.reg.CreateSession(r.Context(), user.Username, authSessionTTL); err == nil {
+			setAuthCookie(w, r, token)
+		}
 		http.Redirect(w, r, "/", http.StatusFound)
 		return
 	}

@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Implementation Plan: Bcrypt Passwords and Opaque Sessions</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #1f2937; line-height: 1.5; }
+    main { max-width: 1100px; margin: 0 auto; padding: 32px; }
+    section { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin: 16px 0; }
+    h1, h2, h3 { line-height: 1.2; margin-top: 0; }
+    code { background: #f3f4f6; padding: 2px 5px; border-radius: 4px; }
+    ul, ol { padding-left: 22px; }
+    li { margin: 6px 0; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #e5e7eb; font-size: 12px; font-weight: 600; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+    .card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 14px; background: #fafafa; }
+    .risk { border-left: 4px solid #dc2626; }
+    .approval { border-left: 4px solid #d97706; }
+    .ok { border-left: 4px solid #16a34a; }
+    .muted { color: #6b7280; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Implementation Plan: Bcrypt Passwords and Opaque Sessions</h1>
+  <p><span class="badge">Issue #156</span> <span class="badge">Approval required before implementation</span></p>
+
+  <section>
+    <h2>Task Summary</h2>
+    <p>Harden Health Dashboard web authentication by replacing unsalted SHA-256 password storage and reusable password-hash cookies with bcrypt password hashes and server-side opaque sessions.</p>
+    <p>The intended PR should close <code>#156 Harden authentication with bcrypt passwords and opaque sessions</code>.</p>
+  </section>
+
+  <section>
+    <h2>Inspected Current Behavior</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>Password Storage</h3>
+        <p><code>internal/registry/registry.go</code> stores <code>health_registry.users.password_hash</code> as <code>hex(sha256(password))</code>. <code>CreateUser</code>, <code>MigrateFromEnv</code>, and <code>HashPassword</code> all use that format.</p>
+      </div>
+      <div class="card">
+        <h3>Login Cookies</h3>
+        <p><code>internal/ui/handler.go</code> sets <code>auth=username|sha256hash</code> in multi-user mode and <code>auth=sha256hash</code> in single-user env mode. Guard validates cookies by comparing the hash against the stored password hash.</p>
+      </div>
+      <div class="card">
+        <h3>ForwardAuth</h3>
+        <p>Trusted Authentik ForwardAuth requests currently issue the same local <code>auth</code> cookie so sessions survive Authentik token expiry. In multi-user mode this leaks the stored password hash into the browser cookie.</p>
+      </div>
+      <div class="card">
+        <h3>Schema</h3>
+        <p><code>EnsureSchema</code> auto-creates <code>health_registry.users</code>. There is no sessions table today. Existing startup DDL already uses additive <code>CREATE TABLE IF NOT EXISTS</code> / <code>ALTER TABLE IF NOT EXISTS</code> style.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <ul>
+      <li>New and changed passwords are stored as bcrypt hashes, with no plaintext persistence and no reusable password hash in cookies.</li>
+      <li>Legacy SHA-256 password hashes continue to authenticate once, then rehash to bcrypt after a successful password login.</li>
+      <li>Browser sessions use random opaque session IDs stored server-side with explicit expiry.</li>
+      <li>Add an explicit logout route that invalidates the server-side session and expires the cookie. Current inspected routes only register <code>/login</code> and <code>/setup</code>; logout is new work, not an existing hook.</li>
+      <li>ForwardAuth keeps the current UX, but creates or refreshes an opaque local session instead of writing the password hash to a cookie.</li>
+      <li>Existing legacy <code>username|hash</code> and bare-hash cookies become invalid after deployment, forcing a one-time login or ForwardAuth refresh.</li>
+      <li>Single-user env-based installation remains a supported installation mode, not a deprecated emergency path.</li>
+      <li>Existing <code>X-API-Key</code> access to guarded dashboard/API routes is a separate bearer-auth surface. This PR should not expand it; either preserve it deliberately with tests or split restriction into a follow-up issue if breaking clients is possible.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Assumptions and Decisions</h2>
+    <ul>
+      <li>Use <code>golang.org/x/crypto/bcrypt</code>; because CI runs <code>-mod=vendor</code>, implementation must update <code>go.mod</code>, <code>go.sum</code>, and <code>vendor/</code>.</li>
+      <li>Use bcrypt cost <code>12</code> by default, but keep it as a package constant so it can be adjusted if local tests show unacceptable latency.</li>
+      <li>Generate session tokens from at least 32 bytes of <code>crypto/rand</code>. Store session tokens as SHA-256 digests, not raw token values, so a database leak does not immediately reveal live cookie values.</li>
+      <li>Cookie name can remain <code>auth</code> for compatibility with existing request paths, but the value becomes a random token.</li>
+      <li>All auth cookies should remain <code>HttpOnly</code> and <code>SameSite=Lax</code>. Add a central cookie helper that sets <code>Secure</code> when the request is HTTPS or carries <code>X-Forwarded-Proto: https</code>, while still allowing plain localhost development.</li>
+      <li>Session expiry should remain 30 days to preserve current user experience unless we decide otherwise before implementation.</li>
+      <li>Single-user env mode should use opaque sessions too. If <code>health_registry</code> is unavailable, store session state in the existing tenant schema instead of treating the mode as less secure.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Files Likely to Change</h2>
+    <ul>
+      <li><code>internal/registry/registry.go</code> - password hashing helpers, legacy-hash detection, bcrypt verification, rehash update, multi-user session table DDL and session CRUD.</li>
+      <li><code>internal/storage/*</code> - single-user session table DDL and CRUD in the tenant schema when registry is not available.</li>
+      <li><code>internal/registry/*_test.go</code> - bcrypt verification, legacy SHA-256 migration, session creation/expiry/deletion tests.</li>
+      <li><code>internal/ui/handler.go</code> - login, setup auto-login, ForwardAuth local session issuance, guard cookie validation, new logout route, cookie security helper, and API-key behavior tests/documentation.</li>
+      <li><code>internal/ui/*_test.go</code> - handler-level cookie/session behavior where practical without external DB dependencies.</li>
+      <li><code>cmd/server/main.go</code> - env seeding should pass plaintext <code>UI_PASSWORD</code> to a bcrypt-aware registry path instead of pre-hashing it before <code>MigrateFromEnv</code>.</li>
+      <li><code>README.md</code> - deployment note: existing users will need a one-time login after the cookie format changes; password hashes are upgraded on login.</li>
+      <li><code>go.mod</code>, <code>go.sum</code>, <code>vendor/</code> - add vendored bcrypt dependency.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Proposed Implementation Steps</h2>
+    <ol>
+      <li>Add password helper functions in <code>internal/registry</code>: <code>HashPasswordBcrypt</code>, <code>VerifyPassword</code>, <code>IsLegacySHA256Hash</code>, and <code>UpdatePasswordHash</code>.</li>
+      <li>Change <code>CreateUser</code> and setup/admin user creation to store bcrypt hashes for new users.</li>
+      <li>Change the env-seeding contract deliberately: <code>cmd/server/main.go</code> should stop pre-hashing <code>UI_PASSWORD</code>. Add a bcrypt-aware <code>MigrateFromEnv</code> replacement or overload that receives plaintext, stores bcrypt for fresh env-seeded admins, and leaves existing legacy SHA-256 rows untouched until a successful password login proves the plaintext.</li>
+      <li>Add <code>health_registry.sessions</code> with <code>id_hash TEXT PRIMARY KEY</code>, <code>username TEXT REFERENCES users(username) ON DELETE CASCADE</code>, <code>created_at</code>, <code>expires_at</code>, and optional <code>last_seen_at</code>.</li>
+      <li>Add an equivalent single-user session store in the active tenant schema, for example <code>auth_sessions</code> with <code>id_hash</code>, <code>created_at</code>, and <code>expires_at</code>. It does not need <code>username</code> because the env-mode tenant is singular.</li>
+      <li>Add registry session CRUD: create random token, store digest, resolve token to user if unexpired, delete token on logout, and opportunistically prune expired sessions.</li>
+      <li>Update both multi-user and single-user <code>guard</code> paths to resolve <code>auth</code> as an opaque token. Old <code>username|hash</code> and bare SHA-256 cookies should fail closed and redirect to <code>/login</code>.</li>
+      <li>Update password login: verify bcrypt or legacy SHA-256, rehash legacy on success, create a session, set cookie to the raw random token.</li>
+      <li>Update setup auto-login to create a session only after user creation succeeds. Admin-created users should not mint sessions because the admin API returns JSON for a different account.</li>
+      <li>Update ForwardAuth local-cookie issuance to create a session for the resolved registry user instead of copying <code>PasswordHash</code>. Do not return early just because some <code>auth</code> cookie exists; overwrite invalid, expired, or legacy-format cookies after trusted ForwardAuth resolves the user.</li>
+      <li>Add <code>/logout</code> as a POST-preferred route that deletes the current server-side session and expires the browser cookie. If a GET link is needed for existing navigation constraints, keep it idempotent and CSRF-low-risk by only deleting the current session.</li>
+      <li>Leave <code>X-API-Key</code> behavior unchanged in this PR unless implementation inspection shows a safe narrow restriction. Add explicit tests or documentation so this bearer-auth surface is not accidentally confused with browser sessions.</li>
+      <li>Document the one-time relogin and the legacy rehash behavior in README.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Auth, Migration, and UX Impact</h2>
+    <ul>
+      <li><strong>Auth:</strong> Password hashes are no longer bearer-equivalent session credentials. Cookie theft remains a session risk, but DB password-hash theft no longer becomes browser login.</li>
+      <li><strong>Migration:</strong> Existing <code>health_registry.users.password_hash</code> rows can remain as SHA-256 until each user logs in successfully. Env-mode <code>UI_PASSWORD</code> does not persist a password hash, so it can verify directly against the current environment value and then issue an opaque session. Bcrypt hashes are self-identifying via the <code>$2a$</code>/<code>$2b$</code>/<code>$2y$</code> prefix.</li>
+      <li><strong>UX:</strong> Existing local sessions will be invalidated once. ForwardAuth users should be silently re-sessioned on the next trusted proxied request.</li>
+      <li><strong>Deployment:</strong> Startup DDL adds one registry table in multi-user mode and one tenant-local session table in single-user mode. No destructive migration is planned. Rollback leaves the new sessions tables unused.</li>
+      <li><strong>API key scope:</strong> The current UI guard accepts <code>X-API-Key</code> as an alternate bearer credential. This plan treats that as pre-existing behavior and not as part of session hardening unless explicitly expanded before implementation.</li>
+      <li><strong>Security boundary:</strong> Do not log raw session tokens, bcrypt hashes, plaintext passwords, or full cookie values.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <ul>
+      <li><code>go test ./internal/registry -count=1</code> for password and session helper tests.</li>
+      <li><code>go test ./internal/ui -count=1</code> for login/guard/logout cookie behavior where feasible.</li>
+      <li>Specific cases: env-seeded admin stores bcrypt; legacy SHA-256 user rehashes after password login; old <code>username|hash</code> and bare-hash cookies are rejected; ForwardAuth replaces invalid/legacy cookies; admin-created users do not receive sessions; single-user session table is created; <code>X-API-Key</code> behavior is intentionally preserved or intentionally restricted.</li>
+      <li><code>go test ./... -count=1</code> for full local regression coverage.</li>
+      <li><code>go vet ./...</code> for static checks.</li>
+      <li><code>git diff --check</code> before commit.</li>
+      <li>After PR opens, require GitHub CI <code>Build, Vet &amp; Test</code> to pass under <code>-mod=vendor</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Manual QA Checklist</h2>
+    <ul>
+      <li>Fresh setup wizard creates an admin user, sets an opaque cookie, and opens the dashboard.</li>
+      <li>Single-user env install with only <code>UI_PASSWORD</code> logs in, writes an opaque server-side session, and accepts the session on the next request.</li>
+      <li>Existing username/password user with SHA-256 hash can log in once and is rehashed to bcrypt.</li>
+      <li>Old <code>username|hash</code> cookie redirects to login instead of authenticating.</li>
+      <li>Old bare SHA-256 single-user cookie redirects to login instead of authenticating.</li>
+      <li>Logout expires the browser cookie and deletes the corresponding server-side session.</li>
+      <li>Trusted ForwardAuth request for username/email creates an opaque local session and reaches the dashboard, including when the request arrives with a stale legacy <code>auth</code> cookie.</li>
+      <li>Untrusted ForwardAuth headers are still ignored by the existing CIDR/flag guard.</li>
+      <li>Admin user creation stores bcrypt hashes, does not return or set a session token for the created user, and the created user can log in normally.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks and Edge Cases</h2>
+    <ul>
+      <li><strong>Dependency risk:</strong> Adding bcrypt requires vendoring <code>golang.org/x/crypto</code>. If vendoring fails in the local sandbox, the PR cannot be completed without network access or an approved dependency update path.</li>
+      <li><strong>Single-user mode:</strong> This mode is supported and must not remain on reusable hash cookies. The tenant-local session table must be created in the same startup path as other single-tenant tables.</li>
+      <li><strong>ForwardAuth lookup:</strong> Username and email paths must create sessions for the actual registry username, not the raw header value when email matching is used.</li>
+      <li><strong>Stale cookies:</strong> Trusted ForwardAuth must replace invalid legacy cookies. Otherwise users behind Authentik could repeatedly depend on headers and lose the local-session benefit after Authentik expiry.</li>
+      <li><strong>Session cleanup:</strong> Expired sessions should not grow without bound. A lightweight delete on create/resolve is enough for this PR.</li>
+      <li><strong>API-key auth:</strong> Keeping current <code>X-API-Key</code> access avoids breaking machine clients but leaves a broad bearer-auth path. Restricting it is a separate risk-managed change unless explicitly approved for this PR.</li>
+      <li><strong>Clock behavior:</strong> Session expiry uses server time. Tests should avoid brittle exact timestamps.</li>
+      <li><strong>Rollback:</strong> If rolled back after users are rehashed to bcrypt, older code that expects SHA-256 will not be able to verify those passwords. See rollback plan.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <p>Code rollback is straightforward for the session tables because they are additive and can remain unused. Password-hash rollback is not fully transparent once multi-user accounts have been rehashed to bcrypt: the previous code cannot validate bcrypt hashes. Single-user env mode can still fall back to <code>UI_PASSWORD</code> after rollback. If emergency rollback is needed after deployment, either restore the new auth code quickly or manually reset affected multi-user passwords through a controlled admin/SQL path. For this reason, deploy should include a smoke test immediately after merge.</p>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Should session expiry remain 30 days exactly, or should we shorten it while touching the session model?</li>
+      <li>Do we want a visible admin/settings note about active sessions now, or keep session management internal for this PR?</li>
+    </ul>
+  </section>
+
+  <section class="ok">
+    <h2>Implementation Update</h2>
+    <p>Implemented after approval on 2026-06-01.</p>
+    <ul>
+      <li>Added bcrypt password hashing with legacy SHA-256 verification and rehash-on-login support.</li>
+      <li>Pinned <code>golang.org/x/crypto</code> to the currently latest verified release, <code>v0.52.0</code>, with refreshed vendored dependencies.</li>
+      <li>Added <code>health_registry.sessions</code> for multi-user opaque browser sessions.</li>
+      <li>Added tenant-local <code>auth_sessions</code> for supported single-user env installs.</li>
+      <li>Changed browser auth cookies to opaque random tokens; old hash-shaped cookies no longer authenticate.</li>
+      <li>Preserved <code>X-API-Key</code> auth behavior for mobile sync, MCP, and existing machine clients.</li>
+      <li>Updated trusted ForwardAuth handling to issue/replace local opaque sessions instead of copying password hashes.</li>
+      <li>Added <code>/logout</code> to delete the current server-side session and expire the browser cookie.</li>
+      <li>Added README notes for bcrypt, opaque sessions, one-time relogin, and single-user session support.</li>
+    </ul>
+    <h3>Checks Run</h3>
+    <ul>
+      <li><code>go test ./internal/registry ./internal/ui -count=1</code></li>
+      <li><code>go test ./... -count=1</code></li>
+      <li><code>go vet ./...</code></li>
+      <li><code>go build ./...</code></li>
+    </ul>
+    <h3>Known Limitations</h3>
+    <ul>
+      <li>Session management remains internal; there is no admin UI for listing or revoking all active sessions.</li>
+      <li><code>X-API-Key</code> remains a broad bearer credential by design in this PR. Narrowing dashboard API-key access should be a separate compatibility decision.</li>
+      <li>Rollback after multi-user accounts rehash to bcrypt still requires either restoring this auth code or resetting affected passwords.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval Gate</h2>
+    <p>Implementation must not start until this plan is explicitly approved. After approval, the implementation PR should close issue <code>#156</code> and update this HTML plan with actual changes, checks run, limitations, and follow-up recommendations.</p>
+  </section>
+</main>
+</body>
+</html>

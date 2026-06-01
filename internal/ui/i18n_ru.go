@@ -22,6 +22,7 @@ var translationsRu = map[string]string{
 	"compare":                    "Сравнить",
 	"all_metrics":                "Метрики",
 	"nav_settings":               "Настройки",
+	"nav_logout":                 "Выйти",
 	"your_trends":                "Ваши тренды",
 	"search_placeholder":         "Поиск метрик...",
 	"esc_hint":                   "ESC — закрыть",
