@@ -10,9 +10,9 @@ import (
 )
 
 // ComputeStressValidationReport runs the §4.5 validation rubric for
-// the calling tenant over a rolling window ending at `asOfDate` (or
-// "today" in `tz` when empty). Returns the kernel-decided verdict
-// + per-channel coefficients.
+// the calling tenant over the latest complete rolling window available
+// at `asOfDate` (or "today" in `tz` when empty). Returns the
+// kernel-decided verdict + per-channel coefficients.
 //
 //	day d → today's sustained_hr_load[d] (already in daily_scores)
 //	day d+1 → next-morning HRV, next-morning baseline_hr_overnight
@@ -24,7 +24,10 @@ import (
 // existing tables, no new persistence.
 //
 // `windowDays` defaults to 30 per spec. `tz` must be the tenant's
-// REPORT_TZ.
+// REPORT_TZ. Because the HRV/RHR outcomes come from day d+1, the
+// load-date window ends at asOfDate-1 so a 30-day validation keeps
+// 30 complete load/outcome pairs instead of including today's
+// incomplete row.
 func (s *DB) ComputeStressValidationReport(
 	ctx context.Context,
 	tz, asOfDate string,
@@ -46,8 +49,7 @@ func (s *DB) ComputeStressValidationReport(
 			return health.ValidationReport{}, fmt.Errorf("parse asOfDate %q: %w", asOfDate, err)
 		}
 	}
-	from := d.AddDate(0, 0, -windowDays).Format("2006-01-02")
-	to := d.Format("2006-01-02")
+	from, to := stressValidationDateRange(d, windowDays)
 
 	pairs, err := s.fetchValidationPairs(ctx, from, to)
 	if err != nil {
@@ -101,6 +103,15 @@ func (s *DB) ComputeStressValidationReport(
 
 	health.RubricDecide(&report)
 	return report, nil
+}
+
+func stressValidationDateRange(asOf time.Time, windowDays int) (from, to string) {
+	if windowDays <= 0 {
+		windowDays = 30
+	}
+	latestCompleteLoadDate := asOf.AddDate(0, 0, -1)
+	return latestCompleteLoadDate.AddDate(0, 0, -(windowDays - 1)).Format("2006-01-02"),
+		latestCompleteLoadDate.Format("2006-01-02")
 }
 
 // validationPair carries one row of the day-d / day-(d+1) join.
@@ -186,9 +197,9 @@ func (s *DB) fetchValidationPairs(
 // returns the vote count + Pearson coefficients for diagnostic use.
 // Three sub-signals:
 //
-//   load[d] vs onset_latency[d]      expected sign: positive
-//   load[d] vs sleep_awake[d]        expected sign: positive
-//   load[d] vs deep_pct_first_third  expected sign: negative
+//	load[d] vs onset_latency[d]      expected sign: positive
+//	load[d] vs sleep_awake[d]        expected sign: positive
+//	load[d] vs deep_pct_first_third  expected sign: negative
 //
 // Each sub-signal contributes one "agreement vote" when it has
 // enough samples AND |r| ≥ 0.1 AND the sign matches expectation.
