@@ -575,6 +575,7 @@ function refreshTenantPanel() {
   runQualityAudit();
   loadCheckinCoverage();
   loadEnergySettings();
+  loadStressObservability();
 }
 
 function switchProfileTab(tab) {
@@ -590,7 +591,10 @@ function switchProfileTab(tab) {
     htmx.trigger('#admin-readiness-contract-table', 'reload');
     htmx.trigger('#admin-readiness-monitoring-table', 'reload');
   }
-  if (tab === 'energy') loadEnergySettings();
+  if (tab === 'energy') {
+    loadEnergySettings();
+    loadStressObservability();
+  }
 }
 
 function adminOpenSection(id) {
