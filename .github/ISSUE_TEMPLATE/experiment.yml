@@ -1,0 +1,52 @@
+name: Evidence-bound experiment
+description: Plan a scoring, calibration, or health-signal experiment before implementation.
+title: "[Experiment]: "
+labels: ["type:experiment", "evidence-boundary", "status:needs-plan"]
+body:
+  - type: textarea
+    id: hypothesis
+    attributes:
+      label: Hypothesis
+      description: State the predeclared claim being tested.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why this matters
+      description: What scoring, confidence, or user trust decision depends on this?
+    validations:
+      required: true
+  - type: textarea
+    id: data_boundary
+    attributes:
+      label: Data and privacy boundary
+      description: Describe profiles, tenants, or datasets anonymously. Do not include raw personal values.
+      placeholder: "Profile A / Profile B; production-like read-only verification; local private dataset."
+    validations:
+      required: true
+  - type: textarea
+    id: method
+    attributes:
+      label: Method
+      description: Query, feature slice, baseline, metric, and comparison approach.
+    validations:
+      required: true
+  - type: textarea
+    id: stop_rule
+    attributes:
+      label: Stop rule / verdict criteria
+      description: Define what counts as ship, park, no-go, or needs more data before running the experiment.
+    validations:
+      required: true
+  - type: textarea
+    id: non_goals
+    attributes:
+      label: Non-goals
+      description: What this experiment must not change automatically.
+      placeholder: "No scoring threshold changes without a follow-up implementation issue."
+  - type: textarea
+    id: reporting
+    attributes:
+      label: Reporting plan
+      description: How results will be summarized without exposing private health data.

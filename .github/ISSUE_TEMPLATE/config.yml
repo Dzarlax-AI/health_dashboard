@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security report
+    url: https://github.com/Dzarlax-AI/health_dashboard/security/policy
+    about: Please report vulnerabilities through the private security policy instead of public issues.
