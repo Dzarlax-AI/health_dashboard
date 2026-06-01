@@ -2,6 +2,7 @@ package health
 
 import (
 	"math"
+	"math/rand"
 	"testing"
 )
 
@@ -20,10 +21,10 @@ func approxEq(t *testing.T, name string, got, want, tol float64) {
 // ratio, severe deficit).
 func TestSleepQuality_TableDriven(t *testing.T) {
 	cases := []struct {
-		name                          string
-		totalH, deepH, remH, awakeH   float64
-		want                          float64
-		tol                           float64
+		name                        string
+		totalH, deepH, remH, awakeH float64
+		want                        float64
+		tol                         float64
 	}{
 		{
 			// Textbook ideal: 8h, no fragmentation, healthy stages.
@@ -186,9 +187,9 @@ func TestDrainV2(t *testing.T) {
 	// 0), so the kcal-only behaviour from v2.0 is the dominant
 	// code path — first half of the cases proves equivalence.
 	cases := []struct {
-		name                          string
-		kcal, sustained, alpha, beta  float64
-		want                          float64
+		name                         string
+		kcal, sustained, alpha, beta float64
+		want                         float64
 	}{
 		// v2.0 equivalent path (beta=0): same numbers the legacy
 		// TestDrainV2 pinned, proving FormulaVersion bump 1→2 doesn't
@@ -203,7 +204,7 @@ func TestDrainV2(t *testing.T) {
 
 		// v2.2 stress term: hr-load contributes only when beta > 0
 		// AND sustained_hr_load > 0.
-		{"stress_disabled_beta_zero", 500, 7.5, 0.08, 0, 40},  // β=0 → kcal-only
+		{"stress_disabled_beta_zero", 500, 7.5, 0.08, 0, 40},    // β=0 → kcal-only
 		{"stress_enabled_anxious_day", 500, 7.5, 0.08, 0.8, 46}, // 40 + 0.8·7.5 = 46
 		{"stress_enabled_calm_day", 500, 0, 0.08, 0.8, 40},      // load=0 → kcal-only
 		{"stress_only_no_kcal", 0, 7.5, 0.08, 0.8, 6},           // 0.8·7.5
@@ -273,4 +274,62 @@ func TestEndToEndOneDay(t *testing.T) {
 	// applying drain to the pre-clamp bank, or flipping a sign) would
 	// shift this number well outside the eps tolerance.
 	approxEq(t, "bank_today", bankToday, 35.875, eps)
+}
+
+// TestBankConvergence pins the Stress v2.2 §4.5 test-retest guard:
+// the v2 bank must forget reasonable bootstrap seeds quickly enough
+// that calibration changes cannot reintroduce seed-dependent drift.
+func TestBankConvergence(t *testing.T) {
+	fixture := syntheticEnergyFixture(t, 9, 22012)
+	banks := make([]float64, 0, 3)
+	for _, seed := range []float64{10, 50, 90} {
+		bank := seed
+		for _, day := range fixture {
+			sq := SleepQuality(day.totalH, day.deepH, day.remH, day.awakeH)
+			drain := DrainV2(day.activeKcal, day.sustainedHRLoad, 0.08, 0.8)
+			bank = ClampSignedBank(AsymptoticCapacity(bank, sq) - drain)
+		}
+		banks = append(banks, bank)
+	}
+
+	minBank, maxBank := banks[0], banks[0]
+	for _, bank := range banks[1:] {
+		if bank < minBank {
+			minBank = bank
+		}
+		if bank > maxBank {
+			maxBank = bank
+		}
+	}
+	if spread := maxBank - minBank; spread > 2 {
+		t.Fatalf("bootstrap seeds should converge within 2 bank points by day 9, got spread %.3f (banks=%v)",
+			spread, banks)
+	}
+}
+
+type syntheticEnergyDay struct {
+	totalH          float64
+	deepH           float64
+	remH            float64
+	awakeH          float64
+	activeKcal      float64
+	sustainedHRLoad float64
+}
+
+func syntheticEnergyFixture(t *testing.T, days int, seed int64) []syntheticEnergyDay {
+	t.Helper()
+	rng := rand.New(rand.NewSource(seed))
+	out := make([]syntheticEnergyDay, days)
+	for i := range out {
+		total := 6.8 + rng.Float64()*1.4
+		out[i] = syntheticEnergyDay{
+			totalH:          total,
+			deepH:           total * (0.14 + rng.Float64()*0.07),
+			remH:            total * (0.19 + rng.Float64()*0.07),
+			awakeH:          rng.Float64() * 0.35,
+			activeKcal:      350 + rng.Float64()*450,
+			sustainedHRLoad: rng.Float64() * 4,
+		}
+	}
+	return out
 }

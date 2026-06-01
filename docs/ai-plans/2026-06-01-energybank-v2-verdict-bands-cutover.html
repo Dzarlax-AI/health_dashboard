@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation Plan: EnergyBank v2 Verdict Bands Cutover</title>
+  <style>
+    body {
+      margin: 0;
+      background: #f6f7f9;
+      color: #1f2937;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 32px;
+    }
+    section {
+      background: #fff;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 18px 20px;
+      margin: 16px 0;
+    }
+    h1, h2, h3 {
+      line-height: 1.2;
+      margin-top: 0;
+    }
+    code {
+      background: #f1f5f9;
+      border-radius: 4px;
+      padding: 2px 5px;
+      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      font-size: 0.95em;
+    }
+    pre {
+      overflow-x: auto;
+      background: #0f172a;
+      color: #e2e8f0;
+      border-radius: 8px;
+      padding: 14px;
+    }
+    ul, ol {
+      padding-left: 22px;
+    }
+    li {
+      margin: 6px 0;
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: #fef3c7;
+      color: #92400e;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .card {
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 12px;
+      background: #f8fafc;
+    }
+    .risk {
+      border-left: 4px solid #dc2626;
+    }
+    .ok {
+      border-left: 4px solid #15803d;
+    }
+    .todo {
+      border-left: 4px solid #2563eb;
+    }
+    .approval {
+      border-left: 4px solid #d97706;
+    }
+    @media (max-width: 760px) {
+      main { padding: 18px; }
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>EnergyBank v2 Verdict Bands Cutover</h1>
+    <p><span class="badge">Approval required before implementation</span></p>
+
+    <section>
+      <h2>Task Summary</h2>
+      <p>
+        Finish the urgent EnergyBank v2 verdict cutover by correcting how personal verdict bands are derived from
+        <code>energy_snapshots</code>, then clean up stale cutover comments/docs. The dashboard already overrides v1
+        verdicts from v2 snapshots, but the current band calculation appears to overweight intraday rows.
+      </p>
+    </section>
+
+    <section>
+      <h2>Current Behavior</h2>
+      <ul>
+        <li><code>GetHealthBriefing</code> still builds the legacy v1 <code>EnergyBank</code> first.</li>
+        <li>When a v2 snapshot exists for <code>lastDate</code>, <code>internal/storage/briefing.go</code> overrides <code>Current</code>, <code>Capacity</code>, <code>DrainSoFar</code>, flags, <code>ActionVerdict</code>, and <code>VerdictReason</code>.</li>
+        <li>The override calls <code>ComputeUserVerdictBands</code>, <code>ChooseVerdictV2</code>, <code>BuildVerdictReasonV2</code>, then stress-flag overrides.</li>
+        <li><code>ComputeUserVerdictBands</code> currently computes percentiles over eligible snapshot rows directly. Multiple intraday rows for one date therefore count as multiple data points.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Evidence</h2>
+      <div class="grid">
+        <div class="card ok">
+          <h3>Cutover code exists</h3>
+          <p>
+            <code>briefing.go</code> already replaces v1 verdicts when <code>energy_snapshots</code> data exists, so this is not a from-scratch cutover.
+          </p>
+        </div>
+        <div class="card risk">
+          <h3>Band computation is row-weighted</h3>
+          <p>
+            Current query over 180 days returned <code>n=650</code>, <code>p20=44</code>, <code>p50=59</code>, <code>p80=72</code>. Distinct-date latest-row analysis from the explorer returned <code>n=178</code>, <code>p20=34</code>, <code>p50=43.5</code>, <code>p80=52.6</code>.
+          </p>
+        </div>
+        <div class="card risk">
+          <h3>Formula-version mixing risk</h3>
+          <p>
+            Latest formula has only <code>19</code> distinct eligible days. That is below the documented <code>30</code>-day gate, but raw snapshot rows from the same short period can make the dataset look mature.
+          </p>
+        </div>
+        <div class="card todo">
+          <h3>Todoist intent</h3>
+          <p>
+            The task asks for final verdict threshold retuning after enough v2 data. The evidence says the first fix is the definition of "enough data", not manual constants.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Desired Behavior</h2>
+      <ul>
+        <li>Personal verdict bands should be derived from one representative snapshot per local date, not every intraday recompute row.</li>
+        <li>The <code>30</code>-point readiness gate should count distinct eligible days.</li>
+        <li>Band computation should not silently mix old and current formula versions in a way that makes the latest formula look more mature than it is.</li>
+        <li>If the latest formula has fewer than <code>30</code> distinct eligible days, return documented defaults with <code>NDataPoints</code> set to the distinct-day count.</li>
+        <li>Dashboard and Telegram behavior should remain non-blocking: if bands cannot be computed, fall back to defaults and log.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Assumptions</h2>
+      <ul>
+        <li>One row per <code>date</code> should use the latest <code>ts_bucket</code> for that date, matching the daily/EOD interpretation of verdict thresholds.</li>
+        <li><code>formula_version</code> is meaningful for threshold comparability; personal bands should prefer the latest formula's distinct-day sample.</li>
+        <li>Falling back to <code>DefaultV2VerdictBands</code> until 30 current-formula days exist is safer than using mixed or row-weighted personal bands.</li>
+        <li>No destructive schema migration is needed for this fix.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Likely File Changes</h2>
+      <ul>
+        <li><code>internal/storage/energy_bands.go</code> - change the query to latest row per date and current formula gating.</li>
+        <li><code>internal/storage/energy_config_test.go</code> or a new <code>energy_bands_test.go</code> - add focused storage tests around band sampling.</li>
+        <li><code>internal/storage/briefing.go</code> - update stale half-cutover comments only if implementation confirms they are obsolete.</li>
+        <li><code>ENERGY_BANK.md</code> and/or <code>SCORING.md</code> - small status correction if docs still describe this path as pending.</li>
+        <li>This plan file - update with actual changes and verification after implementation.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Implementation Steps</h2>
+      <ol>
+        <li>Add tests that seed <code>energy_snapshots</code> rows with multiple intraday snapshots per date and verify percentiles count one latest row per date.</li>
+        <li>Add a test where the latest <code>formula_version</code> has fewer than 30 distinct eligible dates and older versions have enough rows; expect default bands with the latest-version day count.</li>
+        <li>Keep existing exclusions for <code>imputed_sleep</code>, <code>imputed_activity</code>, and <code>bootstrap_tail</code>.</li>
+        <li>Update <code>ComputeUserVerdictBands</code> to select latest eligible formula version, then latest row per date within that formula version.</li>
+        <li>Return personal bands only when the distinct-day sample is at least <code>energyBandsMinPoints</code>.</li>
+        <li>Run focused storage tests and full <code>go test ./...</code>.</li>
+        <li>Update Todoist task status only after tests pass and the plan's completion section is filled.</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>Test Plan</h2>
+      <ul>
+        <li><code>go test ./internal/storage -run TestComputeUserVerdictBands</code></li>
+        <li><code>go test ./internal/health</code> to ensure verdict helper behavior is unchanged.</li>
+        <li><code>go test ./...</code> as final local verification.</li>
+        <li>Optional DB read-only smoke: compare current prod thresholds before/after query shape without writing production data.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Manual QA Checklist</h2>
+      <ul>
+        <li>Confirm dashboard still returns an EnergyBank verdict when a v2 snapshot exists.</li>
+        <li>Confirm logs show fallback only when bands fail or current-formula distinct days are below the gate.</li>
+        <li>Check a sample day where row-weighted bands and distinct-day bands would differ, and verify the resulting verdict is explainable.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Risks</h2>
+      <ul>
+        <li>Thresholds may move materially downward once intraday overweighting is removed.</li>
+        <li>Filtering to latest formula version may temporarily return defaults until 30 current-formula days accumulate.</li>
+        <li>Existing user expectations may have adapted to the inflated thresholds; Telegram wording should be watched after deploy.</li>
+        <li>Tests need to avoid brittle assumptions about exact percentile interpolation beyond the behavior under test.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Rollback Plan</h2>
+      <ul>
+        <li>Revert the <code>ComputeUserVerdictBands</code> query change to the previous row-weighted behavior if verdicts are clearly worse.</li>
+        <li>No schema rollback should be required.</li>
+        <li>If production behavior is uncertain, temporarily force defaults by raising the personal-band gate while collecting more current-formula days.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Open Questions</h2>
+      <ul>
+        <li>Should latest-formula fallback use documented defaults immediately, or use distinct-day bands from mixed historical formula versions until 30 latest-formula days exist?</li>
+        <li>Should the percentile targets stay <code>p20/p50/p80</code>, or should the final cutover task explicitly retune to different percentiles after distinct-day sampling is fixed?</li>
+        <li>Should Todoist's PR9 cleanup wait until 30 latest-formula distinct days exist, rather than a fixed calendar date?</li>
+      </ul>
+    </section>
+
+    <section class="approval">
+      <h2>Approval Gate</h2>
+      <p>
+        Implementation should not start until this plan is approved. Recommended approval decision: use latest-formula distinct dates, fall back to defaults below 30 days, and do not manually retune constants in this pass.
+      </p>
+    </section>
+  </main>
+</body>
+</html>
