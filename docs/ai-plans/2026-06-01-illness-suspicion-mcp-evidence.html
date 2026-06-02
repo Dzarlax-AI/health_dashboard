@@ -349,6 +349,26 @@
   </section>
 
   <section>
+    <h2>Future UI Surface</h2>
+    <p>
+      UI rendering is intentionally out of scope for the first implementation PR. The first PR should prove that the
+      evidence object is date-aligned, non-diagnostic, and not noisy on Profile A/Profile B validation. After that,
+      a separate UI PR can expose the signal with conservative visibility rules.
+    </p>
+    <ul>
+      <li>Dashboard surface should render only for <code>moderate</code> or <code>high</code> confidence by default.</li>
+      <li><code>low</code> confidence should stay out of prominent dashboard UI; it can remain available in API/MCP details.</li>
+      <li>Preferred wording: "Signals consistent with respiratory stress or illness." Avoid "you are sick", "likely sick", "low oxygen", or diagnostic language.</li>
+      <li>Use compact contributing-signal chips: respiratory rate, SpO2, HRV/RHR, wrist temperature, sleep, sustained HR load, and subjective check-in when present.</li>
+      <li>Expose details in an expandable evidence panel: value, baseline, z-score, method, status, source summary, and whether the signal is primary or support.</li>
+      <li>SpO2 UI must include device-limitation wording and must distinguish average drop from low-reading cluster.</li>
+      <li>Show missing/warmup states explicitly in details, but do not make missing data look reassuring.</li>
+      <li>Do not render Telegram/report messages until dashboard false-positive behavior is acceptable in retrospective validation.</li>
+      <li>If a future UI uses a hero/banner, it should be quiet and evidence-first, not alarmist; Oura/WHOOP-style coarse "signs" language is the benchmark.</li>
+    </ul>
+  </section>
+
+  <section>
     <h2>MCP Contract Options</h2>
     <table>
       <thead><tr><th>Option</th><th>Pros</th><th>Cons</th></tr></thead>
