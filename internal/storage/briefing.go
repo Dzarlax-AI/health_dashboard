@@ -514,7 +514,8 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 		}
 	}
 
-	// Persist EnergyBank EOD snapshot AFTER the v2 override applies.
+	// Persist EnergyBank EOD snapshot AFTER the v2 override and illness
+	// safety cap apply.
 	// Persisting the v1 numbers here would lock guaranteed-wrong values
 	// (saturated capacity on typical days, no multi-day carryover —
 	// exactly the bug v2 was built to fix) into daily_scores, where
@@ -530,10 +531,6 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 	// becomes the EOD snapshot — once the day rolls over no further
 	// computes target this date and the row freezes. Best-effort:
 	// errors logged inside the helper.
-	if resp.EnergyBank != nil {
-		go s.SaveEnergyBankSnapshot(*lastDate, resp.EnergyBank)
-	}
-
 	// Subjective check-in (Telegram one-tap). Only populated when a
 	// row exists for the briefing date — nil otherwise. GetTodayCheckin
 	// returns (nil, nil) on no-row, so the dashboard simply doesn't
@@ -543,6 +540,14 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 			Status: row.Status,
 			Answer: row.Answer,
 		}
+	}
+
+	illnessInput := s.BuildIllnessEvidenceInput(*lastDate, resp.SubjectiveCheckin)
+	resp.IllnessSuspicion = health.ComputeIllnessSuspicion(illnessInput)
+	health.ApplyIllnessSafetyCap(resp, health.GetStrings(lang))
+
+	if resp.EnergyBank != nil {
+		go s.SaveEnergyBankSnapshot(*lastDate, resp.EnergyBank)
 	}
 
 	// Attach per-source sleep breakdown for the most recent night.

@@ -123,6 +123,28 @@
   </div>
   {{end}}{{end}}
 
+  {{if .IllnessSuspicion}}{{if or (eq .IllnessSuspicion.Confidence "moderate") (eq .IllnessSuspicion.Confidence "high")}}
+  <!-- Evidence-bound illness suspicion. Rendered only for moderate/high
+       confidence so the main dashboard explains conservative safety caps
+       without turning weak wearable noise into a headline. -->
+  <section class="illness-suspicion-panel illness-suspicion-panel--{{.IllnessSuspicion.Confidence}}">
+    <div class="illness-suspicion-heading">
+      <div>
+        <div class="illness-suspicion-title">{{T .Lang "illness_suspicion_title"}}</div>
+        <div class="illness-suspicion-copy">{{T .Lang "illness_suspicion_desc"}}</div>
+      </div>
+      <span class="illness-suspicion-badge illness-suspicion-badge--{{.IllnessSuspicion.Confidence}}">{{T .Lang (printf "illness_suspicion_%s" .IllnessSuspicion.Confidence)}}</span>
+    </div>
+    <div class="illness-suspicion-signals" aria-label="{{T .Lang "illness_suspicion_signals"}}">
+      {{range .IllnessSuspicion.Signals}}
+        {{if .Contributes}}{{if eq .Status "ok"}}{{if ne .Strength "weak"}}
+          <span class="illness-signal illness-signal--{{.Strength}}">{{T $.Lang (printf "illness_signal_%s" .Metric)}}</span>
+        {{end}}{{end}}{{end}}
+      {{end}}
+    </div>
+  </section>
+  {{end}}{{end}}
+
   {{if .Cards}}
   <!-- Metric cards with embedded mini-sparklines (replaces standalone Trends section) -->
   <div id="metric-cards-area">
