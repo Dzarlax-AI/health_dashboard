@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation Plan: Illness Autonomic Prodrome Detection</title>
+  <style>
+    :root {
+      --bg: #f7f8fa;
+      --panel: #ffffff;
+      --text: #1f2933;
+      --muted: #5f6b7a;
+      --border: #d8dee6;
+      --accent: #0f766e;
+      --accent-soft: #dff7f3;
+      --warn: #9a5b00;
+      --warn-soft: #fff4d6;
+      --risk: #9f1239;
+      --risk-soft: #ffe4ec;
+      --code: #f1f5f9;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 32px 20px 56px;
+    }
+
+    header {
+      margin-bottom: 24px;
+      padding: 24px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 30px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      font-size: 20px;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 18px 0 8px;
+      font-size: 16px;
+      letter-spacing: 0;
+    }
+
+    section {
+      margin: 16px 0;
+      padding: 20px 24px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    p {
+      margin: 0 0 12px;
+    }
+
+    ul, ol {
+      margin: 8px 0 0 22px;
+      padding: 0;
+    }
+
+    li {
+      margin: 6px 0;
+    }
+
+    code {
+      padding: 2px 5px;
+      border-radius: 4px;
+      background: var(--code);
+      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      font-size: 0.92em;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 12px;
+      font-size: 14px;
+    }
+
+    th, td {
+      border: 1px solid var(--border);
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #eef2f6;
+      font-weight: 650;
+    }
+
+    .meta {
+      color: var(--muted);
+      margin: 0;
+    }
+
+    .callout {
+      padding: 12px 14px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: #f8fafc;
+      margin: 12px 0;
+    }
+
+    .decision {
+      border-color: #99d8ce;
+      background: var(--accent-soft);
+    }
+
+    .warning {
+      border-color: #f2c66d;
+      background: var(--warn-soft);
+      color: #573a00;
+    }
+
+    .risk {
+      border-color: #f2a6bb;
+      background: var(--risk-soft);
+      color: #5d0c25;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 12px;
+    }
+
+    .card {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px;
+      background: #fbfcfe;
+    }
+
+    .status {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 650;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="meta">Health Dashboard - follow-up plan for issue #173</p>
+      <h1>Illness Autonomic Prodrome Detection</h1>
+      <p class="meta">Created: 2026-06-03. Scope: planning only. No production code changes are included in this branch yet.</p>
+    </header>
+
+    <section>
+      <h2>Summary</h2>
+      <p>
+        The first illness suspicion implementation added an evidence-bound, non-diagnostic layer that detects converging
+        respiratory, oxygen, autonomic, temperature, and subjective signals. Production validation found an important
+        follow-up: a known illness window can show several days of autonomic strain before the respiratory signal becomes
+        strong enough for the v0 detector.
+      </p>
+      <div class="callout decision">
+        <strong>Proposed decision:</strong> add a conservative <code>autonomic_prodrome</code> / <code>autonomic_illness_load</code>
+        pattern inside the existing illness suspicion surface. It should catch repeated elevated sustained heart-load
+        plus elevated resting heart rate under normal or low activity context, while never producing high confidence by
+        itself and never using diagnostic language.
+      </div>
+    </section>
+
+    <section>
+      <h2>Current Behavior</h2>
+      <p>
+        The current detector is intentionally respiratory-first. It is good for acute same-day respiratory evidence, but
+        it treats sustained heart-load as visible context rather than a contributing illness signal. That prevents
+        exercise-related false positives, but it can miss early illness or recovery-load windows where autonomic strain is
+        present before respiratory rate or oxygen evidence converges.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Validation pattern</th>
+            <th>Observed v0 behavior</th>
+            <th>Why it matters</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Known-positive illness window with repeated strong sustained HR load, elevated RHR, normal or low activity, and no early respiratory spike.</td>
+            <td>Early days return <code>none</code> because sustained HR load is non-contributing and respiratory evidence is absent or weak.</td>
+            <td>The dashboard can appear overly positive while the user is already sick or entering a sick/recovery state.</td>
+          </tr>
+          <tr>
+            <td>Later day in the same window with strong respiratory evidence plus autonomic support.</td>
+            <td>Returns <code>high</code>, which confirms the v0 respiratory pathway works once the respiratory signal arrives.</td>
+            <td>The gap is not the whole illness detector; it is the missing autonomic prodrome layer.</td>
+          </tr>
+          <tr>
+            <td>Known-negative sedentary day with low activity and no illness.</td>
+            <td>Must remain <code>none</code> or at most weak/low evidence.</td>
+            <td>The new mode must not classify ordinary sedentary behavior, gaming days, or stress-only days as illness.</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="callout warning">
+        Public planning note: exact private health values and dates are intentionally omitted or generalized here. Real
+        validation should be run locally against private production data and summarized in PR notes without raw health values.
+      </div>
+    </section>
+
+    <section>
+      <h2>Desired Behavior</h2>
+      <ul>
+        <li>Keep the existing respiratory/oxygen illness suspicion behavior unchanged.</li>
+        <li>Add an autonomic pattern that can surface early illness or recovery-load evidence before respiratory evidence arrives.</li>
+        <li>Use objective data first. Subjective sick check-ins may confirm the pattern, but must not be the primary detector.</li>
+        <li>Never raise <code>high</code> confidence from autonomic-only evidence.</li>
+        <li>Use non-diagnostic wording: "autonomic strain consistent with illness or recovery load", not "you are sick".</li>
+        <li>For moderate autonomic suspicion, keep the EnergyBank safety cap conservative at <code>active_recovery</code>; do not force <code>rest</code>.</li>
+        <li>Expose the pattern clearly in server/UI data so the dashboard does not call an autonomic-only event a respiratory illness.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Proposed Policy</h2>
+      <h3>Autonomic Load Day</h3>
+      <p>A date is an autonomic load day when the system sees objective cardiovascular strain that is unlikely to be explained by high activity.</p>
+      <ul>
+        <li><code>sustained_hr_load_z &gt;= 2.0</code> with <code>activity_context</code> normal or low.</li>
+        <li>Plus at least one support signal: elevated RHR, low HRV, weak SpO2 cluster/drop, illness-compatible stress flag, or recent neighboring autonomic load.</li>
+        <li>High activity context blocks autonomic illness escalation unless respiratory/oxygen evidence independently qualifies.</li>
+        <li>Unknown activity context should be treated cautiously: enough for low confidence, but not enough for moderate without repeated days or RHR support.</li>
+      </ul>
+
+      <h3>Confidence Rules</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Evidence</th>
+            <th>Max confidence</th>
+            <th>EnergyBank cap</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>One current autonomic load day, no respiratory/oxygen signal.</td>
+            <td><code>low</code></td>
+            <td>No verdict cap.</td>
+          </tr>
+          <tr>
+            <td>Repeated autonomic load across a short rolling window, with current-day RHR or HR-load support and normal/low activity.</td>
+            <td><code>moderate</code></td>
+            <td>At most <code>active_recovery</code>.</td>
+          </tr>
+          <tr>
+            <td>Autonomic load plus subjective sick check-in, but no respiratory/oxygen convergence.</td>
+            <td><code>moderate</code></td>
+            <td>At most <code>active_recovery</code>.</td>
+          </tr>
+          <tr>
+            <td>Respiratory/oxygen convergence or existing illness signature.</td>
+            <td>Existing v0 rules.</td>
+            <td>Existing v0 rules.</td>
+          </tr>
+          <tr>
+            <td>Autonomic-only evidence, regardless of strength.</td>
+            <td>Never <code>high</code>.</td>
+            <td>Never force <code>rest</code>.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Local Experiment Results</h2>
+      <p>
+        After this plan was created, a local read-only experiment was run against two private production profiles over
+        the recent historical window. Exact health values are intentionally not recorded in this public artifact; the
+        purpose is to validate relative rule behavior and false-positive risk.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Candidate rule</th>
+            <th>Profile A hits</th>
+            <th>Profile B hits</th>
+            <th>Interpretation</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>sustained_hr_load &gt;= 2</code> under normal activity</td>
+            <td>35 / 154 days</td>
+            <td>32 / 154 days</td>
+            <td>Too broad. This would turn ordinary stress/load into illness suspicion too often.</td>
+          </tr>
+          <tr>
+            <td>Load + repeated normal-activity load + <code>RHR z &gt;= 1.0</code></td>
+            <td>7 / 154 days</td>
+            <td>6 / 154 days</td>
+            <td>Good conservative baseline. Catches the known autonomic illness/recovery pattern but may miss the first borderline day.</td>
+          </tr>
+          <tr>
+            <td>Load + repeated normal-activity load + <code>RHR z &gt;= 0.8</code></td>
+            <td>12 / 154 days</td>
+            <td>7 / 154 days</td>
+            <td>More sensitive, but adds extra ambiguous days on Profile A.</td>
+          </tr>
+          <tr>
+            <td>Combined: <code>load_4d &gt;= 2 && RHR z &gt;= 1.0</code> OR <code>load_4d &gt;= 3 && RHR z &gt;= 0.8</code></td>
+            <td>10 / 154 days</td>
+            <td>6 / 154 days</td>
+            <td>Preferred implementation candidate. It catches repeated autonomic prodrome earlier while avoiding support-only expansion.</td>
+          </tr>
+          <tr>
+            <td>Repeated load + any support signal including HRV, SpO2, or stress flags</td>
+            <td>13 / 154 days</td>
+            <td>15 / 154 days</td>
+            <td>Too permissive for Profile B. HRV/stress-flag support should not replace RHR support in v1.</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="callout decision">
+        <strong>Experiment-driven amendment:</strong> implement the combined RHR-gated repeated-load rule as the v1
+        autonomic prodrome path. Keep HRV, SpO2, and stress flags as explanatory support signals, but do not let them
+        independently upgrade an autonomic-only day to moderate confidence.
+      </div>
+      <ul>
+        <li>The known private February illness window is missed by the current v0 detector on early autonomic days, then detected once respiratory evidence becomes strong.</li>
+        <li>The combined candidate catches the early autonomic window before the respiratory peak on Profile A.</li>
+        <li>A known sedentary negative-control day remains outside the autonomic candidate set.</li>
+        <li>Profile B shows compact candidate clusters rather than daily noise under the combined rule.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Likely File Changes</h2>
+      <div class="grid">
+        <div class="card">
+          <h3><code>internal/health/types.go</code></h3>
+          <p>Add a pattern/subtype field to <code>IllnessSuspicion</code>, and possibly add an autonomic pattern count to <code>IllnessEvidenceInput</code>.</p>
+        </div>
+        <div class="card">
+          <h3><code>internal/health/illness.go</code></h3>
+          <p>Add autonomic pattern evaluation and confidence rules while preserving existing respiratory/oxygen precedence.</p>
+        </div>
+        <div class="card">
+          <h3><code>internal/storage/illness_evidence.go</code></h3>
+          <p>Build a date-aligned rolling autonomic context from daily sustained HR load, RHR/HRV evidence, stress flags, and activity context.</p>
+        </div>
+        <div class="card">
+          <h3><code>internal/ui</code></h3>
+          <p>Keep the existing illness card, but choose copy based on pattern so autonomic-only evidence is not described as respiratory illness.</p>
+        </div>
+        <div class="card">
+          <h3><code>cmd/illness_probe</code></h3>
+          <p>Add a date range or window mode for private validation over known-positive and known-negative periods.</p>
+        </div>
+        <div class="card">
+          <h3>Tests</h3>
+          <p>Add focused unit and storage tests for autonomic prodrome, false positives, wording, and EnergyBank cap behavior.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Implementation Steps</h2>
+      <ol>
+        <li>Add an explicit illness pattern field such as <code>pattern</code> with values like <code>respiratory</code>, <code>oxygen</code>, <code>autonomic_prodrome</code>, and <code>mixed</code>.</li>
+        <li>Add a date-aligned rolling autonomic summary in storage. It must use the evaluated date and nearby prior dates, not compressed raw metric slices.</li>
+        <li>Teach <code>ComputeIllnessSuspicion</code> to evaluate autonomic pattern days separately from respiratory/oxygen primary signals.</li>
+        <li>Update reason text so autonomic-only suspicion says "autonomic strain" or "recovery load", not "respiratory stress".</li>
+        <li>Keep <code>ApplyIllnessSafetyCap</code> conservative: moderate autonomic suspicion may cap to <code>active_recovery</code>, high remains unavailable without respiratory/oxygen convergence.</li>
+        <li>Add local probe support for private date windows and summarize validation results without publishing raw values.</li>
+        <li>Update the plan with actual implementation notes, checks run, and known limitations before opening the implementation PR.</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>Test Plan</h2>
+      <h3>Unit tests</h3>
+      <ul>
+        <li>Repeated autonomic load plus elevated RHR and normal/low activity yields moderate <code>autonomic_prodrome</code>.</li>
+        <li>One isolated sustained HR load day remains low or none.</li>
+        <li>High activity context blocks autonomic illness escalation.</li>
+        <li>Autonomic-only evidence never yields high confidence.</li>
+        <li>Respiratory/oxygen high-confidence behavior remains unchanged.</li>
+        <li>Subjective sick check-in cannot create moderate/high confidence without objective evidence.</li>
+        <li>Reason strings do not contain diagnostic wording.</li>
+        <li>Moderate autonomic suspicion caps EnergyBank at <code>active_recovery</code>, not <code>rest</code>.</li>
+      </ul>
+
+      <h3>Storage and private validation</h3>
+      <ul>
+        <li>Autonomic rolling context is date-aligned to the briefing date.</li>
+        <li>Known-positive private February window is surfaced before the respiratory peak.</li>
+        <li>Known-negative sedentary/gaming day remains none or low.</li>
+        <li>High-activity non-illness days do not escalate.</li>
+        <li>Profile B historical sweep does not produce noisy moderate/high runs.</li>
+      </ul>
+
+      <h3>Commands</h3>
+      <ul>
+        <li><code>go test ./internal/health ./internal/storage ./internal/ui ./cmd/illness_probe</code></li>
+        <li><code>go test ./...</code></li>
+        <li><code>go run ./cmd/illness_probe --schema health --from PRIVATE_START --to PRIVATE_END --no-checkin</code></li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Manual QA Checklist</h2>
+      <ul>
+        <li>Open the dashboard for a current sick day and confirm the illness card appears when objective evidence qualifies.</li>
+        <li>Confirm the card copy says autonomic strain/recovery load when respiratory evidence is not present.</li>
+        <li>Confirm readiness and EnergyBank explanations do not overclaim and do not contradict the illness card.</li>
+        <li>Confirm the private known-positive window shows earlier suspicion than the current v0 detector.</li>
+        <li>Confirm the private known-negative sedentary day does not become a moderate illness suspicion.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Risks</h2>
+      <div class="callout risk">
+        <strong>Main risk:</strong> false positives from non-illness autonomic load, including work stress, sleep debt,
+        gaming, alcohol, heat, dehydration, sensor fit, or missing activity data. The mitigation is to require repeated
+        or supported evidence, block high-activity contexts, keep confidence capped at moderate, and keep wording
+        explicitly non-diagnostic.
+      </div>
+      <ul>
+        <li>Some true early illness windows may still remain low confidence if only one signal is present.</li>
+        <li>Activity context quality matters; missing or stale steps/calories can weaken confounder detection.</li>
+        <li>Adding a pattern field is additive, but UI and MCP clients should tolerate empty or unknown values.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Rollback Plan</h2>
+      <ul>
+        <li>No database migration is expected.</li>
+        <li>The implementation can be reverted by removing the autonomic confidence branch and pattern-specific copy.</li>
+        <li>If validation is noisy, ship the probe and tests first, but leave autonomic escalation disabled behind a constant until thresholds are tuned.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Implementation Notes</h2>
+      <p>
+        Implemented locally on branch <code>codex/illness-autonomic-prodrome-plan</code> after the experiment-driven
+        amendment above. The implementation keeps the existing respiratory/oxygen detector intact and adds a separate
+        conservative autonomic-prodrome path.
+      </p>
+      <ul>
+        <li>Added <code>IllnessSuspicion.Pattern</code> so clients can distinguish respiratory/mixed suspicion from autonomic-only prodrome.</li>
+        <li>Added storage-side <code>AutonomicPatternDays</code> over a rolling 4-day window using date-aligned <code>daily_scores.sustained_hr_load</code> and activity context.</li>
+        <li>Added RHR fallback evidence from <code>daily_scores.rhr_avg</code> when the overnight channel baseline is missing or weaker.</li>
+        <li>Implemented the combined RHR-gated rule from the local experiment: repeated normal-activity HR load plus RHR support.</li>
+        <li>Autonomic-only evidence can produce <code>moderate</code>, never <code>high</code>.</li>
+        <li>Moderate autonomic prodrome caps EnergyBank at <code>active_recovery</code> with a separate recovery-load reason, not a respiratory illness reason.</li>
+        <li>Dashboard copy is pattern-aware: autonomic-only prodrome renders the softer "pay attention to recovery" message.</li>
+        <li><code>cmd/illness_probe</code> now supports <code>--from</code>/<code>--to</code> validation windows.</li>
+      </ul>
+      <h3>Validation Run</h3>
+      <ul>
+        <li>Focused tests: <code>go test ./internal/health</code>, <code>go test ./internal/ui -run Illness</code>, <code>go test ./internal/storage -run IllnessEvidence</code>, <code>go test ./cmd/illness_probe</code>.</li>
+        <li>Full test suite: <code>go test ./...</code>.</li>
+        <li>Private Profile A known-positive February window now surfaces early autonomic-prodrome days before the later respiratory/mixed high-confidence day.</li>
+        <li>Private Profile A known sedentary negative-control day remains below dashboard-surface threshold.</li>
+        <li>Private Profile B sample cluster surfaces moderate candidates without producing high confidence.</li>
+      </ul>
+      <div class="callout warning">
+        Validation summaries remain anonymized. Raw health values, tenant identifiers, and private symptoms are not
+        included in this public plan artifact.
+      </div>
+    </section>
+
+    <section>
+      <h2>Design Decisions</h2>
+      <ul>
+        <li>One-day autonomic events stay below moderate unless there is repeated context or subjective confirmation.</li>
+        <li>Unknown activity context does not count toward autonomic-prodrome escalation; the pattern requires known-normal activity.</li>
+        <li>The UI uses softer recovery-load wording for autonomic-only moderate suspicion until respiratory/oxygen evidence converges.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Approval Gate</h2>
+      <p>
+        <span class="status">Waiting for approval</span>
+        This branch contains only the implementation plan. Do not modify production code until the plan is approved.
+      </p>
+    </section>
+  </main>
+</body>
+</html>

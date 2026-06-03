@@ -165,10 +165,12 @@ type Alert struct {
 
 // IllnessSuspicion is an experimental, evidence-bound signal for acute
 // same-day patterns that are consistent with illness or respiratory stress.
-// It is not a diagnosis and must not drive EnergyBank verdict overrides.
+// It is not a diagnosis; EnergyBank may only use it for conservative safety
+// caps, never to make a more aggressive recommendation.
 type IllnessSuspicion struct {
 	Date         string                  `json:"date"`
 	Confidence   string                  `json:"confidence"` // none | low | moderate | high
+	Pattern      string                  `json:"pattern,omitempty"`
 	Reason       string                  `json:"reason"`
 	Experimental bool                    `json:"experimental"`
 	Signals      []IllnessEvidenceSignal `json:"signals,omitempty"`
@@ -215,6 +217,7 @@ type IllnessEvidenceInput struct {
 	StressFlags          []string
 	SubjectiveCheckin    *SubjectiveCheckinSummary
 	ObjectivePatternDays int
+	AutonomicPatternDays int
 }
 
 type MetricEvidenceInput struct {

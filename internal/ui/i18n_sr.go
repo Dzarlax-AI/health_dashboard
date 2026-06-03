@@ -92,6 +92,8 @@ var translationsSr = map[string]string{
 
 	"illness_suspicion_title":                  "Mogući signali bolesti",
 	"illness_suspicion_desc":                   "Podaci sa nosivog uređaja pokazuju usklađene signale respiratornog ili autonomnog opterećenja. Ovo nije dijagnoza.",
+	"illness_suspicion_autonomic_title":        "Obratite pažnju na oporavak",
+	"illness_suspicion_autonomic_desc":         "Podaci sa nosivog uređaja pokazuju ponavljano autonomno opterećenje tokom normalne aktivnosti. To se može javiti pre bolesti, tokom oporavka ili posle stresa. Ovo nije dijagnoza.",
 	"illness_suspicion_moderate":               "Umereno",
 	"illness_suspicion_high":                   "Visoko",
 	"illness_suspicion_signals":                "Signali",
@@ -103,6 +105,7 @@ var translationsSr = map[string]string{
 	"illness_signal_sleep_total":               "Poremećaj sna",
 	"illness_signal_sleep_disruption":          "Poremećaj sna",
 	"illness_signal_sustained_hr_load":         "Dugotrajno HR opterećenje",
+	"illness_signal_autonomic_prodrome":        "Obrazac autonomnog opterećenja",
 	"illness_signal_objective_illness_pattern": "Skoriji objektivni obrazac",
 	"illness_signal_stress_flags":              "Stres signali",
 	"illness_signal_subjective_checkin":        "Subjektivna provera",

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"math"
+	"strings"
 	"time"
 
 	"health-receiver/internal/health"
@@ -15,7 +16,7 @@ func (s *DB) BuildIllnessEvidenceInput(date string, checkin *health.SubjectiveCh
 	in := health.IllnessEvidenceInput{
 		Date:               date,
 		RespiratoryRate:    s.respiratoryEvidence(date, loc),
-		RHR:                s.channelMetricEvidence(date, ChannelHROvernight, "resting_heart_rate", "bpm", loc),
+		RHR:                s.rhrEvidence(date, loc),
 		HRV:                s.channelMetricEvidence(date, ChannelHRV, "heart_rate_variability", "ms", loc),
 		WristTempDeviation: s.channelMetricEvidence(date, ChannelTemp, "wrist_temperature", "degC", loc),
 		SubjectiveCheckin:  checkin,
@@ -26,6 +27,7 @@ func (s *DB) BuildIllnessEvidenceInput(date string, checkin *health.SubjectiveCh
 	in.SpO2LowCluster = s.spO2ClusterEvidence(date)
 	in.StressFlags = s.stressFlagsForDate(date)
 	in.ObjectivePatternDays = s.objectiveIllnessPatternDays(date)
+	in.AutonomicPatternDays = s.autonomicLoadPatternDays(date)
 	return in
 }
 
@@ -34,6 +36,20 @@ func (s *DB) respiratoryEvidence(date string, loc *time.Location) *health.Metric
 	daily := s.dailyScoreMetricEvidence(date, "respiratory_rate", "resp_avg", "br/min")
 	if strongerEvidence(daily, channel, true) {
 		daily.Method = "daily_scores_mean_std:resp_avg"
+		return daily
+	}
+	return channel
+}
+
+func (s *DB) rhrEvidence(date string, loc *time.Location) *health.MetricEvidenceInput {
+	channel := s.channelMetricEvidence(date, ChannelHROvernight, "resting_heart_rate", "bpm", loc)
+	daily := s.dailyScoreMetricEvidence(date, "resting_heart_rate", "rhr_avg", "bpm")
+	if strongerEvidence(daily, channel, true) {
+		if strings.Contains(daily.Method, "metric_points") {
+			daily.Method += ":rhr_avg"
+		} else {
+			daily.Method = "daily_scores_mean_std:rhr_avg"
+		}
 		return daily
 	}
 	return channel
@@ -264,6 +280,22 @@ func (s *DB) objectiveIllnessPatternDays(date string) int {
 		if s.hasObjectiveIllnessPattern(d) {
 			days++
 		}
+	}
+	return days
+}
+
+func (s *DB) autonomicLoadPatternDays(date string) int {
+	days := 0
+	for i := 0; i < 4; i++ {
+		d := subtractDays(date, i)
+		load, ok := s.dailyScoreValue(d, "sustained_hr_load")
+		if !ok || load < 2.0 {
+			continue
+		}
+		if s.activityContextForDate(d) != "normal" {
+			continue
+		}
+		days++
 	}
 	return days
 }

@@ -130,8 +130,13 @@
   <section class="illness-suspicion-panel illness-suspicion-panel--{{.IllnessSuspicion.Confidence}}">
     <div class="illness-suspicion-heading">
       <div>
+        {{if eq .IllnessSuspicion.Pattern "autonomic_prodrome"}}
+        <div class="illness-suspicion-title">{{T .Lang "illness_suspicion_autonomic_title"}}</div>
+        <div class="illness-suspicion-copy">{{T .Lang "illness_suspicion_autonomic_desc"}}</div>
+        {{else}}
         <div class="illness-suspicion-title">{{T .Lang "illness_suspicion_title"}}</div>
         <div class="illness-suspicion-copy">{{T .Lang "illness_suspicion_desc"}}</div>
+        {{end}}
       </div>
       <span class="illness-suspicion-badge illness-suspicion-badge--{{.IllnessSuspicion.Confidence}}">{{T .Lang (printf "illness_suspicion_%s" .IllnessSuspicion.Confidence)}}</span>
     </div>

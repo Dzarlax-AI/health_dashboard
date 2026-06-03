@@ -90,6 +90,8 @@ var translationsRu = map[string]string{
 
 	"illness_suspicion_title":                  "Возможные признаки болезни",
 	"illness_suspicion_desc":                   "Данные носимого устройства показывают сходящиеся признаки респираторной или автономной нагрузки. Это не диагноз.",
+	"illness_suspicion_autonomic_title":        "Будьте внимательны к себе",
+	"illness_suspicion_autonomic_desc":         "Несколько дней подряд видна повышенная автономная нагрузка при обычной активности. Такое бывает перед болезнью, во время восстановления или после стресса. Это не диагноз.",
 	"illness_suspicion_moderate":               "Умеренно",
 	"illness_suspicion_high":                   "Высоко",
 	"illness_suspicion_signals":                "Сигналы",
@@ -101,6 +103,7 @@ var translationsRu = map[string]string{
 	"illness_signal_sleep_total":               "Нарушение сна",
 	"illness_signal_sleep_disruption":          "Нарушение сна",
 	"illness_signal_sustained_hr_load":         "Длительная ЧСС-нагрузка",
+	"illness_signal_autonomic_prodrome":        "Паттерн автономной нагрузки",
 	"illness_signal_objective_illness_pattern": "Паттерн последних дней",
 	"illness_signal_stress_flags":              "Стресс-флаги",
 	"illness_signal_subjective_checkin":        "Самочувствие",
