@@ -165,6 +165,8 @@ var sr = LangStrings{
 	"energy_reason_illness_signature": "Temperatura, frekvencija disanja i HRV — sve tri govore da telo bori infekciju. Danas je odmor pravi izbor.",
 	"energy_reason_recovery_debt":     "Jučerašnje opterećenje stiglo je noću (HRV ↓, RHR ↑) — držite danas lakim da se vrati dug pre nego što opet pritisnete.",
 	"energy_reason_rebound_addon":     "Napomena: HR je bio povišen, ali je HRV iznad norme — to je obrazac faze oporavka, ne akutni stres.",
+	"energy_reason_illness_suspicion_moderate": "Respiratorni/autonomni signali liče na bolest, zato je današnja preporuka ograničena na aktivni oporavak.",
+	"energy_reason_illness_suspicion_high":     "Više signala liči na bolest, zato je današnja preporuka ograničena na odmor.",
 
 	// v2.2 hero-row stress-flag chips.
 	"stress_flags_aria":                       "Oznake stres signala",

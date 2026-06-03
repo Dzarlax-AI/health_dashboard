@@ -191,6 +191,8 @@ var en = LangStrings{
 	"energy_reason_illness_signature": "Temperature, breathing rate and HRV all point to your body fighting something — rest is the recovery move today.",
 	"energy_reason_recovery_debt":     "Yesterday's load showed up overnight (HRV down, RHR up) — keep today light to clear the debt before pushing again.",
 	"energy_reason_rebound_addon":     "Note: HR was elevated but HRV is also above baseline — that's a recovery-phase pattern, not acute stress.",
+	"energy_reason_illness_suspicion_moderate": "Illness-like respiratory/autonomic signals are present, so today's recommendation is capped at active recovery.",
+	"energy_reason_illness_suspicion_high":     "Multiple illness-like signals are present, so today's recommendation is capped at rest.",
 
 	// v2.2 hero-row stress-flag chips.
 	"stress_flags_aria":                       "Stress signal flags",

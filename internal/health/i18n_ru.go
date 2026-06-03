@@ -165,6 +165,8 @@ var ru = LangStrings{
 	"energy_reason_illness_signature": "Температура, частота дыхания и HRV — все три указывают, что тело борется с инфекцией. Сегодня покой лучше тренировки.",
 	"energy_reason_recovery_debt":     "Вчерашняя нагрузка догнала ночью (HRV ↓, RHR ↑) — держите день лёгким, чтобы вернуть долг.",
 	"energy_reason_rebound_addon":     "Примечание: пульс был повышен, но HRV выше нормы — это паттерн фазы восстановления, не острый стресс.",
+	"energy_reason_illness_suspicion_moderate": "Есть respiratory/autonomic сигналы, похожие на болезнь, поэтому рекомендация ограничена активным восстановлением.",
+	"energy_reason_illness_suspicion_high":     "Несколько сигналов похожи на болезнь, поэтому рекомендация ограничена отдыхом.",
 
 	// v2.2 hero-row stress-flag chips.
 	"stress_flags_aria":                       "Флаги стресс-сигналов",

@@ -172,6 +172,69 @@ body { min-height: 100vh; font-size: 15px; }
   font-weight: 600;
   color: var(--text);
 }
+.illness-suspicion-panel {
+  margin: 0 0 18px 0;
+  padding: 14px 16px;
+  border-left: 4px solid var(--fair);
+  background: color-mix(in srgb, var(--fair-bg) 70%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.illness-suspicion-panel--high {
+  border-left-color: var(--low);
+  background: color-mix(in srgb, var(--low-bg) 72%, transparent);
+}
+.illness-suspicion-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.illness-suspicion-title {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--text);
+}
+.illness-suspicion-copy {
+  margin-top: 3px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  max-width: 820px;
+}
+.illness-suspicion-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 10px;
+  border-radius: var(--radius-xs);
+  font-size: 12px;
+  font-weight: 800;
+  background: var(--surface);
+  color: var(--fair);
+}
+.illness-suspicion-badge--high { color: var(--low); }
+.illness-suspicion-signals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.illness-signal {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  background: var(--surface);
+}
+.illness-signal--moderate { color: var(--fair); border-color: color-mix(in srgb, var(--fair) 45%, var(--border)); }
+.illness-signal--strong { color: var(--low); border-color: color-mix(in srgb, var(--low) 45%, var(--border)); }
 .methodology-badge--experimental      { background: var(--fair-bg);  color: var(--fair); border-color: transparent; }
 .methodology-badge--validated         { background: var(--good-bg);  color: var(--good); border-color: transparent; }
 .methodology-badge--labeling          { background: var(--surface2); color: var(--text-secondary); }

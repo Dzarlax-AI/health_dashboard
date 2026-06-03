@@ -163,6 +163,90 @@ type Alert struct {
 	Metric   string `json:"metric"`   // "respiratory_rate", "wrist_temperature", "hrv_cv"
 }
 
+// IllnessSuspicion is an experimental, evidence-bound signal for acute
+// same-day patterns that are consistent with illness or respiratory stress.
+// It is not a diagnosis and must not drive EnergyBank verdict overrides.
+type IllnessSuspicion struct {
+	Date         string                  `json:"date"`
+	Confidence   string                  `json:"confidence"` // none | low | moderate | high
+	Reason       string                  `json:"reason"`
+	Experimental bool                    `json:"experimental"`
+	Signals      []IllnessEvidenceSignal `json:"signals,omitempty"`
+	StressFlags  []string                `json:"stress_flags,omitempty"`
+}
+
+// IllnessEvidenceSignal is a single auditable contributor to
+// IllnessSuspicion. Missing/warmup channels can appear here with Status set
+// so clients do not mistake absent evidence for normal evidence.
+type IllnessEvidenceSignal struct {
+	Metric          string               `json:"metric"`
+	Kind            string               `json:"kind"`      // metric | spo2_cluster | stress_flag | subjective
+	Role            string               `json:"role"`      // primary | support | context
+	Category        string               `json:"category"`  // respiratory | oxygen | autonomic | temperature | sleep | subjective | stress_flag
+	Direction       string               `json:"direction"` // high | low | present | missing
+	Strength        string               `json:"strength"`  // weak | mild | strong | missing | warmup
+	Status          string               `json:"status"`    // ok | missing | warmup | confounded
+	Value           *float64             `json:"value,omitempty"`
+	Baseline        *float64             `json:"baseline,omitempty"`
+	DeltaAbs        *float64             `json:"delta_abs,omitempty"`
+	ZScore          *float64             `json:"z_score,omitempty"`
+	Unit            string               `json:"unit,omitempty"`
+	Method          string               `json:"method,omitempty"`
+	ActivityContext string               `json:"activity_context,omitempty"` // normal | high | unknown
+	Evidence        string               `json:"evidence"`
+	Sources         []SpO2SourceEvidence `json:"sources,omitempty"`
+}
+
+// IllnessEvidenceInput is the date-aligned input shape for
+// ComputeIllnessSuspicion. Storage owns constructing this for the evaluated
+// local date; callers must not infer acute evidence from compressed
+// RawMetrics slice indexes.
+type IllnessEvidenceInput struct {
+	Date                 string
+	RespiratoryRate      *MetricEvidenceInput
+	SpO2Average          *MetricEvidenceInput
+	SpO2LowCluster       *SpO2ClusterEvidence
+	RHR                  *MetricEvidenceInput
+	HRV                  *MetricEvidenceInput
+	SleepDisruption      *MetricEvidenceInput
+	SustainedHRLoad      *MetricEvidenceInput
+	WristTempDeviation   *MetricEvidenceInput
+	StressFlags          []string
+	SubjectiveCheckin    *SubjectiveCheckinSummary
+	ObjectivePatternDays int
+}
+
+type MetricEvidenceInput struct {
+	Metric          string
+	Value           float64
+	Baseline        float64
+	ZScore          float64
+	Unit            string
+	Method          string
+	Status          string // ok | missing | warmup
+	ActivityContext string // normal | high | unknown; used by sustained_hr_load
+}
+
+type SpO2ClusterEvidence struct {
+	Status        string // ok | missing | warmup
+	ValidReadings int
+	Below94Count  int
+	Below92Count  int
+	Min           float64
+	Avg           float64
+	Sources       []SpO2SourceEvidence
+}
+
+type SpO2SourceEvidence struct {
+	Source       string  `json:"source"`
+	Count        int     `json:"count"`
+	Below94Count int     `json:"below_94_count"`
+	Below92Count int     `json:"below_92_count"`
+	Min          float64 `json:"min"`
+	Avg          float64 `json:"avg"`
+	Window       string  `json:"window,omitempty"` // sleep | daytime | mixed | unknown
+}
+
 // HeadlineSignal is the most notable cross-metric signal of the day.
 // Surfaced at the top of the briefing so a single insight doesn't get
 // buried among "all good" section cards. Built on the converging-evidence
@@ -354,6 +438,7 @@ type BriefingResponse struct {
 	Sleep               *SleepAnalysis     `json:"sleep"`
 	MetricCards         []MetricCard       `json:"metric_cards"`
 	EnergyBank          *EnergyBank        `json:"energy_bank,omitempty"`
+	IllnessSuspicion    *IllnessSuspicion  `json:"illness_suspicion,omitempty"`
 	// SubjectiveCheckin is the morning self-report (Telegram one-tap).
 	// Populated from subjective_checkins when a row exists for today
 	// in the tenant's REPORT_TZ. nil when no row — dashboard renders

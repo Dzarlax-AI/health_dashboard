@@ -580,6 +580,7 @@ func (h *Handler) pageDashboard(w http.ResponseWriter, r *http.Request) {
 		RecoveryPct       int
 		Headline          *health.HeadlineSignal
 		EnergyBank        *health.EnergyBank
+		IllnessSuspicion  *health.IllnessSuspicion
 		SubjectiveCheckin *health.SubjectiveCheckinSummary
 		Cards             []health.MetricCard
 		Alerts            []health.Alert
@@ -604,6 +605,7 @@ func (h *Handler) pageDashboard(w http.ResponseWriter, r *http.Request) {
 		data.RecoveryPct = br.RecoveryPct
 		data.Headline = br.Headline
 		data.EnergyBank = br.EnergyBank
+		data.IllnessSuspicion = br.IllnessSuspicion
 		data.SubjectiveCheckin = br.SubjectiveCheckin
 		data.Cards = br.MetricCards
 		data.Alerts = br.Alerts
