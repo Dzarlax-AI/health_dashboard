@@ -233,7 +233,7 @@ body { min-height: 100vh; font-size: 15px; }
   color: var(--text-secondary);
   background: var(--surface);
 }
-.illness-signal--moderate { color: var(--fair); border-color: color-mix(in srgb, var(--fair) 45%, var(--border)); }
+.illness-signal--mild { color: var(--fair); border-color: color-mix(in srgb, var(--fair) 45%, var(--border)); }
 .illness-signal--strong { color: var(--low); border-color: color-mix(in srgb, var(--low) 45%, var(--border)); }
 .methodology-badge--experimental      { background: var(--fair-bg);  color: var(--fair); border-color: transparent; }
 .methodology-badge--validated         { background: var(--good-bg);  color: var(--good); border-color: transparent; }

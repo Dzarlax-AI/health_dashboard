@@ -65,6 +65,12 @@ func (s *DB) channelMetricEvidence(date string, channel BaselineChannel, metric,
 	if bl.State == CalibrationWarmup {
 		status = "warmup"
 	}
+	if bl.MADSD <= 0 || !isFiniteFloat(bl.MADSD) {
+		return &health.MetricEvidenceInput{
+			Metric: metric, Value: today, Baseline: bl.Median,
+			Unit: unit, Method: "personal_baseline_mad", Status: "missing",
+		}
+	}
 	return &health.MetricEvidenceInput{
 		Metric: metric, Value: today, Baseline: bl.Median,
 		ZScore: (today - bl.Median) / bl.MADSD,
@@ -73,7 +79,7 @@ func (s *DB) channelMetricEvidence(date string, channel BaselineChannel, metric,
 }
 
 func (s *DB) dailyScoreMetricEvidence(date, metric, column, unit string) *health.MetricEvidenceInput {
-	value, ok := s.dailyScoreValue(date, column)
+	value, valueSource, ok := s.dailyMetricCurrentValue(date, metric, column)
 	if !ok {
 		return &health.MetricEvidenceInput{Metric: metric, Unit: unit, Method: "daily_scores_mean_std", Status: "missing"}
 	}
@@ -86,7 +92,11 @@ func (s *DB) dailyScoreMetricEvidence(date, metric, column, unit string) *health
 		return &health.MetricEvidenceInput{Metric: metric, Value: value, Unit: unit, Method: "daily_scores_mean_std", Status: status}
 	}
 	z := (value - avg) / sd
-	return &health.MetricEvidenceInput{Metric: metric, Value: value, Baseline: avg, ZScore: z, Unit: unit, Method: "daily_scores_mean_std", Status: "ok"}
+	method := "daily_scores_mean_std"
+	if valueSource == "metric_points" {
+		method = "metric_points_current:daily_scores_mean_std"
+	}
+	return &health.MetricEvidenceInput{Metric: metric, Value: value, Baseline: avg, ZScore: z, Unit: unit, Method: method, Status: "ok"}
 }
 
 func (s *DB) sustainedHRLoadEvidence(date string) *health.MetricEvidenceInput {
@@ -105,6 +115,37 @@ func (s *DB) dailyScoreValue(date, column string) (float64, bool) {
 	defer cancel()
 	var v *float64
 	err := s.pool.QueryRow(ctx, `SELECT `+column+` FROM daily_scores WHERE date = $1`, date).Scan(&v)
+	if err != nil || v == nil || !isFiniteFloat(*v) {
+		return 0, false
+	}
+	return *v, true
+}
+
+func (s *DB) dailyMetricCurrentValue(date, metric, column string) (float64, string, bool) {
+	if value, ok := s.dailyScoreValue(date, column); ok {
+		return value, "daily_scores", true
+	}
+	if value, ok := s.metricPointsDailyValue(date, metric); ok {
+		return value, "metric_points", true
+	}
+	return 0, "", false
+}
+
+func (s *DB) metricPointsDailyValue(date, metric string) (float64, bool) {
+	agg := "AVG(qty)"
+	if metric == "sleep_total" {
+		agg = "SUM(qty)"
+	}
+	ctx, cancel := queryCtx()
+	defer cancel()
+	var v *float64
+	err := s.pool.QueryRow(ctx, `
+		SELECT `+agg+`
+		  FROM metric_points
+		 WHERE metric_name = $1
+		   AND SUBSTRING(date,1,10) = $2
+		   AND qty > 0
+		   AND quality = 'ok'`, metric, date).Scan(&v)
 	if err != nil || v == nil || !isFiniteFloat(*v) {
 		return 0, false
 	}

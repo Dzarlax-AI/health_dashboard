@@ -13,7 +13,7 @@ func TestDashboardIllnessSuspicionPanelVisibility(t *testing.T) {
 		Confidence: "moderate",
 		Signals: []health.IllnessEvidenceSignal{
 			{Metric: "respiratory_rate", Status: "ok", Strength: "strong"},
-			{Metric: "resting_heart_rate", Status: "ok", Strength: "moderate"},
+			{Metric: "resting_heart_rate", Status: "ok", Strength: "mild"},
 		},
 	})
 
@@ -31,7 +31,7 @@ func TestDashboardIllnessSuspicionPanelVisibility(t *testing.T) {
 
 	low := renderDashboardIllnessForTest(t, &health.IllnessSuspicion{
 		Confidence: "low",
-		Signals:    []health.IllnessEvidenceSignal{{Metric: "respiratory_rate", Status: "ok", Strength: "moderate"}},
+		Signals:    []health.IllnessEvidenceSignal{{Metric: "respiratory_rate", Status: "ok", Strength: "mild"}},
 	})
 	if strings.Contains(low, "Возможные признаки болезни") {
 		t.Fatalf("low confidence illness suspicion should not render the dashboard panel")
