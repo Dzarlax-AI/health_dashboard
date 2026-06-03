@@ -492,11 +492,11 @@
     </section>
 
     <section>
-      <h2>Open Questions</h2>
+      <h2>Design Decisions</h2>
       <ul>
-        <li>Should a one-day autonomic event with strong RHR support show <code>low</code> or <code>moderate</code>? Proposed answer: <code>low</code> unless there is repeated context or subjective confirmation.</li>
-        <li>Should unknown activity context allow moderate autonomic suspicion? Proposed answer: only with repeated days and RHR/HRV support.</li>
-        <li>Should the UI show "possible illness" for autonomic-only moderate, or a softer "recovery load" label? Proposed answer: use softer wording until respiratory/oxygen evidence converges.</li>
+        <li>One-day autonomic events stay below moderate unless there is repeated context or subjective confirmation.</li>
+        <li>Unknown activity context does not count toward autonomic-prodrome escalation; the pattern requires known-normal activity.</li>
+        <li>The UI uses softer recovery-load wording for autonomic-only moderate suspicion until respiratory/oxygen evidence converges.</li>
       </ul>
     </section>
 

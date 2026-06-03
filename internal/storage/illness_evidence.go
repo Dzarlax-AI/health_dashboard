@@ -2,6 +2,7 @@ package storage
 
 import (
 	"math"
+	"strings"
 	"time"
 
 	"health-receiver/internal/health"
@@ -44,7 +45,11 @@ func (s *DB) rhrEvidence(date string, loc *time.Location) *health.MetricEvidence
 	channel := s.channelMetricEvidence(date, ChannelHROvernight, "resting_heart_rate", "bpm", loc)
 	daily := s.dailyScoreMetricEvidence(date, "resting_heart_rate", "rhr_avg", "bpm")
 	if strongerEvidence(daily, channel, true) {
-		daily.Method = "daily_scores_mean_std:rhr_avg"
+		if strings.Contains(daily.Method, "metric_points") {
+			daily.Method += ":rhr_avg"
+		} else {
+			daily.Method = "daily_scores_mean_std:rhr_avg"
+		}
 		return daily
 	}
 	return channel
@@ -287,7 +292,7 @@ func (s *DB) autonomicLoadPatternDays(date string) int {
 		if !ok || load < 2.0 {
 			continue
 		}
-		if s.activityContextForDate(d) == "high" {
+		if s.activityContextForDate(d) != "normal" {
 			continue
 		}
 		days++

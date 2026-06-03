@@ -125,6 +125,25 @@ func TestComputeIllnessSuspicion_RepeatedAutonomicLoadNeedsRHRGate(t *testing.T)
 	}
 }
 
+func TestComputeIllnessSuspicion_AutonomicProdromeRequiresKnownNormalActivity(t *testing.T) {
+	got := ComputeIllnessSuspicion(IllnessEvidenceInput{
+		Date:                 "2026-02-06",
+		AutonomicPatternDays: 4,
+		SustainedHRLoad: &MetricEvidenceInput{
+			Metric: "sustained_hr_load", Value: 3.4, Baseline: 0, ZScore: 3.4, Method: "sustained_hr_load_z", Status: "ok", ActivityContext: "unknown",
+		},
+		RHR: &MetricEvidenceInput{
+			Metric: "resting_heart_rate", Value: 70, Baseline: 60, ZScore: 1.2, Unit: "bpm", Method: "personal_baseline_mad", Status: "ok",
+		},
+	})
+	if got.Confidence != IllnessConfidenceLow {
+		t.Fatalf("confidence = %q, want low from RHR only when activity context is unknown; %+v", got.Confidence, got)
+	}
+	if got.Pattern == IllnessPatternAutonomicProdrome {
+		t.Fatalf("pattern = %q, want no autonomic prodrome without known-normal activity", got.Pattern)
+	}
+}
+
 func TestComputeIllnessSuspicion_ThreeDayAutonomicLoadAllowsBorderlineRHR(t *testing.T) {
 	got := ComputeIllnessSuspicion(IllnessEvidenceInput{
 		Date:                 "2026-02-05",

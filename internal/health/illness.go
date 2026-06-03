@@ -411,16 +411,23 @@ func evalSustainedHRLoad(in *MetricEvidenceInput) []illnessSignalEval {
 }
 
 func evalAutonomicProdrome(in IllnessEvidenceInput) []illnessSignalEval {
+	// Thresholds come from the local Profile A/B validation documented in
+	// docs/ai-plans/2026-06-03-illness-autonomic-prodrome.html: require a
+	// strong current HR-load day, known-normal activity context, and RHR
+	// corroboration before surfacing a moderate autonomic-only warning.
 	load := in.SustainedHRLoad
 	rhr := in.RHR
 	if load == nil || rhr == nil || load.Status != "ok" || rhr.Status != "ok" {
 		return nil
 	}
-	if load.ZScore < 2.0 || load.ActivityContext == "high" {
+	if load.ZScore < 2.0 || load.ActivityContext != "normal" {
 		return nil
 	}
 	rhrZ := rhr.ZScore
 	days := in.AutonomicPatternDays
+	// Two load days need a clearer RHR rise; three or more load days can
+	// accept a borderline RHR rise to catch early prodrome without letting
+	// HRV/SpO2/stress flags independently escalate this path.
 	contributes := (days >= 2 && rhrZ >= 1.0) || (days >= 3 && rhrZ >= 0.8)
 	if !contributes {
 		return nil
@@ -428,6 +435,8 @@ func evalAutonomicProdrome(in IllnessEvidenceInput) []illnessSignalEval {
 	v := float64(days)
 	z := rhrZ
 	strength := "mild"
+	// A longer load run or stronger RHR rise changes signal strength only;
+	// confidence stays capped at moderate for autonomic-only evidence.
 	if days >= 3 || rhrZ >= 1.5 {
 		strength = "strong"
 	}

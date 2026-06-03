@@ -129,7 +129,7 @@ func runRange(db *storage.DB, schema, from, to string, includeCheckin bool) {
 	if _, err := time.Parse("2006-01-02", to); err != nil {
 		log.Fatalf("invalid --to date: %v", err)
 	}
-	rows, err := db.QueryReadOnly(fmt.Sprintf("SELECT date FROM daily_scores WHERE date >= '%s' AND date <= '%s' ORDER BY date", from, to))
+	rows, err := db.QueryReadOnly("SELECT date FROM daily_scores WHERE date >= $1 AND date <= $2 ORDER BY date", from, to)
 	if err != nil {
 		log.Fatal(err)
 	}

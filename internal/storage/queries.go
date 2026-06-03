@@ -209,10 +209,10 @@ func (s *DB) metricDataFromCache(table, col, metric, from, to string) ([]DataPoi
 	for rows.Next() {
 		var p DataPoint
 		if err := rows.Scan(&p.Date, &p.Qty, &p.Min, &p.Max); err != nil {
-				log.Printf("scan DataPoint: %v", err)
-				continue
-			}
-			out = append(out, p)
+			log.Printf("scan DataPoint: %v", err)
+			continue
+		}
+		out = append(out, p)
 	}
 
 	// If cache is empty, fall back to raw data so the UI never returns nothing.
@@ -312,10 +312,10 @@ func (s *DB) metricDataDayFromHourly(metric, from, to string) ([]DataPoint, erro
 	for rows.Next() {
 		var p DataPoint
 		if err := rows.Scan(&p.Date, &p.Qty, &p.Min, &p.Max); err != nil {
-				log.Printf("scan DataPoint: %v", err)
-				continue
-			}
-			out = append(out, p)
+			log.Printf("scan DataPoint: %v", err)
+			continue
+		}
+		out = append(out, p)
 	}
 	return out, rows.Err()
 }
@@ -753,7 +753,7 @@ func (s *DB) GetSleepSummary(from, to string) ([]SleepNight, error) {
 }
 
 // QueryReadOnly executes an arbitrary SELECT and returns results as []map[string]any.
-func (s *DB) QueryReadOnly(query string) ([]map[string]any, error) {
+func (s *DB) QueryReadOnly(query string, args ...any) ([]map[string]any, error) {
 	ctx, cancel := queryCtx()
 	defer cancel()
 
@@ -761,7 +761,7 @@ func (s *DB) QueryReadOnly(query string) ([]map[string]any, error) {
 	if !strings.HasPrefix(q, "SELECT") {
 		return nil, fmt.Errorf("only SELECT queries are allowed")
 	}
-	rows, err := s.pool.Query(ctx, query)
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
