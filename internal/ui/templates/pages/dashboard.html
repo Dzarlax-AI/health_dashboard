@@ -137,9 +137,9 @@
     </div>
     <div class="illness-suspicion-signals" aria-label="{{T .Lang "illness_suspicion_signals"}}">
       {{range .IllnessSuspicion.Signals}}
-        {{if eq .Status "ok"}}{{if ne .Strength "weak"}}
+        {{if .Contributes}}{{if eq .Status "ok"}}{{if ne .Strength "weak"}}
           <span class="illness-signal illness-signal--{{.Strength}}">{{T $.Lang (printf "illness_signal_%s" .Metric)}}</span>
-        {{end}}{{end}}
+        {{end}}{{end}}{{end}}
       {{end}}
     </div>
   </section>

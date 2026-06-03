@@ -117,7 +117,9 @@ func ComputeIllnessSuspicion(in IllnessEvidenceInput) *IllnessSuspicion {
 	strongConfounder := false
 	hasIllnessSignature := false
 	for _, e := range evals {
-		signals = append(signals, e.signal)
+		sig := e.signal
+		sig.Contributes = e.contributes
+		signals = append(signals, sig)
 		if e.illnessSignature {
 			hasIllnessSignature = true
 		}

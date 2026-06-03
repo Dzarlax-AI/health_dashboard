@@ -12,8 +12,9 @@ func TestDashboardIllnessSuspicionPanelVisibility(t *testing.T) {
 	moderate := renderDashboardIllnessForTest(t, &health.IllnessSuspicion{
 		Confidence: "moderate",
 		Signals: []health.IllnessEvidenceSignal{
-			{Metric: "respiratory_rate", Status: "ok", Strength: "strong"},
-			{Metric: "resting_heart_rate", Status: "ok", Strength: "mild"},
+			{Metric: "respiratory_rate", Status: "ok", Strength: "strong", Contributes: true},
+			{Metric: "resting_heart_rate", Status: "ok", Strength: "mild", Contributes: true},
+			{Metric: "stress_flags", Status: "ok", Strength: "mild", Contributes: false},
 		},
 	})
 
@@ -28,10 +29,13 @@ func TestDashboardIllnessSuspicionPanelVisibility(t *testing.T) {
 			t.Fatalf("moderate illness panel missing %q", want)
 		}
 	}
+	if strings.Contains(moderate, "Стресс-флаги") {
+		t.Fatalf("non-contributing signals should not render as dashboard chips")
+	}
 
 	low := renderDashboardIllnessForTest(t, &health.IllnessSuspicion{
 		Confidence: "low",
-		Signals:    []health.IllnessEvidenceSignal{{Metric: "respiratory_rate", Status: "ok", Strength: "mild"}},
+		Signals:    []health.IllnessEvidenceSignal{{Metric: "respiratory_rate", Status: "ok", Strength: "mild", Contributes: true}},
 	})
 	if strings.Contains(low, "Возможные признаки болезни") {
 		t.Fatalf("low confidence illness suspicion should not render the dashboard panel")

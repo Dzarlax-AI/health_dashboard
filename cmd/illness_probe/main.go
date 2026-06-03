@@ -70,6 +70,12 @@ func printDate(db *storage.DB, schema, date string, includeCheckin bool) {
 }
 
 func runSweep(db *storage.DB, schema string, days int, includeCheckin bool) {
+	if days < 1 {
+		days = 1
+	}
+	if days > 3650 {
+		days = 3650
+	}
 	rows, err := db.QueryReadOnly(fmt.Sprintf("SELECT date FROM daily_scores ORDER BY date DESC LIMIT %d", days))
 	if err != nil {
 		log.Fatal(err)

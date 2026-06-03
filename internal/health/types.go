@@ -186,6 +186,7 @@ type IllnessEvidenceSignal struct {
 	Direction       string               `json:"direction"` // high | low | present | missing
 	Strength        string               `json:"strength"`  // weak | mild | strong | missing | warmup
 	Status          string               `json:"status"`    // ok | missing | warmup | confounded
+	Contributes     bool                 `json:"contributes"`
 	Value           *float64             `json:"value,omitempty"`
 	Baseline        *float64             `json:"baseline,omitempty"`
 	DeltaAbs        *float64             `json:"delta_abs,omitempty"`
