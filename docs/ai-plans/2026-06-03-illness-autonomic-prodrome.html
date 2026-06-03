@@ -290,6 +290,68 @@
     </section>
 
     <section>
+      <h2>Local Experiment Results</h2>
+      <p>
+        After this plan was created, a local read-only experiment was run against two private production profiles over
+        the recent historical window. Exact health values are intentionally not recorded in this public artifact; the
+        purpose is to validate relative rule behavior and false-positive risk.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Candidate rule</th>
+            <th>Profile A hits</th>
+            <th>Profile B hits</th>
+            <th>Interpretation</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>sustained_hr_load &gt;= 2</code> under normal activity</td>
+            <td>35 / 154 days</td>
+            <td>32 / 154 days</td>
+            <td>Too broad. This would turn ordinary stress/load into illness suspicion too often.</td>
+          </tr>
+          <tr>
+            <td>Load + repeated normal-activity load + <code>RHR z &gt;= 1.0</code></td>
+            <td>7 / 154 days</td>
+            <td>6 / 154 days</td>
+            <td>Good conservative baseline. Catches the known autonomic illness/recovery pattern but may miss the first borderline day.</td>
+          </tr>
+          <tr>
+            <td>Load + repeated normal-activity load + <code>RHR z &gt;= 0.8</code></td>
+            <td>12 / 154 days</td>
+            <td>7 / 154 days</td>
+            <td>More sensitive, but adds extra ambiguous days on Profile A.</td>
+          </tr>
+          <tr>
+            <td>Combined: <code>load_4d &gt;= 2 && RHR z &gt;= 1.0</code> OR <code>load_4d &gt;= 3 && RHR z &gt;= 0.8</code></td>
+            <td>10 / 154 days</td>
+            <td>6 / 154 days</td>
+            <td>Preferred implementation candidate. It catches repeated autonomic prodrome earlier while avoiding support-only expansion.</td>
+          </tr>
+          <tr>
+            <td>Repeated load + any support signal including HRV, SpO2, or stress flags</td>
+            <td>13 / 154 days</td>
+            <td>15 / 154 days</td>
+            <td>Too permissive for Profile B. HRV/stress-flag support should not replace RHR support in v1.</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="callout decision">
+        <strong>Experiment-driven amendment:</strong> implement the combined RHR-gated repeated-load rule as the v1
+        autonomic prodrome path. Keep HRV, SpO2, and stress flags as explanatory support signals, but do not let them
+        independently upgrade an autonomic-only day to moderate confidence.
+      </div>
+      <ul>
+        <li>The known private February illness window is missed by the current v0 detector on early autonomic days, then detected once respiratory evidence becomes strong.</li>
+        <li>The combined candidate catches the early autonomic window before the respiratory peak on Profile A.</li>
+        <li>A known sedentary negative-control day remains outside the autonomic candidate set.</li>
+        <li>Profile B shows compact candidate clusters rather than daily noise under the combined rule.</li>
+      </ul>
+    </section>
+
+    <section>
       <h2>Likely File Changes</h2>
       <div class="grid">
         <div class="card">
