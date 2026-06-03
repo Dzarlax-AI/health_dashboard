@@ -5,17 +5,23 @@ const (
 	IllnessConfidenceLow      = "low"
 	IllnessConfidenceModerate = "moderate"
 	IllnessConfidenceHigh     = "high"
+
+	IllnessPatternRespiratory       = "respiratory"
+	IllnessPatternOxygen            = "oxygen"
+	IllnessPatternAutonomicProdrome = "autonomic_prodrome"
+	IllnessPatternMixed             = "mixed"
 )
 
 type illnessSignalEval struct {
-	signal           IllnessEvidenceSignal
-	contributes      bool
-	objective        bool
-	primary          bool
-	autoOrTemp       bool
-	strong           bool
-	illnessSignature bool
-	strongConfounder bool
+	signal            IllnessEvidenceSignal
+	contributes       bool
+	objective         bool
+	primary           bool
+	autoOrTemp        bool
+	strong            bool
+	illnessSignature  bool
+	strongConfounder  bool
+	autonomicProdrome bool
 }
 
 // ComputeIllnessSuspicion converts a date-aligned evidence input into an
@@ -58,6 +64,7 @@ func ComputeIllnessSuspicion(in IllnessEvidenceInput) *IllnessSuspicion {
 		strongText: "Sleep was strongly disrupted versus personal baseline.",
 	})...)
 	evals = append(evals, evalSustainedHRLoad(in.SustainedHRLoad)...)
+	evals = append(evals, evalAutonomicProdrome(in)...)
 	evals = append(evals, evalObjectivePersistence(in.ObjectivePatternDays)...)
 
 	for _, flag := range in.StressFlags {
@@ -116,6 +123,7 @@ func ComputeIllnessSuspicion(in IllnessEvidenceInput) *IllnessSuspicion {
 	subjectiveSick := false
 	strongConfounder := false
 	hasIllnessSignature := false
+	hasAutonomicProdrome := false
 	for _, e := range evals {
 		sig := e.signal
 		sig.Contributes = e.contributes
@@ -131,6 +139,9 @@ func ComputeIllnessSuspicion(in IllnessEvidenceInput) *IllnessSuspicion {
 		}
 		if e.strongConfounder {
 			strongConfounder = true
+		}
+		if e.autonomicProdrome && e.contributes {
+			hasAutonomicProdrome = true
 		}
 		if !e.contributes {
 			continue
@@ -171,16 +182,20 @@ func ComputeIllnessSuspicion(in IllnessEvidenceInput) *IllnessSuspicion {
 		confidence = IllnessConfidenceModerate
 	case hasObjectivePersistence && len(objectiveCategories) > 0:
 		confidence = IllnessConfidenceModerate
+	case hasAutonomicProdrome:
+		confidence = IllnessConfidenceModerate
 	case (strongPrimary || strongObjective) && subjectiveSick:
 		confidence = IllnessConfidenceModerate
 	case len(objectiveCategories) > 0:
 		confidence = IllnessConfidenceLow
 	}
 
+	pattern := illnessPattern(confidence, hasRespiratoryPrimary, hasOxygenObjective, hasAutonomicProdrome)
 	return &IllnessSuspicion{
 		Date:         in.Date,
 		Confidence:   confidence,
-		Reason:       illnessReason(confidence),
+		Pattern:      pattern,
+		Reason:       illnessReason(confidence, pattern),
 		Experimental: true,
 		Signals:      signals,
 		StressFlags:  append([]string(nil), in.StressFlags...),
@@ -203,7 +218,11 @@ func ApplyIllnessSafetyCap(resp *BriefingResponse, ls LangStrings) {
 	case IllnessConfidenceModerate:
 		if verdictRank(resp.EnergyBank.ActionVerdict) > verdictRank("active_recovery") {
 			resp.EnergyBank.ActionVerdict = "active_recovery"
-			resp.EnergyBank.VerdictReason = ls["energy_reason_illness_suspicion_moderate"]
+			if resp.IllnessSuspicion.Pattern == IllnessPatternAutonomicProdrome {
+				resp.EnergyBank.VerdictReason = ls["energy_reason_autonomic_prodrome_moderate"]
+			} else {
+				resp.EnergyBank.VerdictReason = ls["energy_reason_illness_suspicion_moderate"]
+			}
 		}
 	}
 }
@@ -391,6 +410,53 @@ func evalSustainedHRLoad(in *MetricEvidenceInput) []illnessSignalEval {
 	return []illnessSignalEval{{signal: sig, contributes: false, strong: strong, strongConfounder: strongConfounder}}
 }
 
+func evalAutonomicProdrome(in IllnessEvidenceInput) []illnessSignalEval {
+	load := in.SustainedHRLoad
+	rhr := in.RHR
+	if load == nil || rhr == nil || load.Status != "ok" || rhr.Status != "ok" {
+		return nil
+	}
+	if load.ZScore < 2.0 || load.ActivityContext == "high" {
+		return nil
+	}
+	rhrZ := rhr.ZScore
+	days := in.AutonomicPatternDays
+	contributes := (days >= 2 && rhrZ >= 1.0) || (days >= 3 && rhrZ >= 0.8)
+	if !contributes {
+		return nil
+	}
+	v := float64(days)
+	z := rhrZ
+	strength := "mild"
+	if days >= 3 || rhrZ >= 1.5 {
+		strength = "strong"
+	}
+	sig := IllnessEvidenceSignal{
+		Metric:          "autonomic_prodrome",
+		Kind:            "autonomic_pattern",
+		Role:            "context",
+		Category:        "autonomic",
+		Direction:       "present",
+		Strength:        strength,
+		Status:          "ok",
+		Contributes:     true,
+		Value:           &v,
+		ZScore:          &z,
+		Unit:            "days",
+		Method:          "rolling_4_day_sustained_hr_load_rhr",
+		ActivityContext: activityContext(load.ActivityContext),
+		Evidence:        "Repeated normal-activity HR load with elevated resting heart rate suggests autonomic strain or recovery load.",
+	}
+	return []illnessSignalEval{{
+		signal:            sig,
+		contributes:       true,
+		objective:         true,
+		autoOrTemp:        true,
+		strong:            strength == "strong",
+		autonomicProdrome: true,
+	}}
+}
+
 func evalObjectivePersistence(days int) []illnessSignalEval {
 	if days < 2 {
 		return nil
@@ -456,7 +522,33 @@ func metricSignal(in *MetricEvidenceInput, metric, kind, role, category, directi
 	}
 }
 
-func illnessReason(confidence string) string {
+func illnessPattern(confidence string, hasRespiratory, hasOxygen, hasAutonomicProdrome bool) string {
+	if confidence == IllnessConfidenceNone {
+		return ""
+	}
+	switch {
+	case hasAutonomicProdrome && !hasRespiratory && !hasOxygen:
+		return IllnessPatternAutonomicProdrome
+	case hasRespiratory && (hasOxygen || hasAutonomicProdrome):
+		return IllnessPatternMixed
+	case hasRespiratory:
+		return IllnessPatternRespiratory
+	case hasOxygen:
+		return IllnessPatternOxygen
+	default:
+		return ""
+	}
+}
+
+func illnessReason(confidence, pattern string) string {
+	if pattern == IllnessPatternAutonomicProdrome {
+		switch confidence {
+		case IllnessConfidenceModerate:
+			return "Repeated autonomic strain is present during normal activity. This can happen before illness or during recovery, but it is not a diagnosis."
+		case IllnessConfidenceLow:
+			return "One autonomic strain signal is outside its usual range. This is not a diagnosis."
+		}
+	}
 	switch confidence {
 	case IllnessConfidenceHigh:
 		return "Multiple wearable signals are consistent with respiratory stress or illness. This is not a diagnosis."

@@ -461,6 +461,37 @@
     </section>
 
     <section>
+      <h2>Implementation Notes</h2>
+      <p>
+        Implemented locally on branch <code>codex/illness-autonomic-prodrome-plan</code> after the experiment-driven
+        amendment above. The implementation keeps the existing respiratory/oxygen detector intact and adds a separate
+        conservative autonomic-prodrome path.
+      </p>
+      <ul>
+        <li>Added <code>IllnessSuspicion.Pattern</code> so clients can distinguish respiratory/mixed suspicion from autonomic-only prodrome.</li>
+        <li>Added storage-side <code>AutonomicPatternDays</code> over a rolling 4-day window using date-aligned <code>daily_scores.sustained_hr_load</code> and activity context.</li>
+        <li>Added RHR fallback evidence from <code>daily_scores.rhr_avg</code> when the overnight channel baseline is missing or weaker.</li>
+        <li>Implemented the combined RHR-gated rule from the local experiment: repeated normal-activity HR load plus RHR support.</li>
+        <li>Autonomic-only evidence can produce <code>moderate</code>, never <code>high</code>.</li>
+        <li>Moderate autonomic prodrome caps EnergyBank at <code>active_recovery</code> with a separate recovery-load reason, not a respiratory illness reason.</li>
+        <li>Dashboard copy is pattern-aware: autonomic-only prodrome renders the softer "pay attention to recovery" message.</li>
+        <li><code>cmd/illness_probe</code> now supports <code>--from</code>/<code>--to</code> validation windows.</li>
+      </ul>
+      <h3>Validation Run</h3>
+      <ul>
+        <li>Focused tests: <code>go test ./internal/health</code>, <code>go test ./internal/ui -run Illness</code>, <code>go test ./internal/storage -run IllnessEvidence</code>, <code>go test ./cmd/illness_probe</code>.</li>
+        <li>Full test suite: <code>go test ./...</code>.</li>
+        <li>Private Profile A known-positive February window now surfaces early autonomic-prodrome days before the later respiratory/mixed high-confidence day.</li>
+        <li>Private Profile A known sedentary negative-control day remains below dashboard-surface threshold.</li>
+        <li>Private Profile B sample cluster surfaces moderate candidates without producing high confidence.</li>
+      </ul>
+      <div class="callout warning">
+        Validation summaries remain anonymized. Raw health values, tenant identifiers, and private symptoms are not
+        included in this public plan artifact.
+      </div>
+    </section>
+
+    <section>
       <h2>Open Questions</h2>
       <ul>
         <li>Should a one-day autonomic event with strong RHR support show <code>low</code> or <code>moderate</code>? Proposed answer: <code>low</code> unless there is repeated context or subjective confirmation.</li>

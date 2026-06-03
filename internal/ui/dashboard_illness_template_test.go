@@ -42,6 +42,29 @@ func TestDashboardIllnessSuspicionPanelVisibility(t *testing.T) {
 	}
 }
 
+func TestDashboardIllnessSuspicionAutonomicProdromeCopy(t *testing.T) {
+	html := renderDashboardIllnessForTest(t, &health.IllnessSuspicion{
+		Confidence: "moderate",
+		Pattern:    health.IllnessPatternAutonomicProdrome,
+		Signals: []health.IllnessEvidenceSignal{
+			{Metric: "autonomic_prodrome", Kind: "autonomic_pattern", Status: "ok", Strength: "strong", Contributes: true},
+			{Metric: "sustained_hr_load", Status: "ok", Strength: "strong", Contributes: false},
+		},
+	})
+	for _, want := range []string{
+		"Будьте внимательны к себе",
+		"повышенная автономная нагрузка",
+		"Паттерн автономной нагрузки",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("autonomic prodrome panel missing %q", want)
+		}
+	}
+	if strings.Contains(html, "Возможные признаки болезни") {
+		t.Fatalf("autonomic prodrome panel should use softer title")
+	}
+}
+
 func renderDashboardIllnessForTest(t *testing.T, illness *health.IllnessSuspicion) string {
 	t.Helper()
 	w := httptest.NewRecorder()

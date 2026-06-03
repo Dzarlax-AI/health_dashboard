@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"health-receiver/internal/health"
 	"health-receiver/internal/storage"
@@ -16,6 +17,8 @@ func main() {
 	schema := flag.String("schema", "health", "tenant schema")
 	lang := flag.String("lang", "en", "briefing language")
 	date := flag.String("date", "", "specific local date YYYY-MM-DD; defaults to latest briefing")
+	from := flag.String("from", "", "start local date YYYY-MM-DD for inclusive sweep")
+	to := flag.String("to", "", "end local date YYYY-MM-DD for inclusive sweep")
 	days := flag.Int("days", 0, "retrospective sweep over recent daily_scores dates")
 	noCheckin := flag.Bool("no-checkin", false, "ignore subjective check-in evidence")
 	flag.Parse()
@@ -28,6 +31,11 @@ func main() {
 
 	if *days > 0 {
 		runSweep(db, *schema, *days, !*noCheckin)
+		return
+	}
+
+	if *from != "" || *to != "" {
+		runRange(db, *schema, *from, *to, !*noCheckin)
 		return
 	}
 
@@ -109,6 +117,55 @@ func runSweep(db *storage.DB, schema string, days int, includeCheckin bool) {
 		}
 	}
 	printJSON(map[string]any{"schema": schema, "days": days, "counts": counts, "top_hits": hits})
+}
+
+func runRange(db *storage.DB, schema, from, to string, includeCheckin bool) {
+	if from == "" || to == "" {
+		log.Fatal("--from and --to must be provided together")
+	}
+	if _, err := time.Parse("2006-01-02", from); err != nil {
+		log.Fatalf("invalid --from date: %v", err)
+	}
+	if _, err := time.Parse("2006-01-02", to); err != nil {
+		log.Fatalf("invalid --to date: %v", err)
+	}
+	rows, err := db.QueryReadOnly(fmt.Sprintf("SELECT date FROM daily_scores WHERE date >= '%s' AND date <= '%s' ORDER BY date", from, to))
+	if err != nil {
+		log.Fatal(err)
+	}
+	type day struct {
+		Date       string   `json:"date"`
+		Confidence string   `json:"confidence"`
+		Pattern    string   `json:"pattern,omitempty"`
+		Signals    []string `json:"signals,omitempty"`
+	}
+	out := struct {
+		Schema string         `json:"schema"`
+		From   string         `json:"from"`
+		To     string         `json:"to"`
+		Counts map[string]int `json:"counts"`
+		Days   []day          `json:"days"`
+	}{Schema: schema, From: from, To: to, Counts: map[string]int{"none": 0, "low": 0, "moderate": 0, "high": 0}}
+	for _, row := range rows {
+		date, _ := row["date"].(string)
+		if date == "" {
+			continue
+		}
+		var checkin *health.SubjectiveCheckinSummary
+		if includeCheckin {
+			checkin = checkinForDate(db, date)
+		}
+		ill := health.ComputeIllnessSuspicion(db.BuildIllnessEvidenceInput(date, checkin))
+		out.Counts[ill.Confidence]++
+		d := day{Date: date, Confidence: ill.Confidence, Pattern: ill.Pattern}
+		for _, sig := range ill.Signals {
+			if sig.Status == "ok" && sig.Strength != "weak" && (sig.Contributes || sig.Metric == "sustained_hr_load") {
+				d.Signals = append(d.Signals, sig.Metric+":"+sig.Strength)
+			}
+		}
+		out.Days = append(out.Days, d)
+	}
+	printJSON(out)
 }
 
 func checkinForDate(db *storage.DB, date string) *health.SubjectiveCheckinSummary {

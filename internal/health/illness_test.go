@@ -83,6 +83,83 @@ func TestComputeIllnessSuspicion_RespiratoryPlusSustainedHRLoadOnlyStaysLow(t *t
 	assertNonDiagnosticWording(t, got)
 }
 
+func TestComputeIllnessSuspicion_RepeatedAutonomicLoadWithRHRIsModerateProdrome(t *testing.T) {
+	got := ComputeIllnessSuspicion(IllnessEvidenceInput{
+		Date:                 "2026-02-06",
+		AutonomicPatternDays: 4,
+		SustainedHRLoad: &MetricEvidenceInput{
+			Metric: "sustained_hr_load", Value: 3.4, Baseline: 0, ZScore: 3.4, Method: "sustained_hr_load_z", Status: "ok", ActivityContext: "normal",
+		},
+		RHR: &MetricEvidenceInput{
+			Metric: "resting_heart_rate", Value: 70, Baseline: 60, ZScore: 1.2, Unit: "bpm", Method: "personal_baseline_mad", Status: "ok",
+		},
+	})
+	if got.Confidence != IllnessConfidenceModerate {
+		t.Fatalf("confidence = %q, want %q; %+v", got.Confidence, IllnessConfidenceModerate, got)
+	}
+	if got.Pattern != IllnessPatternAutonomicProdrome {
+		t.Fatalf("pattern = %q, want %q; %+v", got.Pattern, IllnessPatternAutonomicProdrome, got)
+	}
+	if !hasSignal(got, "autonomic_prodrome", "autonomic_pattern") {
+		t.Fatalf("signals = %+v, want autonomic prodrome pattern signal", got.Signals)
+	}
+	if strings.Contains(strings.ToLower(got.Reason), "respiratory") {
+		t.Fatalf("autonomic prodrome reason should not claim respiratory evidence: %q", got.Reason)
+	}
+	assertNonDiagnosticWording(t, got)
+}
+
+func TestComputeIllnessSuspicion_RepeatedAutonomicLoadNeedsRHRGate(t *testing.T) {
+	got := ComputeIllnessSuspicion(IllnessEvidenceInput{
+		Date:                 "2026-02-05",
+		AutonomicPatternDays: 3,
+		SustainedHRLoad: &MetricEvidenceInput{
+			Metric: "sustained_hr_load", Value: 7.7, Baseline: 0, ZScore: 7.7, Method: "sustained_hr_load_z", Status: "ok", ActivityContext: "normal",
+		},
+		RHR: &MetricEvidenceInput{
+			Metric: "resting_heart_rate", Value: 68, Baseline: 60, ZScore: 0.7, Unit: "bpm", Method: "personal_baseline_mad", Status: "ok",
+		},
+	})
+	if got.Confidence != IllnessConfidenceNone {
+		t.Fatalf("confidence = %q, want none without RHR gate; %+v", got.Confidence, got)
+	}
+}
+
+func TestComputeIllnessSuspicion_ThreeDayAutonomicLoadAllowsBorderlineRHR(t *testing.T) {
+	got := ComputeIllnessSuspicion(IllnessEvidenceInput{
+		Date:                 "2026-02-05",
+		AutonomicPatternDays: 3,
+		SustainedHRLoad: &MetricEvidenceInput{
+			Metric: "sustained_hr_load", Value: 7.7, Baseline: 0, ZScore: 7.7, Method: "sustained_hr_load_z", Status: "ok", ActivityContext: "normal",
+		},
+		RHR: &MetricEvidenceInput{
+			Metric: "resting_heart_rate", Value: 68, Baseline: 60, ZScore: 0.85, Unit: "bpm", Method: "personal_baseline_mad", Status: "ok",
+		},
+	})
+	if got.Confidence != IllnessConfidenceModerate {
+		t.Fatalf("confidence = %q, want moderate for repeated load with borderline RHR; %+v", got.Confidence, got)
+	}
+	if got.Pattern != IllnessPatternAutonomicProdrome {
+		t.Fatalf("pattern = %q, want autonomic prodrome", got.Pattern)
+	}
+}
+
+func TestComputeIllnessSuspicion_AutonomicProdromeNeverHigh(t *testing.T) {
+	got := ComputeIllnessSuspicion(IllnessEvidenceInput{
+		Date:                 "2026-02-08",
+		AutonomicPatternDays: 4,
+		SustainedHRLoad: &MetricEvidenceInput{
+			Metric: "sustained_hr_load", Value: 8, Baseline: 0, ZScore: 8, Method: "sustained_hr_load_z", Status: "ok", ActivityContext: "normal",
+		},
+		RHR: &MetricEvidenceInput{
+			Metric: "resting_heart_rate", Value: 75, Baseline: 60, ZScore: 3, Unit: "bpm", Method: "personal_baseline_mad", Status: "ok",
+		},
+	})
+	if got.Confidence == IllnessConfidenceHigh {
+		t.Fatalf("autonomic-only confidence = high, want capped below high; %+v", got)
+	}
+}
+
 func TestComputeIllnessSuspicion_OxygenPlusAutonomicWithoutRespiratoryOrSickStaysLow(t *testing.T) {
 	got := ComputeIllnessSuspicion(IllnessEvidenceInput{
 		Date: "2026-06-02",
@@ -188,6 +265,23 @@ func TestApplyIllnessSafetyCap_CapsPushHardForModerateIllness(t *testing.T) {
 	}
 	if !strings.Contains(resp.EnergyBank.VerdictReason, "Illness-like") {
 		t.Fatalf("reason = %q, want illness cap reason", resp.EnergyBank.VerdictReason)
+	}
+}
+
+func TestApplyIllnessSafetyCap_AutonomicProdromeUsesAutonomicReason(t *testing.T) {
+	resp := &BriefingResponse{
+		EnergyBank: &EnergyBank{ActionVerdict: "push_hard", VerdictReason: "green"},
+		IllnessSuspicion: &IllnessSuspicion{
+			Confidence: IllnessConfidenceModerate,
+			Pattern:    IllnessPatternAutonomicProdrome,
+		},
+	}
+	ApplyIllnessSafetyCap(resp, GetStrings("en"))
+	if resp.EnergyBank.ActionVerdict != "active_recovery" {
+		t.Fatalf("verdict = %q, want active_recovery", resp.EnergyBank.ActionVerdict)
+	}
+	if !strings.Contains(resp.EnergyBank.VerdictReason, "autonomic strain") {
+		t.Fatalf("reason = %q, want autonomic prodrome reason", resp.EnergyBank.VerdictReason)
 	}
 }
 

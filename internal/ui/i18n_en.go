@@ -95,6 +95,8 @@ var translationsEn = map[string]string{
 
 	"illness_suspicion_title":                  "Possible illness signals",
 	"illness_suspicion_desc":                   "Wearable data shows converging signals consistent with respiratory or autonomic stress. This is not a diagnosis.",
+	"illness_suspicion_autonomic_title":        "Pay attention to recovery",
+	"illness_suspicion_autonomic_desc":         "Wearable data shows repeated autonomic strain during normal activity. This can happen before illness, during recovery, or after stress. This is not a diagnosis.",
 	"illness_suspicion_moderate":               "Moderate",
 	"illness_suspicion_high":                   "High",
 	"illness_suspicion_signals":                "Contributing signals",
@@ -106,6 +108,7 @@ var translationsEn = map[string]string{
 	"illness_signal_sleep_total":               "Sleep disruption",
 	"illness_signal_sleep_disruption":          "Sleep disruption",
 	"illness_signal_sustained_hr_load":         "Sustained HR load",
+	"illness_signal_autonomic_prodrome":        "Autonomic load pattern",
 	"illness_signal_objective_illness_pattern": "Recent objective pattern",
 	"illness_signal_stress_flags":              "Stress flags",
 	"illness_signal_subjective_checkin":        "Check-in",
