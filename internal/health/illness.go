@@ -206,17 +206,19 @@ func ComputeIllnessSuspicion(in IllnessEvidenceInput) *IllnessSuspicion {
 // caps the prescriptive EnergyBank action when illness evidence says a hard
 // recommendation would be unsafe.
 func ApplyIllnessSafetyCap(resp *BriefingResponse, ls LangStrings) {
-	if resp == nil || resp.EnergyBank == nil || resp.IllnessSuspicion == nil {
+	if resp == nil || resp.IllnessSuspicion == nil {
 		return
 	}
 	switch resp.IllnessSuspicion.Confidence {
 	case IllnessConfidenceHigh:
-		if verdictRank(resp.EnergyBank.ActionVerdict) > verdictRank("rest") {
+		applyReadinessResponseCap(resp, readinessLowCap, ReadinessConfidenceLow, "illness_suspicion_high", ls)
+		if resp.EnergyBank != nil && verdictRank(resp.EnergyBank.ActionVerdict) > verdictRank("rest") {
 			resp.EnergyBank.ActionVerdict = "rest"
 			resp.EnergyBank.VerdictReason = ls["energy_reason_illness_suspicion_high"]
 		}
 	case IllnessConfidenceModerate:
-		if verdictRank(resp.EnergyBank.ActionVerdict) > verdictRank("active_recovery") {
+		applyReadinessResponseCap(resp, readinessFairCap, ReadinessConfidenceProvisional, "illness_suspicion_moderate", ls)
+		if resp.EnergyBank != nil && verdictRank(resp.EnergyBank.ActionVerdict) > verdictRank("active_recovery") {
 			resp.EnergyBank.ActionVerdict = "active_recovery"
 			if resp.IllnessSuspicion.Pattern == IllnessPatternAutonomicProdrome {
 				resp.EnergyBank.VerdictReason = ls["energy_reason_autonomic_prodrome_moderate"]

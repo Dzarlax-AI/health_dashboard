@@ -5,12 +5,14 @@ package ui
 // added in PR #117 intentionally fall back to English until a
 // reviewer with Serbian fluency lands translations.
 var translationsSr = map[string]string{
-	"app_title":             "Zdravlje",
-	"explore":               "Pretraži",
-	"loading":               "Učitavanje podataka",
-	"readiness":             "Spremnost",
-	"recovery":              "Oporavak",
-	"readiness_today_label": "Danas",
+	"app_title":              "Zdravlje",
+	"explore":                "Pretraži",
+	"loading":                "Učitavanje podataka",
+	"readiness":              "Spremnost",
+	"recovery":               "Oporavak",
+	"readiness_today_label":  "Danas",
+	"readiness_waiting_data": "Čekamo današnje podatke oporavka",
+	"readiness_provisional":  "Spremnost je privremena dok današnji signali ne stignu",
 
 	"section_cardio_title":      "Srce i pluća",
 	"section_cardio_subtitle":   "Puls u miru · HRV · VO2 · disanje",

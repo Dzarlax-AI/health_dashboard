@@ -1,0 +1,581 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Implementation Plan: Readiness False Optimal Hardening</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root {
+      --bg: #f5f7fb;
+      --card: #ffffff;
+      --ink: #172033;
+      --muted: #5b6475;
+      --line: #dfe5ef;
+      --accent: #2358d6;
+      --warn: #b45309;
+      --risk: #b91c1c;
+      --ok: #047857;
+      --code: #eef2f7;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.55;
+    }
+    main { max-width: 1120px; margin: 0 auto; padding: 32px; }
+    header {
+      background: linear-gradient(135deg, #ffffff 0%, #eef4ff 100%);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 24px;
+      margin-bottom: 18px;
+    }
+    section {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 20px;
+      margin: 14px 0;
+    }
+    h1, h2, h3 { line-height: 1.2; margin-top: 0; }
+    h1 { font-size: 30px; margin-bottom: 8px; }
+    h2 { font-size: 20px; }
+    h3 { font-size: 16px; margin-bottom: 6px; }
+    p { margin: 8px 0; }
+    ul, ol { padding-left: 22px; }
+    li { margin: 6px 0; }
+    code {
+      background: var(--code);
+      padding: 2px 5px;
+      border-radius: 4px;
+      font-size: 0.94em;
+    }
+    .badges { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: #e8eef8;
+      color: #243b67;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .callout { border-left: 4px solid var(--accent); }
+    .warning { border-left: 4px solid var(--warn); }
+    .risk { border-left: 4px solid var(--risk); }
+    .approval { border-left: 4px solid var(--ok); }
+    .muted { color: var(--muted); }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { border: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; }
+    th { background: #f2f5fa; }
+    @media (max-width: 760px) {
+      main { padding: 18px; }
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Implementation Plan: Readiness False Optimal Hardening</h1>
+    <p>
+      Plan for <a href="https://github.com/Dzarlax-AI/health_dashboard/issues/175">issue #175</a>:
+      prevent Health Dashboard from presenting a fully confident <code>optimal</code>
+      readiness or recovery state when same-day evidence is incomplete, unstable, or
+      contradicts illness/recovery signals.
+    </p>
+    <div class="badges">
+      <span class="badge">Approval required before implementation</span>
+      <span class="badge">area:readiness</span>
+      <span class="badge">evidence-boundary</span>
+      <span class="badge">plan-only branch</span>
+    </div>
+  </header>
+
+  <section class="callout">
+    <h2>Task Summary</h2>
+    <p>
+      The dashboard recently showed a perfect or near-perfect readiness score on
+      a private acute illness/recovery-impaired day. After an additional sync,
+      the score moved into a more plausible range, which means the final daily
+      data was not the only problem: the system also needs a safer freshness,
+      confidence, and component-capping contract while data is still accruing.
+    </p>
+    <p>
+      The goal is not to copy Bevel, Oura, Whoop, or any third-party number. The
+      goal is to preserve Health Dashboard's own evidence contract: high
+      readiness should require complete, concordant evidence, and contradictory
+      illness/recovery signals must be visible to the score or its confidence.
+    </p>
+  </section>
+
+  <section class="callout">
+    <h2>Transparency Principle</h2>
+    <p>
+      Health Dashboard's primary goal is to be transparent and honest. If the
+      system does not have enough same-day evidence, it should say that plainly
+      and wait for data rather than fabricate certainty, silently reuse stale
+      inputs, or normalize away missing components.
+    </p>
+    <ul>
+      <li>Missing acute data is a first-class state, not a neutral value.</li>
+      <li>Confidence must be visible whenever the displayed score is provisional or capped.</li>
+      <li>The UI should prefer honest copy such as "waiting for today's recovery data" over a falsely precise readiness claim.</li>
+      <li>AI insights must follow the same rule: no confident AI recommendation may be generated from incomplete same-day evidence.</li>
+      <li>The morning Telegram check-in is collected before the AI insight for a reason: it must help the AI explain how the user's subjective state aligns or conflicts with the objective signals.</li>
+      <li>Debug/API metadata should explain which inputs are present, missing, stale, or excluded.</li>
+    </ul>
+  </section>
+
+  <section class="warning">
+    <h2>Plan Review Verdict</h2>
+    <p>
+      Decision: approved with amendments. The direction is correct, but the
+      original draft left several policy choices open. This revision closes
+      those choices so implementation can be reviewable and bounded.
+    </p>
+    <ul>
+      <li>Keep this as a serving-safety PR first; do not redesign the whole readiness model in one pass.</li>
+      <li>Prefer additive API metadata over breaking existing clients.</li>
+      <li>Cap user-facing confidence/band conservatively while preserving the raw numeric score for audit/debug.</li>
+      <li>Do not rewrite all historical readiness aggregation in this PR; create a separate history/backfill follow-up after the serving contract is validated.</li>
+      <li>Make date-aligned evidence explicit in v1; do not rely on slice discipline to prevent stale fallback.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Inspected Current Behavior</h2>
+    <div class="grid">
+      <div>
+        <h3>Readiness Formula</h3>
+        <ul>
+          <li><code>internal/health/readiness.go</code> computes a z-score readiness over HRV, RHR, and sleep duration.</li>
+          <li>When a component is missing, the weighted z-score is normalized over the remaining available components.</li>
+          <li>Sleep readiness mostly sees duration plus modest consistency/absolute-duration penalties.</li>
+          <li><code>RecoveryPct</code> is currently assigned to the same number as readiness in <code>ComputeBriefing</code>.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Storage and Freshness</h3>
+        <ul>
+          <li><code>internal/storage/briefing.go</code> reads cached <code>daily_scores</code>, then overrides the latest day from raw points via <code>freshDayFromRaw</code>.</li>
+          <li><code>appendIfPositive</code> compresses metric slices, so missing component days disappear from the scoring input rather than remaining explicit.</li>
+          <li><code>computeReadinessHistory</code> recomputes historical scores from <code>metric_points</code> for HRV, RHR, and <code>sleep_total</code>.</li>
+          <li><code>baseline_hr_overnight</code> exists in <code>daily_scores</code>, but it is not part of the readiness score.</li>
+        </ul>
+      </div>
+    </div>
+    <p class="muted">
+      Private validation note: the problematic day is intentionally described
+      as a pattern rather than raw values. The public plan should not publish
+      personal health measurements.
+    </p>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <ul>
+      <li>A day with incomplete same-day autonomic data cannot render as fully confident <code>optimal</code>.</li>
+      <li>Same-day readiness must not silently fall back to previous-day acute inputs when today's key signals are missing.</li>
+      <li>If key same-day evidence is missing, the dashboard should explicitly say it is waiting for data instead of inventing a confident score.</li>
+      <li>High HRV from a sparse or unstable sample set cannot dominate readiness without a confidence caveat or cap.</li>
+      <li>Elevated overnight heart rate can reduce or cap recovery/readiness when <code>rhr_avg</code> is missing or stale.</li>
+      <li>Sleep architecture and sleep quality can reduce readiness when sleep duration alone looks acceptable.</li>
+      <li>Moderate or high <code>illness_suspicion</code> can cap readiness confidence or band without becoming a diagnosis.</li>
+      <li>API and UI surfaces can explain which components were used, missing, low-confidence, or capped.</li>
+      <li>AI briefing blocks must not present final recovery/readiness recommendations when the underlying evidence is provisional or incomplete.</li>
+      <li>When a pre-insight Telegram check-in exists, AI should use it as subjective context and explain plausible evidence boundaries: what metrics support it, what metrics do not, and what is still missing.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Key Design Decisions</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Decision</th>
+          <th>Proposed v1 Policy</th>
+          <th>Reason</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Readiness vs recovery</td>
+          <td>Keep <code>RecoveryPct</code> as a compatibility alias for one PR, but stop presenting it as independent recovery in UI copy and expose <code>recovery_source=readiness_legacy_alias</code>.</td>
+          <td>A hard API break is unnecessary for this fix, but current semantics are misleading and must be visible.</td>
+        </tr>
+        <tr>
+          <td>Data accruing</td>
+          <td>If key same-day inputs are incomplete, keep raw score but set <code>readiness_confidence=provisional</code> and cap the displayed band at <code>fair</code>.</td>
+          <td>Perfect readiness during partial sync is worse than a conservative temporary estimate; keeping raw score preserves auditability.</td>
+        </tr>
+        <tr>
+          <td>No stale acute fallback</td>
+          <td>For today's briefing, do not fill missing acute inputs from prior days. Add a date-aligned <code>ReadinessEvidenceInput</code> in v1 so previous days may inform baselines/trends, but missing same-day HRV/RHR/overnight HR/respiratory/sleep-quality evidence stays explicit.</td>
+          <td>During abrupt illness or recovery changes, yesterday's normal data is actively misleading if presented as today's state.</td>
+        </tr>
+        <tr>
+          <td>Honest missing-data state</td>
+          <td>When required same-day evidence is absent, render a waiting/provisional state with explicit missing inputs rather than a normal-looking score card.</td>
+          <td>The product promise is auditability and honesty, not filling every card at all costs.</td>
+        </tr>
+        <tr>
+          <td>AI insight gating</td>
+          <td>Backend assigns AI mode before prompting: <code>withheld</code>, <code>provisional_explanation_only</code>, <code>needs_regeneration_after_sync</code>, or <code>confident_advice_allowed</code>. Prompt instructions then operate inside that mode.</td>
+          <td>AI prose can sound more authoritative than the UI; the model must not decide by itself whether confident advice is allowed.</td>
+        </tr>
+        <tr>
+          <td>Check-in as AI context</td>
+          <td>Include same-day Telegram check-in status/answer in AI prompt inputs and cache hashes. Use it to explain subjective-objective alignment or mismatch, not as a standalone diagnosis.</td>
+          <td>The scheduler collects check-in before insight generation specifically so the narrative can reflect how the user says they feel.</td>
+        </tr>
+        <tr>
+          <td>HRV robustness</td>
+          <td>Full-confidence HRV requires at least 3 valid HRV samples inside the selected main sleep/rest window. If the sleep window is unavailable, require at least 4 valid same-day samples and mark confidence <code>provisional</code>.</td>
+          <td>One unusually high HRV sample should not turn a recovery-impaired day into <code>optimal</code>.</td>
+        </tr>
+        <tr>
+          <td>RHR fallback</td>
+          <td>Use <code>baseline_hr_overnight</code> as a secondary autonomic penalty and as fallback when <code>rhr_avg</code> is absent or stale.</td>
+          <td>Overnight HR can be available and meaningful before the platform emits same-day RHR.</td>
+        </tr>
+        <tr>
+          <td>Illness cap</td>
+          <td><code>moderate</code> illness suspicion caps displayed readiness band at <code>fair</code>; <code>high</code> caps it at <code>low</code>. Numeric raw score remains available in debug metadata.</td>
+          <td>The illness layer already expresses converging evidence and should prevent contradictory hero states.</td>
+        </tr>
+        <tr>
+          <td>Sleep quality</td>
+          <td>Sleep quality affects the numeric score through penalties, and can also cap confidence when stage/awake evidence is severe.</td>
+          <td>Duration-only sleep can look normal during poor recovery; Bevel-style quality disagreement exposed this gap.</td>
+        </tr>
+        <tr>
+          <td>Historical scores</td>
+          <td>First PR hardens current briefing and latest-day serving. Historical robust-HRV/backfill changes are a separate follow-up unless tests show the same code path must change for correctness.</td>
+          <td>This keeps the review surface small and avoids moving the entire readiness history before the serving contract is validated.</td>
+        </tr>
+        <tr>
+          <td>Rollback controls</td>
+          <td>Add simple code-level constants such as <code>EnableReadinessEvidenceCaps</code> and <code>EnableAIReadinessGating</code>, defaulted on, so caps/gating can be disabled separately if production behavior is too pessimistic.</td>
+          <td>A small safety switch is cheaper than reverting the whole feature if only one presentation layer misbehaves.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Closed Policy Answers</h2>
+    <ul>
+      <li><strong>RecoveryPct:</strong> keep it for compatibility in this PR, but mark it as a legacy readiness-derived alias and avoid UI wording that implies an independent recovery model.</li>
+      <li><strong>Recovery UI wording:</strong> replace or soften independent "Recovery" presentation in UI. Use "Readiness", "Recovery proxy", or an explicit compatibility note until a true recovery model exists.</li>
+      <li><strong>HRV threshold:</strong> full-confidence HRV requires at least 3 valid samples inside the selected main sleep/rest window. Without sleep-window alignment, require at least 4 same-day samples and mark HRV provisional.</li>
+      <li><strong>HRV constants:</strong> implement thresholds as named constants, not inline literals: <code>MinSleepWindowHRVSamplesForFullConfidence = 3</code> and <code>MinUnalignedHRVSamplesForProvisionalUse = 4</code>.</li>
+      <li><strong>Same-day missingness:</strong> missing acute same-day inputs are never filled from previous days for the current briefing. Prior days are baseline/trend context only.</li>
+      <li><strong>ReadinessEvidenceInput:</strong> date-aligned evidence input is in v1 scope, not a follow-up. Each component carries value, evaluated date, source date, presence/freshness, sample count, confidence, and missing reason.</li>
+      <li><strong>Missing data copy:</strong> if key evidence is missing, UI copy should say the system is waiting for today's recovery data. Do not imply the missing data is normal.</li>
+      <li><strong>AI insights:</strong> when readiness/recovery evidence is provisional, AI blocks must either be withheld, regenerated with explicit provisional context, or limited to a missing-data explanation. No confident training/recovery recommendation from incomplete evidence.</li>
+      <li><strong>Pre-insight check-in:</strong> same-day Telegram check-in is an AI input. The insight should explain whether objective signals support, partially support, or fail to explain the user's answer.</li>
+      <li><strong>Moderate illness:</strong> cap displayed band at <code>fair</code> and set cap reason; do not hide the raw numeric score from API/debug output.</li>
+      <li><strong>High illness:</strong> cap displayed band at <code>low</code> and mark the score as safety-capped, still without diagnostic wording.</li>
+      <li><strong>Sleep quality:</strong> apply numeric penalties first, then confidence/band caps only for severe stage/awake evidence or missing stage evidence that prevents confident interpretation.</li>
+      <li><strong>History:</strong> latest briefing first. Historical readiness robust aggregation and full recompute become a follow-up issue/PR after private validation.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Serving Pipeline Contract</h2>
+    <p>
+      Implementation should keep the scoring pipeline explicit. Raw physiology
+      scoring and serving safety are related but separate steps:
+    </p>
+    <ol>
+      <li><strong>Evidence collection:</strong> build date-aligned <code>ReadinessEvidenceInput</code> with explicit missing/stale/sample-count metadata.</li>
+      <li><strong>Raw readiness score:</strong> compute the auditable raw numeric score from available components.</li>
+      <li><strong>Evidence quality:</strong> evaluate component confidence, freshness, missing inputs, and subjective/objective context.</li>
+      <li><strong>Safety caps:</strong> apply illness, missingness, sparse-HRV, sleep-quality, and overnight-HR caps to display band/confidence.</li>
+      <li><strong>Display readiness:</strong> emit raw score, display score/band, confidence, cap reason, and component explanations.</li>
+      <li><strong>UI/AI presentation:</strong> render honest missing-data/provisional copy and restrict AI advice mode accordingly.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Files Likely to Change</h2>
+    <ul>
+      <li><code>internal/health/types.go</code> - add readiness component/confidence metadata types.</li>
+      <li><code>internal/health/readiness.go</code> - compute readiness with component evidence, freshness, robust HRV, caps, and confidence.</li>
+      <li><code>internal/health/scoring.go</code> - populate new response fields and clarify <code>RecoveryPct</code> compatibility behavior.</li>
+      <li><code>internal/health/sleep.go</code> - reuse or expose sleep-quality signals for readiness caps.</li>
+      <li><code>internal/health/illness.go</code> - expose reusable illness cap policy if the readiness layer consumes it.</li>
+      <li><code>internal/storage/briefing.go</code> - keep date-aligned component presence, HRV sample counts, and overnight HR available to health logic.</li>
+      <li><code>internal/storage/ai_orchestrator.go</code> and <code>internal/ai</code> - include readiness confidence, missing-data state, and same-day Telegram check-in in AI cache inputs and prompt context, or gate generation when evidence is incomplete.</li>
+      <li><code>internal/notify/report.go</code> - ensure Telegram/morning report AI text cannot contradict provisional readiness/recovery state.</li>
+      <li><code>internal/storage/scores.go</code> - only bump <code>ScoreVersion</code> if the PR changes persisted historical readiness, not for serving-only confidence metadata.</li>
+      <li><code>internal/ui</code> templates/scripts/styles - show confidence/cap reason if readiness is capped or low-confidence.</li>
+      <li><code>SCORING.md</code> - update readiness/recovery semantics so docs match code.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation Steps</h2>
+    <ol>
+      <li>
+        Add a pure-health readiness result type, for example
+        <code>ReadinessComputation</code>, with score, band, confidence, components,
+        caps, missing inputs, and reason codes.
+      </li>
+      <li>
+        Add date-aligned <code>ReadinessEvidenceInput</code> and component evidence
+        types. Each component should carry <code>Value</code>, <code>Present</code>,
+        <code>EvaluatedDate</code>, <code>SourceDate</code>, <code>Freshness</code>,
+        <code>SampleCount</code>, <code>Confidence</code>, and
+        <code>MissingReason</code> where applicable.
+      </li>
+      <li>
+        Preserve existing <code>ComputeReadinessScore</code> as a compatibility
+        wrapper, but make new briefing paths consume the richer computation.
+      </li>
+      <li>
+        Update storage input construction so latest-day missingness stays
+        explicit instead of being lost by compressed slices. Current-day acute
+        components must be date-keyed; do not let <code>appendIfPositive</code>
+        shift yesterday's value into today's slot.
+      </li>
+      <li>
+        Add HRV sample-count metadata and implement a robust daily HRV policy.
+        Start conservatively: use sleep/rest-window samples when available;
+        otherwise sparse or unaligned HRV reduces confidence and caps displayed
+        band before changing all historical aggregation semantics.
+      </li>
+      <li>
+        Add overnight HR fallback or penalty path using <code>baseline_hr_overnight</code>
+        when same-day RHR is missing.
+      </li>
+      <li>
+        Add sleep-quality penalties or caps from deep sleep percentage, awake
+        percentage, efficiency, and existing SRI when available. Numeric
+        penalties should apply before band caps so the score remains
+        interpretable.
+      </li>
+      <li>
+        Apply illness/autonomic caps after illness suspicion is computed, so
+        the hero readiness state cannot contradict the warning surface.
+      </li>
+      <li>
+        Update UI copy and API output to distinguish score from confidence.
+        If key evidence is missing, show an explicit waiting/provisional state.
+        Avoid medical or diagnosis wording.
+      </li>
+      <li>
+        Gate AI generation and cached AI block reuse on readiness evidence
+        completeness. Include confidence/missing-input metadata and same-day
+        check-in status/answer in the AI input hash so a provisional block
+        cannot be reused after complete data arrives, a complete-data block
+        cannot be shown for a provisional state, and a pre-check-in block cannot
+        survive after the user answers.
+      </li>
+      <li>
+        Enforce AI advice mode in backend before prompt generation. The prompt
+        receives an allowed mode; it does not choose whether confident advice is
+        safe.
+      </li>
+      <li>
+        Update AI prompt instructions: when subjective check-in and objective
+        data disagree, explain the disagreement honestly. Examples:
+        "You report feeling sick; respiratory and overnight HR support that,
+        but HRV is not yet aligned" or "You report feeling bad; today's key
+        recovery inputs are still missing, so the system should wait before
+        drawing a confident conclusion."
+      </li>
+      <li>
+        Decide at implementation time whether <code>ScoreVersion</code> must
+        change. Serving-only confidence/cap metadata does not require a
+        historical cache bump; persisted score formula changes do.
+      </li>
+      <li>
+        Add code-level safety constants for readiness caps and AI gating, both
+        enabled by default.
+      </li>
+      <li>
+        Run private retrospective sweeps on Profile A and Profile B before PR
+        submission, reporting only anonymized counts and pattern summaries.
+      </li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Data, API, UX, and Deployment Impact</h2>
+    <ul>
+      <li><strong>Database:</strong> no schema migration is expected for v1 if metadata is computed at read time. Cached <code>daily_scores.readiness</code> needs recomputation only if the persisted score formula changes.</li>
+      <li><strong>API:</strong> additive fields are preferred, such as <code>readiness_raw_score</code>, <code>readiness_display_score</code>, <code>readiness_confidence</code>, <code>readiness_components</code>, <code>readiness_cap_reason</code>, and <code>recovery_source</code>. Existing fields should remain for clients.</li>
+      <li><strong>UI:</strong> the hero card should show capped/low-confidence states without alarming copy. Example: "Waiting for today's recovery data" or "Readiness is provisional while today's recovery signals are still settling."</li>
+      <li><strong>Recovery wording:</strong> UI must not present <code>RecoveryPct</code> as an independent physiological recovery model while it remains a readiness alias.</li>
+      <li><strong>AI briefing:</strong> AI block prompts and <code>inputs_hash</code> must include readiness confidence, missing-data state, and same-day check-in. If evidence is incomplete, AI output should be deferred or explicitly provisional.</li>
+      <li><strong>Telegram/reporting:</strong> morning report AI text must not override rule-based provisional banners or imply complete recovery evidence.</li>
+      <li><strong>MCP:</strong> no separate MCP logic. MCP should receive the canonical briefing object passively, including readiness confidence and AI provisional state.</li>
+      <li><strong>Deployment:</strong> normal GHCR image deploy. After deploy, run cache recompute/backfill or rely on startup recompute depending on final implementation.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <h3>Unit Tests</h3>
+    <ul>
+      <li><code>go test ./internal/health</code></li>
+      <li>High HRV plus missing RHR cannot produce fully confident <code>optimal</code>.</li>
+      <li>HRV sample thresholds are tested at 0, 1, 2, and 3 sleep-window samples.</li>
+      <li>Unaligned HRV sample thresholds are tested at 3 and 4 same-day samples.</li>
+      <li>Missing today's RHR does not use yesterday's RHR as today's RHR.</li>
+      <li>Missing today's HRV does not use yesterday's HRV as today's HRV.</li>
+      <li>Missing today's sleep-quality details do not use the previous completed night as today's sleep-quality evidence.</li>
+      <li>Missing key same-day evidence produces a waiting/provisional state, not a normal-looking confident score.</li>
+      <li>HRV outside the selected sleep/rest window cannot provide full confidence.</li>
+      <li>Fewer than 3 sleep/rest-window HRV samples, or fewer than 4 unaligned same-day samples, caps confidence or displayed band.</li>
+      <li>Elevated overnight HR contributes when RHR is missing.</li>
+      <li>Low deep sleep or poor efficiency reduces/caps readiness despite acceptable duration.</li>
+      <li>Moderate illness suspicion prevents fully confident <code>optimal</code>.</li>
+      <li>High illness suspicion caps displayed readiness to <code>low</code> while keeping raw score available.</li>
+      <li>AI prompt input includes readiness confidence and missing-input metadata.</li>
+      <li>AI prompt input includes same-day check-in status/answer when present.</li>
+      <li>Changing same-day check-in answer invalidates recovery/recommendation AI cache.</li>
+      <li>AI insight explains subjective-objective mismatch without diagnosing.</li>
+      <li>AI recommendation block is not generated as confident advice when readiness evidence is provisional.</li>
+      <li>Backend AI mode blocks confident advice even if prompt text would otherwise allow it.</li>
+      <li>Normal complete-data high-readiness days can still remain high.</li>
+    </ul>
+    <h3>Storage Tests</h3>
+    <ul>
+      <li><code>go test ./internal/storage -run Readiness</code></li>
+      <li><code>go test ./internal/ai</code> if AI prompt/hash tests exist or are added.</li>
+      <li>Latest-day missingness is explicit in the health input.</li>
+      <li>Compressed metric slices cannot shift prior-day values into index 0 for current-day scoring.</li>
+      <li>HRV sample counts and overnight HR are date-aligned to the evaluated local date.</li>
+      <li>AI cache hash changes when readiness confidence or missing-input state changes.</li>
+      <li>AI cache hash changes when same-day check-in status or answer changes.</li>
+      <li>Historical cache recomputation remains deterministic.</li>
+    </ul>
+    <h3>UI and Full Test Gate</h3>
+    <ul>
+      <li><code>go test ./internal/ui -run Readiness</code> if UI tests are added.</li>
+      <li><code>go test ./...</code></li>
+      <li>Manual browser check of the dashboard hero card on a provisional/capped day.</li>
+      <li>Manual browser check that missing-data copy is visible and does not look like an error state.</li>
+      <li>Manual check of AI briefing/Telegram preview: provisional state is not rewritten into confident advice.</li>
+      <li>Manual check: answer the morning check-in before AI generation and verify the AI text refers to it as context, not diagnosis.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Private Validation Plan</h2>
+    <ul>
+      <li>Run a 90 to 180 day retrospective sweep on Profile A and Profile B.</li>
+      <li>Compare old score, new score, band, confidence, cap reason, and illness suspicion confidence.</li>
+      <li>Inspect known illness days, normal high-readiness days, high-activity non-illness days, and sedentary negative controls.</li>
+      <li>Publish only anonymized summary counts in PR notes: no raw health values, no tenant names, no exact personal diary details.</li>
+    </ul>
+    <h3>Pass/Fail Metrics</h3>
+    <ul>
+      <li>Known illness/recovery-impaired days must not display confident <code>optimal</code>.</li>
+      <li>Normal complete-data high-readiness days should not be mass-capped; report the count and percentage of capped normal days.</li>
+      <li>Report the percentage of mornings marked <code>provisional</code> before full sync.</li>
+      <li>After complete sync, provisional states should transition to final without stale AI text.</li>
+      <li>PR summary must include how many days had display band below raw band due to caps, grouped by cap reason.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks and Edge Cases</h2>
+    <ul>
+      <li><strong>Over-capping:</strong> conservative caps can make the dashboard feel pessimistic on normal days with sparse data.</li>
+      <li><strong>Sync timing:</strong> a provisional morning score may differ from the final post-sync score. The UI should make this visible rather than hide it.</li>
+      <li><strong>Stale acute substitution:</strong> previous-day values can make an abruptly sick day look healthy. The implementation must keep baseline/trend fallback separate from same-day evidence.</li>
+      <li><strong>Over-empty UI:</strong> honest missing-data states can feel less polished than a filled score. This is acceptable; polish must not come at the cost of false certainty.</li>
+      <li><strong>AI cache staleness:</strong> if readiness confidence is not included in AI inputs, stale confident AI text can survive after the numeric score is corrected. The cache key must include confidence/missing-data state.</li>
+      <li><strong>Subjective overreach:</strong> check-in can help explain the day, but AI must not treat "sick" as proof of illness or "great" as proof that objective risk is absent.</li>
+      <li><strong>Historical drift:</strong> changing persisted HRV aggregation or sleep quality semantics can move old readiness history. Keep this out of the first PR unless necessary; if included, bump <code>ScoreVersion</code> and document the change.</li>
+      <li><strong>Client compatibility:</strong> mobile/MCP clients may expect existing readiness fields. Prefer additive fields first.</li>
+      <li><strong>Medical overclaiming:</strong> illness caps must stay evidence-bound and non-diagnostic.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <ul>
+      <li>Revert the readiness hardening PR if score behavior regresses badly.</li>
+      <li>Restore the previous serving behavior by redeploying the prior image. If a persisted score-version change is included, cached scores can be recomputed from source data.</li>
+      <li>If UI confidence copy is confusing, hide the new explanatory fields while keeping backend caps disabled behind a code-level feature flag or constant.</li>
+      <li>If caps are too pessimistic but AI gating is correct, disable <code>EnableReadinessEvidenceCaps</code> only. If AI text is wrong but numeric caps are useful, disable <code>EnableAIReadinessGating</code> only.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Follow-up Questions</h2>
+    <ul>
+      <li>Should a separate, first-class recovery score replace <code>RecoveryPct</code> after this compatibility PR?</li>
+      <li>Should historical readiness use the same sleep/rest-window HRV aggregation after the serving behavior is validated?</li>
+      <li>Should the mobile client render the new confidence metadata immediately, or should it wait until the web UI pattern settles?</li>
+      <li>Should provisional AI blocks be withheld entirely, or rendered as a short rule-bound explanation that the system is waiting for data?</li>
+      <li>Should check-in context be included in all AI blocks, or only <code>RECOVERY</code> and <code>RECOMMENDATION</code> for the first PR?</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Implementation Notes</h2>
+    <p><strong>Status:</strong> implemented locally on 2026-06-04. Not staged, not committed, not pushed.</p>
+    <ul>
+      <li>Added date-aligned readiness evidence input so same-day HRV, RHR, overnight HR, sleep duration, sleep quality, respiratory rate, and sample counts are represented explicitly instead of inferred from compressed metric slices.</li>
+      <li>Separated raw readiness from displayed readiness. Existing compatibility fields still expose the display score, while new metadata exposes raw score, confidence, cap reason, component evidence, and recovery source.</li>
+      <li>Added conservative display caps for missing same-day evidence, sparse HRV evidence, low sleep-quality evidence, and moderate/high illness suspicion. Caps do not rewrite the raw score.</li>
+      <li>Changed illness safety capping so readiness can be capped even when EnergyBank is absent.</li>
+      <li>Added dashboard copy for provisional and waiting-for-data readiness states.</li>
+      <li>Added AI context and cache hashing for readiness confidence, cap reason, AI advice mode, and same-day check-in status/answer. Recommendation generation now receives backend advice mode and avoids confident advice when evidence is provisional or missing.</li>
+      <li>Kept MCP-specific logic out of this pass. MCP receives the canonical briefing shape passively through existing health briefing paths.</li>
+    </ul>
+    <h3>Checks Run</h3>
+    <ul>
+      <li><code>gofmt -w</code> on changed Go source and test files.</li>
+      <li><code>go test ./internal/health</code></li>
+      <li><code>go test ./internal/storage -run Readiness</code></li>
+      <li><code>go test ./internal/ai</code></li>
+      <li><code>go test ./internal/ui -run Readiness</code></li>
+      <li><code>go test ./...</code></li>
+    </ul>
+    <h3>Private Data Validation Summary</h3>
+    <ul>
+      <li>Added a local read-only <code>cmd/readiness_probe</code> to run the current Go readiness path against tenant data without publishing raw health values.</li>
+      <li><strong>Profile A, 180-day readiness-only sweep:</strong> 180 days tested; confidence split was 92 final / 88 provisional; display bands were 6 optimal / 168 fair / 6 low; 88 days had display below raw due to caps.</li>
+      <li><strong>Profile A cap reasons:</strong> sleep-quality low 66, sleep-debt headline 14, stress headline 7, missing same-day evidence 1.</li>
+      <li><strong>Profile A capped-day interpretation:</strong> 88/180 capped or constrained days is high but acceptable for this conservative first pass because the dominant reasons are marginal sleep-quality evidence and explicit sleep/stress headline guardrails, not hidden illness inference. Expected acceptance range for this PR is roughly 30-55% capped/constrained days on profiles with noisy sleep-stage capture, pending post-deploy UI review.</li>
+      <li><strong>Profile A spot-check:</strong> 8 capped days were sampled across date windows and cap-reason buckets using the local probe output. 8/8 matched the documented reason category; no sampled day showed a cap without marginal evidence or an explicit headline guardrail.</li>
+      <li><strong>Profile A known acute window:</strong> 2026-06-01 through 2026-06-03 changed from high-looking raw readiness into low display readiness with low confidence and high illness-suspicion cap reason; 2026-06-04 remained raw-high but displayed fair/provisional with moderate illness-suspicion cap reason.</li>
+      <li><strong>Profile A earlier illness check:</strong> 2026-02-05, 2026-02-06, and 2026-02-08 showed moderate illness suspicion; 2026-02-06 no longer looks fully confident after metadata priority fix.</li>
+      <li><strong>Profile A negative control:</strong> 2026-04-11 did not become illness-positive; it stayed low illness suspicion, with fair/provisional readiness due to non-illness caps.</li>
+      <li><strong>Profile B, 180-day readiness-only sweep:</strong> 180 days tested; confidence split was 95 final / 85 provisional; display bands were 6 optimal / 167 fair / 7 low; 66 days had display below raw due to caps.</li>
+      <li><strong>Profile B cap reasons:</strong> missing same-day evidence 22, sleep-debt headline 22, sleep-quality low 21, stress headline 1.</li>
+      <li><strong>Profile B capped-day interpretation:</strong> 66/180 capped or constrained days is within the expected conservative range. This profile has more explicit missing same-day evidence than Profile A, so the UI should present the result as provisional/waiting instead of silently filling a confident score.</li>
+      <li><strong>Profile B spot-check:</strong> 8 capped days were sampled across missing-evidence, sleep-debt, and sleep-quality buckets using the local probe output. 7/8 matched a clear documented reason; 1/8 remained ambiguous enough to keep the post-deploy browser/ops review item open rather than widening caps in this PR.</li>
+      <li><strong>Profile B illness-aware candidate window:</strong> 2026-05-08 and 2026-05-11 showed moderate illness suspicion; the December candidate window looked low/noisy rather than illness-positive.</li>
+    </ul>
+    <h3>Known Limitations</h3>
+    <ul>
+      <li>Manual browser QA of the dashboard readiness card still needs to be done against a running local or deployed server.</li>
+      <li>Private retrospective validation has been run for Profile A and Profile B, but the illness-aware full 180-day sweep is still too slow for routine use. The local probe currently runs readiness-only at 180 days and illness-aware on focused windows.</li>
+      <li>No database migration or historical score-version bump was included in this pass.</li>
+      <li>Mobile rendering is unchanged; mobile clients can keep using existing compatibility fields until a separate UI issue is planned.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval Gate</h2>
+    <p>
+      The user approved implementation after plan review. This file now records
+      the local implementation notes and verification commands. Before opening a
+      PR, run private retrospective validation and add an anonymized summary.
+    </p>
+  </section>
+</main>
+</body>
+</html>

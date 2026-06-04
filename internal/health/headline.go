@@ -8,27 +8,32 @@ import (
 // Cross-metric stress thresholds — chosen with explicit research anchors.
 //
 // rhrEvolveAbsBpm (5 bpm) — Wearable HF decompensation 2025 (MDPI):
-//   nocturnal RHR rise > 5 bpm doubled CV hospitalisation/mortality risk.
-//   Below this delta the signal is dominated by device noise (Dial 2025).
+//
+//	nocturnal RHR rise > 5 bpm doubled CV hospitalisation/mortality risk.
+//	Below this delta the signal is dominated by device noise (Dial 2025).
 //
 // sleepDebtThresholdH (6.5 h) — sits below the AASM ≥ 7 h recommendation
-//   (Watson 2015) but above the U-curve worst-case (< 5 h, Li 2025), which
-//   gives a "functional debt" zone where additional autonomic stress
-//   should not be ignored.
+//
+//	(Watson 2015) but above the U-curve worst-case (< 5 h, Li 2025), which
+//	gives a "functional debt" zone where additional autonomic stress
+//	should not be ignored.
 //
 // hrvDepressedZ (-1.0) — 1 SD below personal baseline, matching the
-//   dynamic threshold approach already used in scoreRecovery (and
-//   recommended by Beattie 2024, Plews 2014).
+//
+//	dynamic threshold approach already used in scoreRecovery (and
+//	recommended by Beattie 2024, Plews 2014).
 //
 // awakeFragmentedH (0.5 h) — same threshold used by scoreSleep for the
-//   "consolidated sleep" bonus; > 30 min of nightly wake is the line
-//   above which sleep stops being restorative.
+//
+//	"consolidated sleep" bonus; > 30 min of nightly wake is the line
+//	above which sleep stops being restorative.
 //
 // stressSignalsRequired (2) — multi-signal converging evidence rule
-//   (Meeusen 2013, Plews 2014). One signal alone has too many benign
-//   explanations (illness, alcohol, late workout); two or more
-//   simultaneously is the recognised overreaching/early-illness pattern
-//   (Mishra 2024, Persistent COVID changes 2025).
+//
+//	(Meeusen 2013, Plews 2014). One signal alone has too many benign
+//	explanations (illness, alcohol, late workout); two or more
+//	simultaneously is the recognised overreaching/early-illness pattern
+//	(Mishra 2024, Persistent COVID changes 2025).
 const (
 	rhrElevateAbsBpm      = 5.0
 	sleepDebtThresholdH   = 6.5
@@ -304,27 +309,38 @@ func applyCoherencePass(resp *BriefingResponse, ls LangStrings) {
 		// converging stress markers contradict an "Optimal" verdict even if
 		// the numeric score from any single component looks fine.
 		if resp.ReadinessScore > 65 {
-			resp.ReadinessScore = 65
-			resp.ReadinessBand = ReadinessBand(65)
-			resp.ReadinessLabel = ls["readiness_fair"]
-			resp.ReadinessTip = ls["tip_fair"]
-			resp.RecoveryPct = 65
-			resp.ReadinessToday = 65
-			resp.ReadinessTodayBand = ReadinessBand(65)
-			resp.ReadinessTodayLabel = ls["readiness_fair"]
+			applyReadinessResponseCap(resp, 65, ReadinessConfidenceProvisional, "stress_headline", ls)
 		}
 	case "sleep_debt":
 		// Sleep < 6.5h alone shouldn't push readiness over 65 (Watson 2015,
 		// Walker 2017): one good HRV/RHR night doesn't pay off slept-debt.
 		if resp.ReadinessScore > 65 {
-			resp.ReadinessScore = 65
-			resp.ReadinessBand = ReadinessBand(65)
-			resp.ReadinessLabel = ls["readiness_fair"]
-			resp.ReadinessTip = ls["tip_fair"]
-			resp.RecoveryPct = 65
-			resp.ReadinessToday = 65
-			resp.ReadinessTodayBand = ReadinessBand(65)
-			resp.ReadinessTodayLabel = ls["readiness_fair"]
+			applyReadinessResponseCap(resp, 65, ReadinessConfidenceProvisional, "sleep_debt_headline", ls)
 		}
+	}
+}
+
+func applyReadinessResponseCap(resp *BriefingResponse, maxScore int, confidence, reason string, ls LangStrings) {
+	if resp == nil {
+		return
+	}
+	if resp.ReadinessRawScore == 0 {
+		resp.ReadinessRawScore = resp.ReadinessScore
+	}
+	if resp.ReadinessScore > maxScore {
+		resp.ReadinessScore = maxScore
+	}
+	resp.ReadinessDisplayScore = resp.ReadinessScore
+	resp.ReadinessBand = ReadinessBand(resp.ReadinessScore)
+	resp.ReadinessLabel, resp.ReadinessTip = readinessLabelTip(resp.ReadinessScore, ls)
+	resp.RecoveryPct = resp.ReadinessScore
+	resp.ReadinessToday = resp.ReadinessScore
+	resp.ReadinessTodayBand = resp.ReadinessBand
+	resp.ReadinessTodayLabel = resp.ReadinessLabel
+	if readinessConfidenceRank(confidence) > readinessConfidenceRank(resp.ReadinessConfidence) {
+		resp.ReadinessConfidence = confidence
+	}
+	if readinessCapReasonRank(reason) > readinessCapReasonRank(resp.ReadinessCapReason) {
+		resp.ReadinessCapReason = reason
 	}
 }
