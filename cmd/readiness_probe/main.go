@@ -143,7 +143,7 @@ func computeDate(db *storage.DB, date, lang string, includeIllness bool) (dayRes
 		Confidence: resp.ReadinessConfidence,
 		CapReason:  resp.ReadinessCapReason,
 		Illness:    illnessConfidence,
-		Capped:     resp.ReadinessDisplayScore < resp.ReadinessRawScore,
+		Capped:     resp.ReadinessCapReason != "" || resp.ReadinessConfidence != health.ReadinessConfidenceFinal || resp.ReadinessDisplayScore < resp.ReadinessRawScore,
 	}
 	if checkin != nil {
 		res.Checkin = checkin.Answer
@@ -282,7 +282,7 @@ func sleepQuality(date string, latest dayRollup) health.ReadinessComponentEviden
 		c.MissingReason = "missing_sleep_quality"
 		return c
 	}
-	if latest.Deep == nil && latest.Awake == nil {
+	if latest.Deep == nil || latest.Awake == nil {
 		c.Freshness = health.ReadinessFreshnessMissing
 		c.MissingReason = "missing_sleep_stage_details"
 		return c

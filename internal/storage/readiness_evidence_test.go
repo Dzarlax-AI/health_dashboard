@@ -56,3 +56,21 @@ func TestBuildReadinessEvidence_HRVSampleThresholdsAreMonotonic(t *testing.T) {
 		t.Fatalf("HRV confidence at full threshold = %q", final.HRV.Confidence)
 	}
 }
+
+func TestBuildReadinessEvidence_SleepQualityRequiresDeepAndAwake(t *testing.T) {
+	sleep := 7.5
+	deep := 1.0
+	latest := dailyScoreRow{
+		date: "2026-06-04",
+		slp:  &sleep,
+		deep: &deep,
+	}
+
+	e := buildReadinessEvidence("2026-06-04", latest, nil)
+	if e.SleepQuality.Present {
+		t.Fatalf("sleep quality present = true; missing awake stage must remain missing evidence")
+	}
+	if e.SleepQuality.MissingReason != "missing_sleep_stage_details" {
+		t.Fatalf("sleep quality missing reason = %q", e.SleepQuality.MissingReason)
+	}
+}

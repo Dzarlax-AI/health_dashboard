@@ -206,7 +206,7 @@ func sleepQualityEvidence(date, sourceDate string, sleep, deep, awake *float64) 
 	if sleep == nil || *sleep <= 0 {
 		return c
 	}
-	if deep == nil && awake == nil {
+	if deep == nil || awake == nil {
 		c.MissingReason = "missing_sleep_stage_details"
 		return c
 	}
@@ -401,7 +401,7 @@ func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
 		return out
 	}
 
-	return &health.RawMetrics{
+	out := &health.RawMetrics{
 		LastDate: lastDate,
 		HRV:      getDailyValues("heart_rate_variability", 30, "AVG"),
 		RHR:      getDailyValues("resting_heart_rate", 30, "AVG"),
@@ -423,6 +423,8 @@ func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
 		StepsWithDates: getDailyWithDates("step_count", 7, "SUM"),
 		HRVWithDates:   getDailyWithDates("heart_rate_variability", 7, "AVG"),
 	}
+	out.ReadinessEvidence = buildReadinessEvidence(lastDate, dailyScoreRow{date: lastDate}, s.freshDayFromRaw(lastDate))
+	return out
 }
 
 // intradayPartialSum returns today's accumulated total for a SUM metric
