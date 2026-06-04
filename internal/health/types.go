@@ -438,8 +438,8 @@ type BriefingResponse struct {
 	ReadinessTip   string `json:"readiness_tip"`
 	// ReadinessRawScore is the uncapped numeric formula output. Existing
 	// ReadinessScore remains the display score for compatibility and safety.
-	ReadinessRawScore     int                         `json:"readiness_raw_score,omitempty"`
-	ReadinessDisplayScore int                         `json:"readiness_display_score,omitempty"`
+	ReadinessRawScore     int                         `json:"readiness_raw_score"`
+	ReadinessDisplayScore int                         `json:"readiness_display_score"`
 	ReadinessConfidence   string                      `json:"readiness_confidence,omitempty"`
 	ReadinessCapReason    string                      `json:"readiness_cap_reason,omitempty"`
 	ReadinessComponents   []ReadinessComponentSummary `json:"readiness_components,omitempty"`

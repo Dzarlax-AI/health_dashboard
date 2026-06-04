@@ -53,8 +53,16 @@ func TestGenerateRecommendationAddsProvisionalInstruction(t *testing.T) {
 		CheckinStatus:       "answered",
 		CheckinAnswer:       "sick",
 	}
-	text, err := GenerateRecommendation("", "test-model", 100, []byte(`{}`), "en", "sleep", "yesterday", "recovery", nil, nil, ctx)
-	if err == nil && strings.TrimSpace(text) != "" {
-		t.Fatalf("GenerateRecommendation unexpectedly called model without API key")
+	got := BuildRecommendationContext("sleep", "yesterday", "recovery", nil, nil, ctx)
+	for _, want := range []string{
+		"READINESS_EVIDENCE_CONTEXT",
+		"advice_mode=provisional_explanation_only",
+		"checkin_answer=sick",
+		"Treat today's readiness as provisional",
+		"Do NOT give confident push-hard advice",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("recommendation context missing %q:\n%s", want, got)
+		}
 	}
 }

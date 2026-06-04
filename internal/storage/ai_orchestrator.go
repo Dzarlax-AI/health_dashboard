@@ -76,12 +76,17 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 		insightCtx = aiContextFromBriefing(briefing)
 	}
 
-	rawJSON, err := json.Marshal(struct {
+	metricsJSON, err := json.Marshal(raw)
+	if err != nil {
+		log.Printf("EnsureTodayAIInsight: marshal: %v", err)
+		return ""
+	}
+	recoveryJSON, err := json.Marshal(struct {
 		Metrics *health.RawMetrics `json:"metrics"`
 		Context ai.InsightContext  `json:"context"`
 	}{Metrics: raw, Context: insightCtx})
 	if err != nil {
-		log.Printf("EnsureTodayAIInsight: marshal: %v", err)
+		log.Printf("EnsureTodayAIInsight: marshal recovery context: %v", err)
 		return ""
 	}
 
@@ -99,7 +104,13 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 	}
 
 	saved := 0
-	results := ai.GenerateLeafBlocks(aiCfg.APIKey, aiCfg.Model, aiCfg.MaxOutputTokens, rawJSON, lang, skip)
+	payloadForBlock := func(block string) []byte {
+		if block == ai.BlockRecovery {
+			return recoveryJSON
+		}
+		return metricsJSON
+	}
+	results := ai.GenerateLeafBlocks(aiCfg.APIKey, aiCfg.Model, aiCfg.MaxOutputTokens, payloadForBlock, lang, skip)
 	for _, r := range results {
 		if r.Err != nil {
 			log.Printf("EnsureTodayAIInsight: gemini %s: %v", r.Block, r.Err)
@@ -146,7 +157,7 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 		if eb != nil {
 			stressFlags = eb.Flags
 		}
-		recText, err := ai.GenerateRecommendation(aiCfg.APIKey, aiCfg.Model, aiCfg.MaxOutputTokens, rawJSON, lang,
+		recText, err := ai.GenerateRecommendation(aiCfg.APIKey, aiCfg.Model, aiCfg.MaxOutputTokens, recoveryJSON, lang,
 			sleepText, yesterdayText, recoveryText, verdictHistory, stressFlags, insightCtx)
 		if err != nil {
 			log.Printf("EnsureTodayAIInsight: gemini RECOMMENDATION: %v", err)

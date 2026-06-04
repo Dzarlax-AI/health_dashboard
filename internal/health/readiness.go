@@ -121,8 +121,8 @@ const (
 	wToday = 0.60
 	wTrend = 0.40
 
-	MinSleepWindowHRVSamplesForFullConfidence = 3
-	MinUnalignedHRVSamplesForProvisionalUse   = 4
+	MinSleepWindowHRVSamplesForFullConfidence = 4
+	MinUnalignedHRVSamplesForProvisionalUse   = 3
 
 	readinessFairCap = 65
 	readinessLowCap  = 45

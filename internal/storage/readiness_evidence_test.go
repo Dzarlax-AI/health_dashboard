@@ -1,6 +1,10 @@
 package storage
 
-import "testing"
+import (
+	"testing"
+
+	"health-receiver/internal/health"
+)
 
 func TestBuildReadinessEvidence_DoesNotUsePriorDayAsSameDayRHR(t *testing.T) {
 	rhr := 55.0
@@ -36,5 +40,19 @@ func TestBuildReadinessEvidence_UsesFreshSameDayCounts(t *testing.T) {
 	}
 	if !e.RHR.Present || e.RHR.SourceDate != "2026-06-04" {
 		t.Fatalf("RHR evidence = present %v source %q, want same-day present", e.RHR.Present, e.RHR.SourceDate)
+	}
+}
+
+func TestBuildReadinessEvidence_HRVSampleThresholdsAreMonotonic(t *testing.T) {
+	hrv := 80.0
+
+	provisional := buildReadinessEvidence("2026-06-04", dailyScoreRow{date: "2026-06-04"}, &dayRow{hrv: &hrv, hrvN: health.MinUnalignedHRVSamplesForProvisionalUse})
+	if provisional.HRV.Confidence != health.ReadinessConfidenceProvisional {
+		t.Fatalf("HRV confidence at provisional threshold = %q", provisional.HRV.Confidence)
+	}
+
+	final := buildReadinessEvidence("2026-06-04", dailyScoreRow{date: "2026-06-04"}, &dayRow{hrv: &hrv, hrvN: health.MinSleepWindowHRVSamplesForFullConfidence})
+	if final.HRV.Confidence != health.ReadinessConfidenceFinal {
+		t.Fatalf("HRV confidence at full threshold = %q", final.HRV.Confidence)
 	}
 }

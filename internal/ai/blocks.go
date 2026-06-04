@@ -211,7 +211,7 @@ type BlockResult struct {
 //
 // hashes carry the inputs_hash for each block so callers can compare against
 // the cache and skip Gemini when nothing has changed since last generation.
-func GenerateLeafBlocks(apiKey, model string, maxTokens int, rawMetricsJSON []byte, lang string,
+func GenerateLeafBlocks(apiKey, model string, maxTokens int, payloadForBlock func(block string) []byte, lang string,
 	skipBlock func(block string) bool) []BlockResult {
 
 	results := make([]BlockResult, 0, len(LeafBlocks))
@@ -225,7 +225,11 @@ func GenerateLeafBlocks(apiKey, model string, maxTokens int, rawMetricsJSON []by
 		go func(block string) {
 			defer wg.Done()
 			prompt := BuildBlockPrompt(block)
-			text, _, err := generateWithPrompt(apiKey, model, maxTokens, prompt, rawMetricsJSON, lang)
+			payload := []byte(nil)
+			if payloadForBlock != nil {
+				payload = payloadForBlock(block)
+			}
+			text, _, err := generateWithPrompt(apiKey, model, maxTokens, prompt, payload, lang)
 			resultsMu.Lock()
 			results = append(results, BlockResult{Block: block, Text: text, Err: err})
 			resultsMu.Unlock()
@@ -249,6 +253,12 @@ func GenerateLeafBlocks(apiKey, model string, maxTokens int, rawMetricsJSON []by
 func GenerateRecommendation(apiKey, model string, maxTokens int, rawMetricsJSON []byte, lang string,
 	sleepText, yesterdayText, recoveryText string, verdictHistory []string, stressFlags []string, ctx InsightContext) (string, error) {
 	prompt := BuildBlockPrompt(BlockRecommendation)
+	context := BuildRecommendationContext(sleepText, yesterdayText, recoveryText, verdictHistory, stressFlags, ctx)
+	text, _, err := generateWithPrompt(apiKey, model, maxTokens, prompt, append(rawMetricsJSON, []byte(context)...), lang)
+	return text, err
+}
+
+func BuildRecommendationContext(sleepText, yesterdayText, recoveryText string, verdictHistory []string, stressFlags []string, ctx InsightContext) string {
 	leafSummary := fmt.Sprintf(
 		"\n\nLEAF BLOCKS (already generated for the user):\n\nSLEEP\n%s\n\nYESTERDAY\n%s\n\nRECOVERY\n%s",
 		sleepText, yesterdayText, recoveryText)
@@ -289,6 +299,5 @@ func GenerateRecommendation(apiKey, model string, maxTokens int, rawMetricsJSON 
 		leafSummary += "\n\nSTRESS_FLAGS (active multi-channel signals): " +
 			strings.Join(stressFlags, ", ")
 	}
-	text, _, err := generateWithPrompt(apiKey, model, maxTokens, prompt, append(rawMetricsJSON, []byte(leafSummary)...), lang)
-	return text, err
+	return leafSummary
 }
