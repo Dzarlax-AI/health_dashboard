@@ -20,6 +20,15 @@
         {{else if ge .ReadinessScore 40}}{{T .Lang "status_fair"}}
         {{else if gt .ReadinessScore 0}}{{T .Lang "status_low"}}{{end}}
       </div>
+      {{if and .ReadinessConfidence (ne .ReadinessConfidence "final")}}
+      <div class="readiness-confidence-note">
+        {{if eq .ReadinessCapReason "missing_same_day_evidence"}}
+          {{T .Lang "readiness_waiting_data"}}
+        {{else}}
+          {{T .Lang "readiness_provisional"}}
+        {{end}}
+      </div>
+      {{end}}
     </div>
 
     <div id="hero-narrative-block">

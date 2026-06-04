@@ -4,12 +4,14 @@ package ui
 // into the multi-language `translations` table in i18n.go. Missing
 // keys in other languages fall back here via T().
 var translationsEn = map[string]string{
-	"app_title":             "Health",
-	"explore":               "Explore",
-	"loading":               "Loading your health data",
-	"readiness":             "Readiness",
-	"recovery":              "Recovery",
-	"readiness_today_label": "Today",
+	"app_title":              "Health",
+	"explore":                "Explore",
+	"loading":                "Loading your health data",
+	"readiness":              "Readiness",
+	"recovery":               "Recovery",
+	"readiness_today_label":  "Today",
+	"readiness_waiting_data": "Waiting for today's recovery data",
+	"readiness_provisional":  "Readiness is provisional while today's signals settle",
 
 	// Section catalogue (GET /api/sections) — stable list of detail
 	// pages with localized title + subtitle for native clients that

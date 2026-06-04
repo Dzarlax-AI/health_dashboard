@@ -96,12 +96,22 @@ type YesterdayInputs struct {
 // design. The RECOVERY prompt itself focuses on autonomic trajectories and
 // does not reference EnergyBank.
 type RecoveryInputs struct {
-	LastDate  string
-	HRV       []float64
-	RHR       []float64
-	VO2       []float64
-	Sleep     []float64
-	Readiness *float64
+	LastDate string
+	HRV      []float64
+	RHR      []float64
+	VO2      []float64
+	Sleep    []float64
+	Context  InsightContext
+}
+
+type InsightContext struct {
+	ReadinessScore      int    `json:"readiness_score,omitempty"`
+	ReadinessRawScore   int    `json:"readiness_raw_score,omitempty"`
+	ReadinessConfidence string `json:"readiness_confidence,omitempty"`
+	ReadinessCapReason  string `json:"readiness_cap_reason,omitempty"`
+	AIAdviceMode        string `json:"ai_advice_mode,omitempty"`
+	CheckinStatus       string `json:"checkin_status,omitempty"`
+	CheckinAnswer       string `json:"checkin_answer,omitempty"`
 }
 
 // HashSleep / HashYesterday / HashRecovery extract and hash per-block subsets.
@@ -135,18 +145,18 @@ func HashYesterday(r *health.RawMetrics) string {
 	})
 }
 
-func HashRecovery(r *health.RawMetrics, eb *health.EnergyBank, readiness *float64) string {
+func HashRecovery(r *health.RawMetrics, eb *health.EnergyBank, ctx InsightContext) string {
 	if r == nil {
 		return ""
 	}
 	_ = eb // see RecoveryInputs doc — intra-day fields would defeat the cache
 	return hashInputs(RecoveryInputs{
-		LastDate:  r.LastDate,
-		HRV:       r.HRV,
-		RHR:       r.RHR,
-		VO2:       r.VO2,
-		Sleep:     r.Sleep,
-		Readiness: readiness,
+		LastDate: r.LastDate,
+		HRV:      r.HRV,
+		RHR:      r.RHR,
+		VO2:      r.VO2,
+		Sleep:    r.Sleep,
+		Context:  ctx,
 	})
 }
 
@@ -163,7 +173,7 @@ func HashRecovery(r *health.RawMetrics, eb *health.EnergyBank, readiness *float6
 // EnergyBank fields. Passing the sequence lets RECOMMENDATION pick up
 // patterns like "3 rest days in a row" without re-hitting Gemini just
 // because today's verdict is unchanged.
-func HashRecommendation(sleepText, yesterdayText, recoveryText string, eb *health.EnergyBank, verdictHistory []string) string {
+func HashRecommendation(sleepText, yesterdayText, recoveryText string, eb *health.EnergyBank, verdictHistory []string, ctx InsightContext) string {
 	verdict := ""
 	var flags []string
 	if eb != nil {
@@ -180,8 +190,9 @@ func HashRecommendation(sleepText, yesterdayText, recoveryText string, eb *healt
 		// to surface the rest guidance, even if leaf texts and the
 		// verdict label are unchanged.
 		StressFlags []string
+		Context     InsightContext
 	}
-	return hashInputs(rec{sleepText, yesterdayText, recoveryText, verdict, verdictHistory, flags})
+	return hashInputs(rec{sleepText, yesterdayText, recoveryText, verdict, verdictHistory, flags, ctx})
 }
 
 // ─── orchestrator ─────────────────────────────────────────────────────────
@@ -236,7 +247,7 @@ func GenerateLeafBlocks(apiKey, model string, maxTokens int, rawMetricsJSON []by
 // proper rest" instead of treating each day in isolation. Empty slice
 // is fine — the line is simply omitted from the prompt context.
 func GenerateRecommendation(apiKey, model string, maxTokens int, rawMetricsJSON []byte, lang string,
-	sleepText, yesterdayText, recoveryText string, verdictHistory []string, stressFlags []string) (string, error) {
+	sleepText, yesterdayText, recoveryText string, verdictHistory []string, stressFlags []string, ctx InsightContext) (string, error) {
 	prompt := BuildBlockPrompt(BlockRecommendation)
 	leafSummary := fmt.Sprintf(
 		"\n\nLEAF BLOCKS (already generated for the user):\n\nSLEEP\n%s\n\nYESTERDAY\n%s\n\nRECOVERY\n%s",
@@ -244,6 +255,20 @@ func GenerateRecommendation(apiKey, model string, maxTokens int, rawMetricsJSON 
 	if len(verdictHistory) > 0 {
 		leafSummary += "\n\nENERGYBANK_VERDICT_HISTORY (oldest→newest, last 7 EOD snapshots): " +
 			strings.Join(verdictHistory, ", ")
+	}
+	if ctx.AIAdviceMode != "" {
+		leafSummary += "\n\nREADINESS_EVIDENCE_CONTEXT: advice_mode=" + ctx.AIAdviceMode +
+			fmt.Sprintf(", readiness=%d, raw_readiness=%d, confidence=%s, cap_reason=%s",
+				ctx.ReadinessScore, ctx.ReadinessRawScore, ctx.ReadinessConfidence, ctx.ReadinessCapReason)
+		if ctx.CheckinStatus != "" || ctx.CheckinAnswer != "" {
+			leafSummary += fmt.Sprintf(", checkin_status=%s, checkin_answer=%s", ctx.CheckinStatus, ctx.CheckinAnswer)
+		}
+	}
+	switch ctx.AIAdviceMode {
+	case "withheld":
+		leafSummary += "\nINSTRUCTION: Do not provide a training or recovery recommendation. Explain briefly that the system is waiting for today's recovery data."
+	case "provisional_explanation_only", "needs_regeneration_after_sync":
+		leafSummary += "\nINSTRUCTION: Treat today's readiness as provisional. Explain what is known, what is missing, and how the user's check-in aligns or conflicts with objective signals. Do NOT give confident push-hard advice."
 	}
 	// v2.2 §4.3 hard guard for the recommendation prose — the model
 	// has a known failure mode where verdict=active_recovery but the

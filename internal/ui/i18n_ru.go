@@ -3,12 +3,14 @@ package ui
 // translationsRu holds the Russian UI strings. Missing keys fall back
 // to English via T().
 var translationsRu = map[string]string{
-	"app_title":             "Здоровье",
-	"explore":               "Поиск",
-	"loading":               "Загрузка данных",
-	"readiness":             "Готовность",
-	"recovery":              "Восстановление",
-	"readiness_today_label": "Сегодня",
+	"app_title":              "Здоровье",
+	"explore":                "Поиск",
+	"loading":                "Загрузка данных",
+	"readiness":              "Готовность",
+	"recovery":               "Восстановление",
+	"readiness_today_label":  "Сегодня",
+	"readiness_waiting_data": "Ждём сегодняшние данные восстановления",
+	"readiness_provisional":  "Готовность предварительная, сигналы ещё доезжают",
 
 	"section_cardio_title":      "Сердце и лёгкие",
 	"section_cardio_subtitle":   "Пульс покоя · HRV · VO2 · дыхание",

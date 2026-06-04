@@ -15,7 +15,9 @@ func ComputeBriefing(d RawMetrics, lang string) *BriefingResponse {
 	activitySec := scoreActivity(d, ls)
 	cardioSec := scoreCardio(d, ls)
 
-	readinessScore, label, tip := computeReadinessScore(d, ls)
+	readiness := computeReadinessWithEvidence(d)
+	readinessScore := readiness.DisplayScore
+	label, tip := readinessLabelTip(readinessScore, ls)
 
 	var sections []BriefingSection
 	for _, sec := range []*BriefingSection{recoverySec, sleepSec, activitySec, cardioSec} {
@@ -30,25 +32,31 @@ func ComputeBriefing(d RawMetrics, lang string) *BriefingResponse {
 	headline := computeHeadline(d, ls)
 
 	resp := &BriefingResponse{
-		Date:                d.LastDate,
-		Greeting:            "Here's your health summary",
-		Overall:             overall,
-		Headline:            headline,
-		Sections:            sections,
-		Highlights:          highlights,
-		ReadinessScore:      readinessScore,
-		ReadinessBand:       ReadinessBand(readinessScore),
-		ReadinessLabel:      label,
-		ReadinessTip:        tip,
-		RecoveryPct:         readinessScore,
-		ReadinessToday:      readinessScore,
-		ReadinessTodayBand:  ReadinessBand(readinessScore),
-		ReadinessTodayLabel: label,
-		Correlation:         buildCorrelation(d),
-		Insights:            computeInsights(d, activitySec, readinessScore, ls),
-		Alerts:              computeAlerts(d, ls),
-		Sleep:               computeSleepAnalysis(d),
-		MetricCards:         metricCards,
+		Date:                  d.LastDate,
+		Greeting:              "Here's your health summary",
+		Overall:               overall,
+		Headline:              headline,
+		Sections:              sections,
+		Highlights:            highlights,
+		ReadinessScore:        readinessScore,
+		ReadinessBand:         ReadinessBand(readinessScore),
+		ReadinessLabel:        label,
+		ReadinessTip:          tip,
+		ReadinessRawScore:     readiness.RawScore,
+		ReadinessDisplayScore: readiness.DisplayScore,
+		ReadinessConfidence:   readiness.Confidence,
+		ReadinessCapReason:    readiness.CapReason,
+		ReadinessComponents:   readiness.Components,
+		RecoverySource:        ReadinessRecoverySourceLegacyAlias,
+		RecoveryPct:           readinessScore,
+		ReadinessToday:        readinessScore,
+		ReadinessTodayBand:    ReadinessBand(readinessScore),
+		ReadinessTodayLabel:   label,
+		Correlation:           buildCorrelation(d),
+		Insights:              computeInsights(d, activitySec, readinessScore, ls),
+		Alerts:                computeAlerts(d, ls),
+		Sleep:                 computeSleepAnalysis(d),
+		MetricCards:           metricCards,
 	}
 
 	// Coherence pass: when a stress headline fires, downgrade conflicting

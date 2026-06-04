@@ -104,8 +104,8 @@ func scoreRecovery(d RawMetrics, ls LangStrings) *BriefingSection {
 //   - Sleep: 35% — duration + consistency penalty (Walker 2017)
 
 const (
-	zToScoreCenter = 70.0  // z=0 maps to this score
-	zToScoreScale  = 15.0  // each 1 SD = 15 points
+	zToScoreCenter = 70.0 // z=0 maps to this score
+	zToScoreScale  = 15.0 // each 1 SD = 15 points
 	minReadiness   = 0
 	maxReadiness   = 100
 
@@ -120,6 +120,12 @@ const (
 	// Blending: today vs 7-day trend.
 	wToday = 0.60
 	wTrend = 0.40
+
+	MinSleepWindowHRVSamplesForFullConfidence = 3
+	MinUnalignedHRVSamplesForProvisionalUse   = 4
+
+	readinessFairCap = 65
+	readinessLowCap  = 45
 )
 
 // zScore returns (value - mean) / sd. Returns 0 if sd ≈ 0 (no variance).
@@ -255,6 +261,134 @@ func computeReadiness(d RawMetrics) (score int, label, tip string, recoveryPct i
 
 	s := int(math.Round(zToScore(totalZ)))
 	return s, "", "", s
+}
+
+type readinessComputation struct {
+	RawScore     int
+	DisplayScore int
+	Confidence   string
+	CapReason    string
+	Components   []ReadinessComponentSummary
+}
+
+func computeReadinessWithEvidence(d RawMetrics) readinessComputation {
+	scoreInput := d
+	e := d.ReadinessEvidence
+	if e != nil {
+		if !e.HRV.Present {
+			scoreInput.HRV = nil
+		}
+		if !e.RHR.Present {
+			scoreInput.RHR = nil
+		}
+		if !e.SleepDuration.Present {
+			scoreInput.Sleep = nil
+		}
+	}
+	raw, _, _, _ := computeReadiness(scoreInput)
+	out := readinessComputation{
+		RawScore:     raw,
+		DisplayScore: raw,
+		Confidence:   ReadinessConfidenceFinal,
+	}
+	if e == nil {
+		return out
+	}
+	out.Components = readinessComponentSummaries(*e)
+
+	if !e.HRV.Present || !e.RHR.Present || !e.SleepDuration.Present {
+		out.cap(readinessFairCap, ReadinessConfidenceProvisional, "missing_same_day_evidence")
+	}
+	if e.HRV.Present {
+		switch {
+		case e.HRV.Confidence == ReadinessConfidenceProvisional:
+			out.cap(readinessFairCap, ReadinessConfidenceProvisional, "hrv_provisional")
+		case e.HRV.SampleCount > 0 && e.HRV.SampleCount < MinSleepWindowHRVSamplesForFullConfidence:
+			out.cap(readinessFairCap, ReadinessConfidenceProvisional, "hrv_sparse")
+		}
+	}
+	if !e.RHR.Present && e.OvernightHR.Present {
+		out.cap(readinessFairCap, ReadinessConfidenceProvisional, "rhr_missing_overnight_hr_available")
+	}
+	if e.SleepQuality.Present && e.SleepQuality.Confidence == ReadinessConfidenceLow {
+		out.DisplayScore -= 10
+		if out.DisplayScore < 0 {
+			out.DisplayScore = 0
+		}
+		out.cap(readinessFairCap, ReadinessConfidenceProvisional, "sleep_quality_low")
+	}
+	switch e.IllnessConfidence {
+	case IllnessConfidenceHigh:
+		out.cap(readinessLowCap, ReadinessConfidenceLow, "illness_suspicion_high")
+	case IllnessConfidenceModerate:
+		out.cap(readinessFairCap, ReadinessConfidenceProvisional, "illness_suspicion_moderate")
+	}
+	return out
+}
+
+func (r *readinessComputation) cap(maxScore int, confidence, reason string) {
+	if r.DisplayScore > maxScore {
+		r.DisplayScore = maxScore
+	}
+	if readinessConfidenceRank(confidence) > readinessConfidenceRank(r.Confidence) {
+		r.Confidence = confidence
+	}
+	if readinessCapReasonRank(reason) > readinessCapReasonRank(r.CapReason) {
+		r.CapReason = reason
+	}
+}
+
+func readinessConfidenceRank(conf string) int {
+	switch conf {
+	case ReadinessConfidenceLow:
+		return 2
+	case ReadinessConfidenceProvisional:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func readinessCapReasonRank(reason string) int {
+	switch reason {
+	case "illness_suspicion_high":
+		return 4
+	case "illness_suspicion_moderate":
+		return 3
+	case "missing_same_day_evidence", "hrv_provisional", "hrv_sparse", "rhr_missing_overnight_hr_available":
+		return 2
+	case "sleep_quality_low", "stress_headline", "sleep_debt_headline":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func readinessComponentSummaries(e ReadinessEvidenceInput) []ReadinessComponentSummary {
+	components := []ReadinessComponentEvidence{
+		e.HRV,
+		e.RHR,
+		e.OvernightHR,
+		e.SleepDuration,
+		e.SleepQuality,
+		e.Respiratory,
+	}
+	out := make([]ReadinessComponentSummary, 0, len(components))
+	for _, c := range components {
+		if c.Metric == "" {
+			continue
+		}
+		out = append(out, ReadinessComponentSummary{
+			Metric:        c.Metric,
+			Present:       c.Present,
+			Freshness:     c.Freshness,
+			Confidence:    c.Confidence,
+			SampleCount:   c.SampleCount,
+			Value:         c.Value,
+			MissingReason: c.MissingReason,
+		})
+	}
+	return out
 }
 
 // ComputeReadinessScore is the public API for daily_scores backfill.

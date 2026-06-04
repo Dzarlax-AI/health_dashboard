@@ -59,6 +59,11 @@ type RawMetrics struct {
 	// contributed minute-level state to the SRI computation. Surfaced so
 	// the section detail can render "(n=12)" when partial.
 	SleepRegularityNights int
+
+	// ReadinessEvidence is the date-aligned serving-safety input for today's
+	// readiness. It prevents compressed metric slices from shifting a prior
+	// day's value into today's acute slot when today's data is missing.
+	ReadinessEvidence *ReadinessEvidenceInput
 }
 
 // DatedValue is a single metric data point paired with its calendar date.
@@ -431,8 +436,16 @@ type BriefingResponse struct {
 	ReadinessBand  string `json:"readiness_band"`
 	ReadinessLabel string `json:"readiness_label"`
 	ReadinessTip   string `json:"readiness_tip"`
-	RecoveryPct    int    `json:"recovery_pct"`
-	ReadinessToday int    `json:"readiness_today"` // today only vs baseline
+	// ReadinessRawScore is the uncapped numeric formula output. Existing
+	// ReadinessScore remains the display score for compatibility and safety.
+	ReadinessRawScore     int                         `json:"readiness_raw_score,omitempty"`
+	ReadinessDisplayScore int                         `json:"readiness_display_score,omitempty"`
+	ReadinessConfidence   string                      `json:"readiness_confidence,omitempty"`
+	ReadinessCapReason    string                      `json:"readiness_cap_reason,omitempty"`
+	ReadinessComponents   []ReadinessComponentSummary `json:"readiness_components,omitempty"`
+	RecoverySource        string                      `json:"recovery_source,omitempty"`
+	RecoveryPct           int                         `json:"recovery_pct"`
+	ReadinessToday        int                         `json:"readiness_today"` // today only vs baseline
 	// ReadinessTodayBand mirrors ReadinessBand for the today-only score.
 	ReadinessTodayBand  string             `json:"readiness_today_band"`
 	ReadinessTodayLabel string             `json:"readiness_today_label"`
@@ -453,6 +466,54 @@ type BriefingResponse struct {
 	// Populated by the API handler (not by GetHealthBriefing), so it stays
 	// optional and doesn't pollute internal-use callers of BriefingResponse.
 	AIInsight string `json:"ai_insight,omitempty"`
+}
+
+const (
+	ReadinessConfidenceFinal       = "final"
+	ReadinessConfidenceProvisional = "provisional"
+	ReadinessConfidenceLow         = "low"
+
+	ReadinessFreshnessOK      = "ok"
+	ReadinessFreshnessMissing = "missing"
+	ReadinessFreshnessStale   = "stale"
+
+	ReadinessRecoverySourceLegacyAlias = "readiness_legacy_alias"
+)
+
+type ReadinessEvidenceInput struct {
+	Date              string
+	HRV               ReadinessComponentEvidence
+	RHR               ReadinessComponentEvidence
+	OvernightHR       ReadinessComponentEvidence
+	SleepDuration     ReadinessComponentEvidence
+	SleepQuality      ReadinessComponentEvidence
+	Respiratory       ReadinessComponentEvidence
+	IllnessConfidence string
+	IllnessPattern    string
+	CheckinStatus     string
+	CheckinAnswer     string
+}
+
+type ReadinessComponentEvidence struct {
+	Metric        string   `json:"metric"`
+	Value         *float64 `json:"value,omitempty"`
+	Present       bool     `json:"present"`
+	EvaluatedDate string   `json:"evaluated_date,omitempty"`
+	SourceDate    string   `json:"source_date,omitempty"`
+	Freshness     string   `json:"freshness"`
+	SampleCount   int      `json:"sample_count,omitempty"`
+	Confidence    string   `json:"confidence,omitempty"`
+	MissingReason string   `json:"missing_reason,omitempty"`
+}
+
+type ReadinessComponentSummary struct {
+	Metric        string   `json:"metric"`
+	Present       bool     `json:"present"`
+	Freshness     string   `json:"freshness"`
+	Confidence    string   `json:"confidence,omitempty"`
+	SampleCount   int      `json:"sample_count,omitempty"`
+	Value         *float64 `json:"value,omitempty"`
+	MissingReason string   `json:"missing_reason,omitempty"`
 }
 
 // SubjectiveCheckinSummary is the read-shape rendered into the

@@ -574,22 +574,26 @@ func (h *Handler) pageDashboard(w http.ResponseWriter, r *http.Request) {
 
 	data := struct {
 		BasePage
-		ReadinessScore    int
-		ReadinessLabel    string
-		ReadinessTip      string
-		RecoveryPct       int
-		Headline          *health.HeadlineSignal
-		EnergyBank        *health.EnergyBank
-		IllnessSuspicion  *health.IllnessSuspicion
-		SubjectiveCheckin *health.SubjectiveCheckinSummary
-		Cards             []health.MetricCard
-		Alerts            []health.Alert
-		Sections          []health.BriefingSection
-		Sleep             *sleepData
-		Insights          []health.Insight
-		Correlation       []health.CorrelationPoint
-		CorrelationJSON   template.JS
-		AIInsight         string
+		ReadinessScore      int
+		ReadinessLabel      string
+		ReadinessTip        string
+		ReadinessConfidence string
+		ReadinessCapReason  string
+		ReadinessRawScore   int
+		RecoveryPct         int
+		RecoverySource      string
+		Headline            *health.HeadlineSignal
+		EnergyBank          *health.EnergyBank
+		IllnessSuspicion    *health.IllnessSuspicion
+		SubjectiveCheckin   *health.SubjectiveCheckinSummary
+		Cards               []health.MetricCard
+		Alerts              []health.Alert
+		Sections            []health.BriefingSection
+		Sleep               *sleepData
+		Insights            []health.Insight
+		Correlation         []health.CorrelationPoint
+		CorrelationJSON     template.JS
+		AIInsight           string
 	}{
 		BasePage:        h.basePage(r, T(lang, "app_title"), "dashboard"),
 		CorrelationJSON: "null",
@@ -602,7 +606,11 @@ func (h *Handler) pageDashboard(w http.ResponseWriter, r *http.Request) {
 		data.ReadinessScore = br.ReadinessToday
 		data.ReadinessLabel = br.ReadinessTodayLabel
 		data.ReadinessTip = br.ReadinessTip
+		data.ReadinessConfidence = br.ReadinessConfidence
+		data.ReadinessCapReason = br.ReadinessCapReason
+		data.ReadinessRawScore = br.ReadinessRawScore
 		data.RecoveryPct = br.RecoveryPct
+		data.RecoverySource = br.RecoverySource
 		data.Headline = br.Headline
 		data.EnergyBank = br.EnergyBank
 		data.IllnessSuspicion = br.IllnessSuspicion

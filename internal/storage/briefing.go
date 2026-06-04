@@ -19,7 +19,7 @@ func (s *DB) rawMetricsFromDailyScores(lastDate string) *health.RawMetrics {
 	rows, err := s.pool.Query(ctx, `
 		SELECT date, hrv_avg, rhr_avg, sleep_total, sleep_deep, sleep_rem,
 		       sleep_core, sleep_awake, steps, calories, exercise_min,
-		       spo2_avg, vo2_avg, resp_avg
+		       spo2_avg, vo2_avg, resp_avg, baseline_hr_overnight
 		FROM daily_scores
 		WHERE date >= $1 AND date <= $2
 		  AND (hrv_avg IS NOT NULL OR sleep_total IS NOT NULL OR steps IS NOT NULL)
@@ -31,19 +31,13 @@ func (s *DB) rawMetricsFromDailyScores(lastDate string) *health.RawMetrics {
 	}
 	defer rows.Close()
 
-	type row struct {
-		date                                         string
-		hrv, rhr, slp, deep, rem, core, awake        *float64
-		steps, cal, ex, spo2, vo2, resp              *float64
-	}
-
-	var all []row
+	var all []dailyScoreRow
 	for rows.Next() {
-		var r row
+		var r dailyScoreRow
 		if err := rows.Scan(
 			&r.date, &r.hrv, &r.rhr, &r.slp, &r.deep, &r.rem,
 			&r.core, &r.awake, &r.steps, &r.cal, &r.ex,
-			&r.spo2, &r.vo2, &r.resp,
+			&r.spo2, &r.vo2, &r.resp, &r.nightHR,
 		); err == nil {
 			all = append(all, r)
 		}
@@ -121,8 +115,136 @@ func (s *DB) rawMetricsFromDailyScores(lastDate string) *health.RawMetrics {
 	// can't latch onto a prior day's nap. Slice filters qty>0 → its
 	// index 0 is the latest day someone napped, not necessarily today.
 	d.NapToday = s.metricPointDailyPoint("nap_total", lastDate)
+	d.ReadinessEvidence = buildReadinessEvidence(lastDate, all[0], freshToday)
 
 	return d
+}
+
+type dailyScoreRow struct {
+	date                                  string
+	hrv, rhr, slp, deep, rem, core, awake *float64
+	steps, cal, ex, spo2, vo2, resp       *float64
+	nightHR                               *float64
+}
+
+func buildReadinessEvidence(date string, latest dailyScoreRow, fresh *dayRow) *health.ReadinessEvidenceInput {
+	pick := func(freshVal, cachedVal *float64) (*float64, string) {
+		if freshVal != nil {
+			return freshVal, date
+		}
+		if cachedVal != nil && latest.date == date {
+			return cachedVal, latest.date
+		}
+		return nil, ""
+	}
+	evidence := &health.ReadinessEvidenceInput{Date: date}
+	hrv, hrvDate := pick(nil, latest.hrv)
+	if fresh != nil {
+		hrv, hrvDate = pick(fresh.hrv, latest.hrv)
+	}
+	rhr, rhrDate := pick(nil, latest.rhr)
+	if fresh != nil {
+		rhr, rhrDate = pick(fresh.rhr, latest.rhr)
+	}
+	slp, slpDate := pick(nil, latest.slp)
+	deep, _ := pick(nil, latest.deep)
+	awake, _ := pick(nil, latest.awake)
+	resp, respDate := pick(nil, latest.resp)
+	if fresh != nil {
+		slp, slpDate = pick(fresh.slp, latest.slp)
+		deep, _ = pick(fresh.deep, latest.deep)
+		awake, _ = pick(fresh.awake, latest.awake)
+		resp, respDate = pick(fresh.resp, latest.resp)
+	}
+	evidence.HRV = readinessComponent("heart_rate_variability", date, hrvDate, hrv, sampleCount(fresh, "hrv"), "")
+	if evidence.HRV.Present {
+		if evidence.HRV.SampleCount >= health.MinSleepWindowHRVSamplesForFullConfidence {
+			evidence.HRV.Confidence = health.ReadinessConfidenceFinal
+		} else if evidence.HRV.SampleCount >= health.MinUnalignedHRVSamplesForProvisionalUse {
+			evidence.HRV.Confidence = health.ReadinessConfidenceProvisional
+		} else {
+			evidence.HRV.Confidence = health.ReadinessConfidenceProvisional
+		}
+	}
+	evidence.RHR = readinessComponent("resting_heart_rate", date, rhrDate, rhr, sampleCount(fresh, "rhr"), "")
+	evidence.OvernightHR = readinessComponent("baseline_hr_overnight", date, latest.date, latest.nightHR, 0, "")
+	evidence.SleepDuration = readinessComponent("sleep_total", date, slpDate, slp, 0, "")
+	evidence.Respiratory = readinessComponent("respiratory_rate", date, respDate, resp, sampleCount(fresh, "resp"), "")
+	evidence.SleepQuality = sleepQualityEvidence(date, slpDate, slp, deep, awake)
+	return evidence
+}
+
+func readinessComponent(metric, evaluatedDate, sourceDate string, value *float64, samples int, missingReason string) health.ReadinessComponentEvidence {
+	c := health.ReadinessComponentEvidence{
+		Metric:        metric,
+		EvaluatedDate: evaluatedDate,
+		SourceDate:    sourceDate,
+		Value:         value,
+		SampleCount:   samples,
+		Confidence:    health.ReadinessConfidenceFinal,
+	}
+	if value == nil || sourceDate == "" {
+		c.Freshness = health.ReadinessFreshnessMissing
+		c.MissingReason = missingReason
+		if c.MissingReason == "" {
+			c.MissingReason = "missing_same_day_value"
+		}
+		return c
+	}
+	c.Present = true
+	if sourceDate != evaluatedDate {
+		c.Freshness = health.ReadinessFreshnessStale
+		c.Confidence = health.ReadinessConfidenceProvisional
+	} else {
+		c.Freshness = health.ReadinessFreshnessOK
+	}
+	return c
+}
+
+func sleepQualityEvidence(date, sourceDate string, sleep, deep, awake *float64) health.ReadinessComponentEvidence {
+	c := readinessComponent("sleep_quality", date, sourceDate, nil, 0, "")
+	if sleep == nil || *sleep <= 0 {
+		return c
+	}
+	if deep == nil && awake == nil {
+		c.MissingReason = "missing_sleep_stage_details"
+		return c
+	}
+	deepPct := 0.0
+	if deep != nil {
+		deepPct = *deep / *sleep * 100
+	}
+	awakePct := 0.0
+	if awake != nil {
+		awakePct = *awake / *sleep * 100
+	}
+	value := deepPct
+	c.Value = &value
+	c.Present = true
+	c.Freshness = health.ReadinessFreshnessOK
+	c.Confidence = health.ReadinessConfidenceFinal
+	if deepPct < 8 || awakePct > 10 {
+		c.Confidence = health.ReadinessConfidenceLow
+	}
+	return c
+}
+
+func sampleCount(r *dayRow, metric string) int {
+	if r == nil {
+		return 0
+	}
+	switch metric {
+	case "hrv":
+		return r.hrvN
+	case "rhr":
+		return r.rhrN
+	case "resp":
+		return r.respN
+	case "spo2":
+		return r.spo2N
+	default:
+		return 0
+	}
 }
 
 // metricPointDailyPoint returns the per-source-MAX daily SUM for a single
@@ -280,13 +402,13 @@ func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
 	}
 
 	return &health.RawMetrics{
-		LastDate:       lastDate,
-		HRV:            getDailyValues("heart_rate_variability", 30, "AVG"),
-		RHR:            getDailyValues("resting_heart_rate", 30, "AVG"),
-		Sleep:          getDailyValues("sleep_total", 30, "SUM"),
-		Deep:           getDailyValues("sleep_deep", 30, "SUM"),
-		REM:            getDailyValues("sleep_rem", 30, "SUM"),
-		Awake:          getDailyValues("sleep_awake", 30, "SUM"),
+		LastDate: lastDate,
+		HRV:      getDailyValues("heart_rate_variability", 30, "AVG"),
+		RHR:      getDailyValues("resting_heart_rate", 30, "AVG"),
+		Sleep:    getDailyValues("sleep_total", 30, "SUM"),
+		Deep:     getDailyValues("sleep_deep", 30, "SUM"),
+		REM:      getDailyValues("sleep_rem", 30, "SUM"),
+		Awake:    getDailyValues("sleep_awake", 30, "SUM"),
 		// New-format split written by health-sync iOS — see RawMetrics doc.
 		NightSleep:     getDailyValues("night_sleep_total", 30, "SUM"),
 		Nap:            getDailyValues("nap_total", 30, "SUM"),
@@ -725,7 +847,10 @@ func (s *DB) computeReadinessHistory(outputDays int) ([]health.ReadinessPoint, e
 	// historical baseline. Sorting by value (as before) was a bug: it put the
 	// best HRV days first, artificially inflating the "recent" average.
 	valsBefore := func(m map[string]float64, anchor string) []float64 {
-		type dateval struct{ d string; v float64 }
+		type dateval struct {
+			d string
+			v float64
+		}
 		var pairs []dateval
 		for d, v := range m {
 			if d <= anchor {
@@ -785,6 +910,7 @@ func (s *DB) fetchDailyMetric(metric, lastDate string, days int, agg string) []f
 type dayRow struct {
 	hrv, rhr, slp, deep, rem, core, awake *float64
 	steps, cal, ex, spo2, vo2, resp       *float64
+	hrvN, rhrN, respN, spo2N              int
 }
 
 // freshDayFromRaw reads today's values directly from metric_points (always
@@ -797,22 +923,23 @@ func (s *DB) freshDayFromRaw(date string) *dayRow {
 		metric string
 		dest   **float64
 		isSum  bool
+		count  *int
 	}
 	r := &dayRow{}
 	specs := []spec{
-		{"heart_rate_variability", &r.hrv, false},
-		{"resting_heart_rate", &r.rhr, false},
-		{"sleep_total", &r.slp, true},
-		{"sleep_deep", &r.deep, true},
-		{"sleep_rem", &r.rem, true},
-		{"sleep_core", &r.core, true},
-		{"sleep_awake", &r.awake, true},
-		{"step_count", &r.steps, true},
-		{"active_energy", &r.cal, true},
-		{"apple_exercise_time", &r.ex, true},
-		{"blood_oxygen_saturation", &r.spo2, false},
-		{"vo2_max", &r.vo2, false},
-		{"respiratory_rate", &r.resp, false},
+		{"heart_rate_variability", &r.hrv, false, &r.hrvN},
+		{"resting_heart_rate", &r.rhr, false, &r.rhrN},
+		{"sleep_total", &r.slp, true, nil},
+		{"sleep_deep", &r.deep, true, nil},
+		{"sleep_rem", &r.rem, true, nil},
+		{"sleep_core", &r.core, true, nil},
+		{"sleep_awake", &r.awake, true, nil},
+		{"step_count", &r.steps, true, nil},
+		{"active_energy", &r.cal, true, nil},
+		{"apple_exercise_time", &r.ex, true, nil},
+		{"blood_oxygen_saturation", &r.spo2, false, &r.spo2N},
+		{"vo2_max", &r.vo2, false, nil},
+		{"respiratory_rate", &r.resp, false, &r.respN},
 	}
 	anyFound := false
 	for _, sp := range specs {
@@ -828,11 +955,15 @@ func (s *DB) freshDayFromRaw(date string) *dayRow {
 					GROUP BY source
 				) `, sleepDedup)+preferredSourceForMetric(sp.metric), sp.metric, date).Scan(&val)
 		} else {
+			var n int
 			err = s.pool.QueryRow(ctx, `
-				SELECT COALESCE(AVG(qty), 0)
+				SELECT COALESCE(AVG(qty), 0), COUNT(*)
 				FROM metric_points
 				WHERE metric_name=$1 AND SUBSTRING(date,1,10)=$2 AND qty > 0 AND quality = 'ok'`,
-				sp.metric, date).Scan(&val)
+				sp.metric, date).Scan(&val, &n)
+			if sp.count != nil {
+				*sp.count = n
+			}
 		}
 		if err == nil && val > 0 {
 			v := val

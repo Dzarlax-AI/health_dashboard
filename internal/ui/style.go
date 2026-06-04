@@ -97,6 +97,13 @@ body { min-height: 100vh; font-size: 15px; }
   letter-spacing: -3px; margin-bottom: 4px;
 }
 #readiness-status { font-size: 20px; font-weight: 700; opacity: 0.9; }
+.readiness-confidence-note {
+  margin-top: 6px;
+  max-width: 190px;
+  font-size: 12px;
+  line-height: 1.25;
+  color: var(--text-secondary);
+}
 
 /* Methodology status badge — surfaces the honest provenance of a score
    (heuristic / experimental / validated floor / labeling framework).

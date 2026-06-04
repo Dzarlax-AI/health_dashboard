@@ -70,14 +70,16 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 		return ""
 	}
 	var eb *health.EnergyBank
-	var readiness *float64
+	var insightCtx ai.InsightContext
 	if briefing != nil {
 		eb = briefing.EnergyBank
-		r := float64(briefing.ReadinessScore)
-		readiness = &r
+		insightCtx = aiContextFromBriefing(briefing)
 	}
 
-	rawJSON, err := json.Marshal(raw)
+	rawJSON, err := json.Marshal(struct {
+		Metrics *health.RawMetrics `json:"metrics"`
+		Context ai.InsightContext  `json:"context"`
+	}{Metrics: raw, Context: insightCtx})
 	if err != nil {
 		log.Printf("EnsureTodayAIInsight: marshal: %v", err)
 		return ""
@@ -86,7 +88,7 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 	hashes := map[string]string{
 		ai.BlockSleep:     ai.HashSleep(raw),
 		ai.BlockYesterday: ai.HashYesterday(raw),
-		ai.BlockRecovery:  ai.HashRecovery(raw, eb, readiness),
+		ai.BlockRecovery:  ai.HashRecovery(raw, eb, insightCtx),
 	}
 
 	cached := s.GetAIBlocksFull(today, lang)
@@ -137,7 +139,7 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 			}
 		}
 	}
-	recHash := ai.HashRecommendation(sleepText, yesterdayText, recoveryText, eb, verdictHistory)
+	recHash := ai.HashRecommendation(sleepText, yesterdayText, recoveryText, eb, verdictHistory, insightCtx)
 	recRow := cached[ai.BlockRecommendation]
 	if recRow == nil || recRow.InputsHash != recHash || strings.TrimSpace(recRow.Text) == "" {
 		var stressFlags []string
@@ -145,7 +147,7 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 			stressFlags = eb.Flags
 		}
 		recText, err := ai.GenerateRecommendation(aiCfg.APIKey, aiCfg.Model, aiCfg.MaxOutputTokens, rawJSON, lang,
-			sleepText, yesterdayText, recoveryText, verdictHistory, stressFlags)
+			sleepText, yesterdayText, recoveryText, verdictHistory, stressFlags, insightCtx)
 		if err != nil {
 			log.Printf("EnsureTodayAIInsight: gemini RECOMMENDATION: %v", err)
 		} else if strings.TrimSpace(recText) == "" {
@@ -166,6 +168,34 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 	}
 
 	return s.GetAIInsightCombined(today, lang)
+}
+
+func aiContextFromBriefing(b *health.BriefingResponse) ai.InsightContext {
+	if b == nil {
+		return ai.InsightContext{AIAdviceMode: "withheld"}
+	}
+	mode := "confident_advice_allowed"
+	switch b.ReadinessConfidence {
+	case health.ReadinessConfidenceLow:
+		mode = "provisional_explanation_only"
+	case health.ReadinessConfidenceProvisional:
+		mode = "provisional_explanation_only"
+	}
+	if b.ReadinessCapReason == "missing_same_day_evidence" {
+		mode = "needs_regeneration_after_sync"
+	}
+	ctx := ai.InsightContext{
+		ReadinessScore:      b.ReadinessScore,
+		ReadinessRawScore:   b.ReadinessRawScore,
+		ReadinessConfidence: b.ReadinessConfidence,
+		ReadinessCapReason:  b.ReadinessCapReason,
+		AIAdviceMode:        mode,
+	}
+	if b.SubjectiveCheckin != nil {
+		ctx.CheckinStatus = b.SubjectiveCheckin.Status
+		ctx.CheckinAnswer = b.SubjectiveCheckin.Answer
+	}
+	return ctx
 }
 
 // EnsureTodayAIInsightAsync fires EnsureTodayAIInsight in a goroutine.
