@@ -183,9 +183,9 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	// EnergyBank v2 orchestrator: runs in parallel with the v1
-	// dashboard rendering. Snapshots accumulate silently for
-	// observation; PR8 will flip the UI over once v2 is validated.
+	// EnergyBank v2 orchestrator: writes snapshots consumed by the
+	// dashboard, reports, and history chart. Briefing rendering still
+	// has a legacy fallback for days before the first v2 snapshot lands.
 	energyV2 := storage.NewEnergyV2Orchestrator()
 
 	onNewData := func(db *storage.DB, dates []string) {
@@ -286,8 +286,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	var morningSendMu sync.Mutex
 	maybeFireMorningReport := makeMorningTrigger(db, &morningSendMu, mgr, reg, schema, notifyDefaults)
 	backfillDatesFn := makeBackfillDatesFn(db, schema, notifyDefaults)
-	// EnergyBank v2 orchestrator: same role as in multi-tenant mode —
-	// passive snapshot accumulation alongside the live v1 dashboard.
+	// EnergyBank v2 orchestrator: same role as in multi-tenant mode.
 	energyV2 := storage.NewEnergyV2Orchestrator()
 	onNewData := func(_ *storage.DB, dates []string) {
 		backfillDatesFn(dates)

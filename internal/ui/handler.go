@@ -1190,12 +1190,10 @@ func (h *Handler) readinessHistory(w http.ResponseWriter, r *http.Request) {
 
 // energyHistory serves the EnergyBank trend chart in two modes:
 //
-//	?granularity=day  (default) — legacy v1 behaviour, reads EOD
+//	?granularity=day  (default) — legacy day-level behaviour, reads EOD
 //	                              snapshots from daily_scores. Kept for
-//	                              backward compatibility with existing
-//	                              dashboard sparkline callers; will be
-//	                              retired in PR8 once the UI flips to
-//	                              v2.
+//	                              backward compatibility and AI verdict
+//	                              history context.
 //	?granularity=hour            — v2 behaviour, reads 5-min buckets
 //	                              from energy_snapshots over the last
 //	                              ?hours= hours.

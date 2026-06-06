@@ -189,8 +189,8 @@ function loadEnergySparkline(canvasId) {
 //
 // Verdict colouring intentionally NOT applied here: the v2 endpoint
 // doesn't expose per-bucket verdict (it's a derived property of the
-// iteration, not a stored column). PR8 will reconcile the colour
-// story when it flips the dashboard's source of truth from v1 to v2.
+// iteration, not a stored column). The current hero verdict comes from
+// the freshest same-day snapshot, while the chart stays value-only.
 var energyHourlyChart = null;
 function loadEnergyHourlyChart(canvasId) {
   // Guard before fetch: when the server renders the dashboard for a

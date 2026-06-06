@@ -105,8 +105,8 @@
           </ul>
           <!-- v2 hourly chart: hidden until JS confirms ≥3 points so a
                fresh tenant doesn't render an empty/flat canvas. The
-               legacy v1 EOD sparkline above stays unchanged; PR8 will
-               retire it once the v2 graph is the source of truth. -->
+               legacy day-level history endpoint remains available for
+               compatibility, but this chart reads energy_snapshots. -->
           <div id="energy-hourly-wrap" hidden>
             <div class="energy-hourly-label">{{T .Lang "energy_hourly_label"}}</div>
             <canvas id="energy-hourly-chart" height="120"></canvas>

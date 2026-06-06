@@ -416,13 +416,14 @@ the headline with section verdicts so the briefing is **internally consistent**:
 
 ---
 
-## Energy Bank v1 (shipping — to be replaced by v2)
+## Energy Bank legacy fallback
 
-> **Status:** v1 is what currently runs in `internal/health/energy.go`. Cross-user empirical validation revealed structural problems (saturation on typical days, no multi-day carryover, formula squashing); a redesign — Energy Bank v2 — is documented in `ENERGY_BANK.md` and summarised in the next section. v1 stays here as the operational reference until v2 ships.
+> **Status:** this is the compatibility fallback in `internal/health/energy.go::computeLegacyEnergyBank`. The normal dashboard/report path uses the latest v2 row from `energy_snapshots` when one exists for the requested local date. The legacy formula remains for fresh tenants, cold-start days, and older compatibility history; it is not the source of truth for current Energy Bank methodology.
 
-Computed in `internal/health/energy.go::computeEnergyBank`, returned in
-`response.energy_bank`. Where the Headline answers *"what's notable today?"*,
-the Energy Bank answers *"what should you do?"* — a prescriptive verdict that
+The fallback is returned in `response.energy_bank` only until the storage
+briefing path replaces it with the latest v2 snapshot. Where the Headline
+answers *"what's notable today?"*, Energy Bank answers *"what should you do?"*
+— a prescriptive verdict that
 rolls capacity, observed activity load, and autonomic stress into a single
 plain-language action ("push_hard", "moderate", "active_recovery", "rest").
 
@@ -470,8 +471,8 @@ plain-language action ("push_hard", "moderate", "active_recovery", "rest").
    The same active day costs more when autonomics are already taxed — this
    is the McEwen 1998 / 2024 PNAS allostatic-load shape [[38]](#ref-38),
    conservatively parameterised. Without intraday HR we cannot model
-   parasympathetic *refill*; the system therefore monotonically drains
-   through the day. Documented as `// TODO(v2)` in `energy.go`.
+   parasympathetic *refill*; the fallback therefore monotonically drains
+   through the day. v2 fixes this with cross-day state and sleep restore.
 
 ### Verdict thresholds (Plews / Vesterinen smallest-worthwhile-change band)
 
@@ -514,13 +515,14 @@ is stronger than any single-marker green light.
 
 ---
 
-## Energy Bank v2 (design — pending implementation)
+## Energy Bank v2 (current shipped path)
 
-> Full specification: [`ENERGY_BANK.md`](./ENERGY_BANK.md). This section captures
-> the methodology and the empirically-derived design principles; the spec doc
-> carries the implementation detail (schema, concurrency, rollout phases).
+> Full specification and operational details: [`ENERGY_BANK.md`](./ENERGY_BANK.md).
+> v2 writes `energy_snapshots`, reads the latest local-date snapshot into the
+> dashboard/report `energy_bank` field, and serves hourly history from the same
+> table. Legacy `daily_scores.energy_*` columns remain compatibility-only.
 
-Three structural problems with v1 were discovered through an empirical
+Three structural problems with the legacy fallback were discovered through an empirical
 prototype run on 90 days of real data, on **two distinct users** (one
 sedentary with clean data, one mixed-source with frequent sync gaps):
 

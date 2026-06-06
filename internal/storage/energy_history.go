@@ -7,11 +7,9 @@ import (
 	"health-receiver/internal/health"
 )
 
-// EnergyHistoryPoint is one day of the EnergyBank trend chart. Capacity is
-// what the user started the day with; CurrentEOD is what was left at the
-// last snapshot (typically end-of-day after all sync ticks); Drain is the
-// cumulative cost; Verdict is the prescriptive action that fell out of
-// the formula. All four come straight from health.EnergyBank.
+// EnergyHistoryPoint is one legacy day-level EnergyBank point from
+// daily_scores.energy_*. The v2 hourly chart reads energy_snapshots instead;
+// these rows stay as a compatibility history/verdict source for old data.
 type EnergyHistoryPoint struct {
 	Date       string `json:"date"`
 	Capacity   int    `json:"capacity"`
@@ -20,9 +18,9 @@ type EnergyHistoryPoint struct {
 	Verdict    string `json:"verdict"`
 }
 
-// SaveEnergyBankSnapshot upserts the EOD snapshot of the day's EnergyBank
-// into daily_scores. Best-effort — errors are logged but not returned, and
-// callers should never block briefing rendering on this.
+// SaveEnergyBankSnapshot upserts a legacy EOD EnergyBank snapshot into
+// daily_scores.energy_*. Best-effort — errors are logged but not returned,
+// and callers should never block briefing rendering on this.
 //
 // Called from the briefing path on every render so the latest in-memory
 // EnergyBank for `date` is the value that lands. By construction the
@@ -51,10 +49,10 @@ func (s *DB) SaveEnergyBankSnapshot(date string, eb *health.EnergyBank) {
 	}
 }
 
-// GetEnergyHistory returns the most recent `days` EOD snapshots in
-// ascending date order. Rows without an energy_verdict (snapshot never
-// taken) are skipped — the sparkline shouldn't render a flat line for
-// pre-persistence days.
+// GetEnergyHistory returns the most recent `days` legacy EOD snapshots in
+// ascending date order. Rows without an energy_verdict are skipped. Current
+// dashboard hourly history should use GetEnergyHistoryV2; this path remains
+// for day-level compatibility and AI verdict-history context.
 func (s *DB) GetEnergyHistory(days int) ([]EnergyHistoryPoint, error) {
 	if days <= 0 {
 		days = 14

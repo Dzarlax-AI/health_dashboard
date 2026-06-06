@@ -133,17 +133,17 @@ func TestComputeAlerts_RequiresBaselineVariance(t *testing.T) {
 	}
 }
 
-func TestComputeEnergyBank_MissingInputsReturnNil(t *testing.T) {
+func TestComputeLegacyEnergyBank_MissingInputsReturnNil(t *testing.T) {
 	ls := GetStrings("en")
-	if got := computeEnergyBank(RawMetrics{}, 70, nil, ls); got != nil {
-		t.Fatalf("computeEnergyBank without baseline data = %+v, want nil", got)
+	if got := computeLegacyEnergyBank(RawMetrics{}, 70, nil, ls); got != nil {
+		t.Fatalf("computeLegacyEnergyBank without baseline data = %+v, want nil", got)
 	}
 	d := RawMetrics{
 		HRV:   repeatFloat(40, minBaseline+2),
 		Sleep: append([]float64{0}, repeatFloat(7.5, minBaseline+1)...),
 	}
-	if got := computeEnergyBank(d, 70, nil, ls); got != nil {
-		t.Fatalf("computeEnergyBank with zero sleep today = %+v, want nil", got)
+	if got := computeLegacyEnergyBank(d, 70, nil, ls); got != nil {
+		t.Fatalf("computeLegacyEnergyBank with zero sleep today = %+v, want nil", got)
 	}
 }
 

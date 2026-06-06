@@ -26,7 +26,7 @@ type LatestEnergySnapshot struct {
 // error when no row exists for that date — a fresh tenant or a
 // recompute that hasn't run yet for today should not surface as a
 // hard error to the briefing path; the caller must fall through to
-// the v1 EnergyBank instead.
+// the legacy EnergyBank instead.
 func (s *DB) GetLatestEnergySnapshotForDate(ctx context.Context, dateStr string) (*LatestEnergySnapshot, error) {
 	row := s.pool.QueryRow(ctx, `
 		SELECT bank, drain_delta, restore_delta, formula_version, flags

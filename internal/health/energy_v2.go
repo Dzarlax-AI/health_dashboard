@@ -2,12 +2,10 @@ package health
 
 // EnergyBank v2 — pure-math kernel.
 //
-// This file holds the formulas only; orchestration (14-day forward
-// iteration, snapshot persistence, missing-data imputation) lands in
-// later PRs. v1 (computeEnergyBank, scoreEnergyBank) stays in use and
-// untouched until PR8 flips the dashboard over. Until then, every
-// symbol below is dead code by design — the unit-test suite is the only
-// caller.
+// This file holds the formulas only. Storage owns the 14-day forward
+// iteration, missing-data imputation, snapshot persistence, and read-side
+// projection from energy_snapshots. The legacy daily formula remains in
+// energy.go only as a cold-start fallback.
 //
 // Design rationale and validation: ENERGY_BANK.md.
 
@@ -142,4 +140,3 @@ func ClampSignedBank(bank float64) float64 {
 	}
 	return bank
 }
-
