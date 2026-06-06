@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Implementation Plan: Issue #152 CI Race Detector and Branch Protection Policy</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #1f2937; line-height: 1.5; }
+    main { max-width: 1100px; margin: 0 auto; padding: 32px; }
+    section { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin: 16px 0; }
+    h1, h2 { line-height: 1.2; margin-top: 0; }
+    code { background: #f3f4f6; padding: 2px 5px; border-radius: 4px; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #dcfce7; color: #166534; font-size: 12px; font-weight: 700; }
+    .risk { border-left: 4px solid #dc2626; }
+    .approval { border-left: 4px solid #d97706; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Implementation Plan: Issue #152 CI Race Detector and Branch Protection Policy</h1>
+  <p class="badge">Approved and implemented</p>
+
+  <section>
+    <h2>Task Summary</h2>
+    <p>Record a clear policy for race-detector CI and branch protection, then implement only the parts that are justified now.</p>
+  </section>
+
+  <section>
+    <h2>Current Behavior</h2>
+    <ul>
+      <li><code>.github/workflows/ci.yml</code> has one required-looking build job named <code>Build, Vet &amp; Test</code>.</li>
+      <li>The job runs <code>CGO_ENABLED=0 go build</code>, <code>go vet</code>, and <code>go test</code>.</li>
+      <li>The workflow comment explicitly says <code>-race</code> is skipped because it requires <code>CGO=1</code> and the current test set is mostly pure math-kernel code.</li>
+      <li>The repo contains concurrency-sensitive code and tests, for example <code>internal/storage/recompute.go</code> and <code>internal/tenants/manager.go</code>.</li>
+      <li>Branch protection state is a GitHub repository setting, not represented in the working tree.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <ul>
+      <li>A documented policy says when <code>go test -race</code> is required, optional, or deferred.</li>
+      <li>If race CI is added, it is a separate job with clear CGO expectations and does not slow the default pure test loop unnecessarily.</li>
+      <li>Branch protection decision is explicit: either require the existing CI check, or document why it remains manual for now.</li>
+      <li>This issue stays separate from product guardrail tests and no-vendor migration.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Assumptions And Unknowns</h2>
+    <ul>
+      <li>Assumption: the default fast CI job should remain pure and easy to understand.</li>
+      <li>Assumption: race detector is most valuable for PRs touching scheduler, tenant manager, async AI generation, recompute, webhook dispatch, or notification goroutines.</li>
+      <li>Unknown: whether GitHub branch protection is already configured outside the repository.</li>
+      <li>Unknown: whether the user wants enforcement now or just a recorded revisit policy.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Files Likely To Change</h2>
+    <ul>
+      <li><code>.github/workflows/ci.yml</code> - add an optional/manual or path-scoped race job only if approved.</li>
+      <li><code>CONTRIBUTING.md</code> - document local <code>go test -race ./...</code> guidance and CI policy.</li>
+      <li><code>README.md</code> or <code>docs/ARCHITECTURE.md</code> - only if branch protection policy belongs in operator docs.</li>
+      <li>GitHub repository settings - if branch protection is approved, apply through <code>gh api</code> after confirming exact required check names.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation Steps</h2>
+    <ol>
+      <li>Inspect current branch protection via GitHub API before changing settings.</li>
+      <li>Choose one of three race-detector policies: defer with revisit criteria, manual workflow-only job, or PR job for all branches.</li>
+      <li>If implementing race CI, add a separate <code>Race Detector</code> job using <code>CGO_ENABLED=1 go test -race ./...</code>.</li>
+      <li>Keep the existing <code>Build, Vet &amp; Test</code> job name stable unless branch protection is updated at the same time.</li>
+      <li>Document local developer guidance and revisit criteria.</li>
+      <li>If branch protection is approved, update GitHub settings and verify required status checks match actual workflow job names.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Impact</h2>
+    <ul>
+      <li><strong>CI:</strong> possible extra job duration if race detector is enabled.</li>
+      <li><strong>Repository process:</strong> branch protection could block direct merges/pushes when CI fails.</li>
+      <li><strong>Runtime:</strong> no production code changes expected.</li>
+      <li><strong>Permissions:</strong> branch protection changes require GitHub admin capability and explicit user approval.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <ul>
+      <li><code>go test ./...</code></li>
+      <li><code>go vet ./...</code></li>
+      <li>If race job is added: <code>CGO_ENABLED=1 go test -race ./...</code> locally or in CI.</li>
+      <li>If branch protection is changed: verify via <code>gh api repos/Dzarlax-AI/health_dashboard/branches/main/protection</code>.</li>
+      <li>After PR: confirm workflow job names match any required status checks.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks And Edge Cases</h2>
+    <ul>
+      <li>Race detector can be slow and may need CGO toolchain behavior that differs from the production <code>CGO_ENABLED=0</code> build.</li>
+      <li>Branch protection misconfiguration can block urgent fixes or require admin intervention.</li>
+      <li>Changing CI policy at the same time as no-vendor migration can make failures harder to attribute; coordinate with issue #170.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <p>Remove the race job or switch it back to manual-only. For branch protection, restore the previous protection JSON or remove the newly required check after confirming with the user.</p>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Should race detector be required on every PR, manual-only, or deferred with explicit triggers?</li>
+      <li>Do we want branch protection on <code>main</code> now?</li>
+      <li>If issue #170 is approved, should this policy be implemented after no-vendor CI settles?</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval Gate</h2>
+    <p>Approved by the user on 2026-06-06. Branch protection settings were inspected but not changed, because settings mutation requires additional explicit approval.</p>
+  </section>
+
+  <section>
+    <h2>Implementation Result</h2>
+    <ul>
+      <li>Kept the default <code>Build, Vet &amp; Test</code> job name stable.</li>
+      <li>Added a manual-only <code>Race Detector</code> job behind <code>workflow_dispatch</code> input <code>run_race=true</code>.</li>
+      <li>Race detector job runs <code>CGO_ENABLED=1 go test -race ./...</code> and is not required on normal PR or push runs.</li>
+      <li>Documented local and CI race-detector guidance in <code>CONTRIBUTING.md</code>.</li>
+      <li>Recorded current branch protection state: GitHub API returned <code>Branch not protected</code> for <code>main</code> on 2026-06-06.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Verification Run</h2>
+    <ul>
+      <li><code>go test ./...</code></li>
+      <li><code>go vet ./...</code></li>
+      <li><code>CGO_ENABLED=1 go test -race ./...</code> on Windows was blocked before tests by missing <code>gcc</code> in <code>PATH</code>; the manual GitHub Actions job is the Ubuntu validation path.</li>
+      <li><code>gh api repos/Dzarlax-AI/health_dashboard/branches/main/protection</code> returned <code>404 Branch not protected</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Known Limitations</h2>
+    <ul>
+      <li>Race detector is intentionally manual-only; it will not block PRs unless branch protection and workflow policy are changed later.</li>
+      <li>Local race-detector runs require a working CGO C compiler. This Windows workspace did not have <code>gcc</code> available.</li>
+      <li>Branch protection remains unchanged to avoid silently imposing repository-admin policy from a code PR.</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>
