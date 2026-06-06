@@ -316,8 +316,8 @@ Available tools:
 
 | Tool | Description |
 |---|---|
-| `get_health_briefing` | Daily health briefing: composite readiness score (z-score based), sleep analysis, activity, insights, and alerts. Supports `lang` (en/ru/sr). |
-| `get_readiness_history` | Composite readiness scores (0-100) for the last N days. |
+| `get_health_briefing` | Daily health briefing with readiness score, server-owned `readiness_serving` freshness/confidence metadata, sleep analysis, activity, insights, and alerts. Supports `lang` (en/ru/sr). |
+| `get_readiness_history` | Composite readiness scores (0-100) and server-derived bands for the last N days. Use `get_health_briefing` for today's freshness/confidence contract. |
 | `list_metrics` | List all available metrics with record counts and date ranges. |
 | `get_dashboard` | Today's summary with trend vs yesterday. |
 | `get_metric_data` | Time series for a single metric with minute/hour/day buckets. |
@@ -332,6 +332,32 @@ Available tools:
 | `get_workout` | One workout by its HAE UUID. |
 | `workout_stats` | Aggregate counters for workouts in a range: count, total duration, distance, energy, avg/max HR, total time-in-HR-zone. |
 | `sql_query` | Run any read-only SQL SELECT on the PostgreSQL database. |
+
+### Readiness serving contract
+
+`/api/health-briefing` and MCP `get_health_briefing` expose `readiness_serving` as the canonical contract for clients that need to render score freshness or uncertainty. Prefer this grouped object over recomputing state from dates or metric counts client-side.
+
+```json
+{
+  "readiness_serving": {
+    "status": "fresh | missing | stale | data_accruing | low_coverage | capped",
+    "confidence": "final | provisional | low",
+    "reason": "missing_same_day_evidence",
+    "components": [
+      {
+        "metric": "heart_rate_variability",
+        "present": true,
+        "freshness": "ok | missing | stale",
+        "confidence": "final | provisional | low",
+        "sample_count": 4,
+        "missing_reason": "missing_same_day_value"
+      }
+    ]
+  }
+}
+```
+
+The legacy top-level `readiness_confidence`, `readiness_cap_reason`, and `readiness_components` fields remain for compatibility. `readiness_serving.status` is the display-oriented summary: `missing` means a core same-day input is absent, `data_accruing` means same-day data exists but is still too sparse for final confidence, `low_coverage` means a quality/coverage gate fired, and `capped` means a safety or coherence cap changed the displayed score without implying missing data.
 
 ## Telegram Reports
 

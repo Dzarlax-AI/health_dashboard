@@ -269,6 +269,7 @@ type readinessComputation struct {
 	Confidence   string
 	CapReason    string
 	Components   []ReadinessComponentSummary
+	Serving      *ReadinessServingState
 }
 
 func computeReadinessWithEvidence(d RawMetrics) readinessComputation {
@@ -292,6 +293,7 @@ func computeReadinessWithEvidence(d RawMetrics) readinessComputation {
 		Confidence:   ReadinessConfidenceFinal,
 	}
 	if e == nil {
+		out.Serving = readinessServingState(out.Confidence, out.CapReason, out.Components)
 		return out
 	}
 	out.Components = readinessComponentSummaries(*e)
@@ -323,6 +325,7 @@ func computeReadinessWithEvidence(d RawMetrics) readinessComputation {
 	case IllnessConfidenceModerate:
 		out.cap(readinessFairCap, ReadinessConfidenceProvisional, "illness_suspicion_moderate")
 	}
+	out.Serving = readinessServingState(out.Confidence, out.CapReason, out.Components)
 	return out
 }
 
@@ -362,6 +365,52 @@ func readinessCapReasonRank(reason string) int {
 	default:
 		return 0
 	}
+}
+
+func updateReadinessServing(resp *BriefingResponse) {
+	if resp == nil {
+		return
+	}
+	resp.ReadinessServing = readinessServingState(resp.ReadinessConfidence, resp.ReadinessCapReason, resp.ReadinessComponents)
+}
+
+func readinessServingState(confidence, reason string, components []ReadinessComponentSummary) *ReadinessServingState {
+	if confidence == "" {
+		confidence = ReadinessConfidenceFinal
+	}
+	status := ReadinessServingFresh
+	if len(components) == 0 && reason == "" {
+		status = ReadinessServingMissing
+	} else if hasComponentFreshness(components, ReadinessFreshnessMissing) || reason == "missing_same_day_evidence" {
+		status = ReadinessServingMissing
+	} else if hasComponentFreshness(components, ReadinessFreshnessStale) {
+		status = ReadinessServingStale
+	} else if reason == "hrv_provisional" || reason == "hrv_sparse" {
+		status = ReadinessServingDataAccruing
+	} else if reason == "sleep_quality_low" {
+		status = ReadinessServingLowCoverage
+	} else if reason != "" || confidence == ReadinessConfidenceProvisional {
+		status = ReadinessServingCapped
+	}
+	copied := append([]ReadinessComponentSummary(nil), components...)
+	return &ReadinessServingState{
+		Status:     status,
+		Confidence: confidence,
+		Reason:     reason,
+		Components: copied,
+	}
+}
+
+func hasComponentFreshness(components []ReadinessComponentSummary, freshness string) bool {
+	for _, c := range components {
+		switch c.Metric {
+		case "heart_rate_variability", "resting_heart_rate", "sleep_total":
+			if c.Freshness == freshness {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func readinessComponentSummaries(e ReadinessEvidenceInput) []ReadinessComponentSummary {

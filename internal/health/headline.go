@@ -343,4 +343,5 @@ func applyReadinessResponseCap(resp *BriefingResponse, maxScore int, confidence,
 	if readinessCapReasonRank(reason) > readinessCapReasonRank(resp.ReadinessCapReason) {
 		resp.ReadinessCapReason = reason
 	}
+	updateReadinessServing(resp)
 }

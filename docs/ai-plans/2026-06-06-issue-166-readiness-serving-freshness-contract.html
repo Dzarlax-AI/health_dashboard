@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Implementation Plan: Issue #166 Readiness Serving/Freshness Contract</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #1f2937; line-height: 1.5; }
+    main { max-width: 1100px; margin: 0 auto; padding: 32px; }
+    section { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin: 16px 0; }
+    h1, h2 { line-height: 1.2; margin-top: 0; }
+    code { background: #f3f4f6; padding: 2px 5px; border-radius: 4px; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #fee2e2; color: #991b1b; font-size: 12px; font-weight: 700; }
+    .note { border-left: 4px solid #2563eb; }
+    .risk { border-left: 4px solid #dc2626; }
+    .approval { border-left: 4px solid #d97706; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Implementation Plan: Issue #166 Readiness Serving/Freshness Contract</h1>
+  <p class="badge">Approved and implemented</p>
+
+  <section>
+    <h2>Task Summary</h2>
+    <p>
+      Define and implement the stable readiness freshness/confidence contract that
+      dashboard, iOS, MCP, and later confidence UI can consume without duplicating
+      backend logic. This issue is broader than the already-executed
+      <code>2026-05-28-readiness-serving-freshness-closure.html</code> plan: that
+      plan closed bounded restamp/backfill wiring, while this one should formalize
+      the API shape and consumer semantics.
+    </p>
+  </section>
+
+  <section>
+    <h2>Current Behavior</h2>
+    <ul>
+      <li><code>internal/health/types.go</code> already exposes <code>readiness_confidence</code>, <code>readiness_cap_reason</code>, <code>readiness_components</code>, and per-component <code>freshness</code>, <code>confidence</code>, <code>sample_count</code>, and <code>missing_reason</code> on <code>BriefingResponse</code>.</li>
+      <li><code>internal/storage/briefing.go</code> builds date-aligned readiness evidence from daily cache plus same-day raw metric fallback, including missing and stale states.</li>
+      <li><code>/api/health-briefing</code> returns the full <code>BriefingResponse</code>; <code>/api/readiness-history</code> returns score and band only.</li>
+      <li><code>internal/mcpserver/tools.go</code> has <code>get_health_briefing</code> and <code>get_readiness_history</code>, but tool descriptions still describe the older readiness formula and do not call out freshness/confidence metadata.</li>
+      <li>Dashboard page rendering currently reads confidence and cap reason into the page data, but confidence UI is intentionally not the goal of this issue.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <ul>
+      <li>One documented server-owned readiness state vocabulary: fresh, stale, missing, data-accruing, low-coverage, and capped/provisional states.</li>
+      <li>API consumers can decide display state from response fields only; no client should infer freshness from dates or recompute coverage.</li>
+      <li>Existing score values remain behavior-compatible unless tests expose a mismatch between score and metadata.</li>
+      <li>Dashboard and MCP continue to work, with richer metadata available and documented for future confidence UI.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Assumptions And Unknowns</h2>
+    <ul>
+      <li>Assumption: the primary contract should be attached to <code>/api/health-briefing</code> first because it already owns <code>BriefingResponse</code>.</li>
+      <li>Assumption: <code>/api/readiness-history</code> should stay lightweight unless the confidence UI needs historical confidence states.</li>
+      <li>Unknown: whether <code>data_accruing</code> should be represented as a new readiness freshness enum or mapped through <code>confidence=provisional</code> plus reason.</li>
+      <li>Unknown: whether MCP needs a separate concise readiness contract tool or simply better descriptions for existing tools.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Files Likely To Change</h2>
+    <ul>
+      <li><code>internal/health/types.go</code> - add or tighten response structs/enums only if the current fields cannot express the contract cleanly.</li>
+      <li><code>internal/storage/briefing.go</code> - normalize evidence mapping and reasons if stale/missing/low-coverage cases are inconsistent.</li>
+      <li><code>internal/storage/readiness_evidence_test.go</code> or related tests - cover fresh, stale, missing, low-coverage, and data-accruing/provisional cases.</li>
+      <li><code>internal/ui/handler.go</code> and UI tests - only if response wrapping or dashboard API shape needs explicit metadata preservation.</li>
+      <li><code>internal/mcpserver/tools.go</code> - update readiness tool descriptions and, if approved, expose concise contract metadata.</li>
+      <li><code>README.md</code>, <code>docs/ARCHITECTURE.md</code>, or a small new API doc - document the contract for dashboard and MCP/debug consumers.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation Steps</h2>
+    <ol>
+      <li>Write a short contract table before code edits: fields, allowed values, producer, and intended consumer behavior.</li>
+      <li>Audit current readiness evidence outputs against that table for fresh, stale, missing same-day value, low HRV sample count, missing sleep-stage details, and illness/stress cap scenarios.</li>
+      <li>Add focused tests for the current mapping. Prefer tests around pure or near-pure evidence builders before touching handlers.</li>
+      <li>If the current fields cannot express <code>data_accruing</code> cleanly, add a small explicit reason/status field rather than changing existing score semantics.</li>
+      <li>Update MCP descriptions and docs so the contract is discoverable.</li>
+      <li>Run focused tests first, then full Go test/vet before PR.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Impact</h2>
+    <ul>
+      <li><strong>API:</strong> additive metadata only; no removal or rename of existing JSON fields.</li>
+      <li><strong>Data/migration:</strong> no schema migration expected.</li>
+      <li><strong>Auth/permissions:</strong> no change.</li>
+      <li><strong>UX:</strong> no new confidence UI in this issue; it prepares that work.</li>
+      <li><strong>Deployment:</strong> normal app deploy after tests if code changes are needed.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <ul>
+      <li><code>go test ./internal/health ./internal/storage -run "Test.*Readiness.*Evidence|Test.*Readiness.*Confidence" -count=1</code></li>
+      <li><code>go test ./internal/ui ./internal/mcpserver -count=1</code> if handlers or MCP descriptions are touched.</li>
+      <li><code>go test ./...</code></li>
+      <li><code>go vet ./...</code></li>
+      <li>Optional direct DB smoke with <code>~/.health-db</code>: inspect one current <code>/api/health-briefing</code>-equivalent row and confirm metadata matches actual same-day availability.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks And Edge Cases</h2>
+    <ul>
+      <li>Changing numeric readiness behavior under a metadata issue would blur scope; keep score changes out unless a contract test reveals a bug.</li>
+      <li>Adding too many enums could make client logic harder; prefer a small stable vocabulary plus reason strings.</li>
+      <li>Historical readiness points may not have enough evidence to expose detailed metadata without extra queries.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <p>Revert additive metadata and documentation changes. No database rollback should be required. Existing consumers should continue to work throughout because the plan avoids removing current fields.</p>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Should <code>/api/readiness-history</code> gain historical confidence metadata now, or should that wait for the confidence UI issue?</li>
+      <li>Should <code>data_accruing</code> be a freshness enum, a cap reason, or a separate serving state?</li>
+      <li>Which doc should be canonical for API consumers: README, architecture doc, or a dedicated API contract section?</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation Result</h2>
+    <p>
+      Implemented on 2026-06-06. The change is additive: existing
+      <code>readiness_confidence</code>, <code>readiness_cap_reason</code>, and
+      <code>readiness_components</code> fields remain in place, and clients can
+      now prefer the grouped <code>readiness_serving</code> object.
+    </p>
+    <ul>
+      <li>Added <code>ReadinessServingState</code> with <code>status</code>, <code>confidence</code>, <code>reason</code>, and component evidence.</li>
+      <li>Added serving status values: <code>fresh</code>, <code>missing</code>, <code>stale</code>, <code>data_accruing</code>, <code>low_coverage</code>, and <code>capped</code>.</li>
+      <li>Kept readiness score behavior unchanged; the new object summarizes existing evidence/cap metadata for consumers.</li>
+      <li>Kept serving state synchronized when coherence or illness safety caps update readiness metadata after initial scoring.</li>
+      <li>Updated MCP descriptions and README documentation so consumers know to use <code>readiness_serving</code> instead of guessing.</li>
+      <li>Added tests for missing evidence priority, sparse-HRV data-accruing status, illness cap status, low-coverage status, and <code>ComputeBriefing</code> response exposure.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Verification Run</h2>
+    <ul>
+      <li><code>go test ./internal/health ./internal/storage -run "Test.*Readiness.*Evidence|Test.*Readiness.*Serving|TestComputeBriefing_ExposesReadinessServingContract" -count=1</code> passed.</li>
+      <li><code>go test ./internal/ui ./internal/mcpserver -count=1</code> passed; <code>internal/mcpserver</code> has no test files but compiled.</li>
+      <li><code>go test ./internal/health ./internal/storage -count=1</code> passed.</li>
+      <li><code>go test ./...</code> passed.</li>
+      <li><code>go vet ./...</code> passed.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Known Limitations After Implementation</h2>
+    <ul>
+      <li><code>/api/readiness-history</code> still returns lightweight score and band data only; historical confidence metadata remains a future confidence UI decision.</li>
+      <li>No database migration or historical backfill was added; this is a response-contract change over current evidence.</li>
+      <li>No new visual confidence UI was added in this issue.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval Gate</h2>
+    <p>Approved and implemented. Further confidence UI or historical readiness metadata should use a separate follow-up plan.</p>
+  </section>
+</main>
+</body>
+</html>
