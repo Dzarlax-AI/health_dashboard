@@ -25,6 +25,8 @@ Dependencies are managed through normal Go module resolution. Review dependency 
 
 DB-backed integration tests skip when no Postgres connection is configured. To run them, provide libpq environment variables or `READINESS_TEST_DSN`. Tests create throwaway schemas and drop them during cleanup.
 
+See `docs/TEST_COVERAGE.md` for the current focused coverage roadmap and fixture rules.
+
 ### CI and race detector policy
 
 The default required-looking CI job is `Build, Vet & Test`. Keep that job name stable unless repository branch protection is updated at the same time.
