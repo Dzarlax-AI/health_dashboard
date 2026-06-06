@@ -74,7 +74,7 @@ jobs:
     name: Docker Build & Push (amd64)
     needs: build
     runs-on: ubuntu-latest
-    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.build_amd64)) }}
+    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.build_amd64 && !inputs.run_race)) }}
     permissions:
       contents: read
       packages: write
@@ -115,7 +115,7 @@ jobs:
     name: Docker Build & Push (arm64)
     needs: build
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_arm64 }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_arm64 && !inputs.run_race }}
     permissions:
       contents: read
       packages: write

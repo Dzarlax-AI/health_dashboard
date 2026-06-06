@@ -133,6 +133,7 @@
       <li>Kept the default <code>Build, Vet &amp; Test</code> job name stable.</li>
       <li>Added a manual-only <code>Race Detector</code> job behind <code>workflow_dispatch</code> input <code>run_race=true</code>.</li>
       <li>Race detector job runs <code>CGO_ENABLED=1 go test -race ./...</code> and is not required on normal PR or push runs.</li>
+      <li>Guarded Docker publish jobs so race-only dispatches do not push images when <code>run_race=true</code>.</li>
       <li>Documented local and CI race-detector guidance in <code>CONTRIBUTING.md</code>.</li>
       <li>Recorded current branch protection state: GitHub API returned <code>Branch not protected</code> for <code>main</code> on 2026-06-06.</li>
     </ul>
@@ -144,6 +145,7 @@
       <li><code>go test ./...</code></li>
       <li><code>go vet ./...</code></li>
       <li><code>CGO_ENABLED=1 go test -race ./...</code> on Windows was blocked before tests by missing <code>gcc</code> in <code>PATH</code>; the manual GitHub Actions job is the Ubuntu validation path.</li>
+      <li>Manual GitHub Actions run <code>27062004434</code> passed with <code>run_race=true</code>, including the <code>Race Detector</code> job on Ubuntu.</li>
       <li><code>gh api repos/Dzarlax-AI/health_dashboard/branches/main/protection</code> returned <code>404 Branch not protected</code>.</li>
     </ul>
   </section>

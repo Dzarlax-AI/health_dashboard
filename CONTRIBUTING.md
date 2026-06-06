@@ -29,7 +29,7 @@ DB-backed integration tests skip when no Postgres connection is configured. To r
 
 The default required-looking CI job is `Build, Vet & Test`. Keep that job name stable unless repository branch protection is updated at the same time.
 
-Default PR and push CI uses `CGO_ENABLED=0` for build, vet, and tests, matching the production binary. Race detector tests are available as a manual GitHub Actions run: start the `CI` workflow with `run_race=true`. Use this before merging changes that touch tenant management, scheduler goroutines, async AI generation, recompute coordination, Telegram webhook dispatch, or notification loops.
+Default PR and push CI uses `CGO_ENABLED=0` for build, vet, and tests, matching the production binary. Race detector tests are available as a manual GitHub Actions run: start the `CI` workflow with `run_race=true`. Race-only dispatches do not publish Docker images, even when the image build inputs are left at their defaults. Use this before merging changes that touch tenant management, scheduler goroutines, async AI generation, recompute coordination, Telegram webhook dispatch, or notification loops.
 
 For local checks on a machine with a CGO toolchain:
 
