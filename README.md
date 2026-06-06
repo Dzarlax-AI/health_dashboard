@@ -490,6 +490,8 @@ make docker-down      # stop all services
 
 Cache tables are rebuilt automatically on server startup (incremental, last 48h) and after each sync (debounced, 2-minute delay). Use `make backfill-force` only after code changes to aggregation logic.
 
+Dependencies are managed through Go modules (`go.mod` / `go.sum`). The repository does not commit `vendor/`; CI and Docker builds download modules using the normal Go module cache/proxy path.
+
 Schema migrations (new columns on `daily_scores`, etc.) auto-apply on startup via `EnsureIndexes()` — uses `ADD COLUMN IF NOT EXISTS`, so existing deployments pick them up without manual SQL. Fresh installs get the full schema from `CREATE TABLE IF NOT EXISTS` paths in `internal/storage/db.go`.
 
 ### One-off: seed the persistent review tenant

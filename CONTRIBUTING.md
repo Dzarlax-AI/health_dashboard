@@ -16,9 +16,12 @@ This project is a self-hosted health-data system. Changes should preserve the co
 Use Go 1.24+ and PostgreSQL.
 
 ```bash
+go mod tidy
 go test ./...
 go vet ./...
 ```
+
+Dependencies are managed through normal Go module resolution. Review dependency changes in `go.mod` and `go.sum`; the repository does not commit a `vendor/` tree.
 
 DB-backed integration tests skip when no Postgres connection is configured. To run them, provide libpq environment variables or `READINESS_TEST_DSN`. Tests create throwaway schemas and drop them during cleanup.
 

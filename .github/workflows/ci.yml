@@ -30,13 +30,13 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-          cache: false
+          cache: true
 
       - name: Build all binaries
-        run: CGO_ENABLED=0 go build -mod=vendor ./...
+        run: CGO_ENABLED=0 go build ./...
 
       - name: Vet
-        run: CGO_ENABLED=0 go vet -mod=vendor ./...
+        run: CGO_ENABLED=0 go vet ./...
 
       # Unit tests. All current test files are pure (no DATABASE_URL,
       # no network) — verified by grepping *_test.go for DATABASE_URL,
@@ -50,7 +50,7 @@ jobs:
       # CGO=1, so we skip it; the test set today is mostly
       # math-kernel pure functions where -race adds little.
       - name: Test
-        run: CGO_ENABLED=0 go test -mod=vendor ./...
+        run: CGO_ENABLED=0 go test ./...
 
   docker-amd64:
     name: Docker Build & Push (amd64)

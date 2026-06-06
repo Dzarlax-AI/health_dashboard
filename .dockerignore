@@ -1,0 +1,5 @@
+.git
+.gocache
+bin
+docs/ai-plans
+vendor
