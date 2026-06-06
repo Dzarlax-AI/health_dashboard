@@ -51,6 +51,9 @@ func TestReadinessEvidence_SparseHRVCapsConfidence(t *testing.T) {
 	if got.CapReason != "hrv_provisional" {
 		t.Fatalf("cap reason = %q", got.CapReason)
 	}
+	if got.Serving == nil || got.Serving.Status != ReadinessServingDataAccruing {
+		t.Fatalf("serving = %+v, want data_accruing", got.Serving)
+	}
 }
 
 func TestReadinessEvidence_IllnessCapsDisplayNotRaw(t *testing.T) {
@@ -80,6 +83,9 @@ func TestReadinessEvidence_IllnessCapsDisplayNotRaw(t *testing.T) {
 	if got.CapReason != "illness_suspicion_high" {
 		t.Fatalf("cap reason = %q", got.CapReason)
 	}
+	if got.Serving == nil || got.Serving.Status != ReadinessServingCapped {
+		t.Fatalf("serving = %+v, want capped", got.Serving)
+	}
 }
 
 func TestApplyIllnessSafetyCap_UpdatesMetadataAtBoundary(t *testing.T) {
@@ -103,6 +109,9 @@ func TestApplyIllnessSafetyCap_UpdatesMetadataAtBoundary(t *testing.T) {
 	}
 	if resp.ReadinessCapReason != "illness_suspicion_moderate" {
 		t.Fatalf("cap reason = %q", resp.ReadinessCapReason)
+	}
+	if resp.ReadinessServing == nil || resp.ReadinessServing.Status != ReadinessServingCapped {
+		t.Fatalf("serving = %+v, want capped", resp.ReadinessServing)
 	}
 }
 
@@ -149,6 +158,50 @@ func TestReadinessEvidence_LowSleepQualityPenalizesAndCaps(t *testing.T) {
 	}
 	if got.CapReason != "sleep_quality_low" {
 		t.Fatalf("cap reason = %q", got.CapReason)
+	}
+	if got.Serving == nil || got.Serving.Status != ReadinessServingLowCoverage {
+		t.Fatalf("serving = %+v, want low_coverage", got.Serving)
+	}
+}
+
+func TestReadinessServingState_MissingCoreComponentWins(t *testing.T) {
+	state := readinessServingState(ReadinessConfidenceProvisional, "missing_same_day_evidence", []ReadinessComponentSummary{
+		{Metric: "heart_rate_variability", Present: true, Freshness: ReadinessFreshnessOK, Confidence: ReadinessConfidenceFinal},
+		{Metric: "resting_heart_rate", Present: false, Freshness: ReadinessFreshnessMissing, Confidence: ReadinessConfidenceFinal, MissingReason: "missing_same_day_value"},
+		{Metric: "sleep_total", Present: true, Freshness: ReadinessFreshnessOK, Confidence: ReadinessConfidenceFinal},
+	})
+	if state.Status != ReadinessServingMissing {
+		t.Fatalf("status = %q, want missing", state.Status)
+	}
+	if state.Confidence != ReadinessConfidenceProvisional || state.Reason != "missing_same_day_evidence" {
+		t.Fatalf("state = %+v, want provisional missing_same_day_evidence", state)
+	}
+}
+
+func TestComputeBriefing_ExposesReadinessServingContract(t *testing.T) {
+	d := RawMetrics{
+		LastDate: "2026-06-04",
+		HRV:      append([]float64{90}, repeatFloat(40, 20)...),
+		RHR:      repeatFloat(55, 21),
+		Sleep:    repeatFloat(7.5, 21),
+		ReadinessEvidence: &ReadinessEvidenceInput{
+			Date:          "2026-06-04",
+			HRV:           presentReadinessComponent("heart_rate_variability", 90, 2),
+			RHR:           presentReadinessComponent("resting_heart_rate", 55, 1),
+			SleepDuration: presentReadinessComponent("sleep_total", 7.5, 0),
+		},
+	}
+	d.ReadinessEvidence.HRV.Confidence = ReadinessConfidenceProvisional
+
+	resp := ComputeBriefing(d, "en")
+	if resp.ReadinessServing == nil {
+		t.Fatal("readiness serving contract missing")
+	}
+	if resp.ReadinessServing.Status != ReadinessServingDataAccruing {
+		t.Fatalf("serving status = %q, want data_accruing", resp.ReadinessServing.Status)
+	}
+	if len(resp.ReadinessServing.Components) == 0 {
+		t.Fatal("serving components missing")
 	}
 }
 

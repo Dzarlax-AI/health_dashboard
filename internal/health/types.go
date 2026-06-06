@@ -443,9 +443,15 @@ type BriefingResponse struct {
 	ReadinessConfidence   string                      `json:"readiness_confidence,omitempty"`
 	ReadinessCapReason    string                      `json:"readiness_cap_reason,omitempty"`
 	ReadinessComponents   []ReadinessComponentSummary `json:"readiness_components,omitempty"`
-	RecoverySource        string                      `json:"recovery_source,omitempty"`
-	RecoveryPct           int                         `json:"recovery_pct"`
-	ReadinessToday        int                         `json:"readiness_today"` // today only vs baseline
+	// ReadinessServing is the canonical serving/freshness contract for
+	// dashboards, MCP clients, and future confidence UI. The older
+	// top-level readiness_confidence/readiness_cap_reason/components fields
+	// remain for compatibility, but clients should prefer this grouped
+	// object when they need to render freshness or uncertainty states.
+	ReadinessServing *ReadinessServingState `json:"readiness_serving,omitempty"`
+	RecoverySource   string                 `json:"recovery_source,omitempty"`
+	RecoveryPct      int                    `json:"recovery_pct"`
+	ReadinessToday   int                    `json:"readiness_today"` // today only vs baseline
 	// ReadinessTodayBand mirrors ReadinessBand for the today-only score.
 	ReadinessTodayBand  string             `json:"readiness_today_band"`
 	ReadinessTodayLabel string             `json:"readiness_today_label"`
@@ -476,6 +482,13 @@ const (
 	ReadinessFreshnessOK      = "ok"
 	ReadinessFreshnessMissing = "missing"
 	ReadinessFreshnessStale   = "stale"
+
+	ReadinessServingFresh        = "fresh"
+	ReadinessServingMissing      = "missing"
+	ReadinessServingStale        = "stale"
+	ReadinessServingDataAccruing = "data_accruing"
+	ReadinessServingLowCoverage  = "low_coverage"
+	ReadinessServingCapped       = "capped"
 
 	ReadinessRecoverySourceLegacyAlias = "readiness_legacy_alias"
 )
@@ -514,6 +527,13 @@ type ReadinessComponentSummary struct {
 	SampleCount   int      `json:"sample_count,omitempty"`
 	Value         *float64 `json:"value,omitempty"`
 	MissingReason string   `json:"missing_reason,omitempty"`
+}
+
+type ReadinessServingState struct {
+	Status     string                      `json:"status"`
+	Confidence string                      `json:"confidence"`
+	Reason     string                      `json:"reason,omitempty"`
+	Components []ReadinessComponentSummary `json:"components,omitempty"`
 }
 
 // SubjectiveCheckinSummary is the read-shape rendered into the

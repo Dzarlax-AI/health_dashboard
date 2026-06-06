@@ -47,6 +47,7 @@ func ComputeBriefing(d RawMetrics, lang string) *BriefingResponse {
 		ReadinessConfidence:   readiness.Confidence,
 		ReadinessCapReason:    readiness.CapReason,
 		ReadinessComponents:   readiness.Components,
+		ReadinessServing:      readiness.Serving,
 		RecoverySource:        ReadinessRecoverySourceLegacyAlias,
 		RecoveryPct:           readinessScore,
 		ReadinessToday:        readinessScore,
@@ -64,6 +65,7 @@ func ComputeBriefing(d RawMetrics, lang string) *BriefingResponse {
 	// "all good" in section cards (converging-evidence rule, Meeusen 2013).
 	applyCoherencePass(resp, ls)
 	resp.Overall = overallStatus(resp.Sections) // re-derive after coherence
+	updateReadinessServing(resp)
 
 	// Energy Bank runs *after* the coherence pass so a stress-capped readiness
 	// flows in as morning capacity, and so the verdict can downgrade

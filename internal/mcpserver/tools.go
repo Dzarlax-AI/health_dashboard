@@ -15,7 +15,7 @@ import (
 
 func registerMetricTools(s *server.MCPServer, _ DBResolver) {
 	s.AddTool(mcp.NewTool("get_health_briefing",
-		mcp.WithDescription("Get a full daily health briefing: composite readiness score (z-score based: today 60% + 7-day trend 40%, components HRV 40% + RHR 25% + Sleep 35% vs 30-day personal baseline; 70 = your norm, 85 = good, 55 = rough day), sleep analysis with per-source breakdown, recovery, activity, cardio sections, insights, and health alerts. Best starting point."),
+		mcp.WithDescription("Get a full daily health briefing with readiness score, server-owned readiness_serving freshness/confidence metadata, sleep analysis, recovery, activity, cardio sections, EnergyBank, insights, and health alerts. Best starting point for consumers that must not guess missing/stale/low-coverage states."),
 		mcp.WithString("lang", mcp.Description("Response language: en, ru, sr (default: en)")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		lang := req.GetString("lang", "en")
@@ -41,7 +41,7 @@ func registerMetricTools(s *server.MCPServer, _ DBResolver) {
 	})
 
 	s.AddTool(mcp.NewTool("get_readiness_history",
-		mcp.WithDescription("Get daily composite readiness scores (0–100) for the last N days. Z-score based: today 60% + 7-day trend 40%. Components: HRV 40%, RHR 25%, Sleep 35% (duration + consistency). Score 70 = personal baseline, 85 = 1 SD above, 55 = 1 SD below."),
+		mcp.WithDescription("Get daily composite readiness scores (0–100) and server-derived readiness bands for the last N days. For today's freshness/confidence contract, use get_health_briefing and read readiness_serving."),
 		mcp.WithNumber("days", mcp.Description("Number of recent days (default: 30)")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		days := req.GetInt("days", 30)
@@ -51,7 +51,6 @@ func registerMetricTools(s *server.MCPServer, _ DBResolver) {
 		}
 		return jsonResult(map[string]any{"days": days, "points": pts})
 	})
-
 
 	s.AddTool(mcp.NewTool("list_metrics",
 		mcp.WithDescription("List all available health metrics with record counts and date ranges. Call this first to discover what data is available."),
