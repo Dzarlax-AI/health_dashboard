@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<HealthData locale="en_US">
+  <Record type="HKQuantityTypeIdentifierOxygenSaturation" sourceName="Synthetic Watch" unit="%" creationDate="2026-02-01 06:00:00 +0100" startDate="2026-02-01 06:00:00 +0100" endDate="2026-02-01 06:01:00 +0100" value="98"/>
+  <Record type="HKCategoryTypeIdentifierMindfulSession" sourceName="Synthetic Phone" creationDate="2026-02-01 09:15:00 +0100" startDate="2026-02-01 09:00:00 +0100" endDate="2026-02-01 09:15:00 +0100" value="HKCategoryValueNotApplicable"/>
+  <Record type="HKCategoryTypeIdentifierAppleStandHour" sourceName="Synthetic Watch" creationDate="2026-02-01 10:00:00 +0100" startDate="2026-02-01 10:00:00 +0100" endDate="2026-02-01 11:00:00 +0100" value="HKCategoryValueAppleStandHourStood"/>
+  <Record type="HKCategoryTypeIdentifierMindfulSession" sourceName="Synthetic Phone" creationDate="2026-02-01 11:00:00 +0100" startDate="2026-02-01 11:00:00 +0100" endDate="2026-02-01 10:59:00 +0100" value="HKCategoryValueNotApplicable"/>
+  <Record type="HKCorrelationTypeIdentifierBloodPressure" sourceName="Synthetic Cuff" creationDate="2026-02-01 12:00:00 +0100" startDate="2026-02-01 12:00:00 +0100" endDate="2026-02-01 12:01:00 +0100" value="ignored"/>
+  <Record type="HKQuantityTypeIdentifierSomeNewMetric" sourceName="Synthetic Device" unit="count" creationDate="2026-02-01 13:00:00 +0100" startDate="2026-02-01 13:00:00 +0100" endDate="2026-02-01 13:01:00 +0100" value="12.5"/>
+</HealthData>

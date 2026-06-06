@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Implementation Plan: Issue #149 Focused Test Coverage Roadmap</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #1f2937; line-height: 1.5; }
+    main { max-width: 1100px; margin: 0 auto; padding: 32px; }
+    section { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin: 16px 0; }
+    h1, h2 { line-height: 1.2; margin-top: 0; }
+    code { background: #f3f4f6; padding: 2px 5px; border-radius: 4px; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #dcfce7; color: #166534; font-size: 12px; font-weight: 700; }
+    .risk { border-left: 4px solid #dc2626; }
+    .approval { border-left: 4px solid #d97706; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Implementation Plan: Issue #149 Focused Test Coverage Roadmap</h1>
+  <p class="badge">Approved and implemented</p>
+
+  <section>
+    <h2>Task Summary</h2>
+    <p>Create a current, focused test coverage roadmap for active Health Dashboard behavior. This should update the issue/doc roadmap and add only high-value missing tests, not introduce broad coverage thresholds or slow infrastructure.</p>
+  </section>
+
+  <section>
+    <h2>Current Behavior</h2>
+    <ul>
+      <li>The repository currently has 78 Go test files under <code>internal</code> and related packages.</li>
+      <li>Existing tests already cover major active areas: health formulas, readiness evidence, EnergyBank v2, stress validation, Apple Health XML parser fixtures, UI admin contracts, tenant scope, webhook dispatch, and storage writers.</li>
+      <li><code>internal/applehealth/testdata</code> already has synthetic, malformed, and empty XML fixtures.</li>
+      <li><code>CONTRIBUTING.md</code> states DB-backed tests skip when no Postgres connection is configured and warns against real personal health data in fixtures.</li>
+      <li>CI currently runs the full pure test suite under <code>go test ./...</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <ul>
+      <li>The repo has a short, current roadmap that identifies remaining high-value test gaps instead of implying the test suite is empty.</li>
+      <li>New tests target product contracts that change often: readiness freshness, EnergyBank v1/v2 compatibility boundaries, import conflict resolution, and API response stability.</li>
+      <li>All tests added in this lane run under the existing default <code>go test ./...</code> path unless explicitly DB-gated and justified.</li>
+      <li>No real personal health data is committed.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Assumptions And Unknowns</h2>
+    <ul>
+      <li>Assumption: this issue is best handled as a roadmap plus a small first batch of tests, not a large test sweep.</li>
+      <li>Assumption: issue #166 should own readiness freshness contract tests if implemented first.</li>
+      <li>Unknown: whether the user wants child GitHub issues created for each coverage lane or a single living doc section.</li>
+      <li>Unknown: whether coverage measurement should be introduced now; the issue says threshold should wait until there is a meaningful baseline.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Files Likely To Change</h2>
+    <ul>
+      <li><code>docs/ARCHITECTURE.md</code>, <code>README.md</code>, or <code>CONTRIBUTING.md</code> - add the current test coverage roadmap.</li>
+      <li><code>internal/health/*_test.go</code> - add focused invariant tests only where gaps remain.</li>
+      <li><code>internal/applehealth/testdata/*</code> and <code>internal/applehealth/parse_test.go</code> - add a small anonymized fixture only if current fixtures do not cover a real parser risk.</li>
+      <li><code>internal/ui/*_test.go</code> - add API response contract tests if readiness/AI/dashboard shapes are changed.</li>
+      <li>GitHub issue comments or child issues - optional, if the roadmap should live in GitHub rather than docs.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation Steps</h2>
+    <ol>
+      <li>Produce a compact test inventory grouped by package and behavior.</li>
+      <li>Map the issue's candidate lanes to current coverage and mark each as covered, partial, or missing.</li>
+      <li>Choose a first small batch of tests that protects active product behavior without DB/network requirements.</li>
+      <li>Add or update docs with the roadmap and "do not commit personal health data" fixture rule.</li>
+      <li>If GitHub child issues are desired, create them after user approval with clear scopes and dependencies.</li>
+      <li>Run the default test suite and vet.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Impact</h2>
+    <ul>
+      <li><strong>CI:</strong> should remain fast; no coverage threshold or race job in this issue.</li>
+      <li><strong>Data:</strong> no production DB changes; fixtures must stay synthetic/anonymized.</li>
+      <li><strong>Product behavior:</strong> tests should pin existing behavior unless paired with an approved product change.</li>
+      <li><strong>GitHub process:</strong> optional child issues can make the roadmap easier to execute incrementally.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <ul>
+      <li><code>go test ./internal/health ./internal/applehealth ./internal/ui ./internal/storage -count=1</code></li>
+      <li><code>go test ./...</code></li>
+      <li><code>go vet ./...</code></li>
+      <li>If fixtures are added: manually inspect fixture content for personal data before commit.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks And Edge Cases</h2>
+    <ul>
+      <li>A generic coverage push can create brittle tests that slow useful development.</li>
+      <li>DB-backed tests can become flaky if they assume a developer has a local database; keep them opt-in unless necessary.</li>
+      <li>Fixtures can accidentally leak personal data; prefer minimal synthetic XML.</li>
+      <li>This issue overlaps with #166 and #152; keep readiness contract tests and race policy in their respective issues where possible.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <p>Revert roadmap docs and any added tests. If child issues are created incorrectly, close or relabel them rather than deleting historical context.</p>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Should the roadmap live in docs, GitHub child issues, or both?</li>
+      <li>Which first coverage batch is most valuable after #166: import safety, EnergyBank compatibility, or dashboard API stability?</li>
+      <li>Should coverage metrics be measured once as an informational baseline, without enforcing a threshold?</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval Gate</h2>
+    <p>Approved by the user on 2026-06-06 before production code changes.</p>
+  </section>
+
+  <section>
+    <h2>Implementation Result</h2>
+    <ul>
+      <li>Added <code>docs/TEST_COVERAGE.md</code> as the living focused coverage roadmap.</li>
+      <li>Linked the roadmap from <code>CONTRIBUTING.md</code>.</li>
+      <li>Added a synthetic Apple Health edge fixture at <code>internal/applehealth/testdata/focused_edge_export.xml</code>.</li>
+      <li>Added <code>TestParseXMLFocusedEdgeFixturePinsImportSafety</code> to pin percent normalization boundaries, duration-derived category metrics, stand-hour mapping, unknown quantity fallback, invalid duration rejection, and unsupported correlation skipping.</li>
+      <li>No real personal health data was added.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Verification Run</h2>
+    <ul>
+      <li><code>go test ./internal/health ./internal/applehealth ./internal/ui ./internal/storage -count=1</code></li>
+      <li><code>go test ./...</code></li>
+      <li><code>go vet ./...</code></li>
+      <li><code>git diff --check</code></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Known Limitations And Follow-Up</h2>
+    <ul>
+      <li>This PR intentionally does not add a coverage threshold.</li>
+      <li>DB-backed coverage remains opt-in unless a product bug requires a focused storage contract test.</li>
+      <li>Candidate follow-ups are tracked in <code>docs/TEST_COVERAGE.md</code> rather than created as child issues in this first pass.</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>

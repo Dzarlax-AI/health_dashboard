@@ -26,6 +26,21 @@ func TestParseXMLSyntheticFixtureMapsHealthKitRecords(t *testing.T) {
 	assertNoPoint(t, points, "sleep_total", "2026-01-02 02:00:00 +0000")
 }
 
+func TestParseXMLFocusedEdgeFixturePinsImportSafety(t *testing.T) {
+	points := collectXMLFixturePoints(t, "testdata/focused_edge_export.xml")
+
+	if got, want := len(points), 4; got != want {
+		t.Fatalf("point count = %d, want %d: %+v", got, want, points)
+	}
+	assertPoint(t, points, "blood_oxygen_saturation", "%", "2026-02-01 06:00:00 +0100", "Synthetic Watch", 98)
+	assertPoint(t, points, "mindful_minutes", "min", "2026-02-01 09:00:00 +0100", "Synthetic Phone", 15)
+	assertPoint(t, points, "apple_stand_hour", "count", "2026-02-01 10:00:00 +0100", "Synthetic Watch", 1)
+	assertPoint(t, points, "some_new_metric", "count", "2026-02-01 13:00:00 +0100", "Synthetic Device", 12.5)
+
+	assertMetricCount(t, points, "mindful_minutes", 1)
+	assertNoMetric(t, points, "blood_pressure")
+}
+
 func TestParseXMLEmptyAndMalformedInputs(t *testing.T) {
 	var emitted bool
 	if err := parseXMLFixture("testdata/empty_export.xml", func(points []storage.MetricPoint) {
@@ -83,6 +98,15 @@ func assertNoPoint(t *testing.T, points []storage.MetricPoint, metric, date stri
 	for _, p := range points {
 		if p.MetricName == metric && p.Date == date {
 			t.Fatalf("unexpected point metric=%s date=%s: %+v", metric, date, p)
+		}
+	}
+}
+
+func assertNoMetric(t *testing.T, points []storage.MetricPoint, metric string) {
+	t.Helper()
+	for _, p := range points {
+		if p.MetricName == metric {
+			t.Fatalf("unexpected metric=%s point: %+v", metric, p)
 		}
 	}
 }
