@@ -178,6 +178,16 @@ func TestReadinessServingState_MissingCoreComponentWins(t *testing.T) {
 	}
 }
 
+func TestReadinessServingState_EvidenceFreeInputIsMissing(t *testing.T) {
+	state := readinessServingState(ReadinessConfidenceFinal, "", nil)
+	if state.Status != ReadinessServingMissing {
+		t.Fatalf("status = %q, want missing", state.Status)
+	}
+	if state.Confidence != ReadinessConfidenceFinal {
+		t.Fatalf("confidence = %q, want final", state.Confidence)
+	}
+}
+
 func TestComputeBriefing_ExposesReadinessServingContract(t *testing.T) {
 	d := RawMetrics{
 		LastDate: "2026-06-04",

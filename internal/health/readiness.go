@@ -379,7 +379,9 @@ func readinessServingState(confidence, reason string, components []ReadinessComp
 		confidence = ReadinessConfidenceFinal
 	}
 	status := ReadinessServingFresh
-	if hasComponentFreshness(components, ReadinessFreshnessMissing) || reason == "missing_same_day_evidence" {
+	if len(components) == 0 && reason == "" {
+		status = ReadinessServingMissing
+	} else if hasComponentFreshness(components, ReadinessFreshnessMissing) || reason == "missing_same_day_evidence" {
 		status = ReadinessServingMissing
 	} else if hasComponentFreshness(components, ReadinessFreshnessStale) {
 		status = ReadinessServingStale
