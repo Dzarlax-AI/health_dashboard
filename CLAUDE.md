@@ -19,7 +19,7 @@ make test             # send a test POST to localhost:8080/health
 DATABASE_URL=postgres://... make import FILE=export.zip  # import Apple Health export
 ```
 
-Build is pure Go (no CGO). Uses `jackc/pgx/v5` for PostgreSQL. Docker images built via GitHub Actions.
+Build is pure Go (no CGO). Uses `jackc/pgx/v5` for PostgreSQL. Dependencies resolve from `go.mod` / `go.sum`; `vendor/` is intentionally not committed. Docker images built via GitHub Actions.
 
 **Time zones:** the binary builds with `CGO_ENABLED=0` and the alpine runtime image has no system tzdata. `cmd/server/main.go` imports `_ "time/tzdata"` to embed the IANA database (~450KB). **Don't remove this import** — every TZ-aware feature (report scheduler, smart-retry timing, freshness banners, `energy_snapshots.date`) silently coerces to UTC without it, and most callers fall back to UTC on `LoadLocation` error so the breakage is invisible until you query a specific time-of-day-sensitive output.
 

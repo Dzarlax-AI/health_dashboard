@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Implementation Plan: Issue #170 Stop Vendoring Go Modules</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #1f2937; line-height: 1.5; }
+    main { max-width: 1100px; margin: 0 auto; padding: 32px; }
+    section { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin: 16px 0; }
+    h1, h2 { line-height: 1.2; margin-top: 0; }
+    code { background: #f3f4f6; padding: 2px 5px; border-radius: 4px; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #dcfce7; color: #166534; font-size: 12px; font-weight: 700; }
+    .risk { border-left: 4px solid #dc2626; }
+    .approval { border-left: 4px solid #d97706; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Implementation Plan: Issue #170 Stop Vendoring Go Modules</h1>
+  <p class="badge">Approved and implemented</p>
+
+  <section>
+    <h2>Task Summary</h2>
+    <p>Decide and implement the dependency workflow change from committed <code>vendor/</code> plus <code>-mod=vendor</code> to normal Go module resolution, if approved.</p>
+  </section>
+
+  <section>
+    <h2>Current Behavior</h2>
+    <ul>
+      <li>The repository contains a committed <code>vendor/</code> tree and <code>vendor/modules.txt</code>.</li>
+      <li><code>.github/workflows/ci.yml</code> runs <code>go build -mod=vendor ./...</code>, <code>go vet -mod=vendor ./...</code>, and <code>go test -mod=vendor ./...</code>.</li>
+      <li><code>actions/setup-go</code> has <code>cache: false</code>.</li>
+      <li><code>Dockerfile</code> copies the full repository before building and runs <code>go build -mod=vendor</code>.</li>
+      <li><code>go.mod</code> uses Go 1.25.0 and current dependencies are represented in <code>go.sum</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <ul>
+      <li><code>go.mod</code> and <code>go.sum</code> are the reviewable dependency boundary.</li>
+      <li>CI builds, vets, and tests without <code>-mod=vendor</code>, with Go module caching enabled.</li>
+      <li>Docker build has a stable module download layer: copy <code>go.mod</code>/<code>go.sum</code>, run <code>go mod download</code>, then copy source and build.</li>
+      <li>Contributor docs describe normal Go module workflow.</li>
+      <li>Implementation does not upgrade dependencies unless required by no-vendor build validation.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Assumptions And Unknowns</h2>
+    <ul>
+      <li>Assumption: smaller PR diffs and OSS readability are more important than hermetic offline builds for this repository.</li>
+      <li>Assumption: GitHub Actions and Docker builders may access the public Go module proxy.</li>
+      <li>Unknown: whether any deployment environment requires offline Docker builds from a checked-in vendor tree.</li>
+      <li>Unknown: whether branch protection currently requires the existing check name exactly; this can be handled in issue #152.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Files Likely To Change</h2>
+    <ul>
+      <li><code>vendor/</code> - remove committed vendored dependencies if the decision is no-vendor.</li>
+      <li><code>.github/workflows/ci.yml</code> - remove <code>-mod=vendor</code>, enable Go cache, and update comments.</li>
+      <li><code>Dockerfile</code> - add module download layer and build without vendor mode.</li>
+      <li><code>README.md</code>, <code>CONTRIBUTING.md</code>, <code>AGENTS.md</code>, <code>CLAUDE.md</code> - update build/dependency notes where relevant.</li>
+      <li><code>.dockerignore</code> - add only if needed to keep Docker context clean after vendor removal.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation Steps</h2>
+    <ol>
+      <li>Confirm no explicit offline-build requirement exists in docs or deployment notes.</li>
+      <li>Run <code>go mod tidy</code> and inspect whether <code>go.mod</code>/<code>go.sum</code> change.</li>
+      <li>Update CI commands to remove <code>-mod=vendor</code> and enable setup-go cache.</li>
+      <li>Restructure Dockerfile around <code>go mod download</code> and normal <code>go build</code>.</li>
+      <li>Remove <code>vendor/</code> in one commit so dependency deletion is easy to review separately from logic changes.</li>
+      <li>Update contributor docs and project agent docs to remove vendor assumptions.</li>
+      <li>Validate local Go commands and Docker build; then rely on GitHub CI for clean checkout verification.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Impact</h2>
+    <ul>
+      <li><strong>Build:</strong> CI and Docker become network-dependent during module download.</li>
+      <li><strong>Runtime:</strong> no intended runtime image behavior change except build-stage dependency resolution.</li>
+      <li><strong>Security/review:</strong> dependency review moves to <code>go.mod</code>/<code>go.sum</code> instead of large vendor diffs.</li>
+      <li><strong>Deployment:</strong> normal GHCR build path should continue, but needs CI and Docker validation.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <ul>
+      <li><code>go mod tidy</code></li>
+      <li><code>go test ./...</code></li>
+      <li><code>go vet ./...</code></li>
+      <li><code>go build ./...</code></li>
+      <li><code>docker build .</code></li>
+      <li>After PR: verify GitHub Actions <code>Build, Vet &amp; Test</code> and Docker build jobs pass from a clean checkout.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks And Edge Cases</h2>
+    <ul>
+      <li>Network or Go proxy outage can break builds that previously used the committed vendor tree.</li>
+      <li>Large vendor deletion can obscure other changes; keep the PR focused.</li>
+      <li>Docker layer caching must be structured correctly or builds get slower.</li>
+      <li>If existing branch protection keys off exact check names, preserve names or coordinate via issue #152.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <p>Restore <code>vendor/</code>, restore <code>-mod=vendor</code> in CI and Dockerfile, run <code>go mod vendor</code>, and revert docs to vendored dependency workflow.</p>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Do we accept network-dependent CI/Docker builds for this repository?</li>
+      <li>Should Docker use default Go proxy or an explicitly configured <code>GOPROXY</code>?</li>
+      <li>Should this PR be split into two commits: config/docs first, vendor deletion second?</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval Gate</h2>
+    <p>Approved by the user on 2026-06-06.</p>
+  </section>
+
+  <section>
+    <h2>Implementation Result</h2>
+    <ul>
+      <li>Removed the committed <code>vendor/</code> tree and <code>vendor/modules.txt</code>.</li>
+      <li>Updated CI to use normal Go module resolution with setup-go caching enabled.</li>
+      <li>Updated Dockerfile to copy <code>go.mod</code>/<code>go.sum</code>, run <code>go mod download</code>, then copy source and build without <code>-mod=vendor</code>.</li>
+      <li>Added <code>.dockerignore</code> so Docker context excludes <code>.git</code>, local caches, docs plans, build outputs, and any accidental <code>vendor</code> directory.</li>
+      <li>Updated README, CONTRIBUTING, AGENTS, and CLAUDE dependency workflow notes.</li>
+      <li><code>go mod tidy</code> produced no semantic <code>go.mod</code>/<code>go.sum</code> changes.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Verification Run</h2>
+    <ul>
+      <li><code>go mod tidy</code> with workspace-independent temporary <code>GOCACHE</code>.</li>
+      <li><code>go test ./...</code></li>
+      <li><code>go vet ./...</code></li>
+      <li><code>go build ./...</code></li>
+      <li><code>docker build -t health-receiver:no-vendor-smoke .</code></li>
+      <li>Docker build context dropped from about 362 MB before <code>.dockerignore</code> to about 420 KB after it.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Known Limitations</h2>
+    <ul>
+      <li>CI and Docker builds now require network access to the Go module proxy or configured module source.</li>
+      <li>Clean-checkout verification is still delegated to GitHub Actions after PR creation.</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>

@@ -1,7 +1,9 @@
 FROM golang:1.25-alpine AS builder
 WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -mod=vendor -ldflags="-w -s" -o /app/server ./cmd/server
+RUN CGO_ENABLED=0 go build -ldflags="-w -s" -o /app/server ./cmd/server
 
 FROM alpine:latest
 
