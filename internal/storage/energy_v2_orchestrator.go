@@ -12,10 +12,9 @@ import (
 // serialises recomputes for that tenant and coalesces ingest bursts
 // into one immediate compute + at most one follow-up.
 //
-// In v2.0 the orchestrator runs in parallel with the v1 EnergyBank
-// rendered on the dashboard — the snapshots accumulate silently for
-// observation, no UI consumes them yet. PR8 will flip the dashboard
-// over once the v2 numbers have been validated against live data.
+// The dashboard and reports now consume the latest v2 energy_snapshots row
+// when present. The legacy daily EnergyBank remains only as the briefing
+// fallback for fresh tenants or days before the first v2 snapshot lands.
 //
 // The orchestrator owns no resources beyond the per-tenant
 // TenantRecompute structs; the lifecycle ctx for those workers is
@@ -64,10 +63,8 @@ func (o *EnergyV2Orchestrator) recompute(ctx context.Context, db *DB, schema, tz
 		log.Printf("[ENERGY_V2] schema=%s upsert error: %v", schema, err)
 		return
 	}
-	// One log line per recompute lets us observe v2 behaviour in
-	// production without UI changes — the v1 dashboard is unaffected
-	// in this PR. Useful for spotting regressions early before PR8
-	// flips rendering.
+	// One log line per recompute lets us observe v2 behaviour in production
+	// without depending on request-path rendering.
 	log.Printf("[ENERGY_V2] schema=%s bank=%d display=%d state=%s flags=%v alpha=%.4f drain=%d restore=%d",
 		schema, res.Bank, res.Display, res.State, res.Flags, res.AlphaUsed, res.TodayDrain, res.TodayRestore)
 }

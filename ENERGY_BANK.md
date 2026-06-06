@@ -1,6 +1,6 @@
-# EnergyBank v2 — Design
+# EnergyBank v2 — Current Implementation
 
-Status: design, not implemented. v1 (current `internal/health/energy.go`) is a stateless daily snapshot whose strain scale saturates on typical days; v2 replaces it with a Bevel-style continuous battery integrating drain and restore over time, with cross-day carryover.
+Status: shipped. EnergyBank v2 stores current bank state in `energy_snapshots`, drives dashboard/report rendering when a same-day snapshot exists, and serves the hourly history chart from those rows. The old stateless daily formula in `internal/health/energy.go` remains only as a legacy fallback for fresh tenants or days before the first v2 snapshot lands.
 
 ## Model
 
@@ -10,8 +10,8 @@ bank[t] = bank[t−1] + restore(t−1 → t) − drain(t−1 → t)
 
 State machine. Each event recomputes the bank for the affected interval and writes a snapshot. No daily reset — yesterday's residual carries through sleep restoration into today's morning capacity.
 
-- **Live current** (dashboard hero, Telegram report): computed on read = latest stored snapshot + delta from `metric_points` since that snapshot. Always reflects "now", independent of write cadence.
-- **History** (sparkline, hourly graph in `<details>`): reads `energy_snapshots` directly.
+- **Live current** (dashboard hero, Telegram report): read from the latest same-day stored snapshot, then projected into the shared `health.EnergyBank` response shape.
+- **History** (hourly graph in `<details>`): reads `energy_snapshots` directly.
 
 ## Storage
 
@@ -59,7 +59,7 @@ bootstrap_tail     — within first 3 days after formula_version bump (transient
 
 v2.5+ extends with `calibration_alpha_tuned`, `calibration_alert`, `data_quality_warn` — no schema change required, just new string constants in Go.
 
-`daily_scores.energy_*` columns become a roll-up (last bucket of the day) — no longer the source of truth.
+`daily_scores.energy_*` columns are legacy compatibility columns. They are no longer the source of truth and must not be dropped without an explicit reversible migration.
 
 ## Cadence — event-driven, not timer
 
@@ -211,7 +211,7 @@ Distribution of `bank_eod` under asymptotic restore: min=3, p10=17, p25=34, medi
 
 ## Phased delivery
 
-**v2.0 — skeleton.** Schema + event-driven recompute + sleep-only restore + UI hourly chart in hero `<details>` + live read with compute-on-read. Constants set to plausible starting values, calibration deferred. Old `EnergyBank` formula and verdict thresholds stay live until v2.0 is validated; AI orchestrator continues reading the daily snapshot field.
+**v2.0 — shipped skeleton.** Schema + event-driven recompute + sleep-only restore + UI hourly chart in hero `<details>` + latest-snapshot read. Constants set to plausible starting values, calibration deferred. The old `EnergyBank` formula is retained only as a cold-start fallback.
 
 **v2.1 — calibration.** Verdict thresholds are re-derived from the user's own day-level `energy_snapshots` distribution: one latest eligible snapshot per local date, never raw intraday rows. Mature personal calibration requires 30 distinct eligible dates for the current formula (`personal_latest_formula`) or for explicitly compatible formula versions during warmup (`personal_mixed_formula_warmup`). A guarded provisional mode exists for 20-29 compatible dates (`provisional_compatible_formula_warmup`): it uses the same 180-day window, clamps Rest / Recovery / PushHard so they are not more permissive than defaults, and exposes `UsedDays`, `LatestFormulaDays`, and `CompatibleFormulaDays` so clients do not mistake it for mature calibration. β stays at 0 (the autonomic-load term is a v2.2 piece, not v2.1) — tuning it here against pre-rubric data would fit it to whatever the bank already does, defeating the validation in STRESS_MEASUREMENT.md §4.5.
 
@@ -267,7 +267,7 @@ With one parameter and 30 observations against an external physiological signal,
 - **Per-user calibration tuning** at launch (everyone gets same starting α/β/quality_weight/z_threshold) — but constants live in `settings` table from day one, not as Go consts, so v2.1 can tune per-user without schema migration. β reserves the setting slot but stays at 0 effective until v2.2 ships and the §4.5 validation rubric passes; same for `z_threshold` and `stress_drain_enabled`. "Athlete profile" preset becomes a v2.1+ feature.
 - Workout-type detection (drain is HR/kcal driven, not exercise-class aware)
 - Real-time push notifications when bank drops below threshold
-- Migration of `daily_scores.energy_*` rows — left in place as-is; v2 starts writing alongside; `daily_scores` becomes a derived view of v2 snapshots in v2.1
+- Migration or removal of `daily_scores.energy_*` rows — left in place as-is as compatibility columns. Any destructive cleanup needs a separate reversible migration.
 
 ## Open implementation questions
 
@@ -277,7 +277,7 @@ These don't block v2.0 design but need resolution during build:
 
     | State | Trigger | Baseline source | UI |
     |---|---|---|---|
-    | `cold` | `n_nights < 3` overnight RHR samples in last 30d | None — `computeEnergyBank` returns `nil` | "Collecting baseline · 3 nights minimum" placeholder, no bank rendered |
+    | `cold` | `n_nights < 3` overnight RHR samples in last 30d | None — no v2 bank is rendered; briefing may still use the legacy fallback if its own data gate passes | "Collecting baseline · 3 nights minimum" placeholder, no bank rendered |
     | `warmup` | `3 ≤ n_nights < 7` OR newest sample > 14 days old | Simple mean of available samples (EMA α not calibrated for <7 points) | Bank rendered with `calibration_state: "warmup"` flag → frontend badges "calibrating · need N more nights" |
     | `steady` | `n_nights ≥ 7` AND newest sample ≤ 14 days old | EMA, α ≈ 0.25 (~7-day effective window) | Bank rendered normally |
 

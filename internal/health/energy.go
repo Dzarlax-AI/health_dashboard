@@ -5,7 +5,7 @@ import (
 	"math"
 )
 
-// Energy Bank — Bevel-inspired prescriptive metric.
+// Legacy Energy Bank — stateless daily fallback.
 //
 // Capacity is the user's "energy budget" at the start of the day, drawn from
 // the same readiness signal that already aggregates sleep + autonomic markers.
@@ -54,16 +54,18 @@ const (
 	currentPushHardMin    = 60 // need this and HRV green to push hard
 )
 
-// computeEnergyBank produces the day's prescriptive verdict. Returns nil when
-// the underlying readiness/sleep data is too thin — same gate as the readiness
-// score itself, keeps the briefing JSON clean for new accounts.
+// computeLegacyEnergyBank produces the v1 daily prescriptive verdict used only
+// as a compatibility fallback when no v2 energy_snapshots row exists for the
+// requested day. Returns nil when the underlying readiness/sleep data is too
+// thin — same gate as the readiness score itself, keeping the briefing JSON
+// clean for new accounts.
 //
 // `readinessScore` is the score already computed by computeReadiness — it
 // already blends sleep + HRV + RHR with the U-curve penalty, so we re-use it
 // as morning capacity rather than re-deriving an analogous number here.
 //
 // `headline` is consulted for the stress-coherence rule and may be nil.
-func computeEnergyBank(d RawMetrics, readinessScore int, headline *HeadlineSignal, ls LangStrings) *EnergyBank {
+func computeLegacyEnergyBank(d RawMetrics, readinessScore int, headline *HeadlineSignal, ls LangStrings) *EnergyBank {
 	if len(d.HRV) < minBaseline+2 || len(d.Sleep) < minBaseline+2 {
 		return nil
 	}

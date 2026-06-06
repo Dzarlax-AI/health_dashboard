@@ -67,10 +67,11 @@ func ComputeBriefing(d RawMetrics, lang string) *BriefingResponse {
 	resp.Overall = overallStatus(resp.Sections) // re-derive after coherence
 	updateReadinessServing(resp)
 
-	// Energy Bank runs *after* the coherence pass so a stress-capped readiness
-	// flows in as morning capacity, and so the verdict can downgrade
-	// `push_hard` when a stress headline is present.
-	resp.EnergyBank = computeEnergyBank(d, resp.ReadinessScore, headline, ls)
+	// Legacy EnergyBank runs after the coherence pass so it is a reasonable
+	// fallback for fresh tenants and days where the v2 snapshot has not been
+	// written yet. The storage briefing path replaces this with the latest
+	// v2 energy_snapshots row when one exists.
+	resp.EnergyBank = computeLegacyEnergyBank(d, resp.ReadinessScore, headline, ls)
 
 	return resp
 }

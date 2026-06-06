@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Implementation Plan: Issue #148 EnergyBank v1 Cleanup and Docs</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #1f2937; line-height: 1.5; }
+    main { max-width: 1100px; margin: 0 auto; padding: 32px; }
+    section { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin: 16px 0; }
+    h1, h2 { line-height: 1.2; margin-top: 0; }
+    code { background: #f3f4f6; padding: 2px 5px; border-radius: 4px; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #dcfce7; color: #166534; font-size: 12px; font-weight: 700; }
+    .risk { border-left: 4px solid #dc2626; }
+    .approval { border-left: 4px solid #d97706; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Implementation Plan: Issue #148 EnergyBank v1 Cleanup and Docs</h1>
+  <p class="badge">Approved and implemented</p>
+
+  <section>
+    <h2>Task Summary</h2>
+    <p>Audit remaining EnergyBank v1 code and documentation, then either remove obsolete v1 paths or explicitly document them as compatibility fallback. Update scoring docs so they describe the shipped v2 behavior rather than pending design language.</p>
+  </section>
+
+  <section>
+    <h2>Current Behavior</h2>
+    <ul>
+      <li><code>internal/health/energy.go::computeEnergyBank</code> is still called by <code>internal/health/scoring.go</code>.</li>
+      <li><code>internal/storage/briefing.go</code> computes the health response through the v1 path first, then overrides display bank/capacity/drain/verdict from <code>energy_snapshots</code> when a v2 snapshot exists.</li>
+      <li><code>internal/storage/energy_history.go::SaveEnergyBankSnapshot</code> still writes legacy <code>daily_scores.energy_*</code> columns; <code>GetEnergyHistory</code> serves the older EOD history path.</li>
+      <li><code>internal/storage/energy_history_v2.go</code> serves the newer hourly <code>energy_snapshots</code> path.</li>
+      <li><code>SCORING.md</code> still says EnergyBank is computed in <code>internal/health/energy.go::computeEnergyBank</code>, while <code>ENERGY_BANK.md</code> includes v2 design/cutover history and says old formula stays live in older roadmap text.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <ul>
+      <li>Every remaining v1 reference is either removed or labeled as compatibility/fallback with a current reason.</li>
+      <li>Docs describe the shipped v2 state machine, snapshot table, personal verdict bands, and legacy daily columns accurately.</li>
+      <li>No destructive DB cleanup is bundled unless separately approved and reversible.</li>
+      <li>Dashboard, Telegram, AI prompt, and MCP/debug paths continue to render EnergyBank correctly.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Assumptions And Unknowns</h2>
+    <ul>
+      <li>Assumption: do not drop <code>daily_scores.energy_*</code> in this PR; keep or deprecate them unless a separate migration is approved.</li>
+      <li>Assumption: <code>computeEnergyBank</code> may still be needed as a bootstrap/fallback when no v2 snapshot exists.</li>
+      <li>Unknown: whether the legacy sparkline path is still used by any client after the v2 hourly chart.</li>
+      <li>Unknown: whether production has enough v2 stability to remove fallback behavior entirely; issue says at least 7 production days without material issues.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Files Likely To Change</h2>
+    <ul>
+      <li><code>internal/health/energy.go</code> and <code>internal/health/scoring.go</code> - only if v1 fallback can be safely removed or renamed as legacy.</li>
+      <li><code>internal/storage/briefing.go</code> - clarify or simplify v1-to-v2 override comments and persistence behavior.</li>
+      <li><code>internal/storage/energy_history.go</code>, <code>internal/storage/energy_history_v2.go</code>, and related UI handlers - audit whether legacy EOD history is still needed.</li>
+      <li><code>SCORING.md</code>, <code>ENERGY_BANK.md</code>, <code>README.md</code>, <code>AGENTS.md</code>, <code>CLAUDE.md</code> - update current methodology and compatibility notes.</li>
+      <li><code>internal/health/*energy*_test.go</code> and storage energy tests - update tests only where they pin obsolete v1 behavior.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation Steps</h2>
+    <ol>
+      <li>Run <code>git grep computeEnergyBank</code>, <code>git grep SaveEnergyBankSnapshot</code>, and <code>git grep energy_</code> to build a final removal/deprecation list.</li>
+      <li>Trace dashboard, Telegram report, AI prompt, MCP, and chart reads to identify which paths still depend on legacy daily columns.</li>
+      <li>Decide between two safe paths: docs-only deprecation of v1 fallback, or code removal where no live callsite remains.</li>
+      <li>Update methodology docs first so reviewers can check intended current behavior.</li>
+      <li>Apply the smallest code cleanup that matches the audit; avoid schema drops.</li>
+      <li>Run EnergyBank-focused tests and full Go verification.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Impact</h2>
+    <ul>
+      <li><strong>Data:</strong> no destructive migration planned; legacy columns remain unless separately approved.</li>
+      <li><strong>API/UX:</strong> EnergyBank JSON shape should remain compatible.</li>
+      <li><strong>Docs:</strong> methodology docs become the main output if code still needs v1 fallback.</li>
+      <li><strong>Deployment:</strong> normal app deploy only if production code changes; docs-only changes need no deploy for runtime behavior.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <ul>
+      <li><code>go test ./internal/health -run "Test.*Energy|Test.*Verdict" -count=1</code></li>
+      <li><code>go test ./internal/storage -run "Test.*Energy" -count=1</code></li>
+      <li><code>go test ./internal/ui -run "Test.*Energy|Test.*Dashboard" -count=1</code> if UI/chart handlers change.</li>
+      <li><code>go test ./...</code></li>
+      <li><code>go vet ./...</code></li>
+      <li>Manual QA if deployed: confirm dashboard hero EnergyBank, hourly chart, and Telegram morning report still render.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks And Edge Cases</h2>
+    <ul>
+      <li>Removing v1 too early can break cold-start tenants or days with no v2 snapshot.</li>
+      <li>Docs can become inconsistent if <code>AGENTS.md</code> and <code>CLAUDE.md</code> are not kept in lockstep.</li>
+      <li>Legacy daily columns may still support old chart or AI history paths; audit before removal.</li>
+      <li>Changing EnergyBank behavior under a cleanup issue would be out of scope.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <p>For docs/test cleanup, revert the PR. For any code removal, restore the legacy fallback callsite and tests. No database rollback is expected because schema drops are excluded from this plan.</p>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Should <code>computeEnergyBank</code> remain as a named legacy fallback until all tenants have v2 snapshots?</li>
+      <li>Is the old EOD <code>GetEnergyHistory</code> path still needed by any frontend or mobile client?</li>
+      <li>Do we want a separate future issue for dropping <code>daily_scores.energy_*</code> columns after compatibility expires?</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval Gate</h2>
+    <p>Approved by the user on 2026-06-06 before implementation.</p>
+  </section>
+
+  <section>
+    <h2>Implementation Result</h2>
+    <ul>
+      <li>Renamed <code>computeEnergyBank</code> to <code>computeLegacyEnergyBank</code> to make the remaining v1 behavior explicitly compatibility-only.</li>
+      <li>Kept the legacy fallback behavior unchanged for fresh tenants and days before a v2 snapshot exists.</li>
+      <li>Updated storage, server, UI, and chart comments that still described v2 as passive, pending, or waiting for a future UI flip.</li>
+      <li>Updated <code>SCORING.md</code> and <code>ENERGY_BANK.md</code> so v2 is documented as the current shipped path and <code>daily_scores.energy_*</code> columns are documented as legacy compatibility columns.</li>
+      <li>No schema drops or destructive database cleanup were included.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Verification Run</h2>
+    <ul>
+      <li><code>gofmt -w</code> on changed Go files.</li>
+      <li><code>go test ./internal/health -run "Test.*Energy|Test.*Verdict" -count=1</code></li>
+      <li><code>go test ./internal/storage -run "Test.*Energy" -count=1</code></li>
+      <li><code>go test ./internal/ui -run "Test.*Energy|Test.*Dashboard" -count=1</code></li>
+      <li><code>go test ./...</code></li>
+      <li><code>go vet ./...</code></li>
+      <li><code>git diff --check</code></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Known Limitations And Follow-Up</h2>
+    <ul>
+      <li>The legacy fallback is intentionally still present; removing it would need a separate compatibility decision.</li>
+      <li><code>daily_scores.energy_*</code> columns remain in place and should only be removed by a future explicit migration.</li>
+      <li>The day-level history endpoint remains available for compatibility and AI verdict-history context.</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>
