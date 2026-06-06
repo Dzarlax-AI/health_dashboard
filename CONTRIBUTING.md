@@ -25,6 +25,20 @@ Dependencies are managed through normal Go module resolution. Review dependency 
 
 DB-backed integration tests skip when no Postgres connection is configured. To run them, provide libpq environment variables or `READINESS_TEST_DSN`. Tests create throwaway schemas and drop them during cleanup.
 
+### CI and race detector policy
+
+The default required-looking CI job is `Build, Vet & Test`. Keep that job name stable unless repository branch protection is updated at the same time.
+
+Default PR and push CI uses `CGO_ENABLED=0` for build, vet, and tests, matching the production binary. Race detector tests are available as a manual GitHub Actions run: start the `CI` workflow with `run_race=true`. Race-only dispatches do not publish Docker images, even when the image build inputs are left at their defaults. Use this before merging changes that touch tenant management, scheduler goroutines, async AI generation, recompute coordination, Telegram webhook dispatch, or notification loops.
+
+For local checks on a machine with a CGO toolchain:
+
+```bash
+CGO_ENABLED=1 go test -race ./...
+```
+
+Branch protection is managed in GitHub repository settings, not in this tree. As of 2026-06-06, the GitHub API reports `main` as not protected. Enabling required checks is a separate admin decision; if enabled, require the `Build, Vet & Test` check first and only require `Race Detector` after deciding that every PR should pay the CGO/race runtime cost.
+
 ## Pull Request Guidelines
 
 - Keep behavioral changes focused and explain the data contract they affect.

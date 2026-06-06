@@ -15,6 +15,10 @@ on:
         description: "Build ARM64 image"
         type: boolean
         default: false
+      run_race:
+        description: "Run Go race detector tests"
+        type: boolean
+        default: false
 
 env:
   REGISTRY: ghcr.io
@@ -45,18 +49,36 @@ jobs:
       # services into this job; the build job's purpose is catching
       # logic regressions in seconds, not standing up a stack.
       #
-      # CGO_ENABLED stays at 0 (matches the build above). `-race`
-      # would catch goroutine data-race regressions but requires
-      # CGO=1, so we skip it; the test set today is mostly
-      # math-kernel pure functions where -race adds little.
+      # CGO_ENABLED stays at 0 (matches the build above). Use the
+      # manual Race Detector job when reviewing concurrency-sensitive
+      # changes; it runs with CGO=1 because Go's -race requires CGO.
       - name: Test
         run: CGO_ENABLED=0 go test ./...
+
+  race:
+    name: Race Detector
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_race }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test with race detector
+        run: CGO_ENABLED=1 go test -race ./...
 
   docker-amd64:
     name: Docker Build & Push (amd64)
     needs: build
     runs-on: ubuntu-latest
-    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.build_amd64)) }}
+    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.build_amd64 && !inputs.run_race)) }}
     permissions:
       contents: read
       packages: write
@@ -97,7 +119,7 @@ jobs:
     name: Docker Build & Push (arm64)
     needs: build
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_arm64 }}
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.build_arm64 && !inputs.run_race }}
     permissions:
       contents: read
       packages: write
