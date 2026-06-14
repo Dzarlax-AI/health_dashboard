@@ -48,15 +48,16 @@ func main() {
 
 	// Env-level defaults for the first/only tenant.
 	envNotifyDefaults := storage.NotifyConfig{
-		Token:              os.Getenv("TELEGRAM_TOKEN"),
-		ChatID:             os.Getenv("TELEGRAM_CHAT_ID"),
-		Lang:               getEnv("REPORT_LANG", "en"),
-		Timezone:           getEnv("REPORT_TZ", ""),
-		MorningWeekdayHour: getEnvInt("REPORT_MORNING_WEEKDAY", 8),
-		MorningWeekendHour: getEnvInt("REPORT_MORNING_WEEKEND", 9),
-		EveningWeekdayHour: getEnvInt("REPORT_EVENING_WEEKDAY", 20),
-		EveningWeekendHour: getEnvInt("REPORT_EVENING_WEEKEND", 21),
-		MorningCapHour:     getEnvInt("REPORT_MORNING_CAP", 0),
+		Token:                os.Getenv("TELEGRAM_TOKEN"),
+		ChatID:               os.Getenv("TELEGRAM_CHAT_ID"),
+		Lang:                 getEnv("REPORT_LANG", "en"),
+		Timezone:             getEnv("REPORT_TZ", ""),
+		MorningWeekdayHour:   getEnvInt("REPORT_MORNING_WEEKDAY", 8),
+		MorningWeekendHour:   getEnvInt("REPORT_MORNING_WEEKEND", 9),
+		EveningWeekdayHour:   getEnvInt("REPORT_EVENING_WEEKDAY", 20),
+		EveningWeekendHour:   getEnvInt("REPORT_EVENING_WEEKEND", 21),
+		TelegramRichMessages: getEnvBool("TELEGRAM_RICH_MESSAGES", false),
+		MorningCapHour:       getEnvInt("REPORT_MORNING_CAP", 0),
 	}
 	envAIDefaults := storage.AIConfig{
 		APIKey:          os.Getenv("GEMINI_API_KEY"),
@@ -506,15 +507,16 @@ func tenantLocalNow(db *storage.DB, defaults storage.NotifyConfig) time.Time {
 // finding all three call sites.
 func buildNotifyCfg(db *storage.DB, c storage.NotifyConfig) notify.Config {
 	cfg := notify.Config{
-		Token:              c.Token,
-		ChatID:             c.ChatID,
-		Lang:               c.Lang,
-		Timezone:           c.Timezone,
-		MorningWeekdayHour: c.MorningWeekdayHour,
-		MorningWeekendHour: c.MorningWeekendHour,
-		EveningWeekdayHour: c.EveningWeekdayHour,
-		EveningWeekendHour: c.EveningWeekendHour,
-		MorningCapHour:     c.MorningCapHour,
+		Token:                c.Token,
+		ChatID:               c.ChatID,
+		Lang:                 c.Lang,
+		Timezone:             c.Timezone,
+		MorningWeekdayHour:   c.MorningWeekdayHour,
+		MorningWeekendHour:   c.MorningWeekendHour,
+		EveningWeekdayHour:   c.EveningWeekdayHour,
+		EveningWeekendHour:   c.EveningWeekendHour,
+		TelegramRichMessages: c.TelegramRichMessages,
+		MorningCapHour:       c.MorningCapHour,
 	}
 	if h, m, ok := db.GetTypicalWakeTime(14); ok {
 		cfg.TypicalWakeHour = h
@@ -1226,6 +1228,15 @@ func getEnvInt(key string, fallback int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
+		}
+	}
+	return fallback
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	if v := os.Getenv(key); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
 		}
 	}
 	return fallback

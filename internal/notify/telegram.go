@@ -17,6 +17,8 @@ import (
 // handler indefinitely.
 const telegramHTTPTimeout = 5 * time.Second
 
+var telegramAPIBase = "https://api.telegram.org"
+
 // Bot is a minimal Telegram bot client.
 type Bot struct {
 	token  string
@@ -25,6 +27,10 @@ type Bot struct {
 
 func NewBot(token, chatID string) *Bot {
 	return &Bot{token: token, chatID: chatID}
+}
+
+func botAPIURL(token, method string) string {
+	return fmt.Sprintf("%s/bot%s/%s", telegramAPIBase, token, method)
 }
 
 // postJSON is the shared http.Post-with-timeout used by every Bot
@@ -43,7 +49,7 @@ func postJSON(url string, payload []byte) (*http.Response, error) {
 
 // Send sends an HTML-formatted message to the configured chat.
 func (b *Bot) Send(text string) error {
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", b.token)
+	url := botAPIURL(b.token, "sendMessage")
 	payload, _ := json.Marshal(map[string]string{
 		"chat_id":    b.chatID,
 		"text":       text,
@@ -56,6 +62,51 @@ func (b *Bot) Send(text string) error {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("telegram API: status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func buildRichMessagePayload(chatID, html string, replyMarkup any) ([]byte, error) {
+	payload := map[string]any{
+		"chat_id": chatID,
+		"rich_message": map[string]any{
+			"html": html,
+		},
+	}
+	if replyMarkup != nil {
+		payload["reply_markup"] = replyMarkup
+	}
+	return json.Marshal(payload)
+}
+
+// SendRichHTML sends a Telegram Rich Message using InputRichMessage.html.
+func (b *Bot) SendRichHTML(html string) error {
+	url := botAPIURL(b.token, "sendRichMessage")
+	payload, err := buildRichMessagePayload(b.chatID, html, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := postJSON(url, payload)
+	if err != nil {
+		return fmt.Errorf("telegram sendRichMessage: %w", err)
+	}
+	defer resp.Body.Close()
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return fmt.Errorf("telegram sendRichMessage: read body: %w", readErr)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("telegram API: status %d body=%s", resp.StatusCode, body)
+	}
+	var parsed struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return fmt.Errorf("telegram response decode: %w", err)
+	}
+	if !parsed.OK {
+		return fmt.Errorf("telegram API: ok=false description=%q", parsed.Description)
 	}
 	return nil
 }
@@ -84,7 +135,7 @@ func buildInlineKeyboardPayload(chatID, text string, rows [][]InlineButton) ([]b
 // markup. Returns the Telegram message_id on success so callers can
 // persist it (useful for edit-after-answer flows in later PRs).
 func (b *Bot) SendInlineKeyboard(text string, rows [][]InlineButton) (int64, error) {
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", b.token)
+	url := botAPIURL(b.token, "sendMessage")
 	payload, err := buildInlineKeyboardPayload(b.chatID, text, rows)
 	if err != nil {
 		return 0, err
@@ -123,7 +174,7 @@ func (b *Bot) SendInlineKeyboard(text string, rows [][]InlineButton) (int64, err
 // SendInlineKeyboard does. Without that, a 200-with-ok-false would
 // be silently treated as success.
 func (b *Bot) AnswerCallbackQuery(callbackQueryID, text string) error {
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/answerCallbackQuery", b.token)
+	url := botAPIURL(b.token, "answerCallbackQuery")
 	payload, _ := json.Marshal(map[string]any{
 		"callback_query_id": callbackQueryID,
 		"text":              text,

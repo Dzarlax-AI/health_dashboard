@@ -2,6 +2,7 @@ package notify
 
 import (
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -21,8 +22,9 @@ type Config struct {
 	MorningWeekendHour int
 
 	// Hour (0–23) at which to send the evening day summary.
-	EveningWeekdayHour int
-	EveningWeekendHour int
+	EveningWeekdayHour   int
+	EveningWeekendHour   int
+	TelegramRichMessages bool
 
 	// Smart-retry deadline. The morning trigger keeps deferring until sleep
 	// data settles (see storage.SleepSettled); past this hour it force-sends
@@ -204,13 +206,20 @@ func SendMorningSmartOpts(bot *Bot, db *storage.DB, cfg Config, opts MorningSend
 	aiBlocks := db.GetAIBlocks(today, cfg.Lang)
 	fresh := computeFreshness(db, time.Now())
 	msg := formatMorning(briefing, aiBlocks, cfg.Lang, loc, fresh, opts.CheckinExpired)
+	richMsg := ""
+	if cfg.TelegramRichMessages {
+		richMsg = formatMorningRich(briefing, aiBlocks, cfg.Lang, loc, fresh, opts.CheckinExpired, "")
+	}
 
 	if !status.Settled {
 		if banner := tr(cfg.Lang, "tg_stale_"+status.Reason); banner != "" && banner != "tg_stale_"+status.Reason {
 			msg = banner + "\n\n" + msg
+			if cfg.TelegramRichMessages {
+				richMsg = formatMorningRich(briefing, aiBlocks, cfg.Lang, loc, fresh, opts.CheckinExpired, banner)
+			}
 		}
 	}
-	return true, status.Reason, bot.Send(msg)
+	return true, status.Reason, sendReportHTML(bot, cfg, "morning", richMsg, msg)
 }
 
 // SendEvening sends a "today so far" snapshot. Activity bullets are intentionally
@@ -226,7 +235,28 @@ func SendEvening(bot *Bot, db *storage.DB, cfg Config) error {
 		return err
 	}
 	fresh := computeFreshness(db, time.Now())
-	return bot.Send(formatEvening(briefing, dash, cfg.Lang, cfg.location(), fresh))
+	fallback := formatEvening(briefing, dash, cfg.Lang, cfg.location(), fresh)
+	rich := ""
+	if cfg.TelegramRichMessages {
+		rich = formatEveningRich(briefing, dash, cfg.Lang, cfg.location(), fresh)
+	}
+	return sendReportHTML(bot, cfg, "evening", rich, fallback)
+}
+
+type htmlReportSender interface {
+	Send(text string) error
+	SendRichHTML(html string) error
+}
+
+func sendReportHTML(bot htmlReportSender, cfg Config, label, richHTML, fallbackHTML string) error {
+	if cfg.TelegramRichMessages && strings.TrimSpace(richHTML) != "" {
+		if err := bot.SendRichHTML(richHTML); err == nil {
+			return nil
+		} else {
+			log.Printf("telegram %s rich send failed, falling back to sendMessage HTML: %v", label, err)
+		}
+	}
+	return bot.Send(fallbackHTML)
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

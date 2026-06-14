@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Implementation Plan: Telegram Rich Messages</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #1f2937; line-height: 1.5; }
+    main { max-width: 1100px; margin: 0 auto; padding: 32px; }
+    section { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin: 16px 0; }
+    h1, h2, h3 { line-height: 1.2; }
+    code { background: #f3f4f6; padding: 2px 5px; border-radius: 4px; }
+    a { color: #2563eb; }
+    li { margin: 6px 0; }
+    table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+    th, td { border: 1px solid #e5e7eb; padding: 8px; text-align: left; vertical-align: top; }
+    th { background: #f9fafb; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #e5e7eb; font-size: 12px; font-weight: 600; }
+    .callout { border-left: 4px solid #2563eb; }
+    .risk { border-left: 4px solid #dc2626; }
+    .approval { border-left: 4px solid #d97706; }
+    .muted { color: #6b7280; }
+    .mockups { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+    .telegram-mock { background: #e7f2fb; border: 1px solid #c7ddea; border-radius: 8px; padding: 16px; }
+    .bubble { background: #fff; border-radius: 8px; padding: 14px; box-shadow: 0 1px 2px rgba(31, 41, 55, 0.12); font-size: 14px; }
+    .bubble h3 { margin: 0 0 10px; font-size: 18px; }
+    .bubble h4 { margin: 14px 0 6px; font-size: 15px; }
+    .bubble p { margin: 8px 0; }
+    .bubble ul { margin: 6px 0 8px 20px; padding: 0; }
+    .bubble blockquote { margin: 8px 0; padding: 8px 10px; border-left: 3px solid #8bb9dd; background: #f5fbff; color: #374151; }
+    .bubble details { margin: 8px 0; padding: 8px 10px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; }
+    .bubble table { font-size: 13px; }
+    .sample { font-size: 12px; color: #6b7280; margin-top: 10px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Implementation Plan: Telegram Rich Messages</h1>
+  <p class="badge">Approval required before implementation</p>
+  <p class="muted">Issue: <a href="https://github.com/Dzarlax-AI/health_dashboard/issues/183">#183 Upgrade Telegram reports to Rich Messages</a></p>
+
+  <section>
+    <h2>Task Summary</h2>
+    <p>Upgrade the Telegram report delivery path to use Telegram Bot API Rich Messages for the morning and evening reports, while preserving the current <code>sendMessage</code> HTML path as a reliable fallback. The goal is a more scannable daily report surface, not a broad notification rewrite.</p>
+  </section>
+
+  <section>
+    <h2>Inspected Current Behavior</h2>
+    <ul>
+      <li><code>internal/notify/telegram.go</code> has a minimal <code>Bot</code> client. Regular messages go through <code>Bot.Send</code>, which POSTs to <code>/sendMessage</code> with <code>parse_mode=HTML</code>.</li>
+      <li><code>buildInlineKeyboardPayload</code> and <code>SendInlineKeyboard</code> also use <code>/sendMessage</code> with <code>reply_markup</code> for the morning subjective check-in buttons.</li>
+      <li><code>internal/notify/report.go</code> builds the morning report in <code>formatMorning</code> as one flat HTML string. It already keeps rule-based bullets authoritative and places AI commentary underneath each section.</li>
+      <li><code>SendMorningSmartOpts</code> is the main morning delivery path. It computes sleep-settled status, fetches briefing data and AI blocks, formats the message, prepends stale banners when needed, and calls <code>bot.Send(msg)</code>.</li>
+      <li><code>SendEvening</code> builds the evening report through <code>formatEvening</code> and sends it through the same <code>Bot.Send</code> path. Weekly quality digest and proactive notifications also share this path, but they should stay unchanged in the first vertical slice.</li>
+      <li><code>internal/notify/telegram_test.go</code> currently tests inline keyboard payload shape directly; there are no tests yet for regular send payload shape or rich-message fallback.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Telegram API Facts</h2>
+    <ul>
+      <li>Telegram Bot API 10.1 added Rich Messages on 2026-06-11.</li>
+      <li><code>sendRichMessage</code> requires <code>chat_id</code> and <code>rich_message</code>.</li>
+      <li><code>InputRichMessage</code> accepts exactly one of <code>html</code> or <code>markdown</code>. This plan uses <code>html</code> to stay close to the current formatter.</li>
+      <li>Supported rich HTML includes headings, paragraphs, lists, block quotes, tables, <code>details</code>, <code>hr</code>, inline formatting, and anchors.</li>
+      <li><code>sendRichMessage</code> still accepts <code>reply_markup</code>, but this first slice does not move the check-in prompt because it does not need richer formatting.</li>
+      <li>Media blocks support only HTTP/HTTPS URLs. This plan does not add media blocks.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <ul>
+      <li>Morning and evening reports can be sent via <code>sendRichMessage</code> when rich sending is enabled.</li>
+      <li>If rich sending fails with a Telegram API error, transport error, or invalid response, the same report still sends through the current <code>sendMessage</code> HTML path.</li>
+      <li>The first rich morning report is structured as a compact, readable health briefing:
+        <ul>
+          <li>top heading with date and stale-data banner when present;</li>
+          <li>summary table for EnergyBank, readiness, sleep, and recovery/watch status;</li>
+          <li>section headings and lists for rule-based findings;</li>
+          <li>AI commentary in block quotes so it is visually distinct from rule-based bullets;</li>
+          <li><code>details</code> blocks for sleep sources and freshness diagnostics where useful;</li>
+          <li>final recommendation block near the end.</li>
+        </ul>
+      </li>
+      <li>The rich evening report is smaller but should use the same visual language:
+        <ul>
+          <li>heading with date and stale-data banner when present;</li>
+          <li>today-so-far summary table for steps, active energy, and exercise when dashboard data is current;</li>
+          <li>EnergyBank and readiness sections with concise guidance;</li>
+          <li>alert and insight lists preserved from the current report;</li>
+          <li>phone-off or missing-activity banners still replacing misleading dashboard cards.</li>
+        </ul>
+      </li>
+      <li>Weekly digest, proactive notifications, and check-in buttons remain on the existing path for this issue unless a later approval expands scope.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Message Mockups</h2>
+    <p class="muted">Static sample only. Values below are illustrative placeholders for layout review, not health data or target thresholds.</p>
+    <div class="mockups">
+      <div class="telegram-mock">
+        <div class="bubble">
+          <h3>🌅 Morning Report — 2026-06-14</h3>
+          <p><strong>💡 Stable recovery, moderate load recommended</strong><br>
+          <em>Sleep was adequate, but recovery markers are mixed. Keep the day controlled.</em></p>
+          <table>
+            <tr><th>Signal</th><th>Now</th><th>Read</th></tr>
+            <tr><td>⚡ EnergyBank</td><td>64/100</td><td>Moderate</td></tr>
+            <tr><td>🟡 Readiness</td><td>71/100</td><td>Fair</td></tr>
+            <tr><td>😴 Sleep</td><td>7.3h</td><td>OK</td></tr>
+            <tr><td>❤️ Recovery</td><td>Mixed</td><td>Watch markers present</td></tr>
+          </table>
+
+          <h4>😴 Sleep</h4>
+          <ul>
+            <li>Total: 7.3h</li>
+            <li>Deep: 1.1h</li>
+            <li>Awake: 0.4h</li>
+          </ul>
+          <blockquote>🤖 Good enough for a normal day, but not a strong recovery signal. Avoid stacking hard training with poor sleep consistency.</blockquote>
+
+          <details>
+            <summary>Sleep sources</summary>
+            <ul>
+              <li>Apple Watch — 7.3h</li>
+              <li>RingConn — 7.0h</li>
+            </ul>
+          </details>
+
+          <h4>📅 Yesterday</h4>
+          <ul>
+            <li>Steps: 9,800</li>
+            <li>Active energy: 620 kcal</li>
+            <li>Exercise: 42 min</li>
+          </ul>
+
+          <h4>🎯 Recommendation</h4>
+          <p><strong>Moderate push.</strong> Train if planned, but keep intensity below all-out and stop early if HRV/RHR feel off.</p>
+          <p class="sample">Sample rich blocks: heading, table, list, blockquote, details.</p>
+        </div>
+      </div>
+
+      <div class="telegram-mock">
+        <div class="bubble">
+          <h3>🌆 Evening Report — 2026-06-14</h3>
+          <p><strong>Today so far</strong></p>
+          <table>
+            <tr><th>Metric</th><th>Value</th><th>Vs yesterday</th></tr>
+            <tr><td>👟 Steps</td><td>8,400</td><td>+12%</td></tr>
+            <tr><td>🔥 Active kcal</td><td>540</td><td>-4%</td></tr>
+            <tr><td>🏃 Exercise</td><td>35 min</td><td>+8%</td></tr>
+          </table>
+
+          <h4>⚡ EnergyBank</h4>
+          <p><strong>52/100 — Moderate</strong><br>
+          <em>Capacity drained during the day, but not enough to force rest.</em></p>
+
+          <h4>🟡 Readiness</h4>
+          <p><strong>71/100 — Fair</strong><br>
+          Trend is usable, but not a recovery peak.</p>
+
+          <h4>💡 Insights</h4>
+          <ul>
+            <li>Activity is on track for a normal training day.</li>
+            <li>No critical health alerts in the evening snapshot.</li>
+            <li>Keep tonight's wind-down consistent to protect tomorrow's recovery.</li>
+          </ul>
+
+          <details>
+            <summary>Freshness diagnostics</summary>
+            <ul>
+              <li>Steps: fresh</li>
+              <li>Sleep: from last night</li>
+              <li>Watch markers: fresh</li>
+            </ul>
+          </details>
+          <p class="sample">Sample rich blocks: heading, today table, sections, list, details.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Assumptions and Unknowns</h2>
+    <ul>
+      <li>Assumption: Telegram clients used by the recipient can display Rich Messages. Fallback protects delivery if the Bot API rejects the call.</li>
+      <li>Assumption: A transport-level feature flag is useful during rollout. The likely shape is a small config boolean, sourced from an env var and/or existing settings pattern, without adding a UI control in the first slice.</li>
+      <li>Unknown: Whether Telegram rich HTML will render every supported block consistently on all client platforms. Manual QA must inspect the received message in the real client.</li>
+      <li>Unknown: Whether the current AI block text can contain characters that need stricter escaping under rich HTML. The rich renderer should escape dynamic text deliberately instead of relying on Telegram parsing tolerance.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Files Likely to Change</h2>
+    <table>
+      <thead>
+        <tr><th>File</th><th>Reason</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>internal/notify/telegram.go</code></td><td>Add a rich-message payload builder and <code>Bot.SendRichHTML</code> or equivalent. Keep <code>Bot.Send</code> unchanged for fallback and other notification surfaces.</td></tr>
+        <tr><td><code>internal/notify/telegram_test.go</code></td><td>Cover rich payload shape, response error handling, and fallback-relevant helpers.</td></tr>
+        <tr><td><code>internal/notify/report.go</code></td><td>Route morning and evening delivery through rich send when enabled and keep existing formatting as fallback.</td></tr>
+        <tr><td><code>internal/notify/report_rich.go</code> or similar new file</td><td>Keep the rich morning and evening renderers separate from the existing flat HTML formatters to reduce churn and make rollback easy.</td></tr>
+        <tr><td><code>internal/notify/report_test.go</code></td><td>Pin rich renderer structure for key sections, stale banners, AI block quotes, evening dashboard table, and fallback behavior where feasible.</td></tr>
+        <tr><td><code>cmd/server/main.go</code> or notification config loading code</td><td>Only if a feature flag must be threaded through <code>notify.Config</code>.</td></tr>
+        <tr><td><code>AGENTS.md</code> / <code>CLAUDE.md</code></td><td>Only if implementation establishes a durable new convention for Telegram rich rendering that future agents must follow.</td></tr>
+        <tr><td><code>docs/ai-plans/2026-06-14-telegram-rich-messages.html</code></td><td>Update after implementation with actual changes, checks, known limitations, and follow-up recommendations.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Implementation Steps</h2>
+    <ol>
+      <li>Add package-private rich payload builders in <code>internal/notify/telegram.go</code>:
+        <code>buildRichMessagePayload(chatID, html string, replyMarkup any)</code> or a small options struct.
+      </li>
+      <li>Add <code>Bot.SendRichHTML(html string)</code> that POSTs to <code>/sendRichMessage</code>, decodes Telegram's <code>{ok, description}</code> response, and returns useful errors on <code>ok=false</code>.</li>
+      <li>Add a send wrapper for reports, for example <code>sendReportHTML(bot, richHTML, fallbackHTML, enabled, label)</code>, where rich failure logs the report label and then calls <code>bot.Send(fallbackHTML)</code>.</li>
+      <li>Create rich morning and evening renderers in a separate file. Reuse the same source data passed to <code>formatMorning</code> and <code>formatEvening</code>: <code>BriefingResponse</code>, dashboard data, AI blocks, language, location, freshness, and check-in expiry state where applicable.</li>
+      <li>Centralize minimal rich HTML escaping for dynamic text. Numeric values and trusted tags should be assembled by helpers; health labels, notes, AI prose, source names, and translated strings should be escaped before interpolation.</li>
+      <li>Keep the existing <code>formatMorning</code> and <code>formatEvening</code> outputs as fallback bodies. Do not remove or substantially rewrite them in this issue.</li>
+      <li>Thread a small enablement flag through notification config if needed. Prefer a simple default and document the rollout behavior in this plan after implementation.</li>
+      <li>Add focused unit tests for payload shape, rich renderer structure, and fallback path. Avoid live Telegram tests in the automated suite.</li>
+      <li>Run Go tests and, after explicit deploy/send approval, use the admin test-send path or a controlled manual send to inspect the real Telegram rendering.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Impact</h2>
+    <ul>
+      <li>Data and migrations: no database schema change expected.</li>
+      <li>API contracts: no inbound HTTP API change expected. Outbound Telegram API usage adds <code>sendRichMessage</code>.</li>
+      <li>Auth and permissions: no new app permissions. Telegram bot token and chat ID remain the existing credentials.</li>
+      <li>Deployment: if a feature flag is added, deployment must set or verify it explicitly. No Docker or proxy changes expected.</li>
+      <li>User experience: morning and evening Telegram reports become more structured and easier to scan. Delivery should remain reliable through fallback.</li>
+      <li>Operations: logs should distinguish rich-send failure from total notification failure so fallback does not hide compatibility problems.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <ul>
+      <li><code>go test ./internal/notify -run "Telegram|Morning|Rich" -count=1</code></li>
+      <li><code>go test ./internal/notify -count=1</code></li>
+      <li><code>go test ./...</code></li>
+      <li>If config loading changes: add the relevant package test for env/settings parsing.</li>
+      <li>Manual, after approval: send one controlled test morning report and one controlled test evening report to Telegram. Inspect heading, tables, lists, block quotes/details where present, and fallback logs.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Manual QA Checklist</h2>
+    <ul>
+      <li>Morning report arrives once, not once through rich and once through fallback.</li>
+      <li>Evening report arrives once, not once through rich and once through fallback.</li>
+      <li>Morning top summary table is readable on mobile Telegram.</li>
+      <li>Evening today-so-far table is readable on mobile Telegram.</li>
+      <li>Rule-based bullets are still visible and not replaced by AI prose.</li>
+      <li>AI commentary is visually distinct from rule-based output.</li>
+      <li>Sleep source details render correctly when multiple sources are present.</li>
+      <li>Stale-data and device-off banners still appear in the right scenarios.</li>
+      <li>Check-in prompt and callback flow still use the existing inline keyboard path and are not regressed.</li>
+      <li>Fallback path can be exercised by forcing rich send disabled or simulating an API error in tests.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks and Edge Cases</h2>
+    <ul>
+      <li>Telegram rich HTML is new. The Bot API may accept the payload but some client layouts may be less polished than expected.</li>
+      <li>Dynamic text escaping matters more when assembling richer HTML. A single unescaped <code>&lt;</code>, <code>&amp;</code>, or malformed tag in AI prose could reject the rich send.</li>
+      <li>Rich reports may be longer than the current flat report once table/details markup is included. Keep the first version compact.</li>
+      <li>Fallback must not bypass report dedup semantics. For morning reports, fallback should happen inside one send attempt, after the report has already passed the existing <code>HasSentMorningReport</code> and sleep-settled gates.</li>
+      <li>Do not migrate proactive notifications in the same change. They have their own cadence and persistence rules, so broad changes increase duplicate-send risk.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <p>Disable the rich-message feature flag if present, or revert the morning and evening sender call sites to <code>bot.Send(formatMorning(...))</code> and <code>bot.Send(formatEvening(...))</code>. Because the existing flat HTML formatters remain in place and no schema migration is planned, rollback should be a code/config rollback only. If a live deploy shows Telegram rendering problems but fallback still works, leave fallback enabled and disable rich send while preserving notification delivery.</p>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Should rich messages be enabled by default after deploy, or should the first deploy keep them behind an explicit env/settings flag until a live manual send is inspected?</li>
+      <li>Should the first rich renderer include a <code>details</code> diagnostics block by default, or only when stale/device-off/source-divergence conditions exist?</li>
+      <li>Should weekly quality digest be the second slice after morning and evening report validation? It is a good candidate for tables but should not be bundled into the first PR.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval Gate</h2>
+    <p>Implementation must not start until the user explicitly approves this plan. Approval scope is limited to Telegram rich-message transport, rich morning and evening report rendering, fallback behavior, tests, and plan updates. Weekly digest, proactive notifications, check-in prompt transport changes, and deployment are out of scope unless separately approved.</p>
+  </section>
+
+  <section class="callout">
+    <h2>Post-Implementation Update</h2>
+    <h3>Actual Changes</h3>
+    <ul>
+      <li>Added <code>sendRichMessage</code> support in <code>internal/notify/telegram.go</code> via <code>Bot.SendRichHTML</code> and a testable <code>buildRichMessagePayload</code>.</li>
+      <li>Kept the existing <code>Bot.Send</code> / <code>sendMessage</code> HTML path intact for all legacy notifications and fallback delivery.</li>
+      <li>Added <code>sendReportHTML</code>, which tries rich send only when enabled and falls back once to legacy HTML on rich-send failure.</li>
+      <li>Added rich morning and evening renderers in <code>internal/notify/report_rich.go</code>, using headings, tables, lists, block quotes, and details blocks.</li>
+      <li>Wired morning and evening report send paths to generate both rich and fallback bodies from the same source data.</li>
+      <li>Added opt-in config flag <code>TELEGRAM_RICH_MESSAGES</code> and DB setting <code>telegram_rich_messages</code>, defaulting to <code>false</code> for conservative rollout.</li>
+      <li>Updated <code>AGENTS.md</code> and <code>CLAUDE.md</code> with the new Telegram rich-message flag.</li>
+      <li>Added focused tests for rich payload shape, Telegram <code>ok=false</code> handling, fallback behavior, morning rich structure/escaping, and evening today table rendering.</li>
+    </ul>
+
+    <h3>Checks Run</h3>
+    <ul>
+      <li><code>go test ./internal/notify -run "Telegram|Morning|Rich|SendReport" -count=1</code> — passed.</li>
+      <li><code>go test ./internal/notify -count=1</code> — passed.</li>
+      <li><code>go test ./...</code> — passed.</li>
+      <li><code>go vet ./...</code> — passed.</li>
+    </ul>
+
+    <h3>Known Limitations</h3>
+    <ul>
+      <li>No live Telegram send was performed in this implementation pass.</li>
+      <li>Rich messages are opt-in by default. Existing deployments continue sending legacy HTML until <code>TELEGRAM_RICH_MESSAGES=true</code> or <code>telegram_rich_messages=true</code> is set.</li>
+      <li>Weekly quality digest, proactive notifications, and check-in prompt transport remain on legacy <code>sendMessage</code>.</li>
+      <li>Telegram client rendering still needs manual inspection after enabling the flag in a controlled environment.</li>
+    </ul>
+
+    <h3>Recommended Follow-Up</h3>
+    <ul>
+      <li>Enable rich messages for one controlled test send, inspect mobile Telegram rendering, and leave fallback logs visible during the first production day.</li>
+      <li>If rendering is acceptable, consider a second issue for weekly quality digest tables.</li>
+      <li>If rich details/table rendering is inconsistent across clients, keep the transport but simplify the rich renderer to headings, lists, and block quotes only.</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>

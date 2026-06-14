@@ -90,6 +90,8 @@ func prettyMetric(m string) string {
 		return "Steps"
 	case "active_energy":
 		return "Active kcal"
+	case "apple_exercise_time":
+		return "Exercise"
 	case "sleep_total":
 		return "Sleep"
 	}
