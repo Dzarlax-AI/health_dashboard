@@ -156,12 +156,16 @@ func renderRichHeadline(sb *strings.Builder, h *health.HeadlineSignal) {
 func renderRichMorningSummary(sb *strings.Builder, b *health.BriefingResponse, f freshness, lang string) {
 	sleepValue := "—"
 	sleepRead := tr(lang, "tg_warn_no_sleep")
-	if b.Sleep != nil {
+	if f.sleepStale() && f.sleepKnown {
+		sleepRead = fmt.Sprintf(tr(lang, "tg_sleep_silence"), fmtSilence(f.sleep, lang))
+	} else if b.Sleep != nil {
 		sleepValue = fmt.Sprintf("%.1fh", b.Sleep.TotalAvg)
 		sleepRead = sectionSummary(findSection(b, "sleep"))
 	}
+	recoveryValue := fmt.Sprintf("%d%%", b.RecoveryPct)
 	recoveryRead := sectionSummary(findSection(b, "recovery"))
 	if f.watchOff() && f.watchKnown {
+		recoveryValue = "—"
 		recoveryRead = fmt.Sprintf(tr(lang, "tg_watch_off"), fmtSilence(f.watch, lang))
 	}
 	energyValue, energyRead := "—", "—"
@@ -174,7 +178,7 @@ func renderRichMorningSummary(sb *strings.Builder, b *health.BriefingResponse, f
 	fmt.Fprintf(sb, "<tr><td>⚡ %s</td><td>%s</td><td>%s</td></tr>\n", richEsc(tr(lang, "tg_energy")), richEsc(energyValue), richText(energyRead))
 	fmt.Fprintf(sb, "<tr><td>%s %s</td><td>%d/100</td><td>%s</td></tr>\n", richEsc(readinessEmoji(b.ReadinessToday)), richEsc(tr(lang, "tg_readiness")), b.ReadinessToday, richText(b.ReadinessTodayLabel))
 	fmt.Fprintf(sb, "<tr><td>😴 Sleep</td><td>%s</td><td>%s</td></tr>\n", richEsc(sleepValue), richText(stripSimpleTags(sleepRead)))
-	fmt.Fprintf(sb, "<tr><td>❤️ Recovery</td><td>%d%%</td><td>%s</td></tr>\n", b.RecoveryPct, richText(stripSimpleTags(recoveryRead)))
+	fmt.Fprintf(sb, "<tr><td>❤️ Recovery</td><td>%s</td><td>%s</td></tr>\n", richEsc(recoveryValue), richText(stripSimpleTags(recoveryRead)))
 	sb.WriteString("</table>\n")
 }
 

@@ -91,7 +91,10 @@ func (b *Bot) SendRichHTML(html string) error {
 		return fmt.Errorf("telegram sendRichMessage: %w", err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return fmt.Errorf("telegram sendRichMessage: read body: %w", readErr)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("telegram API: status %d body=%s", resp.StatusCode, body)
 	}

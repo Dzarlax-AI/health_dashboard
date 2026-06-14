@@ -196,6 +196,28 @@ func TestFormatMorningRich_StructureAndEscaping(t *testing.T) {
 	}
 }
 
+func TestFormatMorningRich_SuppressesStaleSummaryMetrics(t *testing.T) {
+	loc, _ := time.LoadLocation("UTC")
+	briefing := sampleBriefing()
+	out := formatMorningRich(briefing, nil, "en", loc, freshness{
+		sleep:      48 * time.Hour,
+		watch:      48 * time.Hour,
+		sleepKnown: true,
+		watchKnown: true,
+	}, false, "")
+
+	for _, staleValue := range []string{"7.3h", "68%"} {
+		if strings.Contains(out, staleValue) {
+			t.Fatalf("rich summary should suppress stale value %q:\n%s", staleValue, out)
+		}
+	}
+	for _, want := range []string{"No sleep recorded", "Apple Watch off"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("rich summary should include stale banner %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestFormatEveningRich_TodayTable(t *testing.T) {
 	loc, _ := time.LoadLocation("UTC")
 	now := time.Now().In(loc).Format("2006-01-02")
