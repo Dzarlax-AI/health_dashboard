@@ -1,11 +1,13 @@
 package notify
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"health-receiver/internal/health"
+	"health-receiver/internal/storage"
 )
 
 // TestMorningCapTime_FloorsPastCapsToPromptWindow pins the floor that
@@ -117,4 +119,168 @@ func TestFormatMorning_AppendsExpiredNote(t *testing.T) {
 			t.Errorf("EN expired note missing:\n%s\n\nwanted substring %q", out, want)
 		}
 	})
+}
+
+type fakeHTMLReportSender struct {
+	richErr      error
+	sendCalls    int
+	richCalls    int
+	lastSendText string
+	lastRichHTML string
+}
+
+func (f *fakeHTMLReportSender) Send(text string) error {
+	f.sendCalls++
+	f.lastSendText = text
+	return nil
+}
+
+func (f *fakeHTMLReportSender) SendRichHTML(html string) error {
+	f.richCalls++
+	f.lastRichHTML = html
+	return f.richErr
+}
+
+func TestSendReportHTML_FallbackBehavior(t *testing.T) {
+	t.Run("rich disabled sends fallback only", func(t *testing.T) {
+		bot := &fakeHTMLReportSender{}
+		if err := sendReportHTML(bot, Config{}, "morning", "<h2>rich</h2>", "<b>fallback</b>"); err != nil {
+			t.Fatalf("send report: %v", err)
+		}
+		if bot.richCalls != 0 || bot.sendCalls != 1 || bot.lastSendText != "<b>fallback</b>" {
+			t.Fatalf("unexpected calls: rich=%d send=%d text=%q", bot.richCalls, bot.sendCalls, bot.lastSendText)
+		}
+	})
+
+	t.Run("rich success does not also send fallback", func(t *testing.T) {
+		bot := &fakeHTMLReportSender{}
+		if err := sendReportHTML(bot, Config{TelegramRichMessages: true}, "morning", "<h2>rich</h2>", "<b>fallback</b>"); err != nil {
+			t.Fatalf("send report: %v", err)
+		}
+		if bot.richCalls != 1 || bot.sendCalls != 0 || bot.lastRichHTML != "<h2>rich</h2>" {
+			t.Fatalf("unexpected calls: rich=%d send=%d richHTML=%q", bot.richCalls, bot.sendCalls, bot.lastRichHTML)
+		}
+	})
+
+	t.Run("rich error falls back once", func(t *testing.T) {
+		bot := &fakeHTMLReportSender{richErr: errors.New("telegram rejected rich")}
+		if err := sendReportHTML(bot, Config{TelegramRichMessages: true}, "evening", "<h2>rich</h2>", "<b>fallback</b>"); err != nil {
+			t.Fatalf("send report: %v", err)
+		}
+		if bot.richCalls != 1 || bot.sendCalls != 1 || bot.lastSendText != "<b>fallback</b>" {
+			t.Fatalf("unexpected calls: rich=%d send=%d text=%q", bot.richCalls, bot.sendCalls, bot.lastSendText)
+		}
+	})
+}
+
+func TestFormatMorningRich_StructureAndEscaping(t *testing.T) {
+	loc, _ := time.LoadLocation("UTC")
+	briefing := sampleBriefing()
+	out := formatMorningRich(briefing, map[string]string{
+		"SLEEP":          "AI says <check sleep>",
+		"YESTERDAY":      "AI says move",
+		"RECOVERY":       "AI says recover",
+		"RECOMMENDATION": "Do not chase <max effort>",
+	}, "en", loc, freshness{}, false, "")
+
+	for _, want := range []string{
+		"<h2>🌅 Morning report — 2026-06-14</h2>",
+		"<table>",
+		"<blockquote>🤖 AI says &lt;check sleep&gt;</blockquote>",
+		"<details><summary>Sources</summary>",
+		"Do not chase &lt;max effort&gt;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("rich morning missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestFormatEveningRich_TodayTable(t *testing.T) {
+	loc, _ := time.LoadLocation("UTC")
+	now := time.Now().In(loc).Format("2006-01-02")
+	briefing := sampleBriefing()
+	briefing.Date = now
+	dash := &storage.DashboardResponse{
+		Date: now,
+		Cards: []storage.CardData{
+			{Metric: "step_count", Value: 8400, Prev: 7500, Unit: "steps"},
+			{Metric: "active_energy", Value: 540, Prev: 560, Unit: "kcal"},
+			{Metric: "apple_exercise_time", Value: 35, Prev: 25, Unit: "min"},
+		},
+	}
+	out := formatEveningRich(briefing, dash, "en", loc, freshness{})
+
+	for _, want := range []string{
+		"<h2>🌆 Day so far — " + now + "</h2>",
+		"<th>Vs yesterday</th>",
+		"👟 Steps",
+		"🏃 Exercise",
+		"<h3>💡 Insights</h3>",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("rich evening missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func sampleBriefing() *health.BriefingResponse {
+	return &health.BriefingResponse{
+		Date:                "2026-06-14",
+		ReadinessScore:      72,
+		ReadinessLabel:      "Fair",
+		ReadinessToday:      70,
+		ReadinessTodayLabel: "Fair",
+		ReadinessTip:        "Keep the day controlled.",
+		RecoveryPct:         68,
+		Headline: &health.HeadlineSignal{
+			Severity: "info",
+			Title:    "Stable recovery",
+			Detail:   "No major warning signs.",
+		},
+		EnergyBank: &health.EnergyBank{
+			Capacity:      100,
+			Current:       64,
+			ActionVerdict: "moderate",
+			VerdictLabel:  "Moderate",
+			VerdictReason: "Useful capacity, not a peak day.",
+		},
+		Sleep: &health.SleepAnalysis{
+			TotalAvg: 7.3,
+			Sources: []health.SleepSourceSummary{
+				{Source: "Apple Watch", Total: 7.3},
+				{Source: "RingConn", Total: 7.0},
+			},
+		},
+		Sections: []health.BriefingSection{
+			{
+				Key:     "sleep",
+				Title:   "Sleep",
+				Status:  "fair",
+				Summary: "Adequate sleep",
+				Details: []health.BriefingDetail{
+					{Label: "Total", Value: "7.3h"},
+				},
+			},
+			{
+				Key:     "activity",
+				Title:   "Activity",
+				Status:  "good",
+				Summary: "Normal load",
+				Details: []health.BriefingDetail{
+					{Label: "Steps", Value: "8400"},
+				},
+			},
+			{
+				Key:     "recovery",
+				Title:   "Recovery",
+				Status:  "fair",
+				Summary: "Mixed markers",
+				Details: []health.BriefingDetail{
+					{Label: "HRV", Value: "42 ms"},
+				},
+			},
+		},
+		Insights: []health.Insight{{Text: "Keep tonight consistent.", Type: "positive"}},
+	}
 }

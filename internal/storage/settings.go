@@ -7,14 +7,15 @@ import (
 // NotifyConfig holds Telegram credentials and per-weekday report schedule.
 // It mirrors notify.Config but lives in storage to avoid import cycles.
 type NotifyConfig struct {
-	Token              string
-	ChatID             string
-	Lang               string
-	Timezone           string
-	MorningWeekdayHour int
-	MorningWeekendHour int
-	EveningWeekdayHour int
-	EveningWeekendHour int
+	Token                string
+	ChatID               string
+	Lang                 string
+	Timezone             string
+	MorningWeekdayHour   int
+	MorningWeekendHour   int
+	EveningWeekdayHour   int
+	EveningWeekendHour   int
+	TelegramRichMessages bool
 	// MorningCapHour is the deadline (24h clock, in Timezone) for the smart-retry
 	// loop. Past this hour the morning report fires regardless of whether sleep
 	// data has settled, with a stale-data banner. Defaults to MorningHour+4 with
@@ -78,8 +79,8 @@ func (s *DB) SaveSettings(kv map[string]string) error {
 
 // AIConfig holds Gemini API credentials and generation parameters.
 type AIConfig struct {
-	APIKey        string
-	Model         string
+	APIKey          string
+	Model           string
 	MaxOutputTokens int
 }
 
@@ -102,15 +103,16 @@ func (s *DB) GetAIConfig(defaults AIConfig) AIConfig {
 // falling back to the supplied env-derived defaults for any unset key.
 func (s *DB) GetNotifyConfig(defaults NotifyConfig) NotifyConfig {
 	return NotifyConfig{
-		Token:              s.GetSetting("telegram_token", defaults.Token),
-		ChatID:             s.GetSetting("telegram_chat_id", defaults.ChatID),
-		Lang:               s.GetSetting("report_lang", defaults.Lang),
-		Timezone:           s.GetSetting("timezone", defaults.Timezone),
-		MorningWeekdayHour: getSettingInt(s, "report_morning_weekday", defaults.MorningWeekdayHour),
-		MorningWeekendHour: getSettingInt(s, "report_morning_weekend", defaults.MorningWeekendHour),
-		EveningWeekdayHour: getSettingInt(s, "report_evening_weekday", defaults.EveningWeekdayHour),
-		EveningWeekendHour: getSettingInt(s, "report_evening_weekend", defaults.EveningWeekendHour),
-		MorningCapHour:     getSettingInt(s, "report_morning_cap", defaults.MorningCapHour),
+		Token:                s.GetSetting("telegram_token", defaults.Token),
+		ChatID:               s.GetSetting("telegram_chat_id", defaults.ChatID),
+		Lang:                 s.GetSetting("report_lang", defaults.Lang),
+		Timezone:             s.GetSetting("timezone", defaults.Timezone),
+		MorningWeekdayHour:   getSettingInt(s, "report_morning_weekday", defaults.MorningWeekdayHour),
+		MorningWeekendHour:   getSettingInt(s, "report_morning_weekend", defaults.MorningWeekendHour),
+		EveningWeekdayHour:   getSettingInt(s, "report_evening_weekday", defaults.EveningWeekdayHour),
+		EveningWeekendHour:   getSettingInt(s, "report_evening_weekend", defaults.EveningWeekendHour),
+		TelegramRichMessages: getSettingBool(s, "telegram_rich_messages", defaults.TelegramRichMessages),
+		MorningCapHour:       getSettingInt(s, "report_morning_cap", defaults.MorningCapHour),
 	}
 }
 
