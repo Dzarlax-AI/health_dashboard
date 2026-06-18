@@ -118,6 +118,14 @@
           <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
             {{T .Lang "admin_checkin_coverage_desc"}}
           </p>
+          <div class="checkin-sla-settings">
+            <label>
+              <span>{{T .Lang "admin_checkin_enabled_since"}}</span>
+              <input type="date" id="checkin-enabled-since">
+            </label>
+            <button class="btn btn--primary btn--small" onclick="saveCheckinEnabledSince()">{{T .Lang "admin_save"}}</button>
+            <span id="checkin-enabled-msg" class="muted"></span>
+          </div>
           <div id="admin-checkin-coverage-section">
             <div class="spinner spinner--large"></div>
           </div>
@@ -873,9 +881,35 @@ function loadCheckinCoverage() {
     .catch(function(e) { el.innerHTML = '<div class="alert alert--low">' + escapeHtml(String(e.message || e)) + '</div>'; });
 }
 
+function saveCheckinEnabledSince() {
+  var input = $('checkin-enabled-since');
+  var msg = $('checkin-enabled-msg');
+  if (!input) return;
+  if (msg) msg.textContent = '{{T .Lang "admin_saving"}}';
+  fetchWithAdminSchema('/api/admin/checkin-coverage?days=14', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({enabled_since: input.value || ''})
+  })
+    .then(function(r){
+      if (!r.ok) return r.text().then(function(t){ throw new Error(t || '{{T .Lang "admin_checkin_save_failed"}}'); });
+      return r.json();
+    })
+    .then(function(d) {
+      if (msg) msg.textContent = '{{T .Lang "admin_saved"}}';
+      var el = $('admin-checkin-coverage-section');
+      if (el) el.innerHTML = renderCheckinCoverage(d);
+    })
+    .catch(function(e) { if (msg) msg.textContent = String(e.message || e); });
+}
+
 function renderCheckinCoverage(d) {
   var s = d.summary || {};
+  var sla = d.sla_summary || {};
   var rows = d.rows || [];
+  var slaRows = d.sla_rows || [];
+  var enabledInput = $('checkin-enabled-since');
+  if (enabledInput) enabledInput.value = d.enabled_since || '';
   var labels = {
     total: '{{T .Lang "admin_checkin_total"}}',
     promptedCoverage: '{{T .Lang "admin_checkin_prompted_coverage"}}',
@@ -883,6 +917,9 @@ function renderCheckinCoverage(d) {
     avgResponse: '{{T .Lang "admin_checkin_avg_response"}}',
     noResponse: '{{T .Lang "admin_checkin_no_response"}}',
     answers: '{{T .Lang "admin_checkin_answers"}}',
+    calendarTitle: '{{T .Lang "admin_checkin_calendar_sla"}}',
+    historyTitle: '{{T .Lang "admin_checkin_history"}}',
+    inactive: '{{T .Lang "admin_checkin_sla_inactive"}}',
     date: '{{T .Lang "admin_checkin_date"}}',
     status: '{{T .Lang "admin_checkin_status"}}',
     answer: '{{T .Lang "admin_checkin_answer"}}',
@@ -893,7 +930,8 @@ function renderCheckinCoverage(d) {
     answered: '{{T .Lang "admin_checkin_status_answered"}}',
     late_answered: '{{T .Lang "admin_checkin_status_late"}}',
     expired: '{{T .Lang "admin_checkin_status_expired"}}',
-    missing: '{{T .Lang "admin_checkin_status_missing"}}'
+    missing: '{{T .Lang "admin_checkin_status_missing"}}',
+    pending: '{{T .Lang "admin_checkin_status_pending"}}'
   };
   var answerLabels = {
     great: '{{T .Lang "checkin_answer_great"}}',
@@ -910,41 +948,52 @@ function renderCheckinCoverage(d) {
     var sec = Math.round(n % 60);
     return min + 'm ' + sec + 's';
   };
-  var answerCounts = s.answer_counts || {};
-  var answerLine = ['great', 'ok', 'meh', 'sick'].map(function(k) {
-    return escapeHtml(answerLabels[k] || k) + ' ' + (answerCounts[k] || 0);
-  }).join(' · ');
-
-  var html = '<div class="checkin-kpis">'
-    + '<div class="checkin-kpi"><span>' + escapeHtml(labels.total) + '</span><strong>' + (s.total_days == null ? (d.days || 0) : s.total_days) + '</strong></div>'
-    + '<div class="checkin-kpi"><span>' + escapeHtml(labels.promptedCoverage) + '</span><strong>' + (s.prompted_coverage_percent || 0) + '%</strong></div>'
-    + '<div class="checkin-kpi"><span>' + escapeHtml(labels.answeredCoverage) + '</span><strong>' + (s.answered_coverage_percent || 0) + '%</strong></div>'
-    + '<div class="checkin-kpi"><span>' + escapeHtml(labels.avgResponse) + '</span><strong>' + (s.average_response_seconds == null ? escapeHtml(labels.noResponse) : escapeHtml(fmtDuration(s.average_response_seconds))) + '</strong></div>'
-    + '</div>'
-    + '<div class="checkin-answer-line"><span class="muted">' + escapeHtml(labels.answers) + '</span> ' + answerLine + '</div>';
-
-  html += '<table class="admin-table checkin-table"><thead><tr>'
-    + '<th>' + escapeHtml(labels.date) + '</th>'
-    + '<th>' + escapeHtml(labels.status) + '</th>'
-    + '<th>' + escapeHtml(labels.answer) + '</th>'
-    + '<th style="text-align:right">' + escapeHtml(labels.latency) + '</th>'
-    + '</tr></thead><tbody>';
   var allowedStatusClass = {
-    prompted: true, answered: true, late_answered: true, expired: true, missing: true
+    prompted: true, answered: true, late_answered: true, expired: true, missing: true, pending: true
   };
-  rows.forEach(function(row) {
-    var status = row.status || 'missing';
-    var statusClass = allowedStatusClass[status] ? status : 'missing';
-    var statusText = statusLabels[status] || status;
-    var answer = row.answer ? (answerLabels[row.answer] || row.answer) : '—';
-    html += '<tr>'
-      + '<td><code>' + escapeHtml(row.date || '') + '</code></td>'
-      + '<td><span class="checkin-status checkin-status--' + statusClass + '">' + escapeHtml(statusText) + '</span></td>'
-      + '<td>' + escapeHtml(answer) + '</td>'
-      + '<td style="text-align:right">' + escapeHtml(fmtDuration(row.response_latency_seconds)) + '</td>'
-      + '</tr>';
-  });
-  html += '</tbody></table>';
+
+  function renderBlock(title, summary, tableRows, showInactive) {
+    if (showInactive) {
+      return '<h4 class="checkin-subtitle">' + escapeHtml(title) + '</h4>'
+        + '<div class="alert">' + escapeHtml(labels.inactive) + '</div>';
+    }
+    var answerCounts = summary.answer_counts || {};
+    var answerLine = ['great', 'ok', 'meh', 'sick'].map(function(k) {
+      return escapeHtml(answerLabels[k] || k) + ' ' + (answerCounts[k] || 0);
+    }).join(' · ');
+    var html = '<h4 class="checkin-subtitle">' + escapeHtml(title) + '</h4>'
+      + '<div class="checkin-kpis">'
+      + '<div class="checkin-kpi"><span>' + escapeHtml(labels.total) + '</span><strong>' + (summary.total_days == null ? (d.days || 0) : summary.total_days) + '</strong></div>'
+      + '<div class="checkin-kpi"><span>' + escapeHtml(labels.promptedCoverage) + '</span><strong>' + (summary.prompted_coverage_percent || 0) + '%</strong></div>'
+      + '<div class="checkin-kpi"><span>' + escapeHtml(labels.answeredCoverage) + '</span><strong>' + (summary.answered_coverage_percent || 0) + '%</strong></div>'
+      + '<div class="checkin-kpi"><span>' + escapeHtml(labels.avgResponse) + '</span><strong>' + (summary.average_response_seconds == null ? escapeHtml(labels.noResponse) : escapeHtml(fmtDuration(summary.average_response_seconds))) + '</strong></div>'
+      + '</div>'
+      + '<div class="checkin-answer-line"><span class="muted">' + escapeHtml(labels.answers) + '</span> ' + answerLine + '</div>';
+
+    html += '<table class="admin-table checkin-table"><thead><tr>'
+      + '<th>' + escapeHtml(labels.date) + '</th>'
+      + '<th>' + escapeHtml(labels.status) + '</th>'
+      + '<th>' + escapeHtml(labels.answer) + '</th>'
+      + '<th style="text-align:right">' + escapeHtml(labels.latency) + '</th>'
+      + '</tr></thead><tbody>';
+    tableRows.forEach(function(row) {
+      var status = row.status || 'missing';
+      var statusClass = allowedStatusClass[status] ? status : 'missing';
+      var statusText = statusLabels[status] || status;
+      var answer = row.answer ? (answerLabels[row.answer] || row.answer) : '—';
+      html += '<tr>'
+        + '<td><code>' + escapeHtml(row.date || '') + '</code></td>'
+        + '<td><span class="checkin-status checkin-status--' + statusClass + '">' + escapeHtml(statusText) + '</span></td>'
+        + '<td>' + escapeHtml(answer) + '</td>'
+        + '<td style="text-align:right">' + escapeHtml(fmtDuration(row.response_latency_seconds)) + '</td>'
+        + '</tr>';
+    });
+    html += '</tbody></table>';
+    return html;
+  }
+
+  var html = renderBlock(labels.calendarTitle, sla, slaRows, !d.sla_active)
+    + renderBlock(labels.historyTitle, s, rows, false);
   return html;
 }
 

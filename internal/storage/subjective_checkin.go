@@ -36,6 +36,8 @@ const (
 // analytics can tell them apart per entry point.
 const CheckinSourceTelegram = "telegram"
 
+const SettingSubjectiveCheckinEnabledSince = "subjective_checkin_enabled_since"
+
 // subjectiveCheckinTableDDL returns the CREATE TABLE statement for
 // subjective_checkins. Exposed package-internal so the structural test
 // can assert column shape without a live DB.
@@ -140,17 +142,21 @@ type CheckinRow struct {
 }
 
 // CheckinCoverage is the admin read model for the morning check-in
-// coverage table. It includes the latest N subjective_checkins rows.
-// It intentionally does not synthesize pre-rollout "missing" rows:
-// during the first two weeks after launch, calendar-day coverage would
-// make a perfectly healthy rollout look mostly broken.
+// coverage table. Rows/Summary keep the latest actual subjective_checkins
+// history. SLARows/SLASummary synthesize calendar-day rows only after an
+// explicit enabled-since date is configured, avoiding false pre-rollout
+// missing days.
 type CheckinCoverage struct {
-	From    string                 `json:"from"`
-	To      string                 `json:"to"`
-	Days    int                    `json:"days"`
-	Source  string                 `json:"source"`
-	Summary CheckinCoverageSummary `json:"summary"`
-	Rows    []CheckinCoverageRow   `json:"rows"`
+	From         string                 `json:"from"`
+	To           string                 `json:"to"`
+	Days         int                    `json:"days"`
+	Source       string                 `json:"source"`
+	EnabledSince string                 `json:"enabled_since,omitempty"`
+	SLAActive    bool                   `json:"sla_active"`
+	SLASummary   CheckinCoverageSummary `json:"sla_summary"`
+	SLARows      []CheckinCoverageRow   `json:"sla_rows"`
+	Summary      CheckinCoverageSummary `json:"summary"`
+	Rows         []CheckinCoverageRow   `json:"rows"`
 }
 
 type CheckinCoverageSummary struct {
@@ -160,6 +166,7 @@ type CheckinCoverageSummary struct {
 	LateAnswered            int            `json:"late_answered"`
 	Expired                 int            `json:"expired"`
 	Missing                 int            `json:"missing"`
+	Pending                 int            `json:"pending"`
 	AnswerCounts            map[string]int `json:"answer_counts"`
 	AverageResponseSeconds  *int64         `json:"average_response_seconds,omitempty"`
 	AnsweredCoveragePercent int            `json:"answered_coverage_percent"`
@@ -178,6 +185,28 @@ type CheckinCoverageRow struct {
 }
 
 const CheckinStatusMissing = "missing"
+const CheckinStatusPending = "pending"
+
+func ValidateCheckinEnabledSince(date string) error {
+	if date == "" {
+		return nil
+	}
+	if _, err := time.Parse("2006-01-02", date); err != nil {
+		return fmt.Errorf("enabled_since must be YYYY-MM-DD: %w", err)
+	}
+	return nil
+}
+
+func (s *DB) GetCheckinEnabledSince() string {
+	return s.GetSetting(SettingSubjectiveCheckinEnabledSince, "")
+}
+
+func (s *DB) SaveCheckinEnabledSince(date string) error {
+	if err := ValidateCheckinEnabledSince(date); err != nil {
+		return err
+	}
+	return s.SaveSettings(map[string]string{SettingSubjectiveCheckinEnabledSince: date})
+}
 
 // SaveCheckinPrompted upserts a `prompted` row for (date, source).
 // Idempotent on retry: a second prompt for the same date overwrites
@@ -320,6 +349,10 @@ func (s *DB) GetCheckinCoverage(today, source string, days int) (*CheckinCoverag
 	if _, err := time.Parse("2006-01-02", today); err != nil {
 		return nil, fmt.Errorf("today must be YYYY-MM-DD: %w", err)
 	}
+	enabledSince := s.GetCheckinEnabledSince()
+	if err := ValidateCheckinEnabledSince(enabledSince); err != nil {
+		return nil, err
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -335,6 +368,43 @@ func (s *DB) GetCheckinCoverage(today, source string, days int) (*CheckinCoverag
 	}
 	defer rows.Close()
 
+	entries, err := scanCheckinRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	coverage, err := buildCheckinCoverage(today, source, days, entries)
+	if err != nil {
+		return nil, err
+	}
+	coverage.EnabledSince = enabledSince
+	if enabledSince == "" {
+		return coverage, nil
+	}
+
+	from := calendarCoverageStart(today, enabledSince, days)
+	calendarEntries, err := s.getCheckinRowsBetween(ctx, source, from, today)
+	if err != nil {
+		return nil, err
+	}
+	return buildCheckinCoverageWithSLA(coverage, today, from, source, enabledSince, calendarEntries)
+}
+
+func (s *DB) getCheckinRowsBetween(ctx context.Context, source, from, to string) ([]CheckinRow, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT date, source, status, answer, prompt_message_id, prompted_at, answered_at, expires_at
+		  FROM subjective_checkins
+		 WHERE source = $1
+		   AND date >= $2
+		   AND date <= $3
+		 ORDER BY date DESC`, source, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanCheckinRows(rows)
+}
+
+func scanCheckinRows(rows pgx.Rows) ([]CheckinRow, error) {
 	var entries []CheckinRow
 	for rows.Next() {
 		row := CheckinRow{}
@@ -355,10 +425,7 @@ func (s *DB) GetCheckinCoverage(today, source string, days int) (*CheckinCoverag
 		}
 		entries = append(entries, row)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return buildCheckinCoverage(today, source, days, entries)
+	return entries, rows.Err()
 }
 
 func buildCheckinCoverage(today, source string, days int, entries []CheckinRow) (*CheckinCoverage, error) {
@@ -393,25 +460,9 @@ func buildCheckinCoverage(today, source string, days int, entries []CheckinRow) 
 	var latencyN int64
 	promptedDays := 0
 	for _, entry := range entries {
-		promptedAt := entry.PromptedAt
-		expiresAt := entry.ExpiresAt
-		row := CheckinCoverageRow{
-			Date:       entry.Date,
-			Source:     entry.Source,
-			Status:     entry.Status,
-			Answer:     entry.Answer,
-			PromptedAt: &promptedAt,
-			ExpiresAt:  &expiresAt,
-		}
-		if !entry.AnsweredAt.IsZero() {
-			answeredAt := entry.AnsweredAt
-			row.AnsweredAt = &answeredAt
-			latency := int64(answeredAt.Sub(promptedAt).Seconds())
-			if latency < 0 {
-				latency = 0
-			}
-			row.ResponseLatencySeconds = &latency
-			latencySum += latency
+		row := checkinCoverageRow(entry)
+		if row.ResponseLatencySeconds != nil {
+			latencySum += *row.ResponseLatencySeconds
 			latencyN++
 		}
 		switch entry.Status {
@@ -440,6 +491,118 @@ func buildCheckinCoverage(today, source string, days int, entries []CheckinRow) 
 	out.Summary.AnsweredCoveragePercent = percent(out.Summary.Answered, len(entries))
 	out.Summary.PromptedCoveragePercent = percent(promptedDays, len(entries))
 	return out, nil
+}
+
+func calendarCoverageStart(today, enabledSince string, days int) string {
+	t, err := time.Parse("2006-01-02", today)
+	if err != nil {
+		return enabledSince
+	}
+	windowStart := t.AddDate(0, 0, -days+1).Format("2006-01-02")
+	if enabledSince > windowStart {
+		return enabledSince
+	}
+	return windowStart
+}
+
+func buildCheckinCoverageWithSLA(base *CheckinCoverage, today, from, source, enabledSince string, entries []CheckinRow) (*CheckinCoverage, error) {
+	start, err := time.Parse("2006-01-02", from)
+	if err != nil {
+		return nil, fmt.Errorf("from must be YYYY-MM-DD: %w", err)
+	}
+	end, err := time.Parse("2006-01-02", today)
+	if err != nil {
+		return nil, fmt.Errorf("today must be YYYY-MM-DD: %w", err)
+	}
+	if end.Before(start) {
+		base.SLAActive = true
+		base.EnabledSince = enabledSince
+		base.SLASummary = CheckinCoverageSummary{AnswerCounts: map[string]int{}}
+		base.SLARows = []CheckinCoverageRow{}
+		return base, nil
+	}
+
+	byDate := map[string]CheckinRow{}
+	for _, entry := range entries {
+		byDate[entry.Date] = entry
+	}
+	rows := make([]CheckinCoverageRow, 0, int(end.Sub(start).Hours()/24)+1)
+	summary := CheckinCoverageSummary{AnswerCounts: map[string]int{}}
+	var latencySum int64
+	var latencyN int64
+	promptedDays := 0
+	for d := end; !d.Before(start); d = d.AddDate(0, 0, -1) {
+		date := d.Format("2006-01-02")
+		entry, ok := byDate[date]
+		if !ok {
+			status := CheckinStatusMissing
+			if date == today {
+				status = CheckinStatusPending
+				summary.Pending++
+			} else {
+				summary.Missing++
+			}
+			rows = append(rows, CheckinCoverageRow{Date: date, Source: source, Status: status})
+			continue
+		}
+		row := checkinCoverageRow(entry)
+		rows = append(rows, row)
+		promptedDays++
+		switch entry.Status {
+		case CheckinStatusPrompted:
+			summary.Prompted++
+		case CheckinStatusAnswered:
+			summary.Answered++
+		case CheckinStatusLateAnswered:
+			summary.LateAnswered++
+		case CheckinStatusExpired:
+			summary.Expired++
+		}
+		if entry.Answer != "" {
+			summary.AnswerCounts[entry.Answer]++
+		}
+		if row.ResponseLatencySeconds != nil {
+			latencySum += *row.ResponseLatencySeconds
+			latencyN++
+		}
+	}
+	summary.TotalDays = len(rows)
+	if latencyN > 0 {
+		avg := latencySum / latencyN
+		summary.AverageResponseSeconds = &avg
+	}
+	completedDays := summary.TotalDays - summary.Pending
+	summary.AnsweredCoveragePercent = percent(summary.Answered, completedDays)
+	summary.PromptedCoveragePercent = percent(promptedDays, completedDays)
+
+	base.SLAActive = true
+	base.EnabledSince = enabledSince
+	base.SLASummary = summary
+	base.SLARows = rows
+	return base, nil
+}
+
+func checkinCoverageRow(entry CheckinRow) CheckinCoverageRow {
+	promptedAt := entry.PromptedAt
+	expiresAt := entry.ExpiresAt
+	row := CheckinCoverageRow{
+		Date:       entry.Date,
+		Source:     entry.Source,
+		Status:     entry.Status,
+		Answer:     entry.Answer,
+		PromptedAt: &promptedAt,
+		ExpiresAt:  &expiresAt,
+	}
+	if !entry.AnsweredAt.IsZero() {
+		answeredAt := entry.AnsweredAt
+		row.AnsweredAt = &answeredAt
+		latency := int64(answeredAt.Sub(promptedAt).Seconds())
+		if latency < 0 {
+			latency = 0
+		}
+		row.ResponseLatencySeconds = &latency
+	}
+	return row
 }
 
 func percent(n, total int) int {

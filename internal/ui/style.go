@@ -1118,6 +1118,21 @@ details.admin-section[open] > :not(summary) { margin-left: 16px; margin-right: 1
   display: flex; gap: 24px; font-size: 13px; color: var(--muted); padding: 0 4px;
 }
 .admin-meta-row strong { color: var(--fg); }
+.checkin-sla-settings {
+  display: flex; align-items: end; gap: 10px; flex-wrap: wrap;
+  margin: 0 0 14px;
+}
+.checkin-sla-settings label {
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 12px; color: var(--muted);
+}
+.checkin-sla-settings input {
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface); color: var(--fg); padding: 7px 9px;
+}
+.checkin-subtitle {
+  margin: 14px 0 8px; color: var(--fg); font-size: 14px;
+}
 .checkin-kpis {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 10px; margin-bottom: 10px;
@@ -1142,6 +1157,7 @@ details.admin-section[open] > :not(summary) { margin-left: 16px; margin-right: 1
 .checkin-status--prompted { background: var(--surface2); color: var(--text-secondary); }
 .checkin-status--expired { background: var(--low-bg); color: var(--low); }
 .checkin-status--missing { background: transparent; color: var(--text-tertiary); border: 1px dashed var(--border); }
+.checkin-status--pending { background: var(--surface2); color: var(--text-tertiary); border: 1px solid var(--border); }
 .admin-monitoring-block { margin-bottom: 16px; }
 .admin-monitoring-head {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
