@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Implementation Plan: Subjective Check-in Calendar SLA</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #1f2937; line-height: 1.5; }
+    main { max-width: 1120px; margin: 0 auto; padding: 32px; }
+    section { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin: 16px 0; }
+    h1, h2, h3 { line-height: 1.2; margin-top: 0; }
+    code { background: #f3f4f6; padding: 2px 5px; border-radius: 4px; }
+    ul, ol { padding-left: 22px; }
+    li { margin: 6px 0; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #e5e7eb; font-size: 12px; font-weight: 600; }
+    .meta { color: #6b7280; margin: 6px 0 0; }
+    .callout { border-left: 4px solid #2563eb; }
+    .risk { border-left: 4px solid #dc2626; }
+    .approval { border-left: 4px solid #d97706; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+    .mini { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Implementation Plan: Subjective Check-in Calendar SLA</h1>
+  <span class="badge">Approval required before implementation</span>
+  <p class="meta">Created 2026-06-18 for the overdue Todoist follow-up: <code>Subjective check-in — calendar SLA after explicit enabled-since date</code>.</p>
+
+  <section>
+    <h2>Task Summary</h2>
+    <p>
+      Add an explicit per-tenant date from which subjective Telegram check-in prompts are expected,
+      then expose a calendar-day SLA view that marks missing expected prompt days as real failures.
+      Keep the current latest-prompts view because it remains useful for operator history and response latency.
+    </p>
+  </section>
+
+  <section>
+    <h2>Current Behavior</h2>
+    <ul>
+      <li><code>internal/storage/subjective_checkin.go</code> owns <code>subjective_checkins</code>, with one row per <code>(date, source)</code>.</li>
+      <li><code>GetCheckinCoverage(today, source, days)</code> deliberately returns the latest N actual rows only. It does not synthesize missing calendar dates.</li>
+      <li>The code comment says this was intentional during rollout, because pre-rollout calendar gaps would create false failures.</li>
+      <li><code>CheckinStatusMissing</code> already exists, and the admin UI already has CSS/status labels for <code>missing</code>, but no storage path emits missing rows today.</li>
+      <li><code>/api/admin/checkin-coverage?days=14</code> is admin-only, resolves the active tenant, computes tenant-local today, and returns the current read model.</li>
+      <li><code>internal/ui/templates/pages/admin.html</code> renders one Subjective check-in coverage table from that response.</li>
+      <li>The feature-enabled check for the morning gate is currently webhook-secret based in <code>cmd/server/main.go::morningCheckinEnabled</code>; it is not persisted as a calendar SLA start date.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <div class="grid">
+      <div class="mini">
+        <h3>Explicit Start</h3>
+        <p>Store a tenant-local <code>YYYY-MM-DD</code> setting such as <code>subjective_checkin_enabled_since</code>. Empty means calendar SLA is not active yet.</p>
+      </div>
+      <div class="mini">
+        <h3>Calendar SLA</h3>
+        <p>For dates from <code>max(enabled_since, today-days+1)</code> through today, synthesize one row per day. Missing DB rows become <code>missing</code>.</p>
+      </div>
+      <div class="mini">
+        <h3>History Preserved</h3>
+        <p>Continue returning/rendering latest actual prompt rows separately so response latency and late answers remain easy to inspect.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Assumptions and Unknowns</h2>
+    <ul>
+      <li>Use the existing per-tenant <code>settings</code> table instead of a schema migration. The table already supports arbitrary key/value tenant settings.</li>
+      <li>The enabled-since date should be set by an admin/operator, not inferred from the first prompt row, because the requirement says explicit enabled-since date.</li>
+      <li>Calendar missing means no row exists for <code>(date, telegram)</code>. A row with <code>expired</code> is not missing; it means the prompt was sent and not answered before cap.</li>
+      <li>Open question: should the implementation provide a one-click "set to first prompt date" helper, or only a manual date input?</li>
+      <li>Open question: should today count as missing before the morning check-in window has elapsed? The conservative default is to include today only after the tenant-local morning cap has passed, or mark it as pending if the day is still in progress.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Files Likely to Change</h2>
+    <ul>
+      <li><code>internal/storage/subjective_checkin.go</code> - add enabled-since helpers and a calendar SLA read model that overlays actual rows on expected dates.</li>
+      <li><code>internal/storage/subjective_checkin_test.go</code> - unit tests for calendar synthesis, missing rows, lower bound at enabled-since, and current latest-row behavior.</li>
+      <li><code>internal/ui/handler.go</code> - extend <code>adminCheckinCoverage</code> or add a small companion admin endpoint to save/read <code>subjective_checkin_enabled_since</code>.</li>
+      <li><code>internal/ui/admin_checkin_coverage_test.go</code> - API JSON shape tests for calendar rows and invalid date handling.</li>
+      <li><code>internal/ui/templates/pages/admin.html</code> - add date input/save control and render calendar SLA plus latest prompt history.</li>
+      <li><code>internal/ui/i18n_en.go</code>, <code>internal/ui/i18n_ru.go</code>, <code>internal/ui/i18n_sr.go</code> - labels for enabled-since, SLA mode, history table, pending/missing explanation if needed.</li>
+      <li><code>internal/ui/style.go</code> - small layout adjustments if the two-table admin section needs clearer spacing.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Proposed Implementation Steps</h2>
+    <ol>
+      <li>Add constants and validation for <code>subjective_checkin_enabled_since</code> in storage. Accept empty or valid <code>YYYY-MM-DD</code>.</li>
+      <li>Add <code>GetCheckinEnabledSince</code> and <code>SaveCheckinEnabledSince</code> wrappers over <code>settings</code>.</li>
+      <li>Keep <code>GetCheckinCoverage</code> as the latest-actual history path, or rename internally to make that explicit while preserving the API shape.</li>
+      <li>Add a calendar builder that receives <code>today</code>, <code>enabledSince</code>, <code>days</code>, and actual rows, then returns expected rows newest-first with synthesized <code>missing</code> rows.</li>
+      <li>Extend the admin response with <code>enabled_since</code>, <code>sla_active</code>, <code>calendar_rows</code>, and <code>calendar_summary</code>, while keeping existing <code>rows</code> and <code>summary</code> for history.</li>
+      <li>Add admin POST handling for the enabled-since date. Keep it tenant-scoped through the existing <code>resolveAdminTenantScope</code> path.</li>
+      <li>Update the admin UI to show a date control, a clear inactive state when no date is set, a calendar SLA table, and the existing latest prompt history table.</li>
+      <li>Update this plan after implementation with actual changes, checks run, limitations, and follow-up recommendations.</li>
+    </ol>
+  </section>
+
+  <section class="callout">
+    <h2>Data, API, Auth, and UX Impact</h2>
+    <ul>
+      <li>Data: no new table required if the enabled-since value lives in <code>settings</code>. No destructive migration.</li>
+      <li>API: admin-only check-in coverage response gains fields. Existing fields should remain stable to reduce template and test churn.</li>
+      <li>Auth: no change. Reads and writes stay behind <code>adminGuard</code> and tenant scope resolution.</li>
+      <li>UX: the admin page will distinguish "SLA not active" from "SLA active and missing prompt rows". This avoids false alarms before explicit enablement.</li>
+      <li>Deployment: safe deploy before setting the date. Calendar missing rows only appear after the admin setting is saved.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <ul>
+      <li><code>go test ./internal/storage -run "Test.*Checkin|Test.*CheckinCoverage" -count=1</code></li>
+      <li><code>go test ./internal/ui -run TestAdminCheckinCoverage -count=1</code></li>
+      <li>If DB-backed behavior is touched beyond pure builders, run the targeted DB-enabled UI/storage tests using the repo's usual DB environment.</li>
+      <li>Run <code>gofmt -w</code> on changed Go files.</li>
+      <li>Manual JSON check: call <code>/api/admin/checkin-coverage?days=14</code> for a tenant with and without <code>subjective_checkin_enabled_since</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Manual QA Checklist</h2>
+    <ul>
+      <li>Admin page shows check-in coverage without JavaScript errors when enabled-since is empty.</li>
+      <li>Saving an enabled-since date persists for the active tenant only.</li>
+      <li>Calendar SLA starts no earlier than enabled-since and no earlier than the selected day window.</li>
+      <li>Dates with actual <code>answered</code>, <code>late_answered</code>, <code>expired</code>, or <code>prompted</code> rows keep those statuses.</li>
+      <li>Dates with no row after enabled-since render as <code>missing</code>.</li>
+      <li>Latest prompt history still shows actual rows only and still reports average response latency from answered rows.</li>
+      <li>Multi-tenant admin tab switching reloads the correct tenant's SLA date and rows.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks and Edge Cases</h2>
+    <ul>
+      <li>Counting today too early could create noisy false missing rows. The implementation should either exclude in-progress today until cap or label it pending.</li>
+      <li>Timezone drift matters because dates are tenant-local. Use the same <code>tenantLocalToday</code> path as the current endpoint.</li>
+      <li>Manual date mistakes can create many historical missing rows. Keep the setting visible and easy to correct.</li>
+      <li>Calendar rows and latest rows have different denominators. The UI labels must make that difference explicit.</li>
+      <li>Do not make missing rows affect health scoring, illness evidence, or report generation. This is admin observability only.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <ul>
+      <li>Clear or delete <code>settings.subjective_checkin_enabled_since</code> to disable calendar SLA output without changing prompt delivery.</li>
+      <li>Revert the code changes if needed; no derived health data or raw health records are modified by this feature.</li>
+      <li>If the response extension causes UI trouble, keep the storage helper and temporarily render only the existing latest history table.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Should the first production enabled-since date be set to the actual rollout date from PR 2, the first prompt row, or a manually chosen date?</li>
+      <li>Should in-progress today be excluded, shown as <code>prompted</code> when a prompt exists, or shown as a separate <code>pending</code> state when no prompt exists yet?</li>
+      <li>Do we want a Todoist task close/update after implementation, or should that remain manual?</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implemented Result</h2>
+    <ul>
+      <li>Created GitHub issue <code>#186</code>: <code>Add calendar-day SLA for subjective check-in prompts</code>.</li>
+      <li>Added tenant-scoped setting <code>subjective_checkin_enabled_since</code> through the existing <code>settings</code> table.</li>
+      <li>Extended <code>/api/admin/checkin-coverage</code>: <code>GET</code> returns existing latest history plus new SLA fields; <code>POST</code> saves <code>enabled_since</code> for the active tenant and returns refreshed coverage.</li>
+      <li>Kept existing <code>summary</code> and <code>rows</code> as latest actual prompt history for compatibility.</li>
+      <li>Added <code>sla_summary</code> and <code>sla_rows</code> for calendar-day coverage after enabled-since.</li>
+      <li>Added <code>pending</code> for the current day when no row exists yet, so today is not prematurely counted as <code>missing</code>.</li>
+      <li>Updated Admin UI with an enabled-since date input, Calendar SLA table, and Latest prompt history table.</li>
+      <li>Added English, Russian, and Serbian labels plus minimal CSS for the new UI.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Checks Run</h2>
+    <ul>
+      <li><code>gofmt -w internal\storage\subjective_checkin.go internal\storage\subjective_checkin_test.go internal\ui\handler.go internal\ui\admin_checkin_coverage_test.go internal\ui\i18n_en.go internal\ui\i18n_ru.go internal\ui\i18n_sr.go</code></li>
+      <li><code>go test ./internal/storage -run "Test.*Checkin|Test.*CheckinCoverage" -count=1</code> - passed.</li>
+      <li><code>go test ./internal/ui -run TestAdminCheckinCoverage -count=1</code> - passed.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Known Limitations</h2>
+    <ul>
+      <li>The current day with no prompt row is shown as <code>pending</code> for the full day. This is deliberately conservative; a later refinement can switch it to <code>missing</code> after the tenant's morning cap passes.</li>
+      <li>Clearing enabled-since stores an empty settings value rather than deleting the row; existing settings helpers treat that as inactive.</li>
+      <li>No production setting was changed during implementation. Enabling SLA for a tenant is still an explicit admin action.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval Gate</h2>
+    <p>
+      Implementation must not start until the user explicitly approves this plan.
+      Suggested approval phrase: <code>погнали</code>.
+    </p>
+  </section>
+</main>
+</body>
+</html>

@@ -156,3 +156,68 @@ func TestBuildCheckinCoverage_LimitsToLatestRows(t *testing.T) {
 		t.Fatalf("summary = %+v, want total=2 answered=2", coverage.Summary)
 	}
 }
+
+func TestBuildCheckinCoverageWithSLA_SynthesizesMissingAfterEnabledSince(t *testing.T) {
+	prompted := time.Date(2026, 6, 16, 8, 0, 0, 0, time.UTC)
+	base, err := buildCheckinCoverage("2026-06-18", CheckinSourceTelegram, 14, nil)
+	if err != nil {
+		t.Fatalf("build history: %v", err)
+	}
+	coverage, err := buildCheckinCoverageWithSLA(base, "2026-06-18", "2026-06-15", CheckinSourceTelegram, "2026-06-15", []CheckinRow{
+		{Date: "2026-06-16", Source: CheckinSourceTelegram, Status: CheckinStatusAnswered, Answer: CheckinAnswerOK, PromptedAt: prompted, AnsweredAt: prompted.Add(2 * time.Minute), ExpiresAt: prompted.Add(time.Hour)},
+		{Date: "2026-06-15", Source: CheckinSourceTelegram, Status: CheckinStatusExpired, PromptedAt: prompted.AddDate(0, 0, -1), ExpiresAt: prompted.AddDate(0, 0, -1).Add(time.Hour)},
+	})
+	if err != nil {
+		t.Fatalf("build SLA: %v", err)
+	}
+	if !coverage.SLAActive || coverage.EnabledSince != "2026-06-15" {
+		t.Fatalf("sla active=%v enabled=%q", coverage.SLAActive, coverage.EnabledSince)
+	}
+	got := []string{
+		coverage.SLARows[0].Date + ":" + coverage.SLARows[0].Status,
+		coverage.SLARows[1].Date + ":" + coverage.SLARows[1].Status,
+		coverage.SLARows[2].Date + ":" + coverage.SLARows[2].Status,
+		coverage.SLARows[3].Date + ":" + coverage.SLARows[3].Status,
+	}
+	want := []string{
+		"2026-06-18:" + CheckinStatusPending,
+		"2026-06-17:" + CheckinStatusMissing,
+		"2026-06-16:" + CheckinStatusAnswered,
+		"2026-06-15:" + CheckinStatusExpired,
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("row %d = %q, want %q; all=%v", i, got[i], want[i], got)
+		}
+	}
+	if coverage.SLASummary.TotalDays != 4 ||
+		coverage.SLASummary.Pending != 1 ||
+		coverage.SLASummary.Missing != 1 ||
+		coverage.SLASummary.Answered != 1 ||
+		coverage.SLASummary.Expired != 1 {
+		t.Fatalf("sla summary = %+v", coverage.SLASummary)
+	}
+	if coverage.SLASummary.PromptedCoveragePercent != 67 {
+		t.Fatalf("prompted coverage = %d, want 67", coverage.SLASummary.PromptedCoveragePercent)
+	}
+}
+
+func TestCalendarCoverageStart_ClampsToEnabledSince(t *testing.T) {
+	if got := calendarCoverageStart("2026-06-18", "2026-06-15", 14); got != "2026-06-15" {
+		t.Fatalf("start = %s, want enabled-since", got)
+	}
+	if got := calendarCoverageStart("2026-06-18", "2026-05-01", 3); got != "2026-06-16" {
+		t.Fatalf("start = %s, want window start", got)
+	}
+}
+
+func TestValidateCheckinEnabledSince(t *testing.T) {
+	for _, date := range []string{"", "2026-06-18"} {
+		if err := ValidateCheckinEnabledSince(date); err != nil {
+			t.Fatalf("date %q should be valid: %v", date, err)
+		}
+	}
+	if err := ValidateCheckinEnabledSince("18-06-2026"); err == nil {
+		t.Fatal("invalid date should be rejected")
+	}
+}

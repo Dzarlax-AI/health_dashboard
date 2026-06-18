@@ -370,7 +370,11 @@ var translationsEn = map[string]string{
 	"admin_quality_missed":            "Missed nights",
 	"admin_quality_fixed":             "Flagged %d impossible, %d suspect rows.",
 	"admin_checkin_coverage_title":    "Subjective check-in coverage",
-	"admin_checkin_coverage_desc":     "Read-only view of the latest Telegram morning prompts and response latency.",
+	"admin_checkin_coverage_desc":     "Calendar SLA after the enabled-since date, plus latest Telegram morning prompts and response latency.",
+	"admin_checkin_enabled_since":     "Enabled since",
+	"admin_checkin_calendar_sla":      "Calendar SLA",
+	"admin_checkin_history":           "Latest prompt history",
+	"admin_checkin_sla_inactive":      "Set an enabled-since date to start calendar SLA checks.",
 	"admin_checkin_total":             "Days",
 	"admin_checkin_prompted_coverage": "Prompted",
 	"admin_checkin_answered_coverage": "Answered",
@@ -386,6 +390,9 @@ var translationsEn = map[string]string{
 	"admin_checkin_status_late":       "Late",
 	"admin_checkin_status_expired":    "Expired",
 	"admin_checkin_status_missing":    "Missing",
+	"admin_checkin_status_pending":    "Pending",
+	"admin_save":                      "Save",
+	"admin_saved":                     "Saved",
 
 	// ─── Admin: AI briefing settings ───────────────────────────
 	"admin_ai_title":      "AI Morning Briefing",

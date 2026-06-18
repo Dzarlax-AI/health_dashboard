@@ -2865,7 +2865,7 @@ func (h *Handler) adminQualityDigest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) adminCheckinCoverage(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -2882,6 +2882,20 @@ func (h *Handler) adminCheckinCoverage(w http.ResponseWriter, r *http.Request) {
 	if scopeErr != nil {
 		writeStatusError(w, scopeErr)
 		return
+	}
+	if r.Method == http.MethodPost {
+		var req struct {
+			EnabledSince string `json:"enabled_since"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
+			return
+		}
+		req.EnabledSince = strings.TrimSpace(req.EnabledSince)
+		if err := scope.DB.SaveCheckinEnabledSince(req.EnabledSince); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 	today := tenantLocalToday(h, scope.DB, scope.Schema)
 	coverage, err := scope.DB.GetCheckinCoverage(today, storage.CheckinSourceTelegram, days)
