@@ -375,6 +375,7 @@ var translationsEn = map[string]string{
 	"admin_checkin_calendar_sla":      "Calendar SLA",
 	"admin_checkin_history":           "Latest prompt history",
 	"admin_checkin_sla_inactive":      "Set an enabled-since date to start calendar SLA checks.",
+	"admin_checkin_save_failed":       "Failed to save check-in SLA date",
 	"admin_checkin_total":             "Days",
 	"admin_checkin_prompted_coverage": "Prompted",
 	"admin_checkin_answered_coverage": "Answered",
@@ -393,6 +394,7 @@ var translationsEn = map[string]string{
 	"admin_checkin_status_pending":    "Pending",
 	"admin_save":                      "Save",
 	"admin_saved":                     "Saved",
+	"admin_saving":                    "Saving...",
 
 	// ─── Admin: AI briefing settings ───────────────────────────
 	"admin_ai_title":      "AI Morning Briefing",

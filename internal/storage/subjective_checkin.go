@@ -368,27 +368,8 @@ func (s *DB) GetCheckinCoverage(today, source string, days int) (*CheckinCoverag
 	}
 	defer rows.Close()
 
-	var entries []CheckinRow
-	for rows.Next() {
-		row := CheckinRow{}
-		var answer *string
-		var msgID *int64
-		var answeredAt *time.Time
-		if err := rows.Scan(&row.Date, &row.Source, &row.Status, &answer, &msgID, &row.PromptedAt, &answeredAt, &row.ExpiresAt); err != nil {
-			return nil, err
-		}
-		if answer != nil {
-			row.Answer = *answer
-		}
-		if msgID != nil {
-			row.PromptMessageID = *msgID
-		}
-		if answeredAt != nil {
-			row.AnsweredAt = *answeredAt
-		}
-		entries = append(entries, row)
-	}
-	if err := rows.Err(); err != nil {
+	entries, err := scanCheckinRows(rows)
+	if err != nil {
 		return nil, err
 	}
 	coverage, err := buildCheckinCoverage(today, source, days, entries)
@@ -420,7 +401,10 @@ func (s *DB) getCheckinRowsBetween(ctx context.Context, source, from, to string)
 		return nil, err
 	}
 	defer rows.Close()
+	return scanCheckinRows(rows)
+}
 
+func scanCheckinRows(rows pgx.Rows) ([]CheckinRow, error) {
 	var entries []CheckinRow
 	for rows.Next() {
 		row := CheckinRow{}
@@ -476,25 +460,9 @@ func buildCheckinCoverage(today, source string, days int, entries []CheckinRow) 
 	var latencyN int64
 	promptedDays := 0
 	for _, entry := range entries {
-		promptedAt := entry.PromptedAt
-		expiresAt := entry.ExpiresAt
-		row := CheckinCoverageRow{
-			Date:       entry.Date,
-			Source:     entry.Source,
-			Status:     entry.Status,
-			Answer:     entry.Answer,
-			PromptedAt: &promptedAt,
-			ExpiresAt:  &expiresAt,
-		}
-		if !entry.AnsweredAt.IsZero() {
-			answeredAt := entry.AnsweredAt
-			row.AnsweredAt = &answeredAt
-			latency := int64(answeredAt.Sub(promptedAt).Seconds())
-			if latency < 0 {
-				latency = 0
-			}
-			row.ResponseLatencySeconds = &latency
-			latencySum += latency
+		row := checkinCoverageRow(entry)
+		if row.ResponseLatencySeconds != nil {
+			latencySum += *row.ResponseLatencySeconds
 			latencyN++
 		}
 		switch entry.Status {

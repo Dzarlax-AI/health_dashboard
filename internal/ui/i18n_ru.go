@@ -353,6 +353,7 @@ var translationsRu = map[string]string{
 	"admin_checkin_calendar_sla":      "Календарный SLA",
 	"admin_checkin_history":           "История промптов",
 	"admin_checkin_sla_inactive":      "Укажите дату включения, чтобы начать календарные SLA-проверки.",
+	"admin_checkin_save_failed":       "Не удалось сохранить дату SLA check-in",
 	"admin_checkin_total":             "Дней",
 	"admin_checkin_prompted_coverage": "Промпт был",
 	"admin_checkin_answered_coverage": "Ответ был",
@@ -371,6 +372,7 @@ var translationsRu = map[string]string{
 	"admin_checkin_status_pending":    "Ждём",
 	"admin_save":                      "Сохранить",
 	"admin_saved":                     "Сохранено",
+	"admin_saving":                    "Сохраняем...",
 
 	"admin_ai_title":      "AI-брифинг утром",
 	"admin_ai_key":        "Gemini API ключ",

@@ -885,14 +885,14 @@ function saveCheckinEnabledSince() {
   var input = $('checkin-enabled-since');
   var msg = $('checkin-enabled-msg');
   if (!input) return;
-  if (msg) msg.textContent = '...';
+  if (msg) msg.textContent = '{{T .Lang "admin_saving"}}';
   fetchWithAdminSchema('/api/admin/checkin-coverage?days=14', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({enabled_since: input.value || ''})
   })
     .then(function(r){
-      if (!r.ok) return r.text().then(function(t){ throw new Error(t || 'Failed to save check-in SLA date'); });
+      if (!r.ok) return r.text().then(function(t){ throw new Error(t || '{{T .Lang "admin_checkin_save_failed"}}'); });
       return r.json();
     })
     .then(function(d) {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"math"
 	"net"
 	"net/http"
@@ -2887,7 +2888,14 @@ func (h *Handler) adminCheckinCoverage(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			EnabledSince string `json:"enabled_since"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		const maxBodyBytes = 1024
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
+			return
+		}
+		if err := dec.Decode(&struct{}{}); err != io.EOF {
 			http.Error(w, "invalid JSON", http.StatusBadRequest)
 			return
 		}

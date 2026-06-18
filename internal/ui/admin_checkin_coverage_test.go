@@ -141,6 +141,21 @@ func TestAdminCheckinCoverage_PostRejectsBadEnabledSince(t *testing.T) {
 	}
 }
 
+func TestAdminCheckinCoverage_PostRejectsUnknownFields(t *testing.T) {
+	db, schema, cleanup := testTenantDB(t)
+	defer cleanup()
+
+	h := &Handler{}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/admin/checkin-coverage", bytes.NewBufferString(`{"enabled_since":"2026-06-15","extra":true}`)).
+		WithContext(adminContext(db, schema))
+	h.adminCheckinCoverage(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestAdminCheckinCoverage_RejectsBadDays(t *testing.T) {
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/api/admin/checkin-coverage?days=0", nil)
