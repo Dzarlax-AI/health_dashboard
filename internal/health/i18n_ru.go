@@ -201,6 +201,23 @@ var ru = LangStrings{
 	"checkin_ack_late":     "Записал после отчёта — пойдёт в аналитику.",
 	"checkin_expired_note": "<i>Хотите, чтобы отчёт точнее отражал ваше состояние? Ответьте одним нажатием на утренний вопрос завтра.</i>",
 
+	// Proactive context prompts. Answers are categorical only; never store
+	// free text or the concrete real-world event behind the anomaly.
+	"context_prompt_low_sleep_text":           "Последний сон был заметно ниже вашей нормы. Был какой-то контекст, который стоит отметить?",
+	"context_prompt_btn_poor_sleep_context":   "Плохой сон",
+	"context_prompt_btn_stress_context":       "Стресс",
+	"context_prompt_btn_travel_context":       "Поездка",
+	"context_prompt_btn_unknown_context":      "Не уверен(а)",
+	"context_prompt_btn_skip_context":         "Пропустить",
+	"context_prompt_ack_saved":                "Контекст сохранён для будущих отчётов.",
+	"context_prompt_ack_skipped":              "Контекст не сохранён.",
+	"context_prompt_ack_expired":              "Этот вопрос уже устарел.",
+	"context_prompt_label_poor_sleep_context": "Вы отметили этот сигнал низкого сна как контекст качества сна.",
+	"context_prompt_label_stress_context":     "Вы отметили этот сигнал низкого сна как стрессовый контекст.",
+	"context_prompt_label_travel_context":     "Вы отметили этот сигнал низкого сна как контекст поездки.",
+	"context_prompt_label_unknown_context":    "Вы отметили этот сигнал низкого сна как необъяснённый контекст.",
+	"tg_context_notes":                        "Контекстные заметки",
+
 	"energy_note_capacity":              "утренняя капасити = сон %.1fч + маркеры восстановления",
 	"energy_component_morning_capacity": "Утренняя капасити",
 	"energy_component_activity_load":    "Нагрузка (сегодня vs 28-дн норма)",

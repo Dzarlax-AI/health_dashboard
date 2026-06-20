@@ -30,6 +30,10 @@ type CheckinAnswerRouter interface {
 	// in-time answer. No-op when the report has already been sent
 	// for today (idempotent on the tenant side).
 	TriggerReport(schema string)
+	// SaveContextPromptAnswer persists an opaque proactive-context
+	// answer. It does not trigger reports; answers only affect future
+	// caveats.
+	SaveContextPromptAnswer(promptID, category, source string, answeredAt time.Time) (string, error)
 }
 
 // CheckinTenant carries the per-tenant routing context the webhook
@@ -123,6 +127,26 @@ func NewWebhookHandler(cfg WebhookConfig) http.HandlerFunc {
 			fmt.Fprintln(w, "ignored: unknown chat")
 			return
 		}
+		// Context callbacks intentionally do not check the send feature
+		// flag. `proactive_context_prompts=false` stops new prompt sends,
+		// but a user who already received a prompt must still be able to
+		// answer it until expires_at; otherwise a rollout kill switch would
+		// turn delivered buttons into dead UI.
+		if promptID, category, ok := parseContextPromptCallback(upd.CallbackQuery.Data); ok {
+			status, err := tenant.Router.SaveContextPromptAnswer(promptID, category, storage.ContextPromptSourceTelegram, time.Now())
+			if err != nil {
+				log.Printf("telegram webhook: save context prompt tenant=%s prompt=%s category=%s err=%v", tenant.Schema, promptID, category, err)
+				_ = tenant.Router.AnswerCallbackQuery(upd.CallbackQuery.ID, "")
+				fmt.Fprintln(w, "ignored: context save error")
+				return
+			}
+			ack := contextAckText(tenant.Lang, status)
+			if err := tenant.Router.AnswerCallbackQuery(upd.CallbackQuery.ID, ack); err != nil {
+				log.Printf("telegram webhook: context ack: %v", err)
+			}
+			fmt.Fprintln(w, "ok")
+			return
+		}
 		answer, date, ok := parseCheckinCallback(upd.CallbackQuery.Data)
 		if !ok {
 			log.Printf("telegram webhook: malformed callback %q from chat %s", upd.CallbackQuery.Data, chat)
@@ -200,4 +224,18 @@ func ackText(lang, answer, status string) string {
 		return strs["checkin_ack_sick"]
 	}
 	return ""
+}
+
+func contextAckText(lang, status string) string {
+	strs := health.GetStrings(lang)
+	switch status {
+	case storage.ContextPromptStatusAnswered:
+		return strs["context_prompt_ack_saved"]
+	case storage.ContextPromptStatusSkipped:
+		return strs["context_prompt_ack_skipped"]
+	case storage.ContextPromptStatusExpired:
+		return strs["context_prompt_ack_expired"]
+	default:
+		return ""
+	}
 }

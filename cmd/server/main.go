@@ -103,6 +103,7 @@ func main() {
 		legacyDB.EnsureEnergySnapshotsTable()
 		legacyDB.EnsureReadinessRedesignTables()
 		legacyDB.EnsureSubjectiveCheckinsTable()
+		legacyDB.EnsureContextPromptInteractionsTable()
 		legacyDB.EnsureAuthSessionsTable()
 
 		passwordHash := ""
@@ -154,7 +155,7 @@ func main() {
 	// One-time backfill of installation-wide Gemini config for installs
 	// that pre-date PR #16 (where AI settings were per-tenant). When the
 	// global table is empty but an admin tenant already has gemini_* rows,
-	// copy them up so non-admin tenants (Maria-style accounts) inherit.
+	// copy them up so non-admin tenants inherit.
 	if err := migrateGlobalAIIfNeeded(ctx, reg, mgr, users); err != nil {
 		log.Printf("global AI migration: %v", err)
 	}
@@ -174,6 +175,7 @@ func main() {
 		db.EnsureEnergySnapshotsTable()
 		db.EnsureReadinessRedesignTables()
 		db.EnsureSubjectiveCheckinsTable()
+		db.EnsureContextPromptInteractionsTable()
 		db.EnsureAuthSessionsTable()
 		startTenant(ctx, mgr, reg, db, u.SchemaName, envNotifyDefaults, envAIDefaults, baseURL)
 	}
@@ -229,6 +231,7 @@ func main() {
 		db.EnsureEnergySnapshotsTable()
 		db.EnsureReadinessRedesignTables()
 		db.EnsureSubjectiveCheckinsTable()
+		db.EnsureContextPromptInteractionsTable()
 		db.EnsureAuthSessionsTable()
 		startTenant(ctx, mgr, reg, db, schema, envNotifyDefaults, envAIDefaults, baseURL)
 	})
@@ -667,6 +670,9 @@ type liveCheckinRouter struct {
 func (r *liveCheckinRouter) SaveAnswer(date, source, answer string, answeredAt time.Time) (string, error) {
 	return r.db.SaveCheckinAnswer(date, source, answer, answeredAt)
 }
+func (r *liveCheckinRouter) SaveContextPromptAnswer(promptID, category, source string, answeredAt time.Time) (string, error) {
+	return r.db.SaveContextPromptAnswer(promptID, category, source, answeredAt)
+}
 func (r *liveCheckinRouter) AnswerCallbackQuery(qid, text string) error {
 	return r.bot.AnswerCallbackQuery(qid, text)
 }
@@ -706,13 +712,19 @@ func makeReportTrigger(mgr *tenants.Manager, schema string, defaults storage.Not
 		sendMu := mgr.MorningSendMuFor(schema)
 		if sendMu != nil {
 			sendMu.Lock()
-			defer sendMu.Unlock()
 		}
+		sentReport := false
 		if db.HasSentMorningReport(today) {
+			if sendMu != nil {
+				sendMu.Unlock()
+			}
 			return
 		}
 		sent, reason, err := notify.SendMorningSmart(bot, db, ncfg, false)
 		if err != nil {
+			if sendMu != nil {
+				sendMu.Unlock()
+			}
 			log.Printf("checkin-trigger: send: %v", err)
 			return
 		}
@@ -720,6 +732,13 @@ func makeReportTrigger(mgr *tenants.Manager, schema string, defaults storage.Not
 			if perr := db.MarkMorningReportSent(today); perr != nil {
 				log.Printf("checkin-trigger: mark sent: %v", perr)
 			}
+			sentReport = true
+		}
+		if sendMu != nil {
+			sendMu.Unlock()
+		}
+		if sentReport {
+			trySendContextPromptAfterMorning(bot, db, ncfg, today, time.Now().In(loc))
 			log.Printf("checkin-trigger: sent (reason=%s) for %s", reason, today)
 		}
 	}
@@ -832,8 +851,8 @@ func makeMorningTrigger(db *storage.DB, sendMu *sync.Mutex, mgr *tenants.Manager
 			// both observe HasSent=false in the narrow window between
 			// the outer check and the actual Telegram POST.
 			sendMu.Lock()
-			defer sendMu.Unlock()
 			if db.HasSentMorningReport(today) {
+				sendMu.Unlock()
 				return
 			}
 			sent, reason, err := notify.SendMorningSmartOpts(bot, db, ncfg, notify.MorningSendOpts{
@@ -841,16 +860,20 @@ func makeMorningTrigger(db *storage.DB, sendMu *sync.Mutex, mgr *tenants.Manager
 				CheckinExpired: action == notify.MorningActionExpireAndForce,
 			})
 			if err != nil {
+				sendMu.Unlock()
 				log.Printf("morning trigger: send telegram: %v", err)
 				return
 			}
 			if !sent {
+				sendMu.Unlock()
 				log.Printf("morning trigger: deferring — %s", reason)
 				return
 			}
 			if err := db.MarkMorningReportSent(today); err != nil {
 				log.Printf("morning trigger: mark sent: %v", err)
 			}
+			sendMu.Unlock()
+			trySendContextPromptAfterMorning(bot, db, ncfg, today, now)
 			log.Printf("morning trigger: sent (reason=%s, forced=%v, action=%s)", reason, force, action)
 		}
 	}
@@ -1090,6 +1113,7 @@ func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager,
 			}
 			if sent {
 				log.Printf("morning smart-retry: sent (reason=%s, forced=%v, action=%s)", reason, past, action)
+				trySendContextPromptAfterMorning(bot, db, ncfg, today, time.Now().In(loc))
 				return
 			}
 			if past {
@@ -1103,6 +1127,26 @@ func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager,
 			time.Sleep(tick)
 		}
 	}
+}
+
+func trySendContextPromptAfterMorning(bot *notify.Bot, db *storage.DB, cfg notify.Config, signalDate string, now time.Time) {
+	if !storage.IsContextPromptsEnabled(db) {
+		return
+	}
+	promptDate := now.Format("2006-01-02")
+	prompt, reserved, err := db.ReserveLowSleepContextPrompt(signalDate, promptDate, now, now.Add(36*time.Hour))
+	if err != nil {
+		log.Printf("context prompt: reserve low_sleep date=%s: %v", signalDate, err)
+		return
+	}
+	if !reserved || prompt == nil {
+		return
+	}
+	if err := notify.SendContextPrompt(bot, db, cfg.Lang, prompt, now); err != nil {
+		log.Printf("context prompt: send low_sleep prompt=%s date=%s: %v", prompt.PromptID, signalDate, err)
+		return
+	}
+	log.Printf("context prompt: sent low_sleep prompt=%s date=%s", prompt.PromptID, signalDate)
 }
 
 // runDailyQualityScan ticks once per day at 03:00 (REPORT_TZ or system local)
@@ -1146,6 +1190,11 @@ func runDailyQualityScan(db *storage.DB, schema string, defaults storage.NotifyC
 		now = time.Now().In(loc)
 		today := now.Format("2006-01-02")
 		db.RunReadinessRedesignBackfillForDatesAt([]string{today}, now)
+		if deleted, err := db.PruneContextPromptInteractions(now); err != nil {
+			log.Printf("[%s] context prompt retention: %v", schema, err)
+		} else if deleted > 0 {
+			log.Printf("[%s] context prompt retention: pruned %d rows", schema, deleted)
+		}
 	}
 }
 

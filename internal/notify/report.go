@@ -530,6 +530,21 @@ func renderAlerts(sb *strings.Builder, alerts []health.Alert, lang string) {
 	sb.WriteByte('\n')
 }
 
+func renderContextAnnotations(sb *strings.Builder, annotations []health.ContextAnnotationSummary, lang string) {
+	if len(annotations) == 0 {
+		return
+	}
+	fmt.Fprintf(sb, "📝 <b>%s</b>\n", tr(lang, "tg_context_notes"))
+	for _, a := range annotations {
+		label := tr(lang, "context_prompt_label_"+a.Category)
+		if label == "context_prompt_label_"+a.Category {
+			label = tr(lang, "context_prompt_label_unknown_context")
+		}
+		fmt.Fprintf(sb, "  • %s\n", label)
+	}
+	sb.WriteByte('\n')
+}
+
 func abs(x int) int {
 	if x < 0 {
 		return -x
@@ -562,6 +577,7 @@ func formatMorning(b *health.BriefingResponse, aiBlocks map[string]string, lang 
 	renderEnergyBank(&sb, b.EnergyBank, lang)
 	renderReadiness(&sb, b, lang)
 	renderAlerts(&sb, b.Alerts, lang)
+	renderContextAnnotations(&sb, b.ContextAnnotations, lang)
 
 	// Sleep — rule-based bullets always; AI take layered underneath. If sleep
 	// data is silent for ≥36h, the briefing is from a stale night and the

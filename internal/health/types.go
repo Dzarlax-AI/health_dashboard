@@ -453,15 +453,16 @@ type BriefingResponse struct {
 	RecoveryPct      int                    `json:"recovery_pct"`
 	ReadinessToday   int                    `json:"readiness_today"` // today only vs baseline
 	// ReadinessTodayBand mirrors ReadinessBand for the today-only score.
-	ReadinessTodayBand  string             `json:"readiness_today_band"`
-	ReadinessTodayLabel string             `json:"readiness_today_label"`
-	Correlation         []CorrelationPoint `json:"correlation"`
-	Insights            []Insight          `json:"insights"`
-	Alerts              []Alert            `json:"alerts,omitempty"`
-	Sleep               *SleepAnalysis     `json:"sleep"`
-	MetricCards         []MetricCard       `json:"metric_cards"`
-	EnergyBank          *EnergyBank        `json:"energy_bank,omitempty"`
-	IllnessSuspicion    *IllnessSuspicion  `json:"illness_suspicion,omitempty"`
+	ReadinessTodayBand  string                     `json:"readiness_today_band"`
+	ReadinessTodayLabel string                     `json:"readiness_today_label"`
+	Correlation         []CorrelationPoint         `json:"correlation"`
+	Insights            []Insight                  `json:"insights"`
+	Alerts              []Alert                    `json:"alerts,omitempty"`
+	Sleep               *SleepAnalysis             `json:"sleep"`
+	MetricCards         []MetricCard               `json:"metric_cards"`
+	EnergyBank          *EnergyBank                `json:"energy_bank,omitempty"`
+	IllnessSuspicion    *IllnessSuspicion          `json:"illness_suspicion,omitempty"`
+	ContextAnnotations  []ContextAnnotationSummary `json:"context_annotations,omitempty"`
 	// SubjectiveCheckin is the morning self-report (Telegram one-tap).
 	// Populated from subjective_checkins when a row exists for today
 	// in the tenant's REPORT_TZ. nil when no row — dashboard renders
@@ -472,6 +473,15 @@ type BriefingResponse struct {
 	// Populated by the API handler (not by GetHealthBriefing), so it stays
 	// optional and doesn't pollute internal-use callers of BriefingResponse.
 	AIInsight string `json:"ai_insight,omitempty"`
+}
+
+type ContextAnnotationSummary struct {
+	Date           string  `json:"date"`
+	DetectedReason string  `json:"detected_reason"`
+	Category       string  `json:"category"`
+	SleepHours     float64 `json:"sleep_hours,omitempty"`
+	BaselineAvg    float64 `json:"baseline_avg,omitempty"`
+	ZScore         float64 `json:"z_score,omitempty"`
 }
 
 const (

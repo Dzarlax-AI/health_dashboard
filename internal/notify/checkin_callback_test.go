@@ -9,17 +9,22 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"health-receiver/internal/storage"
 )
 
 type fakeRouter struct {
-	saveStatus string
-	saveErr    error
-	saveCalls  int
-	ackCalls   int
-	triggers   []string
-	lastDate   string
-	lastSource string
-	lastAnswer string
+	saveStatus   string
+	saveErr      error
+	saveCalls    int
+	ackCalls     int
+	triggers     []string
+	lastDate     string
+	lastSource   string
+	lastAnswer   string
+	contextCalls int
+	lastPromptID string
+	lastCategory string
 }
 
 func (f *fakeRouter) SaveAnswer(date, source, answer string, _ time.Time) (string, error) {
@@ -29,6 +34,11 @@ func (f *fakeRouter) SaveAnswer(date, source, answer string, _ time.Time) (strin
 }
 func (f *fakeRouter) AnswerCallbackQuery(qid, text string) error { f.ackCalls++; return nil }
 func (f *fakeRouter) TriggerReport(schema string)                { f.triggers = append(f.triggers, schema) }
+func (f *fakeRouter) SaveContextPromptAnswer(promptID, category, source string, _ time.Time) (string, error) {
+	f.contextCalls++
+	f.lastPromptID, f.lastCategory, f.lastSource = promptID, category, source
+	return f.saveStatus, f.saveErr
+}
 
 func buildUpdateBody(t *testing.T, chatID, callbackData string) []byte {
 	t.Helper()
@@ -171,6 +181,37 @@ func TestWebhook_LateAnswered_DoesNotTriggerReport(t *testing.T) {
 	}
 	if len(router.triggers) != 0 {
 		t.Fatalf("late answer must NOT retrigger report (already sent); got triggers=%v", router.triggers)
+	}
+}
+
+func TestWebhook_ContextPromptAnswer_DoesNotTriggerReport(t *testing.T) {
+	router := &fakeRouter{saveStatus: storage.ContextPromptStatusAnswered}
+	h := NewWebhookHandler(WebhookConfig{
+		Secret: "good",
+		TenantFinder: func(chat string) (CheckinTenant, bool) {
+			return CheckinTenant{Schema: "health", Lang: "ru", Router: router}, true
+		},
+	})
+	req := httptest.NewRequest("POST", "/api/telegram/webhook/good", bytes.NewReader(buildUpdateBody(t, "111", "ctx:cp_abc123:stress")))
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rec.Code)
+	}
+	if router.saveCalls != 0 {
+		t.Fatalf("check-in save must not run for context prompt; got %d", router.saveCalls)
+	}
+	if router.contextCalls != 1 {
+		t.Fatalf("context save not called: %d", router.contextCalls)
+	}
+	if router.lastPromptID != "cp_abc123" || router.lastCategory != storage.ContextPromptCategoryStress || router.lastSource != storage.ContextPromptSourceTelegram {
+		t.Fatalf("wrong context payload: %+v", router)
+	}
+	if router.ackCalls != 1 {
+		t.Fatalf("ack not called: %d", router.ackCalls)
+	}
+	if len(router.triggers) != 0 {
+		t.Fatalf("context answer must not trigger report; got %v", router.triggers)
 	}
 }
 

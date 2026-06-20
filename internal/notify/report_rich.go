@@ -34,6 +34,7 @@ func formatMorningRich(b *health.BriefingResponse, aiBlocks map[string]string, l
 	renderRichEnergyBank(&sb, b.EnergyBank, lang)
 	renderRichReadiness(&sb, b, lang)
 	renderRichAlerts(&sb, b.Alerts, lang)
+	renderRichContextAnnotations(&sb, b.ContextAnnotations, lang)
 
 	switch {
 	case f.sleepStale() && f.sleepKnown:
@@ -151,6 +152,21 @@ func renderRichHeadline(sb *strings.Builder, h *health.HeadlineSignal) {
 		fmt.Fprintf(sb, "<br><em>%s</em>", richText(h.Detail))
 	}
 	sb.WriteString("</p>\n")
+}
+
+func renderRichContextAnnotations(sb *strings.Builder, annotations []health.ContextAnnotationSummary, lang string) {
+	if len(annotations) == 0 {
+		return
+	}
+	fmt.Fprintf(sb, "<h3>📝 %s</h3>\n<ul>\n", richEsc(tr(lang, "tg_context_notes")))
+	for _, a := range annotations {
+		label := tr(lang, "context_prompt_label_"+a.Category)
+		if label == "context_prompt_label_"+a.Category {
+			label = tr(lang, "context_prompt_label_unknown_context")
+		}
+		fmt.Fprintf(sb, "<li>%s</li>\n", richText(label))
+	}
+	sb.WriteString("</ul>\n")
 }
 
 func renderRichMorningSummary(sb *strings.Builder, b *health.BriefingResponse, f freshness, lang string) {

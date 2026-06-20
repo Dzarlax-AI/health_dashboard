@@ -335,6 +335,8 @@ func (m *Manager) CreateUserSchema(ctx context.Context, schemaName string) error
 	db.EnsureAIBriefingBlocksTable()
 	db.EnsureEnergySnapshotsTable()
 	db.EnsureReadinessRedesignTables()
+	db.EnsureSubjectiveCheckinsTable()
+	db.EnsureContextPromptInteractionsTable()
 	// Verify the readiness-redesign schema landed cleanly. Ensure is
 	// log-and-continue so startup never blocks, but a new tenant must
 	// not be handed back to the caller with broken Phase 0 storage —
