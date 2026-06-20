@@ -616,7 +616,7 @@ func (s *DB) reserveContextPrompt(reason, detectorVersion, signalDate, promptLoc
 		          COALESCE(category, ''), COALESCE(source, ''), COALESCE(prompt_message_id, 0),
 		          COALESCE(prompted_at, '0001-01-01'::timestamptz), expires_at,
 		          COALESCE(answered_at, '0001-01-01'::timestamptz), allowed_categories, metadata`,
-		promptID, signalDate, promptLocalDate, reason, detectorVersion, ContextPromptStatusReserved, expiresAt, allowedJSON, metadataJSON, now).
+		promptID, signalDate, promptLocalDate, reason, detectorVersion, ContextPromptStatusReserved, expiresAt, json.RawMessage(allowedJSON), json.RawMessage(metadataJSON), now).
 		Scan(&row.PromptID, &row.SignalDate, &row.PromptLocalDate, &row.DetectedReason, &row.DetectorVersion, &row.Status,
 			&row.Category, &row.Source, &row.PromptMessageID, &row.PromptedAt, &row.ExpiresAt, &row.AnsweredAt, &allowedRaw, &metadataRaw)
 	if err != nil {
@@ -728,15 +728,27 @@ func contextPromptCanAcceptAnswer(status string) bool {
 }
 
 func (s *DB) GetContextAnnotationsForDate(signalDate string) ([]ContextAnnotation, error) {
+	return s.GetRecentContextAnnotationsThroughDate(signalDate, 1)
+}
+
+func (s *DB) GetRecentContextAnnotationsThroughDate(toDate string, days int) ([]ContextAnnotation, error) {
+	if days < 1 {
+		days = 1
+	}
+	if days > 14 {
+		days = 14
+	}
+	fromDate := subtractDays(toDate, days-1)
 	ctx, cancel := queryCtx()
 	defer cancel()
 	rows, err := s.pool.Query(ctx, `
 		SELECT signal_date::text, detected_reason, category, metadata
 		  FROM context_prompt_interactions
-		 WHERE signal_date = $1
-		   AND status = $2
+		 WHERE signal_date >= $1
+		   AND signal_date <= $2
+		   AND status = $3
 		   AND category IS NOT NULL
-		 ORDER BY answered_at DESC`, signalDate, ContextPromptStatusAnswered)
+		 ORDER BY signal_date DESC, answered_at DESC`, fromDate, toDate, ContextPromptStatusAnswered)
 	if err != nil {
 		return nil, err
 	}

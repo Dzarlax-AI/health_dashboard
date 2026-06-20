@@ -143,18 +143,18 @@
   source             TEXT,          -- NULL until answer; telegram for MVP
   prompt_message_id  BIGINT,
   prompted_at        TIMESTAMPTZ,
-  expires_at         TIMESTAMPTZ,
+  expires_at         TIMESTAMPTZ NOT NULL,
   answered_at        TIMESTAMPTZ,
-  allowed_categories JSONB NOT NULL,
+  allowed_categories JSONB NOT NULL DEFAULT '[]'::jsonb,
   metadata           JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (signal_date, detected_reason)
 );</code></pre>
     <p>Add a partial unique index for one sent prompt per tenant-local prompt day:</p>
-    <pre><code>CREATE UNIQUE INDEX IF NOT EXISTS ux_context_prompt_one_sent_per_day
+    <pre><code>CREATE UNIQUE INDEX IF NOT EXISTS idx_context_prompt_one_sent_per_day
 ON context_prompt_interactions (prompt_local_date)
-WHERE status IN ('reserved', 'prompted', 'answered', 'skipped', 'expired');</code></pre>
+WHERE status IN ('reserved', 'prompted', 'answered', 'skipped', 'expired', 'send_failed');</code></pre>
     <ul>
       <li><code>source</code> is an answer/source channel, not event identity.</li>
       <li><code>category</code> is nullable until answer.</li>
@@ -452,7 +452,7 @@ WHERE status IN ('reserved', 'prompted', 'answered', 'skipped', 'expired');</cod
       <li><code>go test ./internal/storage ./internal/notify ./internal/health</code></li>
       <li><code>go test ./cmd/server</code></li>
       <li><code>go test ./...</code></li>
-      <li>Real DB dry-run on schema <code>health</code>: before guards, 8 potential prompt days in the last 180 days; after guards, 4. Since 2025, after guards, 18. With timing evidence disabled for MVP, prompt-usefulness sends 3 of the 4 last-180-day candidates; <code>2026-05-01</code> becomes <code>low_usefulness</code>. <code>2025-12-22</code> remains <code>no_trigger</code> with sleep 5.94h and z-score -1.13.</li>
+      <li>Real DB dry-run on schema <code>health</code>: before guards, 8 potential prompt days in the last 180 days; after guards, 4. Since the broader retrospective start, after guards, 18. With timing evidence disabled for MVP, prompt-usefulness sends 3 of the 4 last-180-day candidates; one low-usefulness candidate is rejected by the policy gate, and the known manually reviewed historical outlier remains <code>no_trigger</code>.</li>
     </ul>
   </section>
 

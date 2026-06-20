@@ -671,7 +671,7 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 	health.ApplyIllnessSafetyCap(resp, health.GetStrings(lang))
 
 	if IsContextCaveatsEnabled(s) {
-		if annotations, aerr := s.GetContextAnnotationsForDate(*lastDate); aerr == nil {
+		if annotations, aerr := s.GetRecentContextAnnotationsThroughDate(*lastDate, 3); aerr == nil {
 			for _, a := range annotations {
 				resp.ContextAnnotations = append(resp.ContextAnnotations, health.ContextAnnotationSummary{
 					Date:           a.Date,
