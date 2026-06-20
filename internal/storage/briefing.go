@@ -670,6 +670,23 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 	resp.IllnessSuspicion = health.ComputeIllnessSuspicion(illnessInput)
 	health.ApplyIllnessSafetyCap(resp, health.GetStrings(lang))
 
+	if IsContextCaveatsEnabled(s) {
+		if annotations, aerr := s.GetRecentContextAnnotationsThroughDate(*lastDate, 3); aerr == nil {
+			for _, a := range annotations {
+				resp.ContextAnnotations = append(resp.ContextAnnotations, health.ContextAnnotationSummary{
+					Date:           a.Date,
+					DetectedReason: a.DetectedReason,
+					Category:       a.Category,
+					SleepHours:     a.SleepHours,
+					BaselineAvg:    a.BaselineAvg,
+					ZScore:         a.ZScore,
+				})
+			}
+		} else {
+			log.Printf("context annotations: %v", aerr)
+		}
+	}
+
 	if resp.EnergyBank != nil {
 		go s.SaveEnergyBankSnapshot(*lastDate, resp.EnergyBank)
 	}

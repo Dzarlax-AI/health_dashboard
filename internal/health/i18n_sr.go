@@ -201,6 +201,23 @@ var sr = LangStrings{
 	"checkin_ack_late":     "Zabeleženo posle izveštaja — ide u analitiku.",
 	"checkin_expired_note": "<i>Želite da izveštaj bolje odražava vaše stanje? Odgovorite jednim dodirom sutra.</i>",
 
+	// Proactive context prompts. Answers are categorical only; never store
+	// free text or the concrete real-world event behind the anomaly.
+	"context_prompt_low_sleep_text":           "Poslednji san je bio primetno ispod vaše norme. Ima li konteksta koji vredi zabeležiti?",
+	"context_prompt_btn_poor_sleep_context":   "Loš san",
+	"context_prompt_btn_stress_context":       "Stres",
+	"context_prompt_btn_travel_context":       "Putovanje",
+	"context_prompt_btn_unknown_context":      "Nisam siguran/na",
+	"context_prompt_btn_skip_context":         "Preskoči",
+	"context_prompt_ack_saved":                "Kontekst sačuvan za buduće izveštaje.",
+	"context_prompt_ack_skipped":              "Kontekst nije sačuvan.",
+	"context_prompt_ack_expired":              "Ovo pitanje je isteklo.",
+	"context_prompt_label_poor_sleep_context": "Ovaj signal niskog sna označen je kao kontekst kvaliteta sna.",
+	"context_prompt_label_stress_context":     "Ovaj signal niskog sna označen je kao stresni kontekst.",
+	"context_prompt_label_travel_context":     "Ovaj signal niskog sna označen je kao kontekst putovanja.",
+	"context_prompt_label_unknown_context":    "Ovaj signal niskog sna označen je kao neobjašnjen kontekst.",
+	"tg_context_notes":                        "Beleške konteksta",
+
 	"energy_note_capacity":              "jutarnji kapacitet iz sna %.1fh i markera oporavka",
 	"energy_component_morning_capacity": "Jutarnji kapacitet",
 	"energy_component_activity_load":    "Opterećenje (danas vs 28d hronični)",

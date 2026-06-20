@@ -186,7 +186,7 @@
   <section>
     <h2>Checks Run</h2>
     <ul>
-      <li><code>gofmt -w internal\storage\subjective_checkin.go internal\storage\subjective_checkin_test.go internal\ui\handler.go internal\ui\admin_checkin_coverage_test.go internal\ui\i18n_en.go internal\ui\i18n_ru.go internal\ui\i18n_sr.go</code></li>
+      <li><code>gofmt -w internal/storage/subjective_checkin.go internal/storage/subjective_checkin_test.go internal/ui/handler.go internal/ui/admin_checkin_coverage_test.go internal/ui/i18n_en.go internal/ui/i18n_ru.go internal/ui/i18n_sr.go</code></li>
       <li><code>go test ./internal/storage -run "Test.*Checkin|Test.*CheckinCoverage" -count=1</code> - passed.</li>
       <li><code>go test ./internal/ui -run TestAdminCheckinCoverage -count=1</code> - passed.</li>
     </ul>
@@ -202,10 +202,9 @@
   </section>
 
   <section class="approval">
-    <h2>Approval Gate</h2>
+    <h2>Approval Gate Status</h2>
     <p>
-      Implementation must not start until the user explicitly approves this plan.
-      Suggested approval phrase: <code>погнали</code>.
+      This was the historical approval gate for the implementation plan. Approval was received and the implementation results above reflect the completed work.
     </p>
   </section>
 </main>

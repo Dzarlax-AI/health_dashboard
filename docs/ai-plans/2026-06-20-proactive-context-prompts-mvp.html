@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Implementation Plan: Proactive Context Prompts MVP</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #1f2937; line-height: 1.5; }
+    main { max-width: 1180px; margin: 0 auto; padding: 32px; }
+    section { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin: 16px 0; }
+    h1, h2, h3 { line-height: 1.2; }
+    h1 { margin-bottom: 8px; }
+    code { background: #f3f4f6; padding: 2px 5px; border-radius: 4px; }
+    pre { background: #111827; color: #f9fafb; padding: 14px; border-radius: 8px; overflow-x: auto; }
+    pre code { background: transparent; padding: 0; color: inherit; }
+    li { margin: 6px 0; }
+    table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+    th, td { border: 1px solid #e5e7eb; padding: 8px; text-align: left; vertical-align: top; }
+    th { background: #f9fafb; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #e5e7eb; font-size: 12px; font-weight: 600; }
+    .muted { color: #6b7280; }
+    .callout { border-left: 4px solid #2563eb; }
+    .privacy { border-left: 4px solid #059669; }
+    .safety { border-left: 4px solid #7c3aed; }
+    .risk { border-left: 4px solid #dc2626; }
+    .approval { border-left: 4px solid #d97706; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+    .telegram { background: #e7f2fb; border: 1px solid #c7ddea; border-radius: 8px; padding: 16px; }
+    .bubble { background: #fff; border-radius: 8px; padding: 14px; box-shadow: 0 1px 2px rgba(31, 41, 55, 0.12); font-size: 14px; }
+    .buttons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+    .button { background: #eef6ff; border: 1px solid #b7d5f4; border-radius: 6px; padding: 8px; text-align: center; font-size: 13px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Implementation Plan: Proactive Context Prompts MVP</h1>
+  <p class="badge">Implemented on branch codex/185-proactive-context-prompts</p>
+  <p class="muted">Issue: #185. Revised 2026-06-20 after plan review. Scope: one non-safety detector, stateful Telegram prompt lifecycle, privacy-safe detector-specific annotations, and illness-safety non-regression.</p>
+
+  <section>
+    <h2>Task Summary</h2>
+    <p>Build a narrow first slice of interactive proactivity: when one selected non-safety detector notices a strong unusual pattern, reserve and send one Telegram prompt asking for broad context, then store the user's closed-enum answer. The annotation applies to the specific detector only and is used in future reports; it does not alter readiness scoring or illness-safety logic.</p>
+    <p>The plan intentionally reduces the earlier broad design. First slice means one detector, one prompt lifecycle, one storage model, one callback path, one tenant rollout, and measurable stop/go criteria.</p>
+    <p>The implementation separates two roles: <code>low_sleep_v2</code> is a candidate detector, while a separate prompt-usefulness gate decides whether asking the user is worth it.</p>
+  </section>
+
+  <section>
+    <h2>Review-Driven Changes</h2>
+    <ul>
+      <li>Replace <code>category NOT NULL</code> annotation rows with an explicit prompt/interaction state machine where <code>category</code> is nullable until answered.</li>
+      <li>Use <code>signal_date</code> and <code>prompt_local_date</code> as separate <code>DATE</code> fields. Do not use ambiguous <code>date TEXT</code>.</li>
+      <li>Deduplicate signals by <code>signal_date + detected_reason</code>, not by source.</li>
+      <li>Use an opaque <code>prompt_id</code> in Telegram callbacks. Do not put date, detector reason, or category as the identity in callback payload.</li>
+      <li>Expire callbacks by <code>expires_at</code>, not by "callback date equals today". A morning prompt commonly explains yesterday's signal.</li>
+      <li>Start with one non-safety detector. Defer respiratory/oxygen and high-autonomic-load prompts until the UX proves itself.</li>
+      <li>Rename <code>ignore_signal</code> to <code>skip_context</code> / <code>unknown_context</code> so users do not think safety warnings are disabled.</li>
+      <li>Stored context applies to one detector only, not the whole day.</li>
+      <li>Answers apply to future reports. First slice does not edit an already-sent report.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Inspected Current Architecture</h2>
+    <ul>
+      <li><code>internal/notify/proactive.go</code> supports one-way proactive notifications with cadence and error isolation. It does not model a prompt lifecycle, reservation, expiry, or answered state.</li>
+      <li><code>internal/storage/subjective_checkin.go</code> has a robust check-in state machine and stale callback protection, but its "date must equal today" rule is specific to morning check-ins and is not valid for context prompts about prior-day signals.</li>
+      <li><code>internal/notify/checkin_callback.go</code> validates chat/tenant routing and rejects stale check-in callbacks before storage mutation. The context flow should reuse tenant lookup style but not reuse date semantics.</li>
+      <li><code>internal/storage/briefing.go</code> computes illness suspicion and applies safety caps before report output. Context annotations must sit beside this, not inside it.</li>
+      <li><code>internal/health/illness.go</code> already has non-diagnostic wording tests and safety cap tests. These become regression anchors for this feature.</li>
+      <li><code>internal/notify/report.go</code> and <code>internal/notify/report_rich.go</code> can show future detector-specific caveats after a prompt is answered, gated behind a separate display setting.</li>
+    </ul>
+  </section>
+
+  <section class="safety">
+    <h2>Illness-Safety Boundary</h2>
+    <p>This feature must complement illness detection, not compete with it.</p>
+    <ul>
+      <li><code>IllnessSuspicion</code> remains the safety layer. It can cap readiness confidence and EnergyBank recommendation when objective evidence is moderate/high.</li>
+      <li>Context prompts are an explanation layer. They ask for broad context and mark one detector result as explained or skipped.</li>
+      <li>Context answers must not lower illness confidence, remove illness signals, or undo illness safety caps.</li>
+      <li><code>illness_context</code> is not part of MVP category choices. When added later, it must not feed <code>ComputeIllnessSuspicion</code> as subjective illness evidence without a separate validation plan.</li>
+      <li>Safety-sensitive detectors such as respiratory/oxygen shifts are explicitly out of the first slice.</li>
+    </ul>
+  </section>
+
+  <section class="privacy">
+    <h2>Privacy Boundary</h2>
+    <ul>
+      <li>No free text in Telegram, storage, logs, issue comments, docs, Gemini prompts, or report caveats.</li>
+      <li>No specific medical procedures, diagnoses, clinic names, physician names, locations, personal names, or real person/date examples in public artifacts.</li>
+      <li>Allowed stored categories for MVP: <code>poor_sleep_context</code>, <code>stress_context</code>, <code>travel_context</code>, <code>unknown_context</code>, <code>skip_context</code>.</li>
+      <li>Allowed metadata: detector key/version, numeric value/baseline/z-score/percentile, prompt id, allowed categories, and lifecycle timestamps.</li>
+      <li>Even closed categories such as stress/travel are sensitive. Add retention/delete policy in this plan and do not treat them as harmless telemetry.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>MVP Detector Choice</h2>
+    <p>Use <code>low_sleep</code> as the first detector if settled sleep data is reliable enough in code. It is non-safety, understandable, common enough to validate UX, and less likely to conflict with illness-safety logic than autonomic or respiratory signals.</p>
+    <table>
+      <thead><tr><th>Detector</th><th>Decision</th><th>Reason</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>low_sleep</code></td>
+          <td>First slice candidate</td>
+          <td>Clear user-facing explanation; uses settled sleep data; non-safety; report context is easy to apply detector-specifically.</td>
+        </tr>
+        <tr>
+          <td><code>unusual_daytime_rest</code></td>
+          <td>Follow-up detector</td>
+          <td>Useful, but needs more careful segmentation and false-positive handling.</td>
+        </tr>
+        <tr>
+          <td><code>low_activity</code></td>
+          <td>Follow-up detector</td>
+          <td>Good candidate, but device coverage and illness/travel/recovery ambiguity need more handling.</td>
+        </tr>
+        <tr>
+          <td><code>high_autonomic_load</code></td>
+          <td>Defer</td>
+          <td>Intersects heavily with illness prodrome and stress flags.</td>
+        </tr>
+        <tr>
+          <td><code>respiratory_or_oxygen_shift</code></td>
+          <td>Out of MVP</td>
+          <td>Safety-sensitive. Validate basic prompt UX before asking about this class of signal.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>State Model</h2>
+    <p>Use one tenant-local interaction table for MVP. It represents the detected signal, reservation, prompt lifecycle, and eventual answer.</p>
+    <pre><code>CREATE TABLE IF NOT EXISTS context_prompt_interactions (
+  prompt_id          TEXT PRIMARY KEY,
+  signal_date        DATE NOT NULL,
+  prompt_local_date  DATE NOT NULL,
+  detected_reason    TEXT NOT NULL,
+  detector_version   TEXT NOT NULL,
+  status             TEXT NOT NULL, -- detected | reserved | prompted | answered | skipped | expired | send_failed
+  category           TEXT,          -- NULL until answered/skipped
+  source             TEXT,          -- NULL until answer; telegram for MVP
+  prompt_message_id  BIGINT,
+  prompted_at        TIMESTAMPTZ,
+  expires_at         TIMESTAMPTZ NOT NULL,
+  answered_at        TIMESTAMPTZ,
+  allowed_categories JSONB NOT NULL DEFAULT '[]'::jsonb,
+  metadata           JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (signal_date, detected_reason)
+);</code></pre>
+    <p>Add a partial unique index for one sent prompt per tenant-local prompt day:</p>
+    <pre><code>CREATE UNIQUE INDEX IF NOT EXISTS idx_context_prompt_one_sent_per_day
+ON context_prompt_interactions (prompt_local_date)
+WHERE status IN ('reserved', 'prompted', 'answered', 'skipped', 'expired', 'send_failed');</code></pre>
+    <ul>
+      <li><code>source</code> is an answer/source channel, not event identity.</li>
+      <li><code>category</code> is nullable until answer.</li>
+      <li><code>signal_date</code> is the date of the metric anomaly.</li>
+      <li><code>prompt_local_date</code> is the local date on which the prompt is/was sent.</li>
+      <li>Use <code>DATE</code>, not <code>TEXT</code>, to prevent string/date confusion.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Prompt Lifecycle</h2>
+    <table>
+      <thead><tr><th>Status</th><th>Meaning</th><th>Transitions</th></tr></thead>
+      <tbody>
+        <tr><td><code>detected</code></td><td>Signal exists but no prompt is reserved.</td><td>Optional; MVP may skip and reserve directly inside a transaction.</td></tr>
+        <tr><td><code>reserved</code></td><td>Scheduler claimed the daily prompt slot before Telegram send.</td><td><code>prompted</code> after send success; <code>send_failed</code> after send failure.</td></tr>
+        <tr><td><code>prompted</code></td><td>Telegram prompt was sent and can be answered until <code>expires_at</code>.</td><td><code>answered</code>, <code>skipped</code>, or <code>expired</code>.</td></tr>
+        <tr><td><code>answered</code></td><td>User selected a concrete context category.</td><td>Terminal; repeated same callback is idempotent.</td></tr>
+        <tr><td><code>skipped</code></td><td>User selected <code>skip_context</code> or <code>unknown_context</code>.</td><td>Terminal; suppresses future prompt for same signal.</td></tr>
+        <tr><td><code>expired</code></td><td>Prompt lifetime elapsed.</td><td>Terminal for MVP; do not re-prompt same signal.</td></tr>
+        <tr><td><code>send_failed</code></td><td>Reservation happened but Telegram send failed.</td><td>Terminal for MVP, or eligible for cleanup/retry only if explicitly implemented.</td></tr>
+      </tbody>
+    </table>
+    <p>Delivery policy: prefer rare missed prompts over duplicate prompts. The MVP should bias toward at-most-once prompt delivery.</p>
+  </section>
+
+  <section>
+    <h2>Telegram Callback Design</h2>
+    <ul>
+      <li>Callback payload shape: <code>ctx:&lt;prompt_id&gt;:&lt;choice_code&gt;</code>, where both IDs are short and opaque enough to fit Telegram's 64-byte limit.</li>
+      <li>Server loads the prompt by <code>prompt_id</code> and validates tenant/chat ownership, status, <code>expires_at</code>, and allowed category set.</li>
+      <li>Do not encode signal date, detector reason, or full category as callback identity.</li>
+      <li>Repeated webhook delivery is idempotent. A second click on the same final category returns an ack without rewriting timestamps.</li>
+      <li>Double-clicking different categories after a final answer must not change the stored category in MVP. First valid answer wins.</li>
+      <li>If feature flag is disabled after prompt send but before answer, accept already-sent prompt answers unless a separate kill switch requires hard rejection.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>MVP Bot UX</h2>
+    <div class="grid">
+      <div class="telegram">
+        <div class="bubble">
+          <h3>Prompt</h3>
+          <p><b>Sleep was unusually short</b></p>
+          <p>Your latest sleep was well below your usual range. What context should be noted?</p>
+          <div class="buttons">
+            <div class="button">Bad sleep</div>
+            <div class="button">Stress</div>
+            <div class="button">Travel</div>
+            <div class="button">Not sure</div>
+          </div>
+        </div>
+      </div>
+      <div class="telegram">
+        <div class="bubble">
+          <h3>Acknowledgement</h3>
+          <p>Saved for future reports.</p>
+        </div>
+      </div>
+      <div class="telegram">
+        <div class="bubble">
+          <h3>Future report caveat</h3>
+          <p><b>Sleep context:</b> stress.</p>
+          <p><i>This explains the low-sleep detector only; other health signals are evaluated normally.</i></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Report Semantics</h2>
+    <ul>
+      <li>Answers apply to future reports only. MVP does not edit an already-sent Telegram report.</li>
+      <li>Acknowledgement text should say "Saved for future reports" to avoid implying the current report changed.</li>
+      <li>No pending caveat for non-safety MVP signals. Pending caveats add anxiety without user value.</li>
+      <li>Context is detector-specific: "Sleep context: travel" or "Activity context: recovery", not "this whole day is incomparable".</li>
+      <li>Future baseline exclusion must also be metric/detector-specific and requires a separate plan. MVP does not exclude annotations from baselines.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Feature Flags and Kill Switches</h2>
+    <ul>
+      <li><code>proactive_context_prompts</code>: controls sending new prompts. Default false.</li>
+      <li><code>context_caveats_enabled</code>: controls report rendering of saved context caveats. Default false.</li>
+      <li>Disabling prompt sending does not delete stored rows and does not reject already-sent prompt answers unless explicitly configured.</li>
+      <li>Disabling caveats hides context in reports without affecting prompt lifecycle storage.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Reliability Scenarios</h2>
+    <table>
+      <thead><tr><th>Scenario</th><th>Expected MVP behavior</th></tr></thead>
+      <tbody>
+        <tr><td>Two scheduler runs in parallel</td><td>Unique constraints allow at most one reservation and one prompt-local-date slot.</td></tr>
+        <tr><td>Crash after reservation before Telegram send</td><td>Row remains <code>reserved</code> and occupies the daily prompt slot. No duplicate prompt.</td></tr>
+        <tr><td>Telegram send succeeds but status update fails</td><td>Prefer no re-send. Log loudly; row may need admin cleanup. Avoid duplicate UX.</td></tr>
+        <tr><td>Telegram send fails</td><td>Mark <code>send_failed</code> if possible; <code>send_failed</code> occupies the daily prompt slot and is terminal in MVP.</td></tr>
+        <tr><td>Repeated webhook delivery</td><td>Idempotent ack, no timestamp/category churn.</td></tr>
+        <tr><td>Double tap different buttons</td><td>First valid final answer wins; second receives neutral ack.</td></tr>
+        <tr><td>Feature flag disabled after send</td><td>Already-sent answer is accepted unless a hard kill switch is added later.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Retention and Deletion</h2>
+    <ul>
+      <li>MVP retention is 180 days by default via <code>context_prompt_retention_days</code>, clamped to 30-730 days. Daily maintenance deletes older interaction rows.</li>
+      <li>Numeric metadata should be minimal and derivable. Do not store raw metric series in annotations.</li>
+      <li>Provide a future deletion path per tenant/date/detected_reason; dashboard/admin editing is a separate issue.</li>
+      <li>Issue/PR/docs must not include real user examples.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Files Likely to Change</h2>
+    <ul>
+      <li><code>internal/storage/context_prompt.go</code> - DDL, state machine, reservation, answer save, expiry, cleanup helpers.</li>
+      <li><code>internal/storage/context_prompt_test.go</code> - state transitions, uniqueness, metadata allowlist, reliability scenarios.</li>
+      <li><code>internal/storage/context_anomaly.go</code> - low-sleep detector and detector registry contract.</li>
+      <li><code>internal/notify/context_prompt.go</code> - Telegram prompt rendering, callback parsing, ack text.</li>
+      <li><code>internal/notify/checkin_callback.go</code> or new webhook dispatcher - route <code>checkin:</code> and <code>ctx:</code> prefixes safely.</li>
+      <li><code>internal/notify/report.go</code> and <code>internal/notify/report_rich.go</code> - future-report detector-specific caveat rendering, behind kill switch.</li>
+      <li><code>internal/health/i18n_en.go</code>, <code>internal/health/i18n_ru.go</code>, <code>internal/health/i18n_sr.go</code> - prompt labels, choices, acknowledgements, future caveats.</li>
+      <li><code>cmd/server/main.go</code> - startup DDL and scheduler/webhook wiring.</li>
+      <li><code>AGENTS.md</code> and <code>CLAUDE.md</code> only if durable architecture instructions are added; mirror both files.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation Steps</h2>
+    <ol>
+      <li>Add storage schema and constants for statuses, categories, detected reasons, and feature flags.</li>
+      <li>Add reservation transaction: choose eligible low-sleep signal, enforce uniqueness, create <code>reserved</code> row with <code>prompt_id</code>, <code>prompt_local_date</code>, <code>expires_at</code>, and allowed categories.</li>
+      <li>Add Telegram send path that turns <code>reserved</code> into <code>prompted</code> only after send success.</li>
+      <li>Add callback handler for <code>ctx:</code> payloads with tenant/chat ownership, expiry, allowed-category validation, and first-answer-wins idempotency.</li>
+      <li>Add low-sleep detector with conservative threshold and enough settled-data checks.</li>
+      <li>Add report caveat rendering for answered/skipped context only when <code>context_caveats_enabled</code> is true.</li>
+      <li>Add cleanup/expiry for stale prompted/reserved rows.</li>
+      <li>Update this plan with actual implementation notes and verification after approval and code completion.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <ul>
+      <li><code>go test ./internal/storage -run Context -count=1</code></li>
+      <li><code>go test ./internal/notify -run Context -count=1</code></li>
+      <li><code>go test ./internal/notify -run Checkin -count=1</code> to prove existing check-in callbacks still work.</li>
+      <li><code>go test ./internal/health -run Illness -count=1</code> to prove illness logic is unchanged.</li>
+      <li><code>go test ./internal/notify ./internal/storage ./internal/health -count=1</code></li>
+      <li>DB-backed smoke if a test DB is configured: DDL, uniqueness, reservation race, answer idempotency, expiry, metadata allowlist.</li>
+    </ul>
+    <h3>Required Test Scenarios</h3>
+    <ul>
+      <li>Two concurrent scheduler attempts reserve only one prompt.</li>
+      <li>Same signal from a later source cannot create a second event row.</li>
+      <li>One sent prompt per prompt-local-date.</li>
+      <li>Callback for yesterday's signal is valid if prompt is not expired.</li>
+      <li>Expired prompt rejects answer without mutation.</li>
+      <li>Category not in allowed set rejects answer.</li>
+      <li>Repeated webhook delivery is idempotent.</li>
+      <li>Double tap different categories keeps first answer.</li>
+      <li>Feature flag off prevents new prompts.</li>
+      <li>Context answer does not alter illness confidence or safety caps.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Manual QA Checklist</h2>
+    <ul>
+      <li>Ordinary day: no prompt.</li>
+      <li>Low-sleep synthetic day: one prompt only.</li>
+      <li>Prompt answer ack says saved for future reports.</li>
+      <li>Current already-sent report is not edited.</li>
+      <li>Next report shows detector-specific caveat only when caveats are enabled.</li>
+      <li>Check-in prompt still triggers morning report when answered in time.</li>
+      <li>Context prompt answer never triggers a morning report.</li>
+      <li>Disabling prompt flag stops new prompts.</li>
+      <li>Disabling caveat flag hides report caveats.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollout Metrics</h2>
+    <p>Define stop/go criteria before enabling beyond one tenant.</p>
+    <table>
+      <thead><tr><th>Metric</th><th>Go signal</th><th>Stop/revisit signal</th></tr></thead>
+      <tbody>
+        <tr><td>Prompts per user per rolling 7 days</td><td>&le; 2 prompts/user/7 days.</td><td>&gt; 3 prompts/user/7 days or prompts on 3 consecutive days.</td></tr>
+        <tr><td>Response rate</td><td>&ge; 50% answered or skipped within 36h.</td><td>&lt; 30% answered or skipped after at least 5 prompts.</td></tr>
+        <tr><td>Skip/unknown rate</td><td>&le; 50% of answered prompts.</td><td>&gt; 70% after at least 5 answers.</td></tr>
+        <tr><td>False ordinary-day prompt rate</td><td>0 obvious false positives in manual review of first 5 prompts.</td><td>&ge; 1 obvious false positive pauses rollout.</td></tr>
+        <tr><td>Duplicate prompts</td><td>0 duplicate prompt messages per prompt-local-date.</td><td>Any duplicate is a blocker.</td></tr>
+        <tr><td>Expired callbacks</td><td>&le; 30% of sent prompts expire unanswered.</td><td>&gt; 50% after at least 5 prompts.</td></tr>
+        <tr><td>Illness safety changes</td><td>0 context-driven changes to illness confidence, caps, or EnergyBank safety overrides.</td><td>Any context-driven safety change is a blocker.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="risk">
+    <h2>Risks and Mitigations</h2>
+    <ul>
+      <li><strong>State mismatch:</strong> explicit statuses and nullable category fix awaiting-classification modeling.</li>
+      <li><strong>Duplicate prompts:</strong> unique constraints, reservation transaction, and at-most-once policy.</li>
+      <li><strong>Wrong stale callback semantics:</strong> prompt expiry is based on <code>expires_at</code>, not signal date equals today.</li>
+      <li><strong>UX fatigue:</strong> one detector, one prompt per day, rolling cooldown, and stop/go metrics.</li>
+      <li><strong>Safety conflict:</strong> non-safety MVP detector and regression tests around illness caps.</li>
+      <li><strong>Privacy leak:</strong> closed enums, no free text, metadata allowlist, retention policy.</li>
+      <li><strong>Over-broad context:</strong> detector-specific caveats only.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollout Plan</h2>
+    <ol>
+      <li>Merge code with both <code>proactive_context_prompts=false</code> and <code>context_caveats_enabled=false</code>.</li>
+      <li>Deploy and verify DDL, webhook routing, and no prompt sends while disabled.</li>
+      <li>Enable prompt sending for one tenant only.</li>
+      <li>Review rollout metrics after a fixed small window, for example 7-14 days or at least 3 eligible prompts.</li>
+      <li>Enable caveats only after prompt lifecycle is clean and duplicate rate is zero.</li>
+      <li>Do not add second detector until first detector meets stop/go criteria.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <ul>
+      <li>Disable <code>proactive_context_prompts</code> to stop new prompts.</li>
+      <li>Disable <code>context_caveats_enabled</code> to hide report caveats.</li>
+      <li>Stored rows remain until the 180-day default retention job prunes them, unless the operator manually deletes rows earlier.</li>
+      <li>No readiness or EnergyBank recalculation is required because MVP does not change scoring.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Out of Scope</h2>
+    <ul>
+      <li>Respiratory/oxygen prompts.</li>
+      <li>High-autonomic-load prompts.</li>
+      <li>Dashboard/admin editing of annotations.</li>
+      <li>Editing already-sent Telegram reports.</li>
+      <li>Sending context to Gemini.</li>
+      <li>Automatic baseline exclusion.</li>
+      <li>Free-text explanations.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Resolved Decisions and Follow-Ups</h2>
+    <ul>
+      <li>First detector: <code>low_sleep</code>.</li>
+      <li>Low-sleep threshold: <code>sleep_total &lt;= 6.0h</code> and z-score <code>&lt;= -1.5</code> against at least 14 valid prior baseline days in the last 30 days.</li>
+      <li>Sleep data quality gate: reject target and baseline days with <code>sleep_total &lt; 3.0h</code> as <code>capture_gap</code>.</li>
+      <li>Source-conflict gate: reject target and baseline days when another source in the same normalized sleep day is at least 2h higher and reaches <code>max(6.0h, baseline_avg - 1.0h)</code>. The detector does not decide which source is correct; material disagreement suppresses the prompt.</li>
+      <li>Prompt-usefulness gate: after candidate detection, veto if there is a recent equivalent prompt, wake-date <code>sick</code> subjective check-in for the analyzed sleep, or moderate/high illness suspicion.</li>
+      <li>Prompt-usefulness positive evidence: strong anomaly (<code>sleep_total &lt;= 4.5h</code> or z-score <code>&lt;= -2.5</code>), disrupted sleep structure/awake time, or at least 2 short nights in the last 3 days. Timing evidence is disabled in MVP until a source-qualified timing extractor exists.</li>
+      <li>Usefulness evidence cannot rescue a candidate rejected by <code>capture_gap</code>, <code>source_conflict</code>, baseline warmup, or another candidate-quality reason.</li>
+      <li>Prompt expiry: 36 hours after prompt reservation/send attempt.</li>
+      <li>Retention: default 180 days, configurable via <code>context_prompt_retention_days</code> and clamped to 30-730 days.</li>
+      <li>Follow-up: add admin/SQL rollout dashboard before enabling beyond the first tenant.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation Result</h2>
+    <ul>
+      <li>Added <code>context_prompt_interactions</code> with opaque <code>prompt_id</code>, separate <code>signal_date</code> / <code>prompt_local_date</code>, nullable <code>category</code>, explicit lifecycle statuses, allowed-category JSON, and metadata allowlist.</li>
+      <li>Added startup DDL wiring for legacy mode, existing tenants, newly created tenants, and the tenant manager provisioning path.</li>
+      <li>Implemented the first detector as <code>low_sleep_v2</code>: requires at least 14 valid prior baseline days, <code>sleep_total &lt;= 6.0h</code>, and z-score <code>&lt;= -1.5</code> against the prior 30-day valid sleep baseline.</li>
+      <li>Added merge-gate sleep quality guards: <code>capture_gap</code> for selected sleep below 3h, and <code>source_conflict</code> for material same-day source disagreement. The same predicate filters baseline days before computing average and standard deviation.</li>
+      <li>Added separate prompt-usefulness gate: it vetoes recent equivalent prompts, wake-date <code>sick</code> check-ins for the analyzed sleep, and moderate/high illness flow; it requires at least one usefulness signal such as strong anomaly (<code>sleep_total &lt;= 4.5h</code> or z-score <code>&lt;= -2.5</code>), awake/efficiency disruption, or repeated short-night trend.</li>
+      <li>Disabled timing deviation as send evidence for MVP because raw timing rows can mix sources after candidate source-quality checks. Re-enable only with a source-qualified timing extractor.</li>
+      <li>Candidate quality remains first in the pipeline: sleep structure evidence is evaluated only after <code>low_sleep_v2</code> has passed coverage/source-quality checks, and tests pin that usefulness evidence cannot bypass a rejected candidate.</li>
+      <li>Context prompt callbacks now accept both <code>prompted</code> and <code>reserved</code> rows, so a Telegram send that succeeds before the sent-status DB update fails does not leave a delivered button unanswerable.</li>
+      <li>Context prompt reservation/send runs after the morning report send mutex is released. Prompt dedupe relies on <code>context_prompt_interactions</code> uniqueness instead of holding the morning report lock.</li>
+      <li>Added post-morning-report prompt sending behind <code>settings.proactive_context_prompts</code>. The prompt is reserved before send, marks <code>send_failed</code> on Telegram failure, and uses at-most-once semantics.</li>
+      <li>Added Telegram callback format <code>ctx:&lt;prompt_id&gt;:&lt;choice_code&gt;</code>. It does not include signal date, detector reason, category names, or any real-world event details.</li>
+      <li>Extended the webhook router to handle context answers separately from subjective check-ins. Context answers do not trigger morning reports and expire via <code>expires_at</code>.</li>
+      <li>Added future-report context caveats behind <code>settings.context_caveats_enabled</code>. Caveats are attached after illness suspicion and safety caps, so context cannot lower illness confidence or remove safety caps.</li>
+      <li>Made <code>send_failed</code> terminal for MVP and part of the one-prompt-per-local-day dedupe constraint.</li>
+      <li>Kept callbacks accepted after prompt delivery even when <code>proactive_context_prompts</code> is later disabled; the flag stops new sends, not answers to already delivered prompts.</li>
+      <li>Added 180-day default retention with daily pruning and <code>context_prompt_retention_days</code> bounds.</li>
+      <li>Added English, Russian, and Serbian copy for prompt text, button labels, callback acknowledgements, and report caveats.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Checks Run</h2>
+    <ul>
+      <li><code>gofmt</code> on all touched Go files.</li>
+      <li><code>go test ./internal/storage ./internal/notify ./internal/health</code></li>
+      <li><code>go test ./cmd/server</code></li>
+      <li><code>go test ./...</code></li>
+      <li>Real DB dry-run on schema <code>health</code>: before guards, 8 potential prompt days in the last 180 days; after guards, 4. Since the broader retrospective start, after guards, 18. With timing evidence disabled for MVP, prompt-usefulness sends 3 of the 4 last-180-day candidates; one low-usefulness candidate is rejected by the policy gate, and the known manually reviewed historical outlier remains <code>no_trigger</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Known Limitations</h2>
+    <ul>
+      <li>No live database race test was added; the project already uses structural DDL tests for this layer. Race prevention relies on SQL uniqueness plus transactional answer updates.</li>
+      <li>Retention now has a default prune path, but there is still no user-facing deletion UI.</li>
+      <li>There is no admin UI for prompt metrics yet. Rollout should use SQL until a later observability slice.</li>
+      <li>The first detector uses a conservative hybrid threshold plus source-quality guards. It should be reviewed after real prompt volume is observed.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval Gate</h2>
+    <p>Approved in chat on 2026-06-20. Implementation completed on branch <code>codex/185-proactive-context-prompts</code>. Do not enable <code>proactive_context_prompts</code> or <code>context_caveats_enabled</code> in production until the deployment checklist and rollout owner approve the tenant-level rollout.</p>
+  </section>
+</main>
+</body>
+</html>

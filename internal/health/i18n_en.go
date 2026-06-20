@@ -227,6 +227,23 @@ var en = LangStrings{
 	"checkin_ack_late":     "Logged after the morning report — saved for analytics.",
 	"checkin_expired_note": "<i>Want the report to reflect your state better? Answer the one-tap morning question tomorrow.</i>",
 
+	// Proactive context prompts. Answers are categorical only; never store
+	// free text or the concrete real-world event behind the anomaly.
+	"context_prompt_low_sleep_text":           "Your latest sleep was unusually low for you. Was there context worth noting?",
+	"context_prompt_btn_poor_sleep_context":   "Bad sleep",
+	"context_prompt_btn_stress_context":       "Stress",
+	"context_prompt_btn_travel_context":       "Travel",
+	"context_prompt_btn_unknown_context":      "Not sure",
+	"context_prompt_btn_skip_context":         "Skip",
+	"context_prompt_ack_saved":                "Context saved for future reports.",
+	"context_prompt_ack_skipped":              "No context saved.",
+	"context_prompt_ack_expired":              "This prompt expired.",
+	"context_prompt_label_poor_sleep_context": "You marked this low-sleep signal as sleep-quality context.",
+	"context_prompt_label_stress_context":     "You marked this low-sleep signal as stress context.",
+	"context_prompt_label_travel_context":     "You marked this low-sleep signal as travel context.",
+	"context_prompt_label_unknown_context":    "You marked this low-sleep signal as unexplained context.",
+	"tg_context_notes":                        "Context notes",
+
 	"energy_note_capacity":              "morning capacity carried over from sleep %.1fh + recovery markers",
 	"energy_component_morning_capacity": "Morning capacity",
 	"energy_component_activity_load":    "Activity load (today vs 28-day chronic)",
