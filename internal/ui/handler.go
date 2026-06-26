@@ -581,6 +581,7 @@ func (h *Handler) pageDashboard(w http.ResponseWriter, r *http.Request) {
 		ReadinessConfidence string
 		ReadinessCapReason  string
 		ReadinessRawScore   int
+		ReadinessServing    readinessServingView
 		RecoveryPct         int
 		RecoverySource      string
 		Headline            *health.HeadlineSignal
@@ -610,6 +611,7 @@ func (h *Handler) pageDashboard(w http.ResponseWriter, r *http.Request) {
 		data.ReadinessConfidence = br.ReadinessConfidence
 		data.ReadinessCapReason = br.ReadinessCapReason
 		data.ReadinessRawScore = br.ReadinessRawScore
+		data.ReadinessServing = buildReadinessServingView(lang, br.ReadinessServing)
 		data.RecoveryPct = br.RecoveryPct
 		data.RecoverySource = br.RecoverySource
 		data.Headline = br.Headline
@@ -640,6 +642,111 @@ func (h *Handler) pageDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	renderPage(w, "dashboard", data)
+}
+
+type readinessServingView struct {
+	Has           bool
+	Label         string
+	Note          string
+	Tooltip       string
+	Class         string
+	LowConfidence bool
+}
+
+func buildReadinessServingView(lang string, serving *health.ReadinessServingState) readinessServingView {
+	if serving == nil || serving.Status == "" {
+		return readinessServingView{}
+	}
+
+	status := serving.Status
+	class := "neutral"
+	switch status {
+	case health.ReadinessServingFresh:
+		class = "fresh"
+	case health.ReadinessServingDataAccruing:
+		class = "pending"
+	case health.ReadinessServingMissing, health.ReadinessServingStale:
+		class = "warning"
+	case health.ReadinessServingLowCoverage:
+		class = "low"
+	case health.ReadinessServingCapped:
+		class = "neutral"
+	}
+
+	label := T(lang, "readiness_serving_status_"+status)
+	if label == "readiness_serving_status_"+status {
+		label = T(lang, "readiness_serving_status_capped")
+	}
+
+	note := ""
+	if status != health.ReadinessServingFresh {
+		note = T(lang, "readiness_serving_note_"+status)
+		if note == "readiness_serving_note_"+status {
+			note = T(lang, "readiness_provisional")
+		}
+	}
+
+	tooltipParts := []string{T(lang, "readiness_serving_desc_"+status)}
+	if tooltipParts[0] == "readiness_serving_desc_"+status {
+		tooltipParts[0] = T(lang, "readiness_serving_desc_capped")
+	}
+	if reason := readinessServingReasonText(lang, serving.Reason); reason != "" {
+		tooltipParts = append(tooltipParts, reason)
+	}
+	if coverage := readinessServingCoverageText(lang, serving.Components); coverage != "" {
+		tooltipParts = append(tooltipParts, coverage)
+	}
+
+	return readinessServingView{
+		Has:           true,
+		Label:         label,
+		Note:          note,
+		Tooltip:       strings.Join(tooltipParts, " "),
+		Class:         class,
+		LowConfidence: serving.Confidence == health.ReadinessConfidenceLow || status == health.ReadinessServingMissing || status == health.ReadinessServingStale || status == health.ReadinessServingLowCoverage,
+	}
+}
+
+func readinessServingReasonText(lang, reason string) string {
+	if reason == "" {
+		return ""
+	}
+	key := "readiness_serving_reason_" + reason
+	text := T(lang, key)
+	if text == key {
+		return ""
+	}
+	return text
+}
+
+func readinessServingCoverageText(lang string, components []health.ReadinessComponentSummary) string {
+	if len(components) == 0 {
+		return ""
+	}
+	total := 0
+	ok := 0
+	for _, c := range components {
+		if !isCoreReadinessComponent(c.Metric) {
+			continue
+		}
+		total++
+		if c.Present && c.Freshness == health.ReadinessFreshnessOK {
+			ok++
+		}
+	}
+	if total == 0 {
+		return ""
+	}
+	return fmt.Sprintf(T(lang, "readiness_serving_core_coverage"), ok, total)
+}
+
+func isCoreReadinessComponent(metric string) bool {
+	switch metric {
+	case "heart_rate_variability", "resting_heart_rate", "sleep_total":
+		return true
+	default:
+		return false
+	}
 }
 
 func fmtMinutes(m float64) string {
