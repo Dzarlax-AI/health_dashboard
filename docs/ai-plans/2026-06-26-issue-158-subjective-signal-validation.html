@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation Plan: Issue 158 Subjective Signal Validation</title>
+  <style>
+    body {
+      margin: 0;
+      background: #f6f7f9;
+      color: #1f2937;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 32px;
+    }
+    section {
+      background: #fff;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 18px 20px;
+      margin: 16px 0;
+    }
+    h1, h2, h3 {
+      line-height: 1.2;
+      margin-top: 0;
+    }
+    code {
+      background: #f1f5f9;
+      border-radius: 4px;
+      padding: 2px 5px;
+      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      font-size: 0.95em;
+    }
+    pre {
+      overflow-x: auto;
+      background: #0f172a;
+      color: #e5e7eb;
+      border-radius: 8px;
+      padding: 14px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0;
+      font-size: 14px;
+    }
+    th, td {
+      border: 1px solid #e2e8f0;
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #f8fafc;
+    }
+    ul, ol {
+      padding-left: 22px;
+    }
+    li {
+      margin: 6px 0;
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: #fef3c7;
+      color: #92400e;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .card {
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 12px;
+      background: #f8fafc;
+    }
+    .risk { border-left: 4px solid #dc2626; }
+    .ok { border-left: 4px solid #15803d; }
+    .todo { border-left: 4px solid #2563eb; }
+    .approval { border-left: 4px solid #d97706; }
+    @media (max-width: 760px) {
+      main { padding: 18px; }
+      .grid { grid-template-columns: 1fr; }
+      table { font-size: 13px; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Issue 158: Subjective Signal Validation</h1>
+  <p><span class="badge">Read-only analysis completed</span></p>
+
+  <section>
+    <h2>Task Summary</h2>
+    <p>
+      Build a read-only validation workflow for GitHub issue
+      <a href="https://github.com/Dzarlax-AI/health_dashboard/issues/158">#158</a>:
+      check whether readiness, EnergyBank, and stress-derived signals align with subjective morning check-in answers.
+      This is evidence gathering only. The default outcome is no scoring change.
+    </p>
+    <p>
+      The issue precondition is strict: run the analysis only for tenant schemas with at least 30 answered
+      <code>subjective_checkins</code> rows excluding <code>late_answered</code>. If no tenant clears the gate, the
+      implementation should produce a short blocked-status report and stop.
+    </p>
+  </section>
+
+  <section>
+    <h2>Current Behavior</h2>
+    <ul>
+      <li><code>internal/storage/subjective_checkin.go</code> stores one row per <code>(date, source)</code> with answers <code>great</code>, <code>ok</code>, <code>meh</code>, <code>sick</code> and status values including <code>answered</code> and <code>late_answered</code>.</li>
+      <li><code>daily_scores</code> contains the day-level readiness cache in <code>readiness</code>, plus stress fields such as <code>sustained_hr_load</code> and <code>stress_flags</code>.</li>
+      <li><code>energy_snapshots</code> contains EnergyBank v2 snapshots with <code>date</code>, signed <code>bank</code>, deltas, <code>formula_version</code>, <code>components</code>, and <code>flags</code>.</li>
+      <li><code>internal/storage/stress_validation.go</code> and <code>internal/storage/stress_observability.go</code> already provide read-only stress validation primitives, but they do not use subjective check-ins.</li>
+      <li>Existing analysis scripts under <code>analysis/phase*</code> use direct <code>psql</code> subprocess calls, libpq env vars, deterministic splits, and Markdown reports. This task can follow that pattern without touching production server paths.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Issue Context</h2>
+    <ul>
+      <li>Issue labels: <code>priority:p1</code>, <code>status:blocked</code>, <code>type:experiment</code>, <code>evidence-boundary</code>, <code>area:readiness</code>, <code>area:energybank</code>, <code>area:stress</code>.</li>
+      <li>Last recorded issue comment, dated 2026-06-06, found 17 valid answered days for Profile A and 3 for Profile B, so neither tenant met the 30-day minimum then.</li>
+      <li>On 2026-06-26, direct Tailscale DB access was restored via local <code>~/.health-db</code>. Current eligible counts are 34 for Profile A and 4 for Profile B.</li>
+      <li>Profile A now clears the 30-row precondition. Profile B remains excluded from signal conclusions.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Actual Results</h2>
+    <ul>
+      <li>Read-only analysis was completed with direct <code>psql</code> queries; no production code, schema, scoring, threshold, UI, Telegram, or deployment changes were made.</li>
+      <li>All 34 included Profile A rows had <code>readiness</code>, <code>energy_eod_current</code>, <code>energy_verdict</code>, and <code>stress_flags</code> coverage.</li>
+      <li>Answer distribution: <code>great=7</code>, <code>ok=10</code>, <code>meh=7</code>, <code>sick=10</code>; one late <code>sick</code> row was excluded.</li>
+      <li>Correlation with subjective ordinal (<code>sick=1</code>, <code>meh=2</code>, <code>ok=3</code>, <code>great=4</code>): readiness Pearson <code>-0.003</code>, Spearman <code>-0.112</code>; EnergyBank current Pearson <code>-0.098</code>, Spearman <code>-0.096</code>; sustained HR load Pearson <code>0.156</code>, Spearman <code>0.227</code>.</li>
+      <li>Bad-day detection (<code>meh</code>/<code>sick</code>): any stress flag precision <code>0.67</code>, recall <code>0.12</code>; EnergyBank <code>rest</code>/<code>active_recovery</code> precision <code>0.56</code>, recall <code>0.88</code>; readiness &lt; 60 recall <code>0.00</code>.</li>
+      <li>Conclusion: the precondition is now met for one profile, but the sample does not justify readiness, EnergyBank, or stress threshold changes.</li>
+      <li>Generated report: <code>SUBJECTIVE_SIGNAL_VALIDATION_ISSUE_158.md</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <ul>
+      <li>Add a repeatable, read-only analysis command or script that loads only anonymized, date-level signal data.</li>
+      <li>Run a tenant-by-tenant preflight count and skip tenants below 30 eligible answered check-in days.</li>
+      <li>For eligible tenants, report distributions by answer bucket for readiness, EnergyBank current/bank, readiness sub-signals where available, stress flags, and stress verdicts.</li>
+      <li>Compute Pearson and Spearman correlation between readiness score and an explicit ordinal mapping of subjective answers.</li>
+      <li>Compare weak/rest/stress-like verdicts and stress flags against <code>meh</code>/<code>sick</code> days with transparent confusion-style counts.</li>
+      <li>Generate a Markdown report suitable for a PR body or issue comment, with tenant patterns anonymized as Profile A/Profile B.</li>
+      <li>Do not change readiness, EnergyBank, stress formulas, thresholds, Telegram behavior, dashboard behavior, or DB schema in this issue.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Assumptions and Unknowns</h2>
+    <ul>
+      <li>Assumption: subjective ordinal order will be <code>great=3</code>, <code>ok=2</code>, <code>meh=1</code>, <code>sick=0</code>, so positive correlation means higher score aligns with better subjective state.</li>
+      <li>Assumption: EnergyBank analysis should use one end-of-day row per local date, preferring the latest snapshot for that date, to avoid row-weighting intraday snapshots.</li>
+      <li>Assumption: <code>late_answered</code> rows are excluded from the primary analysis exactly as issue #158 says, but may be counted in a separate excluded-row note.</li>
+      <li>Unknown: whether any tenant now meets the 30-day precondition. This must be checked with direct DB evidence before running the main analysis.</li>
+      <li>Unknown: whether the final report should be committed into the repository, posted only as an issue comment, or both. The safe default is commit an anonymized report and paste a short issue summary.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Likely File Changes</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>File</th>
+          <th>Purpose</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>analysis/subjective_signal_validation/validate.py</code></td>
+          <td>New read-only script that queries check-ins, daily scores, and EnergyBank snapshots via <code>psql</code>; computes distributions, correlations, and classification-style counts.</td>
+        </tr>
+        <tr>
+          <td><code>analysis/subjective_signal_validation/README.md</code></td>
+          <td>Short runbook documenting required env vars, precondition, anonymization policy, and example commands.</td>
+        </tr>
+        <tr>
+          <td><code>SUBJECTIVE_SIGNAL_VALIDATION_ISSUE_158.md</code></td>
+          <td>Anonymized generated report if at least one tenant clears the gate; otherwise a brief blocked-status report with current eligible counts.</td>
+        </tr>
+        <tr>
+          <td><code>docs/ai-plans/2026-06-26-issue-158-subjective-signal-validation.html</code></td>
+          <td>This approval plan; after implementation, update with actual changes, commands, results, limitations, and follow-ups.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Analysis Design</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>Primary Cohort</h3>
+        <ul>
+          <li><code>subjective_checkins.answer IS NOT NULL</code></li>
+          <li><code>status &lt;&gt; 'late_answered'</code></li>
+          <li><code>source = 'telegram'</code> unless future sources are explicitly included</li>
+          <li>Join on local <code>date</code> to <code>daily_scores.date</code> and latest EnergyBank snapshot for that same date</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Metrics</h3>
+        <ul>
+          <li>Counts by answer and excluded status</li>
+          <li>Median, IQR, min/max by answer bucket</li>
+          <li>Pearson and Spearman readiness-vs-ordinal correlations</li>
+          <li>Stress flag prevalence by answer bucket</li>
+          <li><code>meh</code>/<code>sick</code> detection counts for low readiness, rest/active-recovery EnergyBank verdicts, and stress flags</li>
+        </ul>
+      </div>
+    </div>
+    <p>
+      The report should avoid personal dates in the headline tables where possible. If date samples are needed for debugging,
+      show small anonymized examples such as relative row numbers or redact exact dates in the public issue comment.
+    </p>
+  </section>
+
+  <section>
+    <h2>Implementation Steps</h2>
+    <ol>
+      <li>Add the analysis directory and a script with no production imports beyond standard Python modules plus optional <code>numpy</code>, matching the existing feasibility-script style.</li>
+      <li>Implement a preflight query per schema:
+        <pre><code>SELECT COUNT(*)
+FROM &lt;schema&gt;.subjective_checkins
+WHERE answer IS NOT NULL
+  AND status &lt;&gt; 'late_answered';</code></pre>
+      </li>
+      <li>If all schemas are below 30 eligible rows, generate a blocked report with counts and stop; do not compute correlations.</li>
+      <li>For eligible schemas, load joined rows from <code>subjective_checkins</code>, <code>daily_scores</code>, and latest-per-date <code>energy_snapshots</code>.</li>
+      <li>Compute per-answer distributions and correlations with explicit sample counts for every metric.</li>
+      <li>Compute verdict/flag alignment against <code>meh</code> and <code>sick</code>, clearly labeling this as exploratory evidence, not a tuning rule.</li>
+      <li>Generate Markdown output with anonymized schema labels and a limitations section.</li>
+      <li>Run formatting/tests, update this plan with actual commands and results, then prepare a short issue/PR summary.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Data, API, Migration, Auth, Deployment, UX Impact</h2>
+    <ul>
+      <li>Data: read-only direct DB access only; no writes, migrations, or backfills.</li>
+      <li>API: no public API changes.</li>
+      <li>Auth and permissions: no runtime auth changes. The script requires an operator with DB read access via <code>psql</code>.</li>
+      <li>Deployment: no service deployment required if only analysis files/report are added.</li>
+      <li>UX: no dashboard or Telegram UI changes in this issue.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <ul>
+      <li><code>python3 -m py_compile analysis/subjective_signal_validation/validate.py</code></li>
+      <li><code>PSQL=psql python3 analysis/subjective_signal_validation/validate.py --schemas &lt;schema_a&gt;,&lt;schema_b&gt; --preflight-only</code></li>
+      <li><code>PSQL=psql python3 analysis/subjective_signal_validation/validate.py --schemas &lt;schema_a&gt;,&lt;schema_b&gt; &gt; SUBJECTIVE_SIGNAL_VALIDATION_ISSUE_158.md</code></li>
+      <li>If Go code is untouched, no full Go test run is required for correctness, but <code>go test ./...</code> remains the final broad safety check if a PR is prepared.</li>
+      <li>If a helper is implemented in Go instead of Python after approval, add focused unit tests for ordinal mapping, Pearson/Spearman helpers, percentile summaries, and below-threshold preflight behavior.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Manual QA Checklist</h2>
+    <ul>
+      <li>Confirm every included tenant has at least 30 non-late answered check-ins.</li>
+      <li>Confirm <code>late_answered</code> rows are excluded from primary analysis and separately counted.</li>
+      <li>Confirm EnergyBank contributes at most one row per date.</li>
+      <li>Confirm all report tables include sample size <code>n</code>.</li>
+      <li>Confirm report language avoids causality claims and diagnosis claims.</li>
+      <li>Confirm any recommendation for scoring changes is moved to a separate GitHub issue rather than implemented here.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks and Edge Cases</h2>
+    <ul>
+      <li>Small sample sizes can produce unstable correlations. Mitigation: hard precondition at 30 rows, report confidence limitations, and avoid threshold tuning.</li>
+      <li>Subjective answers may be imbalanced, for example many <code>ok</code> rows and few <code>sick</code> rows. Mitigation: report bucket counts and avoid over-reading sparse buckets.</li>
+      <li>EnergyBank intraday snapshots can overweight busy sync days. Mitigation: latest snapshot per local date only.</li>
+      <li>Readiness and EnergyBank may intentionally disagree on illness-safe days. Mitigation: report each signal separately and avoid declaring one canonical "truth".</li>
+      <li>Exact dates and tenant names are sensitive. Mitigation: anonymize schema labels and avoid publishing row-level raw data.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <p>
+      Since this is read-only analysis, rollback is simply removing the new <code>analysis/subjective_signal_validation/</code>
+      files and the generated Markdown report. No database rollback, service rollback, or cache rebuild is required.
+    </p>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Should the final report be committed, posted only to issue #158, or both?</li>
+      <li>Should <code>ok</code> map to 2 and <code>meh</code> to 1, or should the ordinal be inverted in output so lower numbers mean better state? The plan assumes <code>great=3</code> down to <code>sick=0</code>.</li>
+      <li>Should stress "weak verdicts" mean EnergyBank <code>active_recovery/rest</code>, stress-validation <code>weak/validated</code>, specific <code>stress_flags</code>, or all of the above as separate rows?</li>
+      <li>What DB env file should be used on this Mac workspace? The documented <code>~/.health-db</code> was not present during planning.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval Gate Outcome</h2>
+    <p>
+      The completed work stayed within the read-only approval boundary: direct DB evidence and an anonymized Markdown report.
+      No scoring changes, threshold tuning, schema changes, UI changes, Telegram changes, or deployment were performed.
+    </p>
+  </section>
+</main>
+</body>
+</html>
