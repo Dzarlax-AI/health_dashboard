@@ -216,10 +216,6 @@ body { min-height: 100vh; font-size: 15px; }
   left: 50%;
   transform: translate(-50%, -2px);
 }
-.ui-tooltip--center:hover::after,
-.ui-tooltip--center:focus-visible::after {
-  transform: translate(-50%, 0);
-}
 .ui-tooltip--cell {
   cursor: help;
 }
@@ -228,6 +224,10 @@ body { min-height: 100vh; font-size: 15px; }
   opacity: 1;
   visibility: visible;
   transform: translateY(0);
+}
+.ui-tooltip--center:hover::after,
+.ui-tooltip--center:focus-visible::after {
+  transform: translate(-50%, 0);
 }
 
 /* Webhook status badge on the settings page. Live-updates every 5s
