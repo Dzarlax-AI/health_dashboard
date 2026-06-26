@@ -67,7 +67,7 @@ body { min-height: 100vh; font-size: 15px; }
   padding: 36px 48px;
   color: var(--text);
   position: relative;
-  overflow: hidden;
+  overflow: visible;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) minmax(260px, auto);
   column-gap: 40px;
@@ -195,6 +195,10 @@ body { min-height: 100vh; font-size: 15px; }
   pointer-events: none;
   transform: translateY(-2px);
   transition: opacity 0.12s ease, transform 0.12s ease;
+}
+.readiness-trust-badge.ui-tooltip::after {
+  left: auto;
+  right: 0;
 }
 .ui-tooltip:hover::after,
 .ui-tooltip:focus-visible::after {
