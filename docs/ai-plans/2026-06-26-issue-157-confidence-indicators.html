@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Issue #157 - Confidence and Uncertainty Indicators</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8fb;
+      --panel: #ffffff;
+      --text: #20242c;
+      --muted: #687180;
+      --border: #d9dee7;
+      --accent: #2f6fed;
+      --ok: #16764f;
+      --warn: #9a5b00;
+      --bad: #a73434;
+      --code: #f0f3f8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--text);
+      background: var(--bg);
+    }
+    main {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 32px 18px 48px;
+    }
+    header, section {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+      margin: 0 0 16px;
+    }
+    h1, h2 {
+      line-height: 1.2;
+      margin: 0 0 12px;
+    }
+    h1 { font-size: 28px; }
+    h2 { font-size: 19px; }
+    p { margin: 0 0 10px; }
+    ul, ol { margin: 8px 0 0 22px; padding: 0; }
+    li { margin: 6px 0; }
+    code {
+      background: var(--code);
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 8px;
+      overflow-wrap: anywhere;
+    }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: #f3f5f9; }
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 14px;
+    }
+    .pill {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 3px 9px;
+      color: var(--muted);
+      background: #fbfcfe;
+      font-size: 13px;
+    }
+    .callout {
+      border-left: 4px solid var(--accent);
+      background: #eef4ff;
+      padding: 10px 12px;
+      margin-top: 10px;
+      border-radius: 4px;
+    }
+    .approval {
+      border-color: #b9c8ee;
+      background: #f2f6ff;
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Issue #157: Confidence and Uncertainty Indicators</h1>
+    <p>
+      Plan to add dashboard UI for readiness freshness, coverage, and confidence
+      using the server-owned <code>readiness_serving</code> contract delivered by
+      issue #166 / PR #177.
+    </p>
+    <div class="meta">
+      <span class="pill">Date: 2026-06-26</span>
+      <span class="pill">Status: implemented and verified</span>
+      <span class="pill">Scope: dashboard UI + tests</span>
+      <span class="pill">No production code changed by this plan</span>
+    </div>
+  </header>
+
+  <section>
+    <h2>Task Summary</h2>
+    <p>
+      The dashboard should make it clear when the readiness score is fresh,
+      still accruing data, stale, missing core inputs, low coverage, or adjusted
+      by a safety cap. Users should not have to infer whether a quiet score means
+      "all OK" or "not enough reliable data yet".
+    </p>
+    <p>
+      The implementation must not invent presentation-only heuristics. It should
+      render the canonical <code>ReadinessServingState</code> object already
+      exposed by <code>/api/health-briefing</code>.
+    </p>
+  </section>
+
+  <section>
+    <h2>Current Behavior</h2>
+    <ul>
+      <li><code>internal/health/types.go</code> defines <code>ReadinessServingState</code> with <code>status</code>, <code>confidence</code>, <code>reason</code>, and component summaries.</li>
+      <li><code>internal/health/readiness.go</code> maps evidence into <code>fresh</code>, <code>missing</code>, <code>stale</code>, <code>data_accruing</code>, <code>low_coverage</code>, and <code>capped</code>.</li>
+      <li><code>internal/health/readiness_evidence_test.go</code> already pins the backend serving contract, including data-accruing, low-coverage, missing, and capped cases.</li>
+      <li><code>internal/ui/handler.go</code> passes only legacy top-level fields to the dashboard: <code>ReadinessConfidence</code>, <code>ReadinessCapReason</code>, and <code>ReadinessRawScore</code>.</li>
+      <li><code>internal/ui/templates/pages/dashboard.html</code> renders a coarse note only when confidence is not final. It does not distinguish all serving states or show a positive fresh/covered state.</li>
+      <li>The template already has suitable UI patterns nearby: methodology badges and compact stress-flag chips.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <ul>
+      <li>Show a compact readiness trust badge near the existing methodology badge in the hero score block.</li>
+      <li>Render all server statuses in human language: fresh, missing, stale, still settling, low coverage, and adjusted.</li>
+      <li>Show a subtle positive state when data is fresh and confidence is final, for example "Fresh data" or "Full confidence".</li>
+      <li>Use tooltips or accessible titles to explain low-confidence reasons without leaking implementation details such as enum names.</li>
+      <li>Dim the score area only when confidence is genuinely low or the status is missing, stale, or low coverage. Provisional/accruing and capped states should be visible but not visually treated as broken.</li>
+      <li>Keep copy concise and non-technical across English, Russian, and Serbian localizations.</li>
+      <li>Preserve existing score thresholds, methodology badge behavior, and API compatibility.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Assumptions</h2>
+    <ul>
+      <li>The first implementation targets the readiness hero score only, because readiness currently has the server-owned serving/freshness contract.</li>
+      <li>EnergyBank and metric cards should not get similar badges until they have equally explicit serving contracts.</li>
+      <li>Existing top-level readiness fields remain available as fallback for older paths, but the dashboard should prefer <code>ReadinessServing</code>.</li>
+      <li>No new database schema or migration is needed.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Likely File Changes</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>File</th>
+          <th>Expected change</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>internal/ui/handler.go</code></td>
+          <td>Pass <code>ReadinessServing</code> into dashboard template data, ideally as a small view model with label, severity class, tooltip, and note text.</td>
+        </tr>
+        <tr>
+          <td><code>internal/ui/templates/pages/dashboard.html</code></td>
+          <td>Render the readiness trust badge and replace the coarse provisional note with state-specific output.</td>
+        </tr>
+        <tr>
+          <td><code>internal/ui/style.go</code></td>
+          <td>Add compact badge styles and low-confidence dimming styles that fit the current hero layout on desktop and mobile.</td>
+        </tr>
+        <tr>
+          <td><code>internal/ui/i18n_en.go</code>, <code>internal/ui/i18n_ru.go</code>, <code>internal/ui/i18n_sr.go</code></td>
+          <td>Add labels and short tooltip strings for serving statuses, confidence states, and common reasons.</td>
+        </tr>
+        <tr>
+          <td><code>internal/ui/dashboard_illness_template_test.go</code> or a new dashboard readiness template test</td>
+          <td>Add template coverage for fresh, data-accruing, missing/stale, low-coverage, and capped displays.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Implementation Steps</h2>
+    <ol>
+      <li>Add a dashboard readiness-serving view model in the UI layer rather than placing enum mapping directly into the template.</li>
+      <li>Map server statuses to stable visual severities:
+        <code>fresh</code> to positive,
+        <code>data_accruing</code> to pending,
+        <code>capped</code> to neutral,
+        <code>missing</code> and <code>stale</code> to warning,
+        <code>low_coverage</code> to low confidence.
+      </li>
+      <li>Build a short tooltip from the server reason and core components. Prefer plain phrases such as "HRV has too few samples today" over raw enum names.</li>
+      <li>Render the badge next to the readiness methodology badge in the hero label row. Keep the old legacy note path only as fallback if <code>ReadinessServing</code> is nil.</li>
+      <li>Add a short visible note under the score only for states that require attention: missing, stale, data-accruing, low-coverage, or capped.</li>
+      <li>Add CSS for the badge, tooltip title affordance, and low-confidence dimming. Verify the hero layout does not shift or overlap.</li>
+      <li>Add EN/RU/SR localization keys for labels, notes, and reason copy.</li>
+      <li>Add focused template tests for the rendering matrix and keep backend readiness tests unchanged unless a gap is discovered.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <ul>
+      <li>Run focused UI template tests for the readiness serving states.</li>
+      <li>Run <code>go test ./internal/ui -count=1</code>.</li>
+      <li>Run <code>go test ./internal/health -run Readiness -count=1</code> to confirm the serving contract still holds.</li>
+      <li>Run <code>go test ./internal/ui ./internal/health -count=1</code> before committing.</li>
+      <li>If the implementation touches shared handler behavior, run <code>go test ./... -count=1</code> as a final check.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Manual QA Checklist</h2>
+    <ul>
+      <li>Desktop: readiness hero shows methodology and trust badges without wrapping awkwardly.</li>
+      <li>Mobile: badge row, score, status, and note stay readable and do not overlap the narrative or EnergyBank blocks.</li>
+      <li>Fresh/final fixture: positive badge appears subtly and no dimming is applied.</li>
+      <li>Data-accruing fixture: the user sees that data is still settling, not that recovery is bad.</li>
+      <li>Missing/stale fixture: the user sees that the score is limited by missing or old inputs.</li>
+      <li>Low-coverage fixture: score area is visibly lower-confidence and tooltip explains why in plain language.</li>
+      <li>Capped fixture: badge explains that the displayed score was adjusted, without implying missing data.</li>
+      <li>English, Russian, and Serbian labels fit within the hero layout.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Risks</h2>
+    <ul>
+      <li><strong>Duplicating backend logic:</strong> avoid by mapping only display labels/severity from <code>ReadinessServing.Status</code>, not recomputing freshness in UI.</li>
+      <li><strong>Over-warning users:</strong> keep fresh/capped/accruing visually calm; reserve dimming for genuinely low-confidence states.</li>
+      <li><strong>Hero clutter:</strong> use compact badges and the existing methodology/stress-chip visual language.</li>
+      <li><strong>Localization overflow:</strong> test long RU/SR strings on mobile and shorten copy if necessary.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <ul>
+      <li>Revert the UI view model, template, CSS, and i18n changes in one PR if the display proves confusing.</li>
+      <li>Because the backend contract already exists and no schema changes are planned, rollback does not require data migration.</li>
+      <li>Keep legacy <code>ReadinessConfidence</code> fallback during implementation to reduce rollback risk.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Should the positive fresh/full-confidence badge always be visible, or only visible when the user hovers/taps details? Recommendation: show it subtly so silence does not have to mean "unknown".</li>
+      <li>Should this PR include only readiness, or also start a pattern for EnergyBank? Recommendation: readiness only for #157, because EnergyBank lacks the same serving contract today.</li>
+      <li>Should component coverage be summarized as a percentage in the first pass? The current contract exposes component presence/freshness/sample counts, not a single canonical percentage. Recommendation: show component coverage text now and add numeric percentage only if the backend defines it.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Implementation Notes</h2>
+    <ul>
+      <li>Added a dashboard readiness-serving view model in <code>internal/ui/handler.go</code>.</li>
+      <li>Dashboard now renders a compact readiness trust badge from <code>ReadinessServing.Status</code> and keeps the legacy confidence note only as fallback.</li>
+      <li>Added visual classes for fresh, pending, neutral, warning, and low-confidence states.</li>
+      <li>Added English, Russian, and Serbian copy for serving statuses, notes, tooltips, and known cap reasons.</li>
+      <li>Added focused dashboard template tests covering fresh, data-accruing, missing, stale, low-coverage, and capped states.</li>
+    </ul>
+
+    <h2>Checks Run</h2>
+    <ul>
+      <li><code>git diff --check</code> — passed.</li>
+      <li><code>gofmt -w internal/ui/handler.go internal/ui/i18n_en.go internal/ui/i18n_ru.go internal/ui/i18n_sr.go internal/ui/dashboard_illness_template_test.go</code> — passed.</li>
+      <li><code>go test ./internal/ui -count=1</code> — passed.</li>
+      <li><code>go test ./internal/health -run Readiness -count=1</code> — passed.</li>
+      <li><code>go test ./internal/ui ./internal/health -count=1</code> — passed.</li>
+      <li><code>go test ./... -count=1</code> — passed after allowing module downloads and local <code>httptest</code> binds.</li>
+    </ul>
+
+    <h2>Known Limitations</h2>
+    <ul>
+      <li>No live browser/manual responsive QA has been run yet; automated template coverage verifies the expected hero states.</li>
+    </ul>
+
+    <h2>Approval Gate</h2>
+    <p>
+      Implementation has started on <code>codex/issue-157-confidence-indicators</code>
+      after approval and has passed automated verification. Next step is commit,
+      push, and pull request review.
+    </p>
+  </section>
+</main>
+</body>
+</html>

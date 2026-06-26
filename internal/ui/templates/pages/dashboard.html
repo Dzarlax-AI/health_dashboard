@@ -6,13 +6,18 @@
        Energy Bank (PR #2) into a single hero band so the dashboard
        opens with one consolidated "where am I today" snapshot rather
        than three competing headers. -->
-  <div id="hero-section" class="status-{{if ge .ReadinessScore 70}}good{{else if ge .ReadinessScore 40}}fair{{else}}low{{end}}{{if .Headline}} headline--{{.Headline.Severity}}{{end}}">
+  <div id="hero-section" class="status-{{if ge .ReadinessScore 70}}good{{else if ge .ReadinessScore 40}}fair{{else}}low{{end}}{{if .Headline}} headline--{{.Headline.Severity}}{{end}}{{if .ReadinessServing.LowConfidence}} readiness-low-confidence{{end}}">
     <div id="hero-score-block">
       <div id="readiness-label-top">
         {{T .Lang "readiness_today_label"}}
         <span class="methodology-badge methodology-badge--heuristic"
               title="{{T .Lang "methodology_status_heuristic_personalized_desc"}}"
               aria-label="{{T .Lang "methodology_status_heuristic_personalized_desc"}}">{{T .Lang "methodology_status_heuristic_personalized"}}</span>
+        {{if .ReadinessServing.Has}}
+        <span class="readiness-trust-badge readiness-trust-badge--{{.ReadinessServing.Class}}"
+              title="{{.ReadinessServing.Tooltip}}"
+              aria-label="{{.ReadinessServing.Tooltip}}">{{.ReadinessServing.Label}}</span>
+        {{end}}
       </div>
       <div id="readiness-score">{{if .ReadinessScore}}{{.ReadinessScore}}{{else}}--{{end}}</div>
       <div id="readiness-status">
@@ -20,7 +25,9 @@
         {{else if ge .ReadinessScore 40}}{{T .Lang "status_fair"}}
         {{else if gt .ReadinessScore 0}}{{T .Lang "status_low"}}{{end}}
       </div>
-      {{if and .ReadinessConfidence (ne .ReadinessConfidence "final")}}
+      {{if .ReadinessServing.Note}}
+      <div class="readiness-confidence-note">{{.ReadinessServing.Note}}</div>
+      {{else if and .ReadinessConfidence (ne .ReadinessConfidence "final")}}
       <div class="readiness-confidence-note">
         {{if eq .ReadinessCapReason "missing_same_day_evidence"}}
           {{T .Lang "readiness_waiting_data"}}

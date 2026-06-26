@@ -89,12 +89,16 @@ body { min-height: 100vh; font-size: 15px; }
 }
 #hero-score-block { position: relative; z-index: 2; align-self: center; }
 #readiness-label-top {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   font-size: 12px; font-weight: 700; text-transform: uppercase;
   letter-spacing: 2px; opacity: 0.65; margin-bottom: 8px;
 }
 #readiness-score {
   font-size: 88px; font-weight: 900; line-height: 1;
   letter-spacing: -3px; margin-bottom: 4px;
+}
+#hero-section.readiness-low-confidence #readiness-score {
+  opacity: 0.72;
 }
 #readiness-status { font-size: 20px; font-weight: 700; opacity: 0.9; }
 .readiness-confidence-note {
@@ -126,6 +130,42 @@ body { min-height: 100vh; font-size: 15px; }
   white-space: nowrap;
 }
 .methodology-badge--heuristic         { background: var(--surface2); color: var(--muted); }
+
+.readiness-trust-badge {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 10px;
+  vertical-align: middle;
+  border: 1px solid transparent;
+  cursor: help;
+  white-space: nowrap;
+}
+.readiness-trust-badge--fresh {
+  background: var(--good-bg);
+  color: var(--good);
+}
+.readiness-trust-badge--pending {
+  background: var(--surface2);
+  color: var(--text-secondary);
+  border-color: var(--border);
+}
+.readiness-trust-badge--neutral {
+  background: var(--surface2);
+  color: var(--muted);
+  border-color: var(--border);
+}
+.readiness-trust-badge--warning {
+  background: var(--fair-bg);
+  color: var(--fair);
+}
+.readiness-trust-badge--low {
+  background: var(--low-bg);
+  color: var(--low);
+}
 
 /* Webhook status badge on the settings page. Live-updates every 5s
    while state=pending; static otherwise. Colour-coded by state so the
