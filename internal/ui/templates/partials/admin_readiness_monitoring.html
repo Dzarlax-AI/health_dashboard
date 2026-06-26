@@ -34,7 +34,7 @@
         <td>{{T $.Lang "admin_monitoring_signal_coverage"}}</td>
         <td><code>{{.SubScore}}/{{.TargetKind}}</code></td>
         <td>{{.Status}}</td>
-        <td title="{{.ReasonTitle}}">
+        <td{{if .ReasonTitle}} class="ui-tooltip ui-tooltip--cell" data-tooltip="{{.ReasonTitle}}" aria-label="{{.ReasonTitle}}" tabindex="0"{{end}}>
           {{.Coverage}}{{if .TopReason}} · {{.TopReason}}{{end}}
           <div class="muted">{{T $.Lang "admin_monitoring_window"}} {{.Window}}</div>
           {{if .Freshness}}<div class="muted">{{.Freshness}}</div>{{end}}

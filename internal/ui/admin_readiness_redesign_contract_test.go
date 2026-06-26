@@ -256,11 +256,11 @@ func TestFragmentAdminReadinessContract_RendersValueAndUnknown(t *testing.T) {
 	if !strings.Contains(body, "unknown") {
 		t.Errorf("fragment missing 'unknown' marker: %s", body)
 	}
-	// Baseline reason now lives in the cell's title= attribute as
+	// Baseline reason now lives in the shared data-tooltip attribute as
 	// part of "baseline=… · target=… · epoch=…" tooltip — confirm
 	// it's the value-side label, not just the cell text.
-	if !strings.Contains(body, `title="baseline=`+storage.BaselineReasonWarmup) {
-		t.Errorf("fragment missing baseline_warmup title attribute: %s", body)
+	if !strings.Contains(body, `data-tooltip="baseline=`+storage.BaselineReasonWarmup) {
+		t.Errorf("fragment missing baseline_warmup tooltip attribute: %s", body)
 	}
 	// Pivot includes tenant column with the schema name.
 	if !strings.Contains(body, schema) {

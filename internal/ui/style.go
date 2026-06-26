@@ -13,6 +13,16 @@ const cssStyle = `
   --card-bg: var(--surface);
   --card-border: var(--border);
   --fg: var(--text);
+  --tooltip-bg: #111827;
+  --tooltip-fg: #f9fafb;
+  --tooltip-border: rgba(255,255,255,0.16);
+  --tooltip-shadow: 0 14px 38px rgba(15,23,42,0.28);
+}
+[dark-mode] {
+  --tooltip-bg: #f8fafc;
+  --tooltip-fg: #111827;
+  --tooltip-border: rgba(15,23,42,0.18);
+  --tooltip-shadow: 0 18px 42px rgba(0,0,0,0.48);
 }
 body { min-height: 100vh; font-size: 15px; }
 
@@ -173,17 +183,17 @@ body { min-height: 100vh; font-size: 15px; }
 .ui-tooltip::after {
   content: attr(data-tooltip);
   position: absolute;
-  z-index: 30;
+  z-index: 1000;
   left: 0;
   top: calc(100% + 8px);
   width: max-content;
   max-width: min(340px, calc(100vw - 32px));
   padding: 9px 11px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--tooltip-border);
   border-radius: 8px;
-  background: var(--surface);
-  color: var(--text);
-  box-shadow: var(--shadow);
+  background: var(--tooltip-bg);
+  color: var(--tooltip-fg);
+  box-shadow: var(--tooltip-shadow);
   font-size: 12px;
   font-weight: 500;
   line-height: 1.45;
@@ -192,17 +202,31 @@ body { min-height: 100vh; font-size: 15px; }
   white-space: normal;
   text-align: left;
   opacity: 0;
+  visibility: hidden;
   pointer-events: none;
   transform: translateY(-2px);
-  transition: opacity 0.12s ease, transform 0.12s ease;
+  transition: opacity 0.12s ease, transform 0.12s ease, visibility 0.12s ease;
 }
+.ui-tooltip--right::after,
 .readiness-trust-badge.ui-tooltip::after {
   left: auto;
   right: 0;
 }
+.ui-tooltip--center::after {
+  left: 50%;
+  transform: translate(-50%, -2px);
+}
+.ui-tooltip--center:hover::after,
+.ui-tooltip--center:focus-visible::after {
+  transform: translate(-50%, 0);
+}
+.ui-tooltip--cell {
+  cursor: help;
+}
 .ui-tooltip:hover::after,
 .ui-tooltip:focus-visible::after {
   opacity: 1;
+  visibility: visible;
   transform: translateY(0);
 }
 
