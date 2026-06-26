@@ -101,7 +101,7 @@ body { min-height: 100vh; font-size: 15px; }
 #readiness-label-top {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   font-size: 12px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: 2px; opacity: 0.65; margin-bottom: 8px;
+  letter-spacing: 2px; color: var(--text-secondary); margin-bottom: 8px;
 }
 #readiness-score {
   font-size: 88px; font-weight: 900; line-height: 1;
@@ -483,7 +483,7 @@ body { min-height: 100vh; font-size: 15px; }
 }
 .hero-energy-label {
   font-size: 11px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: 1.5px; opacity: 0.55;
+  letter-spacing: 1.5px; color: var(--text-secondary);
 }
 .hero-energy-numbers { font-size: 18px; font-weight: 800; letter-spacing: -0.5px; }
 .hero-energy-details { font-size: 12px; color: var(--text-secondary); }
