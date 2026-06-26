@@ -87,9 +87,10 @@ func TestDashboardReadinessServingBadges(t *testing.T) {
 			serving: readinessServingForTest(health.ReadinessServingDataAccruing, health.ReadinessConfidenceProvisional, "hrv_provisional"),
 			want: []string{
 				"readiness-trust-badge--pending",
+				"data-tooltip=",
 				"Still settling",
 				"signals are still settling",
-				"HRV has too few samples today.",
+				"fewer than 4 usable samples",
 			},
 		},
 		{
@@ -119,7 +120,8 @@ func TestDashboardReadinessServingBadges(t *testing.T) {
 				`id="hero-section" class="status-good readiness-low-confidence"`,
 				"readiness-trust-badge--low",
 				"Low confidence",
-				"Low-confidence score: coverage is thin.",
+				"Low-confidence score: input quality is weak.",
+				"stage breakdown looks unreliable",
 			},
 		},
 		{
@@ -129,7 +131,7 @@ func TestDashboardReadinessServingBadges(t *testing.T) {
 				"readiness-trust-badge--neutral",
 				"Adjusted",
 				"Displayed score adjusted for safety.",
-				"Illness-like signals are present, so the score is conservative.",
+				"subjective signals are present",
 			},
 			wantMissing: []string{`id="hero-section" class="status-good readiness-low-confidence"`},
 		},
@@ -149,6 +151,31 @@ func TestDashboardReadinessServingBadges(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestReadinessServingReasonTextCoversKnownReasons(t *testing.T) {
+	reasons := []string{
+		"missing_same_day_evidence",
+		"hrv_provisional",
+		"hrv_sparse",
+		"rhr_missing_overnight_hr_available",
+		"sleep_quality_low",
+		"illness_suspicion_moderate",
+		"illness_suspicion_high",
+		"stress_headline",
+		"sleep_debt_headline",
+	}
+	for _, lang := range []string{"en", "ru", "sr"} {
+		for _, reason := range reasons {
+			got := readinessServingReasonText(lang, reason)
+			if got == "" {
+				t.Fatalf("readiness reason %q missing for lang %s", reason, lang)
+			}
+			if strings.Contains(got, reason) || strings.HasPrefix(got, "readiness_serving_reason_") {
+				t.Fatalf("readiness reason %q leaked raw key for lang %s: %q", reason, lang, got)
+			}
+		}
 	}
 }
 
