@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UI Tooltip System Plan</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #17202a;
+      --muted: #5c6773;
+      --border: #d8dde4;
+      --accent: #2563eb;
+      --warn: #9a3412;
+      --code: #eef2f7;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #101418;
+        --panel: #171d23;
+        --text: #edf2f7;
+        --muted: #aab4bf;
+        --border: #303944;
+        --accent: #7aa2ff;
+        --warn: #f2a36f;
+        --code: #202833;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 32px 18px 56px;
+    }
+    header {
+      margin-bottom: 24px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 16px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 30px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+    h2 {
+      margin: 28px 0 10px;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+    p { margin: 8px 0; }
+    ul, ol { margin: 8px 0 0 22px; padding: 0; }
+    li { margin: 6px 0; }
+    code {
+      background: var(--code);
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      margin-top: 14px;
+    }
+    .meta {
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .gate {
+      border-left: 4px solid var(--accent);
+      padding-left: 12px;
+    }
+    .risk {
+      border-left: 4px solid var(--warn);
+      padding-left: 12px;
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>UI Tooltip System Plan</h1>
+    <p class="meta">Date: 2026-06-26 · Scope: Health dashboard UI · Issue context: #157 follow-up</p>
+  </header>
+
+  <section class="card">
+    <h2>Task Summary</h2>
+    <p>
+      Make project tooltips readable by default and replace remaining browser-native
+      <code>title</code> tooltips with one consistent DOM/CSS tooltip pattern.
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>Current Behavior</h2>
+    <ul>
+      <li>The new readiness tooltip pattern uses <code>.ui-tooltip</code> with <code>data-tooltip</code>, but the surface is visually too transparent or too close to the page background, so text is hard to read.</li>
+      <li>Some dashboard elements still use browser-native <code>title</code> only, including EnergyBank helper/marker UI.</li>
+      <li>Navigation icon actions and admin readiness tables still rely on <code>title</code> for tooltip text.</li>
+      <li>Chart.js has its own canvas tooltip plugin configuration in <code>internal/ui/static/charts.js</code>; that is a separate mechanism and not the source of the transparent DOM tooltip problem.</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>Desired Behavior</h2>
+    <ul>
+      <li>All DOM tooltips use a shared <code>.ui-tooltip</code> pattern with an opaque, high-contrast background in light and dark themes.</li>
+      <li>Tooltip text appears on hover and keyboard focus, with <code>aria-label</code> preserving accessible names.</li>
+      <li>Converted elements use <code>data-tooltip</code> for the visible tooltip text. Native <code>title</code> should be removed from converted controls to avoid duplicate browser bubbles.</li>
+      <li>The old browser tooltip must be disabled wherever the new tooltip is used; there should never be two competing tooltip layers on the same element.</li>
+      <li>Tooltips should not clip at common dashboard edges, including the right side of hero cards and table cells.</li>
+      <li>Chart.js canvas tooltips remain unchanged in this PR unless we find a direct visual regression there.</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>Assumptions</h2>
+    <ul>
+      <li>"Replace all Tooltips" means all HTML/browser <code>title</code> tooltips in the Go templates, not Chart.js internal canvas tooltips.</li>
+      <li>It is acceptable to add keyboard focusability via <code>tabindex="0"</code> to non-interactive elements that expose explanatory tooltip text.</li>
+      <li>Admin-only readiness pages should be included because they currently contain title-only tooltip content.</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>Likely File Changes</h2>
+    <ul>
+      <li><code>internal/ui/style.go</code> — harden shared tooltip CSS: opaque surface, readable contrast, shadow, border, max-width, alignment helpers, focus behavior.</li>
+      <li><code>internal/ui/templates/pages/dashboard.html</code> — convert remaining dashboard <code>title</code> helpers/markers to <code>data-tooltip</code>.</li>
+      <li><code>internal/ui/templates/nav.html</code> — convert navigation icon tooltips to the shared pattern.</li>
+      <li><code>internal/ui/templates/partials/admin_readiness_contract.html</code> — convert admin readiness contract cell titles.</li>
+      <li><code>internal/ui/templates/partials/admin_readiness_monitoring.html</code> — convert monitoring reason titles.</li>
+      <li><code>internal/ui/dashboard_illness_template_test.go</code> and <code>internal/ui/admin_readiness_redesign_contract_test.go</code> — update expectations from <code>title</code> to <code>data-tooltip</code>/<code>aria-label</code> where needed.</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>Implementation Steps</h2>
+    <ol>
+      <li>Inventory template-level <code>title=</code> usage again and classify each as DOM tooltip, accessibility label, or non-tooltip metadata.</li>
+      <li>Update <code>.ui-tooltip</code> CSS so the tooltip bubble uses an explicit opaque background and readable foreground instead of relying only on potentially translucent surface tokens.</li>
+      <li>Add small alignment modifiers if needed, for example right-aligned tooltips near card edges or table cells.</li>
+      <li>Convert title-only tooltip elements to <code>class="ui-tooltip"</code>, <code>data-tooltip</code>, and <code>aria-label</code>; add <code>tabindex="0"</code> for focusable explanatory spans/cells.</li>
+      <li>Remove converted native <code>title</code> attributes to prevent duplicate tooltip UI.</li>
+      <li>Search the touched templates after conversion and verify that no converted <code>.ui-tooltip</code> element still carries <code>title</code>.</li>
+      <li>Update tests to assert the new tooltip contract.</li>
+      <li>Update this plan with actual changes, checks run, limitations, and follow-up notes after implementation.</li>
+    </ol>
+  </section>
+
+  <section class="card">
+    <h2>Test Plan</h2>
+    <ul>
+      <li>Run <code>git diff --check</code>.</li>
+      <li>Run <code>go test ./internal/ui -count=1</code>.</li>
+      <li>Run <code>go test ./... -count=1</code> if the localized UI test pass is clean.</li>
+      <li>Manual QA in browser: readiness confidence badge, readiness methodology badge, EnergyBank helper/marker, nav settings/admin/logout controls, admin readiness contract table, admin readiness monitoring table.</li>
+      <li>Manual QA light and dark modes where possible, including long Russian/Serbian tooltip text and narrow viewport behavior.</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>Manual QA Checklist</h2>
+    <ul>
+      <li>Tooltip background is opaque enough that text is readable over dashboard cards and charts.</li>
+      <li>Hover and keyboard focus both show tooltip content.</li>
+      <li>No browser-native duplicate tooltip appears on converted elements.</li>
+      <li>Converted elements expose exactly one visible tooltip layer: the shared <code>.ui-tooltip</code> bubble.</li>
+      <li>Tooltip does not resize or shift the underlying layout.</li>
+      <li>Tooltip is not clipped by hero/dashboard containers or table wrappers in the common desktop viewport.</li>
+    </ul>
+  </section>
+
+  <section class="card risk">
+    <h2>Risks</h2>
+    <ul>
+      <li>Table-cell tooltips may need careful positioning so they do not hide neighboring values or create awkward keyboard tab stops.</li>
+      <li>Removing <code>title</code> changes browser-native fallback behavior; accessibility is preserved through <code>aria-label</code>, but visual behavior now depends on CSS.</li>
+      <li>Fixing clipping with <code>overflow: visible</code> or z-index changes can accidentally let tooltips overlap nearby controls. This needs manual QA.</li>
+      <li>Touch screens do not have hover. Focus/tap behavior improves this, but it will not be identical to desktop hover.</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>Rollback Plan</h2>
+    <ul>
+      <li>Revert the tooltip CSS and template conversion commit.</li>
+      <li>Because this is UI-only template/CSS work, rollback does not require database or deployment-state migration.</li>
+      <li>If only one converted area misbehaves, restore that area to the previous <code>title</code> behavior while keeping the opaque tooltip CSS fix.</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Should admin table-cell tooltips be focusable with <code>tabindex="0"</code>, or should we only show them on mouse hover to keep keyboard navigation shorter? Recommendation: make them focusable because the content is explanatory.</li>
+      <li>Should Chart.js canvas tooltips be redesigned in a separate pass? Recommendation: no for this PR; leave canvas chart behavior untouched unless QA reveals the same readability problem there.</li>
+    </ul>
+  </section>
+
+  <section class="card gate">
+    <h2>Approval Gate</h2>
+    <p>
+      Production code should not be changed until this plan is approved.
+      After approval, implementation will proceed on a new <code>codex/</code>
+      branch and be delivered through a pull request.
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>Implementation Update</h2>
+    <p>Status: implemented on <code>codex/ui-tooltip-system</code>.</p>
+    <ul>
+      <li>Added dedicated opaque tooltip tokens in <code>internal/ui/style.go</code> for light and dark mode.</li>
+      <li>Updated <code>.ui-tooltip</code> to use a high-contrast opaque surface, higher z-index, hidden visibility while inactive, and alignment helpers.</li>
+      <li>Removed native <code>title</code> from converted dashboard readiness tooltips so only the shared tooltip appears.</li>
+      <li>Converted EnergyBank helper/marker, navigation actions, and admin readiness table cells from <code>title</code> to <code>data-tooltip</code> + <code>aria-label</code>.</li>
+      <li>Updated the admin readiness contract test to assert the new <code>data-tooltip</code> contract.</li>
+      <li>Left Chart.js canvas tooltips unchanged because they are a separate plugin mechanism.</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>Checks Run</h2>
+    <ul>
+      <li><code>rg -n "title=|data-tooltip|ui-tooltip" internal/ui/templates internal/ui/style.go internal/ui/*_test.go</code> — no template <code>title=</code> attributes remain.</li>
+      <li><code>gofmt -w internal/ui/admin_readiness_redesign_contract_test.go</code></li>
+      <li><code>git diff --check</code></li>
+      <li><code>go test ./internal/ui -count=1</code></li>
+      <li><code>go test ./... -count=1</code></li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>Known Limitations</h2>
+    <ul>
+      <li>Manual visual QA in an authenticated browser is still recommended before or immediately after deployment, especially for admin table cells and narrow viewports.</li>
+      <li>Touch behavior remains inherently different from desktop hover; converted explanatory elements are keyboard-focusable where they are not already interactive.</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>

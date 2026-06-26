@@ -11,13 +11,11 @@
       <div id="readiness-label-top">
         {{T .Lang "readiness_today_label"}}
         <span class="methodology-badge methodology-badge--heuristic ui-tooltip"
-              title="{{T .Lang "methodology_status_heuristic_personalized_desc"}}"
               data-tooltip="{{T .Lang "methodology_status_heuristic_personalized_desc"}}"
               tabindex="0"
               aria-label="{{T .Lang "methodology_status_heuristic_personalized_desc"}}">{{T .Lang "methodology_status_heuristic_personalized"}}</span>
         {{if .ReadinessServing.Has}}
         <span class="readiness-trust-badge readiness-trust-badge--{{.ReadinessServing.Class}} ui-tooltip"
-              title="{{.ReadinessServing.Tooltip}}"
               data-tooltip="{{.ReadinessServing.Tooltip}}"
               tabindex="0"
               aria-label="{{.ReadinessServing.Tooltip}}">{{.ReadinessServing.Label}}</span>
@@ -91,8 +89,9 @@
         <div class="hero-energy-header">
           <span class="hero-energy-label">
             {{T .Lang "energy_label"}}
-            <span class="methodology-badge methodology-badge--heuristic"
-                  title="{{T .Lang "methodology_status_heuristic_prescriptive_desc"}}"
+            <span class="methodology-badge methodology-badge--heuristic ui-tooltip ui-tooltip--right"
+                  data-tooltip="{{T .Lang "methodology_status_heuristic_prescriptive_desc"}}"
+                  tabindex="0"
                   aria-label="{{T .Lang "methodology_status_heuristic_prescriptive_desc"}}">{{T .Lang "methodology_status_heuristic_prescriptive"}}</span>
           </span>
           <span class="hero-energy-numbers">{{.EnergyBank.Current}}<span class="muted">/{{.EnergyBank.Capacity}}</span></span>
@@ -103,7 +102,7 @@
         </div>
         <div class="energy-bar" aria-label="{{T .Lang "energy_capacity_label"}}">
           <div class="energy-bar-fill energy-bar-fill--{{.EnergyBank.Level}}" style="width: {{.EnergyBank.Current}}%"></div>
-          {{if lt .EnergyBank.Capacity 100}}<div class="energy-bar-marker" style="left: {{.EnergyBank.Capacity}}%" title="{{T .Lang "energy_capacity_label"}}: {{.EnergyBank.Capacity}}"></div>{{end}}
+          {{if lt .EnergyBank.Capacity 100}}<div class="energy-bar-marker ui-tooltip ui-tooltip--center" style="left: {{.EnergyBank.Capacity}}%" data-tooltip="{{T .Lang "energy_capacity_label"}}: {{.EnergyBank.Capacity}}" tabindex="0" aria-label="{{T .Lang "energy_capacity_label"}}: {{.EnergyBank.Capacity}}"></div>{{end}}
         </div>
         <div id="energy-sparkline-wrap" hidden><canvas id="energy-sparkline" height="36"></canvas></div>
         {{if .EnergyBank.Components}}

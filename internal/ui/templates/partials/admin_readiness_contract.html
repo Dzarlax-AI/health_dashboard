@@ -23,10 +23,10 @@
     <tr>
       <td>{{.Tenant}}</td>
       <td>{{.Date}}</td>
-      <td{{if .Recovery.Title}} title="{{.Recovery.Title}}"{{end}}>{{.Recovery.Text}}</td>
-      <td{{if .Passive.Title}} title="{{.Passive.Title}}"{{end}}>{{.Passive.Text}}</td>
-      <td{{if .Chronic.Title}} title="{{.Chronic.Title}}"{{end}}>{{.Chronic.Text}}</td>
-      <td{{if .Acute.Title}} title="{{.Acute.Title}}"{{end}}>{{.Acute.Text}}</td>
+      <td{{if .Recovery.Title}} class="ui-tooltip ui-tooltip--cell" data-tooltip="{{.Recovery.Title}}" aria-label="{{.Recovery.Title}}" tabindex="0"{{end}}>{{.Recovery.Text}}</td>
+      <td{{if .Passive.Title}} class="ui-tooltip ui-tooltip--cell" data-tooltip="{{.Passive.Title}}" aria-label="{{.Passive.Title}}" tabindex="0"{{end}}>{{.Passive.Text}}</td>
+      <td{{if .Chronic.Title}} class="ui-tooltip ui-tooltip--cell" data-tooltip="{{.Chronic.Title}}" aria-label="{{.Chronic.Title}}" tabindex="0"{{end}}>{{.Chronic.Text}}</td>
+      <td{{if .Acute.Title}} class="ui-tooltip ui-tooltip--cell" data-tooltip="{{.Acute.Title}}" aria-label="{{.Acute.Title}}" tabindex="0"{{end}}>{{.Acute.Text}}</td>
     </tr>
     {{end}}
   </tbody>
