@@ -67,7 +67,7 @@ body { min-height: 100vh; font-size: 15px; }
   padding: 36px 48px;
   color: var(--text);
   position: relative;
-  overflow: hidden;
+  overflow: visible;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) minmax(260px, auto);
   column-gap: 40px;
@@ -165,6 +165,45 @@ body { min-height: 100vh; font-size: 15px; }
 .readiness-trust-badge--low {
   background: var(--low-bg);
   color: var(--low);
+}
+
+.ui-tooltip {
+  position: relative;
+}
+.ui-tooltip::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  z-index: 30;
+  left: 0;
+  top: calc(100% + 8px);
+  width: max-content;
+  max-width: min(340px, calc(100vw - 32px));
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.45;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: normal;
+  text-align: left;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-2px);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+.readiness-trust-badge.ui-tooltip::after {
+  left: auto;
+  right: 0;
+}
+.ui-tooltip:hover::after,
+.ui-tooltip:focus-visible::after {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 /* Webhook status badge on the settings page. Live-updates every 5s

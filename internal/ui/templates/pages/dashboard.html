@@ -10,12 +10,16 @@
     <div id="hero-score-block">
       <div id="readiness-label-top">
         {{T .Lang "readiness_today_label"}}
-        <span class="methodology-badge methodology-badge--heuristic"
+        <span class="methodology-badge methodology-badge--heuristic ui-tooltip"
               title="{{T .Lang "methodology_status_heuristic_personalized_desc"}}"
+              data-tooltip="{{T .Lang "methodology_status_heuristic_personalized_desc"}}"
+              tabindex="0"
               aria-label="{{T .Lang "methodology_status_heuristic_personalized_desc"}}">{{T .Lang "methodology_status_heuristic_personalized"}}</span>
         {{if .ReadinessServing.Has}}
-        <span class="readiness-trust-badge readiness-trust-badge--{{.ReadinessServing.Class}}"
+        <span class="readiness-trust-badge readiness-trust-badge--{{.ReadinessServing.Class}} ui-tooltip"
               title="{{.ReadinessServing.Tooltip}}"
+              data-tooltip="{{.ReadinessServing.Tooltip}}"
+              tabindex="0"
               aria-label="{{.ReadinessServing.Tooltip}}">{{.ReadinessServing.Label}}</span>
         {{end}}
       </div>
