@@ -42,10 +42,10 @@ func TestClassifyBaselineNullReason(t *testing.T) {
 	anchor := time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC)
 
 	cases := []struct {
-		name                string
-		earliestOffsetDays  int
-		epochStart          string
-		wantReason          string
+		name               string
+		earliestOffsetDays int
+		epochStart         string
+		wantReason         string
 	}{
 		// --- no epoch ---
 		{
@@ -216,7 +216,7 @@ func TestSaveNaiveBaseline_JointStateGuard(t *testing.T) {
 // populated. Complements TestSaveNaiveBaseline_JointStateGuard's
 // pure-validation rejections.
 func TestSaveNaiveBaseline_NilValueWithValidReasonPersists(t *testing.T) {
-	db, cleanup := testDB(t)
+	db, cleanup := testReadinessDB(t)
 	defer cleanup()
 
 	err := db.SaveNaiveBaseline(NaiveBaseline{
@@ -258,6 +258,9 @@ func TestSaveNaiveBaseline_NilValueWithValidReasonPersists(t *testing.T) {
 // failure. Each subtest mutates the column then asserts verify
 // errors with the right marker.
 func TestVerifyReadinessRedesignSchema_DetectsReasonColumnDrift(t *testing.T) {
+	db, cleanup := testIsolatedReadinessDB(t)
+	defer cleanup()
+
 	cases := []struct {
 		name       string
 		mutate     string
@@ -294,8 +297,7 @@ func TestVerifyReadinessRedesignSchema_DetectsReasonColumnDrift(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			db, cleanup := testDB(t)
-			defer cleanup()
+			resetReadinessSchemaForDriftTest(t, db)
 
 			if err := db.VerifyReadinessRedesignSchema(); err != nil {
 				t.Fatalf("baseline verify (pristine schema) failed: %v", err)
@@ -317,4 +319,18 @@ func TestVerifyReadinessRedesignSchema_DetectsReasonColumnDrift(t *testing.T) {
 			}
 		})
 	}
+}
+
+func resetReadinessSchemaForDriftTest(t *testing.T, db *DB) {
+	t.Helper()
+	if _, err := db.pool.Exec(t.Context(), `
+		DROP TABLE IF EXISTS naive_baselines CASCADE;
+		DROP TABLE IF EXISTS feature_snapshots CASCADE;
+		DROP TABLE IF EXISTS target_snapshots CASCADE;
+		DROP TABLE IF EXISTS chip_calibrations CASCADE;
+		DROP TABLE IF EXISTS source_epochs CASCADE;
+	`); err != nil {
+		t.Fatalf("reset readiness schema: %v", err)
+	}
+	db.EnsureReadinessRedesignTables()
 }

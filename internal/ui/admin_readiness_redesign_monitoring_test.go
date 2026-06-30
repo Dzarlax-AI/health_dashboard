@@ -124,7 +124,7 @@ func TestFragmentAdminReadinessMonitoring_Renders(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
 	}
 	body := w.Body.String()
-	for _, want := range []string{schema, "coverage", storage.SubScoreRecoveryStability, "window", "inputs stable through", date + " " + storage.EligibilitySleepDataMissing + " (partial_capture_short)"} {
+	for _, want := range []string{schema, "coverage", storage.SubScoreRecoveryStability, "window", "critical: no stable input in monitoring lookback", date + " " + storage.EligibilitySleepDataMissing + " (partial_capture_short)"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("fragment missing %q; body=%s", want, body)
 		}

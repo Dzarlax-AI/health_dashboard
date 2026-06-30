@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,16 +11,19 @@ import (
 )
 
 func TestComputeUserVerdictBands_UsesOneLatestEligibleRowPerDate(t *testing.T) {
-	db, cleanup := testDB(t)
+	db, cleanup := testEnergyDB(t)
 	defer cleanup()
-	db.EnsureEnergySnapshotsTable()
 
 	ctx := context.Background()
+	rows := make([]energySnapshotSeed, 0, energyBandsMinPoints*2)
 	for i := 0; i < energyBandsMinPoints; i++ {
 		date := bandTestDate(i)
-		insertEnergySnapshot(t, db, date, 8, 100, 2, nil)
-		insertEnergySnapshot(t, db, date, 20, i, 2, nil)
+		rows = append(rows,
+			energySnapshot(date, 8, 100, 2, nil),
+			energySnapshot(date, 20, i, 2, nil),
+		)
 	}
+	insertEnergySnapshots(t, db, rows...)
 
 	bands, err := db.ComputeUserVerdictBands(ctx)
 	if err != nil {
@@ -37,15 +41,17 @@ func TestComputeUserVerdictBands_UsesOneLatestEligibleRowPerDate(t *testing.T) {
 }
 
 func TestComputeUserVerdictBands_ExcludesFlaggedRowsBeforeSelectingLatest(t *testing.T) {
-	db, cleanup := testDB(t)
+	db, cleanup := testEnergyDB(t)
 	defer cleanup()
-	db.EnsureEnergySnapshotsTable()
 
-	insertEnergySnapshot(t, db, bandTestDate(0), 8, 0, 2, nil)
-	insertEnergySnapshot(t, db, bandTestDate(0), 20, 100, 2, []string{"imputed_sleep"})
-	for i := 1; i < energyBandsMinPoints; i++ {
-		insertEnergySnapshot(t, db, bandTestDate(i), 20, i, 2, nil)
+	rows := []energySnapshotSeed{
+		energySnapshot(bandTestDate(0), 8, 0, 2, nil),
+		energySnapshot(bandTestDate(0), 20, 100, 2, []string{"imputed_sleep"}),
 	}
+	for i := 1; i < energyBandsMinPoints; i++ {
+		rows = append(rows, energySnapshot(bandTestDate(i), 20, i, 2, nil))
+	}
+	insertEnergySnapshots(t, db, rows...)
 
 	bands, err := db.ComputeUserVerdictBands(context.Background())
 	if err != nil {
@@ -63,16 +69,17 @@ func TestComputeUserVerdictBands_ExcludesFlaggedRowsBeforeSelectingLatest(t *tes
 }
 
 func TestComputeUserVerdictBands_UsesLatestFormulaWhenMature(t *testing.T) {
-	db, cleanup := testDB(t)
+	db, cleanup := testEnergyDB(t)
 	defer cleanup()
-	db.EnsureEnergySnapshotsTable()
 
+	rows := make([]energySnapshotSeed, 0, 70)
 	for i := 0; i < energyBandsMinPoints; i++ {
-		insertEnergySnapshot(t, db, bandTestDate(i), 20, 70+i, 2, nil)
+		rows = append(rows, energySnapshot(bandTestDate(i), 20, 70+i, 2, nil))
 	}
 	for i := 30; i < 70; i++ {
-		insertEnergySnapshot(t, db, bandTestDate(i), 20, i-30, 1, nil)
+		rows = append(rows, energySnapshot(bandTestDate(i), 20, i-30, 1, nil))
 	}
+	insertEnergySnapshots(t, db, rows...)
 
 	bands, err := db.ComputeUserVerdictBands(context.Background())
 	if err != nil {
@@ -90,16 +97,17 @@ func TestComputeUserVerdictBands_UsesLatestFormulaWhenMature(t *testing.T) {
 }
 
 func TestComputeUserVerdictBands_UsesCompatibleFormulaWarmup(t *testing.T) {
-	db, cleanup := testDB(t)
+	db, cleanup := testEnergyDB(t)
 	defer cleanup()
-	db.EnsureEnergySnapshotsTable()
 
+	rows := make([]energySnapshotSeed, 0, 35)
 	for i := 0; i < 10; i++ {
-		insertEnergySnapshot(t, db, bandTestDate(i), 20, 70+i, 2, nil)
+		rows = append(rows, energySnapshot(bandTestDate(i), 20, 70+i, 2, nil))
 	}
 	for i := 10; i < 35; i++ {
-		insertEnergySnapshot(t, db, bandTestDate(i), 20, i-10, 1, nil)
+		rows = append(rows, energySnapshot(bandTestDate(i), 20, i-10, 1, nil))
 	}
+	insertEnergySnapshots(t, db, rows...)
 
 	bands, err := db.ComputeUserVerdictBands(context.Background())
 	if err != nil {
@@ -115,18 +123,21 @@ func TestComputeUserVerdictBands_UsesCompatibleFormulaWarmup(t *testing.T) {
 }
 
 func TestComputeUserVerdictBands_CountsOneDateAcrossCompatibleFormulas(t *testing.T) {
-	db, cleanup := testDB(t)
+	db, cleanup := testEnergyDB(t)
 	defer cleanup()
-	db.EnsureEnergySnapshotsTable()
 
+	rows := make([]energySnapshotSeed, 0, 40)
 	for i := 0; i < 15; i++ {
 		date := bandTestDate(i)
-		insertEnergySnapshot(t, db, date, 8, i, 1, nil)
-		insertEnergySnapshot(t, db, date, 20, 70+i, 2, nil)
+		rows = append(rows,
+			energySnapshot(date, 8, i, 1, nil),
+			energySnapshot(date, 20, 70+i, 2, nil),
+		)
 	}
 	for i := 15; i < 25; i++ {
-		insertEnergySnapshot(t, db, bandTestDate(i), 20, i, 1, nil)
+		rows = append(rows, energySnapshot(bandTestDate(i), 20, i, 1, nil))
 	}
+	insertEnergySnapshots(t, db, rows...)
 
 	bands, err := db.ComputeUserVerdictBands(context.Background())
 	if err != nil {
@@ -144,13 +155,14 @@ func TestComputeUserVerdictBands_CountsOneDateAcrossCompatibleFormulas(t *testin
 }
 
 func TestComputeUserVerdictBands_ProvisionalDoesNotActivateAt19CompatibleDays(t *testing.T) {
-	db, cleanup := testDB(t)
+	db, cleanup := testEnergyDB(t)
 	defer cleanup()
-	db.EnsureEnergySnapshotsTable()
 
+	rows := make([]energySnapshotSeed, 0, energyBandsProvisionalMinPoints-1)
 	for i := 0; i < energyBandsProvisionalMinPoints-1; i++ {
-		insertEnergySnapshot(t, db, bandTestDate(i), 20, 70+i, 2, nil)
+		rows = append(rows, energySnapshot(bandTestDate(i), 20, 70+i, 2, nil))
 	}
+	insertEnergySnapshots(t, db, rows...)
 
 	bands, err := db.ComputeUserVerdictBands(context.Background())
 	if err != nil {
@@ -168,16 +180,17 @@ func TestComputeUserVerdictBands_ProvisionalDoesNotActivateAt19CompatibleDays(t 
 }
 
 func TestComputeUserVerdictBands_UsesProvisionalCompatibleWarmupAt20Days(t *testing.T) {
-	db, cleanup := testDB(t)
+	db, cleanup := testEnergyDB(t)
 	defer cleanup()
-	db.EnsureEnergySnapshotsTable()
 
+	rows := make([]energySnapshotSeed, 0, energyBandsProvisionalMinPoints)
 	for i := 0; i < 10; i++ {
-		insertEnergySnapshot(t, db, bandTestDate(i), 20, 70+i, 2, nil)
+		rows = append(rows, energySnapshot(bandTestDate(i), 20, 70+i, 2, nil))
 	}
 	for i := 10; i < energyBandsProvisionalMinPoints; i++ {
-		insertEnergySnapshot(t, db, bandTestDate(i), 20, 40+i, 1, nil)
+		rows = append(rows, energySnapshot(bandTestDate(i), 20, 40+i, 1, nil))
 	}
+	insertEnergySnapshots(t, db, rows...)
 
 	bands, err := db.ComputeUserVerdictBands(context.Background())
 	if err != nil {
@@ -194,13 +207,14 @@ func TestComputeUserVerdictBands_UsesProvisionalCompatibleWarmupAt20Days(t *test
 }
 
 func TestComputeUserVerdictBands_ProvisionalClampsAllBoundariesToDefaults(t *testing.T) {
-	db, cleanup := testDB(t)
+	db, cleanup := testEnergyDB(t)
 	defer cleanup()
-	db.EnsureEnergySnapshotsTable()
 
+	rows := make([]energySnapshotSeed, 0, energyBandsProvisionalMinPoints)
 	for i := 0; i < energyBandsProvisionalMinPoints; i++ {
-		insertEnergySnapshot(t, db, bandTestDate(i), 20, i, 2, nil)
+		rows = append(rows, energySnapshot(bandTestDate(i), 20, i, 2, nil))
 	}
+	insertEnergySnapshots(t, db, rows...)
 
 	bands, err := db.ComputeUserVerdictBands(context.Background())
 	if err != nil {
@@ -228,16 +242,17 @@ func TestComputeUserVerdictBands_ProvisionalFallsBackWhenClampBreaksMonotonicity
 }
 
 func TestComputeUserVerdictBands_MatureCompatibleStillWinsAt30Days(t *testing.T) {
-	db, cleanup := testDB(t)
+	db, cleanup := testEnergyDB(t)
 	defer cleanup()
-	db.EnsureEnergySnapshotsTable()
 
+	rows := make([]energySnapshotSeed, 0, energyBandsMinPoints)
 	for i := 0; i < 10; i++ {
-		insertEnergySnapshot(t, db, bandTestDate(i), 20, 70+i, 2, nil)
+		rows = append(rows, energySnapshot(bandTestDate(i), 20, 70+i, 2, nil))
 	}
 	for i := 10; i < energyBandsMinPoints; i++ {
-		insertEnergySnapshot(t, db, bandTestDate(i), 20, 40+i, 1, nil)
+		rows = append(rows, energySnapshot(bandTestDate(i), 20, 40+i, 1, nil))
 	}
+	insertEnergySnapshots(t, db, rows...)
 
 	bands, err := db.ComputeUserVerdictBands(context.Background())
 	if err != nil {
@@ -249,15 +264,16 @@ func TestComputeUserVerdictBands_MatureCompatibleStillWinsAt30Days(t *testing.T)
 }
 
 func TestComputeUserVerdictBands_ProvisionalUsesConfiguredWindowOnly(t *testing.T) {
-	db, cleanup := testDB(t)
+	db, cleanup := testEnergyDB(t)
 	defer cleanup()
-	db.EnsureEnergySnapshotsTable()
 
+	rows := make([]energySnapshotSeed, 0, energyBandsProvisionalMinPoints)
 	for i := 0; i < energyBandsProvisionalMinPoints-1; i++ {
-		insertEnergySnapshot(t, db, bandTestDate(i), 20, 70+i, 2, nil)
+		rows = append(rows, energySnapshot(bandTestDate(i), 20, 70+i, 2, nil))
 	}
 	oldDate := time.Now().AddDate(0, 0, -(energyBandsWindowDays + 5)).Format("2006-01-02")
-	insertEnergySnapshot(t, db, oldDate, 20, 100, 2, nil)
+	rows = append(rows, energySnapshot(oldDate, 20, 100, 2, nil))
+	insertEnergySnapshots(t, db, rows...)
 
 	bands, err := db.ComputeUserVerdictBands(context.Background())
 	if err != nil {
@@ -272,16 +288,17 @@ func TestComputeUserVerdictBands_ProvisionalUsesConfiguredWindowOnly(t *testing.
 }
 
 func TestComputeUserVerdictBands_UnknownFormulaExcludedFromWarmup(t *testing.T) {
-	db, cleanup := testDB(t)
+	db, cleanup := testEnergyDB(t)
 	defer cleanup()
-	db.EnsureEnergySnapshotsTable()
 
+	rows := make([]energySnapshotSeed, 0, 35)
 	for i := 0; i < 10; i++ {
-		insertEnergySnapshot(t, db, bandTestDate(i), 20, 70+i, 2, nil)
+		rows = append(rows, energySnapshot(bandTestDate(i), 20, 70+i, 2, nil))
 	}
 	for i := 10; i < 35; i++ {
-		insertEnergySnapshot(t, db, bandTestDate(i), 20, i-10, 9, nil)
+		rows = append(rows, energySnapshot(bandTestDate(i), 20, i-10, 9, nil))
 	}
+	insertEnergySnapshots(t, db, rows...)
 
 	bands, err := db.ComputeUserVerdictBands(context.Background())
 	if err != nil {
@@ -296,16 +313,17 @@ func TestComputeUserVerdictBands_UnknownFormulaExcludedFromWarmup(t *testing.T) 
 }
 
 func TestComputeUserVerdictBands_UnknownFormulaExcludedFromProvisionalWarmup(t *testing.T) {
-	db, cleanup := testDB(t)
+	db, cleanup := testEnergyDB(t)
 	defer cleanup()
-	db.EnsureEnergySnapshotsTable()
 
+	rows := make([]energySnapshotSeed, 0, energyBandsProvisionalMinPoints)
 	for i := 0; i < 10; i++ {
-		insertEnergySnapshot(t, db, bandTestDate(i), 20, 70+i, 2, nil)
+		rows = append(rows, energySnapshot(bandTestDate(i), 20, 70+i, 2, nil))
 	}
 	for i := 10; i < energyBandsProvisionalMinPoints; i++ {
-		insertEnergySnapshot(t, db, bandTestDate(i), 20, 40+i, 9, nil)
+		rows = append(rows, energySnapshot(bandTestDate(i), 20, 40+i, 9, nil))
 	}
+	insertEnergySnapshots(t, db, rows...)
 
 	bands, err := db.ComputeUserVerdictBands(context.Background())
 	if err != nil {
@@ -320,19 +338,20 @@ func TestComputeUserVerdictBands_UnknownFormulaExcludedFromProvisionalWarmup(t *
 }
 
 func TestComputeUserVerdictBands_StressDrainDisablesV1Compatibility(t *testing.T) {
-	db, cleanup := testDB(t)
+	db, cleanup := testEnergyDB(t)
 	defer cleanup()
-	db.EnsureEnergySnapshotsTable()
 	if err := db.SaveSettings(map[string]string{"energy.stress_drain_enabled": "true"}); err != nil {
 		t.Fatalf("SaveSettings: %v", err)
 	}
 
+	rows := make([]energySnapshotSeed, 0, 35)
 	for i := 0; i < 10; i++ {
-		insertEnergySnapshot(t, db, bandTestDate(i), 20, 70+i, 2, nil)
+		rows = append(rows, energySnapshot(bandTestDate(i), 20, 70+i, 2, nil))
 	}
 	for i := 10; i < 35; i++ {
-		insertEnergySnapshot(t, db, bandTestDate(i), 20, i-10, 1, nil)
+		rows = append(rows, energySnapshot(bandTestDate(i), 20, i-10, 1, nil))
 	}
+	insertEnergySnapshots(t, db, rows...)
 
 	bands, err := db.ComputeUserVerdictBands(context.Background())
 	if err != nil {
@@ -347,14 +366,15 @@ func TestComputeUserVerdictBands_StressDrainDisablesV1Compatibility(t *testing.T
 }
 
 func TestComputeUserVerdictBands_StressDrainIgnoresPreToggleV2Rows(t *testing.T) {
-	db, cleanup := testDB(t)
+	db, cleanup := testEnergyDB(t)
 	defer cleanup()
-	db.EnsureEnergySnapshotsTable()
 
 	beforeToggle := time.Now().Add(-2 * time.Hour)
+	rows := make([]energySnapshotSeed, 0, energyBandsMinPoints)
 	for i := 0; i < energyBandsMinPoints; i++ {
-		insertEnergySnapshotAt(t, db, bandTestDate(i), 20, 70+i, 2, nil, beforeToggle)
+		rows = append(rows, energySnapshotAt(bandTestDate(i), 20, 70+i, 2, nil, beforeToggle))
 	}
+	insertEnergySnapshots(t, db, rows...)
 	if err := db.SaveSettings(map[string]string{"energy.stress_drain_enabled": "true"}); err != nil {
 		t.Fatalf("SaveSettings: %v", err)
 	}
@@ -372,19 +392,20 @@ func TestComputeUserVerdictBands_StressDrainIgnoresPreToggleV2Rows(t *testing.T)
 }
 
 func TestComputeUserVerdictBands_AlphaChangeDisablesV1Compatibility(t *testing.T) {
-	db, cleanup := testDB(t)
+	db, cleanup := testEnergyDB(t)
 	defer cleanup()
-	db.EnsureEnergySnapshotsTable()
 	if err := db.SaveSettings(map[string]string{"energy.alpha_factor": "1.2"}); err != nil {
 		t.Fatalf("SaveSettings: %v", err)
 	}
 
+	rows := make([]energySnapshotSeed, 0, 35)
 	for i := 0; i < 10; i++ {
-		insertEnergySnapshot(t, db, bandTestDate(i), 20, 70+i, 2, nil)
+		rows = append(rows, energySnapshot(bandTestDate(i), 20, 70+i, 2, nil))
 	}
 	for i := 10; i < 35; i++ {
-		insertEnergySnapshot(t, db, bandTestDate(i), 20, i-10, 1, nil)
+		rows = append(rows, energySnapshot(bandTestDate(i), 20, i-10, 1, nil))
 	}
+	insertEnergySnapshots(t, db, rows...)
 
 	bands, err := db.ComputeUserVerdictBands(context.Background())
 	if err != nil {
@@ -399,14 +420,15 @@ func TestComputeUserVerdictBands_AlphaChangeDisablesV1Compatibility(t *testing.T
 }
 
 func TestComputeUserVerdictBands_ClampsDisplayBankBeforePercentiles(t *testing.T) {
-	db, cleanup := testDB(t)
+	db, cleanup := testEnergyDB(t)
 	defer cleanup()
-	db.EnsureEnergySnapshotsTable()
 
+	rows := make([]energySnapshotSeed, 0, energyBandsMinPoints)
 	for i := 0; i < energyBandsMinPoints; i++ {
 		bank := i - 20
-		insertEnergySnapshot(t, db, bandTestDate(i), 20, bank, 2, nil)
+		rows = append(rows, energySnapshot(bandTestDate(i), 20, bank, 2, nil))
 	}
+	insertEnergySnapshots(t, db, rows...)
 
 	bands, err := db.ComputeUserVerdictBands(context.Background())
 	if err != nil {
@@ -421,31 +443,59 @@ func bandTestDate(daysAgo int) string {
 	return time.Now().AddDate(0, 0, -daysAgo).Format("2006-01-02")
 }
 
-func insertEnergySnapshot(t *testing.T, db *DB, date string, hour, bank, formulaVersion int, flags []string) {
-	t.Helper()
-	insertEnergySnapshotAt(t, db, date, hour, bank, formulaVersion, flags, time.Now())
+type energySnapshotSeed struct {
+	date           string
+	hour           int
+	bank           int
+	formulaVersion int
+	flags          []string
+	computedAt     time.Time
 }
 
-func insertEnergySnapshotAt(t *testing.T, db *DB, date string, hour, bank, formulaVersion int, flags []string, computedAt time.Time) {
+func energySnapshot(date string, hour, bank, formulaVersion int, flags []string) energySnapshotSeed {
+	return energySnapshotAt(date, hour, bank, formulaVersion, flags, time.Now())
+}
+
+func energySnapshotAt(date string, hour, bank, formulaVersion int, flags []string, computedAt time.Time) energySnapshotSeed {
+	return energySnapshotSeed{
+		date:           date,
+		hour:           hour,
+		bank:           bank,
+		formulaVersion: formulaVersion,
+		flags:          flags,
+		computedAt:     computedAt,
+	}
+}
+
+func insertEnergySnapshots(t *testing.T, db *DB, rows ...energySnapshotSeed) {
 	t.Helper()
+	if len(rows) == 0 {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if flags == nil {
-		flags = []string{}
-	}
 
-	ts, err := time.ParseInLocation("2006-01-02 15", fmt.Sprintf("%s %02d", date, hour), time.UTC)
-	if err != nil {
-		t.Fatalf("parse test ts: %v", err)
+	values := make([]string, 0, len(rows))
+	args := make([]any, 0, len(rows)*6)
+	for i, row := range rows {
+		if row.flags == nil {
+			row.flags = []string{}
+		}
+		ts, err := time.ParseInLocation("2006-01-02 15", fmt.Sprintf("%s %02d", row.date, row.hour), time.UTC)
+		if err != nil {
+			t.Fatalf("parse test ts date=%s hour=%d: %v", row.date, row.hour, err)
+		}
+		base := i*6 + 1
+		values = append(values, fmt.Sprintf("($%d, $%d, $%d, 0, 0, $%d, '{}'::jsonb, $%d, $%d)",
+			base, base+1, base+2, base+3, base+4, base+5))
+		args = append(args, ts, row.date, row.bank, row.formulaVersion, row.flags, row.computedAt)
 	}
-	_, err = db.pool.Exec(ctx, `
+	_, err := db.pool.Exec(ctx, `
 		INSERT INTO energy_snapshots
 			(ts_bucket, date, bank, drain_delta, restore_delta, formula_version, components, flags, computed_at)
-		VALUES ($1, $2, $3, 0, 0, $4, '{}'::jsonb, $5, $6)`,
-		ts, date, bank, formulaVersion, flags, computedAt)
+		VALUES `+strings.Join(values, ", "), args...)
 	if err != nil {
-		t.Fatalf("insert energy snapshot date=%s hour=%d bank=%d version=%d flags=%v: %v",
-			date, hour, bank, formulaVersion, flags, err)
+		t.Fatalf("insert %d energy snapshots: %v", len(rows), err)
 	}
 }
 

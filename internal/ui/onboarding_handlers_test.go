@@ -24,24 +24,25 @@ func TestOnboardingWizard_RejectsSchemaAll(t *testing.T) {
 	h := &Handler{}
 
 	type endpointCase struct {
-		name   string
-		method string
-		path   string
+		name                 string
+		method               string
+		path                 string
+		checkMissingFallback bool
 	}
 	endpoints := []endpointCase{
 		// Read-only steps.
-		{"step-1 GET", http.MethodGet, "/fragments/admin-readiness-onboarding/step-1"},
-		{"step-2 GET", http.MethodGet, "/fragments/admin-readiness-onboarding/step-2"},
-		{"step-3 GET", http.MethodGet, "/fragments/admin-readiness-onboarding/step-3"},
-		{"step-4-plan GET", http.MethodGet, "/fragments/admin-readiness-onboarding/step-4-plan"},
-		{"step-5 GET", http.MethodGet, "/fragments/admin-readiness-onboarding/step-5"},
+		{"step-1 GET", http.MethodGet, "/fragments/admin-readiness-onboarding/step-1", true},
+		{"step-2 GET", http.MethodGet, "/fragments/admin-readiness-onboarding/step-2", true},
+		{"step-3 GET", http.MethodGet, "/fragments/admin-readiness-onboarding/step-3", true},
+		{"step-4-plan GET", http.MethodGet, "/fragments/admin-readiness-onboarding/step-4-plan", true},
+		{"step-5 GET", http.MethodGet, "/fragments/admin-readiness-onboarding/step-5", true},
 		// Mutating steps — the load-bearing rejections.
-		{"step-4-run POST", http.MethodPost, "/fragments/admin-readiness-onboarding/step-4-run"},
-		{"step-6-run POST", http.MethodPost, "/fragments/admin-readiness-onboarding/step-6-run"},
+		{"step-4-run POST", http.MethodPost, "/fragments/admin-readiness-onboarding/step-4-run", false},
+		{"step-6-run POST", http.MethodPost, "/fragments/admin-readiness-onboarding/step-6-run", true},
 		// Step 7 reuses the operational-contract fragment but the
 		// wizard's onboardingScope guard runs first, so the rule
 		// applies here too.
-		{"step-7 GET", http.MethodGet, "/fragments/admin-readiness-onboarding/step-7"},
+		{"step-7 GET", http.MethodGet, "/fragments/admin-readiness-onboarding/step-7", true},
 	}
 
 	for _, ep := range endpoints {
@@ -57,27 +58,34 @@ func TestOnboardingWizard_RejectsSchemaAll(t *testing.T) {
 				t.Errorf("body should mention schema=all; got %q", w.Body.String())
 			}
 		})
-		t.Run(ep.name+" missing schema falls back to ctx", func(t *testing.T) {
-			req := httptest.NewRequest(ep.method, ep.path, nil).
-				WithContext(adminContext(db, schema))
-			w := httptest.NewRecorder()
-			dispatchOnboardingHandler(h, ep.path, w, req)
-			// Missing schema must NOT 400 — it falls back to the
-			// request's own tenant. Anything other than 200 (read-only
-			// steps) or 200 (mutating run paths return result fragment)
-			// is a regression. We allow any non-400 success-ish code:
-			// production happy paths return 200, but storage hiccups
-			// could plausibly bubble up a 5xx the resolver doesn't
-			// classify. The load-bearing point is "missing schema must
-			// not be rejected as a contract violation".
-			if w.Code == http.StatusBadRequest {
-				body := w.Body.String()
-				if strings.Contains(body, "schema parameter is required") {
-					t.Fatalf("missing schema rejected as 'parameter required' — should fall back to request tenant. body=%s", body)
+		if ep.checkMissingFallback {
+			t.Run(ep.name+" missing schema falls back to ctx", func(t *testing.T) {
+				req := httptest.NewRequest(ep.method, ep.path, nil).
+					WithContext(adminContext(db, schema))
+				w := httptest.NewRecorder()
+				dispatchOnboardingHandler(h, ep.path, w, req)
+				if w.Code == http.StatusBadRequest {
+					t.Fatalf("missing schema should fall back to request tenant, got 400: %s", w.Body.String())
 				}
-			}
-		})
+			})
+		}
 	}
+
+	t.Run("scope missing schema falls back to ctx for heavy run endpoints", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/fragments/admin-readiness-onboarding/step-4-run", nil).
+			WithContext(adminContext(db, schema))
+		w := httptest.NewRecorder()
+		scope := h.onboardingScope(w, req)
+		if w.Code == http.StatusBadRequest {
+			t.Fatalf("missing schema rejected as bad request; body=%s", w.Body.String())
+		}
+		if scope == nil {
+			t.Fatalf("expected fallback scope, got nil with status=%d body=%s", w.Code, w.Body.String())
+		}
+		if scope.schema != schema {
+			t.Fatalf("scope.schema = %q, want %q", scope.schema, schema)
+		}
+	})
 }
 
 // dispatchOnboardingHandler routes the test request to the matching

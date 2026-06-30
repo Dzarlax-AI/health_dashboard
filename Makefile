@@ -1,4 +1,4 @@
-.PHONY: dev build backfill backfill-force energy-backfill energy-backfill-dry import docker-up docker-down test
+.PHONY: dev build backfill backfill-force energy-backfill energy-backfill-dry import docker-up docker-down test test-unit test-db-storage test-db-ui test-db-ui-fast test-db-energy test-db-energy-smoke test-db-readiness test-db smoke-health-post
 
 ADDR ?= :8080
 
@@ -40,7 +40,33 @@ docker-up:
 docker-down:
 	docker compose down
 
+test-unit:
+	HEALTH_DB_TESTS= CGO_ENABLED=0 go test ./...
+
+test-db-storage:
+	HEALTH_DB_TESTS=1 go test ./internal/storage -count=1 -timeout=120s
+
+test-db-ui:
+	HEALTH_DB_TESTS=1 go test ./internal/ui -count=1 -timeout=120s
+
+test-db-ui-fast:
+	HEALTH_DB_TESTS=1 go test ./internal/ui -run "^(TestAdminCheckinCoverage_JSONShape|TestOnboardingWizard_RejectsSchemaAll|TestFragmentAdminReadinessMonitoring_Renders)$$" -count=1 -timeout=60s
+
+test-db-energy:
+	HEALTH_DB_TESTS=1 go test ./internal/storage -run "TestComputeUserVerdictBands" -count=1 -timeout=90s
+
+test-db-energy-smoke:
+	HEALTH_DB_TESTS=1 go test ./internal/storage -run "^TestComputeUserVerdictBands_UsesCompatibleFormulaWarmup$$" -count=1 -timeout=30s
+
+test-db-readiness:
+	HEALTH_DB_TESTS=1 go test ./internal/storage -run '^(TestSaveNaiveBaseline_NilValueWithValidReasonPersists|TestVerifyReadinessRedesignSchema_DetectsReasonColumnDrift|TestRecomputeChipCalibrations_Integration_(RejectsCrossEpochLabels|PercentileP80|InsufficientData))$$' -count=1 -timeout=90s
+
+test-db: test-db-ui-fast test-db-energy-smoke test-db-readiness
+
 test:
+	$(MAKE) smoke-health-post
+
+smoke-health-post:
 	curl -s -X POST http://localhost$(ADDR)/health \
 		-H "Content-Type: application/json" \
 		-H "automation-name: Test" \

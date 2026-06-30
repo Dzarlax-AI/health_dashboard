@@ -53,13 +53,13 @@ func TestPercentile_EmptySliceIsNaN(t *testing.T) {
 func TestSaveChipCalibration_JointStateGuard(t *testing.T) {
 	v := 0.42
 	base := ChipCalibration{
-		SubScore:    SubScoreAcuteRisk,
-		TargetKind:  TargetKindEventT1T3,
-		SourceEpoch: InitialSourceEpoch,
-		Method:      ChipCalibrationMethodPercentileP80,
+		SubScore:              SubScoreAcuteRisk,
+		TargetKind:            TargetKindEventT1T3,
+		SourceEpoch:           InitialSourceEpoch,
+		Method:                ChipCalibrationMethodPercentileP80,
 		CalibrationWindowDays: ChipCalibrationWindowDays,
-		NEligible:   100,
-		NPositives:  20,
+		NEligible:             100,
+		NPositives:            20,
 	}
 
 	cases := []struct {
@@ -172,7 +172,7 @@ func TestSaveChipCalibration_JointStateGuard(t *testing.T) {
 // test fails: the writer pairs 120 leaked labels with predictions
 // and computes a (wrong) cutoff.
 func TestRecomputeChipCalibrations_Integration_RejectsCrossEpochLabels(t *testing.T) {
-	db, cleanup := testDB(t)
+	db, cleanup := testReadinessDB(t)
 	defer cleanup()
 	ctx := context.Background()
 
@@ -257,7 +257,7 @@ func TestRecomputeChipCalibrations_Integration_RejectsCrossEpochLabels(t *testin
 // (predicted_value, label) pairs over the calibration window and
 // asserts the produced row has the expected status + audit fields.
 func TestRecomputeChipCalibrations_Integration_PercentileP80(t *testing.T) {
-	db, cleanup := testDB(t)
+	db, cleanup := testReadinessDB(t)
 	defer cleanup()
 
 	// Seed 120 days ending today with monotonically-increasing
@@ -276,15 +276,15 @@ func TestRecomputeChipCalibrations_Integration_PercentileP80(t *testing.T) {
 		}
 		baselines = append(baselines, NaiveBaseline{
 			Date: d, SubScore: SubScoreChronicLoad,
-			TargetKind: TargetKindChronicLabel,
-			BaselineKind: BaselineKindEventBaseRate,
+			TargetKind:     TargetKindChronicLabel,
+			BaselineKind:   BaselineKindEventBaseRate,
 			PredictedValue: &pred,
-			SourceEpoch: InitialSourceEpoch, FormulaVersion: 1,
+			SourceEpoch:    InitialSourceEpoch, FormulaVersion: 1,
 		})
 		lv := labelVal
 		labels = append(labels, targetSnapshotSeed{
 			Date: d, SubScore: SubScoreChronicLoad,
-			TargetKind: TargetKindChronicLabel,
+			TargetKind:  TargetKindChronicLabel,
 			TargetValue: &lv, Eligible: true, EligibilityReason: "ok",
 			SourceEpoch: InitialSourceEpoch, FormulaVersion: 1,
 		})
@@ -354,7 +354,7 @@ func TestRecomputeChipCalibrations_Integration_PercentileP80(t *testing.T) {
 // no-positive data so the writer should land on the corresponding
 // status enum.
 func TestRecomputeChipCalibrations_Integration_InsufficientData(t *testing.T) {
-	db, cleanup := testDB(t)
+	db, cleanup := testReadinessDB(t)
 	defer cleanup()
 
 	today := time.Now().UTC()

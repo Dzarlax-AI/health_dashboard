@@ -19,10 +19,28 @@ on:
         description: "Run Go race detector tests"
         type: boolean
         default: false
+      run_db_tests:
+        description: "Run DB-backed test lanes with a Postgres service"
+        type: boolean
+        default: false
+      db_test_lane:
+        description: "DB lane to run when run_db_tests is true"
+        type: choice
+        default: stable
+        options:
+          - stable
+          - routine
+          - ui
+          - energy
+          - readiness
+          - storage
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -42,18 +60,70 @@ jobs:
       - name: Vet
         run: CGO_ENABLED=0 go vet ./...
 
-      # Unit tests. All current test files are pure (no DATABASE_URL,
-      # no network) — verified by grepping *_test.go for DATABASE_URL,
-      # pgxpool, net.Dial → zero matches. If a future test grows
-      # external deps, gate it behind a build tag rather than wiring
-      # services into this job; the build job's purpose is catching
-      # logic regressions in seconds, not standing up a stack.
+      # Unit tests. DB-backed integration tests are gated by
+      # HEALTH_DB_TESTS=1 and skip in this job even if libpq environment
+      # variables happen to exist. The separate DB Tests job runs the
+      # stable DB lanes with an isolated Postgres service on PR/push.
       #
       # CGO_ENABLED stays at 0 (matches the build above). Use the
       # manual Race Detector job when reviewing concurrency-sensitive
       # changes; it runs with CGO=1 because Go's -race requires CGO.
       - name: Test
-        run: CGO_ENABLED=0 go test ./...
+        run: make test-unit
+
+  db-tests:
+    name: DB Tests
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_db_tests }}
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: health_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d health_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      HEALTH_DB_TESTS: "1"
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGDATABASE: health_test
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      GOCACHE: /tmp/health-go-build-cache
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run routine DB lane
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.db_test_lane == 'stable' || inputs.db_test_lane == 'routine' }}
+        run: make test-db
+
+      - name: Run full UI DB lane
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.db_test_lane == 'stable' || inputs.db_test_lane == 'ui' }}
+        run: make test-db-ui
+
+      - name: Run full Energy DB lane
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.db_test_lane == 'stable' || inputs.db_test_lane == 'energy' }}
+        run: make test-db-energy
+
+      - name: Run Readiness DB lane
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.db_test_lane == 'readiness' }}
+        run: make test-db-readiness
+
+      - name: Run full Storage DB lane
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.db_test_lane == 'storage' }}
+        run: make test-db-storage
 
   race:
     name: Race Detector
@@ -78,7 +148,7 @@ jobs:
     name: Docker Build & Push (amd64)
     needs: build
     runs-on: ubuntu-latest
-    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.build_amd64 && !inputs.run_race)) }}
+    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.build_amd64 && !inputs.run_race && !inputs.run_db_tests)) }}
     permissions:
       contents: read
       packages: write
@@ -119,7 +189,7 @@ jobs:
     name: Docker Build & Push (arm64)
     needs: build
     runs-on: ubuntu-latest
-    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.build_arm64 && !inputs.run_race }}
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.build_arm64 && !inputs.run_race && !inputs.run_db_tests }}
     permissions:
       contents: read
       packages: write

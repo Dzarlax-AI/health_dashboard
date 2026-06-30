@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Implementation Plan: Issue #182 DB-Backed Integration Tests</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #1f2937; line-height: 1.5; }
+    main { max-width: 1100px; margin: 0 auto; padding: 32px; }
+    section { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin: 16px 0; }
+    h1, h2 { line-height: 1.2; margin-top: 0; }
+    code { background: #f3f4f6; padding: 2px 5px; border-radius: 4px; }
+    pre { background: #111827; color: #f9fafb; padding: 14px; border-radius: 8px; overflow-x: auto; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #fef3c7; color: #92400e; font-size: 12px; font-weight: 700; }
+    .note { border-left: 4px solid #2563eb; }
+    .risk { border-left: 4px solid #dc2626; }
+    .approval { border-left: 4px solid #d97706; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Implementation Plan: Issue #182 DB-Backed Integration Tests</h1>
+  <p class="badge">Approval required before implementation</p>
+
+  <section>
+    <h2>Task Summary</h2>
+    <p>Stabilize the opt-in Postgres-backed Go tests for <code>internal/storage</code> and <code>internal/ui</code> so they create complete throwaway schemas, fail fast on setup problems, and do not run unrelated long backfill work inside validation-focused tests.</p>
+  </section>
+
+  <section>
+    <h2>Current Behavior</h2>
+    <ul>
+      <li><code>internal/storage</code> has a shared <code>testDB</code> helper in <code>recovery_stability_writer_integration_test.go</code>. It creates a throwaway schema, calls <code>EnsureAllTables</code>, <code>EnsureIndexes</code>, <code>EnsureReadinessRedesignTables</code>, then verifies readiness schema health.</li>
+      <li><code>internal/ui</code> has a similar <code>testTenantDB</code> helper in <code>admin_readiness_redesign_config_test.go</code>. It creates a throwaway schema and readiness redesign tables, but does not currently create <code>subjective_checkins</code>.</li>
+      <li><code>TestAdminCheckinCoverage_JSONShape</code> seeds check-in rows through <code>SaveCheckinPrompted</code> and fails on a fresh UI test schema with <code>ERROR: relation "subjective_checkins" does not exist</code>.</li>
+      <li><code>TestFragmentAdminReadinessMonitoring_Renders</code> seeds a single current-day target row and expects the phrase <code>inputs stable through</code>. With the current monitoring window shape, the fragment can correctly render <code>critical: no stable input in monitoring lookback</code> instead, making the assertion brittle.</li>
+      <li><code>TestOnboardingWizard_RejectsSchemaAll</code> tests schema validation for every onboarding fragment, but the missing-schema subtest for <code>step-4-run POST</code> calls the real one-year readiness backfill chain. On real Postgres this timed out after 90s inside <code>BackfillAcuteRiskSnapshots</code>.</li>
+      <li><code>TestVerifyReadinessRedesignSchema_DetectsReasonColumnDrift</code> now passes on real Postgres in the observed run, but each subtest takes about 7-9 seconds because it creates and mutates a fresh schema.</li>
+    </ul>
+  </section>
+
+  <section class="note">
+    <h2>Observed Verification Notes</h2>
+    <ul>
+      <li>Running DB tests without network permission can be misleading: the DB helpers skip after <code>connect: operation not permitted</code>, producing a green result that did not exercise the database.</li>
+      <li>With real Postgres access, <code>go test ./internal/storage -run "TestVerifyReadinessRedesignSchema_DetectsReasonColumnDrift" -count=1 -timeout=90s -v</code> passed in about 23.6s.</li>
+      <li>With real Postgres access, <code>go test ./internal/ui -run "TestAdminCheckinCoverage_JSONShape|TestOnboardingWizard_RejectsSchemaAll|TestFragmentAdminReadinessMonitoring_Renders" -count=1 -timeout=90s -v</code> reproduced the missing table failure, the brittle fragment assertion, and the onboarding timeout.</li>
+      <li><code>go test ./...</code> inside the sandbox also fails in <code>internal/notify</code> because <code>httptest.NewServer</code> cannot bind a local port under current sandbox permissions. That is separate from issue #182.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <ul>
+      <li>DB-backed tests create every table their exercised code paths require, including newer startup-created tables such as <code>subjective_checkins</code>.</li>
+      <li>Tests whose purpose is request validation do not run slow product backfills as incidental side effects.</li>
+      <li>Monitoring fragment tests assert stable user-facing contract markers without depending on a data shape that contradicts the seeded fixture.</li>
+      <li>DB tests remain opt-in through <code>READINESS_TEST_DSN</code> or libpq env vars and continue to skip on machines without configured Postgres.</li>
+      <li>Failures should be specific and fast enough to identify the broken contract within a 90-120s package timeout.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Assumptions And Unknowns</h2>
+    <ul>
+      <li>Assumption: the intent is to stabilize the existing opt-in test suite, not to make CI require a live database.</li>
+      <li>Assumption: production startup still owns auto-created auxiliary tables; the test helpers should mirror startup setup for the tables they need.</li>
+      <li>Assumption: the onboarding validation test should prove <code>schema=all</code> rejection and missing-schema fallback without executing a full historical backfill.</li>
+      <li>Unknown: whether to introduce a shared exported test setup helper in <code>internal/storage</code> or keep package-local helpers to avoid test-only API surface.</li>
+      <li>Unknown: whether the slow storage drift test should be optimized now or only left with clearer timeout coverage, since it currently passes.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Files Likely To Change</h2>
+    <ul>
+      <li><code>internal/ui/admin_readiness_redesign_config_test.go</code> - update <code>testTenantDB</code> to create all tables required by UI DB-backed tests, likely by calling <code>EnsureSubjectiveCheckinsTable</code> and any other startup helper directly needed by current tests.</li>
+      <li><code>internal/ui/onboarding_handlers_test.go</code> - split schema validation from expensive run paths, or provide a handler/test seam that validates scope without running the real one-year backfill.</li>
+      <li><code>internal/ui/admin_readiness_redesign_monitoring_test.go</code> - make the seeded fixture and assertions agree. Either seed enough stable rows to expect <code>inputs stable through</code>, or assert the current no-stable-input message as the correct output for a sparse fixture.</li>
+      <li><code>internal/storage/recovery_stability_writer_integration_test.go</code> - optionally tighten the shared <code>testDB</code> helper or document why storage setup differs from UI setup.</li>
+      <li><code>internal/storage/baseline_reason_test.go</code> - optional only if we decide to reduce drift-test runtime or add per-subtest fail-fast setup checks.</li>
+      <li><code>docs/ai-plans/2026-06-29-issue-182-db-backed-integration-tests.html</code> - update after implementation with actual changes and verification results.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation Steps</h2>
+    <ol>
+      <li>Update the UI DB test setup helper to mirror required startup-created tables. Start with <code>db.EnsureSubjectiveCheckinsTable()</code>, then rerun the targeted UI tests to reveal any next missing table.</li>
+      <li>Refactor <code>TestOnboardingWizard_RejectsSchemaAll</code> so validation coverage does not execute heavy backfills. Prefer separate cases: read-only handlers can still call real handlers; mutating run handlers should test <code>schema=all</code> rejection directly and test missing-schema fallback through a lightweight seam or a narrower helper.</li>
+      <li>Adjust the monitoring fragment test. If the contract requires displaying stable input text, seed a full enough monitoring window to make that text true. If the sparse fixture is intentional, update the assertion to require <code>critical: no stable input in monitoring lookback</code> instead.</li>
+      <li>Rerun the targeted UI test command against real Postgres with a 90s timeout. Confirm failures are gone and no new setup gaps appear.</li>
+      <li>Rerun <code>go test ./internal/storage ./internal/ui -count=1 -timeout=120s</code> against real Postgres.</li>
+      <li>Run the default suite without DB env to confirm opt-in behavior remains fast and green, using sandbox-compatible <code>GOCACHE</code>. If local port binding remains blocked for <code>internal/notify</code>, record it separately rather than treating it as a #182 regression.</li>
+      <li>Update this HTML plan with implementation results, checks run, limitations, and follow-up recommendations.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Impact</h2>
+    <ul>
+      <li><strong>Database:</strong> no production schema migration is intended. Changes should affect throwaway test schemas only.</li>
+      <li><strong>API:</strong> no API contract change is intended.</li>
+      <li><strong>Auth and permissions:</strong> no auth behavior change is intended.</li>
+      <li><strong>Deployment:</strong> no deployment change is intended.</li>
+      <li><strong>Developer workflow:</strong> DB-backed tests should become more reliable when Postgres is configured. The command may still require network permission in sandboxed environments.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <ul>
+      <li><code>source ~/.health-db &amp;&amp; GOCACHE=/tmp/health-go-build-cache go test ./internal/ui -run "TestAdminCheckinCoverage_JSONShape|TestOnboardingWizard_RejectsSchemaAll|TestFragmentAdminReadinessMonitoring_Renders" -count=1 -timeout=90s -v</code></li>
+      <li><code>source ~/.health-db &amp;&amp; GOCACHE=/tmp/health-go-build-cache go test ./internal/storage -run "TestVerifyReadinessRedesignSchema_DetectsReasonColumnDrift" -count=1 -timeout=90s -v</code></li>
+      <li><code>source ~/.health-db &amp;&amp; GOCACHE=/tmp/health-go-build-cache go test ./internal/storage ./internal/ui -count=1 -timeout=120s</code></li>
+      <li><code>GOCACHE=/tmp/health-go-build-cache go test ./...</code> with no DB env, noting any sandbox-only local-port failures separately.</li>
+      <li><code>git diff --check</code></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Manual QA Checklist</h2>
+    <ul>
+      <li>Confirm DB-backed tests create and drop only schemas named with the test prefixes such as <code>ui_test_*</code> and <code>rs_test_*</code>.</li>
+      <li>Confirm no production tenant schema is modified during test setup or teardown.</li>
+      <li>Confirm <code>schema=all</code> onboarding requests still return HTTP 400 for read-only and mutating fragments.</li>
+      <li>Confirm missing schema still falls back to the request tenant for lightweight paths without requiring a full backfill run in the validation test.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks And Edge Cases</h2>
+    <ul>
+      <li>Adding every startup helper to test setup could mask missing-table regressions if production startup forgets to call the same helper. Keep setup explicit and tied to tested behavior.</li>
+      <li>Mocking or stubbing onboarding writers too broadly could stop testing the real handler wiring. Keep at least one focused integration test for actual run behavior if one does not already exist elsewhere.</li>
+      <li>Monitoring output depends on time windows and tenant-local dates. Tests should use helpers such as <code>daysAgoUTC</code> and seed data that matches the expected monitoring window.</li>
+      <li>DB tests can look green when sandbox network blocks Postgres and helpers skip. Verification must distinguish skipped tests from executed tests.</li>
+      <li>Long-running tests can leave throwaway schemas behind if interrupted before cleanup. Check and clean only test-prefixed schemas if needed.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <p>Revert the test helper and test assertion changes. Because no production code or schema migration is planned, rollback should be limited to test files and this plan update. If interrupted test runs leave throwaway schemas, drop only schemas with the exact test prefixes created by these helpers.</p>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Should the onboarding mutating path get a small handler-level dependency seam for tests, or should the validation test simply avoid the expensive missing-schema success path for <code>step-4-run</code>?</li>
+      <li>Should <code>EnsureAllTables</code> eventually include auxiliary tables like <code>subjective_checkins</code>, or should startup-only helpers remain separate and explicitly called by tests?</li>
+      <li>Should the readiness schema drift test be optimized now, or is a 23s targeted runtime acceptable for an opt-in DB test?</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval Gate</h2>
+    <p>Approved by the user on 2026-06-29 before production code and test code changes.</p>
+  </section>
+
+  <section>
+    <h2>Implementation Result</h2>
+    <ul>
+      <li>Updated the UI DB test helper to create <code>subjective_checkins</code> in throwaway schemas, fixing the missing-table failure in <code>TestAdminCheckinCoverage_JSONShape</code>.</li>
+      <li>Changed <code>TestOnboardingWizard_RejectsSchemaAll</code> so the heavy <code>step-4-run</code> missing-schema fallback case validates <code>onboardingScope</code> directly instead of launching the one-year readiness backfill chain.</li>
+      <li>Adjusted <code>TestFragmentAdminReadinessMonitoring_Renders</code> to assert the sparse-fixture output <code>critical: no stable input in monitoring lookback</code>, matching the data seeded by the test.</li>
+      <li>Changed the storage DB test helper to use test-sized pgx pools (<code>MaxConns=2</code>, <code>MinConns=0</code>) instead of production tenant pool sizing for every throwaway schema.</li>
+      <li>Added a readiness-only storage test helper and moved baseline reason plus chip-calibration integration tests onto it, avoiding unnecessary creation of the full health table set for tests that only need readiness redesign tables.</li>
+      <li>Reduced the schema drift test from three full throwaway DB setups to one readiness-only schema reset between subtests.</li>
+      <li>Follow-up harness work added shared <code>internal/testdb</code> helpers and the explicit <code>HEALTH_DB_TESTS=1</code> activation contract so DB tests do not run accidentally and do not silently skip when explicitly requested.</li>
+      <li>Follow-up harness work also moved storage/UI DB helpers to shared package-level schemas and added an EnergyBand-specific fixture to reduce repeated schema creation.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Verification Run</h2>
+    <ul>
+      <li><code>source ~/.health-db &amp;&amp; GOCACHE=/tmp/health-go-build-cache go test ./internal/ui -run "TestAdminCheckinCoverage_JSONShape|TestOnboardingWizard_RejectsSchemaAll|TestFragmentAdminReadinessMonitoring_Renders" -count=1 -timeout=90s -v</code> passed in about 16.8s.</li>
+      <li><code>source ~/.health-db &amp;&amp; GOCACHE=/tmp/health-go-build-cache go test ./internal/storage -run "TestRecomputeChipCalibrations_Integration_RejectsCrossEpochLabels" -count=1 -timeout=90s -v</code> passed in about 7.6s before the readiness-only helper was added.</li>
+      <li><code>source ~/.health-db &amp;&amp; GOCACHE=/tmp/health-go-build-cache go test ./internal/storage -run "TestSaveNaiveBaseline_NilValueWithValidReasonPersists|TestVerifyReadinessRedesignSchema_DetectsReasonColumnDrift|TestRecomputeChipCalibrations_Integration" -count=1 -timeout=30s -v</code> passed in about 24.7s.</li>
+      <li>The broad command <code>source ~/.health-db &amp;&amp; GOCACHE=/tmp/health-go-build-cache go test ./internal/storage ./internal/ui -count=1 -timeout=120s</code> was attempted after the UI fixes. <code>internal/ui</code> passed in about 76.7s, but <code>internal/storage</code> timed out while opening another DB pool in a later integration test. This prompted the storage test-pool and readiness-only helper changes above.</li>
+      <li>After <code>internal/testdb</code>, <code>source ~/.health-db &amp;&amp; HEALTH_DB_TESTS=1 GOCACHE=/tmp/health-go-build-cache go test ./internal/storage -run "TestSaveNaiveBaseline_NilValueWithValidReasonPersists" -count=1 -timeout=20s -v</code> passed in about 3.0s.</li>
+      <li>After shared fixtures, representative UI DB tests passed in about 10.7s and the EnergyBand storage group passed under a 60s timeout.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Known Limitations And Follow-Up</h2>
+    <ul>
+      <li>The reproduced issue-specific UI failures are fixed by targeted verification.</li>
+      <li>The storage suite still has many tests that create their own throwaway schema. Even with smaller pools, this is not a good fast dev-loop shape over remote Postgres.</li>
+      <li>A separate follow-up should redesign the DB integration harness around fewer schema creations, shared package-level fixtures with explicit table resets, or narrower helper variants per table family. That is larger than the targeted #182 fixes above.</li>
+      <li>Do not treat sandbox-green DB tests as meaningful when Postgres network access is blocked; helpers can skip after <code>connect: operation not permitted</code>.</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>

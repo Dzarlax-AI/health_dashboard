@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Implementation Plan: DB Test Harness Redesign</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #1f2937; line-height: 1.5; }
+    main { max-width: 1100px; margin: 0 auto; padding: 32px; }
+    section { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin: 16px 0; }
+    h1, h2 { line-height: 1.2; margin-top: 0; }
+    code { background: #f3f4f6; padding: 2px 5px; border-radius: 4px; }
+    pre { background: #111827; color: #f9fafb; padding: 14px; border-radius: 8px; overflow-x: auto; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #fef3c7; color: #92400e; font-size: 12px; font-weight: 700; }
+    .note { border-left: 4px solid #2563eb; }
+    .risk { border-left: 4px solid #dc2626; }
+    .approval { border-left: 4px solid #d97706; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Implementation Plan: DB Test Harness Redesign</h1>
+  <p class="badge">Approved; harness implemented with follow-up lane closure</p>
+
+  <section>
+    <h2>Task Summary</h2>
+    <p>Replace the current ad-hoc DB-backed integration test pattern with a predictable test system: fast default tests, explicit DB integration commands, bounded database connection usage, reusable schema fixtures, and clear runtime expectations.</p>
+  </section>
+
+  <section>
+    <h2>Current Behavior</h2>
+    <ul>
+      <li>Default CI runs <code>CGO_ENABLED=0 go test ./...</code> and DB-backed tests skip when no Postgres env is configured.</li>
+      <li><code>CONTRIBUTING.md</code> documents that DB-backed tests use <code>READINESS_TEST_DSN</code> or libpq env vars and create throwaway schemas.</li>
+      <li><code>internal/storage</code> has many tests calling <code>testDB(t)</code>; several files create many independent throwaway schemas in one package run.</li>
+      <li>Before the issue #182 changes, <code>testDB(t)</code> used production-sized tenant pools through <code>NewWithSchema</code> (<code>MaxConns=8</code>, <code>MinConns=2</code>) for every throwaway schema.</li>
+      <li>Issue #182 introduced a smaller test pool and a readiness-only helper, but the broader pattern still creates a large number of schemas and pools.</li>
+      <li>Some UI tests use a separate <code>testTenantDB(t)</code> helper and can drift from storage setup unless kept in sync manually.</li>
+      <li>The current Makefile has no useful <code>test-unit</code>, <code>test-db</code>, or <code>test-ci</code> targets; <code>make test</code> is an HTTP smoke POST against a running server.</li>
+    </ul>
+  </section>
+
+  <section class="note">
+    <h2>Observed Pain</h2>
+    <ul>
+      <li>Targeted DB tests can take seconds each over remote Postgres even when the actual assertion is small.</li>
+      <li>Broad DB package runs are not a normal dev-loop: <code>internal/ui</code> passed in about 76 seconds in one run, while <code>internal/storage</code> timed out at 120 seconds while opening another DB pool.</li>
+      <li>Sandbox-blocked network can make DB tests look green because helpers skip after <code>connect: operation not permitted</code>.</li>
+      <li>Long-running DB tests are hard to interrupt cleanly and can leave test-prefixed schemas behind.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <ul>
+      <li>Default local and CI test loop remains fast and does not require a live DB: <code>go test ./...</code> or <code>make test-unit</code>.</li>
+      <li>DB integration tests have a named command such as <code>make test-db</code>, explicit environment requirements, and a realistic runtime target.</li>
+      <li>DB integration commands fail fast when DB execution is explicitly requested but the database is unreachable. They must not silently skip in that mode.</li>
+      <li>Unit commands must not accidentally run DB tests just because libpq env vars such as <code>PGHOST</code> are present in the user's shell.</li>
+      <li>DB tests use test-sized pools with no idle connection floor and bounded total connections.</li>
+      <li>DB tests reuse a small number of schemas per package or test group and reset tables between tests instead of creating a fresh schema for every test case.</li>
+      <li>Tests declare the schema family they need: full health schema, readiness redesign only, energy snapshots only, or UI tenant schema.</li>
+      <li>Skipped DB tests are distinguishable from executed DB tests in docs and command output.</li>
+      <li>Slow integration tests are grouped or tagged so developers can run focused lanes without paying for the whole suite.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Activation Contract</h2>
+    <ul>
+      <li>Use env-gated DB tests for the first implementation pass, not build tags. Build tags can be revisited later if env-gating remains confusing.</li>
+      <li>Add a dedicated required flag such as <code>HEALTH_DB_TESTS=1</code> for DB execution. DB helpers should skip unless this flag is set, even if <code>PGHOST</code> or <code>READINESS_TEST_DSN</code> exists in the shell.</li>
+      <li><code>make test-unit</code>: clears or ignores <code>HEALTH_DB_TESTS</code> and runs the default pure suite.</li>
+      <li><code>make test-db-storage</code>, <code>make test-db-ui</code>, and <code>make test-db</code>: set <code>HEALTH_DB_TESTS=1</code> and require <code>READINESS_TEST_DSN</code> or libpq env. In this mode, connection failure must be <code>t.Fatal</code>, not <code>t.Skip</code>.</li>
+      <li>Keep <code>go test ./...</code> behavior compatible with CI: pure tests run, DB tests skip unless <code>HEALTH_DB_TESTS=1</code> is explicitly set.</li>
+      <li>Do not repurpose the existing <code>make test</code> target in the first pass. Add explicit targets and optionally add <code>make smoke-health-post</code> as an alias for the existing HTTP smoke command.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Proposed Architecture</h2>
+    <ul>
+      <li>Create a real shared test helper package, likely <code>internal/testdb</code>, instead of hiding helpers in <code>internal/storage/*_test.go</code>. Both <code>internal/storage</code> and <code>internal/ui</code> tests can import it.</li>
+      <li><code>internal/testdb</code> should own connection parsing, the <code>HEALTH_DB_TESTS</code> activation contract, test-sized pgx pool configuration, schema create/drop, and identifier quoting.</li>
+      <li>Storage-specific setup can stay in <code>internal/storage</code> test helpers when it needs unexported storage symbols, but low-level schema/pool lifecycle should be shared.</li>
+      <li>Use one schema per package run or per test file group where isolation permits, with <code>TRUNCATE ... RESTART IDENTITY CASCADE</code> or targeted <code>DELETE</code> resets between tests.</li>
+      <li>Keep destructive DDL drift tests isolated in their own disposable schema because they intentionally mutate table shape.</li>
+      <li>Keep writer/backfill tests that depend on broad table sets on a full-schema fixture, but move pure readiness table tests to readiness-only fixtures.</li>
+      <li>Expose separate commands:
+        <code>make test-unit</code>,
+        <code>make test-db-storage</code>,
+        <code>make test-db-ui</code>,
+        <code>make test-db</code>,
+        and possibly <code>make test-all</code>.</li>
+      <li>Document runtime goals: unit suite under normal CI budget; targeted DB lanes ideally under 30 seconds each on the configured local network; full DB lane allowed to be slower but not part of routine edits.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Fixture Reset Contract</h2>
+    <ul>
+      <li>Do not migrate all DB tests to shared schemas at once. First classify tests as <code>shared-safe</code> or <code>isolated-required</code>.</li>
+      <li>Shared fixtures must reset data before each test with an explicit table list. For full health schemas, reset should include <code>health_records</code>, <code>metric_points</code>, caches, <code>daily_scores</code>, <code>settings</code>, <code>workouts</code>, <code>energy_snapshots</code>, readiness tables, check-ins, AI tables, and any future startup-created tables used by tests.</li>
+      <li>Use FK-safe ordering or <code>TRUNCATE ... RESTART IDENTITY CASCADE</code> only on test-owned schemas. Never run broad truncate against a production tenant schema.</li>
+      <li>After resetting readiness tables, reseed the bootstrap <code>source_epochs</code> row exactly as <code>EnsureReadinessRedesignTables</code> does.</li>
+      <li>After resetting settings, tests that depend on config must seed explicit values instead of relying on leftovers from another test.</li>
+      <li>Tests that mutate schema shape, source epoch boundaries in hard-to-restore ways, global config semantics, or table definitions remain isolated in disposable schemas.</li>
+      <li>Run shared-schema tests sequentially unless the fixture can allocate independent schemas per parallel group. Do not introduce <code>t.Parallel()</code> for tests sharing one schema.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Files Likely To Change</h2>
+    <ul>
+      <li><code>internal/storage/recovery_stability_writer_integration_test.go</code> - current home of shared storage DB helpers; either extend carefully or move helpers into a clearer <code>db_test_helpers_test.go</code>.</li>
+      <li><code>internal/storage/*_integration_test.go</code>, <code>internal/storage/*_test.go</code> - migrate repeated <code>testDB(t)</code> calls to appropriate shared fixtures or narrower helpers.</li>
+      <li><code>internal/ui/admin_readiness_redesign_config_test.go</code> - current home of UI tenant DB helper; align with storage harness or wrap shared setup without exporting production APIs.</li>
+      <li><code>internal/testdb</code> - new test helper package for shared DB activation, pool, schema lifecycle, and cleanup primitives.</li>
+      <li><code>Makefile</code> - add explicit test targets and rename the current HTTP smoke target if needed.</li>
+      <li><code>CONTRIBUTING.md</code> - document test lanes, DB env, skip behavior, runtime expectations, and cleanup commands for test-prefixed schemas.</li>
+      <li><code>.github/workflows/ci.yml</code> - update stale comments and optionally switch CI to <code>make test-unit</code> once that target exists.</li>
+      <li><code>docs/TEST_COVERAGE.md</code> - update the testing roadmap with the DB harness policy.</li>
+      <li><code>docs/ai-plans/2026-06-29-issue-182-db-backed-integration-tests.html</code> - link this follow-up as the broader harness redesign.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation Steps</h2>
+    <ol>
+      <li>Inventory DB-backed tests by schema needs and reset requirements: full health, readiness-only, energy-plus-settings, UI tenant, destructive DDL, and pure tests that should not use DB at all. Record this inventory in a short doc or table before migrating tests.</li>
+      <li>Add <code>internal/testdb</code> with the activation contract: skip when <code>HEALTH_DB_TESTS</code> is unset; fail when it is set and connection/schema creation fails; use test-sized pools; expose schema lifecycle helpers.</li>
+      <li>Add Makefile targets for unit and DB lanes. Keep existing HTTP smoke behavior under the current <code>make test</code> target for compatibility in the first pass, or add <code>smoke-health-post</code> without changing <code>make test</code>.</li>
+      <li>Update CI workflow comments, route unit CI through <code>make test-unit</code>, and add automatic Postgres service-container CI for stable DB lanes once their runtime is bounded.</li>
+      <li>Move the existing storage helper code out of <code>recovery_stability_writer_integration_test.go</code> so the harness is not hidden in one feature test file.</li>
+      <li>Convert readiness-only tests first, because their dependency surface is smallest. Keep destructive drift tests isolated.</li>
+      <li>Convert energy tests only after inventory confirms exact dependencies such as <code>settings</code>, <code>energy_snapshots</code>, and any config tables read by EnergyBank paths.</li>
+      <li>Convert full writer/backfill tests in batches, using shared fixtures only for tests proven shared-safe. Leave high-risk tests on isolated schemas.</li>
+      <li>Unify UI helper setup by importing <code>internal/testdb</code> for schema/pool lifecycle, while keeping UI-specific handler context helpers in <code>internal/ui</code>.</li>
+      <li>Update docs and plan files with exact commands, expected env, skip/fail behavior, cleanup commands, and runtime expectations.</li>
+      <li>Run focused lanes after each migration batch rather than one huge suite after every edit.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <ul>
+      <li><code>GOCACHE=/tmp/health-go-build-cache go test ./... -count=1</code> with DB env unset or cleared, verifying DB tests skip and pure tests pass.</li>
+      <li><code>GOCACHE=/tmp/health-go-build-cache make test-unit</code> with <code>PGHOST</code> set but <code>HEALTH_DB_TESTS</code> unset, verifying DB tests still skip.</li>
+      <li><code>HEALTH_DB_TESTS=1 GOCACHE=/tmp/health-go-build-cache make test-db-storage</code> without DB connection env, verifying the command fails fast with an actionable setup error.</li>
+      <li><code>source ~/.health-db &amp;&amp; GOCACHE=/tmp/health-go-build-cache make test-db-storage</code></li>
+      <li><code>source ~/.health-db &amp;&amp; GOCACHE=/tmp/health-go-build-cache make test-db-ui</code></li>
+      <li><code>source ~/.health-db &amp;&amp; GOCACHE=/tmp/health-go-build-cache make test-db</code></li>
+      <li><code>go test ./internal/storage -run TestName -count=1 -timeout=30s -v</code> for representative tests in each table-family fixture.</li>
+      <li><code>git diff --check</code></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Manual QA Checklist</h2>
+    <ul>
+      <li>Confirm DB tests create only schemas with explicit test prefixes.</li>
+      <li>Confirm cleanup removes test schemas after success and after failures where Go cleanup runs.</li>
+      <li>Confirm no production tenant schema is used when <code>READINESS_TEST_DSN</code> points at the shared database.</li>
+      <li>Confirm connection counts stay bounded while running DB lanes.</li>
+      <li>Confirm docs explain that sandbox/network-denied skips are not real DB verification.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks And Edge Cases</h2>
+    <ul>
+      <li>Shared schemas can leak state between tests if reset helpers are incomplete. Migrate incrementally and keep destructive tests isolated.</li>
+      <li>Over-optimizing setup can hide missing startup DDL. Keep at least one full-schema provisioning test that validates startup helpers together.</li>
+      <li>Some tests may depend on sequence values or computed timestamps; table resets must account for those assumptions.</li>
+      <li>Makefile target changes could confuse existing workflow if <code>make test</code> is repurposed. Prefer adding explicit targets first and only renaming the smoke target after a clear doc update.</li>
+      <li>Remote Postgres latency means “fast” has a ceiling; pure tests should carry most feedback, DB tests should be targeted and explicit.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <p>Revert harness/helper migrations and Makefile/docs changes. Because the plan targets test infrastructure only, production behavior should not need rollback. If a run leaves test schemas behind, drop only schemas with the documented test prefixes.</p>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Should DB tests eventually run in GitHub Actions using a Postgres service container, or stay local/manual only?</li>
+      <li>What runtime SLA should be enforced for <code>make test-db-storage</code> and <code>make test-db-ui</code> on this machine/network?</li>
+      <li>After the env-gated harness is stable, should DB integration tests move to build tags for even stronger separation?</li>
+      <li>After new targets exist, should <code>make test</code> eventually become the default unit test target, or remain the HTTP smoke command permanently?</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval Gate</h2>
+    <p>Approved by the user on 2026-06-29 before implementation. Current issue #182 targeted fixes remain separate from this broader test-system work.</p>
+  </section>
+
+  <section>
+    <h2>Implementation Result</h2>
+    <ul>
+      <li>Added <code>internal/testdb</code> as a shared DB test harness package for activation, test-sized pgx pools, schema names, schema create/drop, and identifier quoting.</li>
+      <li>Added <code>HEALTH_DB_TESTS=1</code> as the explicit DB-test activation contract. Without it, DB integration tests skip even when libpq env vars are present. With it, missing DB env or unreachable Postgres is a failure.</li>
+      <li>Added <code>storage.NewFromPool</code> so tests can wrap test-sized pools without using production tenant pool sizing.</li>
+      <li>Rewired storage and UI DB helpers to use <code>internal/testdb</code>.</li>
+      <li>Converted storage DB helpers to shared package-level schemas guarded by mutexes, with reset before each test and schema drop in <code>TestMain</code>.</li>
+      <li>Converted the UI DB helper to a shared package-level tenant schema with reset before each test and schema drop in <code>TestMain</code>.</li>
+      <li>Added a specialized <code>testEnergyDB</code> fixture and moved EnergyBand DB tests to it so they avoid readiness DDL during reset.</li>
+      <li>Kept destructive readiness DDL tests on an isolated readiness schema.</li>
+      <li>Added Make targets: <code>test-unit</code>, <code>test-db-storage</code>, <code>test-db-ui</code>, <code>test-db</code>, and <code>smoke-health-post</code>. Existing <code>make test</code> remains the HTTP smoke command via <code>smoke-health-post</code>.</li>
+      <li>Follow-up lane closure added <code>test-db-ui-fast</code>, <code>test-db-energy-smoke</code>, <code>test-db-energy</code>, and <code>test-db-readiness</code>. <code>test-db</code> now runs only the fast DB contract lanes in sequence: UI-fast, Energy-smoke, and Readiness.</li>
+      <li><code>test-db-storage</code> remains the full <code>./internal/storage</code> package DB run for manual/pre-merge verification, not routine focused DB verification.</li>
+      <li><code>test-db-ui</code> and <code>test-db-energy</code> remain full domain sweeps for changes that touch those areas.</li>
+      <li>Narrowed Energy fixture reset to <code>energy_snapshots</code> and <code>settings</code>, removed redundant per-test <code>EnsureEnergySnapshotsTable</code> calls from EnergyBand tests, and batched EnergyBand seed inserts into one multi-row INSERT per test.</li>
+      <li>Updated CI to run <code>make test-unit</code> and corrected the stale comment that claimed all tests were pure/no-network.</li>
+      <li>Updated <code>CONTRIBUTING.md</code> and <code>docs/TEST_COVERAGE.md</code> with test lanes and DB-test behavior.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Verification Run</h2>
+    <ul>
+      <li><code>GOCACHE=/tmp/health-go-build-cache make test-unit</code> passed outside the sandbox because notify tests bind a local <code>httptest</code> port.</li>
+      <li><code>env -u READINESS_TEST_DSN -u PGHOST -u PGDATABASE -u PGUSER -u PGPASSWORD HEALTH_DB_TESTS=1 GOCACHE=/tmp/health-go-build-cache go test ./internal/storage -run TestSaveNaiveBaseline_NilValueWithValidReasonPersists -count=1</code> failed fast as intended with a missing-DB-env message.</li>
+      <li><code>source ~/.health-db &amp;&amp; HEALTH_DB_TESTS=1 GOCACHE=/tmp/health-go-build-cache go test ./internal/ui -run "TestAdminCheckinCoverage_JSONShape|TestOnboardingWizard_RejectsSchemaAll|TestFragmentAdminReadinessMonitoring_Renders" -count=1 -timeout=60s -v</code> passed in about 15.8s.</li>
+      <li><code>source ~/.health-db &amp;&amp; HEALTH_DB_TESTS=1 GOCACHE=/tmp/health-go-build-cache go test ./internal/storage -run "TestSaveNaiveBaseline_NilValueWithValidReasonPersists" -count=1 -timeout=20s -v</code> passed in about 3.0s.</li>
+      <li>After shared UI fixtures, the same representative UI DB command passed in about 10.7s.</li>
+      <li><code>source ~/.health-db &amp;&amp; HEALTH_DB_TESTS=1 GOCACHE=/tmp/health-go-build-cache go test ./internal/storage -run "TestComputeUserVerdictBands" -count=1 -timeout=60s -v</code> passed in about 55.6s after moving EnergyBand tests to <code>testEnergyDB</code>. The same group previously timed out at 60s during cleanup reset.</li>
+      <li>Follow-up lane closure confirmed storage test names with <code>GOCACHE=/tmp/health-go-build-cache go test ./internal/storage -list 'Test.*'</code> before defining targeted regexes.</li>
+      <li>A follow-up trial of <code>test-db-readiness</code> including <code>TestLoadReadinessMonitoringSummary_*</code> ran for 68.3s and failed on <code>TestLoadReadinessMonitoringSummary_CoverageAndDrift</code> with <code>OverallStatus = "critical", want warn</code>. The routine readiness lane was narrowed to baseline/schema/calibration tests only.</li>
+      <li><code>source ~/.health-db &amp;&amp; HEALTH_DB_TESTS=1 GOCACHE=/tmp/health-go-build-cache make test-db-readiness</code> passed in 18.8s after the narrowing.</li>
+      <li><code>source ~/.health-db &amp;&amp; HEALTH_DB_TESTS=1 GOCACHE=/tmp/health-go-build-cache make test-db-energy</code> passed in 67.9s with the 90s timeout, then 56.1s after narrowing Energy fixture reset, then 21.8s after batching EnergyBand seed inserts.</li>
+      <li><code>source ~/.health-db &amp;&amp; HEALTH_DB_TESTS=1 GOCACHE=/tmp/health-go-build-cache make test-db-ui</code> passed in 41.4s for the full UI package.</li>
+      <li><code>source ~/.health-db &amp;&amp; HEALTH_DB_TESTS=1 GOCACHE=/tmp/health-go-build-cache make test-db</code> passed as the routine DB aggregate: UI-fast 10.7s, Energy-smoke 5.8s, Readiness 16.1s.</li>
+      <li>CI workflow now runs stable DB lanes automatically on PR/push: routine <code>make test-db</code>, full <code>make test-db-ui</code>, and full <code>make test-db-energy</code> against a Postgres service container.</li>
+      <li><code>source ~/.health-db &amp;&amp; HEALTH_DB_TESTS=1 GOCACHE=/tmp/health-go-build-cache make test-db-storage</code> timed out at 120s in <code>TestChronicLoad_Integration_NoLeakageInPerDayBaseline</code>, so full storage remains manual until the chronic/acute writer families are optimized.</li>
+      <li>A parallel DB verification attempt was interrupted after the storage side stalled. Future DB verification should run short, single-lane commands rather than parallel remote-Postgres commands.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Known Limitations And Follow-Up</h2>
+    <ul>
+      <li>This implementation establishes the activation contract, shared low-level harness, shared storage/UI schemas, and one specialized energy fixture.</li>
+      <li>The broad <code>make test-db-storage</code> lane is still too slow for automatic CI because acute/chronic/passive/recovery writer groups perform substantial DB work; the measured full storage run timed out at 120s.</li>
+      <li>The routine <code>make test-db</code> lane now avoids the full storage package, full UI package, and full Energy verdict-band group. <code>test-db-readiness</code> intentionally excludes readiness monitoring tests because they still use the full storage DB helper and failed during the first targeted-lane trial.</li>
+      <li>The full UI DB lane is reliable but not sub-20s on the current remote Postgres path; use <code>make test-db-ui-fast</code> for tight UI handler loops and <code>make test-db-ui</code> for broader UI DB verification.</li>
+      <li>The full Energy DB lane is now bounded enough for domain verification after batching seed rows, but remains separate from the routine <code>make test-db</code> aggregate.</li>
+      <li>The next implementation batch should convert more repeat-schema groups to specialized fixtures only where dependency inventory shows it is safe.</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>

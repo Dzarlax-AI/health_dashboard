@@ -17,13 +17,40 @@ Use Go 1.24+ and PostgreSQL.
 
 ```bash
 go mod tidy
-go test ./...
+make test-unit
 go vet ./...
 ```
 
 Dependencies are managed through normal Go module resolution. Review dependency changes in `go.mod` and `go.sum`; the repository does not commit a `vendor/` tree.
 
-DB-backed integration tests skip when no Postgres connection is configured. To run them, provide libpq environment variables or `READINESS_TEST_DSN`. Tests create throwaway schemas and drop them during cleanup.
+DB-backed integration tests are explicit. They skip unless `HEALTH_DB_TESTS=1` is set, even when `PGHOST` or other libpq variables are present in your shell. To run them, provide libpq environment variables or `READINESS_TEST_DSN`, then use:
+
+```bash
+HEALTH_DB_TESTS=1 make test-db-storage
+HEALTH_DB_TESTS=1 make test-db-ui
+HEALTH_DB_TESTS=1 make test-db-ui-fast
+HEALTH_DB_TESTS=1 make test-db-energy
+HEALTH_DB_TESTS=1 make test-db-energy-smoke
+HEALTH_DB_TESTS=1 make test-db-readiness
+HEALTH_DB_TESTS=1 make test-db
+```
+
+`test-db` is the routine DB contract aggregate: fast UI DB smoke, EnergyBank DB smoke, and targeted Readiness DB checks. It intentionally does not run the full UI package, full EnergyBank verdict-band suite, or full `./internal/storage` package. Use the full domain lanes when a change touches that area.
+
+Lane commands:
+
+```bash
+make test-db           # routine DB contract: ui-fast + energy-smoke + readiness
+make test-db-ui-fast   # representative UI/admin DB handler checks
+make test-db-energy-smoke # one EnergyBank verdict-band DB contract check
+make test-db-readiness # readiness schema/calibration DB checks
+make test-db-ui        # full internal/ui DB package sweep
+make test-db-energy    # full EnergyBank verdict-band DB group
+make test-db-storage   # full internal/storage DB package sweep
+```
+
+When `HEALTH_DB_TESTS=1` is set, missing or unreachable Postgres is a test failure, not a skip. Tests create throwaway schemas with test prefixes and drop them during cleanup.
+Readiness monitoring and broad readiness writer families are intentionally outside the routine `test-db-readiness` lane until their fixtures are narrowed or runtime is measured separately. Full UI, full Energy, and full Storage lanes are manual/domain sweeps, not the normal edit-loop.
 
 See `docs/TEST_COVERAGE.md` for the current focused coverage roadmap and fixture rules.
 
@@ -31,7 +58,11 @@ See `docs/TEST_COVERAGE.md` for the current focused coverage roadmap and fixture
 
 The default required-looking CI job is `Build, Vet & Test`. Keep that job name stable unless repository branch protection is updated at the same time.
 
-Default PR and push CI uses `CGO_ENABLED=0` for build, vet, and tests, matching the production binary. Race detector tests are available as a manual GitHub Actions run: start the `CI` workflow with `run_race=true`. Race-only dispatches do not publish Docker images, even when the image build inputs are left at their defaults. Use this before merging changes that touch tenant management, scheduler goroutines, async AI generation, recompute coordination, Telegram webhook dispatch, or notification loops.
+Default PR and push CI uses `CGO_ENABLED=0` for build, vet, and unit tests, matching the production binary, and also runs the stable DB lanes against an isolated Postgres service container: routine `make test-db`, full UI DB, and full Energy DB. Full Storage DB is still manual because the current full storage package exceeds the 120s lane timeout in chronic-load writer tests.
+
+Manual DB runs are available through the `CI` workflow: set `run_db_tests=true` and choose `stable`, `routine`, `ui`, `energy`, `readiness`, or `storage`.
+
+Race detector tests are also manual: start the `CI` workflow with `run_race=true`. Race-only and DB-only dispatches do not publish Docker images, even when the image build inputs are left at their defaults. Use the race detector before merging changes that touch tenant management, scheduler goroutines, async AI generation, recompute coordination, Telegram webhook dispatch, or notification loops.
 
 For local checks on a machine with a CGO toolchain:
 
