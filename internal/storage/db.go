@@ -247,6 +247,12 @@ func (s *DB) Close() {
 	s.pool.Close()
 }
 
+// NewFromPool wraps an existing pgx pool in a DB handle. The caller
+// transfers ownership of the pool; DB.Close will close it.
+func NewFromPool(pool *pgxpool.Pool) *DB {
+	return &DB{pool: pool}
+}
+
 // CreateSchema issues CREATE SCHEMA for the given name.
 // Returns an error (which may be *registry-compatible ErrNeedsManualSetup via the caller)
 // if the DB user lacks the necessary privileges.

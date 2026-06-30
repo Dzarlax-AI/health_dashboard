@@ -1,8 +1,9 @@
 // Recovery Stability writer integration test.
 //
-// Opt-in via `READINESS_TEST_DSN` or libpq env vars (PGHOST/PGUSER/…).
-// Tests skip silently when no connection info is provided so the suite
-// stays green on machines without a Postgres available.
+// Opt-in via HEALTH_DB_TESTS=1 plus `READINESS_TEST_DSN` or libpq env
+// vars (PGHOST/PGUSER/…). Tests skip silently unless HEALTH_DB_TESTS=1
+// is set; once enabled, missing or unreachable Postgres is a hard
+// failure so DB lanes cannot pass without actually exercising the DB.
 //
 // Each test run creates its own throwaway schema named
 // `rs_test_<unix_nanos>_<pid>` and drops it on cleanup, so prod data
@@ -30,70 +31,279 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"health-receiver/internal/testdb"
 )
 
-// testDB spins up a *DB pointed at a fresh, throwaway schema. Returns
-// the DB and a cleanup that drops the schema. Skips the test when no
-// connection info is available.
+var (
+	sharedFullDBMu sync.Mutex
+	sharedFullDB   *DB
+	sharedFullName string
+	sharedFullErr  error
+
+	sharedReadinessDBMu sync.Mutex
+	sharedReadinessDB   *DB
+	sharedReadinessName string
+	sharedReadinessErr  error
+)
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	cleanupSharedTestDBs()
+	os.Exit(code)
+}
+
+func cleanupSharedTestDBs() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if sharedFullDB != nil {
+		_ = testdb.DropSchema(ctx, sharedFullDB.pool, sharedFullName)
+		sharedFullDB.Close()
+	}
+	if sharedReadinessDB != nil {
+		_ = testdb.DropSchema(ctx, sharedReadinessDB.pool, sharedReadinessName)
+		sharedReadinessDB.Close()
+	}
+}
+
+// testDB returns a shared full-schema DB fixture. Each test gets an
+// exclusive lock and a schema reset before it starts; cleanup resets
+// again and releases the lock.
 func testDB(t *testing.T) (*DB, func()) {
 	t.Helper()
 
-	dsn := os.Getenv("READINESS_TEST_DSN")
-	if dsn == "" {
-		// Fall back to libpq env vars (PGHOST/PGUSER/…). pgx.ParseConfig
-		// with empty string returns config that defers to env.
-		if os.Getenv("PGHOST") == "" && os.Getenv("PGDATABASE") == "" {
-			t.Skip("READINESS_TEST_DSN unset and no libpq env vars; skipping integration test")
+	sharedFullDBMu.Lock()
+	unlockOnExit := true
+	defer func() {
+		if unlockOnExit {
+			sharedFullDBMu.Unlock()
 		}
-	}
+	}()
+	db := getSharedFullDB(t)
+	resetFullTestDB(t, db)
 
-	schema := fmt.Sprintf("rs_test_%d_%d", time.Now().UnixNano(), os.Getpid())
+	cleanup := func() {
+		sharedFullDBMu.Unlock()
+	}
+	unlockOnExit = false
+	return db, cleanup
+}
+
+func testEnergyDB(t *testing.T) (*DB, func()) {
+	t.Helper()
+
+	sharedFullDBMu.Lock()
+	unlockOnExit := true
+	defer func() {
+		if unlockOnExit {
+			sharedFullDBMu.Unlock()
+		}
+	}()
+	db := getSharedFullDB(t)
+	resetEnergyTestDB(t, db)
+
+	cleanup := func() {
+		sharedFullDBMu.Unlock()
+	}
+	unlockOnExit = false
+	return db, cleanup
+}
+
+// testReadinessDB returns a shared readiness-only schema fixture. It is
+// suitable for tests that touch target/feature/baseline/source-epoch/
+// chip-calibration tables. Destructive DDL tests may use it because
+// cleanup restores the readiness table set before unlock.
+func testReadinessDB(t *testing.T) (*DB, func()) {
+	t.Helper()
+
+	sharedReadinessDBMu.Lock()
+	unlockOnExit := true
+	defer func() {
+		if unlockOnExit {
+			sharedReadinessDBMu.Unlock()
+		}
+	}()
+	db := getSharedReadinessDB(t)
+	resetReadinessTestDB(t, db)
+
+	cleanup := func() {
+		sharedReadinessDBMu.Unlock()
+	}
+	unlockOnExit = false
+	return db, cleanup
+}
+
+func testIsolatedReadinessDB(t *testing.T) (*DB, func()) {
+	t.Helper()
+
+	dsn := testdb.DSN(t)
+	schema := testdb.SchemaName("storage_readiness_isolated_test")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Phase 1: connect on default search_path so we can CREATE SCHEMA
-	// without it pre-existing.
-	bootstrap, err := New(ctx, dsn)
+	bootstrapPool, err := testdb.NewPool(ctx, dsn, "")
 	if err != nil {
-		t.Skipf("cannot connect to test DB: %v", err)
+		t.Fatalf("connect to test DB: %v", err)
 	}
-	if err := bootstrap.CreateSchema(ctx, schema); err != nil {
-		bootstrap.Close()
+	if err := testdb.CreateSchema(ctx, bootstrapPool, schema); err != nil {
+		bootstrapPool.Close()
 		t.Fatalf("create schema %q: %v", schema, err)
 	}
-	bootstrap.Close()
 
-	// Phase 2: open a pool pinned to the new schema via search_path.
-	db, err := NewWithSchema(ctx, dsn, schema)
+	pool, err := testdb.NewPool(ctx, dsn, schema)
 	if err != nil {
+		_ = testdb.DropSchema(ctx, bootstrapPool, schema)
+		bootstrapPool.Close()
 		t.Fatalf("open pool on schema %q: %v", schema, err)
 	}
-	if err := db.EnsureAllTables(); err != nil {
-		db.Close()
-		t.Fatalf("EnsureAllTables: %v", err)
-	}
-	// EnsureIndexes adds metric_points.quality (and partial indexes) via
-	// ALTER; Passive Efficiency reads filter `quality='ok'`, so this
-	// must run before any writer is exercised.
-	db.EnsureIndexes()
+	bootstrapPool.Close()
+	db := NewFromPool(pool)
 	db.EnsureReadinessRedesignTables()
 	if err := db.VerifyReadinessRedesignSchema(); err != nil {
+		_ = testdb.DropSchema(ctx, db.pool, schema)
 		db.Close()
-		t.Fatalf("schema not healthy after Ensure: %v", err)
+		t.Fatalf("schema not healthy after EnsureReadinessRedesignTables: %v", err)
 	}
 
 	cleanup := func() {
 		dropCtx, dropCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer dropCancel()
-		// Reuse the pinned-schema pool for the DROP — search_path doesn't
-		// matter for a fully-qualified statement, but we already have a
-		// healthy pool.
-		_, _ = db.pool.Exec(dropCtx, "DROP SCHEMA IF EXISTS "+schema+" CASCADE")
+		_ = testdb.DropSchema(dropCtx, db.pool, schema)
 		db.Close()
 	}
 	return db, cleanup
+}
+
+func getSharedFullDB(t *testing.T) *DB {
+	t.Helper()
+	if sharedFullDB != nil || sharedFullErr != nil {
+		if sharedFullErr != nil {
+			t.Fatalf("initialize shared full DB: %v", sharedFullErr)
+		}
+		return sharedFullDB
+	}
+
+	dsn := testdb.DSN(t)
+	schema := testdb.SchemaName("storage_full_test")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	bootstrapPool, err := testdb.NewPool(ctx, dsn, "")
+	if err != nil {
+		sharedFullErr = fmt.Errorf("connect to test DB: %w", err)
+		t.Fatalf("%v", sharedFullErr)
+	}
+	if err := testdb.CreateSchema(ctx, bootstrapPool, schema); err != nil {
+		bootstrapPool.Close()
+		sharedFullErr = fmt.Errorf("create schema %q: %w", schema, err)
+		t.Fatalf("%v", sharedFullErr)
+	}
+
+	pool, err := testdb.NewPool(ctx, dsn, schema)
+	if err != nil {
+		_ = testdb.DropSchema(ctx, bootstrapPool, schema)
+		bootstrapPool.Close()
+		sharedFullErr = fmt.Errorf("open pool on schema %q: %w", schema, err)
+		t.Fatalf("%v", sharedFullErr)
+	}
+	bootstrapPool.Close()
+	db := NewFromPool(pool)
+	if err := db.EnsureAllTables(); err != nil {
+		_ = testdb.DropSchema(ctx, db.pool, schema)
+		db.Close()
+		sharedFullErr = fmt.Errorf("EnsureAllTables: %w", err)
+		t.Fatalf("%v", sharedFullErr)
+	}
+	db.EnsureIndexes()
+	db.EnsureReadinessRedesignTables()
+	if err := db.VerifyReadinessRedesignSchema(); err != nil {
+		_ = testdb.DropSchema(ctx, db.pool, schema)
+		db.Close()
+		sharedFullErr = fmt.Errorf("schema not healthy after Ensure: %w", err)
+		t.Fatalf("%v", sharedFullErr)
+	}
+	sharedFullDB = db
+	sharedFullName = schema
+	return db
+}
+
+func getSharedReadinessDB(t *testing.T) *DB {
+	t.Helper()
+	if sharedReadinessDB != nil || sharedReadinessErr != nil {
+		if sharedReadinessErr != nil {
+			t.Fatalf("initialize shared readiness DB: %v", sharedReadinessErr)
+		}
+		return sharedReadinessDB
+	}
+
+	dsn := testdb.DSN(t)
+	schema := testdb.SchemaName("storage_readiness_test")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	bootstrapPool, err := testdb.NewPool(ctx, dsn, "")
+	if err != nil {
+		sharedReadinessErr = fmt.Errorf("connect to test DB: %w", err)
+		t.Fatalf("%v", sharedReadinessErr)
+	}
+	if err := testdb.CreateSchema(ctx, bootstrapPool, schema); err != nil {
+		bootstrapPool.Close()
+		sharedReadinessErr = fmt.Errorf("create schema %q: %w", schema, err)
+		t.Fatalf("%v", sharedReadinessErr)
+	}
+
+	pool, err := testdb.NewPool(ctx, dsn, schema)
+	if err != nil {
+		_ = testdb.DropSchema(ctx, bootstrapPool, schema)
+		bootstrapPool.Close()
+		sharedReadinessErr = fmt.Errorf("open pool on schema %q: %w", schema, err)
+		t.Fatalf("%v", sharedReadinessErr)
+	}
+	bootstrapPool.Close()
+	db := NewFromPool(pool)
+	db.EnsureReadinessRedesignTables()
+	if err := db.VerifyReadinessRedesignSchema(); err != nil {
+		_ = testdb.DropSchema(ctx, db.pool, schema)
+		db.Close()
+		sharedReadinessErr = fmt.Errorf("schema not healthy after EnsureReadinessRedesignTables: %w", err)
+		t.Fatalf("%v", sharedReadinessErr)
+	}
+	sharedReadinessDB = db
+	sharedReadinessName = schema
+	return db
+}
+
+func resetFullTestDB(t *testing.T, db *DB) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := testdb.TruncateCurrentSchema(ctx, db.pool); err != nil {
+		t.Fatalf("reset full test DB: %v", err)
+	}
+	db.EnsureReadinessRedesignTables()
+}
+
+func resetEnergyTestDB(t *testing.T, db *DB) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db.EnsureEnergySnapshotsTable()
+	if _, err := db.pool.Exec(ctx, `TRUNCATE energy_snapshots, settings RESTART IDENTITY CASCADE`); err != nil {
+		t.Fatalf("reset energy test DB: %v", err)
+	}
+}
+
+func resetReadinessTestDB(t *testing.T, db *DB) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := testdb.TruncateCurrentSchema(ctx, db.pool); err != nil {
+		t.Fatalf("reset readiness test DB: %v", err)
+	}
+	db.EnsureReadinessRedesignTables()
 }
 
 // seedSleepRow inserts (or upserts) a daily_scores row with the given

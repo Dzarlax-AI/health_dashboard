@@ -30,70 +30,137 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"health-receiver/internal/ctxdb"
 	"health-receiver/internal/health"
 	"health-receiver/internal/storage"
+	"health-receiver/internal/testdb"
 )
 
-// testTenantDB spins up a fresh schema in the configured test database
-// and returns a DB pool pinned to it. Mirrors the storage package's
-// testDB helper but is package-private to ui so the two test trees
-// stay independent.
+var (
+	sharedTenantDBMu sync.Mutex
+	sharedTenantDB   *storage.DB
+	sharedTenantPool *pgxpool.Pool
+	sharedTenantName string
+	sharedTenantErr  error
+)
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	cleanupSharedTenantDB()
+	os.Exit(code)
+}
+
+func cleanupSharedTenantDB() {
+	if sharedTenantDB == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_ = testdb.DropSchema(ctx, sharedTenantPool, sharedTenantName)
+	sharedTenantDB.Close()
+}
+
+// testTenantDB returns a shared UI tenant DB fixture. Each test gets an
+// exclusive lock and a schema reset before it starts. DB tests are
+// opt-in via HEALTH_DB_TESTS=1 so ordinary go test ./... stays pure
+// even when libpq env vars are present in the shell.
 func testTenantDB(t *testing.T) (*storage.DB, string, func()) {
 	t.Helper()
 
-	dsn := os.Getenv("READINESS_TEST_DSN")
-	if dsn == "" {
-		if os.Getenv("PGHOST") == "" && os.Getenv("PGDATABASE") == "" {
-			t.Skip("READINESS_TEST_DSN unset and no libpq env vars; skipping handler test")
+	sharedTenantDBMu.Lock()
+	unlockOnExit := true
+	defer func() {
+		if unlockOnExit {
+			sharedTenantDBMu.Unlock()
 		}
+	}()
+	db, schema := getSharedTenantDB(t)
+	resetTenantTestDB(t, db)
+
+	cleanup := func() {
+		sharedTenantDBMu.Unlock()
+	}
+	unlockOnExit = false
+	return db, schema, cleanup
+}
+
+func getSharedTenantDB(t *testing.T) (*storage.DB, string) {
+	t.Helper()
+	if sharedTenantDB != nil || sharedTenantErr != nil {
+		if sharedTenantErr != nil {
+			t.Fatalf("initialize shared UI DB: %v", sharedTenantErr)
+		}
+		return sharedTenantDB, sharedTenantName
 	}
 
-	schema := fmt.Sprintf("ui_test_%d_%d", time.Now().UnixNano(), os.Getpid())
+	dsn := testdb.DSN(t)
+	schema := testdb.SchemaName("ui_test")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	bootstrap, err := storage.New(ctx, dsn)
+	bootstrapPool, err := testdb.NewPool(ctx, dsn, "")
 	if err != nil {
-		t.Skipf("cannot connect to test DB: %v", err)
+		sharedTenantErr = fmt.Errorf("connect to test DB: %w", err)
+		t.Fatalf("%v", sharedTenantErr)
 	}
-	if err := bootstrap.CreateSchema(ctx, schema); err != nil {
-		bootstrap.Close()
-		t.Fatalf("create schema %q: %v", schema, err)
+	if err := testdb.CreateSchema(ctx, bootstrapPool, schema); err != nil {
+		bootstrapPool.Close()
+		sharedTenantErr = fmt.Errorf("create schema %q: %w", schema, err)
+		t.Fatalf("%v", sharedTenantErr)
 	}
-	bootstrap.Close()
 
-	db, err := storage.NewWithSchema(ctx, dsn, schema)
+	pool, err := testdb.NewPool(ctx, dsn, schema)
 	if err != nil {
-		t.Fatalf("open pool on schema %q: %v", schema, err)
+		_ = testdb.DropSchema(ctx, bootstrapPool, schema)
+		bootstrapPool.Close()
+		sharedTenantErr = fmt.Errorf("open pool on schema %q: %w", schema, err)
+		t.Fatalf("%v", sharedTenantErr)
 	}
+	bootstrapPool.Close()
+	db := storage.NewFromPool(pool)
 	if err := db.EnsureAllTables(); err != nil {
+		_ = testdb.DropSchema(ctx, pool, schema)
 		db.Close()
-		t.Fatalf("EnsureAllTables: %v", err)
+		sharedTenantErr = fmt.Errorf("EnsureAllTables: %w", err)
+		t.Fatalf("%v", sharedTenantErr)
 	}
 	// Phase 0 redesign tables are created lazily by their own helper
 	// — call it here so handler tests can reach naive_baselines /
 	// target_snapshots without each test seeding the schema itself.
 	db.EnsureReadinessRedesignTables()
-
-	cleanup := func() {
+	if err := db.VerifyReadinessRedesignSchema(); err != nil {
+		_ = testdb.DropSchema(ctx, pool, schema)
 		db.Close()
-		dropCtx, dropCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer dropCancel()
-		// Reopen a bootstrap pool on the default schema to DROP — the
-		// schema-pinned pool above doesn't expose raw SQL exec across
-		// the package boundary.
-		drop, err := storage.New(dropCtx, dsn)
-		if err != nil {
-			return
-		}
-		_ = drop.DropSchema(dropCtx, schema)
-		drop.Close()
+		sharedTenantErr = fmt.Errorf("schema not healthy after EnsureReadinessRedesignTables: %w", err)
+		t.Fatalf("%v", sharedTenantErr)
 	}
-	return db, schema, cleanup
+	db.EnsureSubjectiveCheckinsTable()
+	sharedTenantDB = db
+	sharedTenantPool = pool
+	sharedTenantName = schema
+	return db, schema
+}
+
+func resetTenantTestDB(t *testing.T, db *storage.DB) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// The underlying pool is owned by storage.DB and kept package-private,
+	// so reset by reusing startup helpers for required tables after the
+	// low-level shared harness truncates through the retained pgx pool.
+	if err := testdb.TruncateCurrentSchema(ctx, sharedTenantPool); err != nil {
+		t.Fatalf("reset UI tenant test DB: %v", err)
+	}
+	db.EnsureReadinessRedesignTables()
+	if err := db.VerifyReadinessRedesignSchema(); err != nil {
+		t.Fatalf("recreate readiness schema: %v", err)
+	}
+	db.EnsureSubjectiveCheckinsTable()
 }
 
 // requestWithTenant builds a request that carries `db`/`schema` in the
