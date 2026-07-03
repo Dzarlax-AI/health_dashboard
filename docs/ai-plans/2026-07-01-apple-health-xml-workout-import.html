@@ -133,7 +133,7 @@
   <section class="ok">
     <h2>Real Export Findings</h2>
     <p>
-      The unpacked export at <code>/Users/dzarlax/Downloads/apple_health_export/</code> was inspected on 2026-07-01.
+      A local unpacked Apple Health export at <code>&lt;LOCAL_APPLE_HEALTH_EXPORT_DIR&gt;/</code> was inspected on 2026-07-01.
       Only structural counts and attribute shapes were used; implementation should not bake in personal paths or source names.
     </p>
     <ul>
@@ -182,7 +182,7 @@ func ParseXMLFileWithOptions(path string, opts EmitOptions, onProgress func(read
     <h2>Workout Field Mapping</h2>
     <ul>
       <li><code>external_id</code>: prefer <code>HKMetadataKeySyncIdentifier</code>, then <code>HKExternalUUID</code>; fall back to a deterministic hash from type/start/end/source/duration/statistics when Apple exports lack IDs.</li>
-      <li><code>name</code>: map <code>workoutActivityType</code> suffix into readable names such as <code>Outdoor Run</code>, <code>Outdoor Cycle</code>, <code>Walking</code>. Unknown values keep a readable suffix rather than failing import.</li>
+      <li><code>name</code>: map <code>workoutActivityType</code> suffix into readable names such as <code>Outdoor Run</code>, <code>Outdoor Cycling</code>, <code>Walking</code>. Unknown values keep a readable suffix rather than failing import.</li>
       <li><code>start_time</code>, <code>end_time</code>: parse Apple Health XML timestamps with the existing HealthKit layout.</li>
       <li><code>duration_sec</code>: use <code>duration</code> plus <code>durationUnit</code> when present; otherwise compute from start/end.</li>
       <li><code>energy_kcal</code>: parse nested <code>WorkoutStatistics type="HKQuantityTypeIdentifierActiveEnergyBurned"</code> using <code>sum</code> and <code>unit</code>.</li>
@@ -309,7 +309,7 @@ func ParseXMLFileWithOptions(path string, opts EmitOptions, onProgress func(read
       <li><code>env GOCACHE=/tmp/health-go-build-cache go test ./internal/applehealth -count=1</code> passed.</li>
       <li><code>env GOCACHE=/tmp/health-go-build-cache go test ./internal/applehealth ./internal/health -count=1</code> passed.</li>
       <li><code>env GOCACHE=/tmp/health-go-build-cache go test ./cmd/import ./internal/handler ./internal/storage ./internal/ui -run "Workout|AppleHealth|ParseXML|Import" -count=1</code> passed.</li>
-      <li><code>env GOCACHE=/tmp/health-go-build-cache go run ./cmd/import --file /Users/dzarlax/Downloads/apple_health_export/export.xml --dry-run --batch 100000 --pause 0</code> parsed <code>6,803,675</code> metric points and <code>862</code> workouts in 24 seconds, with no DB writes.</li>
+      <li><code>env GOCACHE=/tmp/health-go-build-cache go run ./cmd/import --file /path/to/apple_health_export/export.xml --dry-run --batch 100000 --pause 0</code> parsed <code>6,803,618</code> metric points and <code>862</code> workouts in 24 seconds, with no DB writes.</li>
       <li><code>env GOCACHE=/tmp/health-go-build-cache make test-unit</code> passed.</li>
     </ul>
   </section>
@@ -321,6 +321,21 @@ func ParseXMLFileWithOptions(path string, opts EmitOptions, onProgress func(read
       <li>XML-imported workouts do not compute HR-zone seconds because Apple XML workout summaries expose aggregate heart-rate statistics, not per-sample timing inside the workout row.</li>
       <li>CLI historical import stores XML workouts with <code>health_record_id = NULL</code>; Admin UI import behaves the same for workout rows while metric points continue through the existing raw-import path.</li>
       <li>Run/Cycle readiness experiments remain sample-size gated even after XML import; the inspected export contains 7 running and 15 cycling workouts.</li>
+    </ul>
+  </section>
+
+  <section class="ok">
+    <h2>PR Review Follow-Up</h2>
+    <p>
+      Addressed review feedback on 2026-07-03 after PR creation.
+    </p>
+    <ul>
+      <li>Applied the existing physiological quality gate to mapped XML quantity records, so impossible zero values such as heart rate are dropped while valid zero values such as walking asymmetry are preserved.</li>
+      <li>Mapped XML cycling workouts to canonical <code>Indoor Cycling</code> / <code>Outdoor Cycling</code> names to match existing exact-name filters.</li>
+      <li>Changed Admin import status counter reads to <code>atomic.LoadInt64</code> to match atomic writers.</li>
+      <li>Redacted local machine paths from this plan and kept dry-run examples portable.</li>
+      <li>Added validation/canonical-name tests for <code>parseWorkout</code> and kept duration-minute handling explicit.</li>
+      <li>Cleaned up small review nits: batch flag help text and standard-library <code>math.Abs</code> in unit tests.</li>
     </ul>
   </section>
 

@@ -1,6 +1,9 @@
 package health
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestNormalizeDistanceKm(t *testing.T) {
 	tests := []struct {
@@ -17,16 +20,9 @@ func TestNormalizeDistanceKm(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := NormalizeDistanceKm(tt.qty, tt.units); abs(got-tt.want) > 0.000001 {
+			if got := NormalizeDistanceKm(tt.qty, tt.units); math.Abs(got-tt.want) > 0.000001 {
 				t.Fatalf("NormalizeDistanceKm(%v, %q) = %v, want %v", tt.qty, tt.units, got, tt.want)
 			}
 		})
 	}
-}
-
-func abs(v float64) float64 {
-	if v < 0 {
-		return -v
-	}
-	return v
 }

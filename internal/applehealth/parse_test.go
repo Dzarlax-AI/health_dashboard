@@ -95,12 +95,55 @@ func TestParseXMLFocusedEdgeFixturePinsImportSafety(t *testing.T) {
 	}
 	assertPoint(t, points, "blood_oxygen_saturation", "%", "2026-02-01 06:00:00 +0100", "Synthetic Watch", 98)
 	assertPoint(t, points, "walking_asymmetry", "%", "2026-02-01 06:05:00 +0100", "Synthetic Watch", 0)
+	assertNoPoint(t, points, "heart_rate", "2026-02-01 06:10:00 +0100")
 	assertPoint(t, points, "mindful_minutes", "min", "2026-02-01 09:00:00 +0100", "Synthetic Phone", 15)
 	assertPoint(t, points, "apple_stand_hour", "count", "2026-02-01 10:00:00 +0100", "Synthetic Watch", 1)
 	assertPoint(t, points, "some_new_metric", "count", "2026-02-01 13:00:00 +0100", "Synthetic Device", 12.5)
 
 	assertMetricCount(t, points, "mindful_minutes", 1)
 	assertNoMetric(t, points, "blood_pressure")
+}
+
+func TestParseWorkoutValidationAndCanonicalNames(t *testing.T) {
+	if _, ok := parseWorkout(xmlWorkout{}); ok {
+		t.Fatal("empty workout parsed, want rejected")
+	}
+	if _, ok := parseWorkout(xmlWorkout{
+		ActivityType: "HKWorkoutActivityTypeRunning",
+		StartDate:    "2026-01-02 12:45:00 +0000",
+		EndDate:      "2026-01-02 12:00:00 +0000",
+	}); ok {
+		t.Fatal("workout with end before start parsed, want rejected")
+	}
+
+	indoor, ok := parseWorkout(xmlWorkout{
+		ActivityType: "HKWorkoutActivityTypeCycling",
+		Duration:     "30",
+		DurationUnit: "min",
+		StartDate:    "2026-01-02 12:00:00 +0000",
+		EndDate:      "2026-01-02 12:30:00 +0000",
+		Metadata:     []xmlMetadataEntry{{Key: "HKIndoorWorkout", Value: "1"}},
+	})
+	if !ok {
+		t.Fatal("valid indoor cycling workout rejected")
+	}
+	if indoor.Name != "Indoor Cycling" {
+		t.Fatalf("indoor cycling name = %q, want Indoor Cycling", indoor.Name)
+	}
+
+	outdoor, ok := parseWorkout(xmlWorkout{
+		ActivityType: "HKWorkoutActivityTypeCycling",
+		Duration:     "30",
+		DurationUnit: "min",
+		StartDate:    "2026-01-02 12:00:00 +0000",
+		EndDate:      "2026-01-02 12:30:00 +0000",
+	})
+	if !ok {
+		t.Fatal("valid outdoor cycling workout rejected")
+	}
+	if outdoor.Name != "Outdoor Cycling" {
+		t.Fatalf("outdoor cycling name = %q, want Outdoor Cycling", outdoor.Name)
+	}
 }
 
 func TestParseXMLEmptyAndMalformedInputs(t *testing.T) {

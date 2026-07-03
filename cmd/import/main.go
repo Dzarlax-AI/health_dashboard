@@ -23,7 +23,7 @@ import (
 
 func main() {
 	filePath := flag.String("file", "", "Apple Health export (.zip or export.xml) — required")
-	batchSize := flag.Int("batch", 500, "metric points per DB transaction")
+	batchSize := flag.Int("batch", 500, "metric points or workouts per DB transaction")
 	pauseDur := flag.Duration("pause", 150*time.Millisecond, "sleep between batches (rate-limits DB load)")
 	dryRun := flag.Bool("dry-run", false, "parse only — do not write to DB")
 	flag.Parse()

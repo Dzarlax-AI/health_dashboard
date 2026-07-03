@@ -453,6 +453,8 @@ func workoutDurationSec(raw, unit string, start, end time.Time) float64 {
 			return v
 		case "h", "hr", "hrs", "hour", "hours":
 			return v * 3600
+		case "m", "min", "mins", "minute", "minutes":
+			return v * 60
 		default:
 			return v * 60
 		}
@@ -470,9 +472,9 @@ func workoutName(activityType string, indoor bool) string {
 		return "Outdoor Run"
 	case "Cycling":
 		if indoor {
-			return "Indoor Cycle"
+			return "Indoor Cycling"
 		}
-		return "Outdoor Cycle"
+		return "Outdoor Cycling"
 	case "Walking":
 		return "Walking"
 	case "FunctionalStrengthTraining":
@@ -599,6 +601,9 @@ func parseRecord(a map[string]string) []storage.MetricPoint {
 		// Normalize to percentage scale so both sources are consistent.
 		if hkFractionToPercent[suffix] && value > 0 && value <= 1.0 {
 			value *= 100
+		}
+		if health.IsImpossible(info[0], value) {
+			return nil
 		}
 		return []storage.MetricPoint{
 			{MetricName: info[0], Units: units, Date: startDate, Qty: value, Source: source},

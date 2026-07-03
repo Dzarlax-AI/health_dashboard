@@ -2,6 +2,7 @@
 <HealthData locale="en_US">
   <Record type="HKQuantityTypeIdentifierOxygenSaturation" sourceName="Synthetic Watch" unit="%" creationDate="2026-02-01 06:00:00 +0100" startDate="2026-02-01 06:00:00 +0100" endDate="2026-02-01 06:01:00 +0100" value="98"/>
   <Record type="HKQuantityTypeIdentifierWalkingAsymmetryPercentage" sourceName="Synthetic Watch" unit="%" creationDate="2026-02-01 06:05:00 +0100" startDate="2026-02-01 06:05:00 +0100" endDate="2026-02-01 06:06:00 +0100" value="0"/>
+  <Record type="HKQuantityTypeIdentifierHeartRate" sourceName="Synthetic Watch" unit="count/min" creationDate="2026-02-01 06:10:00 +0100" startDate="2026-02-01 06:10:00 +0100" endDate="2026-02-01 06:11:00 +0100" value="0"/>
   <Record type="HKCategoryTypeIdentifierMindfulSession" sourceName="Synthetic Phone" creationDate="2026-02-01 09:15:00 +0100" startDate="2026-02-01 09:00:00 +0100" endDate="2026-02-01 09:15:00 +0100" value="HKCategoryValueNotApplicable"/>
   <Record type="HKCategoryTypeIdentifierAppleStandHour" sourceName="Synthetic Watch" creationDate="2026-02-01 10:00:00 +0100" startDate="2026-02-01 10:00:00 +0100" endDate="2026-02-01 11:00:00 +0100" value="HKCategoryValueAppleStandHourStood"/>
   <Record type="HKCategoryTypeIdentifierMindfulSession" sourceName="Synthetic Phone" creationDate="2026-02-01 11:00:00 +0100" startDate="2026-02-01 11:00:00 +0100" endDate="2026-02-01 10:59:00 +0100" value="HKCategoryValueNotApplicable"/>
