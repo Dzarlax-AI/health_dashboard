@@ -225,6 +225,8 @@ The endpoint stores summary fields only (duration, distance, energy, average / m
 
 If `HEALTH_HR_ZONES_BPM` is configured, the ingest path also computes time-in-zone (Z1..Z5) from the per-minute HR samples in the payload and stores five integer columns per workout. Pick zone borders that match your physiology — the Karvonen (HR Reserve) method using observed MaxHR and resting HR is more accurate than the textbook `220 - age` formula.
 
+Apple Health XML imports (`cmd/import` and the Admin import UI) also ingest `<Workout>` summaries into the same `workouts` table. XML exports provide nested `WorkoutStatistics` for distance, energy, and aggregate heart-rate fields on some workouts, so imported rows may include `distance_km`, `energy_kcal`, `avg_hr_bpm`, and `max_hr_bpm`. GPX workout routes are deliberately not imported.
+
 The `/health` endpoint (no suffix) still accepts all metrics unfiltered for backward compatibility.
 
 > **Why two automations?** HealthKit redistributes cumulative metrics (steps, calories) across time buckets with fractional values. With minute-level grouping, the sum of these fractions exceeds the actual total by ~20-30%. Hourly grouping uses `HKStatisticsQuery` which returns correctly deduplicated totals. Instantaneous metrics (heart rate, SpO2) don't have this problem -- they are averaged, not summed -- so minute-level grouping preserves useful granularity.

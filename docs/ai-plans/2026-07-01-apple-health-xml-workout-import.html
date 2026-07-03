@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Implementation Plan: Apple Health XML Workout Import</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #172033;
+      --muted: #5b6475;
+      --line: #dfe3ea;
+      --accent: #1f6feb;
+      --warn: #b45309;
+      --risk: #b42318;
+      --ok: #087443;
+    }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    main {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 32px;
+    }
+    h1, h2, h3 {
+      line-height: 1.2;
+      margin: 0 0 12px;
+    }
+    p {
+      margin: 0 0 12px;
+    }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 20px;
+      margin: 16px 0;
+    }
+    ul, ol {
+      margin: 8px 0 0 22px;
+      padding: 0;
+    }
+    li {
+      margin: 6px 0;
+    }
+    code {
+      background: #f1f3f6;
+      padding: 2px 5px;
+      border-radius: 4px;
+      font-size: 0.94em;
+    }
+    pre {
+      background: #101828;
+      color: #f8fafc;
+      border-radius: 8px;
+      padding: 14px;
+      overflow-x: auto;
+      font-size: 13px;
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: #e8f1ff;
+      color: #174ea6;
+      font-size: 12px;
+      font-weight: 700;
+      margin-right: 8px;
+    }
+    .muted { color: var(--muted); }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 12px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      background: #fbfcfe;
+    }
+    .approval { border-left: 4px solid var(--warn); }
+    .risk { border-left: 4px solid var(--risk); }
+    .ok { border-left: 4px solid var(--ok); }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Implementation Plan: Apple Health XML Workout Import</h1>
+  <p>
+    <span class="badge">Approval required</span>
+    <span class="muted">Created 2026-07-01. Implementation must wait for explicit approval.</span>
+  </p>
+
+  <section>
+    <h2>Task Summary</h2>
+    <p>
+      Extend the Apple Health historical import path so <code>export.xml</code> / Apple Health export ZIP imports
+      <code>&lt;Workout&gt;</code> elements into the existing <code>workouts</code> table. The existing Health Auto Export
+      JSON endpoint already imports workout summaries; this plan covers the native Apple Health XML backfill gap.
+    </p>
+  </section>
+
+  <section>
+    <h2>Current Behavior</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>HAE JSON workouts work</h3>
+        <p><code>/health/workouts</code> parses Health Auto Export workout JSON, stores the raw payload, converts summary fields, and calls <code>storage.DB.UpsertWorkout</code>.</p>
+      </div>
+      <div class="card">
+        <h3>XML import skips workouts</h3>
+        <p><code>internal/applehealth.ParseXML</code> only processes <code>&lt;Record&gt;</code> elements into <code>storage.MetricPoint</code>. It ignores <code>&lt;Workout&gt;</code> elements.</p>
+      </div>
+      <div class="card">
+        <h3>Import callers are points-only</h3>
+        <p><code>cmd/import</code> and <code>internal/ui/import_handler.go</code> both pass a single callback for metric point batches.</p>
+      </div>
+      <div class="card">
+        <h3>Storage is ready</h3>
+        <p>The <code>workouts</code> table and read APIs already exist, keyed by <code>external_id</code> with upsert semantics.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="ok">
+    <h2>Real Export Findings</h2>
+    <p>
+      The unpacked export at <code>/Users/dzarlax/Downloads/apple_health_export/</code> was inspected on 2026-07-01.
+      Only structural counts and attribute shapes were used; implementation should not bake in personal paths or source names.
+    </p>
+    <ul>
+      <li><code>export.xml</code> is about 2.3 GB and contains <code>862</code> <code>&lt;Workout&gt;</code> elements.</li>
+      <li>Workout activity distribution: Walking 818, Cycling 15, Running 7, Swimming 7, Downhill Skiing 4, Functional Strength Training 4, Hiking 4, Cross Training 1, Equestrian Sports 1, Underwater Diving 1.</li>
+      <li>There are <code>201</code> GPX files under <code>workout-routes/</code>, referenced by nested <code>&lt;WorkoutRoute&gt;</code> / <code>&lt;FileReference&gt;</code> elements.</li>
+      <li>Top-level workout attributes are limited to activity type, duration/unit, source, creation/start/end dates, and sometimes device/source version.</li>
+      <li>Useful measures are nested in <code>&lt;WorkoutStatistics&gt;</code>: active energy 860 rows, walking/running distance 829, basal energy 463, heart-rate stats 186, swimming/cycling/snow-sports distance for smaller subsets.</li>
+      <li>Workout heart-rate stats use <code>average</code> and <code>maximum</code> attributes, not <code>sum</code>.</li>
+      <li>Workout metadata includes <code>HKMetadataKeySyncIdentifier</code> on 339 workouts and <code>HKExternalUUID</code> on 143 workouts; 518 workouts have neither, so deterministic fallback IDs are required.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <ul>
+      <li>Apple Health XML import streams both metric points and workout summaries without loading the full export into memory.</li>
+      <li><code>&lt;Workout&gt;</code> rows are converted into <code>storage.Workout</code> and upserted into <code>workouts</code>.</li>
+      <li>Existing metric import behavior stays backward-compatible for callers that only need points.</li>
+      <li>CLI import and Admin UI import report useful workout counts in logs/status where practical.</li>
+      <li>Historical imported workouts can unlock future data checks for #163/#165, but readiness experiments remain gated by actual sample size.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Proposed Design</h2>
+    <p>
+      Add a new parser API that keeps the existing point callback but also accepts an optional workout callback.
+      Keep <code>ParseXML</code>, <code>ParseZip</code>, and <code>ParseXMLFile</code> as compatibility wrappers around the new path.
+    </p>
+    <pre><code>type EmitOptions struct {
+    Points   func([]storage.MetricPoint)
+    Workouts func([]storage.Workout)
+}
+
+func ParseXMLWithOptions(r io.Reader, opts EmitOptions) error
+func ParseZipWithOptions(path string, opts EmitOptions, onProgress func(read, total int64)) error
+func ParseXMLFileWithOptions(path string, opts EmitOptions, onProgress func(read, total int64)) error</code></pre>
+    <p>
+      This avoids making <code>internal/applehealth</code> depend on <code>internal/handler</code>. XML-specific workout conversion should live in
+      <code>internal/applehealth</code> and target <code>storage.Workout</code> directly.
+    </p>
+  </section>
+
+  <section>
+    <h2>Workout Field Mapping</h2>
+    <ul>
+      <li><code>external_id</code>: prefer <code>HKMetadataKeySyncIdentifier</code>, then <code>HKExternalUUID</code>; fall back to a deterministic hash from type/start/end/source/duration/statistics when Apple exports lack IDs.</li>
+      <li><code>name</code>: map <code>workoutActivityType</code> suffix into readable names such as <code>Outdoor Run</code>, <code>Outdoor Cycle</code>, <code>Walking</code>. Unknown values keep a readable suffix rather than failing import.</li>
+      <li><code>start_time</code>, <code>end_time</code>: parse Apple Health XML timestamps with the existing HealthKit layout.</li>
+      <li><code>duration_sec</code>: use <code>duration</code> plus <code>durationUnit</code> when present; otherwise compute from start/end.</li>
+      <li><code>energy_kcal</code>: parse nested <code>WorkoutStatistics type="HKQuantityTypeIdentifierActiveEnergyBurned"</code> using <code>sum</code> and <code>unit</code>.</li>
+      <li><code>distance_km</code>: parse nested distance statistics: walking/running, cycling, swimming, and downhill snow sports. Normalize with existing distance helpers.</li>
+      <li><code>avg_hr_bpm</code>, <code>max_hr_bpm</code>: parse nested <code>HKQuantityTypeIdentifierHeartRate</code> statistics using <code>average</code> and <code>maximum</code>.</li>
+      <li><code>is_indoor</code>: parse <code>HKIndoorWorkout</code> metadata when present.</li>
+      <li><code>avg_speed_kmh</code>, <code>max_speed_kmh</code>, <code>elevation_up_m</code>, <code>temperature_c</code>, <code>humidity_pct</code>: parse workout metadata keys such as <code>HKAverageSpeed</code>, <code>HKMaximumSpeed</code>, <code>HKElevationAscended</code>, <code>HKWeatherTemperature</code>, and <code>HKWeatherHumidity</code> where unit-bearing values are stable.</li>
+      <li><code>hr_z*_sec</code>: leave NULL for XML imports unless future evidence shows Apple export contains enough per-sample timing inside workout scope. The current export only has aggregate heart-rate statistics under workouts.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Files Likely to Change</h2>
+    <ul>
+      <li><code>internal/applehealth/parse.go</code> - add workout streaming support and XML workout conversion.</li>
+      <li><code>internal/applehealth/parse_test.go</code> - add fixture coverage for <code>&lt;Workout&gt;</code> parsing, unknown workout types, unit conversion, and compatibility wrappers.</li>
+      <li><code>internal/applehealth/testdata/*.xml</code> - add a small synthetic workout fixture or extend the existing synthetic fixture.</li>
+      <li><code>cmd/import/main.go</code> - upsert parsed workouts, count parsed/inserted/skipped workouts, preserve metric import/backfill behavior.</li>
+      <li><code>internal/ui/import_handler.go</code> - upsert parsed workouts in web import and expose count fields in import status if the UI already displays the JSON values.</li>
+      <li><code>README.md</code> - document that Apple Health XML import now includes workout summaries, with limitations.</li>
+      <li><code>docs/ai-plans/2026-07-01-apple-health-xml-workout-import.html</code> - update after implementation with actual changes and verification.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation Steps</h2>
+    <ol>
+      <li>Create a fresh branch from current <code>origin/main</code>; the current checkout is still the merged #182 branch.</li>
+      <li>Add parser option types and compatibility wrappers in <code>internal/applehealth</code>.</li>
+      <li>Teach the streaming decoder to handle both <code>&lt;Record&gt;</code> and <code>&lt;Workout&gt;</code> start elements.</li>
+      <li>Add <code>parseWorkout</code> with conservative field mapping and deterministic fallback IDs.</li>
+      <li>Add workout batching and upsert handling to CLI import.</li>
+      <li>Add workout batching, counters, and min/max date tracking to Admin UI import.</li>
+      <li>Update tests and README.</li>
+      <li>Run focused tests first, then broader import/storage checks.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Data, API, and UX Impact</h2>
+    <ul>
+      <li>No schema migration is expected; <code>workouts</code> already exists and is auto-created by startup table setup.</li>
+      <li>No public endpoint changes are required.</li>
+      <li>Admin import status may gain optional workout counters; existing clients should tolerate additional JSON fields.</li>
+      <li>Upsert by <code>external_id</code> keeps repeated XML imports idempotent.</li>
+      <li>Metric caches still need backfill after import; workout rows do not feed existing aggregate cache tables directly.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <ul>
+      <li><code>go test ./internal/applehealth -count=1</code></li>
+      <li><code>go test ./internal/handler ./internal/storage -run "Workout|AppleHealth|ParseXML" -count=1</code></li>
+      <li><code>go test ./internal/ui -run Import -count=1</code> if existing import tests are present after inspection.</li>
+      <li><code>GOCACHE=/tmp/health-go-build-cache make test-unit</code></li>
+      <li>Optional DB-backed smoke after approval: dry-run or real import against a throwaway schema with a small XML fixture, then query <code>workouts</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Manual QA Checklist</h2>
+    <ul>
+      <li>Run CLI import in <code>--dry-run</code> mode on a small XML containing workouts and confirm logs include workout parse counts.</li>
+      <li>Run Admin UI import on a small XML/ZIP fixture and confirm status completes without breaking existing point import progress.</li>
+      <li>Query <code>list_workout_types</code> or direct SQL after a real test import and confirm expected workout names/counts.</li>
+      <li>Re-import the same fixture and confirm counts do not duplicate due to upsert.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks and Edge Cases</h2>
+    <ul>
+      <li>Apple Health XML workout attributes may vary by iOS version. Unknown fields should be skipped or left NULL rather than failing the whole import.</li>
+      <li>Fallback deterministic IDs can collide if they are too coarse. The fallback should include type, start, end, source, duration, distance, and energy when available.</li>
+      <li>The same real-world workout may appear from multiple sources or app versions. Upsert identity should preserve useful distinct workouts while avoiding duplicate rows for the same Apple sync identifier.</li>
+      <li>Plain Apple XML contains aggregate heart-rate stats for some workouts, but not per-sample timing inside the workout row, so HR-zone data should stay NULL for XML-imported workouts.</li>
+      <li>Readable workout-name mapping must not invent semantics. Unknown HealthKit activity types should remain visibly unknown-but-stable.</li>
+      <li>Large XML import must remain streaming and avoid collecting all workouts in memory.</li>
+      <li>GPX route import is intentionally out of scope; adding route storage would be a separate data model and privacy decision.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <p>
+      Revert the parser/import changes. Existing imported workout rows can remain because they are additive and keyed by <code>external_id</code>.
+      If a bad import needs cleanup, delete rows by <code>health_record_id</code> or by the deterministic fallback ID prefix chosen during implementation.
+    </p>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Should XML import include workouts by default, or should CLI/Admin expose a flag to disable workout import for very conservative historical imports?</li>
+      <li>Should the implementation keep only summary rows from <code>&lt;Workout&gt;</code>, or also persist a route reference path for future diagnostics while still not importing GPX coordinates?</li>
+      <li>Should imported XML workouts be linked to a synthetic <code>health_records</code> row, or is <code>health_record_id = NULL</code> acceptable for CLI historical import batches?</li>
+      <li>Do we want to immediately re-check #163/#165 after importing real historical workouts, or leave that as a separate triage step?</li>
+    </ul>
+  </section>
+
+  <section class="ok">
+    <h2>Implementation Result</h2>
+    <p>
+      Implemented on 2026-07-03 on branch <code>apple-health-xml-workout-import</code>.
+      The parser now supports streaming metric points and workout summaries from Apple Health XML without loading the full export into memory.
+    </p>
+    <ul>
+      <li>Added <code>applehealth.EmitOptions</code> plus <code>ParseXMLWithOptions</code>, <code>ParseXMLFileWithOptions</code>, and <code>ParseZipWithOptions</code>.</li>
+      <li>Kept the previous points-only parser functions as compatibility wrappers.</li>
+      <li>Added XML workout conversion into <code>storage.Workout</code>, including sync/external ID preference, deterministic fallback IDs, activity-name mapping, nested <code>WorkoutStatistics</code>, and selected metadata fields.</li>
+      <li>Updated CLI import and Admin UI import to upsert parsed workouts while preserving existing metric import and backfill behavior.</li>
+      <li>Added workout import counters to Admin import status JSON: <code>workouts_parsed</code>, <code>workouts_upserted</code>, <code>workouts_failed</code>.</li>
+      <li>Fixed distance normalization for Apple XML meter/foot distance units, which are present in workout statistics.</li>
+      <li>Kept zero-valued XML quantity records instead of dropping them, preserving meaningful zero values such as walking asymmetry.</li>
+      <li>Kept Admin import metric cleanup scoped to metric-point date ranges only; workout-only dates no longer expand <code>RemoveAutoExportForRange</code>.</li>
+      <li>Updated README to document XML workout summary import and route-import limitations.</li>
+    </ul>
+  </section>
+
+  <section class="ok">
+    <h2>Verification Run</h2>
+    <ul>
+      <li><code>env GOCACHE=/tmp/health-go-build-cache go test ./internal/applehealth -count=1</code> passed.</li>
+      <li><code>env GOCACHE=/tmp/health-go-build-cache go test ./internal/applehealth ./internal/health -count=1</code> passed.</li>
+      <li><code>env GOCACHE=/tmp/health-go-build-cache go test ./cmd/import ./internal/handler ./internal/storage ./internal/ui -run "Workout|AppleHealth|ParseXML|Import" -count=1</code> passed.</li>
+      <li><code>env GOCACHE=/tmp/health-go-build-cache go run ./cmd/import --file /Users/dzarlax/Downloads/apple_health_export/export.xml --dry-run --batch 100000 --pause 0</code> parsed <code>6,803,675</code> metric points and <code>862</code> workouts in 24 seconds, with no DB writes.</li>
+      <li><code>env GOCACHE=/tmp/health-go-build-cache make test-unit</code> passed.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Known Limitations After Implementation</h2>
+    <ul>
+      <li>GPX route files and route references are not imported.</li>
+      <li>XML-imported workouts do not compute HR-zone seconds because Apple XML workout summaries expose aggregate heart-rate statistics, not per-sample timing inside the workout row.</li>
+      <li>CLI historical import stores XML workouts with <code>health_record_id = NULL</code>; Admin UI import behaves the same for workout rows while metric points continue through the existing raw-import path.</li>
+      <li>Run/Cycle readiness experiments remain sample-size gated even after XML import; the inspected export contains 7 running and 15 cycling workouts.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval Gate</h2>
+    <p>
+      Implementation must not start until the user explicitly approves this plan. After approval, update this same file with what actually changed,
+      checks run, known limitations, and follow-up recommendations.
+    </p>
+  </section>
+</main>
+</body>
+</html>

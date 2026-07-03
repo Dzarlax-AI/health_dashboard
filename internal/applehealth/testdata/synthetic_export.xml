@@ -9,4 +9,21 @@
   <Record type="HKCategoryTypeIdentifierSleepAnalysis" sourceName="Synthetic Watch" creationDate="2026-01-02 06:30:00 +0000" startDate="2026-01-02 01:30:00 +0000" endDate="2026-01-02 02:00:00 +0000" value="HKCategoryValueSleepAnalysisAsleepREM"/>
   <Record type="HKCategoryTypeIdentifierSleepAnalysis" sourceName="Synthetic Watch" creationDate="2026-01-02 06:30:00 +0000" startDate="2026-01-02 02:00:00 +0000" endDate="2026-01-02 02:15:00 +0000" value="HKCategoryValueSleepAnalysisAwake"/>
   <Record type="HKCategoryTypeIdentifierSleepAnalysis" sourceName="Synthetic Phone" creationDate="2026-01-03 07:00:00 +0000" startDate="2026-01-02 23:30:00 +0000" endDate="2026-01-03 05:30:00 +0000" value="HKCategoryValueSleepAnalysisAsleep"/>
+  <Workout workoutActivityType="HKWorkoutActivityTypeRunning" duration="45" durationUnit="min" sourceName="Synthetic Watch" sourceVersion="1" creationDate="2026-01-02 12:46:00 +0000" startDate="2026-01-02 12:00:00 +0000" endDate="2026-01-02 12:45:00 +0000">
+    <MetadataEntry key="HKMetadataKeySyncIdentifier" value="run-sync-1"/>
+    <MetadataEntry key="HKExternalUUID" value="run-external-1"/>
+    <MetadataEntry key="HKIndoorWorkout" value="0"/>
+    <MetadataEntry key="HKAverageSpeed" value="2.5 m/s"/>
+    <MetadataEntry key="HKMaximumSpeed" value="4 m/s"/>
+    <MetadataEntry key="HKElevationAscended" value="33 ft"/>
+    <MetadataEntry key="HKWeatherTemperature" value="68 degF"/>
+    <MetadataEntry key="HKWeatherHumidity" value="0.55 %"/>
+    <WorkoutStatistics type="HKQuantityTypeIdentifierActiveEnergyBurned" startDate="2026-01-02 12:00:00 +0000" endDate="2026-01-02 12:45:00 +0000" sum="500" unit="Cal"/>
+    <WorkoutStatistics type="HKQuantityTypeIdentifierDistanceWalkingRunning" startDate="2026-01-02 12:00:00 +0000" endDate="2026-01-02 12:45:00 +0000" sum="10" unit="km"/>
+    <WorkoutStatistics type="HKQuantityTypeIdentifierHeartRate" startDate="2026-01-02 12:00:00 +0000" endDate="2026-01-02 12:45:00 +0000" average="150" maximum="180" unit="count/min"/>
+  </Workout>
+  <Workout workoutActivityType="HKWorkoutActivityTypeFunctionalStrengthTraining" duration="1800" durationUnit="s" sourceName="Synthetic Watch" creationDate="2026-01-03 09:31:00 +0000" startDate="2026-01-03 09:00:00 +0000" endDate="2026-01-03 09:30:00 +0000">
+    <MetadataEntry key="HKIndoorWorkout" value="1"/>
+    <WorkoutStatistics type="HKQuantityTypeIdentifierActiveEnergyBurned" startDate="2026-01-03 09:00:00 +0000" endDate="2026-01-03 09:30:00 +0000" sum="120" unit="kJ"/>
+  </Workout>
 </HealthData>

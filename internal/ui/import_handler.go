@@ -19,32 +19,38 @@ const maxImportBytes int64 = 2 * 1024 * 1024 * 1024
 
 // importJob tracks the state of a running or completed import.
 type importJob struct {
-	mu         sync.Mutex
-	running    bool
-	done       bool
-	parsed     int64
-	inserted   int64
-	skipped    int64
-	bytesRead  int64
-	totalBytes int64
-	startedAt  time.Time
-	finishedAt time.Time
-	err        string
+	mu               sync.Mutex
+	running          bool
+	done             bool
+	parsed           int64
+	inserted         int64
+	skipped          int64
+	workoutsParsed   int64
+	workoutsUpserted int64
+	workoutsFailed   int64
+	bytesRead        int64
+	totalBytes       int64
+	startedAt        time.Time
+	finishedAt       time.Time
+	err              string
 }
 
 func (j *importJob) status() importStatus {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	s := importStatus{
-		Running:    j.running,
-		Done:       j.done,
-		Parsed:     j.parsed,
-		Inserted:   j.inserted,
-		Skipped:    j.skipped,
-		BytesRead:  j.bytesRead,
-		TotalBytes: j.totalBytes,
-		StartedAt:  j.startedAt.Format(time.RFC3339),
-		Err:        j.err,
+		Running:          j.running,
+		Done:             j.done,
+		Parsed:           j.parsed,
+		Inserted:         j.inserted,
+		Skipped:          j.skipped,
+		WorkoutsParsed:   j.workoutsParsed,
+		WorkoutsUpserted: j.workoutsUpserted,
+		WorkoutsFailed:   j.workoutsFailed,
+		BytesRead:        j.bytesRead,
+		TotalBytes:       j.totalBytes,
+		StartedAt:        j.startedAt.Format(time.RFC3339),
+		Err:              j.err,
 	}
 	if j.done {
 		s.ElapsedSec = int(j.finishedAt.Sub(j.startedAt).Seconds())
@@ -55,16 +61,19 @@ func (j *importJob) status() importStatus {
 }
 
 type importStatus struct {
-	Running    bool   `json:"running"`
-	Done       bool   `json:"done"`
-	Parsed     int64  `json:"parsed"`
-	Inserted   int64  `json:"inserted"`
-	Skipped    int64  `json:"skipped"`
-	BytesRead  int64  `json:"bytes_read"`
-	TotalBytes int64  `json:"total_bytes"`
-	ElapsedSec int    `json:"elapsed_sec"`
-	StartedAt  string `json:"started_at,omitempty"`
-	Err        string `json:"error,omitempty"`
+	Running          bool   `json:"running"`
+	Done             bool   `json:"done"`
+	Parsed           int64  `json:"parsed"`
+	Inserted         int64  `json:"inserted"`
+	Skipped          int64  `json:"skipped"`
+	WorkoutsParsed   int64  `json:"workouts_parsed"`
+	WorkoutsUpserted int64  `json:"workouts_upserted"`
+	WorkoutsFailed   int64  `json:"workouts_failed"`
+	BytesRead        int64  `json:"bytes_read"`
+	TotalBytes       int64  `json:"total_bytes"`
+	ElapsedSec       int    `json:"elapsed_sec"`
+	StartedAt        string `json:"started_at,omitempty"`
+	Err              string `json:"error,omitempty"`
 }
 
 // per-schema import jobs (one at a time per tenant)
@@ -190,9 +199,11 @@ func runImport(job *importJob, db *storage.DB, tmpPath, filename string, batchSi
 
 	// Track min/max dates of imported points so we can invalidate that range.
 	var (
-		dateMu  sync.Mutex
-		minDate string
-		maxDate string
+		dateMu         sync.Mutex
+		metricMinDate  string
+		metricMaxDate  string
+		workoutMinDate string
+		workoutMaxDate string
 	)
 	updateDates := func(pts []storage.MetricPoint) {
 		dateMu.Lock()
@@ -205,11 +216,27 @@ func runImport(job *importJob, db *storage.DB, tmpPath, filename string, batchSi
 			if d == "" {
 				continue
 			}
-			if minDate == "" || d < minDate {
-				minDate = d
+			if metricMinDate == "" || d < metricMinDate {
+				metricMinDate = d
 			}
-			if d > maxDate {
-				maxDate = d
+			if d > metricMaxDate {
+				metricMaxDate = d
+			}
+		}
+	}
+	updateWorkoutDates := func(workouts []storage.Workout) {
+		dateMu.Lock()
+		defer dateMu.Unlock()
+		for _, w := range workouts {
+			d := w.StartTime.Format("2006-01-02")
+			if d == "" {
+				continue
+			}
+			if workoutMinDate == "" || d < workoutMinDate {
+				workoutMinDate = d
+			}
+			if d > workoutMaxDate {
+				workoutMaxDate = d
 			}
 		}
 	}
@@ -225,6 +252,24 @@ func runImport(job *importJob, db *storage.DB, tmpPath, filename string, batchSi
 		atomic.AddInt64(&job.parsed, int64(len(pts)))
 		atomic.AddInt64(&job.inserted, int64(n))
 		atomic.AddInt64(&job.skipped, int64(len(pts)-n))
+		if pause > 0 {
+			time.Sleep(pause)
+		}
+	}
+	var workoutBatchCount int64
+	emitWorkouts := func(workouts []storage.Workout) {
+		workoutBatchCount++
+		updateWorkoutDates(workouts)
+		var failed int64
+		for _, w := range workouts {
+			if err := db.UpsertWorkout(0, w); err != nil {
+				failed++
+				log.Printf("import workout batch %d upsert %s error: %v", workoutBatchCount, w.ExternalID, err)
+			}
+		}
+		atomic.AddInt64(&job.workoutsParsed, int64(len(workouts)))
+		atomic.AddInt64(&job.workoutsUpserted, int64(len(workouts))-failed)
+		atomic.AddInt64(&job.workoutsFailed, failed)
 		if pause > 0 {
 			time.Sleep(pause)
 		}
@@ -246,10 +291,11 @@ func runImport(job *importJob, db *storage.DB, tmpPath, filename string, batchSi
 		}
 	}
 
+	opts := applehealth.EmitOptions{Points: emit, Workouts: emitWorkouts}
 	if isZip {
-		parseErr = applehealth.ParseZip(tmpPath, emit, onProgress)
+		parseErr = applehealth.ParseZipWithOptions(tmpPath, opts, onProgress)
 	} else {
-		parseErr = applehealth.ParseXMLFile(tmpPath, emit, onProgress)
+		parseErr = applehealth.ParseXMLFileWithOptions(tmpPath, opts, onProgress)
 	}
 
 	errMsg := ""
@@ -259,18 +305,21 @@ func runImport(job *importJob, db *storage.DB, tmpPath, filename string, batchSi
 	}
 	finish(errMsg)
 
-	if minDate != "" {
+	if metricMinDate != "" {
 		// Remove Auto Export data for imported date range — Apple Health export
 		// is the ground truth and should replace potentially inaccurate Auto Export data.
-		log.Printf("import: removing Auto Export data for %s … %s", minDate, maxDate)
-		db.RemoveAutoExportForRange(minDate, maxDate)
+		log.Printf("import: removing Auto Export data for %s … %s", metricMinDate, metricMaxDate)
+		db.RemoveAutoExportForRange(metricMinDate, metricMaxDate)
 
 		// Invalidate aggregates and force full rebuild to ensure correctness.
-		log.Printf("import: invalidating aggregates for %s … %s", minDate, maxDate)
-		db.InvalidateDateRangeAggregates(minDate, maxDate)
+		log.Printf("import: invalidating aggregates for %s … %s", metricMinDate, metricMaxDate)
+		db.InvalidateDateRangeAggregates(metricMinDate, metricMaxDate)
 		if backfillFn != nil {
 			log.Println("import: triggering force backfill…")
 			backfillFn(true)
 		}
+	}
+	if workoutMinDate != "" {
+		log.Printf("import: workouts upserted for %s … %s", workoutMinDate, workoutMaxDate)
 	}
 }

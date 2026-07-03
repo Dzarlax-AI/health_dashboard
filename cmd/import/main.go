@@ -47,11 +47,16 @@ func main() {
 	}
 
 	var (
-		totalParsed   int
-		totalInserted int
-		batchN        int
-		pending       []storage.MetricPoint
-		startTime     = time.Now()
+		totalParsed         int
+		totalInserted       int
+		totalWorkoutsParsed int
+		totalWorkoutsUpsert int
+		totalWorkoutsFailed int
+		batchN              int
+		workoutBatchN       int
+		pending             []storage.MetricPoint
+		pendingWorkouts     []storage.Workout
+		startTime           = time.Now()
 	)
 
 	flush := func(pts []storage.MetricPoint) {
@@ -81,6 +86,36 @@ func main() {
 		}
 	}
 
+	flushWorkouts := func(workouts []storage.Workout) {
+		workoutBatchN++
+		totalWorkoutsParsed += len(workouts)
+
+		if *dryRun {
+			if totalWorkoutsParsed%100 == 0 || totalWorkoutsParsed < 20 {
+				log.Printf("[dry-run] parsed %d workouts so far…", totalWorkoutsParsed)
+			}
+			return
+		}
+
+		var failed int
+		for _, w := range workouts {
+			if err := db.UpsertWorkout(0, w); err != nil {
+				failed++
+				log.Printf("workout batch %d upsert %s error: %v", workoutBatchN, w.ExternalID, err)
+			}
+		}
+		totalWorkoutsFailed += failed
+		totalWorkoutsUpsert += len(workouts) - failed
+
+		elapsed := time.Since(startTime).Round(time.Second)
+		log.Printf("workout batch %d: %d parsed / %d upserted / %d failed (total %d upserted, %s elapsed)",
+			workoutBatchN, len(workouts), len(workouts)-failed, failed, totalWorkoutsUpsert, elapsed)
+
+		if *pauseDur > 0 {
+			time.Sleep(*pauseDur)
+		}
+	}
+
 	// Collect points up to batchSize, then flush.
 	emit := func(pts []storage.MetricPoint) {
 		pending = append(pending, pts...)
@@ -90,18 +125,30 @@ func main() {
 		}
 	}
 
+	emitWorkouts := func(workouts []storage.Workout) {
+		pendingWorkouts = append(pendingWorkouts, workouts...)
+		for len(pendingWorkouts) >= *batchSize {
+			flushWorkouts(pendingWorkouts[:*batchSize])
+			pendingWorkouts = pendingWorkouts[*batchSize:]
+		}
+	}
+
 	log.Printf("starting import from %s (batch=%d pause=%s dry-run=%v)",
 		*filePath, *batchSize, *pauseDur, *dryRun)
 
+	opts := applehealth.EmitOptions{Points: emit, Workouts: emitWorkouts}
 	var parseErr error
 	switch {
 	case len(*filePath) > 4 && (*filePath)[len(*filePath)-4:] == ".zip":
-		parseErr = applehealth.ParseZip(*filePath, emit, nil)
+		parseErr = applehealth.ParseZipWithOptions(*filePath, opts, nil)
 	default:
-		parseErr = applehealth.ParseXMLFile(*filePath, emit, nil)
+		parseErr = applehealth.ParseXMLFileWithOptions(*filePath, opts, nil)
 	}
 	if len(pending) > 0 {
 		flush(pending)
+	}
+	if len(pendingWorkouts) > 0 {
+		flushWorkouts(pendingWorkouts)
 	}
 
 	if parseErr != nil {
@@ -110,11 +157,11 @@ func main() {
 
 	elapsed := time.Since(startTime).Round(time.Second)
 	if *dryRun {
-		log.Printf("dry-run complete: %d points parsed in %s", totalParsed, elapsed)
+		log.Printf("dry-run complete: %d points and %d workouts parsed in %s", totalParsed, totalWorkoutsParsed, elapsed)
 		return
 	}
-	log.Printf("import complete: %d points parsed, %d inserted, %d duplicates skipped in %s",
-		totalParsed, totalInserted, totalParsed-totalInserted, elapsed)
+	log.Printf("import complete: %d points parsed, %d inserted, %d duplicates skipped; %d workouts parsed, %d upserted, %d failed in %s",
+		totalParsed, totalInserted, totalParsed-totalInserted, totalWorkoutsParsed, totalWorkoutsUpsert, totalWorkoutsFailed, elapsed)
 
 	// Trigger a full backfill so daily_scores and caches are up to date.
 	log.Println("running backfill (this may take a few minutes)…")
