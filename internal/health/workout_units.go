@@ -20,6 +20,10 @@ func NormalizeDistanceKm(qty float64, units string) float64 {
 	switch normUnit(units) {
 	case "mi", "mile", "miles":
 		return qty * 1.609344
+	case "m", "meter", "meters", "metre", "metres":
+		return qty / 1000
+	case "ft", "foot", "feet":
+		return qty * 0.0003048
 	default: // "km", ""
 		return qty
 	}

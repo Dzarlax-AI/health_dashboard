@@ -2,6 +2,7 @@ package applehealth
 
 import (
 	"bytes"
+	"math"
 	"os"
 	"strings"
 	"testing"
@@ -26,19 +27,123 @@ func TestParseXMLSyntheticFixtureMapsHealthKitRecords(t *testing.T) {
 	assertNoPoint(t, points, "sleep_total", "2026-01-02 02:00:00 +0000")
 }
 
+func TestParseXMLSyntheticFixtureMapsWorkouts(t *testing.T) {
+	var points []storage.MetricPoint
+	var workouts []storage.Workout
+	if err := parseXMLFixtureWithOptions("testdata/synthetic_export.xml", EmitOptions{
+		Points: func(batch []storage.MetricPoint) {
+			points = append(points, batch...)
+		},
+		Workouts: func(batch []storage.Workout) {
+			workouts = append(workouts, batch...)
+		},
+	}); err != nil {
+		t.Fatalf("ParseXMLWithOptions: %v", err)
+	}
+
+	if got, want := len(workouts), 2; got != want {
+		t.Fatalf("workout count = %d, want %d: %+v", got, want, workouts)
+	}
+	if len(points) == 0 {
+		t.Fatal("ParseXMLWithOptions did not emit metric points")
+	}
+
+	run := workouts[0]
+	if run.ExternalID != "run-sync-1" {
+		t.Fatalf("run external id = %q, want sync id", run.ExternalID)
+	}
+	if run.Name != "Outdoor Run" {
+		t.Fatalf("run name = %q, want Outdoor Run", run.Name)
+	}
+	if run.DurationSec != 2700 {
+		t.Fatalf("run duration = %v, want 2700", run.DurationSec)
+	}
+	if run.IsIndoor {
+		t.Fatal("run IsIndoor = true, want false")
+	}
+	assertFloatPtr(t, run.EnergyKcal, 500, "run energy")
+	assertFloatPtr(t, run.DistanceKm, 10, "run distance")
+	assertFloatPtr(t, run.AvgHRBPM, 150, "run avg HR")
+	assertFloatPtr(t, run.MaxHRBPM, 180, "run max HR")
+	assertFloatPtr(t, run.AvgSpeedKmh, 9, "run avg speed")
+	assertFloatPtr(t, run.MaxSpeedKmh, 14.4, "run max speed")
+	assertFloatPtr(t, run.ElevationUpM, 10.0584, "run elevation")
+	assertFloatPtr(t, run.TemperatureC, 20, "run temperature")
+	assertFloatPtr(t, run.HumidityPct, 55, "run humidity")
+
+	strength := workouts[1]
+	if !strings.HasPrefix(strength.ExternalID, "applexml:") {
+		t.Fatalf("strength fallback external id = %q, want applexml prefix", strength.ExternalID)
+	}
+	if strength.Name != "Functional Strength Training" {
+		t.Fatalf("strength name = %q, want Functional Strength Training", strength.Name)
+	}
+	if !strength.IsIndoor {
+		t.Fatal("strength IsIndoor = false, want true")
+	}
+	if strength.DurationSec != 1800 {
+		t.Fatalf("strength duration = %v, want 1800", strength.DurationSec)
+	}
+	assertFloatPtr(t, strength.EnergyKcal, 28.68072, "strength energy")
+}
+
 func TestParseXMLFocusedEdgeFixturePinsImportSafety(t *testing.T) {
 	points := collectXMLFixturePoints(t, "testdata/focused_edge_export.xml")
 
-	if got, want := len(points), 4; got != want {
+	if got, want := len(points), 5; got != want {
 		t.Fatalf("point count = %d, want %d: %+v", got, want, points)
 	}
 	assertPoint(t, points, "blood_oxygen_saturation", "%", "2026-02-01 06:00:00 +0100", "Synthetic Watch", 98)
+	assertPoint(t, points, "walking_asymmetry", "%", "2026-02-01 06:05:00 +0100", "Synthetic Watch", 0)
+	assertNoPoint(t, points, "heart_rate", "2026-02-01 06:10:00 +0100")
 	assertPoint(t, points, "mindful_minutes", "min", "2026-02-01 09:00:00 +0100", "Synthetic Phone", 15)
 	assertPoint(t, points, "apple_stand_hour", "count", "2026-02-01 10:00:00 +0100", "Synthetic Watch", 1)
 	assertPoint(t, points, "some_new_metric", "count", "2026-02-01 13:00:00 +0100", "Synthetic Device", 12.5)
 
 	assertMetricCount(t, points, "mindful_minutes", 1)
 	assertNoMetric(t, points, "blood_pressure")
+}
+
+func TestParseWorkoutValidationAndCanonicalNames(t *testing.T) {
+	if _, ok := parseWorkout(xmlWorkout{}); ok {
+		t.Fatal("empty workout parsed, want rejected")
+	}
+	if _, ok := parseWorkout(xmlWorkout{
+		ActivityType: "HKWorkoutActivityTypeRunning",
+		StartDate:    "2026-01-02 12:45:00 +0000",
+		EndDate:      "2026-01-02 12:00:00 +0000",
+	}); ok {
+		t.Fatal("workout with end before start parsed, want rejected")
+	}
+
+	indoor, ok := parseWorkout(xmlWorkout{
+		ActivityType: "HKWorkoutActivityTypeCycling",
+		Duration:     "30",
+		DurationUnit: "min",
+		StartDate:    "2026-01-02 12:00:00 +0000",
+		EndDate:      "2026-01-02 12:30:00 +0000",
+		Metadata:     []xmlMetadataEntry{{Key: "HKIndoorWorkout", Value: "1"}},
+	})
+	if !ok {
+		t.Fatal("valid indoor cycling workout rejected")
+	}
+	if indoor.Name != "Indoor Cycling" {
+		t.Fatalf("indoor cycling name = %q, want Indoor Cycling", indoor.Name)
+	}
+
+	outdoor, ok := parseWorkout(xmlWorkout{
+		ActivityType: "HKWorkoutActivityTypeCycling",
+		Duration:     "30",
+		DurationUnit: "min",
+		StartDate:    "2026-01-02 12:00:00 +0000",
+		EndDate:      "2026-01-02 12:30:00 +0000",
+	})
+	if !ok {
+		t.Fatal("valid outdoor cycling workout rejected")
+	}
+	if outdoor.Name != "Outdoor Cycling" {
+		t.Fatalf("outdoor cycling name = %q, want Outdoor Cycling", outdoor.Name)
+	}
 }
 
 func TestParseXMLEmptyAndMalformedInputs(t *testing.T) {
@@ -80,6 +185,14 @@ func parseXMLFixture(path string, emit func([]storage.MetricPoint)) error {
 	return ParseXML(bytes.NewReader(data), emit)
 }
 
+func parseXMLFixtureWithOptions(path string, opts EmitOptions) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	return ParseXMLWithOptions(bytes.NewReader(data), opts)
+}
+
 func assertPoint(t *testing.T, points []storage.MetricPoint, metric, units, date, source string, qty float64) {
 	t.Helper()
 	for _, p := range points {
@@ -91,6 +204,16 @@ func assertPoint(t *testing.T, points []storage.MetricPoint, metric, units, date
 		}
 	}
 	t.Fatalf("missing point metric=%s date=%s source=%s in %+v", metric, date, source, points)
+}
+
+func assertFloatPtr(t *testing.T, got *float64, want float64, label string) {
+	t.Helper()
+	if got == nil {
+		t.Fatalf("%s = nil, want %v", label, want)
+	}
+	if math.Abs(*got-want) > 0.00001 {
+		t.Fatalf("%s = %v, want %v", label, *got, want)
+	}
 }
 
 func assertNoPoint(t *testing.T, points []storage.MetricPoint, metric, date string) {
