@@ -68,3 +68,12 @@ const importStageWorkoutsTableDDL = `CREATE TABLE IF NOT EXISTS import_stage_wor
 	hr_z4_sec          INTEGER,
 	hr_z5_sec          INTEGER
 )`
+
+func importStageIndexMigrations() []indexMigration {
+	return []indexMigration{
+		{"idx_import_stage_points_dedup", `CREATE INDEX IF NOT EXISTS idx_import_stage_points_dedup ON import_stage_points (import_run_id, metric_name, date, source, staged_seq DESC)`},
+		{"idx_import_stage_points_coverage", `CREATE INDEX IF NOT EXISTS idx_import_stage_points_coverage ON import_stage_points (import_run_id, metric_name, source, local_date)`},
+		{"idx_import_stage_workouts_dedup", `CREATE INDEX IF NOT EXISTS idx_import_stage_workouts_dedup ON import_stage_workouts (import_run_id, external_id, staged_seq DESC)`},
+		{"idx_import_stage_workouts_synthetic", `CREATE INDEX IF NOT EXISTS idx_import_stage_workouts_synthetic ON import_stage_workouts (import_run_id, name, start_time, end_time)`},
+	}
+}

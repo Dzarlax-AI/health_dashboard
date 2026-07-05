@@ -387,6 +387,34 @@ func TestAppleHealthXMLImportCleanupAbandonedStagesPreservesRecentRunning(t *tes
 	}
 }
 
+func TestBeginAppleHealthXMLImportEnsuresPersistentStageSchema(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	ctx, cancel := queryCtx()
+	defer cancel()
+	if _, err := db.pool.Exec(ctx, `DROP TABLE IF EXISTS import_stage_workouts, import_stage_points`); err != nil {
+		t.Fatalf("drop stage tables: %v", err)
+	}
+	defer db.EnsureIndexes()
+
+	xml := beginTestXMLImport(t, db, "xml-ensure-stage-schema")
+	if err := xml.AddPoints([]MetricPoint{{
+		MetricName: "heart_rate",
+		Units:      "count/min",
+		Date:       "2026-07-01 10:00:00 +0200",
+		Qty:        61,
+		Source:     "Apple Watch",
+	}}); err != nil {
+		t.Fatalf("stage point after schema ensure: %v", err)
+	}
+	assertStageCounts(t, db, xml.runID, 1, 0)
+
+	if _, err := xml.Commit(); err != nil {
+		t.Fatalf("commit xml: %v", err)
+	}
+}
+
 func TestAppleHealthXMLImportReplacesSyntheticWorkoutDuplicate(t *testing.T) {
 	db, cleanup := testDB(t)
 	defer cleanup()
@@ -449,7 +477,7 @@ func beginTestXMLImport(t *testing.T, db *DB, source string) *ImportSession {
 	t.Helper()
 	session, err := db.BeginAppleHealthXMLImport(ImportOptions{
 		SourceName: source,
-		SnapshotAt: time.Now(),
+		SnapshotAt: time.Now().Add(time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("begin xml import: %v", err)

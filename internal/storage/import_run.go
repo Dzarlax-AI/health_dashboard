@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -62,8 +63,11 @@ func (s *DB) BeginAppleHealthXMLImport(opts ImportOptions) (*ImportSession, erro
 	ctx, cancel := longCtx()
 	defer cancel()
 
+	if err := s.ensureAppleHealthImportSchema(ctx); err != nil {
+		return nil, fmt.Errorf("ensure import schema: %w", err)
+	}
 	if err := s.cleanupAbandonedImportStages(ctx, abandonedRunningImportAge); err != nil {
-		return nil, fmt.Errorf("cleanup import staging: %w", err)
+		log.Printf("cleanup abandoned import staging before new import: %v", err)
 	}
 
 	var runID int64
@@ -98,6 +102,26 @@ func (s *DB) BeginAppleHealthXMLImport(opts ImportOptions) (*ImportSession, erro
 		},
 	}
 	return session, nil
+}
+
+func (s *DB) ensureAppleHealthImportSchema(ctx context.Context) error {
+	tables := []string{
+		importRunsTableDDL,
+		importRunCoverageTableDDL,
+		importStagePointsTableDDL,
+		importStageWorkoutsTableDDL,
+	}
+	for _, ddl := range tables {
+		if _, err := s.pool.Exec(ctx, ddl); err != nil {
+			return fmt.Errorf("create import table: %w", err)
+		}
+	}
+	for _, index := range importStageIndexMigrations() {
+		if _, err := s.pool.Exec(ctx, index.ddl); err != nil {
+			return fmt.Errorf("create import index %s: %w", index.name, err)
+		}
+	}
+	return nil
 }
 
 func (s *ImportSession) AddPoints(points []MetricPoint) error {
@@ -182,34 +206,19 @@ func (s *ImportSession) Commit() (ImportCounters, error) {
 	}
 
 	if err := s.promoteCoverage(ctx, tx); err != nil {
-		_ = tx.Rollback(ctx)
-		_ = s.db.markImportFailedWithCounters(s.runID, err.Error(), s.counters)
-		_ = s.db.cleanupImportStageRows(s.runID)
-		return s.counters, err
+		return s.failCommit(tx, err)
 	}
 	if err := s.promotePoints(ctx, tx); err != nil {
-		_ = tx.Rollback(ctx)
-		_ = s.db.markImportFailedWithCounters(s.runID, err.Error(), s.counters)
-		_ = s.db.cleanupImportStageRows(s.runID)
-		return s.counters, err
+		return s.failCommit(tx, err)
 	}
 	if err := s.promoteWorkouts(ctx, tx); err != nil {
-		_ = tx.Rollback(ctx)
-		_ = s.db.markImportFailedWithCounters(s.runID, err.Error(), s.counters)
-		_ = s.db.cleanupImportStageRows(s.runID)
-		return s.counters, err
+		return s.failCommit(tx, err)
 	}
 	if err := s.markCommitted(ctx, tx); err != nil {
-		_ = tx.Rollback(ctx)
-		_ = s.db.markImportFailedWithCounters(s.runID, err.Error(), s.counters)
-		_ = s.db.cleanupImportStageRows(s.runID)
-		return s.counters, err
+		return s.failCommit(tx, err)
 	}
 	if err := s.deleteStageRows(ctx, tx); err != nil {
-		_ = tx.Rollback(ctx)
-		_ = s.db.markImportFailedWithCounters(s.runID, err.Error(), s.counters)
-		_ = s.db.cleanupImportStageRows(s.runID)
-		return s.counters, err
+		return s.failCommit(tx, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		// The outcome can be ambiguous after Commit returns an error. Leave the
@@ -218,6 +227,19 @@ func (s *ImportSession) Commit() (ImportCounters, error) {
 		return s.counters, err
 	}
 	return s.counters, nil
+}
+
+func (s *ImportSession) failCommit(tx pgx.Tx, cause error) (ImportCounters, error) {
+	if err := tx.Rollback(context.Background()); err != nil {
+		log.Printf("rollback import %d promote transaction: %v", s.runID, err)
+	}
+	if err := s.db.markImportFailedWithCounters(s.runID, cause.Error(), s.counters); err != nil {
+		log.Printf("mark import %d failed: %v", s.runID, err)
+	}
+	if err := s.db.cleanupImportStageRows(s.runID); err != nil {
+		log.Printf("cleanup stage rows for import %d: %v", s.runID, err)
+	}
+	return s.counters, cause
 }
 
 func (s *ImportSession) Abort(cause error) {
