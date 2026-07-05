@@ -37,6 +37,8 @@ func (s *DB) EnsureIndexes() {
 	tableMigrations := []string{
 		importRunsTableDDL,
 		importRunCoverageTableDDL,
+		importStagePointsTableDDL,
+		importStageWorkoutsTableDDL,
 	}
 	for _, ddl := range tableMigrations {
 		if err := s.execStartupDDL(ddl, ddlColumnStatementTimeout); err != nil {
@@ -127,6 +129,7 @@ func (s *DB) EnsureIndexes() {
 		// Speeds up WHERE metric_name = $1 AND date-part queries on metric_points
 		{"idx_points_metric_date", `CREATE INDEX IF NOT EXISTS idx_points_metric_date ON metric_points (metric_name, SUBSTRING(date,1,10))`},
 	}
+	indexes = append(indexes, importStageIndexMigrations()...)
 
 	existingIndexes, err := s.existingIndexes(indexes)
 	if err != nil {
@@ -138,6 +141,9 @@ func (s *DB) EnsureIndexes() {
 		if err := s.execStartupDDL(index.ddl, ddlIndexStatementTimeout); err != nil {
 			log.Printf("ensure index: %v (query: %.80s)", err, index.ddl)
 		}
+	}
+	if err := s.CleanupAbandonedImportStages(24 * time.Hour); err != nil {
+		log.Printf("cleanup import staging: %v", err)
 	}
 }
 

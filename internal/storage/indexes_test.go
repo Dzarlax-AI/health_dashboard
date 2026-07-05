@@ -48,6 +48,12 @@ func TestEnsureIndexesIntegration_CreatesAndSkipsTenantDDL(t *testing.T) {
 	db, cleanup := testDB(t)
 	defer cleanup()
 
+	requiredTables := []string{
+		"import_runs",
+		"import_run_coverage",
+		"import_stage_points",
+		"import_stage_workouts",
+	}
 	requiredColumns := []columnRef{
 		{table: "metric_points", column: "quality"},
 		{table: "daily_scores", column: "energy_capacity"},
@@ -65,10 +71,20 @@ func TestEnsureIndexesIntegration_CreatesAndSkipsTenantDDL(t *testing.T) {
 		{name: "idx_hourly_metric_date"},
 		{name: "idx_points_date"},
 		{name: "idx_points_metric_date"},
+		{name: "idx_import_stage_points_dedup"},
+		{name: "idx_import_stage_points_coverage"},
+		{name: "idx_import_stage_workouts_dedup"},
+		{name: "idx_import_stage_workouts_synthetic"},
 	}
 
 	// First run: should create any missing startup DDL for this tenant schema.
 	db.EnsureIndexes()
+
+	for _, table := range requiredTables {
+		if !tableExists(t, db, table) {
+			t.Fatalf("required table missing after EnsureAllTables/EnsureIndexes: %s", table)
+		}
+	}
 
 	columns, err := db.existingColumns(columnMigrationsFromRefs(requiredColumns))
 	if err != nil {
@@ -93,6 +109,17 @@ func TestEnsureIndexesIntegration_CreatesAndSkipsTenantDDL(t *testing.T) {
 	// Run a second time against the already-current tenant schema. The
 	// catalog precheck should skip all idempotent DDL and still return cleanly.
 	db.EnsureIndexes()
+}
+
+func tableExists(t *testing.T, db *DB, table string) bool {
+	t.Helper()
+	ctx, cancel := queryCtx()
+	defer cancel()
+	var exists bool
+	if err := db.pool.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&exists); err != nil {
+		t.Fatalf("check table %s: %v", table, err)
+	}
+	return exists
 }
 
 func columnMigrationsFromRefs(refs []columnRef) []columnMigration {

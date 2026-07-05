@@ -251,7 +251,7 @@
   <section class="ok">
     <h2>Implemented Changes</h2>
     <ul>
-      <li>Added <code>storage.ImportSession</code> for Apple Health XML imports: durable <code>import_runs</code>, one logical <code>health_records</code> row, temp staging tables, <code>pgx.CopyFrom</code>, coverage rows, and set-based promote.</li>
+      <li>Added <code>storage.ImportSession</code> for Apple Health XML imports: durable <code>import_runs</code>, one logical <code>health_records</code> row, staged <code>pgx.CopyFrom</code>, coverage rows, and set-based promote. The initial temp staging was later replaced by persistent <code>import_run_id</code>-keyed staging in the separate follow-up branch.</li>
       <li>Added provenance columns for <code>metric_points</code> and <code>workouts</code>, plus startup creation of <code>import_runs</code> and <code>import_run_coverage</code>.</li>
       <li>Changed live <code>InsertPoints</code> and <code>UpsertWorkout</code> conflict updates to restore <code>origin='live'</code> and clear <code>import_run_id</code>, so later live/mobile data stays fresher than an older XML snapshot.</li>
       <li>Implemented XML point promote with staging deduplication, conservative stale-row cleanup by staged coverage group, and conflict updates guarded by <code>received_at &lt;= snapshot_at</code>.</li>
@@ -279,7 +279,7 @@
     <h2>Known Limitations After Implementation</h2>
     <ul>
       <li>XML deletion remains coverage-group conservative because Apple Health XML sample-level stable IDs are not persisted for metric points.</li>
-      <li><strong>P2 follow-up:</strong> large production imports still hold a staging transaction during parse. If this is too heavy in real use, move to persistent staging keyed by <code>import_run_id</code> and keep only promote transactional.</li>
+      <li><strong>P2 follow-up resolved in separate branch:</strong> persistent staging keyed by <code>import_run_id</code> was implemented in <code>codex/persistent-import-staging</code>, so large production imports no longer hold a staging transaction during the full XML parse; only final promote remains transactional.</li>
       <li>Existing July 2026 XML-imported rows are not retroactively backfilled with <code>origin='apple_health_xml'</code>. Provenance starts with imports performed after this change.</li>
     </ul>
   </section>

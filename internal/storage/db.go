@@ -126,6 +126,8 @@ func (s *DB) EnsureAllTables() error {
 		)`,
 		importRunsTableDDL,
 		importRunCoverageTableDDL,
+		importStagePointsTableDDL,
+		importStageWorkoutsTableDDL,
 		`CREATE TABLE IF NOT EXISTS minute_metrics (
 			metric_name TEXT NOT NULL,
 			minute      TEXT NOT NULL,

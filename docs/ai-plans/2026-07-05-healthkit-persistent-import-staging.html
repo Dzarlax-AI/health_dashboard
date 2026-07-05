@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Implementation Plan: Persistent Staging for Apple Health XML Imports</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f5f7fa;
+      color: #1f2937;
+      line-height: 1.5;
+    }
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 32px;
+    }
+    section {
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 20px;
+      margin: 16px 0;
+    }
+    h1, h2, h3 { line-height: 1.2; }
+    h1 { margin-bottom: 8px; }
+    h2 { margin-top: 0; }
+    code {
+      background: #f3f4f6;
+      padding: 2px 5px;
+      border-radius: 4px;
+      font-size: 0.95em;
+    }
+    pre {
+      background: #111827;
+      color: #f9fafb;
+      border-radius: 8px;
+      padding: 14px;
+      overflow-x: auto;
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: #e0f2fe;
+      color: #075985;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .meta {
+      color: #6b7280;
+      margin-top: 0;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 12px;
+    }
+    .card {
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 14px;
+      background: #fafafa;
+    }
+    .risk { border-left: 4px solid #dc2626; }
+    .approval { border-left: 4px solid #d97706; }
+    .note { border-left: 4px solid #2563eb; }
+    ul, ol { padding-left: 22px; }
+    li { margin: 6px 0; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Implementation Plan: Persistent Staging for Apple Health XML Imports</h1>
+  <p class="meta">Created 2026-07-05 for a separate PR after the staged XML import merge.</p>
+  <p class="badge">Approval required before implementation</p>
+
+  <section>
+    <h2>Task Summary</h2>
+    <p>
+      Finish the remaining P2 follow-up for Apple Health XML imports: replace the current
+      temporary-table staging transaction with persistent staging tables keyed by
+      <code>import_run_id</code>. The goal is to let very large HealthKit exports parse and stage
+      data for hours without holding one long PostgreSQL transaction open.
+    </p>
+  </section>
+
+  <section>
+    <h2>Inspected Context</h2>
+    <ul>
+      <li><code>internal/storage/import_run.go</code> currently owns import metadata, temporary staging, promotion, commit, and abort behavior.</li>
+      <li><code>internal/storage/import_schema.go</code> currently defines <code>import_runs</code> and <code>import_run_coverage</code>.</li>
+      <li><code>internal/storage/indexes.go</code> creates import tables during startup via <code>EnsureIndexes</code>.</li>
+      <li><code>internal/ui/import_handler.go</code> and <code>cmd/import/main.go</code> both use <code>BeginAppleHealthXMLImport</code>, <code>AddPoints</code>, <code>AddWorkouts</code>, <code>Commit</code>, and <code>Abort</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Current Behavior</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>What is already durable</h3>
+        <p>
+          <code>BeginAppleHealthXMLImport</code> creates <code>import_runs</code> and a synthetic
+          <code>health_records</code> row before parsing. Failed imports can therefore be marked in
+          durable metadata.
+        </p>
+      </div>
+      <div class="card">
+        <h3>What is still transactional</h3>
+        <p>
+          The same method then opens <code>s.pool.Begin(ctx)</code> and creates temporary
+          <code>ah_import_points</code> / <code>ah_import_workouts</code> tables with
+          <code>ON COMMIT DROP</code>. Parser callbacks <code>CopyFrom</code> into those temp tables.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Why this is risky</h3>
+        <p>
+          The transaction spans the full XML parse plus final promotion. For a multi-hour import,
+          that can retain database resources, fail late after substantial work, and make operational
+          recovery worse than necessary.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <ul>
+      <li>Use persistent staging tables, likely <code>import_stage_points</code> and <code>import_stage_workouts</code>, with every row keyed by <code>import_run_id</code>.</li>
+      <li>Keep parser callbacks streaming-friendly: <code>AddPoints</code> and <code>AddWorkouts</code> should still batch via <code>CopyFrom</code>, but each call should complete independently without one long-held transaction.</li>
+      <li>Open a short transaction only in <code>Commit</code> to promote coverage, delete stale covered rows, upsert current points and workouts, mark the run committed, and clean up staging rows.</li>
+      <li><code>Abort</code> should persist failure counters/error text, mark the run failed, and delete that run's staging rows so abandoned data does not grow by default.</li>
+      <li>Preserve the behavior from the previous PR: <code>snapshot_at</code> freshness protection, live-data precedence for newer rows, deterministic duplicate tie-breaking via <code>staged_seq</code>, workout import, and coverage audit rows.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Assumptions and Unknowns</h2>
+    <ul>
+      <li>Default behavior should prefer cleanup over retaining failed staging rows for debugging. Because current failed imports only persist <code>status</code> and <code>error</code>, this PR must explicitly persist parsed/staged counters on the failure path before deleting stage rows.</li>
+      <li>Persistent staging increases WAL writes versus temp tables. That is acceptable for this PR because avoiding a multi-hour transaction is the larger operational win.</li>
+      <li>Persistent staging makes concurrent imports stage-isolated, not globally concurrency-safe. Target tables are shared, workout promotion is currently commit-order dependent, and CLI imports can run independently of the UI.</li>
+      <li>Cleanup must not delete a live import. Stale cleanup should touch <code>running</code> imports only when they are clearly abandoned by age and/or protected by an import lease/advisory lock.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Files Likely to Change</h2>
+    <ul>
+      <li><code>internal/storage/import_schema.go</code> - add persistent staging table DDL and indexes.</li>
+      <li><code>internal/storage/db.go</code> - include the new staging tables in <code>EnsureAllTables</code> for tenant provisioning, not only startup migrations.</li>
+      <li><code>internal/storage/indexes.go</code> - create the new staging tables/indexes at startup.</li>
+      <li><code>internal/storage/import_run.go</code> - remove long-lived temp-table transaction, write to persistent staging, promote inside a short transaction, and clean staging on commit/abort.</li>
+      <li><code>internal/storage/import_run_test.go</code> - update integration tests and add coverage for stage-row visibility and cleanup.</li>
+      <li><code>README.md</code>, <code>AGENTS.md</code>, and <code>CLAUDE.md</code> - update import architecture notes if the staging model is documented there.</li>
+      <li><code>docs/ai-plans/2026-07-03-healthkit-import-dedup-batching.html</code> - mark the follow-up as implemented or moved into this PR after code lands.</li>
+      <li>This plan file - update after implementation with actual changes, tests, limitations, and follow-ups.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Proposed Implementation Steps</h2>
+    <ol>
+      <li>Add persistent table DDL for <code>import_stage_points</code> and <code>import_stage_workouts</code>. Include <code>import_run_id</code>, <code>staged_seq BIGSERIAL</code>, and the current staging columns.</li>
+      <li>Add explicit indexes for the actual query shapes: points by <code>(import_run_id, metric_name, date, source, staged_seq DESC)</code>, points coverage by <code>(import_run_id, metric_name, source, local_date)</code>, workouts by <code>(import_run_id, external_id, staged_seq DESC)</code>, workouts synthetic stale-delete keys by <code>(import_run_id, name, start_time, end_time)</code>, plus simple <code>import_run_id</code> cleanup paths if the composite indexes do not cover deletes well enough.</li>
+      <li>Wire table creation into both startup DDL and <code>EnsureAllTables</code> alongside <code>import_runs</code> and <code>import_run_coverage</code>.</li>
+      <li>Change <code>ImportSession</code> so it no longer stores a long-lived <code>pgx.Tx</code>. <code>BeginAppleHealthXMLImport</code> should create durable metadata and return immediately after any stale-stage cleanup needed for the run.</li>
+      <li>Change <code>AddPoints</code> and <code>AddWorkouts</code> to <code>CopyFrom</code> into persistent stage tables with <code>import_run_id</code> included in each row.</li>
+      <li>Change promotion queries to read only rows for <code>s.runID</code>. Every nested stage reference, including <code>NOT EXISTS</code> stale-point checks and workout exact-row checks, must also filter by <code>import_run_id</code>.</li>
+      <li>Keep <code>DISTINCT ON</code> ordering by <code>staged_seq DESC</code> so later staged duplicates win deterministically inside one run.</li>
+      <li>Make <code>Commit</code> open a transaction, promote coverage/points/workouts, update <code>import_runs</code>, delete staging rows for the run, and then commit.</li>
+      <li>Define commit-failure behavior explicitly: if promotion fails before commit, roll back target-table changes, mark the run failed, persist failure counters, and then delete stage rows only after the failure state is durable. Treat ambiguous <code>tx.Commit</code> errors conservatively: mark the run failed only when the transaction state is known rolled back; otherwise leave staging rows for manual inspection.</li>
+      <li>Make <code>Abort</code> persist failure counters, delete staging rows for the run, and mark the import failed. Keep the caller API stable unless tests show returning cleanup errors is necessary.</li>
+      <li>Add a conservative cleanup helper for stale stage rows: delete rows for already <code>failed</code> imports, and for <code>running</code> imports only when <code>started_at</code> is older than a high threshold such as 24 hours. Run it at startup and before a new import begins, unless implementation shows an advisory-lock/lease approach is cleaner.</li>
+      <li>Run focused storage, parser, CLI, and UI tests. Update docs and this plan after implementation.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Data, API, Deployment, and UX Impact</h2>
+    <ul>
+      <li><strong>Database:</strong> adds persistent staging tables and indexes. No destructive migration is planned.</li>
+      <li><strong>API:</strong> no external API contract change is expected for the web import endpoint or CLI flags.</li>
+      <li><strong>UX:</strong> import progress should behave the same, but long imports should be operationally safer. Leaving the import page still should not determine whether server-side staging continues.</li>
+      <li><strong>Deployment:</strong> startup DDL must be safe on existing production data. New staging tables start empty, so initial index creation should be cheap.</li>
+      <li><strong>Performance:</strong> parser staging may write more WAL than temp tables. Final commit should be shorter because parsing no longer happens inside the transaction, but promotion can still be a large transaction and must be indexed and measured.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <pre><code>HEALTH_DB_TESTS=1 GOCACHE=/tmp/health-go-build-cache go test ./internal/storage -run 'TestAppleHealthXMLImport|TestEnsureIndexesIntegration' -count=1 -v
+GOCACHE=/tmp/health-go-build-cache go test ./internal/storage -run 'AppleHealthXMLImport|Import|Bulk|Workout|EnsureIndexesIntegration' -count=1
+GOCACHE=/tmp/health-go-build-cache go test ./internal/applehealth ./cmd/import ./internal/ui -run 'ExportDate|Import' -count=1
+GOCACHE=/tmp/health-go-build-cache make test-unit</code></pre>
+    <ul>
+      <li>Add/adjust DB-backed tests proving staged rows exist before commit and are removed after commit.</li>
+      <li>Add/adjust DB-backed tests proving <code>Abort</code> marks failure and removes stage rows.</li>
+      <li>Add DB-backed tests for cross-run isolation: two staged runs before one commits, nested <code>NOT EXISTS</code> checks ignore the other run, and cleanup never removes the other run's rows.</li>
+      <li>Add tests that failed imports persist parsed/staged counters before stage rows are deleted.</li>
+      <li>Add tests that stale cleanup does not touch a non-stale <code>running</code> import, and does clean old failed/running imports according to the chosen threshold.</li>
+      <li>Add coverage that both <code>EnsureAllTables</code> and <code>EnsureIndexes</code> create the staging tables for new/existing tenants.</li>
+      <li>Add or document workout concurrency/commit-order behavior. If the implementation does not serialize concurrent XML imports, tests should make the expected commit-order behavior explicit.</li>
+      <li>Keep existing dedup and freshness tests passing for live data vs XML snapshot ordering.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Manual QA Checklist</h2>
+    <ul>
+      <li>Run a small XML or ZIP import through the CLI against a test schema and verify <code>import_runs.status = 'committed'</code>.</li>
+      <li>Verify <code>import_stage_points</code> and <code>import_stage_workouts</code> have no rows for the committed run after commit.</li>
+      <li>Trigger a controlled parse/stage failure in a test run and verify the run is marked <code>failed</code> and stage rows are cleaned.</li>
+      <li>Use the Admin import page on a small fixture and confirm progress, completion counters, and cache invalidation still work.</li>
+      <li>After deploy, check startup logs for DDL errors and smoke-test authenticated dashboard redirects as usual.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks and Edge Cases</h2>
+    <ul>
+      <li><strong>Crash during parse:</strong> persistent stage rows can remain if the process dies before <code>Abort</code>. Mitigate with cleanup for stale failed imports and only clearly abandoned <code>running</code> imports.</li>
+      <li><strong>Commit failure after staging:</strong> stage rows should remain or be cleaned according to a documented policy. The transaction must not mark committed unless promotion and cleanup succeed, and ambiguous commit errors must not destroy the only forensic data.</li>
+      <li><strong>Large stage tables:</strong> indexes must stay scoped to promotion and cleanup access patterns, not over-index every column.</li>
+      <li><strong>Duplicate ordering:</strong> changing from temp <code>BIGSERIAL</code> to persistent <code>BIGSERIAL</code> must preserve deterministic "last staged row wins" behavior inside each run.</li>
+      <li><strong>Concurrent imports:</strong> all promotion, delete, and cleanup queries must filter by <code>import_run_id</code> so one import cannot consume another import's staged rows. Shared target-table behavior is still commit-order dependent unless this PR adds serialization.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <p>
+      If the PR causes import trouble after deployment, revert the code to the previous temp-table
+      staging implementation. The new persistent staging tables are additive and can remain unused.
+      If needed, remove leftover stage rows with targeted deletes by <code>import_run_id</code> after
+      confirming no import is running.
+    </p>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Should this PR add explicit import serialization with an advisory lock to avoid commit-order surprises between CLI and UI imports, or is documented stage isolation enough for this follow-up?</li>
+      <li>What stale-running threshold is appropriate for cleanup after crashes? Proposed default: 24 hours.</li>
+      <li>Should ambiguous commit errors preserve staging rows for manual inspection even if normal abort/promotion failures clean them?</li>
+    </ul>
+  </section>
+
+  <section class="note">
+    <h2>PR Hygiene</h2>
+    <ul>
+      <li>Create a new branch from <code>origin/main</code> for this follow-up.</li>
+      <li>If this PR is created from an issue, link the PR to that issue in the PR body.</li>
+      <li>Use English for branch name, commit message, PR title, and GitHub comments.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation Update</h2>
+    <p>
+      Implemented on branch <code>codex/persistent-import-staging</code>. The importer now writes
+      parser batches to persistent <code>import_stage_points</code> and
+      <code>import_stage_workouts</code> rows keyed by <code>import_run_id</code>. The long parse
+      transaction is removed; <code>Commit</code> opens a transaction only for coverage promotion,
+      stale-row cleanup, point/workout upserts, import counter persistence, and stage-row cleanup.
+    </p>
+    <ul>
+      <li>Added stage-table DDL to both <code>EnsureAllTables</code> and startup <code>EnsureIndexes</code>.</li>
+      <li>Added promotion indexes for point dedup, point coverage, workout dedup, and synthetic workout cleanup query shapes.</li>
+      <li>Added conservative cleanup for committed/failed runs and <code>running</code> runs older than 24 hours; recent running imports are preserved because CLI imports can run outside the UI process.</li>
+      <li><code>Abort</code> now persists failure counters before deleting that run's staging rows.</li>
+      <li>Known limitation: concurrent imports are stage-isolated, but shared target-table workout behavior remains commit-order dependent; this PR documents and tests stage isolation rather than introducing advisory-lock serialization.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Verification Update</h2>
+    <ul>
+      <li><code>HEALTH_DB_TESTS=1 GOCACHE=/tmp/health-go-build-cache go test ./internal/storage -run "TestAppleHealthXMLImport|TestEnsureIndexesIntegration" -count=1 -v</code> - passed.</li>
+      <li>Added DB-backed tests for persistent stage visibility/cleanup, cross-run stale-delete isolation, abort counter persistence, abandoned-stage cleanup, and startup/provisioning DDL coverage.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval Gate</h2>
+    <p>
+      Implementation must not start until this plan is explicitly approved. After implementation,
+      update this same file with actual changes, tests run, known limitations, and follow-up
+      recommendations.
+    </p>
+  </section>
+</main>
+</body>
+</html>

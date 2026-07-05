@@ -411,11 +411,11 @@ Admin UI and CLI imports share the same staged storage path:
 
 1. create one logical `import_runs` row and one `health_records` row for the export;
 2. read `HealthData@exportDate` as the snapshot freshness timestamp, falling back to import start only when it is unavailable;
-3. stream parsed metric points and workouts into temporary staging tables with bulk database operations;
-4. promote staged rows in one final transaction, recording coverage metadata and provenance;
+3. stream parsed metric points and workouts into persistent staging tables keyed by `import_run_id` with bulk database operations, without holding a transaction for the full XML parse;
+4. promote staged rows in one final transaction, recording coverage metadata and provenance, then clean the staging rows for that run;
 5. invalidate affected aggregate rows and run one cache rebuild after commit.
 
-If XML parsing or staging fails, the import is marked failed and no cleanup/backfill is run. The old row-by-row `BulkInsertPoints` path is retained only for narrow compatibility helpers.
+If XML parsing or staging fails, the import is marked failed with parsed/staged counters, staging rows for that run are cleaned, and no aggregate cleanup/backfill is run. Startup and new import setup also clean staging rows from failed/committed runs and only clearly abandoned `running` imports. The old row-by-row `BulkInsertPoints` path is retained only for narrow compatibility helpers.
 
 After import, run `make energy-backfill` (CLI) or open **Settings → Historical EnergyBank** (web UI) to compute retrospective EnergyBank snapshots from the imported daily scores. This unlocks per-user verdict band calibration; without it, the cold-start defaults are used until the live orchestrator has accumulated 30+ days of snapshots on its own.
 
