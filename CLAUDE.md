@@ -60,11 +60,11 @@ Single binary HTTP server (`cmd/server/main.go`) that wires together several pac
   ```
   `MaybeFireAll` is called from the morning scheduler tick (see `runMorningSmartRetry` in `cmd/server/main.go`). It honours per-rule cadence + eligibility and never bubbles errors — a misbehaving rule cannot block the morning report path. Render returning `""` is treated as "skip with no persist" (idiomatic when the render itself re-evaluates a condition). See `digest.go` and `energy_nudge.go` for production examples.
 
-- **`internal/applehealth`** — streaming XML parser for Apple Health export files (`export.xml` or `.zip`). Memory-efficient, maps 100+ HK metric types to internal metric names. Normalizes fraction-based percentage metrics (SpO₂, body fat, etc.) to 0–100 scale during import.
+- **`internal/applehealth`** — streaming XML parser for Apple Health export files (`export.xml` or `.zip`). Memory-efficient, maps 100+ HK metric types to internal metric names. Normalizes fraction-based percentage metrics (SpO₂, body fat, etc.) to 0–100 scale during import. Admin UI and CLI XML imports stage through `storage.ImportSession`: one logical `import_runs` row + one `health_records` row per import, `pgx.CopyFrom` temp staging, coverage metadata, set-based promote, and one cache rebuild after commit. XML snapshot freshness is time-based using `HealthData@exportDate` when available: XML supersedes older live/HAE exact rows, later live/mobile exact rows remain fresher, and a later XML snapshot may supersede them again. Do not reintroduce broad `RemoveAutoExportForRange` cleanup for XML imports.
 
 - **`cmd/backfill`** — standalone CLI to rebuild caches. Flags: `--force` / `-f`.
 
-- **`cmd/import`** — standalone CLI to import Apple Health export files. Flags: `--file`, `--batch`, `--pause`, `--dry-run`. Streams XML to avoid memory overload.
+- **`cmd/import`** — standalone CLI to import Apple Health export files. Flags: `--file`, `--batch`, `--pause`, `--dry-run`; `--pause` is retained for compatibility but staged imports ignore per-batch sleeps. Streams XML to avoid memory overload and uses the same `storage.ImportSession` path as Admin UI.
 
 ## Data Flow
 

@@ -166,6 +166,22 @@ func TestParseXMLEmptyAndMalformedInputs(t *testing.T) {
 	}
 }
 
+func TestExportDateFromXML(t *testing.T) {
+	tm, ok, err := exportDateFromXML(strings.NewReader(`<?xml version="1.0"?>
+<HealthData locale="en_US" exportDate="2026-07-05 14:15:16 +0200">
+  <Record type="HKQuantityTypeIdentifierStepCount" sourceName="Watch" unit="count" startDate="2026-07-05 10:00:00 +0200" endDate="2026-07-05 10:00:00 +0200" value="1"/>
+</HealthData>`))
+	if err != nil {
+		t.Fatalf("exportDateFromXML: %v", err)
+	}
+	if !ok {
+		t.Fatal("exportDateFromXML ok = false, want true")
+	}
+	if got := tm.Format(appleTimeLayout); got != "2026-07-05 14:15:16 +0200" {
+		t.Fatalf("exportDate = %q, want 2026-07-05 14:15:16 +0200", got)
+	}
+}
+
 func collectXMLFixturePoints(t *testing.T, path string) []storage.MetricPoint {
 	t.Helper()
 	var out []storage.MetricPoint

@@ -120,8 +120,12 @@ func (s *DB) EnsureAllTables() error {
 			date             TEXT NOT NULL,
 			qty              REAL,
 			source           TEXT,
+			origin           TEXT NOT NULL DEFAULT 'live',
+			import_run_id    BIGINT,
 			UNIQUE(metric_name, date, source)
 		)`,
+		importRunsTableDDL,
+		importRunCoverageTableDDL,
 		`CREATE TABLE IF NOT EXISTS minute_metrics (
 			metric_name TEXT NOT NULL,
 			minute      TEXT NOT NULL,
@@ -204,6 +208,8 @@ func (s *DB) EnsureAllTables() error {
 			hr_z3_sec         INTEGER,
 			hr_z4_sec         INTEGER,
 			hr_z5_sec         INTEGER,
+			origin            TEXT NOT NULL DEFAULT 'live',
+			import_run_id     BIGINT,
 			CONSTRAINT chk_workout_times CHECK (end_time >= start_time)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_workouts_start_time ON workouts (start_time DESC)`,
@@ -372,9 +378,10 @@ func (s *DB) InsertPoints(recordID int64, points []MetricPoint) error {
 	//      exceed 50% vanishingly rarely — when they do, the next sync run
 	//      converges naturally.
 	const upsertSQL = `INSERT INTO metric_points
-		(health_record_id, metric_name, units, date, qty, source)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		(health_record_id, metric_name, units, date, qty, source, origin, import_run_id)
+		VALUES ($1, $2, $3, $4, $5, $6, 'live', NULL)
 		ON CONFLICT(metric_name, date, source) DO UPDATE SET
+			received_at = NOW(),
 			qty = CASE
 				WHEN metric_points.metric_name LIKE 'sleep_%'
 				  AND SUBSTRING(metric_points.date, 12, 8) = '00:00:00'
@@ -395,7 +402,9 @@ func (s *DB) InsertPoints(recordID int64, points []MetricPoint) error {
 				ELSE excluded.qty
 			END,
 			units = excluded.units,
-			health_record_id = excluded.health_record_id`
+			health_record_id = excluded.health_record_id,
+			origin = 'live',
+			import_run_id = NULL`
 
 	const chunkSize = 500
 	for i := 0; i < len(points); i += chunkSize {

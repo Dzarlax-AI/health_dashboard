@@ -187,6 +187,8 @@ func (h *Handler) adminImportUpload(w http.ResponseWriter, r *http.Request) {
 
 func runImport(job *importJob, db *storage.DB, tmpPath, filename string, batchSize int, pause time.Duration, backfillFn func(bool)) {
 	defer os.Remove(tmpPath)
+	_ = batchSize
+	_ = pause
 
 	finish := func(errMsg string) {
 		job.mu.Lock()
@@ -197,82 +199,36 @@ func runImport(job *importJob, db *storage.DB, tmpPath, filename string, batchSi
 		job.mu.Unlock()
 	}
 
-	// Track min/max dates of imported points so we can invalidate that range.
 	var (
-		dateMu         sync.Mutex
-		metricMinDate  string
-		metricMaxDate  string
-		workoutMinDate string
-		workoutMaxDate string
+		stageMu  sync.Mutex
+		stageErr error
+		session  *storage.ImportSession
 	)
-	updateDates := func(pts []storage.MetricPoint) {
-		dateMu.Lock()
-		defer dateMu.Unlock()
-		for _, p := range pts {
-			d := p.Date
-			if len(d) > 10 {
-				d = d[:10]
-			}
-			if d == "" {
-				continue
-			}
-			if metricMinDate == "" || d < metricMinDate {
-				metricMinDate = d
-			}
-			if d > metricMaxDate {
-				metricMaxDate = d
-			}
+	recordStageErr := func(err error) {
+		if err == nil {
+			return
 		}
-	}
-	updateWorkoutDates := func(workouts []storage.Workout) {
-		dateMu.Lock()
-		defer dateMu.Unlock()
-		for _, w := range workouts {
-			d := w.StartTime.Format("2006-01-02")
-			if d == "" {
-				continue
-			}
-			if workoutMinDate == "" || d < workoutMinDate {
-				workoutMinDate = d
-			}
-			if d > workoutMaxDate {
-				workoutMaxDate = d
-			}
+		stageMu.Lock()
+		if stageErr == nil {
+			stageErr = err
 		}
+		stageMu.Unlock()
 	}
-
-	var batchCount int64
 	emit := func(pts []storage.MetricPoint) {
-		batchCount++
-		updateDates(pts)
-		n, err := db.BulkInsertPoints("apple-health-web-import", pts)
-		if err != nil {
-			log.Printf("import batch %d error: %v", batchCount, err)
+		if err := session.AddPoints(pts); err != nil {
+			log.Printf("import stage points error: %v", err)
+			recordStageErr(err)
+			return
 		}
 		atomic.AddInt64(&job.parsed, int64(len(pts)))
-		atomic.AddInt64(&job.inserted, int64(n))
-		atomic.AddInt64(&job.skipped, int64(len(pts)-n))
-		if pause > 0 {
-			time.Sleep(pause)
-		}
 	}
-	var workoutBatchCount int64
 	emitWorkouts := func(workouts []storage.Workout) {
-		workoutBatchCount++
-		updateWorkoutDates(workouts)
-		var failed int64
-		for _, w := range workouts {
-			if err := db.UpsertWorkout(0, w); err != nil {
-				failed++
-				log.Printf("import workout batch %d upsert %s error: %v", workoutBatchCount, w.ExternalID, err)
-			}
+		if err := session.AddWorkouts(workouts); err != nil {
+			log.Printf("import stage workouts error: %v", err)
+			recordStageErr(err)
+			return
 		}
 		atomic.AddInt64(&job.workoutsParsed, int64(len(workouts)))
-		atomic.AddInt64(&job.workoutsUpserted, int64(len(workouts))-failed)
-		atomic.AddInt64(&job.workoutsFailed, failed)
-		if pause > 0 {
-			time.Sleep(pause)
-		}
 	}
 
 	onProgress := func(read, total int64) {
@@ -290,6 +246,40 @@ func runImport(job *importJob, db *storage.DB, tmpPath, filename string, batchSi
 			isZip = false
 		}
 	}
+	snapshotAt := time.Now()
+	var exportDateErr error
+	var exportDateFound bool
+	if isZip {
+		if t, ok, err := applehealth.ExportDateFromZip(tmpPath); err != nil {
+			exportDateErr = err
+		} else if ok {
+			snapshotAt = t
+			exportDateFound = true
+		}
+	} else {
+		if t, ok, err := applehealth.ExportDateFromXMLFile(tmpPath); err != nil {
+			exportDateErr = err
+		} else if ok {
+			snapshotAt = t
+			exportDateFound = true
+		}
+	}
+	if exportDateErr != nil {
+		log.Printf("import: could not read Apple Health exportDate, using import start as snapshot time: %v", exportDateErr)
+	} else if !exportDateFound {
+		log.Printf("import: Apple Health exportDate not found, using import start as snapshot time")
+	}
+
+	var beginErr error
+	session, beginErr = db.BeginAppleHealthXMLImport(storage.ImportOptions{
+		SourceName: "apple-health-web-import",
+		SnapshotAt: snapshotAt,
+	})
+	if beginErr != nil {
+		log.Printf("import begin error: %v", beginErr)
+		finish(beginErr.Error())
+		return
+	}
 
 	opts := applehealth.EmitOptions{Points: emit, Workouts: emitWorkouts}
 	if isZip {
@@ -303,23 +293,38 @@ func runImport(job *importJob, db *storage.DB, tmpPath, filename string, batchSi
 		errMsg = parseErr.Error()
 		log.Printf("import parse error: %v", parseErr)
 	}
-	finish(errMsg)
+	stageMu.Lock()
+	if stageErr != nil && errMsg == "" {
+		errMsg = stageErr.Error()
+	}
+	stageMu.Unlock()
+	if errMsg != "" {
+		session.Abort(errors.New(errMsg))
+		finish(errMsg)
+		return
+	}
 
-	if metricMinDate != "" {
-		// Remove Auto Export data for imported date range — Apple Health export
-		// is the ground truth and should replace potentially inaccurate Auto Export data.
-		log.Printf("import: removing Auto Export data for %s … %s", metricMinDate, metricMaxDate)
-		db.RemoveAutoExportForRange(metricMinDate, metricMaxDate)
+	counters, err := session.Commit()
+	if err != nil {
+		log.Printf("import commit error: %v", err)
+		finish(err.Error())
+		return
+	}
+	atomic.StoreInt64(&job.inserted, counters.InsertedPoints)
+	atomic.StoreInt64(&job.skipped, counters.SkippedPoints)
+	atomic.StoreInt64(&job.workoutsUpserted, counters.UpsertedWorkouts)
+	log.Printf("import committed run=%d: %d parsed, %d inserted, %d updated, %d stale deleted, %d skipped; %d workouts parsed, %d upserted, %d stale deleted",
+		counters.ImportRunID, counters.ParsedPoints, counters.InsertedPoints, counters.UpdatedPoints,
+		counters.DeletedPoints, counters.SkippedPoints, counters.ParsedWorkouts, counters.UpsertedWorkouts,
+		counters.DeletedWorkouts)
 
-		// Invalidate aggregates and force full rebuild to ensure correctness.
-		log.Printf("import: invalidating aggregates for %s … %s", metricMinDate, metricMaxDate)
-		db.InvalidateDateRangeAggregates(metricMinDate, metricMaxDate)
+	if counters.MinDate != "" {
+		log.Printf("import: invalidating aggregates for %s … %s", counters.MinDate, counters.MaxDate)
+		db.InvalidateDateRangeAggregates(counters.MinDate, counters.MaxDate)
 		if backfillFn != nil {
 			log.Println("import: triggering force backfill…")
 			backfillFn(true)
 		}
 	}
-	if workoutMinDate != "" {
-		log.Printf("import: workouts upserted for %s … %s", workoutMinDate, workoutMaxDate)
-	}
+	finish("")
 }

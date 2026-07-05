@@ -34,6 +34,16 @@ const (
 // applies schema migrations that aren't part of init.sql. Safe to call on
 // every startup — uses IF NOT EXISTS.
 func (s *DB) EnsureIndexes() {
+	tableMigrations := []string{
+		importRunsTableDDL,
+		importRunCoverageTableDDL,
+	}
+	for _, ddl := range tableMigrations {
+		if err := s.execStartupDDL(ddl, ddlColumnStatementTimeout); err != nil {
+			log.Printf("migrate table: %v (query: %.80s)", err, ddl)
+		}
+	}
+
 	// Schema migrations. Kept here (not in init.sql) so existing deployments
 	// pick them up without manual intervention. ADD COLUMN IF NOT EXISTS is a
 	// metadata-only change in Postgres ≥ 11 — fast even on the 3.7M-row table.
@@ -41,6 +51,10 @@ func (s *DB) EnsureIndexes() {
 		// quality flag for soft-suspect / hard-impossible filtering. Default
 		// 'ok' so existing rows behave identically until something flips them.
 		{"metric_points", "quality", `ALTER TABLE metric_points ADD COLUMN IF NOT EXISTS quality TEXT NOT NULL DEFAULT 'ok'`},
+		{"metric_points", "origin", `ALTER TABLE metric_points ADD COLUMN IF NOT EXISTS origin TEXT NOT NULL DEFAULT 'live'`},
+		{"metric_points", "import_run_id", `ALTER TABLE metric_points ADD COLUMN IF NOT EXISTS import_run_id BIGINT`},
+		{"workouts", "origin", `ALTER TABLE workouts ADD COLUMN IF NOT EXISTS origin TEXT NOT NULL DEFAULT 'live'`},
+		{"workouts", "import_run_id", `ALTER TABLE workouts ADD COLUMN IF NOT EXISTS import_run_id BIGINT`},
 		// EnergyBank EOD snapshot columns. Capacity / current / drain are 0–100;
 		// verdict is "rest" / "active_recovery" / "moderate" / "push_hard" (matches
 		// EnergyBank.ActionVerdict). NULL means no snapshot was taken — the row

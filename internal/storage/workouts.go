@@ -82,9 +82,11 @@ func (s *DB) UpsertWorkout(healthRecordID int64, w Workout) error {
 			is_indoor, location, avg_hr_bpm, max_hr_bpm, energy_kcal, intensity,
 			distance_km, avg_speed_kmh, max_speed_kmh, elevation_up_m,
 			step_count_total, step_cadence_spm, temperature_c, humidity_pct,
-			hr_z1_sec, hr_z2_sec, hr_z3_sec, hr_z4_sec, hr_z5_sec
+			hr_z1_sec, hr_z2_sec, hr_z3_sec, hr_z4_sec, hr_z5_sec,
+			origin, import_run_id
 		) VALUES (
-			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,
+			'live', NULL
 		)
 		ON CONFLICT (external_id) DO UPDATE SET
 			received_at = NOW(),
@@ -111,7 +113,9 @@ func (s *DB) UpsertWorkout(healthRecordID int64, w Workout) error {
 			hr_z2_sec = excluded.hr_z2_sec,
 			hr_z3_sec = excluded.hr_z3_sec,
 			hr_z4_sec = excluded.hr_z4_sec,
-			hr_z5_sec = excluded.hr_z5_sec
+			hr_z5_sec = excluded.hr_z5_sec,
+			origin = 'live',
+			import_run_id = NULL
 	`,
 		nullableInt64(healthRecordID),
 		w.ExternalID, w.Name, w.StartTime, w.EndTime, w.DurationSec,

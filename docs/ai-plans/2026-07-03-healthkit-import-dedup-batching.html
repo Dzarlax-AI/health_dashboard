@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Implementation Plan: HealthKit Import Deduplication and Bulk Batching</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #1f2937; line-height: 1.5; }
+    main { max-width: 1120px; margin: 0 auto; padding: 32px; }
+    section { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin: 16px 0; }
+    h1, h2, h3 { line-height: 1.2; margin-top: 0; }
+    code { background: #f3f4f6; padding: 2px 5px; border-radius: 4px; }
+    ul, ol { padding-left: 22px; }
+    li { margin: 6px 0; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #e5e7eb; font-size: 12px; font-weight: 700; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+    .card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 14px; background: #fafafa; }
+    .risk { border-left: 4px solid #dc2626; }
+    .ok { border-left: 4px solid #16a34a; }
+    .approval { border-left: 4px solid #d97706; }
+    .muted { color: #6b7280; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Implementation Plan: HealthKit Import Deduplication and Bulk Batching</h1>
+  <p class="badge">Approval required before implementation</p>
+
+  <section>
+    <h2>Task Summary</h2>
+    <p>
+      Implement issue <a href="https://github.com/Dzarlax-AI/health_dashboard/issues/195">#195</a>:
+      replace the current slow row-by-row Apple Health XML import path with a high-throughput staged import,
+      and define correct deduplication/source-of-truth semantics across HealthKit XML export, native iOS
+      <code>health-sync</code>, legacy Health Auto Export style ingest, Admin UI import, and CLI import.
+    </p>
+    <p>
+      The key product decision is that an Apple Health XML export is an authoritative HealthKit snapshot for
+      historical backfill at the time it was exported. Live/mobile data ingested after that point is considered
+      fresher for exact conflicts, because the mobile app reads the current Apple Health state and may include
+      post-export corrections. Older live rows that predate the XML import may still be superseded by the export.
+    </p>
+  </section>
+
+  <section>
+    <h2>Inspected Current Behavior</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>Exact row dedup</h3>
+        <p><code>metric_points</code> has <code>UNIQUE(metric_name, date, source)</code>. Production duplicate scan during the real import showed <code>duplicate_groups=0</code>.</p>
+      </div>
+      <div class="card">
+        <h3>Live/mobile ingest</h3>
+        <p><code>InsertPoints</code> uses <code>ON CONFLICT(metric_name,date,source) DO UPDATE</code> with special sleep guards. It already uses <code>pgx.Batch</code> chunks.</p>
+      </div>
+      <div class="card">
+        <h3>XML point import</h3>
+        <p><code>BulkInsertPoints</code> creates one <code>health_records</code> row per batch, then executes one <code>INSERT ... ON CONFLICT DO NOTHING</code> per point.</p>
+      </div>
+      <div class="card">
+        <h3>Admin UI import</h3>
+        <p>Defaults are <code>batch=500</code>, <code>pause=150ms</code>. After parsing it deletes Auto Export rows for the imported date range and force rebuilds caches.</p>
+      </div>
+      <div class="card">
+        <h3>CLI import</h3>
+        <p><code>cmd/import</code> shares <code>BulkInsertPoints</code>, then runs full aggregate and score backfill.</p>
+      </div>
+      <div class="card">
+        <h3>Workouts</h3>
+        <p><code>UpsertWorkout</code> already updates by <code>external_id</code>, but it is called one workout at a time from XML import paths.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Real Import Observations</h2>
+    <ul>
+      <li>The July 2026 Admin UI XML import completed successfully after deployment of PR #194.</li>
+      <li>Final observed counts after import/backfill: <code>metric_points=7,659,555</code>, <code>xml_rows=7,484,128</code>, <code>workouts=1,012</code>, <code>xml_workouts=849</code>.</li>
+      <li>The import was very slow because it performed millions of row-by-row inserts and UI defaults added many small-batch pauses.</li>
+      <li>The current implementation did not create exact duplicate rows, but it does not encode authoritative XML snapshot semantics.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <ul>
+      <li>Apple Health XML import is authoritative for historical rows that predate the import/export snapshot.</li>
+      <li>Re-importing the same XML export is idempotent.</li>
+      <li>Importing a newer XML export can update corrected historical values.</li>
+      <li>Live/mobile sync keeps updating recent data, data after the export range, and exact conflicts that arrive after the XML import.</li>
+      <li>Admin UI and CLI XML imports share one core import implementation.</li>
+      <li>Large XML imports use set-based DB operations rather than per-row round trips.</li>
+      <li>Cache invalidation and backfill happen once after the committed import.</li>
+      <li>Workout XML import is batched or staged, not one upsert call per workout.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Proposed Data Model</h2>
+    <ul>
+      <li>Add an <code>import_runs</code> table for logical imports: <code>id</code>, <code>origin</code>, <code>source_name</code>, <code>started_at</code>, <code>finished_at</code>, <code>status</code>, <code>min_date</code>, <code>max_date</code>, <code>parsed_points</code>, <code>inserted_points</code>, <code>updated_points</code>, <code>skipped_points</code>, <code>parsed_workouts</code>, <code>upserted_workouts</code>, <code>error</code>.</li>
+      <li>Add coverage metadata for committed XML imports, at minimum by <code>import_run_id</code>, <code>metric_name</code>, <code>source</code>, and local date or compact date range. This prevents broad unsafe deletes and lets future code reason about which historical slices were actually covered by an export.</li>
+      <li>Add provenance columns to <code>metric_points</code>. Target shape is <code>origin TEXT DEFAULT 'live'</code>, <code>import_run_id BIGINT NULL</code>, and possibly <code>source_record_id TEXT</code> later if exact HealthKit UUID-level sample IDs become available. Enforce <code>NOT NULL</code> and FK constraints only after safe validation, if at all.</li>
+      <li>Add provenance columns to <code>workouts</code>. Target shape is <code>origin TEXT DEFAULT 'live'</code>, <code>import_run_id BIGINT NULL</code>, with the same nullable-first migration rule.</li>
+      <li>Create one logical <code>health_records</code> row per XML import run and attach promoted points to it. Do not create one raw record per parser batch, and do not relax the current non-null <code>metric_points.health_record_id</code> constraint in this PR.</li>
+      <li>Use temporary or unlogged staging tables per import transaction for points and workouts. Prefer session-local <code>CREATE TEMP TABLE ... ON COMMIT DROP</code> to avoid persistent cleanup risk.</li>
+      <li>Keep the existing exact uniqueness key <code>(metric_name, date, source)</code> for now. Do not attempt semantic cross-source deduplication in this PR.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Safe Schema Migration</h2>
+    <ul>
+      <li>Do not add large-table constraints or indexes in a way that can block production startup. <code>metric_points</code> already has millions of rows.</li>
+      <li>Prefer nullable provenance columns first, with cheap constant defaults only where PostgreSQL can apply them without a table rewrite. Enforce <code>NOT NULL</code> later only if a backfill and validation path is explicit.</li>
+      <li>If foreign keys are added from <code>metric_points.import_run_id</code> or <code>workouts.import_run_id</code>, add them as <code>NOT VALID</code> first and validate separately, or skip the FK in the first PR and rely on application-level writes.</li>
+      <li>Create any large supporting indexes with <code>CREATE INDEX CONCURRENTLY</code> outside the current startup DDL transaction, or document a manual one-off migration command. Small new tables may still be created by startup DDL.</li>
+      <li>Multi-tenant mode must create the metadata tables per tenant schema and must not assume the default <code>health</code> schema in SQL strings.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Source-Of-Truth Policy</h2>
+    <ul>
+      <li><strong>XML import vs XML import:</strong> newer committed import wins on exact key.</li>
+      <li><strong>XML import vs older live/mobile/HAE:</strong> XML wins inside the covered import range on exact key when the existing row predates the XML import snapshot.</li>
+      <li><strong>Live/mobile after XML:</strong> live/mobile is treated as fresher and can continue inserting and updating rows, including exact conflicts inside a previously XML-covered historical range.</li>
+      <li><strong>Live/mobile exact conflict with XML-covered historical row:</strong> keep current <code>InsertPoints</code> update semantics for rows arriving after the XML import. Do not add a blanket guard that freezes XML-origin rows forever; that would make HealthKit retrospective corrections from the app invisible.</li>
+      <li><strong>Newer XML import vs newer live/mobile:</strong> a later XML export can still supersede live/mobile rows if it is intentionally imported as a newer HealthKit snapshot. The deciding dimension is snapshot/import freshness, not the label "XML" by itself.</li>
+      <li><strong>Rows missing from a newer XML snapshot:</strong> do not globally delete by <code>min_date/max_date</code>. Only delete or supersede rows in coverage groups proven by staging metadata, and only where the existing row is older than the import snapshot. If exact HealthKit sample IDs are unavailable, treat deletion semantics as group-level and conservative.</li>
+      <li><strong>HAE cleanup:</strong> replace broad post-hoc <code>RemoveAutoExportForRange</code> with transactional staged replacement where possible. If cleanup remains, make it provenance-aware and only after XML rows are safely staged.</li>
+      <li><strong>Workouts:</strong> stable <code>external_id</code> rows continue to upsert by <code>external_id</code>. XML workouts with synthetic <code>applexml:</code> ids need covered-range replacement or a more stable identity based on immutable fields; otherwise a corrected workout can become a duplicate.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Import State Machine</h2>
+    <ol>
+      <li>Create <code>import_runs</code> with <code>status='running'</code> and create one associated <code>health_records</code> row for the XML import in durable metadata before staging starts, so a later staging rollback can still mark the run <code>failed</code>.</li>
+      <li>Parse XML and stream points/workouts into staging using <code>pgx.CopyFrom</code> or similarly set-based chunks. Accumulate coverage metadata while staging.</li>
+      <li>If parsing or staging fails, rollback staged data, mark the durable run <code>failed</code>, do not delete old rows, and do not run cache invalidation or backfill.</li>
+      <li>Promote staged points/workouts in one final transaction: conservative stale-row cleanup for covered groups, set-based upsert, import counter update, and <code>status='committed'</code>.</li>
+      <li>Only after commit, invalidate affected aggregate rows and run one cache rebuild/backfill pass.</li>
+      <li>Admin UI and CLI must use the same state machine. Differences should be presentation only: progress reporting, dry-run, and command-line logging.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Files Likely to Change</h2>
+    <ul>
+      <li><code>internal/storage/db.go</code> - base schema additions for <code>import_runs</code>, coverage metadata, provenance columns, and one logical raw <code>health_records</code> row per XML import.</li>
+      <li><code>internal/storage/indexes.go</code> - safe startup column migrations for existing deployments; large indexes must be concurrent/manual rather than startup-transaction DDL.</li>
+      <li><code>internal/storage/bulk.go</code> - replace row-by-row <code>BulkInsertPoints</code> or add a new staged XML import API.</li>
+      <li><code>internal/storage/workouts.go</code> - add batched/staged workout upsert, provenance fields, and synthetic XML workout replacement rules.</li>
+      <li><code>internal/ui/import_handler.go</code> - call the new staged importer, update status counters, remove per-batch sleeps by default, and ensure finish/backfill ordering is correct.</li>
+      <li><code>cmd/import/main.go</code> - use the same staged importer as Admin UI and keep <code>--dry-run</code>.</li>
+      <li><code>internal/handler/health.go</code> and <code>internal/handler/workouts.go</code> - set <code>origin='live'</code> if provenance columns require explicit values, otherwise rely on defaults.</li>
+      <li><code>cmd/seed_review_tenant/main.go</code> - update helper use if <code>BulkInsertPoints</code> signature changes.</li>
+      <li><code>README.md</code> and <code>AGENTS.md</code>/<code>CLAUDE.md</code> if import semantics or commands change materially.</li>
+      <li>Tests under <code>internal/storage</code>, <code>internal/ui</code>, and <code>cmd/import</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation Steps</h2>
+    <ol>
+      <li>Add safe schema support: <code>import_runs</code>, import coverage metadata, nullable provenance columns, and any small-table indexes. Defer large-table concurrent indexes to an explicit migration command if needed.</li>
+      <li>Create storage types for import runs, coverage rows, import freshness, and import counters.</li>
+      <li>Implement a staged point import API using <code>pgx.CopyFrom</code> into a temporary staging table, then set-based insert/upsert into <code>metric_points</code>.</li>
+      <li>Preserve exact deduplication with <code>ON CONFLICT(metric_name,date,source) DO UPDATE</code> for XML imports where the incoming XML row is authoritative.</li>
+      <li>Implement conservative stale-row cleanup for staged coverage groups. Do not delete by broad date range alone.</li>
+      <li>Implement staged or batched workout upsert with provenance, aggregate counters, and duplicate prevention for synthetic XML workout ids.</li>
+      <li>Refactor Admin UI import to stream parser batches into the staged importer, update status from returned counters, and run one final cache rebuild.</li>
+      <li>Refactor CLI import to reuse the same storage importer, preserving dry-run and logging.</li>
+      <li>Remove or de-emphasize the old row-by-row <code>BulkInsertPoints</code> path. Keep a compatibility wrapper only if tests or seed tools still need it.</li>
+      <li>Update documentation and issue #195 PR linkage when opening the implementation PR.</li>
+      <li>After implementation, update this plan with actual changes, tests, and known limitations.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Data, API, and UX Impact</h2>
+    <ul>
+      <li><strong>Database:</strong> Adds import metadata tables and provenance columns. Existing rows should continue reading as live/default origin without requiring an immediate full-table rewrite.</li>
+      <li><strong>API:</strong> No public API contract change is expected. Admin import status may expose richer counters.</li>
+      <li><strong>UI:</strong> Import should complete much faster. Defaults can move toward larger batches and <code>pause=0</code> after backend throughput is fixed.</li>
+      <li><strong>Deployment:</strong> Startup migrations must be safe on multi-million-row <code>metric_points</code>. Avoid long exclusive locks.</li>
+      <li><strong>Backfill:</strong> Existing force backfill remains, but it should start only after import commit and not repeatedly during import.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <ul>
+      <li><code>env GOCACHE=/tmp/health-go-build-cache go test ./internal/storage -run "Import|Bulk|Workout" -count=1</code></li>
+      <li><code>env GOCACHE=/tmp/health-go-build-cache go test ./internal/ui -run Import -count=1</code></li>
+      <li><code>env GOCACHE=/tmp/health-go-build-cache go test ./cmd/import ./internal/applehealth -count=1</code></li>
+      <li><code>env GOCACHE=/tmp/health-go-build-cache make test-unit</code></li>
+      <li>DB-backed integration test: seed live rows, import newer XML staging rows, assert exact conflicts update older live rows and non-covered rows remain.</li>
+      <li>DB-backed integration test: import XML, then ingest live/mobile points with the same exact key, assert the later live/mobile value wins.</li>
+      <li>DB-backed integration test: ingest live/mobile after XML, then import a later XML snapshot with the same exact key, assert the later XML snapshot wins.</li>
+      <li>DB-backed integration test: parse/staging error leaves existing <code>metric_points</code> untouched, marks the run failed, and does not trigger cleanup/backfill.</li>
+      <li>DB-backed integration test: stale-row cleanup only affects rows in staged coverage groups, not every row between <code>min_date</code> and <code>max_date</code>.</li>
+      <li>DB-backed integration test: re-import identical XML fixture twice and assert counters plus final row counts are idempotent.</li>
+      <li>DB-backed integration test: Admin UI and CLI use the same storage importer and produce equivalent final rows/counters for the same fixture.</li>
+      <li>DB-backed integration test: workout batch import updates an existing workout by <code>external_id</code>, prevents duplicate synthetic XML workouts, and records provenance.</li>
+      <li>Manual dry-run on real export remains parse-only: <code>go run ./cmd/import --file /path/to/export.xml --dry-run --batch 100000 --pause 0</code>.</li>
+      <li>Optional staging performance smoke on a throwaway schema with a large XML export or generated fixture.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks and Edge Cases</h2>
+    <ul>
+      <li>Adding non-null columns, validating foreign keys, or creating normal indexes on large tables can lock production. Use nullable-first DDL, <code>NOT VALID</code> constraints, and concurrent/manual indexes where needed.</li>
+      <li>XML authoritative updates may overwrite a live row that was actually newer than the export if freshness handling is too broad. The import must compare provenance/import timing, not only metric date range.</li>
+      <li>Without exact HealthKit sample IDs, authoritative deletion is necessarily conservative. Coverage-group cleanup can remove stale rows in covered groups, but it should not claim perfect sample-level reconciliation.</li>
+      <li>Long-running transactions over millions of staged rows can pressure Postgres. If a single parse transaction is too risky, use persistent staging keyed by <code>import_run_id</code> and keep only the final promote transaction short.</li>
+      <li>The current exact key does not deduplicate semantically identical samples across different source names. This PR should not pretend to solve cross-source semantic deduplication.</li>
+      <li>Set-based updates may bypass existing sleep guards from <code>InsertPoints</code>. This is intentional for authoritative XML import but must be called out in tests.</li>
+      <li>Temporary staging tables inside pooled connections must not leak between imports. Use transactions and <code>ON COMMIT DROP</code>.</li>
+      <li>Large force backfill after import can still be expensive even if insert is fast. That is separate from insert throughput.</li>
+      <li>Admin UI import already completed once with old semantics; follow-up migration should not attempt to rewrite that historical import automatically unless explicitly requested.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <ul>
+      <li>Keep old <code>BulkInsertPoints</code> available behind a narrow compatibility wrapper until staged import is verified, but do not use it for Admin UI or CLI XML imports after this change.</li>
+      <li>If staged import fails before commit, transaction rollback drops staging rows and leaves existing <code>metric_points</code> untouched.</li>
+      <li>If a bad import commits, rollback is data-level: delete rows by <code>import_run_id</code> where safe, inspect any rows superseded by the import, and restore from backup or rerun a corrected newer import. Document the exact SQL before production use.</li>
+      <li>Code rollback reverts storage/import changes. Provenance columns/table can remain inert because reads should not depend on them.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Should historical rows from the completed July 2026 import be backfilled with <code>origin='apple_health_xml'</code>, or should provenance start only after this PR?</li>
+      <li>Should <code>exported_at</code> be user-supplied, parsed from XML metadata if available, or simply equal to import start time? This timestamp defines when XML is fresher than previous live/mobile rows.</li>
+      <li>Do live/mobile payloads expose any source-side modification timestamp, or is server ingest time the only reliable freshness marker?</li>
+      <li>Should Admin UI expose an explicit checkbox like "Treat this export as authoritative for covered dates" or should XML import always behave that way?</li>
+      <li>Should the first implementation use temp staging in one transaction, or persistent staging plus a short promote transaction if real-export imports remain long-running?</li>
+      <li>Can XML workout synthetic ids be made stable enough from immutable fields, or should XML workouts always use covered-range replacement for synthetic ids?</li>
+      <li>Do we want a separate issue for semantic cross-source deduplication by HealthKit UUID/sample metadata if Apple XML exposes enough identifiers?</li>
+    </ul>
+  </section>
+
+  <section class="ok">
+    <h2>Implemented Changes</h2>
+    <ul>
+      <li>Added <code>storage.ImportSession</code> for Apple Health XML imports: durable <code>import_runs</code>, one logical <code>health_records</code> row, temp staging tables, <code>pgx.CopyFrom</code>, coverage rows, and set-based promote.</li>
+      <li>Added provenance columns for <code>metric_points</code> and <code>workouts</code>, plus startup creation of <code>import_runs</code> and <code>import_run_coverage</code>.</li>
+      <li>Changed live <code>InsertPoints</code> and <code>UpsertWorkout</code> conflict updates to restore <code>origin='live'</code> and clear <code>import_run_id</code>, so later live/mobile data stays fresher than an older XML snapshot.</li>
+      <li>Implemented XML point promote with staging deduplication, conservative stale-row cleanup by staged coverage group, and conflict updates guarded by <code>received_at &lt;= snapshot_at</code>.</li>
+      <li>After subagent code review, fixed live conflict updates to refresh <code>received_at</code>, so later XML imports cannot overwrite newer live/mobile corrections just because the row was originally old.</li>
+      <li>After subagent code review, added <code>HealthData@exportDate</code> extraction for XML and zip imports and pass it as <code>snapshot_at</code>; import start is now only a fallback when export metadata is unavailable.</li>
+      <li>Implemented staged workout promote and synthetic <code>applexml:</code> duplicate replacement by stable workout window fields.</li>
+      <li>Refactored Admin UI import and <code>cmd/import</code> to share the same staged storage path. Parse/staging errors now abort without cleanup/backfill; cache invalidation/backfill runs only after commit.</li>
+      <li>Kept <code>BulkInsertPoints</code> as a compatibility path for existing seed/helper callers, but Admin UI and CLI no longer use it.</li>
+      <li>Updated <code>AGENTS.md</code> and <code>CLAUDE.md</code> with the new XML import semantics.</li>
+    </ul>
+  </section>
+
+  <section class="ok">
+    <h2>Verification Run</h2>
+    <ul>
+      <li><code>HEALTH_DB_TESTS=1 GOCACHE=/tmp/health-go-build-cache go test ./internal/storage -run 'TestAppleHealthXMLImport' -count=1 -v</code> - passed against the configured test Postgres, including the live conflict-update freshness regression.</li>
+      <li><code>GOCACHE=/tmp/health-go-build-cache go test ./internal/storage -run "AppleHealthXMLImport|Import|Bulk|Workout" -count=1</code> - passed.</li>
+      <li><code>GOCACHE=/tmp/health-go-build-cache go test ./internal/applehealth ./cmd/import ./internal/ui -run 'ExportDate|Import' -count=1</code> - passed.</li>
+      <li><code>GOCACHE=/tmp/health-go-build-cache go test ./cmd/import ./internal/applehealth -count=1</code> - passed before the review fixes.</li>
+      <li><code>GOCACHE=/tmp/health-go-build-cache make test-unit</code> - passed outside the sandbox. The in-sandbox run failed earlier because <code>httptest</code> could not bind a local port in unrelated <code>internal/notify</code> tests.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Known Limitations After Implementation</h2>
+    <ul>
+      <li>XML deletion remains coverage-group conservative because Apple Health XML sample-level stable IDs are not persisted for metric points.</li>
+      <li><strong>P2 follow-up:</strong> large production imports still hold a staging transaction during parse. If this is too heavy in real use, move to persistent staging keyed by <code>import_run_id</code> and keep only promote transactional.</li>
+      <li>Existing July 2026 XML-imported rows are not retroactively backfilled with <code>origin='apple_health_xml'</code>. Provenance starts with imports performed after this change.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval Gate</h2>
+    <p>
+      Implementation must not start until this plan is explicitly approved. This change affects schema, import semantics,
+      large-data performance, Admin UI import behavior, and CLI import behavior.
+    </p>
+  </section>
+</main>
+</body>
+</html>

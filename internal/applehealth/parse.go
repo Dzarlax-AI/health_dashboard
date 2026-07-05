@@ -177,6 +177,28 @@ func ParseZipWithOptions(path string, opts EmitOptions, onProgress func(read, to
 	return fmt.Errorf("apple_health_export/export.xml not found in zip")
 }
 
+// ExportDateFromZip reads HealthData@exportDate from an Apple Health export zip.
+func ExportDateFromZip(path string) (time.Time, bool, error) {
+	r, err := zip.OpenReader(path)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("open zip: %w", err)
+	}
+	defer r.Close()
+
+	for _, f := range r.File {
+		if f.Name != "apple_health_export/export.xml" {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return time.Time{}, false, fmt.Errorf("open export.xml in zip: %w", err)
+		}
+		defer rc.Close()
+		return exportDateFromXML(rc)
+	}
+	return time.Time{}, false, fmt.Errorf("apple_health_export/export.xml not found in zip")
+}
+
 // ParseXMLFile opens an export.xml file on disk and streams it.
 func ParseXMLFile(path string, emit func([]storage.MetricPoint), onProgress func(read, total int64)) error {
 	return ParseXMLFileWithOptions(path, EmitOptions{Points: emit}, onProgress)
@@ -196,6 +218,54 @@ func ParseXMLFileWithOptions(path string, opts EmitOptions, onProgress func(read
 		total = info.Size()
 	}
 	return ParseXMLWithOptions(newCountingReader(f, total, onProgress), opts)
+}
+
+// ExportDateFromXMLFile reads HealthData@exportDate from an export.xml file.
+func ExportDateFromXMLFile(path string) (time.Time, bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	defer f.Close()
+	return exportDateFromXML(f)
+}
+
+func exportDateFromXML(r io.Reader) (time.Time, bool, error) {
+	dec := xml.NewDecoder(r)
+	dec.Strict = false
+	dec.AutoClose = xml.HTMLAutoClose
+	dec.Entity = xml.HTMLEntity
+
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			return time.Time{}, false, nil
+		}
+		if err != nil {
+			if isHarmlessXMLErr(err) {
+				continue
+			}
+			return time.Time{}, false, fmt.Errorf("xml decode: %w", err)
+		}
+		se, ok := tok.(xml.StartElement)
+		if !ok {
+			continue
+		}
+		if se.Name.Local != "HealthData" {
+			continue
+		}
+		for _, attr := range se.Attr {
+			if attr.Name.Local != "exportDate" || strings.TrimSpace(attr.Value) == "" {
+				continue
+			}
+			t, err := time.Parse(appleTimeLayout, attr.Value)
+			if err != nil {
+				return time.Time{}, false, fmt.Errorf("parse exportDate %q: %w", attr.Value, err)
+			}
+			return t, true, nil
+		}
+		return time.Time{}, false, nil
+	}
 }
 
 // countingReader wraps an io.Reader and calls onProgress every ~1 MB read.
