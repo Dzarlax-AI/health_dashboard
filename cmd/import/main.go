@@ -2,17 +2,16 @@
 //
 // Usage:
 //
-//	import --db /app/data/health.db --file export.zip [--batch 500] [--pause 200ms] [--dry-run]
+//	import --file export.zip [--batch 100000] [--dry-run]
 //
 // The importer streams the XML so it never loads the full file into memory.
-// Batches are inserted with a configurable pause between them so the running
-// server is not starved of DB connections during a large historical import.
+// Parsed rows are staged with bulk database operations, then promoted in one
+// final transaction so parse errors do not leave partial imports behind.
 package main
 
 import (
 	"context"
 	"flag"
-	"fmt"
 	"log"
 	"os"
 	"time"
@@ -22,17 +21,19 @@ import (
 )
 
 func main() {
-	filePath := flag.String("file", "", "Apple Health export (.zip or export.xml) — required")
-	batchSize := flag.Int("batch", 500, "metric points or workouts per DB transaction")
-	pauseDur := flag.Duration("pause", 150*time.Millisecond, "sleep between batches (rate-limits DB load)")
-	dryRun := flag.Bool("dry-run", false, "parse only — do not write to DB")
+	filePath := flag.String("file", "", "Apple Health export (.zip or export.xml) - required")
+	batchSize := flag.Int("batch", 100000, "metric points or workouts per staging flush")
+	pauseDur := flag.Duration("pause", 0, "deprecated; staged import ignores per-batch sleeps")
+	dryRun := flag.Bool("dry-run", false, "parse only - do not write to DB")
 	flag.Parse()
+	_ = pauseDur
 
 	if *filePath == "" {
 		log.Fatal("--file is required")
 	}
 
 	var db *storage.DB
+	var session *storage.ImportSession
 	if !*dryRun {
 		dbURL := os.Getenv("DATABASE_URL")
 		if dbURL == "" {
@@ -44,79 +45,80 @@ func main() {
 			log.Fatalf("open db: %v", err)
 		}
 		defer db.Close()
+
+		snapshotAt := time.Now()
+		var exportDateErr error
+		var exportDateFound bool
+		switch {
+		case len(*filePath) > 4 && (*filePath)[len(*filePath)-4:] == ".zip":
+			if t, ok, err := applehealth.ExportDateFromZip(*filePath); err != nil {
+				exportDateErr = err
+			} else if ok {
+				snapshotAt = t
+				exportDateFound = true
+			}
+		default:
+			if t, ok, err := applehealth.ExportDateFromXMLFile(*filePath); err != nil {
+				exportDateErr = err
+			} else if ok {
+				snapshotAt = t
+				exportDateFound = true
+			}
+		}
+		if exportDateErr != nil {
+			log.Printf("could not read Apple Health exportDate, using import start as snapshot time: %v", exportDateErr)
+		} else if !exportDateFound {
+			log.Printf("Apple Health exportDate not found, using import start as snapshot time")
+		}
+
+		session, err = db.BeginAppleHealthXMLImport(storage.ImportOptions{
+			SourceName: "apple-health-cli-import",
+			SnapshotAt: snapshotAt,
+		})
+		if err != nil {
+			log.Fatalf("begin import: %v", err)
+		}
 	}
 
 	var (
 		totalParsed         int
-		totalInserted       int
 		totalWorkoutsParsed int
-		totalWorkoutsUpsert int
-		totalWorkoutsFailed int
-		batchN              int
-		workoutBatchN       int
 		pending             []storage.MetricPoint
 		pendingWorkouts     []storage.Workout
 		startTime           = time.Now()
 	)
 
 	flush := func(pts []storage.MetricPoint) {
-		batchN++
 		totalParsed += len(pts)
-
 		if *dryRun {
-			if totalParsed%100_000 == 0 || totalParsed < 1000 {
-				log.Printf("[dry-run] parsed %d points so far…", totalParsed)
+			if totalParsed%100000 == 0 || totalParsed < 1000 {
+				log.Printf("[dry-run] parsed %d points so far", totalParsed)
 			}
 			return
 		}
-
-		desc := fmt.Sprintf("apple-health-import batch %d", batchN)
-		n, err := db.BulkInsertPoints(desc, pts)
-		if err != nil {
-			log.Printf("batch %d insert error: %v (continuing)", batchN, err)
+		if err := session.AddPoints(pts); err != nil {
+			session.Abort(err)
+			log.Fatalf("stage points: %v", err)
 		}
-		totalInserted += n
-
-		elapsed := time.Since(startTime).Round(time.Second)
-		log.Printf("batch %d: %d parsed / %d new (total %d inserted, %s elapsed)",
-			batchN, len(pts), n, totalInserted, elapsed)
-
-		if *pauseDur > 0 {
-			time.Sleep(*pauseDur)
+		if totalParsed%100000 == 0 {
+			log.Printf("staged %d points so far", totalParsed)
 		}
 	}
 
 	flushWorkouts := func(workouts []storage.Workout) {
-		workoutBatchN++
 		totalWorkoutsParsed += len(workouts)
-
 		if *dryRun {
 			if totalWorkoutsParsed%100 == 0 || totalWorkoutsParsed < 20 {
-				log.Printf("[dry-run] parsed %d workouts so far…", totalWorkoutsParsed)
+				log.Printf("[dry-run] parsed %d workouts so far", totalWorkoutsParsed)
 			}
 			return
 		}
-
-		var failed int
-		for _, w := range workouts {
-			if err := db.UpsertWorkout(0, w); err != nil {
-				failed++
-				log.Printf("workout batch %d upsert %s error: %v", workoutBatchN, w.ExternalID, err)
-			}
-		}
-		totalWorkoutsFailed += failed
-		totalWorkoutsUpsert += len(workouts) - failed
-
-		elapsed := time.Since(startTime).Round(time.Second)
-		log.Printf("workout batch %d: %d parsed / %d upserted / %d failed (total %d upserted, %s elapsed)",
-			workoutBatchN, len(workouts), len(workouts)-failed, failed, totalWorkoutsUpsert, elapsed)
-
-		if *pauseDur > 0 {
-			time.Sleep(*pauseDur)
+		if err := session.AddWorkouts(workouts); err != nil {
+			session.Abort(err)
+			log.Fatalf("stage workouts: %v", err)
 		}
 	}
 
-	// Collect points up to batchSize, then flush.
 	emit := func(pts []storage.MetricPoint) {
 		pending = append(pending, pts...)
 		for len(pending) >= *batchSize {
@@ -133,8 +135,7 @@ func main() {
 		}
 	}
 
-	log.Printf("starting import from %s (batch=%d pause=%s dry-run=%v)",
-		*filePath, *batchSize, *pauseDur, *dryRun)
+	log.Printf("starting import from %s (batch=%d dry-run=%v)", *filePath, *batchSize, *dryRun)
 
 	opts := applehealth.EmitOptions{Points: emit, Workouts: emitWorkouts}
 	var parseErr error
@@ -150,9 +151,11 @@ func main() {
 	if len(pendingWorkouts) > 0 {
 		flushWorkouts(pendingWorkouts)
 	}
-
 	if parseErr != nil {
-		log.Printf("parse error (partial import may have succeeded): %v", parseErr)
+		if session != nil {
+			session.Abort(parseErr)
+		}
+		log.Fatalf("parse error: %v", parseErr)
 	}
 
 	elapsed := time.Since(startTime).Round(time.Second)
@@ -160,12 +163,18 @@ func main() {
 		log.Printf("dry-run complete: %d points and %d workouts parsed in %s", totalParsed, totalWorkoutsParsed, elapsed)
 		return
 	}
-	log.Printf("import complete: %d points parsed, %d inserted, %d duplicates skipped; %d workouts parsed, %d upserted, %d failed in %s",
-		totalParsed, totalInserted, totalParsed-totalInserted, totalWorkoutsParsed, totalWorkoutsUpsert, totalWorkoutsFailed, elapsed)
 
-	// Trigger a full backfill so daily_scores and caches are up to date.
-	log.Println("running backfill (this may take a few minutes)…")
+	counters, err := session.Commit()
+	if err != nil {
+		log.Fatalf("commit import: %v", err)
+	}
+	log.Printf("import committed: run=%d %d points parsed, %d inserted, %d updated, %d stale deleted, %d duplicate-stage skipped; %d workouts parsed, %d upserted, %d stale deleted in %s",
+		counters.ImportRunID, counters.ParsedPoints, counters.InsertedPoints, counters.UpdatedPoints,
+		counters.DeletedPoints, counters.SkippedPoints, counters.ParsedWorkouts, counters.UpsertedWorkouts,
+		counters.DeletedWorkouts, elapsed)
+
+	log.Println("running backfill (this may take a few minutes)")
 	db.BackfillAggregates(true)
 	db.BackfillScores(true)
-	log.Println("backfill done — import complete")
+	log.Println("backfill done - import complete")
 }

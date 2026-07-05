@@ -225,7 +225,7 @@ The endpoint stores summary fields only (duration, distance, energy, average / m
 
 If `HEALTH_HR_ZONES_BPM` is configured, the ingest path also computes time-in-zone (Z1..Z5) from the per-minute HR samples in the payload and stores five integer columns per workout. Pick zone borders that match your physiology — the Karvonen (HR Reserve) method using observed MaxHR and resting HR is more accurate than the textbook `220 - age` formula.
 
-Apple Health XML imports (`cmd/import` and the Admin import UI) also ingest `<Workout>` summaries into the same `workouts` table. XML exports provide nested `WorkoutStatistics` for distance, energy, and aggregate heart-rate fields on some workouts, so imported rows may include `distance_km`, `energy_kcal`, `avg_hr_bpm`, and `max_hr_bpm`. GPX workout routes are deliberately not imported.
+Apple Health XML imports (`cmd/import` and the Admin import UI) also ingest `<Workout>` summaries into the same `workouts` table. XML exports provide nested `WorkoutStatistics` for distance, energy, and aggregate heart-rate fields on some workouts, so imported rows may include `distance_km`, `energy_kcal`, `avg_hr_bpm`, and `max_hr_bpm`. GPX workout routes are deliberately not imported. XML workouts with stable IDs are upserted by `external_id`; synthetic `applexml:` workout IDs are additionally deduplicated by stable workout window fields so corrected XML snapshots do not leave duplicate rows behind.
 
 The `/health` endpoint (no suffix) still accepts all metrics unfiltered for backward compatibility.
 
@@ -402,10 +402,20 @@ Import a full Apple Health export (from iPhone Settings > Health > Export All He
 
 **Via CLI**:
 ```bash
-DATABASE_URL=postgres://... go run ./cmd/import --file path/to/export.zip
+DATABASE_URL=postgres://... go run ./cmd/import --file path/to/export.zip --batch 100000
 ```
 
 The import streams the XML to avoid memory issues with large files. Percentage metrics (SpO2, body fat, walking asymmetry, etc.) are automatically normalized from Apple Health's fraction format (0.96) to percentage scale (96%).
+
+Admin UI and CLI imports share the same staged storage path:
+
+1. create one logical `import_runs` row and one `health_records` row for the export;
+2. read `HealthData@exportDate` as the snapshot freshness timestamp, falling back to import start only when it is unavailable;
+3. stream parsed metric points and workouts into temporary staging tables with bulk database operations;
+4. promote staged rows in one final transaction, recording coverage metadata and provenance;
+5. invalidate affected aggregate rows and run one cache rebuild after commit.
+
+If XML parsing or staging fails, the import is marked failed and no cleanup/backfill is run. The old row-by-row `BulkInsertPoints` path is retained only for narrow compatibility helpers.
 
 After import, run `make energy-backfill` (CLI) or open **Settings → Historical EnergyBank** (web UI) to compute retrospective EnergyBank snapshots from the imported daily scores. This unlocks per-user verdict band calibration; without it, the cold-start defaults are used until the live orchestrator has accumulated 30+ days of snapshots on its own.
 
@@ -429,7 +439,14 @@ This priority is applied consistently across dashboard, daily scores, readiness 
 
 ### Apple Health Import & Auto Export Conflict Resolution
 
-When re-importing from Apple Health (e.g. to fill gaps from missed Auto Export days), the system automatically removes Auto Export (`Health dash - Hourly`/`Vitals`) data for overlapping dates. Apple Health export is treated as ground truth. A full cache rebuild (force backfill) runs after each import.
+Apple Health XML export is treated as a timestamped HealthKit snapshot, not as a permanent lock on historical rows:
+
+- XML import supersedes older live / Health Auto Export rows on the same exact `(metric_name, date, source)` key.
+- Live/mobile data ingested after that XML snapshot is considered fresher and can overwrite the exact key.
+- A later XML export may supersede those rows again as a newer HealthKit snapshot.
+- Rows missing from a newer XML snapshot are cleaned up conservatively only within coverage groups proven by staging metadata; the importer does not delete every row in a broad `min_date` / `max_date` range.
+
+This lets full exports repair old HealthKit history while still allowing the first-party app to keep recent data fresh.
 
 ## Readiness Score
 
