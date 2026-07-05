@@ -110,6 +110,7 @@ func (s *DB) BeginAppleHealthXMLImport(opts ImportOptions) (*ImportSession, erro
 func (s *ImportSession) createStaging(ctx context.Context) error {
 	stmts := []string{
 		`CREATE TEMP TABLE ah_import_points (
+			staged_seq  BIGSERIAL PRIMARY KEY,
 			metric_name TEXT NOT NULL,
 			units       TEXT,
 			date        TEXT NOT NULL,
@@ -118,6 +119,7 @@ func (s *ImportSession) createStaging(ctx context.Context) error {
 			local_date  TEXT NOT NULL
 		) ON COMMIT DROP`,
 		`CREATE TEMP TABLE ah_import_workouts (
+			staged_seq        BIGSERIAL PRIMARY KEY,
 			external_id       TEXT NOT NULL,
 			name              TEXT NOT NULL,
 			start_time        TIMESTAMPTZ NOT NULL,
@@ -284,7 +286,7 @@ func (s *ImportSession) promotePoints(ctx context.Context) error {
 			SELECT DISTINCT ON (metric_name, date, source)
 			       metric_name, units, date, qty, COALESCE(source, '') AS source, local_date
 			  FROM ah_import_points
-			 ORDER BY metric_name, date, source
+			 ORDER BY metric_name, date, source, staged_seq DESC
 		)
 		SELECT COUNT(*),
 		       COUNT(mp.id),
@@ -321,7 +323,7 @@ func (s *ImportSession) promotePoints(ctx context.Context) error {
 			SELECT DISTINCT ON (metric_name, date, source)
 			       metric_name, units, date, qty, COALESCE(source, '') AS source
 			  FROM ah_import_points
-			 ORDER BY metric_name, date, source
+			 ORDER BY metric_name, date, source, staged_seq DESC
 		)
 		INSERT INTO metric_points
 			(health_record_id, metric_name, units, date, qty, source, origin, import_run_id)
@@ -377,7 +379,7 @@ func (s *ImportSession) promoteWorkouts(ctx context.Context) error {
 			       step_count_total, step_cadence_spm, temperature_c, humidity_pct,
 			       hr_z1_sec, hr_z2_sec, hr_z3_sec, hr_z4_sec, hr_z5_sec
 			  FROM ah_import_workouts
-			 ORDER BY external_id
+			 ORDER BY external_id, staged_seq DESC
 		)
 		INSERT INTO workouts (
 			health_record_id, external_id, name, start_time, end_time, duration_sec,

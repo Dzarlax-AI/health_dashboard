@@ -99,6 +99,27 @@ func TestAppleHealthXMLImportDeletesOnlyCoveredStaleRows(t *testing.T) {
 	assertPointState(t, db, "step_count", "2026-07-01 10:00:00 +0200", "iPhone", 1000, "live")
 }
 
+func TestAppleHealthXMLImportUsesLastStagedDuplicatePoint(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	xml := beginTestXMLImport(t, db, "xml-duplicates")
+	if err := xml.AddPoints([]MetricPoint{
+		{MetricName: "heart_rate", Units: "count/min", Date: "2026-07-01 10:00:00 +0200", Qty: 60, Source: "Apple Watch"},
+		{MetricName: "heart_rate", Units: "count/min", Date: "2026-07-01 10:00:00 +0200", Qty: 61, Source: "Apple Watch"},
+	}); err != nil {
+		t.Fatalf("stage duplicate xml points: %v", err)
+	}
+	counters, err := xml.Commit()
+	if err != nil {
+		t.Fatalf("commit xml: %v", err)
+	}
+	if counters.InsertedPoints != 1 || counters.SkippedPoints != 1 {
+		t.Fatalf("inserted/skipped = %d/%d, want 1/1", counters.InsertedPoints, counters.SkippedPoints)
+	}
+	assertPointState(t, db, "heart_rate", "2026-07-01 10:00:00 +0200", "Apple Watch", 61, appleHealthXMLOrigin)
+}
+
 func TestAppleHealthXMLImportDoesNotOverwriteLiveRowsNewerThanSnapshot(t *testing.T) {
 	db, cleanup := testDB(t)
 	defer cleanup()
