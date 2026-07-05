@@ -37,6 +37,8 @@ func (s *DB) EnsureIndexes() {
 	tableMigrations := []string{
 		importRunsTableDDL,
 		importRunCoverageTableDDL,
+		importStagePointsTableDDL,
+		importStageWorkoutsTableDDL,
 	}
 	for _, ddl := range tableMigrations {
 		if err := s.execStartupDDL(ddl, ddlColumnStatementTimeout); err != nil {
@@ -126,6 +128,13 @@ func (s *DB) EnsureIndexes() {
 
 		// Speeds up WHERE metric_name = $1 AND date-part queries on metric_points
 		{"idx_points_metric_date", `CREATE INDEX IF NOT EXISTS idx_points_metric_date ON metric_points (metric_name, SUBSTRING(date,1,10))`},
+
+		// Persistent Apple Health XML import staging. Each index starts with
+		// import_run_id because concurrent imports share the same stage tables.
+		{"idx_import_stage_points_dedup", `CREATE INDEX IF NOT EXISTS idx_import_stage_points_dedup ON import_stage_points (import_run_id, metric_name, date, source, staged_seq DESC)`},
+		{"idx_import_stage_points_coverage", `CREATE INDEX IF NOT EXISTS idx_import_stage_points_coverage ON import_stage_points (import_run_id, metric_name, source, local_date)`},
+		{"idx_import_stage_workouts_dedup", `CREATE INDEX IF NOT EXISTS idx_import_stage_workouts_dedup ON import_stage_workouts (import_run_id, external_id, staged_seq DESC)`},
+		{"idx_import_stage_workouts_synthetic", `CREATE INDEX IF NOT EXISTS idx_import_stage_workouts_synthetic ON import_stage_workouts (import_run_id, name, start_time, end_time)`},
 	}
 
 	existingIndexes, err := s.existingIndexes(indexes)
@@ -138,6 +147,9 @@ func (s *DB) EnsureIndexes() {
 		if err := s.execStartupDDL(index.ddl, ddlIndexStatementTimeout); err != nil {
 			log.Printf("ensure index: %v (query: %.80s)", err, index.ddl)
 		}
+	}
+	if err := s.CleanupAbandonedImportStages(24 * time.Hour); err != nil {
+		log.Printf("cleanup import staging: %v", err)
 	}
 }
 

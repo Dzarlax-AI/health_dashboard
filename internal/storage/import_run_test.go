@@ -250,6 +250,141 @@ func TestAppleHealthXMLImportAbortLeavesRowsUntouched(t *testing.T) {
 	if status != "failed" || msg != "parse failed" {
 		t.Fatalf("import status/error = %q/%q, want failed/parse failed", status, msg)
 	}
+	assertStageCounts(t, db, xml.runID, 0, 0)
+	var parsedPoints int64
+	if err := db.pool.QueryRow(ctx, `SELECT parsed_points FROM import_runs WHERE id = $1`, xml.runID).Scan(&parsedPoints); err != nil {
+		t.Fatalf("read parsed_points: %v", err)
+	}
+	if parsedPoints != 1 {
+		t.Fatalf("parsed_points after abort = %d, want 1", parsedPoints)
+	}
+}
+
+func TestAppleHealthXMLImportPersistentStageRowsVisibleAndCleaned(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	xml := beginTestXMLImport(t, db, "xml-persistent-stage")
+	start := time.Date(2026, 7, 1, 8, 0, 0, 0, time.UTC)
+	end := start.Add(30 * time.Minute)
+	if err := xml.AddPoints([]MetricPoint{{
+		MetricName: "heart_rate",
+		Units:      "count/min",
+		Date:       "2026-07-01 10:00:00 +0200",
+		Qty:        61,
+		Source:     "Apple Watch",
+	}}); err != nil {
+		t.Fatalf("stage xml point: %v", err)
+	}
+	if err := xml.AddWorkouts([]Workout{{
+		ExternalID:  "applexml:stagevisible",
+		Name:        "Strength Training",
+		StartTime:   start,
+		EndTime:     end,
+		DurationSec: end.Sub(start).Seconds(),
+	}}); err != nil {
+		t.Fatalf("stage xml workout: %v", err)
+	}
+	assertStageCounts(t, db, xml.runID, 1, 1)
+
+	if _, err := xml.Commit(); err != nil {
+		t.Fatalf("commit xml: %v", err)
+	}
+	assertStageCounts(t, db, xml.runID, 0, 0)
+	assertPointState(t, db, "heart_rate", "2026-07-01 10:00:00 +0200", "Apple Watch", 61, appleHealthXMLOrigin)
+}
+
+func TestAppleHealthXMLImportCrossRunStageIsolationForStaleDelete(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	recordID := insertTestRawRecord(t, db, "old-live")
+	if err := db.InsertPoints(recordID, []MetricPoint{
+		{MetricName: "heart_rate", Units: "count/min", Date: "2026-07-01 10:00:00 +0200", Qty: 60, Source: "Apple Watch"},
+		{MetricName: "heart_rate", Units: "count/min", Date: "2026-07-01 11:00:00 +0200", Qty: 70, Source: "Apple Watch"},
+	}); err != nil {
+		t.Fatalf("seed live points: %v", err)
+	}
+
+	first := beginTestXMLImport(t, db, "xml-first")
+	if err := first.AddPoints([]MetricPoint{{
+		MetricName: "heart_rate",
+		Units:      "count/min",
+		Date:       "2026-07-01 10:00:00 +0200",
+		Qty:        61,
+		Source:     "Apple Watch",
+	}}); err != nil {
+		t.Fatalf("stage first point: %v", err)
+	}
+
+	second := beginTestXMLImport(t, db, "xml-second")
+	if err := second.AddPoints([]MetricPoint{{
+		MetricName: "heart_rate",
+		Units:      "count/min",
+		Date:       "2026-07-01 11:00:00 +0200",
+		Qty:        71,
+		Source:     "Apple Watch",
+	}}); err != nil {
+		t.Fatalf("stage second point: %v", err)
+	}
+
+	counters, err := first.Commit()
+	if err != nil {
+		t.Fatalf("commit first: %v", err)
+	}
+	if counters.DeletedPoints != 1 {
+		t.Fatalf("first DeletedPoints = %d, want 1", counters.DeletedPoints)
+	}
+	assertPointMissing(t, db, "heart_rate", "2026-07-01 11:00:00 +0200", "Apple Watch")
+	assertStageCounts(t, db, first.runID, 0, 0)
+	assertStageCounts(t, db, second.runID, 1, 0)
+}
+
+func TestAppleHealthXMLImportCleanupAbandonedStagesPreservesRecentRunning(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	recent := beginTestXMLImport(t, db, "xml-recent-running")
+	if err := recent.AddPoints([]MetricPoint{{
+		MetricName: "heart_rate",
+		Units:      "count/min",
+		Date:       "2026-07-01 10:00:00 +0200",
+		Qty:        61,
+		Source:     "Apple Watch",
+	}}); err != nil {
+		t.Fatalf("stage recent point: %v", err)
+	}
+
+	old := beginTestXMLImport(t, db, "xml-old-running")
+	if err := old.AddPoints([]MetricPoint{{
+		MetricName: "heart_rate",
+		Units:      "count/min",
+		Date:       "2026-07-02 10:00:00 +0200",
+		Qty:        62,
+		Source:     "Apple Watch",
+	}}); err != nil {
+		t.Fatalf("stage old point: %v", err)
+	}
+
+	ctx, cancel := queryCtx()
+	defer cancel()
+	if _, err := db.pool.Exec(ctx, `UPDATE import_runs SET started_at = NOW() - INTERVAL '48 hours' WHERE id = $1`, old.runID); err != nil {
+		t.Fatalf("age old import: %v", err)
+	}
+
+	if err := db.CleanupAbandonedImportStages(24 * time.Hour); err != nil {
+		t.Fatalf("cleanup abandoned stages: %v", err)
+	}
+	assertStageCounts(t, db, recent.runID, 1, 0)
+	assertStageCounts(t, db, old.runID, 0, 0)
+
+	var oldStatus string
+	if err := db.pool.QueryRow(ctx, `SELECT status FROM import_runs WHERE id = $1`, old.runID).Scan(&oldStatus); err != nil {
+		t.Fatalf("read old status: %v", err)
+	}
+	if oldStatus != "failed" {
+		t.Fatalf("old status = %q, want failed", oldStatus)
+	}
 }
 
 func TestAppleHealthXMLImportReplacesSyntheticWorkoutDuplicate(t *testing.T) {
@@ -374,6 +509,22 @@ func assertPointMissing(t *testing.T, db *DB, metric, date, source string) {
 	}
 	if count != 0 {
 		t.Fatalf("point %s/%s/%s count = %d, want 0", metric, date, source, count)
+	}
+}
+
+func assertStageCounts(t *testing.T, db *DB, runID int64, wantPoints, wantWorkouts int) {
+	t.Helper()
+	ctx, cancel := queryCtx()
+	defer cancel()
+	var points, workouts int
+	if err := db.pool.QueryRow(ctx, `SELECT COUNT(*) FROM import_stage_points WHERE import_run_id = $1`, runID).Scan(&points); err != nil {
+		t.Fatalf("count staged points for run %d: %v", runID, err)
+	}
+	if err := db.pool.QueryRow(ctx, `SELECT COUNT(*) FROM import_stage_workouts WHERE import_run_id = $1`, runID).Scan(&workouts); err != nil {
+		t.Fatalf("count staged workouts for run %d: %v", runID, err)
+	}
+	if points != wantPoints || workouts != wantWorkouts {
+		t.Fatalf("stage counts for run %d = points %d workouts %d, want %d/%d", runID, points, workouts, wantPoints, wantWorkouts)
 	}
 }
 
