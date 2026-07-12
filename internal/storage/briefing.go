@@ -734,7 +734,7 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 // otherwise the full sliding-window computation runs and the cache is updated.
 func (s *DB) GetReadinessHistory(outputDays int) ([]health.ReadinessPoint, error) {
 	cached, err := s.readinessFromCache(outputDays)
-	if err == nil && isCacheRecent(cached) {
+	if err == nil && s.isCacheRecent(cached) {
 		fillReadinessBands(cached)
 		return cached, nil
 	}
@@ -861,41 +861,41 @@ func (s *DB) computeReadinessHistory(outputDays int) ([]health.ReadinessPoint, e
 		allDates = allDates[len(allDates)-outputDays:]
 	}
 
-	// valsBefore returns values for all dates <= anchor, sorted by DATE descending
-	// (most recent first) so that vals[:3] is the last 3 days, vals[3:] is the
-	// historical baseline. Sorting by value (as before) was a bug: it put the
-	// best HRV days first, artificially inflating the "recent" average.
-	valsBefore := func(m map[string]float64, anchor string) []float64 {
-		type dateval struct {
-			d string
-			v float64
-		}
-		var pairs []dateval
-		for d, v := range m {
-			if d <= anchor {
-				pairs = append(pairs, dateval{d, v})
-			}
-		}
-		sort.Slice(pairs, func(i, j int) bool { return pairs[i].d > pairs[j].d })
-		if len(pairs) > window {
-			pairs = pairs[:window]
-		}
-		out := make([]float64, len(pairs))
-		for i, p := range pairs {
-			out[i] = p.v
-		}
-		return out
-	}
-
 	out := make([]health.ReadinessPoint, 0, len(allDates))
 	for _, d := range allDates {
-		hrv := valsBefore(hrvMap, d)
-		rhr := valsBefore(rhrMap, d)
-		sleep := valsBefore(sleepMap, d)
+		hrv := calendarAlignedValues(hrvMap, d, window)
+		rhr := calendarAlignedValues(rhrMap, d, window)
+		sleep := calendarAlignedValues(sleepMap, d, window)
 		score := health.ComputeReadinessScore(hrv, rhr, sleep)
 		out = append(out, health.ReadinessPoint{Date: d, Score: score})
 	}
 	return out, nil
+}
+
+// calendarAlignedValues never promotes an older observation into the anchor
+// day's "today" slot. When the anchor is missing, the metric contributes no
+// readiness component for that day instead of silently recycling yesterday.
+func calendarAlignedValues(values map[string]float64, anchor string, window int) []float64 {
+	if _, ok := values[anchor]; !ok {
+		return nil
+	}
+	from := subtractDays(anchor, window-1)
+	type dateval struct {
+		date  string
+		value float64
+	}
+	pairs := make([]dateval, 0, window)
+	for date, value := range values {
+		if date >= from && date <= anchor {
+			pairs = append(pairs, dateval{date: date, value: value})
+		}
+	}
+	sort.Slice(pairs, func(i, j int) bool { return pairs[i].date > pairs[j].date })
+	out := make([]float64, len(pairs))
+	for n, pair := range pairs {
+		out[n] = pair.value
+	}
+	return out
 }
 
 // fetchDailyMetric reads a single metric's daily values from metric_points.

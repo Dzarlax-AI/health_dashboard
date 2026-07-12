@@ -116,10 +116,10 @@ func (s *DB) readinessFromCache(limit int) ([]health.ReadinessPoint, error) {
 	for rows.Next() {
 		var p health.ReadinessPoint
 		if err := rows.Scan(&p.Date, &p.Score); err != nil {
-				log.Printf("readinessFromCache scan: %v", err)
-				continue
-			}
-			pts = append(pts, p)
+			log.Printf("readinessFromCache scan: %v", err)
+			continue
+		}
+		pts = append(pts, p)
 	}
 	// reverse to ascending order
 	for i, j := 0, len(pts)-1; i < j; i, j = i+1, j-1 {
@@ -162,11 +162,12 @@ func (s *DB) saveReadinessScores(pts []health.ReadinessPoint) {
 
 // isCacheRecent returns true when the cache has at least one entry and the
 // most-recent date is within the last two days (accounts for late phone syncs).
-func isCacheRecent(pts []health.ReadinessPoint) bool {
+func (s *DB) isCacheRecent(pts []health.ReadinessPoint) bool {
 	if len(pts) == 0 {
 		return false
 	}
-	threshold := time.Now().AddDate(0, 0, -2).Format("2006-01-02")
+	thresholdTime, _ := time.Parse("2006-01-02", s.Today())
+	threshold := thresholdTime.AddDate(0, 0, -2).Format("2006-01-02")
 	return pts[len(pts)-1].Date >= threshold
 }
 
@@ -175,7 +176,8 @@ func isCacheRecent(pts []health.ReadinessPoint) bool {
 // Metric columns (hrv_avg, steps, …) are preserved.
 // Safe to call from a goroutine; errors are logged, not returned.
 func (s *DB) InvalidateRecentScores(days int) {
-	cutoff := time.Now().AddDate(0, 0, -days).Format("2006-01-02")
+	today, _ := time.Parse("2006-01-02", s.Today())
+	cutoff := today.AddDate(0, 0, -days).Format("2006-01-02")
 	ctx, cancel := queryCtx()
 	defer cancel()
 	if _, err := s.pool.Exec(ctx,

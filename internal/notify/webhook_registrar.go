@@ -72,7 +72,7 @@ func execAndCheck(api string, payload []byte) (string, string, error) {
 	if err != nil {
 		// Network/timeout failure — postJSON's context already capped
 		// at 5s. Treat as a transient reason.
-		return "network", "", fmt.Errorf("network: %w", err)
+		return "network", "", telegramTransportError{cause: err}
 	}
 	defer resp.Body.Close()
 	body, readErr := io.ReadAll(resp.Body)

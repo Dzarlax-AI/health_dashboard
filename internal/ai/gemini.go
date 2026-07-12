@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -26,13 +27,17 @@ func ListModels(apiKey string) ([]Model, error) {
 	if apiKey == "" {
 		return nil, fmt.Errorf("API key is required")
 	}
-	url := "https://generativelanguage.googleapis.com/v1beta/models?key=" + apiKey
-	resp, err := http.Get(url)
+	req, err := http.NewRequest(http.MethodGet, "https://generativelanguage.googleapis.com/v1beta/models", nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("x-goog-api-key", apiKey)
+	resp, err := geminiClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
@@ -94,10 +99,7 @@ func generateWithPrompt(apiKey, model string, maxTokens int, prompt string, user
 		maxTokens = 5000
 	}
 
-	url := fmt.Sprintf(
-		"https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s",
-		model, apiKey,
-	)
+	endpoint := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", url.PathEscape(model))
 
 	langName := langNames[lang]
 	if langName == "" {
@@ -116,11 +118,7 @@ func generateWithPrompt(apiKey, model string, maxTokens int, prompt string, user
 			{
 				"role": "user",
 				"parts": []map[string]any{
-					{"text": fmt.Sprintf("Today: %s (%s)\n\nApple Health data (JSON):\n\n%s",
-							time.Now().Format("2006-01-02"),
-							time.Now().Weekday().String(),
-							string(userPayload),
-						)},
+					{"text": fmt.Sprintf("Use the evaluation date from the supplied health data; never infer it from server time.\n\nApple Health data (JSON):\n\n%s", string(userPayload))},
 				},
 			},
 		},
@@ -135,11 +133,12 @@ func generateWithPrompt(apiKey, model string, maxTokens int, prompt string, user
 		return "", nil, fmt.Errorf("marshal payload: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return "", nil, fmt.Errorf("new request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-goog-api-key", apiKey)
 
 	resp, err := geminiClient.Do(req)
 	if err != nil {
@@ -147,7 +146,7 @@ func generateWithPrompt(apiKey, model string, maxTokens int, prompt string, user
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return "", nil, fmt.Errorf("read response: %w", err)
 	}
@@ -176,4 +175,3 @@ func generateWithPrompt(apiKey, model string, maxTokens int, prompt string, user
 
 	return result.Candidates[0].Content.Parts[0].Text, bodyBytes, nil
 }
-

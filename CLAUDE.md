@@ -37,13 +37,15 @@ Single binary HTTP server (`cmd/server/main.go`) that wires together several pac
 
   **`/api/ai-briefing` is non-blocking by design.** Returns `{insight, blocks, generating, disabled}` and kicks `EnsureTodayAIInsightAsync` on cold cache; `/api/health-briefing` reads AI text from cache only and never waits on Gemini. The web dashboard polls `/api/ai-briefing` every 60s while the tab is visible and the cache is cold (sparkle ✨ marks fresh updates), stops on `disabled` or after the cache is stable for ~10 min.
 
-- **`internal/mcpserver`** — MCP Streamable HTTP server at `/mcp` (mark3labs/mcp-go v0.44.1). Auth via `Authorization: Bearer <key>` or `X-API-Key` header (same `API_KEY` env). Tools: `get_health_briefing`, `get_readiness_history`, `list_metrics`, `get_dashboard`, `get_metric_data`, `summarize_metric`, `compare_periods`, `get_sleep_summary`, `find_anomalies`, `get_weekly_summary`, `get_personal_records`, `sql_query`.
+- **`internal/mcpserver`** — MCP Streamable HTTP server at `/mcp` (mark3labs/mcp-go v0.44.1). Auth via `Authorization: Bearer <key>` or `X-API-Key` header (same `API_KEY` env). Exposes typed health, analysis, and workout tools; arbitrary SQL is not exposed.
+
+- **`internal/tenants`** — tenant registry routing, durable provisioning, and database isolation. In isolated mode each active tenant authenticates with a UUID-derived PostgreSQL LOGIN role; `db_isolation_ready` must be true before a runtime pool opens. Administrative provisioning/migration authority, registry authority, and tenant request pools use separate connection classes. Existing-install cutover, secret rotation, and rollback are operated through `cmd/tenant_isolation`; see `docs/TENANT_ISOLATION_RUNBOOK.md`.
 
 - **`internal/health`** — pure business logic for health analysis (no I/O). Readiness scoring (`scoring.go`, `readiness.go`), health anomaly alerts (`alerts.go`), cardio analysis (`cardio.go`), sleep breakdowns (`sleep.go`), activity analysis (`activity.go`), insights generation (`insights.go`), and i18n (`i18n_en.go`, `i18n_ru.go`, `i18n_sr.go`). Core types in `types.go`.
 
 - **`internal/storage`** — PostgreSQL via `jackc/pgx/v5` connection pool. Tables: `health_records`, `metric_points`, three pre-aggregated cache tables (`minute_metrics`, `hourly_metrics`, `daily_scores`), `settings` (key-value store for Telegram config), `ai_briefing_blocks` (per-block AI cache: SLEEP/YESTERDAY/RECOVERY/RECOMMENDATION × lang × date with `inputs_hash`), and `ai_briefings` (kept as the morning-report `sent_at` lock only — content lives in `ai_briefing_blocks`). Also includes `admin.go` (data gap detection), `settings.go` (notification + AI config persistence), `ai_briefing.go` (legacy `sent_at` CRUD), `ai_briefing_blocks.go` (per-block CRUD + idempotent migration from legacy `ai_briefings.insight`), `ai_orchestrator.go` (`EnsureTodayAIInsight` + `EnsureTodayAIInsightAsync` with single-flight `aiRegenInFlight sync.Map` and 5-min failure backoff `aiRegenLastFailAt`), and `typical_wake.go` (`GetTypicalWakeTime` for adaptive `MorningCapTime`). Schema managed externally via `init.sql` (except `ai_briefings` and `ai_briefing_blocks`, auto-created on startup).
 
-- **`internal/notify`** — Telegram notification subsystem. Bot client (`telegram.go`) and report scheduler (`report.go`) with timezone-aware morning/evening scheduling. Config loaded from env vars with DB overrides.
+- **`internal/notify`** — Telegram notification subsystem. Bot client (`telegram.go`) and report scheduler (`report.go`) with timezone-aware morning/evening scheduling. Config loaded from env vars with DB overrides. Scheduled morning/evening sends use durable at-most-once delivery reservations; an ambiguous transport result is not retried automatically. Scheduler timing is re-read at least once per minute so settings changes do not wait for an old timer.
 
   **Proactive notifications** (one-off Telegram messages outside the morning/evening report cadence — onboarding nudges, illness flags, streak congrats, etc.) register via the framework in `proactive.go`:
   ```go
@@ -78,7 +80,7 @@ POST /health → InsertRaw → health_records → 200 to client (sync, fast)
                                          backfill scheduler
 ```
 
-`health_records` is the **source of truth** — metric_points and all cache tables are derived and can be fully rebuilt via backfill.
+`health_records` is the **source of truth** — metric_points and all cache tables are derived. New ingestion rows move `pending → complete` only after parsing; pending rows replay after restart. Payload content is immutable.
 
 Reads are cache-first: `daily_scores` → `hourly_metrics` → `minute_metrics` → `metric_points` (fallback).
 
@@ -99,7 +101,8 @@ Special metric handling in `internal/handler/health.go::extractPoints`:
 Schema managed by `init.sql` (not by the application). Tables:
 
 ```text
-health_records     — raw JSON payloads, never modified
+health_records     — immutable raw JSON payload plus processing state;
+                     accepted rows replay while status='pending'
 metric_points      — parsed time series, append-only, UNIQUE(metric_name, date, source)
                      date stored as TEXT (YYYY-MM-DD HH:MM:SS ±TZ)
 minute_metrics     — Level 1 cache (no longer actively populated)
@@ -108,6 +111,10 @@ daily_scores       — Level 3 cache: per-day rollups (hrv_avg, rhr_avg,
                      sleep_*, steps, calories, exercise_min, spo2_avg, vo2_avg, resp_avg)
                      + Level 4: readiness score (0–100) with score_version
 settings           — key-value store for Telegram config
+notification_deliveries — durable at-most-once reservations for reports,
+                     proactive messages, and interactive prompts. States:
+                     reserved/sent/ambiguous/failed; ambiguous is never
+                     retried automatically.
 ai_briefings       — sent_at lock for HasSentMorningReport (insight column
                      deprecated; content moved to ai_briefing_blocks). Auto-
                      created via EnsureAIBriefingsTable() on startup.
@@ -248,12 +255,15 @@ The gate has a **second pass** for sources that emit `sleep_unspecified` only (n
 
 ## Environment Variables
 
+**Authentication bootstrap:** fresh interactive installs require a non-empty `SETUP_TOKEN`; `/setup` never displays it. ForwardAuth requires both `TRUST_FORWARD_AUTH=true` and explicit trusted proxy CIDRs in `TRUSTED_FORWARD_AUTH_NETWORK(S)`; there is no private/loopback fallback.
+
 | Variable | Default | Purpose |
 |---|---|---|
 | `DATABASE_URL` | — (required) | PostgreSQL connection string (e.g. `postgres://health_user:pass@host/db?search_path=health`) |
 | `ADDR` | `:8080` | Listen address |
 | `API_KEY` | — | Auth for `/health` and `/mcp` |
 | `UI_PASSWORD` | — | Auth for web UI |
+| `SETUP_TOKEN` | — | Required capability for first-admin `POST /setup`; setup fails closed when empty |
 | `BASE_URL` | `http://localhost:8080` | Used for MCP server URL in logs |
 | `TELEGRAM_TOKEN` | — | Telegram bot token; if set with `TELEGRAM_CHAT_ID` — enables daily reports |
 | `TELEGRAM_CHAT_ID` | — | Recipient chat/user ID |

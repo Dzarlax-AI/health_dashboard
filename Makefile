@@ -1,4 +1,4 @@
-.PHONY: dev build backfill backfill-force energy-backfill energy-backfill-dry import docker-up docker-down test test-unit test-db-storage test-db-ui test-db-ui-fast test-db-energy test-db-energy-smoke test-db-readiness test-db smoke-health-post
+.PHONY: dev build backfill backfill-force energy-backfill energy-backfill-dry tenant-isolation import docker-up docker-down test test-unit test-db-storage test-db-ui test-db-ui-fast test-db-energy test-db-energy-smoke test-db-readiness test-db-import test-db-security test-db smoke-health-post
 
 ADDR ?= :8080
 
@@ -34,6 +34,9 @@ energy-backfill-dry:
 import:
 	DATABASE_URL=$(DATABASE_URL) go run ./cmd/import --file $(FILE) --batch 500 --pause 150ms
 
+tenant-isolation:
+	go run ./cmd/tenant_isolation $(ARGS)
+
 docker-up:
 	docker compose up -d --build
 
@@ -60,6 +63,13 @@ test-db-energy-smoke:
 
 test-db-readiness:
 	HEALTH_DB_TESTS=1 go test ./internal/storage -run '^(TestSaveNaiveBaseline_NilValueWithValidReasonPersists|TestVerifyReadinessRedesignSchema_DetectsReasonColumnDrift|TestRecomputeChipCalibrations_Integration_(RejectsCrossEpochLabels|PercentileP80|InsufficientData))$$' -count=1 -timeout=90s
+
+test-db-security:
+	HEALTH_DB_TESTS=1 go test ./internal/registry -count=1 -timeout=90s
+	HEALTH_DB_TESTS=1 go test ./internal/tenants -count=1 -timeout=120s
+
+test-db-import:
+	HEALTH_DB_TESTS=1 go test ./internal/storage -run '^(TestAppleHealthXMLImport|TestBeginAppleHealthXMLImport|TestHealthRecordProcessing|TestNotificationDelivery|TestQualityReclassification)' -count=1 -timeout=120s
 
 test-db: test-db-ui-fast test-db-energy-smoke test-db-readiness
 

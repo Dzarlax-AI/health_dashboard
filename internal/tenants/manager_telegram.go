@@ -24,16 +24,18 @@ func schemaForChatID(chatIDs map[string]string, chat string) (string, bool) {
 // callback to the right tenant's DB pool.
 //
 // In legacy single-user mode the lookup checks the legacyDB only. In
-// multi-tenant mode it snapshots AllDBs() once and walks it; the
-// snapshot is the source of truth for both the chat_id lookup and
-// the returned *storage.DB so two tenants with the same chat_id
-// can't race-rebind between the two reads.
+// multi-tenant mode it snapshots ActiveDBs(ctx) once and walks it. In
+// isolation mode that snapshot revalidates current ACTIVE registry metadata,
+// so a cached pool never confers authorization after deactivation or identity
+// drift. The snapshot is the source of truth for both the chat_id lookup and
+// the returned *storage.DB so two tenants with the same chat_id can't
+// race-rebind between the two reads.
 //
 // When two tenants share a chat_id (operator misconfiguration), the
 // conflict is logged and the lookup returns (nil, "", false) rather
 // than silently routing the callback to a non-deterministic tenant.
 // Empty chat_id always returns (nil, "", false).
-func (m *Manager) DBForTelegramChatID(_ context.Context, defaults storage.NotifyConfig, chat string) (*storage.DB, string, bool) {
+func (m *Manager) DBForTelegramChatID(ctx context.Context, defaults storage.NotifyConfig, chat string) (*storage.DB, string, bool) {
 	if chat == "" {
 		return nil, "", false
 	}
@@ -50,7 +52,7 @@ func (m *Manager) DBForTelegramChatID(_ context.Context, defaults storage.Notify
 	}
 	// Snapshot once so the schema we resolve and the DB we return
 	// come from the same map view.
-	snapshot := m.AllDBs()
+	snapshot := m.ActiveDBs(ctx)
 	var matched []string
 	var matchedDB *storage.DB
 	for schema, db := range snapshot {

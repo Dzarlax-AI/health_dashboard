@@ -19,12 +19,8 @@ on:
         description: "Run Go race detector tests"
         type: boolean
         default: false
-      run_db_tests:
-        description: "Run DB-backed test lanes with a Postgres service"
-        type: boolean
-        default: false
       db_test_lane:
-        description: "DB lane to run when run_db_tests is true"
+        description: "Additional DB lane selection for manual runs"
         type: choice
         default: stable
         options:
@@ -74,10 +70,9 @@ jobs:
   db-tests:
     name: DB Tests
     runs-on: ubuntu-latest
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_db_tests }}
     services:
       postgres:
-        image: postgres:16
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
         env:
           POSTGRES_DB: health_test
           POSTGRES_USER: postgres
@@ -96,6 +91,7 @@ jobs:
       PGDATABASE: health_test
       PGUSER: postgres
       PGPASSWORD: postgres
+      REGISTRY_TEST_DSN: postgres://registry_ci:registry_ci@localhost:5432/health_test
       GOCACHE: /tmp/health-go-build-cache
     steps:
       - uses: actions/checkout@v5
@@ -104,6 +100,21 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Prepare disposable security-test database
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "CREATE TABLE IF NOT EXISTS public.health_test_metadata(key text primary key, value text not null)"
+          psql -v ON_ERROR_STOP=1 -c "INSERT INTO public.health_test_metadata(key,value) VALUES ('disposable_database','true') ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+          psql -v ON_ERROR_STOP=1 -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='registry_ci') THEN CREATE ROLE registry_ci LOGIN PASSWORD 'registry_ci' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS; END IF; END \$\$"
+          psql -v ON_ERROR_STOP=1 -c "CREATE SCHEMA IF NOT EXISTS health_registry AUTHORIZATION registry_ci"
+          psql -v ON_ERROR_STOP=1 -c "GRANT CONNECT ON DATABASE health_test TO registry_ci"
+          psql -v ON_ERROR_STOP=1 -c "GRANT SELECT ON public.health_test_metadata TO registry_ci"
+
+      - name: Run tenant isolation DB lane
+        run: make test-db-security
+
+      - name: Run import and durable-delivery DB lane
+        run: make test-db-import
 
       - name: Run routine DB lane
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.db_test_lane == 'stable' || inputs.db_test_lane == 'routine' }}
@@ -144,11 +155,38 @@ jobs:
       - name: Test with race detector
         run: CGO_ENABLED=1 go test -race ./...
 
+  container-smoke:
+    name: Container Smoke & Restart
+    needs: [build, db-tests]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build runtime image
+        run: docker build -t health-dashboard:ci .
+
+      - name: Start disposable stack and verify restart recovery
+        run: |
+          docker network create health-ci
+          docker run -d --name health-ci-db --network health-ci -e POSTGRES_DB=health -e POSTGRES_USER=health -e POSTGRES_PASSWORD=health postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+          for i in $(seq 1 30); do docker exec health-ci-db pg_isready -U health -d health && break; sleep 1; done
+          docker run -d --name health-ci-app --network health-ci -p 18080:8080 -e DATABASE_URL='postgres://health:health@health-ci-db:5432/health?search_path=health' -e API_KEY=ci-key -e UI_PASSWORD=ci-password health-dashboard:ci
+          for i in $(seq 1 60); do curl --fail --silent http://localhost:18080/readyz && break; sleep 1; done
+          curl --fail --silent http://localhost:18080/readyz
+          curl --fail --silent -X POST http://localhost:18080/health -H 'X-API-Key: ci-key' -H 'Content-Type: application/json' -d '{"data":{"metrics":[{"name":"step_count","units":"count","data":[{"date":"2026-07-12 10:00:00 +0000","qty":1234,"source":"CI Phone"}]}]}}'
+          docker kill --signal=TERM health-ci-app
+          docker wait health-ci-app
+          docker rm health-ci-app
+          docker run -d --name health-ci-app --network health-ci -p 18080:8080 -e DATABASE_URL='postgres://health:health@health-ci-db:5432/health?search_path=health' -e API_KEY=ci-key -e UI_PASSWORD=ci-password health-dashboard:ci
+          for i in $(seq 1 60); do curl --fail --silent http://localhost:18080/readyz && break; sleep 1; done
+          curl --fail --silent http://localhost:18080/readyz
+          test "$(docker exec health-ci-db psql -U health -d health -Atc "SELECT count(*) FROM health.metric_points WHERE metric_name='step_count' AND qty=1234")" = "1"
+
   docker-amd64:
     name: Docker Build & Push (amd64)
-    needs: build
+    needs: [build, db-tests, container-smoke]
     runs-on: ubuntu-latest
-    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.build_amd64 && !inputs.run_race && !inputs.run_db_tests)) }}
+    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.build_amd64)) }}
     permissions:
       contents: read
       packages: write
@@ -187,9 +225,9 @@ jobs:
 
   docker-arm64:
     name: Docker Build & Push (arm64)
-    needs: build
+    needs: [build, db-tests, container-smoke]
     runs-on: ubuntu-latest
-    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.build_arm64 && !inputs.run_race && !inputs.run_db_tests }}
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.build_arm64 }}
     permissions:
       contents: read
       packages: write

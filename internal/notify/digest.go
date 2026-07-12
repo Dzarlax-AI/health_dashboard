@@ -76,7 +76,7 @@ func prettyMetric(m string) string {
 		return "HRV"
 	case "resting_heart_rate":
 		return "RHR"
-	case "oxygen_saturation":
+	case "oxygen_saturation", "blood_oxygen_saturation":
 		return "SpO₂"
 	case "respiratory_rate":
 		return "Resp"

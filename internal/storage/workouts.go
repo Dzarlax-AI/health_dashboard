@@ -83,10 +83,10 @@ func (s *DB) UpsertWorkout(healthRecordID int64, w Workout) error {
 			distance_km, avg_speed_kmh, max_speed_kmh, elevation_up_m,
 			step_count_total, step_cadence_spm, temperature_c, humidity_pct,
 			hr_z1_sec, hr_z2_sec, hr_z3_sec, hr_z4_sec, hr_z5_sec,
-			origin, import_run_id
+			origin, import_run_id, source_snapshot_at
 		) VALUES (
 			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,
-			'live', NULL
+			'live', NULL, NOW()
 		)
 		ON CONFLICT (external_id) DO UPDATE SET
 			received_at = NOW(),
@@ -115,7 +115,8 @@ func (s *DB) UpsertWorkout(healthRecordID int64, w Workout) error {
 			hr_z4_sec = excluded.hr_z4_sec,
 			hr_z5_sec = excluded.hr_z5_sec,
 			origin = 'live',
-			import_run_id = NULL
+			import_run_id = NULL,
+			source_snapshot_at = NOW()
 	`,
 		nullableInt64(healthRecordID),
 		w.ExternalID, w.Name, w.StartTime, w.EndTime, w.DurationSec,

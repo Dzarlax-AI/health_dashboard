@@ -368,7 +368,7 @@ func TestAppleHealthXMLImportCleanupAbandonedStagesPreservesRecentRunning(t *tes
 
 	ctx, cancel := queryCtx()
 	defer cancel()
-	if _, err := db.pool.Exec(ctx, `UPDATE import_runs SET started_at = NOW() - INTERVAL '48 hours' WHERE id = $1`, old.runID); err != nil {
+	if _, err := db.pool.Exec(ctx, `UPDATE import_runs SET started_at = NOW() - INTERVAL '48 hours', heartbeat_at = NOW() - INTERVAL '48 hours' WHERE id = $1`, old.runID); err != nil {
 		t.Fatalf("age old import: %v", err)
 	}
 
@@ -470,6 +470,83 @@ func TestAppleHealthXMLImportReplacesSyntheticWorkoutDuplicate(t *testing.T) {
 	}
 	if count != 1 || externalID != "applexml:newhash" || distance != 8.2 {
 		t.Fatalf("workout state = count %d id %q distance %.1f, want 1/newhash/8.2", count, externalID, distance)
+	}
+}
+
+func TestAppleHealthXMLImportDoesNotOverwriteWorkoutFromNewerSnapshot(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	start := time.Date(2026, 7, 1, 8, 0, 0, 0, time.UTC)
+	newer, err := db.BeginAppleHealthXMLImport(ImportOptions{SourceName: "newer", SnapshotAt: time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workout := Workout{ExternalID: "workout-stable-id", Name: "Outdoor Run", StartTime: start, EndTime: start.Add(time.Hour), DurationSec: 3600, DistanceKm: importFloatPtr(10)}
+	if err = newer.AddWorkouts([]Workout{workout}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = newer.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	older, err := db.BeginAppleHealthXMLImport(ImportOptions{SourceName: "older", SnapshotAt: time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workout.DistanceKm = importFloatPtr(5)
+	if err = older.AddWorkouts([]Workout{workout}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = older.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := queryCtx()
+	defer cancel()
+	var distance float64
+	if err = db.pool.QueryRow(ctx, `SELECT distance_km FROM workouts WHERE external_id=$1`, workout.ExternalID).Scan(&distance); err != nil {
+		t.Fatal(err)
+	}
+	if distance != 10 {
+		t.Fatalf("older snapshot replaced workout distance: %v", distance)
+	}
+}
+
+func TestHealthRecordProcessingReplayState(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	id, err := db.InsertRaw(Record{Payload: `{"data":{}}`, PendingProcessing: true, ProcessingKind: "sum"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := db.PendingHealthRecords(10)
+	if err != nil || len(pending) != 1 || pending[0].ID != id || pending[0].ProcessingKind != "sum" {
+		t.Fatalf("pending records = %+v, %v", pending, err)
+	}
+	if err = db.SetHealthRecordProcessing(id, "complete", nil); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = db.PendingHealthRecords(10)
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("pending after completion = %+v, %v", pending, err)
+	}
+}
+
+func TestNotificationDeliveryAtMostOnceAndFailedRetry(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx, cancel := queryCtx()
+	defer cancel()
+	token, reserved, err := db.ReserveNotificationDelivery(ctx, "report:morning:2026-07-12")
+	if err != nil || !reserved {
+		t.Fatalf("first reserve = %v, %v", reserved, err)
+	}
+	if _, reserved, err = db.ReserveNotificationDelivery(ctx, "report:morning:2026-07-12"); err != nil || reserved {
+		t.Fatalf("duplicate reserve = %v, %v", reserved, err)
+	}
+	if err = db.CompleteNotificationDelivery(ctx, "report:morning:2026-07-12", token, "failed", "provider_rejected"); err != nil {
+		t.Fatal(err)
+	}
+	if _, reserved, err = db.ReserveNotificationDelivery(ctx, "report:morning:2026-07-12"); err != nil || !reserved {
+		t.Fatalf("definitive failure retry = %v, %v", reserved, err)
 	}
 }
 

@@ -33,6 +33,8 @@ Project direction and maintainer context:
 - [Roadmap](ROADMAP.md) — current priorities, later work, and explicit non-goals.
 - [Architecture](docs/ARCHITECTURE.md) — system boundaries, data layers, scoring methodology, and privacy model.
 - [Contributing](CONTRIBUTING.md) — development workflow, testing, and privacy expectations.
+- [Release and migration runbook](docs/RELEASE_RUNBOOK.md) — clean installs, upgrades, smoke tests, and immutable rollback.
+- [Tenant isolation runbook](docs/TENANT_ISOLATION_RUNBOOK.md) — inventory, canary, cutover, rotation, and rollback.
 
 ## Why This Matters for OSS
 
@@ -254,7 +256,7 @@ GRANT CREATE ON DATABASE aistack TO health_user;
 
 ### First-Time Setup
 
-On first run with an empty registry, the server redirects all traffic to `/setup` — a wizard that creates the first admin user and provisions their schema.
+On first run with an empty registry, generate a secret capability (`openssl rand -hex 32`), set it as `SETUP_TOKEN`, and restart the server. The server redirects traffic to `/setup`; enter that token with the new admin credentials. Keep the token out of logs and source control. Setup closes permanently once the first registry user exists, after which the token may be removed or rotated.
 
 ### Adding More Users
 
@@ -268,9 +270,15 @@ Three methods are supported, checked in order:
 
 | Method | How |
 |---|---|
-| **Authentik ForwardAuth** | Set `TRUST_FORWARD_AUTH=true` (legacy alias: `TRUST_FWD_AUTH=true`). Traefik passes `X-authentik-username` / `X-authentik-email` headers. By default those headers are trusted only from loopback/private proxy addresses; set `TRUSTED_FORWARD_AUTH_NETWORK=<cidr>[,<cidr>...]` or `TRUSTED_FORWARD_AUTH_NETWORKS=<cidr>[,<cidr>...]` when the trusted proxy is outside those ranges. The proxy must strip any client-supplied `X-authentik-*` headers before forwarding. On first request the server also issues a 30-day local cookie, so sessions survive Authentik token expiry. |
+| **Authentik ForwardAuth** | Set `TRUST_FORWARD_AUTH=true` and an explicit `TRUSTED_FORWARD_AUTH_NETWORK=<cidr>[,<cidr>...]` (or plural alias). Startup fails closed without the CIDR allow-list. The proxy must strip client-supplied identity and forwarding headers. |
 | **Username + password** | Login form at `/login`. Passwords are stored with bcrypt. Browser cookies contain opaque 30-day session tokens, not password hashes. Passwords must fit bcrypt's 72-byte input limit. |
 | **API key** | `X-API-Key` header (for iOS app sync and MCP). |
+
+| Configuration | Required | Purpose |
+|---|---|---|
+| `SETUP_TOKEN` | Fresh interactive setup | Secret one-time capability for first-admin `POST /setup`; generate with `openssl rand -hex 32`. |
+| `TRUST_FORWARD_AUTH` | No | Enables Authentik identity headers only when explicit trusted CIDRs are also configured. |
+| `TRUSTED_FORWARD_AUTH_NETWORK(S)` | With ForwardAuth | Comma-separated proxy CIDRs; no private or loopback default is implied. |
 
 Existing installs that predate bcrypt keep working: the first successful password login upgrades that user's legacy SHA-256 password hash to bcrypt. Existing browser cookies from older releases are intentionally invalidated once; log in again after deployment.
 
@@ -316,6 +324,8 @@ Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_conf
 
 Available tools:
 
+> **Breaking MCP change:** `sql_query` has been removed. Existing clients must migrate before rollout: use `get_metric_data`/`summarize_metric` for time series, `compare_periods` for comparisons, `get_sleep_summary` for sleep, `find_anomalies` for outliers, `get_weekly_summary` for weekly rollups, and workout tools for workout data. Deploying this release makes old `sql_query` calls return “tool not found”; rollback requires deploying the previous server version, with no database rollback or migration required.
+
 | Tool | Description |
 |---|---|
 | `get_health_briefing` | Daily health briefing with readiness score, server-owned `readiness_serving` freshness/confidence metadata, sleep analysis, activity, insights, and alerts. Supports `lang` (en/ru/sr). |
@@ -333,7 +343,6 @@ Available tools:
 | `list_workouts` | List Apple Health workouts (runs, rides, strength) in a date range with summary fields and time-in-HR-zone. Optional name filter. |
 | `get_workout` | One workout by its HAE UUID. |
 | `workout_stats` | Aggregate counters for workouts in a range: count, total duration, distance, energy, avg/max HR, total time-in-HR-zone. |
-| `sql_query` | Run any read-only SQL SELECT on the PostgreSQL database. |
 
 ### Readiness serving contract
 

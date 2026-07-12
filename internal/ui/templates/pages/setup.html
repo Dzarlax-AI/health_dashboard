@@ -24,6 +24,7 @@ button:hover{background:#1d4ed8}
   <p class="subtitle">Create your admin account to get started.</p>
   {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
   <form method="POST">
+    <label>Setup token</label><input type="password" name="setup_token" autocomplete="off">
     <label>Username</label>
     <input type="text" name="username" autofocus autocomplete="username">
     <label>Email <span style="font-weight:400;color:#9b9591">(optional — used for Authentik SSO)</span></label>

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Full service audit remediation</title>
+<style>body{font:16px/1.5 system-ui;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#172033}h1,h2{line-height:1.2}section{border:1px solid #d9e0ea;border-radius:12px;padding:1rem 1.25rem;margin:1rem 0}.ok{border-left:6px solid #16845b}.pending{border-left:6px solid #b7791f}code{background:#eef2f7;padding:.1rem .3rem;border-radius:4px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #d9e0ea;padding:.55rem;text-align:left;vertical-align:top}th{background:#f5f7fa}</style>
+</head><body>
+<h1>Full service audit remediation</h1>
+<p>Health Dashboard · 2026-07-12 · issues #198–#204 · approved implementation record</p>
+
+<section><h2>Outcome</h2><p>Remediate the security, data-correctness, lifecycle, notification, migration, clean-install, and release defects found by the full read-only audit. The user superseded the original multi-PR delivery suggestion and requested one cumulative application PR. Production mutation, deployment, and issue closure remain separate evidence gates.</p></section>
+
+<section class="ok"><h2>Implemented</h2><ol>
+<li><strong>#198:</strong> removed arbitrary MCP SQL; added typed-tool registration regression coverage; added per-tenant PostgreSQL LOGIN roles, HMAC-derived versioned credentials, three connection authorities, durable provisioning, active/ready metadata gates, restricted pools, inventory/dry-run/apply/verify/rotate/rollback CLI, denial probes, manifests, and restart reconciliation.</li>
+<li><strong>#199:</strong> one-time setup capability, atomic durable first-admin reservation, fail-closed ForwardAuth CIDRs, spoof rejection, safe redirects, opaque sessions, and throttling.</li>
+<li><strong>#200:</strong> explicit XML <code>source_snapshot_at</code> precedence for points and workouts; import heartbeat/lease ownership; persistent staging; argument validation before DB access; canonical post-import retention contract.</li>
+<li><strong>#201:</strong> calendar-aligned readiness inputs, canonical SpO₂ naming, quality-driven cache/AI/Energy invalidation, tenant DB timezone lookup, and causal EnergyBank fallback stamped as formula version 3.</li>
+<li><strong>#202:</strong> bounded ingest bodies, configured HTTP server, liveness/readiness endpoints, SIGTERM shutdown, queue/session draining, durable accepted-record replay, and strict schema verification.</li>
+<li><strong>#203:</strong> Gemini credentials moved from URLs to headers, tenant-local AI dates, Telegram URL redaction, at-most-once report delivery state, ambiguous-outcome handling, and schedule refresh within one minute.</li>
+<li><strong>#204:</strong> required DB security lane, container start/ingest/shutdown/restart smoke gate before image publication, non-root runtime, bounded shutdown configuration, and immutable release/rollback runbooks.</li>
+</ol></section>
+
+<section><h2>Decisions delegated by the user</h2><table><tr><th>Question</th><th>Decision</th></tr>
+<tr><td>Arbitrary SQL</td><td>Remove completely; no administrator escape hatch in the service.</td></tr>
+<tr><td>XML retention</td><td>Canonical post-import database model. Original Apple export retention remains the operator’s responsibility; no destructive cleanup is added.</td></tr>
+<tr><td>Historical rebuild</td><td>Recompute only dates actually changed by quality/import operations. No production rebuild runs as part of this PR.</td></tr>
+<tr><td>Delivery guarantee</td><td>At-most-once for scheduled reports. Ambiguous transport outcomes are persisted and require operator review.</td></tr></table></section>
+
+<section><h2>Migration and clean-install contract</h2><ul>
+<li>All application DDL is additive/idempotent; legacy large tables avoid volatile-default rewrites.</li>
+<li>Existing users backfill isolation metadata with <code>db_isolation_ready=false</code>. Runtime isolation refuses them until CLI proof succeeds.</li>
+<li>Fresh isolated provisioning runs table creation twice, verifies required tables/indexes/columns, then atomically activates the user with readiness true.</li>
+<li>Existing-install order: deploy compatible code with isolation disabled → inventory/manifest → canary apply/verify → remaining tenants primary-last → enable isolation → deploy immutable image.</li>
+<li>Rollback restores ownership/effective grants and readiness false from checksum-protected manifests before the legacy image starts.</li>
+</ul></section>
+
+<section class="pending"><h2>Verification status before PR/closure</h2><ul>
+<li>Completed locally: full unit suite, focused race suite, vet, YAML parsing, diff whitespace validation, disposable PostgreSQL tenant-security and import/durable-delivery lanes, and final production-image clean-install/ingest/SIGTERM smoke. CI must independently repeat the DB and container lanes before issue closure.</li>
+<li>Rehearse fresh install, legacy upgrade, canary cutover, rotation, rollback, SIGTERM drain, and notification-disabled startup on synthetic data.</li>
+<li>Review the separate <code>personal_ai_stack</code> deployment repository. It cannot be included in the same application-repository PR.</li>
+<li>Do not close #198 before CI denial tests and an approved production canary. Close other issues only when their acceptance evidence is present in the final PR.</li>
+</ul></section>
+
+<section><h2>Rollback and risk controls</h2><p>Keep the legacy DB login until canary and rollback rehearsal pass. Use immutable image digests, normal DB backup, notification-disabled test tenants, bounded lock/statement timeouts, primary tenant last, and no production mutation from automated tests. Additive tables/columns remain in place during application rollback.</p></section>
+
+<section><h2>Approval gate record</h2><p>The user explicitly approved implementation and later requested completion of the whole plan in one cumulative application PR. Commit, push, PR creation, production migration, deployment, and issue closure occur only after final evidence and an exact issue mapping are shown.</p></section>
+</body></html>

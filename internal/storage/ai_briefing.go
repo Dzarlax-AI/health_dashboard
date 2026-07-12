@@ -117,8 +117,9 @@ func (s *DB) GetRawMetrics() *health.RawMetrics {
 	if err := s.pool.QueryRow(ctx, `SELECT MAX(SUBSTRING(hour,1,10)) FROM hourly_metrics`).Scan(&lastDate); err != nil || lastDate == nil {
 		return nil
 	}
-	today := time.Now().Format("2006-01-02")
-	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	now := time.Now().In(s.reportTZLocation())
+	today := now.Format("2006-01-02")
+	yesterday := now.AddDate(0, 0, -1).Format("2006-01-02")
 	hasTodayData := *lastDate >= today
 
 	// Cap at yesterday for activity metrics (steps/cal/exercise are partial today).

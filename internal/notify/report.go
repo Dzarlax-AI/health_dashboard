@@ -1,14 +1,30 @@
 package notify
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"health-receiver/internal/health"
 	"health-receiver/internal/storage"
 )
+
+type notificationDeliveryStore interface {
+	ReserveNotificationDelivery(context.Context, string) (uuid.UUID, bool, error)
+	CompleteNotificationDelivery(context.Context, string, uuid.UUID, string, string) error
+}
+
+func deliveryFailureStatus(err error) (string, string) {
+	var transport telegramTransportError
+	if errors.As(err, &transport) {
+		return "ambiguous", "transport_ambiguous"
+	}
+	return "failed", "provider_rejected"
+}
 
 // Config holds Telegram credentials and per-weekday schedule.
 type Config struct {
@@ -219,7 +235,12 @@ func SendMorningSmartOpts(bot *Bot, db *storage.DB, cfg Config, opts MorningSend
 			}
 		}
 	}
-	return true, status.Reason, sendReportHTML(bot, cfg, "morning", richMsg, msg)
+	key := "report:morning:" + today
+	reserved, err := sendDurableReport(db, key, func() error { return sendReportHTML(bot, cfg, "morning", richMsg, msg) })
+	if !reserved && err == nil {
+		return false, "delivery_already_reserved", nil
+	}
+	return reserved, status.Reason, err
 }
 
 // SendEvening sends a "today so far" snapshot. Activity bullets are intentionally
@@ -240,7 +261,24 @@ func SendEvening(bot *Bot, db *storage.DB, cfg Config) error {
 	if cfg.TelegramRichMessages {
 		rich = formatEveningRich(briefing, dash, cfg.Lang, cfg.location(), fresh)
 	}
-	return sendReportHTML(bot, cfg, "evening", rich, fallback)
+	today := time.Now().In(cfg.location()).Format("2006-01-02")
+	_, err = sendDurableReport(db, "report:evening:"+today, func() error { return sendReportHTML(bot, cfg, "evening", rich, fallback) })
+	return err
+}
+
+func sendDurableReport(db *storage.DB, key string, send func() error) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	token, reserved, err := db.ReserveNotificationDelivery(ctx, key)
+	if err != nil || !reserved {
+		return reserved, err
+	}
+	if err = send(); err != nil {
+		status, code := deliveryFailureStatus(err)
+		completeErr := db.CompleteNotificationDelivery(ctx, key, token, status, code)
+		return true, errors.Join(err, completeErr)
+	}
+	return true, db.CompleteNotificationDelivery(ctx, key, token, "sent", "")
 }
 
 type htmlReportSender interface {
@@ -253,6 +291,10 @@ func sendReportHTML(bot htmlReportSender, cfg Config, label, richHTML, fallbackH
 		if err := bot.SendRichHTML(richHTML); err == nil {
 			return nil
 		} else {
+			var transport telegramTransportError
+			if errors.As(err, &transport) {
+				return err
+			}
 			log.Printf("telegram %s rich send failed, falling back to sendMessage HTML: %v", label, err)
 		}
 	}

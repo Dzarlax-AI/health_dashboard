@@ -14,17 +14,15 @@ func TestForwardAuthTrustedRequiresEnabledFlag(t *testing.T) {
 	}
 }
 
-func TestForwardAuthTrustedDefaultsToLocalAndPrivateAddresses(t *testing.T) {
+func TestForwardAuthDeniedWithoutExplicitNetworks(t *testing.T) {
 	h := &Handler{trustFwdAuth: true}
 	tests := []struct {
 		remote string
 		want   bool
 	}{
-		{remote: "127.0.0.1:1234", want: true},
-		{remote: "10.0.0.8:1234", want: true},
-		{remote: "172.16.0.8:1234", want: true},
-		{remote: "192.168.50.4:1234", want: true},
-		{remote: "[fd00::1]:1234", want: true},
+		{remote: "127.0.0.1:1234", want: false},
+		{remote: "10.0.0.8:1234", want: false},
+		{remote: "[fd00::1]:1234", want: false},
 		{remote: "8.8.8.8:1234", want: false},
 		{remote: "not-an-ip", want: false},
 	}
@@ -39,6 +37,9 @@ func TestForwardAuthTrustedDefaultsToLocalAndPrivateAddresses(t *testing.T) {
 
 func TestTrustedProxyDoesNotRequireForwardAuth(t *testing.T) {
 	h := &Handler{}
+	if err := h.SetTrustedForwardAuthNetworks("10.0.0.0/8"); err != nil {
+		t.Fatal(err)
+	}
 	r := httptest.NewRequest("GET", "/", nil)
 	r.RemoteAddr = "10.0.0.8:1234"
 	if !h.trustedProxy(r) {
@@ -68,9 +69,38 @@ func TestForwardAuthTrustedCIDROverride(t *testing.T) {
 	}
 }
 
+func TestForwardAuthTrustedExplicitIPv6CIDR(t *testing.T) {
+	h := &Handler{trustFwdAuth: true}
+	if err := h.SetTrustedForwardAuthNetworks("2001:db8::/32"); err != nil {
+		t.Fatal(err)
+	}
+	allowed := httptest.NewRequest("GET", "/", nil)
+	allowed.RemoteAddr = "[2001:db8::1]:1234"
+	if !h.forwardAuthTrusted(allowed) {
+		t.Fatal("configured IPv6 CIDR should be trusted")
+	}
+	denied := httptest.NewRequest("GET", "/", nil)
+	denied.RemoteAddr = "[fd00::1]:1234"
+	if h.forwardAuthTrusted(denied) {
+		t.Fatal("unconfigured IPv6 CIDR should be denied")
+	}
+}
+
 func TestSetTrustedForwardAuthNetworksRejectsInvalidCIDR(t *testing.T) {
 	h := &Handler{trustFwdAuth: true}
 	if err := h.SetTrustedForwardAuthNetworks("10.0.0.0/8,not-a-cidr"); err == nil {
 		t.Fatal("expected invalid CIDR error")
+	}
+}
+
+func TestValidateForwardAuthConfigFailsClosed(t *testing.T) {
+	if _, err := ValidateForwardAuthConfig(true, ""); err == nil {
+		t.Fatal("enabled ForwardAuth accepted empty CIDRs")
+	}
+	if _, err := ValidateForwardAuthConfig(true, "bad"); err == nil {
+		t.Fatal("enabled ForwardAuth accepted invalid CIDR")
+	}
+	if nets, err := ValidateForwardAuthConfig(false, ""); err != nil || nets != nil {
+		t.Fatalf("disabled empty config nets=%v err=%v", nets, err)
 	}
 }

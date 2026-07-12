@@ -171,6 +171,16 @@ func TestSendReportHTML_FallbackBehavior(t *testing.T) {
 			t.Fatalf("unexpected calls: rich=%d send=%d text=%q", bot.richCalls, bot.sendCalls, bot.lastSendText)
 		}
 	})
+
+	t.Run("ambiguous rich transport does not risk a duplicate fallback", func(t *testing.T) {
+		bot := &fakeHTMLReportSender{richErr: telegramTransportError{cause: errors.New("timeout after write")}}
+		if err := sendReportHTML(bot, Config{TelegramRichMessages: true}, "morning", "<h2>rich</h2>", "<b>fallback</b>"); err == nil {
+			t.Fatal("expected ambiguous transport error")
+		}
+		if bot.richCalls != 1 || bot.sendCalls != 0 {
+			t.Fatalf("unexpected calls: rich=%d send=%d", bot.richCalls, bot.sendCalls)
+		}
+	})
 }
 
 func TestFormatMorningRich_StructureAndEscaping(t *testing.T) {

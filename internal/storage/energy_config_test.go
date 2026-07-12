@@ -28,8 +28,8 @@ func TestDefaultEnergyConfig(t *testing.T) {
 	if d.AlphaFactorSource != "default" {
 		t.Errorf("AlphaFactorSource = %q, want default", d.AlphaFactorSource)
 	}
-	if d.FormulaVersion != 2 {
-		t.Errorf("FormulaVersion = %v, want 2 (bumped in PR-8 — DrainV2 accepts sustained_hr_load)", d.FormulaVersion)
+	if d.FormulaVersion != 3 {
+		t.Errorf("FormulaVersion = %v, want 3 (causal missing-day imputation)", d.FormulaVersion)
 	}
 }
 
