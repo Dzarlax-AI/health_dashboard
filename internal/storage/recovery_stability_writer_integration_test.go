@@ -104,6 +104,12 @@ func testEnergyDB(t *testing.T) (*DB, func()) {
 	}()
 	db := getSharedFullDB(t)
 	resetEnergyTestDB(t, db)
+	// The energy-band suite exercises the documented v1/v2 compatibility
+	// contract. Pin v2 explicitly so a newer default formula does not silently
+	// change which historical snapshots those tests consider compatible.
+	if err := db.SaveSettings(map[string]string{"energy.formula_version": "2"}); err != nil {
+		t.Fatalf("pin energy-band formula version: %v", err)
+	}
 
 	cleanup := func() {
 		sharedFullDBMu.Unlock()
