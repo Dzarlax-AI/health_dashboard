@@ -99,7 +99,7 @@ func (s *DB) GetDataGaps(minGapDays, minHours int) ([]DataGap, error) {
 	minDate, _ := time.Parse("2006-01-02", days[0].date)
 	maxDate, _ := time.Parse("2006-01-02", days[len(days)-1].date)
 	// Don't flag today as partial — it's still in progress.
-	today := s.Today()
+	today := tenantToday.Format("2006-01-02")
 
 	var gaps []DataGap
 

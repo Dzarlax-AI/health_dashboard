@@ -1,10 +1,12 @@
 package notify
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"health-receiver/internal/storage"
 )
 
@@ -81,6 +83,7 @@ func (f *fakeBot) AnswerCallbackQuery(qid, text string) error { return f.answerE
 
 type fakeCheckinStore struct {
 	saved    bool
+	saveErr  error
 	lastDate string
 	lastSrc  string
 	lastMsg  int64
@@ -93,7 +96,33 @@ func (s *fakeCheckinStore) SaveCheckinPrompted(date, source string, msgID int64,
 	s.lastSrc = source
 	s.lastMsg = msgID
 	s.lastExp = expiresAt
-	return nil
+	return s.saveErr
+}
+
+type fakeDurableCheckinStore struct {
+	fakeCheckinStore
+	reserved     bool
+	token        uuid.UUID
+	completed    bool
+	completion   string
+	completeCode string
+	completeErr  error
+}
+
+func (s *fakeDurableCheckinStore) ReserveNotificationDelivery(context.Context, string) (uuid.UUID, bool, error) {
+	s.reserved = true
+	s.token = uuid.New()
+	return s.token, true, nil
+}
+
+func (s *fakeDurableCheckinStore) CompleteNotificationDelivery(_ context.Context, _ string, token uuid.UUID, status, code string) error {
+	if token != s.token {
+		return errors.New("unexpected delivery token")
+	}
+	s.completed = true
+	s.completion = status
+	s.completeCode = code
+	return s.completeErr
 }
 
 func TestSendCheckinPrompt_HappyPath(t *testing.T) {
@@ -125,5 +154,20 @@ func TestSendCheckinPrompt_TelegramErrSkipsStore(t *testing.T) {
 	}
 	if store.saved {
 		t.Fatal("store must not be written when Telegram send fails")
+	}
+}
+
+func TestSendCheckinPrompt_SaveFailureCompletesDeliveryAsSent(t *testing.T) {
+	saveErr := errors.New("save prompted row")
+	bot := &fakeBot{msgID: 42}
+	store := &fakeDurableCheckinStore{fakeCheckinStore: fakeCheckinStore{saveErr: saveErr}}
+	now := time.Date(2026, 5, 18, 8, 0, 0, 0, time.UTC)
+
+	err := SendCheckinPrompt(bot, store, "en", "2026-05-18", now, now.Add(3*time.Hour))
+	if !errors.Is(err, saveErr) {
+		t.Fatalf("send error = %v, want original persistence error", err)
+	}
+	if !store.reserved || !store.completed || store.completion != "sent" {
+		t.Fatalf("successful external send left delivery dangling: reserved=%v completed=%v status=%q", store.reserved, store.completed, store.completion)
 	}
 }

@@ -1,6 +1,9 @@
 package storage
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestPendingColumnMigrationsSkipsExistingColumns(t *testing.T) {
 	migrations := []columnMigration{
@@ -55,6 +58,8 @@ func TestEnsureIndexesIntegration_CreatesAndSkipsTenantDDL(t *testing.T) {
 		"import_stage_workouts",
 	}
 	requiredColumns := []columnRef{
+		{table: "import_runs", column: "heartbeat_at"},
+		{table: "import_runs", column: "lease_token"},
 		{table: "metric_points", column: "quality"},
 		{table: "daily_scores", column: "energy_capacity"},
 		{table: "daily_scores", column: "energy_eod_current"},
@@ -109,6 +114,32 @@ func TestEnsureIndexesIntegration_CreatesAndSkipsTenantDDL(t *testing.T) {
 	// Run a second time against the already-current tenant schema. The
 	// catalog precheck should skip all idempotent DDL and still return cleanly.
 	db.EnsureIndexes()
+}
+
+func TestEnsureIndexesIntegration_UpgradesLegacyImportRunsLeaseColumns(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	ctx, cancel := queryCtx()
+	defer cancel()
+	if _, err := db.pool.Exec(ctx, `ALTER TABLE import_runs DROP COLUMN IF EXISTS heartbeat_at, DROP COLUMN IF EXISTS lease_token`); err != nil {
+		t.Fatalf("downgrade import_runs fixture: %v", err)
+	}
+	if err := db.VerifyProvisionedSchema(); err == nil || !strings.Contains(err.Error(), "column:import_runs.heartbeat_at") || !strings.Contains(err.Error(), "column:import_runs.lease_token") {
+		t.Fatalf("schema verifier did not report missing import lease columns: %v", err)
+	}
+
+	db.EnsureIndexes()
+	wanted := []columnRef{{table: "import_runs", column: "heartbeat_at"}, {table: "import_runs", column: "lease_token"}}
+	columns, err := db.existingColumns(columnMigrationsFromRefs(wanted))
+	if err != nil {
+		t.Fatalf("existingColumns: %v", err)
+	}
+	for _, ref := range wanted {
+		if !columns[ref] {
+			t.Fatalf("legacy import_runs upgrade did not add %s", ref.column)
+		}
+	}
 }
 
 func tableExists(t *testing.T, db *DB, table string) bool {

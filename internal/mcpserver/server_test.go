@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
 func TestBuildServerDoesNotExposeArbitrarySQL(t *testing.T) {
@@ -32,12 +34,13 @@ func TestBuildServerDoesNotExposeArbitrarySQL(t *testing.T) {
 		"jsonrpc":"2.0","id":2,"method":"tools/call",
 		"params":{"name":"sql_query","arguments":{"query":"SELECT 1"}}
 	}`))
-	payload, err = json.Marshal(response)
-	if err != nil {
-		t.Fatalf("marshal removed tool response: %v", err)
+	errorResponse, ok := response.(mcp.JSONRPCError)
+	if !ok {
+		payload, _ = json.Marshal(response)
+		t.Fatalf("removed sql_query returned %T instead of JSON-RPC error: %s", response, payload)
 	}
-	if !strings.Contains(strings.ToLower(string(payload)), "tool not found") {
-		t.Fatalf("sql_query remains callable or returned an unexpected response: %s", payload)
+	if errorResponse.Error.Code != mcp.INVALID_PARAMS {
+		t.Fatalf("removed sql_query error code = %d, want %d", errorResponse.Error.Code, mcp.INVALID_PARAMS)
 	}
 
 	// Exercise a typed handler that validates its request before accessing storage.

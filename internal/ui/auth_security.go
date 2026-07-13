@@ -105,7 +105,7 @@ func allowFrom(w http.ResponseWriter, l *attemptLimiter, key string) bool {
 		s = 1
 	}
 	w.Header().Set("Retry-After", strconv.Itoa(s))
-	http.Error(w, "too many attempts; retry later", 429)
+	http.Error(w, "too many attempts; retry later", http.StatusTooManyRequests)
 	return false
 }
 func (h *Handler) allowSetupAttempt(w http.ResponseWriter, r *http.Request) bool {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"health-receiver/internal/registry"
@@ -57,6 +58,8 @@ type Manager struct {
 	closeDB          func(*storage.DB)
 	mu               sync.RWMutex
 	tenants          map[string]*entry // schema_name → entry
+	operations       map[string]*poolOperation
+	closed           bool
 
 	// legacyMode is set when health_registry could not be created.
 	// In this mode a single fallback DB is used for all requests.
@@ -66,9 +69,23 @@ type Manager struct {
 	legacyHash string // sha256(UI_PASSWORD) env value
 }
 
+// poolOperation coalesces both cached-pool validation and pool creation for one
+// schema. This prevents one concurrent validator returning a pool while another
+// closes it, and makes initial-open waiters share the leader's result.
+type poolOperation struct {
+	done    chan struct{}
+	db      *storage.DB
+	err     error
+	waiters int
+	cancel  context.CancelFunc
+}
+
+const tenantPoolOperationTimeout = 30 * time.Second
+
 var (
 	ErrIsolationMode         = errors.New("tenant manager isolation mode cannot be downgraded to legacy shared mode")
 	ErrTenantMetadataChanged = errors.New("tenant registry metadata changed while opening pool; retry")
+	ErrManagerClosed         = errors.New("tenant manager is closed")
 )
 
 type restrictedPoolOpener func(context.Context, string, string, string, string) (*storage.DB, error)
@@ -88,10 +105,12 @@ type managerRegistry interface {
 // New creates a Manager backed by the given Registry.
 func New(reg *registry.Registry, connStr string) *Manager {
 	return &Manager{
-		reg:      reg,
-		connStr:  connStr,
-		metadata: reg,
-		tenants:  make(map[string]*entry),
+		reg:        reg,
+		connStr:    connStr,
+		metadata:   reg,
+		tenants:    make(map[string]*entry),
+		operations: make(map[string]*poolOperation),
+		closeDB:    func(db *storage.DB) { db.Close() },
 	}
 }
 
@@ -114,8 +133,9 @@ func NewIsolated(metadata managerRegistry, tenantDSNBase string, deriver Credent
 		assertIdentity: func(ctx context.Context, db *storage.DB, role, schema string) error {
 			return db.AssertIdentity(ctx, role, schema)
 		},
-		closeDB: func(db *storage.DB) { db.Close() },
-		tenants: make(map[string]*entry),
+		closeDB:    func(db *storage.DB) { db.Close() },
+		tenants:    make(map[string]*entry),
+		operations: make(map[string]*poolOperation),
 	}
 	return m, nil
 }
@@ -175,32 +195,87 @@ func (m *Manager) RegisterCallbacks(schema string, cb TenantCallbacks) {
 // GetOrCreate returns the DB for schema, creating the pool on first call.
 func (m *Manager) GetOrCreate(ctx context.Context, schema string) (*storage.DB, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if e, ok := m.tenants[schema]; ok {
-		if !m.isolationEnabled {
-			return e.db, nil
-		}
-		current, err := m.loadTenantIdentity(ctx, schema)
-		if err == nil && current.matchesEntry(e) {
-			return e.db, nil
-		}
-		delete(m.tenants, schema)
-		m.closeDB(e.db)
-		if err != nil {
-			return nil, err
-		}
-		return nil, ErrTenantMetadataChanged
+	if m.closed {
+		m.mu.Unlock()
+		return nil, ErrManagerClosed
 	}
+	if pending := m.operations[schema]; pending != nil {
+		pending.waiters++
+		m.mu.Unlock()
+		return waitForPoolOperation(ctx, pending)
+	}
+	opCtx, cancel := context.WithTimeout(context.Background(), tenantPoolOperationTimeout)
+	pending := &poolOperation{done: make(chan struct{}), cancel: cancel}
+	m.operations[schema] = pending
+	cached := m.tenants[schema]
+	m.mu.Unlock()
+	go m.runPoolOperation(opCtx, schema, cached, pending)
+	return waitForPoolOperation(ctx, pending)
+}
+
+func waitForPoolOperation(ctx context.Context, pending *poolOperation) (*storage.DB, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-pending.done:
+		return pending.db, pending.err
+	}
+}
+
+func (m *Manager) runPoolOperation(ctx context.Context, schema string, cached *entry, pending *poolOperation) {
+	defer pending.cancel()
+	db, cacheEntry, err := m.resolveTenantPool(ctx, schema, cached)
+	m.mu.Lock()
+	if err == nil && cacheEntry != nil && !m.closed {
+		m.tenants[schema] = cacheEntry
+	}
+	closed := m.closed
+	if closed {
+		err = ErrManagerClosed
+		db = nil
+	}
+	if closed && cacheEntry != nil {
+		m.mu.Unlock()
+		m.closeDB(cacheEntry.db)
+		m.mu.Lock()
+	}
+	delete(m.operations, schema)
+	pending.db, pending.err = db, err
+	close(pending.done)
+	m.mu.Unlock()
+}
+
+func (m *Manager) resolveTenantPool(ctx context.Context, schema string, cached *entry) (*storage.DB, *entry, error) {
+	if cached == nil {
+		return m.openTenantPool(ctx, schema)
+	}
+	if !m.isolationEnabled {
+		return cached.db, nil, nil
+	}
+	current, err := m.loadTenantIdentity(ctx, schema)
+	if err != nil {
+		return nil, nil, err
+	}
+	if current.matchesEntry(cached) {
+		return cached.db, nil, nil
+	}
+	// Runtime credential/identity cutover is intentionally unsupported. Tenant
+	// workers and callbacks may hold this pool, so retain the complete entry and
+	// fail closed until the documented service restart performs a clean cutover.
+	return nil, nil, ErrTenantMetadataChanged
+}
+
+func (m *Manager) openTenantPool(ctx context.Context, schema string) (*storage.DB, *entry, error) {
 	var db *storage.DB
 	var err error
 	if m.isolationEnabled {
 		original, lookupErr := m.loadTenantIdentity(ctx, schema)
 		if lookupErr != nil {
-			return nil, lookupErr
+			return nil, nil, lookupErr
 		}
 		password, deriveErr := m.deriver.Derive(original.tenantID, original.dbRole, original.credentialVersion)
 		if deriveErr != nil {
-			return nil, fmt.Errorf("derive tenant credential for schema %s: %w", schema, deriveErr)
+			return nil, nil, fmt.Errorf("derive tenant credential for schema %s: %w", schema, deriveErr)
 		}
 		db, err = m.openRestricted(ctx, m.connStr, original.dbRole, password, original.schemaName)
 		if err == nil {
@@ -214,21 +289,19 @@ func (m *Manager) GetOrCreate(ctx context.Context, schema string) (*storage.DB, 
 			if refreshErr != nil || current != original {
 				m.closeDB(db)
 				if refreshErr != nil {
-					return nil, fmt.Errorf("%w: %v", ErrTenantMetadataChanged, refreshErr)
+					return nil, nil, fmt.Errorf("%w: %v", ErrTenantMetadataChanged, refreshErr)
 				}
-				return nil, ErrTenantMetadataChanged
+				return nil, nil, ErrTenantMetadataChanged
 			}
-			m.tenants[schema] = original.entry(db)
-			return db, nil
+			return db, original.entry(db), nil
 		}
 	} else {
 		db, err = storage.NewWithSchema(ctx, m.connStr, schema)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("open pool for schema %s: %w", schema, err)
+		return nil, nil, fmt.Errorf("open pool for schema %s: %w", schema, err)
 	}
-	m.tenants[schema] = &entry{db: db}
-	return db, nil
+	return db, &entry{db: db}, nil
 }
 
 type tenantIdentity struct {
@@ -475,15 +548,24 @@ func (m *Manager) ActiveDBs(ctx context.Context) map[string]*storage.DB {
 // Close shuts down all tenant DB pools.
 func (m *Manager) Close() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	m.closed = true
 	closed := map[*storage.DB]struct{}{}
 	for _, e := range m.tenants {
-		e.db.Close()
 		closed[e.db] = struct{}{}
 	}
 	if m.legacyDB != nil {
-		if _, ok := closed[m.legacyDB]; !ok {
-			m.legacyDB.Close()
-		}
+		closed[m.legacyDB] = struct{}{}
+	}
+	for _, pending := range m.operations {
+		pending.cancel()
+	}
+	m.tenants = make(map[string]*entry)
+	m.mu.Unlock()
+	for db := range closed {
+		m.closeDB(db)
 	}
 }

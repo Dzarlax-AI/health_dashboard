@@ -18,6 +18,16 @@
 <li><strong>#204:</strong> required DB security lane, container start/ingest/shutdown/restart smoke gate before image publication, non-root runtime, bounded shutdown configuration, and immutable release/rollback runbooks.</li>
 </ol></section>
 
+<section class="ok"><h2>PR review remediation · 2026-07-13</h2><ul>
+<li>Runtime scheduling now fires an unchanged due report, detects last-minute schedule edits, accepts additional runtime tenants in readiness, and prevents API-only bootstrap from creating a usable blank UI password.</li>
+<li>Tenant pool creation and metadata validation are coalesced per schema without holding the manager-wide lock across registry or database I/O. Request cancellation is isolated from shared work. Transient metadata failures and confirmed credential-version drift fail closed without closing pools captured by background workers or discarding callbacks.</li>
+<li>Credential rotation uses safely quoted PostgreSQL utility SQL. Runtime hot pool replacement is intentionally unsupported: a version drift remains fail-closed until a successful service restart establishes new-version pools, and the previous secret must remain available until that verification succeeds.</li>
+<li>Import commit owns and locks its lease through promotion and finalization. Failure and staging cleanup are lease-scoped, while legacy installs add <code>heartbeat_at</code> and <code>lease_token</code> before abandoned-import cleanup runs.</li>
+<li>Accepted ingest records still finalize caches when completion-status bookkeeping fails. Recovery failures are logged instead of disappearing.</li>
+<li>Telegram delivery completion uses a fresh bounded context after sending. Malformed or truncated HTTP 200 acknowledgements are classified as ambiguous, preventing prompt retries and rich-message fallback duplicates; valid provider rejections remain definitive.</li>
+<li>Operational responses no longer expose raw tenant-provisioning errors, setup reconciliation is cooldown-protected, explicit tenant scope avoids eager all-pool validation, and CI restart recovery uses bounded polling.</li>
+</ul></section>
+
 <section><h2>Decisions delegated by the user</h2><table><tr><th>Question</th><th>Decision</th></tr>
 <tr><td>Arbitrary SQL</td><td>Remove completely; no administrator escape hatch in the service.</td></tr>
 <tr><td>XML retention</td><td>Canonical post-import database model. Original Apple export retention remains the operator’s responsibility; no destructive cleanup is added.</td></tr>
@@ -33,7 +43,9 @@
 </ul></section>
 
 <section class="pending"><h2>Verification status before PR/closure</h2><ul>
-<li>Completed locally: full unit suite, focused race suite, vet, YAML parsing, diff whitespace validation, disposable PostgreSQL tenant-security and import/durable-delivery lanes, and final production-image clean-install/ingest/SIGTERM smoke. CI must independently repeat the DB and container lanes before issue closure.</li>
+<li>Completed locally after review remediation: full <code>go test ./...</code>, full <code>go vet ./...</code>, focused race suite for server/tenant/UI/handler/notify/MCP, diff whitespace validation, disposable-schema import lease/upgrade/durable-delivery regressions, and a production-image start/ingest/SIGTERM/restart smoke with recovered parsed data.</li>
+<li>The complete remote PostgreSQL storage package exceeds a five-minute local package timeout because its shared full-schema fixture serially resets many tables; the exact test shown in the timeout and the new commit-versus-cleanup tests pass independently. Required bounded CI DB lanes remain the merge authority. The destructive credential-rotation integration requires CI's disposable <code>REGISTRY_TEST_DSN</code> and was not pointed at the normal configured database.</li>
+<li>CI must independently repeat tenant-security, import/delivery, routine DB, and container lanes before issue closure.</li>
 <li>Rehearse fresh install, legacy upgrade, canary cutover, rotation, rollback, SIGTERM drain, and notification-disabled startup on synthetic data.</li>
 <li>Review the separate <code>personal_ai_stack</code> deployment repository. It cannot be included in the same application-repository PR.</li>
 <li>Do not close #198 before CI denial tests and an approved production canary. Close other issues only when their acceptance evidence is present in the final PR.</li>

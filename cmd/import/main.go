@@ -50,7 +50,7 @@ func main() {
 	if ext != ".zip" && ext != ".xml" {
 		log.Fatal("--file must have .zip or .xml extension")
 	}
-	snapshotAt := time.Now()
+	var snapshotAt time.Time
 	var exportDateErr error
 	var exportDateFound bool
 	if ext == ".zip" {

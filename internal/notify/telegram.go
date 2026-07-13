@@ -2,7 +2,6 @@ package notify
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +17,7 @@ import (
 const telegramHTTPTimeout = 5 * time.Second
 
 var telegramAPIBase = "https://api.telegram.org"
+var telegramHTTPClient = &http.Client{Timeout: telegramHTTPTimeout}
 
 // Bot is a minimal Telegram bot client.
 type Bot struct {
@@ -32,6 +32,29 @@ func (e telegramTransportError) Error() string {
 }
 func (e telegramTransportError) Unwrap() error { return e.cause }
 
+type telegramAPIResponse struct {
+	OK          bool   `json:"ok"`
+	Description string `json:"description"`
+}
+
+// decodeTelegramResponse treats an unreadable or malformed success response
+// as ambiguous. Telegram may already have accepted the message, so callers
+// must not retry or fall back to a second send when the acknowledgement is
+// truncated after HTTP 200.
+func decodeTelegramResponse(resp *http.Response, dst any) error {
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("telegram API: status %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return telegramTransportError{cause: fmt.Errorf("read telegram response: %w", err)}
+	}
+	if err = json.Unmarshal(body, dst); err != nil {
+		return telegramTransportError{cause: fmt.Errorf("decode telegram response: %w", err)}
+	}
+	return nil
+}
+
 func NewBot(token, chatID string) *Bot {
 	return &Bot{token: token, chatID: chatID}
 }
@@ -40,18 +63,17 @@ func botAPIURL(token, method string) string {
 	return fmt.Sprintf("%s/bot%s/%s", telegramAPIBase, token, method)
 }
 
-// postJSON is the shared http.Post-with-timeout used by every Bot
-// method. Wraps the payload in a request bound to a context so a
-// stalled connection fails fast.
+// postJSON is the shared HTTP client path used by every Bot method. The
+// client-level timeout remains active while callers read the response body;
+// cancelling a request context as soon as Do returns would truncate valid
+// acknowledgements that arrive after the response headers.
 func postJSON(url string, payload []byte) (*http.Response, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), telegramHTTPTimeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	return http.DefaultClient.Do(req)
+	return telegramHTTPClient.Do(req)
 }
 
 // Send sends an HTML-formatted message to the configured chat.
@@ -67,8 +89,12 @@ func (b *Bot) Send(text string) error {
 		return telegramTransportError{cause: err}
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("telegram API: status %d", resp.StatusCode)
+	var parsed telegramAPIResponse
+	if err = decodeTelegramResponse(resp, &parsed); err != nil {
+		return err
+	}
+	if !parsed.OK {
+		return fmt.Errorf("telegram API: ok=false description=%q", parsed.Description)
 	}
 	return nil
 }
@@ -98,19 +124,9 @@ func (b *Bot) SendRichHTML(html string) error {
 		return telegramTransportError{cause: err}
 	}
 	defer resp.Body.Close()
-	body, readErr := io.ReadAll(resp.Body)
-	if readErr != nil {
-		return fmt.Errorf("telegram sendRichMessage: read body: %w", readErr)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("telegram API: status %d", resp.StatusCode)
-	}
-	var parsed struct {
-		OK          bool   `json:"ok"`
-		Description string `json:"description"`
-	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return fmt.Errorf("telegram response decode: %w", err)
+	var parsed telegramAPIResponse
+	if err = decodeTelegramResponse(resp, &parsed); err != nil {
+		return err
 	}
 	if !parsed.OK {
 		return fmt.Errorf("telegram API: ok=false description=%q", parsed.Description)
@@ -152,21 +168,17 @@ func (b *Bot) SendInlineKeyboard(text string, rows [][]InlineButton) (int64, err
 		return 0, telegramTransportError{cause: err}
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("telegram API: status %d", resp.StatusCode)
-	}
 	var parsed struct {
-		OK     bool `json:"ok"`
+		telegramAPIResponse
 		Result struct {
 			MessageID int64 `json:"message_id"`
 		} `json:"result"`
 	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return 0, fmt.Errorf("telegram response decode: %w", err)
+	if err = decodeTelegramResponse(resp, &parsed); err != nil {
+		return 0, err
 	}
 	if !parsed.OK {
-		return 0, fmt.Errorf("telegram API: ok=false")
+		return 0, fmt.Errorf("telegram API: ok=false: %s", parsed.Description)
 	}
 	return parsed.Result.MessageID, nil
 }
@@ -192,16 +204,9 @@ func (b *Bot) AnswerCallbackQuery(callbackQueryID, text string) error {
 		return telegramTransportError{cause: err}
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("telegram API: status %d", resp.StatusCode)
-	}
-	var parsed struct {
-		OK          bool   `json:"ok"`
-		Description string `json:"description"`
-	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return fmt.Errorf("telegram response decode: %w", err)
+	var parsed telegramAPIResponse
+	if err = decodeTelegramResponse(resp, &parsed); err != nil {
+		return err
 	}
 	if !parsed.OK {
 		return fmt.Errorf("telegram API: ok=false description=%q", parsed.Description)

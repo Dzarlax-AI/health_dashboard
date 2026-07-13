@@ -85,9 +85,11 @@ Rotation uses a dual-secret window:
 
 1. Configure current and next master secret/version.
 2. Provisioning role derives the next password and runs `ALTER ROLE ... PASSWORD` tenant by tenant.
-3. Recreate that tenant's pool with the next credential and verify `current_user`, `current_schema`, normal reads/writes, and cross-tenant denial.
-4. Persist the new credential version in the registry only after the new pool passes verification.
-5. Remove the old master secret after every tenant has migrated and the rollback window closes.
+3. Open an ephemeral pool with the next credential and verify `current_user`, `current_schema`, normal reads/writes, and cross-tenant denial.
+4. Persist the new credential version in the registry only after the ephemeral verification pool passes.
+5. The running service fails closed when it observes credential-version drift; it does not hot-replace pools held by tenant workers.
+6. Restart the service successfully and verify that it opened new-version runtime pools for every tenant.
+7. Remove the previous master secret only after the restart verification succeeds for every tenant and the rollback window closes.
 
 The registry stores only the credential version, never the derived password.
 
@@ -189,7 +191,9 @@ Required integration tests:
 - Provisioning failure/restart reconciliation is idempotent and marker-scoped.
 - Ambiguous state is reconciled without dropping an active tenant.
 - Existing-schema migration transfers every table, sequence, function, and default privilege correctly.
-- Password rotation moves pools from old to new credentials without mixed-version routing.
+- Password rotation is verified before registry cutover; the running service
+  then fails closed on metadata drift until a successful restart opens only
+  new-version pools. Hot pool replacement is intentionally unsupported.
 - `current_user` and `current_schema()` assertions fail closed.
 - Normal ingestion, import, backfill, UI, AI, notification, and typed MCP tests pass through restricted pools.
 - Connection usage remains within the existing registry plus per-tenant pool budget.

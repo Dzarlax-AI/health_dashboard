@@ -52,9 +52,10 @@ make tenant-isolation ARGS='--mode rotate --all --primary-schema health --expect
 ```
 
 Each role password is changed, authenticated, and denial-tested before the
-registry version advances. Cached pools are evicted on metadata drift. Remove
-the previous secret only after all tenants report the new version and the
-service has restarted successfully.
+registry version advances. The running service fails closed on metadata drift
+and deliberately retains its existing pool and callbacks; it does not perform
+a hot pool cutover. Remove the previous secret only after all tenants report
+the new version and the service has restarted successfully.
 
 ## Rollback
 

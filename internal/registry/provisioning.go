@@ -140,7 +140,7 @@ func (r *Registry) transitionUserAndOperation(ctx context.Context, operationID u
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 	var username string
 	err = tx.QueryRow(ctx, `UPDATE health_registry.tenant_provisioning_operations SET state=$2,error=NULLIF($3,''),updated_at=NOW() WHERE operation_id=$1 AND state=$4 RETURNING username`, operationID, to, strings.TrimSpace(operationError), from).Scan(&username)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -184,7 +184,7 @@ func (r *Registry) ActivateProvisioned(ctx context.Context, expected Provisionin
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 	var username string
 	err = tx.QueryRow(ctx, `UPDATE health_registry.tenant_provisioning_operations SET state='active',error=NULL,updated_at=NOW() WHERE operation_id=$1 AND tenant_id=$2 AND username=$3 AND schema_name=$4 AND db_role=$5 AND credential_version=$6 AND state='provisioning' RETURNING username`, expected.OperationID, expected.TenantID, expected.Username, expected.SchemaName, expected.DBRole, expected.CredentialVersion).Scan(&username)
 	if errors.Is(err, pgx.ErrNoRows) {

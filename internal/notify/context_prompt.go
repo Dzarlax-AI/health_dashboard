@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -99,7 +100,9 @@ func SendContextPrompt(bot ContextPromptBot, store ContextPromptStore, lang stri
 		delivery = candidate
 		var reserved bool
 		var err error
-		token, reserved, err = delivery.ReserveNotificationDelivery(context.Background(), key)
+		ctx, cancel := context.WithTimeout(context.Background(), notificationDeliveryTimeout)
+		token, reserved, err = delivery.ReserveNotificationDelivery(ctx, key)
+		cancel()
 		if err != nil || !reserved {
 			return err
 		}
@@ -108,7 +111,7 @@ func SendContextPrompt(bot ContextPromptBot, store ContextPromptStore, lang stri
 	if err != nil {
 		status, code := deliveryFailureStatus(err)
 		if delivery != nil {
-			_ = delivery.CompleteNotificationDelivery(context.Background(), key, token, status, code)
+			_ = completeNotificationDelivery(delivery, key, token, status, code)
 		}
 		if status == "failed" {
 			_ = store.MarkContextPromptSendFailed(prompt.PromptID, now)
@@ -116,10 +119,13 @@ func SendContextPrompt(bot ContextPromptBot, store ContextPromptStore, lang stri
 		return err
 	}
 	if err = store.MarkContextPromptSent(prompt.PromptID, msgID, now); err != nil {
+		if delivery != nil {
+			return errors.Join(err, completeNotificationDelivery(delivery, key, token, "sent", ""))
+		}
 		return err
 	}
 	if delivery != nil {
-		return delivery.CompleteNotificationDelivery(context.Background(), key, token, "sent", "")
+		return completeNotificationDelivery(delivery, key, token, "sent", "")
 	}
 	return nil
 }

@@ -34,7 +34,7 @@ This roadmap tracks high-value Health Dashboard test coverage without turning th
 | UI and admin APIs | Contract tests cover admin pages, auth/session behavior, webhook dispatch, dashboard sections, and tenant scope. | Pin response-shape changes before frontend code starts depending on them. |
 | Storage writers | Readiness redesign, EnergyBank, sleep gates, freshness, calibration, and tenant helpers have focused tests, with DB-backed tests gated. | Prefer bug-driven storage contract tests over broad repository-level sweeps. |
 | Notifications | Morning/evening report, freshness banners, smart retry, Telegram webhook, and proactive framework tests cover key behavior. | Add regression tests when notification timing or skip conditions change. |
-| CI policy | Default CI runs build, vet, pure tests, tenant-security DB, routine DB, full UI DB, full Energy DB, and container restart smoke. Image jobs depend on all required lanes. Full Storage DB and race detector remain manual. | Move full storage into default CI only after the chronic/acute writer families fit a bounded timeout. |
+| CI policy | Default CI runs build, vet, pure tests, tenant-security DB, import/delivery DB, routine DB, full UI DB, full Energy DB, and container restart smoke. Image jobs depend on all required lanes. Full Storage DB and race detector remain manual. | Move full storage into default CI only after the chronic/acute writer families fit a bounded timeout. |
 
 ## Delivered First Batch
 

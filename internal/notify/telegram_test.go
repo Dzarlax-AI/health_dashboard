@@ -2,6 +2,7 @@ package notify
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -96,5 +97,102 @@ func TestSendRichHTMLChecksTelegramOKFalse(t *testing.T) {
 	}
 	if path != "/bottoken/sendRichMessage" {
 		t.Fatalf("unexpected Telegram path %q", path)
+	}
+}
+
+func TestSendInlineKeyboardChecksTelegramOKFalse(t *testing.T) {
+	oldBase := telegramAPIBase
+	defer func() { telegramAPIBase = oldBase }()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ok":false,"description":"Bad Request: invalid callback data"}`)
+	}))
+	defer ts.Close()
+	telegramAPIBase = ts.URL
+
+	bot := NewBot("token", "chat")
+	_, err := bot.SendInlineKeyboard("Prompt", [][]InlineButton{{{Text: "Answer", CallbackData: "bad"}}})
+	if err == nil {
+		t.Fatal("expected ok=false error")
+	}
+	if !strings.Contains(err.Error(), "invalid callback data") {
+		t.Fatalf("error should include Telegram description, got %v", err)
+	}
+}
+
+func TestTelegramMalformedSuccessResponsesAreAmbiguous(t *testing.T) {
+	oldBase := telegramAPIBase
+	defer func() { telegramAPIBase = oldBase }()
+
+	requests := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ok":`)
+	}))
+	defer ts.Close()
+	telegramAPIBase = ts.URL
+	bot := NewBot("token", "chat")
+
+	t.Run("plain send", func(t *testing.T) {
+		err := bot.Send("hello")
+		var transport telegramTransportError
+		if !errors.As(err, &transport) {
+			t.Fatalf("malformed HTTP 200 must be ambiguous, got %T: %v", err, err)
+		}
+	})
+
+	t.Run("inline keyboard", func(t *testing.T) {
+		_, err := bot.SendInlineKeyboard("prompt", [][]InlineButton{{{Text: "ok", CallbackData: "ok"}}})
+		var transport telegramTransportError
+		if !errors.As(err, &transport) {
+			t.Fatalf("malformed HTTP 200 must be ambiguous, got %T: %v", err, err)
+		}
+	})
+
+	t.Run("rich report does not fall back", func(t *testing.T) {
+		before := requests
+		err := sendReportHTML(bot, Config{TelegramRichMessages: true}, "morning", "<h2>rich</h2>", "fallback")
+		var transport telegramTransportError
+		if !errors.As(err, &transport) {
+			t.Fatalf("malformed rich acknowledgement must stay ambiguous, got %T: %v", err, err)
+		}
+		if requests-before != 1 {
+			t.Fatalf("ambiguous rich send triggered fallback: requests=%d, want 1", requests-before)
+		}
+	})
+
+	t.Run("durable delivery remains ambiguous and is not retried", func(t *testing.T) {
+		store := &recordingDeliveryStore{}
+		before := requests
+		sent, err := sendDurableReport(store, "report:malformed", func() error { return bot.Send("hello") })
+		if !sent || err == nil || store.status != "ambiguous" {
+			t.Fatalf("first send = sent:%v status:%q err:%v, want ambiguous completion", sent, store.status, err)
+		}
+		sent, err = sendDurableReport(store, "report:malformed", func() error { return bot.Send("duplicate") })
+		if sent || err != nil {
+			t.Fatalf("ambiguous delivery retry = sent:%v err:%v, want skipped", sent, err)
+		}
+		if requests-before != 1 {
+			t.Fatalf("ambiguous delivery was sent more than once: requests=%d", requests-before)
+		}
+	})
+}
+
+type failingReadCloser struct{}
+
+func (failingReadCloser) Read([]byte) (int, error) { return 0, errors.New("truncated body") }
+func (failingReadCloser) Close() error             { return nil }
+
+func TestDecodeTelegramResponseReadFailureIsAmbiguous(t *testing.T) {
+	resp := &http.Response{StatusCode: http.StatusOK, Body: failingReadCloser{}}
+	err := decodeTelegramResponse(resp, &telegramAPIResponse{})
+	var transport telegramTransportError
+	if !errors.As(err, &transport) {
+		t.Fatalf("response read failure must be ambiguous, got %T: %v", err, err)
+	}
+	if !strings.Contains(errors.Unwrap(transport).Error(), "truncated body") {
+		t.Fatalf("transport cause lost response read error: %v", transport)
 	}
 }

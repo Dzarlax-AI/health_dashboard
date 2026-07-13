@@ -112,9 +112,11 @@ func (h *Handler) recoverPendingRecords() {
 			record := record
 			h.enqueue(func() {
 				points, err := h.processAcceptedRecord(db, record.ID, []byte(record.Payload), record.ProcessingKind)
-				if err == nil {
-					h.finalizeChunk("", 0, db, datesOf(points), affectsReadiness(points))
+				if err != nil {
+					log.Printf("record %d: recover accepted payload: %v", record.ID, err)
+					return
 				}
+				h.finalizeChunk("", 0, db, datesOf(points), affectsReadiness(points))
 			})
 		}
 	}
@@ -131,8 +133,17 @@ func (h *Handler) processAcceptedRecord(db *storage.DB, id int64, body []byte, k
 		_ = db.SetHealthRecordProcessing(id, "pending", err)
 		return nil, err
 	}
-	if err = db.SetHealthRecordProcessing(id, "complete", nil); err != nil {
-		return nil, err
+	err = db.SetHealthRecordProcessing(id, "complete", nil)
+	return acceptedPointsAfterStatusUpdate(id, points, err)
+}
+
+// acceptedPointsAfterStatusUpdate preserves the successful ingest result when
+// only the replay bookkeeping write fails. InsertPoints is idempotent, so the
+// pending record can repair its status on restart; callers must still refresh
+// caches for the points that are already durable.
+func acceptedPointsAfterStatusUpdate(id int64, points []storage.MetricPoint, statusErr error) ([]storage.MetricPoint, error) {
+	if statusErr != nil {
+		log.Printf("record %d: mark accepted payload complete: %v", id, statusErr)
 	}
 	return points, nil
 }

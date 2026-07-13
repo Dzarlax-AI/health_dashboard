@@ -326,7 +326,7 @@ Apply creates role/password, transfers every table/sequence/function owner as re
 
 - [ ] **Step 5: Implement verify and rotation**
 
-Verify performs normal own-schema probes plus cross-schema/registry denial. Rotation changes one role password, opens the next-version pool, verifies it, updates registry version, and drains the old pool.
+Verify performs normal own-schema probes plus cross-schema/registry denial. Rotation changes one role password, verifies a next-version pool, and updates the registry version. The running service then fails closed on metadata drift; a successful restart opens new-version pools. It does not hot-replace pools held by tenant workers.
 
 - [ ] **Step 6: Add rollback manifest output**
 

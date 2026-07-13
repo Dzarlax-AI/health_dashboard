@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"health-receiver/internal/ai"
@@ -41,6 +42,9 @@ type Handler struct {
 	accountLimiter     *attemptLimiter
 	onTenantCreated    func(schema string)
 	tenantSetup        tenants.TenantSetup
+	setupReconcileMu   sync.Mutex
+	setupReconcileLast time.Time
+	setupReconciling   bool
 
 	// Webhook integration (optional). When configured, settings POST
 	// paths that change Telegram config trigger an async registrar
@@ -528,11 +532,7 @@ func setupAvailable(legacyMode, registryPresent, registryEmpty bool) bool {
 
 func (h *Handler) setup(w http.ResponseWriter, r *http.Request) {
 	if h.reg != nil && !h.reg.HasActiveUsers(r.Context()) {
-		if recovery, ok := h.tenantSetup.(interface{ ReconcileNonterminal(context.Context) error }); ok {
-			if err := recovery.ReconcileNonterminal(r.Context()); err != nil {
-				log.Printf("tenant setup reconciliation failed: %v", err)
-			}
-		}
+		h.reconcileSetupIfDue(r.Context(), time.Now())
 	}
 	// Setup is only available before any users exist and not in legacy mode.
 	registryEmpty := h.reg != nil && h.reg.IsEmpty(r.Context())
@@ -597,6 +597,31 @@ func (h *Handler) setup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	renderPage(w, "setup", struct{ Error string }{""})
+}
+
+const setupReconcileCooldown = 30 * time.Second
+
+func (h *Handler) reconcileSetupIfDue(ctx context.Context, now time.Time) {
+	recovery, ok := h.tenantSetup.(interface{ ReconcileNonterminal(context.Context) error })
+	if !ok {
+		return
+	}
+	h.setupReconcileMu.Lock()
+	if h.setupReconciling || (!h.setupReconcileLast.IsZero() && now.Sub(h.setupReconcileLast) < setupReconcileCooldown) {
+		h.setupReconcileMu.Unlock()
+		return
+	}
+	h.setupReconciling = true
+	h.setupReconcileLast = now
+	h.setupReconcileMu.Unlock()
+	defer func() {
+		h.setupReconcileMu.Lock()
+		h.setupReconciling = false
+		h.setupReconcileMu.Unlock()
+	}()
+	if err := recovery.ReconcileNonterminal(ctx); err != nil {
+		log.Printf("tenant setup reconciliation failed: %v", err)
+	}
 }
 
 // ---- Page handlers ----
@@ -2217,11 +2242,11 @@ func (e *operationalContractHTTPError) Error() string { return e.msg }
 // Schemas returned in sorted order so the admin table render is
 // stable across reloads.
 func (h *Handler) resolveOperationalContractTenants(r *http.Request, scoped string) ([]operationalContractScope, *operationalContractHTTPError) {
-	var all map[string]*storage.DB
-	if h.mgr != nil {
-		all = h.mgr.ActiveDBs(r.Context())
-	}
 	if scoped == "all" {
+		var all map[string]*storage.DB
+		if h.mgr != nil {
+			all = h.mgr.ActiveDBs(r.Context())
+		}
 		if len(all) == 0 {
 			// Legacy / test fallback — no tenants registered, use
 			// request context.
@@ -2243,9 +2268,6 @@ func (h *Handler) resolveOperationalContractTenants(r *http.Request, scoped stri
 		return out, nil
 	}
 	if scoped != "" {
-		if got, ok := all[scoped]; ok && got != nil {
-			return []operationalContractScope{{schema: scoped, db: got}}, nil
-		}
 		// Fallback for legacy / handler-test contexts where the
 		// manager isn't populated but the request's own tenant DB
 		// matches the requested schema. Keeps `?schema=<own>` working
@@ -2254,6 +2276,11 @@ func (h *Handler) resolveOperationalContractTenants(r *http.Request, scoped stri
 		if h.tenantSchema(r) == scoped {
 			if db := h.tenantDB(r); db != nil {
 				return []operationalContractScope{{schema: scoped, db: db}}, nil
+			}
+		}
+		if h.mgr != nil {
+			if got, err := h.mgr.GetOrCreate(r.Context(), scoped); err == nil && got != nil {
+				return []operationalContractScope{{schema: scoped, db: got}}, nil
 			}
 		}
 		return nil, &operationalContractHTTPError{code: http.StatusBadRequest, msg: "unknown schema"}
@@ -3096,7 +3123,8 @@ func (h *Handler) adminUsers(w http.ResponseWriter, r *http.Request) {
 				jsonError(w, "password is too long; bcrypt accepts at most 72 bytes", http.StatusBadRequest)
 				return
 			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			log.Printf("create tenant %q failed: %v", req.Username, err)
+			http.Error(w, "failed to create tenant", http.StatusInternalServerError)
 			return
 		}
 		if h.onTenantCreated != nil {

@@ -55,24 +55,24 @@ func (s *DB) VerifyProvisionedSchema() error {
 			missing = append(missing, "index:"+name)
 		}
 	}
-	columns := map[string][]string{"health_records": {"processing_status", "processing_kind", "processing_error", "processed_at"}, "metric_points": {"quality", "origin", "import_run_id", "source_snapshot_at"}, "workouts": {"origin", "import_run_id", "source_snapshot_at"}, "daily_scores": {"energy_capacity", "energy_eod_current", "energy_drain", "energy_verdict", "baseline_hr_overnight", "sustained_hr_load", "stress_flags", "sleep_unspecified"}}
+	columns := map[string][]string{"health_records": {"processing_status", "processing_kind", "processing_error", "processed_at"}, "import_runs": {"heartbeat_at", "lease_token"}, "metric_points": {"quality", "origin", "import_run_id", "source_snapshot_at"}, "workouts": {"origin", "import_run_id", "source_snapshot_at"}, "daily_scores": {"energy_capacity", "energy_eod_current", "energy_drain", "energy_verdict", "baseline_hr_overnight", "sustained_hr_load", "stress_flags", "sleep_unspecified"}}
 	for table, names := range columns {
 		for _, name := range names {
 			var ok bool
 			if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=$1 AND column_name=$2)`, table, name).Scan(&ok); err != nil {
-				return err
+				return fmt.Errorf("verify column %s.%s: %w", table, name, err)
 			}
 			if !ok {
 				missing = append(missing, "column:"+table+"."+name)
 			}
 		}
 	}
-	if err := s.VerifyReadinessRedesignSchema(); err != nil {
-		return err
-	}
 	if len(missing) > 0 {
 		sort.Strings(missing)
 		return fmt.Errorf("incomplete provisioned tenant schema: %v", missing)
+	}
+	if err := s.VerifyReadinessRedesignSchema(); err != nil {
+		return fmt.Errorf("verify readiness redesign schema: %w", err)
 	}
 	return nil
 }

@@ -60,7 +60,11 @@ func TestTenantMigrationApplyVerifyRollbackIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	deriver := CredentialDeriver{Current: SecretVersion{Version: 1, Secret: []byte("disposable-migration-secret-32-bytes")}}
+	previousSecret := SecretVersion{Version: 1, Secret: []byte("disposable-migration-secret-32-bytes")}
+	deriver := CredentialDeriver{
+		Current:  SecretVersion{Version: 2, Secret: []byte("rotated-migration-secret-32-bytes!!")},
+		Previous: &previousSecret,
+	}
 	migrator, err := NewMigrator(ctx, dsn, credentialFreeTestDSN(t, dsn), deriver)
 	if err != nil {
 		t.Fatal(err)
@@ -77,6 +81,17 @@ func TestTenantMigrationApplyVerifyRollbackIntegration(t *testing.T) {
 	if err != nil || !active.DBIsolationReady {
 		t.Fatalf("active metadata after apply = %+v, %v", active, err)
 	}
+	if err = migrator.RotateTenantCredential(ctx, inventory, 1, 2, otherSchema); err != nil {
+		t.Fatalf("rotate tenant credential: %v", err)
+	}
+	rotated, err := reg.GetBySchema(ctx, user.SchemaName)
+	if err != nil || rotated.DBCredentialVersion != 2 {
+		t.Fatalf("metadata after rotation = %+v, %v", rotated, err)
+	}
+	// Keep the pre-cutover ownership/ACL inventory for rollback; only its
+	// registry credential CAS version advances during rotation.
+	inventory.CredentialVersion = 2
+	inventory.Registry.CredentialVersion = 2
 	if err = migrator.RestoreTenant(ctx, inventory); err != nil {
 		t.Fatal(err)
 	}

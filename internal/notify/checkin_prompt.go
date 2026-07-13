@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -78,7 +79,9 @@ func SendCheckinPrompt(bot CheckinBot, store CheckinStore, lang, date string, no
 		delivery = candidate
 		var reserved bool
 		var err error
-		token, reserved, err = delivery.ReserveNotificationDelivery(context.Background(), "prompt:checkin:"+date)
+		ctx, cancel := context.WithTimeout(context.Background(), notificationDeliveryTimeout)
+		token, reserved, err = delivery.ReserveNotificationDelivery(ctx, "prompt:checkin:"+date)
+		cancel()
 		if err != nil || !reserved {
 			return err
 		}
@@ -87,15 +90,18 @@ func SendCheckinPrompt(bot CheckinBot, store CheckinStore, lang, date string, no
 	if err != nil {
 		if delivery != nil {
 			status, code := deliveryFailureStatus(err)
-			_ = delivery.CompleteNotificationDelivery(context.Background(), "prompt:checkin:"+date, token, status, code)
+			_ = completeNotificationDelivery(delivery, "prompt:checkin:"+date, token, status, code)
 		}
 		return err
 	}
 	if err = store.SaveCheckinPrompted(date, storage.CheckinSourceTelegram, msgID, now, expiresAt); err != nil {
+		if delivery != nil {
+			return errors.Join(err, completeNotificationDelivery(delivery, "prompt:checkin:"+date, token, "sent", ""))
+		}
 		return err
 	}
 	if delivery != nil {
-		return delivery.CompleteNotificationDelivery(context.Background(), "prompt:checkin:"+date, token, "sent", "")
+		return completeNotificationDelivery(delivery, "prompt:checkin:"+date, token, "sent", "")
 	}
 	return nil
 }

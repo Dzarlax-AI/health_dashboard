@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log"
@@ -176,11 +178,17 @@ func main() {
 	// When neither API_KEY nor UI_PASSWORD is set, the setup wizard handles first-run.
 	if reg.IsEmpty(ctx) && (apiKey != "" || uiPassword != "") {
 		log.Println("Registry empty — seeding admin user from API_KEY / UI_PASSWORD env vars…")
-		const adminSchema = "health"
-		if _, err := tenantSetup.CreateFirstTenant(ctx, registry.CreateUserReq{Username: "admin", SchemaName: adminSchema, Password: uiPassword, Email: adminEmail, IsAdmin: true, InitialAPIKey: apiKey}); err != nil {
+		req, generatedPassword, err := bootstrapAdminRequest(apiKey, uiPassword, adminEmail)
+		if err != nil {
+			log.Fatalf("prepare bootstrap admin: %v", err)
+		}
+		if generatedPassword {
+			log.Println("UI_PASSWORD is empty; UI password login remains unavailable while API_KEY access is preserved")
+		}
+		if _, err := tenantSetup.CreateFirstTenant(ctx, req); err != nil {
 			log.Printf("seed admin: %v", err)
 		} else {
-			log.Printf("Admin user created (username: admin, schema: %s)", adminSchema)
+			log.Printf("Admin user created (username: admin, schema: %s)", req.SchemaName)
 		}
 	}
 
@@ -400,13 +408,29 @@ func registerOperationalEndpoints(mux *http.ServeMux, mgr *tenants.Manager, expe
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
-		if len(mgr.ActiveDBs(r.Context())) != expectedTenants {
+		if len(mgr.ActiveDBs(r.Context())) < expectedTenants {
 			http.Error(w, "not ready", http.StatusServiceUnavailable)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ready"}`))
 	})
+}
+
+func bootstrapAdminRequest(apiKey, uiPassword, email string) (registry.CreateUserReq, bool, error) {
+	generated := false
+	if uiPassword == "" {
+		secret := make([]byte, 32)
+		if _, err := rand.Read(secret); err != nil {
+			return registry.CreateUserReq{}, false, fmt.Errorf("generate disabled UI credential: %w", err)
+		}
+		uiPassword = base64.RawURLEncoding.EncodeToString(secret)
+		generated = true
+	}
+	return registry.CreateUserReq{
+		Username: "admin", SchemaName: "health", Password: uiPassword,
+		Email: email, IsAdmin: true, InitialAPIKey: apiKey,
+	}, generated, nil
 }
 
 func serveHTTP(ctx context.Context, addr string, handler http.Handler, drain func(context.Context) error) error {
@@ -1038,15 +1062,13 @@ schedulerLoop:
 				return
 			case <-time.After(wait):
 			}
+			now = time.Now()
 			refreshed := buildNotifyCfg(db, db.GetNotifyConfig(defaults))
-			newMorning, newEvening := refreshed.NextMorning(time.Now()), refreshed.NextEvening(time.Now())
-			newIsMorning := newMorning.Before(newEvening)
-			newNext := newEvening
-			if newIsMorning {
-				newNext = newMorning
-			}
-			if newIsMorning != isMorning || !newNext.Equal(next) {
+			if reportScheduleChanged(now, next, isMorning, ncfg, refreshed) {
 				continue schedulerLoop
+			}
+			if !now.Before(next) {
+				break
 			}
 		}
 
@@ -1064,6 +1086,36 @@ schedulerLoop:
 				log.Printf("report scheduler: evening send error: %v", err)
 			}
 		}
+	}
+}
+
+func reportScheduleChanged(now, expected time.Time, expectedMorning bool, original, refreshed notify.Config) bool {
+	if reportScheduleSignature(original) != reportScheduleSignature(refreshed) {
+		return true
+	}
+	if !now.Before(expected) {
+		return false
+	}
+	morning, evening := refreshed.NextMorning(now), refreshed.NextEvening(now)
+	isMorning := morning.Before(evening)
+	next := evening
+	if isMorning {
+		next = morning
+	}
+	return isMorning != expectedMorning || !next.Equal(expected)
+}
+
+type reportSchedule struct {
+	timezone                       string
+	morningWeekday, morningWeekend int
+	eveningWeekday, eveningWeekend int
+}
+
+func reportScheduleSignature(cfg notify.Config) reportSchedule {
+	return reportSchedule{
+		timezone:       cfg.Timezone,
+		morningWeekday: cfg.MorningWeekdayHour, morningWeekend: cfg.MorningWeekendHour,
+		eveningWeekday: cfg.EveningWeekdayHour, eveningWeekend: cfg.EveningWeekendHour,
 	}
 }
 

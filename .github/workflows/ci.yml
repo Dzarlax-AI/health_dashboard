@@ -180,7 +180,12 @@ jobs:
           docker run -d --name health-ci-app --network health-ci -p 18080:8080 -e DATABASE_URL='postgres://health:health@health-ci-db:5432/health?search_path=health' -e API_KEY=ci-key -e UI_PASSWORD=ci-password health-dashboard:ci
           for i in $(seq 1 60); do curl --fail --silent http://localhost:18080/readyz && break; sleep 1; done
           curl --fail --silent http://localhost:18080/readyz
-          test "$(docker exec health-ci-db psql -U health -d health -Atc "SELECT count(*) FROM health.metric_points WHERE metric_name='step_count' AND qty=1234")" = "1"
+          recovered=0
+          for i in $(seq 1 30); do
+            if test "$(docker exec health-ci-db psql -U health -d health -Atc "SELECT count(*) FROM health.metric_points WHERE metric_name='step_count' AND qty=1234")" = "1"; then recovered=1; break; fi
+            sleep 1
+          done
+          test "$recovered" = "1"
 
   docker-amd64:
     name: Docker Build & Push (amd64)

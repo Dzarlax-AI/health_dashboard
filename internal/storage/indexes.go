@@ -51,6 +51,8 @@ func (s *DB) EnsureIndexes() {
 	// pick them up without manual intervention. ADD COLUMN IF NOT EXISTS is a
 	// metadata-only change in Postgres ≥ 11 — fast even on the 3.7M-row table.
 	migrations := []columnMigration{
+		{"import_runs", "heartbeat_at", `ALTER TABLE import_runs ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`},
+		{"import_runs", "lease_token", `ALTER TABLE import_runs ADD COLUMN IF NOT EXISTS lease_token UUID`},
 		{"health_records", "processing_status", `ALTER TABLE health_records ADD COLUMN IF NOT EXISTS processing_status TEXT NOT NULL DEFAULT 'complete'`},
 		{"health_records", "processing_kind", `ALTER TABLE health_records ADD COLUMN IF NOT EXISTS processing_kind TEXT NOT NULL DEFAULT 'all'`},
 		{"health_records", "processing_error", `ALTER TABLE health_records ADD COLUMN IF NOT EXISTS processing_error TEXT`},

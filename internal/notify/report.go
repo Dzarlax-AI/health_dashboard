@@ -18,6 +18,14 @@ type notificationDeliveryStore interface {
 	CompleteNotificationDelivery(context.Context, string, uuid.UUID, string, string) error
 }
 
+const notificationDeliveryTimeout = 10 * time.Second
+
+func completeNotificationDelivery(store notificationDeliveryStore, key string, token uuid.UUID, status, code string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), notificationDeliveryTimeout)
+	defer cancel()
+	return store.CompleteNotificationDelivery(ctx, key, token, status, code)
+}
+
 func deliveryFailureStatus(err error) (string, string) {
 	var transport telegramTransportError
 	if errors.As(err, &transport) {
@@ -266,19 +274,19 @@ func SendEvening(bot *Bot, db *storage.DB, cfg Config) error {
 	return err
 }
 
-func sendDurableReport(db *storage.DB, key string, send func() error) (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	token, reserved, err := db.ReserveNotificationDelivery(ctx, key)
+func sendDurableReport(db notificationDeliveryStore, key string, send func() error) (bool, error) {
+	reserveCtx, cancelReserve := context.WithTimeout(context.Background(), notificationDeliveryTimeout)
+	token, reserved, err := db.ReserveNotificationDelivery(reserveCtx, key)
+	cancelReserve()
 	if err != nil || !reserved {
 		return reserved, err
 	}
 	if err = send(); err != nil {
 		status, code := deliveryFailureStatus(err)
-		completeErr := db.CompleteNotificationDelivery(ctx, key, token, status, code)
+		completeErr := completeNotificationDelivery(db, key, token, status, code)
 		return true, errors.Join(err, completeErr)
 	}
-	return true, db.CompleteNotificationDelivery(ctx, key, token, "sent", "")
+	return true, completeNotificationDelivery(db, key, token, "sent", "")
 }
 
 type htmlReportSender interface {

@@ -339,7 +339,7 @@ func (r *Registry) SaveGlobalSettings(ctx context.Context, kv map[string]string)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 	for k, v := range kv {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO health_registry.global_settings (key, value, updated_at)
@@ -568,7 +568,7 @@ func (r *Registry) CreateLegacyFirstUser(ctx context.Context, req CreateUserReq)
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(918273645)`); err != nil {
 		return nil, err
 	}
@@ -623,7 +623,7 @@ func (r *Registry) ReserveUser(ctx context.Context, req CreateUserReq) (*User, P
 	if err != nil {
 		return nil, ProvisioningOperation{}, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := insertPreparedUser(ctx, u, email, tx); err != nil {
 		return nil, ProvisioningOperation{}, err
 	}
@@ -721,7 +721,7 @@ func (r *Registry) ReserveFirstUser(ctx context.Context, req CreateUserReq) (*Us
 	if err != nil {
 		return nil, ProvisioningOperation{}, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(918273645)`); err != nil {
 		return nil, ProvisioningOperation{}, err
 	}

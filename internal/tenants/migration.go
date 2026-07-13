@@ -849,8 +849,10 @@ func (m *Migrator) RestoreTenant(ctx context.Context, i TenantInventory) error {
 }
 
 // RotateTenantCredential changes the PostgreSQL login first, proves the new
-// credential, and then advances registry metadata with an exact CAS. Existing
-// pools are evicted by the manager's credential-version revalidation.
+// credential through an ephemeral verification pool, and then advances
+// registry metadata with an exact CAS. Runtime pools are not hot-replaced:
+// Manager fails closed on credential-version drift until a successful service
+// restart opens new-version pools. Keep the previous secret through restart.
 func (m *Migrator) RotateTenantCredential(ctx context.Context, i TenantInventory, expectedOldVersion, targetVersion int, otherSchema string) error {
 	if err := validateInventoryIdentity(i); err != nil {
 		return err
@@ -911,8 +913,12 @@ func (m *Migrator) setRolePassword(ctx context.Context, role, password string) e
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, "ALTER ROLE "+quoteIdent(role)+" PASSWORD $1", password); err != nil {
+	defer func() { _ = tx.Rollback(ctx) }()
+	var statement string
+	if err = tx.QueryRow(ctx, `SELECT format('ALTER ROLE %I PASSWORD %L', $1::text, $2::text)`, role, password).Scan(&statement); err != nil {
+		return fmt.Errorf("format role password statement: %w", err)
+	}
+	if _, err = tx.Exec(ctx, statement); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
