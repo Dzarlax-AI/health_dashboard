@@ -81,7 +81,11 @@ func TestTenantMigrationApplyVerifyRollbackIntegration(t *testing.T) {
 	if err != nil || !active.DBIsolationReady {
 		t.Fatalf("active metadata after apply = %+v, %v", active, err)
 	}
-	if err = migrator.RotateTenantCredential(ctx, inventory, 1, 2, otherSchema); err != nil {
+	rotationInventory, err := migrator.Inventory(ctx, user.SchemaName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = migrator.RotateTenantCredential(ctx, rotationInventory, 1, 2, otherSchema); err != nil {
 		t.Fatalf("rotate tenant credential: %v", err)
 	}
 	rotated, err := reg.GetBySchema(ctx, user.SchemaName)
