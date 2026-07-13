@@ -5,8 +5,8 @@ import (
 )
 
 // Pure-map lookup is the only piece worth testing without a live DB.
-// The DBForTelegramChatID wrapper just walks AllDBs() / legacyDB and
-// invokes this — covered by the smoke test on prod.
+// The DBForTelegramChatID wrapper walks ActiveDBs() / legacyDB; active-cache
+// authorization has dedicated unit and disposable integration coverage.
 func TestSchemaForChatID(t *testing.T) {
 	chatIDs := map[string]string{
 		"111": "health",

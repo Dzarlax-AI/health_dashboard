@@ -1,7 +1,9 @@
 package storage
 
 import (
+	"context"
 	"fmt"
+	"sort"
 
 	"health-receiver/internal/health"
 )
@@ -97,21 +99,41 @@ func (s *DB) MarkExistingImpossible() (int, error) {
 	defer cancel()
 
 	total := 0
+	affected := map[string]struct{}{}
+	affectedMetrics := map[string]struct{}{}
 	for _, name := range auditedMetrics {
 		min, max, ok := health.QualityRange(name)
 		if !ok {
 			continue
 		}
-		tag, err := s.pool.Exec(ctx, `
+		rows, err := s.pool.Query(ctx, `
 			UPDATE metric_points
 			   SET quality = 'impossible'
 			 WHERE metric_name = $1
 			   AND quality = 'ok'
-			   AND (qty < $2 OR qty > $3)`, name, min, max)
+			   AND (qty < $2 OR qty > $3)
+			RETURNING SUBSTRING(date,1,10)`, name, min, max)
 		if err != nil {
 			return total, fmt.Errorf("mark impossible %s: %w", name, err)
 		}
-		total += int(tag.RowsAffected())
+		for rows.Next() {
+			var date string
+			if err := rows.Scan(&date); err != nil {
+				rows.Close()
+				return total, err
+			}
+			affected[date] = struct{}{}
+			affectedMetrics[name] = struct{}{}
+			total++
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return total, err
+		}
+		rows.Close()
+	}
+	if err := s.finalizeQualityChanges(ctx, affected, affectedMetrics); err != nil {
+		return total, err
 	}
 	return total, nil
 }
@@ -137,6 +159,8 @@ func (s *DB) MarkSuspectPoints(days int, sigma float64) (map[string]int, error) 
 	defer cancel()
 
 	out := map[string]int{}
+	affected := map[string]struct{}{}
+	affectedMetrics := map[string]struct{}{}
 	for _, name := range auditedMetrics {
 		// Sleep_* and step_count are noisy by nature — z-score thresholds
 		// flag legitimate variation. Skip until we have a per-metric tuned
@@ -148,7 +172,7 @@ func (s *DB) MarkSuspectPoints(days int, sigma float64) (map[string]int, error) 
 		// Compute mean+sd over a 30-day baseline window (excluding flagged
 		// rows), then UPDATE recent rows whose deviation exceeds sigma. CTE +
 		// UPDATE-FROM keeps it one round-trip per metric.
-		tag, err := s.pool.Exec(ctx, `
+		rows, err := s.pool.Query(ctx, `
 			WITH baseline AS (
 				SELECT AVG(qty)    AS mean,
 				       STDDEV(qty) AS sd
@@ -165,16 +189,81 @@ func (s *DB) MarkSuspectPoints(days int, sigma float64) (map[string]int, error) 
 			   AND b.sd IS NOT NULL
 			   AND b.sd > 0
 			   AND SUBSTRING(mp.date,1,10) >= TO_CHAR(NOW() - INTERVAL '1 day' * $2, 'YYYY-MM-DD')
-			   AND ABS(mp.qty - b.mean) / b.sd > $3`,
+			   AND ABS(mp.qty - b.mean) / b.sd > $3
+			RETURNING SUBSTRING(mp.date,1,10)`,
 			name, days, sigma)
 		if err != nil {
 			return out, fmt.Errorf("mark suspect %s: %w", name, err)
 		}
-		if n := int(tag.RowsAffected()); n > 0 {
+		n := 0
+		for rows.Next() {
+			var date string
+			if err := rows.Scan(&date); err != nil {
+				rows.Close()
+				return out, err
+			}
+			affected[date] = struct{}{}
+			affectedMetrics[name] = struct{}{}
+			n++
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return out, err
+		}
+		rows.Close()
+		if n > 0 {
 			out[name] = n
 		}
 	}
+	if err := s.finalizeQualityChanges(ctx, affected, affectedMetrics); err != nil {
+		return out, err
+	}
 	return out, nil
+}
+
+func (s *DB) finalizeQualityChanges(ctx context.Context, affected, affectedMetrics map[string]struct{}) error {
+	if len(affected) == 0 {
+		return nil
+	}
+	dates := make([]string, 0, len(affected))
+	for date := range affected {
+		dates = append(dates, date)
+	}
+	sort.Strings(dates)
+	if _, err := s.pool.Exec(ctx, `DELETE FROM ai_briefing_blocks WHERE date = ANY($1)`, dates); err != nil {
+		return fmt.Errorf("invalidate AI blocks after quality change: %w", err)
+	}
+	if _, err := s.pool.Exec(ctx, `DELETE FROM energy_snapshots WHERE date = ANY($1)`, dates); err != nil {
+		return fmt.Errorf("invalidate energy snapshots after quality change: %w", err)
+	}
+	dailyColumns := map[string][]string{
+		"heart_rate_variability":  {"hrv_avg", "readiness", "score_version"},
+		"resting_heart_rate":      {"rhr_avg", "readiness", "score_version"},
+		"oxygen_saturation":       {"spo2_avg"},
+		"blood_oxygen_saturation": {"spo2_avg"},
+		"respiratory_rate":        {"resp_avg"},
+		"vo2_max":                 {"vo2_avg"},
+	}
+	cleared := map[string]struct{}{}
+	for metric := range affectedMetrics {
+		if _, err := s.pool.Exec(ctx, `DELETE FROM hourly_metrics WHERE metric_name=$1 AND SUBSTRING(hour,1,10)=ANY($2)`, metric, dates); err != nil {
+			return fmt.Errorf("clear hourly %s after quality change: %w", metric, err)
+		}
+		if _, err := s.pool.Exec(ctx, `DELETE FROM minute_metrics WHERE metric_name=$1 AND SUBSTRING(minute,1,10)=ANY($2)`, metric, dates); err != nil {
+			return fmt.Errorf("clear minute %s after quality change: %w", metric, err)
+		}
+		for _, column := range dailyColumns[metric] {
+			if _, ok := cleared[column]; ok {
+				continue
+			}
+			if _, err := s.pool.Exec(ctx, "UPDATE daily_scores SET "+column+"=NULL WHERE date = ANY($1)", dates); err != nil {
+				return fmt.Errorf("clear daily %s after quality change: %w", column, err)
+			}
+			cleared[column] = struct{}{}
+		}
+	}
+	s.UpsertRecentCache(dates, true)
+	return nil
 }
 
 // zScoreEligible lists metrics where a 3σ z-score sweep is meaningful. These
@@ -183,13 +272,14 @@ func (s *DB) MarkSuspectPoints(days int, sigma float64) (map[string]int, error) 
 // (rest day vs active day) that confuse z-score — they belong in a different
 // quality check.
 var zScoreEligible = map[string]bool{
-	"heart_rate_variability": true,
-	"resting_heart_rate":     true,
-	"oxygen_saturation":      true,
-	"respiratory_rate":       true,
-	"wrist_temperature":      true,
-	"vo2_max":                true,
-	"body_mass":              true,
+	"heart_rate_variability":  true,
+	"resting_heart_rate":      true,
+	"oxygen_saturation":       true,
+	"blood_oxygen_saturation": true,
+	"respiratory_rate":        true,
+	"wrist_temperature":       true,
+	"vo2_max":                 true,
+	"body_mass":               true,
 }
 
 // auditedMetrics is the list of metrics we run the audit over. Kept here
@@ -202,6 +292,7 @@ var auditedMetrics = []string{
 	"resting_heart_rate",
 	"walking_heart_rate",
 	"oxygen_saturation",
+	"blood_oxygen_saturation",
 	"respiratory_rate",
 	"body_mass",
 	"body_fat_percentage",
@@ -219,4 +310,3 @@ var auditedMetrics = []string{
 	"sleep_awake",
 	"wrist_temperature",
 }
-

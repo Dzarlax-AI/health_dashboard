@@ -1,10 +1,13 @@
 package notify
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"health-receiver/internal/health"
 	"health-receiver/internal/storage"
 )
@@ -90,10 +93,39 @@ func SendContextPrompt(bot ContextPromptBot, store ContextPromptStore, lang stri
 	if len(rows) == 0 {
 		return nil
 	}
+	var delivery notificationDeliveryStore
+	var token uuid.UUID
+	key := "prompt:context:" + prompt.PromptID
+	if candidate, ok := store.(notificationDeliveryStore); ok {
+		delivery = candidate
+		var reserved bool
+		var err error
+		ctx, cancel := context.WithTimeout(context.Background(), notificationDeliveryTimeout)
+		token, reserved, err = delivery.ReserveNotificationDelivery(ctx, key)
+		cancel()
+		if err != nil || !reserved {
+			return err
+		}
+	}
 	msgID, err := bot.SendInlineKeyboard(text, rows)
 	if err != nil {
-		_ = store.MarkContextPromptSendFailed(prompt.PromptID, now)
+		status, code := deliveryFailureStatus(err)
+		if delivery != nil {
+			_ = completeNotificationDelivery(delivery, key, token, status, code)
+		}
+		if status == "failed" {
+			_ = store.MarkContextPromptSendFailed(prompt.PromptID, now)
+		}
 		return err
 	}
-	return store.MarkContextPromptSent(prompt.PromptID, msgID, now)
+	if err = store.MarkContextPromptSent(prompt.PromptID, msgID, now); err != nil {
+		if delivery != nil {
+			return errors.Join(err, completeNotificationDelivery(delivery, key, token, "sent", ""))
+		}
+		return err
+	}
+	if delivery != nil {
+		return completeNotificationDelivery(delivery, key, token, "sent", "")
+	}
+	return nil
 }

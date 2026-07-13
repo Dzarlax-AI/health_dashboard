@@ -206,8 +206,12 @@ func fireOne(bot *Bot, db *storage.DB, cfg Config, baseURL string, p ProactiveNo
 		return
 	}
 
-	if err := bot.Send(msg); err != nil {
+	reserved, err := sendDurableReport(db, "proactive:"+p.Name+":"+now.Format("2006-01-02"), func() error { return bot.Send(msg) })
+	if err != nil {
 		log.Printf("proactive %s: send error: %v", p.Name, err)
+		return
+	}
+	if !reserved {
 		return
 	}
 	// Persist the date marker so the cadence gate skips us until

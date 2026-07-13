@@ -1,14 +1,65 @@
 package notify
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"health-receiver/internal/health"
 	"health-receiver/internal/storage"
 )
+
+type recordingDeliveryStore struct {
+	reserveCtx  context.Context
+	completeCtx context.Context
+	token       uuid.UUID
+	status      string
+}
+
+func (s *recordingDeliveryStore) ReserveNotificationDelivery(ctx context.Context, _ string) (uuid.UUID, bool, error) {
+	if s.status == "sent" || s.status == "ambiguous" {
+		return uuid.Nil, false, nil
+	}
+	s.reserveCtx = ctx
+	s.token = uuid.New()
+	return s.token, true, nil
+}
+
+func (s *recordingDeliveryStore) CompleteNotificationDelivery(ctx context.Context, _ string, token uuid.UUID, status, _ string) error {
+	if token != s.token {
+		return errors.New("unexpected delivery token")
+	}
+	s.completeCtx = ctx
+	s.status = status
+	return ctx.Err()
+}
+
+func TestSendDurableReportUsesFreshCompletionContext(t *testing.T) {
+	store := &recordingDeliveryStore{}
+	sent, err := sendDurableReport(store, "report:test", func() error {
+		select {
+		case <-store.reserveCtx.Done():
+			return nil
+		default:
+			return errors.New("reservation context remained live during external send")
+		}
+	})
+	if err != nil || !sent {
+		t.Fatalf("send = %v, %v", sent, err)
+	}
+	if store.completeCtx == nil || store.completeCtx == store.reserveCtx {
+		t.Fatal("completion reused the reservation context")
+	}
+	if _, ok := store.completeCtx.Deadline(); !ok {
+		t.Fatal("completion context must be bounded")
+	}
+	if store.status != "sent" {
+		t.Fatalf("completion status = %q, want sent", store.status)
+	}
+}
 
 // TestMorningCapTime_FloorsPastCapsToPromptWindow pins the floor that
 // keeps the check-in prompt window alive for users whose adaptive cap
@@ -169,6 +220,16 @@ func TestSendReportHTML_FallbackBehavior(t *testing.T) {
 		}
 		if bot.richCalls != 1 || bot.sendCalls != 1 || bot.lastSendText != "<b>fallback</b>" {
 			t.Fatalf("unexpected calls: rich=%d send=%d text=%q", bot.richCalls, bot.sendCalls, bot.lastSendText)
+		}
+	})
+
+	t.Run("ambiguous rich transport does not risk a duplicate fallback", func(t *testing.T) {
+		bot := &fakeHTMLReportSender{richErr: telegramTransportError{cause: errors.New("timeout after write")}}
+		if err := sendReportHTML(bot, Config{TelegramRichMessages: true}, "morning", "<h2>rich</h2>", "<b>fallback</b>"); err == nil {
+			t.Fatal("expected ambiguous transport error")
+		}
+		if bot.richCalls != 1 || bot.sendCalls != 0 {
+			t.Fatalf("unexpected calls: rich=%d send=%d", bot.richCalls, bot.sendCalls)
 		}
 	})
 }

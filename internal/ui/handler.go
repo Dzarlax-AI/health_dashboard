@@ -1,18 +1,21 @@
 package ui
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
 	"io"
+	"log"
 	"math"
 	"net"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"health-receiver/internal/ai"
@@ -34,7 +37,14 @@ type Handler struct {
 	reg                *registry.Registry
 	trustFwdAuth       bool
 	trustedFwdAuthNets []*net.IPNet
+	setupToken         string
+	ipLimiter          *attemptLimiter
+	accountLimiter     *attemptLimiter
 	onTenantCreated    func(schema string)
+	tenantSetup        tenants.TenantSetup
+	setupReconcileMu   sync.Mutex
+	setupReconcileLast time.Time
+	setupReconciling   bool
 
 	// Webhook integration (optional). When configured, settings POST
 	// paths that change Telegram config trigger an async registrar
@@ -46,8 +56,10 @@ type Handler struct {
 }
 
 func New(mgr *tenants.Manager, reg *registry.Registry, trustFwdAuth bool) *Handler {
-	return &Handler{mgr: mgr, reg: reg, trustFwdAuth: trustFwdAuth}
+	return &Handler{mgr: mgr, reg: reg, trustFwdAuth: trustFwdAuth, ipLimiter: newAttemptLimiter(5, 15*time.Minute, 10000), accountLimiter: newAttemptLimiter(5, 15*time.Minute, 10000)}
 }
+func (h *Handler) SetSetupToken(s string)               { h.setupToken = s }
+func (h *Handler) SetTenantSetup(s tenants.TenantSetup) { h.tenantSetup = s }
 
 // ConfigureWebhook plugs the Telegram webhook registrar into the
 // settings write path. Called once at server boot from main.go with
@@ -425,16 +437,19 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	next := r.URL.Query().Get("next")
-	if next == "" {
-		next = "/"
-	}
+	next := safeNext(r.URL.Query().Get("next"))
 
 	if r.Method == http.MethodPost {
 		password := r.FormValue("password")
+		if !h.allowLoginIP(w, r) {
+			return
+		}
 
 		// Legacy mode: compare against env password hash directly.
 		if h.mgr.LegacyMode() {
+			if !h.allowLoginAccount(w, "legacy") {
+				return
+			}
 			if ok, _ := registry.VerifyPassword(h.mgr.LegacyPasswordHash(), password); ok {
 				token, err := h.mgr.LegacyDB().CreateAuthSession(authSessionTTL)
 				if err != nil {
@@ -442,6 +457,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				h.setAuthCookie(w, r, token)
+				h.clearLoginLimits(r, "legacy")
 				http.Redirect(w, r, next, http.StatusFound)
 				return
 			}
@@ -454,8 +470,14 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		username := r.FormValue("username")
 		user, err := h.reg.GetByUsername(r.Context(), username)
 		if err != nil {
+			if !h.allowLoginAccount(w, "unknown") {
+				return
+			}
 			w.WriteHeader(http.StatusUnauthorized)
 			renderPage(w, "login", loginPageData{Error: "Invalid username or password.", MultiUser: true})
+			return
+		}
+		if !h.allowLoginAccount(w, user.Username) {
 			return
 		}
 		ok, needsRehash := registry.VerifyPassword(user.PasswordHash, password)
@@ -475,6 +497,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.setAuthCookie(w, r, token)
+		h.clearLoginLimits(r, user.Username)
 		http.Redirect(w, r, next, http.StatusFound)
 		return
 	}
@@ -503,15 +526,31 @@ type loginPageData struct {
 	MultiUser bool
 }
 
+func setupAvailable(legacyMode, registryPresent, registryEmpty bool) bool {
+	return !legacyMode && registryPresent && registryEmpty
+}
+
 func (h *Handler) setup(w http.ResponseWriter, r *http.Request) {
+	if h.reg != nil && !h.reg.HasActiveUsers(r.Context()) {
+		h.reconcileSetupIfDue(r.Context(), time.Now())
+	}
 	// Setup is only available before any users exist and not in legacy mode.
-	if h.mgr.LegacyMode() || (h.reg != nil && !h.reg.IsEmpty(r.Context())) {
+	registryEmpty := h.reg != nil && h.reg.IsEmpty(r.Context())
+	if !setupAvailable(h.mgr.LegacyMode(), h.reg != nil, registryEmpty) {
 		http.Redirect(w, r, "/", http.StatusFound)
 		return
 	}
 
 	if r.Method == http.MethodPost {
 		username := strings.TrimSpace(r.FormValue("username"))
+		if !h.allowSetupAttempt(w, r) {
+			return
+		}
+		if !h.validSetupToken(r.FormValue("setup_token")) {
+			w.WriteHeader(http.StatusForbidden)
+			renderPage(w, "setup", struct{ Error string }{"Invalid setup token."})
+			return
+		}
 		password := r.FormValue("password")
 		confirm := r.FormValue("confirm")
 
@@ -524,7 +563,11 @@ func (h *Handler) setup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		user, err := h.reg.CreateUser(r.Context(), registry.CreateUserReq{
+		if h.tenantSetup == nil {
+			renderPage(w, "setup", struct{ Error string }{"Tenant setup is unavailable."})
+			return
+		}
+		user, err := h.tenantSetup.CreateFirstTenant(r.Context(), registry.CreateUserReq{
 			Username: username,
 			Password: password,
 			Email:    strings.TrimSpace(r.FormValue("email")),
@@ -536,14 +579,11 @@ func (h *Handler) setup(w http.ResponseWriter, r *http.Request) {
 				renderPage(w, "setup", struct{ Error string }{"Password is too long; bcrypt accepts at most 72 bytes."})
 				return
 			}
-			renderPage(w, "setup", struct{ Error string }{"Failed to create user: " + err.Error()})
+			log.Printf("tenant setup failed: %v", err)
+			renderPage(w, "setup", struct{ Error string }{"Failed to create user. Please try again or contact the administrator."})
 			return
 		}
 
-		if err := h.mgr.CreateUserSchema(r.Context(), user.SchemaName); err != nil {
-			renderPage(w, "setup", struct{ Error string }{"Failed to create schema: " + err.Error()})
-			return
-		}
 		if h.onTenantCreated != nil {
 			h.onTenantCreated(user.SchemaName)
 		}
@@ -557,6 +597,31 @@ func (h *Handler) setup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	renderPage(w, "setup", struct{ Error string }{""})
+}
+
+const setupReconcileCooldown = 30 * time.Second
+
+func (h *Handler) reconcileSetupIfDue(ctx context.Context, now time.Time) {
+	recovery, ok := h.tenantSetup.(interface{ ReconcileNonterminal(context.Context) error })
+	if !ok {
+		return
+	}
+	h.setupReconcileMu.Lock()
+	if h.setupReconciling || (!h.setupReconcileLast.IsZero() && now.Sub(h.setupReconcileLast) < setupReconcileCooldown) {
+		h.setupReconcileMu.Unlock()
+		return
+	}
+	h.setupReconciling = true
+	h.setupReconcileLast = now
+	h.setupReconcileMu.Unlock()
+	defer func() {
+		h.setupReconcileMu.Lock()
+		h.setupReconciling = false
+		h.setupReconcileMu.Unlock()
+	}()
+	if err := recovery.ReconcileNonterminal(ctx); err != nil {
+		log.Printf("tenant setup reconciliation failed: %v", err)
+	}
 }
 
 // ---- Page handlers ----
@@ -601,7 +666,7 @@ func (h *Handler) pageDashboard(w http.ResponseWriter, r *http.Request) {
 		CorrelationJSON: "null",
 	}
 
-	today := time.Now().Format("2006-01-02")
+	today := db.Today()
 	data.AIInsight = db.GetAIInsightCombined(today, lang)
 
 	if br, err := db.GetHealthBriefing(lang); err == nil && br != nil {
@@ -841,7 +906,7 @@ func (h *Handler) pageAdmin(w http.ResponseWriter, r *http.Request) {
 		CurrentSchema: h.tenantSchema(r),
 	}
 	if h.reg != nil && !h.mgr.LegacyMode() {
-		users, err := h.reg.ListUsers(r.Context())
+		users, err := h.reg.ListActiveUsers(r.Context())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -1215,14 +1280,16 @@ func (h *Handler) metricData(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "metric required", http.StatusBadRequest)
 		return
 	}
+	db := h.tenantDB(r)
 
 	from := q.Get("from")
 	to := q.Get("to")
+	tenantToday, _ := time.Parse("2006-01-02", db.Today())
 	if from == "" {
-		from = time.Now().AddDate(0, 0, -7).Format("2006-01-02")
+		from = tenantToday.AddDate(0, 0, -7).Format("2006-01-02")
 	}
 	if to == "" {
-		to = time.Now().Format("2006-01-02")
+		to = tenantToday.Format("2006-01-02")
 	}
 
 	bucket := q.Get("bucket")
@@ -1252,7 +1319,6 @@ func (h *Handler) metricData(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	db := h.tenantDB(r)
 	if q.Get("by_source") == "1" {
 		sourcePoints, serr := db.GetMetricDataBySource(metric, from, to+" 23:59:59", bucket, aggFunc)
 		if serr == nil {
@@ -1523,7 +1589,7 @@ func (h *Handler) healthBriefing(w http.ResponseWriter, r *http.Request) {
 	// from /api/ai-briefing separately and update their UI when it arrives,
 	// instead of waiting on this endpoint.
 	if resp != nil {
-		today := time.Now().Format("2006-01-02")
+		today := db.Today()
 		resp.AIInsight = db.GetAIInsightCombined(today, lang)
 		if resp.AIInsight == "" {
 			aiDefaults := h.mgr.AIDefaultsFor(r.Context(), schema)
@@ -1541,7 +1607,7 @@ func (h *Handler) aiBriefing(w http.ResponseWriter, r *http.Request) {
 	lang := supportedLang(r.URL.Query().Get("lang"))
 	db := h.tenantDB(r)
 	schema := h.tenantSchema(r)
-	today := time.Now().Format("2006-01-02")
+	today := db.Today()
 
 	aiDefaults := h.mgr.AIDefaultsFor(r.Context(), schema)
 	aiCfg := db.GetAIConfig(aiDefaults)
@@ -1725,7 +1791,7 @@ func (h *Handler) adminReadinessRedesignBackfill(w http.ResponseWriter, r *http.
 			http.Error(w, "registry not available", http.StatusServiceUnavailable)
 			return
 		}
-		users, err := h.reg.ListUsers(r.Context())
+		users, err := h.reg.ListActiveUsers(r.Context())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -1741,7 +1807,7 @@ func (h *Handler) adminReadinessRedesignBackfill(w http.ResponseWriter, r *http.
 			http.Error(w, "unknown schema", http.StatusBadRequest)
 			return
 		}
-		all := h.mgr.AllDBs()
+		all := h.mgr.ActiveDBs(r.Context())
 		got, ok := all[target]
 		if !ok || got == nil {
 			http.Error(w, "tenant DB pool not initialised", http.StatusServiceUnavailable)
@@ -1850,7 +1916,7 @@ func (h *Handler) adminReadinessRedesignConfig(w http.ResponseWriter, r *http.Re
 			http.Error(w, "registry not available", http.StatusServiceUnavailable)
 			return
 		}
-		users, err := h.reg.ListUsers(r.Context())
+		users, err := h.reg.ListActiveUsers(r.Context())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -1866,7 +1932,7 @@ func (h *Handler) adminReadinessRedesignConfig(w http.ResponseWriter, r *http.Re
 			http.Error(w, "unknown schema", http.StatusBadRequest)
 			return
 		}
-		all := h.mgr.AllDBs()
+		all := h.mgr.ActiveDBs(r.Context())
 		got, ok := all[target]
 		if !ok || got == nil {
 			http.Error(w, "tenant DB pool not initialised", http.StatusServiceUnavailable)
@@ -2176,11 +2242,11 @@ func (e *operationalContractHTTPError) Error() string { return e.msg }
 // Schemas returned in sorted order so the admin table render is
 // stable across reloads.
 func (h *Handler) resolveOperationalContractTenants(r *http.Request, scoped string) ([]operationalContractScope, *operationalContractHTTPError) {
-	var all map[string]*storage.DB
-	if h.mgr != nil {
-		all = h.mgr.AllDBs()
-	}
 	if scoped == "all" {
+		var all map[string]*storage.DB
+		if h.mgr != nil {
+			all = h.mgr.ActiveDBs(r.Context())
+		}
 		if len(all) == 0 {
 			// Legacy / test fallback — no tenants registered, use
 			// request context.
@@ -2202,9 +2268,6 @@ func (h *Handler) resolveOperationalContractTenants(r *http.Request, scoped stri
 		return out, nil
 	}
 	if scoped != "" {
-		if got, ok := all[scoped]; ok && got != nil {
-			return []operationalContractScope{{schema: scoped, db: got}}, nil
-		}
 		// Fallback for legacy / handler-test contexts where the
 		// manager isn't populated but the request's own tenant DB
 		// matches the requested schema. Keeps `?schema=<own>` working
@@ -2213,6 +2276,11 @@ func (h *Handler) resolveOperationalContractTenants(r *http.Request, scoped stri
 		if h.tenantSchema(r) == scoped {
 			if db := h.tenantDB(r); db != nil {
 				return []operationalContractScope{{schema: scoped, db: db}}, nil
+			}
+		}
+		if h.mgr != nil {
+			if got, err := h.mgr.GetOrCreate(r.Context(), scoped); err == nil && got != nil {
+				return []operationalContractScope{{schema: scoped, db: got}}, nil
 			}
 		}
 		return nil, &operationalContractHTTPError{code: http.StatusBadRequest, msg: "unknown schema"}
@@ -3045,21 +3113,18 @@ func (h *Handler) adminUsers(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		user, err := h.reg.CreateUser(r.Context(), req)
+		if h.tenantSetup == nil {
+			http.Error(w, "tenant setup unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		user, err := h.tenantSetup.CreateTenant(r.Context(), req)
 		if err != nil {
 			if registry.IsPasswordTooLong(err) {
 				jsonError(w, "password is too long; bcrypt accepts at most 72 bytes", http.StatusBadRequest)
 				return
 			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if err := h.mgr.CreateUserSchema(r.Context(), user.SchemaName); err != nil {
-			jsonResponse(w, map[string]any{
-				"status":  "partial",
-				"user":    user,
-				"warning": err.Error(),
-			})
+			log.Printf("create tenant %q failed: %v", req.Username, err)
+			http.Error(w, "failed to create tenant", http.StatusInternalServerError)
 			return
 		}
 		if h.onTenantCreated != nil {
@@ -3076,15 +3141,23 @@ func (h *Handler) adminUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	// Mask password hashes.
 	type safeUser struct {
-		Username   string `json:"username"`
-		SchemaName string `json:"schema_name"`
-		APIKey     string `json:"api_key_masked"`
-		Email      string `json:"email,omitempty"`
-		IsAdmin    bool   `json:"is_admin"`
+		Username            string                     `json:"username"`
+		SchemaName          string                     `json:"schema_name"`
+		APIKey              string                     `json:"api_key_masked"`
+		Email               string                     `json:"email,omitempty"`
+		IsAdmin             bool                       `json:"is_admin"`
+		ProvisioningState   registry.ProvisioningState `json:"provisioning_state"`
+		TenantID            string                     `json:"tenant_id,omitempty"`
+		DBRole              string                     `json:"db_role,omitempty"`
+		DBCredentialVersion int                        `json:"db_credential_version,omitempty"`
 	}
 	out := make([]safeUser, len(users))
 	for i, u := range users {
-		out[i] = safeUser{u.Username, u.SchemaName, maskAPIKey(u.APIKey), u.Email, u.IsAdmin}
+		out[i] = safeUser{
+			Username: u.Username, SchemaName: u.SchemaName, APIKey: maskAPIKey(u.APIKey),
+			Email: u.Email, IsAdmin: u.IsAdmin, ProvisioningState: u.ProvisioningState,
+			TenantID: u.TenantID.String(), DBRole: u.DBRole, DBCredentialVersion: u.DBCredentialVersion,
+		}
 	}
 	jsonResponse(w, map[string]any{"users": out})
 }

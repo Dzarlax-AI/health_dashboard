@@ -2,14 +2,20 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	// Embed the IANA timezone database directly in the binary. The
@@ -35,8 +41,12 @@ import (
 )
 
 func main() {
+	isolationCfg, err := tenants.ParseTenantIsolationConfig(os.LookupEnv)
+	if err != nil {
+		log.Fatalf("invalid tenant database isolation configuration: %v", err)
+	}
 	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
+	if dbURL == "" && !isolationCfg.Enabled {
 		log.Fatal("DATABASE_URL environment variable is required")
 	}
 	addr := getEnv("ADDR", ":8080")
@@ -44,6 +54,7 @@ func main() {
 	uiPassword := os.Getenv("UI_PASSWORD")
 	adminEmail := os.Getenv("ADMIN_EMAIL")
 	trustFwdAuth := os.Getenv("TRUST_FORWARD_AUTH") == "true" || os.Getenv("TRUST_FWD_AUTH") == "true"
+	trustedFwdAuthNets := mustParseForwardAuthConfig(trustFwdAuth)
 	baseURL := getEnv("BASE_URL", "http://localhost"+addr)
 
 	// Env-level defaults for the first/only tenant.
@@ -72,21 +83,37 @@ func main() {
 		log.Printf("HEALTH_HR_ZONES_BPM: %v (workouts will ingest without zone breakdown)", err)
 	}
 
-	ctx := context.Background()
+	ctx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopSignals()
 
 	// --- Registry ---
-	reg, err := registry.New(ctx, dbURL)
+	registryDSN := dbURL
+	if isolationCfg.Enabled {
+		registryDSN = isolationCfg.RegistryDSN
+	}
+	reg, err := registry.New(ctx, registryDSN)
 	if err != nil {
 		log.Fatalf("init registry: %v", err)
 	}
 	defer reg.Close()
 
-	mgr := tenants.New(reg, dbURL)
+	var mgr *tenants.Manager
+	if isolationCfg.Enabled {
+		mgr, err = tenants.NewIsolated(reg, isolationCfg.TenantDSNBase, isolationCfg.Credentials)
+		if err != nil {
+			log.Fatalf("init restricted tenant pool manager: %v", err)
+		}
+	} else {
+		mgr = tenants.New(reg, dbURL)
+	}
 	defer mgr.Close()
 
 	// Attempt to create health_registry schema and users table.
 	schemaErr := reg.EnsureSchema(ctx)
 	if schemaErr != nil {
+		if isolationCfg.Enabled {
+			log.Fatalf("ensure registry schema in tenant isolation mode: %v", schemaErr)
+		}
 		log.Printf("⚠️  MULTI-USER SETUP REQUIRED")
 		log.Printf("    %v", schemaErr)
 		log.Printf("    After running that SQL, restart the server.")
@@ -105,6 +132,9 @@ func main() {
 		legacyDB.EnsureSubjectiveCheckinsTable()
 		legacyDB.EnsureContextPromptInteractionsTable()
 		legacyDB.EnsureAuthSessionsTable()
+		if err := legacyDB.VerifyProvisionedSchema(); err != nil {
+			log.Fatalf("legacy startup schema gate: %v", err)
+		}
 
 		passwordHash := ""
 		if uiPassword != "" {
@@ -113,11 +143,32 @@ func main() {
 				log.Fatalf("hash UI_PASSWORD: %v", err)
 			}
 		}
-		mgr.SetLegacyMode(legacyDB, apiKey, passwordHash)
+		if err := mgr.SetLegacyMode(legacyDB, apiKey, passwordHash); err != nil {
+			legacyDB.Close()
+			log.Fatalf("configure legacy tenant manager: %v", err)
+		}
 
-		runSingleTenant(ctx, addr, baseURL, trustFwdAuth, apiKey, mgr, nil,
+		runSingleTenant(ctx, addr, baseURL, trustFwdAuth, trustedFwdAuthNets, apiKey, mgr, nil,
 			legacyDB, "health", envNotifyDefaults, envAIDefaults, hrZones)
 		return
+	}
+	var tenantSetup tenants.TenantSetup
+	if isolationCfg.Enabled {
+		provisioner, err := tenants.NewProvisioner(ctx, isolationCfg.AdminDSN, isolationCfg.TenantDSNBase, isolationCfg.Credentials, reg)
+		if err != nil {
+			log.Fatalf("init tenant provisioner: %v", err)
+		}
+		defer provisioner.Close()
+		if err := provisioner.ReconcileNonterminal(ctx); err != nil {
+			log.Fatalf("reconcile tenant provisioning: %v", err)
+		}
+		tenantSetup = provisioner
+	} else {
+		legacySetup := tenants.NewLegacySetup(reg, dbURL)
+		if err := legacySetup.ReconcileNonterminal(ctx); err != nil {
+			log.Fatalf("reconcile legacy tenant setup: %v", err)
+		}
+		tenantSetup = legacySetup
 	}
 
 	// Seed admin from env vars when the registry is empty and credentials are configured.
@@ -127,27 +178,22 @@ func main() {
 	// When neither API_KEY nor UI_PASSWORD is set, the setup wizard handles first-run.
 	if reg.IsEmpty(ctx) && (apiKey != "" || uiPassword != "") {
 		log.Println("Registry empty — seeding admin user from API_KEY / UI_PASSWORD env vars…")
-		passwordHash := ""
-		if uiPassword != "" {
-			passwordHash, err = registry.HashPassword(uiPassword)
-			if err != nil {
-				log.Fatalf("hash UI_PASSWORD: %v", err)
-			}
+		req, generatedPassword, err := bootstrapAdminRequest(apiKey, uiPassword, adminEmail)
+		if err != nil {
+			log.Fatalf("prepare bootstrap admin: %v", err)
 		}
-		const adminSchema = "health"
-		if err := reg.MigrateFromEnv(ctx, apiKey, passwordHash, adminSchema, adminEmail); err != nil {
+		if generatedPassword {
+			log.Println("UI_PASSWORD is empty; UI password login remains unavailable while API_KEY access is preserved")
+		}
+		if _, err := tenantSetup.CreateFirstTenant(ctx, req); err != nil {
 			log.Printf("seed admin: %v", err)
 		} else {
-			// Create schema + tables if this is a fresh install (legacy upgrade already has them).
-			if err := mgr.CreateUserSchema(ctx, adminSchema); err != nil {
-				log.Printf("ensure schema for admin: %v", err)
-			}
-			log.Printf("Admin user created (username: admin, schema: %s)", adminSchema)
+			log.Printf("Admin user created (username: admin, schema: %s)", req.SchemaName)
 		}
 	}
 
 	// Load all registered users and initialise their DB pools.
-	users, err := reg.ListUsers(ctx)
+	users, err := reg.ListActiveUsers(ctx)
 	if err != nil {
 		log.Fatalf("list users: %v", err)
 	}
@@ -163,8 +209,7 @@ func main() {
 	for _, u := range users {
 		db, err := mgr.GetOrCreate(ctx, u.SchemaName)
 		if err != nil {
-			log.Printf("open pool for %s: %v", u.SchemaName, err)
-			continue
+			log.Fatalf("open startup pool for %s: %v", u.SchemaName, err)
 		}
 		if err := db.EnsureAllTables(); err != nil {
 			log.Printf("ensure tables for %s: %v", u.SchemaName, err)
@@ -177,6 +222,9 @@ func main() {
 		db.EnsureSubjectiveCheckinsTable()
 		db.EnsureContextPromptInteractionsTable()
 		db.EnsureAuthSessionsTable()
+		if err := db.VerifyProvisionedSchema(); err != nil {
+			log.Fatalf("startup schema gate for %s: %v", u.SchemaName, err)
+		}
 		startTenant(ctx, mgr, reg, db, u.SchemaName, envNotifyDefaults, envAIDefaults, baseURL)
 	}
 
@@ -214,10 +262,13 @@ func main() {
 		}
 	}
 
-	handler.New(mgr, onNewData, hrZones).Register(mux)
+	ingestHandler := handler.New(mgr, onNewData, hrZones)
+	ingestHandler.Register(mux)
 
 	uiHandler := ui.New(mgr, reg, trustFwdAuth)
-	configureTrustedForwardAuth(uiHandler)
+	uiHandler.SetTenantSetup(tenantSetup)
+	uiHandler.SetTrustedForwardAuthNetworkList(trustedFwdAuthNets)
+	uiHandler.SetSetupToken(strings.TrimSpace(os.Getenv("SETUP_TOKEN")))
 	uiHandler.ConfigureWebhook(notify.NewTelegramWebhookRegistrar(), baseURL)
 	uiHandler.OnTenantCreated(func(schema string) {
 		db, err := mgr.GetOrCreate(ctx, schema)
@@ -233,12 +284,17 @@ func main() {
 		db.EnsureSubjectiveCheckinsTable()
 		db.EnsureContextPromptInteractionsTable()
 		db.EnsureAuthSessionsTable()
+		if err := db.VerifyProvisionedSchema(); err != nil {
+			log.Printf("new tenant schema gate for %s: %v", schema, err)
+			return
+		}
 		startTenant(ctx, mgr, reg, db, schema, envNotifyDefaults, envAIDefaults, baseURL)
 	})
 	uiHandler.Register(mux)
 	mcpserver.Register(mux, mgr, baseURL)
 
 	registerCheckinWebhook(mux, mgr, reg, envNotifyDefaults, baseURL)
+	registerOperationalEndpoints(mux, mgr, len(users))
 
 	// Crash-recovery: any webhook_status rows still in `pending` were
 	// left there by a previous process that died (kill -9 / OOM /
@@ -263,13 +319,13 @@ func main() {
 
 	log.Printf("listening on %s (multi-user mode, %d user(s))", addr, len(users))
 	log.Printf("MCP endpoint: %s/mcp", baseURL)
-	if err := http.ListenAndServe(addr, logged); err != nil {
+	if err := serveHTTP(ctx, addr, logged, ingestHandler.Shutdown); err != nil {
 		log.Fatalf("server: %v", err)
 	}
 }
 
 // runSingleTenant runs the server in legacy single-user mode.
-func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth bool, apiKey string,
+func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth bool, trustedFwdAuthNets []*net.IPNet, apiKey string,
 	mgr *tenants.Manager, reg *registry.Registry,
 	db *storage.DB, schema string,
 	notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig, hrZones health.HRZones) {
@@ -310,17 +366,19 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 		AIDefaults:     aiDefaults,
 	})
 
-	go runReportScheduler(db, mgr, reg, schema, notifyDefaults, baseURL)
+	go runReportScheduler(ctx, db, mgr, reg, schema, notifyDefaults, baseURL)
 	go runDailyQualityScan(db, schema, notifyDefaults)
 
 	mux := http.NewServeMux()
-	handler.New(mgr, onNewData, hrZones).Register(mux)
+	ingestHandler := handler.New(mgr, onNewData, hrZones)
+	ingestHandler.Register(mux)
 	legacyUI := ui.New(mgr, reg, trustFwdAuth)
-	configureTrustedForwardAuth(legacyUI)
+	legacyUI.SetTrustedForwardAuthNetworkList(trustedFwdAuthNets)
 	legacyUI.ConfigureWebhook(notify.NewTelegramWebhookRegistrar(), baseURL)
 	legacyUI.Register(mux)
 	mcpserver.Register(mux, mgr, baseURL)
 	registerCheckinWebhook(mux, mgr, reg, notifyDefaults, baseURL)
+	registerOperationalEndpoints(mux, mgr, 1)
 
 	// Crash-recovery (legacy path mirrors multi-tenant — see main()).
 	if reg != nil {
@@ -339,9 +397,74 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 
 	log.Printf("listening on %s (single-user legacy mode)", addr)
 	log.Printf("MCP endpoint: %s/mcp", baseURL)
-	if err := http.ListenAndServe(addr, logged); err != nil {
+	if err := serveHTTP(ctx, addr, logged, ingestHandler.Shutdown); err != nil {
 		log.Fatalf("server: %v", err)
 	}
+}
+
+func registerOperationalEndpoints(mux *http.ServeMux, mgr *tenants.Manager, expectedTenants int) {
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		if len(mgr.ActiveDBs(r.Context())) < expectedTenants {
+			http.Error(w, "not ready", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ready"}`))
+	})
+}
+
+func bootstrapAdminRequest(apiKey, uiPassword, email string) (registry.CreateUserReq, bool, error) {
+	generated := false
+	if uiPassword == "" {
+		secret := make([]byte, 32)
+		if _, err := rand.Read(secret); err != nil {
+			return registry.CreateUserReq{}, false, fmt.Errorf("generate disabled UI credential: %w", err)
+		}
+		uiPassword = base64.RawURLEncoding.EncodeToString(secret)
+		generated = true
+	}
+	return registry.CreateUserReq{
+		Username: "admin", SchemaName: "health", Password: uiPassword,
+		Email: email, IsAdmin: true, InitialAPIKey: apiKey,
+	}, generated, nil
+}
+
+func serveHTTP(ctx context.Context, addr string, handler http.Handler, drain func(context.Context) error) error {
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		// Imports may stream multi-gigabyte Apple exports. Keep a finite
+		// connection deadline without regressing that supported workflow.
+		ReadTimeout:    30 * time.Minute,
+		WriteTimeout:   30 * time.Minute,
+		IdleTimeout:    2 * time.Minute,
+		MaxHeaderBytes: 1 << 20,
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.ListenAndServe() }()
+	select {
+	case err := <-errCh:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	shutdownErr := server.Shutdown(shutdownCtx)
+	cancel()
+	if shutdownErr != nil {
+		shutdownErr = errors.Join(shutdownErr, server.Close())
+	}
+	drainCtx, cancelDrain := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelDrain()
+	drainErr := drain(drainCtx)
+	return errors.Join(shutdownErr, drainErr)
 }
 
 // startTenant launches the report scheduler for one tenant and runs a one-shot
@@ -381,7 +504,7 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Regist
 		AIDefaults:     aiDefaults,
 	})
 
-	go runReportScheduler(db, mgr, reg, schema, notifyDefaults, baseURL)
+	go runReportScheduler(ctx, db, mgr, reg, schema, notifyDefaults, baseURL)
 	go runDailyQualityScan(db, schema, notifyDefaults)
 }
 
@@ -895,11 +1018,21 @@ func morningCheckinEnabled(reg *registry.Registry) bool {
 		os.Getenv("TELEGRAM_WEBHOOK_TOKEN_HEADER") != ""
 }
 
-func runReportScheduler(db *storage.DB, mgr *tenants.Manager, reg *registry.Registry, schema string, defaults storage.NotifyConfig, baseURL string) {
+func runReportScheduler(ctx context.Context, db *storage.DB, mgr *tenants.Manager, reg *registry.Registry, schema string, defaults storage.NotifyConfig, baseURL string) {
+schedulerLoop:
 	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
 		cfg := db.GetNotifyConfig(defaults)
 		if !cfg.Enabled() {
-			time.Sleep(5 * time.Minute)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Minute):
+			}
 			continue
 		}
 
@@ -919,7 +1052,25 @@ func runReportScheduler(db *storage.DB, mgr *tenants.Manager, reg *registry.Regi
 			map[bool]string{true: "morning", false: "evening"}[isMorning],
 			next.Format("2006-01-02 15:04"))
 
-		time.Sleep(time.Until(next))
+		for time.Until(next) > 0 {
+			wait := time.Until(next)
+			if wait > time.Minute {
+				wait = time.Minute
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(wait):
+			}
+			now = time.Now()
+			refreshed := buildNotifyCfg(db, db.GetNotifyConfig(defaults))
+			if reportScheduleChanged(now, next, isMorning, ncfg, refreshed) {
+				continue schedulerLoop
+			}
+			if !now.Before(next) {
+				break
+			}
+		}
 
 		cfg = db.GetNotifyConfig(defaults)
 		if !cfg.Enabled() {
@@ -935,6 +1086,36 @@ func runReportScheduler(db *storage.DB, mgr *tenants.Manager, reg *registry.Regi
 				log.Printf("report scheduler: evening send error: %v", err)
 			}
 		}
+	}
+}
+
+func reportScheduleChanged(now, expected time.Time, expectedMorning bool, original, refreshed notify.Config) bool {
+	if reportScheduleSignature(original) != reportScheduleSignature(refreshed) {
+		return true
+	}
+	if !now.Before(expected) {
+		return false
+	}
+	morning, evening := refreshed.NextMorning(now), refreshed.NextEvening(now)
+	isMorning := morning.Before(evening)
+	next := evening
+	if isMorning {
+		next = morning
+	}
+	return isMorning != expectedMorning || !next.Equal(expected)
+}
+
+type reportSchedule struct {
+	timezone                       string
+	morningWeekday, morningWeekend int
+	eveningWeekday, eveningWeekend int
+}
+
+func reportScheduleSignature(cfg notify.Config) reportSchedule {
+	return reportSchedule{
+		timezone:       cfg.Timezone,
+		morningWeekday: cfg.MorningWeekdayHour, morningWeekend: cfg.MorningWeekendHour,
+		eveningWeekday: cfg.EveningWeekdayHour, eveningWeekend: cfg.EveningWeekendHour,
 	}
 }
 
@@ -1260,17 +1441,22 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
-func configureTrustedForwardAuth(h *ui.Handler) {
+func mustParseForwardAuthConfig(enabled bool) []*net.IPNet {
 	raw := strings.TrimSpace(os.Getenv("TRUSTED_FORWARD_AUTH_NETWORK"))
 	if raw == "" {
 		raw = strings.TrimSpace(os.Getenv("TRUSTED_FORWARD_AUTH_NETWORKS"))
 	}
 	if raw == "" {
-		return
+		if enabled {
+			log.Fatal("TRUST_FORWARD_AUTH requires explicit TRUSTED_FORWARD_AUTH_NETWORK CIDR configuration")
+		}
+		return nil
 	}
-	if err := h.SetTrustedForwardAuthNetworks(raw); err != nil {
+	nets, err := ui.ValidateForwardAuthConfig(enabled, raw)
+	if err != nil {
 		log.Fatalf("invalid TRUSTED_FORWARD_AUTH_NETWORK: %v", err)
 	}
+	return nets
 }
 
 func getEnvInt(key string, fallback int) int {

@@ -1,19 +1,38 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"strings"
 )
 
+func ValidateForwardAuthConfig(enabled bool, raw string) ([]*net.IPNet, error) {
+	if strings.TrimSpace(raw) == "" {
+		if enabled {
+			return nil, errors.New("TRUST_FORWARD_AUTH requires explicit trusted proxy CIDRs")
+		}
+		return nil, nil
+	}
+	return ParseTrustedForwardAuthNetworks(raw)
+}
+
 // SetTrustedForwardAuthNetworks configures the proxy CIDR allow-list for
-// X-authentik-* headers. Empty input restores the default local/private rule.
+// X-authentik-* headers. Empty input trusts no peer.
 func (h *Handler) SetTrustedForwardAuthNetworks(raw string) error {
+	nets, err := ParseTrustedForwardAuthNetworks(raw)
+	if err != nil {
+		return err
+	}
+	h.trustedFwdAuthNets = nets
+	return nil
+}
+
+func ParseTrustedForwardAuthNetworks(raw string) ([]*net.IPNet, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		h.trustedFwdAuthNets = nil
-		return nil
+		return nil, nil
 	}
 
 	parts := strings.Split(raw, ",")
@@ -25,13 +44,14 @@ func (h *Handler) SetTrustedForwardAuthNetworks(raw string) error {
 		}
 		_, network, err := net.ParseCIDR(cidr)
 		if err != nil {
-			return fmt.Errorf("invalid TRUSTED_FORWARD_AUTH_NETWORK CIDR %q: %w", cidr, err)
+			return nil, fmt.Errorf("invalid TRUSTED_FORWARD_AUTH_NETWORK CIDR %q: %w", cidr, err)
 		}
 		nets = append(nets, network)
 	}
-	h.trustedFwdAuthNets = nets
-	return nil
+	return nets, nil
 }
+
+func (h *Handler) SetTrustedForwardAuthNetworkList(nets []*net.IPNet) { h.trustedFwdAuthNets = nets }
 
 func (h *Handler) forwardAuthTrusted(r *http.Request) bool {
 	if !h.trustFwdAuth {
@@ -57,5 +77,5 @@ func (h *Handler) trustedProxy(r *http.Request) bool {
 		}
 		return false
 	}
-	return ip.IsPrivate() || ip.IsLoopback()
+	return false
 }

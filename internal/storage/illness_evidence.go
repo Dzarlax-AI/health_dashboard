@@ -12,7 +12,7 @@ import (
 // the evaluated local date. The health package scores this object; storage
 // owns the date alignment and aggregate source summaries.
 func (s *DB) BuildIllnessEvidenceInput(date string, checkin *health.SubjectiveCheckinSummary) health.IllnessEvidenceInput {
-	loc := reportTZLocation()
+	loc := s.reportTZLocation()
 	in := health.IllnessEvidenceInput{
 		Date:               date,
 		RespiratoryRate:    s.respiratoryEvidence(date, loc),
@@ -301,7 +301,7 @@ func (s *DB) autonomicLoadPatternDays(date string) int {
 }
 
 func (s *DB) hasObjectiveIllnessPattern(date string) bool {
-	loc := reportTZLocation()
+	loc := s.reportTZLocation()
 	resp := s.respiratoryEvidence(date, loc)
 	spo2 := s.dailyScoreMetricEvidence(date, "blood_oxygen_saturation", "spo2_avg", "%")
 	rhr := s.channelMetricEvidence(date, ChannelHROvernight, "resting_heart_rate", "bpm", loc)

@@ -1,12 +1,15 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"health-receiver/internal/ctxdb"
@@ -16,8 +19,10 @@ import (
 )
 
 // Sync session protocol (iOS chunked re-sync):
-//   X-Sync-Session:        <uuid>   — same on every chunk in the batch
-//   X-Sync-Session-Total:  <N>      — total chunks the client will send
+//
+//	X-Sync-Session:        <uuid>   — same on every chunk in the batch
+//	X-Sync-Session-Total:  <N>      — total chunks the client will send
+//
 // Server holds back UpsertRecentCache + onNewData until N chunks land (or the
 // session ages out), then runs them ONCE for the union of affected dates.
 // Posts WITHOUT these headers behave as before — per-POST cache rebuild —
@@ -32,6 +37,7 @@ const (
 // worker drains the queue serially, keeping DB pool usage predictable
 // (one connection in use from this path at a time, regardless of POST burst).
 const jobQueueSize = 256
+const maxIngestBodyBytes = 16 << 20
 
 type syncSession struct {
 	db                 *storage.DB
@@ -71,7 +77,10 @@ type Handler struct {
 
 	hrZones health.HRZones // optional; zero value disables HR-zone computation on /health/workouts
 
-	jobs chan func()
+	jobs     chan func()
+	jobsWG   sync.WaitGroup
+	timersWG sync.WaitGroup
+	closing  atomic.Bool
 
 	sessMu   sync.Mutex
 	sessions map[string]*syncSession
@@ -88,7 +97,69 @@ func New(mgr *tenants.Manager, onNewData func(db *storage.DB, dates []string), z
 		sessions:  make(map[string]*syncSession),
 	}
 	go h.runWorker()
+	h.recoverPendingRecords()
 	return h
+}
+
+func (h *Handler) recoverPendingRecords() {
+	for _, db := range h.mgr.ActiveDBs(context.Background()) {
+		records, err := db.PendingHealthRecords(1000)
+		if err != nil {
+			log.Printf("handler: list pending accepted records: %v", err)
+			continue
+		}
+		for _, record := range records {
+			record := record
+			h.enqueue(func() {
+				points, err := h.processAcceptedRecord(db, record.ID, []byte(record.Payload), record.ProcessingKind)
+				if err != nil {
+					log.Printf("record %d: recover accepted payload: %v", record.ID, err)
+					return
+				}
+				h.finalizeChunk("", 0, db, datesOf(points), affectsReadiness(points))
+			})
+		}
+	}
+}
+
+func (h *Handler) processAcceptedRecord(db *storage.DB, id int64, body []byte, kind string) ([]storage.MetricPoint, error) {
+	allPoints, err := parseMetricPoints(body)
+	if err != nil {
+		_ = db.SetHealthRecordProcessing(id, "failed", err)
+		return nil, err
+	}
+	points := filterPointsByKind(allPoints, kind)
+	if err = db.InsertPoints(id, points); err != nil {
+		_ = db.SetHealthRecordProcessing(id, "pending", err)
+		return nil, err
+	}
+	err = db.SetHealthRecordProcessing(id, "complete", nil)
+	return acceptedPointsAfterStatusUpdate(id, points, err)
+}
+
+// acceptedPointsAfterStatusUpdate preserves the successful ingest result when
+// only the replay bookkeeping write fails. InsertPoints is idempotent, so the
+// pending record can repair its status on restart; callers must still refresh
+// caches for the points that are already durable.
+func acceptedPointsAfterStatusUpdate(id int64, points []storage.MetricPoint, statusErr error) ([]storage.MetricPoint, error) {
+	if statusErr != nil {
+		log.Printf("record %d: mark accepted payload complete: %v", id, statusErr)
+	}
+	return points, nil
+}
+
+func filterPointsByKind(all []storage.MetricPoint, kind string) []storage.MetricPoint {
+	if kind != "sum" && kind != "avg" {
+		return all
+	}
+	points := make([]storage.MetricPoint, 0, len(all))
+	for _, point := range all {
+		isSUM := storage.SumMetrics[point.MetricName]
+		if (kind == "sum" && isSUM) || (kind == "avg" && !isSUM) {
+			points = append(points, point)
+		}
+	}
+	return points
 }
 
 // runWorker drains the job queue serially. One in-flight InsertPoints / cache
@@ -102,11 +173,49 @@ func (h *Handler) runWorker() {
 // enqueue tries to schedule the job. If the queue is full (very large backlog)
 // we run the job inline as a degraded-but-safe fallback rather than dropping it.
 func (h *Handler) enqueue(job func()) {
+	h.jobsWG.Add(1)
+	wrapped := func() {
+		defer h.jobsWG.Done()
+		job()
+	}
+	if h.closing.Load() {
+		wrapped()
+		return
+	}
 	select {
-	case h.jobs <- job:
+	case h.jobs <- wrapped:
 	default:
 		log.Printf("handler: job queue full (%d), running inline", jobQueueSize)
-		job()
+		wrapped()
+	}
+}
+
+// Shutdown stops session timers, flushes their accepted work, and waits for
+// the bounded processing queue. Raw payloads are already durable before a
+// request receives 200, so a deadline only postpones derived-cache work.
+func (h *Handler) Shutdown(ctx context.Context) error {
+	h.closing.Store(true)
+	h.sessMu.Lock()
+	for id, session := range h.sessions {
+		if session.timer.Stop() {
+			h.timersWG.Done()
+		}
+		delete(h.sessions, id)
+		dates := make([]string, 0, len(session.dates))
+		for date := range session.dates {
+			dates = append(dates, date)
+		}
+		h.enqueue(func() { h.flushDates(session.db, dates, session.scoreMetricChanged) })
+	}
+	h.sessMu.Unlock()
+	h.timersWG.Wait()
+	done := make(chan struct{})
+	go func() { h.jobsWG.Wait(); close(done) }()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -134,7 +243,9 @@ func (h *Handler) finalizeChunk(sessionID string, total int, db *storage.DB, dat
 	s, ok := h.sessions[sessionID]
 	if !ok {
 		s = &syncSession{db: db, total: total, dates: make(map[string]bool)}
+		h.timersWG.Add(1)
 		s.timer = time.AfterFunc(sessionTimeout, func() {
+			defer h.timersWG.Done()
 			h.sessMu.Lock()
 			ts, ok := h.sessions[sessionID]
 			if !ok {
@@ -165,7 +276,9 @@ func (h *Handler) finalizeChunk(sessionID string, total int, db *storage.DB, dat
 	var snapshot []string
 	var scoreSnap bool
 	if complete {
-		s.timer.Stop()
+		if s.timer.Stop() {
+			h.timersWG.Done()
+		}
 		delete(h.sessions, sessionID)
 		snapshot = make([]string, 0, len(s.dates))
 		for d := range s.dates {
@@ -187,6 +300,20 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/health/hourly", h.auth(h.healthFiltered("sum")))
 	mux.HandleFunc("/health/vitals", h.auth(h.healthFiltered("avg")))
 	mux.HandleFunc("/health/workouts", h.auth(h.workouts))
+}
+
+func readIngestBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxIngestBodyBytes)
+	return io.ReadAll(r.Body)
+}
+
+func writeIngestReadError(w http.ResponseWriter, err error) {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	http.Error(w, "failed to read body", http.StatusBadRequest)
 }
 
 // auth resolves the tenant DB from X-API-Key and injects it into the context.
@@ -213,10 +340,10 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := readIngestBody(w, r)
 	if err != nil {
 		log.Printf("read body: %v", err)
-		http.Error(w, "failed to read body", http.StatusInternalServerError)
+		writeIngestReadError(w, err)
 		return
 	}
 	defer r.Body.Close()
@@ -230,6 +357,8 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 		SessionID:             r.Header.Get("session-id"),
 		ContentType:           r.Header.Get("Content-Type"),
 		Payload:               string(body),
+		PendingProcessing:     true,
+		ProcessingKind:        "all",
 	}
 
 	id, err := db.InsertRaw(rec)
@@ -246,12 +375,9 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 	sessionTotal, _ := strconv.Atoi(r.Header.Get(hdrSyncSessionTotal))
 
 	h.enqueue(func() {
-		points, parseErr := parseMetricPoints(body)
-		if parseErr != nil {
-			log.Printf("record %d: parse payload: %v", id, parseErr)
-		}
-		if err := db.InsertPoints(id, points); err != nil {
-			log.Printf("record %d: insert points: %v", id, err)
+		points, err := h.processAcceptedRecord(db, id, body, "all")
+		if err != nil {
+			log.Printf("record %d: process accepted payload: %v", id, err)
 			return
 		}
 		log.Printf("record %d: saved %d points", id, len(points))
@@ -271,10 +397,10 @@ func (h *Handler) healthFiltered(kind string) http.HandlerFunc {
 			return
 		}
 
-		body, err := io.ReadAll(r.Body)
+		body, err := readIngestBody(w, r)
 		if err != nil {
 			log.Printf("read body: %v", err)
-			http.Error(w, "failed to read body", http.StatusInternalServerError)
+			writeIngestReadError(w, err)
 			return
 		}
 		defer r.Body.Close()
@@ -288,6 +414,8 @@ func (h *Handler) healthFiltered(kind string) http.HandlerFunc {
 			SessionID:             r.Header.Get("session-id"),
 			ContentType:           r.Header.Get("Content-Type"),
 			Payload:               string(body),
+			PendingProcessing:     true,
+			ProcessingKind:        kind,
 		}
 
 		id, err := db.InsertRaw(rec)
@@ -304,22 +432,12 @@ func (h *Handler) healthFiltered(kind string) http.HandlerFunc {
 		sessionTotal, _ := strconv.Atoi(r.Header.Get(hdrSyncSessionTotal))
 
 		h.enqueue(func() {
-			allPoints, parseErr := parseMetricPoints(body)
-			if parseErr != nil {
-				log.Printf("record %d: parse payload: %v", id, parseErr)
-			}
-			var points []storage.MetricPoint
-			for _, p := range allPoints {
-				isSUM := storage.SumMetrics[p.MetricName]
-				if (kind == "sum" && isSUM) || (kind == "avg" && !isSUM) {
-					points = append(points, p)
-				}
-			}
-			if err := db.InsertPoints(id, points); err != nil {
-				log.Printf("record %d: insert points: %v", id, err)
+			points, err := h.processAcceptedRecord(db, id, body, kind)
+			if err != nil {
+				log.Printf("record %d: process accepted payload: %v", id, err)
 				return
 			}
-			log.Printf("record %d: saved %d points (filtered %s, dropped %d)", id, len(points), kind, len(allPoints)-len(points))
+			log.Printf("record %d: saved %d points (filtered %s)", id, len(points), kind)
 			h.finalizeChunk(sessionID, sessionTotal, db, datesOf(points), affectsReadiness(points))
 		})
 	}
@@ -443,7 +561,9 @@ func extractPoints(metricName, units string, raw json.RawMessage) []storage.Metr
 			}
 		}
 	}
-	var p struct{ Qty float64 `json:"qty"` }
+	var p struct {
+		Qty float64 `json:"qty"`
+	}
 	json.Unmarshal(raw, &p)
 	return []storage.MetricPoint{pt(metricName, p.Qty)}
 }

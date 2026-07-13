@@ -245,7 +245,7 @@ func (s *DB) UpsertRecentCache(dates []string, recomputeReadiness bool) {
 	// `time.LoadLocation` allocates ~5 KB per call which adds up over a
 	// 48-hour incremental window. Fallback to UTC inside
 	// reportTZLocation matches energy_compute.go convention.
-	loc := reportTZLocation()
+	loc := s.reportTZLocation()
 	s.cacheMu.Lock()
 	for _, date := range dates {
 		s.upsertHourlyAvgForDate(date)
@@ -743,7 +743,7 @@ func (s *DB) buildBaselineHROvernightAll(force bool) {
 	if len(dates) == 0 {
 		return
 	}
-	loc := reportTZLocation()
+	loc := s.reportTZLocation()
 	for _, d := range dates {
 		s.upsertBaselineHROvernightForDate(d, loc)
 	}

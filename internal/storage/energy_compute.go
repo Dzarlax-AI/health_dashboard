@@ -251,11 +251,11 @@ func computeBankFromDays(days []dailyInputs, cfg EnergyConfig) BankResult {
 	for i := energyIterStart; i < energyWindowDays; i++ {
 		if imputedSleep[i] {
 			sq[i] = trailingAvg(sq, imputedSleep, i, energyMinValidLookback,
-				windowMedianFloat(sq, imputedSleep))
+				prefixMedianFloat(sq, imputedSleep, i))
 		}
 		if imputedActivity[i] {
 			drain[i] = trailingAvg(drain, imputedActivity, i, energyMinValidLookback,
-				windowMedianFloat(drain, imputedActivity))
+				prefixMedianFloat(drain, imputedActivity, i))
 		}
 	}
 
@@ -331,14 +331,11 @@ func trailingAvg(values []float64, imputed []bool, i, minValid int, fallback flo
 	return sum / float64(n)
 }
 
-// windowMedianFloat is the median of non-imputed values across the full
-// 21-day window. Used as the imputation fallback when the trailing
-// lookback runs out of non-imputed neighbours. Zero on an empty window
-// (which only happens in the all-missing case where the trust state is
-// already "stale").
-func windowMedianFloat(values []float64, imputed []bool) float64 {
-	xs := make([]float64, 0, len(values))
-	for i, v := range values {
+// prefixMedianFloat is a causal fallback: a historical day may use only
+// observations strictly before it, never data from its future.
+func prefixMedianFloat(values []float64, imputed []bool, before int) float64 {
+	xs := make([]float64, 0, before)
+	for i, v := range values[:before] {
 		if !imputed[i] {
 			xs = append(xs, v)
 		}

@@ -31,9 +31,10 @@ func registerMetricTools(s *server.MCPServer, _ DBResolver) {
 		mcp.WithString("date", mcp.Description("Date YYYY-MM-DD (default: today)")),
 		mcp.WithString("lang", mcp.Description("Language: en, ru, sr (default: en). Returns cached briefing matching this language.")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		date := req.GetString("date", time.Now().Format("2006-01-02"))
+		db := ctxdb.FromContext(ctx)
+		date := req.GetString("date", db.Today())
 		lang := req.GetString("lang", "en")
-		insight := ctxdb.FromContext(ctx).GetAIInsightCombined(date, lang)
+		insight := db.GetAIInsightCombined(date, lang)
 		if insight == "" {
 			return mcp.NewToolResultText("No AI briefing available for " + date), nil
 		}
@@ -113,64 +114,6 @@ func registerMetricTools(s *server.MCPServer, _ DBResolver) {
 		return jsonResult(stats)
 	})
 
-	s.AddTool(mcp.NewTool("sql_query",
-		mcp.WithDescription(`Run a read-only SQL SELECT on the health database. Use when other tools don't cover your query.
-
-Schema:
-  metric_points(id, health_record_id, metric_name TEXT, units TEXT,
-    date TEXT,   -- "YYYY-MM-DD HH:MM:SS +HHMM" — use substr(date,1,10) for day
-    qty REAL, source TEXT)
-
-  daily_scores(date TEXT PRIMARY KEY,  -- "YYYY-MM-DD", pre-aggregated per-day values
-    readiness INTEGER,                 -- 0-100 readiness score
-    hrv_avg REAL, rhr_avg REAL,
-    sleep_total REAL, sleep_deep REAL, sleep_rem REAL, sleep_core REAL, sleep_awake REAL,
-    sleep_unspecified REAL,            -- coarse asleep total for sources without stage breakdown
-    steps REAL, calories REAL, exercise_min REAL,
-    spo2_avg REAL, vo2_avg REAL, resp_avg REAL)
-
-  hourly_metrics(metric_name TEXT, hour TEXT,  -- "YYYY-MM-DD HH:00"
-    source TEXT, avg_val REAL, min_val REAL, max_val REAL)
-
-  minute_metrics — DEPRECATED, no longer populated. Use metric_points for minute-level data.
-
-  health_records(id, received_at DATETIME, automation_name TEXT, session_id TEXT)
-
-  workouts(id, external_id TEXT UNIQUE,  -- HAE workout UUID
-    name TEXT,                            -- activity, e.g. 'Outdoor Run'
-    start_time TIMESTAMPTZ, end_time TIMESTAMPTZ, duration_sec DOUBLE PRECISION,
-    is_indoor BOOL, location TEXT,
-    avg_hr_bpm, max_hr_bpm, energy_kcal, intensity,
-    distance_km, avg_speed_kmh, max_speed_kmh, elevation_up_m,
-    step_count_total INT, step_cadence_spm,
-    temperature_c, humidity_pct,
-    hr_z1_sec INT .. hr_z5_sec INT)       -- time-in-HR-zone, Z1=recovery, Z5=VO2max
-
-Key metrics: heart_rate, resting_heart_rate, heart_rate_variability, blood_oxygen_saturation,
-  step_count, active_energy, basal_energy_burned, walking_running_distance, apple_exercise_time,
-  sleep_total, sleep_deep, sleep_rem, sleep_core, sleep_unspecified, sleep_awake,
-  respiratory_rate, wrist_temperature, vo2_max
-
-Notes:
-  - Prefer daily_scores for day-level queries — one row per day, much faster than metric_points
-  - Always filter qty > 0 on metric_points to exclude zero-value placeholders
-  - Date comparison on metric_points: use substr(date,1,10) >= '2026-01-01' (NOT strftime — TZ offset breaks it)
-  - SUM metrics: step_count, active_energy, basal_energy_burned, apple_exercise_time,
-      apple_stand_time, flights_climbed, walking_running_distance, time_in_daylight,
-      sleep_total, sleep_deep, sleep_rem, sleep_core, sleep_unspecified, sleep_awake
-  - All others use AVG`),
-		mcp.WithString("query", mcp.Required(), mcp.Description("SQL SELECT query")),
-	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		query := req.GetString("query", "")
-		if !strings.HasPrefix(strings.TrimSpace(strings.ToUpper(query)), "SELECT") {
-			return mcp.NewToolResultError("only SELECT queries are allowed"), nil
-		}
-		rows, err := ctxdb.FromContext(ctx).QueryReadOnly(query)
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("query error: %v", err)), nil
-		}
-		return jsonResult(rows)
-	})
 }
 
 func registerAnalysisTools(s *server.MCPServer, _ DBResolver) {

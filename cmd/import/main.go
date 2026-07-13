@@ -14,6 +14,8 @@ import (
 	"flag"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"health-receiver/internal/applehealth"
@@ -27,9 +29,41 @@ func main() {
 	dryRun := flag.Bool("dry-run", false, "parse only - do not write to DB")
 	flag.Parse()
 	_ = pauseDur
+	if flag.NArg() != 0 {
+		log.Fatal("positional arguments are not accepted")
+	}
 
 	if *filePath == "" {
 		log.Fatal("--file is required")
+	}
+	if *batchSize <= 0 {
+		log.Fatal("--batch must be positive")
+	}
+	if *pauseDur < 0 {
+		log.Fatal("--pause must not be negative")
+	}
+	info, err := os.Stat(*filePath)
+	if err != nil || !info.Mode().IsRegular() {
+		log.Fatalf("--file must name a readable regular file: %v", err)
+	}
+	ext := strings.ToLower(filepath.Ext(*filePath))
+	if ext != ".zip" && ext != ".xml" {
+		log.Fatal("--file must have .zip or .xml extension")
+	}
+	var snapshotAt time.Time
+	var exportDateErr error
+	var exportDateFound bool
+	if ext == ".zip" {
+		snapshotAt, exportDateFound, exportDateErr = applehealth.ExportDateFromZip(*filePath)
+	} else {
+		snapshotAt, exportDateFound, exportDateErr = applehealth.ExportDateFromXMLFile(*filePath)
+	}
+	if exportDateErr != nil {
+		log.Printf("could not read Apple Health exportDate, using import start as snapshot time: %v", exportDateErr)
+		snapshotAt = time.Now()
+	} else if !exportDateFound {
+		log.Printf("Apple Health exportDate not found, using import start as snapshot time")
+		snapshotAt = time.Now()
 	}
 
 	var db *storage.DB
@@ -39,37 +73,11 @@ func main() {
 		if dbURL == "" {
 			log.Fatal("DATABASE_URL environment variable is required")
 		}
-		var err error
 		db, err = storage.New(context.Background(), dbURL)
 		if err != nil {
 			log.Fatalf("open db: %v", err)
 		}
 		defer db.Close()
-
-		snapshotAt := time.Now()
-		var exportDateErr error
-		var exportDateFound bool
-		switch {
-		case len(*filePath) > 4 && (*filePath)[len(*filePath)-4:] == ".zip":
-			if t, ok, err := applehealth.ExportDateFromZip(*filePath); err != nil {
-				exportDateErr = err
-			} else if ok {
-				snapshotAt = t
-				exportDateFound = true
-			}
-		default:
-			if t, ok, err := applehealth.ExportDateFromXMLFile(*filePath); err != nil {
-				exportDateErr = err
-			} else if ok {
-				snapshotAt = t
-				exportDateFound = true
-			}
-		}
-		if exportDateErr != nil {
-			log.Printf("could not read Apple Health exportDate, using import start as snapshot time: %v", exportDateErr)
-		} else if !exportDateFound {
-			log.Printf("Apple Health exportDate not found, using import start as snapshot time")
-		}
 
 		session, err = db.BeginAppleHealthXMLImport(storage.ImportOptions{
 			SourceName: "apple-health-cli-import",

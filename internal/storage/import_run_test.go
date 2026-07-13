@@ -1,10 +1,71 @@
 package storage
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
+
+func TestAppleHealthXMLImportCommitLocksLeaseAgainstCleanup(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	session := beginTestXMLImport(t, db, "xml-commit-cleanup-race")
+	if err := session.AddPoints([]MetricPoint{{
+		MetricName: "heart_rate",
+		Units:      "count/min",
+		Date:       "2026-07-01 10:00:00 +0200",
+		Qty:        61,
+		Source:     "Apple Watch",
+	}}); err != nil {
+		t.Fatalf("stage point: %v", err)
+	}
+	ctx, cancel := queryCtx()
+	defer cancel()
+	if _, err := db.pool.Exec(ctx, `UPDATE import_runs SET heartbeat_at=NOW()-INTERVAL '48 hours' WHERE id=$1`, session.runID); err != nil {
+		t.Fatalf("age import lease: %v", err)
+	}
+
+	leaseLocked := make(chan struct{})
+	releaseCommit := make(chan struct{})
+	session.afterLeaseLocked = func() {
+		close(leaseLocked)
+		<-releaseCommit
+	}
+	commitDone := make(chan error, 1)
+	go func() {
+		_, err := session.Commit()
+		commitDone <- err
+	}()
+	<-leaseLocked
+
+	cleanupDone := make(chan error, 1)
+	go func() { cleanupDone <- db.CleanupAbandonedImportStages(24 * time.Hour) }()
+	select {
+	case err := <-cleanupDone:
+		t.Fatalf("cleanup bypassed locked import lease: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(releaseCommit)
+	if err := <-commitDone; err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if err := <-cleanupDone; err != nil {
+		t.Fatalf("cleanup after commit: %v", err)
+	}
+
+	var status string
+	if err := db.pool.QueryRow(context.Background(), `SELECT status FROM import_runs WHERE id=$1`, session.runID).Scan(&status); err != nil {
+		t.Fatalf("read import status: %v", err)
+	}
+	if status != "committed" {
+		t.Fatalf("status = %q, want committed", status)
+	}
+	assertStageCounts(t, db, session.runID, 0, 0)
+}
 
 func TestAppleHealthXMLImportFreshnessOrder(t *testing.T) {
 	db, cleanup := testDB(t)
@@ -260,6 +321,74 @@ func TestAppleHealthXMLImportAbortLeavesRowsUntouched(t *testing.T) {
 	}
 }
 
+func TestAppleHealthXMLImportAbortWithStaleLeaseLeavesRunAndStagingUntouched(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	owned := beginTestXMLImport(t, db, "xml-stale-lease")
+	if err := owned.AddPoints([]MetricPoint{{
+		MetricName: "heart_rate",
+		Units:      "count/min",
+		Date:       "2026-07-01 10:00:00 +0200",
+		Qty:        61,
+		Source:     "Apple Watch",
+	}}); err != nil {
+		t.Fatalf("stage point: %v", err)
+	}
+	stale := *owned
+	stale.leaseToken = uuid.New()
+	stale.Abort(errors.New("stale session failed"))
+
+	ctx, cancel := queryCtx()
+	defer cancel()
+	var status string
+	var failure *string
+	if err := db.pool.QueryRow(ctx, `SELECT status, error FROM import_runs WHERE id=$1`, owned.runID).Scan(&status, &failure); err != nil {
+		t.Fatalf("read import run: %v", err)
+	}
+	if status != "running" || failure != nil {
+		t.Fatalf("status/error after stale abort = %q/%v, want running/nil", status, failure)
+	}
+	assertStageCounts(t, db, owned.runID, 1, 0)
+}
+
+func TestAppleHealthXMLImportAbortAfterCommitLeavesRunAndStagingUntouched(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	session := beginTestXMLImport(t, db, "xml-committed-abort")
+	if err := session.AddPoints([]MetricPoint{{
+		MetricName: "heart_rate",
+		Units:      "count/min",
+		Date:       "2026-07-01 10:00:00 +0200",
+		Qty:        61,
+		Source:     "Apple Watch",
+	}}); err != nil {
+		t.Fatalf("stage point: %v", err)
+	}
+	if _, err := session.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	ctx, cancel := queryCtx()
+	defer cancel()
+	if _, err := db.pool.Exec(ctx, `
+		INSERT INTO import_stage_points(import_run_id,metric_name,units,date,qty,source,local_date)
+		VALUES ($1,'forensic_probe','count','2026-07-01 11:00:00 +0200',1,'test','2026-07-01')`, session.runID); err != nil {
+		t.Fatalf("seed forensic staging row: %v", err)
+	}
+
+	session.Abort(errors.New("late abort"))
+	var status string
+	var failure *string
+	if err := db.pool.QueryRow(ctx, `SELECT status, error FROM import_runs WHERE id=$1`, session.runID).Scan(&status, &failure); err != nil {
+		t.Fatalf("read import run: %v", err)
+	}
+	if status != "committed" || failure != nil {
+		t.Fatalf("status/error after late abort = %q/%v, want committed/nil", status, failure)
+	}
+	assertStageCounts(t, db, session.runID, 1, 0)
+}
+
 func TestAppleHealthXMLImportPersistentStageRowsVisibleAndCleaned(t *testing.T) {
 	db, cleanup := testDB(t)
 	defer cleanup()
@@ -368,7 +497,7 @@ func TestAppleHealthXMLImportCleanupAbandonedStagesPreservesRecentRunning(t *tes
 
 	ctx, cancel := queryCtx()
 	defer cancel()
-	if _, err := db.pool.Exec(ctx, `UPDATE import_runs SET started_at = NOW() - INTERVAL '48 hours' WHERE id = $1`, old.runID); err != nil {
+	if _, err := db.pool.Exec(ctx, `UPDATE import_runs SET started_at = NOW() - INTERVAL '48 hours', heartbeat_at = NOW() - INTERVAL '48 hours' WHERE id = $1`, old.runID); err != nil {
 		t.Fatalf("age old import: %v", err)
 	}
 
@@ -470,6 +599,96 @@ func TestAppleHealthXMLImportReplacesSyntheticWorkoutDuplicate(t *testing.T) {
 	}
 	if count != 1 || externalID != "applexml:newhash" || distance != 8.2 {
 		t.Fatalf("workout state = count %d id %q distance %.1f, want 1/newhash/8.2", count, externalID, distance)
+	}
+}
+
+func TestAppleHealthXMLImportDoesNotOverwriteWorkoutFromNewerSnapshot(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	start := time.Date(2026, 7, 1, 8, 0, 0, 0, time.UTC)
+	newer, err := db.BeginAppleHealthXMLImport(ImportOptions{SourceName: "newer", SnapshotAt: time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workout := Workout{ExternalID: "workout-stable-id", Name: "Outdoor Run", StartTime: start, EndTime: start.Add(time.Hour), DurationSec: 3600, DistanceKm: importFloatPtr(10)}
+	if err = newer.AddWorkouts([]Workout{workout}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = newer.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	older, err := db.BeginAppleHealthXMLImport(ImportOptions{SourceName: "older", SnapshotAt: time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workout.DistanceKm = importFloatPtr(5)
+	if err = older.AddWorkouts([]Workout{workout}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = older.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := queryCtx()
+	defer cancel()
+	var distance float64
+	if err = db.pool.QueryRow(ctx, `SELECT distance_km FROM workouts WHERE external_id=$1`, workout.ExternalID).Scan(&distance); err != nil {
+		t.Fatal(err)
+	}
+	if distance != 10 {
+		t.Fatalf("older snapshot replaced workout distance: %v", distance)
+	}
+}
+
+func TestHealthRecordProcessingReplayState(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	id, err := db.InsertRaw(Record{Payload: `{"data":{}}`, PendingProcessing: true, ProcessingKind: "sum"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := db.PendingHealthRecords(10)
+	if err != nil || len(pending) != 1 || pending[0].ID != id || pending[0].ProcessingKind != "sum" {
+		t.Fatalf("pending records = %+v, %v", pending, err)
+	}
+	if err = db.SetHealthRecordProcessing(id, "complete", nil); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = db.PendingHealthRecords(10)
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("pending after completion = %+v, %v", pending, err)
+	}
+}
+
+func TestNotificationDeliveryAtMostOnceAmbiguousAndFailedRetry(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx, cancel := queryCtx()
+	defer cancel()
+	ambiguousKey := "report:morning:2026-07-12"
+	token, reserved, err := db.ReserveNotificationDelivery(ctx, ambiguousKey)
+	if err != nil || !reserved {
+		t.Fatalf("first reserve = %v, %v", reserved, err)
+	}
+	if err = db.CompleteNotificationDelivery(ctx, ambiguousKey, token, "ambiguous", "transport_ambiguous"); err != nil {
+		t.Fatal(err)
+	}
+	if _, reserved, err = db.ReserveNotificationDelivery(ctx, ambiguousKey); err != nil || reserved {
+		t.Fatalf("ambiguous outcome must not retry = %v, %v", reserved, err)
+	}
+
+	failedKey := "report:evening:2026-07-12"
+	token, reserved, err = db.ReserveNotificationDelivery(ctx, failedKey)
+	if err != nil || !reserved {
+		t.Fatalf("failed-path first reserve = %v, %v", reserved, err)
+	}
+	if _, reserved, err = db.ReserveNotificationDelivery(ctx, failedKey); err != nil || reserved {
+		t.Fatalf("duplicate reserve = %v, %v", reserved, err)
+	}
+	if err = db.CompleteNotificationDelivery(ctx, failedKey, token, "failed", "provider_rejected"); err != nil {
+		t.Fatal(err)
+	}
+	if _, reserved, err = db.ReserveNotificationDelivery(ctx, failedKey); err != nil || !reserved {
+		t.Fatalf("definitive failure retry = %v, %v", reserved, err)
 	}
 }
 

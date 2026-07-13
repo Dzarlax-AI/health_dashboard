@@ -2,10 +2,12 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -43,7 +45,11 @@ type ImportSession struct {
 	runID          int64
 	healthRecordID int64
 	snapshotAt     time.Time
+	leaseToken     uuid.UUID
 	counters       ImportCounters
+	// afterLeaseLocked is used by DB-backed concurrency tests to pause after
+	// Commit has acquired the import-run row lock. Production sessions leave it nil.
+	afterLeaseLocked func()
 }
 
 // BeginAppleHealthXMLImport creates durable import metadata. Staged rows live
@@ -69,15 +75,15 @@ func (s *DB) BeginAppleHealthXMLImport(opts ImportOptions) (*ImportSession, erro
 	if err := s.cleanupAbandonedImportStages(ctx, abandonedRunningImportAge); err != nil {
 		log.Printf("cleanup abandoned import staging before new import: %v", err)
 	}
-
 	var runID int64
+	leaseToken := uuid.New()
 	if err := s.pool.QueryRow(ctx, `
-		INSERT INTO import_runs (origin, source_name, snapshot_at, status)
-		VALUES ($1, $2, $3, 'running')
+		INSERT INTO import_runs (origin, source_name, snapshot_at, status, heartbeat_at, lease_token)
+		VALUES ($1, $2, $3, 'running', NOW(), $4)
 		RETURNING id`,
-		opts.Origin, opts.SourceName, opts.SnapshotAt,
+		opts.Origin, opts.SourceName, opts.SnapshotAt, leaseToken,
 	).Scan(&runID); err != nil {
-		return nil, fmt.Errorf("create import_run: %w", err)
+		return nil, fmt.Errorf("acquire active import lease: %w", err)
 	}
 
 	var recordID int64
@@ -96,6 +102,7 @@ func (s *DB) BeginAppleHealthXMLImport(opts ImportOptions) (*ImportSession, erro
 		runID:          runID,
 		healthRecordID: recordID,
 		snapshotAt:     opts.SnapshotAt,
+		leaseToken:     leaseToken,
 		counters: ImportCounters{
 			ImportRunID:    runID,
 			HealthRecordID: recordID,
@@ -116,6 +123,14 @@ func (s *DB) ensureAppleHealthImportSchema(ctx context.Context) error {
 			return fmt.Errorf("create import table: %w", err)
 		}
 	}
+	for _, ddl := range []string{
+		`ALTER TABLE import_runs ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`,
+		`ALTER TABLE import_runs ADD COLUMN IF NOT EXISTS lease_token UUID`,
+	} {
+		if _, err := s.pool.Exec(ctx, ddl); err != nil {
+			return fmt.Errorf("migrate import lease schema: %w", err)
+		}
+	}
 	for _, index := range importStageIndexMigrations() {
 		if _, err := s.pool.Exec(ctx, index.ddl); err != nil {
 			return fmt.Errorf("create import index %s: %w", index.name, err)
@@ -130,6 +145,9 @@ func (s *ImportSession) AddPoints(points []MetricPoint) error {
 	}
 	ctx, cancel := longCtx()
 	defer cancel()
+	if err := s.touchLease(ctx); err != nil {
+		return err
+	}
 
 	rows := make([][]any, 0, len(points))
 	for _, p := range points {
@@ -164,6 +182,9 @@ func (s *ImportSession) AddWorkouts(workouts []Workout) error {
 	}
 	ctx, cancel := longCtx()
 	defer cancel()
+	if err := s.touchLease(ctx); err != nil {
+		return err
+	}
 
 	rows := make([][]any, 0, len(workouts))
 	for _, w := range workouts {
@@ -195,14 +216,35 @@ func (s *ImportSession) AddWorkouts(workouts []Workout) error {
 	return nil
 }
 
+func (s *ImportSession) touchLease(ctx context.Context) error {
+	tag, err := s.db.pool.Exec(ctx, `UPDATE import_runs SET heartbeat_at=NOW() WHERE id=$1 AND status='running' AND lease_token=$2`, s.runID, s.leaseToken)
+	if err != nil {
+		return fmt.Errorf("refresh active import lease: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return errors.New("active import lease is no longer owned")
+	}
+	return nil
+}
+
 func (s *ImportSession) Commit() (ImportCounters, error) {
 	ctx, cancel := longCtx()
 	defer cancel()
 
 	tx, err := s.db.pool.Begin(ctx)
 	if err != nil {
-		_ = s.db.markImportFailedWithCounters(s.runID, fmt.Sprintf("begin promote transaction: %v", err), s.counters)
+		s.markFailedAndCleanup(fmt.Sprintf("begin promote transaction: %v", err))
 		return s.counters, err
+	}
+	var leaseOwned bool
+	if err := tx.QueryRow(ctx, `SELECT true FROM import_runs WHERE id=$1 AND status='running' AND lease_token=$2 FOR UPDATE`, s.runID, s.leaseToken).Scan(&leaseOwned); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			err = errors.New("active import lease is no longer owned")
+		}
+		return s.failCommit(tx, err)
+	}
+	if s.afterLeaseLocked != nil {
+		s.afterLeaseLocked()
 	}
 
 	if err := s.promoteCoverage(ctx, tx); err != nil {
@@ -233,12 +275,7 @@ func (s *ImportSession) failCommit(tx pgx.Tx, cause error) (ImportCounters, erro
 	if err := tx.Rollback(context.Background()); err != nil {
 		log.Printf("rollback import %d promote transaction: %v", s.runID, err)
 	}
-	if err := s.db.markImportFailedWithCounters(s.runID, cause.Error(), s.counters); err != nil {
-		log.Printf("mark import %d failed: %v", s.runID, err)
-	}
-	if err := s.db.cleanupImportStageRows(s.runID); err != nil {
-		log.Printf("cleanup stage rows for import %d: %v", s.runID, err)
-	}
+	s.markFailedAndCleanup(cause.Error())
 	return s.counters, cause
 }
 
@@ -247,8 +284,26 @@ func (s *ImportSession) Abort(cause error) {
 	if cause != nil {
 		msg = cause.Error()
 	}
-	_ = s.db.markImportFailedWithCounters(s.runID, msg, s.counters)
-	_ = s.db.cleanupImportStageRows(s.runID)
+	s.markFailedAndCleanup(msg)
+}
+
+func (s *ImportSession) markFailed(msg string) (bool, error) {
+	return s.db.updateImportFailed(s.runID, msg, s.counters, &s.leaseToken)
+}
+
+func (s *ImportSession) markFailedAndCleanup(msg string) {
+	owned, err := s.markFailed(msg)
+	if err != nil {
+		log.Printf("mark import %d failed: %v", s.runID, err)
+		return
+	}
+	if !owned {
+		log.Printf("skip import %d failure cleanup: active lease is no longer owned", s.runID)
+		return
+	}
+	if err := s.db.cleanupImportStageRows(s.runID); err != nil {
+		log.Printf("cleanup stage rows for import %d: %v", s.runID, err)
+	}
 }
 
 func (s *ImportSession) promoteCoverage(ctx context.Context, tx pgx.Tx) error {
@@ -276,7 +331,7 @@ func (s *ImportSession) promotePoints(ctx context.Context, tx pgx.Tx) error {
 		)
 		SELECT COUNT(*),
 		       COUNT(mp.id),
-		       COUNT(mp.id) FILTER (WHERE mp.received_at > $1)
+		       COUNT(mp.id) FILTER (WHERE COALESCE(mp.source_snapshot_at, mp.received_at) > $1)
 		  FROM incoming i
 		  LEFT JOIN metric_points mp
 		    ON mp.metric_name = i.metric_name
@@ -292,7 +347,7 @@ func (s *ImportSession) promotePoints(ctx context.Context, tx pgx.Tx) error {
 		  AND mp.metric_name = c.metric_name
 		  AND COALESCE(mp.source, '') = c.source
 		  AND SUBSTRING(mp.date, 1, 10) = c.local_date
-		  AND mp.received_at <= $2
+		  AND COALESCE(mp.source_snapshot_at, mp.received_at) <= $2
 		  AND NOT EXISTS (
 		      SELECT 1
 		        FROM import_stage_points st
@@ -314,8 +369,8 @@ func (s *ImportSession) promotePoints(ctx context.Context, tx pgx.Tx) error {
 			 ORDER BY metric_name, date, source, staged_seq DESC
 		)
 		INSERT INTO metric_points
-			(health_record_id, metric_name, units, date, qty, source, origin, import_run_id)
-		SELECT $1, metric_name, units, date, qty, source, $2, $3
+			(health_record_id, metric_name, units, date, qty, source, origin, import_run_id, source_snapshot_at)
+		SELECT $1, metric_name, units, date, qty, source, $2, $3, $4
 		  FROM incoming
 		ON CONFLICT (metric_name, date, source) DO UPDATE SET
 			received_at = NOW(),
@@ -323,8 +378,9 @@ func (s *ImportSession) promotePoints(ctx context.Context, tx pgx.Tx) error {
 			units = excluded.units,
 			qty = excluded.qty,
 			origin = excluded.origin,
-			import_run_id = excluded.import_run_id
-		WHERE metric_points.received_at <= $4`,
+			import_run_id = excluded.import_run_id,
+			source_snapshot_at = excluded.source_snapshot_at
+		WHERE COALESCE(metric_points.source_snapshot_at, metric_points.received_at) <= excluded.source_snapshot_at`,
 		s.healthRecordID, appleHealthXMLOrigin, s.runID, s.snapshotAt)
 	if err != nil {
 		return fmt.Errorf("upsert staged points: %w", err)
@@ -347,6 +403,7 @@ func (s *ImportSession) promoteWorkouts(ctx context.Context, tx pgx.Tx) error {
 			   AND import_run_id = $2
 		) st
 		WHERE w.origin = $1
+		  AND COALESCE(w.source_snapshot_at, w.received_at) <= $3
 		  AND w.external_id LIKE 'applexml:%'
 		  AND w.name = st.name
 		  AND w.start_time = st.start_time
@@ -355,7 +412,7 @@ func (s *ImportSession) promoteWorkouts(ctx context.Context, tx pgx.Tx) error {
 		      SELECT 1 FROM import_stage_workouts exact
 		       WHERE exact.external_id = w.external_id
 		         AND exact.import_run_id = $2
-		  )`, appleHealthXMLOrigin, s.runID)
+		  )`, appleHealthXMLOrigin, s.runID, s.snapshotAt)
 	if err != nil {
 		return fmt.Errorf("delete stale synthetic workouts: %w", err)
 	}
@@ -378,7 +435,7 @@ func (s *ImportSession) promoteWorkouts(ctx context.Context, tx pgx.Tx) error {
 			distance_km, avg_speed_kmh, max_speed_kmh, elevation_up_m,
 			step_count_total, step_cadence_spm, temperature_c, humidity_pct,
 			hr_z1_sec, hr_z2_sec, hr_z3_sec, hr_z4_sec, hr_z5_sec,
-			origin, import_run_id
+			origin, import_run_id, source_snapshot_at
 		)
 		SELECT
 			$1, external_id, name, start_time, end_time, duration_sec,
@@ -386,7 +443,7 @@ func (s *ImportSession) promoteWorkouts(ctx context.Context, tx pgx.Tx) error {
 			distance_km, avg_speed_kmh, max_speed_kmh, elevation_up_m,
 			step_count_total, step_cadence_spm, temperature_c, humidity_pct,
 			hr_z1_sec, hr_z2_sec, hr_z3_sec, hr_z4_sec, hr_z5_sec,
-			$2, $3
+			$2, $3, $4
 		  FROM incoming
 		ON CONFLICT (external_id) DO UPDATE SET
 			received_at = NOW(),
@@ -415,8 +472,10 @@ func (s *ImportSession) promoteWorkouts(ctx context.Context, tx pgx.Tx) error {
 			hr_z4_sec = excluded.hr_z4_sec,
 			hr_z5_sec = excluded.hr_z5_sec,
 			origin = excluded.origin,
-			import_run_id = excluded.import_run_id`,
-		s.healthRecordID, appleHealthXMLOrigin, s.runID)
+			import_run_id = excluded.import_run_id,
+			source_snapshot_at = excluded.source_snapshot_at
+		WHERE COALESCE(workouts.source_snapshot_at, workouts.received_at) <= excluded.source_snapshot_at`,
+		s.healthRecordID, appleHealthXMLOrigin, s.runID, s.snapshotAt)
 	if err != nil {
 		return fmt.Errorf("upsert staged workouts: %w", err)
 	}
@@ -426,7 +485,7 @@ func (s *ImportSession) promoteWorkouts(ctx context.Context, tx pgx.Tx) error {
 }
 
 func (s *ImportSession) markCommitted(ctx context.Context, tx pgx.Tx) error {
-	_, err := tx.Exec(ctx, `
+	tag, err := tx.Exec(ctx, `
 		UPDATE import_runs
 		   SET finished_at = NOW(),
 		       status = 'committed',
@@ -441,13 +500,16 @@ func (s *ImportSession) markCommitted(ctx context.Context, tx pgx.Tx) error {
 		       upserted_workouts = $10,
 		       deleted_workouts = $11,
 		       error = NULL
-		 WHERE id = $1`,
+		 WHERE id = $1 AND status = 'running' AND lease_token = $12`,
 		s.runID, nullableString(s.counters.MinDate), nullableString(s.counters.MaxDate),
 		s.counters.ParsedPoints, s.counters.InsertedPoints, s.counters.UpdatedPoints,
 		s.counters.DeletedPoints, s.counters.SkippedPoints, s.counters.ParsedWorkouts,
-		s.counters.UpsertedWorkouts, s.counters.DeletedWorkouts)
+		s.counters.UpsertedWorkouts, s.counters.DeletedWorkouts, s.leaseToken)
 	if err != nil {
 		return fmt.Errorf("mark import committed: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return errors.New("active import lease is no longer owned")
 	}
 	return nil
 }
@@ -467,12 +529,21 @@ func (s *DB) markImportFailed(runID int64, msg string) error {
 }
 
 func (s *DB) markImportFailedWithCounters(runID int64, msg string, counters ImportCounters) error {
+	_, err := s.updateImportFailed(runID, msg, counters, nil)
+	return err
+}
+
+func (s *DB) updateImportFailed(runID int64, msg string, counters ImportCounters, leaseToken *uuid.UUID) (bool, error) {
 	ctx, cancel := queryCtx()
 	defer cancel()
 	if len(msg) > 4000 {
 		msg = msg[:4000]
 	}
-	_, err := s.pool.Exec(ctx, `
+	var leaseParam any
+	if leaseToken != nil {
+		leaseParam = *leaseToken
+	}
+	tag, err := s.pool.Exec(ctx, `
 		UPDATE import_runs
 		   SET finished_at = NOW(),
 		       status = 'failed',
@@ -487,12 +558,16 @@ func (s *DB) markImportFailedWithCounters(runID int64, msg string, counters Impo
 		       upserted_workouts = GREATEST(upserted_workouts, $10),
 		       deleted_workouts = GREATEST(deleted_workouts, $11),
 		       error = $12
-		 WHERE id = $1`,
+		 WHERE id = $1
+		   AND ($13::uuid IS NULL OR (status = 'running' AND lease_token = $13))`,
 		runID, nullableString(counters.MinDate), nullableString(counters.MaxDate),
 		counters.ParsedPoints, counters.InsertedPoints, counters.UpdatedPoints,
 		counters.DeletedPoints, counters.SkippedPoints, counters.ParsedWorkouts,
-		counters.UpsertedWorkouts, counters.DeletedWorkouts, msg)
-	return err
+		counters.UpsertedWorkouts, counters.DeletedWorkouts, msg, leaseParam)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 func (s *DB) cleanupImportStageRows(runID int64) error {
@@ -525,15 +600,14 @@ func (s *DB) cleanupAbandonedImportStages(ctx context.Context, runningOlderThan 
 	if err != nil {
 		return fmt.Errorf("begin import staging cleanup: %w", err)
 	}
-	defer tx.Rollback(ctx)
-
+	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx, `
 		UPDATE import_runs
 		   SET status = 'failed',
 		       finished_at = COALESCE(finished_at, NOW()),
 		       error = COALESCE(NULLIF(error, ''), 'import abandoned before completion')
 		 WHERE status = 'running'
-		   AND started_at < $1`, cutoff); err != nil {
+		   AND COALESCE(heartbeat_at, started_at) < $1`, cutoff); err != nil {
 		return fmt.Errorf("mark abandoned imports failed: %w", err)
 	}
 
@@ -541,7 +615,7 @@ func (s *DB) cleanupAbandonedImportStages(ctx context.Context, runningOlderThan 
 		SELECT id
 		  FROM import_runs
 		 WHERE status IN ('committed', 'failed')
-		    OR (status = 'running' AND started_at < $1)`
+		    OR (status = 'running' AND COALESCE(heartbeat_at, started_at) < $1)`
 	if _, err := tx.Exec(ctx, `DELETE FROM import_stage_points WHERE import_run_id IN (`+targetRuns+`)`, cutoff); err != nil {
 		return fmt.Errorf("cleanup staged points: %w", err)
 	}

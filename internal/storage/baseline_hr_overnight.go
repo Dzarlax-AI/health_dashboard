@@ -108,8 +108,8 @@ func (s *DB) upsertBaselineHROvernightForDate(date string, loc *time.Location) {
 // Falls back to UTC on missing/invalid env to match the rest of the
 // codebase (energy_compute.go etc.) — keeps multi-tenant rollout
 // non-fatal even when one tenant's TZ env is misconfigured.
-func reportTZLocation() *time.Location {
-	tz := os.Getenv("REPORT_TZ")
+func (s *DB) reportTZLocation() *time.Location {
+	tz := s.GetSetting("timezone", os.Getenv("REPORT_TZ"))
 	if tz == "" {
 		return time.UTC
 	}
@@ -118,6 +118,12 @@ func reportTZLocation() *time.Location {
 		return time.UTC
 	}
 	return loc
+}
+
+// Today returns the tenant-local calendar date used by caches, AI, reports,
+// and UI endpoints. Callers outside storage should not use server-local time.
+func (s *DB) Today() string {
+	return time.Now().In(s.reportTZLocation()).Format("2006-01-02")
 }
 
 // resolveBaselineWindow picks the [start, end) interval for the

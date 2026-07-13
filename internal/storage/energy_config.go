@@ -96,7 +96,9 @@ func DefaultEnergyConfig() EnergyConfig {
 		// stamp lets calibration tooling (PR-11) distinguish "this
 		// snapshot was computed by a formula that COULD apply β"
 		// from "this snapshot pre-dates the v2.2 audit trail".
-		FormulaVersion: 2,
+		// Version 3 makes missing-day fallback causal: retrospective
+		// snapshots never borrow observations from a future date.
+		FormulaVersion: 3,
 	}
 }
 

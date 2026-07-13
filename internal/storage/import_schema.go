@@ -8,6 +8,8 @@ const importRunsTableDDL = `CREATE TABLE IF NOT EXISTS import_runs (
 	finished_at        TIMESTAMPTZ,
 	snapshot_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	status            TEXT NOT NULL DEFAULT 'running',
+	heartbeat_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	lease_token       UUID,
 	min_date           TEXT,
 	max_date           TEXT,
 	parsed_points      BIGINT NOT NULL DEFAULT 0,

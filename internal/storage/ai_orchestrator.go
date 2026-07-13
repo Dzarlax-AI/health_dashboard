@@ -36,7 +36,7 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 	if !aiCfg.Enabled() {
 		return ""
 	}
-	today := time.Now().Format("2006-01-02")
+	today := time.Now().In(s.reportTZLocation()).Format("2006-01-02")
 	key := today + "|" + lang
 
 	// Single-flight gate. If another caller is already regenerating, return
@@ -220,7 +220,7 @@ func (s *DB) EnsureTodayAIInsightAsync(aiCfg AIConfig, lang string) bool {
 	if !aiCfg.Enabled() {
 		return false
 	}
-	key := time.Now().Format("2006-01-02") + "|" + lang
+	key := time.Now().In(s.reportTZLocation()).Format("2006-01-02") + "|" + lang
 	if _, ok := s.aiRegenInFlight.Load(key); ok {
 		return false
 	}
@@ -232,7 +232,7 @@ func (s *DB) EnsureTodayAIInsightAsync(aiCfg AIConfig, lang string) bool {
 // Used by the /api/ai-briefing handler to set a "generating" flag in the
 // response when the cache is still warming up.
 func (s *DB) AIRegenInFlight(lang string) bool {
-	key := time.Now().Format("2006-01-02") + "|" + lang
+	key := time.Now().In(s.reportTZLocation()).Format("2006-01-02") + "|" + lang
 	_, ok := s.aiRegenInFlight.Load(key)
 	return ok
 }

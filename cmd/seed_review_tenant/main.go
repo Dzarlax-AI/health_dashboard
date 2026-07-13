@@ -217,7 +217,7 @@ func ensureReviewTenant(ctx context.Context, cfg seedConfig) error {
 		}
 		fmt.Printf("review user exists: username=%s schema=%s api_key=%s\n", user.Username, user.SchemaName, maskSecret(user.APIKey))
 	} else if errors.Is(err, registry.ErrUserNotFound) {
-		user, err = reg.CreateUser(ctx, registry.CreateUserReq{
+		user, err = reg.CreateLegacyUser(ctx, registry.CreateUserReq{
 			Username:   cfg.username,
 			SchemaName: cfg.schema,
 			Password:   cfg.password,

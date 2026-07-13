@@ -104,6 +104,12 @@ func testEnergyDB(t *testing.T) (*DB, func()) {
 	}()
 	db := getSharedFullDB(t)
 	resetEnergyTestDB(t, db)
+	// The energy-band suite exercises the documented v1/v2 compatibility
+	// contract. Pin v2 explicitly so a newer default formula does not silently
+	// change which historical snapshots those tests consider compatible.
+	if err := db.SaveSettings(map[string]string{"energy.formula_version": "2"}); err != nil {
+		t.Fatalf("pin energy-band formula version: %v", err)
+	}
 
 	cleanup := func() {
 		sharedFullDBMu.Unlock()
@@ -218,11 +224,22 @@ func getSharedFullDB(t *testing.T) *DB {
 		t.Fatalf("%v", sharedFullErr)
 	}
 	db.EnsureIndexes()
+	db.EnsureAIBriefingsTable()
+	db.EnsureAIBriefingBlocksTable()
+	db.EnsureEnergySnapshotsTable()
 	db.EnsureReadinessRedesignTables()
-	if err := db.VerifyReadinessRedesignSchema(); err != nil {
+	db.EnsureSubjectiveCheckinsTable()
+	db.EnsureContextPromptInteractionsTable()
+	if err := db.EnsureAuthSessionsTable(); err != nil {
 		_ = testdb.DropSchema(ctx, db.pool, schema)
 		db.Close()
-		sharedFullErr = fmt.Errorf("schema not healthy after Ensure: %w", err)
+		sharedFullErr = fmt.Errorf("EnsureAuthSessionsTable: %w", err)
+		t.Fatalf("%v", sharedFullErr)
+	}
+	if err := db.VerifyProvisionedSchema(); err != nil {
+		_ = testdb.DropSchema(ctx, db.pool, schema)
+		db.Close()
+		sharedFullErr = fmt.Errorf("full schema not healthy after Ensure: %w", err)
 		t.Fatalf("%v", sharedFullErr)
 	}
 	sharedFullDB = db

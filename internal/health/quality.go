@@ -29,30 +29,31 @@ type qualityRange struct {
 }
 
 var qualityRanges = map[string]qualityRange{
-	"heart_rate_variability": {Min: 4, Max: 300},
-	"heart_rate":             {Min: 25, Max: 250},
-	"resting_heart_rate":     {Min: 28, Max: 150},
-	"walking_heart_rate":     {Min: 40, Max: 200},
-	"oxygen_saturation":      {Min: 70, Max: 100},
-	"respiratory_rate":       {Min: 4, Max: 50},
-	"body_mass":              {Min: 20, Max: 300},
-	"body_fat_percentage":    {Min: 3, Max: 70},
-	"vo2_max":                {Min: 10, Max: 90},
-	"step_count":             {Min: 0, Max: 100000},
-	"active_energy":          {Min: 0, Max: 15000},
-	"basal_energy_burned":    {Min: 0, Max: 5000},
-	"apple_exercise_time":    {Min: 0, Max: 1440}, // minutes/day; 24h hard ceiling
-	"apple_stand_time":       {Min: 0, Max: 1440},
-	"flights_climbed":        {Min: 0, Max: 1000},
-	"sleep_total":            {Min: 0, Max: 14},
-	"sleep_deep":             {Min: 0, Max: 8},
-	"sleep_rem":              {Min: 0, Max: 8},
-	"sleep_core":             {Min: 0, Max: 12},
-	"sleep_unspecified":      {Min: 0, Max: 14}, // coarse asleep total — sources without stages
-	"sleep_awake":            {Min: 0, Max: 6},
-	"night_sleep_total":      {Min: 0, Max: 14}, // matches sleep_total
-	"nap_total":              {Min: 0, Max: 8},  // pathological if >8h of naps
-	"wrist_temperature":      {Min: 25, Max: 42}, // °C; pyrexia cap
+	"heart_rate_variability":  {Min: 4, Max: 300},
+	"heart_rate":              {Min: 25, Max: 250},
+	"resting_heart_rate":      {Min: 28, Max: 150},
+	"walking_heart_rate":      {Min: 40, Max: 200},
+	"oxygen_saturation":       {Min: 70, Max: 100},
+	"blood_oxygen_saturation": {Min: 70, Max: 100},
+	"respiratory_rate":        {Min: 4, Max: 50},
+	"body_mass":               {Min: 20, Max: 300},
+	"body_fat_percentage":     {Min: 3, Max: 70},
+	"vo2_max":                 {Min: 10, Max: 90},
+	"step_count":              {Min: 0, Max: 100000},
+	"active_energy":           {Min: 0, Max: 15000},
+	"basal_energy_burned":     {Min: 0, Max: 5000},
+	"apple_exercise_time":     {Min: 0, Max: 1440}, // minutes/day; 24h hard ceiling
+	"apple_stand_time":        {Min: 0, Max: 1440},
+	"flights_climbed":         {Min: 0, Max: 1000},
+	"sleep_total":             {Min: 0, Max: 14},
+	"sleep_deep":              {Min: 0, Max: 8},
+	"sleep_rem":               {Min: 0, Max: 8},
+	"sleep_core":              {Min: 0, Max: 12},
+	"sleep_unspecified":       {Min: 0, Max: 14}, // coarse asleep total — sources without stages
+	"sleep_awake":             {Min: 0, Max: 6},
+	"night_sleep_total":       {Min: 0, Max: 14},  // matches sleep_total
+	"nap_total":               {Min: 0, Max: 8},   // pathological if >8h of naps
+	"wrist_temperature":       {Min: 25, Max: 42}, // °C; pyrexia cap
 }
 
 // IsImpossible reports whether (metric, value) is outside the physiological

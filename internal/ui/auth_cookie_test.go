@@ -22,6 +22,9 @@ func TestAuthCookieSecurePolicy(t *testing.T) {
 	}
 
 	trusted := httptest.NewRequest("GET", "http://example.test/", nil)
+	if err := h.SetTrustedForwardAuthNetworks("10.0.0.0/8"); err != nil {
+		t.Fatal(err)
+	}
 	trusted.RemoteAddr = "10.0.0.10:1234"
 	trusted.Header.Set("X-Forwarded-Proto", "https")
 	if !h.authCookieSecure(trusted) {

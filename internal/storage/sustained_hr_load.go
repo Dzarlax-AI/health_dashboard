@@ -311,7 +311,7 @@ func (s *DB) buildSustainedHRLoadAll(force bool) {
 	if len(dates) == 0 {
 		return
 	}
-	loc := reportTZLocation()
+	loc := s.reportTZLocation()
 	for _, d := range dates {
 		// log-and-continue: individual-date failures are already
 		// logged inside; the backfill summary line below is "filled

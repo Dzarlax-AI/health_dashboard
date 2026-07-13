@@ -1,10 +1,13 @@
 package notify
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"health-receiver/internal/health"
 	"health-receiver/internal/storage"
 )
@@ -70,9 +73,35 @@ type CheckinStore interface {
 // claim "we prompted them" when no message ever arrived.
 func SendCheckinPrompt(bot CheckinBot, store CheckinStore, lang, date string, now, expiresAt time.Time) error {
 	rows, text := buildCheckinPromptButtons(lang, date)
+	var delivery notificationDeliveryStore
+	var token uuid.UUID
+	if candidate, ok := store.(notificationDeliveryStore); ok {
+		delivery = candidate
+		var reserved bool
+		var err error
+		ctx, cancel := context.WithTimeout(context.Background(), notificationDeliveryTimeout)
+		token, reserved, err = delivery.ReserveNotificationDelivery(ctx, "prompt:checkin:"+date)
+		cancel()
+		if err != nil || !reserved {
+			return err
+		}
+	}
 	msgID, err := bot.SendInlineKeyboard(text, rows)
 	if err != nil {
+		if delivery != nil {
+			status, code := deliveryFailureStatus(err)
+			_ = completeNotificationDelivery(delivery, "prompt:checkin:"+date, token, status, code)
+		}
 		return err
 	}
-	return store.SaveCheckinPrompted(date, storage.CheckinSourceTelegram, msgID, now, expiresAt)
+	if err = store.SaveCheckinPrompted(date, storage.CheckinSourceTelegram, msgID, now, expiresAt); err != nil {
+		if delivery != nil {
+			return errors.Join(err, completeNotificationDelivery(delivery, "prompt:checkin:"+date, token, "sent", ""))
+		}
+		return err
+	}
+	if delivery != nil {
+		return completeNotificationDelivery(delivery, "prompt:checkin:"+date, token, "sent", "")
+	}
+	return nil
 }

@@ -39,6 +39,7 @@ func (s *DB) EnsureIndexes() {
 		importRunCoverageTableDDL,
 		importStagePointsTableDDL,
 		importStageWorkoutsTableDDL,
+		notificationDeliveriesTableDDL,
 	}
 	for _, ddl := range tableMigrations {
 		if err := s.execStartupDDL(ddl, ddlColumnStatementTimeout); err != nil {
@@ -50,13 +51,24 @@ func (s *DB) EnsureIndexes() {
 	// pick them up without manual intervention. ADD COLUMN IF NOT EXISTS is a
 	// metadata-only change in Postgres ≥ 11 — fast even on the 3.7M-row table.
 	migrations := []columnMigration{
+		{"import_runs", "heartbeat_at", `ALTER TABLE import_runs ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`},
+		{"import_runs", "lease_token", `ALTER TABLE import_runs ADD COLUMN IF NOT EXISTS lease_token UUID`},
+		{"health_records", "processing_status", `ALTER TABLE health_records ADD COLUMN IF NOT EXISTS processing_status TEXT NOT NULL DEFAULT 'complete'`},
+		{"health_records", "processing_kind", `ALTER TABLE health_records ADD COLUMN IF NOT EXISTS processing_kind TEXT NOT NULL DEFAULT 'all'`},
+		{"health_records", "processing_error", `ALTER TABLE health_records ADD COLUMN IF NOT EXISTS processing_error TEXT`},
+		{"health_records", "processed_at", `ALTER TABLE health_records ADD COLUMN IF NOT EXISTS processed_at TIMESTAMPTZ`},
 		// quality flag for soft-suspect / hard-impossible filtering. Default
 		// 'ok' so existing rows behave identically until something flips them.
 		{"metric_points", "quality", `ALTER TABLE metric_points ADD COLUMN IF NOT EXISTS quality TEXT NOT NULL DEFAULT 'ok'`},
 		{"metric_points", "origin", `ALTER TABLE metric_points ADD COLUMN IF NOT EXISTS origin TEXT NOT NULL DEFAULT 'live'`},
 		{"metric_points", "import_run_id", `ALTER TABLE metric_points ADD COLUMN IF NOT EXISTS import_run_id BIGINT`},
+		// Nullable is intentional: legacy rows fall back to received_at. A
+		// volatile NOW() default would rewrite multi-million-row tables during
+		// upgrade; every current writer sets the value explicitly instead.
+		{"metric_points", "source_snapshot_at", `ALTER TABLE metric_points ADD COLUMN IF NOT EXISTS source_snapshot_at TIMESTAMPTZ`},
 		{"workouts", "origin", `ALTER TABLE workouts ADD COLUMN IF NOT EXISTS origin TEXT NOT NULL DEFAULT 'live'`},
 		{"workouts", "import_run_id", `ALTER TABLE workouts ADD COLUMN IF NOT EXISTS import_run_id BIGINT`},
+		{"workouts", "source_snapshot_at", `ALTER TABLE workouts ADD COLUMN IF NOT EXISTS source_snapshot_at TIMESTAMPTZ`},
 		// EnergyBank EOD snapshot columns. Capacity / current / drain are 0–100;
 		// verdict is "rest" / "active_recovery" / "moderate" / "push_hard" (matches
 		// EnergyBank.ActionVerdict). NULL means no snapshot was taken — the row

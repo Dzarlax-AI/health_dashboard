@@ -36,10 +36,10 @@ type RedesignStorageStatus struct {
 
 // DataGap represents a contiguous range of dates with missing or incomplete health data.
 type DataGap struct {
-	From         string `json:"from"`                   // first affected date (YYYY-MM-DD)
-	To           string `json:"to"`                     // last affected date (YYYY-MM-DD)
-	Days         int    `json:"days"`                   // number of affected days
-	Partial      bool   `json:"partial,omitempty"`      // data exists but fewer than minHours recorded
+	From         string `json:"from"`                    // first affected date (YYYY-MM-DD)
+	To           string `json:"to"`                      // last affected date (YYYY-MM-DD)
+	Days         int    `json:"days"`                    // number of affected days
+	Partial      bool   `json:"partial,omitempty"`       // data exists but fewer than minHours recorded
 	TodayMissing bool   `json:"today_missing,omitempty"` // no data received for today yet
 }
 
@@ -56,7 +56,8 @@ func (s *DB) GetDataGaps(minGapDays, minHours int) ([]DataGap, error) {
 	}
 
 	// Compute the 12-months-ago cutoff in Go and pass as parameter.
-	twelveMonthsAgo := time.Now().AddDate(-1, 0, 0).Format("2006-01-02")
+	tenantToday, _ := time.Parse("2006-01-02", s.Today())
+	twelveMonthsAgo := tenantToday.AddDate(-1, 0, 0).Format("2006-01-02")
 
 	// Fetch all days in the last 12 months with their hour counts.
 	ctx, cancel := queryCtx()
@@ -80,10 +81,10 @@ func (s *DB) GetDataGaps(minGapDays, minHours int) ([]DataGap, error) {
 	for rows.Next() {
 		var di dayInfo
 		if err := rows.Scan(&di.date, &di.hours); err != nil {
-				log.Printf("GetDataGaps scan: %v", err)
-				continue
-			}
-			days = append(days, di)
+			log.Printf("GetDataGaps scan: %v", err)
+			continue
+		}
+		days = append(days, di)
 	}
 	if len(days) == 0 {
 		return nil, nil
@@ -98,13 +99,13 @@ func (s *DB) GetDataGaps(minGapDays, minHours int) ([]DataGap, error) {
 	minDate, _ := time.Parse("2006-01-02", days[0].date)
 	maxDate, _ := time.Parse("2006-01-02", days[len(days)-1].date)
 	// Don't flag today as partial — it's still in progress.
-	today := time.Now().Format("2006-01-02")
+	today := tenantToday.Format("2006-01-02")
 
 	var gaps []DataGap
 
 	// Walk every calendar day in [minDate, yesterday] looking for complete gaps.
 	// We stop at yesterday because today might still be in progress.
-	yesterday := time.Now().AddDate(0, 0, -1)
+	yesterday := tenantToday.AddDate(0, 0, -1)
 	walkEnd := maxDate
 	if yesterday.Before(walkEnd) {
 		walkEnd = yesterday

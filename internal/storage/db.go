@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -93,6 +94,58 @@ func NewWithSchema(ctx context.Context, connString, schema string) (*DB, error) 
 	return &DB{pool: pool}, nil
 }
 
+// RestrictedTenantPoolConfig builds a tenant pool config from a credential-free
+// base DSN. The caller supplies only the tenant's derived login and canonical
+// schema; administrative and registry credentials never enter this path.
+func RestrictedTenantPoolConfig(baseDSN, user, password, schema string) (*pgxpool.Config, error) {
+	config, err := pgxpool.ParseConfig(baseDSN)
+	if err != nil {
+		return nil, fmt.Errorf("parse restricted tenant config: %w", err)
+	}
+	config.ConnConfig.User = user
+	config.ConnConfig.Password = password
+	if config.ConnConfig.RuntimeParams == nil {
+		config.ConnConfig.RuntimeParams = make(map[string]string)
+	}
+	config.ConnConfig.RuntimeParams["search_path"] = schema
+	config.AfterConnect = nil
+	config.MaxConns = 8
+	config.MinConns = 2
+	config.MaxConnIdleTime = 5 * time.Minute
+	config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	return config, nil
+}
+
+// NewRestrictedTenant opens a pool which authenticates as one tenant role.
+func NewRestrictedTenant(ctx context.Context, baseDSN, user, password, schema string) (*DB, error) {
+	config, err := RestrictedTenantPoolConfig(baseDSN, user, password, schema)
+	if err != nil {
+		return nil, err
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		return nil, fmt.Errorf("connect restricted tenant pool: %w", err)
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("ping restricted tenant pool: %w", err)
+	}
+	return &DB{pool: pool}, nil
+}
+
+// AssertIdentity proves that a restricted pool authenticated as and resolves
+// unqualified names to the expected tenant identity.
+func (s *DB) AssertIdentity(ctx context.Context, expectedUser, expectedSchema string) error {
+	var currentUser, currentSchema string
+	if err := s.pool.QueryRow(ctx, `SELECT current_user, current_schema()`).Scan(&currentUser, &currentSchema); err != nil {
+		return fmt.Errorf("query database identity: %w", err)
+	}
+	if currentUser != expectedUser || currentSchema != expectedSchema {
+		return fmt.Errorf("database identity mismatch: current_user=%q current_schema=%q", currentUser, currentSchema)
+	}
+	return nil
+}
+
 // EnsureAllTables creates all health schema tables if they do not exist.
 // Called when provisioning a new tenant schema.
 func (s *DB) EnsureAllTables() error {
@@ -109,7 +162,11 @@ func (s *DB) EnsureAllTables() error {
 			automation_period      TEXT,
 			session_id             TEXT,
 			content_type           TEXT,
-			payload                TEXT
+			payload                TEXT,
+			processing_status      TEXT NOT NULL DEFAULT 'complete',
+			processing_kind        TEXT NOT NULL DEFAULT 'all',
+			processing_error       TEXT,
+			processed_at           TIMESTAMPTZ
 		)`,
 		`CREATE TABLE IF NOT EXISTS metric_points (
 			id               BIGSERIAL PRIMARY KEY,
@@ -122,6 +179,7 @@ func (s *DB) EnsureAllTables() error {
 			source           TEXT,
 			origin           TEXT NOT NULL DEFAULT 'live',
 			import_run_id    BIGINT,
+			source_snapshot_at TIMESTAMPTZ,
 			UNIQUE(metric_name, date, source)
 		)`,
 		importRunsTableDDL,
@@ -175,6 +233,7 @@ func (s *DB) EnsureAllTables() error {
 			value      TEXT NOT NULL DEFAULT '',
 			updated_at TEXT NOT NULL DEFAULT NOW()::text
 		)`,
+		notificationDeliveriesTableDDL,
 		// One row per Apple Health workout. We store summary fields only —
 		// timeseries (route, per-minute HR, per-second energy) are large
 		// (3000+ points for an outdoor run) and are not used by any text
@@ -212,6 +271,7 @@ func (s *DB) EnsureAllTables() error {
 			hr_z5_sec         INTEGER,
 			origin            TEXT NOT NULL DEFAULT 'live',
 			import_run_id     BIGINT,
+			source_snapshot_at TIMESTAMPTZ,
 			CONSTRAINT chk_workout_times CHECK (end_time >= start_time)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_workouts_start_time ON workouts (start_time DESC)`,
@@ -303,6 +363,8 @@ type Record struct {
 	SessionID             string
 	ContentType           string
 	Payload               string
+	PendingProcessing     bool
+	ProcessingKind        string
 }
 
 // MetricPoint is a single parsed data point stored in metric_points.
@@ -320,15 +382,64 @@ func (s *DB) InsertRaw(r Record) (int64, error) {
 	ctx, cancel := queryCtx()
 	defer cancel()
 	var recordID int64
+	status := "complete"
+	if r.PendingProcessing {
+		status = "pending"
+	}
+	if r.ProcessingKind == "" {
+		r.ProcessingKind = "all"
+	}
 	err := s.pool.QueryRow(ctx,
 		`INSERT INTO health_records
-		(automation_name, automation_id, automation_aggregation, automation_period, session_id, content_type, payload)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		(automation_name, automation_id, automation_aggregation, automation_period, session_id, content_type, payload, processing_status, processing_kind)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING id`,
 		r.AutomationName, r.AutomationID, r.AutomationAggregation,
-		r.AutomationPeriod, r.SessionID, r.ContentType, r.Payload,
+		r.AutomationPeriod, r.SessionID, r.ContentType, r.Payload, status, r.ProcessingKind,
 	).Scan(&recordID)
 	return recordID, err
+}
+
+type PendingHealthRecord struct {
+	ID             int64
+	Payload        string
+	ProcessingKind string
+}
+
+func (s *DB) PendingHealthRecords(limit int) ([]PendingHealthRecord, error) {
+	if limit <= 0 || limit > 10000 {
+		limit = 1000
+	}
+	ctx, cancel := queryCtx()
+	defer cancel()
+	rows, err := s.pool.Query(ctx, `SELECT id,payload,processing_kind FROM health_records WHERE processing_status='pending' ORDER BY id LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PendingHealthRecord
+	for rows.Next() {
+		var record PendingHealthRecord
+		if err := rows.Scan(&record.ID, &record.Payload, &record.ProcessingKind); err != nil {
+			return nil, err
+		}
+		out = append(out, record)
+	}
+	return out, rows.Err()
+}
+
+func (s *DB) SetHealthRecordProcessing(id int64, status string, processingErr error) error {
+	if status != "pending" && status != "complete" && status != "failed" {
+		return errors.New("invalid health record processing status")
+	}
+	ctx, cancel := queryCtx()
+	defer cancel()
+	message := ""
+	if processingErr != nil {
+		message = processingErr.Error()
+	}
+	_, err := s.pool.Exec(ctx, `UPDATE health_records SET processing_status=$2,processing_error=NULLIF($3,''),processed_at=CASE WHEN $2='complete' THEN NOW() ELSE processed_at END WHERE id=$1`, id, status, message)
+	return err
 }
 
 // InsertPoints upserts parsed metric_points for a previously saved health_record.
@@ -380,8 +491,8 @@ func (s *DB) InsertPoints(recordID int64, points []MetricPoint) error {
 	//      exceed 50% vanishingly rarely — when they do, the next sync run
 	//      converges naturally.
 	const upsertSQL = `INSERT INTO metric_points
-		(health_record_id, metric_name, units, date, qty, source, origin, import_run_id)
-		VALUES ($1, $2, $3, $4, $5, $6, 'live', NULL)
+		(health_record_id, metric_name, units, date, qty, source, origin, import_run_id, source_snapshot_at)
+		VALUES ($1, $2, $3, $4, $5, $6, 'live', NULL, NOW())
 		ON CONFLICT(metric_name, date, source) DO UPDATE SET
 			received_at = NOW(),
 			qty = CASE
@@ -406,7 +517,8 @@ func (s *DB) InsertPoints(recordID int64, points []MetricPoint) error {
 			units = excluded.units,
 			health_record_id = excluded.health_record_id,
 			origin = 'live',
-			import_run_id = NULL`
+			import_run_id = NULL,
+			source_snapshot_at = NOW()`
 
 	const chunkSize = 500
 	for i := 0; i < len(points); i += chunkSize {

@@ -1,9 +1,13 @@
 package notify
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
 	"health-receiver/internal/storage"
 )
 
@@ -58,5 +62,52 @@ func TestBuildContextPromptButtons_UsesOpaqueCallbackData(t *testing.T) {
 				t.Fatalf("callback leaks semantic context: %q", btn.CallbackData)
 			}
 		}
+	}
+}
+
+type fakeDurableContextPromptStore struct {
+	markSentErr error
+	token       uuid.UUID
+	completed   bool
+	completion  string
+}
+
+func (s *fakeDurableContextPromptStore) MarkContextPromptSent(string, int64, time.Time) error {
+	return s.markSentErr
+}
+
+func (s *fakeDurableContextPromptStore) MarkContextPromptSendFailed(string, time.Time) error {
+	return nil
+}
+
+func (s *fakeDurableContextPromptStore) ReserveNotificationDelivery(context.Context, string) (uuid.UUID, bool, error) {
+	s.token = uuid.New()
+	return s.token, true, nil
+}
+
+func (s *fakeDurableContextPromptStore) CompleteNotificationDelivery(_ context.Context, _ string, token uuid.UUID, status, _ string) error {
+	if token != s.token {
+		return errors.New("unexpected delivery token")
+	}
+	s.completed = true
+	s.completion = status
+	return nil
+}
+
+func TestSendContextPrompt_MarkSentFailureCompletesDeliveryAsSent(t *testing.T) {
+	markErr := errors.New("mark context prompt sent")
+	store := &fakeDurableContextPromptStore{markSentErr: markErr}
+	bot := &fakeBot{msgID: 73}
+	prompt := &storage.ContextPromptInteraction{
+		PromptID:          "cp_abcdef",
+		AllowedCategories: []string{storage.ContextPromptCategoryStress},
+	}
+
+	err := SendContextPrompt(bot, store, "en", prompt, time.Now())
+	if !errors.Is(err, markErr) {
+		t.Fatalf("send error = %v, want original persistence error", err)
+	}
+	if !store.completed || store.completion != "sent" {
+		t.Fatalf("successful external send left delivery dangling: completed=%v status=%q", store.completed, store.completion)
 	}
 }

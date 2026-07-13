@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"health-receiver/internal/registry"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -110,20 +112,20 @@ func resolveSchemas(ctx context.Context, pool *pgxpool.Pool, raw string) ([]stri
 	case "":
 		return nil, nil
 	case "all":
-		rows, err := pool.Query(ctx, `SELECT schema_name FROM health_registry.users ORDER BY schema_name`)
+		reg, err := registry.New(ctx, pool.Config().ConnString())
 		if err != nil {
 			return nil, err
 		}
-		defer rows.Close()
-		var out []string
-		for rows.Next() {
-			var schema string
-			if err := rows.Scan(&schema); err != nil {
-				return nil, err
-			}
-			out = append(out, schema)
+		defer reg.Close()
+		users, err := reg.ListActiveUsers(ctx)
+		if err != nil {
+			return nil, err
 		}
-		return out, rows.Err()
+		out := make([]string, 0, len(users))
+		for _, user := range users {
+			out = append(out, user.SchemaName)
+		}
+		return out, nil
 	default:
 		parts := strings.Split(raw, ",")
 		out := make([]string, 0, len(parts))
