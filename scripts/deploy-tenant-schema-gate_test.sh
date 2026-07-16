@@ -293,7 +293,7 @@ recovery_snapshot=$(sed -n 's/^Private recovery Compose snapshot: //p' "$preout"
 [[ -f $recovery_snapshot ]] || { printf 'FAIL: recovery snapshot did not survive gate cleanup\n' >&2; exit 1; }
 /usr/bin/python3 -c 'import json,os,stat,sys; p,image=sys.argv[1:]; s=os.stat(p); d=os.stat(os.path.dirname(p)); v=json.load(open(p)); target=v["services"]["health-receiver"]; assert stat.S_IMODE(s.st_mode)==0o600 and stat.S_IMODE(d.st_mode)==0o700 and target["image"]==image and "build" not in target' "$recovery_snapshot" "$previous_id"
 /usr/bin/python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["services"]["health-receiver"]["pull_policy"]=="never"' "$recovery_snapshot"
-grep -Fq -- "-f $recovery_snapshot -p health-test up -d --no-deps health-receiver" "$preout" || { printf 'FAIL: recovery command does not reference private snapshot\n' >&2; exit 1; }
+grep -Fq -- "$tmp/bin/docker compose --project-directory $tmp/compose -f $recovery_snapshot -p health-test up -d --no-deps health-receiver" "$preout" || { printf 'FAIL: recovery command does not use the trusted Docker executable and private snapshot\n' >&2; exit 1; }
 grep -Fq -- "rm -rf -- $(dirname "$recovery_snapshot")" "$preout" || { printf 'FAIL: secure recovery snapshot cleanup instruction missing\n' >&2; exit 1; }
 [[ $(grep -c '<config> <--format> <json>' "$command_log") == 2 ]] || { printf 'FAIL: recovery snapshot was not Compose-validated\n' >&2; exit 1; }
 if grep -q 'docker-run-stderr-canary-secret\|do-not-leak-this-secret' "$preout" "$command_log"; then printf 'FAIL: secret leaked\n' >&2; exit 1; fi

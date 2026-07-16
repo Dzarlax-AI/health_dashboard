@@ -253,7 +253,9 @@ print_recovery() {
   if [[ $previous_image_id =~ ^sha256:[0-9a-f]{64}$ && -n $recovery_compose ]]; then
     printf 'Previous immutable local image ID: %s\n' "$previous_image_id" >&2
     printf 'Private recovery Compose snapshot: %s\n' "$recovery_compose" >&2
-    printf 'Reviewed recovery command (verify database backward compatibility first):\n  docker compose --project-directory ' >&2; printf '%q' "$compose_dir_canonical" >&2
+    printf 'Reviewed recovery command (verify database backward compatibility first):\n  ' >&2
+    printf '%q' "$DOCKER" >&2
+    printf ' compose --project-directory ' >&2; printf '%q' "$compose_dir_canonical" >&2
     printf ' -f ' >&2; printf '%q' "$recovery_compose" >&2
     printf ' -p ' >&2; printf '%q' "$compose_project" >&2
     printf ' up -d --no-deps ' >&2; printf '%q\n' "$service" >&2
