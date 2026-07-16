@@ -62,7 +62,9 @@ type User struct {
 // Registry manages user accounts stored in the health_registry schema.
 // All queries use fully-qualified table names so search_path doesn't matter.
 type Registry struct {
-	pool *pgxpool.Pool
+	pool                 *pgxpool.Pool
+	connConfig           *pgx.ConnConfig
+	commitProvisioningTx func(context.Context, pgx.Tx) error
 }
 
 // New opens a registry connection. The pool uses no fixed search_path so it
@@ -84,7 +86,7 @@ func New(ctx context.Context, connStr string) (*Registry, error) {
 		pool.Close()
 		return nil, fmt.Errorf("ping: %w", err)
 	}
-	return &Registry{pool: pool}, nil
+	return &Registry{pool: pool, connConfig: config.ConnConfig.Copy()}, nil
 }
 
 // EnsureSchema creates the health_registry schema and users table if they do

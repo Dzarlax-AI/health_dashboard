@@ -14,6 +14,7 @@ import (
 func contractMigrationFixture() fleetSnapshot {
 	s := auditFixture()
 	s.Markers[0].RelKind = "r"
+	s.Markers[0].Persistence = "p"
 	i, ok := snapshotProbeInventory(s, s.Registry[0].Schema)
 	if !ok {
 		panic("invalid contract migration fixture")
@@ -88,7 +89,7 @@ func TestMigrateTenantContractRequiresPermanentMarker(t *testing.T) {
 func TestContractMigrationStructuralDigestExcludesExpectedMigrationChanges(t *testing.T) {
 	base := contractMigrationFixture()
 	changed := contractMigrationFixture()
-	oldVersion, oldChecksum := storage.SchemaContractVersion+1, strings.Repeat("a", 64)
+	oldVersion, oldChecksum := storage.SchemaContractVersion-1, strings.Repeat("a", 64)
 	changed.Registry[0].ContractVersion, changed.Registry[0].ContractChecksum = &oldVersion, &oldChecksum
 	changed.Markers[0].Rows[0].ContractVersion, changed.Markers[0].Rows[0].ContractChecksum = &oldVersion, &oldChecksum
 	changed.Inventories[0].Objects = []OwnedObject{{Kind: "TABLE", Name: "new_contract_object", Owner: changed.Inventories[0].Role}}
@@ -115,7 +116,7 @@ func TestPrepareContractMigrationFleetAllowsOldPairButRejectsStructuralCorruptio
 		"marker issue":   func(s *fleetSnapshot) { s.Markers[0].Issues = []string{"marker_column_type_mismatch"} },
 		"marker rows":    func(s *fleetSnapshot) { s.Markers[0].Rows = nil },
 		"orphan marker": func(s *fleetSnapshot) {
-			s.Markers = append(s.Markers, auditMarkerRow{Schema: "health_orphan", RelKind: "r"})
+			s.Markers = append(s.Markers, auditMarkerRow{Schema: "health_orphan", RelKind: "r", Persistence: "p"})
 		},
 		"missing role":   func(s *fleetSnapshot) { s.Roles = nil },
 		"duplicate role": func(s *fleetSnapshot) { s.Roles = append(s.Roles, s.Roles[0]) },
@@ -141,7 +142,7 @@ func TestLegacyMarkerVariantsNormalizeAcrossTwoTenantProgression(t *testing.T) {
 	id, op, credential := uuid.New(), uuid.New(), 1
 	schema, role := "health_second", TenantRoleName(id)
 	s.Registry = append(s.Registry, auditRegistryRow{TenantID: &id, Schema: schema, Role: role, CredentialVersion: &credential, IsolationReady: true, State: "active"})
-	s.Markers = append(s.Markers, auditMarkerRow{Schema: schema, RelKind: "r", Issues: []string{"marker_column_nullability_mismatch:schema_contract_version:YES", "marker_column_nullability_mismatch:schema_contract_checksum:YES"}, Rows: []auditMarkerIdentity{{Singleton: boolPtr(true), TenantID: &id, OperationID: &op}}})
+	s.Markers = append(s.Markers, auditMarkerRow{Schema: schema, RelKind: "r", Persistence: "p", Issues: []string{"marker_column_nullability_mismatch:schema_contract_version:YES", "marker_column_nullability_mismatch:schema_contract_checksum:YES"}, Rows: []auditMarkerIdentity{{Singleton: boolPtr(true), TenantID: &id, OperationID: &op}}})
 	s.Roles = append(s.Roles, auditRoleRow{TenantID: id, Role: role, OperationID: op, Valid: true})
 	s.Inventories = append(s.Inventories, TenantInventory{Schema: schema, TenantID: id, Role: role, CredentialVersion: 1, SchemaOwner: role, RoleCatalog: RoleMetadata{Name: role, Exists: true, Login: true, Inherit: true, ConnLimit: -1}, Registry: RegistryMetadata{TenantID: id, Schema: schema, Role: role, CredentialVersion: 1, IsolationReady: true, State: "active"}})
 
@@ -160,7 +161,62 @@ func TestLegacyMarkerVariantsNormalizeAcrossTwoTenantProgression(t *testing.T) {
 	}
 }
 
+func TestMigrationCompatibleMarkerShapeAllowsCompleteTransitionValidNullablePair(t *testing.T) {
+	base := contractMigrationFixture().Markers[0]
+	base.Issues = []string{
+		"marker_column_nullability_mismatch:schema_contract_version:YES",
+		"marker_column_nullability_mismatch:schema_contract_checksum:YES",
+	}
+	targetVersion, targetChecksum := storage.SchemaContractVersion, storage.SchemaContractChecksum()
+	olderVersion, olderChecksum := targetVersion-1, strings.Repeat("a", 64)
+
+	for name, pair := range map[string]struct {
+		version  *int
+		checksum *string
+		want     bool
+	}{
+		"empty legacy pair":     {want: true},
+		"exact target pair":     {version: &targetVersion, checksum: &targetChecksum, want: true},
+		"older transition pair": {version: &olderVersion, checksum: &olderChecksum, want: olderVersion > 0},
+		"partial pair":          {version: &targetVersion},
+	} {
+		t.Run(name, func(t *testing.T) {
+			marker := base
+			marker.Rows = append([]auditMarkerIdentity(nil), base.Rows...)
+			marker.Rows[0].ContractVersion = pair.version
+			marker.Rows[0].ContractChecksum = pair.checksum
+			if got := migrationCompatibleMarkerShape(marker); got != pair.want {
+				t.Fatalf("migrationCompatibleMarkerShape() = %t, want %t", got, pair.want)
+			}
+		})
+	}
+
+	invalidVersion, invalidChecksum := targetVersion+1, "not-a-checksum"
+	base.Rows[0].ContractVersion = &invalidVersion
+	base.Rows[0].ContractChecksum = &invalidChecksum
+	if migrationCompatibleMarkerShape(base) {
+		t.Fatal("invalid complete contract pair was accepted")
+	}
+	base.Issues = nil
+	if migrationCompatibleMarkerShape(base) {
+		t.Fatal("invalid complete contract pair without shape issues was accepted")
+	}
+}
+
 func boolPtr(v bool) *bool { return &v }
+
+func TestMigrationCompatibleMarkerRejectsUnsafePhysicalShapes(t *testing.T) {
+	marker := contractMigrationFixture().Markers[0]
+	marker.Persistence = "u"
+	if migrationCompatibleMarkerShape(marker) {
+		t.Fatal("migration accepted an UNLOGGED permanent identity marker")
+	}
+	marker.Persistence = "p"
+	marker.Issues = []string{"marker_column_unexpected:shadow"}
+	if migrationCompatibleMarkerShape(marker) {
+		t.Fatal("migration accepted a permanent identity marker with extra columns")
+	}
+}
 
 func TestContractMigrationFleetDoesNotCoupleRolloutOrderToAdminStatus(t *testing.T) {
 	for _, isAdmin := range []bool{false, true} {

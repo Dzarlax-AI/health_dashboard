@@ -39,6 +39,10 @@ func (s *DB) EnsureIndexes() {
 	defer cancel()
 	if err := s.EnsureIndexesContext(ctx); err != nil {
 		log.Printf("EnsureIndexes: %v", err)
+		return
+	}
+	if err := s.cleanupAbandonedImportStages(ctx, 24*time.Hour); err != nil {
+		log.Printf("cleanup abandoned import staging after index migration: %v", err)
 	}
 }
 
@@ -162,9 +166,6 @@ func (s *DB) EnsureIndexesContext(ctx context.Context) error {
 		if err := s.execStartupDDLContext(ctx, index.ddl, ddlIndexStatementTimeout); err != nil {
 			return fmt.Errorf("ensure index %s: %w", index.name, err)
 		}
-	}
-	if err := s.cleanupAbandonedImportStages(ctx, 24*time.Hour); err != nil {
-		return fmt.Errorf("cleanup import staging: %w", err)
 	}
 	return nil
 }

@@ -18,7 +18,7 @@ import (
 // SchemaContractVersion is bumped whenever the declared tenant schema
 // contract changes. Existing tenants are not current until both the permanent
 // marker and registry metadata carry this version and checksum.
-const SchemaContractVersion = 2
+const SchemaContractVersion = 3
 
 // TenantIdentityTable is the permanent marker shared by clean provisioning
 // and existing-tenant migrations. The provisioning marker is intentionally
@@ -33,6 +33,7 @@ type ContractManifest struct {
 	IndexDefinitions  []IndexDefinition
 	Columns           map[string][]string
 	ColumnDefinitions []ColumnDefinition
+	Constraints       []ConstraintDefinition
 	RequiredRows      []RequiredRow
 }
 
@@ -49,16 +50,24 @@ type IndexDefinition struct {
 }
 
 type ColumnDefinition struct {
-	Table    string
-	Column   string
-	DataType string
-	Nullable bool
+	Table          string
+	Column         string
+	DataType       string
+	UDTName        string
+	Nullable       bool
+	Default        string
+	RequireDefault bool
+}
+
+type ConstraintDefinition struct {
+	Table   string
+	Kind    string
+	Columns []string
 }
 
 type RequiredRow struct {
 	Table  string
-	Column string
-	Value  string
+	Values map[string]string
 }
 
 // TenantIdentity is the durable per-schema identity and applied contract.
@@ -133,15 +142,40 @@ var schemaContract = ContractManifest{
 		"naive_baselines":   {"reason"},
 		"chip_calibrations": {"cutoff", "p80", "base_rate", "status", "method"},
 	},
-	ColumnDefinitions: []ColumnDefinition{
-		{Table: "naive_baselines", Column: "reason", DataType: "text", Nullable: true},
-		{Table: "chip_calibrations", Column: "cutoff", DataType: "real", Nullable: true},
-		{Table: "chip_calibrations", Column: "p80", DataType: "real", Nullable: true},
-		{Table: "chip_calibrations", Column: "base_rate", DataType: "real", Nullable: true},
-		{Table: "chip_calibrations", Column: "status", DataType: "text", Nullable: false},
-		{Table: "chip_calibrations", Column: "method", DataType: "text", Nullable: false},
+	ColumnDefinitions: runtimeContractColumns(),
+	Constraints: []ConstraintDefinition{
+		{Table: "health_records", Kind: "p", Columns: []string{"id"}},
+		{Table: "metric_points", Kind: "p", Columns: []string{"id"}},
+		{Table: "metric_points", Kind: "u", Columns: []string{"metric_name", "date", "source"}},
+		{Table: "import_runs", Kind: "p", Columns: []string{"id"}},
+		{Table: "import_run_coverage", Kind: "p", Columns: []string{"import_run_id", "metric_name", "source", "local_date"}},
+		{Table: "import_stage_points", Kind: "p", Columns: []string{"staged_seq"}},
+		{Table: "import_stage_workouts", Kind: "p", Columns: []string{"staged_seq"}},
+		{Table: "minute_metrics", Kind: "p", Columns: []string{"metric_name", "minute", "source"}},
+		{Table: "hourly_metrics", Kind: "p", Columns: []string{"metric_name", "hour", "source"}},
+		{Table: "daily_scores", Kind: "p", Columns: []string{"date"}},
+		{Table: "settings", Kind: "p", Columns: []string{"key"}},
+		{Table: "notification_deliveries", Kind: "p", Columns: []string{"delivery_key"}},
+		{Table: "workouts", Kind: "p", Columns: []string{"id"}},
+		{Table: "workouts", Kind: "u", Columns: []string{"external_id"}},
+		{Table: "ai_briefings", Kind: "p", Columns: []string{"date"}},
+		{Table: "ai_briefing_blocks", Kind: "p", Columns: []string{"date", "lang", "block"}},
+		{Table: "energy_snapshots", Kind: "p", Columns: []string{"ts_bucket"}},
+		{Table: "source_epochs", Kind: "p", Columns: []string{"epoch_id"}},
+		{Table: "target_snapshots", Kind: "p", Columns: []string{"date", "sub_score", "target_kind"}},
+		{Table: "feature_snapshots", Kind: "p", Columns: []string{"date", "sub_score"}},
+		{Table: "naive_baselines", Kind: "p", Columns: []string{"date", "sub_score", "target_kind", "baseline_kind"}},
+		{Table: "chip_calibrations", Kind: "p", Columns: []string{"sub_score", "target_kind", "source_epoch"}},
+		{Table: "subjective_checkins", Kind: "p", Columns: []string{"date", "source"}},
+		{Table: "context_prompt_interactions", Kind: "p", Columns: []string{"prompt_id"}},
+		{Table: "context_prompt_interactions", Kind: "u", Columns: []string{"signal_date", "detected_reason"}},
+		{Table: "auth_sessions", Kind: "p", Columns: []string{"id_hash"}},
 	},
-	RequiredRows: []RequiredRow{{Table: "source_epochs", Column: "epoch_id", Value: InitialSourceEpoch}},
+	RequiredRows: []RequiredRow{{Table: "source_epochs", Values: map[string]string{
+		"epoch_id": InitialSourceEpoch, "start_date": "2014-01-01", "end_date": "NULL",
+		"kind": SourceEpochKindIngest, "description": "pre-redesign baseline; covers all historical data prior to the first detected epoch boundary",
+		"detected_by": DetectedByManual, "confirmed": "true",
+	}}},
 }
 
 // SchemaContractManifest returns the exact application objects verified by
@@ -153,6 +187,7 @@ func SchemaContractManifest() ContractManifest {
 		IndexDefinitions:  append([]IndexDefinition(nil), schemaContract.IndexDefinitions...),
 		Columns:           make(map[string][]string, len(schemaContract.Columns)),
 		ColumnDefinitions: append([]ColumnDefinition(nil), schemaContract.ColumnDefinitions...),
+		Constraints:       append([]ConstraintDefinition(nil), schemaContract.Constraints...),
 		RequiredRows:      append([]RequiredRow(nil), schemaContract.RequiredRows...),
 	}
 	for i := range out.IndexDefinitions {
@@ -160,6 +195,15 @@ func SchemaContractManifest() ContractManifest {
 	}
 	for table, columns := range schemaContract.Columns {
 		out.Columns[table] = append([]string(nil), columns...)
+	}
+	for i := range out.Constraints {
+		out.Constraints[i].Columns = append([]string(nil), out.Constraints[i].Columns...)
+	}
+	for i := range out.RequiredRows {
+		out.RequiredRows[i].Values = make(map[string]string, len(schemaContract.RequiredRows[i].Values))
+		for column, value := range schemaContract.RequiredRows[i].Values {
+			out.RequiredRows[i].Values[column] = value
+		}
 	}
 	return out
 }
@@ -195,14 +239,31 @@ func SchemaContractChecksum() string {
 		return a.Table+"."+a.Column < b.Table+"."+b.Column
 	})
 	for _, definition := range manifest.ColumnDefinitions {
-		fmt.Fprintf(&canonical, "column-definition:%s.%s:%s:nullable=%t\n", definition.Table, definition.Column, definition.DataType, definition.Nullable)
+		defaultValue := ""
+		if definition.RequireDefault {
+			defaultValue = canonicalCatalogExpression(definition.Default)
+		}
+		fmt.Fprintf(&canonical, "column-definition:%s.%s:%s:udt=%s:nullable=%t:require-default=%t:default=%s\n", definition.Table, definition.Column, definition.DataType, definition.UDTName, definition.Nullable, definition.RequireDefault, defaultValue)
+	}
+	sort.Slice(manifest.Constraints, func(i, j int) bool {
+		a, b := manifest.Constraints[i], manifest.Constraints[j]
+		return a.Table+":"+a.Kind+":"+strings.Join(a.Columns, ",") < b.Table+":"+b.Kind+":"+strings.Join(b.Columns, ",")
+	})
+	for _, constraint := range manifest.Constraints {
+		fmt.Fprintf(&canonical, "constraint:%s:kind=%s:columns=%s\n", constraint.Table, constraint.Kind, strings.Join(constraint.Columns, ","))
 	}
 	sort.Slice(manifest.RequiredRows, func(i, j int) bool {
-		a, b := manifest.RequiredRows[i], manifest.RequiredRows[j]
-		return a.Table+"."+a.Column+"="+a.Value < b.Table+"."+b.Column+"="+b.Value
+		return manifest.RequiredRows[i].Table < manifest.RequiredRows[j].Table
 	})
 	for _, row := range manifest.RequiredRows {
-		fmt.Fprintf(&canonical, "required-row:%s.%s=%s\n", row.Table, row.Column, row.Value)
+		columns := make([]string, 0, len(row.Values))
+		for column := range row.Values {
+			columns = append(columns, column)
+		}
+		sort.Strings(columns)
+		for _, column := range columns {
+			fmt.Fprintf(&canonical, "required-row:%s.%s=%s\n", row.Table, column, row.Values[column])
+		}
 	}
 	sum := sha256.Sum256([]byte(canonical.String()))
 	return hex.EncodeToString(sum[:])
@@ -588,27 +649,60 @@ func (s *DB) VerifySchemaContractContext(ctx context.Context) error {
 		}
 	}
 	for _, definition := range manifest.ColumnDefinitions {
-		var dataType, isNullable string
-		err := s.pool.QueryRow(ctx, `SELECT data_type,is_nullable FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=$1 AND column_name=$2`, definition.Table, definition.Column).Scan(&dataType, &isNullable)
+		var dataType, udtName, isNullable, defaultValue string
+		err := s.pool.QueryRow(ctx, `SELECT data_type,udt_name,is_nullable,COALESCE(column_default,'') FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=$1 AND column_name=$2`, definition.Table, definition.Column).Scan(&dataType, &udtName, &isNullable, &defaultValue)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return &SchemaContractMismatchError{Reason: "required column definition is missing", Cause: err}
 		}
 		if err != nil {
 			return fmt.Errorf("verify column definition %s.%s: %w", definition.Table, definition.Column, err)
 		}
-		if dataType != definition.DataType || (isNullable == "YES") != definition.Nullable {
+		if dataType != definition.DataType || (definition.UDTName != "" && udtName != definition.UDTName) || (isNullable == "YES") != definition.Nullable || (definition.RequireDefault && canonicalCatalogExpression(defaultValue) != canonicalCatalogExpression(definition.Default)) {
 			return &SchemaContractMismatchError{Reason: "required column definition differs"}
+		}
+	}
+	for _, expected := range manifest.Constraints {
+		var present bool
+		err := s.pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1
+				  FROM pg_constraint con
+				  JOIN pg_class tbl ON tbl.oid=con.conrelid
+				  JOIN pg_namespace ns ON ns.oid=tbl.relnamespace
+				 WHERE ns.nspname=current_schema() AND tbl.relname=$1 AND con.contype=$2
+				   AND ARRAY(SELECT att.attname::text FROM unnest(con.conkey) WITH ORDINALITY key(attnum,ord) JOIN pg_attribute att ON att.attrelid=con.conrelid AND att.attnum=key.attnum ORDER BY key.ord)=$3::text[]
+			)`, expected.Table, expected.Kind, expected.Columns).Scan(&present)
+		if err != nil {
+			return fmt.Errorf("verify constraint %s(%s): %w", expected.Table, strings.Join(expected.Columns, ","), err)
+		}
+		if !present {
+			return &SchemaContractMismatchError{Reason: "required primary or unique constraint differs"}
 		}
 	}
 	for _, row := range manifest.RequiredRows {
 		var present bool
-		query := "SELECT EXISTS(SELECT 1 FROM " + pgx.Identifier{row.Table}.Sanitize() + " WHERE " + pgx.Identifier{row.Column}.Sanitize() + "=$1)"
-		if err := s.pool.QueryRow(ctx, query, row.Value).Scan(&present); err != nil {
+		columns := make([]string, 0, len(row.Values))
+		for column := range row.Values {
+			columns = append(columns, column)
+		}
+		sort.Strings(columns)
+		predicates := make([]string, 0, len(columns))
+		args := make([]any, 0, len(columns))
+		for _, column := range columns {
+			if row.Values[column] == "NULL" {
+				predicates = append(predicates, pgx.Identifier{column}.Sanitize()+" IS NULL")
+				continue
+			}
+			args = append(args, row.Values[column])
+			predicates = append(predicates, pgx.Identifier{column}.Sanitize()+fmt.Sprintf("=$%d", len(args)))
+		}
+		query := "SELECT EXISTS(SELECT 1 FROM " + pgx.Identifier{row.Table}.Sanitize() + " WHERE " + strings.Join(predicates, " AND ") + ")"
+		if err := s.pool.QueryRow(ctx, query, args...).Scan(&present); err != nil {
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && (pgErr.Code == "42P01" || pgErr.Code == "42703") {
 				return &SchemaContractMismatchError{Reason: "required row catalog shape is missing", Cause: err}
 			}
-			return fmt.Errorf("verify required row %s.%s: %w", row.Table, row.Column, err)
+			return fmt.Errorf("verify required row %s: %w", row.Table, err)
 		}
 		if !present {
 			return &SchemaContractMismatchError{Reason: "required row is missing"}

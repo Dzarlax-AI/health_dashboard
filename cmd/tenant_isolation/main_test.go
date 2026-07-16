@@ -360,7 +360,35 @@ func TestRunMigrateContractRejectsWrongPrimaryAndFinalAuditFailure(t *testing.T)
 			if !errors.Is(err, ErrMigrationFailed) || !strings.Contains(out.String(), `"status":"fail"`) {
 				t.Fatalf("output/error = %q / %v", out.String(), err)
 			}
+			if name == "final audit" && (!errors.Is(err, ErrAuditFailed) || errors.Is(err, ErrAuditOperational)) {
+				t.Fatalf("status-only final audit error = %v, want ErrAuditFailed only", err)
+			}
 		})
+	}
+}
+
+func TestRunMigrateContractFinalAuditPreservesOperationalCause(t *testing.T) {
+	primary := cliInventory("health_primary", uuid.MustParse("22222222-2222-4222-8222-222222222222"))
+	auditCause := errors.New("postgres://raw_user:password@db/private")
+	f := &fakeFleetMigrator{
+		fleet:       tenants.ContractMigrationFleet{Inventories: []tenants.TenantInventory{primary}, PeerSchemas: []string{primary.Schema}, Digest: "digest"},
+		auditResult: tenants.AuditResult{Status: tenants.AuditStatusFail},
+		auditErr:    auditCause,
+	}
+	var out bytes.Buffer
+	err := runFleetMode(context.Background(), options{mode: modeMigrateContract, all: true, confirm: true, primarySchema: primary.Schema}, &out, f)
+	for _, want := range []error{ErrMigrationFailed, ErrAuditOperational, auditCause} {
+		if !errors.Is(err, want) {
+			t.Fatalf("final audit error %v lost %v", err, want)
+		}
+	}
+	if errors.Is(err, ErrAuditFailed) {
+		t.Fatalf("operational failure incorrectly retained status-only sentinel: %v", err)
+	}
+	for _, secret := range []string{"postgres://", "password", "raw_user", primary.Schema} {
+		if strings.Contains(err.Error()+out.String(), secret) {
+			t.Fatalf("secret %q leaked in %q / %v", secret, out.String(), err)
+		}
 	}
 }
 

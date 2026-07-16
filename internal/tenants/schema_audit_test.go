@@ -26,7 +26,7 @@ func auditFixture() fleetSnapshot {
 
 func auditMarker(schema string, id, op uuid.UUID, version int, checksum string) auditMarkerRow {
 	singleton := true
-	return auditMarkerRow{Schema: schema, Rows: []auditMarkerIdentity{{Singleton: &singleton, TenantID: &id, OperationID: &op, ContractVersion: &version, ContractChecksum: &checksum}}}
+	return auditMarkerRow{Schema: schema, RelKind: "r", Persistence: "p", Rows: []auditMarkerIdentity{{Singleton: &singleton, TenantID: &id, OperationID: &op, ContractVersion: &version, ContractChecksum: &checksum}}}
 }
 
 func TestEvaluateFleetSnapshotPassAndDeterministicDigest(t *testing.T) {

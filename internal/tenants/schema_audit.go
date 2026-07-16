@@ -91,10 +91,11 @@ type auditRegistryRow struct {
 	ContractChecksum  *string
 }
 type auditMarkerRow struct {
-	Schema  string
-	RelKind string
-	Rows    []auditMarkerIdentity
-	Issues  []string
+	Schema      string
+	RelKind     string
+	Persistence string
+	Rows        []auditMarkerIdentity
+	Issues      []string
 }
 type auditMarkerIdentity struct {
 	Singleton        *bool
@@ -577,7 +578,7 @@ func markerShapeKnownInvalid(s fleetSnapshot, schema string) bool {
 	for _, marker := range s.Markers {
 		if marker.Schema == schema {
 			_, canonical := canonicalMarkerIdentity(marker)
-			return marker.RelKind != "r" || len(marker.Issues) > 0 || !canonical
+			return marker.RelKind != "r" || marker.Persistence != "p" || len(marker.Issues) > 0 || !canonical
 		}
 	}
 	return true
@@ -626,11 +627,14 @@ func snapshotProbeInventory(s fleetSnapshot, schema string) (TenantInventory, bo
 	return i, true
 }
 
-func readPhysicalMarker(ctx context.Context, catalog migrationCatalogReader, schema, relkind string) (auditMarkerRow, error) {
-	marker := auditMarkerRow{Schema: schema, RelKind: relkind}
+func readPhysicalMarker(ctx context.Context, catalog migrationCatalogReader, schema, relkind, persistence string) (auditMarkerRow, error) {
+	marker := auditMarkerRow{Schema: schema, RelKind: relkind, Persistence: persistence}
 	if relkind != "r" {
 		marker.Issues = []string{"marker_relation_kind_invalid:" + relkind}
 		return marker, nil
+	}
+	if persistence != "p" {
+		marker.Issues = append(marker.Issues, "marker_relation_persistence_invalid:"+persistence)
 	}
 	markerCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -655,6 +659,11 @@ func readPhysicalMarker(ctx context.Context, catalog migrationCatalogReader, sch
 	}
 	rows.Close()
 	expected := map[string]string{"singleton": "boolean", "tenant_id": "uuid", "operation_id": "uuid", "schema_contract_version": "integer", "schema_contract_checksum": "text"}
+	for name := range shapes {
+		if _, ok := expected[name]; !ok {
+			marker.Issues = append(marker.Issues, "marker_column_unexpected:"+name)
+		}
+	}
 	for name, dataType := range expected {
 		shape, ok := shapes[name]
 		if !ok {
@@ -771,15 +780,15 @@ func (m *Migrator) readFleetSnapshot(ctx context.Context) (fleetSnapshot, error)
 		return s, err
 	}
 	rows.Close()
-	rows, err = tx.Query(ctx, `SELECT n.nspname,c.relkind::text FROM pg_namespace n JOIN pg_class c ON c.relnamespace=n.oid AND c.relname=$1 ORDER BY n.nspname`, storage.TenantIdentityTable)
+	rows, err = tx.Query(ctx, `SELECT n.nspname,c.relkind::text,c.relpersistence::text FROM pg_namespace n JOIN pg_class c ON c.relnamespace=n.oid AND c.relname=$1 ORDER BY n.nspname`, storage.TenantIdentityTable)
 	if err != nil {
 		return s, err
 	}
-	type markerRelation struct{ schema, relkind string }
+	type markerRelation struct{ schema, relkind, persistence string }
 	var relations []markerRelation
 	for rows.Next() {
 		var x markerRelation
-		if err = rows.Scan(&x.schema, &x.relkind); err != nil {
+		if err = rows.Scan(&x.schema, &x.relkind, &x.persistence); err != nil {
 			rows.Close()
 			return s, err
 		}
@@ -791,7 +800,7 @@ func (m *Migrator) readFleetSnapshot(ctx context.Context) (fleetSnapshot, error)
 	}
 	rows.Close()
 	for _, relation := range relations {
-		marker, markerErr := readPhysicalMarker(ctx, tx, relation.schema, relation.relkind)
+		marker, markerErr := readPhysicalMarker(ctx, tx, relation.schema, relation.relkind, relation.persistence)
 		if markerErr != nil {
 			return s, markerErr
 		}

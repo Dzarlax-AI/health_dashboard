@@ -221,14 +221,50 @@ func (r *Registry) ActivateProvisioned(ctx context.Context, expected Provisionin
 	if tag.RowsAffected() != 1 {
 		return ErrProvisioningStateConflict
 	}
-	if err := tx.Commit(ctx); err != nil {
+	commit := r.commitProvisioningTx
+	if commit == nil {
+		commit = func(commitCtx context.Context, tx pgx.Tx) error { return tx.Commit(commitCtx) }
+	}
+	if err := commit(ctx, tx); err != nil {
 		readCtx, cancel := detachedRegistryContext()
 		defer cancel()
-		op, readErr := r.GetProvisioningOperation(readCtx, expected.OperationID)
-		if readErr == nil && op.State == ProvisioningStateActive {
+		landed, readErr := r.activateProvisionedLanded(readCtx, expected, contract)
+		if readErr == nil && landed {
 			return nil
 		}
 		return err
 	}
 	return nil
+}
+
+func (r *Registry) activateProvisionedLanded(ctx context.Context, expected ProvisioningOperation, contract SchemaContractMetadata) (bool, error) {
+	var landed bool
+	err := r.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM health_registry.tenant_provisioning_operations AS op
+			JOIN health_registry.users AS u ON u.username = op.username
+			WHERE op.operation_id = $1
+			  AND op.tenant_id = $2
+			  AND op.username = $3
+			  AND op.schema_name = $4
+			  AND op.db_role = $5
+			  AND op.credential_version = $6
+			  AND op.state = 'active'
+			  AND op.error IS NULL
+			  AND u.username = $3
+			  AND u.tenant_id = $2
+			  AND u.schema_name = $4
+			  AND u.db_role = $5
+			  AND u.db_credential_version = $6
+			  AND u.provisioning_state = 'active'
+			  AND u.db_isolation_ready = true
+			  AND u.schema_contract_version = $7
+			  AND u.schema_contract_checksum = $8
+		)
+	`, expected.OperationID, expected.TenantID, expected.Username, expected.SchemaName, expected.DBRole, expected.CredentialVersion, contract.Version, contract.Checksum).Scan(&landed)
+	if err != nil {
+		return false, fmt.Errorf("verify provisioned activation commit: %w", err)
+	}
+	return landed, nil
 }

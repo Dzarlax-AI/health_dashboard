@@ -7,6 +7,7 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/health-schema-gate-test.XXXXXX")
 tmp=$(CDPATH= cd -- "$tmp" && pwd -P)
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin" "$tmp/compose" "$tmp/gate-tmp"
+chmod 0755 "$tmp/bin" "$tmp/compose" "$tmp/gate-tmp"
 printf '%s\n' 'services:' '  health-receiver:' '    image: ${HEALTH_IMAGE}' '    env_file:' '      - dependency.env' >"$tmp/compose/compose.yml"
 printf 'ORIGINAL=1\n' >"$tmp/compose/dependency.env"
 printf 'TENANT_DB_MASTER_SECRET=do-not-leak-this-secret\n' >"$tmp/audit.env"
@@ -31,7 +32,7 @@ replacements=[
  ("required_euid=0",f"required_euid={uid}"),
  ("trusted_uid=0",f"trusted_uid={uid}"),
  ("allow_untrusted_ancestors_for_tests=0","allow_untrusted_ancestors_for_tests=1"),
- ("trusted_path=\x27/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\x27",f"trusted_path=\x27{fake}:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\x27"),
+ ("trusted_path=\x27/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\x27",f"trusted_path=\x27{fake}:/usr/bin:/bin\x27"),
  ("temp_base=/var/tmp",f"temp_base=\x27{temp}\x27"),
  ("stability_interval=1","stability_interval=0.01"),
 ]
@@ -40,7 +41,9 @@ for old,new in replacements:
  s=s.replace(old,new,1)
 open(dst,"w",encoding="utf-8").write(s)
 ' "$production_gate" "$test_gate" "$tmp/bin" "$tmp/gate-tmp" "$uid"
-chmod +x "$test_gate"
+chmod 0755 "$test_gate"
+grep -Fq "trusted_path='$tmp/bin:/usr/bin:/bin'" "$test_gate" || { printf 'FAIL: generated test PATH is not the controlled portable fixture PATH\n' >&2; exit 1; }
+grep -Fq "trusted_path='/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'" "$production_gate" || { printf 'FAIL: production trusted PATH changed\n' >&2; exit 1; }
 
 digest_a='ghcr.io/example/health@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 digest_d='ghcr.io/example/health@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'
@@ -77,10 +80,24 @@ if [[ $1 == compose ]]; then
   done
   case "$action" in
     config)
+      if [[ $compose_file == *health-schema-recovery.*/* ]]; then
+        /usr/bin/python3 -c '
+import json,os,sys
+value=json.load(open(sys.argv[1])); target=value["services"]["health-receiver"]
+if os.environ.get("FAKE_RECOVERY_DRIFT")=="1": target["image"]="sha256:"+"f"*64
+if os.environ.get("FAKE_RECOVERY_BUILD")=="1": target["build"]={"context":"."}
+print(json.dumps(value,separators=(",",":")))
+' "$compose_file"
+        exit 0
+      fi
       image=${HEALTH_IMAGE:-}
       [[ ${FAKE_COMPOSE_IGNORES_IMAGE:-0} != 1 ]] || image='ghcr.io/example/health:previous'
-      if [[ ${FAKE_COMPOSE_BUILD_OVERRIDE:-0} == 1 ]]; then
+      if [[ ${FAKE_RECOVERY_RICH:-0} == 1 ]]; then
+        printf '{"services":{"health-receiver":{"image":"%s","pull_policy":"always","depends_on":{"unrelated":{"condition":"service_started"}},"networks":{"app":null},"volumes":[{"type":"volume","source":"health-data","target":"/data"}],"secrets":[{"source":"health-secret","target":"health-secret"}]},"unrelated":{"image":"busybox","environment":{"UNRELATED_SECRET":"must-not-persist"}}},"networks":{"app":{"name":"health-app"},"unused":{"name":"unused"}},"volumes":{"health-data":{"name":"health-data"},"unused-data":{"name":"unused-data"}},"secrets":{"health-secret":{"file":"/private/health-secret"},"unrelated-secret":{"environment":"UNRELATED_SECRET"}}}\n' "$image"
+      elif [[ ${FAKE_COMPOSE_BUILD_OVERRIDE:-0} == 1 ]]; then
         printf '{"services":{"health-receiver":{"image":"%s","build":{"context":"."}}}}\n' "$image"
+      elif [[ ${FAKE_COMPOSE_PULL_ALWAYS:-0} == 1 ]]; then
+        printf '{"services":{"health-receiver":{"image":"%s","pull_policy":"always"}}}\n' "$image"
       else
         printf '{"services":{"health-receiver":{"image":"%s"}}}\n' "$image"
       fi
@@ -179,7 +196,7 @@ if [[ $1 == logs ]]; then
 fi
 exit 99
 EOF
-chmod +x "$tmp/bin/docker"
+chmod 0755 "$tmp/bin/docker"
 
 reset_fixture() {
   : >"$command_log"
@@ -192,7 +209,7 @@ reset_fixture() {
 run_gate() {
   local output=$1 fail=${2:-} runtime=${3:-} payload=${4:-} digests=$digest_a
   (($# < 5)) || digests=$5
-  local special=${6:-} ignores=0 network_missing=0 malformed_env=0 render_swap=0 build_override=0 logical_fail=0
+  local special=${6:-} ignores=0 network_missing=0 malformed_env=0 render_swap=0 build_override=0 logical_fail=0 hardcoded_compose=0 pull_always=0 recovery_rich=0 recovery_drift=0 recovery_build=0
   case "$special" in
     ignored-image) ignores=1 ;;
     missing-network) network_missing=1 ;;
@@ -200,9 +217,17 @@ run_gate() {
     render-swap) render_swap=1 ;;
     build-override) build_override=1 ;;
     transport-logical-fail) logical_fail=1 ;;
+    hardcoded-compose) hardcoded_compose=1 ;;
+    pull-policy-always) pull_always=1 ;;
+    recovery-rich) recovery_rich=1 ;;
+    recovery-drift) recovery_drift=1 ;;
+    recovery-build) recovery_build=1 ;;
   esac
   local rc=0
   reset_fixture
+  if ((hardcoded_compose == 1)); then
+    printf '%s\n' 'services:' '  health-receiver:' "    image: $digest_a" '    env_file:' '      - dependency.env' >"$tmp/compose/compose.yml"
+  fi
   PATH="$tmp/bin:$PATH" FAKE_COMMAND_LOG="$command_log" FAKE_REPO_DIGESTS="$digests" \
     FAKE_TARGET_DIGEST="$digest_a" FAKE_PREVIOUS_ID="$previous_id" FAKE_STATE_DIR="$state_dir" \
     FAKE_FAIL_STAGE="$fail" FAKE_RUNTIME="$runtime" FAKE_PAYLOAD="$payload" \
@@ -211,6 +236,8 @@ run_gate() {
     FAKE_COMPOSE_IGNORES_IMAGE="$ignores" FAKE_NETWORK_MISSING="$network_missing" \
     FAKE_MALFORMED_ENV_LAUNCH="$malformed_env" FAKE_COMPOSE_SWAP_DURING_RENDER="$render_swap" \
     FAKE_COMPOSE_BUILD_OVERRIDE="$build_override" \
+    FAKE_COMPOSE_PULL_ALWAYS="$pull_always" FAKE_RECOVERY_RICH="$recovery_rich" \
+    FAKE_RECOVERY_DRIFT="$recovery_drift" FAKE_RECOVERY_BUILD="$recovery_build" \
     FAKE_TRANSPORT_LOGICAL_FAIL="$logical_fail" \
     "$test_gate" --image "$mutable" --compose-dir "$tmp/compose" --compose-file compose.yml \
       --project health-test --service health-receiver --primary-schema health_primary \
@@ -260,8 +287,15 @@ run_gate "$tmp/transport-logical-fail.out" '' '' '' "$digest_a" transport-logica
 grep -q 'Tenant schema release gate passed' "$tmp/transport-logical-fail.out" || { printf 'FAIL: valid logical transport audit failure was not accepted\n' >&2; exit 1; }
 
 preout=$(expect_failure preaudit preaudit)
-grep -q 'Reviewed recovery template' "$preout" || { printf 'FAIL: recovery template missing\n' >&2; exit 1; }
-grep -q "HEALTH_IMAGE=$previous_id docker compose" "$preout" || { printf 'FAIL: immutable recovery ID missing\n' >&2; exit 1; }
+grep -q 'Reviewed recovery command' "$preout" || { printf 'FAIL: recovery command missing\n' >&2; exit 1; }
+grep -q 'Private recovery Compose snapshot:' "$preout" || { printf 'FAIL: private recovery snapshot missing\n' >&2; exit 1; }
+recovery_snapshot=$(sed -n 's/^Private recovery Compose snapshot: //p' "$preout")
+[[ -f $recovery_snapshot ]] || { printf 'FAIL: recovery snapshot did not survive gate cleanup\n' >&2; exit 1; }
+/usr/bin/python3 -c 'import json,os,stat,sys; p,image=sys.argv[1:]; s=os.stat(p); d=os.stat(os.path.dirname(p)); v=json.load(open(p)); target=v["services"]["health-receiver"]; assert stat.S_IMODE(s.st_mode)==0o600 and stat.S_IMODE(d.st_mode)==0o700 and target["image"]==image and "build" not in target' "$recovery_snapshot" "$previous_id"
+/usr/bin/python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["services"]["health-receiver"]["pull_policy"]=="never"' "$recovery_snapshot"
+grep -Fq -- "-f $recovery_snapshot -p health-test up -d --no-deps health-receiver" "$preout" || { printf 'FAIL: recovery command does not reference private snapshot\n' >&2; exit 1; }
+grep -Fq -- "rm -rf -- $(dirname "$recovery_snapshot")" "$preout" || { printf 'FAIL: secure recovery snapshot cleanup instruction missing\n' >&2; exit 1; }
+[[ $(grep -c '<config> <--format> <json>' "$command_log") == 2 ]] || { printf 'FAIL: recovery snapshot was not Compose-validated\n' >&2; exit 1; }
 if grep -q 'docker-run-stderr-canary-secret\|do-not-leak-this-secret' "$preout" "$command_log"; then printf 'FAIL: secret leaked\n' >&2; exit 1; fi
 if grep -q '<up>\|<exec>\|<logs>' "$command_log"; then printf 'FAIL: pre-audit failure continued deployment\n' >&2; exit 1; fi
 
@@ -276,9 +310,47 @@ if PATH="$tmp/bin:$PATH" FAKE_COMMAND_LOG="$command_log" FAKE_REPO_DIGESTS="$dig
       --service health-receiver --primary-schema health_primary --audit-env "$tmp/audit.env" --network health-net >"$partial" 2>&1; then
   printf 'FAIL: partial previous inspection succeeded\n' >&2; exit 1
 fi
-grep -q 'immutable image ID is unavailable' "$partial" || { printf 'FAIL: safe partial-inspect message missing\n' >&2; exit 1; }
-if grep -q 'Reviewed recovery template\|HEALTH_IMAGE=' "$partial"; then printf 'FAIL: unsafe partial-inspect recovery command printed\n' >&2; exit 1; fi
+grep -q 'validated private snapshot.*unavailable' "$partial" || { printf 'FAIL: safe partial-inspect message missing\n' >&2; exit 1; }
+if grep -q 'Reviewed recovery command\|Private recovery Compose snapshot:' "$partial"; then printf 'FAIL: unsafe partial-inspect recovery command printed\n' >&2; exit 1; fi
 if grep -q 'inspect canary-secret' "$partial"; then printf 'FAIL: inspect stderr leaked\n' >&2; exit 1; fi
+
+# A source Compose file that hardcodes the audited target image must not make
+# the printed recovery command restart that failed target. The persistent
+# effective snapshot is independently pinned to the prior immutable image ID.
+hardcoded_out=$(expect_failure hardcoded-recovery preaudit '' '' "$digest_a" hardcoded-compose)
+grep -Fq "image: $digest_a" "$tmp/compose/compose.yml" || { printf 'FAIL: hardcoded target fixture was not active\n' >&2; exit 1; }
+hardcoded_snapshot=$(sed -n 's/^Private recovery Compose snapshot: //p' "$hardcoded_out")
+[[ -f $hardcoded_snapshot ]] || { printf 'FAIL: hardcoded-image recovery snapshot missing\n' >&2; exit 1; }
+/usr/bin/python3 -c 'import json,sys; target=json.load(open(sys.argv[1]))["services"]["health-receiver"]; assert target["image"]==sys.argv[2] and target["image"]!=sys.argv[3] and "build" not in target' "$hardcoded_snapshot" "$previous_id" "$digest_a"
+grep -Fq -- "-f $hardcoded_snapshot -p health-test up -d --no-deps health-receiver" "$hardcoded_out" || { printf 'FAIL: hardcoded-image recovery command reused source Compose\n' >&2; exit 1; }
+
+# An original pull_policy=always must be overridden so recovery cannot pull a
+# different image for the old reference.
+pull_out=$(expect_failure recovery-pull-policy preaudit '' '' "$digest_a" pull-policy-always)
+pull_snapshot=$(sed -n 's/^Private recovery Compose snapshot: //p' "$pull_out")
+/usr/bin/python3 -c 'import json,sys; target=json.load(open(sys.argv[1]))["services"]["health-receiver"]; assert target["pull_policy"]=="never" and target["image"]==sys.argv[2]' "$pull_snapshot" "$previous_id"
+
+# The persistent artifact keeps only the selected service and the top-level
+# resources it references. Unrelated service configuration and secrets must
+# not survive merely because they appeared in the rendered source model.
+rich_out=$(expect_failure recovery-minimal preaudit '' '' "$digest_a" recovery-rich)
+rich_snapshot=$(sed -n 's/^Private recovery Compose snapshot: //p' "$rich_out")
+/usr/bin/python3 -c '
+import json,sys
+v=json.load(open(sys.argv[1])); target=v["services"]["health-receiver"]
+assert set(v["services"])=={"health-receiver"} and "depends_on" not in target
+assert set(v["networks"])=={"app"} and set(v["volumes"])=={"health-data"} and set(v["secrets"])=={"health-secret"}
+assert "must-not-persist" not in open(sys.argv[1]).read() and "unrelated-secret" not in v["secrets"]
+' "$rich_snapshot"
+
+# Static JSON checks are not sufficient: if Compose interprets the snapshot as
+# a different image or reintroduces build, no executable recovery is printed.
+for recovery_fault in recovery-drift recovery-build; do
+  fault_out=$(expect_failure "$recovery_fault" preaudit '' '' "$digest_a" "$recovery_fault")
+  grep -q 'validated private snapshot.*unavailable' "$fault_out" || { printf 'FAIL: %s did not suppress recovery\n' "$recovery_fault" >&2; exit 1; }
+  if grep -q 'Reviewed recovery command\|Private recovery Compose snapshot:' "$fault_out"; then printf 'FAIL: %s printed unsafe recovery\n' "$recovery_fault" >&2; exit 1; fi
+  [[ $(grep -c '<config> <--format> <json>' "$command_log") == 2 ]] || { printf 'FAIL: %s did not exercise Compose validation\n' "$recovery_fault" >&2; exit 1; }
+done
 
 expect_failure migration-contradiction '' '' migration-contradiction >/dev/null
 expect_failure audit-contradiction '' '' audit-contradiction >/dev/null

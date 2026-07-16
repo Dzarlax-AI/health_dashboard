@@ -186,9 +186,18 @@ docker run --rm --entrypoint /usr/bin/id health-dashboard:schema-gate -u</code><
 
   <section class="approval">
     <h2>Implementation Record</h2>
-    <p><strong>Approved and implemented on <code>codex/tenant-schema-release-gate</code>.</strong> The implementation added schema contract v2, permanent identity metadata, fleet migration/audit CLI modes, the root-operated deployment gate, Docker packaging for both binaries, and a required disposable-PostgreSQL CI lane.</p>
+    <p><strong>Approved and implemented on <code>codex/tenant-schema-release-gate</code>.</strong> The implementation added schema contract v3, permanent identity metadata, fleet migration/audit CLI modes, the root-operated deployment gate, Docker packaging for both binaries, and a required disposable-PostgreSQL CI lane.</p>
     <p>Verified locally with <code>go test ./...</code>, <code>go vet ./...</code>, the hardened deployment-script suite, <code>make test-db-security</code> against PostgreSQL 16, and a production Docker build. The three-tenant integration proved all 27 expected denial probes. No production deployment, commit, push, PR, or issue closure was performed as part of implementation.</p>
     <p>Known operational limitation: the all-pairs proof grows quadratically with tenant count. Automatic database rollback remains intentionally unsupported; a failed gate leaves the service stopped and prints an immutable recovery template for reviewed manual use.</p>
+  </section>
+
+  <section>
+    <h2>PR Review Remediation — Approved 2026-07-16</h2>
+    <p>Before merge, address the validated PR #206 findings: interruption-safe nullable marker recovery; dedicated advisory-lock connections; exact ambiguous-commit recovery; preserved final-audit causes; separation of import housekeeping from contract DDL; runtime-critical column, key, and bootstrap-row contract verification; permanent exact marker shape; portable deployment fixtures; and a validated immutable recovery Compose snapshot.</p>
+    <p>The suggested per-tenant startup <code>continue</code> is intentionally excluded: without manager quarantine it would leave a failed tenant routable through an already-cached pool. Fleet startup remains fail-closed.</p>
+    <p>Required validation adds focused regression tests for every finding, the full Go suite, disposable PostgreSQL security lane, deployment fake-suite, container smoke, and a final independent review before the follow-up commit is pushed.</p>
+    <p><strong>Implementation result:</strong> nullable marker transitions are retryable; fleet locks use dedicated connections; ambiguous commits require an exact landed activation; final audit failures retain their operational cause; contract verification now covers exact runtime column and array types, conflict keys, and the complete bootstrap tuple; marker persistence and exact shape are audited; import cleanup is outside migration-critical DDL; and the recovery command uses a minimized, owner-private Compose artifact pinned to the previous local image with <code>pull_policy: never</code> and a secure cleanup instruction.</p>
+    <p><strong>Checks completed:</strong> full Go tests and vet, the disposable PostgreSQL registry/tenant/storage security lane on PostgreSQL 16, the hardened deployment fake-suite, <code>git diff --check</code>, a production Docker build, both-binary container smoke, and non-root runtime verification. Production deployment and issue #198 closure remain intentionally pending the real postflight.</p>
   </section>
 </main>
 </body>

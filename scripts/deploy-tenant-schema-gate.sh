@@ -151,28 +151,128 @@ compose_fingerprint=''
 compose_path=''
 compose_dir_canonical=''
 audit_env_snapshot=$tmp_dir/audit.env
+recovery_compose=''
+recovery_dir=''
+
+create_recovery_snapshot() {
+  local candidate interpreted interpreted_err
+  [[ -f ${rendered_compose:-} && $previous_image_id =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+  # `docker compose config` may contain resolved environment values. Persist
+  # it only in a new owner-private directory, never print its contents, and
+  # keep the original validated effective configuration otherwise unchanged.
+  recovery_dir=$($MKTEMP -d "$temp_base/health-schema-recovery.XXXXXX") || return 1
+  $CHMOD 700 "$recovery_dir" || { $RM -rf "$recovery_dir"; return 1; }
+  candidate=$recovery_dir/effective-compose.json
+  if ! "$PYTHON" -c '
+import json, os, stat, sys
+src,dst,service,image=sys.argv[1:5]; uid=int(sys.argv[5])
+with open(src,"r",encoding="utf-8") as f: value=json.load(f)
+services=value.get("services")
+if not isinstance(services,dict) or not isinstance(services.get(service),dict): raise SystemExit(1)
+target=dict(services[service])
+target["image"]=image
+target.pop("build",None)
+target["pull_policy"]="never"
+# `up --no-deps` intentionally excludes ordinary service dependencies. Reject
+# coupling forms whose semantics cannot be preserved in a single-service file.
+for key in ("links","volumes_from"):
+ if target.get(key): raise SystemExit(1)
+for key in ("network_mode","ipc","pid"):
+ if isinstance(target.get(key),str) and target[key].startswith("service:"): raise SystemExit(1)
+target.pop("depends_on",None)
+minimal={"services":{service:target}}
+def names(value):
+ if isinstance(value,dict): return set(value)
+ if not isinstance(value,list): return set()
+ out=set()
+ for item in value:
+  if isinstance(item,str): out.add(item)
+  elif isinstance(item,dict) and isinstance(item.get("source"),str): out.add(item["source"])
+ return out
+refs={"networks":names(target.get("networks")),"configs":names(target.get("configs")),"secrets":names(target.get("secrets"))}
+volumes=set()
+for item in target.get("volumes",[]) if isinstance(target.get("volumes",[]),list) else []:
+ if isinstance(item,dict) and item.get("type")=="volume" and isinstance(item.get("source"),str): volumes.add(item["source"])
+refs["volumes"]=volumes
+for section,wanted in refs.items():
+ available=value.get(section,{})
+ if not isinstance(available,dict) or not wanted.issubset(available):
+  if wanted: raise SystemExit(1)
+  continue
+ if wanted: minimal[section]={name:available[name] for name in sorted(wanted)}
+flags=os.O_WRONLY|os.O_CREAT|os.O_EXCL|getattr(os,"O_NOFOLLOW")
+fd=os.open(dst,flags,0o600)
+try:
+ raw=(json.dumps(minimal,separators=(",",":"),sort_keys=True)+"\n").encode()
+ view=memoryview(raw)
+ while view: view=view[os.write(fd,view):]
+ os.fsync(fd)
+finally: os.close(fd)
+ds=os.stat(os.path.dirname(dst)); s=os.stat(dst)
+if ds.st_uid != uid or stat.S_IMODE(ds.st_mode) != 0o700: raise SystemExit(1)
+if not stat.S_ISREG(s.st_mode) or s.st_uid != uid or stat.S_IMODE(s.st_mode) != 0o600: raise SystemExit(1)
+with open(dst,"r",encoding="utf-8") as f: checked=json.load(f)
+effective=checked.get("services",{}).get(service,{})
+if set(checked.get("services",{})) != {service}: raise SystemExit(1)
+if effective.get("image") != image or "build" in effective or effective.get("pull_policy") != "never": raise SystemExit(1)
+' "$rendered_compose" "$candidate" "$service" "$previous_image_id" "$trusted_uid"; then
+    $RM -rf "$recovery_dir"
+    recovery_dir=''
+    return 1
+  fi
+  interpreted=$tmp_dir/recovery-effective.json
+  interpreted_err=$tmp_dir/recovery-effective.stderr
+  : >"$interpreted"; : >"$interpreted_err"; $CHMOD 600 "$interpreted" "$interpreted_err"
+  if ! "$DOCKER" compose --project-directory "$compose_dir_canonical" -f "$candidate" -p "$compose_project" \
+    config --format json >"$interpreted" 2>"$interpreted_err"; then
+    $RM -rf "$recovery_dir"; recovery_dir=''; return 1
+  fi
+  if ! "$PYTHON" -c '
+import json, os, stat, sys
+candidate,interpreted,service,image=sys.argv[1:5]; uid=int(sys.argv[5])
+for path in (candidate,interpreted):
+ s=os.stat(path)
+ if not stat.S_ISREG(s.st_mode) or s.st_uid != uid or stat.S_IMODE(s.st_mode) != 0o600: raise SystemExit(1)
+with open(candidate,"r",encoding="utf-8") as f: source=json.load(f)
+with open(interpreted,"r",encoding="utf-8") as f: effective=json.load(f)
+for value in (source,effective):
+ services=value.get("services",{})
+ if set(services) != {service}: raise SystemExit(1)
+ target=services[service]
+ if target.get("image") != image or "build" in target or target.get("pull_policy") != "never": raise SystemExit(1)
+' "$candidate" "$interpreted" "$service" "$previous_image_id" "$trusted_uid"; then
+    $RM -rf "$recovery_dir"; recovery_dir=''; return 1
+  fi
+  recovery_compose=$candidate
+}
 
 print_recovery() {
   printf 'Release gate failed during stage: %s\n' "$stage" >&2
   if [[ $previous_container =~ ^[A-Za-z0-9_.-]+$ ]]; then printf 'Previous container ID: %s\n' "$previous_container" >&2; fi
   if [[ $previous_image =~ ^[A-Za-z0-9][A-Za-z0-9._/:@-]*$ ]]; then printf 'Previous image reference: %s\n' "$previous_image" >&2; fi
-  if [[ $previous_image_id =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  if [[ $previous_image_id =~ ^sha256:[0-9a-f]{64}$ && -n $recovery_compose ]]; then
     printf 'Previous immutable local image ID: %s\n' "$previous_image_id" >&2
-    printf 'Reviewed recovery template (verify database backward compatibility first):\n  HEALTH_IMAGE=' >&2
-    printf '%q' "$previous_image_id" >&2
-    printf ' docker compose --project-directory ' >&2; printf '%q' "$compose_dir_canonical" >&2
-    printf ' -f ' >&2; printf '%q' "$compose_path" >&2
+    printf 'Private recovery Compose snapshot: %s\n' "$recovery_compose" >&2
+    printf 'Reviewed recovery command (verify database backward compatibility first):\n  docker compose --project-directory ' >&2; printf '%q' "$compose_dir_canonical" >&2
+    printf ' -f ' >&2; printf '%q' "$recovery_compose" >&2
     printf ' -p ' >&2; printf '%q' "$compose_project" >&2
     printf ' up -d --no-deps ' >&2; printf '%q\n' "$service" >&2
+    printf 'After recovery review, remove the private snapshot:\n  ' >&2; printf '%q' "$RM" >&2
+    printf ' -rf -- ' >&2; printf '%q\n' "$recovery_dir" >&2
   else
-    printf 'Previous immutable image ID is unavailable; no executable recovery command can be printed safely.\n' >&2
+    printf 'A validated private snapshot for the previous immutable image is unavailable; no executable recovery command can be printed safely.\n' >&2
   fi
   printf 'No database rollback or old-image restart was attempted automatically.\n' >&2
 }
 on_exit() {
   local rc=$?
+  trap - EXIT
+  if ((rc != 0)) && ((success == 0)); then
+    create_recovery_snapshot || recovery_compose=''
+  fi
   $RM -rf "$tmp_dir"
   if ((rc != 0)) && ((success == 0)); then print_recovery; fi
+  exit "$rc"
 }
 trap on_exit EXIT
 

@@ -29,6 +29,24 @@ func TestEnsureSchemaContractContextHonorsCancellation(t *testing.T) {
 	}
 }
 
+func TestEnsureSchemaContractIgnoresImportHousekeepingFailure(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx := t.Context()
+	if _, err := db.pool.Exec(ctx, `
+		CREATE FUNCTION reject_stage_cleanup() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN RAISE EXCEPTION 'cleanup blocked by fixture'; END $$;
+		CREATE TRIGGER reject_stage_cleanup BEFORE DELETE ON import_stage_points
+		FOR EACH STATEMENT EXECUTE FUNCTION reject_stage_cleanup();
+		INSERT INTO import_runs(origin,source_name,started_at,snapshot_at,status,heartbeat_at)
+		VALUES('fixture','fixture',NOW()-INTERVAL '3 days',NOW()-INTERVAL '3 days','running',NOW()-INTERVAL '3 days')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.EnsureSchemaContractContext(ctx); err != nil {
+		t.Fatalf("contract migration was coupled to best-effort import cleanup: %v", err)
+	}
+}
+
 func TestVerifySchemaContractRejectsViewSpoofingRequiredTable(t *testing.T) {
 	db, cleanup := testDB(t)
 	defer cleanup()
@@ -92,6 +110,72 @@ func TestVerifySchemaContractRejectsWrongPartialIndexLiteralCase(t *testing.T) {
 	}
 	if err := db.VerifySchemaContractContext(ctx); err == nil || !strings.Contains(err.Error(), "index definition differs") {
 		t.Fatalf("wrong partial-index literal verification error=%v", err)
+	}
+}
+
+func TestVerifySchemaContractRejectsWrongRuntimeColumnShape(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx := t.Context()
+	if _, err := db.pool.Exec(ctx, `ALTER TABLE target_snapshots ALTER COLUMN formula_version TYPE bigint`); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if _, err := db.pool.Exec(context.Background(), `ALTER TABLE target_snapshots ALTER COLUMN formula_version TYPE integer USING formula_version::integer`); err != nil {
+			t.Errorf("restore target_snapshots.formula_version: %v", err)
+		}
+	}()
+	if err := db.VerifySchemaContractContext(ctx); err == nil || !strings.Contains(err.Error(), "column definition differs") {
+		t.Fatalf("wrong column shape verification error=%v", err)
+	}
+}
+
+func TestVerifySchemaContractRejectsWrongArrayElementType(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx := t.Context()
+	if _, err := db.pool.Exec(ctx, `ALTER TABLE daily_scores ALTER COLUMN stress_flags TYPE integer[] USING NULL::integer[]`); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if _, err := db.pool.Exec(context.Background(), `ALTER TABLE daily_scores ALTER COLUMN stress_flags TYPE text[] USING NULL::text[]`); err != nil {
+			t.Errorf("restore daily_scores.stress_flags: %v", err)
+		}
+	}()
+	if err := db.VerifySchemaContractContext(ctx); err == nil || !strings.Contains(err.Error(), "column definition differs") {
+		t.Fatalf("wrong array element type verification error=%v", err)
+	}
+}
+
+func TestVerifySchemaContractRejectsWrongCompositeConflictKey(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx := t.Context()
+	if _, err := db.pool.Exec(ctx, `ALTER TABLE target_snapshots DROP CONSTRAINT target_snapshots_pkey, ADD UNIQUE (date, sub_score)`); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if _, err := db.pool.Exec(context.Background(), `
+			ALTER TABLE target_snapshots
+				DROP CONSTRAINT IF EXISTS target_snapshots_date_sub_score_key,
+				ADD CONSTRAINT target_snapshots_pkey PRIMARY KEY (date, sub_score, target_kind)`); err != nil {
+			t.Errorf("restore target_snapshots conflict key: %v", err)
+		}
+	}()
+	if err := db.VerifySchemaContractContext(ctx); err == nil || !strings.Contains(err.Error(), "primary or unique constraint differs") {
+		t.Fatalf("wrong composite key verification error=%v", err)
+	}
+}
+
+func TestVerifySchemaContractRejectsMalformedBootstrapTuple(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx := t.Context()
+	if _, err := db.pool.Exec(ctx, `UPDATE source_epochs SET confirmed=false WHERE epoch_id=$1`, InitialSourceEpoch); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.VerifySchemaContractContext(ctx); err == nil || !strings.Contains(err.Error(), "required row is missing") {
+		t.Fatalf("malformed bootstrap tuple verification error=%v", err)
 	}
 }
 

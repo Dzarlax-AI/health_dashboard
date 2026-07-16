@@ -389,11 +389,10 @@ func runFleetMode(ctx context.Context, o options, out io.Writer, m fleetMigrator
 	finalAudit, auditErr := m.AuditFleet(ctx)
 	if auditErr != nil || finalAudit.Status != tenants.AuditStatusPass {
 		summary.ElapsedMS = time.Since(started).Milliseconds()
-		cause := error(ErrAuditFailed)
 		if auditErr != nil {
-			cause = ErrAuditOperational
+			return writeOutcomeJSON(out, summary, safeCauseError{action: "tenant contract migration final audit", cause: errors.Join(ErrMigrationFailed, ErrAuditOperational, auditErr)})
 		}
-		return writeOutcomeJSON(out, summary, safeCauseError{action: "tenant contract migration final audit", cause: errors.Join(ErrMigrationFailed, cause)})
+		return writeOutcomeJSON(out, summary, safeCauseError{action: "tenant contract migration final audit", cause: errors.Join(ErrMigrationFailed, ErrAuditFailed)})
 	}
 	if err = lock.Release(); err != nil {
 		summary.ElapsedMS = time.Since(started).Milliseconds()

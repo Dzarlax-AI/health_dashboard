@@ -221,6 +221,26 @@ func TestAuditFleetThreeTenantIntegration(t *testing.T) {
 	if _, err = admin.Exec(ctx, "ALTER TABLE "+markerTable+" ALTER COLUMN tenant_id TYPE uuid USING tenant_id::uuid"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err = admin.Exec(ctx, "ALTER TABLE "+markerTable+" SET UNLOGGED"); err != nil {
+		t.Fatal(err)
+	}
+	unlogged, auditErr := migrator.AuditFleet(ctx)
+	if auditErr != nil || !findingCodes(unlogged.Findings)["marker_relation_persistence_invalid"] {
+		t.Fatalf("unlogged marker audit=%+v err=%v", unlogged, auditErr)
+	}
+	if _, err = admin.Exec(ctx, "ALTER TABLE "+markerTable+" SET LOGGED"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = admin.Exec(ctx, "ALTER TABLE "+markerTable+" ADD COLUMN unexpected_marker_data text"); err != nil {
+		t.Fatal(err)
+	}
+	extraColumn, auditErr := migrator.AuditFleet(ctx)
+	if auditErr != nil || !findingCodes(extraColumn.Findings)["marker_column_unexpected"] {
+		t.Fatalf("extra marker column audit=%+v err=%v", extraColumn, auditErr)
+	}
+	if _, err = admin.Exec(ctx, "ALTER TABLE "+markerTable+" DROP COLUMN unexpected_marker_data"); err != nil {
+		t.Fatal(err)
+	}
 	for _, sql := range []string{"ALTER TABLE " + markerTable + " DROP CONSTRAINT IF EXISTS __tenant_identity_pkey", "ALTER TABLE " + markerTable + " DROP CONSTRAINT IF EXISTS __tenant_identity_singleton_check", "ALTER TABLE " + markerTable + " ALTER COLUMN singleton DROP DEFAULT", "ALTER TABLE " + markerTable + " ALTER COLUMN singleton TYPE text USING singleton::text"} {
 		if _, err = admin.Exec(ctx, sql); err != nil {
 			t.Fatal(err)

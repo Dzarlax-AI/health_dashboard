@@ -130,11 +130,14 @@ func prepareContractMigrationFleetSnapshot(s fleetSnapshot) (ContractMigrationFl
 }
 
 func migrationCompatibleMarkerShape(marker auditMarkerRow) bool {
-	if marker.RelKind != "r" {
+	if marker.RelKind != "r" || marker.Persistence != "p" {
 		return false
 	}
 	identity, canonical := canonicalMarkerIdentity(marker)
 	if !canonical || (identity.ContractVersion == nil) != (identity.ContractChecksum == nil) {
+		return false
+	}
+	if err := storage.ValidateSchemaContractTransition(identity.ContractVersion, identity.ContractChecksum, storage.SchemaContractVersion, storage.SchemaContractChecksum()); err != nil {
 		return false
 	}
 	if len(marker.Issues) == 0 {
@@ -143,7 +146,13 @@ func migrationCompatibleMarkerShape(marker auditMarkerRow) bool {
 	issues := sortedCopy(marker.Issues)
 	missing := []string{"marker_column_missing:schema_contract_checksum", "marker_column_missing:schema_contract_version"}
 	nullable := []string{"marker_column_nullability_mismatch:schema_contract_checksum:YES", "marker_column_nullability_mismatch:schema_contract_version:YES"}
-	return identity.ContractVersion == nil && identity.ContractChecksum == nil && (equalStrings(issues, missing) || equalStrings(issues, nullable))
+	if equalStrings(issues, missing) {
+		return identity.ContractVersion == nil && identity.ContractChecksum == nil
+	}
+	if !equalStrings(issues, nullable) {
+		return false
+	}
+	return true
 }
 
 func equalStrings(a, b []string) bool {

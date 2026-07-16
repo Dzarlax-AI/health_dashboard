@@ -22,7 +22,7 @@ func TestSchemaContractManifestIsDeterministic(t *testing.T) {
 	if !regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(first) {
 		t.Fatalf("schema contract checksum is not lowercase SHA-256: %q", first)
 	}
-	if want := "6844a4996ce551fb72cf87f26283cb8543149e52b35353e82386e95069a68426"; first != want {
+	if want := "962b237cf8b54bd857aa123b5cf4e764b274d4b4c19ede00244971e455d2f45e"; first != want {
 		t.Fatalf("schema contract checksum = %q, want %q; bump SchemaContractVersion when intentionally changing the manifest", first, want)
 	}
 	if SchemaContractVersion <= 0 {
@@ -175,7 +175,18 @@ func TestSchemaContractManifestDeclaresProvisioningVerifierObjects(t *testing.T)
 	if len(wantDefinitions) != 0 {
 		t.Fatalf("missing readiness column definitions: %v", wantDefinitions)
 	}
-	if len(manifest.RequiredRows) != 1 || manifest.RequiredRows[0].Table != "source_epochs" || manifest.RequiredRows[0].Column != "epoch_id" || manifest.RequiredRows[0].Value != InitialSourceEpoch {
+	arrayTypes := map[string]string{}
+	for _, definition := range manifest.ColumnDefinitions {
+		if definition.DataType == "ARRAY" {
+			arrayTypes[definition.Table+"."+definition.Column] = definition.UDTName
+		}
+	}
+	for _, column := range []string{"daily_scores.stress_flags", "energy_snapshots.flags"} {
+		if arrayTypes[column] != "_text" {
+			t.Errorf("array element type %s = %q, want _text", column, arrayTypes[column])
+		}
+	}
+	if len(manifest.RequiredRows) != 1 || manifest.RequiredRows[0].Table != "source_epochs" || manifest.RequiredRows[0].Values["epoch_id"] != InitialSourceEpoch || manifest.RequiredRows[0].Values["start_date"] != "2014-01-01" || manifest.RequiredRows[0].Values["confirmed"] != "true" {
 		t.Fatalf("bootstrap row invariant missing from manifest: %+v", manifest.RequiredRows)
 	}
 }
@@ -186,9 +197,10 @@ func TestSchemaContractManifestReturnsDefensiveCopies(t *testing.T) {
 	first.Columns["health_records"][0] = "mutated"
 	first.IndexDefinitions[0].Keys[0] = "mutated"
 	first.ColumnDefinitions[0].Column = "mutated"
-	first.RequiredRows[0].Value = "mutated"
+	first.Constraints[0].Columns[0] = "mutated"
+	first.RequiredRows[0].Values["epoch_id"] = "mutated"
 	second := SchemaContractManifest()
-	if containsString(second.Tables, "mutated") || containsString(second.Columns["health_records"], "mutated") || second.IndexDefinitions[0].Keys[0] == "mutated" || second.ColumnDefinitions[0].Column == "mutated" || second.RequiredRows[0].Value == "mutated" {
+	if containsString(second.Tables, "mutated") || containsString(second.Columns["health_records"], "mutated") || second.IndexDefinitions[0].Keys[0] == "mutated" || second.ColumnDefinitions[0].Column == "mutated" || second.Constraints[0].Columns[0] == "mutated" || second.RequiredRows[0].Values["epoch_id"] == "mutated" {
 		t.Fatal("schema contract manifest exposed mutable package state")
 	}
 }
@@ -197,10 +209,17 @@ func TestSchemaContractChecksumIncludesDefinitionsAndBootstrapRows(t *testing.T)
 	baseline := SchemaContractChecksum()
 	originalIndex := schemaContract.IndexDefinitions[0]
 	originalDefinition := schemaContract.ColumnDefinitions[0]
+	originalConstraint := schemaContract.Constraints[0]
 	originalRow := schemaContract.RequiredRows[0]
+	originalValues := make(map[string]string, len(originalRow.Values))
+	for key, value := range originalRow.Values {
+		originalValues[key] = value
+	}
 	t.Cleanup(func() {
 		schemaContract.IndexDefinitions[0] = originalIndex
 		schemaContract.ColumnDefinitions[0] = originalDefinition
+		schemaContract.Constraints[0] = originalConstraint
+		originalRow.Values = originalValues
 		schemaContract.RequiredRows[0] = originalRow
 	})
 	schemaContract.IndexDefinitions[0].Keys = []string{"wrong_column"}
@@ -213,10 +232,21 @@ func TestSchemaContractChecksumIncludesDefinitionsAndBootstrapRows(t *testing.T)
 		t.Fatal("checksum ignored a type/nullability invariant")
 	}
 	schemaContract.ColumnDefinitions[0] = originalDefinition
-	schemaContract.RequiredRows[0].Value = originalRow.Value + "_changed"
+	schemaContract.ColumnDefinitions[0].UDTName = "wrong_udt"
+	if got := SchemaContractChecksum(); got == baseline {
+		t.Fatal("checksum ignored an array/user-defined catalog type invariant")
+	}
+	schemaContract.ColumnDefinitions[0] = originalDefinition
+	schemaContract.Constraints[0].Columns = []string{"wrong_column"}
+	if got := SchemaContractChecksum(); got == baseline {
+		t.Fatal("checksum ignored a primary/unique constraint")
+	}
+	schemaContract.Constraints[0] = originalConstraint
+	schemaContract.RequiredRows[0].Values["epoch_id"] = originalValues["epoch_id"] + "_changed"
 	if got := SchemaContractChecksum(); got == baseline {
 		t.Fatal("checksum ignored a required bootstrap-row invariant")
 	}
+	originalRow.Values = originalValues
 	schemaContract.RequiredRows[0] = originalRow
 	if got := SchemaContractChecksum(); got != baseline {
 		t.Fatalf("checksum did not return to baseline after restoring manifest: %s", got)
