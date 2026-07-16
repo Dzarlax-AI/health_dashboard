@@ -239,7 +239,7 @@ func newManagerFixture(t *testing.T) managerFixture {
 		t.Fatal(err)
 	}
 	op.State = registry.ProvisioningStateProvisioning
-	if err := reg.ActivateProvisioned(ctx, op); err != nil {
+	if err := reg.ActivateProvisioned(ctx, op, registry.SchemaContractMetadata{Version: storage.SchemaContractVersion, Checksum: storage.SchemaContractChecksum()}); err != nil {
 		t.Fatal(err)
 	}
 	active, err := reg.GetBySchema(ctx, user.SchemaName)

@@ -32,6 +32,12 @@ type AIBlock struct {
 func (s *DB) EnsureAIBriefingBlocksTable() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	if err := s.EnsureAIBriefingBlocksTableContext(ctx); err != nil {
+		log.Printf("EnsureAIBriefingBlocksTable: %v", err)
+	}
+}
+
+func (s *DB) EnsureAIBriefingBlocksTableContext(ctx context.Context) error {
 	if _, err := s.pool.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS ai_briefing_blocks (
 			date         TEXT NOT NULL,
@@ -43,31 +49,35 @@ func (s *DB) EnsureAIBriefingBlocksTable() {
 			PRIMARY KEY (date, lang, block)
 		)
 	`); err != nil {
-		log.Printf("EnsureAIBriefingBlocksTable: %v", err)
+		return err
 	}
-	s.migrateLegacyAIBriefings(ctx)
+	return s.migrateLegacyAIBriefings(ctx)
 }
 
 // migrateLegacyAIBriefings copies any ai_briefings rows that don't yet have
 // matching per-block rows. Skips rows with empty lang (legacy pre-i18n
 // inserts) — they predate the new orchestrator's lang requirement.
-func (s *DB) migrateLegacyAIBriefings(ctx context.Context) {
+func (s *DB) migrateLegacyAIBriefings(ctx context.Context) error {
 	rows, err := s.pool.Query(ctx, `
 		SELECT date, lang, insight FROM ai_briefings
 		 WHERE insight <> '' AND lang <> ''`)
 	if err != nil {
-		return
+		return err
 	}
 	type row struct{ date, lang, insight string }
 	var batch []row
 	for rows.Next() {
 		var r row
 		if err := rows.Scan(&r.date, &r.lang, &r.insight); err != nil {
-			continue
+			rows.Close()
+			return err
 		}
 		batch = append(batch, r)
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
 
 	for _, r := range batch {
 		blocks := splitLegacyBriefing(r.insight)
@@ -75,13 +85,16 @@ func (s *DB) migrateLegacyAIBriefings(ctx context.Context) {
 			if text == "" {
 				continue
 			}
-			s.pool.Exec(ctx, `
+			if _, err := s.pool.Exec(ctx, `
 				INSERT INTO ai_briefing_blocks (date, lang, block, text, inputs_hash, created_at)
 				VALUES ($1, $2, $3, $4, 'legacy', NOW())
 				ON CONFLICT (date, lang, block) DO NOTHING`,
-				r.date, r.lang, block, text)
+				r.date, r.lang, block, text); err != nil {
+				return err
+			}
 		}
 	}
+	return nil
 }
 
 // splitLegacyBriefing parses the joined Gemini blob using the same header

@@ -44,15 +44,17 @@ func (r *Registry) GetSessionUser(ctx context.Context, token string) (*User, err
 	var tenantID *uuid.UUID
 	var dbRole *string
 	var credentialVersion *int
+	var contractVersion *int
+	var contractChecksum *string
 	err := r.pool.QueryRow(ctx, `
 		SELECT u.username, u.schema_name, u.api_key, u.password_hash, u.email, u.is_admin, u.created_at,
-		       u.tenant_id, u.db_role, u.db_credential_version, u.db_isolation_ready, u.provisioning_state
+		       u.tenant_id, u.db_role, u.db_credential_version, u.db_isolation_ready, u.schema_contract_version, u.schema_contract_checksum, u.provisioning_state
 		FROM health_registry.sessions s
 		JOIN health_registry.users u ON u.username = s.username
 		WHERE s.id_hash = $1 AND s.expires_at > NOW() AND u.provisioning_state = 'active'
 	`, sessionDigest(token)).Scan(
 		&u.Username, &u.SchemaName, &u.APIKey, &u.PasswordHash, &email, &u.IsAdmin, &u.CreatedAt,
-		&tenantID, &dbRole, &credentialVersion, &u.DBIsolationReady, &u.ProvisioningState,
+		&tenantID, &dbRole, &credentialVersion, &u.DBIsolationReady, &contractVersion, &contractChecksum, &u.ProvisioningState,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -71,6 +73,12 @@ func (r *Registry) GetSessionUser(ctx context.Context, token string) (*User, err
 	}
 	if credentialVersion != nil {
 		u.DBCredentialVersion = *credentialVersion
+	}
+	if contractVersion != nil {
+		u.SchemaContractVersion = *contractVersion
+	}
+	if contractChecksum != nil {
+		u.SchemaContractChecksum = *contractChecksum
 	}
 	if err := validateUserProvisioningMetadata(&u); err != nil {
 		return nil, fmt.Errorf("invalid provisioning metadata for session user %q: %w", u.Username, err)

@@ -2,11 +2,44 @@ package registry
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+func TestActivateProvisionedAdvancesContractMetadataWithCAS(t *testing.T) {
+	r, ctx := newEmptyTestRegistry(t)
+	u, op, err := r.ReserveUser(ctx, CreateUserReq{Username: "contract", Password: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.AdvanceProvisioning(ctx, op.OperationID, ProvisioningStatePending, ProvisioningStateProvisioning, ""); err != nil {
+		t.Fatal(err)
+	}
+	contract := SchemaContractMetadata{Version: 1, Checksum: strings.Repeat("a", 64)}
+	if _, err := r.pool.Exec(ctx, `UPDATE health_registry.users SET schema_contract_version=99,schema_contract_checksum=$2 WHERE username=$1`, u.Username, strings.Repeat("b", 64)); err != nil {
+		t.Fatal(err)
+	}
+	op.State = ProvisioningStateProvisioning
+	if err := r.ActivateProvisioned(ctx, op, contract); !errors.Is(err, ErrProvisioningStateConflict) {
+		t.Fatalf("activation with stale contract metadata error = %v", err)
+	}
+	if _, err := r.pool.Exec(ctx, `UPDATE health_registry.users SET schema_contract_version=NULL,schema_contract_checksum=NULL WHERE username=$1`, u.Username); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ActivateProvisioned(ctx, op, contract); err != nil {
+		t.Fatalf("activate provisioned contract: %v", err)
+	}
+	active, err := r.GetByUsername(ctx, u.Username)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active.SchemaContractVersion != contract.Version || active.SchemaContractChecksum != contract.Checksum || !active.DBIsolationReady {
+		t.Fatalf("active contract metadata = %+v", active)
+	}
+}
 
 func TestInactiveTenantIsRejectedByAuthLookups(t *testing.T) {
 	r, ctx := newEmptyTestRegistry(t)
@@ -41,6 +74,9 @@ func TestInactiveTenantIsRejectedByAuthLookups(t *testing.T) {
 	}
 	if afterMigration.TenantID != user.TenantID || afterMigration.DBRole != user.DBRole || afterMigration.DBCredentialVersion != user.DBCredentialVersion {
 		t.Fatalf("repeated migration changed immutable metadata: before=%#v after=%#v", user, afterMigration)
+	}
+	if afterMigration.SchemaContractVersion != 0 || afterMigration.SchemaContractChecksum != "" {
+		t.Fatalf("legacy active user was silently marked current: %#v", afterMigration)
 	}
 	token, err := r.CreateSession(ctx, user.Username, time.Hour)
 	if err != nil {

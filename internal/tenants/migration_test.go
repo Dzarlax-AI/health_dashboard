@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"health-receiver/internal/registry"
+	"health-receiver/internal/storage"
 )
 
 const validImage = "repo/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -160,6 +161,30 @@ func TestPlanRevokesPublicAndPreservesGrantOption(t *testing.T) {
 	}
 }
 
+func TestPlanDoesNotMaterializeImplicitFormerOwnerACL(t *testing.T) {
+	i := canonicalInventory()
+	i.SchemaACLIsNull = false
+	i.SchemaACL = []ACLRecord{{ObjectType: "SCHEMA", ObjectName: i.Schema, Grantor: i.SchemaOwner, Grantee: i.SchemaOwner, Privilege: "USAGE"}}
+	i.Objects = []OwnedObject{{Kind: "TABLE", Name: "metric_points", Owner: i.SchemaOwner, ACLIsNull: false}}
+	i.Grants = []GrantRecord{
+		{ObjectType: "TABLE", ObjectName: "metric_points", Grantor: i.SchemaOwner, Grantee: i.SchemaOwner, Privilege: "SELECT"},
+		{ObjectType: "TABLE", ObjectName: "metric_points", Grantor: i.SchemaOwner, Grantee: "reporter", Privilege: "SELECT"},
+		{ObjectType: "SEQUENCE", ObjectName: "metric_points_id_seq", Grantor: i.SchemaOwner, Grantee: i.SchemaOwner, Privilege: "USAGE"},
+	}
+	p, err := BuildMigrationPlan(i)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(p)
+	s := string(b)
+	if strings.Contains(s, `TO \"`+i.SchemaOwner+`\"`) {
+		t.Fatalf("implicit former-owner ACL was materialized: %s", s)
+	}
+	if !strings.Contains(s, `TO \"reporter\"`) {
+		t.Fatalf("reviewed third-party ACL was not preserved: %s", s)
+	}
+}
+
 func TestPlanUsesTablePrivilegeSyntaxForTableLikeRelations(t *testing.T) {
 	for _, kind := range []string{"TABLE", "VIEW", "MATERIALIZED VIEW", "FOREIGN TABLE"} {
 		i := canonicalInventory()
@@ -211,6 +236,63 @@ func TestRollbackPlanRestoresOwnersAndEffectivePrivileges(t *testing.T) {
 	}
 	if strings.Contains(s, `TO \"PUBLIC\"`) {
 		t.Fatal("PUBLIC was incorrectly emitted as a quoted role")
+	}
+}
+
+func TestRollbackPlanPreservesExistingTenantMarker(t *testing.T) {
+	i := canonicalInventory()
+	i.Objects = []OwnedObject{{Kind: "TABLE", Name: storage.TenantIdentityTable, Owner: "legacy_owner"}}
+	i.Marker = &TenantMarkerMetadata{TenantID: i.TenantID, OperationID: uuid.New()}
+	p, err := BuildRollbackPlan(i)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(p)
+	if !strings.Contains(string(b), "restore_tenant_identity_marker_contract") || strings.Contains(string(b), "drop_migration_tenant_identity_marker") {
+		t.Fatalf("existing marker rollback operations = %s", b)
+	}
+}
+
+func TestRegistryContractStateMatchesRequiresExactLandedState(t *testing.T) {
+	i := canonicalInventory()
+	version, checksum := storage.SchemaContractVersion, storage.SchemaContractChecksum()
+	if !registryContractStateMatches(i, i.TenantID, i.Schema, i.Role, i.CredentialVersion, "active", true, &version, &checksum) {
+		t.Fatal("exact landed registry state was not accepted")
+	}
+	wrongChecksum := strings.Repeat("f", 64)
+	for name, matched := range map[string]bool{
+		"wrong tenant":   registryContractStateMatches(i, uuid.New(), i.Schema, i.Role, i.CredentialVersion, "active", true, &version, &checksum),
+		"not ready":      registryContractStateMatches(i, i.TenantID, i.Schema, i.Role, i.CredentialVersion, "active", false, &version, &checksum),
+		"wrong state":    registryContractStateMatches(i, i.TenantID, i.Schema, i.Role, i.CredentialVersion, "pending", true, &version, &checksum),
+		"wrong checksum": registryContractStateMatches(i, i.TenantID, i.Schema, i.Role, i.CredentialVersion, "active", true, &version, &wrongChecksum),
+		"null contract":  registryContractStateMatches(i, i.TenantID, i.Schema, i.Role, i.CredentialVersion, "active", true, nil, nil),
+	} {
+		if matched {
+			t.Fatalf("%s was accepted as landed", name)
+		}
+	}
+}
+
+func TestRegistryRollbackStateMatchesRequiresExactRestoredState(t *testing.T) {
+	i := canonicalInventory()
+	if !registryRollbackStateMatches(i, i.TenantID, i.Schema, i.Role, i.CredentialVersion, "active", false, nil, nil) {
+		t.Fatal("exact NULL/NULL rollback state was not accepted")
+	}
+	version, checksum := storage.SchemaContractVersion, storage.SchemaContractChecksum()
+	i.Registry.ContractVersion, i.Registry.ContractChecksum = &version, &checksum
+	if !registryRollbackStateMatches(i, i.TenantID, i.Schema, i.Role, i.CredentialVersion, "active", false, &version, &checksum) {
+		t.Fatal("exact versioned rollback state was not accepted")
+	}
+	for name, matched := range map[string]bool{
+		"still ready":      registryRollbackStateMatches(i, i.TenantID, i.Schema, i.Role, i.CredentialVersion, "active", true, &version, &checksum),
+		"wrong identity":   registryRollbackStateMatches(i, uuid.New(), i.Schema, i.Role, i.CredentialVersion, "active", false, &version, &checksum),
+		"wrong state":      registryRollbackStateMatches(i, i.TenantID, i.Schema, i.Role, i.CredentialVersion, "pending", false, &version, &checksum),
+		"wrong contract":   registryRollbackStateMatches(i, i.TenantID, i.Schema, i.Role, i.CredentialVersion, "active", false, nil, nil),
+		"partial contract": registryRollbackStateMatches(i, i.TenantID, i.Schema, i.Role, i.CredentialVersion, "active", false, &version, nil),
+	} {
+		if matched {
+			t.Fatalf("%s was accepted as restored", name)
+		}
 	}
 }
 

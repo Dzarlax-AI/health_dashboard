@@ -29,8 +29,12 @@ func newEmptyTestRegistry(t *testing.T) (*Registry, context.Context) {
 		t.Fatal("disposable registry integration database must start with an empty health_registry.users table")
 	}
 	t.Cleanup(func() {
-		_, _ = r.pool.Exec(context.Background(), `DELETE FROM health_registry.tenant_provisioning_operations WHERE username IN ('alpha','bravo','third')`)
-		_, _ = r.pool.Exec(context.Background(), `DELETE FROM health_registry.users WHERE username IN ('alpha','bravo','third')`)
+		// The helper has already proved that this is a disposable database and
+		// that the registry started empty. Clear every row created by the test so
+		// newly added fixtures cannot leak state merely because their username
+		// was not added to a hard-coded cleanup list.
+		_, _ = r.pool.Exec(context.Background(), `DELETE FROM health_registry.tenant_provisioning_operations`)
+		_, _ = r.pool.Exec(context.Background(), `DELETE FROM health_registry.users`)
 	})
 	return r, ctx
 }

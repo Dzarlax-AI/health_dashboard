@@ -14,6 +14,12 @@ import (
 func (s *DB) EnsureAIBriefingsTable() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	if err := s.EnsureAIBriefingsTableContext(ctx); err != nil {
+		log.Printf("EnsureAIBriefingsTable: %v", err)
+	}
+}
+
+func (s *DB) EnsureAIBriefingsTableContext(ctx context.Context) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS ai_briefings (
 			date            TEXT PRIMARY KEY,
@@ -29,9 +35,10 @@ func (s *DB) EnsureAIBriefingsTable() {
 	}
 	for _, q := range stmts {
 		if _, err := s.pool.Exec(ctx, q); err != nil {
-			log.Printf("EnsureAIBriefingsTable: %v", err)
+			return err
 		}
 	}
+	return nil
 }
 
 // SaveAIBriefing stores (or replaces) the AI-generated insight for the given date.

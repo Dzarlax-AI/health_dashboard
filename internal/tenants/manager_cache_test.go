@@ -105,7 +105,56 @@ func (*scriptedRegistry) GetByEmail(context.Context, string) (*registry.User, er
 func (*scriptedRegistry) GetAllGlobalSettings(context.Context) map[string]string { return nil }
 
 func activeTestUser(schema string, id uuid.UUID, version int) *registry.User {
-	return &registry.User{SchemaName: schema, TenantID: id, DBRole: TenantRoleName(id), DBCredentialVersion: version, DBIsolationReady: true, ProvisioningState: registry.ProvisioningStateActive}
+	return &registry.User{SchemaName: schema, TenantID: id, DBRole: TenantRoleName(id), DBCredentialVersion: version, DBIsolationReady: true, SchemaContractVersion: storage.SchemaContractVersion, SchemaContractChecksum: storage.SchemaContractChecksum(), ProvisioningState: registry.ProvisioningStateActive}
+}
+
+func TestLoadTenantIdentityRejectsContractMismatch(t *testing.T) {
+	base := activeTestUser("health_a", uuid.New(), 1)
+	cases := map[string]func(*registry.User){
+		"null":              func(u *registry.User) { u.SchemaContractVersion, u.SchemaContractChecksum = 0, "" },
+		"stale":             func(u *registry.User) { u.SchemaContractVersion = storage.SchemaContractVersion - 1 },
+		"newer":             func(u *registry.User) { u.SchemaContractVersion = storage.SchemaContractVersion + 1 },
+		"partial version":   func(u *registry.User) { u.SchemaContractVersion = 0 },
+		"partial checksum":  func(u *registry.User) { u.SchemaContractChecksum = "" },
+		"checksum mismatch": func(u *registry.User) { u.SchemaContractChecksum = "mismatch" },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			u := *base
+			mutate(&u)
+			m, _, _ := isolatedTestManager(t, &schemaRegistry{users: map[string]*registry.User{u.SchemaName: &u}})
+			if _, err := m.loadTenantIdentity(context.Background(), u.SchemaName); err == nil {
+				t.Fatal("isolated manager accepted mismatched contract metadata")
+			}
+		})
+	}
+}
+
+func TestVerifyTenantContractRejectsMarkerMismatch(t *testing.T) {
+	u := activeTestUser("health_a", uuid.New(), 1)
+	m, db, _ := isolatedTestManager(t, &schemaRegistry{users: map[string]*registry.User{u.SchemaName: u}})
+	m.readTenantIdentity = func(context.Context, *storage.DB) (storage.TenantIdentity, error) {
+		return storage.TenantIdentity{TenantID: uuid.New(), SchemaContractVersion: storage.SchemaContractVersion, SchemaContractChecksum: storage.SchemaContractChecksum()}, nil
+	}
+	if err := m.VerifyTenantContract(context.Background(), u.SchemaName, db); err == nil {
+		t.Fatal("isolated worker gate accepted marker tenant mismatch")
+	}
+	m.readTenantIdentity = func(context.Context, *storage.DB) (storage.TenantIdentity, error) {
+		return storage.TenantIdentity{TenantID: u.TenantID, SchemaContractVersion: storage.SchemaContractVersion + 1, SchemaContractChecksum: storage.SchemaContractChecksum()}, nil
+	}
+	if err := m.VerifyTenantContract(context.Background(), u.SchemaName, db); err == nil {
+		t.Fatal("isolated worker gate accepted marker contract mismatch")
+	}
+	m.readTenantIdentity = func(context.Context, *storage.DB) (storage.TenantIdentity, error) {
+		return storage.TenantIdentity{TenantID: u.TenantID, SchemaContractVersion: storage.SchemaContractVersion, SchemaContractChecksum: storage.SchemaContractChecksum()}, nil
+	}
+	if err := m.VerifyTenantContract(context.Background(), u.SchemaName, db); err != nil {
+		t.Fatalf("isolated worker gate rejected matching contract: %v", err)
+	}
+	legacy := New(nil, "postgres://db.example/health")
+	if err := legacy.VerifyTenantContract(context.Background(), "health", &storage.DB{}); err != nil {
+		t.Fatalf("legacy compatibility gate returned %v", err)
+	}
 }
 
 func isolatedTestManager(t *testing.T, loader managerRegistry) (*Manager, *storage.DB, *int) {
@@ -129,7 +178,7 @@ func TestGetOrCreateCachedHitRejectsInactiveWithoutClosingPool(t *testing.T) {
 	failed.ProvisioningState = registry.ProvisioningStateFailed
 	loader := &scriptedRegistry{users: []*registry.User{&failed}}
 	m, db, closed := isolatedTestManager(t, loader)
-	m.tenants[active.SchemaName] = tenantIdentity{schemaName: active.SchemaName, tenantID: id, dbRole: active.DBRole, credentialVersion: 1}.entry(db)
+	m.tenants[active.SchemaName] = tenantIdentity{schemaName: active.SchemaName, tenantID: id, dbRole: active.DBRole, credentialVersion: 1, contractVersion: storage.SchemaContractVersion, contractChecksum: storage.SchemaContractChecksum()}.entry(db)
 	if got, err := m.GetOrCreate(context.Background(), active.SchemaName); err == nil || got != nil {
 		t.Fatalf("got=%p err=%v", got, err)
 	}
@@ -142,7 +191,7 @@ func TestGetOrCreateCachedMetadataErrorRetainsPool(t *testing.T) {
 	for _, lookupErr := range []error{context.Canceled, errors.New("temporary registry outage")} {
 		m, db, closed := isolatedTestManager(t, failingSchemaRegistry{err: lookupErr})
 		id := uuid.New()
-		cached := tenantIdentity{schemaName: "health_a", tenantID: id, dbRole: TenantRoleName(id), credentialVersion: 1}.entry(db)
+		cached := tenantIdentity{schemaName: "health_a", tenantID: id, dbRole: TenantRoleName(id), credentialVersion: 1, contractVersion: storage.SchemaContractVersion, contractChecksum: storage.SchemaContractChecksum()}.entry(db)
 		cached.callbacks = &TenantCallbacks{Backfill: func(bool) {}}
 		m.tenants["health_a"] = cached
 		if got, err := m.GetOrCreate(context.Background(), "health_a"); got != nil || !errors.Is(err, lookupErr) {
@@ -158,10 +207,12 @@ func TestGetOrCreateCachedHitRetainsPoolAndCallbacksOnIdentityDrift(t *testing.T
 	id := uuid.New()
 	current := activeTestUser("health_a", id, 2)
 	cases := []entry{
-		{schemaName: "health_other", tenantID: id, dbRole: current.DBRole, credentialVersion: 2},
-		{schemaName: current.SchemaName, tenantID: uuid.New(), dbRole: current.DBRole, credentialVersion: 2},
-		{schemaName: current.SchemaName, tenantID: id, dbRole: TenantRoleName(uuid.New()), credentialVersion: 2},
-		{schemaName: current.SchemaName, tenantID: id, dbRole: current.DBRole, credentialVersion: 1},
+		{schemaName: "health_other", tenantID: id, dbRole: current.DBRole, credentialVersion: 2, contractVersion: storage.SchemaContractVersion, contractChecksum: storage.SchemaContractChecksum()},
+		{schemaName: current.SchemaName, tenantID: uuid.New(), dbRole: current.DBRole, credentialVersion: 2, contractVersion: storage.SchemaContractVersion, contractChecksum: storage.SchemaContractChecksum()},
+		{schemaName: current.SchemaName, tenantID: id, dbRole: TenantRoleName(uuid.New()), credentialVersion: 2, contractVersion: storage.SchemaContractVersion, contractChecksum: storage.SchemaContractChecksum()},
+		{schemaName: current.SchemaName, tenantID: id, dbRole: current.DBRole, credentialVersion: 1, contractVersion: storage.SchemaContractVersion, contractChecksum: storage.SchemaContractChecksum()},
+		{schemaName: current.SchemaName, tenantID: id, dbRole: current.DBRole, credentialVersion: 2, contractVersion: storage.SchemaContractVersion + 1, contractChecksum: storage.SchemaContractChecksum()},
+		{schemaName: current.SchemaName, tenantID: id, dbRole: current.DBRole, credentialVersion: 2, contractVersion: storage.SchemaContractVersion, contractChecksum: "drifted"},
 	}
 	for _, cached := range cases {
 		loader := &scriptedRegistry{users: []*registry.User{current}}
@@ -183,7 +234,7 @@ func TestGetOrCreateCoalescesConcurrentCachedValidation(t *testing.T) {
 	active := activeTestUser("health_a", uuid.New(), 1)
 	loader := &blockingSchemaRegistry{user: active, entered: make(chan struct{}), release: make(chan struct{})}
 	m, db, closed := isolatedTestManager(t, loader)
-	m.tenants[active.SchemaName] = tenantIdentity{schemaName: active.SchemaName, tenantID: active.TenantID, dbRole: active.DBRole, credentialVersion: 1}.entry(db)
+	m.tenants[active.SchemaName] = tenantIdentity{schemaName: active.SchemaName, tenantID: active.TenantID, dbRole: active.DBRole, credentialVersion: 1, contractVersion: storage.SchemaContractVersion, contractChecksum: storage.SchemaContractChecksum()}.entry(db)
 	type result struct {
 		db  *storage.DB
 		err error

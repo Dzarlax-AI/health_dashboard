@@ -20,6 +20,12 @@ import (
 func (s *DB) EnsureEnergySnapshotsTable() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	if err := s.EnsureEnergySnapshotsTableContext(ctx); err != nil {
+		log.Printf("EnsureEnergySnapshotsTable: %v", err)
+	}
+}
+
+func (s *DB) EnsureEnergySnapshotsTableContext(ctx context.Context) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS energy_snapshots (
 			ts_bucket       TIMESTAMPTZ NOT NULL,
@@ -39,7 +45,8 @@ func (s *DB) EnsureEnergySnapshotsTable() {
 	}
 	for _, q := range stmts {
 		if _, err := s.pool.Exec(ctx, q); err != nil {
-			log.Printf("EnsureEnergySnapshotsTable: %v", err)
+			return err
 		}
 	}
+	return nil
 }

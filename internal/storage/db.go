@@ -151,7 +151,12 @@ func (s *DB) AssertIdentity(ctx context.Context, expectedUser, expectedSchema st
 func (s *DB) EnsureAllTables() error {
 	ctx, cancel := longCtx()
 	defer cancel()
+	return s.EnsureAllTablesContext(ctx)
+}
 
+// EnsureAllTablesContext is the caller-cancellable form used by provisioning
+// and explicit fleet migrations.
+func (s *DB) EnsureAllTablesContext(ctx context.Context) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS health_records (
 			id                     BIGSERIAL PRIMARY KEY,

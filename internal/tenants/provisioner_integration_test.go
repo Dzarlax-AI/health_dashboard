@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"health-receiver/internal/registry"
+	"health-receiver/internal/storage"
 	"health-receiver/internal/testdb"
 )
 
@@ -77,6 +78,65 @@ func TestProvisionerIsolationAndIdempotency(t *testing.T) {
 		if err := p.EnsureTenant(ctx, spec); err != nil {
 			t.Fatalf("idempotent ensure %s: %v", spec.SchemaName, err)
 		}
+		var markerTenant, markerOperation uuid.UUID
+		var contractVersion int
+		var contractChecksum string
+		if err := admin.QueryRow(ctx, "SELECT tenant_id,operation_id,schema_contract_version,schema_contract_checksum FROM "+pgxIdent(spec.SchemaName)+"."+pgxIdent(storage.TenantIdentityTable)+" WHERE singleton=true").Scan(&markerTenant, &markerOperation, &contractVersion, &contractChecksum); err != nil {
+			t.Fatalf("read permanent marker for %s: %v", spec.SchemaName, err)
+		}
+		if markerTenant != spec.TenantID || markerOperation != spec.OperationID || contractVersion != storage.SchemaContractVersion || contractChecksum != storage.SchemaContractChecksum() {
+			t.Fatalf("permanent marker for %s is stale", spec.SchemaName)
+		}
+	}
+	uc, opc, err := reg.ReserveUser(ctx, registry.CreateUserReq{Username: prefix + "c", SchemaName: prefix + "_c", Password: "fixture"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := TenantSpec{TenantID: opc.TenantID, OperationID: opc.OperationID, SchemaName: opc.SchemaName, DBRole: opc.DBRole, CredentialVersion: opc.CredentialVersion}
+	if err := reg.AdvanceProvisioning(ctx, c.OperationID, registry.ProvisioningStatePending, registry.ProvisioningStateProvisioning, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec(ctx, "CREATE ROLE "+pgxIdent(c.DBRole)+" LOGIN"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.setRoleMarker(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+pgxIdent(c.SchemaName)+" AUTHORIZATION "+pgxIdent(c.DBRole)); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.ensureMarker(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = admin.Exec(context.Background(), "REVOKE SELECT ON health_registry.users FROM "+pgxIdent(c.DBRole))
+		_, _ = admin.Exec(context.Background(), "REVOKE USAGE ON SCHEMA health_registry FROM "+pgxIdent(c.DBRole))
+		if err := p.cleanupOwnedFixture(context.Background(), c); err != nil {
+			t.Errorf("cleanup owned fixture %s: %v", c.SchemaName, err)
+		}
+		_ = reg.DeleteUser(context.Background(), uc.Username)
+	})
+	if _, err := admin.Exec(ctx, "GRANT USAGE ON SCHEMA health_registry TO "+pgxIdent(c.DBRole)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec(ctx, "GRANT SELECT ON health_registry.users TO "+pgxIdent(c.DBRole)); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.EnsureTenant(ctx, c); err == nil {
+		t.Fatal("provisioning accepted restricted-login isolation failure")
+	}
+	var permanentMarkerExists bool
+	if err := admin.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, c.SchemaName+"."+storage.TenantIdentityTable).Scan(&permanentMarkerExists); err != nil {
+		t.Fatal(err)
+	}
+	if permanentMarkerExists {
+		t.Fatal("permanent marker was written before restricted isolation proof")
+	}
+	if _, err := admin.Exec(ctx, "REVOKE SELECT ON health_registry.users FROM "+pgxIdent(c.DBRole)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec(ctx, "REVOKE USAGE ON SCHEMA health_registry FROM "+pgxIdent(c.DBRole)); err != nil {
+		t.Fatal(err)
 	}
 	missingIndex := pgxIdent(a.SchemaName) + `.idx_hourly_date`
 	if _, err := admin.Exec(ctx, "DROP INDEX "+missingIndex); err != nil {
@@ -146,9 +206,13 @@ func TestProvisionerIsolationAndIdempotency(t *testing.T) {
 	assertSQLState(t, registryPool, `CREATE TABLE `+pgxIdent(a.SchemaName)+`.registry_injected(id int)`, "42501")
 	for _, op := range []registry.ProvisioningOperation{opa, opb} {
 		op.State = registry.ProvisioningStateProvisioning
-		if err := reg.ActivateProvisioned(ctx, op); err != nil {
+		if err := reg.ActivateProvisioned(ctx, op, registry.SchemaContractMetadata{Version: storage.SchemaContractVersion, Checksum: storage.SchemaContractChecksum()}); err != nil {
 			t.Fatal(err)
 		}
+	}
+	activeA, err := reg.GetBySchema(ctx, a.SchemaName)
+	if err != nil || activeA.SchemaContractVersion != storage.SchemaContractVersion || activeA.SchemaContractChecksum != storage.SchemaContractChecksum() {
+		t.Fatalf("active registry contract = %+v, %v", activeA, err)
 	}
 	var bPassword string
 	if err := admin.QueryRow(ctx, `SELECT rolpassword FROM pg_authid WHERE rolname=$1`, b.DBRole).Scan(&bPassword); err != nil {
@@ -233,6 +297,12 @@ func requireDisposableProvisioningDB(t *testing.T, ctx context.Context, pool *pg
 	var users int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM health_registry.users`).Scan(&users); err != nil || users != 0 {
 		t.Fatalf("destructive provisioning test requires empty registry (users=%d, err=%v)", users, err)
+	}
+	// Provisioning operations intentionally outlive deleted users in production.
+	// Disposable integration fixtures delete their users during cleanup, so clear
+	// the orphaned operation history before the next destructive test starts.
+	if _, err := pool.Exec(ctx, `DELETE FROM health_registry.tenant_provisioning_operations`); err != nil {
+		t.Fatalf("clear disposable provisioning operations: %v", err)
 	}
 }
 

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
@@ -34,6 +35,14 @@ const (
 // applies schema migrations that aren't part of init.sql. Safe to call on
 // every startup — uses IF NOT EXISTS.
 func (s *DB) EnsureIndexes() {
+	ctx, cancel := longCtx()
+	defer cancel()
+	if err := s.EnsureIndexesContext(ctx); err != nil {
+		log.Printf("EnsureIndexes: %v", err)
+	}
+}
+
+func (s *DB) EnsureIndexesContext(ctx context.Context) error {
 	tableMigrations := []string{
 		importRunsTableDDL,
 		importRunCoverageTableDDL,
@@ -42,8 +51,8 @@ func (s *DB) EnsureIndexes() {
 		notificationDeliveriesTableDDL,
 	}
 	for _, ddl := range tableMigrations {
-		if err := s.execStartupDDL(ddl, ddlColumnStatementTimeout); err != nil {
-			log.Printf("migrate table: %v (query: %.80s)", err, ddl)
+		if err := s.execStartupDDLContext(ctx, ddl, ddlColumnStatementTimeout); err != nil {
+			return fmt.Errorf("migrate table: %w", err)
 		}
 	}
 
@@ -111,15 +120,15 @@ func (s *DB) EnsureIndexes() {
 		{"daily_scores", "sleep_unspecified", `ALTER TABLE daily_scores ADD COLUMN IF NOT EXISTS sleep_unspecified REAL`},
 	}
 
-	existingColumns, err := s.existingColumns(migrations)
+	existingColumns, err := s.existingColumnsContext(ctx, migrations)
 	if err != nil {
-		log.Printf("migrate: catalog check failed: %v", err)
+		return fmt.Errorf("migrate catalog check: %w", err)
 	} else {
 		migrations = pendingColumnMigrations(migrations, existingColumns)
 	}
 	for _, migration := range migrations {
-		if err := s.execStartupDDL(migration.ddl, ddlColumnStatementTimeout); err != nil {
-			log.Printf("migrate: %v (query: %.80s)", err, migration.ddl)
+		if err := s.execStartupDDLContext(ctx, migration.ddl, ddlColumnStatementTimeout); err != nil {
+			return fmt.Errorf("migrate column %s.%s: %w", migration.table, migration.column, err)
 		}
 	}
 
@@ -143,20 +152,21 @@ func (s *DB) EnsureIndexes() {
 	}
 	indexes = append(indexes, importStageIndexMigrations()...)
 
-	existingIndexes, err := s.existingIndexes(indexes)
+	existingIndexes, err := s.existingIndexesContext(ctx, indexes)
 	if err != nil {
-		log.Printf("ensure index: catalog check failed: %v", err)
+		return fmt.Errorf("ensure index catalog check: %w", err)
 	} else {
 		indexes = pendingIndexMigrations(indexes, existingIndexes)
 	}
 	for _, index := range indexes {
-		if err := s.execStartupDDL(index.ddl, ddlIndexStatementTimeout); err != nil {
-			log.Printf("ensure index: %v (query: %.80s)", err, index.ddl)
+		if err := s.execStartupDDLContext(ctx, index.ddl, ddlIndexStatementTimeout); err != nil {
+			return fmt.Errorf("ensure index %s: %w", index.name, err)
 		}
 	}
-	if err := s.CleanupAbandonedImportStages(24 * time.Hour); err != nil {
-		log.Printf("cleanup import staging: %v", err)
+	if err := s.cleanupAbandonedImportStages(ctx, 24*time.Hour); err != nil {
+		return fmt.Errorf("cleanup import staging: %w", err)
 	}
+	return nil
 }
 
 func pendingColumnMigrations(migrations []columnMigration, existing map[columnRef]bool) []columnMigration {
@@ -182,7 +192,10 @@ func pendingIndexMigrations(indexes []indexMigration, existing map[string]bool) 
 func (s *DB) existingColumns(migrations []columnMigration) (map[columnRef]bool, error) {
 	ctx, cancel := queryCtx()
 	defer cancel()
+	return s.existingColumnsContext(ctx, migrations)
+}
 
+func (s *DB) existingColumnsContext(ctx context.Context, migrations []columnMigration) (map[columnRef]bool, error) {
 	wanted := make(map[columnRef]bool, len(migrations))
 	for _, migration := range migrations {
 		wanted[columnRef{table: migration.table, column: migration.column}] = false
@@ -215,7 +228,10 @@ func (s *DB) existingColumns(migrations []columnMigration) (map[columnRef]bool, 
 func (s *DB) existingIndexes(indexes []indexMigration) (map[string]bool, error) {
 	ctx, cancel := queryCtx()
 	defer cancel()
+	return s.existingIndexesContext(ctx, indexes)
+}
 
+func (s *DB) existingIndexesContext(ctx context.Context, indexes []indexMigration) (map[string]bool, error) {
 	wanted := make(map[string]bool, len(indexes))
 	for _, index := range indexes {
 		wanted[index.name] = false
@@ -245,6 +261,12 @@ func (s *DB) existingIndexes(indexes []indexMigration) (map[string]bool, error) 
 
 func (s *DB) execStartupDDL(ddl string, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return s.execStartupDDLContext(ctx, ddl, timeout)
+}
+
+func (s *DB) execStartupDDLContext(parent context.Context, ddl string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
 	// The pool uses pgx SimpleProtocol by default; keep startup DDL out of
