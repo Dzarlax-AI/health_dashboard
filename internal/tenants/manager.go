@@ -43,23 +43,26 @@ type entry struct {
 	dbRole            string
 	credentialVersion int
 	schemaName        string
+	contractVersion   int
+	contractChecksum  string
 }
 
 // Manager holds one DB pool per tenant schema and routes requests by API key
 // or username. Tenant pools are created lazily on first access.
 type Manager struct {
-	reg              managerRegistry
-	connStr          string
-	metadata         tenantMetadataLoader
-	isolationEnabled bool
-	deriver          CredentialDeriver
-	openRestricted   restrictedPoolOpener
-	assertIdentity   func(context.Context, *storage.DB, string, string) error
-	closeDB          func(*storage.DB)
-	mu               sync.RWMutex
-	tenants          map[string]*entry // schema_name → entry
-	operations       map[string]*poolOperation
-	closed           bool
+	reg                managerRegistry
+	connStr            string
+	metadata           tenantMetadataLoader
+	isolationEnabled   bool
+	deriver            CredentialDeriver
+	openRestricted     restrictedPoolOpener
+	assertIdentity     func(context.Context, *storage.DB, string, string) error
+	readTenantIdentity func(context.Context, *storage.DB) (storage.TenantIdentity, error)
+	closeDB            func(*storage.DB)
+	mu                 sync.RWMutex
+	tenants            map[string]*entry // schema_name → entry
+	operations         map[string]*poolOperation
+	closed             bool
 
 	// legacyMode is set when health_registry could not be created.
 	// In this mode a single fallback DB is used for all requests.
@@ -132,6 +135,9 @@ func NewIsolated(metadata managerRegistry, tenantDSNBase string, deriver Credent
 		openRestricted: storage.NewRestrictedTenant,
 		assertIdentity: func(ctx context.Context, db *storage.DB, role, schema string) error {
 			return db.AssertIdentity(ctx, role, schema)
+		},
+		readTenantIdentity: func(ctx context.Context, db *storage.DB) (storage.TenantIdentity, error) {
+			return db.ReadTenantIdentity(ctx)
 		},
 		closeDB:    func(db *storage.DB) { db.Close() },
 		tenants:    make(map[string]*entry),
@@ -309,6 +315,8 @@ type tenantIdentity struct {
 	tenantID          uuid.UUID
 	dbRole            string
 	credentialVersion int
+	contractVersion   int
+	contractChecksum  string
 }
 
 func (m *Manager) loadTenantIdentity(ctx context.Context, schema string) (tenantIdentity, error) {
@@ -316,18 +324,38 @@ func (m *Manager) loadTenantIdentity(ctx context.Context, schema string) (tenant
 	if err != nil {
 		return tenantIdentity{}, fmt.Errorf("load active tenant metadata for schema %s: %w", schema, err)
 	}
-	if user.ProvisioningState != registry.ProvisioningStateActive || !user.DBIsolationReady || user.TenantID == uuid.Nil || user.SchemaName != schema || user.DBRole != TenantRoleName(user.TenantID) || user.DBCredentialVersion <= 0 {
+	if user.ProvisioningState != registry.ProvisioningStateActive || !user.DBIsolationReady || user.TenantID == uuid.Nil || user.SchemaName != schema || user.DBRole != TenantRoleName(user.TenantID) || user.DBCredentialVersion <= 0 || user.SchemaContractVersion != storage.SchemaContractVersion || user.SchemaContractChecksum != storage.SchemaContractChecksum() {
 		return tenantIdentity{}, fmt.Errorf("active tenant metadata for schema %s is incomplete or inconsistent", schema)
 	}
-	return tenantIdentity{schemaName: user.SchemaName, tenantID: user.TenantID, dbRole: user.DBRole, credentialVersion: user.DBCredentialVersion}, nil
+	return tenantIdentity{schemaName: user.SchemaName, tenantID: user.TenantID, dbRole: user.DBRole, credentialVersion: user.DBCredentialVersion, contractVersion: user.SchemaContractVersion, contractChecksum: user.SchemaContractChecksum}, nil
 }
 
 func (i tenantIdentity) entry(db *storage.DB) *entry {
-	return &entry{db: db, schemaName: i.schemaName, tenantID: i.tenantID, dbRole: i.dbRole, credentialVersion: i.credentialVersion}
+	return &entry{db: db, schemaName: i.schemaName, tenantID: i.tenantID, dbRole: i.dbRole, credentialVersion: i.credentialVersion, contractVersion: i.contractVersion, contractChecksum: i.contractChecksum}
 }
 
 func (i tenantIdentity) matchesEntry(e *entry) bool {
-	return e != nil && i.schemaName == e.schemaName && i.tenantID == e.tenantID && i.dbRole == e.dbRole && i.credentialVersion == e.credentialVersion
+	return e != nil && i.schemaName == e.schemaName && i.tenantID == e.tenantID && i.dbRole == e.dbRole && i.credentialVersion == e.credentialVersion && i.contractVersion == e.contractVersion && i.contractChecksum == e.contractChecksum
+}
+
+// VerifyTenantContract gates isolated worker startup on matching registry and
+// permanent marker metadata. Legacy shared-login mode remains compatible.
+func (m *Manager) VerifyTenantContract(ctx context.Context, schema string, db *storage.DB) error {
+	if !m.isolationEnabled {
+		return nil
+	}
+	identity, err := m.loadTenantIdentity(ctx, schema)
+	if err != nil {
+		return err
+	}
+	marker, err := m.readTenantIdentity(ctx, db)
+	if err != nil {
+		return err
+	}
+	if marker.TenantID != identity.tenantID || marker.SchemaContractVersion != identity.contractVersion || marker.SchemaContractChecksum != identity.contractChecksum {
+		return errors.New("tenant permanent marker does not match active registry contract")
+	}
+	return nil
 }
 
 // DBForAPIKey looks up a tenant by API key and returns their DB.
@@ -527,17 +555,19 @@ func (m *Manager) ActiveDBs(ctx context.Context) map[string]*storage.DB {
 		tenantID          uuid.UUID
 		dbRole            string
 		credentialVersion int
+		contractVersion   int
+		contractChecksum  string
 	}
 	m.mu.RLock()
 	candidates := make(map[string]candidate, len(m.tenants))
 	for schema, e := range m.tenants {
-		candidates[schema] = candidate{db: e.db, schemaName: e.schemaName, tenantID: e.tenantID, dbRole: e.dbRole, credentialVersion: e.credentialVersion}
+		candidates[schema] = candidate{db: e.db, schemaName: e.schemaName, tenantID: e.tenantID, dbRole: e.dbRole, credentialVersion: e.credentialVersion, contractVersion: e.contractVersion, contractChecksum: e.contractChecksum}
 	}
 	m.mu.RUnlock()
 	active := make(map[string]*storage.DB, len(candidates))
 	for schema, cached := range candidates {
 		user, err := m.metadata.GetBySchema(ctx, schema)
-		if err != nil || user.ProvisioningState != registry.ProvisioningStateActive || !user.DBIsolationReady || user.SchemaName != schema || user.SchemaName != cached.schemaName || user.TenantID != cached.tenantID || user.DBRole != cached.dbRole || user.DBCredentialVersion != cached.credentialVersion {
+		if err != nil || user.ProvisioningState != registry.ProvisioningStateActive || !user.DBIsolationReady || user.SchemaName != schema || user.SchemaName != cached.schemaName || user.TenantID != cached.tenantID || user.DBRole != cached.dbRole || user.DBCredentialVersion != cached.credentialVersion || user.SchemaContractVersion != cached.contractVersion || user.SchemaContractChecksum != cached.contractChecksum || user.SchemaContractVersion != storage.SchemaContractVersion || user.SchemaContractChecksum != storage.SchemaContractChecksum() {
 			continue
 		}
 		active[schema] = cached.db

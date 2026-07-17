@@ -43,6 +43,30 @@ The new application may be deployed with isolation disabled before the DB
 cutover. Enabling the flag before `db_isolation_ready=true` fails closed rather
 than falling back to the shared tenant credential.
 
+## Schema-contract release gate
+
+After the initial isolation cutover, all tenant schema upgrades use the CLI
+embedded in the same immutable image as the server. The authoritative modes
+are fleet-only:
+
+```bash
+/app/tenant_isolation --mode audit --all --primary-schema health
+/app/tenant_isolation --mode migrate-contract --all --primary-schema health --confirm
+```
+
+The audit compares the exact registry, permanent marker, and tenant-role sets;
+checks the deterministic schema version/checksum, owners, grants, default
+privileges, and role attributes; then runs registry-denial and all-pairs tenant
+probes. Output is one pseudonymous JSON document and a failure exits nonzero.
+
+For production, run `scripts/deploy-tenant-schema-gate.sh` as root with a
+root-owned mode-0600 environment file. The wrapper pins one image digest,
+audits before downtime, stops only the application service, migrates and audits
+while stopped, starts the pinned image, checks stability, audits again, and
+rechecks stability/logs. It never performs an automatic database rollback or
+old-image restart; on failure follow only the printed immutable recovery
+instructions after verifying backward compatibility.
+
 ## Rotation
 
 Configure the new secret/version as current and the old pair as previous. Then:

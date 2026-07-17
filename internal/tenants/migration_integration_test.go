@@ -2,12 +2,15 @@ package tenants
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"health-receiver/internal/registry"
+	"health-receiver/internal/storage"
 	"health-receiver/internal/testdb"
 )
 
@@ -52,6 +55,9 @@ func TestTenantMigrationApplyVerifyRollbackIntegration(t *testing.T) {
 	if err = legacy.ReconcileNonterminal(ctx); err != nil {
 		t.Fatal(err)
 	}
+	if _, err = admin.Exec(ctx, "DROP INDEX "+pgxIdent(user.SchemaName)+".idx_hourly_date"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err = admin.Exec(ctx, "CREATE SCHEMA "+pgxIdent(otherSchema)); err != nil {
 		t.Fatal(err)
 	}
@@ -77,9 +83,43 @@ func TestTenantMigrationApplyVerifyRollbackIntegration(t *testing.T) {
 	if err = migrator.ApplyRestrictedTenant(ctx, inventory, otherSchema); err != nil {
 		t.Fatal(err)
 	}
+	probeResult, err := migrator.VerifyRestrictedTenantAll(ctx, inventory, []string{otherSchema})
+	if err != nil {
+		t.Fatalf("all-pairs restricted verification: %v", err)
+	}
+	if probeResult.Total != 6 || probeResult.Denied != 6 || probeResult.RegistryFailures != 0 || probeResult.CrossTenantFailures != 0 || probeResult.OperationalFailures != 0 {
+		t.Fatalf("all-pairs probe result = %+v, want 6/6 denied", probeResult)
+	}
+	var repairedIndex bool
+	if err = admin.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_indexes WHERE schemaname=$1 AND indexname='idx_hourly_date')`, user.SchemaName).Scan(&repairedIndex); err != nil || !repairedIndex {
+		t.Fatalf("shared contract did not repair missing index: present=%v err=%v", repairedIndex, err)
+	}
 	active, err := reg.GetBySchema(ctx, user.SchemaName)
-	if err != nil || !active.DBIsolationReady {
+	if err != nil || !active.DBIsolationReady || active.SchemaContractVersion != storage.SchemaContractVersion || active.SchemaContractChecksum != storage.SchemaContractChecksum() {
 		t.Fatalf("active metadata after apply = %+v, %v", active, err)
+	}
+	marker, err := storage.ReadTenantIdentityMarker(ctx, admin, user.SchemaName)
+	if err != nil || marker.TenantID != user.TenantID || marker.SchemaContractVersion != storage.SchemaContractVersion || marker.SchemaContractChecksum != storage.SchemaContractChecksum() {
+		t.Fatalf("permanent marker after migration = %+v, %v", marker, err)
+	}
+	casInventory, err := migrator.Inventory(ctx, user.SchemaName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleCASInventory := casInventory
+	staleCASInventory.Registry.ContractVersion = nil
+	staleCASInventory.Registry.ContractChecksum = nil
+	if err := migrator.advanceRegistryContract(ctx, staleCASInventory, true); err != nil {
+		t.Fatalf("zero-row registry CAS did not accept exact landed target: %v", err)
+	}
+	if _, err := admin.Exec(ctx, `UPDATE health_registry.users SET schema_contract_checksum=$2 WHERE schema_name=$1`, user.SchemaName, strings.Repeat("f", 64)); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrator.advanceRegistryContract(ctx, casInventory, true); !errors.Is(err, registry.ErrProvisioningStateConflict) {
+		t.Fatalf("registry contract CAS accepted metadata drift: %v", err)
+	}
+	if _, err := admin.Exec(ctx, `UPDATE health_registry.users SET schema_contract_version=$2,schema_contract_checksum=$3 WHERE schema_name=$1`, user.SchemaName, storage.SchemaContractVersion, storage.SchemaContractChecksum()); err != nil {
+		t.Fatal(err)
 	}
 	rotationInventory, err := migrator.Inventory(ctx, user.SchemaName)
 	if err != nil {
@@ -99,8 +139,120 @@ func TestTenantMigrationApplyVerifyRollbackIntegration(t *testing.T) {
 	if err = migrator.RestoreTenant(ctx, inventory); err != nil {
 		t.Fatal(err)
 	}
+	if err = migrator.RestoreTenant(ctx, inventory); err != nil {
+		t.Fatalf("retry rollback for cutover-created marker: %v", err)
+	}
 	restored, err := reg.GetBySchema(ctx, user.SchemaName)
-	if err != nil || restored.DBIsolationReady {
+	if err != nil || restored.DBIsolationReady || restored.SchemaContractVersion != 0 || restored.SchemaContractChecksum != "" {
 		t.Fatalf("metadata after rollback = %+v, %v", restored, err)
+	}
+	var markerExists bool
+	if err = admin.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, user.SchemaName+"."+storage.TenantIdentityTable).Scan(&markerExists); err != nil || markerExists {
+		t.Fatalf("cutover-only marker after rollback: exists=%v err=%v", markerExists, err)
+	}
+	freshInventory, err := migrator.Inventory(ctx, user.SchemaName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if freshInventory.Registry.ContractVersion != nil || freshInventory.Registry.ContractChecksum != nil || freshInventory.Registry.IsolationReady {
+		t.Fatalf("fresh rollback inventory did not preserve NULL/NULL: %+v", freshInventory.Registry)
+	}
+	if err = migrator.ApplyRestrictedTenant(ctx, freshInventory, otherSchema); err != nil {
+		t.Fatalf("reapply after rollback: %v", err)
+	}
+	reapplied, err := reg.GetBySchema(ctx, user.SchemaName)
+	if err != nil || !reapplied.DBIsolationReady || reapplied.SchemaContractVersion != storage.SchemaContractVersion || reapplied.SchemaContractChecksum != storage.SchemaContractChecksum() {
+		t.Fatalf("metadata after reapply = %+v, %v", reapplied, err)
+	}
+	currentInventory, err := migrator.Inventory(ctx, user.SchemaName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentInventory.Marker == nil || currentInventory.Marker.ContractVersion == nil || currentInventory.Marker.ContractChecksum == nil {
+		t.Fatalf("current marker missing from inventory: %+v", currentInventory.Marker)
+	}
+	if err = migrator.RestoreTenant(ctx, currentInventory); err != nil {
+		t.Fatalf("restore existing current marker: %v", err)
+	}
+	if err = migrator.RestoreTenant(ctx, currentInventory); err != nil {
+		t.Fatalf("retry restore existing current marker: %v", err)
+	}
+	currentRestored, err := reg.GetBySchema(ctx, user.SchemaName)
+	if err != nil || currentRestored.DBIsolationReady || currentRestored.SchemaContractVersion != storage.SchemaContractVersion || currentRestored.SchemaContractChecksum != storage.SchemaContractChecksum() {
+		t.Fatalf("current contract metadata after rollback = %+v, %v", currentRestored, err)
+	}
+	marker, err = storage.ReadTenantIdentityMarker(ctx, admin, user.SchemaName)
+	if err != nil || marker.SchemaContractVersion != storage.SchemaContractVersion || marker.SchemaContractChecksum != storage.SchemaContractChecksum() {
+		t.Fatalf("existing current marker after rollback = %+v, %v", marker, err)
+	}
+	if _, err = admin.Exec(ctx, `UPDATE health_registry.users SET db_isolation_ready=true,schema_contract_version=$2,schema_contract_checksum=$3 WHERE schema_name=$1`, user.SchemaName, storage.SchemaContractVersion, storage.SchemaContractChecksum()); err != nil {
+		t.Fatal(err)
+	}
+	legacyMarkerInventory := currentInventory
+	legacyMarkerInventory.Registry.ContractVersion = nil
+	legacyMarkerInventory.Registry.ContractChecksum = nil
+	legacyMarkerInventory.Marker.ContractVersion = nil
+	legacyMarkerInventory.Marker.ContractChecksum = nil
+	if err = migrator.RestoreTenant(ctx, legacyMarkerInventory); err != nil {
+		t.Fatalf("restore pre-existing legacy NULL marker: %v", err)
+	}
+	if err = migrator.RestoreTenant(ctx, legacyMarkerInventory); err != nil {
+		t.Fatalf("retry restore pre-existing legacy NULL marker: %v", err)
+	}
+	if _, err = admin.Exec(ctx, "UPDATE "+pgxIdent(user.SchemaName)+"."+pgxIdent(storage.TenantIdentityTable)+` SET schema_contract_version=$1,schema_contract_checksum=$2 WHERE singleton=true`, storage.SchemaContractVersion, storage.SchemaContractChecksum()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = admin.Exec(ctx, `UPDATE health_registry.users SET db_isolation_ready=true,schema_contract_version=$2,schema_contract_checksum=$3 WHERE schema_name=$1`, user.SchemaName, storage.SchemaContractVersion, storage.SchemaContractChecksum()); err != nil {
+		t.Fatal(err)
+	}
+	olderVersion, olderChecksum := storage.SchemaContractVersion-1, strings.Repeat("a", 64)
+	olderInventory := currentInventory
+	olderInventory.Registry.ContractVersion = &olderVersion
+	olderInventory.Registry.ContractChecksum = &olderChecksum
+	olderInventory.Marker.ContractVersion = &olderVersion
+	olderInventory.Marker.ContractChecksum = &olderChecksum
+	if err = migrator.RestoreTenant(ctx, olderInventory); err != nil {
+		t.Fatalf("restore pre-existing older marker: %v", err)
+	}
+	if err = migrator.RestoreTenant(ctx, olderInventory); err != nil {
+		t.Fatalf("retry restore pre-existing older marker: %v", err)
+	}
+	for _, column := range []string{"schema_contract_version", "schema_contract_checksum"} {
+		if _, err = admin.Exec(ctx, "ALTER TABLE "+pgxIdent(user.SchemaName)+"."+pgxIdent(storage.TenantIdentityTable)+" ALTER COLUMN "+pgxIdent(column)+" DROP NOT NULL"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err = admin.Exec(ctx, "UPDATE "+pgxIdent(user.SchemaName)+"."+pgxIdent(storage.TenantIdentityTable)+` SET schema_contract_version=NULL,schema_contract_checksum=NULL WHERE singleton=true`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = admin.Exec(ctx, `UPDATE health_registry.users SET db_isolation_ready=true,schema_contract_version=NULL,schema_contract_checksum=NULL WHERE schema_name=$1`, user.SchemaName); err != nil {
+		t.Fatal(err)
+	}
+	contractInventory, err := migrator.Inventory(ctx, user.SchemaName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelledRegistryCtx, cancelRegistry := context.WithCancel(ctx)
+	cancelRegistry()
+	if err = migrator.advanceRegistryContract(cancelledRegistryCtx, contractInventory, true); err == nil {
+		t.Fatal("cancelled registry contract CAS unexpectedly succeeded")
+	}
+	unchangedAfterCancel, err := reg.GetBySchema(ctx, user.SchemaName)
+	if err != nil || unchangedAfterCancel.SchemaContractVersion != 0 || unchangedAfterCancel.SchemaContractChecksum != "" {
+		t.Fatalf("cancelled registry CAS changed contract metadata: %+v, %v", unchangedAfterCancel, err)
+	}
+	if err = migrator.MigrateTenantContract(ctx, contractInventory, []string{otherSchema}); err != nil {
+		t.Fatalf("explicit contract migration: %v", err)
+	}
+	currentContractInventory, err := migrator.Inventory(ctx, user.SchemaName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = migrator.MigrateTenantContract(ctx, currentContractInventory, []string{otherSchema}); err != nil {
+		t.Fatalf("idempotent explicit contract migration retry: %v", err)
+	}
+	currentContract, err := reg.GetBySchema(ctx, user.SchemaName)
+	if err != nil || !currentContract.DBIsolationReady || currentContract.SchemaContractVersion != storage.SchemaContractVersion || currentContract.SchemaContractChecksum != storage.SchemaContractChecksum() {
+		t.Fatalf("explicit contract migration metadata = %+v, %v", currentContract, err)
 	}
 }

@@ -75,9 +75,14 @@ func subjectiveCheckinTableDDL() string {
 func (s *DB) EnsureSubjectiveCheckinsTable() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if _, err := s.pool.Exec(ctx, subjectiveCheckinTableDDL()); err != nil {
+	if err := s.EnsureSubjectiveCheckinsTableContext(ctx); err != nil {
 		log.Printf("EnsureSubjectiveCheckinsTable: %v", err)
 	}
+}
+
+func (s *DB) EnsureSubjectiveCheckinsTableContext(ctx context.Context) error {
+	_, err := s.pool.Exec(ctx, subjectiveCheckinTableDDL())
+	return err
 }
 
 // ValidateCheckinAnswer reports whether ans is one of the four allowed

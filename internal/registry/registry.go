@@ -43,24 +43,28 @@ func (e *ErrNeedsManualSetup) Error() string {
 
 // User represents a registered health dashboard user.
 type User struct {
-	Username            string            `json:"username"`
-	SchemaName          string            `json:"schema_name"`
-	APIKey              string            `json:"api_key"`
-	PasswordHash        string            `json:"-"`
-	Email               string            `json:"email,omitempty"`
-	IsAdmin             bool              `json:"is_admin"`
-	CreatedAt           time.Time         `json:"created_at"`
-	TenantID            uuid.UUID         `json:"tenant_id,omitempty"`
-	DBRole              string            `json:"db_role,omitempty"`
-	DBCredentialVersion int               `json:"db_credential_version,omitempty"`
-	DBIsolationReady    bool              `json:"db_isolation_ready"`
-	ProvisioningState   ProvisioningState `json:"provisioning_state"`
+	Username               string            `json:"username"`
+	SchemaName             string            `json:"schema_name"`
+	APIKey                 string            `json:"api_key"`
+	PasswordHash           string            `json:"-"`
+	Email                  string            `json:"email,omitempty"`
+	IsAdmin                bool              `json:"is_admin"`
+	CreatedAt              time.Time         `json:"created_at"`
+	TenantID               uuid.UUID         `json:"tenant_id,omitempty"`
+	DBRole                 string            `json:"db_role,omitempty"`
+	DBCredentialVersion    int               `json:"db_credential_version,omitempty"`
+	DBIsolationReady       bool              `json:"db_isolation_ready"`
+	SchemaContractVersion  int               `json:"schema_contract_version,omitempty"`
+	SchemaContractChecksum string            `json:"schema_contract_checksum,omitempty"`
+	ProvisioningState      ProvisioningState `json:"provisioning_state"`
 }
 
 // Registry manages user accounts stored in the health_registry schema.
 // All queries use fully-qualified table names so search_path doesn't matter.
 type Registry struct {
-	pool *pgxpool.Pool
+	pool                 *pgxpool.Pool
+	connConfig           *pgx.ConnConfig
+	commitProvisioningTx func(context.Context, pgx.Tx) error
 }
 
 // New opens a registry connection. The pool uses no fixed search_path so it
@@ -82,7 +86,7 @@ func New(ctx context.Context, connStr string) (*Registry, error) {
 		pool.Close()
 		return nil, fmt.Errorf("ping: %w", err)
 	}
-	return &Registry{pool: pool}, nil
+	return &Registry{pool: pool, connConfig: config.ConnConfig.Copy()}, nil
 }
 
 // EnsureSchema creates the health_registry schema and users table if they do
@@ -169,6 +173,8 @@ func (r *Registry) ensureProvisioningMetadata(ctx context.Context) error {
 		`ALTER TABLE health_registry.users ADD COLUMN IF NOT EXISTS db_role TEXT`,
 		`ALTER TABLE health_registry.users ADD COLUMN IF NOT EXISTS db_credential_version INTEGER`,
 		`ALTER TABLE health_registry.users ADD COLUMN IF NOT EXISTS db_isolation_ready BOOLEAN NOT NULL DEFAULT false`,
+		`ALTER TABLE health_registry.users ADD COLUMN IF NOT EXISTS schema_contract_version INTEGER`,
+		`ALTER TABLE health_registry.users ADD COLUMN IF NOT EXISTS schema_contract_checksum TEXT`,
 		`ALTER TABLE health_registry.users ADD COLUMN IF NOT EXISTS provisioning_state TEXT NOT NULL DEFAULT 'active'`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_registry_users_tenant_id ON health_registry.users (tenant_id)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_registry_users_db_role ON health_registry.users (db_role)`,
@@ -396,7 +402,7 @@ func (r *Registry) DetectLegacyInstall(ctx context.Context) bool {
 func (r *Registry) GetByAPIKey(ctx context.Context, key string) (*User, error) {
 	return r.getUser(ctx, `
 		SELECT username, schema_name, api_key, password_hash, email, is_admin, created_at,
-		       tenant_id, db_role, db_credential_version, db_isolation_ready, provisioning_state
+		       tenant_id, db_role, db_credential_version, db_isolation_ready, schema_contract_version, schema_contract_checksum, provisioning_state
 		FROM health_registry.users WHERE api_key = $1 AND provisioning_state = 'active'
 	`, key)
 }
@@ -405,7 +411,7 @@ func (r *Registry) GetByAPIKey(ctx context.Context, key string) (*User, error) {
 func (r *Registry) GetByUsername(ctx context.Context, username string) (*User, error) {
 	return r.getUser(ctx, `
 		SELECT username, schema_name, api_key, password_hash, email, is_admin, created_at,
-		       tenant_id, db_role, db_credential_version, db_isolation_ready, provisioning_state
+		       tenant_id, db_role, db_credential_version, db_isolation_ready, schema_contract_version, schema_contract_checksum, provisioning_state
 		FROM health_registry.users WHERE username = $1 AND provisioning_state = 'active'
 	`, username)
 }
@@ -414,7 +420,7 @@ func (r *Registry) GetByUsername(ctx context.Context, username string) (*User, e
 func (r *Registry) GetByEmail(ctx context.Context, email string) (*User, error) {
 	return r.getUser(ctx, `
 		SELECT username, schema_name, api_key, password_hash, email, is_admin, created_at,
-		       tenant_id, db_role, db_credential_version, db_isolation_ready, provisioning_state
+		       tenant_id, db_role, db_credential_version, db_isolation_ready, schema_contract_version, schema_contract_checksum, provisioning_state
 		FROM health_registry.users WHERE email = $1 AND provisioning_state = 'active'
 	`, email)
 }
@@ -425,7 +431,7 @@ func (r *Registry) GetByEmail(ctx context.Context, email string) (*User, error) 
 func (r *Registry) GetBySchema(ctx context.Context, schema string) (*User, error) {
 	return r.getUser(ctx, `
 		SELECT username, schema_name, api_key, password_hash, email, is_admin, created_at,
-		       tenant_id, db_role, db_credential_version, db_isolation_ready, provisioning_state
+		       tenant_id, db_role, db_credential_version, db_isolation_ready, schema_contract_version, schema_contract_checksum, provisioning_state
 		FROM health_registry.users WHERE schema_name = $1 AND provisioning_state = 'active'
 	`, schema)
 }
@@ -436,9 +442,11 @@ func (r *Registry) getUser(ctx context.Context, query string, arg string) (*User
 	var tenantID *uuid.UUID
 	var dbRole *string
 	var credentialVersion *int
+	var contractVersion *int
+	var contractChecksum *string
 	err := r.pool.QueryRow(ctx, query, arg).Scan(
 		&u.Username, &u.SchemaName, &u.APIKey, &u.PasswordHash, &email, &u.IsAdmin, &u.CreatedAt,
-		&tenantID, &dbRole, &credentialVersion, &u.DBIsolationReady, &u.ProvisioningState,
+		&tenantID, &dbRole, &credentialVersion, &u.DBIsolationReady, &contractVersion, &contractChecksum, &u.ProvisioningState,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -457,6 +465,12 @@ func (r *Registry) getUser(ctx context.Context, query string, arg string) (*User
 	}
 	if credentialVersion != nil {
 		u.DBCredentialVersion = *credentialVersion
+	}
+	if contractVersion != nil {
+		u.SchemaContractVersion = *contractVersion
+	}
+	if contractChecksum != nil {
+		u.SchemaContractChecksum = *contractChecksum
 	}
 	if err := validateUserProvisioningMetadata(&u); err != nil {
 		return nil, fmt.Errorf("invalid provisioning metadata for user %q: %w", u.Username, err)
@@ -477,7 +491,7 @@ func (r *Registry) ListActiveUsers(ctx context.Context) ([]User, error) {
 func (r *Registry) listUsers(ctx context.Context, where string) ([]User, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT username, schema_name, api_key, password_hash, email, is_admin, created_at,
-		       tenant_id, db_role, db_credential_version, db_isolation_ready, provisioning_state
+		       tenant_id, db_role, db_credential_version, db_isolation_ready, schema_contract_version, schema_contract_checksum, provisioning_state
 		FROM health_registry.users`+where+` ORDER BY created_at
 	`)
 	if err != nil {
@@ -492,7 +506,9 @@ func (r *Registry) listUsers(ctx context.Context, where string) ([]User, error) 
 		var tenantID *uuid.UUID
 		var dbRole *string
 		var credentialVersion *int
-		if err := rows.Scan(&u.Username, &u.SchemaName, &u.APIKey, &u.PasswordHash, &email, &u.IsAdmin, &u.CreatedAt, &tenantID, &dbRole, &credentialVersion, &u.DBIsolationReady, &u.ProvisioningState); err != nil {
+		var contractVersion *int
+		var contractChecksum *string
+		if err := rows.Scan(&u.Username, &u.SchemaName, &u.APIKey, &u.PasswordHash, &email, &u.IsAdmin, &u.CreatedAt, &tenantID, &dbRole, &credentialVersion, &u.DBIsolationReady, &contractVersion, &contractChecksum, &u.ProvisioningState); err != nil {
 			return nil, err
 		}
 		if email != nil {
@@ -506,6 +522,12 @@ func (r *Registry) listUsers(ctx context.Context, where string) ([]User, error) 
 		}
 		if credentialVersion != nil {
 			u.DBCredentialVersion = *credentialVersion
+		}
+		if contractVersion != nil {
+			u.SchemaContractVersion = *contractVersion
+		}
+		if contractChecksum != nil {
+			u.SchemaContractChecksum = *contractChecksum
 		}
 		if err := validateUserProvisioningMetadata(&u); err != nil {
 			return nil, fmt.Errorf("invalid provisioning metadata for user %q: %w", u.Username, err)
@@ -557,7 +579,21 @@ func (r *Registry) CreateLegacyUser(ctx context.Context, req CreateUserReq) (*Us
 	if err != nil {
 		return nil, err
 	}
-	return insertPreparedUser(ctx, u, email, r.pool)
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared($1)`, FleetMigrationAdvisoryLockKey); err != nil {
+		return nil, fmt.Errorf("acquire legacy reservation fleet lock: %w", err)
+	}
+	if _, err = insertPreparedUser(ctx, u, email, tx); err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return u, nil
 }
 func (r *Registry) CreateLegacyFirstUser(ctx context.Context, req CreateUserReq) (*User, error) {
 	u, email, err := prepareUser(req)
@@ -569,6 +605,9 @@ func (r *Registry) CreateLegacyFirstUser(ctx context.Context, req CreateUserReq)
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared($1)`, FleetMigrationAdvisoryLockKey); err != nil {
+		return nil, fmt.Errorf("acquire legacy first-user reservation fleet lock: %w", err)
+	}
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(918273645)`); err != nil {
 		return nil, err
 	}
@@ -624,6 +663,9 @@ func (r *Registry) ReserveUser(ctx context.Context, req CreateUserReq) (*User, P
 		return nil, ProvisioningOperation{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared($1)`, FleetMigrationAdvisoryLockKey); err != nil {
+		return nil, ProvisioningOperation{}, fmt.Errorf("acquire reservation fleet lock: %w", err)
+	}
 	if _, err := insertPreparedUser(ctx, u, email, tx); err != nil {
 		return nil, ProvisioningOperation{}, err
 	}
@@ -722,6 +764,9 @@ func (r *Registry) ReserveFirstUser(ctx context.Context, req CreateUserReq) (*Us
 		return nil, ProvisioningOperation{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared($1)`, FleetMigrationAdvisoryLockKey); err != nil {
+		return nil, ProvisioningOperation{}, fmt.Errorf("acquire first-user reservation fleet lock: %w", err)
+	}
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(918273645)`); err != nil {
 		return nil, ProvisioningOperation{}, err
 	}
@@ -767,13 +812,24 @@ func (r *Registry) MigrateFromEnv(ctx context.Context, apiKey, passwordHash, sch
 		emailPtr = &email
 	}
 	tenantID := uuid.New()
-	_, err := r.pool.Exec(ctx, `
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared($1)`, FleetMigrationAdvisoryLockKey); err != nil {
+		return fmt.Errorf("acquire environment migration fleet lock: %w", err)
+	}
+	_, err = tx.Exec(ctx, `
 		INSERT INTO health_registry.users
 			(username, schema_name, api_key, password_hash, email, is_admin, tenant_id, db_role, db_credential_version, provisioning_state)
 		VALUES ('admin', $1, $2, $3, $4, true, $5, $6, 1, 'active')
 		ON CONFLICT (username) DO UPDATE SET email = EXCLUDED.email WHERE health_registry.users.email IS NULL
 	`, schemaName, apiKey, passwordHash, emailPtr, tenantID, tenantDBRole(tenantID))
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // DeleteUser removes a user by username. Does not drop their schema.

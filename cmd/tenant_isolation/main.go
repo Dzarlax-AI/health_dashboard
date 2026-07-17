@@ -11,19 +11,30 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"time"
 
+	"health-receiver/internal/storage"
 	"health-receiver/internal/tenants"
 )
 
 type mode string
 
 const (
-	modeInventory mode = "inventory"
-	modeDryRun    mode = "dry-run"
-	modeApply     mode = "apply"
-	modeVerify    mode = "verify"
-	modeRotate    mode = "rotate"
-	modeRollback  mode = "rollback"
+	modeInventory       mode = "inventory"
+	modeDryRun          mode = "dry-run"
+	modeApply           mode = "apply"
+	modeVerify          mode = "verify"
+	modeRotate          mode = "rotate"
+	modeRollback        mode = "rollback"
+	modeMigrateContract mode = "migrate-contract"
+	modeAudit           mode = "audit"
+)
+
+var (
+	ErrAuditFailed      = errors.New("tenant fleet audit failed")
+	ErrAuditOperational = errors.New("tenant fleet audit operation failed")
+	ErrMigrationFailed  = errors.New("tenant contract migration failed")
+	ErrJSONOutputFailed = errors.New("write sanitized JSON output failed")
 )
 
 type options struct {
@@ -41,7 +52,7 @@ func parseOptions(args []string) (options, error) {
 	fs := flag.NewFlagSet("tenant_isolation", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var m string
-	fs.StringVar(&m, "mode", "", "inventory|dry-run|apply|verify|rotate|rollback")
+	fs.StringVar(&m, "mode", "", "inventory|dry-run|apply|verify|rotate|rollback|migrate-contract|audit")
 	fs.StringVar(&o.schema, "schema", "", "canonical active registry schema")
 	fs.BoolVar(&o.all, "all", false, "process every active tenant, primary last")
 	fs.BoolVar(&o.confirm, "confirm", false, "confirm mutation")
@@ -58,11 +69,16 @@ func parseOptions(args []string) (options, error) {
 	}
 	o.mode = mode(m)
 	switch o.mode {
-	case modeInventory, modeDryRun, modeApply, modeVerify, modeRotate, modeRollback:
+	case modeInventory, modeDryRun, modeApply, modeVerify, modeRotate, modeRollback, modeMigrateContract, modeAudit:
 	default:
 		return o, errors.New("invalid --mode")
 	}
-	if (o.schema == "") == (!o.all) {
+	fleetOnly := o.mode == modeMigrateContract || o.mode == modeAudit
+	if fleetOnly {
+		if !o.all || o.schema != "" {
+			return o, errors.New("fleet mode requires --all and rejects --schema")
+		}
+	} else if (o.schema == "") == (!o.all) {
 		return o, errors.New("exactly one of --schema or --all is required")
 	}
 	if o.schema != "" && !schemaPattern.MatchString(o.schema) {
@@ -74,7 +90,7 @@ func parseOptions(args []string) (options, error) {
 	if !o.all && o.primarySchema != "" {
 		return o, errors.New("--primary-schema is valid only with --all")
 	}
-	mutating := o.mode == modeApply || o.mode == modeRotate || o.mode == modeRollback
+	mutating := o.mode == modeApply || o.mode == modeRotate || o.mode == modeRollback || o.mode == modeMigrateContract
 	if mutating && !o.confirm {
 		return o, errors.New("mutation mode requires --confirm")
 	}
@@ -89,6 +105,12 @@ func parseOptions(args []string) (options, error) {
 	}
 	if o.mode == modeDryRun && ((o.image == "") != (o.manifest == "")) {
 		return o, errors.New("dry-run manifest output requires both --image and --manifest")
+	}
+	if fleetOnly && (o.credentialVersion != 0 || o.expectedOldVersion != 0 || o.image != "" || o.manifest != "") {
+		return o, errors.New("fleet contract modes reject unrelated mutation flags")
+	}
+	if o.mode == modeAudit && o.confirm {
+		return o, errors.New("audit rejects mutation confirmation")
 	}
 	return o, nil
 }
@@ -115,18 +137,32 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	fleetMode := o.mode == modeMigrateContract || o.mode == modeAudit
 	cfg, err := tenants.ParseTenantIsolationConfig(os.LookupEnv)
 	if err != nil {
+		if fleetMode {
+			return writeFleetSetupFailure(o, out, "configuration", err)
+		}
 		return err
 	}
 	if !cfg.Enabled {
-		return errors.New("tenant database isolation configuration must be enabled")
+		err = errors.New("tenant database isolation configuration must be enabled")
+		if fleetMode {
+			return writeFleetSetupFailure(o, out, "configuration", err)
+		}
+		return err
 	}
-	m, err := tenants.NewMigrator(ctx, cfg.AdminDSN, cfg.TenantDSNBase, cfg.Credentials)
+	m, err := tenants.NewMigratorWithRegistryLock(ctx, cfg.AdminDSN, cfg.RegistryDSN, cfg.TenantDSNBase, cfg.Credentials)
 	if err != nil {
+		if fleetMode {
+			return writeFleetSetupFailure(o, out, "open migration administrator", err)
+		}
 		return safeCauseError{"open migration administrator", err}
 	}
 	defer m.Close()
+	if fleetMode {
+		return runFleetMode(ctx, o, out, m)
+	}
 	schemas := []string{o.schema}
 	if o.all {
 		schemas, err = m.CanonicalSchemas(ctx)
@@ -207,6 +243,203 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		return nil
 	}
 	return renderReadOnly(o, inventories, out)
+}
+
+type fleetMigrator interface {
+	AuditFleet(context.Context) (tenants.AuditResult, error)
+	AcquireFleetMigrationLock(context.Context) (*tenants.FleetMigrationLock, error)
+	PrepareContractMigrationFleet(context.Context) (tenants.ContractMigrationFleet, error)
+	ValidateContractMigrationFleet(context.Context, string) (tenants.ContractMigrationFleet, error)
+	MigrateTenantContract(context.Context, tenants.TenantInventory, []string) error
+}
+
+type auditJSON struct {
+	tenants.AuditResult
+	Error string `json:"error,omitempty"`
+}
+
+type migrationJSON struct {
+	Status                 string `json:"status"`
+	TargetContractVersion  int    `json:"target_contract_version"`
+	TargetContractChecksum string `json:"target_contract_checksum"`
+	Attempted              int    `json:"attempted"`
+	Completed              int    `json:"completed"`
+	FailedTenantRef        string `json:"failed_tenant_ref,omitempty"`
+	ElapsedMS              int64  `json:"elapsed_ms"`
+}
+
+func writeFleetSetupFailure(o options, out io.Writer, action string, cause error) error {
+	if o.mode == modeAudit {
+		payload := auditJSON{
+			AuditResult: stableAuditResult(tenants.AuditResult{
+				Status:                 tenants.AuditStatusFail,
+				TargetContractVersion:  storage.SchemaContractVersion,
+				TargetContractChecksum: storage.SchemaContractChecksum(),
+			}),
+			Error: "audit_operational_error",
+		}
+		return writeOutcomeJSON(out, payload, safeCauseError{action: "tenant fleet audit " + action, cause: errors.Join(ErrAuditOperational, cause)})
+	}
+	payload := migrationJSON{
+		Status:                 tenants.AuditStatusFail,
+		TargetContractVersion:  storage.SchemaContractVersion,
+		TargetContractChecksum: storage.SchemaContractChecksum(),
+	}
+	return writeOutcomeJSON(out, payload, safeCauseError{action: "tenant contract migration " + action, cause: errors.Join(ErrMigrationFailed, cause)})
+}
+
+func stableAuditResult(result tenants.AuditResult) tenants.AuditResult {
+	if result.Counts.RegistryByState == nil {
+		result.Counts.RegistryByState = map[string]int{}
+	}
+	if result.Findings == nil {
+		result.Findings = []tenants.AuditFinding{}
+	}
+	return result
+}
+
+func writeOutcomeJSON(out io.Writer, value any, outcome error) error {
+	if outputErr := writeCompactJSON(out, value); outputErr != nil {
+		if outcome != nil {
+			return errors.Join(outcome, outputErr)
+		}
+		return outputErr
+	}
+	return outcome
+}
+
+func writeCompactJSON(out io.Writer, value any) error {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return safeCauseError{action: "write sanitized JSON output", cause: errors.Join(ErrJSONOutputFailed, err)}
+	}
+	encoded = append(encoded, '\n')
+	n, err := out.Write(encoded)
+	if err == nil && n != len(encoded) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		return safeCauseError{action: "write sanitized JSON output", cause: errors.Join(ErrJSONOutputFailed, err)}
+	}
+	return nil
+}
+
+func runFleetMode(ctx context.Context, o options, out io.Writer, m fleetMigrator) error {
+	if o.mode == modeAudit {
+		result, auditErr := m.AuditFleet(ctx)
+		payload := auditJSON{AuditResult: stableAuditResult(result)}
+		var outcome error
+		if auditErr != nil {
+			payload.Status = tenants.AuditStatusFail
+			payload.Error = "audit_operational_error"
+			outcome = safeCauseError{action: "tenant fleet audit", cause: errors.Join(ErrAuditOperational, auditErr)}
+		} else if result.Status != tenants.AuditStatusPass {
+			outcome = ErrAuditFailed
+		}
+		return writeOutcomeJSON(out, payload, outcome)
+	}
+	if o.mode != modeMigrateContract {
+		return errors.New("unsupported fleet mode")
+	}
+	started := time.Now()
+	summary := migrationJSON{
+		Status:                 tenants.AuditStatusFail,
+		TargetContractVersion:  storage.SchemaContractVersion,
+		TargetContractChecksum: storage.SchemaContractChecksum(),
+	}
+	lock, err := m.AcquireFleetMigrationLock(ctx)
+	if err != nil {
+		summary.ElapsedMS = time.Since(started).Milliseconds()
+		return writeOutcomeJSON(out, summary, safeCauseError{action: "tenant contract migration lock", cause: errors.Join(ErrMigrationFailed, err)})
+	}
+	defer func() { _ = lock.Release() }()
+	fleet, err := m.PrepareContractMigrationFleet(ctx)
+	if err != nil {
+		summary.ElapsedMS = time.Since(started).Milliseconds()
+		return writeOutcomeJSON(out, summary, safeCauseError{action: "tenant contract migration preflight", cause: errors.Join(ErrMigrationFailed, err)})
+	}
+	inventories, err := reorderInventoriesPrimaryLast(fleet.Inventories, o.primarySchema)
+	if err != nil {
+		summary.ElapsedMS = time.Since(started).Milliseconds()
+		return writeOutcomeJSON(out, summary, safeCauseError{action: "tenant contract migration ordering", cause: errors.Join(ErrMigrationFailed, err)})
+	}
+	for _, inventory := range inventories {
+		validated, validateErr := m.ValidateContractMigrationFleet(ctx, fleet.Digest)
+		if validateErr != nil {
+			summary.ElapsedMS = time.Since(started).Milliseconds()
+			return writeOutcomeJSON(out, summary, safeCauseError{action: "tenant contract migration fleet validation", cause: errors.Join(ErrMigrationFailed, validateErr)})
+		}
+		fresh, freshErr := inventoryForSchema(validated.Inventories, inventory.Schema)
+		if freshErr != nil {
+			summary.ElapsedMS = time.Since(started).Milliseconds()
+			return writeOutcomeJSON(out, summary, safeCauseError{action: "tenant contract migration refreshed inventory", cause: errors.Join(ErrMigrationFailed, freshErr)})
+		}
+		summary.Attempted++
+		if err = m.MigrateTenantContract(ctx, fresh, validated.PeerSchemas); err != nil {
+			summary.FailedTenantRef = tenants.TenantReference(fresh)
+			summary.ElapsedMS = time.Since(started).Milliseconds()
+			return writeOutcomeJSON(out, summary, safeCauseError{action: "tenant contract migration", cause: errors.Join(ErrMigrationFailed, err)})
+		}
+		summary.Completed++
+	}
+	if _, err = m.ValidateContractMigrationFleet(ctx, fleet.Digest); err != nil {
+		summary.ElapsedMS = time.Since(started).Milliseconds()
+		return writeOutcomeJSON(out, summary, safeCauseError{action: "tenant contract migration final fleet validation", cause: errors.Join(ErrMigrationFailed, err)})
+	}
+	finalAudit, auditErr := m.AuditFleet(ctx)
+	if auditErr != nil || finalAudit.Status != tenants.AuditStatusPass {
+		summary.ElapsedMS = time.Since(started).Milliseconds()
+		if auditErr != nil {
+			return writeOutcomeJSON(out, summary, safeCauseError{action: "tenant contract migration final audit", cause: errors.Join(ErrMigrationFailed, ErrAuditOperational, auditErr)})
+		}
+		return writeOutcomeJSON(out, summary, safeCauseError{action: "tenant contract migration final audit", cause: errors.Join(ErrMigrationFailed, ErrAuditFailed)})
+	}
+	if err = lock.Release(); err != nil {
+		summary.ElapsedMS = time.Since(started).Milliseconds()
+		return writeOutcomeJSON(out, summary, safeCauseError{action: "tenant contract migration lock release", cause: errors.Join(ErrMigrationFailed, err)})
+	}
+	summary.Status = tenants.AuditStatusPass
+	summary.ElapsedMS = time.Since(started).Milliseconds()
+	if outputErr := writeCompactJSON(out, summary); outputErr != nil {
+		return outputErr
+	}
+	return nil
+}
+
+func inventoryForSchema(inventories []tenants.TenantInventory, schema string) (tenants.TenantInventory, error) {
+	var found tenants.TenantInventory
+	count := 0
+	for _, inventory := range inventories {
+		if inventory.Schema == schema {
+			found = inventory
+			count++
+		}
+	}
+	if count != 1 {
+		return tenants.TenantInventory{}, errors.New("refreshed migration fleet does not contain exactly one target")
+	}
+	return found, nil
+}
+
+func reorderInventoriesPrimaryLast(in []tenants.TenantInventory, primary string) ([]tenants.TenantInventory, error) {
+	bySchema := make(map[string]tenants.TenantInventory, len(in))
+	schemas := make([]string, 0, len(in))
+	for _, inventory := range in {
+		if _, exists := bySchema[inventory.Schema]; exists {
+			return nil, errors.New("contract migration fleet contains a duplicate canonical tenant")
+		}
+		bySchema[inventory.Schema] = inventory
+		schemas = append(schemas, inventory.Schema)
+	}
+	ordered, err := reorderPrimaryLast(schemas, primary)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]tenants.TenantInventory, 0, len(ordered))
+	for _, schema := range ordered {
+		out = append(out, bySchema[schema])
+	}
+	return out, nil
 }
 
 func firstOtherSchema(schemas []string, current string) string {

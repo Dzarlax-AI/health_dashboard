@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Implementation Plan: Tenant Schema Release Gate</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root { color-scheme: light; --bg:#f5f7fa; --card:#fff; --text:#172033; --muted:#5e6878; --line:#dce2ea; --accent:#2855d9; --warn:#b56800; --risk:#b42318; --ok:#147a4b; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--bg); color:var(--text); line-height:1.55; }
+    main { max-width:1080px; margin:0 auto; padding:32px 22px 64px; }
+    section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:22px; margin:16px 0; }
+    h1,h2,h3 { line-height:1.22; }
+    h1 { margin-bottom:8px; }
+    h2 { margin-top:0; }
+    code { background:#eef1f6; padding:2px 5px; border-radius:4px; overflow-wrap:anywhere; }
+    pre { background:#111827; color:#e5e7eb; padding:14px; border-radius:7px; overflow:auto; }
+    .badge { display:inline-block; padding:5px 11px; border-radius:999px; background:#fff3d6; color:#825000; font-size:12px; font-weight:700; }
+    .muted { color:var(--muted); }
+    .decision { border-left:4px solid var(--ok); }
+    .risk { border-left:4px solid var(--risk); }
+    .approval { border-left:4px solid var(--warn); }
+    table { width:100%; border-collapse:collapse; }
+    th,td { text-align:left; vertical-align:top; border-bottom:1px solid var(--line); padding:9px 8px; }
+    th { background:#f8fafc; }
+    li + li { margin-top:7px; }
+    .flow { display:grid; grid-template-columns:repeat(auto-fit,minmax(155px,1fr)); gap:9px; padding:0; list-style:none; counter-reset:step; }
+    .flow li { border:1px solid var(--line); border-radius:8px; padding:12px; margin:0; }
+    .flow li::before { counter-increment:step; content:counter(step); display:block; color:var(--accent); font-weight:800; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Tenant Schema Release Gate</h1>
+  <p class="badge">Approval required before production-code changes</p>
+  <p class="muted">Prepared 2026-07-14 · related to issue #198 · based on merged <code>origin/main</code></p>
+
+  <section>
+    <h2>Task Summary</h2>
+    <p>Add an exact-set pre-production and post-production gate which proves that every registered tenant schema was migrated, every physical tenant schema and role is accounted for, and database isolation still holds. The target image provides an explicit mutating migration mode and a separate read-only audit mode.</p>
+  </section>
+
+  <section class="decision">
+    <h2>Approved Decisions</h2>
+    <ul>
+      <li>Use both pre-start and post-start audits.</li>
+      <li>Keep audit detection-only; migration is a separate explicitly confirmed command.</li>
+      <li>Use one immutable image digest for migration, audit, runtime, and postflight.</li>
+      <li>Use a short maintenance window instead of adding an online provisioning lease.</li>
+      <li>Verify all tenant pairs, not a single representative foreign schema.</li>
+      <li>Keep default output pseudonymous and safe to attach to an issue.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Current Behavior</h2>
+    <ul>
+      <li><code>cmd/tenant_isolation</code> inventories only active registry schemas through <code>CanonicalSchemas</code>.</li>
+      <li>Verification selects only the first other schema for denial probing.</li>
+      <li>Existing-tenant migration writes <code>__tenant_identity</code>, while clean provisioning uses <code>_health_tenant_provisioning</code>.</li>
+      <li><code>VerifyProvisionedSchema</code> checks required object names, but there is no durable schema-contract version/checksum.</li>
+      <li>The runtime image currently contains only <code>/app/server</code>.</li>
+      <li>Startup performs schema initialization, so a target-image audit cannot prove target compatibility before those mutations run.</li>
+      <li>The Compose file supports <code>HEALTH_IMAGE</code>, but its fallback remains mutable <code>:latest</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired Release Flow</h2>
+    <ol class="flow">
+      <li>Resolve target digest</li>
+      <li>Inventory current fleet</li>
+      <li>Stop service</li>
+      <li>Migrate all schemas</li>
+      <li>Run exact-set audit</li>
+      <li>Start pinned digest</li>
+      <li>Wait for readiness</li>
+      <li>Repeat audit</li>
+    </ol>
+    <p>The service is not started with the target image if migration or the authoritative pre-start audit fails.</p>
+  </section>
+
+  <section>
+    <h2>Data and CLI Contract</h2>
+    <p>Every active schema gets one permanent <code>__tenant_identity</code> row containing immutable tenant identity plus <code>schema_contract_version</code> and <code>schema_contract_checksum</code>. The active registry row stores the same contract metadata. The target binary contains the expected values.</p>
+    <pre><code>/app/tenant_isolation --mode migrate-contract --all --primary-schema ... --confirm
+/app/tenant_isolation --mode audit --all --primary-schema ...</code></pre>
+    <p><code>migrate-contract</code> is idempotent and mutating. <code>audit</code> performs read-only catalog scans and rollback-only runtime denial probes. Both return nonzero on incomplete coverage.</p>
+  </section>
+
+  <section>
+    <h2>Likely File Changes</h2>
+    <table>
+      <thead><tr><th>File</th><th>Responsibility</th></tr></thead>
+      <tbody>
+        <tr><td><code>internal/storage/schema_contract.go</code></td><td>New shared contract manifest, version/checksum, idempotent Ensure path, and verification.</td></tr>
+        <tr><td><code>internal/storage/schema_contract_test.go</code></td><td>Manifest determinism and contract verification tests.</td></tr>
+        <tr><td><code>internal/storage/provisioning_verify.go</code></td><td>Delegate declared object checks to the shared contract.</td></tr>
+        <tr><td><code>internal/tenants/provisioner.go</code></td><td>Create the permanent marker for clean installs and CAS registry contract metadata after verification.</td></tr>
+        <tr><td><code>internal/tenants/migration.go</code></td><td>All-state inventory, physical marker/role enumeration, contract migration, exact-set audit, ownership/ACL checks, and all-pairs denial probes.</td></tr>
+        <tr><td><code>internal/tenants/schema_audit_test.go</code></td><td>Pure comparison, sanitization, and stable failure-code tests.</td></tr>
+        <tr><td><code>internal/tenants/migration_integration_test.go</code></td><td>Three-tenant positive and negative PostgreSQL fixtures.</td></tr>
+        <tr><td><code>cmd/tenant_isolation/main.go</code></td><td>Add <code>migrate-contract</code> and <code>audit</code> CLI modes and JSON output.</td></tr>
+        <tr><td><code>cmd/tenant_isolation/main_test.go</code></td><td>Argument, confirmation, exit, and redaction contracts.</td></tr>
+        <tr><td><code>cmd/server/main.go</code></td><td>Call the shared schema-contract path so startup and clean installs cannot drift.</td></tr>
+        <tr><td><code>Dockerfile</code></td><td>Build and copy both the server and tenant-isolation CLI.</td></tr>
+        <tr><td><code>scripts/deploy-tenant-schema-gate.sh</code></td><td>Resolve/pin digest and enforce stop → migrate → audit → start → ready → audit.</td></tr>
+        <tr><td><code>.github/workflows/ci.yml</code>, <code>Makefile</code></td><td>Add exact-set DB lane and runtime-image CLI smoke check.</td></tr>
+        <tr><td><code>README.md</code>, <code>.env.example</code></td><td>Document root-only audit environment, maintenance window, commands, and recovery.</td></tr>
+        <tr><td><code>AGENTS.md</code>, <code>CLAUDE.md</code></td><td>Keep clean-install, migration, audit, and marker invariants in lockstep.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Implementation Steps</h2>
+    <ol>
+      <li><strong>Contract first:</strong> add failing tests for a deterministic manifest/version/checksum and incomplete catalog detection; implement the shared contract without changing production wiring.</li>
+      <li><strong>Permanent identity:</strong> extend <code>__tenant_identity</code> and registry metadata; prove interrupted marker/registry updates are detected and retryable.</li>
+      <li><strong>Clean-install convergence:</strong> switch provisioning and startup to the shared contract path; retain the transient provisioning marker only for recovery ownership.</li>
+      <li><strong>Exact inventory:</strong> enumerate registry rows in all states, permanent marked schemas, marked roles, and nonterminal operations; compare exact sets and recheck the digest at audit end.</li>
+      <li><strong>Isolation proof:</strong> audit owner/grants/default ACLs and execute rollback-only tenant-to-registry and all-pairs tenant denial probes.</li>
+      <li><strong>CLI:</strong> add explicit migration and read-only audit modes, structured pseudonymous JSON, stable reason codes, and nonzero failure exits.</li>
+      <li><strong>Runtime artifact:</strong> include the CLI in the same image as the server and verify both binaries in container smoke tests.</li>
+      <li><strong>Deployment gate:</strong> implement the maintenance-window wrapper with one resolved digest and explicit recovery output.</li>
+      <li><strong>Documentation:</strong> update configuration and architecture docs, including the fact that admin credentials remain part of the current runtime architecture.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Automated Test Plan</h2>
+    <pre><code>GOCACHE=/tmp/health-go-build-cache go test ./internal/storage ./internal/tenants ./cmd/tenant_isolation -count=1
+make test-db-security
+make test-unit
+CGO_ENABLED=0 go vet ./...
+docker build -t health-dashboard:schema-gate .
+docker run --rm --entrypoint /bin/ls health-dashboard:schema-gate -l /app/server /app/tenant_isolation
+docker run --rm --entrypoint /usr/bin/id health-dashboard:schema-gate -u</code></pre>
+    <ul>
+      <li>Positive fixture: three active tenants, exact markers/roles/contracts, all-pairs denial.</li>
+      <li>Negative fixtures: missing and orphan schemas/roles, nonterminal operations, identity/version/checksum mismatch, bad owner/default ACL, cross-tenant grant, registry grant, and changing inventory.</li>
+      <li>Output tests assert stable reason codes and absence of raw username, email, schema, role, DSN, password, and master secret in default mode.</li>
+      <li>Fresh-install test provisions a new tenant and immediately passes the same target contract audit used for upgrades.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Manual QA and Production Checklist</h2>
+    <ul>
+      <li>Prepare a root-only migration environment; confirm it is not mounted into logs or committed.</li>
+      <li>Resolve and record target and previous immutable digests before downtime.</li>
+      <li>Confirm no out-of-band tenant registry changes will occur during the maintenance window.</li>
+      <li>Run current inventory, stop only <code>health-receiver</code>, then run migration and pre-start audit.</li>
+      <li>Start the pinned digest, verify <code>/readyz</code>, restart count, and recent logs.</li>
+      <li>Run post-start audit and retain only sanitized JSON evidence.</li>
+      <li>Close issue #198 only when production isolation is enabled and this postflight passes.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks and Edge Cases</h2>
+    <ul>
+      <li>A failed authoritative gate leaves the application stopped. The wrapper must print a clear, reviewed recovery command and previous digest.</li>
+      <li>Contract migration must remain additive and backward-compatible; destructive migrations need a separate design.</li>
+      <li>Large future tenant counts make all-pairs probes quadratic. That is acceptable for the current fleet; catalog checks may later reduce runtime probes.</li>
+      <li>Direct registry writes outside the stopped application can still race the maintenance window and are operationally prohibited.</li>
+      <li>The audit cannot claim that admin credentials are absent from the main application; provisioner separation is out of scope.</li>
+      <li>The local branch is currently behind <code>origin/main</code> and contains an unrelated untracked audit plan. Implementation must begin in a fresh branch/worktree from <code>origin/main</code> without overwriting it.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <p>Record the previous digest before the service is stopped. Do not automatically reverse schema or privilege changes. If the gate fails, either fix and rerun the idempotent target migration or explicitly restart the previous digest after confirming compatibility. Never drop tenant schemas, roles, markers, registry metadata, or data as part of automatic rollback.</p>
+  </section>
+
+  <section>
+    <h2>Assumptions and Open Questions</h2>
+    <ul>
+      <li>Assumption: tenant creation occurs through this service; direct registry writes are excluded during deployment.</li>
+      <li>Assumption: the current small fleet tolerates a short maintenance window.</li>
+      <li>Assumption: the first contract migration is additive and can be retried safely.</li>
+      <li>No blocking product decision remains. Exact contract version numbering and checksum encoding are implementation details covered by deterministic tests.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Implementation Record</h2>
+    <p><strong>Approved and implemented on <code>codex/tenant-schema-release-gate</code>.</strong> The implementation added schema contract v3, permanent identity metadata, fleet migration/audit CLI modes, the root-operated deployment gate, Docker packaging for both binaries, and a required disposable-PostgreSQL CI lane.</p>
+    <p>Verified locally with <code>go test ./...</code>, <code>go vet ./...</code>, the hardened deployment-script suite, <code>make test-db-security</code> against PostgreSQL 16, and a production Docker build. The three-tenant integration proved all 27 expected denial probes. No production deployment, commit, push, PR, or issue closure was performed as part of implementation.</p>
+    <p>Known operational limitation: the all-pairs proof grows quadratically with tenant count. Automatic database rollback remains intentionally unsupported; a failed gate leaves the service stopped and prints an immutable recovery template for reviewed manual use.</p>
+  </section>
+
+  <section>
+    <h2>PR Review Remediation — Approved 2026-07-16</h2>
+    <p>Before merge, address the validated PR #206 findings: interruption-safe nullable marker recovery; dedicated advisory-lock connections; exact ambiguous-commit recovery; preserved final-audit causes; separation of import housekeeping from contract DDL; runtime-critical column, key, and bootstrap-row contract verification; permanent exact marker shape; portable deployment fixtures; and a validated immutable recovery Compose snapshot.</p>
+    <p>The suggested per-tenant startup <code>continue</code> is intentionally excluded: without manager quarantine it would leave a failed tenant routable through an already-cached pool. Fleet startup remains fail-closed.</p>
+    <p>Required validation adds focused regression tests for every finding, the full Go suite, disposable PostgreSQL security lane, deployment fake-suite, container smoke, and a final independent review before the follow-up commit is pushed.</p>
+    <p><strong>Implementation result:</strong> nullable marker transitions are retryable; fleet locks use dedicated connections; ambiguous commits require an exact landed activation; final audit failures retain their operational cause; contract verification now covers exact runtime column and array types, conflict keys, and the complete bootstrap tuple; marker persistence and exact shape are audited; import cleanup is outside migration-critical DDL; and the recovery command uses a minimized, owner-private Compose artifact pinned to the previous local image with <code>pull_policy: never</code> and a secure cleanup instruction.</p>
+    <p><strong>Checks completed:</strong> full Go tests and vet, the disposable PostgreSQL registry/tenant/storage security lane on PostgreSQL 16, the hardened deployment fake-suite, <code>git diff --check</code>, a production Docker build, both-binary container smoke, and non-root runtime verification. Production deployment and issue #198 closure remain intentionally pending the real postflight.</p>
+  </section>
+</main>
+</body>
+</html>

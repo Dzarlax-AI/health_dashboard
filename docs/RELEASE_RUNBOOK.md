@@ -14,7 +14,10 @@ Before deployment:
    multi-million-row tables: `source_snapshot_at` remains nullable for old rows
    and falls back to `received_at`.
 3. For tenant isolation, follow `docs/TENANT_ISOLATION_RUNBOOK.md`; database
-   cutover and the runtime flag are separate steps.
+   cutover and the runtime flag are separate steps. Once isolation is active,
+   use `scripts/deploy-tenant-schema-gate.sh` for every schema-contract release;
+   do not start the new service unless both stopped-service migration and audit
+   have passed for the exact pinned image digest.
 4. Run the image against a disposable empty database. Complete first-user
    setup, ingest synthetic data, terminate with SIGTERM, restart, and confirm
    the accepted payload is processed exactly once.

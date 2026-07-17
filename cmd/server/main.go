@@ -211,19 +211,11 @@ func main() {
 		if err != nil {
 			log.Fatalf("open startup pool for %s: %v", u.SchemaName, err)
 		}
-		if err := db.EnsureAllTables(); err != nil {
-			log.Printf("ensure tables for %s: %v", u.SchemaName, err)
-		}
-		db.EnsureIndexes()
-		db.EnsureAIBriefingsTable()
-		db.EnsureAIBriefingBlocksTable()
-		db.EnsureEnergySnapshotsTable()
-		db.EnsureReadinessRedesignTables()
-		db.EnsureSubjectiveCheckinsTable()
-		db.EnsureContextPromptInteractionsTable()
-		db.EnsureAuthSessionsTable()
-		if err := db.VerifyProvisionedSchema(); err != nil {
+		if err := db.EnsureSchemaContract(); err != nil {
 			log.Fatalf("startup schema gate for %s: %v", u.SchemaName, err)
+		}
+		if err := mgr.VerifyTenantContract(ctx, u.SchemaName, db); err != nil {
+			log.Fatalf("startup tenant contract gate for %s: %v", u.SchemaName, err)
 		}
 		startTenant(ctx, mgr, reg, db, u.SchemaName, envNotifyDefaults, envAIDefaults, baseURL)
 	}
@@ -276,16 +268,12 @@ func main() {
 			log.Printf("onTenantCreated: open pool for %s: %v", schema, err)
 			return
 		}
-		db.EnsureIndexes()
-		db.EnsureAIBriefingsTable()
-		db.EnsureAIBriefingBlocksTable()
-		db.EnsureEnergySnapshotsTable()
-		db.EnsureReadinessRedesignTables()
-		db.EnsureSubjectiveCheckinsTable()
-		db.EnsureContextPromptInteractionsTable()
-		db.EnsureAuthSessionsTable()
-		if err := db.VerifyProvisionedSchema(); err != nil {
+		if err := db.EnsureSchemaContract(); err != nil {
 			log.Printf("new tenant schema gate for %s: %v", schema, err)
+			return
+		}
+		if err := mgr.VerifyTenantContract(ctx, schema, db); err != nil {
+			log.Printf("new tenant contract gate for %s: %v", schema, err)
 			return
 		}
 		startTenant(ctx, mgr, reg, db, schema, envNotifyDefaults, envAIDefaults, baseURL)

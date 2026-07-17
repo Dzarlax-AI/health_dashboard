@@ -82,3 +82,22 @@ func TestValidateUserProvisioningMetadata(t *testing.T) {
 		})
 	}
 }
+
+func TestSchemaContractMetadataValidation(t *testing.T) {
+	valid := SchemaContractMetadata{Version: 1, Checksum: strings.Repeat("a", 64)}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid schema contract metadata: %v", err)
+	}
+	for name, metadata := range map[string]SchemaContractMetadata{
+		"zero version":     {Checksum: valid.Checksum},
+		"empty checksum":   {Version: 1},
+		"short checksum":   {Version: 1, Checksum: "abc"},
+		"non-hex checksum": {Version: 1, Checksum: strings.Repeat("g", 64)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := metadata.Validate(); err == nil {
+				t.Fatal("invalid contract metadata was accepted")
+			}
+		})
+	}
+}

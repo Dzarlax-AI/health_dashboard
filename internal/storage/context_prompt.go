@@ -143,6 +143,12 @@ func contextPromptDailyDedupeIndexDDL() string {
 func (s *DB) EnsureContextPromptInteractionsTable() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	if err := s.EnsureContextPromptInteractionsTableContext(ctx); err != nil {
+		log.Printf("EnsureContextPromptInteractionsTable: %v", err)
+	}
+}
+
+func (s *DB) EnsureContextPromptInteractionsTableContext(ctx context.Context) error {
 	stmts := []string{
 		contextPromptInteractionsTableDDL(),
 		contextPromptDailyDedupeIndexDDL(),
@@ -151,9 +157,10 @@ func (s *DB) EnsureContextPromptInteractionsTable() {
 	}
 	for _, stmt := range stmts {
 		if _, err := s.pool.Exec(ctx, stmt); err != nil {
-			log.Printf("EnsureContextPromptInteractionsTable: %v", err)
+			return err
 		}
 	}
+	return nil
 }
 
 func ValidateContextPromptCategory(category string) error {

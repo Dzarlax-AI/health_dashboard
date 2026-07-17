@@ -265,7 +265,12 @@ func IsChipCalibrationMethodValid(s string) bool {
 func (s *DB) EnsureReadinessRedesignTables() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	if err := s.EnsureReadinessRedesignTablesContext(ctx); err != nil {
+		log.Printf("EnsureReadinessRedesignTables: %v", err)
+	}
+}
 
+func (s *DB) EnsureReadinessRedesignTablesContext(ctx context.Context) error {
 	stmts := []string{
 		// source_epochs — the small catalogue of ingest + physiology epochs.
 		`CREATE TABLE IF NOT EXISTS source_epochs (
@@ -366,7 +371,7 @@ func (s *DB) EnsureReadinessRedesignTables() {
 	}
 	for _, q := range stmts {
 		if _, err := s.pool.Exec(ctx, q); err != nil {
-			log.Printf("EnsureReadinessRedesignTables: %v", err)
+			return err
 		}
 	}
 
@@ -385,8 +390,9 @@ func (s *DB) EnsureReadinessRedesignTables() {
 		"pre-redesign baseline; covers all historical data prior to the first detected epoch boundary",
 		DetectedByManual,
 	); err != nil {
-		log.Printf("EnsureReadinessRedesignTables seed initial epoch: %v", err)
+		return err
 	}
+	return nil
 }
 
 // --- Storage API --------------------------------------------------------

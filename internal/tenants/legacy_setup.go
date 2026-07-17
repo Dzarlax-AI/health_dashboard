@@ -2,6 +2,7 @@ package tenants
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -17,7 +18,22 @@ type LegacySetup struct {
 	dsn string
 }
 
+func (l *LegacySetup) withProvisioningGuard(ctx context.Context, fn func() error) (err error) {
+	guard, err := l.reg.AcquireProvisioningGuard(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, guard.Release()) }()
+	return fn()
+}
+
 func (l *LegacySetup) ReconcileNonterminal(ctx context.Context) error {
+	return l.withProvisioningGuard(ctx, func() error {
+		return l.reconcileNonterminal(ctx)
+	})
+}
+
+func (l *LegacySetup) reconcileNonterminal(ctx context.Context) error {
 	ops, err := l.reg.ListNonterminalProvisioningOperations(ctx)
 	if err != nil {
 		return err
@@ -73,10 +89,12 @@ func (l *LegacySetup) CreateFirstTenant(ctx context.Context, req registry.Create
 	if err != nil {
 		return nil, err
 	}
-	if err := l.initialize(ctx, req.SchemaName); err != nil {
-		return nil, fmt.Errorf("legacy schema initialization: %w", err)
-	}
-	if err := l.reg.ActivateLegacyReservation(ctx, op); err != nil {
+	if err := l.withProvisioningGuard(ctx, func() error {
+		if err := l.initialize(ctx, req.SchemaName); err != nil {
+			return fmt.Errorf("legacy schema initialization: %w", err)
+		}
+		return l.reg.ActivateLegacyReservation(ctx, op)
+	}); err != nil {
 		return nil, err
 	}
 	u.ProvisioningState = registry.ProvisioningStateActive
@@ -90,10 +108,12 @@ func (l *LegacySetup) CreateTenant(ctx context.Context, req registry.CreateUserR
 	if err != nil {
 		return nil, err
 	}
-	if err := l.initialize(ctx, req.SchemaName); err != nil {
-		return nil, err
-	}
-	if err := l.reg.ActivateLegacyReservation(ctx, op); err != nil {
+	if err := l.withProvisioningGuard(ctx, func() error {
+		if err := l.initialize(ctx, req.SchemaName); err != nil {
+			return err
+		}
+		return l.reg.ActivateLegacyReservation(ctx, op)
+	}); err != nil {
 		return nil, err
 	}
 	u.ProvisioningState = registry.ProvisioningStateActive

@@ -1,12 +1,126 @@
 package registry
 
 import (
+	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
+
+func TestActivateProvisionedAdvancesContractMetadataWithCAS(t *testing.T) {
+	r, ctx := newEmptyTestRegistry(t)
+	u, op, err := r.ReserveUser(ctx, CreateUserReq{Username: "contract", Password: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.AdvanceProvisioning(ctx, op.OperationID, ProvisioningStatePending, ProvisioningStateProvisioning, ""); err != nil {
+		t.Fatal(err)
+	}
+	contract := SchemaContractMetadata{Version: 1, Checksum: strings.Repeat("a", 64)}
+	if _, err := r.pool.Exec(ctx, `UPDATE health_registry.users SET schema_contract_version=99,schema_contract_checksum=$2 WHERE username=$1`, u.Username, strings.Repeat("b", 64)); err != nil {
+		t.Fatal(err)
+	}
+	op.State = ProvisioningStateProvisioning
+	if err := r.ActivateProvisioned(ctx, op, contract); !errors.Is(err, ErrProvisioningStateConflict) {
+		t.Fatalf("activation with stale contract metadata error = %v", err)
+	}
+	if _, err := r.pool.Exec(ctx, `UPDATE health_registry.users SET schema_contract_version=NULL,schema_contract_checksum=NULL WHERE username=$1`, u.Username); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ActivateProvisioned(ctx, op, contract); err != nil {
+		t.Fatalf("activate provisioned contract: %v", err)
+	}
+	active, err := r.GetByUsername(ctx, u.Username)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active.SchemaContractVersion != contract.Version || active.SchemaContractChecksum != contract.Checksum || !active.DBIsolationReady {
+		t.Fatalf("active contract metadata = %+v", active)
+	}
+}
+
+func TestActivateProvisionedAmbiguousCommitRequiresExactLandedMetadata(t *testing.T) {
+	r, ctx := newEmptyTestRegistry(t)
+	contract := SchemaContractMetadata{Version: 1, Checksum: strings.Repeat("a", 64)}
+	ambiguous := errors.New("ambiguous commit transport failure")
+	tests := []struct {
+		username string
+		mutate   func(ProvisioningOperation) error
+	}{
+		{
+			username: "ambiguous_user",
+			mutate: func(op ProvisioningOperation) error {
+				_, err := r.pool.Exec(context.Background(), `UPDATE health_registry.users SET db_isolation_ready=false WHERE username=$1`, op.Username)
+				return err
+			},
+		},
+		{
+			username: "ambiguous_operation",
+			mutate: func(op ProvisioningOperation) error {
+				_, err := r.pool.Exec(context.Background(), `UPDATE health_registry.tenant_provisioning_operations SET schema_name=schema_name || '_changed' WHERE operation_id=$1`, op.OperationID)
+				return err
+			},
+		},
+		{
+			username: "ambiguous_operation_error",
+			mutate: func(op ProvisioningOperation) error {
+				_, err := r.pool.Exec(context.Background(), `UPDATE health_registry.tenant_provisioning_operations SET error='stale failure' WHERE operation_id=$1`, op.OperationID)
+				return err
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.username, func(t *testing.T) {
+			_, op, err := r.ReserveUser(ctx, CreateUserReq{Username: test.username, Password: "secret"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := r.AdvanceProvisioning(ctx, op.OperationID, ProvisioningStatePending, ProvisioningStateProvisioning, ""); err != nil {
+				t.Fatal(err)
+			}
+			op.State = ProvisioningStateProvisioning
+			r.commitProvisioningTx = func(commitCtx context.Context, tx pgx.Tx) error {
+				if err := tx.Commit(commitCtx); err != nil {
+					return err
+				}
+				if err := test.mutate(op); err != nil {
+					t.Fatalf("tamper landed activation metadata: %v", err)
+				}
+				return ambiguous
+			}
+			if err := r.ActivateProvisioned(ctx, op, contract); !errors.Is(err, ambiguous) {
+				t.Fatalf("ambiguous activation with mismatched landed metadata = %v, want original commit error", err)
+			}
+		})
+	}
+}
+
+func TestActivateProvisionedAmbiguousCommitAcceptsExactLandedActivation(t *testing.T) {
+	r, ctx := newEmptyTestRegistry(t)
+	_, op, err := r.ReserveUser(ctx, CreateUserReq{Username: "ambiguous_exact", Password: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.AdvanceProvisioning(ctx, op.OperationID, ProvisioningStatePending, ProvisioningStateProvisioning, ""); err != nil {
+		t.Fatal(err)
+	}
+	op.State = ProvisioningStateProvisioning
+	contract := SchemaContractMetadata{Version: 1, Checksum: strings.Repeat("a", 64)}
+	ambiguous := errors.New("ambiguous commit transport failure")
+	r.commitProvisioningTx = func(commitCtx context.Context, tx pgx.Tx) error {
+		if err := tx.Commit(commitCtx); err != nil {
+			return err
+		}
+		return ambiguous
+	}
+	if err := r.ActivateProvisioned(ctx, op, contract); err != nil {
+		t.Fatalf("exact landed activation after ambiguous commit = %v, want nil", err)
+	}
+}
 
 func TestInactiveTenantIsRejectedByAuthLookups(t *testing.T) {
 	r, ctx := newEmptyTestRegistry(t)
@@ -41,6 +155,9 @@ func TestInactiveTenantIsRejectedByAuthLookups(t *testing.T) {
 	}
 	if afterMigration.TenantID != user.TenantID || afterMigration.DBRole != user.DBRole || afterMigration.DBCredentialVersion != user.DBCredentialVersion {
 		t.Fatalf("repeated migration changed immutable metadata: before=%#v after=%#v", user, afterMigration)
+	}
+	if afterMigration.SchemaContractVersion != 0 || afterMigration.SchemaContractChecksum != "" {
+		t.Fatalf("legacy active user was silently marked current: %#v", afterMigration)
 	}
 	token, err := r.CreateSession(ctx, user.Username, time.Hour)
 	if err != nil {
