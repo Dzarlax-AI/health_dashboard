@@ -22,11 +22,11 @@ func TestSchemaContractManifestIsDeterministic(t *testing.T) {
 	if !regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(first) {
 		t.Fatalf("schema contract checksum is not lowercase SHA-256: %q", first)
 	}
-	if want := "962b237cf8b54bd857aa123b5cf4e764b274d4b4c19ede00244971e455d2f45e"; first != want {
+	if want := "10c748d0e36698e0696d837919c04404565f30ac5b22945a715557415567af4d"; first != want {
 		t.Fatalf("schema contract checksum = %q, want %q; bump SchemaContractVersion when intentionally changing the manifest", first, want)
 	}
-	if SchemaContractVersion <= 0 {
-		t.Fatalf("schema contract version must be positive: %d", SchemaContractVersion)
+	if SchemaContractVersion != 4 {
+		t.Fatalf("schema contract version = %d, want 4", SchemaContractVersion)
 	}
 }
 
@@ -186,8 +186,22 @@ func TestSchemaContractManifestDeclaresProvisioningVerifierObjects(t *testing.T)
 			t.Errorf("array element type %s = %q, want _text", column, arrayTypes[column])
 		}
 	}
-	if len(manifest.RequiredRows) != 1 || manifest.RequiredRows[0].Table != "source_epochs" || manifest.RequiredRows[0].Values["epoch_id"] != InitialSourceEpoch || manifest.RequiredRows[0].Values["start_date"] != "2014-01-01" || manifest.RequiredRows[0].Values["confirmed"] != "true" {
+	if len(manifest.RequiredRows) != 1 || manifest.RequiredRows[0].Table != "source_epochs" {
 		t.Fatalf("bootstrap row invariant missing from manifest: %+v", manifest.RequiredRows)
+	}
+	wantRequiredValues := map[string]string{
+		"epoch_id":   InitialSourceEpoch,
+		"start_date": "2014-01-01",
+		"kind":       SourceEpochKindIngest,
+		"confirmed":  "true",
+	}
+	if len(manifest.RequiredRows[0].Values) != len(wantRequiredValues) {
+		t.Fatalf("bootstrap row invariant values = %+v, want only %+v", manifest.RequiredRows[0].Values, wantRequiredValues)
+	}
+	for column, want := range wantRequiredValues {
+		if got := manifest.RequiredRows[0].Values[column]; got != want {
+			t.Errorf("bootstrap row invariant %s = %q, want %q", column, got, want)
+		}
 	}
 }
 

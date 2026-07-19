@@ -1137,11 +1137,12 @@ Three constants in code:
 |---|---|---|---|
 | `ChronicLoadMinAcuteDensity` | 7 events / 14 days | empirical distribution on `health` schema (PR #97) | other tenants with different Acute OR base rate will get a misaligned positive rate; label may not discriminate |
 | `ChronicLoadMinBreachDays` | 5 days / 14 days | plan-level guess, never empirically calibrated | same class of risk — depends on tenant's Recovery rolling_3d stability |
-| Bootstrap source epoch (`initial`) covering 2014-01-01..NULL | hard-coded into the migration | universal — every tenant gets the same bootstrap row | safe; the start date is far enough back that no real tenant has older data |
+| Bootstrap source epoch (`initial`) starting at 2014-01-01, initially open-ended | hard-coded into the migration | universal — every tenant gets the same bootstrap row; it may be closed when later source epochs exist | stable bootstrap identity is safe; operators must keep confirmed epoch ranges contiguous or gaps resolve to `unknown` |
 
-The third row is safe. The first two are count-based thresholds that
-do NOT scale with tenant-specific data distributions the way
-sigma-based thresholds do.
+The bootstrap seed is structurally safe provided operators keep confirmed
+epoch ranges contiguous. The first two are count-based thresholds that do
+NOT scale with tenant-specific data distributions the way sigma-based
+thresholds do.
 
 ### Operational impact
 

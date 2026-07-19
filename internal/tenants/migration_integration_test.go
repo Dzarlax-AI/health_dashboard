@@ -222,10 +222,18 @@ func TestTenantMigrationApplyVerifyRollbackIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err = admin.Exec(ctx, "UPDATE "+pgxIdent(user.SchemaName)+"."+pgxIdent(storage.TenantIdentityTable)+` SET schema_contract_version=NULL,schema_contract_checksum=NULL WHERE singleton=true`); err != nil {
+	const previousContractVersion = 3
+	const previousContractChecksum = "962b237cf8b54bd857aa123b5cf4e764b274d4b4c19ede00244971e455d2f45e"
+	if _, err = admin.Exec(ctx, "UPDATE "+pgxIdent(user.SchemaName)+"."+pgxIdent(storage.TenantIdentityTable)+` SET schema_contract_version=$1,schema_contract_checksum=$2 WHERE singleton=true`, previousContractVersion, previousContractChecksum); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = admin.Exec(ctx, `UPDATE health_registry.users SET db_isolation_ready=true,schema_contract_version=NULL,schema_contract_checksum=NULL WHERE schema_name=$1`, user.SchemaName); err != nil {
+	if _, err = admin.Exec(ctx, `UPDATE health_registry.users SET db_isolation_ready=true,schema_contract_version=$2,schema_contract_checksum=$3 WHERE schema_name=$1`, user.SchemaName, previousContractVersion, previousContractChecksum); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = admin.Exec(ctx, "UPDATE "+pgxIdent(user.SchemaName)+`.source_epochs SET end_date='2025-12-31',description='closed production epoch',detected_by='automatic' WHERE epoch_id='initial'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = admin.Exec(ctx, "INSERT INTO "+pgxIdent(user.SchemaName)+`.source_epochs(epoch_id,start_date,end_date,kind,description,detected_by,confirmed) VALUES('contract_v4_next','2026-01-01',NULL,'source_epoch','current production epoch','automatic',true)`); err != nil {
 		t.Fatal(err)
 	}
 	contractInventory, err := migrator.Inventory(ctx, user.SchemaName)
@@ -238,7 +246,7 @@ func TestTenantMigrationApplyVerifyRollbackIntegration(t *testing.T) {
 		t.Fatal("cancelled registry contract CAS unexpectedly succeeded")
 	}
 	unchangedAfterCancel, err := reg.GetBySchema(ctx, user.SchemaName)
-	if err != nil || unchangedAfterCancel.SchemaContractVersion != 0 || unchangedAfterCancel.SchemaContractChecksum != "" {
+	if err != nil || unchangedAfterCancel.SchemaContractVersion != previousContractVersion || unchangedAfterCancel.SchemaContractChecksum != previousContractChecksum {
 		t.Fatalf("cancelled registry CAS changed contract metadata: %+v, %v", unchangedAfterCancel, err)
 	}
 	if err = migrator.MigrateTenantContract(ctx, contractInventory, []string{otherSchema}); err != nil {

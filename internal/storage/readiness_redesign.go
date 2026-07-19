@@ -169,10 +169,10 @@ const (
 	DetectedByDistributionShift = "distribution_shift"
 )
 
-// SentinelSourceEpoch is returned by ResolveSourceEpoch when no epoch
-// covers a date. Should not happen in practice — the bootstrap row in
-// EnsureReadinessRedesignTables covers 2014-01-01..NULL, so any
-// realistic ingest date resolves to at least `initial`.
+// SentinelSourceEpoch is returned by ResolveSourceEpoch when no confirmed
+// source epoch covers a date. New catalogues seed `initial` at 2014-01-01
+// with no end date, but it may later be closed when a successor epoch is
+// added; dates before the seed or in catalogue gaps resolve to the sentinel.
 const SentinelSourceEpoch = "unknown"
 
 // InitialSourceEpoch is the bootstrap row planted by
@@ -375,8 +375,9 @@ func (s *DB) EnsureReadinessRedesignTablesContext(ctx context.Context) error {
 		}
 	}
 
-	// Bootstrap initial source_epoch so writers can resolve any historical
-	// date without falling through to SentinelSourceEpoch. Idempotent.
+	// Bootstrap initial source_epoch with open-ended day-zero coverage from
+	// 2014-01-01. Catalogue management may later close it when a successor
+	// epoch is added. Idempotent.
 	if _, err := s.pool.Exec(ctx, `
 		INSERT INTO source_epochs
 			(epoch_id, start_date, end_date, kind, description, detected_by, confirmed)
@@ -990,11 +991,12 @@ type SourceEpoch struct {
 }
 
 // ResolveSourceEpoch picks the source_epoch that covers `date`. Returns
-// SentinelSourceEpoch (`"unknown"`) when nothing matches — which should
-// not happen in production because the bootstrap `initial` epoch covers
-// 2014-01-01..NULL. Only confirmed rows of kind=source_epoch are
-// considered (unconfirmed shifts wait for manual confirmation before
-// influencing baselines).
+// SentinelSourceEpoch (`"unknown"`) when nothing matches. The bootstrap
+// `initial` epoch starts at 2014-01-01 and is initially open-ended, but it
+// may be closed when later source epochs exist; dates outside confirmed
+// epoch ranges, including catalogue gaps, resolve to the sentinel. Only
+// confirmed rows of kind=source_epoch are considered (unconfirmed shifts
+// wait for manual confirmation before influencing baselines).
 //
 // Returns the most recent epoch by start_date when multiple match —
 // epochs are non-overlapping by convention, enforced in code at the
