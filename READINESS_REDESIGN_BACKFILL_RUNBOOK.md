@@ -150,11 +150,11 @@ SELECT sub_score, source_epoch, COUNT(*)
 "
 ```
 
-For the 30-day window today, all rows should resolve to `initial`
-(the only confirmed epoch). Any `unknown` rows here mean
-ResolveSourceEpoch fell through to the sentinel — which should not
-happen given the bootstrap row covers 2014-01-01..NULL. If it does,
-report it.
+Each row should resolve to the confirmed source epoch whose date range
+covers it: `initial` before its optional close, then the applicable later
+epoch. Any `unknown` rows mean the date is before the catalogue starts or
+falls in a gap (including a closed `initial` without a confirmed successor);
+investigate the epoch ranges before trusting the backfill.
 
 ### 3.4 Sample coverage JSON for ineligible rows
 

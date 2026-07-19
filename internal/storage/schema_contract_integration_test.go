@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 func TestVerifySchemaContractContextHonorsCancellation(t *testing.T) {
@@ -176,6 +177,78 @@ func TestVerifySchemaContractRejectsMalformedBootstrapTuple(t *testing.T) {
 	}
 	if err := db.VerifySchemaContractContext(ctx); err == nil || !strings.Contains(err.Error(), "required row is missing") {
 		t.Fatalf("malformed bootstrap tuple verification error=%v", err)
+	}
+}
+
+func TestVerifySchemaContractAcceptsProductionShapedSourceEpochs(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx := t.Context()
+	const (
+		nextEpoch      = "contract_v4_next"
+		temporaryEpoch = "contract_v4_renamed_initial"
+	)
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		_, _ = db.pool.Exec(cleanupCtx, `DELETE FROM source_epochs WHERE epoch_id=$1`, nextEpoch)
+		_, _ = db.pool.Exec(cleanupCtx, `UPDATE source_epochs SET epoch_id=$2 WHERE epoch_id=$1`, temporaryEpoch, InitialSourceEpoch)
+		_, _ = db.pool.Exec(cleanupCtx, `
+			UPDATE source_epochs
+			   SET start_date='2014-01-01', end_date=NULL, kind=$2,
+			       description='pre-redesign baseline; covers all historical data prior to the first detected epoch boundary',
+			       detected_by=$3, confirmed=true
+			 WHERE epoch_id=$1`, InitialSourceEpoch, SourceEpochKindIngest, DetectedByManual)
+	})
+	if _, err := db.pool.Exec(ctx, `
+		UPDATE source_epochs
+		   SET end_date='2025-12-31', description='closed after a production source transition',
+		       detected_by='automatic'
+		 WHERE epoch_id=$1;
+		INSERT INTO source_epochs(epoch_id,start_date,end_date,kind,description,detected_by,confirmed)
+		VALUES($2,'2026-01-01',NULL,$3,'current production epoch','automatic',true)`,
+		InitialSourceEpoch, nextEpoch, SourceEpochKindIngest); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.VerifySchemaContractContext(ctx); err != nil {
+		t.Fatalf("production-shaped source epochs rejected: %v", err)
+	}
+
+	t.Run("epoch id", func(t *testing.T) {
+		if _, err := db.pool.Exec(ctx, `UPDATE source_epochs SET epoch_id=$2 WHERE epoch_id=$1`, InitialSourceEpoch, temporaryEpoch); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if _, err := db.pool.Exec(context.Background(), `UPDATE source_epochs SET epoch_id=$2 WHERE epoch_id=$1`, temporaryEpoch, InitialSourceEpoch); err != nil {
+				t.Errorf("restore initial epoch id: %v", err)
+			}
+		}()
+		if err := db.VerifySchemaContractContext(ctx); err == nil || !strings.Contains(err.Error(), "required row is missing") {
+			t.Fatalf("stable-field mutation verification error=%v", err)
+		}
+	})
+
+	for _, test := range []struct {
+		name    string
+		column  string
+		value   any
+		restore any
+	}{
+		{name: "start date", column: "start_date", value: "2014-01-02", restore: "2014-01-01"},
+		{name: "kind", column: "kind", value: "physiology_epoch", restore: SourceEpochKindIngest},
+		{name: "confirmed", column: "confirmed", value: false, restore: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			query := `UPDATE source_epochs SET ` + pgx.Identifier{test.column}.Sanitize() + `=$2 WHERE epoch_id=$1`
+			if _, err := db.pool.Exec(ctx, query, InitialSourceEpoch, test.value); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.VerifySchemaContractContext(ctx); err == nil || !strings.Contains(err.Error(), "required row is missing") {
+				t.Fatalf("stable-field mutation verification error=%v", err)
+			}
+			if _, err := db.pool.Exec(ctx, query, InitialSourceEpoch, test.restore); err != nil {
+				t.Fatalf("restore stable field: %v", err)
+			}
+		})
 	}
 }
 

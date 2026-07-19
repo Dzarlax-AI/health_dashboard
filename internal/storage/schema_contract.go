@@ -18,7 +18,7 @@ import (
 // SchemaContractVersion is bumped whenever the declared tenant schema
 // contract changes. Existing tenants are not current until both the permanent
 // marker and registry metadata carry this version and checksum.
-const SchemaContractVersion = 3
+const SchemaContractVersion = 4
 
 // TenantIdentityTable is the permanent marker shared by clean provisioning
 // and existing-tenant migrations. The provisioning marker is intentionally
@@ -172,9 +172,8 @@ var schemaContract = ContractManifest{
 		{Table: "auth_sessions", Kind: "p", Columns: []string{"id_hash"}},
 	},
 	RequiredRows: []RequiredRow{{Table: "source_epochs", Values: map[string]string{
-		"epoch_id": InitialSourceEpoch, "start_date": "2014-01-01", "end_date": "NULL",
-		"kind": SourceEpochKindIngest, "description": "pre-redesign baseline; covers all historical data prior to the first detected epoch boundary",
-		"detected_by": DetectedByManual, "confirmed": "true",
+		"epoch_id": InitialSourceEpoch, "start_date": "2014-01-01",
+		"kind": SourceEpochKindIngest, "confirmed": "true",
 	}}},
 }
 

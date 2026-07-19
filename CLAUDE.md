@@ -183,9 +183,11 @@ source_epochs      — Small catalogue of ingest + physiology epochs,
                      PRIMARY KEY epoch_id TEXT. Baselines reset at epoch
                      boundaries (see plan §3.4) so distribution shifts
                      in source/method don't masquerade as physiology.
-                     Bootstrap row `initial` covers 2014-01-01..NULL so
-                     ResolveSourceEpoch never falls through to
-                     SentinelSourceEpoch in practice. UNIQUE (kind,
+                     Bootstrap row `initial` starts at 2014-01-01 so
+                     ResolveSourceEpoch has a historical baseline. It may be
+                     closed with `end_date` when later source epochs exist;
+                     its description and detection metadata may also evolve.
+                     UNIQUE (kind,
                      start_date); idx_source_epochs_active (partial
                      WHERE end_date IS NULL).
 ```
