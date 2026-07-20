@@ -17,16 +17,13 @@ import (
 
 func TestProvisionerIsolationAndIdempotency(t *testing.T) {
 	dsn := testdb.DSN(t)
-	registryDSN := os.Getenv("REGISTRY_TEST_DSN")
-	if registryDSN == "" {
-		t.Fatal("HEALTH_DB_TESTS=1 requires REGISTRY_TEST_DSN for registry-role denial proof")
-	}
+	adminDSN, registryDSN := requireFixedIdentityTestDSNs(t)
 	ctx := context.Background()
 	admin, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer admin.Close()
+	t.Cleanup(admin.Close)
 	requireDisposableProvisioningDB(t, ctx, admin)
 
 	prefix := fmt.Sprintf("p%d", os.Getpid())
@@ -54,7 +51,7 @@ func TestProvisionerIsolationAndIdempotency(t *testing.T) {
 	})
 	a := TenantSpec{TenantID: opa.TenantID, OperationID: opa.OperationID, SchemaName: opa.SchemaName, DBRole: opa.DBRole, CredentialVersion: opa.CredentialVersion}
 	b := TenantSpec{TenantID: opb.TenantID, OperationID: opb.OperationID, SchemaName: opb.SchemaName, DBRole: opb.DBRole, CredentialVersion: opb.CredentialVersion}
-	p, err := NewProvisioner(ctx, dsn, dsn, deriver, reg)
+	p, err := NewProvisioner(ctx, adminDSN, credentialFreeTestDSN(t, dsn), deriver, reg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +59,7 @@ func TestProvisionerIsolationAndIdempotency(t *testing.T) {
 	var owned []TenantSpec
 	t.Cleanup(func() {
 		for _, spec := range owned {
-			if err := p.cleanupOwnedFixture(context.Background(), spec); err != nil {
+			if err := cleanupTenantFixtureAsRoot(context.Background(), admin, spec); err != nil {
 				t.Errorf("cleanup owned fixture %s: %v", spec.SchemaName, err)
 			}
 		}
@@ -96,7 +93,7 @@ func TestProvisionerIsolationAndIdempotency(t *testing.T) {
 	if err := reg.AdvanceProvisioning(ctx, c.OperationID, registry.ProvisioningStatePending, registry.ProvisioningStateProvisioning, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := admin.Exec(ctx, "CREATE ROLE "+pgxIdent(c.DBRole)+" LOGIN"); err != nil {
+	if _, err := p.admin.Exec(ctx, "CREATE ROLE "+pgxIdent(c.DBRole)+" LOGIN"); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.setRoleMarker(ctx, c); err != nil {
@@ -105,13 +102,13 @@ func TestProvisionerIsolationAndIdempotency(t *testing.T) {
 	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+pgxIdent(c.SchemaName)+" AUTHORIZATION "+pgxIdent(c.DBRole)); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.ensureMarker(ctx, c); err != nil {
+	if err := p.ensureMarker(ctx, admin, c); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		_, _ = admin.Exec(context.Background(), "REVOKE SELECT ON health_registry.users FROM "+pgxIdent(c.DBRole))
 		_, _ = admin.Exec(context.Background(), "REVOKE USAGE ON SCHEMA health_registry FROM "+pgxIdent(c.DBRole))
-		if err := p.cleanupOwnedFixture(context.Background(), c); err != nil {
+		if err := cleanupTenantFixtureAsRoot(context.Background(), admin, c); err != nil {
 			t.Errorf("cleanup owned fixture %s: %v", c.SchemaName, err)
 		}
 		_ = reg.DeleteUser(context.Background(), uc.Username)

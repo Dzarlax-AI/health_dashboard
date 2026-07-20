@@ -1,15 +1,65 @@
 services:
+  postgres:
+    image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+    environment:
+      POSTGRES_DB: health
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:-health-postgres-dev-only}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  health-db-bootstrap:
+    # Use exactly the same application artifact for bootstrap and runtime.
+    # Production deployments must set HEALTH_IMAGE to an immutable digest.
+    image: ${HEALTH_IMAGE:-ghcr.io/dzarlax-ai/health_dashboard:latest}
+    command:
+      - /app/tenant_isolation
+      - --mode
+      - bootstrap-db-identities
+      - --manifest
+      - /secure/health-db-identities.json
+      - --confirm
+    user: "0:0"
+    environment:
+      TENANT_DB_BOOTSTRAP_DATABASE_URL: ${TENANT_DB_BOOTSTRAP_DATABASE_URL:-postgres://postgres:health-postgres-dev-only@postgres:5432/health?sslmode=disable}
+      HEALTH_ADMIN_DB_PASSWORD: ${HEALTH_ADMIN_DB_PASSWORD:-health-admin-dev-only}
+      HEALTH_REGISTRY_DB_PASSWORD: ${HEALTH_REGISTRY_DB_PASSWORD:-health-registry-dev-only}
+    volumes:
+      - health-db-identity-manifests:/secure
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
   health-receiver:
     # Production deployments must set HEALTH_IMAGE to an immutable digest.
     image: ${HEALTH_IMAGE:-ghcr.io/dzarlax-ai/health_dashboard:latest}
     ports:
       - "8080:8080"
     environment:
-      - DATABASE_URL=postgres://health:health@postgres:5432/health
-      # - API_KEY=your-secret-key
-      # - UI_PASSWORD=your-ui-password
-      # - TRUST_FORWARD_AUTH=true  # enable if behind Authentik/ForwardAuth proxy
-      # - TRUSTED_FORWARD_AUTH_NETWORK=172.16.0.0/12  # proxy CIDR if not using the default private/loopback trust rule
+      TENANT_DB_ISOLATION_ENABLED: "true"
+      ADMIN_DATABASE_URL: ${ADMIN_DATABASE_URL:-postgres://health_admin:health-admin-dev-only@postgres:5432/health?sslmode=disable}
+      REGISTRY_DATABASE_URL: ${REGISTRY_DATABASE_URL:-postgres://health_registry:health-registry-dev-only@postgres:5432/health?sslmode=disable}
+      TENANT_DATABASE_URL_BASE: ${TENANT_DATABASE_URL_BASE:-postgres://postgres:5432/health?sslmode=disable}
+      # Exactly 32 decoded bytes. This committed value is for local development only.
+      TENANT_DB_MASTER_SECRET: ${TENANT_DB_MASTER_SECRET:-aGVhbHRoLXRlbmFudC1kZXYtc2VjcmV0LTAwMDAwMDA=}
+      TENANT_DB_MASTER_SECRET_VERSION: ${TENANT_DB_MASTER_SECRET_VERSION:-1}
+      # A fresh registry is seeded as admin from these existing credentials.
+      API_KEY: ${API_KEY:-health-dev-api-key}
+      UI_PASSWORD: ${UI_PASSWORD:-health-dev-ui-password}
+      # TRUST_FORWARD_AUTH: "true"  # only behind an explicitly trusted proxy CIDR
+      # TRUSTED_FORWARD_AUTH_NETWORK: "172.16.0.0/12"
     restart: unless-stopped
     stop_grace_period: 35s
     healthcheck:
@@ -17,24 +67,13 @@ services:
       interval: 10s
       timeout: 3s
       retries: 6
+      start_period: 10s
     depends_on:
       postgres:
         condition: service_healthy
-
-  postgres:
-    image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
-    environment:
-      POSTGRES_DB: health
-      POSTGRES_USER: health
-      POSTGRES_PASSWORD: health
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U health"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    restart: unless-stopped
+      health-db-bootstrap:
+        condition: service_completed_successfully
 
 volumes:
   pgdata:
+  health-db-identity-manifests:

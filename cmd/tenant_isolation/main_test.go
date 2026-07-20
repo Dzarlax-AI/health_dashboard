@@ -36,6 +36,30 @@ func TestParseOptionsRejectsUnsafeArguments(t *testing.T) {
 	}
 }
 
+func TestParseOptionsDatabaseIdentityModes(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		ok   bool
+	}{
+		{[]string{"--mode", "bootstrap-db-identities", "--confirm", "--manifest", "/tmp/identity.json"}, true},
+		{[]string{"--mode", "bootstrap-db-identities", "--manifest", "/tmp/identity.json"}, false},
+		{[]string{"--mode", "bootstrap-db-identities", "--confirm"}, false},
+		{[]string{"--mode", "finalize-db-identities", "--confirm", "--manifest", "/tmp/identity.json"}, true},
+		{[]string{"--mode", "finalize-db-identities", "--confirm"}, false},
+		{[]string{"--mode", "rollback-db-identities", "--confirm", "--manifest", "/tmp/identity.json"}, true},
+		{[]string{"--mode", "rollback-db-identities", "--confirm"}, false},
+		{[]string{"--mode", "verify-db-identities"}, true},
+		{[]string{"--mode", "verify-db-identities", "--allow-legacy-bridge"}, true},
+		{[]string{"--mode", "verify-db-identities", "--confirm"}, false},
+		{[]string{"--mode", "bootstrap-db-identities", "--confirm", "--manifest", "/tmp/identity.json", "--schema", "health_a"}, false},
+	} {
+		_, err := parseOptions(tc.args)
+		if (err == nil) != tc.ok {
+			t.Fatalf("parseOptions(%q) error=%v, want ok=%v", tc.args, err, tc.ok)
+		}
+	}
+}
+
 func cliInventory(schema string, id uuid.UUID) tenants.TenantInventory {
 	return tenants.TenantInventory{Schema: schema, TenantID: id, Role: tenants.TenantRoleName(id), CredentialVersion: 1, Registry: tenants.RegistryMetadata{Username: schema, TenantID: id, Schema: schema, Role: tenants.TenantRoleName(id), CredentialVersion: 1, State: "active"}}
 }

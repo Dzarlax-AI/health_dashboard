@@ -417,8 +417,9 @@ func confirmLandedTenantIdentityContract(ctx context.Context, catalog ContractCa
 }
 
 // RestoreTenantIdentityMarkerContract rolls a marker back from the compiled
-// contract to the exact state captured before cutover. The caller must run it
-// in the same transaction as the registry rollback.
+// contract to the exact state captured before cutover. The operation is an
+// idempotent CAS so callers can coordinate it with separately-authorized
+// registry and catalog phases without claiming cross-identity atomicity.
 func RestoreTenantIdentityMarkerContract(ctx context.Context, catalog ContractCatalog, schema string, tenantID, operationID uuid.UUID, restore SchemaContractState) error {
 	if (restore.Version == nil) != (restore.Checksum == nil) {
 		return errors.New("restore schema contract pair is partial")

@@ -199,6 +199,7 @@ type managerFixture struct {
 func newManagerFixture(t *testing.T) managerFixture {
 	t.Helper()
 	dsn := testdb.DSN(t)
+	adminDSN := requireFixedAdminTestDSN(t)
 	ctx := context.Background()
 	admin, err := pgxpool.New(ctx, dsn)
 	if err != nil {
@@ -225,13 +226,17 @@ func newManagerFixture(t *testing.T) managerFixture {
 	}
 	t.Cleanup(func() { _ = reg.DeleteUser(context.Background(), name) })
 	deriver := CredentialDeriver{Current: SecretVersion{Version: 1, Secret: []byte("disposable-manager-master-secret-32-bytes")}}
-	p, err := NewProvisioner(ctx, dsn, credentialFreeTestDSN(t, dsn), deriver, reg)
+	p, err := NewProvisioner(ctx, adminDSN, credentialFreeTestDSN(t, dsn), deriver, reg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(p.Close)
 	spec := TenantSpec{TenantID: op.TenantID, OperationID: op.OperationID, SchemaName: op.SchemaName, DBRole: op.DBRole, CredentialVersion: op.CredentialVersion}
-	t.Cleanup(func() { _ = p.cleanupOwnedFixture(context.Background(), spec) })
+	t.Cleanup(func() {
+		if err := cleanupTenantFixtureAsRoot(context.Background(), admin, spec); err != nil {
+			t.Errorf("cleanup manager tenant fixture: %v", err)
+		}
+	})
 	if err := reg.AdvanceProvisioning(ctx, op.OperationID, registry.ProvisioningStatePending, registry.ProvisioningStateProvisioning, ""); err != nil {
 		t.Fatal(err)
 	}

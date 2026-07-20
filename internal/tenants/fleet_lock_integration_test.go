@@ -18,10 +18,7 @@ func TestFleetMigrationLockSerializesReservationAndProvisioning(t *testing.T) {
 	}
 	ctx := context.Background()
 	dsn := testdb.DSN(t)
-	registryDSN := os.Getenv("REGISTRY_TEST_DSN")
-	if registryDSN == "" {
-		t.Fatal("HEALTH_DB_TESTS=1 requires REGISTRY_TEST_DSN")
-	}
+	adminDSN, registryDSN := requireFixedIdentityTestDSNs(t)
 	admin, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
@@ -38,7 +35,25 @@ func TestFleetMigrationLockSerializesReservationAndProvisioning(t *testing.T) {
 		t.Fatal(err)
 	}
 	deriver := CredentialDeriver{Current: SecretVersion{Version: 1, Secret: []byte("fleet-lock-integration-secret-32-bytes")}}
-	migrator, err := NewMigratorWithRegistryLock(ctx, dsn, registryDSN, credentialFreeTestDSN(t, dsn), deriver)
+	legacyMigrator, err := NewMigrator(ctx, dsn, credentialFreeTestDSN(t, dsn), deriver)
+	if err != nil {
+		t.Fatalf("legacy migrator setup: %v", err)
+	}
+	legacyLock, err := legacyMigrator.AcquireFleetMigrationLock(ctx)
+	if err != nil {
+		legacyMigrator.Close()
+		t.Fatalf("legacy migrator lock with root identity: %v", err)
+	}
+	if err = legacyLock.Release(); err != nil {
+		legacyMigrator.Close()
+		t.Fatalf("release legacy migrator lock: %v", err)
+	}
+	legacyMigrator.Close()
+	if rejected, rejectErr := NewMigratorWithRegistryLock(ctx, adminDSN, dsn, credentialFreeTestDSN(t, dsn), deriver); rejectErr == nil {
+		rejected.Close()
+		t.Fatal("exact migrator accepted a non-health_registry registry identity")
+	}
+	migrator, err := NewMigratorWithRegistryLock(ctx, adminDSN, registryDSN, credentialFreeTestDSN(t, dsn), deriver)
 	if err != nil {
 		t.Fatal(err)
 	}

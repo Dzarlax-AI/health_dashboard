@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"health-receiver/internal/registry"
 	"health-receiver/internal/storage"
 )
@@ -435,7 +436,7 @@ func inventorySafetyFindings(i TenantInventory) []AuditFinding {
 		}
 	}
 	r := i.RoleCatalog
-	if !r.Exists || !r.Login || !r.Inherit || r.Superuser || r.CreateRole || r.CreateDB || r.Replication || r.BypassRLS || r.ConnLimit != -1 || r.ValidUntil != nil || len(r.Config) > 0 || len(i.Memberships) > 0 {
+	if !r.Exists || !r.Login || !r.Inherit || r.Superuser || r.CreateRole || r.CreateDB || r.Replication || r.BypassRLS || r.ConnLimit != -1 || r.ValidUntil != nil || len(r.Config) > 0 || !canonicalTenantMemberships(i.Role, i.Memberships) {
 		out = append(out, AuditFinding{"unsafe_role", "role", ref})
 	}
 	allowedGrant := func(g ACLRecord) bool { return g.Grantee == i.Role && g.Grantor == i.Role && !g.Grantable }
@@ -484,6 +485,20 @@ func (m *Migrator) AuditFleet(ctx context.Context) (AuditResult, error) {
 	result.Counts = countsForSnapshot(start)
 	result.Findings = evaluateFleetSnapshot(start)
 	var operational error
+	allowedTenantRoles := make(map[string]bool)
+	for _, row := range start.Registry {
+		if canonicalTenantRolePattern.MatchString(row.Role) {
+			allowedTenantRoles[row.Role] = true
+		}
+	}
+	fixedResult, fixedErr := verifyFixedIdentityCatalog(ctx, m.admin, false, allowedTenantRoles)
+	for _, finding := range fixedResult.Findings {
+		result.Findings = append(result.Findings, AuditFinding{finding.Code, finding.Scope, ""})
+	}
+	if fixedErr != nil {
+		result.Findings = append(result.Findings, AuditFinding{"fixed_identity_verification_failed", "database", ""})
+		operational = fixedErr
+	}
 	activeSchemaSet := map[string]bool{}
 	for _, r := range start.Registry {
 		if r.State == "active" && r.TenantID != nil {
@@ -544,6 +559,19 @@ func (m *Migrator) AuditFleet(ctx context.Context) (AuditResult, error) {
 			if operational == nil {
 				operational = probeErr
 			}
+		}
+	}
+	registryProbe, registryProbeErr := m.verifyRegistryDeniedAll(ctx, activeSchemas)
+	result.Probes.Attempted += registryProbe.Total
+	result.Probes.Denied += registryProbe.Denied
+	result.Probes.Failed += registryProbe.CrossTenantFailures + registryProbe.OperationalFailures
+	if registryProbe.CrossTenantFailures > 0 {
+		result.Findings = append(result.Findings, AuditFinding{"registry_tenant_access_allowed", "isolation", ""})
+	}
+	if registryProbe.OperationalFailures > 0 || (registryProbeErr != nil && registryProbe.Total == 0) {
+		result.Findings = append(result.Findings, AuditFinding{"registry_tenant_probe_failed", "isolation", ""})
+		if operational == nil {
+			operational = registryProbeErr
 		}
 	}
 	if m.auditBeforeEndSnapshot != nil {
@@ -627,7 +655,7 @@ func snapshotProbeInventory(s fleetSnapshot, schema string) (TenantInventory, bo
 	return i, true
 }
 
-func readPhysicalMarker(ctx context.Context, catalog migrationCatalogReader, schema, relkind, persistence string) (auditMarkerRow, error) {
+func readPhysicalMarker(ctx context.Context, catalog, dataCatalog migrationCatalogReader, schema, relkind, persistence string) (auditMarkerRow, error) {
 	marker := auditMarkerRow{Schema: schema, RelKind: relkind, Persistence: persistence}
 	if relkind != "r" {
 		marker.Issues = []string{"marker_relation_kind_invalid:" + relkind}
@@ -640,7 +668,17 @@ func readPhysicalMarker(ctx context.Context, catalog migrationCatalogReader, sch
 	defer cancel()
 	type columnShape struct{ dataType, nullable, defaultExpr string }
 	shapes := map[string]columnShape{}
-	rows, err := catalog.Query(markerCtx, `SELECT column_name,data_type,is_nullable,COALESCE(column_default,'') FROM information_schema.columns WHERE table_schema=$1 AND table_name=$2 ORDER BY ordinal_position`, schema, storage.TenantIdentityTable)
+	// information_schema.columns only exposes columns for which current_user has
+	// some privilege. health_admin deliberately has no tenant-data privileges
+	// after isolation, so use the privilege-neutral system catalogs for shape
+	// inspection and reserve the tenant pool for reading the marker row itself.
+	rows, err := catalog.Query(markerCtx, `SELECT a.attname,format_type(a.atttypid,a.atttypmod),CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END,COALESCE(pg_get_expr(d.adbin,d.adrelid),'')
+		FROM pg_namespace n
+		JOIN pg_class c ON c.relnamespace=n.oid
+		JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped
+		LEFT JOIN pg_attrdef d ON d.adrelid=c.oid AND d.adnum=a.attnum
+		WHERE n.nspname=$1 AND c.relname=$2
+		ORDER BY a.attnum`, schema, storage.TenantIdentityTable)
 	if err != nil {
 		return marker, err
 	}
@@ -704,13 +742,18 @@ func readPhysicalMarker(ctx context.Context, catalog migrationCatalogReader, sch
 		return fallback
 	}
 	table := qualified(schema, storage.TenantIdentityTable)
+	if dataCatalog == nil {
+		marker.Issues = append(marker.Issues, "marker_data_reader_unavailable")
+		marker.Issues = sortedCopy(marker.Issues)
+		return marker, nil
+	}
 	var boundedCount int
-	if err = catalog.QueryRow(markerCtx, "SELECT count(*) FROM (SELECT 1 FROM "+table+" LIMIT 2) bounded").Scan(&boundedCount); err != nil {
+	if err = dataCatalog.QueryRow(markerCtx, "SELECT count(*) FROM (SELECT 1 FROM "+table+" LIMIT 2) bounded").Scan(&boundedCount); err != nil {
 		return marker, err
 	}
 	if boundedCount > 0 {
 		q := "SELECT " + strings.Join([]string{expr("singleton", "boolean", "NULL::boolean"), expr("tenant_id", "uuid", "NULL::uuid"), expr("operation_id", "uuid", "NULL::uuid"), expr("schema_contract_version", "integer", "NULL::integer"), expr("schema_contract_checksum", "text", "NULL::text")}, ",") + " FROM " + table + " LIMIT 2"
-		rows, err = catalog.Query(markerCtx, q)
+		rows, err = dataCatalog.Query(markerCtx, q)
 		if err != nil {
 			return marker, err
 		}
@@ -733,13 +776,18 @@ func readPhysicalMarker(ctx context.Context, catalog migrationCatalogReader, sch
 }
 
 func (m *Migrator) readFleetSnapshot(ctx context.Context) (fleetSnapshot, error) {
-	tx, err := m.admin.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	registryTx, err := m.registry.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return fleetSnapshot{}, err
 	}
-	defer tx.Rollback(ctx)
+	defer registryTx.Rollback(ctx)
+	adminTx, err := m.admin.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return fleetSnapshot{}, err
+	}
+	defer adminTx.Rollback(ctx)
 	var s fleetSnapshot
-	rows, err := tx.Query(ctx, `SELECT username,tenant_id,schema_name,db_role,db_credential_version,db_isolation_ready,is_admin,provisioning_state,schema_contract_version,schema_contract_checksum FROM health_registry.users ORDER BY schema_name,username`)
+	rows, err := registryTx.Query(ctx, `SELECT username,tenant_id,schema_name,db_role,db_credential_version,db_isolation_ready,is_admin,provisioning_state,schema_contract_version,schema_contract_checksum FROM health_registry.users ORDER BY schema_name,username`)
 	if err != nil {
 		return s, err
 	}
@@ -763,7 +811,7 @@ func (m *Migrator) readFleetSnapshot(ctx context.Context) (fleetSnapshot, error)
 		return s, err
 	}
 	rows.Close()
-	rows, err = tx.Query(ctx, `SELECT operation_id,tenant_id,schema_name,db_role,credential_version,state FROM health_registry.tenant_provisioning_operations WHERE state IN ('pending','provisioning') ORDER BY tenant_id,operation_id`)
+	rows, err = registryTx.Query(ctx, `SELECT operation_id,tenant_id,schema_name,db_role,credential_version,state FROM health_registry.tenant_provisioning_operations WHERE state IN ('pending','provisioning') ORDER BY tenant_id,operation_id`)
 	if err != nil {
 		return s, err
 	}
@@ -780,7 +828,7 @@ func (m *Migrator) readFleetSnapshot(ctx context.Context) (fleetSnapshot, error)
 		return s, err
 	}
 	rows.Close()
-	rows, err = tx.Query(ctx, `SELECT n.nspname,c.relkind::text,c.relpersistence::text FROM pg_namespace n JOIN pg_class c ON c.relnamespace=n.oid AND c.relname=$1 ORDER BY n.nspname`, storage.TenantIdentityTable)
+	rows, err = adminTx.Query(ctx, `SELECT n.nspname,c.relkind::text,c.relpersistence::text FROM pg_namespace n JOIN pg_class c ON c.relnamespace=n.oid AND c.relname=$1 ORDER BY n.nspname`, storage.TenantIdentityTable)
 	if err != nil {
 		return s, err
 	}
@@ -800,13 +848,25 @@ func (m *Migrator) readFleetSnapshot(ctx context.Context) (fleetSnapshot, error)
 	}
 	rows.Close()
 	for _, relation := range relations {
-		marker, markerErr := readPhysicalMarker(ctx, tx, relation.schema, relation.relkind, relation.persistence)
+		var dataCatalog migrationCatalogReader
+		var markerPool *pgxpool.Pool
+		if inventory, ok := snapshotProbeInventory(s, relation.schema); ok {
+			markerPool, err = m.openInventoryTenantPool(ctx, inventory)
+			if err != nil {
+				return s, err
+			}
+			dataCatalog = markerPool
+		}
+		marker, markerErr := readPhysicalMarker(ctx, adminTx, dataCatalog, relation.schema, relation.relkind, relation.persistence)
+		if markerPool != nil {
+			markerPool.Close()
+		}
 		if markerErr != nil {
 			return s, markerErr
 		}
 		s.Markers = append(s.Markers, marker)
 	}
-	rows, err = tx.Query(ctx, `SELECT rolname,shobj_description(oid,'pg_authid') FROM pg_roles WHERE shobj_description(oid,'pg_authid') LIKE 'health-tenant-v1:%' ORDER BY rolname`)
+	rows, err = adminTx.Query(ctx, `SELECT rolname,shobj_description(oid,'pg_authid') FROM pg_roles WHERE shobj_description(oid,'pg_authid') LIKE 'health-tenant-v1:%' ORDER BY rolname`)
 	if err != nil {
 		return s, err
 	}
@@ -850,13 +910,16 @@ func (m *Migrator) readFleetSnapshot(ctx context.Context) (fleetSnapshot, error)
 		if _, ok := snapshotProbeInventory(s, schema); !ok {
 			continue
 		}
-		inventory, inventoryErr := m.inventoryWithCatalog(ctx, tx, schema, false)
+		inventory, inventoryErr := m.inventoryWithCatalog(ctx, registryTx, adminTx, schema, false)
 		if inventoryErr != nil {
 			return s, inventoryErr
 		}
 		s.Inventories = append(s.Inventories, inventory)
 	}
-	if err = tx.Commit(ctx); err != nil {
+	if err = adminTx.Commit(ctx); err != nil {
+		return s, err
+	}
+	if err = registryTx.Commit(ctx); err != nil {
 		return s, err
 	}
 	return s, nil

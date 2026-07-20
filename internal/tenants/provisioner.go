@@ -57,17 +57,26 @@ func NewProvisioner(ctx context.Context, adminDSN, tenantBase string, deriver Cr
 	if err != nil {
 		return nil, fmt.Errorf("parse provisioning database config: %w", err)
 	}
-	delete(cfg.ConnConfig.RuntimeParams, "search_path")
-	cfg.AfterConnect = nil
+	if err = secureFixedPoolConfig(cfg); err != nil {
+		return nil, err
+	}
 	cfg.MaxConns, cfg.MinConns = 1, 0
 	cfg.MaxConnIdleTime = 30 * time.Second
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("open provisioning database: %w", err)
 	}
-	if err := pool.Ping(ctx); err != nil {
+	if err := requireExactPoolIdentity(ctx, pool, DatabaseAdminRole); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("ping provisioning database: %w", err)
+		return nil, err
+	}
+	if reg == nil {
+		pool.Close()
+		return nil, errors.New("provisioner registry is unavailable (details redacted)")
+	}
+	if err := reg.RequireExactIdentity(ctx, DatabaseRegistryRole); err != nil {
+		pool.Close()
+		return nil, err
 	}
 	return &AdminProvisioner{admin: pool, tenantBase: tenantBase, deriver: deriver, registry: reg}, nil
 }
@@ -129,9 +138,6 @@ func (p *AdminProvisioner) ensureTenant(ctx context.Context, spec TenantSpec) er
 		if err := p.assertSchemaOwner(ctx, spec); err != nil {
 			return err
 		}
-		if err := p.assertSchemaMarker(ctx, spec); err != nil {
-			return err
-		}
 	}
 	createdRole := false
 	if _, err = p.admin.Exec(ctx, "CREATE ROLE "+role+" LOGIN"); err == nil {
@@ -149,22 +155,58 @@ func (p *AdminProvisioner) ensureTenant(ctx context.Context, spec TenantSpec) er
 	if err := p.assertRoleCatalog(ctx, spec.DBRole); err != nil {
 		return err
 	}
+	if schemaExists {
+		markerTx, beginErr := p.admin.Begin(ctx)
+		if beginErr != nil {
+			return beginErr
+		}
+		defer func() { _ = markerTx.Rollback(ctx) }()
+		if err = withTemporaryAdminSet(ctx, markerTx, spec.DBRole, func() error {
+			if _, setErr := markerTx.Exec(ctx, "SET LOCAL ROLE "+role); setErr != nil {
+				return setErr
+			}
+			return p.assertSchemaMarker(ctx, markerTx, spec)
+		}); err != nil {
+			return err
+		}
+		if err = markerTx.Commit(ctx); err != nil {
+			return err
+		}
+	}
 	if err = p.setRolePassword(ctx, spec.DBRole, password); err != nil {
 		return fmt.Errorf("set tenant credential: %w", err)
 	}
-	if _, err = p.admin.Exec(ctx, "CREATE SCHEMA "+schema+" AUTHORIZATION "+role); err != nil && !sqlState(err, "42P06") {
-		return fmt.Errorf("create tenant schema: %w", err)
-	}
-	if err := p.assertSchemaOwner(ctx, spec); err != nil {
+	tx, err := p.admin.Begin(ctx)
+	if err != nil {
 		return err
 	}
-	if _, err = p.admin.Exec(ctx, "REVOKE ALL ON SCHEMA "+schema+" FROM PUBLIC"); err != nil {
-		return fmt.Errorf("revoke public tenant schema access: %w", err)
+	defer func() { _ = tx.Rollback(ctx) }()
+	err = withTemporaryAdminSet(ctx, tx, spec.DBRole, func() error {
+		if !schemaExists {
+			if _, createErr := tx.Exec(ctx, "CREATE SCHEMA "+schema+" AUTHORIZATION "+role); createErr != nil {
+				return fmt.Errorf("create tenant schema: %w", createErr)
+			}
+		}
+		if _, createErr := tx.Exec(ctx, "SET LOCAL ROLE "+role); createErr != nil {
+			return fmt.Errorf("enter transaction-scoped tenant owner role: %w", createErr)
+		}
+		if _, createErr := tx.Exec(ctx, "REVOKE ALL ON SCHEMA "+schema+" FROM PUBLIC"); createErr != nil {
+			return fmt.Errorf("revoke public tenant schema access: %w", createErr)
+		}
+		if !schemaExists {
+			if createErr := p.ensureMarker(ctx, tx, spec); createErr != nil {
+				return createErr
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
-	if _, err = p.admin.Exec(ctx, `REVOKE ALL ON SCHEMA health_registry FROM PUBLIC`); err != nil {
-		return fmt.Errorf("revoke public registry schema access: %w", err)
+	if err = tx.Commit(ctx); err != nil {
+		return err
 	}
-	if err := p.ensureMarker(ctx, spec); err != nil {
+	if err := p.assertSchemaOwner(ctx, spec); err != nil {
 		return err
 	}
 	for i := 0; i < 2; i++ {
@@ -256,11 +298,11 @@ func (p *AdminProvisioner) assertRoleCatalog(ctx context.Context, role string) e
 	if !login || superuser || createRole || createDB || replication || bypassRLS {
 		return errors.New("existing tenant role has unsafe catalog attributes")
 	}
-	var memberships int
-	if err := p.admin.QueryRow(ctx, `SELECT count(*) FROM pg_auth_members WHERE member=(SELECT oid FROM pg_roles WHERE rolname=$1)`, role).Scan(&memberships); err != nil {
+	var memberships, canonical int
+	if err := p.admin.QueryRow(ctx, `SELECT count(*),count(*) FILTER (WHERE granted.rolname=$1 AND member.rolname='health_admin' AND m.admin_option AND NOT m.inherit_option AND NOT m.set_option) FROM pg_auth_members m JOIN pg_roles granted ON granted.oid=m.roleid JOIN pg_roles member ON member.oid=m.member WHERE m.member=(SELECT oid FROM pg_roles WHERE rolname=$1) OR m.roleid=(SELECT oid FROM pg_roles WHERE rolname=$1)`, role).Scan(&memberships, &canonical); err != nil {
 		return err
 	}
-	if memberships != 0 {
+	if memberships != 1 || canonical != 1 {
 		return errors.New("existing tenant role has unexpected role memberships")
 	}
 	return nil
@@ -277,15 +319,20 @@ func (p *AdminProvisioner) assertSchemaOwner(ctx context.Context, spec TenantSpe
 	return nil
 }
 
-func (p *AdminProvisioner) ensureMarker(ctx context.Context, spec TenantSpec) error {
+type markerCatalog interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+func (p *AdminProvisioner) ensureMarker(ctx context.Context, catalog markerCatalog, spec TenantSpec) error {
 	table := pgx.Identifier{spec.SchemaName, provisionMarkerTable}.Sanitize()
-	if _, err := p.admin.Exec(ctx, "CREATE TABLE IF NOT EXISTS "+table+` (singleton boolean PRIMARY KEY DEFAULT true CHECK(singleton), tenant_id uuid NOT NULL, operation_id uuid NOT NULL)`); err != nil {
+	if _, err := catalog.Exec(ctx, "CREATE TABLE IF NOT EXISTS "+table+` (singleton boolean PRIMARY KEY DEFAULT true CHECK(singleton), tenant_id uuid NOT NULL, operation_id uuid NOT NULL)`); err != nil {
 		return fmt.Errorf("create tenant marker: %w", err)
 	}
 	var tenantID, operationID uuid.UUID
-	err := p.admin.QueryRow(ctx, "SELECT tenant_id, operation_id FROM "+table+" WHERE singleton=true").Scan(&tenantID, &operationID)
+	err := catalog.QueryRow(ctx, "SELECT tenant_id, operation_id FROM "+table+" WHERE singleton=true").Scan(&tenantID, &operationID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		_, err = p.admin.Exec(ctx, "INSERT INTO "+table+" (tenant_id, operation_id) VALUES ($1,$2)", spec.TenantID, spec.OperationID)
+		_, err = catalog.Exec(ctx, "INSERT INTO "+table+" (tenant_id, operation_id) VALUES ($1,$2)", spec.TenantID, spec.OperationID)
 		if err != nil {
 			return fmt.Errorf("write tenant marker: %w", err)
 		}
@@ -300,10 +347,10 @@ func (p *AdminProvisioner) ensureMarker(ctx context.Context, spec TenantSpec) er
 	return nil
 }
 
-func (p *AdminProvisioner) assertSchemaMarker(ctx context.Context, spec TenantSpec) error {
+func (p *AdminProvisioner) assertSchemaMarker(ctx context.Context, catalog markerCatalog, spec TenantSpec) error {
 	table := pgx.Identifier{spec.SchemaName, provisionMarkerTable}.Sanitize()
 	var tenantID, operationID uuid.UUID
-	if err := p.admin.QueryRow(ctx, "SELECT tenant_id, operation_id FROM "+table+" WHERE singleton=true").Scan(&tenantID, &operationID); err != nil {
+	if err := catalog.QueryRow(ctx, "SELECT tenant_id, operation_id FROM "+table+" WHERE singleton=true").Scan(&tenantID, &operationID); err != nil {
 		return fmt.Errorf("existing tenant schema has no valid provisioning marker: %w", err)
 	}
 	if tenantID != spec.TenantID || operationID != spec.OperationID {

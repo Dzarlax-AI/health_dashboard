@@ -20,7 +20,7 @@ func TestProvisionerAdoptionChecksPrecedeCredentialMutation(t *testing.T) {
 	if marker < 0 || password < 0 || marker > password {
 		t.Fatal("duplicate role marker must be verified before password mutation")
 	}
-	for _, want := range []string{"rolreplication", "rolbypassrls", "pg_auth_members", "assertSchemaMarker(ctx, spec)", "assertRegistryOperation(ctx, spec,"} {
+	for _, want := range []string{"rolreplication", "rolbypassrls", "pg_auth_members", "assertSchemaMarker(ctx,", "assertRegistryOperation(ctx, spec,"} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("missing catalog safety check %q", want)
 		}

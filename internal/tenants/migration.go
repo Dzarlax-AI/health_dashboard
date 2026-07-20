@@ -171,6 +171,7 @@ func BuildMigrationPlan(i TenantInventory) (MigrationPlan, error) {
 		)
 	}
 	p.Statements = append(p.Statements,
+		PlannedStatement{Operation: "enable_transactional_admin_set"},
 		PlannedStatement{Operation: "ensure_exact_tenant_identity_marker"},
 	)
 	p.Statements = append(p.Statements, PlannedStatement{Operation: "set_role_password", SecretParameter: &TypedSecretParameter{Name: "derived_credential", Type: "postgres_role_password", Source: "credential_deriver"}})
@@ -645,10 +646,12 @@ var (
 )
 
 type Migrator struct {
-	admin              *pgxpool.Pool
-	registryLockConfig *pgx.ConnConfig
-	tenantBase         string
-	deriver            CredentialDeriver
+	admin                *pgxpool.Pool
+	registry             *pgxpool.Pool
+	registryLockConfig   *pgx.ConnConfig
+	registryLockIdentity string
+	tenantBase           string
+	deriver              CredentialDeriver
 	// auditBeforeEndSnapshot is test-only fault injection for proving the
 	// start/end stability gate. Production constructors leave it nil.
 	auditBeforeEndSnapshot func(context.Context) error
@@ -659,13 +662,35 @@ type MigrationConnectionError struct {
 	cause error
 }
 
+var ErrLegacyRollbackBridgeMissing = errors.New("legacy rollback bridge is missing; run rollback-db-identities before tenant rollback")
+
 func (e *MigrationConnectionError) Error() string {
 	return e.stage + " administrator connection failed (details redacted)"
 }
 func (e *MigrationConnectionError) Unwrap() error { return e.cause }
 
 func NewMigrator(ctx context.Context, adminDSN, tenantBase string, deriver CredentialDeriver) (*Migrator, error) {
-	return NewMigratorWithRegistryLock(ctx, adminDSN, adminDSN, tenantBase, deriver)
+	if err := deriverValidateForReadOnly(deriver); err != nil {
+		return nil, err
+	}
+	p, err := openMigratorPool(ctx, adminDSN, "", "administrator")
+	if err != nil {
+		return nil, err
+	}
+	if err = validateTenantDSNBase(tenantBase); err != nil {
+		p.Close()
+		return nil, fmt.Errorf("tenant database base: %w", err)
+	}
+	lockConfig, err := pgx.ParseConfig(adminDSN)
+	if err != nil {
+		p.Close()
+		return nil, &MigrationConnectionError{stage: "parse legacy registry lock", cause: err}
+	}
+	if err = secureFixedConnConfig(lockConfig); err != nil {
+		p.Close()
+		return nil, &MigrationConnectionError{stage: "validate legacy registry lock", cause: err}
+	}
+	return &Migrator{admin: p, registry: p, registryLockConfig: lockConfig, tenantBase: tenantBase, deriver: deriver}, nil
 }
 
 // NewMigratorWithRegistryLock keeps catalog administration on adminDSN while
@@ -675,35 +700,63 @@ func NewMigratorWithRegistryLock(ctx context.Context, adminDSN, registryDSN, ten
 	if err := deriverValidateForReadOnly(deriver); err != nil {
 		return nil, err
 	}
-	c, err := pgxpool.ParseConfig(adminDSN)
+	p, err := openMigratorPool(ctx, adminDSN, DatabaseAdminRole, "administrator")
 	if err != nil {
-		return nil, &MigrationConnectionError{stage: "parse", cause: err}
-	}
-	c.MaxConns = 1
-	c.MinConns = 0
-	p, err := pgxpool.NewWithConfig(ctx, c)
-	if err != nil {
-		return nil, &MigrationConnectionError{stage: "open", cause: err}
-	}
-	if err = p.Ping(ctx); err != nil {
-		p.Close()
-		return nil, &MigrationConnectionError{stage: "ping", cause: err}
+		return nil, err
 	}
 	if err := validateTenantDSNBase(tenantBase); err != nil {
 		p.Close()
 		return nil, fmt.Errorf("tenant database base: %w", err)
 	}
+	registryPool, err := openMigratorPool(ctx, registryDSN, DatabaseRegistryRole, "registry")
+	if err != nil {
+		p.Close()
+		return nil, err
+	}
 	lockConfig, err := pgx.ParseConfig(registryDSN)
 	if err != nil {
 		p.Close()
+		registryPool.Close()
 		return nil, &MigrationConnectionError{stage: "parse registry lock", cause: err}
 	}
-	return &Migrator{admin: p, registryLockConfig: lockConfig, tenantBase: tenantBase, deriver: deriver}, nil
+	if err = secureFixedConnConfig(lockConfig); err != nil {
+		p.Close()
+		registryPool.Close()
+		return nil, &MigrationConnectionError{stage: "validate registry lock", cause: err}
+	}
+	return &Migrator{admin: p, registry: registryPool, registryLockConfig: lockConfig, registryLockIdentity: DatabaseRegistryRole, tenantBase: tenantBase, deriver: deriver}, nil
+}
+
+func openMigratorPool(ctx context.Context, dsn, expectedIdentity, stage string) (*pgxpool.Pool, error) {
+	c, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, &MigrationConnectionError{stage: "parse " + stage, cause: err}
+	}
+	if err = secureFixedPoolConfig(c); err != nil {
+		return nil, &MigrationConnectionError{stage: "validate " + stage, cause: err}
+	}
+	c.MaxConns, c.MinConns = 1, 0
+	p, err := pgxpool.NewWithConfig(ctx, c)
+	if err != nil {
+		return nil, &MigrationConnectionError{stage: "open " + stage, cause: err}
+	}
+	if expectedIdentity != "" {
+		if err = requireExactPoolIdentity(ctx, p, expectedIdentity); err != nil {
+			p.Close()
+			return nil, &MigrationConnectionError{stage: stage + " identity", cause: err}
+		}
+	}
+	return p, nil
 }
 func deriverValidateForReadOnly(d CredentialDeriver) error { return d.validate() }
-func (m *Migrator) Close()                                 { m.admin.Close() }
+func (m *Migrator) Close() {
+	m.admin.Close()
+	if m.registry != m.admin {
+		m.registry.Close()
+	}
+}
 func (m *Migrator) CanonicalSchemas(ctx context.Context) ([]string, error) {
-	rows, err := m.admin.Query(ctx, `SELECT schema_name FROM health_registry.users WHERE provisioning_state='active' ORDER BY created_at ASC,schema_name ASC`)
+	rows, err := m.registry.Query(ctx, `SELECT schema_name FROM health_registry.users WHERE provisioning_state='active' ORDER BY created_at ASC,schema_name ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -875,16 +928,8 @@ func (m *Migrator) ApplyRestrictedTenant(ctx context.Context, i TenantInventory,
 			return fmt.Errorf("ensure restricted tenant schema contract: %w", err)
 		}
 		if err := m.VerifyRestrictedTenant(ctx, i, otherSchema); err != nil {
-			tx, beginErr := m.admin.Begin(ctx)
-			if beginErr != nil {
-				return errors.Join(err, beginErr)
-			}
-			defer tx.Rollback(ctx)
-			if markerErr := ensureMigrationTenantMarker(ctx, tx, i); markerErr != nil {
+			if markerErr := m.ensureMigrationTenantMarker(ctx, i); markerErr != nil {
 				return errors.Join(err, markerErr)
-			}
-			if commitErr := tx.Commit(ctx); commitErr != nil {
-				return errors.Join(err, commitErr)
 			}
 			if err = m.VerifyRestrictedTenant(ctx, i, otherSchema); err != nil {
 				return err
@@ -899,16 +944,7 @@ func (m *Migrator) ApplyRestrictedTenant(ctx context.Context, i TenantInventory,
 		restoreErr := m.RestoreTenant(ctx, i)
 		return errors.Join(fmt.Errorf("ensure restricted tenant schema contract: %w", err), restoreErr)
 	}
-	markerTx, err := m.admin.Begin(ctx)
-	if err != nil {
-		restoreErr := m.RestoreTenant(ctx, i)
-		return errors.Join(err, restoreErr)
-	}
-	if err = ensureMigrationTenantMarker(ctx, markerTx, i); err == nil {
-		err = markerTx.Commit(ctx)
-	} else {
-		_ = markerTx.Rollback(ctx)
-	}
+	err = m.ensureMigrationTenantMarker(ctx, i)
 	if err != nil {
 		restoreErr := m.RestoreTenant(ctx, i)
 		return errors.Join(fmt.Errorf("ensure migrated tenant identity marker: %w", err), restoreErr)
@@ -964,7 +1000,7 @@ func (m *Migrator) advanceRegistryContract(ctx context.Context, i TenantInventor
 	if alreadyReady {
 		readyPredicate = "db_isolation_ready=true"
 	}
-	tag, err := m.admin.Exec(ctx, `UPDATE health_registry.users
+	tag, err := m.registry.Exec(ctx, `UPDATE health_registry.users
 		SET db_isolation_ready=true,schema_contract_version=$7,schema_contract_checksum=$8
 		WHERE tenant_id=$1 AND schema_name=$2 AND db_role=$3 AND db_credential_version=$4
 		  AND provisioning_state='active' AND `+readyPredicate+`
@@ -1003,7 +1039,7 @@ func (m *Migrator) registryContractUpdateLanded(ctx context.Context, i TenantInv
 	var ready bool
 	var version *int
 	var checksum *string
-	err := m.admin.QueryRow(readCtx, `SELECT tenant_id,schema_name,db_role,db_credential_version,provisioning_state,db_isolation_ready,schema_contract_version,schema_contract_checksum
+	err := m.registry.QueryRow(readCtx, `SELECT tenant_id,schema_name,db_role,db_credential_version,provisioning_state,db_isolation_ready,schema_contract_version,schema_contract_checksum
 		FROM health_registry.users
 		WHERE tenant_id=$1 AND schema_name=$2 AND db_role=$3 AND db_credential_version=$4`,
 		i.TenantID, i.Schema, i.Role, i.CredentialVersion).Scan(&tenantID, &schema, &role, &credentialVersion, &state, &ready, &version, &checksum)
@@ -1029,9 +1065,14 @@ func (m *Migrator) executeMigrationPlan(ctx context.Context, i TenantInventory, 
 	if err != nil {
 		return err
 	}
+	// Role creation/password changes must happen as health_admin before entering
+	// either the legacy or tenant owner role.
 	for _, statement := range plan.Statements {
 		switch statement.Operation {
 		case "":
+			if !strings.HasPrefix(statement.SQL, "CREATE ROLE ") && !strings.HasPrefix(statement.SQL, "COMMENT ON ROLE ") {
+				continue
+			}
 			if _, err = tx.Exec(ctx, statement.SQL); err != nil {
 				return err
 			}
@@ -1043,96 +1084,412 @@ func (m *Migrator) executeMigrationPlan(ctx context.Context, i TenantInventory, 
 			if _, err = tx.Exec(ctx, sql); err != nil {
 				return err
 			}
-		case "ensure_exact_tenant_identity_marker":
-			// Deferred until the restricted role has executed and verified the
-			// shared additive schema contract after this catalog transaction.
-		case "registry_compare_and_set_after_restricted_pool_proof":
-			// Deliberately executed only after this transaction commits and the
-			// restricted connection proves its denial boundaries.
+		case "enable_transactional_admin_set", "ensure_exact_tenant_identity_marker", "registry_compare_and_set_after_restricted_pool_proof":
+			// Catalog ownership and temporary membership are handled below.
 		default:
 			return fmt.Errorf("unsupported migration operation %q", statement.Operation)
 		}
 	}
+	if err = transferLegacyTenantOwnership(ctx, tx, i); err != nil {
+		return err
+	}
+	// Apply final grants as the new owner. The second, health_admin-granted SET
+	// row is removed before commit, preserving only PostgreSQL 16's canonical
+	// automatic membership.
+	if _, err = tx.Exec(ctx, "GRANT "+quoteIdent(i.Role)+" TO health_admin WITH INHERIT FALSE, SET TRUE"); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, "SET LOCAL ROLE "+quoteIdent(i.Role)); err != nil {
+		return err
+	}
+	for _, statement := range plan.Statements {
+		if statement.Operation != "" {
+			continue
+		}
+		if strings.HasPrefix(statement.SQL, "CREATE ROLE ") || strings.HasPrefix(statement.SQL, "COMMENT ON ROLE ") || strings.Contains(statement.SQL, " OWNER TO ") || strings.HasPrefix(statement.SQL, "ALTER DEFAULT PRIVILEGES FOR ROLE "+quoteIdent(legacyDatabaseRole)) {
+			continue
+		}
+		if _, err = tx.Exec(ctx, statement.SQL); err != nil {
+			return err
+		}
+	}
+	if _, err = tx.Exec(ctx, "RESET ROLE"); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, "REVOKE "+quoteIdent(i.Role)+" FROM health_admin GRANTED BY health_admin"); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
 }
 
-func ensureMigrationTenantMarker(ctx context.Context, tx pgx.Tx, i TenantInventory) error {
-	expected := storage.SchemaContractState{Version: i.Registry.ContractVersion, Checksum: i.Registry.ContractChecksum}
-	if err := storage.MigrateTenantIdentityMarker(ctx, tx, i.Schema, i.TenantID, i.TenantID, expected); err != nil {
+func transferLegacyTenantOwnership(ctx context.Context, tx pgx.Tx, i TenantInventory) error {
+	if i.SchemaOwner != legacyDatabaseRole && i.SchemaOwner != i.Role {
+		return errors.New("tenant schema owner is not the approved legacy or tenant role")
+	}
+	for _, o := range i.Objects {
+		if o.Owner != legacyDatabaseRole && o.Owner != i.Role {
+			return errors.New("tenant object owner is not the approved legacy or tenant role")
+		}
+	}
+	if i.SchemaOwner == i.Role {
+		return nil
+	}
+	var grantDB string
+	if err := tx.QueryRow(ctx, `SELECT format('GRANT CREATE ON DATABASE %I TO %I',current_database(),$1::text)`, i.Role).Scan(&grantDB); err != nil {
 		return err
 	}
-	_, err := tx.Exec(ctx, "ALTER TABLE "+qualified(i.Schema, storage.TenantIdentityTable)+" OWNER TO "+quoteIdent(i.Role))
+	if _, err := tx.Exec(ctx, grantDB); err != nil {
+		return fmt.Errorf("grant transient tenant database CREATE: %w", err)
+	}
+	var grantLegacyDB string
+	if err := tx.QueryRow(ctx, `SELECT format('GRANT CREATE ON DATABASE %I TO health_user',current_database())`).Scan(&grantLegacyDB); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, grantLegacyDB); err != nil {
+		return fmt.Errorf("grant transient legacy database CREATE: %w", err)
+	}
+	if _, err := tx.Exec(ctx, "GRANT "+quoteIdent(i.Role)+" TO health_admin WITH INHERIT FALSE, SET TRUE"); err != nil {
+		return fmt.Errorf("grant transient admin-to-tenant SET: %w", err)
+	}
+	if _, err := tx.Exec(ctx, "GRANT "+quoteIdent(i.Role)+" TO "+quoteIdent(legacyDatabaseRole)+" WITH INHERIT FALSE, SET TRUE"); err != nil {
+		return fmt.Errorf("grant transient legacy-to-tenant SET: %w", err)
+	}
+	if _, err := tx.Exec(ctx, "SET LOCAL ROLE "+quoteIdent(legacyDatabaseRole)); err != nil {
+		return fmt.Errorf("enter legacy owner role: %w", err)
+	}
+	if _, err := tx.Exec(ctx, "GRANT CREATE ON SCHEMA "+quoteIdent(i.Schema)+" TO "+quoteIdent(i.Role)); err != nil {
+		return fmt.Errorf("grant transient tenant schema CREATE: %w", err)
+	}
+	for _, o := range i.Objects {
+		if o.Owner == i.Role {
+			continue
+		}
+		target := qualified(i.Schema, o.Name)
+		if o.Kind == "FUNCTION" || o.Kind == "PROCEDURE" {
+			target = quoteIdent(i.Schema) + "." + quoteIdent(o.Name) + "(" + o.Identity + ")"
+		}
+		if _, err := tx.Exec(ctx, "ALTER "+o.Kind+" "+target+" OWNER TO "+quoteIdent(i.Role)); err != nil {
+			return fmt.Errorf("transfer tenant object owner: %w", err)
+		}
+	}
+	// Remove the old owner's temporary ACL row before changing schema owner;
+	// otherwise it survives the transaction as an unnecessary explicit grant.
+	if _, err := tx.Exec(ctx, "REVOKE CREATE ON SCHEMA "+quoteIdent(i.Schema)+" FROM "+quoteIdent(i.Role)); err != nil {
+		return fmt.Errorf("revoke transient tenant schema CREATE: %w", err)
+	}
+	if _, err := tx.Exec(ctx, "ALTER SCHEMA "+quoteIdent(i.Schema)+" OWNER TO "+quoteIdent(i.Role)); err != nil {
+		return fmt.Errorf("transfer tenant schema owner: %w", err)
+	}
+	if _, err := tx.Exec(ctx, "RESET ROLE"); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, "REVOKE "+quoteIdent(i.Role)+" FROM "+quoteIdent(legacyDatabaseRole)+" GRANTED BY health_admin"); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, "REVOKE "+quoteIdent(i.Role)+" FROM health_admin GRANTED BY health_admin"); err != nil {
+		return err
+	}
+	var revokeDB string
+	if err := tx.QueryRow(ctx, `SELECT format('REVOKE CREATE ON DATABASE %I FROM %I GRANTED BY health_admin',current_database(),$1::text)`, i.Role).Scan(&revokeDB); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, revokeDB); err != nil {
+		return err
+	}
+	var revokeLegacyDB string
+	if err := tx.QueryRow(ctx, `SELECT format('REVOKE CREATE ON DATABASE %I FROM health_user GRANTED BY health_admin',current_database())`).Scan(&revokeLegacyDB); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, revokeLegacyDB)
 	return err
 }
 
-// RestoreTenant applies the manifest inventory transactionally and disables
-// isolated routing in the same commit. It is safe to retry; the restricted
-// role is retained but loses ownership and explicit runtime grants.
+func (m *Migrator) verifyRegistryDeniedAll(ctx context.Context, schemas []string) (IsolationProbeResult, error) {
+	var result IsolationProbeResult
+	cfg, err := pgxpool.ParseConfig(m.registryLockConfig.ConnString())
+	if err != nil {
+		return result, err
+	}
+	if err = secureFixedPoolConfig(cfg); err != nil {
+		return result, err
+	}
+	cfg.MaxConns, cfg.MinConns = 1, 0
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return result, err
+	}
+	defer pool.Close()
+	if err = requireExactPoolIdentity(ctx, pool, DatabaseRegistryRole); err != nil {
+		return result, err
+	}
+	var failures []error
+	for _, schema := range schemas {
+		for _, statement := range []string{
+			"SELECT 1 FROM " + qualified(schema, "metric_points") + " LIMIT 0",
+			"INSERT INTO " + qualified(schema, "settings") + "(key,value) VALUES ('__registry_isolation_probe__','x')",
+			"CREATE TABLE " + qualified(schema, "__registry_isolation_probe__") + "(id integer)",
+		} {
+			result.Total++
+			if probeErr := expectPermissionDenied(ctx, pool, statement); probeErr != nil {
+				failures = append(failures, errors.New("registry-to-tenant denial probe failed (details redacted)"))
+				var allowed *isolationAccessAllowedError
+				if errors.As(probeErr, &allowed) {
+					result.CrossTenantFailures++
+				} else {
+					result.OperationalFailures++
+				}
+			} else {
+				result.Denied++
+			}
+		}
+	}
+	return result, errors.Join(failures...)
+}
+
+func (m *Migrator) ensureMigrationTenantMarker(ctx context.Context, i TenantInventory) error {
+	pool, err := m.openInventoryTenantPool(ctx, i)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	expected := storage.SchemaContractState{Version: i.Registry.ContractVersion, Checksum: i.Registry.ContractChecksum}
+	operationID := i.TenantID
+	if i.Marker != nil {
+		operationID = i.Marker.OperationID
+	}
+	return storage.MigrateTenantIdentityMarker(ctx, pool, "", i.TenantID, operationID, expected)
+}
+
+// RestoreTenant first disables isolated routing through the registry identity,
+// then restores tenant catalog state through health_admin. PostgreSQL cannot
+// make those independently-authorized steps one transaction; ordering the
+// registry CAS first fails closed, and both phases are idempotent on retry.
 func (m *Migrator) RestoreTenant(ctx context.Context, i TenantInventory) error {
 	plan, err := BuildRollbackPlan(i)
 	if err != nil {
 		return err
+	}
+	if err = m.disableRegistryIsolation(ctx, i); err != nil {
+		return err
+	}
+	if !rollbackCatalogAlreadyTenantOwned(i) {
+		bridge, bridgeErr := m.legacyRollbackBridgePresent(ctx)
+		if bridgeErr != nil {
+			return bridgeErr
+		}
+		if !bridge {
+			return ErrLegacyRollbackBridgeMissing
+		}
+	}
+	// The marker is tenant data and health_admin intentionally cannot touch it.
+	// Restore it through the exact tenant identity before catalog ownership is
+	// handed back. This phase and the registry phase are independently
+	// idempotent, so a failure leaves runtime routing disabled and is safe to
+	// retry without pretending the cross-identity work was atomic.
+	if err = m.restoreTenantMarker(ctx, i); err != nil {
+		return err
+	}
+	if rollbackCatalogAlreadyTenantOwned(i) {
+		return m.restoreTenantOwnedCatalog(ctx, i, plan)
+	}
+	return m.restoreLegacyOwnedCatalog(ctx, i, plan)
+}
+
+func (m *Migrator) restoreLegacyOwnedCatalog(ctx context.Context, i TenantInventory, plan RollbackPlan) error {
+	landed, err := rollbackCatalogOwnersLanded(ctx, m.admin, i)
+	if err != nil {
+		return err
+	}
+	if landed {
+		return nil
 	}
 	tx, err := m.admin.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
+	var grantDatabase string
+	if err = tx.QueryRow(ctx, `SELECT format('GRANT CREATE ON DATABASE %I TO health_user',current_database())`).Scan(&grantDatabase); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, grantDatabase); err != nil {
+		return fmt.Errorf("grant transient legacy database CREATE: %w", err)
+	}
+	if _, err = tx.Exec(ctx, "GRANT "+quoteIdent(i.Role)+" TO health_admin WITH INHERIT TRUE, SET TRUE"); err != nil {
+		return fmt.Errorf("grant transient inherited tenant authority: %w", err)
+	}
+	if _, err = tx.Exec(ctx, "GRANT CREATE ON SCHEMA "+quoteIdent(i.Schema)+" TO "+quoteIdent(legacyDatabaseRole)); err != nil {
+		return fmt.Errorf("grant transient legacy schema CREATE: %w", err)
+	}
 	for _, statement := range plan.Statements {
-		switch statement.Operation {
-		case "":
+		if statement.Operation == "" && strings.Contains(statement.SQL, " OWNER TO ") {
 			if _, err = tx.Exec(ctx, statement.SQL); err != nil {
 				return err
 			}
-		case "drop_migration_tenant_identity_marker":
-			if _, err = tx.Exec(ctx, "DROP TABLE IF EXISTS "+qualified(i.Schema, "__tenant_identity")); err != nil {
+		}
+	}
+	if _, err = tx.Exec(ctx, "SET LOCAL ROLE "+quoteIdent(legacyDatabaseRole)); err != nil {
+		return fmt.Errorf("enter restored legacy owner role: %w", err)
+	}
+	defaultPrivilegePrefix := "ALTER DEFAULT PRIVILEGES FOR ROLE " + quoteIdent(i.Role)
+	for _, statement := range plan.Statements {
+		switch statement.Operation {
+		case "":
+			if strings.Contains(statement.SQL, " OWNER TO ") || strings.HasPrefix(statement.SQL, defaultPrivilegePrefix) {
+				continue
+			}
+			if _, err = tx.Exec(ctx, statement.SQL); err != nil {
 				return err
 			}
-		case "restore_tenant_identity_marker_contract":
-			if i.Marker == nil {
-				return errors.New("rollback inventory records a tenant identity marker without marker metadata")
-			}
-			state := storage.SchemaContractState{Version: i.Marker.ContractVersion, Checksum: i.Marker.ContractChecksum}
-			if err = storage.RestoreTenantIdentityMarkerContract(ctx, tx, i.Schema, i.Marker.TenantID, i.Marker.OperationID, state); err != nil {
-				return err
-			}
-		case "registry_compare_and_set_isolation_ready_false":
-			tag, execErr := tx.Exec(ctx, `UPDATE health_registry.users
-				SET db_isolation_ready=false,schema_contract_version=$5,schema_contract_checksum=$6
-				WHERE tenant_id=$1 AND schema_name=$2 AND db_role=$3 AND db_credential_version=$4
-				  AND provisioning_state='active' AND db_isolation_ready=true
-				  AND schema_contract_version=$7 AND schema_contract_checksum=$8`,
-				i.TenantID, i.Schema, i.Role, i.CredentialVersion,
-				i.Registry.ContractVersion, i.Registry.ContractChecksum,
-				storage.SchemaContractVersion, storage.SchemaContractChecksum())
-			if execErr != nil {
-				return execErr
-			}
-			if tag.RowsAffected() != 1 {
-				landed, readErr := registryRollbackStateLanded(ctx, tx, i)
-				if landed {
-					continue
-				}
-				if readErr != nil {
-					return errors.Join(registry.ErrProvisioningStateConflict, readErr)
-				}
-				return registry.ErrProvisioningStateConflict
-			}
+		case "drop_migration_tenant_identity_marker", "restore_tenant_identity_marker_contract", "registry_compare_and_set_isolation_ready_false":
+			continue
 		default:
 			return fmt.Errorf("unsupported rollback operation %q", statement.Operation)
 		}
 	}
-	if err = tx.Commit(ctx); err != nil {
-		landed, readErr := m.rollbackStateLanded(ctx, i)
-		if landed {
-			return nil
-		}
-		if readErr != nil {
-			return errors.Join(err, fmt.Errorf("confirm rollback after ambiguous commit: %w", readErr))
-		}
+	if _, err = tx.Exec(ctx, "REVOKE CREATE ON SCHEMA "+quoteIdent(i.Schema)+" FROM "+quoteIdent(legacyDatabaseRole)); err != nil {
+		return fmt.Errorf("revoke transient legacy schema CREATE: %w", err)
+	}
+	if _, err = tx.Exec(ctx, "RESET ROLE"); err != nil {
 		return err
 	}
-	return nil
+	for _, statement := range plan.Statements {
+		if statement.Operation == "" && strings.HasPrefix(statement.SQL, defaultPrivilegePrefix) {
+			if _, err = tx.Exec(ctx, statement.SQL); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err = tx.Exec(ctx, "REVOKE "+quoteIdent(i.Role)+" FROM health_admin GRANTED BY health_admin"); err != nil {
+		return fmt.Errorf("remove transient inherited tenant authority: %w", err)
+	}
+	var revokeDatabase string
+	if err = tx.QueryRow(ctx, `SELECT format('REVOKE CREATE ON DATABASE %I FROM health_user GRANTED BY health_admin',current_database())`).Scan(&revokeDatabase); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, revokeDatabase); err != nil {
+		return fmt.Errorf("revoke transient legacy database CREATE: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
+func rollbackCatalogOwnersLanded(ctx context.Context, query databaseIdentityQuerier, i TenantInventory) (bool, error) {
+	var schemaOwner string
+	if err := query.QueryRow(ctx, `SELECT owner.rolname FROM pg_namespace n JOIN pg_roles owner ON owner.oid=n.nspowner WHERE n.nspname=$1`, i.Schema).Scan(&schemaOwner); err != nil {
+		return false, err
+	}
+	if schemaOwner != i.SchemaOwner {
+		return false, nil
+	}
+	for _, object := range i.Objects {
+		var owner string
+		var err error
+		switch object.Kind {
+		case "TABLE", "VIEW", "MATERIALIZED VIEW", "SEQUENCE", "FOREIGN TABLE":
+			err = query.QueryRow(ctx, `SELECT owner.rolname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_roles owner ON owner.oid=c.relowner WHERE n.nspname=$1 AND c.relname=$2`, i.Schema, object.Name).Scan(&owner)
+		case "FUNCTION", "PROCEDURE":
+			err = query.QueryRow(ctx, `SELECT owner.rolname FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace JOIN pg_roles owner ON owner.oid=p.proowner WHERE n.nspname=$1 AND p.proname=$2 AND pg_get_function_identity_arguments(p.oid)=$3`, i.Schema, object.Name, object.Identity).Scan(&owner)
+		case "TYPE", "DOMAIN":
+			err = query.QueryRow(ctx, `SELECT owner.rolname FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace JOIN pg_roles owner ON owner.oid=t.typowner WHERE n.nspname=$1 AND t.typname=$2`, i.Schema, object.Name).Scan(&owner)
+		default:
+			return false, fmt.Errorf("unsupported rollback owner verification kind %q", object.Kind)
+		}
+		if err != nil {
+			return false, err
+		}
+		if owner != object.Owner {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func (m *Migrator) legacyRollbackBridgePresent(ctx context.Context) (bool, error) {
+	var present bool
+	err := m.admin.QueryRow(ctx, `SELECT EXISTS(
+		SELECT 1 FROM pg_auth_members membership
+		JOIN pg_roles granted ON granted.oid=membership.roleid
+		JOIN pg_roles member ON member.oid=membership.member
+		WHERE granted.rolname=$1 AND member.rolname=$2
+		  AND NOT membership.admin_option AND NOT membership.inherit_option AND membership.set_option
+	)`, legacyDatabaseRole, DatabaseAdminRole).Scan(&present)
+	return present, err
+}
+
+func rollbackCatalogAlreadyTenantOwned(i TenantInventory) bool {
+	if i.SchemaOwner != i.Role {
+		return false
+	}
+	for _, object := range i.Objects {
+		if object.Owner != i.Role {
+			return false
+		}
+	}
+	return true
+}
+
+func (m *Migrator) restoreTenantOwnedCatalog(ctx context.Context, i TenantInventory, plan RollbackPlan) error {
+	pool, err := m.openInventoryTenantPool(ctx, i)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	ownerSuffix := " OWNER TO " + quoteIdent(i.Role)
+	for _, statement := range plan.Statements {
+		if statement.Operation != "" || strings.HasSuffix(statement.SQL, ownerSuffix) {
+			continue
+		}
+		if _, err = tx.Exec(ctx, statement.SQL); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func (m *Migrator) restoreTenantMarker(ctx context.Context, i TenantInventory) error {
+	pool, err := m.openInventoryTenantPool(ctx, i)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	if i.Marker == nil {
+		_, err = pool.Exec(ctx, "DROP TABLE IF EXISTS "+quoteIdent(storage.TenantIdentityTable))
+		return err
+	}
+	state := storage.SchemaContractState{Version: i.Marker.ContractVersion, Checksum: i.Marker.ContractChecksum}
+	return storage.RestoreTenantIdentityMarkerContract(ctx, pool, "", i.Marker.TenantID, i.Marker.OperationID, state)
+}
+
+func (m *Migrator) disableRegistryIsolation(ctx context.Context, i TenantInventory) error {
+	tag, err := m.registry.Exec(ctx, `UPDATE health_registry.users
+		SET db_isolation_ready=false,schema_contract_version=$5,schema_contract_checksum=$6
+		WHERE tenant_id=$1 AND schema_name=$2 AND db_role=$3 AND db_credential_version=$4
+		  AND provisioning_state='active' AND db_isolation_ready=true
+		  AND schema_contract_version=$7 AND schema_contract_checksum=$8`,
+		i.TenantID, i.Schema, i.Role, i.CredentialVersion,
+		i.Registry.ContractVersion, i.Registry.ContractChecksum,
+		storage.SchemaContractVersion, storage.SchemaContractChecksum())
+	if err == nil && tag.RowsAffected() == 1 {
+		return nil
+	}
+	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	landed, readErr := registryRollbackStateLanded(readCtx, m.registry, i)
+	if landed {
+		return nil
+	}
+	if err != nil {
+		return errors.Join(err, readErr)
+	}
+	if readErr != nil {
+		return errors.Join(registry.ErrProvisioningStateConflict, readErr)
+	}
+	return registry.ErrProvisioningStateConflict
 }
 
 type registryRollbackReader interface {
@@ -1167,28 +1524,6 @@ func sameNullableContract(aVersion *int, aChecksum *string, bVersion *int, bChec
 		return true
 	}
 	return *aVersion == *bVersion && *aChecksum == *bChecksum
-}
-
-func (m *Migrator) rollbackStateLanded(ctx context.Context, i TenantInventory) (bool, error) {
-	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-	defer cancel()
-	registryLanded, err := registryRollbackStateLanded(readCtx, m.admin, i)
-	if err != nil || !registryLanded {
-		return false, err
-	}
-	if i.Marker == nil {
-		var exists bool
-		err = m.admin.QueryRow(readCtx, `SELECT to_regclass($1) IS NOT NULL`, i.Schema+"."+storage.TenantIdentityTable).Scan(&exists)
-		return err == nil && !exists, err
-	}
-	var tenantID, operationID uuid.UUID
-	var version *int
-	var checksum *string
-	err = m.admin.QueryRow(readCtx, "SELECT tenant_id,operation_id,schema_contract_version,schema_contract_checksum FROM "+qualified(i.Schema, storage.TenantIdentityTable)+" WHERE singleton=true").Scan(&tenantID, &operationID, &version, &checksum)
-	if err != nil {
-		return false, err
-	}
-	return tenantID == i.Marker.TenantID && operationID == i.Marker.OperationID && sameNullableContract(version, checksum, i.Marker.ContractVersion, i.Marker.ContractChecksum), nil
 }
 
 // RotateTenantCredential changes the PostgreSQL login first, proves the new
@@ -1229,24 +1564,21 @@ func (m *Migrator) RotateTenantCredential(ctx context.Context, i TenantInventory
 		restoreErr := m.setRolePassword(ctx, i.Role, oldPassword)
 		return errors.Join(fmt.Errorf("verify target credential: %w", err), restoreErr)
 	}
-	tag, err := m.admin.Exec(ctx, `UPDATE health_registry.users SET db_credential_version=$5 WHERE tenant_id=$1 AND schema_name=$2 AND db_role=$3 AND db_credential_version=$4 AND provisioning_state='active' AND db_isolation_ready=true`, i.TenantID, i.Schema, i.Role, expectedOldVersion, targetVersion)
-	if err != nil {
+	tag, err := m.registry.Exec(ctx, `UPDATE health_registry.users SET db_credential_version=$5 WHERE tenant_id=$1 AND schema_name=$2 AND db_role=$3 AND db_credential_version=$4 AND provisioning_state='active' AND db_isolation_ready=true`, i.TenantID, i.Schema, i.Role, expectedOldVersion, targetVersion)
+	if err != nil || tag.RowsAffected() != 1 {
 		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
 		var landedVersion int
-		readErr := m.admin.QueryRow(readCtx, `SELECT db_credential_version FROM health_registry.users WHERE tenant_id=$1 AND schema_name=$2 AND db_role=$3 AND provisioning_state='active' AND db_isolation_ready=true`, i.TenantID, i.Schema, i.Role).Scan(&landedVersion)
+		readErr := m.registry.QueryRow(readCtx, `SELECT db_credential_version FROM health_registry.users WHERE tenant_id=$1 AND schema_name=$2 AND db_role=$3 AND provisioning_state='active' AND db_isolation_ready=true`, i.TenantID, i.Schema, i.Role).Scan(&landedVersion)
 		if readErr == nil && landedVersion == targetVersion {
 			return nil
 		}
-		restoreErr := m.setRolePassword(readCtx, i.Role, oldPassword)
-		return errors.Join(fmt.Errorf("advance credential version: %w", err), readErr, restoreErr)
-	}
-	if tag.RowsAffected() != 1 {
-		if err == nil {
-			err = registry.ErrProvisioningStateConflict
+		cause := err
+		if cause == nil {
+			cause = registry.ErrProvisioningStateConflict
 		}
-		restoreErr := m.setRolePassword(ctx, i.Role, oldPassword)
-		return errors.Join(fmt.Errorf("advance credential version: %w", err), restoreErr)
+		restoreErr := m.setRolePassword(readCtx, i.Role, oldPassword)
+		return errors.Join(fmt.Errorf("advance credential version: %w", cause), readErr, restoreErr)
 	}
 	return nil
 }
@@ -1333,14 +1665,14 @@ type migrationCatalogReader interface {
 }
 
 func (m *Migrator) Inventory(ctx context.Context, schema string) (TenantInventory, error) {
-	return m.inventoryWithCatalog(ctx, m.admin, schema, true)
+	return m.inventoryWithCatalog(ctx, m.registry, m.admin, schema, true)
 }
 
-func (m *Migrator) inventoryWithCatalog(ctx context.Context, catalog migrationCatalogReader, schema string, readMarker bool) (TenantInventory, error) {
+func (m *Migrator) inventoryWithCatalog(ctx context.Context, registryCatalog, catalog migrationCatalogReader, schema string, readMarker bool) (TenantInventory, error) {
 	var i TenantInventory
 	i.Schema = schema
 	var state string
-	err := catalog.QueryRow(ctx, `SELECT username,tenant_id,schema_name,db_role,db_credential_version,db_isolation_ready,provisioning_state,is_admin,schema_contract_version,schema_contract_checksum FROM health_registry.users WHERE schema_name=$1 AND provisioning_state='active'`, schema).Scan(&i.Registry.Username, &i.TenantID, &i.Registry.Schema, &i.Role, &i.CredentialVersion, &i.Registry.IsolationReady, &state, &i.IsPrimary, &i.Registry.ContractVersion, &i.Registry.ContractChecksum)
+	err := registryCatalog.QueryRow(ctx, `SELECT username,tenant_id,schema_name,db_role,db_credential_version,db_isolation_ready,provisioning_state,is_admin,schema_contract_version,schema_contract_checksum FROM health_registry.users WHERE schema_name=$1 AND provisioning_state='active'`, schema).Scan(&i.Registry.Username, &i.TenantID, &i.Registry.Schema, &i.Role, &i.CredentialVersion, &i.Registry.IsolationReady, &state, &i.IsPrimary, &i.Registry.ContractVersion, &i.Registry.ContractChecksum)
 	if err != nil {
 		return i, fmt.Errorf("schema is not a canonical active registry tenant: %w", err)
 	}
@@ -1390,15 +1722,25 @@ func (m *Migrator) inventoryWithCatalog(ctx context.Context, catalog migrationCa
 	rows.Close()
 	if readMarker && inventoryHasObject(i, "TABLE", storage.TenantIdentityTable) {
 		var contractColumnCount int
-		if err = catalog.QueryRow(ctx, `SELECT count(*) FROM information_schema.columns WHERE table_schema=$1 AND table_name=$2 AND column_name IN ('schema_contract_version','schema_contract_checksum')`, schema, storage.TenantIdentityTable).Scan(&contractColumnCount); err != nil {
+		if err = catalog.QueryRow(ctx, `SELECT count(*)
+			FROM pg_namespace n
+			JOIN pg_class c ON c.relnamespace=n.oid
+			JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped
+			WHERE n.nspname=$1 AND c.relname=$2
+			  AND a.attname IN ('schema_contract_version','schema_contract_checksum')`, schema, storage.TenantIdentityTable).Scan(&contractColumnCount); err != nil {
 			return i, err
 		}
 		marker := &TenantMarkerMetadata{}
+		markerPool, openErr := m.openInventoryTenantPool(ctx, i)
+		if openErr != nil {
+			return i, fmt.Errorf("open tenant identity marker reader: %w", openErr)
+		}
+		defer markerPool.Close()
 		switch contractColumnCount {
 		case 0:
-			err = catalog.QueryRow(ctx, "SELECT tenant_id,operation_id FROM "+qualified(schema, storage.TenantIdentityTable)+" WHERE singleton=true").Scan(&marker.TenantID, &marker.OperationID)
+			err = markerPool.QueryRow(ctx, "SELECT tenant_id,operation_id FROM "+qualified(schema, storage.TenantIdentityTable)+" WHERE singleton=true").Scan(&marker.TenantID, &marker.OperationID)
 		case 2:
-			err = catalog.QueryRow(ctx, "SELECT tenant_id,operation_id,schema_contract_version,schema_contract_checksum FROM "+qualified(schema, storage.TenantIdentityTable)+" WHERE singleton=true").Scan(&marker.TenantID, &marker.OperationID, &marker.ContractVersion, &marker.ContractChecksum)
+			err = markerPool.QueryRow(ctx, "SELECT tenant_id,operation_id,schema_contract_version,schema_contract_checksum FROM "+qualified(schema, storage.TenantIdentityTable)+" WHERE singleton=true").Scan(&marker.TenantID, &marker.OperationID, &marker.ContractVersion, &marker.ContractChecksum)
 		default:
 			return i, errors.New("tenant identity marker has partial contract columns")
 		}
@@ -1538,6 +1880,29 @@ func (m *Migrator) inventoryWithCatalog(ctx context.Context, catalog migrationCa
 	sort.Strings(i.Blockers)
 	return i, nil
 }
+
+func (m *Migrator) openInventoryTenantPool(ctx context.Context, i TenantInventory) (*pgxpool.Pool, error) {
+	password, err := m.deriver.Derive(i.TenantID, i.Role, i.CredentialVersion)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := pgxpool.ParseConfig(m.tenantBase)
+	if err != nil {
+		return nil, &MigrationConnectionError{stage: "parse inventory tenant", cause: err}
+	}
+	cfg.ConnConfig.User, cfg.ConnConfig.Password = i.Role, password
+	cfg.ConnConfig.RuntimeParams["search_path"] = i.Schema
+	cfg.MaxConns, cfg.MinConns = 1, 0
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, &MigrationConnectionError{stage: "open inventory tenant", cause: err}
+	}
+	if err = requireExactPoolIdentity(ctx, pool, i.Role); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return pool, nil
+}
 func (m *Migrator) acls(ctx context.Context, catalog migrationCatalogReader, q string, args ...any) ([]ACLRecord, error) {
 	rows, err := catalog.Query(ctx, q, args...)
 	if err != nil {
@@ -1590,7 +1955,7 @@ func (i *TenantInventory) applySafetyPolicy() {
 	if r.Exists && (r.Comment == nil || !strings.HasPrefix(*r.Comment, "health-tenant-v1:"+i.TenantID.String()+":")) {
 		i.Blockers = append(i.Blockers, "existing tenant role marker comment is missing or mismatched")
 	}
-	if len(i.Memberships) > 0 {
+	if r.Exists && !canonicalTenantMemberships(i.Role, i.Memberships) {
 		i.Blockers = append(i.Blockers, "tenant role has unexpected memberships")
 	}
 }

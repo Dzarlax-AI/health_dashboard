@@ -125,10 +125,41 @@ The pre-aggregated tables are built automatically on startup and after each sync
 
 ## Quick Start
 
-Requires a running PostgreSQL instance with the `health` schema (see `init.sql` in the [personal-ai-stack](https://github.com/dzarlax/personal_ai_stack) monorepo).
+The standalone Compose stack uses PostgreSQL 17, creates the restricted
+`health_admin` and `health_registry` database identities in a one-shot service,
+then starts the application in tenant-isolation mode. On a fresh volume the
+application creates the first `admin` tenant from `API_KEY` and `UI_PASSWORD`.
 
 ```bash
-# Pull and run
+docker compose up -d
+docker compose ps
+```
+
+The committed defaults are deliberately development-only. Before any shared or
+production deployment, set an immutable `HEALTH_IMAGE` digest and override all
+database passwords, `TENANT_DB_MASTER_SECRET`, `API_KEY`, and `UI_PASSWORD` from
+secret storage. `TENANT_DB_BOOTSTRAP_DATABASE_URL` must use the same PostgreSQL
+superuser password as `POSTGRES_SUPERUSER_PASSWORD`; `ADMIN_DATABASE_URL` and
+`REGISTRY_DATABASE_URL` must likewise match the two passwords supplied to the
+bootstrap service. URL-encode credentials embedded in URL-form DSNs.
+
+The bootstrap container is intentionally not part of the running service. It
+exits after success and is safe to start again: it validates and reuses the
+existing mode-0600 rollback manifest instead of overwriting it. The manifest is
+kept in the `health-db-identity-manifests` volume. Back up that volume and do not
+run `docker compose down -v` while rollback may still be required. The main
+application container never receives the bootstrap/superuser connection.
+
+### External PostgreSQL
+
+For an existing externally managed database, complete the fixed-identity
+bootstrap and tenant migration in the [tenant isolation runbook](docs/TENANT_ISOLATION_RUNBOOK.md),
+then run the image with its restricted isolation-mode connections. Legacy
+single-schema installations can remain on `DATABASE_URL` while following that
+cutover procedure.
+
+```bash
+# Legacy single-schema example
 docker pull dzarlax/health_dashboard:latest
 
 docker run -d \
@@ -149,7 +180,13 @@ All configuration is via environment variables:
 
 | Variable | Required | Description |
 |---|---|---|
-| `DATABASE_URL` | **Yes** | PostgreSQL connection string (e.g. `postgres://health_user:pass@host/db?search_path=health`) |
+| `DATABASE_URL` | Legacy mode only | Shared PostgreSQL connection for installations with tenant isolation disabled. |
+| `TENANT_DB_ISOLATION_ENABLED` | No | Enables restricted per-tenant database identities. The standalone Compose stack sets this to `true`. |
+| `ADMIN_DATABASE_URL` | Isolation mode | Restricted `health_admin` connection used only for tenant provisioning and migrations. |
+| `REGISTRY_DATABASE_URL` | Isolation mode | Restricted `health_registry` connection used for registry access. |
+| `TENANT_DATABASE_URL_BASE` | Isolation mode | PostgreSQL URL containing host/database parameters only; it must not contain user or password information. |
+| `TENANT_DB_MASTER_SECRET` | Isolation mode | Base64/base64url secret that decodes to at least 32 bytes, used to derive tenant credentials. Store outside source control. |
+| `TENANT_DB_MASTER_SECRET_VERSION` | Isolation mode | Positive version for the current tenant credential derivation secret. |
 | `API_KEY` | Recommended | Protects `/health` (data upload) and `/mcp`. If not set -- endpoints are open. |
 | `UI_PASSWORD` | Recommended | Password for the web dashboard at `/`. If not set -- UI is open. |
 | `ADDR` | No | Listen address. Default: `:8080` |

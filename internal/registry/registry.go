@@ -74,6 +74,36 @@ func New(ctx context.Context, connStr string) (*Registry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	return openRegistry(ctx, config)
+}
+
+// NewWithExpectedIdentity is the fail-closed constructor for isolated runtime
+// mode. It rejects startup-time impersonation before opening a socket and then
+// binds both session_user and current_user to the expected login.
+func NewWithExpectedIdentity(ctx context.Context, connStr, expected string) (*Registry, error) {
+	config, err := pgxpool.ParseConfig(connStr)
+	if err != nil {
+		return nil, errors.New("parse isolated registry configuration (details redacted)")
+	}
+	delete(config.ConnConfig.RuntimeParams, "search_path")
+	for _, key := range []string{"role", "session_authorization", "options"} {
+		if _, exists := config.ConnConfig.RuntimeParams[key]; exists {
+			return nil, errors.New("isolated registry configuration contains forbidden startup parameters (details redacted)")
+		}
+	}
+	config.AfterConnect = nil
+	r, err := openRegistry(ctx, config)
+	if err != nil {
+		return nil, errors.New("open isolated registry database (details redacted)")
+	}
+	if err = r.RequireExactIdentity(ctx, expected); err != nil {
+		r.Close()
+		return nil, err
+	}
+	return r, nil
+}
+
+func openRegistry(ctx context.Context, config *pgxpool.Config) (*Registry, error) {
 	config.MaxConns = 5
 	config.MinConns = 1
 	config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
@@ -87,6 +117,23 @@ func New(ctx context.Context, connStr string) (*Registry, error) {
 		return nil, fmt.Errorf("ping: %w", err)
 	}
 	return &Registry{pool: pool, connConfig: config.ConnConfig.Copy()}, nil
+}
+
+// RequireExactIdentity binds security-sensitive runtime modes to the intended
+// login. New intentionally remains compatible with legacy shared-role setups;
+// isolated startup opts into this fail-closed check explicitly.
+func (r *Registry) RequireExactIdentity(ctx context.Context, expected string) error {
+	if r == nil || r.pool == nil || expected == "" {
+		return errors.New("registry database identity is unavailable (details redacted)")
+	}
+	var sessionUser, currentUser string
+	if err := r.pool.QueryRow(ctx, `SELECT session_user,current_user`).Scan(&sessionUser, &currentUser); err != nil {
+		return errors.New("verify registry database identity (details redacted)")
+	}
+	if sessionUser != expected || currentUser != expected {
+		return errors.New("registry database identity mismatch (details redacted)")
+	}
+	return nil
 }
 
 // EnsureSchema creates the health_registry schema and users table if they do
@@ -164,6 +211,19 @@ func (r *Registry) EnsureSchema(ctx context.Context) error {
 	}
 	_, _ = r.pool.Exec(ctx, `CREATE INDEX IF NOT EXISTS idx_registry_sessions_user ON health_registry.sessions (username)`)
 	_, _ = r.pool.Exec(ctx, `CREATE INDEX IF NOT EXISTS idx_registry_sessions_expires ON health_registry.sessions (expires_at)`)
+	// Registry objects are private to the registry login. Table row/array types
+	// are created after the database-identity bootstrap, so enforce both current
+	// and future type/routine defaults here under the owning registry role.
+	for _, statement := range []string{
+		`ALTER DEFAULT PRIVILEGES REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC`,
+		`ALTER DEFAULT PRIVILEGES REVOKE USAGE ON TYPES FROM PUBLIC`,
+		`REVOKE ALL ON ALL FUNCTIONS IN SCHEMA health_registry FROM PUBLIC`,
+		`DO $types$ DECLARE x record; BEGIN FOR x IN SELECT t.typname FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace WHERE n.nspname='health_registry' AND t.typelem=0 LOOP EXECUTE format('REVOKE ALL ON TYPE %I.%I FROM PUBLIC','health_registry',x.typname); END LOOP; END $types$`,
+	} {
+		if _, err = r.pool.Exec(ctx, statement); err != nil {
+			return fmt.Errorf("secure registry object defaults: %w", err)
+		}
+	}
 	return nil
 }
 
