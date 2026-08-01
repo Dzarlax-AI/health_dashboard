@@ -137,6 +137,11 @@ func (s *DB) EnsureIndexesContext(ctx context.Context) error {
 	}
 
 	indexes := []indexMigration{
+		// Supports the dashboard "updated" timestamp without scanning the
+		// append-only raw payload table or treating pending/failed ingestion
+		// as completed health data.
+		{"idx_health_records_completed_processed_at", `CREATE INDEX IF NOT EXISTS idx_health_records_completed_processed_at ON health_records (processed_at DESC) WHERE processing_status = 'complete' AND processed_at IS NOT NULL`},
+
 		// Partial index covers the hot path — baseline reads filter quality='ok'.
 		// Defined inline (not in the migration block) because it depends on the
 		// quality column existing first.

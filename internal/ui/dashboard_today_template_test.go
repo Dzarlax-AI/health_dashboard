@@ -15,11 +15,12 @@ func TestBuildDashboardPageDataCreatesPrimaryAndSupportingScores(t *testing.T) {
 	br := &health.BriefingResponse{
 		Date:                  "2026-08-01",
 		ReadinessToday:        73,
+		ReadinessTodayBand:    "fair",
 		ReadinessTodayLabel:   "Optimal",
 		ReadinessServing:      &health.ReadinessServingState{Status: health.ReadinessServingFresh, Confidence: health.ReadinessConfidenceFinal},
 		EnergyBank:            &health.EnergyBank{Current: 81, Capacity: 94, ActionVerdict: "moderate"},
 		SleepQuality:          &health.SleepQualityBreakdown{ScorePct: &sleepScore, DurationPct: 96, Confidence: health.SleepQualityConfidenceFinal},
-		TodayGuidance:         &health.DashboardTodayGuidance{Action: "moderate", Label: "Moderate day", Summary: "Keep today comfortably active.", Reason: "Fresh evidence.", Confidence: health.ReadinessConfidenceFinal, UpdatedAt: updated},
+		TodayGuidance:         &health.DashboardTodayGuidance{Action: "moderate", Label: "Moderate day", Summary: "Keep today comfortably active.", Reason: "Fresh evidence.", Confidence: health.ReadinessConfidenceFinal, UpdatedAt: &updated},
 		MetricCards:           []health.MetricCard{},
 		Sections:              []health.BriefingSection{},
 		ReadinessDisplayScore: 73,
@@ -44,6 +45,9 @@ func TestBuildDashboardPageDataCreatesPrimaryAndSupportingScores(t *testing.T) {
 	if data.UpdatedLabel == "" {
 		t.Fatal("UpdatedLabel is empty")
 	}
+	if data.ReadinessBand != "fair" {
+		t.Fatalf("readiness band = %q, want canonical fair", data.ReadinessBand)
+	}
 }
 
 func TestBuildDashboardPageDataDoesNotInventPartialSleepScore(t *testing.T) {
@@ -67,24 +71,33 @@ func TestBuildDashboardPageDataDoesNotInventPartialSleepScore(t *testing.T) {
 }
 
 func TestBuildDashboardPageDataClampsSignedEnergyForGaugeGeometry(t *testing.T) {
+	highSleepScore := 118
 	br := &health.BriefingResponse{
 		Date:             "2026-08-01",
-		ReadinessToday:   40,
+		ReadinessToday:   140,
 		ReadinessServing: &health.ReadinessServingState{Status: health.ReadinessServingFresh, Confidence: health.ReadinessConfidenceFinal},
 		EnergyBank:       &health.EnergyBank{Current: -18, Capacity: 60, ActionVerdict: "rest"},
+		SleepQuality:     &health.SleepQualityBreakdown{ScorePct: &highSleepScore, Confidence: health.SleepQualityConfidenceFinal},
 	}
 	data := buildDashboardPageData(BasePage{Lang: "en", StaticVer: StaticVer()}, br, "")
 	if data.EnergyGauge.Value != 0 {
 		t.Fatalf("signed energy gauge = %d, want visual clamp 0", data.EnergyGauge.Value)
+	}
+	if data.ReadinessGauge.Value != 100 {
+		t.Fatalf("readiness gauge = %d, want visual clamp 100", data.ReadinessGauge.Value)
+	}
+	if data.SleepGauge.Value != 100 {
+		t.Fatalf("sleep gauge = %d, want visual clamp 100", data.SleepGauge.Value)
 	}
 }
 
 func TestDashboardGaugeGeometryIsStructural(t *testing.T) {
 	score := 80
 	data := buildDashboardPageData(BasePage{Lang: "en", Title: "Health", StaticVer: StaticVer()}, &health.BriefingResponse{
-		Date:             "2026-08-01",
-		ReadinessToday:   72,
-		ReadinessServing: &health.ReadinessServingState{Status: health.ReadinessServingFresh, Confidence: health.ReadinessConfidenceFinal},
+		Date:               "2026-08-01",
+		ReadinessToday:     72,
+		ReadinessTodayBand: "fair",
+		ReadinessServing:   &health.ReadinessServingState{Status: health.ReadinessServingFresh, Confidence: health.ReadinessConfidenceFinal},
 		EnergyBank: &health.EnergyBank{
 			Current: 70, Capacity: 90, ActionVerdict: "moderate",
 			Components: []health.EnergyBankComponent{{Name: "morning_capacity", Value: 80, Note: "review fixture"}},
@@ -109,6 +122,9 @@ func TestDashboardGaugeGeometryIsStructural(t *testing.T) {
 	if strings.Contains(html, `daily-score-card--readiness`) {
 		t.Fatal("readiness gauge is duplicated below the hero")
 	}
+	if !strings.Contains(html, `class="today-hero status-fair"`) {
+		t.Fatal("hero does not use the canonical readiness band")
+	}
 	if strings.Contains(html, `stress_flag_backfilled`) {
 		t.Fatal("internal EnergyBank provenance flag leaked into the user-facing dashboard")
 	}
@@ -122,6 +138,18 @@ func TestDashboardGaugeGeometryIsStructural(t *testing.T) {
 	}
 	if !strings.Contains(cssStyle, "#hero-section.today-hero") {
 		t.Fatal("friendly hero must override the legacy #hero-section specificity")
+	}
+	for _, selector := range []string{
+		"#hero-section.today-hero.status-optimal",
+		"#hero-section.today-hero.status-fair",
+		"#hero-section.today-hero.status-low",
+		"#hero-section.today-hero.readiness-low-confidence .score-gauge__value",
+		".today-action--push_hard",
+		".today-action--moderate",
+	} {
+		if !strings.Contains(cssStyle, selector) {
+			t.Fatalf("friendly dashboard state styling missing %s", selector)
+		}
 	}
 }
 

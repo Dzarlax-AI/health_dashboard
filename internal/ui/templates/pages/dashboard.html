@@ -3,7 +3,7 @@
 
   {{if .HasHealthData}}
   <section id="hero-section"
-           class="today-hero status-{{if ge .ReadinessScore 70}}good{{else if ge .ReadinessScore 40}}fair{{else}}low{{end}}{{if .ReadinessServing.LowConfidence}} readiness-low-confidence{{end}}">
+           class="today-hero status-{{.ReadinessBand}}{{if .ReadinessServing.LowConfidence}} readiness-low-confidence{{end}}">
     <img class="today-hero__image"
          src="/static/morning-meadow-hero.webp?v={{.StaticVer}}"
          alt=""

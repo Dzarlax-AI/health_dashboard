@@ -80,7 +80,7 @@ func TestDashboardReadinessServingBadges(t *testing.T) {
 				"Fresh data",
 				"Core coverage: 3/3 fresh signals.",
 			},
-			wantMissing: []string{`class="today-hero status-good readiness-low-confidence"`, `<div class="readiness-confidence-note">`},
+			wantMissing: []string{`class="today-hero status-optimal readiness-low-confidence"`, `<div class="readiness-confidence-note">`},
 		},
 		{
 			name:    "data accruing",
@@ -97,7 +97,7 @@ func TestDashboardReadinessServingBadges(t *testing.T) {
 			name:    "missing",
 			serving: readinessServingForTest(health.ReadinessServingMissing, health.ReadinessConfidenceProvisional, "missing_same_day_evidence"),
 			want: []string{
-				`class="today-hero status-good readiness-low-confidence"`,
+				`class="today-hero status-optimal readiness-low-confidence"`,
 				"readiness-trust-badge--warning",
 				"Missing inputs",
 				"Waiting for today",
@@ -107,7 +107,7 @@ func TestDashboardReadinessServingBadges(t *testing.T) {
 			name:    "stale",
 			serving: readinessServingForTest(health.ReadinessServingStale, health.ReadinessConfidenceProvisional, ""),
 			want: []string{
-				`class="today-hero status-good readiness-low-confidence"`,
+				`class="today-hero status-optimal readiness-low-confidence"`,
 				"readiness-trust-badge--warning",
 				"Stale inputs",
 				"Some recovery inputs are stale.",
@@ -117,7 +117,7 @@ func TestDashboardReadinessServingBadges(t *testing.T) {
 			name:    "low coverage",
 			serving: readinessServingForTest(health.ReadinessServingLowCoverage, health.ReadinessConfidenceLow, "sleep_quality_low"),
 			want: []string{
-				`class="today-hero status-good readiness-low-confidence"`,
+				`class="today-hero status-optimal readiness-low-confidence"`,
 				"readiness-trust-badge--low",
 				"Low confidence",
 				"Low-confidence score: input quality is weak.",
@@ -133,7 +133,7 @@ func TestDashboardReadinessServingBadges(t *testing.T) {
 				"Displayed score adjusted for safety.",
 				"subjective signals are present",
 			},
-			wantMissing: []string{`class="today-hero status-good readiness-low-confidence"`},
+			wantMissing: []string{`class="today-hero status-optimal readiness-low-confidence"`},
 		},
 	}
 
@@ -195,6 +195,7 @@ func renderDashboardForTest(t *testing.T, lang string, serving *health.Readiness
 	br := &health.BriefingResponse{
 		Date:                "2026-08-01",
 		ReadinessToday:      88,
+		ReadinessTodayBand:  "optimal",
 		ReadinessTodayLabel: "Optimal",
 		ReadinessTip:        "A balanced day is a good fit.",
 		ReadinessServing:    serving,

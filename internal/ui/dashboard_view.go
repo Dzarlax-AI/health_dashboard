@@ -37,6 +37,7 @@ type dashboardPageData struct {
 	EnergyGauge         scoreGaugeView
 	SleepGauge          scoreGaugeView
 	ReadinessScore      int
+	ReadinessBand       string
 	ReadinessLabel      string
 	ReadinessTip        string
 	ReadinessConfidence string
@@ -73,6 +74,7 @@ func buildDashboardPageData(base BasePage, br *health.BriefingResponse, aiInsigh
 	data.DataDate = br.Date
 	data.Guidance = br.TodayGuidance
 	data.ReadinessScore = br.ReadinessToday
+	data.ReadinessBand = br.ReadinessTodayBand
 	data.ReadinessLabel = br.ReadinessTodayLabel
 	data.ReadinessTip = br.ReadinessTip
 	data.ReadinessConfidence = br.ReadinessConfidence
@@ -91,14 +93,14 @@ func buildDashboardPageData(base BasePage, br *health.BriefingResponse, aiInsigh
 	data.Insights = br.Insights
 	data.Correlation = br.Correlation
 
-	if br.TodayGuidance != nil && !br.TodayGuidance.UpdatedAt.IsZero() {
+	if br.TodayGuidance != nil && br.TodayGuidance.UpdatedAt != nil {
 		data.UpdatedLabel = fmt.Sprintf(T(base.Lang, "today_updated_at"), br.TodayGuidance.UpdatedAt.Format("15:04"))
 	}
 
 	data.ReadinessGauge = scoreGaugeView{
 		ID:         "readiness",
 		Label:      T(base.Lang, "readiness"),
-		Value:      br.ReadinessToday,
+		Value:      clampGaugeValue(br.ReadinessToday),
 		HasValue:   data.HasHealthData,
 		Status:     br.ReadinessTodayLabel,
 		Subline:    data.ReadinessServing.Note,
@@ -167,7 +169,7 @@ func buildSleepGauge(lang string, sleep *health.SleepQualityBreakdown) scoreGaug
 	switch sleep.Confidence {
 	case health.SleepQualityConfidenceFinal, health.SleepQualityConfidenceLow:
 		if sleep.ScorePct != nil {
-			gauge.Value = *sleep.ScorePct
+			gauge.Value = clampGaugeValue(*sleep.ScorePct)
 			gauge.HasValue = true
 			gauge.Status = sleepQualityBandLabel(lang, *sleep.ScorePct)
 		}

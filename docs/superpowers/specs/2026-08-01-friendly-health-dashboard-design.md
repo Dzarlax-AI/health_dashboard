@@ -1,7 +1,8 @@
 # Friendly Health Dashboard Design
 
 **Date:** 2026-08-01
-**Status:** Approved visual direction; specification awaiting review
+**Status:** Approved and implemented in `codex/friendly-health-dashboard`;
+review fixes in progress
 **Scope:** Main dashboard as the first implementation of an application-wide
 web design direction
 
@@ -14,7 +15,7 @@ The selected direction combines:
 
 - a scenic background in the “Today” area;
 - one clear recommendation for the day;
-- three first-class daily scores: Readiness, Energy, and Sleep Quality;
+- Readiness as the primary hero score, supported by Energy and Sleep Quality;
 - compact supporting metrics and drill-downs below the hero;
 - the existing analytical sections, charts, metric pages, and historical data.
 
@@ -118,11 +119,10 @@ appear as confidence context, not as the hero headline.
 
 ### 3. Daily score row
 
-Show three equally structured summary cards:
+Show two equally structured supporting cards below the hero:
 
-1. **Readiness** — today’s display score, band, and one supporting reason.
-2. **Energy** — current Energy Bank value, capacity, and state.
-3. **Sleep Quality** — quality score, qualitative label, duration, and the most
+1. **Energy** — current Energy Bank value, capacity, and state.
+2. **Sleep Quality** — quality score, qualitative label, duration, and the most
    relevant supporting observation.
 
 Each card links to its existing detailed view or the most appropriate existing
@@ -285,7 +285,7 @@ type SleepQualityBreakdown struct {
     DurationPct   int
     ContinuityPct *int
     StructurePct  *int
-    Confidence    string // final | partial | missing
+    Confidence    string // final | partial | missing | low
 }
 ```
 
@@ -483,8 +483,9 @@ logic in JavaScript.
 - `internal/ui/*_test.go`, `internal/health/*_test.go`
   - cover state, copy, and rendering contracts.
 
-No database migration is expected because the score can be derived from the
-existing daily sleep fields.
+No stored score column is needed because the score is derived from existing
+daily sleep fields. A partial index on successfully processed raw payloads
+supports the hero's last-updated timestamp.
 
 ## Testing
 
@@ -546,11 +547,9 @@ Application-wide migration remains a separate implementation plan. The
 dashboard phase must leave current pages functional and visually coherent while
 they still use the older composition.
 
-## Approval Gate
+## Approval Record
 
-Implementation must not begin until:
-
-1. this design specification is reviewed and approved;
-2. a self-contained HTML implementation plan is created under
-   `docs/ai-plans/`;
-3. that implementation plan is explicitly approved.
+The user approved the visual direction and the HTML implementation plan on
+2026-08-01. Implementation was completed in the isolated branch
+`codex/friendly-health-dashboard`; production deployment remains a separate
+explicit action.

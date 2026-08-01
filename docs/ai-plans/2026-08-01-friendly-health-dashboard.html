@@ -649,9 +649,10 @@ CGO_ENABLED=0 make build</pre>
     <h2>11. Rollback и последующие фазы</h2>
     <p>
       Rollback выполняется возвратом dashboard template/CSS/view-model и
-      прекращением заполнения новых optional response fields. Новых таблиц,
-      миграций и необратимых записей нет. Исходные Readiness и EnergyBank
-      остаются источниками истины.
+      прекращением заполнения новых optional response fields. Новых таблиц и
+      необратимых записей нет; добавляемый partial index можно безопасно
+      удалить отдельно. Исходные Readiness и EnergyBank остаются источниками
+      истины.
     </p>
     <p>
       После стабилизации dashboard отдельный план сможет перенести общие
@@ -670,9 +671,9 @@ CGO_ENABLED=0 make build</pre>
       </li>
       <li>
         В hero показывается дата data frame из briefing. Относительное
-        «обновлено N минут назад» выводится только если
-        <code>GetLatestMetricDate</code> успешно вернул timestamp; иначе строка
-        не фабрикуется.
+        «обновлено N минут назад» выводится только по
+        <code>health_records.processed_at</code> успешно завершённого payload;
+        pending/failed ingest не делает старые показатели визуально свежими.
       </li>
       <li>
         Qualitative sleep bands остаются: 80–100 restorative, 60–79 good,
@@ -695,7 +696,7 @@ CGO_ENABLED=0 make build</pre>
     <p>
       Gate пройден: пользователь явно одобрил план и реализацию. Production-код
       изменён только в изолированной ветке <code>codex/friendly-health-dashboard</code>;
-      commit, push и merge не выполнялись.
+      PR #209 открыт, merge и production deploy не выполнялись.
     </p>
   </section>
 
@@ -738,6 +739,27 @@ CGO_ENABLED=0 make build</pre>
         Для подготовки WebP локально установлены Homebrew packages
         <code>webp</code> и <code>libtiff</code> с их зависимостями.
       </li>
+      <li>
+        После review исправлена трактовка Apple Watch nights с
+        <code>sleep_awake = 0</code>: ноль восстанавливается только при наличии
+        полного same-night набора total/deep/REM/core, поэтому полноценная ночь
+        не становится partial.
+      </li>
+      <li>
+        Hero freshness теперь берётся только из
+        <code>health_records.processed_at</code> для успешно обработанных
+        payload. Поле API стало nullable, а partial index исключает full scan
+        append-only таблицы.
+      </li>
+      <li>
+        Hero использует canonical readiness band
+        <code>optimal/fair/low</code> с backend thresholds 80/50. Добавлены
+        визуальные состояния band, low-confidence и все четыре guidance action.
+      </li>
+      <li>
+        Ошибка <code>GetHealthBriefing</code> больше не маскируется под no-data;
+        gauge values единообразно ограничиваются диапазоном 0–100.
+      </li>
     </ul>
 
     <h3>Фактические проверки</h3>
@@ -750,6 +772,10 @@ CGO_ENABLED=0 make build
 # PASS: bin/server
 
 git diff --check
+# PASS
+
+# Review-fix targeted verification
+CGO_ENABLED=0 go test ./internal/health ./internal/storage ./internal/ui -count=1
 # PASS</pre>
     <ul>
       <li>
@@ -771,6 +797,17 @@ git diff --check
         неверную раскладку новому hero. Регрессия закреплена тестом.
       </li>
       <li>Console ошибок preview не содержит.</li>
+      <li>
+        Review-fix browser QA: состояния <code>optimal/fair/low</code> и
+        <code>readiness-low-confidence</code> проверены на 1280 px; action
+        variants <code>push_hard/moderate/active_recovery/rest</code> получили
+        ожидаемые semantic colors.
+      </li>
+      <li>
+        На 375 и 320 px горизонтальный overflow равен 0. Frame и SVG readiness
+        gauge остаются квадратными и имеют одинаковый центр; low-confidence
+        меняет только opacity значения, не геометрию круга.
+      </li>
     </ul>
 
     <h3>Известные ограничения и рекомендации</h3>
@@ -792,8 +829,8 @@ git diff --check
         TypeScript frontend build с поэтапным переносом маршрутов.
       </li>
       <li>
-        Rollback остаётся файловым: новых таблиц, миграций и необратимых
-        записей нет.
+        Rollback остаётся обратимым: новых таблиц и необратимых записей нет;
+        optional partial index удаляется независимой DDL-командой.
       </li>
     </ul>
   </section>

@@ -71,6 +71,7 @@ func TestEnsureIndexesIntegration_CreatesAndSkipsTenantDDL(t *testing.T) {
 		{table: "daily_scores", column: "sleep_unspecified"},
 	}
 	requiredIndexes := []indexMigration{
+		{name: "idx_health_records_completed_processed_at"},
 		{name: "idx_points_quality_metric"},
 		{name: "idx_hourly_date"},
 		{name: "idx_hourly_metric_date"},

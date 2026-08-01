@@ -632,7 +632,10 @@ func (h *Handler) pageDashboard(w http.ResponseWriter, r *http.Request) {
 
 	today := db.Today()
 	aiInsight := db.GetAIInsightCombined(today, lang)
-	br, _ := db.GetHealthBriefing(lang)
+	br, err := db.GetHealthBriefing(lang)
+	if err != nil {
+		log.Printf("[DASHBOARD] GetHealthBriefing: %v", err)
+	}
 	data := buildDashboardPageData(h.basePage(r, T(lang, "app_title"), "dashboard"), br, aiInsight)
 
 	renderPage(w, "dashboard", data)

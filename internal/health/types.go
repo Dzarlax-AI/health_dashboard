@@ -147,12 +147,12 @@ type SleepQualityBreakdown struct {
 // DashboardTodayGuidance is the single prescriptive message shown in the
 // dashboard hero after EnergyBank overrides and safety caps have settled.
 type DashboardTodayGuidance struct {
-	Action     string    `json:"action"`
-	Label      string    `json:"label"`
-	Summary    string    `json:"summary"`
-	Reason     string    `json:"reason"`
-	Confidence string    `json:"confidence"`
-	UpdatedAt  time.Time `json:"updated_at,omitempty"`
+	Action     string     `json:"action"`
+	Label      string     `json:"label"`
+	Summary    string     `json:"summary"`
+	Reason     string     `json:"reason"`
+	Confidence string     `json:"confidence"`
+	UpdatedAt  *time.Time `json:"updated_at,omitempty"`
 }
 
 type MetricCard struct {
@@ -546,6 +546,7 @@ type ReadinessEvidenceInput struct {
 	SleepQuality      ReadinessComponentEvidence
 	SleepDeep         ReadinessComponentEvidence
 	SleepREM          ReadinessComponentEvidence
+	SleepCore         ReadinessComponentEvidence
 	SleepAwake        ReadinessComponentEvidence
 	Respiratory       ReadinessComponentEvidence
 	IllnessConfidence string

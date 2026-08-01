@@ -1390,6 +1390,10 @@ details.admin-section[open] > :not(summary) { margin-left: 16px; margin-right: 1
   box-shadow: 0 24px 70px rgba(35, 67, 48, 0.16);
   color: #1b2b22;
 }
+#hero-section.today-hero.status-optimal { border-top-color: var(--good); }
+#hero-section.today-hero.status-fair { border-top-color: var(--fair); }
+#hero-section.today-hero.status-low { border-top-color: var(--low); }
+#hero-section.today-hero.readiness-low-confidence .score-gauge__value { opacity: 0.72; }
 .today-hero__image,
 .today-hero__wash {
   position: absolute;
@@ -1487,8 +1491,10 @@ details.admin-section[open] > :not(summary) { margin-left: 16px; margin-right: 1
   font-size: 12px;
   font-weight: 800;
 }
-.today-action--rest { color: var(--danger); }
-.today-action--active_recovery { color: var(--today-energy); }
+.today-action--push_hard { background: var(--good-bg); color: var(--good); }
+.today-action--moderate { background: var(--fair-bg); color: var(--fair); }
+.today-action--active_recovery { background: var(--warn-bg, var(--fair-bg)); color: var(--warn, var(--fair)); }
+.today-action--rest { background: var(--low-bg); color: var(--low); }
 .today-hero__signal {
   display: flex;
   align-items: center;

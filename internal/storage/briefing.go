@@ -149,14 +149,25 @@ func buildReadinessEvidence(date string, latest dailyScoreRow, fresh *dayRow) *h
 	slp, slpDate := pick(nil, latest.slp)
 	deep, deepDate := pick(nil, latest.deep)
 	rem, remDate := pick(nil, latest.rem)
+	core, coreDate := pick(nil, latest.core)
 	awake, awakeDate := pick(nil, latest.awake)
 	resp, respDate := pick(nil, latest.resp)
 	if fresh != nil {
 		slp, slpDate = pick(fresh.slp, latest.slp)
 		deep, deepDate = pick(fresh.deep, latest.deep)
 		rem, remDate = pick(fresh.rem, latest.rem)
+		core, coreDate = pick(fresh.core, latest.core)
 		awake, awakeDate = pick(fresh.awake, latest.awake)
 		resp, respDate = pick(fresh.resp, latest.resp)
+	}
+	// Zero-valued sleep_awake rows are intentionally filtered by the
+	// aggregation path. When the same night still has total + all asleep
+	// stages, the missing awake row represents a measured zero rather than
+	// incomplete evidence.
+	if awake == nil && slp != nil && deep != nil && rem != nil && core != nil {
+		zeroAwake := 0.0
+		awake = &zeroAwake
+		awakeDate = date
 	}
 	evidence.HRV = readinessComponent("heart_rate_variability", date, hrvDate, hrv, sampleCount(fresh, "hrv"), "")
 	if evidence.HRV.Present {
@@ -173,6 +184,7 @@ func buildReadinessEvidence(date string, latest dailyScoreRow, fresh *dayRow) *h
 	evidence.SleepDuration = readinessComponent("sleep_total", date, slpDate, slp, 0, "")
 	evidence.SleepDeep = readinessComponent("sleep_deep", date, deepDate, deep, 0, "")
 	evidence.SleepREM = readinessComponent("sleep_rem", date, remDate, rem, 0, "")
+	evidence.SleepCore = readinessComponent("sleep_core", date, coreDate, core, 0, "")
 	evidence.SleepAwake = readinessComponent("sleep_awake", date, awakeDate, awake, 0, "")
 	evidence.Respiratory = readinessComponent("respiratory_rate", date, respDate, resp, sampleCount(fresh, "resp"), "")
 	evidence.SleepQuality = sleepQualityEvidence(date, slpDate, slp, deep, awake)
@@ -683,8 +695,18 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 	)
 	if resp.TodayGuidance != nil {
 		var updatedAt *time.Time
-		if err := s.pool.QueryRow(ctx, `SELECT MAX(received_at) FROM health_records`).Scan(&updatedAt); err == nil && updatedAt != nil {
-			resp.TodayGuidance.UpdatedAt = *updatedAt
+		updatedCtx, cancelUpdated := queryCtx()
+		err := s.pool.QueryRow(updatedCtx, `
+			SELECT MAX(processed_at)
+			FROM health_records
+			WHERE processing_status = 'complete'
+			  AND processed_at IS NOT NULL
+		`).Scan(&updatedAt)
+		cancelUpdated()
+		if err != nil {
+			log.Printf("[DASHBOARD_GUIDANCE] updated_at read: %v", err)
+		} else if updatedAt != nil {
+			resp.TodayGuidance.UpdatedAt = updatedAt
 		}
 	}
 
