@@ -20,16 +20,13 @@ func TestTenantMigrationApplyVerifyRollbackIntegration(t *testing.T) {
 	}
 	ctx := context.Background()
 	dsn := testdb.DSN(t)
+	adminDSN, registryDSN := requireFixedIdentityTestDSNs(t)
 	admin, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(admin.Close)
 	requireDisposableProvisioningDB(t, ctx, admin)
-	registryDSN := os.Getenv("REGISTRY_TEST_DSN")
-	if registryDSN == "" {
-		t.Fatal("HEALTH_DB_TESTS=1 requires REGISTRY_TEST_DSN")
-	}
 	reg, err := registry.New(ctx, registryDSN)
 	if err != nil {
 		t.Fatal(err)
@@ -51,7 +48,8 @@ func TestTenantMigrationApplyVerifyRollbackIntegration(t *testing.T) {
 		_, _ = admin.Exec(context.Background(), "DROP ROLE IF EXISTS "+pgxIdent(user.DBRole))
 		_ = reg.DeleteUser(context.Background(), name)
 	})
-	legacy := NewLegacySetup(reg, dsn)
+	legacyDSN := createLegacyOwnerTestIdentity(t, ctx, admin, dsn)
+	legacy := NewLegacySetup(reg, legacyDSN)
 	if err = legacy.ReconcileNonterminal(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +69,7 @@ func TestTenantMigrationApplyVerifyRollbackIntegration(t *testing.T) {
 		Current:  SecretVersion{Version: 2, Secret: []byte("rotated-migration-secret-32-bytes!!")},
 		Previous: &previousSecret,
 	}
-	migrator, err := NewMigrator(ctx, dsn, credentialFreeTestDSN(t, dsn), deriver)
+	migrator, err := NewMigratorWithRegistryLock(ctx, adminDSN, registryDSN, credentialFreeTestDSN(t, dsn), deriver)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,9 +126,21 @@ func TestTenantMigrationApplyVerifyRollbackIntegration(t *testing.T) {
 	if err = migrator.RotateTenantCredential(ctx, rotationInventory, 1, 2, otherSchema); err != nil {
 		t.Fatalf("rotate tenant credential: %v", err)
 	}
+	// Model an ambiguous CAS response where another writer already landed the
+	// exact target metadata. Retrying from the stale inventory must preserve the
+	// target password instead of restoring the old credential.
+	if err = migrator.RotateTenantCredential(ctx, rotationInventory, 1, 2, otherSchema); err != nil {
+		t.Fatalf("same-target credential rotation retry: %v", err)
+	}
 	rotated, err := reg.GetBySchema(ctx, user.SchemaName)
 	if err != nil || rotated.DBCredentialVersion != 2 {
 		t.Fatalf("metadata after rotation = %+v, %v", rotated, err)
+	}
+	rotationProbe := rotationInventory
+	rotationProbe.CredentialVersion = 2
+	rotationProbe.Registry.CredentialVersion = 2
+	if err = migrator.VerifyRestrictedTenant(ctx, rotationProbe, otherSchema); err != nil {
+		t.Fatalf("target credential after same-target retry: %v", err)
 	}
 	// Keep the pre-cutover ownership/ACL inventory for rollback; only its
 	// registry credential CAS version advances during rotation.
@@ -139,9 +149,11 @@ func TestTenantMigrationApplyVerifyRollbackIntegration(t *testing.T) {
 	if err = migrator.RestoreTenant(ctx, inventory); err != nil {
 		t.Fatal(err)
 	}
+	assertCanonicalMembershipRows(t, ctx, admin, user.DBRole)
 	if err = migrator.RestoreTenant(ctx, inventory); err != nil {
 		t.Fatalf("retry rollback for cutover-created marker: %v", err)
 	}
+	assertCanonicalMembershipRows(t, ctx, admin, user.DBRole)
 	restored, err := reg.GetBySchema(ctx, user.SchemaName)
 	if err != nil || restored.DBIsolationReady || restored.SchemaContractVersion != 0 || restored.SchemaContractChecksum != "" {
 		t.Fatalf("metadata after rollback = %+v, %v", restored, err)

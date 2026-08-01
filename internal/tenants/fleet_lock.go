@@ -34,6 +34,12 @@ func (m *Migrator) AcquireFleetMigrationLock(ctx context.Context) (*FleetMigrati
 	if err != nil {
 		return nil, fmt.Errorf("acquire fleet migration connection: %w", err)
 	}
+	if m.registryLockIdentity != "" {
+		if err = requireExactConnIdentity(ctx, conn, m.registryLockIdentity); err != nil {
+			_ = conn.Close(ctx)
+			return nil, err
+		}
+	}
 	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, registry.FleetMigrationAdvisoryLockKey); err != nil {
 		closeCtx, cancel := context.WithTimeout(context.Background(), fleetMigrationLockReleaseTimeout)
 		_ = conn.Close(closeCtx)

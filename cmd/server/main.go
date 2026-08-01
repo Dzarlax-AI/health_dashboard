@@ -91,7 +91,12 @@ func main() {
 	if isolationCfg.Enabled {
 		registryDSN = isolationCfg.RegistryDSN
 	}
-	reg, err := registry.New(ctx, registryDSN)
+	var reg *registry.Registry
+	if isolationCfg.Enabled {
+		reg, err = registry.NewWithExpectedIdentity(ctx, registryDSN, tenants.DatabaseRegistryRole)
+	} else {
+		reg, err = registry.New(ctx, registryDSN)
+	}
 	if err != nil {
 		log.Fatalf("init registry: %v", err)
 	}

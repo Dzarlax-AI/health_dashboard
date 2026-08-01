@@ -24,6 +24,11 @@ func auditFixture() fleetSnapshot {
 	}
 }
 
+func canonicalMembership(role string) []MembershipRecord {
+	f := false
+	return []MembershipRecord{{Role: role, Member: DatabaseAdminRole, Grantor: DatabaseAdminRole, AdminOption: true, InheritOption: &f, SetOption: &f}}
+}
+
 func auditMarker(schema string, id, op uuid.UUID, version int, checksum string) auditMarkerRow {
 	singleton := true
 	return auditMarkerRow{Schema: schema, RelKind: "r", Persistence: "p", Rows: []auditMarkerIdentity{{Singleton: &singleton, TenantID: &id, OperationID: &op, ContractVersion: &version, ContractChecksum: &checksum}}}
@@ -80,7 +85,7 @@ func TestFleetDigestTypedEncodingRejectsDelimiterCollisions(t *testing.T) {
 func TestFleetDigestIncludesAuditedCatalogSurface(t *testing.T) {
 	s := auditFixture()
 	id := *s.Registry[0].TenantID
-	inventory := TenantInventory{Schema: s.Registry[0].Schema, TenantID: id, Role: s.Registry[0].Role, SchemaOwner: s.Registry[0].Role, Objects: []OwnedObject{{Kind: "TABLE", Name: "metric_points", Owner: s.Registry[0].Role}}, Grants: []GrantRecord{{ObjectType: "TABLE", ObjectName: "metric_points", Grantor: s.Registry[0].Role, Grantee: s.Registry[0].Role, Privilege: "SELECT"}}, RoleCatalog: RoleMetadata{Name: s.Registry[0].Role, Exists: true, Login: true, Inherit: true, ConnLimit: -1}}
+	inventory := TenantInventory{Schema: s.Registry[0].Schema, TenantID: id, Role: s.Registry[0].Role, SchemaOwner: s.Registry[0].Role, Objects: []OwnedObject{{Kind: "TABLE", Name: "metric_points", Owner: s.Registry[0].Role}}, Grants: []GrantRecord{{ObjectType: "TABLE", ObjectName: "metric_points", Grantor: s.Registry[0].Role, Grantee: s.Registry[0].Role, Privilege: "SELECT"}}, RoleCatalog: RoleMetadata{Name: s.Registry[0].Role, Exists: true, Login: true, Inherit: true, ConnLimit: -1}, Memberships: canonicalMembership(s.Registry[0].Role)}
 	s.Inventories = []TenantInventory{inventory}
 	base := fleetDigest(s)
 	mutations := []func(*TenantInventory){func(i *TenantInventory) { i.Objects[0].Owner = "other" }, func(i *TenantInventory) {
@@ -219,6 +224,7 @@ func TestInventorySafetyFindingsExplicitAllowRules(t *testing.T) {
 	id := *s.Registry[0].TenantID
 	i := TenantInventory{Schema: s.Registry[0].Schema, TenantID: id, Role: s.Registry[0].Role, SchemaOwner: s.Registry[0].Role,
 		RoleCatalog:       RoleMetadata{Exists: true, Login: true, Inherit: true, ConnLimit: -1},
+		Memberships:       canonicalMembership(s.Registry[0].Role),
 		Objects:           []OwnedObject{{Kind: "TABLE", Name: "metric_points", Owner: s.Registry[0].Role}},
 		SchemaACL:         []ACLRecord{{ObjectType: "SCHEMA", Grantee: s.Registry[0].Role, Grantor: s.Registry[0].Role, Privilege: "USAGE"}},
 		Grants:            []GrantRecord{{ObjectType: "TABLE", ObjectName: "metric_points", Grantee: s.Registry[0].Role, Grantor: s.Registry[0].Role, Privilege: "SELECT"}},

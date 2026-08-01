@@ -21,6 +21,7 @@ func contractMigrationFixture() fleetSnapshot {
 	}
 	i.SchemaOwner = i.Role
 	i.RoleCatalog = RoleMetadata{Name: i.Role, Exists: true, Login: true, Inherit: true, ConnLimit: -1}
+	i.Memberships = canonicalMembership(i.Role)
 	s.Inventories = []TenantInventory{i}
 	return s
 }
@@ -144,7 +145,7 @@ func TestLegacyMarkerVariantsNormalizeAcrossTwoTenantProgression(t *testing.T) {
 	s.Registry = append(s.Registry, auditRegistryRow{TenantID: &id, Schema: schema, Role: role, CredentialVersion: &credential, IsolationReady: true, State: "active"})
 	s.Markers = append(s.Markers, auditMarkerRow{Schema: schema, RelKind: "r", Persistence: "p", Issues: []string{"marker_column_nullability_mismatch:schema_contract_version:YES", "marker_column_nullability_mismatch:schema_contract_checksum:YES"}, Rows: []auditMarkerIdentity{{Singleton: boolPtr(true), TenantID: &id, OperationID: &op}}})
 	s.Roles = append(s.Roles, auditRoleRow{TenantID: id, Role: role, OperationID: op, Valid: true})
-	s.Inventories = append(s.Inventories, TenantInventory{Schema: schema, TenantID: id, Role: role, CredentialVersion: 1, SchemaOwner: role, RoleCatalog: RoleMetadata{Name: role, Exists: true, Login: true, Inherit: true, ConnLimit: -1}, Registry: RegistryMetadata{TenantID: id, Schema: schema, Role: role, CredentialVersion: 1, IsolationReady: true, State: "active"}})
+	s.Inventories = append(s.Inventories, TenantInventory{Schema: schema, TenantID: id, Role: role, CredentialVersion: 1, SchemaOwner: role, RoleCatalog: RoleMetadata{Name: role, Exists: true, Login: true, Inherit: true, ConnLimit: -1}, Memberships: canonicalMembership(role), Registry: RegistryMetadata{TenantID: id, Schema: schema, Role: role, CredentialVersion: 1, IsolationReady: true, State: "active"}})
 
 	fleet, err := prepareContractMigrationFleetSnapshot(s)
 	if err != nil || len(fleet.Inventories) != 2 {

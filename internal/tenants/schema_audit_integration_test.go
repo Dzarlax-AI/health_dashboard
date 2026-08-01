@@ -18,15 +18,12 @@ func TestAuditFleetThreeTenantIntegration(t *testing.T) {
 	}
 	ctx := context.Background()
 	dsn := testdb.DSN(t)
+	adminDSN, registryDSN := requireFixedIdentityTestDSNs(t)
 	admin, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(admin.Close)
-	registryDSN := os.Getenv("REGISTRY_TEST_DSN")
-	if registryDSN == "" {
-		t.Fatal("HEALTH_DB_TESTS=1 requires REGISTRY_TEST_DSN")
-	}
 	requireSameDisposableRegistryTarget(t, ctx, admin, registryDSN)
 	requireDisposableProvisioningDB(t, ctx, admin)
 	reg, err := registry.New(ctx, registryDSN)
@@ -38,7 +35,8 @@ func TestAuditFleetThreeTenantIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	prefix := fmt.Sprintf("fleet%d", os.Getpid())
-	legacy := NewLegacySetup(reg, dsn)
+	legacyDSN := createLegacyOwnerTestIdentity(t, ctx, admin, dsn)
+	legacy := NewLegacySetup(reg, legacyDSN)
 	users := make([]*registry.User, 0, 3)
 	for n := 0; n < 3; n++ {
 		name := fmt.Sprintf("%s%d", prefix, n)
@@ -57,7 +55,7 @@ func TestAuditFleetThreeTenantIntegration(t *testing.T) {
 		}
 	})
 	deriver := CredentialDeriver{Current: SecretVersion{Version: 1, Secret: []byte("fleet-audit-disposable-secret-32-bytes")}}
-	migrator, err := NewMigrator(ctx, dsn, credentialFreeTestDSN(t, dsn), deriver)
+	migrator, err := NewMigratorWithRegistryLock(ctx, adminDSN, registryDSN, credentialFreeTestDSN(t, dsn), deriver)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,11 +70,14 @@ func TestAuditFleetThreeTenantIntegration(t *testing.T) {
 			t.Fatal(applyErr)
 		}
 	}
+	if _, err = admin.Exec(ctx, `REVOKE health_user FROM health_admin`); err != nil {
+		t.Fatalf("remove pre-finalize legacy bridge before authoritative audit: %v", err)
+	}
 	result, auditErr := migrator.AuditFleet(ctx)
 	if auditErr != nil {
 		t.Fatal(auditErr)
 	}
-	if result.Status != AuditStatusPass || result.Counts.Markers != 3 || result.Counts.Roles != 3 || result.Probes.Attempted != 27 || result.Probes.Denied != 27 || result.Probes.Failed != 0 {
+	if result.Status != AuditStatusPass || result.Counts.Markers != 3 || result.Counts.Roles != 3 || result.Probes.Attempted != 36 || result.Probes.Denied != 36 || result.Probes.Failed != 0 {
 		t.Fatalf("clean fleet audit=%+v", result)
 	}
 	// Exercise both supported legacy marker shapes across a real multi-tenant
@@ -131,7 +132,7 @@ func TestAuditFleetThreeTenantIntegration(t *testing.T) {
 	}
 	assertNoAuditArtifacts(t, ctx, admin, users)
 	migrator.auditBeforeEndSnapshot = func(hookCtx context.Context) error {
-		_, hookErr := migrator.admin.Exec(hookCtx, `UPDATE health_registry.users SET schema_contract_checksum='changed-during-audit' WHERE schema_name=$1`, users[0].SchemaName)
+		_, hookErr := admin.Exec(hookCtx, `UPDATE health_registry.users SET schema_contract_checksum='changed-during-audit' WHERE schema_name=$1`, users[0].SchemaName)
 		return hookErr
 	}
 	changed, changedErr := migrator.AuditFleet(ctx)
@@ -150,10 +151,10 @@ func TestAuditFleetThreeTenantIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	migrator.auditBeforeEndSnapshot = func(hookCtx context.Context) error {
-		if _, hookErr := migrator.admin.Exec(hookCtx, "GRANT SELECT ON "+pgxIdent(users[1].SchemaName)+".metric_points TO PUBLIC"); hookErr != nil {
+		if _, hookErr := admin.Exec(hookCtx, "GRANT SELECT ON "+pgxIdent(users[1].SchemaName)+".metric_points TO PUBLIC"); hookErr != nil {
 			return hookErr
 		}
-		_, hookErr := migrator.admin.Exec(hookCtx, "ALTER TABLE "+pgxIdent(users[1].SchemaName)+".settings OWNER TO "+pgxIdent(adminRole))
+		_, hookErr := admin.Exec(hookCtx, "ALTER TABLE "+pgxIdent(users[1].SchemaName)+".settings OWNER TO "+pgxIdent(adminRole))
 		return hookErr
 	}
 	catalogChanged, catalogChangedErr := migrator.AuditFleet(ctx)
@@ -180,7 +181,7 @@ func TestAuditFleetThreeTenantIntegration(t *testing.T) {
 	if accessErr != nil {
 		t.Fatal(accessErr)
 	}
-	if !findingCodes(accessAllowed.Findings)["cross_tenant_access_allowed"] || accessAllowed.Probes.Attempted != 27 || accessAllowed.Probes.Failed < 1 {
+	if !findingCodes(accessAllowed.Findings)["cross_tenant_access_allowed"] || accessAllowed.Probes.Attempted != 36 || accessAllowed.Probes.Failed < 1 {
 		t.Fatalf("cross grant not detected: %+v", accessAllowed)
 	}
 	assertNoAuditArtifacts(t, ctx, admin, users)
@@ -197,7 +198,7 @@ func TestAuditFleetThreeTenantIntegration(t *testing.T) {
 	if markerlessErr != nil {
 		t.Fatalf("missing marker is logical: %v", markerlessErr)
 	}
-	if !findingCodes(markerless.Findings)["registry_marker_missing"] || markerless.Probes.Attempted != 27 {
+	if !findingCodes(markerless.Findings)["registry_marker_missing"] || markerless.Probes.Attempted != 36 {
 		t.Fatalf("markerless active schema omitted from peers/probes: %+v", markerless)
 	}
 	if err = storage.EnsureTenantIdentityMarker(ctx, admin, users[0].SchemaName, users[0].TenantID, users[0].TenantID); err != nil {
@@ -214,7 +215,7 @@ func TestAuditFleetThreeTenantIntegration(t *testing.T) {
 	if wrongTenantTypeErr != nil {
 		t.Fatalf("snapshot-known tenant_id type corruption became operational: %v", wrongTenantTypeErr)
 	}
-	if !findingCodes(wrongTenantType.Findings)["marker_column_type_mismatch"] || wrongTenantType.Probes.Attempted != 27 {
+	if !findingCodes(wrongTenantType.Findings)["marker_column_type_mismatch"] || wrongTenantType.Probes.Attempted != 36 {
 		t.Fatalf("tenant_id type corruption audit=%+v", wrongTenantType)
 	}
 	assertNoAuditArtifacts(t, ctx, admin, users)
@@ -250,7 +251,7 @@ func TestAuditFleetThreeTenantIntegration(t *testing.T) {
 	if wrongSingletonTypeErr != nil {
 		t.Fatalf("snapshot-known singleton type corruption became operational: %v", wrongSingletonTypeErr)
 	}
-	if !findingCodes(wrongSingletonType.Findings)["marker_column_type_mismatch"] || wrongSingletonType.Probes.Attempted != 27 {
+	if !findingCodes(wrongSingletonType.Findings)["marker_column_type_mismatch"] || wrongSingletonType.Probes.Attempted != 36 {
 		t.Fatalf("singleton type corruption audit=%+v", wrongSingletonType)
 	}
 	assertNoAuditArtifacts(t, ctx, admin, users)
@@ -307,12 +308,12 @@ func TestAuditFleetThreeTenantIntegration(t *testing.T) {
 		t.Fatalf("malformed markers are logical findings, got %v", malformedErr)
 	}
 	codes := findingCodes(malformed.Findings)
-	for _, want := range []string{"marker_contract_columns_partial", "marker_column_missing", "marker_empty", "marker_multiple_rows", "marker_multiple_singleton_rows", "marker_singleton_primary_key_missing", "marker_singleton_check_missing", "marker_singleton_default_mismatch", "marker_relation_kind_invalid", "marker_registry_missing"} {
+	for _, want := range []string{"marker_contract_columns_partial", "marker_column_missing", "marker_data_reader_unavailable", "marker_empty", "marker_singleton_primary_key_missing", "marker_singleton_check_missing", "marker_singleton_default_mismatch", "marker_relation_kind_invalid", "marker_registry_missing"} {
 		if !codes[want] {
 			t.Errorf("missing %s in %+v", want, malformed.Findings)
 		}
 	}
-	if malformed.Counts.Markers != 6 || malformed.Counts.Roles != 3 || malformed.Probes.Attempted != 54 {
+	if malformed.Counts.Markers != 6 || malformed.Counts.Roles != 3 || malformed.Probes.Attempted != 63 {
 		t.Fatalf("malformed fleet counts/probes=%+v", malformed)
 	}
 	assertNoAuditArtifacts(t, ctx, admin, users)

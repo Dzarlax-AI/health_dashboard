@@ -96,7 +96,6 @@ jobs:
       PGDATABASE: health_test
       PGUSER: postgres
       PGPASSWORD: postgres
-      REGISTRY_TEST_DSN: postgres://registry_ci:registry_ci@localhost:5432/health_test
       GOCACHE: /tmp/health-go-build-cache
     steps:
       - uses: actions/checkout@v5
@@ -110,13 +109,52 @@ jobs:
         run: |
           psql -v ON_ERROR_STOP=1 -c "CREATE TABLE IF NOT EXISTS public.health_test_metadata(key text primary key, value text not null)"
           psql -v ON_ERROR_STOP=1 -c "INSERT INTO public.health_test_metadata(key,value) VALUES ('disposable_database','true') ON CONFLICT(key) DO UPDATE SET value=excluded.value"
-          psql -v ON_ERROR_STOP=1 -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='registry_ci') THEN CREATE ROLE registry_ci LOGIN PASSWORD 'registry_ci' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS; END IF; END \$\$"
-          psql -v ON_ERROR_STOP=1 -c "CREATE SCHEMA IF NOT EXISTS health_registry AUTHORIZATION registry_ci"
-          psql -v ON_ERROR_STOP=1 -c "GRANT CONNECT ON DATABASE health_test TO registry_ci"
-          psql -v ON_ERROR_STOP=1 -c "GRANT SELECT ON public.health_test_metadata TO registry_ci"
+
+      # Keep DB_IDENTITY_TEST_DSN step-local. The lifecycle test is destructive
+      # by design and must not run again as part of the full tenant package.
+      - name: Run PostgreSQL 16 database identity lifecycle
+        env:
+          DB_IDENTITY_TEST_DSN: postgres://postgres:postgres@localhost:5432/health_test
+        run: |
+          set -o pipefail
+          lifecycle_output="$RUNNER_TEMP/database-identity-lifecycle.txt"
+          go test ./internal/tenants -run '^TestDatabaseIdentityTemporaryPrivilegeFlow$' -count=1 -timeout=120s -v | tee "$lifecycle_output"
+          grep -F -- '--- PASS: TestDatabaseIdentityTemporaryPrivilegeFlow ' "$lifecycle_output"
+
+      - name: Bootstrap fixed database identities
+        run: |
+          admin_password="$(openssl rand -hex 32)"
+          registry_password="$(openssl rand -hex 32)"
+          echo "::add-mask::$admin_password"
+          echo "::add-mask::$registry_password"
+
+          identity_bin="$RUNNER_TEMP/tenant_isolation"
+          identity_manifest="$RUNNER_TEMP/health-db-identity-manifest.json"
+          go build -o "$identity_bin" ./cmd/tenant_isolation
+
+          TENANT_DB_BOOTSTRAP_DATABASE_URL='postgres://postgres:postgres@localhost:5432/health_test' \
+          HEALTH_ADMIN_DB_PASSWORD="$admin_password" \
+          HEALTH_REGISTRY_DB_PASSWORD="$registry_password" \
+            "$identity_bin" --mode bootstrap-db-identities --manifest "$identity_manifest" --confirm
+
+          # The registry integration tests independently enforce this marker
+          # before they perform destructive fixture setup.
+          psql -v ON_ERROR_STOP=1 -c "GRANT SELECT ON public.health_test_metadata TO health_admin,health_registry"
+
+          {
+            echo "ADMIN_TEST_DSN=postgres://health_admin:${admin_password}@localhost:5432/health_test"
+            echo "REGISTRY_TEST_DSN=postgres://health_registry:${registry_password}@localhost:5432/health_test"
+            echo "DB_IDENTITY_MANIFEST=$identity_manifest"
+          } >> "$GITHUB_ENV"
 
       - name: Run tenant isolation DB lane
         run: make test-db-security
+
+      - name: Verify fixed identities after registry initialization
+        run: |
+          ADMIN_DATABASE_URL="$ADMIN_TEST_DSN" \
+          REGISTRY_DATABASE_URL="$REGISTRY_TEST_DSN" \
+            "$RUNNER_TEMP/tenant_isolation" --mode verify-db-identities
 
       - name: Run import and durable-delivery DB lane
         run: make test-db-import
@@ -173,24 +211,119 @@ jobs:
       - name: Verify runtime image contract
         run: docker run --rm --entrypoint /bin/sh health-dashboard:ci -c 'test -x /app/server && test -x /app/tenant_isolation && test "$(id -u)" -ne 0'
 
-      - name: Start disposable stack and verify restart recovery
+      - name: Bootstrap blank database and verify isolated restart recovery
         run: |
+          set -eu
+
+          root_password="$(openssl rand -hex 32)"
+          admin_password="$(openssl rand -hex 32)"
+          registry_password="$(openssl rand -hex 32)"
+          master_secret="$(openssl rand -base64 48 | tr -d '\n')"
+          echo "::add-mask::$root_password"
+          echo "::add-mask::$admin_password"
+          echo "::add-mask::$registry_password"
+          echo "::add-mask::$master_secret"
+
+          cleanup() {
+            docker rm -f health-ci-app health-ci-db >/dev/null 2>&1 || true
+            docker network rm health-ci >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          manifest_dir="$RUNNER_TEMP/health-ci-identity"
+          mkdir -p "$manifest_dir"
+          chmod 0700 "$manifest_dir"
+          manifest=/bootstrap/database-identity-manifest.json
+
           docker network create health-ci
-          docker run -d --name health-ci-db --network health-ci -e POSTGRES_DB=health -e POSTGRES_USER=health -e POSTGRES_PASSWORD=health postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
-          for i in $(seq 1 30); do docker exec health-ci-db pg_isready -U health -d health && break; sleep 1; done
-          docker run -d --name health-ci-app --network health-ci -p 18080:8080 -e DATABASE_URL='postgres://health:health@health-ci-db:5432/health?search_path=health' -e API_KEY=ci-key -e UI_PASSWORD=ci-password health-dashboard:ci
+          docker run -d --name health-ci-db --network health-ci \
+            -e POSTGRES_DB=health -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD="$root_password" \
+            postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+          ready=0
+          for i in $(seq 1 30); do
+            if docker exec health-ci-db pg_isready -U postgres -d health >/dev/null; then ready=1; break; fi
+            sleep 1
+          done
+          test "$ready" = "1"
+
+          docker run --rm --user 0:0 --network health-ci -v "$manifest_dir:/bootstrap" \
+            -e TENANT_DB_BOOTSTRAP_DATABASE_URL="postgres://postgres:${root_password}@health-ci-db:5432/health" \
+            -e HEALTH_ADMIN_DB_PASSWORD="$admin_password" \
+            -e HEALTH_REGISTRY_DB_PASSWORD="$registry_password" \
+            --entrypoint /app/tenant_isolation health-dashboard:ci \
+            --mode bootstrap-db-identities --manifest "$manifest" --confirm
+
+          test -f "$manifest_dir/database-identity-manifest.json"
+          test "$(stat -c '%u' "$manifest_dir/database-identity-manifest.json")" = "0"
+          test "$(stat -c '%a' "$manifest_dir/database-identity-manifest.json")" = "600"
+
+          docker run -d --name health-ci-app --network health-ci -p 18080:8080 \
+            -e TENANT_DB_ISOLATION_ENABLED=true \
+            -e ADMIN_DATABASE_URL="postgres://health_admin:${admin_password}@health-ci-db:5432/health" \
+            -e REGISTRY_DATABASE_URL="postgres://health_registry:${registry_password}@health-ci-db:5432/health" \
+            -e TENANT_DATABASE_URL_BASE='postgres://health-ci-db:5432/health?sslmode=disable' \
+            -e TENANT_DB_MASTER_SECRET="$master_secret" \
+            -e TENANT_DB_MASTER_SECRET_VERSION=1 \
+            -e API_KEY=ci-key -e UI_PASSWORD=ci-password \
+            health-dashboard:ci
+          docker exec health-ci-app /bin/sh -c 'test -z "$TENANT_DB_BOOTSTRAP_DATABASE_URL"; case "$ADMIN_DATABASE_URL $REGISTRY_DATABASE_URL" in *postgres://postgres:*) exit 1;; esac'
           for i in $(seq 1 60); do curl --fail --silent http://localhost:18080/readyz && break; sleep 1; done
           curl --fail --silent http://localhost:18080/readyz
+
+          docker run --rm --network health-ci \
+            -e TENANT_DB_ISOLATION_ENABLED=true \
+            -e ADMIN_DATABASE_URL="postgres://health_admin:${admin_password}@health-ci-db:5432/health" \
+            -e REGISTRY_DATABASE_URL="postgres://health_registry:${registry_password}@health-ci-db:5432/health" \
+            -e TENANT_DATABASE_URL_BASE='postgres://health-ci-db:5432/health?sslmode=disable' \
+            -e TENANT_DB_MASTER_SECRET="$master_secret" \
+            -e TENANT_DB_MASTER_SECRET_VERSION=1 \
+            --entrypoint /app/tenant_isolation health-dashboard:ci \
+            --mode migrate-contract --all --primary-schema health --confirm
+          docker run --rm --network health-ci \
+            -e TENANT_DB_ISOLATION_ENABLED=true \
+            -e ADMIN_DATABASE_URL="postgres://health_admin:${admin_password}@health-ci-db:5432/health" \
+            -e REGISTRY_DATABASE_URL="postgres://health_registry:${registry_password}@health-ci-db:5432/health" \
+            -e TENANT_DATABASE_URL_BASE='postgres://health-ci-db:5432/health?sslmode=disable' \
+            -e TENANT_DB_MASTER_SECRET="$master_secret" \
+            -e TENANT_DB_MASTER_SECRET_VERSION=1 \
+            --entrypoint /app/tenant_isolation health-dashboard:ci \
+            --mode audit --all --primary-schema health
+
+          docker run --rm --user 0:0 --network health-ci -v "$manifest_dir:/bootstrap" \
+            -e TENANT_DB_BOOTSTRAP_DATABASE_URL="postgres://postgres:${root_password}@health-ci-db:5432/health" \
+            --entrypoint /app/tenant_isolation health-dashboard:ci \
+            --mode finalize-db-identities --manifest "$manifest" --confirm
+          docker run --rm --network health-ci \
+            -e ADMIN_DATABASE_URL="postgres://health_admin:${admin_password}@health-ci-db:5432/health" \
+            -e REGISTRY_DATABASE_URL="postgres://health_registry:${registry_password}@health-ci-db:5432/health" \
+            --entrypoint /app/tenant_isolation health-dashboard:ci \
+            --mode verify-db-identities
+
           curl --fail --silent -X POST http://localhost:18080/health -H 'X-API-Key: ci-key' -H 'Content-Type: application/json' -d '{"data":{"metrics":[{"name":"step_count","units":"count","data":[{"date":"2026-07-12 10:00:00 +0000","qty":1234,"source":"CI Phone"}]}]}}'
+          ingested=0
+          for i in $(seq 1 30); do
+            if test "$(docker exec -e PGPASSWORD="$root_password" health-ci-db psql -U postgres -d health -Atc "SELECT count(*) FROM health.metric_points WHERE metric_name='step_count' AND qty=1234")" = "1"; then ingested=1; break; fi
+            sleep 1
+          done
+          test "$ingested" = "1"
+
           docker kill --signal=TERM health-ci-app
           docker wait health-ci-app
           docker rm health-ci-app
-          docker run -d --name health-ci-app --network health-ci -p 18080:8080 -e DATABASE_URL='postgres://health:health@health-ci-db:5432/health?search_path=health' -e API_KEY=ci-key -e UI_PASSWORD=ci-password health-dashboard:ci
+          docker run -d --name health-ci-app --network health-ci -p 18080:8080 \
+            -e TENANT_DB_ISOLATION_ENABLED=true \
+            -e ADMIN_DATABASE_URL="postgres://health_admin:${admin_password}@health-ci-db:5432/health" \
+            -e REGISTRY_DATABASE_URL="postgres://health_registry:${registry_password}@health-ci-db:5432/health" \
+            -e TENANT_DATABASE_URL_BASE='postgres://health-ci-db:5432/health?sslmode=disable' \
+            -e TENANT_DB_MASTER_SECRET="$master_secret" \
+            -e TENANT_DB_MASTER_SECRET_VERSION=1 \
+            -e API_KEY=ci-key -e UI_PASSWORD=ci-password \
+            health-dashboard:ci
           for i in $(seq 1 60); do curl --fail --silent http://localhost:18080/readyz && break; sleep 1; done
           curl --fail --silent http://localhost:18080/readyz
           recovered=0
           for i in $(seq 1 30); do
-            if test "$(docker exec health-ci-db psql -U health -d health -Atc "SELECT count(*) FROM health.metric_points WHERE metric_name='step_count' AND qty=1234")" = "1"; then recovered=1; break; fi
+            if test "$(docker exec -e PGPASSWORD="$root_password" health-ci-db psql -U postgres -d health -Atc "SELECT count(*) FROM health.metric_points WHERE metric_name='step_count' AND qty=1234")" = "1"; then recovered=1; break; fi
             sleep 1
           done
           test "$recovered" = "1"
