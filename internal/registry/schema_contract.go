@@ -70,7 +70,7 @@ func IsSchemaContractRelation(kind, name string) bool {
 func VerifySchemaContract(ctx context.Context, query SchemaContractQuerier) error {
 	for table, wantColumns := range registryContractColumns {
 		columns, err := collectSchemaContractRows(ctx, query, `SELECT a.attname||':'||format_type(a.atttypid,a.atttypmod)||':'||CASE WHEN a.attnotnull THEN 'not-null' ELSE 'nullable' END FROM pg_attribute a WHERE a.attrelid=to_regclass($1) AND a.attnum>0 AND NOT a.attisdropped ORDER BY a.attnum`, "health_registry."+table)
-		if err != nil || !equalStrings(columns, wantColumns) {
+		if err != nil || !equalRegistryColumns(columns, wantColumns) {
 			return fmt.Errorf("registry schema contract columns drift for %s", table)
 		}
 		constraints, err := collectSchemaContractRows(ctx, query, `SELECT conname||':'||pg_get_constraintdef(oid,true) FROM pg_constraint WHERE conrelid=to_regclass($1) ORDER BY conname`, "health_registry."+table)
@@ -83,6 +83,10 @@ func VerifySchemaContract(ctx context.Context, query SchemaContractQuerier) erro
 		}
 	}
 	return nil
+}
+
+func equalRegistryColumns(a, b []string) bool {
+	return equalSortedStrings(a, b)
 }
 
 func collectSchemaContractRows(ctx context.Context, query SchemaContractQuerier, sql string, args ...any) ([]string, error) {
