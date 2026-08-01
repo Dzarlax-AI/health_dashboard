@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html/template"
 	"io"
 	"log"
 	"math"
@@ -631,80 +630,10 @@ func (h *Handler) pageDashboard(w http.ResponseWriter, r *http.Request) {
 	lang := langFromRequest(r)
 	setLangCookie(w, r)
 
-	type sleepData struct {
-		Nights   int
-		AvgTotal string
-		AvgDeep  string
-		AvgREM   string
-	}
-
-	data := struct {
-		BasePage
-		ReadinessScore      int
-		ReadinessLabel      string
-		ReadinessTip        string
-		ReadinessConfidence string
-		ReadinessCapReason  string
-		ReadinessRawScore   int
-		ReadinessServing    readinessServingView
-		RecoveryPct         int
-		RecoverySource      string
-		Headline            *health.HeadlineSignal
-		EnergyBank          *health.EnergyBank
-		IllnessSuspicion    *health.IllnessSuspicion
-		SubjectiveCheckin   *health.SubjectiveCheckinSummary
-		Cards               []health.MetricCard
-		Alerts              []health.Alert
-		Sections            []health.BriefingSection
-		Sleep               *sleepData
-		Insights            []health.Insight
-		Correlation         []health.CorrelationPoint
-		CorrelationJSON     template.JS
-		AIInsight           string
-	}{
-		BasePage:        h.basePage(r, T(lang, "app_title"), "dashboard"),
-		CorrelationJSON: "null",
-	}
-
 	today := db.Today()
-	data.AIInsight = db.GetAIInsightCombined(today, lang)
-
-	if br, err := db.GetHealthBriefing(lang); err == nil && br != nil {
-		data.ReadinessScore = br.ReadinessToday
-		data.ReadinessLabel = br.ReadinessTodayLabel
-		data.ReadinessTip = br.ReadinessTip
-		data.ReadinessConfidence = br.ReadinessConfidence
-		data.ReadinessCapReason = br.ReadinessCapReason
-		data.ReadinessRawScore = br.ReadinessRawScore
-		data.ReadinessServing = buildReadinessServingView(lang, br.ReadinessServing)
-		data.RecoveryPct = br.RecoveryPct
-		data.RecoverySource = br.RecoverySource
-		data.Headline = br.Headline
-		data.EnergyBank = br.EnergyBank
-		data.IllnessSuspicion = br.IllnessSuspicion
-		data.SubjectiveCheckin = br.SubjectiveCheckin
-		data.Cards = br.MetricCards
-		data.Alerts = br.Alerts
-		data.Sections = br.Sections
-		data.Insights = br.Insights
-		data.Correlation = br.Correlation
-
-		if br.Sleep != nil {
-			s := br.Sleep
-			data.Sleep = &sleepData{
-				Nights:   s.Nights,
-				AvgTotal: fmtMinutes(s.TotalAvg * 60),
-				AvgDeep:  fmtMinutes(s.DeepAvg * 60),
-				AvgREM:   fmtMinutes(s.REMAvg * 60),
-			}
-		}
-
-		if len(br.Correlation) > 0 {
-			if b, err := json.Marshal(br.Correlation); err == nil {
-				data.CorrelationJSON = template.JS(b)
-			}
-		}
-	}
+	aiInsight := db.GetAIInsightCombined(today, lang)
+	br, _ := db.GetHealthBriefing(lang)
+	data := buildDashboardPageData(h.basePage(r, T(lang, "app_title"), "dashboard"), br, aiInsight)
 
 	renderPage(w, "dashboard", data)
 }

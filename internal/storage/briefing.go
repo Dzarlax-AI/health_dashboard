@@ -147,13 +147,15 @@ func buildReadinessEvidence(date string, latest dailyScoreRow, fresh *dayRow) *h
 		rhr, rhrDate = pick(fresh.rhr, latest.rhr)
 	}
 	slp, slpDate := pick(nil, latest.slp)
-	deep, _ := pick(nil, latest.deep)
-	awake, _ := pick(nil, latest.awake)
+	deep, deepDate := pick(nil, latest.deep)
+	rem, remDate := pick(nil, latest.rem)
+	awake, awakeDate := pick(nil, latest.awake)
 	resp, respDate := pick(nil, latest.resp)
 	if fresh != nil {
 		slp, slpDate = pick(fresh.slp, latest.slp)
-		deep, _ = pick(fresh.deep, latest.deep)
-		awake, _ = pick(fresh.awake, latest.awake)
+		deep, deepDate = pick(fresh.deep, latest.deep)
+		rem, remDate = pick(fresh.rem, latest.rem)
+		awake, awakeDate = pick(fresh.awake, latest.awake)
 		resp, respDate = pick(fresh.resp, latest.resp)
 	}
 	evidence.HRV = readinessComponent("heart_rate_variability", date, hrvDate, hrv, sampleCount(fresh, "hrv"), "")
@@ -169,6 +171,9 @@ func buildReadinessEvidence(date string, latest dailyScoreRow, fresh *dayRow) *h
 	evidence.RHR = readinessComponent("resting_heart_rate", date, rhrDate, rhr, sampleCount(fresh, "rhr"), "")
 	evidence.OvernightHR = readinessComponent("baseline_hr_overnight", date, latest.date, latest.nightHR, 0, "")
 	evidence.SleepDuration = readinessComponent("sleep_total", date, slpDate, slp, 0, "")
+	evidence.SleepDeep = readinessComponent("sleep_deep", date, deepDate, deep, 0, "")
+	evidence.SleepREM = readinessComponent("sleep_rem", date, remDate, rem, 0, "")
+	evidence.SleepAwake = readinessComponent("sleep_awake", date, awakeDate, awake, 0, "")
 	evidence.Respiratory = readinessComponent("respiratory_rate", date, respDate, resp, sampleCount(fresh, "resp"), "")
 	evidence.SleepQuality = sleepQualityEvidence(date, slpDate, slp, deep, awake)
 	return evidence
@@ -669,6 +674,19 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 	illnessInput := s.BuildIllnessEvidenceInput(*lastDate, resp.SubjectiveCheckin)
 	resp.IllnessSuspicion = health.ComputeIllnessSuspicion(illnessInput)
 	health.ApplyIllnessSafetyCap(resp, health.GetStrings(lang))
+	resp.TodayGuidance = health.ResolveDashboardTodayGuidance(
+		resp.EnergyBank,
+		resp.ReadinessServing,
+		resp.IllnessSuspicion,
+		resp.SleepQuality,
+		health.GetStrings(lang),
+	)
+	if resp.TodayGuidance != nil {
+		var updatedAt *time.Time
+		if err := s.pool.QueryRow(ctx, `SELECT MAX(received_at) FROM health_records`).Scan(&updatedAt); err == nil && updatedAt != nil {
+			resp.TodayGuidance.UpdatedAt = *updatedAt
+		}
+	}
 
 	if IsContextCaveatsEnabled(s) {
 		if annotations, aerr := s.GetRecentContextAnnotationsThroughDate(*lastDate, 3); aerr == nil {

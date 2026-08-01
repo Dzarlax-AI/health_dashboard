@@ -74,3 +74,43 @@ func TestBuildReadinessEvidence_SleepQualityRequiresDeepAndAwake(t *testing.T) {
 		t.Fatalf("sleep quality missing reason = %q", e.SleepQuality.MissingReason)
 	}
 }
+
+func TestBuildReadinessEvidence_SleepStagesStayDateAligned(t *testing.T) {
+	sleep := 7.5
+	deep := 1.0
+	rem := 1.5
+	awake := 0.4
+	latest := dailyScoreRow{
+		date:  "2026-06-03",
+		slp:   &sleep,
+		deep:  &deep,
+		rem:   &rem,
+		awake: &awake,
+	}
+
+	stale := buildReadinessEvidence("2026-06-04", latest, nil)
+	for name, component := range map[string]health.ReadinessComponentEvidence{
+		"duration": stale.SleepDuration,
+		"deep":     stale.SleepDeep,
+		"rem":      stale.SleepREM,
+		"awake":    stale.SleepAwake,
+	} {
+		if component.Present || component.SourceDate != "" {
+			t.Fatalf("%s evidence treated prior-day stage as current: %+v", name, component)
+		}
+	}
+
+	fresh := buildReadinessEvidence("2026-06-04", dailyScoreRow{date: "2026-06-04"}, &dayRow{
+		slp: &sleep, deep: &deep, rem: &rem, awake: &awake,
+	})
+	for name, component := range map[string]health.ReadinessComponentEvidence{
+		"duration": fresh.SleepDuration,
+		"deep":     fresh.SleepDeep,
+		"rem":      fresh.SleepREM,
+		"awake":    fresh.SleepAwake,
+	} {
+		if !component.Present || component.SourceDate != "2026-06-04" {
+			t.Fatalf("%s same-day evidence = %+v", name, component)
+		}
+	}
+}

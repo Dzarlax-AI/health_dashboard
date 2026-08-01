@@ -125,6 +125,84 @@ func TestSleepQuality_RangeInvariant(t *testing.T) {
 	}
 }
 
+func TestComputeSleepQualityBreakdown_StatesAndComponents(t *testing.T) {
+	total := 8.0
+	deep := 1.2
+	rem := 1.6
+	awake := 0.0
+	finalEvidence := ReadinessComponentEvidence{
+		Present:    true,
+		Freshness:  ReadinessFreshnessOK,
+		Confidence: ReadinessConfidenceFinal,
+	}
+
+	final := ComputeSleepQualityBreakdown(&total, &deep, &rem, &awake, finalEvidence)
+	if final.Confidence != SleepQualityConfidenceFinal {
+		t.Fatalf("final confidence = %q", final.Confidence)
+	}
+	for name, value := range map[string]*int{
+		"score": final.ScorePct, "continuity": final.ContinuityPct, "structure": final.StructurePct,
+	} {
+		if value == nil || *value != 100 {
+			t.Fatalf("%s = %v, want 100", name, value)
+		}
+	}
+	if final.DurationPct != 100 {
+		t.Fatalf("duration = %d, want 100", final.DurationPct)
+	}
+	if got := SleepQuality(total, deep, rem, awake); math.Abs(got-float64(*final.ScorePct)/100) > 0.005 {
+		t.Fatalf("legacy score = %v, breakdown = %d", got, *final.ScorePct)
+	}
+
+	short := 7.0
+	partial := ComputeSleepQualityBreakdown(&short, nil, nil, nil, ReadinessComponentEvidence{})
+	if partial.Confidence != SleepQualityConfidencePartial {
+		t.Fatalf("partial confidence = %q", partial.Confidence)
+	}
+	if partial.ScorePct != nil || partial.ContinuityPct != nil || partial.StructurePct != nil {
+		t.Fatalf("partial breakdown fabricated unavailable components: %+v", partial)
+	}
+	if partial.DurationPct != 88 {
+		t.Fatalf("partial duration = %d, want 88", partial.DurationPct)
+	}
+
+	missing := ComputeSleepQualityBreakdown(nil, nil, nil, nil, ReadinessComponentEvidence{})
+	if missing.Confidence != SleepQualityConfidenceMissing || missing.ScorePct != nil {
+		t.Fatalf("missing breakdown = %+v", missing)
+	}
+
+	lowEvidence := finalEvidence
+	lowEvidence.Confidence = ReadinessConfidenceLow
+	low := ComputeSleepQualityBreakdown(&total, &deep, &rem, &awake, lowEvidence)
+	if low.Confidence != SleepQualityConfidenceLow || low.ScorePct == nil {
+		t.Fatalf("low-confidence breakdown = %+v", low)
+	}
+}
+
+func TestComputeBriefingSleepQualityUsesAllStageFreshness(t *testing.T) {
+	total, deep, rem, awake := 7.8, 1.2, 1.6, 0.4
+	fresh := func(metric string, value *float64) ReadinessComponentEvidence {
+		return ReadinessComponentEvidence{
+			Metric: metric, Value: value, Present: true,
+			Freshness: ReadinessFreshnessOK, Confidence: ReadinessConfidenceFinal,
+		}
+	}
+	evidence := &ReadinessEvidenceInput{
+		SleepDuration: fresh("sleep_total", &total),
+		SleepDeep:     fresh("sleep_deep", &deep),
+		SleepREM:      fresh("sleep_rem", &rem),
+		SleepAwake:    fresh("sleep_awake", &awake),
+		SleepQuality:  fresh("sleep_quality", &deep),
+	}
+	evidence.SleepREM.Freshness = ReadinessFreshnessStale
+	evidence.SleepREM.Confidence = ReadinessConfidenceProvisional
+
+	got := computeDashboardSleepQuality(RawMetrics{ReadinessEvidence: evidence})
+	if got.Confidence != SleepQualityConfidenceLow {
+		t.Fatalf("confidence = %q, want %q when REM is stale", got.Confidence, SleepQualityConfidenceLow)
+	}
+}
+
 // TestAsymptoticCapacity covers the three load-bearing properties from
 // the docstring: no overshoot above 100, signed input handled, sq=0
 // produces pure carryover.

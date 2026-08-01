@@ -80,7 +80,7 @@ func TestDashboardReadinessServingBadges(t *testing.T) {
 				"Fresh data",
 				"Core coverage: 3/3 fresh signals.",
 			},
-			wantMissing: []string{`id="hero-section" class="status-good readiness-low-confidence"`, `<div class="readiness-confidence-note">`},
+			wantMissing: []string{`class="today-hero status-good readiness-low-confidence"`, `<div class="readiness-confidence-note">`},
 		},
 		{
 			name:    "data accruing",
@@ -97,7 +97,7 @@ func TestDashboardReadinessServingBadges(t *testing.T) {
 			name:    "missing",
 			serving: readinessServingForTest(health.ReadinessServingMissing, health.ReadinessConfidenceProvisional, "missing_same_day_evidence"),
 			want: []string{
-				`id="hero-section" class="status-good readiness-low-confidence"`,
+				`class="today-hero status-good readiness-low-confidence"`,
 				"readiness-trust-badge--warning",
 				"Missing inputs",
 				"Waiting for today",
@@ -107,7 +107,7 @@ func TestDashboardReadinessServingBadges(t *testing.T) {
 			name:    "stale",
 			serving: readinessServingForTest(health.ReadinessServingStale, health.ReadinessConfidenceProvisional, ""),
 			want: []string{
-				`id="hero-section" class="status-good readiness-low-confidence"`,
+				`class="today-hero status-good readiness-low-confidence"`,
 				"readiness-trust-badge--warning",
 				"Stale inputs",
 				"Some recovery inputs are stale.",
@@ -117,7 +117,7 @@ func TestDashboardReadinessServingBadges(t *testing.T) {
 			name:    "low coverage",
 			serving: readinessServingForTest(health.ReadinessServingLowCoverage, health.ReadinessConfidenceLow, "sleep_quality_low"),
 			want: []string{
-				`id="hero-section" class="status-good readiness-low-confidence"`,
+				`class="today-hero status-good readiness-low-confidence"`,
 				"readiness-trust-badge--low",
 				"Low confidence",
 				"Low-confidence score: input quality is weak.",
@@ -133,7 +133,7 @@ func TestDashboardReadinessServingBadges(t *testing.T) {
 				"Displayed score adjusted for safety.",
 				"subjective signals are present",
 			},
-			wantMissing: []string{`id="hero-section" class="status-good readiness-low-confidence"`},
+			wantMissing: []string{`class="today-hero status-good readiness-low-confidence"`},
 		},
 	}
 
@@ -181,47 +181,42 @@ func TestReadinessServingReasonTextCoversKnownReasons(t *testing.T) {
 
 func renderDashboardIllnessForTest(t *testing.T, illness *health.IllnessSuspicion) string {
 	t.Helper()
-	w := httptest.NewRecorder()
-	renderPage(w, "dashboard", map[string]any{
-		"Lang":             "ru",
-		"Title":            "Здоровье",
-		"ActiveNav":        "dashboard",
-		"StaticVer":        StaticVer(),
-		"ReadinessScore":   88,
-		"ReadinessServing": readinessServingView{},
-		"IllnessSuspicion": illness,
-		"Cards":            []health.MetricCard{},
-		"Alerts":           []health.Alert{},
-		"Sections":         []health.BriefingSection{},
-		"Insights":         []health.Insight{},
-		"CorrelationJSON":  "null",
-		"AIInsight":        "",
-		"IsAdmin":          false,
-	})
-	if w.Code != 200 {
-		t.Fatalf("render dashboard: status=%d body=%s", w.Code, w.Body.String())
-	}
-	return w.Body.String()
+	return renderDashboardForTest(t, "ru", nil, illness)
 }
 
 func renderDashboardReadinessServingForTest(t *testing.T, serving *health.ReadinessServingState) string {
 	t.Helper()
+	return renderDashboardForTest(t, "en", serving, nil)
+}
+
+func renderDashboardForTest(t *testing.T, lang string, serving *health.ReadinessServingState, illness *health.IllnessSuspicion) string {
+	t.Helper()
+	sleepScore := 76
+	br := &health.BriefingResponse{
+		Date:                "2026-08-01",
+		ReadinessToday:      88,
+		ReadinessTodayLabel: "Optimal",
+		ReadinessTip:        "A balanced day is a good fit.",
+		ReadinessServing:    serving,
+		EnergyBank: &health.EnergyBank{
+			Current:       72,
+			Capacity:      90,
+			ActionVerdict: "moderate",
+		},
+		SleepQuality: &health.SleepQualityBreakdown{
+			ScorePct:   &sleepScore,
+			Confidence: health.SleepQualityConfidenceFinal,
+		},
+		IllnessSuspicion: illness,
+	}
+	base := BasePage{
+		Lang:      lang,
+		Title:     "Health",
+		ActiveNav: "dashboard",
+		StaticVer: StaticVer(),
+	}
 	w := httptest.NewRecorder()
-	renderPage(w, "dashboard", map[string]any{
-		"Lang":             "en",
-		"Title":            "Health",
-		"ActiveNav":        "dashboard",
-		"StaticVer":        StaticVer(),
-		"ReadinessScore":   88,
-		"ReadinessServing": buildReadinessServingView("en", serving),
-		"Cards":            []health.MetricCard{},
-		"Alerts":           []health.Alert{},
-		"Sections":         []health.BriefingSection{},
-		"Insights":         []health.Insight{},
-		"CorrelationJSON":  "null",
-		"AIInsight":        "",
-		"IsAdmin":          false,
-	})
+	renderPage(w, "dashboard", buildDashboardPageData(base, br, ""))
 	if w.Code != 200 {
 		t.Fatalf("render dashboard: status=%d body=%s", w.Code, w.Body.String())
 	}

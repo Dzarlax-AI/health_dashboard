@@ -1,0 +1,802 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>План реализации: дружелюбный health dashboard</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --page: #f3f5f2;
+      --surface: #fff;
+      --text: #1d2520;
+      --muted: #647069;
+      --line: #dce3dd;
+      --green: #177d4a;
+      --green-soft: #e5f4ea;
+      --amber: #a85e00;
+      --amber-soft: #fff0d8;
+      --blue: #4b57b8;
+      --blue-soft: #eceeff;
+      --red: #b42318;
+      --red-soft: #fff0ee;
+      --shadow: 0 12px 34px rgba(30, 48, 37, .08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--page);
+      color: var(--text);
+      font: 15px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { max-width: 1120px; margin: 0 auto; padding: 34px 24px 72px; }
+    h1, h2, h3 { line-height: 1.2; letter-spacing: -.02em; }
+    h1 { margin: 12px 0 10px; font-size: clamp(30px, 5vw, 48px); }
+    h2 { margin: 0 0 14px; font-size: 23px; }
+    h3 { margin: 22px 0 8px; font-size: 17px; }
+    p { margin: 8px 0; }
+    a { color: var(--green); }
+    code, pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+    }
+    code { padding: 2px 5px; border-radius: 5px; background: #eef1ee; }
+    pre {
+      overflow: auto;
+      margin: 12px 0;
+      padding: 16px;
+      border: 1px solid #d8dfd9;
+      border-radius: 12px;
+      background: #17201b;
+      color: #eaf3ed;
+      white-space: pre-wrap;
+    }
+    section {
+      margin: 18px 0;
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+    ul, ol { margin: 10px 0; padding-left: 23px; }
+    li + li { margin-top: 7px; }
+    .eyebrow {
+      color: var(--green);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      margin-top: 8px;
+      padding: 6px 11px;
+      border-radius: 999px;
+      background: var(--amber-soft);
+      color: var(--amber);
+      font-size: 12px;
+      font-weight: 750;
+    }
+    .summary {
+      max-width: 820px;
+      color: var(--muted);
+      font-size: 18px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .card {
+      padding: 17px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fbfcfb;
+    }
+    .card h3 { margin-top: 0; }
+    .good { border-left: 5px solid var(--green); }
+    .info { border-left: 5px solid var(--blue); }
+    .risk { border-left: 5px solid var(--red); }
+    .approval { border-left: 5px solid var(--amber); }
+    .task {
+      margin: 14px 0;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fcfdfc;
+    }
+    .task h3 { margin: 0 0 8px; }
+    .checklist { list-style: none; padding-left: 0; }
+    .checklist li { position: relative; padding-left: 28px; }
+    .checklist li::before {
+      position: absolute;
+      left: 0;
+      top: 1px;
+      width: 17px;
+      height: 17px;
+      border: 2px solid #aeb9b1;
+      border-radius: 5px;
+      content: "";
+    }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: 12px; letter-spacing: .04em; text-transform: uppercase; }
+    .nowrap { white-space: nowrap; }
+    .callout {
+      margin: 14px 0;
+      padding: 14px 16px;
+      border-radius: 12px;
+      background: var(--green-soft);
+      color: #185c39;
+    }
+    .small { color: var(--muted); font-size: 13px; }
+    @media (max-width: 760px) {
+      main { padding: 22px 14px 50px; }
+      section { padding: 18px; border-radius: 14px; }
+      .grid { grid-template-columns: 1fr; }
+      table { display: block; overflow-x: auto; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">Health Processing · Implementation Plan · 2026-08-01</div>
+  <h1>Дружелюбный dashboard с качеством сна</h1>
+  <p class="summary">
+    Перестроить главный экран вокруг одного понятного совета на день,
+    сохранить аналитическую глубину ниже и заложить общие визуальные примитивы
+    для будущего обновления всего веб-интерфейса.
+  </p>
+  <div class="badge">План одобрен · реализация выполнена в изолированной ветке</div>
+
+  <section>
+    <h2>1. Результат и границы первой фазы</h2>
+    <div class="grid">
+      <div class="card good">
+        <h3>Входит в эту реализацию</h3>
+        <ul>
+          <li>Новый Today hero с утверждённым пейзажным фоном.</li>
+          <li>Одна консервативная рекомендация вместо конкурирующих вердиктов.</li>
+          <li>Готовность как главный показатель в hero; энергия и качество сна как поддерживающие показатели ниже.</li>
+          <li>Структурно стабильный SVG-компонент кругового показателя.</li>
+          <li>Более мягкие карточки и общие визуальные токены.</li>
+          <li>Сохранение alerts, AI insight, метрик, секций и недельной аналитики.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Не входит в эту реализацию</h3>
+        <ul>
+          <li>Редизайн Settings, Admin, login, import и metric detail.</li>
+          <li>Изменение формул Readiness или EnergyBank.</li>
+          <li>Новая медицинская интерпретация данных.</li>
+          <li>Миграция базы данных или новый сохранённый score.</li>
+          <li>Копирование мобильной навигации Bevel.</li>
+        </ul>
+      </div>
+    </div>
+    <p class="callout">
+      Dashboard станет первым потребителем общей дизайн-системы, но фон
+      останется особенностью Today hero. Остальные страницы позже унаследуют
+      типографику, поверхности, контролы и состояния — не пейзаж.
+    </p>
+  </section>
+
+  <section>
+    <h2>2. Что есть сейчас</h2>
+    <ul>
+      <li>
+        <code>internal/ui/templates/pages/dashboard.html</code> показывает в
+        одном hero независимые Readiness, Headline, EnergyBank и 30-дневный
+        sparkline. Пользователь вынужден сам согласовывать их смысл.
+      </li>
+      <li>
+        <code>internal/ui/handler.go::pageDashboard</code> строит локальную
+        анонимную view model и вручную переносит поля из
+        <code>health.BriefingResponse</code>.
+      </li>
+      <li>
+        <code>internal/health/energy_v2.go::SleepQuality</code> уже содержит
+        формулу качества сна: длительность × непрерывность × структура.
+      </li>
+      <li>
+        <code>internal/health/sleep.go::computeSleepAnalysis</code> сейчас
+        возвращает преимущественно семидневные средние, поэтому отдельный
+        same-night breakdown нужен для дневной карточки.
+      </li>
+      <li>
+        <code>internal/ui/style.go</code> содержит единый большой CSS string.
+        Текущий readiness score — крупное число, а не геометрически
+        зафиксированный круговой компонент.
+      </li>
+      <li>
+        <code>internal/ui/render.go</code> встраивает только
+        <code>static/*.js</code> и всегда отвечает JavaScript MIME type.
+        Перед добавлением изображения статический обработчик нужно сделать
+        бинарно- и MIME-safe.
+      </li>
+      <li>
+        Тесты шаблона уже существуют в
+        <code>internal/ui/dashboard_illness_template_test.go</code>; тесты
+        формулы сна — в <code>internal/health/energy_v2_test.go</code>.
+      </li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>3. Контракты данных и логика</h2>
+
+    <h3>Качество сна</h3>
+    <p>
+      Формула остаётся единственной. Новый helper возвращает результат и
+      компоненты, а существующий <code>SleepQuality</code> делегирует ему,
+      чтобы EnergyBank и UI не разошлись.
+    </p>
+    <pre>type SleepQualityBreakdown struct {
+    ScorePct      *int   `json:"score_pct,omitempty"`
+    DurationPct   int    `json:"duration_pct"`
+    ContinuityPct *int   `json:"continuity_pct,omitempty"`
+    StructurePct  *int   `json:"structure_pct,omitempty"`
+    Confidence    string `json:"confidence"` // final | partial | missing | low
+}
+
+func ComputeSleepQualityBreakdown(
+    totalH, deepH, remH, awakeH *float64,
+    evidence ReadinessComponentEvidence,
+) *SleepQualityBreakdown</pre>
+    <p>
+      <strong>Final</strong> требует same-night total, deep, REM и awake с
+      допустимым evidence. При наличии только total возвращается
+      <strong>partial</strong> без точного <code>ScorePct</code>. При
+      отсутствии total возвращается <strong>missing</strong>.
+      Нулевой score никогда не используется как замена отсутствующим данным.
+    </p>
+
+    <h3>Единая рекомендация</h3>
+    <pre>type DashboardTodayGuidance struct {
+    Action     string    `json:"action"`     // rest | active_recovery | moderate | push_hard
+    Label      string    `json:"label"`      // localized short label
+    Summary    string    `json:"summary"`    // one actionable sentence
+    Reason     string    `json:"reason"`     // concise supporting evidence
+    Confidence string    `json:"confidence"` // final | provisional | low
+    UpdatedAt  time.Time `json:"updated_at,omitempty"`
+}
+
+func ResolveDashboardTodayGuidance(
+    energy *EnergyBank,
+    readiness *ReadinessServingState,
+    illness *IllnessSuspicion,
+    sleep *SleepQualityBreakdown,
+    ls LangStrings,
+) *DashboardTodayGuidance</pre>
+    <ol>
+      <li>Существующие illness safety caps остаются высшим приоритетом.</li>
+      <li><code>rest</code> и <code>active_recovery</code> никогда не повышаются UI-слоем.</li>
+      <li>
+        <code>push_hard</code> понижается до <code>moderate</code>, если
+        Readiness missing, stale, provisional или low coverage.
+      </li>
+      <li>
+        Partial/low sleep может только ограничить действие, но не повысить его
+        выше EnergyBank verdict.
+      </li>
+      <li>
+        При fresh/final данных сохраняется финальный EnergyBank verdict.
+      </li>
+    </ol>
+
+    <h3>Последовательность вычисления</h3>
+    <pre>ComputeBriefing builds same-night SleepQualityBreakdown
+  → storage applies EnergyBank v2 override
+  → storage attaches subjective check-in and illness evidence
+  → ApplyIllnessSafetyCap
+  → ResolveDashboardTodayGuidance
+  → EnrichLabels
+  → handler maps a named DashboardPage view model
+  → server-rendered template</pre>
+    <p class="small">
+      Это важно: guidance строится после всех storage-level override и safety
+      cap, иначе hero снова сможет противоречить фактическому EnergyBank.
+    </p>
+  </section>
+
+  <section>
+    <h2>4. Геометрический контракт кругов</h2>
+    <div class="card risk">
+      <h3>Смещение круга считается блокирующей регрессией</h3>
+      <p>
+        Компонент не должен зависеть от длины текста, соседней колонки,
+        локали или viewport. Никаких ручных <code>translate</code>,
+        отрицательных margin или breakpoint-specific offsets.
+      </p>
+    </div>
+    <pre>&lt;div class="score-gauge__frame"&gt;
+  &lt;svg class="score-gauge__svg"
+       viewBox="0 0 120 120"
+       preserveAspectRatio="xMidYMid meet"
+       role="img"
+       aria-labelledby="..."&gt;
+    &lt;circle class="score-gauge__track" cx="60" cy="60" r="50"/&gt;
+    &lt;circle class="score-gauge__progress"
+            cx="60" cy="60" r="50"
+            pathLength="100"
+            stroke-dasharray="VALUE 100"/&gt;
+  &lt;/svg&gt;
+  &lt;div class="score-gauge__content"&gt;…&lt;/div&gt;
+&lt;/div&gt;</pre>
+    <ul>
+      <li>Wrapper: <code>aspect-ratio: 1</code>, одинаковые inline/block size.</li>
+      <li>Центрирование: CSS grid с <code>place-items: center</code>.</li>
+      <li>Размер: один bounded <code>clamp()</code>, без растяжения по контенту.</li>
+      <li>Track, progress, score и label используют один центр.</li>
+      <li>Readiness, Energy и Sleep используют один template partial.</li>
+      <li>
+        Structural test фиксирует square wrapper, <code>viewBox</code>,
+        <code>preserveAspectRatio</code> и отсутствие inline positional hacks.
+      </li>
+      <li>
+        Browser QA сравнивает центр и bounding box на ширинах
+        320, 375, 768, 1024 и 1440 px во всех локалях.
+      </li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>5. Файлы и ответственность</h2>
+    <table>
+      <thead>
+        <tr><th>Файл</th><th>Изменение</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>internal/health/types.go</code></td>
+          <td>Добавить API-типы SleepQualityBreakdown и DashboardTodayGuidance, а также optional поля в BriefingResponse.</td>
+        </tr>
+        <tr>
+          <td><code>internal/health/energy_v2.go</code></td>
+          <td>Выделить общий breakdown формулы без изменения текущего результата SleepQuality.</td>
+        </tr>
+        <tr>
+          <td><code>internal/health/dashboard_guidance.go</code></td>
+          <td>Новая чистая функция приоритетов одной рекомендации.</td>
+        </tr>
+        <tr>
+          <td><code>internal/health/energy_v2_test.go</code></td>
+          <td>Совпадение старого score с breakdown, границы 0–100, final/partial/missing/low.</td>
+        </tr>
+        <tr>
+          <td><code>internal/health/dashboard_guidance_test.go</code></td>
+          <td>Табличные тесты приоритетов verdict, readiness, illness и sleep.</td>
+        </tr>
+        <tr>
+          <td><code>internal/storage/briefing.go</code></td>
+          <td>Создать same-night breakdown и guidance после всех override/cap, до финального EnrichLabels.</td>
+        </tr>
+        <tr>
+          <td><code>internal/storage/readiness_evidence_test.go</code></td>
+          <td>Зафиксировать выравнивание по дате, coarse sleep и stale/partial состояния на storage boundary.</td>
+        </tr>
+        <tr>
+          <td><code>internal/ui/dashboard_view.go</code></td>
+          <td>Новая именованная page view model, gauge view и форматирование даты/времени/подписей.</td>
+        </tr>
+        <tr>
+          <td><code>internal/ui/handler.go</code></td>
+          <td>Упростить pageDashboard: получить briefing и передать его в builder view model.</td>
+        </tr>
+        <tr>
+          <td><code>internal/ui/templates/partials/score_gauge.html</code></td>
+          <td>Единственный SVG-компонент кругового показателя.</td>
+        </tr>
+        <tr>
+          <td><code>internal/ui/templates/pages/dashboard.html</code></td>
+          <td>Новый hero, score row и перестановка существующих аналитических блоков без удаления.</td>
+        </tr>
+        <tr>
+          <td><code>internal/ui/style.go</code></td>
+          <td>Общие токены/примитивы, hero, cards, gauge, responsive и accessibility fallback.</td>
+        </tr>
+        <tr>
+          <td><code>internal/ui/static/morning-meadow-hero.webp</code></td>
+          <td>Оптимизированный same-origin фон из утверждённого концепта.</td>
+        </tr>
+        <tr>
+          <td><code>internal/ui/render.go</code></td>
+          <td>Встраивать static assets, отдавать бинарные данные с MIME по расширению и сохранить cache-busting.</td>
+        </tr>
+        <tr>
+          <td><code>internal/ui/i18n_en.go</code>, <code>i18n_ru.go</code>, <code>i18n_sr.go</code></td>
+          <td>Рекомендации, confidence, sleep labels, accessible names и empty states.</td>
+        </tr>
+        <tr>
+          <td><code>internal/ui/dashboard_today_template_test.go</code></td>
+          <td>Template/view-model states и структурные инварианты gauge.</td>
+        </tr>
+        <tr>
+          <td><code>internal/ui/render_static_test.go</code></td>
+          <td>MIME, байтовая целостность и immutable cache для изображения и JavaScript.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>6. Последовательность реализации</h2>
+
+    <div class="task">
+      <h3>Шаг 1 — Зафиксировать контракты тестами</h3>
+      <ol>
+        <li>Добавить failing tests для breakdown сна и guidance precedence.</li>
+        <li>Запустить точечные тесты и подтвердить ожидаемый compile/fail.</li>
+        <li>Добавить минимальные типы и чистые функции.</li>
+        <li>Запустить <code>gofmt</code> и точечные тесты до green.</li>
+      </ol>
+    </div>
+
+    <div class="task">
+      <h3>Шаг 2 — Подключить final data frame</h3>
+      <ol>
+        <li>Добавить storage-boundary tests для staged, coarse и missing sleep.</li>
+        <li>
+          Вычислять breakdown по последней согласованной ночи, используя
+          readiness evidence для confidence, а не индекс сжатого массива как
+          доказательство свежести.
+        </li>
+        <li>
+          Строить guidance только после EnergyBank v2 override и
+          <code>ApplyIllnessSafetyCap</code>.
+        </li>
+        <li>Проверить неизменность существующих JSON-полей.</li>
+      </ol>
+    </div>
+
+    <div class="task">
+      <h3>Шаг 3 — Сделать статические изображения безопасными</h3>
+      <ol>
+        <li>Добавить failing tests для WebP MIME и бинарного тела.</li>
+        <li>Расширить embed pattern с JS на допустимые static assets.</li>
+        <li>
+          Определять MIME через расширение с fallback
+          <code>http.DetectContentType</code>; писать байты через
+          <code>ResponseWriter.Write</code>.
+        </li>
+        <li>Проверить прежний MIME и cache policy для app.js/charts.js.</li>
+        <li>Добавить оптимизированный фон без пользовательских health data.</li>
+      </ol>
+    </div>
+
+    <div class="task">
+      <h3>Шаг 4 — Зафиксировать view model и gauge</h3>
+      <ol>
+        <li>Вынести анонимную dashboard data struct в <code>dashboard_view.go</code>.</li>
+        <li>Добавить failing render tests для трёх gauge и confidence states.</li>
+        <li>Добавить один named partial <code>score-gauge</code>.</li>
+        <li>
+          Зафиксировать square wrapper и SVG geometry структурными тестами до
+          изменения hero layout.
+        </li>
+      </ol>
+    </div>
+
+    <div class="task">
+      <h3>Шаг 5 — Реализовать утверждённую композицию</h3>
+      <ol>
+        <li>Добавить декоративный hero image с пустым <code>alt</code>.</li>
+        <li>Поместить readiness gauge и одну recommendation в hero.</li>
+        <li>Оставить Readiness только в hero; добавить поддерживающий row Energy / Sleep Quality.</li>
+        <li>
+          Перенести confidence/missing state в поддерживающий слой; не делать
+          его главным сообщением.
+        </li>
+        <li>
+          Сохранить существующие alerts, check-in, metric cards, AI insight,
+          sections и weekly chart.
+        </li>
+      </ol>
+    </div>
+
+    <div class="task">
+      <h3>Шаг 6 — Дизайн-система и адаптивность</h3>
+      <ol>
+        <li>Добавить семантические color/spacing/radius/surface tokens.</li>
+        <li>Стилизовать hero и аналитические поверхности раздельно.</li>
+        <li>Добавить desktop/tablet/mobile layouts без горизонтального scroll.</li>
+        <li>
+          Добавить <code>prefers-reduced-motion</code>,
+          <code>prefers-reduced-transparency</code> и high-contrast fallback.
+        </li>
+      </ol>
+    </div>
+
+    <div class="task">
+      <h3>Шаг 7 — Локализация, проверка и полировка</h3>
+      <ol>
+        <li>Добавить одинаковый набор ключей в EN/RU/SR.</li>
+        <li>Запустить unit/UI tests и полный <code>make test-unit</code>.</li>
+        <li>Проверить synthetic review tenant, не production health data.</li>
+        <li>Снять viewport/localization matrix и измерить gauge geometry.</li>
+        <li>Проверить клавиатуру, screen-reader labels и fallback без картинки.</li>
+      </ol>
+    </div>
+  </section>
+
+  <section>
+    <h2>7. Тест-план</h2>
+    <h3>Команды</h3>
+    <pre>gofmt -w \
+  internal/health/types.go \
+  internal/health/energy_v2.go \
+  internal/health/dashboard_guidance.go \
+  internal/health/energy_v2_test.go \
+  internal/health/dashboard_guidance_test.go \
+  internal/storage/briefing.go \
+  internal/storage/briefing_sleep_quality_test.go \
+  internal/ui/dashboard_view.go \
+  internal/ui/handler.go \
+  internal/ui/render.go \
+  internal/ui/dashboard_today_template_test.go \
+  internal/ui/render_static_test.go
+
+CGO_ENABLED=0 go test ./internal/health -count=1
+CGO_ENABLED=0 go test ./internal/ui -count=1
+
+source ~/.health-db
+HEALTH_DB_TESTS=1 go test ./internal/storage \
+  -run 'TestDashboardSleepQuality' -count=1 -timeout=90s
+
+CGO_ENABLED=0 make test-unit
+CGO_ENABLED=0 make build</pre>
+    <p class="small">
+      DB-тест запускается только для нового storage-boundary набора и использует
+      тестовую схему. Для визуальной проверки применяется существующий
+      synthetic-only review tenant.
+    </p>
+
+    <h3>Автоматические сценарии</h3>
+    <ul>
+      <li>Идеальная, короткая, фрагментированная и stage-deficient ночь.</li>
+      <li>Только sleep_total → partial без точного score.</li>
+      <li>Нет same-night sleep → missing, без подстановки старого значения.</li>
+      <li>Low-confidence evidence → low state.</li>
+      <li>Illness cap побеждает любой положительный verdict.</li>
+      <li>Missing/provisional readiness ограничивает push_hard до moderate.</li>
+      <li>Final readiness сохраняет EnergyBank verdict.</li>
+      <li>Неизвестные enum не превращаются в сырые i18n keys.</li>
+      <li>Hero image имеет <code>image/webp</code> и cache-busted URL.</li>
+      <li>JS assets продолжают иметь JavaScript MIME.</li>
+      <li>Gauge partial содержит фиксированную геометрию и accessible name.</li>
+      <li>Существующие illness/readiness template tests остаются зелёными.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>8. Manual QA</h2>
+    <ul class="checklist">
+      <li>Fresh day: один совет и три score всего — Readiness в hero, Energy и Sleep ниже, без дублирования готовности.</li>
+      <li>Provisional readiness: score виден, confidence вторичен, push_hard не показывается.</li>
+      <li>Partial sleep: длительность видна, точный quality score скрыт.</li>
+      <li>Missing sleep: нет пустого/нулевого круга, показано спокойное объяснение.</li>
+      <li>Stale data: старое значение не выглядит свежим.</li>
+      <li>Illness suspicion: safety cap и alert остаются заметными.</li>
+      <li>No data: onboarding action вместо пустых gauge.</li>
+      <li>Фон не снижает контраст и корректно исчезает при ошибке загрузки.</li>
+      <li>Клавиатурой достижимы cards, details, nav и confidence disclosure.</li>
+      <li>Все status различимы без цвета.</li>
+      <li>EN/RU/SR не показывают raw keys и не ломают layout.</li>
+      <li>320, 375, 768, 1024, 1440 px не создают горизонтальный scroll.</li>
+      <li>Центр readiness circle не меняется при длинной рекомендации.</li>
+      <li>Центр circle совпадает в fresh/provisional/partial/missing fixtures.</li>
+      <li>На dark-mode hero остаётся читаемым; аналитические карточки не становятся прозрачными.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>9. Риски и защита</h2>
+    <table>
+      <thead><tr><th>Риск</th><th>Мера</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>Guidance вычислен раньше финального EnergyBank override.</td>
+          <td>Создавать его в конце storage briefing path после safety caps; отдельный precedence test.</td>
+        </tr>
+        <tr>
+          <td>Сжатые metric slices подставляют прошлую ночь как сегодняшнюю.</td>
+          <td>Confidence брать из date-aligned readiness evidence; missing не превращать в score 0.</td>
+        </tr>
+        <tr>
+          <td>Круг готовности снова съезжает.</td>
+          <td>Один SVG partial, square wrapper, structural tests и browser matrix. Геометрические positional hacks запрещены.</td>
+        </tr>
+        <tr>
+          <td>Пейзаж ухудшает читаемость или dark mode.</td>
+          <td>Постоянный readability wash, opaque fallback, contrast review.</td>
+        </tr>
+        <tr>
+          <td>Большое изображение замедляет первый экран.</td>
+          <td>WebP, ограниченный размер, cache hash, явные width/height или aspect ratio.</td>
+        </tr>
+        <tr>
+          <td>Редизайн случайно скрывает глубокую аналитику.</td>
+          <td>Template tests проверяют присутствие прежних section ids и links.</td>
+        </tr>
+        <tr>
+          <td>Новые общие CSS tokens ломают Admin/Settings.</td>
+          <td>Токены additive; существующие aliases сохраняются. Smoke-check одной dense и одной form page.</td>
+        </tr>
+        <tr>
+          <td>Публичный JSON contract ломает клиентов.</td>
+          <td>Только optional additive поля, существующие поля не переименовываются и не меняют тип.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>10. Данные, безопасность и доставка</h2>
+    <ul>
+      <li><strong>DB:</strong> миграция не требуется; score вычисляется из существующих sleep fields.</li>
+      <li><strong>Auth/permissions:</strong> маршруты и tenant scoping не меняются.</li>
+      <li><strong>API:</strong> только additive optional поля в BriefingResponse.</li>
+      <li><strong>Privacy:</strong> фон не содержит health data; screenshots делаются только на synthetic review tenant.</li>
+      <li><strong>Deployment:</strong> изображение встраивается в Go binary и отдаётся same-origin, без runtime CDN.</li>
+      <li><strong>Cache:</strong> изображение участвует в существующем static hash и immutable cache policy.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>11. Rollback и последующие фазы</h2>
+    <p>
+      Rollback выполняется возвратом dashboard template/CSS/view-model и
+      прекращением заполнения новых optional response fields. Новых таблиц,
+      миграций и необратимых записей нет. Исходные Readiness и EnergyBank
+      остаются источниками истины.
+    </p>
+    <p>
+      После стабилизации dashboard отдельный план сможет перенести общие
+      primitives на metric detail/history, затем Settings/import, затем
+      Admin/login. Эта реализация не должна незаметно расширяться на эти
+      страницы.
+    </p>
+  </section>
+
+  <section>
+    <h2>12. Предположения и открытые вопросы</h2>
+    <ul>
+      <li>
+        Используется утверждённый morning-meadow visual; перед включением
+        исходник оптимизируется в WebP без изменения композиции.
+      </li>
+      <li>
+        В hero показывается дата data frame из briefing. Относительное
+        «обновлено N минут назад» выводится только если
+        <code>GetLatestMetricDate</code> успешно вернул timestamp; иначе строка
+        не фабрикуется.
+      </li>
+      <li>
+        Qualitative sleep bands остаются: 80–100 restorative, 60–79 good,
+        40–59 mixed, 0–39 poor. Это UX labels существующей формулы, не диагноз.
+      </li>
+      <li>
+        Первый выпуск меняет только dashboard composition; общие токены
+        проектируются с учётом будущих страниц, но не применяются к ним
+        массово.
+      </li>
+    </ul>
+    <p class="callout">
+      Неразрешённых вопросов, блокирующих начало реализации после одобрения
+      этого плана, нет.
+    </p>
+  </section>
+
+  <section class="approval">
+    <h2>13. Approval gate</h2>
+    <p>
+      Gate пройден: пользователь явно одобрил план и реализацию. Production-код
+      изменён только в изолированной ветке <code>codex/friendly-health-dashboard</code>;
+      commit, push и merge не выполнялись.
+    </p>
+  </section>
+
+  <section class="good">
+    <h2>14. Фактический результат реализации</h2>
+    <h3>Что изменено</h3>
+    <ul>
+      <li>
+        Добавлен единый консервативный <code>DashboardTodayGuidance</code>,
+        вычисляемый после EnergyBank override и illness safety cap. Медицински
+        значимая причина cap не перезаписывается менее важным missing/stale
+        состоянием.
+      </li>
+      <li>
+        Существующая формула <code>SleepQuality</code> стала источником
+        breakdown: duration, continuity, structure и confidence. Partial или
+        missing сон не превращается в точный нулевой score; stale REM и другие
+        stage-сигналы участвуют в confidence.
+      </li>
+      <li>
+        Dashboard получил пейзажный Today hero, один план на день и общий SVG
+        gauge partial. После обратной связи готовность показывается только в
+        hero; ниже остались Energy и Sleep Quality.
+      </li>
+      <li>
+        Старые readiness/energy sparklines, hourly EnergyBank chart,
+        methodology badges и EnergyBank components сохранены в компактном
+        раскрываемом блоке «Детали».
+      </li>
+      <li>
+        Добавлены named dashboard view model, no-data onboarding,
+        partial/missing sleep states, EN/RU/SR labels и accessibility fallbacks.
+      </li>
+      <li>
+        Статический обработчик теперь бинарно-safe и определяет MIME по
+        расширению. Утверждённый фон оптимизирован в WebP (около 75 KB),
+        встроен в Go binary и участвует в существующем static hash.
+      </li>
+      <li>
+        Для подготовки WebP локально установлены Homebrew packages
+        <code>webp</code> и <code>libtiff</code> с их зависимостями.
+      </li>
+    </ul>
+
+    <h3>Фактические проверки</h3>
+    <pre>GOCACHE=/private/tmp/health-friendly-dashboard-gocache \
+CGO_ENABLED=0 go test ./... -count=1
+# PASS: все Go packages
+
+GOCACHE=/private/tmp/health-friendly-dashboard-gocache \
+CGO_ENABLED=0 make build
+# PASS: bin/server
+
+git diff --check
+# PASS</pre>
+    <ul>
+      <li>
+        Browser QA на 1440, 375 и 320 px: горизонтального overflow нет;
+        SVG и square wrapper имеют одинаковые размеры.
+      </li>
+      <li>
+        Измеренное смещение центра progress circle относительно frame:
+        0 px с субпиксельной погрешностью рендеринга менее 0.001 px.
+      </li>
+      <li>
+        Full fixture: три круга всего — readiness hero, energy, sleep.
+        Partial sleep: sleep circle отсутствует, показано объяснение.
+        No data: gauge отсутствуют, показан onboarding.
+      </li>
+      <li>
+        Визуальная проверка обнаружила и исправила конфликт специфичности
+        старого <code>#hero-section</code>, который добавлял чёрную рамку и
+        неверную раскладку новому hero. Регрессия закреплена тестом.
+      </li>
+      <li>Console ошибок preview не содержит.</li>
+    </ul>
+
+    <h3>Известные ограничения и рекомендации</h3>
+    <ul>
+      <li>
+        Отдельные screenshots для 768 и 1024 px и ручной dark-mode capture в
+        этой итерации не выполнялись; responsive/dark CSS покрыт структурно,
+        но эти состояния стоит пройти перед production deploy.
+      </li>
+      <li>
+        Визуальные fixtures были синтетическими и не делали записей в БД.
+        Исторические charts сохранены структурно, но не наполнялись live API
+        во время статического preview.
+      </li>
+      <li>
+        Dashboard всё ещё работает на embedded Go templates и глобальном CSS.
+        Конфликт <code>#hero-section</code> подтвердил, что дальнейший
+        интерфейсный редизайн лучше вынести в отдельный план миграции на
+        TypeScript frontend build с поэтапным переносом маршрутов.
+      </li>
+      <li>
+        Rollback остаётся файловым: новых таблиц, миграций и необратимых
+        записей нет.
+      </li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>

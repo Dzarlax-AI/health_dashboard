@@ -9,6 +9,15 @@ var en = LangStrings{
 	"tip_fair":          "Some deviation from your norm. Moderate activity is a good choice.",
 	"tip_low":           "Focus on recovery: hydrate, rest, and avoid intense exercise.",
 
+	// Dashboard single-guidance contract.
+	"dashboard_guidance_summary_push_hard":        "You have room for a challenging day.",
+	"dashboard_guidance_summary_moderate":         "Keep today comfortably active.",
+	"dashboard_guidance_summary_active_recovery":  "Choose gentle movement and recovery.",
+	"dashboard_guidance_summary_rest":             "Give recovery priority today.",
+	"dashboard_guidance_reason_readiness_pending": "Recovery signals are still settling, so the recommendation stays conservative.",
+	"dashboard_guidance_reason_sleep_partial":     "Sleep duration is available, but stage quality is still being refined.",
+	"dashboard_guidance_reason_sleep_low":         "Sleep evidence is missing or low-confidence, so the recommendation stays conservative.",
+
 	// Per-section status labels (BriefingSection.Status) — surfaced via
 	// EnrichLabels (internal/health/labels.go) so iOS / other consumers
 	// don't maintain a parallel i18n table for the good/fair/low enum.

@@ -57,6 +57,7 @@ func ComputeBriefing(d RawMetrics, lang string) *BriefingResponse {
 		Insights:              computeInsights(d, activitySec, readinessScore, ls),
 		Alerts:                computeAlerts(d, ls),
 		Sleep:                 computeSleepAnalysis(d),
+		SleepQuality:          computeDashboardSleepQuality(d),
 		MetricCards:           metricCards,
 	}
 
@@ -74,6 +75,40 @@ func ComputeBriefing(d RawMetrics, lang string) *BriefingResponse {
 	resp.EnergyBank = computeLegacyEnergyBank(d, resp.ReadinessScore, headline, ls)
 
 	return resp
+}
+
+func computeDashboardSleepQuality(d RawMetrics) *SleepQualityBreakdown {
+	if d.ReadinessEvidence == nil {
+		return ComputeSleepQualityBreakdown(nil, nil, nil, nil, ReadinessComponentEvidence{})
+	}
+	e := d.ReadinessEvidence
+	qualityEvidence := e.SleepQuality
+	for _, component := range []ReadinessComponentEvidence{
+		e.SleepDuration,
+		e.SleepDeep,
+		e.SleepREM,
+		e.SleepAwake,
+	} {
+		if !component.Present || component.Value == nil {
+			qualityEvidence.Present = false
+			qualityEvidence.Freshness = ReadinessFreshnessMissing
+			break
+		}
+		if component.Freshness == ReadinessFreshnessStale {
+			qualityEvidence.Freshness = ReadinessFreshnessStale
+			qualityEvidence.Confidence = ReadinessConfidenceProvisional
+		}
+		if component.Confidence == ReadinessConfidenceLow {
+			qualityEvidence.Confidence = ReadinessConfidenceLow
+		}
+	}
+	return ComputeSleepQualityBreakdown(
+		e.SleepDuration.Value,
+		e.SleepDeep.Value,
+		e.SleepREM.Value,
+		e.SleepAwake.Value,
+		qualityEvidence,
+	)
 }
 
 func computeReadinessScore(d RawMetrics, ls LangStrings) (score int, label, tip string) {
