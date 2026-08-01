@@ -261,7 +261,7 @@ func ComputeSleepQualityBreakdown(
     Summary    string    `json:"summary"`    // one actionable sentence
     Reason     string    `json:"reason"`     // concise supporting evidence
     Confidence string    `json:"confidence"` // final | provisional | low
-    UpdatedAt  time.Time `json:"updated_at,omitempty"`
+    UpdatedAt  *time.Time `json:"updated_at,omitempty"` // nil until successful processing
 }
 
 func ResolveDashboardTodayGuidance(
@@ -831,6 +831,268 @@ CGO_ENABLED=0 go test ./internal/health ./internal/storage ./internal/ui -count=
       <li>
         Rollback остаётся обратимым: новых таблиц и необратимых записей нет;
         optional partial index удаляется независимой DDL-командой.
+      </li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>15. План закрытия повторного review</h2>
+    <p class="callout">
+      Этот раздел относится только к замечаниям, появившимся после коммита
+      <code>6f74845</code>. Пользователь явно одобрил follow-up plan; изменения
+      реализованы и проверены локально; этот implementation record входит в
+      follow-up commit. Deployment не выполнялся.
+    </p>
+
+    <h3>Причина follow-up: поведение до исправления</h3>
+    <ul>
+      <li>
+        Контракт в этом HTML всё ещё показывает
+        <code>DashboardTodayGuidance.UpdatedAt</code> как
+        <code>time.Time</code>, хотя Go-контракт уже использует nullable
+        <code>*time.Time</code>.
+      </li>
+      <li>
+        <code>idx_health_records_completed_processed_at</code> сейчас входит в
+        <code>EnsureIndexesContext</code>. Обычный <code>CREATE INDEX</code>
+        выполняется через startup DDL transaction и после получения lock может
+        блокировать записи в <code>health_records</code> на всё время build.
+      </li>
+      <li>
+        Индекс пока не входит в exact tenant schema contract v4, поэтому fleet
+        audit не доказывает его наличие и точное partial predicate.
+      </li>
+      <li>
+        Три теста проверяют новую логику недостаточно строго: guidance reasons
+        не закреплены для всех precedence branches, индекс проверяется только
+        по имени, а <code>SleepCore</code> использует то же fixture-значение,
+        что и deep sleep.
+      </li>
+    </ul>
+
+    <h3>Желаемое поведение и выбранный migration path</h3>
+    <p>
+      Индекс становится частью нового exact schema contract. Runtime startup
+      только проверяет его наличие и не пытается строить тяжёлый индекс.
+      Existing tenants получают индекс через authoritative
+      <code>tenant_isolation --mode migrate-contract</code>, который официальный
+      deploy gate запускает после остановки application service. Поэтому для
+      этого проекта выбирается deployment-only offline build, а не
+      <code>CREATE INDEX CONCURRENTLY</code>: существующий maintenance-window
+      contract уже исключает live tenant writes и проверяется deployment tests.
+      New tenant provisioning создаёт индекс до активации tenant и до появления
+      его трафика.
+    </p>
+
+    <h3>Предполагаемые изменения файлов</h3>
+    <ul>
+      <li>
+        <code>internal/storage/indexes.go</code> — убрать индекс из startup
+        списка и выделить deployment/provisioning-only ensure path.
+      </li>
+      <li>
+        <code>internal/storage/schema_contract.go</code> и contract tests —
+        объявить точное определение partial index и поднять contract version.
+      </li>
+      <li>
+        <code>internal/tenants/contract_migration.go</code>,
+        <code>internal/tenants/migration.go</code> и
+        <code>internal/tenants/provisioner.go</code> — применять offline index
+        только в остановленном fleet migration или до активации нового tenant.
+      </li>
+      <li>
+        <code>internal/storage/indexes_test.go</code> и schema-contract
+        integration tests — различить runtime verification и explicit migration,
+        проверить keys, sort direction и predicate.
+      </li>
+      <li>
+        <code>internal/health/dashboard_guidance_test.go</code> и
+        <code>internal/storage/readiness_evidence_test.go</code> — усилить
+        reason precedence и независимость core/deep fixtures.
+      </li>
+      <li>
+        Этот HTML, design record и при необходимости
+        <code>docs/TENANT_ISOLATION_RUNBOOK.md</code> — синхронизировать nullable
+        API contract и deployment-only index invariant.
+      </li>
+    </ul>
+
+    <h3>Шаги реализации</h3>
+    <ol>
+      <li>
+        Сначала добавить failing tests: startup не строит отсутствующий тяжёлый
+        индекс; explicit migration/provisioning строят; contract audit отвергает
+        отсутствие или неверное определение.
+      </li>
+      <li>
+        Вынести DDL индекса из <code>EnsureIndexesContext</code> в отдельный
+        метод, доступный migration/provisioning paths. Не запускать его из
+        <code>cmd/server</code>.
+      </li>
+      <li>
+        Добавить индекс с keys <code>processed_at DESC</code> и predicate
+        <code>processing_status = 'complete' AND processed_at IS NOT NULL</code>
+        в schema manifest; поднять contract version и checksum ожидаемым
+        механизмом.
+      </li>
+      <li>
+        Подключить новый ensure до финальной contract verification в fleet
+        migration и tenant provisioning; сохранить idempotency и fail-closed
+        семантику.
+      </li>
+      <li>
+        Исправить nullable документацию и три review test gaps без изменения
+        пользовательской формулы или UI.
+      </li>
+      <li>
+        Выполнить targeted, full, DB integration и deployment-gate проверки,
+        затем обновить этот раздел фактическими результатами.
+      </li>
+    </ol>
+
+    <h3>Влияние</h3>
+    <ul>
+      <li>
+        <strong>Data/API:</strong> данные не переписываются; JSON API остаётся
+        прежним, <code>updated_at</code> по-прежнему optional.
+      </li>
+      <li>
+        <strong>Multi-tenant:</strong> contract version изменится для всех
+        tenant schemas; перед стартом нового image обязателен fleet migration и
+        audit из того же immutable digest.
+      </li>
+      <li>
+        <strong>Deployment:</strong> новый UI по-прежнему не деплоится этим
+        follow-up. Когда deployment будет отдельно одобрен, используется только
+        существующий stop → migrate → audit → start → ready → audit gate.
+      </li>
+      <li>
+        <strong>UX:</strong> визуального изменения нет; исправления повышают
+        миграционную безопасность и точность regression tests.
+      </li>
+    </ul>
+
+    <h3>План проверок</h3>
+    <pre>git diff --check
+GOCACHE=/private/tmp/health-friendly-dashboard-go-cache CGO_ENABLED=0 \
+  go test ./internal/health ./internal/storage ./internal/tenants ./cmd/tenant_isolation -count=1
+GOCACHE=/private/tmp/health-friendly-dashboard-go-cache CGO_ENABLED=0 \
+  go test ./... -count=1
+GOCACHE=/private/tmp/health-friendly-dashboard-go-cache CGO_ENABLED=0 make build
+HEALTH_DB_TESTS=1 go test ./internal/storage ./internal/tenants -count=1
+bash scripts/deploy-tenant-schema-gate_test.sh</pre>
+    <ul>
+      <li>Contract migration создаёт индекс на каждом tenant и проходит audit.</li>
+      <li>Повторный migrate-contract ничего не перестраивает и остаётся успешным.</li>
+      <li>Startup с missing index завершается fail-closed без попытки тяжёлого DDL.</li>
+      <li>New tenant получает индекс до перехода в active state.</li>
+      <li>После миграции dashboard freshness query использует точный partial index.</li>
+    </ul>
+
+    <h3>Риски, rollback и открытые вопросы</h3>
+    <ul>
+      <li>
+        Ошибка порядка вызовов может запустить verification до index build или
+        активировать tenant без полного contract; integration tests должны
+        закрепить оба порядка.
+      </li>
+      <li>
+        Contract version bump требует миграции всего exact fleet. Частичный
+        успех оставляет release gate закрытым и сервис остановленным, как уже
+        предусмотрено runbook.
+      </li>
+      <li>
+        Rollback к предыдущему image допустим только по существующей
+        deployment процедуре. Сам индекс additive и backward-compatible; при
+        необходимости его можно удалить отдельной reviewed DDL после rollback.
+      </li>
+      <li>
+        Блокирующих продуктовых вопросов нет. Техническое решение зафиксировано:
+        offline build под существующим maintenance window, без нового online
+        migration subsystem.
+      </li>
+    </ul>
+  </section>
+
+  <section class="good">
+    <h2>16. Implementation record повторного review</h2>
+    <p>
+      Gate пройден явным сообщением пользователя «Погнали». Реализация сохранила
+      утверждённую архитектуру: schema contract поднят с v4 до v5; тяжёлый
+      partial index исключён из runtime <code>EnsureIndexesContext</code> и
+      создаётся только через <code>MigrateSchemaContractContext</code>.
+      Stopped-service fleet migration и pre-activation provisioning используют
+      полный migration path; startup выполняет безопасные ensures, затем
+      fail-closed verification.
+    </p>
+    <ul>
+      <li>
+        Exact contract проверяет имя, таблицу, btree key
+        <code>processed_at DESC</code> и predicate
+        <code>processing_status = 'complete' AND processed_at IS NOT NULL</code>.
+      </li>
+      <li>
+        Guidance tests теперь закрепляют reason каждой precedence branch;
+        sleep evidence использует независимые deep/core fixtures.
+      </li>
+      <li>
+        <code>UpdatedAt</code> синхронизирован как nullable
+        <code>*time.Time</code> в Go-контракте, design record и этом плане.
+      </li>
+      <li>
+        <code>AGENTS.md</code>, <code>CLAUDE.md</code> и tenant isolation
+        runbook фиксируют запрет блокирующих index builds в runtime startup.
+      </li>
+      <li>
+        Contract verifier теперь сохраняет точные missing-column identifiers
+        при проверке column definitions вместо преждевременной общей ошибки;
+        integration test использует caller-controlled deadline для удалённой БД.
+      </li>
+    </ul>
+    <h3>Проверки</h3>
+    <ul>
+      <li>
+        RED зафиксирован до реализации: новые tests не компилировались без
+        migration methods и deployment index definition.
+      </li>
+      <li>
+        Targeted health/storage/tenant tests прошли после реализации.
+      </li>
+      <li>
+        Полный <code>go test ./...</code> прошёл вне sandbox, где разрешены
+        локальные <code>httptest</code> sockets.
+      </li>
+      <li><code>go vet ./...</code> и <code>make build</code> прошли.</li>
+      <li>
+        На финальном diff три ключевых PostgreSQL integration scenarios прошли
+        за 161.262 s: runtime skip + fail-closed → explicit migration,
+        legacy-column upgrade и rejection неверного index definition.
+      </li>
+      <li>
+        Hardened deployment-gate fake tests прошли после потоковой нормализации
+        существующих CRLF; repository scripts не переписывались.
+      </li>
+      <li><code>git diff --check</code> прошёл.</li>
+    </ul>
+    <h3>Известные ограничения</h3>
+    <ul>
+      <li>
+        Полный opt-in storage DB suite на удалённой общей PostgreSQL не завершил
+        зелёный прогон: два EnergyBank assertions и один readiness-monitoring
+        assertion воспроизводятся отдельно, а широкий suite достиг
+        10-минутного timeout. Точный предыдущий SHA <code>6f74845</code> также
+        не проходит этот opt-in набор: shared fixture останавливается на
+        15-секундном schema-verification timeout. Новые DDL/contract scenarios
+        прогнаны отдельно и прошли.
+      </li>
+      <li>
+        Полная tenant identity DB lane требует отдельных disposable
+        <code>ADMIN_TEST_DSN</code> и <code>REGISTRY_TEST_DSN</code>, которых в
+        локальном окружении нет; её должен подтвердить обязательный CI PR.
+      </li>
+      <li>
+        GitHub replies/thread resolution и deployment остаются отдельными
+        действиями.
       </li>
     </ul>
   </section>

@@ -18,7 +18,7 @@ import (
 // SchemaContractVersion is bumped whenever the declared tenant schema
 // contract changes. Existing tenants are not current until both the permanent
 // marker and registry metadata carry this version and checksum.
-const SchemaContractVersion = 4
+const SchemaContractVersion = 5
 
 // TenantIdentityTable is the permanent marker shared by clean provisioning
 // and existing-tenant migrations. The provisioning marker is intentionally
@@ -106,7 +106,7 @@ type ContractCatalog interface {
 
 var schemaContract = ContractManifest{
 	Tables:  []string{"health_records", "metric_points", "import_runs", "import_run_coverage", "import_stage_points", "import_stage_workouts", "minute_metrics", "hourly_metrics", "daily_scores", "settings", "notification_deliveries", "workouts", "ai_briefings", "ai_briefing_blocks", "energy_snapshots", "source_epochs", "target_snapshots", "feature_snapshots", "naive_baselines", "chip_calibrations", "subjective_checkins", "context_prompt_interactions", "auth_sessions"},
-	Indexes: []string{"idx_auth_sessions_expires", "idx_chip_calibrations_sub_kind", "idx_context_prompt_one_sent_per_day", "idx_context_prompt_status_expires", "idx_energy_snapshots_date", "idx_energy_snapshots_flags", "idx_energy_snapshots_ts", "idx_feature_snapshots_sub_date", "idx_hourly_date", "idx_hourly_metric_date", "idx_import_stage_points_coverage", "idx_import_stage_points_dedup", "idx_import_stage_workouts_dedup", "idx_import_stage_workouts_synthetic", "idx_naive_baselines_sub_kind_base_date", "idx_points_date", "idx_points_metric_date", "idx_points_quality_metric", "idx_source_epochs_active", "idx_target_snapshots_source_epoch", "idx_target_snapshots_sub_kind_date", "idx_workouts_name", "idx_workouts_start_time", "uq_source_epochs_kind_start"},
+	Indexes: []string{"idx_auth_sessions_expires", "idx_chip_calibrations_sub_kind", "idx_context_prompt_one_sent_per_day", "idx_context_prompt_status_expires", "idx_energy_snapshots_date", "idx_energy_snapshots_flags", "idx_energy_snapshots_ts", "idx_feature_snapshots_sub_date", "idx_health_records_completed_processed_at", "idx_hourly_date", "idx_hourly_metric_date", "idx_import_stage_points_coverage", "idx_import_stage_points_dedup", "idx_import_stage_workouts_dedup", "idx_import_stage_workouts_synthetic", "idx_naive_baselines_sub_kind_base_date", "idx_points_date", "idx_points_metric_date", "idx_points_quality_metric", "idx_source_epochs_active", "idx_target_snapshots_source_epoch", "idx_target_snapshots_sub_kind_date", "idx_workouts_name", "idx_workouts_start_time", "uq_source_epochs_kind_start"},
 	IndexDefinitions: []IndexDefinition{
 		{Name: "idx_auth_sessions_expires", Table: "auth_sessions", AccessMethod: "btree", Keys: []string{"expires_at"}},
 		{Name: "idx_chip_calibrations_sub_kind", Table: "chip_calibrations", AccessMethod: "btree", Keys: []string{"sub_score", "target_kind", "computed_at desc"}},
@@ -116,6 +116,7 @@ var schemaContract = ContractManifest{
 		{Name: "idx_energy_snapshots_flags", Table: "energy_snapshots", AccessMethod: "gin", Keys: []string{"flags"}},
 		{Name: "idx_energy_snapshots_ts", Table: "energy_snapshots", AccessMethod: "btree", Keys: []string{"ts_bucket desc"}},
 		{Name: "idx_feature_snapshots_sub_date", Table: "feature_snapshots", AccessMethod: "btree", Keys: []string{"sub_score", "date desc"}},
+		{Name: "idx_health_records_completed_processed_at", Table: "health_records", AccessMethod: "btree", Keys: []string{"processed_at desc"}, Predicate: "processing_status = 'complete' and processed_at is not null"},
 		{Name: "idx_hourly_date", Table: "hourly_metrics", AccessMethod: "btree", Keys: []string{"substring(hour,1,10)"}},
 		{Name: "idx_hourly_metric_date", Table: "hourly_metrics", AccessMethod: "btree", Keys: []string{"metric_name", "substring(hour,1,10)"}},
 		{Name: "idx_import_stage_points_coverage", Table: "import_stage_points", AccessMethod: "btree", Keys: []string{"import_run_id", "metric_name", "source", "local_date"}},
@@ -532,10 +533,39 @@ func (s *DB) EnsureSchemaContract() error {
 	return s.EnsureSchemaContractContext(ctx)
 }
 
-// EnsureSchemaContractContext runs the full additive contract migration under
-// the caller's cancellation and deadline. No nested Ensure operation detaches
-// onto context.Background.
+// EnsureSchemaContractContext applies startup-safe additive operations and
+// verifies the declared contract. It deliberately does not build deployment
+// indexes that can block tenant writes; a missing deployment index therefore
+// fails closed and requires the stopped-service fleet migration.
 func (s *DB) EnsureSchemaContractContext(ctx context.Context) error {
+	if err := s.ensureSchemaContractObjectsContext(ctx); err != nil {
+		return err
+	}
+	return s.VerifySchemaContractContext(ctx)
+}
+
+// MigrateSchemaContract applies the complete tenant contract while the tenant
+// is offline or not yet active.
+func (s *DB) MigrateSchemaContract() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	return s.MigrateSchemaContractContext(ctx)
+}
+
+// MigrateSchemaContractContext is the explicit deployment/provisioning path.
+// The caller must guarantee that no tenant traffic is active while regular
+// deployment indexes are built.
+func (s *DB) MigrateSchemaContractContext(ctx context.Context) error {
+	if err := s.ensureSchemaContractObjectsContext(ctx); err != nil {
+		return err
+	}
+	if err := s.EnsureDeploymentIndexesContext(ctx); err != nil {
+		return err
+	}
+	return s.VerifySchemaContractContext(ctx)
+}
+
+func (s *DB) ensureSchemaContractObjectsContext(ctx context.Context) error {
 	if err := s.EnsureAllTablesContext(ctx); err != nil {
 		return err
 	}
@@ -563,7 +593,7 @@ func (s *DB) EnsureSchemaContractContext(ctx context.Context) error {
 	if err := s.EnsureAuthSessionsTableContext(ctx); err != nil {
 		return err
 	}
-	return s.VerifySchemaContractContext(ctx)
+	return nil
 }
 
 // VerifySchemaContract checks the manifest compiled into this binary.
@@ -579,6 +609,14 @@ func (s *DB) VerifySchemaContract() error {
 func (s *DB) VerifySchemaContractContext(ctx context.Context) error {
 	manifest := SchemaContractManifest()
 	var missing []string
+	missingSet := make(map[string]struct{})
+	addMissing := func(item string) {
+		if _, exists := missingSet[item]; exists {
+			return
+		}
+		missingSet[item] = struct{}{}
+		missing = append(missing, item)
+	}
 	for _, name := range manifest.Tables {
 		var relkind string
 		if err := s.pool.QueryRow(ctx, `
@@ -586,7 +624,7 @@ func (s *DB) VerifySchemaContractContext(ctx context.Context) error {
 			  FROM pg_class c
 			  JOIN pg_namespace n ON n.oid=c.relnamespace
 			 WHERE n.nspname=current_schema() AND c.relname=$1`, name).Scan(&relkind); errors.Is(err, pgx.ErrNoRows) {
-			missing = append(missing, "table:"+name)
+			addMissing("table:" + name)
 			continue
 		} else if err != nil {
 			return fmt.Errorf("verify table %s: %w", name, err)
@@ -624,7 +662,7 @@ func (s *DB) VerifySchemaContractContext(ctx context.Context) error {
 			  JOIN pg_am am ON am.oid=ic.relam
 			 WHERE ns.nspname=current_schema() AND ic.relname=$1`, expected.Name).Scan(&table, &unique, &valid, &ready, &method, &keys, &predicate)
 		if errors.Is(err, pgx.ErrNoRows) {
-			missing = append(missing, "index:"+expected.Name)
+			addMissing("index:" + expected.Name)
 			continue
 		}
 		if err != nil {
@@ -644,7 +682,7 @@ func (s *DB) VerifySchemaContractContext(ctx context.Context) error {
 				return fmt.Errorf("verify column %s.%s: %w", table, name, err)
 			}
 			if !ok {
-				missing = append(missing, "column:"+table+"."+name)
+				addMissing("column:" + table + "." + name)
 			}
 		}
 	}
@@ -652,7 +690,8 @@ func (s *DB) VerifySchemaContractContext(ctx context.Context) error {
 		var dataType, udtName, isNullable, defaultValue string
 		err := s.pool.QueryRow(ctx, `SELECT data_type,udt_name,is_nullable,COALESCE(column_default,'') FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=$1 AND column_name=$2`, definition.Table, definition.Column).Scan(&dataType, &udtName, &isNullable, &defaultValue)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return &SchemaContractMismatchError{Reason: "required column definition is missing", Cause: err}
+			addMissing("column:" + definition.Table + "." + definition.Column)
+			continue
 		}
 		if err != nil {
 			return fmt.Errorf("verify column definition %s.%s: %w", definition.Table, definition.Column, err)

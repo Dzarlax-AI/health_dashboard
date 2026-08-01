@@ -25,6 +25,18 @@ type columnRef struct {
 	column string
 }
 
+func deploymentIndexMigrations() []indexMigration {
+	return []indexMigration{
+		// Supports the dashboard "updated" timestamp without scanning the
+		// append-only raw payload table or treating pending/failed ingestion
+		// as completed health data. This index is deliberately excluded from
+		// startup DDL: the regular CREATE INDEX may block health ingestion for
+		// the duration of the build. The fleet migration runs with the service
+		// stopped, while tenant provisioning runs before activation.
+		{"idx_health_records_completed_processed_at", `CREATE INDEX IF NOT EXISTS idx_health_records_completed_processed_at ON health_records (processed_at DESC) WHERE processing_status = 'complete' AND processed_at IS NOT NULL`},
+	}
+}
+
 const (
 	ddlColumnStatementTimeout = 15 * time.Second
 	ddlIndexStatementTimeout  = 5 * time.Minute
@@ -137,11 +149,6 @@ func (s *DB) EnsureIndexesContext(ctx context.Context) error {
 	}
 
 	indexes := []indexMigration{
-		// Supports the dashboard "updated" timestamp without scanning the
-		// append-only raw payload table or treating pending/failed ingestion
-		// as completed health data.
-		{"idx_health_records_completed_processed_at", `CREATE INDEX IF NOT EXISTS idx_health_records_completed_processed_at ON health_records (processed_at DESC) WHERE processing_status = 'complete' AND processed_at IS NOT NULL`},
-
 		// Partial index covers the hot path — baseline reads filter quality='ok'.
 		// Defined inline (not in the migration block) because it depends on the
 		// quality column existing first.
@@ -160,7 +167,18 @@ func (s *DB) EnsureIndexesContext(ctx context.Context) error {
 		{"idx_points_metric_date", `CREATE INDEX IF NOT EXISTS idx_points_metric_date ON metric_points (metric_name, SUBSTRING(date,1,10))`},
 	}
 	indexes = append(indexes, importStageIndexMigrations()...)
+	return s.ensureIndexMigrationsContext(ctx, indexes)
+}
 
+// EnsureDeploymentIndexesContext creates indexes whose regular PostgreSQL
+// build may block tenant writes. Callers must guarantee that the tenant is not
+// serving traffic: the fleet release gate stops the application first, and
+// provisioning invokes this before tenant activation.
+func (s *DB) EnsureDeploymentIndexesContext(ctx context.Context) error {
+	return s.ensureIndexMigrationsContext(ctx, deploymentIndexMigrations())
+}
+
+func (s *DB) ensureIndexMigrationsContext(ctx context.Context, indexes []indexMigration) error {
 	existingIndexes, err := s.existingIndexesContext(ctx, indexes)
 	if err != nil {
 		return fmt.Errorf("ensure index catalog check: %w", err)

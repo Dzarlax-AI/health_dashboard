@@ -8,6 +8,7 @@ import (
 )
 
 func TestResolveDashboardTodayGuidance_Precedence(t *testing.T) {
+	ls := GetStrings("en")
 	tests := []struct {
 		name       string
 		energy     *EnergyBank
@@ -25,6 +26,7 @@ func TestResolveDashboardTodayGuidance_Precedence(t *testing.T) {
 			sleep:      finalSleepQuality(88),
 			wantAction: "push_hard",
 			wantConf:   ReadinessConfidenceFinal,
+			wantReason: "Bank and HRV support a hard day.",
 		},
 		{
 			name:       "provisional readiness caps push hard",
@@ -33,6 +35,7 @@ func TestResolveDashboardTodayGuidance_Precedence(t *testing.T) {
 			sleep:      finalSleepQuality(88),
 			wantAction: "moderate",
 			wantConf:   ReadinessConfidenceProvisional,
+			wantReason: ls["dashboard_guidance_reason_readiness_pending"],
 		},
 		{
 			name:       "partial sleep caps push hard",
@@ -41,6 +44,7 @@ func TestResolveDashboardTodayGuidance_Precedence(t *testing.T) {
 			sleep:      &SleepQualityBreakdown{DurationPct: 88, Confidence: SleepQualityConfidencePartial},
 			wantAction: "moderate",
 			wantConf:   ReadinessConfidenceProvisional,
+			wantReason: ls["dashboard_guidance_reason_sleep_partial"],
 		},
 		{
 			name:       "missing sleep uses the low-confidence reason",
@@ -49,7 +53,7 @@ func TestResolveDashboardTodayGuidance_Precedence(t *testing.T) {
 			sleep:      &SleepQualityBreakdown{Confidence: SleepQualityConfidenceMissing},
 			wantAction: "moderate",
 			wantConf:   ReadinessConfidenceLow,
-			wantReason: GetStrings("en")["dashboard_guidance_reason_sleep_low"],
+			wantReason: ls["dashboard_guidance_reason_sleep_low"],
 		},
 		{
 			name:       "moderate illness wins",
@@ -59,6 +63,7 @@ func TestResolveDashboardTodayGuidance_Precedence(t *testing.T) {
 			sleep:      finalSleepQuality(88),
 			wantAction: "active_recovery",
 			wantConf:   ReadinessConfidenceProvisional,
+			wantReason: "Bank is charged.",
 		},
 		{
 			name:       "high illness forces rest",
@@ -68,6 +73,7 @@ func TestResolveDashboardTodayGuidance_Precedence(t *testing.T) {
 			sleep:      finalSleepQuality(88),
 			wantAction: "rest",
 			wantConf:   ReadinessConfidenceLow,
+			wantReason: "Bank is charged.",
 		},
 		{
 			name:       "existing rest is never promoted",
@@ -76,6 +82,7 @@ func TestResolveDashboardTodayGuidance_Precedence(t *testing.T) {
 			sleep:      finalSleepQuality(88),
 			wantAction: "rest",
 			wantConf:   ReadinessConfidenceFinal,
+			wantReason: "Bank is depleted.",
 		},
 	}
 
@@ -91,7 +98,7 @@ func TestResolveDashboardTodayGuidance_Precedence(t *testing.T) {
 			if got.Confidence != tt.wantConf {
 				t.Fatalf("confidence = %q, want %q", got.Confidence, tt.wantConf)
 			}
-			if tt.wantReason != "" && got.Reason != tt.wantReason {
+			if got.Reason != tt.wantReason {
 				t.Fatalf("reason = %q, want %q", got.Reason, tt.wantReason)
 			}
 			if got.Label == "" || got.Summary == "" || got.Reason == "" {

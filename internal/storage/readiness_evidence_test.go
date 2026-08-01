@@ -107,6 +107,7 @@ func TestBuildReadinessEvidence_SleepStagesStayDateAligned(t *testing.T) {
 	sleep := 7.5
 	deep := 1.0
 	rem := 1.5
+	core := 4.6
 	awake := 0.4
 	latest := dailyScoreRow{
 		date:  "2026-06-03",
@@ -130,7 +131,7 @@ func TestBuildReadinessEvidence_SleepStagesStayDateAligned(t *testing.T) {
 	}
 
 	fresh := buildReadinessEvidence("2026-06-04", dailyScoreRow{date: "2026-06-04"}, &dayRow{
-		slp: &sleep, deep: &deep, rem: &rem, core: &deep, awake: &awake,
+		slp: &sleep, deep: &deep, rem: &rem, core: &core, awake: &awake,
 	})
 	for name, component := range map[string]health.ReadinessComponentEvidence{
 		"duration": fresh.SleepDuration,
@@ -142,5 +143,8 @@ func TestBuildReadinessEvidence_SleepStagesStayDateAligned(t *testing.T) {
 		if !component.Present || component.SourceDate != "2026-06-04" {
 			t.Fatalf("%s same-day evidence = %+v", name, component)
 		}
+	}
+	if fresh.SleepCore.Value == nil || *fresh.SleepCore.Value != core {
+		t.Fatalf("core value = %v, want %v", fresh.SleepCore.Value, core)
 	}
 }

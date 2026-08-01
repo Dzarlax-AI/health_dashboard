@@ -360,7 +360,7 @@ func (p *AdminProvisioner) assertSchemaMarker(ctx context.Context, catalog marke
 }
 
 func ensureTenantTables(db *storage.DB) error {
-	return db.EnsureSchemaContract()
+	return db.MigrateSchemaContract()
 }
 
 func (p *AdminProvisioner) tenantConfig(spec TenantSpec) (*pgxpool.Config, error) {

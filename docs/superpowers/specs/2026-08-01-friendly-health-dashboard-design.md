@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-01
 **Status:** Approved and implemented in `codex/friendly-health-dashboard`;
-review fixes in progress
+repeat-review fixes implemented and verified
 **Scope:** Main dashboard as the first implementation of an application-wide
 web design direction
 
@@ -230,7 +230,7 @@ type DashboardTodayGuidance struct {
     Summary     string // short user-facing action
     Reason      string // concise evidence explanation
     Confidence  string // final | provisional | low
-    UpdatedAt   time.Time
+    UpdatedAt   *time.Time // nil until a payload is successfully processed
 }
 ```
 
@@ -485,7 +485,10 @@ logic in JavaScript.
 
 No stored score column is needed because the score is derived from existing
 daily sleep fields. A partial index on successfully processed raw payloads
-supports the hero's last-updated timestamp.
+supports the hero's last-updated timestamp. The index is part of tenant schema
+contract v5 and is built only by stopped-service fleet migration or pre-activation
+tenant provisioning; runtime startup verifies it but never performs the
+potentially blocking build.
 
 ## Testing
 

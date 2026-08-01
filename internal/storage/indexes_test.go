@@ -1,8 +1,10 @@
 package storage
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPendingColumnMigrationsSkipsExistingColumns(t *testing.T) {
@@ -47,6 +49,26 @@ func TestPendingIndexMigrationsSkipsExistingIndexes(t *testing.T) {
 	}
 }
 
+func TestDeploymentIndexDefinition(t *testing.T) {
+	indexes := deploymentIndexMigrations()
+	if len(indexes) != 1 {
+		t.Fatalf("deployment indexes = %d, want 1", len(indexes))
+	}
+	index := indexes[0]
+	if index.name != "idx_health_records_completed_processed_at" {
+		t.Fatalf("deployment index = %q", index.name)
+	}
+	for _, fragment := range []string{
+		"processed_at DESC",
+		"processing_status = 'complete'",
+		"processed_at IS NOT NULL",
+	} {
+		if !strings.Contains(index.ddl, fragment) {
+			t.Fatalf("deployment index DDL missing %q: %s", fragment, index.ddl)
+		}
+	}
+}
+
 func TestEnsureIndexesIntegration_CreatesAndSkipsTenantDDL(t *testing.T) {
 	db, cleanup := testDB(t)
 	defer cleanup()
@@ -71,7 +93,6 @@ func TestEnsureIndexesIntegration_CreatesAndSkipsTenantDDL(t *testing.T) {
 		{table: "daily_scores", column: "sleep_unspecified"},
 	}
 	requiredIndexes := []indexMigration{
-		{name: "idx_health_records_completed_processed_at"},
 		{name: "idx_points_quality_metric"},
 		{name: "idx_hourly_date"},
 		{name: "idx_hourly_metric_date"},
@@ -117,6 +138,54 @@ func TestEnsureIndexesIntegration_CreatesAndSkipsTenantDDL(t *testing.T) {
 	db.EnsureIndexes()
 }
 
+func TestRuntimeEnsureSkipsDeploymentIndexAndMigrationCreatesIt(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	ctx := t.Context()
+	const name = "idx_health_records_completed_processed_at"
+	if _, err := db.pool.Exec(ctx, "DROP INDEX "+name); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := db.MigrateSchemaContractContext(context.Background()); err != nil {
+			t.Errorf("restore deployment index: %v", err)
+		}
+	}()
+
+	if err := db.EnsureIndexesContext(ctx); err != nil {
+		t.Fatalf("runtime index ensure: %v", err)
+	}
+	indexes, err := db.existingIndexesContext(ctx, []indexMigration{{name: name}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if indexes[name] {
+		t.Fatal("runtime index ensure built deployment-only index")
+	}
+	if err := db.EnsureSchemaContractContext(ctx); err == nil {
+		t.Fatal("runtime schema gate accepted a missing deployment index")
+	}
+	indexes, err = db.existingIndexesContext(ctx, []indexMigration{{name: name}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if indexes[name] {
+		t.Fatal("runtime schema gate built deployment-only index")
+	}
+
+	if err := db.MigrateSchemaContractContext(ctx); err != nil {
+		t.Fatalf("explicit schema migration: %v", err)
+	}
+	indexes, err = db.existingIndexesContext(ctx, []indexMigration{{name: name}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !indexes[name] {
+		t.Fatal("explicit schema migration did not build deployment index")
+	}
+}
+
 func TestEnsureIndexesIntegration_UpgradesLegacyImportRunsLeaseColumns(t *testing.T) {
 	db, cleanup := testDB(t)
 	defer cleanup()
@@ -126,7 +195,9 @@ func TestEnsureIndexesIntegration_UpgradesLegacyImportRunsLeaseColumns(t *testin
 	if _, err := db.pool.Exec(ctx, `ALTER TABLE import_runs DROP COLUMN IF EXISTS heartbeat_at, DROP COLUMN IF EXISTS lease_token`); err != nil {
 		t.Fatalf("downgrade import_runs fixture: %v", err)
 	}
-	if err := db.VerifyProvisionedSchema(); err == nil || !strings.Contains(err.Error(), "column:import_runs.heartbeat_at") || !strings.Contains(err.Error(), "column:import_runs.lease_token") {
+	verifyCtx, cancelVerify := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancelVerify()
+	if err := db.VerifyProvisionedSchemaContext(verifyCtx); err == nil || !strings.Contains(err.Error(), "column:import_runs.heartbeat_at") || !strings.Contains(err.Error(), "column:import_runs.lease_token") {
 		t.Fatalf("schema verifier did not report missing import lease columns: %v", err)
 	}
 
