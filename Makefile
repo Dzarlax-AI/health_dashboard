@@ -1,4 +1,4 @@
-.PHONY: dev build backfill backfill-force energy-backfill energy-backfill-dry tenant-isolation import docker-up docker-down test test-unit test-db-storage test-db-ui test-db-ui-fast test-db-energy test-db-energy-smoke test-db-readiness test-db-import test-db-security test-db smoke-health-post
+.PHONY: dev build backfill backfill-force energy-backfill energy-backfill-dry tenant-isolation import contract-generate contract-check docker-up docker-down test test-unit test-db-storage test-db-ui test-db-ui-fast test-db-energy test-db-energy-smoke test-db-readiness test-db-import test-db-security test-db smoke-health-post
 
 ADDR ?= :8080
 
@@ -36,6 +36,12 @@ import:
 
 tenant-isolation:
 	go run ./cmd/tenant_isolation $(ARGS)
+
+contract-generate:
+	go run ./cmd/client_contract -out contracts/openapi.json
+
+contract-check:
+	go test ./internal/api -count=1
 
 docker-up:
 	docker compose up -d --build

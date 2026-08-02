@@ -1,0 +1,1629 @@
+{
+  "components": {
+    "schemas": {
+      "AIBriefingResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "blocks": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "date": {
+            "type": "string"
+          },
+          "disabled": {
+            "type": "boolean"
+          },
+          "generating": {
+            "type": "boolean"
+          },
+          "insight": {
+            "type": "string"
+          },
+          "lang": {
+            "enum": [
+              "en",
+              "ru",
+              "sr"
+            ],
+            "type": "string"
+          },
+          "recommendation": {
+            "type": "string"
+          },
+          "recovery": {
+            "type": "string"
+          },
+          "sections": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "body": {
+                  "type": "string"
+                },
+                "header": {
+                  "type": "string"
+                },
+                "key": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "key",
+                "header",
+                "body"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "sleep": {
+            "type": "string"
+          },
+          "yesterday": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "date",
+          "lang",
+          "insight",
+          "sections",
+          "blocks",
+          "generating",
+          "disabled"
+        ],
+        "type": "object"
+      },
+      "DashboardResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "cards": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "date": {
+                  "type": "string"
+                },
+                "metric": {
+                  "type": "string"
+                },
+                "prev": {
+                  "type": "number"
+                },
+                "unit": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "metric",
+                "value",
+                "prev",
+                "unit",
+                "date"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "date": {
+            "type": "string"
+          },
+          "last_updated": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "date",
+          "last_updated",
+          "cards"
+        ],
+        "type": "object"
+      },
+      "EnergyHistoryDayResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "granularity": {
+            "enum": [
+              "day"
+            ],
+            "type": "string"
+          },
+          "points": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "capacity": {
+                  "type": "integer"
+                },
+                "current_eod": {
+                  "type": "integer"
+                },
+                "date": {
+                  "type": "string"
+                },
+                "drain": {
+                  "type": "integer"
+                },
+                "verdict": {
+                  "enum": [
+                    "push_hard",
+                    "moderate",
+                    "active_recovery",
+                    "rest"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "date",
+                "capacity",
+                "current_eod",
+                "drain",
+                "verdict"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "granularity",
+          "points"
+        ],
+        "type": "object"
+      },
+      "EnergyHistoryHourResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "formula_version": {
+            "type": "integer"
+          },
+          "granularity": {
+            "enum": [
+              "hour"
+            ],
+            "type": "string"
+          },
+          "points": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "bank": {
+                  "type": "integer"
+                },
+                "components": true,
+                "drain_delta": {
+                  "type": "integer"
+                },
+                "flags": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "restore_delta": {
+                  "type": "integer"
+                },
+                "ts": {
+                  "format": "date-time",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "ts",
+                "bank",
+                "drain_delta",
+                "restore_delta",
+                "flags"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "granularity",
+          "formula_version",
+          "points"
+        ],
+        "type": "object"
+      },
+      "HealthBriefingResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "ai_insight": {
+            "type": "string"
+          },
+          "alerts": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "metric": {
+                  "type": "string"
+                },
+                "severity": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text",
+                "severity",
+                "metric"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "context_annotations": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "baseline_avg": {
+                  "type": "number"
+                },
+                "category": {
+                  "type": "string"
+                },
+                "date": {
+                  "type": "string"
+                },
+                "detected_reason": {
+                  "type": "string"
+                },
+                "sleep_hours": {
+                  "type": "number"
+                },
+                "z_score": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "date",
+                "detected_reason",
+                "category"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "correlation": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "date": {
+                  "type": "string"
+                },
+                "hrv": {
+                  "type": "number"
+                },
+                "load": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "date",
+                "load",
+                "hrv"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "date": {
+            "type": "string"
+          },
+          "energy_bank": {
+            "additionalProperties": false,
+            "properties": {
+              "action_verdict": {
+                "enum": [
+                  "push_hard",
+                  "moderate",
+                  "active_recovery",
+                  "rest"
+                ],
+                "type": "string"
+              },
+              "capacity": {
+                "type": "integer"
+              },
+              "components": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "note": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "value",
+                    "note"
+                  ],
+                  "type": "object"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "current": {
+                "type": "integer"
+              },
+              "drain_so_far": {
+                "type": "integer"
+              },
+              "flag_details": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "description": {
+                      "type": "string"
+                    },
+                    "key": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "severity": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "key",
+                    "label",
+                    "description"
+                  ],
+                  "type": "object"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "flags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "hrv_z_raw": {
+                "type": "number"
+              },
+              "strain": {
+                "type": "integer"
+              },
+              "stress": {
+                "type": "integer"
+              },
+              "verdict_label": {
+                "type": "string"
+              },
+              "verdict_reason": {
+                "type": "string"
+              },
+              "verdict_severity": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "capacity",
+              "current",
+              "drain_so_far",
+              "strain",
+              "stress",
+              "action_verdict",
+              "verdict_reason",
+              "hrv_z_raw"
+            ],
+            "type": "object"
+          },
+          "greeting": {
+            "type": "string"
+          },
+          "headline": {
+            "additionalProperties": false,
+            "properties": {
+              "detail": {
+                "type": "string"
+              },
+              "key": {
+                "type": "string"
+              },
+              "metrics": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "baseline": {
+                      "type": "number"
+                    },
+                    "delta_abs": {
+                      "type": "number"
+                    },
+                    "delta_pct": {
+                      "type": "number"
+                    },
+                    "metric": {
+                      "type": "string"
+                    },
+                    "unit": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "number"
+                    },
+                    "z_score": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "metric",
+                    "value",
+                    "baseline",
+                    "delta_abs",
+                    "delta_pct",
+                    "z_score",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "severity": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "severity",
+              "title",
+              "detail"
+            ],
+            "type": "object"
+          },
+          "highlights": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "note": {
+                  "type": "string"
+                },
+                "trend": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "label",
+                "value",
+                "note",
+                "trend"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "illness_suspicion": {
+            "additionalProperties": false,
+            "properties": {
+              "confidence": {
+                "type": "string"
+              },
+              "date": {
+                "type": "string"
+              },
+              "experimental": {
+                "type": "boolean"
+              },
+              "pattern": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "signals": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "activity_context": {
+                      "type": "string"
+                    },
+                    "baseline": {
+                      "type": "number"
+                    },
+                    "category": {
+                      "type": "string"
+                    },
+                    "contributes": {
+                      "type": "boolean"
+                    },
+                    "delta_abs": {
+                      "type": "number"
+                    },
+                    "direction": {
+                      "type": "string"
+                    },
+                    "evidence": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string"
+                    },
+                    "method": {
+                      "type": "string"
+                    },
+                    "metric": {
+                      "type": "string"
+                    },
+                    "role": {
+                      "type": "string"
+                    },
+                    "sources": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "avg": {
+                            "type": "number"
+                          },
+                          "below_92_count": {
+                            "type": "integer"
+                          },
+                          "below_94_count": {
+                            "type": "integer"
+                          },
+                          "count": {
+                            "type": "integer"
+                          },
+                          "min": {
+                            "type": "number"
+                          },
+                          "source": {
+                            "type": "string"
+                          },
+                          "window": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "source",
+                          "count",
+                          "below_94_count",
+                          "below_92_count",
+                          "min",
+                          "avg"
+                        ],
+                        "type": "object"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "strength": {
+                      "type": "string"
+                    },
+                    "unit": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "number"
+                    },
+                    "z_score": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "metric",
+                    "kind",
+                    "role",
+                    "category",
+                    "direction",
+                    "strength",
+                    "status",
+                    "contributes",
+                    "evidence"
+                  ],
+                  "type": "object"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "stress_flags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "date",
+              "confidence",
+              "reason",
+              "experimental"
+            ],
+            "type": "object"
+          },
+          "insights": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "text": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text",
+                "type"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "metric_cards": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "badge": {
+                  "type": "string"
+                },
+                "metric": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "trend_30d_label": {
+                  "type": "string"
+                },
+                "trend_30d_pct": {
+                  "type": "number"
+                },
+                "trend_30d_status": {
+                  "type": "string"
+                },
+                "trend_7d_label": {
+                  "type": "string"
+                },
+                "trend_7d_pct": {
+                  "type": "number"
+                },
+                "trend_7d_status": {
+                  "type": "string"
+                },
+                "trend_label": {
+                  "type": "string"
+                },
+                "trend_pct": {
+                  "type": "number"
+                },
+                "trend_status": {
+                  "type": "string"
+                },
+                "unit": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "metric",
+                "value",
+                "unit",
+                "trend_pct",
+                "trend_label",
+                "trend_status",
+                "trend_7d_pct",
+                "trend_30d_pct"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "overall": {
+            "enum": [
+              "good",
+              "fair",
+              "low"
+            ],
+            "type": "string"
+          },
+          "readiness_band": {
+            "enum": [
+              "optimal",
+              "fair",
+              "low"
+            ],
+            "type": "string"
+          },
+          "readiness_cap_reason": {
+            "type": "string"
+          },
+          "readiness_components": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "confidence": {
+                  "type": "string"
+                },
+                "freshness": {
+                  "type": "string"
+                },
+                "metric": {
+                  "type": "string"
+                },
+                "missing_reason": {
+                  "type": "string"
+                },
+                "present": {
+                  "type": "boolean"
+                },
+                "sample_count": {
+                  "type": "integer"
+                },
+                "value": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "metric",
+                "present",
+                "freshness"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "readiness_confidence": {
+            "type": "string"
+          },
+          "readiness_display_score": {
+            "type": "integer"
+          },
+          "readiness_label": {
+            "type": "string"
+          },
+          "readiness_raw_score": {
+            "type": "integer"
+          },
+          "readiness_score": {
+            "type": "integer"
+          },
+          "readiness_serving": {
+            "additionalProperties": false,
+            "properties": {
+              "components": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "confidence": {
+                      "type": "string"
+                    },
+                    "freshness": {
+                      "type": "string"
+                    },
+                    "metric": {
+                      "type": "string"
+                    },
+                    "missing_reason": {
+                      "type": "string"
+                    },
+                    "present": {
+                      "type": "boolean"
+                    },
+                    "sample_count": {
+                      "type": "integer"
+                    },
+                    "value": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "metric",
+                    "present",
+                    "freshness"
+                  ],
+                  "type": "object"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "confidence": {
+                "enum": [
+                  "final",
+                  "provisional",
+                  "low"
+                ],
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "fresh",
+                  "missing",
+                  "stale",
+                  "data_accruing",
+                  "low_coverage",
+                  "capped"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "confidence"
+            ],
+            "type": "object"
+          },
+          "readiness_tip": {
+            "type": "string"
+          },
+          "readiness_today": {
+            "type": "integer"
+          },
+          "readiness_today_band": {
+            "enum": [
+              "optimal",
+              "fair",
+              "low"
+            ],
+            "type": "string"
+          },
+          "readiness_today_label": {
+            "type": "string"
+          },
+          "recovery_pct": {
+            "type": "integer"
+          },
+          "recovery_source": {
+            "type": "string"
+          },
+          "sections": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "details": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "label": {
+                        "type": "string"
+                      },
+                      "note": {
+                        "type": "string"
+                      },
+                      "trend": {
+                        "type": "string"
+                      },
+                      "value": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "label",
+                      "value",
+                      "note",
+                      "trend"
+                    ],
+                    "type": "object"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "icon": {
+                  "type": "string"
+                },
+                "key": {
+                  "type": "string"
+                },
+                "status": {
+                  "enum": [
+                    "good",
+                    "fair",
+                    "low"
+                  ],
+                  "type": "string"
+                },
+                "status_label": {
+                  "type": "string"
+                },
+                "summary": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "key",
+                "title",
+                "icon",
+                "status",
+                "summary",
+                "details"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "sleep": {
+            "additionalProperties": false,
+            "properties": {
+              "awake_avg": {
+                "type": "number"
+              },
+              "deep_avg": {
+                "type": "number"
+              },
+              "efficiency": {
+                "type": "number"
+              },
+              "nights": {
+                "type": "integer"
+              },
+              "rem_avg": {
+                "type": "number"
+              },
+              "sources": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "awake": {
+                      "type": "number"
+                    },
+                    "core": {
+                      "type": "number"
+                    },
+                    "deep": {
+                      "type": "number"
+                    },
+                    "rem": {
+                      "type": "number"
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "total": {
+                      "type": "number"
+                    },
+                    "unspecified": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "total",
+                    "deep",
+                    "rem",
+                    "core",
+                    "awake"
+                  ],
+                  "type": "object"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "total_avg": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "nights",
+              "total_avg",
+              "deep_avg",
+              "rem_avg",
+              "awake_avg",
+              "efficiency"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "sleep_quality": {
+            "additionalProperties": false,
+            "properties": {
+              "confidence": {
+                "type": "string"
+              },
+              "continuity_pct": {
+                "type": "integer"
+              },
+              "duration_pct": {
+                "type": "integer"
+              },
+              "score_pct": {
+                "type": "integer"
+              },
+              "structure_pct": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "duration_pct",
+              "confidence"
+            ],
+            "type": "object"
+          },
+          "subjective_checkin": {
+            "additionalProperties": false,
+            "properties": {
+              "answer": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          },
+          "today_guidance": {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "type": "string"
+              },
+              "confidence": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "summary": {
+                "type": "string"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "label",
+              "summary",
+              "reason",
+              "confidence"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "date",
+          "greeting",
+          "overall",
+          "sections",
+          "highlights",
+          "readiness_score",
+          "readiness_band",
+          "readiness_label",
+          "readiness_tip",
+          "readiness_raw_score",
+          "readiness_display_score",
+          "recovery_pct",
+          "readiness_today",
+          "readiness_today_band",
+          "readiness_today_label",
+          "correlation",
+          "insights",
+          "sleep",
+          "metric_cards"
+        ],
+        "type": "object"
+      },
+      "ReadinessHistoryResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "points": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "band": {
+                  "enum": [
+                    "optimal",
+                    "fair",
+                    "low"
+                  ],
+                  "type": "string"
+                },
+                "date": {
+                  "type": "string"
+                },
+                "score": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "date",
+                "score"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "points"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "ApiKeyAuth": {
+        "description": "Per-tenant API key used by native and machine clients.",
+        "in": "header",
+        "name": "X-API-Key",
+        "type": "apiKey"
+      },
+      "SessionCookie": {
+        "description": "Opaque local browser session. Authentik ForwardAuth may establish this session, but clients must not synthesize trusted proxy headers.",
+        "in": "cookie",
+        "name": "auth",
+        "type": "apiKey"
+      }
+    }
+  },
+  "info": {
+    "description": "Tenant-aware read API shared by the web dashboard and native health-sync client. Tenant identity is resolved only from authenticated backend context.",
+    "title": "Health Dashboard Client API",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/ai-briefing": {
+      "get": {
+        "operationId": "getAIBriefing",
+        "parameters": [
+          {
+            "description": "Unsupported values are ignored and the server falls back to the documented default.",
+            "in": "query",
+            "name": "lang",
+            "required": false,
+            "schema": {
+              "default": "en",
+              "enum": [
+                "en",
+                "ru",
+                "sr"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIBriefingResponse"
+                }
+              }
+            },
+            "description": "Successful tenant-scoped response."
+          },
+          "302": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Browser authentication or initial setup is required; Location identifies the interactive route.",
+            "headers": {
+              "Location": {
+                "description": "Interactive login or setup route.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The backend could not load or encode the tenant response."
+          }
+        },
+        "summary": "Non-blocking cached AI narrative"
+      }
+    },
+    "/api/dashboard": {
+      "get": {
+        "operationId": "getDashboard",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardResponse"
+                }
+              }
+            },
+            "description": "Successful tenant-scoped response."
+          },
+          "302": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Browser authentication or initial setup is required; Location identifies the interactive route.",
+            "headers": {
+              "Location": {
+                "description": "Interactive login or setup route.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The backend could not load or encode the tenant response."
+          }
+        },
+        "summary": "Lean current-day metric dashboard"
+      }
+    },
+    "/api/energy-history": {
+      "get": {
+        "operationId": "getEnergyHistory",
+        "parameters": [
+          {
+            "description": "Unsupported values are ignored and the server falls back to the documented default.",
+            "in": "query",
+            "name": "granularity",
+            "required": false,
+            "schema": {
+              "default": "day",
+              "enum": [
+                "day",
+                "hour"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "default": 14,
+              "maximum": 365,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "hours",
+            "required": false,
+            "schema": {
+              "default": 72,
+              "maximum": 720,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "discriminator": {
+                    "propertyName": "granularity"
+                  },
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/EnergyHistoryDayResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EnergyHistoryHourResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Energy history. The response schema is selected by granularity."
+          },
+          "302": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Browser authentication or initial setup is required; Location identifies the interactive route.",
+            "headers": {
+              "Location": {
+                "description": "Interactive login or setup route.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Invalid granularity. Use day or hour."
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The backend could not load or encode the tenant response."
+          }
+        },
+        "summary": "EnergyBank day or intraday history"
+      }
+    },
+    "/api/health-briefing": {
+      "get": {
+        "operationId": "getHealthBriefing",
+        "parameters": [
+          {
+            "description": "Unsupported values are ignored and the server falls back to the documented default.",
+            "in": "query",
+            "name": "lang",
+            "required": false,
+            "schema": {
+              "default": "en",
+              "enum": [
+                "en",
+                "ru",
+                "sr"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthBriefingResponse"
+                }
+              }
+            },
+            "description": "Successful tenant-scoped response."
+          },
+          "302": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Browser authentication or initial setup is required; Location identifies the interactive route.",
+            "headers": {
+              "Location": {
+                "description": "Interactive login or setup route.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The backend could not load or encode the tenant response."
+          }
+        },
+        "summary": "Rich current-day health briefing"
+      }
+    },
+    "/api/readiness-history": {
+      "get": {
+        "operationId": "getReadinessHistory",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "maximum": 365,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessHistoryResponse"
+                }
+              }
+            },
+            "description": "Successful tenant-scoped response."
+          },
+          "302": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Browser authentication or initial setup is required; Location identifies the interactive route.",
+            "headers": {
+              "Location": {
+                "description": "Interactive login or setup route.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The backend could not load or encode the tenant response."
+          }
+        },
+        "summary": "Readiness score history"
+      }
+    }
+  },
+  "security": [
+    {
+      "ApiKeyAuth": []
+    },
+    {
+      "SessionCookie": []
+    }
+  ],
+  "servers": [
+    {
+      "url": "/"
+    }
+  ],
+  "x-compatibility-policy": {
+    "breaking": [
+      "remove a required response field",
+      "change a response field type",
+      "remove null from an optional response field",
+      "narrow a documented enum"
+    ],
+    "default": "additive"
+  },
+  "x-tenant-resolution": "The backend resolves tenant identity from the authenticated API key or session. Public client operations expose no tenant or schema selector."
+}
