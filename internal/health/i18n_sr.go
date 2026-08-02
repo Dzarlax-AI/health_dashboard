@@ -8,6 +8,15 @@ var sr = LangStrings{
 	"tip_fair":          "Malo odstupanje od vaše norme. Umjerena aktivnost je dobar izbor.",
 	"tip_low":           "Fokusirajte se na oporavak: hidratacija, odmor i izbjegavanje intenzivnog vježbanja.",
 
+	// Jedna preporuka na glavnom ekranu.
+	"dashboard_guidance_summary_push_hard":        "Danas imate prostora za zahtjevan dan.",
+	"dashboard_guidance_summary_moderate":         "Danas zadržite udoban tempo.",
+	"dashboard_guidance_summary_active_recovery":  "Izaberite lagano kretanje i oporavak.",
+	"dashboard_guidance_summary_rest":             "Danas dajte prednost oporavku.",
+	"dashboard_guidance_reason_readiness_pending": "Signali oporavka se još stabilizuju, pa preporuka ostaje oprezna.",
+	"dashboard_guidance_reason_sleep_partial":     "Trajanje sna je poznato, ali se kvalitet faza još precizira.",
+	"dashboard_guidance_reason_sleep_low":         "Podaci o snu nedostaju ili su niske pouzdanosti, pa preporuka ostaje oprezna.",
+
 	// Per-section status labels (BriefingSection.Status) — surfaced via
 	// EnrichLabels so iOS / web consumers don't maintain a parallel i18n
 	// table for the good/fair/low enum.

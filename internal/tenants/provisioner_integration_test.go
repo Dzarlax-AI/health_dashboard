@@ -174,7 +174,7 @@ func TestProvisionerIsolationAndIdempotency(t *testing.T) {
 	if _, err := admin.Exec(ctx, "UPDATE "+markerTable+" SET operation_id=$1", a.OperationID); err != nil {
 		t.Fatal(err)
 	}
-	aPool, err := p.openTenantPool(ctx, a)
+	aPool, err := p.openProvisioningTenantPool(ctx, a)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -261,7 +261,7 @@ func (m *Migrator) MigrateTenantContract(ctx context.Context, i TenantInventory,
 	if err = db.AssertIdentity(ctx, i.Role, i.Schema); err != nil {
 		return err
 	}
-	if err = db.EnsureSchemaContractContext(ctx); err != nil {
+	if err = db.MigrateSchemaContractContext(ctx); err != nil {
 		return err
 	}
 	old := storage.SchemaContractState{Version: i.Marker.ContractVersion, Checksum: i.Marker.ContractChecksum}

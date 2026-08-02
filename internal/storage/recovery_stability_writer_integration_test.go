@@ -223,23 +223,10 @@ func getSharedFullDB(t *testing.T) *DB {
 		sharedFullErr = fmt.Errorf("EnsureAllTables: %w", err)
 		t.Fatalf("%v", sharedFullErr)
 	}
-	db.EnsureIndexes()
-	db.EnsureAIBriefingsTable()
-	db.EnsureAIBriefingBlocksTable()
-	db.EnsureEnergySnapshotsTable()
-	db.EnsureReadinessRedesignTables()
-	db.EnsureSubjectiveCheckinsTable()
-	db.EnsureContextPromptInteractionsTable()
-	if err := db.EnsureAuthSessionsTable(); err != nil {
+	if err := db.MigrateSchemaContract(); err != nil {
 		_ = testdb.DropSchema(ctx, db.pool, schema)
 		db.Close()
-		sharedFullErr = fmt.Errorf("EnsureAuthSessionsTable: %w", err)
-		t.Fatalf("%v", sharedFullErr)
-	}
-	if err := db.VerifyProvisionedSchema(); err != nil {
-		_ = testdb.DropSchema(ctx, db.pool, schema)
-		db.Close()
-		sharedFullErr = fmt.Errorf("full schema not healthy after Ensure: %w", err)
+		sharedFullErr = fmt.Errorf("MigrateSchemaContract: %w", err)
 		t.Fatalf("%v", sharedFullErr)
 	}
 	sharedFullDB = db

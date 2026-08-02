@@ -74,3 +74,77 @@ func TestBuildReadinessEvidence_SleepQualityRequiresDeepAndAwake(t *testing.T) {
 		t.Fatalf("sleep quality missing reason = %q", e.SleepQuality.MissingReason)
 	}
 }
+
+func TestBuildReadinessEvidence_InfersFilteredZeroAwakeForCompleteStagedNight(t *testing.T) {
+	sleep := 7.5
+	deep := 1.0
+	rem := 1.5
+	core := 5.0
+	latest := dailyScoreRow{
+		date: "2026-06-04",
+		slp:  &sleep,
+		deep: &deep,
+		rem:  &rem,
+		core: &core,
+	}
+
+	e := buildReadinessEvidence("2026-06-04", latest, nil)
+	if !e.SleepAwake.Present || e.SleepAwake.Value == nil {
+		t.Fatalf("awake evidence = %+v, want inferred measured zero", e.SleepAwake)
+	}
+	if *e.SleepAwake.Value != 0 {
+		t.Fatalf("awake value = %v, want 0", *e.SleepAwake.Value)
+	}
+	if e.SleepAwake.SourceDate != "2026-06-04" {
+		t.Fatalf("awake source date = %q, want same-night date", e.SleepAwake.SourceDate)
+	}
+	if !e.SleepQuality.Present {
+		t.Fatalf("sleep quality = %+v, want complete staged evidence", e.SleepQuality)
+	}
+}
+
+func TestBuildReadinessEvidence_SleepStagesStayDateAligned(t *testing.T) {
+	sleep := 7.5
+	deep := 1.0
+	rem := 1.5
+	core := 4.6
+	awake := 0.4
+	latest := dailyScoreRow{
+		date:  "2026-06-03",
+		slp:   &sleep,
+		deep:  &deep,
+		rem:   &rem,
+		awake: &awake,
+	}
+
+	stale := buildReadinessEvidence("2026-06-04", latest, nil)
+	for name, component := range map[string]health.ReadinessComponentEvidence{
+		"duration": stale.SleepDuration,
+		"deep":     stale.SleepDeep,
+		"rem":      stale.SleepREM,
+		"core":     stale.SleepCore,
+		"awake":    stale.SleepAwake,
+	} {
+		if component.Present || component.SourceDate != "" {
+			t.Fatalf("%s evidence treated prior-day stage as current: %+v", name, component)
+		}
+	}
+
+	fresh := buildReadinessEvidence("2026-06-04", dailyScoreRow{date: "2026-06-04"}, &dayRow{
+		slp: &sleep, deep: &deep, rem: &rem, core: &core, awake: &awake,
+	})
+	for name, component := range map[string]health.ReadinessComponentEvidence{
+		"duration": fresh.SleepDuration,
+		"deep":     fresh.SleepDeep,
+		"rem":      fresh.SleepREM,
+		"core":     fresh.SleepCore,
+		"awake":    fresh.SleepAwake,
+	} {
+		if !component.Present || component.SourceDate != "2026-06-04" {
+			t.Fatalf("%s same-day evidence = %+v", name, component)
+		}
+	}
+	if fresh.SleepCore.Value == nil || *fresh.SleepCore.Value != core {
+		t.Fatalf("core value = %v, want %v", fresh.SleepCore.Value, core)
+	}
+}

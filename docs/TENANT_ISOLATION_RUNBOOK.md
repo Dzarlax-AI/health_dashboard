@@ -125,6 +125,12 @@ It runs tenant-to-registry, all-pairs tenant, and registry-to-every-tenant
 read/write/DDL probes; every denial must return SQLSTATE 42501. Output is one
 pseudonymous JSON document and a failure exits nonzero.
 
+The contract migration also creates deployment-only indexes whose regular
+PostgreSQL build could block tenant writes. Runtime startup never builds these
+indexes: it fails closed when one is missing. New-tenant provisioning creates
+them before activation, while existing tenants receive them only after
+`scripts/deploy-tenant-schema-gate.sh` has stopped the application service.
+
 For production, run `scripts/deploy-tenant-schema-gate.sh` as root with a
 root-owned mode-0600 environment file. The wrapper pins one image digest,
 audits before downtime, stops only the application service, migrates and audits

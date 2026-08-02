@@ -1,5 +1,7 @@
 package health
 
+import "time"
+
 // RawMetrics holds pre-fetched time-series data for all health metrics.
 // Values are ordered most-recent-first. All []float64 slices come from 30-day windows.
 // StepsWithDates and HRVWithDates are from a 7-day window for the correlation chart.
@@ -121,6 +123,36 @@ type SleepAnalysis struct {
 	AwakeAvg   float64              `json:"awake_avg"`
 	Efficiency float64              `json:"efficiency"`
 	Sources    []SleepSourceSummary `json:"sources,omitempty"`
+}
+
+const (
+	SleepQualityConfidenceFinal   = "final"
+	SleepQualityConfidencePartial = "partial"
+	SleepQualityConfidenceMissing = "missing"
+	SleepQualityConfidenceLow     = "low"
+)
+
+// SleepQualityBreakdown exposes the factors behind the existing EnergyBank
+// SleepQuality score. Pointer components stay nil when the source did not
+// provide enough stage data, so API consumers cannot confuse missing input
+// with a measured zero.
+type SleepQualityBreakdown struct {
+	ScorePct      *int   `json:"score_pct,omitempty"`
+	DurationPct   int    `json:"duration_pct"`
+	ContinuityPct *int   `json:"continuity_pct,omitempty"`
+	StructurePct  *int   `json:"structure_pct,omitempty"`
+	Confidence    string `json:"confidence"`
+}
+
+// DashboardTodayGuidance is the single prescriptive message shown in the
+// dashboard hero after EnergyBank overrides and safety caps have settled.
+type DashboardTodayGuidance struct {
+	Action     string     `json:"action"`
+	Label      string     `json:"label"`
+	Summary    string     `json:"summary"`
+	Reason     string     `json:"reason"`
+	Confidence string     `json:"confidence"`
+	UpdatedAt  *time.Time `json:"updated_at,omitempty"`
 }
 
 type MetricCard struct {
@@ -459,8 +491,10 @@ type BriefingResponse struct {
 	Insights            []Insight                  `json:"insights"`
 	Alerts              []Alert                    `json:"alerts,omitempty"`
 	Sleep               *SleepAnalysis             `json:"sleep"`
+	SleepQuality        *SleepQualityBreakdown     `json:"sleep_quality,omitempty"`
 	MetricCards         []MetricCard               `json:"metric_cards"`
 	EnergyBank          *EnergyBank                `json:"energy_bank,omitempty"`
+	TodayGuidance       *DashboardTodayGuidance    `json:"today_guidance,omitempty"`
 	IllnessSuspicion    *IllnessSuspicion          `json:"illness_suspicion,omitempty"`
 	ContextAnnotations  []ContextAnnotationSummary `json:"context_annotations,omitempty"`
 	// SubjectiveCheckin is the morning self-report (Telegram one-tap).
@@ -510,6 +544,10 @@ type ReadinessEvidenceInput struct {
 	OvernightHR       ReadinessComponentEvidence
 	SleepDuration     ReadinessComponentEvidence
 	SleepQuality      ReadinessComponentEvidence
+	SleepDeep         ReadinessComponentEvidence
+	SleepREM          ReadinessComponentEvidence
+	SleepCore         ReadinessComponentEvidence
+	SleepAwake        ReadinessComponentEvidence
 	Respiratory       ReadinessComponentEvidence
 	IllnessConfidence string
 	IllnessPattern    string

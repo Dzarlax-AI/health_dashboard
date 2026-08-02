@@ -22,11 +22,11 @@ func TestSchemaContractManifestIsDeterministic(t *testing.T) {
 	if !regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(first) {
 		t.Fatalf("schema contract checksum is not lowercase SHA-256: %q", first)
 	}
-	if want := "10c748d0e36698e0696d837919c04404565f30ac5b22945a715557415567af4d"; first != want {
+	if want := "9862767947a2357cf557f6fccdb4d9a5b840cfd60b1d3d16dd81fcb036ebdf9c"; first != want {
 		t.Fatalf("schema contract checksum = %q, want %q; bump SchemaContractVersion when intentionally changing the manifest", first, want)
 	}
-	if SchemaContractVersion != 4 {
-		t.Fatalf("schema contract version = %d, want 4", SchemaContractVersion)
+	if SchemaContractVersion != 5 {
+		t.Fatalf("schema contract version = %d, want 5", SchemaContractVersion)
 	}
 }
 
@@ -121,7 +121,7 @@ func TestSchemaContractManifestDeclaresProvisioningVerifierObjects(t *testing.T)
 			t.Errorf("manifest does not declare table %q", table)
 		}
 	}
-	for _, index := range []string{"idx_auth_sessions_expires", "idx_points_quality_metric", "uq_source_epochs_kind_start"} {
+	for _, index := range []string{"idx_auth_sessions_expires", "idx_health_records_completed_processed_at", "idx_points_quality_metric", "uq_source_epochs_kind_start"} {
 		if !containsString(manifest.Indexes, index) {
 			t.Errorf("manifest does not declare index %q", index)
 		}
@@ -141,6 +141,13 @@ func TestSchemaContractManifestDeclaresProvisioningVerifierObjects(t *testing.T)
 	quality := definitions["idx_points_quality_metric"]
 	if quality.Table != "metric_points" || quality.AccessMethod != "btree" || quality.Predicate == "" || len(quality.Keys) != 2 {
 		t.Errorf("quality index definition is incomplete: %+v", quality)
+	}
+	freshness := definitions["idx_health_records_completed_processed_at"]
+	if freshness.Table != "health_records" ||
+		freshness.AccessMethod != "btree" ||
+		!equalStrings(freshness.Keys, []string{"processed_at desc"}) ||
+		freshness.Predicate != "processing_status = 'complete' and processed_at is not null" {
+		t.Errorf("freshness index definition is incomplete: %+v", freshness)
 	}
 	wantColumns := map[string]string{
 		"health_records":    "processing_status",
