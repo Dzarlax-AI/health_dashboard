@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"health-receiver/internal/ai"
+	clientapi "health-receiver/internal/api"
 	"health-receiver/internal/ctxdb"
 	"health-receiver/internal/health"
 	"health-receiver/internal/notify"
@@ -1291,7 +1292,7 @@ func (h *Handler) readinessHistory(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	jsonResponse(w, map[string]any{"points": pts})
+	jsonResponse(w, clientapi.ReadinessHistoryResponse{Points: pts})
 }
 
 // energyHistory serves the EnergyBank trend chart in two modes:
@@ -1332,9 +1333,9 @@ func (h *Handler) energyHistory(w http.ResponseWriter, r *http.Request) {
 		if pts == nil {
 			pts = []storage.EnergyHistoryPoint{}
 		}
-		jsonResponse(w, map[string]any{
-			"granularity": "day",
-			"points":      pts,
+		jsonResponse(w, clientapi.EnergyHistoryDayResponse{
+			Granularity: "day",
+			Points:      pts,
 		})
 	case "hour":
 		hours := 72
@@ -1365,10 +1366,10 @@ func (h *Handler) energyHistory(w http.ResponseWriter, r *http.Request) {
 		if len(pts) > 0 {
 			formulaVersion = pts[len(pts)-1].FormulaVersion
 		}
-		jsonResponse(w, map[string]any{
-			"granularity":     "hour",
-			"formula_version": formulaVersion,
-			"points":          pts,
+		jsonResponse(w, clientapi.EnergyHistoryHourResponse{
+			Granularity:    "hour",
+			FormulaVersion: formulaVersion,
+			Points:         pts,
 		})
 	default:
 		http.Error(w, "granularity must be 'day' or 'hour'", http.StatusBadRequest)
@@ -1551,24 +1552,15 @@ func (h *Handler) aiBriefing(w http.ResponseWriter, r *http.Request) {
 		db.EnsureTodayAIInsightAsync(aiCfg, lang)
 	}
 
-	// `sections[]` is the canonical shape going forward: ordered array
-	// of `{key, header, body}` entries with the localized header
-	// inline. iOS decodes the array directly and renders each entry
-	// without per-block lookup. Crucially, a new AI block added
-	// server-side (e.g. a `nutrition` chunk) appears in the array
-	// automatically — iOS picks it up with zero code change because
-	// the header ships in the response. Closed extensibility (issue
-	// #83 item #5 clarification).
+	// `sections[]` is the canonical shape going forward: an ordered array
+	// of `{key, header, body}` entries with the localized header inline.
+	// New clients can render a server-added block without a per-key lookup.
 	//
-	// The legacy `blocks` map (uppercase keys) and `insight` (combined
-	// text) stay for backward compat: older iOS builds depend on them
-	// and the web dashboard pre-renders `insight` template-side.
+	// The legacy `blocks` map, combined `insight`, and named top-level
+	// block fields stay for backward compatibility. The released iOS model
+	// still consumes those representations and does not decode sections[];
+	// the web dashboard pre-renders insight template-side.
 	ls := health.GetStrings(lang)
-	type aiSection struct {
-		Key    string `json:"key"`
-		Header string `json:"header"`
-		Body   string `json:"body"`
-	}
 	// Canonical block order matches the morning report (notify/report.go)
 	// so the dashboard, Telegram, and iOS all render the same sequence.
 	type blockSpec struct{ wireKey, dbKey, headerKey string }
@@ -1578,28 +1570,28 @@ func (h *Handler) aiBriefing(w http.ResponseWriter, r *http.Request) {
 		{"recovery", "RECOVERY", "ai_block_recovery_header"},
 		{"recommendation", "RECOMMENDATION", "ai_block_recommendation_header"},
 	}
-	sections := make([]aiSection, 0, len(blockOrder))
+	sections := make([]clientapi.AIBriefingSection, 0, len(blockOrder))
 	for _, b := range blockOrder {
 		body := blocks[b.dbKey]
 		if body == "" {
 			continue
 		}
-		sections = append(sections, aiSection{
+		sections = append(sections, clientapi.AIBriefingSection{
 			Key:    b.wireKey,
 			Header: ls[b.headerKey],
 			Body:   body,
 		})
 	}
 
-	jsonResponse(w, map[string]any{
-		"date":       today,
-		"lang":       lang,
-		"insight":    combined,
-		"sections":   sections,
-		"blocks":     blocks,
-		"generating": db.AIRegenInFlight(lang),
-		"disabled":   !aiCfg.Enabled(),
-	})
+	jsonResponse(w, clientapi.NewAIBriefingResponse(
+		today,
+		lang,
+		combined,
+		sections,
+		blocks,
+		db.AIRegenInFlight(lang),
+		!aiCfg.Enabled(),
+	))
 }
 
 func (h *Handler) adminStatus(w http.ResponseWriter, r *http.Request) {
