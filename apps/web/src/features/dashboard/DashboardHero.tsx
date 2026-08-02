@@ -11,13 +11,15 @@ interface DashboardHeroProps {
 }
 
 export function DashboardHero({ locale, model }: DashboardHeroProps) {
-  const dateLabel = model.date
-    ? new Intl.DateTimeFormat(locale, {
-        day: "numeric",
-        month: "long",
-        weekday: "long",
-      }).format(new Date(`${model.date}T12:00:00`))
-    : translate(locale, "today");
+  const parsedDate = model.date ? new Date(`${model.date}T12:00:00`) : undefined;
+  const dateLabel =
+    parsedDate && !Number.isNaN(parsedDate.valueOf())
+      ? new Intl.DateTimeFormat(locale, {
+          day: "numeric",
+          month: "long",
+          weekday: "long",
+        }).format(parsedDate)
+      : translate(locale, "today");
 
   if (!model.readiness) {
     return (

@@ -38,6 +38,8 @@ describe("dashboard model", () => {
     [{ date: "" }, "unavailable"],
     [{ readiness_serving: { status: "missing", confidence: "low" } }, "unavailable"],
     [{ readiness_serving: { status: "stale", confidence: "low" } }, "stale"],
+    [{ readiness_serving: { status: "low_coverage", confidence: "final" } }, "partial"],
+    [{ readiness_serving: { status: "capped", confidence: "final" } }, "partial"],
     [
       { readiness_serving: { status: "data_accruing", confidence: "provisional" } },
       "partial",
@@ -98,6 +100,63 @@ describe("dashboard model", () => {
 
     expect(model.sleep?.value).toBeUndefined();
     expect(model.sleep?.detail).toBe("7.6 h");
+  });
+
+  it("shows only substantive illness suspicion and preserves optional failures", () => {
+    const model = buildDashboardViewModel(
+      briefing({
+        illness_suspicion: {
+          confidence: "high",
+          date: "2026-08-02",
+          experimental: false,
+          pattern: "Elevated overnight signals",
+          reason: "Several recovery signals moved together.",
+        },
+      }),
+      ["energyHistory"],
+    );
+
+    expect(model.illness).toEqual({
+      confidence: "high",
+      pattern: "Elevated overnight signals",
+      reason: "Several recovery signals moved together.",
+    });
+    expect(model.degradedResources).toEqual(["energyHistory"]);
+  });
+
+  it("does not promote low-confidence illness suspicion", () => {
+    const model = buildDashboardViewModel(
+      briefing({
+        illness_suspicion: {
+          confidence: "low",
+          date: "2026-08-02",
+          experimental: false,
+          reason: "Weak signal",
+        },
+      }),
+    );
+
+    expect(model.illness).toBeUndefined();
+  });
+
+  it("leaves the Energy Bank label empty for the localized card fallback", () => {
+    const model = buildDashboardViewModel(
+      briefing({
+        energy_bank: {
+          action_verdict: "moderate",
+          capacity: 80,
+          current: 40,
+          drain_so_far: 20,
+          hrv_z_raw: 0,
+          strain: 10,
+          stress: 10,
+          verdict_label: "",
+          verdict_reason: "Measured reserve.",
+        },
+      }),
+    );
+
+    expect(model.energy?.label).toBe("");
   });
 
   it.each([

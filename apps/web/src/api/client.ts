@@ -7,9 +7,8 @@ export type DashboardResponse = components["schemas"]["DashboardResponse"];
 export type HealthBriefingResponse = components["schemas"]["HealthBriefingResponse"];
 export type AIBriefingResponse = components["schemas"]["AIBriefingResponse"];
 export type ReadinessHistoryResponse = components["schemas"]["ReadinessHistoryResponse"];
-export type EnergyHistoryResponse =
-  | components["schemas"]["EnergyHistoryDayResponse"]
-  | components["schemas"]["EnergyHistoryHourResponse"];
+export type EnergyHistoryDayResponse =
+  components["schemas"]["EnergyHistoryDayResponse"];
 export type SessionResponse = components["schemas"]["SessionResponse"];
 
 export class ClientApiError extends Error {
@@ -87,12 +86,16 @@ export async function getReadinessHistory(
 export async function getEnergyHistory(
   days = 14,
   signal?: AbortSignal,
-): Promise<EnergyHistoryResponse> {
+): Promise<EnergyHistoryDayResponse> {
   const { data, error, response } = await client.GET("/api/energy-history", {
     params: { query: { granularity: "day", days } },
     signal,
   });
-  return requireData(data, error, response);
+  const history = requireData(data, error, response);
+  if (history.granularity !== "day") {
+    throw new ClientApiError(500, "Expected daily energy history");
+  }
+  return history;
 }
 
 export async function getSession(signal?: AbortSignal): Promise<SessionResponse> {

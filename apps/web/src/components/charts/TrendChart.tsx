@@ -15,7 +15,7 @@ export interface TrendPoint {
   value: number;
 }
 
-interface TrendChartProps {
+export interface TrendChartProps {
   ariaLabel: string;
   data: TrendPoint[];
   tone: "readiness" | "energy";

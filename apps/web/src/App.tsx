@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { ClientApiError } from "./api/client";
 import { AppHeader } from "./components/AppHeader";
@@ -6,6 +6,7 @@ import { StatusPanel } from "./components/StatusPanel";
 import { fixtureNames, fixtureResources, resolveFixture } from "./features/dashboard/fixtures";
 import { DashboardDetails } from "./features/dashboard/DashboardDetails";
 import { DashboardHero } from "./features/dashboard/DashboardHero";
+import { shouldPollAI } from "./features/dashboard/aiPolling";
 import { loadDashboardResources, type DashboardResources } from "./features/dashboard/loader";
 import { buildDashboardViewModel } from "./features/dashboard/model";
 import { ScoreSummaryCard } from "./features/dashboard/ScoreSummaryCard";
@@ -28,6 +29,7 @@ export function App() {
   const fixture = fixtureEnabled ? resolveFixture(params.get("fixture")) : undefined;
   const [reloadKey, setReloadKey] = useState(0);
   const [liveState, setLiveState] = useState<AppState>({ status: "loading" });
+  const aiPollAttempts = useRef(0);
   const fixtureState: AppState | undefined = fixture
     ? fixture === "loading"
       ? { status: "loading" }
@@ -39,6 +41,7 @@ export function App() {
 
   useEffect(() => {
     document.documentElement.lang = locale;
+    aiPollAttempts.current = 0;
   }, [locale]);
 
   useEffect(() => {
@@ -65,7 +68,11 @@ export function App() {
   }, [fixture, locale, reloadKey]);
 
   useEffect(() => {
-    if (state.status !== "ready" || !state.resources.ai?.generating || fixture) {
+    if (
+      state.status !== "ready" ||
+      !shouldPollAI(state.resources.ai, aiPollAttempts.current) ||
+      fixture
+    ) {
       return;
     }
     let timer: number | undefined;
@@ -75,7 +82,10 @@ export function App() {
       }
       timer =
         document.visibilityState === "visible"
-          ? window.setTimeout(() => setReloadKey((value) => value + 1), 60_000)
+          ? window.setTimeout(() => {
+              aiPollAttempts.current += 1;
+              setReloadKey((value) => value + 1);
+            }, 60_000)
           : undefined;
     };
     schedule();
@@ -91,7 +101,7 @@ export function App() {
   const model = useMemo(
     () =>
       state.status === "ready"
-        ? buildDashboardViewModel(state.resources.briefing)
+        ? buildDashboardViewModel(state.resources.briefing, state.resources.missing)
         : undefined,
     [state],
   );
@@ -132,7 +142,10 @@ export function App() {
               title={translate(locale, "signInTitle")}
               detail={translate(locale, "signInDetail")}
             />
-            <a className="primary-action" href={`/login?next=/?lang=${locale}`}>
+            <a
+              className="primary-action"
+              href={`/login?next=${encodeURIComponent(`/?lang=${locale}`)}`}
+            >
               {translate(locale, "signIn")}
             </a>
           </div>

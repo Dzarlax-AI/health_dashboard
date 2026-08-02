@@ -335,29 +335,28 @@ function classifyBriefing(bundle: DashboardBundle): DashboardState {
         <tr><td><code>internal/api/openapi.go</code></td><td>Additive <code>GET /api/session</code> contract and version <code>0.2.0</code></td><td>Modify</td></tr>
         <tr><td><code>internal/api/openapi_test.go</code></td><td>Pin tenant-safe session operation</td><td>Modify</td></tr>
         <tr><td><code>internal/ui/handler.go</code></td><td>Return only <code>is_admin</code> from authenticated context</td><td>Modify</td></tr>
-        <tr><td><code>internal/ui/client_api_tenant_scope_test.go</code></td><td>Prove session route ignores tenant selectors</td><td>Modify</td></tr>
+        <tr><td><code>internal/ui/client_session_test.go</code></td><td>Prove session route is authenticated and ignores tenant selectors</td><td>Create</td></tr>
         <tr><td><code>contracts/openapi.json</code></td><td>Generated current contract</td><td>Generate, never hand-edit</td></tr>
         <tr><td><code>apps/web/src/api/generated/schema.ts</code></td><td>Generated TypeScript contract</td><td>Generate, never hand-edit</td></tr>
         <tr><td><code>apps/web/src/api/client.ts</code></td><td>Session and energy history typed reads</td><td>Modify</td></tr>
         <tr><td><code>apps/web/src/features/dashboard/model.ts</code></td><td>Pure state classification and display derivation</td><td>Create</td></tr>
         <tr><td><code>apps/web/src/features/dashboard/model.test.ts</code></td><td>Health-semantic regression tests</td><td>Create</td></tr>
-        <tr><td><code>apps/web/src/features/dashboard/useDashboard.ts</code></td><td>Abortable resource loading, retry, optional histories, AI polling</td><td>Create</td></tr>
-        <tr><td><code>apps/web/src/features/dashboard/useDashboard.test.tsx</code></td><td>Loading, auth, retry, optional failure, polling lifecycle</td><td>Create</td></tr>
-        <tr><td><code>apps/web/src/features/dashboard/DashboardPage.tsx</code></td><td>Page composition and state boundary</td><td>Create</td></tr>
+        <tr><td><code>apps/web/src/features/dashboard/loader.ts</code></td><td>Abortable required and optional resource loading</td><td>Create</td></tr>
+        <tr><td><code>apps/web/src/features/dashboard/loader.test.ts</code></td><td>Required and optional failure isolation</td><td>Create</td></tr>
+        <tr><td><code>apps/web/src/features/dashboard/aiPolling.ts</code></td><td>Visible cold-cache and generation polling policy with a bounded retry count</td><td>Create</td></tr>
         <tr><td><code>apps/web/src/features/dashboard/DashboardHero.tsx</code></td><td>Single readiness gauge, guidance, confidence, headline</td><td>Create</td></tr>
-        <tr><td><code>apps/web/src/features/dashboard/SupportingScores.tsx</code></td><td>Compact Energy Bank and sleep quality cards</td><td>Create</td></tr>
-        <tr><td><code>apps/web/src/features/dashboard/BriefingPanels.tsx</code></td><td>Flags, alerts, illness, AI, metrics, and legacy sections</td><td>Create</td></tr>
+        <tr><td><code>apps/web/src/features/dashboard/ScoreSummaryCard.tsx</code></td><td>Compact Energy Bank and sleep quality card primitive</td><td>Create</td></tr>
+        <tr><td><code>apps/web/src/features/dashboard/DashboardDetails.tsx</code></td><td>Flags, alerts, illness, AI, trends, metrics, and legacy sections</td><td>Create</td></tr>
         <tr><td><code>apps/web/src/components/AppHeader.tsx</code></td><td>Reusable locale, legacy navigation, admin, and logout shell</td><td>Create</td></tr>
-        <tr><td><code>apps/web/src/components/LegacyLink.tsx</code></td><td>Same-origin locale-preserving link primitive</td><td>Create</td></tr>
         <tr><td><code>apps/web/src/components/StatusBadge.tsx</code></td><td>Shared semantic status/confidence treatment</td><td>Create</td></tr>
         <tr><td><code>apps/web/src/components/charts/TrendChart.tsx</code></td><td>Reusable accessible Recharts line/sparkline foundation</td><td>Create</td></tr>
+        <tr><td><code>apps/web/src/components/charts/LazyTrendChart.tsx</code></td><td>Code-split chart boundary with local loading and failure containment</td><td>Create</td></tr>
         <tr><td><code>apps/web/src/components/charts/chartTheme.ts</code></td><td>Shared Recharts colors, tooltip, axis, and motion policy</td><td>Create</td></tr>
-        <tr><td><code>apps/web/src/fixtures/dashboard.ts</code></td><td>Fixture-build-only deterministic API bundle states</td><td>Create</td></tr>
+        <tr><td><code>apps/web/src/features/dashboard/fixtures.ts</code></td><td>Explicitly enabled deterministic API bundle states</td><td>Create</td></tr>
         <tr><td><code>apps/web/src/App.tsx</code></td><td>Locale shell, legacy navigation, live dashboard entry</td><td>Replace fixture composition</td></tr>
         <tr><td><code>apps/web/src/App.test.tsx</code></td><td>Integration rendering and accessible navigation</td><td>Rewrite</td></tr>
         <tr><td><code>apps/web/src/i18n/index.ts</code></td><td>Client-owned labels only</td><td>Extend all three locales</td></tr>
         <tr><td><code>apps/web/src/styles/index.css</code></td><td>Global shell and existing primitives</td><td>Modify minimally</td></tr>
-        <tr><td><code>apps/web/src/features/dashboard/dashboard.css</code></td><td>Dashboard-specific responsive layout</td><td>Create</td></tr>
         <tr><td><code>apps/web/package.json</code></td><td>Pin Recharts 3.10.1 plus fixture build/dev scripts</td><td>Modify</td></tr>
         <tr><td><code>apps/web/playwright.config.ts</code></td><td>Build with fixture mode for deterministic visual tests</td><td>Modify</td></tr>
         <tr><td><code>apps/web/tests/visual/dashboard.spec.ts</code></td><td>Responsive geometry, density, and state coverage</td><td>Create</td></tr>
@@ -527,20 +526,20 @@ function legacyHref(path: string, locale: Locale): string {
       <h3>Task 6 — Make fixtures safe and pin responsive behavior</h3>
       <p class="task-meta">Goal: deterministic review without any production fake-data surface.</p>
       <ul class="checklist">
-        <li>Move normal/partial/stale/loading/unavailable/error data into <code>src/fixtures/dashboard.ts</code>.</li>
-        <li>Gate fixture resolution on <code>import.meta.env.MODE === "fixtures"</code>.</li>
+        <li>Move normal/partial/stale/loading/unavailable/error data into <code>src/features/dashboard/fixtures.ts</code>.</li>
+        <li>Gate fixture resolution on the explicit <code>VITE_ENABLE_FIXTURES=true</code> build variable.</li>
         <li>Add <code>build:fixtures</code> and <code>dev:fixtures</code> scripts.</li>
         <li>Make Playwright build in fixture mode; keep the ordinary production build live-only.</li>
         <li>Pin 320, 375, 768, 1024, and 1440 px layouts across en/ru/sr where text length affects geometry.</li>
         <li>Assert circular ring bounds, shared SVG/content center, one readiness instance, no horizontal overflow, compact supporting card height, and working legacy hrefs.</li>
         <li>Split each no-score state into its own Playwright test for actionable failures.</li>
       </ul>
-      <pre><code>const fixtureMode = import.meta.env.MODE === "fixtures";
-const fixture = fixtureMode
+      <pre><code>const fixtureEnabled = import.meta.env.VITE_ENABLE_FIXTURES === "true";
+const fixture = fixtureEnabled
   ? resolveDashboardFixture(new URLSearchParams(location.search).get("fixture"))
   : undefined;
 
-// Ordinary `vite build` does not include an active query-controlled fixture path.</code></pre>
+// Ordinary `vite build` leaves VITE_ENABLE_FIXTURES unset and ignores fixture input.</code></pre>
       <pre><code>make web-check
 make web-test-visual
 # Expected: all unit, build, and responsive geometry checks pass.</code></pre>
@@ -676,7 +675,7 @@ git diff --check</code></pre>
           <li>Readiness uses <code>readiness_today</code> once. Missing data never fabricates a score.</li>
           <li>Signed Energy Bank values keep their raw text while the circular visual clamps to 0–100.</li>
           <li>Provisional sleep shows duration without inventing a sleep-quality percentage.</li>
-          <li>AI regeneration polling runs only while visible and stops when the cache is not generating.</li>
+          <li>AI regeneration polling runs only while visible, covers cold caches before the generating flag appears, and stops after ten attempts or when content arrives.</li>
           <li>Recharts is code-split: the initial production JS chunk is about 220 KB instead of about 571 KB before splitting.</li>
         </ul>
       </div>
@@ -688,7 +687,7 @@ git diff --check</code></pre>
         <tr><th>Check</th><th>Result</th></tr>
       </thead>
       <tbody>
-        <tr><td><code>pnpm --filter @health/web check</code></td><td>Passed: contract freshness, TypeScript, ESLint, 34 Vitest tests, production build.</td></tr>
+        <tr><td><code>pnpm --filter @health/web check</code></td><td>Passed after review fixes: contract freshness, TypeScript, ESLint, 48 Vitest tests, production build.</td></tr>
         <tr><td><code>pnpm --filter @health/web test:visual</code></td><td>Passed: 19 Playwright tests across 320/375/768/1024/1440 px and en/ru/sr.</td></tr>
         <tr><td><code>make test-unit</code></td><td>Passed: full non-DB Go suite.</td></tr>
         <tr><td>Browser inspection</td><td>Passed: desktop and 390×844 mobile, no horizontal overflow, ring/frame/SVG/content centers identical, no console errors.</td></tr>

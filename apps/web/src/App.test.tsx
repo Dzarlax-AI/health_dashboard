@@ -1,6 +1,20 @@
 import { render, screen } from "@testing-library/react";
 
+import { ClientApiError } from "./api/client";
 import { App } from "./App";
+import { fixtureResources } from "./features/dashboard/fixtures";
+import { loadDashboardResources } from "./features/dashboard/loader";
+
+vi.mock("./features/dashboard/loader", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("./features/dashboard/loader")>();
+  return {
+    ...actual,
+    loadDashboardResources: vi.fn(),
+  };
+});
+
+const mockedLoadDashboardResources = vi.mocked(loadDashboardResources);
 
 function renderFixture(fixture: string, locale = "en") {
   vi.stubEnv("VITE_ENABLE_FIXTURES", "true");
@@ -10,6 +24,7 @@ function renderFixture(fixture: string, locale = "en") {
 
 describe("foundation fixtures", () => {
   afterEach(() => {
+    mockedLoadDashboardResources.mockReset();
     window.history.replaceState({}, "", "/");
     document.documentElement.lang = "en";
     vi.unstubAllEnvs();
@@ -48,13 +63,31 @@ describe("foundation fixtures", () => {
     ).toBeInTheDocument();
   });
 
-  it("ignores fixture query input in an ordinary production build", () => {
+  it("ignores fixture query input in an ordinary production build", async () => {
     vi.stubEnv("VITE_ENABLE_FIXTURES", "false");
     window.history.replaceState({}, "", "/?lang=en&fixture=normal");
-    render(<App />);
+    mockedLoadDashboardResources.mockResolvedValue(fixtureResources("en", "normal"));
+    const view = render(<App />);
 
     expect(screen.queryByRole("navigation", { name: "Component states" })).not.toBeInTheDocument();
     expect(screen.getByText("Refreshing today")).toBeInTheDocument();
+    expect(await screen.findByText("You can move with more confidence today.")).toBeInTheDocument();
+    view.unmount();
+  });
+
+  it("encodes the complete post-login destination", async () => {
+    vi.stubEnv("VITE_ENABLE_FIXTURES", "false");
+    window.history.replaceState({}, "", "/?lang=en");
+    mockedLoadDashboardResources.mockRejectedValue(
+      new ClientApiError(401, "authentication required"),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByRole("link", { name: "Sign in" })).toHaveAttribute(
+      "href",
+      "/login?next=%2F%3Flang%3Den",
+    );
   });
 
   it("falls back to the English locale for unsupported input", () => {

@@ -59,15 +59,28 @@ textarea {
   margin-left: auto;
 }
 
-.app-header__links a {
+.app-header__links a,
+.logout-form button {
   color: var(--text-secondary);
   font-size: var(--text-sm);
   font-weight: 650;
   text-decoration: none;
 }
 
-.app-header__links a:hover {
+.app-header__links a:hover,
+.logout-form button:hover {
   color: var(--text);
+}
+
+.logout-form {
+  margin: 0;
+}
+
+.logout-form button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
 }
 
 .app-header__brand {
@@ -530,6 +543,28 @@ textarea {
   background: linear-gradient(90deg, var(--surface-2), var(--surface), var(--surface-2));
   background-size: 200% 100%;
   animation: trend-loading 1.5s ease-in-out infinite;
+}
+
+.trend-chart--error {
+  min-height: 150px;
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+}
+
+.degraded-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.degraded-card p,
+.alert-card > p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.alert-card > p + p {
+  margin-top: var(--space-3);
 }
 
 @keyframes trend-loading {

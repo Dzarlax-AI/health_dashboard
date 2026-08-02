@@ -1,25 +1,63 @@
-import { lazy, Suspense } from "react";
+import {
+  Component,
+  lazy,
+  Suspense,
+  type ErrorInfo,
+  type ReactNode,
+} from "react";
 
-import type { TrendPoint } from "./TrendChart";
+import type { TrendChartProps } from "./TrendChart";
 
 const TrendChart = lazy(async () => {
   const module = await import("./TrendChart");
   return { default: module.TrendChart };
 });
 
-interface LazyTrendChartProps {
-  ariaLabel: string;
-  data: TrendPoint[];
-  tone: "readiness" | "energy";
+interface ChartErrorBoundaryProps {
+  children: ReactNode;
+  fallback: ReactNode;
 }
 
-export function LazyTrendChart(props: LazyTrendChartProps) {
+interface ChartErrorBoundaryState {
+  failed: boolean;
+}
+
+export class ChartErrorBoundary extends Component<
+  ChartErrorBoundaryProps,
+  ChartErrorBoundaryState
+> {
+  state: ChartErrorBoundaryState = { failed: false };
+
+  static getDerivedStateFromError(): ChartErrorBoundaryState {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("Trend chart failed to render", error, info.componentStack);
+  }
+
+  render() {
+    return this.state.failed ? this.props.fallback : this.props.children;
+  }
+}
+
+export function LazyTrendChart(props: TrendChartProps) {
   if (props.data.length < 2) {
     return null;
   }
   return (
-    <Suspense fallback={<div className="trend-chart trend-chart--loading" />}>
-      <TrendChart {...props} />
-    </Suspense>
+    <ChartErrorBoundary
+      fallback={
+        <div
+          className="trend-chart trend-chart--error"
+          role="img"
+          aria-label={props.ariaLabel}
+        />
+      }
+    >
+      <Suspense fallback={<div className="trend-chart trend-chart--loading" />}>
+        <TrendChart {...props} />
+      </Suspense>
+    </ChartErrorBoundary>
   );
 }

@@ -22,6 +22,12 @@ export interface DashboardViewModel {
   alerts: HealthBriefingResponse["alerts"];
   sections: HealthBriefingResponse["sections"];
   metricCards: HealthBriefingResponse["metric_cards"];
+  illness?: {
+    confidence: string;
+    reason: string;
+    pattern?: string;
+  };
+  degradedResources: readonly string[];
   checkinAnswer?: string;
 }
 
@@ -54,6 +60,7 @@ export function classifyBriefing(
 
 export function buildDashboardViewModel(
   briefing: HealthBriefingResponse,
+  degradedResources: readonly string[] = [],
 ): DashboardViewModel {
   const state = classifyBriefing(briefing);
   const guidance = briefing.today_guidance;
@@ -69,7 +76,7 @@ export function buildDashboardViewModel(
 
   const energy = briefing.energy_bank
     ? {
-        label: briefing.energy_bank.verdict_label || "Energy",
+        label: briefing.energy_bank.verdict_label || "",
         value: clampPercent(briefing.energy_bank.current),
         status: briefing.energy_bank.verdict_reason,
         detail: `${Math.round(briefing.energy_bank.current)} / ${Math.round(briefing.energy_bank.capacity)}`,
@@ -109,6 +116,16 @@ export function buildDashboardViewModel(
     alerts: briefing.alerts ?? [],
     sections: briefing.sections ?? [],
     metricCards: briefing.metric_cards ?? [],
+    illness:
+      briefing.illness_suspicion &&
+      ["moderate", "high"].includes(briefing.illness_suspicion.confidence)
+        ? {
+            confidence: briefing.illness_suspicion.confidence,
+            reason: briefing.illness_suspicion.reason,
+            pattern: briefing.illness_suspicion.pattern,
+          }
+        : undefined,
+    degradedResources,
     checkinAnswer:
       briefing.subjective_checkin?.status === "answered"
         ? briefing.subjective_checkin.answer

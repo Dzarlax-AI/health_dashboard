@@ -7,13 +7,34 @@ const briefing = {
 
 function loaders(): DashboardLoaders {
   return {
-    briefing: vi.fn().mockResolvedValue(briefing),
-    dashboard: vi.fn().mockResolvedValue({ cards: [], date: "", last_updated: "" }),
-    ai: vi.fn().mockResolvedValue({ generating: false }),
-    readinessHistory: vi.fn().mockResolvedValue({ points: [] }),
-    energyHistory: vi.fn().mockResolvedValue({ granularity: "day", points: [] }),
-    session: vi.fn().mockResolvedValue({ is_admin: false }),
-  } as unknown as DashboardLoaders;
+    briefing: vi.fn<DashboardLoaders["briefing"]>().mockResolvedValue(briefing),
+    dashboard: vi.fn<DashboardLoaders["dashboard"]>().mockResolvedValue({
+      cards: [],
+      date: "",
+      last_updated: "",
+    }),
+    ai: vi.fn<DashboardLoaders["ai"]>().mockResolvedValue({
+      blocks: {},
+      date: "",
+      disabled: false,
+      generating: false,
+      insight: "",
+      lang: "en",
+      recommendation: "",
+      recovery: "",
+      sections: [],
+      sleep: "",
+      yesterday: "",
+    }),
+    readinessHistory: vi.fn<DashboardLoaders["readinessHistory"]>().mockResolvedValue({
+      points: [],
+    }),
+    energyHistory: vi.fn<DashboardLoaders["energyHistory"]>().mockResolvedValue({
+      granularity: "day",
+      points: [],
+    }),
+    session: vi.fn<DashboardLoaders["session"]>().mockResolvedValue({ is_admin: false }),
+  };
 }
 
 describe("dashboard resource loader", () => {

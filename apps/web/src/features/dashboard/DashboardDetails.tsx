@@ -1,6 +1,6 @@
 import type {
   AIBriefingResponse,
-  EnergyHistoryResponse,
+  EnergyHistoryDayResponse,
   ReadinessHistoryResponse,
 } from "../../api/client";
 import { Surface } from "../../components/Surface";
@@ -15,7 +15,7 @@ interface DashboardDetailsProps {
   model: DashboardViewModel;
   ai?: AIBriefingResponse;
   readinessHistory?: ReadinessHistoryResponse;
-  energyHistory?: EnergyHistoryResponse;
+  energyHistory?: EnergyHistoryDayResponse;
 }
 
 function dayLabel(date: string, locale: Locale): string {
@@ -36,17 +36,44 @@ export function DashboardDetails({
     label: dayLabel(point.date, locale),
     value: point.score,
   }));
-  const energyPoints: TrendPoint[] =
-    energyHistory?.granularity === "day"
-      ? (energyHistory.points ?? []).map((point) => ({
-          label: dayLabel(point.date, locale),
-          value: point.current_eod,
-        }))
-      : [];
+  const energyPoints: TrendPoint[] = (energyHistory?.points ?? []).map((point) => ({
+    label: dayLabel(point.date, locale),
+    value: point.current_eod,
+  }));
   const aiSections = ai?.sections ?? [];
 
   return (
     <>
+      {model.degradedResources.length > 0 ? (
+        <Surface className="content-card degraded-card">
+          <StatusBadge tone="warn">{translate(locale, "partiallyAvailable")}</StatusBadge>
+          <p>{translate(locale, "optionalDataUnavailable")}</p>
+        </Surface>
+      ) : null}
+
+      {model.illness ? (
+        <Surface className="content-card alert-card">
+          <div className="section-heading">
+            <div>
+              <p>{translate(locale, "attention")}</p>
+              <h2>{translate(locale, "illnessSignal")}</h2>
+            </div>
+            <StatusBadge
+              tone={model.illness.confidence === "high" ? "danger" : "warn"}
+            >
+              {translate(
+                locale,
+                model.illness.confidence === "high"
+                  ? "confidenceHigh"
+                  : "confidenceModerate",
+              )}
+            </StatusBadge>
+          </div>
+          <p>{model.illness.reason}</p>
+          {model.illness.pattern ? <p>{model.illness.pattern}</p> : null}
+        </Surface>
+      ) : null}
+
       {model.alerts && model.alerts.length > 0 ? (
         <Surface className="content-card alert-card">
           <div className="section-heading">
@@ -125,7 +152,7 @@ export function DashboardDetails({
           {model.sections.map((section) => (
             <a
               className="section-link"
-              href={`/${section.key}?lang=${locale}`}
+              href={`/${encodeURIComponent(section.key)}?lang=${locale}`}
               key={section.key}
             >
               <span aria-hidden="true">{section.icon}</span>

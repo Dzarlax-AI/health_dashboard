@@ -7,7 +7,7 @@ import {
   getSession,
   type AIBriefingResponse,
   type DashboardResponse,
-  type EnergyHistoryResponse,
+  type EnergyHistoryDayResponse,
   type HealthBriefingResponse,
   type ReadinessHistoryResponse,
   type SessionResponse,
@@ -19,7 +19,7 @@ export interface DashboardResources {
   dashboard?: DashboardResponse;
   ai?: AIBriefingResponse;
   readinessHistory?: ReadinessHistoryResponse;
-  energyHistory?: EnergyHistoryResponse;
+  energyHistory?: EnergyHistoryDayResponse;
   session?: SessionResponse;
   missing: string[];
 }

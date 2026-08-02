@@ -28,14 +28,18 @@ export function AppHeader({ locale, isAdmin = false }: AppHeaderProps) {
         {isAdmin ? (
           <a href={localizedHref("/admin", locale)}>{translate(locale, "admin")}</a>
         ) : null}
+        <form method="post" action="/logout" className="logout-form">
+          <button type="submit">{translate(locale, "logout")}</button>
+        </form>
       </nav>
       <nav className="locale-switcher" aria-label={translate(locale, "languageNav")}>
         {supportedLocales.map((candidate) => {
-          params.set("lang", candidate);
+          const candidateParams = new URLSearchParams(params);
+          candidateParams.set("lang", candidate);
           return (
             <a
               key={candidate}
-              href={`/?${params.toString()}`}
+              href={`/?${candidateParams.toString()}`}
               aria-current={candidate === locale ? "page" : undefined}
             >
               {candidate.toUpperCase()}
