@@ -989,7 +989,7 @@ func (m *Migrator) ensureRestrictedSchemaContract(ctx context.Context, i TenantI
 	if err := db.AssertIdentity(ctx, i.Role, i.Schema); err != nil {
 		return err
 	}
-	return db.MigrateSchemaContract()
+	return db.MigrateSchemaContractContext(ctx)
 }
 
 func (m *Migrator) advanceRegistryContract(ctx context.Context, i TenantInventory, alreadyReady bool) error {

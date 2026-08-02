@@ -1096,6 +1096,110 @@ bash scripts/deploy-tenant-schema-gate_test.sh</pre>
       </li>
     </ul>
   </section>
+
+  <section>
+    <h2>17. Follow-up: propagation caller context</h2>
+    <p class="callout">
+      Gate пройден сообщением пользователя «Чини» после разбора трёх новых
+      замечаний CodeRabbit. Scope ограничен propagation cancellation/deadline;
+      schema contract, DDL и пользовательский UI не меняются.
+    </p>
+
+    <h3>Текущее и желаемое поведение</h3>
+    <ul>
+      <li>
+        Fleet migration и tenant provisioning вызывают
+        <code>MigrateSchemaContract()</code>, который создаёт независимый
+        пятиминутный context. После отмены caller работа может продолжаться.
+      </li>
+      <li>
+        Integration test создаёт двухминутный verification context от
+        30-секундного <code>queryCtx()</code>, поэтому фактический deadline
+        остаётся 30 секунд.
+      </li>
+      <li>
+        После исправления оба production path передают принадлежащий операции
+        <code>ctx</code> в <code>MigrateSchemaContractContext(ctx)</code>, а
+        удалённая test verification получает собственный двухминутный budget.
+      </li>
+    </ul>
+
+    <h3>Файлы и шаги</h3>
+    <ol>
+      <li>
+        В <code>internal/tenants/migration.go</code> сохранить caller context
+        при полном schema-contract migration.
+      </li>
+      <li>
+        В <code>internal/tenants/provisioner.go</code> протянуть context через
+        <code>ensureTenantTables</code> во все provisioning passes, включая
+        caller из <code>internal/tenants/legacy_setup.go</code>.
+      </li>
+      <li>
+        В <code>internal/storage/indexes_test.go</code> отделить длинный
+        verification deadline от короткого fixture-query context.
+      </li>
+      <li>
+        Выполнить format/diff checks, targeted tenant/storage tests, полный
+        <code>go test ./...</code>, <code>go vet ./...</code> и build.
+      </li>
+    </ol>
+
+    <h3>Допущения, риски и rollback</h3>
+    <ul>
+      <li>
+        Caller contexts provisioning/fleet migration имеют подходящий deadline;
+        их отмена должна прерывать PostgreSQL DDL, а не переживаться внутренним
+        background context.
+      </li>
+      <li>
+        Риск ограничен более ранней отменой уже отменённой операции. Контракт
+        остаётся fail-closed и повторная migration остаётся idempotent.
+      </li>
+      <li>
+        Rollback — возврат трёх локальных context changes; данные и schema
+        definition не затрагиваются.
+      </li>
+      <li>
+        Блокирующих открытых вопросов нет. GitHub replies, thread resolution,
+        commit, push и deployment остаются отдельными действиями.
+      </li>
+    </ul>
+
+    <h3>Approval gate</h3>
+    <p>
+      План явно одобрен пользователем. Реализация выполняется в существующем
+      worktree ветки <code>codex/friendly-health-dashboard</code>.
+    </p>
+
+    <h3>Implementation record</h3>
+    <ul>
+      <li>
+        Fleet migration вызывает
+        <code>MigrateSchemaContractContext(ctx)</code> и прекращает DDL при
+        отмене своей операции.
+      </li>
+      <li>
+        Admin provisioning и legacy first-tenant setup передают caller context
+        через <code>ensureTenantTables(ctx, db)</code> в оба migration passes.
+      </li>
+      <li>
+        Legacy-column integration test создаёт двухминутный verification
+        context от <code>context.Background()</code>, независимо от короткого
+        fixture-query context.
+      </li>
+      <li>
+        Targeted storage/tenant tests, полный <code>go test ./...</code>,
+        <code>go vet ./...</code> и <code>make build</code> прошли. Точный
+        PostgreSQL integration test прошёл за 54.53 s.
+      </li>
+      <li>
+        Первая sandbox-попытка полного suite остановилась на запрете loopback
+        listener для <code>httptest</code>; тот же suite успешно повторён вне
+        sandbox. Production deployment не выполнялся.
+      </li>
+    </ul>
+  </section>
 </main>
 </body>
 </html>

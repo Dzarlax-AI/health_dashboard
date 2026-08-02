@@ -195,7 +195,7 @@ func TestEnsureIndexesIntegration_UpgradesLegacyImportRunsLeaseColumns(t *testin
 	if _, err := db.pool.Exec(ctx, `ALTER TABLE import_runs DROP COLUMN IF EXISTS heartbeat_at, DROP COLUMN IF EXISTS lease_token`); err != nil {
 		t.Fatalf("downgrade import_runs fixture: %v", err)
 	}
-	verifyCtx, cancelVerify := context.WithTimeout(ctx, 2*time.Minute)
+	verifyCtx, cancelVerify := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancelVerify()
 	if err := db.VerifyProvisionedSchemaContext(verifyCtx); err == nil || !strings.Contains(err.Error(), "column:import_runs.heartbeat_at") || !strings.Contains(err.Error(), "column:import_runs.lease_token") {
 		t.Fatalf("schema verifier did not report missing import lease columns: %v", err)

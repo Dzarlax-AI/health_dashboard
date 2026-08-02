@@ -79,7 +79,7 @@ func (l *LegacySetup) initialize(ctx context.Context, schema string) error {
 		return err
 	}
 	defer db.Close()
-	return ensureTenantTables(db)
+	return ensureTenantTables(ctx, db)
 }
 func (l *LegacySetup) CreateFirstTenant(ctx context.Context, req registry.CreateUserReq) (*registry.User, error) {
 	if req.SchemaName == "" {

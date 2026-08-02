@@ -214,7 +214,7 @@ func (p *AdminProvisioner) ensureTenant(ctx context.Context, spec TenantSpec) er
 		if err != nil {
 			return err
 		}
-		err = ensureTenantTables(db)
+		err = ensureTenantTables(ctx, db)
 		db.Close()
 		if err != nil {
 			return fmt.Errorf("tenant table initialization pass %d: %w", i+1, err)
@@ -359,8 +359,8 @@ func (p *AdminProvisioner) assertSchemaMarker(ctx context.Context, catalog marke
 	return nil
 }
 
-func ensureTenantTables(db *storage.DB) error {
-	return db.MigrateSchemaContract()
+func ensureTenantTables(ctx context.Context, db *storage.DB) error {
+	return db.MigrateSchemaContractContext(ctx)
 }
 
 func (p *AdminProvisioner) tenantConfig(spec TenantSpec) (*pgxpool.Config, error) {
