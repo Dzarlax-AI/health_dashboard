@@ -7,6 +7,10 @@ export type DashboardResponse = components["schemas"]["DashboardResponse"];
 export type HealthBriefingResponse = components["schemas"]["HealthBriefingResponse"];
 export type AIBriefingResponse = components["schemas"]["AIBriefingResponse"];
 export type ReadinessHistoryResponse = components["schemas"]["ReadinessHistoryResponse"];
+export type EnergyHistoryResponse =
+  | components["schemas"]["EnergyHistoryDayResponse"]
+  | components["schemas"]["EnergyHistoryHourResponse"];
+export type SessionResponse = components["schemas"]["SessionResponse"];
 
 export class ClientApiError extends Error {
   readonly status: number;
@@ -77,5 +81,21 @@ export async function getReadinessHistory(
     params: { query: { days } },
     signal,
   });
+  return requireData(data, error, response);
+}
+
+export async function getEnergyHistory(
+  days = 14,
+  signal?: AbortSignal,
+): Promise<EnergyHistoryResponse> {
+  const { data, error, response } = await client.GET("/api/energy-history", {
+    params: { query: { granularity: "day", days } },
+    signal,
+  });
+  return requireData(data, error, response);
+}
+
+export async function getSession(signal?: AbortSignal): Promise<SessionResponse> {
+  const { data, error, response } = await client.GET("/api/session", { signal });
   return requireData(data, error, response);
 }

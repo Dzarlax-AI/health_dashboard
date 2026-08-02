@@ -8,6 +8,13 @@ import (
 	"health-receiver/internal/storage"
 )
 
+// SessionResponse exposes only browser capabilities derived from the
+// authenticated request context. It intentionally contains no tenant identity
+// or selector.
+type SessionResponse struct {
+	IsAdmin bool `json:"is_admin"`
+}
+
 // AIBriefingSection is one localized, ordered AI narrative block.
 type AIBriefingSection struct {
 	Key    string `json:"key"`

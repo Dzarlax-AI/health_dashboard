@@ -63,6 +63,7 @@ func TestClientContractHasExpectedPhaseOneOperationsAndNoTenantSelector(t *testi
 		"/api/ai-briefing",
 		"/api/readiness-history",
 		"/api/energy-history",
+		"/api/session",
 	} {
 		if _, ok := paths[expected]; !ok {
 			t.Errorf("missing phase-one operation %s", expected)
@@ -93,6 +94,14 @@ func TestClientContractHasExpectedPhaseOneOperationsAndNoTenantSelector(t *testi
 				}
 			}
 		}
+	}
+
+	schemas := doc["components"].(map[string]any)["schemas"].(map[string]any)
+	session := schemas["SessionResponse"].(map[string]any)
+	sessionProperties := session["properties"].(map[string]any)
+	isAdmin := sessionProperties["is_admin"].(map[string]any)
+	if isAdmin["type"] != "boolean" {
+		t.Fatalf("session is_admin schema = %#v, want boolean", isAdmin)
 	}
 }
 

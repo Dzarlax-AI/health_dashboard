@@ -3,6 +3,7 @@ import { render, screen } from "@testing-library/react";
 import { App } from "./App";
 
 function renderFixture(fixture: string, locale = "en") {
+  vi.stubEnv("VITE_ENABLE_FIXTURES", "true");
   window.history.replaceState({}, "", `/?lang=${locale}&fixture=${fixture}`);
   return render(<App />);
 }
@@ -11,6 +12,7 @@ describe("foundation fixtures", () => {
   afterEach(() => {
     window.history.replaceState({}, "", "/");
     document.documentElement.lang = "en";
+    vi.unstubAllEnvs();
   });
 
   it.each(["normal", "partial", "stale"])(
@@ -18,7 +20,8 @@ describe("foundation fixtures", () => {
     (fixture) => {
       renderFixture(fixture, "ru");
       expect(document.querySelector("[data-readiness-ring]")).toBeInTheDocument();
-      expect(document.querySelector(`[data-resource-state="${fixture}"]`)).toBeInTheDocument();
+      const state = fixture === "normal" ? "ready" : fixture;
+      expect(document.querySelector(`[data-resource-state="${state}"]`)).toBeInTheDocument();
     },
   );
 
@@ -43,6 +46,15 @@ describe("foundation fixtures", () => {
     expect(
       screen.getByRole("region", { name: "Dodatne zdravstvene ocene" }),
     ).toBeInTheDocument();
+  });
+
+  it("ignores fixture query input in an ordinary production build", () => {
+    vi.stubEnv("VITE_ENABLE_FIXTURES", "false");
+    window.history.replaceState({}, "", "/?lang=en&fixture=normal");
+    render(<App />);
+
+    expect(screen.queryByRole("navigation", { name: "Component states" })).not.toBeInTheDocument();
+    expect(screen.getByText("Refreshing today")).toBeInTheDocument();
   });
 
   it("falls back to the English locale for unsupported input", () => {

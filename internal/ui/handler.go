@@ -189,6 +189,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/sections", h.guard(h.sectionsCatalogue))
 	mux.HandleFunc("/api/readiness-history", h.guard(h.readinessHistory))
 	mux.HandleFunc("/api/energy-history", h.guard(h.energyHistory))
+	mux.HandleFunc("GET /api/session", h.guard(h.clientSession))
 	mux.HandleFunc("/api/settings", h.guard(h.userSettings))
 	mux.HandleFunc("/api/settings/test-notify", h.guard(h.adminTestNotify))
 	mux.HandleFunc("/api/import/upload", h.guard(h.adminImportUpload))
@@ -326,7 +327,9 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 		if h.mgr.LegacyMode() {
 			db := h.mgr.LegacyDB()
 			inject := func() {
-				next(w, r.WithContext(ctxdb.WithDB(r.Context(), db, "health")))
+				ctx := ctxdb.WithDB(r.Context(), db, "health")
+				ctx = ctxdb.WithIsAdmin(ctx, true)
+				next(w, r.WithContext(ctx))
 			}
 
 			// Authentik forward auth
@@ -1204,6 +1207,12 @@ func (h *Handler) dashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, resp)
+}
+
+func (h *Handler) clientSession(w http.ResponseWriter, r *http.Request) {
+	jsonResponse(w, clientapi.SessionResponse{
+		IsAdmin: ctxdb.IsAdminFromContext(r.Context()),
+	})
 }
 
 func (h *Handler) metricData(w http.ResponseWriter, r *http.Request) {
