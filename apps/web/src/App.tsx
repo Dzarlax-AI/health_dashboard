@@ -1,3 +1,5 @@
+import { useEffect } from "react";
+
 import { ReadinessRing } from "./components/ReadinessRing";
 import { ScoreCard } from "./components/ScoreCard";
 import { StatusPanel } from "./components/StatusPanel";
@@ -20,6 +22,8 @@ const fixtureNames = [
 ] as const;
 
 type FixtureName = (typeof fixtureNames)[number];
+
+const statusFixtures = new Set<FixtureName>(["loading", "unavailable", "error"]);
 
 const fixtureLabelKeys: Record<FixtureName, MessageKey> = {
   normal: "normalFixture",
@@ -116,7 +120,11 @@ export function App() {
   const params = new URLSearchParams(window.location.search);
   const locale = resolveLocale(params.get("lang"));
   const fixture = resolveFixture(params.get("fixture"));
-  const hasSupportingScores = ["normal", "partial", "stale"].includes(fixture);
+  const hasSupportingScores = !statusFixtures.has(fixture);
+
+  useEffect(() => {
+    document.documentElement.lang = locale;
+  }, [locale]);
 
   return (
     <div className="app-shell" data-locale={locale} data-fixture={fixture}>
@@ -124,7 +132,7 @@ export function App() {
         <a className="app-header__brand" href={fixtureHref(locale, "normal")}>
           {translate(locale, "appTitle")}
         </a>
-        <nav className="locale-switcher" aria-label="Language">
+        <nav className="locale-switcher" aria-label={translate(locale, "languageNav")}>
           {supportedLocales.map((candidate) => (
             <a
               key={candidate}
@@ -138,7 +146,7 @@ export function App() {
       </header>
 
       <main className="page">
-        <nav className="fixture-switcher" aria-label="Component states">
+        <nav className="fixture-switcher" aria-label={translate(locale, "fixtureNav")}>
           {fixtureNames.map((candidate) => (
             <a
               key={candidate}
@@ -158,7 +166,10 @@ export function App() {
         </Surface>
 
         {hasSupportingScores ? (
-          <section className="supporting-scores" aria-label="Supporting score primitives">
+          <section
+            className="supporting-scores"
+            aria-label={translate(locale, "supportingScores")}
+          >
             <ScoreCard
               label={translate(locale, "energy")}
               value={72}

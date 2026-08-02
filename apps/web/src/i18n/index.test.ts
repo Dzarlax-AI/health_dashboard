@@ -11,5 +11,8 @@ describe("localisation", () => {
   it.each(supportedLocales)("has translated readiness copy for %s", (locale) => {
     expect(translate(locale, "readiness")).not.toBe("");
     expect(translate(locale, "normalSummary")).not.toBe("");
+    expect(translate(locale, "languageNav")).not.toBe("");
+    expect(translate(locale, "fixtureNav")).not.toBe("");
+    expect(translate(locale, "supportingScores")).not.toBe("");
   });
 });

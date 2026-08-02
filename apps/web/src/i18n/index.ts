@@ -5,6 +5,9 @@ export type Locale = (typeof supportedLocales)[number];
 const messages = {
   en: {
     appTitle: "Health",
+    languageNav: "Language",
+    fixtureNav: "Component states",
+    supportingScores: "Supporting health scores",
     foundationsTitle: "Today",
     readiness: "Readiness",
     moderate: "Fair",
@@ -34,6 +37,9 @@ const messages = {
   },
   ru: {
     appTitle: "Здоровье",
+    languageNav: "Язык",
+    fixtureNav: "Состояния компонентов",
+    supportingScores: "Дополнительные показатели здоровья",
     foundationsTitle: "Сегодня",
     readiness: "Готовность",
     moderate: "Умеренно",
@@ -63,6 +69,9 @@ const messages = {
   },
   sr: {
     appTitle: "Zdravlje",
+    languageNav: "Jezik",
+    fixtureNav: "Stanja komponenti",
+    supportingScores: "Dodatne zdravstvene ocene",
     foundationsTitle: "Danas",
     readiness: "Spremnost",
     moderate: "Umereno",

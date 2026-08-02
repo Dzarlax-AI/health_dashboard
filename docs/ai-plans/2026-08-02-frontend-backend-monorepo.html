@@ -540,6 +540,44 @@
   </section>
 
   <section class="gate">
+    <h2>PR #221 review update</h2>
+    <p>
+      The review pass tightened accessibility, localisation, numeric input handling,
+      frontend CI coverage, and the container smoke-test boundary without changing
+      production routing or deploying the new UI.
+    </p>
+    <div class="grid">
+      <div class="card">
+        <h3>Corrections applied</h3>
+        <ul>
+          <li>The document language now follows the constrained locale, and navigation and supporting-score landmarks use translated accessible names.</li>
+          <li>Standalone loading, unavailable, and error states now expose a page-level heading.</li>
+          <li>The score gauge treats non-finite values as zero and no longer emits an unused CSS custom property.</li>
+          <li>Shared hero imagery and fixture classification were deduplicated; stylelint casing and spacing findings were corrected.</li>
+          <li>Missing-score Playwright scenarios were separated so failures identify the affected state directly.</li>
+          <li>Frontend typecheck, lint, unit tests, build, and Playwright geometry checks now run as a required CI lane.</li>
+          <li>The container smoke test waits for an authenticated SQL query over the Docker network before database identity bootstrap, removing the socket-versus-TCP readiness race.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Verification completed</h3>
+        <ul>
+          <li><code>make web-check</code>: typecheck, ESLint, 20 Vitest tests, and production build passed.</li>
+          <li><code>make web-test-visual</code>: 19 Chromium/Playwright checks passed.</li>
+          <li><code>make test-unit</code>: the complete non-DB Go suite passed outside the filesystem sandbox required by local <code>httptest</code> listeners.</li>
+          <li>The backend Docker image built successfully with frontend build artefacts excluded from its context.</li>
+          <li>The corrected Docker-network readiness query and tenant database-identity bootstrap completed successfully against a fresh PostgreSQL 17 container.</li>
+          <li>The workflow YAML parsed successfully and the working-tree diff passed whitespace validation.</li>
+        </ul>
+      </div>
+    </div>
+    <p class="muted">
+      GitHub Actions remains the authoritative Linux verification for the full
+      container restart scenario and its Linux ownership assertions.
+    </p>
+  </section>
+
+  <section class="gate">
     <h2>Approval gate</h2>
     <p>
       The architectural direction and first-phase scope were approved in conversation on 2 August 2026:

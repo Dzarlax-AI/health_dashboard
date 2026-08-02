@@ -35,7 +35,7 @@
   --today-energy: #d97706;
   --today-sleep: #5965d9;
 
-  --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+  --font: -apple-system, "BlinkMacSystemFont", "SF Pro Display", "SF Pro Text",
     system-ui, sans-serif;
   --font-mono: "SF Mono", "Fira Code", "Roboto Mono", monospace;
 

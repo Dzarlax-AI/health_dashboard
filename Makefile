@@ -1,4 +1,4 @@
-.PHONY: dev build backfill backfill-force energy-backfill energy-backfill-dry tenant-isolation import contract-generate contract-check web-install web-dev web-check web-test-visual docker-up docker-down test test-unit test-db-storage test-db-ui test-db-ui-fast test-db-energy test-db-energy-smoke test-db-readiness test-db-import test-db-security test-db smoke-health-post
+.PHONY: dev build backfill backfill-force energy-backfill energy-backfill-dry tenant-isolation import contract-generate contract-check web-install web-install-browsers web-dev web-check web-test-visual docker-up docker-down test test-unit test-db-storage test-db-ui test-db-ui-fast test-db-energy test-db-energy-smoke test-db-readiness test-db-import test-db-security test-db smoke-health-post
 
 ADDR ?= :8080
 PNPM ?= pnpm
@@ -47,13 +47,16 @@ contract-check:
 web-install:
 	$(PNPM) install --frozen-lockfile
 
+web-install-browsers:
+	$(PNPM) --dir apps/web exec playwright install chromium
+
 web-dev:
 	$(PNPM) web:dev
 
 web-check:
 	$(PNPM) web:check
 
-web-test-visual:
+web-test-visual: web-install-browsers
 	$(PNPM) web:test:visual
 
 docker-up:

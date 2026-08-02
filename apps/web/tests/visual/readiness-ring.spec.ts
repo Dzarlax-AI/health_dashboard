@@ -75,11 +75,11 @@ test("adjacent copy and confidence state do not move the ring", async ({ page })
   }
 });
 
-test("missing states never fabricate a score", async ({ page }) => {
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  for (const fixture of ["loading", "unavailable", "error"]) {
+for (const fixture of ["loading", "unavailable", "error"] as const) {
+  test(`${fixture} state never fabricates a score`, async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
     await page.goto(`/?lang=en&fixture=${fixture}`);
     await expect(page.locator("[data-readiness-ring]")).toHaveCount(0);
     await expect(page.locator(`[data-resource-state="${fixture}"]`)).toBeVisible();
-  }
-});
+  });
+}

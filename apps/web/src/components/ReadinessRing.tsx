@@ -1,5 +1,3 @@
-import type { CSSProperties } from "react";
-
 export type ScoreTone = "readiness" | "energy" | "sleep" | "neutral";
 export type ScoreSize = "hero" | "card";
 
@@ -13,6 +11,9 @@ interface ReadinessRingProps {
 }
 
 function clampScore(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
   return Math.min(100, Math.max(0, Math.round(value)));
 }
 
@@ -25,7 +26,6 @@ export function ReadinessRing({
   size = "hero",
 }: ReadinessRingProps) {
   const score = clampScore(value);
-  const style = { "--score-progress": score } as CSSProperties;
   const accessibleLabel = [label, `${score}%`, status, subline].filter(Boolean).join(", ");
 
   return (
@@ -35,7 +35,6 @@ export function ReadinessRing({
       data-readiness-ring={tone === "readiness" ? true : undefined}
       data-score={score}
       aria-label={accessibleLabel}
-      style={style}
     >
       <div className="score-gauge__frame" data-gauge-frame>
         <svg

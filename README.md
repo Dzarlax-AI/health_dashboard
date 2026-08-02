@@ -139,8 +139,7 @@ required. Local frontend development does not require Docker:
 pnpm install
 make web-dev                 # Vite on http://127.0.0.1:4173
 make web-check               # contract drift, types, lint, unit tests, build
-pnpm --dir apps/web exec playwright install chromium
-make web-test-visual         # responsive readiness-ring geometry
+make web-test-visual         # install Chromium and test responsive gauge geometry
 ```
 
 Vite proxies same-origin `/api/*` requests to `http://127.0.0.1:8080` by

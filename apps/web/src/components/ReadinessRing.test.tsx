@@ -25,6 +25,9 @@ describe("ReadinessRing", () => {
     [-12, "0"],
     [48.6, "49"],
     [125, "100"],
+    [Number.NaN, "0"],
+    [Number.POSITIVE_INFINITY, "0"],
+    [Number.NEGATIVE_INFINITY, "0"],
   ])("clamps score %s to %s", (value, expected) => {
     render(<ReadinessRing value={value} label="Readiness" />);
     expect(screen.getByLabelText(new RegExp(`Readiness, ${expected}%`))).toHaveAttribute(
