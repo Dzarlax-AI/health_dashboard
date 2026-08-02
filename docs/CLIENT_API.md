@@ -9,17 +9,20 @@ machine-readable contract is [`contracts/openapi.json`](../contracts/openapi.jso
 Existing `/api/*` paths remain canonical. A parallel `/api/v1/*` tree is not
 introduced until there is a real breaking migration to perform.
 
-Response changes are additive by default:
+Contract changes are additive by default:
 
+- existing paths, operations, parameters, and success response schemas remain;
 - existing required fields remain required;
 - existing field types and nullability remain accepted;
+- existing query-parameter values remain accepted;
 - documented enum values are never removed;
 - new optional fields and new open-enum values may be added;
 - legacy fields stay until the supported clients no longer depend on them.
 
 `contracts/openapi.compat.json` is the protected compatibility baseline.
-`make contract-check` rejects a current contract that removes a baseline
-schema, property, required guarantee, accepted type/null value, or enum value.
+`make contract-check` rejects a current contract that removes a baseline path,
+operation, parameter, success response schema, response schema/property,
+required guarantee, accepted type/null value, or enum value.
 Updating that baseline is a breaking-change review action, not a routine
 generation step.
 
@@ -135,3 +138,5 @@ make contract-check     # validate generation drift and compatibility
 
 Do not regenerate `contracts/openapi.compat.json` during normal development.
 It changes only after an explicitly reviewed breaking-contract decision.
+The generator refuses that file as an output path, and CODEOWNERS requires an
+explicit owner review when the protected baseline changes.

@@ -160,11 +160,23 @@
       <li>Documented authentication, locale, timestamp, partial-data, error, and compatibility behavior in <code>docs/CLIENT_API.md</code>.</li>
       <li>Updated <code>AGENTS.md</code> and <code>CLAUDE.md</code> in lockstep.</li>
     </ul>
+    <h3>Review follow-up</h3>
+    <ul>
+      <li>Extended the compatibility gate to protect paths, operations, success response references, parameters, and parameter enums in addition to component schemas.</li>
+      <li>Fixed additive-nullability comparison and added regression cases for both widening and narrowing.</li>
+      <li>Made enum schema-path drift fail generation instead of silently dropping constraints.</li>
+      <li>Modeled fresh-tenant empty briefing enum values and added explicit day/hour discriminator mappings.</li>
+      <li>Kept released iOS AI fields present during empty and partial cold-cache states.</li>
+      <li>Added an object schema for hourly EnergyBank components.</li>
+      <li>Protected the compatibility baseline with generator rejection and <code>CODEOWNERS</code>, and wired <code>contract-check</code> into CI.</li>
+      <li>Rejected the suggested legacy <code>401</code> response after source verification: the current guard redirects invalid API-key requests with <code>302</code>, which the contract already documents.</li>
+    </ul>
     <h3>Checks run</h3>
     <ul>
       <li><code>make contract-check</code></li>
       <li><code>make test-unit</code></li>
       <li><code>go vet ./...</code></li>
+      <li><code>git diff --check</code></li>
       <li>JSON parsing and deterministic generation checks for both contract files</li>
       <li>Static compatibility audit against <code>health-sync/ServerClient.swift</code> and <code>DashboardModels.swift</code></li>
     </ul>

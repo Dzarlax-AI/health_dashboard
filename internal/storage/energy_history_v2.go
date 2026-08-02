@@ -27,7 +27,7 @@ type EnergySnapshotPoint struct {
 	RestoreDelta   int             `json:"restore_delta"`
 	FormulaVersion int             `json:"-"`
 	Flags          []string        `json:"flags"`
-	Components     json.RawMessage `json:"components,omitempty"`
+	Components     json.RawMessage `json:"components,omitempty" jsonschema:"type=object"`
 }
 
 // GetEnergyHistoryV2 returns energy_snapshots rows for the last

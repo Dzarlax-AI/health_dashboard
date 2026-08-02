@@ -13,6 +13,11 @@ func main() {
 	outPath := flag.String("out", "contracts/openapi.json", "output path")
 	flag.Parse()
 
+	if err := rejectProtectedBaseline(*outPath); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
 	document, err := clientapi.GenerateOpenAPI()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -30,4 +35,19 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func rejectProtectedBaseline(outPath string) error {
+	protectedPath, err := filepath.Abs(filepath.Join("contracts", "openapi.compat.json"))
+	if err != nil {
+		return fmt.Errorf("resolve protected compatibility baseline: %w", err)
+	}
+	requestedPath, err := filepath.Abs(filepath.Clean(outPath))
+	if err != nil {
+		return fmt.Errorf("resolve output path: %w", err)
+	}
+	if requestedPath == protectedPath {
+		return fmt.Errorf("refusing to overwrite protected compatibility baseline %s", outPath)
+	}
+	return nil
 }

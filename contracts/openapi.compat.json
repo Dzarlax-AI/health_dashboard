@@ -75,6 +75,10 @@
           "insight",
           "sections",
           "blocks",
+          "sleep",
+          "yesterday",
+          "recovery",
+          "recommendation",
           "generating",
           "disabled"
         ],
@@ -206,7 +210,9 @@
                 "bank": {
                   "type": "integer"
                 },
-                "components": true,
+                "components": {
+                  "type": "object"
+                },
                 "drain_delta": {
                   "type": "integer"
                 },
@@ -797,6 +803,7 @@
           },
           "overall": {
             "enum": [
+              "",
               "good",
               "fair",
               "low"
@@ -805,6 +812,7 @@
           },
           "readiness_band": {
             "enum": [
+              "",
               "optimal",
               "fair",
               "low"
@@ -945,6 +953,7 @@
           },
           "readiness_today_band": {
             "enum": [
+              "",
               "optimal",
               "fair",
               "low"
@@ -1423,6 +1432,10 @@
               "application/json": {
                 "schema": {
                   "discriminator": {
+                    "mapping": {
+                      "day": "#/components/schemas/EnergyHistoryDayResponse",
+                      "hour": "#/components/schemas/EnergyHistoryHourResponse"
+                    },
                     "propertyName": "granularity"
                   },
                   "oneOf": [
@@ -1618,6 +1631,9 @@
   ],
   "x-compatibility-policy": {
     "breaking": [
+      "remove a documented path or operation",
+      "remove or redirect a documented success response schema",
+      "remove a parameter or narrow its accepted values",
       "remove a required response field",
       "change a response field type",
       "remove null from an optional response field",

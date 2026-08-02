@@ -26,10 +26,10 @@ type AIBriefingResponse struct {
 	Insight    string              `json:"insight"`
 	Sections   []AIBriefingSection `json:"sections"`
 	Blocks     map[string]string   `json:"blocks"`
-	Sleep      string              `json:"sleep,omitempty"`
-	Yesterday  string              `json:"yesterday,omitempty"`
-	Recovery   string              `json:"recovery,omitempty"`
-	Recommend  string              `json:"recommendation,omitempty"`
+	Sleep      string              `json:"sleep"`
+	Yesterday  string              `json:"yesterday"`
+	Recovery   string              `json:"recovery"`
+	Recommend  string              `json:"recommendation"`
 	Generating bool                `json:"generating"`
 	Disabled   bool                `json:"disabled"`
 }

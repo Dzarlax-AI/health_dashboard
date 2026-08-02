@@ -45,21 +45,37 @@ func GenerateOpenAPI() ([]byte, error) {
 
 	// These are stable wire enums already defined by server business logic.
 	// Reflection cannot infer enum values from plain Go strings.
-	setPropertyEnum(schemas["HealthBriefingResponse"], []string{"overall"}, "good", "fair", "low")
-	setPropertyEnum(schemas["HealthBriefingResponse"], []string{"readiness_band"}, "optimal", "fair", "low")
-	setPropertyEnum(schemas["HealthBriefingResponse"], []string{"readiness_today_band"}, "optimal", "fair", "low")
-	setNestedPropertyEnum(schemas["HealthBriefingResponse"], "sections", "status", "good", "fair", "low")
-	setNestedPropertyEnum(schemas["HealthBriefingResponse"], "energy_bank", "action_verdict", "push_hard", "moderate", "active_recovery", "rest")
-	setNestedPropertyEnum(schemas["HealthBriefingResponse"], "readiness_serving", "status",
-		"fresh", "missing", "stale", "data_accruing", "low_coverage", "capped")
-	setNestedPropertyEnum(schemas["HealthBriefingResponse"], "readiness_serving", "confidence",
-		"final", "provisional", "low")
-	setNestedPropertyEnum(schemas["ReadinessHistoryResponse"], "points", "band",
-		"optimal", "fair", "low")
-	setNestedPropertyEnum(schemas["EnergyHistoryDayResponse"], "points", "verdict",
-		"push_hard", "moderate", "active_recovery", "rest")
+	for _, enum := range []struct {
+		schema string
+		path   []string
+		values []string
+	}{
+		{"HealthBriefingResponse", []string{"overall"}, []string{"", "good", "fair", "low"}},
+		{"HealthBriefingResponse", []string{"readiness_band"}, []string{"", "optimal", "fair", "low"}},
+		{"HealthBriefingResponse", []string{"readiness_today_band"}, []string{"", "optimal", "fair", "low"}},
+	} {
+		if err := setPropertyEnum(schemas[enum.schema], enum.path, enum.values...); err != nil {
+			return nil, fmt.Errorf("schema %s: %w", enum.schema, err)
+		}
+	}
+	for _, enum := range []struct {
+		schema string
+		parent string
+		child  string
+		values []string
+	}{
+		{"HealthBriefingResponse", "sections", "status", []string{"good", "fair", "low"}},
+		{"HealthBriefingResponse", "energy_bank", "action_verdict", []string{"push_hard", "moderate", "active_recovery", "rest"}},
+		{"HealthBriefingResponse", "readiness_serving", "status", []string{"fresh", "missing", "stale", "data_accruing", "low_coverage", "capped"}},
+		{"HealthBriefingResponse", "readiness_serving", "confidence", []string{"final", "provisional", "low"}},
+		{"ReadinessHistoryResponse", "points", "band", []string{"optimal", "fair", "low"}},
+		{"EnergyHistoryDayResponse", "points", "verdict", []string{"push_hard", "moderate", "active_recovery", "rest"}},
+	} {
+		if err := setNestedPropertyEnum(schemas[enum.schema], enum.parent, enum.child, enum.values...); err != nil {
+			return nil, fmt.Errorf("schema %s: %w", enum.schema, err)
+		}
+	}
 	allowPropertyNull(schemas["HealthBriefingResponse"], "sleep")
-	allowPropertyNull(schemas["DashboardResponse"], "cards")
 
 	doc := map[string]any{
 		"openapi": OpenAPIVersion,
@@ -94,6 +110,9 @@ func GenerateOpenAPI() ([]byte, error) {
 		"x-compatibility-policy": map[string]any{
 			"default": "additive",
 			"breaking": []any{
+				"remove a documented path or operation",
+				"remove or redirect a documented success response schema",
+				"remove a parameter or narrow its accepted values",
 				"remove a required response field",
 				"change a response field type",
 				"remove null from an optional response field",
@@ -128,7 +147,13 @@ func clientPaths() map[string]any {
 							schemaRef("EnergyHistoryDayResponse"),
 							schemaRef("EnergyHistoryHourResponse"),
 						},
-						"discriminator": map[string]any{"propertyName": "granularity"},
+						"discriminator": map[string]any{
+							"propertyName": "granularity",
+							"mapping": map[string]any{
+								"day":  "#/components/schemas/EnergyHistoryDayResponse",
+								"hour": "#/components/schemas/EnergyHistoryHourResponse",
+							},
+						},
 					},
 				},
 			},
@@ -299,22 +324,23 @@ func removeSchemaMetadata(value any) {
 	}
 }
 
-func setPropertyEnum(root any, path []string, values ...string) {
+func setPropertyEnum(root any, path []string, values ...string) error {
 	schema, ok := root.(map[string]any)
 	if !ok {
-		return
+		return fmt.Errorf("enum target %s: root is not a schema", strings.Join(path, "."))
 	}
 	for _, part := range path {
 		properties, ok := schema["properties"].(map[string]any)
 		if !ok {
-			return
+			return fmt.Errorf("enum target %s: properties missing before %q", strings.Join(path, "."), part)
 		}
 		schema, ok = properties[part].(map[string]any)
 		if !ok {
-			return
+			return fmt.Errorf("enum target %s: property %q missing", strings.Join(path, "."), part)
 		}
 	}
 	schema["enum"] = stringsToAny(values)
+	return nil
 }
 
 func allowPropertyNull(root any, property string) {
@@ -353,38 +379,38 @@ func allowNullableArrays(value any) {
 	}
 }
 
-func setNestedPropertyEnum(root any, parent, child string, values ...string) {
+func setNestedPropertyEnum(root any, parent, child string, values ...string) error {
 	schema, ok := root.(map[string]any)
 	if !ok {
-		return
+		return fmt.Errorf("enum target %s.%s: root is not a schema", parent, child)
 	}
 	properties, ok := schema["properties"].(map[string]any)
 	if !ok {
-		return
+		return fmt.Errorf("enum target %s.%s: root properties missing", parent, child)
 	}
 	parentSchema, ok := properties[parent].(map[string]any)
 	if !ok {
-		return
+		return fmt.Errorf("enum target %s.%s: parent missing", parent, child)
 	}
-	target := findObjectSchema(parentSchema)
-	if target == nil {
-		return
-	}
-	if items, ok := target["items"].(map[string]any); ok {
+	target := parentSchema
+	if items, ok := parentSchema["items"].(map[string]any); ok {
 		target = findObjectSchema(items)
+	} else {
+		target = findObjectSchema(parentSchema)
 	}
 	if target == nil {
-		return
+		return fmt.Errorf("enum target %s.%s: object schema missing", parent, child)
 	}
 	childProperties, ok := target["properties"].(map[string]any)
 	if !ok {
-		return
+		return fmt.Errorf("enum target %s.%s: child properties missing", parent, child)
 	}
 	childSchema, ok := childProperties[child].(map[string]any)
 	if !ok {
-		return
+		return fmt.Errorf("enum target %s.%s: child missing", parent, child)
 	}
 	childSchema["enum"] = stringsToAny(values)
+	return nil
 }
 
 func findObjectSchema(schema map[string]any) map[string]any {
@@ -403,7 +429,7 @@ func findObjectSchema(schema map[string]any) map[string]any {
 			}
 		}
 	}
-	return schema
+	return nil
 }
 
 func stringsToAny(values []string) []any {
@@ -505,7 +531,197 @@ func CompatibleResponseContract(baseline, current []byte) error {
 			return err
 		}
 	}
+	if err := compatibleOperations(oldDoc, newDoc); err != nil {
+		return err
+	}
 	return nil
+}
+
+func compatibleOperations(oldDoc, newDoc map[string]any) error {
+	oldPaths, ok := oldDoc["paths"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("baseline: paths missing")
+	}
+	newPaths, ok := newDoc["paths"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("current: paths missing")
+	}
+
+	pathNames := make([]string, 0, len(oldPaths))
+	for path := range oldPaths {
+		pathNames = append(pathNames, path)
+	}
+	sort.Strings(pathNames)
+	for _, path := range pathNames {
+		oldPath, ok := oldPaths[path].(map[string]any)
+		if !ok {
+			return fmt.Errorf("paths.%s is not a path item", path)
+		}
+		newPath, ok := newPaths[path].(map[string]any)
+		if !ok {
+			return fmt.Errorf("path %s removed", path)
+		}
+		for _, method := range []string{"get", "put", "post", "delete", "options", "head", "patch", "trace"} {
+			oldOperation, exists := oldPath[method]
+			if !exists {
+				continue
+			}
+			newOperation, exists := newPath[method]
+			if !exists {
+				return fmt.Errorf("operation %s %s removed", strings.ToUpper(method), path)
+			}
+			oldOperationMap, oldOK := oldOperation.(map[string]any)
+			newOperationMap, newOK := newOperation.(map[string]any)
+			if !oldOK || !newOK {
+				return fmt.Errorf("operation %s %s changed incompatibly", strings.ToUpper(method), path)
+			}
+			operationPath := "paths." + path + "." + method
+			if err := compatibleSuccessResponse(operationPath, oldOperationMap, newOperationMap); err != nil {
+				return err
+			}
+			if err := compatibleParameters(operationPath, oldOperationMap, newOperationMap); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func compatibleSuccessResponse(path string, oldOperation, newOperation map[string]any) error {
+	oldSchema, err := operationResponseSchema(oldOperation, "200")
+	if err != nil {
+		return fmt.Errorf("%s baseline: %w", path, err)
+	}
+	newSchema, err := operationResponseSchema(newOperation, "200")
+	if err != nil {
+		return fmt.Errorf("%s current: %w", path, err)
+	}
+	if err := requireSuperset(path+".responses.200.refs", referenceSet(oldSchema), referenceSet(newSchema)); err != nil {
+		return err
+	}
+	if err := compatibleDiscriminatorMapping(path+".responses.200", oldSchema, newSchema); err != nil {
+		return err
+	}
+	return compatibleSchema(path+".responses.200.schema", oldSchema, newSchema)
+}
+
+func operationResponseSchema(operation map[string]any, status string) (map[string]any, error) {
+	responses, ok := operation["responses"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("responses missing")
+	}
+	response, ok := responses[status].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("response %s missing", status)
+	}
+	content, ok := response["content"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("response %s content missing", status)
+	}
+	mediaType, ok := content["application/json"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("response %s application/json missing", status)
+	}
+	schema, ok := mediaType["schema"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("response %s schema missing", status)
+	}
+	return schema, nil
+}
+
+func compatibleParameters(path string, oldOperation, newOperation map[string]any) error {
+	oldParameters := parameterMap(oldOperation["parameters"])
+	newParameters := parameterMap(newOperation["parameters"])
+	keys := make([]string, 0, len(oldParameters))
+	for key := range oldParameters {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		oldParameter := oldParameters[key]
+		newParameter, ok := newParameters[key]
+		if !ok {
+			return fmt.Errorf("%s parameter %s removed", path, key)
+		}
+		oldRequired, _ := oldParameter["required"].(bool)
+		newRequired, _ := newParameter["required"].(bool)
+		if !oldRequired && newRequired {
+			return fmt.Errorf("%s parameter %s became required", path, key)
+		}
+		oldSchema, oldOK := oldParameter["schema"].(map[string]any)
+		newSchema, newOK := newParameter["schema"].(map[string]any)
+		if oldOK && !newOK {
+			return fmt.Errorf("%s parameter %s schema removed", path, key)
+		}
+		if oldOK {
+			if err := compatibleSchema(path+".parameters."+key, oldSchema, newSchema); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func parameterMap(value any) map[string]map[string]any {
+	out := map[string]map[string]any{}
+	parameters, _ := value.([]any)
+	for _, rawParameter := range parameters {
+		parameter, ok := rawParameter.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := parameter["name"].(string)
+		location, _ := parameter["in"].(string)
+		if name != "" && location != "" {
+			out[location+":"+name] = parameter
+		}
+	}
+	return out
+}
+
+func compatibleDiscriminatorMapping(path string, oldSchema, newSchema map[string]any) error {
+	oldDiscriminator, _ := oldSchema["discriminator"].(map[string]any)
+	if oldDiscriminator == nil {
+		return nil
+	}
+	newDiscriminator, _ := newSchema["discriminator"].(map[string]any)
+	if newDiscriminator == nil {
+		return fmt.Errorf("%s discriminator removed", path)
+	}
+	if oldDiscriminator["propertyName"] != newDiscriminator["propertyName"] {
+		return fmt.Errorf("%s discriminator property changed", path)
+	}
+	oldMapping, _ := oldDiscriminator["mapping"].(map[string]any)
+	newMapping, _ := newDiscriminator["mapping"].(map[string]any)
+	for key, oldRef := range oldMapping {
+		if newMapping[key] != oldRef {
+			return fmt.Errorf("%s discriminator mapping %q removed or changed", path, key)
+		}
+	}
+	return nil
+}
+
+func referenceSet(value any) map[string]struct{} {
+	out := map[string]struct{}{}
+	var collect func(any)
+	collect = func(candidate any) {
+		switch typed := candidate.(type) {
+		case map[string]any:
+			if ref, ok := typed["$ref"].(string); ok {
+				encoded, _ := json.Marshal(ref)
+				out[string(encoded)] = struct{}{}
+			}
+			for _, child := range typed {
+				collect(child)
+			}
+		case []any:
+			for _, child := range typed {
+				collect(child)
+			}
+		}
+	}
+	collect(value)
+	return out
 }
 
 func componentSchemas(doc map[string]any) (map[string]any, error) {
@@ -593,7 +809,8 @@ func valueSet(value any) map[string]struct{} {
 	out := map[string]struct{}{}
 	switch typed := value.(type) {
 	case string:
-		out[typed] = struct{}{}
+		encoded, _ := json.Marshal(typed)
+		out[string(encoded)] = struct{}{}
 	case []any:
 		for _, item := range typed {
 			encoded, _ := json.Marshal(item)

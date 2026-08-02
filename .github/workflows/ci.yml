@@ -67,6 +67,9 @@ jobs:
       - name: Test
         run: make test-unit
 
+      - name: Verify client API contract
+        run: make contract-check
+
       - name: Test tenant schema release gate scripts
         run: |
           bash -n scripts/deploy-tenant-schema-gate.sh scripts/deploy-tenant-schema-gate_test.sh
