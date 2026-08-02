@@ -1,16 +1,33 @@
 import { render, screen } from "@testing-library/react";
 
+import { ClientApiError } from "./api/client";
 import { App } from "./App";
+import { fixtureResources } from "./features/dashboard/fixtures";
+import { loadDashboardResources } from "./features/dashboard/loader";
+
+vi.mock("./features/dashboard/loader", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("./features/dashboard/loader")>();
+  return {
+    ...actual,
+    loadDashboardResources: vi.fn(),
+  };
+});
+
+const mockedLoadDashboardResources = vi.mocked(loadDashboardResources);
 
 function renderFixture(fixture: string, locale = "en") {
+  vi.stubEnv("VITE_ENABLE_FIXTURES", "true");
   window.history.replaceState({}, "", `/?lang=${locale}&fixture=${fixture}`);
   return render(<App />);
 }
 
 describe("foundation fixtures", () => {
   afterEach(() => {
+    mockedLoadDashboardResources.mockReset();
     window.history.replaceState({}, "", "/");
     document.documentElement.lang = "en";
+    vi.unstubAllEnvs();
   });
 
   it.each(["normal", "partial", "stale"])(
@@ -18,7 +35,8 @@ describe("foundation fixtures", () => {
     (fixture) => {
       renderFixture(fixture, "ru");
       expect(document.querySelector("[data-readiness-ring]")).toBeInTheDocument();
-      expect(document.querySelector(`[data-resource-state="${fixture}"]`)).toBeInTheDocument();
+      const state = fixture === "normal" ? "ready" : fixture;
+      expect(document.querySelector(`[data-resource-state="${state}"]`)).toBeInTheDocument();
     },
   );
 
@@ -43,6 +61,33 @@ describe("foundation fixtures", () => {
     expect(
       screen.getByRole("region", { name: "Dodatne zdravstvene ocene" }),
     ).toBeInTheDocument();
+  });
+
+  it("ignores fixture query input in an ordinary production build", async () => {
+    vi.stubEnv("VITE_ENABLE_FIXTURES", "false");
+    window.history.replaceState({}, "", "/?lang=en&fixture=normal");
+    mockedLoadDashboardResources.mockResolvedValue(fixtureResources("en", "normal"));
+    const view = render(<App />);
+
+    expect(screen.queryByRole("navigation", { name: "Component states" })).not.toBeInTheDocument();
+    expect(screen.getByText("Refreshing today")).toBeInTheDocument();
+    expect(await screen.findByText("You can move with more confidence today.")).toBeInTheDocument();
+    view.unmount();
+  });
+
+  it("encodes the complete post-login destination", async () => {
+    vi.stubEnv("VITE_ENABLE_FIXTURES", "false");
+    window.history.replaceState({}, "", "/?lang=en");
+    mockedLoadDashboardResources.mockRejectedValue(
+      new ClientApiError(401, "authentication required"),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByRole("link", { name: "Sign in" })).toHaveAttribute(
+      "href",
+      "/login?next=%2F%3Flang%3Den",
+    );
   });
 
   it("falls back to the English locale for unsupported input", () => {

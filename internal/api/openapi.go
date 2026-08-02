@@ -16,7 +16,7 @@ import (
 
 const (
 	OpenAPIVersion  = "3.1.0"
-	ContractVersion = "0.1.0"
+	ContractVersion = "0.2.0"
 )
 
 // GenerateOpenAPI builds the canonical public client contract. Route metadata
@@ -32,6 +32,7 @@ func GenerateOpenAPI() ([]byte, error) {
 		"EnergyHistoryHourResponse": EnergyHistoryHourResponse{},
 		"HealthBriefingResponse":    health.BriefingResponse{},
 		"ReadinessHistoryResponse":  ReadinessHistoryResponse{},
+		"SessionResponse":           SessionResponse{},
 	} {
 		schema, err := reflectedSchema(value)
 		if err != nil {
@@ -198,6 +199,14 @@ func clientPaths() map[string]any {
 		},
 		"/api/energy-history": map[string]any{
 			"get": energyOperation,
+		},
+		"/api/session": map[string]any{
+			"get": getOperation(
+				"getSession",
+				"Authenticated browser capabilities",
+				nil,
+				jsonResponseRef("SessionResponse"),
+			),
 		},
 	}
 }
