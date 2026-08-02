@@ -1,6 +1,7 @@
-.PHONY: dev build backfill backfill-force energy-backfill energy-backfill-dry tenant-isolation import contract-generate contract-check docker-up docker-down test test-unit test-db-storage test-db-ui test-db-ui-fast test-db-energy test-db-energy-smoke test-db-readiness test-db-import test-db-security test-db smoke-health-post
+.PHONY: dev build backfill backfill-force energy-backfill energy-backfill-dry tenant-isolation import contract-generate contract-check web-install web-dev web-check web-test-visual docker-up docker-down test test-unit test-db-storage test-db-ui test-db-ui-fast test-db-energy test-db-energy-smoke test-db-readiness test-db-import test-db-security test-db smoke-health-post
 
 ADDR ?= :8080
+PNPM ?= pnpm
 
 dev:
 	DATABASE_URL=$(DATABASE_URL) ADDR=$(ADDR) go run ./cmd/server
@@ -42,6 +43,18 @@ contract-generate:
 
 contract-check:
 	go test ./internal/api -count=1
+
+web-install:
+	$(PNPM) install --frozen-lockfile
+
+web-dev:
+	$(PNPM) web:dev
+
+web-check:
+	$(PNPM) web:check
+
+web-test-visual:
+	$(PNPM) web:test:visual
 
 docker-up:
 	docker compose up -d --build

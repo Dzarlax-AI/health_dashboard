@@ -1,0 +1,18 @@
+{
+  "name": "health-dashboard",
+  "private": true,
+  "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "web:dev": "pnpm --filter @health/web dev",
+    "web:build": "pnpm --filter @health/web build",
+    "web:typecheck": "pnpm --filter @health/web typecheck",
+    "web:lint": "pnpm --filter @health/web lint",
+    "web:test": "pnpm --filter @health/web test",
+    "web:test:visual": "pnpm --filter @health/web test:visual",
+    "web:contract:generate": "pnpm --filter @health/web contract:generate",
+    "web:check": "pnpm --filter @health/web check"
+  }
+}
