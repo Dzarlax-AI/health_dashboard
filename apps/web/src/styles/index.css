@@ -803,6 +803,7 @@ textarea {
   .app-header__links {
     order: 3;
     width: 100%;
+    gap: var(--space-3);
     justify-content: space-between;
   }
 
