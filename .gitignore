@@ -48,3 +48,11 @@ hae_*.json
 # session state). The /docs/superpowers/plans/*.md artefacts are
 # tracked; everything else is per-session scratch.
 .superpowers/
+
+# TypeScript workspace
+node_modules/
+.pnpm-store/
+*.tsbuildinfo
+apps/*/dist/
+apps/*/playwright-report/
+apps/*/test-results/

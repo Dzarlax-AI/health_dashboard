@@ -75,6 +75,33 @@ jobs:
           bash -n scripts/deploy-tenant-schema-gate.sh scripts/deploy-tenant-schema-gate_test.sh
           bash scripts/deploy-tenant-schema-gate_test.sh
 
+  web:
+    name: Web Typecheck, Lint & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install pinned dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check frontend
+        run: make web-check
+
+      - name: Install Playwright browser dependencies
+        run: pnpm --dir apps/web exec playwright install --with-deps chromium
+
+      - name: Test responsive score geometry
+        run: make web-test-visual
+
   db-tests:
     name: DB Tests
     runs-on: ubuntu-latest
@@ -203,7 +230,7 @@ jobs:
 
   container-smoke:
     name: Container Smoke & Restart
-    needs: [build, db-tests]
+    needs: [build, db-tests, web]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -228,8 +255,13 @@ jobs:
           echo "::add-mask::$master_secret"
 
           cleanup() {
+            status=$?
+            if test "$status" -ne 0; then
+              docker logs health-ci-db >&2 || true
+            fi
             docker rm -f health-ci-app health-ci-db >/dev/null 2>&1 || true
             docker network rm health-ci >/dev/null 2>&1 || true
+            return "$status"
           }
           trap cleanup EXIT
 
@@ -242,15 +274,20 @@ jobs:
           docker run -d --name health-ci-db --network health-ci \
             -e POSTGRES_DB=health -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD="$root_password" \
             postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
-          ready=0
-          for i in $(seq 1 30); do
-            if docker exec health-ci-db pg_isready -U postgres -d health >/dev/null; then ready=1; break; fi
-            sleep 1
-          done
-          test "$ready" = "1"
+          docker run --rm --network health-ci -e PGPASSWORD="$root_password" \
+            postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193 \
+            /bin/sh -ec '
+              for i in $(seq 1 30); do
+                if test "$(psql -h health-ci-db -U postgres -d health -Atc "SELECT 1" 2>/dev/null)" = "1"; then
+                  exit 0
+                fi
+                sleep 1
+              done
+              exit 1
+            '
 
           docker run --rm --user 0:0 --network health-ci -v "$manifest_dir:/bootstrap" \
-            -e TENANT_DB_BOOTSTRAP_DATABASE_URL="postgres://postgres:${root_password}@health-ci-db:5432/health" \
+            -e TENANT_DB_BOOTSTRAP_DATABASE_URL="postgres://postgres:${root_password}@health-ci-db:5432/health?sslmode=disable" \
             -e HEALTH_ADMIN_DB_PASSWORD="$admin_password" \
             -e HEALTH_REGISTRY_DB_PASSWORD="$registry_password" \
             --entrypoint /app/tenant_isolation health-dashboard:ci \

@@ -123,6 +123,30 @@ Data is stored in layers:
 
 The pre-aggregated tables are built automatically on startup and after each sync. They can be wiped and rebuilt at any time from `metric_points`.
 
+## Frontend Workspace
+
+The repository includes a lightweight pnpm workspace under `apps/web` for the
+incremental React + TypeScript frontend migration. The current Go-rendered UI
+remains the production route until the dedicated routing issue is completed.
+Both clients consume the canonical OpenAPI contract in `contracts/openapi.json`;
+the browser never receives database credentials, API keys, or a tenant/schema
+selector.
+
+Node.js 24+ and the pinned pnpm version from the root `package.json` are
+required. Local frontend development does not require Docker:
+
+```bash
+pnpm install
+make web-dev                 # Vite on http://127.0.0.1:4173
+make web-check               # contract drift, types, lint, unit tests, build
+make web-test-visual         # install Chromium and test responsive gauge geometry
+```
+
+Vite proxies same-origin `/api/*` requests to `http://127.0.0.1:8080` by
+default. Set `HEALTH_API_PROXY_TARGET` to point at a different local backend.
+The checked-in component fixture supports `?lang=en|ru|sr` and
+`?fixture=normal|partial|stale|loading|unavailable|error`.
+
 ## Quick Start
 
 The standalone Compose stack uses PostgreSQL 17, creates the restricted
