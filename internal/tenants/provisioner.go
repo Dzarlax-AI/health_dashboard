@@ -210,7 +210,7 @@ func (p *AdminProvisioner) ensureTenant(ctx context.Context, spec TenantSpec) er
 		return err
 	}
 	for i := 0; i < 2; i++ {
-		db, err := p.openTenantDB(ctx, spec)
+		db, err := p.openProvisioningTenantDB(ctx, spec)
 		if err != nil {
 			return err
 		}
@@ -223,7 +223,7 @@ func (p *AdminProvisioner) ensureTenant(ctx context.Context, spec TenantSpec) er
 	if err := p.verifyRestrictedSchemaAndIsolation(ctx, spec); err != nil {
 		return fmt.Errorf("pre-marker restricted tenant proof: %w", err)
 	}
-	markerDB, err := p.openTenantDB(ctx, spec)
+	markerDB, err := p.openProvisioningTenantDB(ctx, spec)
 	if err != nil {
 		return err
 	}
@@ -363,7 +363,7 @@ func ensureTenantTables(ctx context.Context, db *storage.DB) error {
 	return db.MigrateSchemaContractContext(ctx)
 }
 
-func (p *AdminProvisioner) tenantConfig(spec TenantSpec) (*pgxpool.Config, error) {
+func (p *AdminProvisioner) provisioningTenantConfig(spec TenantSpec) (*pgxpool.Config, error) {
 	password, err := p.deriver.Derive(spec.TenantID, spec.DBRole, spec.CredentialVersion)
 	if err != nil {
 		return nil, err
@@ -378,8 +378,13 @@ func (p *AdminProvisioner) tenantConfig(spec TenantSpec) (*pgxpool.Config, error
 	return cfg, nil
 }
 
-func (p *AdminProvisioner) openTenantPool(ctx context.Context, spec TenantSpec) (*pgxpool.Pool, error) {
-	cfg, err := p.tenantConfig(spec)
+// openProvisioningTenantPool is a short-lived pre-activation connection class.
+// It authenticates as the future tenant role so provisioning proves real
+// ownership and ACL isolation before the registry marks the tenant ready. It is
+// never cached by Manager and never serves requests; using the registry
+// connection here would bypass the proof this path is designed to perform.
+func (p *AdminProvisioner) openProvisioningTenantPool(ctx context.Context, spec TenantSpec) (*pgxpool.Pool, error) {
+	cfg, err := p.provisioningTenantConfig(spec)
 	if err != nil {
 		return nil, err
 	}
@@ -394,8 +399,8 @@ func (p *AdminProvisioner) openTenantPool(ctx context.Context, spec TenantSpec) 
 	return pool, nil
 }
 
-func (p *AdminProvisioner) openTenantDB(ctx context.Context, spec TenantSpec) (*storage.DB, error) {
-	pool, err := p.openTenantPool(ctx, spec)
+func (p *AdminProvisioner) openProvisioningTenantDB(ctx context.Context, spec TenantSpec) (*storage.DB, error) {
+	pool, err := p.openProvisioningTenantPool(ctx, spec)
 	if err != nil {
 		return nil, err
 	}
@@ -410,7 +415,7 @@ func (p *AdminProvisioner) VerifyTenant(ctx context.Context, spec TenantSpec) er
 }
 
 func (p *AdminProvisioner) verifyRestrictedSchemaAndIsolation(ctx context.Context, spec TenantSpec) error {
-	db, err := p.openTenantDB(ctx, spec)
+	db, err := p.openProvisioningTenantDB(ctx, spec)
 	if err != nil {
 		return err
 	}
@@ -438,7 +443,7 @@ func (p *AdminProvisioner) verifyRestrictedSchemaAndIsolation(ctx context.Contex
 }
 
 func (p *AdminProvisioner) verifyTenantIdentity(ctx context.Context, spec TenantSpec) error {
-	db, err := p.openTenantDB(ctx, spec)
+	db, err := p.openProvisioningTenantDB(ctx, spec)
 	if err != nil {
 		return err
 	}

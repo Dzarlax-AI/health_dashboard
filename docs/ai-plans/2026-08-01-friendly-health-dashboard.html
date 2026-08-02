@@ -636,7 +636,12 @@ CGO_ENABLED=0 make build</pre>
   <section>
     <h2>10. Данные, безопасность и доставка</h2>
     <ul>
-      <li><strong>DB:</strong> миграция не требуется; score вычисляется из существующих sleep fields.</li>
+      <li>
+        <strong>DB:</strong> для первой фазы новый сохранённый score и миграция
+        данных не требуются; score вычисляется из существующих sleep fields.
+        Раздел 15 описывает обязательную follow-up migration schema contract v5
+        для deployment-only partial index.
+      </li>
       <li><strong>Auth/permissions:</strong> маршруты и tenant scoping не меняются.</li>
       <li><strong>API:</strong> только additive optional поля в BriefingResponse.</li>
       <li><strong>Privacy:</strong> фон не содержит health data; screenshots делаются только на synthetic review tenant.</li>
@@ -1197,6 +1202,108 @@ bash scripts/deploy-tenant-schema-gate_test.sh</pre>
         Первая sandbox-попытка полного suite остановилась на запрете loopback
         listener для <code>httptest</code>; тот же suite успешно повторён вне
         sandbox. Production deployment не выполнялся.
+      </li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>18. Follow-up: pre-activation connection classes</h2>
+    <p class="callout">
+      Gate пройден сообщением пользователя «Чини» после review коммита
+      <code>f5a346d</code>. Изменение устраняет неоднозначность названий и
+      документации, не ослабляя tenant ownership/ACL proof.
+    </p>
+
+    <h3>Текущее и желаемое поведение</h3>
+    <ul>
+      <li>
+        <code>AdminProvisioner.openTenantPool</code> выглядит как runtime pool,
+        хотя это короткоживущее pre-activation соединение под tenant role.
+      </li>
+      <li>
+        Оно намеренно создаёт schema objects и проверяет доступ от имени
+        будущего tenant owner до атомарной установки
+        <code>db_isolation_ready=true</code>; запросы пользователей через него
+        не обслуживаются.
+      </li>
+      <li>
+        Runtime pools принадлежат <code>tenants.Manager</code> и остаются
+        fail-closed до active + isolation-ready + exact contract.
+      </li>
+    </ul>
+
+    <h3>План реализации и файлы</h3>
+    <ol>
+      <li>
+        Переименовать helpers в <code>provisioningTenantConfig</code>,
+        <code>openProvisioningTenantPool</code> и
+        <code>openProvisioningTenantDB</code>; обновить все call sites и тест.
+      </li>
+      <li>
+        Добавить load-bearing comment о границе provisioning/runtime и причине,
+        почему migration нельзя переносить на registry connection.
+      </li>
+      <li>
+        Синхронно закрепить invariant в <code>AGENTS.md</code> и
+        <code>CLAUDE.md</code>.
+      </li>
+      <li>
+        Исправить противоречие раздела 10: для score migration данных не нужна,
+        но schema contract v5 требует deployment migration из раздела 15.
+      </li>
+      <li>
+        Запустить targeted tenant tests, полный Go suite, vet, build и
+        <code>git diff --check</code>.
+      </li>
+    </ol>
+
+    <h3>Риски, rollback и открытые вопросы</h3>
+    <ul>
+      <li>
+        Поведение соединений не меняется: это rename/documentation hardening.
+        Перенос DDL на admin/registry authority намеренно исключён, поскольку
+        скрыл бы ошибки owner/ACL до activation.
+      </li>
+      <li>
+        Rollback — обратное переименование helpers и документации; DB/API/UI
+        не затрагиваются.
+      </li>
+      <li>
+        Блокирующих вопросов нет. GitHub reply/thread resolution и deployment
+        остаются отдельными действиями.
+      </li>
+    </ul>
+
+    <h3>Approval gate</h3>
+    <p>
+      Пользователь явно одобрил этот scope. Реализация выполняется в
+      <code>codex/friendly-health-dashboard</code>.
+    </p>
+
+    <h3>Implementation record</h3>
+    <ul>
+      <li>
+        Provisioning helpers и их call sites переименованы; имя
+        <code>openTenantPool</code> осталось только у
+        <code>tenants.Manager</code>, где действует readiness gate.
+      </li>
+      <li>
+        Load-bearing comment и twin project instructions фиксируют, что
+        pre-activation connection работает под future tenant role, не
+        обслуживает requests и доказывает ownership/ACL до activation.
+      </li>
+      <li>
+        Раздел 10 теперь различает отсутствие data migration для sleep score и
+        обязательную schema-contract v5 migration для partial index.
+      </li>
+      <li>
+        Targeted tenant tests, полный <code>go test ./...</code>,
+        <code>go vet ./...</code>, <code>make build</code> и
+        <code>git diff --check</code> прошли. DB/API/UI behavior не менялся.
+      </li>
+      <li>
+        GitHub reply/thread resolution и deployment не выполнялись; этот
+        implementation record входит в follow-up commit существующего PR.
       </li>
     </ul>
   </section>
