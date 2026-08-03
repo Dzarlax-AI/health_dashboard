@@ -1,6 +1,8 @@
 services:
   health-receiver:
-    image: ${HEALTH_BACKEND_IMAGE:?resolve an immutable compatible backend image first}
+    # HEALTH_IMAGE is the audited override injected by the mandatory tenant
+    # schema release gate. Ordinary paired releases use HEALTH_BACKEND_IMAGE.
+    image: ${HEALTH_IMAGE:-${HEALTH_BACKEND_IMAGE:?resolve an immutable compatible backend image first}}
     env_file:
       - ${HEALTH_RUNTIME_ENV_FILE:-.env}
     restart: unless-stopped

@@ -58,6 +58,9 @@ assert_config() {
   mode=$1
   release=$tmp/$mode.env
   rendered=$tmp/$mode.yml
+  gate_rendered=$tmp/$mode-gate.yml
+  gate_digest=sha256:$(printf '9%.0s' $(seq 1 64))
+  gate_image=ghcr.io/dzarlax-ai/health_dashboard@$gate_digest
   "$resolver" --mode "$mode" --host health.example.com --output "$release"
   HEALTH_RUNTIME_ENV_FILE="$tmp/runtime.env" docker compose --env-file "$release" -f "$compose" config --format json > "$rendered"
   python3 - "$mode" "$rendered" <<'PY'
@@ -104,6 +107,17 @@ elif mode == "cutover":
 else:
     assert f["traefik.enable"] == "false"
     assert "__frontend_disabled__" in root
+PY
+  HEALTH_IMAGE="$gate_image" HEALTH_RUNTIME_ENV_FILE="$tmp/runtime.env" \
+    docker compose --env-file "$release" -f "$compose" config --format json > "$gate_rendered"
+  python3 - "$gate_image" "$gate_rendered" <<'PY'
+import json, sys
+
+expected, path = sys.argv[1:]
+with open(path, encoding="utf-8") as stream:
+    config = json.load(stream)
+actual = config["services"]["health-receiver"]["image"]
+assert actual == expected, f"schema gate image override = {actual!r}, want {expected!r}"
 PY
 }
 

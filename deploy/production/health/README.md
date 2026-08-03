@@ -34,6 +34,9 @@ docker compose \
 
 `release.env` contains no secrets, is ignored by Git, and records the exact pair
 digest, component digests, revisions, contract version, and route mode.
+The tenant schema release gate deliberately overrides the backend selection
+through `HEALTH_IMAGE`; the Compose definition gives that audited value
+precedence over `HEALTH_BACKEND_IMAGE`.
 
 ## Route modes
 
