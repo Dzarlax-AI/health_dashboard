@@ -3,6 +3,8 @@ import type {
   EnergyHistoryDayResponse,
   ReadinessHistoryResponse,
 } from "../../api/client";
+import { ArrowRight } from "lucide-react";
+import { HealthSectionIcon } from "../../components/HealthSectionIcon";
 import { Surface } from "../../components/Surface";
 import { StatusBadge } from "../../components/StatusBadge";
 import { LazyTrendChart } from "../../components/charts/LazyTrendChart";
@@ -152,15 +154,21 @@ export function DashboardDetails({
           {model.sections.map((section) => (
             <a
               className="section-link"
+              data-section={section.key}
               href={`/${encodeURIComponent(section.key)}?lang=${locale}`}
               key={section.key}
             >
-              <span aria-hidden="true">{section.icon}</span>
-              <div>
+              <HealthSectionIcon sectionKey={section.key} />
+              <div className="section-link__content">
                 <strong>{section.title}</strong>
                 <p>{section.summary}</p>
               </div>
-              <span aria-hidden="true">→</span>
+              <ArrowRight
+                aria-hidden="true"
+                className="section-link__arrow"
+                size={20}
+                strokeWidth={1.8}
+              />
             </a>
           ))}
         </section>

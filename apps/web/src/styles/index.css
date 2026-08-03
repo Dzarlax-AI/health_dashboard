@@ -169,7 +169,7 @@ textarea {
   overflow: hidden;
   padding: clamp(24px, 4vw, 52px);
   border-radius: var(--today-radius);
-  background-image: var(--hero-veil), url("/morning-meadow-hero.webp");
+  background-image: var(--hero-veil), url("../assets/morning-meadow-hero.webp");
   background-position: center;
   background-size: cover;
 }
@@ -583,12 +583,14 @@ textarea {
 
 .section-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--space-4);
   margin-top: var(--space-5);
 }
 
 .section-link {
+  --section-color: var(--text-secondary);
+
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: start;
@@ -600,6 +602,41 @@ textarea {
   background: var(--surface);
   box-shadow: var(--shadow-sm);
   text-decoration: none;
+}
+
+.section-link[data-section="recovery"] {
+  --section-color: var(--today-readiness);
+}
+
+.section-link[data-section="sleep"] {
+  --section-color: var(--today-sleep);
+}
+
+.section-link[data-section="activity"] {
+  --section-color: var(--activity);
+}
+
+.section-link[data-section="cardio"] {
+  --section-color: var(--heart);
+}
+
+.section-link__icon {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border-radius: 13px;
+  color: var(--section-color);
+  background: color-mix(in srgb, var(--section-color) 10%, transparent);
+}
+
+.section-link__content {
+  min-width: 0;
+}
+
+.section-link__arrow {
+  margin-top: 10px;
+  color: var(--text-tertiary);
 }
 
 .section-link:hover {
@@ -615,6 +652,12 @@ textarea {
   margin: var(--space-2) 0 0;
   color: var(--text-secondary);
   font-size: var(--text-sm);
+}
+
+@media (max-width: 1080px) {
+  .section-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .metric-grid {
@@ -660,7 +703,7 @@ textarea {
   border-radius: var(--today-radius);
   background-image:
     linear-gradient(rgba(255, 255, 255, 0.44), rgba(255, 255, 255, 0.74)),
-    url("/morning-meadow-hero.webp");
+    url("../assets/morning-meadow-hero.webp");
   background-position: center;
   background-size: cover;
 }

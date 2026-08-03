@@ -147,6 +147,26 @@ default. Set `HEALTH_API_PROXY_TARGET` to point at a different local backend.
 The checked-in component fixture supports `?lang=en|ru|sr` and
 `?fixture=normal|partial|stale|loading|unavailable|error`.
 
+The monorepo also defines independent local image contracts:
+
+```bash
+make docker-build-backend    # Dockerfile.backend → health-backend:local
+make docker-build-frontend   # apps/web/Dockerfile → health-frontend:local
+make test-container-images   # build both and verify users, artifacts, labels, HTTP, and caching
+```
+
+Both builds embed the current source revision and OpenAPI contract version as
+OCI labels. The backend image preserves `/app/server` and
+`/app/tenant_isolation`; the frontend is a non-root static Nginx runtime with no
+Node.js toolchain or secrets. Its hashed `/assets/*` responses are immutable,
+while `index.html` is not cached across releases. The static image deliberately
+does not proxy `/api/*`: the browser uses same-origin API paths and the
+production reverse proxy will route those paths to the backend.
+
+Building these images does not switch or deploy the React UI. The current
+production image publication and routing remain backend-only until the separate
+CI publication and canary-routing issues are completed.
+
 ## Quick Start
 
 The standalone Compose stack uses PostgreSQL 17, creates the restricted
