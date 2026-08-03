@@ -1,4 +1,4 @@
-.PHONY: dev build backfill backfill-force energy-backfill energy-backfill-dry tenant-isolation import contract-generate contract-check web-install web-install-browsers web-dev web-check web-test-visual docker-build-backend docker-build-frontend docker-build-images test-container-images docker-up docker-down test test-unit test-db-storage test-db-ui test-db-ui-fast test-db-energy test-db-energy-smoke test-db-readiness test-db-import test-db-security test-db smoke-health-post
+.PHONY: dev build backfill backfill-force energy-backfill energy-backfill-dry tenant-isolation import contract-generate contract-check web-install web-install-browsers web-dev web-check web-test-visual docker-build-backend docker-build-frontend docker-build-images test-container-images test-release-contract-helpers docker-up docker-down test test-unit test-db-storage test-db-ui test-db-ui-fast test-db-energy test-db-energy-smoke test-db-readiness test-db-import test-db-security test-db smoke-health-post
 
 ADDR ?= :8080
 PNPM ?= pnpm
@@ -87,6 +87,9 @@ test-container-images: docker-build-images
 	IMAGE_VERSION=$(IMAGE_VERSION) \
 	API_CONTRACT_VERSION=$(API_CONTRACT_VERSION) \
 	./scripts/test-container-images.sh
+
+test-release-contract-helpers:
+	./scripts/test-release-contract-helpers.sh
 
 docker-up:
 	docker compose up -d --build
