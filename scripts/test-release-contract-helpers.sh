@@ -378,8 +378,8 @@ changed_output="$resolver_tmp/changed-output"
 env \
 	COMPONENT_CHANGED=true \
 	PUBLISHED_DIGEST="$valid_digest_backend" \
-	IMAGE=ghcr.io/example/health-dashboard \
-	PAIR_IMAGE=ghcr.io/example/health-dashboard-pair \
+	IMAGE=ghcr.io/Dzarlax-AI/health-dashboard \
+	PAIR_IMAGE=ghcr.io/Dzarlax-AI/health-dashboard-pair \
 	COMPONENT_KEY=backend \
 	EXPECTED_ROLE=backend \
 	GITHUB_OUTPUT="$changed_output" \
@@ -388,7 +388,7 @@ env \
 	FAKE_COMPONENT_CONTRACT=2.4.0 \
 	FAKE_COMPONENT_ROLE=backend \
 	"$resolver"
-grep -Fx "image=ghcr.io/example/health-dashboard" "$changed_output" >/dev/null
+grep -Fx "image=ghcr.io/dzarlax-ai/health-dashboard" "$changed_output" >/dev/null
 grep -Fx "digest=$valid_digest_backend" "$changed_output" >/dev/null
 grep -Fx "revision=$valid_backend_revision" "$changed_output" >/dev/null
 grep -Fx "contract=2.4.0" "$changed_output" >/dev/null
@@ -399,22 +399,22 @@ reused_output="$resolver_tmp/reused-output"
 env \
 	COMPONENT_CHANGED=false \
 	PUBLISHED_DIGEST= \
-	IMAGE=ghcr.io/example/health-dashboard-frontend \
-	PAIR_IMAGE=ghcr.io/example/health-dashboard-pair \
+	IMAGE=ghcr.io/Dzarlax-AI/health-dashboard-frontend \
+	PAIR_IMAGE=ghcr.io/Dzarlax-AI/health-dashboard-pair \
 	COMPONENT_KEY=frontend \
 	EXPECTED_ROLE=frontend \
 	GITHUB_OUTPUT="$reused_output" \
 	DOCKER_BIN="$fake_docker" \
 	FAKE_PAIR_REVISION="$valid_revision" \
 	FAKE_PAIR_CONTRACT=2.4.0 \
-	FAKE_PAIR_COMPONENT_IMAGE=ghcr.io/example/health-dashboard-frontend \
+	FAKE_PAIR_COMPONENT_IMAGE=ghcr.io/dzarlax-ai/health-dashboard-frontend \
 	FAKE_PAIR_COMPONENT_DIGEST="$valid_digest_frontend" \
 	FAKE_PAIR_COMPONENT_REVISION="$valid_frontend_revision" \
 	FAKE_COMPONENT_REVISION="$valid_frontend_revision" \
 	FAKE_COMPONENT_CONTRACT=2.4.0 \
 	FAKE_COMPONENT_ROLE=frontend \
 	"$resolver"
-grep -Fx "image=ghcr.io/example/health-dashboard-frontend" "$reused_output" >/dev/null
+grep -Fx "image=ghcr.io/dzarlax-ai/health-dashboard-frontend" "$reused_output" >/dev/null
 grep -Fx "digest=$valid_digest_frontend" "$reused_output" >/dev/null
 grep -Fx "revision=$valid_frontend_revision" "$reused_output" >/dev/null
 grep -Fx "contract=2.4.0" "$reused_output" >/dev/null
