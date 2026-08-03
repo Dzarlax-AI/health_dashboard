@@ -158,7 +158,7 @@ export function DashboardDetails({
               href={`/${encodeURIComponent(section.key)}?lang=${locale}`}
               key={section.key}
             >
-              <HealthSectionIcon name={section.icon} />
+              <HealthSectionIcon sectionKey={section.key} />
               <div className="section-link__content">
                 <strong>{section.title}</strong>
                 <p>{section.summary}</p>

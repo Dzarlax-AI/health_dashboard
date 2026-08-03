@@ -4,17 +4,27 @@ import { describe, expect, it } from "vitest";
 import { HealthSectionIcon } from "./HealthSectionIcon";
 
 describe("HealthSectionIcon", () => {
-  it("renders a real icon without exposing the API icon key", () => {
-    const { container } = render(<HealthSectionIcon name="battery" />);
+  it.each([
+    ["activity", "lucide-activity"],
+    ["cardio", "lucide-heart-pulse"],
+    ["recovery", "lucide-battery-medium"],
+    ["sleep", "lucide-moon"],
+  ])("renders the intended icon for %s", (sectionKey, iconClass) => {
+    const { container } = render(<HealthSectionIcon sectionKey={sectionKey} />);
 
-    expect(container.querySelector("svg")).toBeInTheDocument();
-    expect(container).not.toHaveTextContent("battery");
+    expect(container.querySelector("svg")).toHaveClass(iconClass);
+    expect(container).not.toHaveTextContent(sectionKey);
   });
 
-  it("renders a safe fallback for an unknown icon key", () => {
-    const { container } = render(<HealthSectionIcon name="future-section" />);
+  it.each(["☾", "♡", "↗", "future-section"])(
+    "renders a safe fallback for unknown key %s",
+    (sectionKey) => {
+      const { container } = render(<HealthSectionIcon sectionKey={sectionKey} />);
 
-    expect(container.querySelector("svg")).toBeInTheDocument();
-    expect(container).not.toHaveTextContent("future-section");
-  });
+      expect(container.querySelector("svg")).toHaveClass(
+        "lucide-circle-question-mark",
+      );
+      expect(container).not.toHaveTextContent(sectionKey);
+    },
+  );
 });

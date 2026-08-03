@@ -355,7 +355,7 @@ make test-container-images</code></pre>
       <li>Added a pinned Node 24 multi-stage frontend build and pinned unprivileged Nginx runtime.</li>
       <li>Added explicit static routing, CSP/security headers, immutable hashed-asset caching, non-cached HTML, and 404 behavior.</li>
       <li>Moved the existing meadow image into <code>src/assets</code>; Vite now emits a content-hashed filename without changing the visual source.</li>
-      <li>During production-data QA, replaced exposed semantic icon keys with reusable Lucide icons and changed the four-card health-section navigation to a balanced 4/2/1-column responsive grid.</li>
+      <li>During production-data QA, replaced exposed icon values with reusable Lucide icons selected by stable semantic section keys and changed the four-card health-section navigation to a balanced 4/2/1-column responsive grid.</li>
       <li>Added Make targets and <code>scripts/test-container-images.sh</code> for repeatable local/CI contract verification.</li>
       <li>Updated README and kept the substantive portions of <code>AGENTS.md</code>/<code>CLAUDE.md</code> in lockstep.</li>
     </ul>
@@ -370,7 +370,7 @@ make test-container-images</code></pre>
     <table>
       <thead><tr><th>Check</th><th>Result</th></tr></thead>
       <tbody>
-        <tr><td><code>pnpm web:check</code></td><td>Passed: contract check, TypeScript, ESLint, 50 unit tests, and production Vite build.</td></tr>
+        <tr><td><code>pnpm web:check</code></td><td>Passed: contract check, TypeScript, ESLint, 56 unit tests, and production Vite build.</td></tr>
         <tr><td><code>CGO_ENABLED=0 go test ./...</code></td><td>Passed for all Go packages.</td></tr>
         <tr><td><code>make test-container-images</code></td><td>Passed: both images built; users, binaries, labels, HEALTHCHECK, runtime contents, secrets, HTTP health, caching, and 404 behavior verified.</td></tr>
         <tr><td><code>CI=true HEALTH_WEB_TEST_PORT=49173 pnpm web:test:visual</code></td><td>Passed: 19/19 responsive and state tests across 320–1440px and en/ru/sr.</td></tr>

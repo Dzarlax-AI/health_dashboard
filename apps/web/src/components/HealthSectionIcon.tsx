@@ -1,7 +1,7 @@
 import {
   Activity,
   BatteryMedium,
-  CircleHelp,
+  CircleQuestionMark,
   HeartPulse,
   Moon,
   type LucideIcon,
@@ -9,17 +9,17 @@ import {
 
 const sectionIcons: Record<string, LucideIcon> = {
   activity: Activity,
-  battery: BatteryMedium,
-  heart: HeartPulse,
-  moon: Moon,
+  cardio: HeartPulse,
+  recovery: BatteryMedium,
+  sleep: Moon,
 };
 
 interface HealthSectionIconProps {
-  name: string;
+  sectionKey: string;
 }
 
-export function HealthSectionIcon({ name }: HealthSectionIconProps) {
-  const Icon = sectionIcons[name] ?? CircleHelp;
+export function HealthSectionIcon({ sectionKey }: HealthSectionIconProps) {
+  const Icon = sectionIcons[sectionKey] ?? CircleQuestionMark;
 
   return (
     <span className="section-link__icon" aria-hidden="true">
