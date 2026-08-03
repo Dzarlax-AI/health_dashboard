@@ -58,7 +58,7 @@ assert_config() {
   mode=$1
   release=$tmp/$mode.env
   rendered=$tmp/$mode.yml
-  "$resolver" --mode "$mode" --output "$release"
+  "$resolver" --mode "$mode" --host health.example.com --output "$release"
   HEALTH_RUNTIME_ENV_FILE="$tmp/runtime.env" docker compose --env-file "$release" -f "$compose" config --format json > "$rendered"
   python3 - "$mode" "$rendered" <<'PY'
 import json, sys
@@ -99,8 +99,8 @@ if mode == "canary":
     assert "HeaderRegexp(`Cookie`" in assets and "health_frontend_canary=1" in assets
 elif mode == "cutover":
     assert f["traefik.enable"] == "true"
-    assert root == "Host(`health.dzarlax.dev`) && Path(`/`)"
-    assert assets == "Host(`health.dzarlax.dev`) && PathPrefix(`/assets/`)"
+    assert root == "Host(`health.example.com`) && Path(`/`)"
+    assert assets == "Host(`health.example.com`) && PathPrefix(`/assets/`)"
 else:
     assert f["traefik.enable"] == "false"
     assert "__frontend_disabled__" in root
@@ -111,20 +111,24 @@ assert_config canary
 assert_config cutover
 assert_config rollback
 
-if "$resolver" --mode invalid --output "$tmp/invalid.env" >/dev/null 2>&1; then
+if "$resolver" --mode invalid --host health.example.com --output "$tmp/invalid.env" >/dev/null 2>&1; then
   echo "invalid mode unexpectedly succeeded" >&2
   exit 1
 fi
-if FAKE_FRONTEND_DIGEST=mutable "$resolver" --mode canary --output "$tmp/bad.env" >/dev/null 2>&1; then
+if FAKE_FRONTEND_DIGEST=mutable "$resolver" --mode canary --host health.example.com --output "$tmp/bad.env" >/dev/null 2>&1; then
   echo "invalid digest unexpectedly succeeded" >&2
   exit 1
 fi
-if FAKE_BACKEND_IMAGE=ghcr.io/example/other "$resolver" --mode canary --output "$tmp/wrong-image.env" >/dev/null 2>&1; then
+if FAKE_BACKEND_IMAGE=ghcr.io/example/other "$resolver" --mode canary --host health.example.com --output "$tmp/wrong-image.env" >/dev/null 2>&1; then
   echo "unexpected backend repository unexpectedly succeeded" >&2
   exit 1
 fi
-if FAKE_ACTUAL_FRONTEND_REVISION=$backend_revision "$resolver" --mode canary --output "$tmp/mismatch.env" >/dev/null 2>&1; then
+if FAKE_ACTUAL_FRONTEND_REVISION=$backend_revision "$resolver" --mode canary --host health.example.com --output "$tmp/mismatch.env" >/dev/null 2>&1; then
   echo "mismatched frontend revision unexpectedly succeeded" >&2
+  exit 1
+fi
+if "$resolver" --mode canary --host 'bad host' --output "$tmp/bad-host.env" >/dev/null 2>&1; then
+  echo "invalid host unexpectedly succeeded" >&2
   exit 1
 fi
 

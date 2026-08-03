@@ -30,18 +30,19 @@ write_release() {
   mode=$1
   case "$mode" in
     canary)
-      root_rule='Host(`health.dzarlax.dev`) && Path(`/`) && HeaderRegexp(`Cookie`, `(^|;[ ]*)health_frontend_canary=1(;|[ ]*$)`)'
-      assets_rule='Host(`health.dzarlax.dev`) && PathPrefix(`/assets/`) && HeaderRegexp(`Cookie`, `(^|;[ ]*)health_frontend_canary=1(;|[ ]*$)`)'
+      root_rule='Host(`health.example.com`) && Path(`/`) && HeaderRegexp(`Cookie`, `(^|;[ ]*)health_frontend_canary=1(;|[ ]*$)`)'
+      assets_rule='Host(`health.example.com`) && PathPrefix(`/assets/`) && HeaderRegexp(`Cookie`, `(^|;[ ]*)health_frontend_canary=1(;|[ ]*$)`)'
       ;;
     cutover)
-      root_rule='Host(`health.dzarlax.dev`) && Path(`/`)'
-      assets_rule='Host(`health.dzarlax.dev`) && PathPrefix(`/assets/`)'
+      root_rule='Host(`health.example.com`) && Path(`/`)'
+      assets_rule='Host(`health.example.com`) && PathPrefix(`/assets/`)'
       ;;
     *) exit 2 ;;
   esac
   {
     echo "HEALTH_BACKEND_IMAGE=example.invalid/backend@sha256:$(printf 'b%.0s' $(seq 1 64))"
     echo "HEALTH_FRONTEND_IMAGE=example.invalid/frontend@sha256:$(printf 'f%.0s' $(seq 1 64))"
+    echo "HEALTH_HOST=health.example.com"
     echo "HEALTH_FRONTEND_TRAEFIK_ENABLED=true"
     printf "HEALTH_FRONTEND_ROOT_RULE='%s'\n" "$root_rule"
     printf "HEALTH_FRONTEND_ASSETS_RULE='%s'\n" "$assets_rule"

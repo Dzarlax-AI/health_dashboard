@@ -23,6 +23,7 @@ Authenticate Docker to GHCR, then resolve the authoritative pair pointer:
 ```bash
 ./scripts/resolve-production-pair.sh \
   --mode canary \
+  --host health.example.com \
   --output deploy/production/health/release.env
 
 docker compose \
@@ -37,7 +38,8 @@ digest, component digests, revisions, contract version, and route mode.
 ## Route modes
 
 - `canary`: frontend routes require the host-only cookie
-  `health_frontend_canary=1`. Set it manually for `health.dzarlax.dev`; it is
+  `health_frontend_canary=1`. Set it manually for the configured `HEALTH_HOST`;
+  it is
   not an authentication credential.
 - `cutover`: `/` and `/assets/*` default to the frontend.
 - `rollback`: Traefik discovery is disabled for the frontend, so the already
@@ -47,8 +49,8 @@ Generate a new `release.env` for every transition. Do not hand-edit router
 rules:
 
 ```bash
-./scripts/resolve-production-pair.sh --mode cutover --output /secure/release.env
-./scripts/resolve-production-pair.sh --mode rollback --output /secure/release.env
+./scripts/resolve-production-pair.sh --mode cutover --host health.example.com --output /secure/release.env
+./scripts/resolve-production-pair.sh --mode rollback --host health.example.com --output /secure/release.env
 ```
 
 ## Required evidence before cutover

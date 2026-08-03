@@ -6,6 +6,7 @@ expected_pair_image=ghcr.io/dzarlax-ai/health_dashboard-pair
 expected_backend_image=ghcr.io/dzarlax-ai/health_dashboard
 expected_frontend_image=ghcr.io/dzarlax-ai/health_dashboard-frontend
 mode=
+host=
 output=
 docker_bin=${DOCKER_BIN:-docker}
 
@@ -15,13 +16,14 @@ fail() {
 }
 
 usage() {
-  echo "usage: $0 --mode canary|cutover|rollback --output FILE [--pair IMAGE:TAG]" >&2
+  echo "usage: $0 --mode canary|cutover|rollback --host HOST --output FILE [--pair IMAGE:TAG]" >&2
   exit 2
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --mode) [ "$#" -ge 2 ] || usage; mode=$2; shift 2 ;;
+    --host) [ "$#" -ge 2 ] || usage; host=$2; shift 2 ;;
     --output) [ "$#" -ge 2 ] || usage; output=$2; shift 2 ;;
     --pair) [ "$#" -ge 2 ] || usage; pair_ref=$2; shift 2 ;;
     *) usage ;;
@@ -30,10 +32,18 @@ done
 
 case "$mode" in canary|cutover|rollback) ;; *) usage ;; esac
 [ -n "$output" ] || usage
+[ -n "$host" ] || usage
 command -v "$docker_bin" >/dev/null 2>&1 || fail "docker was not found"
 command -v python3 >/dev/null 2>&1 || fail "python3 was not found"
 
 pair_ref=$(printf '%s' "$pair_ref" | tr '[:upper:]' '[:lower:]')
+host=$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')
+case "$host" in
+  *..*|.*|*.) fail "--host must be a valid DNS hostname" ;;
+esac
+printf '%s\n' "$host" | grep -Eq '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$' ||
+  fail "--host must be a valid DNS hostname"
+[ "${#host}" -le 253 ] || fail "--host must be at most 253 characters"
 case "$pair_ref" in *@sha256:*) fail "--pair must name the movable compatible pointer, not a digest" ;; esac
 case "$pair_ref" in *:compatible) ;; *) fail "--pair must end in :compatible" ;; esac
 pair_image=${pair_ref%:compatible}
@@ -117,18 +127,18 @@ verify_component "$frontend_ref" frontend "$frontend_revision"
 case "$mode" in
   canary)
     enabled=true
-    root_rule='Host(`health.dzarlax.dev`) && Path(`/`) && HeaderRegexp(`Cookie`, `(^|;[ ]*)health_frontend_canary=1(;|[ ]*$)`)'
-    assets_rule='Host(`health.dzarlax.dev`) && PathPrefix(`/assets/`) && HeaderRegexp(`Cookie`, `(^|;[ ]*)health_frontend_canary=1(;|[ ]*$)`)'
+    root_rule="Host(\`$host\`) && Path(\`/\`) && HeaderRegexp(\`Cookie\`, \`(^|;[ ]*)health_frontend_canary=1(;|[ ]*\$)\`)"
+    assets_rule="Host(\`$host\`) && PathPrefix(\`/assets/\`) && HeaderRegexp(\`Cookie\`, \`(^|;[ ]*)health_frontend_canary=1(;|[ ]*\$)\`)"
     ;;
   cutover)
     enabled=true
-    root_rule='Host(`health.dzarlax.dev`) && Path(`/`)'
-    assets_rule='Host(`health.dzarlax.dev`) && PathPrefix(`/assets/`)'
+    root_rule="Host(\`$host\`) && Path(\`/\`)"
+    assets_rule="Host(\`$host\`) && PathPrefix(\`/assets/\`)"
     ;;
   rollback)
     enabled=false
-    root_rule='Host(`health.dzarlax.dev`) && Path(`/__frontend_disabled__`)'
-    assets_rule='Host(`health.dzarlax.dev`) && PathPrefix(`/__frontend_disabled__/assets/`)'
+    root_rule="Host(\`$host\`) && Path(\`/__frontend_disabled__\`)"
+    assets_rule="Host(\`$host\`) && PathPrefix(\`/__frontend_disabled__/assets/\`)"
     ;;
 esac
 
@@ -145,6 +155,7 @@ chmod 0600 "$tmp"
   printf 'HEALTH_BACKEND_REVISION=%s\n' "$backend_revision"
   printf 'HEALTH_FRONTEND_IMAGE=%s\n' "$frontend_ref"
   printf 'HEALTH_FRONTEND_REVISION=%s\n' "$frontend_revision"
+  printf 'HEALTH_HOST=%s\n' "$host"
   printf 'HEALTH_FRONTEND_ROUTE_MODE=%s\n' "$mode"
   printf 'HEALTH_FRONTEND_TRAEFIK_ENABLED=%s\n' "$enabled"
   printf "HEALTH_FRONTEND_ROOT_RULE='%s'\n" "$root_rule"

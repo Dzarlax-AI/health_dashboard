@@ -18,7 +18,7 @@ services:
 
       # Machine clients retain their existing API-key/bearer boundary.
       traefik.http.routers.health-machine.entrypoints: https
-      traefik.http.routers.health-machine.rule: Host(`health.dzarlax.dev`) && (PathPrefix(`/health`) || PathPrefix(`/mcp`))
+      traefik.http.routers.health-machine.rule: Host(`${HEALTH_HOST:?set the production dashboard hostname}`) && (PathPrefix(`/health`) || PathPrefix(`/mcp`))
       traefik.http.routers.health-machine.priority: "300"
       traefik.http.routers.health-machine.tls: "true"
       traefik.http.routers.health-machine.tls.certresolver: letsEncrypt
@@ -28,7 +28,7 @@ services:
       # Authentik exactly as before. Only the presence is matched here; the Go
       # guard still performs the constant-time credential check.
       traefik.http.routers.health-api-key.entrypoints: https
-      traefik.http.routers.health-api-key.rule: Host(`health.dzarlax.dev`) && PathPrefix(`/api`) && HeaderRegexp(`X-API-Key`, `.+`)
+      traefik.http.routers.health-api-key.rule: Host(`${HEALTH_HOST:?set the production dashboard hostname}`) && PathPrefix(`/api`) && HeaderRegexp(`X-API-Key`, `.+`)
       traefik.http.routers.health-api-key.priority: "305"
       traefik.http.routers.health-api-key.tls: "true"
       traefik.http.routers.health-api-key.tls.certresolver: letsEncrypt
@@ -37,7 +37,7 @@ services:
       # Browser JSON calls pass through ForwardAuth so the backend can create
       # and resolve its opaque tenant-aware local session.
       traefik.http.routers.health-browser-api.entrypoints: https
-      traefik.http.routers.health-browser-api.rule: Host(`health.dzarlax.dev`) && PathPrefix(`/api`)
+      traefik.http.routers.health-browser-api.rule: Host(`${HEALTH_HOST:?set the production dashboard hostname}`) && PathPrefix(`/api`)
       traefik.http.routers.health-browser-api.priority: "290"
       traefik.http.routers.health-browser-api.tls: "true"
       traefik.http.routers.health-browser-api.tls.certresolver: letsEncrypt
@@ -47,7 +47,7 @@ services:
       # The Go UI remains the broad, low-priority fallback. The frontend
       # routers win only for their exact root/assets rules.
       traefik.http.routers.health-legacy.entrypoints: https
-      traefik.http.routers.health-legacy.rule: Host(`health.dzarlax.dev`)
+      traefik.http.routers.health-legacy.rule: Host(`${HEALTH_HOST:?set the production dashboard hostname}`)
       traefik.http.routers.health-legacy.priority: "10"
       traefik.http.routers.health-legacy.tls: "true"
       traefik.http.routers.health-legacy.tls.certresolver: letsEncrypt
@@ -56,7 +56,7 @@ services:
 
       # Stable explicit rollback/manual-QA URL for the Go dashboard.
       traefik.http.routers.health-legacy-root.entrypoints: https
-      traefik.http.routers.health-legacy-root.rule: Host(`health.dzarlax.dev`) && Path(`/legacy`)
+      traefik.http.routers.health-legacy-root.rule: Host(`${HEALTH_HOST:?set the production dashboard hostname}`) && Path(`/legacy`)
       traefik.http.routers.health-legacy-root.priority: "310"
       traefik.http.routers.health-legacy-root.tls: "true"
       traefik.http.routers.health-legacy-root.tls.certresolver: letsEncrypt
