@@ -96,19 +96,11 @@ test-compatible-image-pair: docker-build-images
 	./scripts/test-compatible-image-pair.sh
 
 test-compatible-image-pair-negative: docker-build-images
-	@output_file=$$(mktemp); \
-	trap 'rm -f "$$output_file"' EXIT; \
-	if BACKEND_IMAGE=$(BACKEND_IMAGE) \
-		FRONTEND_IMAGE=$(FRONTEND_IMAGE) \
-		BUILD_REVISION=$(BUILD_REVISION) \
-		API_CONTRACT_VERSION=$(API_CONTRACT_VERSION)-deliberately-wrong \
-		PAIR_PREFLIGHT_ONLY=1 \
-		./scripts/test-compatible-image-pair.sh >"$$output_file" 2>&1; then \
-		echo "expected incompatible API contract preflight to fail" >&2; \
-		exit 1; \
-	fi; \
-	grep -q "rebuild both images from the same revision and API contract" "$$output_file"; \
-	echo "incompatible API contract rejected before service startup"
+	BACKEND_IMAGE=$(BACKEND_IMAGE) \
+	FRONTEND_IMAGE=$(FRONTEND_IMAGE) \
+	BUILD_REVISION=$(BUILD_REVISION) \
+	API_CONTRACT_VERSION=$(API_CONTRACT_VERSION) \
+	./scripts/test-compatible-image-pair-preflight.sh
 
 test-release-contract-helpers:
 	./scripts/test-release-contract-helpers.sh

@@ -10,13 +10,15 @@ proxy_image="${PROXY_IMAGE:-nginxinc/nginx-unprivileged:1.31.3-alpine3.24@sha256
 
 script_dir="$(CDPATH= cd "$(dirname "$0")" && pwd)"
 proxy_config="$script_dir/fixtures/compatible-image-pair.nginx.conf"
-pair_prefix="${PAIR_PREFIX:-health-pair-$$}"
-network_name="${PAIR_NETWORK:-$pair_prefix-net}"
-db_container="${PAIR_DB_CONTAINER:-$pair_prefix-db}"
-backend_container="${PAIR_BACKEND_CONTAINER:-$pair_prefix-backend}"
-frontend_container="${PAIR_FRONTEND_CONTAINER:-$pair_prefix-frontend}"
-proxy_container="${PAIR_PROXY_CONTAINER:-$pair_prefix-proxy}"
+pair_prefix="${PAIR_PREFIX:-}"
+network_name="${PAIR_NETWORK:-}"
+db_container="${PAIR_DB_CONTAINER:-}"
+backend_container="${PAIR_BACKEND_CONTAINER:-}"
+frontend_container="${PAIR_FRONTEND_CONTAINER:-}"
+proxy_container="${PAIR_PROXY_CONTAINER:-}"
 proxy_port="${PAIR_PROXY_PORT:-}"
+run_token="${PAIR_RUN_TOKEN:-}"
+owner_label="io.health-dashboard.compatibility-run"
 
 network_created=0
 db_created=0
@@ -44,36 +46,78 @@ sanitize_logs() {
 }
 
 print_failure_logs() {
-  print_container_logs "$proxy_container" "$proxy_created"
-  print_container_logs "$backend_container" "$backend_created"
-  print_container_logs "$frontend_container" "$frontend_created"
-  print_container_logs "$db_container" "$db_created"
+  print_container_logs "$proxy_container"
+  print_container_logs "$backend_container"
+  print_container_logs "$frontend_container"
+  print_container_logs "$db_container"
 }
 
 print_container_logs() {
   container="$1"
-  created="$2"
-  if [ "$created" -eq 1 ] && docker container inspect "$container" >/dev/null 2>&1; then
+  if owned_container "$container"; then
     echo "----- logs: $container -----" >&2
     docker logs "$container" 2>&1 | sanitize_logs >&2 || true
   fi
 }
 
+owned_container() {
+  container="$1"
+  [ -n "$container" ] &&
+    [ -n "$run_token" ] &&
+    [ "$(docker container inspect --format "{{ index .Config.Labels \"$owner_label\" }}" "$container" 2>/dev/null || true)" = "$run_token" ]
+}
+
+owned_network() {
+  [ -n "$network_name" ] &&
+    [ -n "$run_token" ] &&
+    [ "$(docker network inspect --format "{{ index .Labels \"$owner_label\" }}" "$network_name" 2>/dev/null || true)" = "$run_token" ]
+}
+
+remove_owned_container() {
+  container="$1"
+  created="$2"
+  if owned_container "$container"; then
+    docker rm -f -v "$container" >/dev/null 2>&1 || true
+  elif [ "$created" -eq 1 ]; then
+    echo "compatible image pair: refusing to remove '$container' because its ownership label changed" >&2
+  fi
+}
+
 cleanup() {
   status=$?
-  trap - 0 1 2 15
+  trap - 0
   if [ "$status" -ne 0 ]; then
     print_failure_logs
   fi
-  if [ "$proxy_created" -eq 1 ]; then docker rm -f -v "$proxy_container" >/dev/null 2>&1 || true; fi
-  if [ "$frontend_created" -eq 1 ]; then docker rm -f -v "$frontend_container" >/dev/null 2>&1 || true; fi
-  if [ "$backend_created" -eq 1 ]; then docker rm -f -v "$backend_container" >/dev/null 2>&1 || true; fi
-  if [ "$db_created" -eq 1 ]; then docker rm -f -v "$db_container" >/dev/null 2>&1 || true; fi
-  if [ "$network_created" -eq 1 ]; then docker network rm "$network_name" >/dev/null 2>&1 || true; fi
+  remove_owned_container "$proxy_container" "$proxy_created"
+  remove_owned_container "$frontend_container" "$frontend_created"
+  remove_owned_container "$backend_container" "$backend_created"
+  remove_owned_container "$db_container" "$db_created"
+  if owned_network; then
+    docker network rm "$network_name" >/dev/null 2>&1 || true
+  elif [ "$network_created" -eq 1 ]; then
+    echo "compatible image pair: refusing to remove '$network_name' because its ownership label changed" >&2
+  fi
   if [ -n "$tmp_dir" ] && [ -d "$tmp_dir" ]; then rm -rf "$tmp_dir"; fi
   exit "$status"
 }
-trap cleanup 0 1 2 15
+
+handle_signal() {
+  signal_status="$1"
+  trap - 1 2 15
+  exit "$signal_status"
+}
+
+trap cleanup 0
+trap 'handle_signal 130' 2
+trap 'handle_signal 143' 15
+
+case "${PAIR_SELF_TEST_SIGNAL:-}" in
+  INT) kill -INT "$$" ;;
+  TERM) kill -TERM "$$" ;;
+  "") ;;
+  *) echo "compatible image pair: PAIR_SELF_TEST_SIGNAL must be INT or TERM" >&2; exit 2 ;;
+esac
 
 fail() {
   echo "compatible image pair: $*" >&2
@@ -139,6 +183,17 @@ require_command openssl
 require_command python3
 test -f "$proxy_config" || fail "proxy fixture not found at '$proxy_config'"
 
+if [ -z "$run_token" ]; then
+  run_token="$(openssl rand -hex 16)"
+fi
+validate_name PAIR_RUN_TOKEN "$run_token"
+if [ -z "$pair_prefix" ]; then pair_prefix="health-pair-$run_token"; fi
+if [ -z "$network_name" ]; then network_name="$pair_prefix-net"; fi
+if [ -z "$db_container" ]; then db_container="$pair_prefix-db"; fi
+if [ -z "$backend_container" ]; then backend_container="$pair_prefix-backend"; fi
+if [ -z "$frontend_container" ]; then frontend_container="$pair_prefix-frontend"; fi
+if [ -z "$proxy_container" ]; then proxy_container="$pair_prefix-proxy"; fi
+
 validate_name PAIR_NETWORK "$network_name"
 validate_name PAIR_DB_CONTAINER "$db_container"
 validate_name PAIR_BACKEND_CONTAINER "$backend_container"
@@ -173,13 +228,18 @@ master_secret="$(openssl rand -base64 32 | tr -d '\n')"
 api_key="$(openssl rand -hex 32)"
 ui_password="$(openssl rand -hex 32)"
 
+docker network create --label "$owner_label=$run_token" "$network_name" >/dev/null
 network_created=1
-docker network create "$network_name" >/dev/null
 
-db_created=1
+if [ "${PAIR_SELF_TEST_CLEANUP_FAILURE:-0}" = "1" ]; then
+  fail "intentional post-create failure for cleanup verification"
+fi
+
 docker run -d --name "$db_container" --network "$network_name" --network-alias database \
+  --label "$owner_label=$run_token" \
   -e POSTGRES_DB=health -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD="$root_password" \
   "$postgres_image" >/dev/null
+db_created=1
 
 docker run --rm --network "$network_name" -e PGPASSWORD="$root_password" \
   "$postgres_image" /bin/sh -ec '
@@ -209,8 +269,8 @@ docker run --rm --user 0:0 -v "$manifest_dir:/bootstrap:ro" \
     test "$(stat -c "%a" /bootstrap/database-identity-manifest.json)" = "600"
   '
 
-backend_created=1
 docker run -d --name "$backend_container" --network "$network_name" --network-alias backend \
+  --label "$owner_label=$run_token" \
   -e TENANT_DB_ISOLATION_ENABLED=true \
   -e ADMIN_DATABASE_URL="postgres://health_admin:${admin_password}@database:5432/health" \
   -e REGISTRY_DATABASE_URL="postgres://health_registry:${registry_password}@database:5432/health" \
@@ -220,6 +280,7 @@ docker run -d --name "$backend_container" --network "$network_name" --network-al
   -e API_KEY="$api_key" \
   -e UI_PASSWORD="$ui_password" \
   "$backend_image" >/dev/null
+backend_created=1
 
 docker exec "$backend_container" /bin/sh -ec '
   test -z "$TENANT_DB_BOOTSTRAP_DATABASE_URL"
@@ -262,9 +323,10 @@ docker run --rm --network "$network_name" \
   --entrypoint /app/tenant_isolation "$backend_image" \
   --mode verify-db-identities
 
-frontend_created=1
 docker run -d --name "$frontend_container" --network "$network_name" --network-alias frontend \
+  --label "$owner_label=$run_token" \
   "$frontend_image" >/dev/null
+frontend_created=1
 
 docker exec "$frontend_container" wget -q -O - http://127.0.0.1:8080/healthz >/dev/null
 docker exec "$backend_container" wget -q -O - http://127.0.0.1:8080/readyz >/dev/null
@@ -274,11 +336,12 @@ if [ -n "$proxy_port" ]; then
 else
   publish_arg="127.0.0.1::8080"
 fi
-proxy_created=1
 docker run -d --name "$proxy_container" --network "$network_name" \
+  --label "$owner_label=$run_token" \
   -p "$publish_arg" \
   -v "$proxy_config:/etc/nginx/conf.d/default.conf:ro" \
   "$proxy_image" >/dev/null
+proxy_created=1
 
 proxy_binding=""
 i=0
