@@ -1,0 +1,106 @@
+services:
+  health-receiver:
+    # HEALTH_IMAGE is the audited override injected by the mandatory tenant
+    # schema release gate. Ordinary paired releases use HEALTH_BACKEND_IMAGE.
+    image: ${HEALTH_IMAGE:-${HEALTH_BACKEND_IMAGE:?resolve an immutable compatible backend image first}}
+    env_file:
+      - ${HEALTH_RUNTIME_ENV_FILE:-.env}
+    restart: unless-stopped
+    stop_grace_period: 35s
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: traefik
+      traefik.http.services.health-backend.loadbalancer.server.port: "8080"
+
+      # Machine clients retain their existing API-key/bearer boundary.
+      traefik.http.routers.health-machine.entrypoints: https
+      traefik.http.routers.health-machine.rule: Host(`${HEALTH_HOST:?set the production dashboard hostname}`) && (PathPrefix(`/health`) || PathPrefix(`/mcp`))
+      traefik.http.routers.health-machine.priority: "300"
+      traefik.http.routers.health-machine.tls: "true"
+      traefik.http.routers.health-machine.tls.certresolver: letsEncrypt
+      traefik.http.routers.health-machine.service: health-backend
+
+      # Existing API-key consumers (including the mobile client) bypass
+      # Authentik exactly as before. Only the presence is matched here; the Go
+      # guard still performs the constant-time credential check.
+      traefik.http.routers.health-api-key.entrypoints: https
+      traefik.http.routers.health-api-key.rule: Host(`${HEALTH_HOST:?set the production dashboard hostname}`) && PathPrefix(`/api`) && HeaderRegexp(`X-API-Key`, `.+`)
+      traefik.http.routers.health-api-key.priority: "305"
+      traefik.http.routers.health-api-key.tls: "true"
+      traefik.http.routers.health-api-key.tls.certresolver: letsEncrypt
+      traefik.http.routers.health-api-key.service: health-backend
+
+      # Browser JSON calls pass through ForwardAuth so the backend can create
+      # and resolve its opaque tenant-aware local session.
+      traefik.http.routers.health-browser-api.entrypoints: https
+      traefik.http.routers.health-browser-api.rule: Host(`${HEALTH_HOST:?set the production dashboard hostname}`) && PathPrefix(`/api`)
+      traefik.http.routers.health-browser-api.priority: "290"
+      traefik.http.routers.health-browser-api.tls: "true"
+      traefik.http.routers.health-browser-api.tls.certresolver: letsEncrypt
+      traefik.http.routers.health-browser-api.middlewares: authentik-auth
+      traefik.http.routers.health-browser-api.service: health-backend
+
+      # The Go UI remains the broad, low-priority fallback. The frontend
+      # routers win only for their exact root/assets rules.
+      traefik.http.routers.health-legacy.entrypoints: https
+      traefik.http.routers.health-legacy.rule: Host(`${HEALTH_HOST:?set the production dashboard hostname}`)
+      traefik.http.routers.health-legacy.priority: "10"
+      traefik.http.routers.health-legacy.tls: "true"
+      traefik.http.routers.health-legacy.tls.certresolver: letsEncrypt
+      traefik.http.routers.health-legacy.middlewares: authentik-auth
+      traefik.http.routers.health-legacy.service: health-backend
+
+      # Stable explicit rollback/manual-QA URL for the Go dashboard.
+      traefik.http.routers.health-legacy-root.entrypoints: https
+      traefik.http.routers.health-legacy-root.rule: Host(`${HEALTH_HOST:?set the production dashboard hostname}`) && Path(`/legacy`)
+      traefik.http.routers.health-legacy-root.priority: "310"
+      traefik.http.routers.health-legacy-root.tls: "true"
+      traefik.http.routers.health-legacy-root.tls.certresolver: letsEncrypt
+      traefik.http.routers.health-legacy-root.middlewares: authentik-auth,health-legacy-root
+      traefik.http.routers.health-legacy-root.service: health-backend
+      traefik.http.middlewares.health-legacy-root.replacepath.path: /
+    networks:
+      - traefik
+      - infra
+
+  health-frontend:
+    image: ${HEALTH_FRONTEND_IMAGE:?resolve an immutable compatible frontend image first}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
+    labels:
+      traefik.enable: ${HEALTH_FRONTEND_TRAEFIK_ENABLED:?set by resolve-production-pair.sh}
+      traefik.docker.network: traefik
+      traefik.http.services.health-frontend.loadbalancer.server.port: "8080"
+      traefik.http.routers.health-frontend-root.entrypoints: https
+      traefik.http.routers.health-frontend-root.rule: ${HEALTH_FRONTEND_ROOT_RULE:?set by resolve-production-pair.sh}
+      traefik.http.routers.health-frontend-root.priority: "400"
+      traefik.http.routers.health-frontend-root.tls: "true"
+      traefik.http.routers.health-frontend-root.tls.certresolver: letsEncrypt
+      traefik.http.routers.health-frontend-root.middlewares: authentik-auth
+      traefik.http.routers.health-frontend-root.service: health-frontend
+      traefik.http.routers.health-frontend-assets.entrypoints: https
+      traefik.http.routers.health-frontend-assets.rule: ${HEALTH_FRONTEND_ASSETS_RULE:?set by resolve-production-pair.sh}
+      traefik.http.routers.health-frontend-assets.priority: "390"
+      traefik.http.routers.health-frontend-assets.tls: "true"
+      traefik.http.routers.health-frontend-assets.tls.certresolver: letsEncrypt
+      traefik.http.routers.health-frontend-assets.middlewares: authentik-auth
+      traefik.http.routers.health-frontend-assets.service: health-frontend
+    networks:
+      - traefik
+
+networks:
+  traefik:
+    external: true
+  infra:
+    external: true

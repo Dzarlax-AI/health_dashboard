@@ -56,3 +56,6 @@ node_modules/
 apps/*/dist/
 apps/*/playwright-report/
 apps/*/test-results/
+
+# Generated non-secret production release identity and route state.
+deploy/production/health/release.env
