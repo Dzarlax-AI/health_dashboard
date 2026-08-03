@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation Plan: Separate Frontend and Backend Images</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f7f5;
+      --surface: #ffffff;
+      --text: #17201b;
+      --muted: #5f6d64;
+      --line: #dfe7e1;
+      --green: #147a4c;
+      --green-soft: #e9f6ee;
+      --amber: #9a6200;
+      --amber-soft: #fff6df;
+      --red: #a33a35;
+      --red-soft: #fff0ee;
+      --blue: #315f91;
+      --blue-soft: #edf5ff;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.55;
+    }
+    main { max-width: 1120px; margin: 0 auto; padding: 36px 24px 72px; }
+    header { padding: 8px 2px 18px; }
+    h1, h2, h3 { line-height: 1.2; margin-top: 0; }
+    h1 { max-width: 760px; margin-bottom: 10px; font-size: clamp(2rem, 4vw, 3.2rem); }
+    h2 { font-size: 1.25rem; margin-bottom: 14px; }
+    h3 { font-size: 1rem; margin-bottom: 8px; }
+    p { margin: 8px 0; }
+    ul, ol { margin: 10px 0 0; padding-left: 22px; }
+    li + li { margin-top: 7px; }
+    code {
+      padding: 2px 6px;
+      border-radius: 5px;
+      background: #eef2ef;
+      font-size: .92em;
+    }
+    pre {
+      overflow-x: auto;
+      padding: 14px 16px;
+      border-radius: 9px;
+      background: #152019;
+      color: #eef8f1;
+      line-height: 1.45;
+    }
+    pre code { padding: 0; background: transparent; }
+    section {
+      margin: 16px 0;
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--surface);
+      box-shadow: 0 7px 24px rgba(30, 55, 40, .035);
+    }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th, td { padding: 11px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: .82rem; text-transform: uppercase; letter-spacing: .05em; }
+    tr:last-child td { border-bottom: 0; }
+    .lede { max-width: 820px; color: var(--muted); font-size: 1.08rem; }
+    .badge {
+      display: inline-block;
+      margin-right: 7px;
+      padding: 5px 10px;
+      border-radius: 999px;
+      background: var(--green-soft);
+      color: var(--green);
+      font-size: .78rem;
+      font-weight: 700;
+    }
+    .muted { color: var(--muted); }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .card {
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fbfdfb;
+    }
+    .callout { border-left: 4px solid var(--blue); background: var(--blue-soft); }
+    .risk { border-left: 4px solid var(--red); background: var(--red-soft); }
+    .approval { border-left: 4px solid var(--amber); background: var(--amber-soft); }
+    .scope-no { color: var(--red); }
+    @media (max-width: 760px) {
+      main { padding: 24px 14px 48px; }
+      section { padding: 18px; }
+      .grid { grid-template-columns: 1fr; }
+      table { display: block; overflow-x: auto; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <p>
+      <span class="badge">Issue #215</span>
+      <span class="badge">Implemented locally</span>
+      <span class="badge">Not deployed</span>
+    </p>
+    <h1>Separate frontend and backend container images</h1>
+    <p class="lede">
+      Establish two minimal, immutable image contracts from the monorepo without
+      changing production routing or deploying the React UI yet.
+    </p>
+  </header>
+
+  <section>
+    <h2>1. Task summary and boundaries</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>In scope</h3>
+        <ul>
+          <li>An explicitly named backend Dockerfile preserving both Go binaries.</li>
+          <li>A multi-stage Vite build with a non-root static runtime.</li>
+          <li>Local image build and contract-smoke commands.</li>
+          <li>Health endpoints, cache policy, and OCI version metadata.</li>
+          <li>Documentation for building and inspecting both images.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3 class="scope-no">Out of scope</h3>
+        <ul>
+          <li>Publishing a second GHCR image lane — issue #216.</li>
+          <li>Production Compose, reverse-proxy, or DNS changes — issue #217.</li>
+          <li>Switching <code>/</code> from the Go UI to React.</li>
+          <li>Migrating the remaining settings/admin/metrics routes.</li>
+          <li>Changing API, database, tenancy, authentication, or secrets.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>2. Current architecture</h2>
+    <ul>
+      <li>
+        The root <code>Dockerfile</code> builds a single non-root Alpine image containing
+        <code>/app/server</code> and <code>/app/tenant_isolation</code>.
+      </li>
+      <li>
+        The current CI smoke test and amd64/arm64 publish jobs implicitly build that root file.
+        Production consumes the resulting backend image.
+      </li>
+      <li>
+        <code>apps/web</code> is a pnpm/Vite/React workspace. Its build emits
+        <code>dist/index.html</code>, hashed JS/CSS chunks, and one currently un-hashed hero image.
+      </li>
+      <li>
+        Browser API calls already use same-origin <code>/api/*</code>. Vite only supplies a
+        development proxy; production routing is deliberately external to the frontend image.
+      </li>
+      <li>
+        The backend already exposes <code>/healthz</code> and database-aware <code>/readyz</code>.
+        The frontend has no runtime image or health endpoint.
+      </li>
+      <li>
+        The API contract is <code>contracts/openapi.json</code>, currently version
+        <code>0.2.0</code>.
+      </li>
+    </ul>
+  </section>
+
+  <section class="callout">
+    <h2>3. Proposed image contracts</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Property</th>
+          <th>Backend image</th>
+          <th>Frontend image</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Dockerfile</td>
+          <td><code>Dockerfile.backend</code></td>
+          <td><code>apps/web/Dockerfile</code>, built with the repository root as context</td>
+        </tr>
+        <tr>
+          <td>Runtime</td>
+          <td>Pinned Alpine; existing unprivileged <code>health</code> user</td>
+          <td>Pinned unprivileged Nginx runtime; no Node, pnpm, source, or test tools</td>
+        </tr>
+        <tr>
+          <td>Artifacts</td>
+          <td><code>/app/server</code> and <code>/app/tenant_isolation</code></td>
+          <td>Only Vite <code>dist</code> output plus reviewed server configuration</td>
+        </tr>
+        <tr>
+          <td>Port and health</td>
+          <td><code>8080</code>; existing <code>/healthz</code> and <code>/readyz</code></td>
+          <td><code>8080</code>; static <code>/healthz</code> response</td>
+        </tr>
+        <tr>
+          <td>Version metadata</td>
+          <td colspan="2">
+            Matching OCI labels for source revision, semantic image version, source repository,
+            and API contract version; supplied as non-secret build arguments and inspectable with
+            <code>docker image inspect</code>.
+          </td>
+        </tr>
+        <tr>
+          <td>Routing responsibility</td>
+          <td>Owns <code>/api/*</code> and legacy routes</td>
+          <td>Serves only compiled frontend files; the future reverse proxy will keep
+            <code>/api/*</code> on the backend</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="muted">
+      The existing root Dockerfile is renamed rather than duplicated. Existing CI references are
+      updated to <code>Dockerfile.backend</code> so the currently published backend image retains
+      the same runtime behavior. Creation of a separate frontend publishing job remains in #216.
+    </p>
+  </section>
+
+  <section>
+    <h2>4. Static delivery and security decisions</h2>
+    <ul>
+      <li>Pin both build and runtime base images by digest.</li>
+      <li>Use <code>pnpm install --frozen-lockfile</code> and the repository-pinned pnpm version.</li>
+      <li>Build with production fixtures disabled; fixture data must never be emitted into the runtime image.</li>
+      <li>Move the hero image into Vite's asset graph so it receives a content hash.</li>
+      <li>Serve hashed assets with long-lived immutable caching and <code>index.html</code> with revalidation/no-cache semantics.</li>
+      <li>Return 404 for unknown paths in this image contract instead of silently swallowing leaked legacy routes.</li>
+      <li>Keep all JS, CSS, and images same-origin and baked into the image; reject any unexpected remote runtime asset reference in smoke checks.</li>
+      <li>Declare no frontend runtime secrets, database credentials, API keys, or tenant/schema selector.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>5. Files likely to change</h2>
+    <table>
+      <thead><tr><th>File</th><th>Reason</th></tr></thead>
+      <tbody>
+        <tr><td><code>Dockerfile.backend</code></td><td>Renamed and documented backend image contract; preserve both binaries and non-root runtime.</td></tr>
+        <tr><td><code>Dockerfile</code></td><td>Removed after references are migrated, avoiding two drifting backend definitions.</td></tr>
+        <tr><td><code>apps/web/Dockerfile</code></td><td>Multi-stage dependency/build/static-runtime image.</td></tr>
+        <tr><td><code>apps/web/container/nginx.conf</code></td><td>Health endpoint, static routing, headers, caching, and port 8080.</td></tr>
+        <tr><td><code>apps/web/src/styles/index.css</code></td><td>Reference the hero through Vite's hashed asset pipeline.</td></tr>
+        <tr><td><code>apps/web/src/assets/morning-meadow-hero.webp</code></td><td>Move the existing source asset; no visual redesign.</td></tr>
+        <tr><td><code>.dockerignore</code></td><td>Keep build contexts small without excluding workspace inputs required by the frontend build.</td></tr>
+        <tr><td><code>Makefile</code></td><td>Add explicit local backend/frontend image build and smoke targets.</td></tr>
+        <tr><td><code>scripts/test-container-images.sh</code></td><td>Reusable checks for users, artifacts, labels, HTTP health, cache headers, and bundled assets.</td></tr>
+        <tr><td><code>.github/workflows/ci.yml</code></td><td>Point the existing backend smoke/publish path at <code>Dockerfile.backend</code>; do not add the #216 frontend publish lane.</td></tr>
+        <tr><td><code>README.md</code></td><td>Document both local image contracts and the deliberate lack of production routing.</td></tr>
+        <tr><td><code>AGENTS.md</code>, <code>CLAUDE.md</code></td><td>Mirror the new commands and image architecture in the twin project instructions.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>6. Implementation steps</h2>
+    <ol>
+      <li>Rename the backend Dockerfile and update every repository reference atomically.</li>
+      <li>Add common build arguments and OCI labels without changing the backend executable paths, user, entrypoint, or port.</li>
+      <li>Create the frontend multi-stage build from the root pnpm workspace and copy only compiled output into the static runtime.</li>
+      <li>Add the minimal unprivileged Nginx configuration with health, cache, security-header, and explicit 404 behavior.</li>
+      <li>Move the hero source asset into Vite's hashed asset graph and confirm the rendered UI is visually unchanged.</li>
+      <li>Add Make targets and a shell smoke test that can validate either or both local images.</li>
+      <li>Update current backend CI references, leaving image naming/publishing separation to issue #216.</li>
+      <li>Update user and agent documentation, then run repository and container verification.</li>
+      <li>Record actual changes, checks, limitations, and follow-ups in this plan.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>7. Test plan</h2>
+    <pre><code>pnpm install --frozen-lockfile
+make web-check
+CGO_ENABLED=0 go test ./...
+
+docker build -f Dockerfile.backend \
+  --build-arg BUILD_REVISION="$(git rev-parse HEAD)" \
+  --build-arg IMAGE_VERSION=dev \
+  --build-arg API_CONTRACT_VERSION=0.2.0 \
+  -t health-backend:local .
+
+docker build -f apps/web/Dockerfile \
+  --build-arg BUILD_REVISION="$(git rev-parse HEAD)" \
+  --build-arg IMAGE_VERSION=dev \
+  --build-arg API_CONTRACT_VERSION=0.2.0 \
+  -t health-frontend:local .
+
+make test-container-images</code></pre>
+    <p>The smoke test will assert:</p>
+    <ul>
+      <li>Both images start as non-root and expose the expected port.</li>
+      <li>The backend still contains both executable contracts.</li>
+      <li>The frontend runtime contains no Node/pnpm toolchain, source tree, lockfile, or secret-like environment values.</li>
+      <li>Both images expose matching revision/API-contract labels.</li>
+      <li>Frontend <code>/healthz</code> succeeds; <code>/</code> serves the built app; a missing path returns 404.</li>
+      <li>Hashed assets are immutable, HTML is revalidated, and output contains no external CDN/runtime asset URL.</li>
+      <li>The current backend database/bootstrap/restart container smoke remains green in CI.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>8. Manual QA checklist</h2>
+    <ul>
+      <li>Open the frontend container root at desktop and mobile widths.</li>
+      <li>Confirm the meadow background, readiness ring, primary cards, typography, and all three locales retain the approved visual language.</li>
+      <li>Confirm health-section navigation uses real icons and reflows as 4 columns on wide screens, 2 on medium screens, and 1 on mobile.</li>
+      <li>Confirm a standalone frontend correctly reports API unavailability rather than showing fabricated health data.</li>
+      <li>Inspect network requests: all JS, CSS, and images originate from the same local origin.</li>
+      <li>Inspect response headers for HTML, hashed assets, health, and missing paths.</li>
+      <li>Stop/restart both containers and confirm deterministic behavior.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>9. Risks, edge cases, and rollback</h2>
+    <ul>
+      <li><strong>Existing release breakage:</strong> a missed root-Dockerfile reference could stop backend CI. Mitigation: repository-wide search plus current container smoke.</li>
+      <li><strong>Multi-architecture base mismatch:</strong> pinned digests must support amd64 and arm64. Verify manifests before choosing them.</li>
+      <li><strong>Stale frontend shell:</strong> long-cache <code>index.html</code> could strand old asset URLs. Keep HTML non-immutable while hashing every asset.</li>
+      <li><strong>Route masking:</strong> SPA fallback could conceal proxy mistakes. Use explicit 404 behavior until a React client-side route actually requires fallback.</li>
+      <li><strong>Secret leakage:</strong> Vite variables are compile-time public. Do not accept secret build args and inspect the final image/output.</li>
+      <li><strong>False compatibility:</strong> labels supplied incorrectly could claim mismatched builds. The smoke target compares required values across both images.</li>
+    </ul>
+    <p>
+      <strong>Rollback:</strong> before issue #216, no production service references the frontend image.
+      Reverting this change restores the root backend Dockerfile and prior CI references. No database,
+      API, tenant, or persistent-volume rollback is required.
+    </p>
+  </section>
+
+  <section>
+    <h2>10. Assumptions and open questions</h2>
+    <ul>
+      <li><strong>Assumption:</strong> reverse-proxy routing will keep <code>/api/*</code> and legacy pages on the backend; the frontend container does not proxy API traffic itself.</li>
+      <li><strong>Assumption:</strong> OCI labels are the compatibility metadata interface for #215; an HTTP version endpoint is unnecessary unless #216 proves otherwise.</li>
+      <li><strong>Assumption:</strong> the primary dashboard visual output remains stable; the user-approved health-section navigation correction replaces exposed icon keys and the orphaned 3+1 grid.</li>
+      <li><strong>Open question deferred to #216:</strong> final GHCR repository names, tags, provenance/SBOM publication, and cross-image compatibility-gate implementation.</li>
+      <li><strong>Open question deferred to #217:</strong> exact Traefik rules, canary host/path, CSP enforcement point, and rollback switch.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>11. Implementation record</h2>
+    <p><strong>Implemented on 2026-08-03 in <code>codex/separate-container-images</code>.</strong></p>
+    <ul>
+      <li>Renamed the backend build contract to <code>Dockerfile.backend</code> and updated every active CI build reference.</li>
+      <li>Preserved the backend's non-root user, port, command, and both required executables.</li>
+      <li>Added matching build revision, image version, API contract version, source, and role labels to both images.</li>
+      <li>Added Docker health checks using each image's <code>/healthz</code> endpoint.</li>
+      <li>Added a pinned Node 24 multi-stage frontend build and pinned unprivileged Nginx runtime.</li>
+      <li>Added explicit static routing, CSP/security headers, immutable hashed-asset caching, non-cached HTML, and 404 behavior.</li>
+      <li>Moved the existing meadow image into <code>src/assets</code>; Vite now emits a content-hashed filename without changing the visual source.</li>
+      <li>During production-data QA, replaced exposed semantic icon keys with reusable Lucide icons and changed the four-card health-section navigation to a balanced 4/2/1-column responsive grid.</li>
+      <li>Added Make targets and <code>scripts/test-container-images.sh</code> for repeatable local/CI contract verification.</li>
+      <li>Updated README and kept the substantive portions of <code>AGENTS.md</code>/<code>CLAUDE.md</code> in lockstep.</li>
+    </ul>
+    <p class="muted">
+      No API, database, authentication, tenant, production Compose, reverse-proxy,
+      registry naming, or deployment configuration changed.
+    </p>
+  </section>
+
+  <section>
+    <h2>12. Verification record</h2>
+    <table>
+      <thead><tr><th>Check</th><th>Result</th></tr></thead>
+      <tbody>
+        <tr><td><code>pnpm web:check</code></td><td>Passed: contract check, TypeScript, ESLint, 50 unit tests, and production Vite build.</td></tr>
+        <tr><td><code>CGO_ENABLED=0 go test ./...</code></td><td>Passed for all Go packages.</td></tr>
+        <tr><td><code>make test-container-images</code></td><td>Passed: both images built; users, binaries, labels, HEALTHCHECK, runtime contents, secrets, HTTP health, caching, and 404 behavior verified.</td></tr>
+        <tr><td><code>CI=true HEALTH_WEB_TEST_PORT=49173 pnpm web:test:visual</code></td><td>Passed: 19/19 responsive and state tests across 320–1440px and en/ru/sr.</td></tr>
+        <tr><td>Production-data local QA</td><td>Passed through a temporary read-only proxy: four real section icons rendered in one wide row, raw icon names were absent, API calls succeeded, and the browser console was clean.</td></tr>
+        <tr><td><code>git diff --check</code></td><td>Passed before closeout; repeated after this record is written.</td></tr>
+      </tbody>
+    </table>
+    <p class="muted">
+      The first local Playwright attempt reused an unrelated Docker-held service on port
+      4173 and therefore loaded a build without fixtures. The isolated rerun on port 49173
+      started its own fixture server and passed all scenarios. No foreign container was stopped.
+    </p>
+    <p><strong>Known limitations:</strong> image publication, paired compatibility CI, production canary routing, and deployment remain intentionally deferred to issues #216 and #217.</p>
+  </section>
+
+  <section class="approval">
+    <h2>Approval record</h2>
+    <p>
+      The user approved this plan on 2026-08-03. That approval covered issue #215 only;
+      it did not authorize deployment or production route changes, and none were performed.
+    </p>
+  </section>
+</main>
+</body>
+</html>

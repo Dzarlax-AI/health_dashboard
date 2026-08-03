@@ -1,7 +1,12 @@
-.PHONY: dev build backfill backfill-force energy-backfill energy-backfill-dry tenant-isolation import contract-generate contract-check web-install web-install-browsers web-dev web-check web-test-visual docker-up docker-down test test-unit test-db-storage test-db-ui test-db-ui-fast test-db-energy test-db-energy-smoke test-db-readiness test-db-import test-db-security test-db smoke-health-post
+.PHONY: dev build backfill backfill-force energy-backfill energy-backfill-dry tenant-isolation import contract-generate contract-check web-install web-install-browsers web-dev web-check web-test-visual docker-build-backend docker-build-frontend docker-build-images test-container-images docker-up docker-down test test-unit test-db-storage test-db-ui test-db-ui-fast test-db-energy test-db-energy-smoke test-db-readiness test-db-import test-db-security test-db smoke-health-post
 
 ADDR ?= :8080
 PNPM ?= pnpm
+BACKEND_IMAGE ?= health-backend:local
+FRONTEND_IMAGE ?= health-frontend:local
+BUILD_REVISION ?= $(shell git rev-parse --verify HEAD)
+IMAGE_VERSION ?= dev
+API_CONTRACT_VERSION ?= $(shell python3 -c 'import json; print(json.load(open("contracts/openapi.json"))["info"]["version"])')
 
 dev:
 	DATABASE_URL=$(DATABASE_URL) ADDR=$(ADDR) go run ./cmd/server
@@ -58,6 +63,30 @@ web-check:
 
 web-test-visual: web-install-browsers
 	$(PNPM) web:test:visual
+
+docker-build-backend:
+	docker build -f Dockerfile.backend \
+		--build-arg BUILD_REVISION=$(BUILD_REVISION) \
+		--build-arg IMAGE_VERSION=$(IMAGE_VERSION) \
+		--build-arg API_CONTRACT_VERSION=$(API_CONTRACT_VERSION) \
+		-t $(BACKEND_IMAGE) .
+
+docker-build-frontend:
+	docker build -f apps/web/Dockerfile \
+		--build-arg BUILD_REVISION=$(BUILD_REVISION) \
+		--build-arg IMAGE_VERSION=$(IMAGE_VERSION) \
+		--build-arg API_CONTRACT_VERSION=$(API_CONTRACT_VERSION) \
+		-t $(FRONTEND_IMAGE) .
+
+docker-build-images: docker-build-backend docker-build-frontend
+
+test-container-images: docker-build-images
+	BACKEND_IMAGE=$(BACKEND_IMAGE) \
+	FRONTEND_IMAGE=$(FRONTEND_IMAGE) \
+	BUILD_REVISION=$(BUILD_REVISION) \
+	IMAGE_VERSION=$(IMAGE_VERSION) \
+	API_CONTRACT_VERSION=$(API_CONTRACT_VERSION) \
+	./scripts/test-container-images.sh
 
 docker-up:
 	docker compose up -d --build
