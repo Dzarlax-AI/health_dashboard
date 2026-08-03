@@ -1,10 +1,12 @@
-.PHONY: dev build backfill backfill-force energy-backfill energy-backfill-dry tenant-isolation import contract-generate contract-check web-install web-install-browsers web-dev web-check web-test-visual docker-build-backend docker-build-frontend docker-build-images test-container-images docker-up docker-down test test-unit test-db-storage test-db-ui test-db-ui-fast test-db-energy test-db-energy-smoke test-db-readiness test-db-import test-db-security test-db smoke-health-post
+.PHONY: dev build backfill backfill-force energy-backfill energy-backfill-dry tenant-isolation import contract-generate contract-check web-install web-install-browsers web-dev web-check web-test-visual docker-build-backend docker-build-frontend docker-build-images test-container-images test-compatible-image-pair test-compatible-image-pair-negative test-release-contract-helpers docker-up docker-down test test-unit test-db-storage test-db-ui test-db-ui-fast test-db-energy test-db-energy-smoke test-db-readiness test-db-import test-db-security test-db smoke-health-post
 
 ADDR ?= :8080
 PNPM ?= pnpm
 BACKEND_IMAGE ?= health-backend:local
 FRONTEND_IMAGE ?= health-frontend:local
 BUILD_REVISION ?= $(shell git rev-parse --verify HEAD)
+BACKEND_BUILD_REVISION ?= $(BUILD_REVISION)
+FRONTEND_BUILD_REVISION ?= $(BUILD_REVISION)
 IMAGE_VERSION ?= dev
 API_CONTRACT_VERSION ?= $(shell python3 -c 'import json; print(json.load(open("contracts/openapi.json"))["info"]["version"])')
 
@@ -66,14 +68,14 @@ web-test-visual: web-install-browsers
 
 docker-build-backend:
 	docker build -f Dockerfile.backend \
-		--build-arg BUILD_REVISION=$(BUILD_REVISION) \
+		--build-arg BUILD_REVISION=$(BACKEND_BUILD_REVISION) \
 		--build-arg IMAGE_VERSION=$(IMAGE_VERSION) \
 		--build-arg API_CONTRACT_VERSION=$(API_CONTRACT_VERSION) \
 		-t $(BACKEND_IMAGE) .
 
 docker-build-frontend:
 	docker build -f apps/web/Dockerfile \
-		--build-arg BUILD_REVISION=$(BUILD_REVISION) \
+		--build-arg BUILD_REVISION=$(FRONTEND_BUILD_REVISION) \
 		--build-arg IMAGE_VERSION=$(IMAGE_VERSION) \
 		--build-arg API_CONTRACT_VERSION=$(API_CONTRACT_VERSION) \
 		-t $(FRONTEND_IMAGE) .
@@ -84,9 +86,32 @@ test-container-images: docker-build-images
 	BACKEND_IMAGE=$(BACKEND_IMAGE) \
 	FRONTEND_IMAGE=$(FRONTEND_IMAGE) \
 	BUILD_REVISION=$(BUILD_REVISION) \
+	BACKEND_BUILD_REVISION=$(BACKEND_BUILD_REVISION) \
+	FRONTEND_BUILD_REVISION=$(FRONTEND_BUILD_REVISION) \
 	IMAGE_VERSION=$(IMAGE_VERSION) \
 	API_CONTRACT_VERSION=$(API_CONTRACT_VERSION) \
 	./scripts/test-container-images.sh
+
+test-compatible-image-pair: docker-build-images
+	BACKEND_IMAGE=$(BACKEND_IMAGE) \
+	FRONTEND_IMAGE=$(FRONTEND_IMAGE) \
+	BUILD_REVISION=$(BUILD_REVISION) \
+	BACKEND_BUILD_REVISION=$(BACKEND_BUILD_REVISION) \
+	FRONTEND_BUILD_REVISION=$(FRONTEND_BUILD_REVISION) \
+	API_CONTRACT_VERSION=$(API_CONTRACT_VERSION) \
+	./scripts/test-compatible-image-pair.sh
+
+test-compatible-image-pair-negative: docker-build-images
+	BACKEND_IMAGE=$(BACKEND_IMAGE) \
+	FRONTEND_IMAGE=$(FRONTEND_IMAGE) \
+	BUILD_REVISION=$(BUILD_REVISION) \
+	BACKEND_BUILD_REVISION=$(BACKEND_BUILD_REVISION) \
+	FRONTEND_BUILD_REVISION=$(FRONTEND_BUILD_REVISION) \
+	API_CONTRACT_VERSION=$(API_CONTRACT_VERSION) \
+	./scripts/test-compatible-image-pair-preflight.sh
+
+test-release-contract-helpers:
+	./scripts/test-release-contract-helpers.sh
 
 docker-up:
 	docker compose up -d --build
