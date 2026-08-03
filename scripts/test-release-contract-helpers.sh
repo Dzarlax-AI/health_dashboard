@@ -32,17 +32,26 @@ assert_classification() {
 
 assert_manifest_fails() {
 	name=$1
-	shift
+	expected_error=$2
+	shift 2
 
-	if "$manifest" "$@" >/dev/null 2>&1; then
+	if error_output=$("$manifest" "$@" 2>&1 >/dev/null); then
 		fail "$name: manifest generation unexpectedly succeeded"
 	fi
+	case "$error_output" in
+		*"$expected_error"*)
+			;;
+		*)
+			fail "$name: expected error containing '$expected_error', got '$error_output'"
+			;;
+	esac
 
 	tests_run=$((tests_run + 1))
 }
 
 valid_digest_backend=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 valid_digest_frontend=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+valid_revision=0123456789abcdef0123456789abcdef01234567
 
 assert_classification "frontend app" 'apps/web/src/routes/+page.svelte
 ' false true
@@ -73,10 +82,12 @@ valid_output=$(
 	"$manifest" \
 		--backend-image ghcr.io/example/health-backend \
 		--frontend-image ghcr.io/example/health-frontend \
+		--backend-role backend \
+		--frontend-role frontend \
 		--backend-digest "$valid_digest_backend" \
 		--frontend-digest "$valid_digest_frontend" \
-		--backend-revision 0123456789abcdef \
-		--frontend-revision 0123456789abcdef \
+		--backend-revision "$valid_revision" \
+		--frontend-revision "$valid_revision" \
 		--backend-contract-version 2.4.0 \
 		--frontend-contract-version 2.4.0 \
 		--created-at 2026-08-03T10:15:30Z
@@ -99,7 +110,7 @@ expected = {
         "image": "ghcr.io/example/health-frontend",
         "role": "frontend",
     },
-    "revision": "0123456789abcdef",
+    "revision": "0123456789abcdef0123456789abcdef01234567",
     "schema_version": 1,
 }
 if document != expected:
@@ -111,48 +122,134 @@ if os.environ["VALID_OUTPUT"] != deterministic:
 PY
 tests_run=$((tests_run + 1))
 
-assert_manifest_fails "invalid digest" \
+assert_manifest_fails "invalid digest" "backend digest must be sha256:" \
 	--backend-image ghcr.io/example/health-backend \
 	--frontend-image ghcr.io/example/health-frontend \
+	--backend-role backend \
+	--frontend-role frontend \
 	--backend-digest sha256:ABCDEF \
 	--frontend-digest "$valid_digest_frontend" \
-	--backend-revision same \
-	--frontend-revision same \
+	--backend-revision "$valid_revision" \
+	--frontend-revision "$valid_revision" \
 	--backend-contract-version 2.4.0 \
 	--frontend-contract-version 2.4.0 \
 	--created-at 2026-08-03T10:15:30Z
 
-assert_manifest_fails "revision mismatch" \
+assert_manifest_fails "revision mismatch" "backend and frontend revisions must match" \
 	--backend-image ghcr.io/example/health-backend \
 	--frontend-image ghcr.io/example/health-frontend \
+	--backend-role backend \
+	--frontend-role frontend \
 	--backend-digest "$valid_digest_backend" \
 	--frontend-digest "$valid_digest_frontend" \
-	--backend-revision backend-revision \
-	--frontend-revision frontend-revision \
+	--backend-revision aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+	--frontend-revision bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
 	--backend-contract-version 2.4.0 \
 	--frontend-contract-version 2.4.0 \
 	--created-at 2026-08-03T10:15:30Z
 
-assert_manifest_fails "contract mismatch" \
+assert_manifest_fails "contract mismatch" "backend and frontend contract versions must match" \
 	--backend-image ghcr.io/example/health-backend \
 	--frontend-image ghcr.io/example/health-frontend \
+	--backend-role backend \
+	--frontend-role frontend \
 	--backend-digest "$valid_digest_backend" \
 	--frontend-digest "$valid_digest_frontend" \
-	--backend-revision same \
-	--frontend-revision same \
+	--backend-revision "$valid_revision" \
+	--frontend-revision "$valid_revision" \
 	--backend-contract-version 2.4.0 \
 	--frontend-contract-version 2.5.0 \
 	--created-at 2026-08-03T10:15:30Z
 
-assert_manifest_fails "empty image reference" \
+assert_manifest_fails "empty image reference" "backend image must be non-empty" \
 	--backend-image '' \
 	--frontend-image ghcr.io/example/health-frontend \
+	--backend-role backend \
+	--frontend-role frontend \
 	--backend-digest "$valid_digest_backend" \
 	--frontend-digest "$valid_digest_frontend" \
-	--backend-revision same \
-	--frontend-revision same \
+	--backend-revision "$valid_revision" \
+	--frontend-revision "$valid_revision" \
 	--backend-contract-version 2.4.0 \
 	--frontend-contract-version 2.4.0 \
 	--created-at 2026-08-03T10:15:30Z
+
+assert_manifest_fails "swapped roles" "backend role must be exactly 'backend'" \
+	--backend-image ghcr.io/example/health-backend \
+	--frontend-image ghcr.io/example/health-frontend \
+	--backend-role frontend \
+	--frontend-role backend \
+	--backend-digest "$valid_digest_backend" \
+	--frontend-digest "$valid_digest_frontend" \
+	--backend-revision "$valid_revision" \
+	--frontend-revision "$valid_revision" \
+	--backend-contract-version 2.4.0 \
+	--frontend-contract-version 2.4.0 \
+	--created-at 2026-08-03T10:15:30Z
+
+assert_manifest_fails "invalid frontend role" "frontend role must be exactly 'frontend'" \
+	--backend-image ghcr.io/example/health-backend \
+	--frontend-image ghcr.io/example/health-frontend \
+	--backend-role backend \
+	--frontend-role backend \
+	--backend-digest "$valid_digest_backend" \
+	--frontend-digest "$valid_digest_frontend" \
+	--backend-revision "$valid_revision" \
+	--frontend-revision "$valid_revision" \
+	--backend-contract-version 2.4.0 \
+	--frontend-contract-version 2.4.0 \
+	--created-at 2026-08-03T10:15:30Z
+
+assert_manifest_fails "invalid revision" "backend revision must be 40 lowercase hex chars" \
+	--backend-image ghcr.io/example/health-backend \
+	--frontend-image ghcr.io/example/health-frontend \
+	--backend-role backend \
+	--frontend-role frontend \
+	--backend-digest "$valid_digest_backend" \
+	--frontend-digest "$valid_digest_frontend" \
+	--backend-revision not-a-git-object \
+	--frontend-revision not-a-git-object \
+	--backend-contract-version 2.4.0 \
+	--frontend-contract-version 2.4.0 \
+	--created-at 2026-08-03T10:15:30Z
+
+assert_manifest_fails "unknown contract" "backend contract version must not be a sentinel value" \
+	--backend-image ghcr.io/example/health-backend \
+	--frontend-image ghcr.io/example/health-frontend \
+	--backend-role backend \
+	--frontend-role frontend \
+	--backend-digest "$valid_digest_backend" \
+	--frontend-digest "$valid_digest_frontend" \
+	--backend-revision "$valid_revision" \
+	--frontend-revision "$valid_revision" \
+	--backend-contract-version unknown \
+	--frontend-contract-version unknown \
+	--created-at 2026-08-03T10:15:30Z
+
+assert_manifest_fails "non-UTC created-at" "created-at must use canonical RFC3339 UTC format" \
+	--backend-image ghcr.io/example/health-backend \
+	--frontend-image ghcr.io/example/health-frontend \
+	--backend-role backend \
+	--frontend-role frontend \
+	--backend-digest "$valid_digest_backend" \
+	--frontend-digest "$valid_digest_frontend" \
+	--backend-revision "$valid_revision" \
+	--frontend-revision "$valid_revision" \
+	--backend-contract-version 2.4.0 \
+	--frontend-contract-version 2.4.0 \
+	--created-at 2026-08-03T12:15:30+02:00
+
+assert_manifest_fails "invalid calendar created-at" "created-at must use canonical RFC3339 UTC format" \
+	--backend-image ghcr.io/example/health-backend \
+	--frontend-image ghcr.io/example/health-frontend \
+	--backend-role backend \
+	--frontend-role frontend \
+	--backend-digest "$valid_digest_backend" \
+	--frontend-digest "$valid_digest_frontend" \
+	--backend-revision "$valid_revision" \
+	--frontend-revision "$valid_revision" \
+	--backend-contract-version 2.4.0 \
+	--frontend-contract-version 2.4.0 \
+	--created-at 2026-02-30T10:15:30Z
 
 echo "PASS: $tests_run release contract helper tests"
