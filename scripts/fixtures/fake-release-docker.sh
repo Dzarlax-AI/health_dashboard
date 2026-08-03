@@ -3,6 +3,17 @@
 set -eu
 
 if test "$1" = pull; then
+	shift
+	target=
+	for argument do
+		target=$argument
+	done
+	case "$target" in
+		*[A-Z]*)
+			echo "invalid reference format: repository name must be lowercase" >&2
+			exit 1
+			;;
+	esac
 	exit 0
 fi
 
@@ -11,6 +22,13 @@ test "$2" = inspect
 test "$3" = --format
 format=$4
 target=$5
+
+case "$target" in
+	*[A-Z]*)
+		echo "invalid reference format: repository name must be lowercase" >&2
+		exit 1
+		;;
+esac
 
 case "$target" in
 	*-pair:compatible)

@@ -152,7 +152,7 @@
       routing stays unchanged until issue #217.
     </p>
     <div class="meta">
-      <span>Status: review fixes locally verified; hosted CI rerun pending</span>
+      <span>Status: merged; post-merge GHCR case hotfix locally verified</span>
       <span>Repository: health_dashboard monorepo</span>
       <span>Date: 2026-08-03</span>
       <span>Live runtime/routing impact: none in this issue</span>
@@ -164,15 +164,19 @@
     <span class="badge">Implementation status</span>
     <h2>Task summary</h2>
     <p>
-      The issue #216 implementation is complete in the local working tree. It retains mandatory Go,
+      The issue #216 implementation was merged in PR #224. It retains mandatory Go,
       database, security, contract, and frontend source checks; adds standalone and routed candidate
       image gates; publishes or resolves the two components independently; verifies the exact
       linux/amd64 digest pair; and records it in JSON plus an OCI metadata image.
     </p>
     <p>
-      A hosted GitHub Actions rerun for the review fixes, final review, and merge remain pending. Nothing in this
-      issue changes Traefik, production Compose, tenant data, database schemas, or live route
-      ownership, and this plan does not claim deployment.
+      The first main release built and pushed both component candidates, then failed closed while
+      resolving their immutable digests because <code>github.repository</code> preserved uppercase
+      owner characters while Docker repository references require lowercase. The compatibility
+      pointer and convenience tags were not advanced. The follow-up hotfix normalizes component and
+      pair repository references at their Docker boundaries and adds a regression fixture that
+      reproduces Docker's lowercase constraint. Nothing in this issue changes Traefik, production
+      Compose, tenant data, database schemas, or live route ownership.
     </p>
   </section>
 
@@ -242,16 +246,16 @@
     <table>
       <thead><tr><th>File</th><th>Actual change</th></tr></thead>
       <tbody>
-        <tr><td><code>.github/workflows/ci.yml</code></td><td>Added classification, mandatory candidate pair checks, independent publish-or-resolve jobs, exact released-pair verification, atomic pair metadata publication, stable compatibility gate, main serialization, and safe manual arm64 tagging.</td></tr>
+        <tr><td><code>.github/workflows/ci.yml</code></td><td>Added classification, mandatory candidate pair checks, independent publish-or-resolve jobs, exact released-pair verification, atomic pair metadata publication, stable compatibility gate, main serialization, and safe manual arm64 tagging. The post-merge hotfix also canonicalizes the pair repository before direct Docker commands.</td></tr>
         <tr><td><code>Makefile</code></td><td>Added independent backend/frontend revision inputs to the existing standalone, negative-preflight, and routed-pair targets.</td></tr>
         <tr><td><code>scripts/test-compatible-image-pair.sh</code></td><td>Validates independent component revisions and retains the canonical tenant-isolation lifecycle, routed probes, diagnostics, and ownership-aware cleanup.</td></tr>
         <tr><td><code>scripts/test-compatible-image-pair-preflight.sh</code></td><td>Tests both contract-mismatch directions, both revision-mismatch directions, signal status, cleanup, and foreign-resource ownership.</td></tr>
         <tr><td><code>scripts/test-container-images.sh</code></td><td>Supports distinct expected component revisions for standalone contracts.</td></tr>
         <tr><td><code>scripts/classify-image-changes.sh</code></td><td>New fail-closed backend/frontend path classifier used by the workflow and deterministic helper tests.</td></tr>
         <tr><td><code>scripts/create-compatibility-manifest.py</code></td><td>New strict manifest generator for pair identity, component digests, revisions, roles, contract, and timestamp.</td></tr>
-        <tr><td><code>scripts/resolve-release-image.sh</code></td><td>Shared fail-closed publish-or-resolve validator used by both component release lanes.</td></tr>
-        <tr><td><code>scripts/test-release-contract-helpers.sh</code></td><td>New deterministic classifier, manifest, and release resolver validation suite with 35 cases.</td></tr>
-        <tr><td><code>scripts/fixtures/fake-release-docker.sh</code></td><td>Deterministic Docker boundary fixture for changed, reused, and corrupted release resolver cases.</td></tr>
+        <tr><td><code>scripts/resolve-release-image.sh</code></td><td>Shared fail-closed publish-or-resolve validator used by both component release lanes; repository references are canonicalized to lowercase before Docker use and output.</td></tr>
+        <tr><td><code>scripts/test-release-contract-helpers.sh</code></td><td>New deterministic classifier, manifest, and release resolver validation suite with 35 cases, including uppercase GitHub owner inputs for changed and reused components.</td></tr>
+        <tr><td><code>scripts/fixtures/fake-release-docker.sh</code></td><td>Deterministic Docker boundary fixture for changed, reused, and corrupted release resolver cases; rejects uppercase repository references like Docker does.</td></tr>
         <tr><td><code>scripts/fixtures/compatibility-manifest.Dockerfile</code></td><td>New scratch metadata image with pair labels and embedded <code>/compatibility.json</code>.</td></tr>
         <tr><td><code>scripts/fixtures/compatible-image-pair.nginx.conf</code></td><td>New reverse-proxy fixture for routed frontend, API, auth, health, MCP, and ingest probes.</td></tr>
         <tr><td><code>scripts/fixtures/contract-mismatch.Dockerfile</code></td><td>New deliberately incompatible image fixture for negative contract checks.</td></tr>
@@ -272,6 +276,7 @@
         <h3>Source and helper checks</h3>
         <ul>
           <li>Release helper suite: 35 tests passed.</li>
+          <li>The GHCR case regression failed before the hotfix with Docker's lowercase-reference error and passed after component and pair normalization.</li>
           <li>Go unit tests and generated-contract compatibility checks passed.</li>
           <li>Web suite: 11 files and 56 tests passed; typecheck, lint, and production build passed.</li>
           <li>Responsive Playwright suite: 19 tests passed in isolated CI mode on a dedicated local port.</li>
@@ -299,7 +304,7 @@
   <section class="risk">
     <h2>Known limitations and remaining risks</h2>
     <ul>
-      <li><strong>Hosted expressions:</strong> GitHub-hosted evaluation of job conditions, outputs, package permissions, and registry behavior still requires the PR CI run.</li>
+      <li><strong>Hosted hotfix verification:</strong> GitHub-hosted evaluation of the lowercase component and pair references still requires the hotfix PR and subsequent main release.</li>
       <li><strong>Hosted semantics:</strong> <code>actionlint</code>, YAML, pins, graph, expression placement, ordering, concurrency, and pointer assertions passed locally, but GitHub-hosted package and event behavior still requires the PR CI run.</li>
       <li><strong>First pair pointer:</strong> a selective main release needs an existing valid <code>${repo}-pair:compatible</code> to resolve an unchanged component; conservative unknown/shared classification rebuilds both.</li>
       <li><strong>Mutable conveniences:</strong> operators could still misuse component <code>latest</code>; documentation and #217 deployment logic must consume the pair metadata instead.</li>
@@ -324,9 +329,9 @@
   <section>
     <h2>Follow-up and review gate</h2>
     <ul>
-      <li>Review the cumulative diff and the issue #216 remediation commit.</li>
-      <li>Rerun the full GitHub-hosted PR workflow and verify the stable <code>Compatibility Gate</code> conclusion and all existing required checks.</li>
-      <li>Merge only after hosted CI and review pass; no production deployment is part of this approval.</li>
+      <li>Review the focused GHCR reference normalization hotfix.</li>
+      <li>Run the full GitHub-hosted PR workflow and verify the stable <code>Compatibility Gate</code> conclusion and all existing required checks.</li>
+      <li>After merge, verify that the main release advances the authoritative pair pointer before beginning #217.</li>
       <li>Issue #217 must consume the authoritative pair metadata, perform the production Traefik canary, verify observability and auth, and rehearse rollback before changing route ownership.</li>
     </ul>
   </section>
@@ -334,10 +339,10 @@
   <section class="approval">
     <h2>Current gate</h2>
     <p>
-      <strong>Local implementation and review remediation are complete; hosted CI rerun, final PR
-      review, and merge are pending.</strong> The approved scope covers issue #216 source, CI, tests, and documentation
-      only. It does not authorize deployment, Traefik changes, route migration, image deletion, or
-      cleanup of existing tags.
+      <strong>PR #224 is merged and the focused post-merge GHCR case hotfix is locally
+      verified; hotfix PR CI and the next main release remain pending.</strong> This record does not
+      authorize deployment, Traefik changes, route migration, image deletion, or cleanup of existing
+      tags. Those changes remain isolated in issue #217.
     </p>
   </section>
 </main>

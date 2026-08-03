@@ -679,6 +679,7 @@ jobs:
           API_CONTRACT_VERSION: ${{ needs.docker-amd64.outputs.contract }}
         run: |
           set -eu
+          PAIR_IMAGE="$(printf '%s' "$PAIR_IMAGE" | tr '[:upper:]' '[:lower:]')"
           pair_context="$RUNNER_TEMP/compatibility-pair-context"
           pair_metadata="$RUNNER_TEMP/compatibility-pair-build.json"
           extracted_manifest="$RUNNER_TEMP/extracted-compatibility-manifest.json"
@@ -742,6 +743,7 @@ jobs:
               awk '{print "sha256:" $1}'
           )"
           test "$resolved_pair_digest" = "$pair_digest"
+          echo "image=$PAIR_IMAGE" >> "$GITHUB_OUTPUT"
           echo "digest=$pair_digest" >> "$GITHUB_OUTPUT"
 
       - name: Promote component convenience tags
@@ -787,7 +789,7 @@ jobs:
           BACKEND_REVISION: ${{ needs.docker-amd64.outputs.revision }}
           FRONTEND_REVISION: ${{ needs.docker-frontend-amd64.outputs.revision }}
           API_CONTRACT_VERSION: ${{ needs.docker-amd64.outputs.contract }}
-          PAIR_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-pair
+          PAIR_IMAGE: ${{ steps.publish-pair.outputs.image }}
           PAIR_DIGEST: ${{ steps.publish-pair.outputs.digest }}
         run: |
           {

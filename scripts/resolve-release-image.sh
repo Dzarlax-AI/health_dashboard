@@ -9,8 +9,8 @@ fail() {
 
 component_changed=${COMPONENT_CHANGED:?COMPONENT_CHANGED is required}
 published_digest=${PUBLISHED_DIGEST-}
-image=${IMAGE:?IMAGE is required}
-pair_image=${PAIR_IMAGE:?PAIR_IMAGE is required}
+image=$(printf '%s' "${IMAGE:?IMAGE is required}" | tr '[:upper:]' '[:lower:]')
+pair_image=$(printf '%s' "${PAIR_IMAGE:?PAIR_IMAGE is required}" | tr '[:upper:]' '[:lower:]')
 component_key=${COMPONENT_KEY:?COMPONENT_KEY is required}
 expected_role=${EXPECTED_ROLE:?EXPECTED_ROLE is required}
 github_output=${GITHUB_OUTPUT:?GITHUB_OUTPUT is required}
