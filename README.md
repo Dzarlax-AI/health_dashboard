@@ -153,7 +153,7 @@ The monorepo also defines independent local image contracts:
 make docker-build-backend    # Dockerfile.backend → health-backend:local
 make docker-build-frontend   # apps/web/Dockerfile → health-frontend:local
 make test-container-images   # build both and verify users, artifacts, labels, HTTP, and caching
-make test-release-contract-helpers          # classifier and manifest unit checks
+make test-release-contract-helpers          # classifier, manifest, and release resolver unit checks
 make test-compatible-image-pair-negative    # reject contract/revision mismatches before startup
 make test-compatible-image-pair             # run the full routed backend/frontend pair harness
 ```
@@ -175,6 +175,8 @@ routed harness, then recorded in a `compatibility-manifest.json` artifact and in
 the `${repo}-pair:compatible` metadata image. That single metadata tag is the
 authoritative atomic pair pointer. Component `latest` tags are updated afterward
 for convenience only and must never be used to select a compatible pair.
+Both component lanes call the same fail-closed release resolver so label,
+revision, digest, role, and contract validation cannot drift between them.
 
 The manual backend arm64 build uses the architecture-qualified
 `${sha}-arm64` tag and is not part of the verified linux/amd64 pair. Building or

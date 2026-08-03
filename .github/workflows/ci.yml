@@ -53,6 +53,7 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Classify changed paths
         id: classify
@@ -270,18 +271,20 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Read API contract version
+        run: echo "API_CONTRACT_VERSION=$(python3 -c 'import json; print(json.load(open("contracts/openapi.json"))["info"]["version"])')" >> "$GITHUB_ENV"
+
       - name: Build runtime image
         run: |
-          contract_version="$(python3 -c 'import json; print(json.load(open("contracts/openapi.json"))["info"]["version"])')"
           docker build -f Dockerfile.backend \
             --build-arg BUILD_REVISION="$GITHUB_SHA" \
             --build-arg IMAGE_VERSION=ci \
-            --build-arg API_CONTRACT_VERSION="$contract_version" \
+            --build-arg API_CONTRACT_VERSION="$API_CONTRACT_VERSION" \
             -t health-dashboard:ci .
           docker build -f apps/web/Dockerfile \
             --build-arg BUILD_REVISION="$GITHUB_SHA" \
             --build-arg IMAGE_VERSION=ci \
-            --build-arg API_CONTRACT_VERSION="$contract_version" \
+            --build-arg API_CONTRACT_VERSION="$API_CONTRACT_VERSION" \
             -t health-frontend:ci .
 
       - name: Verify runtime image contract
@@ -290,7 +293,7 @@ jobs:
           FRONTEND_IMAGE=health-frontend:ci \
           BUILD_REVISION="$GITHUB_SHA" \
           IMAGE_VERSION=ci \
-          API_CONTRACT_VERSION="$(python3 -c 'import json; print(json.load(open("contracts/openapi.json"))["info"]["version"])')" \
+          API_CONTRACT_VERSION="$API_CONTRACT_VERSION" \
           ./scripts/test-container-images.sh
 
       - name: Reject both contract-mismatch directions before startup
@@ -298,7 +301,7 @@ jobs:
           BACKEND_IMAGE=health-dashboard:ci \
           FRONTEND_IMAGE=health-frontend:ci \
           BUILD_REVISION="$GITHUB_SHA" \
-          API_CONTRACT_VERSION="$(python3 -c 'import json; print(json.load(open("contracts/openapi.json"))["info"]["version"])')" \
+          API_CONTRACT_VERSION="$API_CONTRACT_VERSION" \
           ./scripts/test-compatible-image-pair-preflight.sh
 
       - name: Verify routed candidate image pair
@@ -306,7 +309,7 @@ jobs:
           BACKEND_IMAGE=health-dashboard:ci \
           FRONTEND_IMAGE=health-frontend:ci \
           BUILD_REVISION="$GITHUB_SHA" \
-          API_CONTRACT_VERSION="$(python3 -c 'import json; print(json.load(open("contracts/openapi.json"))["info"]["version"])')" \
+          API_CONTRACT_VERSION="$API_CONTRACT_VERSION" \
           ./scripts/test-compatible-image-pair.sh
 
       - name: Bootstrap blank database and verify isolated restart recovery
@@ -452,6 +455,8 @@ jobs:
       role: ${{ steps.resolve.outputs.role }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -475,7 +480,7 @@ jobs:
 
       - name: Read API contract version
         id: contract
-        run: echo "version=$(python3 -c 'import json; print(json.load(open(\"contracts/openapi.json\"))[\"info\"][\"version\"])')" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(python3 -c 'import json; print(json.load(open("contracts/openapi.json"))["info"]["version"])')" >> "$GITHUB_OUTPUT"
 
       - name: Build and push (amd64)
         id: build-push
@@ -500,53 +505,11 @@ jobs:
         env:
           COMPONENT_CHANGED: ${{ needs.classify-image-changes.outputs.backend == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_amd64) }}
           PUBLISHED_DIGEST: ${{ steps.build-push.outputs.digest }}
-        run: |
-          set -eu
-          image="${REGISTRY}/${IMAGE_NAME}"
-          if test "$COMPONENT_CHANGED" = "true"; then
-            digest="$PUBLISHED_DIGEST"
-            test -n "$digest"
-            docker pull --platform linux/amd64 "$image@$digest"
-          else
-            pair_image="${REGISTRY}/${IMAGE_NAME}-pair"
-            docker pull "$pair_image:compatible"
-            pair_role="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.image-role"}}' "$pair_image:compatible")"
-            pair_revision="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.pair-revision"}}' "$pair_image:compatible")"
-            contract="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.api-contract-version"}}' "$pair_image:compatible")"
-            selected_image="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.backend-image"}}' "$pair_image:compatible")"
-            digest="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.backend-digest"}}' "$pair_image:compatible")"
-            revision="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.backend-revision"}}' "$pair_image:compatible")"
-            test "$pair_role" = compatibility-pair
-            printf '%s\n' "$pair_revision" | grep -Eq '^[0-9a-f]{40}$'
-            test "$selected_image" = "$image"
-            printf '%s\n' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'
-            printf '%s\n' "$revision" | grep -Eq '^[0-9a-f]{40}$'
-            case "$contract" in ""|"<no value>"|n/a|none|null|unknown|unset) exit 1 ;; esac
-            docker pull --platform linux/amd64 "$image@$digest"
-          fi
-
-          printf '%s\n' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'
-          actual_revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image@$digest")"
-          actual_contract="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.api-contract-version"}}' "$image@$digest")"
-          role="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.image-role"}}' "$image@$digest")"
-          printf '%s\n' "$actual_revision" | grep -Eq '^[0-9a-f]{40}$'
-          case "$actual_contract" in ""|"<no value>"|n/a|none|null|unknown|unset) exit 1 ;; esac
-          test "$role" = backend
-          if test "$COMPONENT_CHANGED" = "true"; then
-            revision="$actual_revision"
-            contract="$actual_contract"
-          else
-            test "$actual_revision" = "$revision"
-            test "$actual_contract" = "$contract"
-          fi
-
-          {
-            echo "image=$image"
-            echo "digest=$digest"
-            echo "revision=$revision"
-            echo "contract=$contract"
-            echo "role=$role"
-          } >> "$GITHUB_OUTPUT"
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          PAIR_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-pair
+          COMPONENT_KEY: backend
+          EXPECTED_ROLE: backend
+        run: ./scripts/resolve-release-image.sh
 
   docker-frontend-amd64:
     name: Frontend Docker Build & Push (amd64)
@@ -564,6 +527,8 @@ jobs:
       role: ${{ steps.resolve.outputs.role }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -587,7 +552,7 @@ jobs:
 
       - name: Read API contract version
         id: contract
-        run: echo "version=$(python3 -c 'import json; print(json.load(open(\"contracts/openapi.json\"))[\"info\"][\"version\"])')" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(python3 -c 'import json; print(json.load(open("contracts/openapi.json"))["info"]["version"])')" >> "$GITHUB_OUTPUT"
 
       - name: Build and push (amd64)
         id: build-push
@@ -612,53 +577,11 @@ jobs:
         env:
           COMPONENT_CHANGED: ${{ needs.classify-image-changes.outputs.frontend == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_amd64) }}
           PUBLISHED_DIGEST: ${{ steps.build-push.outputs.digest }}
-        run: |
-          set -eu
-          image="${REGISTRY}/${IMAGE_NAME}-frontend"
-          if test "$COMPONENT_CHANGED" = "true"; then
-            digest="$PUBLISHED_DIGEST"
-            test -n "$digest"
-            docker pull --platform linux/amd64 "$image@$digest"
-          else
-            pair_image="${REGISTRY}/${IMAGE_NAME}-pair"
-            docker pull "$pair_image:compatible"
-            pair_role="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.image-role"}}' "$pair_image:compatible")"
-            pair_revision="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.pair-revision"}}' "$pair_image:compatible")"
-            contract="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.api-contract-version"}}' "$pair_image:compatible")"
-            selected_image="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.frontend-image"}}' "$pair_image:compatible")"
-            digest="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.frontend-digest"}}' "$pair_image:compatible")"
-            revision="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.frontend-revision"}}' "$pair_image:compatible")"
-            test "$pair_role" = compatibility-pair
-            printf '%s\n' "$pair_revision" | grep -Eq '^[0-9a-f]{40}$'
-            test "$selected_image" = "$image"
-            printf '%s\n' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'
-            printf '%s\n' "$revision" | grep -Eq '^[0-9a-f]{40}$'
-            case "$contract" in ""|"<no value>"|n/a|none|null|unknown|unset) exit 1 ;; esac
-            docker pull --platform linux/amd64 "$image@$digest"
-          fi
-
-          printf '%s\n' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'
-          actual_revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image@$digest")"
-          actual_contract="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.api-contract-version"}}' "$image@$digest")"
-          role="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.image-role"}}' "$image@$digest")"
-          printf '%s\n' "$actual_revision" | grep -Eq '^[0-9a-f]{40}$'
-          case "$actual_contract" in ""|"<no value>"|n/a|none|null|unknown|unset) exit 1 ;; esac
-          test "$role" = frontend
-          if test "$COMPONENT_CHANGED" = "true"; then
-            revision="$actual_revision"
-            contract="$actual_contract"
-          else
-            test "$actual_revision" = "$revision"
-            test "$actual_contract" = "$contract"
-          fi
-
-          {
-            echo "image=$image"
-            echo "digest=$digest"
-            echo "revision=$revision"
-            echo "contract=$contract"
-            echo "role=$role"
-          } >> "$GITHUB_OUTPUT"
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend
+          PAIR_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-pair
+          COMPONENT_KEY: frontend
+          EXPECTED_ROLE: frontend
+        run: ./scripts/resolve-release-image.sh
 
   released-pair:
     name: Released Image Pair
@@ -670,6 +593,8 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -951,7 +876,7 @@ jobs:
 
       - name: Read API contract version
         id: contract
-        run: echo "version=$(python3 -c 'import json; print(json.load(open(\"contracts/openapi.json\"))[\"info\"][\"version\"])')" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(python3 -c 'import json; print(json.load(open("contracts/openapi.json"))["info"]["version"])')" >> "$GITHUB_OUTPUT"
 
       - name: Build and push (arm64)
         uses: docker/build-push-action@v6
@@ -966,5 +891,5 @@ jobs:
           platforms: linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=multiarch
-          cache-to: type=gha,mode=max,scope=multiarch
+          cache-from: type=gha,scope=arm64
+          cache-to: type=gha,mode=max,scope=arm64

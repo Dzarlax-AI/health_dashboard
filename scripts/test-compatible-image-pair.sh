@@ -330,6 +330,14 @@ docker run -d --name "$frontend_container" --network "$network_name" --network-a
   "$frontend_image" >/dev/null
 frontend_created=1
 
+i=0
+while [ "$i" -lt 90 ]; do
+  if docker exec "$frontend_container" wget -q -O - http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
+    break
+  fi
+  i=$((i + 1))
+  sleep 1
+done
 docker exec "$frontend_container" wget -q -O - http://127.0.0.1:8080/healthz >/dev/null
 docker exec "$backend_container" wget -q -O - http://127.0.0.1:8080/readyz >/dev/null
 

@@ -5,6 +5,8 @@ set -eu
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 classifier="$script_dir/classify-image-changes.sh"
 manifest="$script_dir/create-compatibility-manifest.py"
+resolver="$script_dir/resolve-release-image.sh"
+fake_docker="$script_dir/fixtures/fake-release-docker.sh"
 tests_run=0
 
 fail() {
@@ -37,6 +39,25 @@ assert_manifest_fails() {
 
 	if error_output=$("$manifest" "$@" 2>&1 >/dev/null); then
 		fail "$name: manifest generation unexpectedly succeeded"
+	fi
+	case "$error_output" in
+		*"$expected_error"*)
+			;;
+		*)
+			fail "$name: expected error containing '$expected_error', got '$error_output'"
+			;;
+	esac
+
+	tests_run=$((tests_run + 1))
+}
+
+assert_resolver_fails() {
+	name=$1
+	expected_error=$2
+	shift 2
+
+	if error_output=$(env "$@" "$resolver" 2>&1 >/dev/null); then
+		fail "$name: release image resolution unexpectedly succeeded"
 	fi
 	case "$error_output" in
 		*"$expected_error"*)
@@ -324,5 +345,78 @@ assert_manifest_fails "invalid calendar created-at" "created-at must use canonic
 	--backend-contract-version 2.4.0 \
 	--frontend-contract-version 2.4.0 \
 	--created-at 2026-02-30T10:15:30Z
+
+resolver_tmp=$(mktemp -d "${TMPDIR:-/tmp}/health-release-resolver.XXXXXX")
+trap 'rm -rf "$resolver_tmp"' EXIT HUP INT TERM
+
+changed_output="$resolver_tmp/changed-output"
+env \
+	COMPONENT_CHANGED=true \
+	PUBLISHED_DIGEST="$valid_digest_backend" \
+	IMAGE=ghcr.io/example/health-dashboard \
+	PAIR_IMAGE=ghcr.io/example/health-dashboard-pair \
+	COMPONENT_KEY=backend \
+	EXPECTED_ROLE=backend \
+	GITHUB_OUTPUT="$changed_output" \
+	DOCKER_BIN="$fake_docker" \
+	FAKE_COMPONENT_REVISION="$valid_backend_revision" \
+	FAKE_COMPONENT_CONTRACT=2.4.0 \
+	FAKE_COMPONENT_ROLE=backend \
+	"$resolver"
+grep -Fx "image=ghcr.io/example/health-dashboard" "$changed_output" >/dev/null
+grep -Fx "digest=$valid_digest_backend" "$changed_output" >/dev/null
+grep -Fx "revision=$valid_backend_revision" "$changed_output" >/dev/null
+grep -Fx "contract=2.4.0" "$changed_output" >/dev/null
+grep -Fx "role=backend" "$changed_output" >/dev/null
+tests_run=$((tests_run + 1))
+
+reused_output="$resolver_tmp/reused-output"
+env \
+	COMPONENT_CHANGED=false \
+	PUBLISHED_DIGEST= \
+	IMAGE=ghcr.io/example/health-dashboard-frontend \
+	PAIR_IMAGE=ghcr.io/example/health-dashboard-pair \
+	COMPONENT_KEY=frontend \
+	EXPECTED_ROLE=frontend \
+	GITHUB_OUTPUT="$reused_output" \
+	DOCKER_BIN="$fake_docker" \
+	FAKE_PAIR_REVISION="$valid_revision" \
+	FAKE_PAIR_CONTRACT=2.4.0 \
+	FAKE_PAIR_COMPONENT_IMAGE=ghcr.io/example/health-dashboard-frontend \
+	FAKE_PAIR_COMPONENT_DIGEST="$valid_digest_frontend" \
+	FAKE_PAIR_COMPONENT_REVISION="$valid_frontend_revision" \
+	FAKE_COMPONENT_REVISION="$valid_frontend_revision" \
+	FAKE_COMPONENT_CONTRACT=2.4.0 \
+	FAKE_COMPONENT_ROLE=frontend \
+	"$resolver"
+grep -Fx "image=ghcr.io/example/health-dashboard-frontend" "$reused_output" >/dev/null
+grep -Fx "digest=$valid_digest_frontend" "$reused_output" >/dev/null
+grep -Fx "revision=$valid_frontend_revision" "$reused_output" >/dev/null
+grep -Fx "contract=2.4.0" "$reused_output" >/dev/null
+grep -Fx "role=frontend" "$reused_output" >/dev/null
+tests_run=$((tests_run + 1))
+
+assert_resolver_fails "unknown component key" "COMPONENT_KEY must be backend or frontend" \
+	COMPONENT_CHANGED=true \
+	PUBLISHED_DIGEST="$valid_digest_backend" \
+	IMAGE=ghcr.io/example/health-dashboard \
+	PAIR_IMAGE=ghcr.io/example/health-dashboard-pair \
+	COMPONENT_KEY=service \
+	EXPECTED_ROLE=backend \
+	GITHUB_OUTPUT="$resolver_tmp/invalid-key-output" \
+	DOCKER_BIN="$fake_docker"
+
+assert_resolver_fails "missing component contract label" "component contract is missing or invalid" \
+	COMPONENT_CHANGED=true \
+	PUBLISHED_DIGEST="$valid_digest_backend" \
+	IMAGE=ghcr.io/example/health-dashboard \
+	PAIR_IMAGE=ghcr.io/example/health-dashboard-pair \
+	COMPONENT_KEY=backend \
+	EXPECTED_ROLE=backend \
+	GITHUB_OUTPUT="$resolver_tmp/missing-contract-output" \
+	DOCKER_BIN="$fake_docker" \
+	FAKE_COMPONENT_REVISION="$valid_backend_revision" \
+	FAKE_COMPONENT_CONTRACT="<no value>" \
+	FAKE_COMPONENT_ROLE=backend
 
 echo "PASS: $tests_run release contract helper tests"
