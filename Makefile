@@ -1,4 +1,4 @@
-.PHONY: dev build backfill backfill-force energy-backfill energy-backfill-dry tenant-isolation import contract-generate contract-check web-install web-install-browsers web-dev web-check web-test-visual docker-build-backend docker-build-frontend docker-build-images test-container-images test-release-contract-helpers docker-up docker-down test test-unit test-db-storage test-db-ui test-db-ui-fast test-db-energy test-db-energy-smoke test-db-readiness test-db-import test-db-security test-db smoke-health-post
+.PHONY: dev build backfill backfill-force energy-backfill energy-backfill-dry tenant-isolation import contract-generate contract-check web-install web-install-browsers web-dev web-check web-test-visual docker-build-backend docker-build-frontend docker-build-images test-container-images test-compatible-image-pair test-compatible-image-pair-negative test-release-contract-helpers docker-up docker-down test test-unit test-db-storage test-db-ui test-db-ui-fast test-db-energy test-db-energy-smoke test-db-readiness test-db-import test-db-security test-db smoke-health-post
 
 ADDR ?= :8080
 PNPM ?= pnpm
@@ -87,6 +87,28 @@ test-container-images: docker-build-images
 	IMAGE_VERSION=$(IMAGE_VERSION) \
 	API_CONTRACT_VERSION=$(API_CONTRACT_VERSION) \
 	./scripts/test-container-images.sh
+
+test-compatible-image-pair: docker-build-images
+	BACKEND_IMAGE=$(BACKEND_IMAGE) \
+	FRONTEND_IMAGE=$(FRONTEND_IMAGE) \
+	BUILD_REVISION=$(BUILD_REVISION) \
+	API_CONTRACT_VERSION=$(API_CONTRACT_VERSION) \
+	./scripts/test-compatible-image-pair.sh
+
+test-compatible-image-pair-negative: docker-build-images
+	@output_file=$$(mktemp); \
+	trap 'rm -f "$$output_file"' EXIT; \
+	if BACKEND_IMAGE=$(BACKEND_IMAGE) \
+		FRONTEND_IMAGE=$(FRONTEND_IMAGE) \
+		BUILD_REVISION=$(BUILD_REVISION) \
+		API_CONTRACT_VERSION=$(API_CONTRACT_VERSION)-deliberately-wrong \
+		PAIR_PREFLIGHT_ONLY=1 \
+		./scripts/test-compatible-image-pair.sh >"$$output_file" 2>&1; then \
+		echo "expected incompatible API contract preflight to fail" >&2; \
+		exit 1; \
+	fi; \
+	grep -q "rebuild both images from the same revision and API contract" "$$output_file"; \
+	echo "incompatible API contract rejected before service startup"
 
 test-release-contract-helpers:
 	./scripts/test-release-contract-helpers.sh
