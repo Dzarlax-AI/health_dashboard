@@ -250,7 +250,7 @@
         <tr><td><code>scripts/classify-image-changes.sh</code></td><td>New fail-closed backend/frontend path classifier used by the workflow and deterministic helper tests.</td></tr>
         <tr><td><code>scripts/create-compatibility-manifest.py</code></td><td>New strict manifest generator for pair identity, component digests, revisions, roles, contract, and timestamp.</td></tr>
         <tr><td><code>scripts/resolve-release-image.sh</code></td><td>Shared fail-closed publish-or-resolve validator used by both component release lanes.</td></tr>
-        <tr><td><code>scripts/test-release-contract-helpers.sh</code></td><td>New deterministic classifier, manifest, and release resolver validation suite with 26 cases.</td></tr>
+        <tr><td><code>scripts/test-release-contract-helpers.sh</code></td><td>New deterministic classifier, manifest, and release resolver validation suite with 35 cases.</td></tr>
         <tr><td><code>scripts/fixtures/fake-release-docker.sh</code></td><td>Deterministic Docker boundary fixture for changed, reused, and corrupted release resolver cases.</td></tr>
         <tr><td><code>scripts/fixtures/compatibility-manifest.Dockerfile</code></td><td>New scratch metadata image with pair labels and embedded <code>/compatibility.json</code>.</td></tr>
         <tr><td><code>scripts/fixtures/compatible-image-pair.nginx.conf</code></td><td>New reverse-proxy fixture for routed frontend, API, auth, health, MCP, and ingest probes.</td></tr>
@@ -271,13 +271,14 @@
       <div class="card">
         <h3>Source and helper checks</h3>
         <ul>
-          <li>Release helper suite: 26 tests passed.</li>
+          <li>Release helper suite: 35 tests passed.</li>
           <li>Go unit tests and generated-contract compatibility checks passed.</li>
           <li>Web suite: 11 files and 56 tests passed; typecheck, lint, and production build passed.</li>
           <li>Responsive Playwright suite: 19 tests passed in isolated CI mode on a dedicated local port.</li>
           <li>Shell syntax and Python bytecode compilation passed.</li>
           <li><code>actionlint</code> v1.7.7 passed against <code>.github/workflows/ci.yml</code>.</li>
           <li>Review remediation verified corrected shell/Python quoting, non-persisted credentials, one shared component resolver, and an architecture-specific arm64 cache scope.</li>
+          <li>Follow-up review remediation normalizes contract sentinels case-insensitively and covers every unchanged-pointer cross-validation guard with negative tests.</li>
           <li>YAML parsing found the expected 11-job graph; action pins, concurrency, pointer authority, and publication ordering assertions passed.</li>
           <li>Diff policy checks passed.</li>
         </ul>

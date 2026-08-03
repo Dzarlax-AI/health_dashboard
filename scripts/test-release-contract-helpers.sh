@@ -349,6 +349,31 @@ assert_manifest_fails "invalid calendar created-at" "created-at must use canonic
 resolver_tmp=$(mktemp -d "${TMPDIR:-/tmp}/health-release-resolver.XXXXXX")
 trap 'rm -rf "$resolver_tmp"' EXIT HUP INT TERM
 
+assert_reused_resolver_fails() {
+	name=$1
+	expected_error=$2
+	shift 2
+
+	assert_resolver_fails "$name" "$expected_error" \
+		COMPONENT_CHANGED=false \
+		PUBLISHED_DIGEST= \
+		IMAGE=ghcr.io/example/health-dashboard-frontend \
+		PAIR_IMAGE=ghcr.io/example/health-dashboard-pair \
+		COMPONENT_KEY=frontend \
+		EXPECTED_ROLE=frontend \
+		GITHUB_OUTPUT="$resolver_tmp/reused-failure-output" \
+		DOCKER_BIN="$fake_docker" \
+		FAKE_PAIR_REVISION="$valid_revision" \
+		FAKE_PAIR_CONTRACT=2.4.0 \
+		FAKE_PAIR_COMPONENT_IMAGE=ghcr.io/example/health-dashboard-frontend \
+		FAKE_PAIR_COMPONENT_DIGEST="$valid_digest_frontend" \
+		FAKE_PAIR_COMPONENT_REVISION="$valid_frontend_revision" \
+		FAKE_COMPONENT_REVISION="$valid_frontend_revision" \
+		FAKE_COMPONENT_CONTRACT=2.4.0 \
+		FAKE_COMPONENT_ROLE=frontend \
+		"$@"
+}
+
 changed_output="$resolver_tmp/changed-output"
 env \
 	COMPONENT_CHANGED=true \
@@ -396,6 +421,30 @@ grep -Fx "contract=2.4.0" "$reused_output" >/dev/null
 grep -Fx "role=frontend" "$reused_output" >/dev/null
 tests_run=$((tests_run + 1))
 
+assert_reused_resolver_fails "wrong pair role" "compatible pointer has the wrong image role" \
+	FAKE_PAIR_ROLE=backend
+
+assert_reused_resolver_fails "invalid pair revision" "compatible pointer pair revision is missing or invalid" \
+	FAKE_PAIR_REVISION=not-a-revision
+
+assert_reused_resolver_fails "mismatched selected image" "compatible pointer selected an unexpected component image" \
+	FAKE_PAIR_COMPONENT_IMAGE=ghcr.io/example/other-frontend
+
+assert_reused_resolver_fails "invalid pair component digest" "compatible pointer component digest is missing or invalid" \
+	FAKE_PAIR_COMPONENT_DIGEST=sha256:invalid
+
+assert_reused_resolver_fails "invalid pair component revision" "compatible pointer component revision is missing or invalid" \
+	FAKE_PAIR_COMPONENT_REVISION=not-a-revision
+
+assert_reused_resolver_fails "mixed-case pair contract sentinel" "compatible pointer contract is missing or invalid" \
+	FAKE_PAIR_CONTRACT=N/A
+
+assert_reused_resolver_fails "component revision differs from pointer" "component revision does not match compatible pointer" \
+	FAKE_COMPONENT_REVISION=cccccccccccccccccccccccccccccccccccccccc
+
+assert_reused_resolver_fails "component contract differs from pointer" "component contract does not match compatible pointer" \
+	FAKE_COMPONENT_CONTRACT=2.5.0
+
 assert_resolver_fails "unknown component key" "COMPONENT_KEY must be backend or frontend" \
 	COMPONENT_CHANGED=true \
 	PUBLISHED_DIGEST="$valid_digest_backend" \
@@ -417,6 +466,19 @@ assert_resolver_fails "missing component contract label" "component contract is 
 	DOCKER_BIN="$fake_docker" \
 	FAKE_COMPONENT_REVISION="$valid_backend_revision" \
 	FAKE_COMPONENT_CONTRACT="<no value>" \
+	FAKE_COMPONENT_ROLE=backend
+
+assert_resolver_fails "mixed-case component contract sentinel" "component contract is missing or invalid" \
+	COMPONENT_CHANGED=true \
+	PUBLISHED_DIGEST="$valid_digest_backend" \
+	IMAGE=ghcr.io/example/health-dashboard \
+	PAIR_IMAGE=ghcr.io/example/health-dashboard-pair \
+	COMPONENT_KEY=backend \
+	EXPECTED_ROLE=backend \
+	GITHUB_OUTPUT="$resolver_tmp/mixed-case-contract-output" \
+	DOCKER_BIN="$fake_docker" \
+	FAKE_COMPONENT_REVISION="$valid_backend_revision" \
+	FAKE_COMPONENT_CONTRACT=Unknown \
 	FAKE_COMPONENT_ROLE=backend
 
 echo "PASS: $tests_run release contract helper tests"

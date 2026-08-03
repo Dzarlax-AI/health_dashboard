@@ -41,7 +41,7 @@ valid_revision() {
 }
 
 valid_contract() {
-	case "$1" in
+	case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
 		"" | "<no value>" | n/a | none | null | unknown | unset)
 			return 1
 			;;
