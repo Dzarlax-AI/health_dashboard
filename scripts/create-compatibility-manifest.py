@@ -12,7 +12,9 @@ import sys
 DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
 REVISION_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
 CREATED_AT_PATTERN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
-CONTRACT_SENTINELS = frozenset({"n/a", "none", "null", "unknown", "unset"})
+CONTRACT_SENTINELS = frozenset(
+    {"<no value>", "n/a", "none", "null", "unknown", "unset"}
+)
 
 
 def nonempty(value: str, label: str) -> str:
@@ -31,6 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frontend-role", required=True)
     parser.add_argument("--backend-digest", required=True)
     parser.add_argument("--frontend-digest", required=True)
+    parser.add_argument("--pair-revision", required=True)
     parser.add_argument("--backend-revision", required=True)
     parser.add_argument("--frontend-revision", required=True)
     parser.add_argument("--backend-contract-version", required=True)
@@ -42,6 +45,7 @@ def parse_args() -> argparse.Namespace:
 def create_manifest(args: argparse.Namespace) -> dict[str, object]:
     backend_image = nonempty(args.backend_image, "backend image")
     frontend_image = nonempty(args.frontend_image, "frontend image")
+    pair_revision = nonempty(args.pair_revision, "pair revision")
     backend_revision = nonempty(args.backend_revision, "backend revision")
     frontend_revision = nonempty(args.frontend_revision, "frontend revision")
     backend_contract = nonempty(
@@ -56,8 +60,8 @@ def create_manifest(args: argparse.Namespace) -> dict[str, object]:
         raise ValueError("backend role must be exactly 'backend'")
     if args.frontend_role != "frontend":
         raise ValueError("frontend role must be exactly 'frontend'")
-    if backend_revision != frontend_revision:
-        raise ValueError("backend and frontend revisions must match")
+    if not REVISION_PATTERN.fullmatch(pair_revision):
+        raise ValueError("pair revision must be 40 lowercase hex chars")
     if not REVISION_PATTERN.fullmatch(backend_revision):
         raise ValueError("backend revision must be 40 lowercase hex chars")
     if not REVISION_PATTERN.fullmatch(frontend_revision):
@@ -83,17 +87,19 @@ def create_manifest(args: argparse.Namespace) -> dict[str, object]:
 
     return {
         "schema_version": 1,
-        "revision": backend_revision,
+        "pair_revision": pair_revision,
         "api_contract_version": backend_contract,
         "created_at": created_at,
         "backend": {
             "image": backend_image,
             "digest": args.backend_digest,
+            "revision": backend_revision,
             "role": args.backend_role,
         },
         "frontend": {
             "image": frontend_image,
             "digest": args.frontend_digest,
+            "revision": frontend_revision,
             "role": args.frontend_role,
         },
     }

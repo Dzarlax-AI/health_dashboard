@@ -38,7 +38,39 @@ env:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.ref == 'refs/heads/main' && 'health-dashboard-main-release' || format('health-dashboard-ci-{0}', github.run_id) }}
+  cancel-in-progress: false
+
 jobs:
+  classify-image-changes:
+    name: Classify Image Changes
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.classify.outputs.backend }}
+      frontend: ${{ steps.classify.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          fetch-depth: 0
+
+      - name: Classify changed paths
+        id: classify
+        env:
+          DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -eu
+          changed_paths="$RUNNER_TEMP/changed-paths.txt"
+          : > "$changed_paths"
+
+          if printf '%s\n' "$DIFF_BASE" | grep -Eq '^[0-9a-f]{40}$' &&
+            test "$DIFF_BASE" != 0000000000000000000000000000000000000000 &&
+            git cat-file -e "$DIFF_BASE^{commit}" 2>/dev/null; then
+            git diff --name-only "$DIFF_BASE" "$GITHUB_SHA" > "$changed_paths" || : > "$changed_paths"
+          fi
+
+          ./scripts/classify-image-changes.sh < "$changed_paths" | tee -a "$GITHUB_OUTPUT"
+
   build:
     name: Build, Vet & Test
     runs-on: ubuntu-latest
@@ -74,6 +106,9 @@ jobs:
         run: |
           bash -n scripts/deploy-tenant-schema-gate.sh scripts/deploy-tenant-schema-gate_test.sh
           bash scripts/deploy-tenant-schema-gate_test.sh
+
+      - name: Test release contract helpers
+        run: make test-release-contract-helpers
 
   web:
     name: Web Typecheck, Lint & Test
@@ -258,6 +293,22 @@ jobs:
           API_CONTRACT_VERSION="$(python3 -c 'import json; print(json.load(open("contracts/openapi.json"))["info"]["version"])')" \
           ./scripts/test-container-images.sh
 
+      - name: Reject both contract-mismatch directions before startup
+        run: |
+          BACKEND_IMAGE=health-dashboard:ci \
+          FRONTEND_IMAGE=health-frontend:ci \
+          BUILD_REVISION="$GITHUB_SHA" \
+          API_CONTRACT_VERSION="$(python3 -c 'import json; print(json.load(open("contracts/openapi.json"))["info"]["version"])')" \
+          ./scripts/test-compatible-image-pair-preflight.sh
+
+      - name: Verify routed candidate image pair
+        run: |
+          BACKEND_IMAGE=health-dashboard:ci \
+          FRONTEND_IMAGE=health-frontend:ci \
+          BUILD_REVISION="$GITHUB_SHA" \
+          API_CONTRACT_VERSION="$(python3 -c 'import json; print(json.load(open("contracts/openapi.json"))["info"]["version"])')" \
+          ./scripts/test-compatible-image-pair.sh
+
       - name: Bootstrap blank database and verify isolated restart recovery
         run: |
           set -eu
@@ -387,20 +438,26 @@ jobs:
 
   docker-amd64:
     name: Docker Build & Push (amd64)
-    needs: [build, db-tests, container-smoke]
+    needs: [classify-image-changes, build, db-tests, web, container-smoke]
     runs-on: ubuntu-latest
-    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.build_amd64)) }}
+    if: ${{ github.ref == 'refs/heads/main' }}
     permissions:
       contents: read
       packages: write
+    outputs:
+      image: ${{ steps.resolve.outputs.image }}
+      digest: ${{ steps.resolve.outputs.digest }}
+      revision: ${{ steps.resolve.outputs.revision }}
+      contract: ${{ steps.resolve.outputs.contract }}
+      role: ${{ steps.resolve.outputs.role }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -408,19 +465,22 @@ jobs:
 
       - name: Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        if: ${{ needs.classify-image-changes.outputs.backend == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_amd64) }}
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: latest=false
           tags: |
-            type=raw,value=latest
-            type=sha,prefix=,format=short
+            type=raw,value=${{ github.sha }}
 
       - name: Read API contract version
         id: contract
         run: echo "version=$(python3 -c 'import json; print(json.load(open(\"contracts/openapi.json\"))[\"info\"][\"version\"])')" >> "$GITHUB_OUTPUT"
 
       - name: Build and push (amd64)
-        uses: docker/build-push-action@v6
+        id: build-push
+        if: ${{ needs.classify-image-changes.outputs.backend == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_amd64) }}
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: Dockerfile.backend
@@ -435,9 +495,430 @@ jobs:
           cache-from: type=gha,scope=amd64
           cache-to: type=gha,mode=max,scope=amd64
 
+      - name: Resolve exact backend artifact
+        id: resolve
+        env:
+          COMPONENT_CHANGED: ${{ needs.classify-image-changes.outputs.backend == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_amd64) }}
+          PUBLISHED_DIGEST: ${{ steps.build-push.outputs.digest }}
+        run: |
+          set -eu
+          image="${REGISTRY}/${IMAGE_NAME}"
+          if test "$COMPONENT_CHANGED" = "true"; then
+            digest="$PUBLISHED_DIGEST"
+            test -n "$digest"
+            docker pull --platform linux/amd64 "$image@$digest"
+          else
+            pair_image="${REGISTRY}/${IMAGE_NAME}-pair"
+            docker pull "$pair_image:compatible"
+            pair_role="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.image-role"}}' "$pair_image:compatible")"
+            pair_revision="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.pair-revision"}}' "$pair_image:compatible")"
+            contract="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.api-contract-version"}}' "$pair_image:compatible")"
+            selected_image="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.backend-image"}}' "$pair_image:compatible")"
+            digest="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.backend-digest"}}' "$pair_image:compatible")"
+            revision="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.backend-revision"}}' "$pair_image:compatible")"
+            test "$pair_role" = compatibility-pair
+            printf '%s\n' "$pair_revision" | grep -Eq '^[0-9a-f]{40}$'
+            test "$selected_image" = "$image"
+            printf '%s\n' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'
+            printf '%s\n' "$revision" | grep -Eq '^[0-9a-f]{40}$'
+            case "$contract" in ""|"<no value>"|n/a|none|null|unknown|unset) exit 1 ;; esac
+            docker pull --platform linux/amd64 "$image@$digest"
+          fi
+
+          printf '%s\n' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'
+          actual_revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image@$digest")"
+          actual_contract="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.api-contract-version"}}' "$image@$digest")"
+          role="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.image-role"}}' "$image@$digest")"
+          printf '%s\n' "$actual_revision" | grep -Eq '^[0-9a-f]{40}$'
+          case "$actual_contract" in ""|"<no value>"|n/a|none|null|unknown|unset) exit 1 ;; esac
+          test "$role" = backend
+          if test "$COMPONENT_CHANGED" = "true"; then
+            revision="$actual_revision"
+            contract="$actual_contract"
+          else
+            test "$actual_revision" = "$revision"
+            test "$actual_contract" = "$contract"
+          fi
+
+          {
+            echo "image=$image"
+            echo "digest=$digest"
+            echo "revision=$revision"
+            echo "contract=$contract"
+            echo "role=$role"
+          } >> "$GITHUB_OUTPUT"
+
+  docker-frontend-amd64:
+    name: Frontend Docker Build & Push (amd64)
+    needs: [classify-image-changes, build, db-tests, web, container-smoke]
+    runs-on: ubuntu-latest
+    if: ${{ github.ref == 'refs/heads/main' }}
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.resolve.outputs.image }}
+      digest: ${{ steps.resolve.outputs.digest }}
+      revision: ${{ steps.resolve.outputs.revision }}
+      contract: ${{ steps.resolve.outputs.contract }}
+      role: ${{ steps.resolve.outputs.role }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        if: ${{ needs.classify-image-changes.outputs.frontend == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_amd64) }}
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend
+          flavor: latest=false
+          tags: |
+            type=raw,value=${{ github.sha }}
+
+      - name: Read API contract version
+        id: contract
+        run: echo "version=$(python3 -c 'import json; print(json.load(open(\"contracts/openapi.json\"))[\"info\"][\"version\"])')" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push (amd64)
+        id: build-push
+        if: ${{ needs.classify-image-changes.outputs.frontend == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_amd64) }}
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          build-args: |
+            BUILD_REVISION=${{ github.sha }}
+            IMAGE_VERSION=${{ steps.meta.outputs.version }}
+            API_CONTRACT_VERSION=${{ steps.contract.outputs.version }}
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=frontend-amd64
+          cache-to: type=gha,mode=max,scope=frontend-amd64
+
+      - name: Resolve exact frontend artifact
+        id: resolve
+        env:
+          COMPONENT_CHANGED: ${{ needs.classify-image-changes.outputs.frontend == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_amd64) }}
+          PUBLISHED_DIGEST: ${{ steps.build-push.outputs.digest }}
+        run: |
+          set -eu
+          image="${REGISTRY}/${IMAGE_NAME}-frontend"
+          if test "$COMPONENT_CHANGED" = "true"; then
+            digest="$PUBLISHED_DIGEST"
+            test -n "$digest"
+            docker pull --platform linux/amd64 "$image@$digest"
+          else
+            pair_image="${REGISTRY}/${IMAGE_NAME}-pair"
+            docker pull "$pair_image:compatible"
+            pair_role="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.image-role"}}' "$pair_image:compatible")"
+            pair_revision="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.pair-revision"}}' "$pair_image:compatible")"
+            contract="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.api-contract-version"}}' "$pair_image:compatible")"
+            selected_image="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.frontend-image"}}' "$pair_image:compatible")"
+            digest="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.frontend-digest"}}' "$pair_image:compatible")"
+            revision="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.frontend-revision"}}' "$pair_image:compatible")"
+            test "$pair_role" = compatibility-pair
+            printf '%s\n' "$pair_revision" | grep -Eq '^[0-9a-f]{40}$'
+            test "$selected_image" = "$image"
+            printf '%s\n' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'
+            printf '%s\n' "$revision" | grep -Eq '^[0-9a-f]{40}$'
+            case "$contract" in ""|"<no value>"|n/a|none|null|unknown|unset) exit 1 ;; esac
+            docker pull --platform linux/amd64 "$image@$digest"
+          fi
+
+          printf '%s\n' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'
+          actual_revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image@$digest")"
+          actual_contract="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.api-contract-version"}}' "$image@$digest")"
+          role="$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.image-role"}}' "$image@$digest")"
+          printf '%s\n' "$actual_revision" | grep -Eq '^[0-9a-f]{40}$'
+          case "$actual_contract" in ""|"<no value>"|n/a|none|null|unknown|unset) exit 1 ;; esac
+          test "$role" = frontend
+          if test "$COMPONENT_CHANGED" = "true"; then
+            revision="$actual_revision"
+            contract="$actual_contract"
+          else
+            test "$actual_revision" = "$revision"
+            test "$actual_contract" = "$contract"
+          fi
+
+          {
+            echo "image=$image"
+            echo "digest=$digest"
+            echo "revision=$revision"
+            echo "contract=$contract"
+            echo "role=$role"
+          } >> "$GITHUB_OUTPUT"
+
+  released-pair:
+    name: Released Image Pair
+    needs: [docker-amd64, docker-frontend-amd64]
+    runs-on: ubuntu-latest
+    if: ${{ github.ref == 'refs/heads/main' }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull and verify exact released artifacts
+        env:
+          BACKEND_IMAGE: ${{ needs.docker-amd64.outputs.image }}@${{ needs.docker-amd64.outputs.digest }}
+          FRONTEND_IMAGE: ${{ needs.docker-frontend-amd64.outputs.image }}@${{ needs.docker-frontend-amd64.outputs.digest }}
+          BACKEND_BUILD_REVISION: ${{ needs.docker-amd64.outputs.revision }}
+          FRONTEND_BUILD_REVISION: ${{ needs.docker-frontend-amd64.outputs.revision }}
+          BACKEND_CONTRACT: ${{ needs.docker-amd64.outputs.contract }}
+          FRONTEND_CONTRACT: ${{ needs.docker-frontend-amd64.outputs.contract }}
+        run: |
+          set -eu
+          docker pull --platform linux/amd64 "$BACKEND_IMAGE"
+          docker pull --platform linux/amd64 "$FRONTEND_IMAGE"
+
+          test "$BACKEND_CONTRACT" = "$FRONTEND_CONTRACT"
+          BACKEND_IMAGE="$BACKEND_IMAGE" \
+          FRONTEND_IMAGE="$FRONTEND_IMAGE" \
+          BACKEND_BUILD_REVISION="$BACKEND_BUILD_REVISION" \
+          FRONTEND_BUILD_REVISION="$FRONTEND_BUILD_REVISION" \
+          API_CONTRACT_VERSION="$BACKEND_CONTRACT" \
+          PAIR_PREFLIGHT_ONLY=1 \
+          ./scripts/test-compatible-image-pair.sh
+
+      - name: Verify routed released image pair
+        env:
+          BACKEND_IMAGE: ${{ needs.docker-amd64.outputs.image }}@${{ needs.docker-amd64.outputs.digest }}
+          FRONTEND_IMAGE: ${{ needs.docker-frontend-amd64.outputs.image }}@${{ needs.docker-frontend-amd64.outputs.digest }}
+          BACKEND_BUILD_REVISION: ${{ needs.docker-amd64.outputs.revision }}
+          FRONTEND_BUILD_REVISION: ${{ needs.docker-frontend-amd64.outputs.revision }}
+          API_CONTRACT_VERSION: ${{ needs.docker-amd64.outputs.contract }}
+        run: ./scripts/test-compatible-image-pair.sh
+
+      - name: Create compatibility manifest
+        env:
+          BACKEND_IMAGE: ${{ needs.docker-amd64.outputs.image }}
+          FRONTEND_IMAGE: ${{ needs.docker-frontend-amd64.outputs.image }}
+          BACKEND_DIGEST: ${{ needs.docker-amd64.outputs.digest }}
+          FRONTEND_DIGEST: ${{ needs.docker-frontend-amd64.outputs.digest }}
+          BACKEND_REVISION: ${{ needs.docker-amd64.outputs.revision }}
+          FRONTEND_REVISION: ${{ needs.docker-frontend-amd64.outputs.revision }}
+          API_CONTRACT_VERSION: ${{ needs.docker-amd64.outputs.contract }}
+          BACKEND_ROLE: ${{ needs.docker-amd64.outputs.role }}
+          FRONTEND_ROLE: ${{ needs.docker-frontend-amd64.outputs.role }}
+        run: |
+          set -eu
+          created_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          ./scripts/create-compatibility-manifest.py \
+            --backend-image "$BACKEND_IMAGE" \
+            --frontend-image "$FRONTEND_IMAGE" \
+            --backend-role "$BACKEND_ROLE" \
+            --frontend-role "$FRONTEND_ROLE" \
+            --backend-digest "$BACKEND_DIGEST" \
+            --frontend-digest "$FRONTEND_DIGEST" \
+            --pair-revision "$GITHUB_SHA" \
+            --backend-revision "$BACKEND_REVISION" \
+            --frontend-revision "$FRONTEND_REVISION" \
+            --backend-contract-version "$API_CONTRACT_VERSION" \
+            --frontend-contract-version "$API_CONTRACT_VERSION" \
+            --created-at "$created_at" \
+            > compatibility-manifest.json
+
+      - name: Publish atomic compatibility pair pointer
+        id: publish-pair
+        env:
+          PAIR_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-pair
+          BACKEND_IMAGE: ${{ needs.docker-amd64.outputs.image }}
+          FRONTEND_IMAGE: ${{ needs.docker-frontend-amd64.outputs.image }}
+          BACKEND_DIGEST: ${{ needs.docker-amd64.outputs.digest }}
+          FRONTEND_DIGEST: ${{ needs.docker-frontend-amd64.outputs.digest }}
+          BACKEND_REVISION: ${{ needs.docker-amd64.outputs.revision }}
+          FRONTEND_REVISION: ${{ needs.docker-frontend-amd64.outputs.revision }}
+          API_CONTRACT_VERSION: ${{ needs.docker-amd64.outputs.contract }}
+        run: |
+          set -eu
+          pair_context="$RUNNER_TEMP/compatibility-pair-context"
+          pair_metadata="$RUNNER_TEMP/compatibility-pair-build.json"
+          extracted_manifest="$RUNNER_TEMP/extracted-compatibility-manifest.json"
+          mkdir -p "$pair_context"
+          cp compatibility-manifest.json "$pair_context/compatibility-manifest.json"
+
+          docker buildx build \
+            --provenance=false \
+            --platform linux/amd64 \
+            --file scripts/fixtures/compatibility-manifest.Dockerfile \
+            --build-arg "PAIR_REVISION=$GITHUB_SHA" \
+            --build-arg "API_CONTRACT_VERSION=$API_CONTRACT_VERSION" \
+            --build-arg "BACKEND_IMAGE=$BACKEND_IMAGE" \
+            --build-arg "BACKEND_DIGEST=$BACKEND_DIGEST" \
+            --build-arg "BACKEND_REVISION=$BACKEND_REVISION" \
+            --build-arg "FRONTEND_IMAGE=$FRONTEND_IMAGE" \
+            --build-arg "FRONTEND_DIGEST=$FRONTEND_DIGEST" \
+            --build-arg "FRONTEND_REVISION=$FRONTEND_REVISION" \
+            --tag "$PAIR_IMAGE:$GITHUB_SHA" \
+            --metadata-file "$pair_metadata" \
+            --push \
+            "$pair_context"
+
+          pair_digest="$(
+            python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["containerimage.digest"])' "$pair_metadata"
+          )"
+          printf '%s\n' "$pair_digest" | grep -Eq '^sha256:[0-9a-f]{64}$'
+          docker pull --platform linux/amd64 "$PAIR_IMAGE@$pair_digest"
+
+          assert_pair_label() {
+            label="$1"
+            expected="$2"
+            actual="$(docker image inspect --format "{{ index .Config.Labels \"$label\" }}" "$PAIR_IMAGE@$pair_digest")"
+            test "$actual" = "$expected"
+          }
+
+          assert_pair_label io.health-dashboard.image-role compatibility-pair
+          assert_pair_label io.health-dashboard.pair-revision "$GITHUB_SHA"
+          assert_pair_label io.health-dashboard.api-contract-version "$API_CONTRACT_VERSION"
+          assert_pair_label io.health-dashboard.backend-image "$BACKEND_IMAGE"
+          assert_pair_label io.health-dashboard.backend-digest "$BACKEND_DIGEST"
+          assert_pair_label io.health-dashboard.backend-revision "$BACKEND_REVISION"
+          assert_pair_label io.health-dashboard.frontend-image "$FRONTEND_IMAGE"
+          assert_pair_label io.health-dashboard.frontend-digest "$FRONTEND_DIGEST"
+          assert_pair_label io.health-dashboard.frontend-revision "$FRONTEND_REVISION"
+
+          pair_container="$(docker create "$PAIR_IMAGE@$pair_digest" /compatibility.json)"
+          trap 'docker rm -f "$pair_container" >/dev/null 2>&1 || true' EXIT
+          docker cp "$pair_container:/compatibility.json" "$extracted_manifest"
+          docker rm "$pair_container"
+          pair_container=""
+          cmp compatibility-manifest.json "$extracted_manifest"
+
+          docker buildx imagetools create \
+            --prefer-index=false \
+            --tag "$PAIR_IMAGE:compatible" \
+            "$PAIR_IMAGE@$pair_digest"
+          resolved_pair_digest="$(
+            docker buildx imagetools inspect "$PAIR_IMAGE:compatible" --raw |
+              sha256sum |
+              awk '{print "sha256:" $1}'
+          )"
+          test "$resolved_pair_digest" = "$pair_digest"
+          echo "digest=$pair_digest" >> "$GITHUB_OUTPUT"
+
+      - name: Promote component convenience tags
+        env:
+          BACKEND_IMAGE: ${{ needs.docker-amd64.outputs.image }}
+          FRONTEND_IMAGE: ${{ needs.docker-frontend-amd64.outputs.image }}
+          BACKEND_DIGEST: ${{ needs.docker-amd64.outputs.digest }}
+          FRONTEND_DIGEST: ${{ needs.docker-frontend-amd64.outputs.digest }}
+        run: |
+          set -eu
+
+          promote_latest() {
+            image="$1"
+            digest="$2"
+            docker buildx imagetools create \
+              --prefer-index=false \
+              --tag "$image:latest" \
+              "$image@$digest"
+            resolved_digest="$(
+              docker buildx imagetools inspect "$image:latest" --raw |
+                sha256sum |
+                awk '{print "sha256:" $1}'
+            )"
+            test "$resolved_digest" = "$digest"
+          }
+
+          promote_latest "$BACKEND_IMAGE" "$BACKEND_DIGEST"
+          promote_latest "$FRONTEND_IMAGE" "$FRONTEND_DIGEST"
+
+      - name: Upload compatibility manifest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: compatibility-manifest-${{ github.sha }}
+          path: compatibility-manifest.json
+          if-no-files-found: error
+
+      - name: Publish compatibility summary
+        env:
+          BACKEND_IMAGE: ${{ needs.docker-amd64.outputs.image }}
+          FRONTEND_IMAGE: ${{ needs.docker-frontend-amd64.outputs.image }}
+          BACKEND_DIGEST: ${{ needs.docker-amd64.outputs.digest }}
+          FRONTEND_DIGEST: ${{ needs.docker-frontend-amd64.outputs.digest }}
+          BACKEND_REVISION: ${{ needs.docker-amd64.outputs.revision }}
+          FRONTEND_REVISION: ${{ needs.docker-frontend-amd64.outputs.revision }}
+          API_CONTRACT_VERSION: ${{ needs.docker-amd64.outputs.contract }}
+          PAIR_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-pair
+          PAIR_DIGEST: ${{ steps.publish-pair.outputs.digest }}
+        run: |
+          {
+            echo "## Verified compatible image pair"
+            echo
+            echo "- Pair revision: \`$GITHUB_SHA\`"
+            echo "- Backend: \`$BACKEND_IMAGE@$BACKEND_DIGEST\` (revision \`$BACKEND_REVISION\`)"
+            echo "- Frontend: \`$FRONTEND_IMAGE@$FRONTEND_DIGEST\` (revision \`$FRONTEND_REVISION\`)"
+            echo "- Pair metadata: \`$PAIR_IMAGE@$PAIR_DIGEST\`"
+            echo "- API contract: \`$API_CONTRACT_VERSION\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  compatibility-gate:
+    name: Compatibility Gate
+    needs:
+      - classify-image-changes
+      - build
+      - web
+      - db-tests
+      - container-smoke
+      - docker-amd64
+      - docker-frontend-amd64
+      - released-pair
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce required CI outcomes
+        env:
+          REF_NAME: ${{ github.ref }}
+          CLASSIFY_RESULT: ${{ needs.classify-image-changes.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          WEB_RESULT: ${{ needs.web.result }}
+          DB_RESULT: ${{ needs.db-tests.result }}
+          CANDIDATE_RESULT: ${{ needs.container-smoke.result }}
+          BACKEND_RELEASE_RESULT: ${{ needs.docker-amd64.result }}
+          FRONTEND_RELEASE_RESULT: ${{ needs.docker-frontend-amd64.result }}
+          RELEASED_PAIR_RESULT: ${{ needs.released-pair.result }}
+        run: |
+          set -eu
+          for result in "$CLASSIFY_RESULT" "$BUILD_RESULT" "$WEB_RESULT" "$DB_RESULT" "$CANDIDATE_RESULT"; do
+            test "$result" = success
+          done
+
+          if test "$REF_NAME" = refs/heads/main; then
+            test "$BACKEND_RELEASE_RESULT" = success
+            test "$FRONTEND_RELEASE_RESULT" = success
+            test "$RELEASED_PAIR_RESULT" = success
+          else
+            test "$BACKEND_RELEASE_RESULT" = skipped
+            test "$FRONTEND_RELEASE_RESULT" = skipped
+            test "$RELEASED_PAIR_RESULT" = skipped
+          fi
+
   docker-arm64:
     name: Docker Build & Push (arm64)
-    needs: [build, db-tests, container-smoke]
+    needs: [compatibility-gate]
     runs-on: ubuntu-latest
     if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.build_arm64 }}
     permissions:
@@ -464,9 +945,9 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: latest=false
           tags: |
-            type=raw,value=latest
-            type=sha,prefix=,format=short
+            type=raw,value=${{ github.sha }}-arm64
 
       - name: Read API contract version
         id: contract
@@ -482,7 +963,7 @@ jobs:
             IMAGE_VERSION=${{ steps.meta.outputs.version }}
             API_CONTRACT_VERSION=${{ steps.contract.outputs.version }}
           push: true
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=multiarch

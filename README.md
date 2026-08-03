@@ -153,6 +153,9 @@ The monorepo also defines independent local image contracts:
 make docker-build-backend    # Dockerfile.backend → health-backend:local
 make docker-build-frontend   # apps/web/Dockerfile → health-frontend:local
 make test-container-images   # build both and verify users, artifacts, labels, HTTP, and caching
+make test-release-contract-helpers          # classifier and manifest unit checks
+make test-compatible-image-pair-negative    # reject contract/revision mismatches before startup
+make test-compatible-image-pair             # run the full routed backend/frontend pair harness
 ```
 
 Both builds embed the current source revision and OpenAPI contract version as
@@ -163,9 +166,20 @@ while `index.html` is not cached across releases. The static image deliberately
 does not proxy `/api/*`: the browser uses same-origin API paths and the
 production reverse proxy will route those paths to the backend.
 
-Building these images does not switch or deploy the React UI. The current
-production image publication and routing remain backend-only until the separate
-CI publication and canary-routing issues are completed.
+On `main`, CI publishes the backend and frontend to separate GHCR repositories
+as full-Git-SHA-tagged candidates. A changed component is published; an
+unchanged component is resolved from the last authoritative compatible pair.
+Tags can move, so the exact image digests—not the full-SHA tags—are the immutable
+component identities. The digest pair is preflighted and exercised through the
+routed harness, then recorded in a `compatibility-manifest.json` artifact and in
+the `${repo}-pair:compatible` metadata image. That single metadata tag is the
+authoritative atomic pair pointer. Component `latest` tags are updated afterward
+for convenience only and must never be used to select a compatible pair.
+
+The manual backend arm64 build uses the architecture-qualified
+`${sha}-arm64` tag and is not part of the verified linux/amd64 pair. Building or
+publishing these images does not switch the React UI: production routing remains
+unchanged until the canary and rollback work in issue #217.
 
 ## Quick Start
 

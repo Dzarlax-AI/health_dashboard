@@ -52,6 +52,8 @@ assert_manifest_fails() {
 valid_digest_backend=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 valid_digest_frontend=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 valid_revision=0123456789abcdef0123456789abcdef01234567
+valid_backend_revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+valid_frontend_revision=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 
 assert_classification "frontend app" 'apps/web/src/routes/+page.svelte
 ' false true
@@ -86,8 +88,9 @@ valid_output=$(
 		--frontend-role frontend \
 		--backend-digest "$valid_digest_backend" \
 		--frontend-digest "$valid_digest_frontend" \
-		--backend-revision "$valid_revision" \
-		--frontend-revision "$valid_revision" \
+		--pair-revision "$valid_revision" \
+		--backend-revision "$valid_backend_revision" \
+		--frontend-revision "$valid_frontend_revision" \
 		--backend-contract-version 2.4.0 \
 		--frontend-contract-version 2.4.0 \
 		--created-at 2026-08-03T10:15:30Z
@@ -102,15 +105,17 @@ expected = {
     "backend": {
         "digest": "sha256:" + "a" * 64,
         "image": "ghcr.io/example/health-backend",
+        "revision": "a" * 40,
         "role": "backend",
     },
     "created_at": "2026-08-03T10:15:30Z",
     "frontend": {
         "digest": "sha256:" + "b" * 64,
         "image": "ghcr.io/example/health-frontend",
+        "revision": "b" * 40,
         "role": "frontend",
     },
-    "revision": "0123456789abcdef0123456789abcdef01234567",
+    "pair_revision": "0123456789abcdef0123456789abcdef01234567",
     "schema_version": 1,
 }
 if document != expected:
@@ -122,6 +127,36 @@ if os.environ["VALID_OUTPUT"] != deterministic:
 PY
 tests_run=$((tests_run + 1))
 
+same_revision_output=$(
+	"$manifest" \
+		--backend-image ghcr.io/example/health-backend \
+		--frontend-image ghcr.io/example/health-frontend \
+		--backend-role backend \
+		--frontend-role frontend \
+		--backend-digest "$valid_digest_backend" \
+		--frontend-digest "$valid_digest_frontend" \
+		--pair-revision "$valid_revision" \
+		--backend-revision "$valid_revision" \
+		--frontend-revision "$valid_revision" \
+		--backend-contract-version 2.4.0 \
+		--frontend-contract-version 2.4.0 \
+		--created-at 2026-08-03T10:15:30Z
+)
+SAME_REVISION_OUTPUT=$same_revision_output python3 - <<'PY'
+import json
+import os
+
+document = json.loads(os.environ["SAME_REVISION_OUTPUT"])
+revision = "0123456789abcdef0123456789abcdef01234567"
+if document["pair_revision"] != revision:
+    raise SystemExit("same-revision manifest lost pair revision")
+if document["backend"]["revision"] != revision:
+    raise SystemExit("same-revision manifest lost backend revision")
+if document["frontend"]["revision"] != revision:
+    raise SystemExit("same-revision manifest lost frontend revision")
+PY
+tests_run=$((tests_run + 1))
+
 assert_manifest_fails "invalid digest" "backend digest must be sha256:" \
 	--backend-image ghcr.io/example/health-backend \
 	--frontend-image ghcr.io/example/health-frontend \
@@ -129,21 +164,23 @@ assert_manifest_fails "invalid digest" "backend digest must be sha256:" \
 	--frontend-role frontend \
 	--backend-digest sha256:ABCDEF \
 	--frontend-digest "$valid_digest_frontend" \
+	--pair-revision "$valid_revision" \
 	--backend-revision "$valid_revision" \
 	--frontend-revision "$valid_revision" \
 	--backend-contract-version 2.4.0 \
 	--frontend-contract-version 2.4.0 \
 	--created-at 2026-08-03T10:15:30Z
 
-assert_manifest_fails "revision mismatch" "backend and frontend revisions must match" \
+assert_manifest_fails "invalid pair revision" "pair revision must be 40 lowercase hex chars" \
 	--backend-image ghcr.io/example/health-backend \
 	--frontend-image ghcr.io/example/health-frontend \
 	--backend-role backend \
 	--frontend-role frontend \
 	--backend-digest "$valid_digest_backend" \
 	--frontend-digest "$valid_digest_frontend" \
-	--backend-revision aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-	--frontend-revision bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+	--pair-revision not-a-git-object \
+	--backend-revision "$valid_backend_revision" \
+	--frontend-revision "$valid_frontend_revision" \
 	--backend-contract-version 2.4.0 \
 	--frontend-contract-version 2.4.0 \
 	--created-at 2026-08-03T10:15:30Z
@@ -155,6 +192,7 @@ assert_manifest_fails "contract mismatch" "backend and frontend contract version
 	--frontend-role frontend \
 	--backend-digest "$valid_digest_backend" \
 	--frontend-digest "$valid_digest_frontend" \
+	--pair-revision "$valid_revision" \
 	--backend-revision "$valid_revision" \
 	--frontend-revision "$valid_revision" \
 	--backend-contract-version 2.4.0 \
@@ -168,6 +206,7 @@ assert_manifest_fails "empty image reference" "backend image must be non-empty" 
 	--frontend-role frontend \
 	--backend-digest "$valid_digest_backend" \
 	--frontend-digest "$valid_digest_frontend" \
+	--pair-revision "$valid_revision" \
 	--backend-revision "$valid_revision" \
 	--frontend-revision "$valid_revision" \
 	--backend-contract-version 2.4.0 \
@@ -181,6 +220,7 @@ assert_manifest_fails "swapped roles" "backend role must be exactly 'backend'" \
 	--frontend-role backend \
 	--backend-digest "$valid_digest_backend" \
 	--frontend-digest "$valid_digest_frontend" \
+	--pair-revision "$valid_revision" \
 	--backend-revision "$valid_revision" \
 	--frontend-revision "$valid_revision" \
 	--backend-contract-version 2.4.0 \
@@ -194,6 +234,7 @@ assert_manifest_fails "invalid frontend role" "frontend role must be exactly 'fr
 	--frontend-role backend \
 	--backend-digest "$valid_digest_backend" \
 	--frontend-digest "$valid_digest_frontend" \
+	--pair-revision "$valid_revision" \
 	--backend-revision "$valid_revision" \
 	--frontend-revision "$valid_revision" \
 	--backend-contract-version 2.4.0 \
@@ -207,7 +248,22 @@ assert_manifest_fails "invalid revision" "backend revision must be 40 lowercase 
 	--frontend-role frontend \
 	--backend-digest "$valid_digest_backend" \
 	--frontend-digest "$valid_digest_frontend" \
+	--pair-revision "$valid_revision" \
 	--backend-revision not-a-git-object \
+	--frontend-revision not-a-git-object \
+	--backend-contract-version 2.4.0 \
+	--frontend-contract-version 2.4.0 \
+	--created-at 2026-08-03T10:15:30Z
+
+assert_manifest_fails "invalid frontend revision" "frontend revision must be 40 lowercase hex chars" \
+	--backend-image ghcr.io/example/health-backend \
+	--frontend-image ghcr.io/example/health-frontend \
+	--backend-role backend \
+	--frontend-role frontend \
+	--backend-digest "$valid_digest_backend" \
+	--frontend-digest "$valid_digest_frontend" \
+	--pair-revision "$valid_revision" \
+	--backend-revision "$valid_revision" \
 	--frontend-revision not-a-git-object \
 	--backend-contract-version 2.4.0 \
 	--frontend-contract-version 2.4.0 \
@@ -220,10 +276,25 @@ assert_manifest_fails "unknown contract" "backend contract version must not be a
 	--frontend-role frontend \
 	--backend-digest "$valid_digest_backend" \
 	--frontend-digest "$valid_digest_frontend" \
+	--pair-revision "$valid_revision" \
 	--backend-revision "$valid_revision" \
 	--frontend-revision "$valid_revision" \
 	--backend-contract-version unknown \
 	--frontend-contract-version unknown \
+	--created-at 2026-08-03T10:15:30Z
+
+assert_manifest_fails "missing-label contract" "backend contract version must not be a sentinel value" \
+	--backend-image ghcr.io/example/health-backend \
+	--frontend-image ghcr.io/example/health-frontend \
+	--backend-role backend \
+	--frontend-role frontend \
+	--backend-digest "$valid_digest_backend" \
+	--frontend-digest "$valid_digest_frontend" \
+	--pair-revision "$valid_revision" \
+	--backend-revision "$valid_revision" \
+	--frontend-revision "$valid_revision" \
+	--backend-contract-version "<no value>" \
+	--frontend-contract-version "<no value>" \
 	--created-at 2026-08-03T10:15:30Z
 
 assert_manifest_fails "non-UTC created-at" "created-at must use canonical RFC3339 UTC format" \
@@ -233,6 +304,7 @@ assert_manifest_fails "non-UTC created-at" "created-at must use canonical RFC333
 	--frontend-role frontend \
 	--backend-digest "$valid_digest_backend" \
 	--frontend-digest "$valid_digest_frontend" \
+	--pair-revision "$valid_revision" \
 	--backend-revision "$valid_revision" \
 	--frontend-revision "$valid_revision" \
 	--backend-contract-version 2.4.0 \
@@ -246,6 +318,7 @@ assert_manifest_fails "invalid calendar created-at" "created-at must use canonic
 	--frontend-role frontend \
 	--backend-digest "$valid_digest_backend" \
 	--frontend-digest "$valid_digest_frontend" \
+	--pair-revision "$valid_revision" \
 	--backend-revision "$valid_revision" \
 	--frontend-revision "$valid_revision" \
 	--backend-contract-version 2.4.0 \

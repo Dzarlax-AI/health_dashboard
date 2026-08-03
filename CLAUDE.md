@@ -23,11 +23,16 @@ make web-check         # generated contract, types, lint, tests, production buil
 make web-test-visual   # Playwright responsive gauge geometry checks
 make docker-build-backend  # build Dockerfile.backend → health-backend:local
 make docker-build-frontend # build apps/web/Dockerfile → health-frontend:local
-make test-container-images # build and smoke-test both image contracts
+make test-container-images # build and smoke-test both standalone image contracts
+make test-release-contract-helpers       # run classifier/manifest helper checks
+make test-compatible-image-pair-negative # reject contract/revision mismatches before startup
+make test-compatible-image-pair          # run the full routed backend/frontend pair harness
 DATABASE_URL=postgres://... make import FILE=export.zip  # import Apple Health export
 ```
 
-The backend build is pure Go (no CGO). Uses `jackc/pgx/v5` for PostgreSQL. Dependencies resolve from `go.mod` / `go.sum`; `vendor/` is intentionally not committed. The frontend uses Node.js 24+, the root pnpm workspace, React, TypeScript, and Vite. Run `pnpm install --frozen-lockfile` from the repository root after a clean checkout. `Dockerfile.backend` preserves `/app/server` and `/app/tenant_isolation`; `apps/web/Dockerfile` produces a separate non-root static runtime. Both expose port 8080 and carry matching revision/API-contract OCI labels. Production still publishes and routes only the backend image until the dedicated CI and canary-routing issues land.
+The backend build is pure Go (no CGO). Uses `jackc/pgx/v5` for PostgreSQL. Dependencies resolve from `go.mod` / `go.sum`; `vendor/` is intentionally not committed. The frontend uses Node.js 24+, the root pnpm workspace, React, TypeScript, and Vite. Run `pnpm install --frozen-lockfile` from the repository root after a clean checkout. `Dockerfile.backend` preserves `/app/server` and `/app/tenant_isolation`; `apps/web/Dockerfile` produces a separate non-root static runtime. Both expose port 8080 and carry revision/API-contract OCI labels. Production routing remains unchanged until issue #217.
+
+**CI image release contract:** source checks remain mandatory regardless of change classification. The candidate-pair gate builds and validates both standalone images, rejects contract or component-revision mismatches before startup, and exercises the routed pair. On `main`, backend and frontend publish-or-resolve independently from separate image repositories using full-SHA-tagged candidates; unchanged components are resolved only from the authoritative `${repo}-pair:compatible` metadata image. Tags can move; exact image digests are the immutable component identities. The released-pair job tests the exact digest pair and atomically advances that single pair pointer before promoting non-authoritative component `latest` tags. Never select compatibility from component `latest`. Main releases are serialized to prevent pair-pointer races. Backend and frontend component revisions may differ and are recorded separately in the compatibility JSON artifact and metadata image. The manual backend arm64 build uses `${sha}-arm64`; it is architecture-qualified and is not part of the verified linux/amd64 pair.
 
 **Time zones:** the binary builds with `CGO_ENABLED=0` and the alpine runtime image has no system tzdata. `cmd/server/main.go` imports `_ "time/tzdata"` to embed the IANA database (~450KB). **Don't remove this import** — every TZ-aware feature (report scheduler, smart-retry timing, freshness banners, `energy_snapshots.date`) silently coerces to UTC without it, and most callers fall back to UTC on `LoadLocation` error so the breakage is invisible until you query a specific time-of-day-sensitive output.
 

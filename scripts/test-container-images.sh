@@ -4,6 +4,8 @@ set -eu
 backend_image="${BACKEND_IMAGE:-health-backend:local}"
 frontend_image="${FRONTEND_IMAGE:-health-frontend:local}"
 build_revision="${BUILD_REVISION:-unknown}"
+backend_build_revision="${BACKEND_BUILD_REVISION:-$build_revision}"
+frontend_build_revision="${FRONTEND_BUILD_REVISION:-$build_revision}"
 image_version="${IMAGE_VERSION:-dev}"
 api_contract_version="${API_CONTRACT_VERSION:-unknown}"
 frontend_container="health-frontend-contract-$$"
@@ -26,12 +28,13 @@ assert_label() {
 }
 
 for image in "$backend_image" "$frontend_image"; do
-  assert_label "$image" org.opencontainers.image.revision "$build_revision"
   assert_label "$image" org.opencontainers.image.version "$image_version"
   assert_label "$image" io.health-dashboard.api-contract-version "$api_contract_version"
   docker image inspect --format '{{json .Config.Healthcheck.Test}}' "$image" | grep -q '/healthz'
 done
 
+assert_label "$backend_image" org.opencontainers.image.revision "$backend_build_revision"
+assert_label "$frontend_image" org.opencontainers.image.revision "$frontend_build_revision"
 assert_label "$backend_image" io.health-dashboard.image-role backend
 assert_label "$frontend_image" io.health-dashboard.image-role frontend
 

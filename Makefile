@@ -5,6 +5,8 @@ PNPM ?= pnpm
 BACKEND_IMAGE ?= health-backend:local
 FRONTEND_IMAGE ?= health-frontend:local
 BUILD_REVISION ?= $(shell git rev-parse --verify HEAD)
+BACKEND_BUILD_REVISION ?= $(BUILD_REVISION)
+FRONTEND_BUILD_REVISION ?= $(BUILD_REVISION)
 IMAGE_VERSION ?= dev
 API_CONTRACT_VERSION ?= $(shell python3 -c 'import json; print(json.load(open("contracts/openapi.json"))["info"]["version"])')
 
@@ -66,14 +68,14 @@ web-test-visual: web-install-browsers
 
 docker-build-backend:
 	docker build -f Dockerfile.backend \
-		--build-arg BUILD_REVISION=$(BUILD_REVISION) \
+		--build-arg BUILD_REVISION=$(BACKEND_BUILD_REVISION) \
 		--build-arg IMAGE_VERSION=$(IMAGE_VERSION) \
 		--build-arg API_CONTRACT_VERSION=$(API_CONTRACT_VERSION) \
 		-t $(BACKEND_IMAGE) .
 
 docker-build-frontend:
 	docker build -f apps/web/Dockerfile \
-		--build-arg BUILD_REVISION=$(BUILD_REVISION) \
+		--build-arg BUILD_REVISION=$(FRONTEND_BUILD_REVISION) \
 		--build-arg IMAGE_VERSION=$(IMAGE_VERSION) \
 		--build-arg API_CONTRACT_VERSION=$(API_CONTRACT_VERSION) \
 		-t $(FRONTEND_IMAGE) .
@@ -84,6 +86,8 @@ test-container-images: docker-build-images
 	BACKEND_IMAGE=$(BACKEND_IMAGE) \
 	FRONTEND_IMAGE=$(FRONTEND_IMAGE) \
 	BUILD_REVISION=$(BUILD_REVISION) \
+	BACKEND_BUILD_REVISION=$(BACKEND_BUILD_REVISION) \
+	FRONTEND_BUILD_REVISION=$(FRONTEND_BUILD_REVISION) \
 	IMAGE_VERSION=$(IMAGE_VERSION) \
 	API_CONTRACT_VERSION=$(API_CONTRACT_VERSION) \
 	./scripts/test-container-images.sh
@@ -92,6 +96,8 @@ test-compatible-image-pair: docker-build-images
 	BACKEND_IMAGE=$(BACKEND_IMAGE) \
 	FRONTEND_IMAGE=$(FRONTEND_IMAGE) \
 	BUILD_REVISION=$(BUILD_REVISION) \
+	BACKEND_BUILD_REVISION=$(BACKEND_BUILD_REVISION) \
+	FRONTEND_BUILD_REVISION=$(FRONTEND_BUILD_REVISION) \
 	API_CONTRACT_VERSION=$(API_CONTRACT_VERSION) \
 	./scripts/test-compatible-image-pair.sh
 
@@ -99,6 +105,8 @@ test-compatible-image-pair-negative: docker-build-images
 	BACKEND_IMAGE=$(BACKEND_IMAGE) \
 	FRONTEND_IMAGE=$(FRONTEND_IMAGE) \
 	BUILD_REVISION=$(BUILD_REVISION) \
+	BACKEND_BUILD_REVISION=$(BACKEND_BUILD_REVISION) \
+	FRONTEND_BUILD_REVISION=$(FRONTEND_BUILD_REVISION) \
 	API_CONTRACT_VERSION=$(API_CONTRACT_VERSION) \
 	./scripts/test-compatible-image-pair-preflight.sh
 

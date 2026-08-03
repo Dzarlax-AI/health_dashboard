@@ -4,7 +4,21 @@ set -eu
 backend_image="${BACKEND_IMAGE:-health-backend:local}"
 frontend_image="${FRONTEND_IMAGE:-health-frontend:local}"
 build_revision="${BUILD_REVISION:-unknown}"
+backend_build_revision="${BACKEND_BUILD_REVISION:-$build_revision}"
+frontend_build_revision="${FRONTEND_BUILD_REVISION:-$build_revision}"
 api_contract_version="${API_CONTRACT_VERSION:-unknown}"
+wrong_revision=""
+for candidate in \
+  ffffffffffffffffffffffffffffffffffffffff \
+  eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee \
+  0000000000000000000000000000000000000000; do
+  if [ "$candidate" != "$backend_build_revision" ] &&
+    [ "$candidate" != "$frontend_build_revision" ]; then
+    wrong_revision="$candidate"
+    break
+  fi
+done
+[ -n "$wrong_revision" ]
 
 script_dir="$(CDPATH= cd "$(dirname "$0")" && pwd)"
 harness="$script_dir/test-compatible-image-pair.sh"
@@ -81,15 +95,37 @@ assert_contract_rejected() {
   output="$tmp_dir/$name.out"
   if BACKEND_IMAGE="$backend" \
     FRONTEND_IMAGE="$frontend" \
-    BUILD_REVISION="$build_revision" \
+    BACKEND_BUILD_REVISION="$backend_build_revision" \
+    FRONTEND_BUILD_REVISION="$frontend_build_revision" \
     API_CONTRACT_VERSION="$api_contract_version" \
     PAIR_PREFIX="$prefix" \
     PAIR_PREFLIGHT_ONLY=1 \
     "$harness" >"$output" 2>&1; then
     fail "$name contract mismatch unexpectedly passed"
   fi
-  grep -q "rebuild both images from the same revision and API contract" "$output" ||
+  grep -q "use images with the expected component revisions and API contract" "$output" ||
     fail "$name mismatch did not produce the actionable compatibility error"
+  assert_no_pair_resources "$prefix"
+}
+
+assert_revision_rejected() {
+  name="$1"
+  expected_backend_revision="$2"
+  expected_frontend_revision="$3"
+  prefix="$test_prefix-$name"
+  output="$tmp_dir/$name.out"
+  if BACKEND_IMAGE="$backend_image" \
+    FRONTEND_IMAGE="$frontend_image" \
+    BACKEND_BUILD_REVISION="$expected_backend_revision" \
+    FRONTEND_BUILD_REVISION="$expected_frontend_revision" \
+    API_CONTRACT_VERSION="$api_contract_version" \
+    PAIR_PREFIX="$prefix" \
+    PAIR_PREFLIGHT_ONLY=1 \
+    "$harness" >"$output" 2>&1; then
+    fail "$name revision mismatch unexpectedly passed"
+  fi
+  grep -q "org.opencontainers.image.revision" "$output" ||
+    fail "$name revision mismatch did not identify the revision label"
   assert_no_pair_resources "$prefix"
 }
 
@@ -128,6 +164,11 @@ echo "backend contract mismatch rejected"
 assert_contract_rejected frontend "$backend_image" "$frontend_mismatch"
 echo "frontend contract mismatch rejected"
 
+assert_revision_rejected backend-revision "$wrong_revision" "$frontend_build_revision"
+echo "backend revision mismatch rejected before resources"
+assert_revision_rejected frontend-revision "$backend_build_revision" "$wrong_revision"
+echo "frontend revision mismatch rejected before resources"
+
 assert_signal_status INT 130
 assert_signal_status TERM 143
 echo "SIGINT and SIGTERM exit statuses verified"
@@ -137,7 +178,8 @@ cleanup_output="$tmp_dir/cleanup-failure.out"
 cleanup_status=0
 BACKEND_IMAGE="$backend_image" \
   FRONTEND_IMAGE="$frontend_image" \
-  BUILD_REVISION="$build_revision" \
+  BACKEND_BUILD_REVISION="$backend_build_revision" \
+  FRONTEND_BUILD_REVISION="$frontend_build_revision" \
   API_CONTRACT_VERSION="$api_contract_version" \
   PAIR_PREFIX="$cleanup_prefix" \
   PAIR_SELF_TEST_CLEANUP_FAILURE=1 \
@@ -154,7 +196,8 @@ foreign_network_created=1
 collision_status=0
 BACKEND_IMAGE="$backend_image" \
   FRONTEND_IMAGE="$frontend_image" \
-  BUILD_REVISION="$build_revision" \
+  BACKEND_BUILD_REVISION="$backend_build_revision" \
+  FRONTEND_BUILD_REVISION="$frontend_build_revision" \
   API_CONTRACT_VERSION="$api_contract_version" \
   PAIR_NETWORK="$foreign_network" \
   PAIR_RUN_TOKEN="$token" \

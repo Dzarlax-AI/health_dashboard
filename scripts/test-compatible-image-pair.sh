@@ -4,6 +4,8 @@ set -eu
 backend_image="${BACKEND_IMAGE:-health-backend:local}"
 frontend_image="${FRONTEND_IMAGE:-health-frontend:local}"
 build_revision="${BUILD_REVISION:-unknown}"
+backend_build_revision="${BACKEND_BUILD_REVISION:-$build_revision}"
+frontend_build_revision="${FRONTEND_BUILD_REVISION:-$build_revision}"
 api_contract_version="${API_CONTRACT_VERSION:-unknown}"
 postgres_image="${POSTGRES_IMAGE:-postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193}"
 proxy_image="${PROXY_IMAGE:-nginxinc/nginx-unprivileged:1.31.3-alpine3.24@sha256:a6c3ec0c0d249d68b0682df854d4a9e222b90fb607dc3fcf2f1d2fcbc85d347e}"
@@ -145,7 +147,7 @@ label_value() {
 assert_label() {
   actual="$(label_value "$1" "$2")"
   if [ "$actual" != "$3" ]; then
-    fail "image '$1' label '$2' expected '$3', got '$actual'; rebuild both images from the same revision and API contract"
+    fail "image '$1' label '$2' expected '$3', got '$actual'; use images with the expected component revisions and API contract"
   fi
 }
 
@@ -168,8 +170,8 @@ require_command docker
 # Compatibility is checked before any network, container, or route probe exists.
 assert_label "$backend_image" io.health-dashboard.image-role backend
 assert_label "$frontend_image" io.health-dashboard.image-role frontend
-assert_label "$backend_image" org.opencontainers.image.revision "$build_revision"
-assert_label "$frontend_image" org.opencontainers.image.revision "$build_revision"
+assert_label "$backend_image" org.opencontainers.image.revision "$backend_build_revision"
+assert_label "$frontend_image" org.opencontainers.image.revision "$frontend_build_revision"
 assert_label "$backend_image" io.health-dashboard.api-contract-version "$api_contract_version"
 assert_label "$frontend_image" io.health-dashboard.api-contract-version "$api_contract_version"
 
