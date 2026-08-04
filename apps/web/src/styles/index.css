@@ -320,6 +320,14 @@ textarea {
     inset 0 0 0 1px rgba(255, 255, 255, 0.72);
 }
 
+.today-hero__layout
+  > .score-gauge--readiness.score-gauge--hero
+  .score-gauge__frame {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
 .score-gauge--card .score-gauge__frame {
   inline-size: clamp(146px, 15vw, 190px);
   border-width: 8px;
@@ -925,6 +933,25 @@ textarea {
     width: min(100% - 32px, var(--container-xl));
   }
 
+  .app-header {
+    min-height: 52px;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    padding-block: var(--space-2);
+  }
+
+  .app-header__brand {
+    margin-right: auto;
+  }
+
+  .app-header__links {
+    order: 3;
+    width: 100%;
+    margin-left: 0;
+    gap: var(--space-3);
+    justify-content: space-between;
+  }
+
   .today-hero {
     padding: 22px 18px 30px;
   }
@@ -961,20 +988,6 @@ textarea {
   .app-header,
   .page {
     width: min(100% - 24px, var(--container-xl));
-  }
-
-  .app-header {
-    min-height: 52px;
-    flex-wrap: wrap;
-    gap: var(--space-2);
-    padding-block: var(--space-2);
-  }
-
-  .app-header__links {
-    order: 3;
-    width: 100%;
-    gap: var(--space-3);
-    justify-content: space-between;
   }
 
   .locale-switcher a {

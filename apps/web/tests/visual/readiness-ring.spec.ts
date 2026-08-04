@@ -75,6 +75,26 @@ test("adjacent copy and confidence state do not move the ring", async ({ page })
   }
 });
 
+test("the hero ring has no decorative outer shell", async ({ page }) => {
+  await page.setViewportSize({ width: 430, height: 932 });
+  await page.goto("/?lang=ru&fixture=normal");
+
+  const styles = await page.locator("[data-readiness-ring] [data-gauge-frame]").evaluate((frame) => {
+    const computed = getComputedStyle(frame);
+    return {
+      backgroundColor: computed.backgroundColor,
+      borderWidth: computed.borderWidth,
+      boxShadow: computed.boxShadow,
+    };
+  });
+
+  expect(styles).toEqual({
+    backgroundColor: "rgba(0, 0, 0, 0)",
+    borderWidth: "0px",
+    boxShadow: "none",
+  });
+});
+
 for (const fixture of ["loading", "unavailable", "error"] as const) {
   test(`${fixture} state never fabricates a score`, async ({ page }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });

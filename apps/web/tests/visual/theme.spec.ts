@@ -79,3 +79,45 @@ test("the theme switcher remains visible at mobile width", async ({ page }) => {
   await expect(switcher.getByRole("radio")).toHaveCount(3);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(320);
 });
+
+test("the mobile header contains every control at 430px", async ({ page }) => {
+  await page.setViewportSize({ width: 430, height: 932 });
+  await page.goto("/?lang=ru&fixture=normal");
+
+  const header = page.locator(".app-header");
+  await expect(header).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Основная навигация" })).toBeVisible();
+  await expect(page.getByRole("radiogroup", { name: "Тема" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Язык" })).toBeVisible();
+
+  const layout = await header.evaluate((element) => {
+    const box = (selector: string) => {
+      const node = element.querySelector<HTMLElement>(selector);
+      if (!node) {
+        throw new Error(`Missing header element: ${selector}`);
+      }
+      const rect = node.getBoundingClientRect();
+      return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+    };
+
+    const rect = element.getBoundingClientRect();
+    return {
+      header: { left: rect.left, right: rect.right },
+      brand: box(".app-header__brand"),
+      links: box(".app-header__links"),
+      theme: box(".theme-switcher"),
+      locale: box(".locale-switcher"),
+    };
+  });
+
+  for (const control of [layout.brand, layout.links, layout.theme, layout.locale]) {
+    expect(control.left).toBeGreaterThanOrEqual(layout.header.left);
+    expect(control.right).toBeLessThanOrEqual(layout.header.right);
+  }
+  expect(layout.links.top).toBeGreaterThan(layout.brand.top);
+  const documentWidth = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    clientWidth: document.documentElement.clientWidth,
+  }));
+  expect(documentWidth.scrollWidth).toBeLessThanOrEqual(documentWidth.clientWidth);
+});
