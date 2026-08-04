@@ -7,7 +7,9 @@
   }
 
   const prefersDark = globalThis.matchMedia("(prefers-color-scheme: dark)").matches;
-  if (storedTheme === "dark" || (!storedTheme && prefersDark)) {
+  const preference =
+    storedTheme === "light" || storedTheme === "dark" ? storedTheme : "system";
+  if (preference === "dark" || (preference === "system" && prefersDark)) {
     globalThis.document.documentElement.setAttribute("dark-mode", "");
   }
 })();

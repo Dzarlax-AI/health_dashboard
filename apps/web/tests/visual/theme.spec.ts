@@ -35,16 +35,32 @@ test("a saved dark preference overrides a light system preference", async ({ pag
   await expect(page.locator("html")).toHaveCSS("color-scheme", "dark");
 });
 
+test("an unsupported saved preference falls back to the system preference", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
+  await page.addInitScript(() => localStorage.setItem("theme", "unsupported"));
+  await page.goto("/?lang=en&fixture=normal");
+
+  await expect(page.locator("html")).toHaveAttribute("dark-mode", "");
+  await expect(page.locator("html")).toHaveCSS("color-scheme", "dark");
+});
+
 test("the theme switcher updates and persists the preference without navigation", async ({
   page,
 }) => {
   await page.emulateMedia({ colorScheme: "light", reducedMotion: "reduce" });
   await page.goto("/?lang=en&fixture=normal");
 
+  let mainFrameNavigations = 0;
+  page.on("framenavigated", (frame) => {
+    if (frame === page.mainFrame()) {
+      mainFrameNavigations += 1;
+    }
+  });
+
   await page.getByRole("radio", { name: "Use dark theme" }).click();
   await expect(page.locator("html")).toHaveAttribute("dark-mode", "");
   expect(await page.evaluate(() => localStorage.getItem("theme"))).toBe("dark");
-  expect(await page.evaluate(() => performance.getEntriesByType("navigation").length)).toBe(1);
+  expect(mainFrameNavigations).toBe(0);
 
   await page.reload();
   await expect(page.locator("html")).toHaveAttribute("dark-mode", "");

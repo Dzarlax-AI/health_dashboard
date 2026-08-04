@@ -34,7 +34,10 @@ test("stacks insight sections in one column on mobile", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/?lang=en&fixture=normal");
 
-  const boxes = await page.locator(".insight-card__sections article").evaluateAll((articles) =>
+  const sections = page.locator(".insight-card__sections article");
+  await expect(sections).toHaveCount(4);
+
+  const boxes = await sections.evaluateAll((articles) =>
     articles.map((article) => {
       const box = article.getBoundingClientRect();
       return { left: box.left, top: box.top, width: box.width };

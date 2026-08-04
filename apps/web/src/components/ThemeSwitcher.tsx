@@ -1,5 +1,5 @@
 import { Monitor, Moon, Sun, type LucideIcon } from "lucide-react";
-import { useLayoutEffect, useState } from "react";
+import { useLayoutEffect, useState, type KeyboardEvent } from "react";
 
 import { translate, type Locale, type MessageKey } from "../i18n";
 
@@ -64,13 +64,40 @@ export function ThemeSwitcher({ locale }: ThemeSwitcherProps) {
     setPreference(nextPreference);
   }
 
+  function handleKeyDown(
+    event: KeyboardEvent<HTMLButtonElement>,
+    currentIndex: number,
+  ): void {
+    let nextIndex: number | undefined;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      nextIndex = (currentIndex + 1) % themeOptions.length;
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      nextIndex = (currentIndex - 1 + themeOptions.length) % themeOptions.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = themeOptions.length - 1;
+    }
+
+    if (nextIndex === undefined) {
+      return;
+    }
+
+    event.preventDefault();
+    selectTheme(themeOptions[nextIndex].value);
+    const options = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>(
+      '[role="radio"]',
+    );
+    options?.[nextIndex]?.focus();
+  }
+
   return (
     <div
       aria-label={translate(locale, "themeNav")}
       className="theme-switcher"
       role="radiogroup"
     >
-      {themeOptions.map(({ icon: Icon, label, value }) => {
+      {themeOptions.map(({ icon: Icon, label, value }, index) => {
         const optionLabel = translate(locale, label);
         return (
           <button
@@ -78,7 +105,9 @@ export function ThemeSwitcher({ locale }: ThemeSwitcherProps) {
             aria-label={optionLabel}
             key={value}
             onClick={() => selectTheme(value)}
+            onKeyDown={(event) => handleKeyDown(event, index)}
             role="radio"
+            tabIndex={preference === value ? 0 : -1}
             title={optionLabel}
             type="button"
           >

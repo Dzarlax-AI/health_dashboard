@@ -60,7 +60,7 @@
 
   <section><h2>Likely file changes</h2>
     <ul>
-      <li><code>apps/web/index.html</code> and <code>apps/web/public/theme-bootstrap.js</code> — synchronous same-origin pre-render theme bootstrap compatible with the production CSP.</li>
+      <li><code>apps/web/index.html</code> and <code>apps/web/public/assets/theme-bootstrap.js</code> — synchronous same-origin pre-render theme bootstrap compatible with the production CSP and frontend asset routing.</li>
       <li><code>apps/web/src/components/ThemeSwitcher.tsx</code> and <code>AppHeader.tsx</code> — accessible three-state theme control.</li>
       <li><code>apps/web/src/i18n/index.ts</code> — localized control and option labels.</li>
       <li><code>apps/web/src/styles/tokens.css</code> — semantic dark tokens and chart tokens.</li>
@@ -127,17 +127,17 @@
   </section>
 
   <section><h2>Rollback plan</h2>
-    <p>Revert the frontend-only commit and rebuild the compatible image pair. The current canary remains usable on the previous frontend digest; no database or backend rollback is required. The insight layout can also be rolled back independently by removing its wrapper classes and responsive grid rules.</p>
+    <p>Revert the frontend-only commit and publish a new compatible-pair pointer through the release tooling. Any unchanged backend or frontend component must be resolved exclusively from the authoritative compatible-pair metadata; the operation must fail closed if a digest, revision, API contract, image role, or compatible-pair pointer is missing, invalid, or mismatched. The current canary remains usable on the previous validated frontend digest; no database rollback is required. The insight layout can also be rolled back independently by removing its wrapper classes and responsive grid rules.</p>
   </section>
 
   <section><h2>Open questions</h2>
-    <p>No blocking questions. A visible three-state theme control (system/light/dark) can be considered separately after restoring parity.</p>
+    <p>No blocking questions. The visible three-state theme control (system/light/dark) is included in this change.</p>
   </section>
 
   <section><h2>Implementation outcome</h2>
     <ul>
-      <li>Added a parser-blocking same-origin theme bootstrap that preserves the legacy saved-preference/system-preference precedence without weakening the production CSP.</li>
-      <li>Added an accessible three-state header switcher for System, Light, and Dark. It updates before paint, persists explicit choices, removes the override for System, and follows later operating-system changes while System is selected.</li>
+      <li>Added a parser-blocking same-origin theme bootstrap under the production-routed <code>/assets/</code> namespace. It preserves saved-preference/system-preference precedence, treats absent or unsupported stored values as System, and does not weaken the production CSP.</li>
+      <li>Added an accessible three-state header switcher for System, Light, and Dark. It updates before paint, persists explicit choices, removes the override for System, follows later operating-system changes while System is selected, and implements roving focus with Arrow/Home/End keyboard navigation.</li>
       <li>Added semantic dark tokens and switched Recharts grid, text, line, and tooltip colors to those tokens.</li>
       <li>Generated and added <code>apps/web/src/assets/night-meadow-hero.webp</code> at the same 1600×772 dimensions as the morning source; dark hero and standalone states now use it.</li>
       <li>Converted the insight body to a semantic responsive grid, kept the API/DOM order unchanged, and emphasized the recommendation with a restrained readiness accent.</li>
@@ -152,22 +152,22 @@
 
   <section><h2>Checks run</h2>
     <ul>
-      <li><code>pnpm web:check</code>: contract check, TypeScript, ESLint, 58 unit tests, and production Vite build passed.</li>
-      <li>Full Playwright visual suite: 26 tests passed, including dark precedence, saved overrides, no-navigation switching, mobile switcher fit, 320–1440 px readiness-ring geometry, desktop insight grid, mobile insight stack, and empty/error score integrity.</li>
-      <li>Production frontend Docker image built successfully. Its nginx container became healthy, served the bootstrap under the existing <code>script-src 'self'</code> CSP, and returned the expected no-store/no-cache policies.</li>
+      <li><code>pnpm web:check</code>: contract check, TypeScript, ESLint, 59 unit tests, and production Vite build passed.</li>
+      <li>Full Playwright visual suite: 27 tests passed, including dark precedence, saved and unsupported-value overrides, no-navigation switching, mobile switcher fit, 320–1440 px readiness-ring geometry, desktop insight grid, mobile insight stack, and empty/error score integrity.</li>
+      <li>Production frontend Docker image built successfully. Its nginx container served <code>/assets/theme-bootstrap.js</code> with HTTP 200, the existing <code>script-src 'self'</code> CSP, and the expected immutable cache policy.</li>
       <li>Manual inspection completed at 1280×720 and 390×844: night crop, ring alignment, insight density, responsive stacking, and absence of horizontal overflow passed; no browser warnings or errors were reported.</li>
     </ul>
   </section>
 
   <section><h2>Known limitations and follow-ups</h2>
     <ul>
-      <li>The production canary is unchanged until a separate PR is reviewed, merged, built as a compatible image pair, and deployed.</li>
+      <li>The production canary is unchanged until a separate PR is reviewed and merged, and release tooling publishes an authoritative compatible-pair pointer. Deployment must reject missing or mismatched component digests, revisions, API contracts, image roles, or pointer metadata.</li>
       <li>Raw localized display values such as <code>ok</code>, <code>hrs</code>, <code>bpm</code>, and provisional-sleep wording remain a separate content-consistency follow-up.</li>
     </ul>
   </section>
 
   <section class="gate"><h2>Approval gate</h2>
-    <p>Approved by the user on 2026-08-03 with the explicit addition of a dedicated night landscape. Implementation may proceed, but the production canary remains unchanged until a reviewed PR is merged and a new compatible image pair passes CI.</p>
+    <p>Approved by the user on 2026-08-03 with the explicit addition of a dedicated night landscape. Implementation may proceed, but the production canary remains unchanged until a reviewed PR is merged and release tooling validates a new authoritative compatible-pair pointer against both component digests, revisions, API contracts, image roles, and pointer metadata, failing closed if any value is absent or mismatched.</p>
   </section>
 </main></body>
 </html>

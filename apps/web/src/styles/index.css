@@ -925,13 +925,15 @@ textarea {
     width: min(100% - 32px, var(--container-xl));
   }
 
+  .today-hero {
+    padding: 22px 18px 30px;
+  }
+
   html:not([dark-mode]) .today-hero {
     --hero-veil: linear-gradient(
       rgba(255, 255, 255, 0.3),
       rgba(255, 255, 255, 0.72)
     );
-
-    padding: 22px 18px 30px;
   }
 
   .today-hero__layout {

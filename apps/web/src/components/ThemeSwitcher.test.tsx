@@ -38,4 +38,28 @@ describe("ThemeSwitcher", () => {
     expect(screen.getByRole("radio", { name: "Светлая тема" })).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: "Тёмная тема" })).toBeInTheDocument();
   });
+
+  it("moves and selects options with standard radio-group keys", () => {
+    render(<ThemeSwitcher locale="en" />);
+
+    const system = screen.getByRole("radio", { name: "Use system theme" });
+    const light = screen.getByRole("radio", { name: "Use light theme" });
+    const dark = screen.getByRole("radio", { name: "Use dark theme" });
+
+    expect(system).toHaveAttribute("tabindex", "0");
+    expect(light).toHaveAttribute("tabindex", "-1");
+
+    system.focus();
+    fireEvent.keyDown(system, { key: "ArrowLeft" });
+
+    expect(dark).toHaveFocus();
+    expect(dark).toHaveAttribute("aria-checked", "true");
+    expect(dark).toHaveAttribute("tabindex", "0");
+    expect(globalThis.localStorage.getItem("theme")).toBe("dark");
+
+    fireEvent.keyDown(dark, { key: "Home" });
+    expect(system).toHaveFocus();
+    expect(system).toHaveAttribute("aria-checked", "true");
+    expect(globalThis.localStorage.getItem("theme")).toBeNull();
+  });
 });
