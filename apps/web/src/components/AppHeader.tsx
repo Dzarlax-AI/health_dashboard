@@ -1,4 +1,5 @@
 import { supportedLocales, translate, type Locale } from "../i18n";
+import { ThemeSwitcher } from "./ThemeSwitcher";
 
 interface AppHeaderProps {
   locale: Locale;
@@ -32,6 +33,7 @@ export function AppHeader({ locale, isAdmin = false }: AppHeaderProps) {
           <button type="submit">{translate(locale, "logout")}</button>
         </form>
       </nav>
+      <ThemeSwitcher locale={locale} />
       <nav className="locale-switcher" aria-label={translate(locale, "languageNav")}>
         {supportedLocales.map((candidate) => {
           const candidateParams = new URLSearchParams(params);
