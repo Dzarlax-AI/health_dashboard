@@ -251,6 +251,32 @@ function ai(locale: Locale): AIBriefingResponse {
     sections: [
       {
         body: localized(locale, {
+          en: "Sleep duration was strong, but the latest signals are still settling.",
+          ru: "Продолжительность сна была хорошей, но последние сигналы ещё стабилизируются.",
+          sr: "Trajanje sna je bilo dobro, ali se najnoviji signali još stabilizuju.",
+        }),
+        header: localized(locale, {
+          en: "Sleep",
+          ru: "Сон",
+          sr: "San",
+        }),
+        key: "SLEEP",
+      },
+      {
+        body: localized(locale, {
+          en: "Yesterday stayed light enough to leave room for recovery.",
+          ru: "Вчерашняя нагрузка оставила достаточно пространства для восстановления.",
+          sr: "Jučerašnje opterećenje ostavilo je dovoljno prostora za oporavak.",
+        }),
+        header: localized(locale, {
+          en: "Yesterday",
+          ru: "Вчера",
+          sr: "Juče",
+        }),
+        key: "YESTERDAY",
+      },
+      {
+        body: localized(locale, {
           en: "A long night restored your reserve, while HRV sits above your usual level.",
           ru: "Длинный сон заметно восстановил запас. ВСР тоже выше твоего обычного уровня.",
           sr: "Dug san je obnovio rezervu, dok je HRV iznad tvog uobičajenog nivoa.",
@@ -261,6 +287,19 @@ function ai(locale: Locale): AIBriefingResponse {
           sr: "Zaslužen oporavak",
         }),
         key: "RECOVERY",
+      },
+      {
+        body: localized(locale, {
+          en: "Keep the day flexible and choose moderate activity while the remaining signals settle.",
+          ru: "Оставь день гибким и выбери умеренную активность, пока остальные сигналы стабилизируются.",
+          sr: "Ostavi dan fleksibilnim i izaberi umerenu aktivnost dok se ostali signali stabilizuju.",
+        }),
+        header: localized(locale, {
+          en: "Plan for today",
+          ru: "План на сегодня",
+          sr: "Plan za danas",
+        }),
+        key: "RECOMMENDATION",
       },
     ],
     sleep: "",

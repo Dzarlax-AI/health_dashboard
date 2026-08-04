@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation Plan: Restore dark theme</title>
+  <style>
+    body{margin:0;background:#f4f3ef;color:#202421;font:16px/1.55 system-ui,sans-serif}
+    main{max-width:980px;margin:auto;padding:28px 18px 60px}
+    header,section{margin-bottom:14px;padding:22px;border:1px solid #dfe1dc;border-radius:16px;background:#fff}
+    header{border-top:5px solid #168c57}
+    h1,h2{margin-top:0;line-height:1.2}
+    code{padding:2px 5px;border-radius:5px;background:#eef0ec}
+    pre{overflow-wrap:anywhere;white-space:pre-wrap}
+    .gate{border-left:5px solid #b66a12}
+  </style>
+</head>
+<body><main>
+  <header>
+    <h1>Restore dark theme and tighten the insight layout</h1>
+    <p>The production canary is healthy, but the migrated dashboard no longer preserves the legacy theme behavior and wastes substantial horizontal space inside the personal-insight card.</p>
+  </header>
+
+  <section><h2>Task summary</h2>
+    <p>Bring back a complete dark palette and make the personal insight denser without changing routing, APIs, authentication, tenant isolation, data calculations, or AI content.</p>
+  </section>
+
+  <section><h2>Current behavior</h2>
+    <ul>
+      <li>The legacy Go UI applies <code>dark-mode</code> before first paint from <code>localStorage.theme</code> or <code>prefers-color-scheme</code>.</li>
+      <li>The React entry page has no equivalent bootstrap.</li>
+      <li>React tokens and Recharts colors are light-only, and <code>html</code> forces a light color scheme.</li>
+      <li>Hero, glass panels, gauges, loading states, and chart tooltips contain additional light-only colors.</li>
+      <li>Insight paragraphs are correctly limited to a readable line length, but their parent card spans the full desktop container. Four sequential blocks occupy only the left half and make the card unnecessarily tall.</li>
+    </ul>
+  </section>
+
+  <section><h2>Desired behavior</h2>
+    <ul>
+      <li>Dark system preference selects the dark palette when there is no saved choice.</li>
+      <li>Saved <code>light</code> and <code>dark</code> preferences override the system preference exactly as in the legacy UI.</li>
+      <li>A compact three-state control in the header lets the user choose System, Light, or Dark without reloading the page.</li>
+      <li>The theme is applied before React and CSS render, avoiding a light flash.</li>
+      <li>Background, surfaces, hero artwork, rings, states, charts, and tooltips remain readable and visually consistent.</li>
+      <li>Dark mode uses a dedicated night rendering of the same meadow composition, rather than dimming the morning image into a muddy low-contrast background.</li>
+      <li>The existing light theme remains pixel-stable except for CSS-variable plumbing used by charts.</li>
+      <li>At wide desktop sizes, insight sections use a balanced two-column layout while keeping readable line lengths; narrow screens preserve the existing single-column reading order.</li>
+      <li>The actionable “plan for today” block receives clearer emphasis without changing its text.</li>
+    </ul>
+  </section>
+
+  <section><h2>Assumptions</h2>
+    <ul>
+      <li>The visible control uses the existing <code>theme</code> storage key: Light and Dark persist their values, while System removes the key and follows <code>prefers-color-scheme</code>.</li>
+      <li>The existing <code>dark-mode</code> HTML attribute remains the shared theme contract.</li>
+      <li>The morning meadow remains the light-theme source of truth. A non-destructive sibling asset preserves its composition while changing only time of day, lighting, atmosphere, and palette for dark mode.</li>
+      <li>The API section order remains authoritative. CSS layout may rearrange presentation only when the four known sections are present, while DOM reading order stays unchanged.</li>
+    </ul>
+  </section>
+
+  <section><h2>Likely file changes</h2>
+    <ul>
+      <li><code>apps/web/index.html</code> and <code>apps/web/public/theme-bootstrap.js</code> — synchronous same-origin pre-render theme bootstrap compatible with the production CSP.</li>
+      <li><code>apps/web/src/components/ThemeSwitcher.tsx</code> and <code>AppHeader.tsx</code> — accessible three-state theme control.</li>
+      <li><code>apps/web/src/i18n/index.ts</code> — localized control and option labels.</li>
+      <li><code>apps/web/src/styles/tokens.css</code> — semantic dark tokens and chart tokens.</li>
+      <li><code>apps/web/src/styles/index.css</code> — dark treatment for artwork, glass, rings, and status surfaces.</li>
+      <li><code>apps/web/src/assets/night-meadow-hero.webp</code> — generated night-time counterpart to the existing morning meadow.</li>
+      <li><code>apps/web/src/components/charts/chartTheme.ts</code> and <code>TrendChart.tsx</code> — consume semantic CSS variables.</li>
+      <li><code>apps/web/src/features/dashboard/DashboardDetails.tsx</code> — add a semantic wrapper and section key hooks for the insight grid.</li>
+      <li><code>apps/web/tests/visual/theme.spec.ts</code> — system and saved-preference regression coverage.</li>
+      <li><code>apps/web/tests/visual/insight-layout.spec.ts</code> — desktop density, DOM order, and mobile reflow coverage.</li>
+    </ul>
+  </section>
+
+  <section><h2>Implementation steps</h2>
+    <ol>
+      <li>Add a synchronous, storage-safe same-origin bootstrap matching the legacy precedence rules without requiring <code>unsafe-inline</code> in the production CSP.</li>
+      <li>Add an accessible segmented radiogroup to the header. Apply changes before paint, persist only explicit Light/Dark choices, and subscribe to system-theme changes only while System is active.</li>
+      <li>Add dark semantic tokens while preserving all light defaults.</li>
+      <li>Replace remaining light-only chart colors with semantic variables.</li>
+      <li>Generate a night variant from the existing meadow, preserving framing, hills, vegetation, negative space, and crop-safe edges; save it as a separate project asset.</li>
+      <li>Add targeted dark overrides for translucent components and switch hero artwork to the night asset.</li>
+      <li>Wrap AI sections in a responsive grid: two equal columns on wide screens, one column below the desktop breakpoint.</li>
+      <li>Keep ordinary sections compact and turn the recommendation section into a visually distinct action block without adding decorative content.</li>
+      <li>Run focused browser tests, then the complete web check and visual suite.</li>
+      <li>Render desktop and mobile fixture views in light and dark modes and inspect console output.</li>
+    </ol>
+  </section>
+
+  <section><h2>Test plan</h2>
+    <ul>
+      <li>Playwright: system dark with no saved preference.</li>
+      <li>Playwright: saved light overrides system dark.</li>
+      <li>Playwright: saved dark overrides system light.</li>
+      <li>Component tests: all three localized options render, selection updates <code>dark-mode</code> immediately, explicit choices persist, and System removes the override.</li>
+      <li>Playwright: the control switches themes without reload and remains usable at mobile width.</li>
+      <li>Playwright: four insight blocks form two columns at wide desktop size and one column on mobile.</li>
+      <li>Playwright: DOM and keyboard reading order remains Sleep → Yesterday → Recovery → Recommendation.</li>
+      <li>Existing readiness-ring geometry suite across 320–1440 px and EN/RU/SR.</li>
+      <li><code>pnpm web:check</code>: contract, types, lint, unit tests, and production build.</li>
+    </ul>
+  </section>
+
+  <section><h2>Manual QA checklist</h2>
+    <ul>
+      <li>Desktop and mobile: no flash of the wrong theme.</li>
+      <li>The switcher fits the existing header hierarchy, exposes a clear selected state, and remains keyboard accessible without crowding navigation or locale controls.</li>
+      <li>Hero background remains visible; recommendation copy and readiness ring remain legible.</li>
+      <li>Night artwork matches the morning meadow's composition and crop across desktop and mobile, with no visible seam when the theme changes.</li>
+      <li>Supporting score cards, alerts, empty/loading/error states, and chart tooltips have sufficient contrast.</li>
+      <li>Insight card uses its width without stretching paragraphs into hard-to-read long lines.</li>
+      <li>Recommendation is visually discoverable and no section divider creates an orphaned line or uneven row.</li>
+      <li>Switching RU/EN/SR does not reset the selected theme.</li>
+      <li>No relevant console errors or warnings.</li>
+    </ul>
+  </section>
+
+  <section><h2>Risks</h2>
+    <ul>
+      <li>A deferred or bundled bootstrap could allow a flash of the wrong theme. Keep the small external script parser-blocking in <code>&lt;head&gt;</code>; the current <code>script-src 'self'</code> policy permits it.</li>
+      <li>Hard-coded light colors may escape the initial audit; repository-wide color search and visual QA mitigate this.</li>
+      <li>Dark chart tooltip styling depends on CSS custom properties supported by the current Recharts/browser baseline.</li>
+      <li>A generated night asset may drift from the established illustration or composition; side-by-side inspection at the actual hero crop is required before it can ship.</li>
+      <li>A two-column visual layout can create a misleading reading order if implemented with CSS reordering; the implementation must preserve DOM order and avoid explicit <code>order</code> values.</li>
+    </ul>
+  </section>
+
+  <section><h2>Rollback plan</h2>
+    <p>Revert the frontend-only commit and rebuild the compatible image pair. The current canary remains usable on the previous frontend digest; no database or backend rollback is required. The insight layout can also be rolled back independently by removing its wrapper classes and responsive grid rules.</p>
+  </section>
+
+  <section><h2>Open questions</h2>
+    <p>No blocking questions. A visible three-state theme control (system/light/dark) can be considered separately after restoring parity.</p>
+  </section>
+
+  <section><h2>Implementation outcome</h2>
+    <ul>
+      <li>Added a parser-blocking same-origin theme bootstrap that preserves the legacy saved-preference/system-preference precedence without weakening the production CSP.</li>
+      <li>Added an accessible three-state header switcher for System, Light, and Dark. It updates before paint, persists explicit choices, removes the override for System, and follows later operating-system changes while System is selected.</li>
+      <li>Added semantic dark tokens and switched Recharts grid, text, line, and tooltip colors to those tokens.</li>
+      <li>Generated and added <code>apps/web/src/assets/night-meadow-hero.webp</code> at the same 1600×772 dimensions as the morning source; dark hero and standalone states now use it.</li>
+      <li>Converted the insight body to a semantic responsive grid, kept the API/DOM order unchanged, and emphasized the recommendation with a restrained readiness accent.</li>
+      <li>Expanded fixture-only AI sections to cover the four production blocks in EN/RU/SR so desktop and mobile layouts are testable without production data.</li>
+    </ul>
+  </section>
+
+  <section><h2>Generated asset record</h2>
+    <p>Built-in image generation was used in <code>lighting-weather</code> edit mode with the morning meadow as the edit target. Final project asset: <code>apps/web/src/assets/night-meadow-hero.webp</code>.</p>
+    <pre>Transform the existing bright morning meadow into a calm night landscape for dark mode. Preserve the source dimensions, viewpoint, horizon, hill silhouettes, vegetation placement, corner foliage, central negative space, crop-safe edges, painterly style, and atmospheric depth. Change only time of day, lighting, atmosphere, and palette: deep navy and muted indigo sky, subtle cool moonlight, restrained faint stars, gentle blue-violet haze, desaturated blue-green meadow, and quiet lavender-gray mountains. Keep enough low-frequency contrast for UI overlays. Avoid new objects, a central moon disk, dramatic clouds, aurora, fantasy glow, neon colors, dense stars, text, logos, watermarks, crushed shadows, and photographic restyling.</pre>
+  </section>
+
+  <section><h2>Checks run</h2>
+    <ul>
+      <li><code>pnpm web:check</code>: contract check, TypeScript, ESLint, 58 unit tests, and production Vite build passed.</li>
+      <li>Full Playwright visual suite: 26 tests passed, including dark precedence, saved overrides, no-navigation switching, mobile switcher fit, 320–1440 px readiness-ring geometry, desktop insight grid, mobile insight stack, and empty/error score integrity.</li>
+      <li>Production frontend Docker image built successfully. Its nginx container became healthy, served the bootstrap under the existing <code>script-src 'self'</code> CSP, and returned the expected no-store/no-cache policies.</li>
+      <li>Manual inspection completed at 1280×720 and 390×844: night crop, ring alignment, insight density, responsive stacking, and absence of horizontal overflow passed; no browser warnings or errors were reported.</li>
+    </ul>
+  </section>
+
+  <section><h2>Known limitations and follow-ups</h2>
+    <ul>
+      <li>The production canary is unchanged until a separate PR is reviewed, merged, built as a compatible image pair, and deployed.</li>
+      <li>Raw localized display values such as <code>ok</code>, <code>hrs</code>, <code>bpm</code>, and provisional-sleep wording remain a separate content-consistency follow-up.</li>
+    </ul>
+  </section>
+
+  <section class="gate"><h2>Approval gate</h2>
+    <p>Approved by the user on 2026-08-03 with the explicit addition of a dedicated night landscape. Implementation may proceed, but the production canary remains unchanged until a reviewed PR is merged and a new compatible image pair passes CI.</p>
+  </section>
+</main></body>
+</html>

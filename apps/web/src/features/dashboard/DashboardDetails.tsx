@@ -108,14 +108,21 @@ export function DashboardDetails({
               <StatusBadge>{translate(locale, "updating")}</StatusBadge>
             ) : null}
           </div>
-          {aiSections.length > 0
-            ? aiSections.map((section) => (
-                <article key={section.key}>
+          {aiSections.length > 0 ? (
+            <div className="insight-card__sections">
+              {aiSections.map((section) => (
+                <article
+                  data-insight-section={section.key.toLowerCase()}
+                  key={section.key}
+                >
                   <h3>{section.header}</h3>
                   <p>{section.body}</p>
                 </article>
-              ))
-            : <p>{ai?.insight}</p>}
+              ))}
+            </div>
+          ) : (
+            <p>{ai?.insight}</p>
+          )}
         </Surface>
       ) : null}
 

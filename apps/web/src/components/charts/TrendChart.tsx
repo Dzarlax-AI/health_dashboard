@@ -48,9 +48,10 @@ export function TrendChart({ ariaLabel, data, tone }: TrendChartProps) {
           <Tooltip
             cursor={{ stroke: chartTheme.grid }}
             contentStyle={{
-              border: "1px solid rgba(26, 26, 30, 0.08)",
+              background: chartTheme.tooltipBackground,
+              border: `1px solid ${chartTheme.tooltipBorder}`,
               borderRadius: 12,
-              boxShadow: "0 8px 24px rgba(0,0,0,.08)",
+              boxShadow: chartTheme.tooltipShadow,
             }}
           />
           <Line

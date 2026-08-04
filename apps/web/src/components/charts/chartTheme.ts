@@ -1,6 +1,9 @@
 export const chartTheme = {
-  readiness: "#159557",
-  energy: "#d97706",
-  grid: "rgba(26, 26, 30, 0.08)",
-  text: "rgba(26, 26, 30, 0.58)",
+  readiness: "var(--today-readiness)",
+  energy: "var(--today-energy)",
+  grid: "var(--chart-grid)",
+  text: "var(--chart-text)",
+  tooltipBackground: "var(--surface)",
+  tooltipBorder: "var(--chart-tooltip-border)",
+  tooltipShadow: "var(--chart-tooltip-shadow)",
 };
