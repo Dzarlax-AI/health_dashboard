@@ -95,6 +95,17 @@ test("the hero ring has no decorative outer shell", async ({ page }) => {
   });
 });
 
+test("the hero ring preserves its forced-colors boundary", async ({ page }) => {
+  await page.emulateMedia({ forcedColors: "active" });
+  await page.goto("/?lang=en&fixture=normal");
+
+  const borderWidth = await page
+    .locator("[data-readiness-ring] [data-gauge-frame]")
+    .evaluate((frame) => getComputedStyle(frame).borderWidth);
+
+  expect(borderWidth).toBe("1px");
+});
+
 for (const fixture of ["loading", "unavailable", "error"] as const) {
   test(`${fixture} state never fabricates a score`, async ({ page }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });

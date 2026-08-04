@@ -1040,6 +1040,12 @@ textarea {
   .score-gauge__frame {
     background: var(--surface);
   }
+
+  .today-hero__layout
+    > .score-gauge--readiness.score-gauge--hero
+    .score-gauge__frame {
+    background: var(--surface);
+  }
 }
 
 @media (forced-colors: active) {
@@ -1048,6 +1054,12 @@ textarea {
   .today-hero__recommendation,
   .status-panel,
   .score-gauge__frame {
+    border: 1px solid CanvasText;
+  }
+
+  .today-hero__layout
+    > .score-gauge--readiness.score-gauge--hero
+    .score-gauge__frame {
     border: 1px solid CanvasText;
   }
 

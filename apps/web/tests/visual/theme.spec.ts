@@ -114,7 +114,11 @@ test("the mobile header contains every control at 430px", async ({ page }) => {
     expect(control.left).toBeGreaterThanOrEqual(layout.header.left);
     expect(control.right).toBeLessThanOrEqual(layout.header.right);
   }
-  expect(layout.links.top).toBeGreaterThan(layout.brand.top);
+  expect(layout.links.top).toBeGreaterThanOrEqual(
+    Math.max(layout.brand.bottom, layout.theme.bottom, layout.locale.bottom),
+  );
+  expect(Math.abs(layout.links.left - layout.header.left)).toBeLessThanOrEqual(0.5);
+  expect(Math.abs(layout.links.right - layout.header.right)).toBeLessThanOrEqual(0.5);
   const documentWidth = await page.evaluate(() => ({
     scrollWidth: document.documentElement.scrollWidth,
     clientWidth: document.documentElement.clientWidth,
