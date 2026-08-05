@@ -6,14 +6,16 @@ interface ScoreSummaryCardProps {
   score: DashboardScore;
   fallbackLabel: string;
   displayStatus?: string;
+  href?: string;
 }
 
 export function ScoreSummaryCard({
   score,
   fallbackLabel,
   displayStatus,
+  href,
 }: ScoreSummaryCardProps) {
-  return (
+  const card = (
     <Surface as="article" className="summary-card">
       {score.value !== undefined ? (
         <ReadinessRing
@@ -33,4 +35,5 @@ export function ScoreSummaryCard({
       )}
     </Surface>
   );
+  return href ? <a className="summary-card-link" href={href}>{card}</a> : card;
 }

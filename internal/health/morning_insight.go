@@ -46,6 +46,17 @@ func BuildMorningInsightEvidenceWithOptions(briefing *BriefingResponse, raw *Raw
 	if raw != nil {
 		evidence.Daily = raw.Daily
 	}
+	for _, section := range briefing.Sections {
+		if options.ExcludeSections[section.Key] {
+			continue
+		}
+		evidence.Sections = append(evidence.Sections, MorningInsightSection{
+			Key:     section.Key,
+			Status:  section.Status,
+			Summary: section.Summary,
+			Details: append([]BriefingDetail(nil), section.Details...),
+		})
+	}
 	if briefing.ReadinessServing != nil {
 		evidence.Readiness.Status = briefing.ReadinessServing.Status
 		if evidence.Readiness.Confidence == "" {

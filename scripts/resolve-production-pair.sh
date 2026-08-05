@@ -127,12 +127,12 @@ verify_component "$frontend_ref" frontend "$frontend_revision"
 case "$mode" in
   canary)
     enabled=true
-    root_rule="Host(\`$host\`) && Path(\`/\`) && HeaderRegexp(\`Cookie\`, \`(^|;[ ]*)health_frontend_canary=1(;|[ ]*\$)\`)"
+    root_rule="Host(\`$host\`) && (Path(\`/\`) || Path(\`/sleep\`)) && HeaderRegexp(\`Cookie\`, \`(^|;[ ]*)health_frontend_canary=1(;|[ ]*\$)\`)"
     assets_rule="Host(\`$host\`) && PathPrefix(\`/assets/\`) && HeaderRegexp(\`Cookie\`, \`(^|;[ ]*)health_frontend_canary=1(;|[ ]*\$)\`)"
     ;;
   cutover)
     enabled=true
-    root_rule="Host(\`$host\`) && Path(\`/\`)"
+    root_rule="Host(\`$host\`) && (Path(\`/\`) || Path(\`/sleep\`))"
     assets_rule="Host(\`$host\`) && PathPrefix(\`/assets/\`)"
     ;;
   rollback)

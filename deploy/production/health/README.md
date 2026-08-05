@@ -14,7 +14,7 @@ Traefik ownership into four boundaries:
   machine/mobile boundary; browser requests pass through Authentik so
   ForwardAuth can establish the opaque tenant session.
 - all legacy pages remain on the backend, with `/legacy` rewritten to `/`.
-- only `/` and `/assets/*` may move to the frontend.
+- only `/`, `/sleep`, and `/assets/*` may move to the frontend.
 
 ## Prepare a release
 
@@ -44,7 +44,7 @@ precedence over `HEALTH_BACKEND_IMAGE`.
   `health_frontend_canary=1`. Set it manually for the configured `HEALTH_HOST`;
   it is
   not an authentication credential.
-- `cutover`: `/` and `/assets/*` default to the frontend.
+- `cutover`: `/`, `/sleep`, and `/assets/*` default to the frontend.
 - `rollback`: Traefik discovery is disabled for the frontend, so the already
   running Go fallback owns `/` again. No database change is involved.
 
@@ -64,7 +64,7 @@ rules:
 3. Canary QA succeeds for RU, EN, and SR.
 4. `/api/session` returns the expected tenant for at least two active tenants.
 5. `/health*` and `/mcp*` retain API-key/bearer behavior.
-6. `/metrics`, `/settings`, `/admin`, `/static/*`, and `/legacy` reach Go.
+6. `/metrics`, `/settings`, `/admin`, `/static/*`, and `/legacy` reach Go; `/sleep` reaches React.
 7. A rollback-mode rehearsal restores the Go root without a DB change.
 
 Production restart or route changes require a separate explicit approval.

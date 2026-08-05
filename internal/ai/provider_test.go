@@ -25,7 +25,7 @@ func TestHashForGenerationIncludesOutputAffectingConfiguration(t *testing.T) {
 		{"model", func(v *GenerationFingerprint) { v.Model = "gpt-5.6-luna" }},
 		{"reasoning", func(v *GenerationFingerprint) { v.ReasoningEffort = "low" }},
 		{"max output tokens", func(v *GenerationFingerprint) { v.MaxOutputTokens = 6000 }},
-		{"prompt revision", func(v *GenerationFingerprint) { v.PromptRevision = "health-briefing-v3" }},
+		{"prompt revision", func(v *GenerationFingerprint) { v.PromptRevision = "health-briefing-v4" }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

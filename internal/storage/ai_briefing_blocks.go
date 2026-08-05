@@ -2,15 +2,32 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// AIBlock holds cached provider output for a single (date, lang, block)
-// triple. AI insight v2 writes SYNTHESIS only. Historical leaf blocks remain
-// readable as a compatibility fallback until a synthesis exists.
+var requiredAIBundleBlocks = []string{
+	"SYNTHESIS",
+	"SLEEP",
+	"YESTERDAY",
+	"RECOVERY",
+	"RECOMMENDATION",
+}
+
+type aiBundleTransaction interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	Commit(context.Context) error
+}
+
+// AIBlock holds cached narrative text for a single (date, lang, block)
+// triple. AI insight v2 writes a complete five-block bundle atomically.
+// Historical leaf blocks remain readable as a compatibility fallback until
+// a synthesis exists.
 type AIBlock struct {
 	Block      string
 	Text       string
@@ -181,6 +198,54 @@ func (s *DB) SaveAIBlock(date, lang, block, text, inputsHash string) error {
 	return err
 }
 
+// SaveAIBundle replaces one complete five-block generation atomically. A
+// validation error or failed write leaves the previous aligned bundle intact.
+func (s *DB) SaveAIBundle(date, lang string, blocks map[string]string, inputsHash string) error {
+	if err := validateAIBundle(blocks); err != nil {
+		return err
+	}
+
+	ctx, cancel := queryCtx()
+	defer cancel()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck -- rollback after commit is harmless
+	return saveAIBundleInTransaction(ctx, tx, date, lang, blocks, inputsHash)
+}
+
+func validateAIBundle(blocks map[string]string) error {
+	for _, block := range requiredAIBundleBlocks {
+		if strings.TrimSpace(blocks[block]) == "" {
+			return fmt.Errorf("AI bundle missing %s", block)
+		}
+	}
+	return nil
+}
+
+func saveAIBundleInTransaction(
+	ctx context.Context,
+	tx aiBundleTransaction,
+	date, lang string,
+	blocks map[string]string,
+	inputsHash string,
+) error {
+	for _, block := range requiredAIBundleBlocks {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO ai_briefing_blocks (date, lang, block, text, inputs_hash, created_at)
+			VALUES ($1, $2, $3, $4, $5, NOW())
+			ON CONFLICT (date, lang, block) DO UPDATE
+				SET text = excluded.text,
+				    inputs_hash = excluded.inputs_hash,
+				    created_at = NOW()
+		`, date, lang, block, blocks[block], inputsHash); err != nil {
+			return fmt.Errorf("save AI bundle %s: %w", block, err)
+		}
+	}
+	return tx.Commit(ctx)
+}
+
 // GetAIBlocks returns the canonical text view for (date, lang). SYNTHESIS
 // suppresses historical leaf rows; without it the old blocks are returned for
 // compatibility with cached pre-v2 reports.
@@ -190,7 +255,19 @@ func (s *DB) GetAIBlocks(date, lang string) map[string]string {
 
 func canonicalAIBlockTexts(full map[string]*AIBlock) map[string]string {
 	if synthesis := full["SYNTHESIS"]; synthesis != nil && strings.TrimSpace(synthesis.Text) != "" {
-		return map[string]string{"SYNTHESIS": synthesis.Text}
+		out := map[string]string{"SYNTHESIS": synthesis.Text}
+		for key, block := range full {
+			if key == "SYNTHESIS" || block == nil {
+				continue
+			}
+			// New structured bundles save all sibling rows with the same exact
+			// evidence + generation fingerprint hash. Old v2 SYNTHESIS rows can
+			// coexist with stale legacy leaves; those must remain suppressed.
+			if block.InputsHash == synthesis.InputsHash && strings.TrimSpace(block.Text) != "" {
+				out[key] = block.Text
+			}
+		}
+		return out
 	}
 	out := make(map[string]string, len(full))
 	for k, v := range full {

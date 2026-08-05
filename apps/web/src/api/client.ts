@@ -6,7 +6,11 @@ import type { components, paths } from "./generated/schema";
 export type DashboardResponse = components["schemas"]["DashboardResponse"];
 export type HealthBriefingResponse = components["schemas"]["HealthBriefingResponse"];
 export type AIBriefingResponse = components["schemas"]["AIBriefingResponse"];
+export type DerivedMetricsResponse = components["schemas"]["DerivedMetricsResponse"];
+export type MetricDataResponse = components["schemas"]["MetricDataResponse"];
+export type MetricRangeResponse = components["schemas"]["MetricRangeResponse"];
 export type ReadinessHistoryResponse = components["schemas"]["ReadinessHistoryResponse"];
+export type SectionResponse = components["schemas"]["SectionResponse"];
 export type EnergyHistoryDayResponse =
   components["schemas"]["EnergyHistoryDayResponse"];
 export type SessionResponse = components["schemas"]["SessionResponse"];
@@ -64,9 +68,68 @@ export async function getHealthBriefing(
 export async function getAIBriefing(
   locale: Locale,
   signal?: AbortSignal,
+  date?: string,
 ): Promise<AIBriefingResponse> {
   const { data, error, response } = await client.GET("/api/ai-briefing", {
-    params: { query: { lang: locale } },
+    params: { query: { lang: locale, date } },
+    signal,
+  });
+  return requireData(data, error, response);
+}
+
+export async function getSection(
+  key: "sleep" | "cardio" | "activity" | "recovery",
+  locale: Locale,
+  signal?: AbortSignal,
+): Promise<SectionResponse> {
+  const { data, error, response } = await client.GET("/api/section/{key}", {
+    params: { path: { key }, query: { lang: locale } },
+    signal,
+  });
+  return requireData(data, error, response);
+}
+
+export async function getMetricData(
+  metric: string,
+  from: string,
+  to: string,
+  signal?: AbortSignal,
+): Promise<MetricDataResponse> {
+  const { data, error, response } = await client.GET("/api/metrics/data", {
+    params: {
+      query: {
+        metric,
+        from,
+        to,
+        bucket: "day",
+        agg: "AVG",
+        by_source: "0",
+      },
+    },
+    signal,
+  });
+  return requireData(data, error, response);
+}
+
+export async function getMetricRange(
+  metric: string,
+  signal?: AbortSignal,
+): Promise<MetricRangeResponse> {
+  const { data, error, response } = await client.GET("/api/metrics/range", {
+    params: { query: { metric } },
+    signal,
+  });
+  return requireData(data, error, response);
+}
+
+export async function getDerivedMetrics(
+  metric: "wake_time",
+  from: string,
+  to: string,
+  signal?: AbortSignal,
+): Promise<DerivedMetricsResponse> {
+  const { data, error, response } = await client.GET("/api/derived-metrics", {
+    params: { query: { metric, from, to } },
     signal,
   });
   return requireData(data, error, response);

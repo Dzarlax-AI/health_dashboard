@@ -113,7 +113,7 @@ if mode == "canary":
     assert "HeaderRegexp(`Cookie`" in assets and "health_frontend_canary=1" in assets
 elif mode == "cutover":
     assert f["traefik.enable"] == "true"
-    assert root == "Host(`health.example.com`) && Path(`/`)"
+    assert root == "Host(`health.example.com`) && (Path(`/`) || Path(`/sleep`))"
     assert assets == "Host(`health.example.com`) && PathPrefix(`/assets/`)"
 else:
     assert f["traefik.enable"] == "false"

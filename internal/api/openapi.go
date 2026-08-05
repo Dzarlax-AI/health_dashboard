@@ -32,7 +32,10 @@ func GenerateOpenAPI() ([]byte, error) {
 		"EnergyHistoryDayResponse":  EnergyHistoryDayResponse{},
 		"EnergyHistoryHourResponse": EnergyHistoryHourResponse{},
 		"HealthBriefingResponse":    health.BriefingResponse{},
+		"MetricDataResponse":        MetricDataResponse{},
+		"MetricRangeResponse":       MetricRangeResponse{},
 		"ReadinessHistoryResponse":  ReadinessHistoryResponse{},
+		"SectionResponse":           SectionResponse{},
 		"SessionResponse":           SessionResponse{},
 	} {
 		schema, err := reflectedSchema(value)
@@ -177,7 +180,7 @@ func clientPaths() map[string]any {
 		jsonResponseRef("DerivedMetricsResponse"),
 	)
 	derivedMetricsOperation["responses"].(map[string]any)["400"] = jsonErrorResponse(
-		"Missing or unsupported metric, invalid date range, or a range longer than 366 days.",
+		"Missing or unsupported metric, or an invalid date range.",
 	)
 
 	return map[string]any{
@@ -201,7 +204,10 @@ func clientPaths() map[string]any {
 			"get": getOperation(
 				"getAIBriefing",
 				"Non-blocking cached AI narrative",
-				[]any{langParameter()},
+				[]any{
+					langParameter(),
+					stringQueryParameter("date", "Optional historical date. Past dates are cache-only and never trigger AI generation."),
+				},
 				jsonResponseRef("AIBriefingResponse"),
 			),
 		},
@@ -218,6 +224,40 @@ func clientPaths() map[string]any {
 		},
 		"/api/derived-metrics": map[string]any{
 			"get": derivedMetricsOperation,
+		},
+		"/api/metrics/data": map[string]any{
+			"get": getOperation(
+				"getMetricData",
+				"Time-bucketed metric history",
+				[]any{
+					requiredStringQueryParameter("metric", "Canonical metric name."),
+					stringQueryParameter("from", "Start date in YYYY-MM-DD."),
+					stringQueryParameter("to", "End date in YYYY-MM-DD."),
+					enumQueryParameter("bucket", "day", "minute", "hour", "day"),
+					enumQueryParameter("agg", "AVG", "AVG", "SUM", "MAX", "MIN"),
+					enumQueryParameter("by_source", "0", "0", "1"),
+				},
+				jsonResponseRef("MetricDataResponse"),
+			),
+		},
+		"/api/metrics/range": map[string]any{
+			"get": getOperation(
+				"getMetricRange",
+				"Earliest and latest dates for a metric",
+				[]any{requiredStringQueryParameter("metric", "Canonical metric name.")},
+				jsonResponseRef("MetricRangeResponse"),
+			),
+		},
+		"/api/section/{key}": map[string]any{
+			"get": getOperation(
+				"getSection",
+				"Localized rule-based detail section",
+				[]any{
+					requiredPathEnumParameter("key", "Section key.", "sleep", "cardio", "activity", "recovery"),
+					langParameter(),
+				},
+				jsonResponseRef("SectionResponse"),
+			),
 		},
 		"/api/session": map[string]any{
 			"get": getOperation(
@@ -344,6 +384,21 @@ func stringQueryParameter(name, description string) map[string]any {
 			"pattern": `^\d{4}-\d{2}-\d{2}$`,
 		},
 	}
+}
+
+func requiredStringQueryParameter(name, description string) map[string]any {
+	parameter := stringQueryParameter(name, description)
+	parameter["required"] = true
+	schema := parameter["schema"].(map[string]any)
+	delete(schema, "format")
+	delete(schema, "pattern")
+	return parameter
+}
+
+func requiredPathEnumParameter(name, description string, values ...string) map[string]any {
+	parameter := requiredEnumQueryParameter(name, description, values...)
+	parameter["in"] = "path"
+	return parameter
 }
 
 func integerQueryParameter(name string, defaultValue, minimum, maximum int) map[string]any {

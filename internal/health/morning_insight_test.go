@@ -59,6 +59,9 @@ func TestBuildMorningInsightEvidenceKeepsCanonicalActionAndRanksReasons(t *testi
 	if got.Reasons[2].Section != "sleep" {
 		t.Fatalf("third reason = %#v, want sleep evidence", got.Reasons[2])
 	}
+	if len(got.Sections) != 3 || got.Sections[0].Key != "sleep" {
+		t.Fatalf("sections = %#v, want all ordered rule-based sections", got.Sections)
+	}
 }
 
 func TestBuildMorningInsightEvidenceDeduplicatesSectionsAndText(t *testing.T) {
@@ -132,6 +135,11 @@ func TestBuildMorningInsightEvidenceAppliesExclusionsBeforeReasonCap(t *testing.
 	for _, reason := range got.Reasons {
 		if reason.Section == "sleep" {
 			t.Fatalf("excluded sleep reason selected: %#v", got.Reasons)
+		}
+	}
+	for _, section := range got.Sections {
+		if section.Key == "sleep" {
+			t.Fatalf("excluded sleep section included: %#v", got.Sections)
 		}
 	}
 	if got.Reasons[2].Section != "recovery" {

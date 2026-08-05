@@ -14,12 +14,14 @@ func TestAIBriefingResponseKeepsReleasedIOSCompatibilityFields(t *testing.T) {
 		{
 			name: "complete",
 			blocks: map[string]string{
+				"SYNTHESIS":      "overview body",
 				"SLEEP":          "sleep body",
 				"YESTERDAY":      "yesterday body",
 				"RECOVERY":       "recovery body",
 				"RECOMMENDATION": "recommendation body",
 			},
 			want: map[string]string{
+				"summary":        "overview body",
 				"sleep":          "sleep body",
 				"yesterday":      "yesterday body",
 				"recovery":       "recovery body",

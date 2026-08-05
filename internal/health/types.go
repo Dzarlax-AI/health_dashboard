@@ -78,26 +78,28 @@ type RawMetrics struct {
 // date. Pointer fields distinguish a missing measurement from a measured
 // value without shifting neighbouring days in the series.
 type DailyHealthMetrics struct {
-	Date      string   `json:"date"`
-	HRV       *float64 `json:"hrv,omitempty"`
-	RHR       *float64 `json:"rhr,omitempty"`
-	Sleep     *float64 `json:"sleep,omitempty"`
-	Deep      *float64 `json:"deep,omitempty"`
-	REM       *float64 `json:"rem,omitempty"`
-	Core      *float64 `json:"core,omitempty"`
-	Awake     *float64 `json:"awake,omitempty"`
-	Steps     *float64 `json:"steps,omitempty"`
-	Calories  *float64 `json:"calories,omitempty"`
-	Exercise  *float64 `json:"exercise,omitempty"`
-	SpO2      *float64 `json:"spo2,omitempty"`
-	VO2       *float64 `json:"vo2,omitempty"`
-	Resp      *float64 `json:"resp,omitempty"`
-	WristTemp *float64 `json:"wrist_temp,omitempty"`
+	Date        string   `json:"date"`
+	HRV         *float64 `json:"hrv,omitempty"`
+	RHR         *float64 `json:"rhr,omitempty"`
+	Sleep       *float64 `json:"sleep,omitempty"`
+	Deep        *float64 `json:"deep,omitempty"`
+	REM         *float64 `json:"rem,omitempty"`
+	Core        *float64 `json:"core,omitempty"`
+	Unspecified *float64 `json:"unspecified,omitempty"`
+	Awake       *float64 `json:"awake,omitempty"`
+	Steps       *float64 `json:"steps,omitempty"`
+	Calories    *float64 `json:"calories,omitempty"`
+	Exercise    *float64 `json:"exercise,omitempty"`
+	SpO2        *float64 `json:"spo2,omitempty"`
+	VO2         *float64 `json:"vo2,omitempty"`
+	Resp        *float64 `json:"resp,omitempty"`
+	WristTemp   *float64 `json:"wrist_temp,omitempty"`
 }
 
 // MorningInsightEvidence is the provider-neutral, auditable input for the
-// single AI synthesis. Verdict and Action are resolved by server policy before
-// the model is called; the model may explain them but never replace them.
+// single structured AI briefing call. Verdict and Action are resolved by
+// server policy before the model is called; the model may explain them but
+// never replace them.
 type MorningInsightEvidence struct {
 	Date          string                  `json:"date"`
 	Verdict       string                  `json:"verdict"`
@@ -105,9 +107,20 @@ type MorningInsightEvidence struct {
 	VerdictReason string                  `json:"verdict_reason"`
 	Action        string                  `json:"action"`
 	Reasons       []MorningInsightReason  `json:"reasons"`
+	Sections      []MorningInsightSection `json:"sections"`
 	Daily         []DailyHealthMetrics    `json:"daily"`
 	EnergyBank    *EnergyBank             `json:"energy_bank,omitempty"`
 	Readiness     MorningReadinessContext `json:"readiness"`
+}
+
+// MorningInsightSection preserves the localized rule-based section result
+// that the model may explain. Details are server-computed facts, not model
+// suggestions.
+type MorningInsightSection struct {
+	Key     string           `json:"key"`
+	Status  string           `json:"status"`
+	Summary string           `json:"summary"`
+	Details []BriefingDetail `json:"details"`
 }
 
 // MorningInsightReason is a localized, rule-based fact selected for the
@@ -545,18 +558,20 @@ type BriefingResponse struct {
 	RecoveryPct      int                    `json:"recovery_pct"`
 	ReadinessToday   int                    `json:"readiness_today"` // today only vs baseline
 	// ReadinessTodayBand mirrors ReadinessBand for the today-only score.
-	ReadinessTodayBand  string                     `json:"readiness_today_band"`
-	ReadinessTodayLabel string                     `json:"readiness_today_label"`
-	Correlation         []CorrelationPoint         `json:"correlation"`
-	Insights            []Insight                  `json:"insights"`
-	Alerts              []Alert                    `json:"alerts,omitempty"`
-	Sleep               *SleepAnalysis             `json:"sleep"`
-	SleepQuality        *SleepQualityBreakdown     `json:"sleep_quality,omitempty"`
-	MetricCards         []MetricCard               `json:"metric_cards"`
-	EnergyBank          *EnergyBank                `json:"energy_bank,omitempty"`
-	TodayGuidance       *DashboardTodayGuidance    `json:"today_guidance,omitempty"`
-	IllnessSuspicion    *IllnessSuspicion          `json:"illness_suspicion,omitempty"`
-	ContextAnnotations  []ContextAnnotationSummary `json:"context_annotations,omitempty"`
+	ReadinessTodayBand    string                     `json:"readiness_today_band"`
+	ReadinessTodayLabel   string                     `json:"readiness_today_label"`
+	Correlation           []CorrelationPoint         `json:"correlation"`
+	Insights              []Insight                  `json:"insights"`
+	Alerts                []Alert                    `json:"alerts,omitempty"`
+	Sleep                 *SleepAnalysis             `json:"sleep"`
+	SleepQuality          *SleepQualityBreakdown     `json:"sleep_quality,omitempty"`
+	SleepRegularityIndex  *float64                   `json:"sleep_regularity_index,omitempty"`
+	SleepRegularityNights int                        `json:"sleep_regularity_nights,omitempty"`
+	MetricCards           []MetricCard               `json:"metric_cards"`
+	EnergyBank            *EnergyBank                `json:"energy_bank,omitempty"`
+	TodayGuidance         *DashboardTodayGuidance    `json:"today_guidance,omitempty"`
+	IllnessSuspicion      *IllnessSuspicion          `json:"illness_suspicion,omitempty"`
+	ContextAnnotations    []ContextAnnotationSummary `json:"context_annotations,omitempty"`
 	// SubjectiveCheckin is the morning self-report (Telegram one-tap).
 	// Populated from subjective_checkins when a row exists for today
 	// in the tenant's REPORT_TZ. nil when no row — dashboard renders

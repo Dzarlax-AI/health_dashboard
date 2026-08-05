@@ -64,6 +64,9 @@ func TestClientContractHasExpectedPhaseOneOperationsAndNoTenantSelector(t *testi
 		"/api/readiness-history",
 		"/api/energy-history",
 		"/api/derived-metrics",
+		"/api/metrics/data",
+		"/api/metrics/range",
+		"/api/section/{key}",
 		"/api/session",
 	} {
 		if _, ok := paths[expected]; !ok {
