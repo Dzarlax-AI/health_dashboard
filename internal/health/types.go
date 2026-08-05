@@ -7,12 +7,18 @@ import "time"
 // StepsWithDates and HRVWithDates are from a 7-day window for the correlation chart.
 type RawMetrics struct {
 	LastDate string
-	HRV      []float64
-	RHR      []float64
-	Sleep    []float64
-	Deep     []float64
-	REM      []float64
-	Awake    []float64
+	// Daily is the date-aligned source used by AI interpretation. Unlike the
+	// legacy metric slices below, missing values remain nil on their calendar
+	// day instead of being compacted away. This prevents a prior day's HRV,
+	// sleep, or activity value from being compared with another metric from a
+	// different day.
+	Daily []DailyHealthMetrics `json:"daily,omitempty"`
+	HRV   []float64
+	RHR   []float64
+	Sleep []float64
+	Deep  []float64
+	REM   []float64
+	Awake []float64
 	// NightSleep and Nap are written by the iOS client (health-sync) when
 	// it can decompose sessions into one main night vs. naps. Only the
 	// most-recent day is consumed today (dashboard sleep card override +
@@ -66,6 +72,60 @@ type RawMetrics struct {
 	// readiness. It prevents compressed metric slices from shifting a prior
 	// day's value into today's acute slot when today's data is missing.
 	ReadinessEvidence *ReadinessEvidenceInput
+}
+
+// DailyHealthMetrics contains all AI-facing daily values for one calendar
+// date. Pointer fields distinguish a missing measurement from a measured
+// value without shifting neighbouring days in the series.
+type DailyHealthMetrics struct {
+	Date      string   `json:"date"`
+	HRV       *float64 `json:"hrv,omitempty"`
+	RHR       *float64 `json:"rhr,omitempty"`
+	Sleep     *float64 `json:"sleep,omitempty"`
+	Deep      *float64 `json:"deep,omitempty"`
+	REM       *float64 `json:"rem,omitempty"`
+	Core      *float64 `json:"core,omitempty"`
+	Awake     *float64 `json:"awake,omitempty"`
+	Steps     *float64 `json:"steps,omitempty"`
+	Calories  *float64 `json:"calories,omitempty"`
+	Exercise  *float64 `json:"exercise,omitempty"`
+	SpO2      *float64 `json:"spo2,omitempty"`
+	VO2       *float64 `json:"vo2,omitempty"`
+	Resp      *float64 `json:"resp,omitempty"`
+	WristTemp *float64 `json:"wrist_temp,omitempty"`
+}
+
+// MorningInsightEvidence is the provider-neutral, auditable input for the
+// single AI synthesis. Verdict and Action are resolved by server policy before
+// the model is called; the model may explain them but never replace them.
+type MorningInsightEvidence struct {
+	Date          string                  `json:"date"`
+	Verdict       string                  `json:"verdict"`
+	VerdictLabel  string                  `json:"verdict_label"`
+	VerdictReason string                  `json:"verdict_reason"`
+	Action        string                  `json:"action"`
+	Reasons       []MorningInsightReason  `json:"reasons"`
+	Daily         []DailyHealthMetrics    `json:"daily"`
+	EnergyBank    *EnergyBank             `json:"energy_bank,omitempty"`
+	Readiness     MorningReadinessContext `json:"readiness"`
+}
+
+// MorningInsightReason is a localized, rule-based fact selected for the
+// compact morning report. Key and Section are stable machine identifiers.
+type MorningInsightReason struct {
+	Key      string `json:"key"`
+	Section  string `json:"section"`
+	Severity string `json:"severity"`
+	Text     string `json:"text"`
+}
+
+type MorningReadinessContext struct {
+	Score      int    `json:"score"`
+	RawScore   int    `json:"raw_score"`
+	Label      string `json:"label"`
+	Confidence string `json:"confidence,omitempty"`
+	Status     string `json:"status,omitempty"`
+	CapReason  string `json:"cap_reason,omitempty"`
 }
 
 // DatedValue is a single metric data point paired with its calendar date.

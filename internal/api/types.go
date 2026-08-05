@@ -37,6 +37,7 @@ type AIBriefingResponse struct {
 	Yesterday  string              `json:"yesterday"`
 	Recovery   string              `json:"recovery"`
 	Recommend  string              `json:"recommendation"`
+	Summary    string              `json:"summary"`
 	Generating bool                `json:"generating"`
 	Disabled   bool                `json:"disabled"`
 }
@@ -52,6 +53,11 @@ func NewAIBriefingResponse(
 	generating bool,
 	disabled bool,
 ) AIBriefingResponse {
+	summary := blocks["SYNTHESIS"]
+	recommendation := summary
+	if recommendation == "" {
+		recommendation = blocks["RECOMMENDATION"]
+	}
 	return AIBriefingResponse{
 		Date:       date,
 		Lang:       lang,
@@ -61,7 +67,8 @@ func NewAIBriefingResponse(
 		Sleep:      blocks["SLEEP"],
 		Yesterday:  blocks["YESTERDAY"],
 		Recovery:   blocks["RECOVERY"],
-		Recommend:  blocks["RECOMMENDATION"],
+		Recommend:  recommendation,
+		Summary:    summary,
 		Generating: generating,
 		Disabled:   disabled,
 	}

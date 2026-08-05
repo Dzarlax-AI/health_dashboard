@@ -128,6 +128,7 @@ export interface components {
                 key: string;
             }[] | null;
             sleep: string;
+            summary: string;
             yesterday: string;
         };
         DashboardResponse: {

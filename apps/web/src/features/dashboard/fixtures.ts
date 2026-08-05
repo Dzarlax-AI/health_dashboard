@@ -248,6 +248,7 @@ function ai(locale: Locale): AIBriefingResponse {
     lang: locale,
     recommendation: "",
     recovery: "",
+    summary: "",
     sections: [
       {
         body: localized(locale, {

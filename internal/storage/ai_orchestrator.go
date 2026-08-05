@@ -16,17 +16,13 @@ import (
 // regen attempt per polling tick.
 const aiRegenFailBackoff = 5 * time.Minute
 
-// EnsureTodayAIInsight regenerates the four AI blocks (SLEEP, YESTERDAY,
-// RECOVERY, RECOMMENDATION) selectively: each leaf is keyed by an
-// inputs_hash over the metrics it depends on, so a late HRV update only
-// invalidates the blocks that actually read HRV. Returns the joined
-// insight (legacy callers still expect a single string), or "" if AI is
-// disabled / no metrics exist.
+// EnsureTodayAIInsight generates one concise SYNTHESIS explanation from a
+// deterministic, date-aligned evidence packet. The server owns the verdict,
+// reasons, and action; the provider may only explain that decision. Returns
+// the canonical insight string, or "" if AI is disabled / no metrics exist.
 //
-// Safe to call repeatedly — cached rows whose inputs_hash matches the
-// current data are skipped, and only the leaves whose hashes diverged hit
-// the active provider. RECOMMENDATION re-runs whenever any leaf text changes
-// or when EnergyBank.action_verdict has rotated.
+// Safe to call repeatedly — a cached row whose inputs_hash matches the exact
+// evidence plus generation fingerprint skips the provider call.
 //
 // Concurrency: only one EnsureTodayAIInsight per (date, lang) runs at a
 // time across the process. Concurrent calls (sync morning-retry vs async
@@ -38,7 +34,8 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 }
 
 // EnsureTodayAIInsightContext is the cancellation-aware variant used by
-// schedulers and shutdown-aware callers.
+// schedulers and shutdown-aware callers. AI insight v2 makes exactly one
+// provider call for one date-aligned evidence packet and stores SYNTHESIS.
 func (s *DB) EnsureTodayAIInsightContext(ctx context.Context, aiCfg AIConfig, lang string) string {
 	if !aiCfg.Enabled() {
 		return ""
@@ -57,8 +54,8 @@ func (s *DB) EnsureTodayAIInsightContext(ctx context.Context, aiCfg AIConfig, la
 		active.ReasoningEffort = descriptor.DefaultReasoning
 	}
 	maxOutputTokens := aiCfg.MaxOutputTokens
-	if maxOutputTokens <= 0 {
-		maxOutputTokens = ai.DefaultMaxOutputTokens
+	if maxOutputTokens <= 0 || maxOutputTokens > ai.SynthesisMaxTokens {
+		maxOutputTokens = ai.SynthesisMaxTokens
 	}
 	providerCfg := ai.ProviderConfig{
 		APIKey:          active.APIKey,
@@ -77,16 +74,11 @@ func (s *DB) EnsureTodayAIInsightContext(ctx context.Context, aiCfg AIConfig, la
 	key := today + "|" + lang
 	failureKey := key + "|" + ai.HashForGeneration("", fingerprint)
 
-	// Single-flight gate. If another caller is already regenerating, return
-	// the (possibly empty) cache rather than fanning out. Caller will see
-	// the cache populate on the next /api/ai-briefing poll.
 	if _, loaded := s.aiRegenInFlight.LoadOrStore(key, true); loaded {
 		return s.GetAIInsightCombined(today, lang)
 	}
 	defer s.aiRegenInFlight.Delete(key)
 
-	// Failure backoff: skip regen for `aiRegenFailBackoff` after the last
-	// run produced zero usable blocks (upstream outage / quota / auth fail).
 	if v, ok := s.aiRegenLastFailAt.Load(failureKey); ok {
 		if t, ok := v.(time.Time); ok && time.Since(t) < aiRegenFailBackoff {
 			return s.GetAIInsightCombined(today, lang)
@@ -98,165 +90,47 @@ func (s *DB) EnsureTodayAIInsightContext(ctx context.Context, aiCfg AIConfig, la
 		log.Println("EnsureTodayAIInsight: no raw metrics available")
 		return ""
 	}
-
-	// EnergyBank lives on the briefing response — fetch it for the recovery
-	// hash and to give RECOMMENDATION the action_verdict context it must
-	// align with.
 	briefing, err := s.GetHealthBriefing(lang)
 	if err != nil {
 		log.Printf("EnsureTodayAIInsight: briefing: %v", err)
 		return ""
 	}
-	var eb *health.EnergyBank
-	var insightCtx ai.InsightContext
-	if briefing != nil {
-		eb = briefing.EnergyBank
-		insightCtx = aiContextFromBriefing(briefing)
-	}
-
-	metricsJSON, err := json.Marshal(raw)
+	evidence := health.BuildMorningInsightEvidence(briefing, raw)
+	evidenceJSON, err := json.Marshal(evidence)
 	if err != nil {
-		log.Printf("EnsureTodayAIInsight: marshal: %v", err)
+		log.Printf("EnsureTodayAIInsight: marshal evidence: %v", err)
 		return ""
 	}
-	recoveryJSON, err := json.Marshal(struct {
-		Metrics *health.RawMetrics `json:"metrics"`
-		Context ai.InsightContext  `json:"context"`
-	}{Metrics: raw, Context: insightCtx})
-	if err != nil {
-		log.Printf("EnsureTodayAIInsight: marshal recovery context: %v", err)
-		return ""
-	}
-
-	hashes := map[string]string{
-		ai.BlockSleep:     ai.HashForGeneration(ai.HashSleep(raw), fingerprint),
-		ai.BlockYesterday: ai.HashForGeneration(ai.HashYesterday(raw), fingerprint),
-		ai.BlockRecovery:  ai.HashForGeneration(ai.HashRecovery(raw, eb, insightCtx), fingerprint),
-	}
-
-	cached := s.GetAIBlocksFull(today, lang)
-
-	skip := func(block string) bool {
-		row := cached[block]
-		return row != nil && row.InputsHash == hashes[block] && strings.TrimSpace(row.Text) != ""
-	}
-
-	saved := 0
-	failed := 0
-	payloadForBlock := func(block string) []byte {
-		if block == ai.BlockRecovery {
-			return recoveryJSON
-		}
-		return metricsJSON
-	}
-	results := ai.GenerateLeafBlocks(ctx, provider, providerCfg, payloadForBlock, lang, skip)
-	for _, r := range results {
-		if r.Err != nil {
-			log.Printf("EnsureTodayAIInsight: provider=%s block=%s: %v", aiCfg.Provider, r.Block, r.Err)
-			failed++
-			continue
-		}
-		if strings.TrimSpace(r.Text) == "" {
-			log.Printf("EnsureTodayAIInsight: provider=%s block=%s returned empty content, not caching", aiCfg.Provider, r.Block)
-			failed++
-			continue
-		}
-		if err := s.SaveAIBlock(today, lang, r.Block, r.Text, hashes[r.Block]); err != nil {
-			log.Printf("EnsureTodayAIInsight: save %s: %v", r.Block, err)
-			continue
-		}
-		cached[r.Block] = &AIBlock{Block: r.Block, Text: r.Text, InputsHash: hashes[r.Block]}
-		saved++
-	}
-
-	textOf := func(block string) string {
-		if b := cached[block]; b != nil {
-			return b.Text
-		}
-		return ""
-	}
-	sleepText := textOf(ai.BlockSleep)
-	yesterdayText := textOf(ai.BlockYesterday)
-	recoveryText := textOf(ai.BlockRecovery)
-	// Pull the last 7 EOD verdict snapshots so RECOMMENDATION can pick up
-	// multi-day patterns ("3 rest days in a row -> push for proper rest")
-	// instead of treating each day in isolation. Frozen past values are
-	// safe to hash — see HashRecommendation doc on why intra-day EnergyBank
-	// fields are excluded.
-	verdictHistory := []string{}
-	if hist, herr := s.GetEnergyHistory(7); herr == nil {
-		for _, p := range hist {
-			if p.Verdict != "" {
-				verdictHistory = append(verdictHistory, p.Verdict)
-			}
-		}
-	}
-	recHash := ai.HashForGeneration(
-		ai.HashRecommendation(sleepText, yesterdayText, recoveryText, eb, verdictHistory, insightCtx),
-		fingerprint,
-	)
-	recRow := cached[ai.BlockRecommendation]
-	if recRow == nil || recRow.InputsHash != recHash || strings.TrimSpace(recRow.Text) == "" {
-		var stressFlags []string
-		if eb != nil {
-			stressFlags = eb.Flags
-		}
-		recText, err := ai.GenerateRecommendation(ctx, provider, providerCfg, recoveryJSON, lang,
-			sleepText, yesterdayText, recoveryText, verdictHistory, stressFlags, insightCtx)
-		if err != nil {
-			log.Printf("EnsureTodayAIInsight: provider=%s block=RECOMMENDATION: %v", aiCfg.Provider, err)
-			failed++
-		} else if strings.TrimSpace(recText) == "" {
-			log.Printf("EnsureTodayAIInsight: provider=%s block=RECOMMENDATION returned empty content, not caching", aiCfg.Provider)
-			failed++
-		} else if err := s.SaveAIBlock(today, lang, ai.BlockRecommendation, recText, recHash); err != nil {
-			log.Printf("EnsureTodayAIInsight: save RECOMMENDATION: %v", err)
-		} else {
-			saved++
-		}
-	}
-
-	// Track sustained failures so the next aiRegenFailBackoff window short-
-	// circuits provider calls. On success, clear the timestamp.
-	if shouldBackoffAIRegen(saved, failed) {
-		s.aiRegenLastFailAt.Store(failureKey, time.Now())
-	} else {
+	synthesisHash := ai.HashForGeneration(ai.HashSynthesis(evidence), fingerprint)
+	cached := s.GetAIBlock(today, lang, ai.BlockSynthesis)
+	if cached != nil && cached.InputsHash == synthesisHash && strings.TrimSpace(cached.Text) != "" {
 		s.aiRegenLastFailAt.Delete(failureKey)
+		return s.GetAIInsightCombined(today, lang)
 	}
 
+	generated, err := ai.GenerateSynthesis(ctx, provider, providerCfg, evidenceJSON, lang)
+	log.Printf(
+		"EnsureTodayAIInsight: provider=%s model=%s block=%s request_id=%q attempts=%d latency=%s input_tokens=%d output_tokens=%d total_tokens=%d finish=%q",
+		aiCfg.Provider, active.Model, ai.BlockSynthesis, generated.RequestID, generated.Attempts,
+		generated.Latency, generated.InputTokens, generated.OutputTokens, generated.TotalTokens, generated.FinishReason,
+	)
+	if err != nil {
+		log.Printf("EnsureTodayAIInsight: provider=%s block=%s: %v", aiCfg.Provider, ai.BlockSynthesis, err)
+		s.aiRegenLastFailAt.Store(failureKey, time.Now())
+		return s.GetAIInsightCombined(today, lang)
+	}
+	if strings.TrimSpace(generated.Text) == "" {
+		log.Printf("EnsureTodayAIInsight: provider=%s block=%s returned empty content, not caching", aiCfg.Provider, ai.BlockSynthesis)
+		s.aiRegenLastFailAt.Store(failureKey, time.Now())
+		return s.GetAIInsightCombined(today, lang)
+	}
+	if err := s.SaveAIBlock(today, lang, ai.BlockSynthesis, generated.Text, synthesisHash); err != nil {
+		log.Printf("EnsureTodayAIInsight: save %s: %v", ai.BlockSynthesis, err)
+		s.aiRegenLastFailAt.Store(failureKey, time.Now())
+		return s.GetAIInsightCombined(today, lang)
+	}
+	s.aiRegenLastFailAt.Delete(failureKey)
 	return s.GetAIInsightCombined(today, lang)
-}
-
-func shouldBackoffAIRegen(saved, failed int) bool {
-	return saved == 0 && failed > 0
-}
-
-func aiContextFromBriefing(b *health.BriefingResponse) ai.InsightContext {
-	if b == nil {
-		return ai.InsightContext{AIAdviceMode: "withheld"}
-	}
-	mode := "confident_advice_allowed"
-	switch b.ReadinessConfidence {
-	case health.ReadinessConfidenceLow:
-		mode = "provisional_explanation_only"
-	case health.ReadinessConfidenceProvisional:
-		mode = "provisional_explanation_only"
-	}
-	if b.ReadinessCapReason == "missing_same_day_evidence" {
-		mode = "needs_regeneration_after_sync"
-	}
-	ctx := ai.InsightContext{
-		ReadinessScore:      b.ReadinessScore,
-		ReadinessRawScore:   b.ReadinessRawScore,
-		ReadinessConfidence: b.ReadinessConfidence,
-		ReadinessCapReason:  b.ReadinessCapReason,
-		AIAdviceMode:        mode,
-	}
-	if b.SubjectiveCheckin != nil {
-		ctx.CheckinStatus = b.SubjectiveCheckin.Status
-		ctx.CheckinAnswer = b.SubjectiveCheckin.Answer
-	}
-	return ctx
 }
 
 // EnsureTodayAIInsightAsync fires EnsureTodayAIInsight in a goroutine.

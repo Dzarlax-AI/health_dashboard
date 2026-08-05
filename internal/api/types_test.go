@@ -36,6 +36,15 @@ func TestAIBriefingResponseKeepsReleasedIOSCompatibilityFields(t *testing.T) {
 			blocks: map[string]string{"SLEEP": "sleep body"},
 			want:   map[string]string{"sleep": "sleep body", "yesterday": "", "recovery": "", "recommendation": ""},
 		},
+		{
+			name:   "v2 synthesis",
+			blocks: map[string]string{"SYNTHESIS": "one aligned explanation"},
+			want: map[string]string{
+				"sleep": "", "yesterday": "", "recovery": "",
+				"recommendation": "one aligned explanation",
+				"summary":        "one aligned explanation",
+			},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -66,6 +75,7 @@ func TestAIBriefingResponseKeepsReleasedIOSCompatibilityFields(t *testing.T) {
 				"yesterday",
 				"recovery",
 				"recommendation",
+				"summary",
 				"generating",
 				"disabled",
 			} {

@@ -8,20 +8,18 @@ import (
 	"time"
 )
 
-// AIBlock holds the cached output of one AI provider call for a single (date,
-// lang, block) triple. Each block is generated independently so a late HRV
-// update only invalidates the blocks whose inputs_hash actually changed —
-// SLEEP/RECOVERY rerun, YESTERDAY stays cached.
+// AIBlock holds cached provider output for a single (date, lang, block)
+// triple. AI insight v2 writes SYNTHESIS only. Historical leaf blocks remain
+// readable as a compatibility fallback until a synthesis exists.
 type AIBlock struct {
 	Block      string
 	Text       string
 	InputsHash string
 }
 
-// EnsureAIBriefingBlocksTable creates the per-block AI cache. Called on
-// startup alongside EnsureAIBriefingsTable. Replaces the single-blob
-// ai_briefings.insight as the source of truth for the morning report's
-// AI commentary.
+// EnsureAIBriefingBlocksTable creates the AI cache. Called on startup alongside
+// EnsureAIBriefingsTable. SYNTHESIS is the v2 source of truth; the existing
+// block-shaped table avoids a schema migration and preserves rollback data.
 //
 // Also runs a one-shot migration: existing ai_briefings.insight blobs are
 // split by SLEEP/YESTERDAY/RECOVERY/RECOMMENDATION headers and inserted as
@@ -183,12 +181,17 @@ func (s *DB) SaveAIBlock(date, lang, block, text, inputsHash string) error {
 	return err
 }
 
-// GetAIBlocks returns all cached blocks for (date, lang) keyed by block name.
-// Text-only view, used by Telegram formatter and the joined UI/MCP getter.
-// For the orchestrator (which also needs inputs_hash to decide regeneration)
-// see GetAIBlocksFull.
+// GetAIBlocks returns the canonical text view for (date, lang). SYNTHESIS
+// suppresses historical leaf rows; without it the old blocks are returned for
+// compatibility with cached pre-v2 reports.
 func (s *DB) GetAIBlocks(date, lang string) map[string]string {
-	full := s.GetAIBlocksFull(date, lang)
+	return canonicalAIBlockTexts(s.GetAIBlocksFull(date, lang))
+}
+
+func canonicalAIBlockTexts(full map[string]*AIBlock) map[string]string {
+	if synthesis := full["SYNTHESIS"]; synthesis != nil && strings.TrimSpace(synthesis.Text) != "" {
+		return map[string]string{"SYNTHESIS": synthesis.Text}
+	}
 	out := make(map[string]string, len(full))
 	for k, v := range full {
 		out[k] = v.Text
@@ -196,10 +199,8 @@ func (s *DB) GetAIBlocks(date, lang string) map[string]string {
 	return out
 }
 
-// GetAIBlocksFull is the orchestrator-facing variant: returns AIBlock structs
-// (text + inputs_hash) so callers can decide per-block regeneration without
-// re-querying for each block. Always returns an initialized map (empty on
-// query error) so callers can write into it without nil-map panics.
+// GetAIBlocksFull returns every stored row including inputs_hash. Always
+// returns an initialized map (empty on query error).
 func (s *DB) GetAIBlocksFull(date, lang string) map[string]*AIBlock {
 	out := make(map[string]*AIBlock)
 	ctx, cancel := queryCtx()
@@ -220,14 +221,19 @@ func (s *DB) GetAIBlocksFull(date, lang string) map[string]*AIBlock {
 	return out
 }
 
-// GetAIInsightCombined joins the four cached blocks back into a single text
-// blob with SLEEP / YESTERDAY / RECOVERY / RECOMMENDATION headers (uppercase,
-// language-agnostic markers — formatMorning reads blocks directly so it
-// doesn't need this; UI dashboard and MCP do). Returns "" if no blocks cached.
+// GetAIInsightCombined returns SYNTHESIS directly when present. For dates that
+// have not regenerated under v2, it joins the four historical blocks so
+// dashboard and MCP clients keep working during rollout and rollback.
 func (s *DB) GetAIInsightCombined(date, lang string) string {
 	blocks := s.GetAIBlocks(date, lang)
 	if len(blocks) == 0 {
 		return ""
+	}
+	// AI insight v2 stores one validated explanation. Once present it is the
+	// canonical narrative; legacy leaf rows remain only as rollback data and
+	// must not leak back into current clients.
+	if synthesis := strings.TrimSpace(blocks["SYNTHESIS"]); synthesis != "" {
+		return synthesis
 	}
 	order := []string{"SLEEP", "YESTERDAY", "RECOVERY", "RECOMMENDATION"}
 	seen := map[string]bool{}

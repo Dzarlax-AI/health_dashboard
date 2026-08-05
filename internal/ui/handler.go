@@ -1574,6 +1574,7 @@ func (h *Handler) aiBriefing(w http.ResponseWriter, r *http.Request) {
 	// so the dashboard, Telegram, and iOS all render the same sequence.
 	type blockSpec struct{ wireKey, dbKey, headerKey string }
 	blockOrder := []blockSpec{
+		{"summary", "SYNTHESIS", "ai_insight_title"},
 		{"sleep", "SLEEP", "ai_block_sleep_header"},
 		{"yesterday", "YESTERDAY", "ai_block_yesterday_header"},
 		{"recovery", "RECOVERY", "ai_block_recovery_header"},

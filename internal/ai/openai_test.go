@@ -73,6 +73,51 @@ func TestOpenAIProviderGenerateResponsesContract(t *testing.T) {
 	}
 }
 
+func TestOpenAIProviderGenerateStructuredOutputAndTelemetry(t *testing.T) {
+	var got map[string]any
+	client := testHTTPClient(func(r *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		resp := jsonResponse(http.StatusOK, `{
+			"status":"completed",
+			"usage":{"input_tokens":120,"output_tokens":18,"total_tokens":138},
+			"output":[{"type":"message","content":[{"type":"output_text","text":"{\"explanation\":\"Aligned explanation.\"}"}]}]
+		}`)
+		resp.Header.Set("x-request-id", "req_test_123")
+		return resp, nil
+	})
+	provider := NewOpenAIProvider(client, "https://example.test")
+	result, err := provider.Generate(context.Background(), ProviderConfig{
+		APIKey: "secret", Model: "gpt-5.6-luna", ReasoningEffort: "none",
+	}, GenerationRequest{
+		Prompt: "p",
+		ResponseSchema: &ResponseSchema{
+			Name: "briefing",
+			Schema: map[string]any{
+				"type": "object",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	textConfig, ok := got["text"].(map[string]any)
+	if !ok {
+		t.Fatalf("text config = %#v", got["text"])
+	}
+	format, ok := textConfig["format"].(map[string]any)
+	if !ok || format["type"] != "json_schema" || format["name"] != "briefing" || format["strict"] != true {
+		t.Fatalf("format = %#v", textConfig["format"])
+	}
+	if result.RequestID != "req_test_123" || result.InputTokens != 120 || result.OutputTokens != 18 || result.TotalTokens != 138 {
+		t.Fatalf("telemetry = %#v", result)
+	}
+	if result.Attempts != 1 || result.FinishReason != "completed" {
+		t.Fatalf("attempts/finish = %d/%q", result.Attempts, result.FinishReason)
+	}
+}
+
 func TestOpenAIProviderOmitsReasoningForNonReasoningModel(t *testing.T) {
 	var got map[string]any
 	client := testHTTPClient(func(r *http.Request) (*http.Response, error) {
@@ -84,12 +129,29 @@ func TestOpenAIProviderOmitsReasoningForNonReasoningModel(t *testing.T) {
 	provider := NewOpenAIProvider(client, "https://example.test")
 	_, err := provider.Generate(context.Background(), ProviderConfig{
 		APIKey: "secret", Model: "gpt-4.1", ReasoningEffort: "high",
-	}, GenerationRequest{Prompt: "p", UserPayload: []byte(`{}`)})
+	}, GenerationRequest{
+		Prompt:      "p",
+		UserPayload: []byte(`{}`),
+		ResponseSchema: &ResponseSchema{
+			Name:   "briefing",
+			Schema: map[string]any{"type": "object"},
+		},
+	})
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 	if _, ok := got["reasoning"]; ok {
 		t.Fatalf("non-reasoning model request contains reasoning: %#v", got["reasoning"])
+	}
+	textConfig, ok := got["text"].(map[string]any)
+	if !ok {
+		t.Fatalf("structured output text config = %#v", got["text"])
+	}
+	if _, ok := textConfig["verbosity"]; ok {
+		t.Fatalf("gpt-4.1 request contains unsupported verbosity: %#v", textConfig)
+	}
+	if _, ok := textConfig["format"].(map[string]any); !ok {
+		t.Fatalf("gpt-4.1 request lost structured output format: %#v", textConfig)
 	}
 }
 
@@ -185,7 +247,7 @@ func TestOpenAIProviderRejectsInvalidReasoningEffort(t *testing.T) {
 	}
 }
 
-func TestOpenAIProviderListModelsFiltersAndSortsSuggestions(t *testing.T) {
+func TestOpenAIProviderListModelsReturnsAllAndRanksTextSuggestionsFirst(t *testing.T) {
 	client := testHTTPClient(func(_ *http.Request) (*http.Response, error) {
 		return jsonResponse(http.StatusOK, `{"data":[{"id":"whisper-1"},{"id":"omni-moderation-latest"},{"id":"gpt-5.6-luna"},{"id":"o4-mini"},{"id":"gpt-4.1"}]}`), nil
 	})
@@ -194,11 +256,14 @@ func TestOpenAIProviderListModelsFiltersAndSortsSuggestions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListModels: %v", err)
 	}
-	want := []string{"gpt-4.1", "gpt-5.6-luna", "o4-mini"}
+	want := []string{"gpt-4.1", "gpt-5.6-luna", "o4-mini", "omni-moderation-latest", "whisper-1"}
 	if len(models) != len(want) {
 		t.Fatalf("models = %v, want %v", models, want)
 	}
-	got := []string{models[0].ID, models[1].ID, models[2].ID}
+	got := make([]string, 0, len(models))
+	for _, model := range models {
+		got = append(got, model.ID)
+	}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("models = %v, want %v", got, want)
