@@ -665,10 +665,12 @@ func makeTestNotifyFn(db *storage.DB, mgr *tenants.Manager, schema string, notif
 		ncfg := buildNotifyCfg(db, scfg)
 		bot := notify.NewBot(ncfg.Token, ncfg.ChatID)
 		if kind == "evening" {
-			return notify.SendEvening(bot, db, ncfg)
+			return notify.SendEveningPreview(bot, db, ncfg)
 		}
-		// Test-notify renders the morning report from whatever AI
-		// blocks are already cached for today — no provider call.
+		// Test-notify renders current deterministic data with whatever AI
+		// blocks are already cached for today — no provider call. Preview
+		// delivery intentionally bypasses the scheduled report's durable
+		// daily key, so every explicit admin click sends a message.
 		//
 		// Before the v2 verdict cutover (PR #47) the recommendation
 		// hash was stable (action_verdict was always "rest" in v1's
@@ -688,7 +690,7 @@ func makeTestNotifyFn(db *storage.DB, mgr *tenants.Manager, schema string, notif
 		// state right now" query path (planned, not yet built) will
 		// regenerate intentionally. Only the explicit "test"
 		// admin button is now cache-only.
-		return notify.SendMorning(bot, db, ncfg)
+		return notify.SendMorningPreview(bot, db, ncfg)
 	}
 }
 

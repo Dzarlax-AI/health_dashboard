@@ -61,6 +61,55 @@ func TestSendDurableReportUsesFreshCompletionContext(t *testing.T) {
 	}
 }
 
+func TestDeliverReportPreviewBypassesDurableReservation(t *testing.T) {
+	store := &recordingDeliveryStore{status: "sent"}
+	sendCalls := 0
+
+	for range 2 {
+		sent, err := deliverReport(reportDeliveryPreview, store, "report:morning:2026-08-05", func() error {
+			sendCalls++
+			return nil
+		})
+		if err != nil || !sent {
+			t.Fatalf("preview delivery = %v, %v", sent, err)
+		}
+	}
+
+	if sendCalls != 2 {
+		t.Fatalf("preview send calls = %d, want 2", sendCalls)
+	}
+	if store.reserveCtx != nil || store.completeCtx != nil {
+		t.Fatal("preview delivery touched the durable reservation store")
+	}
+
+	wantErr := errors.New("telegram rejected preview")
+	_, err := deliverReport(reportDeliveryPreview, store, "report:morning:2026-08-05", func() error {
+		return wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("preview delivery error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestDeliverReportDurableKeepsAtMostOnceGate(t *testing.T) {
+	store := &recordingDeliveryStore{}
+	sendCalls := 0
+
+	for range 2 {
+		_, err := deliverReport(reportDeliveryDurable, store, "report:morning:2026-08-05", func() error {
+			sendCalls++
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("durable delivery: %v", err)
+		}
+	}
+
+	if sendCalls != 1 {
+		t.Fatalf("durable send calls = %d, want 1", sendCalls)
+	}
+}
+
 // TestMorningCapTime_FloorsPastCapsToPromptWindow pins the floor that
 // keeps the check-in prompt window alive for users whose adaptive cap
 // (typical_wake + 60min) lands earlier than the configured morning
