@@ -48,6 +48,11 @@ export function buildSleepDays(resources: SleepResources): SleepDay[] {
       day.wake = point.value_timestamp;
     }
   }
+  for (const day of days.values()) {
+    if (day.total <= 0) {
+      day.total = day.deep + day.rem + day.core + day.unspecified;
+    }
+  }
   return [...days.values()]
     .filter((day) => day.total > 0 || day.deep + day.rem + day.core + day.unspecified > 0)
     .sort((a, b) => b.date.localeCompare(a.date));

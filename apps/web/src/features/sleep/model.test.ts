@@ -57,6 +57,33 @@ describe("sleep model", () => {
     });
   });
 
+  it("derives total sleep from asleep phases when sleep_total is unavailable", () => {
+    const input = resources();
+    delete input.metrics.sleep_total;
+    input.metrics.sleep_rem = {
+      metric: "sleep_rem",
+      bucket: "day",
+      agg: "SUM",
+      points: [{ date: "2026-08-05", qty: 1.4, min: 1.4, max: 1.4 }],
+    };
+    input.metrics.sleep_core = {
+      metric: "sleep_core",
+      bucket: "day",
+      agg: "SUM",
+      points: [{ date: "2026-08-05", qty: 4.2, min: 4.2, max: 4.2 }],
+    };
+    input.metrics.sleep_awake = {
+      metric: "sleep_awake",
+      bucket: "day",
+      agg: "SUM",
+      points: [{ date: "2026-08-05", qty: 0.8, min: 0.8, max: 0.8 }],
+    };
+
+    const [day] = buildSleepDays(input);
+
+    expect(day.total).toBeCloseTo(7.1);
+  });
+
   it("prefers the scoped SLEEP block and falls back to synthesis", () => {
     expect(sleepInsight({ blocks: { SLEEP: "Scoped" } } as never)).toBe("Scoped");
     expect(sleepInsight({ blocks: { SYNTHESIS: "Overview" } } as never)).toBe("Overview");
