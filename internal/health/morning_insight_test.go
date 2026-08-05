@@ -109,3 +109,32 @@ func TestBuildMorningInsightEvidenceUsesWithheldServerGuidance(t *testing.T) {
 		t.Fatalf("action = %q", got.Action)
 	}
 }
+
+func TestBuildMorningInsightEvidenceAppliesExclusionsBeforeReasonCap(t *testing.T) {
+	briefing := &BriefingResponse{
+		Alerts: []Alert{{Metric: "hrv_cv", Severity: "warning", Text: "Alert."}},
+		Headline: &HeadlineSignal{
+			Severity: "info",
+			Detail:   "Headline.",
+		},
+		Sections: []BriefingSection{
+			{Key: "sleep", Status: "low", Summary: "Stale sleep."},
+			{Key: "recovery", Status: "fair", Summary: "Recovery."},
+			{Key: "activity", Status: "good", Summary: "Activity."},
+		},
+	}
+	got := BuildMorningInsightEvidenceWithOptions(briefing, nil, MorningInsightOptions{
+		ExcludeSections: map[string]bool{"sleep": true},
+	})
+	if len(got.Reasons) != 3 {
+		t.Fatalf("reasons = %#v, want refilled top 3", got.Reasons)
+	}
+	for _, reason := range got.Reasons {
+		if reason.Section == "sleep" {
+			t.Fatalf("excluded sleep reason selected: %#v", got.Reasons)
+		}
+	}
+	if got.Reasons[2].Section != "recovery" {
+		t.Fatalf("third reason = %#v, want recovery refill", got.Reasons[2])
+	}
+}

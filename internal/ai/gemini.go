@@ -226,12 +226,15 @@ func generateWithPrompt(ctx context.Context, apiKey, model string, maxTokens int
 		return baseResult, fmt.Errorf("gemini prompt blocked: %s", result.PromptFeedback.BlockReason)
 	}
 
-	if len(result.Candidates) == 0 || len(result.Candidates[0].Content.Parts) == 0 {
+	if len(result.Candidates) == 0 {
 		return baseResult, fmt.Errorf("unexpected gemini response format")
 	}
 	baseResult.FinishReason = result.Candidates[0].FinishReason
 	if baseResult.FinishReason != "" && baseResult.FinishReason != "STOP" {
 		return baseResult, fmt.Errorf("gemini response did not finish cleanly: %s", baseResult.FinishReason)
+	}
+	if len(result.Candidates[0].Content.Parts) == 0 {
+		return baseResult, fmt.Errorf("unexpected gemini response format")
 	}
 	var textParts []string
 	for _, part := range result.Candidates[0].Content.Parts {

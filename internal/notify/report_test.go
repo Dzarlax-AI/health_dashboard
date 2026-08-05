@@ -292,6 +292,30 @@ func TestFormatMorningLegacy_UsesSingleEscapedSynthesis(t *testing.T) {
 	}
 }
 
+func TestFormatMorningLegacy_FiltersStaleReasonsBeforeCapAndShowsFreshness(t *testing.T) {
+	loc, _ := time.LoadLocation("UTC")
+	briefing := sampleBriefing()
+	out := formatMorning(briefing, nil, "en", loc, freshness{
+		sleep:      48 * time.Hour,
+		watch:      time.Hour,
+		sleepKnown: true,
+		watchKnown: true,
+	}, false)
+
+	if strings.Contains(out, "Adequate sleep") {
+		t.Fatalf("stale sleep reason leaked into report:\n%s", out)
+	}
+	for _, want := range []string{
+		"Mixed markers",
+		"Normal load",
+		"Updated: Watch 1h · Sleep 2 days",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("morning report missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestFormatMorningRich_SuppressesStaleSummaryMetrics(t *testing.T) {
 	loc, _ := time.LoadLocation("UTC")
 	briefing := sampleBriefing()

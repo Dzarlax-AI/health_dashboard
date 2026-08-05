@@ -129,12 +129,29 @@ func TestOpenAIProviderOmitsReasoningForNonReasoningModel(t *testing.T) {
 	provider := NewOpenAIProvider(client, "https://example.test")
 	_, err := provider.Generate(context.Background(), ProviderConfig{
 		APIKey: "secret", Model: "gpt-4.1", ReasoningEffort: "high",
-	}, GenerationRequest{Prompt: "p", UserPayload: []byte(`{}`)})
+	}, GenerationRequest{
+		Prompt:      "p",
+		UserPayload: []byte(`{}`),
+		ResponseSchema: &ResponseSchema{
+			Name:   "briefing",
+			Schema: map[string]any{"type": "object"},
+		},
+	})
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 	if _, ok := got["reasoning"]; ok {
 		t.Fatalf("non-reasoning model request contains reasoning: %#v", got["reasoning"])
+	}
+	textConfig, ok := got["text"].(map[string]any)
+	if !ok {
+		t.Fatalf("structured output text config = %#v", got["text"])
+	}
+	if _, ok := textConfig["verbosity"]; ok {
+		t.Fatalf("gpt-4.1 request contains unsupported verbosity: %#v", textConfig)
+	}
+	if _, ok := textConfig["format"].(map[string]any); !ok {
+		t.Fatalf("gpt-4.1 request lost structured output format: %#v", textConfig)
 	}
 }
 

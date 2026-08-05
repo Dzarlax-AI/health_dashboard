@@ -366,6 +366,7 @@ func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
 	getDailyWithDates := func(metric string, days int, agg string) []health.DatedValue {
 		var err error
 		var rows pgx.Rows
+		quantityPredicate := dailyMetricQuantityPredicate(metric)
 		if agg == "SUM" {
 			sleepDedup := sleepDedupClause(metric)
 			r, e := s.pool.Query(ctx, fmt.Sprintf(`
@@ -373,23 +374,23 @@ func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
 				FROM (
 					SELECT SUBSTRING(date,1,10) AS d, source, SUM(qty) AS source_sum
 					FROM metric_points
-					WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND qty > 0 AND quality = 'ok' %s
+					WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND %s AND quality = 'ok' %s
 					GROUP BY d, source
 				) sub
 				GROUP BY d
 				ORDER BY d DESC
-				LIMIT $3`, sleepDedup),
+				LIMIT $3`, quantityPredicate, sleepDedup),
 				metric, subtractDays(lastDate, days), days)
 			rows = r
 			err = e
 		} else {
-			r, e := s.pool.Query(ctx, `
+			r, e := s.pool.Query(ctx, fmt.Sprintf(`
 				SELECT SUBSTRING(date,1,10), `+agg+`(qty)
 				FROM metric_points
-				WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND qty > 0 AND quality = 'ok'
+				WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND %s AND quality = 'ok'
 				GROUP BY SUBSTRING(date,1,10)
 				ORDER BY SUBSTRING(date,1,10) DESC
-				LIMIT $3`,
+				LIMIT $3`, quantityPredicate),
 				metric, subtractDays(lastDate, days), days)
 			rows = r
 			err = e
@@ -452,6 +453,13 @@ func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
 	}
 	out.ReadinessEvidence = buildReadinessEvidence(lastDate, dailyScoreRow{date: lastDate}, s.freshDayFromRaw(lastDate))
 	return out
+}
+
+func dailyMetricQuantityPredicate(metric string) string {
+	if metric == "sleep_awake" {
+		return "qty >= 0"
+	}
+	return "qty > 0"
 }
 
 func datedValues(in []health.DatedValue) []float64 {

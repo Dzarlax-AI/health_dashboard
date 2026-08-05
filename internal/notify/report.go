@@ -594,22 +594,20 @@ func abs(x int) int {
 }
 
 func morningEvidenceForReport(b *health.BriefingResponse, f freshness) health.MorningInsightEvidence {
-	evidence := health.BuildMorningInsightEvidence(b, nil)
-	filtered := evidence.Reasons[:0]
-	for _, reason := range evidence.Reasons {
-		if f.sleepKnown && f.sleepStale() && reason.Section == "sleep" {
-			continue
-		}
-		if f.watchKnown && f.watchOff() && reason.Section == "recovery" {
-			continue
-		}
-		if f.phoneKnown && f.phoneOff() && (reason.Section == "activity" || reason.Section == "cardio") {
-			continue
-		}
-		filtered = append(filtered, reason)
+	excluded := make(map[string]bool)
+	if f.sleepKnown && f.sleepStale() {
+		excluded["sleep"] = true
 	}
-	evidence.Reasons = filtered
-	return evidence
+	if f.watchKnown && f.watchOff() {
+		excluded["recovery"] = true
+	}
+	if f.phoneKnown && f.phoneOff() {
+		excluded["activity"] = true
+		excluded["cardio"] = true
+	}
+	return health.BuildMorningInsightEvidenceWithOptions(b, nil, health.MorningInsightOptions{
+		ExcludeSections: excluded,
+	})
 }
 
 func morningFreshnessParts(f freshness, lang string) []string {
@@ -663,7 +661,7 @@ func formatMorning(b *health.BriefingResponse, aiBlocks map[string]string, lang 
 	case f.sleepKnown && f.sleepStale():
 		fmt.Fprintf(&sb, "  😴 %s\n", telegramText(stripSimpleTags(fmt.Sprintf(tr(lang, "tg_sleep_silence"), fmtSilence(f.sleep, lang)))))
 	case b.Sleep != nil:
-		fmt.Fprintf(&sb, "  😴 %s: %.1fh\n", telegramText(sectionTitle(findSection(b, "sleep"), "Sleep")), b.Sleep.TotalAvg)
+		fmt.Fprintf(&sb, "  😴 %s: %.1fh\n", telegramText(sectionTitle(findSection(b, "sleep"), tr(lang, "sec_sleep"))), b.Sleep.TotalAvg)
 	}
 	if f.watchKnown && f.watchOff() {
 		fmt.Fprintf(&sb, "  ❤️ %s\n", telegramText(stripSimpleTags(fmt.Sprintf(tr(lang, "tg_watch_off"), fmtSilence(f.watch, lang)))))

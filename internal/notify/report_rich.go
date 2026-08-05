@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"health-receiver/internal/ai"
 	"health-receiver/internal/health"
 	"health-receiver/internal/storage"
 )
@@ -47,7 +48,7 @@ func formatMorningRich(b *health.BriefingResponse, aiBlocks map[string]string, l
 		metricLines = append(metricLines, "😴 "+richText(stripSimpleTags(fmt.Sprintf(tr(lang, "tg_sleep_silence"), fmtSilence(f.sleep, lang)))))
 	case b.Sleep != nil:
 		metricLines = append(metricLines, fmt.Sprintf("😴 %s: %.1fh",
-			richText(sectionTitle(findSection(b, "sleep"), "Sleep")), b.Sleep.TotalAvg))
+			richText(sectionTitle(findSection(b, "sleep"), tr(lang, "sec_sleep"))), b.Sleep.TotalAvg))
 	}
 	if f.watchKnown && f.watchOff() {
 		metricLines = append(metricLines, "❤️ "+richText(stripSimpleTags(fmt.Sprintf(tr(lang, "tg_watch_off"), fmtSilence(f.watch, lang)))))
@@ -65,7 +66,7 @@ func formatMorningRich(b *health.BriefingResponse, aiBlocks map[string]string, l
 		}
 		sb.WriteString("</ul>\n")
 	}
-	if synthesis := strings.TrimSpace(aiBlocks["SYNTHESIS"]); synthesis != "" {
+	if synthesis := strings.TrimSpace(aiBlocks[ai.BlockSynthesis]); synthesis != "" {
 		fmt.Fprintf(&sb, "<p>🤖 <em>%s</em></p>\n", richText(synthesis))
 	}
 	if evidence.Action != "" {

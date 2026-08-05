@@ -64,6 +64,16 @@ func TestGenerateSynthesisRejectsUnsafeOrMalformedOutput(t *testing.T) {
 	}
 }
 
+func TestValidateSynthesisAllowsNumericComparisonsButRejectsHTML(t *testing.T) {
+	got, err := validateSynthesisExplanation("HRV < 40 ms is below the supplied reference.")
+	if err != nil || got == "" {
+		t.Fatalf("numeric comparison rejected: text=%q err=%v", got, err)
+	}
+	if _, err := validateSynthesisExplanation("Use <strong>moderate effort</strong> today."); err == nil {
+		t.Fatal("HTML markup was accepted")
+	}
+}
+
 func TestHashSynthesisUsesExactDatedEvidence(t *testing.T) {
 	base := health.MorningInsightEvidence{
 		Date:    "2026-08-04",

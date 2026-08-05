@@ -126,6 +126,7 @@ func (s *DB) EnsureTodayAIInsightContext(ctx context.Context, aiCfg AIConfig, la
 	}
 	if err := s.SaveAIBlock(today, lang, ai.BlockSynthesis, generated.Text, synthesisHash); err != nil {
 		log.Printf("EnsureTodayAIInsight: save %s: %v", ai.BlockSynthesis, err)
+		s.aiRegenLastFailAt.Store(failureKey, time.Now())
 		return s.GetAIInsightCombined(today, lang)
 	}
 	s.aiRegenLastFailAt.Delete(failureKey)

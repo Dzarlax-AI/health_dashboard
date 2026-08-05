@@ -13,10 +13,23 @@ type rankedMorningReason struct {
 	order    int
 }
 
+// MorningInsightOptions controls report-specific evidence exclusions before
+// ranking and the three-reason cap are applied.
+type MorningInsightOptions struct {
+	ExcludeSections map[string]bool
+}
+
 // BuildMorningInsightEvidence reduces the full rule-based briefing to the
 // small, deterministic contract sent to an AI provider. It deliberately keeps
 // the final verdict and action outside model control.
 func BuildMorningInsightEvidence(briefing *BriefingResponse, raw *RawMetrics) MorningInsightEvidence {
+	return BuildMorningInsightEvidenceWithOptions(briefing, raw, MorningInsightOptions{})
+}
+
+// BuildMorningInsightEvidenceWithOptions applies exclusions before selecting
+// the top reasons, allowing a freshness-aware renderer to refill the list from
+// lower-ranked eligible evidence instead of filtering an already-capped list.
+func BuildMorningInsightEvidenceWithOptions(briefing *BriefingResponse, raw *RawMetrics, options MorningInsightOptions) MorningInsightEvidence {
 	if briefing == nil {
 		return MorningInsightEvidence{}
 	}
@@ -121,6 +134,9 @@ func BuildMorningInsightEvidence(briefing *BriefingResponse, raw *RawMetrics) Mo
 	seenSections := make(map[string]bool)
 	seenText := make(map[string]bool)
 	for _, candidate := range candidates {
+		if options.ExcludeSections[candidate.Section] {
+			continue
+		}
 		normalized := strings.ToLower(strings.Join(strings.Fields(candidate.Text), " "))
 		if seenSections[candidate.Section] || seenText[normalized] {
 			continue

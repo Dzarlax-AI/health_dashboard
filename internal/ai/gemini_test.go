@@ -74,6 +74,11 @@ func TestGeminiProviderRejectsBlockedAndTruncatedResponses(t *testing.T) {
 			body: `{"candidates":[{"finishReason":"MAX_TOKENS","content":{"parts":[{"text":"partial"}]}}]}`,
 			want: "did not finish cleanly",
 		},
+		{
+			name: "max tokens without parts",
+			body: `{"candidates":[{"finishReason":"MAX_TOKENS","content":{"parts":[]}}]}`,
+			want: "did not finish cleanly",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -82,11 +87,14 @@ func TestGeminiProviderRejectsBlockedAndTruncatedResponses(t *testing.T) {
 			geminiClient = testHTTPClient(func(_ *http.Request) (*http.Response, error) {
 				return jsonResponse(http.StatusOK, tt.body), nil
 			})
-			_, err := (GeminiProvider{}).Generate(context.Background(), ProviderConfig{
+			result, err := (GeminiProvider{}).Generate(context.Background(), ProviderConfig{
 				APIKey: "secret", Model: "gemini-2.5-flash",
 			}, GenerationRequest{Prompt: "p"})
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("error = %v, want containing %q", err, tt.want)
+			}
+			if tt.name == "max tokens without parts" && result.FinishReason != "MAX_TOKENS" {
+				t.Fatalf("finish reason = %q, want MAX_TOKENS", result.FinishReason)
 			}
 		})
 	}

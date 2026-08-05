@@ -117,8 +117,10 @@ func (p *OpenAIProvider) Generate(ctx context.Context, cfg ProviderConfig, gener
 		"max_output_tokens": cfg.MaxOutputTokens,
 		"store":             false,
 	}
-	textConfig := map[string]any{"verbosity": "low"}
-	payload["text"] = textConfig
+	textConfig := map[string]any{}
+	if supportsOpenAIVerbosity(cfg.Model) {
+		textConfig["verbosity"] = "low"
+	}
 	if isOpenAIReasoningModel(cfg.Model) {
 		if cfg.ReasoningEffort == "" {
 			cfg.ReasoningEffort = "none"
@@ -135,6 +137,9 @@ func (p *OpenAIProvider) Generate(ctx context.Context, cfg ProviderConfig, gener
 			"strict": true,
 			"schema": generation.ResponseSchema.Schema,
 		}
+	}
+	if len(textConfig) > 0 {
+		payload["text"] = textConfig
 	}
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -231,6 +236,11 @@ func isOpenAIReasoningModel(model string) bool {
 		return true
 	}
 	return len(model) > 1 && model[0] == 'o' && model[1] >= '0' && model[1] <= '9'
+}
+
+func supportsOpenAIVerbosity(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(model, "gpt-5")
 }
 
 func openAITextModelRank(model string) int {

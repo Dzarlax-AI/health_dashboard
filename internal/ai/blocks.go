@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"health-receiver/internal/health"
@@ -55,6 +56,8 @@ var synthesisResponseSchema = &ResponseSchema{
 	},
 }
 
+var htmlTagPattern = regexp.MustCompile(`</?[a-zA-Z][^>]*>`)
+
 // GenerateSynthesis makes the single provider call used by AI insight v2.
 // The returned Text is the validated explanation rather than the raw JSON
 // envelope, while request metadata remains available for observability.
@@ -91,9 +94,12 @@ func validateSynthesisExplanation(value string) (string, error) {
 	if words := len(strings.Fields(value)); words > 60 {
 		return "", fmt.Errorf("synthesis explanation is too long: %d words", words)
 	}
+	if htmlTagPattern.MatchString(value) {
+		return "", fmt.Errorf("synthesis explanation contains forbidden content")
+	}
 	lower := strings.ToLower(value)
 	for _, forbidden := range []string{
-		"```", "**", "<", ">",
+		"```", "**",
 		"diagnos", "диагноз", "klinički znač", "клинически знач",
 	} {
 		if strings.Contains(lower, forbidden) {

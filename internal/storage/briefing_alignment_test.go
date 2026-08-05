@@ -60,3 +60,18 @@ func TestMergeDatedMetricsAlignsSparseMetricSeries(t *testing.T) {
 		t.Fatalf("oldest row = %#v, want aligned HRV+sleep", got[2])
 	}
 }
+
+func TestFallbackDailyMetricsPreserveMeasuredZeroAwake(t *testing.T) {
+	if got := dailyMetricQuantityPredicate("sleep_awake"); got != "qty >= 0" {
+		t.Fatalf("sleep_awake predicate = %q, want zero-inclusive predicate", got)
+	}
+	if got := dailyMetricQuantityPredicate("sleep_total"); got != "qty > 0" {
+		t.Fatalf("sleep_total predicate = %q, want positive-only predicate", got)
+	}
+	got := mergeDatedMetrics(map[string][]health.DatedValue{
+		"awake": {{Date: "2026-08-04", Val: 0}},
+	})
+	if len(got) != 1 || got[0].Awake == nil || *got[0].Awake != 0 {
+		t.Fatalf("daily awake = %#v, want measured zero", got)
+	}
+}
