@@ -141,6 +141,7 @@ export async function loadSleepResources(
     } catch {
       throwIfAborted(signal);
     }
+    throwIfAborted(signal);
   }
 
   return {
