@@ -782,7 +782,7 @@ func registerCheckinWebhook(mux *http.ServeMux, mgr *tenants.Manager, reg *regis
 				Schema:    schema,
 				Lang:      cfg.Lang,
 				TodayInTZ: time.Now().In(loc).Format("2006-01-02"),
-				Router:    &liveCheckinRouter{db: db, bot: bot, triggerReport: makeReportTrigger(mgr, schema, notifyDefaults)},
+				Router:    &liveCheckinRouter{db: db, bot: bot, triggerReport: makeReportTrigger(mgr, reg, schema, notifyDefaults)},
 			}, true
 		},
 	}))
@@ -838,7 +838,7 @@ func (r *liveCheckinRouter) TriggerReport(_ string) {
 // mid-tick while a fresh ingest fires) can't produce duplicate sends.
 // Sendmu nil → no other senders exist (legacy single-mode), original
 // lock-free behaviour preserved.
-func makeReportTrigger(mgr *tenants.Manager, schema string, defaults storage.NotifyConfig) func() {
+func makeReportTrigger(mgr *tenants.Manager, reg *registry.Registry, schema string, defaults storage.NotifyConfig) func() {
 	return func() {
 		db, err := mgr.GetOrCreate(context.Background(), schema)
 		if err != nil || db == nil {
@@ -886,7 +886,7 @@ func makeReportTrigger(mgr *tenants.Manager, schema string, defaults storage.Not
 		}
 		if sentReport {
 			now := time.Now().In(loc)
-			if !trySendWakeFeedbackAfterMorning(bot, db, ncfg, today, now) {
+			if !trySendWakeFeedbackAfterMorning(bot, db, ncfg, today, now, morningCheckinEnabled(reg)) {
 				trySendContextPromptAfterMorning(bot, db, ncfg, today, now)
 			}
 			log.Printf("checkin-trigger: sent (reason=%s) for %s", reason, today)
@@ -1023,7 +1023,7 @@ func makeMorningTrigger(ctx context.Context, db *storage.DB, sendMu *sync.Mutex,
 				log.Printf("morning trigger: mark sent: %v", err)
 			}
 			sendMu.Unlock()
-			if !trySendWakeFeedbackAfterMorning(bot, db, ncfg, today, now) {
+			if !trySendWakeFeedbackAfterMorning(bot, db, ncfg, today, now, morningCheckinEnabled(reg)) {
 				trySendContextPromptAfterMorning(bot, db, ncfg, today, now)
 			}
 			log.Printf("morning trigger: sent (reason=%s, forced=%v, action=%s)", reason, force, action)
@@ -1328,7 +1328,7 @@ func runMorningSmartRetry(ctx context.Context, bot *notify.Bot, db *storage.DB, 
 			if sent {
 				log.Printf("morning smart-retry: sent (reason=%s, forced=%v, action=%s)", reason, past, action)
 				now := time.Now().In(loc)
-				if !trySendWakeFeedbackAfterMorning(bot, db, ncfg, today, now) {
+				if !trySendWakeFeedbackAfterMorning(bot, db, ncfg, today, now, morningCheckinEnabled(reg)) {
 					trySendContextPromptAfterMorning(bot, db, ncfg, today, now)
 				}
 				return
@@ -1346,8 +1346,8 @@ func runMorningSmartRetry(ctx context.Context, bot *notify.Bot, db *storage.DB, 
 	}
 }
 
-func trySendWakeFeedbackAfterMorning(bot *notify.Bot, db *storage.DB, cfg notify.Config, date string, now time.Time) bool {
-	if !storage.IsWakeFeedbackEnabled(db) {
+func trySendWakeFeedbackAfterMorning(bot *notify.Bot, db *storage.DB, cfg notify.Config, date string, now time.Time, webhookAvailable bool) bool {
+	if !webhookAvailable || !storage.IsWakeFeedbackEnabled(db) {
 		return false
 	}
 	sent, err := notify.SendWakeFeedbackPrompt(bot, db, cfg.Lang, date, now)

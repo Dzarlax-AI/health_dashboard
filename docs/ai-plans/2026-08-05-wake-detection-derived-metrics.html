@@ -111,6 +111,7 @@
     <h2>Усиление после code review</h2>
     <ul>
       <li>Wake metadata теперь объединяется атомарно: повторный расчёт не стирает Telegram/check-in evidence.</li>
+      <li>Wake feedback не отправляется без зарегистрированного Telegram callback webhook.</li>
       <li>Typical wake ограничен одновременно числом строк и календарным окном; текущий день исключён.</li>
       <li>Forced morning report продолжает отправку с stale banner при ошибке wake detector.</li>
       <li>Исторический probe пропускает дни без подходящего candidate, а CLI валидирует диапазон до подключения к БД.</li>
