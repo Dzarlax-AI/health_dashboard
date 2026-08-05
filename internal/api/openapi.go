@@ -16,7 +16,7 @@ import (
 
 const (
 	OpenAPIVersion  = "3.1.0"
-	ContractVersion = "0.2.0"
+	ContractVersion = "0.3.0"
 )
 
 // GenerateOpenAPI builds the canonical public client contract. Route metadata
@@ -28,6 +28,7 @@ func GenerateOpenAPI() ([]byte, error) {
 	for name, value := range map[string]any{
 		"AIBriefingResponse":        AIBriefingResponse{},
 		"DashboardResponse":         storage.DashboardResponse{},
+		"DerivedMetricsResponse":    DerivedMetricsResponse{},
 		"EnergyHistoryDayResponse":  EnergyHistoryDayResponse{},
 		"EnergyHistoryHourResponse": EnergyHistoryHourResponse{},
 		"HealthBriefingResponse":    health.BriefingResponse{},
@@ -70,6 +71,8 @@ func GenerateOpenAPI() ([]byte, error) {
 		{"HealthBriefingResponse", "readiness_serving", "status", []string{"fresh", "missing", "stale", "data_accruing", "low_coverage", "capped"}},
 		{"HealthBriefingResponse", "readiness_serving", "confidence", []string{"final", "provisional", "low"}},
 		{"ReadinessHistoryResponse", "points", "band", []string{"optimal", "fair", "low"}},
+		{"DerivedMetricsResponse", "values", "value_type", []string{"number", "text", "timestamp", "json"}},
+		{"DerivedMetricsResponse", "values", "state", []string{"provisional", "final"}},
 		{"EnergyHistoryDayResponse", "points", "verdict", []string{"push_hard", "moderate", "active_recovery", "rest"}},
 	} {
 		if err := setNestedPropertyEnum(schemas[enum.schema], enum.parent, enum.child, enum.values...); err != nil {
@@ -200,6 +203,18 @@ func clientPaths() map[string]any {
 		"/api/energy-history": map[string]any{
 			"get": energyOperation,
 		},
+		"/api/derived-metrics": map[string]any{
+			"get": getOperation(
+				"getDerivedMetrics",
+				"Canonical service-derived metric history",
+				[]any{
+					requiredEnumQueryParameter("metric", "wake_time"),
+					stringQueryParameter("from", "Start date in YYYY-MM-DD; defaults to 30 days before to."),
+					stringQueryParameter("to", "End date in YYYY-MM-DD; defaults to tenant-local today."),
+				},
+				jsonResponseRef("DerivedMetricsResponse"),
+			),
+		},
 		"/api/session": map[string]any{
 			"get": getOperation(
 				"getSession",
@@ -282,6 +297,28 @@ func enumQueryParameter(name, defaultValue string, values ...string) map[string]
 			"type":    "string",
 			"default": defaultValue,
 			"enum":    enums,
+		},
+	}
+}
+
+func requiredEnumQueryParameter(name string, values ...string) map[string]any {
+	parameter := enumQueryParameter(name, "", values...)
+	parameter["required"] = true
+	schema := parameter["schema"].(map[string]any)
+	delete(schema, "default")
+	return parameter
+}
+
+func stringQueryParameter(name, description string) map[string]any {
+	return map[string]any{
+		"name":        name,
+		"in":          "query",
+		"required":    false,
+		"description": description,
+		"schema": map[string]any{
+			"type":    "string",
+			"format":  "date",
+			"pattern": `^\d{4}-\d{2}-\d{2}$`,
 		},
 	}
 }

@@ -25,6 +25,9 @@ type fakeRouter struct {
 	contextCalls int
 	lastPromptID string
 	lastCategory string
+	wakeCalls    int
+	wakeDate     string
+	wakeResponse string
 }
 
 func (f *fakeRouter) SaveAnswer(date, source, answer string, _ time.Time) (string, error) {
@@ -38,6 +41,12 @@ func (f *fakeRouter) SaveContextPromptAnswer(promptID, category, source string, 
 	f.contextCalls++
 	f.lastPromptID, f.lastCategory, f.lastSource = promptID, category, source
 	return f.saveStatus, f.saveErr
+}
+
+func (f *fakeRouter) SaveWakeFeedbackAnswer(date string, response string, _ time.Time) (string, error) {
+	f.wakeCalls++
+	f.wakeDate, f.wakeResponse = date, response
+	return response, f.saveErr
 }
 
 func buildUpdateBody(t *testing.T, chatID, callbackData string) []byte {
@@ -59,6 +68,26 @@ func buildUpdateBody(t *testing.T, chatID, callbackData string) []byte {
 		t.Fatal(err)
 	}
 	return body
+}
+
+func TestWebhookRoutesWakeFeedbackWithoutTriggeringReport(t *testing.T) {
+	router := &fakeRouter{}
+	h := NewWebhookHandler(WebhookConfig{Secret: "good", TenantFinder: func(chat string) (CheckinTenant, bool) {
+		return CheckinTenant{Schema: "health", Lang: "ru", TodayInTZ: "2026-08-05", Router: router}, true
+	}})
+	req := httptest.NewRequest("POST", "/api/telegram/webhook/good",
+		bytes.NewReader(buildUpdateBody(t, "111", "wake:returned_to_sleep:2026-08-05")))
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	if rec.Code != http.StatusOK || router.wakeCalls != 1 {
+		t.Fatalf("status=%d wake_calls=%d body=%s", rec.Code, router.wakeCalls, rec.Body.String())
+	}
+	if router.wakeDate != "2026-08-05" || router.wakeResponse != storage.WakeFeedbackReturnedSleep {
+		t.Fatalf("wake date=%q response=%q", router.wakeDate, router.wakeResponse)
+	}
+	if len(router.triggers) != 0 {
+		t.Fatalf("wake feedback triggered report: %v", router.triggers)
+	}
 }
 
 func TestWebhook_RejectsBadSecret(t *testing.T) {

@@ -2,10 +2,12 @@ package storage
 
 import (
 	"sort"
+	"time"
 )
 
 // GetTypicalWakeTime returns the median wake-time-of-day computed from the
-// last `days` calendar days of sleep_* records.
+// last `days` canonical wake_time rows. Until seven canonical rows exist it
+// falls back to the legacy sleep-stage-start heuristic below.
 //
 // Sleep records are written with the segment START timestamp
 // (internal/applehealth/parse.go: Apple HealthKit semantics), so a single
@@ -17,13 +19,24 @@ import (
 // excludes short night-time naps. This window also tolerates moderate
 // late risers without distorting the median.
 //
-// Returns (hour, minute, ok=true) when at least 7 valid days are available;
-// otherwise (0, 0, false) so callers can fall back to a static cap. Threshold
-// of 7 keeps the median stable against a single oversleep/undersleep day.
-func (s *DB) GetTypicalWakeTime(days int) (int, int, bool) {
+// Returns (hour, minute, ok=true) when either source has at least 7 valid
+// days; otherwise (0, 0, false) so callers can fall back to a static cap.
+func (s *DB) GetTypicalWakeTime(days int, locations ...*time.Location) (int, int, bool) {
 	if days <= 0 {
 		days = 14
 	}
+	loc := time.Local
+	if len(locations) > 0 && locations[0] != nil {
+		loc = locations[0]
+	}
+	beforeDate := time.Now().In(loc).AddDate(0, 0, 1).Format("2006-01-02")
+	if minutes, ok, err := s.typicalDerivedWakeMinutes(beforeDate, days, loc); err == nil && ok {
+		return minutes / 60, minutes % 60, true
+	}
+
+	// Compatibility fallback for installs that have not accumulated seven
+	// canonical wake_time rows yet. This path is intentionally temporary and
+	// keeps the previous stage-start heuristic until backfill completes.
 	ctx, cancel := queryCtx()
 	defer cancel()
 

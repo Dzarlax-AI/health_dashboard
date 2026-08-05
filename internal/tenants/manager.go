@@ -21,7 +21,7 @@ type TenantCallbacks struct {
 	// MorningTrigger is the opportunistic ingest-driven morning-report
 	// trigger for this tenant. Called by the shared mux's onNewData hook
 	// when fresh health data lands so the report can fire earlier than
-	// the scheduled morning hour once SleepSettled. nil means the tenant
+	// the scheduled morning hour once the canonical wake detector is ready. nil means the tenant
 	// does not participate in ingest-driven sends (e.g. legacy single-
 	// user mode wires the call directly without going through callbacks).
 	MorningTrigger func()
