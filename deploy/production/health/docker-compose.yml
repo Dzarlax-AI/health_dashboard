@@ -36,6 +36,16 @@ services:
       traefik.http.routers.health-api-key.tls.certresolver: letsEncrypt
       traefik.http.routers.health-api-key.service: health-backend
 
+      # Telegram callback queries cannot pass browser ForwardAuth. The Go
+      # handler authenticates this narrow endpoint with both its secret URL
+      # segment and X-Telegram-Bot-Api-Secret-Token.
+      traefik.http.routers.health-telegram-webhook.entrypoints: https
+      traefik.http.routers.health-telegram-webhook.rule: Host(`${HEALTH_HOST:?set the production dashboard hostname}`) && PathPrefix(`/api/telegram/webhook/`)
+      traefik.http.routers.health-telegram-webhook.priority: "320"
+      traefik.http.routers.health-telegram-webhook.tls: "true"
+      traefik.http.routers.health-telegram-webhook.tls.certresolver: letsEncrypt
+      traefik.http.routers.health-telegram-webhook.service: health-backend
+
       # Browser JSON calls pass through ForwardAuth so the backend can create
       # and resolve its opaque tenant-aware local session.
       traefik.http.routers.health-browser-api.entrypoints: https
