@@ -1507,7 +1507,7 @@ func (h *Handler) sectionAPI(w http.ResponseWriter, r *http.Request) {
 
 // supportedLang clamps untrusted query input to the en/ru/sr whitelist.
 // Any other value (including unknown locales like "fr") falls back to "en"
-// so junk values can't pollute the AI cache or trigger Gemini regen on
+// so junk values can't pollute the AI cache or trigger provider regen on
 // dead-data languages.
 func supportedLang(q string) string {
 	if q == "en" || q == "ru" || q == "sr" {
@@ -1526,7 +1526,7 @@ func (h *Handler) healthBriefing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Briefing returns immediately. AIInsight is read from cache only — never
-	// blocks on Gemini. If empty, kick off async regen so the next poll on
+	// blocks on the AI provider. If empty, kick off async regen so the next poll on
 	// /api/ai-briefing returns content. Clients should fetch the AI narrative
 	// from /api/ai-briefing separately and update their UI when it arrives,
 	// instead of waiting on this endpoint.
@@ -1834,7 +1834,7 @@ func (h *Handler) adminReadinessRedesignBackfill(w http.ResponseWriter, r *http.
 //
 // The general /api/admin/settings endpoint deliberately does NOT
 // accept these keys: it routes to the global registry and silently
-// drops anything outside the gemini_* allow-list, which would look
+// drops anything outside the AI provider allow-list, which would look
 // like success from the operator's side. This endpoint is the
 // supported way to apply the override.
 func (h *Handler) adminReadinessRedesignConfig(w http.ResponseWriter, r *http.Request) {
@@ -2563,9 +2563,89 @@ func (h *Handler) userSettings(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, out)
 }
 
-// adminAISettings handles GET/POST /api/admin/settings — Gemini config, admin only.
+type adminAISettingsRequest struct {
+	Provider        string `json:"provider"`
+	APIKey          string `json:"api_key"`
+	ClearAPIKey     bool   `json:"clear_api_key"`
+	Model           string `json:"model"`
+	ReasoningEffort string `json:"reasoning_effort"`
+	MaxOutputTokens int    `json:"max_output_tokens"`
+}
+
+func buildAdminAISettingsUpdate(body adminAISettingsRequest) (map[string]string, error) {
+	body.Provider = strings.TrimSpace(body.Provider)
+	provider, err := ai.GetProvider(body.Provider)
+	if err != nil {
+		return nil, err
+	}
+	descriptor := provider.Descriptor()
+	body.Model = strings.TrimSpace(body.Model)
+	if body.Model == "" {
+		body.Model = descriptor.DefaultModel
+	}
+	if body.MaxOutputTokens < 200 || body.MaxOutputTokens > 128000 {
+		return nil, fmt.Errorf("max_output_tokens must be in [200, 128000]")
+	}
+	body.ReasoningEffort = strings.TrimSpace(body.ReasoningEffort)
+	if descriptor.SupportsReasoning {
+		if body.ReasoningEffort == "" {
+			body.ReasoningEffort = descriptor.DefaultReasoning
+		}
+		if !ai.ValidReasoningEffort(body.ReasoningEffort) {
+			return nil, fmt.Errorf("invalid reasoning_effort")
+		}
+	} else {
+		body.ReasoningEffort = ""
+	}
+	clean := map[string]string{
+		"ai_provider":                       body.Provider,
+		"ai_max_output_tokens":              strconv.Itoa(body.MaxOutputTokens),
+		body.Provider + "_model":            body.Model,
+		body.Provider + "_reasoning_effort": body.ReasoningEffort,
+	}
+	if body.ClearAPIKey {
+		clean[body.Provider+"_api_key"] = ""
+	} else if key := strings.TrimSpace(body.APIKey); key != "" {
+		clean[body.Provider+"_api_key"] = key
+	}
+	return clean, nil
+}
+
+func adminAISettingsPayload(aiCfg storage.AIConfig) map[string]any {
+	providers := make([]map[string]any, 0)
+	for _, descriptor := range ai.ProviderDescriptors() {
+		settings := aiCfg.SettingsFor(descriptor.ID)
+		model := settings.Model
+		if model == "" {
+			model = descriptor.DefaultModel
+		}
+		reasoning := settings.ReasoningEffort
+		if reasoning == "" {
+			reasoning = descriptor.DefaultReasoning
+		}
+		providers = append(providers, map[string]any{
+			"id":                  descriptor.ID,
+			"display_name":        descriptor.DisplayName,
+			"default_model":       descriptor.DefaultModel,
+			"supports_reasoning":  descriptor.SupportsReasoning,
+			"api_key_placeholder": descriptor.APIKeyPlaceholder,
+			"configured":          settings.APIKey != "",
+			"model":               model,
+			"reasoning_effort":    reasoning,
+		})
+	}
+	return map[string]any{
+		"provider":          aiCfg.Provider,
+		"max_output_tokens": aiCfg.MaxOutputTokens,
+		"enabled":           aiCfg.Enabled(),
+		"providers":         providers,
+	}
+}
+
+// adminAISettings handles GET/POST /api/admin/settings — installation-wide
+// AI provider configuration, admin only.
 //
-// Gemini config is now installation-wide: writes go to
+// AI config is installation-wide: writes go to
 // `health_registry.global_settings`, reads layer that on top of env
 // defaults (see Manager.AIDefaultsFor). Per-tenant overrides in
 // `<schema>.settings` still win, but the admin UI no longer creates new
@@ -2579,19 +2659,15 @@ func (h *Handler) adminAISettings(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "registry unavailable", http.StatusInternalServerError)
 			return
 		}
-		var body map[string]string
+		var body adminAISettingsRequest
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "invalid JSON", http.StatusBadRequest)
 			return
 		}
-		allowed := map[string]bool{
-			"gemini_api_key": true, "gemini_model": true, "gemini_max_tokens": true,
-		}
-		clean := make(map[string]string)
-		for k, v := range body {
-			if allowed[k] {
-				clean[k] = v
-			}
+		clean, err := buildAdminAISettingsUpdate(body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
 		}
 		if err := h.reg.SaveGlobalSettings(r.Context(), clean); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -2601,19 +2677,14 @@ func (h *Handler) adminAISettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Show the installation-wide value (global + env), NOT the admin's own
+	// Show the installation-wide values (global + env), NOT the admin's own
 	// tenant override. Otherwise saving a new global key and refreshing
 	// would re-display whatever legacy `<schema>.settings.gemini_*` row the
 	// admin has — making the form look like the save didn't take. The
 	// settings page exists to manage the global default; tenant overrides
 	// are deliberately invisible here.
 	aiCfg := h.mgr.AIDefaultsFor(r.Context(), schema)
-	jsonResponse(w, map[string]any{
-		"gemini_api_key":    aiCfg.APIKey,
-		"gemini_model":      aiCfg.Model,
-		"gemini_max_tokens": aiCfg.MaxOutputTokens,
-		"gemini_enabled":    aiCfg.Enabled(),
-	})
+	jsonResponse(w, adminAISettingsPayload(aiCfg))
 }
 
 // adminEnergySettings handles GET/POST /api/admin/energy-settings —
@@ -2812,19 +2883,38 @@ func (h *Handler) adminStressValidation(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *Handler) adminAIModels(w http.ResponseWriter, r *http.Request) {
-	schema := h.tenantSchema(r)
-	// Use the installation-wide config (global + env), same source as
-	// /api/admin/settings GET. Layering the admin's tenant override here
-	// would make model discovery use a different API key than what the
-	// admin just saved on the settings page.
-	aiCfg := h.mgr.AIDefaultsFor(r.Context(), schema)
-	if !aiCfg.Enabled() {
-		http.Error(w, "Gemini API key not configured", http.StatusBadRequest)
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
-	models, err := ai.ListModels(aiCfg.APIKey)
+	schema := h.tenantSchema(r)
+	aiCfg := h.mgr.AIDefaultsFor(r.Context(), schema)
+	var body struct {
+		Provider string `json:"provider"`
+		APIKey   string `json:"api_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	body.Provider = strings.TrimSpace(body.Provider)
+	provider, err := ai.GetProvider(body.Provider)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	key := strings.TrimSpace(body.APIKey)
+	if key == "" {
+		key = aiCfg.SettingsFor(body.Provider).APIKey
+	}
+	if key == "" {
+		http.Error(w, body.Provider+" API key not configured", http.StatusBadRequest)
+		return
+	}
+	models, err := provider.ListModels(r.Context(), key)
+	if err != nil {
+		log.Printf("adminAIModels: provider=%s: %v", body.Provider, err)
+		http.Error(w, "provider model discovery failed", http.StatusBadGateway)
 		return
 	}
 	jsonResponse(w, map[string]any{"models": models})

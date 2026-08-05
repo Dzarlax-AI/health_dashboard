@@ -2,6 +2,7 @@ package ai
 
 import (
 	"bytes"
+	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -15,19 +16,17 @@ import (
 //go:embed prompt.txt
 var systemPrompt string
 
-// Model describes a single Gemini model available for content generation.
-type Model struct {
-	ID          string `json:"id"`           // e.g. "gemini-2.5-flash"
-	DisplayName string `json:"display_name"` // e.g. "Gemini 2.5 Flash"
-}
-
 // ListModels returns all Gemini models that support generateContent,
 // sorted as returned by the API. Returns an error if the key is invalid.
 func ListModels(apiKey string) ([]Model, error) {
+	return listModels(context.Background(), apiKey)
+}
+
+func listModels(ctx context.Context, apiKey string) ([]Model, error) {
 	if apiKey == "" {
 		return nil, fmt.Errorf("API key is required")
 	}
-	req, err := http.NewRequest(http.MethodGet, "https://generativelanguage.googleapis.com/v1beta/models", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://generativelanguage.googleapis.com/v1beta/models", nil)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
@@ -42,7 +41,7 @@ func ListModels(apiKey string) ([]Model, error) {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("google API error (%d): %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("google API error (status %d)", resp.StatusCode)
 	}
 
 	var result struct {
@@ -71,6 +70,38 @@ func ListModels(apiKey string) ([]Model, error) {
 
 const defaultModel = "gemini-2.5-flash"
 
+type GeminiProvider struct{}
+
+func (GeminiProvider) Descriptor() ProviderDescriptor {
+	return ProviderDescriptor{
+		ID:                ProviderGemini,
+		DisplayName:       "Gemini",
+		DefaultModel:      defaultModel,
+		APIKeyPlaceholder: "AIza...",
+	}
+}
+
+func (GeminiProvider) ListModels(ctx context.Context, apiKey string) ([]Model, error) {
+	return listModels(ctx, apiKey)
+}
+
+func (GeminiProvider) Generate(ctx context.Context, cfg ProviderConfig, req GenerationRequest) (GenerationResult, error) {
+	text, payload, err := generateWithPrompt(
+		ctx,
+		cfg.APIKey,
+		cfg.Model,
+		cfg.MaxOutputTokens,
+		req.Prompt,
+		req.UserPayload,
+		req.Language,
+	)
+	return GenerationResult{Text: text, RequestPayload: payload}, err
+}
+
+func init() {
+	RegisterProvider(GeminiProvider{})
+}
+
 // geminiClient bounds Gemini calls so a hung remote can't pin a goroutine
 // forever. With per-block parallelism we can have 4 in flight per tenant per
 // tick — an indefinite hang would balloon the pool until process restart.
@@ -88,7 +119,7 @@ var langNames = map[string]string{
 // instructions before calling this) and the user-facing payload bytes.
 //
 //nolint:revive // keep arg order stable for the orchestrator callsite
-func generateWithPrompt(apiKey, model string, maxTokens int, prompt string, userPayload []byte, lang string) (string, []byte, error) {
+func generateWithPrompt(ctx context.Context, apiKey, model string, maxTokens int, prompt string, userPayload []byte, lang string) (string, []byte, error) {
 	if apiKey == "" {
 		return "", nil, fmt.Errorf("gemini API key is not configured")
 	}
@@ -96,7 +127,7 @@ func generateWithPrompt(apiKey, model string, maxTokens int, prompt string, user
 		model = defaultModel
 	}
 	if maxTokens <= 0 {
-		maxTokens = 5000
+		maxTokens = DefaultMaxOutputTokens
 	}
 
 	endpoint := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", url.PathEscape(model))
@@ -133,7 +164,7 @@ func generateWithPrompt(apiKey, model string, maxTokens int, prompt string, user
 		return "", nil, fmt.Errorf("marshal payload: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return "", nil, fmt.Errorf("new request: %w", err)
 	}
@@ -152,7 +183,7 @@ func generateWithPrompt(apiKey, model string, maxTokens int, prompt string, user
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", bodyBytes, fmt.Errorf("gemini error (status %d): %s", resp.StatusCode, string(respBody))
+		return "", bodyBytes, fmt.Errorf("gemini error (status %d)", resp.StatusCode)
 	}
 
 	var result struct {
@@ -166,11 +197,11 @@ func generateWithPrompt(apiKey, model string, maxTokens int, prompt string, user
 	}
 
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", bodyBytes, fmt.Errorf("unmarshal response: %w (%s)", err, string(respBody))
+		return "", bodyBytes, fmt.Errorf("unmarshal response: %w", err)
 	}
 
 	if len(result.Candidates) == 0 || len(result.Candidates[0].Content.Parts) == 0 {
-		return "", bodyBytes, fmt.Errorf("unexpected gemini response format: %s", string(respBody))
+		return "", bodyBytes, fmt.Errorf("unexpected gemini response format")
 	}
 
 	return result.Candidates[0].Content.Parts[0].Text, bodyBytes, nil

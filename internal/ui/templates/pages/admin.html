@@ -456,18 +456,42 @@
           <summary class="section-title" style="cursor:pointer">{{T .Lang "admin_ai_title"}}</summary>
           <div class="admin-settings-form" style="margin-top:12px">
             <div class="admin-field-row">
-              <label class="admin-field-label">{{T .Lang "admin_ai_key"}}</label>
-              <input class="admin-field-input" type="password" id="cfg-gemini-key" autocomplete="off" placeholder="AIza..." oninput="onGeminiKeyChange()">
+              <label class="admin-field-label" for="cfg-ai-provider">{{T .Lang "admin_ai_provider"}}</label>
+              <select class="admin-field-input" id="cfg-ai-provider" onchange="selectAIProvider(this.value)"></select>
             </div>
             <div class="admin-field-row">
-              <label class="admin-field-label">{{T .Lang "admin_ai_model"}}</label>
-              <select class="admin-field-input" id="cfg-gemini-model">
-                <option value="">— enter API key to load models —</option>
+              <label class="admin-field-label" for="cfg-ai-key">{{T .Lang "admin_ai_key"}}</label>
+              <div style="display:flex;gap:8px;align-items:center;width:100%">
+                <input class="admin-field-input" type="password" id="cfg-ai-key" autocomplete="off">
+                <span class="muted" id="cfg-ai-key-status" style="white-space:nowrap"></span>
+              </div>
+            </div>
+            <div class="admin-field-row">
+              <label class="admin-field-label" for="cfg-ai-clear-key">{{T .Lang "admin_ai_clear_key"}}</label>
+              <input type="checkbox" id="cfg-ai-clear-key">
+            </div>
+            <div class="admin-field-row">
+              <label class="admin-field-label" for="cfg-ai-model">{{T .Lang "admin_ai_model"}}</label>
+              <div style="display:flex;gap:8px;width:100%">
+                <input class="admin-field-input" id="cfg-ai-model" list="cfg-ai-models">
+                <datalist id="cfg-ai-models"></datalist>
+                <button class="btn btn--secondary btn--small" type="button" onclick="loadAIModels()">{{T .Lang "admin_ai_load_models"}}</button>
+              </div>
+            </div>
+            <div class="admin-field-row" id="cfg-ai-reasoning-row" hidden>
+              <label class="admin-field-label" for="cfg-ai-reasoning">{{T .Lang "admin_ai_reasoning"}}</label>
+              <select class="admin-field-input" id="cfg-ai-reasoning">
+                <option value="none">none</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="xhigh">xhigh</option>
+                <option value="max">max</option>
               </select>
             </div>
             <div class="admin-field-row">
-              <label class="admin-field-label">{{T .Lang "admin_ai_max_tokens"}}</label>
-              <input class="admin-field-input" type="number" id="cfg-gemini-max-tokens" min="200" max="8192" placeholder="1000">
+              <label class="admin-field-label" for="cfg-ai-max-tokens">{{T .Lang "admin_ai_max_tokens"}}</label>
+              <input class="admin-field-input" type="number" id="cfg-ai-max-tokens" min="200" max="128000" placeholder="5000">
             </div>
             <div class="admin-settings-actions">
               <button class="btn btn--primary btn--small" onclick="saveAISettings()">
@@ -1036,17 +1060,25 @@ function runQualityDigest() {
     });
 }
 
+var _aiSettings = null;
+
 function loadAdminSettings() {
-  var keyInput = $('cfg-gemini-key');
-  var tokenInput = $('cfg-gemini-max-tokens');
   fetch('/api/admin/settings')
     .then(function(r){return r.json()})
     .then(function(d) {
-      if (d.gemini_api_key && keyInput) {
-        keyInput.value = d.gemini_api_key;
-        loadGeminiModels(d.gemini_api_key, d.gemini_model || '');
-      }
-      if (d.gemini_max_tokens && tokenInput) tokenInput.value = d.gemini_max_tokens;
+      _aiSettings = d;
+      var select = $('cfg-ai-provider');
+      select.innerHTML = '';
+      (d.providers || []).forEach(function(provider) {
+        var opt = document.createElement('option');
+        opt.value = provider.id;
+        opt.textContent = provider.display_name;
+        opt.selected = provider.id === d.provider;
+        select.appendChild(opt);
+      });
+      $('cfg-ai-max-tokens').value = d.max_output_tokens || 5000;
+      var known = (d.providers || []).some(function(provider) { return provider.id === d.provider; });
+      selectAIProvider(known ? d.provider : (d.providers && d.providers[0] && d.providers[0].id));
     });
   if (tenantPanelVisible()) {
     loadEnergySettings();
@@ -1230,61 +1262,94 @@ function runStressValidation() {
     });
 }
 
-var _geminiKeyTimer = null;
-function onGeminiKeyChange() {
-  clearTimeout(_geminiKeyTimer);
-  _geminiKeyTimer = setTimeout(function() {
-    var key = $('cfg-gemini-key').value.trim();
-    if (key.length > 10) loadGeminiModels(key, null);
-  }, 800);
+function currentAIProvider() {
+  if (!_aiSettings) return null;
+  var id = $('cfg-ai-provider').value;
+  return (_aiSettings.providers || []).find(function(provider) { return provider.id === id; }) || null;
 }
 
-function loadGeminiModels(key, currentModel) {
-  var sel = $('cfg-gemini-model');
-  sel.innerHTML = '<option value="">Loading...</option>';
-  sel.disabled = true;
+function selectAIProvider(id) {
+  if (!_aiSettings) return;
+  var provider = (_aiSettings.providers || []).find(function(item) { return item.id === id; });
+  if (!provider) return;
+  $('cfg-ai-provider').value = id;
+  $('cfg-ai-key').value = '';
+  $('cfg-ai-key').placeholder = provider.api_key_placeholder || '';
+  $('cfg-ai-key-status').textContent = provider.configured
+    ? '{{T .Lang "admin_ai_key_configured"}}'
+    : '{{T .Lang "admin_ai_key_not_configured"}}';
+  $('cfg-ai-clear-key').checked = false;
+  $('cfg-ai-model').value = provider.model || provider.default_model || '';
+  $('cfg-ai-models').innerHTML = '';
+  $('cfg-ai-reasoning-row').hidden = !provider.supports_reasoning;
+  $('cfg-ai-reasoning').value = provider.reasoning_effort || 'none';
+}
 
-  fetch('/api/admin/settings', {
+function loadAIModels() {
+  var provider = currentAIProvider();
+  if (!provider) return;
+  var msg = $('admin-ai-msg');
+  msg.textContent = '{{T .Lang "admin_ai_models_loading"}}';
+  msg.style.display = '';
+  msg.className = 'alert';
+  fetch('/api/admin/ai-models', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({gemini_api_key: key})
+    body: JSON.stringify({
+      provider: provider.id,
+      api_key: $('cfg-ai-key').value.trim()
+    })
   })
-  .then(function() { return fetch('/api/admin/ai-models'); })
   .then(function(r) {
-    if (!r.ok) throw new Error('Failed to load models');
+    if (!r.ok) return r.text().then(function(t){ throw new Error(t || 'Failed to load models'); });
     return r.json();
   })
   .then(function(d) {
-    sel.innerHTML = '';
+    var list = $('cfg-ai-models');
+    list.innerHTML = '';
     (d.models || []).forEach(function(m) {
       var opt = document.createElement('option');
       opt.value = m.id;
-      opt.textContent = m.display_name ? m.display_name + ' (' + m.id + ')' : m.id;
-      if (m.id === currentModel) opt.selected = true;
-      sel.appendChild(opt);
+      opt.label = m.display_name || m.id;
+      list.appendChild(opt);
     });
-    sel.disabled = false;
+    msg.style.display = 'none';
   })
   .catch(function(e) {
-    sel.innerHTML = '<option value="">— could not load models —</option>';
-    sel.disabled = false;
+    msg.textContent = String(e.message || e);
+    msg.className = 'alert alert--error';
   });
 }
 
 function saveAISettings() {
+  var provider = currentAIProvider();
+  if (!provider) return;
   var body = {
-    gemini_api_key: $('cfg-gemini-key').value,
-    gemini_model: $('cfg-gemini-model').value,
-    gemini_max_tokens: $('cfg-gemini-max-tokens').value
+    provider: provider.id,
+    api_key: $('cfg-ai-key').value.trim(),
+    clear_api_key: $('cfg-ai-clear-key').checked,
+    model: $('cfg-ai-model').value.trim(),
+    reasoning_effort: provider.supports_reasoning ? $('cfg-ai-reasoning').value : '',
+    max_output_tokens: Number($('cfg-ai-max-tokens').value)
   };
   fetch('/api/admin/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
-    .then(function(r){return r.json()})
-    .then(function(d) {
+    .then(function(r) {
+      if (!r.ok) return r.text().then(function(t){ throw new Error(t || 'Failed to save settings'); });
+      return r.json();
+    })
+    .then(function() {
       var msg = $('admin-ai-msg');
       msg.textContent = '{{T .Lang "admin_ai_saved"}}';
       msg.style.display = '';
       msg.className = 'alert alert--success';
       setTimeout(function(){ msg.style.display = 'none'; }, 3000);
+      loadAdminSettings();
+    })
+    .catch(function(e) {
+      var msg = $('admin-ai-msg');
+      msg.textContent = String(e.message || e);
+      msg.style.display = '';
+      msg.className = 'alert alert--error';
     });
 }
 
