@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 )
 
 const (
@@ -12,7 +13,8 @@ const (
 	ProviderOpenAI = "openai"
 
 	DefaultMaxOutputTokens = 5000
-	PromptRevision         = "health-briefing-v1"
+	PromptRevision         = "health-briefing-v2"
+	SynthesisMaxTokens     = 600
 )
 
 // Model describes a model exposed by an AI provider.
@@ -44,14 +46,29 @@ type ProviderConfig struct {
 // GenerationRequest is deliberately provider-neutral. Each adapter translates
 // it to the request shape required by its upstream API.
 type GenerationRequest struct {
-	Prompt      string
-	UserPayload []byte
-	Language    string
+	Prompt         string
+	UserPayload    []byte
+	Language       string
+	ResponseSchema *ResponseSchema
+}
+
+// ResponseSchema is the small JSON Schema subset shared by all adapters.
+// Providers translate it into their native structured-output request shape.
+type ResponseSchema struct {
+	Name   string
+	Schema map[string]any
 }
 
 type GenerationResult struct {
 	Text           string
 	RequestPayload []byte
+	RequestID      string
+	InputTokens    int64
+	OutputTokens   int64
+	TotalTokens    int64
+	FinishReason   string
+	Attempts       int
+	Latency        time.Duration
 }
 
 // Provider is the only vendor-specific boundary used by the block

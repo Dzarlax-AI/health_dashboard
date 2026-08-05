@@ -1,68 +1,84 @@
 package ai
 
 import (
-	"strings"
+	"context"
 	"testing"
 
 	"health-receiver/internal/health"
 )
 
-func TestHashRecoveryIncludesReadinessContextAndCheckin(t *testing.T) {
-	raw := &health.RawMetrics{
-		LastDate: "2026-06-04",
-		HRV:      []float64{40, 41, 42},
-		RHR:      []float64{60, 61, 62},
-		Sleep:    []float64{7, 7.5, 8},
-	}
-	base := InsightContext{
-		ReadinessScore:      65,
-		ReadinessRawScore:   95,
-		ReadinessConfidence: health.ReadinessConfidenceProvisional,
-		ReadinessCapReason:  "missing_same_day_evidence",
-		AIAdviceMode:        "needs_regeneration_after_sync",
-		CheckinStatus:       "answered",
-		CheckinAnswer:       "meh",
-	}
-	changed := base
-	changed.CheckinAnswer = "sick"
+type synthesisProvider struct {
+	calls int
+	req   GenerationRequest
+	cfg   ProviderConfig
+	text  string
+}
 
-	if got, wantNot := HashRecovery(raw, nil, base), HashRecovery(raw, nil, changed); got == wantNot {
-		t.Fatalf("HashRecovery did not change after check-in answer changed")
+func (p *synthesisProvider) Descriptor() ProviderDescriptor {
+	return ProviderDescriptor{ID: "synthesis"}
+}
+
+func (p *synthesisProvider) ListModels(context.Context, string) ([]Model, error) {
+	return nil, nil
+}
+
+func (p *synthesisProvider) Generate(_ context.Context, cfg ProviderConfig, req GenerationRequest) (GenerationResult, error) {
+	p.calls++
+	p.cfg = cfg
+	p.req = req
+	return GenerationResult{Text: p.text}, nil
+}
+
+func TestGenerateSynthesisUsesSchemaAndOperationTokenCap(t *testing.T) {
+	provider := &synthesisProvider{text: `{"explanation":"HRV is above your usual level, while sleep quality keeps the server plan moderate."}`}
+	result, err := GenerateSynthesis(context.Background(), provider, ProviderConfig{
+		MaxOutputTokens: 5000,
+	}, []byte(`{"verdict":"moderate"}`), "en")
+	if err != nil {
+		t.Fatalf("GenerateSynthesis: %v", err)
+	}
+	if provider.calls != 1 {
+		t.Fatalf("calls = %d, want 1", provider.calls)
+	}
+	if provider.cfg.MaxOutputTokens != SynthesisMaxTokens {
+		t.Fatalf("max tokens = %d, want %d", provider.cfg.MaxOutputTokens, SynthesisMaxTokens)
+	}
+	if provider.req.ResponseSchema == nil || provider.req.ResponseSchema.Name != "morning_insight_synthesis" {
+		t.Fatalf("response schema = %#v", provider.req.ResponseSchema)
+	}
+	if result.Text != "HRV is above your usual level, while sleep quality keeps the server plan moderate." {
+		t.Fatalf("text = %q", result.Text)
 	}
 }
 
-func TestHashRecommendationIncludesReadinessContextAndCheckin(t *testing.T) {
-	base := InsightContext{AIAdviceMode: "confident_advice_allowed", CheckinStatus: "answered", CheckinAnswer: "ok"}
-	changed := base
-	changed.AIAdviceMode = "provisional_explanation_only"
-
-	got := HashRecommendation("sleep", "yesterday", "recovery", nil, []string{"moderate"}, base)
-	wantNot := HashRecommendation("sleep", "yesterday", "recovery", nil, []string{"moderate"}, changed)
-	if got == wantNot {
-		t.Fatalf("HashRecommendation did not change after AI advice mode changed")
-	}
-}
-
-func TestGenerateRecommendationAddsProvisionalInstruction(t *testing.T) {
-	ctx := InsightContext{
-		ReadinessScore:      65,
-		ReadinessRawScore:   95,
-		ReadinessConfidence: health.ReadinessConfidenceProvisional,
-		ReadinessCapReason:  "missing_same_day_evidence",
-		AIAdviceMode:        "provisional_explanation_only",
-		CheckinStatus:       "answered",
-		CheckinAnswer:       "sick",
-	}
-	got := BuildRecommendationContext("sleep", "yesterday", "recovery", nil, nil, ctx)
-	for _, want := range []string{
-		"READINESS_EVIDENCE_CONTEXT",
-		"advice_mode=provisional_explanation_only",
-		"checkin_answer=sick",
-		"Treat today's readiness as provisional",
-		"Do NOT give confident push-hard advice",
+func TestGenerateSynthesisRejectsUnsafeOrMalformedOutput(t *testing.T) {
+	for _, text := range []string{
+		`not json`,
+		`{"explanation":""}`,
+		`{"explanation":"**Diagnosis:** illness confirmed."}`,
 	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("recommendation context missing %q:\n%s", want, got)
+		provider := &synthesisProvider{text: text}
+		if _, err := GenerateSynthesis(context.Background(), provider, ProviderConfig{}, []byte(`{}`), "en"); err == nil {
+			t.Fatalf("output %q was accepted", text)
 		}
 	}
 }
+
+func TestHashSynthesisUsesExactDatedEvidence(t *testing.T) {
+	base := health.MorningInsightEvidence{
+		Date:    "2026-08-04",
+		Verdict: "moderate",
+		Daily: []health.DailyHealthMetrics{
+			{Date: "2026-08-04", HRV: floatPtr(51.8)},
+			{Date: "2026-08-03", HRV: floatPtr(38)},
+		},
+	}
+	changed := base
+	changed.Daily = append([]health.DailyHealthMetrics(nil), base.Daily...)
+	changed.Daily[0].Date = "2026-08-03"
+	if HashSynthesis(base) == HashSynthesis(changed) {
+		t.Fatal("changing the metric date did not invalidate synthesis hash")
+	}
+}
+
+func floatPtr(v float64) *float64 { return &v }

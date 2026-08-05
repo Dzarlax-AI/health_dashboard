@@ -238,22 +238,57 @@ func TestFormatMorningRich_StructureAndEscaping(t *testing.T) {
 	loc, _ := time.LoadLocation("UTC")
 	briefing := sampleBriefing()
 	out := formatMorningRich(briefing, map[string]string{
-		"SLEEP":          "AI says <check sleep>",
-		"YESTERDAY":      "AI says move",
-		"RECOVERY":       "AI says recover",
-		"RECOMMENDATION": "Do not chase <max effort>",
+		"SLEEP":     "legacy sleep essay must stay hidden",
+		"SYNTHESIS": "AI explains <moderate & controlled>",
 	}, "en", loc, freshness{}, false, "")
 
 	for _, want := range []string{
 		"<h2>🌅 Morning report — 2026-06-14</h2>",
-		"<table>",
-		"<blockquote>🤖 AI says &lt;check sleep&gt;</blockquote>",
-		"<details><summary>Sources</summary>",
-		"Do not chase &lt;max effort&gt;",
+		"<h3>⚡ Today: Moderate</h3>",
+		"<h3>Key metrics</h3>",
+		"<h3>Why</h3>",
+		"🤖 <em>AI explains &lt;moderate &amp; controlled&gt;</em>",
+		"<h3>🎯 Plan for today</h3>",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("rich morning missing %q:\n%s", want, out)
 		}
+	}
+	for _, forbidden := range []string{
+		"<table>", "<blockquote>", "<details>", "legacy sleep essay must stay hidden",
+	} {
+		if strings.Contains(out, forbidden) {
+			t.Fatalf("rich morning contains obsolete %q:\n%s", forbidden, out)
+		}
+	}
+}
+
+func TestFormatMorningLegacy_UsesSingleEscapedSynthesis(t *testing.T) {
+	loc, _ := time.LoadLocation("UTC")
+	briefing := sampleBriefing()
+	briefing.TodayGuidance = &health.DashboardTodayGuidance{
+		Action:  "moderate",
+		Label:   "Moderate <day>",
+		Summary: "Keep effort <7 & controlled.",
+		Reason:  "Fresh HRV & adequate energy.",
+	}
+	out := formatMorning(briefing, map[string]string{
+		"SLEEP":     "legacy essay",
+		"SYNTHESIS": "One <safe & aligned> explanation.",
+	}, "en", loc, freshness{}, false)
+
+	for _, want := range []string{
+		"Moderate &lt;day&gt;",
+		"Fresh HRV &amp; adequate energy.",
+		"One &lt;safe &amp; aligned&gt; explanation.",
+		"Keep effort &lt;7 &amp; controlled.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("legacy morning missing escaped %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "legacy essay") {
+		t.Fatalf("legacy leaf leaked into v2 morning:\n%s", out)
 	}
 }
 

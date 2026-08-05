@@ -21,56 +21,61 @@ func formatMorningRich(b *health.BriefingResponse, aiBlocks map[string]string, l
 		richTrustedParagraph(&sb, fmt.Sprintf(tr(lang, "tg_warn_stale"), d))
 	}
 
-	renderRichHeadline(&sb, b.Headline)
-	renderRichMorningSummary(&sb, b, f, lang)
-
-	ai := struct{ Sleep, Yesterday, Recovery, Recommendation string }{
-		Sleep:          aiBlocks["SLEEP"],
-		Yesterday:      aiBlocks["YESTERDAY"],
-		Recovery:       aiBlocks["RECOVERY"],
-		Recommendation: aiBlocks["RECOMMENDATION"],
+	evidence := morningEvidenceForReport(b, f)
+	label := evidence.VerdictLabel
+	if label == "" {
+		label = evidence.Verdict
+	}
+	if label == "" {
+		label = firstReportText(b.ReadinessTodayLabel, tr(lang, "tg_no_data"))
+	}
+	fmt.Fprintf(&sb, "<h3>⚡ %s: %s</h3>\n", richEsc(tr(lang, "tg_morning_today")), richText(label))
+	if evidence.VerdictReason != "" {
+		fmt.Fprintf(&sb, "<p>%s</p>\n", richText(evidence.VerdictReason))
 	}
 
-	renderRichEnergyBank(&sb, b.EnergyBank, lang)
-	renderRichReadiness(&sb, b, lang)
-	renderRichAlerts(&sb, b.Alerts, lang)
-	renderRichContextAnnotations(&sb, b.ContextAnnotations, lang)
-
+	fmt.Fprintf(&sb, "<h3>%s</h3>\n<p>", richEsc(tr(lang, "tg_morning_metrics")))
+	var metricLines []string
+	if b.EnergyBank != nil && b.EnergyBank.Capacity > 0 {
+		metricLines = append(metricLines, fmt.Sprintf("⚡ %s: %d/%d",
+			richEsc(tr(lang, "tg_energy")), b.EnergyBank.Current, b.EnergyBank.Capacity))
+	}
+	metricLines = append(metricLines, fmt.Sprintf("%s %s: %d/100",
+		richEsc(readinessEmoji(b.ReadinessToday)), richEsc(tr(lang, "tg_readiness")), b.ReadinessToday))
 	switch {
-	case f.sleepStale() && f.sleepKnown:
-		richTrustedParagraph(&sb, fmt.Sprintf(tr(lang, "tg_sleep_silence"), fmtSilence(f.sleep, lang)))
-	case b.Sleep == nil:
-		richTrustedParagraph(&sb, tr(lang, "tg_warn_no_sleep"))
-	default:
-		renderRichSection(&sb, findSection(b, "sleep"))
-		renderRichAITake(&sb, ai.Sleep)
-		renderRichSleepSources(&sb, b.Sleep, lang)
+	case f.sleepKnown && f.sleepStale():
+		metricLines = append(metricLines, "😴 "+richText(stripSimpleTags(fmt.Sprintf(tr(lang, "tg_sleep_silence"), fmtSilence(f.sleep, lang)))))
+	case b.Sleep != nil:
+		metricLines = append(metricLines, fmt.Sprintf("😴 %s: %.1fh",
+			richText(sectionTitle(findSection(b, "sleep"), "Sleep")), b.Sleep.TotalAvg))
 	}
+	if f.watchKnown && f.watchOff() {
+		metricLines = append(metricLines, "❤️ "+richText(stripSimpleTags(fmt.Sprintf(tr(lang, "tg_watch_off"), fmtSilence(f.watch, lang)))))
+	}
+	if f.phoneKnown && f.phoneOff() {
+		metricLines = append(metricLines, "📱 "+richText(stripSimpleTags(fmt.Sprintf(tr(lang, "tg_phone_off"), fmtSilence(f.phone, lang)))))
+	}
+	sb.WriteString(strings.Join(metricLines, "<br>"))
+	sb.WriteString("</p>\n")
 
-	if f.phoneOff() && f.phoneKnown {
-		richTrustedParagraph(&sb, fmt.Sprintf(tr(lang, "tg_phone_off"), fmtSilence(f.phone, lang)))
-	} else {
-		actSec := findSection(b, "activity")
-		cardioSec := findSection(b, "cardio")
-		if actSec != nil || cardioSec != nil || ai.Yesterday != "" {
-			fmt.Fprintf(&sb, "<h3>📅 %s</h3>\n", richEsc(tr(lang, "tg_yesterday")))
-			renderRichSectionDetails(&sb, actSec)
-			renderRichSectionDetails(&sb, cardioSec)
-			renderRichAITake(&sb, ai.Yesterday)
+	if len(evidence.Reasons) > 0 {
+		fmt.Fprintf(&sb, "<h3>%s</h3>\n<ul>\n", richEsc(tr(lang, "tg_morning_why")))
+		for _, reason := range evidence.Reasons {
+			fmt.Fprintf(&sb, "<li>%s</li>\n", richText(reason.Text))
 		}
+		sb.WriteString("</ul>\n")
 	}
-
-	if f.watchOff() && f.watchKnown {
-		richTrustedParagraph(&sb, fmt.Sprintf(tr(lang, "tg_watch_off"), fmtSilence(f.watch, lang)))
-	} else if recSec := findSection(b, "recovery"); recSec != nil {
-		renderRichSection(&sb, recSec)
-		renderRichAITake(&sb, ai.Recovery)
+	if synthesis := strings.TrimSpace(aiBlocks["SYNTHESIS"]); synthesis != "" {
+		fmt.Fprintf(&sb, "<p>🤖 <em>%s</em></p>\n", richText(synthesis))
 	}
-
-	if ai.Recommendation != "" {
-		fmt.Fprintf(&sb, "<h3>🎯 %s</h3>\n<p>%s</p>\n", richEsc(tr(lang, "tg_recommendation")), richText(ai.Recommendation))
+	if evidence.Action != "" {
+		fmt.Fprintf(&sb, "<h3>🎯 %s</h3>\n<p>%s</p>\n",
+			richEsc(tr(lang, "tg_recommendation")), richText(evidence.Action))
 	}
-	renderRichFreshnessDetails(&sb, f, lang)
+	if parts := morningFreshnessParts(f, lang); len(parts) > 0 {
+		fmt.Fprintf(&sb, "<p><em>%s: %s</em></p>\n",
+			richEsc(tr(lang, "tg_morning_updated")), richText(strings.Join(parts, " · ")))
+	}
 
 	if checkinExpired {
 		if note := tr(lang, "checkin_expired_note"); note != "" && note != "checkin_expired_note" {

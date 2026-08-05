@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"log"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"health-receiver/internal/ai"
 	"health-receiver/internal/health"
 	"health-receiver/internal/storage"
 )
@@ -509,17 +511,6 @@ func renderSectionBullets(sb *strings.Builder, sec *health.BriefingSection) {
 	}
 }
 
-// renderAITake prints the AI prose for a section underneath rule-based bullets.
-// Marked with 🤖 so the user immediately sees this is the LLM layer, not the
-// scoring engine. Empty body is a no-op.
-func renderAITake(sb *strings.Builder, body string) {
-	body = strings.TrimSpace(body)
-	if body == "" {
-		return
-	}
-	fmt.Fprintf(sb, "  🤖 <i>%s</i>\n", body)
-}
-
 func renderHeadline(sb *strings.Builder, h *health.HeadlineSignal) {
 	if h == nil || h.Title == "" {
 		return
@@ -602,6 +593,43 @@ func abs(x int) int {
 	return x
 }
 
+func morningEvidenceForReport(b *health.BriefingResponse, f freshness) health.MorningInsightEvidence {
+	evidence := health.BuildMorningInsightEvidence(b, nil)
+	filtered := evidence.Reasons[:0]
+	for _, reason := range evidence.Reasons {
+		if f.sleepKnown && f.sleepStale() && reason.Section == "sleep" {
+			continue
+		}
+		if f.watchKnown && f.watchOff() && reason.Section == "recovery" {
+			continue
+		}
+		if f.phoneKnown && f.phoneOff() && (reason.Section == "activity" || reason.Section == "cardio") {
+			continue
+		}
+		filtered = append(filtered, reason)
+	}
+	evidence.Reasons = filtered
+	return evidence
+}
+
+func morningFreshnessParts(f freshness, lang string) []string {
+	var parts []string
+	if f.watchKnown {
+		parts = append(parts, tr(lang, "tg_source_watch")+" "+fmtSilence(f.watch, lang))
+	}
+	if f.phoneKnown {
+		parts = append(parts, tr(lang, "tg_source_activity")+" "+fmtSilence(f.phone, lang))
+	}
+	if f.sleepKnown {
+		parts = append(parts, tr(lang, "tg_source_sleep")+" "+fmtSilence(f.sleep, lang))
+	}
+	return parts
+}
+
+func telegramText(s string) string {
+	return html.EscapeString(strings.TrimSpace(s))
+}
+
 // ── morning ──────────────────────────────────────────────────────────────────
 
 func formatMorning(b *health.BriefingResponse, aiBlocks map[string]string, lang string, loc *time.Location, f freshness, checkinExpired bool) string {
@@ -612,77 +640,54 @@ func formatMorning(b *health.BriefingResponse, aiBlocks map[string]string, lang 
 		fmt.Fprintf(&sb, tr(lang, "tg_warn_stale")+"\n\n", d)
 	}
 
-	// Headline first — sets the frame for everything below ("see headline above"
-	// references in section summaries now actually resolve).
-	renderHeadline(&sb, b.Headline)
-
-	// AI blocks come pre-split from ai_briefing_blocks; no parsing needed.
-	ai := struct{ Sleep, Yesterday, Recovery, Recommendation string }{
-		Sleep:          aiBlocks["SLEEP"],
-		Yesterday:      aiBlocks["YESTERDAY"],
-		Recovery:       aiBlocks["RECOVERY"],
-		Recommendation: aiBlocks["RECOMMENDATION"],
+	evidence := morningEvidenceForReport(b, f)
+	label := evidence.VerdictLabel
+	if label == "" {
+		label = evidence.Verdict
 	}
+	if label == "" {
+		label = firstReportText(b.ReadinessTodayLabel, tr(lang, "tg_no_data"))
+	}
+	fmt.Fprintf(&sb, "⚡ <b>%s: %s</b>\n", tr(lang, "tg_morning_today"), telegramText(label))
+	if evidence.VerdictReason != "" {
+		fmt.Fprintf(&sb, "%s\n", telegramText(evidence.VerdictReason))
+	}
+	sb.WriteByte('\n')
 
-	renderEnergyBank(&sb, b.EnergyBank, lang)
-	renderReadiness(&sb, b, lang)
-	renderAlerts(&sb, b.Alerts, lang)
-	renderContextAnnotations(&sb, b.ContextAnnotations, lang)
-
-	// Sleep — rule-based bullets always; AI take layered underneath. If sleep
-	// data is silent for ≥36h, the briefing is from a stale night and the
-	// section misleads — replace with banner.
+	fmt.Fprintf(&sb, "<b>%s</b>\n", tr(lang, "tg_morning_metrics"))
+	if b.EnergyBank != nil && b.EnergyBank.Capacity > 0 {
+		fmt.Fprintf(&sb, "  ⚡ %s: %d/%d\n", tr(lang, "tg_energy"), b.EnergyBank.Current, b.EnergyBank.Capacity)
+	}
+	fmt.Fprintf(&sb, "  %s %s: %d/100\n", readinessEmoji(b.ReadinessToday), tr(lang, "tg_readiness"), b.ReadinessToday)
 	switch {
-	case f.sleepStale() && f.sleepKnown:
-		fmt.Fprintf(&sb, tr(lang, "tg_sleep_silence")+"\n\n", fmtSilence(f.sleep, lang))
-	case b.Sleep == nil:
-		sb.WriteString(tr(lang, "tg_warn_no_sleep") + "\n\n")
-	default:
-		renderSectionBullets(&sb, findSection(b, "sleep"))
-		if len(b.Sleep.Sources) > 1 {
-			fmt.Fprintf(&sb, "📱 <i>%s:</i>\n", tr(lang, "tg_sources"))
-			for _, src := range b.Sleep.Sources {
-				fmt.Fprintf(&sb, "  %s — %.1fh\n", src.Source, src.Total)
-			}
+	case f.sleepKnown && f.sleepStale():
+		fmt.Fprintf(&sb, "  😴 %s\n", telegramText(stripSimpleTags(fmt.Sprintf(tr(lang, "tg_sleep_silence"), fmtSilence(f.sleep, lang)))))
+	case b.Sleep != nil:
+		fmt.Fprintf(&sb, "  😴 %s: %.1fh\n", telegramText(sectionTitle(findSection(b, "sleep"), "Sleep")), b.Sleep.TotalAvg)
+	}
+	if f.watchKnown && f.watchOff() {
+		fmt.Fprintf(&sb, "  ❤️ %s\n", telegramText(stripSimpleTags(fmt.Sprintf(tr(lang, "tg_watch_off"), fmtSilence(f.watch, lang)))))
+	}
+	if f.phoneKnown && f.phoneOff() {
+		fmt.Fprintf(&sb, "  📱 %s\n", telegramText(stripSimpleTags(fmt.Sprintf(tr(lang, "tg_phone_off"), fmtSilence(f.phone, lang)))))
+	}
+	sb.WriteByte('\n')
+
+	if len(evidence.Reasons) > 0 {
+		fmt.Fprintf(&sb, "<b>%s</b>\n", tr(lang, "tg_morning_why"))
+		for _, reason := range evidence.Reasons {
+			fmt.Fprintf(&sb, "  • %s\n", telegramText(reason.Text))
 		}
-		renderAITake(&sb, ai.Sleep)
 		sb.WriteByte('\n')
 	}
-
-	// Yesterday — activity + cardio as the rule-based retrospective. Phone-off
-	// (no step data ≥24h) collapses the whole block into a banner.
-	if f.phoneOff() && f.phoneKnown {
-		fmt.Fprintf(&sb, tr(lang, "tg_phone_off")+"\n\n", fmtSilence(f.phone, lang))
-	} else {
-		actSec := findSection(b, "activity")
-		cardioSec := findSection(b, "cardio")
-		if actSec != nil || cardioSec != nil || ai.Yesterday != "" {
-			fmt.Fprintf(&sb, "📅 <b>%s</b>\n", tr(lang, "tg_yesterday"))
-			if actSec != nil {
-				renderSectionBullets(&sb, actSec)
-			}
-			if cardioSec != nil {
-				renderSectionBullets(&sb, cardioSec)
-			}
-			renderAITake(&sb, ai.Yesterday)
-			sb.WriteByte('\n')
-		}
+	if synthesis := strings.TrimSpace(aiBlocks[ai.BlockSynthesis]); synthesis != "" {
+		fmt.Fprintf(&sb, "🤖 <i>%s</i>\n\n", telegramText(synthesis))
 	}
-
-	// Recovery — watch off (HRV+RHR both silent ≥36h) collapses to a banner.
-	// Without HRV/RHR the section's numbers are days-old and would mislead.
-	if f.watchOff() && f.watchKnown {
-		fmt.Fprintf(&sb, tr(lang, "tg_watch_off")+"\n\n", fmtSilence(f.watch, lang))
-	} else if recSec := findSection(b, "recovery"); recSec != nil {
-		renderSectionBullets(&sb, recSec)
-		renderAITake(&sb, ai.Recovery)
-		sb.WriteByte('\n')
+	if evidence.Action != "" {
+		fmt.Fprintf(&sb, "🎯 <b>%s</b>\n%s\n", tr(lang, "tg_recommendation"), telegramText(evidence.Action))
 	}
-
-	// Recommendation — actionable closer. AI-only; rule-based equivalent is
-	// already covered by EnergyBank.VerdictReason and ReadinessTip rendered above.
-	if ai.Recommendation != "" {
-		fmt.Fprintf(&sb, "🎯 <b>%s</b>\n%s\n", tr(lang, "tg_recommendation"), strings.TrimSpace(ai.Recommendation))
+	if parts := morningFreshnessParts(f, lang); len(parts) > 0 {
+		fmt.Fprintf(&sb, "\n<i>%s: %s</i>\n", tr(lang, "tg_morning_updated"), telegramText(strings.Join(parts, " · ")))
 	}
 
 	// Soft footer: when the cap-path forced the report after the user
@@ -699,6 +704,22 @@ func formatMorning(b *health.BriefingResponse, aiBlocks map[string]string, lang 
 	}
 
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+func sectionTitle(section *health.BriefingSection, fallback string) string {
+	if section == nil || strings.TrimSpace(section.Title) == "" {
+		return fallback
+	}
+	return strings.TrimSpace(section.Title)
+}
+
+func firstReportText(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 // ── evening ──────────────────────────────────────────────────────────────────
