@@ -156,6 +156,7 @@ if errors:
 expected = {
     "health-machine@file",
     "health-api-key@file",
+    "health-telegram-webhook@file",
     "health-browser-api@file",
     "health-legacy@file",
     "health-legacy-root@file",

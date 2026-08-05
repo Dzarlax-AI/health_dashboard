@@ -92,6 +92,17 @@ assert "middlewares" not in {
     for key, value in b.items()
     if key.startswith("traefik.http.routers.health-api-key.")
 }
+assert b["traefik.http.routers.health-telegram-webhook.rule"].endswith(
+    "PathPrefix(`/api/telegram/webhook/`)"
+)
+assert int(b["traefik.http.routers.health-telegram-webhook.priority"]) > int(
+    b["traefik.http.routers.health-api-key.priority"]
+)
+assert "middlewares" not in {
+    key.rsplit(".", 1)[-1]: value
+    for key, value in b.items()
+    if key.startswith("traefik.http.routers.health-telegram-webhook.")
+}
 assert b["traefik.http.routers.health-legacy-root.middlewares"] == "authentik-auth,health-legacy-root"
 assert b["traefik.http.middlewares.health-legacy-root.replacepath.path"] == "/"
 root = f["traefik.http.routers.health-frontend-root.rule"]
