@@ -15,6 +15,7 @@ function briefing(
     recovery: "",
     sections: [],
     sleep: "",
+    summary: "",
     yesterday: "",
     ...overrides,
   };

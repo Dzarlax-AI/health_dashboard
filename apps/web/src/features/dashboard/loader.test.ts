@@ -24,6 +24,7 @@ function loaders(): DashboardLoaders {
       recovery: "",
       sections: [],
       sleep: "",
+      summary: "",
       yesterday: "",
     }),
     readinessHistory: vi.fn<DashboardLoaders["readinessHistory"]>().mockResolvedValue({
