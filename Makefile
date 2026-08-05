@@ -1,4 +1,4 @@
-.PHONY: dev build backfill backfill-force energy-backfill energy-backfill-dry tenant-isolation import contract-generate contract-check web-install web-install-browsers web-dev web-check web-test-visual docker-build-backend docker-build-frontend docker-build-images test-container-images test-compatible-image-pair test-compatible-image-pair-negative test-release-contract-helpers test-production-routing-config test-production-traefik-rules docker-up docker-down test test-unit test-db-storage test-db-ui test-db-ui-fast test-db-energy test-db-energy-smoke test-db-readiness test-db-import test-db-security test-db smoke-health-post
+.PHONY: dev build backfill backfill-force energy-backfill energy-backfill-dry wake-backfill wake-backfill-dry tenant-isolation import contract-generate contract-check web-install web-install-browsers web-dev web-check web-test-visual docker-build-backend docker-build-frontend docker-build-images test-container-images test-compatible-image-pair test-compatible-image-pair-negative test-release-contract-helpers test-production-routing-config test-production-traefik-rules docker-up docker-down test test-unit test-db-storage test-db-ui test-db-ui-fast test-db-energy test-db-energy-smoke test-db-readiness test-db-import test-db-security test-db smoke-health-post
 
 ADDR ?= :8080
 PNPM ?= pnpm
@@ -37,6 +37,18 @@ energy-backfill-dry:
 		$(if $(TZ),--tz $(TZ),) \
 		$(if $(FROM),--from $(FROM),) \
 		$(if $(TO),--to $(TO),) \
+		$(if $(SCHEMA),--schema $(SCHEMA),)
+
+wake-backfill:
+	DATABASE_URL=$(DATABASE_URL) go run ./cmd/wake_detection_backfill --apply \
+		--from $(FROM) --to $(TO) \
+		$(if $(TZ),--tz $(TZ),) \
+		$(if $(SCHEMA),--schema $(SCHEMA),)
+
+wake-backfill-dry:
+	DATABASE_URL=$(DATABASE_URL) go run ./cmd/wake_detection_backfill \
+		--from $(FROM) --to $(TO) \
+		$(if $(TZ),--tz $(TZ),) \
 		$(if $(SCHEMA),--schema $(SCHEMA),)
 
 import:

@@ -147,6 +147,7 @@ func main() {
 		legacyDB.EnsureReadinessRedesignTables()
 		legacyDB.EnsureSubjectiveCheckinsTable()
 		legacyDB.EnsureContextPromptInteractionsTable()
+		legacyDB.EnsureDerivedMetricsTables()
 		legacyDB.EnsureAuthSessionsTable()
 		if err := legacyDB.VerifyProvisionedSchema(); err != nil {
 			log.Fatalf("legacy startup schema gate: %v", err)
@@ -648,7 +649,13 @@ func buildNotifyCfg(db *storage.DB, c storage.NotifyConfig) notify.Config {
 		TelegramRichMessages: c.TelegramRichMessages,
 		MorningCapHour:       c.MorningCapHour,
 	}
-	if h, m, ok := db.GetTypicalWakeTime(14); ok {
+	loc := time.Local
+	if c.Timezone != "" {
+		if configured, err := time.LoadLocation(c.Timezone); err == nil {
+			loc = configured
+		}
+	}
+	if h, m, ok := db.GetTypicalWakeTime(14, loc); ok {
 		cfg.TypicalWakeHour = h
 		cfg.TypicalWakeMinute = m
 		cfg.TypicalWakeOK = true
@@ -704,13 +711,8 @@ func makeTestNotifyFn(db *storage.DB, mgr *tenants.Manager, schema string, notif
 //      job; this opportunistic trigger is the "AI is ready" path).
 //   2. Past the morning floor (05:00 in tz) — don't ping at 3 a.m.
 //   3. Not already sent today.
-//   4. Today's step count > 300 — proxy for "user is up and moving". Without
-//      this, the trigger could fire at 5:01 because the watch did a sync.
-//   5. Sleep data has settled (storage.SleepSettled). This is the new gate:
-//      previously we relied on the AI-insight check + step count, which let
-//      the report fire while the watch was still recording the second half
-//      of a wake-walk-sleep-again cycle. Now we wait for the watch to stop
-//      writing.
+//   4. The shared wake detector is ready. It uses the end of the latest sleep
+//      stage, ingest quiet time, post-wake activity, and the personal median.
 
 // registerCheckinWebhook mounts the Telegram callback handler on mux.
 // Three-step secret lookup via registry.ResolveOrGenerateWebhookSecrets:
@@ -780,7 +782,7 @@ func registerCheckinWebhook(mux *http.ServeMux, mgr *tenants.Manager, reg *regis
 				Schema:    schema,
 				Lang:      cfg.Lang,
 				TodayInTZ: time.Now().In(loc).Format("2006-01-02"),
-				Router:    &liveCheckinRouter{db: db, bot: bot, triggerReport: makeReportTrigger(mgr, schema, notifyDefaults)},
+				Router:    &liveCheckinRouter{db: db, bot: bot, triggerReport: makeReportTrigger(mgr, reg, schema, notifyDefaults)},
 			}, true
 		},
 	}))
@@ -797,10 +799,26 @@ type liveCheckinRouter struct {
 }
 
 func (r *liveCheckinRouter) SaveAnswer(date, source, answer string, answeredAt time.Time) (string, error) {
-	return r.db.SaveCheckinAnswer(date, source, answer, answeredAt)
+	status, err := r.db.SaveCheckinAnswer(date, source, answer, answeredAt)
+	if err == nil {
+		if evidenceErr := r.db.RecordWakeCheckinEvidence(date, answeredAt); evidenceErr != nil {
+			log.Printf("checkin: record wake evidence for %s: %v", date, evidenceErr)
+		}
+	}
+	return status, err
 }
 func (r *liveCheckinRouter) SaveContextPromptAnswer(promptID, category, source string, answeredAt time.Time) (string, error) {
 	return r.db.SaveContextPromptAnswer(promptID, category, source, answeredAt)
+}
+func (r *liveCheckinRouter) SaveWakeFeedbackAnswer(date, response string, answeredAt time.Time) (string, error) {
+	return r.db.SaveDerivedMetricFeedbackAnswer(
+		storage.DerivedMetricWakeTime,
+		date,
+		storage.DerivedMetricFeedbackTelegram,
+		response,
+		nil,
+		answeredAt,
+	)
 }
 func (r *liveCheckinRouter) AnswerCallbackQuery(qid, text string) error {
 	return r.bot.AnswerCallbackQuery(qid, text)
@@ -820,7 +838,7 @@ func (r *liveCheckinRouter) TriggerReport(_ string) {
 // mid-tick while a fresh ingest fires) can't produce duplicate sends.
 // Sendmu nil → no other senders exist (legacy single-mode), original
 // lock-free behaviour preserved.
-func makeReportTrigger(mgr *tenants.Manager, schema string, defaults storage.NotifyConfig) func() {
+func makeReportTrigger(mgr *tenants.Manager, reg *registry.Registry, schema string, defaults storage.NotifyConfig) func() {
 	return func() {
 		db, err := mgr.GetOrCreate(context.Background(), schema)
 		if err != nil || db == nil {
@@ -867,7 +885,10 @@ func makeReportTrigger(mgr *tenants.Manager, schema string, defaults storage.Not
 			sendMu.Unlock()
 		}
 		if sentReport {
-			trySendContextPromptAfterMorning(bot, db, ncfg, today, time.Now().In(loc))
+			now := time.Now().In(loc)
+			if !trySendWakeFeedbackAfterMorning(bot, db, ncfg, today, now, morningCheckinEnabled(reg)) {
+				trySendContextPromptAfterMorning(bot, db, ncfg, today, now)
+			}
 			log.Printf("checkin-trigger: sent (reason=%s) for %s", reason, today)
 		}
 	}
@@ -898,10 +919,6 @@ func makeMorningTrigger(ctx context.Context, db *storage.DB, sendMu *sync.Mutex,
 		if db.HasSentMorningReport(today) {
 			return
 		}
-		if db.GetTodayStepCount(today) < 300 {
-			return
-		}
-
 		if insight := ensureTodayAIInsight(ctx, db, aiCfg, cfg.Lang); insight == "" {
 			log.Println("morning trigger: AI insight unavailable, aborting")
 			return
@@ -920,7 +937,11 @@ func makeMorningTrigger(ctx context.Context, db *storage.DB, sendMu *sync.Mutex,
 		// notify.EffectiveMorningCap — honours row.ExpiresAt over a freshly-
 		// floored cap so an ingest-saved prompt deadline isn't silently
 		// extended on later ticks.
-		settled := db.SleepSettled(today).Settled
+		wakeStatus, wakeErr := db.ComputeMorningWakeStatus(today, loc, now)
+		if wakeErr != nil {
+			log.Printf("morning trigger: wake detection: %v", wakeErr)
+		}
+		settled := wakeErr == nil && wakeStatus.Ready
 		row, rerr := db.GetTodayCheckin(today, storage.CheckinSourceTelegram)
 		if rerr != nil {
 			log.Printf("morning trigger: read checkin: %v", rerr)
@@ -932,7 +953,7 @@ func makeMorningTrigger(ctx context.Context, db *storage.DB, sendMu *sync.Mutex,
 		inputs := notify.MorningGateInputs{
 			Now:            now,
 			Cap:            cap,
-			SleepSettled:   settled,
+			WakeReady:      settled,
 			HasCheckin:     row != nil,
 			CheckinEnabled: checkinEnabled,
 		}
@@ -940,7 +961,7 @@ func makeMorningTrigger(ctx context.Context, db *storage.DB, sendMu *sync.Mutex,
 			inputs.CheckinStatus = row.Status
 		}
 		action := notify.DecideMorningAction(inputs)
-		log.Printf("morning trigger: action=%s settled=%v checkin_status=%q", action, settled, inputs.CheckinStatus)
+		log.Printf("morning trigger: action=%s wake_ready=%v wake_reason=%s wake_confidence=%s checkin_status=%q", action, settled, wakeStatus.Reason, wakeStatus.Confidence, inputs.CheckinStatus)
 
 		switch action {
 		case notify.MorningActionNoop, notify.MorningActionWait:
@@ -1002,7 +1023,9 @@ func makeMorningTrigger(ctx context.Context, db *storage.DB, sendMu *sync.Mutex,
 				log.Printf("morning trigger: mark sent: %v", err)
 			}
 			sendMu.Unlock()
-			trySendContextPromptAfterMorning(bot, db, ncfg, today, now)
+			if !trySendWakeFeedbackAfterMorning(bot, db, ncfg, today, now, morningCheckinEnabled(reg)) {
+				trySendContextPromptAfterMorning(bot, db, ncfg, today, now)
+			}
 			log.Printf("morning trigger: sent (reason=%s, forced=%v, action=%s)", reason, force, action)
 		}
 	}
@@ -1186,7 +1209,11 @@ func runMorningSmartRetry(ctx context.Context, bot *notify.Bot, db *storage.DB, 
 		// (nil, nil); any DB error is logged and treated as "no row" so
 		// the scheduler doesn't get stuck.
 		now := time.Now()
-		settled := db.SleepSettled(today).Settled
+		wakeStatus, wakeErr := db.ComputeMorningWakeStatus(today, loc, now)
+		if wakeErr != nil {
+			log.Printf("morning smart-retry: wake detection: %v", wakeErr)
+		}
+		settled := wakeErr == nil && wakeStatus.Ready
 		row, rerr := db.GetTodayCheckin(today, storage.CheckinSourceTelegram)
 		if rerr != nil {
 			log.Printf("morning smart-retry: read checkin: %v", rerr)
@@ -1205,7 +1232,7 @@ func runMorningSmartRetry(ctx context.Context, bot *notify.Bot, db *storage.DB, 
 		inputs := notify.MorningGateInputs{
 			Now:            now,
 			Cap:            effectiveCap,
-			SleepSettled:   settled,
+			WakeReady:      settled,
 			HasCheckin:     row != nil,
 			CheckinEnabled: checkinEnabled,
 		}
@@ -1213,7 +1240,7 @@ func runMorningSmartRetry(ctx context.Context, bot *notify.Bot, db *storage.DB, 
 			inputs.CheckinStatus = row.Status
 		}
 		action := notify.DecideMorningAction(inputs)
-		log.Printf("morning smart-retry: action=%s settled=%v checkin_status=%q", action, settled, inputs.CheckinStatus)
+		log.Printf("morning smart-retry: action=%s wake_ready=%v wake_reason=%s wake_confidence=%s checkin_status=%q", action, settled, wakeStatus.Reason, wakeStatus.Confidence, inputs.CheckinStatus)
 
 		switch action {
 		case notify.MorningActionNoop:
@@ -1300,7 +1327,10 @@ func runMorningSmartRetry(ctx context.Context, bot *notify.Bot, db *storage.DB, 
 			}
 			if sent {
 				log.Printf("morning smart-retry: sent (reason=%s, forced=%v, action=%s)", reason, past, action)
-				trySendContextPromptAfterMorning(bot, db, ncfg, today, time.Now().In(loc))
+				now := time.Now().In(loc)
+				if !trySendWakeFeedbackAfterMorning(bot, db, ncfg, today, now, morningCheckinEnabled(reg)) {
+					trySendContextPromptAfterMorning(bot, db, ncfg, today, now)
+				}
 				return
 			}
 			if past {
@@ -1314,6 +1344,21 @@ func runMorningSmartRetry(ctx context.Context, bot *notify.Bot, db *storage.DB, 
 			time.Sleep(tick)
 		}
 	}
+}
+
+func trySendWakeFeedbackAfterMorning(bot *notify.Bot, db *storage.DB, cfg notify.Config, date string, now time.Time, webhookAvailable bool) bool {
+	if !webhookAvailable || !storage.IsWakeFeedbackEnabled(db) {
+		return false
+	}
+	sent, err := notify.SendWakeFeedbackPrompt(bot, db, cfg.Lang, date, now)
+	if err != nil {
+		log.Printf("wake feedback: send for %s: %v", date, err)
+		return sent
+	}
+	if sent {
+		log.Printf("wake feedback: prompt sent for %s", date)
+	}
+	return sent
 }
 
 func trySendContextPromptAfterMorning(bot *notify.Bot, db *storage.DB, cfg notify.Config, signalDate string, now time.Time) {

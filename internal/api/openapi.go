@@ -16,7 +16,7 @@ import (
 
 const (
 	OpenAPIVersion  = "3.1.0"
-	ContractVersion = "0.2.0"
+	ContractVersion = "0.3.0"
 )
 
 // GenerateOpenAPI builds the canonical public client contract. Route metadata
@@ -28,6 +28,7 @@ func GenerateOpenAPI() ([]byte, error) {
 	for name, value := range map[string]any{
 		"AIBriefingResponse":        AIBriefingResponse{},
 		"DashboardResponse":         storage.DashboardResponse{},
+		"DerivedMetricsResponse":    DerivedMetricsResponse{},
 		"EnergyHistoryDayResponse":  EnergyHistoryDayResponse{},
 		"EnergyHistoryHourResponse": EnergyHistoryHourResponse{},
 		"HealthBriefingResponse":    health.BriefingResponse{},
@@ -70,6 +71,8 @@ func GenerateOpenAPI() ([]byte, error) {
 		{"HealthBriefingResponse", "readiness_serving", "status", []string{"fresh", "missing", "stale", "data_accruing", "low_coverage", "capped"}},
 		{"HealthBriefingResponse", "readiness_serving", "confidence", []string{"final", "provisional", "low"}},
 		{"ReadinessHistoryResponse", "points", "band", []string{"optimal", "fair", "low"}},
+		{"DerivedMetricsResponse", "values", "value_type", []string{"number", "text", "timestamp", "json"}},
+		{"DerivedMetricsResponse", "values", "state", []string{"provisional", "final"}},
 		{"EnergyHistoryDayResponse", "points", "verdict", []string{"push_hard", "moderate", "active_recovery", "rest"}},
 	} {
 		if err := setNestedPropertyEnum(schemas[enum.schema], enum.parent, enum.child, enum.values...); err != nil {
@@ -163,6 +166,19 @@ func clientPaths() map[string]any {
 	energyOperation["responses"].(map[string]any)["400"] = plainTextResponse(
 		"Invalid granularity. Use day or hour.",
 	)
+	derivedMetricsOperation := getOperation(
+		"getDerivedMetrics",
+		"Canonical service-derived metric history",
+		[]any{
+			requiredEnumQueryParameter("metric", "Canonical metric name. Missing or unsupported values return 400.", "wake_time"),
+			stringQueryParameter("from", "Start date in YYYY-MM-DD; defaults to 30 days before to."),
+			stringQueryParameter("to", "End date in YYYY-MM-DD; defaults to tenant-local today."),
+		},
+		jsonResponseRef("DerivedMetricsResponse"),
+	)
+	derivedMetricsOperation["responses"].(map[string]any)["400"] = jsonErrorResponse(
+		"Missing or unsupported metric, invalid date range, or a range longer than 366 days.",
+	)
 
 	return map[string]any{
 		"/api/dashboard": map[string]any{
@@ -199,6 +215,9 @@ func clientPaths() map[string]any {
 		},
 		"/api/energy-history": map[string]any{
 			"get": energyOperation,
+		},
+		"/api/derived-metrics": map[string]any{
+			"get": derivedMetricsOperation,
 		},
 		"/api/session": map[string]any{
 			"get": getOperation(
@@ -260,6 +279,24 @@ func plainTextResponse(description string) map[string]any {
 	}
 }
 
+func jsonErrorResponse(description string) map[string]any {
+	return map[string]any{
+		"description": description,
+		"content": map[string]any{
+			"application/json": map[string]any{
+				"schema": map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"required":             []any{"error"},
+					"properties": map[string]any{
+						"error": map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+	}
+}
+
 func schemaRef(name string) map[string]any {
 	return map[string]any{"$ref": "#/components/schemas/" + name}
 }
@@ -282,6 +319,29 @@ func enumQueryParameter(name, defaultValue string, values ...string) map[string]
 			"type":    "string",
 			"default": defaultValue,
 			"enum":    enums,
+		},
+	}
+}
+
+func requiredEnumQueryParameter(name, description string, values ...string) map[string]any {
+	parameter := enumQueryParameter(name, "", values...)
+	parameter["required"] = true
+	parameter["description"] = description
+	schema := parameter["schema"].(map[string]any)
+	delete(schema, "default")
+	return parameter
+}
+
+func stringQueryParameter(name, description string) map[string]any {
+	return map[string]any{
+		"name":        name,
+		"in":          "query",
+		"required":    false,
+		"description": description,
+		"schema": map[string]any{
+			"type":    "string",
+			"format":  "date",
+			"pattern": `^\d{4}-\d{2}-\d{2}$`,
 		},
 	}
 }
@@ -323,7 +383,20 @@ func removeSchemaMetadata(value any) {
 	case map[string]any:
 		delete(typed, "$schema")
 		delete(typed, "$id")
-		for _, child := range typed {
+		for key, child := range typed {
+			if key == "properties" {
+				if properties, ok := child.(map[string]any); ok {
+					for propertyName, propertySchema := range properties {
+						if booleanSchema, ok := propertySchema.(bool); ok {
+							if booleanSchema {
+								properties[propertyName] = map[string]any{}
+							} else {
+								properties[propertyName] = map[string]any{"not": map[string]any{}}
+							}
+						}
+					}
+				}
+			}
 			removeSchemaMetadata(child)
 		}
 	case []any:

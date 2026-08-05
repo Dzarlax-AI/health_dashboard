@@ -60,7 +60,7 @@ type Config struct {
 	TelegramRichMessages bool
 
 	// Smart-retry deadline. The morning trigger keeps deferring until sleep
-	// data settles (see storage.SleepSettled); past this hour it force-sends
+	// the wake detector is ready; past this hour it force-sends
 	// with a banner. Caller is responsible for picking a sensible default
 	// (typically MorningHour + 4, floor 11). Zero means "no cap" — use with
 	// care; can lead to no morning report on watch-off days.
@@ -214,7 +214,7 @@ type MorningSendOpts struct {
 }
 
 // SendMorningSmart is the smart-retry-aware morning sender. When force is
-// false, it only sends if sleep data has settled (see storage.SleepSettled);
+// false, it only sends after the wake detector is ready;
 // otherwise returns sent=false with a non-"ok" reason so the caller can retry
 // later. When force is true, it sends regardless and prepends a banner
 // explaining why the data is incomplete.
@@ -223,8 +223,8 @@ type MorningSendOpts struct {
 // signature for the two non-cap call sites (ingest trigger + webhook
 // retrigger) — neither of those knows about check-in expiry.
 //
-// Returns (sent, reason, error). reason is the SleepSettleStatus.Reason —
-// "ok" when settled, otherwise "no_data" / "recent_segment" / "still_writing".
+// Returns (sent, reason, error). reason is the wake detector's explicit
+// decision reason (for example post_wake_activity or still_writing).
 func SendMorningSmart(bot *Bot, db *storage.DB, cfg Config, force bool) (bool, string, error) {
 	return SendMorningSmartOpts(bot, db, cfg, MorningSendOpts{Force: force})
 }
@@ -238,10 +238,19 @@ func SendMorningSmartOpts(bot *Bot, db *storage.DB, cfg Config, opts MorningSend
 
 func sendMorningReport(bot *Bot, db *storage.DB, cfg Config, opts MorningSendOpts, policy reportDeliveryPolicy) (bool, string, error) {
 	loc := cfg.location()
-	today := time.Now().In(loc).Format("2006-01-02")
+	now := time.Now()
+	today := now.In(loc).Format("2006-01-02")
 
-	status := db.SleepSettled(today)
-	if !status.Settled && !opts.Force {
+	status, err := db.ComputeMorningWakeStatus(today, loc, now)
+	wakeErr := err
+	status, err = resolveMorningWakeStatus(status, err, opts.Force)
+	if err != nil {
+		return false, status.Reason, err
+	}
+	if wakeErr != nil {
+		log.Printf("morning report: forced send despite wake detection error: %v", wakeErr)
+	}
+	if !status.Ready && !opts.Force {
 		return false, status.Reason, nil
 	}
 
@@ -257,8 +266,9 @@ func sendMorningReport(bot *Bot, db *storage.DB, cfg Config, opts MorningSendOpt
 		richMsg = formatMorningRich(briefing, aiBlocks, cfg.Lang, loc, fresh, opts.CheckinExpired, "")
 	}
 
-	if !status.Settled {
-		if banner := tr(cfg.Lang, "tg_stale_"+status.Reason); banner != "" && banner != "tg_stale_"+status.Reason {
+	if !status.Ready {
+		staleReason := wakeStaleReason(status.Reason)
+		if banner := tr(cfg.Lang, "tg_stale_"+staleReason); banner != "" && banner != "tg_stale_"+staleReason {
 			msg = banner + "\n\n" + msg
 			if cfg.TelegramRichMessages {
 				richMsg = formatMorningRich(briefing, aiBlocks, cfg.Lang, loc, fresh, opts.CheckinExpired, banner)
@@ -271,6 +281,27 @@ func sendMorningReport(bot *Bot, db *storage.DB, cfg Config, opts MorningSendOpt
 		return false, "delivery_already_reserved", nil
 	}
 	return reserved, status.Reason, err
+}
+
+func resolveMorningWakeStatus(status storage.MorningWakeStatus, err error, force bool) (storage.MorningWakeStatus, error) {
+	if err == nil || !force {
+		return status, err
+	}
+	if status.Reason == "" {
+		status.Reason = "query_error"
+	}
+	return status, nil
+}
+
+func wakeStaleReason(reason string) string {
+	switch reason {
+	case "no_data", "still_writing", "recent_segment":
+		return reason
+	case "query_error", "steps_query_error", "typical_query_error":
+		return "no_data"
+	default:
+		return "recent_segment"
+	}
 }
 
 // SendEvening sends a "today so far" snapshot. Activity bullets are intentionally

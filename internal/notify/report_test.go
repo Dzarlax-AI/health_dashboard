@@ -110,6 +110,17 @@ func TestDeliverReportDurableKeepsAtMostOnceGate(t *testing.T) {
 	}
 }
 
+func TestResolveMorningWakeStatusAllowsForcedSendAfterDetectorError(t *testing.T) {
+	wakeErr := errors.New("wake detector unavailable")
+	status, err := resolveMorningWakeStatus(storage.MorningWakeStatus{}, wakeErr, true)
+	if err != nil || status.Reason != "query_error" {
+		t.Fatalf("forced status=%+v err=%v", status, err)
+	}
+	if _, err := resolveMorningWakeStatus(storage.MorningWakeStatus{Reason: "steps_query_error"}, wakeErr, false); !errors.Is(err, wakeErr) {
+		t.Fatalf("non-forced error=%v, want detector error", err)
+	}
+}
+
 // TestMorningCapTime_FloorsPastCapsToPromptWindow pins the floor that
 // keeps the check-in prompt window alive for users whose adaptive cap
 // (typical_wake + 60min) lands earlier than the configured morning

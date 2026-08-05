@@ -182,6 +182,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/metrics/latest", h.guard(h.latestMetricValues))
 	mux.HandleFunc("/api/metrics/range", h.guard(h.metricRange))
 	mux.HandleFunc("/api/metrics/data", h.guard(h.metricData))
+	mux.HandleFunc("GET /api/derived-metrics", h.guard(h.derivedMetrics))
 	mux.HandleFunc("/api/dashboard", h.guard(h.dashboard))
 	mux.HandleFunc("/api/health-briefing", h.guard(h.healthBriefing))
 	mux.HandleFunc("/api/ai-briefing", h.guard(h.aiBriefing))
@@ -1180,6 +1181,66 @@ func (h *Handler) metricRange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, map[string]string{"min": min, "max": max})
+}
+
+func (h *Handler) derivedMetrics(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	metricName := strings.TrimSpace(query.Get("metric"))
+	if _, ok := storage.DerivedMetricDefinitionFor(metricName); !ok {
+		jsonError(w, "unknown derived metric", http.StatusBadRequest)
+		return
+	}
+	today := tenantLocalToday(h, h.tenantDB(r), h.tenantSchema(r))
+	from := strings.TrimSpace(query.Get("from"))
+	to := strings.TrimSpace(query.Get("to"))
+	if to == "" {
+		to = today
+	}
+	if from == "" {
+		parsed, _ := time.Parse("2006-01-02", to)
+		from = parsed.AddDate(0, 0, -30).Format("2006-01-02")
+	}
+	fromDate, fromErr := time.Parse("2006-01-02", from)
+	toDate, toErr := time.Parse("2006-01-02", to)
+	if fromErr != nil || toErr != nil || fromDate.After(toDate) {
+		jsonError(w, "from and to must be a valid ascending YYYY-MM-DD range", http.StatusBadRequest)
+		return
+	}
+	if toDate.Sub(fromDate) > 366*24*time.Hour {
+		jsonError(w, "derived metric range must not exceed 366 days", http.StatusBadRequest)
+		return
+	}
+	metrics, err := h.tenantDB(r).ListDerivedMetrics(metricName, from, to)
+	if err != nil {
+		jsonError(w, "failed to read derived metrics", http.StatusInternalServerError)
+		return
+	}
+	out := make([]clientapi.DerivedMetricValue, 0, len(metrics))
+	for _, metric := range metrics {
+		value := clientapi.DerivedMetricValue{
+			MetricName:     metric.MetricName,
+			MetricDate:     metric.MetricDate,
+			ValueType:      metric.ValueType,
+			ValueNumeric:   metric.ValueNumeric,
+			ValueText:      metric.ValueText,
+			ValueTimestamp: metric.ValueTimestamp,
+			Unit:           metric.Unit,
+			State:          metric.State,
+			FormulaVersion: metric.FormulaVersion,
+			CalculatedAt:   metric.CalculatedAt,
+			FinalizedAt:    metric.FinalizedAt,
+		}
+		if len(metric.ValueJSON) != 0 {
+			_ = json.Unmarshal(metric.ValueJSON, &value.ValueJSON)
+		}
+		out = append(out, value)
+	}
+	jsonResponse(w, clientapi.DerivedMetricsResponse{
+		Metric: metricName,
+		From:   from,
+		To:     to,
+		Values: out,
+	})
 }
 
 func (h *Handler) syncCheckpoint(w http.ResponseWriter, r *http.Request) {

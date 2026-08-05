@@ -139,6 +139,95 @@
         ],
         "type": "object"
       },
+      "DerivedMetricsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "metric": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "values": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "calculated_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "finalized_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "formula_version": {
+                  "type": "string"
+                },
+                "metric_date": {
+                  "type": "string"
+                },
+                "metric_name": {
+                  "type": "string"
+                },
+                "state": {
+                  "enum": [
+                    "provisional",
+                    "final"
+                  ],
+                  "type": "string"
+                },
+                "unit": {
+                  "type": "string"
+                },
+                "value_json": {},
+                "value_numeric": {
+                  "type": "number"
+                },
+                "value_text": {
+                  "type": "string"
+                },
+                "value_timestamp": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "value_type": {
+                  "enum": [
+                    "number",
+                    "text",
+                    "timestamp",
+                    "json"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "metric_name",
+                "metric_date",
+                "value_type",
+                "unit",
+                "state",
+                "formula_version",
+                "calculated_at"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "metric",
+          "from",
+          "to",
+          "values"
+        ],
+        "type": "object"
+      },
       "EnergyHistoryDayResponse": {
         "additionalProperties": false,
         "properties": {
@@ -1288,7 +1377,7 @@
   "info": {
     "description": "Tenant-aware read API shared by the web dashboard and native health-sync client. Tenant identity is resolved only from authenticated backend context.",
     "title": "Health Dashboard Client API",
-    "version": "0.2.0"
+    "version": "0.3.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -1399,6 +1488,107 @@
           }
         },
         "summary": "Lean current-day metric dashboard"
+      }
+    },
+    "/api/derived-metrics": {
+      "get": {
+        "operationId": "getDerivedMetrics",
+        "parameters": [
+          {
+            "description": "Canonical metric name. Missing or unsupported values return 400.",
+            "in": "query",
+            "name": "metric",
+            "required": true,
+            "schema": {
+              "enum": [
+                "wake_time"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Start date in YYYY-MM-DD; defaults to 30 days before to.",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "format": "date",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "End date in YYYY-MM-DD; defaults to tenant-local today.",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "format": "date",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DerivedMetricsResponse"
+                }
+              }
+            },
+            "description": "Successful tenant-scoped response."
+          },
+          "302": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Browser authentication or initial setup is required; Location identifies the interactive route.",
+            "headers": {
+              "Location": {
+                "description": "Interactive login or setup route.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing or unsupported metric, invalid date range, or a range longer than 366 days."
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The backend could not load or encode the tenant response."
+          }
+        },
+        "summary": "Canonical service-derived metric history"
       }
     },
     "/api/energy-history": {

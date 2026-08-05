@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Детекция пробуждения и derived metrics</title>
+  <style>
+    :root { --bg:#f5f7fb; --panel:#fff; --text:#172033; --muted:#5f6b7a; --line:#dce2ea; --blue:#2563eb; --green:#13795b; --amber:#a15c00; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:16px/1.55 system-ui,-apple-system,sans-serif; }
+    main { max-width:1040px; margin:auto; padding:32px 20px 64px; }
+    section { margin:16px 0; padding:22px; background:var(--panel); border:1px solid var(--line); border-radius:12px; }
+    h1,h2 { line-height:1.2; } h1 { font-size:clamp(28px,4vw,42px); }
+    code { padding:2px 5px; background:#eef1f5; border-radius:5px; }
+    table { width:100%; border-collapse:collapse; } th,td { padding:10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+    .status { display:inline-block; padding:5px 11px; border-radius:999px; background:#e8f7f1; color:var(--green); font-weight:700; }
+    .muted { color:var(--muted); } .decision { border-left:4px solid var(--blue); } .risk { border-left:4px solid var(--amber); }
+  </style>
+</head>
+<body>
+<main>
+  <p class="muted">Health Dashboard · implementation record</p>
+  <h1>Детекция пробуждения и слой внутренних метрик</h1>
+  <p class="status">План одобрен · реализация и review fixes завершены</p>
+
+  <section>
+    <h2>Задача и результат</h2>
+    <p>
+      Грубый gate «сон стабилен» заменён единым объяснимым детектором пробуждения.
+      Вычисленное значение сохраняется как каноническая внутренняя метрика
+      <code>wake_time</code>, используется обоими утренними trigger-путями,
+      доступно через tenant-scoped API и может подтверждаться в Telegram.
+      Подробный экран сна остаётся отдельной задачей.
+    </p>
+  </section>
+
+  <section class="decision">
+    <h2>Ретроспективная проверка решения</h2>
+    <p>
+      Read-only probe прогнан на 68 будних днях с персональным reference 08:00.
+      Первоначальный midnight-summary вариант был отвергнут.
+    </p>
+    <table>
+      <thead><tr><th>Кандидат</th><th>Медиана</th><th>±30 минут</th><th>±60 минут</th></tr></thead>
+      <tbody>
+        <tr><td>Deduplicated midnight summary</td><td>06:45</td><td>12/68</td><td>23/68</td></tr>
+        <tr><td>Последний raw sleep_total end</td><td>07:53</td><td>45/68</td><td>55/68</td></tr>
+        <tr><td><strong>Последний detailed sleep/awake end</strong></td><td><strong>07:58</strong></td><td><strong>56/68</strong></td><td><strong>61/68</strong></td></tr>
+        <tr><td>Summary sleep_total + sleep_awake</td><td>07:19</td><td>22/67</td><td>48/67</td></tr>
+      </tbody>
+    </table>
+    <p>Reference использовался только для проверки распределения и не зашит в detector.</p>
+  </section>
+
+  <section>
+    <h2>Фактический алгоритм wake-v1</h2>
+    <ol>
+      <li>В tenant timezone загрузить raw sleep rows ночи и выбрать один источник существующим правилом Apple Watch → RingConn → max coverage.</li>
+      <li>Основной сигнал: максимальный конец <code>start + qty</code> подробной non-midnight стадии deep/REM/core/unspecified/awake.</li>
+      <li>Fallback: последний raw non-midnight <code>sleep_total</code>; затем слабый midnight summary <code>sleep_total + sleep_awake</code>.</li>
+      <li>Отклонить candidate вне 03:00–15:00; новый поздний sleep fragment переносит candidate.</li>
+      <li>Ждать candidate age ≥30 минут и ingest quiet ≥20 минут. ≥100 шагов после candidate даёт high confidence для detailed signal.</li>
+      <li>Без шагов detailed candidate становится medium через 60 минут. Слишком ранний candidate ждёт до 90 минут либо typical wake −30 минут.</li>
+      <li>Fallback signal без шагов ждёт не менее 90 минут и не получает high confidence.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Модель данных</h2>
+    <p>
+      <code>derived_metrics</code> хранит одну canonical row на
+      <code>(metric_name, metric_date)</code>, один typed value, state,
+      formula version, inputs hash, calculated/finalized timestamps и metadata.
+      Закрытый Go registry не позволяет превратить таблицу в произвольный EAV.
+    </p>
+    <p>
+      <code>derived_metric_feedback</code> хранит один вопрос/ответ на
+      <code>(metric_name, metric_date, channel)</code>. Первый callback
+      сохраняется идемпотентно; повторный tap не меняет label или timestamp.
+      Обе таблицы входят в tenant schema contract v6.
+    </p>
+  </section>
+
+  <section>
+    <h2>Интеграции</h2>
+    <ul>
+      <li>Scheduler и ingest-trigger вызывают <code>ComputeMorningWakeStatus</code>; all-day proxy в 300 шагов удалён.</li>
+      <li>Morning cap, check-in decision table и durable report delivery сохранены.</li>
+      <li>Ответ на subjective morning check-in записывается как passive awake evidence.</li>
+      <li>После отчёта medium/low wake candidate спрашивается в Telegram; high — контрольный вопрос не чаще раза в 7 дней.</li>
+      <li>Если wake-вопрос отправлен или transport неоднозначен, context prompt тем же утром не отправляется.</li>
+      <li><code>wake_feedback_enabled=false</code> отключает новые вопросы.</li>
+      <li><code>GET /api/derived-metrics?metric=wake_time&amp;from=...&amp;to=...</code> возвращает sanitized values без inputs hash и private metadata.</li>
+      <li><code>cmd/wake_detection_backfill</code> dry-run по умолчанию; <code>--apply</code> пишет provisional historical rows без фиктивных confirmations.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Изменённые области</h2>
+    <p>
+      Storage и schema contract; wake detector/probe/backfill; morning scheduler
+      и report sender; Telegram prompt/callback/i18n; public API/OpenAPI;
+      Makefile; AGENTS.md и CLAUDE.md. Старый <code>SleepSettled</code> оставлен
+      как compatibility helper, но утренний flow его больше не использует.
+      Существующий <code>WakeTimeForDate</code> для stress awake-window остаётся
+      отдельной задачей с другой семантикой main-sleep window.
+    </p>
+  </section>
+
+  <section>
+    <h2>Усиление после code review</h2>
+    <ul>
+      <li>Wake metadata теперь объединяется атомарно: повторный расчёт не стирает Telegram/check-in evidence.</li>
+      <li>Wake feedback не отправляется без зарегистрированного Telegram callback webhook.</li>
+      <li>Typical wake ограничен одновременно числом строк и календарным окном; текущий день исключён.</li>
+      <li>Forced morning report продолжает отправку с stale banner при ошибке wake detector.</li>
+      <li>Исторический probe пропускает дни без подходящего candidate, а CLI валидирует диапазон до подключения к БД.</li>
+      <li>OpenAPI документирует JSON 400 для derived metrics и не выдаёт boolean schema, несовместимую с oasdiff.</li>
+      <li>Frontend API types регенерированы; добавлены regression tests для metadata merge, stale baseline, malformed callback и durable Telegram delivery.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Проверки и ручной QA</h2>
+    <ul>
+      <li>Unit/DB tests: typed values, canonical upsert, feedback idempotency, detector scenarios, API redaction, Telegram cadence/callback.</li>
+      <li>OpenAPI contract regenerated and compatibility-checked.</li>
+      <li>Выполнено: <code>go test ./... -count=1</code> — exit 0.</li>
+      <li>Выполнено: <code>go vet ./...</code> — exit 0.</li>
+      <li>Выполнено: <code>make contract-check</code> — OpenAPI 0.3.0 current и обратно совместим.</li>
+      <li>Выполнено: <code>go build ./...</code> — exit 0; schema contract v6 checksum закреплён тестом.</li>
+      <li>После review выполнено: полный Go suite (isolation test отдельно без локального <code>PGOPTIONS</code>), <code>go vet ./...</code> и <code>make web-check</code> — exit 0.</li>
+      <li>После deploy: schema fleet audit, dry-run/backfill, проверить сегодняшнюю wake row, один callback, report delivery и service health.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Риски и rollback</h2>
+    <ul>
+      <li>Утренний короткий сон может сдвинуть candidate; для доставки это безопаснее преждевременного отчёта.</li>
+      <li>Summary-only источники имеют пониженную confidence.</li>
+      <li>Feedback labels в v1 только накапливаются; online learning отсутствует.</li>
+      <li>Runtime rollback возвращает старый image; additive tables не удаляются. Wake feedback отключается setting-ом.</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>

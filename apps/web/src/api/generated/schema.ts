@@ -38,6 +38,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/derived-metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Canonical service-derived metric history */
+        get: operations["getDerivedMetrics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/energy-history": {
         parameters: {
             query?: never;
@@ -141,6 +158,30 @@ export interface components {
             }[] | null;
             date: string;
             last_updated: string;
+        };
+        DerivedMetricsResponse: {
+            from: string;
+            metric: string;
+            to: string;
+            values: {
+                /** Format: date-time */
+                calculated_at: string;
+                /** Format: date-time */
+                finalized_at?: string;
+                formula_version: string;
+                metric_date: string;
+                metric_name: string;
+                /** @enum {string} */
+                state: "provisional" | "final";
+                unit: string;
+                value_json?: unknown;
+                value_numeric?: number;
+                value_text?: string;
+                /** Format: date-time */
+                value_timestamp?: string;
+                /** @enum {string} */
+                value_type: "number" | "text" | "timestamp" | "json";
+            }[] | null;
         };
         EnergyHistoryDayResponse: {
             /**
@@ -482,6 +523,64 @@ export interface operations {
                 };
                 content: {
                     "text/html": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getDerivedMetrics: {
+        parameters: {
+            query: {
+                /** @description Canonical metric name. Missing or unsupported values return 400. */
+                metric: "wake_time";
+                /** @description Start date in YYYY-MM-DD; defaults to 30 days before to. */
+                from?: string;
+                /** @description End date in YYYY-MM-DD; defaults to tenant-local today. */
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DerivedMetricsResponse"];
+                };
+            };
+            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
+            302: {
+                headers: {
+                    /** @description Interactive login or setup route. */
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+            /** @description Missing or unsupported metric, invalid date range, or a range longer than 366 days. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
                 };
             };
             /** @description The backend could not load or encode the tenant response. */

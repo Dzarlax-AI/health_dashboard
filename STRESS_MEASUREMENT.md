@@ -47,11 +47,11 @@ methodology read isn't blocked on chasing them from other files:
    → pick the one whose end is later (treats it as wake-up for day d).
 
    **Implementation note**: `internal/storage/typical_wake.go::GetTypicalWakeTime(days)`
-   returns the *typical* (averaged) wake time across N days — wrong
+   returns the *typical* (median) wake time across N canonical days — wrong
    shape for this use case. Need a new helper `WakeTimeForDate(date)`
    that returns (wakeHour, sleepOnsetHour, ok) implementing the
    algorithm above. `GetTypicalWakeTime` stays for `MorningCapTime`
-   usage (which legitimately wants the average); v2.2 must not
+   usage (which legitimately wants the median); v2.2 must not
    reuse it.
 3. **Coverage gate.** A day with <8 hours of HR-covered awake time
    (watch off charger, sync gap) must NOT compute `sustained_hr_load`
@@ -566,7 +566,7 @@ Decoupled from ENERGY_BANK cutover work — can ship independently.
    `07:00–22:00` only when sleep data is `imputed_sleep` or stale,
    AND emit `imputed_awake_window` flag. Existing
    `internal/storage/typical_wake.go::GetTypicalWakeTime(days)` returns
-   an *average* across N days — wrong shape; v2.2 needs a new
+   a *median* across N days — wrong shape; v2.2 needs a
    per-date helper `WakeTimeForDate(date)`. See §0 blocker 2 for
    why the "last asleep before noon" simplification breaks on
    siestas, night-shift, and jet-lag.
