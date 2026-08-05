@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"health-receiver/internal/ai"
 	"health-receiver/internal/registry"
 	"health-receiver/internal/storage"
 )
@@ -499,6 +500,7 @@ func (m *Manager) AIDefaultsFor(ctx context.Context, schema string) storage.AICo
 		base = e.callbacks.AIDefaults
 	}
 	m.mu.RUnlock()
+	base = base.Clone()
 
 	if m.reg == nil {
 		return base
@@ -508,18 +510,37 @@ func (m *Manager) AIDefaultsFor(ctx context.Context, schema string) storage.AICo
 	// `tenant.settings -> global -> env` is broken (an explicit blank in
 	// global would silently fall through to env).
 	g := m.reg.GetAllGlobalSettings(ctx)
-	if v, ok := g["gemini_api_key"]; ok {
-		base.APIKey = v
+	if v, ok := g["ai_provider"]; ok {
+		base.Provider = v
 	}
-	if v, ok := g["gemini_model"]; ok {
-		base.Model = v
+	if base.Provider == "" {
+		base.Provider = ai.ProviderGemini
 	}
-	if v, ok := g["gemini_max_tokens"]; ok {
+	if v, ok := g["ai_max_output_tokens"]; ok {
 		if v == "" {
-			base.MaxOutputTokens = 0 // gemini.go treats <=0 as "use default 5000"
+			base.MaxOutputTokens = 0
 		} else if n, err := strconv.Atoi(v); err == nil {
 			base.MaxOutputTokens = n
 		}
+	} else if v, ok := g["gemini_max_tokens"]; ok {
+		if v == "" {
+			base.MaxOutputTokens = 0
+		} else if n, err := strconv.Atoi(v); err == nil {
+			base.MaxOutputTokens = n
+		}
+	}
+	for _, descriptor := range ai.ProviderDescriptors() {
+		settings := base.SettingsFor(descriptor.ID)
+		if v, ok := g[descriptor.ID+"_api_key"]; ok {
+			settings.APIKey = v
+		}
+		if v, ok := g[descriptor.ID+"_model"]; ok {
+			settings.Model = v
+		}
+		if v, ok := g[descriptor.ID+"_reasoning_effort"]; ok {
+			settings.ReasoningEffort = v
+		}
+		base.SetSettingsFor(descriptor.ID, settings)
 	}
 	return base
 }

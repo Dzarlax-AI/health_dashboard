@@ -444,12 +444,19 @@ var translationsEn = map[string]string{
 	"admin_saving":                    "Saving...",
 
 	// ─── Admin: AI briefing settings ───────────────────────────
-	"admin_ai_title":      "AI Morning Briefing",
-	"admin_ai_key":        "Gemini API key",
-	"admin_ai_model":      "Model",
-	"admin_ai_max_tokens": "Max output tokens",
-	"admin_ai_save":       "Save",
-	"admin_ai_saved":      "Settings saved",
+	"admin_ai_title":              "AI Morning Briefing",
+	"admin_ai_provider":           "Provider",
+	"admin_ai_key":                "API key",
+	"admin_ai_clear_key":          "Clear saved key",
+	"admin_ai_model":              "Model",
+	"admin_ai_reasoning":          "Reasoning effort",
+	"admin_ai_load_models":        "Load models",
+	"admin_ai_models_loading":     "Loading models…",
+	"admin_ai_key_configured":     "Configured",
+	"admin_ai_key_not_configured": "Not configured",
+	"admin_ai_max_tokens":         "Max output tokens",
+	"admin_ai_save":               "Save",
+	"admin_ai_saved":              "Settings saved",
 
 	// ─── Admin: EnergyBank stress-drain config + validation ────
 	"admin_energy_title":                        "EnergyBank v2.2 — Stress drain",

@@ -30,6 +30,7 @@ import (
 	// than installing tzdata into the runtime image.
 	_ "time/tzdata"
 
+	"health-receiver/internal/ai"
 	"health-receiver/internal/handler"
 	"health-receiver/internal/health"
 	"health-receiver/internal/mcpserver"
@@ -71,9 +72,19 @@ func main() {
 		MorningCapHour:       getEnvInt("REPORT_MORNING_CAP", 0),
 	}
 	envAIDefaults := storage.AIConfig{
-		APIKey:          os.Getenv("GEMINI_API_KEY"),
-		Model:           getEnv("GEMINI_MODEL", "gemini-2.5-flash"),
-		MaxOutputTokens: getEnvInt("GEMINI_MAX_TOKENS", 5000),
+		Provider: getEnv("AI_PROVIDER", ai.ProviderGemini),
+		Providers: map[string]storage.AIProviderSettings{
+			ai.ProviderGemini: {
+				APIKey: os.Getenv("GEMINI_API_KEY"),
+				Model:  getEnv("GEMINI_MODEL", "gemini-2.5-flash"),
+			},
+			ai.ProviderOpenAI: {
+				APIKey:          os.Getenv("OPENAI_API_KEY"),
+				Model:           getEnv("OPENAI_MODEL", "gpt-5.6-luna"),
+				ReasoningEffort: getEnv("OPENAI_REASONING_EFFORT", "none"),
+			},
+		},
+		MaxOutputTokens: getEnvInt("AI_MAX_OUTPUT_TOKENS", getEnvInt("GEMINI_MAX_TOKENS", ai.DefaultMaxOutputTokens)),
 	}
 
 	// HR zones for /health/workouts time-in-zone computation. Optional —
@@ -657,7 +668,7 @@ func makeTestNotifyFn(db *storage.DB, mgr *tenants.Manager, schema string, notif
 			return notify.SendEvening(bot, db, ncfg)
 		}
 		// Test-notify renders the morning report from whatever AI
-		// blocks are already cached for today — no Gemini call.
+		// blocks are already cached for today — no provider call.
 		//
 		// Before the v2 verdict cutover (PR #47) the recommendation
 		// hash was stable (action_verdict was always "rest" in v1's
@@ -666,7 +677,7 @@ func makeTestNotifyFn(db *storage.DB, mgr *tenants.Manager, schema string, notif
 		// realistically rotates 1-3 times per day as bank crosses
 		// personal-band thresholds — and ensureTodayAIInsight then
 		// regenerates the recommendation block on every test click.
-		// That burned Gemini quota for what users reasonably expect
+		// That burned provider quota for what users reasonably expect
 		// to be a free "preview the morning report" button.
 		//
 		// The live morning scheduler still calls EnsureTodayAIInsight
@@ -863,7 +874,7 @@ func makeReportTrigger(mgr *tenants.Manager, schema string, defaults storage.Not
 func makeMorningTrigger(db *storage.DB, sendMu *sync.Mutex, mgr *tenants.Manager, reg *registry.Registry, schema string, notifyDefaults storage.NotifyConfig) func() {
 	return func() {
 		// AIDefaultsFor on each tick so the admin's installation-wide
-		// Gemini key is honoured even if it was set after process start.
+		// AI provider config is honoured even if it changed after process start.
 		aiDefaults := mgr.AIDefaultsFor(context.Background(), schema)
 		aiCfg := db.GetAIConfig(aiDefaults)
 		if !aiCfg.Enabled() {

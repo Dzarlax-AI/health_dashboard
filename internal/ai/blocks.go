@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -171,7 +172,7 @@ func HashRecovery(r *health.RawMetrics, eb *health.EnergyBank, ctx InsightContex
 // (oldest→newest, e.g. ["rest","rest","moderate"]). Past verdicts are
 // frozen once a day rolls over so they're safe to hash — unlike intra-day
 // EnergyBank fields. Passing the sequence lets RECOMMENDATION pick up
-// patterns like "3 rest days in a row" without re-hitting Gemini just
+// patterns like "3 rest days in a row" without re-hitting the provider just
 // because today's verdict is unchanged.
 func HashRecommendation(sleepText, yesterdayText, recoveryText string, eb *health.EnergyBank, verdictHistory []string, ctx InsightContext) string {
 	verdict := ""
@@ -197,7 +198,7 @@ func HashRecommendation(sleepText, yesterdayText, recoveryText string, eb *healt
 
 // ─── orchestrator ─────────────────────────────────────────────────────────
 
-// BlockResult is the outcome of one Gemini call.
+// BlockResult is the outcome of one provider call.
 type BlockResult struct {
 	Block string
 	Text  string
@@ -207,11 +208,11 @@ type BlockResult struct {
 
 // GenerateLeafBlocks runs SLEEP, YESTERDAY, RECOVERY in parallel.
 // Each goroutine builds its own prompt (block-specific instructions injected
-// into the shared template) and calls Gemini with the same raw metrics JSON.
+// into the shared template) and calls the active provider with the same raw metrics JSON.
 //
 // hashes carry the inputs_hash for each block so callers can compare against
-// the cache and skip Gemini when nothing has changed since last generation.
-func GenerateLeafBlocks(apiKey, model string, maxTokens int, payloadForBlock func(block string) []byte, lang string,
+// the cache and skip the provider when nothing has changed since last generation.
+func GenerateLeafBlocks(provider Provider, cfg ProviderConfig, payloadForBlock func(block string) []byte, lang string,
 	skipBlock func(block string) bool) []BlockResult {
 
 	results := make([]BlockResult, 0, len(LeafBlocks))
@@ -229,9 +230,13 @@ func GenerateLeafBlocks(apiKey, model string, maxTokens int, payloadForBlock fun
 			if payloadForBlock != nil {
 				payload = payloadForBlock(block)
 			}
-			text, _, err := generateWithPrompt(apiKey, model, maxTokens, prompt, payload, lang)
+			generated, err := provider.Generate(context.Background(), cfg, GenerationRequest{
+				Prompt:      prompt,
+				UserPayload: payload,
+				Language:    lang,
+			})
 			resultsMu.Lock()
-			results = append(results, BlockResult{Block: block, Text: text, Err: err})
+			results = append(results, BlockResult{Block: block, Text: generated.Text, Err: err})
 			resultsMu.Unlock()
 		}(b)
 	}
@@ -250,12 +255,16 @@ func GenerateLeafBlocks(apiKey, model string, maxTokens int, payloadForBlock fun
 // patterns like "3 rest days in a row → accumulated fatigue, push for
 // proper rest" instead of treating each day in isolation. Empty slice
 // is fine — the line is simply omitted from the prompt context.
-func GenerateRecommendation(apiKey, model string, maxTokens int, rawMetricsJSON []byte, lang string,
+func GenerateRecommendation(provider Provider, cfg ProviderConfig, rawMetricsJSON []byte, lang string,
 	sleepText, yesterdayText, recoveryText string, verdictHistory []string, stressFlags []string, ctx InsightContext) (string, error) {
 	prompt := BuildBlockPrompt(BlockRecommendation)
-	context := BuildRecommendationContext(sleepText, yesterdayText, recoveryText, verdictHistory, stressFlags, ctx)
-	text, _, err := generateWithPrompt(apiKey, model, maxTokens, prompt, append(rawMetricsJSON, []byte(context)...), lang)
-	return text, err
+	recommendationContext := BuildRecommendationContext(sleepText, yesterdayText, recoveryText, verdictHistory, stressFlags, ctx)
+	generated, err := provider.Generate(context.Background(), cfg, GenerationRequest{
+		Prompt:      prompt,
+		UserPayload: append(rawMetricsJSON, []byte(recommendationContext)...),
+		Language:    lang,
+	})
+	return generated.Text, err
 }
 
 func BuildRecommendationContext(sleepText, yesterdayText, recoveryText string, verdictHistory []string, stressFlags []string, ctx InsightContext) string {

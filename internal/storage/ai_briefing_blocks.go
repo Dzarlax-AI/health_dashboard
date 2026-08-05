@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// AIBlock holds the cached output of one Gemini call for a single (date,
+// AIBlock holds the cached output of one AI provider call for a single (date,
 // lang, block) triple. Each block is generated independently so a late HRV
 // update only invalidates the blocks whose inputs_hash actually changed —
 // SLEEP/RECOVERY rerun, YESTERDAY stays cached.

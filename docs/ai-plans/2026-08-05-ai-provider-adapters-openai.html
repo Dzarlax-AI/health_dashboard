@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>План реализации: AI provider adapters и OpenAI API</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f6f8;
+      --card: #ffffff;
+      --text: #172033;
+      --muted: #5d687a;
+      --line: #dce2ea;
+      --accent: #3157d5;
+      --accent-soft: #edf1ff;
+      --ok: #13795b;
+      --warn: #b86608;
+      --danger: #b42318;
+      --code: #f1f3f6;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.55;
+    }
+    main { max-width: 1080px; margin: 0 auto; padding: 32px 20px 64px; }
+    header, section {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 22px;
+      margin: 0 0 16px;
+    }
+    h1, h2, h3 { line-height: 1.2; margin-top: 0; }
+    h1 { margin-bottom: 10px; font-size: clamp(26px, 4vw, 38px); }
+    h2 { font-size: 21px; margin-bottom: 12px; }
+    h3 { font-size: 16px; margin: 20px 0 8px; }
+    p:last-child, ul:last-child, ol:last-child { margin-bottom: 0; }
+    ul, ol { padding-left: 24px; }
+    li + li { margin-top: 7px; }
+    code {
+      background: var(--code);
+      padding: 2px 5px;
+      border-radius: 4px;
+      overflow-wrap: anywhere;
+    }
+    pre {
+      background: #172033;
+      color: #f7f9fc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+    }
+    a { color: var(--accent); }
+    .badge {
+      display: inline-block;
+      padding: 5px 11px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .meta {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 10px;
+      margin-top: 18px;
+    }
+    .meta div {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 11px 12px;
+    }
+    .meta strong { display: block; font-size: 12px; color: var(--muted); }
+    .callout { border-left: 4px solid var(--accent); }
+    .warning { border-left: 4px solid var(--warn); }
+    .risk { border-left: 4px solid var(--danger); }
+    .approval { border-left: 4px solid var(--warn); background: #fffaf3; }
+    .decision { border-left: 4px solid var(--ok); }
+    .muted { color: var(--muted); }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; vertical-align: top; padding: 10px; border-bottom: 1px solid var(--line); }
+    th { font-size: 13px; color: var(--muted); }
+    .checklist { list-style: none; padding-left: 0; }
+    .checklist li::before { content: "☐"; display: inline-block; width: 24px; color: var(--accent); }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <span class="badge">Реализовано и проверено</span>
+    <h1>AI provider adapters и прямая поддержка OpenAI API</h1>
+    <p>
+      Перевести AI-брифинг с Gemini-специфичной реализации на расширяемый registry
+      отдельных provider-адаптеров, добавить прямой OpenAI Responses API и переключатель
+      активного провайдера в Admin UI. Gemini остаётся полностью поддержанным; OpenRouter
+      сознательно отложен и позднее добавляется как третий адаптер.
+    </p>
+    <div class="meta">
+      <div><strong>Дата</strong>2026-08-05</div>
+      <div><strong>Статус</strong>Реализация завершена в <code>codex/ai-provider-openai</code>, без commit/deploy</div>
+      <div><strong>Выбранный подход</strong>Provider interface + registry + отдельные адаптеры</div>
+      <div><strong>Начальный OpenAI target</strong><code>gpt-5.6-luna</code>, reasoning <code>none</code></div>
+    </div>
+  </header>
+
+  <section class="warning">
+    <h2>Состояние репозитория перед реализацией</h2>
+    <ul>
+      <li>Текущий checkout: <code>main</code>, он отстаёт от локального <code>origin/main</code> на 38 коммитов.</li>
+      <li>В рабочем дереве уже лежат три чужих незакоммиченных HTML-плана; они не относятся к этой задаче и должны быть сохранены.</li>
+      <li>До изменения production-кода нужно безопасно синхронизировать исходную ветку и повторно проверить затронутые файлы. План основан на текущем checkout и read-only просмотре соответствующих версий из <code>origin/main</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Текущее поведение</h2>
+    <ul>
+      <li><code>internal/ai/gemini.go</code> одновременно реализует Gemini model discovery, HTTP transport, request construction и response parsing.</li>
+      <li><code>internal/ai/blocks.go</code> принимает Gemini key/model напрямую и вызывает неэкспортируемый <code>generateWithPrompt</code>.</li>
+      <li><code>storage.AIConfig</code>, env defaults, tenant/global layering, Admin API и UI используют только <code>gemini_*</code> поля.</li>
+      <li>Admin UI сохраняет ключ во время загрузки списка моделей и затем возвращает полный ключ обратно браузеру.</li>
+      <li>Три leaf-блока генерируются параллельно, затем генерируется RECOMMENDATION. Этот порядок, single-flight и пяти­минутный failure backoff нужно сохранить.</li>
+      <li><code>inputs_hash</code> учитывает health-входы, но не provider, model, reasoning, output limit или версию prompt. Поэтому простая смена модели не гарантирует регенерацию.</li>
+      <li>Rule-based health bullets остаются авторитетным слоем; AI только дополняет их интерпретацией.</li>
+    </ul>
+  </section>
+
+  <section class="decision">
+    <h2>Принятые продуктовые и архитектурные решения</h2>
+    <ul>
+      <li>Переключатель находится в Admin UI и действует installation-wide через <code>health_registry.global_settings</code>.</li>
+      <li>На первом этапе поддерживаются прямые <strong>Gemini</strong> и <strong>OpenAI</strong> API.</li>
+      <li>OpenRouter не маскируется под OpenAI и позднее добавляется отдельным provider-адаптером.</li>
+      <li>У каждого provider собственные key/model/settings; смена активного provider не удаляет настройки другого.</li>
+      <li>Автоматического fallback между провайдерами нет: конфигурационные и transport-ошибки должны быть видимы в логах и Admin UI.</li>
+      <li>По умолчанию остаётся Gemini для полной обратной совместимости существующих установок.</li>
+      <li>OpenAI используется через Responses API. Для Luna reasoning задаётся явно как <code>none</code>, чтобы не унаследовать более дорогой и медленный default.</li>
+      <li>OpenAI requests используют <code>store: false</code>; prompts и responses не пишутся в application logs.</li>
+    </ul>
+  </section>
+
+  <section class="callout">
+    <h2>Целевая архитектура</h2>
+    <pre>AI block orchestrator
+        │
+        ▼
+Provider registry ── Resolve(activeProvider)
+        │
+        ├── Gemini adapter
+        │     ├── ListModels
+        │     └── Generate → generateContent
+        │
+        ├── OpenAI adapter
+        │     ├── ListModels / model suggestions
+        │     └── Generate → Responses API
+        │
+        └── Future: OpenRouter adapter</pre>
+
+    <h3>Нейтральный контракт</h3>
+    <p>
+      <code>Provider</code> должен принимать provider-neutral <code>GenerationRequest</code>
+      с instructions, user input, language, output limit и дополнительными настройками,
+      а возвращать нормализованный текст и usage metadata. Адаптер сам переводит этот
+      контракт в vendor request: Gemini получает <code>systemInstruction/contents</code>,
+      OpenAI — <code>instructions/input/max_output_tokens/reasoning/store</code>.
+    </p>
+
+    <h3>Registry и описание UI</h3>
+    <p>
+      Registry хранит стабильный ID, display name, factory/instance адаптера и описание
+      поддерживаемых provider-specific полей. Admin handler получает allowlist и UI metadata
+      из registry, поэтому добавление нового provider не требует нового условного блока в
+      orchestrator. Vendor-specific parsing и параметры остаются внутри адаптера.
+    </p>
+  </section>
+
+  <section>
+    <h2>Конфигурация и обратная совместимость</h2>
+    <table>
+      <thead>
+        <tr><th>Настройка</th><th>Назначение</th><th>Default / совместимость</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>ai_provider</code></td><td>Активный adapter ID</td><td><code>gemini</code></td></tr>
+        <tr><td><code>ai_max_output_tokens</code></td><td>Общий output budget</td><td>Fallback к legacy <code>gemini_max_tokens</code>, затем 5000</td></tr>
+        <tr><td><code>gemini_api_key</code>, <code>gemini_model</code></td><td>Существующая Gemini-конфигурация</td><td>Сохраняется без переименования</td></tr>
+        <tr><td><code>openai_api_key</code>, <code>openai_model</code></td><td>Прямая OpenAI-конфигурация</td><td><code>gpt-5.6-luna</code> как начальный model default</td></tr>
+        <tr><td><code>openai_reasoning_effort</code></td><td>Provider-specific reasoning</td><td><code>none</code></td></tr>
+      </tbody>
+    </table>
+    <p>
+      Env equivalents: <code>AI_PROVIDER</code>, <code>AI_MAX_OUTPUT_TOKENS</code>,
+      <code>OPENAI_API_KEY</code>, <code>OPENAI_MODEL</code>,
+      <code>OPENAI_REASONING_EFFORT</code>. Существующие <code>GEMINI_*</code>
+      переменные продолжают работать. KV-таблицы уже допускают новые ключи, поэтому
+      SQL/DDL migration не требуется.
+    </p>
+  </section>
+
+  <section>
+    <h2>Admin UI и Admin API</h2>
+    <ul>
+      <li>Добавить provider selector <code>Gemini / OpenAI</code> и показывать поля активного адаптера без перезагрузки страницы.</li>
+      <li>Сохранять конфигурацию обоих адаптеров одним явным действием Save; изменение поля ключа не должно ничего писать в БД.</li>
+      <li>GET возвращает <code>configured: true/false</code>, но не полный секрет. Пустое password-поле означает «сохранить текущий ключ»; отдельное явное действие очищает ключ.</li>
+      <li>Model input остаётся редактируемым. Provider может предложить варианты через <code>ListModels</code>, но UI не блокирует новую валидную model ID, отсутствующую в discovery response.</li>
+      <li><code>POST /api/admin/ai-models</code> принимает provider и опциональный временный key для discovery, не сохраняя его. Stored key используется только когда новый key не передан.</li>
+      <li>Server-side validation запрещает неизвестный provider, неизвестный reasoning effort и недопустимый token limit.</li>
+      <li>Добавить локализованные подписи и ошибки для EN/RU/SR.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Кэш и data flow</h2>
+    <ol>
+      <li>Текущая AI-конфигурация разрешается по существующему приоритету tenant settings → global settings → env.</li>
+      <li>Registry выбирает активный adapter. Отсутствующий ключ активного provider означает AI disabled; скрытого fallback на другой provider нет.</li>
+      <li>К базовому health hash каждого блока добавляется generation fingerprint: provider ID, model, reasoning, max output tokens и явная prompt revision.</li>
+      <li>При неизменном fingerprint сохраняется текущая per-block дедупликация.</li>
+      <li>При смене provider/model все четыре блока получают новый hash и регенерируются. Старый корректный текст может оставаться видимым до успешной атомарной замены соответствующего блока, сохраняя non-blocking UX; новые вызовы другому provider при этом не выполняются автоматически.</li>
+      <li>Failure backoff должен различать generation fingerprint, чтобы ошибка старой конфигурации не задерживала первый запрос после переключения.</li>
+      <li>Логи используют нейтральные сообщения с provider ID и block ID, но никогда не содержат key, prompt, health JSON или полный vendor response.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Предполагаемые изменения файлов</h2>
+    <table>
+      <thead><tr><th>Файл/область</th><th>Причина</th></tr></thead>
+      <tbody>
+        <tr><td><code>internal/ai/provider.go</code> (new)</td><td>Provider contract, request/result types, registry и validation.</td></tr>
+        <tr><td><code>internal/ai/gemini.go</code></td><td>Превратить текущую реализацию в Gemini adapter без изменения внешнего поведения.</td></tr>
+        <tr><td><code>internal/ai/openai.go</code> (new)</td><td>Responses API transport, request translation, output/refusal/incomplete parsing, model discovery.</td></tr>
+        <tr><td><code>internal/ai/blocks.go</code></td><td>Принимать neutral provider вместо Gemini key/model; добавить generation fingerprint.</td></tr>
+        <tr><td><code>internal/ai/*_test.go</code></td><td>Contract tests и <code>httptest</code> fixtures для обоих adapters.</td></tr>
+        <tr><td><code>internal/storage/settings.go</code></td><td>Provider-aware AIConfig и legacy fallback.</td></tr>
+        <tr><td><code>internal/storage/ai_orchestrator.go</code></td><td>Registry resolution, нейтральные ошибки, cache/backoff identity.</td></tr>
+        <tr><td><code>internal/tenants/manager.go</code></td><td>Layering новых global/env AI settings.</td></tr>
+        <tr><td><code>cmd/server/main.go</code></td><td>Новые env defaults и сохранение существующей Gemini migration.</td></tr>
+        <tr><td><code>internal/ui/handler.go</code> и tests</td><td>Структурированный Admin API, dynamic registry metadata, secret-safe save/discovery.</td></tr>
+        <tr><td><code>internal/ui/templates/pages/admin.html</code></td><td>Provider switch и динамические provider-specific controls.</td></tr>
+        <tr><td><code>internal/ui/i18n_en.go</code>, <code>i18n_ru.go</code>, <code>i18n_sr.go</code></td><td>Новые user-facing labels/errors во всех локалях.</td></tr>
+        <tr><td><code>.env.example</code>, <code>README.md</code></td><td>Конфигурация, privacy semantics и operator workflow.</td></tr>
+        <tr><td><code>AGENTS.md</code>, <code>CLAUDE.md</code></td><td>Заменить Gemini-specific architecture notes; twin-файлы обновить синхронно.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Шаги реализации</h2>
+    <ol>
+      <li>Перед production edits безопасно привести checkout к согласованной актуальной базе, сохранив все пользовательские untracked files; повторить scoped inspection.</li>
+      <li>Добавить neutral provider contract и registry с двумя явно зарегистрированными adapters.</li>
+      <li>Перенести текущее Gemini поведение за adapter boundary и зафиксировать его regression tests до добавления OpenAI.</li>
+      <li>Реализовать OpenAI Responses adapter с 60-second timeout, <code>store: false</code>, явным reasoning effort и безопасным parsing.</li>
+      <li>Перевести block orchestrator на provider contract, не меняя leaf parallelism, recommendation ordering и health prompt.</li>
+      <li>Добавить provider-aware generation fingerprint и скорректировать failure backoff.</li>
+      <li>Расширить env/global/tenant configuration с обратной совместимостью существующих Gemini installations.</li>
+      <li>Перепроектировать Admin API secret semantics и model discovery без side-effecting save.</li>
+      <li>Добавить provider selector и динамические controls в Admin UI, затем EN/RU/SR переводы.</li>
+      <li>Обновить operator/project documentation и оба twin instruction files.</li>
+      <li>Выполнить unit, package, full-suite и ручные проверки; результаты записать в этот HTML-план.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Тест-план</h2>
+    <h3>Автоматические проверки</h3>
+    <ul>
+      <li><code>gofmt</code> для всех изменённых Go sources.</li>
+      <li><code>go test ./internal/ai -count=1</code>.</li>
+      <li><code>go test ./internal/storage ./internal/ui ./internal/tenants ./cmd/server -count=1 -timeout=120s</code> с проектным DB environment там, где он требуется существующим tests.</li>
+      <li><code>go test ./... -count=1 -timeout=180s</code>.</li>
+      <li>HTTP contract tests через <code>httptest.Server</code>: headers, request JSON, Responses output parsing, refusals, incomplete response, 401, 429, 5xx, timeout и malformed JSON.</li>
+      <li>Registry tests: duplicate/unknown provider, provider-specific validation, future adapter registration без изменения orchestrator.</li>
+      <li>Cache tests: metric change, provider change, model change, reasoning change, prompt revision change и отсутствие регенерации при идентичном fingerprint.</li>
+      <li>Admin tests: секрет не возвращается, blank key сохраняет существующий, explicit clear удаляет, discovery не пишет settings, неизвестный provider отклоняется.</li>
+    </ul>
+
+    <h3>Ручной QA</h3>
+    <ul class="checklist">
+      <li>Существующая Gemini-конфигурация отображается и работает после обновления без повторного сохранения.</li>
+      <li>Переключение на OpenAI показывает OpenAI fields и не стирает Gemini key/model.</li>
+      <li>Luna генерирует четыре блока на синтетическом payload; plain-text и длина соответствуют текущему prompt contract.</li>
+      <li>После смены provider/model блоки получают новый fingerprint и обновляются.</li>
+      <li>Неверный OpenAI key показывает понятную admin error и не переключает вызовы на Gemini.</li>
+      <li>При отключённом AI rule-based briefing и Telegram report продолжают работать.</li>
+      <li>В browser responses и application logs отсутствуют API keys и raw health prompts.</li>
+      <li>EN/RU/SR Admin UI не содержит Gemini-specific подписи для OpenAI fields.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Риски и edge cases</h2>
+    <ul>
+      <li><strong>Поведенческий drift:</strong> Gemini и Luna могут по-разному соблюдать 40–70-word contract. Нужны одинаковые fixtures/evals, без переписывания prompt до обнаружения измеримого дефекта.</li>
+      <li><strong>Reasoning default:</strong> GPT-5.6 при пропущенном effort может включить более тяжёлый режим; значение <code>none</code> должно быть явным.</li>
+      <li><strong>Vendor parameters:</strong> нельзя слепо передавать Gemini temperature/options в OpenAI. Каждый adapter формирует только поддерживаемые поля.</li>
+      <li><strong>Response variants:</strong> OpenAI может вернуть refusal, incomplete status или несколько output items; parser не должен принимать пустой/частичный результат за успех.</li>
+      <li><strong>Rate limits:</strong> три параллельных leaf calls сохраняются; 429 проходит через существующий failure backoff без скрытого provider fallback.</li>
+      <li><strong>Secret handling:</strong> текущий UI возвращает и временно сохраняет key во время discovery. Этот паттерн необходимо удалить для обоих providers.</li>
+      <li><strong>Cache race:</strong> provider может смениться во время in-flight generation. Single-flight остаётся общим для date/lang; следующий poll сверяет новый fingerprint и исправляет результат без параллельной записи двух providers.</li>
+      <li><strong>Model discovery:</strong> OpenAI model listing не является надёжной capability registry. Поэтому model field должен оставаться редактируемым.</li>
+      <li><strong>Stale checkout:</strong> implementation нельзя начинать на текущем отстающем checkout без повторной сверки с актуальной веткой.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Влияние на данные, auth и deployment</h2>
+    <ul>
+      <li><strong>Database:</strong> новых таблиц/колонок нет; используются новые ключи существующей <code>global_settings</code>. Schema contract version не меняется.</li>
+      <li><strong>Auth:</strong> Admin endpoints остаются под существующим <code>adminGuard</code>. Новых публичных endpoints нет.</li>
+      <li><strong>Privacy:</strong> OpenAI получает тот же health JSON, который сейчас получает Gemini. <code>store: false</code> обязателен; raw payload не логируется.</li>
+      <li><strong>Deployment:</strong> без OpenAI key поведение остаётся Gemini-only. Переключение provider выполняется после deploy через Admin UI, без restart.</li>
+      <li><strong>External calls:</strong> automated tests не используют реальные API keys. Реальный smoke test выполняется только после явной настройки key оператором.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback</h2>
+    <ol>
+      <li>В Admin UI выбрать <code>Gemini</code>; сохранённая Gemini-конфигурация остаётся на месте.</li>
+      <li>Если проблема в новом release шире provider selection, откатить приложение на предыдущий immutable image/commit.</li>
+      <li>Новые KV settings безвредны для старой версии и не требуют удаления.</li>
+      <li>DB rollback/migration не нужен, так как DDL не меняется.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Предположения и открытые вопросы</h2>
+    <ul>
+      <li><strong>Принято:</strong> provider selection installation-wide, как текущая Gemini config.</li>
+      <li><strong>Принято:</strong> direct OpenAI only на первом этапе; custom Base URL и OpenRouter вне scope.</li>
+      <li><strong>Принято:</strong> default provider Gemini; default OpenAI model <code>gpt-5.6-luna</code>; default reasoning <code>none</code>.</li>
+      <li><strong>Принято:</strong> нет автоматического cross-provider fallback.</li>
+      <li><strong>Требуется при реализации:</strong> актуальная ветка и повторная сверка после 38 отсутствующих коммитов.</li>
+      <li><strong>Требуется для post-implementation smoke test:</strong> OpenAI API key, введённый пользователем через Admin UI; в код или test fixtures он не записывается.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Официальные API-источники</h2>
+    <ul>
+      <li><a href="https://developers.openai.com/api/docs/models/gpt-5.6-luna">GPT-5.6 Luna model page</a></li>
+      <li><a href="https://developers.openai.com/api/docs/guides/model-guidance?model=gpt-5.6">GPT-5.6 model guidance</a></li>
+      <li><a href="https://developers.openai.com/api/docs/guides/reasoning">Reasoning guide</a></li>
+      <li><a href="https://developers.openai.com/api/docs/guides/text">Text generation and Responses API guide</a></li>
+    </ul>
+    <p class="muted">
+      На момент планирования официальный Docs MCP был установлен, но требовал перезапуска
+      сессии; контракт дополнительно проверен по официальным страницам developers.openai.com.
+      Перед реализацией schema request/response нужно повторно проверить через Docs MCP.
+    </p>
+  </section>
+
+  <section class="decision">
+    <h2>Фактический результат реализации</h2>
+    <h3>Что изменено</h3>
+    <ul>
+      <li>Добавлены provider-neutral interface, descriptor registry и generation fingerprint в <code>internal/ai/provider.go</code>.</li>
+      <li>Существующий Gemini transport оформлен как adapter; запросы теперь поддерживают context cancellation, а ошибки не включают raw upstream body.</li>
+      <li>Добавлен прямой OpenAI Responses adapter: Bearer auth, <code>store: false</code>, <code>gpt-5.6-luna</code> по умолчанию, явный reasoning effort и безопасный разбор completed/incomplete/refusal responses.</li>
+      <li>Block orchestrator маршрутизирует четыре блока через активный adapter. Cache fingerprint включает provider, model, reasoning, output limit и prompt revision; failure backoff также разделён по fingerprint.</li>
+      <li>AI config хранит независимые credentials/model каждого provider. Существующие Gemini env/settings продолжают работать; legacy <code>GEMINI_MAX_TOKENS</code> остаётся fallback.</li>
+      <li>Admin UI получил provider selector, masked key replacement/explicit clear, editable model suggestions, conditional reasoning и общий output limit. Model discovery больше не сохраняет key как side effect.</li>
+      <li>Admin GET возвращает только <code>configured</code>, но никогда API keys. Ошибки discovery не отдают browser raw vendor responses.</li>
+      <li>Добавлены EN/RU/SR labels, обновлены README, <code>.env.example</code> и twin-файлы <code>AGENTS.md</code>/<code>CLAUDE.md</code>.</li>
+    </ul>
+
+    <h3>Проверки</h3>
+    <ul>
+      <li><code>go test ./internal/ai ./internal/storage ./internal/ui ./internal/tenants ./cmd/server -count=1 -timeout=180s</code> — пройдено.</li>
+      <li><code>go test ./... -count=1 -timeout=180s</code> — пройдено вне sandbox; первый sandbox-run был заблокирован существующим <code>httptest.Server</code> в <code>internal/notify</code>, которому запрещён local bind.</li>
+      <li><code>go build -o /private/tmp/health-ai-provider-server ./cmd/server</code> — пройдено.</li>
+      <li><code>make contract-check</code> с writable temporary <code>GOCACHE</code> — пройдено.</li>
+      <li><code>git diff --check</code> — пройдено.</li>
+      <li>Unit coverage добавлен для OpenAI request/response contract, auth, <code>store=false</code>, incomplete/refusal, 401/429/503, malformed JSON, cancellation, invalid reasoning, provider lookup, cache fingerprint и Admin secret semantics.</li>
+    </ul>
+
+    <h3>Известные ограничения и follow-up</h3>
+    <ul>
+      <li>Реальный OpenAI smoke test не запускался: API key намеренно не читался и не сохранялся в fixtures. После deploy его нужно ввести через Admin UI и проверить четыре блока.</li>
+      <li>OpenRouter и custom base URL остаются вне scope; registry позволяет добавить их отдельным adapter без изменения block orchestrator.</li>
+      <li>Автоматического cross-provider fallback нет по принятому решению.</li>
+      <li>Переключение provider не удаляет прежние credentials и не очищает старый текст до успешной новой генерации.</li>
+      <li>DB schema и migration не менялись; rollback выполняется выбором Gemini в Admin UI или откатом application release.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval gate — выполнен</h2>
+    <p>
+      Пользователь явно одобрил план 2026-08-05. Реализация выполнена в отдельном worktree
+      на ветке <code>codex/ai-provider-openai</code>, созданной от актуального
+      <code>origin/main</code>, чтобы не затронуть незакоммиченные файлы основного checkout.
+      Commit, push, PR и deployment не выполнялись.
+    </p>
+  </section>
+</main>
+</body>
+</html>

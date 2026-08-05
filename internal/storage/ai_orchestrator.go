@@ -11,7 +11,7 @@ import (
 )
 
 // aiRegenFailBackoff is how long we wait after a failed regen before
-// retrying. Keeps a sustained Gemini outage from amplifying into one
+// retrying. Keeps a sustained upstream outage from amplifying into one
 // regen attempt per polling tick.
 const aiRegenFailBackoff = 5 * time.Minute
 
@@ -24,20 +24,51 @@ const aiRegenFailBackoff = 5 * time.Minute
 //
 // Safe to call repeatedly — cached rows whose inputs_hash matches the
 // current data are skipped, and only the leaves whose hashes diverged hit
-// the Gemini API. RECOMMENDATION re-runs whenever any leaf text changes
+// the active provider. RECOMMENDATION re-runs whenever any leaf text changes
 // or when EnergyBank.action_verdict has rotated.
 //
 // Concurrency: only one EnsureTodayAIInsight per (date, lang) runs at a
 // time across the process. Concurrent calls (sync morning-retry vs async
 // poller-driven regen) return the current cache instead of duplicating
-// Gemini work. After a failure, retries are throttled to once per
-// aiRegenFailBackoff so a Gemini outage doesn't compound.
+// provider work. After a failure, retries are throttled to once per
+// aiRegenFailBackoff so an upstream outage doesn't compound.
 func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 	if !aiCfg.Enabled() {
 		return ""
 	}
+	provider, err := ai.GetProvider(aiCfg.Provider)
+	if err != nil {
+		log.Printf("EnsureTodayAIInsight: %v", err)
+		return ""
+	}
+	active := aiCfg.ActiveSettings()
+	descriptor := provider.Descriptor()
+	if active.Model == "" {
+		active.Model = descriptor.DefaultModel
+	}
+	if active.ReasoningEffort == "" {
+		active.ReasoningEffort = descriptor.DefaultReasoning
+	}
+	maxOutputTokens := aiCfg.MaxOutputTokens
+	if maxOutputTokens <= 0 {
+		maxOutputTokens = ai.DefaultMaxOutputTokens
+	}
+	providerCfg := ai.ProviderConfig{
+		APIKey:          active.APIKey,
+		Model:           active.Model,
+		MaxOutputTokens: maxOutputTokens,
+		ReasoningEffort: active.ReasoningEffort,
+	}
+	fingerprint := ai.GenerationFingerprint{
+		Provider:        aiCfg.Provider,
+		Model:           active.Model,
+		ReasoningEffort: active.ReasoningEffort,
+		MaxOutputTokens: maxOutputTokens,
+		PromptRevision:  ai.PromptRevision,
+	}
 	today := time.Now().In(s.reportTZLocation()).Format("2006-01-02")
 	key := today + "|" + lang
+	failureKey := key + "|" + ai.HashForGeneration("", fingerprint)
 
 	// Single-flight gate. If another caller is already regenerating, return
 	// the (possibly empty) cache rather than fanning out. Caller will see
@@ -48,8 +79,8 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 	defer s.aiRegenInFlight.Delete(key)
 
 	// Failure backoff: skip regen for `aiRegenFailBackoff` after the last
-	// run produced zero usable blocks (Gemini outage / quota / auth fail).
-	if v, ok := s.aiRegenLastFailAt.Load(key); ok {
+	// run produced zero usable blocks (upstream outage / quota / auth fail).
+	if v, ok := s.aiRegenLastFailAt.Load(failureKey); ok {
 		if t, ok := v.(time.Time); ok && time.Since(t) < aiRegenFailBackoff {
 			return s.GetAIInsightCombined(today, lang)
 		}
@@ -91,9 +122,9 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 	}
 
 	hashes := map[string]string{
-		ai.BlockSleep:     ai.HashSleep(raw),
-		ai.BlockYesterday: ai.HashYesterday(raw),
-		ai.BlockRecovery:  ai.HashRecovery(raw, eb, insightCtx),
+		ai.BlockSleep:     ai.HashForGeneration(ai.HashSleep(raw), fingerprint),
+		ai.BlockYesterday: ai.HashForGeneration(ai.HashYesterday(raw), fingerprint),
+		ai.BlockRecovery:  ai.HashForGeneration(ai.HashRecovery(raw, eb, insightCtx), fingerprint),
 	}
 
 	cached := s.GetAIBlocksFull(today, lang)
@@ -110,14 +141,14 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 		}
 		return metricsJSON
 	}
-	results := ai.GenerateLeafBlocks(aiCfg.APIKey, aiCfg.Model, aiCfg.MaxOutputTokens, payloadForBlock, lang, skip)
+	results := ai.GenerateLeafBlocks(provider, providerCfg, payloadForBlock, lang, skip)
 	for _, r := range results {
 		if r.Err != nil {
-			log.Printf("EnsureTodayAIInsight: gemini %s: %v", r.Block, r.Err)
+			log.Printf("EnsureTodayAIInsight: provider=%s block=%s: %v", aiCfg.Provider, r.Block, r.Err)
 			continue
 		}
 		if strings.TrimSpace(r.Text) == "" {
-			log.Printf("EnsureTodayAIInsight: gemini %s returned empty content, not caching", r.Block)
+			log.Printf("EnsureTodayAIInsight: provider=%s block=%s returned empty content, not caching", aiCfg.Provider, r.Block)
 			continue
 		}
 		if err := s.SaveAIBlock(today, lang, r.Block, r.Text, hashes[r.Block]); err != nil {
@@ -150,19 +181,22 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 			}
 		}
 	}
-	recHash := ai.HashRecommendation(sleepText, yesterdayText, recoveryText, eb, verdictHistory, insightCtx)
+	recHash := ai.HashForGeneration(
+		ai.HashRecommendation(sleepText, yesterdayText, recoveryText, eb, verdictHistory, insightCtx),
+		fingerprint,
+	)
 	recRow := cached[ai.BlockRecommendation]
 	if recRow == nil || recRow.InputsHash != recHash || strings.TrimSpace(recRow.Text) == "" {
 		var stressFlags []string
 		if eb != nil {
 			stressFlags = eb.Flags
 		}
-		recText, err := ai.GenerateRecommendation(aiCfg.APIKey, aiCfg.Model, aiCfg.MaxOutputTokens, recoveryJSON, lang,
+		recText, err := ai.GenerateRecommendation(provider, providerCfg, recoveryJSON, lang,
 			sleepText, yesterdayText, recoveryText, verdictHistory, stressFlags, insightCtx)
 		if err != nil {
-			log.Printf("EnsureTodayAIInsight: gemini RECOMMENDATION: %v", err)
+			log.Printf("EnsureTodayAIInsight: provider=%s block=RECOMMENDATION: %v", aiCfg.Provider, err)
 		} else if strings.TrimSpace(recText) == "" {
-			log.Println("EnsureTodayAIInsight: gemini RECOMMENDATION returned empty content, not caching")
+			log.Printf("EnsureTodayAIInsight: provider=%s block=RECOMMENDATION returned empty content, not caching", aiCfg.Provider)
 		} else if err := s.SaveAIBlock(today, lang, ai.BlockRecommendation, recText, recHash); err != nil {
 			log.Printf("EnsureTodayAIInsight: save RECOMMENDATION: %v", err)
 		} else {
@@ -171,11 +205,11 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 	}
 
 	// Track sustained failures so the next aiRegenFailBackoff window short-
-	// circuits Gemini calls. On success, clear the timestamp.
+	// circuits provider calls. On success, clear the timestamp.
 	if saved == 0 {
-		s.aiRegenLastFailAt.Store(key, time.Now())
+		s.aiRegenLastFailAt.Store(failureKey, time.Now())
 	} else {
-		s.aiRegenLastFailAt.Delete(key)
+		s.aiRegenLastFailAt.Delete(failureKey)
 	}
 
 	return s.GetAIInsightCombined(today, lang)
