@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>План и результат: Telegram test-notify preview</title>
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f7fa; color: #1f2937; line-height: 1.55; }
+    main { max-width: 960px; margin: 0 auto; padding: 32px 20px 56px; }
+    section { margin: 16px 0; padding: 20px; background: #fff; border: 1px solid #dfe4ea; border-radius: 10px; }
+    h1, h2 { line-height: 1.2; }
+    h2 { margin-top: 0; font-size: 1.2rem; }
+    code { padding: 2px 5px; border-radius: 4px; background: #eef1f5; overflow-wrap: anywhere; }
+    .badge { display: inline-block; padding: 5px 10px; border-radius: 999px; background: #ecfdf3; color: #067647; font-size: .8rem; font-weight: 700; }
+    .decision { border-left: 4px solid #067647; }
+    .risk { border-left: 4px solid #b42318; }
+    .approval { border-left: 4px solid #b54708; }
+    ul, ol { padding-left: 22px; }
+    li + li { margin-top: 6px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Telegram test-notify: повторяемый preview</h1>
+  <p class="badge">План одобрен 2026-08-05 · Реализация выполнена</p>
+
+  <section>
+    <h2>Задача и подтверждённая причина</h2>
+    <p>
+      «Тест утро» и «Тест вечер» вызывали production-функции отправки.
+      Они использовали дневные ключи <code>report:&lt;kind&gt;:&lt;date&gt;</code>
+      в <code>notification_deliveries</code>. После настоящего отчёта повторное
+      резервирование возвращало <code>reserved=false</code>, Telegram transport
+      не вызывался, а endpoint всё равно отвечал <code>message sent</code>.
+    </p>
+  </section>
+
+  <section class="decision">
+    <h2>Согласованное поведение</h2>
+    <ul>
+      <li>Каждое нажатие test-notify отправляет сообщение; cooldown отсутствует.</li>
+      <li>Отчёт заново собирается из актуальных детерминированных метрик.</li>
+      <li>AI provider не вызывается: используются сохранённые блоки, включая <code>SYNTHESIS</code> и legacy fallback.</li>
+      <li>Preview не создаёт и не меняет production delivery-key.</li>
+      <li>Scheduler и proactive delivery сохраняют durable at-most-once семантику.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Рассмотренные варианты</h2>
+    <ol>
+      <li>Удалять production delivery-key — отклонено как нарушение at-most-once гарантии.</li>
+      <li>Создавать minute-bucket test-key — отклонено после решения не ограничивать частоту.</li>
+      <li>Явный preview delivery без durable reservation — выбран и реализован.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Фактические изменения</h2>
+    <ul>
+      <li><code>internal/notify/report.go</code>: добавлены политики durable/preview и функции <code>SendMorningPreview</code>, <code>SendEveningPreview</code>.</li>
+      <li>Production и preview используют одинаковый путь подготовки payload и одинаковый Rich Message fallback.</li>
+      <li><code>cmd/server/main.go</code>: admin test callback переключён только на preview API; provider regeneration отсутствует.</li>
+      <li><code>internal/notify/report_test.go</code>: preview дважды проходит поверх уже занятого production-key, reservation store не вызывается; production остаётся at-most-once; transport error распространяется.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Воздействие</h2>
+    <ul>
+      <li><strong>БД и миграции:</strong> изменений нет.</li>
+      <li><strong>HTTP API:</strong> URL и JSON-форма ответа не меняются.</li>
+      <li><strong>Auth/tenant routing:</strong> без изменений.</li>
+      <li><strong>Стоимость AI:</strong> дополнительных вызовов нет.</li>
+      <li><strong>UX:</strong> несколько кликов намеренно создают несколько сообщений.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Проверки</h2>
+    <ul>
+      <li>Baseline: <code>go test ./... -count=1</code> — pass до изменений.</li>
+      <li>Red: новые delivery-тесты сначала не собирались из-за отсутствующих preview API/policy.</li>
+      <li>Targeted: <code>go test ./internal/notify ./cmd/server -count=1</code> — pass после реализации.</li>
+      <li>Targeted policy tests — pass; preview error propagation также покрыта.</li>
+      <li><code>go test ./... -count=1</code> — pass после реализации.</li>
+      <li><code>go vet ./...</code> — pass.</li>
+      <li><code>make contract-check</code> — pass.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Manual QA после деплоя</h2>
+    <ul>
+      <li>После настоящего morning report дважды нажать «Тест утро» и получить два сообщения.</li>
+      <li>Дважды нажать «Тест вечер» и получить два сообщения.</li>
+      <li>Проверить отсутствие новых AI generation событий.</li>
+      <li>Проверить, что test clicks не добавили production delivery rows.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Риски и ограничения</h2>
+    <ul>
+      <li>Повторные клики могут создать Telegram spam; это явно выбранная семантика без cooldown.</li>
+      <li>Transport timeout остаётся неоднозначным: Telegram мог принять сообщение даже при ошибке ответа; автоматический retry не добавлен.</li>
+      <li>Полное готовое сообщение не кешируется, поэтому deterministic metrics остаются актуальными на момент preview.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback</h2>
+    <p>
+      Вернуть test callback к <code>SendMorning</code>/<code>SendEvening</code>
+      и удалить preview policy/API. Миграций и очистки данных не требуется.
+    </p>
+  </section>
+
+  <section class="approval">
+    <h2>Git и deployment gate</h2>
+    <p>
+      Реализация находится в отдельной ветке от свежего <code>origin/main</code>.
+      Commit, push, PR, merge и deployment выполняются только после отдельного
+      разрешения пользователя.
+    </p>
+  </section>
+</main>
+</body>
+</html>

@@ -20,6 +20,13 @@ type notificationDeliveryStore interface {
 	CompleteNotificationDelivery(context.Context, string, uuid.UUID, string, string) error
 }
 
+type reportDeliveryPolicy uint8
+
+const (
+	reportDeliveryDurable reportDeliveryPolicy = iota
+	reportDeliveryPreview
+)
+
 const notificationDeliveryTimeout = 10 * time.Second
 
 func completeNotificationDelivery(store notificationDeliveryStore, key string, token uuid.UUID, status, code string) error {
@@ -188,6 +195,15 @@ func SendMorning(bot *Bot, db *storage.DB, cfg Config) error {
 	return err
 }
 
+// SendMorningPreview renders the same report as a forced scheduled send but
+// delivers it without reserving the production report key. It is intended for
+// explicit admin previews, which may be sent repeatedly. AI blocks are read
+// from the existing cache by sendMorningReport; no provider call is made.
+func SendMorningPreview(bot *Bot, db *storage.DB, cfg Config) error {
+	_, _, err := sendMorningReport(bot, db, cfg, MorningSendOpts{Force: true}, reportDeliveryPreview)
+	return err
+}
+
 // MorningSendOpts configures the morning report send. Existing callers
 // continue to use SendMorningSmart(force) which builds a default opts;
 // runMorningSmartRetry passes CheckinExpired=true on the expire-and-
@@ -217,6 +233,10 @@ func SendMorningSmart(bot *Bot, db *storage.DB, cfg Config, force bool) (bool, s
 // extra context (e.g. cap-path saw a prompted check-in expire) pass it
 // via MorningSendOpts so formatMorning can render the right copy.
 func SendMorningSmartOpts(bot *Bot, db *storage.DB, cfg Config, opts MorningSendOpts) (bool, string, error) {
+	return sendMorningReport(bot, db, cfg, opts, reportDeliveryDurable)
+}
+
+func sendMorningReport(bot *Bot, db *storage.DB, cfg Config, opts MorningSendOpts, policy reportDeliveryPolicy) (bool, string, error) {
 	loc := cfg.location()
 	today := time.Now().In(loc).Format("2006-01-02")
 
@@ -246,7 +266,7 @@ func SendMorningSmartOpts(bot *Bot, db *storage.DB, cfg Config, opts MorningSend
 		}
 	}
 	key := "report:morning:" + today
-	reserved, err := sendDurableReport(db, key, func() error { return sendReportHTML(bot, cfg, "morning", richMsg, msg) })
+	reserved, err := deliverReport(policy, db, key, func() error { return sendReportHTML(bot, cfg, "morning", richMsg, msg) })
 	if !reserved && err == nil {
 		return false, "delivery_already_reserved", nil
 	}
@@ -257,6 +277,16 @@ func SendMorningSmartOpts(bot *Bot, db *storage.DB, cfg Config, opts MorningSend
 // omitted because the briefing's activity/cardio sections describe yesterday —
 // users get the full retrospective in the morning report.
 func SendEvening(bot *Bot, db *storage.DB, cfg Config) error {
+	return sendEveningReport(bot, db, cfg, reportDeliveryDurable)
+}
+
+// SendEveningPreview renders current deterministic data and sends it without
+// reserving the production evening-report key.
+func SendEveningPreview(bot *Bot, db *storage.DB, cfg Config) error {
+	return sendEveningReport(bot, db, cfg, reportDeliveryPreview)
+}
+
+func sendEveningReport(bot *Bot, db *storage.DB, cfg Config, policy reportDeliveryPolicy) error {
 	briefing, err := db.GetHealthBriefing(cfg.Lang)
 	if err != nil {
 		return err
@@ -272,8 +302,21 @@ func SendEvening(bot *Bot, db *storage.DB, cfg Config) error {
 		rich = formatEveningRich(briefing, dash, cfg.Lang, cfg.location(), fresh)
 	}
 	today := time.Now().In(cfg.location()).Format("2006-01-02")
-	_, err = sendDurableReport(db, "report:evening:"+today, func() error { return sendReportHTML(bot, cfg, "evening", rich, fallback) })
+	_, err = deliverReport(policy, db, "report:evening:"+today, func() error {
+		return sendReportHTML(bot, cfg, "evening", rich, fallback)
+	})
 	return err
+}
+
+func deliverReport(policy reportDeliveryPolicy, db notificationDeliveryStore, key string, send func() error) (bool, error) {
+	switch policy {
+	case reportDeliveryPreview:
+		return true, send()
+	case reportDeliveryDurable:
+		return sendDurableReport(db, key, send)
+	default:
+		return false, fmt.Errorf("unknown report delivery policy: %d", policy)
+	}
 }
 
 func sendDurableReport(db notificationDeliveryStore, key string, send func() error) (bool, error) {
