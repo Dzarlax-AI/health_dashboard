@@ -182,7 +182,7 @@
                 "unit": {
                   "type": "string"
                 },
-                "value_json": true,
+                "value_json": {},
                 "value_numeric": {
                   "type": "number"
                 },
@@ -1495,7 +1495,7 @@
         "operationId": "getDerivedMetrics",
         "parameters": [
           {
-            "description": "Unsupported values are ignored and the server falls back to the documented default.",
+            "description": "Canonical metric name. Missing or unsupported values return 400.",
             "in": "query",
             "name": "metric",
             "required": true,
@@ -1557,6 +1557,25 @@
                 }
               }
             }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing or unsupported metric, invalid date range, or a range longer than 366 days."
           },
           "500": {
             "content": {

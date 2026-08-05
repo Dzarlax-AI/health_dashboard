@@ -35,6 +35,17 @@ func main() {
 	if err != nil {
 		log.Fatalf("load timezone: %v", err)
 	}
+	from, err := time.ParseInLocation("2006-01-02", *fromValue, loc)
+	if err != nil {
+		log.Fatalf("parse --from: %v", err)
+	}
+	to, err := time.ParseInLocation("2006-01-02", *toValue, loc)
+	if err != nil {
+		log.Fatalf("parse --to: %v", err)
+	}
+	if from.After(to) {
+		log.Fatal("--from must not be after --to")
+	}
 
 	ctx := context.Background()
 	db, err := openTenantDB(ctx, dbURL, *schema)

@@ -75,11 +75,11 @@ func TestValidateDerivedMetricRejectsInvalidDateStateAndMetadata(t *testing.T) {
 }
 
 func TestDerivedMetricsDDLHasCanonicalKeysAndTypedValueChecks(t *testing.T) {
-	ddl := derivedMetricsTableDDL()
+	ddl := strings.Join(strings.Fields(derivedMetricsTableDDL()), " ")
 	for _, fragment := range []string{
 		"PRIMARY KEY (metric_name, metric_date)",
 		"value_timestamp TIMESTAMPTZ",
-		"value_json      JSONB",
+		"value_json JSONB",
 		"= 1",
 		"value_type = 'timestamp'",
 	} {
@@ -87,9 +87,50 @@ func TestDerivedMetricsDDLHasCanonicalKeysAndTypedValueChecks(t *testing.T) {
 			t.Errorf("derived metrics DDL missing %q", fragment)
 		}
 	}
-	feedbackDDL := derivedMetricFeedbackTableDDL()
+	feedbackDDL := strings.Join(strings.Fields(derivedMetricFeedbackTableDDL()), " ")
 	if !strings.Contains(feedbackDDL, "PRIMARY KEY (metric_name, metric_date, channel)") {
 		t.Fatal("feedback DDL does not enforce one prompt/answer per metric date and channel")
+	}
+}
+
+func TestSaveDerivedMetricCanMergeMetadataAtomically(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	first := validWakeMetric()
+	first.Metadata = json.RawMessage(`{"subjective_checkin_answered_at":"2026-08-05T06:40:00Z","confidence":"low"}`)
+	if err := db.SaveDerivedMetric(first); err != nil {
+		t.Fatal(err)
+	}
+	second := first
+	second.Metadata = json.RawMessage(`{"confidence":"high","reason":"post_wake_activity"}`)
+	second.MergeMetadata = true
+	if err := db.SaveDerivedMetric(second); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.GetDerivedMetric(first.MetricName, first.MetricDate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal(got.Metadata, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	if metadata["subjective_checkin_answered_at"] != "2026-08-05T06:40:00Z" ||
+		metadata["confidence"] != "high" || metadata["reason"] != "post_wake_activity" {
+		t.Fatalf("merged metadata=%v", metadata)
+	}
+}
+
+func TestValidateDerivedMetricFeedbackResponseDispatchesByMetric(t *testing.T) {
+	if err := ValidateDerivedMetricFeedbackResponse(DerivedMetricWakeTime, WakeFeedbackConfirmed); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateDerivedMetricFeedbackResponse(DerivedMetricWakeTime, "bogus"); err == nil {
+		t.Fatal("accepted unsupported wake feedback")
+	}
+	if err := ValidateDerivedMetricFeedbackResponse("future_metric", WakeFeedbackConfirmed); err == nil {
+		t.Fatal("accepted unknown derived metric")
 	}
 }
 

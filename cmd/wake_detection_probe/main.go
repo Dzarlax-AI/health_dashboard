@@ -68,16 +68,19 @@ func main() {
 		if *schema == "" {
 			log.Fatal("--schema is required when tenant database isolation is enabled")
 		}
-		reg, err := registry.New(ctx, isolation.RegistryDSN)
+		var reg *registry.Registry
+		reg, err = registry.New(ctx, isolation.RegistryDSN)
 		if err != nil {
 			log.Fatalf("open registry: %v", err)
 		}
 		defer reg.Close()
-		user, err := reg.GetBySchema(ctx, *schema)
+		var user *registry.User
+		user, err = reg.GetBySchema(ctx, *schema)
 		if err != nil {
 			log.Fatalf("resolve tenant schema: %v", err)
 		}
-		password, err := isolation.Credentials.Derive(user.TenantID, user.DBRole, user.DBCredentialVersion)
+		var password string
+		password, err = isolation.Credentials.Derive(user.TenantID, user.DBRole, user.DBCredentialVersion)
 		if err != nil {
 			log.Fatalf("derive restricted tenant credential: %v", err)
 		}

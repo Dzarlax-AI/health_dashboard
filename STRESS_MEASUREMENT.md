@@ -51,7 +51,7 @@ methodology read isn't blocked on chasing them from other files:
    shape for this use case. Need a new helper `WakeTimeForDate(date)`
    that returns (wakeHour, sleepOnsetHour, ok) implementing the
    algorithm above. `GetTypicalWakeTime` stays for `MorningCapTime`
-   usage (which legitimately wants the average); v2.2 must not
+   usage (which legitimately wants the median); v2.2 must not
    reuse it.
 3. **Coverage gate.** A day with <8 hours of HR-covered awake time
    (watch off charger, sync gap) must NOT compute `sustained_hr_load`

@@ -245,3 +245,63 @@ func TestRecordWakeCheckinEvidenceAnnotatesCanonicalMetric(t *testing.T) {
 		t.Fatalf("metadata=%v", metadata)
 	}
 }
+
+func TestTypicalDerivedWakeMinutesIgnoresRowsOutsideCalendarWindow(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	loc := testWakeLocation(t)
+
+	for day := 1; day <= 7; day++ {
+		metric := validWakeMetric()
+		date := time.Date(2026, 6, day, 0, 0, 0, 0, loc)
+		wake := time.Date(2026, 6, day, 5, day, 0, 0, loc)
+		metric.MetricDate = date.Format("2006-01-02")
+		metric.ValueTimestamp = &wake
+		if err := db.SaveDerivedMetric(metric); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, ok, err := db.typicalDerivedWakeMinutes("2026-08-05", 14, loc); err != nil || ok {
+		t.Fatalf("stale-only baseline ok=%v err=%v, want unavailable", ok, err)
+	}
+
+	for day := 22; day <= 28; day++ {
+		metric := validWakeMetric()
+		date := time.Date(2026, 7, day, 0, 0, 0, 0, loc)
+		wake := time.Date(2026, 7, day, 7, day-22, 0, 0, loc)
+		metric.MetricDate = date.Format("2006-01-02")
+		metric.ValueTimestamp = &wake
+		if err := db.SaveDerivedMetric(metric); err != nil {
+			t.Fatal(err)
+		}
+	}
+	minutes, ok, err := db.typicalDerivedWakeMinutes("2026-08-05", 14, loc)
+	if err != nil || !ok || minutes != 7*60+3 {
+		t.Fatalf("recent baseline minutes=%d ok=%v err=%v", minutes, ok, err)
+	}
+}
+
+func TestWakeCandidateVariantsReturnsEmptyDayWithoutAbortingProbe(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx, cancel := queryCtx()
+	defer cancel()
+	recordID := insertTestRawRecord(t, db, "wake-probe-empty")
+	if _, err := db.pool.Exec(ctx, `
+		INSERT INTO metric_points
+			(health_record_id, metric_name, units, date, qty, source, quality)
+		VALUES ($1,'sleep_total','hr','2026-08-04 18:00:00 +0200',2,'Apple Watch','ok')
+	`, recordID); err != nil {
+		t.Fatal(err)
+	}
+	variants, err := db.WakeCandidateVariantsForDate("2026-08-05", testWakeLocation(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if variants.SelectedSource != "Apple Watch" ||
+		!variants.SleepTotalEnd.IsZero() ||
+		!variants.DetailedSessionEnd.IsZero() ||
+		!variants.SummarySessionEnd.IsZero() {
+		t.Fatalf("variants=%+v, want selected source with no eligible candidates", variants)
+	}
+}

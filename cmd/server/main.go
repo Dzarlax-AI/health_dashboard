@@ -1347,8 +1347,7 @@ func runMorningSmartRetry(ctx context.Context, bot *notify.Bot, db *storage.DB, 
 }
 
 func trySendWakeFeedbackAfterMorning(bot *notify.Bot, db *storage.DB, cfg notify.Config, date string, now time.Time) bool {
-	enabled := strings.TrimSpace(strings.ToLower(db.GetSetting(storage.SettingWakeFeedbackEnabled, "true")))
-	if enabled == "false" || enabled == "0" || enabled == "no" || enabled == "off" {
+	if !storage.IsWakeFeedbackEnabled(db) {
 		return false
 	}
 	sent, err := notify.SendWakeFeedbackPrompt(bot, db, cfg.Lang, date, now)

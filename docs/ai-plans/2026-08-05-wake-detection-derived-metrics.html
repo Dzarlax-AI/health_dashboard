@@ -21,7 +21,7 @@
 <main>
   <p class="muted">Health Dashboard · implementation record</p>
   <h1>Детекция пробуждения и слой внутренних метрик</h1>
-  <p class="status">План одобрен · реализация завершена · ожидает PR</p>
+  <p class="status">План одобрен · реализация и review fixes завершены</p>
 
   <section>
     <h2>Задача и результат</h2>
@@ -108,6 +108,18 @@
   </section>
 
   <section>
+    <h2>Усиление после code review</h2>
+    <ul>
+      <li>Wake metadata теперь объединяется атомарно: повторный расчёт не стирает Telegram/check-in evidence.</li>
+      <li>Typical wake ограничен одновременно числом строк и календарным окном; текущий день исключён.</li>
+      <li>Forced morning report продолжает отправку с stale banner при ошибке wake detector.</li>
+      <li>Исторический probe пропускает дни без подходящего candidate, а CLI валидирует диапазон до подключения к БД.</li>
+      <li>OpenAPI документирует JSON 400 для derived metrics и не выдаёт boolean schema, несовместимую с oasdiff.</li>
+      <li>Frontend API types регенерированы; добавлены regression tests для metadata merge, stale baseline, malformed callback и durable Telegram delivery.</li>
+    </ul>
+  </section>
+
+  <section>
     <h2>Проверки и ручной QA</h2>
     <ul>
       <li>Unit/DB tests: typed values, canonical upsert, feedback idempotency, detector scenarios, API redaction, Telegram cadence/callback.</li>
@@ -116,6 +128,7 @@
       <li>Выполнено: <code>go vet ./...</code> — exit 0.</li>
       <li>Выполнено: <code>make contract-check</code> — OpenAPI 0.3.0 current и обратно совместим.</li>
       <li>Выполнено: <code>go build ./...</code> — exit 0; schema contract v6 checksum закреплён тестом.</li>
+      <li>После review выполнено: полный Go suite (isolation test отдельно без локального <code>PGOPTIONS</code>), <code>go vet ./...</code> и <code>make web-check</code> — exit 0.</li>
       <li>После deploy: schema fleet audit, dry-run/backfill, проверить сегодняшнюю wake row, один callback, report delivery и service health.</li>
     </ul>
   </section>

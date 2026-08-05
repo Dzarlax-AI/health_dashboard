@@ -29,7 +29,7 @@ func (s *DB) GetTypicalWakeTime(days int, locations ...*time.Location) (int, int
 	if len(locations) > 0 && locations[0] != nil {
 		loc = locations[0]
 	}
-	beforeDate := time.Now().In(loc).AddDate(0, 0, 1).Format("2006-01-02")
+	beforeDate := time.Now().In(loc).Format("2006-01-02")
 	if minutes, ok, err := s.typicalDerivedWakeMinutes(beforeDate, days, loc); err == nil && ok {
 		return minutes / 60, minutes % 60, true
 	}

@@ -269,6 +269,26 @@ func TestWebhook_RejectsMalformedCallback(t *testing.T) {
 	}
 }
 
+func TestWebhook_RejectsMalformedWakeCallback(t *testing.T) {
+	router := &fakeRouter{}
+	h := NewWebhookHandler(WebhookConfig{
+		Secret: "good",
+		TenantFinder: func(chat string) (CheckinTenant, bool) {
+			return CheckinTenant{Schema: "health", Lang: "ru", Router: router}, true
+		},
+	})
+	req := httptest.NewRequest("POST", "/api/telegram/webhook/good",
+		bytes.NewReader(buildUpdateBody(t, "111", "wake:bogus:2026-08-05")))
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	if rec.Code != http.StatusOK || router.wakeCalls != 0 || router.saveCalls != 0 {
+		t.Fatalf("status=%d wake_calls=%d save_calls=%d body=%s", rec.Code, router.wakeCalls, router.saveCalls, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "ignored: malformed callback") {
+		t.Fatalf("body=%q, want malformed callback marker", rec.Body.String())
+	}
+}
+
 // Tapping yesterday's button from chat history today: SaveCheckinAnswer
 // is not strictly idempotent (it overwrites answer/answered_at on
 // already-answered rows), so the webhook MUST reject stale callbacks

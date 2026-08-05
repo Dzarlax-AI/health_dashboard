@@ -1,8 +1,6 @@
 package storage
 
 import (
-	"fmt"
-	"strings"
 	"time"
 )
 
@@ -119,7 +117,7 @@ func (s *DB) WakeCandidateVariantsForDate(localDate string, loc *time.Location) 
 		}
 	}
 	if out.SleepTotalEnd.IsZero() && out.DetailedSessionEnd.IsZero() && out.SummarySessionEnd.IsZero() {
-		return WakeCandidateVariants{}, fmt.Errorf("no eligible wake variants for %s source %s", localDate, strings.TrimSpace(source))
+		return out, nil
 	}
 	return out, nil
 }

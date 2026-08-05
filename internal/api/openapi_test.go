@@ -104,6 +104,25 @@ func TestClientContractHasExpectedPhaseOneOperationsAndNoTenantSelector(t *testi
 	if isAdmin["type"] != "boolean" {
 		t.Fatalf("session is_admin schema = %#v, want boolean", isAdmin)
 	}
+
+	derived := paths["/api/derived-metrics"].(map[string]any)["get"].(map[string]any)
+	responses := derived["responses"].(map[string]any)
+	badRequest, ok := responses["400"].(map[string]any)
+	if !ok {
+		t.Fatal("derived metrics operation does not document a 400 response")
+	}
+	badRequestSchema := badRequest["content"].(map[string]any)["application/json"].(map[string]any)["schema"].(map[string]any)
+	if badRequestSchema["type"] != "object" {
+		t.Fatalf("derived metrics 400 schema=%#v, want JSON object", badRequestSchema)
+	}
+	parameters := derived["parameters"].([]any)
+	metricParameter := parameters[0].(map[string]any)
+	if !metricParameter["required"].(bool) || strings.Contains(metricParameter["description"].(string), "falls back") {
+		t.Fatalf("derived metric parameter contract=%#v", metricParameter)
+	}
+	if strings.Contains(string(raw), `"value_json": true`) {
+		t.Fatal("OpenAPI contains a boolean schema that compatibility tooling cannot parse")
+	}
 }
 
 func TestClientContractModelsColdStartAndDiscriminatedEnergyResponses(t *testing.T) {

@@ -166,6 +166,19 @@ func clientPaths() map[string]any {
 	energyOperation["responses"].(map[string]any)["400"] = plainTextResponse(
 		"Invalid granularity. Use day or hour.",
 	)
+	derivedMetricsOperation := getOperation(
+		"getDerivedMetrics",
+		"Canonical service-derived metric history",
+		[]any{
+			requiredEnumQueryParameter("metric", "Canonical metric name. Missing or unsupported values return 400.", "wake_time"),
+			stringQueryParameter("from", "Start date in YYYY-MM-DD; defaults to 30 days before to."),
+			stringQueryParameter("to", "End date in YYYY-MM-DD; defaults to tenant-local today."),
+		},
+		jsonResponseRef("DerivedMetricsResponse"),
+	)
+	derivedMetricsOperation["responses"].(map[string]any)["400"] = jsonErrorResponse(
+		"Missing or unsupported metric, invalid date range, or a range longer than 366 days.",
+	)
 
 	return map[string]any{
 		"/api/dashboard": map[string]any{
@@ -204,16 +217,7 @@ func clientPaths() map[string]any {
 			"get": energyOperation,
 		},
 		"/api/derived-metrics": map[string]any{
-			"get": getOperation(
-				"getDerivedMetrics",
-				"Canonical service-derived metric history",
-				[]any{
-					requiredEnumQueryParameter("metric", "wake_time"),
-					stringQueryParameter("from", "Start date in YYYY-MM-DD; defaults to 30 days before to."),
-					stringQueryParameter("to", "End date in YYYY-MM-DD; defaults to tenant-local today."),
-				},
-				jsonResponseRef("DerivedMetricsResponse"),
-			),
+			"get": derivedMetricsOperation,
 		},
 		"/api/session": map[string]any{
 			"get": getOperation(
@@ -275,6 +279,24 @@ func plainTextResponse(description string) map[string]any {
 	}
 }
 
+func jsonErrorResponse(description string) map[string]any {
+	return map[string]any{
+		"description": description,
+		"content": map[string]any{
+			"application/json": map[string]any{
+				"schema": map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"required":             []any{"error"},
+					"properties": map[string]any{
+						"error": map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+	}
+}
+
 func schemaRef(name string) map[string]any {
 	return map[string]any{"$ref": "#/components/schemas/" + name}
 }
@@ -301,9 +323,10 @@ func enumQueryParameter(name, defaultValue string, values ...string) map[string]
 	}
 }
 
-func requiredEnumQueryParameter(name string, values ...string) map[string]any {
+func requiredEnumQueryParameter(name, description string, values ...string) map[string]any {
 	parameter := enumQueryParameter(name, "", values...)
 	parameter["required"] = true
+	parameter["description"] = description
 	schema := parameter["schema"].(map[string]any)
 	delete(schema, "default")
 	return parameter
@@ -360,7 +383,20 @@ func removeSchemaMetadata(value any) {
 	case map[string]any:
 		delete(typed, "$schema")
 		delete(typed, "$id")
-		for _, child := range typed {
+		for key, child := range typed {
+			if key == "properties" {
+				if properties, ok := child.(map[string]any); ok {
+					for propertyName, propertySchema := range properties {
+						if booleanSchema, ok := propertySchema.(bool); ok {
+							if booleanSchema {
+								properties[propertyName] = map[string]any{}
+							} else {
+								properties[propertyName] = map[string]any{"not": map[string]any{}}
+							}
+						}
+					}
+				}
+			}
 			removeSchemaMetadata(child)
 		}
 	case []any:

@@ -498,6 +498,7 @@ func (s *DB) typicalDerivedWakeMinutes(beforeDate string, days int, loc *time.Lo
 		  FROM derived_metrics
 		 WHERE metric_name=$1
 		   AND metric_date < $2
+		   AND metric_date >= $2::date - $3::int
 		 ORDER BY metric_date DESC
 		 LIMIT $3
 	`, DerivedMetricWakeTime, beforeDate, days)
@@ -559,6 +560,7 @@ func (s *DB) saveWakeStatus(localDate string, status MorningWakeStatus, now time
 		CalculatedAt:   now,
 		FinalizedAt:    finalizedAt,
 		Metadata:       metadata,
+		MergeMetadata:  true,
 	})
 }
 
@@ -584,5 +586,6 @@ func (s *DB) RecordWakeCheckinEvidence(localDate string, answeredAt time.Time) e
 		return err
 	}
 	metric.Metadata = encoded
+	metric.MergeMetadata = true
 	return s.SaveDerivedMetric(*metric)
 }

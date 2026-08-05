@@ -58,6 +58,7 @@ type DerivedMetric struct {
 	CalculatedAt   time.Time
 	FinalizedAt    *time.Time
 	Metadata       json.RawMessage
+	MergeMetadata  bool
 }
 
 type DerivedMetricFeedback struct {
@@ -244,11 +245,14 @@ func (s *DB) SaveDerivedMetric(metric DerivedMetric) error {
 			inputs_hash = EXCLUDED.inputs_hash,
 			calculated_at = EXCLUDED.calculated_at,
 			finalized_at = COALESCE(derived_metrics.finalized_at, EXCLUDED.finalized_at),
-			metadata = EXCLUDED.metadata
+			metadata = CASE
+				WHEN $15 THEN derived_metrics.metadata || EXCLUDED.metadata
+				ELSE EXCLUDED.metadata
+			END
 	`, metric.MetricName, metric.MetricDate, metric.ValueType,
 		metric.ValueNumeric, metric.ValueText, metric.ValueTimestamp, valueJSON,
 		metric.Unit, metric.State, metric.FormulaVersion, metric.InputsHash,
-		metric.CalculatedAt, metric.FinalizedAt, json.RawMessage(metadata))
+		metric.CalculatedAt, metric.FinalizedAt, json.RawMessage(metadata), metric.MergeMetadata)
 	return err
 }
 
@@ -325,18 +329,38 @@ func ValidateWakeFeedbackResponse(response string) error {
 	}
 }
 
+func ValidateDerivedMetricFeedbackResponse(metricName, response string) error {
+	switch metricName {
+	case DerivedMetricWakeTime:
+		return ValidateWakeFeedbackResponse(response)
+	default:
+		return fmt.Errorf("unknown derived metric %q", metricName)
+	}
+}
+
+func IsWakeFeedbackEnabled(s *DB) bool {
+	return getSettingBool(s, SettingWakeFeedbackEnabled, true)
+}
+
+func validateDerivedMetricFeedbackIdentity(metricName, metricDate, channel string) error {
+	if _, ok := DerivedMetricDefinitionFor(metricName); !ok {
+		return fmt.Errorf("unknown derived metric %q", metricName)
+	}
+	if _, err := time.Parse("2006-01-02", metricDate); err != nil {
+		return fmt.Errorf("invalid feedback date %q: %w", metricDate, err)
+	}
+	if channel != DerivedMetricFeedbackTelegram {
+		return fmt.Errorf("invalid derived metric feedback channel %q", channel)
+	}
+	return nil
+}
+
 // SaveDerivedMetricFeedbackPrompted records one delivered prompt per
 // metric/date/channel. It returns false when another sender already persisted
 // the same prompt.
 func (s *DB) SaveDerivedMetricFeedbackPrompted(feedback DerivedMetricFeedback) (bool, error) {
-	if _, ok := DerivedMetricDefinitionFor(feedback.MetricName); !ok {
-		return false, fmt.Errorf("unknown derived metric %q", feedback.MetricName)
-	}
-	if _, err := time.Parse("2006-01-02", feedback.MetricDate); err != nil {
-		return false, fmt.Errorf("invalid feedback date %q: %w", feedback.MetricDate, err)
-	}
-	if feedback.Channel != DerivedMetricFeedbackTelegram {
-		return false, fmt.Errorf("invalid derived metric feedback channel %q", feedback.Channel)
+	if err := validateDerivedMetricFeedbackIdentity(feedback.MetricName, feedback.MetricDate, feedback.Channel); err != nil {
+		return false, err
 	}
 	if len(feedback.ProposedValue) == 0 || !json.Valid(feedback.ProposedValue) {
 		return false, errors.New("feedback proposed_value must be valid JSON")
@@ -371,7 +395,10 @@ func (s *DB) SaveDerivedMetricFeedbackPrompted(feedback DerivedMetricFeedback) (
 // SaveDerivedMetricFeedbackAnswer preserves the first answer. Repeated taps
 // return the stored response without changing answered_at.
 func (s *DB) SaveDerivedMetricFeedbackAnswer(metricName, metricDate, channel, response string, correctedValue json.RawMessage, answeredAt time.Time) (string, error) {
-	if err := ValidateWakeFeedbackResponse(response); err != nil {
+	if err := validateDerivedMetricFeedbackIdentity(metricName, metricDate, channel); err != nil {
+		return "", err
+	}
+	if err := ValidateDerivedMetricFeedbackResponse(metricName, response); err != nil {
 		return "", err
 	}
 	if len(correctedValue) != 0 && !json.Valid(correctedValue) {

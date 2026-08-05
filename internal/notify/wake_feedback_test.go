@@ -1,21 +1,47 @@
 package notify
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"health-receiver/internal/storage"
 )
 
 type wakeFeedbackBot struct {
 	rows [][]InlineButton
 	text string
+	err  error
 }
 
 func (b *wakeFeedbackBot) SendInlineKeyboard(text string, rows [][]InlineButton) (int64, error) {
 	b.text, b.rows = text, rows
-	return 42, nil
+	return 42, b.err
+}
+
+type durableWakeFeedbackStore struct {
+	*wakeFeedbackStore
+	reserved  bool
+	token     uuid.UUID
+	completed bool
+	status    string
+}
+
+func (s *durableWakeFeedbackStore) ReserveNotificationDelivery(context.Context, string) (uuid.UUID, bool, error) {
+	s.token = uuid.New()
+	return s.token, s.reserved, nil
+}
+
+func (s *durableWakeFeedbackStore) CompleteNotificationDelivery(_ context.Context, _ string, token uuid.UUID, status, _ string) error {
+	if token != s.token {
+		return errors.New("unexpected delivery token")
+	}
+	s.completed = true
+	s.status = status
+	return nil
 }
 
 type wakeFeedbackStore struct {
@@ -76,6 +102,38 @@ func TestSendWakeFeedbackPromptThrottlesHighConfidence(t *testing.T) {
 	sent, err := SendWakeFeedbackPrompt(bot, store, "en", "2026-08-05", wake.Add(time.Hour))
 	if err != nil || sent || bot.text != "" {
 		t.Fatalf("sent=%v err=%v bot=%+v", sent, err, bot)
+	}
+}
+
+func TestSendWakeFeedbackPromptHonorsDurableReservation(t *testing.T) {
+	wake := time.Date(2026, 8, 5, 8, 0, 0, 0, time.UTC)
+	store := &durableWakeFeedbackStore{
+		wakeFeedbackStore: &wakeFeedbackStore{
+			metric:   &storage.DerivedMetric{ValueTimestamp: &wake},
+			inserted: true,
+		},
+		reserved: false,
+	}
+	bot := &wakeFeedbackBot{}
+	sent, err := SendWakeFeedbackPrompt(bot, store, "en", "2026-08-05", wake.Add(time.Hour))
+	if err != nil || sent || bot.text != "" {
+		t.Fatalf("sent=%v err=%v bot=%+v", sent, err, bot)
+	}
+}
+
+func TestSendWakeFeedbackPromptMarksAmbiguousTransport(t *testing.T) {
+	wake := time.Date(2026, 8, 5, 8, 0, 0, 0, time.UTC)
+	store := &durableWakeFeedbackStore{
+		wakeFeedbackStore: &wakeFeedbackStore{
+			metric:   &storage.DerivedMetric{ValueTimestamp: &wake},
+			inserted: true,
+		},
+		reserved: true,
+	}
+	bot := &wakeFeedbackBot{err: telegramTransportError{cause: errors.New("connection reset")}}
+	sent, err := SendWakeFeedbackPrompt(bot, store, "en", "2026-08-05", wake.Add(time.Hour))
+	if err == nil || !sent || !store.completed || store.status != "ambiguous" {
+		t.Fatalf("sent=%v err=%v completed=%v status=%q", sent, err, store.completed, store.status)
 	}
 }
 

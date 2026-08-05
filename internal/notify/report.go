@@ -242,8 +242,13 @@ func sendMorningReport(bot *Bot, db *storage.DB, cfg Config, opts MorningSendOpt
 	today := now.In(loc).Format("2006-01-02")
 
 	status, err := db.ComputeMorningWakeStatus(today, loc, now)
+	wakeErr := err
+	status, err = resolveMorningWakeStatus(status, err, opts.Force)
 	if err != nil {
 		return false, status.Reason, err
+	}
+	if wakeErr != nil {
+		log.Printf("morning report: forced send despite wake detection error: %v", wakeErr)
 	}
 	if !status.Ready && !opts.Force {
 		return false, status.Reason, nil
@@ -276,6 +281,16 @@ func sendMorningReport(bot *Bot, db *storage.DB, cfg Config, opts MorningSendOpt
 		return false, "delivery_already_reserved", nil
 	}
 	return reserved, status.Reason, err
+}
+
+func resolveMorningWakeStatus(status storage.MorningWakeStatus, err error, force bool) (storage.MorningWakeStatus, error) {
+	if err == nil || !force {
+		return status, err
+	}
+	if status.Reason == "" {
+		status.Reason = "query_error"
+	}
+	return status, nil
 }
 
 func wakeStaleReason(reason string) string {
