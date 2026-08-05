@@ -15,7 +15,8 @@ type SleepState =
   | { status: "unauthenticated" }
   | { status: "error"; message: string };
 
-const phaseKeys = ["deep", "rem", "core", "unspecified", "awake"] as const;
+const asleepPhaseKeys = ["deep", "rem", "core", "unspecified"] as const;
+const phaseKeys = [...asleepPhaseKeys, "awake"] as const;
 
 function hours(value: number, locale: Locale): string {
   return `${new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(value)} ${translate(locale, "sleepHoursShort")}`;
@@ -46,6 +47,15 @@ function phaseTotal(day: SleepDay): number {
   return phaseKeys.reduce((sum, key) => sum + day[key], 0);
 }
 
+function asleepPhaseTotal(day: SleepDay): number {
+  return asleepPhaseKeys.reduce((sum, key) => sum + day[key], 0);
+}
+
+function percentage(value: number, total: number, locale: Locale): string {
+  if (total <= 0) return "0%";
+  return `${new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format((value / total) * 100)}%`;
+}
+
 function PhaseBar({ day, label, locale }: { day: SleepDay; label: string; locale: Locale }) {
   const total = Math.max(phaseTotal(day), day.total + day.awake, 0.01);
   return (
@@ -62,7 +72,7 @@ function PhaseBar({ day, label, locale }: { day: SleepDay; label: string; locale
           ) : null,
         )}
       </span>
-      <strong>{day.total.toFixed(1)}</strong>
+      <strong>{new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(day.total)}</strong>
     </button>
   );
 }
@@ -134,6 +144,7 @@ export function SleepReady({ resources, locale }: { resources: SleepResources; l
   const currentInsight = current ? sleepInsight(todayAI) : "";
   const historicInsight =
     historicAI?.date === selectedDate ? sleepInsight(historicAI) : "";
+  const selectedAsleepTotal = selected ? asleepPhaseTotal(selected) : 0;
 
   return (
     <main className="sleep-page">
@@ -173,14 +184,43 @@ export function SleepReady({ resources, locale }: { resources: SleepResources; l
         </div>
         {selected ? (
           <>
-            <div className="sleep-phase-summary">
-              {phaseKeys.map((key) => (
-                <div key={key}>
-                  <i className={`sleep-phase-dot sleep-phase-dot--${key}`} />
-                  <span>{translate(locale, `sleepPhase_${key}`)}</span>
-                  <strong>{hours(selected[key], locale)}</strong>
-                </div>
-              ))}
+            <div className="sleep-phase-overview">
+              <div
+                className="sleep-phase-composition"
+                role="img"
+                aria-label={`${translate(locale, "sleepPhases")}: ${hours(selected.total, locale)}`}
+              >
+                {asleepPhaseKeys.map((key) =>
+                  selected[key] > 0 ? (
+                    <span
+                      key={key}
+                      className={`sleep-phase-bar__segment sleep-phase-bar__segment--${key}`}
+                      style={{ width: `${(selected[key] / Math.max(selectedAsleepTotal, 0.01)) * 100}%` }}
+                    />
+                  ) : null,
+                )}
+              </div>
+              <div className="sleep-phase-breakdown">
+                {asleepPhaseKeys.map((key) => (
+                  <div key={key}>
+                    <span className="sleep-phase-breakdown__label">
+                      <i className={`sleep-phase-dot sleep-phase-dot--${key}`} />
+                      {translate(locale, `sleepPhase_${key}`)}
+                    </span>
+                    <span className="sleep-phase-breakdown__percentage">
+                      {percentage(selected[key], selectedAsleepTotal, locale)}
+                    </span>
+                    <strong>{hours(selected[key], locale)}</strong>
+                  </div>
+                ))}
+              </div>
+              <div className="sleep-awake-summary">
+                <span className="sleep-phase-breakdown__label">
+                  <i className="sleep-phase-dot sleep-phase-dot--awake" />
+                  {translate(locale, "sleepPhase_awake")}
+                </span>
+                <strong>{hours(selected.awake, locale)}</strong>
+              </div>
             </div>
             {selectedDate !== resources.briefing.date ? (
               historicInsight ? (

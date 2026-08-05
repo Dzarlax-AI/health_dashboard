@@ -70,6 +70,45 @@ describe("sleep resource loader", () => {
     }
   });
 
+  it("retries sleep_total once without discarding the other phase metrics", async () => {
+    let totalAttempts = 0;
+    const testLoaders = loaders({
+      metric: vi.fn(async (metric) => {
+        if (metric === "sleep_total" && totalAttempts++ === 0) {
+          throw new Error("temporary failure");
+        }
+        return metricResponse(metric);
+      }),
+    });
+
+    const result = await loadSleepResources("en", undefined, testLoaders);
+
+    expect(totalAttempts).toBe(2);
+    expect(result.metrics.sleep_total?.metric).toBe("sleep_total");
+    expect(result.missing).not.toContain("sleep_total");
+  });
+
+  it("rejects when the load is aborted as a successful sleep_total retry resolves", async () => {
+    const controller = new AbortController();
+    let totalAttempts = 0;
+    const testLoaders = loaders({
+      metric: vi.fn(async (metric) => {
+        if (metric === "sleep_total" && totalAttempts++ === 0) {
+          throw new Error("temporary failure");
+        }
+        if (metric === "sleep_total") {
+          controller.abort(new DOMException("Superseded", "AbortError"));
+        }
+        return metricResponse(metric);
+      }),
+    });
+
+    await expect(loadSleepResources("en", controller.signal, testLoaders)).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    expect(totalAttempts).toBe(2);
+  });
+
   it("rejects an aborted load instead of publishing partial settled results", async () => {
     const controller = new AbortController();
     const testLoaders = loaders({

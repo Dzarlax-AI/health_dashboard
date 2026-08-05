@@ -135,6 +135,14 @@ export async function loadSleepResources(
       metrics[metric] = value;
     }
   });
+  if (!metrics.sleep_total) {
+    try {
+      metrics.sleep_total = await loaders.metric("sleep_total", from, briefingDate, signal);
+    } catch {
+      throwIfAborted(signal);
+    }
+    throwIfAborted(signal);
+  }
 
   return {
     briefing,
@@ -148,7 +156,7 @@ export async function loadSleepResources(
       ...fixedMissing,
       wake.status === "rejected" ? "wake" : undefined,
       ...metricResults.map((result, index) =>
-        result.status === "rejected" ? sleepMetrics[index] : undefined,
+        result.status === "rejected" && !metrics[sleepMetrics[index]] ? sleepMetrics[index] : undefined,
       ),
     ].filter((name): name is string => Boolean(name)),
   };
