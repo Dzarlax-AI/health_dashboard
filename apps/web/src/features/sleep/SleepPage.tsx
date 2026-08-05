@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { ClientApiError, getAIBriefing, type AIBriefingResponse } from "../../api/client";
 import { AppHeader } from "../../components/AppHeader";
 import { StatusPanel } from "../../components/StatusPanel";
+import { shouldPollAI } from "../dashboard/aiPolling";
 import { resolveLocale, translate, type Locale } from "../../i18n";
 import { sleepFixtureResources } from "./fixtures";
 import { loadSleepResources, type SleepResources } from "./loader";
@@ -28,10 +29,17 @@ function time(value: string | undefined, locale: Locale): string {
 }
 
 function dateLabel(date: string, locale: Locale, compact = false): string {
+  const candidate = date.slice(0, 10);
+  const parsed = new Date(`${candidate}T12:00:00`);
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(candidate) ||
+    Number.isNaN(parsed.getTime()) ||
+    parsed.toISOString().slice(0, 10) !== candidate
+  ) return date;
   return new Intl.DateTimeFormat(locale, compact
     ? { day: "numeric", month: "short" }
     : { weekday: "short", day: "numeric", month: "long" }
-  ).format(new Date(`${date}T12:00:00`));
+  ).format(parsed);
 }
 
 function phaseTotal(day: SleepDay): number {
@@ -71,15 +79,16 @@ function ScoreRing({ score, duration, locale }: { score?: number; duration?: num
   );
 }
 
-function SleepReady({ resources, locale }: { resources: SleepResources; locale: Locale }) {
+export function SleepReady({ resources, locale }: { resources: SleepResources; locale: Locale }) {
   const days = useMemo(() => buildSleepDays(resources), [resources]);
-  const [range, setRange] = useState<7 | 30 | 90>(30);
-  const [selectedDate, setSelectedDate] = useState(resources.briefing.date);
+  const [range, setRange] = useState<7 | 30 | 90 | "all">(30);
+  const [selectedDate, setSelectedDate] = useState(resources.briefing.date || days[0]?.date || "");
   const [historicAI, setHistoricAI] = useState<AIBriefingResponse>();
   const [todayAI, setTodayAI] = useState(resources.ai);
+  const aiPollAttempts = useRef(0);
   const selected = days.find((day) => day.date === selectedDate) ?? days[0];
-  const current = days.find((day) => day.date === resources.briefing.date) ?? days[0];
-  const visible = days.slice(0, range).reverse();
+  const current = days.find((day) => day.date === resources.briefing.date);
+  const visible = (range === "all" ? days : days.slice(0, range)).reverse();
   const score = resources.briefing.sleep_quality?.score_pct;
 
   useEffect(() => {
@@ -94,20 +103,35 @@ function SleepReady({ resources, locale }: { resources: SleepResources; locale: 
   }, [locale, resources.briefing.date, selectedDate]);
 
   useEffect(() => {
-    if (todayAI?.disabled || (!todayAI?.generating && sleepInsight(todayAI))) {
+    if (!shouldPollAI(todayAI, aiPollAttempts.current)) {
       return;
     }
+    let timer: number | undefined;
     const controller = new AbortController();
-    const timer = window.setTimeout(() => {
-      getAIBriefing(locale, controller.signal).then(setTodayAI).catch(() => undefined);
-    }, 60_000);
+    const schedule = () => {
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+      }
+      timer =
+        document.visibilityState === "visible"
+          ? window.setTimeout(() => {
+              aiPollAttempts.current += 1;
+              getAIBriefing(locale, controller.signal).then(setTodayAI).catch(() => undefined);
+            }, 60_000)
+          : undefined;
+    };
+    schedule();
+    document.addEventListener("visibilitychange", schedule);
     return () => {
+      document.removeEventListener("visibilitychange", schedule);
       controller.abort();
-      window.clearTimeout(timer);
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+      }
     };
   }, [locale, todayAI]);
 
-  const currentInsight = sleepInsight(todayAI);
+  const currentInsight = current ? sleepInsight(todayAI) : "";
   const historicInsight =
     historicAI?.date === selectedDate ? sleepInsight(historicAI) : "";
 
@@ -123,7 +147,7 @@ function SleepReady({ resources, locale }: { resources: SleepResources; locale: 
         </div>
         <div className="sleep-hero__grid">
           <ScoreRing
-            score={score}
+            score={current ? score : undefined}
             locale={locale}
           />
           <div className="sleep-key-metrics">
@@ -137,7 +161,7 @@ function SleepReady({ resources, locale }: { resources: SleepResources; locale: 
             <span>✦ {translate(locale, "sleepInsight")}</span>
             <p>{currentInsight}</p>
           </article>
-        ) : todayAI?.generating && selectedDate === resources.briefing.date ? (
+        ) : current && todayAI?.generating ? (
           <p className="sleep-ai-pending">{translate(locale, "sleepInsightPending")}</p>
         ) : null}
       </section>
@@ -176,8 +200,10 @@ function SleepReady({ resources, locale }: { resources: SleepResources; locale: 
         <div className="sleep-history__header">
           <div><p>{translate(locale, "sleepHistoryEyebrow")}</p><h2>{translate(locale, "sleepHistory")}</h2></div>
           <div className="sleep-range" role="group" aria-label={translate(locale, "sleepRange")}>
-            {([7, 30, 90] as const).map((daysCount) => (
-              <button key={daysCount} type="button" aria-pressed={range === daysCount} onClick={() => setRange(daysCount)}>{daysCount}</button>
+            {([7, 30, 90, "all"] as const).map((daysCount) => (
+              <button key={daysCount} type="button" aria-pressed={range === daysCount} onClick={() => setRange(daysCount)}>
+                {daysCount === "all" ? translate(locale, "sleepRangeAll") : daysCount}
+              </button>
             ))}
           </div>
         </div>

@@ -106,6 +106,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/metrics/range": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Earliest and latest dates for a metric */
+        get: operations["getMetricRange"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/readiness-history": {
         parameters: {
             query?: never;
@@ -490,6 +507,10 @@ export interface components {
                 source: string;
             }[] | null;
         };
+        MetricRangeResponse: {
+            max: string;
+            min: string;
+        };
         ReadinessHistoryResponse: {
             points: {
                 /** @enum {string} */
@@ -657,7 +678,7 @@ export interface operations {
                     "text/html": string;
                 };
             };
-            /** @description Missing or unsupported metric, invalid date range, or a range longer than 366 days. */
+            /** @description Missing or unsupported metric, or an invalid date range. */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -805,6 +826,49 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MetricDataResponse"];
+                };
+            };
+            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
+            302: {
+                headers: {
+                    /** @description Interactive login or setup route. */
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getMetricRange: {
+        parameters: {
+            query: {
+                /** @description Canonical metric name. */
+                metric: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricRangeResponse"];
                 };
             };
             /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */

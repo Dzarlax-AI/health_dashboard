@@ -69,7 +69,7 @@ var insightBundleResponseSchema = &ResponseSchema{
 		"properties": map[string]any{
 			"overview": map[string]any{
 				"type":        "string",
-				"description": "One or two concise sentences explaining the server-selected overall verdict.",
+				"description": "Repeat the supplied verdict_reason exactly. The server replaces this field with its authoritative value before persistence.",
 			},
 			"sleep": map[string]any{
 				"type":        "string",
@@ -85,7 +85,7 @@ var insightBundleResponseSchema = &ResponseSchema{
 			},
 			"recommendation": map[string]any{
 				"type":        "string",
-				"description": "One or two concise sentences reinforcing the exact server-selected action without changing it.",
+				"description": "Repeat the supplied action exactly. The server replaces this field with its authoritative value before persistence.",
 			},
 		},
 		"required":             []string{"overview", "sleep", "activity", "recovery", "recommendation"},
@@ -101,12 +101,16 @@ type InsightBundleResult struct {
 	InvalidBlocks map[string]string
 }
 
-// GenerateInsightBundle makes one provider call and validates each narrative
-// independently. A malformed JSON envelope fails the whole call; an unsafe
-// individual field is omitted so valid sibling blocks may still be cached.
+// GenerateInsightBundle makes one provider call and validates the complete
+// narrative bundle. A malformed or unsafe field rejects the whole generation,
+// so callers never persist a mix of old and newly generated sections.
 func GenerateInsightBundle(ctx context.Context, provider Provider, cfg ProviderConfig, evidenceJSON []byte, lang string) (InsightBundleResult, error) {
 	if cfg.MaxOutputTokens <= 0 || cfg.MaxOutputTokens > SynthesisMaxTokens {
 		cfg.MaxOutputTokens = SynthesisMaxTokens
+	}
+	var evidence health.MorningInsightEvidence
+	if err := json.Unmarshal(evidenceJSON, &evidence); err != nil {
+		return InsightBundleResult{}, fmt.Errorf("decode insight evidence: %w", err)
 	}
 	generated, err := provider.Generate(ctx, cfg, GenerationRequest{
 		Prompt:         systemPrompt,
@@ -122,11 +126,11 @@ func GenerateInsightBundle(ctx context.Context, provider Provider, cfg ProviderC
 		return InsightBundleResult{GenerationResult: generated}, fmt.Errorf("decode insight bundle: %w", err)
 	}
 	candidates := map[string]string{
-		BlockSynthesis:      envelope.Overview,
+		BlockSynthesis:      firstNonEmptyInsight(evidence.VerdictReason, evidence.VerdictLabel, evidence.Action),
 		BlockSleep:          envelope.Sleep,
 		BlockYesterday:      envelope.Activity,
 		BlockRecovery:       envelope.Recovery,
-		BlockRecommendation: envelope.Recommendation,
+		BlockRecommendation: firstNonEmptyInsight(evidence.Action, evidence.VerdictReason),
 	}
 	result := InsightBundleResult{
 		GenerationResult: generated,
@@ -141,10 +145,19 @@ func GenerateInsightBundle(ctx context.Context, provider Provider, cfg ProviderC
 		}
 		result.Blocks[block] = value
 	}
-	if len(result.Blocks) == 0 {
-		return result, fmt.Errorf("all insight bundle blocks failed validation")
+	if len(result.InvalidBlocks) > 0 {
+		return result, fmt.Errorf("%d insight bundle blocks failed validation", len(result.InvalidBlocks))
 	}
 	return result, nil
+}
+
+func firstNonEmptyInsight(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func validateSynthesisExplanation(value string) (string, error) {

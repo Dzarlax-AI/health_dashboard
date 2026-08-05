@@ -1180,7 +1180,7 @@ func (h *Handler) metricRange(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	jsonResponse(w, map[string]string{"min": min, "max": max})
+	jsonResponse(w, clientapi.MetricRangeResponse{Min: min, Max: max})
 }
 
 func (h *Handler) derivedMetrics(w http.ResponseWriter, r *http.Request) {
@@ -1204,10 +1204,6 @@ func (h *Handler) derivedMetrics(w http.ResponseWriter, r *http.Request) {
 	toDate, toErr := time.Parse("2006-01-02", to)
 	if fromErr != nil || toErr != nil || fromDate.After(toDate) {
 		jsonError(w, "from and to must be a valid ascending YYYY-MM-DD range", http.StatusBadRequest)
-		return
-	}
-	if toDate.Sub(fromDate) > 366*24*time.Hour {
-		jsonError(w, "derived metric range must not exceed 366 days", http.StatusBadRequest)
 		return
 	}
 	metrics, err := h.tenantDB(r).ListDerivedMetrics(metricName, from, to)
@@ -1296,8 +1292,8 @@ func (h *Handler) metricData(w http.ResponseWriter, r *http.Request) {
 	}
 	fromDate, fromErr := time.Parse("2006-01-02", from)
 	toDate, toErr := time.Parse("2006-01-02", to)
-	if fromErr != nil || toErr != nil || fromDate.After(toDate) || toDate.Sub(fromDate) > 366*24*time.Hour {
-		http.Error(w, "from and to must be a valid ascending YYYY-MM-DD range of at most 366 days", http.StatusBadRequest)
+	if fromErr != nil || toErr != nil || fromDate.After(toDate) {
+		http.Error(w, "from and to must be a valid ascending YYYY-MM-DD range", http.StatusBadRequest)
 		return
 	}
 

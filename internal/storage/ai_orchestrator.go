@@ -114,26 +114,16 @@ func (s *DB) EnsureTodayAIInsightContext(ctx context.Context, aiCfg AIConfig, la
 		aiCfg.Provider, active.Model, generated.RequestID, generated.Attempts,
 		generated.Latency, generated.InputTokens, generated.OutputTokens, generated.TotalTokens, generated.FinishReason,
 	)
+	for block, validationError := range generated.InvalidBlocks {
+		log.Printf("EnsureTodayAIInsight: provider=%s block=%s validation: %s", aiCfg.Provider, block, validationError)
+	}
 	if err != nil {
 		log.Printf("EnsureTodayAIInsight: provider=%s block=BUNDLE: %v", aiCfg.Provider, err)
 		s.aiRegenLastFailAt.Store(failureKey, time.Now())
 		return s.GetAIInsightCombined(today, lang)
 	}
-	for block, validationError := range generated.InvalidBlocks {
-		log.Printf("EnsureTodayAIInsight: provider=%s block=%s validation: %s", aiCfg.Provider, block, validationError)
-	}
-	saveFailed := false
-	for _, block := range ai.GeneratedBlockOrder {
-		text := generated.Blocks[block]
-		if strings.TrimSpace(text) == "" {
-			continue
-		}
-		if err := s.SaveAIBlock(today, lang, block, text, bundleHash); err != nil {
-			log.Printf("EnsureTodayAIInsight: save %s: %v", block, err)
-			saveFailed = true
-		}
-	}
-	if saveFailed || len(generated.InvalidBlocks) > 0 {
+	if err := s.SaveAIBundle(today, lang, generated.Blocks, bundleHash); err != nil {
+		log.Printf("EnsureTodayAIInsight: save bundle: %v", err)
 		s.aiRegenLastFailAt.Store(failureKey, time.Now())
 		return s.GetAIInsightCombined(today, lang)
 	}

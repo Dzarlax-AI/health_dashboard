@@ -8,6 +8,7 @@ export type HealthBriefingResponse = components["schemas"]["HealthBriefingRespon
 export type AIBriefingResponse = components["schemas"]["AIBriefingResponse"];
 export type DerivedMetricsResponse = components["schemas"]["DerivedMetricsResponse"];
 export type MetricDataResponse = components["schemas"]["MetricDataResponse"];
+export type MetricRangeResponse = components["schemas"]["MetricRangeResponse"];
 export type ReadinessHistoryResponse = components["schemas"]["ReadinessHistoryResponse"];
 export type SectionResponse = components["schemas"]["SectionResponse"];
 export type EnergyHistoryDayResponse =
@@ -105,6 +106,17 @@ export async function getMetricData(
         by_source: "0",
       },
     },
+    signal,
+  });
+  return requireData(data, error, response);
+}
+
+export async function getMetricRange(
+  metric: string,
+  signal?: AbortSignal,
+): Promise<MetricRangeResponse> {
+  const { data, error, response } = await client.GET("/api/metrics/range", {
+    params: { query: { metric } },
     signal,
   });
   return requireData(data, error, response);

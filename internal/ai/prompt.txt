@@ -23,11 +23,11 @@ Safety and accuracy:
 
 Output:
 - Return JSON matching the supplied schema.
-- overview explains the final verdict using the ranked reasons.
+- overview repeats verdict_reason exactly; the server owns and enforces the persisted overview.
 - sleep explains the supplied sleep section.
 - activity explains the supplied activity and cardio sections.
 - recovery explains the supplied recovery section.
-- recommendation reinforces the exact server-selected action without replacing or extending it.
+- recommendation repeats action exactly; the server owns and enforces the persisted recommendation.
 - Each field must be one or two concise sentences, no more than 60 words.
 - Plain text inside the JSON string: no Markdown, headings, bullets, arrows, or HTML.
 - Use the requested response language.

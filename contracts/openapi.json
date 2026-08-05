@@ -1415,6 +1415,22 @@
         ],
         "type": "object"
       },
+      "MetricRangeResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "max": {
+            "type": "string"
+          },
+          "min": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "min",
+          "max"
+        ],
+        "type": "object"
+      },
       "ReadinessHistoryResponse": {
         "additionalProperties": false,
         "properties": {
@@ -1810,7 +1826,7 @@
                 }
               }
             },
-            "description": "Missing or unsupported metric, invalid date range, or a range longer than 366 days."
+            "description": "Missing or unsupported metric, or an invalid date range."
           },
           "500": {
             "content": {
@@ -2119,6 +2135,63 @@
           }
         },
         "summary": "Time-bucketed metric history"
+      }
+    },
+    "/api/metrics/range": {
+      "get": {
+        "operationId": "getMetricRange",
+        "parameters": [
+          {
+            "description": "Canonical metric name.",
+            "in": "query",
+            "name": "metric",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricRangeResponse"
+                }
+              }
+            },
+            "description": "Successful tenant-scoped response."
+          },
+          "302": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Browser authentication or initial setup is required; Location identifies the interactive route.",
+            "headers": {
+              "Location": {
+                "description": "Interactive login or setup route.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The backend could not load or encode the tenant response."
+          }
+        },
+        "summary": "Earliest and latest dates for a metric"
       }
     },
     "/api/readiness-history": {

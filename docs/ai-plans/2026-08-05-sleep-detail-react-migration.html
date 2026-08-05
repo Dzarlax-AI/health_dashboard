@@ -551,7 +551,7 @@
     <h2>Зафиксированные решения</h2>
     <ul>
       <li>Основная визуальная линия — вариант A «Спокойная ночь».</li>
-      <li>История доступна за 7, 30 и 90 дней.</li>
+      <li>История доступна за 7, 30, 90 дней и за весь доступный период.</li>
       <li>Показываем deep, REM, core, sleep unspecified и awake; total остаётся сводной длительностью, а не шестой фазой.</li>
       <li>Сегодняшний AI-инсайт показываем отдельной карточкой сразу после актуальной структуры ночи и до истории.</li>
       <li>AI снова формирует крупные блоки, но одним provider call: overview, sleep, activity/yesterday, recovery и recommendation.</li>
@@ -570,11 +570,12 @@
     <h2>Что фактически реализовано</h2>
     <ul>
       <li>React теперь выбирает отдельный <code>SleepPage</code> на <code>/sleep</code>; карточка сна на главной ведёт на новый экран.</li>
-      <li>Собран вариант A: ночной hero, цветной quality ring без серой обводки, duration/wake/regularity, отдельный sleep AI insight, все пять категорий сна и интерактивная история 7/30/90.</li>
+      <li>Собран вариант A: ночной hero, цветной quality ring без серой обводки, duration/wake/regularity, отдельный sleep AI insight, все пять категорий сна и интерактивная история 7/30/90/всё. Начало полного периода определяется typed <code>/api/metrics/range</code>; искусственные 366-дневные ограничения legacy metrics и derived metrics сняты.</li>
       <li>Верх страницы всегда остаётся сегодняшней сводкой. Выбор исторической даты меняет detail block; сохранённый исторический AI-инсайт загружается отдельно и cache-only.</li>
       <li>Добавлены typed OpenAPI-контракты для <code>/api/metrics/data</code> и <code>/api/section/{key}</code>, а briefing дополнен typed sleep regularity.</li>
       <li><code>/api/ai-briefing?date=…</code> валидирует дату: сегодня сохраняет non-blocking generation, прошлое только читает cache, будущее и некорректный формат отклоняются.</li>
-      <li>AI pipeline делает один structured provider call и независимо валидирует/сохраняет <code>SYNTHESIS</code>, <code>SLEEP</code>, <code>YESTERDAY</code>, <code>RECOVERY</code> и <code>RECOMMENDATION</code> под единым evidence hash.</li>
+      <li>AI pipeline делает один structured provider call и валидирует полный bundle <code>SYNTHESIS</code>, <code>SLEEP</code>, <code>YESTERDAY</code>, <code>RECOVERY</code> и <code>RECOMMENDATION</code> под единым evidence hash. Любой невалидный блок отклоняет всю генерацию, а сохранение пяти строк выполняется одной транзакцией.</li>
+      <li>Вердикт и действие больше нельзя переопределить ответом модели: сервер детерминированно записывает собственные <code>verdict_reason</code> и <code>action</code> в <code>SYNTHESIS</code> и <code>RECOMMENDATION</code>; AI отвечает только за объяснения сна, активности и восстановления.</li>
       <li>Traefik resolver отдаёт React маршруты <code>/</code> и <code>/sleep</code> в canary/cutover. Rollback отключает frontend router и автоматически возвращает legacy Go handler; nginx обслуживает только явно разрешённый новый SPA route.</li>
       <li>Добавлены RU/EN/SR подписи и локальные fixture-данные для безопасной визуальной проверки без provider/production DB calls.</li>
     </ul>
@@ -585,10 +586,10 @@
     <ul>
       <li><code>go test ./... -count=1</code> — passed. Для httptest-портов повторён вне sandbox после ожидаемого sandbox bind denial.</li>
       <li><code>go vet ./...</code> — passed.</li>
-      <li><code>pnpm web:check</code> — passed: OpenAPI drift, TypeScript, ESLint, 13 test files / 61 tests и production build.</li>
+      <li><code>pnpm web:check</code> — passed: OpenAPI drift, TypeScript, ESLint, 15 test files / 65 tests и production build. Добавлены regression tests для пустой briefing date, cancellation, полного range и UI-переключателя «Всё».</li>
       <li><code>make test-production-routing-config</code> — passed для canary, cutover и rollback.</li>
       <li><code>git diff --check</code> — passed.</li>
-      <li>Browser QA на локальном fixture: desktop full-page rendering, RU content, 7/30 range interaction, historical date selection, today hero stability и historical empty AI state проверены.</li>
+      <li>Browser QA на локальном fixture: desktop full-page rendering, RU content, 7/30 range interaction, historical date selection, today hero stability и historical empty AI state проверены; полный 90-дневный fixture через «Всё» дополнительно закреплён component test.</li>
     </ul>
   </section>
 

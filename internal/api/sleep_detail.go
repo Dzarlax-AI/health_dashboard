@@ -11,6 +11,11 @@ type MetricDataResponse struct {
 	PointsBySource []storage.SourceDataPoints `json:"points_by_source,omitempty"`
 }
 
+type MetricRangeResponse struct {
+	Min string `json:"min"`
+	Max string `json:"max"`
+}
+
 type SectionDetail struct {
 	Label string `json:"label"`
 	Value string `json:"value"`

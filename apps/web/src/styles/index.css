@@ -1006,6 +1006,7 @@ textarea {
 
 .sleep-score {
   --sleep-score: 0;
+
   display: grid;
   width: min(260px, 72vw);
   aspect-ratio: 1;
@@ -1014,11 +1015,6 @@ textarea {
   border-radius: 50%;
   background: conic-gradient(from 210deg, #7367f0 calc(var(--sleep-score) * 1%), rgba(174, 190, 255, 0.16) 0);
   box-shadow: 0 24px 60px rgba(3, 5, 16, 0.38);
-}
-
-.sleep-score::before {
-  position: absolute;
-  content: "";
 }
 
 .sleep-score__inner {

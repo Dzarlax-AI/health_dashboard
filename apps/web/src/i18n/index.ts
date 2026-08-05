@@ -88,6 +88,7 @@ const messages = {
     sleepHistoryEyebrow: "Every phase, every night",
     sleepHistory: "History",
     sleepRange: "History range",
+    sleepRangeAll: "All",
     sleepLearn: "Understand your sleep",
   },
   ru: {
@@ -175,6 +176,7 @@ const messages = {
     sleepHistoryEyebrow: "Все фазы каждой ночи",
     sleepHistory: "История",
     sleepRange: "Период истории",
+    sleepRangeAll: "Всё",
     sleepLearn: "Как устроен сон",
   },
   sr: {
@@ -262,6 +264,7 @@ const messages = {
     sleepHistoryEyebrow: "Sve faze, svake noći",
     sleepHistory: "Istorija",
     sleepRange: "Period istorije",
+    sleepRangeAll: "Sve",
     sleepLearn: "Razumi svoj san",
   },
 } as const;

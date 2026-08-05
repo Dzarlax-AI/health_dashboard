@@ -9,7 +9,7 @@ function dateOffset(days: number): string {
 }
 
 export function sleepFixtureResources(locale: Locale): SleepResources {
-  const values = Array.from({ length: 30 }, (_, index) => ({
+  const values = Array.from({ length: 90 }, (_, index) => ({
     date: dateOffset(index),
     total: 6.7 + ((index * 7) % 16) / 10,
     deep: 0.8 + ((index * 3) % 6) / 10,
@@ -66,7 +66,7 @@ export function sleepFixtureResources(locale: Locale): SleepResources {
     },
     wake: {
       metric: "wake_time",
-      from: dateOffset(29),
+      from: dateOffset(89),
       to: "2026-08-05",
       values: values.map((value, index) => ({
         metric_name: "wake_time",

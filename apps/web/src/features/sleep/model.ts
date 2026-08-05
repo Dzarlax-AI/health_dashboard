@@ -54,5 +54,5 @@ export function buildSleepDays(resources: SleepResources): SleepDay[] {
 }
 
 export function sleepInsight(ai?: AIBriefingResponse): string {
-  return ai?.blocks.SLEEP || ai?.sleep || ai?.blocks.SYNTHESIS || ai?.summary || "";
+  return ai?.blocks?.SLEEP || ai?.sleep || ai?.blocks?.SYNTHESIS || ai?.summary || "";
 }

@@ -1,8 +1,11 @@
 package storage
 
 import (
+	"context"
+	"errors"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"health-receiver/internal/ai"
 )
 
@@ -59,5 +62,49 @@ func TestAIBundleCacheCompleteRequiresEveryAlignedBlock(t *testing.T) {
 	full[ai.BlockSleep].InputsHash = "old"
 	if aiBundleCacheComplete(full, "bundle") {
 		t.Fatal("mixed-hash bundle was treated as complete")
+	}
+}
+
+type failingAIBundleTx struct {
+	execs     int
+	failAt    int
+	committed bool
+}
+
+func (tx *failingAIBundleTx) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
+	tx.execs++
+	if tx.execs == tx.failAt {
+		return pgconn.CommandTag{}, errors.New("write failed")
+	}
+	return pgconn.NewCommandTag("INSERT 0 1"), nil
+}
+
+func (tx *failingAIBundleTx) Commit(context.Context) error {
+	tx.committed = true
+	return nil
+}
+
+func TestSaveAIBundleInTransactionDoesNotCommitPartialWrite(t *testing.T) {
+	blocks := map[string]string{}
+	for _, block := range ai.GeneratedBlockOrder {
+		blocks[block] = "text"
+	}
+	tx := &failingAIBundleTx{failAt: 3}
+	if err := saveAIBundleInTransaction(context.Background(), tx, "2026-08-05", "en", blocks, "hash"); err == nil {
+		t.Fatal("failed block write was accepted")
+	}
+	if tx.committed {
+		t.Fatal("partial bundle transaction was committed")
+	}
+}
+
+func TestValidateAIBundleRequiresEveryBlock(t *testing.T) {
+	blocks := map[string]string{}
+	for _, block := range ai.GeneratedBlockOrder {
+		blocks[block] = "text"
+	}
+	delete(blocks, ai.BlockSynthesis)
+	if err := validateAIBundle(blocks); err == nil {
+		t.Fatal("bundle without synthesis was accepted")
 	}
 }

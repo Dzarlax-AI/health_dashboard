@@ -33,6 +33,7 @@ func GenerateOpenAPI() ([]byte, error) {
 		"EnergyHistoryHourResponse": EnergyHistoryHourResponse{},
 		"HealthBriefingResponse":    health.BriefingResponse{},
 		"MetricDataResponse":        MetricDataResponse{},
+		"MetricRangeResponse":       MetricRangeResponse{},
 		"ReadinessHistoryResponse":  ReadinessHistoryResponse{},
 		"SectionResponse":           SectionResponse{},
 		"SessionResponse":           SessionResponse{},
@@ -179,7 +180,7 @@ func clientPaths() map[string]any {
 		jsonResponseRef("DerivedMetricsResponse"),
 	)
 	derivedMetricsOperation["responses"].(map[string]any)["400"] = jsonErrorResponse(
-		"Missing or unsupported metric, invalid date range, or a range longer than 366 days.",
+		"Missing or unsupported metric, or an invalid date range.",
 	)
 
 	return map[string]any{
@@ -237,6 +238,14 @@ func clientPaths() map[string]any {
 					enumQueryParameter("by_source", "0", "0", "1"),
 				},
 				jsonResponseRef("MetricDataResponse"),
+			),
+		},
+		"/api/metrics/range": map[string]any{
+			"get": getOperation(
+				"getMetricRange",
+				"Earliest and latest dates for a metric",
+				[]any{requiredStringQueryParameter("metric", "Canonical metric name.")},
+				jsonResponseRef("MetricRangeResponse"),
 			),
 		},
 		"/api/section/{key}": map[string]any{

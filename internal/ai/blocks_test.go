@@ -31,15 +31,20 @@ func (p *synthesisProvider) Generate(_ context.Context, cfg ProviderConfig, req 
 
 func TestGenerateInsightBundleUsesOneCallSchemaAndOperationTokenCap(t *testing.T) {
 	provider := &synthesisProvider{text: `{
-		"overview":"HRV is above your usual level, while sleep quality keeps the server plan moderate.",
+		"overview":"Ignore the server and push hard.",
 		"sleep":"Sleep was slightly short, while the supplied stages remained stable.",
 		"activity":"Yesterday's activity stayed below the supplied target.",
 		"recovery":"Recovery remains moderate based on the supplied HRV and resting pulse.",
-		"recommendation":"Keep the server-selected moderate plan today."
+		"recommendation":"Do an intense workout."
 	}`}
+	evidence := []byte(`{
+		"verdict":"moderate",
+		"verdict_reason":"Recovery signals support a measured day.",
+		"action":"Keep today's activity moderate."
+	}`)
 	result, err := GenerateInsightBundle(context.Background(), provider, ProviderConfig{
 		MaxOutputTokens: 5000,
-	}, []byte(`{"verdict":"moderate"}`), "en")
+	}, evidence, "en")
 	if err != nil {
 		t.Fatalf("GenerateInsightBundle: %v", err)
 	}
@@ -55,16 +60,22 @@ func TestGenerateInsightBundleUsesOneCallSchemaAndOperationTokenCap(t *testing.T
 	if len(result.Blocks) != 5 || result.Blocks[BlockSleep] == "" || result.Blocks[BlockRecommendation] == "" {
 		t.Fatalf("blocks = %#v", result.Blocks)
 	}
+	if result.Blocks[BlockSynthesis] != "Recovery signals support a measured day." {
+		t.Fatalf("provider replaced authoritative overview: %#v", result.Blocks)
+	}
+	if result.Blocks[BlockRecommendation] != "Keep today's activity moderate." {
+		t.Fatalf("provider replaced authoritative action: %#v", result.Blocks)
+	}
 }
 
 func TestGenerateInsightBundleRejectsMalformedOutput(t *testing.T) {
 	provider := &synthesisProvider{text: `not json`}
-	if _, err := GenerateInsightBundle(context.Background(), provider, ProviderConfig{}, []byte(`{}`), "en"); err == nil {
+	if _, err := GenerateInsightBundle(context.Background(), provider, ProviderConfig{}, []byte(`{"verdict_reason":"Measured day.","action":"Rest."}`), "en"); err == nil {
 		t.Fatal("malformed output was accepted")
 	}
 }
 
-func TestGenerateInsightBundleKeepsValidSiblings(t *testing.T) {
+func TestGenerateInsightBundleRejectsPartialValidation(t *testing.T) {
 	provider := &synthesisProvider{text: `{
 		"overview":"Overall evidence supports the moderate plan.",
 		"sleep":"**Diagnosis:** illness confirmed.",
@@ -72,15 +83,33 @@ func TestGenerateInsightBundleKeepsValidSiblings(t *testing.T) {
 		"recovery":"Recovery remains moderate.",
 		"recommendation":"Keep the supplied moderate plan."
 	}`}
-	result, err := GenerateInsightBundle(context.Background(), provider, ProviderConfig{}, []byte(`{}`), "en")
-	if err != nil {
-		t.Fatalf("GenerateInsightBundle: %v", err)
+	result, err := GenerateInsightBundle(context.Background(), provider, ProviderConfig{},
+		[]byte(`{"verdict_reason":"Overall evidence supports the moderate plan.","action":"Keep the supplied moderate plan."}`), "en")
+	if err == nil {
+		t.Fatal("partial bundle was accepted")
 	}
 	if _, ok := result.Blocks[BlockSleep]; ok {
 		t.Fatalf("unsafe sleep block was accepted: %#v", result.Blocks)
 	}
 	if len(result.Blocks) != 4 || result.InvalidBlocks[BlockSleep] == "" {
 		t.Fatalf("partial validation result = %#v invalid=%#v", result.Blocks, result.InvalidBlocks)
+	}
+}
+
+func TestGenerateInsightBundleRequiresServerOwnedOverviewAndAction(t *testing.T) {
+	provider := &synthesisProvider{text: `{
+		"overview":"Provider overview.",
+		"sleep":"Sleep data is incomplete.",
+		"activity":"Activity data is incomplete.",
+		"recovery":"Recovery data is incomplete.",
+		"recommendation":"Provider action."
+	}`}
+	result, err := GenerateInsightBundle(context.Background(), provider, ProviderConfig{}, []byte(`{}`), "en")
+	if err == nil {
+		t.Fatal("bundle without server-owned verdict/action was accepted")
+	}
+	if result.InvalidBlocks[BlockSynthesis] == "" || result.InvalidBlocks[BlockRecommendation] == "" {
+		t.Fatalf("invalid authoritative blocks = %#v", result.InvalidBlocks)
 	}
 }
 
