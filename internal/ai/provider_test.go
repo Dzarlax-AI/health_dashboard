@@ -1,6 +1,10 @@
 package ai
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"testing"
+)
 
 func TestHashForGenerationIncludesOutputAffectingConfiguration(t *testing.T) {
 	base := GenerationFingerprint{
@@ -33,5 +37,39 @@ func TestHashForGenerationIncludesOutputAffectingConfiguration(t *testing.T) {
 				t.Fatalf("%s change did not invalidate hash", tt.name)
 			}
 		})
+	}
+}
+
+type cancellationProvider struct{}
+
+func (cancellationProvider) Descriptor() ProviderDescriptor {
+	return ProviderDescriptor{ID: "cancellation"}
+}
+
+func (cancellationProvider) ListModels(context.Context, string) ([]Model, error) {
+	return nil, nil
+}
+
+func (cancellationProvider) Generate(ctx context.Context, _ ProviderConfig, _ GenerationRequest) (GenerationResult, error) {
+	return GenerationResult{}, ctx.Err()
+}
+
+func TestBlockGenerationPropagatesCallerCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	results := GenerateLeafBlocks(ctx, cancellationProvider{}, ProviderConfig{}, nil, "en", nil)
+	if len(results) != len(LeafBlocks) {
+		t.Fatalf("results = %d, want %d", len(results), len(LeafBlocks))
+	}
+	for _, result := range results {
+		if !errors.Is(result.Err, context.Canceled) {
+			t.Fatalf("%s error = %v, want context canceled", result.Block, result.Err)
+		}
+	}
+	if _, err := GenerateRecommendation(
+		ctx, cancellationProvider{}, ProviderConfig{}, nil, "en",
+		"", "", "", nil, nil, InsightContext{},
+	); !errors.Is(err, context.Canceled) {
+		t.Fatalf("recommendation error = %v, want context canceled", err)
 	}
 }

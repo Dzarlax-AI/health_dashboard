@@ -348,7 +348,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	}()
 
 	var morningSendMu sync.Mutex
-	maybeFireMorningReport := makeMorningTrigger(db, &morningSendMu, mgr, reg, schema, notifyDefaults)
+	maybeFireMorningReport := makeMorningTrigger(ctx, db, &morningSendMu, mgr, reg, schema, notifyDefaults)
 	backfillDatesFn := makeBackfillDatesFn(db, schema, notifyDefaults)
 	// EnergyBank v2 orchestrator: same role as in multi-tenant mode.
 	energyV2 := storage.NewEnergyV2Orchestrator()
@@ -492,7 +492,7 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Regist
 	}()
 
 	var morningSendMu sync.Mutex
-	maybeFireMorningReport := makeMorningTrigger(db, &morningSendMu, mgr, reg, schema, notifyDefaults)
+	maybeFireMorningReport := makeMorningTrigger(ctx, db, &morningSendMu, mgr, reg, schema, notifyDefaults)
 
 	backfillFn := makeBackfillFn(db)
 	backfillDatesFn := makeBackfillDatesFn(db, schema, notifyDefaults)
@@ -871,7 +871,7 @@ func makeReportTrigger(mgr *tenants.Manager, schema string, defaults storage.Not
 	}
 }
 
-func makeMorningTrigger(db *storage.DB, sendMu *sync.Mutex, mgr *tenants.Manager, reg *registry.Registry, schema string, notifyDefaults storage.NotifyConfig) func() {
+func makeMorningTrigger(ctx context.Context, db *storage.DB, sendMu *sync.Mutex, mgr *tenants.Manager, reg *registry.Registry, schema string, notifyDefaults storage.NotifyConfig) func() {
 	return func() {
 		// AIDefaultsFor on each tick so the admin's installation-wide
 		// AI provider config is honoured even if it changed after process start.
@@ -900,7 +900,7 @@ func makeMorningTrigger(db *storage.DB, sendMu *sync.Mutex, mgr *tenants.Manager
 			return
 		}
 
-		if insight := ensureTodayAIInsight(db, aiCfg, cfg.Lang); insight == "" {
+		if insight := ensureTodayAIInsight(ctx, db, aiCfg, cfg.Lang); insight == "" {
 			log.Println("morning trigger: AI insight unavailable, aborting")
 			return
 		}
@@ -1083,7 +1083,7 @@ schedulerLoop:
 		ncfg = buildNotifyCfg(db, cfg)
 		bot := notify.NewBot(cfg.Token, cfg.ChatID)
 		if isMorning {
-			runMorningSmartRetry(bot, db, mgr, reg, schema, ncfg, baseURL)
+			runMorningSmartRetry(ctx, bot, db, mgr, reg, schema, ncfg, baseURL)
 		} else {
 			log.Println("report scheduler: sending evening report…")
 			if err := notify.SendEvening(bot, db, ncfg); err != nil {
@@ -1128,7 +1128,7 @@ func reportScheduleSignature(cfg notify.Config) reportSchedule {
 // either the report has been sent (by this loop, or by the opportunistic
 // ingest trigger) or the cap time is reached. At the cap, it force-sends with
 // a stale-data banner so we never go a day without a morning report.
-func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager, reg *registry.Registry, schema string, ncfg notify.Config, baseURL string) {
+func runMorningSmartRetry(ctx context.Context, bot *notify.Bot, db *storage.DB, mgr *tenants.Manager, reg *registry.Registry, schema string, ncfg notify.Config, baseURL string) {
 	const tick = 15 * time.Minute
 
 	loc := time.Local
@@ -1177,7 +1177,7 @@ func runMorningSmartRetry(bot *notify.Bot, db *storage.DB, mgr *tenants.Manager,
 		// Try to (re)generate AI insight on each tick — cheap if cached.
 		// Resolve AI defaults fresh per-tick so admin-managed global
 		// config is honoured even when it was set mid-day.
-		ensureTodayAIInsight(db, mgr.AIDefaultsFor(context.Background(), schema), ncfg.Lang)
+		ensureTodayAIInsight(ctx, db, mgr.AIDefaultsFor(ctx, schema), ncfg.Lang)
 
 		// Resolve all the per-tick state the gate consults. The check-in
 		// row lookup tolerates "no row" via GetTodayCheckin returning
@@ -1385,8 +1385,8 @@ func runDailyQualityScan(db *storage.DB, schema string, defaults storage.NotifyC
 
 // ensureTodayAIInsight is a thin wrapper around storage.DB.EnsureTodayAIInsight
 // kept for caller convenience.
-func ensureTodayAIInsight(db *storage.DB, aiDefaults storage.AIConfig, lang string) string {
-	return db.EnsureTodayAIInsight(db.GetAIConfig(aiDefaults), lang)
+func ensureTodayAIInsight(ctx context.Context, db *storage.DB, aiDefaults storage.AIConfig, lang string) string {
+	return db.EnsureTodayAIInsightContext(ctx, db.GetAIConfig(aiDefaults), lang)
 }
 
 // migrateGlobalAIIfNeeded copies an admin tenant's per-tenant Gemini

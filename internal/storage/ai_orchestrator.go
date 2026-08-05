@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"strings"
@@ -33,6 +34,12 @@ const aiRegenFailBackoff = 5 * time.Minute
 // provider work. After a failure, retries are throttled to once per
 // aiRegenFailBackoff so an upstream outage doesn't compound.
 func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
+	return s.EnsureTodayAIInsightContext(context.Background(), aiCfg, lang)
+}
+
+// EnsureTodayAIInsightContext is the cancellation-aware variant used by
+// schedulers and shutdown-aware callers.
+func (s *DB) EnsureTodayAIInsightContext(ctx context.Context, aiCfg AIConfig, lang string) string {
 	if !aiCfg.Enabled() {
 		return ""
 	}
@@ -135,20 +142,23 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 	}
 
 	saved := 0
+	failed := 0
 	payloadForBlock := func(block string) []byte {
 		if block == ai.BlockRecovery {
 			return recoveryJSON
 		}
 		return metricsJSON
 	}
-	results := ai.GenerateLeafBlocks(provider, providerCfg, payloadForBlock, lang, skip)
+	results := ai.GenerateLeafBlocks(ctx, provider, providerCfg, payloadForBlock, lang, skip)
 	for _, r := range results {
 		if r.Err != nil {
 			log.Printf("EnsureTodayAIInsight: provider=%s block=%s: %v", aiCfg.Provider, r.Block, r.Err)
+			failed++
 			continue
 		}
 		if strings.TrimSpace(r.Text) == "" {
 			log.Printf("EnsureTodayAIInsight: provider=%s block=%s returned empty content, not caching", aiCfg.Provider, r.Block)
+			failed++
 			continue
 		}
 		if err := s.SaveAIBlock(today, lang, r.Block, r.Text, hashes[r.Block]); err != nil {
@@ -191,12 +201,14 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 		if eb != nil {
 			stressFlags = eb.Flags
 		}
-		recText, err := ai.GenerateRecommendation(provider, providerCfg, recoveryJSON, lang,
+		recText, err := ai.GenerateRecommendation(ctx, provider, providerCfg, recoveryJSON, lang,
 			sleepText, yesterdayText, recoveryText, verdictHistory, stressFlags, insightCtx)
 		if err != nil {
 			log.Printf("EnsureTodayAIInsight: provider=%s block=RECOMMENDATION: %v", aiCfg.Provider, err)
+			failed++
 		} else if strings.TrimSpace(recText) == "" {
 			log.Printf("EnsureTodayAIInsight: provider=%s block=RECOMMENDATION returned empty content, not caching", aiCfg.Provider)
+			failed++
 		} else if err := s.SaveAIBlock(today, lang, ai.BlockRecommendation, recText, recHash); err != nil {
 			log.Printf("EnsureTodayAIInsight: save RECOMMENDATION: %v", err)
 		} else {
@@ -206,13 +218,17 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 
 	// Track sustained failures so the next aiRegenFailBackoff window short-
 	// circuits provider calls. On success, clear the timestamp.
-	if saved == 0 {
+	if shouldBackoffAIRegen(saved, failed) {
 		s.aiRegenLastFailAt.Store(failureKey, time.Now())
 	} else {
 		s.aiRegenLastFailAt.Delete(failureKey)
 	}
 
 	return s.GetAIInsightCombined(today, lang)
+}
+
+func shouldBackoffAIRegen(saved, failed int) bool {
+	return saved == 0 && failed > 0
 }
 
 func aiContextFromBriefing(b *health.BriefingResponse) ai.InsightContext {

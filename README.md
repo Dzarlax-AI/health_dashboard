@@ -104,6 +104,7 @@ flowchart TD
     Provider -->|"responses"| OpenAI
     Gemini -->|"briefing text"| Provider
     OpenAI -->|"briefing text"| Provider
+    Provider -->|"generated blocks"| AI
     AI -->|"cache"| AB
 
     AB -->|"ai insight"| UI
@@ -496,7 +497,7 @@ Times are configurable per weekday/weekend via env vars or through the Settings 
 
 When the active AI provider has an API key (from env or Admin UI), the server generates a personalized morning briefing through its adapter. Gemini and direct OpenAI Responses API are built in; OpenAI defaults to `gpt-5.6-luna` with reasoning effort `none`. The four blocks — `SLEEP` / `YESTERDAY` / `RECOVERY` / `RECOMMENDATION` — are produced **per-block in parallel** (3 leaves) plus a recommendation root that consumes the leaf texts. Each block is cached in `ai_briefing_blocks` keyed by health inputs plus provider, model, reasoning, output limit, and prompt revision, so configuration changes trigger regeneration while the previous text remains available until replacement succeeds.
 
-The briefing is triggered after 05:00 when today's step count exceeds 300 (confirming the user is awake). Smart-retry runs every 15 min until `MorningCapHour` is reached (or the adaptive cap from `GetTypicalWakeTime + 60min` when ≥7 days of per-segment sleep data are present); each tick re-resolves block hashes and only the leaves whose hashes changed hit the active provider.
+The briefing is triggered after 05:00 when today's step count exceeds 300 (confirming the user is awake). Smart-retry runs every 15 min until `MorningCapHour` is reached (or the adaptive cap from `GetTypicalWakeTime + 60min` when ≥7 days of per-segment sleep data are present); each tick re-resolves block hashes, then independently regenerates changed leaf blocks and a changed `RECOMMENDATION` block through the active provider.
 
 The briefing covers four blocks: sleep quality (phases, fragmentation), yesterday's full day (activity, SpO2, breathing, wrist temperature), recovery (HRV/RHR vs 7-day personal baseline), and a concrete recommendation with specific numbers.
 

@@ -43,6 +43,37 @@ func TestBuildAdminAISettingsUpdateRejectsUnknownProvider(t *testing.T) {
 	}
 }
 
+func TestBuildAdminAISettingsUpdateValidatesTokenBounds(t *testing.T) {
+	for _, tokens := range []int{0, 199, 128001} {
+		if _, err := buildAdminAISettingsUpdate(adminAISettingsRequest{
+			Provider: ai.ProviderOpenAI, MaxOutputTokens: tokens,
+		}); err == nil {
+			t.Fatalf("max_output_tokens=%d returned no error", tokens)
+		}
+	}
+	for _, tokens := range []int{200, 128000} {
+		if _, err := buildAdminAISettingsUpdate(adminAISettingsRequest{
+			Provider: ai.ProviderOpenAI, MaxOutputTokens: tokens,
+		}); err != nil {
+			t.Fatalf("max_output_tokens=%d rejected: %v", tokens, err)
+		}
+	}
+}
+
+func TestBuildAdminAISettingsUpdateClearsReasoningForGemini(t *testing.T) {
+	update, err := buildAdminAISettingsUpdate(adminAISettingsRequest{
+		Provider:        ai.ProviderGemini,
+		ReasoningEffort: "high",
+		MaxOutputTokens: 5000,
+	})
+	if err != nil {
+		t.Fatalf("build update: %v", err)
+	}
+	if got := update[ai.ProviderGemini+"_reasoning_effort"]; got != "" {
+		t.Fatalf("reasoning_effort = %q, want empty", got)
+	}
+}
+
 func TestAdminAISettingsPayloadNeverReturnsAPIKeys(t *testing.T) {
 	cfg := storage.AIConfig{
 		Provider: ai.ProviderOpenAI,

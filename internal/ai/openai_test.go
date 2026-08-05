@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -69,6 +70,33 @@ func TestOpenAIProviderGenerateResponsesContract(t *testing.T) {
 	}
 	if input, _ := got["input"].(string); !strings.Contains(input, `"date":"2026-08-05"`) {
 		t.Fatalf("input missing payload: %q", input)
+	}
+}
+
+func TestOpenAIProviderOmitsReasoningForNonReasoningModel(t *testing.T) {
+	var got map[string]any
+	client := testHTTPClient(func(r *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		return jsonResponse(http.StatusOK, `{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Text"}]}]}`), nil
+	})
+	provider := NewOpenAIProvider(client, "https://example.test")
+	_, err := provider.Generate(context.Background(), ProviderConfig{
+		APIKey: "secret", Model: "gpt-4.1", ReasoningEffort: "high",
+	}, GenerationRequest{Prompt: "p", UserPayload: []byte(`{}`)})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if _, ok := got["reasoning"]; ok {
+		t.Fatalf("non-reasoning model request contains reasoning: %#v", got["reasoning"])
+	}
+}
+
+func TestOpenAIProviderDefaultTimeoutSupportsLongerReasoningRuns(t *testing.T) {
+	provider := NewOpenAIProvider(nil, "")
+	if provider.client.Timeout != 120*time.Second {
+		t.Fatalf("timeout = %v, want 120s", provider.client.Timeout)
 	}
 }
 
@@ -159,15 +187,18 @@ func TestOpenAIProviderRejectsInvalidReasoningEffort(t *testing.T) {
 
 func TestOpenAIProviderListModelsFiltersAndSortsSuggestions(t *testing.T) {
 	client := testHTTPClient(func(_ *http.Request) (*http.Response, error) {
-		return jsonResponse(http.StatusOK, `{"data":[{"id":"whisper-1"},{"id":"gpt-5.6-luna"},{"id":"o4-mini"},{"id":"gpt-4.1"}]}`), nil
+		return jsonResponse(http.StatusOK, `{"data":[{"id":"whisper-1"},{"id":"omni-moderation-latest"},{"id":"gpt-5.6-luna"},{"id":"o4-mini"},{"id":"gpt-4.1"}]}`), nil
 	})
 	provider := NewOpenAIProvider(client, "https://example.test")
 	models, err := provider.ListModels(context.Background(), "secret")
 	if err != nil {
 		t.Fatalf("ListModels: %v", err)
 	}
-	got := []string{models[0].ID, models[1].ID, models[2].ID}
 	want := []string{"gpt-4.1", "gpt-5.6-luna", "o4-mini"}
+	if len(models) != len(want) {
+		t.Fatalf("models = %v, want %v", models, want)
+	}
+	got := []string{models[0].ID, models[1].ID, models[2].ID}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("models = %v, want %v", got, want)

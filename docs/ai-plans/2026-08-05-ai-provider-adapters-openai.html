@@ -259,7 +259,7 @@ Provider registry ── Resolve(activeProvider)
       <li>Перед production edits безопасно привести checkout к согласованной актуальной базе, сохранив все пользовательские untracked files; повторить scoped inspection.</li>
       <li>Добавить neutral provider contract и registry с двумя явно зарегистрированными adapters.</li>
       <li>Перенести текущее Gemini поведение за adapter boundary и зафиксировать его regression tests до добавления OpenAI.</li>
-      <li>Реализовать OpenAI Responses adapter с 60-second timeout, <code>store: false</code>, явным reasoning effort и безопасным parsing.</li>
+      <li>Реализовать OpenAI Responses adapter с 120-second timeout, <code>store: false</code>, явным reasoning effort и безопасным parsing.</li>
       <li>Перевести block orchestrator на provider contract, не меняя leaf parallelism, recommendation ordering и health prompt.</li>
       <li>Добавить provider-aware generation fingerprint и скорректировать failure backoff.</li>
       <li>Расширить env/global/tenant configuration с обратной совместимостью существующих Gemini installations.</li>
@@ -318,7 +318,7 @@ Provider registry ── Resolve(activeProvider)
       <li><strong>Database:</strong> новых таблиц/колонок нет; используются новые ключи существующей <code>global_settings</code>. Schema contract version не меняется.</li>
       <li><strong>Auth:</strong> Admin endpoints остаются под существующим <code>adminGuard</code>. Новых публичных endpoints нет.</li>
       <li><strong>Privacy:</strong> OpenAI получает тот же health JSON, который сейчас получает Gemini. <code>store: false</code> обязателен; raw payload не логируется.</li>
-      <li><strong>Deployment:</strong> без OpenAI key поведение остаётся Gemini-only. Переключение provider выполняется после deploy через Admin UI, без restart.</li>
+      <li><strong>Deployment:</strong> при default <code>AI_PROVIDER=gemini</code> отсутствие OpenAI key сохраняет Gemini-only поведение. Если явно выбрать <code>AI_PROVIDER=openai</code> без <code>OPENAI_API_KEY</code>, AI отключается без fallback на Gemini. Переключение provider выполняется после deploy через Admin UI, без restart.</li>
       <li><strong>External calls:</strong> automated tests не используют реальные API keys. Реальный smoke test выполняется только после явной настройки key оператором.</li>
     </ul>
   </section>
@@ -366,7 +366,7 @@ Provider registry ── Resolve(activeProvider)
     <ul>
       <li>Добавлены provider-neutral interface, descriptor registry и generation fingerprint в <code>internal/ai/provider.go</code>.</li>
       <li>Существующий Gemini transport оформлен как adapter; запросы теперь поддерживают context cancellation, а ошибки не включают raw upstream body.</li>
-      <li>Добавлен прямой OpenAI Responses adapter: Bearer auth, <code>store: false</code>, <code>gpt-5.6-luna</code> по умолчанию, явный reasoning effort и безопасный разбор completed/incomplete/refusal responses.</li>
+      <li>Добавлен прямой OpenAI Responses adapter: Bearer auth, 120-second timeout, <code>store: false</code>, <code>gpt-5.6-luna</code> по умолчанию, model-aware reasoning effort и безопасный разбор completed/incomplete/refusal responses.</li>
       <li>Block orchestrator маршрутизирует четыре блока через активный adapter. Cache fingerprint включает provider, model, reasoning, output limit и prompt revision; failure backoff также разделён по fingerprint.</li>
       <li>AI config хранит независимые credentials/model каждого provider. Существующие Gemini env/settings продолжают работать; legacy <code>GEMINI_MAX_TOKENS</code> остаётся fallback.</li>
       <li>Admin UI получил provider selector, masked key replacement/explicit clear, editable model suggestions, conditional reasoning и общий output limit. Model discovery больше не сохраняет key как side effect.</li>

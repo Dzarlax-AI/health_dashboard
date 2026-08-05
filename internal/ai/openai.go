@@ -13,6 +13,7 @@ import (
 )
 
 const defaultOpenAIModel = "gpt-5.6-luna"
+const defaultOpenAITimeout = 120 * time.Second
 
 type OpenAIProvider struct {
 	client  *http.Client
@@ -21,7 +22,7 @@ type OpenAIProvider struct {
 
 func NewOpenAIProvider(client *http.Client, baseURL string) *OpenAIProvider {
 	if client == nil {
-		client = &http.Client{Timeout: 60 * time.Second}
+		client = &http.Client{Timeout: defaultOpenAITimeout}
 	}
 	if baseURL == "" {
 		baseURL = "https://api.openai.com/v1"
@@ -77,7 +78,7 @@ func (p *OpenAIProvider) ListModels(ctx context.Context, apiKey string) ([]Model
 		// The models endpoint does not expose an input/output capability map.
 		// Offer likely text-generation models as suggestions while leaving the
 		// Admin model field editable.
-		if strings.HasPrefix(model.ID, "gpt-") || strings.HasPrefix(model.ID, "o") {
+		if strings.HasPrefix(model.ID, "gpt-") || isOpenAIReasoningModel(model.ID) {
 			out = append(out, Model{ID: model.ID, DisplayName: model.ID})
 		}
 	}
@@ -95,12 +96,6 @@ func (p *OpenAIProvider) Generate(ctx context.Context, cfg ProviderConfig, gener
 	if cfg.MaxOutputTokens <= 0 {
 		cfg.MaxOutputTokens = DefaultMaxOutputTokens
 	}
-	if cfg.ReasoningEffort == "" {
-		cfg.ReasoningEffort = "none"
-	}
-	if !ValidReasoningEffort(cfg.ReasoningEffort) {
-		return GenerationResult{}, fmt.Errorf("invalid OpenAI reasoning effort %q", cfg.ReasoningEffort)
-	}
 	langName := langNames[generation.Language]
 	if langName == "" {
 		langName = "English"
@@ -115,10 +110,16 @@ func (p *OpenAIProvider) Generate(ctx context.Context, cfg ProviderConfig, gener
 			string(generation.UserPayload),
 		),
 		"max_output_tokens": cfg.MaxOutputTokens,
-		"reasoning": map[string]string{
-			"effort": cfg.ReasoningEffort,
-		},
-		"store": false,
+		"store":             false,
+	}
+	if isOpenAIReasoningModel(cfg.Model) {
+		if cfg.ReasoningEffort == "" {
+			cfg.ReasoningEffort = "none"
+		}
+		if !ValidReasoningEffort(cfg.ReasoningEffort) {
+			return GenerationResult{}, fmt.Errorf("invalid OpenAI reasoning effort %q", cfg.ReasoningEffort)
+		}
+		payload["reasoning"] = map[string]string{"effort": cfg.ReasoningEffort}
 	}
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -186,6 +187,14 @@ func ValidReasoningEffort(value string) bool {
 	default:
 		return false
 	}
+}
+
+func isOpenAIReasoningModel(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if strings.HasPrefix(model, "gpt-5") {
+		return true
+	}
+	return len(model) > 1 && model[0] == 'o' && model[1] >= '0' && model[1] <= '9'
 }
 
 func init() {

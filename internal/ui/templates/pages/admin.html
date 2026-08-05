@@ -456,22 +456,22 @@
           <summary class="section-title" style="cursor:pointer">{{T .Lang "admin_ai_title"}}</summary>
           <div class="admin-settings-form" style="margin-top:12px">
             <div class="admin-field-row">
-              <label class="admin-field-label">{{T .Lang "admin_ai_provider"}}</label>
+              <label class="admin-field-label" for="cfg-ai-provider">{{T .Lang "admin_ai_provider"}}</label>
               <select class="admin-field-input" id="cfg-ai-provider" onchange="selectAIProvider(this.value)"></select>
             </div>
             <div class="admin-field-row">
-              <label class="admin-field-label">{{T .Lang "admin_ai_key"}}</label>
+              <label class="admin-field-label" for="cfg-ai-key">{{T .Lang "admin_ai_key"}}</label>
               <div style="display:flex;gap:8px;align-items:center;width:100%">
                 <input class="admin-field-input" type="password" id="cfg-ai-key" autocomplete="off">
                 <span class="muted" id="cfg-ai-key-status" style="white-space:nowrap"></span>
               </div>
             </div>
             <div class="admin-field-row">
-              <label class="admin-field-label">{{T .Lang "admin_ai_clear_key"}}</label>
+              <label class="admin-field-label" for="cfg-ai-clear-key">{{T .Lang "admin_ai_clear_key"}}</label>
               <input type="checkbox" id="cfg-ai-clear-key">
             </div>
             <div class="admin-field-row">
-              <label class="admin-field-label">{{T .Lang "admin_ai_model"}}</label>
+              <label class="admin-field-label" for="cfg-ai-model">{{T .Lang "admin_ai_model"}}</label>
               <div style="display:flex;gap:8px;width:100%">
                 <input class="admin-field-input" id="cfg-ai-model" list="cfg-ai-models">
                 <datalist id="cfg-ai-models"></datalist>
@@ -479,7 +479,7 @@
               </div>
             </div>
             <div class="admin-field-row" id="cfg-ai-reasoning-row" hidden>
-              <label class="admin-field-label">{{T .Lang "admin_ai_reasoning"}}</label>
+              <label class="admin-field-label" for="cfg-ai-reasoning">{{T .Lang "admin_ai_reasoning"}}</label>
               <select class="admin-field-input" id="cfg-ai-reasoning">
                 <option value="none">none</option>
                 <option value="low">low</option>
@@ -490,7 +490,7 @@
               </select>
             </div>
             <div class="admin-field-row">
-              <label class="admin-field-label">{{T .Lang "admin_ai_max_tokens"}}</label>
+              <label class="admin-field-label" for="cfg-ai-max-tokens">{{T .Lang "admin_ai_max_tokens"}}</label>
               <input class="admin-field-input" type="number" id="cfg-ai-max-tokens" min="200" max="128000" placeholder="5000">
             </div>
             <div class="admin-settings-actions">
@@ -1077,7 +1077,8 @@ function loadAdminSettings() {
         select.appendChild(opt);
       });
       $('cfg-ai-max-tokens').value = d.max_output_tokens || 5000;
-      selectAIProvider(d.provider || (d.providers && d.providers[0] && d.providers[0].id));
+      var known = (d.providers || []).some(function(provider) { return provider.id === d.provider; });
+      selectAIProvider(known ? d.provider : (d.providers && d.providers[0] && d.providers[0].id));
     });
   if (tenantPanelVisible()) {
     loadEnergySettings();

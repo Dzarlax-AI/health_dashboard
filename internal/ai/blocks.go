@@ -212,7 +212,7 @@ type BlockResult struct {
 //
 // hashes carry the inputs_hash for each block so callers can compare against
 // the cache and skip the provider when nothing has changed since last generation.
-func GenerateLeafBlocks(provider Provider, cfg ProviderConfig, payloadForBlock func(block string) []byte, lang string,
+func GenerateLeafBlocks(ctx context.Context, provider Provider, cfg ProviderConfig, payloadForBlock func(block string) []byte, lang string,
 	skipBlock func(block string) bool) []BlockResult {
 
 	results := make([]BlockResult, 0, len(LeafBlocks))
@@ -230,7 +230,7 @@ func GenerateLeafBlocks(provider Provider, cfg ProviderConfig, payloadForBlock f
 			if payloadForBlock != nil {
 				payload = payloadForBlock(block)
 			}
-			generated, err := provider.Generate(context.Background(), cfg, GenerationRequest{
+			generated, err := provider.Generate(ctx, cfg, GenerationRequest{
 				Prompt:      prompt,
 				UserPayload: payload,
 				Language:    lang,
@@ -255,11 +255,11 @@ func GenerateLeafBlocks(provider Provider, cfg ProviderConfig, payloadForBlock f
 // patterns like "3 rest days in a row → accumulated fatigue, push for
 // proper rest" instead of treating each day in isolation. Empty slice
 // is fine — the line is simply omitted from the prompt context.
-func GenerateRecommendation(provider Provider, cfg ProviderConfig, rawMetricsJSON []byte, lang string,
-	sleepText, yesterdayText, recoveryText string, verdictHistory []string, stressFlags []string, ctx InsightContext) (string, error) {
+func GenerateRecommendation(ctx context.Context, provider Provider, cfg ProviderConfig, rawMetricsJSON []byte, lang string,
+	sleepText, yesterdayText, recoveryText string, verdictHistory []string, stressFlags []string, insightCtx InsightContext) (string, error) {
 	prompt := BuildBlockPrompt(BlockRecommendation)
-	recommendationContext := BuildRecommendationContext(sleepText, yesterdayText, recoveryText, verdictHistory, stressFlags, ctx)
-	generated, err := provider.Generate(context.Background(), cfg, GenerationRequest{
+	recommendationContext := BuildRecommendationContext(sleepText, yesterdayText, recoveryText, verdictHistory, stressFlags, insightCtx)
+	generated, err := provider.Generate(ctx, cfg, GenerationRequest{
 		Prompt:      prompt,
 		UserPayload: append(rawMetricsJSON, []byte(recommendationContext)...),
 		Language:    lang,
