@@ -10,6 +10,7 @@ import { shouldPollAI } from "./features/dashboard/aiPolling";
 import { loadDashboardResources, type DashboardResources } from "./features/dashboard/loader";
 import { buildDashboardViewModel } from "./features/dashboard/model";
 import { ScoreSummaryCard } from "./features/dashboard/ScoreSummaryCard";
+import { SleepPage } from "./features/sleep/SleepPage";
 import { resolveLocale, translate, type Locale } from "./i18n";
 
 type AppState =
@@ -22,7 +23,7 @@ function fixtureHref(locale: Locale, fixture: string): string {
   return `/?${new URLSearchParams({ lang: locale, fixture }).toString()}`;
 }
 
-export function App() {
+function DashboardApp() {
   const params = new URLSearchParams(window.location.search);
   const locale = resolveLocale(params.get("lang"));
   const fixtureEnabled = import.meta.env.VITE_ENABLE_FIXTURES === "true";
@@ -184,6 +185,7 @@ export function App() {
                   <ScoreSummaryCard
                     score={model.sleep}
                     fallbackLabel={translate(locale, "sleep")}
+                    href={`/sleep?lang=${locale}`}
                     displayStatus={
                       model.sleep.status === "final"
                         ? translate(locale, "statusFinal")
@@ -205,4 +207,8 @@ export function App() {
       </main>
     </div>
   );
+}
+
+export function App() {
+  return window.location.pathname === "/sleep" ? <SleepPage /> : <DashboardApp />;
 }

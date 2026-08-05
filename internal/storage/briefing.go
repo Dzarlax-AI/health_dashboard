@@ -18,7 +18,7 @@ func (s *DB) rawMetricsFromDailyScores(lastDate string) *health.RawMetrics {
 	defer cancel()
 	rows, err := s.pool.Query(ctx, `
 		SELECT date, hrv_avg, rhr_avg, sleep_total, sleep_deep, sleep_rem,
-		       sleep_core, sleep_awake, steps, calories, exercise_min,
+		       sleep_core, sleep_unspecified, sleep_awake, steps, calories, exercise_min,
 		       spo2_avg, vo2_avg, resp_avg, baseline_hr_overnight
 		FROM daily_scores
 		WHERE date >= $1 AND date <= $2
@@ -36,7 +36,7 @@ func (s *DB) rawMetricsFromDailyScores(lastDate string) *health.RawMetrics {
 		var r dailyScoreRow
 		if err := rows.Scan(
 			&r.date, &r.hrv, &r.rhr, &r.slp, &r.deep, &r.rem,
-			&r.core, &r.awake, &r.steps, &r.cal, &r.ex,
+			&r.core, &r.unspecified, &r.awake, &r.steps, &r.cal, &r.ex,
 			&r.spo2, &r.vo2, &r.resp, &r.nightHR,
 		); err == nil {
 			all = append(all, r)
@@ -70,6 +70,7 @@ func (s *DB) rawMetricsFromDailyScores(lastDate string) *health.RawMetrics {
 			r.deep = coalesce(freshToday.deep, r.deep)
 			r.rem = coalesce(freshToday.rem, r.rem)
 			r.core = coalesce(freshToday.core, r.core)
+			r.unspecified = coalesce(freshToday.unspecified, r.unspecified)
 			r.awake = coalesce(freshToday.awake, r.awake)
 			r.steps = coalesce(freshToday.steps, r.steps)
 			r.cal = coalesce(freshToday.cal, r.cal)
@@ -122,29 +123,30 @@ func (s *DB) rawMetricsFromDailyScores(lastDate string) *health.RawMetrics {
 }
 
 type dailyScoreRow struct {
-	date                                  string
-	hrv, rhr, slp, deep, rem, core, awake *float64
-	steps, cal, ex, spo2, vo2, resp       *float64
-	nightHR                               *float64
+	date                                               string
+	hrv, rhr, slp, deep, rem, core, unspecified, awake *float64
+	steps, cal, ex, spo2, vo2, resp                    *float64
+	nightHR                                            *float64
 }
 
 func dailyHealthMetrics(r dailyScoreRow) health.DailyHealthMetrics {
 	return health.DailyHealthMetrics{
-		Date:      r.date,
-		HRV:       positivePtr(r.hrv),
-		RHR:       positivePtr(r.rhr),
-		Sleep:     positivePtr(r.slp),
-		Deep:      positivePtr(r.deep),
-		REM:       positivePtr(r.rem),
-		Core:      positivePtr(r.core),
-		Awake:     nonNegativePtr(r.awake),
-		Steps:     positivePtr(r.steps),
-		Calories:  positivePtr(r.cal),
-		Exercise:  positivePtr(r.ex),
-		SpO2:      positivePtr(r.spo2),
-		VO2:       positivePtr(r.vo2),
-		Resp:      positivePtr(r.resp),
-		WristTemp: nil,
+		Date:        r.date,
+		HRV:         positivePtr(r.hrv),
+		RHR:         positivePtr(r.rhr),
+		Sleep:       positivePtr(r.slp),
+		Deep:        positivePtr(r.deep),
+		REM:         positivePtr(r.rem),
+		Core:        positivePtr(r.core),
+		Unspecified: positivePtr(r.unspecified),
+		Awake:       nonNegativePtr(r.awake),
+		Steps:       positivePtr(r.steps),
+		Calories:    positivePtr(r.cal),
+		Exercise:    positivePtr(r.ex),
+		SpO2:        positivePtr(r.spo2),
+		VO2:         positivePtr(r.vo2),
+		Resp:        positivePtr(r.resp),
+		WristTemp:   nil,
 	}
 }
 
@@ -416,6 +418,7 @@ func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
 		"deep":        getDailyWithDates("sleep_deep", 30, "SUM"),
 		"rem":         getDailyWithDates("sleep_rem", 30, "SUM"),
 		"core":        getDailyWithDates("sleep_core", 30, "SUM"),
+		"unspecified": getDailyWithDates("sleep_unspecified", 30, "SUM"),
 		"awake":       getDailyWithDates("sleep_awake", 30, "SUM"),
 		"steps":       getDailyWithDates("step_count", 30, "SUM"),
 		"calories":    getDailyWithDates("active_energy", 30, "SUM"),
@@ -503,6 +506,8 @@ func mergeDatedMetrics(series map[string][]health.DatedValue) []health.DailyHeal
 				row.REM = valuePtr(value.Val)
 			case "core":
 				row.Core = valuePtr(value.Val)
+			case "unspecified":
+				row.Unspecified = valuePtr(value.Val)
 			case "awake":
 				row.Awake = valuePtr(value.Val)
 			case "steps":
@@ -635,6 +640,8 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 	}
 
 	resp := health.ComputeBriefing(*data, lang)
+	resp.SleepRegularityIndex = data.SleepRegularityIndex
+	resp.SleepRegularityNights = data.SleepRegularityNights
 
 	// EnergyBank v2 half-cutover (PR #43): when a v2 snapshot exists
 	// for `lastDate`, override the displayed bank/capacity/drain with
@@ -1057,9 +1064,9 @@ func (s *DB) fetchDailyMetric(metric, lastDate string, days int, agg string) []f
 
 // dayRow mirrors the daily_scores column set, used for fresh-day override.
 type dayRow struct {
-	hrv, rhr, slp, deep, rem, core, awake *float64
-	steps, cal, ex, spo2, vo2, resp       *float64
-	hrvN, rhrN, respN, spo2N              int
+	hrv, rhr, slp, deep, rem, core, unspecified, awake *float64
+	steps, cal, ex, spo2, vo2, resp                    *float64
+	hrvN, rhrN, respN, spo2N                           int
 }
 
 // freshDayFromRaw reads today's values directly from metric_points (always
@@ -1082,6 +1089,7 @@ func (s *DB) freshDayFromRaw(date string) *dayRow {
 		{"sleep_deep", &r.deep, true, nil},
 		{"sleep_rem", &r.rem, true, nil},
 		{"sleep_core", &r.core, true, nil},
+		{"sleep_unspecified", &r.unspecified, true, nil},
 		{"sleep_awake", &r.awake, true, nil},
 		{"step_count", &r.steps, true, nil},
 		{"active_energy", &r.cal, true, nil},

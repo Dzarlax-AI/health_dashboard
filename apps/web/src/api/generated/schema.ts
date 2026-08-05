@@ -89,6 +89,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/metrics/data": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Time-bucketed metric history */
+        get: operations["getMetricData"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/readiness-history": {
         parameters: {
             query?: never;
@@ -98,6 +115,23 @@ export interface paths {
         };
         /** Readiness score history */
         get: operations["getReadinessHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/section/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Localized rule-based detail section */
+        get: operations["getSection"];
         put?: never;
         post?: never;
         delete?: never;
@@ -419,6 +453,8 @@ export interface components {
                 score_pct?: number;
                 structure_pct?: number;
             };
+            sleep_regularity_index?: number;
+            sleep_regularity_nights?: number;
             subjective_checkin?: {
                 answer?: string;
                 status: string;
@@ -433,6 +469,27 @@ export interface components {
                 updated_at?: string;
             };
         };
+        MetricDataResponse: {
+            agg: string;
+            bucket: string;
+            by_source?: boolean;
+            metric: string;
+            points?: {
+                date: string;
+                max: number;
+                min: number;
+                qty: number;
+            }[] | null;
+            points_by_source?: {
+                points: {
+                    date: string;
+                    max: number;
+                    min: number;
+                    qty: number;
+                }[] | null;
+                source: string;
+            }[] | null;
+        };
         ReadinessHistoryResponse: {
             points: {
                 /** @enum {string} */
@@ -440,6 +497,32 @@ export interface components {
                 date: string;
                 score: number;
             }[] | null;
+        };
+        SectionResponse: {
+            charts: {
+                agg?: string;
+                color?: string;
+                color_dark?: string;
+                label: string;
+                metric?: string;
+                stacked?: boolean;
+                type?: string;
+                unit?: string;
+                virtual?: boolean;
+            }[] | null;
+            details: {
+                label: string;
+                note?: string;
+                trend: string;
+                value: string;
+            }[] | null;
+            explains: {
+                body: string;
+                title: string;
+            }[] | null;
+            key: string;
+            summary: string;
+            title: string;
         };
         SessionResponse: {
             is_admin: boolean;
@@ -458,6 +541,8 @@ export interface operations {
             query?: {
                 /** @description Unsupported values are ignored and the server falls back to the documented default. */
                 lang?: "en" | "ru" | "sr";
+                /** @description Optional historical date. Past dates are cache-only and never trigger AI generation. */
+                date?: string;
             };
             header?: never;
             path?: never;
@@ -691,6 +776,59 @@ export interface operations {
             };
         };
     };
+    getMetricData: {
+        parameters: {
+            query: {
+                /** @description Canonical metric name. */
+                metric: string;
+                /** @description Start date in YYYY-MM-DD. */
+                from?: string;
+                /** @description End date in YYYY-MM-DD. */
+                to?: string;
+                /** @description Unsupported values are ignored and the server falls back to the documented default. */
+                bucket?: "minute" | "hour" | "day";
+                /** @description Unsupported values are ignored and the server falls back to the documented default. */
+                agg?: "AVG" | "SUM" | "MAX" | "MIN";
+                /** @description Unsupported values are ignored and the server falls back to the documented default. */
+                by_source?: "0" | "1";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricDataResponse"];
+                };
+            };
+            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
+            302: {
+                headers: {
+                    /** @description Interactive login or setup route. */
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
     getReadinessHistory: {
         parameters: {
             query?: {
@@ -709,6 +847,52 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReadinessHistoryResponse"];
+                };
+            };
+            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
+            302: {
+                headers: {
+                    /** @description Interactive login or setup route. */
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getSection: {
+        parameters: {
+            query?: {
+                /** @description Unsupported values are ignored and the server falls back to the documented default. */
+                lang?: "en" | "ru" | "sr";
+            };
+            header?: never;
+            path: {
+                /** @description Section key. */
+                key: "sleep" | "cardio" | "activity" | "recovery";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SectionResponse"];
                 };
             };
             /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */

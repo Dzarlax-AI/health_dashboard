@@ -190,7 +190,19 @@ func (s *DB) GetAIBlocks(date, lang string) map[string]string {
 
 func canonicalAIBlockTexts(full map[string]*AIBlock) map[string]string {
 	if synthesis := full["SYNTHESIS"]; synthesis != nil && strings.TrimSpace(synthesis.Text) != "" {
-		return map[string]string{"SYNTHESIS": synthesis.Text}
+		out := map[string]string{"SYNTHESIS": synthesis.Text}
+		for key, block := range full {
+			if key == "SYNTHESIS" || block == nil {
+				continue
+			}
+			// New structured bundles save all sibling rows with the same exact
+			// evidence + generation fingerprint hash. Old v2 SYNTHESIS rows can
+			// coexist with stale legacy leaves; those must remain suppressed.
+			if block.InputsHash == synthesis.InputsHash && strings.TrimSpace(block.Text) != "" {
+				out[key] = block.Text
+			}
+		}
+		return out
 	}
 	out := make(map[string]string, len(full))
 	for k, v := range full {

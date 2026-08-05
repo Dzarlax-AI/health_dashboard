@@ -13,6 +13,7 @@ function localizedHref(path: string, locale: Locale): string {
 
 export function AppHeader({ locale, isAdmin = false }: AppHeaderProps) {
   const params = new URLSearchParams(window.location.search);
+  const currentPath = window.location.pathname;
 
   return (
     <header className="app-header">
@@ -41,7 +42,7 @@ export function AppHeader({ locale, isAdmin = false }: AppHeaderProps) {
           return (
             <a
               key={candidate}
-              href={`/?${candidateParams.toString()}`}
+              href={`${currentPath}?${candidateParams.toString()}`}
               aria-current={candidate === locale ? "page" : undefined}
             >
               {candidate.toUpperCase()}

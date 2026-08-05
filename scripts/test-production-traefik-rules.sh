@@ -30,11 +30,11 @@ write_release() {
   mode=$1
   case "$mode" in
     canary)
-      root_rule='Host(`health.example.com`) && Path(`/`) && HeaderRegexp(`Cookie`, `(^|;[ ]*)health_frontend_canary=1(;|[ ]*$)`)'
+      root_rule='Host(`health.example.com`) && (Path(`/`) || Path(`/sleep`)) && HeaderRegexp(`Cookie`, `(^|;[ ]*)health_frontend_canary=1(;|[ ]*$)`)'
       assets_rule='Host(`health.example.com`) && PathPrefix(`/assets/`) && HeaderRegexp(`Cookie`, `(^|;[ ]*)health_frontend_canary=1(;|[ ]*$)`)'
       ;;
     cutover)
-      root_rule='Host(`health.example.com`) && Path(`/`)'
+      root_rule='Host(`health.example.com`) && (Path(`/`) || Path(`/sleep`))'
       assets_rule='Host(`health.example.com`) && PathPrefix(`/assets/`)'
       ;;
     *) exit 2 ;;

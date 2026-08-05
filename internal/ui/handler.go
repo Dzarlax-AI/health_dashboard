@@ -1294,12 +1294,16 @@ func (h *Handler) metricData(w http.ResponseWriter, r *http.Request) {
 	if to == "" {
 		to = tenantToday.Format("2006-01-02")
 	}
+	fromDate, fromErr := time.Parse("2006-01-02", from)
+	toDate, toErr := time.Parse("2006-01-02", to)
+	if fromErr != nil || toErr != nil || fromDate.After(toDate) || toDate.Sub(fromDate) > 366*24*time.Hour {
+		http.Error(w, "from and to must be a valid ascending YYYY-MM-DD range of at most 366 days", http.StatusBadRequest)
+		return
+	}
 
 	bucket := q.Get("bucket")
 	if bucket == "" {
-		fromT, _ := time.Parse("2006-01-02", from)
-		toT, _ := time.Parse("2006-01-02", to[:10])
-		days := int(toT.Sub(fromT).Hours()/24) + 1
+		days := int(toDate.Sub(fromDate).Hours()/24) + 1
 		switch {
 		case days <= 1:
 			bucket = "minute"
@@ -1308,6 +1312,10 @@ func (h *Handler) metricData(w http.ResponseWriter, r *http.Request) {
 		default:
 			bucket = "day"
 		}
+	}
+	if bucket != "minute" && bucket != "hour" && bucket != "day" {
+		http.Error(w, "bucket must be minute, hour, or day", http.StatusBadRequest)
+		return
 	}
 
 	aggFunc := q.Get("agg")
@@ -1325,12 +1333,12 @@ func (h *Handler) metricData(w http.ResponseWriter, r *http.Request) {
 	if q.Get("by_source") == "1" {
 		sourcePoints, serr := db.GetMetricDataBySource(metric, from, to+" 23:59:59", bucket, aggFunc)
 		if serr == nil {
-			jsonResponse(w, map[string]any{
-				"metric":           metric,
-				"bucket":           bucket,
-				"agg":              aggFunc,
-				"by_source":        true,
-				"points_by_source": sourcePoints,
+			jsonResponse(w, clientapi.MetricDataResponse{
+				Metric:         metric,
+				Bucket:         bucket,
+				Agg:            aggFunc,
+				BySource:       true,
+				PointsBySource: sourcePoints,
 			})
 			return
 		}
@@ -1342,11 +1350,11 @@ func (h *Handler) metricData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jsonResponse(w, map[string]any{
-		"metric": metric,
-		"bucket": bucket,
-		"agg":    aggFunc,
-		"points": points,
+	jsonResponse(w, clientapi.MetricDataResponse{
+		Metric: metric,
+		Bucket: bucket,
+		Agg:    aggFunc,
+		Points: points,
 	})
 }
 
@@ -1446,42 +1454,6 @@ func (h *Handler) energyHistory(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// sectionAPIResponse is the JSON-friendly subset of SectionPageData. It
-// drops template-only fields (HTML icons, BasePage chrome) so native
-// clients consume only what they render.
-type sectionAPIResponse struct {
-	Key      string              `json:"key"`
-	Title    string              `json:"title"`
-	Summary  string              `json:"summary"`
-	Details  []sectionAPIDetail  `json:"details"`
-	Charts   []sectionAPIChart   `json:"charts"`
-	Explains []sectionAPIExplain `json:"explains"`
-}
-
-type sectionAPIDetail struct {
-	Label string `json:"label"`
-	Value string `json:"value"`
-	Trend string `json:"trend"`
-	Note  string `json:"note,omitempty"`
-}
-
-type sectionAPIChart struct {
-	Metric    string `json:"metric,omitempty"`
-	Agg       string `json:"agg,omitempty"`
-	Label     string `json:"label"`
-	Unit      string `json:"unit,omitempty"`
-	Color     string `json:"color,omitempty"`
-	ColorDark string `json:"color_dark,omitempty"`
-	Type      string `json:"type,omitempty"`
-	Stacked   bool   `json:"stacked,omitempty"`
-	Virtual   bool   `json:"virtual,omitempty"`
-}
-
-type sectionAPIExplain struct {
-	Title string `json:"title"`
-	Body  string `json:"body"`
-}
-
 // sectionCatalogueEntry is one row in the stable section catalogue
 // returned by GET /api/sections. iOS / other native clients render
 // it as a navigation row; the abstract `Icon` token (e.g. "heart")
@@ -1538,28 +1510,28 @@ func (h *Handler) sectionAPI(w http.ResponseWriter, r *http.Request) {
 	lang := langFromRequest(r)
 	data := h.buildSectionPage(key, lang, h.tenantDB(r))
 
-	out := sectionAPIResponse{
+	out := clientapi.SectionResponse{
 		Key:      data.SectionKey,
 		Title:    data.SectionTitle,
 		Summary:  data.Summary,
-		Details:  []sectionAPIDetail{}, // never nil — clients prefer [] over null
-		Charts:   []sectionAPIChart{},
-		Explains: []sectionAPIExplain{},
+		Details:  []clientapi.SectionDetail{}, // never nil — clients prefer [] over null
+		Charts:   []clientapi.SectionChart{},
+		Explains: []clientapi.SectionExplain{},
 	}
 	for _, d := range data.Details {
-		out.Details = append(out.Details, sectionAPIDetail{
+		out.Details = append(out.Details, clientapi.SectionDetail{
 			Label: d.Label, Value: d.Value, Trend: d.Trend, Note: d.Note,
 		})
 	}
 	for _, c := range data.Charts {
-		out.Charts = append(out.Charts, sectionAPIChart{
+		out.Charts = append(out.Charts, clientapi.SectionChart{
 			Metric: c.Metric, Agg: c.Agg, Label: c.Label, Unit: c.Unit,
 			Color: c.Color, ColorDark: c.ColorDark,
 			Type: c.Type, Stacked: c.Stacked, Virtual: c.Virtual,
 		})
 	}
 	for _, e := range data.Explains {
-		out.Explains = append(out.Explains, sectionAPIExplain{
+		out.Explains = append(out.Explains, clientapi.SectionExplain{
 			Title: e.Title, Body: e.Body,
 		})
 	}
@@ -1602,23 +1574,27 @@ func (h *Handler) healthBriefing(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, resp)
 }
 
-// aiBriefing serves the per-block AI narrative for today. Polled by the web
-// dashboard and the iOS client so a cold cache doesn't block the rest of the
-// UI. Returns blocks + a generating flag so clients can distinguish "cache
-// empty, regen running" from "cache empty, AI disabled".
+// aiBriefing serves the per-block AI narrative. Today retains non-blocking
+// generation; an explicit historical date is cache-only and can never trigger
+// provider work.
 func (h *Handler) aiBriefing(w http.ResponseWriter, r *http.Request) {
 	lang := supportedLang(r.URL.Query().Get("lang"))
 	db := h.tenantDB(r)
 	schema := h.tenantSchema(r)
 	today := db.Today()
+	date, dateErr := resolveAIBriefingDate(r.URL.Query().Get("date"), today)
+	if dateErr != nil {
+		http.Error(w, dateErr.Error(), http.StatusBadRequest)
+		return
+	}
 
 	aiDefaults := h.mgr.AIDefaultsFor(r.Context(), schema)
 	aiCfg := db.GetAIConfig(aiDefaults)
 
-	blocks := db.GetAIBlocks(today, lang)
-	combined := db.GetAIInsightCombined(today, lang)
+	blocks := db.GetAIBlocks(date, lang)
+	combined := db.GetAIInsightCombined(date, lang)
 
-	if combined == "" && aiCfg.Enabled() {
+	if date == today && combined == "" && aiCfg.Enabled() {
 		db.EnsureTodayAIInsightAsync(aiCfg, lang)
 	}
 
@@ -1655,14 +1631,29 @@ func (h *Handler) aiBriefing(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, clientapi.NewAIBriefingResponse(
-		today,
+		date,
 		lang,
 		combined,
 		sections,
 		blocks,
-		db.AIRegenInFlight(lang),
+		date == today && db.AIRegenInFlight(lang),
 		!aiCfg.Enabled(),
 	))
+}
+
+func resolveAIBriefingDate(rawDate, today string) (string, error) {
+	rawDate = strings.TrimSpace(rawDate)
+	if rawDate == "" {
+		return today, nil
+	}
+	parsed, err := time.Parse("2006-01-02", rawDate)
+	if err != nil || parsed.Format("2006-01-02") != rawDate {
+		return "", fmt.Errorf("invalid date: expected YYYY-MM-DD")
+	}
+	if rawDate > today {
+		return "", fmt.Errorf("future date is not allowed")
+	}
+	return rawDate, nil
 }
 
 func (h *Handler) adminStatus(w http.ResponseWriter, r *http.Request) {

@@ -16,10 +16,10 @@ import (
 // regen attempt per polling tick.
 const aiRegenFailBackoff = 5 * time.Minute
 
-// EnsureTodayAIInsight generates one concise SYNTHESIS explanation from a
+// EnsureTodayAIInsight generates one structured five-block briefing from a
 // deterministic, date-aligned evidence packet. The server owns the verdict,
-// reasons, and action; the provider may only explain that decision. Returns
-// the canonical insight string, or "" if AI is disabled / no metrics exist.
+// reasons, sections, and action; the provider may only explain them. Returns
+// the canonical overview string, or "" if AI is disabled / no metrics exist.
 //
 // Safe to call repeatedly — a cached row whose inputs_hash matches the exact
 // evidence plus generation fingerprint skips the provider call.
@@ -34,8 +34,9 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 }
 
 // EnsureTodayAIInsightContext is the cancellation-aware variant used by
-// schedulers and shutdown-aware callers. AI insight v2 makes exactly one
-// provider call for one date-aligned evidence packet and stores SYNTHESIS.
+// schedulers and shutdown-aware callers. AI insight v3 makes exactly one
+// provider call for one date-aligned evidence packet and stores five aligned
+// rows under their existing compatibility keys.
 func (s *DB) EnsureTodayAIInsightContext(ctx context.Context, aiCfg AIConfig, lang string) string {
 	if !aiCfg.Enabled() {
 		return ""
@@ -101,36 +102,53 @@ func (s *DB) EnsureTodayAIInsightContext(ctx context.Context, aiCfg AIConfig, la
 		log.Printf("EnsureTodayAIInsight: marshal evidence: %v", err)
 		return ""
 	}
-	synthesisHash := ai.HashForGeneration(ai.HashSynthesis(evidence), fingerprint)
-	cached := s.GetAIBlock(today, lang, ai.BlockSynthesis)
-	if cached != nil && cached.InputsHash == synthesisHash && strings.TrimSpace(cached.Text) != "" {
+	bundleHash := ai.HashForGeneration(ai.HashInsightBundle(evidence), fingerprint)
+	if aiBundleCacheComplete(s.GetAIBlocksFull(today, lang), bundleHash) {
 		s.aiRegenLastFailAt.Delete(failureKey)
 		return s.GetAIInsightCombined(today, lang)
 	}
 
-	generated, err := ai.GenerateSynthesis(ctx, provider, providerCfg, evidenceJSON, lang)
+	generated, err := ai.GenerateInsightBundle(ctx, provider, providerCfg, evidenceJSON, lang)
 	log.Printf(
-		"EnsureTodayAIInsight: provider=%s model=%s block=%s request_id=%q attempts=%d latency=%s input_tokens=%d output_tokens=%d total_tokens=%d finish=%q",
-		aiCfg.Provider, active.Model, ai.BlockSynthesis, generated.RequestID, generated.Attempts,
+		"EnsureTodayAIInsight: provider=%s model=%s block=BUNDLE request_id=%q attempts=%d latency=%s input_tokens=%d output_tokens=%d total_tokens=%d finish=%q",
+		aiCfg.Provider, active.Model, generated.RequestID, generated.Attempts,
 		generated.Latency, generated.InputTokens, generated.OutputTokens, generated.TotalTokens, generated.FinishReason,
 	)
 	if err != nil {
-		log.Printf("EnsureTodayAIInsight: provider=%s block=%s: %v", aiCfg.Provider, ai.BlockSynthesis, err)
+		log.Printf("EnsureTodayAIInsight: provider=%s block=BUNDLE: %v", aiCfg.Provider, err)
 		s.aiRegenLastFailAt.Store(failureKey, time.Now())
 		return s.GetAIInsightCombined(today, lang)
 	}
-	if strings.TrimSpace(generated.Text) == "" {
-		log.Printf("EnsureTodayAIInsight: provider=%s block=%s returned empty content, not caching", aiCfg.Provider, ai.BlockSynthesis)
-		s.aiRegenLastFailAt.Store(failureKey, time.Now())
-		return s.GetAIInsightCombined(today, lang)
+	for block, validationError := range generated.InvalidBlocks {
+		log.Printf("EnsureTodayAIInsight: provider=%s block=%s validation: %s", aiCfg.Provider, block, validationError)
 	}
-	if err := s.SaveAIBlock(today, lang, ai.BlockSynthesis, generated.Text, synthesisHash); err != nil {
-		log.Printf("EnsureTodayAIInsight: save %s: %v", ai.BlockSynthesis, err)
+	saveFailed := false
+	for _, block := range ai.GeneratedBlockOrder {
+		text := generated.Blocks[block]
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		if err := s.SaveAIBlock(today, lang, block, text, bundleHash); err != nil {
+			log.Printf("EnsureTodayAIInsight: save %s: %v", block, err)
+			saveFailed = true
+		}
+	}
+	if saveFailed || len(generated.InvalidBlocks) > 0 {
 		s.aiRegenLastFailAt.Store(failureKey, time.Now())
 		return s.GetAIInsightCombined(today, lang)
 	}
 	s.aiRegenLastFailAt.Delete(failureKey)
 	return s.GetAIInsightCombined(today, lang)
+}
+
+func aiBundleCacheComplete(full map[string]*AIBlock, expectedHash string) bool {
+	for _, block := range ai.GeneratedBlockOrder {
+		cached := full[block]
+		if cached == nil || cached.InputsHash != expectedHash || strings.TrimSpace(cached.Text) == "" {
+			return false
+		}
+	}
+	return true
 }
 
 // EnsureTodayAIInsightAsync fires EnsureTodayAIInsight in a goroutine.

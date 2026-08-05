@@ -54,9 +54,9 @@ func NewAIBriefingResponse(
 	disabled bool,
 ) AIBriefingResponse {
 	summary := blocks["SYNTHESIS"]
-	recommendation := summary
+	recommendation := blocks["RECOMMENDATION"]
 	if recommendation == "" {
-		recommendation = blocks["RECOMMENDATION"]
+		recommendation = summary
 	}
 	return AIBriefingResponse{
 		Date:       date,

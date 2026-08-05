@@ -1236,6 +1236,12 @@
             ],
             "type": "object"
           },
+          "sleep_regularity_index": {
+            "type": "number"
+          },
+          "sleep_regularity_nights": {
+            "type": "integer"
+          },
           "subjective_checkin": {
             "additionalProperties": false,
             "properties": {
@@ -1307,6 +1313,108 @@
         ],
         "type": "object"
       },
+      "MetricDataResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "agg": {
+            "type": "string"
+          },
+          "bucket": {
+            "type": "string"
+          },
+          "by_source": {
+            "type": "boolean"
+          },
+          "metric": {
+            "type": "string"
+          },
+          "points": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "date": {
+                  "type": "string"
+                },
+                "max": {
+                  "type": "number"
+                },
+                "min": {
+                  "type": "number"
+                },
+                "qty": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "date",
+                "qty",
+                "min",
+                "max"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "points_by_source": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "points": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "date": {
+                        "type": "string"
+                      },
+                      "max": {
+                        "type": "number"
+                      },
+                      "min": {
+                        "type": "number"
+                      },
+                      "qty": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "date",
+                      "qty",
+                      "min",
+                      "max"
+                    ],
+                    "type": "object"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "source": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "source",
+                "points"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "metric",
+          "bucket",
+          "agg"
+        ],
+        "type": "object"
+      },
       "ReadinessHistoryResponse": {
         "additionalProperties": false,
         "properties": {
@@ -1343,6 +1451,122 @@
         },
         "required": [
           "points"
+        ],
+        "type": "object"
+      },
+      "SectionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "charts": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "agg": {
+                  "type": "string"
+                },
+                "color": {
+                  "type": "string"
+                },
+                "color_dark": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "metric": {
+                  "type": "string"
+                },
+                "stacked": {
+                  "type": "boolean"
+                },
+                "type": {
+                  "type": "string"
+                },
+                "unit": {
+                  "type": "string"
+                },
+                "virtual": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "label"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "details": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "note": {
+                  "type": "string"
+                },
+                "trend": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "label",
+                "value",
+                "trend"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "explains": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "body": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "title",
+                "body"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "key": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "title",
+          "summary",
+          "details",
+          "charts",
+          "explains"
         ],
         "type": "object"
       },
@@ -1397,6 +1621,17 @@
                 "ru",
                 "sr"
               ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Optional historical date. Past dates are cache-only and never trigger AI generation.",
+            "in": "query",
+            "name": "date",
+            "required": false,
+            "schema": {
+              "format": "date",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           }
@@ -1762,6 +1997,130 @@
         "summary": "Rich current-day health briefing"
       }
     },
+    "/api/metrics/data": {
+      "get": {
+        "operationId": "getMetricData",
+        "parameters": [
+          {
+            "description": "Canonical metric name.",
+            "in": "query",
+            "name": "metric",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Start date in YYYY-MM-DD.",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "format": "date",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "End date in YYYY-MM-DD.",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "format": "date",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Unsupported values are ignored and the server falls back to the documented default.",
+            "in": "query",
+            "name": "bucket",
+            "required": false,
+            "schema": {
+              "default": "day",
+              "enum": [
+                "minute",
+                "hour",
+                "day"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Unsupported values are ignored and the server falls back to the documented default.",
+            "in": "query",
+            "name": "agg",
+            "required": false,
+            "schema": {
+              "default": "AVG",
+              "enum": [
+                "AVG",
+                "SUM",
+                "MAX",
+                "MIN"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Unsupported values are ignored and the server falls back to the documented default.",
+            "in": "query",
+            "name": "by_source",
+            "required": false,
+            "schema": {
+              "default": "0",
+              "enum": [
+                "0",
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricDataResponse"
+                }
+              }
+            },
+            "description": "Successful tenant-scoped response."
+          },
+          "302": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Browser authentication or initial setup is required; Location identifies the interactive route.",
+            "headers": {
+              "Location": {
+                "description": "Interactive login or setup route.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The backend could not load or encode the tenant response."
+          }
+        },
+        "summary": "Time-bucketed metric history"
+      }
+    },
     "/api/readiness-history": {
       "get": {
         "operationId": "getReadinessHistory",
@@ -1819,6 +2178,84 @@
           }
         },
         "summary": "Readiness score history"
+      }
+    },
+    "/api/section/{key}": {
+      "get": {
+        "operationId": "getSection",
+        "parameters": [
+          {
+            "description": "Section key.",
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "enum": [
+                "sleep",
+                "cardio",
+                "activity",
+                "recovery"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Unsupported values are ignored and the server falls back to the documented default.",
+            "in": "query",
+            "name": "lang",
+            "required": false,
+            "schema": {
+              "default": "en",
+              "enum": [
+                "en",
+                "ru",
+                "sr"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SectionResponse"
+                }
+              }
+            },
+            "description": "Successful tenant-scoped response."
+          },
+          "302": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Browser authentication or initial setup is required; Location identifies the interactive route.",
+            "headers": {
+              "Location": {
+                "description": "Interactive login or setup route.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The backend could not load or encode the tenant response."
+          }
+        },
+        "summary": "Localized rule-based detail section"
       }
     },
     "/api/session": {

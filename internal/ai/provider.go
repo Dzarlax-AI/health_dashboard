@@ -13,8 +13,8 @@ const (
 	ProviderOpenAI = "openai"
 
 	DefaultMaxOutputTokens = 5000
-	PromptRevision         = "health-briefing-v2"
-	SynthesisMaxTokens     = 600
+	PromptRevision         = "health-briefing-v3"
+	SynthesisMaxTokens     = 1400
 )
 
 // Model describes a model exposed by an AI provider.
