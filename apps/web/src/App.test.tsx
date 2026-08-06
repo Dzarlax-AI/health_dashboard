@@ -96,4 +96,16 @@ describe("foundation fixtures", () => {
     expect(document.querySelector("[data-locale]")).toHaveAttribute("data-locale", "en");
     expect(document.documentElement).toHaveAttribute("lang", "en");
   });
+
+  it.each([
+    ["/activity", "Activity"],
+    ["/cardio", "Heart & breathing"],
+    ["/recovery", "Recovery"],
+  ])("routes %s to its React detail page", (path, title) => {
+    vi.stubEnv("VITE_ENABLE_FIXTURES", "true");
+    window.history.replaceState({}, "", `${path}?lang=en&fixture=normal`);
+    render(<App />);
+
+    expect(screen.getByRole("heading", { level: 1, name: title })).toBeInTheDocument();
+  });
 });

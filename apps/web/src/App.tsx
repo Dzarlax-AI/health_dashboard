@@ -10,6 +10,8 @@ import { shouldPollAI } from "./features/dashboard/aiPolling";
 import { loadDashboardResources, type DashboardResources } from "./features/dashboard/loader";
 import { buildDashboardViewModel } from "./features/dashboard/model";
 import { ScoreSummaryCard } from "./features/dashboard/ScoreSummaryCard";
+import { resolveHealthSection } from "./features/health-detail/config";
+import { HealthDetailPage } from "./features/health-detail/HealthDetailPage";
 import { SleepPage } from "./features/sleep/SleepPage";
 import { resolveLocale, translate, type Locale } from "./i18n";
 
@@ -210,5 +212,7 @@ function DashboardApp() {
 }
 
 export function App() {
-  return window.location.pathname === "/sleep" ? <SleepPage /> : <DashboardApp />;
+  if (window.location.pathname === "/sleep") return <SleepPage />;
+  const healthSection = resolveHealthSection(window.location.pathname);
+  return healthSection ? <HealthDetailPage config={healthSection} /> : <DashboardApp />;
 }

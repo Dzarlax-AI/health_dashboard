@@ -1,7 +1,7 @@
 import createClient from "openapi-fetch";
 
 import type { Locale } from "../i18n";
-import type { components, paths } from "./generated/schema";
+import type { components, operations, paths } from "./generated/schema";
 
 export type DashboardResponse = components["schemas"]["DashboardResponse"];
 export type HealthBriefingResponse = components["schemas"]["HealthBriefingResponse"];
@@ -14,6 +14,14 @@ export type SectionResponse = components["schemas"]["SectionResponse"];
 export type EnergyHistoryDayResponse =
   components["schemas"]["EnergyHistoryDayResponse"];
 export type SessionResponse = components["schemas"]["SessionResponse"];
+
+type MetricDataQuery = operations["getMetricData"]["parameters"]["query"];
+
+export interface MetricDataOptions {
+  agg?: MetricDataQuery["agg"];
+  bucket?: MetricDataQuery["bucket"];
+  bySource?: boolean;
+}
 
 export class ClientApiError extends Error {
   readonly status: number;
@@ -94,6 +102,7 @@ export async function getMetricData(
   from: string,
   to: string,
   signal?: AbortSignal,
+  options: MetricDataOptions = {},
 ): Promise<MetricDataResponse> {
   const { data, error, response } = await client.GET("/api/metrics/data", {
     params: {
@@ -101,9 +110,9 @@ export async function getMetricData(
         metric,
         from,
         to,
-        bucket: "day",
-        agg: "AVG",
-        by_source: "0",
+        bucket: options.bucket ?? "day",
+        agg: options.agg ?? "AVG",
+        by_source: options.bySource ? "1" : "0",
       },
     },
     signal,
