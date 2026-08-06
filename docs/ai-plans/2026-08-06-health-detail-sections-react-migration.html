@@ -223,13 +223,15 @@
       <li>Hero, context, KPI, графики, period picker и раскрывающиеся explainers переиспользуются всеми тремя маршрутами. Главный показатель не дублируется в KPI.</li>
       <li>Добавлены normal/partial/empty fixtures, RU/EN/SR, line/bar charts и явные missing-состояния без подстановки нулей.</li>
       <li>Production canary/cutover rules расширены тремя маршрутами; legacy handlers сохранены для rollback.</li>
+      <li>После review добавлены polling cold AI cache для Recovery, корректная поддержка readiness=0, нормализация production-лейблов VO₂, own-property route guard и защита расчётов от нечисловых значений.</li>
+      <li>Metric query options теперь выводятся из generated OpenAPI operation type; fixture resources и форматтер дат мемоизированы, KPI-grid адаптируется к числу карточек.</li>
     </ul>
   </section>
 
   <section>
     <h2>13. Фактические проверки</h2>
     <ul class="checklist">
-      <li><code>pnpm --dir apps/web check</code> — passed: contract, typecheck, ESLint, 19 test files / 90 tests, production build.</li>
+      <li><code>pnpm --dir apps/web check</code> — passed после review: contract, typecheck, ESLint, 19 test files / 100 tests, production build.</li>
       <li><code>pnpm --dir apps/web exec playwright test tests/visual/health-detail.spec.ts --workers=1</code> — passed: 4/4 сценария.</li>
       <li><code>go test ./internal/api ./internal/ui -count=1</code> — passed.</li>
       <li><code>bash scripts/test-production-routing-config.sh</code> — passed для canary, cutover и rollback.</li>

@@ -120,4 +120,28 @@ describe("health detail resource loader", () => {
       ),
     ).rejects.toMatchObject({ name: "AbortError" });
   });
+
+  it("uses a local-calendar 90-day fallback when metric ranges are unavailable", async () => {
+    const testLoaders = loaders({
+      key: "activity",
+      title: "Activity",
+      summary: "",
+      details: [],
+      explains: [],
+      charts: [],
+    });
+    testLoaders.briefing = vi.fn(async () => ({
+      date: "2026-01-01",
+    }) as HealthBriefingResponse);
+
+    const result = await loadHealthDetailResources(
+      healthSectionConfigs.activity,
+      "en",
+      undefined,
+      testLoaders,
+    );
+
+    expect(result.from).toBe("2025-10-04");
+    expect(result.to).toBe("2026-01-01");
+  });
 });

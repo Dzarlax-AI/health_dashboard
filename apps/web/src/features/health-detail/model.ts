@@ -42,19 +42,23 @@ function briefingSection(
 }
 
 function latestPoint(response?: MetricDataResponse) {
-  return response?.points?.reduce<(NonNullable<MetricDataResponse["points"]>[number]) | undefined>(
+  return response?.points?.filter((point) => Number.isFinite(point.qty)).reduce<
+    (NonNullable<MetricDataResponse["points"]>[number]) | undefined
+  >(
     (latest, point) => (!latest || point.date > latest.date ? point : latest),
     undefined,
   );
 }
 
 function activityComparison(response?: MetricDataResponse): number | undefined {
-  const points = [...(response?.points ?? [])].sort((a, b) => b.date.localeCompare(a.date));
+  const points = (response?.points ?? [])
+    .filter((point) => Number.isFinite(point.qty))
+    .sort((a, b) => b.date.localeCompare(a.date));
   if (points.length < 8) return undefined;
   const current = points[0].qty;
   const baseline = points.slice(1, 31).reduce((sum, point) => sum + point.qty, 0) /
     Math.min(points.length - 1, 30);
-  if (baseline <= 0) return undefined;
+  if (!Number.isFinite(baseline) || baseline <= 0) return undefined;
   return Math.max(0, Math.round((current / baseline) * 100));
 }
 
@@ -62,11 +66,19 @@ function recoveryInsight(resources: HealthDetailResources): string {
   return resources.ai?.blocks?.RECOVERY || resources.ai?.recovery || "";
 }
 
-function trendPoints(response?: MetricDataResponse) {
-  return (response?.points ?? [])
-    .map((point) => ({ date: point.date.slice(0, 10), value: point.qty }))
+function normalizedTrendPoints(points: { date: string; value: number }[]) {
+  return [...points]
     .filter((point) => point.date && Number.isFinite(point.value))
     .sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function trendPoints(response?: MetricDataResponse) {
+  return normalizedTrendPoints(
+    (response?.points ?? []).map((point) => ({
+      date: point.date.slice(0, 10),
+      value: point.qty,
+    })),
+  );
 }
 
 export function buildHealthDetailModel(
@@ -78,27 +90,26 @@ export function buildHealthDetailModel(
   const primary = config.primaryMetric
     ? latestPoint(resources.metrics[config.primaryMetric])
     : undefined;
-  const recoveryScore =
-    resources.briefing.readiness_today ||
-    resources.briefing.readiness_display_score ||
-    resources.briefing.readiness_score;
+  const recoveryScore = resources.briefing.readiness_today;
   const activityRatio = activityComparison(resources.metrics.step_count);
   let heroValue = "—";
   if (config.key === "activity" && primary) {
     heroValue = localeNumber(locale, primary.qty);
   } else if (config.key === "cardio" && primary) {
     heroValue = localeNumber(locale, primary.qty, 1);
-  } else if (config.key === "recovery" && recoveryScore > 0) {
+  } else if (config.key === "recovery" && Number.isFinite(recoveryScore)) {
     heroValue = `${localeNumber(locale, recoveryScore)}%`;
   }
 
   const ai = config.context === "recovery-ai" ? recoveryInsight(resources) : "";
   const chartTrends = (resources.section?.charts ?? []).flatMap<HealthTrend>((chart) => {
     if (chart.virtual) {
-      const points = (resources.readiness?.points ?? []).map((point) => ({
-        date: point.date.slice(0, 10),
-        value: point.score,
-      }));
+      const points = normalizedTrendPoints(
+        (resources.readiness?.points ?? []).map((point) => ({
+          date: point.date.slice(0, 10),
+          value: point.score,
+        })),
+      );
       return points.length
         ? [{
             key: "readiness",
@@ -133,7 +144,7 @@ export function buildHealthDetailModel(
     heroProgress:
       config.key === "activity"
         ? activityRatio === undefined ? undefined : Math.min(100, activityRatio)
-        : config.key === "recovery" && recoveryScore > 0
+        : config.key === "recovery" && Number.isFinite(recoveryScore)
           ? Math.max(0, Math.min(100, recoveryScore))
           : undefined,
     heroComparison: config.key === "activity" ? activityRatio : undefined,

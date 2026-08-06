@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
-import { ClientApiError } from "../../api/client";
+import { ClientApiError, getAIBriefing } from "../../api/client";
 import { AppHeader } from "../../components/AppHeader";
 import { LazyTrendChart } from "../../components/charts/LazyTrendChart";
 import { StatusPanel } from "../../components/StatusPanel";
 import { resolveLocale, translate, type Locale } from "../../i18n";
+import { shouldPollAI } from "../dashboard/aiPolling";
 import type { HealthSectionConfig } from "./config";
 import {
   healthDetailFixtureNames,
@@ -40,6 +41,25 @@ function heroLabel(config: HealthSectionConfig, locale: Locale): string {
   return translate(locale, "readiness");
 }
 
+function normalizedMetricLabel(value: string, locale: Locale): string {
+  return value
+    .normalize("NFKD")
+    .replaceAll("₂", "2")
+    .toLocaleLowerCase(locale)
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}
+
+function isHeroDetail(
+  label: string,
+  config: HealthSectionConfig,
+  locale: Locale,
+): boolean {
+  const normalized = normalizedMetricLabel(label, locale);
+  if (config.key === "cardio") return normalized.includes("vo2");
+  return normalized === normalizedMetricLabel(heroLabel(config, locale), locale);
+}
+
 function HeroGauge({
   model,
   config,
@@ -72,9 +92,8 @@ function DetailStrip({
   config: HealthSectionConfig;
   locale: Locale;
 }) {
-  const primaryLabel = heroLabel(config, locale).toLocaleLowerCase(locale);
   const details = (model.details ?? []).filter(
-    (detail) => detail.label.toLocaleLowerCase(locale) !== primaryLabel,
+    (detail) => !isHeroDetail(detail.label, config, locale),
   );
   if (!details.length) return null;
   return (
@@ -101,6 +120,11 @@ function HistorySection({
   range: HistoryRange;
   setRange: (range: HistoryRange) => void;
 }) {
+  const pointFormat = useMemo(
+    () => new Intl.DateTimeFormat(locale, { day: "numeric", month: "short" }),
+    [locale],
+  );
+
   return (
     <section className="health-detail-section surface">
       <header className="health-detail-section__header">
@@ -135,7 +159,7 @@ function HistorySection({
                 <LazyTrendChart
                   ariaLabel={trend.label}
                   data={points.map((point) => ({
-                    label: new Intl.DateTimeFormat(locale, { day: "numeric", month: "short" }).format(new Date(`${point.date}T12:00:00`)),
+                    label: pointFormat.format(new Date(`${point.date}T12:00:00`)),
                     value: point.value,
                   }))}
                   tone={trend.key === "readiness" ? "readiness" : "energy"}
@@ -172,7 +196,7 @@ export function HealthDetailReady({
   const [range, setRange] = useState<HistoryRange>(30);
 
   return (
-    <main className="health-detail-page" data-section={config.accent}>
+    <main className="health-detail-page" data-section={config.key}>
       <section className="health-detail-hero">
         <div className="health-detail-hero__heading">
           <a className="health-detail-back" href={`/?lang=${locale}`} aria-label={translate(locale, "healthDetailBack")}>←</a>
@@ -231,14 +255,19 @@ export function HealthDetailPage({ config }: { config: HealthSectionConfig }) {
   const fixture = fixtureEnabled ? resolveHealthDetailFixture(params.get("fixture")) : undefined;
   const [reloadKey, setReloadKey] = useState(0);
   const [liveState, setLiveState] = useState<HealthDetailState>({ status: "loading" });
-  const fixtureState: HealthDetailState | undefined = fixture
-    ? { status: "ready", resources: healthDetailFixtureResources(config, locale, fixture) }
-    : undefined;
+  const aiPollAttempts = useRef(0);
+  const fixtureState = useMemo<HealthDetailState | undefined>(
+    () => fixture
+      ? { status: "ready", resources: healthDetailFixtureResources(config, locale, fixture) }
+      : undefined,
+    [config, fixture, locale],
+  );
   const state = fixtureState ?? liveState;
 
   useEffect(() => {
     document.documentElement.lang = locale;
-  }, [locale]);
+    aiPollAttempts.current = 0;
+  }, [config.key, locale]);
 
   useEffect(() => {
     if (fixture) return;
@@ -258,6 +287,41 @@ export function HealthDetailPage({ config }: { config: HealthSectionConfig }) {
       });
     return () => controller.abort();
   }, [config, fixture, locale, reloadKey]);
+
+  useEffect(() => {
+    if (
+      fixture ||
+      config.key !== "recovery" ||
+      state.status !== "ready" ||
+      !shouldPollAI(state.resources.ai, aiPollAttempts.current)
+    ) {
+      return;
+    }
+    let timer: number | undefined;
+    const controller = new AbortController();
+    const schedule = () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      timer = document.visibilityState === "visible"
+        ? window.setTimeout(() => {
+            aiPollAttempts.current += 1;
+            getAIBriefing(locale, controller.signal)
+              .then((ai) => setLiveState((current) =>
+                current.status === "ready"
+                  ? { ...current, resources: { ...current.resources, ai } }
+                  : current,
+              ))
+              .catch(() => undefined);
+          }, 60_000)
+        : undefined;
+    };
+    schedule();
+    document.addEventListener("visibilitychange", schedule);
+    return () => {
+      document.removeEventListener("visibilitychange", schedule);
+      controller.abort();
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [config.key, fixture, locale, state]);
 
   return (
     <div className="app-shell health-detail-shell">

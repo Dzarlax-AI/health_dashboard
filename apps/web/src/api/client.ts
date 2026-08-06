@@ -1,7 +1,7 @@
 import createClient from "openapi-fetch";
 
 import type { Locale } from "../i18n";
-import type { components, paths } from "./generated/schema";
+import type { components, operations, paths } from "./generated/schema";
 
 export type DashboardResponse = components["schemas"]["DashboardResponse"];
 export type HealthBriefingResponse = components["schemas"]["HealthBriefingResponse"];
@@ -15,9 +15,11 @@ export type EnergyHistoryDayResponse =
   components["schemas"]["EnergyHistoryDayResponse"];
 export type SessionResponse = components["schemas"]["SessionResponse"];
 
+type MetricDataQuery = operations["getMetricData"]["parameters"]["query"];
+
 export interface MetricDataOptions {
-  agg?: "AVG" | "SUM" | "MIN" | "MAX";
-  bucket?: "minute" | "hour" | "day";
+  agg?: MetricDataQuery["agg"];
+  bucket?: MetricDataQuery["bucket"];
   bySource?: boolean;
 }
 

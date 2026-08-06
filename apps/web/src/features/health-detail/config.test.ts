@@ -14,4 +14,9 @@ describe("health detail route config", () => {
     expect(resolveHealthSection("/metrics")).toBeUndefined();
     expect(resolveHealthSection("/settings")).toBeUndefined();
   });
+
+  it("does not resolve inherited object properties as routes", () => {
+    expect(resolveHealthSection("/constructor")).toBeUndefined();
+    expect(resolveHealthSection("/toString")).toBeUndefined();
+  });
 });

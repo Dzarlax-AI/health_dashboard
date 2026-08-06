@@ -57,7 +57,9 @@ function dateOnly(value: string): string | undefined {
 function dateOffset(date: string, days: number): string {
   const value = new Date(`${date}T12:00:00`);
   value.setDate(value.getDate() + days);
-  return value.toISOString().slice(0, 10);
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${value.getFullYear()}-${month}-${day}`;
 }
 
 function fulfilled<T>(result?: PromiseSettledResult<T>): T | undefined {
