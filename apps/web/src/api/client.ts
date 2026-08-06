@@ -15,6 +15,12 @@ export type EnergyHistoryDayResponse =
   components["schemas"]["EnergyHistoryDayResponse"];
 export type SessionResponse = components["schemas"]["SessionResponse"];
 
+export interface MetricDataOptions {
+  agg?: "AVG" | "SUM" | "MIN" | "MAX";
+  bucket?: "minute" | "hour" | "day";
+  bySource?: boolean;
+}
+
 export class ClientApiError extends Error {
   readonly status: number;
   readonly retryable: boolean;
@@ -94,6 +100,7 @@ export async function getMetricData(
   from: string,
   to: string,
   signal?: AbortSignal,
+  options: MetricDataOptions = {},
 ): Promise<MetricDataResponse> {
   const { data, error, response } = await client.GET("/api/metrics/data", {
     params: {
@@ -101,9 +108,9 @@ export async function getMetricData(
         metric,
         from,
         to,
-        bucket: "day",
-        agg: "AVG",
-        by_source: "0",
+        bucket: options.bucket ?? "day",
+        agg: options.agg ?? "AVG",
+        by_source: options.bySource ? "1" : "0",
       },
     },
     signal,
