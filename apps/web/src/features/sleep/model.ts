@@ -69,7 +69,7 @@ export function sleepComposition(day: SleepDay): SleepComposition {
     unspecified: resolvedUnspecified,
     awake,
     asleep,
-    inBed: target + awake,
+    inBed: Math.max(target, asleep) + awake,
     coverage,
   };
 }

@@ -276,7 +276,7 @@ var en = LangStrings{
 	"tg_today":             "Today so far",
 	"tg_morning_today":     "Today",
 	"tg_morning_metrics":   "At a glance",
-	"tg_sleep_average":     "30-day average",
+	"tg_sleep_average":     "average of up to 7 nights",
 	"tg_morning_why":       "Why",
 	"tg_morning_updated":   "Updated",
 	"tg_source_watch":      "Watch",

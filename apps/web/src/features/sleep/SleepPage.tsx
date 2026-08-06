@@ -67,6 +67,7 @@ function NightColumn({
     <button
       className={`sleep-history__night${selected ? " is-selected" : ""}`}
       type="button"
+      aria-pressed={selected}
       aria-label={`${label}: ${hours(day.total, locale)}`}
       onClick={onSelect}
     >

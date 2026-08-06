@@ -66,7 +66,7 @@
 </head>
 <body>
 <main>
-  <span class="badge">Implemented · verification complete</span>
+  <span class="badge">Implemented · tenant QA pending</span>
   <h1>Достоверный сон: последняя ночь, честная история и понятное утро</h1>
   <p class="lead">
     Реализовать утверждённый <a href="2026-08-06-sleep-detail-v2-mockup.html">HTML-мокап</a>,
@@ -92,7 +92,7 @@
       <div class="decision"><strong>Качество ≠ confidence</strong><span>27 минут глубокого сна — измеренный результат. Он снижает оценку структуры, но сам по себе не делает данные ненадёжными.</span></div>
       <div class="decision"><strong>Total — высота, фазы — цвет</strong><span>Исторический график сравнивает длительность по общей шкале 0–10 часов и состав внутри каждой ночи.</span></div>
       <div class="decision"><strong>Неизвестное показываем явно</strong><span>Непокрытая часть total становится «сон без разбивки по фазам», а не пустым местом или core 100%.</span></div>
-      <div class="decision"><strong>Последняя ночь — главный объект</strong><span>Hero показывает фактические 7 ч 55 мин, время в постели, сон/пробуждение, пять фаз и сохранённый sleep insight.</span></div>
+      <div class="decision"><strong>Последняя ночь — главный объект</strong><span>Hero показывает фактические 7 ч 55 мин, время в постели, начало интервала в постели/пробуждение, пять фаз и сохранённый sleep insight.</span></div>
       <div class="decision"><strong>Telegram использует ту же ночь</strong><span>В компактной метрике сна показывается latest total; rolling average остаётся только там, где он явно подписан как среднее.</span></div>
       <div class="decision"><strong>Без псевдоточного sleep debt</strong><span>Запас сна не добавляется, пока нет собственной модели персональной потребности.</span></div>
     </div>
@@ -159,7 +159,7 @@
   <section>
     <h2>7. Manual QA</h2>
     <ul>
-      <li>Сегодняшняя ночь: score, 7 ч 55 мин, 8 ч 7 мин, 23:51 → 07:59 и фазы читаются без прокрутки на телефоне.</li>
+      <li>Сегодняшняя ночь: score, 7 ч 55 мин, 8 ч 7 мин, начало интервала в постели 23:51, пробуждение 07:59 и фазы читаются без прокрутки на телефоне.</li>
       <li>История: высота ночей сравнима по одной шкале; 7/30/90/Всё меняют период; клик/тап обновляет выбранную ночь.</li>
       <li>15 июля: нет core 100%; серый сегмент подписан как сон без фаз; частичное покрытие не маскируется.</li>
       <li>Light/dark: контраст подписей, target band и пяти цветов фаз остаётся достаточным.</li>
@@ -210,9 +210,9 @@
     <ul>
       <li>Same-night sleep с низкой долей deep больше не помечается как ненадёжный capture: физиология влияет на score, но не подменяет confidence.</li>
       <li><code>SleepAnalysis</code> получил additive поля <code>latest_total</code> и <code>latest_date</code>; OpenAPI и TypeScript-клиент обновлены.</li>
-      <li>Plain и Rich Telegram используют последнюю ночь. При отсутствии latest rolling value явно подписывается как среднее за 30 дней.</li>
+      <li>Plain и Rich Telegram используют последнюю ночь. При отсутствии latest rolling value явно подписывается как среднее максимум за 7 последних ночей.</li>
       <li>AI synthesis не выводится, если дословно повторяет verdict reason, action или один из rule-based reasons.</li>
-      <li>Rich Telegram получил нативную иерархию Bot API: verdict в <code>aside</code>, компактную таблицу метрик, раскрываемый AI-insight и freshness в <code>footer</code>.</li>
+      <li>Rich Telegram получил нативную иерархию Bot API: verdict в <code>aside</code>, линейный блок метрик, один раскрываемый AI-insight и freshness в <code>footer</code>.</li>
       <li>Frontend reconciliation различает <code>complete</code>, <code>partial</code> и <code>coarse</code>; неизвестный интервал всегда показан явно.</li>
       <li>История заменена вертикальной визуализацией на общей шкале 0–10 часов с target band; высота показывает длительность, цвет — состав, awake вынесен отдельным сегментом.</li>
       <li>Скилл <code>telegram-send</code> расширен режимами <code>--rich-html</code> и <code>--rich-html-file</code> для настоящего Telegram <code>sendRichMessage</code>.</li>
@@ -223,8 +223,10 @@
     <h2>12. Выполненные проверки</h2>
     <ul>
       <li class="ok"><code>go test ./... -count=1</code> — пройден полностью.</li>
-      <li class="ok"><code>pnpm check</code> — contract check, TypeScript, ESLint, 71 тест и production Vite build пройдены.</li>
+      <li class="ok"><code>pnpm check</code> — contract check, TypeScript, ESLint, 72 теста и production Vite build пройдены.</li>
       <li class="ok"><code>make contract-check</code> — OpenAPI current и обратно совместим с baseline.</li>
+      <li class="ok"><code>make contract-generate</code> — канонический OpenAPI перегенерирован из Go transport types; SHA-256 до и после совпал.</li>
+      <li class="ok"><code>go vet ./...</code> — пройден полностью.</li>
       <li class="ok">Мобильный dark fixture 390×844 проверен скриншотом: hero, coverage callout, пять фаз, единая шкала и вертикальная history читаются.</li>
       <li class="ok">Установленный <code>telegram-send</code>: 2 офлайн-теста Rich Message payload/Unicode пройдены.</li>
       <li class="ok">Финальный Rich Message preview доставлен в Telegram как сообщение №11 и проверен в реальном клиенте.</li>

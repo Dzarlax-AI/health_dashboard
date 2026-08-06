@@ -938,6 +938,12 @@ textarea {
 }
 
 .sleep-page {
+  --sleep-phase-deep: #4633bb;
+  --sleep-phase-rem: #7868ec;
+  --sleep-phase-core: #9eb8ff;
+  --sleep-phase-unspecified: #c9d5ee;
+  --sleep-phase-awake: #f0b86e;
+
   width: min(100% - 48px, 1080px);
   margin-inline: auto;
   padding: var(--space-5) 0 var(--space-10);
@@ -1177,11 +1183,11 @@ textarea {
 }
 
 .sleep-coverage--coarse {
-  border-left: 3px solid #c9d5ee;
+  border-left: 3px solid var(--sleep-phase-unspecified);
 }
 
 .sleep-coverage--partial {
-  border-left: 3px solid #9eb8ff;
+  border-left: 3px solid var(--sleep-phase-core);
 }
 
 .sleep-phase-breakdown__label {
@@ -1223,15 +1229,15 @@ textarea {
 }
 
 .sleep-phase-dot--deep,
-.sleep-phase-bar__segment--deep { background: #4633bb; }
+.sleep-phase-bar__segment--deep { background: var(--sleep-phase-deep); }
 .sleep-phase-dot--rem,
-.sleep-phase-bar__segment--rem { background: #7868ec; }
+.sleep-phase-bar__segment--rem { background: var(--sleep-phase-rem); }
 .sleep-phase-dot--core,
-.sleep-phase-bar__segment--core { background: #9eb8ff; }
+.sleep-phase-bar__segment--core { background: var(--sleep-phase-core); }
 .sleep-phase-dot--unspecified,
-.sleep-phase-bar__segment--unspecified { background: #c9d5ee; }
+.sleep-phase-bar__segment--unspecified { background: var(--sleep-phase-unspecified); }
 .sleep-phase-dot--awake,
-.sleep-phase-bar__segment--awake { background: #f0b86e; }
+.sleep-phase-bar__segment--awake { background: var(--sleep-phase-awake); }
 
 .sleep-range {
   display: flex;
@@ -1303,10 +1309,12 @@ textarea {
     repeating-linear-gradient(
       to bottom,
       transparent 0,
-      transparent calc(20% - 1px),
-      color-mix(in srgb, var(--border) 62%, transparent) calc(20% - 1px),
-      color-mix(in srgb, var(--border) 62%, transparent) 20%
+      transparent calc(47.2px - 1px),
+      color-mix(in srgb, var(--border) 62%, transparent) calc(47.2px - 1px),
+      color-mix(in srgb, var(--border) 62%, transparent) 47.2px
     );
+  background-repeat: no-repeat;
+  background-size: 100% 236px;
 }
 
 .sleep-history__target {

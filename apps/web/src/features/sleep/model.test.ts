@@ -137,4 +137,20 @@ describe("sleep model", () => {
     expect(composition.unspecified).toBe(0);
     expect(composition.asleep).toBeCloseTo(7.93);
   });
+
+  it("keeps in-bed duration large enough when stages exceed the reported total", () => {
+    const composition = sleepComposition({
+      date: "2026-08-06",
+      total: 7,
+      deep: 1,
+      rem: 2,
+      core: 4.5,
+      unspecified: 0,
+      awake: 0.5,
+    });
+
+    expect(composition.coverage).toBe("partial");
+    expect(composition.asleep).toBeCloseTo(7.5);
+    expect(composition.inBed).toBeCloseTo(8);
+  });
 });

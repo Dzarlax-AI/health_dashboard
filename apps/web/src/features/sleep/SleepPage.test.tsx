@@ -11,6 +11,7 @@ describe("SleepPage history periods", () => {
     );
 
     expect(container.querySelectorAll(".sleep-history__night")).toHaveLength(30);
+    expect(container.querySelector(".sleep-history__night.is-selected")).toHaveAttribute("aria-pressed", "true");
 
     fireEvent.click(screen.getByRole("button", { name: "All" }));
 

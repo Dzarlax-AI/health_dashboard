@@ -36,36 +36,26 @@ func formatMorningRich(b *health.BriefingResponse, aiBlocks map[string]string, l
 	}
 	sb.WriteString("</aside>\n")
 
-	type morningMetric struct {
-		label string
-		value string
-	}
-	var metrics []morningMetric
+	var metrics []string
 	var metricNotes []string
 	if b.EnergyBank != nil && b.EnergyBank.Capacity > 0 {
-		metrics = append(metrics, morningMetric{
-			label: "⚡ " + richEsc(tr(lang, "tg_energy")),
-			value: fmt.Sprintf("%d/%d", b.EnergyBank.Current, b.EnergyBank.Capacity),
-		})
+		metrics = append(metrics, fmt.Sprintf("⚡ <strong>%d/%d</strong> · %s",
+			b.EnergyBank.Current, b.EnergyBank.Capacity, richEsc(tr(lang, "tg_energy"))))
 	}
-	metrics = append(metrics, morningMetric{
-		label: "◉ " + richEsc(tr(lang, "tg_readiness")),
-		value: fmt.Sprintf("%d/100", b.ReadinessToday),
-	})
+	metrics = append(metrics, fmt.Sprintf("◉ <strong>%d/100</strong> · %s",
+		b.ReadinessToday, richEsc(tr(lang, "tg_readiness"))))
 	switch {
 	case f.sleepKnown && f.sleepStale():
 		metricNotes = append(metricNotes, "😴 "+richText(stripSimpleTags(fmt.Sprintf(tr(lang, "tg_sleep_silence"), fmtSilence(f.sleep, lang)))))
 	case b.Sleep != nil:
 		if latest, ok := latestSleepHours(b.Sleep); ok {
-			metrics = append(metrics, morningMetric{
-				label: "☾ " + richText(sectionTitle(findSection(b, "sleep"), tr(lang, "sec_sleep"))),
-				value: fmt.Sprintf("%.1fh", latest),
-			})
+			metrics = append(metrics, fmt.Sprintf("☾ <strong>%.1fh</strong> · %s",
+				latest, richText(sectionTitle(findSection(b, "sleep"), tr(lang, "sec_sleep")))))
 		} else {
-			metrics = append(metrics, morningMetric{
-				label: "☾ " + richText(sectionTitle(findSection(b, "sleep"), tr(lang, "sec_sleep"))),
-				value: fmt.Sprintf("%.1fh · %s", b.Sleep.TotalAvg, richEsc(tr(lang, "tg_sleep_average"))),
-			})
+			metrics = append(metrics, fmt.Sprintf("☾ <strong>%.1fh</strong> · %s · %s",
+				b.Sleep.TotalAvg,
+				richText(sectionTitle(findSection(b, "sleep"), tr(lang, "sec_sleep"))),
+				richEsc(tr(lang, "tg_sleep_average"))))
 		}
 	}
 	if f.watchKnown && f.watchOff() {
@@ -75,11 +65,8 @@ func formatMorningRich(b *health.BriefingResponse, aiBlocks map[string]string, l
 		metricNotes = append(metricNotes, "📱 "+richText(stripSimpleTags(fmt.Sprintf(tr(lang, "tg_phone_off"), fmtSilence(f.phone, lang)))))
 	}
 	if len(metrics) > 0 {
-		sb.WriteString("<table bordered><tr>")
-		for _, metric := range metrics {
-			fmt.Fprintf(&sb, "<td align=\"center\"><strong>%s</strong><br>%s</td>", metric.value, metric.label)
-		}
-		sb.WriteString("</tr></table>\n")
+		fmt.Fprintf(&sb, "<p><strong>%s</strong><br>%s</p>\n",
+			richEsc(tr(lang, "tg_morning_metrics")), strings.Join(metrics, "<br>"))
 	}
 	if len(metricNotes) > 0 {
 		fmt.Fprintf(&sb, "<p>%s</p>\n", strings.Join(metricNotes, "<br>"))
@@ -88,10 +75,7 @@ func formatMorningRich(b *health.BriefingResponse, aiBlocks map[string]string, l
 	sb.WriteString("<hr/>\n")
 	if len(evidence.Reasons) > 0 {
 		fmt.Fprintf(&sb, "<p><strong>%s</strong>", richEsc(tr(lang, "tg_morning_why")))
-		for index, reason := range evidence.Reasons {
-			if index == 2 {
-				break
-			}
+		for _, reason := range evidence.Reasons {
 			fmt.Fprintf(&sb, "<br>• %s", richText(reason.Text))
 		}
 		sb.WriteString("</p>\n")

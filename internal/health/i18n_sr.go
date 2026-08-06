@@ -250,7 +250,7 @@ var sr = LangStrings{
 	"tg_today":             "Danas dosad",
 	"tg_morning_today":     "Danas",
 	"tg_morning_metrics":   "Najvažnije",
-	"tg_sleep_average":     "prosek za 30 dana",
+	"tg_sleep_average":     "prosek za najviše 7 noći",
 	"tg_morning_why":       "Zašto",
 	"tg_morning_updated":   "Ažurirano",
 	"tg_source_watch":      "Sat",

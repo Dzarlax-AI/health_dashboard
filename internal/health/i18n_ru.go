@@ -250,7 +250,7 @@ var ru = LangStrings{
 	"tg_today":             "Сегодня",
 	"tg_morning_today":     "Сегодня",
 	"tg_morning_metrics":   "Главное",
-	"tg_sleep_average":     "среднее за 30 дней",
+	"tg_sleep_average":     "среднее максимум за 7 ночей",
 	"tg_morning_why":       "Почему",
 	"tg_morning_updated":   "Обновлено",
 	"tg_source_watch":      "Часы",

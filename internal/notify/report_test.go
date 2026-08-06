@@ -305,12 +305,13 @@ func TestFormatMorningRich_StructureAndEscaping(t *testing.T) {
 	for _, want := range []string{
 		"<h2>🌅 Sunday, June 14</h2>",
 		"<aside><strong>Moderate</strong>",
-		"<table bordered><tr>",
-		"<strong>64/100</strong><br>⚡ Energy",
-		"<strong>70/100</strong><br>◉ Readiness",
-		"<strong>7.3h · 30-day average</strong><br>☾ Sleep",
+		"<p><strong>At a glance</strong>",
+		"⚡ <strong>64/100</strong> · Energy",
+		"◉ <strong>70/100</strong> · Readiness",
+		"☾ <strong>7.3h</strong> · Sleep · average of up to 7 nights",
 		"<hr/>",
 		"<strong>Why</strong>",
+		"• Mixed markers",
 		"<details><summary>✦ Insights</summary>",
 		"<em>AI explains &lt;moderate &amp; controlled&gt;</em>",
 		"<strong>🎯 Plan for today</strong>",
@@ -320,7 +321,7 @@ func TestFormatMorningRich_StructureAndEscaping(t *testing.T) {
 		}
 	}
 	for _, forbidden := range []string{
-		"<blockquote>", "<h3>", "legacy sleep essay must stay hidden",
+		"<table", "<blockquote>", "<h3>", "legacy sleep essay must stay hidden",
 	} {
 		if strings.Contains(out, forbidden) {
 			t.Fatalf("rich morning contains obsolete %q:\n%s", forbidden, out)
