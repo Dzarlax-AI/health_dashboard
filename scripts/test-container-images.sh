@@ -85,8 +85,10 @@ test -n "$frontend_address"
 test "$(curl --fail --silent "http://$frontend_address/healthz")" = '{"status":"ok"}'
 
 index_html="$(curl --fail --silent "http://$frontend_address/")"
-sleep_html="$(curl --fail --silent "http://$frontend_address/sleep")"
-test "$sleep_html" = "$index_html"
+for detail_route in sleep activity cardio recovery; do
+  detail_html="$(curl --fail --silent "http://$frontend_address/$detail_route")"
+  test "$detail_html" = "$index_html"
+done
 printf '%s' "$index_html" | grep -q 'id="root"'
 asset_path="$(printf '%s' "$index_html" | sed -n 's/.*src="\([^"]*\/assets\/[^"]*\)".*/\1/p' | sed -n '1p')"
 test -n "$asset_path"
