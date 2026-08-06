@@ -7,7 +7,7 @@ import { shouldPollAI } from "../dashboard/aiPolling";
 import { resolveLocale, translate, type Locale } from "../../i18n";
 import { sleepFixtureResources } from "./fixtures";
 import { loadSleepResources, type SleepResources } from "./loader";
-import { buildSleepDays, sleepInsight, type SleepDay } from "./model";
+import { buildSleepDays, sleepComposition, sleepInsight, type SleepDay } from "./model";
 
 type SleepState =
   | { status: "loading" }
@@ -43,36 +43,50 @@ function dateLabel(date: string, locale: Locale, compact = false): string {
   ).format(parsed);
 }
 
-function phaseTotal(day: SleepDay): number {
-  return phaseKeys.reduce((sum, key) => sum + day[key], 0);
-}
-
-function asleepPhaseTotal(day: SleepDay): number {
-  return asleepPhaseKeys.reduce((sum, key) => sum + day[key], 0);
-}
-
 function percentage(value: number, total: number, locale: Locale): string {
   if (total <= 0) return "0%";
   return `${new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format((value / total) * 100)}%`;
 }
 
-function PhaseBar({ day, label, locale }: { day: SleepDay; label: string; locale: Locale }) {
-  const total = Math.max(phaseTotal(day), day.total + day.awake, 0.01);
+function NightColumn({
+  day,
+  label,
+  locale,
+  selected,
+  onSelect,
+}: {
+  day: SleepDay;
+  label: string;
+  locale: Locale;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const composition = sleepComposition(day);
+  const total = Math.max(composition.inBed, 0.01);
   return (
-    <button className="sleep-history__row" type="button" aria-label={`${label}: ${hours(day.total, locale)}`}>
-      <span className="sleep-history__label">{label}</span>
-      <span className="sleep-phase-bar" aria-hidden="true">
+    <button
+      className={`sleep-history__night${selected ? " is-selected" : ""}`}
+      type="button"
+      aria-label={`${label}: ${hours(day.total, locale)}`}
+      onClick={onSelect}
+    >
+      <span
+        className="sleep-history__column"
+        aria-hidden="true"
+        style={{ height: `${Math.min((composition.inBed / 10) * 100, 100)}%` }}
+      >
         {phaseKeys.map((key) =>
-          day[key] > 0 ? (
+          composition[key] > 0 ? (
             <span
               key={key}
               className={`sleep-phase-bar__segment sleep-phase-bar__segment--${key}`}
-              style={{ width: `${Math.max((day[key] / total) * 100, 1)}%` }}
+              style={{ height: `${Math.max((composition[key] / total) * 100, 1)}%` }}
             />
           ) : null,
         )}
       </span>
       <strong>{new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(day.total)}</strong>
+      <span className="sleep-history__label">{label}</span>
     </button>
   );
 }
@@ -144,7 +158,7 @@ export function SleepReady({ resources, locale }: { resources: SleepResources; l
   const currentInsight = current ? sleepInsight(todayAI) : "";
   const historicInsight =
     historicAI?.date === selectedDate ? sleepInsight(historicAI) : "";
-  const selectedAsleepTotal = selected ? asleepPhaseTotal(selected) : 0;
+  const selectedComposition = selected ? sleepComposition(selected) : undefined;
 
   return (
     <main className="sleep-page">
@@ -191,11 +205,11 @@ export function SleepReady({ resources, locale }: { resources: SleepResources; l
                 aria-label={`${translate(locale, "sleepPhases")}: ${hours(selected.total, locale)}`}
               >
                 {asleepPhaseKeys.map((key) =>
-                  selected[key] > 0 ? (
+                  selectedComposition && selectedComposition[key] > 0 ? (
                     <span
                       key={key}
                       className={`sleep-phase-bar__segment sleep-phase-bar__segment--${key}`}
-                      style={{ width: `${(selected[key] / Math.max(selectedAsleepTotal, 0.01)) * 100}%` }}
+                      style={{ width: `${(selectedComposition[key] / Math.max(selectedComposition.asleep, 0.01)) * 100}%` }}
                     />
                   ) : null,
                 )}
@@ -208,9 +222,9 @@ export function SleepReady({ resources, locale }: { resources: SleepResources; l
                       {translate(locale, `sleepPhase_${key}`)}
                     </span>
                     <span className="sleep-phase-breakdown__percentage">
-                      {percentage(selected[key], selectedAsleepTotal, locale)}
+                      {selectedComposition ? percentage(selectedComposition[key], selectedComposition.asleep, locale) : "0%"}
                     </span>
-                    <strong>{hours(selected[key], locale)}</strong>
+                    <strong>{hours(selectedComposition?.[key] ?? 0, locale)}</strong>
                   </div>
                 ))}
               </div>
@@ -219,9 +233,14 @@ export function SleepReady({ resources, locale }: { resources: SleepResources; l
                   <i className="sleep-phase-dot sleep-phase-dot--awake" />
                   {translate(locale, "sleepPhase_awake")}
                 </span>
-                <strong>{hours(selected.awake, locale)}</strong>
+                <strong>{hours(selectedComposition?.awake ?? 0, locale)}</strong>
               </div>
             </div>
+            {selectedComposition && selectedComposition.coverage !== "complete" ? (
+              <p className={`sleep-coverage sleep-coverage--${selectedComposition.coverage}`}>
+                {translate(locale, selectedComposition.coverage === "coarse" ? "sleepCoverageCoarse" : "sleepCoveragePartial")}
+              </p>
+            ) : null}
             {selectedDate !== resources.briefing.date ? (
               historicInsight ? (
                 <article className="sleep-selected-insight">
@@ -250,12 +269,23 @@ export function SleepReady({ resources, locale }: { resources: SleepResources; l
         <div className="sleep-phase-legend">
           {phaseKeys.map((key) => <span key={key}><i className={`sleep-phase-dot sleep-phase-dot--${key}`} />{translate(locale, `sleepPhase_${key}`)}</span>)}
         </div>
-        <div className="sleep-history">
-          {visible.map((day) => (
-            <div key={day.date} onClick={() => setSelectedDate(day.date)} className={day.date === selectedDate ? "is-selected" : ""}>
-              <PhaseBar day={day} label={dateLabel(day.date, locale, true)} locale={locale} />
-            </div>
-          ))}
+        <div className="sleep-history-chart">
+          <div className="sleep-history__axis" aria-hidden="true">
+            <span>10</span><span>8</span><span>6</span><span>4</span><span>2</span><span>0</span>
+          </div>
+          <div className="sleep-history">
+            <span className="sleep-history__target" aria-hidden="true" />
+            {visible.map((day) => (
+              <NightColumn
+                key={day.date}
+                day={day}
+                label={dateLabel(day.date, locale, true)}
+                locale={locale}
+                selected={day.date === selectedDate}
+                onSelect={() => setSelectedDate(day.date)}
+              />
+            ))}
+          </div>
         </div>
       </section>
 

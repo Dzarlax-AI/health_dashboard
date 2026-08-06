@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { SleepResources } from "./loader";
-import { buildSleepDays, sleepInsight } from "./model";
+import { buildSleepDays, sleepComposition, sleepInsight } from "./model";
 
 function resources(): SleepResources {
   return {
@@ -87,5 +87,54 @@ describe("sleep model", () => {
   it("prefers the scoped SLEEP block and falls back to synthesis", () => {
     expect(sleepInsight({ blocks: { SLEEP: "Scoped" } } as never)).toBe("Scoped");
     expect(sleepInsight({ blocks: { SYNTHESIS: "Overview" } } as never)).toBe("Overview");
+  });
+
+  it("does not present a coarse core-only night as 100% staged core sleep", () => {
+    const composition = sleepComposition({
+      date: "2026-07-15",
+      total: 6.1,
+      deep: 0,
+      rem: 0,
+      core: 4.2,
+      unspecified: 0,
+      awake: 1.2,
+    });
+
+    expect(composition.coverage).toBe("coarse");
+    expect(composition.core).toBe(0);
+    expect(composition.unspecified).toBeCloseTo(6.1);
+    expect(composition.inBed).toBeCloseTo(7.3);
+  });
+
+  it("fills an unexplained staged gap explicitly instead of leaving an empty bar", () => {
+    const composition = sleepComposition({
+      date: "2026-08-06",
+      total: 7.93,
+      deep: 0.45,
+      rem: 2.72,
+      core: 4.2,
+      unspecified: 0,
+      awake: 0.2,
+    });
+
+    expect(composition.coverage).toBe("partial");
+    expect(composition.unspecified).toBeCloseTo(0.56);
+    expect(composition.asleep).toBeCloseTo(7.93);
+  });
+
+  it("keeps complete staged nights unchanged", () => {
+    const composition = sleepComposition({
+      date: "2026-08-06",
+      total: 7.93,
+      deep: 0.45,
+      rem: 2.72,
+      core: 4.76,
+      unspecified: 0,
+      awake: 0.2,
+    });
+
+    expect(composition.coverage).toBe("complete");
+    expect(composition.unspecified).toBe(0);
+    expect(composition.asleep).toBeCloseTo(7.93);
   });
 });

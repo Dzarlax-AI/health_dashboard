@@ -450,6 +450,8 @@ export interface components {
                 awake_avg: number;
                 deep_avg: number;
                 efficiency: number;
+                latest_date?: string;
+                latest_total?: number;
                 nights: number;
                 rem_avg: number;
                 sources?: {

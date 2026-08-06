@@ -702,6 +702,38 @@ func telegramText(s string) string {
 	return html.EscapeString(strings.TrimSpace(s))
 }
 
+func latestSleepHours(sleep *health.SleepAnalysis) (float64, bool) {
+	if sleep == nil {
+		return 0, false
+	}
+	if sleep.LatestTotal != nil && *sleep.LatestTotal > 0 {
+		return *sleep.LatestTotal, true
+	}
+	return 0, false
+}
+
+func normalizedReportText(value string) string {
+	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(value))), " ")
+}
+
+func synthesisAddsInformation(synthesis string, evidence health.MorningInsightEvidence) bool {
+	normalized := normalizedReportText(synthesis)
+	if normalized == "" {
+		return false
+	}
+	for _, existing := range []string{evidence.VerdictReason, evidence.Action} {
+		if normalized == normalizedReportText(existing) {
+			return false
+		}
+	}
+	for _, reason := range evidence.Reasons {
+		if normalized == normalizedReportText(reason.Text) {
+			return false
+		}
+	}
+	return true
+}
+
 // ── morning ──────────────────────────────────────────────────────────────────
 
 func formatMorning(b *health.BriefingResponse, aiBlocks map[string]string, lang string, loc *time.Location, f freshness, checkinExpired bool) string {
@@ -735,7 +767,11 @@ func formatMorning(b *health.BriefingResponse, aiBlocks map[string]string, lang 
 	case f.sleepKnown && f.sleepStale():
 		fmt.Fprintf(&sb, "  😴 %s\n", telegramText(stripSimpleTags(fmt.Sprintf(tr(lang, "tg_sleep_silence"), fmtSilence(f.sleep, lang)))))
 	case b.Sleep != nil:
-		fmt.Fprintf(&sb, "  😴 %s: %.1fh\n", telegramText(sectionTitle(findSection(b, "sleep"), tr(lang, "sec_sleep"))), b.Sleep.TotalAvg)
+		if latest, ok := latestSleepHours(b.Sleep); ok {
+			fmt.Fprintf(&sb, "  😴 %s: %.1fh\n", telegramText(sectionTitle(findSection(b, "sleep"), tr(lang, "sec_sleep"))), latest)
+		} else {
+			fmt.Fprintf(&sb, "  😴 %s: %.1fh (%s)\n", telegramText(sectionTitle(findSection(b, "sleep"), tr(lang, "sec_sleep"))), b.Sleep.TotalAvg, tr(lang, "tg_sleep_average"))
+		}
 	}
 	if f.watchKnown && f.watchOff() {
 		fmt.Fprintf(&sb, "  ❤️ %s\n", telegramText(stripSimpleTags(fmt.Sprintf(tr(lang, "tg_watch_off"), fmtSilence(f.watch, lang)))))
@@ -752,7 +788,7 @@ func formatMorning(b *health.BriefingResponse, aiBlocks map[string]string, lang 
 		}
 		sb.WriteByte('\n')
 	}
-	if synthesis := strings.TrimSpace(aiBlocks[ai.BlockSynthesis]); synthesis != "" {
+	if synthesis := strings.TrimSpace(aiBlocks[ai.BlockSynthesis]); synthesisAddsInformation(synthesis, evidence) {
 		fmt.Fprintf(&sb, "🤖 <i>%s</i>\n\n", telegramText(synthesis))
 	}
 	if evidence.Action != "" {
