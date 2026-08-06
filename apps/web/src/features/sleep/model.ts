@@ -12,6 +12,68 @@ export interface SleepDay {
   wake?: string;
 }
 
+export type SleepPhaseCoverage = "complete" | "partial" | "coarse";
+
+export interface SleepComposition {
+  deep: number;
+  rem: number;
+  core: number;
+  unspecified: number;
+  awake: number;
+  asleep: number;
+  inBed: number;
+  coverage: SleepPhaseCoverage;
+}
+
+const COVERAGE_TOLERANCE_HOURS = 0.08;
+
+export function sleepComposition(day: SleepDay): SleepComposition {
+  const total = Math.max(day.total, 0);
+  const awake = Math.max(day.awake, 0);
+  const deep = Math.max(day.deep, 0);
+  const rem = Math.max(day.rem, 0);
+  const core = Math.max(day.core, 0);
+  const unspecified = Math.max(day.unspecified, 0);
+
+  // Some sources put their entire coarse "asleep" value into sleep_core
+  // without emitting any actual stages. Treating that as 100% Core is a
+  // stronger claim than the source supports, so present it as unclassified.
+  if (deep <= COVERAGE_TOLERANCE_HOURS && rem <= COVERAGE_TOLERANCE_HOURS && core > 0 && unspecified <= COVERAGE_TOLERANCE_HOURS) {
+    const asleep = total > 0 ? total : core;
+    return {
+      deep: 0,
+      rem: 0,
+      core: 0,
+      unspecified: asleep,
+      awake,
+      asleep,
+      inBed: asleep + awake,
+      coverage: "coarse",
+    };
+  }
+
+  const known = deep + rem + core + unspecified;
+  const target = total > 0 ? total : known;
+  const gap = Math.max(target - known, 0);
+  const resolvedUnspecified = unspecified + gap;
+  const asleep = deep + rem + core + resolvedUnspecified;
+  const coverage =
+    gap > COVERAGE_TOLERANCE_HOURS || Math.abs(asleep - target) > COVERAGE_TOLERANCE_HOURS
+      ? "partial"
+      : "complete";
+
+  return {
+    deep,
+    rem,
+    core,
+    unspecified: resolvedUnspecified,
+    awake,
+    asleep,
+    inBed: Math.max(target, asleep) + awake,
+    coverage,
+  };
+}
+
 const metricToKey: Record<SleepMetric, keyof Omit<SleepDay, "date" | "wake">> = {
   sleep_total: "total",
   sleep_deep: "deep",

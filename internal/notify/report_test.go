@@ -303,19 +303,25 @@ func TestFormatMorningRich_StructureAndEscaping(t *testing.T) {
 	}, "en", loc, freshness{}, false, "")
 
 	for _, want := range []string{
-		"<h2>🌅 Morning report — 2026-06-14</h2>",
-		"<h3>⚡ Today: Moderate</h3>",
-		"<h3>Key metrics</h3>",
-		"<h3>Why</h3>",
-		"🤖 <em>AI explains &lt;moderate &amp; controlled&gt;</em>",
-		"<h3>🎯 Plan for today</h3>",
+		"<h2>🌅 Sunday, June 14</h2>",
+		"<aside><strong>Moderate</strong>",
+		"<p><strong>At a glance</strong>",
+		"⚡ <strong>64/100</strong> · Energy",
+		"◉ <strong>70/100</strong> · Readiness",
+		"☾ <strong>7.3h</strong> · Sleep · average of up to 7 nights",
+		"<hr/>",
+		"<strong>Why</strong>",
+		"• Mixed markers",
+		"<details><summary>✦ Insights</summary>",
+		"<em>AI explains &lt;moderate &amp; controlled&gt;</em>",
+		"<strong>🎯 Plan for today</strong>",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("rich morning missing %q:\n%s", want, out)
 		}
 	}
 	for _, forbidden := range []string{
-		"<table>", "<blockquote>", "<details>", "legacy sleep essay must stay hidden",
+		"<table", "<blockquote>", "<h3>", "legacy sleep essay must stay hidden",
 	} {
 		if strings.Contains(out, forbidden) {
 			t.Fatalf("rich morning contains obsolete %q:\n%s", forbidden, out)
@@ -349,6 +355,33 @@ func TestFormatMorningLegacy_UsesSingleEscapedSynthesis(t *testing.T) {
 	}
 	if strings.Contains(out, "legacy essay") {
 		t.Fatalf("legacy leaf leaked into v2 morning:\n%s", out)
+	}
+}
+
+func TestFormatMorning_UsesLatestNightAndSuppressesDuplicateSynthesis(t *testing.T) {
+	loc, _ := time.LoadLocation("UTC")
+	briefing := sampleBriefing()
+	latest := 7.93
+	briefing.Sleep.LatestTotal = &latest
+	briefing.TodayGuidance = &health.DashboardTodayGuidance{
+		Action:  "moderate",
+		Label:   "Moderate",
+		Summary: "Keep the day controlled.",
+		Reason:  "Sleep data is still settling.",
+	}
+
+	out := formatMorning(briefing, map[string]string{
+		"SYNTHESIS": "Sleep data is still settling.",
+	}, "en", loc, freshness{}, false)
+
+	if !strings.Contains(out, "7.9h") {
+		t.Fatalf("morning report should show the latest night, got:\n%s", out)
+	}
+	if strings.Contains(out, "7.3h") {
+		t.Fatalf("morning report leaked the rolling average as today's sleep:\n%s", out)
+	}
+	if strings.Contains(out, "🤖") {
+		t.Fatalf("morning report repeated the rule-based reason as AI synthesis:\n%s", out)
 	}
 }
 

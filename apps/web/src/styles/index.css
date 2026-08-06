@@ -938,6 +938,12 @@ textarea {
 }
 
 .sleep-page {
+  --sleep-phase-deep: #4633bb;
+  --sleep-phase-rem: #7868ec;
+  --sleep-phase-core: #9eb8ff;
+  --sleep-phase-unspecified: #c9d5ee;
+  --sleep-phase-awake: #f0b86e;
+
   width: min(100% - 48px, 1080px);
   margin-inline: auto;
   padding: var(--space-5) 0 var(--space-10);
@@ -1166,6 +1172,24 @@ textarea {
   border-bottom: 1px solid var(--border);
 }
 
+.sleep-coverage {
+  margin: var(--space-4) 0 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--today-sleep) 8%, var(--surface-2));
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+}
+
+.sleep-coverage--coarse {
+  border-left: 3px solid var(--sleep-phase-unspecified);
+}
+
+.sleep-coverage--partial {
+  border-left: 3px solid var(--sleep-phase-core);
+}
+
 .sleep-phase-breakdown__label {
   display: inline-flex;
   min-width: 0;
@@ -1205,15 +1229,15 @@ textarea {
 }
 
 .sleep-phase-dot--deep,
-.sleep-phase-bar__segment--deep { background: #4633bb; }
+.sleep-phase-bar__segment--deep { background: var(--sleep-phase-deep); }
 .sleep-phase-dot--rem,
-.sleep-phase-bar__segment--rem { background: #7868ec; }
+.sleep-phase-bar__segment--rem { background: var(--sleep-phase-rem); }
 .sleep-phase-dot--core,
-.sleep-phase-bar__segment--core { background: #9eb8ff; }
+.sleep-phase-bar__segment--core { background: var(--sleep-phase-core); }
 .sleep-phase-dot--unspecified,
-.sleep-phase-bar__segment--unspecified { background: #c9d5ee; }
+.sleep-phase-bar__segment--unspecified { background: var(--sleep-phase-unspecified); }
 .sleep-phase-dot--awake,
-.sleep-phase-bar__segment--awake { background: #f0b86e; }
+.sleep-phase-bar__segment--awake { background: var(--sleep-phase-awake); }
 
 .sleep-range {
   display: flex;
@@ -1254,52 +1278,103 @@ textarea {
   gap: 6px;
 }
 
-.sleep-history {
+.sleep-history-chart {
   display: grid;
-  max-height: 520px;
-  gap: 4px;
-  overflow: auto;
-  padding: 2px;
+  grid-template-columns: 30px minmax(0, 1fr);
+  min-height: 300px;
+  gap: var(--space-2);
 }
 
-.sleep-history > div {
-  border-radius: var(--radius);
-}
-
-.sleep-history > div.is-selected {
-  background: color-mix(in srgb, var(--today-sleep) 10%, transparent);
-}
-
-.sleep-history__row {
-  display: grid;
-  width: 100%;
-  grid-template-columns: 72px minmax(80px, 1fr) 38px;
-  align-items: center;
-  gap: var(--space-3);
-  padding: 7px var(--space-2);
-  border: 0;
-  background: transparent;
-  color: var(--text);
-  cursor: pointer;
-  text-align: left;
-}
-
-.sleep-history__label {
-  color: var(--text-secondary);
-  font-size: var(--text-xs);
-}
-
-.sleep-history__row strong {
-  font-size: var(--text-sm);
+.sleep-history__axis {
+  display: flex;
+  height: 236px;
+  flex-direction: column;
+  justify-content: space-between;
+  padding-top: 2px;
+  color: var(--text-tertiary);
+  font-size: 0.68rem;
   text-align: right;
 }
 
-.sleep-phase-bar {
+.sleep-history {
+  position: relative;
   display: flex;
-  height: 18px;
+  height: 276px;
+  align-items: flex-start;
+  gap: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0 4px 4px;
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent calc(47.2px - 1px),
+      color-mix(in srgb, var(--border) 62%, transparent) calc(47.2px - 1px),
+      color-mix(in srgb, var(--border) 62%, transparent) 47.2px
+    );
+  background-repeat: no-repeat;
+  background-size: 100% 236px;
+}
+
+.sleep-history__target {
+  position: absolute;
+  inset: 24px 0 auto;
+  z-index: 0;
+  height: 48px;
+  border-block: 1px dashed color-mix(in srgb, var(--today-sleep) 28%, transparent);
+  background: color-mix(in srgb, var(--today-sleep) 5%, transparent);
+  pointer-events: none;
+}
+
+.sleep-history__night {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  width: 48px;
+  min-width: 48px;
+  height: 276px;
+  grid-template-rows: 236px 18px 18px;
+  align-items: end;
+  justify-items: center;
+  padding: 0 3px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.sleep-history__night.is-selected {
+  background: color-mix(in srgb, var(--today-sleep) 10%, transparent);
+}
+
+.sleep-history__column {
+  display: flex;
+  width: 26px;
+  max-height: 236px;
+  align-self: end;
+  flex-direction: column;
+  justify-content: flex-end;
   overflow: hidden;
-  border-radius: var(--radius-full);
-  background: var(--surface-2);
+  border-radius: 8px 8px 3px 3px;
+  box-shadow: 0 5px 14px color-mix(in srgb, var(--today-sleep) 14%, transparent);
+}
+
+.sleep-history__night strong {
+  align-self: center;
+  font-size: 0.7rem;
+}
+
+.sleep-history__label {
+  overflow: hidden;
+  width: 46px;
+  align-self: center;
+  color: var(--text-tertiary);
+  font-size: 0.62rem;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sleep-phase-bar__segment {

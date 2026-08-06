@@ -268,18 +268,12 @@ func sleepQualityEvidence(date, sourceDate string, sleep, deep, awake *float64) 
 	if deep != nil {
 		deepPct = *deep / *sleep * 100
 	}
-	awakePct := 0.0
-	if awake != nil {
-		awakePct = *awake / *sleep * 100
-	}
 	value := deepPct
 	c.Value = &value
 	c.Present = true
 	c.Freshness = health.ReadinessFreshnessOK
 	c.Confidence = health.ReadinessConfidenceFinal
-	if deepPct < 8 || awakePct > 10 {
-		c.Confidence = health.ReadinessConfidenceLow
-	}
+	c.MissingReason = ""
 	return c
 }
 
@@ -642,6 +636,14 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 	resp := health.ComputeBriefing(*data, lang)
 	resp.SleepRegularityIndex = data.SleepRegularityIndex
 	resp.SleepRegularityNights = data.SleepRegularityNights
+	if resp.Sleep != nil && data.ReadinessEvidence != nil {
+		latest := data.ReadinessEvidence.SleepDuration
+		if latest.Present && latest.Value != nil && latest.SourceDate == *lastDate {
+			value := *latest.Value
+			resp.Sleep.LatestTotal = &value
+			resp.Sleep.LatestDate = latest.SourceDate
+		}
+	}
 
 	// EnergyBank v2 half-cutover (PR #43): when a v2 snapshot exists
 	// for `lastDate`, override the displayed bank/capacity/drain with

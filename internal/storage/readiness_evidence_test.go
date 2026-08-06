@@ -103,6 +103,34 @@ func TestBuildReadinessEvidence_InfersFilteredZeroAwakeForCompleteStagedNight(t 
 	}
 }
 
+func TestBuildReadinessEvidence_LowDeepIsPhysiologyNotLowCaptureConfidence(t *testing.T) {
+	sleep := 7.93
+	deep := 0.45
+	rem := 2.72
+	core := 4.76
+	awake := 0.2
+	latest := dailyScoreRow{
+		date:  "2026-08-06",
+		slp:   &sleep,
+		deep:  &deep,
+		rem:   &rem,
+		core:  &core,
+		awake: &awake,
+	}
+
+	e := buildReadinessEvidence("2026-08-06", latest, nil)
+
+	if !e.SleepQuality.Present {
+		t.Fatalf("sleep quality = %+v, want present same-night evidence", e.SleepQuality)
+	}
+	if e.SleepQuality.Confidence != health.ReadinessConfidenceFinal {
+		t.Fatalf("sleep quality confidence = %q, want final capture confidence", e.SleepQuality.Confidence)
+	}
+	if e.SleepQuality.MissingReason != "" {
+		t.Fatalf("sleep quality missing reason = %q, want empty for present evidence", e.SleepQuality.MissingReason)
+	}
+}
+
 func TestBuildReadinessEvidence_SleepStagesStayDateAligned(t *testing.T) {
 	sleep := 7.5
 	deep := 1.0

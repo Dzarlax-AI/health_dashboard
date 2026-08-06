@@ -10,10 +10,11 @@ describe("SleepPage history periods", () => {
       <SleepReady resources={sleepFixtureResources("en")} locale="en" />,
     );
 
-    expect(container.querySelectorAll(".sleep-history > div")).toHaveLength(30);
+    expect(container.querySelectorAll(".sleep-history__night")).toHaveLength(30);
+    expect(container.querySelector(".sleep-history__night.is-selected")).toHaveAttribute("aria-pressed", "true");
 
     fireEvent.click(screen.getByRole("button", { name: "All" }));
 
-    expect(container.querySelectorAll(".sleep-history > div")).toHaveLength(90);
+    expect(container.querySelectorAll(".sleep-history__night")).toHaveLength(90);
   });
 });
