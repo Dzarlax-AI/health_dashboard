@@ -112,6 +112,9 @@ type InsightContext struct {
 	AIAdviceMode        string `json:"ai_advice_mode,omitempty"`
 	CheckinStatus       string `json:"checkin_status,omitempty"`
 	CheckinAnswer       string `json:"checkin_answer,omitempty"`
+	DecisionID          string `json:"decision_id,omitempty"`
+	DecisionMode        string `json:"decision_mode,omitempty"`
+	DecisionReason      string `json:"decision_reason,omitempty"`
 }
 
 // HashSleep / HashYesterday / HashRecovery extract and hash per-block subsets.
@@ -273,6 +276,10 @@ func BuildRecommendationContext(sleepText, yesterdayText, recoveryText string, v
 		if ctx.CheckinStatus != "" || ctx.CheckinAnswer != "" {
 			leafSummary += fmt.Sprintf(", checkin_status=%s, checkin_answer=%s", ctx.CheckinStatus, ctx.CheckinAnswer)
 		}
+	}
+	if ctx.DecisionID != "" {
+		leafSummary += fmt.Sprintf("\n\nDAILY_DECISION (authoritative): id=%s, mode=%s, reason=%s", ctx.DecisionID, ctx.DecisionMode, ctx.DecisionReason)
+		leafSummary += "\nINSTRUCTION: Explain this decision. Do not contradict or replace its action mode."
 	}
 	switch ctx.AIAdviceMode {
 	case "withheld":

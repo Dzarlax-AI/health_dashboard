@@ -1614,8 +1614,24 @@ func (h *Handler) aiBriefing(w http.ResponseWriter, r *http.Request) {
 
 	blocks := db.GetAIBlocks(today, lang)
 	combined := db.GetAIInsightCombined(today, lang)
+	briefing, briefingErr := db.GetHealthBriefing(lang)
+	var decision *health.DailyDecision
+	if briefingErr != nil {
+		// AI remains an enhancement: a transient briefing read failure must not
+		// take down a cached narrative response. Without a current decision the
+		// client will render its deterministic fallback instead of stale advice.
+		log.Printf("ai briefing decision: %v", briefingErr)
+	} else if briefing != nil {
+		decision = briefing.DailyDecision
+	}
+	recommendation := db.GetAIBlock(today, lang, "RECOMMENDATION")
+	freshForDecision := recommendation != nil && decision != nil &&
+		storage.PlanMatchesDecision(recommendation.InputsHash, decision.ID)
 
-	if combined == "" && aiCfg.Enabled() {
+	// Always run the selective cache check. It is a no-op when inputs still
+	// match, but makes a late HealthKit update replace an obsolete morning plan
+	// without waiting for the cache to become empty.
+	if aiCfg.Enabled() && (combined == "" || !freshForDecision) {
 		db.EnsureTodayAIInsightAsync(aiCfg, lang)
 	}
 
@@ -1659,15 +1675,32 @@ func (h *Handler) aiBriefing(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	jsonResponse(w, map[string]any{
-		"date":       today,
-		"lang":       lang,
-		"insight":    combined,
-		"sections":   sections,
-		"blocks":     blocks,
-		"generating": db.AIRegenInFlight(lang),
-		"disabled":   !aiCfg.Enabled(),
-	})
+	var plan any
+	if freshForDecision && recommendation != nil {
+		plan = map[string]any{
+			"title":         ls["ai_block_recommendation_header"],
+			"body":          recommendation.Text,
+			"evidence_keys": decision.SignalKeys,
+		}
+	}
+	response := map[string]any{
+		"date":               today,
+		"lang":               lang,
+		"insight":            combined,
+		"sections":           sections,
+		"blocks":             blocks,
+		"generating":         db.AIRegenInFlight(lang),
+		"disabled":           !aiCfg.Enabled(),
+		"fresh_for_decision": freshForDecision,
+		"plan":               plan,
+	}
+	if decision != nil {
+		response["decision_id"] = decision.ID
+	}
+	if recommendation != nil {
+		response["updated_at"] = recommendation.UpdatedAt
+	}
+	jsonResponse(w, response)
 }
 
 func (h *Handler) adminStatus(w http.ResponseWriter, r *http.Request) {

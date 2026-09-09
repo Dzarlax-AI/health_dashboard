@@ -151,8 +151,13 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 		}
 	}
 	recHash := ai.HashRecommendation(sleepText, yesterdayText, recoveryText, eb, verdictHistory, insightCtx)
+	// Recommendation rows carry the decision ID alongside their content hash.
+	// That lets a client decline a stale morning plan immediately, while the
+	// asynchronous generator produces a replacement. Legacy rows lack this
+	// prefix and are intentionally considered stale once after rollout.
+	planHash := PlanInputsHash(insightCtx.DecisionID, recHash)
 	recRow := cached[ai.BlockRecommendation]
-	if recRow == nil || recRow.InputsHash != recHash || strings.TrimSpace(recRow.Text) == "" {
+	if recRow == nil || recRow.InputsHash != planHash || strings.TrimSpace(recRow.Text) == "" {
 		var stressFlags []string
 		if eb != nil {
 			stressFlags = eb.Flags
@@ -163,7 +168,7 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 			log.Printf("EnsureTodayAIInsight: gemini RECOMMENDATION: %v", err)
 		} else if strings.TrimSpace(recText) == "" {
 			log.Println("EnsureTodayAIInsight: gemini RECOMMENDATION returned empty content, not caching")
-		} else if err := s.SaveAIBlock(today, lang, ai.BlockRecommendation, recText, recHash); err != nil {
+		} else if err := s.SaveAIBlock(today, lang, ai.BlockRecommendation, recText, planHash); err != nil {
 			log.Printf("EnsureTodayAIInsight: save RECOMMENDATION: %v", err)
 		} else {
 			saved++
@@ -205,6 +210,11 @@ func aiContextFromBriefing(b *health.BriefingResponse) ai.InsightContext {
 	if b.SubjectiveCheckin != nil {
 		ctx.CheckinStatus = b.SubjectiveCheckin.Status
 		ctx.CheckinAnswer = b.SubjectiveCheckin.Answer
+	}
+	if b.DailyDecision != nil {
+		ctx.DecisionID = b.DailyDecision.ID
+		ctx.DecisionMode = b.DailyDecision.Mode
+		ctx.DecisionReason = b.DailyDecision.Reason
 	}
 	return ctx
 }

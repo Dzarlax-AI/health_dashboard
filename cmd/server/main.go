@@ -244,8 +244,17 @@ func main() {
 				if fn := mgr.BackfillDatesFor(schema); fn != nil {
 					fn(dates)
 				}
-				energyV2.Trigger(ctx, db, schema,
-					tenantTZOrUTC(db, envNotifyDefaults, schema))
+				energyV2.TriggerAfter(ctx, db, schema,
+					tenantTZOrUTC(db, envNotifyDefaults, schema), func() {
+						// The selective cache verifier does no model work when the
+						// decision is unchanged. When a late health update changes
+						// it, this runs strictly after the persisted Energy snapshot.
+						lang := db.GetNotifyConfig(envNotifyDefaults).Lang
+						if lang == "" {
+							lang = "en"
+						}
+						db.EnsureTodayAIInsightAsync(db.GetAIConfig(envAIDefaults), lang)
+					})
 				// Ingest-driven morning report trigger: fires earlier
 				// than the scheduled morning hour when fresh sleep +
 				// activity data arrives, mirroring the single-tenant
@@ -343,7 +352,13 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	energyV2 := storage.NewEnergyV2Orchestrator()
 	onNewData := func(_ *storage.DB, dates []string) {
 		backfillDatesFn(dates)
-		energyV2.Trigger(ctx, db, schema, tenantTZOrUTC(db, notifyDefaults, schema))
+		energyV2.TriggerAfter(ctx, db, schema, tenantTZOrUTC(db, notifyDefaults, schema), func() {
+			lang := db.GetNotifyConfig(notifyDefaults).Lang
+			if lang == "" {
+				lang = "en"
+			}
+			db.EnsureTodayAIInsightAsync(db.GetAIConfig(aiDefaults), lang)
+		})
 		go maybeFireMorningReport()
 	}
 

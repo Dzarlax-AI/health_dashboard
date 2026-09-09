@@ -453,16 +453,19 @@ type BriefingResponse struct {
 	RecoveryPct      int                    `json:"recovery_pct"`
 	ReadinessToday   int                    `json:"readiness_today"` // today only vs baseline
 	// ReadinessTodayBand mirrors ReadinessBand for the today-only score.
-	ReadinessTodayBand  string                     `json:"readiness_today_band"`
-	ReadinessTodayLabel string                     `json:"readiness_today_label"`
-	Correlation         []CorrelationPoint         `json:"correlation"`
-	Insights            []Insight                  `json:"insights"`
-	Alerts              []Alert                    `json:"alerts,omitempty"`
-	Sleep               *SleepAnalysis             `json:"sleep"`
-	MetricCards         []MetricCard               `json:"metric_cards"`
-	EnergyBank          *EnergyBank                `json:"energy_bank,omitempty"`
-	IllnessSuspicion    *IllnessSuspicion          `json:"illness_suspicion,omitempty"`
-	ContextAnnotations  []ContextAnnotationSummary `json:"context_annotations,omitempty"`
+	ReadinessTodayBand  string             `json:"readiness_today_band"`
+	ReadinessTodayLabel string             `json:"readiness_today_label"`
+	Correlation         []CorrelationPoint `json:"correlation"`
+	Insights            []Insight          `json:"insights"`
+	Alerts              []Alert            `json:"alerts,omitempty"`
+	Sleep               *SleepAnalysis     `json:"sleep"`
+	MetricCards         []MetricCard       `json:"metric_cards"`
+	EnergyBank          *EnergyBank        `json:"energy_bank,omitempty"`
+	// DailyDecision is the single deterministic action boundary for Today.
+	// It is attached by storage after any v2 EnergyBank override is applied.
+	DailyDecision      *DailyDecision             `json:"daily_decision,omitempty"`
+	IllnessSuspicion   *IllnessSuspicion          `json:"illness_suspicion,omitempty"`
+	ContextAnnotations []ContextAnnotationSummary `json:"context_annotations,omitempty"`
 	// SubjectiveCheckin is the morning self-report (Telegram one-tap).
 	// Populated from subjective_checkins when a row exists for today
 	// in the tenant's REPORT_TZ. nil when no row — dashboard renders

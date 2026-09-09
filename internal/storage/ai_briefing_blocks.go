@@ -8,6 +8,21 @@ import (
 	"time"
 )
 
+const planInputsHashPrefix = "daily-plan-v1:"
+
+// PlanInputsHash stores freshness metadata without a schema migration. The
+// suffix remains the complete recommendation-input hash used by the cache.
+func PlanInputsHash(decisionID, recommendationHash string) string {
+	return planInputsHashPrefix + decisionID + ":" + recommendationHash
+}
+
+// PlanMatchesDecision accepts only the current v1 envelope. Old cached AI
+// prose is safe to retain for reports but must not be presented as today's
+// actionable plan after this contract ships.
+func PlanMatchesDecision(inputsHash, decisionID string) bool {
+	return decisionID != "" && strings.HasPrefix(inputsHash, planInputsHashPrefix+decisionID+":")
+}
+
 // AIBlock holds the cached output of one Gemini call for a single (date,
 // lang, block) triple. Each block is generated independently so a late HRV
 // update only invalidates the blocks whose inputs_hash actually changed —
@@ -16,6 +31,7 @@ type AIBlock struct {
 	Block      string
 	Text       string
 	InputsHash string
+	UpdatedAt  time.Time
 }
 
 // EnsureAIBriefingBlocksTable creates the per-block AI cache. Called on
@@ -159,9 +175,9 @@ func (s *DB) GetAIBlock(date, lang, block string) *AIBlock {
 	var b AIBlock
 	b.Block = block
 	err := s.pool.QueryRow(ctx,
-		`SELECT text, inputs_hash FROM ai_briefing_blocks
+		`SELECT text, inputs_hash, created_at FROM ai_briefing_blocks
 		  WHERE date = $1 AND lang = $2 AND block = $3`,
-		date, lang, block).Scan(&b.Text, &b.InputsHash)
+		date, lang, block).Scan(&b.Text, &b.InputsHash, &b.UpdatedAt)
 	if err != nil {
 		return nil
 	}
@@ -205,7 +221,7 @@ func (s *DB) GetAIBlocksFull(date, lang string) map[string]*AIBlock {
 	ctx, cancel := queryCtx()
 	defer cancel()
 	rows, err := s.pool.Query(ctx,
-		`SELECT block, text, inputs_hash FROM ai_briefing_blocks WHERE date = $1 AND lang = $2`,
+		`SELECT block, text, inputs_hash, created_at FROM ai_briefing_blocks WHERE date = $1 AND lang = $2`,
 		date, lang)
 	if err != nil {
 		return out
@@ -213,7 +229,7 @@ func (s *DB) GetAIBlocksFull(date, lang string) map[string]*AIBlock {
 	defer rows.Close()
 	for rows.Next() {
 		b := &AIBlock{}
-		if err := rows.Scan(&b.Block, &b.Text, &b.InputsHash); err == nil {
+		if err := rows.Scan(&b.Block, &b.Text, &b.InputsHash, &b.UpdatedAt); err == nil {
 			out[b.Block] = b
 		}
 	}
