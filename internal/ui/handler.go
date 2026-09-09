@@ -1601,6 +1601,14 @@ func (h *Handler) aiBriefing(w http.ResponseWriter, r *http.Request) {
 	}
 	freshForDecision := recommendation != nil && decision != nil &&
 		storage.PlanMatchesDecision(recommendation.InputsHash, decision.ID)
+	if date == today && decision != nil && !freshForDecision {
+		// A decision changed after this bundle was generated. New clients use
+		// FreshForDecision/Plan, but released clients still render Insight,
+		// Summary, and Recommendation directly. Keep explanatory evidence while
+		// withholding both action-bearing fields until the replacement is ready.
+		blocks = blocksForDecisionFreshness(blocks, false)
+		combined = storage.CombineAIBlocks(blocks)
+	}
 
 	// The bundle cache verifier is cheap on matching input. Calling it for a
 	// stale decision ensures a late health update replaces a morning plan;
@@ -1663,6 +1671,22 @@ func (h *Handler) aiBriefing(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	jsonResponse(w, response)
+}
+
+// blocksForDecisionFreshness returns a presentation-safe copy of AI blocks.
+// SYNTHESIS is hidden with RECOMMENDATION because the legacy API falls back
+// from recommendation to summary, and either may prescribe a stale action.
+func blocksForDecisionFreshness(blocks map[string]string, fresh bool) map[string]string {
+	if fresh {
+		return blocks
+	}
+	out := make(map[string]string, len(blocks))
+	for key, text := range blocks {
+		out[key] = text
+	}
+	delete(out, "SYNTHESIS")
+	delete(out, "RECOMMENDATION")
+	return out
 }
 
 func resolveAIBriefingDate(rawDate, today string) (string, error) {

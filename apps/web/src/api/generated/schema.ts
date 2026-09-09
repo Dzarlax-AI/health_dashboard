@@ -183,11 +183,18 @@ export interface components {
                 [key: string]: string;
             };
             date: string;
+            decision_id?: string;
             disabled: boolean;
+            fresh_for_decision: boolean;
             generating: boolean;
             insight: string;
             /** @enum {string} */
             lang: "en" | "ru" | "sr";
+            plan?: {
+                body: string;
+                evidence_keys?: string[] | null;
+                title: string;
+            };
             recommendation: string;
             recovery: string;
             sections: {
@@ -197,6 +204,8 @@ export interface components {
             }[] | null;
             sleep: string;
             summary: string;
+            /** Format: date-time */
+            updated_at?: string;
             yesterday: string;
         };
         DashboardResponse: {
@@ -286,6 +295,13 @@ export interface components {
                 hrv: number;
                 load: number;
             }[] | null;
+            daily_decision?: {
+                id: string;
+                label: string;
+                mode: string;
+                reason: string;
+                signal_keys?: string[] | null;
+            };
             date: string;
             energy_bank?: {
                 /** @enum {string} */

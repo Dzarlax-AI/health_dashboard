@@ -318,7 +318,13 @@ func (s *DB) GetAIBlocksFull(date, lang string) map[string]*AIBlock {
 // have not regenerated under v2, it joins the four historical blocks so
 // dashboard and MCP clients keep working during rollout and rollback.
 func (s *DB) GetAIInsightCombined(date, lang string) string {
-	blocks := s.GetAIBlocks(date, lang)
+	return CombineAIBlocks(s.GetAIBlocks(date, lang))
+}
+
+// CombineAIBlocks turns canonical AI blocks into the legacy combined
+// representation. It is kept separate from database access so callers can
+// safely omit stale action blocks before serving an older client.
+func CombineAIBlocks(blocks map[string]string) string {
 	if len(blocks) == 0 {
 		return ""
 	}

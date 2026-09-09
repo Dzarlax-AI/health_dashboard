@@ -265,7 +265,10 @@ func main() {
 						if lang == "" {
 							lang = "en"
 						}
-						db.EnsureTodayAIInsightAsync(db.GetAIConfig(envAIDefaults), lang)
+						// Resolve defaults at trigger time so installation-wide AI
+						// settings written through the admin UI reach every tenant.
+						aiDefaults := mgr.AIDefaultsFor(ctx, schema)
+						db.EnsureTodayAIInsightAsync(db.GetAIConfig(aiDefaults), lang)
 					})
 				// Ingest-driven morning report trigger: fires earlier
 				// than the scheduled morning hour when fresh sleep +

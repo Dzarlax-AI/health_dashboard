@@ -8,6 +8,7 @@ function briefing(
     blocks: {},
     date: "2026-08-02",
     disabled: false,
+    fresh_for_decision: false,
     generating: false,
     insight: "",
     lang: "en",

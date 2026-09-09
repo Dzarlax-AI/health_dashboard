@@ -40,3 +40,22 @@ func TestDailyDecisionIDChangesForDecisionRelevantEvidence(t *testing.T) {
 		t.Fatal("decision ID did not change after its headline evidence changed")
 	}
 }
+
+func TestDailyDecisionIDChangesWhenRationaleChanges(t *testing.T) {
+	resp := &BriefingResponse{
+		Date:                "2026-09-09",
+		ReadinessToday:      70,
+		ReadinessConfidence: ReadinessConfidenceFinal,
+		EnergyBank: &EnergyBank{
+			ActionVerdict: "moderate",
+			VerdictLabel:  "Moderate",
+			VerdictReason: "Keep the effort comfortable.",
+		},
+	}
+	first := BuildDailyDecision(resp).ID
+	resp.EnergyBank.VerdictReason = "Prefer easy movement after poor sleep."
+	second := BuildDailyDecision(resp).ID
+	if first == second {
+		t.Fatal("decision ID did not change after its rationale changed")
+	}
+}
