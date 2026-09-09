@@ -108,3 +108,16 @@ func TestValidateAIBundleRequiresEveryBlock(t *testing.T) {
 		t.Fatal("bundle without synthesis was accepted")
 	}
 }
+
+func TestPlanInputsHashBindsBundleToDecision(t *testing.T) {
+	hash := PlanInputsHash("decision-a", "bundle-hash")
+	if !PlanMatchesDecision(hash, "decision-a") {
+		t.Fatal("current decision did not match its bundle metadata")
+	}
+	if PlanMatchesDecision(hash, "decision-b") {
+		t.Fatal("bundle matched a changed decision")
+	}
+	if PlanMatchesDecision("legacy", "decision-a") {
+		t.Fatal("legacy bundle must not be presented as a fresh plan")
+	}
+}

@@ -1589,8 +1589,31 @@ func (h *Handler) aiBriefing(w http.ResponseWriter, r *http.Request) {
 
 	blocks := db.GetAIBlocks(date, lang)
 	combined := db.GetAIInsightCombined(date, lang)
+	var decision *health.DailyDecision
+	var recommendation *storage.AIBlock
+	if date == today {
+		if briefing, err := db.GetHealthBriefing(lang); err != nil {
+			log.Printf("ai briefing decision: %v", err)
+		} else if briefing != nil {
+			decision = briefing.DailyDecision
+		}
+		recommendation = db.GetAIBlock(today, lang, "RECOMMENDATION")
+	}
+	freshForDecision := recommendation != nil && decision != nil &&
+		storage.PlanMatchesDecision(recommendation.InputsHash, decision.ID)
+	if date == today && decision != nil && !freshForDecision {
+		// A decision changed after this bundle was generated. New clients use
+		// FreshForDecision/Plan, but released clients still render Insight,
+		// Summary, and Recommendation directly. Keep explanatory evidence while
+		// withholding both action-bearing fields until the replacement is ready.
+		blocks = blocksForDecisionFreshness(blocks, false)
+		combined = storage.CombineAIBlocks(blocks)
+	}
 
-	if date == today && combined == "" && aiCfg.Enabled() {
+	// The bundle cache verifier is cheap on matching input. Calling it for a
+	// stale decision ensures a late health update replaces a morning plan;
+	// historical reads remain cache-only.
+	if date == today && aiCfg.Enabled() && (combined == "" || !freshForDecision) {
 		db.EnsureTodayAIInsightAsync(aiCfg, lang)
 	}
 
@@ -1626,7 +1649,7 @@ func (h *Handler) aiBriefing(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	jsonResponse(w, clientapi.NewAIBriefingResponse(
+	response := clientapi.NewAIBriefingResponse(
 		date,
 		lang,
 		combined,
@@ -1634,7 +1657,36 @@ func (h *Handler) aiBriefing(w http.ResponseWriter, r *http.Request) {
 		blocks,
 		date == today && db.AIRegenInFlight(lang),
 		!aiCfg.Enabled(),
-	))
+	)
+	response.FreshForDecision = freshForDecision
+	if decision != nil {
+		response.DecisionID = decision.ID
+	}
+	if freshForDecision && recommendation != nil {
+		response.UpdatedAt = &recommendation.UpdatedAt
+		response.Plan = &clientapi.AIBriefingPlan{
+			Title:        decision.Label,
+			Body:         recommendation.Text,
+			EvidenceKeys: decision.SignalKeys,
+		}
+	}
+	jsonResponse(w, response)
+}
+
+// blocksForDecisionFreshness returns a presentation-safe copy of AI blocks.
+// SYNTHESIS is hidden with RECOMMENDATION because the legacy API falls back
+// from recommendation to summary, and either may prescribe a stale action.
+func blocksForDecisionFreshness(blocks map[string]string, fresh bool) map[string]string {
+	if fresh {
+		return blocks
+	}
+	out := make(map[string]string, len(blocks))
+	for key, text := range blocks {
+		out[key] = text
+	}
+	delete(out, "SYNTHESIS")
+	delete(out, "RECOMMENDATION")
+	return out
 }
 
 func resolveAIBriefingDate(rawDate, today string) (string, error) {

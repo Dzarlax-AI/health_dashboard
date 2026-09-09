@@ -11,6 +11,21 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+const planInputsHashPrefix = "daily-plan-v1:"
+
+// PlanInputsHash binds a complete atomically-written AI bundle to the
+// deterministic decision it explains without requiring a schema migration.
+func PlanInputsHash(decisionID, bundleHash string) string {
+	return planInputsHashPrefix + decisionID + ":" + bundleHash
+}
+
+// PlanMatchesDecision treats legacy and differently-versioned bundles as
+// stale. They can remain available to old report consumers but never become
+// an actionable plan for a new native client.
+func PlanMatchesDecision(inputsHash, decisionID string) bool {
+	return decisionID != "" && strings.HasPrefix(inputsHash, planInputsHashPrefix+decisionID+":")
+}
+
 var requiredAIBundleBlocks = []string{
 	"SYNTHESIS",
 	"SLEEP",
@@ -32,6 +47,7 @@ type AIBlock struct {
 	Block      string
 	Text       string
 	InputsHash string
+	UpdatedAt  time.Time
 }
 
 // EnsureAIBriefingBlocksTable creates the AI cache. Called on startup alongside
@@ -174,9 +190,9 @@ func (s *DB) GetAIBlock(date, lang, block string) *AIBlock {
 	var b AIBlock
 	b.Block = block
 	err := s.pool.QueryRow(ctx,
-		`SELECT text, inputs_hash FROM ai_briefing_blocks
+		`SELECT text, inputs_hash, created_at FROM ai_briefing_blocks
 		  WHERE date = $1 AND lang = $2 AND block = $3`,
-		date, lang, block).Scan(&b.Text, &b.InputsHash)
+		date, lang, block).Scan(&b.Text, &b.InputsHash, &b.UpdatedAt)
 	if err != nil {
 		return nil
 	}
@@ -283,7 +299,7 @@ func (s *DB) GetAIBlocksFull(date, lang string) map[string]*AIBlock {
 	ctx, cancel := queryCtx()
 	defer cancel()
 	rows, err := s.pool.Query(ctx,
-		`SELECT block, text, inputs_hash FROM ai_briefing_blocks WHERE date = $1 AND lang = $2`,
+		`SELECT block, text, inputs_hash, created_at FROM ai_briefing_blocks WHERE date = $1 AND lang = $2`,
 		date, lang)
 	if err != nil {
 		return out
@@ -291,7 +307,7 @@ func (s *DB) GetAIBlocksFull(date, lang string) map[string]*AIBlock {
 	defer rows.Close()
 	for rows.Next() {
 		b := &AIBlock{}
-		if err := rows.Scan(&b.Block, &b.Text, &b.InputsHash); err == nil {
+		if err := rows.Scan(&b.Block, &b.Text, &b.InputsHash, &b.UpdatedAt); err == nil {
 			out[b.Block] = b
 		}
 	}
@@ -302,7 +318,13 @@ func (s *DB) GetAIBlocksFull(date, lang string) map[string]*AIBlock {
 // have not regenerated under v2, it joins the four historical blocks so
 // dashboard and MCP clients keep working during rollout and rollback.
 func (s *DB) GetAIInsightCombined(date, lang string) string {
-	blocks := s.GetAIBlocks(date, lang)
+	return CombineAIBlocks(s.GetAIBlocks(date, lang))
+}
+
+// CombineAIBlocks turns canonical AI blocks into the legacy combined
+// representation. It is kept separate from database access so callers can
+// safely omit stale action blocks before serving an older client.
+func CombineAIBlocks(blocks map[string]string) string {
 	if len(blocks) == 0 {
 		return ""
 	}

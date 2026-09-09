@@ -103,6 +103,9 @@ func (s *DB) EnsureTodayAIInsightContext(ctx context.Context, aiCfg AIConfig, la
 		return ""
 	}
 	bundleHash := ai.HashForGeneration(ai.HashInsightBundle(evidence), fingerprint)
+	if briefing.DailyDecision != nil {
+		bundleHash = PlanInputsHash(briefing.DailyDecision.ID, bundleHash)
+	}
 	if aiBundleCacheComplete(s.GetAIBlocksFull(today, lang), bundleHash) {
 		s.aiRegenLastFailAt.Delete(failureKey)
 		return s.GetAIInsightCombined(today, lang)

@@ -6,6 +6,7 @@ package api
 import (
 	"health-receiver/internal/health"
 	"health-receiver/internal/storage"
+	"time"
 )
 
 // SessionResponse exposes only browser capabilities derived from the
@@ -28,18 +29,30 @@ type AIBriefingSection struct {
 // the four named block fields remain additive compatibility surfaces for
 // already-released web and iOS clients.
 type AIBriefingResponse struct {
-	Date       string              `json:"date"`
-	Lang       string              `json:"lang" jsonschema:"enum=en,enum=ru,enum=sr"`
-	Insight    string              `json:"insight"`
-	Sections   []AIBriefingSection `json:"sections"`
-	Blocks     map[string]string   `json:"blocks"`
-	Sleep      string              `json:"sleep"`
-	Yesterday  string              `json:"yesterday"`
-	Recovery   string              `json:"recovery"`
-	Recommend  string              `json:"recommendation"`
-	Summary    string              `json:"summary"`
-	Generating bool                `json:"generating"`
-	Disabled   bool                `json:"disabled"`
+	Date             string              `json:"date"`
+	Lang             string              `json:"lang" jsonschema:"enum=en,enum=ru,enum=sr"`
+	Insight          string              `json:"insight"`
+	Sections         []AIBriefingSection `json:"sections"`
+	Blocks           map[string]string   `json:"blocks"`
+	Sleep            string              `json:"sleep"`
+	Yesterday        string              `json:"yesterday"`
+	Recovery         string              `json:"recovery"`
+	Recommend        string              `json:"recommendation"`
+	Summary          string              `json:"summary"`
+	Generating       bool                `json:"generating"`
+	Disabled         bool                `json:"disabled"`
+	DecisionID       string              `json:"decision_id,omitempty"`
+	FreshForDecision bool                `json:"fresh_for_decision"`
+	UpdatedAt        *time.Time          `json:"updated_at,omitempty"`
+	Plan             *AIBriefingPlan     `json:"plan,omitempty"`
+}
+
+// AIBriefingPlan is the sole actionable AI explanation for the current
+// DailyDecision. Its title/action remain server-owned; AI supplies the body.
+type AIBriefingPlan struct {
+	Title        string   `json:"title"`
+	Body         string   `json:"body"`
+	EvidenceKeys []string `json:"evidence_keys,omitempty"`
 }
 
 // NewAIBriefingResponse keeps every compatibility representation sourced from

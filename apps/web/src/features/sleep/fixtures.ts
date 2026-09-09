@@ -50,6 +50,7 @@ export function sleepFixtureResources(locale: Locale): SleepResources {
       date: "2026-08-05",
       lang: locale,
       disabled: false,
+      fresh_for_decision: false,
       generating: false,
       insight: "",
       summary: "",

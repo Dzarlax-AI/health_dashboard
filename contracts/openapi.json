@@ -13,7 +13,13 @@
           "date": {
             "type": "string"
           },
+          "decision_id": {
+            "type": "string"
+          },
           "disabled": {
+            "type": "boolean"
+          },
+          "fresh_for_decision": {
             "type": "boolean"
           },
           "generating": {
@@ -29,6 +35,31 @@
               "sr"
             ],
             "type": "string"
+          },
+          "plan": {
+            "additionalProperties": false,
+            "properties": {
+              "body": {
+                "type": "string"
+              },
+              "evidence_keys": {
+                "items": {
+                  "type": "string"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "title",
+              "body"
+            ],
+            "type": "object"
           },
           "recommendation": {
             "type": "string"
@@ -68,6 +99,10 @@
           "summary": {
             "type": "string"
           },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
           "yesterday": {
             "type": "string"
           }
@@ -84,7 +119,8 @@
           "recommendation",
           "summary",
           "generating",
-          "disabled"
+          "disabled",
+          "fresh_for_decision"
         ],
         "type": "object"
       },
@@ -440,6 +476,39 @@
               "array",
               "null"
             ]
+          },
+          "daily_decision": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "mode": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "signal_keys": {
+                "items": {
+                  "type": "string"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "mode",
+              "label",
+              "reason"
+            ],
+            "type": "object"
           },
           "date": {
             "type": "string"

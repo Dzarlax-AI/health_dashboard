@@ -167,6 +167,7 @@ export function healthDetailFixtureResources(
       date: "2026-08-06",
       lang: locale,
       disabled: false,
+      fresh_for_decision: false,
       generating: false,
       insight: "",
       summary: "",

@@ -560,20 +560,24 @@ type BriefingResponse struct {
 	RecoveryPct      int                    `json:"recovery_pct"`
 	ReadinessToday   int                    `json:"readiness_today"` // today only vs baseline
 	// ReadinessTodayBand mirrors ReadinessBand for the today-only score.
-	ReadinessTodayBand    string                     `json:"readiness_today_band"`
-	ReadinessTodayLabel   string                     `json:"readiness_today_label"`
-	Correlation           []CorrelationPoint         `json:"correlation"`
-	Insights              []Insight                  `json:"insights"`
-	Alerts                []Alert                    `json:"alerts,omitempty"`
-	Sleep                 *SleepAnalysis             `json:"sleep"`
-	SleepQuality          *SleepQualityBreakdown     `json:"sleep_quality,omitempty"`
-	SleepRegularityIndex  *float64                   `json:"sleep_regularity_index,omitempty"`
-	SleepRegularityNights int                        `json:"sleep_regularity_nights,omitempty"`
-	MetricCards           []MetricCard               `json:"metric_cards"`
-	EnergyBank            *EnergyBank                `json:"energy_bank,omitempty"`
-	TodayGuidance         *DashboardTodayGuidance    `json:"today_guidance,omitempty"`
-	IllnessSuspicion      *IllnessSuspicion          `json:"illness_suspicion,omitempty"`
-	ContextAnnotations    []ContextAnnotationSummary `json:"context_annotations,omitempty"`
+	ReadinessTodayBand    string                  `json:"readiness_today_band"`
+	ReadinessTodayLabel   string                  `json:"readiness_today_label"`
+	Correlation           []CorrelationPoint      `json:"correlation"`
+	Insights              []Insight               `json:"insights"`
+	Alerts                []Alert                 `json:"alerts,omitempty"`
+	Sleep                 *SleepAnalysis          `json:"sleep"`
+	SleepQuality          *SleepQualityBreakdown  `json:"sleep_quality,omitempty"`
+	SleepRegularityIndex  *float64                `json:"sleep_regularity_index,omitempty"`
+	SleepRegularityNights int                     `json:"sleep_regularity_nights,omitempty"`
+	MetricCards           []MetricCard            `json:"metric_cards"`
+	EnergyBank            *EnergyBank             `json:"energy_bank,omitempty"`
+	TodayGuidance         *DashboardTodayGuidance `json:"today_guidance,omitempty"`
+	// DailyDecision is the versioned action boundary consumed by native
+	// clients. It mirrors the final conservative TodayGuidance after all
+	// safety caps have settled; AI may explain it but cannot replace it.
+	DailyDecision      *DailyDecision             `json:"daily_decision,omitempty"`
+	IllnessSuspicion   *IllnessSuspicion          `json:"illness_suspicion,omitempty"`
+	ContextAnnotations []ContextAnnotationSummary `json:"context_annotations,omitempty"`
 	// SubjectiveCheckin is the morning self-report (Telegram one-tap).
 	// Populated from subjective_checkins when a row exists for today
 	// in the tenant's REPORT_TZ. nil when no row — dashboard renders

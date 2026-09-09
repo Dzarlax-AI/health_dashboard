@@ -40,6 +40,14 @@ func NewEnergyV2Orchestrator() *EnergyV2Orchestrator {
 //
 // `schema` is used only for log lines; it has no functional role.
 func (o *EnergyV2Orchestrator) Trigger(ctx context.Context, db *DB, schema, tz string) {
+	o.TriggerAfter(ctx, db, schema, tz, nil)
+}
+
+// TriggerAfter schedules a post-recompute hook after each successful
+// coalesced energy snapshot write. It keeps the hook out of the ingest path:
+// callers may use it to invalidate or selectively regenerate a dependent
+// view, but must not make the POST /health response wait for that work.
+func (o *EnergyV2Orchestrator) TriggerAfter(ctx context.Context, db *DB, schema, tz string, after func()) {
 	o.mu.Lock()
 	rc, ok := o.rcs[db]
 	if !ok {
@@ -49,22 +57,25 @@ func (o *EnergyV2Orchestrator) Trigger(ctx context.Context, db *DB, schema, tz s
 	o.mu.Unlock()
 
 	rc.Trigger(ctx, func() {
-		o.recompute(ctx, db, schema, tz)
+		if o.recompute(ctx, db, schema, tz) && after != nil {
+			after()
+		}
 	})
 }
 
-func (o *EnergyV2Orchestrator) recompute(ctx context.Context, db *DB, schema, tz string) {
+func (o *EnergyV2Orchestrator) recompute(ctx context.Context, db *DB, schema, tz string) bool {
 	res, err := db.ComputeBankForToday(ctx, tz)
 	if err != nil {
 		log.Printf("[ENERGY_V2] schema=%s compute error: %v", schema, err)
-		return
+		return false
 	}
 	if err := db.UpsertEnergySnapshot(ctx, tz, res); err != nil {
 		log.Printf("[ENERGY_V2] schema=%s upsert error: %v", schema, err)
-		return
+		return false
 	}
 	// One log line per recompute lets us observe v2 behaviour in production
 	// without depending on request-path rendering.
 	log.Printf("[ENERGY_V2] schema=%s bank=%d display=%d state=%s flags=%v alpha=%.4f drain=%d restore=%d",
 		schema, res.Bank, res.Display, res.State, res.Flags, res.AlphaUsed, res.TodayDrain, res.TodayRestore)
+	return true
 }

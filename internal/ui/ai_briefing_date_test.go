@@ -1,6 +1,10 @@
 package ui
 
-import "testing"
+import (
+	"testing"
+
+	"health-receiver/internal/storage"
+)
 
 func TestResolveAIBriefingDate(t *testing.T) {
 	today := "2026-08-05"
@@ -29,5 +33,28 @@ func TestResolveAIBriefingDate(t *testing.T) {
 				t.Fatalf("resolveAIBriefingDate(%q) = %q, %v; want %q", tc.raw, got, err, tc.want)
 			}
 		})
+	}
+}
+
+func TestBlocksForStaleDecisionSuppressesActionableNarrative(t *testing.T) {
+	original := map[string]string{
+		"SYNTHESIS":      "Train hard today.",
+		"RECOMMENDATION": "Do intervals.",
+		"SLEEP":          "Sleep was restorative.",
+		"RECOVERY":       "HRV is stable.",
+	}
+
+	got := blocksForDecisionFreshness(original, false)
+	if got["SYNTHESIS"] != "" || got["RECOMMENDATION"] != "" {
+		t.Fatalf("stale action content leaked into blocks: %#v", got)
+	}
+	if got["SLEEP"] == "" || got["RECOVERY"] == "" {
+		t.Fatalf("non-actionable evidence was removed: %#v", got)
+	}
+	if insight := storage.CombineAIBlocks(got); insight == "" || insight == "Train hard today." {
+		t.Fatalf("stale action content leaked into combined insight: %q", insight)
+	}
+	if original["SYNTHESIS"] == "" || original["RECOMMENDATION"] == "" {
+		t.Fatalf("source blocks were mutated: %#v", original)
 	}
 }

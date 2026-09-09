@@ -864,6 +864,10 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 	// values — section statuses are settled by ComputeBriefing, verdict
 	// + flags by the v2 override block above.
 	health.EnrichLabels(resp, health.GetStrings(lang))
+	// This is deliberately last: the daily decision is the canonical action
+	// contract for every client and must reflect the final v2 verdict, illness
+	// cap and localized labels rather than an intermediate scoring result.
+	resp.DailyDecision = health.BuildDailyDecision(resp)
 
 	return resp, nil
 }
