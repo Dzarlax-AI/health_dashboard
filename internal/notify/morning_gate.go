@@ -44,7 +44,7 @@ const (
 type MorningGateInputs struct {
 	Now               time.Time
 	Cap               time.Time
-	SleepSettled      bool
+	WakeReady         bool
 	HasCheckin        bool
 	CheckinStatus     string
 	ReportAlreadySent bool
@@ -66,14 +66,14 @@ type MorningGateInputs struct {
 // Policy:
 //   - report already sent → noop
 //   - past cap:
-//       - prompt is still in `prompted` state → expire + force
-//       - prompt was answered (even late) → send report normally
-//       - no prompt row → force without expire
+//   - prompt is still in `prompted` state → expire + force
+//   - prompt was answered (even late) → send report normally
+//   - no prompt row → force without expire
 //   - before cap:
-//       - sleep not settled → wait (don't prompt yet)
-//       - no checkin yet → prompt
-//       - checkin answered or late_answered → send report
-//       - checkin still in `prompted` → wait
+//   - wake detector not ready → wait (don't prompt yet)
+//   - no checkin yet → prompt
+//   - checkin answered or late_answered → send report
+//   - checkin still in `prompted` → wait
 func DecideMorningAction(in MorningGateInputs) MorningAction {
 	if in.ReportAlreadySent {
 		return MorningActionNoop
@@ -82,7 +82,7 @@ func DecideMorningAction(in MorningGateInputs) MorningAction {
 
 	// Feature-flag bypass: when check-in is disabled we mirror the
 	// pre-PR scheduler exactly — past cap → force-send, before cap →
-	// SendReport (which itself defers when sleep isn't settled).
+	// SendReport (which itself defers until the wake detector is ready).
 	if !in.CheckinEnabled {
 		if past {
 			return MorningActionForce
@@ -105,7 +105,7 @@ func DecideMorningAction(in MorningGateInputs) MorningAction {
 	}
 
 	// Before cap.
-	if !in.SleepSettled {
+	if !in.WakeReady {
 		return MorningActionWait
 	}
 	if !in.HasCheckin {

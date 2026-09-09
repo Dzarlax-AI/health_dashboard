@@ -2,6 +2,7 @@ package ai
 
 import (
 	"bytes"
+	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -15,19 +16,17 @@ import (
 //go:embed prompt.txt
 var systemPrompt string
 
-// Model describes a single Gemini model available for content generation.
-type Model struct {
-	ID          string `json:"id"`           // e.g. "gemini-2.5-flash"
-	DisplayName string `json:"display_name"` // e.g. "Gemini 2.5 Flash"
-}
-
 // ListModels returns all Gemini models that support generateContent,
 // sorted as returned by the API. Returns an error if the key is invalid.
 func ListModels(apiKey string) ([]Model, error) {
+	return listModels(context.Background(), apiKey)
+}
+
+func listModels(ctx context.Context, apiKey string) ([]Model, error) {
 	if apiKey == "" {
 		return nil, fmt.Errorf("API key is required")
 	}
-	req, err := http.NewRequest(http.MethodGet, "https://generativelanguage.googleapis.com/v1beta/models", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://generativelanguage.googleapis.com/v1beta/models", nil)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
@@ -42,7 +41,7 @@ func ListModels(apiKey string) ([]Model, error) {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("google API error (%d): %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("google API error (status %d)", resp.StatusCode)
 	}
 
 	var result struct {
@@ -71,10 +70,41 @@ func ListModels(apiKey string) ([]Model, error) {
 
 const defaultModel = "gemini-2.5-flash"
 
+type GeminiProvider struct{}
+
+func (GeminiProvider) Descriptor() ProviderDescriptor {
+	return ProviderDescriptor{
+		ID:                ProviderGemini,
+		DisplayName:       "Gemini",
+		DefaultModel:      defaultModel,
+		APIKeyPlaceholder: "AIza...",
+	}
+}
+
+func (GeminiProvider) ListModels(ctx context.Context, apiKey string) ([]Model, error) {
+	return listModels(ctx, apiKey)
+}
+
+func (GeminiProvider) Generate(ctx context.Context, cfg ProviderConfig, req GenerationRequest) (GenerationResult, error) {
+	return generateWithPrompt(
+		ctx,
+		cfg.APIKey,
+		cfg.Model,
+		cfg.MaxOutputTokens,
+		req.Prompt,
+		req.UserPayload,
+		req.Language,
+		req.ResponseSchema,
+	)
+}
+
+func init() {
+	RegisterProvider(GeminiProvider{})
+}
+
 // geminiClient bounds Gemini calls so a hung remote can't pin a goroutine
-// forever. With per-block parallelism we can have 4 in flight per tenant per
-// tick — an indefinite hang would balloon the pool until process restart.
-// 60s is generous: typical end-to-end is 2–8 s for flash, 10–25 s for pro.
+// forever. Insight v2 makes one call per regeneration, but every request must
+// still be independently bounded.
 var geminiClient = &http.Client{Timeout: 60 * time.Second}
 
 var langNames = map[string]string{
@@ -84,19 +114,18 @@ var langNames = map[string]string{
 }
 
 // generateWithPrompt is the shared HTTP path for any Gemini call. Callers
-// supply the system prompt (per-block templates inject block-specific
-// instructions before calling this) and the user-facing payload bytes.
+// supply the system prompt and the user-facing payload bytes.
 //
 //nolint:revive // keep arg order stable for the orchestrator callsite
-func generateWithPrompt(apiKey, model string, maxTokens int, prompt string, userPayload []byte, lang string) (string, []byte, error) {
+func generateWithPrompt(ctx context.Context, apiKey, model string, maxTokens int, prompt string, userPayload []byte, lang string, responseSchema *ResponseSchema) (GenerationResult, error) {
 	if apiKey == "" {
-		return "", nil, fmt.Errorf("gemini API key is not configured")
+		return GenerationResult{}, fmt.Errorf("gemini API key is not configured")
 	}
 	if model == "" {
 		model = defaultModel
 	}
 	if maxTokens <= 0 {
-		maxTokens = 5000
+		maxTokens = DefaultMaxOutputTokens
 	}
 
 	endpoint := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", url.PathEscape(model))
@@ -123,55 +152,108 @@ func generateWithPrompt(apiKey, model string, maxTokens int, prompt string, user
 			},
 		},
 		"generationConfig": map[string]any{
-			"temperature":     0.2,
 			"maxOutputTokens": maxTokens,
 		},
+	}
+	if responseSchema != nil {
+		config := payload["generationConfig"].(map[string]any)
+		config["responseMimeType"] = "application/json"
+		config["responseJsonSchema"] = responseSchema.Schema
 	}
 
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
-		return "", nil, fmt.Errorf("marshal payload: %w", err)
+		return GenerationResult{}, fmt.Errorf("marshal payload: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return "", nil, fmt.Errorf("new request: %w", err)
+	buildRequest := func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+		if err != nil {
+			return nil, fmt.Errorf("new request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-goog-api-key", apiKey)
+		return req, nil
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-goog-api-key", apiKey)
-
-	resp, err := geminiClient.Do(req)
+	resp, attempts, latency, err := doRequestWithRetry(ctx, geminiClient, buildRequest)
 	if err != nil {
-		return "", nil, fmt.Errorf("do request: %w", err)
+		return GenerationResult{RequestPayload: bodyBytes, Attempts: attempts, Latency: latency}, fmt.Errorf("do request: %w", err)
 	}
 	defer resp.Body.Close()
+	baseResult := GenerationResult{
+		RequestPayload: bodyBytes,
+		RequestID:      firstHeader(resp.Header, "x-request-id", "x-goog-request-id"),
+		Attempts:       attempts,
+		Latency:        latency,
+	}
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return "", nil, fmt.Errorf("read response: %w", err)
+		return baseResult, fmt.Errorf("read response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", bodyBytes, fmt.Errorf("gemini error (status %d): %s", resp.StatusCode, string(respBody))
+		return baseResult, fmt.Errorf("gemini error (status %d)", resp.StatusCode)
 	}
 
 	var result struct {
 		Candidates []struct {
-			Content struct {
+			FinishReason string `json:"finishReason"`
+			Content      struct {
 				Parts []struct {
 					Text string `json:"text"`
 				} `json:"parts"`
 			} `json:"content"`
 		} `json:"candidates"`
+		PromptFeedback struct {
+			BlockReason string `json:"blockReason"`
+		} `json:"promptFeedback"`
+		UsageMetadata struct {
+			PromptTokenCount     int64 `json:"promptTokenCount"`
+			CandidatesTokenCount int64 `json:"candidatesTokenCount"`
+			TotalTokenCount      int64 `json:"totalTokenCount"`
+		} `json:"usageMetadata"`
 	}
 
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", bodyBytes, fmt.Errorf("unmarshal response: %w (%s)", err, string(respBody))
+		return baseResult, fmt.Errorf("unmarshal response: %w", err)
+	}
+	baseResult.InputTokens = result.UsageMetadata.PromptTokenCount
+	baseResult.OutputTokens = result.UsageMetadata.CandidatesTokenCount
+	baseResult.TotalTokens = result.UsageMetadata.TotalTokenCount
+	if result.PromptFeedback.BlockReason != "" {
+		baseResult.FinishReason = result.PromptFeedback.BlockReason
+		return baseResult, fmt.Errorf("gemini prompt blocked: %s", result.PromptFeedback.BlockReason)
 	}
 
-	if len(result.Candidates) == 0 || len(result.Candidates[0].Content.Parts) == 0 {
-		return "", bodyBytes, fmt.Errorf("unexpected gemini response format: %s", string(respBody))
+	if len(result.Candidates) == 0 {
+		return baseResult, fmt.Errorf("unexpected gemini response format")
 	}
+	baseResult.FinishReason = result.Candidates[0].FinishReason
+	if baseResult.FinishReason != "" && baseResult.FinishReason != "STOP" {
+		return baseResult, fmt.Errorf("gemini response did not finish cleanly: %s", baseResult.FinishReason)
+	}
+	if len(result.Candidates[0].Content.Parts) == 0 {
+		return baseResult, fmt.Errorf("unexpected gemini response format")
+	}
+	var textParts []string
+	for _, part := range result.Candidates[0].Content.Parts {
+		if strings.TrimSpace(part.Text) != "" {
+			textParts = append(textParts, part.Text)
+		}
+	}
+	if len(textParts) == 0 {
+		return baseResult, fmt.Errorf("unexpected gemini response format")
+	}
+	baseResult.Text = strings.Join(textParts, "")
+	return baseResult, nil
+}
 
-	return result.Candidates[0].Content.Parts[0].Text, bodyBytes, nil
+func firstHeader(headers http.Header, names ...string) string {
+	for _, name := range names {
+		if value := headers.Get(name); value != "" {
+			return value
+		}
+	}
+	return ""
 }

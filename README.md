@@ -83,7 +83,9 @@ flowchart TD
         ABB[("health_&lt;user&gt;.ai_briefing_blocks")]
     end
 
+    Provider["AI Provider Adapter"]
     Gemini["Gemini API"]
+    OpenAI["OpenAI Responses API"]
     Claude["Claude / AI"]
     Browser["Browser"]
     Telegram["Telegram"]
@@ -97,8 +99,12 @@ flowchart TD
     HM -->|"rollup"| DS
 
     DS -->|"raw metrics"| AI
-    AI -->|"generateContent"| Gemini
-    Gemini -->|"briefing text"| AI
+    AI --> Provider
+    Provider -->|"generateContent"| Gemini
+    Provider -->|"responses"| OpenAI
+    Gemini -->|"briefing text"| Provider
+    OpenAI -->|"briefing text"| Provider
+    Provider -->|"generated blocks"| AI
     AI -->|"cache"| AB
 
     AB -->|"ai insight"| UI
@@ -122,6 +128,66 @@ Data is stored in layers:
 - **`daily_scores`** -- daily rollups + readiness scores (auto-maintained)
 
 The pre-aggregated tables are built automatically on startup and after each sync. They can be wiped and rebuilt at any time from `metric_points`.
+
+## Frontend Workspace
+
+The repository includes a lightweight pnpm workspace under `apps/web` for the
+incremental React + TypeScript frontend migration. The current Go-rendered UI
+remains the production route until the dedicated routing issue is completed.
+Both clients consume the canonical OpenAPI contract in `contracts/openapi.json`;
+the browser never receives database credentials, API keys, or a tenant/schema
+selector.
+
+Node.js 24+ and the pinned pnpm version from the root `package.json` are
+required. Local frontend development does not require Docker:
+
+```bash
+pnpm install
+make web-dev                 # Vite on http://127.0.0.1:4173
+make web-check               # contract drift, types, lint, unit tests, build
+make web-test-visual         # install Chromium and test responsive gauge geometry
+```
+
+Vite proxies same-origin `/api/*` requests to `http://127.0.0.1:8080` by
+default. Set `HEALTH_API_PROXY_TARGET` to point at a different local backend.
+The checked-in component fixture supports `?lang=en|ru|sr` and
+`?fixture=normal|partial|stale|loading|unavailable|error`.
+
+The monorepo also defines independent local image contracts:
+
+```bash
+make docker-build-backend    # Dockerfile.backend → health-backend:local
+make docker-build-frontend   # apps/web/Dockerfile → health-frontend:local
+make test-container-images   # build both and verify users, artifacts, labels, HTTP, and caching
+make test-release-contract-helpers          # classifier, manifest, and release resolver unit checks
+make test-compatible-image-pair-negative    # reject contract/revision mismatches before startup
+make test-compatible-image-pair             # run the full routed backend/frontend pair harness
+```
+
+Both builds embed the current source revision and OpenAPI contract version as
+OCI labels. The backend image preserves `/app/server` and
+`/app/tenant_isolation`; the frontend is a non-root static Nginx runtime with no
+Node.js toolchain or secrets. Its hashed `/assets/*` responses are immutable,
+while `index.html` is not cached across releases. The static image deliberately
+does not proxy `/api/*`: the browser uses same-origin API paths and the
+production reverse proxy will route those paths to the backend.
+
+On `main`, CI publishes the backend and frontend to separate GHCR repositories
+as full-Git-SHA-tagged candidates. A changed component is published; an
+unchanged component is resolved from the last authoritative compatible pair.
+Tags can move, so the exact image digests—not the full-SHA tags—are the immutable
+component identities. The digest pair is preflighted and exercised through the
+routed harness, then recorded in a `compatibility-manifest.json` artifact and in
+the `${repo}-pair:compatible` metadata image. That single metadata tag is the
+authoritative atomic pair pointer. Component `latest` tags are updated afterward
+for convenience only and must never be used to select a compatible pair.
+Both component lanes call the same fail-closed release resolver so label,
+revision, digest, role, and contract validation cannot drift between them.
+
+The manual backend arm64 build uses the architecture-qualified
+`${sha}-arm64` tag and is not part of the verified linux/amd64 pair. Building or
+publishing these images does not switch the React UI: production routing remains
+unchanged until the canary and rollback work in issue #217.
 
 ## Quick Start
 
@@ -200,9 +266,14 @@ All configuration is via environment variables:
 | `REPORT_EVENING_WEEKEND` | No | Hour (0-23) for evening day summary on weekends. Default: `21`. |
 | `REPORT_MORNING_CAP` | No | Smart-retry deadline (hour 0-23). Past this time the morning report force-sends with a stale-data banner regardless of whether sleep data has settled. Default: `morning_hour + 4` (floor 11). |
 | `REPORT_TZ` | No | Timezone for report scheduling (e.g. `Europe/Belgrade`). Default: system local. |
+| `AI_PROVIDER` | No | Active AI adapter: `gemini` or `openai`. Default: `gemini`. Configurable installation-wide in Admin UI. |
+| `AI_MAX_OUTPUT_TOKENS` | No | Shared max output tokens for the active AI provider. Default: `5000`. |
 | `GEMINI_API_KEY` | No | Gemini API key for AI morning briefing. Get free at [aistudio.google.com](https://aistudio.google.com/apikey). If not set — AI briefing disabled. |
-| `GEMINI_MODEL` | No | Gemini model to use. Default: `gemini-2.5-flash`. Configurable in Admin UI (dropdown fetched from Google API). |
-| `GEMINI_MAX_TOKENS` | No | Max output tokens for AI briefing. Default: `5000`. Configurable in Admin UI. |
+| `GEMINI_MODEL` | No | Gemini model suggestion. Default: `gemini-2.5-flash`; editable in Admin UI. |
+| `GEMINI_MAX_TOKENS` | No | Legacy fallback for upgrades. Prefer `AI_MAX_OUTPUT_TOKENS`. |
+| `OPENAI_API_KEY` | No | OpenAI API key for direct Responses API access. |
+| `OPENAI_MODEL` | No | OpenAI model. Default: `gpt-5.6-luna`; editable in Admin UI. |
+| `OPENAI_REASONING_EFFORT` | No | OpenAI reasoning effort: `none`, `low`, `medium`, `high`, `xhigh`, or `max`. Default: `none`. |
 | `HEALTH_HR_ZONES_BPM` | No | Four ascending BPM borders defining the five HR training zones (Z1<B1, Z2<B2, Z3<B3, Z4<B4, Z5≥B4), e.g. `116,135,154,173`. When set, `/health/workouts` ingest computes time-in-zone per workout. When unset, the `hr_z*_sec` columns stay NULL and ingest still succeeds. |
 
 ## Health Auto Export Setup
@@ -335,7 +406,7 @@ Features:
 - **Metrics view** -- full list of available metrics with latest values; click any to open its chart
 - **Metric charts** -- time series with auto-bucketing (minute / hour / day)
 - **Settings** (`/settings`, all users) -- Telegram notification config, Apple Health import
-- **Admin** (`/admin`, admins only) -- cache status, backfill controls, AI briefing config (Gemini key, model, max tokens), data gap detection, **data quality audit** (impossible-value scan + soft-suspect z-score sweep + manual weekly digest trigger), user management
+- **Admin** (`/admin`, admins only) -- cache status, backfill controls, AI provider/key/model/reasoning config, data gap detection, **data quality audit** (impossible-value scan + soft-suspect z-score sweep + manual weekly digest trigger), user management
 - URL hash state -- shareable links like `/#metric=heart_rate&from=2026-01-01&to=2026-01-31`
 
 ## MCP Server
@@ -414,7 +485,7 @@ When `TELEGRAM_TOKEN` and `TELEGRAM_CHAT_ID` are set, the server sends two daily
 - **Morning** (weekday 08:00 / weekend 09:00) -- Headline (most notable cross-metric signal of the day), Energy Bank verdict ("push hard / moderate / active recovery / rest"), Readiness, Alerts, Sleep, Yesterday (full activity + cardio retrospective), Recovery, plus an AI-generated `🎯 Plan for today`
 - **Evening** (weekday 20:00 / weekend 21:00) -- "today so far" snapshot: dashboard cards (steps, calories, exercise), Energy Bank current vs morning capacity, Readiness trend, top insights
 
-Rule-based bullets are always rendered (grounded in medical literature); when Gemini is configured, AI text is layered underneath each section as `🤖 ...` annotation, never as a replacement.
+Rule-based bullets are always rendered (grounded in medical literature); when an AI provider is configured, its text is layered underneath each section as `🤖 ...` annotation, never as a replacement.
 
 **Smart-retry**: the morning report waits until last night's sleep data has "settled" — record exists, last segment ended ≥45min ago (handles the wake-walk-dog-sleep-again case), no fragments ingested in the last 20min. If conditions aren't met, sending is deferred and retried on each new data batch (or every 15min by the scheduler) until `REPORT_MORNING_CAP`. At the cap, a stale-data banner is prepended and the report fires anyway, so a watch-off day still gets a notification.
 
@@ -424,15 +495,15 @@ Times are configurable per weekday/weekend via env vars or through the Settings 
 
 ### AI Morning Briefing
 
-When `GEMINI_API_KEY` is set (or configured in the Admin UI), the server generates a personalized morning briefing via Gemini. The four blocks — `SLEEP` / `YESTERDAY` / `RECOVERY` / `RECOMMENDATION` — are produced **per-block in parallel** (3 leaves) plus a recommendation root that consumes the leaf texts. Each block is cached in `ai_briefing_blocks` keyed by an `inputs_hash` over the metric subset that drove it, so a late HRV update only invalidates the blocks that read HRV (RECOVERY + RECOMMENDATION). SLEEP / YESTERDAY stay cached until their own inputs change.
+When the active AI provider has an API key (from env or Admin UI), the server generates one concise morning explanation through its adapter. Gemini and direct OpenAI Responses API are built in; OpenAI defaults to `gpt-5.6-luna` with reasoning effort `none`. The rule engine first selects the authoritative verdict, up to three reasons, and the action. The provider receives that decision plus date-aligned health metrics and returns a structured `SYNTHESIS` explanation of at most 60 words. The generation operation is capped at 600 output tokens regardless of the broader provider setting.
 
-The briefing is triggered after 05:00 when today's step count exceeds 300 (confirming the user is awake). Smart-retry runs every 15 min until `MorningCapHour` is reached (or the adaptive cap from `GetTypicalWakeTime + 60min` when ≥7 days of per-segment sleep data are present); each tick re-resolves block hashes and only the leaves whose hashes changed hit Gemini.
+The briefing is triggered after 05:00 when today's step count exceeds 300 (confirming the user is awake). Smart-retry runs every 15 min until `MorningCapHour` is reached (or the adaptive cap from `GetTypicalWakeTime + 60min` when ≥7 days of per-segment sleep data are present); each tick re-evaluates the exact SYNTHESIS evidence and generation fingerprint hash, regenerating only `SYNTHESIS` when it changes.
 
-The briefing covers four blocks: sleep quality (phases, fragmentation), yesterday's full day (activity, SpO2, breathing, wrist temperature), recovery (HRV/RHR vs 7-day personal baseline), and a concrete recommendation with specific numbers.
+The synthesis is cached in `ai_briefing_blocks` using a hash of the exact evidence packet plus provider, model, reasoning, output limit, and prompt revision. Existing four-block cache rows remain available as a rollout fallback, but a valid `SYNTHESIS` row always takes precedence.
 
-The AI insight also appears in the dashboard hero section, served by a dedicated `/api/ai-briefing` endpoint (returns `{insight, blocks, generating, disabled}`) so a cold cache never blocks `/api/health-briefing`. The web dashboard polls every 60s while the cache is warming and surfaces a ✨ marker on fresh updates. The prompt template is in `internal/ai/prompt.txt`; per-block instructions live in `internal/ai/blocks.go::blockInstructions`.
+The AI insight also appears in the dashboard hero section, served by a dedicated `/api/ai-briefing` endpoint (returns `{insight, blocks, generating, disabled}`) so a cold cache never blocks `/api/health-briefing`. The web dashboard polls every 60s while the cache is warming and surfaces a ✨ marker on fresh updates. The prompt template is in `internal/ai/prompt.txt`.
 
-Key and model are stored in the `settings` table and configurable in Admin UI — the model dropdown is populated dynamically from the Google API (only models supporting `generateContent` are shown). Env vars serve as defaults if DB has no value.
+Provider, per-provider keys/models, OpenAI reasoning effort, and the shared output limit are configurable installation-wide in Admin UI. Provider keys are never returned to the browser; entering a new key replaces the stored value, while an explicit checkbox clears it. Model discovery returns suggestions from the selected provider, but the field remains editable. Switching providers does not delete the inactive provider's settings and does not automatically fall back across providers.
 
 ### Weekly Data-Quality Digest
 

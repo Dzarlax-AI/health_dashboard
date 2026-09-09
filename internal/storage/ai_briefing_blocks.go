@@ -2,31 +2,47 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const planInputsHashPrefix = "daily-plan-v1:"
 
-// PlanInputsHash stores freshness metadata without a schema migration. The
-// suffix remains the complete recommendation-input hash used by the cache.
-func PlanInputsHash(decisionID, recommendationHash string) string {
-	return planInputsHashPrefix + decisionID + ":" + recommendationHash
+// PlanInputsHash binds a complete atomically-written AI bundle to the
+// deterministic decision it explains without requiring a schema migration.
+func PlanInputsHash(decisionID, bundleHash string) string {
+	return planInputsHashPrefix + decisionID + ":" + bundleHash
 }
 
-// PlanMatchesDecision accepts only the current v1 envelope. Old cached AI
-// prose is safe to retain for reports but must not be presented as today's
-// actionable plan after this contract ships.
+// PlanMatchesDecision treats legacy and differently-versioned bundles as
+// stale. They can remain available to old report consumers but never become
+// an actionable plan for a new native client.
 func PlanMatchesDecision(inputsHash, decisionID string) bool {
 	return decisionID != "" && strings.HasPrefix(inputsHash, planInputsHashPrefix+decisionID+":")
 }
 
-// AIBlock holds the cached output of one Gemini call for a single (date,
-// lang, block) triple. Each block is generated independently so a late HRV
-// update only invalidates the blocks whose inputs_hash actually changed —
-// SLEEP/RECOVERY rerun, YESTERDAY stays cached.
+var requiredAIBundleBlocks = []string{
+	"SYNTHESIS",
+	"SLEEP",
+	"YESTERDAY",
+	"RECOVERY",
+	"RECOMMENDATION",
+}
+
+type aiBundleTransaction interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	Commit(context.Context) error
+}
+
+// AIBlock holds cached narrative text for a single (date, lang, block)
+// triple. AI insight v2 writes a complete five-block bundle atomically.
+// Historical leaf blocks remain readable as a compatibility fallback until
+// a synthesis exists.
 type AIBlock struct {
 	Block      string
 	Text       string
@@ -34,10 +50,9 @@ type AIBlock struct {
 	UpdatedAt  time.Time
 }
 
-// EnsureAIBriefingBlocksTable creates the per-block AI cache. Called on
-// startup alongside EnsureAIBriefingsTable. Replaces the single-blob
-// ai_briefings.insight as the source of truth for the morning report's
-// AI commentary.
+// EnsureAIBriefingBlocksTable creates the AI cache. Called on startup alongside
+// EnsureAIBriefingsTable. SYNTHESIS is the v2 source of truth; the existing
+// block-shaped table avoids a schema migration and preserves rollback data.
 //
 // Also runs a one-shot migration: existing ai_briefings.insight blobs are
 // split by SLEEP/YESTERDAY/RECOVERY/RECOMMENDATION headers and inserted as
@@ -199,12 +214,77 @@ func (s *DB) SaveAIBlock(date, lang, block, text, inputsHash string) error {
 	return err
 }
 
-// GetAIBlocks returns all cached blocks for (date, lang) keyed by block name.
-// Text-only view, used by Telegram formatter and the joined UI/MCP getter.
-// For the orchestrator (which also needs inputs_hash to decide regeneration)
-// see GetAIBlocksFull.
+// SaveAIBundle replaces one complete five-block generation atomically. A
+// validation error or failed write leaves the previous aligned bundle intact.
+func (s *DB) SaveAIBundle(date, lang string, blocks map[string]string, inputsHash string) error {
+	if err := validateAIBundle(blocks); err != nil {
+		return err
+	}
+
+	ctx, cancel := queryCtx()
+	defer cancel()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck -- rollback after commit is harmless
+	return saveAIBundleInTransaction(ctx, tx, date, lang, blocks, inputsHash)
+}
+
+func validateAIBundle(blocks map[string]string) error {
+	for _, block := range requiredAIBundleBlocks {
+		if strings.TrimSpace(blocks[block]) == "" {
+			return fmt.Errorf("AI bundle missing %s", block)
+		}
+	}
+	return nil
+}
+
+func saveAIBundleInTransaction(
+	ctx context.Context,
+	tx aiBundleTransaction,
+	date, lang string,
+	blocks map[string]string,
+	inputsHash string,
+) error {
+	for _, block := range requiredAIBundleBlocks {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO ai_briefing_blocks (date, lang, block, text, inputs_hash, created_at)
+			VALUES ($1, $2, $3, $4, $5, NOW())
+			ON CONFLICT (date, lang, block) DO UPDATE
+				SET text = excluded.text,
+				    inputs_hash = excluded.inputs_hash,
+				    created_at = NOW()
+		`, date, lang, block, blocks[block], inputsHash); err != nil {
+			return fmt.Errorf("save AI bundle %s: %w", block, err)
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+// GetAIBlocks returns the canonical text view for (date, lang). SYNTHESIS
+// suppresses historical leaf rows; without it the old blocks are returned for
+// compatibility with cached pre-v2 reports.
 func (s *DB) GetAIBlocks(date, lang string) map[string]string {
-	full := s.GetAIBlocksFull(date, lang)
+	return canonicalAIBlockTexts(s.GetAIBlocksFull(date, lang))
+}
+
+func canonicalAIBlockTexts(full map[string]*AIBlock) map[string]string {
+	if synthesis := full["SYNTHESIS"]; synthesis != nil && strings.TrimSpace(synthesis.Text) != "" {
+		out := map[string]string{"SYNTHESIS": synthesis.Text}
+		for key, block := range full {
+			if key == "SYNTHESIS" || block == nil {
+				continue
+			}
+			// New structured bundles save all sibling rows with the same exact
+			// evidence + generation fingerprint hash. Old v2 SYNTHESIS rows can
+			// coexist with stale legacy leaves; those must remain suppressed.
+			if block.InputsHash == synthesis.InputsHash && strings.TrimSpace(block.Text) != "" {
+				out[key] = block.Text
+			}
+		}
+		return out
+	}
 	out := make(map[string]string, len(full))
 	for k, v := range full {
 		out[k] = v.Text
@@ -212,10 +292,8 @@ func (s *DB) GetAIBlocks(date, lang string) map[string]string {
 	return out
 }
 
-// GetAIBlocksFull is the orchestrator-facing variant: returns AIBlock structs
-// (text + inputs_hash) so callers can decide per-block regeneration without
-// re-querying for each block. Always returns an initialized map (empty on
-// query error) so callers can write into it without nil-map panics.
+// GetAIBlocksFull returns every stored row including inputs_hash. Always
+// returns an initialized map (empty on query error).
 func (s *DB) GetAIBlocksFull(date, lang string) map[string]*AIBlock {
 	out := make(map[string]*AIBlock)
 	ctx, cancel := queryCtx()
@@ -236,14 +314,19 @@ func (s *DB) GetAIBlocksFull(date, lang string) map[string]*AIBlock {
 	return out
 }
 
-// GetAIInsightCombined joins the four cached blocks back into a single text
-// blob with SLEEP / YESTERDAY / RECOVERY / RECOMMENDATION headers (uppercase,
-// language-agnostic markers — formatMorning reads blocks directly so it
-// doesn't need this; UI dashboard and MCP do). Returns "" if no blocks cached.
+// GetAIInsightCombined returns SYNTHESIS directly when present. For dates that
+// have not regenerated under v2, it joins the four historical blocks so
+// dashboard and MCP clients keep working during rollout and rollback.
 func (s *DB) GetAIInsightCombined(date, lang string) string {
 	blocks := s.GetAIBlocks(date, lang)
 	if len(blocks) == 0 {
 		return ""
+	}
+	// AI insight v2 stores one validated explanation. Once present it is the
+	// canonical narrative; legacy leaf rows remain only as rollback data and
+	// must not leak back into current clients.
+	if synthesis := strings.TrimSpace(blocks["SYNTHESIS"]); synthesis != "" {
+		return synthesis
 	}
 	order := []string{"SLEEP", "YESTERDAY", "RECOVERY", "RECOMMENDATION"}
 	seen := map[string]bool{}

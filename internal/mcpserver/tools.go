@@ -27,7 +27,7 @@ func registerMetricTools(s *server.MCPServer, _ DBResolver) {
 	})
 
 	s.AddTool(mcp.NewTool("get_ai_briefing",
-		mcp.WithDescription("Get the AI-generated morning health briefing (text) for a given date. Produced by Gemini based on 30-day health data. Contains SLEEP, YESTERDAY, RECOVERY, and RECOMMENDATION blocks. Returns empty if no briefing was generated for that date."),
+		mcp.WithDescription("Get the AI-assisted morning wellness explanation for a given date. The server computes the verdict and health facts; the active AI provider produces one concise SYNTHESIS explanation. Legacy dates may still contain the older SLEEP, YESTERDAY, RECOVERY, and RECOMMENDATION format. Returns a \"No AI briefing available for <date>\" message if no briefing was generated."),
 		mcp.WithString("date", mcp.Description("Date YYYY-MM-DD (default: today)")),
 		mcp.WithString("lang", mcp.Description("Language: en, ru, sr (default: en). Returns cached briefing matching this language.")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

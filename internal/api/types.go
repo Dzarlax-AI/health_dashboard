@@ -1,0 +1,107 @@
+// Package api owns the stable transport envelopes shared by browser and
+// native clients. Business logic stays in health/storage; this package only
+// describes JSON sent over the public client API.
+package api
+
+import (
+	"health-receiver/internal/health"
+	"health-receiver/internal/storage"
+	"time"
+)
+
+// SessionResponse exposes only browser capabilities derived from the
+// authenticated request context. It intentionally contains no tenant identity
+// or selector.
+type SessionResponse struct {
+	IsAdmin bool `json:"is_admin"`
+}
+
+// AIBriefingSection is one localized, ordered AI narrative block.
+type AIBriefingSection struct {
+	Key    string `json:"key"`
+	Header string `json:"header"`
+	Body   string `json:"body"`
+}
+
+// AIBriefingResponse is the non-blocking AI briefing transport shape.
+//
+// Sections is the canonical extensible representation. Insight, Blocks, and
+// the four named block fields remain additive compatibility surfaces for
+// already-released web and iOS clients.
+type AIBriefingResponse struct {
+	Date             string              `json:"date"`
+	Lang             string              `json:"lang" jsonschema:"enum=en,enum=ru,enum=sr"`
+	Insight          string              `json:"insight"`
+	Sections         []AIBriefingSection `json:"sections"`
+	Blocks           map[string]string   `json:"blocks"`
+	Sleep            string              `json:"sleep"`
+	Yesterday        string              `json:"yesterday"`
+	Recovery         string              `json:"recovery"`
+	Recommend        string              `json:"recommendation"`
+	Summary          string              `json:"summary"`
+	Generating       bool                `json:"generating"`
+	Disabled         bool                `json:"disabled"`
+	DecisionID       string              `json:"decision_id,omitempty"`
+	FreshForDecision bool                `json:"fresh_for_decision"`
+	UpdatedAt        *time.Time          `json:"updated_at,omitempty"`
+	Plan             *AIBriefingPlan     `json:"plan,omitempty"`
+}
+
+// AIBriefingPlan is the sole actionable AI explanation for the current
+// DailyDecision. Its title/action remain server-owned; AI supplies the body.
+type AIBriefingPlan struct {
+	Title        string   `json:"title"`
+	Body         string   `json:"body"`
+	EvidenceKeys []string `json:"evidence_keys,omitempty"`
+}
+
+// NewAIBriefingResponse keeps every compatibility representation sourced from
+// the same block map so canonical and legacy fields cannot drift.
+func NewAIBriefingResponse(
+	date string,
+	lang string,
+	insight string,
+	sections []AIBriefingSection,
+	blocks map[string]string,
+	generating bool,
+	disabled bool,
+) AIBriefingResponse {
+	summary := blocks["SYNTHESIS"]
+	recommendation := blocks["RECOMMENDATION"]
+	if recommendation == "" {
+		recommendation = summary
+	}
+	return AIBriefingResponse{
+		Date:       date,
+		Lang:       lang,
+		Insight:    insight,
+		Sections:   sections,
+		Blocks:     blocks,
+		Sleep:      blocks["SLEEP"],
+		Yesterday:  blocks["YESTERDAY"],
+		Recovery:   blocks["RECOVERY"],
+		Recommend:  recommendation,
+		Summary:    summary,
+		Generating: generating,
+		Disabled:   disabled,
+	}
+}
+
+// ReadinessHistoryResponse wraps readiness points so the response can grow
+// additively without changing the top-level JSON kind.
+type ReadinessHistoryResponse struct {
+	Points []health.ReadinessPoint `json:"points"`
+}
+
+// EnergyHistoryDayResponse is the legacy day-level EnergyBank history shape.
+type EnergyHistoryDayResponse struct {
+	Granularity string                       `json:"granularity" jsonschema:"enum=day"`
+	Points      []storage.EnergyHistoryPoint `json:"points"`
+}
+
+// EnergyHistoryHourResponse is the EnergyBank v2 intraday history shape.
+type EnergyHistoryHourResponse struct {
+	Granularity    string                        `json:"granularity" jsonschema:"enum=hour"`
+	FormulaVersion int                           `json:"formula_version"`
+	Points         []storage.EnergySnapshotPoint `json:"points"`
+}

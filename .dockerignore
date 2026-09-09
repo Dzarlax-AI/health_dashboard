@@ -2,4 +2,9 @@
 .gocache
 bin
 docs/ai-plans
+node_modules
+.pnpm-store
+apps/*/dist
+apps/*/playwright-report
+apps/*/test-results
 vendor

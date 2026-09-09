@@ -1,0 +1,595 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Frontend / Backend Monorepo Separation Plan</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f7f3;
+      --surface: #ffffff;
+      --ink: #18211c;
+      --muted: #617068;
+      --line: #dce5df;
+      --green: #159a5b;
+      --green-soft: #e8f7ef;
+      --amber: #b86b09;
+      --amber-soft: #fff4dc;
+      --blue: #4d61d8;
+      --blue-soft: #edf0ff;
+      --red: #a33b34;
+      --red-soft: #fff0ed;
+      --shadow: 0 12px 32px rgba(29, 53, 39, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 12% 0%, rgba(132, 215, 171, 0.24), transparent 28rem),
+        linear-gradient(180deg, #fbfcfa, var(--bg));
+      color: var(--ink);
+      font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { width: min(1120px, calc(100% - 32px)); margin: 36px auto 80px; }
+    h1, h2, h3 { line-height: 1.18; }
+    h1 { max-width: 850px; margin: 0 0 12px; font-size: clamp(2rem, 5vw, 3.8rem); }
+    h2 { margin: 0 0 18px; font-size: 1.55rem; }
+    h3 { margin: 0 0 10px; font-size: 1.08rem; }
+    p { margin: 0 0 12px; }
+    ul, ol { margin: 8px 0 0; padding-left: 1.25rem; }
+    li + li { margin-top: 7px; }
+    code {
+      padding: 0.12rem 0.35rem;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #f8faf8;
+      font: 0.92em ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .lede { max-width: 850px; color: var(--muted); font-size: 1.15rem; }
+    .meta { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 22px; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 7px 11px;
+      border-radius: 999px;
+      background: var(--green-soft);
+      color: #087343;
+      font-weight: 700;
+      font-size: 0.88rem;
+    }
+    section {
+      margin-top: 24px;
+      padding: clamp(20px, 4vw, 34px);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      background: rgba(255, 255, 255, 0.94);
+      box-shadow: var(--shadow);
+    }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .card {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--surface);
+    }
+    .chosen { border-color: #91d7b2; background: var(--green-soft); }
+    .later { background: var(--blue-soft); border-color: #cfd5ff; }
+    .warning { background: var(--amber-soft); border-color: #f0d49c; }
+    .risk { background: var(--red-soft); border-color: #f2c5c0; }
+    .label {
+      display: inline-block;
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: 0.76rem;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .flow {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr auto 1fr;
+      align-items: center;
+      gap: 10px;
+      margin-top: 18px;
+    }
+    .flow .node {
+      min-height: 112px;
+      display: grid;
+      place-content: center;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: #fafcfb;
+      text-align: center;
+    }
+    .arrow { color: var(--green); font-size: 1.5rem; font-weight: 900; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 13px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: 0.82rem; letter-spacing: 0.04em; text-transform: uppercase; }
+    tr:last-child td { border-bottom: 0; }
+    .phase { display: grid; grid-template-columns: 44px 1fr; gap: 14px; }
+    .phase + .phase { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--line); }
+    .number {
+      width: 40px;
+      height: 40px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--green);
+      color: white;
+      font-weight: 800;
+    }
+    .gate {
+      border: 2px solid var(--green);
+      background: linear-gradient(135deg, var(--green-soft), #fff);
+    }
+    .small { color: var(--muted); font-size: 0.92rem; }
+    @media (max-width: 780px) {
+      .grid, .grid.three { grid-template-columns: 1fr; }
+      .flow { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); text-align: center; }
+      section { border-radius: 18px; }
+      th:nth-child(3), td:nth-child(3) { display: none; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="label">Implementation plan · 2 August 2026</div>
+    <h1>Separate the web frontend and Go backend inside one monorepo</h1>
+    <p class="lede">
+      Introduce a separately built TypeScript web application without breaking the current
+      multi-tenant backend, authentication, mobile clients, admin workflows, or rollback path.
+      The dashboard moves first; the existing Go-rendered interface remains available while
+      the rest of the UI is migrated incrementally.
+    </p>
+    <div class="meta">
+      <span class="pill">Chosen: incremental migration</span>
+      <span class="pill">React + TypeScript + Vite</span>
+      <span class="pill">Separate Docker images</span>
+      <span class="pill">One shared API for web and mobile</span>
+    </div>
+  </header>
+
+  <section>
+    <h2>Task summary</h2>
+    <div class="grid">
+      <div class="card">
+        <span class="label">Current state</span>
+        <p>
+          A single Go binary owns ingestion, MCP, JSON APIs, authentication, HTML templates,
+          embedded JavaScript/CSS, static assets, admin pages, and settings pages.
+          CI builds and deploys one container image.
+        </p>
+      </div>
+      <div class="card chosen">
+        <span class="label">Desired state</span>
+        <p>
+          One repository contains an independently built web application and the existing Go
+          backend. Web and native clients consume the same explicit API contract. Frontend and
+          backend images can be tested, released, rolled back, and developed independently.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Why the split is needed</h2>
+    <ul>
+      <li>The embedded template/CSS/JavaScript model is becoming a constraint on UI iteration and component reuse.</li>
+      <li>A dedicated frontend build enables typed API access, component tests, visual regression tests, and predictable responsive behavior.</li>
+      <li>Separate images prevent a frontend-only change from rebuilding or releasing the data-processing server.</li>
+      <li>A shared contract prevents web and mobile from gradually implementing different interpretations of health data.</li>
+      <li>An incremental cutover protects the recently stabilised multi-tenant and deployment boundaries.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Approaches considered</h2>
+    <div class="grid three">
+      <article class="card risk">
+        <span class="label">A · Rejected</span>
+        <h3>Full rewrite and cutover</h3>
+        <p>Move dashboard, sections, metrics, settings, admin, and login in one release.</p>
+        <p class="small">Fast final-state arrival, but a large authentication, routing, and regression blast radius.</p>
+      </article>
+      <article class="card warning">
+        <span class="label">B · Rejected</span>
+        <h3>TypeScript bundle inside the Go image</h3>
+        <p>Build React and embed its output in the existing binary.</p>
+        <p class="small">Improves frontend development, but does not deliver independent images or releases.</p>
+      </article>
+      <article class="card chosen">
+        <span class="label">C · Chosen</span>
+        <h3>Separate images with a strangler cutover</h3>
+        <p>Add <code>apps/web</code>, move the dashboard first, and keep Go pages as fallback.</p>
+        <p class="small">Small reversible steps with the intended operational boundary from the start.</p>
+      </article>
+    </div>
+  </section>
+
+  <section>
+    <h2>Target architecture</h2>
+    <div class="flow">
+      <div class="node"><strong>Browser / iOS</strong><br><span class="small">Different credentials, same domain model</span></div>
+      <div class="arrow">→</div>
+      <div class="node"><strong>Traefik</strong><br><span class="small">Path routing and existing Authentik policy</span></div>
+      <div class="arrow">→</div>
+      <div class="node"><strong>Web image + Go API image</strong><br><span class="small">Static UI and tenant-aware application API</span></div>
+    </div>
+    <div class="grid" style="margin-top:16px">
+      <div class="card">
+        <h3>Frontend boundary</h3>
+        <ul>
+          <li><code>apps/web</code>: React, TypeScript, Vite.</li>
+          <li>Static production image with no database or backend credentials.</li>
+          <li>Same-origin calls to backend paths; no browser-visible service secrets.</li>
+          <li>Frontend owns presentation, routing for migrated pages, localisation, loading, empty, error, and stale states.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Backend boundary</h3>
+        <ul>
+          <li>Go remains the only owner of health rules, tenant resolution, authorisation, persistence, ingestion, notifications, and MCP.</li>
+          <li>Existing Go package layout stays in place during phase 1; moving it under an artificial folder adds no product value.</li>
+          <li>JSON contracts become explicit and contract-tested before more clients depend on them.</li>
+          <li>Legacy HTML routes remain deployable until their replacement reaches parity.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Routing and authentication contract</h2>
+    <table>
+      <thead>
+        <tr><th>Path group</th><th>Phase 1 destination</th><th>Security / compatibility rule</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>/</code> and new web assets</td>
+          <td>Frontend image</td>
+          <td>Keep the existing Authentik browser boundary. The frontend contains no tenant identity claims of its own.</td>
+        </tr>
+        <tr>
+          <td><code>/api/*</code></td>
+          <td>Go backend</td>
+          <td>Tenant and user context continue to be resolved server-side by the existing guards. Response changes are additive until versioning is introduced deliberately.</td>
+        </tr>
+        <tr>
+          <td><code>/health*</code>, <code>/mcp*</code></td>
+          <td>Go backend</td>
+          <td>Preserve the current API-key / bearer-token behavior and bypass the frontend entirely.</td>
+        </tr>
+        <tr>
+          <td><code>/sleep</code>, <code>/cardio</code>, <code>/activity</code>, <code>/recovery</code>, <code>/metrics*</code></td>
+          <td>Legacy Go UI, initially</td>
+          <td>Migrate one route family at a time after contract and visual parity checks.</td>
+        </tr>
+        <tr>
+          <td><code>/login</code>, <code>/setup</code>, <code>/settings</code>, <code>/admin</code>, <code>/fragments/*</code></td>
+          <td>Legacy Go UI</td>
+          <td>Remain backend-owned in the first phase. Admin mutation workflows are explicitly out of the dashboard cutover.</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="card warning" style="margin-top:16px">
+      <strong>No frontend-supplied tenant selector.</strong>
+      The browser may request a locale or presentation option, but it must never choose a schema or tenant identity.
+      Tenant scope continues to come from authenticated server-side context. Admin cross-tenant actions retain their
+      existing explicit and guarded behavior.
+    </div>
+  </section>
+
+  <section>
+    <h2>Repository shape</h2>
+    <pre><code>health_processing/
+├── apps/
+│   └── web/                 # React + TypeScript + Vite source
+├── cmd/                     # existing Go binaries
+├── internal/                # existing backend and legacy UI
+├── contracts/               # shared HTTP schema and compatibility fixtures
+├── deploy/                  # image/runtime contracts owned by this repository
+├── Dockerfile.backend
+├── go.mod
+├── package.json             # workspace commands only
+└── pnpm-workspace.yaml</code></pre>
+    <p class="small">
+      This is a lightweight workspace, not an Nx/Turborepo migration. Add orchestration only if build graph
+      complexity later justifies it. The production compose definition remains in
+      <code>personal_ai_stack/deploy/health</code> and consumes the published images.
+    </p>
+  </section>
+
+  <section>
+    <h2>Likely file changes</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>New</h3>
+        <ul>
+          <li><code>apps/web/**</code></li>
+          <li><code>contracts/**</code></li>
+          <li><code>Dockerfile.backend</code></li>
+          <li><code>apps/web/Dockerfile</code></li>
+          <li>Frontend test and lint configuration</li>
+          <li>Independent image workflow definitions or jobs</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Modified</h3>
+        <ul>
+          <li><code>internal/ui/handler.go</code> and API response types</li>
+          <li><code>.github/workflows/ci.yml</code></li>
+          <li><code>Makefile</code> and developer documentation</li>
+          <li><code>AGENTS.md</code> and <code>CLAUDE.md</code> in lockstep</li>
+          <li><code>personal_ai_stack/deploy/health/docker-compose.yml</code> in the deployment issue, not during scaffolding</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Implementation sequence</h2>
+    <div class="phase">
+      <div class="number">1</div>
+      <div>
+        <h3>Freeze and document the shared client API</h3>
+        <p>
+          Inventory dashboard and section responses, extract stable transport DTOs from template-specific view
+          models, document authentication modes, add contract fixtures, and define compatibility rules.
+          Do not make a cosmetic endpoint rename the prerequisite for the first UI migration.
+        </p>
+      </div>
+    </div>
+    <div class="phase">
+      <div class="number">2</div>
+      <div>
+        <h3>Create the frontend workspace and design foundation</h3>
+        <p>
+          Add React + TypeScript + Vite, typed API access, localisation, test harness, layout primitives, health
+          score card primitives, and a deterministic readiness-ring component. Capture the current friendly
+          background direction as source assets and tokens.
+        </p>
+      </div>
+    </div>
+    <div class="phase">
+      <div class="number">3</div>
+      <div>
+        <h3>Migrate only the dashboard</h3>
+        <p>
+          Rebuild readiness, Energy Bank, sleep quality, health briefing, AI briefing, freshness and insufficient-data
+          states. Preserve the rule that the dashboard leads with useful information rather than a generic
+          “not enough data” message. Keep legacy detail links operational.
+        </p>
+      </div>
+    </div>
+    <div class="phase">
+      <div class="number">4</div>
+      <div>
+        <h3>Split image builds and CI</h3>
+        <p>
+          Produce an immutable backend image and frontend image. Run Go and frontend checks independently,
+          then run an integration lane that boots both images and validates routing, authentication propagation,
+          API access, and fallback pages.
+        </p>
+      </div>
+    </div>
+    <div class="phase">
+      <div class="number">5</div>
+      <div>
+        <h3>Canary the route split</h3>
+        <p>
+          Add the frontend service to the production compose stack, route only the dashboard to it, verify health
+          and logs, then make the route switch. Rollback is a router change back to the still-shipped Go dashboard.
+        </p>
+      </div>
+    </div>
+    <div class="phase">
+      <div class="number">6</div>
+      <div>
+        <h3>Migrate the remaining UI in bounded route families</h3>
+        <p>
+          Move health sections and metrics next. Move settings/admin only after read-only screens are stable.
+          Delete Go templates, fragment handlers, and embedded static assets only after every route has an
+          accepted replacement and rollback window has elapsed.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Test plan</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>Automated</h3>
+        <ul>
+          <li>Go unit, DB, tenant-isolation, and current UI contract suites remain green.</li>
+          <li>TypeScript strict type-check, lint, unit tests, and production build.</li>
+          <li>Contract tests validate required fields, nullability, enums, locale behavior, and additive compatibility.</li>
+          <li>Component tests cover loading, partial, stale, error, and unavailable signal states.</li>
+          <li>Visual regression tests pin ring geometry at supported breakpoints so the readiness circle cannot drift or distort.</li>
+          <li>Browser integration tests validate dashboard → legacy detail navigation and auth expiration.</li>
+          <li>Container integration tests boot both images, exercise `/`, `/api/dashboard`, a legacy Go page, `/health` auth rejection, and backend health.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Manual QA</h3>
+        <ul>
+          <li>Russian, English, and Serbian locale switching.</li>
+          <li>Desktop, tablet, and narrow mobile widths.</li>
+          <li>Readiness ring remains circular, centred, and correctly layered.</li>
+          <li>Score text alignment and vertical spacing match approved UI.</li>
+          <li>Fresh data, partial data, no new data, stale wearable, and AI-generating cases.</li>
+          <li>Authentik session, local cookie fallback, logout, and denied admin access.</li>
+          <li>Two tenants return isolated data under concurrent requests.</li>
+          <li>Old section, metrics, settings, and admin routes remain usable.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Risks and mitigations</h2>
+    <table>
+      <thead><tr><th>Risk</th><th>Mitigation</th><th>Rollback signal</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>Tenant context is lost between proxy and API.</td>
+          <td>Keep tenant resolution exclusively in the Go guard; add cross-tenant negative tests and integration probes.</td>
+          <td>Any mismatched tenant identity or response immediately blocks cutover.</td>
+        </tr>
+        <tr>
+          <td>Browser and mobile contracts drift.</td>
+          <td>One canonical contract, compatibility fixtures, additive changes by default, and shared generated or validated client types.</td>
+          <td>Contract check failure blocks either image release.</td>
+        </tr>
+        <tr>
+          <td>Two deployments create routing ambiguity.</td>
+          <td>Write an explicit path ownership table; integration-test Traefik-equivalent routing before production.</td>
+          <td>404/redirect loops, missing auth headers, or asset failures revert the dashboard route.</td>
+        </tr>
+        <tr>
+          <td>Frontend release depends on an incompatible backend.</td>
+          <td>Publish compatibility metadata and test frontend against the intended backend image pair before deploy.</td>
+          <td>API compatibility probe failure prevents promotion.</td>
+        </tr>
+        <tr>
+          <td>Design regresses while code is reorganised.</td>
+          <td>Approve reference screenshots, component states, and visual regression thresholds before route cutover.</td>
+          <td>Readiness-ring geometry, excessive whitespace, or hierarchy regression blocks UI acceptance.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Rollback plan</h2>
+    <ol>
+      <li>Keep the Go dashboard route and embedded assets in the backend image during the first production window.</li>
+      <li>Pin both frontend and backend by immutable image digest.</li>
+      <li>If frontend health or integration probes fail, route <code>/</code> back to the backend without a database rollback.</li>
+      <li>If an API contract regression appears, restore the previous backend digest and keep the frontend at its last compatible digest.</li>
+      <li>Do not remove legacy templates until the follow-up removal issue confirms parity, usage, and rollback-window completion.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Out of scope for the first phase</h2>
+    <ul>
+      <li>Moving the Go module or packages solely to make the folder tree look symmetrical.</li>
+      <li>Rewriting health scoring, storage, ingestion, notification, MCP, or tenant-isolation logic.</li>
+      <li>Migrating admin mutations, import workflows, setup, and local login to React.</li>
+      <li>Moving the iOS source repository into this monorepo. The shared artifact is the API contract, not necessarily the client source tree.</li>
+      <li>Introducing a heavyweight monorepo orchestrator before the build graph requires one.</li>
+      <li>Removing legacy endpoints or templates during dashboard cutover.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Open questions carried into the issues</h2>
+    <ul>
+      <li>Whether the first formal contract remains on the current <code>/api/*</code> paths or introduces <code>/api/v1/*</code> aliases. This must be decided from the existing iOS call inventory, not by aesthetics.</li>
+      <li>Whether typed clients are generated from OpenAPI or validated from shared JSON Schema. The first contract issue will select one canonical source of truth.</li>
+      <li>The exact production frontend server image and security headers, selected and pinned during the container issue.</li>
+      <li>The compatibility window and telemetry threshold required before deleting the old Go dashboard.</li>
+    </ul>
+  </section>
+
+  <section class="chosen">
+    <h2>Implementation update · issue #213</h2>
+    <p>
+      The frontend workspace and shared UI foundations were implemented on
+      <code>codex/frontend-workspace-foundations</code>. This remains a development-only
+      fixture: production routing, real dashboard composition, and separate container images
+      are intentionally unchanged.
+    </p>
+    <div class="grid">
+      <div class="card">
+        <h3>What changed</h3>
+        <ul>
+          <li>Added a pinned pnpm workspace with React, TypeScript strict mode, Vite, ESLint, Vitest, and Playwright under <code>apps/web</code>.</li>
+          <li>Generated checked-in TypeScript client types from the canonical <code>contracts/openapi.json</code> contract.</li>
+          <li>Added same-origin typed API helpers with explicit loading, ready, partial, stale, unavailable, unauthenticated, and error states.</li>
+          <li>Added constrained <code>en</code>, <code>ru</code>, and <code>sr</code> localisation plumbing.</li>
+          <li>Added source-owned design tokens, surfaces, status panels, supporting score cards, and a deterministic SVG score gauge.</li>
+          <li>Copied the approved morning-meadow asset into the frontend source tree with an identical checksum; no runtime CDN dependency was introduced.</li>
+          <li>Added <code>.gitattributes</code> with an LF policy after the clean baseline exposed CRLF drift in generated OpenAPI and shell scripts.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Verification completed</h3>
+        <ul>
+          <li>Full Go suite passed from the merge commit baseline after LF normalisation and again after the completed frontend changes.</li>
+          <li>TypeScript type-check, ESLint, 16 Vitest tests, and the Vite production build passed.</li>
+          <li>17 Playwright checks passed across 320, 375, 768, 1024, and 1440 px in all three locales.</li>
+          <li>Geometry checks verify square bounds, shared SVG/content centre, no horizontal overflow, and no ring movement between normal, partial, and stale states.</li>
+          <li>Loading, unavailable, and error fixtures verify that no readiness score is fabricated.</li>
+          <li>Desktop and 375 px screenshots were inspected against the approved readiness-ring and morning-meadow direction; state switching was also exercised in the in-app browser with no console errors.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="card warning" style="margin-top:16px">
+      <strong>Known boundary:</strong>
+      the fixture uses deterministic sample values only to exercise components. It does not yet
+      compose the live dashboard API responses. That work belongs to issue #214. Production
+      Traefik routing, Docker images, settings/admin pages, and the Go fallback are unchanged.
+    </div>
+  </section>
+
+  <section class="gate">
+    <h2>PR #221 review update</h2>
+    <p>
+      The review pass tightened accessibility, localisation, numeric input handling,
+      frontend CI coverage, and the container smoke-test boundary without changing
+      production routing or deploying the new UI.
+    </p>
+    <div class="grid">
+      <div class="card">
+        <h3>Corrections applied</h3>
+        <ul>
+          <li>The document language now follows the constrained locale, and navigation and supporting-score landmarks use translated accessible names.</li>
+          <li>Standalone loading, unavailable, and error states now expose a page-level heading.</li>
+          <li>The score gauge treats non-finite values as zero and no longer emits an unused CSS custom property.</li>
+          <li>Shared hero imagery and fixture classification were deduplicated; stylelint casing and spacing findings were corrected.</li>
+          <li>Missing-score Playwright scenarios were separated so failures identify the affected state directly.</li>
+          <li>Frontend typecheck, lint, unit tests, build, and Playwright geometry checks now run as a required CI lane.</li>
+          <li>The container smoke test waits for an authenticated SQL query over the Docker network before database identity bootstrap, removing the socket-versus-TCP readiness race.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Verification completed</h3>
+        <ul>
+          <li><code>make web-check</code>: typecheck, ESLint, 20 Vitest tests, and production build passed.</li>
+          <li><code>make web-test-visual</code>: 19 Chromium/Playwright checks passed.</li>
+          <li><code>make test-unit</code>: the complete non-DB Go suite passed outside the filesystem sandbox required by local <code>httptest</code> listeners.</li>
+          <li>The backend Docker image built successfully with frontend build artefacts excluded from its context.</li>
+          <li>The corrected Docker-network readiness query and tenant database-identity bootstrap completed successfully against a fresh PostgreSQL 17 container.</li>
+          <li>The workflow YAML parsed successfully and the working-tree diff passed whitespace validation.</li>
+        </ul>
+      </div>
+    </div>
+    <p class="muted">
+      GitHub Actions remains the authoritative Linux verification for the full
+      container restart scenario and its Linux ownership assertions.
+    </p>
+  </section>
+
+  <section class="gate">
+    <h2>Approval gate</h2>
+    <p>
+      The architectural direction and first-phase scope were approved in conversation on 2 August 2026:
+      separate images, TypeScript web app, dashboard-first migration, and legacy fallback.
+    </p>
+    <p>
+      This document originally authorised planning and issue creation. The scoped issue #213
+      implementation was subsequently approved and is recorded above. Production routing changes still
+      require their own review, successful integration checks, immutable image digests, and a verified
+      rollback path.
+    </p>
+  </section>
+</main>
+</body>
+</html>

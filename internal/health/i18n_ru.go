@@ -8,6 +8,15 @@ var ru = LangStrings{
 	"tip_fair":          "Небольшое отклонение от нормы. Умеренная активность — хороший выбор.",
 	"tip_low":           "Сосредоточьтесь на восстановлении: пейте воду, отдыхайте, избегайте интенсивных нагрузок.",
 
+	// Единая рекомендация на главном экране.
+	"dashboard_guidance_summary_push_hard":        "Сегодня есть запас для серьёзной нагрузки.",
+	"dashboard_guidance_summary_moderate":         "Сегодня лучше держать комфортный темп.",
+	"dashboard_guidance_summary_active_recovery":  "Выберите лёгкое движение и восстановление.",
+	"dashboard_guidance_summary_rest":             "Сегодня поставьте восстановление на первое место.",
+	"dashboard_guidance_reason_readiness_pending": "Сигналы восстановления ещё уточняются, поэтому рекомендация остаётся осторожной.",
+	"dashboard_guidance_reason_sleep_partial":     "Длительность сна уже известна, но качество по стадиям ещё уточняется.",
+	"dashboard_guidance_reason_sleep_low":         "Данные о сне отсутствуют или ненадёжны, поэтому рекомендация остаётся осторожной.",
+
 	// Per-section status labels (BriefingSection.Status) — surfaced via
 	// EnrichLabels so iOS / web consumers don't maintain a parallel i18n
 	// table for the good/fair/low enum.
@@ -189,17 +198,24 @@ var ru = LangStrings{
 	"stress_flag_calibration_warmup_desc":       "Персональный baseline ещё в warmup (3-6 образцов). Пороги флагов могут быть консервативными.",
 
 	// Subjective morning check-in (Telegram inline keyboard).
-	"checkin_prompt_text":  "Как вы себя чувствуете этим утром?",
-	"checkin_btn_great":    "Отлично",
-	"checkin_btn_ok":       "Нормально",
-	"checkin_btn_meh":      "Не очень",
-	"checkin_btn_sick":     "Болен(а)",
-	"checkin_ack_great":    "Записал: Отлично. Хорошего дня.",
-	"checkin_ack_ok":       "Записал: Нормально.",
-	"checkin_ack_meh":      "Записал: Не очень. Поберегите себя.",
-	"checkin_ack_sick":     "Записал: Болен(а). Отдыхайте.",
-	"checkin_ack_late":     "Записал после отчёта — пойдёт в аналитику.",
-	"checkin_expired_note": "<i>Хотите, чтобы отчёт точнее отражал ваше состояние? Ответьте одним нажатием на утренний вопрос завтра.</i>",
+	"checkin_prompt_text":        "Как вы себя чувствуете этим утром?",
+	"checkin_btn_great":          "Отлично",
+	"checkin_btn_ok":             "Нормально",
+	"checkin_btn_meh":            "Не очень",
+	"checkin_btn_sick":           "Болен(а)",
+	"checkin_ack_great":          "Записал: Отлично. Хорошего дня.",
+	"checkin_ack_ok":             "Записал: Нормально.",
+	"checkin_ack_meh":            "Записал: Не очень. Поберегите себя.",
+	"checkin_ack_sick":           "Записал: Болен(а). Отдыхайте.",
+	"checkin_ack_late":           "Записал после отчёта — пойдёт в аналитику.",
+	"checkin_expired_note":       "<i>Хотите, чтобы отчёт точнее отражал ваше состояние? Ответьте одним нажатием на утренний вопрос завтра.</i>",
+	"wake_feedback_prompt":       "Мы определили, что вы проснулись в %s. Верно?",
+	"wake_feedback_btn_yes":      "Да",
+	"wake_feedback_btn_earlier":  "Раньше",
+	"wake_feedback_btn_later":    "Позже",
+	"wake_feedback_btn_returned": "Я снова уснул(а)",
+	"wake_feedback_ack_yes":      "Спасибо, время подтверждено.",
+	"wake_feedback_ack_adjust":   "Спасибо, учтём это при настройке детектора.",
 
 	// Proactive context prompts. Answers are categorical only; never store
 	// free text or the concrete real-world event behind the anomaly.
@@ -232,6 +248,14 @@ var ru = LangStrings{
 	"tg_readiness_today":   "сегодня",
 	"tg_readiness_trend":   "тренд 7 дней",
 	"tg_today":             "Сегодня",
+	"tg_morning_today":     "Сегодня",
+	"tg_morning_metrics":   "Главное",
+	"tg_sleep_average":     "среднее максимум за 7 ночей",
+	"tg_morning_why":       "Почему",
+	"tg_morning_updated":   "Обновлено",
+	"tg_source_watch":      "Часы",
+	"tg_source_activity":   "Активность",
+	"tg_source_sleep":      "Сон",
 	"tg_yesterday":         "Вчера",
 	"tg_recommendation":    "План на сегодня",
 	"tg_alerts":            "Аномалии",

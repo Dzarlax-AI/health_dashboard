@@ -6,17 +6,18 @@ import (
 	"embed"
 	"encoding/hex"
 	"html/template"
-	"io"
 	"io/fs"
 	"log"
+	"mime"
 	"net/http"
+	"path"
 	"strings"
 )
 
 //go:embed templates/*.html templates/**/*.html
 var templateFS embed.FS
 
-//go:embed static/*.js
+//go:embed static/*
 var staticFS embed.FS
 
 // staticVer is a short content hash over all embedded static files.
@@ -75,6 +76,7 @@ func init() {
 		"templates/partials/admin_readiness_contract.html",
 		"templates/partials/admin_readiness_monitoring.html",
 		"templates/partials/admin_onboarding.html",
+		"templates/partials/score_gauge.html",
 	}
 
 	for _, page := range pages {
@@ -149,7 +151,7 @@ func renderFragment(w http.ResponseWriter, name string, data any) {
 	http.Error(w, "fragment not found: "+name, http.StatusInternalServerError)
 }
 
-// serveStatic serves embedded JS files.
+// serveStatic serves embedded same-origin assets.
 //
 // Templates render URLs as `/static/app.js?v=<hash>`; query params are
 // already separated from r.URL.Path by net/http, so the path lookup
@@ -157,19 +159,29 @@ func renderFragment(w http.ResponseWriter, name string, data any) {
 // build hash we send long-lived immutable caching; otherwise (no version
 // or stale version after deploy) fall back to the previous 1h policy.
 func serveStatic(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/")
-	data, err := staticFS.ReadFile(path)
+	assetPath := strings.TrimPrefix(r.URL.Path, "/")
+	data, err := staticFS.ReadFile(assetPath)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	contentType := mime.TypeByExtension(path.Ext(assetPath))
+	if path.Ext(assetPath) == ".js" {
+		// Preserve the existing contract across platforms: macOS registers
+		// .js as text/javascript while the server has historically emitted
+		// application/javascript.
+		contentType = "application/javascript; charset=utf-8"
+	}
+	if contentType == "" {
+		contentType = http.DetectContentType(data)
+	}
+	w.Header().Set("Content-Type", contentType)
 	if v := r.URL.Query().Get("v"); v != "" && v == staticVer {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	} else {
 		w.Header().Set("Cache-Control", "public, max-age=3600")
 	}
-	io.WriteString(w, string(data))
+	_, _ = w.Write(data)
 }
 
 // computeStaticVer hashes the contents of every embedded static file

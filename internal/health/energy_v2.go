@@ -42,6 +42,11 @@ func SleepQuality(totalH, deepH, remH, awakeH float64) float64 {
 	if totalH <= 0 {
 		return 0
 	}
+	durationFactor, efficiencyFactor, structureFactor := sleepQualityFactors(totalH, deepH, remH, awakeH)
+	return durationFactor * efficiencyFactor * structureFactor
+}
+
+func sleepQualityFactors(totalH, deepH, remH, awakeH float64) (duration, continuity, structure float64) {
 	durationFactor := clamp01(totalH / 8.0)
 	efficiencyFactor := totalH / (totalH + awakeH)
 	deepPct := deepH / totalH
@@ -49,7 +54,53 @@ func SleepQuality(totalH, deepH, remH, awakeH float64) float64 {
 	deepShortfall := math.Max(0, 0.15-deepPct)
 	remShortfall := math.Max(0, 0.20-remPct)
 	structureFactor := math.Max(0.5, 1.0-deepShortfall-remShortfall)
-	return durationFactor * efficiencyFactor * structureFactor
+	return durationFactor, efficiencyFactor, structureFactor
+}
+
+// ComputeSleepQualityBreakdown returns the existing SleepQuality score and its
+// factors when the same-night inputs are sufficiently covered. totalH is
+// useful on its own, so a duration-only night returns partial rather than
+// missing. A precise score is intentionally omitted for partial input.
+func ComputeSleepQualityBreakdown(totalH, deepH, remH, awakeH *float64, evidence ReadinessComponentEvidence) *SleepQualityBreakdown {
+	out := &SleepQualityBreakdown{Confidence: SleepQualityConfidenceMissing}
+	if totalH == nil || *totalH <= 0 {
+		return out
+	}
+
+	out.DurationPct = clampPercent(*totalH / 8.0 * 100)
+	out.Confidence = SleepQualityConfidencePartial
+	if deepH == nil || remH == nil || awakeH == nil {
+		return out
+	}
+
+	durationFactor, continuityFactor, structureFactor := sleepQualityFactors(*totalH, *deepH, *remH, *awakeH)
+	score := clampPercent(durationFactor * continuityFactor * structureFactor * 100)
+	continuity := clampPercent(continuityFactor * 100)
+	structure := clampPercent(structureFactor * 100)
+
+	switch {
+	case evidence.Confidence == ReadinessConfidenceLow || evidence.Freshness == ReadinessFreshnessStale:
+		out.Confidence = SleepQualityConfidenceLow
+	case evidence.Present && evidence.Freshness == ReadinessFreshnessOK && evidence.Confidence == ReadinessConfidenceFinal:
+		out.Confidence = SleepQualityConfidenceFinal
+	default:
+		return out
+	}
+
+	out.ScorePct = &score
+	out.ContinuityPct = &continuity
+	out.StructurePct = &structure
+	return out
+}
+
+func clampPercent(v float64) int {
+	if math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
+		return 0
+	}
+	if v >= 100 {
+		return 100
+	}
+	return int(math.Round(v))
 }
 
 // DrainV2 computes the day's energy drain.

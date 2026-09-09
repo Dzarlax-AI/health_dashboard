@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html/template"
 	"io"
 	"log"
 	"math"
@@ -19,6 +18,7 @@ import (
 	"time"
 
 	"health-receiver/internal/ai"
+	clientapi "health-receiver/internal/api"
 	"health-receiver/internal/ctxdb"
 	"health-receiver/internal/health"
 	"health-receiver/internal/notify"
@@ -182,6 +182,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/metrics/latest", h.guard(h.latestMetricValues))
 	mux.HandleFunc("/api/metrics/range", h.guard(h.metricRange))
 	mux.HandleFunc("/api/metrics/data", h.guard(h.metricData))
+	mux.HandleFunc("GET /api/derived-metrics", h.guard(h.derivedMetrics))
 	mux.HandleFunc("/api/dashboard", h.guard(h.dashboard))
 	mux.HandleFunc("/api/health-briefing", h.guard(h.healthBriefing))
 	mux.HandleFunc("/api/ai-briefing", h.guard(h.aiBriefing))
@@ -189,6 +190,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/sections", h.guard(h.sectionsCatalogue))
 	mux.HandleFunc("/api/readiness-history", h.guard(h.readinessHistory))
 	mux.HandleFunc("/api/energy-history", h.guard(h.energyHistory))
+	mux.HandleFunc("GET /api/session", h.guard(h.clientSession))
 	mux.HandleFunc("/api/settings", h.guard(h.userSettings))
 	mux.HandleFunc("/api/settings/test-notify", h.guard(h.adminTestNotify))
 	mux.HandleFunc("/api/import/upload", h.guard(h.adminImportUpload))
@@ -326,7 +328,9 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 		if h.mgr.LegacyMode() {
 			db := h.mgr.LegacyDB()
 			inject := func() {
-				next(w, r.WithContext(ctxdb.WithDB(r.Context(), db, "health")))
+				ctx := ctxdb.WithDB(r.Context(), db, "health")
+				ctx = ctxdb.WithIsAdmin(ctx, true)
+				next(w, r.WithContext(ctx))
 			}
 
 			// Authentik forward auth
@@ -631,80 +635,13 @@ func (h *Handler) pageDashboard(w http.ResponseWriter, r *http.Request) {
 	lang := langFromRequest(r)
 	setLangCookie(w, r)
 
-	type sleepData struct {
-		Nights   int
-		AvgTotal string
-		AvgDeep  string
-		AvgREM   string
-	}
-
-	data := struct {
-		BasePage
-		ReadinessScore      int
-		ReadinessLabel      string
-		ReadinessTip        string
-		ReadinessConfidence string
-		ReadinessCapReason  string
-		ReadinessRawScore   int
-		ReadinessServing    readinessServingView
-		RecoveryPct         int
-		RecoverySource      string
-		Headline            *health.HeadlineSignal
-		EnergyBank          *health.EnergyBank
-		IllnessSuspicion    *health.IllnessSuspicion
-		SubjectiveCheckin   *health.SubjectiveCheckinSummary
-		Cards               []health.MetricCard
-		Alerts              []health.Alert
-		Sections            []health.BriefingSection
-		Sleep               *sleepData
-		Insights            []health.Insight
-		Correlation         []health.CorrelationPoint
-		CorrelationJSON     template.JS
-		AIInsight           string
-	}{
-		BasePage:        h.basePage(r, T(lang, "app_title"), "dashboard"),
-		CorrelationJSON: "null",
-	}
-
 	today := db.Today()
-	data.AIInsight = db.GetAIInsightCombined(today, lang)
-
-	if br, err := db.GetHealthBriefing(lang); err == nil && br != nil {
-		data.ReadinessScore = br.ReadinessToday
-		data.ReadinessLabel = br.ReadinessTodayLabel
-		data.ReadinessTip = br.ReadinessTip
-		data.ReadinessConfidence = br.ReadinessConfidence
-		data.ReadinessCapReason = br.ReadinessCapReason
-		data.ReadinessRawScore = br.ReadinessRawScore
-		data.ReadinessServing = buildReadinessServingView(lang, br.ReadinessServing)
-		data.RecoveryPct = br.RecoveryPct
-		data.RecoverySource = br.RecoverySource
-		data.Headline = br.Headline
-		data.EnergyBank = br.EnergyBank
-		data.IllnessSuspicion = br.IllnessSuspicion
-		data.SubjectiveCheckin = br.SubjectiveCheckin
-		data.Cards = br.MetricCards
-		data.Alerts = br.Alerts
-		data.Sections = br.Sections
-		data.Insights = br.Insights
-		data.Correlation = br.Correlation
-
-		if br.Sleep != nil {
-			s := br.Sleep
-			data.Sleep = &sleepData{
-				Nights:   s.Nights,
-				AvgTotal: fmtMinutes(s.TotalAvg * 60),
-				AvgDeep:  fmtMinutes(s.DeepAvg * 60),
-				AvgREM:   fmtMinutes(s.REMAvg * 60),
-			}
-		}
-
-		if len(br.Correlation) > 0 {
-			if b, err := json.Marshal(br.Correlation); err == nil {
-				data.CorrelationJSON = template.JS(b)
-			}
-		}
+	aiInsight := db.GetAIInsightCombined(today, lang)
+	br, err := db.GetHealthBriefing(lang)
+	if err != nil {
+		log.Printf("[DASHBOARD] GetHealthBriefing: %v", err)
 	}
+	data := buildDashboardPageData(h.basePage(r, T(lang, "app_title"), "dashboard"), br, aiInsight)
 
 	renderPage(w, "dashboard", data)
 }
@@ -1243,7 +1180,63 @@ func (h *Handler) metricRange(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	jsonResponse(w, map[string]string{"min": min, "max": max})
+	jsonResponse(w, clientapi.MetricRangeResponse{Min: min, Max: max})
+}
+
+func (h *Handler) derivedMetrics(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	metricName := strings.TrimSpace(query.Get("metric"))
+	if _, ok := storage.DerivedMetricDefinitionFor(metricName); !ok {
+		jsonError(w, "unknown derived metric", http.StatusBadRequest)
+		return
+	}
+	today := tenantLocalToday(h, h.tenantDB(r), h.tenantSchema(r))
+	from := strings.TrimSpace(query.Get("from"))
+	to := strings.TrimSpace(query.Get("to"))
+	if to == "" {
+		to = today
+	}
+	if from == "" {
+		parsed, _ := time.Parse("2006-01-02", to)
+		from = parsed.AddDate(0, 0, -30).Format("2006-01-02")
+	}
+	fromDate, fromErr := time.Parse("2006-01-02", from)
+	toDate, toErr := time.Parse("2006-01-02", to)
+	if fromErr != nil || toErr != nil || fromDate.After(toDate) {
+		jsonError(w, "from and to must be a valid ascending YYYY-MM-DD range", http.StatusBadRequest)
+		return
+	}
+	metrics, err := h.tenantDB(r).ListDerivedMetrics(metricName, from, to)
+	if err != nil {
+		jsonError(w, "failed to read derived metrics", http.StatusInternalServerError)
+		return
+	}
+	out := make([]clientapi.DerivedMetricValue, 0, len(metrics))
+	for _, metric := range metrics {
+		value := clientapi.DerivedMetricValue{
+			MetricName:     metric.MetricName,
+			MetricDate:     metric.MetricDate,
+			ValueType:      metric.ValueType,
+			ValueNumeric:   metric.ValueNumeric,
+			ValueText:      metric.ValueText,
+			ValueTimestamp: metric.ValueTimestamp,
+			Unit:           metric.Unit,
+			State:          metric.State,
+			FormulaVersion: metric.FormulaVersion,
+			CalculatedAt:   metric.CalculatedAt,
+			FinalizedAt:    metric.FinalizedAt,
+		}
+		if len(metric.ValueJSON) != 0 {
+			_ = json.Unmarshal(metric.ValueJSON, &value.ValueJSON)
+		}
+		out = append(out, value)
+	}
+	jsonResponse(w, clientapi.DerivedMetricsResponse{
+		Metric: metricName,
+		From:   from,
+		To:     to,
+		Values: out,
+	})
 }
 
 func (h *Handler) syncCheckpoint(w http.ResponseWriter, r *http.Request) {
@@ -1273,6 +1266,12 @@ func (h *Handler) dashboard(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, resp)
 }
 
+func (h *Handler) clientSession(w http.ResponseWriter, r *http.Request) {
+	jsonResponse(w, clientapi.SessionResponse{
+		IsAdmin: ctxdb.IsAdminFromContext(r.Context()),
+	})
+}
+
 func (h *Handler) metricData(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	metric := q.Get("metric")
@@ -1291,12 +1290,16 @@ func (h *Handler) metricData(w http.ResponseWriter, r *http.Request) {
 	if to == "" {
 		to = tenantToday.Format("2006-01-02")
 	}
+	fromDate, fromErr := time.Parse("2006-01-02", from)
+	toDate, toErr := time.Parse("2006-01-02", to)
+	if fromErr != nil || toErr != nil || fromDate.After(toDate) {
+		http.Error(w, "from and to must be a valid ascending YYYY-MM-DD range", http.StatusBadRequest)
+		return
+	}
 
 	bucket := q.Get("bucket")
 	if bucket == "" {
-		fromT, _ := time.Parse("2006-01-02", from)
-		toT, _ := time.Parse("2006-01-02", to[:10])
-		days := int(toT.Sub(fromT).Hours()/24) + 1
+		days := int(toDate.Sub(fromDate).Hours()/24) + 1
 		switch {
 		case days <= 1:
 			bucket = "minute"
@@ -1305,6 +1308,10 @@ func (h *Handler) metricData(w http.ResponseWriter, r *http.Request) {
 		default:
 			bucket = "day"
 		}
+	}
+	if bucket != "minute" && bucket != "hour" && bucket != "day" {
+		http.Error(w, "bucket must be minute, hour, or day", http.StatusBadRequest)
+		return
 	}
 
 	aggFunc := q.Get("agg")
@@ -1322,12 +1329,12 @@ func (h *Handler) metricData(w http.ResponseWriter, r *http.Request) {
 	if q.Get("by_source") == "1" {
 		sourcePoints, serr := db.GetMetricDataBySource(metric, from, to+" 23:59:59", bucket, aggFunc)
 		if serr == nil {
-			jsonResponse(w, map[string]any{
-				"metric":           metric,
-				"bucket":           bucket,
-				"agg":              aggFunc,
-				"by_source":        true,
-				"points_by_source": sourcePoints,
+			jsonResponse(w, clientapi.MetricDataResponse{
+				Metric:         metric,
+				Bucket:         bucket,
+				Agg:            aggFunc,
+				BySource:       true,
+				PointsBySource: sourcePoints,
 			})
 			return
 		}
@@ -1339,11 +1346,11 @@ func (h *Handler) metricData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jsonResponse(w, map[string]any{
-		"metric": metric,
-		"bucket": bucket,
-		"agg":    aggFunc,
-		"points": points,
+	jsonResponse(w, clientapi.MetricDataResponse{
+		Metric: metric,
+		Bucket: bucket,
+		Agg:    aggFunc,
+		Points: points,
 	})
 }
 
@@ -1359,7 +1366,7 @@ func (h *Handler) readinessHistory(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	jsonResponse(w, map[string]any{"points": pts})
+	jsonResponse(w, clientapi.ReadinessHistoryResponse{Points: pts})
 }
 
 // energyHistory serves the EnergyBank trend chart in two modes:
@@ -1400,9 +1407,9 @@ func (h *Handler) energyHistory(w http.ResponseWriter, r *http.Request) {
 		if pts == nil {
 			pts = []storage.EnergyHistoryPoint{}
 		}
-		jsonResponse(w, map[string]any{
-			"granularity": "day",
-			"points":      pts,
+		jsonResponse(w, clientapi.EnergyHistoryDayResponse{
+			Granularity: "day",
+			Points:      pts,
 		})
 	case "hour":
 		hours := 72
@@ -1433,50 +1440,14 @@ func (h *Handler) energyHistory(w http.ResponseWriter, r *http.Request) {
 		if len(pts) > 0 {
 			formulaVersion = pts[len(pts)-1].FormulaVersion
 		}
-		jsonResponse(w, map[string]any{
-			"granularity":     "hour",
-			"formula_version": formulaVersion,
-			"points":          pts,
+		jsonResponse(w, clientapi.EnergyHistoryHourResponse{
+			Granularity:    "hour",
+			FormulaVersion: formulaVersion,
+			Points:         pts,
 		})
 	default:
 		http.Error(w, "granularity must be 'day' or 'hour'", http.StatusBadRequest)
 	}
-}
-
-// sectionAPIResponse is the JSON-friendly subset of SectionPageData. It
-// drops template-only fields (HTML icons, BasePage chrome) so native
-// clients consume only what they render.
-type sectionAPIResponse struct {
-	Key      string              `json:"key"`
-	Title    string              `json:"title"`
-	Summary  string              `json:"summary"`
-	Details  []sectionAPIDetail  `json:"details"`
-	Charts   []sectionAPIChart   `json:"charts"`
-	Explains []sectionAPIExplain `json:"explains"`
-}
-
-type sectionAPIDetail struct {
-	Label string `json:"label"`
-	Value string `json:"value"`
-	Trend string `json:"trend"`
-	Note  string `json:"note,omitempty"`
-}
-
-type sectionAPIChart struct {
-	Metric    string `json:"metric,omitempty"`
-	Agg       string `json:"agg,omitempty"`
-	Label     string `json:"label"`
-	Unit      string `json:"unit,omitempty"`
-	Color     string `json:"color,omitempty"`
-	ColorDark string `json:"color_dark,omitempty"`
-	Type      string `json:"type,omitempty"`
-	Stacked   bool   `json:"stacked,omitempty"`
-	Virtual   bool   `json:"virtual,omitempty"`
-}
-
-type sectionAPIExplain struct {
-	Title string `json:"title"`
-	Body  string `json:"body"`
 }
 
 // sectionCatalogueEntry is one row in the stable section catalogue
@@ -1535,28 +1506,28 @@ func (h *Handler) sectionAPI(w http.ResponseWriter, r *http.Request) {
 	lang := langFromRequest(r)
 	data := h.buildSectionPage(key, lang, h.tenantDB(r))
 
-	out := sectionAPIResponse{
+	out := clientapi.SectionResponse{
 		Key:      data.SectionKey,
 		Title:    data.SectionTitle,
 		Summary:  data.Summary,
-		Details:  []sectionAPIDetail{}, // never nil — clients prefer [] over null
-		Charts:   []sectionAPIChart{},
-		Explains: []sectionAPIExplain{},
+		Details:  []clientapi.SectionDetail{}, // never nil — clients prefer [] over null
+		Charts:   []clientapi.SectionChart{},
+		Explains: []clientapi.SectionExplain{},
 	}
 	for _, d := range data.Details {
-		out.Details = append(out.Details, sectionAPIDetail{
+		out.Details = append(out.Details, clientapi.SectionDetail{
 			Label: d.Label, Value: d.Value, Trend: d.Trend, Note: d.Note,
 		})
 	}
 	for _, c := range data.Charts {
-		out.Charts = append(out.Charts, sectionAPIChart{
+		out.Charts = append(out.Charts, clientapi.SectionChart{
 			Metric: c.Metric, Agg: c.Agg, Label: c.Label, Unit: c.Unit,
 			Color: c.Color, ColorDark: c.ColorDark,
 			Type: c.Type, Stacked: c.Stacked, Virtual: c.Virtual,
 		})
 	}
 	for _, e := range data.Explains {
-		out.Explains = append(out.Explains, sectionAPIExplain{
+		out.Explains = append(out.Explains, clientapi.SectionExplain{
 			Title: e.Title, Body: e.Body,
 		})
 	}
@@ -1565,7 +1536,7 @@ func (h *Handler) sectionAPI(w http.ResponseWriter, r *http.Request) {
 
 // supportedLang clamps untrusted query input to the en/ru/sr whitelist.
 // Any other value (including unknown locales like "fr") falls back to "en"
-// so junk values can't pollute the AI cache or trigger Gemini regen on
+// so junk values can't pollute the AI cache or trigger provider regen on
 // dead-data languages.
 func supportedLang(q string) string {
 	if q == "en" || q == "ru" || q == "sr" {
@@ -1584,7 +1555,7 @@ func (h *Handler) healthBriefing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Briefing returns immediately. AIInsight is read from cache only — never
-	// blocks on Gemini. If empty, kick off async regen so the next poll on
+	// blocks on the AI provider. If empty, kick off async regen so the next poll on
 	// /api/ai-briefing returns content. Clients should fetch the AI narrative
 	// from /api/ai-briefing separately and update their UI when it arrives,
 	// instead of waiting on this endpoint.
@@ -1599,108 +1570,114 @@ func (h *Handler) healthBriefing(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, resp)
 }
 
-// aiBriefing serves the per-block AI narrative for today. Polled by the web
-// dashboard and the iOS client so a cold cache doesn't block the rest of the
-// UI. Returns blocks + a generating flag so clients can distinguish "cache
-// empty, regen running" from "cache empty, AI disabled".
+// aiBriefing serves the per-block AI narrative. Today retains non-blocking
+// generation; an explicit historical date is cache-only and can never trigger
+// provider work.
 func (h *Handler) aiBriefing(w http.ResponseWriter, r *http.Request) {
 	lang := supportedLang(r.URL.Query().Get("lang"))
 	db := h.tenantDB(r)
 	schema := h.tenantSchema(r)
 	today := db.Today()
+	date, dateErr := resolveAIBriefingDate(r.URL.Query().Get("date"), today)
+	if dateErr != nil {
+		http.Error(w, dateErr.Error(), http.StatusBadRequest)
+		return
+	}
 
 	aiDefaults := h.mgr.AIDefaultsFor(r.Context(), schema)
 	aiCfg := db.GetAIConfig(aiDefaults)
 
-	blocks := db.GetAIBlocks(today, lang)
-	combined := db.GetAIInsightCombined(today, lang)
-	briefing, briefingErr := db.GetHealthBriefing(lang)
+	blocks := db.GetAIBlocks(date, lang)
+	combined := db.GetAIInsightCombined(date, lang)
 	var decision *health.DailyDecision
-	if briefingErr != nil {
-		// AI remains an enhancement: a transient briefing read failure must not
-		// take down a cached narrative response. Without a current decision the
-		// client will render its deterministic fallback instead of stale advice.
-		log.Printf("ai briefing decision: %v", briefingErr)
-	} else if briefing != nil {
-		decision = briefing.DailyDecision
+	var recommendation *storage.AIBlock
+	if date == today {
+		if briefing, err := db.GetHealthBriefing(lang); err != nil {
+			log.Printf("ai briefing decision: %v", err)
+		} else if briefing != nil {
+			decision = briefing.DailyDecision
+		}
+		recommendation = db.GetAIBlock(today, lang, "RECOMMENDATION")
 	}
-	recommendation := db.GetAIBlock(today, lang, "RECOMMENDATION")
 	freshForDecision := recommendation != nil && decision != nil &&
 		storage.PlanMatchesDecision(recommendation.InputsHash, decision.ID)
 
-	// Always run the selective cache check. It is a no-op when inputs still
-	// match, but makes a late HealthKit update replace an obsolete morning plan
-	// without waiting for the cache to become empty.
-	if aiCfg.Enabled() && (combined == "" || !freshForDecision) {
+	// The bundle cache verifier is cheap on matching input. Calling it for a
+	// stale decision ensures a late health update replaces a morning plan;
+	// historical reads remain cache-only.
+	if date == today && aiCfg.Enabled() && (combined == "" || !freshForDecision) {
 		db.EnsureTodayAIInsightAsync(aiCfg, lang)
 	}
 
-	// `sections[]` is the canonical shape going forward: ordered array
-	// of `{key, header, body}` entries with the localized header
-	// inline. iOS decodes the array directly and renders each entry
-	// without per-block lookup. Crucially, a new AI block added
-	// server-side (e.g. a `nutrition` chunk) appears in the array
-	// automatically — iOS picks it up with zero code change because
-	// the header ships in the response. Closed extensibility (issue
-	// #83 item #5 clarification).
+	// `sections[]` is the canonical shape going forward: an ordered array
+	// of `{key, header, body}` entries with the localized header inline.
+	// New clients can render a server-added block without a per-key lookup.
 	//
-	// The legacy `blocks` map (uppercase keys) and `insight` (combined
-	// text) stay for backward compat: older iOS builds depend on them
-	// and the web dashboard pre-renders `insight` template-side.
+	// The legacy `blocks` map, combined `insight`, and named top-level
+	// block fields stay for backward compatibility. The released iOS model
+	// still consumes those representations and does not decode sections[];
+	// the web dashboard pre-renders insight template-side.
 	ls := health.GetStrings(lang)
-	type aiSection struct {
-		Key    string `json:"key"`
-		Header string `json:"header"`
-		Body   string `json:"body"`
-	}
 	// Canonical block order matches the morning report (notify/report.go)
 	// so the dashboard, Telegram, and iOS all render the same sequence.
 	type blockSpec struct{ wireKey, dbKey, headerKey string }
 	blockOrder := []blockSpec{
+		{"summary", "SYNTHESIS", "ai_insight_title"},
 		{"sleep", "SLEEP", "ai_block_sleep_header"},
 		{"yesterday", "YESTERDAY", "ai_block_yesterday_header"},
 		{"recovery", "RECOVERY", "ai_block_recovery_header"},
 		{"recommendation", "RECOMMENDATION", "ai_block_recommendation_header"},
 	}
-	sections := make([]aiSection, 0, len(blockOrder))
+	sections := make([]clientapi.AIBriefingSection, 0, len(blockOrder))
 	for _, b := range blockOrder {
 		body := blocks[b.dbKey]
 		if body == "" {
 			continue
 		}
-		sections = append(sections, aiSection{
+		sections = append(sections, clientapi.AIBriefingSection{
 			Key:    b.wireKey,
 			Header: ls[b.headerKey],
 			Body:   body,
 		})
 	}
 
-	var plan any
+	response := clientapi.NewAIBriefingResponse(
+		date,
+		lang,
+		combined,
+		sections,
+		blocks,
+		date == today && db.AIRegenInFlight(lang),
+		!aiCfg.Enabled(),
+	)
+	response.FreshForDecision = freshForDecision
+	if decision != nil {
+		response.DecisionID = decision.ID
+	}
 	if freshForDecision && recommendation != nil {
-		plan = map[string]any{
-			"title":         ls["ai_block_recommendation_header"],
-			"body":          recommendation.Text,
-			"evidence_keys": decision.SignalKeys,
+		response.UpdatedAt = &recommendation.UpdatedAt
+		response.Plan = &clientapi.AIBriefingPlan{
+			Title:        decision.Label,
+			Body:         recommendation.Text,
+			EvidenceKeys: decision.SignalKeys,
 		}
 	}
-	response := map[string]any{
-		"date":               today,
-		"lang":               lang,
-		"insight":            combined,
-		"sections":           sections,
-		"blocks":             blocks,
-		"generating":         db.AIRegenInFlight(lang),
-		"disabled":           !aiCfg.Enabled(),
-		"fresh_for_decision": freshForDecision,
-		"plan":               plan,
-	}
-	if decision != nil {
-		response["decision_id"] = decision.ID
-	}
-	if recommendation != nil {
-		response["updated_at"] = recommendation.UpdatedAt
-	}
 	jsonResponse(w, response)
+}
+
+func resolveAIBriefingDate(rawDate, today string) (string, error) {
+	rawDate = strings.TrimSpace(rawDate)
+	if rawDate == "" {
+		return today, nil
+	}
+	parsed, err := time.Parse("2006-01-02", rawDate)
+	if err != nil || parsed.Format("2006-01-02") != rawDate {
+		return "", fmt.Errorf("invalid date: expected YYYY-MM-DD")
+	}
+	if rawDate > today {
+		return "", fmt.Errorf("future date is not allowed")
+	}
+	return rawDate, nil
 }
 
 func (h *Handler) adminStatus(w http.ResponseWriter, r *http.Request) {
@@ -1934,7 +1911,7 @@ func (h *Handler) adminReadinessRedesignBackfill(w http.ResponseWriter, r *http.
 //
 // The general /api/admin/settings endpoint deliberately does NOT
 // accept these keys: it routes to the global registry and silently
-// drops anything outside the gemini_* allow-list, which would look
+// drops anything outside the AI provider allow-list, which would look
 // like success from the operator's side. This endpoint is the
 // supported way to apply the override.
 func (h *Handler) adminReadinessRedesignConfig(w http.ResponseWriter, r *http.Request) {
@@ -2663,9 +2640,89 @@ func (h *Handler) userSettings(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, out)
 }
 
-// adminAISettings handles GET/POST /api/admin/settings — Gemini config, admin only.
+type adminAISettingsRequest struct {
+	Provider        string `json:"provider"`
+	APIKey          string `json:"api_key"`
+	ClearAPIKey     bool   `json:"clear_api_key"`
+	Model           string `json:"model"`
+	ReasoningEffort string `json:"reasoning_effort"`
+	MaxOutputTokens int    `json:"max_output_tokens"`
+}
+
+func buildAdminAISettingsUpdate(body adminAISettingsRequest) (map[string]string, error) {
+	body.Provider = strings.TrimSpace(body.Provider)
+	provider, err := ai.GetProvider(body.Provider)
+	if err != nil {
+		return nil, err
+	}
+	descriptor := provider.Descriptor()
+	body.Model = strings.TrimSpace(body.Model)
+	if body.Model == "" {
+		body.Model = descriptor.DefaultModel
+	}
+	if body.MaxOutputTokens < 200 || body.MaxOutputTokens > 128000 {
+		return nil, fmt.Errorf("max_output_tokens must be in [200, 128000]")
+	}
+	body.ReasoningEffort = strings.TrimSpace(body.ReasoningEffort)
+	if descriptor.SupportsReasoning {
+		if body.ReasoningEffort == "" {
+			body.ReasoningEffort = descriptor.DefaultReasoning
+		}
+		if !ai.ValidReasoningEffort(body.ReasoningEffort) {
+			return nil, fmt.Errorf("invalid reasoning_effort")
+		}
+	} else {
+		body.ReasoningEffort = ""
+	}
+	clean := map[string]string{
+		"ai_provider":                       body.Provider,
+		"ai_max_output_tokens":              strconv.Itoa(body.MaxOutputTokens),
+		body.Provider + "_model":            body.Model,
+		body.Provider + "_reasoning_effort": body.ReasoningEffort,
+	}
+	if body.ClearAPIKey {
+		clean[body.Provider+"_api_key"] = ""
+	} else if key := strings.TrimSpace(body.APIKey); key != "" {
+		clean[body.Provider+"_api_key"] = key
+	}
+	return clean, nil
+}
+
+func adminAISettingsPayload(aiCfg storage.AIConfig) map[string]any {
+	providers := make([]map[string]any, 0)
+	for _, descriptor := range ai.ProviderDescriptors() {
+		settings := aiCfg.SettingsFor(descriptor.ID)
+		model := settings.Model
+		if model == "" {
+			model = descriptor.DefaultModel
+		}
+		reasoning := settings.ReasoningEffort
+		if reasoning == "" {
+			reasoning = descriptor.DefaultReasoning
+		}
+		providers = append(providers, map[string]any{
+			"id":                  descriptor.ID,
+			"display_name":        descriptor.DisplayName,
+			"default_model":       descriptor.DefaultModel,
+			"supports_reasoning":  descriptor.SupportsReasoning,
+			"api_key_placeholder": descriptor.APIKeyPlaceholder,
+			"configured":          settings.APIKey != "",
+			"model":               model,
+			"reasoning_effort":    reasoning,
+		})
+	}
+	return map[string]any{
+		"provider":          aiCfg.Provider,
+		"max_output_tokens": aiCfg.MaxOutputTokens,
+		"enabled":           aiCfg.Enabled(),
+		"providers":         providers,
+	}
+}
+
+// adminAISettings handles GET/POST /api/admin/settings — installation-wide
+// AI provider configuration, admin only.
 //
-// Gemini config is now installation-wide: writes go to
+// AI config is installation-wide: writes go to
 // `health_registry.global_settings`, reads layer that on top of env
 // defaults (see Manager.AIDefaultsFor). Per-tenant overrides in
 // `<schema>.settings` still win, but the admin UI no longer creates new
@@ -2679,19 +2736,15 @@ func (h *Handler) adminAISettings(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "registry unavailable", http.StatusInternalServerError)
 			return
 		}
-		var body map[string]string
+		var body adminAISettingsRequest
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "invalid JSON", http.StatusBadRequest)
 			return
 		}
-		allowed := map[string]bool{
-			"gemini_api_key": true, "gemini_model": true, "gemini_max_tokens": true,
-		}
-		clean := make(map[string]string)
-		for k, v := range body {
-			if allowed[k] {
-				clean[k] = v
-			}
+		clean, err := buildAdminAISettingsUpdate(body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
 		}
 		if err := h.reg.SaveGlobalSettings(r.Context(), clean); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -2701,19 +2754,14 @@ func (h *Handler) adminAISettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Show the installation-wide value (global + env), NOT the admin's own
+	// Show the installation-wide values (global + env), NOT the admin's own
 	// tenant override. Otherwise saving a new global key and refreshing
 	// would re-display whatever legacy `<schema>.settings.gemini_*` row the
 	// admin has — making the form look like the save didn't take. The
 	// settings page exists to manage the global default; tenant overrides
 	// are deliberately invisible here.
 	aiCfg := h.mgr.AIDefaultsFor(r.Context(), schema)
-	jsonResponse(w, map[string]any{
-		"gemini_api_key":    aiCfg.APIKey,
-		"gemini_model":      aiCfg.Model,
-		"gemini_max_tokens": aiCfg.MaxOutputTokens,
-		"gemini_enabled":    aiCfg.Enabled(),
-	})
+	jsonResponse(w, adminAISettingsPayload(aiCfg))
 }
 
 // adminEnergySettings handles GET/POST /api/admin/energy-settings —
@@ -2912,19 +2960,38 @@ func (h *Handler) adminStressValidation(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *Handler) adminAIModels(w http.ResponseWriter, r *http.Request) {
-	schema := h.tenantSchema(r)
-	// Use the installation-wide config (global + env), same source as
-	// /api/admin/settings GET. Layering the admin's tenant override here
-	// would make model discovery use a different API key than what the
-	// admin just saved on the settings page.
-	aiCfg := h.mgr.AIDefaultsFor(r.Context(), schema)
-	if !aiCfg.Enabled() {
-		http.Error(w, "Gemini API key not configured", http.StatusBadRequest)
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
-	models, err := ai.ListModels(aiCfg.APIKey)
+	schema := h.tenantSchema(r)
+	aiCfg := h.mgr.AIDefaultsFor(r.Context(), schema)
+	var body struct {
+		Provider string `json:"provider"`
+		APIKey   string `json:"api_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	body.Provider = strings.TrimSpace(body.Provider)
+	provider, err := ai.GetProvider(body.Provider)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	key := strings.TrimSpace(body.APIKey)
+	if key == "" {
+		key = aiCfg.SettingsFor(body.Provider).APIKey
+	}
+	if key == "" {
+		http.Error(w, body.Provider+" API key not configured", http.StatusBadRequest)
+		return
+	}
+	models, err := provider.ListModels(r.Context(), key)
+	if err != nil {
+		log.Printf("adminAIModels: provider=%s: %v", body.Provider, err)
+		http.Error(w, "provider model discovery failed", http.StatusBadGateway)
 		return
 	}
 	jsonResponse(w, map[string]any{"models": models})

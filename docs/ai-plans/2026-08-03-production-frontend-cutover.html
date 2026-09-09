@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation Plan: Production frontend cutover</title>
+  <style>
+    body{margin:0;background:#f5f4ef;color:#202226;font:16px/1.55 system-ui,sans-serif}
+    main{max-width:980px;margin:auto;padding:28px 18px 60px}
+    section,header{background:#fff;border:1px solid #dedfdc;border-radius:16px;padding:22px;margin-bottom:14px}
+    header{border-top:5px solid #168c57} h1,h2{line-height:1.2;margin-top:0}
+    code{background:#f0f1ef;border-radius:5px;padding:2px 5px}
+    .ok{border-left:5px solid #168c57}.gate{border-left:5px solid #b66a12}
+  </style>
+</head>
+<body><main>
+  <header>
+    <h1>Deploy the frontend service and canary the dashboard route</h1>
+    <p>Issue #217 adds the verified standalone frontend beside the single Go backend, canaries only <code>/</code> and <code>/assets/*</code>, and keeps immediate route-level rollback.</p>
+  </header>
+  <section><h2>Current and desired behavior</h2>
+    <p>Production currently routes every browser page, JSON API, ingestion request, and MCP call to one Go container. The desired stack keeps one Go backend for API/business logic and a separate static frontend. Browser <code>/api/*</code> receives trusted ForwardAuth headers; mobile/API-key calls preserve their direct API boundary; machine <code>/health*</code> and <code>/mcp*</code> retain API-key/bearer auth; every legacy page remains on Go.</p>
+  </section>
+  <section><h2>Architecture decision</h2>
+    <p>The local <code>personal_ai_stack</code> deployment mirror has no Git metadata and no corresponding accessible GitHub repository. Therefore the reviewable canonical manifest lives in <code>health_dashboard/deploy/production/health</code>. An approved deployment mirrors it to <code>personal_ai_stack/deploy/health</code> and the VPS without copying secrets back into Git.</p>
+  </section>
+  <section><h2>Implementation</h2><ol>
+    <li>Resolve the atomic <code>health_dashboard-pair:compatible</code> pointer and fail closed on digest, role, revision, contract, or architecture mismatch.</li>
+    <li>Generate a non-secret release file for <code>canary</code>, <code>cutover</code>, or <code>rollback</code>; never hand-edit Traefik rules.</li>
+    <li>Add one frontend container. Split machine, browser API, legacy UI, legacy-root alias, frontend root, and frontend assets into explicit priority-ordered routers.</li>
+    <li>Validate all route modes with rendered Compose configuration and negative resolver cases.</li>
+    <li>Canary in production for all locales and at least two tenants, rehearse rollback, then request approval before default cutover.</li>
+  </ol></section>
+  <section><h2>Tests and manual QA</h2><ul>
+    <li>Go tests and complete web contract/type/lint/unit/build checks.</li>
+    <li>Release resolver tests, Compose rendering for three modes, immutable digest checks, and shell syntax.</li>
+    <li>Container health/log checks; tenant-aware <code>/api/session</code>; legacy routes; ingestion and MCP auth; RU/EN/SR; mobile layout.</li>
+  </ul></section>
+  <section><h2>Risks and rollback</h2>
+    <p>Primary risks are auth loops, route shadowing, mixed component releases, duplicate backend side effects, and tenant leakage. Rollback disables Traefik discovery for the frontend so the already-running low-priority Go router owns root again. No schema or data migration is part of this task.</p>
+  </section>
+  <section class="ok"><h2>Implementation update</h2><ul>
+    <li>Added the canonical production Compose definition, release resolver, route-mode documentation, and automated Compose/Traefik tests.</li>
+    <li>Preserved direct <code>X-API-Key</code> access to <code>/api/*</code> for the iOS client while routing browser API calls through Authentik.</li>
+    <li>Resolved pair <code>sha256:c3615d03e8052cb2d209640ce9c30275417cc9a362a203c50742ceca3ec1278c</code>: backend <code>sha256:f434545a0e0bcc89a80954ebe204be4f554399a0f6a297b03709f00c73dc53af</code>, frontend <code>sha256:279285500369887d9e344d11a2c0f3a2856be9368ca52dd19e5eab6dcb724e52</code>, revision <code>9660febcfeafaf16e431bd9a5cc158348b271146</code>, API contract <code>0.2.0</code>, linux/amd64.</li>
+    <li>Checks completed: full Go suite; web contract/type/lint/56 unit tests/build; three route modes with negative resolver cases; Traefik v3.6 parser/runtime checks; exact released-pair PostgreSQL, tenant-isolation, frontend, API, legacy, ingestion, and MCP smoke.</li>
+  </ul></section>
+  <section><h2>Known limitations and follow-up</h2><ul>
+    <li>No production file, container, route, database, or secret has been changed.</li>
+    <li>The active VPS ForwardAuth trust flags and tenant probes remain pre-deployment gates; this session could not access the configured SSH identity.</li>
+    <li>The local exact-pair harness exercises an isolated tenant. The required two-active-tenant denial/identity probes must be run against production during the approved canary.</li>
+  </ul></section>
+  <section class="ok"><h2>Approval status</h2><p>The user approved implementation on 2026-08-03. Implementation may proceed in an isolated branch.</p></section>
+  <section class="gate"><h2>Production gate</h2><p>Implementation approval does not authorize a production restart or route switch. Immediately before deployment, present exact immutable digests, passing checks, probe commands, and rollback command, then obtain fresh explicit approval.</p></section>
+</main></body></html>

@@ -119,7 +119,7 @@ func TestMorningGate(t *testing.T) {
 			got := DecideMorningAction(MorningGateInputs{
 				Now:               tc.now,
 				Cap:               cap,
-				SleepSettled:      tc.sleepSettled,
+				WakeReady:         tc.sleepSettled,
 				HasCheckin:        tc.hasCheckin,
 				CheckinStatus:     tc.checkinStatus,
 				ReportAlreadySent: tc.reportAlreadySent,

@@ -18,7 +18,7 @@ type DB struct {
 
 	// aiRegenInFlight dedupes concurrent EnsureTodayAIInsight calls so
 	// concurrent pollers (and overlapping sync callers — morning smart-retry,
-	// test-notify, opportunistic ingest trigger) don't multiply Gemini calls.
+	// test-notify, opportunistic ingest trigger) don't multiply provider calls.
 	// Keyed by "<date>|<lang>". The LoadOrStore happens inside
 	// EnsureTodayAIInsight using its own derived `today`, so the key always
 	// matches the date being generated (no midnight-rollover race).
@@ -27,8 +27,8 @@ type DB struct {
 	// aiRegenLastFailAt records the wall-clock time of the last failed
 	// EnsureTodayAIInsight (zero blocks saved). Keyed by "<date>|<lang>".
 	// When set, the next ~5 min of regen attempts return the (still empty)
-	// cache instead of hitting Gemini again — avoids per-minute pollers
-	// hammering the API during a sustained Gemini outage.
+	// cache instead of hitting the provider again — avoids per-minute pollers
+	// hammering the API during a sustained upstream outage.
 	aiRegenLastFailAt sync.Map
 }
 

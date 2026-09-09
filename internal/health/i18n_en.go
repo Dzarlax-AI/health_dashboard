@@ -9,6 +9,15 @@ var en = LangStrings{
 	"tip_fair":          "Some deviation from your norm. Moderate activity is a good choice.",
 	"tip_low":           "Focus on recovery: hydrate, rest, and avoid intense exercise.",
 
+	// Dashboard single-guidance contract.
+	"dashboard_guidance_summary_push_hard":        "You have room for a challenging day.",
+	"dashboard_guidance_summary_moderate":         "Keep today comfortably active.",
+	"dashboard_guidance_summary_active_recovery":  "Choose gentle movement and recovery.",
+	"dashboard_guidance_summary_rest":             "Give recovery priority today.",
+	"dashboard_guidance_reason_readiness_pending": "Recovery signals are still settling, so the recommendation stays conservative.",
+	"dashboard_guidance_reason_sleep_partial":     "Sleep duration is available, but stage quality is still being refined.",
+	"dashboard_guidance_reason_sleep_low":         "Sleep evidence is missing or low-confidence, so the recommendation stays conservative.",
+
 	// Per-section status labels (BriefingSection.Status) — surfaced via
 	// EnrichLabels (internal/health/labels.go) so iOS / other consumers
 	// don't maintain a parallel i18n table for the good/fair/low enum.
@@ -215,17 +224,24 @@ var en = LangStrings{
 	"stress_flag_calibration_warmup_desc":       "Personal baseline still in warmup (3-6 samples). Flag thresholds may be conservative.",
 
 	// Subjective morning check-in (Telegram inline keyboard).
-	"checkin_prompt_text":  "How are you feeling this morning?",
-	"checkin_btn_great":    "Great",
-	"checkin_btn_ok":       "OK",
-	"checkin_btn_meh":      "Meh",
-	"checkin_btn_sick":     "Sick",
-	"checkin_ack_great":    "Logged: Great. Have a good one.",
-	"checkin_ack_ok":       "Logged: OK.",
-	"checkin_ack_meh":      "Logged: Meh. Take it easy today.",
-	"checkin_ack_sick":     "Logged: Sick. Rest up.",
-	"checkin_ack_late":     "Logged after the morning report — saved for analytics.",
-	"checkin_expired_note": "<i>Want the report to reflect your state better? Answer the one-tap morning question tomorrow.</i>",
+	"checkin_prompt_text":        "How are you feeling this morning?",
+	"checkin_btn_great":          "Great",
+	"checkin_btn_ok":             "OK",
+	"checkin_btn_meh":            "Meh",
+	"checkin_btn_sick":           "Sick",
+	"checkin_ack_great":          "Logged: Great. Have a good one.",
+	"checkin_ack_ok":             "Logged: OK.",
+	"checkin_ack_meh":            "Logged: Meh. Take it easy today.",
+	"checkin_ack_sick":           "Logged: Sick. Rest up.",
+	"checkin_ack_late":           "Logged after the morning report — saved for analytics.",
+	"checkin_expired_note":       "<i>Want the report to reflect your state better? Answer the one-tap morning question tomorrow.</i>",
+	"wake_feedback_prompt":       "We detected that you woke up at %s. Is that right?",
+	"wake_feedback_btn_yes":      "Yes",
+	"wake_feedback_btn_earlier":  "Earlier",
+	"wake_feedback_btn_later":    "Later",
+	"wake_feedback_btn_returned": "I went back to sleep",
+	"wake_feedback_ack_yes":      "Thanks, wake time confirmed.",
+	"wake_feedback_ack_adjust":   "Thanks, we'll use this to tune the detector.",
 
 	// Proactive context prompts. Answers are categorical only; never store
 	// free text or the concrete real-world event behind the anomaly.
@@ -258,6 +274,14 @@ var en = LangStrings{
 	"tg_readiness_today":   "today",
 	"tg_readiness_trend":   "7-day trend",
 	"tg_today":             "Today so far",
+	"tg_morning_today":     "Today",
+	"tg_morning_metrics":   "At a glance",
+	"tg_sleep_average":     "average of up to 7 nights",
+	"tg_morning_why":       "Why",
+	"tg_morning_updated":   "Updated",
+	"tg_source_watch":      "Watch",
+	"tg_source_activity":   "Activity",
+	"tg_source_sleep":      "Sleep",
 	"tg_yesterday":         "Yesterday",
 	"tg_recommendation":    "Plan for today",
 	"tg_alerts":            "Alerts",

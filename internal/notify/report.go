@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"log"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"health-receiver/internal/ai"
 	"health-receiver/internal/health"
 	"health-receiver/internal/storage"
 )
@@ -17,6 +19,13 @@ type notificationDeliveryStore interface {
 	ReserveNotificationDelivery(context.Context, string) (uuid.UUID, bool, error)
 	CompleteNotificationDelivery(context.Context, string, uuid.UUID, string, string) error
 }
+
+type reportDeliveryPolicy uint8
+
+const (
+	reportDeliveryDurable reportDeliveryPolicy = iota
+	reportDeliveryPreview
+)
 
 const notificationDeliveryTimeout = 10 * time.Second
 
@@ -51,7 +60,7 @@ type Config struct {
 	TelegramRichMessages bool
 
 	// Smart-retry deadline. The morning trigger keeps deferring until sleep
-	// data settles (see storage.SleepSettled); past this hour it force-sends
+	// the wake detector is ready; past this hour it force-sends
 	// with a banner. Caller is responsible for picking a sensible default
 	// (typically MorningHour + 4, floor 11). Zero means "no cap" — use with
 	// care; can lead to no morning report on watch-off days.
@@ -186,6 +195,15 @@ func SendMorning(bot *Bot, db *storage.DB, cfg Config) error {
 	return err
 }
 
+// SendMorningPreview renders the same report as a forced scheduled send but
+// delivers it without reserving the production report key. It is intended for
+// explicit admin previews, which may be sent repeatedly. AI blocks are read
+// from the existing cache by sendMorningReport; no provider call is made.
+func SendMorningPreview(bot *Bot, db *storage.DB, cfg Config) error {
+	_, _, err := sendMorningReport(bot, db, cfg, MorningSendOpts{Force: true}, reportDeliveryPreview)
+	return err
+}
+
 // MorningSendOpts configures the morning report send. Existing callers
 // continue to use SendMorningSmart(force) which builds a default opts;
 // runMorningSmartRetry passes CheckinExpired=true on the expire-and-
@@ -196,7 +214,7 @@ type MorningSendOpts struct {
 }
 
 // SendMorningSmart is the smart-retry-aware morning sender. When force is
-// false, it only sends if sleep data has settled (see storage.SleepSettled);
+// false, it only sends after the wake detector is ready;
 // otherwise returns sent=false with a non-"ok" reason so the caller can retry
 // later. When force is true, it sends regardless and prepends a banner
 // explaining why the data is incomplete.
@@ -205,8 +223,8 @@ type MorningSendOpts struct {
 // signature for the two non-cap call sites (ingest trigger + webhook
 // retrigger) — neither of those knows about check-in expiry.
 //
-// Returns (sent, reason, error). reason is the SleepSettleStatus.Reason —
-// "ok" when settled, otherwise "no_data" / "recent_segment" / "still_writing".
+// Returns (sent, reason, error). reason is the wake detector's explicit
+// decision reason (for example post_wake_activity or still_writing).
 func SendMorningSmart(bot *Bot, db *storage.DB, cfg Config, force bool) (bool, string, error) {
 	return SendMorningSmartOpts(bot, db, cfg, MorningSendOpts{Force: force})
 }
@@ -215,11 +233,24 @@ func SendMorningSmart(bot *Bot, db *storage.DB, cfg Config, force bool) (bool, s
 // extra context (e.g. cap-path saw a prompted check-in expire) pass it
 // via MorningSendOpts so formatMorning can render the right copy.
 func SendMorningSmartOpts(bot *Bot, db *storage.DB, cfg Config, opts MorningSendOpts) (bool, string, error) {
-	loc := cfg.location()
-	today := time.Now().In(loc).Format("2006-01-02")
+	return sendMorningReport(bot, db, cfg, opts, reportDeliveryDurable)
+}
 
-	status := db.SleepSettled(today)
-	if !status.Settled && !opts.Force {
+func sendMorningReport(bot *Bot, db *storage.DB, cfg Config, opts MorningSendOpts, policy reportDeliveryPolicy) (bool, string, error) {
+	loc := cfg.location()
+	now := time.Now()
+	today := now.In(loc).Format("2006-01-02")
+
+	status, err := db.ComputeMorningWakeStatus(today, loc, now)
+	wakeErr := err
+	status, err = resolveMorningWakeStatus(status, err, opts.Force)
+	if err != nil {
+		return false, status.Reason, err
+	}
+	if wakeErr != nil {
+		log.Printf("morning report: forced send despite wake detection error: %v", wakeErr)
+	}
+	if !status.Ready && !opts.Force {
 		return false, status.Reason, nil
 	}
 
@@ -235,8 +266,9 @@ func SendMorningSmartOpts(bot *Bot, db *storage.DB, cfg Config, opts MorningSend
 		richMsg = formatMorningRich(briefing, aiBlocks, cfg.Lang, loc, fresh, opts.CheckinExpired, "")
 	}
 
-	if !status.Settled {
-		if banner := tr(cfg.Lang, "tg_stale_"+status.Reason); banner != "" && banner != "tg_stale_"+status.Reason {
+	if !status.Ready {
+		staleReason := wakeStaleReason(status.Reason)
+		if banner := tr(cfg.Lang, "tg_stale_"+staleReason); banner != "" && banner != "tg_stale_"+staleReason {
 			msg = banner + "\n\n" + msg
 			if cfg.TelegramRichMessages {
 				richMsg = formatMorningRich(briefing, aiBlocks, cfg.Lang, loc, fresh, opts.CheckinExpired, banner)
@@ -244,17 +276,48 @@ func SendMorningSmartOpts(bot *Bot, db *storage.DB, cfg Config, opts MorningSend
 		}
 	}
 	key := "report:morning:" + today
-	reserved, err := sendDurableReport(db, key, func() error { return sendReportHTML(bot, cfg, "morning", richMsg, msg) })
+	reserved, err := deliverReport(policy, db, key, func() error { return sendReportHTML(bot, cfg, "morning", richMsg, msg) })
 	if !reserved && err == nil {
 		return false, "delivery_already_reserved", nil
 	}
 	return reserved, status.Reason, err
 }
 
+func resolveMorningWakeStatus(status storage.MorningWakeStatus, err error, force bool) (storage.MorningWakeStatus, error) {
+	if err == nil || !force {
+		return status, err
+	}
+	if status.Reason == "" {
+		status.Reason = "query_error"
+	}
+	return status, nil
+}
+
+func wakeStaleReason(reason string) string {
+	switch reason {
+	case "no_data", "still_writing", "recent_segment":
+		return reason
+	case "query_error", "steps_query_error", "typical_query_error":
+		return "no_data"
+	default:
+		return "recent_segment"
+	}
+}
+
 // SendEvening sends a "today so far" snapshot. Activity bullets are intentionally
 // omitted because the briefing's activity/cardio sections describe yesterday —
 // users get the full retrospective in the morning report.
 func SendEvening(bot *Bot, db *storage.DB, cfg Config) error {
+	return sendEveningReport(bot, db, cfg, reportDeliveryDurable)
+}
+
+// SendEveningPreview renders current deterministic data and sends it without
+// reserving the production evening-report key.
+func SendEveningPreview(bot *Bot, db *storage.DB, cfg Config) error {
+	return sendEveningReport(bot, db, cfg, reportDeliveryPreview)
+}
+
+func sendEveningReport(bot *Bot, db *storage.DB, cfg Config, policy reportDeliveryPolicy) error {
 	briefing, err := db.GetHealthBriefing(cfg.Lang)
 	if err != nil {
 		return err
@@ -270,8 +333,21 @@ func SendEvening(bot *Bot, db *storage.DB, cfg Config) error {
 		rich = formatEveningRich(briefing, dash, cfg.Lang, cfg.location(), fresh)
 	}
 	today := time.Now().In(cfg.location()).Format("2006-01-02")
-	_, err = sendDurableReport(db, "report:evening:"+today, func() error { return sendReportHTML(bot, cfg, "evening", rich, fallback) })
+	_, err = deliverReport(policy, db, "report:evening:"+today, func() error {
+		return sendReportHTML(bot, cfg, "evening", rich, fallback)
+	})
 	return err
+}
+
+func deliverReport(policy reportDeliveryPolicy, db notificationDeliveryStore, key string, send func() error) (bool, error) {
+	switch policy {
+	case reportDeliveryPreview:
+		return true, send()
+	case reportDeliveryDurable:
+		return sendDurableReport(db, key, send)
+	default:
+		return false, fmt.Errorf("unknown report delivery policy: %d", policy)
+	}
 }
 
 func sendDurableReport(db notificationDeliveryStore, key string, send func() error) (bool, error) {
@@ -509,17 +585,6 @@ func renderSectionBullets(sb *strings.Builder, sec *health.BriefingSection) {
 	}
 }
 
-// renderAITake prints the AI prose for a section underneath rule-based bullets.
-// Marked with 🤖 so the user immediately sees this is the LLM layer, not the
-// scoring engine. Empty body is a no-op.
-func renderAITake(sb *strings.Builder, body string) {
-	body = strings.TrimSpace(body)
-	if body == "" {
-		return
-	}
-	fmt.Fprintf(sb, "  🤖 <i>%s</i>\n", body)
-}
-
 func renderHeadline(sb *strings.Builder, h *health.HeadlineSignal) {
 	if h == nil || h.Title == "" {
 		return
@@ -602,6 +667,73 @@ func abs(x int) int {
 	return x
 }
 
+func morningEvidenceForReport(b *health.BriefingResponse, f freshness) health.MorningInsightEvidence {
+	excluded := make(map[string]bool)
+	if f.sleepKnown && f.sleepStale() {
+		excluded["sleep"] = true
+	}
+	if f.watchKnown && f.watchOff() {
+		excluded["recovery"] = true
+	}
+	if f.phoneKnown && f.phoneOff() {
+		excluded["activity"] = true
+		excluded["cardio"] = true
+	}
+	return health.BuildMorningInsightEvidenceWithOptions(b, nil, health.MorningInsightOptions{
+		ExcludeSections: excluded,
+	})
+}
+
+func morningFreshnessParts(f freshness, lang string) []string {
+	var parts []string
+	if f.watchKnown {
+		parts = append(parts, tr(lang, "tg_source_watch")+" "+fmtSilence(f.watch, lang))
+	}
+	if f.phoneKnown {
+		parts = append(parts, tr(lang, "tg_source_activity")+" "+fmtSilence(f.phone, lang))
+	}
+	if f.sleepKnown {
+		parts = append(parts, tr(lang, "tg_source_sleep")+" "+fmtSilence(f.sleep, lang))
+	}
+	return parts
+}
+
+func telegramText(s string) string {
+	return html.EscapeString(strings.TrimSpace(s))
+}
+
+func latestSleepHours(sleep *health.SleepAnalysis) (float64, bool) {
+	if sleep == nil {
+		return 0, false
+	}
+	if sleep.LatestTotal != nil && *sleep.LatestTotal > 0 {
+		return *sleep.LatestTotal, true
+	}
+	return 0, false
+}
+
+func normalizedReportText(value string) string {
+	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(value))), " ")
+}
+
+func synthesisAddsInformation(synthesis string, evidence health.MorningInsightEvidence) bool {
+	normalized := normalizedReportText(synthesis)
+	if normalized == "" {
+		return false
+	}
+	for _, existing := range []string{evidence.VerdictReason, evidence.Action} {
+		if normalized == normalizedReportText(existing) {
+			return false
+		}
+	}
+	for _, reason := range evidence.Reasons {
+		if normalized == normalizedReportText(reason.Text) {
+			return false
+		}
+	}
+	return true
+}
+
 // ── morning ──────────────────────────────────────────────────────────────────
 
 func formatMorning(b *health.BriefingResponse, aiBlocks map[string]string, lang string, loc *time.Location, f freshness, checkinExpired bool) string {
@@ -612,77 +744,58 @@ func formatMorning(b *health.BriefingResponse, aiBlocks map[string]string, lang 
 		fmt.Fprintf(&sb, tr(lang, "tg_warn_stale")+"\n\n", d)
 	}
 
-	// Headline first — sets the frame for everything below ("see headline above"
-	// references in section summaries now actually resolve).
-	renderHeadline(&sb, b.Headline)
-
-	// AI blocks come pre-split from ai_briefing_blocks; no parsing needed.
-	ai := struct{ Sleep, Yesterday, Recovery, Recommendation string }{
-		Sleep:          aiBlocks["SLEEP"],
-		Yesterday:      aiBlocks["YESTERDAY"],
-		Recovery:       aiBlocks["RECOVERY"],
-		Recommendation: aiBlocks["RECOMMENDATION"],
+	evidence := morningEvidenceForReport(b, f)
+	label := evidence.VerdictLabel
+	if label == "" {
+		label = evidence.Verdict
 	}
+	if label == "" {
+		label = firstReportText(b.ReadinessTodayLabel, tr(lang, "tg_no_data"))
+	}
+	fmt.Fprintf(&sb, "⚡ <b>%s: %s</b>\n", tr(lang, "tg_morning_today"), telegramText(label))
+	if evidence.VerdictReason != "" {
+		fmt.Fprintf(&sb, "%s\n", telegramText(evidence.VerdictReason))
+	}
+	sb.WriteByte('\n')
 
-	renderEnergyBank(&sb, b.EnergyBank, lang)
-	renderReadiness(&sb, b, lang)
-	renderAlerts(&sb, b.Alerts, lang)
-	renderContextAnnotations(&sb, b.ContextAnnotations, lang)
-
-	// Sleep — rule-based bullets always; AI take layered underneath. If sleep
-	// data is silent for ≥36h, the briefing is from a stale night and the
-	// section misleads — replace with banner.
+	fmt.Fprintf(&sb, "<b>%s</b>\n", tr(lang, "tg_morning_metrics"))
+	if b.EnergyBank != nil && b.EnergyBank.Capacity > 0 {
+		fmt.Fprintf(&sb, "  ⚡ %s: %d/%d\n", tr(lang, "tg_energy"), b.EnergyBank.Current, b.EnergyBank.Capacity)
+	}
+	fmt.Fprintf(&sb, "  %s %s: %d/100\n", readinessEmoji(b.ReadinessToday), tr(lang, "tg_readiness"), b.ReadinessToday)
 	switch {
-	case f.sleepStale() && f.sleepKnown:
-		fmt.Fprintf(&sb, tr(lang, "tg_sleep_silence")+"\n\n", fmtSilence(f.sleep, lang))
-	case b.Sleep == nil:
-		sb.WriteString(tr(lang, "tg_warn_no_sleep") + "\n\n")
-	default:
-		renderSectionBullets(&sb, findSection(b, "sleep"))
-		if len(b.Sleep.Sources) > 1 {
-			fmt.Fprintf(&sb, "📱 <i>%s:</i>\n", tr(lang, "tg_sources"))
-			for _, src := range b.Sleep.Sources {
-				fmt.Fprintf(&sb, "  %s — %.1fh\n", src.Source, src.Total)
-			}
-		}
-		renderAITake(&sb, ai.Sleep)
-		sb.WriteByte('\n')
-	}
-
-	// Yesterday — activity + cardio as the rule-based retrospective. Phone-off
-	// (no step data ≥24h) collapses the whole block into a banner.
-	if f.phoneOff() && f.phoneKnown {
-		fmt.Fprintf(&sb, tr(lang, "tg_phone_off")+"\n\n", fmtSilence(f.phone, lang))
-	} else {
-		actSec := findSection(b, "activity")
-		cardioSec := findSection(b, "cardio")
-		if actSec != nil || cardioSec != nil || ai.Yesterday != "" {
-			fmt.Fprintf(&sb, "📅 <b>%s</b>\n", tr(lang, "tg_yesterday"))
-			if actSec != nil {
-				renderSectionBullets(&sb, actSec)
-			}
-			if cardioSec != nil {
-				renderSectionBullets(&sb, cardioSec)
-			}
-			renderAITake(&sb, ai.Yesterday)
-			sb.WriteByte('\n')
+	case f.sleepKnown && f.sleepStale():
+		fmt.Fprintf(&sb, "  😴 %s\n", telegramText(stripSimpleTags(fmt.Sprintf(tr(lang, "tg_sleep_silence"), fmtSilence(f.sleep, lang)))))
+	case b.Sleep != nil:
+		if latest, ok := latestSleepHours(b.Sleep); ok {
+			fmt.Fprintf(&sb, "  😴 %s: %.1fh\n", telegramText(sectionTitle(findSection(b, "sleep"), tr(lang, "sec_sleep"))), latest)
+		} else {
+			fmt.Fprintf(&sb, "  😴 %s: %.1fh (%s)\n", telegramText(sectionTitle(findSection(b, "sleep"), tr(lang, "sec_sleep"))), b.Sleep.TotalAvg, tr(lang, "tg_sleep_average"))
 		}
 	}
+	if f.watchKnown && f.watchOff() {
+		fmt.Fprintf(&sb, "  ❤️ %s\n", telegramText(stripSimpleTags(fmt.Sprintf(tr(lang, "tg_watch_off"), fmtSilence(f.watch, lang)))))
+	}
+	if f.phoneKnown && f.phoneOff() {
+		fmt.Fprintf(&sb, "  📱 %s\n", telegramText(stripSimpleTags(fmt.Sprintf(tr(lang, "tg_phone_off"), fmtSilence(f.phone, lang)))))
+	}
+	sb.WriteByte('\n')
 
-	// Recovery — watch off (HRV+RHR both silent ≥36h) collapses to a banner.
-	// Without HRV/RHR the section's numbers are days-old and would mislead.
-	if f.watchOff() && f.watchKnown {
-		fmt.Fprintf(&sb, tr(lang, "tg_watch_off")+"\n\n", fmtSilence(f.watch, lang))
-	} else if recSec := findSection(b, "recovery"); recSec != nil {
-		renderSectionBullets(&sb, recSec)
-		renderAITake(&sb, ai.Recovery)
+	if len(evidence.Reasons) > 0 {
+		fmt.Fprintf(&sb, "<b>%s</b>\n", tr(lang, "tg_morning_why"))
+		for _, reason := range evidence.Reasons {
+			fmt.Fprintf(&sb, "  • %s\n", telegramText(reason.Text))
+		}
 		sb.WriteByte('\n')
 	}
-
-	// Recommendation — actionable closer. AI-only; rule-based equivalent is
-	// already covered by EnergyBank.VerdictReason and ReadinessTip rendered above.
-	if ai.Recommendation != "" {
-		fmt.Fprintf(&sb, "🎯 <b>%s</b>\n%s\n", tr(lang, "tg_recommendation"), strings.TrimSpace(ai.Recommendation))
+	if synthesis := strings.TrimSpace(aiBlocks[ai.BlockSynthesis]); synthesisAddsInformation(synthesis, evidence) {
+		fmt.Fprintf(&sb, "🤖 <i>%s</i>\n\n", telegramText(synthesis))
+	}
+	if evidence.Action != "" {
+		fmt.Fprintf(&sb, "🎯 <b>%s</b>\n%s\n", tr(lang, "tg_recommendation"), telegramText(evidence.Action))
+	}
+	if parts := morningFreshnessParts(f, lang); len(parts) > 0 {
+		fmt.Fprintf(&sb, "\n<i>%s: %s</i>\n", tr(lang, "tg_morning_updated"), telegramText(strings.Join(parts, " · ")))
 	}
 
 	// Soft footer: when the cap-path forced the report after the user
@@ -699,6 +812,22 @@ func formatMorning(b *health.BriefingResponse, aiBlocks map[string]string, lang 
 	}
 
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+func sectionTitle(section *health.BriefingSection, fallback string) string {
+	if section == nil || strings.TrimSpace(section.Title) == "" {
+		return fallback
+	}
+	return strings.TrimSpace(section.Title)
+}
+
+func firstReportText(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 // ── evening ──────────────────────────────────────────────────────────────────

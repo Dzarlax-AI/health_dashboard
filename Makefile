@@ -1,6 +1,14 @@
-.PHONY: dev build backfill backfill-force energy-backfill energy-backfill-dry tenant-isolation import docker-up docker-down test test-unit test-db-storage test-db-ui test-db-ui-fast test-db-energy test-db-energy-smoke test-db-readiness test-db-import test-db-security test-db smoke-health-post
+.PHONY: dev build backfill backfill-force energy-backfill energy-backfill-dry wake-backfill wake-backfill-dry tenant-isolation import contract-generate contract-check web-install web-install-browsers web-dev web-check web-test-visual docker-build-backend docker-build-frontend docker-build-images test-container-images test-compatible-image-pair test-compatible-image-pair-negative test-release-contract-helpers test-production-routing-config test-production-traefik-rules docker-up docker-down test test-unit test-db-storage test-db-ui test-db-ui-fast test-db-energy test-db-energy-smoke test-db-readiness test-db-import test-db-security test-db smoke-health-post
 
 ADDR ?= :8080
+PNPM ?= pnpm
+BACKEND_IMAGE ?= health-backend:local
+FRONTEND_IMAGE ?= health-frontend:local
+BUILD_REVISION ?= $(shell git rev-parse --verify HEAD)
+BACKEND_BUILD_REVISION ?= $(BUILD_REVISION)
+FRONTEND_BUILD_REVISION ?= $(BUILD_REVISION)
+IMAGE_VERSION ?= dev
+API_CONTRACT_VERSION ?= $(shell python3 -c 'import json; print(json.load(open("contracts/openapi.json"))["info"]["version"])')
 
 dev:
 	DATABASE_URL=$(DATABASE_URL) ADDR=$(ADDR) go run ./cmd/server
@@ -31,11 +39,97 @@ energy-backfill-dry:
 		$(if $(TO),--to $(TO),) \
 		$(if $(SCHEMA),--schema $(SCHEMA),)
 
+wake-backfill:
+	DATABASE_URL=$(DATABASE_URL) go run ./cmd/wake_detection_backfill --apply \
+		--from $(FROM) --to $(TO) \
+		$(if $(TZ),--tz $(TZ),) \
+		$(if $(SCHEMA),--schema $(SCHEMA),)
+
+wake-backfill-dry:
+	DATABASE_URL=$(DATABASE_URL) go run ./cmd/wake_detection_backfill \
+		--from $(FROM) --to $(TO) \
+		$(if $(TZ),--tz $(TZ),) \
+		$(if $(SCHEMA),--schema $(SCHEMA),)
+
 import:
 	DATABASE_URL=$(DATABASE_URL) go run ./cmd/import --file $(FILE) --batch 500 --pause 150ms
 
 tenant-isolation:
 	go run ./cmd/tenant_isolation $(ARGS)
+
+contract-generate:
+	go run ./cmd/client_contract -out contracts/openapi.json
+
+contract-check:
+	go test ./internal/api -count=1
+
+web-install:
+	$(PNPM) install --frozen-lockfile
+
+web-install-browsers:
+	$(PNPM) --dir apps/web exec playwright install chromium
+
+web-dev:
+	$(PNPM) web:dev
+
+web-check:
+	$(PNPM) web:check
+
+web-test-visual: web-install-browsers
+	$(PNPM) web:test:visual
+
+docker-build-backend:
+	docker build -f Dockerfile.backend \
+		--build-arg BUILD_REVISION=$(BACKEND_BUILD_REVISION) \
+		--build-arg IMAGE_VERSION=$(IMAGE_VERSION) \
+		--build-arg API_CONTRACT_VERSION=$(API_CONTRACT_VERSION) \
+		-t $(BACKEND_IMAGE) .
+
+docker-build-frontend:
+	docker build -f apps/web/Dockerfile \
+		--build-arg BUILD_REVISION=$(FRONTEND_BUILD_REVISION) \
+		--build-arg IMAGE_VERSION=$(IMAGE_VERSION) \
+		--build-arg API_CONTRACT_VERSION=$(API_CONTRACT_VERSION) \
+		-t $(FRONTEND_IMAGE) .
+
+docker-build-images: docker-build-backend docker-build-frontend
+
+test-container-images: docker-build-images
+	BACKEND_IMAGE=$(BACKEND_IMAGE) \
+	FRONTEND_IMAGE=$(FRONTEND_IMAGE) \
+	BUILD_REVISION=$(BUILD_REVISION) \
+	BACKEND_BUILD_REVISION=$(BACKEND_BUILD_REVISION) \
+	FRONTEND_BUILD_REVISION=$(FRONTEND_BUILD_REVISION) \
+	IMAGE_VERSION=$(IMAGE_VERSION) \
+	API_CONTRACT_VERSION=$(API_CONTRACT_VERSION) \
+	./scripts/test-container-images.sh
+
+test-compatible-image-pair: docker-build-images
+	BACKEND_IMAGE=$(BACKEND_IMAGE) \
+	FRONTEND_IMAGE=$(FRONTEND_IMAGE) \
+	BUILD_REVISION=$(BUILD_REVISION) \
+	BACKEND_BUILD_REVISION=$(BACKEND_BUILD_REVISION) \
+	FRONTEND_BUILD_REVISION=$(FRONTEND_BUILD_REVISION) \
+	API_CONTRACT_VERSION=$(API_CONTRACT_VERSION) \
+	./scripts/test-compatible-image-pair.sh
+
+test-compatible-image-pair-negative: docker-build-images
+	BACKEND_IMAGE=$(BACKEND_IMAGE) \
+	FRONTEND_IMAGE=$(FRONTEND_IMAGE) \
+	BUILD_REVISION=$(BUILD_REVISION) \
+	BACKEND_BUILD_REVISION=$(BACKEND_BUILD_REVISION) \
+	FRONTEND_BUILD_REVISION=$(FRONTEND_BUILD_REVISION) \
+	API_CONTRACT_VERSION=$(API_CONTRACT_VERSION) \
+	./scripts/test-compatible-image-pair-preflight.sh
+
+test-release-contract-helpers:
+	./scripts/test-release-contract-helpers.sh
+
+test-production-routing-config:
+	./scripts/test-production-routing-config.sh
+
+test-production-traefik-rules:
+	./scripts/test-production-traefik-rules.sh
 
 docker-up:
 	docker compose up -d --build

@@ -18,7 +18,7 @@ func (s *DB) rawMetricsFromDailyScores(lastDate string) *health.RawMetrics {
 	defer cancel()
 	rows, err := s.pool.Query(ctx, `
 		SELECT date, hrv_avg, rhr_avg, sleep_total, sleep_deep, sleep_rem,
-		       sleep_core, sleep_awake, steps, calories, exercise_min,
+		       sleep_core, sleep_unspecified, sleep_awake, steps, calories, exercise_min,
 		       spo2_avg, vo2_avg, resp_avg, baseline_hr_overnight
 		FROM daily_scores
 		WHERE date >= $1 AND date <= $2
@@ -36,7 +36,7 @@ func (s *DB) rawMetricsFromDailyScores(lastDate string) *health.RawMetrics {
 		var r dailyScoreRow
 		if err := rows.Scan(
 			&r.date, &r.hrv, &r.rhr, &r.slp, &r.deep, &r.rem,
-			&r.core, &r.awake, &r.steps, &r.cal, &r.ex,
+			&r.core, &r.unspecified, &r.awake, &r.steps, &r.cal, &r.ex,
 			&r.spo2, &r.vo2, &r.resp, &r.nightHR,
 		); err == nil {
 			all = append(all, r)
@@ -64,32 +64,34 @@ func (s *DB) rawMetricsFromDailyScores(lastDate string) *health.RawMetrics {
 		isLatest := i == 0
 		if isLatest && freshToday != nil {
 			// Override stale daily_scores with fresh hourly data for today.
-			appendIfPositive(&d.HRV, coalesce(freshToday.hrv, r.hrv))
-			appendIfPositive(&d.RHR, coalesce(freshToday.rhr, r.rhr))
-			appendIfPositive(&d.Sleep, coalesce(freshToday.slp, r.slp))
-			appendIfPositive(&d.Deep, coalesce(freshToday.deep, r.deep))
-			appendIfPositive(&d.REM, coalesce(freshToday.rem, r.rem))
-			appendIfPositive(&d.Awake, coalesce(freshToday.awake, r.awake))
-			appendIfPositive(&d.Steps, coalesce(freshToday.steps, r.steps))
-			appendIfPositive(&d.Cal, coalesce(freshToday.cal, r.cal))
-			appendIfPositive(&d.Exercise, coalesce(freshToday.ex, r.ex))
-			appendIfPositive(&d.SpO2, coalesce(freshToday.spo2, r.spo2))
-			appendIfPositive(&d.VO2, coalesce(freshToday.vo2, r.vo2))
-			appendIfPositive(&d.Resp, coalesce(freshToday.resp, r.resp))
-		} else {
-			appendIfPositive(&d.HRV, r.hrv)
-			appendIfPositive(&d.RHR, r.rhr)
-			appendIfPositive(&d.Sleep, r.slp)
-			appendIfPositive(&d.Deep, r.deep)
-			appendIfPositive(&d.REM, r.rem)
-			appendIfPositive(&d.Awake, r.awake)
-			appendIfPositive(&d.Steps, r.steps)
-			appendIfPositive(&d.Cal, r.cal)
-			appendIfPositive(&d.Exercise, r.ex)
-			appendIfPositive(&d.SpO2, r.spo2)
-			appendIfPositive(&d.VO2, r.vo2)
-			appendIfPositive(&d.Resp, r.resp)
+			r.hrv = coalesce(freshToday.hrv, r.hrv)
+			r.rhr = coalesce(freshToday.rhr, r.rhr)
+			r.slp = coalesce(freshToday.slp, r.slp)
+			r.deep = coalesce(freshToday.deep, r.deep)
+			r.rem = coalesce(freshToday.rem, r.rem)
+			r.core = coalesce(freshToday.core, r.core)
+			r.unspecified = coalesce(freshToday.unspecified, r.unspecified)
+			r.awake = coalesce(freshToday.awake, r.awake)
+			r.steps = coalesce(freshToday.steps, r.steps)
+			r.cal = coalesce(freshToday.cal, r.cal)
+			r.ex = coalesce(freshToday.ex, r.ex)
+			r.spo2 = coalesce(freshToday.spo2, r.spo2)
+			r.vo2 = coalesce(freshToday.vo2, r.vo2)
+			r.resp = coalesce(freshToday.resp, r.resp)
 		}
+		d.Daily = append(d.Daily, dailyHealthMetrics(r))
+		appendIfPositive(&d.HRV, r.hrv)
+		appendIfPositive(&d.RHR, r.rhr)
+		appendIfPositive(&d.Sleep, r.slp)
+		appendIfPositive(&d.Deep, r.deep)
+		appendIfPositive(&d.REM, r.rem)
+		appendIfPositive(&d.Awake, r.awake)
+		appendIfPositive(&d.Steps, r.steps)
+		appendIfPositive(&d.Cal, r.cal)
+		appendIfPositive(&d.Exercise, r.ex)
+		appendIfPositive(&d.SpO2, r.spo2)
+		appendIfPositive(&d.VO2, r.vo2)
+		appendIfPositive(&d.Resp, r.resp)
 	}
 
 	// StepsWithDates and HRVWithDates — last 7 rows with actual data.
@@ -121,10 +123,45 @@ func (s *DB) rawMetricsFromDailyScores(lastDate string) *health.RawMetrics {
 }
 
 type dailyScoreRow struct {
-	date                                  string
-	hrv, rhr, slp, deep, rem, core, awake *float64
-	steps, cal, ex, spo2, vo2, resp       *float64
-	nightHR                               *float64
+	date                                               string
+	hrv, rhr, slp, deep, rem, core, unspecified, awake *float64
+	steps, cal, ex, spo2, vo2, resp                    *float64
+	nightHR                                            *float64
+}
+
+func dailyHealthMetrics(r dailyScoreRow) health.DailyHealthMetrics {
+	return health.DailyHealthMetrics{
+		Date:        r.date,
+		HRV:         positivePtr(r.hrv),
+		RHR:         positivePtr(r.rhr),
+		Sleep:       positivePtr(r.slp),
+		Deep:        positivePtr(r.deep),
+		REM:         positivePtr(r.rem),
+		Core:        positivePtr(r.core),
+		Unspecified: positivePtr(r.unspecified),
+		Awake:       nonNegativePtr(r.awake),
+		Steps:       positivePtr(r.steps),
+		Calories:    positivePtr(r.cal),
+		Exercise:    positivePtr(r.ex),
+		SpO2:        positivePtr(r.spo2),
+		VO2:         positivePtr(r.vo2),
+		Resp:        positivePtr(r.resp),
+		WristTemp:   nil,
+	}
+}
+
+func positivePtr(v *float64) *float64 {
+	if v == nil || *v <= 0 {
+		return nil
+	}
+	return v
+}
+
+func nonNegativePtr(v *float64) *float64 {
+	if v == nil || *v < 0 {
+		return nil
+	}
+	return v
 }
 
 func buildReadinessEvidence(date string, latest dailyScoreRow, fresh *dayRow) *health.ReadinessEvidenceInput {
@@ -147,14 +184,27 @@ func buildReadinessEvidence(date string, latest dailyScoreRow, fresh *dayRow) *h
 		rhr, rhrDate = pick(fresh.rhr, latest.rhr)
 	}
 	slp, slpDate := pick(nil, latest.slp)
-	deep, _ := pick(nil, latest.deep)
-	awake, _ := pick(nil, latest.awake)
+	deep, deepDate := pick(nil, latest.deep)
+	rem, remDate := pick(nil, latest.rem)
+	core, coreDate := pick(nil, latest.core)
+	awake, awakeDate := pick(nil, latest.awake)
 	resp, respDate := pick(nil, latest.resp)
 	if fresh != nil {
 		slp, slpDate = pick(fresh.slp, latest.slp)
-		deep, _ = pick(fresh.deep, latest.deep)
-		awake, _ = pick(fresh.awake, latest.awake)
+		deep, deepDate = pick(fresh.deep, latest.deep)
+		rem, remDate = pick(fresh.rem, latest.rem)
+		core, coreDate = pick(fresh.core, latest.core)
+		awake, awakeDate = pick(fresh.awake, latest.awake)
 		resp, respDate = pick(fresh.resp, latest.resp)
+	}
+	// Zero-valued sleep_awake rows are intentionally filtered by the
+	// aggregation path. When the same night still has total + all asleep
+	// stages, the missing awake row represents a measured zero rather than
+	// incomplete evidence.
+	if awake == nil && slp != nil && deep != nil && rem != nil && core != nil {
+		zeroAwake := 0.0
+		awake = &zeroAwake
+		awakeDate = date
 	}
 	evidence.HRV = readinessComponent("heart_rate_variability", date, hrvDate, hrv, sampleCount(fresh, "hrv"), "")
 	if evidence.HRV.Present {
@@ -169,6 +219,10 @@ func buildReadinessEvidence(date string, latest dailyScoreRow, fresh *dayRow) *h
 	evidence.RHR = readinessComponent("resting_heart_rate", date, rhrDate, rhr, sampleCount(fresh, "rhr"), "")
 	evidence.OvernightHR = readinessComponent("baseline_hr_overnight", date, latest.date, latest.nightHR, 0, "")
 	evidence.SleepDuration = readinessComponent("sleep_total", date, slpDate, slp, 0, "")
+	evidence.SleepDeep = readinessComponent("sleep_deep", date, deepDate, deep, 0, "")
+	evidence.SleepREM = readinessComponent("sleep_rem", date, remDate, rem, 0, "")
+	evidence.SleepCore = readinessComponent("sleep_core", date, coreDate, core, 0, "")
+	evidence.SleepAwake = readinessComponent("sleep_awake", date, awakeDate, awake, 0, "")
 	evidence.Respiratory = readinessComponent("respiratory_rate", date, respDate, resp, sampleCount(fresh, "resp"), "")
 	evidence.SleepQuality = sleepQualityEvidence(date, slpDate, slp, deep, awake)
 	return evidence
@@ -214,18 +268,12 @@ func sleepQualityEvidence(date, sourceDate string, sleep, deep, awake *float64) 
 	if deep != nil {
 		deepPct = *deep / *sleep * 100
 	}
-	awakePct := 0.0
-	if awake != nil {
-		awakePct = *awake / *sleep * 100
-	}
 	value := deepPct
 	c.Value = &value
 	c.Present = true
 	c.Freshness = health.ReadinessFreshnessOK
 	c.Confidence = health.ReadinessConfidenceFinal
-	if deepPct < 8 || awakePct > 10 {
-		c.Confidence = health.ReadinessConfidenceLow
-	}
+	c.MissingReason = ""
 	return c
 }
 
@@ -311,54 +359,10 @@ func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
 	ctx, cancel := queryCtx()
 	defer cancel()
 
-	getDailyValues := func(metric string, days int, agg string) []float64 {
-		var err error
-		var rows pgx.Rows
-		if agg == "SUM" {
-			sleepDedup := sleepDedupClause(metric)
-			r, e := s.pool.Query(ctx, fmt.Sprintf(`
-				SELECT MAX(source_sum)
-				FROM (
-					SELECT SUBSTRING(date,1,10) AS d, source, SUM(qty) AS source_sum
-					FROM metric_points
-					WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND qty > 0 AND quality = 'ok' %s
-					GROUP BY d, source
-				) sub
-				GROUP BY d
-				ORDER BY d DESC
-				LIMIT $3`, sleepDedup),
-				metric, subtractDays(lastDate, days), days)
-			rows = r
-			err = e
-		} else {
-			r, e := s.pool.Query(ctx, `
-				SELECT `+agg+`(qty)
-				FROM metric_points
-				WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND qty > 0 AND quality = 'ok'
-				GROUP BY SUBSTRING(date,1,10)
-				ORDER BY SUBSTRING(date,1,10) DESC
-				LIMIT $3`,
-				metric, subtractDays(lastDate, days), days)
-			rows = r
-			err = e
-		}
-		if err != nil {
-			return nil
-		}
-		defer rows.Close()
-		var vals []float64
-		for rows.Next() {
-			var v float64
-			if err := rows.Scan(&v); err == nil {
-				vals = append(vals, v)
-			}
-		}
-		return vals
-	}
-
 	getDailyWithDates := func(metric string, days int, agg string) []health.DatedValue {
 		var err error
 		var rows pgx.Rows
+		quantityPredicate := dailyMetricQuantityPredicate(metric)
 		if agg == "SUM" {
 			sleepDedup := sleepDedupClause(metric)
 			r, e := s.pool.Query(ctx, fmt.Sprintf(`
@@ -366,23 +370,23 @@ func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
 				FROM (
 					SELECT SUBSTRING(date,1,10) AS d, source, SUM(qty) AS source_sum
 					FROM metric_points
-					WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND qty > 0 AND quality = 'ok' %s
+					WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND %s AND quality = 'ok' %s
 					GROUP BY d, source
 				) sub
 				GROUP BY d
 				ORDER BY d DESC
-				LIMIT $3`, sleepDedup),
+				LIMIT $3`, quantityPredicate, sleepDedup),
 				metric, subtractDays(lastDate, days), days)
 			rows = r
 			err = e
 		} else {
-			r, e := s.pool.Query(ctx, `
+			r, e := s.pool.Query(ctx, fmt.Sprintf(`
 				SELECT SUBSTRING(date,1,10), `+agg+`(qty)
 				FROM metric_points
-				WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND qty > 0 AND quality = 'ok'
+				WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND %s AND quality = 'ok'
 				GROUP BY SUBSTRING(date,1,10)
 				ORDER BY SUBSTRING(date,1,10) DESC
-				LIMIT $3`,
+				LIMIT $3`, quantityPredicate),
 				metric, subtractDays(lastDate, days), days)
 			rows = r
 			err = e
@@ -401,29 +405,131 @@ func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
 		return out
 	}
 
+	series := map[string][]health.DatedValue{
+		"hrv":         getDailyWithDates("heart_rate_variability", 30, "AVG"),
+		"rhr":         getDailyWithDates("resting_heart_rate", 30, "AVG"),
+		"sleep":       getDailyWithDates("sleep_total", 30, "SUM"),
+		"deep":        getDailyWithDates("sleep_deep", 30, "SUM"),
+		"rem":         getDailyWithDates("sleep_rem", 30, "SUM"),
+		"core":        getDailyWithDates("sleep_core", 30, "SUM"),
+		"unspecified": getDailyWithDates("sleep_unspecified", 30, "SUM"),
+		"awake":       getDailyWithDates("sleep_awake", 30, "SUM"),
+		"steps":       getDailyWithDates("step_count", 30, "SUM"),
+		"calories":    getDailyWithDates("active_energy", 30, "SUM"),
+		"exercise":    getDailyWithDates("apple_exercise_time", 30, "SUM"),
+		"spo2":        getDailyWithDates("blood_oxygen_saturation", 30, "AVG"),
+		"vo2":         getDailyWithDates("vo2_max", 30, "AVG"),
+		"resp":        getDailyWithDates("respiratory_rate", 30, "AVG"),
+		"wrist_temp":  getDailyWithDates("wrist_temperature", 30, "AVG"),
+		"night_sleep": getDailyWithDates("night_sleep_total", 30, "SUM"),
+		"nap":         getDailyWithDates("nap_total", 30, "SUM"),
+	}
+
 	out := &health.RawMetrics{
 		LastDate: lastDate,
-		HRV:      getDailyValues("heart_rate_variability", 30, "AVG"),
-		RHR:      getDailyValues("resting_heart_rate", 30, "AVG"),
-		Sleep:    getDailyValues("sleep_total", 30, "SUM"),
-		Deep:     getDailyValues("sleep_deep", 30, "SUM"),
-		REM:      getDailyValues("sleep_rem", 30, "SUM"),
-		Awake:    getDailyValues("sleep_awake", 30, "SUM"),
+		Daily:    mergeDatedMetrics(series),
+		HRV:      datedValues(series["hrv"]),
+		RHR:      datedValues(series["rhr"]),
+		Sleep:    datedValues(series["sleep"]),
+		Deep:     datedValues(series["deep"]),
+		REM:      datedValues(series["rem"]),
+		Awake:    datedValues(series["awake"]),
 		// New-format split written by health-sync iOS — see RawMetrics doc.
-		NightSleep:     getDailyValues("night_sleep_total", 30, "SUM"),
-		Nap:            getDailyValues("nap_total", 30, "SUM"),
+		NightSleep:     datedValues(series["night_sleep"]),
+		Nap:            datedValues(series["nap"]),
 		NapToday:       s.metricPointDailyPoint("nap_total", lastDate),
-		Steps:          getDailyValues("step_count", 30, "SUM"),
-		Cal:            getDailyValues("active_energy", 30, "SUM"),
-		Exercise:       getDailyValues("apple_exercise_time", 30, "SUM"),
-		SpO2:           getDailyValues("blood_oxygen_saturation", 30, "AVG"),
-		VO2:            getDailyValues("vo2_max", 30, "AVG"),
-		Resp:           getDailyValues("respiratory_rate", 30, "AVG"),
-		WristTemp:      getDailyValues("wrist_temperature", 30, "AVG"),
-		StepsWithDates: getDailyWithDates("step_count", 7, "SUM"),
-		HRVWithDates:   getDailyWithDates("heart_rate_variability", 7, "AVG"),
+		Steps:          datedValues(series["steps"]),
+		Cal:            datedValues(series["calories"]),
+		Exercise:       datedValues(series["exercise"]),
+		SpO2:           datedValues(series["spo2"]),
+		VO2:            datedValues(series["vo2"]),
+		Resp:           datedValues(series["resp"]),
+		WristTemp:      datedValues(series["wrist_temp"]),
+		StepsWithDates: firstDated(series["steps"], 7),
+		HRVWithDates:   firstDated(series["hrv"], 7),
 	}
 	out.ReadinessEvidence = buildReadinessEvidence(lastDate, dailyScoreRow{date: lastDate}, s.freshDayFromRaw(lastDate))
+	return out
+}
+
+func dailyMetricQuantityPredicate(metric string) string {
+	if metric == "sleep_awake" {
+		return "qty >= 0"
+	}
+	return "qty > 0"
+}
+
+func datedValues(in []health.DatedValue) []float64 {
+	out := make([]float64, 0, len(in))
+	for _, value := range in {
+		out = append(out, value.Val)
+	}
+	return out
+}
+
+func firstDated(in []health.DatedValue, n int) []health.DatedValue {
+	if len(in) <= n {
+		return in
+	}
+	return in[:n]
+}
+
+func mergeDatedMetrics(series map[string][]health.DatedValue) []health.DailyHealthMetrics {
+	byDate := make(map[string]*health.DailyHealthMetrics)
+	valuePtr := func(value float64) *float64 {
+		v := value
+		return &v
+	}
+	for metric, values := range series {
+		for _, value := range values {
+			row := byDate[value.Date]
+			if row == nil {
+				row = &health.DailyHealthMetrics{Date: value.Date}
+				byDate[value.Date] = row
+			}
+			switch metric {
+			case "hrv":
+				row.HRV = valuePtr(value.Val)
+			case "rhr":
+				row.RHR = valuePtr(value.Val)
+			case "sleep":
+				row.Sleep = valuePtr(value.Val)
+			case "deep":
+				row.Deep = valuePtr(value.Val)
+			case "rem":
+				row.REM = valuePtr(value.Val)
+			case "core":
+				row.Core = valuePtr(value.Val)
+			case "unspecified":
+				row.Unspecified = valuePtr(value.Val)
+			case "awake":
+				row.Awake = valuePtr(value.Val)
+			case "steps":
+				row.Steps = valuePtr(value.Val)
+			case "calories":
+				row.Calories = valuePtr(value.Val)
+			case "exercise":
+				row.Exercise = valuePtr(value.Val)
+			case "spo2":
+				row.SpO2 = valuePtr(value.Val)
+			case "vo2":
+				row.VO2 = valuePtr(value.Val)
+			case "resp":
+				row.Resp = valuePtr(value.Val)
+			case "wrist_temp":
+				row.WristTemp = valuePtr(value.Val)
+			}
+		}
+	}
+	dates := make([]string, 0, len(byDate))
+	for date := range byDate {
+		dates = append(dates, date)
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(dates)))
+	out := make([]health.DailyHealthMetrics, 0, len(dates))
+	for _, date := range dates {
+		out = append(out, *byDate[date])
+	}
 	return out
 }
 
@@ -528,6 +634,16 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 	}
 
 	resp := health.ComputeBriefing(*data, lang)
+	resp.SleepRegularityIndex = data.SleepRegularityIndex
+	resp.SleepRegularityNights = data.SleepRegularityNights
+	if resp.Sleep != nil && data.ReadinessEvidence != nil {
+		latest := data.ReadinessEvidence.SleepDuration
+		if latest.Present && latest.Value != nil && latest.SourceDate == *lastDate {
+			value := *latest.Value
+			resp.Sleep.LatestTotal = &value
+			resp.Sleep.LatestDate = latest.SourceDate
+		}
+	}
 
 	// EnergyBank v2 half-cutover (PR #43): when a v2 snapshot exists
 	// for `lastDate`, override the displayed bank/capacity/drain with
@@ -669,6 +785,29 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 	illnessInput := s.BuildIllnessEvidenceInput(*lastDate, resp.SubjectiveCheckin)
 	resp.IllnessSuspicion = health.ComputeIllnessSuspicion(illnessInput)
 	health.ApplyIllnessSafetyCap(resp, health.GetStrings(lang))
+	resp.TodayGuidance = health.ResolveDashboardTodayGuidance(
+		resp.EnergyBank,
+		resp.ReadinessServing,
+		resp.IllnessSuspicion,
+		resp.SleepQuality,
+		health.GetStrings(lang),
+	)
+	if resp.TodayGuidance != nil {
+		var updatedAt *time.Time
+		updatedCtx, cancelUpdated := queryCtx()
+		err := s.pool.QueryRow(updatedCtx, `
+			SELECT MAX(processed_at)
+			FROM health_records
+			WHERE processing_status = 'complete'
+			  AND processed_at IS NOT NULL
+		`).Scan(&updatedAt)
+		cancelUpdated()
+		if err != nil {
+			log.Printf("[DASHBOARD_GUIDANCE] updated_at read: %v", err)
+		} else if updatedAt != nil {
+			resp.TodayGuidance.UpdatedAt = updatedAt
+		}
+	}
 
 	if IsContextCaveatsEnabled(s) {
 		if annotations, aerr := s.GetRecentContextAnnotationsThroughDate(*lastDate, 3); aerr == nil {
@@ -931,9 +1070,9 @@ func (s *DB) fetchDailyMetric(metric, lastDate string, days int, agg string) []f
 
 // dayRow mirrors the daily_scores column set, used for fresh-day override.
 type dayRow struct {
-	hrv, rhr, slp, deep, rem, core, awake *float64
-	steps, cal, ex, spo2, vo2, resp       *float64
-	hrvN, rhrN, respN, spo2N              int
+	hrv, rhr, slp, deep, rem, core, unspecified, awake *float64
+	steps, cal, ex, spo2, vo2, resp                    *float64
+	hrvN, rhrN, respN, spo2N                           int
 }
 
 // freshDayFromRaw reads today's values directly from metric_points (always
@@ -956,6 +1095,7 @@ func (s *DB) freshDayFromRaw(date string) *dayRow {
 		{"sleep_deep", &r.deep, true, nil},
 		{"sleep_rem", &r.rem, true, nil},
 		{"sleep_core", &r.core, true, nil},
+		{"sleep_unspecified", &r.unspecified, true, nil},
 		{"sleep_awake", &r.awake, true, nil},
 		{"step_count", &r.steps, true, nil},
 		{"active_energy", &r.cal, true, nil},

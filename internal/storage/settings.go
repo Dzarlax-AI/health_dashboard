@@ -77,26 +77,76 @@ func (s *DB) SaveSettings(kv map[string]string) error {
 	return tx.Commit(ctx)
 }
 
-// AIConfig holds Gemini API credentials and generation parameters.
-type AIConfig struct {
+type AIProviderSettings struct {
 	APIKey          string
 	Model           string
+	ReasoningEffort string
+}
+
+// AIConfig holds provider-neutral generation parameters plus each adapter's
+// saved credentials/model selection.
+type AIConfig struct {
+	Provider        string
+	Providers       map[string]AIProviderSettings
 	MaxOutputTokens int
 }
 
-// Enabled returns true when the Gemini API key is configured.
+func (c AIConfig) SettingsFor(provider string) AIProviderSettings {
+	if c.Providers == nil {
+		return AIProviderSettings{}
+	}
+	return c.Providers[provider]
+}
+
+func (c *AIConfig) SetSettingsFor(provider string, settings AIProviderSettings) {
+	if c.Providers == nil {
+		c.Providers = make(map[string]AIProviderSettings)
+	}
+	c.Providers[provider] = settings
+}
+
+func (c AIConfig) ActiveSettings() AIProviderSettings {
+	return c.SettingsFor(c.Provider)
+}
+
+// Enabled returns true when the active provider has an API key.
 func (c AIConfig) Enabled() bool {
-	return c.APIKey != ""
+	return c.Provider != "" && c.ActiveSettings().APIKey != ""
+}
+
+func cloneAIConfig(in AIConfig) AIConfig {
+	out := in
+	out.Providers = make(map[string]AIProviderSettings, len(in.Providers))
+	for provider, settings := range in.Providers {
+		out.Providers[provider] = settings
+	}
+	return out
+}
+
+func (c AIConfig) Clone() AIConfig {
+	return cloneAIConfig(c)
 }
 
 // GetAIConfig builds an AIConfig from the settings table,
 // falling back to the supplied env-derived defaults for any unset key.
 func (s *DB) GetAIConfig(defaults AIConfig) AIConfig {
-	return AIConfig{
-		APIKey:          s.GetSetting("gemini_api_key", defaults.APIKey),
-		Model:           s.GetSetting("gemini_model", defaults.Model),
-		MaxOutputTokens: getSettingInt(s, "gemini_max_tokens", defaults.MaxOutputTokens),
+	out := cloneAIConfig(defaults)
+	out.Provider = s.GetSetting("ai_provider", defaults.Provider)
+	if out.Provider == "" {
+		out.Provider = "gemini"
 	}
+	if s.GetSettingExists("ai_max_output_tokens") {
+		out.MaxOutputTokens = getSettingInt(s, "ai_max_output_tokens", defaults.MaxOutputTokens)
+	} else {
+		out.MaxOutputTokens = getSettingInt(s, "gemini_max_tokens", defaults.MaxOutputTokens)
+	}
+	for provider, settings := range out.Providers {
+		settings.APIKey = s.GetSetting(provider+"_api_key", settings.APIKey)
+		settings.Model = s.GetSetting(provider+"_model", settings.Model)
+		settings.ReasoningEffort = s.GetSetting(provider+"_reasoning_effort", settings.ReasoningEffort)
+		out.SetSettingsFor(provider, settings)
+	}
+	return out
 }
 
 // GetNotifyConfig builds a NotifyConfig from the settings table,

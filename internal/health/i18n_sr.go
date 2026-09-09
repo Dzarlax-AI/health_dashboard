@@ -8,6 +8,15 @@ var sr = LangStrings{
 	"tip_fair":          "Malo odstupanje od vaše norme. Umjerena aktivnost je dobar izbor.",
 	"tip_low":           "Fokusirajte se na oporavak: hidratacija, odmor i izbjegavanje intenzivnog vježbanja.",
 
+	// Jedna preporuka na glavnom ekranu.
+	"dashboard_guidance_summary_push_hard":        "Danas imate prostora za zahtjevan dan.",
+	"dashboard_guidance_summary_moderate":         "Danas zadržite udoban tempo.",
+	"dashboard_guidance_summary_active_recovery":  "Izaberite lagano kretanje i oporavak.",
+	"dashboard_guidance_summary_rest":             "Danas dajte prednost oporavku.",
+	"dashboard_guidance_reason_readiness_pending": "Signali oporavka se još stabilizuju, pa preporuka ostaje oprezna.",
+	"dashboard_guidance_reason_sleep_partial":     "Trajanje sna je poznato, ali se kvalitet faza još precizira.",
+	"dashboard_guidance_reason_sleep_low":         "Podaci o snu nedostaju ili su niske pouzdanosti, pa preporuka ostaje oprezna.",
+
 	// Per-section status labels (BriefingSection.Status) — surfaced via
 	// EnrichLabels so iOS / web consumers don't maintain a parallel i18n
 	// table for the good/fair/low enum.
@@ -189,17 +198,24 @@ var sr = LangStrings{
 	"stress_flag_calibration_warmup_desc":       "Lični baseline još u warmup-u (3-6 uzoraka). Pragovi oznaka mogu biti konzervativni.",
 
 	// Subjective morning check-in (Telegram inline keyboard).
-	"checkin_prompt_text":  "Kako se osećate jutros?",
-	"checkin_btn_great":    "Odlično",
-	"checkin_btn_ok":       "Normalno",
-	"checkin_btn_meh":      "Onako",
-	"checkin_btn_sick":     "Bolestan(a)",
-	"checkin_ack_great":    "Zabeleženo: Odlično. Lep dan.",
-	"checkin_ack_ok":       "Zabeleženo: Normalno.",
-	"checkin_ack_meh":      "Zabeleženo: Onako. Štedite se danas.",
-	"checkin_ack_sick":     "Zabeleženo: Bolestan(a). Odmarajte.",
-	"checkin_ack_late":     "Zabeleženo posle izveštaja — ide u analitiku.",
-	"checkin_expired_note": "<i>Želite da izveštaj bolje odražava vaše stanje? Odgovorite jednim dodirom sutra.</i>",
+	"checkin_prompt_text":        "Kako se osećate jutros?",
+	"checkin_btn_great":          "Odlično",
+	"checkin_btn_ok":             "Normalno",
+	"checkin_btn_meh":            "Onako",
+	"checkin_btn_sick":           "Bolestan(a)",
+	"checkin_ack_great":          "Zabeleženo: Odlično. Lep dan.",
+	"checkin_ack_ok":             "Zabeleženo: Normalno.",
+	"checkin_ack_meh":            "Zabeleženo: Onako. Štedite se danas.",
+	"checkin_ack_sick":           "Zabeleženo: Bolestan(a). Odmarajte.",
+	"checkin_ack_late":           "Zabeleženo posle izveštaja — ide u analitiku.",
+	"checkin_expired_note":       "<i>Želite da izveštaj bolje odražava vaše stanje? Odgovorite jednim dodirom sutra.</i>",
+	"wake_feedback_prompt":       "Otkrili smo da ste se probudili u %s. Da li je to tačno?",
+	"wake_feedback_btn_yes":      "Da",
+	"wake_feedback_btn_earlier":  "Ranije",
+	"wake_feedback_btn_later":    "Kasnije",
+	"wake_feedback_btn_returned": "Ponovo sam zaspao/la",
+	"wake_feedback_ack_yes":      "Hvala, vreme buđenja je potvrđeno.",
+	"wake_feedback_ack_adjust":   "Hvala, koristićemo ovo za podešavanje detektora.",
 
 	// Proactive context prompts. Answers are categorical only; never store
 	// free text or the concrete real-world event behind the anomaly.
@@ -232,6 +248,14 @@ var sr = LangStrings{
 	"tg_readiness_today":   "danas",
 	"tg_readiness_trend":   "trend 7 dana",
 	"tg_today":             "Danas dosad",
+	"tg_morning_today":     "Danas",
+	"tg_morning_metrics":   "Najvažnije",
+	"tg_sleep_average":     "prosek za najviše 7 noći",
+	"tg_morning_why":       "Zašto",
+	"tg_morning_updated":   "Ažurirano",
+	"tg_source_watch":      "Sat",
+	"tg_source_activity":   "Aktivnost",
+	"tg_source_sleep":      "San",
 	"tg_yesterday":         "Juče",
 	"tg_recommendation":    "Plan za danas",
 	"tg_alerts":            "Anomalije",

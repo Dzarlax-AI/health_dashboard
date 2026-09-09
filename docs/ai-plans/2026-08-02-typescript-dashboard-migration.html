@@ -1,0 +1,722 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TypeScript Dashboard Migration — Implementation Plan</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #18211d;
+      --muted: #617068;
+      --line: #dce5df;
+      --paper: #f6f8f5;
+      --card: #ffffff;
+      --green: #159557;
+      --green-soft: #e8f7ee;
+      --amber: #b66508;
+      --amber-soft: #fff5df;
+      --blue: #4f5fce;
+      --blue-soft: #eef0ff;
+      --danger: #a13939;
+      --danger-soft: #fff0ef;
+      --code: #13251c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background:
+        linear-gradient(180deg, rgba(232, 247, 238, 0.78), rgba(246, 248, 245, 0) 420px),
+        var(--paper);
+      color: var(--ink);
+      font-family: -apple-system, blinkmacsystemfont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+    main {
+      width: min(1120px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 40px 0 80px;
+    }
+    header, section {
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      background: rgba(255, 255, 255, 0.92);
+      box-shadow: 0 14px 40px rgba(28, 55, 42, 0.06);
+    }
+    header { padding: 34px; }
+    section { margin-top: 18px; padding: 26px; }
+    h1, h2, h3 { margin-top: 0; line-height: 1.2; }
+    h1 { margin-bottom: 12px; font-size: clamp(2rem, 5vw, 3.4rem); }
+    h2 { margin-bottom: 14px; font-size: 1.45rem; }
+    h3 { margin-bottom: 9px; font-size: 1.05rem; }
+    p { margin: 0 0 12px; }
+    p:last-child { margin-bottom: 0; }
+    ul, ol { margin: 8px 0 0; padding-left: 22px; }
+    li + li { margin-top: 7px; }
+    code {
+      border-radius: 5px;
+      background: #eef2ef;
+      padding: 0.12em 0.35em;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 0.92em;
+    }
+    pre {
+      overflow: auto;
+      margin: 12px 0 0;
+      border-radius: 12px;
+      background: var(--code);
+      color: #eaf5ee;
+      padding: 16px;
+      line-height: 1.45;
+      white-space: pre;
+    }
+    pre code { background: transparent; padding: 0; }
+    .eyebrow {
+      margin-bottom: 12px;
+      color: var(--green);
+      font-size: 0.78rem;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    .lead { max-width: 850px; color: var(--muted); font-size: 1.08rem; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--card);
+      padding: 18px;
+    }
+    .decision {
+      border-color: #b8dec8;
+      background: var(--green-soft);
+    }
+    .warning {
+      border-color: #efd099;
+      background: var(--amber-soft);
+    }
+    .risk {
+      border-color: #efc3bf;
+      background: var(--danger-soft);
+    }
+    .task {
+      border-left: 5px solid var(--green);
+      padding-left: 22px;
+    }
+    .task + .task { margin-top: 14px; }
+    .task-meta {
+      margin-bottom: 10px;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+    .checklist {
+      list-style: none;
+      padding-left: 0;
+    }
+    .checklist li {
+      position: relative;
+      padding-left: 28px;
+    }
+    .checklist li::before {
+      position: absolute;
+      left: 0;
+      top: 0.08em;
+      content: "□";
+      color: var(--green);
+      font-size: 1.15rem;
+      font-weight: 800;
+    }
+    .gate {
+      border: 2px solid var(--green);
+      background: linear-gradient(135deg, #f4fff8, #ffffff);
+    }
+    .tag {
+      display: inline-block;
+      margin: 4px 6px 0 0;
+      border-radius: 999px;
+      background: var(--blue-soft);
+      color: #3948ae;
+      padding: 4px 9px;
+      font-size: 0.8rem;
+      font-weight: 700;
+    }
+    table {
+      width: 100%;
+      margin-top: 10px;
+      border-collapse: collapse;
+      font-size: 0.94rem;
+    }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 10px 9px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { color: var(--muted); font-size: 0.8rem; text-transform: uppercase; }
+    .small { color: var(--muted); font-size: 0.9rem; }
+    @media (max-width: 760px) {
+      main { width: min(100% - 20px, 1120px); padding-top: 18px; }
+      header, section { border-radius: 15px; padding: 20px; }
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">Issue #214 · Implementation plan · 2 August 2026</div>
+    <h1>Migrate the main dashboard to TypeScript</h1>
+    <p class="lead">
+      Replace the deterministic foundation mock with a live, tenant-safe React dashboard that preserves
+      the current health semantics, friendly morning background, compact hierarchy, asynchronous AI
+      behavior, and all links into the still-supported Go pages.
+    </p>
+    <div>
+      <span class="tag">React 19</span>
+      <span class="tag">TypeScript 5.9 strict</span>
+      <span class="tag">Vite 8</span>
+      <span class="tag">OpenAPI</span>
+      <span class="tag">Recharts 3.10.1</span>
+      <span class="tag">Vitest</span>
+      <span class="tag">Playwright</span>
+    </div>
+  </header>
+
+  <section>
+    <h2>Summary and boundary</h2>
+    <div class="grid">
+      <div class="card decision">
+        <h3>In this issue</h3>
+        <ul>
+          <li>Live readiness, Energy Bank, sleep quality, guidance, freshness, alerts, briefing sections, metric cards, and AI briefing.</li>
+          <li>Friendly responsive layout with one readiness ring and compact supporting scores.</li>
+          <li>Recoverable loading, partial, stale, no-data, unauthenticated, and API-error states.</li>
+          <li>Links to existing Go routes for sleep, cardio, activity, recovery, metrics, settings, admin, and logout.</li>
+          <li>Build-only deterministic fixtures and regression coverage.</li>
+        </ul>
+      </div>
+      <div class="card warning">
+        <h3>Not in this issue</h3>
+        <ul>
+          <li>No production route switch, frontend container, Traefik change, or deploy.</li>
+          <li>No rewrite of scoring, Energy Bank, sleep calculations, notification logic, auth, or tenant routing.</li>
+          <li>No migration or deletion of Go detail pages, templates, static assets, or Chart.js surfaces.</li>
+          <li>No client-side tenant/schema selector.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Current behavior</h2>
+    <ul>
+      <li><code>apps/web/src/App.tsx</code> renders hard-coded readiness, energy, and sleep fixtures selected by <code>?fixture=</code>.</li>
+      <li>The Go renderer uses <code>/api/health-briefing</code> semantics indirectly through <code>health.BriefingResponse</code> and presents the readiness ring once in the hero.</li>
+      <li><code>/api/health-briefing</code> returns immediately and never waits on Gemini; <code>/api/ai-briefing</code> is polled separately.</li>
+      <li><code>readiness_serving.status</code> is the canonical freshness state: <code>fresh</code>, <code>missing</code>, <code>stale</code>, <code>data_accruing</code>, <code>low_coverage</code>, or <code>capped</code>.</li>
+      <li>Sleep quality may be final, low-confidence, partial, or missing. A partial duration signal must not become a fabricated precise score.</li>
+      <li>The backend already protects every API and legacy page with tenant-aware auth. Redirected HTML is converted to a 401-like <code>ClientApiError</code> by the typed web client.</li>
+      <li>The React workspace is not served in production; the Go dashboard remains the live route and rollback source.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired behavior</h2>
+    <ol>
+      <li>Load the localized health briefing as the required resource; load freshness metadata and trend history independently so an optional failure cannot erase useful health data.</li>
+      <li>Show the readiness score exactly once, centered in the morning-meadow hero, with server-provided guidance and a secondary confidence badge.</li>
+      <li>Show Energy Bank and sleep quality as compact supporting scores. Clamp only visual geometry; preserve the server’s textual verdict.</li>
+      <li>When sleep quality is partial, show duration progress and uncertainty without inventing <code>score_pct</code>.</li>
+      <li>Keep stale or incomplete warnings subordinate when the response still contains a usable date and score.</li>
+      <li>Expose safety-relevant alerts, moderate/high illness suspicion, and localized Energy Bank flag details before optional trend depth.</li>
+      <li>Render AI sections when cached, a quiet generating state when cold, nothing when disabled, and retry polling only while visible.</li>
+      <li>On authentication expiry, offer a login link whose safe <code>next</code> value points back to the current dashboard URL. On retryable errors, provide an in-place retry.</li>
+      <li>Keep all legacy page links same-origin and preserve <code>lang=en|ru|sr</code>.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Architectural decisions</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>Data source</h3>
+        <p>
+          <code>/api/health-briefing</code> is the required source. <code>/api/dashboard</code>,
+          <code>/api/readiness-history</code>, and <code>/api/energy-history</code> are optional
+          resources and cannot turn a usable briefing into a full-page error.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Tenant safety</h3>
+        <p>
+          Every request stays same-origin and carries only documented presentation parameters.
+          No schema, tenant, tenant ID, proxy identity header, or API key is accepted from React.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Fixtures</h3>
+        <p>
+          Production builds always call the live API. <code>?fixture=</code> is honored only when
+          Vite builds in <code>fixtures</code> mode. This prevents a public URL from displaying
+          plausible but fake health data.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Rollback</h3>
+        <p>
+          The Go dashboard route and renderer remain unchanged. Issue #217 will canary routing and
+          define the explicit route-level rollback; #214 produces no production routing mutation.
+        </p>
+      </div>
+      <div class="card decision">
+        <h3>Component ownership</h3>
+        <p>
+          <code>App</code> remains composition glue. Repeated visual patterns live in shared primitives;
+          dashboard behavior lives in feature components; API loading and health semantics stay outside JSX.
+          Variants are explicit props rather than copied markup or one-off CSS.
+        </p>
+      </div>
+      <div class="card decision">
+        <h3>Charts</h3>
+        <p>
+          Use pinned <code>recharts@3.10.1</code> with <code>ResponsiveContainer</code>,
+          <code>LineChart</code>, and shared tooltip/axis styling. Chart components accept normalized
+          data and presentation props so readiness and Energy Bank reuse the same chart foundation.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>State model</h2>
+    <pre><code>type DashboardBundle = {
+  briefing: HealthBriefingResponse;
+  summary?: DashboardResponse;
+  readinessHistory?: ReadinessHistoryResponse;
+  energyHistory?: EnergyHistoryDayResponse;
+};
+
+type DashboardState =
+  | { status: "loading" }
+  | { status: "ready"; data: DashboardBundle }
+  | { status: "partial"; data: DashboardBundle; reasons: readonly string[] }
+  | { status: "stale"; data: DashboardBundle; lastUpdated?: string }
+  | { status: "unavailable"; reason: "no_health_data" }
+  | { status: "unauthenticated"; loginPath: string }
+  | { status: "error"; message: string; retryable: boolean };
+
+function classifyBriefing(bundle: DashboardBundle): DashboardState {
+  if (!bundle.briefing.date) return { status: "unavailable", reason: "no_health_data" };
+  const serving = bundle.briefing.readiness_serving?.status;
+  if (serving === "stale") return { status: "stale", data: bundle };
+  if (serving &amp;&amp; serving !== "fresh") {
+    return { status: "partial", data: bundle, reasons: [serving] };
+  }
+  return { status: "ready", data: bundle };
+}</code></pre>
+    <p class="small">
+      These names and invariants are the implementation contract: only an empty briefing date produces
+      the no-data page; stale/partial data remains renderable; optional history failures do not erase the hero.
+    </p>
+  </section>
+
+  <section>
+    <h2>Likely source changes</h2>
+    <table>
+      <thead>
+        <tr><th>Path</th><th>Responsibility</th><th>Action</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>internal/api/types.go</code></td><td>Small authenticated session/navigation response</td><td>Modify</td></tr>
+        <tr><td><code>internal/api/openapi.go</code></td><td>Additive <code>GET /api/session</code> contract and version <code>0.2.0</code></td><td>Modify</td></tr>
+        <tr><td><code>internal/api/openapi_test.go</code></td><td>Pin tenant-safe session operation</td><td>Modify</td></tr>
+        <tr><td><code>internal/ui/handler.go</code></td><td>Return only <code>is_admin</code> from authenticated context</td><td>Modify</td></tr>
+        <tr><td><code>internal/ui/client_session_test.go</code></td><td>Prove session route is authenticated and ignores tenant selectors</td><td>Create</td></tr>
+        <tr><td><code>contracts/openapi.json</code></td><td>Generated current contract</td><td>Generate, never hand-edit</td></tr>
+        <tr><td><code>apps/web/src/api/generated/schema.ts</code></td><td>Generated TypeScript contract</td><td>Generate, never hand-edit</td></tr>
+        <tr><td><code>apps/web/src/api/client.ts</code></td><td>Session and energy history typed reads</td><td>Modify</td></tr>
+        <tr><td><code>apps/web/src/features/dashboard/model.ts</code></td><td>Pure state classification and display derivation</td><td>Create</td></tr>
+        <tr><td><code>apps/web/src/features/dashboard/model.test.ts</code></td><td>Health-semantic regression tests</td><td>Create</td></tr>
+        <tr><td><code>apps/web/src/features/dashboard/loader.ts</code></td><td>Abortable required and optional resource loading</td><td>Create</td></tr>
+        <tr><td><code>apps/web/src/features/dashboard/loader.test.ts</code></td><td>Required and optional failure isolation</td><td>Create</td></tr>
+        <tr><td><code>apps/web/src/features/dashboard/aiPolling.ts</code></td><td>Visible cold-cache and generation polling policy with a bounded retry count</td><td>Create</td></tr>
+        <tr><td><code>apps/web/src/features/dashboard/DashboardHero.tsx</code></td><td>Single readiness gauge, guidance, confidence, headline</td><td>Create</td></tr>
+        <tr><td><code>apps/web/src/features/dashboard/ScoreSummaryCard.tsx</code></td><td>Compact Energy Bank and sleep quality card primitive</td><td>Create</td></tr>
+        <tr><td><code>apps/web/src/features/dashboard/DashboardDetails.tsx</code></td><td>Flags, alerts, illness, AI, trends, metrics, and legacy sections</td><td>Create</td></tr>
+        <tr><td><code>apps/web/src/components/AppHeader.tsx</code></td><td>Reusable locale, legacy navigation, admin, and logout shell</td><td>Create</td></tr>
+        <tr><td><code>apps/web/src/components/StatusBadge.tsx</code></td><td>Shared semantic status/confidence treatment</td><td>Create</td></tr>
+        <tr><td><code>apps/web/src/components/charts/TrendChart.tsx</code></td><td>Reusable accessible Recharts line/sparkline foundation</td><td>Create</td></tr>
+        <tr><td><code>apps/web/src/components/charts/LazyTrendChart.tsx</code></td><td>Code-split chart boundary with local loading and failure containment</td><td>Create</td></tr>
+        <tr><td><code>apps/web/src/components/charts/chartTheme.ts</code></td><td>Shared Recharts colors, tooltip, axis, and motion policy</td><td>Create</td></tr>
+        <tr><td><code>apps/web/src/features/dashboard/fixtures.ts</code></td><td>Explicitly enabled deterministic API bundle states</td><td>Create</td></tr>
+        <tr><td><code>apps/web/src/App.tsx</code></td><td>Locale shell, legacy navigation, live dashboard entry</td><td>Replace fixture composition</td></tr>
+        <tr><td><code>apps/web/src/App.test.tsx</code></td><td>Integration rendering and accessible navigation</td><td>Rewrite</td></tr>
+        <tr><td><code>apps/web/src/i18n/index.ts</code></td><td>Client-owned labels only</td><td>Extend all three locales</td></tr>
+        <tr><td><code>apps/web/src/styles/index.css</code></td><td>Global shell and existing primitives</td><td>Modify minimally</td></tr>
+        <tr><td><code>apps/web/package.json</code></td><td>Pin Recharts 3.10.1 plus fixture build/dev scripts</td><td>Modify</td></tr>
+        <tr><td><code>apps/web/playwright.config.ts</code></td><td>Build with fixture mode for deterministic visual tests</td><td>Modify</td></tr>
+        <tr><td><code>apps/web/tests/visual/dashboard.spec.ts</code></td><td>Responsive geometry, density, and state coverage</td><td>Create</td></tr>
+        <tr><td><code>README.md</code></td><td>Live and fixture development commands</td><td>Modify</td></tr>
+      </tbody>
+    </table>
+    <p class="small">
+      <code>AGENTS.md</code> and <code>CLAUDE.md</code> change only if commands or architecture guidance
+      materially changes; if one changes, the twin file changes in the same patch.
+    </p>
+  </section>
+
+  <section>
+    <h2>Implementation tasks</h2>
+
+    <div class="card task">
+      <h3>Task 1 — Add minimal session context to the shared API</h3>
+      <p class="task-meta">Goal: hide the legacy admin link for non-admin users without loading Telegram settings or exposing a client tenant selector.</p>
+      <ul class="checklist">
+        <li>Add failing Go contract and handler tests for <code>GET /api/session</code>.</li>
+        <li>Define <code>SessionResponse { IsAdmin bool }</code> in <code>internal/api/types.go</code>.</li>
+        <li>Register a guarded handler that reads only <code>ctxdb.IsAdminFromContext</code>; ignore all query parameters.</li>
+        <li>Add the response schema and operation to <code>internal/api/openapi.go</code> and bump the additive contract version from <code>0.1.0</code> to <code>0.2.0</code>.</li>
+        <li>Generate both contract artifacts and verify compatibility against the protected baseline.</li>
+      </ul>
+      <pre><code>type SessionResponse struct {
+    IsAdmin bool `json:"is_admin"`
+}
+
+func (h *Handler) clientSession(w http.ResponseWriter, r *http.Request) {
+    jsonResponse(w, clientapi.SessionResponse{
+        IsAdmin: ctxdb.IsAdminFromContext(r.Context()),
+    })
+}</code></pre>
+      <pre><code>go test ./internal/api ./internal/ui -run 'Session|ClientContract' -count=1
+make contract-generate
+pnpm web:contract:generate
+make contract-check</code></pre>
+    </div>
+
+    <div class="card task">
+      <h3>Task 2 — Build the pure dashboard state and display model</h3>
+      <p class="task-meta">Goal: centralize semantic choices so JSX never invents health meaning.</p>
+      <ul class="checklist">
+        <li>Write failing table tests for fresh, missing, stale, data-accruing, low-coverage, capped, and empty-date responses.</li>
+        <li>Test readiness uses <code>readiness_today</code> and its server-provided band/label.</li>
+        <li>Test Energy Bank geometry clamps to 0–100 while verdict label/reason remain unchanged.</li>
+        <li>Test sleep final/low confidence may render <code>score_pct</code>; partial/missing never does.</li>
+        <li>Test internal provenance flags with empty labels are not rendered.</li>
+        <li>Implement pure functions only after the red test run.</li>
+      </ul>
+      <pre><code>export interface ScoreView {
+  value?: number;
+  visualValue?: number;
+  label: string;
+  status: string;
+  detail?: string;
+  confidence: "final" | "partial" | "low" | "missing";
+}
+
+export function deriveSleepScore(
+  sleep: HealthBriefingResponse["sleep_quality"],
+): ScoreView;
+
+export function deriveEnergyScore(
+  energy: HealthBriefingResponse["energy_bank"],
+): ScoreView;
+
+export function visibleFlagDetails(
+  energy: HealthBriefingResponse["energy_bank"],
+): readonly FlagDetail[];</code></pre>
+      <pre><code>pnpm --dir apps/web test -- model.test.ts
+# Expected red run: assertions fail before model.ts exists.
+pnpm --dir apps/web test -- model.test.ts
+# Expected green run after implementation: all model cases pass.</code></pre>
+    </div>
+
+    <div class="card task">
+      <h3>Task 3 — Implement abortable loading, optional resources, retry, and AI polling</h3>
+      <p class="task-meta">Goal: useful data survives optional endpoint failures and cold AI cache.</p>
+      <ul class="checklist">
+        <li>Mock typed client functions and write a red hook test for initial loading → ready.</li>
+        <li>Prove a readiness-history or energy-history error still yields a usable hero.</li>
+        <li>Map redirected HTML/401 to <code>unauthenticated</code> with a safe current-page <code>next</code>.</li>
+        <li>Expose a retry function that starts a new request and aborts the previous request.</li>
+        <li>Poll AI at 60 seconds only while visible and stop when disabled or stable for ten ticks.</li>
+        <li>Abort every outstanding request on locale change and unmount.</li>
+      </ul>
+      <pre><code>const required = getHealthBriefing(locale, signal);
+const optional = Promise.allSettled([
+  getDashboard(signal),
+  getReadinessHistory(30, signal),
+  getEnergyHistory("day", 14, signal),
+  getSession(signal),
+]);
+
+const briefing = await required;
+const [summary, readinessHistory, energyHistory, session] = await optional;
+// Rejected optional resources become undefined; they never replace briefing.</code></pre>
+      <pre><code>pnpm --dir apps/web test -- useDashboard.test.tsx
+# Expected: loading/auth/retry/optional-resource/polling cases pass.</code></pre>
+    </div>
+
+    <div class="card task">
+      <h3>Task 4 — Compose the friendly live dashboard</h3>
+      <p class="task-meta">Goal: preserve the approved visual direction while restoring real data density.</p>
+      <ul class="checklist">
+        <li>Keep <code>App</code> limited to locale resolution, fixture/live selection, and top-level composition.</li>
+        <li>Implement shared <code>AppHeader</code>, <code>LegacyLink</code>, and <code>StatusBadge</code> components before feature-specific markup.</li>
+        <li>Replace the fixture switcher with the authenticated page header, locale switcher, and legacy route navigation.</li>
+        <li>Render one and only one readiness ring inside the morning-meadow hero.</li>
+        <li>Use <code>today_guidance.summary/reason/label</code>, falling back to <code>readiness_tip</code> only when guidance is absent.</li>
+        <li>Render compact Energy Bank and sleep cards directly under the hero; never create a second readiness card.</li>
+        <li>Keep the hero useful in partial/stale states and attach confidence to a small badge/detail, not a leading no-data panel.</li>
+        <li>Render no-data, unauthenticated, and error panels only when no usable briefing exists.</li>
+      </ul>
+      <pre><code>&lt;DashboardHero
+  readiness={model.readiness}
+  guidance={model.guidance}
+  headline={model.headline}
+  freshness={model.freshness}
+/&gt;
+&lt;SupportingScores
+  energy={model.energy}
+  sleep={model.sleep}
+/&gt;</code></pre>
+      <pre><code>pnpm --dir apps/web test -- App.test.tsx model.test.ts
+# Required assertion: screen.getAllByTestId("readiness-ring") has length 1.</code></pre>
+    </div>
+
+    <div class="card task">
+      <h3>Task 5 — Restore safety context, briefing depth, AI, and legacy navigation</h3>
+      <p class="task-meta">Goal: maintain current dashboard meaning without recreating every legacy chart.</p>
+      <ul class="checklist">
+        <li>Show localized Energy Bank flag details only when label and description are present.</li>
+        <li>Show alerts and moderate/high illness suspicion before optional trends.</li>
+        <li>Show answered subjective check-in quietly; omit silence/prompted states.</li>
+        <li>Render canonical ordered AI <code>sections[]</code>; use <code>insight</code> only as compatibility fallback.</li>
+        <li>Render metric cards and health section cards with same-origin links carrying the selected locale.</li>
+        <li>Add pinned <code>recharts@3.10.1</code> and build a reusable <code>TrendChart</code> wrapper; dashboard components pass normalized data instead of configuring Recharts ad hoc.</li>
+        <li>Use the shared Recharts component for available readiness and Energy Bank history; hide a chart for empty or failed history.</li>
+        <li>Submit logout as a same-origin POST form.</li>
+      </ul>
+      <pre><code>const legacyRoutes = [
+  ["/sleep", "sleep"],
+  ["/cardio", "cardio"],
+  ["/activity", "activity"],
+  ["/recovery", "recovery"],
+  ["/metrics", "metrics"],
+  ["/settings", "settings"],
+] as const;
+
+function legacyHref(path: string, locale: Locale): string {
+  return `${path}?${new URLSearchParams({ lang: locale })}`;
+}
+
+&lt;TrendChart
+  data={readinessPoints}
+  xKey="date"
+  series={[{ key: "score", color: "var(--today-readiness)" }]}
+  label={translate(locale, "readinessTrend")}
+  compact
+/&gt;</code></pre>
+    </div>
+
+    <div class="card task">
+      <h3>Task 6 — Make fixtures safe and pin responsive behavior</h3>
+      <p class="task-meta">Goal: deterministic review without any production fake-data surface.</p>
+      <ul class="checklist">
+        <li>Move normal/partial/stale/loading/unavailable/error data into <code>src/features/dashboard/fixtures.ts</code>.</li>
+        <li>Gate fixture resolution on the explicit <code>VITE_ENABLE_FIXTURES=true</code> build variable.</li>
+        <li>Add <code>build:fixtures</code> and <code>dev:fixtures</code> scripts.</li>
+        <li>Make Playwright build in fixture mode; keep the ordinary production build live-only.</li>
+        <li>Pin 320, 375, 768, 1024, and 1440 px layouts across en/ru/sr where text length affects geometry.</li>
+        <li>Assert circular ring bounds, shared SVG/content center, one readiness instance, no horizontal overflow, compact supporting card height, and working legacy hrefs.</li>
+        <li>Split each no-score state into its own Playwright test for actionable failures.</li>
+      </ul>
+      <pre><code>const fixtureEnabled = import.meta.env.VITE_ENABLE_FIXTURES === "true";
+const fixture = fixtureEnabled
+  ? resolveDashboardFixture(new URLSearchParams(location.search).get("fixture"))
+  : undefined;
+
+// Ordinary `vite build` leaves VITE_ENABLE_FIXTURES unset and ignores fixture input.</code></pre>
+      <pre><code>make web-check
+make web-test-visual
+# Expected: all unit, build, and responsive geometry checks pass.</code></pre>
+    </div>
+
+    <div class="card task">
+      <h3>Task 7 — Verify compatibility and document the result</h3>
+      <p class="task-meta">Goal: finish issue #214 without silently beginning #215/#217.</p>
+      <ul class="checklist">
+        <li>Run generated-contract freshness and additive compatibility tests.</li>
+        <li>Run full non-DB Go tests and the existing UI tests that pin the untouched Go dashboard.</li>
+        <li>Run frontend typecheck, lint, unit tests, build, and Playwright.</li>
+        <li>Manually inspect live-mode loading against a local Go server and fixture-mode states in all locales.</li>
+        <li>Update this same plan with actual files, checks, limitations, and follow-up recommendations.</li>
+        <li>Do not modify Dockerfiles, compose, Traefik, production routing, or deploy configuration.</li>
+      </ul>
+      <pre><code>make contract-check
+make test-unit
+make web-check
+make web-test-visual
+git diff --check</code></pre>
+    </div>
+  </section>
+
+  <section>
+    <h2>Automated test matrix</h2>
+    <table>
+      <thead>
+        <tr><th>Layer</th><th>Required cases</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Go contract</td><td>Additive session endpoint, deterministic schema, no tenant selector, existing compatibility baseline passes.</td></tr>
+        <tr><td>Go handler</td><td>Admin/non-admin session response, auth guard, query tenant/schema ignored, existing Go dashboard tests unchanged.</td></tr>
+        <tr><td>Pure model</td><td>Fresh, missing, stale, accruing, low coverage, capped, empty date, signed Energy Bank, partial sleep, internal flags.</td></tr>
+        <tr><td>Resource hook</td><td>Abort, locale change, optional endpoint rejection, retry, auth redirect, visibility-aware AI polling, disabled AI.</td></tr>
+        <tr><td>React integration</td><td>One readiness ring, useful partial data, safe no-data page, conditional admin link, legacy hrefs, logout POST, all locales.</td></tr>
+        <tr><td>Visual/browser</td><td>Five widths, three locales, ring center, density, overflow, loading/error states, fixture-build isolation.</td></tr>
+        <tr><td>Existing backend</td><td>Full non-DB Go suite and current UI renderer tests remain green.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Manual QA checklist</h2>
+    <ul class="checklist">
+      <li>Open live mode with an authenticated local Go backend and confirm data belongs to the authenticated tenant.</li>
+      <li>Switch en/ru/sr and verify document language, client labels, server-localized briefing, and legacy link language.</li>
+      <li>Confirm readiness ring is centered at 320, 375, 768, 1024, and 1440 px.</li>
+      <li>Confirm readiness appears once; Energy Bank and sleep quality fill the compact row without large empty cards.</li>
+      <li>Confirm partial sleep shows duration progress but no precise sleep-quality percentage.</li>
+      <li>Confirm stale wearable and low-coverage states keep useful scores visible with secondary uncertainty.</li>
+      <li>Confirm cold AI cache never blocks the dashboard, later content appears, disabled AI stays quiet, and polling pauses in a hidden tab.</li>
+      <li>Confirm moderate/high illness signals and alerts remain visible; low-confidence illness does not become a headline.</li>
+      <li>Expire the session and confirm login recovery returns to the dashboard.</li>
+      <li>Follow every legacy link and confirm Go pages still render.</li>
+      <li>Open an ordinary production build with <code>?fixture=normal</code> and confirm it still requests live data.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Risks and mitigations</h2>
+    <div class="grid">
+      <div class="card risk">
+        <h3>Health-semantic drift</h3>
+        <p>Mitigation: pure model tests mirror the existing Go template tests and prefer server enums/labels over duplicated thresholds.</p>
+      </div>
+      <div class="card risk">
+        <h3>Fake production data</h3>
+        <p>Mitigation: fixture query support is compile-mode gated and Playwright owns the only fixture build.</p>
+      </div>
+      <div class="card risk">
+        <h3>One optional request blanks the page</h3>
+        <p>Mitigation: health briefing is the sole required call; summary/history/session use independent settled results.</p>
+      </div>
+      <div class="card risk">
+        <h3>Auth redirect parsed as JSON</h3>
+        <p>Mitigation: keep the existing redirected/HTML detection and test login recovery explicitly.</p>
+      </div>
+      <div class="card risk">
+        <h3>Mobile contract regression</h3>
+        <p>Mitigation: only additive OpenAPI changes; protected compatibility baseline and generated Swift-facing contract remain unchanged otherwise.</p>
+      </div>
+      <div class="card risk">
+        <h3>Accidental route cutover</h3>
+        <p>Mitigation: no Docker, compose, proxy, Go page route, or deployment file changes are allowed in #214.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Rollback plan</h2>
+    <ol>
+      <li>Before #217, no production rollback is necessary because the React app is not routed in production.</li>
+      <li>If #214 introduces an API regression after its backend image is eventually deployed, restore the previous immutable backend digest; the new session endpoint is additive and requires no database rollback.</li>
+      <li>Do not remove or rewrite <code>internal/ui/templates/pages/dashboard.html</code>, <code>dashboard_view.go</code>, or their tests.</li>
+      <li>During #217 canary, route the dashboard back to the existing Go service without changing the database.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Assumptions and resolved questions</h2>
+    <ul>
+      <li><strong>Primary score:</strong> use <code>readiness_today</code>, matching the current friendly Go hero.</li>
+      <li><strong>Readiness duplication:</strong> forbidden; supporting scores contain Energy Bank and sleep only.</li>
+      <li><strong>Sleep quality:</strong> render a percentage only when the API provides <code>score_pct</code> with final/low confidence.</li>
+      <li><strong>Components:</strong> repeated shell, navigation, status, score, disclosure, and chart patterns must be shared components with explicit variants; <code>App</code> stays small.</li>
+      <li><strong>Charts:</strong> use pinned Recharts 3.10.1 through a shared typed wrapper; do not configure one-off charts inside dashboard panels.</li>
+      <li><strong>Admin navigation:</strong> add a minimal typed session endpoint rather than loading settings or showing inaccessible admin UI.</li>
+      <li><strong>Legacy fallback:</strong> preserve the renderer now; the explicit public fallback route belongs to #217.</li>
+      <li><strong>Deployment:</strong> issue #214 ends at a reviewed, testable development artifact and PR.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation result · 2 August 2026</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>What changed</h3>
+        <ul>
+          <li>Added additive, authenticated <code>GET /api/session</code> with only <code>is_admin</code>; contract version is now 0.2.0.</li>
+          <li>Made legacy guard context explicitly admin so legacy and multi-user session capabilities share one context invariant.</li>
+          <li>Replaced the fixture-only <code>App</code> with live API loading and a pure dashboard view model.</li>
+          <li>Split header, status badge, hero, supporting scores, details, and charts into reusable components.</li>
+          <li>Added pinned Recharts 3.10.1 behind a lazy shared <code>TrendChart</code> wrapper and kept the fixed SVG readiness gauge.</li>
+          <li>Kept fixture selection behind <code>VITE_ENABLE_FIXTURES=true</code>; an ordinary production build ignores <code>?fixture=</code>.</li>
+          <li>Preserved the accepted meadow background and compacted Energy Bank and sleep into useful summary cards.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Behavioral details</h3>
+        <ul>
+          <li><code>/api/health-briefing</code> is the sole required call; optional dashboard, AI, history, and session failures degrade independently.</li>
+          <li>Readiness uses <code>readiness_today</code> once. Missing data never fabricates a score.</li>
+          <li>Signed Energy Bank values keep their raw text while the circular visual clamps to 0–100.</li>
+          <li>Provisional sleep shows duration without inventing a sleep-quality percentage.</li>
+          <li>AI regeneration polling runs only while visible, covers cold caches before the generating flag appears, and stops after ten attempts or when content arrives.</li>
+          <li>Recharts is code-split: the initial production JS chunk is about 220 KB instead of about 571 KB before splitting.</li>
+        </ul>
+      </div>
+    </div>
+
+    <h3>Checks run</h3>
+    <table>
+      <thead>
+        <tr><th>Check</th><th>Result</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>pnpm --filter @health/web check</code></td><td>Passed after review fixes: contract freshness, TypeScript, ESLint, 48 Vitest tests, production build.</td></tr>
+        <tr><td><code>pnpm --filter @health/web test:visual</code></td><td>Passed: 19 Playwright tests across 320/375/768/1024/1440 px and en/ru/sr.</td></tr>
+        <tr><td><code>make test-unit</code></td><td>Passed: full non-DB Go suite.</td></tr>
+        <tr><td>Browser inspection</td><td>Passed: desktop and 390×844 mobile, no horizontal overflow, ring/frame/SVG/content centers identical, no console errors.</td></tr>
+        <tr><td><code>git diff --check</code></td><td>Passed.</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Known limitations and follow-ups</h3>
+    <ul>
+      <li>This issue does not route production traffic to the React build and does not change Docker, compose, Traefik, or deployment files.</li>
+      <li>Authenticated live-data QA against the Go server remains part of route/canary issue #217; this branch verifies API shapes, loader behavior, fixtures, and browser geometry.</li>
+      <li>The existing Go dashboard and legacy detail routes remain the production fallback until the explicit cutover.</li>
+      <li>Next recommended step: review this branch as the issue #214 PR, then implement separate frontend image and canary routing in their planned issues.</li>
+    </ul>
+  </section>
+
+  <section class="gate">
+    <h2>Approval gate</h2>
+    <p>
+      Approval authorizes implementation of issue #214 on
+      <code>codex/migrate-main-dashboard</code> within the boundaries above.
+      It does <strong>not</strong> authorize separate images, production routing, canary deployment,
+      removal of Go templates, or deployment of the new UI.
+    </p>
+    <p>
+      After approval, implementation proceeds task-by-task with red/green tests and review checkpoints.
+      The completed branch will be offered as a PR; merge and deploy remain separate explicit actions.
+    </p>
+  </section>
+</main>
+</body>
+</html>

@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>План: достоверный сон, история и утренний отчёт</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f2ee;
+      --paper: #fff;
+      --ink: #202420;
+      --muted: #68716b;
+      --line: rgba(32, 36, 32, .11);
+      --violet: #696fd1;
+      --violet-soft: #ededff;
+      --green: #168756;
+      --amber: #b9791e;
+      --red: #b84e55;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 8% 0%, rgba(105,111,209,.1), transparent 34rem), var(--bg);
+      color: var(--ink);
+      font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { width: min(calc(100% - 32px), 1050px); margin: 0 auto; padding: 38px 0 76px; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { max-width: 800px; margin-bottom: 11px; font-size: clamp(34px, 5vw, 56px); line-height: 1.02; letter-spacing: -.045em; }
+    h2 { margin-bottom: 12px; font-size: 25px; letter-spacing: -.025em; }
+    h3 { margin-bottom: 7px; }
+    .lead { max-width: 790px; color: var(--muted); font-size: 18px; }
+    .badge {
+      display: inline-flex; margin-bottom: 17px; padding: 6px 11px;
+      border: 1px solid rgba(105,111,209,.22); border-radius: 999px;
+      background: var(--violet-soft); color: #5056a8; font-size: 12px; font-weight: 800;
+      letter-spacing: .06em; text-transform: uppercase;
+    }
+    section {
+      margin-top: 17px; padding: 23px;
+      border: 1px solid var(--line); border-radius: 18px;
+      background: rgba(255,255,255,.91); box-shadow: 0 8px 24px rgba(38,45,40,.035);
+    }
+    ul, ol { margin-bottom: 0; padding-left: 21px; }
+    li + li { margin-top: 7px; }
+    code { padding: 2px 6px; border-radius: 6px; background: #efede9; font-size: .9em; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 10px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: 12px; letter-spacing: .05em; text-transform: uppercase; }
+    .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 11px; }
+    .decision { padding: 14px; border-radius: 14px; background: #f1f0ec; }
+    .decision strong { display: block; margin-bottom: 5px; }
+    .decision span { color: var(--muted); font-size: 13px; }
+    .callout { border-left: 4px solid var(--violet); }
+    .risk { border-left: 4px solid var(--red); }
+    .approval { border-left: 4px solid var(--amber); background: #fffaf0; }
+    .ok { color: var(--green); font-weight: 750; }
+    a { color: #4f56ac; }
+    @media (max-width: 760px) {
+      .grid { grid-template-columns: 1fr; }
+      section { padding: 19px; }
+      th:first-child, td:first-child { width: 38%; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <span class="badge">Implemented · tenant QA pending</span>
+  <h1>Достоверный сон: последняя ночь, честная история и понятное утро</h1>
+  <p class="lead">
+    Реализовать утверждённый <a href="2026-08-06-sleep-detail-v2-mockup.html">HTML-мокап</a>,
+    устранить ложную «ненадёжность» сегодняшнего сна и привести Telegram-отчёт к тому же
+    смысловому контракту. История больше не должна превращать неполную разбивку в
+    «100% основного сна» или оставлять необъяснённые пустые части графика.
+  </p>
+
+  <section>
+    <h2>1. Текущее поведение и подтверждённые причины</h2>
+    <ul>
+      <li><code>SleepPage.tsx</code> считает проценты относительно суммы известных фаз. Если известен только <code>sleep_core</code>, экран честно получает число из API, но ошибочно подписывает его как 100% структуры сна.</li>
+      <li>Историческая полоса нормализуется по <code>max(sum(phases), total + awake)</code>. Разница между total и суммой фаз остаётся пустым фоном без подписи.</li>
+      <li><code>sleepQualityEvidence</code> понижает confidence при <code>deep &lt; 8%</code> или <code>awake &gt; 10%</code>. Измеренное плохое качество сна ошибочно трактуется как ненадёжность измерения.</li>
+      <li>Telegram выводит <code>Sleep.TotalAvg</code> — среднее за несколько ночей — под подписью «Сон», хотя пользователь ожидает длительность последней ночи.</li>
+      <li>AI synthesis может повторять серверную причину дословно, а топ-3 reasons могут не включить реальный ограничитель дневного verdict.</li>
+    </ul>
+  </section>
+
+  <section class="callout">
+    <h2>2. Утверждённые продуктовые решения</h2>
+    <div class="grid">
+      <div class="decision"><strong>Качество ≠ confidence</strong><span>27 минут глубокого сна — измеренный результат. Он снижает оценку структуры, но сам по себе не делает данные ненадёжными.</span></div>
+      <div class="decision"><strong>Total — высота, фазы — цвет</strong><span>Исторический график сравнивает длительность по общей шкале 0–10 часов и состав внутри каждой ночи.</span></div>
+      <div class="decision"><strong>Неизвестное показываем явно</strong><span>Непокрытая часть total становится «сон без разбивки по фазам», а не пустым местом или core 100%.</span></div>
+      <div class="decision"><strong>Последняя ночь — главный объект</strong><span>Hero показывает фактические 7 ч 55 мин, время в постели, начало интервала в постели/пробуждение, пять фаз и сохранённый sleep insight.</span></div>
+      <div class="decision"><strong>Telegram использует ту же ночь</strong><span>В компактной метрике сна показывается latest total; rolling average остаётся только там, где он явно подписан как среднее.</span></div>
+      <div class="decision"><strong>Без псевдоточного sleep debt</strong><span>Запас сна не добавляется, пока нет собственной модели персональной потребности.</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>3. Контракт данных</h2>
+    <ul>
+      <li>Добавить в <code>SleepAnalysis</code> совместимое поле <code>latest_total</code> (и при необходимости <code>latest_date</code>) для Telegram и других briefing-клиентов. Существующие поля не удаляются.</li>
+      <li>В frontend-модели вычислять <code>knownAsleep</code>, <code>unclassifiedAsleep</code> и <code>phaseCoverage: complete|partial|coarse</code>.</li>
+      <li>Если нет meaningful deep/REM, а сохранён только core, не заявлять стадийную структуру: визуализировать authoritative <code>sleep_total</code> как unspecified/coarse.</li>
+      <li>Если стадийные данные есть, но их сумма меньше total сверх малого допуска округления, разницу показать как unspecified. Awake всегда остаётся отдельным временем вне total.</li>
+      <li>Не менять исходные записи и агрегаты в этой работе. Миграция БД не требуется; исправляется контракт чтения и представления.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>4. Файлы, которые вероятно изменятся</h2>
+    <table>
+      <thead><tr><th>Файл</th><th>Изменение</th></tr></thead>
+      <tbody>
+        <tr><td><code>apps/web/src/features/sleep/model.ts</code></td><td>Покрытие фаз, reconciliation total/stages/awake, presentation-ready значения.</td></tr>
+        <tr><td><code>apps/web/src/features/sleep/model.test.ts</code></td><td>Регрессии для coarse-only, partial gap, fully staged и total fallback.</td></tr>
+        <tr><td><code>apps/web/src/features/sleep/SleepPage.tsx</code></td><td>Новый hero, phase statuses, timing, vertical history, selected-night coverage и AI archive.</td></tr>
+        <tr><td><code>apps/web/src/features/sleep/SleepPage.test.tsx</code></td><td>Семантика и интеракции: дата, range, coarse night, archive insight.</td></tr>
+        <tr><td><code>apps/web/src/styles/index.css</code></td><td>Реализация утверждённого responsive layout в существующих токенах и темах.</td></tr>
+        <tr><td><code>apps/web/src/i18n.*</code></td><td>Новые подписи для coverage, timing, target range и статусов.</td></tr>
+        <tr><td><code>internal/health/types.go</code>, <code>internal/storage/briefing.go</code></td><td>Latest-night duration и корректное разделение capture confidence от физиологического качества.</td></tr>
+        <tr><td><code>internal/health/*_test.go</code>, <code>internal/storage/*_test.go</code></td><td>Регрессии confidence, latest total и guidance.</td></tr>
+        <tr><td><code>internal/health/morning_insight.go</code></td><td>Реальная verdict-причина получает приоритет и участвует в дедупликации.</td></tr>
+        <tr><td><code>internal/notify/report.go</code>, <code>report_rich.go</code>, tests</td><td>Latest sleep, компактная визуальная иерархия варианта A, удаление дублирующего AI-фрагмента.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>5. Порядок реализации</h2>
+    <ol>
+      <li>От свежего <code>origin/main</code> создать новую ветку; перенести утверждённый mock/plan. Текущая ветка уже относится к завершённому PR и не переиспользуется.</li>
+      <li>Сначала добавить failing unit tests для phase coverage и sleep confidence.</li>
+      <li>Исправить frontend sleep model и проверить reconciliation независимо от React.</li>
+      <li>Добавить additive latest-night field в briefing и заполнить его из same-day evidence.</li>
+      <li>Перевести confidence на качество захвата: low deep/высокий awake остаются факторами score, но не становятся low confidence без проблемы покрытия.</li>
+      <li>Собрать React-экран по утверждённому HTML-мокапу на существующих компонентах/токенах.</li>
+      <li>Обновить plain и Rich Telegram formatter, reasons и AI дедупликацию.</li>
+      <li>Прогнать targeted tests, полный Go/Frontend test suite, lint/build и визуальный fixture QA в light/dark/mobile.</li>
+      <li>Отправить повторяемый Telegram preview из сохранённого AI cache; модель повторно не вызывать.</li>
+      <li>Обновить этот план фактическими изменениями и результатами проверок.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>6. Test plan</h2>
+    <ul>
+      <li><code>go test ./internal/health ./internal/storage ./internal/notify -count=1</code></li>
+      <li><code>cd apps/web &amp;&amp; npm test -- --run</code> (или фактическая команда из package scripts).</li>
+      <li><code>cd apps/web &amp;&amp; npm run lint &amp;&amp; npm run build</code>.</li>
+      <li>Frontend fixtures: полностью staged ночь; coarse-only ночь; staged gap; zero awake; missing latest night; исторический AI отсутствует/присутствует.</li>
+      <li>Go regressions: deep 5.7% с согласованными фазами остаётся final confidence; stale/missing/mismatched stages остаются partial/low.</li>
+      <li>Telegram golden: latest 7 ч 55 мин, не rolling 7.2; нет ложного «данные отсутствуют»; AI не повторяет verdict reason.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>7. Manual QA</h2>
+    <ul>
+      <li>Сегодняшняя ночь: score, 7 ч 55 мин, 8 ч 7 мин, начало интервала в постели 23:51, пробуждение 07:59 и фазы читаются без прокрутки на телефоне.</li>
+      <li>История: высота ночей сравнима по одной шкале; 7/30/90/Всё меняют период; клик/тап обновляет выбранную ночь.</li>
+      <li>15 июля: нет core 100%; серый сегмент подписан как сон без фаз; частичное покрытие не маскируется.</li>
+      <li>Light/dark: контраст подписей, target band и пяти цветов фаз остаётся достаточным.</li>
+      <li>Архив AI: сегодняшний и исторический insight берутся из сохранённых блоков, отсутствие insight отображается спокойно.</li>
+      <li>Telegram Rich + HTML fallback имеют одинаковый смысл; preview можно отправлять повторно без нового AI-вызова.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>8. Риски и границы</h2>
+    <ul>
+      <li>Frontend-эвристика coarse-only должна быть узкой: не превращать реальную core-only стадийную ночь в unspecified без признаков отсутствующей staged coverage.</li>
+      <li>Старые агрегаты могут содержать несовместимые source totals. UI обязан показать uncertainty, но не должен переписывать данные.</li>
+      <li>Новые API-поля только additive; старые клиенты продолжают работать.</li>
+      <li>Sleep score не копирует формулу Bevel. В этой работе исправляется доверие и объяснимость, а не калибровка нового медицинского score.</li>
+      <li>Реальные tenant-строки 15 июля пока не подтверждены прямым SQL: старый shared login закономерно потерял доступ после tenant isolation. Перед merge потребуется проверить через tenant-authorized production path.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>9. Rollback</h2>
+    <p>
+      Откатить application/frontend image на предыдущую совместимую пару. SQL rollback не нужен:
+      миграций и destructive writes нет. Additive JSON-поля безопасно игнорируются старым клиентом.
+      Telegram preview не занимает production delivery reservation.
+    </p>
+  </section>
+
+  <section>
+    <h2>10. Открытые вопросы</h2>
+    <p>
+      Блокирующих вопросов нет. По умолчанию используем утверждённый мокап, текущие design tokens,
+      серверный total как authoritative duration и узкую coarse-only защиту. Формула персональной
+      потребности во сне и sleep debt остаётся отдельной будущей работой.
+    </p>
+  </section>
+
+  <section class="approval">
+    <h2>Approval gate — пройден</h2>
+    <p>
+      Пользователь одобрил реализацию 6 августа 2026. Работа выполнена в новой ветке
+      <code>codex/sleep-trust-history-morning-report</code> от свежего <code>origin/main</code>.
+    </p>
+  </section>
+
+  <section class="callout">
+    <h2>11. Что фактически изменено</h2>
+    <ul>
+      <li>Same-night sleep с низкой долей deep больше не помечается как ненадёжный capture: физиология влияет на score, но не подменяет confidence.</li>
+      <li><code>SleepAnalysis</code> получил additive поля <code>latest_total</code> и <code>latest_date</code>; OpenAPI и TypeScript-клиент обновлены.</li>
+      <li>Plain и Rich Telegram используют последнюю ночь. При отсутствии latest rolling value явно подписывается как среднее максимум за 7 последних ночей.</li>
+      <li>AI synthesis не выводится, если дословно повторяет verdict reason, action или один из rule-based reasons.</li>
+      <li>Rich Telegram получил нативную иерархию Bot API: verdict в <code>aside</code>, линейный блок метрик, один раскрываемый AI-insight и freshness в <code>footer</code>.</li>
+      <li>Frontend reconciliation различает <code>complete</code>, <code>partial</code> и <code>coarse</code>; неизвестный интервал всегда показан явно.</li>
+      <li>История заменена вертикальной визуализацией на общей шкале 0–10 часов с target band; высота показывает длительность, цвет — состав, awake вынесен отдельным сегментом.</li>
+      <li>Скилл <code>telegram-send</code> расширен режимами <code>--rich-html</code> и <code>--rich-html-file</code> для настоящего Telegram <code>sendRichMessage</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>12. Выполненные проверки</h2>
+    <ul>
+      <li class="ok"><code>go test ./... -count=1</code> — пройден полностью.</li>
+      <li class="ok"><code>pnpm check</code> — contract check, TypeScript, ESLint, 72 теста и production Vite build пройдены.</li>
+      <li class="ok"><code>make contract-check</code> — OpenAPI current и обратно совместим с baseline.</li>
+      <li class="ok"><code>make contract-generate</code> — канонический OpenAPI перегенерирован из Go transport types; SHA-256 до и после совпал.</li>
+      <li class="ok"><code>go vet ./...</code> — пройден полностью.</li>
+      <li class="ok">Мобильный dark fixture 390×844 проверен скриншотом: hero, coverage callout, пять фаз, единая шкала и вертикальная history читаются.</li>
+      <li class="ok">Установленный <code>telegram-send</code>: 2 офлайн-теста Rich Message payload/Unicode пройдены.</li>
+      <li class="ok">Финальный Rich Message preview после review-правок доставлен в Telegram как сообщение №13.</li>
+    </ul>
+    <p>
+      Известная граница: точное время отхода ко сну не выводится, пока backend не предоставляет
+      надёжную derived-метрику; интерфейс не вычисляет его приблизительно и не фабрикует значение.
+    </p>
+  </section>
+</main>
+</body>
+</html>

@@ -1,16 +1,24 @@
 package health
 
+import "time"
+
 // RawMetrics holds pre-fetched time-series data for all health metrics.
 // Values are ordered most-recent-first. All []float64 slices come from 30-day windows.
 // StepsWithDates and HRVWithDates are from a 7-day window for the correlation chart.
 type RawMetrics struct {
 	LastDate string
-	HRV      []float64
-	RHR      []float64
-	Sleep    []float64
-	Deep     []float64
-	REM      []float64
-	Awake    []float64
+	// Daily is the date-aligned source used by AI interpretation. Unlike the
+	// legacy metric slices below, missing values remain nil on their calendar
+	// day instead of being compacted away. This prevents a prior day's HRV,
+	// sleep, or activity value from being compared with another metric from a
+	// different day.
+	Daily []DailyHealthMetrics `json:"daily,omitempty"`
+	HRV   []float64
+	RHR   []float64
+	Sleep []float64
+	Deep  []float64
+	REM   []float64
+	Awake []float64
 	// NightSleep and Nap are written by the iOS client (health-sync) when
 	// it can decompose sessions into one main night vs. naps. Only the
 	// most-recent day is consumed today (dashboard sleep card override +
@@ -66,6 +74,73 @@ type RawMetrics struct {
 	ReadinessEvidence *ReadinessEvidenceInput
 }
 
+// DailyHealthMetrics contains all AI-facing daily values for one calendar
+// date. Pointer fields distinguish a missing measurement from a measured
+// value without shifting neighbouring days in the series.
+type DailyHealthMetrics struct {
+	Date        string   `json:"date"`
+	HRV         *float64 `json:"hrv,omitempty"`
+	RHR         *float64 `json:"rhr,omitempty"`
+	Sleep       *float64 `json:"sleep,omitempty"`
+	Deep        *float64 `json:"deep,omitempty"`
+	REM         *float64 `json:"rem,omitempty"`
+	Core        *float64 `json:"core,omitempty"`
+	Unspecified *float64 `json:"unspecified,omitempty"`
+	Awake       *float64 `json:"awake,omitempty"`
+	Steps       *float64 `json:"steps,omitempty"`
+	Calories    *float64 `json:"calories,omitempty"`
+	Exercise    *float64 `json:"exercise,omitempty"`
+	SpO2        *float64 `json:"spo2,omitempty"`
+	VO2         *float64 `json:"vo2,omitempty"`
+	Resp        *float64 `json:"resp,omitempty"`
+	WristTemp   *float64 `json:"wrist_temp,omitempty"`
+}
+
+// MorningInsightEvidence is the provider-neutral, auditable input for the
+// single structured AI briefing call. Verdict and Action are resolved by
+// server policy before the model is called; the model may explain them but
+// never replace them.
+type MorningInsightEvidence struct {
+	Date          string                  `json:"date"`
+	Verdict       string                  `json:"verdict"`
+	VerdictLabel  string                  `json:"verdict_label"`
+	VerdictReason string                  `json:"verdict_reason"`
+	Action        string                  `json:"action"`
+	Reasons       []MorningInsightReason  `json:"reasons"`
+	Sections      []MorningInsightSection `json:"sections"`
+	Daily         []DailyHealthMetrics    `json:"daily"`
+	EnergyBank    *EnergyBank             `json:"energy_bank,omitempty"`
+	Readiness     MorningReadinessContext `json:"readiness"`
+}
+
+// MorningInsightSection preserves the localized rule-based section result
+// that the model may explain. Details are server-computed facts, not model
+// suggestions.
+type MorningInsightSection struct {
+	Key     string           `json:"key"`
+	Status  string           `json:"status"`
+	Summary string           `json:"summary"`
+	Details []BriefingDetail `json:"details"`
+}
+
+// MorningInsightReason is a localized, rule-based fact selected for the
+// compact morning report. Key and Section are stable machine identifiers.
+type MorningInsightReason struct {
+	Key      string `json:"key"`
+	Section  string `json:"section"`
+	Severity string `json:"severity"`
+	Text     string `json:"text"`
+}
+
+type MorningReadinessContext struct {
+	Score      int    `json:"score"`
+	RawScore   int    `json:"raw_score"`
+	Label      string `json:"label"`
+	Confidence string `json:"confidence,omitempty"`
+	Status     string `json:"status,omitempty"`
+	CapReason  string `json:"cap_reason,omitempty"`
+}
+
 // DatedValue is a single metric data point paired with its calendar date.
 type DatedValue struct {
 	Date string
@@ -114,13 +189,45 @@ type SleepSourceSummary struct {
 }
 
 type SleepAnalysis struct {
-	Nights     int                  `json:"nights"`
-	TotalAvg   float64              `json:"total_avg"`
-	DeepAvg    float64              `json:"deep_avg"`
-	REMAvg     float64              `json:"rem_avg"`
-	AwakeAvg   float64              `json:"awake_avg"`
-	Efficiency float64              `json:"efficiency"`
-	Sources    []SleepSourceSummary `json:"sources,omitempty"`
+	Nights      int                  `json:"nights"`
+	TotalAvg    float64              `json:"total_avg"`
+	LatestTotal *float64             `json:"latest_total,omitempty"`
+	LatestDate  string               `json:"latest_date,omitempty"`
+	DeepAvg     float64              `json:"deep_avg"`
+	REMAvg      float64              `json:"rem_avg"`
+	AwakeAvg    float64              `json:"awake_avg"`
+	Efficiency  float64              `json:"efficiency"`
+	Sources     []SleepSourceSummary `json:"sources,omitempty"`
+}
+
+const (
+	SleepQualityConfidenceFinal   = "final"
+	SleepQualityConfidencePartial = "partial"
+	SleepQualityConfidenceMissing = "missing"
+	SleepQualityConfidenceLow     = "low"
+)
+
+// SleepQualityBreakdown exposes the factors behind the existing EnergyBank
+// SleepQuality score. Pointer components stay nil when the source did not
+// provide enough stage data, so API consumers cannot confuse missing input
+// with a measured zero.
+type SleepQualityBreakdown struct {
+	ScorePct      *int   `json:"score_pct,omitempty"`
+	DurationPct   int    `json:"duration_pct"`
+	ContinuityPct *int   `json:"continuity_pct,omitempty"`
+	StructurePct  *int   `json:"structure_pct,omitempty"`
+	Confidence    string `json:"confidence"`
+}
+
+// DashboardTodayGuidance is the single prescriptive message shown in the
+// dashboard hero after EnergyBank overrides and safety caps have settled.
+type DashboardTodayGuidance struct {
+	Action     string     `json:"action"`
+	Label      string     `json:"label"`
+	Summary    string     `json:"summary"`
+	Reason     string     `json:"reason"`
+	Confidence string     `json:"confidence"`
+	UpdatedAt  *time.Time `json:"updated_at,omitempty"`
 }
 
 type MetricCard struct {
@@ -453,16 +560,21 @@ type BriefingResponse struct {
 	RecoveryPct      int                    `json:"recovery_pct"`
 	ReadinessToday   int                    `json:"readiness_today"` // today only vs baseline
 	// ReadinessTodayBand mirrors ReadinessBand for the today-only score.
-	ReadinessTodayBand  string             `json:"readiness_today_band"`
-	ReadinessTodayLabel string             `json:"readiness_today_label"`
-	Correlation         []CorrelationPoint `json:"correlation"`
-	Insights            []Insight          `json:"insights"`
-	Alerts              []Alert            `json:"alerts,omitempty"`
-	Sleep               *SleepAnalysis     `json:"sleep"`
-	MetricCards         []MetricCard       `json:"metric_cards"`
-	EnergyBank          *EnergyBank        `json:"energy_bank,omitempty"`
-	// DailyDecision is the single deterministic action boundary for Today.
-	// It is attached by storage after any v2 EnergyBank override is applied.
+	ReadinessTodayBand    string                  `json:"readiness_today_band"`
+	ReadinessTodayLabel   string                  `json:"readiness_today_label"`
+	Correlation           []CorrelationPoint      `json:"correlation"`
+	Insights              []Insight               `json:"insights"`
+	Alerts                []Alert                 `json:"alerts,omitempty"`
+	Sleep                 *SleepAnalysis          `json:"sleep"`
+	SleepQuality          *SleepQualityBreakdown  `json:"sleep_quality,omitempty"`
+	SleepRegularityIndex  *float64                `json:"sleep_regularity_index,omitempty"`
+	SleepRegularityNights int                     `json:"sleep_regularity_nights,omitempty"`
+	MetricCards           []MetricCard            `json:"metric_cards"`
+	EnergyBank            *EnergyBank             `json:"energy_bank,omitempty"`
+	TodayGuidance         *DashboardTodayGuidance `json:"today_guidance,omitempty"`
+	// DailyDecision is the versioned action boundary consumed by native
+	// clients. It mirrors the final conservative TodayGuidance after all
+	// safety caps have settled; AI may explain it but cannot replace it.
 	DailyDecision      *DailyDecision             `json:"daily_decision,omitempty"`
 	IllnessSuspicion   *IllnessSuspicion          `json:"illness_suspicion,omitempty"`
 	ContextAnnotations []ContextAnnotationSummary `json:"context_annotations,omitempty"`
@@ -513,6 +625,10 @@ type ReadinessEvidenceInput struct {
 	OvernightHR       ReadinessComponentEvidence
 	SleepDuration     ReadinessComponentEvidence
 	SleepQuality      ReadinessComponentEvidence
+	SleepDeep         ReadinessComponentEvidence
+	SleepREM          ReadinessComponentEvidence
+	SleepCore         ReadinessComponentEvidence
+	SleepAwake        ReadinessComponentEvidence
 	Respiratory       ReadinessComponentEvidence
 	IllnessConfidence string
 	IllnessPattern    string

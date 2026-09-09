@@ -39,6 +39,14 @@ func BuildDailyDecision(resp *BriefingResponse) *DailyDecision {
 			decision.Reason = resp.EnergyBank.VerdictReason
 		}
 	}
+	// TodayGuidance is newer than EnergyBank and applies additional illness,
+	// readiness-serving and sleep-confidence safety caps. It is the final
+	// authoritative action whenever it is available.
+	if resp.TodayGuidance != nil {
+		decision.Mode = resp.TodayGuidance.Action
+		decision.Label = resp.TodayGuidance.Label
+		decision.Reason = resp.TodayGuidance.Reason
+	}
 	if resp.Headline != nil && resp.Headline.Key != "" {
 		decision.SignalKeys = []string{resp.Headline.Key}
 	}
@@ -67,7 +75,7 @@ func dailyDecisionID(resp *BriefingResponse, decision *DailyDecision) string {
 		headline = strings.Join(append([]string{resp.Headline.Key, resp.Headline.Severity}, parts...), "|")
 	}
 	parts := []string{
-		"daily-decision-v1", resp.Date, decision.Mode,
+		"daily-decision-v1", resp.Date, decision.Mode, decision.Reason,
 		resp.ReadinessConfidence, resp.ReadinessCapReason, headline,
 	}
 	if resp.SubjectiveCheckin != nil {

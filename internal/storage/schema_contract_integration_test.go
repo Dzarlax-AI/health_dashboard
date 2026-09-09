@@ -30,6 +30,16 @@ func TestEnsureSchemaContractContextHonorsCancellation(t *testing.T) {
 	}
 }
 
+func TestMigrateSchemaContractContextHonorsCancellation(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := db.MigrateSchemaContractContext(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled migration error=%v", err)
+	}
+}
+
 func TestEnsureSchemaContractIgnoresImportHousekeepingFailure(t *testing.T) {
 	db, cleanup := testDB(t)
 	defer cleanup()
@@ -111,6 +121,28 @@ func TestVerifySchemaContractRejectsWrongPartialIndexLiteralCase(t *testing.T) {
 	}
 	if err := db.VerifySchemaContractContext(ctx); err == nil || !strings.Contains(err.Error(), "index definition differs") {
 		t.Fatalf("wrong partial-index literal verification error=%v", err)
+	}
+}
+
+func TestVerifySchemaContractRejectsWrongHealthRecordsFreshnessIndex(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx := t.Context()
+	const name = "idx_health_records_completed_processed_at"
+	if _, err := db.pool.Exec(ctx, `DROP INDEX `+name); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = db.pool.Exec(context.Background(), `DROP INDEX IF EXISTS `+name)
+		if err := db.MigrateSchemaContractContext(context.Background()); err != nil {
+			t.Errorf("restore freshness index: %v", err)
+		}
+	}()
+	if _, err := db.pool.Exec(ctx, `CREATE INDEX `+name+` ON health_records (processed_at)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.VerifySchemaContractContext(ctx); err == nil || !strings.Contains(err.Error(), "index definition differs") {
+		t.Fatalf("wrong freshness-index verification error=%v", err)
 	}
 }
 

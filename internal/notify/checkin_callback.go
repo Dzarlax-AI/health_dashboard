@@ -34,6 +34,7 @@ type CheckinAnswerRouter interface {
 	// answer. It does not trigger reports; answers only affect future
 	// caveats.
 	SaveContextPromptAnswer(promptID, category, source string, answeredAt time.Time) (string, error)
+	SaveWakeFeedbackAnswer(date, response string, answeredAt time.Time) (string, error)
 }
 
 // CheckinTenant carries the per-tenant routing context the webhook
@@ -143,6 +144,25 @@ func NewWebhookHandler(cfg WebhookConfig) http.HandlerFunc {
 			ack := contextAckText(tenant.Lang, status)
 			if err := tenant.Router.AnswerCallbackQuery(upd.CallbackQuery.ID, ack); err != nil {
 				log.Printf("telegram webhook: context ack: %v", err)
+			}
+			fmt.Fprintln(w, "ok")
+			return
+		}
+		if response, date, ok := parseWakeFeedbackCallback(upd.CallbackQuery.Data); ok {
+			if tenant.TodayInTZ != "" && date != tenant.TodayInTZ {
+				_ = tenant.Router.AnswerCallbackQuery(upd.CallbackQuery.ID, "")
+				fmt.Fprintln(w, "ignored: stale wake feedback")
+				return
+			}
+			stored, err := tenant.Router.SaveWakeFeedbackAnswer(date, response, time.Now())
+			if err != nil {
+				log.Printf("telegram webhook: save wake feedback tenant=%s date=%s err=%v", tenant.Schema, date, err)
+				_ = tenant.Router.AnswerCallbackQuery(upd.CallbackQuery.ID, "")
+				fmt.Fprintln(w, "ignored: wake feedback save error")
+				return
+			}
+			if err := tenant.Router.AnswerCallbackQuery(upd.CallbackQuery.ID, wakeFeedbackAckText(tenant.Lang, stored)); err != nil {
+				log.Printf("telegram webhook: wake feedback ack: %v", err)
 			}
 			fmt.Fprintln(w, "ok")
 			return

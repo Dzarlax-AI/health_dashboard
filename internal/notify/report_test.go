@@ -61,6 +61,66 @@ func TestSendDurableReportUsesFreshCompletionContext(t *testing.T) {
 	}
 }
 
+func TestDeliverReportPreviewBypassesDurableReservation(t *testing.T) {
+	store := &recordingDeliveryStore{status: "sent"}
+	sendCalls := 0
+
+	for range 2 {
+		sent, err := deliverReport(reportDeliveryPreview, store, "report:morning:2026-08-05", func() error {
+			sendCalls++
+			return nil
+		})
+		if err != nil || !sent {
+			t.Fatalf("preview delivery = %v, %v", sent, err)
+		}
+	}
+
+	if sendCalls != 2 {
+		t.Fatalf("preview send calls = %d, want 2", sendCalls)
+	}
+	if store.reserveCtx != nil || store.completeCtx != nil {
+		t.Fatal("preview delivery touched the durable reservation store")
+	}
+
+	wantErr := errors.New("telegram rejected preview")
+	_, err := deliverReport(reportDeliveryPreview, store, "report:morning:2026-08-05", func() error {
+		return wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("preview delivery error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestDeliverReportDurableKeepsAtMostOnceGate(t *testing.T) {
+	store := &recordingDeliveryStore{}
+	sendCalls := 0
+
+	for range 2 {
+		_, err := deliverReport(reportDeliveryDurable, store, "report:morning:2026-08-05", func() error {
+			sendCalls++
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("durable delivery: %v", err)
+		}
+	}
+
+	if sendCalls != 1 {
+		t.Fatalf("durable send calls = %d, want 1", sendCalls)
+	}
+}
+
+func TestResolveMorningWakeStatusAllowsForcedSendAfterDetectorError(t *testing.T) {
+	wakeErr := errors.New("wake detector unavailable")
+	status, err := resolveMorningWakeStatus(storage.MorningWakeStatus{}, wakeErr, true)
+	if err != nil || status.Reason != "query_error" {
+		t.Fatalf("forced status=%+v err=%v", status, err)
+	}
+	if _, err := resolveMorningWakeStatus(storage.MorningWakeStatus{Reason: "steps_query_error"}, wakeErr, false); !errors.Is(err, wakeErr) {
+		t.Fatalf("non-forced error=%v, want detector error", err)
+	}
+}
+
 // TestMorningCapTime_FloorsPastCapsToPromptWindow pins the floor that
 // keeps the check-in prompt window alive for users whose adaptive cap
 // (typical_wake + 60min) lands earlier than the configured morning
@@ -238,21 +298,113 @@ func TestFormatMorningRich_StructureAndEscaping(t *testing.T) {
 	loc, _ := time.LoadLocation("UTC")
 	briefing := sampleBriefing()
 	out := formatMorningRich(briefing, map[string]string{
-		"SLEEP":          "AI says <check sleep>",
-		"YESTERDAY":      "AI says move",
-		"RECOVERY":       "AI says recover",
-		"RECOMMENDATION": "Do not chase <max effort>",
+		"SLEEP":     "legacy sleep essay must stay hidden",
+		"SYNTHESIS": "AI explains <moderate & controlled>",
 	}, "en", loc, freshness{}, false, "")
 
 	for _, want := range []string{
-		"<h2>🌅 Morning report — 2026-06-14</h2>",
-		"<table>",
-		"<blockquote>🤖 AI says &lt;check sleep&gt;</blockquote>",
-		"<details><summary>Sources</summary>",
-		"Do not chase &lt;max effort&gt;",
+		"<h2>🌅 Sunday, June 14</h2>",
+		"<aside><strong>Moderate</strong>",
+		"<p><strong>At a glance</strong>",
+		"⚡ <strong>64/100</strong> · Energy",
+		"◉ <strong>70/100</strong> · Readiness",
+		"☾ <strong>7.3h</strong> · Sleep · average of up to 7 nights",
+		"<hr/>",
+		"<strong>Why</strong>",
+		"• Mixed markers",
+		"<details><summary>✦ Insights</summary>",
+		"<em>AI explains &lt;moderate &amp; controlled&gt;</em>",
+		"<strong>🎯 Plan for today</strong>",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("rich morning missing %q:\n%s", want, out)
+		}
+	}
+	for _, forbidden := range []string{
+		"<table", "<blockquote>", "<h3>", "legacy sleep essay must stay hidden",
+	} {
+		if strings.Contains(out, forbidden) {
+			t.Fatalf("rich morning contains obsolete %q:\n%s", forbidden, out)
+		}
+	}
+}
+
+func TestFormatMorningLegacy_UsesSingleEscapedSynthesis(t *testing.T) {
+	loc, _ := time.LoadLocation("UTC")
+	briefing := sampleBriefing()
+	briefing.TodayGuidance = &health.DashboardTodayGuidance{
+		Action:  "moderate",
+		Label:   "Moderate <day>",
+		Summary: "Keep effort <7 & controlled.",
+		Reason:  "Fresh HRV & adequate energy.",
+	}
+	out := formatMorning(briefing, map[string]string{
+		"SLEEP":     "legacy essay",
+		"SYNTHESIS": "One <safe & aligned> explanation.",
+	}, "en", loc, freshness{}, false)
+
+	for _, want := range []string{
+		"Moderate &lt;day&gt;",
+		"Fresh HRV &amp; adequate energy.",
+		"One &lt;safe &amp; aligned&gt; explanation.",
+		"Keep effort &lt;7 &amp; controlled.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("legacy morning missing escaped %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "legacy essay") {
+		t.Fatalf("legacy leaf leaked into v2 morning:\n%s", out)
+	}
+}
+
+func TestFormatMorning_UsesLatestNightAndSuppressesDuplicateSynthesis(t *testing.T) {
+	loc, _ := time.LoadLocation("UTC")
+	briefing := sampleBriefing()
+	latest := 7.93
+	briefing.Sleep.LatestTotal = &latest
+	briefing.TodayGuidance = &health.DashboardTodayGuidance{
+		Action:  "moderate",
+		Label:   "Moderate",
+		Summary: "Keep the day controlled.",
+		Reason:  "Sleep data is still settling.",
+	}
+
+	out := formatMorning(briefing, map[string]string{
+		"SYNTHESIS": "Sleep data is still settling.",
+	}, "en", loc, freshness{}, false)
+
+	if !strings.Contains(out, "7.9h") {
+		t.Fatalf("morning report should show the latest night, got:\n%s", out)
+	}
+	if strings.Contains(out, "7.3h") {
+		t.Fatalf("morning report leaked the rolling average as today's sleep:\n%s", out)
+	}
+	if strings.Contains(out, "🤖") {
+		t.Fatalf("morning report repeated the rule-based reason as AI synthesis:\n%s", out)
+	}
+}
+
+func TestFormatMorningLegacy_FiltersStaleReasonsBeforeCapAndShowsFreshness(t *testing.T) {
+	loc, _ := time.LoadLocation("UTC")
+	briefing := sampleBriefing()
+	out := formatMorning(briefing, nil, "en", loc, freshness{
+		sleep:      48 * time.Hour,
+		watch:      time.Hour,
+		sleepKnown: true,
+		watchKnown: true,
+	}, false)
+
+	if strings.Contains(out, "Adequate sleep") {
+		t.Fatalf("stale sleep reason leaked into report:\n%s", out)
+	}
+	for _, want := range []string{
+		"Mixed markers",
+		"Normal load",
+		"Updated: Watch 1h · Sleep 2 days",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("morning report missing %q:\n%s", want, out)
 		}
 	}
 }
