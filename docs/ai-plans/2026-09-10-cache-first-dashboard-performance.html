@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation Plan: Cache-first dashboard performance</title>
+  <style>
+    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #1c2733; background: #f4f7f8; }
+    body { margin: 0; line-height: 1.55; }
+    main { max-width: 1040px; margin: 0 auto; padding: 32px 20px 56px; }
+    section { margin: 16px 0; padding: 20px 22px; background: #fff; border: 1px solid #dbe4e8; border-radius: 12px; }
+    h1, h2 { line-height: 1.2; } h1 { margin-bottom: 8px; } h2 { margin-top: 0; font-size: 1.2rem; }
+    code { padding: 1px 5px; border-radius: 4px; background: #edf2f4; font-size: .92em; }
+    li { margin: 6px 0; } table { width: 100%; border-collapse: collapse; } th, td { padding: 9px; text-align: left; vertical-align: top; border-bottom: 1px solid #e3eaed; }
+    th { color: #38505b; background: #f7fafb; } .badge { display: inline-block; border-radius: 999px; padding: 5px 10px; color: #754b00; background: #fff3d6; font-size: .82rem; font-weight: 700; }
+    .note { border-left: 4px solid #287a76; } .risk { border-left: 4px solid #bb4d3d; } .approval { border-left: 4px solid #ca8500; background: #fffaf0; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Cache-first dashboard performance</h1>
+  <p class="badge">Implemented locally; not committed, pushed, or deployed</p>
+
+  <section>
+    <h2>Цель и наблюдаемая проблема</h2>
+    <p>Сделать интерактивный dashboard предсказуемо быстрым при обычной работе и сразу после backend restart, не жертвуя изоляцией tenants и не блокируя UI ради чтения raw-данных.</p>
+    <p>Production evidence от 2026-09-10: <code>/api/health-briefing</code> выполнялся за 1–992 мс; медленные запросы были <code>/api/dashboard</code> (6.507–8.492 с). Они совпали с тремя одновременными startup cache refresh. В это время один tenant пересчитывал историю с ранней датой 1970 года.</p>
+  </section>
+
+  <section>
+    <h2>Текущее поведение</h2>
+    <ul>
+      <li><code>internal/storage/queries.go:GetDashboard</code> по очереди запрашивает 12 сегодняшних карточек из <code>metric_points</code> и 12 вчерашних из <code>hourly_metrics</code>, плюс отдельные date/units запросы. Raw path попадает в пользовательский запрос.</li>
+      <li><code>cmd/server/main.go:startTenant</code> запускает для каждого tenant отдельную goroutine через пять секунд после boot. Каждая запускает broad cache refresh: aggregates, scores и затем derived-state update.</li>
+      <li>После ingest targeted <code>UpsertRecentCache</code> и readiness recompute уже выполняются до debounced safety net. Значит normal current-day UI может опираться на cache, а не ждать raw fallback.</li>
+      <li>React loader запрашивал stable <code>GET /api/dashboard</code> параллельно с основными ресурсами, но response не использовался в view model. Его удаление из loader убирает лишнюю нагрузку со стартового user path.</li>
+    </ul>
+  </section>
+
+  <section class="note">
+    <h2>Одобренное product-решение</h2>
+    <p>Интерактивные dashboard reads становятся cache-first. Когда current cache ещё обновляется, UI показывает последний complete snapshot и явную метку «Обновляем данные», а не запускает raw metric scans на request path. Raw <code>metric_points</code> остаётся источником данных и используется ingestion/background rebuild, но не synchronous dashboard response.</p>
+  </section>
+
+  <section>
+    <h2>Предлагаемая архитектура</h2>
+    <table>
+      <thead><tr><th>Слой</th><th>Изменение</th><th>Граница</th></tr></thead>
+      <tbody>
+        <tr><td>Dashboard read</td><td>Writer вычисляет response из hourly cache и заменяет одну durable snapshot row только после полного успешного refresh. Request читает только эту row.</td><td>Никакого synchronous fallback к <code>metric_points</code> и никакого чтения partial generation.</td></tr>
+        <tr><td>Freshness</td><td>Добавить additive <code>cache_state</code> и <code>cache_completed_at</code>. React продолжает использовать server-owned freshness primary briefing; dashboard response сохраняет последнюю complete generation во время обновления.</td><td><code>last_updated</code> сохраняет прежнюю семантику: timezone-aware ingest receipt timestamp.</td></tr>
+        <tr><td>Startup lifecycle</td><td>Заменить независимые per-tenant 5-second broad refresh на process-owned sequential queue после service readiness.</td><td>Один broad refresh в момент времени; ingest-driven targeted updates сохраняют свой отдельный, короткий путь.</td></tr>
+        <tr><td>Observability</td><td>Логировать cache state и dashboard duration отдельно от generic request log; добавить latency-focused regression coverage.</td><td>Не писать health payload, identity или credentials в logs.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Предположения и открытые вопросы</h2>
+    <ul>
+      <li>Семантика source priority для sum metrics должна совпасть с текущей <code>preferredSourceForMetric</code>; до изменения SQL её нужно зафиксировать fixture-тестом.</li>
+      <li>«Complete» означает успешный cache snapshot для даты, выбранной dashboard. Не означает, что телефон уже успел прислать самые свежие данные.</li>
+      <li>Если cache отсутствует на чистой установке, endpoint возвращает explicit unavailable state без raw scan. UI показывает existing empty/loading state и retry после cache completion.</li>
+      <li>Нужно определить budget: предлагается server-side <code>/api/dashboard</code> p95 &lt; 500 мс на прогретом production-sized fixture; startup queue не должна ухудшать readiness или tenant schema gate.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Вероятно затрагиваемые файлы</h2>
+    <ul>
+      <li><code>internal/storage/queries.go</code> — cache-only dashboard query.</li>
+      <li><code>internal/storage/queries_test.go</code> или новый focused test — source priority, empty cache, current/previous date и отсутствие raw fallback.</li>
+      <li><code>cmd/server/main.go</code> — process-level sequential startup backfill coordinator вместо concurrent per-tenant goroutines.</li>
+      <li><code>cmd/server/main_test.go</code> или focused coordinator test — ordering, one-at-a-time execution и non-blocking startup.</li>
+      <li><code>apps/web/src/features/dashboard/loader.ts</code> — remove the unused optional dashboard request from the interactive start path.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation steps</h2>
+    <ol>
+      <li>Write regression tests that expose the current raw-query dependency and preserve card/source semantics on a representative multi-source fixture.</li>
+      <li>Introduce one atomically persisted cache-only dashboard snapshot while preserving source-selection semantics and the meaning of existing response fields.</li>
+      <li>Remove the unused optional dashboard fetch; keep the existing server-owned primary briefing freshness UI.</li>
+      <li>Extract startup broad refresh scheduling into a process coordinator that queues active tenants sequentially after HTTP readiness. Do not change targeted post-ingest rebuilds.</li>
+      <li>Persist hourly AVG sample counts, retain verified source units in the snapshot, execute focused tests, contract checks and web checks. Reproduce restart against a disposable multi-tenant database before production.</li>
+      <li>Deploy through the immutable-pair and tenant-schema gate, then verify server timings, user dashboard and a fresh authenticated browser route.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Разбивка по моделям и контрольные точки</h2>
+    <table>
+      <thead><tr><th>Этап</th><th>Модель</th><th>Ответственность и граница</th><th>Результат для следующего этапа</th></tr></thead>
+      <tbody>
+        <tr><td>1. Семантическая фиксация</td><td>Terra</td><td>Подтвердить cache-query shape, source-priority/dedup equivalence и границу between broad startup refresh и targeted ingest rebuild.</td><td>Короткий evidence-backed design note и тестовые cases; никаких implementation changes.</td></tr>
+        <tr><td>2. Локальные контрактные куски</td><td>Luna</td><td>После фиксации интерфейса: typed freshness state, React rendering states, generated-client/contract routine и focused unit tests.</td><td>Небольшие обозримые diff-ы без изменения tenant lifecycle или SQL source selection.</td></tr>
+        <tr><td>3. Интеграционное ядро</td><td>Terra</td><td>Реализовать bounded cache-only dashboard query и process-level sequential startup queue; провести disposable multi-tenant/restart verification.</td><td>Один интегрированный diff с performance evidence и contract checks.</td></tr>
+        <tr><td>4. Независимый review</td><td>Sol</td><td>Проверить SQL equivalence, multi-tenant fairness, API compatibility, stale-data UX и deployment/rollback boundary.</td><td>Конкретные findings либо явный approve; исправления возвращаются в соответствующий узкий этап.</td></tr>
+        <tr><td>5. Escalation</td><td>Astra — только при необходимости</td><td>Использовать лишь если Terra/Sol расходятся по source semantics, performance evidence недостаточно или выявляется архитектурный выбор шире этого scope.</td><td>Явное решение с причиной, а не routine implementation.</td></tr>
+      </tbody>
+    </table>
+    <p>Это намеренно не массовая параллелизация: один этап меняет один тип риска, а следующий получает проверяемый артефакт вместо предположений. Model allocation не меняет approval gate и не даёт права на production mutation.</p>
+  </section>
+
+  <section>
+    <h2>Validation and QA</h2>
+    <ul>
+      <li><code>go test ./internal/storage ./internal/ui ./cmd/server -count=1</code> plus the narrow new tests.</li>
+      <li><code>make contract-generate &amp;&amp; make contract-check</code> and <code>make web-check</code>.</li>
+      <li>Use a disposable PostgreSQL multi-tenant fixture to prove one broad startup refresh at a time and that HTTP readiness is available before queue work begins.</li>
+      <li>Measure <code>/api/dashboard</code> and <code>/api/health-briefing</code> before/during/after startup refresh; confirm dashboard stays within the agreed budget and no request performs raw fallback.</li>
+      <li>Manual browser QA: fresh dashboard load, a post-ingest updating badge, fallback with a retained prior snapshot, empty-install unavailable state, RU/EN/SR, then a sleep/detail route.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Риски и rollback</h2>
+    <ul>
+      <li>Неправильная batch SQL source selection может изменить displayed sums. Fixture tests compare every card with the current semantics before cutover.</li>
+      <li>Cache-only can surface a briefly stale snapshot after an ingest failure. The explicit freshness state must make this visible and background rebuild must retain retry/error reporting.</li>
+      <li>A queue must not serialize tenant provisioning, request serving or target-date ingest rebuilds; it applies only to broad startup refresh.</li>
+      <li>Rollback: deploy the previous immutable image pair. No data migration is proposed; additive contract fields are ignored by older clients.</li>
+    </ul>
+  </section>
+
+  <section class="note">
+    <h2>Implementation record</h2>
+    <ul>
+      <li>Sol review found six correctness blockers in the first local draft: partial snapshots, unweighted AVG values, unsafe unit labels, a changed <code>last_updated</code> contract, a 128-tenant startup deadlock, and a DB regression test absent from routine CI.</li>
+      <li>Remediation stores one durable dashboard snapshot after a complete successful cache generation, retains the prior row on failure, and exposes additive <code>complete/updating/unavailable</code> state. <code>last_updated</code> remains the latest receipt timestamp; unit labels are retained only when raw inputs agree.</li>
+      <li>Hourly AVG writers now persist <code>sample_count</code> and snapshot SQL uses weighted averages. This is an additive schema-contract v8 change and therefore requires the existing tenant-schema deployment gate.</li>
+      <li>Startup refresh uses an unbounded pending list plus one worker after HTTP readiness; the routine DB lane now explicitly runs the dashboard snapshot regression.</li>
+      <li>PR review remediation: dashboard publication now creates a fresh context after a long backfill; a missing snapshot defers the durable evening delivery before it can consume its at-most-once reservation, retries only until the tenant-local day boundary, and then stops; and <code>last_updated</code> is read live from the receipt timestamp instead of being frozen in the snapshot payload.</li>
+      <li>Validation after the review remediation: notify, storage, UI, and server Go tests pass; the focused DB snapshot regression passes with <code>HEALTH_DB_TESTS=1</code>, including a receipt accepted after snapshot publication; API contract check and the complete web type/lint/test/build pipeline pass. No commit, push, deployment, or production mutation has occurred.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval gate</h2>
+    <p>Approved and implemented locally. A commit, PR, deployment, and production timing verification remain separate approval gates.</p>
+  </section>
+</main>
+</body>
+</html>

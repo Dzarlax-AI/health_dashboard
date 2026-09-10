@@ -65,6 +65,11 @@ func (s *DB) EnsureIndexesContext(ctx context.Context) error {
 		importStagePointsTableDDL,
 		importStageWorkoutsTableDDL,
 		notificationDeliveriesTableDDL,
+		`CREATE TABLE IF NOT EXISTS dashboard_cache_snapshots (
+			singleton    BOOLEAN PRIMARY KEY DEFAULT true CHECK (singleton),
+			completed_at TIMESTAMPTZ NOT NULL,
+			payload      JSONB NOT NULL
+		)`,
 	}
 	for _, ddl := range tableMigrations {
 		if err := s.execStartupDDLContext(ctx, ddl, ddlColumnStatementTimeout); err != nil {
@@ -82,6 +87,10 @@ func (s *DB) EnsureIndexesContext(ctx context.Context) error {
 		{"health_records", "processing_kind", `ALTER TABLE health_records ADD COLUMN IF NOT EXISTS processing_kind TEXT NOT NULL DEFAULT 'all'`},
 		{"health_records", "processing_error", `ALTER TABLE health_records ADD COLUMN IF NOT EXISTS processing_error TEXT`},
 		{"health_records", "processed_at", `ALTER TABLE health_records ADD COLUMN IF NOT EXISTS processed_at TIMESTAMPTZ`},
+		// AVG dashboard cards must retain their raw sample weights. Legacy
+		// rows stay at zero and are excluded until the next cache refresh,
+		// which is safer than silently returning an average of averages.
+		{"hourly_metrics", "sample_count", `ALTER TABLE hourly_metrics ADD COLUMN IF NOT EXISTS sample_count INTEGER NOT NULL DEFAULT 0`},
 		// quality flag for soft-suspect / hard-impossible filtering. Default
 		// 'ok' so existing rows behave identically until something flips them.
 		{"metric_points", "quality", `ALTER TABLE metric_points ADD COLUMN IF NOT EXISTS quality TEXT NOT NULL DEFAULT 'ok'`},

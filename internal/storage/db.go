@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -15,6 +16,11 @@ import (
 type DB struct {
 	pool    *pgxpool.Pool
 	cacheMu sync.Mutex // protects concurrent writes to hourly_metrics and daily_scores
+
+	// dashboardRefreshes makes the request-visible snapshot state explicit
+	// without exposing the mutable cache tables. A completed snapshot remains
+	// readable while this counter is non-zero.
+	dashboardRefreshes atomic.Int32
 
 	// aiRegenInFlight dedupes concurrent EnsureTodayAIInsight calls so
 	// concurrent pollers (and overlapping sync callers — morning smart-retry,
@@ -35,6 +41,16 @@ type DB struct {
 	// tenant-local factual snapshot and generation fingerprint. The durable
 	// bundle lease remains the cross-process authority.
 	dailyInsightInFlight sync.Map
+}
+
+// BeginDashboardRefresh marks a cache generation as in progress. The returned
+// closer is idempotent so every background caller can defer it safely.
+func (s *DB) BeginDashboardRefresh() func() {
+	s.dashboardRefreshes.Add(1)
+	var once sync.Once
+	return func() {
+		once.Do(func() { s.dashboardRefreshes.Add(-1) })
+	}
 }
 
 // queryCtx returns a context with a 30-second timeout for regular queries.
@@ -212,7 +228,13 @@ func (s *DB) EnsureAllTablesContext(ctx context.Context) error {
 			avg_val     REAL NOT NULL DEFAULT 0,
 			min_val     REAL NOT NULL DEFAULT 0,
 			max_val     REAL NOT NULL DEFAULT 0,
+			sample_count INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (metric_name, hour, source)
+		)`,
+		`CREATE TABLE IF NOT EXISTS dashboard_cache_snapshots (
+			singleton    BOOLEAN PRIMARY KEY DEFAULT true CHECK (singleton),
+			completed_at TIMESTAMPTZ NOT NULL,
+			payload      JSONB NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS daily_scores (
 			date              TEXT PRIMARY KEY,

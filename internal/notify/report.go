@@ -29,6 +29,10 @@ const (
 
 const notificationDeliveryTimeout = 10 * time.Second
 
+// ErrDashboardSnapshotUnavailable causes the scheduler to leave the evening
+// delivery unreserved so a later tick can send the completed dashboard.
+var ErrDashboardSnapshotUnavailable = errors.New("dashboard snapshot unavailable")
+
 func completeNotificationDelivery(store notificationDeliveryStore, key string, token uuid.UUID, status, code string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), notificationDeliveryTimeout)
 	defer cancel()
@@ -333,10 +337,17 @@ func sendEveningReport(bot *Bot, db *storage.DB, cfg Config, policy reportDelive
 		rich = formatEveningRich(briefing, dash, cfg.Lang, cfg.location(), fresh)
 	}
 	today := time.Now().In(cfg.location()).Format("2006-01-02")
-	_, err = deliverReport(policy, db, "report:evening:"+today, func() error {
+	_, err = deliverEveningReport(policy, db, dash, "report:evening:"+today, func() error {
 		return sendReportHTML(bot, cfg, "evening", rich, fallback)
 	})
 	return err
+}
+
+func deliverEveningReport(policy reportDeliveryPolicy, db notificationDeliveryStore, dash *storage.DashboardResponse, key string, send func() error) (bool, error) {
+	if dash == nil || dash.CacheState == storage.DashboardCacheStateUnavailable {
+		return false, ErrDashboardSnapshotUnavailable
+	}
+	return deliverReport(policy, db, key, send)
 }
 
 func deliverReport(policy reportDeliveryPolicy, db notificationDeliveryStore, key string, send func() error) (bool, error) {

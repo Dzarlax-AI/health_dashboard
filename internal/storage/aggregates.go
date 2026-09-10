@@ -240,6 +240,8 @@ func (s *DB) UpsertRecentCache(dates []string, recomputeReadiness bool) error {
 	if len(dates) == 0 {
 		return nil
 	}
+	finishRefresh := s.BeginDashboardRefresh()
+	defer finishRefresh()
 	// Tenant TZ is read once per UpsertRecentCache pass and reused for
 	// every date — REPORT_TZ doesn't change mid-process, and
 	// `time.LoadLocation` allocates ~5 KB per call which adds up over a
@@ -280,17 +282,21 @@ func (s *DB) UpsertRecentCache(dates []string, recomputeReadiness bool) error {
 		}
 	}
 
-	if !recomputeReadiness {
-		return nil
-	}
-	earliest := dates[0]
-	for _, d := range dates[1:] {
-		if d < earliest {
-			earliest = d
+	if recomputeReadiness {
+		earliest := dates[0]
+		for _, d := range dates[1:] {
+			if d < earliest {
+				earliest = d
+			}
+		}
+		if err := s.RecomputeReadinessSince(earliest); err != nil {
+			return fail(err)
 		}
 	}
-	if err := s.RecomputeReadinessSince(earliest); err != nil {
-		return fail(err)
+	ctx, cancel := longCtx()
+	defer cancel()
+	if err := s.refreshDashboardSnapshotLocked(ctx); err != nil {
+		return fail(fmt.Errorf("dashboard snapshot: %w", err))
 	}
 	return nil
 }
@@ -301,11 +307,11 @@ func (s *DB) upsertHourlyAvgForDate(date string) error {
 	ctx, cancel := longCtx()
 	defer cancel()
 	const q = `
-		INSERT INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val)
+		INSERT INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val, sample_count)
 		SELECT metric_name,
 		       SUBSTRING(date, 1, 13) || ':00' AS hour,
 		       source,
-		       AVG(qty), MIN(qty), MAX(qty)
+		       AVG(qty), MIN(qty), MAX(qty), COUNT(*)
 		FROM metric_points
 		WHERE SUBSTRING(date,1,10) = $1
 		  AND qty > 0
@@ -314,7 +320,8 @@ func (s *DB) upsertHourlyAvgForDate(date string) error {
 		  AND metric_name <> ALL($2::text[])
 		GROUP BY metric_name, SUBSTRING(date, 1, 13) || ':00', source
 		ON CONFLICT (metric_name, hour, source) DO UPDATE SET
-			avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val`
+			avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val,
+			sample_count=EXCLUDED.sample_count`
 	if _, err := s.pool.Exec(ctx, q, date, sumMetricSlice()); err != nil {
 		return err
 	}
@@ -327,9 +334,9 @@ func (s *DB) upsertHourlySumForDate(date string) error {
 	ctx, cancel := longCtx()
 	defer cancel()
 	const q = `
-		INSERT INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val)
+		INSERT INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val, sample_count)
 		SELECT metric_name, hour, source,
-		       SUM(minute_max) AS sum_val, MIN(minute_min) AS min_val, MAX(minute_max) AS max_val
+		       SUM(minute_max) AS sum_val, MIN(minute_min) AS min_val, MAX(minute_max) AS max_val, COUNT(*)
 		FROM (
 			SELECT metric_name, source,
 			       SUBSTRING(date, 1, 13) || ':00' AS hour,
@@ -347,7 +354,8 @@ func (s *DB) upsertHourlySumForDate(date string) error {
 		) sub
 		GROUP BY metric_name, hour, source
 		ON CONFLICT (metric_name, hour, source) DO UPDATE SET
-			avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val`
+			avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val,
+			sample_count=EXCLUDED.sample_count`
 	if _, err := s.pool.Exec(ctx, q, date, sumMetricSlice()); err != nil {
 		return err
 	}
@@ -389,9 +397,9 @@ func (s *DB) upsertHourlySleepForDate(date string) error {
 	}
 
 	q := `
-		INSERT INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val)
+		INSERT INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val, sample_count)
 		SELECT metric_name, hour, source,
-		       SUM(minute_max), MIN(minute_min), MAX(minute_max)
+		       SUM(minute_max), MIN(minute_min), MAX(minute_max), COUNT(*)
 		FROM (
 			SELECT metric_name, source,
 			       SUBSTRING(date, 1, 13) || ':00' AS hour,
@@ -409,7 +417,8 @@ func (s *DB) upsertHourlySleepForDate(date string) error {
 		) sub
 		GROUP BY metric_name, hour, source
 		ON CONFLICT (metric_name, hour, source) DO UPDATE SET
-			avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val`
+			avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val,
+			sample_count=EXCLUDED.sample_count`
 	if _, err := tx.Exec(ctx, q, date); err != nil {
 		return fmt.Errorf("insert: %w", err)
 	}
@@ -597,6 +606,8 @@ ON CONFLICT(date) DO UPDATE SET
 // truncated first; otherwise the last 48h are refreshed (catches re-synced
 // data) and new data is appended.
 func (s *DB) BackfillAggregates(force bool) error {
+	finishRefresh := s.BeginDashboardRefresh()
+	defer finishRefresh()
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
 
@@ -634,6 +645,8 @@ func (s *DB) BackfillAggregates(force bool) error {
 	const backfillConcurrency = 2
 	sem := make(chan struct{}, backfillConcurrency)
 	var wg sync.WaitGroup
+	var firstErr error
+	var errMu sync.Mutex
 	for _, m := range metrics {
 		wg.Add(1)
 		sem <- struct{}{}
@@ -642,14 +655,30 @@ func (s *DB) BackfillAggregates(force bool) error {
 			defer func() { <-sem }()
 			if err := s.buildHourlyMetric(m, aggFuncFor(m), force); err != nil {
 				log.Printf("  hourly %s: %v", m, err)
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = fmt.Errorf("hourly %s: %w", m, err)
+				}
+				errMu.Unlock()
 			}
 		}(m)
 	}
 	wg.Wait()
+	if firstErr != nil {
+		return firstErr
+	}
 
 	// Level 2: hourly_metrics → daily_scores metric columns.
 	if err := s.BuildDailyMetrics(force); err != nil {
 		return fmt.Errorf("daily metrics: %w", err)
+	}
+	// The rebuild can exceed the five-minute context created at function entry.
+	// Publish with a fresh deadline so a successful cache generation is always
+	// made visible to request readers.
+	snapshotCtx, cancelSnapshot := longCtx()
+	defer cancelSnapshot()
+	if err := s.refreshDashboardSnapshotLocked(snapshotCtx); err != nil {
+		return fmt.Errorf("dashboard snapshot: %w", err)
 	}
 
 	log.Println("backfill aggregates done")
@@ -1053,8 +1082,8 @@ func (s *DB) buildHourlyMetric(metric, agg string, force bool) error {
 	if agg == "SUM" {
 		// SUM metrics: MAX within each minute (dedup re-syncs), then SUM per hour.
 		query = fmt.Sprintf(`
-			INSERT INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val)
-			SELECT metric_name, hour, source, SUM(minute_max), MIN(minute_min), MAX(minute_max)
+			INSERT INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val, sample_count)
+			SELECT metric_name, hour, source, SUM(minute_max), MIN(minute_min), MAX(minute_max), COUNT(*)
 			FROM (
 				SELECT metric_name, source,
 				       SUBSTRING(date, 1, 13) || ':00' AS hour,
@@ -1066,19 +1095,21 @@ func (s *DB) buildHourlyMetric(metric, agg string, force bool) error {
 			) sub
 			GROUP BY metric_name, hour, source
 			ON CONFLICT (metric_name, hour, source) DO UPDATE SET
-				avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val`, sleepDedup, fromClause)
+				avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val,
+				sample_count=EXCLUDED.sample_count`, sleepDedup, fromClause)
 	} else {
 		query = fmt.Sprintf(`
-			INSERT INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val)
+			INSERT INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val, sample_count)
 			SELECT metric_name,
 			       SUBSTRING(date, 1, 13) || ':00' AS hour,
 			       source,
-			       AVG(qty), MIN(qty), MAX(qty)
+			       AVG(qty), MIN(qty), MAX(qty), COUNT(*)
 			FROM metric_points
 			WHERE metric_name = $1 AND qty > 0 AND quality = 'ok' %s %s
 			GROUP BY metric_name, SUBSTRING(date, 1, 13) || ':00', source
 			ON CONFLICT (metric_name, hour, source) DO UPDATE SET
-				avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val`, sleepDedup, fromClause)
+				avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val,
+				sample_count=EXCLUDED.sample_count`, sleepDedup, fromClause)
 	}
 
 	if !isSleepMetric(metric) {

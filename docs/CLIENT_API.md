@@ -60,7 +60,7 @@ The first TypeScript dashboard depends on these machine-described operations:
 |---|---|---|
 | `GET /api/health-briefing` | Rich current-day health state | Optional headline, EnergyBank, sleep quality, readiness serving state, illness/context/check-in signals. `sleep` is required but may be `null`. |
 | `GET /api/ai-briefing` | Non-blocking AI narrative | `generating=true` means poll; `disabled=true` means hide AI; empty content is valid. |
-| `GET /api/dashboard` | Lean current-day metric cards | Cards may be empty for a fresh tenant. |
+| `GET /api/dashboard` | Lean cache-backed metric cards | Returns the latest complete hourly-cache day and may be empty for a fresh tenant; it never synchronously scans raw metric points. |
 | `GET /api/readiness-history` | Readiness trend | Empty `points` is valid; `days` is clamped to the documented range. |
 | `GET /api/energy-history` | Day or intraday EnergyBank trend | The `granularity` discriminator selects day or hour point shape; empty `points` is valid. |
 
@@ -109,6 +109,12 @@ New clients should render `sections[]`, then fall back to named blocks or
 - Calendar dates use `YYYY-MM-DD` in the tenant report timezone.
 - Timestamps are JSON strings; EnergyBank v2 `ts` values are RFC 3339
   date-times rendered with the tenant timezone offset.
+- `DashboardResponse.last_updated` remains the latest ingest receipt timestamp
+  (`health_records.received_at`); it is not a cache bucket label.
+- `DashboardResponse.cache_state` is `complete`, `updating`, or `unavailable`.
+  A response in `updating` continues to serve the prior complete snapshot;
+  `cache_completed_at` is the RFC 3339 timestamp of that snapshot and is
+  absent only when no complete snapshot exists.
 - Older metric endpoints may expose database timestamp strings. Consumers
   must not reinterpret them as UTC without an explicit offset.
 - Units are server-provided strings. Clients format them but do not recompute

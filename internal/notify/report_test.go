@@ -110,6 +110,31 @@ func TestDeliverReportDurableKeepsAtMostOnceGate(t *testing.T) {
 	}
 }
 
+func TestDeliverEveningReportDefersWhenDashboardSnapshotUnavailable(t *testing.T) {
+	store := &recordingDeliveryStore{}
+	sendCalls := 0
+
+	sent, err := deliverEveningReport(
+		reportDeliveryDurable,
+		store,
+		&storage.DashboardResponse{CacheState: storage.DashboardCacheStateUnavailable},
+		"report:evening:2026-09-10",
+		func() error {
+			sendCalls++
+			return nil
+		},
+	)
+	if sent {
+		t.Fatal("unavailable dashboard must not be marked as sent")
+	}
+	if !errors.Is(err, ErrDashboardSnapshotUnavailable) {
+		t.Fatalf("error = %v, want ErrDashboardSnapshotUnavailable", err)
+	}
+	if sendCalls != 0 || store.reserveCtx != nil || store.completeCtx != nil {
+		t.Fatalf("unavailable dashboard sent or reserved a durable delivery: calls=%d reserve=%v complete=%v", sendCalls, store.reserveCtx != nil, store.completeCtx != nil)
+	}
+}
+
 func TestResolveMorningWakeStatusAllowsForcedSendAfterDetectorError(t *testing.T) {
 	wakeErr := errors.New("wake detector unavailable")
 	status, err := resolveMorningWakeStatus(storage.MorningWakeStatus{}, wakeErr, true)
