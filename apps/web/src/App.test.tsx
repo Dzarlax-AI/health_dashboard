@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 
 import { ClientApiError } from "./api/client";
 import { App } from "./App";
+import { sessionRecoveryStorageKey } from "./auth/sessionRecovery";
 import { fixtureResources } from "./features/dashboard/fixtures";
 import { loadDashboardResources } from "./features/dashboard/loader";
 
@@ -25,6 +26,7 @@ function renderFixture(fixture: string, locale = "en") {
 describe("foundation fixtures", () => {
   afterEach(() => {
     mockedLoadDashboardResources.mockReset();
+    window.sessionStorage.clear();
     window.history.replaceState({}, "", "/");
     document.documentElement.lang = "en";
     vi.unstubAllEnvs();
@@ -103,9 +105,10 @@ describe("foundation fixtures", () => {
     expect(await screen.findByText("Legacy fallback insight.")).toBeInTheDocument();
   });
 
-  it("encodes the complete post-login destination", async () => {
+  it("shows the sign-in fallback after a failed one-time session recovery", async () => {
     vi.stubEnv("VITE_ENABLE_FIXTURES", "false");
     window.history.replaceState({}, "", "/?lang=en");
+    window.sessionStorage.setItem(sessionRecoveryStorageKey, "1");
     mockedLoadDashboardResources.mockRejectedValue(
       new ClientApiError(401, "authentication required"),
     );

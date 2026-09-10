@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { ClientApiError } from "./api/client";
+import {
+  clearSessionRecoveryAttempt,
+  requestSessionRecovery,
+  sessionRecoveryURL,
+} from "./auth/sessionRecovery";
 import { AppHeader } from "./components/AppHeader";
 import { StatusPanel } from "./components/StatusPanel";
 import { fixtureNames, fixtureResources, resolveFixture } from "./features/dashboard/fixtures";
@@ -54,12 +59,24 @@ function DashboardApp() {
     }
     const controller = new AbortController();
     loadDashboardResources(locale, controller.signal)
-      .then((resources) => setLiveState({ status: "ready", resources }))
+      .then((resources) => {
+        clearSessionRecoveryAttempt(window.sessionStorage);
+        setLiveState({ status: "ready", resources });
+      })
       .catch((error: unknown) => {
         if (controller.signal.aborted) {
           return;
         }
         if (error instanceof ClientApiError && error.status === 401) {
+          if (
+            requestSessionRecovery(
+              window.sessionStorage,
+              sessionRecoveryURL(window.location),
+              (target) => window.location.assign(target),
+            )
+          ) {
+            return;
+          }
           setLiveState({ status: "unauthenticated" });
           return;
         }

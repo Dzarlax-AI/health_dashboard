@@ -85,7 +85,11 @@ assert "middlewares" not in {
     for key, value in b.items()
     if key.startswith("traefik.http.routers.health-machine.")
 }
-assert b["traefik.http.routers.health-browser-api.middlewares"] == "authentik-auth"
+assert "middlewares" not in {
+    key.rsplit(".", 1)[-1]: value
+    for key, value in b.items()
+    if key.startswith("traefik.http.routers.health-browser-api.")
+}
 assert "HeaderRegexp(`X-API-Key`, `.+`)" in b["traefik.http.routers.health-api-key.rule"]
 assert "middlewares" not in {
     key.rsplit(".", 1)[-1]: value
@@ -107,6 +111,8 @@ assert b["traefik.http.routers.health-legacy-root.middlewares"] == "authentik-au
 assert b["traefik.http.middlewares.health-legacy-root.replacepath.path"] == "/"
 root = f["traefik.http.routers.health-frontend-root.rule"]
 assets = f["traefik.http.routers.health-frontend-assets.rule"]
+assert f["traefik.http.routers.health-frontend-root.middlewares"] == "authentik-auth"
+assert f["traefik.http.routers.health-frontend-assets.middlewares"] == "authentik-auth"
 if mode == "canary":
     assert f["traefik.enable"] == "true"
     assert "HeaderRegexp(`Cookie`" in root and "health_frontend_canary=1" in root

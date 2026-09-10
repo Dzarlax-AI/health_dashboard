@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Browser API session recovery</title>
+  <style>
+    body { max-width: 900px; margin: 40px auto; padding: 0 20px; font: 16px/1.55 system-ui, sans-serif; color: #18212b; }
+    h1, h2 { line-height: 1.2; } h1 { margin-bottom: .2rem; } h2 { margin-top: 2rem; }
+    .meta { color: #596673; } .callout { padding: 14px 18px; background: #edf6ff; border-left: 4px solid #2878c7; }
+    .risk { padding: 14px 18px; background: #fff7e6; border-left: 4px solid #b7791f; }
+    code { background: #f1f3f5; padding: 1px 4px; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <h1>Browser API session recovery</h1>
+  <p class="meta">Prepared 2026-09-10 · Status: implemented locally and verified; production deployment remains unapproved.</p>
+
+  <h2>Observed behavior</h2>
+  <p>The React dashboard loads its mandatory <code>/api/health-briefing</code> request through Traefik's <code>authentik-auth</code> ForwardAuth middleware. When Authentik returns a login redirect, browser <code>fetch</code> follows it cross-origin and fails before a <code>Response</code> reaches the client. The UI consequently displays the raw message <code>Failed to fetch</code>.</p>
+  <p>Production evidence on 2026-09-10: the same browser route returned both <code>302</code> and <code>200</code> within seconds; the backend was healthy and no API 5xx responses were observed. This is an interactive-auth redirect path, not a health-data or insight-generation failure.</p>
+
+  <h2>Desired behavior</h2>
+  <ul>
+    <li>Existing opaque Health browser sessions remain usable for their intended 30-day lifetime even when an Authentik SSO session is briefly absent or renewing.</li>
+    <li>Protected document routes continue to use Authentik ForwardAuth.</li>
+    <li>Browser API requests without a valid Health session, trusted ForwardAuth identity, or API key return a same-origin machine-readable <code>401</code>, never a cross-origin Authentik redirect.</li>
+    <li>The SPA makes one safe top-level navigation to restore SSO on a real <code>401</code>; if sign-in cannot complete, it shows the existing sign-in state rather than retrying indefinitely or hiding an outage.</li>
+  </ul>
+
+  <h2>Recommended design</h2>
+  <div class="callout">
+    Do not add a background Authentik keepalive. It cannot make a cross-origin redirect fetchable and would create avoidable auth traffic. Keep Authentik on document routes; let the backend enforce the existing opaque, tenant-aware session cookie on <code>/api/*</code> after initial SSO has issued it.
+  </div>
+  <p>Remove <code>authentik-auth</code> only from the browser-API Traefik router. The API remains protected by the Go guard: trusted ForwardAuth headers when present, API key where applicable, or the opaque server-backed session cookie. Change the unauthenticated API branch from a redirect to a JSON <code>401</code>; preserve redirects for document navigation.</p>
+
+  <h2>Likely files</h2>
+  <ul>
+    <li><code>deploy/production/health/docker-compose.yml</code> — remove ForwardAuth only from <code>health-browser-api</code> and update the route comment.</li>
+    <li><code>scripts/test-production-routing-config.sh</code> and <code>scripts/test-production-traefik-rules.sh</code> — assert the revised router boundary, API-key precedence, and protected document routes.</li>
+    <li><code>internal/ui/handler.go</code> plus focused handler tests — emit JSON <code>401</code> for unauthenticated <code>/api/*</code>, while retaining page redirects.</li>
+    <li><code>apps/web/src/api/client.ts</code>, <code>apps/web/src/App.tsx</code>, and tests — recognize same-origin <code>401</code>; allow one top-level reauthentication navigation and retain an explicit sign-in fallback.</li>
+  </ul>
+
+  <h2>Implementation steps</h2>
+  <ol>
+    <li>Fetch current <code>origin/main</code> and create a fresh <code>codex/</code> branch. The local checkout currently points to the pre-merge PR branch, so no auth change may be based on it.</li>
+    <li>Add a narrowly scoped backend API-auth failure response and tests for: no credentials → JSON 401; valid opaque session → success; trusted ForwardAuth identity → success; API key → success; non-API page with no credentials → login redirect.</li>
+    <li>Change only the production browser-API router to omit the ForwardAuth middleware. Keep it on frontend pages, legacy pages, assets, and all unrelated applications. Retain the higher-priority API-key route.</li>
+    <li>Update SPA error classification so a 401 triggers one full-page navigation back to the current Health route. Guard it with per-tab state to prevent a redirect loop; surface the existing sign-in panel if it repeats or if navigation is unavailable.</li>
+    <li>Add unit/integration coverage for the client failure path and route-config checks. Regenerate and check the OpenAPI contract only if the API error envelope changes its documented surface.</li>
+    <li>Run Go, web, routing, container-pair, and targeted authentication checks. Deploy through the immutable-pair release path only after review approval.</li>
+    <li>Post-deploy, verify with a real browser session: normal dashboard load, a valid local cookie while SSO is absent/renewing, expired local cookie → one interactive sign-in, API-key client access, and unauthenticated API response. Check Traefik status aggregates for absence of browser API 302 responses.</li>
+  </ol>
+
+  <h2>Risks and controls</h2>
+  <div class="risk">
+    Removing proxy ForwardAuth from an API route is security-sensitive. It is acceptable only if the backend guard remains fail-closed and the forward-header trust boundary is unchanged. The plan explicitly tests no-cookie denial, tenant resolution, and API-key routing before release.
+  </div>
+  <ul>
+    <li>Do not add credentials to browser storage or synthesize Authentik headers.</li>
+    <li>Do not broaden the unauthenticated route; <code>/api/telegram/webhook/</code> and the existing API-key route retain their separate security contracts.</li>
+    <li>Do not automatically retry arbitrary network failures: a 5xx, offline state, or TLS failure must remain distinguishable from reauthentication.</li>
+  </ul>
+
+  <h2>Rollback</h2>
+  <p>Restore the prior immutable release pair and reattach <code>authentik-auth</code> to <code>health-browser-api</code>. The change is additive to session handling and requires no database migration.</p>
+
+  <h2>Actual implementation</h2>
+  <ul>
+    <li>Removed <code>authentik-auth</code> only from <code>health-browser-api</code>. Frontend pages, assets, legacy routes, and all other services remain protected by ForwardAuth.</li>
+    <li>Made the Go guard return <code>401 application/json</code> with <code>Cache-Control: no-store</code> for unauthenticated <code>/api/*</code> requests. Document requests still redirect to login; setup navigation is unchanged for document requests.</li>
+    <li>Added the Authentik-protected backend route <code>/auth/session</code>. It lets the Go guard mint or refresh the opaque local session from trusted ForwardAuth headers, then safe-redirects to the original SPA path.</li>
+    <li>Added a per-tab, one-time SPA recovery navigation on a real <code>401</code> through <code>/auth/session</code>. A successful authenticated load clears its marker; a repeated failure shows the existing sign-in fallback rather than looping.</li>
+    <li>Added focused backend, browser recovery, and Traefik route assertions.</li>
+  </ul>
+
+  <h2>Verification completed</h2>
+  <ul>
+    <li><code>go test ./... -count=1</code> — passed.</li>
+    <li><code>go vet ./...</code> — passed.</li>
+    <li><code>make web-check</code> — passed: contract check, TypeScript, lint, 109 tests, production build.</li>
+    <li><code>scripts/test-production-routing-config.sh</code> and <code>scripts/test-production-traefik-rules.sh</code> — passed.</li>
+    <li><code>make test-compatible-image-pair</code> — passed, including tenant-isolation denial probes.</li>
+    <li>Independent Sol review found that an initial recovery reload would have hit the React frontend rather than the backend and could not mint a local session. The dedicated <code>/auth/session</code> route addressed that P1; Sol re-reviewed the fix with no remaining P0/P1/P2 findings.</li>
+  </ul>
+
+  <h2>Deployment follow-up</h2>
+  <p>Before calling the user experience fixed in production, deploy the reviewed immutable pair and verify a real browser session across: normal load, valid local cookie while Authentik is unavailable or renewing, expired local cookie followed by exactly one <code>/auth/session</code> SSO navigation, API-key access, and an unauthenticated API JSON 401. Confirm that the browser API router no longer produces Authentik 302 responses.</p>
+
+  <h2>Open questions</h2>
+  <p>None that block implementation. The exact client behavior will be selected by tests: reload current route once on 401, then show the existing sign-in state if the reauthentication attempt does not establish a session.</p>
+
+  <h2>Approval gate</h2>
+  <p>Implementation is complete locally. A commit/PR and deployment each remain separate explicit decisions.</p>
+</body>
+</html>
