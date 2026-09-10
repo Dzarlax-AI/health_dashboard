@@ -345,9 +345,9 @@ textarea {
 
 .score-gauge--card .score-gauge__frame {
   inline-size: clamp(146px, 15vw, 190px);
-  border-width: 8px;
-  background: var(--surface);
-  box-shadow: var(--shadow);
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .score-gauge__svg,
@@ -985,6 +985,18 @@ a.today-insights__domain:hover {
   box-shadow:
     0 18px 45px rgba(0, 0, 0, 0.28),
     inset 0 0 0 1px rgba(241, 245, 242, 0.08);
+}
+
+[dark-mode] .score-gauge--card .score-gauge__frame {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+[dark-mode] .today-hero__action {
+  border: 1px solid rgba(241, 245, 242, 0.18);
+  background: rgba(241, 245, 242, 0.16);
+  color: var(--text);
 }
 
 [dark-mode] .score-gauge__track {
@@ -2036,6 +2048,11 @@ a.today-insights__domain:hover {
   .status-panel,
   .score-gauge__frame {
     border: 1px solid CanvasText;
+  }
+
+  .score-gauge--card .score-gauge__frame {
+    border: 1px solid CanvasText;
+    background: Canvas;
   }
 
   .today-hero__layout

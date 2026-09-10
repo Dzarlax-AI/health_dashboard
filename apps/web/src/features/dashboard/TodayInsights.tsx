@@ -52,6 +52,15 @@ function dataStateLabel(locale: Locale, state: TodayInsightDomain["data_state"])
   }
 }
 
+function supplementaryObservation(domain: TodayInsightDomain): string | undefined {
+  const summary = domain.summary.trim();
+  const observation = domain.insight.observation.trim();
+  if (!observation || observation === summary) {
+    return undefined;
+  }
+  return observation;
+}
+
 export function TodayInsights({ locale, todayInsights }: TodayInsightsProps) {
   if (!todayInsights) {
     return null;
@@ -70,6 +79,7 @@ export function TodayInsights({ locale, todayInsights }: TodayInsightsProps) {
         <div className="today-insights__domains">
           {(domains ?? []).map((domain) => {
             const href = destinationHref(domain.destination, locale);
+            const observation = supplementaryObservation(domain);
             const content = (
               <>
                 <div className="today-insights__domain-meta">
@@ -77,7 +87,7 @@ export function TodayInsights({ locale, todayInsights }: TodayInsightsProps) {
                   <span>{dataStateLabel(locale, domain.data_state)}</span>
                 </div>
                 <strong>{domain.summary}</strong>
-                <p>{domain.insight.observation}</p>
+                {observation ? <p>{observation}</p> : null}
                 {href ? <ArrowRight aria-hidden="true" size={18} strokeWidth={1.8} /> : null}
               </>
             );

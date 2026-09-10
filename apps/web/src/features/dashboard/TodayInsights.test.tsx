@@ -61,4 +61,10 @@ describe("TodayInsights", () => {
     const { container } = render(<TodayInsights locale="en" />);
     expect(container).toBeEmptyDOMElement();
   });
+
+  it("does not repeat a factual card line when an older response duplicates it", () => {
+    render(<TodayInsights locale="en" todayInsights={response} />);
+
+    expect(screen.getAllByText("Energy is available")).toHaveLength(1);
+  });
 });

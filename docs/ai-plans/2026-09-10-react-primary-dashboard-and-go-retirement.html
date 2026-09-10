@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>План: React-primary dashboard и retirement Go UI</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f6f8; color: #18212b; }
+    body { margin: 0; line-height: 1.55; }
+    main { max-width: 1040px; margin: 0 auto; padding: 32px 20px 56px; }
+    section { margin: 16px 0; padding: 20px; border: 1px solid #d9e0e7; border-radius: 12px; background: #fff; }
+    h1, h2 { line-height: 1.2; }
+    h1 { margin-bottom: 6px; }
+    code { padding: 2px 5px; border-radius: 4px; background: #edf1f5; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #dbeafe; color: #1e3a8a; font-size: 13px; font-weight: 700; }
+    .callout { border-left: 4px solid #2563eb; }
+    .risk, .approval { border-left: 4px solid #b45309; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 9px; text-align: left; vertical-align: top; border-bottom: 1px solid #d9e0e7; }
+    @media (prefers-color-scheme: dark) { :root { background: #111827; color: #e5e7eb; } section { background: #18212b; border-color: #344150; } code { background: #273444; } th, td { border-color: #344150; } .badge { background: #1e3a8a; color: #dbeafe; } }
+  </style>
+</head>
+<body>
+<main>
+  <h1>React-primary dashboard и безопасный retirement Go UI</h1>
+  <p class="badge">Нужно явное одобрение перед implementation</p>
+
+  <section>
+    <h2>Задача</h2>
+    <p>Не поддерживать две равноправные реализации пользовательского dashboard. React должен быть единственной активно развиваемой оболочкой для dashboard и его detail-экранов; Go остаётся backend/API, а его HTML-страницы не получают новых UX-изменений.</p>
+  </section>
+
+  <section>
+    <h2>Подтверждённое текущее состояние</h2>
+    <ul>
+      <li>Живая страница <code>/?lang=ru</code> использует React-класс <code>today-insights__domain</code>; Go-шаблон использует другой класс <code>today-insights-domain</code>.</li>
+      <li>Production cutover уже направляет <code>/</code>, <code>/sleep</code>, <code>/activity</code>, <code>/cardio</code>, <code>/recovery</code> и <code>/assets/*</code> на frontend; backend остаётся владельцем <code>/api/*</code>, <code>/health*</code> и <code>/mcp*</code>.</li>
+      <li>Go всё ещё обслуживает <code>/metrics</code>, <code>/metrics/{name}</code>, <code>/settings</code>, <code>/admin</code>, <code>/static/*</code> и явный rollback URL <code>/legacy</code>.</li>
+      <li>Найденный UX-дефект в React Today Insights: sleep-card выводит один факт дважды, потому что <code>summary</code> и <code>insight.observation</code> сейчас равны.</li>
+    </ul>
+  </section>
+
+  <section class="callout">
+    <h2>Решение границы</h2>
+    <p><strong>Рекомендуемый scope:</strong> сейчас прекращаем parity-работу над Go dashboard и исправляем инсайты только в React. Go HTML остаётся временным route-level rollback для уже перенесённых пяти экранов и владельцем ещё не перенесённых metrics/settings/admin. Физически удалять Go renderer, templates или static assets в этом этапе нельзя: это уничтожит проверенный rollback и смешает UX-улучшение с миграцией административных экранов.</p>
+  </section>
+
+  <section>
+    <h2>Целевое поведение инсайтов в React</h2>
+    <table>
+      <thead><tr><th>Элемент</th><th>Правило</th></tr></thead>
+      <tbody>
+        <tr><td>Главный блок</td><td>Один server-owned вывод, его смысл и разрешённый следующий шаг.</td></tr>
+        <tr><td>Сон / восстановление / энергия</td><td>Один факт плюс отдельная интерпретация только при фактическом, относящемся к дню сравнении или сигнале.</td></tr>
+        <tr><td>Недостаточные данные</td><td>Показать состояние и один факт при наличии; не делать общий совет и не повторять строку ради заполнения карточки.</td></tr>
+        <tr><td>AI</td><td>Асинхронно объясняет разрешённый server-owned вывод; не меняет действие, факт или ownership evidence.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Предлагаемые шаги</h2>
+    <ol>
+      <li>Зафиксировать в <code>DailyInsightDomain</code> различие между фактом и интерпретацией; не подставлять один текст в оба поля.</li>
+      <li>Для сна показывать длительность как факт и добавлять смысл только при доступном baseline/quality/freshness signal. Аналогично проверить recovery и energy на повтор primary headline.</li>
+      <li>Обновить React <code>TodayInsights</code>: не рендерить второй текст, если он пуст или совпадает с фактом; не делать это UI-only маскировкой для различающихся, но бессодержательных текстов.</li>
+      <li>Не менять Go template и не создавать новую parity-работу для него. Оставить его как rollback snapshot без новых product claims.</li>
+      <li>Подготовить отдельный follow-up по миграции <code>/metrics</code> и metric-detail в React. Только после coverage всех нужных browser routes и периода стабильной эксплуатации решить физическое удаление Go page renderers.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Вероятно затрагиваемые файлы</h2>
+    <ul>
+      <li><code>internal/health/daily_insights.go</code> — детерминированные факт и интерпретация, evidence и states.</li>
+      <li><code>internal/health/*_test.go</code> — non-duplicate, baseline, stale/partial и локализационные fixtures.</li>
+      <li><code>apps/web/src/features/dashboard/TodayInsights.tsx</code> и тесты — корректный visual hierarchy и conditional rendering.</li>
+      <li><code>apps/web/src/i18n/index.ts</code> — только при необходимости новых коротких локализованных фраз.</li>
+      <li><code>docs/CLIENT_API.md</code>, generated contract — только если для различения факта и интерпретации потребуется additive transport field; сначала предпочесть существующую форму.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Проверки и ручная приёмка</h2>
+    <ul>
+      <li>Focused Go tests для deterministic snapshot, включая sleep duration без baseline, non-uniform baseline, stale/partial sleep и RU/EN/SR.</li>
+      <li><code>make contract-check</code> и <code>make web-check</code>; при изменении contract — generated artifacts только через штатную команду.</li>
+      <li>Playwright/visual checks для desktop и mobile: карточка никогда не содержит две идентичные строки.</li>
+      <li>В живом browser path: root, три detail links, cold/generating/disabled/failed AI state, смена RU/EN/SR и session recovery.</li>
+      <li>Перед будущим physical retirement: подтверждение, что <code>/metrics</code>, settings и admin имеют согласованные owners, и отдельная репетиция rollback.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Риски, rollback и открытые вопросы</h2>
+    <ul>
+      <li>Нельзя подменять отсутствующее baseline-сравнение придуманием смысла: в таком состоянии показывается факт или «контекст ещё уточняется».</li>
+      <li>Удаление Go HTML сейчас сломает <code>/legacy</code> rollback и ещё живые routes. Этот этап не меняет Traefik, Docker, DB или Authentik.</li>
+      <li>Открытый product choice для следующей миграции: переносим сначала <code>/metrics</code> с detail pages или оставляем их Go до отдельной redesign-задачи.</li>
+      <li>Rollback этого этапа — откатить React/insight commit; production routing и data остаются без изменений.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval gate</h2>
+    <p>Approved for the React-primary insight scope. Physical removal of the Go renderer and migration of metrics/settings/admin remain separate decisions.</p>
+  </section>
+
+  <section>
+    <h2>Implementation update</h2>
+    <ul>
+      <li>Implemented the server-side distinction between a factual card line and a separate, evidence-based interpretation. Sleep now compares the latest duration to the personal average when available; recovery shows its score before its guidance; energy shows current reserve before its verdict reason.</li>
+      <li>React suppresses an empty or duplicate supplementary line, protecting users during a cached response or a staggered frontend/backend rollout.</li>
+      <li>Addressed two live visual findings in the React surface: the dark-theme action chip now uses a dark, bordered surface with readable text, and supporting score gauges no longer add a decorative frame around the data ring.</li>
+      <li>Added focused snapshot and React regressions for non-duplicate cards and the no-context sleep case. No Go template, Traefik, deployment, database, or Authentik change was made.</li>
+      <li>Checks: <code>go test ./internal/health ./internal/ui -count=1</code>, <code>make contract-check</code>, and <code>make web-check</code> passed with <code>GOCACHE=/private/tmp/health-insight-go-build</code>. The local React fixture route rendered successfully; the formal Playwright visual suite remains unrun because its Chromium bootstrap stalled and was stopped.</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>

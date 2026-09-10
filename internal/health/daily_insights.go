@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 )
@@ -23,17 +24,17 @@ const (
 )
 
 type insightCopy struct {
-	primaryTitle, primaryMeaning, sleepTitle, sleepMissing, sleepIncomplete, sleepAvailable, sleepMeaning, recoveryTitle, recoveryMeaning, energyTitle, energyMissing, energyIncomplete, energyMeaning string
+	primaryTitle, primaryMeaning, sleepTitle, sleepMissing, sleepIncomplete, sleepAvailable, sleepMeaning, recoveryTitle, recoveryMeaning, energyTitle, energyMissing, energyIncomplete, energyMeaning, locale string
 }
 
 func dailyInsightCopy(lang string) insightCopy {
 	if lang == "ru" {
-		return insightCopy{"Главное на сегодня", "Это текущая наиболее осторожная рекомендация на день.", "Сон", "Данные сна пока недоступны.", "Контекст сна на сегодня неполный.", "Данные сна доступны для оценки восстановления.", "Прошлая ночь влияет на сегодняшнюю готовность.", "Восстановление", "Готовность и восстановление задают границы дня.", "Энергия", "Данные об энергии пока недоступны.", "Рекомендация по энергии на день пока недоступна.", "EnergyBank отражает текущий запас и расход энергии."}
+		return insightCopy{"Главное на сегодня", "Это текущая наиболее осторожная рекомендация на день.", "Сон", "Данные сна пока недоступны.", "Контекст сна на сегодня неполный.", "Данные сна доступны для оценки восстановления.", "Прошлая ночь влияет на сегодняшнюю готовность.", "Восстановление", "Готовность и восстановление задают границы дня.", "Энергия", "Данные об энергии пока недоступны.", "Рекомендация по энергии на день пока недоступна.", "EnergyBank отражает текущий запас и расход энергии.", "ru"}
 	}
 	if lang == "sr" {
-		return insightCopy{"Glavno za danas", "Ovo je trenutno najopreznija preporuka za dan.", "San", "Podaci o snu još nisu dostupni.", "Kontekst sna za danas je nepotpun.", "Podaci o snu su dostupni za procenu oporavka.", "Prošla noć utiče na današnju spremnost.", "Oporavak", "Spremnost i oporavak postavljaju granice dana.", "Energija", "Podaci o energiji još nisu dostupni.", "Preporuka za dnevnu energiju nije dostupna.", "EnergyBank pokazuje trenutnu rezervu i potrošnju energije."}
+		return insightCopy{"Glavno za danas", "Ovo je trenutno najopreznija preporuka za dan.", "San", "Podaci o snu još nisu dostupni.", "Kontekst sna za danas je nepotpun.", "Podaci o snu su dostupni za procenu oporavka.", "Prošla noć utiče na današnju spremnost.", "Oporavak", "Spremnost i oporavak postavljaju granice dana.", "Energija", "Podaci o energiji još nisu dostupni.", "Preporuka za dnevnu energiju nije dostupna.", "EnergyBank pokazuje trenutnu rezervu i potrošnju energije.", "sr"}
 	}
-	return insightCopy{"Today’s focus", "This is the most conservative current-day guidance.", "Sleep", "Sleep data is not available yet.", "Today’s sleep context is incomplete.", "Sleep data is available for recovery context.", "Last night contributes to today’s readiness.", "Recovery", "Readiness and recovery signals set today’s guardrails.", "Energy", "Energy data is not available yet.", "A daily energy recommendation is unavailable.", "EnergyBank reflects the current reserve and drain."}
+	return insightCopy{"Today’s focus", "This is the most conservative current-day guidance.", "Sleep", "Sleep data is not available yet.", "Today’s sleep context is incomplete.", "Sleep data is available for recovery context.", "Last night contributes to today’s readiness.", "Recovery", "Readiness and recovery signals set today’s guardrails.", "Energy", "Energy data is not available yet.", "A daily energy recommendation is unavailable.", "EnergyBank reflects the current reserve and drain.", "en"}
 }
 
 type DailyInsightDestination struct {
@@ -380,7 +381,7 @@ func buildSleepInsightDomain(resp *BriefingResponse, asOf *time.Time, copy insig
 	if domain.DataState == "stale" || domain.DataState == "partial" {
 		insightState = "insufficient_data"
 	}
-	domain.Insight = DailyInsight{State: insightState, Title: copy.sleepTitle, Observation: domain.Summary, Meaning: copy.sleepMeaning, EvidenceIDs: []string{id}, Fallback: true}
+	domain.Insight = DailyInsight{State: insightState, Title: copy.sleepTitle, Observation: sleepInsightInterpretation(resp, copy, domain.DataState), Meaning: copy.sleepMeaning, EvidenceIDs: []string{id}, Fallback: true}
 	return domain
 }
 
@@ -391,15 +392,15 @@ func buildRecoveryInsightDomain(resp *BriefingResponse, asOf *time.Time, copy in
 		state, confidence = resp.ReadinessServing.Status, resp.ReadinessServing.Confidence
 	}
 	domain := DailyInsightDomain{Key: "recovery", Band: firstNonEmptyInsight(resp.ReadinessTodayBand, resp.ReadinessBand, "unknown"), DataState: state, Confidence: confidence, AsOf: asOf, Destination: DailyInsightDestination{Kind: "section", ID: "recovery"}}
-	domain.Summary = firstInsightText(resp.ReadinessTip, resp.ReadinessLabel)
-	insightState := "insight"
-	if domain.Summary == "" || state == "missing" || state == "stale" || state == "low_coverage" {
-		insightState = "insufficient_data"
-		if domain.Summary == "" {
-			domain.Summary = copy.recoveryMeaning
-		}
+	domain.Summary = localizedReadinessFact(copy, resp.ReadinessToday, resp.ReadinessTodayLabel)
+	if domain.Summary == "" {
+		domain.Summary = firstInsightText(resp.ReadinessLabel, copy.recoveryMeaning)
 	}
-	domain.Insight = DailyInsight{State: insightState, Title: copy.recoveryTitle, Observation: domain.Summary, Meaning: copy.recoveryMeaning, EvidenceIDs: []string{id}, Fallback: true}
+	insightState := "insight"
+	if state == "missing" || state == "stale" || state == "low_coverage" {
+		insightState = "insufficient_data"
+	}
+	domain.Insight = DailyInsight{State: insightState, Title: copy.recoveryTitle, Observation: firstInsightText(resp.ReadinessTip), Meaning: copy.recoveryMeaning, EvidenceIDs: []string{id}, Fallback: true}
 	return domain
 }
 
@@ -421,8 +422,11 @@ func buildEnergyInsightDomain(resp *BriefingResponse, asOf *time.Time, copy insi
 	if resp.EnergyBank.ActionVerdict == "" || resp.EnergyBank.VerdictReason == "" {
 		domain.DataState, domain.Confidence = "missing", "low"
 	}
-	domain.Summary = firstInsightText(resp.EnergyBank.VerdictReason, resp.EnergyBank.VerdictLabel)
-	domain.Insight = DailyInsight{State: "insight", Title: copy.energyTitle, Observation: domain.Summary, Meaning: copy.energyMeaning, EvidenceIDs: []string{id}, Fallback: true}
+	domain.Summary = localizedEnergyFact(copy, resp.EnergyBank.Current, resp.EnergyBank.Capacity)
+	if domain.Summary == "" {
+		domain.Summary = firstInsightText(resp.EnergyBank.VerdictLabel, copy.energyMeaning)
+	}
+	domain.Insight = DailyInsight{State: "insight", Title: copy.energyTitle, Observation: firstInsightText(resp.EnergyBank.VerdictReason), Meaning: copy.energyMeaning, EvidenceIDs: []string{id}, Fallback: true}
 	if domain.DataState == "missing" {
 		domain.Insight.State = "insufficient_data"
 	}
@@ -482,6 +486,100 @@ func localizedSleepDuration(copy insightCopy, hours float64) string {
 		return fmt.Sprintf("Trajanje sna je %.1f sati.", hours)
 	default:
 		return fmt.Sprintf("Sleep duration was %.1f hours.", hours)
+	}
+}
+
+func sleepInsightInterpretation(resp *BriefingResponse, copy insightCopy, dataState string) string {
+	if dataState != "fresh" {
+		return copy.sleepIncomplete
+	}
+	if resp.Sleep != nil && resp.Sleep.LatestTotal != nil && resp.Sleep.TotalAvg > 0 {
+		return localizedSleepComparison(copy, *resp.Sleep.LatestTotal, resp.Sleep.TotalAvg)
+	}
+	if resp.SleepQuality != nil && resp.SleepQuality.ScorePct != nil && resp.SleepQuality.Confidence == SleepQualityConfidenceFinal {
+		return localizedSleepQuality(copy, *resp.SleepQuality.ScorePct)
+	}
+	return ""
+}
+
+func localizedSleepComparison(copy insightCopy, latest, baseline float64) string {
+	delta := latest - baseline
+	if math.Abs(delta) < 0.1 {
+		switch copy.locale {
+		case "ru":
+			return "Продолжительность сна близка к вашему среднему."
+		case "sr":
+			return "Trajanje sna je blizu vašeg prosjeka."
+		default:
+			return "Sleep duration is close to your usual average."
+		}
+	}
+	if delta > 0 {
+		switch copy.locale {
+		case "ru":
+			return fmt.Sprintf("На %.1f ч дольше вашего среднего.", delta)
+		case "sr":
+			return fmt.Sprintf("%.1f h duže od vašeg prosjeka.", delta)
+		default:
+			return fmt.Sprintf("%.1f hours longer than your usual average.", delta)
+		}
+	}
+	switch copy.locale {
+	case "ru":
+		return fmt.Sprintf("На %.1f ч меньше вашего среднего.", -delta)
+	case "sr":
+		return fmt.Sprintf("%.1f h kraće od vašeg prosjeka.", -delta)
+	default:
+		return fmt.Sprintf("%.1f hours shorter than your usual average.", -delta)
+	}
+}
+
+func localizedSleepQuality(copy insightCopy, score int) string {
+	switch copy.locale {
+	case "ru":
+		return fmt.Sprintf("Качество сна %d%% — учитываем его в восстановлении.", score)
+	case "sr":
+		return fmt.Sprintf("Kvalitet sna je %d%% i uračunat je u oporavak.", score)
+	default:
+		return fmt.Sprintf("Sleep quality is %d%% and is factored into recovery.", score)
+	}
+}
+
+func localizedReadinessFact(copy insightCopy, score int, label string) string {
+	if score <= 0 {
+		return ""
+	}
+	if label == "" {
+		switch copy.locale {
+		case "ru":
+			return fmt.Sprintf("Готовность — %d%%.", score)
+		case "sr":
+			return fmt.Sprintf("Spremnost je %d%%.", score)
+		default:
+			return fmt.Sprintf("Readiness is %d%%.", score)
+		}
+	}
+	switch copy.locale {
+	case "ru":
+		return fmt.Sprintf("Готовность — %d%%: %s.", score, label)
+	case "sr":
+		return fmt.Sprintf("Spremnost je %d%%: %s.", score, label)
+	default:
+		return fmt.Sprintf("Readiness is %d%%: %s.", score, label)
+	}
+}
+
+func localizedEnergyFact(copy insightCopy, current, capacity int) string {
+	if capacity <= 0 {
+		return ""
+	}
+	switch copy.locale {
+	case "ru":
+		return fmt.Sprintf("Запас энергии — %d из %d.", current, capacity)
+	case "sr":
+		return fmt.Sprintf("Energetska rezerva je %d od %d.", current, capacity)
+	default:
+		return fmt.Sprintf("Energy reserve is %d of %d.", current, capacity)
 	}
 }
 
