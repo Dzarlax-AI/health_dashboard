@@ -993,7 +993,7 @@ a.today-insights__domain:hover {
   box-shadow: none;
 }
 
-[dark-mode] .today-hero__action {
+[dark-mode] .today-hero__recommendation > .today-hero__action {
   border: 1px solid rgba(241, 245, 242, 0.18);
   background: rgba(241, 245, 242, 0.16);
   color: var(--text);

@@ -52,10 +52,10 @@ function dataStateLabel(locale: Locale, state: TodayInsightDomain["data_state"])
   }
 }
 
-function supplementaryObservation(domain: TodayInsightDomain): string | undefined {
-  const summary = domain.summary.trim();
+/** Omits optional interpretation when any card already presents the same fact. */
+function supplementaryObservation(domain: TodayInsightDomain, summaries: ReadonlySet<string>): string | undefined {
   const observation = domain.insight.observation.trim();
-  if (!observation || observation === summary) {
+  if (!observation || summaries.has(observation)) {
     return undefined;
   }
   return observation;
@@ -65,7 +65,9 @@ export function TodayInsights({ locale, todayInsights }: TodayInsightsProps) {
   if (!todayInsights) {
     return null;
   }
-  const { domains, changes, generation } = todayInsights;
+  const { changes, generation } = todayInsights;
+  const domains = todayInsights.domains ?? [];
+  const summaries = new Set(domains.map((domain) => domain.summary.trim()).filter(Boolean));
 
   return (
     <section className="today-insights" aria-label={translate(locale, "todayFocus")}>
@@ -75,11 +77,11 @@ export function TodayInsights({ locale, todayInsights }: TodayInsightsProps) {
         </StatusBadge>
       </div>
 
-      {(domains ?? []).length > 0 ? (
+      {domains.length > 0 ? (
         <div className="today-insights__domains">
-          {(domains ?? []).map((domain) => {
+          {domains.map((domain) => {
             const href = destinationHref(domain.destination, locale);
-            const observation = supplementaryObservation(domain);
+            const observation = supplementaryObservation(domain, summaries);
             const content = (
               <>
                 <div className="today-insights__domain-meta">

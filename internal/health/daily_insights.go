@@ -396,11 +396,11 @@ func buildRecoveryInsightDomain(resp *BriefingResponse, asOf *time.Time, copy in
 	if domain.Summary == "" {
 		domain.Summary = firstInsightText(resp.ReadinessLabel, copy.recoveryMeaning)
 	}
-	insightState := "insight"
-	if state == "missing" || state == "stale" || state == "low_coverage" {
-		insightState = "insufficient_data"
+	insightState, observation := "insight", firstInsightText(resp.ReadinessTip)
+	if !recoveryInsightHasUsableEvidence(state) {
+		insightState, observation = "insufficient_data", ""
 	}
-	domain.Insight = DailyInsight{State: insightState, Title: copy.recoveryTitle, Observation: firstInsightText(resp.ReadinessTip), Meaning: copy.recoveryMeaning, EvidenceIDs: []string{id}, Fallback: true}
+	domain.Insight = DailyInsight{State: insightState, Title: copy.recoveryTitle, Observation: observation, Meaning: copy.recoveryMeaning, EvidenceIDs: []string{id}, Fallback: true}
 	return domain
 }
 
@@ -489,6 +489,7 @@ func localizedSleepDuration(copy insightCopy, hours float64) string {
 	}
 }
 
+// sleepInsightInterpretation emits comparative context only for fresh sleep data.
 func sleepInsightInterpretation(resp *BriefingResponse, copy insightCopy, dataState string) string {
 	if dataState != "fresh" {
 		return copy.sleepIncomplete
@@ -502,6 +503,7 @@ func sleepInsightInterpretation(resp *BriefingResponse, copy insightCopy, dataSt
 	return ""
 }
 
+// localizedSleepComparison describes the latest duration against the personal baseline.
 func localizedSleepComparison(copy insightCopy, latest, baseline float64) string {
 	delta := latest - baseline
 	if math.Abs(delta) < 0.1 {
@@ -534,6 +536,7 @@ func localizedSleepComparison(copy insightCopy, latest, baseline float64) string
 	}
 }
 
+// localizedSleepQuality describes a final, validated sleep-quality score.
 func localizedSleepQuality(copy insightCopy, score int) string {
 	switch copy.locale {
 	case "ru":
@@ -545,8 +548,9 @@ func localizedSleepQuality(copy insightCopy, score int) string {
 	}
 }
 
+// localizedReadinessFact formats all valid readiness scores, including zero.
 func localizedReadinessFact(copy insightCopy, score int, label string) string {
-	if score <= 0 {
+	if score < 0 {
 		return ""
 	}
 	if label == "" {
@@ -569,8 +573,9 @@ func localizedReadinessFact(copy insightCopy, score int, label string) string {
 	}
 }
 
+// localizedEnergyFact formats a reported energy reserve, including a depleted zero snapshot.
 func localizedEnergyFact(copy insightCopy, current, capacity int) string {
-	if capacity <= 0 {
+	if capacity < 0 {
 		return ""
 	}
 	switch copy.locale {
@@ -580,6 +585,16 @@ func localizedEnergyFact(copy insightCopy, current, capacity int) string {
 		return fmt.Sprintf("Energetska rezerva je %d od %d.", current, capacity)
 	default:
 		return fmt.Sprintf("Energy reserve is %d of %d.", current, capacity)
+	}
+}
+
+// recoveryInsightHasUsableEvidence distinguishes withheld estimates from conservative capped scores.
+func recoveryInsightHasUsableEvidence(state string) bool {
+	switch state {
+	case ReadinessServingMissing, ReadinessServingStale, ReadinessServingDataAccruing, ReadinessServingLowCoverage:
+		return false
+	default:
+		return true
 	}
 }
 

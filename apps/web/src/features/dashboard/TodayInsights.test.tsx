@@ -67,4 +67,19 @@ describe("TodayInsights", () => {
 
     expect(screen.getAllByText("Energy is available")).toHaveLength(1);
   });
+
+  it("does not repeat a factual line from another domain as an observation", () => {
+    const crossDomainDuplicate: TodayInsightsResponse = {
+      ...response,
+      domains: response.domains?.map((domain) =>
+        domain.key === "sleep"
+          ? { ...domain, insight: { ...domain.insight, observation: "Energy is available" } }
+          : domain,
+      ) ?? null,
+    };
+
+    render(<TodayInsights locale="en" todayInsights={crossDomainDuplicate} />);
+
+    expect(screen.getAllByText("Energy is available")).toHaveLength(1);
+  });
 });

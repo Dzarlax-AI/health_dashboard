@@ -113,13 +113,13 @@ test("supporting gauges have no decorative outer frame", async ({ page }) => {
   const styles = await page.locator(".score-gauge--card [data-gauge-frame]").evaluateAll((frames) =>
     frames.map((frame) => {
       const computed = getComputedStyle(frame);
-      return { borderWidth: computed.borderWidth, boxShadow: computed.boxShadow };
+      return { backgroundColor: computed.backgroundColor, borderWidth: computed.borderWidth, boxShadow: computed.boxShadow };
     }),
   );
 
   expect(styles.length).toBeGreaterThan(0);
   for (const style of styles) {
-    expect(style).toEqual({ borderWidth: "0px", boxShadow: "none" });
+    expect(style).toEqual({ backgroundColor: "rgba(0, 0, 0, 0)", borderWidth: "0px", boxShadow: "none" });
   }
 });
 

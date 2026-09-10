@@ -76,3 +76,72 @@ func TestBuildDailyInsightSnapshotDoesNotInventSleepInterpretationWithoutContext
 	}
 	t.Fatal("sleep domain missing")
 }
+
+func TestBuildDailyInsightSnapshotPreservesZeroValuedFacts(t *testing.T) {
+	got := BuildDailyInsightSnapshot(&BriefingResponse{
+		Date:                "2026-09-10",
+		ReadinessToday:      0,
+		ReadinessTodayLabel: "Low",
+		ReadinessServing:    &ReadinessServingState{Status: ReadinessServingFresh, Confidence: ReadinessConfidenceFinal},
+		EnergyBank:          &EnergyBank{Current: 0, Capacity: 0, ActionVerdict: "rest", VerdictReason: "The reserve is depleted."},
+	}, "en")
+
+	if summary := dailyInsightDomain(t, got, "recovery").Summary; summary != "Readiness is 0%: Low." {
+		t.Fatalf("recovery summary = %q", summary)
+	}
+	if summary := dailyInsightDomain(t, got, "energy").Summary; summary != "Energy reserve is 0 of 0." {
+		t.Fatalf("energy summary = %q", summary)
+	}
+}
+
+func TestBuildDailyInsightSnapshotWithholdsRecoveryGuidanceForInsufficientServingStates(t *testing.T) {
+	for _, status := range []string{
+		ReadinessServingMissing,
+		ReadinessServingStale,
+		ReadinessServingDataAccruing,
+		ReadinessServingLowCoverage,
+	} {
+		t.Run(status, func(t *testing.T) {
+			got := BuildDailyInsightSnapshot(&BriefingResponse{
+				Date:                "2026-09-10",
+				ReadinessToday:      65,
+				ReadinessTodayLabel: "Moderate",
+				ReadinessTip:        "Keep the effort controlled.",
+				ReadinessServing:    &ReadinessServingState{Status: status, Confidence: ReadinessConfidenceLow},
+			}, "en")
+			domain := dailyInsightDomain(t, got, "recovery")
+			if domain.Insight.State != "insufficient_data" {
+				t.Fatalf("state = %q", domain.Insight.State)
+			}
+			if domain.Insight.Observation != "" {
+				t.Fatalf("observation = %q, want empty", domain.Insight.Observation)
+			}
+		})
+	}
+
+	got := BuildDailyInsightSnapshot(&BriefingResponse{
+		Date:                "2026-09-10",
+		ReadinessToday:      65,
+		ReadinessTodayLabel: "Moderate",
+		ReadinessTip:        "Keep the effort controlled.",
+		ReadinessServing:    &ReadinessServingState{Status: ReadinessServingCapped, Confidence: ReadinessConfidenceProvisional},
+	}, "en")
+	domain := dailyInsightDomain(t, got, "recovery")
+	if domain.Insight.State != "insight" || domain.Insight.Observation != "Keep the effort controlled." {
+		t.Fatalf("capped recovery = %#v", domain.Insight)
+	}
+}
+
+func dailyInsightDomain(t *testing.T, snapshot *DailyInsightSnapshot, key string) DailyInsightDomain {
+	t.Helper()
+	if snapshot == nil {
+		t.Fatal("snapshot is nil")
+	}
+	for _, domain := range snapshot.Domains {
+		if domain.Key == key {
+			return domain
+		}
+	}
+	t.Fatalf("%s domain missing", key)
+	return DailyInsightDomain{}
+}

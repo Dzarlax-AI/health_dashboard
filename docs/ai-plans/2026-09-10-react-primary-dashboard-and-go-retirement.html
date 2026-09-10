@@ -112,6 +112,7 @@
       <li>Implemented the server-side distinction between a factual card line and a separate, evidence-based interpretation. Sleep now compares the latest duration to the personal average when available; recovery shows its score before its guidance; energy shows current reserve before its verdict reason.</li>
       <li>React suppresses an empty or duplicate supplementary line, protecting users during a cached response or a staggered frontend/backend rollout.</li>
       <li>Addressed two live visual findings in the React surface: the dark-theme action chip now uses a dark, bordered surface with readable text, and supporting score gauges no longer add a decorative frame around the data ring.</li>
+      <li>Review follow-up preserves valid zero-valued readiness and energy facts, withholds recovery advice for unavailable serving states, and suppresses observations duplicated by any factual card line.</li>
       <li>Added focused snapshot and React regressions for non-duplicate cards and the no-context sleep case. No Go template, Traefik, deployment, database, or Authentik change was made.</li>
       <li>Checks: <code>go test ./internal/health ./internal/ui -count=1</code>, <code>make contract-check</code>, and <code>make web-check</code> passed with <code>GOCACHE=/private/tmp/health-insight-go-build</code>. The local React fixture route rendered successfully; the formal Playwright visual suite remains unrun because its Chromium bootstrap stalled and was stopped.</li>
     </ul>
