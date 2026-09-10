@@ -71,8 +71,36 @@ describe("foundation fixtures", () => {
 
     expect(screen.queryByRole("navigation", { name: "Component states" })).not.toBeInTheDocument();
     expect(screen.getByText("Refreshing today")).toBeInTheDocument();
-    expect(await screen.findByText("You can move with more confidence today.")).toBeInTheDocument();
+    expect(await screen.findByText("Recovery supports a measured day.")).toBeInTheDocument();
+    expect(screen.queryByText("You can move with more confidence today.")).not.toBeInTheDocument();
     view.unmount();
+  });
+
+  it("uses the legacy AI briefing when Today Insights is unavailable", async () => {
+    vi.stubEnv("VITE_ENABLE_FIXTURES", "false");
+    window.history.replaceState({}, "", "/?lang=en");
+    const resources = fixtureResources("en", "normal");
+    resources.todayInsights = undefined;
+    resources.ai = {
+      blocks: {},
+      date: "2026-08-02",
+      disabled: false,
+      fresh_for_decision: true,
+      generating: false,
+      insight: "Legacy fallback insight.",
+      lang: "en",
+      recommendation: "",
+      recovery: "",
+      sections: [{ body: "Legacy fallback insight.", header: "Summary", key: "summary" }],
+      sleep: "",
+      summary: "Legacy fallback insight.",
+      yesterday: "",
+    };
+    mockedLoadDashboardResources.mockResolvedValue(resources);
+
+    render(<App />);
+
+    expect(await screen.findByText("Legacy fallback insight.")).toBeInTheDocument();
   });
 
   it("encodes the complete post-login destination", async () => {

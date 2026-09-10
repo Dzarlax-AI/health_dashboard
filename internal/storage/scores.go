@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -8,15 +9,22 @@ import (
 	"health-receiver/internal/health"
 )
 
+// ErrNoHourlyMetricData is an expected empty-install state, not a transient
+// failure. Coordinators use it to wait for new ingestion instead of polling
+// the database forever.
+var ErrNoHourlyMetricData = errors.New("no hourly metric data")
+
 // RunIncrementalBackfill fills all pre-aggregated caches for data that is
-// not yet cached. Safe to call from a goroutine at any time.
-func (s *DB) RunIncrementalBackfill() {
+// not yet cached. Safe to call from a goroutine at any time and returns the
+// first failed stage so callers do not publish dependent stale state.
+func (s *DB) RunIncrementalBackfill() error {
 	if err := s.BackfillAggregates(false); err != nil {
-		log.Printf("backfill aggregates: %v", err)
+		return fmt.Errorf("backfill aggregates: %w", err)
 	}
 	if err := s.BackfillScores(false); err != nil {
-		log.Printf("backfill scores: %v", err)
+		return fmt.Errorf("backfill scores: %w", err)
 	}
+	return nil
 }
 
 // RunIncrementalBackfillForDates rebuilds caches for an explicit date set
@@ -25,15 +33,17 @@ func (s *DB) RunIncrementalBackfill() {
 // those reported by the iOS payloads, so nothing older silently slips
 // through the cracks.
 func (s *DB) RunIncrementalBackfillForDates(dates []string) {
-	s.RunIncrementalBackfillForDatesAt(dates, time.Now())
+	_ = s.RunIncrementalBackfillForDatesAt(dates, time.Now())
 }
 
-func (s *DB) RunIncrementalBackfillForDatesAt(dates []string, today time.Time) {
+func (s *DB) RunIncrementalBackfillForDatesAt(dates []string, today time.Time) error {
 	if len(dates) == 0 {
-		return
+		return nil
 	}
-	s.UpsertRecentCache(dates, true)
-	s.RunReadinessRedesignBackfillForDatesAt(dates, today)
+	if err := s.UpsertRecentCache(dates, true); err != nil {
+		return err
+	}
+	return s.RunReadinessRedesignBackfillForDatesAt(dates, today)
 }
 
 // RecomputeReadinessSince re-runs the sliding-window readiness computation for
@@ -43,23 +53,26 @@ func (s *DB) RunIncrementalBackfillForDatesAt(dates []string, today time.Time) {
 //
 // Called inline after UpsertRecentCache so per-POST data appears with a fresh
 // readiness score without waiting for a scheduled job.
-func (s *DB) RecomputeReadinessSince(fromDate string) {
+func (s *DB) RecomputeReadinessSince(fromDate string) error {
 	ctx, cancel := queryCtx()
 	defer cancel()
 	var latest *string
 	if err := s.pool.QueryRow(ctx,
 		`SELECT MAX(SUBSTRING(hour,1,10)) FROM hourly_metrics`).Scan(&latest); err != nil || latest == nil {
-		return
+		if err != nil {
+			return err
+		}
+		return ErrNoHourlyMetricData
 	}
 	tFrom, err := time.Parse("2006-01-02", fromDate)
 	if err != nil {
 		log.Printf("recompute readiness: parse fromDate %q: %v", fromDate, err)
-		return
+		return err
 	}
 	tLatest, err := time.Parse("2006-01-02", *latest)
 	if err != nil {
 		log.Printf("recompute readiness: parse latest %q: %v", *latest, err)
-		return
+		return err
 	}
 	days := int(tLatest.Sub(tFrom).Hours()/24) + 1
 	if days <= 0 {
@@ -68,10 +81,13 @@ func (s *DB) RecomputeReadinessSince(fromDate string) {
 	pts, err := s.computeReadinessHistory(days)
 	if err != nil {
 		log.Printf("recompute readiness from %s: %v", fromDate, err)
-		return
+		return err
 	}
-	s.saveReadinessScores(pts)
+	if err := s.saveReadinessScores(pts); err != nil {
+		return fmt.Errorf("save readiness scores: %w", err)
+	}
 	log.Printf("recomputed readiness for %d days (from %s)", len(pts), fromDate)
+	return nil
 }
 
 // ScoreVersion identifies the readiness formula revision.
@@ -129,14 +145,13 @@ func (s *DB) readinessFromCache(limit int) ([]health.ReadinessPoint, error) {
 }
 
 // saveReadinessScores upserts readiness scores without touching metric columns.
-func (s *DB) saveReadinessScores(pts []health.ReadinessPoint) {
+func (s *DB) saveReadinessScores(pts []health.ReadinessPoint) error {
 	ctx, cancel := longCtx()
 	defer cancel()
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		log.Printf("saveReadinessScores begin tx: %v", err)
-		return
+		return fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
@@ -151,13 +166,13 @@ func (s *DB) saveReadinessScores(pts []health.ReadinessPoint) {
 				computed_at   = excluded.computed_at`,
 			p.Date, p.Score, ScoreVersion, now,
 		); err != nil {
-			log.Printf("save readiness score %s: %v", p.Date, err)
-			return
+			return fmt.Errorf("save %s: %w", p.Date, err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		log.Printf("saveReadinessScores commit: %v", err)
+		return fmt.Errorf("commit: %w", err)
 	}
+	return nil
 }
 
 // isCacheRecent returns true when the cache has at least one entry and the
@@ -237,7 +252,9 @@ func (s *DB) BackfillScores(force bool) error {
 		return fmt.Errorf("compute: %w", err)
 	}
 
-	s.saveReadinessScores(pts)
+	if err := s.saveReadinessScores(pts); err != nil {
+		return fmt.Errorf("save: %w", err)
+	}
 	log.Printf("saved %d readiness scores (ScoreVersion=%d)", len(pts), ScoreVersion)
 	return nil
 }

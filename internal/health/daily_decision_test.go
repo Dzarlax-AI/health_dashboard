@@ -59,3 +59,33 @@ func TestDailyDecisionIDChangesWhenRationaleChanges(t *testing.T) {
 		t.Fatal("decision ID did not change after its rationale changed")
 	}
 }
+
+func TestDailyDecisionEvidenceDomainsFollowFinalGuidanceCap(t *testing.T) {
+	resp := &BriefingResponse{
+		Date:               "2026-09-10",
+		ReadinessCapReason: "missing_same_day_evidence",
+		EnergyBank: &EnergyBank{
+			ActionVerdict: "moderate",
+			VerdictReason: "Energy is healthy.",
+		},
+		SleepQuality: &SleepQualityBreakdown{Confidence: SleepQualityConfidenceLow},
+		TodayGuidance: &DashboardTodayGuidance{
+			Action: "rest",
+			Reason: "Сон пока не даёт полной уверенности.",
+		},
+	}
+	decision := BuildDailyDecision(resp)
+	if got, want := decision.EvidenceDomains, []string{"sleep"}; len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("evidence domains = %#v, want %#v", got, want)
+	}
+
+	domains := []DailyInsightDomain{
+		{Key: "sleep", Insight: DailyInsight{EvidenceIDs: []string{"sleep-evidence"}}},
+		{Key: "recovery", Insight: DailyInsight{EvidenceIDs: []string{"recovery-evidence"}}},
+		{Key: "energy", Insight: DailyInsight{EvidenceIDs: []string{"energy-evidence"}}},
+	}
+	primary := choosePrimaryInsight(resp, decision, domains, dailyInsightCopy("en"))
+	if got, want := primary.EvidenceIDs, []string{"sleep-evidence"}; len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("primary evidence = %#v, want %#v", got, want)
+	}
+}

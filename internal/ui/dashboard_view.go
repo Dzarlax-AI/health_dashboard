@@ -58,6 +58,7 @@ type dashboardPageData struct {
 	Correlation         []health.CorrelationPoint
 	CorrelationJSON     template.JS
 	AIInsight           string
+	TodayInsights       *health.DailyInsightSnapshot
 }
 
 func buildDashboardPageData(base BasePage, br *health.BriefingResponse, aiInsight string) dashboardPageData {
@@ -92,6 +93,7 @@ func buildDashboardPageData(base BasePage, br *health.BriefingResponse, aiInsigh
 	data.Sections = br.Sections
 	data.Insights = br.Insights
 	data.Correlation = br.Correlation
+	data.TodayInsights = health.BuildDailyInsightSnapshot(br, base.Lang)
 
 	if br.TodayGuidance != nil && br.TodayGuidance.UpdatedAt != nil {
 		data.UpdatedLabel = fmt.Sprintf(T(base.Lang, "today_updated_at"), br.TodayGuidance.UpdatedAt.Format("15:04"))

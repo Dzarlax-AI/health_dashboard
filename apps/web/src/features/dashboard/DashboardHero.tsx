@@ -37,6 +37,7 @@ export function DashboardHero({ locale, model }: DashboardHeroProps) {
   }
 
   const badgeTone = model.state === "ready" ? "good" : "warn";
+  const primary = model.todayInsights?.primary;
   const stateLabel = {
     ready: translate(locale, "state_ready"),
     partial: translate(locale, "state_partial"),
@@ -57,8 +58,11 @@ export function DashboardHero({ locale, model }: DashboardHeroProps) {
           <StatusBadge tone={badgeTone}>
             {stateLabel}
           </StatusBadge>
-          <h1>{model.title}</h1>
-          <p>{model.detail}</p>
+          <h1>{primary?.observation || model.title}</h1>
+          <p>{primary?.meaning || model.detail}</p>
+          {primary?.next_step ? (
+            <p className="today-hero__action">{primary.next_step.text}</p>
+          ) : null}
           {model.checkinAnswer ? (
             <p className="today-hero__checkin">
               {translate(locale, "checkin")}: {model.checkinAnswer}

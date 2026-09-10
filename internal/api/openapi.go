@@ -37,6 +37,7 @@ func GenerateOpenAPI() ([]byte, error) {
 		"ReadinessHistoryResponse":  ReadinessHistoryResponse{},
 		"SectionResponse":           SectionResponse{},
 		"SessionResponse":           SessionResponse{},
+		"TodayInsightsResponse":     TodayInsightsResponse{},
 	} {
 		schema, err := reflectedSchema(value)
 		if err != nil {
@@ -182,6 +183,18 @@ func clientPaths() map[string]any {
 	derivedMetricsOperation["responses"].(map[string]any)["400"] = jsonErrorResponse(
 		"Missing or unsupported metric, or an invalid date range.",
 	)
+	todayInsightsOperation := getOperation(
+		"getTodayInsights",
+		"Current-day factual insight snapshot and non-blocking narrative state",
+		[]any{langParameter()},
+		jsonResponseRef("TodayInsightsResponse"),
+	)
+	todayInsightsOperation["responses"].(map[string]any)["400"] = plainTextResponse(
+		"The endpoint is today-only and does not accept a date parameter.",
+	)
+	todayInsightsOperation["responses"].(map[string]any)["503"] = plainTextResponse(
+		"Current-day source data is not available yet.",
+	)
 
 	return map[string]any{
 		"/api/dashboard": map[string]any{
@@ -210,6 +223,9 @@ func clientPaths() map[string]any {
 				},
 				jsonResponseRef("AIBriefingResponse"),
 			),
+		},
+		"/api/today-insights": map[string]any{
+			"get": todayInsightsOperation,
 		},
 		"/api/readiness-history": map[string]any{
 			"get": getOperation(

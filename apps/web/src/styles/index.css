@@ -439,6 +439,88 @@ textarea {
   margin-top: var(--space-5);
 }
 
+.today-insights {
+  display: grid;
+  gap: var(--space-5);
+  margin-top: var(--space-5);
+}
+
+.today-insights__changes {
+  padding: clamp(22px, 3vw, 34px);
+}
+
+.today-insights__changes .section-heading {
+  margin-bottom: var(--space-4);
+}
+
+.today-insights__status { display: flex; justify-content: flex-end; margin-bottom: calc(var(--space-3) * -1); }
+
+.today-hero__action {
+  display: inline-flex;
+  width: fit-content;
+  margin-top: var(--space-4);
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.74);
+  color: var(--text);
+  font-weight: 700;
+}
+
+.today-insights__domains {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.today-insights__domain {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: inherit;
+  text-decoration: none;
+}
+
+a.today-insights__domain:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.today-insights__domain-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+.today-insights__domain-meta span:last-child {
+  text-transform: capitalize;
+}
+
+.today-insights__domain strong {
+  font-size: var(--text-base);
+  line-height: 1.35;
+}
+
+.today-insights__domain p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+.today-insights__domain svg {
+  align-self: flex-end;
+  margin-top: auto;
+  color: var(--accent);
+}
+
 .summary-card {
   min-width: 0;
   padding: clamp(20px, 2.5vw, 30px);
@@ -1801,6 +1883,7 @@ textarea {
   }
 
   .trend-grid,
+  .today-insights__domains,
   .section-grid,
   .metric-grid {
     grid-template-columns: minmax(0, 1fr);

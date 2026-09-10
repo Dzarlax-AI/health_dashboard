@@ -18,7 +18,7 @@ import (
 // SchemaContractVersion is bumped whenever the declared tenant schema
 // contract changes. Existing tenants are not current until both the permanent
 // marker and registry metadata carry this version and checksum.
-const SchemaContractVersion = 6
+const SchemaContractVersion = 7
 
 // TenantIdentityTable is the permanent marker shared by clean provisioning
 // and existing-tenant migrations. The provisioning marker is intentionally
@@ -105,7 +105,7 @@ type ContractCatalog interface {
 }
 
 var schemaContract = ContractManifest{
-	Tables:  []string{"health_records", "metric_points", "import_runs", "import_run_coverage", "import_stage_points", "import_stage_workouts", "minute_metrics", "hourly_metrics", "daily_scores", "settings", "notification_deliveries", "workouts", "ai_briefings", "ai_briefing_blocks", "energy_snapshots", "source_epochs", "target_snapshots", "feature_snapshots", "naive_baselines", "chip_calibrations", "subjective_checkins", "context_prompt_interactions", "derived_metrics", "derived_metric_feedback", "auth_sessions"},
+	Tables:  []string{"health_records", "metric_points", "import_runs", "import_run_coverage", "import_stage_points", "import_stage_workouts", "minute_metrics", "hourly_metrics", "daily_scores", "settings", "notification_deliveries", "workouts", "ai_briefings", "ai_briefing_blocks", "daily_insight_bundles", "energy_snapshots", "source_epochs", "target_snapshots", "feature_snapshots", "naive_baselines", "chip_calibrations", "subjective_checkins", "context_prompt_interactions", "derived_metrics", "derived_metric_feedback", "auth_sessions"},
 	Indexes: []string{"idx_auth_sessions_expires", "idx_chip_calibrations_sub_kind", "idx_context_prompt_one_sent_per_day", "idx_context_prompt_status_expires", "idx_energy_snapshots_date", "idx_energy_snapshots_flags", "idx_energy_snapshots_ts", "idx_feature_snapshots_sub_date", "idx_health_records_completed_processed_at", "idx_hourly_date", "idx_hourly_metric_date", "idx_import_stage_points_coverage", "idx_import_stage_points_dedup", "idx_import_stage_workouts_dedup", "idx_import_stage_workouts_synthetic", "idx_naive_baselines_sub_kind_base_date", "idx_points_date", "idx_points_metric_date", "idx_points_quality_metric", "idx_source_epochs_active", "idx_target_snapshots_source_epoch", "idx_target_snapshots_sub_kind_date", "idx_workouts_name", "idx_workouts_start_time", "uq_source_epochs_kind_start"},
 	IndexDefinitions: []IndexDefinition{
 		{Name: "idx_auth_sessions_expires", Table: "auth_sessions", AccessMethod: "btree", Keys: []string{"expires_at"}},
@@ -161,6 +161,7 @@ var schemaContract = ContractManifest{
 		{Table: "workouts", Kind: "u", Columns: []string{"external_id"}},
 		{Table: "ai_briefings", Kind: "p", Columns: []string{"date"}},
 		{Table: "ai_briefing_blocks", Kind: "p", Columns: []string{"date", "lang", "block"}},
+		{Table: "daily_insight_bundles", Kind: "p", Columns: []string{"date", "lang"}},
 		{Table: "energy_snapshots", Kind: "p", Columns: []string{"ts_bucket"}},
 		{Table: "source_epochs", Kind: "p", Columns: []string{"epoch_id"}},
 		{Table: "target_snapshots", Kind: "p", Columns: []string{"date", "sub_score", "target_kind"}},
@@ -578,6 +579,9 @@ func (s *DB) ensureSchemaContractObjectsContext(ctx context.Context) error {
 		return err
 	}
 	if err := s.EnsureAIBriefingBlocksTableContext(ctx); err != nil {
+		return err
+	}
+	if err := s.EnsureDailyInsightBundlesTableContext(ctx); err != nil {
 		return err
 	}
 	if err := s.EnsureEnergySnapshotsTableContext(ctx); err != nil {

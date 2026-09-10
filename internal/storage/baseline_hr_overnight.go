@@ -80,7 +80,7 @@ func (s *DB) ComputeOvernightHRBaseline(date string, loc *time.Location) (median
 // one-off backfill cmd. Production cache rebuilds call the lowercase
 // variant from inside cacheMu in `UpsertRecentCache`.
 func (s *DB) UpsertBaselineHROvernightForDate(date string, loc *time.Location) {
-	s.upsertBaselineHROvernightForDate(date, loc)
+	_ = s.upsertBaselineHROvernightForDate(date, loc)
 }
 
 // upsertBaselineHROvernightForDate computes the v2.2 baseline and
@@ -89,10 +89,10 @@ func (s *DB) UpsertBaselineHROvernightForDate(date string, loc *time.Location) {
 // section. When the helper returns ok=false (no sleep AND no fallback
 // HR), the column stays NULL via the conditional UPDATE — we never
 // overwrite a valid prior value with NULL.
-func (s *DB) upsertBaselineHROvernightForDate(date string, loc *time.Location) {
+func (s *DB) upsertBaselineHROvernightForDate(date string, loc *time.Location) error {
 	median, _, ok := s.ComputeOvernightHRBaseline(date, loc)
 	if !ok {
-		return
+		return nil
 	}
 	ctx, cancel := queryCtx()
 	defer cancel()
@@ -100,8 +100,9 @@ func (s *DB) upsertBaselineHROvernightForDate(date string, loc *time.Location) {
 		UPDATE daily_scores
 		   SET baseline_hr_overnight = $2
 		 WHERE date = $1`, date, median); err != nil {
-		log.Printf("upsertBaselineHROvernightForDate %s: %v", date, err)
+		return err
 	}
+	return nil
 }
 
 // reportTZLocation loads the tenant's REPORT_TZ as `time.Location`.

@@ -16,6 +16,7 @@ interface DashboardDetailsProps {
   locale: Locale;
   model: DashboardViewModel;
   ai?: AIBriefingResponse;
+  hideLegacyAI?: boolean;
   readinessHistory?: ReadinessHistoryResponse;
   energyHistory?: EnergyHistoryDayResponse;
 }
@@ -31,6 +32,7 @@ export function DashboardDetails({
   locale,
   model,
   ai,
+  hideLegacyAI = false,
   readinessHistory,
   energyHistory,
 }: DashboardDetailsProps) {
@@ -97,7 +99,7 @@ export function DashboardDetails({
         </Surface>
       ) : null}
 
-      {aiSections.length > 0 || ai?.insight ? (
+      {!hideLegacyAI && (aiSections.length > 0 || ai?.insight) ? (
         <Surface className="content-card insight-card">
           <div className="section-heading">
             <div>

@@ -905,6 +905,7 @@ select:focus, input[type=date]:focus { outline: none; border-color: var(--accent
   #hero-visual-block > * { flex: 1; min-width: 0; }
   #metric-cards-grid { grid-template-columns: repeat(3, 1fr); }
   #correlation-insights-row { grid-template-columns: 1fr; }
+  .today-insights-domains { grid-template-columns: 1fr; }
 }
 @media (max-width: 768px) {
   #app { padding: 0 16px 48px; }
@@ -1581,6 +1582,15 @@ details.admin-section[open] > :not(summary) { margin-left: 16px; margin-right: 1
 .score-gauge--readiness { color: var(--today-readiness); }
 .score-gauge--energy { color: var(--today-energy); }
 .score-gauge--sleep { color: var(--today-sleep); }
+
+#today-insights { margin: 0 0 36px; }
+.today-insights-domains { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.today-insights-domain { display: flex; min-width: 0; flex-direction: column; gap: 10px; padding: 18px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); color: inherit; text-decoration: none; }
+.today-insights-domain:hover { border-color: var(--accent); box-shadow: var(--shadow); }
+.today-insights-domain-meta { display: flex; justify-content: space-between; gap: 8px; color: var(--text-secondary); font-size: 12px; }
+.today-insights-domain-meta span:last-child { text-transform: capitalize; }
+.today-insights-domain strong { font-size: 15px; line-height: 1.35; }
+.today-insights-domain p { margin: 0; color: var(--text-secondary); font-size: 13px; line-height: 1.45; }
 
 #daily-scores { margin: 0 0 36px; }
 .daily-scores__grid {

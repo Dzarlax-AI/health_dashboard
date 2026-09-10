@@ -6,6 +6,7 @@ import type { components, operations, paths } from "./generated/schema";
 export type DashboardResponse = components["schemas"]["DashboardResponse"];
 export type HealthBriefingResponse = components["schemas"]["HealthBriefingResponse"];
 export type AIBriefingResponse = components["schemas"]["AIBriefingResponse"];
+export type TodayInsightsResponse = components["schemas"]["TodayInsightsResponse"];
 export type DerivedMetricsResponse = components["schemas"]["DerivedMetricsResponse"];
 export type MetricDataResponse = components["schemas"]["MetricDataResponse"];
 export type MetricRangeResponse = components["schemas"]["MetricRangeResponse"];
@@ -80,6 +81,17 @@ export async function getAIBriefing(
 ): Promise<AIBriefingResponse> {
   const { data, error, response } = await client.GET("/api/ai-briefing", {
     params: { query: { lang: locale, date } },
+    signal,
+  });
+  return requireData(data, error, response);
+}
+
+export async function getTodayInsights(
+  locale: Locale,
+  signal?: AbortSignal,
+): Promise<TodayInsightsResponse> {
+  const { data, error, response } = await client.GET("/api/today-insights", {
+    params: { query: { lang: locale } },
     signal,
   });
   return requireData(data, error, response);

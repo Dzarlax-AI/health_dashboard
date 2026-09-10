@@ -30,6 +30,11 @@ type DB struct {
 	// cache instead of hitting the provider again — avoids per-minute pollers
 	// hammering the API during a sustained upstream outage.
 	aiRegenLastFailAt sync.Map
+
+	// dailyInsightInFlight suppresses duplicate goroutines for one exact
+	// tenant-local factual snapshot and generation fingerprint. The durable
+	// bundle lease remains the cross-process authority.
+	dailyInsightInFlight sync.Map
 }
 
 // queryCtx returns a context with a 30-second timeout for regular queries.

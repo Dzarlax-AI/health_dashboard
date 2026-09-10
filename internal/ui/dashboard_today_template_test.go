@@ -48,6 +48,9 @@ func TestBuildDashboardPageDataCreatesPrimaryAndSupportingScores(t *testing.T) {
 	if data.ReadinessBand != "fair" {
 		t.Fatalf("readiness band = %q, want canonical fair", data.ReadinessBand)
 	}
+	if data.TodayInsights == nil || len(data.TodayInsights.Domains) != 3 {
+		t.Fatalf("today insights = %#v, want the three server-declared domains", data.TodayInsights)
+	}
 }
 
 func TestBuildDashboardPageDataDoesNotInventPartialSleepScore(t *testing.T) {
@@ -121,6 +124,12 @@ func TestDashboardGaugeGeometryIsStructural(t *testing.T) {
 	}
 	if strings.Contains(html, `daily-score-card--readiness`) {
 		t.Fatal("readiness gauge is duplicated below the hero")
+	}
+	if !strings.Contains(html, `id="today-insights"`) || strings.Count(html, `class="today-insights-domain"`) != 3 {
+		t.Fatal("legacy dashboard did not render the one primary Today model and three domain cards")
+	}
+	if strings.Contains(html, `id="ai-insight-wrap"`) {
+		t.Fatal("legacy AI prose is duplicated beside the server-owned Today model")
 	}
 	if !strings.Contains(html, `class="today-hero status-fair"`) {
 		t.Fatal("hero does not use the canonical readiness band")

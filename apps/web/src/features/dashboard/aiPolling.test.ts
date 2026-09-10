@@ -1,5 +1,5 @@
-import type { AIBriefingResponse } from "../../api/client";
-import { maxAIPollAttempts, shouldPollAI } from "./aiPolling";
+import type { AIBriefingResponse, TodayInsightsResponse } from "../../api/client";
+import { maxAIPollAttempts, shouldPollAI, shouldPollTodayInsights, todayInsightsPollDelayMs } from "./aiPolling";
 
 function briefing(
   overrides: Partial<AIBriefingResponse> = {},
@@ -38,5 +38,45 @@ describe("AI polling policy", () => {
 
   it("caps cold-cache polling attempts", () => {
     expect(shouldPollAI(briefing(), maxAIPollAttempts)).toBe(false);
+  });
+});
+
+function todayInsights(
+  state: TodayInsightsResponse["generation"]["state"],
+  freshForSnapshot = true,
+): TodayInsightsResponse {
+  return {
+    changes: [],
+    date: "2026-08-02",
+    decision_id: "fixture",
+    domains: [],
+    evidence: [],
+    generation: { fresh_for_snapshot: freshForSnapshot, state },
+    has_more: false,
+    primary: { evidence_ids: [], fallback: true, meaning: "", observation: "", state: "insight", title: "Today" },
+    snapshot_version: "fixture",
+  };
+}
+
+describe("Today Insights polling policy", () => {
+  it("polls only while the factual snapshot needs a provider acknowledgement", () => {
+    expect(shouldPollTodayInsights(todayInsights("cold"), 0)).toBe(true);
+    expect(shouldPollTodayInsights(todayInsights("generating"), 0)).toBe(true);
+    expect(shouldPollTodayInsights(todayInsights("ready", false), 0)).toBe(true);
+  });
+
+  it("stops for ready, disabled, unavailable, and capped states", () => {
+    expect(shouldPollTodayInsights(todayInsights("ready"), 0)).toBe(false);
+    expect(shouldPollTodayInsights(todayInsights("disabled"), 0)).toBe(false);
+    expect(shouldPollTodayInsights(undefined, 0)).toBe(false);
+    expect(shouldPollTodayInsights(todayInsights("cold"), maxAIPollAttempts)).toBe(false);
+  });
+
+  it("waits for the server backoff before retrying a failed acknowledgement", () => {
+    const failed = todayInsights("failed");
+    failed.generation.retry_after_seconds = 300;
+
+    expect(shouldPollTodayInsights(failed, 0)).toBe(true);
+    expect(todayInsightsPollDelayMs(failed, 0)).toBe(300_000);
   });
 });

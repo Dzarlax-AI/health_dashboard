@@ -1,8 +1,8 @@
 import type {
-  AIBriefingResponse,
   EnergyHistoryDayResponse,
   HealthBriefingResponse,
   ReadinessHistoryResponse,
+  TodayInsightsResponse,
 } from "../../api/client";
 import type { Locale } from "../../i18n";
 import type { DashboardResources } from "./loader";
@@ -238,87 +238,72 @@ const energyHistory: EnergyHistoryDayResponse = {
   })),
 };
 
-function ai(locale: Locale): AIBriefingResponse {
-  return {
-    blocks: {},
-    date: "2026-08-02",
-    disabled: false,
-    fresh_for_decision: false,
-    generating: false,
-    insight: "",
-    lang: locale,
-    recommendation: "",
-    recovery: "",
-    summary: "",
-    sections: [
-      {
-        body: localized(locale, {
-          en: "Sleep duration was strong, but the latest signals are still settling.",
-          ru: "Продолжительность сна была хорошей, но последние сигналы ещё стабилизируются.",
-          sr: "Trajanje sna je bilo dobro, ali se najnoviji signali još stabilizuju.",
-        }),
-        header: localized(locale, {
-          en: "Sleep",
-          ru: "Сон",
-          sr: "San",
-        }),
-        key: "SLEEP",
-      },
-      {
-        body: localized(locale, {
-          en: "Yesterday stayed light enough to leave room for recovery.",
-          ru: "Вчерашняя нагрузка оставила достаточно пространства для восстановления.",
-          sr: "Jučerašnje opterećenje ostavilo je dovoljno prostora za oporavak.",
-        }),
-        header: localized(locale, {
-          en: "Yesterday",
-          ru: "Вчера",
-          sr: "Juče",
-        }),
-        key: "YESTERDAY",
-      },
-      {
-        body: localized(locale, {
-          en: "A long night restored your reserve, while HRV sits above your usual level.",
-          ru: "Длинный сон заметно восстановил запас. ВСР тоже выше твоего обычного уровня.",
-          sr: "Dug san je obnovio rezervu, dok je HRV iznad tvog uobičajenog nivoa.",
-        }),
-        header: localized(locale, {
-          en: "A deserved rebound",
-          ru: "Заслуженный отскок",
-          sr: "Zaslužen oporavak",
-        }),
-        key: "RECOVERY",
-      },
-      {
-        body: localized(locale, {
-          en: "Keep the day flexible and choose moderate activity while the remaining signals settle.",
-          ru: "Оставь день гибким и выбери умеренную активность, пока остальные сигналы стабилизируются.",
-          sr: "Ostavi dan fleksibilnim i izaberi umerenu aktivnost dok se ostali signali stabilizuju.",
-        }),
-        header: localized(locale, {
-          en: "Plan for today",
-          ru: "План на сегодня",
-          sr: "Plan za danas",
-        }),
-        key: "RECOMMENDATION",
-      },
-    ],
-    sleep: "",
-    yesterday: "",
-  };
-}
-
 export function fixtureResources(
   locale: Locale,
   fixture: FixtureName,
 ): DashboardResources {
   return {
     briefing: briefing(locale, fixture),
-    ai: ai(locale),
+    todayInsights: todayInsights(locale, fixture),
     readinessHistory,
     energyHistory,
     session: { is_admin: true },
     missing: fixture === "partial" ? ["dashboard"] : [],
+  };
+}
+
+function todayInsights(locale: Locale, fixture: FixtureName): TodayInsightsResponse | undefined {
+  if (fixture === "unavailable") {
+    return undefined;
+  }
+  const partial = fixture === "partial";
+  const stale = fixture === "stale";
+  const energyDestination = { kind: "section", id: "activity" };
+  return {
+    changes: [],
+    date: "2026-08-02",
+    decision_id: `fixture-${fixture}`,
+    domains: [
+      {
+        band: "good",
+        confidence: partial ? "provisional" : "final",
+        data_state: partial ? "partial" : "fresh",
+        destination: { kind: "sleep", id: "sleep" },
+        insight: { evidence_ids: ["sleep"], fallback: true, meaning: localized(locale, { en: "Sleep context is available.", ru: "Контекст сна доступен.", sr: "Kontekst sna je dostupan." }), observation: localized(locale, { en: "Your overnight pattern is usable.", ru: "Ночной паттерн можно использовать.", sr: "Noćni obrazac je upotrebljiv." }), state: "insight", title: localized(locale, { en: "Sleep", ru: "Сон", sr: "San" }) },
+        key: "sleep",
+        summary: localized(locale, { en: "Sleep", ru: "Сон", sr: "San" }),
+      },
+      {
+        band: "fair",
+        confidence: partial ? "provisional" : "final",
+        data_state: stale ? "stale" : "fresh",
+        destination: { kind: "section", id: "recovery" },
+        insight: { evidence_ids: ["recovery"], fallback: true, meaning: localized(locale, { en: "Recovery is read directly from the server.", ru: "Восстановление берётся напрямую с сервера.", sr: "Oporavak stiže direktno sa servera." }), observation: localized(locale, { en: "Recovery remains the main context.", ru: "Восстановление остаётся главным контекстом.", sr: "Oporavak ostaje glavni kontekst." }), state: "insight", title: localized(locale, { en: "Recovery", ru: "Восстановление", sr: "Oporavak" }) },
+        key: "recovery",
+        summary: localized(locale, { en: "Recovery", ru: "Восстановление", sr: "Oporavak" }),
+      },
+      {
+        band: "good",
+        confidence: "final",
+        data_state: "fresh",
+        destination: energyDestination,
+        insight: { evidence_ids: ["energy"], fallback: true, meaning: localized(locale, { en: "Energy keeps its existing activity detail.", ru: "Для энергии сохраняется текущая детализация активности.", sr: "Energija zadržava postojeći detalj aktivnosti." }), observation: localized(locale, { en: "Your reserve is available.", ru: "Запас доступен.", sr: "Tvoja rezerva je dostupna." }), state: "insight", title: localized(locale, { en: "Energy", ru: "Энергия", sr: "Energija" }) },
+        key: "energy",
+        summary: localized(locale, { en: "Energy", ru: "Энергия", sr: "Energija" }),
+      },
+    ],
+    evidence: [],
+    generation: { fresh_for_snapshot: !stale, state: partial ? "generating" : "disabled" },
+    has_more: false,
+    primary: {
+      evidence_ids: ["recovery"],
+      fallback: true,
+      meaning: localized(locale, { en: "Keep the effort controlled.", ru: "Держи нагрузку под контролем.", sr: "Zadrži opterećenje pod kontrolom." }),
+      next_step: { id: "daily-decision-moderate", text: localized(locale, { en: "Measured day", ru: "Размеренный день", sr: "Odmeren dan" }) },
+      observation: localized(locale, { en: "Recovery supports a measured day.", ru: "Восстановление поддерживает размеренный день.", sr: "Oporavak podržava odmeren dan." }),
+      state: "insight",
+      title: localized(locale, { en: "Today", ru: "Сегодня", sr: "Danas" }),
+    },
+    snapshot_version: "fixture-v1",
   };
 }

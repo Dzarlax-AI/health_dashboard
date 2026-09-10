@@ -480,6 +480,15 @@
           "daily_decision": {
             "additionalProperties": false,
             "properties": {
+              "evidence_domains": {
+                "items": {
+                  "type": "string"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
               "id": {
                 "type": "string"
               },
@@ -1672,6 +1681,357 @@
           "is_admin"
         ],
         "type": "object"
+      },
+      "TodayInsightsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "changes": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "destination": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                },
+                "detail": {
+                  "type": "string"
+                },
+                "domain": {
+                  "type": "string"
+                },
+                "evidence_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "id": {
+                  "type": "string"
+                },
+                "severity": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "domain",
+                "severity",
+                "title",
+                "detail",
+                "evidence_ids",
+                "destination"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "date": {
+            "type": "string"
+          },
+          "decision_id": {
+            "type": "string"
+          },
+          "domains": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "as_of": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "band": {
+                  "type": "string"
+                },
+                "confidence": {
+                  "type": "string"
+                },
+                "data_state": {
+                  "type": "string"
+                },
+                "destination": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                },
+                "insight": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "evidence_ids": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "fallback": {
+                      "type": "boolean"
+                    },
+                    "meaning": {
+                      "type": "string"
+                    },
+                    "next_step": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "text"
+                      ],
+                      "type": "object"
+                    },
+                    "observation": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "title",
+                    "observation",
+                    "meaning",
+                    "evidence_ids",
+                    "fallback"
+                  ],
+                  "type": "object"
+                },
+                "key": {
+                  "type": "string"
+                },
+                "summary": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "key",
+                "band",
+                "data_state",
+                "summary",
+                "insight",
+                "destination"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "evidence": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "baseline": {
+                  "type": "number"
+                },
+                "comparison": {
+                  "type": "string"
+                },
+                "comparison_period": {
+                  "type": "string"
+                },
+                "confidence": {
+                  "type": "string"
+                },
+                "data_state": {
+                  "type": "string"
+                },
+                "delta": {
+                  "type": "number"
+                },
+                "destination": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                },
+                "domain": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "observed_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "unit": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "id",
+                "domain",
+                "data_state",
+                "destination"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "generation": {
+            "additionalProperties": false,
+            "properties": {
+              "fresh_for_snapshot": {
+                "type": "boolean"
+              },
+              "retry_after_seconds": {
+                "type": "integer"
+              },
+              "state": {
+                "enum": [
+                  "cold",
+                  "generating",
+                  "ready",
+                  "failed",
+                  "disabled"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "fresh_for_snapshot"
+            ],
+            "type": "object"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "primary": {
+            "additionalProperties": false,
+            "properties": {
+              "evidence_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "fallback": {
+                "type": "boolean"
+              },
+              "meaning": {
+                "type": "string"
+              },
+              "next_step": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "text"
+                ],
+                "type": "object"
+              },
+              "observation": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "title",
+              "observation",
+              "meaning",
+              "evidence_ids",
+              "fallback"
+            ],
+            "type": "object"
+          },
+          "snapshot_version": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "date",
+          "decision_id",
+          "snapshot_version",
+          "primary",
+          "domains",
+          "evidence",
+          "changes",
+          "has_more",
+          "generation"
+        ],
+        "type": "object"
       }
     },
     "securitySchemes": {
@@ -2450,6 +2810,89 @@
           }
         },
         "summary": "Authenticated browser capabilities"
+      }
+    },
+    "/api/today-insights": {
+      "get": {
+        "operationId": "getTodayInsights",
+        "parameters": [
+          {
+            "description": "Unsupported values are ignored and the server falls back to the documented default.",
+            "in": "query",
+            "name": "lang",
+            "required": false,
+            "schema": {
+              "default": "en",
+              "enum": [
+                "en",
+                "ru",
+                "sr"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TodayInsightsResponse"
+                }
+              }
+            },
+            "description": "Successful tenant-scoped response."
+          },
+          "302": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Browser authentication or initial setup is required; Location identifies the interactive route.",
+            "headers": {
+              "Location": {
+                "description": "Interactive login or setup route.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The endpoint is today-only and does not accept a date parameter."
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The backend could not load or encode the tenant response."
+          },
+          "503": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Current-day source data is not available yet."
+          }
+        },
+        "summary": "Current-day factual insight snapshot and non-blocking narrative state"
       }
     }
   },

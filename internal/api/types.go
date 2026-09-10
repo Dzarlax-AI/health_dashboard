@@ -55,6 +55,22 @@ type AIBriefingPlan struct {
 	EvidenceKeys []string `json:"evidence_keys,omitempty"`
 }
 
+// TodayInsightsGeneration keeps presentation clients independent from provider
+// implementation details. The factual snapshot remains renderable in every
+// state, including disabled or failed narrative generation.
+type TodayInsightsGeneration struct {
+	State             string `json:"state" jsonschema:"enum=cold,enum=generating,enum=ready,enum=failed,enum=disabled"`
+	FreshForSnapshot  bool   `json:"fresh_for_snapshot"`
+	RetryAfterSeconds int    `json:"retry_after_seconds,omitempty"`
+}
+
+// TodayInsightsResponse is today-only. It intentionally embeds the server
+// factual snapshot; no tenant selector or historical date is accepted.
+type TodayInsightsResponse struct {
+	*health.DailyInsightSnapshot
+	Generation TodayInsightsGeneration `json:"generation"`
+}
+
 // NewAIBriefingResponse keeps every compatibility representation sourced from
 // the same block map so canonical and legacy fields cannot drift.
 func NewAIBriefingResponse(
