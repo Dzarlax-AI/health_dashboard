@@ -228,6 +228,7 @@ func main() {
 	// workers independently.
 	energyV2 := storage.NewEnergyV2Orchestrator()
 	todayDerived := storage.NewTodayDerivedStateCoordinator(energyV2)
+	startupBackfills := newStartupBackfillQueue(ctx, 5*time.Second)
 
 	for _, u := range users {
 		db, err := mgr.GetOrCreate(ctx, u.SchemaName)
@@ -240,7 +241,7 @@ func main() {
 		if err := mgr.VerifyTenantContract(ctx, u.SchemaName, db); err != nil {
 			log.Fatalf("startup tenant contract gate for %s: %v", u.SchemaName, err)
 		}
-		startTenant(ctx, mgr, reg, db, u.SchemaName, envNotifyDefaults, envAIDefaults, baseURL, todayDerived)
+		startTenant(ctx, mgr, reg, db, u.SchemaName, envNotifyDefaults, envAIDefaults, baseURL, todayDerived, startupBackfills)
 	}
 
 	if len(users) == 0 {
@@ -292,7 +293,7 @@ func main() {
 			log.Printf("new tenant contract gate for %s: %v", schema, err)
 			return
 		}
-		startTenant(ctx, mgr, reg, db, schema, envNotifyDefaults, envAIDefaults, baseURL, todayDerived)
+		startTenant(ctx, mgr, reg, db, schema, envNotifyDefaults, envAIDefaults, baseURL, todayDerived, startupBackfills)
 	})
 	uiHandler.Register(mux)
 	mcpserver.Register(mux, mgr, baseURL)
@@ -327,7 +328,7 @@ func main() {
 
 	log.Printf("listening on %s (multi-user mode, %d user(s))", addr, len(users))
 	log.Printf("MCP endpoint: %s/mcp", baseURL)
-	if err := serveHTTP(ctx, addr, logged, ingestHandler.Shutdown); err != nil {
+	if err := serveHTTP(ctx, addr, logged, ingestHandler.Shutdown, startupBackfills.Start); err != nil {
 		log.Fatalf("server: %v", err)
 	}
 }
@@ -345,21 +346,8 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	backfillDatesFn := makeTodayDerivedStateTrigger(ctx, db, schema, notifyDefaults, todayDerived, func() storage.AIConfig {
 		return db.GetAIConfig(aiDefaults)
 	})
-	go func() {
-		time.Sleep(5 * time.Second)
-		force := db.NeedsForceBackfill()
-		if force {
-			log.Println("startup: caches empty, rebuilding all…")
-		} else {
-			log.Println("startup: incremental cache refresh…")
-		}
-		if err := runCacheBackfill(db, force); err != nil {
-			log.Printf("startup: cache refresh failed: %v", err)
-			return
-		}
-		backfillDatesFn([]string{tenantLocalNow(db, notifyDefaults).Format("2006-01-02")})
-		log.Println("startup: cache refresh done")
-	}()
+	startupBackfills := newStartupBackfillQueue(ctx, 5*time.Second)
+	enqueueStartupCacheRefresh(startupBackfills, db, schema, notifyDefaults, backfillDatesFn)
 	onNewData := func(_ *storage.DB, dates []string) {
 		backfillDatesFn(dates)
 		go maybeFireMorningReport()
@@ -414,7 +402,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 
 	log.Printf("listening on %s (single-user legacy mode)", addr)
 	log.Printf("MCP endpoint: %s/mcp", baseURL)
-	if err := serveHTTP(ctx, addr, logged, ingestHandler.Shutdown); err != nil {
+	if err := serveHTTP(ctx, addr, logged, ingestHandler.Shutdown, startupBackfills.Start); err != nil {
 		log.Fatalf("server: %v", err)
 	}
 }
@@ -450,7 +438,7 @@ func bootstrapAdminRequest(apiKey, uiPassword, email string) (registry.CreateUse
 	}, generated, nil
 }
 
-func serveHTTP(ctx context.Context, addr string, handler http.Handler, drain func(context.Context) error) error {
+func serveHTTP(ctx context.Context, addr string, handler http.Handler, drain func(context.Context) error, onListening func()) error {
 	server := &http.Server{
 		Addr:              addr,
 		Handler:           handler,
@@ -462,8 +450,15 @@ func serveHTTP(ctx context.Context, addr string, handler http.Handler, drain fun
 		IdleTimeout:    2 * time.Minute,
 		MaxHeaderBytes: 1 << 20,
 	}
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
 	errCh := make(chan error, 1)
-	go func() { errCh <- server.ListenAndServe() }()
+	go func() { errCh <- server.Serve(listener) }()
+	if onListening != nil {
+		onListening()
+	}
 	select {
 	case err := <-errCh:
 		if errors.Is(err, http.ErrServerClosed) {
@@ -489,27 +484,14 @@ func serveHTTP(ctx context.Context, addr string, handler http.Handler, drain fun
 // the EnergyBank-backfill onboarding nudge can embed a clickable
 // link back to the tenant's /settings page.
 func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Registry, db *storage.DB, schema string,
-	notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig, baseURL string, todayDerived *storage.TodayDerivedStateCoordinator) {
+	notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig, baseURL string, todayDerived *storage.TodayDerivedStateCoordinator,
+	startupBackfills *startupBackfillQueue) {
 	backfillDatesFn := makeTodayDerivedStateTrigger(ctx, db, schema, notifyDefaults, todayDerived, func() storage.AIConfig {
 		// Resolve installation defaults when the queued refresh actually runs.
 		return db.GetAIConfig(mgr.AIDefaultsFor(ctx, schema))
 	})
 
-	go func() {
-		time.Sleep(5 * time.Second)
-		force := db.NeedsForceBackfill()
-		if force {
-			log.Printf("[%s] startup: caches empty, rebuilding all…", schema)
-		} else {
-			log.Printf("[%s] startup: incremental cache refresh…", schema)
-		}
-		if err := runCacheBackfill(db, force); err != nil {
-			log.Printf("[%s] startup: cache refresh failed: %v", schema, err)
-			return
-		}
-		backfillDatesFn([]string{tenantLocalNow(db, notifyDefaults).Format("2006-01-02")})
-		log.Printf("[%s] startup: cache refresh done", schema)
-	}()
+	enqueueStartupCacheRefresh(startupBackfills, db, schema, notifyDefaults, backfillDatesFn)
 
 	var morningSendMu sync.Mutex
 	maybeFireMorningReport := makeMorningTrigger(ctx, db, &morningSendMu, mgr, reg, schema, notifyDefaults)
@@ -531,6 +513,113 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Regist
 		backfillDatesFn([]string{db.Today()})
 	})
 	go runDailyQualityScan(db, schema, notifyDefaults, backfillDatesFn)
+}
+
+type startupBackfillTask struct {
+	schema string
+	run    func()
+}
+
+// startupBackfillQueue prevents every tenant pool from rebuilding cache state
+// at once after a process restart. The initial grace period lets the HTTP
+// listener become ready first; tenants provisioned later join the same worker
+// without another delay.
+type startupBackfillQueue struct {
+	ctx          context.Context
+	initialDelay time.Duration
+	mu           sync.Mutex
+	pending      []startupBackfillTask
+	wake         chan struct{}
+	startOnce    sync.Once
+}
+
+func newStartupBackfillQueue(ctx context.Context, initialDelay time.Duration) *startupBackfillQueue {
+	q := &startupBackfillQueue{
+		ctx:          ctx,
+		initialDelay: initialDelay,
+		wake:         make(chan struct{}, 1),
+	}
+	return q
+}
+
+func (q *startupBackfillQueue) Start() {
+	q.startOnce.Do(func() {
+		go func() {
+			if q.initialDelay > 0 {
+				timer := time.NewTimer(q.initialDelay)
+				defer timer.Stop()
+				select {
+				case <-q.ctx.Done():
+					return
+				case <-timer.C:
+				}
+			}
+			for {
+				task, ok := q.next()
+				if !ok {
+					select {
+					case <-q.ctx.Done():
+						return
+					case <-q.wake:
+						continue
+					}
+				}
+				select {
+				case <-q.ctx.Done():
+					return
+				default:
+				}
+				started := time.Now()
+				log.Printf("[%s] startup cache refresh: started", task.schema)
+				task.run()
+				log.Printf("[%s] startup cache refresh: finished in %s", task.schema, time.Since(started).Round(time.Millisecond))
+			}
+		}()
+	})
+}
+
+func (q *startupBackfillQueue) Enqueue(schema string, run func()) {
+	select {
+	case <-q.ctx.Done():
+		return
+	default:
+	}
+	q.mu.Lock()
+	q.pending = append(q.pending, startupBackfillTask{schema: schema, run: run})
+	q.mu.Unlock()
+	select {
+	case q.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (q *startupBackfillQueue) next() (startupBackfillTask, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.pending) == 0 {
+		return startupBackfillTask{}, false
+	}
+	task := q.pending[0]
+	q.pending[0] = startupBackfillTask{}
+	q.pending = q.pending[1:]
+	return task, true
+}
+
+func enqueueStartupCacheRefresh(queue *startupBackfillQueue, db *storage.DB, schema string,
+	notifyDefaults storage.NotifyConfig, refreshToday func([]string)) {
+	queue.Enqueue(schema, func() {
+		force := db.NeedsForceBackfill()
+		if force {
+			log.Printf("[%s] startup cache refresh: caches empty; rebuilding all", schema)
+		} else {
+			log.Printf("[%s] startup cache refresh: incremental", schema)
+		}
+		if err := runCacheBackfill(db, force); err != nil {
+			log.Printf("[%s] startup cache refresh: failed: %v", schema, err)
+			return
+		}
+		refreshToday([]string{tenantLocalNow(db, notifyDefaults).Format("2006-01-02")})
+	})
 }
 
 // makeBackfillFn returns the admin/import callback that recomputes caches.

@@ -1,11 +1,16 @@
 package storage
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // MetricSummary is returned by ListMetrics.
@@ -42,10 +47,99 @@ type CardData struct {
 
 // DashboardResponse is returned by GetDashboard.
 type DashboardResponse struct {
-	Date        string     `json:"date"`
-	LastUpdated string     `json:"last_updated"`
-	Cards       []CardData `json:"cards"`
+	Date             string     `json:"date"`
+	LastUpdated      string     `json:"last_updated"`
+	CacheState       string     `json:"cache_state"`
+	CacheCompletedAt string     `json:"cache_completed_at,omitempty"`
+	Cards            []CardData `json:"cards"`
 }
+
+const (
+	dashboardCacheStateComplete    = "complete"
+	dashboardCacheStateUpdating    = "updating"
+	dashboardCacheStateUnavailable = "unavailable"
+)
+
+// dashboardCacheQuery is run only by the background cache writer. Requests
+// read dashboard_cache_snapshots instead, so they never observe this mutable
+// intermediate state or fall back to metric_points.
+//
+// SUM metrics keep the established source priority and sleep cross-validation;
+// AVG metrics preserve their raw-sample average through hourly sample counts.
+var dashboardCacheQuery = `
+	WITH latest AS (
+		SELECT MAX(SUBSTRING(hour, 1, 10)) AS today
+		FROM hourly_metrics
+	), days AS (
+		SELECT today,
+		       (SELECT MAX(SUBSTRING(hour, 1, 10))
+		        FROM hourly_metrics
+		        WHERE SUBSTRING(hour, 1, 10) < latest.today) AS previous
+		FROM latest
+	), requested(metric, aggregation, ordinal) AS (
+		VALUES
+			('step_count', 'SUM', 1),
+			('active_energy', 'SUM', 2),
+			('basal_energy_burned', 'SUM', 3),
+			('heart_rate', 'AVG', 4),
+			('resting_heart_rate', 'AVG', 5),
+			('heart_rate_variability', 'AVG', 6),
+			('blood_oxygen_saturation', 'AVG', 7),
+			('respiratory_rate', 'AVG', 8),
+			('sleep_total', 'SUM', 9),
+			('apple_exercise_time', 'SUM', 10),
+			('walking_running_distance', 'SUM', 11),
+			('wrist_temperature', 'AVG', 12)
+	), source_totals AS (
+		SELECT SUBSTRING(h.hour, 1, 10) AS date,
+		       h.metric_name,
+		       h.source,
+		       SUM(h.avg_val)::double precision AS source_total
+		FROM hourly_metrics h
+		JOIN requested r ON r.metric = h.metric_name AND r.aggregation = 'SUM'
+		CROSS JOIN days d
+		WHERE SUBSTRING(h.hour, 1, 10) = d.today
+		   OR SUBSTRING(h.hour, 1, 10) = d.previous
+		GROUP BY SUBSTRING(h.hour, 1, 10), h.metric_name, h.source
+	), sum_values AS (
+		SELECT date,
+		       metric_name,
+		       CASE
+		           WHEN metric_name LIKE 'sleep_%' THEN (` + sleepCrossValidationPickExpr("source_total") + `)
+		           ELSE COALESCE(
+		               MAX(CASE WHEN source LIKE '%Ultra%' OR source LIKE '%Apple Watch%' THEN source_total END),
+		               MAX(CASE WHEN source LIKE '%iPhone%' THEN source_total END),
+		               MAX(source_total)
+		           )
+		       END AS value
+		FROM source_totals
+		GROUP BY date, metric_name
+	), avg_values AS (
+		SELECT SUBSTRING(h.hour, 1, 10) AS date,
+		       h.metric_name,
+		       (SUM(h.avg_val * h.sample_count) /
+		        NULLIF(SUM(h.sample_count), 0))::double precision AS value
+		FROM hourly_metrics h
+		JOIN requested r ON r.metric = h.metric_name AND r.aggregation = 'AVG'
+		CROSS JOIN days d
+		WHERE SUBSTRING(h.hour, 1, 10) = d.today
+		   OR SUBSTRING(h.hour, 1, 10) = d.previous
+		GROUP BY SUBSTRING(h.hour, 1, 10), h.metric_name
+	), values_by_day AS (
+		SELECT date, metric_name, value FROM sum_values
+		UNION ALL
+		SELECT date, metric_name, value FROM avg_values
+	)
+	SELECT d.today,
+	       d.previous,
+	       r.metric,
+	       COALESCE(current.value, 0),
+	       COALESCE(previous.value, 0)
+	FROM days d
+	CROSS JOIN requested r
+	LEFT JOIN values_by_day current ON current.date = d.today AND current.metric_name = r.metric
+	LEFT JOIN values_by_day previous ON previous.date = d.previous AND previous.metric_name = r.metric
+	ORDER BY r.ordinal`
 
 // LatestValue is the most recent value for a single metric, used by GetLatestMetricValues.
 type LatestValue struct {
@@ -473,137 +567,139 @@ func (s *DB) GetDashboard() (*DashboardResponse, error) {
 	ctx, cancel := queryCtx()
 	defer cancel()
 
-	// Detect "today" from the descending index on SUBSTRING(date,1,10) — fast index-only scan.
-	var today *string
-	if err := s.pool.QueryRow(ctx,
-		`SELECT SUBSTRING(date,1,10) FROM metric_points ORDER BY SUBSTRING(date,1,10) DESC LIMIT 1`,
-	).Scan(&today); err != nil || today == nil {
-		return &DashboardResponse{}, nil
-	}
-
-	// "yesterday" from hourly_metrics (smaller table, already cached).
-	var yesterday *string
-	s.pool.QueryRow(ctx,
-		`SELECT MAX(SUBSTRING(hour,1,10)) FROM hourly_metrics WHERE SUBSTRING(hour,1,10) < $1`, *today,
-	).Scan(&yesterday)
-
-	var lastUpdated *string
-	s.pool.QueryRow(ctx, `SELECT MAX(received_at) FROM health_records`).Scan(&lastUpdated)
-
-	type spec struct {
-		metric string
-		agg    string
-	}
-	cards := []spec{
-		{"step_count", "SUM"},
-		{"active_energy", "SUM"},
-		{"basal_energy_burned", "SUM"},
-		{"heart_rate", "AVG"},
-		{"resting_heart_rate", "AVG"},
-		{"heart_rate_variability", "AVG"},
-		{"blood_oxygen_saturation", "AVG"},
-		{"respiratory_rate", "AVG"},
-		{"sleep_total", "SUM"},
-		{"apple_exercise_time", "SUM"},
-		{"walking_running_distance", "SUM"},
-		{"wrist_temperature", "AVG"},
-	}
-
-	queryDayRaw := func(metric, agg, day string) float64 {
-		var val float64
-		if agg == "SUM" {
-			sleepDedup := sleepDedupClause(metric)
-			query := fmt.Sprintf(`
-				WITH source_totals AS (
-					SELECT source, SUM(qty) AS source_total
-					FROM metric_points
-					WHERE metric_name=$1 AND SUBSTRING(date,1,10)=$2 AND qty > 0 %s
-					GROUP BY source
-				) `, sleepDedup) + preferredSourceForMetric(metric)
-			s.pool.QueryRow(ctx, query, metric, day).Scan(&val)
-		} else {
-			s.pool.QueryRow(ctx,
-				`SELECT COALESCE(AVG(qty), 0) FROM metric_points WHERE metric_name=$1 AND SUBSTRING(date,1,10)=$2 AND qty > 0`,
-				metric, day,
-			).Scan(&val)
+	var payload []byte
+	var completedAt time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT payload, completed_at
+		FROM dashboard_cache_snapshots
+		WHERE singleton = true`).Scan(&payload, &completedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &DashboardResponse{CacheState: dashboardCacheStateUnavailable}, nil
 		}
-		return val
+		return nil, fmt.Errorf("read dashboard snapshot: %w", err)
 	}
 
-	queryDayCache := func(metric, agg, day string) float64 {
-		var val float64
-		if agg == "SUM" {
-			s.pool.QueryRow(ctx, `
-				WITH source_totals AS (
-					SELECT source, SUM(avg_val) AS source_total
-					FROM hourly_metrics
-					WHERE metric_name=$1 AND SUBSTRING(hour,1,10)=$2
-					GROUP BY source
-				) `+preferredSourceForMetric(metric), metric, day,
-			).Scan(&val)
-		} else {
-			s.pool.QueryRow(ctx,
-				`SELECT COALESCE(AVG(avg_val), 0) FROM hourly_metrics WHERE metric_name=$1 AND SUBSTRING(hour,1,10)=$2`,
-				metric, day,
-			).Scan(&val)
+	var result DashboardResponse
+	if err := json.Unmarshal(payload, &result); err != nil {
+		return nil, fmt.Errorf("decode dashboard snapshot: %w", err)
+	}
+	result.CacheCompletedAt = completedAt.UTC().Format(time.RFC3339Nano)
+	if s.dashboardRefreshes.Load() > 0 {
+		result.CacheState = dashboardCacheStateUpdating
+	} else {
+		result.CacheState = dashboardCacheStateComplete
+	}
+	return &result, nil
+}
+
+// refreshDashboardSnapshot is used by integration tests and migration tooling.
+// Production cache writers call the locked form immediately after all cache
+// tables for their generation have been updated successfully.
+func (s *DB) refreshDashboardSnapshot(ctx context.Context) error {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	return s.refreshDashboardSnapshotLocked(ctx)
+}
+
+func (s *DB) refreshDashboardSnapshotLocked(ctx context.Context) error {
+	rows, err := s.pool.Query(ctx, dashboardCacheQuery)
+	if err != nil {
+		return fmt.Errorf("query dashboard cache: %w", err)
+	}
+	defer rows.Close()
+
+	var result DashboardResponse
+	for rows.Next() {
+		var today, previous *string
+		var metric string
+		var value, previousValue float64
+		if err := rows.Scan(&today, &previous, &metric, &value, &previousValue); err != nil {
+			return fmt.Errorf("scan dashboard cache: %w", err)
 		}
-		return val
-	}
-
-	// Batch units lookup (1 query instead of 12)
-	unitMap := make(map[string]string)
-	unitRows, err := s.pool.Query(ctx, `
-		SELECT metric_name, units
-		FROM metric_points
-		WHERE metric_name IN ('step_count','active_energy','basal_energy_burned',
-		      'heart_rate','resting_heart_rate','heart_rate_variability',
-		      'blood_oxygen_saturation','respiratory_rate','sleep_total',
-		      'apple_exercise_time','walking_running_distance','wrist_temperature')
-		  AND units IS NOT NULL AND units != ''
-		GROUP BY metric_name, units`)
-	if err == nil {
-		defer unitRows.Close()
-		for unitRows.Next() {
-			var name, unit string
-			if err := unitRows.Scan(&name, &unit); err == nil {
-				unitMap[name] = unit
-			}
+		if today == nil {
+			break
 		}
-	}
-
-	yesterdayStr := ""
-	if yesterday != nil {
-		yesterdayStr = *yesterday
-	}
-	lastUpdatedStr := ""
-	if lastUpdated != nil {
-		lastUpdatedStr = *lastUpdated
-	}
-
-	// Metrics that are reported infrequently (once per day, often late).
-	// When today's value is missing, fall back to yesterday's so the card is not dropped.
-	slowMetrics := map[string]bool{
-		"resting_heart_rate": true,
-		"wrist_temperature":  true,
-	}
-
-	var result []CardData
-	for _, c := range cards {
-		val := queryDayRaw(c.metric, c.agg, *today)
-		prev := queryDayCache(c.metric, c.agg, yesterdayStr)
-		if val == 0 {
-			if slowMetrics[c.metric] && prev != 0 {
-				val = prev
-			} else {
-				continue
-			}
+		result.Date = *today
+		if value == 0 && (metric == "resting_heart_rate" || metric == "wrist_temperature") && previousValue != 0 {
+			value = previousValue
 		}
-		result = append(result, CardData{
-			Metric: c.metric, Value: val, Prev: prev,
-			Unit: unitMap[c.metric], Date: *today,
+		if value == 0 {
+			continue
+		}
+		result.Cards = append(result.Cards, CardData{
+			Metric: metric,
+			Value:  value,
+			Prev:   previousValue,
+			Date:   *today,
 		})
 	}
-	return &DashboardResponse{Date: *today, LastUpdated: lastUpdatedStr, Cards: result}, nil
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate dashboard cache: %w", err)
+	}
+	if result.Date != "" {
+		units, err := s.dashboardSnapshotUnits(ctx, result.Date)
+		if err != nil {
+			return err
+		}
+		for i := range result.Cards {
+			result.Cards[i].Unit = units[result.Cards[i].Metric]
+		}
+	}
+	var lastUpdated *string
+	if err := s.pool.QueryRow(ctx, `SELECT MAX(received_at) FROM health_records`).Scan(&lastUpdated); err != nil {
+		return fmt.Errorf("read dashboard receipt timestamp: %w", err)
+	}
+	if lastUpdated != nil {
+		result.LastUpdated = *lastUpdated
+	}
+
+	payload, err := json.Marshal(result)
+	if err != nil {
+		return fmt.Errorf("encode dashboard snapshot: %w", err)
+	}
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO dashboard_cache_snapshots (singleton, completed_at, payload)
+		VALUES (true, NOW(), $1)
+		ON CONFLICT (singleton) DO UPDATE
+		SET completed_at = EXCLUDED.completed_at, payload = EXCLUDED.payload`, json.RawMessage(payload)); err != nil {
+		return fmt.Errorf("write dashboard snapshot: %w", err)
+	}
+	return nil
+}
+
+// dashboardSnapshotUnits retains a unit only when the current-day source
+// data agrees on one non-empty value. A missing label is safer than claiming
+// that miles are kilometres or kJ are kcal; this runs off-request-path while
+// the completed snapshot is being built.
+func (s *DB) dashboardSnapshotUnits(ctx context.Context, date string) (map[string]string, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT metric_name,
+			CASE
+				WHEN COUNT(*) FILTER (WHERE NULLIF(BTRIM(units), '') IS NULL) = 0
+				 AND COUNT(DISTINCT NULLIF(BTRIM(units), '')) = 1
+				THEN MIN(NULLIF(BTRIM(units), ''))
+				ELSE ''
+			END AS unit
+		FROM metric_points
+		WHERE SUBSTRING(date, 1, 10) = $1
+		GROUP BY metric_name`, date)
+	if err != nil {
+		return nil, fmt.Errorf("read dashboard units: %w", err)
+	}
+	defer rows.Close()
+	units := make(map[string]string)
+	for rows.Next() {
+		var metric, unit string
+		if err := rows.Scan(&metric, &unit); err != nil {
+			return nil, fmt.Errorf("scan dashboard unit: %w", err)
+		}
+		units[metric] = unit
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate dashboard units: %w", err)
+	}
+	return units, nil
 }
 
 func (s *DB) SummarizeMetric(metric string, days int) (*MetricStats, error) {

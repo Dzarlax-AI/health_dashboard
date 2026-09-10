@@ -18,7 +18,7 @@ import (
 // SchemaContractVersion is bumped whenever the declared tenant schema
 // contract changes. Existing tenants are not current until both the permanent
 // marker and registry metadata carry this version and checksum.
-const SchemaContractVersion = 7
+const SchemaContractVersion = 8
 
 // TenantIdentityTable is the permanent marker shared by clean provisioning
 // and existing-tenant migrations. The provisioning marker is intentionally
@@ -105,7 +105,7 @@ type ContractCatalog interface {
 }
 
 var schemaContract = ContractManifest{
-	Tables:  []string{"health_records", "metric_points", "import_runs", "import_run_coverage", "import_stage_points", "import_stage_workouts", "minute_metrics", "hourly_metrics", "daily_scores", "settings", "notification_deliveries", "workouts", "ai_briefings", "ai_briefing_blocks", "daily_insight_bundles", "energy_snapshots", "source_epochs", "target_snapshots", "feature_snapshots", "naive_baselines", "chip_calibrations", "subjective_checkins", "context_prompt_interactions", "derived_metrics", "derived_metric_feedback", "auth_sessions"},
+	Tables:  []string{"health_records", "metric_points", "import_runs", "import_run_coverage", "import_stage_points", "import_stage_workouts", "minute_metrics", "hourly_metrics", "dashboard_cache_snapshots", "daily_scores", "settings", "notification_deliveries", "workouts", "ai_briefings", "ai_briefing_blocks", "daily_insight_bundles", "energy_snapshots", "source_epochs", "target_snapshots", "feature_snapshots", "naive_baselines", "chip_calibrations", "subjective_checkins", "context_prompt_interactions", "derived_metrics", "derived_metric_feedback", "auth_sessions"},
 	Indexes: []string{"idx_auth_sessions_expires", "idx_chip_calibrations_sub_kind", "idx_context_prompt_one_sent_per_day", "idx_context_prompt_status_expires", "idx_energy_snapshots_date", "idx_energy_snapshots_flags", "idx_energy_snapshots_ts", "idx_feature_snapshots_sub_date", "idx_health_records_completed_processed_at", "idx_hourly_date", "idx_hourly_metric_date", "idx_import_stage_points_coverage", "idx_import_stage_points_dedup", "idx_import_stage_workouts_dedup", "idx_import_stage_workouts_synthetic", "idx_naive_baselines_sub_kind_base_date", "idx_points_date", "idx_points_metric_date", "idx_points_quality_metric", "idx_source_epochs_active", "idx_target_snapshots_source_epoch", "idx_target_snapshots_sub_kind_date", "idx_workouts_name", "idx_workouts_start_time", "uq_source_epochs_kind_start"},
 	IndexDefinitions: []IndexDefinition{
 		{Name: "idx_auth_sessions_expires", Table: "auth_sessions", AccessMethod: "btree", Keys: []string{"expires_at"}},
@@ -138,6 +138,7 @@ var schemaContract = ContractManifest{
 		"health_records":    {"processing_status", "processing_kind", "processing_error", "processed_at"},
 		"import_runs":       {"heartbeat_at", "lease_token"},
 		"metric_points":     {"quality", "origin", "import_run_id", "source_snapshot_at"},
+		"hourly_metrics":    {"sample_count"},
 		"workouts":          {"origin", "import_run_id", "source_snapshot_at"},
 		"daily_scores":      {"energy_capacity", "energy_eod_current", "energy_drain", "energy_verdict", "baseline_hr_overnight", "sustained_hr_load", "stress_flags", "sleep_unspecified"},
 		"naive_baselines":   {"reason"},
@@ -154,6 +155,7 @@ var schemaContract = ContractManifest{
 		{Table: "import_stage_workouts", Kind: "p", Columns: []string{"staged_seq"}},
 		{Table: "minute_metrics", Kind: "p", Columns: []string{"metric_name", "minute", "source"}},
 		{Table: "hourly_metrics", Kind: "p", Columns: []string{"metric_name", "hour", "source"}},
+		{Table: "dashboard_cache_snapshots", Kind: "p", Columns: []string{"singleton"}},
 		{Table: "daily_scores", Kind: "p", Columns: []string{"date"}},
 		{Table: "settings", Kind: "p", Columns: []string{"key"}},
 		{Table: "notification_deliveries", Kind: "p", Columns: []string{"delivery_key"}},

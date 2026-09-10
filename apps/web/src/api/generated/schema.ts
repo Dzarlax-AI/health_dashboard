@@ -226,6 +226,8 @@ export interface components {
             yesterday: string;
         };
         DashboardResponse: {
+            cache_completed_at?: string;
+            cache_state: string;
             cards: {
                 date: string;
                 metric: string;

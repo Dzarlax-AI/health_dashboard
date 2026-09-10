@@ -127,6 +127,12 @@
       "DashboardResponse": {
         "additionalProperties": false,
         "properties": {
+          "cache_completed_at": {
+            "type": "string"
+          },
+          "cache_state": {
+            "type": "string"
+          },
           "cards": {
             "items": {
               "additionalProperties": false,
@@ -171,6 +177,7 @@
         "required": [
           "date",
           "last_updated",
+          "cache_state",
           "cards"
         ],
         "type": "object"
