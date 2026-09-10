@@ -106,6 +106,39 @@ test("the hero ring preserves its forced-colors boundary", async ({ page }) => {
   expect(borderWidth).toBe("1px");
 });
 
+test("supporting gauges have no decorative outer frame", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto("/?lang=en&fixture=normal");
+
+  const styles = await page.locator(".score-gauge--card [data-gauge-frame]").evaluateAll((frames) =>
+    frames.map((frame) => {
+      const computed = getComputedStyle(frame);
+      return { backgroundColor: computed.backgroundColor, borderWidth: computed.borderWidth, boxShadow: computed.boxShadow };
+    }),
+  );
+
+  expect(styles.length).toBeGreaterThan(0);
+  for (const style of styles) {
+    expect(style).toEqual({ backgroundColor: "rgba(0, 0, 0, 0)", borderWidth: "0px", boxShadow: "none" });
+  }
+});
+
+test("dark-mode action chip keeps a distinct readable surface", async ({ page }) => {
+  await page.goto("/?lang=en&fixture=normal");
+  await page.locator("html").evaluate((root) => root.setAttribute("dark-mode", ""));
+
+  const styles = await page.locator(".today-hero__action").evaluate((action) => {
+    const computed = getComputedStyle(action);
+    return { backgroundColor: computed.backgroundColor, borderWidth: computed.borderWidth, color: computed.color };
+  });
+
+  expect(styles).toEqual({
+    backgroundColor: "rgba(241, 245, 242, 0.16)",
+    borderWidth: "1px",
+    color: "rgb(241, 245, 242)",
+  });
+});
+
 for (const fixture of ["loading", "unavailable", "error"] as const) {
   test(`${fixture} state never fabricates a score`, async ({ page }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
