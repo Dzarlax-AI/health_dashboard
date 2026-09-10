@@ -48,12 +48,24 @@ func TestGetDashboardServesOnlyAnAtomicallyCompletedSnapshot(t *testing.T) {
 	if err := db.refreshDashboardSnapshot(ctx); err != nil {
 		t.Fatalf("refresh dashboard snapshot: %v", err)
 	}
+	// A newly received upload can arrive before the next asynchronous snapshot
+	// refresh. last_updated remains a live receipt timestamp, not snapshot state.
+	var postSnapshotReceipt string
+	if err := db.pool.QueryRow(ctx, `
+		INSERT INTO health_records (received_at, processing_status)
+		VALUES ('2026-09-10T16:45:00+02:00', 'complete')
+		RETURNING received_at`).Scan(&postSnapshotReceipt); err != nil {
+		t.Fatalf("seed post-snapshot health record: %v", err)
+	}
 	initial, err := db.GetDashboard()
 	if err != nil {
 		t.Fatalf("read completed dashboard snapshot: %v", err)
 	}
 	if initial.CacheState != dashboardCacheStateComplete || initial.CacheCompletedAt == "" {
 		t.Fatalf("initial cache metadata = (%q, %q), want completed snapshot", initial.CacheState, initial.CacheCompletedAt)
+	}
+	if initial.LastUpdated != postSnapshotReceipt {
+		t.Fatalf("initial last updated = %q, want live post-snapshot receipt %q", initial.LastUpdated, postSnapshotReceipt)
 	}
 
 	// Simulate a partially-written next generation. Readers must retain the

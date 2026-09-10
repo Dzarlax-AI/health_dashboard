@@ -55,9 +55,12 @@ type DashboardResponse struct {
 }
 
 const (
-	dashboardCacheStateComplete    = "complete"
-	dashboardCacheStateUpdating    = "updating"
-	dashboardCacheStateUnavailable = "unavailable"
+	dashboardCacheStateComplete = "complete"
+	dashboardCacheStateUpdating = "updating"
+	// DashboardCacheStateUnavailable means no completed dashboard snapshot is
+	// available yet. Callers that make durable decisions must defer rather than
+	// treating it as an empty dashboard.
+	DashboardCacheStateUnavailable = "unavailable"
 )
 
 // dashboardCacheQuery is run only by the background cache writer. Requests
@@ -575,7 +578,11 @@ func (s *DB) GetDashboard() (*DashboardResponse, error) {
 		WHERE singleton = true`).Scan(&payload, &completedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return &DashboardResponse{CacheState: dashboardCacheStateUnavailable}, nil
+			lastUpdated, err := s.dashboardLastUpdated(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return &DashboardResponse{LastUpdated: lastUpdated, CacheState: DashboardCacheStateUnavailable}, nil
 		}
 		return nil, fmt.Errorf("read dashboard snapshot: %w", err)
 	}
@@ -584,6 +591,11 @@ func (s *DB) GetDashboard() (*DashboardResponse, error) {
 	if err := json.Unmarshal(payload, &result); err != nil {
 		return nil, fmt.Errorf("decode dashboard snapshot: %w", err)
 	}
+	lastUpdated, err := s.dashboardLastUpdated(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result.LastUpdated = lastUpdated
 	result.CacheCompletedAt = completedAt.UTC().Format(time.RFC3339Nano)
 	if s.dashboardRefreshes.Load() > 0 {
 		result.CacheState = dashboardCacheStateUpdating
@@ -591,6 +603,19 @@ func (s *DB) GetDashboard() (*DashboardResponse, error) {
 		result.CacheState = dashboardCacheStateComplete
 	}
 	return &result, nil
+}
+
+// dashboardLastUpdated preserves the documented receipt-time meaning of
+// DashboardResponse.LastUpdated independently of the cache snapshot cadence.
+func (s *DB) dashboardLastUpdated(ctx context.Context) (string, error) {
+	var lastUpdated *string
+	if err := s.pool.QueryRow(ctx, `SELECT MAX(received_at) FROM health_records`).Scan(&lastUpdated); err != nil {
+		return "", fmt.Errorf("read dashboard receipt timestamp: %w", err)
+	}
+	if lastUpdated == nil {
+		return "", nil
+	}
+	return *lastUpdated, nil
 }
 
 // refreshDashboardSnapshot is used by integration tests and migration tooling.
@@ -646,14 +671,6 @@ func (s *DB) refreshDashboardSnapshotLocked(ctx context.Context) error {
 			result.Cards[i].Unit = units[result.Cards[i].Metric]
 		}
 	}
-	var lastUpdated *string
-	if err := s.pool.QueryRow(ctx, `SELECT MAX(received_at) FROM health_records`).Scan(&lastUpdated); err != nil {
-		return fmt.Errorf("read dashboard receipt timestamp: %w", err)
-	}
-	if lastUpdated != nil {
-		result.LastUpdated = *lastUpdated
-	}
-
 	payload, err := json.Marshal(result)
 	if err != nil {
 		return fmt.Errorf("encode dashboard snapshot: %w", err)

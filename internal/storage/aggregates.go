@@ -672,7 +672,12 @@ func (s *DB) BackfillAggregates(force bool) error {
 	if err := s.BuildDailyMetrics(force); err != nil {
 		return fmt.Errorf("daily metrics: %w", err)
 	}
-	if err := s.refreshDashboardSnapshotLocked(ctx); err != nil {
+	// The rebuild can exceed the five-minute context created at function entry.
+	// Publish with a fresh deadline so a successful cache generation is always
+	// made visible to request readers.
+	snapshotCtx, cancelSnapshot := longCtx()
+	defer cancelSnapshot()
+	if err := s.refreshDashboardSnapshotLocked(snapshotCtx); err != nil {
 		return fmt.Errorf("dashboard snapshot: %w", err)
 	}
 

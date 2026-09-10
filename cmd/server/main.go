@@ -1252,10 +1252,54 @@ schedulerLoop:
 			runMorningSmartRetry(ctx, bot, db, mgr, reg, schema, ncfg, baseURL)
 		} else {
 			log.Println("report scheduler: sending evening report…")
-			if err := notify.SendEvening(bot, db, ncfg); err != nil {
+			if err := retryEveningSnapshotUnavailable(ctx, next, reportTimezone(ncfg), time.Now, waitForContext, func() error {
+				return notify.SendEvening(bot, db, ncfg)
+			}); err != nil {
 				log.Printf("report scheduler: evening send error: %v", err)
 			}
 		}
+	}
+}
+
+const eveningSnapshotRetryInterval = time.Minute
+
+func reportTimezone(cfg notify.Config) *time.Location {
+	if cfg.Timezone != "" {
+		if loc, err := time.LoadLocation(cfg.Timezone); err == nil {
+			return loc
+		}
+	}
+	return time.Local
+}
+
+// retryEveningSnapshotUnavailable retries only while a first-start snapshot
+// is unavailable. SendEvening returns before reserving the durable delivery,
+// so each retry remains safe; retries stop at the tenant-local day boundary.
+func retryEveningSnapshotUnavailable(ctx context.Context, scheduledAt time.Time, loc *time.Location, now func() time.Time, pause func(context.Context, time.Duration) error, send func() error) error {
+	scheduledDate := scheduledAt.In(loc).Format("2006-01-02")
+	for {
+		if now().In(loc).Format("2006-01-02") != scheduledDate {
+			return notify.ErrDashboardSnapshotUnavailable
+		}
+		err := send()
+		if !errors.Is(err, notify.ErrDashboardSnapshotUnavailable) {
+			return err
+		}
+		log.Printf("report scheduler: dashboard snapshot unavailable; retrying in %s", eveningSnapshotRetryInterval)
+		if err := pause(ctx, eveningSnapshotRetryInterval); err != nil {
+			return err
+		}
+	}
+}
+
+func waitForContext(ctx context.Context, wait time.Duration) error {
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 

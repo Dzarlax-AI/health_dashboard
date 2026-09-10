@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -48,6 +49,57 @@ func TestReportScheduleAtDeadlineFiresInsteadOfReschedulingTomorrow(t *testing.T
 	}
 	if !reportScheduleChanged(next, next, true, cfg, changed) {
 		t.Fatal("schedule change during the final wait was ignored at the old deadline")
+	}
+}
+
+func TestRetryEveningSnapshotUnavailableUntilComplete(t *testing.T) {
+	loc := time.UTC
+	now := time.Date(2026, time.September, 10, 20, 0, 0, 0, loc)
+	attempts := 0
+	pauses := 0
+	err := retryEveningSnapshotUnavailable(
+		context.Background(),
+		now,
+		loc,
+		func() time.Time { return now },
+		func(context.Context, time.Duration) error {
+			pauses++
+			return nil
+		},
+		func() error {
+			attempts++
+			if attempts == 1 {
+				return notify.ErrDashboardSnapshotUnavailable
+			}
+			return nil
+		},
+	)
+	if err != nil || attempts != 2 || pauses != 1 {
+		t.Fatalf("retry result = err:%v attempts:%d pauses:%d, want success after one retry", err, attempts, pauses)
+	}
+}
+
+func TestRetryEveningSnapshotUnavailableStopsAtDayRollover(t *testing.T) {
+	loc := time.UTC
+	scheduled := time.Date(2026, time.September, 10, 23, 59, 0, 0, loc)
+	now := scheduled
+	attempts := 0
+	err := retryEveningSnapshotUnavailable(
+		context.Background(),
+		scheduled,
+		loc,
+		func() time.Time { return now },
+		func(context.Context, time.Duration) error {
+			now = now.Add(time.Minute)
+			return nil
+		},
+		func() error {
+			attempts++
+			return notify.ErrDashboardSnapshotUnavailable
+		},
+	)
+	if !errors.Is(err, notify.ErrDashboardSnapshotUnavailable) || attempts != 1 {
+		t.Fatalf("rollover retry = err:%v attempts:%d, want one unavailable attempt", err, attempts)
 	}
 }
 

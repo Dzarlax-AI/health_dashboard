@@ -131,7 +131,8 @@
       <li>Remediation stores one durable dashboard snapshot after a complete successful cache generation, retains the prior row on failure, and exposes additive <code>complete/updating/unavailable</code> state. <code>last_updated</code> remains the latest receipt timestamp; unit labels are retained only when raw inputs agree.</li>
       <li>Hourly AVG writers now persist <code>sample_count</code> and snapshot SQL uses weighted averages. This is an additive schema-contract v8 change and therefore requires the existing tenant-schema deployment gate.</li>
       <li>Startup refresh uses an unbounded pending list plus one worker after HTTP readiness; the routine DB lane now explicitly runs the dashboard snapshot regression.</li>
-      <li>Validation: affected Go packages, queue regressions, schema-contract check, contract generation/check, and the full web pipeline pass. The focused DB test is wired into the routine lane but its current local fixture stalled during pre-test schema migration (before the test body); it needs a clean available test DB before final DB sign-off. No commit, push, deployment, or production mutation has occurred.</li>
+      <li>PR review remediation: dashboard publication now creates a fresh context after a long backfill; a missing snapshot defers the durable evening delivery before it can consume its at-most-once reservation, retries only until the tenant-local day boundary, and then stops; and <code>last_updated</code> is read live from the receipt timestamp instead of being frozen in the snapshot payload.</li>
+      <li>Validation after the review remediation: notify, storage, UI, and server Go tests pass; the focused DB snapshot regression passes with <code>HEALTH_DB_TESTS=1</code>, including a receipt accepted after snapshot publication; API contract check and the complete web type/lint/test/build pipeline pass. No commit, push, deployment, or production mutation has occurred.</li>
     </ul>
   </section>
 
