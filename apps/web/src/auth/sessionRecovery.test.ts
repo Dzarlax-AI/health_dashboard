@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { ClientApiError } from "../api/client";
 import {
   clearSessionRecoveryAttempt,
+  recoverSessionOnUnauthorized,
   requestSessionRecovery,
   sessionRecoveryURL,
   sessionRecoveryStorageKey,
@@ -30,6 +32,50 @@ describe("session recovery", () => {
 
     clearSessionRecoveryAttempt(storage);
     expect(values.has(sessionRecoveryStorageKey)).toBe(false);
+  });
+
+  it("shares one 401 recovery path across every React entry route", () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+    };
+    const navigate = vi.fn();
+
+    expect(
+      recoverSessionOnUnauthorized(
+        new ClientApiError(401, "authentication required"),
+        { pathname: "/activity", search: "?lang=en", hash: "" },
+        storage,
+        navigate,
+      ),
+    ).toBe(true);
+    expect(navigate).toHaveBeenCalledWith("/auth/session?next=%2Factivity%3Flang%3Den");
+    expect(
+      recoverSessionOnUnauthorized(
+        new ClientApiError(401, "authentication required"),
+        { pathname: "/sleep", search: "", hash: "" },
+        storage,
+        navigate,
+      ),
+    ).toBe(false);
+    expect(
+      recoverSessionOnUnauthorized(
+        new ClientApiError(500, "server error"),
+        { pathname: "/recovery", search: "", hash: "" },
+        storage,
+        navigate,
+      ),
+    ).toBe(false);
+    expect(
+      recoverSessionOnUnauthorized(
+        { status: 401 },
+        { pathname: "/cardio", search: "", hash: "" },
+        storage,
+        navigate,
+      ),
+    ).toBe(false);
   });
 
   it("does not leave a retry marker when navigation fails", () => {

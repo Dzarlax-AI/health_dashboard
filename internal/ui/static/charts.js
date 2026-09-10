@@ -2,6 +2,26 @@
 'use strict';
 
 var SOURCE_PALETTE = ['#2563eb','#e11d48','#059669','#d97706','#7c3aed','#06b6d4','#ea580c','#0891b2'];
+var HEALTH_SESSION_RECOVERY_STORAGE_KEY = 'health.auth.recovery.attempted';
+
+function healthAPIResponse(response) {
+  if (response.status === 401) {
+    try {
+      if (window.sessionStorage.getItem(HEALTH_SESSION_RECOVERY_STORAGE_KEY) !== '1') {
+        window.sessionStorage.setItem(HEALTH_SESSION_RECOVERY_STORAGE_KEY, '1');
+        var next = window.location.pathname + window.location.search + window.location.hash;
+        window.location.assign('/auth/session?next=' + encodeURIComponent(next));
+      }
+    } catch (_) {
+      // Storage or navigation can be unavailable in hardened browser contexts.
+    }
+    return Promise.reject(new Error('Interactive authentication is required'));
+  }
+  if (response.ok) {
+    try { window.sessionStorage.removeItem(HEALTH_SESSION_RECOVERY_STORAGE_KEY); } catch (_) {}
+  }
+  return response.json();
+}
 
 // Track chart instances per canvas to destroy before reuse
 var _chartInstances = {};
@@ -56,7 +76,7 @@ Chart.register({
 var sparklineChart = null;
 function loadReadinessSparkline(canvasId) {
   fetch('/api/readiness-history?days=30')
-    .then(function(r){return r.json()})
+    .then(healthAPIResponse)
     .then(function(d) {
       var pts = d.points || [];
       if (pts.length < 3) return;
@@ -121,7 +141,7 @@ function loadReadinessSparkline(canvasId) {
 var energySparklineChart = null;
 function loadEnergySparkline(canvasId) {
   fetch('/api/energy-history?days=14')
-    .then(function(r){return r.json()})
+    .then(healthAPIResponse)
     .then(function(d) {
       var pts = d.points || [];
       if (pts.length < 3) return;
@@ -202,7 +222,7 @@ function loadEnergyHourlyChart(canvasId) {
   var el = document.getElementById(canvasId);
   if (!el) return;
   fetch('/api/energy-history?granularity=hour&hours=72')
-    .then(function(r) { return r.json(); })
+    .then(healthAPIResponse)
     .then(function(d) {
       var pts = d.points || [];
       if (pts.length < 3) return;
@@ -379,12 +399,12 @@ function loadTrendCharts(containerId) {
   Promise.all(TRENDS.map(function(f) {
     if (f.virtual) {
       return fetch('/api/readiness-history?days=30')
-        .then(function(r){return r.json()})
+        .then(healthAPIResponse)
         .then(function(d) { return { f: f, pts: (d.points || []).map(function(p){ return { date: p.date, qty: p.score }; }) }; })
         .catch(function() { return { f: f, pts: [] }; });
     }
     return fetch('/api/metrics/data?metric=' + encodeURIComponent(f.metric) + '&from=' + from30 + '&to=' + to30 + '&bucket=day')
-      .then(function(r){return r.json()})
+      .then(healthAPIResponse)
       .then(function(d) { return { f: f, pts: (d.points || []).filter(function(p){return p.qty > 0}) }; })
       .catch(function() { return { f: f, pts: [] }; });
   })).then(function(results) {
@@ -452,7 +472,7 @@ function loadMetricCardSparklines() {
     var metric = canvas.getAttribute('data-metric');
     if (!metric) return;
     fetch('/api/metrics/data?metric=' + encodeURIComponent(metric) + '&from=' + from + '&to=' + to + '&bucket=day')
-      .then(function(r){return r.json()})
+      .then(healthAPIResponse)
       .then(function(d) {
         var pts = (d.points || []).filter(function(p){ return p.qty > 0; });
         if (pts.length < 2) return;
@@ -517,7 +537,7 @@ function loadSleepChart(canvasId, from, to) {
   setLoading(true);
   Promise.all(SLEEP_PHASES.map(function(ph) {
     return fetch('/api/metrics/data?metric=' + ph.metric + '&from=' + from + '&to=' + to + '&bucket=day&agg=AVG')
-      .then(function(r){return r.json()});
+      .then(healthAPIResponse);
   })).then(function(results) {
     setLoading(false);
     var labelSet = new Set();
@@ -581,7 +601,7 @@ function loadReadinessChart(canvasId, from, to) {
   var toD = new Date(to + 'T12:00:00');
   var days = Math.round((toD - fromD) / 86400000) + 1;
   fetch('/api/readiness-history?days=' + days)
-    .then(function(r){return r.json()})
+    .then(healthAPIResponse)
     .then(function(d) {
       setLoading(false);
       var pts = (d.points || []).filter(function(p){ return p.date >= from && p.date <= to; });
@@ -640,7 +660,7 @@ function loadMetricChart(canvasId, metric, from, to, bucket, agg, opts) {
   if (opts.bySource) url += '&by_source=1';
 
   fetch(url)
-    .then(function(r){return r.json()})
+    .then(healthAPIResponse)
     .then(function(data) {
       setLoading(false);
       var pts = data.points || [];

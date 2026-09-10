@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 import { ClientApiError, getAIBriefing } from "../../api/client";
+import {
+  clearSessionRecoveryAttempt,
+  recoverSessionOnUnauthorized,
+} from "../../auth/sessionRecovery";
 import { AppHeader } from "../../components/AppHeader";
 import { LazyTrendChart } from "../../components/charts/LazyTrendChart";
 import { StatusPanel } from "../../components/StatusPanel";
@@ -273,9 +277,20 @@ export function HealthDetailPage({ config }: { config: HealthSectionConfig }) {
     if (fixture) return;
     const controller = new AbortController();
     loadHealthDetailResources(config, locale, controller.signal)
-      .then((resources) => setLiveState({ status: "ready", resources }))
+      .then((resources) => {
+        clearSessionRecoveryAttempt(window.sessionStorage);
+        setLiveState({ status: "ready", resources });
+      })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
+        if (recoverSessionOnUnauthorized(
+          error,
+          window.location,
+          window.sessionStorage,
+          (target) => window.location.assign(target),
+        )) {
+          return;
+        }
         if (error instanceof ClientApiError && error.status === 401) {
           setLiveState({ status: "unauthenticated" });
           return;

@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { ClientApiError, getAIBriefing } from "../../api/client";
+import { sessionRecoveryStorageKey } from "../../auth/sessionRecovery";
 import { healthSectionConfigs } from "./config";
 import { healthDetailFixtureResources } from "./fixtures";
 import { HealthDetailPage, HealthDetailReady } from "./HealthDetailPage";
@@ -30,6 +31,7 @@ describe("HealthDetailPage", () => {
   afterEach(() => {
     mockedGetAIBriefing.mockReset();
     mockedLoadHealthDetailResources.mockReset();
+    window.sessionStorage.clear();
     window.history.replaceState({}, "", "/");
     vi.unstubAllEnvs();
     vi.useRealTimers();
@@ -101,9 +103,10 @@ describe("HealthDetailPage", () => {
     expect(screen.getByText("Кислород крови")).toBeInTheDocument();
   });
 
-  it("renders the protected sign-in destination after a 401", async () => {
+  it("renders the protected sign-in destination after a failed session recovery", async () => {
     vi.stubEnv("VITE_ENABLE_FIXTURES", "false");
     window.history.replaceState({}, "", "/activity?lang=en");
+    window.sessionStorage.setItem(sessionRecoveryStorageKey, "1");
     mockedLoadHealthDetailResources.mockRejectedValue(
       new ClientApiError(401, "authentication required"),
     );

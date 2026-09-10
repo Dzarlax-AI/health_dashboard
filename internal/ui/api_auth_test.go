@@ -42,6 +42,33 @@ func TestRejectUnauthenticatedKeepsPageLoginRedirect(t *testing.T) {
 	}
 }
 
+func TestForwardAuthIdentityIsRejectedForAPIRequests(t *testing.T) {
+	h := &Handler{trustFwdAuth: true}
+	if err := h.SetTrustedForwardAuthNetworks("203.0.113.0/24"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "browser API", path: "/api/dashboard", want: false},
+		{name: "API key route", path: "/api/metrics", want: false},
+		{name: "machine checkpoint", path: "/health/checkpoint", want: false},
+		{name: "protected session refresh", path: "/auth/session", want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			req.RemoteAddr = "203.0.113.5:8443"
+			req.Header.Set("X-authentik-username", "admin")
+			if got := h.forwardAuthIdentityTrusted(req); got != tc.want {
+				t.Fatalf("forwardAuthIdentityTrusted(%s) = %v, want %v", tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSessionRecoveryRedirectsToSafeSPAPath(t *testing.T) {
 	h := &Handler{}
 

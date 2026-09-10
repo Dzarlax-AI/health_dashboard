@@ -3,8 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ClientApiError } from "./api/client";
 import {
   clearSessionRecoveryAttempt,
-  requestSessionRecovery,
-  sessionRecoveryURL,
+  recoverSessionOnUnauthorized,
 } from "./auth/sessionRecovery";
 import { AppHeader } from "./components/AppHeader";
 import { StatusPanel } from "./components/StatusPanel";
@@ -67,16 +66,15 @@ function DashboardApp() {
         if (controller.signal.aborted) {
           return;
         }
+        if (recoverSessionOnUnauthorized(
+          error,
+          window.location,
+          window.sessionStorage,
+          (target) => window.location.assign(target),
+        )) {
+          return;
+        }
         if (error instanceof ClientApiError && error.status === 401) {
-          if (
-            requestSessionRecovery(
-              window.sessionStorage,
-              sessionRecoveryURL(window.location),
-              (target) => window.location.assign(target),
-            )
-          ) {
-            return;
-          }
           setLiveState({ status: "unauthenticated" });
           return;
         }

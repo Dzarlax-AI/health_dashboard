@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { ClientApiError, getAIBriefing, type AIBriefingResponse } from "../../api/client";
+import {
+  clearSessionRecoveryAttempt,
+  recoverSessionOnUnauthorized,
+} from "../../auth/sessionRecovery";
 import { AppHeader } from "../../components/AppHeader";
 import { StatusPanel } from "../../components/StatusPanel";
 import { shouldPollAI } from "../dashboard/aiPolling";
@@ -321,9 +325,20 @@ export function SleepPage() {
     if (fixture) return;
     const controller = new AbortController();
     loadSleepResources(locale, controller.signal)
-      .then((resources) => setState({ status: "ready", resources }))
+      .then((resources) => {
+        clearSessionRecoveryAttempt(window.sessionStorage);
+        setState({ status: "ready", resources });
+      })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
+        if (recoverSessionOnUnauthorized(
+          error,
+          window.location,
+          window.sessionStorage,
+          (target) => window.location.assign(target),
+        )) {
+          return;
+        }
         if (error instanceof ClientApiError && error.status === 401) {
           setState({ status: "unauthenticated" });
         } else {

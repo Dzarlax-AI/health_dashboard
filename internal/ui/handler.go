@@ -336,7 +336,7 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 			}
 
 			// Authentik forward auth
-			if h.forwardAuthTrusted(r) &&
+			if h.forwardAuthIdentityTrusted(r) &&
 				(r.Header.Get("X-authentik-username") != "" || r.Header.Get("X-authentik-email") != "") {
 				// Issue a local cookie so requests survive Authentik session expiry.
 				if cookie, err := r.Cookie(authCookieName); err != nil || !db.AuthSessionValid(cookie.Value) {
@@ -395,7 +395,7 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		// Authentik forward auth: trust X-authentik-username / X-authentik-email headers.
-		if h.forwardAuthTrusted(r) {
+		if h.forwardAuthIdentityTrusted(r) {
 			authentikUser := r.Header.Get("X-authentik-username")
 			authentikEmail := r.Header.Get("X-authentik-email")
 			if authentikUser != "" || authentikEmail != "" {
@@ -442,6 +442,13 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 
 func isAPIRequest(r *http.Request) bool {
 	return strings.HasPrefix(r.URL.Path, "/api/")
+}
+
+// forwardAuthIdentityTrusted accepts Authentik identity only on protected
+// document requests. API and machine routers deliberately bypass ForwardAuth;
+// never treat client-supplied X-authentik-* headers as their credentials.
+func (h *Handler) forwardAuthIdentityTrusted(r *http.Request) bool {
+	return !isAPIRequest(r) && !strings.HasPrefix(r.URL.Path, "/health") && h.forwardAuthTrusted(r)
 }
 
 func writeAPIAuthenticationRequired(w http.ResponseWriter) {

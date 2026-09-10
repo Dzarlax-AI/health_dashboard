@@ -1,3 +1,5 @@
+import { ClientApiError } from "../api/client";
+
 export const sessionRecoveryStorageKey = "health.auth.recovery.attempted";
 
 export function sessionRecoveryURL(
@@ -27,6 +29,21 @@ export function requestSessionRecovery(
     }
     return false;
   }
+}
+
+export function recoverSessionOnUnauthorized(
+  error: unknown,
+  location: Pick<Location, "pathname" | "search" | "hash">,
+  storage: Pick<Storage, "getItem" | "setItem" | "removeItem">,
+  navigate: (target: string) => void,
+): boolean {
+  if (
+    !(error instanceof ClientApiError) ||
+    error.status !== 401
+  ) {
+    return false;
+  }
+  return requestSessionRecovery(storage, sessionRecoveryURL(location), navigate);
 }
 
 export function clearSessionRecoveryAttempt(
