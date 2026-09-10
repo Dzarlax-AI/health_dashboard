@@ -2,7 +2,6 @@ package storage
 
 import (
 	"fmt"
-	"log"
 
 	"health-receiver/internal/health"
 )
@@ -19,17 +18,17 @@ type EnergyHistoryPoint struct {
 }
 
 // SaveEnergyBankSnapshot upserts a legacy EOD EnergyBank snapshot into
-// daily_scores.energy_*. Best-effort — errors are logged but not returned,
-// and callers should never block briefing rendering on this.
+// daily_scores.energy_*. It returns write errors to the mutation coordinator;
+// briefing rendering itself remains independent from this compatibility write.
 //
 // Called only from the derived-state refresh coordinator. By construction the
 // previous day's row freezes once today rolls over (no more recompute for
 // it from a read path). Backfilling historical rows is intentionally out of
 // scope — adding that prematurely would lock in numbers from an evolving
 // formula. Track via Todoist: 6gX922PFjx82PvGf.
-func (s *DB) SaveEnergyBankSnapshot(date string, eb *health.EnergyBank) {
+func (s *DB) SaveEnergyBankSnapshot(date string, eb *health.EnergyBank) error {
 	if eb == nil || date == "" {
-		return
+		return nil
 	}
 	ctx, cancel := queryCtx()
 	defer cancel()
@@ -43,24 +42,21 @@ func (s *DB) SaveEnergyBankSnapshot(date string, eb *health.EnergyBank) {
 			energy_verdict     = excluded.energy_verdict,
 			computed_at        = excluded.computed_at`,
 		date, eb.Capacity, eb.Current, eb.DrainSoFar, eb.ActionVerdict)
-	if err != nil {
-		log.Printf("save energy bank snapshot %s: %v", date, err)
-	}
+	return err
 }
 
 // RefreshLegacyEnergyBankSnapshot keeps the compatibility day-level history
 // in sync from the canonical briefing, but deliberately does so only from a
 // mutation-driven coordinator. GetHealthBriefing itself stays read-only.
-func (s *DB) RefreshLegacyEnergyBankSnapshot(lang string) {
+func (s *DB) RefreshLegacyEnergyBankSnapshot(lang string) error {
 	briefing, err := s.GetHealthBriefing(lang)
 	if err != nil {
-		log.Printf("refresh legacy energy bank snapshot: briefing: %v", err)
-		return
+		return fmt.Errorf("get health briefing: %w", err)
 	}
 	if briefing == nil || briefing.EnergyBank == nil || briefing.Date == "" {
-		return
+		return nil
 	}
-	s.SaveEnergyBankSnapshot(briefing.Date, briefing.EnergyBank)
+	return s.SaveEnergyBankSnapshot(briefing.Date, briefing.EnergyBank)
 }
 
 // GetEnergyHistory returns the most recent `days` legacy EOD snapshots in

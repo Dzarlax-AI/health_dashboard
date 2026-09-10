@@ -70,8 +70,8 @@ type DailyInsightNarrativeResult struct {
 
 // GenerateDailyInsightNarrative asks a provider to acknowledge a closed,
 // server-authored template. It has no authority over text, state, actions, or
-// destinations. A bad primary rejects the result; bad non-primary domains are
-// omitted so their deterministic fallback can continue to render.
+// destinations. Any bad or missing section rejects the acknowledgement so it
+// cannot be persisted as ready.
 func GenerateDailyInsightNarrative(ctx context.Context, provider Provider, cfg ProviderConfig, snapshot *health.DailyInsightSnapshot, lang string) (DailyInsightNarrativeResult, error) {
 	if snapshot == nil {
 		return DailyInsightNarrativeResult{}, fmt.Errorf("daily insight snapshot is nil")
@@ -131,13 +131,14 @@ func validateDailyInsightNarrative(snapshot *health.DailyInsightSnapshot, candid
 		section, sectionErr := validateDailyInsightNarrativeSection(domain.DailyInsightNarrativeSection, serverDomain.Insight.EvidenceIDs)
 		if sectionErr != nil {
 			invalidDomains[domain.Key] = sectionErr.Error()
-			continue
+			return health.DailyInsightNarrative{}, invalidDomains, fmt.Errorf("domain %q: %w", domain.Key, sectionErr)
 		}
 		out.Domains = append(out.Domains, health.DailyInsightNarrativeDomain{Key: domain.Key, DailyInsightNarrativeSection: section})
 	}
 	for _, domain := range snapshot.Domains {
 		if _, ok := seen[domain.Key]; !ok {
 			invalidDomains[domain.Key] = "missing from provider response"
+			return health.DailyInsightNarrative{}, invalidDomains, fmt.Errorf("missing domain %q", domain.Key)
 		}
 	}
 	return out, invalidDomains, nil

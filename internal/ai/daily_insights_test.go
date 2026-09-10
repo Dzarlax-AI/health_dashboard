@@ -6,7 +6,7 @@ import (
 	"health-receiver/internal/health"
 )
 
-func TestValidateDailyInsightNarrativeRejectsProviderProse(t *testing.T) {
+func TestValidateDailyInsightNarrativeRejectsInvalidDomainAcknowledgement(t *testing.T) {
 	snapshot := &health.DailyInsightSnapshot{
 		Primary: health.DailyInsight{EvidenceIDs: []string{"primary-evidence"}, Fallback: true},
 		Domains: []health.DailyInsightDomain{
@@ -28,20 +28,16 @@ func TestValidateDailyInsightNarrativeRejectsProviderProse(t *testing.T) {
 	}
 
 	validated, invalidDomains, err := validateDailyInsightNarrative(snapshot, candidate)
-	if err != nil {
-		t.Fatalf("primary acknowledgement: %v", err)
-	}
-	if validated.Primary.Template != "server_default" {
-		t.Fatalf("primary template = %q", validated.Primary.Template)
-	}
-	applied, err := health.ApplyDailyInsightNarrative(snapshot, validated)
-	if err != nil {
-		t.Fatalf("apply acknowledgement: %v", err)
-	}
-	if !applied.Primary.Fallback {
-		t.Fatal("server-authored copy was incorrectly presented as provider-authored")
+	if err == nil {
+		t.Fatal("invalid domain acknowledgement was accepted")
 	}
 	if got := invalidDomains["sleep"]; got == "" {
 		t.Fatalf("unsafe provider prose was accepted: %#v", validated)
+	}
+	if len(validated.Domains) != 0 || validated.Primary.Template != "" {
+		t.Fatalf("validated partial narrative = %#v, want zero value", validated)
+	}
+	if _, err := health.ApplyDailyInsightNarrative(snapshot, candidate); err == nil {
+		t.Fatal("ApplyDailyInsightNarrative accepted an invalid domain")
 	}
 }

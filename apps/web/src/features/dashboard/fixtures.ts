@@ -268,7 +268,7 @@ function todayInsights(locale: Locale, fixture: FixtureName): TodayInsightsRespo
         band: "good",
         confidence: partial ? "provisional" : "final",
         data_state: partial ? "partial" : "fresh",
-        destination: { kind: "section", id: "sleep" },
+        destination: { kind: "sleep", id: "sleep" },
         insight: { evidence_ids: ["sleep"], fallback: true, meaning: localized(locale, { en: "Sleep context is available.", ru: "Контекст сна доступен.", sr: "Kontekst sna je dostupan." }), observation: localized(locale, { en: "Your overnight pattern is usable.", ru: "Ночной паттерн можно использовать.", sr: "Noćni obrazac je upotrebljiv." }), state: "insight", title: localized(locale, { en: "Sleep", ru: "Сон", sr: "San" }) },
         key: "sleep",
         summary: localized(locale, { en: "Sleep", ru: "Сон", sr: "San" }),

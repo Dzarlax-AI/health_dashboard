@@ -353,8 +353,10 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 		} else {
 			log.Println("startup: incremental cache refresh…")
 		}
-		db.BackfillAggregates(force)
-		db.BackfillScores(force)
+		if err := runCacheBackfill(db, force); err != nil {
+			log.Printf("startup: cache refresh failed: %v", err)
+			return
+		}
 		backfillDatesFn([]string{tenantLocalNow(db, notifyDefaults).Format("2006-01-02")})
 		log.Println("startup: cache refresh done")
 	}()
@@ -501,8 +503,10 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Regist
 		} else {
 			log.Printf("[%s] startup: incremental cache refresh…", schema)
 		}
-		db.BackfillAggregates(force)
-		db.BackfillScores(force)
+		if err := runCacheBackfill(db, force); err != nil {
+			log.Printf("[%s] startup: cache refresh failed: %v", schema, err)
+			return
+		}
 		backfillDatesFn([]string{tenantLocalNow(db, notifyDefaults).Format("2006-01-02")})
 		log.Printf("[%s] startup: cache refresh done", schema)
 	}()
@@ -545,7 +549,10 @@ func makeBackfillFn(db *storage.DB, refreshToday func([]string)) func(bool) {
 			go func() {
 				defer atomic.StoreInt32(&incrRunning, 0)
 				log.Println("incremental backfill: starting…")
-				db.RunIncrementalBackfill()
+				if err := db.RunIncrementalBackfill(); err != nil {
+					log.Printf("incremental backfill: failed: %v", err)
+					return
+				}
 				if refreshToday != nil {
 					refreshToday([]string{db.Today()})
 				}
@@ -560,14 +567,28 @@ func makeBackfillFn(db *storage.DB, refreshToday func([]string)) func(bool) {
 		go func() {
 			defer atomic.StoreInt32(&forceRunning, 0)
 			log.Println("force backfill: starting full rebuild…")
-			db.BackfillAggregates(true)
-			db.BackfillScores(true)
+			if err := runCacheBackfill(db, true); err != nil {
+				log.Printf("force backfill: failed: %v", err)
+				return
+			}
 			if refreshToday != nil {
 				refreshToday([]string{db.Today()})
 			}
 			log.Println("force backfill: done")
 		}()
 	}
+}
+
+// runCacheBackfill keeps broad cache rebuild callers from continuing with
+// stale derived state after either aggregation or readiness recomputation.
+func runCacheBackfill(db *storage.DB, force bool) error {
+	if err := db.BackfillAggregates(force); err != nil {
+		return fmt.Errorf("backfill aggregates: %w", err)
+	}
+	if err := db.BackfillScores(force); err != nil {
+		return fmt.Errorf("backfill scores: %w", err)
+	}
+	return nil
 }
 
 // makeTodayDerivedStateTrigger returns the single mutation-driven Today
@@ -619,7 +640,9 @@ func makeTodayDerivedStateTrigger(ctx context.Context, db *storage.DB, schema st
 				log.Printf("[%s] today insight snapshot: %v", schema, err)
 				return err
 			}
-			db.RefreshLegacyEnergyBankSnapshot(lang)
+			if err := db.RefreshLegacyEnergyBankSnapshot(lang); err != nil {
+				return fmt.Errorf("refresh legacy energy bank snapshot: %w", err)
+			}
 			// The new Today path owns its own provider generation. Legacy blocks
 			// remain compatibility/on-demand for their existing endpoint and the
 			// morning report, so one derived-state refresh never pays twice.
@@ -1115,6 +1138,12 @@ schedulerLoop:
 			case <-time.After(wait):
 			}
 			now = time.Now()
+			currentTenantDay = db.Today()
+			if currentTenantDay != lastTenantDay && onDayRollover != nil {
+				log.Printf("[%s] report scheduler: tenant day rolled over %s -> %s; refreshing Today derived state", schema, lastTenantDay, currentTenantDay)
+				onDayRollover()
+			}
+			lastTenantDay = currentTenantDay
 			refreshed := buildNotifyCfg(db, db.GetNotifyConfig(defaults))
 			if reportScheduleChanged(now, next, isMorning, ncfg, refreshed) {
 				continue schedulerLoop

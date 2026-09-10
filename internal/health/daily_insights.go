@@ -125,8 +125,8 @@ type DailyInsightNarrativeDomain struct {
 
 // ApplyDailyInsightNarrative marks a server-authored template as ready only
 // when the provider returns the exact closed template and evidence already
-// selected by policy. A bad primary invalidates the acknowledgement; a bad
-// individual domain remains a factual fallback without hiding the rest.
+// selected by policy for every visible domain. A partial acknowledgement is
+// not ready: deterministic factual copy remains visible while it is retried.
 func ApplyDailyInsightNarrative(snapshot *DailyInsightSnapshot, narrative DailyInsightNarrative) (*DailyInsightSnapshot, error) {
 	if snapshot == nil {
 		return nil, fmt.Errorf("daily insight snapshot is nil")
@@ -150,13 +150,18 @@ func ApplyDailyInsightNarrative(snapshot *DailyInsightSnapshot, narrative DailyI
 			return nil, fmt.Errorf("duplicate narrative domain %q", candidate.Key)
 		}
 		seen[candidate.Key] = struct{}{}
-		// A malformed non-primary domain is intentionally non-fatal. Its
-		// deterministic fallback remains visible while safe siblings render.
-		_ = applyDailyInsightNarrativeSection(
+		if err := applyDailyInsightNarrativeSection(
 			&out.Domains[index].Insight,
 			candidate.DailyInsightNarrativeSection,
 			out.Domains[index].Insight.EvidenceIDs,
-		)
+		); err != nil {
+			return nil, fmt.Errorf("domain %q narrative: %w", candidate.Key, err)
+		}
+	}
+	for _, domain := range out.Domains {
+		if _, ok := seen[domain.Key]; !ok {
+			return nil, fmt.Errorf("missing narrative domain %q", domain.Key)
+		}
 	}
 	return out, nil
 }

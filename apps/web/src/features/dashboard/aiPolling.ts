@@ -29,6 +29,24 @@ export function shouldPollTodayInsights(
   return (
     generation.state === "cold" ||
     generation.state === "generating" ||
+    generation.state === "failed" ||
     !generation.fresh_for_snapshot
   );
+}
+
+// todayInsightsPollDelayMs waits out a server-issued retry window instead of
+// polling an upstream provider failure every minute. A failed state without a
+// window is retried at the ordinary cadence because it is immediately eligible.
+export function todayInsightsPollDelayMs(
+  todayInsights: TodayInsightsResponse | undefined,
+  attempts: number,
+): number | undefined {
+  if (!shouldPollTodayInsights(todayInsights, attempts)) {
+    return undefined;
+  }
+  const retryAfter = todayInsights?.generation.retry_after_seconds ?? 0;
+  if (todayInsights?.generation.state === "failed" && retryAfter > 0) {
+    return retryAfter * 1_000;
+  }
+  return 60_000;
 }

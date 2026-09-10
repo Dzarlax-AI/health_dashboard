@@ -65,8 +65,11 @@ func dailyDecisionEvidenceDomains(resp *BriefingResponse) []string {
 		return nil
 	}
 	if resp.TodayGuidance != nil {
-		reason := strings.ToLower(firstNonEmptyInsight(resp.ReadinessCapReason, resp.TodayGuidance.Reason))
-		if strings.Contains(reason, "sleep") {
+		// Dashboard guidance can carry localized prose, while cap reasons can
+		// be generic (for example missing_same_day_evidence). The structured
+		// sleep confidence is the stable source of a sleep safety cap.
+		if (resp.IllnessSuspicion == nil || (resp.IllnessSuspicion.Confidence != IllnessConfidenceHigh && resp.IllnessSuspicion.Confidence != IllnessConfidenceModerate)) &&
+			(resp.SleepQuality == nil || resp.SleepQuality.Confidence != SleepQualityConfidenceFinal) {
 			return []string{"sleep"}
 		}
 		return []string{"recovery"}

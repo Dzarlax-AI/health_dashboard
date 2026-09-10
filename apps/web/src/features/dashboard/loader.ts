@@ -1,11 +1,13 @@
 import {
   getDashboard,
+  getAIBriefing,
   getEnergyHistory,
   getHealthBriefing,
   getReadinessHistory,
   getSession,
   getTodayInsights,
   type DashboardResponse,
+  type AIBriefingResponse,
   type EnergyHistoryDayResponse,
   type HealthBriefingResponse,
   type ReadinessHistoryResponse,
@@ -17,6 +19,7 @@ import type { Locale } from "../../i18n";
 export interface DashboardResources {
   briefing: HealthBriefingResponse;
   dashboard?: DashboardResponse;
+  ai?: AIBriefingResponse;
   todayInsights?: TodayInsightsResponse;
   readinessHistory?: ReadinessHistoryResponse;
   energyHistory?: EnergyHistoryDayResponse;
@@ -27,6 +30,7 @@ export interface DashboardResources {
 export interface DashboardLoaders {
   briefing: typeof getHealthBriefing;
   dashboard: typeof getDashboard;
+  ai: typeof getAIBriefing;
   todayInsights: typeof getTodayInsights;
   readinessHistory: typeof getReadinessHistory;
   energyHistory: typeof getEnergyHistory;
@@ -36,6 +40,7 @@ export interface DashboardLoaders {
 const defaultLoaders: DashboardLoaders = {
   briefing: getHealthBriefing,
   dashboard: getDashboard,
+  ai: getAIBriefing,
   todayInsights: getTodayInsights,
   readinessHistory: getReadinessHistory,
   energyHistory: getEnergyHistory,
@@ -47,10 +52,11 @@ export async function loadDashboardResources(
   signal?: AbortSignal,
   loaders: DashboardLoaders = defaultLoaders,
 ): Promise<DashboardResources> {
-  const [briefing, dashboard, todayInsights, readinessHistory, energyHistory, session] =
+  const [briefing, dashboard, ai, todayInsights, readinessHistory, energyHistory, session] =
     await Promise.allSettled([
       loaders.briefing(locale, signal),
       loaders.dashboard(signal),
+      loaders.ai(locale, signal),
       loaders.todayInsights(locale, signal),
       loaders.readinessHistory(30, signal),
       loaders.energyHistory(14, signal),
@@ -61,7 +67,7 @@ export async function loadDashboardResources(
     throw briefing.reason;
   }
 
-  const optional = { dashboard, todayInsights, readinessHistory, energyHistory, session };
+  const optional = { dashboard, ai, todayInsights, readinessHistory, energyHistory, session };
   const missing = Object.entries(optional)
     .filter(([, result]) => result.status === "rejected")
     .map(([name]) => name);
@@ -69,6 +75,7 @@ export async function loadDashboardResources(
   return {
     briefing: briefing.value,
     dashboard: fulfilled(dashboard),
+    ai: fulfilled(ai),
     todayInsights: fulfilled(todayInsights),
     readinessHistory: fulfilled(readinessHistory),
     energyHistory: fulfilled(energyHistory),

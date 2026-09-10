@@ -9,10 +9,16 @@ interface TodayInsightsProps {
   todayInsights?: TodayInsightsResponse;
 }
 
+type TodayInsightDomain = NonNullable<TodayInsightsResponse["domains"]>[number];
+type TodayInsightDestination = TodayInsightDomain["destination"];
+
 function destinationHref(
-  destination: { kind: string; id: string },
+  destination: TodayInsightDestination,
   locale: Locale,
 ): string | undefined {
+  if (destination.kind === "sleep" && destination.id === "sleep") {
+    return `/sleep?lang=${locale}`;
+  }
   if (destination.kind !== "section" || !destination.id) {
     return undefined;
   }
@@ -33,7 +39,7 @@ function generationLabel(locale: Locale, state: TodayInsightsResponse["generatio
   }
 }
 
-function dataStateLabel(locale: Locale, state: string): string {
+function dataStateLabel(locale: Locale, state: TodayInsightDomain["data_state"]): string {
   switch (state) {
     case "fresh":
       return translate(locale, "state_ready");

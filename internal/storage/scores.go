@@ -15,14 +15,16 @@ import (
 var ErrNoHourlyMetricData = errors.New("no hourly metric data")
 
 // RunIncrementalBackfill fills all pre-aggregated caches for data that is
-// not yet cached. Safe to call from a goroutine at any time.
-func (s *DB) RunIncrementalBackfill() {
+// not yet cached. Safe to call from a goroutine at any time and returns the
+// first failed stage so callers do not publish dependent stale state.
+func (s *DB) RunIncrementalBackfill() error {
 	if err := s.BackfillAggregates(false); err != nil {
-		log.Printf("backfill aggregates: %v", err)
+		return fmt.Errorf("backfill aggregates: %w", err)
 	}
 	if err := s.BackfillScores(false); err != nil {
-		log.Printf("backfill scores: %v", err)
+		return fmt.Errorf("backfill scores: %w", err)
 	}
+	return nil
 }
 
 // RunIncrementalBackfillForDates rebuilds caches for an explicit date set

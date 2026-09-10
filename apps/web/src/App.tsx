@@ -6,7 +6,7 @@ import { StatusPanel } from "./components/StatusPanel";
 import { fixtureNames, fixtureResources, resolveFixture } from "./features/dashboard/fixtures";
 import { DashboardDetails } from "./features/dashboard/DashboardDetails";
 import { DashboardHero } from "./features/dashboard/DashboardHero";
-import { shouldPollTodayInsights } from "./features/dashboard/aiPolling";
+import { todayInsightsPollDelayMs } from "./features/dashboard/aiPolling";
 import { loadDashboardResources, type DashboardResources } from "./features/dashboard/loader";
 import { buildDashboardViewModel } from "./features/dashboard/model";
 import { ScoreSummaryCard } from "./features/dashboard/ScoreSummaryCard";
@@ -72,11 +72,11 @@ function DashboardApp() {
   }, [fixture, locale, reloadKey]);
 
   useEffect(() => {
-    if (
-      state.status !== "ready" ||
-      !shouldPollTodayInsights(state.resources.todayInsights, aiPollAttempts.current) ||
-      fixture
-    ) {
+    const pollDelay =
+      state.status === "ready"
+        ? todayInsightsPollDelayMs(state.resources.todayInsights, aiPollAttempts.current)
+        : undefined;
+    if (pollDelay === undefined || fixture) {
       return;
     }
     let timer: number | undefined;
@@ -89,7 +89,7 @@ function DashboardApp() {
           ? window.setTimeout(() => {
               aiPollAttempts.current += 1;
               setReloadKey((value) => value + 1);
-            }, 60_000)
+            }, pollDelay)
           : undefined;
     };
     schedule();
@@ -206,6 +206,7 @@ function DashboardApp() {
             <DashboardDetails
               locale={locale}
               model={model}
+              ai={state.resources.ai}
               hideLegacyAI={Boolean(model.todayInsights)}
               readinessHistory={state.resources.readinessHistory}
               energyHistory={state.resources.energyHistory}

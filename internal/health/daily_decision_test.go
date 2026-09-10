@@ -63,14 +63,15 @@ func TestDailyDecisionIDChangesWhenRationaleChanges(t *testing.T) {
 func TestDailyDecisionEvidenceDomainsFollowFinalGuidanceCap(t *testing.T) {
 	resp := &BriefingResponse{
 		Date:               "2026-09-10",
-		ReadinessCapReason: "sleep_quality_low",
+		ReadinessCapReason: "missing_same_day_evidence",
 		EnergyBank: &EnergyBank{
 			ActionVerdict: "moderate",
 			VerdictReason: "Energy is healthy.",
 		},
+		SleepQuality: &SleepQualityBreakdown{Confidence: SleepQualityConfidenceLow},
 		TodayGuidance: &DashboardTodayGuidance{
 			Action: "rest",
-			Reason: "Sleep quality is incomplete.",
+			Reason: "Сон пока не даёт полной уверенности.",
 		},
 	}
 	decision := BuildDailyDecision(resp)

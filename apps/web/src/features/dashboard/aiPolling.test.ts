@@ -1,5 +1,5 @@
 import type { AIBriefingResponse, TodayInsightsResponse } from "../../api/client";
-import { maxAIPollAttempts, shouldPollAI, shouldPollTodayInsights } from "./aiPolling";
+import { maxAIPollAttempts, shouldPollAI, shouldPollTodayInsights, todayInsightsPollDelayMs } from "./aiPolling";
 
 function briefing(
   overrides: Partial<AIBriefingResponse> = {},
@@ -65,11 +65,18 @@ describe("Today Insights polling policy", () => {
     expect(shouldPollTodayInsights(todayInsights("ready", false), 0)).toBe(true);
   });
 
-  it("stops for ready, failed, disabled, unavailable, and capped states", () => {
+  it("stops for ready, disabled, unavailable, and capped states", () => {
     expect(shouldPollTodayInsights(todayInsights("ready"), 0)).toBe(false);
-    expect(shouldPollTodayInsights(todayInsights("failed"), 0)).toBe(false);
     expect(shouldPollTodayInsights(todayInsights("disabled"), 0)).toBe(false);
     expect(shouldPollTodayInsights(undefined, 0)).toBe(false);
     expect(shouldPollTodayInsights(todayInsights("cold"), maxAIPollAttempts)).toBe(false);
+  });
+
+  it("waits for the server backoff before retrying a failed acknowledgement", () => {
+    const failed = todayInsights("failed");
+    failed.generation.retry_after_seconds = 300;
+
+    expect(shouldPollTodayInsights(failed, 0)).toBe(true);
+    expect(todayInsightsPollDelayMs(failed, 0)).toBe(300_000);
   });
 });

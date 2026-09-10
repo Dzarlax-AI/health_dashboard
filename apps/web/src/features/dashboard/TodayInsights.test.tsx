@@ -11,7 +11,7 @@ const response: TodayInsightsResponse = {
     {
       band: "good",
       data_state: "fresh",
-      destination: { id: "sleep", kind: "section" },
+      destination: { id: "sleep", kind: "sleep" },
       insight: { evidence_ids: ["sleep"], fallback: true, meaning: "Sleep is complete.", observation: "You slept well.", state: "insight", title: "Sleep" },
       key: "sleep",
       summary: "Sleep is stable",
