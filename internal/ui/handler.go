@@ -145,6 +145,7 @@ func (h *Handler) basePage(r *http.Request, title, activeNav string) BasePage {
 func (h *Handler) Register(mux *http.ServeMux) {
 	// Auth
 	mux.HandleFunc("/login", h.login)
+	mux.HandleFunc("GET /auth/session", h.guard(h.sessionRecovery))
 	mux.HandleFunc("POST /logout", h.logout)
 	mux.HandleFunc("/setup", h.setup)
 
@@ -335,7 +336,7 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 			}
 
 			// Authentik forward auth
-			if h.forwardAuthTrusted(r) &&
+			if h.forwardAuthIdentityTrusted(r) &&
 				(r.Header.Get("X-authentik-username") != "" || r.Header.Get("X-authentik-email") != "") {
 				// Issue a local cookie so requests survive Authentik session expiry.
 				if cookie, err := r.Cookie(authCookieName); err != nil || !db.AuthSessionValid(cookie.Value) {
@@ -358,7 +359,7 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 				inject()
 				return
 			}
-			http.Redirect(w, r, "/login?next="+r.URL.RequestURI(), http.StatusFound)
+			h.rejectUnauthenticated(w, r)
 			return
 		}
 
@@ -366,6 +367,10 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 
 		// New install: redirect to setup wizard before anything else.
 		if h.reg != nil && h.reg.IsEmpty(r.Context()) {
+			if isAPIRequest(r) {
+				writeAPIAuthenticationRequired(w)
+				return
+			}
 			http.Redirect(w, r, "/setup", http.StatusFound)
 			return
 		}
@@ -390,7 +395,7 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		// Authentik forward auth: trust X-authentik-username / X-authentik-email headers.
-		if h.forwardAuthTrusted(r) {
+		if h.forwardAuthIdentityTrusted(r) {
 			authentikUser := r.Header.Get("X-authentik-username")
 			authentikEmail := r.Header.Get("X-authentik-email")
 			if authentikUser != "" || authentikEmail != "" {
@@ -431,8 +436,41 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 			}
 		}
 
-		http.Redirect(w, r, "/login?next="+r.URL.RequestURI(), http.StatusFound)
+		h.rejectUnauthenticated(w, r)
 	}
+}
+
+func isAPIRequest(r *http.Request) bool {
+	return strings.HasPrefix(r.URL.Path, "/api/")
+}
+
+// forwardAuthIdentityTrusted accepts Authentik identity only on protected
+// document requests. API and machine routers deliberately bypass ForwardAuth;
+// never treat client-supplied X-authentik-* headers as their credentials.
+func (h *Handler) forwardAuthIdentityTrusted(r *http.Request) bool {
+	return !isAPIRequest(r) && !strings.HasPrefix(r.URL.Path, "/health") && h.forwardAuthTrusted(r)
+}
+
+func writeAPIAuthenticationRequired(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusUnauthorized)
+	_, _ = w.Write([]byte(`{"error":"authentication required"}`))
+}
+
+func (h *Handler) rejectUnauthenticated(w http.ResponseWriter, r *http.Request) {
+	if isAPIRequest(r) {
+		writeAPIAuthenticationRequired(w)
+		return
+	}
+	http.Redirect(w, r, "/login?next="+r.URL.RequestURI(), http.StatusFound)
+}
+
+// sessionRecovery runs behind the Authentik-protected document router. guard
+// refreshes the opaque local session from trusted ForwardAuth headers before
+// this handler returns the browser to its original SPA route.
+func (h *Handler) sessionRecovery(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, safeNext(r.URL.Query().Get("next")), http.StatusFound)
 }
 
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {

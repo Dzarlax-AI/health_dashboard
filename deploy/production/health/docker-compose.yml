@@ -46,14 +46,16 @@ services:
       traefik.http.routers.health-telegram-webhook.tls.certresolver: letsEncrypt
       traefik.http.routers.health-telegram-webhook.service: health-backend
 
-      # Browser JSON calls pass through ForwardAuth so the backend can create
-      # and resolve its opaque tenant-aware local session.
+      # Browser JSON calls rely on the backend's opaque tenant-aware local
+      # session. Document routes remain behind ForwardAuth, where the backend
+      # refreshes that session from trusted identity headers. Keeping API calls
+      # out of ForwardAuth prevents a cross-origin SSO redirect becoming a
+      # browser fetch failure while preserving fail-closed backend auth.
       traefik.http.routers.health-browser-api.entrypoints: https
       traefik.http.routers.health-browser-api.rule: Host(`${HEALTH_HOST:?set the production dashboard hostname}`) && PathPrefix(`/api`)
       traefik.http.routers.health-browser-api.priority: "290"
       traefik.http.routers.health-browser-api.tls: "true"
       traefik.http.routers.health-browser-api.tls.certresolver: letsEncrypt
-      traefik.http.routers.health-browser-api.middlewares: authentik-auth
       traefik.http.routers.health-browser-api.service: health-backend
 
       # The Go UI remains the broad, low-priority fallback. The frontend

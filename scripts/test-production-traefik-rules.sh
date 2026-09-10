@@ -169,6 +169,12 @@ if missing:
         f"{mode} missing enabled routers: {sorted(missing)}; "
         f"loaded={sorted(raw.get('routers', {}))}"
     )
+browser_api = raw["routers"]["health-browser-api@file"]
+if browser_api.get("middlewares"):
+    raise SystemExit("browser API must rely on backend session auth, not ForwardAuth")
+for name in ("health-frontend-root@file", "health-frontend-assets@file"):
+    if "authentik-auth@file" not in raw["routers"][name].get("middlewares", []):
+        raise SystemExit(f"{name} must remain protected by Authentik")
 PY
   remove_owned_container
 done
