@@ -1,4 +1,4 @@
-import type { HealthBriefingResponse } from "../../api/client";
+import type { HealthBriefingResponse, TodayInsightsResponse } from "../../api/client";
 
 export type DashboardDataState = "ready" | "partial" | "stale" | "unavailable";
 export type ScoreTone = "readiness" | "energy" | "sleep";
@@ -29,6 +29,7 @@ export interface DashboardViewModel {
   };
   degradedResources: readonly string[];
   checkinAnswer?: string;
+  todayInsights?: TodayInsightsResponse;
 }
 
 export function clampPercent(value: number): number {
@@ -61,6 +62,7 @@ export function classifyBriefing(
 export function buildDashboardViewModel(
   briefing: HealthBriefingResponse,
   degradedResources: readonly string[] = [],
+  todayInsights?: TodayInsightsResponse,
 ): DashboardViewModel {
   const state = classifyBriefing(briefing);
   const guidance = briefing.today_guidance;
@@ -130,5 +132,6 @@ export function buildDashboardViewModel(
       briefing.subjective_checkin?.status === "answered"
         ? briefing.subjective_checkin.answer
         : undefined,
+    todayInsights,
   };
 }

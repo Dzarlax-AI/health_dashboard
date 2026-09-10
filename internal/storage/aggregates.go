@@ -236,9 +236,9 @@ func (s *DB) listMetricNames() ([]string, error) {
 // readiness recomputation pass runs once for the whole date range — the
 // caller passes false when only non-score metrics changed (e.g. step_count
 // alone) to skip it.
-func (s *DB) UpsertRecentCache(dates []string, recomputeReadiness bool) {
+func (s *DB) UpsertRecentCache(dates []string, recomputeReadiness bool) error {
 	if len(dates) == 0 {
-		return
+		return nil
 	}
 	// Tenant TZ is read once per UpsertRecentCache pass and reused for
 	// every date — REPORT_TZ doesn't change mid-process, and
@@ -247,25 +247,41 @@ func (s *DB) UpsertRecentCache(dates []string, recomputeReadiness bool) {
 	// reportTZLocation matches energy_compute.go convention.
 	loc := s.reportTZLocation()
 	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	fail := func(err error) error {
+		log.Printf("upsert recent cache: %v", err)
+		return err
+	}
 	for _, date := range dates {
-		s.upsertHourlyAvgForDate(date)
-		s.upsertHourlySumForDate(date)
-		s.upsertHourlySleepForDate(date)
-		s.upsertDailyForDate(date)
+		if err := s.upsertHourlyAvgForDate(date); err != nil {
+			return fail(fmt.Errorf("hourly avg %s: %w", date, err))
+		}
+		if err := s.upsertHourlySumForDate(date); err != nil {
+			return fail(fmt.Errorf("hourly sum %s: %w", date, err))
+		}
+		if err := s.upsertHourlySleepForDate(date); err != nil {
+			return fail(fmt.Errorf("hourly sleep %s: %w", date, err))
+		}
+		if err := s.upsertDailyForDate(date); err != nil {
+			return fail(fmt.Errorf("daily scores %s: %w", date, err))
+		}
 		// Must run AFTER upsertDailyForDate — the latter creates the
 		// daily_scores row that the baseline UPDATE targets. Cheap
 		// enough to run inside the same critical section (one
 		// percentile query + one UPDATE per date).
-		s.upsertBaselineHROvernightForDate(date, loc)
+		if err := s.upsertBaselineHROvernightForDate(date, loc); err != nil {
+			return fail(fmt.Errorf("overnight baseline %s: %w", date, err))
+		}
 		// v2.2 sustained_hr_load — depends on baseline_hr_overnight
 		// being current AND on the personal HR baseline being
 		// readable, so runs last in the per-date chain.
-		_, _ = s.upsertSustainedHRLoadForDate(date, loc)
+		if _, err := s.upsertSustainedHRLoadForDate(date, loc); err != nil {
+			return fail(fmt.Errorf("sustained HR load %s: %w", date, err))
+		}
 	}
-	s.cacheMu.Unlock()
 
 	if !recomputeReadiness {
-		return
+		return nil
 	}
 	earliest := dates[0]
 	for _, d := range dates[1:] {
@@ -273,12 +289,15 @@ func (s *DB) UpsertRecentCache(dates []string, recomputeReadiness bool) {
 			earliest = d
 		}
 	}
-	s.RecomputeReadinessSince(earliest)
+	if err := s.RecomputeReadinessSince(earliest); err != nil {
+		return fail(err)
+	}
+	return nil
 }
 
 // upsertHourlyAvgForDate rebuilds hourly_metrics for ALL non-sleep AVG metrics
 // on `date` in a single SQL statement.
-func (s *DB) upsertHourlyAvgForDate(date string) {
+func (s *DB) upsertHourlyAvgForDate(date string) error {
 	ctx, cancel := longCtx()
 	defer cancel()
 	const q = `
@@ -297,13 +316,14 @@ func (s *DB) upsertHourlyAvgForDate(date string) {
 		ON CONFLICT (metric_name, hour, source) DO UPDATE SET
 			avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val`
 	if _, err := s.pool.Exec(ctx, q, date, sumMetricSlice()); err != nil {
-		log.Printf("upsert hourly avg %s: %v", date, err)
+		return err
 	}
+	return nil
 }
 
 // upsertHourlySumForDate rebuilds hourly_metrics for non-sleep SUM metrics
 // (steps, active_energy, etc.) — one SQL for all of them.
-func (s *DB) upsertHourlySumForDate(date string) {
+func (s *DB) upsertHourlySumForDate(date string) error {
 	ctx, cancel := longCtx()
 	defer cancel()
 	const q = `
@@ -329,8 +349,9 @@ func (s *DB) upsertHourlySumForDate(date string) {
 		ON CONFLICT (metric_name, hour, source) DO UPDATE SET
 			avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val`
 	if _, err := s.pool.Exec(ctx, q, date, sumMetricSlice()); err != nil {
-		log.Printf("upsert hourly sum %s: %v", date, err)
+		return err
 	}
+	return nil
 }
 
 // upsertHourlySleepForDate handles the 5 sleep_* metrics with the dedup clause.
@@ -350,23 +371,21 @@ func (s *DB) upsertHourlySumForDate(date string) {
 // keyed by (metric_name, hour, source), so without the DELETE the old
 // fragment rows for this date would survive and upsertDailyForDate
 // would sum them with the new summary — double counting the night.
-func (s *DB) upsertHourlySleepForDate(date string) {
+func (s *DB) upsertHourlySleepForDate(date string) error {
 	ctx, cancel := longCtx()
 	defer cancel()
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		log.Printf("upsert hourly sleep %s: begin tx: %v", date, err)
-		return
+		return fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
 	if _, err := tx.Exec(ctx, `
 		DELETE FROM hourly_metrics
 		WHERE SUBSTRING(hour,1,10) = $1
-		  AND metric_name LIKE 'sleep\_%' ESCAPE '\'`, date); err != nil {
-		log.Printf("upsert hourly sleep %s: delete stale: %v", date, err)
-		return
+		AND metric_name LIKE 'sleep\_%' ESCAPE '\'`, date); err != nil {
+		return fmt.Errorf("delete stale: %w", err)
 	}
 
 	q := `
@@ -392,13 +411,13 @@ func (s *DB) upsertHourlySleepForDate(date string) {
 		ON CONFLICT (metric_name, hour, source) DO UPDATE SET
 			avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val`
 	if _, err := tx.Exec(ctx, q, date); err != nil {
-		log.Printf("upsert hourly sleep %s: insert: %v", date, err)
-		return
+		return fmt.Errorf("insert: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		log.Printf("upsert hourly sleep %s: commit: %v", date, err)
+		return fmt.Errorf("commit: %w", err)
 	}
+	return nil
 }
 
 // sumMetricSlice returns the SumMetrics map keys as a slice (for $::text[] params).
@@ -416,7 +435,7 @@ func sumMetricSlice() []string {
 // the result lands in daily_scores via INSERT ... ON CONFLICT DO UPDATE.
 //
 // Replaces a previous loop that issued 13 SELECTs + 13 UPSERTs in a tx.
-func (s *DB) upsertDailyForDate(date string) {
+func (s *DB) upsertDailyForDate(date string) error {
 	ctx, cancel := longCtx()
 	defer cancel()
 
@@ -568,8 +587,9 @@ ON CONFLICT(date) DO UPDATE SET
     resp_avg     = COALESCE(EXCLUDED.resp_avg,     daily_scores.resp_avg),
     computed_at  = EXCLUDED.computed_at`
 	if _, err := s.pool.Exec(ctx, q, date); err != nil {
-		log.Printf("upsertDailyForDate %s: %v", date, err)
+		return err
 	}
+	return nil
 }
 
 // BackfillAggregates rebuilds hourly_metrics from metric_points and

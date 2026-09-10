@@ -6,10 +6,11 @@ import { StatusPanel } from "./components/StatusPanel";
 import { fixtureNames, fixtureResources, resolveFixture } from "./features/dashboard/fixtures";
 import { DashboardDetails } from "./features/dashboard/DashboardDetails";
 import { DashboardHero } from "./features/dashboard/DashboardHero";
-import { shouldPollAI } from "./features/dashboard/aiPolling";
+import { shouldPollTodayInsights } from "./features/dashboard/aiPolling";
 import { loadDashboardResources, type DashboardResources } from "./features/dashboard/loader";
 import { buildDashboardViewModel } from "./features/dashboard/model";
 import { ScoreSummaryCard } from "./features/dashboard/ScoreSummaryCard";
+import { TodayInsights } from "./features/dashboard/TodayInsights";
 import { resolveHealthSection } from "./features/health-detail/config";
 import { HealthDetailPage } from "./features/health-detail/HealthDetailPage";
 import { SleepPage } from "./features/sleep/SleepPage";
@@ -73,7 +74,7 @@ function DashboardApp() {
   useEffect(() => {
     if (
       state.status !== "ready" ||
-      !shouldPollAI(state.resources.ai, aiPollAttempts.current) ||
+      !shouldPollTodayInsights(state.resources.todayInsights, aiPollAttempts.current) ||
       fixture
     ) {
       return;
@@ -104,7 +105,11 @@ function DashboardApp() {
   const model = useMemo(
     () =>
       state.status === "ready"
-        ? buildDashboardViewModel(state.resources.briefing, state.resources.missing)
+        ? buildDashboardViewModel(
+            state.resources.briefing,
+            state.resources.missing,
+            state.resources.todayInsights,
+          )
         : undefined,
     [state],
   );
@@ -172,6 +177,7 @@ function DashboardApp() {
         ) : model ? (
           <>
             <DashboardHero locale={locale} model={model} />
+            <TodayInsights locale={locale} todayInsights={model.todayInsights} />
             {model.energy || model.sleep ? (
               <section
                 className="supporting-scores"
@@ -200,7 +206,7 @@ function DashboardApp() {
             <DashboardDetails
               locale={locale}
               model={model}
-              ai={state.resources.ai}
+              hideLegacyAI={Boolean(model.todayInsights)}
               readinessHistory={state.resources.readinessHistory}
               energyHistory={state.resources.energyHistory}
             />

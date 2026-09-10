@@ -71,7 +71,8 @@ describe("foundation fixtures", () => {
 
     expect(screen.queryByRole("navigation", { name: "Component states" })).not.toBeInTheDocument();
     expect(screen.getByText("Refreshing today")).toBeInTheDocument();
-    expect(await screen.findByText("You can move with more confidence today.")).toBeInTheDocument();
+    expect(await screen.findByText("Recovery supports a measured day.")).toBeInTheDocument();
+    expect(screen.queryByText("You can move with more confidence today.")).not.toBeInTheDocument();
     view.unmount();
   });
 

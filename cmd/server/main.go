@@ -223,6 +223,12 @@ func main() {
 		log.Printf("global AI migration: %v", err)
 	}
 
+	// The derived-state coordinator is shared across every tenant. It gives
+	// Today one causal refresh chain instead of racing cache, Energy, and AI
+	// workers independently.
+	energyV2 := storage.NewEnergyV2Orchestrator()
+	todayDerived := storage.NewTodayDerivedStateCoordinator(energyV2)
+
 	for _, u := range users {
 		db, err := mgr.GetOrCreate(ctx, u.SchemaName)
 		if err != nil {
@@ -234,7 +240,7 @@ func main() {
 		if err := mgr.VerifyTenantContract(ctx, u.SchemaName, db); err != nil {
 			log.Fatalf("startup tenant contract gate for %s: %v", u.SchemaName, err)
 		}
-		startTenant(ctx, mgr, reg, db, u.SchemaName, envNotifyDefaults, envAIDefaults, baseURL)
+		startTenant(ctx, mgr, reg, db, u.SchemaName, envNotifyDefaults, envAIDefaults, baseURL, todayDerived)
 	}
 
 	if len(users) == 0 {
@@ -242,11 +248,6 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-
-	// EnergyBank v2 orchestrator: writes snapshots consumed by the
-	// dashboard, reports, and history chart. Briefing rendering still
-	// has a legacy fallback for days before the first v2 snapshot lands.
-	energyV2 := storage.NewEnergyV2Orchestrator()
 
 	onNewData := func(db *storage.DB, dates []string) {
 		// The tenant schema is encoded in the DB pool's search_path.
@@ -256,20 +257,6 @@ func main() {
 				if fn := mgr.BackfillDatesFor(schema); fn != nil {
 					fn(dates)
 				}
-				energyV2.TriggerAfter(ctx, db, schema,
-					tenantTZOrUTC(db, envNotifyDefaults, schema), func() {
-						// The selective cache verifier does no model work when the
-						// decision is unchanged. When a late health update changes
-						// it, this runs strictly after the persisted Energy snapshot.
-						lang := db.GetNotifyConfig(envNotifyDefaults).Lang
-						if lang == "" {
-							lang = "en"
-						}
-						// Resolve defaults at trigger time so installation-wide AI
-						// settings written through the admin UI reach every tenant.
-						aiDefaults := mgr.AIDefaultsFor(ctx, schema)
-						db.EnsureTodayAIInsightAsync(db.GetAIConfig(aiDefaults), lang)
-					})
 				// Ingest-driven morning report trigger: fires earlier
 				// than the scheduled morning hour when fresh sleep +
 				// activity data arrives, mirroring the single-tenant
@@ -305,12 +292,16 @@ func main() {
 			log.Printf("new tenant contract gate for %s: %v", schema, err)
 			return
 		}
-		startTenant(ctx, mgr, reg, db, schema, envNotifyDefaults, envAIDefaults, baseURL)
+		startTenant(ctx, mgr, reg, db, schema, envNotifyDefaults, envAIDefaults, baseURL, todayDerived)
 	})
 	uiHandler.Register(mux)
 	mcpserver.Register(mux, mgr, baseURL)
 
-	registerCheckinWebhook(mux, mgr, reg, envNotifyDefaults, baseURL)
+	registerCheckinWebhook(mux, mgr, reg, envNotifyDefaults, baseURL, func(_ *storage.DB, schema string) {
+		if refresh := mgr.BackfillDatesFor(schema); refresh != nil {
+			refresh(nil)
+		}
+	})
 	registerOperationalEndpoints(mux, mgr, len(users))
 
 	// Crash-recovery: any webhook_status rows still in `pending` were
@@ -347,6 +338,13 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	db *storage.DB, schema string,
 	notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig, hrZones health.HRZones) {
 
+	var morningSendMu sync.Mutex
+	maybeFireMorningReport := makeMorningTrigger(ctx, db, &morningSendMu, mgr, reg, schema, notifyDefaults)
+	energyV2 := storage.NewEnergyV2Orchestrator()
+	todayDerived := storage.NewTodayDerivedStateCoordinator(energyV2)
+	backfillDatesFn := makeTodayDerivedStateTrigger(ctx, db, schema, notifyDefaults, todayDerived, func() storage.AIConfig {
+		return db.GetAIConfig(aiDefaults)
+	})
 	go func() {
 		time.Sleep(5 * time.Second)
 		force := db.NeedsForceBackfill()
@@ -357,27 +355,15 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 		}
 		db.BackfillAggregates(force)
 		db.BackfillScores(force)
+		backfillDatesFn([]string{tenantLocalNow(db, notifyDefaults).Format("2006-01-02")})
 		log.Println("startup: cache refresh done")
 	}()
-
-	var morningSendMu sync.Mutex
-	maybeFireMorningReport := makeMorningTrigger(ctx, db, &morningSendMu, mgr, reg, schema, notifyDefaults)
-	backfillDatesFn := makeBackfillDatesFn(db, schema, notifyDefaults)
-	// EnergyBank v2 orchestrator: same role as in multi-tenant mode.
-	energyV2 := storage.NewEnergyV2Orchestrator()
 	onNewData := func(_ *storage.DB, dates []string) {
 		backfillDatesFn(dates)
-		energyV2.TriggerAfter(ctx, db, schema, tenantTZOrUTC(db, notifyDefaults, schema), func() {
-			lang := db.GetNotifyConfig(notifyDefaults).Lang
-			if lang == "" {
-				lang = "en"
-			}
-			db.EnsureTodayAIInsightAsync(db.GetAIConfig(aiDefaults), lang)
-		})
 		go maybeFireMorningReport()
 	}
 
-	backfillFn := makeBackfillFn(db)
+	backfillFn := makeBackfillFn(db, backfillDatesFn)
 	testNotifyFn := makeTestNotifyFn(db, mgr, schema, notifyDefaults)
 
 	mgr.RegisterCallbacks(schema, tenants.TenantCallbacks{
@@ -389,8 +375,10 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 		AIDefaults:     aiDefaults,
 	})
 
-	go runReportScheduler(ctx, db, mgr, reg, schema, notifyDefaults, baseURL)
-	go runDailyQualityScan(db, schema, notifyDefaults)
+	go runReportScheduler(ctx, db, mgr, reg, schema, notifyDefaults, baseURL, func() {
+		backfillDatesFn([]string{db.Today()})
+	})
+	go runDailyQualityScan(db, schema, notifyDefaults, backfillDatesFn)
 
 	mux := http.NewServeMux()
 	ingestHandler := handler.New(mgr, onNewData, hrZones)
@@ -400,7 +388,11 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	legacyUI.ConfigureWebhook(notify.NewTelegramWebhookRegistrar(), baseURL)
 	legacyUI.Register(mux)
 	mcpserver.Register(mux, mgr, baseURL)
-	registerCheckinWebhook(mux, mgr, reg, notifyDefaults, baseURL)
+	registerCheckinWebhook(mux, mgr, reg, notifyDefaults, baseURL, func(_ *storage.DB, schema string) {
+		if refresh := mgr.BackfillDatesFor(schema); refresh != nil {
+			refresh(nil)
+		}
+	})
 	registerOperationalEndpoints(mux, mgr, 1)
 
 	// Crash-recovery (legacy path mirrors multi-tenant — see main()).
@@ -495,7 +487,11 @@ func serveHTTP(ctx context.Context, addr string, handler http.Handler, drain fun
 // the EnergyBank-backfill onboarding nudge can embed a clickable
 // link back to the tenant's /settings page.
 func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Registry, db *storage.DB, schema string,
-	notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig, baseURL string) {
+	notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig, baseURL string, todayDerived *storage.TodayDerivedStateCoordinator) {
+	backfillDatesFn := makeTodayDerivedStateTrigger(ctx, db, schema, notifyDefaults, todayDerived, func() storage.AIConfig {
+		// Resolve installation defaults when the queued refresh actually runs.
+		return db.GetAIConfig(mgr.AIDefaultsFor(ctx, schema))
+	})
 
 	go func() {
 		time.Sleep(5 * time.Second)
@@ -507,14 +503,14 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Regist
 		}
 		db.BackfillAggregates(force)
 		db.BackfillScores(force)
+		backfillDatesFn([]string{tenantLocalNow(db, notifyDefaults).Format("2006-01-02")})
 		log.Printf("[%s] startup: cache refresh done", schema)
 	}()
 
 	var morningSendMu sync.Mutex
 	maybeFireMorningReport := makeMorningTrigger(ctx, db, &morningSendMu, mgr, reg, schema, notifyDefaults)
 
-	backfillFn := makeBackfillFn(db)
-	backfillDatesFn := makeBackfillDatesFn(db, schema, notifyDefaults)
+	backfillFn := makeBackfillFn(db, backfillDatesFn)
 	testNotifyFn := makeTestNotifyFn(db, mgr, schema, notifyDefaults)
 
 	mgr.RegisterCallbacks(schema, tenants.TenantCallbacks{
@@ -527,14 +523,18 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Regist
 		AIDefaults:     aiDefaults,
 	})
 
-	go runReportScheduler(ctx, db, mgr, reg, schema, notifyDefaults, baseURL)
-	go runDailyQualityScan(db, schema, notifyDefaults)
+	go runReportScheduler(ctx, db, mgr, reg, schema, notifyDefaults, baseURL, func() {
+		backfillDatesFn([]string{db.Today()})
+	})
+	go runDailyQualityScan(db, schema, notifyDefaults, backfillDatesFn)
 }
 
 // makeBackfillFn returns the admin/import callback that recomputes caches.
 // Per-POST cache work is now inline (storage.UpsertRecentCache + readiness
 // recompute), so this is only invoked from the admin UI button or post-import.
-func makeBackfillFn(db *storage.DB) func(bool) {
+// Once the broad rebuild completes, the coordinator refreshes today's
+// derived state in the same causal order as ingest.
+func makeBackfillFn(db *storage.DB, refreshToday func([]string)) func(bool) {
 	var forceRunning, incrRunning int32
 	return func(force bool) {
 		if !force {
@@ -546,6 +546,9 @@ func makeBackfillFn(db *storage.DB) func(bool) {
 				defer atomic.StoreInt32(&incrRunning, 0)
 				log.Println("incremental backfill: starting…")
 				db.RunIncrementalBackfill()
+				if refreshToday != nil {
+					refreshToday([]string{db.Today()})
+				}
 				log.Println("incremental backfill: done")
 			}()
 			return
@@ -559,21 +562,17 @@ func makeBackfillFn(db *storage.DB) func(bool) {
 			log.Println("force backfill: starting full rebuild…")
 			db.BackfillAggregates(true)
 			db.BackfillScores(true)
+			if refreshToday != nil {
+				refreshToday([]string{db.Today()})
+			}
 			log.Println("force backfill: done")
 		}()
 	}
 }
 
-// backfillDatesDebounce is the window over which incoming POST dates are
-// accumulated before the safety-net rebuild fires. Long enough to absorb a
-// full chunked iOS sync (typically tens of seconds), short enough that a
-// failed inline UpsertRecentCache is repaired quickly.
-const backfillDatesDebounce = 60 * time.Second
-
-// makeBackfillDatesFn returns a debounced trigger that accumulates the union
-// of dates reported by POST /health bursts and rebuilds caches for exactly
-// that set after the burst settles. Replaces the old "last 7 days" safety net
-// so backfills cover the actual dates that came in, not a fixed window.
+// makeTodayDerivedStateTrigger returns the single mutation-driven Today
+// refresh chain. The coordinator owns the 60-second debounce and accumulates
+// the union of dates reported by POST /health bursts.
 // tenantTZOrUTC resolves the tenant's report timezone, falling back to
 // "UTC" (and warning once on first observation) when neither the
 // tenant's settings nor envNotifyDefaults supply one. The fallback
@@ -599,44 +598,34 @@ func tenantTZOrUTC(db *storage.DB, defaults storage.NotifyConfig, schema string)
 	return "UTC"
 }
 
-func makeBackfillDatesFn(db *storage.DB, schema string, defaults storage.NotifyConfig) func([]string) {
-	var (
-		mu      sync.Mutex
-		pending = make(map[string]struct{})
-		timer   *time.Timer
-	)
-	flush := func() {
-		mu.Lock()
-		dates := make([]string, 0, len(pending))
-		for d := range pending {
-			dates = append(dates, d)
-		}
-		pending = make(map[string]struct{})
-		timer = nil
-		mu.Unlock()
-		if len(dates) == 0 {
-			return
-		}
-		log.Printf("[%s] backfill (date-aware): rebuilding %d date(s)", schema, len(dates))
-		db.RunIncrementalBackfillForDatesAt(dates, tenantLocalNow(db, defaults))
-		log.Printf("[%s] backfill (date-aware): done", schema)
-	}
+func makeTodayDerivedStateTrigger(ctx context.Context, db *storage.DB, schema string, defaults storage.NotifyConfig, coordinator *storage.TodayDerivedStateCoordinator, aiConfig func() storage.AIConfig) func([]string) {
 	return func(dates []string) {
-		if len(dates) == 0 {
-			return
-		}
-		mu.Lock()
-		for _, d := range dates {
-			if len(d) >= 10 {
-				pending[d[:10]] = struct{}{}
+		coordinator.Trigger(ctx, db, schema, dates, func(affected []string) error {
+			if len(affected) == 0 {
+				return nil
 			}
-		}
-		if timer == nil {
-			timer = time.AfterFunc(backfillDatesDebounce, flush)
-		} else {
-			timer.Reset(backfillDatesDebounce)
-		}
-		mu.Unlock()
+			log.Printf("[%s] today derived state: rebuilding %d date(s)", schema, len(affected))
+			return db.RunIncrementalBackfillForDatesAt(affected, tenantLocalNow(db, defaults))
+		}, func() string {
+			return tenantTZOrUTC(db, defaults, schema)
+		}, func() error {
+			lang := db.GetNotifyConfig(defaults).Lang
+			if lang == "" {
+				lang = "en"
+			}
+			cfg := aiConfig()
+			snapshot, err := db.RefreshTodayInsightSnapshotWithConfig(ctx, lang, cfg)
+			if err != nil {
+				log.Printf("[%s] today insight snapshot: %v", schema, err)
+				return err
+			}
+			db.RefreshLegacyEnergyBankSnapshot(lang)
+			// The new Today path owns its own provider generation. Legacy blocks
+			// remain compatibility/on-demand for their existing endpoint and the
+			// morning report, so one derived-state refresh never pays twice.
+			db.EnsureDailyInsightNarrativeAsync(snapshot, cfg, lang)
+			return nil
+		})
 	}
 }
 
@@ -750,7 +739,7 @@ func makeTestNotifyFn(db *storage.DB, mgr *tenants.Manager, schema string, notif
 //
 // Used from both runSingleTenant (legacy mode) and the multi-tenant
 // mux build so neither path falls through silently.
-func registerCheckinWebhook(mux *http.ServeMux, mgr *tenants.Manager, reg *registry.Registry, notifyDefaults storage.NotifyConfig, baseURL string) {
+func registerCheckinWebhook(mux *http.ServeMux, mgr *tenants.Manager, reg *registry.Registry, notifyDefaults storage.NotifyConfig, baseURL string, refreshToday func(*storage.DB, string)) {
 	envSecret := os.Getenv("TELEGRAM_WEBHOOK_SECRET")
 	envToken := os.Getenv("TELEGRAM_WEBHOOK_TOKEN_HEADER")
 
@@ -796,11 +785,15 @@ func registerCheckinWebhook(mux *http.ServeMux, mgr *tenants.Manager, reg *regis
 				loc = l
 			}
 			bot := notify.NewBot(cfg.Token, cfg.ChatID)
+			var refresh func()
+			if refreshToday != nil {
+				refresh = func() { refreshToday(db, schema) }
+			}
 			return notify.CheckinTenant{
 				Schema:    schema,
 				Lang:      cfg.Lang,
 				TodayInTZ: time.Now().In(loc).Format("2006-01-02"),
-				Router:    &liveCheckinRouter{db: db, bot: bot, triggerReport: makeReportTrigger(mgr, reg, schema, notifyDefaults)},
+				Router:    &liveCheckinRouter{db: db, bot: bot, triggerReport: makeReportTrigger(mgr, reg, schema, notifyDefaults), refreshToday: refresh},
 			}, true
 		},
 	}))
@@ -814,6 +807,7 @@ type liveCheckinRouter struct {
 	db            *storage.DB
 	bot           *notify.Bot
 	triggerReport func()
+	refreshToday  func()
 }
 
 func (r *liveCheckinRouter) SaveAnswer(date, source, answer string, answeredAt time.Time) (string, error) {
@@ -821,6 +815,9 @@ func (r *liveCheckinRouter) SaveAnswer(date, source, answer string, answeredAt t
 	if err == nil {
 		if evidenceErr := r.db.RecordWakeCheckinEvidence(date, answeredAt); evidenceErr != nil {
 			log.Printf("checkin: record wake evidence for %s: %v", date, evidenceErr)
+		}
+		if r.refreshToday != nil {
+			r.refreshToday()
 		}
 	}
 	return status, err
@@ -1065,7 +1062,8 @@ func morningCheckinEnabled(reg *registry.Registry) bool {
 		os.Getenv("TELEGRAM_WEBHOOK_TOKEN_HEADER") != ""
 }
 
-func runReportScheduler(ctx context.Context, db *storage.DB, mgr *tenants.Manager, reg *registry.Registry, schema string, defaults storage.NotifyConfig, baseURL string) {
+func runReportScheduler(ctx context.Context, db *storage.DB, mgr *tenants.Manager, reg *registry.Registry, schema string, defaults storage.NotifyConfig, baseURL string, onDayRollover func()) {
+	lastTenantDay := ""
 schedulerLoop:
 	for {
 		select {
@@ -1073,6 +1071,13 @@ schedulerLoop:
 			return
 		default:
 		}
+		currentTenantDay := db.Today()
+		if lastTenantDay != "" && currentTenantDay != lastTenantDay && onDayRollover != nil {
+			log.Printf("[%s] report scheduler: tenant day rolled over %s -> %s; refreshing Today derived state", schema, lastTenantDay, currentTenantDay)
+			onDayRollover()
+		}
+		lastTenantDay = currentTenantDay
+
 		cfg := db.GetNotifyConfig(defaults)
 		if !cfg.Enabled() {
 			select {
@@ -1403,7 +1408,7 @@ func trySendContextPromptAfterMorning(bot *notify.Bot, db *storage.DB, cfg notif
 // and calls MarkSuspectPoints to flag z-score outliers in the last 7 days of
 // autonomic metrics. Cheap (~one query per metric) and idempotent — re-running
 // only flips quality='ok' rows whose deviation exceeds 3σ.
-func runDailyQualityScan(db *storage.DB, schema string, defaults storage.NotifyConfig) {
+func runDailyQualityScan(db *storage.DB, schema string, defaults storage.NotifyConfig, refreshToday func([]string)) {
 	for {
 		// Resolve tz per iteration so per-tenant settings.timezone overrides
 		// the env default — same pattern as runReportScheduler.
@@ -1439,7 +1444,9 @@ func runDailyQualityScan(db *storage.DB, schema string, defaults storage.NotifyC
 
 		now = time.Now().In(loc)
 		today := now.Format("2006-01-02")
-		db.RunReadinessRedesignBackfillForDatesAt([]string{today}, now)
+		if refreshToday != nil {
+			refreshToday([]string{today})
+		}
 		if deleted, err := db.PruneContextPromptInteractions(now); err != nil {
 			log.Printf("[%s] context prompt retention: %v", schema, err)
 		} else if deleted > 0 {

@@ -30,7 +30,13 @@
                   aria-label="{{.ReadinessServing.Tooltip}}">{{.ReadinessServing.Label}}</span>
             {{end}}
           </div>
-          {{if .Guidance}}
+          {{if .TodayInsights}}
+          <h1>{{.TodayInsights.Primary.Observation}}</h1>
+          <p>{{.TodayInsights.Primary.Meaning}}</p>
+          {{if .TodayInsights.Primary.NextStep}}
+          <span class="today-action">{{.TodayInsights.Primary.NextStep.Text}}</span>
+          {{end}}
+          {{else if .Guidance}}
           <h1>{{.Guidance.Summary}}</h1>
           <p>{{.Guidance.Reason}}</p>
           <span class="today-action today-action--{{.Guidance.Action}}">{{.Guidance.Label}}</span>
@@ -71,6 +77,20 @@
       {{end}}{{end}}
     </div>
   </section>
+
+  {{if .TodayInsights}}
+  <section id="today-insights" aria-label="{{.TodayInsights.Primary.Title}}">
+    <div class="today-insights-domains">
+      {{range .TodayInsights.Domains}}
+      <a class="today-insights-domain" href="/{{.Destination.ID}}">
+        <div class="today-insights-domain-meta"><span>{{.Insight.Title}}</span></div>
+        <strong>{{.Summary}}</strong>
+        <p>{{.Insight.Observation}}</p>
+      </a>
+      {{end}}
+    </div>
+  </section>
+  {{end}}
 
   <section id="daily-scores" aria-labelledby="daily-scores-title">
     <div class="section-title" id="daily-scores-title">{{T .Lang "daily_scores"}}</div>
@@ -216,14 +236,6 @@
     {{end}}
   </div>
   {{end}}
-
-  <!-- AI Insight: server may have rendered it inline above; if cache was
-       cold, the wrapper still emits and JS polls /api/ai-briefing until
-       text arrives. Hidden when there is nothing yet. -->
-  <details id="ai-insight-wrap"{{if not .AIInsight}} hidden{{end}}>
-    <summary>{{T .Lang "ai_insight_title"}}<span id="ai-insight-spark" style="display:none">&nbsp;✨</span></summary>
-    <div id="ai-insight" data-lang="{{.Lang}}">{{.AIInsight}}</div>
-  </details>
 
   <!-- Section detail cards -->
   {{if .Sections}}

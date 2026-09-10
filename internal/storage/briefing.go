@@ -826,10 +826,6 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 		}
 	}
 
-	if resp.EnergyBank != nil {
-		go s.SaveEnergyBankSnapshot(*lastDate, resp.EnergyBank)
-	}
-
 	// Attach per-source sleep breakdown for the most recent night.
 	// Query hourly_metrics (indexed by hour) instead of metric_points.
 	if resp.Sleep != nil {

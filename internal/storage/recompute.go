@@ -43,8 +43,15 @@ var preUnlockHook atomic.Pointer[func()]
 // worker's reads. A plain bool would trip the race detector and miss
 // updates on weakly-ordered architectures.
 type TenantRecompute struct {
-	mu    sync.Mutex
-	dirty atomic.Bool
+	mu       sync.Mutex
+	dirty    atomic.Bool
+	debounce time.Duration
+}
+
+// NewTenantRecompute creates a coalescing worker with an explicit debounce.
+// The zero value remains usable for existing callers and tests.
+func NewTenantRecompute(debounce time.Duration) *TenantRecompute {
+	return &TenantRecompute{debounce: debounce}
 }
 
 // Trigger schedules `work` to run. If no worker is currently running,
@@ -83,7 +90,7 @@ func (t *TenantRecompute) Trigger(ctx context.Context, work func()) {
 			work()
 			if t.dirty.Load() {
 				select {
-				case <-time.After(recomputeDebounce):
+				case <-time.After(t.debounceDuration()):
 				case <-ctx.Done():
 					t.mu.Unlock()
 					return
@@ -111,4 +118,11 @@ func (t *TenantRecompute) Trigger(ctx context.Context, work func()) {
 			}
 		}
 	}()
+}
+
+func (t *TenantRecompute) debounceDuration() time.Duration {
+	if t.debounce > 0 {
+		return t.debounce
+	}
+	return recomputeDebounce
 }

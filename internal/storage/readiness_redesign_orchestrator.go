@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"errors"
+	"fmt"
 	"log"
 	"time"
 )
@@ -51,30 +53,33 @@ func (s *DB) RunReadinessRedesignBackfillForDates(dates []string) {
 	s.RunReadinessRedesignBackfillForDatesAt(dates, time.Now())
 }
 
-func (s *DB) RunReadinessRedesignBackfillForDatesAt(dates []string, today time.Time) {
+func (s *DB) RunReadinessRedesignBackfillForDatesAt(dates []string, today time.Time) error {
 	from, to, ok := readinessRedesignRoutineWindow(dates, today)
 	if !ok {
-		return
+		return nil
 	}
-	s.runReadinessRedesignBackfillRange(from, to)
+	return s.runReadinessRedesignBackfillRange(from, to)
 }
 
-func (s *DB) runReadinessRedesignBackfillRange(from, to string) {
+func (s *DB) runReadinessRedesignBackfillRange(from, to string) error {
 	writers := []readinessRedesignWriter{
 		{name: "recovery_stability", run: s.BackfillRecoveryStabilitySnapshots},
 		{name: "passive_efficiency", run: s.BackfillPassiveEfficiencySnapshots},
 		{name: "acute_risk", run: s.BackfillAcuteRiskSnapshots},
 		{name: "chronic_load", run: s.BackfillChronicLoadSnapshots},
 	}
-	runReadinessRedesignWriters(from, to, writers)
+	return runReadinessRedesignWriters(from, to, writers)
 }
 
-func runReadinessRedesignWriters(from, to string, writers []readinessRedesignWriter) {
+func runReadinessRedesignWriters(from, to string, writers []readinessRedesignWriter) error {
 	log.Printf("readiness redesign backfill: starting %s..%s", from, to)
+	var errs []error
 	for _, w := range writers {
 		if n, err := w.run(from, to); err != nil {
 			log.Printf("readiness redesign backfill %s: wrote=%d err=%v", w.name, n, err)
+			errs = append(errs, fmt.Errorf("%s: %w", w.name, err))
 		}
 	}
 	log.Printf("readiness redesign backfill: done %s..%s", from, to)
+	return errors.Join(errs...)
 }

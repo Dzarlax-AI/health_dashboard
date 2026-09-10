@@ -186,6 +186,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/dashboard", h.guard(h.dashboard))
 	mux.HandleFunc("/api/health-briefing", h.guard(h.healthBriefing))
 	mux.HandleFunc("/api/ai-briefing", h.guard(h.aiBriefing))
+	mux.HandleFunc("GET /api/today-insights", h.guard(h.todayInsights))
 	mux.HandleFunc("GET /api/section/{key}", h.guard(h.sectionAPI))
 	mux.HandleFunc("GET /api/sections", h.guard(h.sectionsCatalogue))
 	mux.HandleFunc("/api/readiness-history", h.guard(h.readinessHistory))
@@ -635,13 +636,14 @@ func (h *Handler) pageDashboard(w http.ResponseWriter, r *http.Request) {
 	lang := langFromRequest(r)
 	setLangCookie(w, r)
 
-	today := db.Today()
-	aiInsight := db.GetAIInsightCombined(today, lang)
 	br, err := db.GetHealthBriefing(lang)
 	if err != nil {
 		log.Printf("[DASHBOARD] GetHealthBriefing: %v", err)
 	}
-	data := buildDashboardPageData(h.basePage(r, T(lang, "app_title"), "dashboard"), br, aiInsight)
+	// The legacy dashboard renders the same server-owned factual Today model as
+	// the API. It deliberately does not pre-render legacy AI blocks beside the
+	// new focal card, which would duplicate or contradict the daily decision.
+	data := buildDashboardPageData(h.basePage(r, T(lang, "app_title"), "dashboard"), br, "")
 
 	renderPage(w, "dashboard", data)
 }
@@ -1570,6 +1572,114 @@ func (h *Handler) healthBriefing(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, resp)
 }
 
+// todayInsights exposes a cache-safe factual Today snapshot. It is deliberately
+// today-only: historical detail continues to use the established section and
+// metric endpoints and can never cause provider work.
+func (h *Handler) todayInsights(w http.ResponseWriter, r *http.Request) {
+	lang := supportedLang(r.URL.Query().Get("lang"))
+	if _, present := r.URL.Query()["date"]; present {
+		http.Error(w, "today-insights does not accept date", http.StatusBadRequest)
+		return
+	}
+	db := h.tenantDB(r)
+	schema := h.tenantSchema(r)
+	w.Header().Set("Cache-Control", "private, no-store")
+	briefing, err := db.GetHealthBriefing(lang)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	snapshot := health.BuildDailyInsightSnapshot(briefing, lang)
+	if snapshot == nil {
+		http.Error(w, "today insight snapshot unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if snapshot.Date != db.Today() {
+		// Do not relabel yesterday's latest sample as Today. The client can
+		// retain its last factual response and retry after ingestion catches up.
+		http.Error(w, "today insight data unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	aiCfg := db.GetAIConfig(h.mgr.AIDefaultsFor(r.Context(), schema))
+	materialHash := health.DailyInsightMaterialHash(snapshot)
+	providerFingerprint := storage.DailyInsightGenerationFingerprint(aiCfg, lang)
+	snapshotPayload, err := json.Marshal(snapshot)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	bundle, err := db.GetDailyInsightBundle(snapshot.Date, lang)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if bundle == nil || bundle.MaterialInputHash != materialHash || bundle.ProviderFingerprint != providerFingerprint {
+		if err := db.UpsertDailyInsightSnapshot(r.Context(), storage.DailyInsightBundle{
+			Date: snapshot.Date, Lang: lang, MaterialInputHash: materialHash,
+			DecisionID: snapshot.DecisionID, SchemaVersion: health.DailyInsightSnapshotVersion,
+			PolicyVersion: health.DailyInsightPolicyVersion, PromptRevision: health.DailyInsightPromptRevision,
+			ProviderFingerprint: providerFingerprint, Snapshot: snapshotPayload,
+		}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		bundle, err = db.GetDailyInsightBundle(snapshot.Date, lang)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	if bundle == nil {
+		http.Error(w, "today insight bundle unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	// The request-time comparison is a safety net for lifecycle paths that
+	// have not yet refreshed the durable bundle. Never render a narrative
+	// whose factual or generation inputs are no longer current.
+	fresh := bundle.MaterialInputHash == materialHash && bundle.ProviderFingerprint == providerFingerprint
+	state := bundle.GenerationState
+	if !aiCfg.Enabled() {
+		state = storage.DailyInsightStateDisabled
+	} else if !fresh || state == "" {
+		state = storage.DailyInsightStateCold
+	}
+	if state == storage.DailyInsightStateReady && len(bundle.Narrative) == 0 {
+		state = storage.DailyInsightStateFailed
+	}
+	if state == storage.DailyInsightStateReady {
+		var narrative health.DailyInsightNarrative
+		if err := json.Unmarshal(bundle.Narrative, &narrative); err != nil {
+			state = storage.DailyInsightStateFailed
+			if err := db.InvalidateDailyInsightNarrative(r.Context(), snapshot.Date, lang, materialHash, providerFingerprint); err != nil {
+				log.Printf("today insights: invalidate unreadable narrative: %v", err)
+			}
+		} else if rendered, err := health.ApplyDailyInsightNarrative(snapshot, narrative); err != nil {
+			// A persisted overlay is never trusted more than the current
+			// factual snapshot. Keep deterministic fallback text instead.
+			state = storage.DailyInsightStateFailed
+			if err := db.InvalidateDailyInsightNarrative(r.Context(), snapshot.Date, lang, materialHash, providerFingerprint); err != nil {
+				log.Printf("today insights: invalidate incompatible narrative: %v", err)
+			}
+		} else {
+			snapshot = rendered
+		}
+	}
+	canGenerate := bundle.RetryAfter == nil || !bundle.RetryAfter.After(time.Now())
+	if aiCfg.Enabled() && fresh && state != storage.DailyInsightStateReady && canGenerate {
+		db.EnsureDailyInsightNarrativeAsync(snapshot, aiCfg, lang)
+	}
+	retryAfter := 0
+	if bundle.RetryAfter != nil && bundle.RetryAfter.After(time.Now()) {
+		retryAfter = int(time.Until(*bundle.RetryAfter).Seconds())
+	}
+	jsonResponse(w, clientapi.TodayInsightsResponse{
+		DailyInsightSnapshot: snapshot,
+		Generation: clientapi.TodayInsightsGeneration{
+			State: state, FreshForSnapshot: fresh, RetryAfterSeconds: retryAfter,
+		},
+	})
+}
+
 // aiBriefing serves the per-block AI narrative. Today retains non-blocking
 // generation; an explicit historical date is cache-only and can never trigger
 // provider work.
@@ -1905,6 +2015,13 @@ func (h *Handler) adminReadinessRedesignBackfill(w http.ResponseWriter, r *http.
 	// the calibrated defaults. Always populated, even when wantChronic
 	// is false — useful when chaining backfills.
 	_, chronicCfg := db.LoadChronicLoadConfig()
+	// The redesign writers can change the readiness context used by today's
+	// decision. Route the affected tenant through the same causal refresh as
+	// ingest; the HTTP response remains synchronous only for the requested
+	// historical writer operation.
+	if refresh := h.mgr.BackfillDatesFor(schema); refresh != nil {
+		refresh([]string{db.Today()})
+	}
 
 	jsonResponse(w, map[string]any{
 		"schema":              schema,
@@ -2607,6 +2724,7 @@ func (h *Handler) userSettings(w http.ResponseWriter, r *http.Request) {
 		if oldEffectiveToken == "" {
 			oldEffectiveToken = notifyDefaults.Token
 		}
+		oldToday := db.Today()
 
 		if err := db.SaveSettings(clean); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -2630,6 +2748,16 @@ func (h *Handler) userSettings(w http.ResponseWriter, r *http.Request) {
 		h.dispatchWebhookDiffRaw(r.Context(), schema,
 			storage.NotifyConfig{Token: oldForDiff, ChatID: oldRawChat},
 			storage.NotifyConfig{Token: newRawToken, ChatID: newRawChat})
+		if _, langChanged := clean["report_lang"]; langChanged {
+			if refresh := h.mgr.BackfillDatesFor(schema); refresh != nil {
+				refresh([]string{db.Today()})
+			}
+		}
+		if _, timezoneChanged := clean["timezone"]; timezoneChanged {
+			if refresh := h.mgr.BackfillDatesFor(schema); refresh != nil {
+				refresh([]string{oldToday, db.Today()})
+			}
+		}
 
 		jsonResponse(w, map[string]string{"status": "ok"})
 		return
@@ -2774,6 +2902,14 @@ func (h *Handler) adminAISettings(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// A provider/model/prompt policy change invalidates generation inputs
+		// for every tenant inheriting global defaults. The registered callback
+		// uses the derived-state coordinator and is non-blocking.
+		for tenantSchema := range h.mgr.AllDBs() {
+			if refresh := h.mgr.BackfillDatesFor(tenantSchema); refresh != nil {
+				refresh(nil)
+			}
+		}
 		jsonResponse(w, map[string]string{"status": "ok"})
 		return
 	}
@@ -2859,6 +2995,11 @@ func (h *Handler) adminEnergySettings(w http.ResponseWriter, r *http.Request) {
 		if err := db.SaveSettings(clean); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		// Recompute through the shared causal chain rather than relying on a
+		// future dashboard read to notice the changed EnergyBank settings.
+		if refresh := h.mgr.BackfillDatesFor(scope.Schema); refresh != nil {
+			refresh(nil)
 		}
 		jsonResponse(w, map[string]string{"status": "ok"})
 		return

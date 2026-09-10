@@ -64,6 +64,17 @@ func (o *EnergyV2Orchestrator) TriggerAfter(ctx context.Context, db *DB, schema,
 }
 
 func (o *EnergyV2Orchestrator) recompute(ctx context.Context, db *DB, schema, tz string) bool {
+	return o.Refresh(ctx, db, schema, tz)
+}
+
+// Refresh synchronously computes and persists the canonical EnergyBank v2
+// snapshot. It is intentionally exported for the derived-state coordinator:
+// callers that need a coherent Today snapshot must await this method instead
+// of scheduling an independent recompute and racing its write.
+//
+// Normal ingest callers should continue using Trigger/TriggerAfter so the
+// POST /health acceptance path remains non-blocking.
+func (o *EnergyV2Orchestrator) Refresh(ctx context.Context, db *DB, schema, tz string) bool {
 	res, err := db.ComputeBankForToday(ctx, tz)
 	if err != nil {
 		log.Printf("[ENERGY_V2] schema=%s compute error: %v", schema, err)

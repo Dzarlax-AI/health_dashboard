@@ -22,10 +22,9 @@ type EnergyHistoryPoint struct {
 // daily_scores.energy_*. Best-effort — errors are logged but not returned,
 // and callers should never block briefing rendering on this.
 //
-// Called from the briefing path on every render so the latest in-memory
-// EnergyBank for `date` is the value that lands. By construction the
+// Called only from the derived-state refresh coordinator. By construction the
 // previous day's row freezes once today rolls over (no more recompute for
-// it from briefing). Backfilling historical rows is intentionally out of
+// it from a read path). Backfilling historical rows is intentionally out of
 // scope — adding that prematurely would lock in numbers from an evolving
 // formula. Track via Todoist: 6gX922PFjx82PvGf.
 func (s *DB) SaveEnergyBankSnapshot(date string, eb *health.EnergyBank) {
@@ -47,6 +46,21 @@ func (s *DB) SaveEnergyBankSnapshot(date string, eb *health.EnergyBank) {
 	if err != nil {
 		log.Printf("save energy bank snapshot %s: %v", date, err)
 	}
+}
+
+// RefreshLegacyEnergyBankSnapshot keeps the compatibility day-level history
+// in sync from the canonical briefing, but deliberately does so only from a
+// mutation-driven coordinator. GetHealthBriefing itself stays read-only.
+func (s *DB) RefreshLegacyEnergyBankSnapshot(lang string) {
+	briefing, err := s.GetHealthBriefing(lang)
+	if err != nil {
+		log.Printf("refresh legacy energy bank snapshot: briefing: %v", err)
+		return
+	}
+	if briefing == nil || briefing.EnergyBank == nil || briefing.Date == "" {
+		return
+	}
+	s.SaveEnergyBankSnapshot(briefing.Date, briefing.EnergyBank)
 }
 
 // GetEnergyHistory returns the most recent `days` legacy EOD snapshots in

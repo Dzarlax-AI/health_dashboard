@@ -11,11 +11,12 @@ import (
 // explain this decision, but must not choose a competing intensity on its own.
 // ID changes only when inputs relevant to that boundary change.
 type DailyDecision struct {
-	ID         string   `json:"id"`
-	Mode       string   `json:"mode"`
-	Label      string   `json:"label"`
-	Reason     string   `json:"reason"`
-	SignalKeys []string `json:"signal_keys,omitempty"`
+	ID              string   `json:"id"`
+	Mode            string   `json:"mode"`
+	Label           string   `json:"label"`
+	Reason          string   `json:"reason"`
+	SignalKeys      []string `json:"signal_keys,omitempty"`
+	EvidenceDomains []string `json:"evidence_domains,omitempty"`
 }
 
 // BuildDailyDecision must run after the final EnergyBank has been attached to
@@ -50,8 +51,30 @@ func BuildDailyDecision(resp *BriefingResponse) *DailyDecision {
 	if resp.Headline != nil && resp.Headline.Key != "" {
 		decision.SignalKeys = []string{resp.Headline.Key}
 	}
+	decision.EvidenceDomains = dailyDecisionEvidenceDomains(resp)
 	decision.ID = dailyDecisionID(resp, decision)
 	return decision
+}
+
+// dailyDecisionEvidenceDomains keeps the primary explanation tied to the
+// rule source that set the final action. It must never infer provenance from
+// the action label itself: "rest" can result from illness or sleep coverage,
+// even when EnergyBank is healthy.
+func dailyDecisionEvidenceDomains(resp *BriefingResponse) []string {
+	if resp == nil {
+		return nil
+	}
+	if resp.TodayGuidance != nil {
+		reason := strings.ToLower(firstNonEmptyInsight(resp.ReadinessCapReason, resp.TodayGuidance.Reason))
+		if strings.Contains(reason, "sleep") {
+			return []string{"sleep"}
+		}
+		return []string{"recovery"}
+	}
+	if resp.EnergyBank != nil {
+		return []string{"energy"}
+	}
+	return []string{"recovery"}
 }
 
 func fallbackDecisionMode(score int) string {
@@ -77,6 +100,7 @@ func dailyDecisionID(resp *BriefingResponse, decision *DailyDecision) string {
 	parts := []string{
 		"daily-decision-v1", resp.Date, decision.Mode, decision.Reason,
 		resp.ReadinessConfidence, resp.ReadinessCapReason, headline,
+		strings.Join(decision.EvidenceDomains, ","),
 	}
 	if resp.SubjectiveCheckin != nil {
 		parts = append(parts, resp.SubjectiveCheckin.Status, resp.SubjectiveCheckin.Answer)
