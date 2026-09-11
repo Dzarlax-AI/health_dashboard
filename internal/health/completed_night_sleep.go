@@ -238,7 +238,13 @@ func EvaluateRecentSleepBelowReference(records []CompletedNightSleep, wakeDate s
 		state = RecentSleepClaimTrue
 	}
 	result := RecentSleepBelowReference{State: state, ReferenceHours: reference, CurrentShortDays: short}
-	if state != RecentSleepClaimTrue || now.In(loc).Before(mustNightFinalizationTime(wakeDate, loc)) {
+	localNow := now.In(loc)
+	// An action is a present-tense, evening-only Today event. The evaluator is
+	// also used for historical availability analysis, where a past `true` may
+	// be useful evidence but must never be counted as an action that could have
+	// been served to the user.
+	if state != RecentSleepClaimTrue || localNow.Format("2006-01-02") != wakeDate ||
+		localNow.Hour() < 18 || now.Before(mustNightFinalizationTime(wakeDate, loc)) {
 		return finalize(result)
 	}
 	for offset := -7; offset <= -1; offset++ {

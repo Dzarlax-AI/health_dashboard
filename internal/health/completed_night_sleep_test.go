@@ -104,6 +104,23 @@ func TestEvaluateRecentSleepBelowReferenceDoesNotTreatUnknownCadenceAsBlocker(t 
 	}
 }
 
+func TestEvaluateRecentSleepBelowReferenceDoesNotCreateHistoricalAction(t *testing.T) {
+	loc := time.FixedZone("test", 0)
+	wakeDate := time.Date(2026, 9, 9, 0, 0, 0, 0, loc)
+	now := time.Date(2026, 9, 10, 19, 0, 0, 0, loc)
+	records := make([]CompletedNightSleep, 0, 94)
+	for offset := -93; offset <= -4; offset++ {
+		records = append(records, finalNight(wakeDate.AddDate(0, 0, offset), 8, fmt.Sprintf("baseline-%d", offset)))
+	}
+	for offset := -3; offset <= 0; offset++ {
+		records = append(records, finalNight(wakeDate.AddDate(0, 0, offset), 7.4, fmt.Sprintf("current-%d", offset)))
+	}
+	got := EvaluateRecentSleepBelowReference(records, wakeDate.Format("2006-01-02"), now, loc)
+	if got.State != RecentSleepClaimTrue || got.ActionEvent {
+		t.Fatalf("historical evaluation must be a claim, not an action: %#v", got)
+	}
+}
+
 func TestEvaluateRecentSleepBelowReferenceKeepsMorningObservationProvisional(t *testing.T) {
 	loc := time.FixedZone("test", 0)
 	now := time.Date(2026, 9, 10, 8, 0, 0, 0, loc)
