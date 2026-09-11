@@ -15,7 +15,13 @@ func TestCompletedNightSleepRequiresCommittedRawPointAndFinalizes(t *testing.T) 
 	db, cleanup := testDB(t)
 	defer cleanup()
 	ctx := context.Background()
-	loc := time.FixedZone("test", 2*60*60)
+	loc, err := time.LoadLocation("Europe/Belgrade")
+	if err != nil {
+		t.Fatalf("load test timezone: %v", err)
+	}
+	if err := db.SaveSettings(map[string]string{"timezone": "Europe/Belgrade"}); err != nil {
+		t.Fatalf("set tenant timezone: %v", err)
+	}
 	wakeDate := "2026-09-10"
 	metricDate := "2026-09-10 00:00:00 +0200"
 	source := "Apple Watch"
