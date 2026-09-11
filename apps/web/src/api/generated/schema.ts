@@ -612,14 +612,18 @@ export interface components {
                     kind: string;
                 };
                 insight: {
+                    answer_kind: string;
+                    claim_id?: string;
                     evidence_ids: string[] | null;
                     fallback: boolean;
+                    gap_reason?: string;
                     meaning: string;
                     next_step?: {
                         id: string;
                         text: string;
                     };
                     observation: string;
+                    remediation_id?: string;
                     state: string;
                     title: string;
                 };
@@ -652,14 +656,18 @@ export interface components {
             };
             has_more: boolean;
             primary: {
+                answer_kind: string;
+                claim_id?: string;
                 evidence_ids: string[] | null;
                 fallback: boolean;
+                gap_reason?: string;
                 meaning: string;
                 next_step?: {
                     id: string;
                     text: string;
                 };
                 observation: string;
+                remediation_id?: string;
                 state: string;
                 title: string;
             };

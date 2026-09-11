@@ -53,7 +53,7 @@ function todayInsights(
     evidence: [],
     generation: { fresh_for_snapshot: freshForSnapshot, state },
     has_more: false,
-    primary: { evidence_ids: [], fallback: true, meaning: "", observation: "", state: "insight", title: "Today" },
+    primary: { answer_kind: "factual_context", evidence_ids: [], fallback: true, meaning: "", observation: "", state: "insight", title: "Today" },
     snapshot_version: "fixture",
   };
 }

@@ -53,7 +53,7 @@ func TestBuildDailyInsightSnapshotSeparatesFactsFromInterpretations(t *testing.T
 	}
 }
 
-func TestBuildDailyInsightSnapshotDoesNotInventSleepInterpretationWithoutContext(t *testing.T) {
+func TestBuildDailyInsightSnapshotUsesFactualSleepContextWithoutBaseline(t *testing.T) {
 	latestSleep := 7.1
 	got := BuildDailyInsightSnapshot(&BriefingResponse{
 		Date:  "2026-09-10",
@@ -69,8 +69,11 @@ func TestBuildDailyInsightSnapshotDoesNotInventSleepInterpretationWithoutContext
 		if domain.Summary != "Sleep duration was 7.1 hours." {
 			t.Fatalf("summary = %q", domain.Summary)
 		}
-		if domain.Insight.Observation != "" {
-			t.Fatalf("observation = %q, want empty without baseline or quality", domain.Insight.Observation)
+		if domain.Insight.AnswerKind != DailyInsightAnswerProvisional {
+			t.Fatalf("answer kind = %q", domain.Insight.AnswerKind)
+		}
+		if domain.Insight.Observation != "Last night is part of today’s context; a personal comparison will appear as more history accumulates." {
+			t.Fatalf("observation = %q", domain.Insight.Observation)
 		}
 		return
 	}
@@ -94,7 +97,7 @@ func TestBuildDailyInsightSnapshotPreservesZeroValuedFacts(t *testing.T) {
 	}
 }
 
-func TestBuildDailyInsightSnapshotWithholdsRecoveryGuidanceForInsufficientServingStates(t *testing.T) {
+func TestBuildDailyInsightSnapshotExplainsRecoveryDataLimits(t *testing.T) {
 	for _, status := range []string{
 		ReadinessServingMissing,
 		ReadinessServingStale,
@@ -113,8 +116,11 @@ func TestBuildDailyInsightSnapshotWithholdsRecoveryGuidanceForInsufficientServin
 			if domain.Insight.State != "insufficient_data" {
 				t.Fatalf("state = %q", domain.Insight.State)
 			}
-			if domain.Insight.Observation != "" {
-				t.Fatalf("observation = %q, want empty", domain.Insight.Observation)
+			if domain.Insight.AnswerKind != DailyInsightAnswerDataGuidance {
+				t.Fatalf("answer kind = %q", domain.Insight.AnswerKind)
+			}
+			if domain.Insight.Observation == "" || domain.Insight.Meaning == "" {
+				t.Fatalf("data guidance is incomplete: %#v", domain.Insight)
 			}
 		})
 	}
@@ -129,6 +135,66 @@ func TestBuildDailyInsightSnapshotWithholdsRecoveryGuidanceForInsufficientServin
 	domain := dailyInsightDomain(t, got, "recovery")
 	if domain.Insight.State != "insight" || domain.Insight.Observation != "Keep the effort controlled." {
 		t.Fatalf("capped recovery = %#v", domain.Insight)
+	}
+}
+
+func TestBuildDailyInsightSnapshotAlwaysProvidesAReadableAnswer(t *testing.T) {
+	got := BuildDailyInsightSnapshot(&BriefingResponse{Date: "2026-09-10"}, "en")
+	if got == nil {
+		t.Fatal("snapshot is nil")
+	}
+	if got.Primary.Title == "" || got.Primary.Observation == "" || got.Primary.Meaning == "" {
+		t.Fatalf("primary is incomplete: %#v", got.Primary)
+	}
+	for _, domain := range got.Domains {
+		if domain.Insight.Title == "" || domain.Insight.Observation == "" || domain.Insight.Meaning == "" {
+			t.Fatalf("%s answer is incomplete: %#v", domain.Key, domain.Insight)
+		}
+		switch domain.Insight.AnswerKind {
+		case DailyInsightAnswerConfirmedPersonal, DailyInsightAnswerProvisional, DailyInsightAnswerFactual, DailyInsightAnswerDataGuidance:
+		default:
+			t.Fatalf("%s answer kind = %q", domain.Key, domain.Insight.AnswerKind)
+		}
+	}
+}
+
+func TestDailyInsightMaterialHashIncludesAnswerPolicy(t *testing.T) {
+	base := &DailyInsightSnapshot{
+		Date: "2026-09-10", Version: DailyInsightSnapshotVersion,
+		Primary: DailyInsight{State: "insight", AnswerKind: DailyInsightAnswerFactual},
+		Domains: []DailyInsightDomain{{Key: "sleep", Insight: DailyInsight{State: "insight", AnswerKind: DailyInsightAnswerFactual}}},
+	}
+	changed := *base
+	changed.Primary = base.Primary
+	changed.Primary.AnswerKind = DailyInsightAnswerDataGuidance
+	if DailyInsightMaterialHash(base) == DailyInsightMaterialHash(&changed) {
+		t.Fatal("answer kind must invalidate the material hash")
+	}
+
+	changed = *base
+	changed.Domains = append([]DailyInsightDomain(nil), base.Domains...)
+	changed.Domains[0].Insight = base.Domains[0].Insight
+	changed.Domains[0].Insight.Remediation = "sync_sleep_data"
+	if DailyInsightMaterialHash(base) == DailyInsightMaterialHash(&changed) {
+		t.Fatal("remediation must invalidate the material hash")
+	}
+}
+
+func TestApplyRecentSleepBelowReferenceAddsOnlySleepAction(t *testing.T) {
+	base := BuildDailyInsightSnapshot(&BriefingResponse{Date: "2026-09-10"}, "en")
+	got := ApplyRecentSleepBelowReference(base, RecentSleepBelowReference{State: RecentSleepClaimTrue, ActionEvent: true}, "en")
+	sleep := dailyInsightDomain(t, got, "sleep")
+	if sleep.Insight.AnswerKind != DailyInsightAnswerConfirmedPersonal || sleep.Insight.ClaimID != "recent_sleep_below_reference" || sleep.Insight.NextStep == nil || sleep.Insight.NextStep.ID != "wind_down" {
+		t.Fatalf("sleep B0 claim = %#v", sleep.Insight)
+	}
+	if got.Primary.NextStep != base.Primary.NextStep {
+		t.Fatalf("sleep action changed primary decision: before=%#v after=%#v", base.Primary.NextStep, got.Primary.NextStep)
+	}
+	if dailyInsightDomain(t, got, "recovery").Insight.NextStep != nil || dailyInsightDomain(t, got, "energy").Insight.NextStep != nil {
+		t.Fatal("sleep action leaked into another domain")
+	}
+	if DailyInsightMaterialHash(base) == DailyInsightMaterialHash(got) {
+		t.Fatal("canonical sleep claim must invalidate the material hash")
 	}
 }
 
