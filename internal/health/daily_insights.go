@@ -117,6 +117,8 @@ func ApplyRecentSleepBelowReference(snapshot *DailyInsightSnapshot, claim Recent
 			domain.Insight.ClaimID = "recent_sleep_below_reference"
 			domain.Insight.GapReason, domain.Insight.Remediation = "", ""
 			domain.Insight.Observation, domain.Insight.Meaning = localizedRecentSleepBelowReference(locale)
+			domain.Insight.EvidenceIDs = []string{"sleep_recent_reference", "sleep_recent_short_nights"}
+			copy.Evidence = append(copy.Evidence, recentSleepClaimEvidence(claim, domain.Destination, copy.UpdatedAt)...)
 			if claim.ActionEvent {
 				id, text := localizedWindDownAction(locale)
 				domain.Insight.NextStep = &DailyInsightAction{ID: id, Text: text}
@@ -127,6 +129,27 @@ func ApplyRecentSleepBelowReference(snapshot *DailyInsightSnapshot, claim Recent
 		return copy
 	}
 	return copy
+}
+
+// recentSleepClaimEvidence replaces display-aggregate references for the B0
+// sleep claim. A future narrative overlay can therefore acknowledge only the
+// same canonical history and current window that decided the claim.
+func recentSleepClaimEvidence(claim RecentSleepBelowReference, destination DailyInsightDestination, observedAt *time.Time) []DailyInsightEvidence {
+	reference := claim.ReferenceHours
+	shortNights := float64(claim.CurrentShortDays)
+	threshold := 3.0
+	return []DailyInsightEvidence{
+		{
+			ID: "sleep_recent_reference", Domain: "sleep", ObservedAt: observedAt,
+			ComparisonPeriod: "D-93..D-4; at least 60 final nights", Comparison: "personal canonical reference",
+			DataState: "fresh", Confidence: "final", Value: &reference, Unit: "h", Destination: destination,
+		},
+		{
+			ID: "sleep_recent_short_nights", Domain: "sleep", ObservedAt: observedAt,
+			ComparisonPeriod: "D-3..D", Comparison: "nights at least 0.5 h below the personal reference",
+			DataState: "fresh", Confidence: "final", Value: &shortNights, Baseline: &threshold, Unit: "nights", Destination: destination,
+		},
+	}
 }
 
 type DailyInsightDomain struct {

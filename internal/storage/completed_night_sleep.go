@@ -82,6 +82,9 @@ func (s *DB) SaveNightSleepCoverageCommitment(ctx context.Context, commitment Ni
 	if commitment.CaptureCompleteness != health.NightCaptureComplete && commitment.CaptureCompleteness != health.NightCapturePartial {
 		return fmt.Errorf("invalid night sleep coverage completeness %q", commitment.CaptureCompleteness)
 	}
+	if err := s.validateNightSleepCoverageCommitment(commitment); err != nil {
+		return err
+	}
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO night_sleep_coverage_commitments(
 			wake_date,source,metric_date,source_epoch,capture_completeness,
@@ -101,6 +104,33 @@ func (s *DB) SaveNightSleepCoverageCommitment(ctx context.Context, commitment Ni
 		commitment.CaptureCompleteness, commitment.CoverageGeneration, commitment.CoveredIntervalStart,
 		commitment.CoveredIntervalEnd, commitment.ObservedAt, commitment.InputHash)
 	return err
+}
+
+// validateNightSleepCoverageCommitment ties a controlled adapter's metadata to
+// the tenant-local wake day. A syntactically valid but misdated interval must
+// never promote an unrelated raw point into the canonical B0 evidence set.
+func (s *DB) validateNightSleepCoverageCommitment(commitment NightSleepCoverageCommitment) error {
+	loc := s.reportTZLocation()
+	wakeDay, err := time.ParseInLocation("2006-01-02", commitment.WakeDate, loc)
+	if err != nil {
+		return fmt.Errorf("invalid night sleep coverage wake date: %w", err)
+	}
+	metricAt, err := parseMetricDate(commitment.MetricDate)
+	if err != nil {
+		return fmt.Errorf("invalid night sleep coverage metric date: %w", err)
+	}
+	if metricAt.In(loc).Format("2006-01-02") != commitment.WakeDate {
+		return fmt.Errorf("night sleep coverage metric date does not match wake date")
+	}
+	expectedEnd := time.Date(wakeDay.Year(), wakeDay.Month(), wakeDay.Day(), 12, 0, 0, 0, loc)
+	expectedStart := expectedEnd.AddDate(0, 0, -1)
+	if !commitment.CoveredIntervalStart.Equal(expectedStart) || !commitment.CoveredIntervalEnd.Equal(expectedEnd) {
+		return fmt.Errorf("night sleep coverage interval does not match tenant-local noon-to-noon wake window")
+	}
+	if metricAt.Before(commitment.CoveredIntervalStart) || !metricAt.Before(commitment.CoveredIntervalEnd) {
+		return fmt.Errorf("night sleep coverage metric date is outside covered interval")
+	}
+	return nil
 }
 
 // ReconcileCompletedNightSleep selects the highest-priority committed source

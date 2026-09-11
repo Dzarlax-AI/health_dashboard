@@ -732,6 +732,12 @@ func makeTodayDerivedStateTrigger(ctx context.Context, db *storage.DB, schema st
 				lang = "en"
 			}
 			cfg := aiConfig()
+			if !storage.TodayInsightsB1Enabled(db) {
+				// Match the request path: a mutation-triggered refresh may persist
+				// deterministic material, but must never call a provider before
+				// the explicit B1 opt-in is enabled for this tenant.
+				cfg = storage.AIConfig{}
+			}
 			snapshot, err := db.RefreshTodayInsightSnapshotWithConfig(ctx, lang, cfg)
 			if err != nil {
 				log.Printf("[%s] today insight snapshot: %v", schema, err)
@@ -1574,18 +1580,16 @@ func trySendContextPromptAfterMorning(bot *notify.Bot, db *storage.DB, cfg notif
 	log.Printf("context prompt: sent low_sleep prompt=%s date=%s", prompt.PromptID, signalDate)
 }
 
-// runCompletedNightSleepCoordinator reconciles controlled-adapter commitments
-// and advances only already-complete canonical nights at the tenant-local
-// finalization boundary. It is deliberately independent from requests and AI
-// generation so the factual fallback is always available during failures.
+// runCompletedNightSleepCoordinator runs a bounded historical reconciliation
+// once at startup. Thereafter ingestion reconciles the one changed commitment
+// inline and this timer only advances provisional rows at finalization time.
+// It is deliberately independent from requests and AI generation so the
+// factual fallback is always available during failures.
 func runCompletedNightSleepCoordinator(ctx context.Context, db *storage.DB, schema string) {
 	const interval = time.Minute
-	run := func() {
-		if err := db.ReconcileRecentCompletedNightSleep(ctx, time.Now()); err != nil {
-			log.Printf("[%s] completed-night reconciliation: %v", schema, err)
-		}
+	if err := db.ReconcileRecentCompletedNightSleep(ctx, time.Now()); err != nil {
+		log.Printf("[%s] completed-night startup reconciliation: %v", schema, err)
 	}
-	run()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -1593,7 +1597,9 @@ func runCompletedNightSleepCoordinator(ctx context.Context, db *storage.DB, sche
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			run()
+			if err := db.FinalizeCompletedNightSleep(ctx, time.Now()); err != nil {
+				log.Printf("[%s] completed-night finalization: %v", schema, err)
+			}
 		}
 	}
 }

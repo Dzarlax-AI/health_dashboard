@@ -136,6 +136,9 @@ func (h *Handler) processAcceptedRecord(db *storage.DB, id int64, body []byte, k
 		_ = db.SetHealthRecordProcessing(id, "pending", err)
 		return nil, err
 	}
+	for _, coverageErr := range parsed.NightSleepCoverageErr {
+		log.Printf("record %d: ignore invalid night sleep coverage: %v", id, coverageErr)
+	}
 	// Canonical night sleep is a best-effort derived state. It is never
 	// allowed to delay or fail an accepted raw upload, and it is only fed by
 	// an explicit controlled-adapter coverage commitment.
@@ -502,8 +505,9 @@ type nightSleepCoveragePayload struct {
 }
 
 type parsedMetricPayload struct {
-	Points             []storage.MetricPoint
-	NightSleepCoverage []storage.NightSleepCoverageCommitment
+	Points                []storage.MetricPoint
+	NightSleepCoverage    []storage.NightSleepCoverageCommitment
+	NightSleepCoverageErr []error
 }
 
 type basePoint struct {
@@ -530,41 +534,51 @@ func parseMetricPayload(body []byte) (parsedMetricPayload, error) {
 			points = append(points, filterImpossible(extractPoints(m.Name, m.Units, raw))...)
 		}
 	}
-	coverage, err := parseNightSleepCoverage(p.Data.NightSleepCoverage)
-	if err != nil {
-		return parsedMetricPayload{}, err
-	}
+	coverage, coverageErrs := parseNightSleepCoverage(p.Data.NightSleepCoverage)
+	validCoverage := make([]storage.NightSleepCoverageCommitment, 0, len(coverage))
 	for _, commitment := range coverage {
 		if !containsCommittedNightPoint(points, commitment) {
-			return parsedMetricPayload{}, fmt.Errorf("night sleep coverage does not bind to an exact night_sleep_total point")
+			coverageErrs = append(coverageErrs, fmt.Errorf("night sleep coverage does not bind to an exact night_sleep_total point"))
+			continue
 		}
+		// Keep only independently valid metadata. Raw metrics remain the
+		// accepted record's durable payload even if this optional derived
+		// attestation is malformed or does not bind exactly.
+		validCoverage = append(validCoverage, commitment)
 	}
-	return parsedMetricPayload{Points: points, NightSleepCoverage: coverage}, nil
+	return parsedMetricPayload{Points: points, NightSleepCoverage: validCoverage, NightSleepCoverageErr: coverageErrs}, nil
 }
 
-func parseNightSleepCoverage(raw []nightSleepCoveragePayload) ([]storage.NightSleepCoverageCommitment, error) {
+func parseNightSleepCoverage(raw []nightSleepCoveragePayload) ([]storage.NightSleepCoverageCommitment, []error) {
 	commitments := make([]storage.NightSleepCoverageCommitment, 0, len(raw))
+	warnings := make([]error, 0)
 	for _, item := range raw {
 		if _, err := time.Parse("2006-01-02", item.WakeDate); err != nil {
-			return nil, fmt.Errorf("night sleep coverage wake date: %w", err)
+			warnings = append(warnings, fmt.Errorf("night sleep coverage wake date: %w", err))
+			continue
 		}
 		if strings.TrimSpace(item.MetricDate) == "" || strings.TrimSpace(item.Source) == "" ||
 			strings.TrimSpace(item.SourceEpoch) == "" || strings.TrimSpace(item.CoverageGeneration) == "" {
-			return nil, fmt.Errorf("night sleep coverage requires metric date, source, source epoch, and sync generation")
+			warnings = append(warnings, fmt.Errorf("night sleep coverage requires metric date, source, source epoch, and sync generation"))
+			continue
 		}
 		start, err := time.Parse(time.RFC3339, item.CoveredIntervalStart)
 		if err != nil {
-			return nil, fmt.Errorf("night sleep coverage start: %w", err)
+			warnings = append(warnings, fmt.Errorf("night sleep coverage start: %w", err))
+			continue
 		}
 		end, err := time.Parse(time.RFC3339, item.CoveredIntervalEnd)
 		if err != nil {
-			return nil, fmt.Errorf("night sleep coverage end: %w", err)
+			warnings = append(warnings, fmt.Errorf("night sleep coverage end: %w", err))
+			continue
 		}
 		if item.CaptureCompleteness != health.NightCaptureComplete && item.CaptureCompleteness != health.NightCapturePartial {
-			return nil, fmt.Errorf("night sleep coverage has invalid completeness %q", item.CaptureCompleteness)
+			warnings = append(warnings, fmt.Errorf("night sleep coverage has invalid completeness %q", item.CaptureCompleteness))
+			continue
 		}
 		if !end.After(start) {
-			return nil, fmt.Errorf("night sleep coverage interval must be positive")
+			warnings = append(warnings, fmt.Errorf("night sleep coverage interval must be positive"))
+			continue
 		}
 		material := strings.Join([]string{item.WakeDate, item.MetricDate, item.Source, item.SourceEpoch, item.CaptureCompleteness, item.CoverageGeneration, start.UTC().Format(time.RFC3339Nano), end.UTC().Format(time.RFC3339Nano)}, "\x1f")
 		commitments = append(commitments, storage.NightSleepCoverageCommitment{
@@ -574,7 +588,7 @@ func parseNightSleepCoverage(raw []nightSleepCoveragePayload) ([]storage.NightSl
 			InputHash: fmt.Sprintf("%x", sha256.Sum256([]byte(material))),
 		})
 	}
-	return commitments, nil
+	return commitments, warnings
 }
 
 func containsCommittedNightPoint(points []storage.MetricPoint, commitment storage.NightSleepCoverageCommitment) bool {

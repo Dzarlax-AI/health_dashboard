@@ -182,13 +182,16 @@ func TestDailyInsightMaterialHashIncludesAnswerPolicy(t *testing.T) {
 
 func TestApplyRecentSleepBelowReferenceAddsOnlySleepAction(t *testing.T) {
 	base := BuildDailyInsightSnapshot(&BriefingResponse{Date: "2026-09-10"}, "en")
-	got := ApplyRecentSleepBelowReference(base, RecentSleepBelowReference{State: RecentSleepClaimTrue, ActionEvent: true}, "en")
+	got := ApplyRecentSleepBelowReference(base, RecentSleepBelowReference{State: RecentSleepClaimTrue, ReferenceHours: 7.8, CurrentShortDays: 3, ActionEvent: true}, "en")
 	sleep := dailyInsightDomain(t, got, "sleep")
 	if sleep.Insight.AnswerKind != DailyInsightAnswerConfirmedPersonal || sleep.Insight.ClaimID != "recent_sleep_below_reference" || sleep.Insight.NextStep == nil || sleep.Insight.NextStep.ID != "wind_down" {
 		t.Fatalf("sleep B0 claim = %#v", sleep.Insight)
 	}
 	if got.Primary.NextStep != base.Primary.NextStep {
 		t.Fatalf("sleep action changed primary decision: before=%#v after=%#v", base.Primary.NextStep, got.Primary.NextStep)
+	}
+	if got.Evidence[len(got.Evidence)-2].ID != "sleep_recent_reference" || got.Evidence[len(got.Evidence)-1].ID != "sleep_recent_short_nights" || len(sleep.Insight.EvidenceIDs) != 2 {
+		t.Fatalf("sleep B0 evidence = %#v, ids=%#v", got.Evidence, sleep.Insight.EvidenceIDs)
 	}
 	if dailyInsightDomain(t, got, "recovery").Insight.NextStep != nil || dailyInsightDomain(t, got, "energy").Insight.NextStep != nil {
 		t.Fatal("sleep action leaked into another domain")
