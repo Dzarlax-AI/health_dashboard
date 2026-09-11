@@ -12,15 +12,22 @@ import (
 // DailyInsightSnapshot is the deterministic, client-safe basis for Today.
 // It deliberately contains no model output: policy chooses the domain,
 // evidence, and allowed action before any narrative provider is involved.
-const DailyInsightSnapshotVersion = "daily-insight-v1"
+const DailyInsightSnapshotVersion = "daily-insight-v2"
 
 // These versions are part of the material contract. Changing policy or the
 // action catalogue must invalidate a previously generated narrative even if
 // the visible health values happen to be unchanged.
 const (
-	DailyInsightPolicyVersion        = "daily-insight-policy-v1"
+	DailyInsightPolicyVersion        = "daily-insight-policy-v2"
 	DailyInsightActionCatalogVersion = "daily-insight-actions-v1"
-	DailyInsightPromptRevision       = "daily-insight-prompt-v2"
+	DailyInsightPromptRevision       = "daily-insight-prompt-v3"
+)
+
+const (
+	DailyInsightAnswerConfirmedPersonal = "confirmed_personal"
+	DailyInsightAnswerProvisional       = "provisional_pattern"
+	DailyInsightAnswerFactual           = "factual_context"
+	DailyInsightAnswerDataGuidance      = "data_guidance"
 )
 
 type insightCopy struct {
@@ -64,12 +71,85 @@ type DailyInsightAction struct {
 
 type DailyInsight struct {
 	State       string              `json:"state"`
+	AnswerKind  string              `json:"answer_kind"`
+	ClaimID     string              `json:"claim_id,omitempty"`
+	GapReason   string              `json:"gap_reason,omitempty"`
+	Remediation string              `json:"remediation_id,omitempty"`
 	Title       string              `json:"title"`
 	Observation string              `json:"observation"`
 	Meaning     string              `json:"meaning"`
 	NextStep    *DailyInsightAction `json:"next_step,omitempty"`
 	EvidenceIDs []string            `json:"evidence_ids"`
 	Fallback    bool                `json:"fallback"`
+}
+
+// ApplyRecentSleepBelowReference adds the one Phase B0 claim to an otherwise
+// complete factual snapshot. It never changes the primary decision, and it
+// never turns an unknown canonical record into a health action.
+func ApplyRecentSleepBelowReference(snapshot *DailyInsightSnapshot, claim RecentSleepBelowReference, locale string) *DailyInsightSnapshot {
+	if snapshot == nil {
+		return snapshot
+	}
+	copy := cloneDailyInsightSnapshot(snapshot)
+	copy.PolicyDigest = claim.EvidenceDigest
+	if claim.State == RecentSleepClaimFalse || claim.State == RecentSleepClaimUnknown {
+		return copy
+	}
+	for index := range copy.Domains {
+		domain := &copy.Domains[index]
+		if domain.Key != "sleep" {
+			continue
+		}
+		switch claim.State {
+		case RecentSleepClaimProvisional:
+			domain.DataState, domain.Confidence = "partial", "provisional"
+			domain.Insight.State = "insight"
+			domain.Insight.AnswerKind = DailyInsightAnswerProvisional
+			domain.Insight.ClaimID = ""
+			domain.Insight.GapReason = "sleep_current_sync"
+			domain.Insight.Remediation = ""
+			domain.Insight.Observation, domain.Insight.Meaning = localizedCurrentSyncSleepContext(locale)
+			domain.Insight.NextStep = nil
+		case RecentSleepClaimTrue:
+			domain.DataState, domain.Confidence = "fresh", "final"
+			domain.Insight.State = "insight"
+			domain.Insight.AnswerKind = DailyInsightAnswerConfirmedPersonal
+			domain.Insight.ClaimID = "recent_sleep_below_reference"
+			domain.Insight.GapReason, domain.Insight.Remediation = "", ""
+			domain.Insight.Observation, domain.Insight.Meaning = localizedRecentSleepBelowReference(locale)
+			domain.Insight.EvidenceIDs = []string{"sleep_recent_reference", "sleep_recent_short_nights"}
+			copy.Evidence = append(copy.Evidence, recentSleepClaimEvidence(claim, domain.Destination, copy.UpdatedAt)...)
+			if claim.ActionEvent {
+				id, text := localizedWindDownAction(locale)
+				domain.Insight.NextStep = &DailyInsightAction{ID: id, Text: text}
+			} else {
+				domain.Insight.NextStep = nil
+			}
+		}
+		return copy
+	}
+	return copy
+}
+
+// recentSleepClaimEvidence replaces display-aggregate references for the B0
+// sleep claim. A future narrative overlay can therefore acknowledge only the
+// same canonical history and current window that decided the claim.
+func recentSleepClaimEvidence(claim RecentSleepBelowReference, destination DailyInsightDestination, observedAt *time.Time) []DailyInsightEvidence {
+	reference := claim.ReferenceHours
+	shortNights := float64(claim.CurrentShortDays)
+	threshold := 3.0
+	return []DailyInsightEvidence{
+		{
+			ID: "sleep_recent_reference", Domain: "sleep", ObservedAt: observedAt,
+			ComparisonPeriod: "D-93..D-4; at least 60 final nights", Comparison: "personal canonical reference",
+			DataState: "fresh", Confidence: "final", Value: &reference, Unit: "h", Destination: destination,
+		},
+		{
+			ID: "sleep_recent_short_nights", Domain: "sleep", ObservedAt: observedAt,
+			ComparisonPeriod: "D-3..D", Comparison: "nights at least 0.5 h below the personal reference",
+			DataState: "fresh", Confidence: "final", Value: &shortNights, Baseline: &threshold, Unit: "nights", Destination: destination,
+		},
+	}
 }
 
 type DailyInsightDomain struct {
@@ -103,6 +183,10 @@ type DailyInsightSnapshot struct {
 	Evidence   []DailyInsightEvidence `json:"evidence"`
 	Changes    []DailyInsightChange   `json:"changes"`
 	HasMore    bool                   `json:"has_more"`
+	// PolicyDigest is server-internal cache material. It binds a future
+	// narrative overlay to the exact canonical sleep records without exposing
+	// an implementation hash as a user-facing fact.
+	PolicyDigest string `json:"-"`
 }
 
 // DailyInsightNarrative is a provider acknowledgement of one closed
@@ -310,7 +394,21 @@ func DailyInsightMaterialHash(snapshot *DailyInsightSnapshot) string {
 	if snapshot == nil {
 		return ""
 	}
-	parts := []string{DailyInsightPolicyVersion, DailyInsightActionCatalogVersion, snapshot.Version, snapshot.Date, snapshot.DecisionID, snapshot.Primary.State, snapshot.Primary.NextStepID(), snapshot.Primary.NextStepText()}
+	parts := []string{
+		DailyInsightPolicyVersion,
+		DailyInsightActionCatalogVersion,
+		snapshot.Version,
+		snapshot.Date,
+		snapshot.DecisionID,
+		snapshot.PolicyDigest,
+		snapshot.Primary.State,
+		snapshot.Primary.AnswerKind,
+		snapshot.Primary.ClaimID,
+		snapshot.Primary.GapReason,
+		snapshot.Primary.Remediation,
+		snapshot.Primary.NextStepID(),
+		snapshot.Primary.NextStepText(),
+	}
 	parts = append(parts, snapshot.Primary.EvidenceIDs...)
 	for _, evidence := range snapshot.Evidence {
 		parts = append(parts, evidence.ID, evidence.Domain, evidence.DataState, evidence.Confidence, evidence.ComparisonPeriod, evidence.Unit)
@@ -325,7 +423,17 @@ func DailyInsightMaterialHash(snapshot *DailyInsightSnapshot) string {
 		}
 	}
 	for _, domain := range snapshot.Domains {
-		parts = append(parts, domain.Key, domain.Band, domain.DataState, domain.Confidence, domain.Insight.State)
+		parts = append(parts,
+			domain.Key,
+			domain.Band,
+			domain.DataState,
+			domain.Confidence,
+			domain.Insight.State,
+			domain.Insight.AnswerKind,
+			domain.Insight.ClaimID,
+			domain.Insight.GapReason,
+			domain.Insight.Remediation,
+		)
 		parts = append(parts, domain.Insight.EvidenceIDs...)
 	}
 	for _, change := range snapshot.Changes {
@@ -355,7 +463,8 @@ func buildSleepInsightDomain(resp *BriefingResponse, asOf *time.Time, copy insig
 	domain := DailyInsightDomain{Key: "sleep", Band: "unknown", DataState: "missing", AsOf: asOf, Destination: DailyInsightDestination{Kind: "sleep", ID: "sleep"}}
 	if resp.Sleep == nil {
 		domain.Summary = copy.sleepMissing
-		domain.Insight = DailyInsight{State: "insufficient_data", Title: copy.sleepTitle, Observation: domain.Summary, Meaning: copy.sleepIncomplete, EvidenceIDs: []string{id}, Fallback: true}
+		observation, meaning, remediation := localizedInsightDataGuidance(copy.locale, "sleep", "missing")
+		domain.Insight = DailyInsight{State: "insufficient_data", AnswerKind: DailyInsightAnswerDataGuidance, GapReason: "sleep_missing", Remediation: remediation, Title: copy.sleepTitle, Observation: observation, Meaning: meaning, EvidenceIDs: []string{id}, Fallback: true}
 		return domain
 	}
 	if resp.SleepQuality != nil && resp.SleepQuality.ScorePct != nil {
@@ -378,10 +487,22 @@ func buildSleepInsightDomain(resp *BriefingResponse, asOf *time.Time, copy insig
 	}
 	domain.Summary = sleepSummary
 	insightState := "insight"
+	answerKind := DailyInsightAnswerFactual
 	if domain.DataState == "stale" || domain.DataState == "partial" {
 		insightState = "insufficient_data"
+		answerKind = DailyInsightAnswerDataGuidance
 	}
-	domain.Insight = DailyInsight{State: insightState, Title: copy.sleepTitle, Observation: sleepInsightInterpretation(resp, copy, domain.DataState), Meaning: copy.sleepMeaning, EvidenceIDs: []string{id}, Fallback: true}
+	observation := sleepInsightInterpretation(resp, copy, domain.DataState)
+	meaning := copy.sleepMeaning
+	gapReason, remediation := "", ""
+	if answerKind == DailyInsightAnswerDataGuidance {
+		gapReason = "sleep_" + domain.DataState
+		observation, meaning, remediation = localizedInsightDataGuidance(copy.locale, "sleep", domain.DataState)
+	} else if observation == "" {
+		answerKind = DailyInsightAnswerProvisional
+		observation = localizedInsightFactualContext(copy.locale, "sleep")
+	}
+	domain.Insight = DailyInsight{State: insightState, AnswerKind: answerKind, GapReason: gapReason, Remediation: remediation, Title: copy.sleepTitle, Observation: observation, Meaning: meaning, EvidenceIDs: []string{id}, Fallback: true}
 	return domain
 }
 
@@ -396,11 +517,17 @@ func buildRecoveryInsightDomain(resp *BriefingResponse, asOf *time.Time, copy in
 	if domain.Summary == "" {
 		domain.Summary = firstInsightText(resp.ReadinessLabel, copy.recoveryMeaning)
 	}
-	insightState, observation := "insight", firstInsightText(resp.ReadinessTip)
+	insightState, answerKind, observation := "insight", DailyInsightAnswerFactual, firstInsightText(resp.ReadinessTip)
+	meaning, gapReason, remediation := copy.recoveryMeaning, "", ""
 	if !recoveryInsightHasUsableEvidence(state) {
-		insightState, observation = "insufficient_data", ""
+		insightState, answerKind = "insufficient_data", DailyInsightAnswerDataGuidance
+		gapReason = "recovery_" + firstNonEmptyInsight(state, "missing")
+		observation, meaning, remediation = localizedInsightDataGuidance(copy.locale, "recovery", state)
+	} else if observation == "" {
+		answerKind = DailyInsightAnswerProvisional
+		observation = localizedInsightFactualContext(copy.locale, "recovery")
 	}
-	domain.Insight = DailyInsight{State: insightState, Title: copy.recoveryTitle, Observation: observation, Meaning: copy.recoveryMeaning, EvidenceIDs: []string{id}, Fallback: true}
+	domain.Insight = DailyInsight{State: insightState, AnswerKind: answerKind, GapReason: gapReason, Remediation: remediation, Title: copy.recoveryTitle, Observation: observation, Meaning: meaning, EvidenceIDs: []string{id}, Fallback: true}
 	return domain
 }
 
@@ -412,7 +539,8 @@ func buildEnergyInsightDomain(resp *BriefingResponse, asOf *time.Time, copy insi
 	domain := DailyInsightDomain{Key: "energy", Band: "unknown", DataState: "missing", AsOf: asOf, Destination: DailyInsightDestination{Kind: "section", ID: "activity"}}
 	if resp.EnergyBank == nil {
 		domain.Summary = copy.energyMissing
-		domain.Insight = DailyInsight{State: "insufficient_data", Title: copy.energyTitle, Observation: domain.Summary, Meaning: copy.energyIncomplete, EvidenceIDs: []string{id}, Fallback: true}
+		observation, meaning, remediation := localizedInsightDataGuidance(copy.locale, "energy", "missing")
+		domain.Insight = DailyInsight{State: "insufficient_data", AnswerKind: DailyInsightAnswerDataGuidance, GapReason: "energy_missing", Remediation: remediation, Title: copy.energyTitle, Observation: observation, Meaning: meaning, EvidenceIDs: []string{id}, Fallback: true}
 		return domain
 	}
 	domain.Band, domain.DataState, domain.Confidence = resp.EnergyBank.Level(), "fresh", "final"
@@ -426,9 +554,21 @@ func buildEnergyInsightDomain(resp *BriefingResponse, asOf *time.Time, copy insi
 	if domain.Summary == "" {
 		domain.Summary = firstInsightText(resp.EnergyBank.VerdictLabel, copy.energyMeaning)
 	}
-	domain.Insight = DailyInsight{State: "insight", Title: copy.energyTitle, Observation: firstInsightText(resp.EnergyBank.VerdictReason), Meaning: copy.energyMeaning, EvidenceIDs: []string{id}, Fallback: true}
+	answerKind, observation, meaning := DailyInsightAnswerFactual, firstInsightText(resp.EnergyBank.VerdictReason), copy.energyMeaning
+	domain.Insight = DailyInsight{State: "insight", AnswerKind: answerKind, Title: copy.energyTitle, Observation: observation, Meaning: meaning, EvidenceIDs: []string{id}, Fallback: true}
 	if domain.DataState == "missing" {
 		domain.Insight.State = "insufficient_data"
+		domain.Insight.AnswerKind = DailyInsightAnswerDataGuidance
+		domain.Insight.GapReason = "energy_missing"
+		domain.Insight.Observation, domain.Insight.Meaning, domain.Insight.Remediation = localizedInsightDataGuidance(copy.locale, "energy", "missing")
+	} else if domain.DataState == "partial" {
+		domain.Insight.AnswerKind = DailyInsightAnswerProvisional
+		if domain.Insight.Observation == "" {
+			domain.Insight.Observation = localizedInsightFactualContext(copy.locale, "energy")
+		}
+	} else if domain.Insight.Observation == "" {
+		domain.Insight.AnswerKind = DailyInsightAnswerProvisional
+		domain.Insight.Observation = localizedInsightFactualContext(copy.locale, "energy")
 	}
 	return domain
 }
@@ -474,6 +614,133 @@ func firstInsightText(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// localizedInsightDataGuidance keeps an unavailable data point useful without
+// turning a personal health observer into a clinical warning surface. The
+// remediation is advisory and never gates the rest of the Today response.
+func localizedInsightDataGuidance(locale, domain, state string) (observation, meaning, remediation string) {
+	switch locale {
+	case "ru":
+		switch domain {
+		case "sleep":
+			if state == "stale" {
+				return "Последняя запись сна относится не к сегодняшней ночи.", "Персональное сравнение пока не показываем; проверь синхронизацию устройства, когда будет удобно.", "sync_sleep"
+			}
+			if state == "partial" {
+				return "Ночная запись ещё неполная, поэтому персональное сравнение пока не показываем.", "Заверши синхронизацию устройства, когда будет удобно.", "sync_sleep"
+			}
+			return "За сегодняшнюю ночь пока нет пригодной записи сна.", "Остальные инсайты остаются доступны; проверь синхронизацию устройства, когда будет удобно.", "sync_sleep"
+		case "recovery":
+			if state == ReadinessServingDataAccruing {
+				return "Сигналы восстановления за сегодня ещё собираются.", "Покажем более точный контекст после следующего обновления данных.", ""
+			}
+			return "Сигналы восстановления за сегодня пока неполные.", "Остальные инсайты остаются доступны; проверь синхронизацию устройства, когда будет удобно.", "sync_recovery"
+		default:
+			return "Данные об энергии за сегодня пока неполные.", "Остальные инсайты остаются доступны; проверь синхронизацию устройства, когда будет удобно.", "sync_energy"
+		}
+	case "sr":
+		switch domain {
+		case "sleep":
+			if state == "stale" {
+				return "Poslednji zapis sna ne odnosi se na prethodnu noć.", "Lično poređenje zasad ne prikazujemo; proverite sinhronizaciju uređaja kada vam odgovara.", "sync_sleep"
+			}
+			if state == "partial" {
+				return "Noćni zapis još nije potpun, pa lično poređenje zasad ne prikazujemo.", "Završite sinhronizaciju uređaja kada vam odgovara.", "sync_sleep"
+			}
+			return "Za prethodnu noć još nema upotrebljivog zapisa sna.", "Ostali uvidi su i dalje dostupni; proverite sinhronizaciju uređaja kada vam odgovara.", "sync_sleep"
+		case "recovery":
+			if state == ReadinessServingDataAccruing {
+				return "Signali oporavka za danas se još prikupljaju.", "Precizniji kontekst će se pojaviti nakon sledećeg ažuriranja podataka.", ""
+			}
+			return "Signali oporavka za danas još nisu potpuni.", "Ostali uvidi su i dalje dostupni; proverite sinhronizaciju uređaja kada vam odgovara.", "sync_recovery"
+		default:
+			return "Podaci o energiji za danas još nisu potpuni.", "Ostali uvidi su i dalje dostupni; proverite sinhronizaciju uređaja kada vam odgovara.", "sync_energy"
+		}
+	default:
+		switch domain {
+		case "sleep":
+			if state == "stale" {
+				return "The latest sleep record is not from last night.", "A personal comparison is not shown yet; check device sync when convenient.", "sync_sleep"
+			}
+			if state == "partial" {
+				return "The overnight record is still incomplete, so a personal comparison is not shown yet.", "Finish device sync when convenient.", "sync_sleep"
+			}
+			return "There is no usable sleep record for last night yet.", "The rest of Today remains available; check device sync when convenient.", "sync_sleep"
+		case "recovery":
+			if state == ReadinessServingDataAccruing {
+				return "Today’s recovery signals are still accumulating.", "A more precise context will appear after the next data update.", ""
+			}
+			return "Today’s recovery signals are incomplete.", "The rest of Today remains available; check device sync when convenient.", "sync_recovery"
+		default:
+			return "Today’s energy data is incomplete.", "The rest of Today remains available; check device sync when convenient.", "sync_energy"
+		}
+	}
+}
+
+func localizedInsightFactualContext(locale, domain string) string {
+	switch locale {
+	case "ru":
+		switch domain {
+		case "sleep":
+			return "Ночь учтена в сегодняшнем контексте; личное сравнение появится, когда накопится история."
+		case "recovery":
+			return "Доступные сигналы восстановления помогают задать спокойный темп дня."
+		default:
+			return "Текущий запас можно учитывать при выборе темпа на оставшуюся часть дня."
+		}
+	case "sr":
+		switch domain {
+		case "sleep":
+			return "Noć je uračunata u današnji kontekst; lično poređenje će se pojaviti kada se prikupi više istorije."
+		case "recovery":
+			return "Dostupni signali oporavka pomažu da se odredi mirniji tempo dana."
+		default:
+			return "Trenutnu rezervu možete uzeti u obzir pri izboru tempa za ostatak dana."
+		}
+	default:
+		switch domain {
+		case "sleep":
+			return "Last night is part of today’s context; a personal comparison will appear as more history accumulates."
+		case "recovery":
+			return "Available recovery signals help set a measured pace for the day."
+		default:
+			return "The current reserve can help choose a pace for the rest of the day."
+		}
+	}
+}
+
+func localizedCurrentSyncSleepContext(locale string) (observation, meaning string) {
+	switch locale {
+	case "ru":
+		return "Ночь учтена по текущей синхронизации.", "Окончательное сравнение появится после вечерней проверки данных."
+	case "sr":
+		return "Noć je evidentirana prema trenutnoj sinhronizaciji.", "Konačno poređenje će se pojaviti nakon večernje provere podataka."
+	default:
+		return "Last night is included from the current sync.", "The final comparison will appear after this evening’s data check."
+	}
+}
+
+func localizedRecentSleepBelowReference(locale string) (observation, meaning string) {
+	switch locale {
+	case "ru":
+		return "Несколько последних ночей были короче твоего обычного ритма.", "Сегодня вечером оставь место для спокойного завершения дня."
+	case "sr":
+		return "Nekoliko poslednjih noći bilo je kraće od vašeg uobičajenog ritma.", "Ostavite večeras prostora za mirniji završetak dana."
+	default:
+		return "Several recent nights were shorter than your usual rhythm.", "Leave room for a quieter end to the day tonight."
+	}
+}
+
+func localizedWindDownAction(locale string) (id, text string) {
+	switch locale {
+	case "ru":
+		return "wind_down", "Сделать вечер тише"
+	case "sr":
+		return "wind_down", "Utišati veče"
+	default:
+		return "wind_down", "Wind down this evening"
+	}
 }
 
 func localizedSleepDuration(copy insightCopy, hours float64) string {

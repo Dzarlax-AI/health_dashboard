@@ -214,6 +214,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/quality-digest", h.adminGuard(h.adminQualityDigest))
 	mux.HandleFunc("/api/admin/checkin-coverage", h.adminGuard(h.adminCheckinCoverage))
 	mux.HandleFunc("/api/admin/settings", h.adminGuard(h.adminAISettings))
+	mux.HandleFunc("/api/admin/today-insights/config", h.adminGuard(h.adminTodayInsightsConfig))
 	mux.HandleFunc("/api/admin/ai-models", h.adminGuard(h.adminAIModels))
 	mux.HandleFunc("/api/admin/energy-settings", h.adminGuard(h.adminEnergySettings))
 	mux.HandleFunc("/api/admin/stress-observability", h.adminGuard(h.adminStressObservability))
@@ -1638,7 +1639,22 @@ func (h *Handler) todayInsights(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "today insight data unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	if storage.TodayInsightsB0Enabled(db) {
+		claim, claimErr := db.EvaluateRecentSleepBelowReference(r.Context(), snapshot.Date, time.Now())
+		if claimErr != nil {
+			// B0 is additive. A canonical-read outage must not remove the
+			// factual Today response that was already constructed above.
+			log.Printf("today insights: evaluate canonical sleep claim: %v", claimErr)
+		} else {
+			snapshot = health.ApplyRecentSleepBelowReference(snapshot, claim, lang)
+		}
+	}
 	aiCfg := db.GetAIConfig(h.mgr.AIDefaultsFor(r.Context(), schema))
+	if !storage.TodayInsightsB1Enabled(db) {
+		// The deterministic snapshot is the product baseline. Do not spend a
+		// provider call merely because an installation has general AI settings.
+		aiCfg = storage.AIConfig{}
+	}
 	materialHash := health.DailyInsightMaterialHash(snapshot)
 	providerFingerprint := storage.DailyInsightGenerationFingerprint(aiCfg, lang)
 	snapshotPayload, err := json.Marshal(snapshot)
@@ -3050,6 +3066,53 @@ func (h *Handler) adminEnergySettings(w http.ResponseWriter, r *http.Request) {
 		"energy.stress_drain_enabled": cfg.StressDrainEnabled,
 		"effective_beta":              cfg.EffectiveBeta(),
 		"schema":                      scope.Schema,
+	})
+}
+
+// adminTodayInsightsConfig is the explicit tenant-scoped rollout gate for
+// Today insights. B0 remains off until canonical-night coverage is reviewed;
+// B1 remains off until its frozen template output is reviewed.
+func (h *Handler) adminTodayInsightsConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	scope, scopeErr := h.resolveAdminTenantScope(r)
+	if scopeErr != nil {
+		writeStatusError(w, scopeErr)
+		return
+	}
+	if r.Method == http.MethodPost {
+		var body map[string]bool
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid JSON: expected object of {key: bool}", http.StatusBadRequest)
+			return
+		}
+		if len(body) == 0 {
+			http.Error(w, "body is empty", http.StatusBadRequest)
+			return
+		}
+		allowed := map[string]bool{
+			storage.SettingTodayInsightsB0Enabled: true,
+			storage.SettingTodayInsightsB1Enabled: true,
+		}
+		toSave := make(map[string]string, len(body))
+		for key, enabled := range body {
+			if !allowed[key] {
+				http.Error(w, "unknown key "+key, http.StatusBadRequest)
+				return
+			}
+			toSave[key] = strconv.FormatBool(enabled)
+		}
+		if err := scope.DB.SaveSettings(toSave); err != nil {
+			http.Error(w, "save settings: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	jsonResponse(w, map[string]any{
+		"schema":     scope.Schema,
+		"b0_enabled": storage.TodayInsightsB0Enabled(scope.DB),
+		"b1_enabled": storage.TodayInsightsB1Enabled(scope.DB),
 	})
 }
 

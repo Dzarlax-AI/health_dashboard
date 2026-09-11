@@ -60,6 +60,7 @@ The first TypeScript dashboard depends on these machine-described operations:
 |---|---|---|
 | `GET /api/health-briefing` | Rich current-day health state | Optional headline, EnergyBank, sleep quality, readiness serving state, illness/context/check-in signals. `sleep` is required but may be `null`. |
 | `GET /api/ai-briefing` | Non-blocking AI narrative | `generating=true` means poll; `disabled=true` means hide AI; empty content is valid. |
+| `GET /api/today-insights` | Server-owned Today hero and Sleep/Recovery/Energy explanations | Today-only. Every primary/domain insight has a non-empty `title`, `observation`, and `meaning`; `answer_kind` distinguishes confirmed personal evidence, a provisional pattern, factual context, and data guidance. |
 | `GET /api/dashboard` | Lean cache-backed metric cards | Returns the latest complete hourly-cache day and may be empty for a fresh tenant; it never synchronously scans raw metric points. |
 | `GET /api/readiness-history` | Readiness trend | Empty `points` is valid; `days` is clamped to the documented range. |
 | `GET /api/energy-history` | Day or intraday EnergyBank trend | The `granularity` discriminator selects day or hour point shape; empty `points` is valid. |
@@ -103,6 +104,39 @@ all of these compatibility representations from the same cached blocks.
 
 New clients should render `sections[]`, then fall back to named blocks or
 `insight` only when talking to an older server.
+
+### Today Insights safety boundary
+
+`/api/today-insights` is a personal-observation surface, not a medical
+monitor. The server owns facts, data state, evidence and any action; a client
+must not infer a diagnosis, prognosis or treatment from `answer_kind`.
+
+- `confirmed_personal` means a closed server claim passed its documented
+  evidence gate.
+- `provisional_pattern` describes current, not-yet-final data and never carries
+  a health action.
+- `factual_context` explains an available fact without claiming an individual
+  physiological conclusion.
+- `data_guidance` identifies a material data limitation. `gap_reason` is
+  machine-readable and `remediation_id`, when present, is an optional data
+  action rather than health advice.
+
+The optional `claim_id` is server-owned. The current B0 sleep claim,
+`recent_sleep_below_reference`, is disabled by default and can use only the
+canonical `completed_night_sleep` records. It never falls back to a dashboard
+sleep card or `daily_scores.sleep_total`. Its optional `next_step` with ID
+`wind_down` belongs only to the Sleep domain; it does not replace the main
+daily decision or authorize an AI provider to create another action.
+
+AI framing for Today Insights is separately opt-in (`today_insights_b1_enabled`)
+and disabled by default. A provider outage, invalid response or disabled flag
+never removes the deterministic server explanation.
+
+Admins inspect or change these tenant-scoped rollout gates through
+`GET`/`POST /api/admin/today-insights/config`; the POST body may contain only
+the boolean keys `today_insights_b0_enabled` and
+`today_insights_b1_enabled`. Enabling a gate is an operator decision after
+coverage or output review, never an automatic side effect of deployment.
 
 ## Dates, timestamps, and units
 

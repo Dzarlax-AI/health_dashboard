@@ -4,6 +4,23 @@ import (
 	"strconv"
 )
 
+const (
+	SettingTodayInsightsB0Enabled = "today_insights_b0_enabled"
+	SettingTodayInsightsB1Enabled = "today_insights_b1_enabled"
+)
+
+// TodayInsightsB0Enabled controls only the new canonical sleep claim/action.
+// The factual answer ladder remains available regardless of this flag.
+func TodayInsightsB0Enabled(s *DB) bool {
+	return getSettingBool(s, SettingTodayInsightsB0Enabled, false)
+}
+
+// TodayInsightsB1Enabled is deliberately opt-in: provider framing cannot run
+// before the frozen-snapshot quality review accepts it for a tenant.
+func TodayInsightsB1Enabled(s *DB) bool {
+	return getSettingBool(s, SettingTodayInsightsB1Enabled, false)
+}
+
 // NotifyConfig holds Telegram credentials and per-weekday report schedule.
 // It mirrors notify.Config but lives in storage to avoid import cycles.
 type NotifyConfig struct {

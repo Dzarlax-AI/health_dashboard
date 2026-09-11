@@ -21,7 +21,7 @@ function loaders(): DashboardLoaders {
       evidence: [],
       generation: { fresh_for_snapshot: true, state: "disabled" },
       has_more: false,
-      primary: { evidence_ids: [], fallback: true, meaning: "", observation: "", state: "no_material_change", title: "Today" },
+      primary: { answer_kind: "factual_context", evidence_ids: [], fallback: true, meaning: "", observation: "", state: "no_material_change", title: "Today" },
       snapshot_version: "fixture",
     }),
     readinessHistory: vi.fn<DashboardLoaders["readinessHistory"]>().mockResolvedValue({

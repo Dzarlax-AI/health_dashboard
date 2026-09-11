@@ -143,6 +143,9 @@ func main() {
 		legacyDB.EnsureIndexes()
 		legacyDB.EnsureAIBriefingsTable()
 		legacyDB.EnsureAIBriefingBlocksTable()
+		if err := legacyDB.EnsureCompletedNightSleepTableContext(context.Background()); err != nil {
+			log.Fatalf("init completed night sleep table: %v", err)
+		}
 		legacyDB.EnsureEnergySnapshotsTable()
 		legacyDB.EnsureReadinessRedesignTables()
 		legacyDB.EnsureSubjectiveCheckinsTable()
@@ -369,6 +372,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 		backfillDatesFn([]string{db.Today()})
 	})
 	go runDailyQualityScan(db, schema, notifyDefaults, backfillDatesFn)
+	go runCompletedNightSleepCoordinator(ctx, db, schema)
 
 	mux := http.NewServeMux()
 	ingestHandler := handler.New(mgr, onNewData, hrZones)
@@ -513,6 +517,7 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Regist
 		backfillDatesFn([]string{db.Today()})
 	})
 	go runDailyQualityScan(db, schema, notifyDefaults, backfillDatesFn)
+	go runCompletedNightSleepCoordinator(ctx, db, schema)
 }
 
 type startupBackfillTask struct {
@@ -617,6 +622,9 @@ func enqueueStartupCacheRefresh(queue *startupBackfillQueue, db *storage.DB, sch
 		if err := runCacheBackfill(db, force); err != nil {
 			log.Printf("[%s] startup cache refresh: failed: %v", schema, err)
 			return
+		}
+		if err := db.ReconcileRecentCompletedNightSleep(context.Background(), time.Now()); err != nil {
+			log.Printf("[%s] startup completed-night reconciliation: %v", schema, err)
 		}
 		refreshToday([]string{tenantLocalNow(db, notifyDefaults).Format("2006-01-02")})
 	})
@@ -724,6 +732,12 @@ func makeTodayDerivedStateTrigger(ctx context.Context, db *storage.DB, schema st
 				lang = "en"
 			}
 			cfg := aiConfig()
+			if !storage.TodayInsightsB1Enabled(db) {
+				// Match the request path: a mutation-triggered refresh may persist
+				// deterministic material, but must never call a provider before
+				// the explicit B1 opt-in is enabled for this tenant.
+				cfg = storage.AIConfig{}
+			}
 			snapshot, err := db.RefreshTodayInsightSnapshotWithConfig(ctx, lang, cfg)
 			if err != nil {
 				log.Printf("[%s] today insight snapshot: %v", schema, err)
@@ -1564,6 +1578,30 @@ func trySendContextPromptAfterMorning(bot *notify.Bot, db *storage.DB, cfg notif
 		return
 	}
 	log.Printf("context prompt: sent low_sleep prompt=%s date=%s", prompt.PromptID, signalDate)
+}
+
+// runCompletedNightSleepCoordinator runs a bounded historical reconciliation
+// once at startup. Thereafter ingestion reconciles the one changed commitment
+// inline and this timer only advances provisional rows at finalization time.
+// It is deliberately independent from requests and AI generation so the
+// factual fallback is always available during failures.
+func runCompletedNightSleepCoordinator(ctx context.Context, db *storage.DB, schema string) {
+	const interval = time.Minute
+	if err := db.ReconcileRecentCompletedNightSleep(ctx, time.Now()); err != nil {
+		log.Printf("[%s] completed-night startup reconciliation: %v", schema, err)
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := db.FinalizeCompletedNightSleep(ctx, time.Now()); err != nil {
+				log.Printf("[%s] completed-night finalization: %v", schema, err)
+			}
+		}
+	}
 }
 
 // runDailyQualityScan ticks once per day at 03:00 (REPORT_TZ or system local)

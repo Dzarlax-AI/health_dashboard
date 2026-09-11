@@ -90,15 +90,27 @@ export function TodayInsights({ locale, todayInsights }: TodayInsightsProps) {
                 </div>
                 <strong>{domain.summary}</strong>
                 {observation ? <p>{observation}</p> : null}
+                {domain.insight.next_step ? (
+                  <span className="today-insights__domain-action">{domain.insight.next_step.text}</span>
+                ) : null}
                 {href ? <ArrowRight aria-hidden="true" size={18} strokeWidth={1.8} /> : null}
               </>
             );
             return href ? (
-              <a className="today-insights__domain" href={href} key={domain.key}>
+              <a
+                className="today-insights__domain"
+                data-answer-kind={domain.insight.answer_kind}
+                href={href}
+                key={domain.key}
+              >
                 {content}
               </a>
             ) : (
-              <article className="today-insights__domain" key={domain.key}>
+              <article
+                className="today-insights__domain"
+                data-answer-kind={domain.insight.answer_kind}
+                key={domain.key}
+              >
                 {content}
               </article>
             );
