@@ -32,7 +32,7 @@ describe("DashboardHero", () => {
     const todayInsights: TodayInsightsResponse = {
       changes: [], date: "2026-08-02", decision_id: "fixture", domains: [], evidence: [],
       generation: { fresh_for_snapshot: true, state: "disabled" }, has_more: false,
-      primary: { evidence_ids: [], fallback: true, meaning: "Keep the effort controlled.", next_step: { id: "moderate", text: "Measured day" }, observation: "Recovery supports a measured day.", state: "insight", title: "Today" }, snapshot_version: "fixture",
+      primary: { answer_kind: "factual_context", evidence_ids: [], fallback: true, meaning: "Keep the effort controlled.", next_step: { id: "moderate", text: "Measured day" }, observation: "Recovery supports a measured day.", state: "insight", title: "Today" }, snapshot_version: "fixture",
     };
     render(<DashboardHero locale="en" model={{ ...model, todayInsights }} />);
 

@@ -22,11 +22,11 @@ func TestSchemaContractManifestIsDeterministic(t *testing.T) {
 	if !regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(first) {
 		t.Fatalf("schema contract checksum is not lowercase SHA-256: %q", first)
 	}
-	if want := "d7879c0e4e641c934af49dfc6115d880820e06af202948815efca05eb5ecda78"; first != want {
+	if want := "d23fa3f265581120a20315d43731d0ae60fd943a3a20c99bc56bc18550482a7b"; first != want {
 		t.Fatalf("schema contract checksum = %q, want %q; bump SchemaContractVersion when intentionally changing the manifest", first, want)
 	}
-	if SchemaContractVersion != 8 {
-		t.Fatalf("schema contract version = %d, want 8", SchemaContractVersion)
+	if SchemaContractVersion != 9 {
+		t.Fatalf("schema contract version = %d, want 9", SchemaContractVersion)
 	}
 }
 
@@ -116,7 +116,7 @@ func TestMigrateTenantIdentityMarkerRejectsNonExactAmbiguousOutcome(t *testing.T
 
 func TestSchemaContractManifestDeclaresProvisioningVerifierObjects(t *testing.T) {
 	manifest := SchemaContractManifest()
-	for _, table := range []string{"health_records", "metric_points", "derived_metrics", "derived_metric_feedback", "auth_sessions"} {
+	for _, table := range []string{"health_records", "metric_points", "completed_night_sleep", "night_sleep_coverage_commitments", "derived_metrics", "derived_metric_feedback", "auth_sessions"} {
 		if !containsString(manifest.Tables, table) {
 			t.Errorf("manifest does not declare table %q", table)
 		}
