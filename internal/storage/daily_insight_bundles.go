@@ -229,28 +229,22 @@ func DailyInsightGenerationFingerprint(cfg AIConfig, lang string) string {
 	if !cfg.Enabled() {
 		return "disabled|" + lang + "|" + health.DailyInsightSnapshotVersion + "|" + health.DailyInsightPolicyVersion + "|" + health.DailyInsightActionCatalogVersion
 	}
-	provider, err := ai.GetProvider(cfg.Provider)
-	model := cfg.ActiveSettings().Model
-	reasoning := cfg.ActiveSettings().ReasoningEffort
-	if err == nil {
-		descriptor := provider.Descriptor()
-		if model == "" {
-			model = descriptor.DefaultModel
+	_, resolved, err := ResolveTodayInsightsB1ProviderConfig(cfg)
+	if err != nil {
+		// An invalid provider can never pass the B1 approval gate, but retain a
+		// deterministic fingerprint for this disabled/rejected configuration.
+		active := cfg.ActiveSettings()
+		resolved = ai.ProviderConfig{
+			APIKey: active.APIKey, Model: active.Model, ReasoningEffort: active.ReasoningEffort,
+			MaxOutputTokens: ai.DailyInsightMaxTokens,
 		}
-		if reasoning == "" {
-			reasoning = descriptor.DefaultReasoning
-		}
-	}
-	maxTokens := cfg.MaxOutputTokens
-	if maxTokens <= 0 || maxTokens > ai.DailyInsightMaxTokens {
-		maxTokens = ai.DailyInsightMaxTokens
 	}
 	identity := ai.DailyInsightNarrativeCurrentReviewIdentity()
 	return ai.HashForGeneration("", ai.GenerationFingerprint{
 		Provider:        cfg.Provider,
-		Model:           model,
-		ReasoningEffort: reasoning,
-		MaxOutputTokens: maxTokens,
+		Model:           resolved.Model,
+		ReasoningEffort: resolved.ReasoningEffort,
+		MaxOutputTokens: resolved.MaxOutputTokens,
 		// The literal B1 prompt/schema fingerprint must invalidate cached prose
 		// together with the model and claim-packet versions. The durable gate
 		// already fails closed on the same identity; retaining it here prevents

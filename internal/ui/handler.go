@@ -1352,8 +1352,7 @@ func (h *Handler) sleepGoal(w http.ResponseWriter, r *http.Request) {
 		// are recalculated on their own read path so changing a goal cannot turn
 		// an older stored number into a silently current claim.
 		if _, err := db.ReconcileSleepDurationBalance(r.Context(), today, time.Now()); err != nil {
-			jsonError(w, "sleep goal saved but balance refresh failed", http.StatusInternalServerError)
-			return
+			log.Printf("sleep goal saved; defer balance refresh: %v", err)
 		}
 		jsonResponse(w, clientapi.SleepGoalResponse{Goal: &clientapi.SleepGoalValue{EffectiveDate: goal.EffectiveDate, GoalHours: goal.Hours, Version: goal.Version}})
 	default:

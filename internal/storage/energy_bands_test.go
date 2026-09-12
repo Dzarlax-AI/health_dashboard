@@ -40,6 +40,27 @@ func TestComputeUserVerdictBands_UsesOneLatestEligibleRowPerDate(t *testing.T) {
 	}
 }
 
+func TestComputeUserVerdictBandsThroughExcludesFutureSnapshots(t *testing.T) {
+	db, cleanup := testEnergyDB(t)
+	defer cleanup()
+
+	throughDate := bandTestDate(40)
+	rows := make([]energySnapshotSeed, 0, energyBandsMinPoints*2)
+	for i := 0; i < energyBandsMinPoints; i++ {
+		rows = append(rows, energySnapshot(bandTestDate(40+i), 20, i, 2, nil))
+		rows = append(rows, energySnapshot(bandTestDate(i), 20, 80+i%20, 2, nil))
+	}
+	insertEnergySnapshots(t, db, rows...)
+
+	bands, err := db.ComputeUserVerdictBandsThrough(context.Background(), throughDate)
+	if err != nil {
+		t.Fatalf("ComputeUserVerdictBandsThrough: %v", err)
+	}
+	if bands.UsedDays != energyBandsMinPoints || bands.Rest != 5 || bands.Recovery != 14 || bands.PushHard != 23 {
+		t.Fatalf("historical bands = %+v, want pre-cutoff sample only", bands)
+	}
+}
+
 func TestComputeUserVerdictBands_ExcludesFlaggedRowsBeforeSelectingLatest(t *testing.T) {
 	db, cleanup := testEnergyDB(t)
 	defer cleanup()

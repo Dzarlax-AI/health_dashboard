@@ -209,6 +209,14 @@ func TestRecentSleepAvailabilityReportExplainsSevenDayActionCadence(t *testing.T
 	}
 }
 
+func TestRecentSleepAvailabilityReportRejectsFutureThroughDate(t *testing.T) {
+	loc := time.FixedZone("test", 0)
+	asOf := time.Date(2026, 9, 10, 9, 0, 0, 0, loc)
+	if _, err := BuildRecentSleepAvailabilityReport(nil, "2026-09-11", 1, asOf, loc); err == nil {
+		t.Fatal("future availability report date accepted")
+	}
+}
+
 func finalNight(date time.Time, duration float64, hash string) CompletedNightSleep {
 	finalized := time.Date(date.Year(), date.Month(), date.Day(), 18, 0, 0, 0, date.Location())
 	return CompletedNightSleep{

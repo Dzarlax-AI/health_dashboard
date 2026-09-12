@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sort"
 	"time"
 
@@ -674,6 +675,9 @@ func CheckDailyInsightNarrativeQualityGate(corpus DailyInsightNarrativeCorpus, c
 		snapshot, err := expected.SnapshotForEvaluation()
 		if err != nil {
 			return DailyInsightNarrativeQualityGate{}, err
+		}
+		if want := DailyInsightNarrativeFallbacks(snapshot, expected.Locale); !reflect.DeepEqual(actual.Fallbacks, want) {
+			return DailyInsightNarrativeQualityGate{}, fmt.Errorf("evaluation case %q fallback baseline does not match the frozen snapshot", expected.ID)
 		}
 		eligible := health.HasEligibleDailyInsightNarrativeClaims(&snapshot, expected.Locale)
 		if !eligible {

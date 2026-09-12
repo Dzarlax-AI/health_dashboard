@@ -34,6 +34,41 @@ func TestCompletedSleepEpisodesMustStayWithinOneCompletePeriodAndNotOverlap(t *t
 	}
 }
 
+func TestSleepPeriodSnapshotInputHashChangesForEpisodeOnlyCorrection(t *testing.T) {
+	coverage := SleepPeriodCoverageCommitment{InputHash: "coverage-hash"}
+	first, err := sleepPeriodSnapshotInputHash(coverage, []CompletedSleepEpisodeCommitment{{InputHash: "episode-a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := sleepPeriodSnapshotInputHash(coverage, []CompletedSleepEpisodeCommitment{{InputHash: "episode-b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("episode-only correction retained the old coverage hash")
+	}
+}
+
+func TestValidateSleepPeriodCoverageCommitmentRequiresTenantNoonWindow(t *testing.T) {
+	loc, err := time.LoadLocation("Europe/Belgrade")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wake := time.Date(2026, 10, 25, 0, 0, 0, 0, loc)
+	end := time.Date(wake.Year(), wake.Month(), wake.Day(), 12, 0, 0, 0, loc)
+	coverage := SleepPeriodCoverageCommitment{
+		WakeDate: wake.Format("2006-01-02"), SourceEpoch: "ios", CoverageGeneration: "one", InputHash: "hash",
+		CaptureCompleteness: health.SleepBalanceCoverageComplete, CoveredIntervalStart: end.AddDate(0, 0, -1), CoveredIntervalEnd: end, ObservedAt: end,
+	}
+	if err := validateSleepPeriodCoverageCommitment(coverage, loc); err != nil {
+		t.Fatalf("DST-aware noon window rejected: %v", err)
+	}
+	coverage.CoveredIntervalStart = coverage.CoveredIntervalStart.Add(time.Hour)
+	if err := validateSleepPeriodCoverageCommitment(coverage, loc); err == nil {
+		t.Fatal("shifted coverage window accepted")
+	}
+}
+
 func TestSleepDurationBalanceInputHashIsStableAcrossInputOrder(t *testing.T) {
 	goals := []health.SleepGoal{
 		{EffectiveDate: "2026-09-02", Hours: 7.5, Version: "manual-v1"},

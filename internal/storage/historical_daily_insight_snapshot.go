@@ -113,7 +113,7 @@ func (s *DB) applyHistoricalEnergySnapshot(ctx context.Context, resp *health.Bri
 	resp.EnergyBank.Components = nil
 	resp.EnergyBank.Flags = snapshot.Flags
 
-	bands, bandsErr := s.ComputeUserVerdictBands(ctx)
+	bands, bandsErr := s.ComputeUserVerdictBandsThrough(ctx, date)
 	if bandsErr != nil {
 		bands = health.DefaultV2VerdictBands()
 	}

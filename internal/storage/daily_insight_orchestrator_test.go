@@ -36,6 +36,9 @@ func TestEnsureDailyInsightNarrativeAsyncRequiresB1QualityGate(t *testing.T) {
 func TestEnsureDailyInsightNarrativeDirectlyRequiresB1QualityGate(t *testing.T) {
 	db, cleanup := testDB(t)
 	defer cleanup()
+	if err := db.SaveSettings(map[string]string{SettingTodayInsightsB1Enabled: "true"}); err != nil {
+		t.Fatalf("enable B1: %v", err)
+	}
 	snapshot := &health.DailyInsightSnapshot{
 		Date: time.Now().In(db.reportTZLocation()).Format("2006-01-02"),
 		Domains: []health.DailyInsightDomain{{

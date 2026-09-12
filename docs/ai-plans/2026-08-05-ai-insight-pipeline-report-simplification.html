@@ -402,10 +402,14 @@ type MorningInsightReason struct {
 
     <h3>4. Контракт AI-ответа</h3>
     <p>
-      AI возвращает один короткий объект, а не самостоятельный medical verdict:
+      AI возвращает пять коротких текстовых полей, а не самостоятельный medical verdict:
     </p>
     <pre><code>{
-  "explanation": "Почему выбран серверный план; 1–2 предложения, до 60 слов."
+  "overview": "Короткое объяснение общего server-owned вывода.",
+  "sleep": "Объяснение только разрешённого sleep claim или fallback.",
+  "activity": "Объяснение только разрешённого yesterday/activity claim или fallback.",
+  "recovery": "Объяснение только разрешённого recovery claim или fallback.",
+  "recommendation": "Короткая framing-подводка к server-owned действию."
 }</code></pre>
     <p>
       Общий <code>GenerationRequest</code> получает опциональную JSON Schema. OpenAI adapter

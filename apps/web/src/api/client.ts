@@ -202,8 +202,14 @@ export async function getSleepDurationBalance(
   return requireData(data, error, response);
 }
 
-export async function getSleepGoal(signal?: AbortSignal): Promise<SleepGoalResponse> {
-  const { data, error, response } = await client.GET("/api/sleep/goal", { signal });
+export async function getSleepGoal(
+  signal?: AbortSignal,
+  date?: string,
+): Promise<SleepGoalResponse> {
+  const { data, error, response } = await client.GET("/api/sleep/goal", {
+    params: { query: { date } },
+    signal,
+  });
   return requireData(data, error, response);
 }
 

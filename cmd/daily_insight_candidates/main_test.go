@@ -78,6 +78,27 @@ func TestSelectDiverseCandidatesKeepsStructuralAndTemporalCoverage(t *testing.T)
 	}
 }
 
+func TestSelectDiverseCandidatesReservesTemporalCoverageWhenAllSignaturesDiffer(t *testing.T) {
+	candidates := []ai.DailyInsightNarrativeCandidate{
+		candidateForSelection("en", "rest", "a"),
+		candidateForSelection("en", "rest", "b"),
+		candidateForSelection("en", "rest", "c"),
+		candidateForSelection("en", "rest", "d"),
+		candidateForSelection("en", "rest", "e"),
+		candidateForSelection("en", "rest", "f"),
+	}
+	got := selectDiverseCandidates(candidates, 4)
+	if len(got) != 4 {
+		t.Fatalf("selected %d candidates, want 4", len(got))
+	}
+	if got[0].ReviewHints[0] != "a" || got[len(got)-1].ReviewHints[0] != "f" {
+		t.Fatalf("selection did not retain temporal endpoints: %#v", got)
+	}
+	if got[2].ReviewHints[0] != "c" {
+		t.Fatalf("selection did not retain a middle candidate: %#v", got)
+	}
+}
+
 func candidateForSelection(locale, subject, hint string) ai.DailyInsightNarrativeCandidate {
 	item := ai.DailyInsightNarrativeCorpusCase{
 		Locale: locale,

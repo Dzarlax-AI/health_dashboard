@@ -106,8 +106,8 @@ export async function loadSleepResources(
     loaders.ai(locale, signal),
     loaders.session(signal),
     loaders.range("sleep_total", signal),
-    loaders.balance(signal),
-    loaders.goal(signal),
+    loaders.balance(signal, briefingDate),
+    loaders.goal(signal, briefingDate),
   ]);
   throwIfAborted(signal);
 

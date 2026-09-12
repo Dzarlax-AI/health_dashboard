@@ -57,6 +57,8 @@ describe("sleep resource loader", () => {
     await loadSleepResources("en", undefined, testLoaders);
 
     expect(testLoaders.range).toHaveBeenCalledWith("sleep_total", undefined);
+    expect(testLoaders.balance).toHaveBeenCalledWith(undefined, "2026-08-05");
+    expect(testLoaders.goal).toHaveBeenCalledWith(undefined, "2026-08-05");
     expect(testLoaders.wake).toHaveBeenCalledWith(
       "wake_time",
       "2020-01-01",

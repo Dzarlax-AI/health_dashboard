@@ -166,6 +166,15 @@ func TestCheckDailyInsightNarrativeQualityGateRequiresAllRunsToBeUsefulAndSafe(t
 	}
 }
 
+func TestCheckDailyInsightNarrativeQualityGateRejectsChangedFrozenFallback(t *testing.T) {
+	corpus := coveredNarrativeCorpus(t, 20)
+	output := reviewedEvaluation(t, corpus)
+	output.Cases[0].Fallbacks = nil
+	if _, err := CheckDailyInsightNarrativeQualityGate(corpus, "frozen-hash", output); err == nil || !strings.Contains(err.Error(), "fallback baseline") {
+		t.Fatalf("quality gate error = %v, want frozen fallback mismatch", err)
+	}
+}
+
 func TestCheckDailyInsightNarrativeQualityGateRejectsAChangedStaticPromptContract(t *testing.T) {
 	corpus := coveredNarrativeCorpus(t, 20)
 	output := reviewedEvaluation(t, corpus)
@@ -357,12 +366,12 @@ func reviewedEvaluation(t *testing.T, corpus DailyInsightNarrativeCorpus) DailyI
 	}
 	for _, item := range corpus.Cases {
 		if !health.HasEligibleDailyInsightNarrativeClaims(&item.Snapshot, item.Locale) {
-			output.Cases = append(output.Cases, DailyInsightNarrativeEvaluationCase{ID: item.ID, Locale: item.Locale, Tags: append([]string(nil), item.Tags...), Mode: "deterministic_fallback"})
+			output.Cases = append(output.Cases, DailyInsightNarrativeEvaluationCase{ID: item.ID, Locale: item.Locale, Tags: append([]string(nil), item.Tags...), Mode: "deterministic_fallback", Fallbacks: DailyInsightNarrativeFallbacks(item.Snapshot, item.Locale)})
 			continue
 		}
 		candidate := corpusNarrative(item.Snapshot, item.Locale)
 		output.Cases = append(output.Cases, DailyInsightNarrativeEvaluationCase{
-			ID: item.ID, Locale: item.Locale, Tags: append([]string(nil), item.Tags...), Mode: "narrative_candidate",
+			ID: item.ID, Locale: item.Locale, Tags: append([]string(nil), item.Tags...), Mode: "narrative_candidate", Fallbacks: DailyInsightNarrativeFallbacks(item.Snapshot, item.Locale),
 			Runs: []DailyInsightNarrativeEvaluationRun{
 				{Narrative: &candidate, Review: DailyInsightNarrativeRunReview{Safety: "safe", Usefulness: "better_than_fallback"}},
 				{Narrative: &candidate, Review: DailyInsightNarrativeRunReview{Safety: "safe", Usefulness: "better_than_fallback"}},

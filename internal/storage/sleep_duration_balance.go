@@ -110,12 +110,17 @@ func (s *DB) EnsureSleepDurationBalanceTablesContext(ctx context.Context) error 
 // episodes. A replay with the same exact input hash is a no-op; a correction
 // never leaves mixed generations behind.
 func (s *DB) ApplySleepPeriodSnapshot(ctx context.Context, coverage SleepPeriodCoverageCommitment, episodes []CompletedSleepEpisodeCommitment) (bool, error) {
-	if err := validateSleepPeriodCoverageCommitment(coverage); err != nil {
+	if err := validateSleepPeriodCoverageCommitment(coverage, s.reportTZLocation()); err != nil {
 		return false, err
 	}
 	if err := validateCompletedSleepEpisodeCommitments(coverage, episodes); err != nil {
 		return false, err
 	}
+	inputHash, err := sleepPeriodSnapshotInputHash(coverage, episodes)
+	if err != nil {
+		return false, err
+	}
+	coverage.InputHash = inputHash
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, err
@@ -344,14 +349,45 @@ func (s *DB) saveSleepDurationBalanceSnapshot(ctx context.Context, result health
 	return err
 }
 
-func validateSleepPeriodCoverageCommitment(coverage SleepPeriodCoverageCommitment) error {
+func validateSleepPeriodCoverageCommitment(coverage SleepPeriodCoverageCommitment, loc *time.Location) error {
 	if coverage.WakeDate == "" || coverage.SourceEpoch == "" || coverage.CoverageGeneration == "" || coverage.InputHash == "" || coverage.ObservedAt.IsZero() || !coverage.CoveredIntervalEnd.After(coverage.CoveredIntervalStart) {
 		return fmt.Errorf("invalid sleep period coverage")
 	}
 	if coverage.CaptureCompleteness != health.SleepBalanceCoverageComplete {
 		return fmt.Errorf("sleep period coverage must be complete")
 	}
+	if loc == nil {
+		return fmt.Errorf("sleep period coverage requires tenant timezone")
+	}
+	wakeDate, err := time.ParseInLocation("2006-01-02", coverage.WakeDate, loc)
+	if err != nil {
+		return fmt.Errorf("parse sleep period coverage wake date: %w", err)
+	}
+	expectedEnd := time.Date(wakeDate.Year(), wakeDate.Month(), wakeDate.Day(), 12, 0, 0, 0, loc)
+	expectedStart := expectedEnd.AddDate(0, 0, -1)
+	if !coverage.CoveredIntervalStart.Equal(expectedStart) || !coverage.CoveredIntervalEnd.Equal(expectedEnd) {
+		return fmt.Errorf("sleep period coverage must match the tenant-local noon-to-noon window")
+	}
 	return nil
+}
+
+func sleepPeriodSnapshotInputHash(coverage SleepPeriodCoverageCommitment, episodes []CompletedSleepEpisodeCommitment) (string, error) {
+	hashes := make([]string, len(episodes))
+	for index, episode := range episodes {
+		if episode.InputHash == "" {
+			return "", fmt.Errorf("completed sleep episode requires input hash")
+		}
+		hashes[index] = episode.InputHash
+	}
+	sort.Strings(hashes)
+	payload, err := json.Marshal(struct {
+		CoverageHash  string
+		EpisodeHashes []string
+	}{CoverageHash: coverage.InputHash, EpisodeHashes: hashes})
+	if err != nil {
+		return "", fmt.Errorf("encode sleep period snapshot input: %w", err)
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(payload)), nil
 }
 
 func validateCompletedSleepEpisodeCommitments(coverage SleepPeriodCoverageCommitment, episodes []CompletedSleepEpisodeCommitment) error {

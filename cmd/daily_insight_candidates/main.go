@@ -115,6 +115,15 @@ func selectDiverseCandidates(candidates []ai.DailyInsightNarrativeCandidate, lim
 		limit = len(candidates)
 	}
 	selected := make(map[int]struct{}, limit)
+	// Reserve first/middle/last representatives before structural selection.
+	// Otherwise a stream whose newest candidates all have distinct signatures
+	// degenerates into an accidental latest-N corpus.
+	if limit > 1 && len(candidates) > 1 {
+		temporalSlots := min(limit, 3)
+		for slot := 0; slot < temporalSlots; slot++ {
+			selected[slot*(len(candidates)-1)/(temporalSlots-1)] = struct{}{}
+		}
+	}
 	seenSignatures := make(map[string]struct{})
 	for index, candidate := range candidates {
 		if len(selected) == limit {

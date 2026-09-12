@@ -13,7 +13,8 @@ The corpus JSON has this shape:
     {
       "id": "synthetic-001",
       "locale": "ru",
-      "tags": ["mixed_sleep_baseline", "complete_sleep"],
+      "origin": "synthetic_controlled",
+      "tags": ["synthetic_controlled", "mixed_sleep_baseline", "complete_sleep"],
       "scenario": {
         "checkin": "absent"
       },

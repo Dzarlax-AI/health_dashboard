@@ -82,7 +82,10 @@ func TodayInsightsB1QualityGateReasoning(providerID, reasoning string) (string, 
 	if err != nil {
 		return "", fmt.Errorf("resolve B1 quality-gate provider: %w", err)
 	}
-	descriptor := provider.Descriptor()
+	return canonicalTodayInsightsB1Reasoning(provider.Descriptor(), reasoning)
+}
+
+func canonicalTodayInsightsB1Reasoning(descriptor ai.ProviderDescriptor, reasoning string) (string, error) {
 	if !descriptor.SupportsReasoning {
 		return "", nil
 	}
@@ -91,9 +94,43 @@ func TodayInsightsB1QualityGateReasoning(providerID, reasoning string) (string, 
 		reasoning = descriptor.DefaultReasoning
 	}
 	if reasoning == "" {
-		return "", fmt.Errorf("B1 quality-gate reasoning is required for provider %q", providerID)
+		return "", fmt.Errorf("B1 quality-gate reasoning is required for provider %q", descriptor.ID)
 	}
 	return reasoning, nil
+}
+
+// ResolveTodayInsightsB1ProviderConfig is the single configuration resolver
+// for B1's review identity, cache fingerprint, and provider request. Keeping
+// these values identical prevents an approval for a provider default from
+// accidentally being reused with a differently normalized runtime request.
+func ResolveTodayInsightsB1ProviderConfig(cfg AIConfig) (ai.Provider, ai.ProviderConfig, error) {
+	provider, err := ai.GetProvider(cfg.Provider)
+	if err != nil {
+		return nil, ai.ProviderConfig{}, fmt.Errorf("resolve B1 provider: %w", err)
+	}
+	descriptor := provider.Descriptor()
+	active := cfg.ActiveSettings()
+	model := strings.TrimSpace(active.Model)
+	if model == "" {
+		model = descriptor.DefaultModel
+	}
+	if model == "" {
+		return nil, ai.ProviderConfig{}, fmt.Errorf("B1 model is required for provider %q", cfg.Provider)
+	}
+	reasoning, err := canonicalTodayInsightsB1Reasoning(descriptor, active.ReasoningEffort)
+	if err != nil {
+		return nil, ai.ProviderConfig{}, err
+	}
+	maxOutputTokens := cfg.MaxOutputTokens
+	if maxOutputTokens <= 0 || maxOutputTokens > ai.DailyInsightMaxTokens {
+		maxOutputTokens = ai.DailyInsightMaxTokens
+	}
+	return provider, ai.ProviderConfig{
+		APIKey:          active.APIKey,
+		Model:           model,
+		ReasoningEffort: reasoning,
+		MaxOutputTokens: maxOutputTokens,
+	}, nil
 }
 
 // TodayInsightsB1QualityGateApproval returns only a validated approval. A
@@ -129,13 +166,12 @@ func TodayInsightsB1QualityGateMatchesConfig(approval TodayInsightsB1QualityGate
 	if err := ValidateTodayInsightsB1QualityGateApproval(approval); err != nil || !cfg.Enabled() {
 		return false
 	}
-	active := cfg.ActiveSettings()
-	reasoning, err := TodayInsightsB1QualityGateReasoning(cfg.Provider, active.ReasoningEffort)
+	_, resolved, err := ResolveTodayInsightsB1ProviderConfig(cfg)
 	if err != nil {
 		return false
 	}
 	identity := ai.DailyInsightNarrativeCurrentReviewIdentity()
-	return approval.Provider == cfg.Provider && approval.Model == active.Model && approval.Reasoning == reasoning &&
+	return approval.Provider == cfg.Provider && approval.Model == resolved.Model && approval.Reasoning == resolved.ReasoningEffort &&
 		approval.PromptRevision == identity.PromptRevision &&
 		approval.ClaimPacketVersion == identity.ClaimPacketVersion &&
 		approval.NarrativeVersion == identity.NarrativeVersion &&

@@ -58,21 +58,9 @@ func (s *DB) EnsureDailyInsightNarrative(ctx context.Context, snapshot *health.D
 	if snapshot.Date != time.Now().In(s.reportTZLocation()).Format("2006-01-02") {
 		return fmt.Errorf("refusing non-current daily insight generation for %s", snapshot.Date)
 	}
-	provider, err := ai.GetProvider(aiCfg.Provider)
+	provider, active, err := ResolveTodayInsightsB1ProviderConfig(aiCfg)
 	if err != nil {
 		return err
-	}
-	active := aiCfg.ActiveSettings()
-	descriptor := provider.Descriptor()
-	if active.Model == "" {
-		active.Model = descriptor.DefaultModel
-	}
-	if active.ReasoningEffort == "" {
-		active.ReasoningEffort = descriptor.DefaultReasoning
-	}
-	maxOutputTokens := aiCfg.MaxOutputTokens
-	if maxOutputTokens <= 0 || maxOutputTokens > ai.DailyInsightMaxTokens {
-		maxOutputTokens = ai.DailyInsightMaxTokens
 	}
 	leaseToken, err := s.ClaimDailyInsightGeneration(ctx, snapshot.Date, lang, materialHash, providerFingerprint, time.Now())
 	if err != nil {
@@ -88,7 +76,7 @@ func (s *DB) EnsureDailyInsightNarrative(ctx context.Context, snapshot *health.D
 		APIKey:          active.APIKey,
 		Model:           active.Model,
 		ReasoningEffort: active.ReasoningEffort,
-		MaxOutputTokens: maxOutputTokens,
+		MaxOutputTokens: active.MaxOutputTokens,
 	}, snapshot, lang)
 	log.Printf(
 		"daily insight narrative: provider=%s model=%s request_id=%q attempts=%d latency=%s input_tokens=%d output_tokens=%d total_tokens=%d finish=%q",

@@ -16,6 +16,8 @@
 -- data. Keep the query and output only as a reproducible baseline; do not use
 -- eligible_action_events as a forecast of the current seven-day cadence.
 
+BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
+
 -- 1. Explain the daily proxy grain and data-quality exclusions.
 WITH per_source AS (
   SELECT
@@ -33,7 +35,8 @@ WITH per_source AS (
   FROM per_source
   ORDER BY day,
     CASE WHEN source = :'primary_source' THEN 0 ELSE 1 END,
-    sleep_hours DESC
+    sleep_hours DESC,
+    source ASC
 )
 SELECT
   source,
@@ -58,7 +61,8 @@ WITH per_source AS (
   FROM per_source
   ORDER BY day,
     CASE WHEN source = :'primary_source' THEN 0 ELSE 1 END,
-    sleep_hours DESC
+    sleep_hours DESC,
+    source ASC
 ), bounds AS (
   SELECT min(day) AS first_day, max(day) AS last_day FROM chosen
 ), calendar AS (
@@ -134,7 +138,8 @@ WITH per_source AS (
   FROM per_source
   ORDER BY day,
     CASE WHEN source = :'primary_source' THEN 0 ELSE 1 END,
-    sleep_hours DESC
+    sleep_hours DESC,
+    source ASC
 ), bounds AS (
   SELECT min(day) AS first_day, max(day) AS last_day FROM chosen
 ), calendar AS (
@@ -198,7 +203,8 @@ WITH per_source AS (
   FROM per_source
   ORDER BY day,
     CASE WHEN source = :'primary_source' THEN 0 ELSE 1 END,
-    sleep_hours DESC
+    sleep_hours DESC,
+    source ASC
 ), bounds AS (
   SELECT min(day) AS first_day, max(day) AS last_day FROM chosen
 ), calendar AS (
@@ -248,3 +254,5 @@ SELECT
 FROM paired
 GROUP BY state
 ORDER BY state;
+
+COMMIT;

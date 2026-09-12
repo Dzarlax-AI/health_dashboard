@@ -64,7 +64,7 @@ func dailyInsightTestSnapshot(t *testing.T) *health.DailyInsightSnapshot {
 	base := health.BuildDailyInsightSnapshot(&health.BriefingResponse{
 		Date: "2026-09-12", Sleep: &health.SleepAnalysis{LatestDate: "2026-09-12", LatestTotal: &duration, TotalAvg: 6.8},
 		ReadinessToday: 70, ReadinessTodayLabel: "Moderate", ReadinessServing: &health.ReadinessServingState{Status: health.ReadinessServingFresh, Confidence: health.ReadinessConfidenceFinal},
-		EnergyBank: &health.EnergyBank{Current: 56, Capacity: 80, ActionVerdict: "moderate", VerdictReason: "Current reserve is available."},
+		EnergyBank: &health.EnergyBank{Current: 56, Capacity: 80, ActionVerdict: "active_recovery", VerdictReason: "Current reserve is available."},
 	}, "en")
 	return health.ApplyRecentSleepBelowReference(base, health.RecentSleepBelowReference{State: health.RecentSleepClaimTrue}, "en")
 }

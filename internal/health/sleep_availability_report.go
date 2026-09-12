@@ -38,6 +38,9 @@ func BuildRecentSleepAvailabilityReport(records []CompletedNightSleep, throughDa
 	if asOf.IsZero() {
 		return RecentSleepAvailabilityReport{}, fmt.Errorf("availability report requires as-of time")
 	}
+	if through.After(time.Date(asOf.In(loc).Year(), asOf.In(loc).Month(), asOf.In(loc).Day(), 0, 0, 0, 0, loc)) {
+		return RecentSleepAvailabilityReport{}, fmt.Errorf("availability report through date is after as-of date")
+	}
 	report := RecentSleepAvailabilityReport{
 		Version:                  RecentSleepAvailabilityReportVersion,
 		EvaluationDays:           days,

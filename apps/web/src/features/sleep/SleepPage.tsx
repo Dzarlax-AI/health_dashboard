@@ -4,6 +4,7 @@ import {
   ClientApiError,
   getAIBriefing,
   getSleepDurationBalance,
+  getSleepGoal,
   putSleepGoal,
   type AIBriefingResponse,
   type SleepDurationBalanceResponse,
@@ -200,12 +201,17 @@ export function SleepReady({ resources, locale }: { resources: SleepResources; l
     setSavingGoal(true);
     setGoalSaveError(false);
     try {
-      const response = await putSleepGoal({
+      await putSleepGoal({
         effective_date: goalEffectiveDate,
         goal_hours: goalValue,
       });
-      setGoal(response.goal);
-      setBalance(await getSleepDurationBalance(undefined, resources.briefing.date));
+      const displayDate = resources.briefing.date;
+      const [effectiveGoal, refreshedBalance] = await Promise.all([
+        getSleepGoal(undefined, displayDate),
+        getSleepDurationBalance(undefined, displayDate),
+      ]);
+      setGoal(effectiveGoal.goal);
+      setBalance(refreshedBalance);
     } catch {
       setGoalSaveError(true);
     } finally {
