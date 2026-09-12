@@ -344,13 +344,13 @@ func (s *DB) metricPointDailySums(metric, lastDate string, days int) []float64 {
 		FROM (
 			SELECT SUBSTRING(date,1,10) AS d, source, SUM(qty) AS source_sum
 			FROM metric_points
-			WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND qty > 0 AND quality = 'ok'
+			WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND SUBSTRING(date,1,10) <= $3 AND qty > 0 AND quality = 'ok'
 			GROUP BY d, source
 		) sub
 		GROUP BY d
 		ORDER BY d DESC
-		LIMIT $3`,
-		metric, subtractDays(lastDate, days), days)
+		LIMIT $4`,
+		metric, subtractDays(lastDate, days), lastDate, days)
 	if err != nil {
 		return nil
 	}
@@ -382,24 +382,24 @@ func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
 				FROM (
 					SELECT SUBSTRING(date,1,10) AS d, source, SUM(qty) AS source_sum
 					FROM metric_points
-					WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND %s AND quality = 'ok' %s
+					WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND SUBSTRING(date,1,10) <= $3 AND %s AND quality = 'ok' %s
 					GROUP BY d, source
 				) sub
 				GROUP BY d
 				ORDER BY d DESC
-				LIMIT $3`, quantityPredicate, sleepDedup),
-				metric, subtractDays(lastDate, days), days)
+				LIMIT $4`, quantityPredicate, sleepDedup),
+				metric, subtractDays(lastDate, days), lastDate, days)
 			rows = r
 			err = e
 		} else {
 			r, e := s.pool.Query(ctx, fmt.Sprintf(`
 				SELECT SUBSTRING(date,1,10), `+agg+`(qty)
 				FROM metric_points
-				WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND %s AND quality = 'ok'
+				WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND SUBSTRING(date,1,10) <= $3 AND %s AND quality = 'ok'
 				GROUP BY SUBSTRING(date,1,10)
 				ORDER BY SUBSTRING(date,1,10) DESC
-				LIMIT $3`, quantityPredicate),
-				metric, subtractDays(lastDate, days), days)
+				LIMIT $4`, quantityPredicate),
+				metric, subtractDays(lastDate, days), lastDate, days)
 			rows = r
 			err = e
 		}
@@ -1057,11 +1057,11 @@ func (s *DB) fetchDailyMetric(metric, lastDate string, days int, agg string) []f
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+agg+`(qty)
 		FROM metric_points
-		WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND qty > 0 AND quality = 'ok'
+		WHERE metric_name = $1 AND SUBSTRING(date,1,10) >= $2 AND SUBSTRING(date,1,10) <= $3 AND qty > 0 AND quality = 'ok'
 		GROUP BY SUBSTRING(date,1,10)
 		ORDER BY SUBSTRING(date,1,10) DESC
-		LIMIT $3`,
-		metric, subtractDays(lastDate, days), days)
+		LIMIT $4`,
+		metric, subtractDays(lastDate, days), lastDate, days)
 	if err != nil {
 		return nil
 	}

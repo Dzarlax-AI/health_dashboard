@@ -48,8 +48,15 @@ func ValidateTodayInsightsB1QualityGateApproval(approval TodayInsightsB1QualityG
 	if approval.CorpusHash != strings.ToLower(approval.CorpusHash) {
 		return fmt.Errorf("B1 quality-gate corpus hash must be lowercase")
 	}
-	if strings.TrimSpace(approval.Provider) == "" || strings.TrimSpace(approval.Model) == "" || strings.TrimSpace(approval.Reasoning) == "" {
-		return fmt.Errorf("B1 quality-gate provider, model and reasoning are required")
+	if strings.TrimSpace(approval.Provider) == "" || strings.TrimSpace(approval.Model) == "" {
+		return fmt.Errorf("B1 quality-gate provider and model are required")
+	}
+	canonicalReasoning, err := TodayInsightsB1QualityGateReasoning(approval.Provider, approval.Reasoning)
+	if err != nil {
+		return err
+	}
+	if approval.Reasoning != canonicalReasoning {
+		return fmt.Errorf("B1 quality-gate reasoning must match the provider capability")
 	}
 	if strings.TrimSpace(approval.PromptRevision) == "" || strings.TrimSpace(approval.ClaimPacketVersion) == "" || strings.TrimSpace(approval.NarrativeVersion) == "" {
 		return fmt.Errorf("B1 quality-gate prompt and narrative contract versions are required")
@@ -64,6 +71,29 @@ func ValidateTodayInsightsB1QualityGateApproval(approval TodayInsightsB1QualityG
 		return fmt.Errorf("parse B1 quality-gate approval time: %w", err)
 	}
 	return nil
+}
+
+// TodayInsightsB1QualityGateReasoning produces the stable review identity for
+// a provider's reasoning setting. Providers without reasoning support must
+// persist an empty value: a UI's stale "none" setting does not affect their
+// output and must not make a valid Gemini review impossible to reuse.
+func TodayInsightsB1QualityGateReasoning(providerID, reasoning string) (string, error) {
+	provider, err := ai.GetProvider(providerID)
+	if err != nil {
+		return "", fmt.Errorf("resolve B1 quality-gate provider: %w", err)
+	}
+	descriptor := provider.Descriptor()
+	if !descriptor.SupportsReasoning {
+		return "", nil
+	}
+	reasoning = strings.TrimSpace(reasoning)
+	if reasoning == "" {
+		reasoning = descriptor.DefaultReasoning
+	}
+	if reasoning == "" {
+		return "", fmt.Errorf("B1 quality-gate reasoning is required for provider %q", providerID)
+	}
+	return reasoning, nil
 }
 
 // TodayInsightsB1QualityGateApproval returns only a validated approval. A
@@ -100,8 +130,12 @@ func TodayInsightsB1QualityGateMatchesConfig(approval TodayInsightsB1QualityGate
 		return false
 	}
 	active := cfg.ActiveSettings()
+	reasoning, err := TodayInsightsB1QualityGateReasoning(cfg.Provider, active.ReasoningEffort)
+	if err != nil {
+		return false
+	}
 	identity := ai.DailyInsightNarrativeCurrentReviewIdentity()
-	return approval.Provider == cfg.Provider && approval.Model == active.Model && approval.Reasoning == active.ReasoningEffort &&
+	return approval.Provider == cfg.Provider && approval.Model == active.Model && approval.Reasoning == reasoning &&
 		approval.PromptRevision == identity.PromptRevision &&
 		approval.ClaimPacketVersion == identity.ClaimPacketVersion &&
 		approval.NarrativeVersion == identity.NarrativeVersion &&

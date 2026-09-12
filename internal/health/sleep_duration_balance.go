@@ -32,6 +32,19 @@ type SleepGoal struct {
 	Version       string
 }
 
+// ValidateSleepGoal keeps the request boundary and durable storage aligned on
+// the small, user-facing manual-goal contract. It does not assign medical
+// meaning to the target; it only validates a dated preference.
+func ValidateSleepGoal(goal SleepGoal) error {
+	if goal.Version == "" || goal.Hours < 3 || goal.Hours > 14 {
+		return fmt.Errorf("invalid manual sleep goal")
+	}
+	if _, err := time.Parse("2006-01-02", goal.EffectiveDate); err != nil {
+		return fmt.Errorf("invalid sleep goal effective date %q", goal.EffectiveDate)
+	}
+	return nil
+}
+
 // CompletedSleepEpisode is a source-selected, deduplicated episode emitted by
 // the controlled adapter. The balance calculator rejects overlapping episodes
 // rather than silently double counting them.

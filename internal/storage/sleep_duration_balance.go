@@ -174,7 +174,7 @@ func (s *DB) ApplySleepPeriodSnapshot(ctx context.Context, coverage SleepPeriodC
 }
 
 func (s *DB) SaveSleepGoal(ctx context.Context, goal health.SleepGoal, now time.Time) error {
-	if err := validateSleepGoalsForStorage([]health.SleepGoal{goal}, s.reportTZLocation()); err != nil {
+	if err := validateSleepGoalsForStorage([]health.SleepGoal{goal}); err != nil {
 		return err
 	}
 	if now.IsZero() {
@@ -379,14 +379,11 @@ func validateCompletedSleepEpisodeCommitments(coverage SleepPeriodCoverageCommit
 	return nil
 }
 
-func validateSleepGoalsForStorage(goals []health.SleepGoal, loc *time.Location) error {
+func validateSleepGoalsForStorage(goals []health.SleepGoal) error {
 	seen := make(map[string]struct{}, len(goals))
 	for _, goal := range goals {
-		if goal.Version == "" || goal.Hours < 3 || goal.Hours > 14 {
-			return fmt.Errorf("invalid manual sleep goal")
-		}
-		if _, err := time.ParseInLocation("2006-01-02", goal.EffectiveDate, loc); err != nil {
-			return fmt.Errorf("invalid sleep goal effective date %q", goal.EffectiveDate)
+		if err := health.ValidateSleepGoal(goal); err != nil {
+			return err
 		}
 		if _, duplicate := seen[goal.EffectiveDate]; duplicate {
 			return fmt.Errorf("duplicate sleep goal effective date %q", goal.EffectiveDate)

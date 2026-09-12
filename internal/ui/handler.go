@@ -1340,8 +1340,12 @@ func (h *Handler) sleepGoal(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		goal := health.SleepGoal{EffectiveDate: request.EffectiveDate, Hours: request.GoalHours, Version: "manual-goal-v1"}
-		if err := db.SaveSleepGoal(r.Context(), goal, time.Now()); err != nil {
+		if err := health.ValidateSleepGoal(goal); err != nil {
 			jsonError(w, "goal_hours must be between 3 and 14", http.StatusBadRequest)
+			return
+		}
+		if err := db.SaveSleepGoal(r.Context(), goal, time.Now()); err != nil {
+			jsonError(w, "failed to save sleep goal", http.StatusInternalServerError)
 			return
 		}
 		// Refresh today's materialized window immediately. Historical windows
@@ -3259,10 +3263,15 @@ func (h *Handler) adminTodayInsightsB1QualityGate(w http.ResponseWriter, r *http
 		return
 	}
 	identity := ai.DailyInsightNarrativeCurrentReviewIdentity()
+	reasoning, err := storage.TodayInsightsB1QualityGateReasoning(request.Evaluation.Provider, request.Evaluation.Reasoning)
+	if err != nil {
+		http.Error(w, "normalize B1 quality-gate reasoning: "+err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
 	approval := storage.TodayInsightsB1QualityGateApproval{
 		Version: storage.TodayInsightsB1QualityGateVersion, CorpusHash: corpusHash,
 		Provider: request.Evaluation.Provider, Model: request.Evaluation.Model,
-		Reasoning: request.Evaluation.Reasoning, PromptRevision: identity.PromptRevision,
+		Reasoning: reasoning, PromptRevision: identity.PromptRevision,
 		ClaimPacketVersion: identity.ClaimPacketVersion, NarrativeVersion: identity.NarrativeVersion,
 		ReviewFingerprint: identity.Fingerprint, ApprovedAt: time.Now().UTC().Format(time.RFC3339),
 	}

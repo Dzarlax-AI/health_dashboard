@@ -66,3 +66,23 @@ func TestTodayInsightsB1QualityGateMatchesOnlyReviewedModelConfig(t *testing.T) 
 		t.Fatal("changed prompt/schema fingerprint reused an old B1 quality-gate approval")
 	}
 }
+
+func TestTodayInsightsB1QualityGateAllowsCanonicalEmptyReasoningForGemini(t *testing.T) {
+	identity := ai.DailyInsightNarrativeCurrentReviewIdentity()
+	approval := TodayInsightsB1QualityGateApproval{
+		Version: TodayInsightsB1QualityGateVersion, CorpusHash: strings.Repeat("b", 64),
+		Provider: "gemini", Model: "gemini-2.5-flash", Reasoning: "",
+		PromptRevision: identity.PromptRevision, ClaimPacketVersion: identity.ClaimPacketVersion,
+		NarrativeVersion: identity.NarrativeVersion, ReviewFingerprint: identity.Fingerprint,
+		ApprovedAt: "2026-09-12T10:00:00Z",
+	}
+	if err := ValidateTodayInsightsB1QualityGateApproval(approval); err != nil {
+		t.Fatalf("Gemini approval with empty reasoning rejected: %v", err)
+	}
+	cfg := AIConfig{Provider: "gemini", Providers: map[string]AIProviderSettings{
+		"gemini": {APIKey: "not-empty", Model: "gemini-2.5-flash", ReasoningEffort: "none"},
+	}}
+	if !TodayInsightsB1QualityGateMatchesConfig(approval, cfg) {
+		t.Fatal("Gemini approval did not match its non-reasoning active configuration")
+	}
+}
