@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"health-receiver/internal/ai"
 	"health-receiver/internal/storage"
+	"health-receiver/internal/tenants"
 )
 
 const candidateExportVersion = "daily-insight-narrative-candidates-v1"
@@ -54,11 +55,11 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	db, err := storage.NewWithSchema(ctx, dsn, *schema)
+	db, closeSource, err := openCandidateSource(ctx, dsn, *schema)
 	if err != nil {
 		log.Fatalf("open read-only candidate source: %v", err)
 	}
-	defer db.Close()
+	defer closeSource()
 
 	export := ai.DailyInsightNarrativeCandidateExport{Version: candidateExportVersion, Failures: []ai.DailyInsightNarrativeCandidateGap{}}
 	allCandidates := make([]ai.DailyInsightNarrativeCandidate, 0)
@@ -100,6 +101,37 @@ func main() {
 		log.Fatalf("write candidates: %v", err)
 	}
 	fmt.Printf("wrote %d anonymized candidates and %d unavailable placeholders\n", len(export.Candidates), len(export.Failures))
+}
+
+func openCandidateSource(ctx context.Context, dsn, schema string) (*storage.DB, func(), error) {
+	if strings.TrimSpace(dsn) != "" || standardPostgresEnvConfigured() {
+		db, err := storage.NewWithSchema(ctx, dsn, schema)
+		if err != nil {
+			return nil, nil, err
+		}
+		return db, db.Close, nil
+	}
+	cfg, err := tenants.ParseTenantIsolationConfig(os.LookupEnv)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse isolated tenant source: %w", err)
+	}
+	if !cfg.Enabled {
+		return nil, nil, fmt.Errorf("DATABASE_URL is required when tenant database isolation is disabled")
+	}
+	db, closeSource, err := tenants.OpenReadOnlyTenant(ctx, cfg, schema)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open isolated tenant source: %w", err)
+	}
+	return db, closeSource, nil
+}
+
+func standardPostgresEnvConfigured() bool {
+	for _, key := range []string{"PGHOST", "PGPORT", "PGDATABASE", "PGUSER"} {
+		if strings.TrimSpace(os.Getenv(key)) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // selectDiverseCandidates prevents the bounded review artifact from becoming

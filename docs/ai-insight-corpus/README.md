@@ -102,6 +102,22 @@ claim). They are deliberately not corpus tags: `no_checkin`,
 `late_source_update`, and `energy_recovery_conflict` require separately
 verified provenance and are never inferred by the export.
 
+`daily_insight_availability` is the corresponding aggregate-only B0 report.
+For a deliberately supplied `DATABASE_URL`, it opens that schema directly. In
+an isolated production deployment, omit `DATABASE_URL` and run it with the
+standard tenant-isolation environment instead: it resolves the active tenant
+through the registry and opens the same derived, schema-bound tenant role as
+the service. It never substitutes an admin connection. This keeps the
+pre-enable report usable without weakening tenant isolation:
+
+```bash
+go run ./cmd/daily_insight_availability \
+  --schema health --through 2026-09-11 --days 108
+```
+
+The report contains only aggregate claim states, unknown reasons and action
+suppression counts. It reads no raw payload and writes no tenant data.
+
 For the optional `no_checkin` scenario only, the exporter may attach
 `scenario.checkin` as `answered` or `absent`. It reads just the row status for
 the configured Telegram source: it never reads or exports the answer, message
@@ -157,6 +173,10 @@ DATABASE_URL=postgres://... go run ./cmd/daily_insight_candidates \
   --locales en,ru,sr --max 90 \
   --out /safe/path/daily-insight-candidates.json
 ```
+
+In an isolated production deployment, omit `DATABASE_URL` and run the command
+with the standard tenant-isolation environment. The exporter then uses the
+active schema's derived tenant role, not an administrative connection.
 
 The utility also accepts the standard `PGHOST`/`PGPORT`/`PGDATABASE`/`PGUSER`
 environment variables instead of `DATABASE_URL`. It must run with a
