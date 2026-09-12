@@ -139,6 +139,9 @@ func (h *Handler) processAcceptedRecord(db *storage.DB, id int64, body []byte, k
 	for _, coverageErr := range parsed.NightSleepCoverageErr {
 		log.Printf("record %d: ignore invalid night sleep coverage: %v", id, coverageErr)
 	}
+	for _, coverageErr := range parsed.SleepPeriodCoverageErr {
+		log.Printf("record %d: ignore invalid sleep period coverage: %v", id, coverageErr)
+	}
 	// Canonical night sleep is a best-effort derived state. It is never
 	// allowed to delay or fail an accepted raw upload, and it is only fed by
 	// an explicit controlled-adapter coverage commitment.
@@ -561,6 +564,7 @@ type parsedMetricPayload struct {
 	NightSleepCoverage     []storage.NightSleepCoverageCommitment
 	NightSleepCoverageErr  []error
 	SleepPeriodCoverage    []storage.SleepPeriodCoverageCommitment
+	SleepPeriodCoverageErr []error
 	CompletedSleepEpisodes map[string][]storage.CompletedSleepEpisodeCommitment
 }
 
@@ -600,16 +604,25 @@ func parseMetricPayload(body []byte) (parsedMetricPayload, error) {
 		// attestation is malformed or does not bind exactly.
 		validCoverage = append(validCoverage, commitment)
 	}
-	periodCoverage, err := parseSleepPeriodCoverage(p.Data.SleepPeriodCoverage)
-	if err != nil {
-		return parsedMetricPayload{}, err
-	}
-	episodes, err := parseCompletedSleepEpisodes(p.Data.CompletedSleepEpisodes, periodCoverage)
-	if err != nil {
-		return parsedMetricPayload{}, err
+	periodCoverage, periodErr := parseSleepPeriodCoverage(p.Data.SleepPeriodCoverage)
+	periodCoverageErrs := make([]error, 0, 1)
+	episodes := make(map[string][]storage.CompletedSleepEpisodeCommitment)
+	if periodErr != nil {
+		periodCoverageErrs = append(periodCoverageErrs, periodErr)
+	} else {
+		var episodesErr error
+		episodes, episodesErr = parseCompletedSleepEpisodes(p.Data.CompletedSleepEpisodes, periodCoverage)
+		if episodesErr != nil {
+			// A rejected episode must not be turned into an empty complete
+			// period: that could erase a prior valid snapshot on reconciliation.
+			periodCoverage = nil
+			episodes = make(map[string][]storage.CompletedSleepEpisodeCommitment)
+			periodCoverageErrs = append(periodCoverageErrs, episodesErr)
+		}
 	}
 	return parsedMetricPayload{
-		Points: points, NightSleepCoverage: validCoverage, NightSleepCoverageErr: coverageErrs, SleepPeriodCoverage: periodCoverage,
+		Points: points, NightSleepCoverage: validCoverage, NightSleepCoverageErr: coverageErrs,
+		SleepPeriodCoverage: periodCoverage, SleepPeriodCoverageErr: periodCoverageErrs,
 		CompletedSleepEpisodes: episodes,
 	}, nil
 }

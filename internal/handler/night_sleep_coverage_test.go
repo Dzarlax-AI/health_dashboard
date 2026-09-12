@@ -104,9 +104,10 @@ func TestParseMetricPayloadKeepsCompleteEmptySleepPeriod(t *testing.T) {
 	}
 }
 
-func TestParseMetricPayloadRejectsEpisodeWithoutMatchingCoverageGeneration(t *testing.T) {
-	_, err := parseMetricPayload([]byte(`{
+func TestParseMetricPayloadKeepsMetricsWhenEpisodeDoesNotMatchCoverageGeneration(t *testing.T) {
+	parsed, err := parseMetricPayload([]byte(`{
 		"data": {
+			"metrics": [{"name":"step_count","units":"count","data":[{"date":"2026-09-10T07:00:00Z","source":"Apple Watch","qty":42}]}],
 			"sleep_period_coverage": [{
 				"wake_date":"2026-09-10","source_epoch":"health-sync-ios-v1","capture_completeness":"complete","sync_generation":"period-42",
 				"covered_interval_start":"2026-09-09T10:00:00Z","covered_interval_end":"2026-09-10T10:00:00Z"
@@ -117,7 +118,11 @@ func TestParseMetricPayloadRejectsEpisodeWithoutMatchingCoverageGeneration(t *te
 			}]
 		}
 	}`))
-	if err == nil || !strings.Contains(err.Error(), "does not match period coverage generation") {
-		t.Fatalf("error = %v", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Points) != 1 || len(parsed.SleepPeriodCoverage) != 0 || len(parsed.SleepPeriodCoverageErr) != 1 ||
+		!strings.Contains(parsed.SleepPeriodCoverageErr[0].Error(), "does not match period coverage generation") {
+		t.Fatalf("parsed payload = %#v", parsed)
 	}
 }
