@@ -269,6 +269,48 @@ func TestCheckDailyInsightNarrativeQualityGateReviewsPartialBundlesAndRequiresEx
 	}
 }
 
+func TestCheckDailyInsightNarrativeQualityGateKeepsSuccessfulSlotsReviewableAfterSiblingProviderFailure(t *testing.T) {
+	corpus := coveredNarrativeCorpus(t, 20)
+	output := reviewedEvaluation(t, corpus)
+	found := false
+	for caseIndex := range output.Cases {
+		if len(output.Cases[caseIndex].Runs) == 0 {
+			continue
+		}
+		run := &output.Cases[caseIndex].Runs[0]
+		if len(run.Review.Domains) < 2 {
+			continue
+		}
+		failed := run.Review.Domains[1].Key
+		for domainIndex := range run.Narrative.Domains {
+			if run.Narrative.Domains[domainIndex].Key == failed {
+				run.Narrative.Domains[domainIndex].Section = nil
+				break
+			}
+		}
+		run.ProviderErrors = map[string]string{failed: "provider timeout"}
+		for reviewIndex := range run.Review.Domains {
+			if run.Review.Domains[reviewIndex].Key == failed {
+				run.Review.Domains[reviewIndex] = DailyInsightNarrativeDomainReview{Key: failed, OutputStatus: "provider_error"}
+				continue
+			}
+			run.Review.Domains[reviewIndex].Safety = "violation"
+		}
+		found = true
+		break
+	}
+	if !found {
+		t.Fatal("fixture has no multi-slot eligible candidate")
+	}
+	gate, err := CheckDailyInsightNarrativeQualityGate(corpus, "frozen-hash", output)
+	if err != nil {
+		t.Fatalf("CheckDailyInsightNarrativeQualityGate: %v", err)
+	}
+	if gate.Passed || len(gate.SafetyViolations) != 1 || !strings.Contains(gate.SafetyViolations[0], "reviewer marked") {
+		t.Fatalf("successful sibling was not kept reviewable after provider failure: %#v", gate)
+	}
+}
+
 func TestCheckDailyInsightNarrativeQualityGateRejectsChangedFrozenFallback(t *testing.T) {
 	corpus := coveredNarrativeCorpus(t, 20)
 	output := reviewedEvaluation(t, corpus)

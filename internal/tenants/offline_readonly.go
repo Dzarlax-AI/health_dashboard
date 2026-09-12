@@ -31,6 +31,11 @@ func OpenReadOnlyTenant(ctx context.Context, cfg TenantIsolationConfig, schema s
 		reg.Close()
 		return nil, nil, fmt.Errorf("open isolated tenant source: %w", err)
 	}
+	if err := manager.VerifyTenantContract(ctx, schema, db); err != nil {
+		manager.Close()
+		reg.Close()
+		return nil, nil, fmt.Errorf("verify isolated tenant source contract: %w", err)
+	}
 	return db, func() {
 		manager.Close()
 		reg.Close()

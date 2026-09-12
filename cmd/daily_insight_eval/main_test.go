@@ -25,6 +25,25 @@ func TestEvaluatorRegistryDSNUsesIsolationRegistryWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestEvaluatorRegistryDSNAllowsNoLegacyURLWhenIsolationIsEnabled(t *testing.T) {
+	values := map[string]string{
+		"TENANT_DB_ISOLATION_ENABLED":     "true",
+		"ADMIN_DATABASE_URL":              "postgres://admin@example/health",
+		"REGISTRY_DATABASE_URL":           "postgres://registry@example/health",
+		"TENANT_DATABASE_URL_BASE":        "postgres://example/health",
+		"TENANT_DB_MASTER_SECRET":         "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
+		"TENANT_DB_MASTER_SECRET_VERSION": "1",
+	}
+	lookup := func(key string) (string, bool) { value, ok := values[key]; return value, ok }
+	got, err := evaluatorRegistryDSN("", lookup)
+	if err != nil {
+		t.Fatalf("evaluatorRegistryDSN() error = %v", err)
+	}
+	if want := values["REGISTRY_DATABASE_URL"]; got != want {
+		t.Fatalf("registry dsn = %q, want %q", got, want)
+	}
+}
+
 func TestGlobalAIConfigUsesInstallationWideProviderSettings(t *testing.T) {
 	config := globalAIConfig(map[string]string{
 		"ai_provider":                   ai.ProviderOpenAI,

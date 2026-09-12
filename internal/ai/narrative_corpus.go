@@ -776,6 +776,7 @@ type DailyInsightNarrativeRunReview struct {
 type DailyInsightNarrativeEvaluationRun struct {
 	Narrative      *health.DailyInsightNarrative  `json:"narrative,omitempty"`
 	InvalidDomains map[string]string              `json:"invalid_domains,omitempty"`
+	ProviderErrors map[string]string              `json:"provider_errors,omitempty"`
 	Error          string                         `json:"error,omitempty"`
 	Attempts       int                            `json:"attempts"`
 	InputTokens    int                            `json:"input_tokens"`
@@ -896,9 +897,8 @@ func CheckDailyInsightNarrativeQualityGate(corpus DailyInsightNarrativeCorpus, c
 		caseImproved := true
 		for runIndex, run := range actual.Runs {
 			label := fmt.Sprintf("%s/run-%d", expected.ID, runIndex+1)
-			if run.Error != "" {
+			if run.Error != "" || len(run.ProviderErrors) != 0 {
 				caseImproved = false
-				continue
 			}
 			if len(run.InvalidDomains) != 0 {
 				caseImproved = false
@@ -915,7 +915,7 @@ func CheckDailyInsightNarrativeQualityGate(corpus DailyInsightNarrativeCorpus, c
 				gate.SafetyViolations = append(gate.SafetyViolations, label+": stored narrative no longer passes semantic validation")
 				continue
 			}
-			reviewed, better, violations := checkDailyInsightNarrativeRunReview(snapshot, expected.Locale, &validated, run.Review)
+			reviewed, better, violations := checkDailyInsightNarrativeRunReview(snapshot, expected.Locale, &validated, run.Review, run.ProviderErrors)
 			if !reviewed {
 				caseImproved = false
 				gate.UnreviewedRuns = append(gate.UnreviewedRuns, label+": incomplete domain review")
@@ -953,8 +953,8 @@ func CheckDailyInsightNarrativeQualityGate(corpus DailyInsightNarrativeCorpus, c
 // checkDailyInsightNarrativeRunReview verifies a complete, one-per-domain
 // worksheet. It returns whether the worksheet itself is complete, whether it
 // is strictly better than fallback, and any reviewer-detected safety breach.
-func checkDailyInsightNarrativeRunReview(snapshot health.DailyInsightSnapshot, locale string, narrative *health.DailyInsightNarrative, review DailyInsightNarrativeRunReview) (bool, bool, []string) {
-	expected := dailyInsightNarrativeReviewStatuses(snapshot, locale, narrative, nil, false)
+func checkDailyInsightNarrativeRunReview(snapshot health.DailyInsightSnapshot, locale string, narrative *health.DailyInsightNarrative, review DailyInsightNarrativeRunReview, providerErrors map[string]string) (bool, bool, []string) {
+	expected := dailyInsightNarrativeReviewStatuses(snapshot, locale, narrative, nil, providerErrors)
 	if len(review.Domains) != len(expected) {
 		return false, false, nil
 	}
@@ -996,8 +996,8 @@ func checkDailyInsightNarrativeRunReview(snapshot health.DailyInsightSnapshot, l
 // DailyInsightNarrativeRunReviewWorksheet creates the structural portion of
 // a manual review. The evaluator writes an entry for every eligible domain,
 // so a partial provider bundle cannot hide review of a returned neighbour.
-func DailyInsightNarrativeRunReviewWorksheet(snapshot health.DailyInsightSnapshot, locale string, narrative *health.DailyInsightNarrative, invalidDomains map[string]string, providerFailed bool) DailyInsightNarrativeRunReview {
-	statuses := dailyInsightNarrativeReviewStatuses(snapshot, locale, narrative, invalidDomains, providerFailed)
+func DailyInsightNarrativeRunReviewWorksheet(snapshot health.DailyInsightSnapshot, locale string, narrative *health.DailyInsightNarrative, invalidDomains, providerErrors map[string]string) DailyInsightNarrativeRunReview {
+	statuses := dailyInsightNarrativeReviewStatuses(snapshot, locale, narrative, invalidDomains, providerErrors)
 	domains := make([]DailyInsightNarrativeDomainReview, 0, len(statuses))
 	for key, status := range statuses {
 		domains = append(domains, DailyInsightNarrativeDomainReview{Key: key, OutputStatus: status})
@@ -1006,7 +1006,7 @@ func DailyInsightNarrativeRunReviewWorksheet(snapshot health.DailyInsightSnapsho
 	return DailyInsightNarrativeRunReview{Domains: domains}
 }
 
-func dailyInsightNarrativeReviewStatuses(snapshot health.DailyInsightSnapshot, locale string, narrative *health.DailyInsightNarrative, invalidDomains map[string]string, providerFailed bool) map[string]string {
+func dailyInsightNarrativeReviewStatuses(snapshot health.DailyInsightSnapshot, locale string, narrative *health.DailyInsightNarrative, invalidDomains, providerErrors map[string]string) map[string]string {
 	statuses := make(map[string]string)
 	sections := make(map[string]*health.DailyInsightNarrativeSection)
 	if narrative != nil {
@@ -1021,7 +1021,7 @@ func dailyInsightNarrativeReviewStatuses(snapshot health.DailyInsightSnapshot, l
 		}
 		status := "null"
 		switch {
-		case providerFailed:
+		case providerErrors[domain.Key] != "":
 			status = "provider_error"
 		case invalidDomains[domain.Key] != "":
 			status = "validator_rejected"

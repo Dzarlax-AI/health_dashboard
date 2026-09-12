@@ -32,6 +32,15 @@ func (s *DB) EnsureDailyInsightNarrativeSlotsAsync(snapshot *health.DailyInsight
 		if materialHash == "" {
 			continue
 		}
+		// Ingestion can refresh a snapshot before the first HTTP read creates
+		// its slot rows. Materialize the durable row before claiming it so the
+		// first current-day background pass can actually obtain a lease.
+		if err := s.UpsertDailyInsightNarrativeSlot(context.Background(), DailyInsightNarrativeSlot{
+			Date: snapshot.Date, Lang: lang, Slot: slot, MaterialInputHash: materialHash, ProviderFingerprint: providerFingerprint,
+		}); err != nil {
+			log.Printf("daily insight narrative slot: initialize date=%s lang=%s slot=%s: %v", snapshot.Date, lang, slot, err)
+			continue
+		}
 		key := snapshot.Date + "|" + lang + "|" + slot + "|" + materialHash + "|" + providerFingerprint
 		if _, loaded := s.dailyInsightInFlight.LoadOrStore(key, struct{}{}); loaded {
 			continue

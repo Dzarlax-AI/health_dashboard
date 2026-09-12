@@ -124,7 +124,7 @@ func main() {
 		result.Mode = "narrative_candidate"
 		result.Runs = make([]ai.DailyInsightNarrativeEvaluationRun, 0, *runs)
 		for run := 0; run < *runs; run++ {
-			entry := ai.DailyInsightNarrativeEvaluationRun{InvalidDomains: map[string]string{}}
+			entry := ai.DailyInsightNarrativeEvaluationRun{InvalidDomains: map[string]string{}, ProviderErrors: map[string]string{}}
 			candidate := health.DailyInsightNarrative{Version: health.DailyInsightNarrativeVersion, Locale: item.Locale, Domains: make([]health.DailyInsightNarrativeDomain, 0, 3)}
 			for _, slot := range []string{health.DailyInsightNarrativeOverallSlot, "sleep", "recovery", "energy"} {
 				input, known := health.BuildDailyInsightNarrativeSlotInput(&snapshot, item.Locale, slot)
@@ -141,8 +141,15 @@ func main() {
 				entry.InputTokens += int(generated.InputTokens)
 				entry.OutputTokens += int(generated.OutputTokens)
 				if generationErr != nil {
-					entry.Error = fmt.Sprintf("%s: %v", slot, generationErr)
-					break
+					// A slot is the runtime unit of generation. Keep successful
+					// siblings in the review artifact and mark only this slot as a
+					// provider failure; otherwise an unsafe successful section could
+					// be hidden by a later unrelated request failure.
+					entry.ProviderErrors[slot] = generationErr.Error()
+					if slot != health.DailyInsightNarrativeOverallSlot {
+						candidate.Domains = append(candidate.Domains, health.DailyInsightNarrativeDomain{Key: slot})
+					}
+					continue
 				}
 				if slot == health.DailyInsightNarrativeOverallSlot {
 					candidate.Overall = generated.Section
@@ -150,13 +157,14 @@ func main() {
 					candidate.Domains = append(candidate.Domains, health.DailyInsightNarrativeDomain{Key: slot, Section: generated.Section})
 				}
 			}
-			if entry.Error == "" {
-				entry.Narrative = &candidate
-			}
+			entry.Narrative = &candidate
 			if len(entry.InvalidDomains) == 0 {
 				entry.InvalidDomains = nil
 			}
-			entry.Review = ai.DailyInsightNarrativeRunReviewWorksheet(snapshot, item.Locale, entry.Narrative, entry.InvalidDomains, entry.Error != "")
+			if len(entry.ProviderErrors) == 0 {
+				entry.ProviderErrors = nil
+			}
+			entry.Review = ai.DailyInsightNarrativeRunReviewWorksheet(snapshot, item.Locale, entry.Narrative, entry.InvalidDomains, entry.ProviderErrors)
 			result.Runs = append(result.Runs, entry)
 		}
 		output.Cases = append(output.Cases, result)
@@ -220,9 +228,6 @@ func inspectProviderConfig(providerID, model, reasoning, apiKeyEnv string, datab
 // Callers must never log or serialize APIKey.
 func loadProviderConfigFromDatabase(databaseURLEnv, providerID string) (storage.AIProviderSettings, error) {
 	databaseURL := os.Getenv(databaseURLEnv)
-	if databaseURL == "" {
-		return storage.AIProviderSettings{}, fmt.Errorf("environment variable %q is empty", databaseURLEnv)
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	registryDSN, err := evaluatorRegistryDSN(databaseURL, os.LookupEnv)
@@ -244,6 +249,9 @@ func evaluatorRegistryDSN(databaseURL string, lookup func(string) (string, bool)
 	}
 	if isolation.Enabled {
 		return isolation.RegistryDSN, nil
+	}
+	if databaseURL == "" {
+		return "", fmt.Errorf("database URL is empty while tenant isolation is disabled")
 	}
 	return databaseURL, nil
 }
