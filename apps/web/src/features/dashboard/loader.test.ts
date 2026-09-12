@@ -8,11 +8,6 @@ const briefing = {
 function loaders(): DashboardLoaders {
   return {
     briefing: vi.fn<DashboardLoaders["briefing"]>().mockResolvedValue(briefing),
-    ai: vi.fn<DashboardLoaders["ai"]>().mockResolvedValue({
-      blocks: {}, date: "2026-08-02", disabled: false, fresh_for_decision: true,
-      generating: false, insight: "", lang: "en", recommendation: "", recovery: "",
-      sections: [], sleep: "", summary: "", yesterday: "",
-    }),
     todayInsights: vi.fn<DashboardLoaders["todayInsights"]>().mockResolvedValue({
       changes: [],
       date: "2026-08-02",

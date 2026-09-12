@@ -18,7 +18,7 @@ import (
 // SchemaContractVersion is bumped whenever the declared tenant schema
 // contract changes. Existing tenants are not current until both the permanent
 // marker and registry metadata carry this version and checksum.
-const SchemaContractVersion = 10
+const SchemaContractVersion = 11
 
 // TenantIdentityTable is the permanent marker shared by clean provisioning
 // and existing-tenant migrations. The provisioning marker is intentionally
@@ -105,7 +105,7 @@ type ContractCatalog interface {
 }
 
 var schemaContract = ContractManifest{
-	Tables:  []string{"health_records", "metric_points", "import_runs", "import_run_coverage", "import_stage_points", "import_stage_workouts", "minute_metrics", "hourly_metrics", "dashboard_cache_snapshots", "daily_scores", "settings", "notification_deliveries", "workouts", "ai_briefings", "ai_briefing_blocks", "daily_insight_bundles", "completed_night_sleep", "night_sleep_coverage_commitments", "sleep_period_coverage", "completed_sleep_episode", "sleep_goal", "sleep_duration_balance_snapshot", "energy_snapshots", "source_epochs", "target_snapshots", "feature_snapshots", "naive_baselines", "chip_calibrations", "subjective_checkins", "context_prompt_interactions", "derived_metrics", "derived_metric_feedback", "auth_sessions"},
+	Tables:  []string{"health_records", "metric_points", "import_runs", "import_run_coverage", "import_stage_points", "import_stage_workouts", "minute_metrics", "hourly_metrics", "dashboard_cache_snapshots", "daily_scores", "settings", "notification_deliveries", "workouts", "ai_briefings", "ai_briefing_blocks", "daily_insight_bundles", "daily_insight_narrative_slots", "completed_night_sleep", "night_sleep_coverage_commitments", "sleep_period_coverage", "completed_sleep_episode", "sleep_goal", "sleep_duration_balance_snapshot", "energy_snapshots", "source_epochs", "target_snapshots", "feature_snapshots", "naive_baselines", "chip_calibrations", "subjective_checkins", "context_prompt_interactions", "derived_metrics", "derived_metric_feedback", "auth_sessions"},
 	Indexes: []string{"idx_auth_sessions_expires", "idx_chip_calibrations_sub_kind", "idx_completed_sleep_episode_wake_start", "idx_context_prompt_one_sent_per_day", "idx_context_prompt_status_expires", "idx_energy_snapshots_date", "idx_energy_snapshots_flags", "idx_energy_snapshots_ts", "idx_feature_snapshots_sub_date", "idx_health_records_completed_processed_at", "idx_hourly_date", "idx_hourly_metric_date", "idx_import_stage_points_coverage", "idx_import_stage_points_dedup", "idx_import_stage_workouts_dedup", "idx_import_stage_workouts_synthetic", "idx_naive_baselines_sub_kind_base_date", "idx_points_date", "idx_points_metric_date", "idx_points_quality_metric", "idx_source_epochs_active", "idx_target_snapshots_source_epoch", "idx_target_snapshots_sub_kind_date", "idx_workouts_name", "idx_workouts_start_time", "uq_source_epochs_kind_start"},
 	IndexDefinitions: []IndexDefinition{
 		{Name: "idx_auth_sessions_expires", Table: "auth_sessions", AccessMethod: "btree", Keys: []string{"expires_at"}},
@@ -165,6 +165,7 @@ var schemaContract = ContractManifest{
 		{Table: "ai_briefings", Kind: "p", Columns: []string{"date"}},
 		{Table: "ai_briefing_blocks", Kind: "p", Columns: []string{"date", "lang", "block"}},
 		{Table: "daily_insight_bundles", Kind: "p", Columns: []string{"date", "lang"}},
+		{Table: "daily_insight_narrative_slots", Kind: "p", Columns: []string{"date", "lang", "slot"}},
 		{Table: "completed_night_sleep", Kind: "p", Columns: []string{"wake_date"}},
 		{Table: "night_sleep_coverage_commitments", Kind: "p", Columns: []string{"wake_date", "source"}},
 		{Table: "sleep_period_coverage", Kind: "p", Columns: []string{"wake_date"}},
@@ -621,6 +622,9 @@ func (s *DB) ensureFullSchemaContractObjectsContext(ctx context.Context) error {
 		return err
 	}
 	if err := s.EnsureCompletedNightSleepTableContext(ctx); err != nil {
+		return err
+	}
+	if err := s.EnsureDailyInsightNarrativeSlotsTableContext(ctx); err != nil {
 		return err
 	}
 	return s.EnsureSleepDurationBalanceTablesContext(ctx)

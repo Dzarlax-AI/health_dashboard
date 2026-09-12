@@ -727,6 +727,14 @@ export interface components {
             generation: {
                 fresh_for_snapshot: boolean;
                 retry_after_seconds?: number;
+                slots?: {
+                    fresh_for_snapshot: boolean;
+                    /** @enum {string} */
+                    key: "overall" | "sleep" | "recovery" | "energy";
+                    retry_after_seconds?: number;
+                    /** @enum {string} */
+                    state: "cold" | "generating" | "ready" | "failed" | "disabled";
+                }[] | null;
                 /** @enum {string} */
                 state: "cold" | "generating" | "ready" | "failed" | "disabled";
             };

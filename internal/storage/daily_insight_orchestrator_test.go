@@ -60,7 +60,7 @@ func TestDailyInsightGenerationFingerprintIncludesStaticReviewIdentity(t *testin
 	cfg := AIConfig{Provider: "openai", Providers: map[string]AIProviderSettings{
 		"openai": {APIKey: "test-key", Model: "gpt-5.6-luna", ReasoningEffort: "none"},
 	}}
-	identity := ai.DailyInsightNarrativeCurrentReviewIdentity()
+	identity := ai.DailyInsightNarrativeSlotCurrentReviewIdentity()
 	got := DailyInsightGenerationFingerprint(cfg, "en")
 	want := ai.HashForGeneration("", ai.GenerationFingerprint{
 		Provider: "openai", Model: "gpt-5.6-luna", ReasoningEffort: "none", MaxOutputTokens: ai.DailyInsightMaxTokens,
@@ -78,7 +78,7 @@ func TestDailyInsightGenerationFingerprintIncludesStaticReviewIdentity(t *testin
 }
 
 func TestDailyInsightNarrativeStaticRevisionMatchesReviewIdentity(t *testing.T) {
-	identity := ai.DailyInsightNarrativeCurrentReviewIdentity()
+	identity := ai.DailyInsightNarrativeSlotCurrentReviewIdentity()
 	if got, want := DailyInsightNarrativeStaticRevision(), identity.PromptRevision+"|"+identity.Fingerprint; got != want {
 		t.Fatalf("stored static revision = %q, want %q", got, want)
 	}

@@ -267,6 +267,68 @@ func TestDailyInsightNarrativeSkipsGenericCurrentContext(t *testing.T) {
 	}
 }
 
+func TestDailyInsightNarrativeInputKeepsCanonicalDomainSlotsForPartialSnapshot(t *testing.T) {
+	snapshot := &DailyInsightSnapshot{Domains: []DailyInsightDomain{{Key: "recovery"}}}
+	input := BuildDailyInsightNarrativeInput(snapshot, "en")
+	if len(input.Domains) != 3 {
+		t.Fatalf("domain count = %d, want 3", len(input.Domains))
+	}
+	for index, want := range []string{"sleep", "recovery", "energy"} {
+		if got := input.Domains[index].Key; got != want {
+			t.Fatalf("domain %d key = %q, want %q", index, got, want)
+		}
+	}
+	if len(input.Domains[0].Claims) != 0 || len(input.Domains[1].Claims) != 0 || len(input.Domains[2].Claims) != 0 {
+		t.Fatalf("partial snapshot unexpectedly created claims: %#v", input.Domains)
+	}
+	validated, invalid, err := ValidateDailyInsightNarrative(snapshot, "en", DailyInsightNarrative{
+		Version: DailyInsightNarrativeVersion,
+		Locale:  "en",
+		Domains: []DailyInsightNarrativeDomain{{Key: "sleep"}, {Key: "recovery"}, {Key: "energy"}},
+	})
+	if err != nil || len(invalid) != 0 || len(validated.Domains) != 3 {
+		t.Fatalf("partial snapshot validation = %#v, invalid=%#v, err=%v", validated, invalid, err)
+	}
+}
+
+func TestDailyInsightNarrativeSlotsKeepSiblingMaterialIndependent(t *testing.T) {
+	duration := 7.2
+	base := BuildDailyInsightSnapshot(&BriefingResponse{
+		Date: "2026-09-12", Sleep: &SleepAnalysis{LatestDate: "2026-09-12", LatestTotal: &duration, TotalAvg: 6.8},
+		ReadinessToday: 42, ReadinessTodayBand: "low", ReadinessServing: &ReadinessServingState{Status: ReadinessServingFresh, Confidence: ReadinessConfidenceFinal},
+		EnergyBank: &EnergyBank{Current: 45, Capacity: 80, ActionVerdict: "active_recovery", VerdictReason: "Current reserve is available."},
+	}, "en")
+	base.DecisionID = "decision-for-test"
+	base.Primary = DailyInsight{
+		State: "insight", AnswerKind: DailyInsightAnswerFactual, EvidenceIDs: []string{"decision-evidence"},
+		NextStep: &DailyInsightAction{ID: "daily-decision-active_recovery", Text: "Active recovery"}, NarrativeSubject: "active_recovery",
+	}
+	base.Evidence = append(base.Evidence, DailyInsightEvidence{ID: "decision-evidence", Domain: "recovery", DataState: "fresh", Confidence: "final"})
+	overall, known := BuildDailyInsightNarrativeSlotInput(base, "en", DailyInsightNarrativeOverallSlot)
+	if !known || len(overall.Slot.Claims) != 1 || overall.Slot.Claims[0].ID != "overall_daily_decision_context" {
+		t.Fatalf("overall slot packet = %#v, known=%v", overall, known)
+	}
+	if hash := DailyInsightNarrativeSlotMaterialHash(base, "en", "recovery"); hash == "" {
+		t.Fatal("recovery slot has no material hash")
+	} else if changed := DailyInsightNarrativeSlotMaterialHash(ApplyRecentSleepBelowReference(base, RecentSleepBelowReference{State: RecentSleepClaimTrue}, "en"), "en", "recovery"); changed != hash {
+		t.Fatalf("sleep update changed recovery slot hash: before=%s after=%s", hash, changed)
+	}
+	section := &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
+		Text:     "It frames the day as a deliberately conservative choice, not a broader judgement.",
+		ClaimIDs: []string{"overall_daily_decision_context"}, QualifierIDs: []string{"current_context"},
+	}}}
+	validated, err := ValidateDailyInsightNarrativeSlotResponse(base, "en", DailyInsightNarrativeOverallSlot, DailyInsightNarrativeSlot{
+		Version: DailyInsightNarrativeVersion, Locale: "en", Slot: DailyInsightNarrativeDomain{Key: DailyInsightNarrativeOverallSlot, Section: section},
+	})
+	if err != nil || validated == nil {
+		t.Fatalf("validate overall slot: section=%#v err=%v", validated, err)
+	}
+	rendered, err := ApplyDailyInsightNarrativeSlot(base, "en", DailyInsightNarrativeOverallSlot, validated)
+	if err != nil || rendered.Primary.Narrative == nil || rendered.Primary.Narrative.Text != section.Sentences[0].Text {
+		t.Fatalf("apply overall slot: snapshot=%#v err=%v", rendered, err)
+	}
+}
+
 func TestDailyInsightNarrativeIncludesDistinctRecoveryAndEnergyClaims(t *testing.T) {
 	duration := 7.2
 	snapshot := BuildDailyInsightSnapshot(&BriefingResponse{

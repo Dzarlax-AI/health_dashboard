@@ -3,6 +3,7 @@ package health
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
@@ -22,8 +23,8 @@ const (
 	DailyInsightPolicyVersion         = "daily-insight-policy-v2"
 	DailyInsightActionCatalogVersion  = "daily-insight-actions-v1"
 	DailyInsightPromptRevision        = "daily-insight-prompt-v4"
-	DailyInsightNarrativeInputVersion = "today-domain-prose-input-v1"
-	DailyInsightNarrativeVersion      = "today-domain-prose-v1"
+	DailyInsightNarrativeInputVersion = "today-insight-slot-input-v2"
+	DailyInsightNarrativeVersion      = "today-insight-slot-v2"
 )
 
 const (
@@ -88,6 +89,9 @@ type DailyInsight struct {
 	// server-owned section. Observation and Meaning remain the factual
 	// fallback and continue to render when an overlay is missing or rejected.
 	Narrative *DailyInsightNarrativeOverlay `json:"narrative,omitempty"`
+	// NarrativeSubject is a closed server-only variant used solely to phrase
+	// the overall explanation. It never becomes client display copy.
+	NarrativeSubject string `json:"-"`
 }
 
 // DailyInsightNarrativeOverlay is additive client-facing presentation data.
@@ -218,6 +222,16 @@ type DailyInsightNarrativeInput struct {
 	Domains []DailyInsightNarrativeDomainInput `json:"domains"`
 }
 
+// DailyInsightNarrativeSlotInput is the exact, independent provider payload
+// for one screen slot. It deliberately does not include another slot's
+// display copy, action, or claim: a late sleep update must not reword the
+// recovery or overall explanation.
+type DailyInsightNarrativeSlotInput struct {
+	Version string                           `json:"version"`
+	Locale  string                           `json:"locale"`
+	Slot    DailyInsightNarrativeDomainInput `json:"slot"`
+}
+
 type DailyInsightNarrativeDomainInput struct {
 	Key    string                       `json:"key"`
 	Claims []DailyInsightNarrativeClaim `json:"claims"`
@@ -240,6 +254,7 @@ type DailyInsightNarrativeClaim struct {
 type DailyInsightNarrative struct {
 	Version string                        `json:"version"`
 	Locale  string                        `json:"locale"`
+	Overall *DailyInsightNarrativeSection `json:"overall,omitempty"`
 	Domains []DailyInsightNarrativeDomain `json:"domains"`
 }
 
@@ -258,6 +273,21 @@ type DailyInsightNarrativeDomain struct {
 	Section *DailyInsightNarrativeSection `json:"section"`
 }
 
+// DailyInsightNarrativeSlot is the provider response for exactly one
+// independently generated explanation. It intentionally cannot carry any
+// sibling prose.
+type DailyInsightNarrativeSlot struct {
+	Version string                      `json:"version"`
+	Locale  string                      `json:"locale"`
+	Slot    DailyInsightNarrativeDomain `json:"slot"`
+}
+
+const DailyInsightNarrativeOverallSlot = "overall"
+
+var dailyInsightNarrativeDomainKeys = []string{"sleep", "recovery", "energy"}
+
+var dailyInsightNarrativeSlotKeys = []string{DailyInsightNarrativeOverallSlot, "sleep", "recovery", "energy"}
+
 // BuildDailyInsightNarrativeInput converts a factual snapshot into the closed
 // proposition set that an optional provider may explain. It never sends the
 // primary, action copy, or display strings to the model.
@@ -270,14 +300,127 @@ func BuildDailyInsightNarrativeInput(snapshot *DailyInsightSnapshot, locale stri
 	if snapshot == nil {
 		return input
 	}
-	for _, domain := range snapshot.Domains {
-		packet := DailyInsightNarrativeDomainInput{Key: domain.Key, Claims: []DailyInsightNarrativeClaim{}}
-		if domainNarrativeEligible(domain) {
-			packet.Claims = append(packet.Claims, buildDailyInsightNarrativeClaim(snapshot, domain, input.Locale))
+	for _, key := range dailyInsightNarrativeDomainKeys {
+		packet := DailyInsightNarrativeDomainInput{Key: key, Claims: []DailyInsightNarrativeClaim{}}
+		for _, domain := range snapshot.Domains {
+			if domain.Key != key {
+				continue
+			}
+			if domainNarrativeEligible(domain) {
+				packet.Claims = append(packet.Claims, buildDailyInsightNarrativeClaim(snapshot, domain, input.Locale))
+			}
+			break
 		}
 		input.Domains = append(input.Domains, packet)
 	}
 	return input
+}
+
+// BuildDailyInsightNarrativeSlotInput derives an isolated, closed claim
+// packet for one independently cached explanation. The bool is false only
+// for an unknown slot; known slots always return a packet so a caller can
+// distinguish a valid null slot from a programming error.
+func BuildDailyInsightNarrativeSlotInput(snapshot *DailyInsightSnapshot, locale, slot string) (DailyInsightNarrativeSlotInput, bool) {
+	input := DailyInsightNarrativeSlotInput{
+		Version: DailyInsightNarrativeInputVersion,
+		Locale:  normalizeDailyInsightLocale(locale),
+		Slot:    DailyInsightNarrativeDomainInput{Key: slot, Claims: []DailyInsightNarrativeClaim{}},
+	}
+	if !isDailyInsightNarrativeSlot(slot) {
+		return DailyInsightNarrativeSlotInput{}, false
+	}
+	if snapshot == nil {
+		return input, true
+	}
+	if slot == DailyInsightNarrativeOverallSlot {
+		if overallNarrativeEligible(snapshot) {
+			input.Slot.Claims = append(input.Slot.Claims, buildOverallDailyInsightNarrativeClaim(snapshot, input.Locale))
+		}
+		return input, true
+	}
+	for _, domain := range BuildDailyInsightNarrativeInput(snapshot, input.Locale).Domains {
+		if domain.Key == slot {
+			input.Slot = domain
+			break
+		}
+	}
+	return input, true
+}
+
+func isDailyInsightNarrativeSlot(slot string) bool {
+	for _, key := range dailyInsightNarrativeSlotKeys {
+		if key == slot {
+			return true
+		}
+	}
+	return false
+}
+
+func overallNarrativeEligible(snapshot *DailyInsightSnapshot) bool {
+	if snapshot == nil {
+		return false
+	}
+	primary := snapshot.Primary
+	if snapshot.DecisionID == "" || primary.State != "insight" || primary.Remediation != "" || primary.NextStep == nil || len(primary.EvidenceIDs) == 0 {
+		return false
+	}
+	freshEvidence := false
+	for _, evidence := range snapshot.Evidence {
+		if !containsDailyInsightID(primary.EvidenceIDs, evidence.ID) || evidence.DataState != "fresh" {
+			continue
+		}
+		for _, domain := range snapshot.Domains {
+			if domain.Key == evidence.Domain && domain.DataState == "fresh" {
+				freshEvidence = true
+				break
+			}
+		}
+		if freshEvidence {
+			break
+		}
+	}
+	if !freshEvidence {
+		return false
+	}
+	switch primary.AnswerKind {
+	case DailyInsightAnswerConfirmedPersonal, DailyInsightAnswerFactual:
+		return true
+	default:
+		return false
+	}
+}
+
+func buildOverallDailyInsightNarrativeClaim(snapshot *DailyInsightSnapshot, locale string) DailyInsightNarrativeClaim {
+	return DailyInsightNarrativeClaim{
+		ID:                   "overall_daily_decision_context",
+		Domain:               DailyInsightNarrativeOverallSlot,
+		Kind:                 "daily_decision",
+		Proposition:          localizedOverallNarrativeProposition(locale, snapshot.Primary.NarrativeSubject),
+		EvidenceIDs:          append([]string(nil), snapshot.Primary.EvidenceIDs...),
+		ComparisonPeriod:     "current day",
+		Confidence:           snapshot.Primary.AnswerKind,
+		RequiredQualifierIDs: []string{"current_context"},
+	}
+}
+
+func localizedOverallNarrativeProposition(locale, mode string) string {
+	switch locale {
+	case "ru":
+		switch mode {
+		case "rest":
+			return "Сервер выбрал для сегодняшнего дня режим отдыха по доступному контексту."
+		case "active_recovery":
+			return "Сервер выбрал для сегодняшнего дня режим активного восстановления по доступному контексту."
+		case "push_hard":
+			return "Сервер выбрал для сегодняшнего дня режим более высокой нагрузки по доступному контексту."
+		default:
+			return "Сервер выбрал для сегодняшнего дня умеренный режим по доступному контексту."
+		}
+	case "sr":
+		return "Server je izabrao današnji režim na osnovu dostupnog konteksta za danas."
+	default:
+		return "The server selected today’s mode from the available context for today."
+	}
 }
 
 func normalizeDailyInsightLocale(locale string) string {
@@ -311,8 +454,9 @@ func domainNarrativeEligible(domain DailyInsightDomain) bool {
 // cost and quality boundary: an all-factual snapshot must not make a provider
 // call merely to restate the visible cards.
 func HasEligibleDailyInsightNarrativeClaims(snapshot *DailyInsightSnapshot, locale string) bool {
-	for _, domain := range BuildDailyInsightNarrativeInput(snapshot, locale).Domains {
-		if len(domain.Claims) > 0 {
+	for _, slot := range dailyInsightNarrativeSlotKeys {
+		input, known := BuildDailyInsightNarrativeSlotInput(snapshot, locale, slot)
+		if known && len(input.Slot.Claims) > 0 {
 			return true
 		}
 	}
@@ -503,9 +647,9 @@ func containsDailyInsightID(ids []string, want string) bool {
 	return false
 }
 
-// ApplyDailyInsightNarrative attaches only a validated domain overlay. A nil
-// section deliberately preserves its deterministic fallback; valid sibling
-// domains do not depend on it.
+// ApplyDailyInsightNarrative attaches only validated overlays. A nil section
+// deliberately preserves its deterministic fallback; valid sibling slots do
+// not depend on it.
 func ApplyDailyInsightNarrative(snapshot *DailyInsightSnapshot, narrative DailyInsightNarrative) (*DailyInsightSnapshot, error) {
 	if snapshot == nil {
 		return nil, fmt.Errorf("daily insight snapshot is nil")
@@ -515,6 +659,11 @@ func ApplyDailyInsightNarrative(snapshot *DailyInsightSnapshot, narrative DailyI
 		return nil, err
 	}
 	out := cloneDailyInsightSnapshot(snapshot)
+	if validated.Overall != nil {
+		input, _ := BuildDailyInsightNarrativeSlotInput(snapshot, narrative.Locale, DailyInsightNarrativeOverallSlot)
+		text, claimIDs, evidenceIDs := flattenDailyInsightNarrativeSection(*validated.Overall, input.Slot)
+		out.Primary.Narrative = &DailyInsightNarrativeOverlay{Text: text, ClaimIDs: claimIDs, EvidenceIDs: evidenceIDs}
+	}
 	byKey := make(map[string]int, len(out.Domains))
 	for index, domain := range out.Domains {
 		byKey[domain.Key] = index
@@ -527,7 +676,8 @@ func ApplyDailyInsightNarrative(snapshot *DailyInsightSnapshot, narrative DailyI
 		if candidate.Section == nil {
 			continue
 		}
-		text, claimIDs, evidenceIDs := flattenDailyInsightNarrativeSection(*candidate.Section, BuildDailyInsightNarrativeInput(snapshot, narrative.Locale), candidate.Key)
+		input, _ := BuildDailyInsightNarrativeSlotInput(snapshot, narrative.Locale, candidate.Key)
+		text, claimIDs, evidenceIDs := flattenDailyInsightNarrativeSection(*candidate.Section, input.Slot)
 		out.Domains[index].Insight.Narrative = &DailyInsightNarrativeOverlay{Text: text, ClaimIDs: claimIDs, EvidenceIDs: evidenceIDs}
 	}
 	return out, nil
@@ -536,6 +686,9 @@ func ApplyDailyInsightNarrative(snapshot *DailyInsightSnapshot, narrative DailyI
 func cloneDailyInsightSnapshot(snapshot *DailyInsightSnapshot) *DailyInsightSnapshot {
 	out := *snapshot
 	out.Primary.EvidenceIDs = append([]string(nil), snapshot.Primary.EvidenceIDs...)
+	if narrative := snapshot.Primary.Narrative; narrative != nil {
+		out.Primary.Narrative = &DailyInsightNarrativeOverlay{Text: narrative.Text, ClaimIDs: append([]string(nil), narrative.ClaimIDs...), EvidenceIDs: append([]string(nil), narrative.EvidenceIDs...)}
+	}
 	out.Domains = append([]DailyInsightDomain(nil), snapshot.Domains...)
 	for index := range out.Domains {
 		out.Domains[index].Insight.EvidenceIDs = append([]string(nil), snapshot.Domains[index].Insight.EvidenceIDs...)
@@ -548,7 +701,7 @@ func cloneDailyInsightSnapshot(snapshot *DailyInsightSnapshot) *DailyInsightSnap
 	return &out
 }
 
-func flattenDailyInsightNarrativeSection(section DailyInsightNarrativeSection, input DailyInsightNarrativeInput, key string) (string, []string, []string) {
+func flattenDailyInsightNarrativeSection(section DailyInsightNarrativeSection, input DailyInsightNarrativeDomainInput) (string, []string, []string) {
 	parts, claimIDs, evidenceIDs := make([]string, 0, len(section.Sentences)), []string{}, []string{}
 	for _, sentence := range section.Sentences {
 		parts = append(parts, strings.TrimSpace(sentence.Text))
@@ -556,15 +709,11 @@ func flattenDailyInsightNarrativeSection(section DailyInsightNarrativeSection, i
 			if !containsDailyInsightID(claimIDs, claimID) {
 				claimIDs = append(claimIDs, claimID)
 			}
-			for _, domain := range input.Domains {
-				if domain.Key == key {
-					for _, claim := range domain.Claims {
-						if claim.ID == claimID {
-							for _, evidenceID := range claim.EvidenceIDs {
-								if !containsDailyInsightID(evidenceIDs, evidenceID) {
-									evidenceIDs = append(evidenceIDs, evidenceID)
-								}
-							}
+			for _, claim := range input.Claims {
+				if claim.ID == claimID {
+					for _, evidenceID := range claim.EvidenceIDs {
+						if !containsDailyInsightID(evidenceIDs, evidenceID) {
+							evidenceIDs = append(evidenceIDs, evidenceID)
 						}
 					}
 				}
@@ -602,6 +751,18 @@ func ValidateDailyInsightNarrative(snapshot *DailyInsightSnapshot, locale string
 	}
 
 	out := DailyInsightNarrative{Version: DailyInsightNarrativeVersion, Locale: input.Locale, Domains: make([]DailyInsightNarrativeDomain, 0, len(input.Domains))}
+	overallInput, _ := BuildDailyInsightNarrativeSlotInput(snapshot, input.Locale, DailyInsightNarrativeOverallSlot)
+	if len(overallInput.Slot.Claims) == 0 {
+		if candidate.Overall != nil {
+			invalid[DailyInsightNarrativeOverallSlot] = "slot has no eligible claims"
+		}
+	} else if candidate.Overall == nil {
+		invalid[DailyInsightNarrativeOverallSlot] = "missing from provider response"
+	} else if err := validateDailyInsightNarrativeSection(*candidate.Overall, overallInput.Slot); err != nil {
+		invalid[DailyInsightNarrativeOverallSlot] = err.Error()
+	} else {
+		out.Overall = cloneDailyInsightNarrativeSection(*candidate.Overall)
+	}
 	for _, expected := range input.Domains {
 		candidateDomain, found := provided[expected.Key]
 		if !found {
@@ -628,6 +789,117 @@ func ValidateDailyInsightNarrative(snapshot *DailyInsightSnapshot, locale string
 		out.Domains = append(out.Domains, DailyInsightNarrativeDomain{Key: expected.Key, Section: cloneDailyInsightNarrativeSection(*candidateDomain.Section)})
 	}
 	return out, invalid, nil
+}
+
+// ValidateDailyInsightNarrativeSlot validates a provider response against one
+// independently cached claim packet. It intentionally rejects sibling text so
+// one slot cannot overwrite or delay another slot’s explanation.
+func ValidateDailyInsightNarrativeSlot(snapshot *DailyInsightSnapshot, locale, slot string, candidate DailyInsightNarrative) (DailyInsightNarrative, error) {
+	input, known := BuildDailyInsightNarrativeSlotInput(snapshot, locale, slot)
+	if !known {
+		return DailyInsightNarrative{}, fmt.Errorf("unknown narrative slot %q", slot)
+	}
+	if candidate.Version != DailyInsightNarrativeVersion {
+		return DailyInsightNarrative{}, fmt.Errorf("unexpected narrative version %q", candidate.Version)
+	}
+	if candidate.Locale != input.Locale {
+		return DailyInsightNarrative{}, fmt.Errorf("unexpected narrative locale %q", candidate.Locale)
+	}
+	var section *DailyInsightNarrativeSection
+	if slot == DailyInsightNarrativeOverallSlot {
+		if len(candidate.Domains) != 0 {
+			return DailyInsightNarrative{}, fmt.Errorf("overall response contains domain text")
+		}
+		section = candidate.Overall
+	} else {
+		if candidate.Overall != nil || len(candidate.Domains) != 1 || candidate.Domains[0].Key != slot {
+			return DailyInsightNarrative{}, fmt.Errorf("response does not contain exactly slot %q", slot)
+		}
+		section = candidate.Domains[0].Section
+	}
+	out := DailyInsightNarrative{Version: DailyInsightNarrativeVersion, Locale: input.Locale}
+	if len(input.Slot.Claims) == 0 {
+		if section != nil {
+			return DailyInsightNarrative{}, fmt.Errorf("slot %q has no eligible claims", slot)
+		}
+		if slot != DailyInsightNarrativeOverallSlot {
+			out.Domains = []DailyInsightNarrativeDomain{{Key: slot}}
+		}
+		return out, nil
+	}
+	if section != nil {
+		if err := validateDailyInsightNarrativeSection(*section, input.Slot); err != nil {
+			return DailyInsightNarrative{}, err
+		}
+		section = cloneDailyInsightNarrativeSection(*section)
+	}
+	if slot == DailyInsightNarrativeOverallSlot {
+		out.Overall = section
+	} else {
+		out.Domains = []DailyInsightNarrativeDomain{{Key: slot, Section: section}}
+	}
+	return out, nil
+}
+
+// ValidateDailyInsightNarrativeSlotResponse validates the compact response
+// shape used by the independent slot generator. The return value is nil when
+// the model correctly elects not to add meaning beyond the server fallback.
+func ValidateDailyInsightNarrativeSlotResponse(snapshot *DailyInsightSnapshot, locale, slot string, candidate DailyInsightNarrativeSlot) (*DailyInsightNarrativeSection, error) {
+	input, known := BuildDailyInsightNarrativeSlotInput(snapshot, locale, slot)
+	if !known {
+		return nil, fmt.Errorf("unknown narrative slot %q", slot)
+	}
+	if candidate.Version != DailyInsightNarrativeVersion {
+		return nil, fmt.Errorf("unexpected narrative version %q", candidate.Version)
+	}
+	if candidate.Locale != input.Locale {
+		return nil, fmt.Errorf("unexpected narrative locale %q", candidate.Locale)
+	}
+	if candidate.Slot.Key != slot {
+		return nil, fmt.Errorf("response slot %q, want %q", candidate.Slot.Key, slot)
+	}
+	if len(input.Slot.Claims) == 0 {
+		if candidate.Slot.Section != nil {
+			return nil, fmt.Errorf("slot %q has no eligible claims", slot)
+		}
+		return nil, nil
+	}
+	if candidate.Slot.Section == nil {
+		return nil, nil
+	}
+	if err := validateDailyInsightNarrativeSection(*candidate.Slot.Section, input.Slot); err != nil {
+		return nil, err
+	}
+	return cloneDailyInsightNarrativeSection(*candidate.Slot.Section), nil
+}
+
+// ApplyDailyInsightNarrativeSlot attaches an already validated independent
+// section. It never touches another domain’s text or the deterministic action.
+func ApplyDailyInsightNarrativeSlot(snapshot *DailyInsightSnapshot, locale, slot string, section *DailyInsightNarrativeSection) (*DailyInsightSnapshot, error) {
+	input, known := BuildDailyInsightNarrativeSlotInput(snapshot, locale, slot)
+	if !known {
+		return nil, fmt.Errorf("unknown narrative slot %q", slot)
+	}
+	if section == nil {
+		return cloneDailyInsightSnapshot(snapshot), nil
+	}
+	if err := validateDailyInsightNarrativeSection(*section, input.Slot); err != nil {
+		return nil, err
+	}
+	text, claimIDs, evidenceIDs := flattenDailyInsightNarrativeSection(*section, input.Slot)
+	out := cloneDailyInsightSnapshot(snapshot)
+	overlay := &DailyInsightNarrativeOverlay{Text: text, ClaimIDs: claimIDs, EvidenceIDs: evidenceIDs}
+	if slot == DailyInsightNarrativeOverallSlot {
+		out.Primary.Narrative = overlay
+		return out, nil
+	}
+	for index := range out.Domains {
+		if out.Domains[index].Key == slot {
+			out.Domains[index].Insight.Narrative = overlay
+			return out, nil
+		}
+	}
+	return nil, fmt.Errorf("snapshot lacks narrative slot %q", slot)
 }
 
 func narrativeInputDomain(input DailyInsightNarrativeInput, key string) (DailyInsightNarrativeDomainInput, bool) {
@@ -885,6 +1157,30 @@ func DailyInsightMaterialHash(snapshot *DailyInsightSnapshot) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// DailyInsightNarrativeSlotMaterialHash binds one durable narrative to the
+// exact closed claim packet it may explain. Unlike the snapshot hash, it does
+// not change when another domain receives late data.
+func DailyInsightNarrativeSlotMaterialHash(snapshot *DailyInsightSnapshot, locale, slot string) string {
+	input, known := BuildDailyInsightNarrativeSlotInput(snapshot, locale, slot)
+	if !known {
+		return ""
+	}
+	payload, err := jsonMarshalDailyInsightNarrativeSlotInput(input)
+	if err != nil {
+		// The input is made solely of static Go structs. Treat an impossible
+		// marshal failure as no usable material rather than reusing old prose.
+		return ""
+	}
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
+
+func jsonMarshalDailyInsightNarrativeSlotInput(input DailyInsightNarrativeSlotInput) ([]byte, error) {
+	// Keep the standard-library dependency narrow in this file’s public hash
+	// path and retain deterministic struct-field ordering.
+	return json.Marshal(input)
+}
+
 func (i DailyInsight) NextStepID() string {
 	if i.NextStep == nil {
 		return ""
@@ -1037,6 +1333,7 @@ func choosePrimaryInsight(resp *BriefingResponse, decision *DailyDecision, domai
 	primary.Observation = firstInsightText(decision.Reason, primary.Observation)
 	primary.Meaning = copy.primaryMeaning
 	primary.NextStep = &DailyInsightAction{ID: "daily-decision-" + decision.Mode, Text: decision.Label}
+	primary.NarrativeSubject = decision.Mode
 	for _, evidenceDomain := range decision.EvidenceDomains {
 		for _, domain := range domains {
 			if domain.Key == evidenceDomain && len(domain.Insight.EvidenceIDs) > 0 {

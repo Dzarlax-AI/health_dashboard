@@ -78,31 +78,17 @@ describe("foundation fixtures", () => {
     view.unmount();
   });
 
-  it("uses the legacy AI briefing when Today Insights is unavailable", async () => {
+  it("does not request the legacy AI briefing when Today Insights is unavailable", async () => {
     vi.stubEnv("VITE_ENABLE_FIXTURES", "false");
     window.history.replaceState({}, "", "/?lang=en");
     const resources = fixtureResources("en", "normal");
     resources.todayInsights = undefined;
-    resources.ai = {
-      blocks: {},
-      date: "2026-08-02",
-      disabled: false,
-      fresh_for_decision: true,
-      generating: false,
-      insight: "Legacy fallback insight.",
-      lang: "en",
-      recommendation: "",
-      recovery: "",
-      sections: [{ body: "Legacy fallback insight.", header: "Summary", key: "summary" }],
-      sleep: "",
-      summary: "Legacy fallback insight.",
-      yesterday: "",
-    };
     mockedLoadDashboardResources.mockResolvedValue(resources);
 
     render(<App />);
 
-    expect(await screen.findByText("Legacy fallback insight.")).toBeInTheDocument();
+    expect(await screen.findByText("Solid recovery supports a controlled effort.")).toBeInTheDocument();
+    expect(screen.queryByText("Legacy fallback insight.")).not.toBeInTheDocument();
   });
 
   it("shows the sign-in fallback after a failed one-time session recovery", async () => {

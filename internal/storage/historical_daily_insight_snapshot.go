@@ -2,10 +2,13 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"health-receiver/internal/health"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // BuildHistoricalDailyInsightSnapshot reconstructs a candidate Today snapshot
@@ -60,6 +63,15 @@ func (s *DB) BuildHistoricalDailyInsightSnapshot(ctx context.Context, date, lang
 	finalizedAt := time.Date(parsedDate.Year(), parsedDate.Month(), parsedDate.Day(), 18, 1, 0, 0, loc)
 	claim, err := s.EvaluateRecentSleepBelowReference(ctx, date, finalizedAt)
 	if err != nil {
+		// B1 corpus preparation is deliberately usable against retained
+		// aggregate state before the optional B0 canonical-night contract has
+		// been migrated. A missing B0 table means only that the sleep claim is
+		// unavailable; it must not erase valid overall/recovery/energy review
+		// candidates. Any other database failure remains visible to the caller.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+			return snapshot, nil
+		}
 		return nil, fmt.Errorf("evaluate historical recent sleep claim for %s: %w", date, err)
 	}
 	return health.ApplyRecentSleepBelowReference(snapshot, claim, lang), nil

@@ -8,7 +8,7 @@ import (
 )
 
 func TestValidateTodayInsightsB1QualityGateApproval(t *testing.T) {
-	identity := ai.DailyInsightNarrativeCurrentReviewIdentity()
+	identity := ai.DailyInsightNarrativeSlotCurrentReviewIdentity()
 	valid := TodayInsightsB1QualityGateApproval{
 		Version: TodayInsightsB1QualityGateVersion, CorpusHash: strings.Repeat("a", 64),
 		Provider: "openai", Model: "gpt-5.6-luna", Reasoning: "none",
@@ -26,7 +26,7 @@ func TestValidateTodayInsightsB1QualityGateApproval(t *testing.T) {
 }
 
 func TestTodayInsightsB1QualityGateMatchesOnlyReviewedModelConfig(t *testing.T) {
-	identity := ai.DailyInsightNarrativeCurrentReviewIdentity()
+	identity := ai.DailyInsightNarrativeSlotCurrentReviewIdentity()
 	approval := TodayInsightsB1QualityGateApproval{
 		Version: TodayInsightsB1QualityGateVersion, CorpusHash: strings.Repeat("b", 64),
 		Provider: "openai", Model: "gpt-5.6-luna", Reasoning: "none",
@@ -68,7 +68,7 @@ func TestTodayInsightsB1QualityGateMatchesOnlyReviewedModelConfig(t *testing.T) 
 }
 
 func TestTodayInsightsB1QualityGateAllowsCanonicalEmptyReasoningForGemini(t *testing.T) {
-	identity := ai.DailyInsightNarrativeCurrentReviewIdentity()
+	identity := ai.DailyInsightNarrativeSlotCurrentReviewIdentity()
 	approval := TodayInsightsB1QualityGateApproval{
 		Version: TodayInsightsB1QualityGateVersion, CorpusHash: strings.Repeat("b", 64),
 		Provider: "gemini", Model: "gemini-2.5-flash", Reasoning: "",
@@ -88,7 +88,7 @@ func TestTodayInsightsB1QualityGateAllowsCanonicalEmptyReasoningForGemini(t *tes
 }
 
 func TestTodayInsightsB1QualityGateResolvesGeminiDefaultsConsistently(t *testing.T) {
-	identity := ai.DailyInsightNarrativeCurrentReviewIdentity()
+	identity := ai.DailyInsightNarrativeSlotCurrentReviewIdentity()
 	approval := TodayInsightsB1QualityGateApproval{
 		Version: TodayInsightsB1QualityGateVersion, CorpusHash: strings.Repeat("b", 64),
 		Provider: "gemini", Model: "gemini-2.5-flash", Reasoning: "",

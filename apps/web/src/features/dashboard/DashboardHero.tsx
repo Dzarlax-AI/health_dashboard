@@ -59,7 +59,7 @@ export function DashboardHero({ locale, model }: DashboardHeroProps) {
             {stateLabel}
           </StatusBadge>
           <h1>{primary?.observation || model.title}</h1>
-          <p>{primary?.meaning || model.detail}</p>
+          <p>{primary?.narrative?.text || primary?.meaning || model.detail}</p>
           {primary?.next_step ? (
             <p className="today-hero__action">{primary.next_step.text}</p>
           ) : null}

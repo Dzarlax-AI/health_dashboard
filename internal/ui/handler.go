@@ -1762,51 +1762,118 @@ func (h *Handler) todayInsights(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "today insight bundle unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	// The request-time comparison is a safety net for lifecycle paths that
-	// have not yet refreshed the durable bundle. Never render a narrative
-	// whose factual or generation inputs are no longer current.
+	// The factual bundle remains one atomic snapshot, but provider prose is
+	// independently cached by slot. A late sleep record therefore cannot wipe
+	// a still-valid energy explanation or make the primary recommendation wait.
 	fresh := bundle.MaterialInputHash == materialHash && bundle.ProviderFingerprint == providerFingerprint
-	state := bundle.GenerationState
-	if !aiCfg.Enabled() {
-		state = storage.DailyInsightStateDisabled
-	} else if !fresh || state == "" {
-		state = storage.DailyInsightStateCold
-	}
-	if state == storage.DailyInsightStateReady && len(bundle.Narrative) == 0 {
-		state = storage.DailyInsightStateFailed
-	}
-	if state == storage.DailyInsightStateReady {
-		var narrative health.DailyInsightNarrative
-		if err := json.Unmarshal(bundle.Narrative, &narrative); err != nil {
-			state = storage.DailyInsightStateFailed
-			if err := db.InvalidateDailyInsightNarrative(r.Context(), snapshot.Date, lang, materialHash, providerFingerprint); err != nil {
-				log.Printf("today insights: invalidate unreadable narrative: %v", err)
-			}
-		} else if rendered, err := health.ApplyDailyInsightNarrative(snapshot, narrative); err != nil {
-			// A persisted overlay is never trusted more than the current
-			// factual snapshot. Keep deterministic fallback text instead.
-			state = storage.DailyInsightStateFailed
-			if err := db.InvalidateDailyInsightNarrative(r.Context(), snapshot.Date, lang, materialHash, providerFingerprint); err != nil {
-				log.Printf("today insights: invalidate incompatible narrative: %v", err)
-			}
-		} else {
-			snapshot = rendered
+	slotStates := make([]clientapi.TodayInsightSlotGeneration, 0, 4)
+	if !aiCfg.Enabled() || !fresh {
+		state := storage.DailyInsightStateDisabled
+		if aiCfg.Enabled() && !fresh {
+			state = storage.DailyInsightStateCold
 		}
+		for _, slot := range todayInsightNarrativeSlots {
+			slotStates = append(slotStates, clientapi.TodayInsightSlotGeneration{Key: slot, State: state, FreshForSnapshot: fresh})
+		}
+	} else {
+		for _, slot := range todayInsightNarrativeSlots {
+			input, known := health.BuildDailyInsightNarrativeSlotInput(snapshot, lang, slot)
+			if !known || len(input.Slot.Claims) == 0 {
+				slotStates = append(slotStates, clientapi.TodayInsightSlotGeneration{Key: slot, State: storage.DailyInsightStateDisabled, FreshForSnapshot: true})
+				continue
+			}
+			slotHash := health.DailyInsightNarrativeSlotMaterialHash(snapshot, lang, slot)
+			if err := db.UpsertDailyInsightNarrativeSlot(r.Context(), storage.DailyInsightNarrativeSlot{
+				Date: snapshot.Date, Lang: lang, Slot: slot, MaterialInputHash: slotHash, ProviderFingerprint: providerFingerprint,
+			}); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		entries, err := db.GetDailyInsightNarrativeSlots(snapshot.Date, lang)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		for _, slot := range todayInsightNarrativeSlots {
+			input, known := health.BuildDailyInsightNarrativeSlotInput(snapshot, lang, slot)
+			if !known || len(input.Slot.Claims) == 0 {
+				continue
+			}
+			slotHash := health.DailyInsightNarrativeSlotMaterialHash(snapshot, lang, slot)
+			entry, found := entries[slot]
+			entryFresh := found && entry.MaterialInputHash == slotHash && entry.ProviderFingerprint == providerFingerprint
+			state := storage.DailyInsightStateCold
+			if entryFresh && entry.GenerationState != "" {
+				state = entry.GenerationState
+			}
+			if state == storage.DailyInsightStateReady && (entry.NarrativeInputHash != slotHash || len(entry.Narrative) == 0) {
+				state = storage.DailyInsightStateFailed
+			}
+			if state == storage.DailyInsightStateReady {
+				var candidate health.DailyInsightNarrativeSlot
+				if err := json.Unmarshal(entry.Narrative, &candidate); err != nil {
+					state = storage.DailyInsightStateFailed
+					if err := db.InvalidateDailyInsightNarrativeSlot(r.Context(), snapshot.Date, lang, slot, slotHash, providerFingerprint); err != nil {
+						log.Printf("today insights: invalidate unreadable slot %s: %v", slot, err)
+					}
+				} else if section, err := health.ValidateDailyInsightNarrativeSlotResponse(snapshot, lang, slot, candidate); err != nil {
+					state = storage.DailyInsightStateFailed
+					if err := db.InvalidateDailyInsightNarrativeSlot(r.Context(), snapshot.Date, lang, slot, slotHash, providerFingerprint); err != nil {
+						log.Printf("today insights: invalidate incompatible slot %s: %v", slot, err)
+					}
+				} else if rendered, err := health.ApplyDailyInsightNarrativeSlot(snapshot, lang, slot, section); err != nil {
+					state = storage.DailyInsightStateFailed
+					log.Printf("today insights: apply slot %s: %v", slot, err)
+				} else {
+					snapshot = rendered
+				}
+			}
+			retryAfter := 0
+			if entry.RetryAfter != nil && entry.RetryAfter.After(time.Now()) {
+				retryAfter = int(time.Until(*entry.RetryAfter).Seconds())
+			}
+			slotStates = append(slotStates, clientapi.TodayInsightSlotGeneration{Key: slot, State: state, FreshForSnapshot: entryFresh, RetryAfterSeconds: retryAfter})
+		}
+		db.EnsureDailyInsightNarrativeSlotsAsync(snapshot, aiCfg, lang)
 	}
-	canGenerate := bundle.RetryAfter == nil || !bundle.RetryAfter.After(time.Now())
-	if aiCfg.Enabled() && fresh && state != storage.DailyInsightStateReady && canGenerate {
-		db.EnsureDailyInsightNarrativeAsync(snapshot, aiCfg, lang)
-	}
-	retryAfter := 0
-	if bundle.RetryAfter != nil && bundle.RetryAfter.After(time.Now()) {
-		retryAfter = int(time.Until(*bundle.RetryAfter).Seconds())
-	}
+	state, retryAfter := aggregateTodayInsightGeneration(slotStates)
 	jsonResponse(w, clientapi.TodayInsightsResponse{
 		DailyInsightSnapshot: snapshot,
 		Generation: clientapi.TodayInsightsGeneration{
-			State: state, FreshForSnapshot: fresh, RetryAfterSeconds: retryAfter,
+			State: state, FreshForSnapshot: fresh, RetryAfterSeconds: retryAfter, Slots: slotStates,
 		},
 	})
+}
+
+var todayInsightNarrativeSlots = []string{health.DailyInsightNarrativeOverallSlot, "sleep", "recovery", "energy"}
+
+// aggregateTodayInsightGeneration preserves the additive legacy state while
+// slot-level consumers can observe exactly which explanation is refreshing.
+func aggregateTodayInsightGeneration(slots []clientapi.TodayInsightSlotGeneration) (string, int) {
+	if len(slots) == 0 {
+		return storage.DailyInsightStateDisabled, 0
+	}
+	eligible, retryAfter := 0, 0
+	states := make(map[string]bool, len(slots))
+	for _, slot := range slots {
+		states[slot.State] = true
+		if slot.State != storage.DailyInsightStateDisabled {
+			eligible++
+		}
+		if slot.RetryAfterSeconds > retryAfter {
+			retryAfter = slot.RetryAfterSeconds
+		}
+	}
+	if eligible == 0 {
+		return storage.DailyInsightStateDisabled, 0
+	}
+	for _, state := range []string{storage.DailyInsightStateGenerating, storage.DailyInsightStateCold, storage.DailyInsightStateFailed} {
+		if states[state] {
+			return state, retryAfter
+		}
+	}
+	return storage.DailyInsightStateReady, retryAfter
 }
 
 // aiBriefing serves the per-block AI narrative. Today retains non-blocking
@@ -3261,7 +3328,7 @@ func (h *Handler) adminTodayInsightsB1QualityGate(w http.ResponseWriter, r *http
 		})
 		return
 	}
-	identity := ai.DailyInsightNarrativeCurrentReviewIdentity()
+	identity := ai.DailyInsightNarrativeSlotCurrentReviewIdentity()
 	reasoning, err := storage.TodayInsightsB1QualityGateReasoning(request.Evaluation.Provider, request.Evaluation.Reasoning)
 	if err != nil {
 		http.Error(w, "normalize B1 quality-gate reasoning: "+err.Error(), http.StatusUnprocessableEntity)

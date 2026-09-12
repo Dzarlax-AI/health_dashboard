@@ -59,6 +59,17 @@ type AIBriefingPlan struct {
 // implementation details. The factual snapshot remains renderable in every
 // state, including disabled or failed narrative generation.
 type TodayInsightsGeneration struct {
+	State             string                       `json:"state" jsonschema:"enum=cold,enum=generating,enum=ready,enum=failed,enum=disabled"`
+	FreshForSnapshot  bool                         `json:"fresh_for_snapshot"`
+	RetryAfterSeconds int                          `json:"retry_after_seconds,omitempty"`
+	Slots             []TodayInsightSlotGeneration `json:"slots,omitempty"`
+}
+
+// TodayInsightSlotGeneration lets a client refresh only the narrative area
+// whose evidence changed. State remains additive: older clients may continue
+// to use the aggregate Generation state.
+type TodayInsightSlotGeneration struct {
+	Key               string `json:"key" jsonschema:"enum=overall,enum=sleep,enum=recovery,enum=energy"`
 	State             string `json:"state" jsonschema:"enum=cold,enum=generating,enum=ready,enum=failed,enum=disabled"`
 	FreshForSnapshot  bool   `json:"fresh_for_snapshot"`
 	RetryAfterSeconds int    `json:"retry_after_seconds,omitempty"`
