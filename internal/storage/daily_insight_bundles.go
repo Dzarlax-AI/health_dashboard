@@ -239,7 +239,7 @@ func DailyInsightGenerationFingerprint(cfg AIConfig, lang string) string {
 			MaxOutputTokens: ai.DailyInsightMaxTokens,
 		}
 	}
-	identity := ai.DailyInsightNarrativeCurrentReviewIdentity()
+	identity := ai.DailyInsightNarrativeSlotCurrentReviewIdentity()
 	return ai.HashForGeneration("", ai.GenerationFingerprint{
 		Provider:        cfg.Provider,
 		Model:           resolved.Model,
@@ -285,7 +285,7 @@ func (s *DB) RefreshTodayInsightSnapshotWithConfig(ctx context.Context, lang str
 // exposed to the HTTP writer so every lifecycle path records the same exact
 // literal prompt/schema/claim-contract identity.
 func DailyInsightNarrativeStaticRevision() string {
-	identity := ai.DailyInsightNarrativeCurrentReviewIdentity()
+	identity := ai.DailyInsightNarrativeSlotCurrentReviewIdentity()
 	return identity.PromptRevision + "|" + identity.Fingerprint
 }
 

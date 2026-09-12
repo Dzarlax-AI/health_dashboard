@@ -58,6 +58,48 @@ func TestGenerateDailyInsightNarrativeUsesClaimPacketAndKeepsInvalidDomainFallba
 	}
 }
 
+func TestGenerateDailyInsightNarrativeSlotSendsOnlyOneClosedPacket(t *testing.T) {
+	snapshot := dailyInsightTestSnapshot(t)
+	provider := &dailyInsightTestProvider{}
+	provider.response = `{"version":"today-insight-slot-v2","locale":"en","slot":{"key":"sleep","section":{"sentences":[{"text":"It gives the day a little more context.","claim_ids":["recent_sleep_below_reference"],"qualifier_ids":["personal_pattern","current_context"]}]}}}`
+	result, err := GenerateDailyInsightNarrativeSlot(context.Background(), provider, ProviderConfig{}, snapshot, "en", "sleep")
+	if err != nil || result.Section == nil {
+		t.Fatalf("GenerateDailyInsightNarrativeSlot: section=%#v err=%v", result.Section, err)
+	}
+	var payload health.DailyInsightNarrativeSlotInput
+	if err := json.Unmarshal(provider.request.UserPayload, &payload); err != nil {
+		t.Fatalf("decode slot packet: %v", err)
+	}
+	if payload.Slot.Key != "sleep" || len(payload.Slot.Claims) != 1 || payload.Slot.Claims[0].ID != "recent_sleep_below_reference" {
+		t.Fatalf("slot payload = %#v", payload)
+	}
+	if provider.request.ResponseSchema != dailyInsightNarrativeSlotResponseSchema {
+		t.Fatal("provider did not receive independent slot response schema")
+	}
+}
+
+func TestDailyInsightNarrativeSlotSchemaUsesStrictObjectKeywords(t *testing.T) {
+	root := dailyInsightNarrativeSlotResponseSchema.Schema
+	rootProperties, ok := root["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("root properties = %#v", root["properties"])
+	}
+	if _, misplaced := rootProperties["required"]; misplaced || root["required"] == nil || root["additionalProperties"] != false {
+		t.Fatalf("root strict schema keywords are misplaced: %#v", root)
+	}
+	slot, ok := rootProperties["slot"].(map[string]any)
+	if !ok {
+		t.Fatalf("slot schema = %#v", rootProperties["slot"])
+	}
+	slotProperties, ok := slot["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("slot properties = %#v", slot["properties"])
+	}
+	if _, misplaced := slotProperties["required"]; misplaced || slot["required"] == nil || slot["additionalProperties"] != false {
+		t.Fatalf("slot strict schema keywords are misplaced: %#v", slot)
+	}
+}
+
 func dailyInsightTestSnapshot(t *testing.T) *health.DailyInsightSnapshot {
 	t.Helper()
 	duration := 7.2

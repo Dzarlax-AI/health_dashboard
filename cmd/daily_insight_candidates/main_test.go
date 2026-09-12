@@ -1,13 +1,30 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"health-receiver/internal/ai"
 	"health-receiver/internal/health"
 )
+
+func TestOpenCandidateSourceRequiresDirectDSNWhenIsolationDisabled(t *testing.T) {
+	t.Setenv("TENANT_DB_ISOLATION_ENABLED", "false")
+	for _, key := range []string{"PGHOST", "PGPORT", "PGDATABASE", "PGUSER"} {
+		t.Setenv(key, "")
+	}
+
+	db, closeSource, err := openCandidateSource(context.Background(), "", "health")
+	if err == nil || !strings.Contains(err.Error(), "DATABASE_URL is required") {
+		t.Fatalf("openCandidateSource error = %v, want missing direct DSN error", err)
+	}
+	if db != nil || closeSource != nil {
+		t.Fatal("openCandidateSource returned a source on configuration error")
+	}
+}
 
 func TestCandidateFailureReasonDoesNotExposeStorageError(t *testing.T) {
 	tests := []struct {

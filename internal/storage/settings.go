@@ -170,7 +170,7 @@ func TodayInsightsB1QualityGateMatchesConfig(approval TodayInsightsB1QualityGate
 	if err != nil {
 		return false
 	}
-	identity := ai.DailyInsightNarrativeCurrentReviewIdentity()
+	identity := ai.DailyInsightNarrativeSlotCurrentReviewIdentity()
 	return approval.Provider == cfg.Provider && approval.Model == resolved.Model && approval.Reasoning == resolved.ReasoningEffort &&
 		approval.PromptRevision == identity.PromptRevision &&
 		approval.ClaimPacketVersion == identity.ClaimPacketVersion &&

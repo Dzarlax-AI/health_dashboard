@@ -754,7 +754,7 @@ func makeTodayDerivedStateTrigger(ctx context.Context, db *storage.DB, schema st
 			// The new Today path owns its own provider generation. Legacy blocks
 			// remain compatibility/on-demand for their existing endpoint and the
 			// morning report, so one derived-state refresh never pays twice.
-			db.EnsureDailyInsightNarrativeAsync(snapshot, cfg, lang)
+			db.EnsureDailyInsightNarrativeSlotsAsync(snapshot, cfg, lang)
 			return nil
 		})
 	}

@@ -221,7 +221,7 @@ function DashboardApp() {
             <DashboardDetails
               locale={locale}
               model={model}
-              ai={state.resources.ai}
+              ai={undefined}
               hideLegacyAI={Boolean(model.todayInsights)}
               readinessHistory={state.resources.readinessHistory}
               energyHistory={state.resources.energyHistory}

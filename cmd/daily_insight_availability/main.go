@@ -11,9 +11,11 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 
 	"health-receiver/internal/storage"
+	"health-receiver/internal/tenants"
 )
 
 func main() {
@@ -29,11 +31,11 @@ func main() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	db, err := storage.NewWithSchema(ctx, os.Getenv("DATABASE_URL"), *schema)
+	db, closeSource, err := openAvailabilitySource(ctx, *schema)
 	if err != nil {
 		log.Fatalf("open canonical report source: %v", err)
 	}
-	defer db.Close()
+	defer closeSource()
 	report, err := db.RecentSleepAvailabilityReport(ctx, *through, *days, time.Now())
 	if err != nil {
 		log.Fatalf("build canonical availability report: %v", err)
@@ -43,4 +45,41 @@ func main() {
 		log.Fatalf("encode availability report: %v", err)
 	}
 	fmt.Println(string(encoded))
+}
+
+// openAvailabilitySource uses a direct read-only DSN when one is deliberately
+// supplied. Production isolated tenants do not expose such a DSN: in that
+// mode it opens the same derived, schema-bound tenant pool as the service.
+// Neither path writes data or falls back to an administrative tenant pool.
+func openAvailabilitySource(ctx context.Context, schema string) (*storage.DB, func(), error) {
+	dsn := strings.TrimSpace(os.Getenv("DATABASE_URL"))
+	if dsn != "" || standardPostgresEnvConfigured() {
+		db, err := storage.NewWithSchema(ctx, dsn, schema)
+		if err != nil {
+			return nil, nil, err
+		}
+		return db, db.Close, nil
+	}
+
+	cfg, err := tenants.ParseTenantIsolationConfig(os.LookupEnv)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse isolated tenant source: %w", err)
+	}
+	if !cfg.Enabled {
+		return nil, nil, fmt.Errorf("DATABASE_URL is required when tenant database isolation is disabled")
+	}
+	db, closeSource, err := tenants.OpenReadOnlyTenant(ctx, cfg, schema)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open isolated tenant source: %w", err)
+	}
+	return db, closeSource, nil
+}
+
+func standardPostgresEnvConfigured() bool {
+	for _, key := range []string{"PGHOST", "PGPORT", "PGDATABASE", "PGUSER"} {
+		if strings.TrimSpace(os.Getenv(key)) != "" {
+			return true
+		}
+	}
+	return false
 }
