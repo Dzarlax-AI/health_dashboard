@@ -58,6 +58,50 @@ func TestEnsureSchemaContractIgnoresImportHousekeepingFailure(t *testing.T) {
 	}
 }
 
+func TestEnsureSchemaContractDoesNotCreatePartialSleepFeatureSchema(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx := t.Context()
+	// Reproduce the production-shaped halfway state: Phase A's first two
+	// tables exist under the old v9 marker, while the later Phase C tables do
+	// not. A normal restart must fail closed and leave that state untouched;
+	// only the stopped-service migration may complete the whole contract.
+	for _, table := range []string{
+		"sleep_duration_balance_snapshot",
+		"sleep_goal",
+		"completed_sleep_episode",
+		"sleep_period_coverage",
+	} {
+		if _, err := db.pool.Exec(ctx, "DROP TABLE "+table+" CASCADE"); err != nil {
+			t.Fatalf("drop %s: %v", table, err)
+		}
+	}
+	if err := db.EnsureSchemaContractContext(ctx); err == nil {
+		t.Fatal("runtime schema ensure unexpectedly accepted an incomplete sleep feature contract")
+	}
+	for _, table := range []string{"completed_night_sleep", "night_sleep_coverage_commitments"} {
+		var exists bool
+		if err := db.pool.QueryRow(ctx, "SELECT to_regclass(current_schema() || '.' || $1) IS NOT NULL", table).Scan(&exists); err != nil {
+			t.Fatalf("inspect %s: %v", table, err)
+		}
+		if !exists {
+			t.Fatalf("runtime schema ensure removed existing partial table %s", table)
+		}
+	}
+	for _, table := range []string{"sleep_period_coverage", "completed_sleep_episode", "sleep_goal", "sleep_duration_balance_snapshot"} {
+		var exists bool
+		if err := db.pool.QueryRow(ctx, "SELECT to_regclass(current_schema() || '.' || $1) IS NOT NULL", table).Scan(&exists); err != nil {
+			t.Fatalf("inspect %s: %v", table, err)
+		}
+		if exists {
+			t.Fatalf("runtime schema ensure created missing partial table %s", table)
+		}
+	}
+	if err := db.MigrateSchemaContractContext(ctx); err != nil {
+		t.Fatalf("explicit migration did not restore full sleep feature contract: %v", err)
+	}
+}
+
 func TestVerifySchemaContractRejectsViewSpoofingRequiredTable(t *testing.T) {
 	db, cleanup := testDB(t)
 	defer cleanup()

@@ -269,7 +269,7 @@ function todayInsights(locale: Locale, fixture: FixtureName): TodayInsightsRespo
         confidence: partial ? "provisional" : "final",
         data_state: partial ? "partial" : "fresh",
         destination: { kind: "sleep", id: "sleep" },
-        insight: { answer_kind: partial ? "provisional_pattern" : "confirmed_personal", evidence_ids: ["sleep"], fallback: true, meaning: localized(locale, { en: "Sleep context is available.", ru: "Контекст сна доступен.", sr: "Kontekst sna je dostupan." }), observation: localized(locale, { en: "Your overnight pattern is usable.", ru: "Ночной паттерн можно использовать.", sr: "Noćni obrazac je upotrebljiv." }), state: "insight", title: localized(locale, { en: "Sleep", ru: "Сон", sr: "San" }) },
+        insight: { answer_kind: partial ? "provisional_pattern" : "confirmed_personal", evidence_ids: ["sleep"], fallback: true, meaning: localized(locale, { en: "Sleep context is available.", ru: "Контекст сна доступен.", sr: "Kontekst sna je dostupan." }), narrative: partial ? undefined : { claim_ids: ["recent_sleep_below_reference"], evidence_ids: ["sleep"], text: localized(locale, { en: "The recent pattern is worth noticing today, without defining the whole day.", ru: "Недавний паттерн стоит заметить сегодня, но он не определяет весь день.", sr: "Nedavni obrazac vredi primetiti danas, ali ne određuje ceo dan." }) }, observation: localized(locale, { en: "Your overnight pattern is usable.", ru: "Ночной паттерн можно использовать.", sr: "Noćni obrazac je upotrebljiv." }), state: "insight", title: localized(locale, { en: "Sleep", ru: "Сон", sr: "San" }) },
         key: "sleep",
         summary: localized(locale, { en: "Sleep", ru: "Сон", sr: "San" }),
       },

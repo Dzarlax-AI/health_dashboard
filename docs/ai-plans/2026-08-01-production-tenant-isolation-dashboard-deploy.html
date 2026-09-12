@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Production deploy: tenant DB isolation</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f7f2;
+      --paper: rgba(255, 255, 255, 0.92);
+      --ink: #20251f;
+      --muted: #677067;
+      --line: #dce4da;
+      --green: #168f57;
+      --green-soft: #e5f5eb;
+      --amber: #a55f00;
+      --amber-soft: #fff1d8;
+      --red: #a93535;
+      --red-soft: #fde8e8;
+      --blue: #4159b9;
+      --blue-soft: #e9edff;
+      --shadow: 0 18px 50px rgba(53, 72, 58, 0.09);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 10% 0%, rgba(197, 232, 207, 0.65), transparent 34rem),
+        radial-gradient(circle at 92% 18%, rgba(216, 223, 255, 0.7), transparent 32rem),
+        var(--bg);
+    }
+    main { width: min(1120px, calc(100% - 32px)); margin: 34px auto 72px; }
+    header, section {
+      background: var(--paper);
+      border: 1px solid rgba(210, 221, 209, 0.9);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+    }
+    header { padding: clamp(28px, 5vw, 56px); }
+    section { margin-top: 18px; padding: clamp(24px, 4vw, 40px); }
+    h1 { margin: 8px 0 14px; max-width: 850px; font-size: clamp(34px, 6vw, 64px); line-height: 1.03; letter-spacing: -0.045em; }
+    h2 { margin: 0 0 18px; font-size: clamp(24px, 3vw, 34px); letter-spacing: -0.025em; }
+    h3 { margin: 28px 0 10px; font-size: 19px; }
+    p { margin: 10px 0; }
+    ul, ol { padding-left: 24px; }
+    li + li { margin-top: 8px; }
+    code {
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 0.9em;
+      background: #edf1ec;
+      border-radius: 7px;
+      padding: 2px 6px;
+      overflow-wrap: anywhere;
+    }
+    pre {
+      overflow-x: auto;
+      padding: 18px;
+      border-radius: 16px;
+      background: #17201a;
+      color: #e8f3ea;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+    pre code { padding: 0; background: none; color: inherit; }
+    .eyebrow { color: var(--green); text-transform: uppercase; font-weight: 800; letter-spacing: 0.12em; font-size: 12px; }
+    .lead { max-width: 820px; color: var(--muted); font-size: 19px; }
+    .badges { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 24px; }
+    .badge { padding: 8px 12px; border-radius: 999px; font-weight: 750; font-size: 13px; }
+    .green { color: var(--green); background: var(--green-soft); }
+    .amber { color: var(--amber); background: var(--amber-soft); }
+    .red { color: var(--red); background: var(--red-soft); }
+    .blue { color: var(--blue); background: var(--blue-soft); }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .card { padding: 18px; border: 1px solid var(--line); border-radius: 17px; background: rgba(250, 252, 249, 0.9); }
+    .card strong { display: block; margin-bottom: 5px; }
+    .note { border-left: 5px solid var(--amber); background: var(--amber-soft); padding: 16px 18px; border-radius: 4px 15px 15px 4px; }
+    .danger { border-left-color: var(--red); background: var(--red-soft); }
+    .ok { border-left-color: var(--green); background: var(--green-soft); }
+    .steps { counter-reset: step; list-style: none; padding: 0; }
+    .steps > li { counter-increment: step; position: relative; padding: 20px 20px 20px 66px; border: 1px solid var(--line); border-radius: 18px; background: #fbfcfa; }
+    .steps > li + li { margin-top: 12px; }
+    .steps > li::before {
+      content: counter(step);
+      position: absolute;
+      left: 18px;
+      top: 18px;
+      width: 32px;
+      height: 32px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--green);
+      color: white;
+      font-weight: 800;
+    }
+    .steps strong { font-size: 17px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { padding: 12px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+    .gate {
+      border: 2px solid var(--green);
+      background: linear-gradient(135deg, #f7fff9, #eef8f0);
+    }
+    .gate h2 { color: var(--green); }
+    @media (max-width: 760px) {
+      main { width: min(100% - 20px, 1120px); margin-top: 10px; }
+      header, section { border-radius: 18px; }
+      .grid { grid-template-columns: 1fr; }
+      table { display: block; overflow-x: auto; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">Implementation plan · 1 августа 2026</div>
+    <h1>Production-релиз tenant DB isolation</h1>
+    <p class="lead">
+      Это не обычный <code>docker compose pull</code>. Production работал на общей роли
+      <code>health_user</code>, поэтому релиз разделён на обратимую подготовку, canary-миграцию
+      и короткое контролируемое окно cutover. По уточнению пользователя scope был сужен до базы:
+      новый UI не входит в этот релиз.
+    </p>
+    <div class="badges">
+      <span class="badge green">DB isolation: deployed</span>
+      <span class="badge blue">UI PR #209: не деплоился</span>
+      <span class="badge green">3 tenant-а isolation-ready</span>
+      <span class="badge green">Authoritative audit: pass</span>
+    </div>
+  </header>
+
+  <section>
+    <h2>Что подтверждено сейчас</h2>
+    <div class="grid">
+      <div class="card">
+        <strong>Текущий immutable image</strong>
+        <code>ghcr.io/dzarlax-ai/health_dashboard@sha256:46e3339f27153b6c344acc650d714138547b13df1b49a81e778944631833a7b1</code>
+      </div>
+      <div class="card">
+        <strong>Production runtime</strong>
+        Один контейнер <code>health-health-receiver-1</code>, работает 12 дней, restart count 0.
+      </div>
+      <div class="card">
+        <strong>Свежий backup</strong>
+        <code>/root/vol/backup/postgres/dump-2026-08-01.sql.gz</code>, 253&nbsp;585&nbsp;960 байт.
+        Архив успешно прошёл <code>gzip -t</code>.
+      </div>
+      <div class="card">
+        <strong>Текущее состояние БД</strong>
+        PostgreSQL 17.9. Ролей <code>health_admin</code> и <code>health_registry</code> ещё нет.
+        Зарегистрировано 3 активных tenant-а; у всех есть identity metadata, но <code>db_isolation_ready=false</code>.
+      </div>
+      <div class="card">
+        <strong>Текущий compose</strong>
+        Legacy single-service layout с образом <code>:latest</code>, Traefik labels и общей переменной
+        <code>DATABASE_URL</code>.
+      </div>
+      <div class="card">
+        <strong>Новый UI</strong>
+        Draft PR #209 rebased на main, mergeable, обязательные CI lanes зелёные; локальные Go tests/build
+        и visual QA пройдены.
+      </div>
+    </div>
+    <p class="note">
+      Старый образ не имеет <code>/healthz</code> и <code>/readyz</code>, поэтому эти проверки становятся
+      обязательными только после запуска нового immutable image.
+    </p>
+  </section>
+
+  <section>
+    <h2>Желаемый результат</h2>
+    <ul>
+      <li>DB-only runtime работает из immutable GHCR digest; изменения нового dashboard не включены.</li>
+      <li>Frontend и backend пока остаются в текущем приложении. Разделение на отдельные images и общий API для web/mobile вынесено в следующий архитектурный этап.</li>
+      <li>Каждый из 3 tenant-ов подключается собственной DB-ролью; registry и administration используют отдельные least-privilege identities.</li>
+      <li>Никаких runtime-ссылок на mutable <code>:latest</code> во время cutover.</li>
+      <li>Traefik, Authentik и PostgreSQL-контейнеры не перезапускаются.</li>
+      <li>После релиза проходят health/readiness checks, fleet audit, login/API/ingest smoke tests и проверка стабильности контейнера.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Файлы и секретное состояние</h2>
+    <table>
+      <thead>
+        <tr><th>Объект</th><th>Планируемое изменение</th><th>Правило безопасности</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>personal_ai_stack/deploy/health/docker-compose.yml</code></td>
+          <td>Сохранить production Traefik/network layout, добавить immutable image input, healthcheck, graceful stop и isolation runtime contract.</td>
+          <td>Сначала локальный diff с remote; не копировать app-dev compose с локальным PostgreSQL.</td>
+        </tr>
+        <tr>
+          <td><code>personal_ai_stack/deploy/health/.env.example</code></td>
+          <td>Документировать только имена новых DB-isolation переменных.</td>
+          <td>Никаких реальных паролей, DSN или master secret в git.</td>
+        </tr>
+        <tr>
+          <td><code>/root/health/.env</code></td>
+          <td>Добавить restricted admin/registry DSN, credential-free tenant base URL, master secret/version и staged isolation flag.</td>
+          <td>Меняется только после approval; резервная копия mode 0600; значения не печатаются в лог или ответ.</td>
+        </tr>
+        <tr>
+          <td><code>/root/health/secure/</code></td>
+          <td>Хранить DB identity manifest, fleet/canary manifests и audit env.</td>
+          <td>Каталог root-owned 0700, файлы root-owned 0600, не попадают в git.</td>
+        </tr>
+        <tr>
+          <td><code>scripts/deploy-tenant-schema-gate.sh</code></td>
+          <td>Использовать проверенный скрипт из exact release commit.</td>
+          <td>Запуск от root; exact digest; скрипт останавливает и запускает только health service.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Последовательность релиза</h2>
+    <ol class="steps">
+      <li>
+        <strong>Завершить UI PR и получить immutable artifact.</strong>
+        Перевести PR #209 из draft, дождаться review/CI, merge в <code>main</code>, дождаться main image workflow.
+        Разрешить опубликованный image в digest и дальше использовать только
+        <code>ghcr.io/dzarlax-ai/health_dashboard@sha256:…</code>.
+      </li>
+      <li>
+        <strong>Зафиксировать rollback baseline.</strong>
+        Повторно записать current digest, состояние контейнера и логи. Сделать отдельный on-demand pre-cutover
+        PostgreSQL backup и проверить архив. Ежедневный backup уже валиден, но cutover получает собственную контрольную точку.
+      </li>
+      <li>
+        <strong>Подготовить production compose без переключения runtime.</strong>
+        Изменить локальный <code>personal_ai_stack</code> compose, проверить <code>docker compose config</code>,
+        показать diff с remote, затем загрузить только non-secret config. Remote <code>.env</code> не перезаписывается копированием.
+      </li>
+      <li>
+        <strong>Безопасно подготовить DB identities и secrets.</strong>
+        Сгенерировать независимые пароли fixed roles и 32-byte tenant master secret, создать root-only secret files.
+        Bootstrap DSN хранить отдельно и использовать только для one-shot CLI; он не остаётся в runtime env.
+        На этом этапе <code>TENANT_DB_ISOLATION_ENABLED=false</code>.
+      </li>
+      <li>
+        <strong>Bootstrap и pre-finalize verification.</strong>
+        Из exact target image запустить <code>bootstrap-db-identities</code> с checksum-protected manifest.
+        Затем выполнить read-only <code>verify-db-identities --allow-legacy-bridge</code>.
+        Любая неоднозначная роль, ACL drift или ошибка немедленно останавливает релиз.
+      </li>
+      <li>
+        <strong>Inventory, dry-run и canary.</strong>
+        Прочитать реальные schema names из registry во время выполнения. Не придумывать имя tenant-а.
+        Выбрать один зарегистрированный non-primary schema как canary, выполнить inventory/dry-run,
+        затем <code>apply</code> и <code>verify</code> только для canary.
+      </li>
+      <li>
+        <strong>Мигрировать остальной fleet, primary последним.</strong>
+        После успешного canary применить ownership/credential migration ко всем оставшимся tenant-ам,
+        оставив canonical primary schema <code>health</code> последней. Подтвердить ровно 3 isolation-ready tenant-а.
+      </li>
+      <li>
+        <strong>Контролируемое окно cutover.</strong>
+        Остановить только health application. Выполнить <code>finalize-db-identities</code>, удалить legacy bridge,
+        затем authoritative <code>verify-db-identities</code> без allow-legacy flag.
+        Это точка невозврата для простого application rollback.
+      </li>
+      <li>
+        <strong>Schema gate и запуск нового digest.</strong>
+        Установить <code>TENANT_DB_ISOLATION_ENABLED=true</code> и запустить
+        <code>deploy-tenant-schema-gate.sh</code> с exact digest, project/service/network/primary schema и root-owned audit env.
+        Gate выполняет audit до downtime, stopped-service migration, повторный audit, запуск target и stability/log checks.
+      </li>
+      <li>
+        <strong>Postflight и доказательство результата.</strong>
+        Проверить compose status, restart count, <code>/healthz</code>, <code>/readyz</code>, публичный UI,
+        authenticated dashboard/API, API-key ingest и MCP typed tools. Повторить authoritative fleet audit,
+        проверить tenant count и отсутствие новых ERROR/FATAL/panic. Issue #198 закрывать только после сохранения этих доказательств.
+      </li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Ключевые команды выполнения</h2>
+    <p>Команды ниже — форма runbook. Реальные digest, canary schema и secret paths подставляются только после read-only discovery.</p>
+    <pre><code># Bootstrap fixed DB identities from exact target image
+/app/tenant_isolation \
+  --mode bootstrap-db-identities \
+  --manifest /secure/health-db-identities.json \
+  --confirm
+
+# Pre-finalize restricted-identity verification
+/app/tenant_isolation --mode verify-db-identities --allow-legacy-bridge
+
+# Canary, then full fleet with primary last
+/app/tenant_isolation --mode inventory --all --primary-schema health
+/app/tenant_isolation --mode dry-run --all --primary-schema health \
+  --image "$TARGET_DIGEST" --manifest /secure/health-isolation.json
+/app/tenant_isolation --mode apply --schema "$DISCOVERED_CANARY" \
+  --credential-version 1 --image "$TARGET_DIGEST" \
+  --manifest /secure/health-canary.json --confirm
+/app/tenant_isolation --mode verify --schema "$DISCOVERED_CANARY"
+/app/tenant_isolation --mode apply --all --primary-schema health \
+  --credential-version 1 --image "$TARGET_DIGEST" \
+  --manifest /secure/health-isolation.json --confirm
+
+# With legacy app stopped: irreversible cutover
+/app/tenant_isolation --mode finalize-db-identities \
+  --manifest /secure/health-db-identities.json --confirm
+/app/tenant_isolation --mode verify-db-identities
+
+# Exact production release gate
+scripts/deploy-tenant-schema-gate.sh \
+  --image "$TARGET_DIGEST" \
+  --compose-dir /root/health \
+  --compose-file docker-compose.yml \
+  --project health \
+  --service health-receiver \
+  --primary-schema health \
+  --audit-env /root/health/secure/audit.env \
+  --network infra \
+  --readiness-timeout 120</code></pre>
+    <p class="note">
+      Команды с секретами не запускаются через shell history в открытом виде. Конкретное имя Docker network
+      будет подтверждено через <code>docker inspect</code>/<code>docker network ls</code>; <code>infra</code> выше — параметр,
+      который должен совпасть с фактическим production network до запуска gate.
+    </p>
+  </section>
+
+  <section>
+    <h2>Проверки</h2>
+    <h3>Автоматические до production</h3>
+    <ul>
+      <li>Все обязательные PR и main CI lanes зелёные; image опубликован из merge commit.</li>
+      <li><code>go test ./... -count=1</code>, <code>make build</code>, container smoke/restart и DB-isolation tests.</li>
+      <li><code>docker compose config</code> на итоговом production compose с placeholder secrets.</li>
+      <li>Проверка exact image digest и embedded CLI version перед любыми DB mutations.</li>
+    </ul>
+    <h3>Postflight</h3>
+    <ul>
+      <li><code>docker compose ps</code>: service healthy, restart count не растёт.</li>
+      <li><code>/healthz</code> возвращает success; <code>/readyz</code> подтверждает DB/tenant readiness.</li>
+      <li>Fleet audit проходит без findings; registered tenant set, permanent marker set и role set совпадают.</li>
+      <li>Во всех трёх tenant-ах открываются собственные dashboard/metrics; cross-tenant access probes получают SQLSTATE 42501.</li>
+      <li>За наблюдаемое окно в логах нет новых ERROR/FATAL/panic и циклических reconnect/restart.</li>
+    </ul>
+    <h3>Ручной QA</h3>
+    <ul>
+      <li>Authentik login и восстановление session cookie.</li>
+      <li>RU/EN dashboard: один readiness gauge, компактные Energy Bank/Sleep cards, hero background, responsive layout.</li>
+      <li>Dashboard, settings и admin pages доступны только с правильными правами.</li>
+      <li>Тестовый authenticated ingest сохраняется и появляется в правильном tenant-е.</li>
+      <li>MCP typed tools работают; произвольный cross-tenant SQL не используется как smoke test.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Фактическое выполнение</h2>
+    <div class="grid">
+      <div class="card">
+        <strong>Production image</strong>
+        <code>ghcr.io/dzarlax-ai/health_dashboard@sha256:88728bdddebfd3938b67261ba3d8e63d4d680e64c016872c5c7ef5bf3be2415d</code>
+        из merge commit <code>3f96f9179cf47f5417e884a187c63c87f0151306</code>.
+      </div>
+      <div class="card">
+        <strong>Backup</strong>
+        Создан и проверен <code>/root/health/pre-db-isolation-20260801.sql.gz</code>,
+        253&nbsp;680&nbsp;291 байт, mode 0600.
+      </div>
+      <div class="card">
+        <strong>Tenant fleet</strong>
+        Мигрированы <code>health_review</code> (canary), <code>health_tenant_b</code> и последним
+        primary <code>health</code>. Все 3 записи active и isolation-ready.
+      </div>
+      <div class="card">
+        <strong>Least privilege</strong>
+        Fixed admin/registry identities и отдельные tenant-роли проверены. Legacy bridge удалён;
+        строгий <code>verify-db-identities</code> проходит без <code>--allow-legacy-bridge</code>.
+      </div>
+      <div class="card">
+        <strong>Authoritative audit</strong>
+        Contract version 4, 3 markers, 3 roles, 0 findings, 0 незавершённых операций.
+        Все 36 из 36 cross-tenant probes отклонены.
+      </div>
+      <div class="card">
+        <strong>Runtime postflight</strong>
+        Контейнер healthy, restart count 0; <code>/healthz</code> и <code>/readyz</code> успешны;
+        authenticated dashboard smoke успешен; severe log matches — 0.
+      </div>
+    </div>
+    <h3>Изменения по ходу выполнения</h3>
+    <ul>
+      <li>
+        Строгая проверка registry schema ошибочно считала физический порядок колонок частью контракта.
+        Исправление сравнивает колонки как неупорядоченный набор и закреплено unit-тестами в PR #210.
+      </li>
+      <li>
+        Main CI run <code>30708384298</code> полностью зелёный: build/vet/tests, DB lifecycle,
+        container smoke/restart и публикация amd64 image.
+      </li>
+      <li>
+        Загруженная рабочая копия release-gate скрипта получила CRLF из локального checkout.
+        На VPS переносы строк нормализованы до LF до повторного запуска; сам gate после этого прошёл.
+      </li>
+    </ul>
+    <h3>Известные ограничения и follow-up</h3>
+    <ul>
+      <li>
+        CLI сравнивает пустой ACL slice <code>[]</code> и <code>nil</code> через
+        <code>reflect.DeepEqual</code>. Для текущей миграции использован безопасный workflow:
+        dry-run без manifest, затем apply с новым manifest path. Сравнение стоит нормализовать отдельно.
+      </li>
+      <li>
+        PR #209 с новым UI оставлен открытым и не вошёл в production image.
+      </li>
+      <li>
+        Следующий архитектурный этап: monorepo, отдельные frontend/backend images и единый versioned API
+        для web-клиента и мобильного приложения.
+      </li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Риски и стоп-условия</h2>
+    <div class="grid">
+      <div class="card">
+        <strong>Finalize необратим простым restart-ом</strong>
+        После удаления legacy bridge нельзя просто вернуть старый image. Нужен manifest-driven DB rollback.
+      </div>
+      <div class="card">
+        <strong>Credential mismatch</strong>
+        Ошибка master secret/version или role password заставляет runtime fail closed. Проверяем каждую restricted identity до cutover.
+      </div>
+      <div class="card">
+        <strong>Shared PostgreSQL budget</strong>
+        Tenant pools ограничены; не увеличивать MaxConns и не перезапускать PostgreSQL/Authentik.
+      </div>
+      <div class="card">
+        <strong>Повторные уведомления</strong>
+        Перед rollback или повторным запуском проверить delivery state; schedulers не должны повторно отправить ambiguous report.
+      </div>
+    </div>
+    <p class="note danger">
+      Немедленный STOP: невалидный backup, CI/image mismatch, неизвестный tenant schema, manifest checksum error,
+      ACL/schema drift, canary verify failure, tenant count не равен registry count, authoritative audit finding
+      или растущий restart count. Такие ошибки не «чинятся на ходу» в production.
+    </p>
+  </section>
+
+  <section>
+    <h2>Rollback</h2>
+    <h3>До finalize</h3>
+    <p>
+      Оставить <code>TENANT_DB_ISOLATION_ENABLED=false</code>, вернуть проверенный compose и текущий immutable digest,
+      при необходимости откатить подготовленные tenant manifests штатной CLI-командой. Legacy app продолжает использовать
+      общий credential; fixed roles могут оставаться подготовленными и неактивными.
+    </p>
+    <h3>После finalize</h3>
+    <ol>
+      <li>Оставить приложение остановленным и отключить notification schedulers на время восстановления.</li>
+      <li>Сначала выполнить <code>rollback-db-identities</code> из сохранённого DB identity manifest.</li>
+      <li>Затем выполнить tenant fleet <code>rollback</code> из canary/fleet manifests.</li>
+      <li>Проверить восстановленный legacy bridge и registry access.</li>
+      <li>Только после этого запустить записанный current digest <code>sha256:46e333…</code> с isolation disabled.</li>
+      <li>Повторить login/API/ingest/log smoke tests и сохранить evidence.</li>
+    </ol>
+    <p class="note danger">
+      Schema gate намеренно не делает автоматический DB rollback и не запускает старый image при ошибке.
+      Это защищает от запуска несовместимого приложения поверх частично изменённой модели ownership.
+    </p>
+  </section>
+
+  <section class="gate">
+    <h2>Approval gate — выполнен</h2>
+    <p><strong>Пользователь одобрил DB-only выполнение. В разрешённый scope вошли:</strong></p>
+    <ul>
+      <li>изменить production deploy config в <code>personal_ai_stack</code>;</li>
+      <li>создать root-owned secret/manifest files и аккуратно обновить <code>/root/health/.env</code> без раскрытия значений;</li>
+      <li>выполнить описанные DB identity/tenant migrations и controlled downtime только для health application;</li>
+      <li>запустить DB-only exact digest и выполнить полный postflight.</li>
+    </ul>
+    <p><strong>Не выполнялось:</strong> merge/deploy UI PR #209, перезапуск PostgreSQL, Traefik или Authentik,
+      удаление данных/volumes, изменение других сервисов либо использование mutable <code>:latest</code>.</p>
+  </section>
+</main>
+</body>
+</html>

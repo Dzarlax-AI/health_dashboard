@@ -81,6 +81,22 @@ export function sleepFixtureResources(locale: Locale): SleepResources {
       })),
     },
     session: { is_admin: true },
+    balance: {
+      wake_date: "2026-08-05",
+      window_start_date: "2026-07-23",
+      calculated_through: "2026-08-05T12:00:00+02:00",
+      state: "complete",
+      confidence: "normal",
+      balance_hours: 1.25,
+      periods: [],
+    },
+    goal: {
+      goal: {
+        effective_date: "2026-08-05",
+        goal_hours: 8,
+        version: "manual-goal-v1",
+      },
+    },
     metrics: Object.fromEntries(
       sleepMetrics.map((metric) => [
         metric,

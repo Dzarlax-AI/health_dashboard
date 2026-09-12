@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation Plan: Telegram webhook API routing</title>
+  <style>
+    :root { color-scheme: light; --bg: #f4f6f8; --card: #fff; --text: #172033; --muted: #5f6b7a; --line: #dfe4ea; --blue: #2457d6; --amber: #b45309; --red: #b42318; --green: #157f3b; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); line-height: 1.55; }
+    main { max-width: 1040px; margin: 0 auto; padding: 32px 20px 56px; }
+    h1, h2, h3 { line-height: 1.2; }
+    h1 { margin-bottom: 8px; }
+    section { margin: 16px 0; padding: 20px 22px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+    code { padding: 2px 5px; background: #eef1f5; border-radius: 4px; overflow-wrap: anywhere; }
+    pre { padding: 14px; overflow-x: auto; background: #111827; color: #e5e7eb; border-radius: 8px; }
+    pre code { padding: 0; background: transparent; }
+    li + li { margin-top: 7px; }
+    .badge { display: inline-block; padding: 5px 11px; color: #713f12; background: #fef3c7; border-radius: 999px; font-size: 13px; font-weight: 700; }
+    .fact { border-left: 4px solid var(--blue); }
+    .risk { border-left: 4px solid var(--red); }
+    .approval { border-left: 4px solid var(--amber); }
+    .success { border-left: 4px solid var(--green); }
+    .muted { color: var(--muted); }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>План исправления Telegram webhook после переноса UI на API</h1>
+  <p class="badge">Одобрено и выполнено 5 августа 2026</p>
+
+  <section>
+    <h2>Краткое описание</h2>
+    <p>
+      Вернуть Telegram callback-кнопкам рабочий публичный маршрут, не открывая остальные
+      <code>/api</code>-эндпоинты. Исправление ограничивается отдельным Traefik router для
+      <code>/api/telegram/webhook/</code> и controlled recreate только контейнера
+      <code>health-receiver</code>.
+    </p>
+  </section>
+
+  <section class="fact">
+    <h2>Подтверждённое текущее поведение</h2>
+    <ul>
+      <li>Production Compose отправляет весь обычный <code>/api</code> через middleware <code>authentik-auth</code>.</li>
+      <li>Telegram присылает <code>X-Telegram-Bot-Api-Secret-Token</code>, но не <code>X-API-Key</code>, поэтому не попадает в существующий machine/API-key router.</li>
+      <li>Публичный <code>/api/telegram/webhook/…</code> сейчас возвращает <code>302</code> на Authentik.</li>
+      <li>Go backend успешно монтирует webhook handler при старте, но в логах после отправки опроса нет входящих callback-событий.</li>
+      <li>Оба production-контейнера healthy, restart count равен нулю; ошибки Gemini 503 к callback-проблеме не относятся.</li>
+      <li>Локальный <code>personal_ai_stack/deploy/health/docker-compose.yml</code> совпадает с production-копией по содержимому.</li>
+    </ul>
+  </section>
+
+  <section class="success">
+    <h2>Желаемое поведение</h2>
+    <ul>
+      <li>Только <code>/api/telegram/webhook/</code> маршрутизируется прямо в Go backend без Authentik.</li>
+      <li>Защита остаётся двухуровневой внутри приложения: секретный сегмент URL и constant-time проверка заголовка Telegram.</li>
+      <li>Остальной <code>/api</code> продолжает использовать Authentik либо существующий <code>X-API-Key</code> router.</li>
+      <li>Нажатие актуальной кнопки сохраняет ответ, закрывает spinner через <code>answerCallbackQuery</code> и запускает положенный report flow.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Предположения и неизвестные</h2>
+    <ul>
+      <li>Используем <code>PathPrefix(`/api/telegram/webhook/`)</code>, потому что handler ожидает секрет после завершающего slash.</li>
+      <li>Router получит приоритет выше browser API и API-key routers; предлагаемый приоритет — <code>320</code>.</li>
+      <li>Смена labels потребует recreate только <code>health-receiver</code>; отдельный restart Traefik или Authentik не нужен, так как Traefik читает Docker labels динамически.</li>
+      <li>Старый Telegram update может быть уже просрочен. Финальная пользовательская проверка может потребовать новую кнопку или повторное нажатие сегодняшней.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Файлы, которые вероятно изменятся</h2>
+    <table>
+      <thead><tr><th>Файл</th><th>Причина</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>/Users/dzarlax/Projects/Code/Personal/personal_ai_stack/deploy/health/docker-compose.yml</code></td>
+          <td>Добавить узкий unauthenticated Traefik router для Telegram webhook; это каноническое локальное зеркало production deploy config.</td>
+        </tr>
+        <tr>
+          <td><code>/root/health/docker-compose.yml</code> на VPS</td>
+          <td>Синхронизировать проверенный Compose без изменения <code>.env</code>, секретов или image digests.</td>
+        </tr>
+        <tr>
+          <td><code>/Users/dzarlax/Projects/Code/Personal/personal_ai_stack/deploy/health/README.md</code></td>
+          <td>Зафиксировать webhook как отдельную machine ingress boundary без Authentik.</td>
+        </tr>
+        <tr>
+          <td><code>docs/ai-plans/2026-08-05-telegram-webhook-api-routing.html</code></td>
+          <td>После реализации записать фактические изменения, проверки, ограничения и результат production QA.</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="muted">Изменения Go-кода, БД, схемы, Telegram token и webhook secret не ожидаются.</p>
+  </section>
+
+  <section>
+    <h2>Шаги реализации</h2>
+    <ol>
+      <li>Добавить к <code>health-receiver</code> router <code>health-telegram-webhook</code> с HTTPS, host rule и точным path prefix; не назначать ему Authentik middleware.</li>
+      <li>Оставить service target <code>health-backend</code>, TLS resolver и существующие browser/API-key routers без изменений.</li>
+      <li>Проверить итоговый Compose с текущим <code>release.env</code>; убедиться, что секретные значения не выводятся.</li>
+      <li>Повторно сравнить локальный Compose с production и загрузить только проверенные non-secret config files; production <code>.env</code> не трогать.</li>
+      <li>Зафиксировать текущий immutable backend image и выполнить controlled recreate только <code>health-receiver</code> с тем же image reference.</li>
+      <li>Провести postflight: container health, restart count, logs, HTTP routing и реальное нажатие Telegram-кнопки.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Влияние</h2>
+    <ul>
+      <li><strong>Auth/permissions:</strong> публичным становится только endpoint, уже защищённый двумя Telegram-specific секретами внутри Go.</li>
+      <li><strong>API:</strong> payload и response contract не меняются.</li>
+      <li><strong>Данные/миграции:</strong> отсутствуют.</li>
+      <li><strong>Deployment:</strong> краткий recreate backend-контейнера; frontend, PostgreSQL, Traefik и Authentik не перезапускаются.</li>
+      <li><strong>UX:</strong> callback spinner закрывается, ответ опроса сохраняется, появляется локализованный Telegram toast.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>План проверок</h2>
+    <h3>До production</h3>
+    <ul>
+      <li><code>docker compose --env-file release.env config --quiet</code> в локальном deploy-каталоге.</li>
+      <li>Проверка rendered labels: новый router не содержит middleware; browser API router сохраняет <code>authentik-auth</code>.</li>
+      <li>Статическая проверка, что rule ограничен <code>/api/telegram/webhook/</code>, а не всем <code>/api</code>.</li>
+    </ul>
+    <h3>Production postflight</h3>
+    <ul>
+      <li><code>docker inspect</code>: backend running/healthy, ожидаемый immutable image, без restart loop.</li>
+      <li><code>GET /healthz</code> возвращает <code>200</code>.</li>
+      <li>Запрос к webhook path с неверным секретом возвращает backend <code>403</code>, а не Authentik <code>302</code>.</li>
+      <li>Обычный browser <code>/api</code> без сессии по-прежнему перенаправляется в Authentik.</li>
+      <li>После нажатия актуальной кнопки Telegram прекращает spinner и показывает подтверждение; backend не пишет save/ack errors.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Риски и граничные случаи</h2>
+    <ul>
+      <li><strong>Слишком широкий bypass:</strong> исключается точным path prefix и отдельной проверкой rendered rule.</li>
+      <li><strong>Потеря защиты webhook:</strong> middleware снимается только на proxy-слое; обе Go-проверки остаются.</li>
+      <li><strong>Случайная смена image:</strong> перед recreate сверяется текущий digest и используется тот же immutable reference.</li>
+      <li><strong>Короткая недоступность backend:</strong> ограничивается recreate одного контейнера и контролируется healthcheck.</li>
+      <li><strong>Старые кнопки:</strong> cross-day callback намеренно отклоняется stale-date guard; QA проводится на актуальной кнопке.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback</h2>
+    <ol>
+      <li>Вернуть предыдущий production Compose без router <code>health-telegram-webhook</code>.</li>
+      <li>Recreate только <code>health-receiver</code> на том же immutable image.</li>
+      <li>Проверить healthy state и восстановление прежнего <code>302</code> поведения webhook path.</li>
+    </ol>
+    <p>Откат не затрагивает БД и не требует rollback данных.</p>
+  </section>
+
+  <section>
+    <h2>Открытые вопросы</h2>
+    <ul>
+      <li>Блокирующих вопросов нет. Предлагаемый scope — один Compose router и production verification.</li>
+      <li>Отдельным follow-up можно добавить source-controlled regression harness для production routing; текущий <code>personal_ai_stack</code> deploy mirror не содержит такого тестового набора.</li>
+    </ul>
+  </section>
+
+  <section class="success">
+    <h2>Фактически выполнено</h2>
+    <ul>
+      <li>В <code>personal_ai_stack/deploy/health/docker-compose.yml</code> добавлен router <code>health-telegram-webhook</code> с приоритетом <code>320</code> и rule, ограниченным <code>/api/telegram/webhook/</code>.</li>
+      <li>У нового router отсутствует middleware; <code>health-browser-api</code> сохранил <code>authentik-auth</code>.</li>
+      <li>Deploy README обновлён: Telegram webhook выделен как отдельная machine ingress boundary; локальная и VPS-копии синхронизированы без рестарта.</li>
+      <li>Локальная и production-копии Compose синхронизированы; production <code>.env</code> не изменялся.</li>
+      <li>Пересоздан только <code>health-receiver</code> на прежнем immutable backend digest <code>sha256:572488…</code>. Frontend, Traefik, Authentik и PostgreSQL не перезапускались.</li>
+    </ul>
+    <h3>Выполненные проверки</h3>
+    <ul>
+      <li>Локальный и production <code>docker compose --env-file release.env config --quiet</code> завершились с exit code 0.</li>
+      <li><code>go test ./... -count=1</code> прошёл полностью вне sandbox. Первый sandbox-запуск был ограничен запретом на локальный TCP listener для <code>httptest</code>, после чего тот же suite успешно повторён с разрешённым listener.</li>
+      <li>Rendered labels подтвердили узкий webhook rule, отсутствие middleware на нём и сохранение Authentik на browser API.</li>
+      <li>Backend: running/healthy, restart count 0, прежний image ID <code>sha256:0c18b1…</code>.</li>
+      <li>Frontend: running/healthy, restart count 0, start timestamp не изменился.</li>
+      <li><code>/healthz</code> возвращает <code>200</code>; webhook с неверными секретами — backend <code>403</code> без redirect; обычный browser API — <code>302</code> в Authentik.</li>
+      <li>После деплоя наблюдался один реальный (non-test) POST на Telegram webhook; в соответствующем окне логов нет ошибок unknown/malformed/stale/save/ack, ERROR/FATAL или WARN.</li>
+    </ul>
+    <h3>Известные ограничения и follow-up</h3>
+    <ul>
+      <li>В текущем deploy mirror нет source-controlled regression harness для Traefik rules. Рекомендуемый follow-up — добавить статический routing contract test, чтобы следующий UI/API cutover не закрыл machine webhook.</li>
+      <li>Отдельного production Compose example нет. Оба dev Compose не содержат Traefik labels и не требуют изменения; <code>.env.example</code> также не менялся, поскольку новых переменных окружения нет.</li>
+      <li>Go-код и схема БД не менялись; дополнительных миграций или cleanup нет.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval gate — выполнен</h2>
+    <p>
+      Пользователь одобрил план сообщением «выглядит ок». Реализация осталась в согласованном scope:
+      без restart Traefik, Authentik или PostgreSQL, без изменения секретов, image upgrade,
+      миграций и изменений других сервисов.
+    </p>
+  </section>
+</main>
+</body>
+</html>

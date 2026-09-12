@@ -1,4 +1,4 @@
-.PHONY: dev build backfill backfill-force energy-backfill energy-backfill-dry wake-backfill wake-backfill-dry tenant-isolation import contract-generate contract-check web-install web-install-browsers web-dev web-check web-test-visual docker-build-backend docker-build-frontend docker-build-images test-container-images test-compatible-image-pair test-compatible-image-pair-negative test-release-contract-helpers test-production-routing-config test-production-traefik-rules docker-up docker-down test test-unit test-db-storage test-db-ui test-db-ui-fast test-db-energy test-db-energy-smoke test-db-readiness test-db-dashboard test-db-sleep-insights test-db-import test-db-security test-db smoke-health-post
+.PHONY: dev build backfill backfill-force energy-backfill energy-backfill-dry wake-backfill wake-backfill-dry tenant-isolation import contract-generate contract-check web-install web-install-browsers web-dev web-check web-test-visual docker-build-backend docker-build-frontend docker-build-images test-container-images test-compatible-image-pair test-compatible-image-pair-negative test-release-contract-helpers test-production-routing-config test-production-traefik-rules docker-up docker-down test test-unit test-db-storage test-db-ui test-db-ui-fast test-db-energy test-db-energy-smoke test-db-readiness test-db-dashboard test-db-sleep-insights test-db-sleep-balance test-db-import test-db-security test-db smoke-health-post
 
 ADDR ?= :8080
 PNPM ?= pnpm
@@ -166,13 +166,16 @@ test-db-security:
 test-db-import:
 	HEALTH_DB_TESTS=1 go test ./internal/storage -run '^(TestAppleHealthXMLImport|TestBeginAppleHealthXMLImport|TestHealthRecordProcessing|TestNotificationDelivery|TestQualityReclassification)' -count=1 -timeout=120s
 
-test-db: test-db-ui-fast test-db-energy-smoke test-db-readiness test-db-dashboard test-db-sleep-insights
+test-db: test-db-ui-fast test-db-energy-smoke test-db-readiness test-db-dashboard test-db-sleep-insights test-db-sleep-balance
 
 test-db-dashboard:
 	HEALTH_DB_TESTS=1 go test ./internal/storage -run '^TestGetDashboardServesOnlyAnAtomicallyCompletedSnapshot$$' -count=1 -timeout=60s
 
 test-db-sleep-insights:
-	HEALTH_DB_TESTS=1 go test ./internal/storage -run '^TestCompletedNightSleepRequiresCommittedRawPointAndFinalizes$$' -count=1 -timeout=60s
+	HEALTH_DB_TESTS=1 go test ./internal/storage -run '^(TestCompletedNightSleepRequiresCommittedRawPointAndFinalizes|TestEnsureSchemaContractDoesNotCreatePartialSleepFeatureSchema)$$' -count=1 -timeout=60s
+
+test-db-sleep-balance:
+	HEALTH_DB_TESTS=1 go test ./internal/ui -run '^TestSleepGoal(AndBalance_ManualGoalPersistsWithHonestIncompleteBalance|_RejectsOutOfRangeGoal)$$' -count=1 -timeout=60s
 
 test:
 	$(MAKE) smoke-health-post

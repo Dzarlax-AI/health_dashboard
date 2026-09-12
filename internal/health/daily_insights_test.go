@@ -201,6 +201,140 @@ func TestApplyRecentSleepBelowReferenceAddsOnlySleepAction(t *testing.T) {
 	}
 }
 
+func TestDailyInsightNarrativeKeepsFallbackAndRejectsOnlyUnsafeDomain(t *testing.T) {
+	latestSleep := 7.2
+	base := BuildDailyInsightSnapshot(&BriefingResponse{
+		Date: "2026-09-12", Sleep: &SleepAnalysis{LatestDate: "2026-09-12", LatestTotal: &latestSleep, TotalAvg: 6.8},
+		ReadinessToday: 70, ReadinessTodayBand: "low", ReadinessTodayLabel: "Moderate", ReadinessServing: &ReadinessServingState{Status: ReadinessServingFresh, Confidence: ReadinessConfidenceFinal},
+		EnergyBank: &EnergyBank{Current: 56, Capacity: 80, ActionVerdict: "moderate", VerdictReason: "Current reserve is available."},
+	}, "en")
+	snapshot := ApplyRecentSleepBelowReference(base, RecentSleepBelowReference{State: RecentSleepClaimTrue}, "en")
+	input := BuildDailyInsightNarrativeInput(snapshot, "en")
+	if len(input.Domains) != 3 || input.Domains[0].Claims[0].ID != "recent_sleep_below_reference" || len(input.Domains[1].Claims) != 0 || len(input.Domains[2].Claims) != 0 {
+		t.Fatalf("claim packet = %#v", input)
+	}
+	if got := input.Domains[0].Claims[0].Proposition; got != "Several recent nights were shorter than the personal historical sleep reference." {
+		t.Fatalf("B0 narrative proposition = %q, want the server-selected multi-night claim", got)
+	}
+	if strings.Contains(input.Domains[0].Claims[0].Proposition, snapshot.Domains[0].Summary) {
+		t.Fatalf("claim packet leaked display summary: %#v", input.Domains[0])
+	}
+
+	validSleep := &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
+		Text: "It gives the current day a little more context.", ClaimIDs: []string{"recent_sleep_below_reference"}, QualifierIDs: []string{"personal_pattern", "current_context"},
+	}}}
+	unsafeRecovery := &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
+		Text: "Today is 100% safe.", ClaimIDs: []string{"recovery_current_context"}, QualifierIDs: []string{"current_context"},
+	}}}
+	narrative := DailyInsightNarrative{Version: DailyInsightNarrativeVersion, Locale: "en", Domains: []DailyInsightNarrativeDomain{
+		{Key: "sleep", Section: validSleep}, {Key: "recovery", Section: unsafeRecovery}, {Key: "energy", Section: nil},
+	}}
+	validated, invalid, err := ValidateDailyInsightNarrative(snapshot, "en", narrative)
+	if err != nil {
+		t.Fatalf("ValidateDailyInsightNarrative: %v", err)
+	}
+	if invalid["recovery"] == "" || validated.Domains[0].Section == nil || validated.Domains[1].Section != nil {
+		t.Fatalf("partial validation = %#v, invalid=%#v", validated, invalid)
+	}
+	rendered, err := ApplyDailyInsightNarrative(snapshot, narrative)
+	if err != nil {
+		t.Fatalf("ApplyDailyInsightNarrative: %v", err)
+	}
+	sleep := dailyInsightDomain(t, rendered, "sleep").Insight
+	recovery := dailyInsightDomain(t, rendered, "recovery").Insight
+	if sleep.Narrative == nil || sleep.Narrative.Text != validSleep.Sentences[0].Text {
+		t.Fatalf("sleep overlay = %#v", sleep.Narrative)
+	}
+	if recovery.Narrative != nil || recovery.Observation != dailyInsightDomain(t, snapshot, "recovery").Insight.Observation {
+		t.Fatalf("recovery fallback changed: %#v", recovery)
+	}
+}
+
+func TestDailyInsightNarrativeSkipsGenericCurrentContext(t *testing.T) {
+	duration := 7.2
+	snapshot := BuildDailyInsightSnapshot(&BriefingResponse{
+		Date: "2026-09-12", Sleep: &SleepAnalysis{LatestDate: "2026-09-12", LatestTotal: &duration, TotalAvg: 6.8},
+		ReadinessToday: 70, ReadinessTodayLabel: "Moderate", ReadinessServing: &ReadinessServingState{Status: ReadinessServingFresh, Confidence: ReadinessConfidenceFinal},
+		EnergyBank: &EnergyBank{Current: 56, Capacity: 80, ActionVerdict: "moderate", VerdictReason: "Current reserve is available."},
+	}, "en")
+	if HasEligibleDailyInsightNarrativeClaims(snapshot, "en") {
+		t.Fatalf("generic snapshot unexpectedly eligible: %#v", BuildDailyInsightNarrativeInput(snapshot, "en"))
+	}
+	for _, domain := range BuildDailyInsightNarrativeInput(snapshot, "en").Domains {
+		if len(domain.Claims) != 0 {
+			t.Fatalf("generic %s domain has model claim: %#v", domain.Key, domain.Claims)
+		}
+	}
+}
+
+func TestDailyInsightNarrativeIncludesDistinctRecoveryAndEnergyClaims(t *testing.T) {
+	duration := 7.2
+	snapshot := BuildDailyInsightSnapshot(&BriefingResponse{
+		Date:               "2026-09-12",
+		Sleep:              &SleepAnalysis{LatestDate: "2026-09-12", LatestTotal: &duration, TotalAvg: 7.1},
+		ReadinessToday:     42,
+		ReadinessTodayBand: "low",
+		ReadinessTip:       "Recovery signals are more limited today.",
+		ReadinessServing:   &ReadinessServingState{Status: ReadinessServingFresh, Confidence: ReadinessConfidenceFinal},
+		EnergyBank:         &EnergyBank{Current: 45, Capacity: 80, ActionVerdict: "active_recovery", VerdictReason: "The current reserve supports a quieter day."},
+	}, "en")
+	input := BuildDailyInsightNarrativeInput(snapshot, "en")
+	if got := narrativeInputClaimIDs(input, "recovery"); len(got) != 1 || got[0] != "recovery_readiness_context" {
+		t.Fatalf("recovery claims = %#v", got)
+	}
+	if got := narrativeInputClaimIDs(input, "energy"); len(got) != 1 || got[0] != "energy_current_verdict_context" {
+		t.Fatalf("energy claims = %#v", got)
+	}
+	if claim := narrativeInputClaim(input, "recovery"); strings.Contains(claim.Proposition, "Recovery signals are more limited today.") || claim.RequiredQualifierIDs[0] != "current_context" {
+		t.Fatalf("recovery packet leaked display copy or wrong qualifiers: %#v", claim)
+	}
+	if claim := narrativeInputClaim(input, "energy"); strings.Contains(claim.Proposition, "The current reserve supports a quieter day.") || claim.RequiredQualifierIDs[0] != "current_context" {
+		t.Fatalf("energy packet leaked display copy or wrong qualifiers: %#v", claim)
+	}
+	if got := dailyInsightDomain(t, snapshot, "energy").Band; got == "active_recovery" {
+		t.Fatalf("energy display band was overwritten by narrative subject")
+	}
+	if got := dailyInsightDomain(t, snapshot, "energy").NarrativeSubject; got != "active_recovery" {
+		t.Fatalf("energy narrative subject = %q", got)
+	}
+}
+
+func TestEnergyNarrativePropositionsAreObservationsNotActions(t *testing.T) {
+	for _, locale := range []string{"en", "ru", "sr"} {
+		for _, verdict := range []string{"push_hard", "rest", "active_recovery"} {
+			got := localizedEnergyNarrativeProposition(locale, verdict)
+			for _, forbidden := range []string{"pace", "tempo", "темп"} {
+				if strings.Contains(strings.ToLower(got), forbidden) {
+					t.Fatalf("%s/%s proposition is action-like: %q", locale, verdict, got)
+				}
+			}
+		}
+	}
+}
+
+func narrativeInputClaimIDs(input DailyInsightNarrativeInput, key string) []string {
+	for _, domain := range input.Domains {
+		if domain.Key != key {
+			continue
+		}
+		ids := make([]string, 0, len(domain.Claims))
+		for _, claim := range domain.Claims {
+			ids = append(ids, claim.ID)
+		}
+		return ids
+	}
+	return nil
+}
+
+func narrativeInputClaim(input DailyInsightNarrativeInput, key string) DailyInsightNarrativeClaim {
+	for _, domain := range input.Domains {
+		if domain.Key == key && len(domain.Claims) == 1 {
+			return domain.Claims[0]
+		}
+	}
+	return DailyInsightNarrativeClaim{}
+}
+
 func dailyInsightDomain(t *testing.T, snapshot *DailyInsightSnapshot, key string) DailyInsightDomain {
 	t.Helper()
 	if snapshot == nil {

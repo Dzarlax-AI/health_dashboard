@@ -184,6 +184,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/metrics/range", h.guard(h.metricRange))
 	mux.HandleFunc("/api/metrics/data", h.guard(h.metricData))
 	mux.HandleFunc("GET /api/derived-metrics", h.guard(h.derivedMetrics))
+	mux.HandleFunc("GET /api/sleep/balance", h.guard(h.sleepDurationBalance))
+	mux.HandleFunc("GET /api/sleep/goal", h.guard(h.sleepGoal))
+	mux.HandleFunc("PUT /api/sleep/goal", h.guard(h.sleepGoal))
 	mux.HandleFunc("/api/dashboard", h.guard(h.dashboard))
 	mux.HandleFunc("/api/health-briefing", h.guard(h.healthBriefing))
 	mux.HandleFunc("/api/ai-briefing", h.guard(h.aiBriefing))
@@ -215,6 +218,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/checkin-coverage", h.adminGuard(h.adminCheckinCoverage))
 	mux.HandleFunc("/api/admin/settings", h.adminGuard(h.adminAISettings))
 	mux.HandleFunc("/api/admin/today-insights/config", h.adminGuard(h.adminTodayInsightsConfig))
+	mux.HandleFunc("/api/admin/today-insights/b1-quality-gate", h.adminGuard(h.adminTodayInsightsB1QualityGate))
 	mux.HandleFunc("/api/admin/ai-models", h.adminGuard(h.adminAIModels))
 	mux.HandleFunc("/api/admin/energy-settings", h.adminGuard(h.adminEnergySettings))
 	mux.HandleFunc("/api/admin/stress-observability", h.adminGuard(h.adminStressObservability))
@@ -1280,6 +1284,82 @@ func (h *Handler) derivedMetrics(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) sleepDurationBalance(w http.ResponseWriter, r *http.Request) {
+	db := h.tenantDB(r)
+	date := strings.TrimSpace(r.URL.Query().Get("date"))
+	if date == "" {
+		date = tenantLocalToday(h, db, h.tenantSchema(r))
+	}
+	if _, err := time.Parse("2006-01-02", date); err != nil {
+		jsonError(w, "date must be YYYY-MM-DD", http.StatusBadRequest)
+		return
+	}
+	// This is deterministic local accounting, never a provider call. The save
+	// is idempotent and lets a newly created Goal yield an honest incomplete
+	// response immediately rather than an empty card until another ingest.
+	value, err := db.ReconcileSleepDurationBalance(r.Context(), date, time.Now())
+	if err != nil {
+		jsonError(w, "failed to calculate sleep duration balance", http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, clientapi.NewSleepDurationBalanceResponse(value))
+}
+
+func (h *Handler) sleepGoal(w http.ResponseWriter, r *http.Request) {
+	db := h.tenantDB(r)
+	today := tenantLocalToday(h, db, h.tenantSchema(r))
+	switch r.Method {
+	case http.MethodGet:
+		date := strings.TrimSpace(r.URL.Query().Get("date"))
+		if date == "" {
+			date = today
+		}
+		if _, err := time.Parse("2006-01-02", date); err != nil {
+			jsonError(w, "date must be YYYY-MM-DD", http.StatusBadRequest)
+			return
+		}
+		goal, err := db.GetEffectiveSleepGoal(r.Context(), date)
+		if err != nil {
+			jsonError(w, "failed to load sleep goal", http.StatusInternalServerError)
+			return
+		}
+		response := clientapi.SleepGoalResponse{}
+		if goal != nil {
+			response.Goal = &clientapi.SleepGoalValue{EffectiveDate: goal.EffectiveDate, GoalHours: goal.Hours, Version: goal.Version}
+		}
+		jsonResponse(w, response)
+	case http.MethodPut:
+		defer r.Body.Close()
+		var request clientapi.SleepGoalRequest
+		if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&request); err != nil {
+			jsonError(w, "invalid sleep goal request", http.StatusBadRequest)
+			return
+		}
+		if _, err := time.Parse("2006-01-02", request.EffectiveDate); err != nil || request.EffectiveDate == "" {
+			jsonError(w, "effective_date must be YYYY-MM-DD", http.StatusBadRequest)
+			return
+		}
+		goal := health.SleepGoal{EffectiveDate: request.EffectiveDate, Hours: request.GoalHours, Version: "manual-goal-v1"}
+		if err := health.ValidateSleepGoal(goal); err != nil {
+			jsonError(w, "goal_hours must be between 3 and 14", http.StatusBadRequest)
+			return
+		}
+		if err := db.SaveSleepGoal(r.Context(), goal, time.Now()); err != nil {
+			jsonError(w, "failed to save sleep goal", http.StatusInternalServerError)
+			return
+		}
+		// Refresh today's materialized window immediately. Historical windows
+		// are recalculated on their own read path so changing a goal cannot turn
+		// an older stored number into a silently current claim.
+		if _, err := db.ReconcileSleepDurationBalance(r.Context(), today, time.Now()); err != nil {
+			log.Printf("sleep goal saved; defer balance refresh: %v", err)
+		}
+		jsonResponse(w, clientapi.SleepGoalResponse{Goal: &clientapi.SleepGoalValue{EffectiveDate: goal.EffectiveDate, GoalHours: goal.Hours, Version: goal.Version}})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
 func (h *Handler) syncCheckpoint(w http.ResponseWriter, r *http.Request) {
 	ts, err := h.tenantDB(r).GetLatestMetricDate()
 	if err != nil {
@@ -1623,14 +1703,13 @@ func (h *Handler) todayInsights(w http.ResponseWriter, r *http.Request) {
 	db := h.tenantDB(r)
 	schema := h.tenantSchema(r)
 	w.Header().Set("Cache-Control", "private, no-store")
-	briefing, err := db.GetHealthBriefing(lang)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	snapshot := health.BuildDailyInsightSnapshot(briefing, lang)
+	snapshot, err := db.BuildTodayInsightSnapshot(r.Context(), lang, time.Now())
 	if snapshot == nil {
-		http.Error(w, "today insight snapshot unavailable", http.StatusServiceUnavailable)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		} else {
+			http.Error(w, "today insight snapshot unavailable", http.StatusServiceUnavailable)
+		}
 		return
 	}
 	if snapshot.Date != db.Today() {
@@ -1639,20 +1718,16 @@ func (h *Handler) todayInsights(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "today insight data unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	if storage.TodayInsightsB0Enabled(db) {
-		claim, claimErr := db.EvaluateRecentSleepBelowReference(r.Context(), snapshot.Date, time.Now())
-		if claimErr != nil {
-			// B0 is additive. A canonical-read outage must not remove the
-			// factual Today response that was already constructed above.
-			log.Printf("today insights: evaluate canonical sleep claim: %v", claimErr)
-		} else {
-			snapshot = health.ApplyRecentSleepBelowReference(snapshot, claim, lang)
-		}
-	}
 	aiCfg := db.GetAIConfig(h.mgr.AIDefaultsFor(r.Context(), schema))
-	if !storage.TodayInsightsB1Enabled(db) {
+	if !storage.TodayInsightsB1Enabled(db) || !storage.TodayInsightsB1ApprovedForConfig(db, aiCfg) {
 		// The deterministic snapshot is the product baseline. Do not spend a
 		// provider call merely because an installation has general AI settings.
+		aiCfg = storage.AIConfig{}
+	}
+	if aiCfg.Enabled() && !health.HasEligibleDailyInsightNarrativeClaims(snapshot, lang) {
+		// B1 does not paraphrase ordinary current-context cards. Present their
+		// server text as factual instead of showing an artificial "updating"
+		// state or spending a provider request that cannot add a permitted claim.
 		aiCfg = storage.AIConfig{}
 	}
 	materialHash := health.DailyInsightMaterialHash(snapshot)
@@ -1671,7 +1746,7 @@ func (h *Handler) todayInsights(w http.ResponseWriter, r *http.Request) {
 		if err := db.UpsertDailyInsightSnapshot(r.Context(), storage.DailyInsightBundle{
 			Date: snapshot.Date, Lang: lang, MaterialInputHash: materialHash,
 			DecisionID: snapshot.DecisionID, SchemaVersion: health.DailyInsightSnapshotVersion,
-			PolicyVersion: health.DailyInsightPolicyVersion, PromptRevision: health.DailyInsightPromptRevision,
+			PolicyVersion: health.DailyInsightPolicyVersion, PromptRevision: storage.DailyInsightNarrativeStaticRevision(),
 			ProviderFingerprint: providerFingerprint, Snapshot: snapshotPayload,
 		}); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -3071,7 +3146,8 @@ func (h *Handler) adminEnergySettings(w http.ResponseWriter, r *http.Request) {
 
 // adminTodayInsightsConfig is the explicit tenant-scoped rollout gate for
 // Today insights. B0 remains off until canonical-night coverage is reviewed;
-// B1 remains off until its frozen template output is reviewed.
+// B1 remains off until its frozen corpus and review artifact pass the stored
+// quality gate.
 func (h *Handler) adminTodayInsightsConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -3092,28 +3168,126 @@ func (h *Handler) adminTodayInsightsConfig(w http.ResponseWriter, r *http.Reques
 			http.Error(w, "body is empty", http.StatusBadRequest)
 			return
 		}
-		allowed := map[string]bool{
-			storage.SettingTodayInsightsB0Enabled: true,
-			storage.SettingTodayInsightsB1Enabled: true,
-		}
-		toSave := make(map[string]string, len(body))
-		for key, enabled := range body {
-			if !allowed[key] {
-				http.Error(w, "unknown key "+key, http.StatusBadRequest)
-				return
+		activeAIConfig := scope.DB.GetAIConfig(h.mgr.AIDefaultsFor(r.Context(), scope.Schema))
+		b1Approved := storage.TodayInsightsB1ApprovedForConfig(scope.DB, activeAIConfig)
+		toSave, err := todayInsightsConfigSettings(body, b1Approved)
+		if err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, errTodayInsightsB1QualityGateRequired) {
+				status = http.StatusConflict
 			}
-			toSave[key] = strconv.FormatBool(enabled)
+			http.Error(w, err.Error(), status)
+			return
 		}
 		if err := scope.DB.SaveSettings(toSave); err != nil {
 			http.Error(w, "save settings: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 	}
+	b1MatchesActiveAI := h.todayInsightsB1QualityGateMatchesActiveAI(scope.DB, scope.Schema, r.Context())
 	jsonResponse(w, map[string]any{
-		"schema":     scope.Schema,
-		"b0_enabled": storage.TodayInsightsB0Enabled(scope.DB),
-		"b1_enabled": storage.TodayInsightsB1Enabled(scope.DB),
+		"schema":                            scope.Schema,
+		"b0_enabled":                        storage.TodayInsightsB0Enabled(scope.DB),
+		"b1_enabled":                        storage.TodayInsightsB1Enabled(scope.DB) && b1MatchesActiveAI,
+		"b1_quality_gate_approved":          todayInsightsB1QualityGateApproved(scope.DB),
+		"b1_quality_gate_matches_active_ai": b1MatchesActiveAI,
 	})
+}
+
+var errTodayInsightsB1QualityGateRequired = errors.New("B1 cannot be enabled before a passing frozen-corpus quality gate is recorded")
+
+func todayInsightsConfigSettings(body map[string]bool, b1Approved bool) (map[string]string, error) {
+	allowed := map[string]bool{
+		storage.SettingTodayInsightsB0Enabled: true,
+		storage.SettingTodayInsightsB1Enabled: true,
+	}
+	toSave := make(map[string]string, len(body))
+	for key, enabled := range body {
+		if !allowed[key] {
+			return nil, fmt.Errorf("unknown key %s", key)
+		}
+		if key == storage.SettingTodayInsightsB1Enabled && enabled && !b1Approved {
+			return nil, errTodayInsightsB1QualityGateRequired
+		}
+		toSave[key] = strconv.FormatBool(enabled)
+	}
+	return toSave, nil
+}
+
+type todayInsightsB1QualityGateRequest struct {
+	Corpus     ai.DailyInsightNarrativeCorpus           `json:"corpus"`
+	Evaluation ai.DailyInsightNarrativeEvaluationOutput `json:"evaluation"`
+}
+
+// adminTodayInsightsB1QualityGate records a passing review only after the
+// server independently revalidates the frozen corpus, checksum and all three
+// reviewed runs. It stores release metadata, never the corpus or review prose.
+func (h *Handler) adminTodayInsightsB1QualityGate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	scope, scopeErr := h.resolveAdminTenantScope(r)
+	if scopeErr != nil {
+		writeStatusError(w, scopeErr)
+		return
+	}
+	var request todayInsightsB1QualityGateRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		http.Error(w, "invalid JSON quality-gate artifact: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		http.Error(w, "invalid JSON quality-gate artifact: multiple values", http.StatusBadRequest)
+		return
+	}
+	corpusHash, err := ai.DailyInsightNarrativeCorpusHash(request.Corpus)
+	if err != nil {
+		http.Error(w, "validate frozen corpus: "+err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	gate, err := ai.CheckDailyInsightNarrativeQualityGate(request.Corpus, corpusHash, request.Evaluation)
+	if err != nil {
+		http.Error(w, "validate quality-gate review: "+err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	if !gate.Passed {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": "B1 frozen-corpus quality gate did not pass", "quality_gate": gate,
+		})
+		return
+	}
+	identity := ai.DailyInsightNarrativeCurrentReviewIdentity()
+	reasoning, err := storage.TodayInsightsB1QualityGateReasoning(request.Evaluation.Provider, request.Evaluation.Reasoning)
+	if err != nil {
+		http.Error(w, "normalize B1 quality-gate reasoning: "+err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	approval := storage.TodayInsightsB1QualityGateApproval{
+		Version: storage.TodayInsightsB1QualityGateVersion, CorpusHash: corpusHash,
+		Provider: request.Evaluation.Provider, Model: request.Evaluation.Model,
+		Reasoning: reasoning, PromptRevision: identity.PromptRevision,
+		ClaimPacketVersion: identity.ClaimPacketVersion, NarrativeVersion: identity.NarrativeVersion,
+		ReviewFingerprint: identity.Fingerprint, ApprovedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := scope.DB.SaveTodayInsightsB1QualityGateApproval(approval); err != nil {
+		http.Error(w, "save B1 quality-gate approval: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, map[string]any{"schema": scope.Schema, "approval": approval, "quality_gate": gate})
+}
+
+func todayInsightsB1QualityGateApproved(db *storage.DB) bool {
+	_, approved := storage.TodayInsightsB1QualityGateApprovalFor(db)
+	return approved
+}
+
+func (h *Handler) todayInsightsB1QualityGateMatchesActiveAI(db *storage.DB, schema string, ctx context.Context) bool {
+	return storage.TodayInsightsB1ApprovedForConfig(db, db.GetAIConfig(h.mgr.AIDefaultsFor(ctx, schema)))
 }
 
 // adminStressObservability handles GET /api/admin/stress-observability.

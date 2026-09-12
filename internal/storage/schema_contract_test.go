@@ -22,11 +22,11 @@ func TestSchemaContractManifestIsDeterministic(t *testing.T) {
 	if !regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(first) {
 		t.Fatalf("schema contract checksum is not lowercase SHA-256: %q", first)
 	}
-	if want := "d23fa3f265581120a20315d43731d0ae60fd943a3a20c99bc56bc18550482a7b"; first != want {
+	if want := "b6013fa327e505190e7ff8cf6f7485e51c299219c22384c509515f7af6bb49ea"; first != want {
 		t.Fatalf("schema contract checksum = %q, want %q; bump SchemaContractVersion when intentionally changing the manifest", first, want)
 	}
-	if SchemaContractVersion != 9 {
-		t.Fatalf("schema contract version = %d, want 9", SchemaContractVersion)
+	if SchemaContractVersion != 10 {
+		t.Fatalf("schema contract version = %d, want 10", SchemaContractVersion)
 	}
 }
 
@@ -116,12 +116,12 @@ func TestMigrateTenantIdentityMarkerRejectsNonExactAmbiguousOutcome(t *testing.T
 
 func TestSchemaContractManifestDeclaresProvisioningVerifierObjects(t *testing.T) {
 	manifest := SchemaContractManifest()
-	for _, table := range []string{"health_records", "metric_points", "completed_night_sleep", "night_sleep_coverage_commitments", "derived_metrics", "derived_metric_feedback", "auth_sessions"} {
+	for _, table := range []string{"health_records", "metric_points", "completed_night_sleep", "night_sleep_coverage_commitments", "sleep_period_coverage", "completed_sleep_episode", "sleep_goal", "sleep_duration_balance_snapshot", "derived_metrics", "derived_metric_feedback", "auth_sessions"} {
 		if !containsString(manifest.Tables, table) {
 			t.Errorf("manifest does not declare table %q", table)
 		}
 	}
-	for _, index := range []string{"idx_auth_sessions_expires", "idx_health_records_completed_processed_at", "idx_points_quality_metric", "uq_source_epochs_kind_start"} {
+	for _, index := range []string{"idx_auth_sessions_expires", "idx_completed_sleep_episode_wake_start", "idx_health_records_completed_processed_at", "idx_points_quality_metric", "uq_source_epochs_kind_start"} {
 		if !containsString(manifest.Indexes, index) {
 			t.Errorf("manifest does not declare index %q", index)
 		}

@@ -55,6 +55,16 @@ const energyBandsWindowDays = 180
 // before invoking this. Keeping ComputeUserVerdictBands pure means
 // the tests don't need a settings mock.
 func (s *DB) ComputeUserVerdictBands(ctx context.Context) (health.VerdictBands, error) {
+	return s.ComputeUserVerdictBandsThrough(ctx, time.Now().In(s.reportTZLocation()).Format("2006-01-02"))
+}
+
+// ComputeUserVerdictBandsThrough calibrates verdict bands from data that was
+// available no later than throughDate. Historical insight materialization uses
+// this bounded form so later snapshots cannot rewrite an earlier verdict.
+func (s *DB) ComputeUserVerdictBandsThrough(ctx context.Context, throughDate string) (health.VerdictBands, error) {
+	if _, err := time.Parse("2006-01-02", throughDate); err != nil {
+		return health.VerdictBands{}, fmt.Errorf("invalid energy band cutoff date %q: %w", throughDate, err)
+	}
 	cfg := s.GetEnergyConfig()
 	compatibleVersions := compatibleEnergyBandFormulaVersions(cfg)
 	calibrationCutoff, err := s.energyBandCalibrationCutoff(ctx, cfg)
@@ -62,11 +72,11 @@ func (s *DB) ComputeUserVerdictBands(ctx context.Context) (health.VerdictBands, 
 		return health.VerdictBands{}, err
 	}
 
-	latest, err := s.computeVerdictBandsForVersions(ctx, []int{cfg.FormulaVersion}, calibrationCutoff)
+	latest, err := s.computeVerdictBandsForVersions(ctx, []int{cfg.FormulaVersion}, calibrationCutoff, throughDate)
 	if err != nil {
 		return health.VerdictBands{}, err
 	}
-	compatible, err := s.computeVerdictBandsForVersions(ctx, mapKeys(compatibleVersions), calibrationCutoff)
+	compatible, err := s.computeVerdictBandsForVersions(ctx, mapKeys(compatibleVersions), calibrationCutoff, throughDate)
 	if err != nil {
 		return health.VerdictBands{}, err
 	}
@@ -99,7 +109,7 @@ type verdictBandSample struct {
 	n   int
 }
 
-func (s *DB) computeVerdictBandsForVersions(ctx context.Context, versions []int, calibrationCutoff *time.Time) (verdictBandSample, error) {
+func (s *DB) computeVerdictBandsForVersions(ctx context.Context, versions []int, calibrationCutoff *time.Time, throughDate string) (verdictBandSample, error) {
 	if len(versions) == 0 {
 		return verdictBandSample{}, nil
 	}
@@ -107,10 +117,10 @@ func (s *DB) computeVerdictBandsForVersions(ctx context.Context, versions []int,
 	var p20, p50, p80 *float64
 	var n int
 	placeholders := make([]string, len(versions))
-	args := make([]any, 0, len(versions)+1)
-	args = append(args, energyBandsWindowDays)
+	args := make([]any, 0, len(versions)+2)
+	args = append(args, energyBandsWindowDays, throughDate)
 	for i, version := range versions {
-		placeholders[i] = fmt.Sprintf("$%d", i+2)
+		placeholders[i] = fmt.Sprintf("$%d", i+3)
 		args = append(args, version)
 	}
 	cutoffClause := ""
@@ -139,7 +149,8 @@ func (s *DB) computeVerdictBandsForVersions(ctx context.Context, versions []int,
 					ORDER BY ts_bucket DESC, computed_at DESC, formula_version DESC, bank DESC
 				) AS rn
 			FROM energy_snapshots
-			WHERE date >= (CURRENT_DATE - make_interval(days => $1))::text
+			WHERE date >= ($2::date - make_interval(days => $1))::text
+			  AND date <= $2
 			  AND NOT ('imputed_sleep' = ANY(flags))
 			  AND NOT ('imputed_activity' = ANY(flags))
 			  AND NOT ('bootstrap_tail' = ANY(flags))

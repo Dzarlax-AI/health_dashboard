@@ -289,8 +289,16 @@ func (s *DB) SaveCompletedNightSleep(ctx context.Context, night health.Completed
 	return err
 }
 
+type completedNightSleepQueryer interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
 func (s *DB) ListCompletedNightSleep(ctx context.Context, fromDate, throughDate string) ([]health.CompletedNightSleep, error) {
-	rows, err := s.pool.Query(ctx, `
+	return listCompletedNightSleep(ctx, s.pool, fromDate, throughDate)
+}
+
+func listCompletedNightSleep(ctx context.Context, queryer completedNightSleepQueryer, fromDate, throughDate string) ([]health.CompletedNightSleep, error) {
+	rows, err := queryer.Query(ctx, `
 		SELECT wake_date,duration_hours,source,source_epoch,input_hash,capture_completeness,
 		       duration_assessment,finalization_state,claim_eligibility,
 		       COALESCE(coverage_generation,''),covered_interval_start,covered_interval_end,

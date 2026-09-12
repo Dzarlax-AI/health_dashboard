@@ -54,7 +54,7 @@ function dataStateLabel(locale: Locale, state: TodayInsightDomain["data_state"])
 
 /** Omits optional interpretation when any card already presents the same fact. */
 function supplementaryObservation(domain: TodayInsightDomain, summaries: ReadonlySet<string>): string | undefined {
-  const observation = domain.insight.observation.trim();
+  const observation = domain.insight.narrative?.text.trim() || domain.insight.observation.trim();
   if (!observation || summaries.has(observation)) {
     return undefined;
   }

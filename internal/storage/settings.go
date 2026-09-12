@@ -1,13 +1,187 @@
 package storage
 
 import (
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"strconv"
+	"strings"
+	"time"
+
+	"health-receiver/internal/ai"
 )
 
 const (
-	SettingTodayInsightsB0Enabled = "today_insights_b0_enabled"
-	SettingTodayInsightsB1Enabled = "today_insights_b1_enabled"
+	SettingTodayInsightsB0Enabled     = "today_insights_b0_enabled"
+	SettingTodayInsightsB1Enabled     = "today_insights_b1_enabled"
+	SettingTodayInsightsB1QualityGate = "today_insights_b1_quality_gate_v2"
+	TodayInsightsB1QualityGateVersion = "today-insights-b1-quality-gate-v2"
 )
+
+// TodayInsightsB1QualityGateApproval is durable, tenant-scoped evidence that
+// the exact reviewed B1 corpus passed the product gate. It intentionally keeps
+// only release metadata: the anonymized corpus and human review notes remain
+// in their external review artifact and are never copied into tenant settings.
+type TodayInsightsB1QualityGateApproval struct {
+	Version            string `json:"version"`
+	CorpusHash         string `json:"corpus_hash"`
+	Provider           string `json:"provider"`
+	Model              string `json:"model"`
+	Reasoning          string `json:"reasoning"`
+	PromptRevision     string `json:"prompt_revision"`
+	ClaimPacketVersion string `json:"claim_packet_version"`
+	NarrativeVersion   string `json:"narrative_version"`
+	ReviewFingerprint  string `json:"review_fingerprint"`
+	ApprovedAt         string `json:"approved_at"`
+}
+
+func ValidateTodayInsightsB1QualityGateApproval(approval TodayInsightsB1QualityGateApproval) error {
+	if approval.Version != TodayInsightsB1QualityGateVersion {
+		return fmt.Errorf("unsupported B1 quality-gate version %q", approval.Version)
+	}
+	if len(approval.CorpusHash) != 64 {
+		return fmt.Errorf("B1 quality-gate corpus hash must be SHA-256")
+	}
+	if _, err := hex.DecodeString(approval.CorpusHash); err != nil {
+		return fmt.Errorf("decode B1 quality-gate corpus hash: %w", err)
+	}
+	if approval.CorpusHash != strings.ToLower(approval.CorpusHash) {
+		return fmt.Errorf("B1 quality-gate corpus hash must be lowercase")
+	}
+	if strings.TrimSpace(approval.Provider) == "" || strings.TrimSpace(approval.Model) == "" {
+		return fmt.Errorf("B1 quality-gate provider and model are required")
+	}
+	canonicalReasoning, err := TodayInsightsB1QualityGateReasoning(approval.Provider, approval.Reasoning)
+	if err != nil {
+		return err
+	}
+	if approval.Reasoning != canonicalReasoning {
+		return fmt.Errorf("B1 quality-gate reasoning must match the provider capability")
+	}
+	if strings.TrimSpace(approval.PromptRevision) == "" || strings.TrimSpace(approval.ClaimPacketVersion) == "" || strings.TrimSpace(approval.NarrativeVersion) == "" {
+		return fmt.Errorf("B1 quality-gate prompt and narrative contract versions are required")
+	}
+	if len(approval.ReviewFingerprint) != 64 {
+		return fmt.Errorf("B1 quality-gate review fingerprint must be SHA-256")
+	}
+	if _, err := hex.DecodeString(approval.ReviewFingerprint); err != nil || approval.ReviewFingerprint != strings.ToLower(approval.ReviewFingerprint) {
+		return fmt.Errorf("B1 quality-gate review fingerprint must be lowercase SHA-256")
+	}
+	if _, err := time.Parse(time.RFC3339, approval.ApprovedAt); err != nil {
+		return fmt.Errorf("parse B1 quality-gate approval time: %w", err)
+	}
+	return nil
+}
+
+// TodayInsightsB1QualityGateReasoning produces the stable review identity for
+// a provider's reasoning setting. Providers without reasoning support must
+// persist an empty value: a UI's stale "none" setting does not affect their
+// output and must not make a valid Gemini review impossible to reuse.
+func TodayInsightsB1QualityGateReasoning(providerID, reasoning string) (string, error) {
+	provider, err := ai.GetProvider(providerID)
+	if err != nil {
+		return "", fmt.Errorf("resolve B1 quality-gate provider: %w", err)
+	}
+	return canonicalTodayInsightsB1Reasoning(provider.Descriptor(), reasoning)
+}
+
+func canonicalTodayInsightsB1Reasoning(descriptor ai.ProviderDescriptor, reasoning string) (string, error) {
+	if !descriptor.SupportsReasoning {
+		return "", nil
+	}
+	reasoning = strings.TrimSpace(reasoning)
+	if reasoning == "" {
+		reasoning = descriptor.DefaultReasoning
+	}
+	if reasoning == "" {
+		return "", fmt.Errorf("B1 quality-gate reasoning is required for provider %q", descriptor.ID)
+	}
+	return reasoning, nil
+}
+
+// ResolveTodayInsightsB1ProviderConfig is the single configuration resolver
+// for B1's review identity, cache fingerprint, and provider request. Keeping
+// these values identical prevents an approval for a provider default from
+// accidentally being reused with a differently normalized runtime request.
+func ResolveTodayInsightsB1ProviderConfig(cfg AIConfig) (ai.Provider, ai.ProviderConfig, error) {
+	provider, err := ai.GetProvider(cfg.Provider)
+	if err != nil {
+		return nil, ai.ProviderConfig{}, fmt.Errorf("resolve B1 provider: %w", err)
+	}
+	descriptor := provider.Descriptor()
+	active := cfg.ActiveSettings()
+	model := strings.TrimSpace(active.Model)
+	if model == "" {
+		model = descriptor.DefaultModel
+	}
+	if model == "" {
+		return nil, ai.ProviderConfig{}, fmt.Errorf("B1 model is required for provider %q", cfg.Provider)
+	}
+	reasoning, err := canonicalTodayInsightsB1Reasoning(descriptor, active.ReasoningEffort)
+	if err != nil {
+		return nil, ai.ProviderConfig{}, err
+	}
+	maxOutputTokens := cfg.MaxOutputTokens
+	if maxOutputTokens <= 0 || maxOutputTokens > ai.DailyInsightMaxTokens {
+		maxOutputTokens = ai.DailyInsightMaxTokens
+	}
+	return provider, ai.ProviderConfig{
+		APIKey:          active.APIKey,
+		Model:           model,
+		ReasoningEffort: reasoning,
+		MaxOutputTokens: maxOutputTokens,
+	}, nil
+}
+
+// TodayInsightsB1QualityGateApproval returns only a validated approval. A
+// malformed or stale-looking setting is fail-closed: the factual Today
+// snapshot remains available but no provider call is allowed.
+func TodayInsightsB1QualityGateApprovalFor(s *DB) (TodayInsightsB1QualityGateApproval, bool) {
+	var approval TodayInsightsB1QualityGateApproval
+	if err := json.Unmarshal([]byte(s.GetSetting(SettingTodayInsightsB1QualityGate, "")), &approval); err != nil {
+		return TodayInsightsB1QualityGateApproval{}, false
+	}
+	if err := ValidateTodayInsightsB1QualityGateApproval(approval); err != nil {
+		return TodayInsightsB1QualityGateApproval{}, false
+	}
+	return approval, true
+}
+
+func (s *DB) SaveTodayInsightsB1QualityGateApproval(approval TodayInsightsB1QualityGateApproval) error {
+	if err := ValidateTodayInsightsB1QualityGateApproval(approval); err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(approval)
+	if err != nil {
+		return fmt.Errorf("encode B1 quality-gate approval: %w", err)
+	}
+	return s.SaveSettings(map[string]string{SettingTodayInsightsB1QualityGate: string(encoded)})
+}
+
+// TodayInsightsB1QualityGateMatchesConfig prevents a review of one model from
+// being silently reused after an Admin changes the active provider, model or
+// reasoning. That change can alter the prose without changing a health fact,
+// so it requires its own frozen-corpus review.
+func TodayInsightsB1QualityGateMatchesConfig(approval TodayInsightsB1QualityGateApproval, cfg AIConfig) bool {
+	if err := ValidateTodayInsightsB1QualityGateApproval(approval); err != nil || !cfg.Enabled() {
+		return false
+	}
+	_, resolved, err := ResolveTodayInsightsB1ProviderConfig(cfg)
+	if err != nil {
+		return false
+	}
+	identity := ai.DailyInsightNarrativeCurrentReviewIdentity()
+	return approval.Provider == cfg.Provider && approval.Model == resolved.Model && approval.Reasoning == resolved.ReasoningEffort &&
+		approval.PromptRevision == identity.PromptRevision &&
+		approval.ClaimPacketVersion == identity.ClaimPacketVersion &&
+		approval.NarrativeVersion == identity.NarrativeVersion &&
+		approval.ReviewFingerprint == identity.Fingerprint
+}
+
+func TodayInsightsB1ApprovedForConfig(s *DB, cfg AIConfig) bool {
+	approval, approved := TodayInsightsB1QualityGateApprovalFor(s)
+	return approved && TodayInsightsB1QualityGateMatchesConfig(approval, cfg)
+}
 
 // TodayInsightsB0Enabled controls only the new canonical sleep claim/action.
 // The factual answer ladder remains available regardless of this flag.
@@ -15,10 +189,15 @@ func TodayInsightsB0Enabled(s *DB) bool {
 	return getSettingBool(s, SettingTodayInsightsB0Enabled, false)
 }
 
-// TodayInsightsB1Enabled is deliberately opt-in: provider framing cannot run
-// before the frozen-snapshot quality review accepts it for a tenant.
+// TodayInsightsB1Enabled is deliberately opt-in and additionally requires a
+// durable approval of the frozen-corpus quality gate. A bare boolean cannot
+// accidentally activate a provider after deployment.
 func TodayInsightsB1Enabled(s *DB) bool {
-	return getSettingBool(s, SettingTodayInsightsB1Enabled, false)
+	if !getSettingBool(s, SettingTodayInsightsB1Enabled, false) {
+		return false
+	}
+	_, approved := TodayInsightsB1QualityGateApprovalFor(s)
+	return approved
 }
 
 // NotifyConfig holds Telegram credentials and per-weekday report schedule.

@@ -139,6 +139,9 @@ func (h *Handler) processAcceptedRecord(db *storage.DB, id int64, body []byte, k
 	for _, coverageErr := range parsed.NightSleepCoverageErr {
 		log.Printf("record %d: ignore invalid night sleep coverage: %v", id, coverageErr)
 	}
+	for _, coverageErr := range parsed.SleepPeriodCoverageErr {
+		log.Printf("record %d: ignore invalid sleep period coverage: %v", id, coverageErr)
+	}
 	// Canonical night sleep is a best-effort derived state. It is never
 	// allowed to delay or fail an accepted raw upload, and it is only fed by
 	// an explicit controlled-adapter coverage commitment.
@@ -152,6 +155,30 @@ func (h *Handler) processAcceptedRecord(db *storage.DB, id int64, body []byte, k
 		}
 		if err := db.ReconcileCompletedNightSleep(context.Background(), commitment.WakeDate, time.Now()); err != nil {
 			log.Printf("record %d: reconcile completed night sleep: %v", id, err)
+		}
+	}
+	// Balance periods are independent from the legacy nightly aggregate. The
+	// storage operation replaces a period atomically, so a late correction
+	// cannot leave an old nap mixed with a new night. Failures remain best-effort
+	// derived-state failures and never turn an accepted upload into a rejection.
+	for _, coverage := range parsed.SleepPeriodCoverage {
+		changed, err := db.ApplySleepPeriodSnapshot(context.Background(), coverage, parsed.CompletedSleepEpisodes[coverage.WakeDate])
+		if err != nil {
+			log.Printf("record %d: apply sleep period snapshot: %v", id, err)
+			continue
+		}
+		if !changed {
+			continue
+		}
+		through, err := db.LatestSleepPeriodCoverageDate(context.Background())
+		if err != nil || through == "" {
+			if err != nil {
+				log.Printf("record %d: find latest sleep period coverage: %v", id, err)
+			}
+			continue
+		}
+		if err := db.ReconcileSleepDurationBalancesAfter(context.Background(), coverage.WakeDate, through, time.Now()); err != nil {
+			log.Printf("record %d: reconcile sleep duration balances: %v", id, err)
 		}
 	}
 	err = db.SetHealthRecordProcessing(id, "complete", nil)
@@ -485,7 +512,9 @@ type payload struct {
 			Units string            `json:"units"`
 			Data  []json.RawMessage `json:"data"`
 		} `json:"metrics"`
-		NightSleepCoverage []nightSleepCoveragePayload `json:"night_sleep_coverage"`
+		NightSleepCoverage     []nightSleepCoveragePayload    `json:"night_sleep_coverage"`
+		SleepPeriodCoverage    []sleepPeriodCoveragePayload   `json:"sleep_period_coverage"`
+		CompletedSleepEpisodes []completedSleepEpisodePayload `json:"completed_sleep_episodes"`
 	} `json:"data"`
 }
 
@@ -504,10 +533,39 @@ type nightSleepCoveragePayload struct {
 	CoveredIntervalEnd   string `json:"covered_interval_end"`
 }
 
+// sleepPeriodCoveragePayload closes one complete tenant-local noon-to-noon
+// accounting window. It is intentionally not tied to a particular wearable
+// source or metric point: an empty complete period means no observed sleep,
+// while an absent period remains unknown.
+type sleepPeriodCoveragePayload struct {
+	WakeDate             string `json:"wake_date"`
+	SourceEpoch          string `json:"source_epoch"`
+	CaptureCompleteness  string `json:"capture_completeness"`
+	CoverageGeneration   string `json:"sync_generation"`
+	CoveredIntervalStart string `json:"covered_interval_start"`
+	CoveredIntervalEnd   string `json:"covered_interval_end"`
+}
+
+// completedSleepEpisodePayload carries an exact, source-selected asleep
+// interval. The server derives its identity/hash and accepts it only beside
+// the same payload's complete period coverage, never as a free-standing
+// client assertion.
+type completedSleepEpisodePayload struct {
+	WakeDate           string `json:"wake_date"`
+	Start              string `json:"start"`
+	End                string `json:"end"`
+	Source             string `json:"source"`
+	SourceEpoch        string `json:"source_epoch"`
+	CoverageGeneration string `json:"sync_generation"`
+}
+
 type parsedMetricPayload struct {
-	Points                []storage.MetricPoint
-	NightSleepCoverage    []storage.NightSleepCoverageCommitment
-	NightSleepCoverageErr []error
+	Points                 []storage.MetricPoint
+	NightSleepCoverage     []storage.NightSleepCoverageCommitment
+	NightSleepCoverageErr  []error
+	SleepPeriodCoverage    []storage.SleepPeriodCoverageCommitment
+	SleepPeriodCoverageErr []error
+	CompletedSleepEpisodes map[string][]storage.CompletedSleepEpisodeCommitment
 }
 
 type basePoint struct {
@@ -546,7 +604,27 @@ func parseMetricPayload(body []byte) (parsedMetricPayload, error) {
 		// attestation is malformed or does not bind exactly.
 		validCoverage = append(validCoverage, commitment)
 	}
-	return parsedMetricPayload{Points: points, NightSleepCoverage: validCoverage, NightSleepCoverageErr: coverageErrs}, nil
+	periodCoverage, periodErr := parseSleepPeriodCoverage(p.Data.SleepPeriodCoverage)
+	periodCoverageErrs := make([]error, 0, 1)
+	episodes := make(map[string][]storage.CompletedSleepEpisodeCommitment)
+	if periodErr != nil {
+		periodCoverageErrs = append(periodCoverageErrs, periodErr)
+	} else {
+		var episodesErr error
+		episodes, episodesErr = parseCompletedSleepEpisodes(p.Data.CompletedSleepEpisodes, periodCoverage)
+		if episodesErr != nil {
+			// A rejected episode must not be turned into an empty complete
+			// period: that could erase a prior valid snapshot on reconciliation.
+			periodCoverage = nil
+			episodes = make(map[string][]storage.CompletedSleepEpisodeCommitment)
+			periodCoverageErrs = append(periodCoverageErrs, episodesErr)
+		}
+	}
+	return parsedMetricPayload{
+		Points: points, NightSleepCoverage: validCoverage, NightSleepCoverageErr: coverageErrs,
+		SleepPeriodCoverage: periodCoverage, SleepPeriodCoverageErr: periodCoverageErrs,
+		CompletedSleepEpisodes: episodes,
+	}, nil
 }
 
 func parseNightSleepCoverage(raw []nightSleepCoveragePayload) ([]storage.NightSleepCoverageCommitment, []error) {
@@ -598,6 +676,81 @@ func containsCommittedNightPoint(points []storage.MetricPoint, commitment storag
 		}
 	}
 	return false
+}
+
+func parseSleepPeriodCoverage(raw []sleepPeriodCoveragePayload) ([]storage.SleepPeriodCoverageCommitment, error) {
+	commitments := make([]storage.SleepPeriodCoverageCommitment, 0, len(raw))
+	seen := make(map[string]struct{}, len(raw))
+	for _, item := range raw {
+		if _, err := time.Parse("2006-01-02", item.WakeDate); err != nil {
+			return nil, fmt.Errorf("sleep period coverage wake date: %w", err)
+		}
+		if _, duplicate := seen[item.WakeDate]; duplicate {
+			return nil, fmt.Errorf("duplicate sleep period coverage for %s", item.WakeDate)
+		}
+		if strings.TrimSpace(item.SourceEpoch) == "" || strings.TrimSpace(item.CoverageGeneration) == "" {
+			return nil, fmt.Errorf("sleep period coverage requires source epoch and sync generation")
+		}
+		if item.CaptureCompleteness != health.SleepBalanceCoverageComplete {
+			return nil, fmt.Errorf("sleep period coverage must be complete")
+		}
+		start, err := time.Parse(time.RFC3339, item.CoveredIntervalStart)
+		if err != nil {
+			return nil, fmt.Errorf("sleep period coverage start: %w", err)
+		}
+		end, err := time.Parse(time.RFC3339, item.CoveredIntervalEnd)
+		if err != nil {
+			return nil, fmt.Errorf("sleep period coverage end: %w", err)
+		}
+		if !end.After(start) {
+			return nil, fmt.Errorf("sleep period coverage interval must be positive")
+		}
+		material := strings.Join([]string{item.WakeDate, item.SourceEpoch, item.CaptureCompleteness, item.CoverageGeneration, start.UTC().Format(time.RFC3339Nano), end.UTC().Format(time.RFC3339Nano)}, "\x1f")
+		commitments = append(commitments, storage.SleepPeriodCoverageCommitment{
+			WakeDate: item.WakeDate, SourceEpoch: item.SourceEpoch, CaptureCompleteness: item.CaptureCompleteness,
+			CoverageGeneration: item.CoverageGeneration, CoveredIntervalStart: start, CoveredIntervalEnd: end,
+			ObservedAt: time.Now().UTC(), InputHash: fmt.Sprintf("%x", sha256.Sum256([]byte(material))),
+		})
+		seen[item.WakeDate] = struct{}{}
+	}
+	return commitments, nil
+}
+
+func parseCompletedSleepEpisodes(raw []completedSleepEpisodePayload, coverage []storage.SleepPeriodCoverageCommitment) (map[string][]storage.CompletedSleepEpisodeCommitment, error) {
+	byWakeDate := make(map[string]storage.SleepPeriodCoverageCommitment, len(coverage))
+	for _, item := range coverage {
+		byWakeDate[item.WakeDate] = item
+	}
+	result := make(map[string][]storage.CompletedSleepEpisodeCommitment, len(coverage))
+	for _, item := range raw {
+		period, found := byWakeDate[item.WakeDate]
+		if !found {
+			return nil, fmt.Errorf("completed sleep episode has no matching complete period coverage")
+		}
+		if strings.TrimSpace(item.Source) == "" || strings.TrimSpace(item.SourceEpoch) == "" || strings.TrimSpace(item.CoverageGeneration) == "" {
+			return nil, fmt.Errorf("completed sleep episode requires source, source epoch, and sync generation")
+		}
+		if item.SourceEpoch != period.SourceEpoch || item.CoverageGeneration != period.CoverageGeneration {
+			return nil, fmt.Errorf("completed sleep episode does not match period coverage generation")
+		}
+		start, err := time.Parse(time.RFC3339, item.Start)
+		if err != nil {
+			return nil, fmt.Errorf("completed sleep episode start: %w", err)
+		}
+		end, err := time.Parse(time.RFC3339, item.End)
+		if err != nil {
+			return nil, fmt.Errorf("completed sleep episode end: %w", err)
+		}
+		material := strings.Join([]string{item.WakeDate, item.Source, item.SourceEpoch, item.CoverageGeneration, start.UTC().Format(time.RFC3339Nano), end.UTC().Format(time.RFC3339Nano)}, "\x1f")
+		hash := fmt.Sprintf("%x", sha256.Sum256([]byte(material)))
+		result[item.WakeDate] = append(result[item.WakeDate], storage.CompletedSleepEpisodeCommitment{
+			EpisodeID: hash, WakeDate: item.WakeDate, Start: start, End: end, Source: item.Source,
+			SourceEpoch: item.SourceEpoch, InputHash: hash, CoverageGeneration: item.CoverageGeneration,
+			CaptureState: health.SleepBalanceCoverageComplete, DurationAssessment: health.NightDurationPlausible,
+			ObservedAt: period.ObservedAt,
+		})
+	}
+	return result, nil
 }
 
 // filterImpossible drops points whose values fall outside the configured

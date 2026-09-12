@@ -70,6 +70,17 @@ func TestNextCheckinStatus(t *testing.T) {
 	}
 }
 
+func TestHistoricalCheckinScenarioDoesNotExposeAnswerState(t *testing.T) {
+	if got := historicalCheckinScenario(CheckinStatusAnswered); got != "answered" {
+		t.Fatalf("answered scenario = %q", got)
+	}
+	for _, status := range []string{"", CheckinStatusPrompted, CheckinStatusExpired, CheckinStatusLateAnswered, "unexpected"} {
+		if got := historicalCheckinScenario(status); got != "absent" {
+			t.Errorf("status %q scenario = %q, want absent", status, got)
+		}
+	}
+}
+
 func TestValidateAnswer(t *testing.T) {
 	for _, ans := range []string{CheckinAnswerGreat, CheckinAnswerOK, CheckinAnswerMeh, CheckinAnswerSick} {
 		if err := ValidateCheckinAnswer(ans); err != nil {

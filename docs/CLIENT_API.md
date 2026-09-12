@@ -129,14 +129,43 @@ sleep card or `daily_scores.sleep_total`. Its optional `next_step` with ID
 daily decision or authorize an AI provider to create another action.
 
 AI framing for Today Insights is separately opt-in (`today_insights_b1_enabled`)
-and disabled by default. A provider outage, invalid response or disabled flag
-never removes the deterministic server explanation.
+and disabled by default. It additionally requires a tenant-scoped record of a
+passing frozen-corpus quality gate; a bare boolean cannot activate a provider.
+A provider outage, invalid response or disabled flag never removes the
+deterministic server explanation.
+
+When B1 is enabled and a domain-specific provider response passes validation,
+the corresponding `domains[].insight` may additionally contain:
+
+```json
+"narrative": {
+  "text": "A short, evidence-grounded explanation.",
+  "claim_ids": ["server_claim_id"],
+  "evidence_ids": ["server_evidence_id"]
+}
+```
+
+This overlay is optional and applies only to Sleep, Recovery, or Energy. It
+does not replace the server-owned `observation`, `meaning`, `next_step`,
+evidence, or data state. Clients may prefer non-empty `narrative.text` for
+presentation, but must fall back to `observation` and `meaning` when it is
+absent. Clients must not interpret its prose as a new claim or construct an
+action from it.
 
 Admins inspect or change these tenant-scoped rollout gates through
 `GET`/`POST /api/admin/today-insights/config`; the POST body may contain only
 the boolean keys `today_insights_b0_enabled` and
 `today_insights_b1_enabled`. Enabling a gate is an operator decision after
-coverage or output review, never an automatic side effect of deployment.
+coverage or output review, never an automatic side effect of deployment. B1
+returns `409 Conflict` until an admin submits a reviewed corpus/evaluation
+artifact to `POST /api/admin/today-insights/b1-quality-gate`; the server
+independently revalidates its canonical checksum, three runs and quality rule,
+then persists only the approval metadata. `GET /api/admin/today-insights/config`
+also exposes `b1_quality_gate_approved`.
+It also exposes `b1_quality_gate_matches_active_ai`: changing the active
+provider, model, reasoning, B1 prompt, response schema, or claim-packet
+contract makes B1 ineffective until that exact configuration has a newly
+recorded quality gate.
 
 ## Dates, timestamps, and units
 

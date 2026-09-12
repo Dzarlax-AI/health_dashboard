@@ -1254,6 +1254,79 @@ a.today-insights__domain:hover {
   font-size: clamp(var(--text-xl), 3vw, var(--text-3xl));
 }
 
+.sleep-balance {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.sleep-balance p {
+  margin: 0;
+  color: var(--text-secondary);
+  max-width: 70ch;
+}
+
+.sleep-balance__goal {
+  color: var(--text-primary) !important;
+  font-weight: 650;
+}
+
+.sleep-balance small {
+  color: var(--text-muted);
+}
+
+.sleep-balance__form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+
+.sleep-balance__form label {
+  display: grid;
+  gap: var(--space-1);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+.sleep-balance__form input {
+  width: 7rem;
+  min-height: 2.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  color: var(--text-primary);
+  font: inherit;
+  padding: 0 var(--space-3);
+}
+
+.sleep-balance__form input[type="date"] {
+  width: 10.5rem;
+}
+
+.sleep-balance__form button {
+  min-height: 2.75rem;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: var(--accent-foreground);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 650;
+  padding: 0 var(--space-4);
+}
+
+.sleep-balance__form button:disabled,
+.sleep-balance__form input:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.sleep-balance__form > p {
+  flex-basis: 100%;
+  color: var(--danger) !important;
+}
+
 .sleep-section__title > strong {
   font-size: var(--text-2xl);
 }

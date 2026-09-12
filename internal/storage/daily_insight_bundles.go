@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"time"
 
 	"health-receiver/internal/ai"
@@ -187,42 +188,19 @@ func (s *DB) RefreshTodayInsightSnapshot(ctx context.Context, lang string) (*hea
 	return s.RefreshTodayInsightSnapshotWithConfig(ctx, lang, AIConfig{})
 }
 
-// DailyInsightGenerationFingerprint is a secret-free fingerprint of every
-// output-affecting generation setting. It deliberately includes the
-// server-owned policy/action revisions and language, but never the API key.
-func DailyInsightGenerationFingerprint(cfg AIConfig, lang string) string {
-	if !cfg.Enabled() {
-		return "disabled|" + lang + "|" + health.DailyInsightSnapshotVersion + "|" + health.DailyInsightPolicyVersion + "|" + health.DailyInsightActionCatalogVersion
+// BuildTodayInsightSnapshot is the single factual builder for both the
+// request path and background derived-state refresh. B0 is deliberately
+// applied here, before a bundle is fingerprinted or a B1 worker can see it:
+// otherwise the background worker would persist a claim-less snapshot while a
+// browser request constructed a different, B0-enriched one for the same day.
+//
+// Canonical-night lookup is additive. A transient read failure must not make
+// the whole Today response unavailable; it leaves the deterministic factual
+// answer ladder intact and logs the missing optional claim for operators.
+func (s *DB) BuildTodayInsightSnapshot(ctx context.Context, lang string, now time.Time) (*health.DailyInsightSnapshot, error) {
+	if now.IsZero() {
+		now = time.Now()
 	}
-	provider, err := ai.GetProvider(cfg.Provider)
-	model := cfg.ActiveSettings().Model
-	reasoning := cfg.ActiveSettings().ReasoningEffort
-	if err == nil {
-		descriptor := provider.Descriptor()
-		if model == "" {
-			model = descriptor.DefaultModel
-		}
-		if reasoning == "" {
-			reasoning = descriptor.DefaultReasoning
-		}
-	}
-	maxTokens := cfg.MaxOutputTokens
-	if maxTokens <= 0 || maxTokens > ai.DailyInsightMaxTokens {
-		maxTokens = ai.DailyInsightMaxTokens
-	}
-	return ai.HashForGeneration("", ai.GenerationFingerprint{
-		Provider:        cfg.Provider,
-		Model:           model,
-		ReasoningEffort: reasoning,
-		MaxOutputTokens: maxTokens,
-		PromptRevision:  health.DailyInsightPromptRevision + "|" + health.DailyInsightSnapshotVersion + "|" + health.DailyInsightPolicyVersion + "|" + health.DailyInsightActionCatalogVersion + "|" + lang,
-	})
-}
-
-// RefreshTodayInsightSnapshotWithConfig creates the factual side of the
-// bundle and records the generation fingerprint alongside it. This keeps a
-// provider/model/policy change from serving a narrative made for old rules.
-func (s *DB) RefreshTodayInsightSnapshotWithConfig(ctx context.Context, lang string, aiCfg AIConfig) (*health.DailyInsightSnapshot, error) {
 	briefing, err := s.GetHealthBriefing(lang)
 	if err != nil {
 		return nil, err
@@ -230,6 +208,58 @@ func (s *DB) RefreshTodayInsightSnapshotWithConfig(ctx context.Context, lang str
 	snapshot := health.BuildDailyInsightSnapshot(briefing, lang)
 	if snapshot == nil {
 		return nil, errors.New("today insight snapshot unavailable")
+	}
+	// Today Insights is intentionally today-only. Do not attach an action or a
+	// finalized claim to a stale dashboard frame while ingestion is catching up.
+	if snapshot.Date != s.Today() || !TodayInsightsB0Enabled(s) {
+		return snapshot, nil
+	}
+	claim, claimErr := s.EvaluateRecentSleepBelowReference(ctx, snapshot.Date, now)
+	if claimErr != nil {
+		log.Printf("today insights: evaluate canonical sleep claim: %v", claimErr)
+		return snapshot, nil
+	}
+	return health.ApplyRecentSleepBelowReference(snapshot, claim, lang), nil
+}
+
+// DailyInsightGenerationFingerprint is a secret-free fingerprint of every
+// output-affecting generation setting. It deliberately includes the
+// server-owned policy/action revisions and language, but never the API key.
+func DailyInsightGenerationFingerprint(cfg AIConfig, lang string) string {
+	if !cfg.Enabled() {
+		return "disabled|" + lang + "|" + health.DailyInsightSnapshotVersion + "|" + health.DailyInsightPolicyVersion + "|" + health.DailyInsightActionCatalogVersion
+	}
+	_, resolved, err := ResolveTodayInsightsB1ProviderConfig(cfg)
+	if err != nil {
+		// An invalid provider can never pass the B1 approval gate, but retain a
+		// deterministic fingerprint for this disabled/rejected configuration.
+		active := cfg.ActiveSettings()
+		resolved = ai.ProviderConfig{
+			APIKey: active.APIKey, Model: active.Model, ReasoningEffort: active.ReasoningEffort,
+			MaxOutputTokens: ai.DailyInsightMaxTokens,
+		}
+	}
+	identity := ai.DailyInsightNarrativeCurrentReviewIdentity()
+	return ai.HashForGeneration("", ai.GenerationFingerprint{
+		Provider:        cfg.Provider,
+		Model:           resolved.Model,
+		ReasoningEffort: resolved.ReasoningEffort,
+		MaxOutputTokens: resolved.MaxOutputTokens,
+		// The literal B1 prompt/schema fingerprint must invalidate cached prose
+		// together with the model and claim-packet versions. The durable gate
+		// already fails closed on the same identity; retaining it here prevents
+		// an old narrative from surviving a static-contract edit.
+		PromptRevision: identity.PromptRevision + "|" + identity.Fingerprint + "|" + health.DailyInsightSnapshotVersion + "|" + health.DailyInsightPolicyVersion + "|" + health.DailyInsightActionCatalogVersion + "|" + lang,
+	})
+}
+
+// RefreshTodayInsightSnapshotWithConfig creates the factual side of the
+// bundle and records the generation fingerprint alongside it. This keeps a
+// provider/model/policy change from serving a narrative made for old rules.
+func (s *DB) RefreshTodayInsightSnapshotWithConfig(ctx context.Context, lang string, aiCfg AIConfig) (*health.DailyInsightSnapshot, error) {
+	snapshot, err := s.BuildTodayInsightSnapshot(ctx, lang, time.Now())
+	if err != nil {
+		return nil, err
 	}
 	payload, err := json.Marshal(snapshot)
 	if err != nil {
@@ -242,13 +272,21 @@ func (s *DB) RefreshTodayInsightSnapshotWithConfig(ctx context.Context, lang str
 		DecisionID:          snapshot.DecisionID,
 		SchemaVersion:       health.DailyInsightSnapshotVersion,
 		PolicyVersion:       health.DailyInsightPolicyVersion,
-		PromptRevision:      health.DailyInsightPromptRevision,
+		PromptRevision:      DailyInsightNarrativeStaticRevision(),
 		ProviderFingerprint: DailyInsightGenerationFingerprint(aiCfg, lang),
 		Snapshot:            payload,
 	}); err != nil {
 		return nil, err
 	}
 	return snapshot, nil
+}
+
+// DailyInsightNarrativeStaticRevision is persisted with a factual bundle and
+// exposed to the HTTP writer so every lifecycle path records the same exact
+// literal prompt/schema/claim-contract identity.
+func DailyInsightNarrativeStaticRevision() string {
+	identity := ai.DailyInsightNarrativeCurrentReviewIdentity()
+	return identity.PromptRevision + "|" + identity.Fingerprint
 }
 
 // ClaimDailyInsightGeneration leases one exact snapshot/config generation and

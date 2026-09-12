@@ -83,4 +83,30 @@ describe("TodayInsights", () => {
 
     expect(screen.getAllByText("Energy is available")).toHaveLength(1);
   });
+
+  it("renders a validated domain narrative in preference to the factual fallback", () => {
+    const withNarrative: TodayInsightsResponse = {
+      ...response,
+      domains: response.domains?.map((domain) =>
+        domain.key === "sleep"
+          ? {
+              ...domain,
+              insight: {
+                ...domain.insight,
+                narrative: {
+                  claim_ids: ["recent_sleep_below_reference"],
+                  evidence_ids: ["sleep"],
+                  text: "This is a calmer reading of the sleep context.",
+                },
+              },
+            }
+          : domain,
+      ) ?? null,
+    };
+
+    render(<TodayInsights locale="en" todayInsights={withNarrative} />);
+
+    expect(screen.getByText("This is a calmer reading of the sleep context.")).toBeInTheDocument();
+    expect(screen.queryByText("You slept well.")).not.toBeInTheDocument();
+  });
 });

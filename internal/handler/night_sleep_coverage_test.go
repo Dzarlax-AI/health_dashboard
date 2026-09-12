@@ -1,6 +1,9 @@
 package handler
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseMetricPayloadParsesBoundNightSleepCoverage(t *testing.T) {
 	parsed, err := parseMetricPayload([]byte(`{
@@ -50,6 +53,76 @@ func TestParseMetricPayloadKeepsMetricsWhenCoverageDoesNotBind(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(parsed.Points) != 1 || len(parsed.NightSleepCoverage) != 0 || len(parsed.NightSleepCoverageErr) != 1 {
+		t.Fatalf("parsed payload = %#v", parsed)
+	}
+}
+
+func TestParseMetricPayloadBindsCompletedEpisodesToCompletePeriodCoverage(t *testing.T) {
+	parsed, err := parseMetricPayload([]byte(`{
+		"data": {
+			"sleep_period_coverage": [{
+				"wake_date":"2026-09-10","source_epoch":"health-sync-ios-v1","capture_completeness":"complete","sync_generation":"period-42",
+				"covered_interval_start":"2026-09-09T10:00:00Z","covered_interval_end":"2026-09-10T10:00:00Z"
+			}],
+			"completed_sleep_episodes": [{
+				"wake_date":"2026-09-10","start":"2026-09-09T22:00:00Z","end":"2026-09-10T06:00:00Z","source":"Apple Watch",
+				"source_epoch":"health-sync-ios-v1","sync_generation":"period-42"
+			}]
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.SleepPeriodCoverage) != 1 || len(parsed.CompletedSleepEpisodes["2026-09-10"]) != 1 {
+		t.Fatalf("parsed period payload = %#v", parsed)
+	}
+	episode := parsed.CompletedSleepEpisodes["2026-09-10"][0]
+	if episode.InputHash == "" || episode.EpisodeID == "" || episode.CoverageGeneration != "period-42" {
+		t.Fatalf("episode did not receive server identity: %#v", episode)
+	}
+}
+
+func TestParseMetricPayloadKeepsCompleteEmptySleepPeriod(t *testing.T) {
+	parsed, err := parseMetricPayload([]byte(`{
+		"data": {
+			"metrics": [],
+			"sleep_period_coverage": [{
+				"wake_date":"2026-09-10","source_epoch":"health-sync-ios-v1","capture_completeness":"complete","sync_generation":"empty-period-42",
+				"covered_interval_start":"2026-09-09T10:00:00Z","covered_interval_end":"2026-09-10T10:00:00Z"
+			}],
+			"completed_sleep_episodes": []
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Points) != 0 || len(parsed.SleepPeriodCoverage) != 1 {
+		t.Fatalf("parsed empty period payload = %#v", parsed)
+	}
+	if episodes, found := parsed.CompletedSleepEpisodes["2026-09-10"]; found || len(episodes) != 0 {
+		t.Fatalf("empty period unexpectedly has episodes: %#v", parsed.CompletedSleepEpisodes)
+	}
+}
+
+func TestParseMetricPayloadKeepsMetricsWhenEpisodeDoesNotMatchCoverageGeneration(t *testing.T) {
+	parsed, err := parseMetricPayload([]byte(`{
+		"data": {
+			"metrics": [{"name":"step_count","units":"count","data":[{"date":"2026-09-10T07:00:00Z","source":"Apple Watch","qty":42}]}],
+			"sleep_period_coverage": [{
+				"wake_date":"2026-09-10","source_epoch":"health-sync-ios-v1","capture_completeness":"complete","sync_generation":"period-42",
+				"covered_interval_start":"2026-09-09T10:00:00Z","covered_interval_end":"2026-09-10T10:00:00Z"
+			}],
+			"completed_sleep_episodes": [{
+				"wake_date":"2026-09-10","start":"2026-09-09T22:00:00Z","end":"2026-09-10T06:00:00Z","source":"Apple Watch",
+				"source_epoch":"health-sync-ios-v1","sync_generation":"other-generation"
+			}]
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Points) != 1 || len(parsed.SleepPeriodCoverage) != 0 || len(parsed.SleepPeriodCoverageErr) != 1 ||
+		!strings.Contains(parsed.SleepPeriodCoverageErr[0].Error(), "does not match period coverage generation") {
 		t.Fatalf("parsed payload = %#v", parsed)
 	}
 }

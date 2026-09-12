@@ -1689,6 +1689,153 @@
         ],
         "type": "object"
       },
+      "SleepDurationBalanceResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "balance_hours": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "calculated_through": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "confidence": {
+            "enum": [
+              "normal",
+              "low"
+            ],
+            "type": "string"
+          },
+          "incomplete_reason": {
+            "type": "string"
+          },
+          "last_complete_date": {
+            "type": "string"
+          },
+          "periods": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "capture_state": {
+                  "type": "string"
+                },
+                "delta_hours": {
+                  "type": "number"
+                },
+                "duration_assessment": {
+                  "type": "string"
+                },
+                "end": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "goal_hours": {
+                  "type": "number"
+                },
+                "start": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "total_sleep_hours": {
+                  "type": "number"
+                },
+                "wake_date": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "wake_date",
+                "start",
+                "end",
+                "goal_hours",
+                "total_sleep_hours",
+                "delta_hours",
+                "capture_state",
+                "duration_assessment"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "state": {
+            "enum": [
+              "complete",
+              "incomplete"
+            ],
+            "type": "string"
+          },
+          "wake_date": {
+            "type": "string"
+          },
+          "window_start_date": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "wake_date",
+          "window_start_date",
+          "calculated_through",
+          "state",
+          "confidence",
+          "balance_hours",
+          "periods"
+        ],
+        "type": "object"
+      },
+      "SleepGoalRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "effective_date": {
+            "type": "string"
+          },
+          "goal_hours": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "effective_date",
+          "goal_hours"
+        ],
+        "type": "object"
+      },
+      "SleepGoalResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "goal": {
+            "additionalProperties": false,
+            "properties": {
+              "effective_date": {
+                "type": "string"
+              },
+              "goal_hours": {
+                "type": "number"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "effective_date",
+              "goal_hours",
+              "version"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "goal"
+        ],
+        "type": "object"
+      },
       "TodayInsightsResponse": {
         "additionalProperties": false,
         "properties": {
@@ -1818,6 +1965,38 @@
                     },
                     "meaning": {
                       "type": "string"
+                    },
+                    "narrative": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "claim_ids": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": [
+                            "array",
+                            "null"
+                          ]
+                        },
+                        "evidence_ids": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": [
+                            "array",
+                            "null"
+                          ]
+                        },
+                        "text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "text",
+                        "claim_ids",
+                        "evidence_ids"
+                      ],
+                      "type": "object"
                     },
                     "next_step": {
                       "additionalProperties": false,
@@ -2005,6 +2184,38 @@
               "meaning": {
                 "type": "string"
               },
+              "narrative": {
+                "additionalProperties": false,
+                "properties": {
+                  "claim_ids": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": [
+                      "array",
+                      "null"
+                    ]
+                  },
+                  "evidence_ids": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": [
+                      "array",
+                      "null"
+                    ]
+                  },
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "text",
+                  "claim_ids",
+                  "evidence_ids"
+                ],
+                "type": "object"
+              },
               "next_step": {
                 "additionalProperties": false,
                 "properties": {
@@ -2085,7 +2296,7 @@
   "info": {
     "description": "Tenant-aware read API shared by the web dashboard and native health-sync client. Tenant identity is resolved only from authenticated backend context.",
     "title": "Health Dashboard Client API",
-    "version": "0.3.0"
+    "version": "0.4.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -2843,6 +3054,235 @@
           }
         },
         "summary": "Authenticated browser capabilities"
+      }
+    },
+    "/api/sleep/balance": {
+      "get": {
+        "operationId": "getSleepDurationBalance",
+        "parameters": [
+          {
+            "description": "Optional tenant-local balance wake date in YYYY-MM-DD; defaults to today.",
+            "in": "query",
+            "name": "date",
+            "required": false,
+            "schema": {
+              "format": "date",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SleepDurationBalanceResponse"
+                }
+              }
+            },
+            "description": "Successful tenant-scoped response."
+          },
+          "302": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Browser authentication or initial setup is required; Location identifies the interactive route.",
+            "headers": {
+              "Location": {
+                "description": "Interactive login or setup route.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid date."
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The backend could not load or encode the tenant response."
+          }
+        },
+        "summary": "Transparent fourteen-period sleep-duration accounting relative to a manual goal"
+      }
+    },
+    "/api/sleep/goal": {
+      "get": {
+        "operationId": "getSleepGoal",
+        "parameters": [
+          {
+            "description": "Optional tenant-local date in YYYY-MM-DD; defaults to today.",
+            "in": "query",
+            "name": "date",
+            "required": false,
+            "schema": {
+              "format": "date",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SleepGoalResponse"
+                }
+              }
+            },
+            "description": "Successful tenant-scoped response."
+          },
+          "302": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Browser authentication or initial setup is required; Location identifies the interactive route.",
+            "headers": {
+              "Location": {
+                "description": "Interactive login or setup route.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid date."
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The backend could not load or encode the tenant response."
+          }
+        },
+        "summary": "Effective manual sleep-duration goal"
+      },
+      "put": {
+        "operationId": "putSleepGoal",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SleepGoalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SleepGoalResponse"
+                }
+              }
+            },
+            "description": "Successful tenant-scoped response."
+          },
+          "302": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Browser authentication or initial setup is required; Location identifies the interactive route.",
+            "headers": {
+              "Location": {
+                "description": "Interactive login or setup route.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid effective date or goal hours outside 3 through 14."
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The backend could not update or encode the tenant response."
+          }
+        },
+        "summary": "Set a manual versioned sleep-duration goal"
       }
     },
     "/api/today-insights": {

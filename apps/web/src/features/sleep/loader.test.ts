@@ -8,6 +8,8 @@ import type {
   MetricRangeResponse,
   SectionResponse,
   SessionResponse,
+  SleepDurationBalanceResponse,
+  SleepGoalResponse,
 } from "../../api/client";
 import { loadSleepResources, sleepMetrics, type SleepLoaders } from "./loader";
 
@@ -28,6 +30,8 @@ function loaders(overrides: Partial<SleepLoaders> = {}): SleepLoaders {
     range: vi.fn(async () => ({ min: "2020-01-01", max: "2026-08-05" }) as MetricRangeResponse),
     wake: vi.fn(async () => ({}) as DerivedMetricsResponse),
     session: vi.fn(async () => ({}) as SessionResponse),
+    balance: vi.fn(async () => ({ state: "incomplete", confidence: "normal", wake_date: "2026-08-05", window_start_date: "2026-07-23", calculated_through: "2026-08-05T12:00:00Z", balance_hours: null, periods: [] }) as SleepDurationBalanceResponse),
+    goal: vi.fn(async () => ({ goal: null }) as SleepGoalResponse),
     metric: vi.fn(async (metric) => metricResponse(metric)),
     ...overrides,
   };
@@ -53,6 +57,8 @@ describe("sleep resource loader", () => {
     await loadSleepResources("en", undefined, testLoaders);
 
     expect(testLoaders.range).toHaveBeenCalledWith("sleep_total", undefined);
+    expect(testLoaders.balance).toHaveBeenCalledWith(undefined, "2026-08-05");
+    expect(testLoaders.goal).toHaveBeenCalledWith(undefined, "2026-08-05");
     expect(testLoaders.wake).toHaveBeenCalledWith(
       "wake_time",
       "2020-01-01",
