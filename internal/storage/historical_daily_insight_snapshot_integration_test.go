@@ -79,4 +79,10 @@ func TestHistoricalDailyInsightSnapshotKeepsOtherCandidatesWhenB0TablesAreAbsent
 	if snapshot == nil || snapshot.Date != "2026-09-01" {
 		t.Fatalf("snapshot = %#v", snapshot)
 	}
+	for _, domain := range snapshot.Domains {
+		if domain.Key == "recovery" && domain.Insight.ClaimID != "" {
+			return
+		}
+	}
+	t.Fatalf("snapshot lost its retained non-sleep recovery candidate: %#v", snapshot.Domains)
 }

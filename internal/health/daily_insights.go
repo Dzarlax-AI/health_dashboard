@@ -417,9 +417,27 @@ func localizedOverallNarrativeProposition(locale, mode string) string {
 			return "Сервер выбрал для сегодняшнего дня умеренный режим по доступному контексту."
 		}
 	case "sr":
-		return "Server je izabrao današnji režim na osnovu dostupnog konteksta za danas."
+		switch mode {
+		case "rest":
+			return "Server je za danas izabrao režim odmora na osnovu dostupnog konteksta."
+		case "active_recovery":
+			return "Server je za danas izabrao režim aktivnog oporavka na osnovu dostupnog konteksta."
+		case "push_hard":
+			return "Server je za danas izabrao režim većeg opterećenja na osnovu dostupnog konteksta."
+		default:
+			return "Server je za danas izabrao umeren režim na osnovu dostupnog konteksta."
+		}
 	default:
-		return "The server selected today’s mode from the available context for today."
+		switch mode {
+		case "rest":
+			return "The server selected a rest-oriented mode for today from the available context."
+		case "active_recovery":
+			return "The server selected an active-recovery mode for today from the available context."
+		case "push_hard":
+			return "The server selected a higher-load mode for today from the available context."
+		default:
+			return "The server selected a moderate mode for today from the available context."
+		}
 	}
 }
 
@@ -756,12 +774,12 @@ func ValidateDailyInsightNarrative(snapshot *DailyInsightSnapshot, locale string
 		if candidate.Overall != nil {
 			invalid[DailyInsightNarrativeOverallSlot] = "slot has no eligible claims"
 		}
-	} else if candidate.Overall == nil {
-		invalid[DailyInsightNarrativeOverallSlot] = "missing from provider response"
-	} else if err := validateDailyInsightNarrativeSection(*candidate.Overall, overallInput.Slot); err != nil {
-		invalid[DailyInsightNarrativeOverallSlot] = err.Error()
-	} else {
-		out.Overall = cloneDailyInsightNarrativeSection(*candidate.Overall)
+	} else if candidate.Overall != nil {
+		if err := validateDailyInsightNarrativeSection(*candidate.Overall, overallInput.Slot); err != nil {
+			invalid[DailyInsightNarrativeOverallSlot] = err.Error()
+		} else {
+			out.Overall = cloneDailyInsightNarrativeSection(*candidate.Overall)
+		}
 	}
 	for _, expected := range input.Domains {
 		candidateDomain, found := provided[expected.Key]

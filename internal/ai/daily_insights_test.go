@@ -78,6 +78,28 @@ func TestGenerateDailyInsightNarrativeSlotSendsOnlyOneClosedPacket(t *testing.T)
 	}
 }
 
+func TestDailyInsightNarrativeSlotSchemaUsesStrictObjectKeywords(t *testing.T) {
+	root := dailyInsightNarrativeSlotResponseSchema.Schema
+	rootProperties, ok := root["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("root properties = %#v", root["properties"])
+	}
+	if _, misplaced := rootProperties["required"]; misplaced || root["required"] == nil || root["additionalProperties"] != false {
+		t.Fatalf("root strict schema keywords are misplaced: %#v", root)
+	}
+	slot, ok := rootProperties["slot"].(map[string]any)
+	if !ok {
+		t.Fatalf("slot schema = %#v", rootProperties["slot"])
+	}
+	slotProperties, ok := slot["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("slot properties = %#v", slot["properties"])
+	}
+	if _, misplaced := slotProperties["required"]; misplaced || slot["required"] == nil || slot["additionalProperties"] != false {
+		t.Fatalf("slot strict schema keywords are misplaced: %#v", slot)
+	}
+}
+
 func dailyInsightTestSnapshot(t *testing.T) *health.DailyInsightSnapshot {
 	t.Helper()
 	duration := 7.2

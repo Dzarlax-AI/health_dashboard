@@ -140,13 +140,13 @@ var dailyInsightNarrativeSlotResponseSchema = &ResponseSchema{
 							},
 						},
 					},
-					"required":             []string{"key", "section"},
-					"additionalProperties": false,
 				},
+				"required":             []string{"key", "section"},
+				"additionalProperties": false,
 			},
-			"required":             []string{"version", "locale", "slot"},
-			"additionalProperties": false,
 		},
+		"required":             []string{"version", "locale", "slot"},
+		"additionalProperties": false,
 	},
 }
 
@@ -158,44 +158,6 @@ type DailyInsightNarrativeReviewIdentity struct {
 	ClaimPacketVersion string `json:"claim_packet_version"`
 	NarrativeVersion   string `json:"narrative_version"`
 	Fingerprint        string `json:"fingerprint"`
-}
-
-// legacyDailyInsightNarrativeReviewIdentity documents the superseded coupled
-// bundle contract. It remains available only so legacy tests/tools can decode
-// historical artifacts; it can never authorize the B1 runtime.
-func legacyDailyInsightNarrativeReviewIdentity() DailyInsightNarrativeReviewIdentity {
-	payload := struct {
-		Prompt               string          `json:"prompt"`
-		ResponseSchema       *ResponseSchema `json:"response_schema"`
-		PromptRevision       string          `json:"prompt_revision"`
-		ClaimPacketVersion   string          `json:"claim_packet_version"`
-		NarrativeVersion     string          `json:"narrative_version"`
-		SnapshotVersion      string          `json:"snapshot_version"`
-		PolicyVersion        string          `json:"policy_version"`
-		ActionCatalogVersion string          `json:"action_catalog_version"`
-	}{
-		Prompt:               dailyInsightSystemPrompt,
-		ResponseSchema:       dailyInsightNarrativeResponseSchema,
-		PromptRevision:       DailyInsightNarrativePromptRevision,
-		ClaimPacketVersion:   health.DailyInsightNarrativeInputVersion,
-		NarrativeVersion:     health.DailyInsightNarrativeVersion,
-		SnapshotVersion:      health.DailyInsightSnapshotVersion,
-		PolicyVersion:        health.DailyInsightPolicyVersion,
-		ActionCatalogVersion: health.DailyInsightActionCatalogVersion,
-	}
-	encoded, err := json.Marshal(payload)
-	if err != nil {
-		// The payload is static, fully JSON-serializable Go data. This must
-		// fail closed if a future edit makes its review identity unavailable.
-		panic(fmt.Sprintf("marshal B1 review identity: %v", err))
-	}
-	sum := sha256.Sum256(encoded)
-	return DailyInsightNarrativeReviewIdentity{
-		PromptRevision:     DailyInsightNarrativePromptRevision,
-		ClaimPacketVersion: health.DailyInsightNarrativeInputVersion,
-		NarrativeVersion:   health.DailyInsightNarrativeVersion,
-		Fingerprint:        hex.EncodeToString(sum[:]),
-	}
 }
 
 // DailyInsightNarrativeCurrentReviewIdentity returns the only contract that

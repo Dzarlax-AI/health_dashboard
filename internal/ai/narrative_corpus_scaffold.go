@@ -25,7 +25,7 @@ func BuildDailyInsightNarrativeCorpusScaffold(export DailyInsightNarrativeCandid
 	used := make(map[int]struct{})
 	add := func(predicate func(DailyInsightNarrativeCorpusCase) bool, tags []string, retainCheckin bool) error {
 		for index, candidate := range export.Candidates {
-			if _, exists := used[index]; exists || !predicate(candidate.DailyInsightNarrativeCorpusCase) {
+			if _, exists := used[index]; exists || candidate.PrimaryMeaningID == "" || !predicate(candidate.DailyInsightNarrativeCorpusCase) {
 				continue
 			}
 			item := observedNarrativeCorpusCase(candidate.DailyInsightNarrativeCorpusCase, len(selected)+1, tags, retainCheckin)
@@ -88,19 +88,6 @@ func BuildDailyInsightNarrativeCorpusScaffold(export DailyInsightNarrativeCandid
 		return DailyInsightNarrativeCorpus{}, fmt.Errorf("validate corpus scaffold: %w", err)
 	}
 	return corpus, nil
-}
-
-func hasNarrativeEligibleLocale(items []DailyInsightNarrativeCorpusCase, locale string) bool {
-	for _, item := range items {
-		if item.Locale != locale {
-			continue
-		}
-		snapshot, err := item.SnapshotForEvaluation()
-		if err == nil && health.HasEligibleDailyInsightNarrativeClaims(&snapshot, locale) {
-			return true
-		}
-	}
-	return false
 }
 
 func countCasesMatching(items []DailyInsightNarrativeCorpusCase, predicate func(DailyInsightNarrativeCorpusCase) bool) int {

@@ -291,6 +291,37 @@ func TestDailyInsightNarrativeInputKeepsCanonicalDomainSlotsForPartialSnapshot(t
 	}
 }
 
+func TestOverallNarrativePropositionCarriesDecisionModeAcrossLocales(t *testing.T) {
+	for _, locale := range []string{"en", "ru", "sr"} {
+		moderate := localizedOverallNarrativeProposition(locale, "moderate")
+		for _, mode := range []string{"rest", "active_recovery", "push_hard"} {
+			if got := localizedOverallNarrativeProposition(locale, mode); got == moderate {
+				t.Fatalf("%s proposition does not distinguish %q from moderate: %q", locale, mode, got)
+			}
+		}
+	}
+}
+
+func TestDailyInsightNarrativeBundleDoesNotRequireAnOverallSection(t *testing.T) {
+	snapshot := &DailyInsightSnapshot{
+		DecisionID: "daily-decision", Version: DailyInsightSnapshotVersion,
+		Primary:  DailyInsight{State: "insight", AnswerKind: DailyInsightAnswerFactual, EvidenceIDs: []string{"overall-evidence"}, NextStep: &DailyInsightAction{ID: "moderate"}, NarrativeSubject: "moderate"},
+		Evidence: []DailyInsightEvidence{{ID: "overall-evidence", Domain: "recovery", DataState: "fresh", Confidence: "final"}},
+		Domains: []DailyInsightDomain{
+			{Key: "sleep"},
+			{Key: "recovery", DataState: "fresh", Confidence: "final", Insight: DailyInsight{State: "insight", AnswerKind: DailyInsightAnswerFactual, ClaimID: "recovery_current_context", EvidenceIDs: []string{"overall-evidence"}}},
+			{Key: "energy"},
+		},
+	}
+	_, invalid, err := ValidateDailyInsightNarrative(snapshot, "en", DailyInsightNarrative{
+		Version: DailyInsightNarrativeVersion, Locale: "en",
+		Domains: []DailyInsightNarrativeDomain{{Key: "sleep"}, {Key: "recovery"}, {Key: "energy"}},
+	})
+	if err != nil || invalid[DailyInsightNarrativeOverallSlot] != "" {
+		t.Fatalf("bundle validation unexpectedly required overall: invalid=%#v err=%v", invalid, err)
+	}
+}
+
 func TestDailyInsightNarrativeSlotsKeepSiblingMaterialIndependent(t *testing.T) {
 	duration := 7.2
 	base := BuildDailyInsightSnapshot(&BriefingResponse{

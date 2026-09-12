@@ -417,6 +417,10 @@ func TestBuildDailyInsightNarrativeCorpusScaffoldUsesObservedCoverageAndExplicit
 		item.PrimaryMeaningID = narrativeCorpusPrimaryMeaningForDomain(item.Snapshot.Domains[0])
 		export.Candidates = append(export.Candidates, DailyInsightNarrativeCandidate{DailyInsightNarrativeCorpusCase: item})
 	}
+	invalid := export.Candidates[0]
+	invalid.ID = "candidate-without-primary-meaning"
+	invalid.PrimaryMeaningID = ""
+	export.Candidates = append([]DailyInsightNarrativeCandidate{invalid}, export.Candidates...)
 
 	corpus, err := BuildDailyInsightNarrativeCorpusScaffold(export)
 	if err != nil {
