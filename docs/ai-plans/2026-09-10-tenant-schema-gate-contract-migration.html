@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation Plan: Tenant schema-gate contract migration</title>
+  <style>
+    body { margin: 0; font: 16px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #1f2937; }
+    main { max-width: 980px; margin: auto; padding: 32px; }
+    section { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; margin: 16px 0; padding: 20px; }
+    h1, h2 { line-height: 1.2; }
+    code { background: #f3f4f6; border-radius: 4px; padding: 2px 5px; }
+    .badge { display: inline-block; border-radius: 999px; background: #fef3c7; color: #92400e; font-size: 13px; font-weight: 700; padding: 4px 10px; }
+    .risk { border-left: 4px solid #dc2626; }
+    .approval { border-left: 4px solid #d97706; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Tenant schema-gate contract migration</h1>
+  <p class="badge">Approval required before implementation</p>
+
+  <section>
+    <h2>Task summary</h2>
+    <p>Restore a deployable tenant-schema release path. The production gate correctly detects three active tenants with stale contract metadata, but its migration preflight rejects that expected stale state before attempting any tenant migration.</p>
+  </section>
+
+  <section>
+    <h2>Observed behavior</h2>
+    <p>The read-only production audit reports only contract version/checksum mismatches and the restricted verification result <code>schema_contract_mismatch</code>, with all 36 isolation-denial probes succeeding. <code>prepareContractMigrationFleetSnapshot</code> permits the former findings but rejects the latter. The current verifier uses the same result code for both a stale marker contract and unsafe structural failures such as a missing tenant table, so broad allow-listing would weaken the gate.</p>
+  </section>
+
+  <section>
+    <h2>Desired behavior</h2>
+    <p>A structurally sound active fleet with an allowed older contract may enter the existing stopped-service migration flow. Missing tenant tables, bad identity markers, access violations, changing inventory, and other unsafe conditions must still fail closed. No API, authentication, tenant authorization, or data semantics change is intended.</p>
+  </section>
+
+  <section>
+    <h2>Likely files</h2>
+    <ul>
+      <li><code>internal/tenants/migration.go</code> — distinguish an expected stale contract from a structural contract failure during restricted verification.</li>
+      <li><code>internal/tenants/contract_migration.go</code> — allow only that new, migration-safe finding during fleet preparation.</li>
+      <li><code>internal/tenants/*_test.go</code> — add regressions for accepted stale metadata and rejected missing/unsafe schema conditions.</li>
+      <li><code>docs/ai-plans/2026-09-10-tenant-schema-gate-contract-migration.html</code> — record implementation and release evidence.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation and verification</h2>
+    <ol>
+      <li>Add the narrow stale-contract classification without changing authorization probes or their failure handling.</li>
+      <li>Allow that classification in contract-migration preflight only; retain all other fail-closed paths.</li>
+      <li>Add focused tests for the production-shaped stale contract and for a structurally missing tenant schema.</li>
+      <li>Run focused Go tests, formatting, and the existing disposable-DB tenant audit/migration suite.</li>
+      <li>Commit, open a focused PR, wait for required CI, then deploy via <code>deploy-tenant-schema-gate.sh</code> and verify post-start audit plus a live authenticated dashboard route.</li>
+    </ol>
+  </section>
+
+  <section class="risk">
+    <h2>Risks and rollback</h2>
+    <p>Incorrectly treating all <code>schema_contract_mismatch</code> results as safe could migrate a malformed tenant. The fix therefore introduces a distinct reason and tests the unsafe alternative. Deployment uses the existing gate; it preserves a private recovery snapshot and never rolls back a database automatically. The production database has not been changed by the failed attempts.</p>
+  </section>
+
+  <section>
+    <h2>Open questions</h2>
+    <p>None blocking: the intended scope is limited to preserving the gate's existing contract-transition policy while making its diagnostic classification precise.</p>
+  </section>
+
+  <section class="approval">
+    <h2>Approval gate</h2>
+    <p>Do not modify production code or run a new migration until this plan is explicitly approved.</p>
+  </section>
+</main>
+</body>
+</html>

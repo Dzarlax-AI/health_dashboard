@@ -14,6 +14,15 @@ import (
 // daily_scores cache in a single query. Returns nil if the cache is empty or
 // has no usable rows (cold start).
 func (s *DB) rawMetricsFromDailyScores(lastDate string) *health.RawMetrics {
+	return s.rawMetricsFromDailyScoresAt(lastDate, true)
+}
+
+// rawMetricsFromDailyScoresAt builds the same 30-day cache-backed window for
+// a supplied date. Serving calls it with includeFreshLatest=true so today's
+// cache can be overlaid with newly ingested points. Offline historical review
+// must set it false: reading later raw points would silently change the
+// point-in-time candidate it is trying to evaluate.
+func (s *DB) rawMetricsFromDailyScoresAt(lastDate string, includeFreshLatest bool) *health.RawMetrics {
 	ctx, cancel := queryCtx()
 	defer cancel()
 	rows, err := s.pool.Query(ctx, `
@@ -57,7 +66,10 @@ func (s *DB) rawMetricsFromDailyScores(lastDate string) *health.RawMetrics {
 	// For the most recent day, daily_scores may be stale (backfill hasn't run
 	// yet after a sync). Read fresh values from metric_points directly — they
 	// are always up-to-date (INSERT writes there immediately).
-	freshToday := s.freshDayFromRaw(lastDate)
+	var freshToday *dayRow
+	if includeFreshLatest {
+		freshToday = s.freshDayFromRaw(lastDate)
+	}
 
 	d := &health.RawMetrics{LastDate: lastDate}
 	for i, r := range all {

@@ -16,7 +16,7 @@ import (
 
 const (
 	OpenAPIVersion  = "3.1.0"
-	ContractVersion = "0.3.0"
+	ContractVersion = "0.4.0"
 )
 
 // GenerateOpenAPI builds the canonical public client contract. Route metadata
@@ -26,18 +26,21 @@ const (
 func GenerateOpenAPI() ([]byte, error) {
 	schemas := map[string]any{}
 	for name, value := range map[string]any{
-		"AIBriefingResponse":        AIBriefingResponse{},
-		"DashboardResponse":         storage.DashboardResponse{},
-		"DerivedMetricsResponse":    DerivedMetricsResponse{},
-		"EnergyHistoryDayResponse":  EnergyHistoryDayResponse{},
-		"EnergyHistoryHourResponse": EnergyHistoryHourResponse{},
-		"HealthBriefingResponse":    health.BriefingResponse{},
-		"MetricDataResponse":        MetricDataResponse{},
-		"MetricRangeResponse":       MetricRangeResponse{},
-		"ReadinessHistoryResponse":  ReadinessHistoryResponse{},
-		"SectionResponse":           SectionResponse{},
-		"SessionResponse":           SessionResponse{},
-		"TodayInsightsResponse":     TodayInsightsResponse{},
+		"AIBriefingResponse":           AIBriefingResponse{},
+		"DashboardResponse":            storage.DashboardResponse{},
+		"DerivedMetricsResponse":       DerivedMetricsResponse{},
+		"EnergyHistoryDayResponse":     EnergyHistoryDayResponse{},
+		"EnergyHistoryHourResponse":    EnergyHistoryHourResponse{},
+		"HealthBriefingResponse":       health.BriefingResponse{},
+		"MetricDataResponse":           MetricDataResponse{},
+		"MetricRangeResponse":          MetricRangeResponse{},
+		"ReadinessHistoryResponse":     ReadinessHistoryResponse{},
+		"SectionResponse":              SectionResponse{},
+		"SessionResponse":              SessionResponse{},
+		"SleepDurationBalanceResponse": SleepDurationBalanceResponse{},
+		"SleepGoalRequest":             SleepGoalRequest{},
+		"SleepGoalResponse":            SleepGoalResponse{},
+		"TodayInsightsResponse":        TodayInsightsResponse{},
 	} {
 		schema, err := reflectedSchema(value)
 		if err != nil {
@@ -59,6 +62,8 @@ func GenerateOpenAPI() ([]byte, error) {
 		{"HealthBriefingResponse", []string{"overall"}, []string{"", "good", "fair", "low"}},
 		{"HealthBriefingResponse", []string{"readiness_band"}, []string{"", "optimal", "fair", "low"}},
 		{"HealthBriefingResponse", []string{"readiness_today_band"}, []string{"", "optimal", "fair", "low"}},
+		{"SleepDurationBalanceResponse", []string{"state"}, []string{"complete", "incomplete"}},
+		{"SleepDurationBalanceResponse", []string{"confidence"}, []string{"normal", "low"}},
 	} {
 		if err := setPropertyEnum(schemas[enum.schema], enum.path, enum.values...); err != nil {
 			return nil, fmt.Errorf("schema %s: %w", enum.schema, err)
@@ -84,6 +89,11 @@ func GenerateOpenAPI() ([]byte, error) {
 		}
 	}
 	allowPropertyNull(schemas["HealthBriefingResponse"], "sleep")
+	// Pointer values are encoded as JSON null by the handler. Reflection keeps
+	// the scalar element type but does not retain pointer nullability, so make
+	// this wire behaviour explicit for generated clients.
+	allowPropertyNull(schemas["SleepDurationBalanceResponse"], "balance_hours")
+	allowPropertyNull(schemas["SleepGoalResponse"], "goal")
 
 	doc := map[string]any{
 		"openapi": OpenAPIVersion,
@@ -195,6 +205,27 @@ func clientPaths() map[string]any {
 	todayInsightsOperation["responses"].(map[string]any)["503"] = plainTextResponse(
 		"Current-day source data is not available yet.",
 	)
+	sleepBalanceOperation := getOperation(
+		"getSleepDurationBalance",
+		"Transparent fourteen-period sleep-duration accounting relative to a manual goal",
+		[]any{stringQueryParameter("date", "Optional tenant-local balance wake date in YYYY-MM-DD; defaults to today.")},
+		jsonResponseRef("SleepDurationBalanceResponse"),
+	)
+	sleepBalanceOperation["responses"].(map[string]any)["400"] = jsonErrorResponse("Invalid date.")
+	sleepGoalGetOperation := getOperation(
+		"getSleepGoal",
+		"Effective manual sleep-duration goal",
+		[]any{stringQueryParameter("date", "Optional tenant-local date in YYYY-MM-DD; defaults to today.")},
+		jsonResponseRef("SleepGoalResponse"),
+	)
+	sleepGoalGetOperation["responses"].(map[string]any)["400"] = jsonErrorResponse("Invalid date.")
+	sleepGoalPutOperation := putOperation(
+		"putSleepGoal",
+		"Set a manual versioned sleep-duration goal",
+		"SleepGoalRequest",
+		jsonResponseRef("SleepGoalResponse"),
+	)
+	sleepGoalPutOperation["responses"].(map[string]any)["400"] = jsonErrorResponse("Invalid effective date or goal hours outside 3 through 14.")
 
 	return map[string]any{
 		"/api/dashboard": map[string]any{
@@ -240,6 +271,13 @@ func clientPaths() map[string]any {
 		},
 		"/api/derived-metrics": map[string]any{
 			"get": derivedMetricsOperation,
+		},
+		"/api/sleep/balance": map[string]any{
+			"get": sleepBalanceOperation,
+		},
+		"/api/sleep/goal": map[string]any{
+			"get": sleepGoalGetOperation,
+			"put": sleepGoalPutOperation,
 		},
 		"/api/metrics/data": map[string]any{
 			"get": getOperation(
@@ -300,6 +338,24 @@ func getOperation(operationID, summary string, parameters []any, okResponse map[
 		op["parameters"] = parameters
 	}
 	return op
+}
+
+func putOperation(operationID, summary, requestSchema string, okResponse map[string]any) map[string]any {
+	return map[string]any{
+		"operationId": operationID,
+		"summary":     summary,
+		"requestBody": map[string]any{
+			"required": true,
+			"content": map[string]any{
+				"application/json": map[string]any{"schema": schemaRef(requestSchema)},
+			},
+		},
+		"responses": map[string]any{
+			"200": okResponse,
+			"302": redirectResponse("Browser authentication or initial setup is required; Location identifies the interactive route."),
+			"500": plainTextResponse("The backend could not update or encode the tenant response."),
+		},
+	}
 }
 
 func redirectResponse(description string) map[string]any {

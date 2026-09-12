@@ -143,9 +143,11 @@ func main() {
 		legacyDB.EnsureIndexes()
 		legacyDB.EnsureAIBriefingsTable()
 		legacyDB.EnsureAIBriefingBlocksTable()
-		if err := legacyDB.EnsureCompletedNightSleepTableContext(context.Background()); err != nil {
-			log.Fatalf("init completed night sleep table: %v", err)
-		}
+		// Sleep insight and balance tables are part of the tenant schema
+		// contract. They must be created together by the explicit stopped-service
+		// migration, not as a partial side effect of a legacy server restart.
+		// Otherwise an old contract marker can coexist with only the Phase A
+		// tables, leaving the next release in an un-auditable halfway state.
 		legacyDB.EnsureEnergySnapshotsTable()
 		legacyDB.EnsureReadinessRedesignTables()
 		legacyDB.EnsureSubjectiveCheckinsTable()
@@ -732,10 +734,13 @@ func makeTodayDerivedStateTrigger(ctx context.Context, db *storage.DB, schema st
 				lang = "en"
 			}
 			cfg := aiConfig()
-			if !storage.TodayInsightsB1Enabled(db) {
+			if !storage.TodayInsightsB1Enabled(db) || !storage.TodayInsightsB1ApprovedForConfig(db, cfg) {
 				// Match the request path: a mutation-triggered refresh may persist
 				// deterministic material, but must never call a provider before
-				// the explicit B1 opt-in is enabled for this tenant.
+				// the explicit B1 opt-in and approved configuration are present.
+				// Keep the stored bundle fingerprint disabled too. Otherwise a
+				// background refresh could leave a misleading cold/generating B1
+				// state even though the provider boundary correctly refuses it.
 				cfg = storage.AIConfig{}
 			}
 			snapshot, err := db.RefreshTodayInsightSnapshotWithConfig(ctx, lang, cfg)

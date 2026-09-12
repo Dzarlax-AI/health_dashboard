@@ -177,3 +177,26 @@ func TestDashboardNoDataRendersOnboardingWithoutGauge(t *testing.T) {
 		t.Fatal("no-data onboarding missing")
 	}
 }
+
+func TestDashboardTemplatePrefersDomainNarrativeOverlay(t *testing.T) {
+	duration := 7.2
+	data := buildDashboardPageData(BasePage{Lang: "en", Title: "Health", StaticVer: StaticVer()}, &health.BriefingResponse{
+		Date: "2026-08-01", ReadinessToday: 72, ReadinessTodayBand: "fair",
+		ReadinessServing: &health.ReadinessServingState{Status: health.ReadinessServingFresh, Confidence: health.ReadinessConfidenceFinal},
+		Sleep:            &health.SleepAnalysis{LatestDate: "2026-08-01", LatestTotal: &duration, TotalAvg: 6.8},
+		EnergyBank:       &health.EnergyBank{Current: 70, Capacity: 90, ActionVerdict: "moderate", VerdictReason: "Current reserve is available."},
+	}, "")
+	data.TodayInsights.Domains[0].Insight.Observation = "Deterministic fallback text."
+	data.TodayInsights.Domains[0].Insight.Narrative = &health.DailyInsightNarrativeOverlay{
+		Text: "Validated narrative text.", ClaimIDs: []string{"sleep_current_context"}, EvidenceIDs: []string{"sleep"},
+	}
+	w := httptest.NewRecorder()
+	renderPage(w, "dashboard", data)
+	if w.Code != 200 {
+		t.Fatalf("render status = %d", w.Code)
+	}
+	html := w.Body.String()
+	if !strings.Contains(html, "Validated narrative text.") || strings.Contains(html, "Deterministic fallback text.") {
+		t.Fatalf("dashboard did not prefer narrative overlay: %s", html)
+	}
+}

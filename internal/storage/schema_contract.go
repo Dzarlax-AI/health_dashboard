@@ -18,7 +18,7 @@ import (
 // SchemaContractVersion is bumped whenever the declared tenant schema
 // contract changes. Existing tenants are not current until both the permanent
 // marker and registry metadata carry this version and checksum.
-const SchemaContractVersion = 9
+const SchemaContractVersion = 10
 
 // TenantIdentityTable is the permanent marker shared by clean provisioning
 // and existing-tenant migrations. The provisioning marker is intentionally
@@ -105,11 +105,12 @@ type ContractCatalog interface {
 }
 
 var schemaContract = ContractManifest{
-	Tables:  []string{"health_records", "metric_points", "import_runs", "import_run_coverage", "import_stage_points", "import_stage_workouts", "minute_metrics", "hourly_metrics", "dashboard_cache_snapshots", "daily_scores", "settings", "notification_deliveries", "workouts", "ai_briefings", "ai_briefing_blocks", "daily_insight_bundles", "completed_night_sleep", "night_sleep_coverage_commitments", "energy_snapshots", "source_epochs", "target_snapshots", "feature_snapshots", "naive_baselines", "chip_calibrations", "subjective_checkins", "context_prompt_interactions", "derived_metrics", "derived_metric_feedback", "auth_sessions"},
-	Indexes: []string{"idx_auth_sessions_expires", "idx_chip_calibrations_sub_kind", "idx_context_prompt_one_sent_per_day", "idx_context_prompt_status_expires", "idx_energy_snapshots_date", "idx_energy_snapshots_flags", "idx_energy_snapshots_ts", "idx_feature_snapshots_sub_date", "idx_health_records_completed_processed_at", "idx_hourly_date", "idx_hourly_metric_date", "idx_import_stage_points_coverage", "idx_import_stage_points_dedup", "idx_import_stage_workouts_dedup", "idx_import_stage_workouts_synthetic", "idx_naive_baselines_sub_kind_base_date", "idx_points_date", "idx_points_metric_date", "idx_points_quality_metric", "idx_source_epochs_active", "idx_target_snapshots_source_epoch", "idx_target_snapshots_sub_kind_date", "idx_workouts_name", "idx_workouts_start_time", "uq_source_epochs_kind_start"},
+	Tables:  []string{"health_records", "metric_points", "import_runs", "import_run_coverage", "import_stage_points", "import_stage_workouts", "minute_metrics", "hourly_metrics", "dashboard_cache_snapshots", "daily_scores", "settings", "notification_deliveries", "workouts", "ai_briefings", "ai_briefing_blocks", "daily_insight_bundles", "completed_night_sleep", "night_sleep_coverage_commitments", "sleep_period_coverage", "completed_sleep_episode", "sleep_goal", "sleep_duration_balance_snapshot", "energy_snapshots", "source_epochs", "target_snapshots", "feature_snapshots", "naive_baselines", "chip_calibrations", "subjective_checkins", "context_prompt_interactions", "derived_metrics", "derived_metric_feedback", "auth_sessions"},
+	Indexes: []string{"idx_auth_sessions_expires", "idx_chip_calibrations_sub_kind", "idx_completed_sleep_episode_wake_start", "idx_context_prompt_one_sent_per_day", "idx_context_prompt_status_expires", "idx_energy_snapshots_date", "idx_energy_snapshots_flags", "idx_energy_snapshots_ts", "idx_feature_snapshots_sub_date", "idx_health_records_completed_processed_at", "idx_hourly_date", "idx_hourly_metric_date", "idx_import_stage_points_coverage", "idx_import_stage_points_dedup", "idx_import_stage_workouts_dedup", "idx_import_stage_workouts_synthetic", "idx_naive_baselines_sub_kind_base_date", "idx_points_date", "idx_points_metric_date", "idx_points_quality_metric", "idx_source_epochs_active", "idx_target_snapshots_source_epoch", "idx_target_snapshots_sub_kind_date", "idx_workouts_name", "idx_workouts_start_time", "uq_source_epochs_kind_start"},
 	IndexDefinitions: []IndexDefinition{
 		{Name: "idx_auth_sessions_expires", Table: "auth_sessions", AccessMethod: "btree", Keys: []string{"expires_at"}},
 		{Name: "idx_chip_calibrations_sub_kind", Table: "chip_calibrations", AccessMethod: "btree", Keys: []string{"sub_score", "target_kind", "computed_at desc"}},
+		{Name: "idx_completed_sleep_episode_wake_start", Table: "completed_sleep_episode", AccessMethod: "btree", Keys: []string{"wake_date", "start_at"}},
 		{Name: "idx_context_prompt_one_sent_per_day", Table: "context_prompt_interactions", Unique: true, AccessMethod: "btree", Keys: []string{"prompt_local_date"}, Predicate: "status = any (array['reserved','prompted','answered','skipped','expired','send_failed'])"},
 		{Name: "idx_context_prompt_status_expires", Table: "context_prompt_interactions", AccessMethod: "btree", Keys: []string{"status", "expires_at"}},
 		{Name: "idx_energy_snapshots_date", Table: "energy_snapshots", AccessMethod: "btree", Keys: []string{"date desc"}},
@@ -166,6 +167,10 @@ var schemaContract = ContractManifest{
 		{Table: "daily_insight_bundles", Kind: "p", Columns: []string{"date", "lang"}},
 		{Table: "completed_night_sleep", Kind: "p", Columns: []string{"wake_date"}},
 		{Table: "night_sleep_coverage_commitments", Kind: "p", Columns: []string{"wake_date", "source"}},
+		{Table: "sleep_period_coverage", Kind: "p", Columns: []string{"wake_date"}},
+		{Table: "completed_sleep_episode", Kind: "p", Columns: []string{"episode_id"}},
+		{Table: "sleep_goal", Kind: "p", Columns: []string{"effective_date"}},
+		{Table: "sleep_duration_balance_snapshot", Kind: "p", Columns: []string{"wake_date"}},
 		{Table: "energy_snapshots", Kind: "p", Columns: []string{"ts_bucket"}},
 		{Table: "source_epochs", Kind: "p", Columns: []string{"epoch_id"}},
 		{Table: "target_snapshots", Kind: "p", Columns: []string{"date", "sub_score", "target_kind"}},
@@ -540,12 +545,14 @@ func (s *DB) EnsureSchemaContract() error {
 	return s.EnsureSchemaContractContext(ctx)
 }
 
-// EnsureSchemaContractContext applies startup-safe additive operations and
-// verifies the declared contract. It deliberately does not build deployment
-// indexes that can block tenant writes; a missing deployment index therefore
-// fails closed and requires the stopped-service fleet migration.
+// EnsureSchemaContractContext applies startup-safe legacy housekeeping and
+// verifies the declared contract. New sleep-contract tables are deliberately
+// excluded: their creation belongs to MigrateSchemaContractContext under the
+// stopped-service fleet gate, so a server restart cannot leave a tenant with
+// an old marker and a partial new feature schema. It also deliberately does
+// not build deployment indexes that can block tenant writes.
 func (s *DB) EnsureSchemaContractContext(ctx context.Context) error {
-	if err := s.ensureSchemaContractObjectsContext(ctx); err != nil {
+	if err := s.ensureRuntimeSchemaContractObjectsContext(ctx); err != nil {
 		return err
 	}
 	return s.VerifySchemaContractContext(ctx)
@@ -563,7 +570,7 @@ func (s *DB) MigrateSchemaContract() error {
 // The caller must guarantee that no tenant traffic is active while regular
 // deployment indexes are built.
 func (s *DB) MigrateSchemaContractContext(ctx context.Context) error {
-	if err := s.ensureSchemaContractObjectsContext(ctx); err != nil {
+	if err := s.ensureFullSchemaContractObjectsContext(ctx); err != nil {
 		return err
 	}
 	if err := s.EnsureDeploymentIndexesContext(ctx); err != nil {
@@ -572,7 +579,7 @@ func (s *DB) MigrateSchemaContractContext(ctx context.Context) error {
 	return s.VerifySchemaContractContext(ctx)
 }
 
-func (s *DB) ensureSchemaContractObjectsContext(ctx context.Context) error {
+func (s *DB) ensureRuntimeSchemaContractObjectsContext(ctx context.Context) error {
 	if err := s.EnsureAllTablesContext(ctx); err != nil {
 		return err
 	}
@@ -586,9 +593,6 @@ func (s *DB) ensureSchemaContractObjectsContext(ctx context.Context) error {
 		return err
 	}
 	if err := s.EnsureDailyInsightBundlesTableContext(ctx); err != nil {
-		return err
-	}
-	if err := s.EnsureCompletedNightSleepTableContext(ctx); err != nil {
 		return err
 	}
 	if err := s.EnsureEnergySnapshotsTableContext(ctx); err != nil {
@@ -610,6 +614,16 @@ func (s *DB) ensureSchemaContractObjectsContext(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func (s *DB) ensureFullSchemaContractObjectsContext(ctx context.Context) error {
+	if err := s.ensureRuntimeSchemaContractObjectsContext(ctx); err != nil {
+		return err
+	}
+	if err := s.EnsureCompletedNightSleepTableContext(ctx); err != nil {
+		return err
+	}
+	return s.EnsureSleepDurationBalanceTablesContext(ctx)
 }
 
 // VerifySchemaContract checks the manifest compiled into this binary.

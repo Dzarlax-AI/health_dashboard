@@ -15,6 +15,10 @@ export type SectionResponse = components["schemas"]["SectionResponse"];
 export type EnergyHistoryDayResponse =
   components["schemas"]["EnergyHistoryDayResponse"];
 export type SessionResponse = components["schemas"]["SessionResponse"];
+export type SleepDurationBalanceResponse = components["schemas"]["SleepDurationBalanceResponse"];
+export type SleepGoalRequest = components["schemas"]["SleepGoalRequest"];
+export type SleepGoalResponse = components["schemas"]["SleepGoalResponse"];
+export type SleepGoalValue = NonNullable<SleepGoalResponse["goal"]>;
 
 type MetricDataQuery = operations["getMetricData"]["parameters"]["query"];
 
@@ -184,5 +188,29 @@ export async function getEnergyHistory(
 
 export async function getSession(signal?: AbortSignal): Promise<SessionResponse> {
   const { data, error, response } = await client.GET("/api/session", { signal });
+  return requireData(data, error, response);
+}
+
+export async function getSleepDurationBalance(
+  signal?: AbortSignal,
+  date?: string,
+): Promise<SleepDurationBalanceResponse> {
+  const { data, error, response } = await client.GET("/api/sleep/balance", {
+    params: { query: { date } },
+    signal,
+  });
+  return requireData(data, error, response);
+}
+
+export async function getSleepGoal(signal?: AbortSignal): Promise<SleepGoalResponse> {
+  const { data, error, response } = await client.GET("/api/sleep/goal", { signal });
+  return requireData(data, error, response);
+}
+
+export async function putSleepGoal(
+  body: SleepGoalRequest,
+  signal?: AbortSignal,
+): Promise<SleepGoalResponse> {
+  const { data, error, response } = await client.PUT("/api/sleep/goal", { body, signal });
   return requireData(data, error, response);
 }

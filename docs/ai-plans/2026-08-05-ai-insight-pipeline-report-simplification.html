@@ -1,0 +1,728 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>План: упрощение AI-инсайта и утреннего отчёта</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #eef1f5;
+      --surface: #fff;
+      --surface-soft: #f7f9fb;
+      --text: #18202a;
+      --muted: #667180;
+      --line: #dce2e9;
+      --blue: #2768c7;
+      --blue-soft: #edf4ff;
+      --green: #18794e;
+      --green-soft: #e8f5ee;
+      --yellow: #875b00;
+      --yellow-soft: #fff5d6;
+      --red: #b42318;
+      --red-soft: #fff0ee;
+      --code: #17202b;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 10% 0, rgba(39, 104, 199, .09), transparent 32rem),
+        var(--bg);
+      color: var(--text);
+      font: 15px/1.58 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      width: min(1120px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 44px 0 80px;
+    }
+
+    h1, h2, h3 { line-height: 1.2; letter-spacing: -.02em; }
+    h1 { margin: 0 0 12px; font-size: clamp(29px, 5vw, 46px); }
+    h2 { margin: 0 0 14px; font-size: 25px; }
+    h3 { margin: 24px 0 10px; font-size: 18px; }
+    p { margin: 8px 0; }
+    a { color: var(--blue); }
+
+    .lead {
+      max-width: 880px;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 22px;
+    }
+
+    .tag {
+      padding: 6px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255,255,255,.75);
+      color: #44505e;
+      font-size: 12px;
+    }
+
+    .card {
+      margin-top: 22px;
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--surface);
+      box-shadow: 0 12px 38px rgba(24, 32, 42, .055);
+    }
+
+    .callout {
+      margin: 16px 0;
+      padding: 14px 16px;
+      border-left: 4px solid var(--blue);
+      border-radius: 8px;
+      background: var(--blue-soft);
+    }
+
+    .callout.good {
+      border-color: var(--green);
+      background: var(--green-soft);
+    }
+
+    .callout.warn {
+      border-color: #c48700;
+      background: var(--yellow-soft);
+    }
+
+    .callout.risk {
+      border-color: var(--red);
+      background: var(--red-soft);
+    }
+
+    ul, ol { margin: 10px 0; padding-left: 23px; }
+    li { margin: 6px 0; }
+
+    table {
+      width: 100%;
+      margin: 14px 0;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    th, td {
+      padding: 10px 11px;
+      border: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th { background: var(--surface-soft); }
+
+    code {
+      padding: .12em .35em;
+      border-radius: 5px;
+      background: #eef1f4;
+      font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    pre {
+      overflow-x: auto;
+      margin: 12px 0;
+      padding: 15px 17px;
+      border-radius: 12px;
+      background: var(--code);
+      color: #e8edf2;
+      font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+      white-space: pre;
+    }
+
+    pre code { padding: 0; background: none; color: inherit; }
+
+    .flow {
+      display: grid;
+      grid-template-columns: 1fr auto 1.2fr auto 1fr;
+      gap: 12px;
+      align-items: center;
+      margin: 18px 0;
+    }
+
+    .flow-box {
+      min-height: 104px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--surface-soft);
+    }
+
+    .flow-box strong { display: block; margin-bottom: 5px; }
+    .flow-arrow { color: var(--blue); font-size: 24px; font-weight: 800; }
+
+    .task {
+      margin: 19px 0;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--surface-soft);
+    }
+
+    .task h3 { margin-top: 0; }
+    .checklist { list-style: none; padding-left: 0; }
+    .checklist li { padding-left: 27px; position: relative; }
+    .checklist li::before {
+      position: absolute;
+      left: 0;
+      content: "☐";
+      color: var(--blue);
+      font-size: 17px;
+    }
+
+    .approval {
+      border: 2px solid var(--blue);
+      background: var(--blue-soft);
+    }
+
+    .small { color: var(--muted); font-size: 13px; }
+
+    @media (max-width: 760px) {
+      .flow { grid-template-columns: 1fr; }
+      .flow-arrow { transform: rotate(90deg); text-align: center; }
+      .card { padding: 18px; }
+      table { display: block; overflow-x: auto; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>AI-инсайт v2: один вывод без потери секций</h1>
+    <p class="lead">
+      План исправляет найденные ошибки данных и провайдерских вызовов, сокращает четыре
+      конкурирующих AI-текста до одного синтеза и перестраивает утренний Telegram-отчёт
+      по варианту A: решение → три причины → конкретное действие.
+    </p>
+    <div class="meta">
+      <span class="tag">Дата: 2026-08-05</span>
+      <span class="tag">База: origin/main @ b53bfc0</span>
+      <span class="tag">Статус: ожидает одобрения</span>
+      <span class="tag">Production-код не изменён</span>
+    </div>
+  </header>
+
+  <section class="card">
+    <h2>Резюме задачи</h2>
+    <p>
+      Текущий отчёт выводит отдельно rule-based секции Sleep / Yesterday / Recovery,
+      три AI-комментария и ещё один AI-план. Из-за этого одна и та же мысль повторяется,
+      а независимые генерации могут противоречить серверному EnergyBank и друг другу.
+      В примере за 2026-08-04 одновременно появились «HRV выше нормы», «можно жёстко»
+      и AI-утверждения о снижении HRV до недельного и месячного минимума.
+    </p>
+    <div class="callout good">
+      <strong>Целевой принцип:</strong> сервер остаётся единственным источником вердикта
+      и фактов. AI не принимает решение, а один раз кратко объясняет уже вычисленный вывод.
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Текущее поведение и подтверждённые проблемы</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Проблема</th>
+          <th>Причина в коде</th>
+          <th>Наблюдаемый эффект</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Сдвинутые временные ряды</td>
+          <td><code>rawMetricsFromDailyScores</code> независимо удаляет NULL/0 из каждого массива, а prompt трактует одинаковый индекс как один день.</td>
+          <td>Модель может сопоставить HRV одного дня со сном или RHR другого и придумать ложный тренд.</td>
+        </tr>
+        <tr>
+          <td>EnergyBank не попадает в фактический request</td>
+          <td>Вердикт входит в hash, но <code>GenerateRecommendation</code> получает <code>recoveryJSON</code> без <code>EnergyBank</code>.</td>
+          <td>AI способен отменить разрешённую нагрузку или, наоборот, советовать нагрузку при серверном rest.</td>
+        </tr>
+        <tr>
+          <td>Четыре независимых AI-текста</td>
+          <td>Три leaf-вызова плюс RECOMMENDATION; каждый лист получает почти весь сырой набор метрик.</td>
+          <td>Повторы, противоречия, лишние токены и задержка.</td>
+        </tr>
+        <tr>
+          <td>Слишком медицинский prompt</td>
+          <td>Роль «clinical health analyst», жёсткие клинические пороги и причинные формулировки для consumer wearable.</td>
+          <td>Диагностический тон и чрезмерная уверенность в данных Apple Watch.</td>
+        </tr>
+        <tr>
+          <td>Небезопасный legacy HTML</td>
+          <td><code>renderAITake</code> и финальная рекомендация вставляют модельный текст без HTML escaping.</td>
+          <td>Символы <code>&lt;</code>, <code>&gt;</code>, <code>&amp;</code> ломают Telegram-разметку.</td>
+        </tr>
+        <tr>
+          <td>Rich-разметка шумит при чтении и копировании</td>
+          <td>Утренний отчёт использует <code>&lt;table&gt;</code>, три <code>&lt;blockquote&gt;</code> и <code>&lt;details&gt;Freshness</code>.</td>
+          <td>В копии появляются буквальные Table / Quote / Freshness, а отчёт выглядит тяжелее.</td>
+        </tr>
+        <tr>
+          <td>Неполная обработка provider response</td>
+          <td>Gemini читает только первую part и не проверяет <code>finishReason</code>, <code>promptFeedback</code>, usage; оба адаптера не имеют bounded retry.</td>
+          <td>Обрезанный/заблокированный ответ может выглядеть как обычный сбой; transient ошибки не восстанавливаются.</td>
+        </tr>
+        <tr>
+          <td>Слабая наблюдаемость и завышенный лимит</td>
+          <td>Нет provider request ID, latency, attempts и usage metadata; общий default — 5000 output tokens.</td>
+          <td>Нельзя нормально оценить стоимость/латентность; короткий отчёт допускает чрезмерный ответ.</td>
+        </tr>
+        <tr>
+          <td>Ненадёжный OpenAI model picker</td>
+          <td>Модели отбрасываются по эвристике имени, хотя <code>/models</code> не возвращает карту output-capabilities.</td>
+          <td>Новая подходящая модель может исчезнуть из подсказок, а неподходящая — пройти фильтр.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>Желаемое поведение</h2>
+    <div class="flow">
+      <div class="flow-box">
+        <strong>Структурированные секции</strong>
+        Sleep, Yesterday, Recovery, alerts, readiness, EnergyBank и freshness остаются на сервере.
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box">
+        <strong>Детерминированный отбор</strong>
+        Сервер выбирает максимум три причины, не более одной на секцию, и формирует canonical action.
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box">
+        <strong>Один AI-синтез</strong>
+        Модель пишет только короткое объяснение. При ошибке отчёт полностью работает без AI.
+      </div>
+    </div>
+
+    <h3>Целевой Telegram-порядок</h3>
+    <ol>
+      <li>Заголовок и одна короткая freshness/settling-плашка, если нужна.</li>
+      <li><strong>Сегодня:</strong> canonical action verdict и одна строка объяснения.</li>
+      <li>Три компактных значения: Energy, Readiness, Sleep.</li>
+      <li><strong>Почему:</strong> максимум три отобранных сервером факта.</li>
+      <li><strong>План:</strong> детерминированное действие сервера; AI не вправе его менять.</li>
+      <li>Одна строка свежести внизу без <code>details</code>.</li>
+    </ol>
+
+    <h3>Куда деваются секции</h3>
+    <p>
+      Они не удаляются. Полные <code>BriefingSection</code> продолжают питать dashboard/API.
+      Для Telegram из каждой секции строится список типизированных кандидатов. Ranking выбирает
+      наиболее важные факты; остальные доступны в полном health briefing, но не отправляются
+      отдельными AI-эссе.
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>Архитектурный контракт</h2>
+
+    <h3>1. Датированные значения вместо сжатых массивов</h3>
+    <p>
+      Legacy-поля <code>RawMetrics.HRV</code>, <code>Sleep</code> и остальные сохраняются для
+      существующего scoring-кода. Для AI добавляется новый date-aligned источник:
+    </p>
+    <pre><code>type DailyHealthMetrics struct {
+    Date      string   `json:"date"`
+    HRV       *float64 `json:"hrv,omitempty"`
+    RHR       *float64 `json:"rhr,omitempty"`
+    Sleep     *float64 `json:"sleep,omitempty"`
+    Deep      *float64 `json:"deep,omitempty"`
+    REM       *float64 `json:"rem,omitempty"`
+    Awake     *float64 `json:"awake,omitempty"`
+    Steps     *float64 `json:"steps,omitempty"`
+    Calories  *float64 `json:"calories,omitempty"`
+    Exercise  *float64 `json:"exercise,omitempty"`
+    SpO2      *float64 `json:"spo2,omitempty"`
+    VO2       *float64 `json:"vo2,omitempty"`
+    Resp      *float64 `json:"resp,omitempty"`
+    WristTemp *float64 `json:"wrist_temp,omitempty"`
+}
+
+type RawMetrics struct {
+    // existing fields remain unchanged
+    Daily []DailyHealthMetrics `json:"daily,omitempty"`
+}</code></pre>
+    <p>
+      Каждый элемент соответствует ровно одной календарной дате; отсутствующее значение остаётся
+      <code>null</code>, поэтому модель не может принять вчерашний HRV за сегодняшний.
+    </p>
+
+    <h3>2. Серверный evidence packet</h3>
+    <pre><code>type MorningInsightEvidence struct {
+    Date          string
+    Verdict       string
+    VerdictLabel  string
+    VerdictReason string
+    Action        string
+    Reasons       []MorningInsightReason // 0..3, ranked
+    Metrics       []DailyHealthMetrics    // aligned, newest first
+    EnergyBank    *EnergyBank
+    Readiness     MorningReadinessContext
+    Freshness     MorningFreshnessContext
+}
+
+type MorningInsightReason struct {
+    Key      string
+    Section  string // sleep|yesterday|recovery|alert|headline
+    Severity string // critical|warning|info|good
+    Text     string // localized, rule-based
+}</code></pre>
+    <p>Ranking-инварианты:</p>
+    <ul>
+      <li>critical/warning flags и safety ограничения выше positive сигналов;</li>
+      <li>не более одной причины из одной секции;</li>
+      <li>не более трёх причин всего;</li>
+      <li>причина не включается, если соответствующий источник stale/unknown;</li>
+      <li><code>AIAdviceMode=withheld</code> запрещает тренировочный action;</li>
+      <li>canonical action определяется только серверным EnergyBank/readiness policy.</li>
+    </ul>
+
+    <h3>3. Один кэшируемый AI-блок</h3>
+    <p>
+      Вводится block key <code>SYNTHESIS</code>. Его hash строится из точного JSON
+      <code>MorningInsightEvidence</code> плюс provider/model/reasoning/token budget/prompt revision.
+      Старые SLEEP/YESTERDAY/RECOVERY/RECOMMENDATION rows не удаляются.
+    </p>
+    <ul>
+      <li>Если <code>SYNTHESIS</code> существует — Telegram, dashboard, MCP и API используют его и игнорируют старые leaf-блоки.</li>
+      <li>Если его ещё нет — текущий v1 cache остаётся временным fallback до первой успешной v2 генерации.</li>
+      <li>Rollback на старый бинарник автоматически снова увидит старые блоки; миграция БД не нужна.</li>
+    </ul>
+
+    <h3>4. Контракт AI-ответа</h3>
+    <p>
+      AI возвращает один короткий объект, а не самостоятельный medical verdict:
+    </p>
+    <pre><code>{
+  "explanation": "Почему выбран серверный план; 1–2 предложения, до 60 слов."
+}</code></pre>
+    <p>
+      Общий <code>GenerationRequest</code> получает опциональную JSON Schema. OpenAI adapter
+      переводит её в Responses API <code>text.format.type=json_schema</code>; Gemini
+      <code>generateContent</code> — в <code>responseMimeType=application/json</code> и
+      <code>responseJsonSchema</code>. После JSON parse выполняется semantic validation:
+      непустой текст, word limit, отсутствие markup и запрещённых диагностических/прескриптивных
+      конструкций. При провале AI-текст не сохраняется, а отчёт использует только server copy.
+    </p>
+
+    <h3>5. Provider-neutral telemetry и retry</h3>
+    <pre><code>type GenerationResult struct {
+    Text           string
+    RequestPayload []byte
+    RequestID      string
+    InputTokens    int64
+    OutputTokens   int64
+    TotalTokens    int64
+    FinishReason   string
+    Attempts       int
+    Latency        time.Duration
+}</code></pre>
+    <ul>
+      <li>Не более двух повторов после первоначальной попытки.</li>
+      <li>Retry только для 408, 429 и 5xx; 400/401/403 не повторяются.</li>
+      <li>Учитывается <code>Retry-After</code>; иначе exponential backoff с jitter.</li>
+      <li>Ожидание прерывается через <code>context.Context</code>.</li>
+      <li>В логах: provider, model, block, request ID, attempts, latency, token counts, finish reason; без API key и health payload.</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>Предположения и границы</h2>
+    <ul>
+      <li>Выбран визуальный вариант A из <a href="2026-08-05-morning-insight-report-variants.html">файла вариантов</a>.</li>
+      <li>Morning report меняется; evening report сохраняет текущую структуру, кроме общего escaping/telemetry.</li>
+      <li>Серверные rule-based формулы readiness, EnergyBank и health sections не пересчитываются.</li>
+      <li>Схема PostgreSQL не меняется: <code>block</code> уже TEXT и принимает <code>SYNTHESIS</code>.</li>
+      <li>Существующие API-поля сохраняются. Новые клиенты получают canonical section <code>summary</code>; legacy <code>recommendation</code> указывает на тот же synthesis body.</li>
+      <li>Детальные секции остаются на dashboard/API и не генерируются моделью заново.</li>
+      <li>OpenRouter в эту работу не входит; новый общий контракт должен позволить добавить его отдельным адаптером.</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>Карта файлов</h2>
+    <table>
+      <thead>
+        <tr><th>Файл</th><th>Изменение</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>internal/health/types.go</code></td><td>Добавить date-aligned daily metrics и transport-neutral evidence types.</td></tr>
+        <tr><td><code>internal/health/morning_insight.go</code> (new)</td><td>Детерминированный ranking причин и canonical action/fallback copy.</td></tr>
+        <tr><td><code>internal/health/morning_insight_test.go</code> (new)</td><td>Тесты ranking, dedup, stale suppression и запрета противоречий.</td></tr>
+        <tr><td><code>internal/storage/briefing.go</code></td><td>Заполнять <code>RawMetrics.Daily</code> в cache и raw fallback paths без compact-сдвигов.</td></tr>
+        <tr><td><code>internal/storage/briefing_test.go</code></td><td>Закрепить календарное выравнивание при NULL/0 в разных колонках.</td></tr>
+        <tr><td><code>internal/storage/ai_orchestrator.go</code></td><td>Заменить 3+1 вызова одним SYNTHESIS request и exact-input hash.</td></tr>
+        <tr><td><code>internal/storage/ai_orchestrator_test.go</code></td><td>One-call, cache invalidation, fallback и telemetry tests.</td></tr>
+        <tr><td><code>internal/storage/ai_briefing_blocks.go</code></td><td>Canonical synthesis read с v1 fallback; без удаления старых rows.</td></tr>
+        <tr><td><code>internal/storage/ai_briefing_blocks_test.go</code></td><td>Проверить приоритет SYNTHESIS и обратную совместимость.</td></tr>
+        <tr><td><code>internal/ai/blocks.go</code></td><td>Удалить leaf orchestration из runtime path; добавить synthesis hash/generation/validation.</td></tr>
+        <tr><td><code>internal/ai/blocks_test.go</code></td><td>Exact hash, JSON parse, word limit и semantic rejection.</td></tr>
+        <tr><td><code>internal/ai/prompt.txt</code></td><td>Новый wellness prompt: объяснять серверный вывод, не диагностировать и не придумывать причинность.</td></tr>
+        <tr><td><code>internal/ai/provider.go</code></td><td>Optional response schema, telemetry fields, operation token budget, prompt revision v2.</td></tr>
+        <tr><td><code>internal/ai/provider_test.go</code></td><td>Fingerprint/metadata/contract tests.</td></tr>
+        <tr><td><code>internal/ai/http_retry.go</code> (new)</td><td>Общий bounded retry с Retry-After, jitter и cancellation.</td></tr>
+        <tr><td><code>internal/ai/http_retry_test.go</code> (new)</td><td>408/429/5xx retry; 4xx no-retry; context cancellation.</td></tr>
+        <tr><td><code>internal/ai/gemini.go</code></td><td>JSON schema mapping, multipart join, block/finish/usage parsing, retry metadata.</td></tr>
+        <tr><td><code>internal/ai/gemini_test.go</code> (new)</td><td>Blocked, truncated, multipart, usage, structured output и retry fixtures.</td></tr>
+        <tr><td><code>internal/ai/openai.go</code></td><td><code>text.format</code>, usage/request-id parsing, retry, model list без capability-эвристики.</td></tr>
+        <tr><td><code>internal/ai/openai_test.go</code></td><td>Schema payload, incomplete/refusal, usage/request-id, retry и unfiltered model suggestions.</td></tr>
+        <tr><td><code>internal/notify/report.go</code></td><td>Variant A для legacy HTML; один escaped synthesis; compact sections/freshness.</td></tr>
+        <tr><td><code>internal/notify/report_rich.go</code></td><td>Variant A без morning table/blockquote/details.</td></tr>
+        <tr><td><code>internal/notify/report_test.go</code></td><td>Golden invariants на примере 2026-08-04 и escaping.</td></tr>
+        <tr><td><code>internal/api/types.go</code>, <code>internal/api/types_test.go</code></td><td>Canonical summary section и legacy field compatibility.</td></tr>
+        <tr><td><code>internal/ui/handler.go</code> + tests</td><td>Отдавать SYNTHESIS как одну секцию и не возвращать stale leaf prose после cutover.</td></tr>
+        <tr><td><code>internal/mcpserver/tools.go</code></td><td>Обновить описание AI briefing с четырёх блоков на единый synthesis.</td></tr>
+        <tr><td><code>README.md</code>, <code>AGENTS.md</code>, <code>CLAUDE.md</code></td><td>Обновить архитектуру; AGENTS/CLAUDE держать в lockstep.</td></tr>
+        <tr><td><code>.env.example</code></td><td>Новый безопасный default token ceiling и пояснение legacy fallback.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>Пошаговая реализация</h2>
+
+    <article class="task">
+      <h3>Task 1 — Закрепить date-aligned данные</h3>
+      <ul class="checklist">
+        <li>Добавить failing test: даты D0/D1/D2, HRV отсутствует на D0, sleep отсутствует на D1; проверить, что <code>Daily[0]</code> содержит D0 с <code>HRV=nil</code>, а не HRV от D1.</li>
+        <li>Запустить <code>go test ./internal/storage -run 'TestRawMetrics.*DateAligned' -count=1</code>; ожидаемый результат до реализации — FAIL.</li>
+        <li>Добавить <code>DailyHealthMetrics</code> и заполнение <code>RawMetrics.Daily</code> из одного прохода по строкам <code>daily_scores</code>.</li>
+        <li>Повторить то же для <code>rawMetricsFromPoints</code>; legacy slices оставить без изменения поведения scoring.</li>
+        <li>Запустить targeted test; ожидаемый результат — PASS.</li>
+      </ul>
+    </article>
+
+    <article class="task">
+      <h3>Task 2 — Построить детерминированный evidence selector</h3>
+      <ul class="checklist">
+        <li>Написать table tests для critical flag, warning alert, positive headline, stale sleep, duplicated recovery evidence и <code>AIAdviceMode=withheld</code>.</li>
+        <li>Запустить <code>go test ./internal/health -run 'TestBuildMorningInsightEvidence' -count=1</code>; ожидаемый результат — FAIL.</li>
+        <li>Реализовать <code>BuildMorningInsightEvidence</code> с stable ranking, максимум тремя reasons и максимум одной reason на section.</li>
+        <li>Canonical action брать из EnergyBank verdict + existing localized verdict reason/readiness tip; при withheld выводить ожидание свежих recovery данных.</li>
+        <li>Проверить, что fixture из пользовательского примера не может одновременно выдать «push hard» и «cancel intensity».</li>
+      </ul>
+    </article>
+
+    <article class="task">
+      <h3>Task 3 — Свести orchestration к одному SYNTHESIS-вызову</h3>
+      <ul class="checklist">
+        <li>Создать fake provider, считающий вызовы, и failing test: холодный cache → ровно один Generate; повтор с тем же evidence → ноль.</li>
+        <li>Добавить failing test: изменение verdict, reason, freshness или date-aligned metric меняет exact request hash.</li>
+        <li>Добавить <code>BlockSynthesis = "SYNTHESIS"</code>, <code>HashSynthesis</code> и <code>GenerateSynthesis</code>.</li>
+        <li>Удалить leaf generation из active orchestrator path; старые функции оставить только если нужны legacy tests, затем безопасно удалить в том же изменении.</li>
+        <li>Сохранить SYNTHESIS только после JSON parse и semantic validation; на ошибке оставить предыдущий cache/fallback.</li>
+        <li>Ограничить operation budget до 600 output tokens независимо от более высокого admin ceiling.</li>
+      </ul>
+    </article>
+
+    <article class="task">
+      <h3>Task 4 — Сделать provider contract надёжным и расширяемым</h3>
+      <ul class="checklist">
+        <li>Добавить в <code>GenerationRequest</code> optional common-subset JSON schema и в <code>GenerationResult</code> request ID/usage/finish/attempts/latency.</li>
+        <li>Реализовать общий HTTP retry helper: initial + максимум 2 retries, 408/429/5xx only, Retry-After, exponential jitter, context-aware wait.</li>
+        <li>В Gemini собрать все text parts, отклонять blocked/non-STOP finish, читать <code>promptFeedback</code> и <code>usageMetadata</code>.</li>
+        <li>В OpenAI добавить <code>text.format</code> JSON schema, читать <code>usage</code> и <code>x-request-id</code>, сохранить incomplete/refusal handling.</li>
+        <li>Убрать жёсткое исключение OpenAI models по имени: показывать полный server result как editable suggestions, сортируя GPT-модели первыми.</li>
+        <li>Логировать metadata после каждого завершённого provider call; не логировать request body.</li>
+      </ul>
+    </article>
+
+    <article class="task">
+      <h3>Task 5 — Переписать prompt и validators</h3>
+      <ul class="checklist">
+        <li>Заменить clinical role на wellness-data explainer и убрать диагностические пороги/причинные утверждения.</li>
+        <li>Передавать только evidence packet: canonical verdict/action, selected reasons, aligned daily metrics, EnergyBank и readiness context.</li>
+        <li>Потребовать одно поле <code>explanation</code>, 1–2 предложения, максимум 60 слов, без markdown, диагноза и нового action.</li>
+        <li>Добавить semantic validator и fixtures: valid concise, too long, markdown, empty, diagnostic claim, new prescriptive action.</li>
+        <li>Поднять <code>PromptRevision</code> до <code>health-briefing-v2</code>, чтобы v1 cache не совпал с новым input.</li>
+      </ul>
+    </article>
+
+    <article class="task">
+      <h3>Task 6 — Перестроить Telegram report по варианту A</h3>
+      <ul class="checklist">
+        <li>Сначала заменить rich/legacy expectations в <code>report_test.go</code>: один AI fragment; отсутствуют <code>table</code>, <code>blockquote</code>, <code>details</code>, Table/Quote/Freshness labels.</li>
+        <li>Добавить regression fixture по данным 2026-08-04 и проверить порядок: header → today → metrics → why → plan → freshness.</li>
+        <li>Реализовать общий escaped text helper и использовать его для AI и dynamic rule text в legacy HTML.</li>
+        <li>Сделать legacy и rich версии семантически одинаковыми; rich использует только headings/paragraph/list/strong/em.</li>
+        <li>Не выводить AI section при invalid/missing SYNTHESIS; server plan и reasons остаются полноценными.</li>
+      </ul>
+    </article>
+
+    <article class="task">
+      <h3>Task 7 — Переключить API/dashboard/MCP без breaking change</h3>
+      <ul class="checklist">
+        <li>Добавить tests: SYNTHESIS становится единственной canonical section; legacy <code>recommendation</code> содержит тот же body; старые leaf fields пусты после cutover.</li>
+        <li><code>GetAIInsightCombined</code>: при SYNTHESIS вернуть его; иначе использовать существующий v1 join.</li>
+        <li><code>/api/ai-briefing</code>: вернуть section key <code>summary</code> и compatibility fields без stale leaf prose.</li>
+        <li>Dashboard polling оставить неизменным: он продолжает читать <code>insight</code>.</li>
+        <li>Обновить MCP description и документацию API semantics.</li>
+      </ul>
+    </article>
+
+    <article class="task">
+      <h3>Task 8 — Полная проверка и документация</h3>
+      <ul class="checklist">
+        <li>Запустить <code>gofmt</code> только по изменённым Go source files.</li>
+        <li>Запустить <code>GOCACHE=/private/tmp/health-ai-insight-v2-go-build go test ./internal/ai ./internal/health ./internal/storage ./internal/notify ./internal/api ./internal/ui ./internal/mcpserver -count=1</code>.</li>
+        <li>Запустить <code>GOCACHE=/private/tmp/health-ai-insight-v2-go-build go test ./... -count=1</code>.</li>
+        <li>Сравнить golden Telegram output на ru/en/sr и убедиться, что dynamic strings escaped.</li>
+        <li>Обновить README, AGENTS и CLAUDE; проверить <code>diff -u AGENTS.md CLAUDE.md</code> с допустимым отличием только первой строки.</li>
+        <li>Обновить этот план фактическими изменениями, выполненными checks, ограничениями и follow-ups.</li>
+      </ul>
+    </article>
+  </section>
+
+  <section class="card">
+    <h2>Тест-план</h2>
+    <table>
+      <thead>
+        <tr><th>Уровень</th><th>Критические проверки</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Unit: data</td><td>NULL не сдвигает даты; cache/raw paths дают одинаковый <code>Daily</code>; latest-day override остаётся на своей дате.</td></tr>
+        <tr><td>Unit: evidence</td><td>Приоритет safety; максимум 3; section dedup; stale suppression; canonical action не меняется AI.</td></tr>
+        <tr><td>Unit: provider</td><td>JSON schema payloads; multipart; blocked/incomplete/refusal; usage; request ID; 408/429/5xx retry; cancellation.</td></tr>
+        <tr><td>Unit: cache</td><td>Один call на cold cache; zero calls на hit; любое реальное input/config изменение инвалидирует synthesis.</td></tr>
+        <tr><td>Unit: rendering</td><td>Один AI-текст; правильный порядок; escaped HTML; без rich table/quote/details labels.</td></tr>
+        <tr><td>Compatibility</td><td>v1 cache читается до первого SYNTHESIS; v2 API сохраняет legacy поля; старый binary не требует rollback migration.</td></tr>
+        <tr><td>Integration</td><td>Gemini и OpenAI fake servers возвращают одинаковый provider-neutral result/telemetry.</td></tr>
+        <tr><td>Full regression</td><td><code>go test ./...</code>, schema contract tests, UI handler tests, MCP tests.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>Manual QA checklist</h2>
+    <ul class="checklist">
+      <li>Выбрать Gemini в Admin, сохранить config, вручную регенерировать morning insight.</li>
+      <li>Проверить Telegram rich и fallback HTML: один итог, не более трёх причин, одно действие.</li>
+      <li>Скопировать сообщение как текст: в нём нет Table, Quote, Freshness.</li>
+      <li>Проверить русский, английский и сербский языки.</li>
+      <li>Подставить данные из примера 2026-08-04: HRV +37% не превращается в «месячный минимум».</li>
+      <li>Сымитировать stale sleep/watch: stale facts исчезают, warning остаётся.</li>
+      <li>Сымитировать provider 429 → retry; 401 → без retry; timeout → bounded failure и server-only report.</li>
+      <li>Переключить Admin на OpenAI Luna и повторить; сравнить структуру, а не дословный текст.</li>
+      <li>Проверить dashboard <code>/api/ai-briefing</code> и MCP: один synthesis, без старых leaf essays.</li>
+      <li>Проверить логи: request ID/latency/usage есть, health payload/API key отсутствуют.</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>Риски и меры</h2>
+    <table>
+      <thead><tr><th>Риск</th><th>Снижение риска</th></tr></thead>
+      <tbody>
+        <tr><td>Потеря полезной детализации</td><td>Полные rule-based sections сохраняются в health briefing/dashboard; Telegram выбирает top-3, а не удаляет данные.</td></tr>
+        <tr><td>Модель выдаёт schema-valid, но смысловой конфликт</td><td>AI не генерирует verdict/action; semantic validator; server-only fallback.</td></tr>
+        <tr><td>Gemini/OpenAI поддерживают разный subset JSON Schema</td><td>Использовать минимальный общий schema: object с одной required string и <code>additionalProperties=false</code>.</td></tr>
+        <tr><td>Retry усиливает rate limit</td><td>Максимум 2 retries, Retry-After, jitter, shared context deadline.</td></tr>
+        <tr><td>В день deploy остаются v1 blocks</td><td>Приоритет SYNTHESIS только после его успешного сохранения; до этого v1 — fallback.</td></tr>
+        <tr><td>iOS ожидает четыре поля</td><td>Поля остаются; summary дублируется в legacy recommendation, остальные становятся пустыми только после v2 cutover.</td></tr>
+        <tr><td>Default token change затрагивает custom deployments</td><td>Admin/env остаётся ceiling; operation-level cap документирован; rollback не требует config migration.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>Rollback</h2>
+    <ol>
+      <li>Откатить application image на digest предыдущего deploy.</li>
+      <li>Не выполнять SQL rollback: новая строка <code>SYNTHESIS</code> безопасна для старого кода и будет проигнорирована.</li>
+      <li>Старые SLEEP/YESTERDAY/RECOVERY/RECOMMENDATION rows остаются в таблице и снова используются старым бинарником.</li>
+      <li>Если требуется временно отключить AI, очистить provider API key/выключить AI через Admin; rule-based morning report продолжит работать.</li>
+    </ol>
+  </section>
+
+  <section class="card">
+    <h2>Открытые вопросы</h2>
+    <p>
+      Блокирующих вопросов нет. Зафиксированы следующие решения по умолчанию:
+    </p>
+    <ul>
+      <li>целевой дизайн — вариант A;</li>
+      <li>AI пишет только объяснение, не план тренировки;</li>
+      <li>Telegram показывает top-3 причины, полные секции остаются на dashboard/API;</li>
+      <li>v1 cache сохраняется как rollback fallback;</li>
+      <li>OpenRouter остаётся отдельной будущей задачей.</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>Проверенные внешние контракты</h2>
+    <ul>
+      <li>
+        OpenAI Responses API поддерживает structured output через
+        <a href="https://developers.openai.com/api/docs/guides/structured-outputs">text.format с JSON Schema</a>;
+        официальная документация рекомендует Structured Outputs вместо JSON mode, когда они доступны.
+      </li>
+      <li>
+        Gemini <code>generateContent</code> поддерживает
+        <a href="https://ai.google.dev/gemini-api/docs/generate-content/structured-output">response MIME type + response schema</a>
+        и отдельно предупреждает, что schema-valid output всё равно нужно семантически валидировать.
+      </li>
+      <li>
+        Google рекомендует
+        <a href="https://ai.google.dev/gemini-api/docs/troubleshooting">exponential backoff с jitter</a>
+        только для transient 408/429/5xx и ограниченное число попыток.
+      </li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>Фактический результат реализации</h2>
+    <p>
+      План одобрен 5 августа 2026 года и реализован в ветке
+      <code>codex/ai-insight-v2</code>. Production-код изменён только после
+      явного ответа пользователя «погнали».
+    </p>
+    <ul class="checklist">
+      <li>Добавлен date-aligned <code>DailyHealthMetrics</code> contract; cache и raw paths сохраняют календарные даты и отсутствующие значения.</li>
+      <li><code>BuildMorningInsightEvidence</code> детерминированно выбирает server-owned verdict, action и максимум три причины.</li>
+      <li>Runtime переведён с четырёх leaf/root вызовов на один structured-output <code>SYNTHESIS</code>; старые строки остаются rollback fallback.</li>
+      <li>OpenAI Responses и Gemini adapters поддерживают общий JSON Schema, multipart parsing, finish/refusal validation, usage/request metadata и максимум две transient retry-попытки после первой.</li>
+      <li>Operation-level output cap установлен в 600 токенов; объяснение дополнительно ограничено 60 словами семантическим валидатором.</li>
+      <li>Legacy Telegram HTML и Rich Messages используют один порядок: verdict → key metrics → top-3 reasons → один AI synthesis → action → freshness.</li>
+      <li>В утреннем Rich Message отсутствуют <code>table</code>, <code>blockquote</code> и <code>details</code>; динамические строки экранируются.</li>
+      <li>API сохраняет legacy поля и добавляет <code>summary</code>; dashboard и MCP получают synthesis с fallback на старый cache.</li>
+      <li>README, AGENTS, CLAUDE и OpenAPI contract обновлены.</li>
+    </ul>
+    <h3>Выполненные проверки</h3>
+    <ul class="checklist">
+      <li><code>gofmt</code> по всем изменённым Go-файлам.</li>
+      <li><code>GOCACHE=/private/tmp/health-ai-insight-v2-final-test go test ./... -count=1</code> — exit 0.</li>
+      <li><code>GOCACHE=/private/tmp/health-ai-insight-v2-final-vet go vet ./...</code> — exit 0.</li>
+      <li><code>make contract-check</code> — exit 0.</li>
+      <li><code>git diff --check</code> — без whitespace errors.</li>
+    </ul>
+    <h3>Известные ограничения и follow-up</h3>
+    <ul>
+      <li>Реальные Gemini/OpenAI credentials и отправка в production Telegram не использовались; adapters проверены fake HTTP servers и formatter tests.</li>
+      <li>OpenRouter намеренно не входит в эту итерацию и может быть добавлен отдельным adapter без изменения orchestration contract.</li>
+      <li>Старые leaf rows не удаляются автоматически: это намеренный rollback path, а не активный формат отчёта.</li>
+    </ul>
+  </section>
+
+  <section class="card approval">
+    <h2>Approval gate — пройден</h2>
+    <p>
+      <strong>План одобрен пользователем.</strong>
+      Реализация выполнена от свежего <code>origin/main</code> в ветке
+      <code>codex/ai-insight-v2</code>; при выборе PR он создаётся сразу Ready for review, не Draft.
+    </p>
+    <p>Следующий gate: выбрать способ интеграции ветки.</p>
+  </section>
+</main>
+</body>
+</html>

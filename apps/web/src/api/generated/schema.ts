@@ -174,6 +174,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sleep/balance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Transparent fourteen-period sleep-duration accounting relative to a manual goal */
+        get: operations["getSleepDurationBalance"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sleep/goal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Effective manual sleep-duration goal */
+        get: operations["getSleepGoal"];
+        /** Set a manual versioned sleep-duration goal */
+        put: operations["putSleepGoal"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/today-insights": {
         parameters: {
             query?: never;
@@ -586,6 +621,42 @@ export interface components {
         SessionResponse: {
             is_admin: boolean;
         };
+        SleepDurationBalanceResponse: {
+            balance_hours: number | null;
+            /** Format: date-time */
+            calculated_through: string;
+            /** @enum {string} */
+            confidence: "normal" | "low";
+            incomplete_reason?: string;
+            last_complete_date?: string;
+            periods: {
+                capture_state: string;
+                delta_hours: number;
+                duration_assessment: string;
+                /** Format: date-time */
+                end: string;
+                goal_hours: number;
+                /** Format: date-time */
+                start: string;
+                total_sleep_hours: number;
+                wake_date: string;
+            }[] | null;
+            /** @enum {string} */
+            state: "complete" | "incomplete";
+            wake_date: string;
+            window_start_date: string;
+        };
+        SleepGoalRequest: {
+            effective_date: string;
+            goal_hours: number;
+        };
+        SleepGoalResponse: {
+            goal: {
+                effective_date: string;
+                goal_hours: number;
+                version: string;
+            } | null;
+        };
         TodayInsightsResponse: {
             changes: {
                 destination: {
@@ -618,6 +689,11 @@ export interface components {
                     fallback: boolean;
                     gap_reason?: string;
                     meaning: string;
+                    narrative?: {
+                        claim_ids: string[] | null;
+                        evidence_ids: string[] | null;
+                        text: string;
+                    };
                     next_step?: {
                         id: string;
                         text: string;
@@ -662,6 +738,11 @@ export interface components {
                 fallback: boolean;
                 gap_reason?: string;
                 meaning: string;
+                narrative?: {
+                    claim_ids: string[] | null;
+                    evidence_ids: string[] | null;
+                    text: string;
+                };
                 next_step?: {
                     id: string;
                     text: string;
@@ -1138,6 +1219,169 @@ export interface operations {
                 };
             };
             /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getSleepDurationBalance: {
+        parameters: {
+            query?: {
+                /** @description Optional tenant-local balance wake date in YYYY-MM-DD; defaults to today. */
+                date?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SleepDurationBalanceResponse"];
+                };
+            };
+            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
+            302: {
+                headers: {
+                    /** @description Interactive login or setup route. */
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+            /** @description Invalid date. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getSleepGoal: {
+        parameters: {
+            query?: {
+                /** @description Optional tenant-local date in YYYY-MM-DD; defaults to today. */
+                date?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SleepGoalResponse"];
+                };
+            };
+            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
+            302: {
+                headers: {
+                    /** @description Interactive login or setup route. */
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+            /** @description Invalid date. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    putSleepGoal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SleepGoalRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SleepGoalResponse"];
+                };
+            };
+            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
+            302: {
+                headers: {
+                    /** @description Interactive login or setup route. */
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+            /** @description Invalid effective date or goal hours outside 3 through 14. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description The backend could not update or encode the tenant response. */
             500: {
                 headers: {
                     [name: string]: unknown;

@@ -1,0 +1,654 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Варианты утреннего health-инсайта</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --page: #eef1f5;
+      --surface: #ffffff;
+      --surface-soft: #f7f8fa;
+      --text: #18202a;
+      --muted: #697382;
+      --line: #dfe4ea;
+      --green: #18794e;
+      --green-soft: #e8f5ee;
+      --yellow: #946200;
+      --yellow-soft: #fff5d6;
+      --blue: #2f6feb;
+      --blue-soft: #edf4ff;
+      --red: #b42318;
+      --red-soft: #fff0ee;
+      --shadow: 0 16px 50px rgba(24, 32, 42, 0.09);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at top left, rgba(47, 111, 235, 0.08), transparent 32rem),
+        var(--page);
+      color: var(--text);
+      font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      width: min(1480px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 48px 0 72px;
+    }
+
+    .intro {
+      max-width: 880px;
+      margin-bottom: 28px;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: clamp(28px, 4vw, 44px);
+      line-height: 1.08;
+      letter-spacing: -0.035em;
+    }
+
+    .intro p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 17px;
+    }
+
+    .principles {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 22px 0 32px;
+    }
+
+    .principles span {
+      padding: 7px 11px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.72);
+      color: #44505e;
+      font-size: 13px;
+    }
+
+    .variants {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 22px;
+      align-items: start;
+    }
+
+    .variant {
+      min-width: 0;
+    }
+
+    .variant-head {
+      min-height: 116px;
+      padding: 0 4px 14px;
+    }
+
+    .variant-kicker {
+      margin: 0 0 5px;
+      color: var(--blue);
+      font-weight: 750;
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .variant h2 {
+      margin: 0 0 6px;
+      font-size: 21px;
+      line-height: 1.25;
+      letter-spacing: -0.015em;
+    }
+
+    .variant-head p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .phone {
+      overflow: hidden;
+      border: 1px solid #d5dbe3;
+      border-radius: 26px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+
+    .telegram-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 13px 17px;
+      border-bottom: 1px solid var(--line);
+      background: #f8fafc;
+    }
+
+    .avatar {
+      display: grid;
+      width: 36px;
+      height: 36px;
+      place-items: center;
+      border-radius: 50%;
+      background: linear-gradient(145deg, #65b5ef, #2f80c4);
+      color: white;
+      font-size: 17px;
+    }
+
+    .telegram-bar strong {
+      display: block;
+      font-size: 14px;
+    }
+
+    .telegram-bar small {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .message {
+      padding: 20px 18px 22px;
+    }
+
+    .date {
+      margin: 0 0 14px;
+      font-size: 17px;
+      line-height: 1.3;
+    }
+
+    .notice {
+      margin: 0 0 14px;
+      padding: 9px 11px;
+      border-radius: 10px;
+      background: var(--yellow-soft);
+      color: #674800;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .hero {
+      margin-bottom: 15px;
+      padding: 15px;
+      border: 1px solid #d9e4dc;
+      border-radius: 15px;
+      background: linear-gradient(145deg, #f7fcf9, var(--green-soft));
+    }
+
+    .hero-label,
+    .section-label {
+      margin: 0 0 5px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 750;
+      letter-spacing: 0.065em;
+      text-transform: uppercase;
+    }
+
+    .hero h3 {
+      margin: 0 0 5px;
+      color: var(--green);
+      font-size: 21px;
+      line-height: 1.2;
+    }
+
+    .hero p {
+      margin: 0;
+      font-size: 13px;
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin: 0 0 16px;
+    }
+
+    .metric {
+      padding: 10px 8px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: var(--surface-soft);
+      text-align: center;
+    }
+
+    .metric strong {
+      display: block;
+      font-size: 16px;
+      line-height: 1.25;
+    }
+
+    .metric span {
+      display: block;
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 10px;
+    }
+
+    .section {
+      padding: 13px 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .section:first-of-type { border-top: 0; }
+
+    .section h4 {
+      margin: 0 0 7px;
+      font-size: 15px;
+    }
+
+    .section p {
+      margin: 0;
+      color: #384351;
+      font-size: 13px;
+    }
+
+    .facts {
+      display: grid;
+      gap: 7px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .facts li {
+      position: relative;
+      padding-left: 17px;
+      color: #384351;
+      font-size: 13px;
+    }
+
+    .facts li::before {
+      position: absolute;
+      left: 0;
+      content: "•";
+      color: var(--blue);
+      font-weight: 900;
+    }
+
+    .action {
+      margin-top: 3px;
+      padding: 13px 14px;
+      border-radius: 13px;
+      background: var(--blue-soft);
+    }
+
+    .action strong {
+      display: block;
+      margin-bottom: 4px;
+      color: #1f5eb8;
+      font-size: 14px;
+    }
+
+    .action p {
+      margin: 0;
+      font-size: 13px;
+    }
+
+    .freshness {
+      margin: 15px 0 0;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .compact-line {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 9px 0;
+      border-bottom: 1px solid var(--line);
+      font-size: 13px;
+    }
+
+    .compact-line:last-child { border-bottom: 0; }
+    .compact-line span { color: var(--muted); }
+
+    .signal {
+      margin: 0 0 10px;
+      padding: 11px 12px;
+      border-radius: 12px;
+      background: var(--green-soft);
+      color: #145c3c;
+      font-size: 13px;
+    }
+
+    .warning {
+      margin: 10px 0 0;
+      color: var(--yellow);
+      font-size: 12px;
+    }
+
+    .score-row {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 15px;
+    }
+
+    .score-pill {
+      flex: 1;
+      padding: 11px;
+      border-radius: 12px;
+      background: var(--surface-soft);
+    }
+
+    .score-pill span {
+      display: block;
+      color: var(--muted);
+      font-size: 10px;
+    }
+
+    .score-pill strong {
+      display: block;
+      margin-top: 2px;
+      font-size: 16px;
+    }
+
+    .recommendation {
+      margin: 15px 0;
+      padding: 15px;
+      border: 1px solid #cdddf7;
+      border-radius: 14px;
+      background: var(--blue-soft);
+    }
+
+    .recommendation h4 {
+      margin: 0 0 6px;
+      color: #1f5eb8;
+      font-size: 16px;
+    }
+
+    .recommendation p {
+      margin: 0;
+      font-size: 13px;
+    }
+
+    .ai-note {
+      margin: 12px 0 0;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .verdict-stack {
+      display: grid;
+      gap: 9px;
+      margin-bottom: 15px;
+    }
+
+    .verdict-row {
+      display: grid;
+      grid-template-columns: 27px 1fr auto;
+      align-items: center;
+      gap: 9px;
+      padding: 10px 11px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+    }
+
+    .verdict-row .icon { font-size: 18px; }
+    .verdict-row strong { display: block; font-size: 13px; }
+    .verdict-row small { display: block; color: var(--muted); font-size: 10px; }
+    .verdict-row .value { color: #29323d; font-weight: 750; font-size: 13px; }
+
+    .tradeoffs {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 22px;
+      margin-top: 28px;
+    }
+
+    .tradeoff {
+      padding: 17px 18px;
+      border: 1px solid var(--line);
+      border-radius: 15px;
+      background: rgba(255, 255, 255, 0.78);
+    }
+
+    .tradeoff strong {
+      display: block;
+      margin-bottom: 5px;
+    }
+
+    .tradeoff p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .recommend {
+      margin-top: 24px;
+      padding: 18px 20px;
+      border: 1px solid #cdddf7;
+      border-radius: 16px;
+      background: var(--blue-soft);
+    }
+
+    .recommend strong { color: #1f5eb8; }
+    .recommend p { margin: 5px 0 0; }
+
+    @media (max-width: 1050px) {
+      .variants,
+      .tradeoffs {
+        grid-template-columns: 1fr;
+      }
+      .variant-head { min-height: 0; }
+      .phone { max-width: 640px; }
+    }
+
+    @media (max-width: 560px) {
+      main {
+        width: min(100% - 22px, 1480px);
+        padding-top: 28px;
+      }
+      .metrics { grid-template-columns: 1fr; }
+      .metric { text-align: left; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="intro">
+      <h1>Каким должен быть утренний инсайт</h1>
+      <p>
+        Три варианта на данных из отчёта за 4 августа. Во всех версиях серверный
+        вердикт остаётся главным, AI объясняет его один раз, а факты не спорят друг с другом.
+      </p>
+    </section>
+
+    <div class="principles" aria-label="Общие принципы">
+      <span>Один итог</span>
+      <span>Один AI-блок</span>
+      <span>Максимум 3 причины</span>
+      <span>Никаких Table / Quote / Freshness</span>
+      <span>Свежесть одной строкой</span>
+    </div>
+
+    <section class="variants">
+      <article class="variant">
+        <header class="variant-head">
+          <p class="variant-kicker">Вариант A</p>
+          <h2>Решение прежде всего</h2>
+          <p>Сразу отвечает, что делать сегодня. Детали оставляет только как обоснование.</p>
+        </header>
+
+        <div class="phone">
+          <div class="telegram-bar">
+            <div class="avatar">♥</div>
+            <div><strong>Health Assistant</strong><small>утренний отчёт</small></div>
+          </div>
+          <div class="message">
+            <h3 class="date">🌅 4 августа</h3>
+            <p class="notice">⏰ Сон ещё синхронизируется — оценка может уточниться.</p>
+
+            <section class="hero">
+              <p class="hero-label">Сегодня</p>
+              <h3>Можно тренироваться</h3>
+              <p>Энергии достаточно, но готовность умеренная — держите нагрузку контролируемой.</p>
+            </section>
+
+            <div class="metrics">
+              <div class="metric"><strong>67/81</strong><span>энергия</span></div>
+              <div class="metric"><strong>65/100</strong><span>готовность</span></div>
+              <div class="metric"><strong>7.0 ч</strong><span>сон</span></div>
+            </div>
+
+            <section class="section">
+              <p class="section-label">Почему</p>
+              <ul class="facts">
+                <li>HRV 51.8 мс — на 37% выше личной нормы.</li>
+                <li>Сна достаточно, но глубокая фаза ниже целевого диапазона.</li>
+                <li>Вчера нагрузка была низкой: 1 864 шага и 6 минут упражнений.</li>
+              </ul>
+            </section>
+
+            <section class="action">
+              <strong>🎯 План</strong>
+              <p>Обычная тренировка средней интенсивности. Если сонливость сохраняется — снизьте объём на 20%.</p>
+            </section>
+
+            <p class="freshness">Обновлено: Watch 1ч · Activity 1ч · Sleep 11ч</p>
+          </div>
+        </div>
+      </article>
+
+      <article class="variant">
+        <header class="variant-head">
+          <p class="variant-kicker">Вариант B</p>
+          <h2>Короткий аналитический</h2>
+          <p>Сохраняет привычные разделы, но каждый занимает одну строку, а AI пишет только вывод.</p>
+        </header>
+
+        <div class="phone">
+          <div class="telegram-bar">
+            <div class="avatar">♥</div>
+            <div><strong>Health Assistant</strong><small>утренний отчёт</small></div>
+          </div>
+          <div class="message">
+            <h3 class="date">🌅 Утренний отчёт · 04.08</h3>
+            <p class="notice">⏰ Данные сна неполные: последние фрагменты ещё приходят.</p>
+
+            <p class="signal"><strong>Главный сигнал:</strong> HRV заметно выше вашей нормы — восстановление выглядит лучше обычного.</p>
+
+            <div class="score-row">
+              <div class="score-pill"><span>Энергия</span><strong>67/81</strong></div>
+              <div class="score-pill"><span>Готовность</span><strong>65/100</strong></div>
+            </div>
+
+            <div class="compact-line">
+              <strong>😴 Сон</strong>
+              <span>7.0 ч · Deep 11% · REM 20%</span>
+            </div>
+            <div class="compact-line">
+              <strong>❤️ Восстановление</strong>
+              <span>HRV 51.8 · RHR 69</span>
+            </div>
+            <div class="compact-line">
+              <strong>🚶 Вчера</strong>
+              <span>1 864 шагов · 6 мин</span>
+            </div>
+
+            <section class="recommendation">
+              <h4>🎯 На сегодня</h4>
+              <p>
+                Показатели не требуют восстановительного дня. Выбирайте умеренную тренировку;
+                из-за низкой доли глубокого сна не гонитесь за максимальной интенсивностью.
+              </p>
+            </section>
+
+            <p class="ai-note">🤖 AI объяснил серверный вердикт по свежим данным, не меняя его.</p>
+            <p class="freshness">Данные: часы 1ч · активность 1ч · сон 11ч</p>
+          </div>
+        </div>
+      </article>
+
+      <article class="variant">
+        <header class="variant-head">
+          <p class="variant-kicker">Вариант C</p>
+          <h2>Сигналы и действие</h2>
+          <p>Самый структурный: быстрый скан показателей, затем одно персональное действие.</p>
+        </header>
+
+        <div class="phone">
+          <div class="telegram-bar">
+            <div class="avatar">♥</div>
+            <div><strong>Health Assistant</strong><small>утренний отчёт</small></div>
+          </div>
+          <div class="message">
+            <h3 class="date">🌅 Сегодня · 4 августа</h3>
+            <p class="notice">⏰ Предварительно: синхронизация сна не завершена.</p>
+
+            <div class="verdict-stack">
+              <div class="verdict-row">
+                <span class="icon">⚡</span>
+                <span><strong>Энергия</strong><small>запас высокий</small></span>
+                <span class="value">67/81</span>
+              </div>
+              <div class="verdict-row">
+                <span class="icon">🟡</span>
+                <span><strong>Готовность</strong><small>умеренная</small></span>
+                <span class="value">65</span>
+              </div>
+              <div class="verdict-row">
+                <span class="icon">✅</span>
+                <span><strong>HRV</strong><small>выше нормы</small></span>
+                <span class="value">+37%</span>
+              </div>
+              <div class="verdict-row">
+                <span class="icon">😴</span>
+                <span><strong>Сон</strong><small>достаточно, Deep низкий</small></span>
+                <span class="value">7.0 ч</span>
+              </div>
+            </div>
+
+            <section class="hero">
+              <p class="hero-label">Итог</p>
+              <h3>Умеренная нагрузка</h3>
+              <p>
+                Хороший HRV поддерживает тренировку, но качество сна и общая готовность
+                не дают оснований для максимальной интенсивности.
+              </p>
+            </section>
+
+            <section class="action">
+              <strong>🎯 Следующий шаг</strong>
+              <p>30–45 минут в привычном темпе, субъективная тяжесть не выше 7 из 10.</p>
+            </section>
+
+            <p class="warning">⚠️ Аномалия: недельная вариативность HRV повышена.</p>
+            <p class="freshness">Синхронизация: Watch 1ч · Activity 1ч · Sleep 11ч</p>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <section class="tradeoffs" aria-label="Сравнение вариантов">
+      <div class="tradeoff">
+        <strong>A · Самый практичный</strong>
+        <p>Лучше всего отвечает на вопрос «что делать сегодня», но скрывает часть привычных метрик.</p>
+      </div>
+      <div class="tradeoff">
+        <strong>B · Самый знакомый</strong>
+        <p>Ближе к текущему отчёту и проще внедрить, при этом примерно вдвое короче.</p>
+      </div>
+      <div class="tradeoff">
+        <strong>C · Самый сканируемый</strong>
+        <p>Быстро читается глазами, но сильнее зависит от поддержки rich-разметки клиентом.</p>
+      </div>
+    </section>
+
+    <section class="recommend">
+      <strong>Моя рекомендация: вариант A.</strong>
+      <p>
+        Он делает отчёт инструментом принятия решения, а не журналом показателей.
+        Архитектурно это также самый чистый путь: сервер определяет вердикт и факты,
+        AI формулирует одно короткое объяснение и не может противоречить результату.
+      </p>
+    </section>
+  </main>
+</body>
+</html>

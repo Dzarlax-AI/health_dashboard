@@ -4,6 +4,8 @@ import {
   getHealthBriefing,
   getMetricData,
   getMetricRange,
+  getSleepDurationBalance,
+  getSleepGoal,
   getSection,
   getSession,
   type AIBriefingResponse,
@@ -13,6 +15,8 @@ import {
   type MetricRangeResponse,
   type SectionResponse,
   type SessionResponse,
+  type SleepDurationBalanceResponse,
+  type SleepGoalResponse,
 } from "../../api/client";
 import type { Locale } from "../../i18n";
 
@@ -34,6 +38,8 @@ export interface SleepResources {
   wake?: DerivedMetricsResponse;
   range?: MetricRangeResponse;
   session?: SessionResponse;
+  balance?: SleepDurationBalanceResponse;
+  goal?: SleepGoalResponse;
   metrics: Partial<Record<SleepMetric, MetricDataResponse>>;
   missing: string[];
 }
@@ -45,6 +51,8 @@ export interface SleepLoaders {
   range: typeof getMetricRange;
   wake: typeof getDerivedMetrics;
   session: typeof getSession;
+  balance: typeof getSleepDurationBalance;
+  goal: typeof getSleepGoal;
   metric: typeof getMetricData;
 }
 
@@ -55,6 +63,8 @@ const defaultLoaders: SleepLoaders = {
   range: getMetricRange,
   wake: getDerivedMetrics,
   session: getSession,
+  balance: getSleepDurationBalance,
+  goal: getSleepGoal,
   metric: getMetricData,
 };
 
@@ -91,11 +101,13 @@ export async function loadSleepResources(
   const rawBriefing = await loaders.briefing(locale, signal);
   const briefingDate = normalizedDate(rawBriefing.date);
   const briefing = briefingDate ? { ...rawBriefing, date: briefingDate } : rawBriefing;
-  const [section, ai, session, range] = await Promise.allSettled([
+  const [section, ai, session, range, balance, goal] = await Promise.allSettled([
     loaders.section("sleep", locale, signal),
     loaders.ai(locale, signal),
     loaders.session(signal),
     loaders.range("sleep_total", signal),
+    loaders.balance(signal),
+    loaders.goal(signal),
   ]);
   throwIfAborted(signal);
 
@@ -104,6 +116,8 @@ export async function loadSleepResources(
     ai.status === "rejected" ? "ai" : undefined,
     session.status === "rejected" ? "session" : undefined,
     range.status === "rejected" ? "range" : undefined,
+    balance.status === "rejected" ? "balance" : undefined,
+    goal.status === "rejected" ? "goal" : undefined,
   ].filter((name): name is string => Boolean(name));
 
   if (!briefingDate) {
@@ -113,6 +127,8 @@ export async function loadSleepResources(
       ai: fulfilled(ai),
       session: fulfilled(session),
       range: fulfilled(range),
+      balance: fulfilled(balance),
+      goal: fulfilled(goal),
       metrics: {},
       missing: fixedMissing,
     };
@@ -151,6 +167,8 @@ export async function loadSleepResources(
     wake: fulfilled(wake),
     session: fulfilled(session),
     range: fulfilled(range),
+    balance: fulfilled(balance),
+    goal: fulfilled(goal),
     metrics,
     missing: [
       ...fixedMissing,

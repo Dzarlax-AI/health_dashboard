@@ -340,6 +340,32 @@ func (s *DB) GetTodayCheckin(date, source string) (*CheckinRow, error) {
 	return row, nil
 }
 
+// HistoricalCheckinScenario returns only the review-safe presence state for
+// a historical Telegram check-in. It deliberately does not select answer,
+// timestamps, message IDs, or any health content. A pending, expired, late,
+// or absent row is "absent" because it was not a timely optional label.
+func (s *DB) HistoricalCheckinScenario(ctx context.Context, date string) (string, error) {
+	var status string
+	err := s.pool.QueryRow(ctx, `
+		SELECT status
+		  FROM subjective_checkins
+		 WHERE date = $1 AND source = $2`, date, CheckinSourceTelegram).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "absent", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return historicalCheckinScenario(status), nil
+}
+
+func historicalCheckinScenario(status string) string {
+	if status == CheckinStatusAnswered {
+		return "answered"
+	}
+	return "absent"
+}
+
 // GetCheckinCoverage returns the latest N check-in rows up to today.
 // `today` must be YYYY-MM-DD in the tenant's REPORT_TZ; callers own
 // timezone resolution so this storage method stays pure SQL + date

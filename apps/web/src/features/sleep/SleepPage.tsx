@@ -1,6 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
-import { ClientApiError, getAIBriefing, type AIBriefingResponse } from "../../api/client";
+import {
+  ClientApiError,
+  getAIBriefing,
+  getSleepDurationBalance,
+  putSleepGoal,
+  type AIBriefingResponse,
+  type SleepDurationBalanceResponse,
+  type SleepGoalValue,
+} from "../../api/client";
 import {
   clearSessionRecoveryAttempt,
   recoverSessionOnUnauthorized,
@@ -31,6 +39,13 @@ function time(value: string | undefined, locale: Locale): string {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return "—";
   return new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }).format(parsed);
+}
+
+function dateTime(value: string | undefined, locale: Locale): string {
+  if (!value) return "—";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "—";
+  return new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(parsed);
 }
 
 function dateLabel(date: string, locale: Locale, compact = false): string {
@@ -114,6 +129,12 @@ export function SleepReady({ resources, locale }: { resources: SleepResources; l
   const [selectedDate, setSelectedDate] = useState(resources.briefing.date || days[0]?.date || "");
   const [historicAI, setHistoricAI] = useState<AIBriefingResponse>();
   const [todayAI, setTodayAI] = useState(resources.ai);
+  const [balance, setBalance] = useState<SleepDurationBalanceResponse | undefined>(resources.balance);
+  const [goal, setGoal] = useState<SleepGoalValue | null | undefined>(resources.goal?.goal);
+  const [goalHours, setGoalHours] = useState(resources.goal?.goal?.goal_hours?.toString() ?? "8");
+  const [goalEffectiveDate, setGoalEffectiveDate] = useState(resources.goal?.goal?.effective_date ?? resources.briefing.date);
+  const [savingGoal, setSavingGoal] = useState(false);
+  const [goalSaveError, setGoalSaveError] = useState(false);
   const aiPollAttempts = useRef(0);
   const selected = days.find((day) => day.date === selectedDate) ?? days[0];
   const current = days.find((day) => day.date === resources.briefing.date);
@@ -164,6 +185,33 @@ export function SleepReady({ resources, locale }: { resources: SleepResources; l
   const historicInsight =
     historicAI?.date === selectedDate ? sleepInsight(historicAI) : "";
   const selectedComposition = selected ? sleepComposition(selected) : undefined;
+  const balanceHours = balance?.balance_hours ?? undefined;
+
+  async function saveGoal(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const goalValue = Number(goalHours);
+    if (
+      !Number.isFinite(goalValue) || goalValue < 3 || goalValue > 14 ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(goalEffectiveDate)
+    ) {
+      setGoalSaveError(true);
+      return;
+    }
+    setSavingGoal(true);
+    setGoalSaveError(false);
+    try {
+      const response = await putSleepGoal({
+        effective_date: goalEffectiveDate,
+        goal_hours: goalValue,
+      });
+      setGoal(response.goal);
+      setBalance(await getSleepDurationBalance(undefined, resources.briefing.date));
+    } catch {
+      setGoalSaveError(true);
+    } finally {
+      setSavingGoal(false);
+    }
+  }
 
   return (
     <main className="sleep-page">
@@ -195,6 +243,57 @@ export function SleepReady({ resources, locale }: { resources: SleepResources; l
           <p className="sleep-ai-pending">{translate(locale, "sleepInsightPending")}</p>
         ) : null}
       </section>
+
+      {balance ? (
+        <section className="sleep-section surface sleep-balance">
+          <div className="sleep-section__title">
+            <div><p>{translate(locale, "sleepBalanceEyebrow")}</p><h2>{translate(locale, "sleepBalanceTitle")}</h2></div>
+            <strong>{balanceHours === undefined ? "—" : `${balanceHours >= 0 ? "+" : ""}${hours(balanceHours, locale)}`}</strong>
+          </div>
+          {balance.state === "complete" && balanceHours !== undefined ? (
+            <p>{translate(locale, balance.confidence === "low" ? "sleepBalanceLowConfidence" : "sleepBalanceComplete")}</p>
+          ) : (
+            <p>{translate(locale, "sleepBalanceIncomplete")}</p>
+          )}
+          {goal ? (
+            <p className="sleep-balance__goal">{translate(locale, "sleepBalanceGoal")} {hours(goal.goal_hours, locale)}</p>
+          ) : (
+            <p className="sleep-balance__goal">{translate(locale, "sleepBalanceNoGoal")}</p>
+          )}
+          <small>{translate(locale, "sleepBalanceCalculatedThrough")} {dateTime(balance.calculated_through, locale)}</small>
+          {balance.last_complete_date ? <small>{translate(locale, "sleepBalanceThrough")} {dateLabel(balance.last_complete_date, locale, true)}</small> : null}
+          <form className="sleep-balance__form" onSubmit={saveGoal}>
+            <label>
+              <span>{translate(locale, "sleepBalanceGoalLabel")}</span>
+              <input
+                aria-label={translate(locale, "sleepBalanceGoalLabel")}
+                type="number"
+                min="3"
+                max="14"
+                step="0.25"
+                inputMode="decimal"
+                value={goalHours}
+                onChange={(event) => setGoalHours(event.target.value)}
+                disabled={savingGoal}
+              />
+            </label>
+            <label>
+              <span>{translate(locale, "sleepBalanceEffectiveDate")}</span>
+              <input
+                aria-label={translate(locale, "sleepBalanceEffectiveDate")}
+                type="date"
+                value={goalEffectiveDate}
+                onChange={(event) => setGoalEffectiveDate(event.target.value)}
+                disabled={savingGoal}
+              />
+            </label>
+            <button type="submit" disabled={savingGoal}>
+              {translate(locale, savingGoal ? "sleepBalanceSaving" : "sleepBalanceSave")}
+            </button>
+            {goalSaveError ? <p role="alert">{translate(locale, "sleepBalanceSaveError")}</p> : null}
+          </form>
+        </section>
+      ) : null}
 
       <section className="sleep-section surface">
         <div className="sleep-section__title">

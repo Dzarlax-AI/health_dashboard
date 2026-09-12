@@ -85,7 +85,11 @@
       <a class="today-insights-domain" href="/{{.Destination.ID}}">
         <div class="today-insights-domain-meta"><span>{{.Insight.Title}}</span></div>
         <strong>{{.Summary}}</strong>
+        {{if .Insight.Narrative}}
+        <p>{{.Insight.Narrative.Text}}</p>
+        {{else}}
         <p>{{.Insight.Observation}}</p>
+        {{end}}
       </a>
       {{end}}
     </div>
