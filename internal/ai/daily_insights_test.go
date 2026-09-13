@@ -121,6 +121,15 @@ func TestDailyInsightSlotPromptDoesNotInviteForbiddenSafetyDisclaimers(t *testin
 	}
 }
 
+func TestDailyInsightSlotPromptRejectsInterfaceMetaVoice(t *testing.T) {
+	prompt := strings.ToLower(dailyInsightSlotSystemPrompt)
+	for _, fragment := range []string{"shown", "presented", "highlighted", "card", "indicator", "cue", "score"} {
+		if !strings.Contains(prompt, fragment) {
+			t.Fatalf("slot prompt no longer guards interface-meta wording %q", fragment)
+		}
+	}
+}
+
 func dailyInsightTestSnapshot(t *testing.T) *health.DailyInsightSnapshot {
 	t.Helper()
 	duration := 7.2

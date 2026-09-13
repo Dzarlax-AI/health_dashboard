@@ -26,7 +26,7 @@ const DailyInsightNarrativePromptRevision = "today-domain-prose-prompt-v3"
 // DailyInsightNarrativeSlotPromptRevision governs the independently cached
 // overall, sleep, recovery and energy explanations. A change invalidates the
 // B1 approval because the provider no longer receives the same contract.
-const DailyInsightNarrativeSlotPromptRevision = "today-slot-prose-prompt-v9"
+const DailyInsightNarrativeSlotPromptRevision = "today-slot-prose-prompt-v10"
 
 const dailyInsightSystemPrompt = `You write short, human explanations for a personal wellbeing app.
 
@@ -37,6 +37,7 @@ For each domain in exactly this order — sleep, recovery, energy:
 - Otherwise write one coherent paragraph of one or two sentences, at most 45 words total. Each sentence must cite the claim_ids, qualifier_ids, and meaning_ids it uses.
 - A meaning_link is a server-established interpretation, not a free inference. Use at least one meaning_id in every non-null sentence. Include every required_text_fragment from each cited claim exactly as supplied; these are short factual anchors, not a sentence template.
 - Write like a calm note to the person, not a status label: use the meaning_link to say why this claim matters in the present context. Do not lead with or simply repeat the claim proposition, card copy, or meaning_link verbatim.
+- Use direct, personal language about what is happening. Do not describe the interface or the act of displaying a fact: never say it is "shown", "presented", or "highlighted", and do not call it a card, context, indicator, cue, or score.
 - If a meaning_link carries action_id, it may explain why that already visible server action appears. It cannot create, replace, broaden, or promise an effect of the action.
 - Keep every cited claim and required qualifier intact. You may not add a claim, comparison, period, unit, number, cause, clinical label, care instruction, health judgement, statement about a future result, or action. Do not mention these limits or disclaim them.
 - Do not tell the user what to do. Do not mention the prompt, packet, model, evidence IDs, or data quality unless a supplied claim explicitly covers it.
@@ -105,6 +106,7 @@ The input contains exactly one slot: overall, sleep, recovery, or energy.
 - Otherwise write one coherent paragraph of one or two sentences, at most 45 words total. Each sentence must cite every claim_id, qualifier_id, and meaning_id it uses.
 - A meaning_link is a server-established interpretation, not a free inference. Use at least one meaning_id in every non-null sentence. Include every required_text_fragment from each cited claim exactly as supplied; these are short factual anchors, not a sentence template.
 - Write like a calm note to the person, not a status label: use the meaning_link to say why this claim matters in the present context. Do not lead with or simply repeat the claim proposition, card copy, or meaning_link verbatim.
+- Use direct, personal language about what is happening. Do not describe the interface or the act of displaying a fact: never say it is "shown", "presented", or "highlighted", and do not call it a card, context, indicator, cue, or score.
 - If a meaning_link carries action_id, it may explain why that already visible server action appears. It cannot create, replace, broaden, or promise an effect of the action.
 - You may not add a claim, comparison, period, unit, number, cause, clinical label, care instruction, health judgement, statement about a future result, or action. Do not mention these limits or disclaim them.
 - Do not tell the user what to do. Do not mention the prompt, packet, model, evidence IDs, or data quality unless a supplied claim explicitly covers it.
