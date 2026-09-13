@@ -139,6 +139,15 @@ func TestDailyInsightSlotPromptRejectsAbstractPacingBoilerplate(t *testing.T) {
 	}
 }
 
+func TestDailyInsightSlotPromptKeepsRussianAndSerbianVoiceConsistent(t *testing.T) {
+	prompt := strings.ToLower(dailyInsightSlotSystemPrompt)
+	for _, fragment := range []string{"informal singular", "never switch to formal plural", "reserve, signal, band, or range"} {
+		if !strings.Contains(prompt, fragment) {
+			t.Fatalf("slot prompt no longer guards conversational localisation %q", fragment)
+		}
+	}
+}
+
 func TestDailyInsightSlotPromptUsesServerPositionWithoutInterfaceVoice(t *testing.T) {
 	prompt := strings.ToLower(dailyInsightSlotSystemPrompt)
 	for _, fragment := range []string{"server_position", "supporting signal", "position_ids", "never mention a server"} {

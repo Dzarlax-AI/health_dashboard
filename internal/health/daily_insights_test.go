@@ -1,6 +1,7 @@
 package health
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -423,6 +424,18 @@ func TestDailyInsightNarrativeSlotRequiresClaimTextAnchors(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "missing required text fragment") {
 		t.Fatalf("unexpected text-anchor validation error: %v", err)
+	}
+}
+
+func TestDailyInsightNarrativeRussianAnchorsUseEverydayLanguage(t *testing.T) {
+	if got, want := localizedRecoveryNarrativeTextFragments("ru", "low"), []string{"восстановление не на пике"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("low recovery anchors = %#v, want %#v", got, want)
+	}
+	if got, want := localizedEnergyNarrativeTextFragments("ru", "rest"), []string{"сегодня сил немного"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("rest energy anchors = %#v, want %#v", got, want)
+	}
+	if got, want := localizedSleepNarrativeTextFragments("sr"), []string{"kraće od tvog uobičajenog ritma sna"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Serbian sleep anchors = %#v, want %#v", got, want)
 	}
 }
 

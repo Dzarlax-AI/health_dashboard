@@ -23,7 +23,7 @@ const (
 	DailyInsightPolicyVersion         = "daily-insight-policy-v2"
 	DailyInsightActionCatalogVersion  = "daily-insight-actions-v1"
 	DailyInsightPromptRevision        = "daily-insight-prompt-v4"
-	DailyInsightNarrativeInputVersion = "today-insight-slot-input-v7"
+	DailyInsightNarrativeInputVersion = "today-insight-slot-input-v8"
 	DailyInsightNarrativeVersion      = "today-insight-slot-v2"
 )
 
@@ -775,7 +775,7 @@ func localizedSleepNarrativeTextFragments(locale string) []string {
 	case "ru":
 		return []string{"короче твоего обычного ритма сна"}
 	case "sr":
-		return []string{"kraće od vašeg uobičajenog ritma sna"}
+		return []string{"kraće od tvog uobičajenog ritma sna"}
 	default:
 		return []string{"shorter than your usual sleep rhythm"}
 	}
@@ -816,9 +816,9 @@ func localizedRecoveryNarrativeProposition(locale, band string) string {
 	switch locale {
 	case "ru":
 		if band == "optimal" {
-			return "Сигналы восстановления сегодня находятся в верхнем диапазоне готовности."
+			return "Сегодня восстановление на хорошем уровне."
 		}
-		return "Сигналы восстановления сегодня находятся в нижнем диапазоне готовности."
+		return "Сегодня восстановление не на пике."
 	case "sr":
 		if band == "optimal" {
 			return "Signali oporavka su danas u višem opsegu spremnosti."
@@ -836,9 +836,9 @@ func localizedRecoveryNarrativeTextFragments(locale, band string) []string {
 	switch normalizeDailyInsightLocale(locale) {
 	case "ru":
 		if band == "optimal" {
-			return []string{"верхнем диапазоне готовности"}
+			return []string{"восстановление на хорошем уровне"}
 		}
-		return []string{"нижнем диапазоне готовности"}
+		return []string{"восстановление не на пике"}
 	case "sr":
 		if band == "optimal" {
 			return []string{"višem opsegu spremnosti"}
@@ -857,11 +857,11 @@ func localizedEnergyNarrativeProposition(locale, verdict string) string {
 	case "ru":
 		switch verdict {
 		case "push_hard":
-			return "Текущий запас энергии находится в диапазоне более высокого ресурса."
+			return "Сил сегодня достаточно."
 		case "rest":
-			return "Текущий запас энергии находится в диапазоне низкого ресурса."
+			return "Сегодня сил немного."
 		default:
-			return "Текущий запас энергии находится в диапазоне восстановления."
+			return "Энергия сегодня про восстановление."
 		}
 	case "sr":
 		switch verdict {
@@ -889,11 +889,11 @@ func localizedEnergyNarrativeTextFragments(locale, verdict string) []string {
 	case "ru":
 		switch verdict {
 		case "push_hard":
-			return []string{"более высокого ресурса"}
+			return []string{"сил сегодня достаточно"}
 		case "rest":
-			return []string{"низкого ресурса"}
+			return []string{"сегодня сил немного"}
 		default:
-			return []string{"диапазоне восстановления"}
+			return []string{"энергия сегодня про восстановление"}
 		}
 	case "sr":
 		switch verdict {
