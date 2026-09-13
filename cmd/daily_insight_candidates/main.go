@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -25,12 +26,28 @@ import (
 )
 
 const candidateExportVersion = "daily-insight-narrative-candidates-v1"
+const defaultCandidateWorkers = 3
+const maxCandidateWorkers = 4
+
+type candidateJob struct {
+	index       int
+	date        time.Time
+	locale      string
+	candidateID string
+}
+
+type candidateResult struct {
+	index     int
+	candidate *ai.DailyInsightNarrativeCandidate
+	failure   *ai.DailyInsightNarrativeCandidateGap
+}
 
 func main() {
 	from := flag.String("from", "", "inclusive historical start date (YYYY-MM-DD)")
 	to := flag.String("to", "", "inclusive historical end date (YYYY-MM-DD)")
 	locales := flag.String("locales", "en,ru,sr", "comma-separated locales from en,ru,sr")
 	maxCandidates := flag.Int("max", 90, "maximum anonymized candidates to write (1..180)")
+	workers := flag.Int("workers", defaultCandidateWorkers, "bounded concurrent historical reads (1..4)")
 	includeCheckinPresence := flag.Bool("include-checkin-presence", false, "include only answered/absent optional check-in provenance")
 	schema := flag.String("schema", "health", "tenant schema to read")
 	out := flag.String("out", "", "output path outside the repository")
@@ -41,6 +58,9 @@ func main() {
 	}
 	if *maxCandidates < 1 || *maxCandidates > 180 {
 		log.Fatal("--max must be between 1 and 180")
+	}
+	if *workers < 1 || *workers > maxCandidateWorkers {
+		log.Fatalf("--workers must be between 1 and %d", maxCandidateWorkers)
 	}
 	start, end := parseDateRange(*from, *to)
 	selectedLocales := parseLocales(*locales)
@@ -61,34 +81,8 @@ func main() {
 	}
 	defer closeSource()
 
-	export := ai.DailyInsightNarrativeCandidateExport{Version: candidateExportVersion, Failures: []ai.DailyInsightNarrativeCandidateGap{}}
-	allCandidates := make([]ai.DailyInsightNarrativeCandidate, 0)
-	index := 0
-	for day := end; !day.Before(start); day = day.AddDate(0, 0, -1) {
-		for _, locale := range selectedLocales {
-			index++
-			candidateID := fmt.Sprintf("candidate-%03d", index)
-			snapshot, err := db.BuildHistoricalDailyInsightSnapshot(ctx, day.Format("2006-01-02"), locale)
-			if err != nil {
-				export.Failures = append(export.Failures, ai.DailyInsightNarrativeCandidateGap{CandidateID: candidateID, Reason: candidateFailureReason(err)})
-				continue
-			}
-			item := ai.SanitizeDailyInsightNarrativeCorpusCandidate(*snapshot, locale, candidateID)
-			if *includeCheckinPresence {
-				// Check-ins are optional product input. The candidate retains only
-				// a timely-presence marker for the review-only no_checkin scenario;
-				// its answer and timestamps never leave storage. A missing optional
-				// table/read leaves provenance unannotated instead of guessing absent.
-				if checkin, checkinErr := db.HistoricalCheckinScenario(ctx, day.Format("2006-01-02")); checkinErr == nil {
-					item.Scenario.CheckIn = checkin
-				}
-			}
-			allCandidates = append(allCandidates, ai.DailyInsightNarrativeCandidate{
-				DailyInsightNarrativeCorpusCase: item,
-				ReviewHints:                     ai.DailyInsightNarrativeCandidateReviewHints(item),
-			})
-		}
-	}
+	allCandidates, failures := materializeCandidates(ctx, db, candidateJobs(start, end, selectedLocales), *includeCheckinPresence, *workers)
+	export := ai.DailyInsightNarrativeCandidateExport{Version: candidateExportVersion, Failures: failures}
 	export.Candidates = selectDiverseCandidates(allCandidates, *maxCandidates)
 	encoded, err := json.MarshalIndent(export, "", "  ")
 	if err != nil {
@@ -101,6 +95,85 @@ func main() {
 		log.Fatalf("write candidates: %v", err)
 	}
 	fmt.Printf("wrote %d anonymized candidates and %d unavailable placeholders\n", len(export.Candidates), len(export.Failures))
+}
+
+// candidateJobs deliberately enumerates newest-to-oldest and locale order before
+// concurrent reads begin. The worker pool may finish in any order, but the
+// materializer restores this sequence before diversity selection so the frozen
+// corpus remains reproducible for the same retained state.
+func candidateJobs(start, end time.Time, locales []string) []candidateJob {
+	jobs := make([]candidateJob, 0, int(end.Sub(start).Hours()/24+1)*len(locales))
+	index := 0
+	for day := end; !day.Before(start); day = day.AddDate(0, 0, -1) {
+		for _, locale := range locales {
+			index++
+			jobs = append(jobs, candidateJob{
+				index: index, date: day, locale: locale,
+				candidateID: fmt.Sprintf("candidate-%03d", index),
+			})
+		}
+	}
+	return jobs
+}
+
+func materializeCandidates(ctx context.Context, db *storage.DB, jobs []candidateJob, includeCheckinPresence bool, workers int) ([]ai.DailyInsightNarrativeCandidate, []ai.DailyInsightNarrativeCandidateGap) {
+	if len(jobs) == 0 {
+		return nil, []ai.DailyInsightNarrativeCandidateGap{}
+	}
+	work := make(chan candidateJob, len(jobs))
+	results := make(chan candidateResult, len(jobs))
+	for _, job := range jobs {
+		work <- job
+	}
+	close(work)
+
+	var group sync.WaitGroup
+	for range workers {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			for job := range work {
+				result := candidateResult{index: job.index}
+				snapshot, err := db.BuildHistoricalDailyInsightSnapshot(ctx, job.date.Format("2006-01-02"), job.locale)
+				if err != nil {
+					result.failure = &ai.DailyInsightNarrativeCandidateGap{CandidateID: job.candidateID, Reason: candidateFailureReason(err)}
+					results <- result
+					continue
+				}
+				item := ai.SanitizeDailyInsightNarrativeCorpusCandidate(*snapshot, job.locale, job.candidateID)
+				if includeCheckinPresence {
+					// Check-ins are optional product input. The candidate retains only
+					// a timely-presence marker; answer contents and timestamps never leave storage.
+					if checkin, checkinErr := db.HistoricalCheckinScenario(ctx, job.date.Format("2006-01-02")); checkinErr == nil {
+						item.Scenario.CheckIn = checkin
+					}
+				}
+				result.candidate = &ai.DailyInsightNarrativeCandidate{
+					DailyInsightNarrativeCorpusCase: item,
+					ReviewHints:                     ai.DailyInsightNarrativeCandidateReviewHints(item),
+				}
+				results <- result
+			}
+		}()
+	}
+	group.Wait()
+	close(results)
+
+	ordered := make([]candidateResult, len(jobs))
+	for result := range results {
+		ordered[result.index-1] = result
+	}
+	candidates := make([]ai.DailyInsightNarrativeCandidate, 0, len(jobs))
+	failures := make([]ai.DailyInsightNarrativeCandidateGap, 0)
+	for _, result := range ordered {
+		if result.candidate != nil {
+			candidates = append(candidates, *result.candidate)
+		}
+		if result.failure != nil {
+			failures = append(failures, *result.failure)
+		}
+	}
+	return candidates, failures
 }
 
 func openCandidateSource(ctx context.Context, dsn, schema string) (*storage.DB, func(), error) {

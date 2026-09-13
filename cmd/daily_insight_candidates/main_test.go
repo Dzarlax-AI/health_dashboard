@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"health-receiver/internal/ai"
@@ -130,6 +131,29 @@ func TestSelectDiverseCandidatesReservesTemporalCoverageWhenAllSignaturesDiffer(
 	}
 	if got[2].ReviewHints[0] != "c" {
 		t.Fatalf("selection did not retain a middle candidate: %#v", got)
+	}
+}
+
+func TestCandidateJobsKeepHistoricalLocaleOrderBeforeConcurrentReads(t *testing.T) {
+	start := time.Date(2026, time.September, 11, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, time.September, 12, 0, 0, 0, 0, time.UTC)
+	jobs := candidateJobs(start, end, []string{"en", "ru", "sr"})
+	if len(jobs) != 6 {
+		t.Fatalf("job count = %d, want 6", len(jobs))
+	}
+	want := []struct{ date, locale, id string }{
+		{"2026-09-12", "en", "candidate-001"},
+		{"2026-09-12", "ru", "candidate-002"},
+		{"2026-09-12", "sr", "candidate-003"},
+		{"2026-09-11", "en", "candidate-004"},
+		{"2026-09-11", "ru", "candidate-005"},
+		{"2026-09-11", "sr", "candidate-006"},
+	}
+	for index, expected := range want {
+		job := jobs[index]
+		if job.date.Format("2006-01-02") != expected.date || job.locale != expected.locale || job.candidateID != expected.id {
+			t.Fatalf("job %d = %#v, want date=%s locale=%s id=%s", index, job, expected.date, expected.locale, expected.id)
+		}
 	}
 }
 
