@@ -99,7 +99,7 @@ func TestTodayInsightsB1QualityGateResolvesGeminiDefaultsConsistently(t *testing
 	identity := ai.DailyInsightNarrativeSlotCurrentReviewIdentity()
 	approval := TodayInsightsB1QualityGateApproval{
 		Version: TodayInsightsB1QualityGateVersion, CorpusHash: strings.Repeat("b", 64),
-		Provider: "gemini", Model: "gemini-2.5-flash", Reasoning: "minimal",
+		Provider: "gemini", Model: "gemini-2.5-flash", Reasoning: "low",
 		MaxOutputTokens: ai.DailyInsightMaxTokens,
 		PromptRevision:  identity.PromptRevision, ClaimPacketVersion: identity.ClaimPacketVersion,
 		NarrativeVersion: identity.NarrativeVersion, ReviewFingerprint: identity.Fingerprint,
@@ -117,5 +117,18 @@ func TestTodayInsightsB1QualityGateResolvesGeminiDefaultsConsistently(t *testing
 	}
 	if resolved.Model != approval.Model || resolved.ReasoningEffort != approval.Reasoning {
 		t.Fatalf("resolved Gemini config = %+v, want reviewed identity", resolved)
+	}
+}
+
+func TestTodayInsightsB1QualityGateResolvesGemini3ProToLow(t *testing.T) {
+	cfg := AIConfig{Provider: "gemini", Providers: map[string]AIProviderSettings{
+		"gemini": {APIKey: "not-empty", Model: "gemini-3-pro-preview"},
+	}}
+	_, resolved, err := ResolveTodayInsightsB1ProviderConfig(cfg)
+	if err != nil {
+		t.Fatalf("resolve Gemini 3 Pro defaults: %v", err)
+	}
+	if resolved.ReasoningEffort != "low" {
+		t.Fatalf("Gemini 3 Pro reasoning = %q, want low", resolved.ReasoningEffort)
 	}
 }

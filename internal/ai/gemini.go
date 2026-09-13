@@ -80,7 +80,9 @@ func (GeminiProvider) Descriptor() ProviderDescriptor {
 		SupportsReasoning: true,
 		ReasoningEfforts:  []string{"minimal", "low", "medium", "high"},
 		APIKeyPlaceholder: "AIza...",
-		DefaultReasoning:  "minimal",
+		// This is the cross-model safe default for the editable Admin form.
+		// Generate and B1 resolution refine it for known Flash models.
+		DefaultReasoning: "low",
 	}
 }
 
@@ -148,7 +150,7 @@ func generateWithPrompt(ctx context.Context, apiKey, model string, maxTokens int
 	// level explicit instead of inheriting Gemini 3's high default. Gemini 2.5
 	// uses a different thinkingBudget contract, so leave it unchanged here.
 	if isGemini3Model(model) {
-		level, err := geminiThinkingLevel(reasoningEffort)
+		level, err := geminiThinkingLevel(model, reasoningEffort)
 		if err != nil {
 			return GenerationResult{}, err
 		}
@@ -269,15 +271,57 @@ func isGemini3Model(model string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gemini-3")
 }
 
-func geminiThinkingLevel(value string) (string, error) {
+func geminiThinkingLevel(model, value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		value = "minimal"
+		value = GeminiDefaultThinkingLevel(model)
 	}
-	if !ValidReasoningEffortForProvider(GeminiProvider{}.Descriptor(), value) {
-		return "", fmt.Errorf("invalid Gemini thinking level %q", value)
+	if !ValidGeminiThinkingLevel(model, value) {
+		return "", fmt.Errorf("invalid Gemini thinking level %q for model %q", value, model)
 	}
 	return value, nil
+}
+
+// GeminiDefaultThinkingLevel selects the least expensive level which is valid
+// for a known Gemini 3 family. Unknown future Gemini 3 names take the safe
+// shared level rather than inheriting a possibly unsupported Flash-only value.
+func GeminiDefaultThinkingLevel(model string) string {
+	if supportsGeminiThinkingLevel(model, "minimal") {
+		return "minimal"
+	}
+	return "low"
+}
+
+// ValidGeminiThinkingLevel captures the documented per-model Gemini 3
+// differences. A conservative low/high intersection protects custom future
+// model names until their capabilities are explicitly added here.
+func ValidGeminiThinkingLevel(model, value string) bool {
+	return supportsGeminiThinkingLevel(model, value)
+}
+
+func supportsGeminiThinkingLevel(model, value string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	var levels []string
+	switch {
+	case strings.HasPrefix(model, "gemini-3-pro-preview"):
+		levels = []string{"low", "high"}
+	case strings.HasPrefix(model, "gemini-3.1-pro"):
+		levels = []string{"low", "medium", "high"}
+	case strings.HasPrefix(model, "gemini-3.1-flash-lite"):
+		levels = []string{"minimal", "high"}
+	case strings.HasPrefix(model, "gemini-3.7-flash"), strings.HasPrefix(model, "gemini-3.8-flash"):
+		levels = []string{"low", "medium", "high"}
+	case strings.HasPrefix(model, "gemini-3-flash-preview"), strings.HasPrefix(model, "gemini-3.5-flash"), strings.HasPrefix(model, "gemini-3.6-flash"):
+		levels = []string{"minimal", "low", "medium", "high"}
+	default:
+		levels = []string{"low", "high"}
+	}
+	for _, allowed := range levels {
+		if value == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 func firstHeader(headers http.Header, names ...string) string {

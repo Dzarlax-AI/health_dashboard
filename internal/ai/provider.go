@@ -50,6 +50,20 @@ func ValidReasoningEffortForProvider(descriptor ProviderDescriptor, value string
 	return false
 }
 
+// ValidReasoningEffortForProviderModel applies the model-sensitive Gemini 3
+// matrix at the single boundary where an editable model and reasoning value
+// become a provider request. Other providers retain their descriptor list.
+func ValidReasoningEffortForProviderModel(providerID, model, value string) bool {
+	provider, err := GetProvider(providerID)
+	if err != nil {
+		return false
+	}
+	if providerID == ProviderGemini && isGemini3Model(model) {
+		return ValidGeminiThinkingLevel(model, value)
+	}
+	return ValidReasoningEffortForProvider(provider.Descriptor(), value)
+}
+
 // ProviderConfig is the active provider's resolved configuration. Adapters
 // ignore fields they do not support.
 type ProviderConfig struct {

@@ -83,6 +83,15 @@ func TestBuildAdminAISettingsUpdateRejectsUnsupportedGeminiThinkingLevel(t *test
 	}
 }
 
+func TestBuildAdminAISettingsUpdateRejectsFlashOnlyThinkingLevelForGemini3Pro(t *testing.T) {
+	_, err := buildAdminAISettingsUpdate(adminAISettingsRequest{
+		Provider: ai.ProviderGemini, Model: "gemini-3-pro-preview", ReasoningEffort: "minimal", MaxOutputTokens: 5000,
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid reasoning_effort") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestAdminAISettingsPayloadNeverReturnsAPIKeys(t *testing.T) {
 	cfg := storage.AIConfig{
 		Provider: ai.ProviderOpenAI,

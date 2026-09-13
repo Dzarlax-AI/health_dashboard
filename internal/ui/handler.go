@@ -3016,7 +3016,7 @@ func buildAdminAISettingsUpdate(body adminAISettingsRequest) (map[string]string,
 		if body.ReasoningEffort == "" {
 			body.ReasoningEffort = descriptor.DefaultReasoning
 		}
-		if !ai.ValidReasoningEffortForProvider(descriptor, body.ReasoningEffort) {
+		if !ai.ValidReasoningEffortForProviderModel(body.Provider, body.Model, body.ReasoningEffort) {
 			return nil, fmt.Errorf("invalid reasoning_effort")
 		}
 	} else {
@@ -3330,7 +3330,7 @@ func (h *Handler) adminTodayInsightsB1QualityGate(w http.ResponseWriter, r *http
 		return
 	}
 	identity := ai.DailyInsightNarrativeSlotCurrentReviewIdentity()
-	reasoning, err := storage.TodayInsightsB1QualityGateReasoning(request.Evaluation.Provider, request.Evaluation.Reasoning)
+	reasoning, err := storage.TodayInsightsB1QualityGateReasoning(request.Evaluation.Provider, request.Evaluation.Model, request.Evaluation.Reasoning)
 	if err != nil {
 		http.Error(w, "normalize B1 quality-gate reasoning: "+err.Error(), http.StatusUnprocessableEntity)
 		return
