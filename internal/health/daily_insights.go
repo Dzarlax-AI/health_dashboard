@@ -573,7 +573,7 @@ func localizedNarrativeMeaning(locale, id string) string {
 	translations := map[string]map[string]string{
 		"en": {
 			"overall_pacing_guardrail":       "Treat the selected plan as a pacing guardrail for today, not a promise about the outcome of the day.",
-			"overall_visible_action":         "Connect the explanation to the action already visible on screen; do not invent another action.",
+			"overall_visible_action":         "The action already visible on screen is the practical expression of today's selected pacing plan.",
 			"sleep_pattern_not_single_night": "Frame this as a recent pattern across nights, not a verdict on the quality of one night or on health.",
 			"sleep_wind_down_bridge":         "The already offered quieter evening is a practical way to give the next sleep period more room; do not promise recovery or diagnose a deficit.",
 			"recovery_pacing_not_verdict":    "Readiness is a present-day pacing signal, not a judgement about health, fitness, or a forecast.",
@@ -581,7 +581,7 @@ func localizedNarrativeMeaning(locale, id string) string {
 		},
 		"ru": {
 			"overall_pacing_guardrail":       "Покажите выбранный план как ориентир темпа на сегодня, а не обещание того, как сложится день.",
-			"overall_visible_action":         "Свяжите объяснение только с уже видимым на экране действием; не придумывайте новое действие.",
+			"overall_visible_action":         "Уже видимое на экране действие — практическое выражение выбранного на сегодня темпа.",
 			"sleep_pattern_not_single_night": "Покажите это как паттерн нескольких ночей, а не вердикт об одной ночи или о здоровье.",
 			"sleep_wind_down_bridge":         "Уже предложенный более тихий вечер даёт следующему сну больше пространства; не обещайте восстановление и не ставьте диагноз.",
 			"recovery_pacing_not_verdict":    "Готовность — это ориентир темпа на текущий день, а не оценка здоровья, формы или прогноз.",
@@ -589,7 +589,7 @@ func localizedNarrativeMeaning(locale, id string) string {
 		},
 		"sr": {
 			"overall_pacing_guardrail":       "Prikažite izabrani plan kao ogradu za tempo dana, a ne obećanje ishoda dana.",
-			"overall_visible_action":         "Povežite objašnjenje samo sa već vidljivom akcijom na ekranu; ne izmišljajte novu akciju.",
+			"overall_visible_action":         "Već vidljiva akcija na ekranu je praktičan izraz danas izabranog tempa.",
 			"sleep_pattern_not_single_night": "Prikažite ovo kao obrazac kroz nekoliko noći, ne kao presudu o jednoj noći ili zdravlju.",
 			"sleep_wind_down_bridge":         "Već ponuđeno mirnije veče daje narednom snu više prostora; ne obećavajte oporavak niti postavljajte dijagnozu.",
 			"recovery_pacing_not_verdict":    "Spremnost je signal za tempo dana, ne procena zdravlja, forme ili prognoza.",
