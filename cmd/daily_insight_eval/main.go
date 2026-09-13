@@ -33,11 +33,11 @@ func main() {
 	validateOnly := flag.Bool("validate", false, "validate and print the checksum of --corpus without calling a provider")
 	prepareReview := flag.Bool("prepare-review", false, "write offline claim/fallback review packet without calling a provider")
 	checkConfig := flag.Bool("check-config", false, "verify provider configuration without reading a corpus or calling a provider")
-	providerID := flag.String("provider", "", "explicit provider id")
-	model := flag.String("model", "", "explicit model id; provider default if empty")
-	reasoning := flag.String("reasoning", "", "explicit reasoning effort; provider default if empty")
+	providerID := flag.String("provider", "", "explicit provider id; with --database-config must match the active Admin provider")
+	model := flag.String("model", "", "explicit model id; with --database-config must match the active Admin model")
+	reasoning := flag.String("reasoning", "", "explicit reasoning effort; with --database-config must match the active Admin setting")
 	apiKeyEnv := flag.String("api-key-env", "", "environment variable containing the provider key")
-	databaseConfig := flag.Bool("database-config", false, "load the selected provider configuration from installation-wide Admin settings")
+	databaseConfig := flag.Bool("database-config", false, "load only the active B1 provider configuration from installation-wide Admin settings")
 	databaseURLEnv := flag.String("database-url-env", "DATABASE_URL", "environment variable containing the database URL when --database-config is set")
 	runs := flag.Int("runs", 3, "independent generations per eligible case")
 	flag.Parse()
@@ -58,8 +58,8 @@ func main() {
 		inspectProviderConfig(*providerID, *model, *reasoning, *apiKeyEnv, *databaseConfig, *databaseURLEnv)
 		return
 	}
-	if *corpusPath == "" || *outPath == "" || *providerID == "" || (!*databaseConfig && *apiKeyEnv == "") {
-		log.Fatal("--corpus, --out, --provider and either --api-key-env or --database-config are required")
+	if *corpusPath == "" || *outPath == "" || (!*databaseConfig && (*providerID == "" || *apiKeyEnv == "")) {
+		log.Fatal("--corpus and --out are required; outside --database-config also provide --provider and --api-key-env")
 	}
 	if *runs != 3 {
 		log.Fatal("--runs must be exactly 3 for the B1 quality gate")
@@ -69,52 +69,39 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	provider, err := ai.GetProvider(*providerID)
-	if err != nil {
-		log.Fatal(err)
-	}
-	descriptor := provider.Descriptor()
-	modelExplicit := *model != ""
-	reasoningExplicit := *reasoning != ""
-	if *model == "" {
-		*model = descriptor.DefaultModel
-	}
-	if *reasoning == "" {
-		*reasoning = descriptor.DefaultReasoning
-	}
-	key := os.Getenv(*apiKeyEnv)
-	var storedConfig storage.AIConfig
+	var provider ai.Provider
+	var config ai.ProviderConfig
 	if *databaseConfig {
-		storedConfig, err = loadAIConfigFromDatabase(*databaseURLEnv)
+		storedConfig, err := loadAIConfigFromDatabase(*databaseURLEnv)
 		if err != nil {
 			log.Fatal(err)
 		}
-		stored := storedConfig.SettingsFor(*providerID)
-		key = stored.APIKey
-		if !modelExplicit && stored.Model != "" {
-			*model = stored.Model
-		}
-		if !reasoningExplicit && stored.ReasoningEffort != "" {
-			*reasoning = stored.ReasoningEffort
-		}
-	}
-	if key == "" {
-		if *databaseConfig {
-			log.Fatalf("database settings have no API key for provider %q", *providerID)
-		}
-		log.Fatalf("environment variable %q is empty", *apiKeyEnv)
-	}
-
-	config := ai.ProviderConfig{APIKey: key, Model: *model, ReasoningEffort: *reasoning, MaxOutputTokens: ai.DailyInsightMaxTokens}
-	if *databaseConfig {
-		storedConfig.Provider = *providerID
-		storedConfig.SetSettingsFor(*providerID, storage.AIProviderSettings{APIKey: key, Model: *model, ReasoningEffort: *reasoning})
-		_, resolved, err := storage.ResolveTodayInsightsB1ProviderConfig(storedConfig)
+		provider, config, err = resolveActiveDatabaseProviderConfig(storedConfig, *providerID, *model, *reasoning)
 		if err != nil {
 			log.Fatal(err)
 		}
-		config = resolved
+		if config.APIKey == "" {
+			log.Fatalf("active database provider %q is not configured", provider.Descriptor().ID)
+		}
+		*providerID = provider.Descriptor().ID
 		*model, *reasoning = config.Model, config.ReasoningEffort
+	} else {
+		provider, err = ai.GetProvider(*providerID)
+		if err != nil {
+			log.Fatal(err)
+		}
+		descriptor := provider.Descriptor()
+		if *model == "" {
+			*model = descriptor.DefaultModel
+		}
+		if *reasoning == "" {
+			*reasoning = descriptor.DefaultReasoning
+		}
+		key := os.Getenv(*apiKeyEnv)
+		if key == "" {
+			log.Fatalf("environment variable %q is empty", *apiKeyEnv)
+		}
+		config = ai.ProviderConfig{APIKey: key, Model: *model, ReasoningEffort: *reasoning, MaxOutputTokens: ai.DailyInsightMaxTokens}
 	}
 	identity := ai.DailyInsightNarrativeCurrentReviewIdentity()
 	output := ai.DailyInsightNarrativeEvaluationOutput{
@@ -200,41 +187,61 @@ func main() {
 // inspectProviderConfig verifies only configuration reachability. Its output
 // deliberately contains no key material, corpus data, or provider response.
 func inspectProviderConfig(providerID, model, reasoning, apiKeyEnv string, databaseConfig bool, databaseURLEnv string) {
-	if providerID == "" || (!databaseConfig && apiKeyEnv == "") {
-		log.Fatal("--provider and either --api-key-env or --database-config are required with --check-config")
+	if !databaseConfig && (providerID == "" || apiKeyEnv == "") {
+		log.Fatal("outside --database-config, --provider and --api-key-env are required with --check-config")
+	}
+	if databaseConfig {
+		stored, err := loadAIConfigFromDatabase(databaseURLEnv)
+		if err != nil {
+			log.Fatal(err)
+		}
+		provider, active, err := resolveActiveDatabaseProviderConfig(stored, providerID, model, reasoning)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if active.APIKey == "" {
+			log.Fatalf("active database provider %q is not configured", provider.Descriptor().ID)
+		}
+		fmt.Printf("provider=%s configured=true model=%s reasoning=%s max_output_tokens=%d\n", provider.Descriptor().ID, active.Model, active.ReasoningEffort, active.MaxOutputTokens)
+		return
 	}
 	provider, err := ai.GetProvider(providerID)
 	if err != nil {
 		log.Fatal(err)
 	}
 	descriptor := provider.Descriptor()
-	modelExplicit := model != ""
-	reasoningExplicit := reasoning != ""
 	if model == "" {
 		model = descriptor.DefaultModel
 	}
 	if reasoning == "" {
 		reasoning = descriptor.DefaultReasoning
 	}
-	key := os.Getenv(apiKeyEnv)
-	if databaseConfig {
-		stored, err := loadAIConfigFromDatabase(databaseURLEnv)
-		if err != nil {
-			log.Fatal(err)
-		}
-		providerSettings := stored.SettingsFor(providerID)
-		key = providerSettings.APIKey
-		if !modelExplicit && providerSettings.Model != "" {
-			model = providerSettings.Model
-		}
-		if !reasoningExplicit && providerSettings.ReasoningEffort != "" {
-			reasoning = providerSettings.ReasoningEffort
-		}
-	}
-	if key == "" {
-		log.Fatalf("provider %q is not configured", providerID)
+	if key := os.Getenv(apiKeyEnv); key == "" {
+		log.Fatalf("environment variable %q is empty", apiKeyEnv)
 	}
 	fmt.Printf("provider=%s configured=true model=%s reasoning=%s\n", providerID, model, reasoning)
+}
+
+// resolveActiveDatabaseProviderConfig makes the evaluator follow exactly the
+// same active B1 configuration that serving uses. A database-backed evaluation
+// is evidence for that configuration only; silently selecting an alternate
+// configured provider would make its corpus review inapplicable to serving.
+func resolveActiveDatabaseProviderConfig(stored storage.AIConfig, requestedProvider, requestedModel, requestedReasoning string) (ai.Provider, ai.ProviderConfig, error) {
+	provider, active, err := storage.ResolveTodayInsightsB1ProviderConfig(stored)
+	if err != nil {
+		return nil, ai.ProviderConfig{}, err
+	}
+	activeID := provider.Descriptor().ID
+	if requestedProvider != "" && requestedProvider != activeID {
+		return nil, ai.ProviderConfig{}, fmt.Errorf("--database-config refuses provider %q: active Admin provider is %q", requestedProvider, activeID)
+	}
+	if requestedModel != "" && requestedModel != active.Model {
+		return nil, ai.ProviderConfig{}, fmt.Errorf("--database-config refuses model %q: active Admin model is %q", requestedModel, active.Model)
+	}
+	if requestedReasoning != "" && requestedReasoning != active.ReasoningEffort {
+		return nil, ai.ProviderConfig{}, fmt.Errorf("--database-config refuses reasoning %q: active Admin reasoning is %q", requestedReasoning, active.ReasoningEffort)
+	}
+	return provider, active, nil
 }
 
 // loadProviderConfigFromDatabase reads the installation-wide Admin provider
