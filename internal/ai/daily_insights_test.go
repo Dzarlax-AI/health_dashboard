@@ -130,6 +130,15 @@ func TestDailyInsightSlotPromptRejectsInterfaceMetaVoice(t *testing.T) {
 	}
 }
 
+func TestDailyInsightSlotPromptRejectsAbstractPacingBoilerplate(t *testing.T) {
+	prompt := strings.ToLower(dailyInsightSlotSystemPrompt)
+	for _, fragment := range []string{"guide, orientation, cue, verdict, score", "today's pace", "how the day is going", "second person"} {
+		if !strings.Contains(prompt, fragment) {
+			t.Fatalf("slot prompt no longer guards abstract pacing boilerplate %q", fragment)
+		}
+	}
+}
+
 func dailyInsightTestSnapshot(t *testing.T) *health.DailyInsightSnapshot {
 	t.Helper()
 	duration := 7.2
