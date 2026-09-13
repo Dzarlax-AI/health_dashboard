@@ -221,7 +221,7 @@ func TestDailyInsightNarrativeKeepsFallbackAndRejectsOnlyUnsafeDomain(t *testing
 	}
 
 	validSleep := &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
-		Text: "It gives the current day a little more context.", ClaimIDs: []string{"recent_sleep_below_reference"}, QualifierIDs: []string{"personal_pattern", "current_context"}, MeaningIDs: []string{"sleep_pattern_not_single_night"},
+		Text: "Several recent nights were shorter than the personal historical reference, forming a pattern rather than describing one night.", ClaimIDs: []string{"recent_sleep_below_reference"}, QualifierIDs: []string{"personal_pattern", "current_context"}, MeaningIDs: []string{"sleep_pattern_not_single_night"},
 	}}}
 	unsafeRecovery := &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
 		Text: "Today is 100% safe.", ClaimIDs: []string{"recovery_current_context"}, QualifierIDs: []string{"current_context"}, MeaningIDs: []string{"recovery_pacing_not_verdict"},
@@ -345,7 +345,7 @@ func TestDailyInsightNarrativeSlotsKeepSiblingMaterialIndependent(t *testing.T) 
 		t.Fatalf("sleep update changed recovery slot hash: before=%s after=%s", hash, changed)
 	}
 	section := &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
-		Text:     "It frames the day as a deliberately conservative choice, not a broader judgement.",
+		Text:     "Today is set to an active-recovery pace, keeping the selected pace scoped to today.",
 		ClaimIDs: []string{"overall_daily_decision_context"}, QualifierIDs: []string{"current_context"}, MeaningIDs: []string{"overall_pacing_guardrail"},
 	}}}
 	validated, err := ValidateDailyInsightNarrativeSlotResponse(base, "en", DailyInsightNarrativeOverallSlot, DailyInsightNarrativeSlot{
@@ -372,6 +372,36 @@ func TestDailyInsightNarrativeSlotRejectsMeaningOutsideServerCatalogue(t *testin
 	})
 	if err == nil || !strings.Contains(err.Error(), "unapproved meaning ID") {
 		t.Fatalf("unexpected meaning validation error: %v", err)
+	}
+}
+
+func TestDailyInsightNarrativeSlotRequiresClaimTextAnchors(t *testing.T) {
+	snapshot := ApplyRecentSleepBelowReference(BuildDailyInsightSnapshot(&BriefingResponse{Date: "2026-09-12"}, "en"), RecentSleepBelowReference{State: RecentSleepClaimTrue}, "en")
+	_, err := ValidateDailyInsightNarrativeSlotResponse(snapshot, "en", "sleep", DailyInsightNarrativeSlot{
+		Version: DailyInsightNarrativeVersion,
+		Locale:  "en",
+		Slot: DailyInsightNarrativeDomain{Key: "sleep", Section: &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
+			Text:     "It gives the current day a little more context.",
+			ClaimIDs: []string{"recent_sleep_below_reference"}, QualifierIDs: []string{"personal_pattern", "current_context"}, MeaningIDs: []string{"sleep_pattern_not_single_night"},
+		}}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing required text fragment") {
+		t.Fatalf("unexpected text-anchor validation error: %v", err)
+	}
+}
+
+func TestDailyInsightNarrativeSlotRequiresSerbianLatinScript(t *testing.T) {
+	snapshot := ApplyRecentSleepBelowReference(BuildDailyInsightSnapshot(&BriefingResponse{Date: "2026-09-12"}, "sr"), RecentSleepBelowReference{State: RecentSleepClaimTrue}, "sr")
+	_, err := ValidateDailyInsightNarrativeSlotResponse(snapshot, "sr", "sleep", DailyInsightNarrativeSlot{
+		Version: DailyInsightNarrativeVersion,
+		Locale:  "sr",
+		Slot: DailyInsightNarrativeDomain{Key: "sleep", Section: &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
+			Text:     "Нekoliko poslednjih noći bilo je kraće od ličnog obrasca, pa čini skorašnji obrazac.",
+			ClaimIDs: []string{"recent_sleep_below_reference"}, QualifierIDs: []string{"personal_pattern", "current_context"}, MeaningIDs: []string{"sleep_pattern_not_single_night"},
+		}}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "Latin script") {
+		t.Fatalf("unexpected Serbian script validation error: %v", err)
 	}
 }
 

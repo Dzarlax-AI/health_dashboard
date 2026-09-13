@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -147,7 +148,12 @@ func main() {
 					// siblings in the review artifact and mark only this slot as a
 					// provider failure; otherwise an unsafe successful section could
 					// be hidden by a later unrelated request failure.
-					entry.ProviderErrors[slot] = generationErr.Error()
+					var semanticErr *ai.DailyInsightNarrativeSemanticError
+					if errors.As(generationErr, &semanticErr) {
+						entry.InvalidDomains[slot] = semanticErr.Error()
+					} else {
+						entry.ProviderErrors[slot] = generationErr.Error()
+					}
 					if slot != health.DailyInsightNarrativeOverallSlot {
 						candidate.Domains = append(candidate.Domains, health.DailyInsightNarrativeDomain{Key: slot})
 					}

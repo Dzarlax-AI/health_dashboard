@@ -650,27 +650,22 @@ func reviewedDomainReviews(snapshot health.DailyInsightSnapshot, locale string) 
 func intPointer(value int) *int { return &value }
 
 func corpusNarrative(snapshot health.DailyInsightSnapshot, locale string) health.DailyInsightNarrative {
-	text := "This personal recent pattern gives the current day a little more context."
-	if locale == "ru" {
-		text = "Этот недавний личный паттерн даёт сегодняшнему дню чуть больше контекста."
-	}
-	if locale == "sr" {
-		text = "Ovaj lični nedavni obrazac daje današnjem danu malo više konteksta."
-	}
 	input := dailyInsightNarrativeReviewInputs(snapshot, locale)
 	domains := make([]health.DailyInsightNarrativeDomain, 0, 3)
 	var overall *health.DailyInsightNarrativeSection
 	for _, domain := range input {
 		candidate := health.DailyInsightNarrativeDomain{Key: domain.Key}
 		if len(domain.Claims) > 0 {
-			claimIDs, qualifierIDs, meaningIDs := make([]string, 0, len(domain.Claims)), []string{}, []string{}
+			claimIDs, qualifierIDs, meaningIDs, anchors := make([]string, 0, len(domain.Claims)), []string{}, []string{}, []string{}
 			for _, claim := range domain.Claims {
 				claimIDs = append(claimIDs, claim.ID)
 				qualifierIDs = append(qualifierIDs, claim.RequiredQualifierIDs...)
+				anchors = append(anchors, claim.RequiredTextFragments...)
 				if len(claim.MeaningLinks) != 0 {
 					meaningIDs = append(meaningIDs, claim.MeaningLinks[0].ID)
 				}
 			}
+			text := strings.Join(anchors, " ") + ". This keeps the explanation tied to the server-selected context."
 			candidate.Section = &health.DailyInsightNarrativeSection{Sentences: []health.DailyInsightNarrativeSentence{{Text: text, ClaimIDs: claimIDs, QualifierIDs: qualifierIDs, MeaningIDs: meaningIDs}}}
 		}
 		if domain.Key == health.DailyInsightNarrativeOverallSlot {
