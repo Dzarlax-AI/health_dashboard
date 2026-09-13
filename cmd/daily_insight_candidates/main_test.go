@@ -26,6 +26,23 @@ func TestOpenCandidateSourceRequiresDirectDSNWhenIsolationDisabled(t *testing.T)
 	}
 }
 
+func TestOpenCandidateSourceRejectsInvalidIsolationBeforeUsingDatabaseURL(t *testing.T) {
+	t.Setenv("TENANT_DB_ISOLATION_ENABLED", "true")
+	t.Setenv("ADMIN_DATABASE_URL", "")
+	t.Setenv("REGISTRY_DATABASE_URL", "")
+	t.Setenv("TENANT_DATABASE_URL_BASE", "")
+	t.Setenv("TENANT_DB_MASTER_SECRET", "")
+	t.Setenv("TENANT_DB_MASTER_SECRET_VERSION", "")
+
+	db, closeSource, err := openCandidateSource(context.Background(), "postgres://registry.example/health", "health")
+	if err == nil || !strings.Contains(err.Error(), "parse tenant candidate source") {
+		t.Fatalf("openCandidateSource error = %v, want isolation configuration error", err)
+	}
+	if db != nil || closeSource != nil {
+		t.Fatal("openCandidateSource returned a source for invalid isolation configuration")
+	}
+}
+
 func TestCandidateFailureReasonDoesNotExposeStorageError(t *testing.T) {
 	tests := []struct {
 		err  error

@@ -104,6 +104,22 @@ func main() {
 }
 
 func openCandidateSource(ctx context.Context, dsn, schema string) (*storage.DB, func(), error) {
+	cfg, err := tenants.ParseTenantIsolationConfig(os.LookupEnv)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse tenant candidate source: %w", err)
+	}
+	// A production isolation deployment exposes DATABASE_URL for the registry
+	// connection. It is not a tenant data source, even when a caller supplies a
+	// valid tenant schema. Prefer the same read-only tenant resolver as other
+	// offline tools, otherwise an evaluator can silently build all-missing
+	// snapshots from the registry database.
+	if cfg.Enabled {
+		db, closeSource, err := tenants.OpenReadOnlyTenant(ctx, cfg, schema)
+		if err != nil {
+			return nil, nil, fmt.Errorf("open isolated tenant source: %w", err)
+		}
+		return db, closeSource, nil
+	}
 	if strings.TrimSpace(dsn) != "" || standardPostgresEnvConfigured() {
 		db, err := storage.NewWithSchema(ctx, dsn, schema)
 		if err != nil {
@@ -111,18 +127,7 @@ func openCandidateSource(ctx context.Context, dsn, schema string) (*storage.DB, 
 		}
 		return db, db.Close, nil
 	}
-	cfg, err := tenants.ParseTenantIsolationConfig(os.LookupEnv)
-	if err != nil {
-		return nil, nil, fmt.Errorf("parse isolated tenant source: %w", err)
-	}
-	if !cfg.Enabled {
-		return nil, nil, fmt.Errorf("DATABASE_URL is required when tenant database isolation is disabled")
-	}
-	db, closeSource, err := tenants.OpenReadOnlyTenant(ctx, cfg, schema)
-	if err != nil {
-		return nil, nil, fmt.Errorf("open isolated tenant source: %w", err)
-	}
-	return db, closeSource, nil
+	return nil, nil, fmt.Errorf("DATABASE_URL is required when tenant database isolation is disabled")
 }
 
 func standardPostgresEnvConfigured() bool {
