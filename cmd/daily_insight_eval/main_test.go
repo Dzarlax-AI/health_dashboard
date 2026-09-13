@@ -2,11 +2,49 @@ package main
 
 import (
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"health-receiver/internal/ai"
 	"health-receiver/internal/storage"
 )
+
+func TestRunIndependentEvaluationRunsPreservesOrderAndBoundsConcurrency(t *testing.T) {
+	started := make(chan struct{}, evaluationRunConcurrency)
+	release := make(chan struct{})
+	finished := make(chan []ai.DailyInsightNarrativeEvaluationRun, 1)
+	var inFlight, maxInFlight int32
+
+	go func() {
+		finished <- runIndependentEvaluationRuns(3, func(run int) ai.DailyInsightNarrativeEvaluationRun {
+			current := atomic.AddInt32(&inFlight, 1)
+			for {
+				previous := atomic.LoadInt32(&maxInFlight)
+				if current <= previous || atomic.CompareAndSwapInt32(&maxInFlight, previous, current) {
+					break
+				}
+			}
+			started <- struct{}{}
+			<-release
+			atomic.AddInt32(&inFlight, -1)
+			return ai.DailyInsightNarrativeEvaluationRun{Attempts: run + 1}
+		})
+	}()
+
+	for range 3 {
+		<-started
+	}
+	close(release)
+	runs := <-finished
+	if maxInFlight != evaluationRunConcurrency {
+		t.Fatalf("maximum concurrency = %d, want %d", maxInFlight, evaluationRunConcurrency)
+	}
+	for index, run := range runs {
+		if want := index + 1; run.Attempts != want {
+			t.Fatalf("run %d attempts = %d, want %d", index, run.Attempts, want)
+		}
+	}
+}
 
 func TestEvaluatorRegistryDSNUsesIsolationRegistryWhenEnabled(t *testing.T) {
 	values := map[string]string{

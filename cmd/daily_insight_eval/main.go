@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"health-receiver/internal/ai"
@@ -26,6 +27,11 @@ import (
 	"health-receiver/internal/storage"
 	"health-receiver/internal/tenants"
 )
+
+// evaluationRunConcurrency bounds offline evaluator traffic. Each run still
+// generates its slots sequentially, so a run's narrative and review remain
+// exactly as they would in the production generation path.
+const evaluationRunConcurrency = 3
 
 func main() {
 	corpusPath := flag.String("corpus", "", "path to a frozen anonymized corpus JSON file")
@@ -125,56 +131,9 @@ func main() {
 			continue
 		}
 		result.Mode = "narrative_candidate"
-		result.Runs = make([]ai.DailyInsightNarrativeEvaluationRun, 0, *runs)
-		for run := 0; run < *runs; run++ {
-			entry := ai.DailyInsightNarrativeEvaluationRun{InvalidDomains: map[string]string{}, ProviderErrors: map[string]string{}}
-			candidate := health.DailyInsightNarrative{Version: health.DailyInsightNarrativeVersion, Locale: item.Locale, Domains: make([]health.DailyInsightNarrativeDomain, 0, 3)}
-			for _, slot := range []string{health.DailyInsightNarrativeOverallSlot, "sleep", "recovery", "energy"} {
-				input, known := health.BuildDailyInsightNarrativeSlotInput(&snapshot, item.Locale, slot)
-				if !known || len(input.Slot.Claims) == 0 {
-					if slot != health.DailyInsightNarrativeOverallSlot {
-						candidate.Domains = append(candidate.Domains, health.DailyInsightNarrativeDomain{Key: slot})
-					}
-					continue
-				}
-				generationCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-				generated, generationErr := ai.GenerateDailyInsightNarrativeSlot(generationCtx, provider, config, &snapshot, item.Locale, slot)
-				cancel()
-				entry.Attempts += generated.Attempts
-				entry.InputTokens += int(generated.InputTokens)
-				entry.OutputTokens += int(generated.OutputTokens)
-				if generationErr != nil {
-					// A slot is the runtime unit of generation. Keep successful
-					// siblings in the review artifact and mark only this slot as a
-					// provider failure; otherwise an unsafe successful section could
-					// be hidden by a later unrelated request failure.
-					var semanticErr *ai.DailyInsightNarrativeSemanticError
-					if errors.As(generationErr, &semanticErr) {
-						entry.InvalidDomains[slot] = semanticErr.Error()
-					} else {
-						entry.ProviderErrors[slot] = generationErr.Error()
-					}
-					if slot != health.DailyInsightNarrativeOverallSlot {
-						candidate.Domains = append(candidate.Domains, health.DailyInsightNarrativeDomain{Key: slot})
-					}
-					continue
-				}
-				if slot == health.DailyInsightNarrativeOverallSlot {
-					candidate.Overall = generated.Section
-				} else {
-					candidate.Domains = append(candidate.Domains, health.DailyInsightNarrativeDomain{Key: slot, Section: generated.Section})
-				}
-			}
-			entry.Narrative = &candidate
-			if len(entry.InvalidDomains) == 0 {
-				entry.InvalidDomains = nil
-			}
-			if len(entry.ProviderErrors) == 0 {
-				entry.ProviderErrors = nil
-			}
-			entry.Review = ai.DailyInsightNarrativeRunReviewWorksheet(snapshot, item.Locale, entry.Narrative, entry.InvalidDomains, entry.ProviderErrors)
-			result.Runs = append(result.Runs, entry)
-		}
+		result.Runs = runIndependentEvaluationRuns(*runs, func(_ int) ai.DailyInsightNarrativeEvaluationRun {
+			return evaluateNarrativeRun(snapshot, item.Locale, provider, config)
+		})
 		output.Cases = append(output.Cases, result)
 	}
 	encoded, err := json.MarshalIndent(output, "", "  ")
@@ -188,6 +147,78 @@ func main() {
 		log.Fatal(err)
 	}
 	fmt.Printf("wrote %s for %d frozen cases; corpus_sha256=%s\n", *outPath, len(output.Cases), output.CorpusHash)
+}
+
+func runIndependentEvaluationRuns(runs int, evaluate func(int) ai.DailyInsightNarrativeEvaluationRun) []ai.DailyInsightNarrativeEvaluationRun {
+	results := make([]ai.DailyInsightNarrativeEvaluationRun, runs)
+	workers := min(runs, evaluationRunConcurrency)
+	jobs := make(chan int)
+	var group sync.WaitGroup
+	for worker := 0; worker < workers; worker++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			for run := range jobs {
+				results[run] = evaluate(run)
+			}
+		}()
+	}
+	for run := 0; run < runs; run++ {
+		jobs <- run
+	}
+	close(jobs)
+	group.Wait()
+	return results
+}
+
+func evaluateNarrativeRun(snapshot health.DailyInsightSnapshot, locale string, provider ai.Provider, config ai.ProviderConfig) ai.DailyInsightNarrativeEvaluationRun {
+	entry := ai.DailyInsightNarrativeEvaluationRun{InvalidDomains: map[string]string{}, ProviderErrors: map[string]string{}}
+	candidate := health.DailyInsightNarrative{Version: health.DailyInsightNarrativeVersion, Locale: locale, Domains: make([]health.DailyInsightNarrativeDomain, 0, 3)}
+	for _, slot := range []string{health.DailyInsightNarrativeOverallSlot, "sleep", "recovery", "energy"} {
+		input, known := health.BuildDailyInsightNarrativeSlotInput(&snapshot, locale, slot)
+		if !known || len(input.Slot.Claims) == 0 {
+			if slot != health.DailyInsightNarrativeOverallSlot {
+				candidate.Domains = append(candidate.Domains, health.DailyInsightNarrativeDomain{Key: slot})
+			}
+			continue
+		}
+		generationCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		generated, generationErr := ai.GenerateDailyInsightNarrativeSlot(generationCtx, provider, config, &snapshot, locale, slot)
+		cancel()
+		entry.Attempts += generated.Attempts
+		entry.InputTokens += int(generated.InputTokens)
+		entry.OutputTokens += int(generated.OutputTokens)
+		if generationErr != nil {
+			// A slot is the runtime unit of generation. Keep successful siblings
+			// in the review artifact and mark only this slot as a provider failure;
+			// otherwise an unsafe successful section could be hidden by a later
+			// unrelated request failure.
+			var semanticErr *ai.DailyInsightNarrativeSemanticError
+			if errors.As(generationErr, &semanticErr) {
+				entry.InvalidDomains[slot] = semanticErr.Error()
+			} else {
+				entry.ProviderErrors[slot] = generationErr.Error()
+			}
+			if slot != health.DailyInsightNarrativeOverallSlot {
+				candidate.Domains = append(candidate.Domains, health.DailyInsightNarrativeDomain{Key: slot})
+			}
+			continue
+		}
+		if slot == health.DailyInsightNarrativeOverallSlot {
+			candidate.Overall = generated.Section
+		} else {
+			candidate.Domains = append(candidate.Domains, health.DailyInsightNarrativeDomain{Key: slot, Section: generated.Section})
+		}
+	}
+	entry.Narrative = &candidate
+	if len(entry.InvalidDomains) == 0 {
+		entry.InvalidDomains = nil
+	}
+	if len(entry.ProviderErrors) == 0 {
+		entry.ProviderErrors = nil
+	}
+	entry.Review = ai.DailyInsightNarrativeRunReviewWorksheet(snapshot, locale, entry.Narrative, entry.InvalidDomains, entry.ProviderErrors)
+	return entry
 }
 
 // inspectProviderConfig verifies only configuration reachability. Its output
