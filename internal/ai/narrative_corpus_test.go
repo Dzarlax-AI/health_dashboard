@@ -154,6 +154,35 @@ func TestSanitizeNarrativeCorpusCandidateKeepsOnlyClosedClaimInputs(t *testing.T
 	}
 }
 
+func TestSanitizeNarrativeCorpusCandidateRetainsOnlyClosedSleepWindDownMarker(t *testing.T) {
+	original := corpusSnapshot("2026-09-12")
+	original.Domains[0].Insight.NextStep = &health.DailyInsightAction{ID: "wind_down", Text: "Private action copy"}
+	candidate := SanitizeDailyInsightNarrativeCorpusCandidate(original, "en", "candidate-01")
+	sleep, found := narrativeCorpusDomain(candidate.Snapshot, "sleep")
+	if !found || sleep.Insight.NextStep == nil || sleep.Insight.NextStep.ID != "wind_down" || sleep.Insight.NextStep.Text != "" {
+		t.Fatalf("sanitized sleep action = %#v", sleep.Insight.NextStep)
+	}
+	if strings.Contains(mustMarshalNarrativeCorpusCandidate(t, candidate), "Private action copy") {
+		t.Fatal("sanitized candidate leaked action copy")
+	}
+
+	original.Domains[0].Insight.NextStep = &health.DailyInsightAction{ID: "other", Text: "Other private action"}
+	candidate = SanitizeDailyInsightNarrativeCorpusCandidate(original, "en", "candidate-02")
+	sleep, found = narrativeCorpusDomain(candidate.Snapshot, "sleep")
+	if !found || sleep.Insight.NextStep != nil {
+		t.Fatalf("sanitized unsupported sleep action = %#v", sleep.Insight.NextStep)
+	}
+}
+
+func mustMarshalNarrativeCorpusCandidate(t *testing.T, candidate DailyInsightNarrativeCorpusCase) string {
+	t.Helper()
+	encoded, err := json.Marshal(candidate)
+	if err != nil {
+		t.Fatalf("marshal sanitized candidate: %v", err)
+	}
+	return string(encoded)
+}
+
 func TestCheckDailyInsightNarrativeQualityGateRequiresAllRunsToBeUsefulAndSafe(t *testing.T) {
 	corpus := coveredNarrativeCorpus(t, 20)
 	output := reviewedEvaluation(t, corpus)
@@ -367,6 +396,20 @@ func TestValidateDailyInsightNarrativeCorpusRequiresEveryClaimInEveryLocale(t *t
 	}
 }
 
+func TestValidateDailyInsightNarrativeCorpusRequiresActionLinkedMeaningInEveryLocale(t *testing.T) {
+	corpus := coveredNarrativeCorpus(t, 20)
+	for index := range corpus.Cases {
+		for domainIndex := range corpus.Cases[index].Snapshot.Domains {
+			if corpus.Cases[index].Snapshot.Domains[domainIndex].Key == "sleep" {
+				corpus.Cases[index].Snapshot.Domains[domainIndex].Insight.NextStep = nil
+			}
+		}
+	}
+	if err := ValidateDailyInsightNarrativeCorpus(corpus); err == nil || !strings.Contains(err.Error(), "en:sleep_wind_down_bridge") {
+		t.Fatalf("validation error = %v, want missing action-linked meaning coverage", err)
+	}
+}
+
 func TestValidateDailyInsightNarrativeCorpusBoundsAndLabelsSyntheticFixtures(t *testing.T) {
 	corpus := coveredNarrativeCorpus(t, 20)
 	corpus.Cases[0].Origin = DailyInsightNarrativeOriginSynthetic
@@ -553,7 +596,7 @@ func corpusSnapshot(date string) health.DailyInsightSnapshot {
 		Evidence: []health.DailyInsightEvidence{{ID: "sleep-evidence", Domain: "sleep", DataState: "fresh", Confidence: "final"}},
 		Domains: []health.DailyInsightDomain{{
 			Key: "sleep", DataState: "fresh", Confidence: "final", Summary: "Server summary",
-			Insight: health.DailyInsight{State: "insight", AnswerKind: health.DailyInsightAnswerConfirmedPersonal, ClaimID: "recent_sleep_below_reference", Observation: "Server fallback", Meaning: "Server meaning", EvidenceIDs: []string{"sleep-evidence"}},
+			Insight: health.DailyInsight{State: "insight", AnswerKind: health.DailyInsightAnswerConfirmedPersonal, ClaimID: "recent_sleep_below_reference", Observation: "Server fallback", Meaning: "Server meaning", EvidenceIDs: []string{"sleep-evidence"}, NextStep: &health.DailyInsightAction{ID: "wind_down"}},
 		}},
 	}
 }

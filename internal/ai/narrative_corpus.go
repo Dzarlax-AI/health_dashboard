@@ -128,10 +128,13 @@ func validCorpusPrimaryNarrativeSubject(value string) bool {
 }
 
 // SanitizeDailyInsightNarrativeCorpusCandidate removes identifiers, dates,
-// display copy, actions and measurements from a snapshot while retaining the
-// closed state needed to derive the exact B1 claim packet. The result is a
-// candidate, not a frozen corpus: callers must supply review tags and any
-// non-serving scenario provenance separately.
+// display copy, action copy and measurements from a snapshot while retaining
+// the closed state needed to derive the exact B1 claim packet. The only
+// retained domain action marker is the closed "wind_down" ID: it is needed to
+// exercise the matching server-owned meaning link, but cannot reveal or let a
+// provider invent action copy. The result is a candidate, not a frozen corpus:
+// callers must supply review tags and any non-serving scenario provenance
+// separately.
 func SanitizeDailyInsightNarrativeCorpusCandidate(snapshot health.DailyInsightSnapshot, locale, candidateID string) DailyInsightNarrativeCorpusCase {
 	evidenceIDs := make(map[string]string, len(snapshot.Evidence))
 	for index, evidence := range snapshot.Evidence {
@@ -175,6 +178,7 @@ func SanitizeDailyInsightNarrativeCorpusCandidate(snapshot health.DailyInsightSn
 				Remediation: domain.Insight.Remediation,
 				EvidenceIDs: mapEvidenceIDs(domain.Insight.EvidenceIDs),
 				Fallback:    domain.Insight.Fallback,
+				NextStep:    sanitizedNarrativeDomainAction(domain.Insight.NextStep),
 			},
 		})
 	}
@@ -216,6 +220,13 @@ func SanitizeDailyInsightNarrativeCorpusCandidate(snapshot health.DailyInsightSn
 		PrimaryNarrativeSubject: primarySubject,
 		PrimaryMeaningID:        narrativeCorpusPrimaryMeaningID(snapshot),
 	}
+}
+
+func sanitizedNarrativeDomainAction(action *health.DailyInsightAction) *health.DailyInsightAction {
+	if action == nil || action.ID != "wind_down" {
+		return nil
+	}
+	return &health.DailyInsightAction{ID: "wind_down"}
 }
 
 // narrativeCorpusPrimaryMeaningID carries only which closed domain meaning
@@ -322,6 +333,15 @@ var RequiredDailyInsightNarrativeClaimIDs = []string{
 	"energy_current_verdict_context",
 }
 
+// RequiredDailyInsightNarrativeMeaningIDs are server-owned interpretive
+// variants which must have explicit frozen-corpus coverage before B1 can be
+// approved. The action-linked sleep variant is otherwise rare in retained
+// history, yet reaches production whenever the closed B0 event selects the
+// existing wind_down action.
+var RequiredDailyInsightNarrativeMeaningIDs = []string{
+	"sleep_wind_down_bridge",
+}
+
 const (
 	DailyInsightNarrativeCorpusMinCases          = 20
 	DailyInsightNarrativeCorpusMaxCases          = 30
@@ -361,6 +381,7 @@ func ValidateDailyInsightNarrativeCorpus(corpus DailyInsightNarrativeCorpus) err
 	ids := make(map[string]struct{}, len(corpus.Cases))
 	tags := make(map[string]struct{})
 	claimCoverage := make(map[string]map[string]struct{})
+	meaningCoverage := make(map[string]map[string]struct{})
 	syntheticCases := 0
 	for index, item := range corpus.Cases {
 		if item.ID == "" {
@@ -420,6 +441,12 @@ func ValidateDailyInsightNarrativeCorpus(corpus DailyInsightNarrativeCorpus) err
 					claimCoverage[item.Locale] = make(map[string]struct{})
 				}
 				claimCoverage[item.Locale][claim.ID] = struct{}{}
+				if meaningCoverage[item.Locale] == nil {
+					meaningCoverage[item.Locale] = make(map[string]struct{})
+				}
+				for _, meaning := range claim.MeaningLinks {
+					meaningCoverage[item.Locale][meaning.ID] = struct{}{}
+				}
 			}
 		}
 	}
@@ -443,6 +470,17 @@ func ValidateDailyInsightNarrativeCorpus(corpus DailyInsightNarrativeCorpus) err
 	}
 	if len(missingClaimCoverage) != 0 {
 		return fmt.Errorf("corpus is missing narrative claim coverage: %v", missingClaimCoverage)
+	}
+	missingMeaningCoverage := make([]string, 0)
+	for _, locale := range []string{"en", "ru", "sr"} {
+		for _, meaningID := range RequiredDailyInsightNarrativeMeaningIDs {
+			if _, present := meaningCoverage[locale][meaningID]; !present {
+				missingMeaningCoverage = append(missingMeaningCoverage, locale+":"+meaningID)
+			}
+		}
+	}
+	if len(missingMeaningCoverage) != 0 {
+		return fmt.Errorf("corpus is missing narrative meaning coverage: %v", missingMeaningCoverage)
 	}
 	if syntheticCases > DailyInsightNarrativeCorpusMaxSyntheticCases {
 		return fmt.Errorf("corpus has %d synthetic cases; want at most %d", syntheticCases, DailyInsightNarrativeCorpusMaxSyntheticCases)
@@ -496,6 +534,9 @@ func validateDailyInsightNarrativeCorpusCase(item DailyInsightNarrativeCorpusCas
 		return fmt.Errorf("case %q has unsupported update kind %q", item.ID, item.Scenario.UpdateKind)
 	}
 	for _, domain := range snapshot.Domains {
+		if domain.Insight.NextStep != nil && domain.Insight.NextStep.ID != "wind_down" {
+			return fmt.Errorf("case %q has unsupported domain action marker %q", item.ID, domain.Insight.NextStep.ID)
+		}
 		if domain.Key != "energy" || domain.Insight.ClaimID != "energy_current_verdict_context" {
 			continue
 		}

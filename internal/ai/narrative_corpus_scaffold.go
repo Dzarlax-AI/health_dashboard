@@ -162,7 +162,7 @@ func syntheticRecoveryEnergyConflictCase(index int, locale string) DailyInsightN
 		PrimaryMeaningID:        "primary:recovery:recovery_readiness_context",
 		Snapshot: health.DailyInsightSnapshot{Date: "review-day", Version: health.DailyInsightSnapshotVersion,
 			Domains: []health.DailyInsightDomain{
-				{Key: "sleep", DataState: "fresh", Confidence: "final", Insight: health.DailyInsight{State: "insight", AnswerKind: health.DailyInsightAnswerConfirmedPersonal, ClaimID: "recent_sleep_below_reference", EvidenceIDs: []string{"evidence-sleep"}}},
+				{Key: "sleep", DataState: "fresh", Confidence: "final", Insight: health.DailyInsight{State: "insight", AnswerKind: health.DailyInsightAnswerConfirmedPersonal, ClaimID: "recent_sleep_below_reference", EvidenceIDs: []string{"evidence-sleep"}, NextStep: &health.DailyInsightAction{ID: "wind_down"}}},
 				{Key: "recovery", DataState: "fresh", Confidence: "final", Insight: health.DailyInsight{State: "insight", AnswerKind: health.DailyInsightAnswerFactual, ClaimID: "recovery_readiness_context", EvidenceIDs: []string{"evidence-recovery"}}},
 				{Key: "energy", DataState: "fresh", Confidence: "final", Insight: health.DailyInsight{State: "insight", AnswerKind: health.DailyInsightAnswerFactual, ClaimID: "energy_current_verdict_context", EvidenceIDs: []string{"evidence-energy"}}},
 			},
