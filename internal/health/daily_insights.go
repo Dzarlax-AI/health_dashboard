@@ -23,7 +23,7 @@ const (
 	DailyInsightPolicyVersion         = "daily-insight-policy-v2"
 	DailyInsightActionCatalogVersion  = "daily-insight-actions-v1"
 	DailyInsightPromptRevision        = "daily-insight-prompt-v4"
-	DailyInsightNarrativeInputVersion = "today-insight-slot-input-v5"
+	DailyInsightNarrativeInputVersion = "today-insight-slot-input-v6"
 	DailyInsightNarrativeVersion      = "today-insight-slot-v2"
 )
 
@@ -621,28 +621,28 @@ func energyNarrativeMeaningLinks(locale string) []DailyInsightNarrativeMeaningLi
 func localizedNarrativeMeaning(locale, id string) string {
 	translations := map[string]map[string]string{
 		"en": {
-			"overall_pacing_guardrail":       "Keep the selected pace scoped to today rather than to the whole day’s outcome.",
-			"overall_visible_action":         "The action already on screen gives the selected pace a concrete form.",
-			"sleep_pattern_not_single_night": "This combines several nights into one recent pattern instead of describing a single night.",
-			"sleep_wind_down_bridge":         "The already offered quieter evening gives the next sleep period more room.",
-			"recovery_pacing_not_verdict":    "Readiness helps set today’s pace without becoming a label for the person.",
-			"energy_pacing_today":            "The energy state helps set today’s pace without extending the statement beyond today.",
+			"overall_pacing_guardrail":       "The selected pace is a guide for today, not a verdict on the whole day.",
+			"overall_visible_action":         "The visible action is the practical form of the selected pace.",
+			"sleep_pattern_not_single_night": "The useful signal is the recent pattern, not one isolated night.",
+			"sleep_wind_down_bridge":         "The quieter-evening suggestion responds to the recent sleep pattern, not to one isolated night.",
+			"recovery_pacing_not_verdict":    "Readiness is a cue for today’s pace, not a verdict about the person.",
+			"energy_pacing_today":            "Energy is a cue for today’s pace, not a score of how the day is going.",
 		},
 		"ru": {
-			"overall_pacing_guardrail":       "Выбранный темп относится к сегодняшнему дню, а не к результату всего дня.",
-			"overall_visible_action":         "Уже показанное действие придаёт выбранному темпу конкретную форму.",
-			"sleep_pattern_not_single_night": "Несколько ночей складываются в недавний паттерн, а не описывают одну ночь.",
-			"sleep_wind_down_bridge":         "Уже предложенный более тихий вечер даёт следующему периоду сна больше пространства.",
-			"recovery_pacing_not_verdict":    "Готовность помогает задать темп на сегодня, не становясь оценкой человека.",
-			"energy_pacing_today":            "Состояние энергии помогает задать темп на сегодня, не выходя за рамки сегодняшнего дня.",
+			"overall_pacing_guardrail":       "Выбранный темп — ориентир на сегодня, а не оценка всего дня.",
+			"overall_visible_action":         "Показанное действие — практическая форма выбранного темпа.",
+			"sleep_pattern_not_single_night": "Здесь важен недавний паттерн, а не одна отдельная ночь.",
+			"sleep_wind_down_bridge":         "Совет сделать вечер тише связан с недавним паттерном сна, а не с одной отдельной ночью.",
+			"recovery_pacing_not_verdict":    "Готовность — ориентир для сегодняшнего темпа, а не оценка человека.",
+			"energy_pacing_today":            "Энергия — ориентир для сегодняшнего темпа, а не оценка того, как идёт день.",
 		},
 		"sr": {
-			"overall_pacing_guardrail":       "Izabrani tempo odnosi se na danas, a ne na ishod celog dana.",
-			"overall_visible_action":         "Već prikazana radnja daje izabranom tempu konkretnu formu.",
-			"sleep_pattern_not_single_night": "Nekoliko noći zajedno čine skorašnji obrazac, umesto da opisuju jednu noć.",
-			"sleep_wind_down_bridge":         "Već ponuđeno mirnije veče ostavlja više prostora za sledeći period sna.",
-			"recovery_pacing_not_verdict":    "Spremnost pomaže da se odredi tempo za danas, bez procene osobe.",
-			"energy_pacing_today":            "Stanje energije pomaže da se odredi tempo za danas, bez izlaska iz okvira današnjeg dana.",
+			"overall_pacing_guardrail":       "Izabrani tempo je smernica za danas, a ne ocena celog dana.",
+			"overall_visible_action":         "Prikazana radnja je praktični oblik izabranog tempa.",
+			"sleep_pattern_not_single_night": "Ovde je važan skorašnji obrazac, a ne jedna izdvojena noć.",
+			"sleep_wind_down_bridge":         "Savet za mirnije veče vezan je za skorašnji obrazac sna, a ne za jednu izdvojenu noć.",
+			"recovery_pacing_not_verdict":    "Spremnost je smernica za današnji tempo, a ne procena osobe.",
+			"energy_pacing_today":            "Energija je smernica za današnji tempo, a ne ocena kako dan ide.",
 		},
 	}
 	if byID, found := translations[normalizeDailyInsightLocale(locale)]; found {
@@ -665,11 +665,11 @@ func localizedRecentSleepNarrativeProposition(locale string) string {
 func localizedSleepNarrativeTextFragments(locale string) []string {
 	switch normalizeDailyInsightLocale(locale) {
 	case "ru":
-		return []string{"несколько последних ночей", "короче", "личного"}
+		return []string{"короче твоего обычного ритма сна"}
 	case "sr":
-		return []string{"nekoliko poslednjih noći", "kraće", "ličnog"}
+		return []string{"kraće od vašeg uobičajenog ritma sna"}
 	default:
-		return []string{"several recent nights", "shorter", "personal"}
+		return []string{"shorter than your usual sleep rhythm"}
 	}
 }
 
@@ -728,19 +728,19 @@ func localizedRecoveryNarrativeTextFragments(locale, band string) []string {
 	switch normalizeDailyInsightLocale(locale) {
 	case "ru":
 		if band == "optimal" {
-			return []string{"сигналы восстановления", "сегодня", "верхнем диапазоне"}
+			return []string{"верхнем диапазоне готовности"}
 		}
-		return []string{"сигналы восстановления", "сегодня", "нижнем диапазоне"}
+		return []string{"нижнем диапазоне готовности"}
 	case "sr":
 		if band == "optimal" {
-			return []string{"signali oporavka", "danas", "višem opsegu"}
+			return []string{"višem opsegu spremnosti"}
 		}
-		return []string{"signali oporavka", "danas", "nižem opsegu"}
+		return []string{"nižem opsegu spremnosti"}
 	default:
 		if band == "optimal" {
-			return []string{"recovery signals", "today", "higher readiness"}
+			return []string{"higher readiness"}
 		}
-		return []string{"recovery signals", "today", "lower readiness"}
+		return []string{"lower readiness"}
 	}
 }
 
@@ -779,34 +779,31 @@ func localizedEnergyNarrativeProposition(locale, verdict string) string {
 func localizedEnergyNarrativeTextFragments(locale, verdict string) []string {
 	switch normalizeDailyInsightLocale(locale) {
 	case "ru":
-		fragments := []string{"запас энергии"}
 		switch verdict {
 		case "push_hard":
-			return append(fragments, "более высокого ресурса")
+			return []string{"более высокого ресурса"}
 		case "rest":
-			return append(fragments, "низкого ресурса")
+			return []string{"низкого ресурса"}
 		default:
-			return append(fragments, "диапазоне восстановления")
+			return []string{"диапазоне восстановления"}
 		}
 	case "sr":
-		fragments := []string{"rezerva energije"}
 		switch verdict {
 		case "push_hard":
-			return append(fragments, "većeg kapaciteta")
+			return []string{"većeg kapaciteta"}
 		case "rest":
-			return append(fragments, "nižeg kapaciteta")
+			return []string{"nižeg kapaciteta"}
 		default:
-			return append(fragments, "opsegu oporavka")
+			return []string{"opsegu oporavka"}
 		}
 	default:
-		fragments := []string{"energy"}
 		switch verdict {
 		case "push_hard":
-			return append(fragments, "higher-capacity")
+			return []string{"higher-capacity"}
 		case "rest":
-			return append(fragments, "lower-capacity")
+			return []string{"lower-capacity"}
 		default:
-			return append(fragments, "recovery-oriented")
+			return []string{"recovery-oriented"}
 		}
 	}
 }

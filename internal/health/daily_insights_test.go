@@ -221,7 +221,7 @@ func TestDailyInsightNarrativeKeepsFallbackAndRejectsOnlyUnsafeDomain(t *testing
 	}
 
 	validSleep := &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
-		Text: "Several recent nights were shorter than the personal historical reference, forming a pattern rather than describing one night.", ClaimIDs: []string{"recent_sleep_below_reference"}, QualifierIDs: []string{"personal_pattern", "current_context"}, MeaningIDs: []string{"sleep_pattern_not_single_night"},
+		Text: "Recent nights were shorter than your usual sleep rhythm, so the pattern matters more than a single night.", ClaimIDs: []string{"recent_sleep_below_reference"}, QualifierIDs: []string{"personal_pattern", "current_context"}, MeaningIDs: []string{"sleep_pattern_not_single_night"},
 	}}}
 	unsafeRecovery := &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
 		Text: "Today is 100% safe.", ClaimIDs: []string{"recovery_current_context"}, QualifierIDs: []string{"current_context"}, MeaningIDs: []string{"recovery_pacing_not_verdict"},

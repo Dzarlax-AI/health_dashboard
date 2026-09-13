@@ -31,7 +31,7 @@ func TestGenerateDailyInsightNarrativeUsesClaimPacketAndKeepsInvalidDomainFallba
 	provider := &dailyInsightTestProvider{}
 	provider.response = dailyInsightTestNarrative(t,
 		&health.DailyInsightNarrativeSection{Sentences: []health.DailyInsightNarrativeSentence{{
-			Text: "Several recent nights were shorter than the personal historical reference, forming a pattern rather than describing one night.", ClaimIDs: []string{"recent_sleep_below_reference"}, QualifierIDs: []string{"personal_pattern", "current_context"}, MeaningIDs: []string{"sleep_pattern_not_single_night"},
+			Text: "Recent nights were shorter than your usual sleep rhythm, so the pattern matters more than a single night.", ClaimIDs: []string{"recent_sleep_below_reference"}, QualifierIDs: []string{"personal_pattern", "current_context"}, MeaningIDs: []string{"sleep_pattern_not_single_night"},
 		}}},
 		&health.DailyInsightNarrativeSection{Sentences: []health.DailyInsightNarrativeSentence{{
 			Text: "You should rest today.", ClaimIDs: []string{"recovery_current_context"}, QualifierIDs: []string{"current_context"}, MeaningIDs: []string{"recovery_pacing_not_verdict"},
@@ -63,7 +63,7 @@ func TestGenerateDailyInsightNarrativeUsesClaimPacketAndKeepsInvalidDomainFallba
 func TestGenerateDailyInsightNarrativeSlotSendsOnlyOneClosedPacket(t *testing.T) {
 	snapshot := dailyInsightTestSnapshot(t)
 	provider := &dailyInsightTestProvider{}
-	provider.response = `{"version":"today-insight-slot-v2","locale":"en","slot":{"key":"sleep","section":{"sentences":[{"text":"Several recent nights were shorter than the personal historical reference, forming a pattern rather than describing one night.","claim_ids":["recent_sleep_below_reference"],"qualifier_ids":["personal_pattern","current_context"],"meaning_ids":["sleep_pattern_not_single_night"]}]}}}`
+	provider.response = `{"version":"today-insight-slot-v2","locale":"en","slot":{"key":"sleep","section":{"sentences":[{"text":"Recent nights were shorter than your usual sleep rhythm, so the pattern matters more than a single night.","claim_ids":["recent_sleep_below_reference"],"qualifier_ids":["personal_pattern","current_context"],"meaning_ids":["sleep_pattern_not_single_night"]}]}}}`
 	result, err := GenerateDailyInsightNarrativeSlot(context.Background(), provider, ProviderConfig{}, snapshot, "en", "sleep")
 	if err != nil || result.Section == nil {
 		t.Fatalf("GenerateDailyInsightNarrativeSlot: section=%#v err=%v", result.Section, err)
