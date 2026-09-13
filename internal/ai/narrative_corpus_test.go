@@ -620,12 +620,15 @@ func corpusNarrative(snapshot health.DailyInsightSnapshot, locale string) health
 	for _, domain := range input {
 		candidate := health.DailyInsightNarrativeDomain{Key: domain.Key}
 		if len(domain.Claims) > 0 {
-			claimIDs, qualifierIDs := make([]string, 0, len(domain.Claims)), []string{}
+			claimIDs, qualifierIDs, meaningIDs := make([]string, 0, len(domain.Claims)), []string{}, []string{}
 			for _, claim := range domain.Claims {
 				claimIDs = append(claimIDs, claim.ID)
 				qualifierIDs = append(qualifierIDs, claim.RequiredQualifierIDs...)
+				if len(claim.MeaningLinks) != 0 {
+					meaningIDs = append(meaningIDs, claim.MeaningLinks[0].ID)
+				}
 			}
-			candidate.Section = &health.DailyInsightNarrativeSection{Sentences: []health.DailyInsightNarrativeSentence{{Text: text, ClaimIDs: claimIDs, QualifierIDs: qualifierIDs}}}
+			candidate.Section = &health.DailyInsightNarrativeSection{Sentences: []health.DailyInsightNarrativeSentence{{Text: text, ClaimIDs: claimIDs, QualifierIDs: qualifierIDs, MeaningIDs: meaningIDs}}}
 		}
 		if domain.Key == health.DailyInsightNarrativeOverallSlot {
 			overall = candidate.Section

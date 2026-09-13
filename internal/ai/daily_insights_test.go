@@ -29,10 +29,10 @@ func TestGenerateDailyInsightNarrativeUsesClaimPacketAndKeepsInvalidDomainFallba
 	provider := &dailyInsightTestProvider{}
 	provider.response = dailyInsightTestNarrative(t,
 		&health.DailyInsightNarrativeSection{Sentences: []health.DailyInsightNarrativeSentence{{
-			Text: "It gives the current day a little more context.", ClaimIDs: []string{"recent_sleep_below_reference"}, QualifierIDs: []string{"personal_pattern", "current_context"},
+			Text: "It gives the current day a little more context.", ClaimIDs: []string{"recent_sleep_below_reference"}, QualifierIDs: []string{"personal_pattern", "current_context"}, MeaningIDs: []string{"sleep_pattern_not_single_night"},
 		}}},
 		&health.DailyInsightNarrativeSection{Sentences: []health.DailyInsightNarrativeSentence{{
-			Text: "You should rest today.", ClaimIDs: []string{"recovery_current_context"}, QualifierIDs: []string{"current_context"},
+			Text: "You should rest today.", ClaimIDs: []string{"recovery_current_context"}, QualifierIDs: []string{"current_context"}, MeaningIDs: []string{"recovery_pacing_not_verdict"},
 		}}},
 	)
 
@@ -61,7 +61,7 @@ func TestGenerateDailyInsightNarrativeUsesClaimPacketAndKeepsInvalidDomainFallba
 func TestGenerateDailyInsightNarrativeSlotSendsOnlyOneClosedPacket(t *testing.T) {
 	snapshot := dailyInsightTestSnapshot(t)
 	provider := &dailyInsightTestProvider{}
-	provider.response = `{"version":"today-insight-slot-v2","locale":"en","slot":{"key":"sleep","section":{"sentences":[{"text":"It gives the day a little more context.","claim_ids":["recent_sleep_below_reference"],"qualifier_ids":["personal_pattern","current_context"]}]}}}`
+	provider.response = `{"version":"today-insight-slot-v2","locale":"en","slot":{"key":"sleep","section":{"sentences":[{"text":"It gives the day a little more context.","claim_ids":["recent_sleep_below_reference"],"qualifier_ids":["personal_pattern","current_context"],"meaning_ids":["sleep_pattern_not_single_night"]}]}}}`
 	result, err := GenerateDailyInsightNarrativeSlot(context.Background(), provider, ProviderConfig{}, snapshot, "en", "sleep")
 	if err != nil || result.Section == nil {
 		t.Fatalf("GenerateDailyInsightNarrativeSlot: section=%#v err=%v", result.Section, err)
@@ -70,7 +70,7 @@ func TestGenerateDailyInsightNarrativeSlotSendsOnlyOneClosedPacket(t *testing.T)
 	if err := json.Unmarshal(provider.request.UserPayload, &payload); err != nil {
 		t.Fatalf("decode slot packet: %v", err)
 	}
-	if payload.Slot.Key != "sleep" || len(payload.Slot.Claims) != 1 || payload.Slot.Claims[0].ID != "recent_sleep_below_reference" {
+	if payload.Slot.Key != "sleep" || len(payload.Slot.Claims) != 1 || payload.Slot.Claims[0].ID != "recent_sleep_below_reference" || len(payload.Slot.Claims[0].MeaningLinks) == 0 {
 		t.Fatalf("slot payload = %#v", payload)
 	}
 	if provider.request.ResponseSchema != dailyInsightNarrativeSlotResponseSchema {
