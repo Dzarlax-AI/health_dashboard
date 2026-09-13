@@ -23,7 +23,7 @@ const (
 	DailyInsightPolicyVersion         = "daily-insight-policy-v2"
 	DailyInsightActionCatalogVersion  = "daily-insight-actions-v1"
 	DailyInsightPromptRevision        = "daily-insight-prompt-v4"
-	DailyInsightNarrativeInputVersion = "today-insight-slot-input-v2"
+	DailyInsightNarrativeInputVersion = "today-insight-slot-input-v3"
 	DailyInsightNarrativeVersion      = "today-insight-slot-v2"
 )
 
@@ -238,14 +238,24 @@ type DailyInsightNarrativeDomainInput struct {
 }
 
 type DailyInsightNarrativeClaim struct {
-	ID                   string   `json:"id"`
-	Domain               string   `json:"domain"`
-	Kind                 string   `json:"kind"`
-	Proposition          string   `json:"proposition"`
-	EvidenceIDs          []string `json:"evidence_ids"`
-	ComparisonPeriod     string   `json:"comparison_period,omitempty"`
-	Confidence           string   `json:"confidence,omitempty"`
-	RequiredQualifierIDs []string `json:"required_qualifier_ids,omitempty"`
+	ID                   string                             `json:"id"`
+	Domain               string                             `json:"domain"`
+	Kind                 string                             `json:"kind"`
+	Proposition          string                             `json:"proposition"`
+	EvidenceIDs          []string                           `json:"evidence_ids"`
+	ComparisonPeriod     string                             `json:"comparison_period,omitempty"`
+	Confidence           string                             `json:"confidence,omitempty"`
+	RequiredQualifierIDs []string                           `json:"required_qualifier_ids,omitempty"`
+	MeaningLinks         []DailyInsightNarrativeMeaningLink `json:"meaning_links,omitempty"`
+}
+
+// DailyInsightNarrativeMeaningLink is a server-approved interpretive move for
+// one closed claim. The provider may phrase it naturally, but cannot create a
+// new explanation, causal story, or action outside this small catalogue.
+type DailyInsightNarrativeMeaningLink struct {
+	ID        string `json:"id"`
+	Statement string `json:"statement"`
+	ActionID  string `json:"action_id,omitempty"`
 }
 
 // DailyInsightNarrative is the narrow provider result. Primary and actions
@@ -266,6 +276,7 @@ type DailyInsightNarrativeSentence struct {
 	Text         string   `json:"text"`
 	ClaimIDs     []string `json:"claim_ids"`
 	QualifierIDs []string `json:"qualifier_ids"`
+	MeaningIDs   []string `json:"meaning_ids"`
 }
 
 type DailyInsightNarrativeDomain struct {
@@ -400,6 +411,7 @@ func buildOverallDailyInsightNarrativeClaim(snapshot *DailyInsightSnapshot, loca
 		ComparisonPeriod:     "current day",
 		Confidence:           snapshot.Primary.AnswerKind,
 		RequiredQualifierIDs: []string{"current_context"},
+		MeaningLinks:         overallNarrativeMeaningLinks(locale, snapshot.Primary.NextStepID()),
 	}
 }
 
@@ -501,14 +513,17 @@ func buildDailyInsightNarrativeClaim(snapshot *DailyInsightSnapshot, domain Dail
 		claim.Kind = "comparison"
 		claim.RequiredQualifierIDs = []string{"personal_pattern", "current_context"}
 		claim.Proposition = localizedRecentSleepNarrativeProposition(locale)
+		claim.MeaningLinks = sleepNarrativeMeaningLinks(locale, domain.Insight.NextStepID())
 		return claim
 	}
 	if claim.ID == "recovery_readiness_context" {
 		claim.Proposition = localizedRecoveryNarrativeProposition(locale, domain.Band)
+		claim.MeaningLinks = recoveryNarrativeMeaningLinks(locale)
 		return claim
 	}
 	if claim.ID == "energy_current_verdict_context" {
 		claim.Proposition = localizedEnergyNarrativeProposition(locale, domain.NarrativeSubject)
+		claim.MeaningLinks = energyNarrativeMeaningLinks(locale)
 		return claim
 	}
 
@@ -528,6 +543,63 @@ func buildDailyInsightNarrativeClaim(snapshot *DailyInsightSnapshot, domain Dail
 	}
 	claim.Proposition = localizedDomainNarrativeProposition(locale, domain)
 	return claim
+}
+
+func overallNarrativeMeaningLinks(locale, actionID string) []DailyInsightNarrativeMeaningLink {
+	links := []DailyInsightNarrativeMeaningLink{{ID: "overall_pacing_guardrail", Statement: localizedNarrativeMeaning(locale, "overall_pacing_guardrail")}}
+	if actionID != "" {
+		links = append(links, DailyInsightNarrativeMeaningLink{ID: "overall_visible_action", Statement: localizedNarrativeMeaning(locale, "overall_visible_action"), ActionID: actionID})
+	}
+	return links
+}
+
+func sleepNarrativeMeaningLinks(locale, actionID string) []DailyInsightNarrativeMeaningLink {
+	links := []DailyInsightNarrativeMeaningLink{{ID: "sleep_pattern_not_single_night", Statement: localizedNarrativeMeaning(locale, "sleep_pattern_not_single_night")}}
+	if actionID == "wind_down" {
+		links = append(links, DailyInsightNarrativeMeaningLink{ID: "sleep_wind_down_bridge", Statement: localizedNarrativeMeaning(locale, "sleep_wind_down_bridge"), ActionID: actionID})
+	}
+	return links
+}
+
+func recoveryNarrativeMeaningLinks(locale string) []DailyInsightNarrativeMeaningLink {
+	return []DailyInsightNarrativeMeaningLink{{ID: "recovery_pacing_not_verdict", Statement: localizedNarrativeMeaning(locale, "recovery_pacing_not_verdict")}}
+}
+
+func energyNarrativeMeaningLinks(locale string) []DailyInsightNarrativeMeaningLink {
+	return []DailyInsightNarrativeMeaningLink{{ID: "energy_pacing_not_prediction", Statement: localizedNarrativeMeaning(locale, "energy_pacing_not_prediction")}}
+}
+
+func localizedNarrativeMeaning(locale, id string) string {
+	translations := map[string]map[string]string{
+		"en": {
+			"overall_pacing_guardrail":       "Treat the selected plan as a pacing guardrail for today, not a promise about the outcome of the day.",
+			"overall_visible_action":         "The action already visible on screen is the practical expression of today's selected pacing plan.",
+			"sleep_pattern_not_single_night": "Frame this as a recent pattern across nights, not a verdict on the quality of one night or on health.",
+			"sleep_wind_down_bridge":         "The already offered quieter evening is a practical way to give the next sleep period more room; do not promise recovery or diagnose a deficit.",
+			"recovery_pacing_not_verdict":    "Readiness is a present-day pacing signal, not a judgement about health, fitness, or a forecast.",
+			"energy_pacing_not_prediction":   "The energy verdict helps choose a pace for today; it is not a prediction of how the whole day will feel.",
+		},
+		"ru": {
+			"overall_pacing_guardrail":       "Покажите выбранный план как ориентир темпа на сегодня, а не обещание того, как сложится день.",
+			"overall_visible_action":         "Уже видимое на экране действие — практическое выражение выбранного на сегодня темпа.",
+			"sleep_pattern_not_single_night": "Покажите это как паттерн нескольких ночей, а не вердикт об одной ночи или о здоровье.",
+			"sleep_wind_down_bridge":         "Уже предложенный более тихий вечер даёт следующему сну больше пространства; не обещайте восстановление и не ставьте диагноз.",
+			"recovery_pacing_not_verdict":    "Готовность — это ориентир темпа на текущий день, а не оценка здоровья, формы или прогноз.",
+			"energy_pacing_not_prediction":   "Энергетический вердикт помогает выбрать темп сегодня, но не предсказывает ощущения на весь день.",
+		},
+		"sr": {
+			"overall_pacing_guardrail":       "Prikažite izabrani plan kao ogradu za tempo dana, a ne obećanje ishoda dana.",
+			"overall_visible_action":         "Već vidljiva akcija na ekranu je praktičan izraz danas izabranog tempa.",
+			"sleep_pattern_not_single_night": "Prikažite ovo kao obrazac kroz nekoliko noći, ne kao presudu o jednoj noći ili zdravlju.",
+			"sleep_wind_down_bridge":         "Već ponuđeno mirnije veče daje narednom snu više prostora; ne obećavajte oporavak niti postavljajte dijagnozu.",
+			"recovery_pacing_not_verdict":    "Spremnost je signal za tempo dana, ne procena zdravlja, forme ili prognoza.",
+			"energy_pacing_not_prediction":   "Energetski zaključak pomaže izabrati tempo danas, ali ne predviđa kako će se ceo dan osećati.",
+		},
+	}
+	if byID, found := translations[normalizeDailyInsightLocale(locale)]; found {
+		return byID[id]
+	}
+	return translations["en"][id]
 }
 
 func localizedRecentSleepNarrativeProposition(locale string) string {
@@ -933,7 +1005,7 @@ func cloneDailyInsightNarrativeSection(section DailyInsightNarrativeSection) *Da
 	out := DailyInsightNarrativeSection{Sentences: make([]DailyInsightNarrativeSentence, 0, len(section.Sentences))}
 	for _, sentence := range section.Sentences {
 		out.Sentences = append(out.Sentences, DailyInsightNarrativeSentence{
-			Text: strings.TrimSpace(sentence.Text), ClaimIDs: append([]string(nil), sentence.ClaimIDs...), QualifierIDs: append([]string(nil), sentence.QualifierIDs...),
+			Text: strings.TrimSpace(sentence.Text), ClaimIDs: append([]string(nil), sentence.ClaimIDs...), QualifierIDs: append([]string(nil), sentence.QualifierIDs...), MeaningIDs: append([]string(nil), sentence.MeaningIDs...),
 		})
 	}
 	return &out
@@ -944,12 +1016,16 @@ func validateDailyInsightNarrativeSection(section DailyInsightNarrativeSection, 
 		return fmt.Errorf("expected one or two sentences")
 	}
 	claims := make(map[string]DailyInsightNarrativeClaim, len(input.Claims))
+	meanings := make(map[string]DailyInsightNarrativeMeaningLink)
 	requiredClaims, requiredQualifiers := make(map[string]struct{}, len(input.Claims)), map[string]struct{}{}
 	for _, claim := range input.Claims {
 		claims[claim.ID] = claim
 		requiredClaims[claim.ID] = struct{}{}
 		for _, qualifierID := range claim.RequiredQualifierIDs {
 			requiredQualifiers[qualifierID] = struct{}{}
+		}
+		for _, meaning := range claim.MeaningLinks {
+			meanings[meaning.ID] = meaning
 		}
 	}
 	usedClaims, usedQualifiers := map[string]struct{}{}, map[string]struct{}{}
@@ -968,6 +1044,14 @@ func validateDailyInsightNarrativeSection(section DailyInsightNarrativeSection, 
 		}
 		if len(sentence.ClaimIDs) == 0 {
 			return fmt.Errorf("sentence has no claim IDs")
+		}
+		if len(meanings) != 0 && len(sentence.MeaningIDs) == 0 {
+			return fmt.Errorf("sentence has no meaning IDs")
+		}
+		for _, meaningID := range sentence.MeaningIDs {
+			if _, known := meanings[meaningID]; !known {
+				return fmt.Errorf("unapproved meaning ID %q", meaningID)
+			}
 		}
 		for _, claimID := range sentence.ClaimIDs {
 			if _, known := claims[claimID]; !known {

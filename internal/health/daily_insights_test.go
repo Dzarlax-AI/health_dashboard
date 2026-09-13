@@ -221,10 +221,10 @@ func TestDailyInsightNarrativeKeepsFallbackAndRejectsOnlyUnsafeDomain(t *testing
 	}
 
 	validSleep := &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
-		Text: "It gives the current day a little more context.", ClaimIDs: []string{"recent_sleep_below_reference"}, QualifierIDs: []string{"personal_pattern", "current_context"},
+		Text: "It gives the current day a little more context.", ClaimIDs: []string{"recent_sleep_below_reference"}, QualifierIDs: []string{"personal_pattern", "current_context"}, MeaningIDs: []string{"sleep_pattern_not_single_night"},
 	}}}
 	unsafeRecovery := &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
-		Text: "Today is 100% safe.", ClaimIDs: []string{"recovery_current_context"}, QualifierIDs: []string{"current_context"},
+		Text: "Today is 100% safe.", ClaimIDs: []string{"recovery_current_context"}, QualifierIDs: []string{"current_context"}, MeaningIDs: []string{"recovery_pacing_not_verdict"},
 	}}}
 	narrative := DailyInsightNarrative{Version: DailyInsightNarrativeVersion, Locale: "en", Domains: []DailyInsightNarrativeDomain{
 		{Key: "sleep", Section: validSleep}, {Key: "recovery", Section: unsafeRecovery}, {Key: "energy", Section: nil},
@@ -346,7 +346,7 @@ func TestDailyInsightNarrativeSlotsKeepSiblingMaterialIndependent(t *testing.T) 
 	}
 	section := &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
 		Text:     "It frames the day as a deliberately conservative choice, not a broader judgement.",
-		ClaimIDs: []string{"overall_daily_decision_context"}, QualifierIDs: []string{"current_context"},
+		ClaimIDs: []string{"overall_daily_decision_context"}, QualifierIDs: []string{"current_context"}, MeaningIDs: []string{"overall_pacing_guardrail"},
 	}}}
 	validated, err := ValidateDailyInsightNarrativeSlotResponse(base, "en", DailyInsightNarrativeOverallSlot, DailyInsightNarrativeSlot{
 		Version: DailyInsightNarrativeVersion, Locale: "en", Slot: DailyInsightNarrativeDomain{Key: DailyInsightNarrativeOverallSlot, Section: section},
@@ -357,6 +357,21 @@ func TestDailyInsightNarrativeSlotsKeepSiblingMaterialIndependent(t *testing.T) 
 	rendered, err := ApplyDailyInsightNarrativeSlot(base, "en", DailyInsightNarrativeOverallSlot, validated)
 	if err != nil || rendered.Primary.Narrative == nil || rendered.Primary.Narrative.Text != section.Sentences[0].Text {
 		t.Fatalf("apply overall slot: snapshot=%#v err=%v", rendered, err)
+	}
+}
+
+func TestDailyInsightNarrativeSlotRejectsMeaningOutsideServerCatalogue(t *testing.T) {
+	snapshot := ApplyRecentSleepBelowReference(BuildDailyInsightSnapshot(&BriefingResponse{Date: "2026-09-12"}, "en"), RecentSleepBelowReference{State: RecentSleepClaimTrue}, "en")
+	_, err := ValidateDailyInsightNarrativeSlotResponse(snapshot, "en", "sleep", DailyInsightNarrativeSlot{
+		Version: DailyInsightNarrativeVersion,
+		Locale:  "en",
+		Slot: DailyInsightNarrativeDomain{Key: "sleep", Section: &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
+			Text:     "It keeps the focus on a pattern rather than a single night.",
+			ClaimIDs: []string{"recent_sleep_below_reference"}, QualifierIDs: []string{"personal_pattern", "current_context"}, MeaningIDs: []string{"invented_meaning"},
+		}}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unapproved meaning ID") {
+		t.Fatalf("unexpected meaning validation error: %v", err)
 	}
 }
 
