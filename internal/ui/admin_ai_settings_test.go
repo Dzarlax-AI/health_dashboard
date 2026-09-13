@@ -60,17 +60,26 @@ func TestBuildAdminAISettingsUpdateValidatesTokenBounds(t *testing.T) {
 	}
 }
 
-func TestBuildAdminAISettingsUpdateClearsReasoningForGemini(t *testing.T) {
+func TestBuildAdminAISettingsUpdatePersistsGeminiThinkingLevel(t *testing.T) {
 	update, err := buildAdminAISettingsUpdate(adminAISettingsRequest{
 		Provider:        ai.ProviderGemini,
-		ReasoningEffort: "high",
+		ReasoningEffort: "minimal",
 		MaxOutputTokens: 5000,
 	})
 	if err != nil {
 		t.Fatalf("build update: %v", err)
 	}
-	if got := update[ai.ProviderGemini+"_reasoning_effort"]; got != "" {
-		t.Fatalf("reasoning_effort = %q, want empty", got)
+	if got := update[ai.ProviderGemini+"_reasoning_effort"]; got != "minimal" {
+		t.Fatalf("reasoning_effort = %q, want minimal", got)
+	}
+}
+
+func TestBuildAdminAISettingsUpdateRejectsUnsupportedGeminiThinkingLevel(t *testing.T) {
+	_, err := buildAdminAISettingsUpdate(adminAISettingsRequest{
+		Provider: ai.ProviderGemini, ReasoningEffort: "none", MaxOutputTokens: 5000,
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid reasoning_effort") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

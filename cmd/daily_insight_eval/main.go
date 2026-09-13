@@ -14,6 +14,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"health-receiver/internal/ai"
@@ -80,11 +81,13 @@ func main() {
 		*reasoning = descriptor.DefaultReasoning
 	}
 	key := os.Getenv(*apiKeyEnv)
+	var storedConfig storage.AIConfig
 	if *databaseConfig {
-		stored, err := loadProviderConfigFromDatabase(*databaseURLEnv, *providerID)
+		storedConfig, err = loadAIConfigFromDatabase(*databaseURLEnv)
 		if err != nil {
 			log.Fatal(err)
 		}
+		stored := storedConfig.SettingsFor(*providerID)
 		key = stored.APIKey
 		if !modelExplicit && stored.Model != "" {
 			*model = stored.Model
@@ -100,16 +103,26 @@ func main() {
 		log.Fatalf("environment variable %q is empty", *apiKeyEnv)
 	}
 
+	config := ai.ProviderConfig{APIKey: key, Model: *model, ReasoningEffort: *reasoning, MaxOutputTokens: ai.DailyInsightMaxTokens}
+	if *databaseConfig {
+		storedConfig.Provider = *providerID
+		storedConfig.SetSettingsFor(*providerID, storage.AIProviderSettings{APIKey: key, Model: *model, ReasoningEffort: *reasoning})
+		_, resolved, err := storage.ResolveTodayInsightsB1ProviderConfig(storedConfig)
+		if err != nil {
+			log.Fatal(err)
+		}
+		config = resolved
+		*model, *reasoning = config.Model, config.ReasoningEffort
+	}
 	identity := ai.DailyInsightNarrativeCurrentReviewIdentity()
 	output := ai.DailyInsightNarrativeEvaluationOutput{
-		Version: "daily-insight-narrative-evaluation-v2", CorpusHash: corpusHash, GeneratedAt: time.Now().UTC(),
-		Provider: *providerID, Model: *model, Reasoning: *reasoning,
+		Version: "daily-insight-narrative-evaluation-v3", CorpusHash: corpusHash, GeneratedAt: time.Now().UTC(),
+		Provider: *providerID, Model: config.Model, Reasoning: config.ReasoningEffort, MaxOutputTokens: config.MaxOutputTokens,
 		PromptRevision: identity.PromptRevision, ClaimPacketVersion: identity.ClaimPacketVersion,
 		NarrativeVersion: identity.NarrativeVersion, ReviewFingerprint: identity.Fingerprint,
 		RunsPerCase: *runs,
 		Cases:       make([]ai.DailyInsightNarrativeEvaluationCase, 0, len(corpus.Cases)),
 	}
-	config := ai.ProviderConfig{APIKey: key, Model: *model, ReasoningEffort: *reasoning, MaxOutputTokens: ai.DailyInsightMaxTokens}
 	for _, item := range corpus.Cases {
 		snapshot, err := item.SnapshotForEvaluation()
 		if err != nil {
@@ -203,16 +216,17 @@ func inspectProviderConfig(providerID, model, reasoning, apiKeyEnv string, datab
 	}
 	key := os.Getenv(apiKeyEnv)
 	if databaseConfig {
-		stored, err := loadProviderConfigFromDatabase(databaseURLEnv, providerID)
+		stored, err := loadAIConfigFromDatabase(databaseURLEnv)
 		if err != nil {
 			log.Fatal(err)
 		}
-		key = stored.APIKey
-		if !modelExplicit && stored.Model != "" {
-			model = stored.Model
+		providerSettings := stored.SettingsFor(providerID)
+		key = providerSettings.APIKey
+		if !modelExplicit && providerSettings.Model != "" {
+			model = providerSettings.Model
 		}
-		if !reasoningExplicit && stored.ReasoningEffort != "" {
-			reasoning = stored.ReasoningEffort
+		if !reasoningExplicit && providerSettings.ReasoningEffort != "" {
+			reasoning = providerSettings.ReasoningEffort
 		}
 	}
 	if key == "" {
@@ -226,20 +240,20 @@ func inspectProviderConfig(providerID, model, reasoning, apiKeyEnv string, datab
 // serving. It deliberately does not open a tenant data pool: B1 evaluation
 // must receive its corpus from the caller and needs no health-data access.
 // Callers must never log or serialize APIKey.
-func loadProviderConfigFromDatabase(databaseURLEnv, providerID string) (storage.AIProviderSettings, error) {
+func loadAIConfigFromDatabase(databaseURLEnv string) (storage.AIConfig, error) {
 	databaseURL := os.Getenv(databaseURLEnv)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	registryDSN, err := evaluatorRegistryDSN(databaseURL, os.LookupEnv)
 	if err != nil {
-		return storage.AIProviderSettings{}, err
+		return storage.AIConfig{}, err
 	}
 	reg, err := registry.New(ctx, registryDSN)
 	if err != nil {
-		return storage.AIProviderSettings{}, fmt.Errorf("connect for global provider configuration: %w", err)
+		return storage.AIConfig{}, fmt.Errorf("connect for global provider configuration: %w", err)
 	}
 	defer reg.Close()
-	return globalAIConfig(reg.GetAllGlobalSettings(ctx)).SettingsFor(providerID), nil
+	return globalAIConfig(reg.GetAllGlobalSettings(ctx)), nil
 }
 
 func evaluatorRegistryDSN(databaseURL string, lookup func(string) (string, bool)) (string, error) {
@@ -277,7 +291,11 @@ func standardPostgresEnvironmentConfigured(lookup func(string) (string, bool)) b
 // the same defaults that a tenant DB receives at serving time. It deliberately
 // accepts only the closed provider registry and never exposes key values.
 func globalAIConfig(settings map[string]string) storage.AIConfig {
-	config := storage.AIConfig{Provider: settings["ai_provider"], Providers: make(map[string]storage.AIProviderSettings)}
+	maxOutputTokens := parseMaxOutputTokens(settings["ai_max_output_tokens"])
+	if maxOutputTokens == 0 {
+		maxOutputTokens = parseMaxOutputTokens(settings["gemini_max_tokens"])
+	}
+	config := storage.AIConfig{Provider: settings["ai_provider"], Providers: make(map[string]storage.AIProviderSettings), MaxOutputTokens: maxOutputTokens}
 	for _, descriptor := range ai.ProviderDescriptors() {
 		config.SetSettingsFor(descriptor.ID, storage.AIProviderSettings{
 			APIKey:          settings[descriptor.ID+"_api_key"],
@@ -286,6 +304,14 @@ func globalAIConfig(settings map[string]string) storage.AIConfig {
 		})
 	}
 	return config
+}
+
+func parseMaxOutputTokens(value string) int {
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0
+	}
+	return parsed
 }
 
 func prepareOfflineReview(corpusPath, outPath string) {

@@ -12,7 +12,8 @@ func TestValidateTodayInsightsB1QualityGateApproval(t *testing.T) {
 	valid := TodayInsightsB1QualityGateApproval{
 		Version: TodayInsightsB1QualityGateVersion, CorpusHash: strings.Repeat("a", 64),
 		Provider: "openai", Model: "gpt-5.6-luna", Reasoning: "none",
-		PromptRevision: identity.PromptRevision, ClaimPacketVersion: identity.ClaimPacketVersion,
+		MaxOutputTokens: ai.DailyInsightMaxTokens,
+		PromptRevision:  identity.PromptRevision, ClaimPacketVersion: identity.ClaimPacketVersion,
 		NarrativeVersion: identity.NarrativeVersion, ReviewFingerprint: identity.Fingerprint,
 		ApprovedAt: "2026-09-12T10:00:00Z",
 	}
@@ -30,7 +31,8 @@ func TestTodayInsightsB1QualityGateMatchesOnlyReviewedModelConfig(t *testing.T) 
 	approval := TodayInsightsB1QualityGateApproval{
 		Version: TodayInsightsB1QualityGateVersion, CorpusHash: strings.Repeat("b", 64),
 		Provider: "openai", Model: "gpt-5.6-luna", Reasoning: "none",
-		PromptRevision: identity.PromptRevision, ClaimPacketVersion: identity.ClaimPacketVersion,
+		MaxOutputTokens: ai.DailyInsightMaxTokens,
+		PromptRevision:  identity.PromptRevision, ClaimPacketVersion: identity.ClaimPacketVersion,
 		NarrativeVersion: identity.NarrativeVersion, ReviewFingerprint: identity.Fingerprint,
 		ApprovedAt: "2026-09-12T10:00:00Z",
 	}
@@ -61,6 +63,11 @@ func TestTodayInsightsB1QualityGateMatchesOnlyReviewedModelConfig(t *testing.T) 
 		t.Fatal("missing active API key reused an old B1 quality-gate approval")
 	}
 	cfg.Providers["openai"] = AIProviderSettings{APIKey: "not-empty", Model: "gpt-5.6-luna", ReasoningEffort: "none"}
+	cfg.MaxOutputTokens = ai.DailyInsightMaxTokens - 1
+	if TodayInsightsB1QualityGateMatchesConfig(approval, cfg) {
+		t.Fatal("changed output budget reused an old B1 quality-gate approval")
+	}
+	cfg.MaxOutputTokens = ai.DailyInsightMaxTokens
 	approval.ReviewFingerprint = strings.Repeat("c", 64)
 	if TodayInsightsB1QualityGateMatchesConfig(approval, cfg) {
 		t.Fatal("changed prompt/schema fingerprint reused an old B1 quality-gate approval")
@@ -71,8 +78,9 @@ func TestTodayInsightsB1QualityGateAllowsCanonicalEmptyReasoningForGemini(t *tes
 	identity := ai.DailyInsightNarrativeSlotCurrentReviewIdentity()
 	approval := TodayInsightsB1QualityGateApproval{
 		Version: TodayInsightsB1QualityGateVersion, CorpusHash: strings.Repeat("b", 64),
-		Provider: "gemini", Model: "gemini-2.5-flash", Reasoning: "",
-		PromptRevision: identity.PromptRevision, ClaimPacketVersion: identity.ClaimPacketVersion,
+		Provider: "gemini", Model: "gemini-2.5-flash", Reasoning: "minimal",
+		MaxOutputTokens: ai.DailyInsightMaxTokens,
+		PromptRevision:  identity.PromptRevision, ClaimPacketVersion: identity.ClaimPacketVersion,
 		NarrativeVersion: identity.NarrativeVersion, ReviewFingerprint: identity.Fingerprint,
 		ApprovedAt: "2026-09-12T10:00:00Z",
 	}
@@ -80,7 +88,7 @@ func TestTodayInsightsB1QualityGateAllowsCanonicalEmptyReasoningForGemini(t *tes
 		t.Fatalf("Gemini approval with empty reasoning rejected: %v", err)
 	}
 	cfg := AIConfig{Provider: "gemini", Providers: map[string]AIProviderSettings{
-		"gemini": {APIKey: "not-empty", Model: "gemini-2.5-flash", ReasoningEffort: "none"},
+		"gemini": {APIKey: "not-empty", Model: "gemini-2.5-flash", ReasoningEffort: "minimal"},
 	}}
 	if !TodayInsightsB1QualityGateMatchesConfig(approval, cfg) {
 		t.Fatal("Gemini approval did not match its non-reasoning active configuration")
@@ -91,8 +99,9 @@ func TestTodayInsightsB1QualityGateResolvesGeminiDefaultsConsistently(t *testing
 	identity := ai.DailyInsightNarrativeSlotCurrentReviewIdentity()
 	approval := TodayInsightsB1QualityGateApproval{
 		Version: TodayInsightsB1QualityGateVersion, CorpusHash: strings.Repeat("b", 64),
-		Provider: "gemini", Model: "gemini-2.5-flash", Reasoning: "",
-		PromptRevision: identity.PromptRevision, ClaimPacketVersion: identity.ClaimPacketVersion,
+		Provider: "gemini", Model: "gemini-2.5-flash", Reasoning: "minimal",
+		MaxOutputTokens: ai.DailyInsightMaxTokens,
+		PromptRevision:  identity.PromptRevision, ClaimPacketVersion: identity.ClaimPacketVersion,
 		NarrativeVersion: identity.NarrativeVersion, ReviewFingerprint: identity.Fingerprint,
 		ApprovedAt: "2026-09-12T10:00:00Z",
 	}

@@ -70,11 +70,15 @@ func TestGlobalAIConfigUsesInstallationWideProviderSettings(t *testing.T) {
 		"gemini_api_key":                "configured-gemini-key",
 		"gemini_model":                  "gemini-2.5-flash",
 		"gemini_reasoning_effort":       "low",
+		"ai_max_output_tokens":          "1200",
 		"unregistered_provider_api_key": "must-not-be-imported",
 	})
 
 	if config.Provider != ai.ProviderOpenAI {
 		t.Fatalf("provider = %q, want %q", config.Provider, ai.ProviderOpenAI)
+	}
+	if config.MaxOutputTokens != 1200 {
+		t.Fatalf("max_output_tokens = %d, want 1200", config.MaxOutputTokens)
 	}
 	if got := config.SettingsFor(ai.ProviderOpenAI); got.APIKey != "configured-openai-key" || got.Model != "gpt-5.6-luna" || got.ReasoningEffort != "medium" {
 		t.Fatalf("openai settings = %#v", got)

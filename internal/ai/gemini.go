@@ -77,7 +77,10 @@ func (GeminiProvider) Descriptor() ProviderDescriptor {
 		ID:                ProviderGemini,
 		DisplayName:       "Gemini",
 		DefaultModel:      defaultModel,
+		SupportsReasoning: true,
+		ReasoningEfforts:  []string{"minimal", "low", "medium", "high"},
 		APIKeyPlaceholder: "AIza...",
+		DefaultReasoning:  "minimal",
 	}
 }
 
@@ -91,6 +94,7 @@ func (GeminiProvider) Generate(ctx context.Context, cfg ProviderConfig, req Gene
 		cfg.APIKey,
 		cfg.Model,
 		cfg.MaxOutputTokens,
+		cfg.ReasoningEffort,
 		req.Prompt,
 		req.UserPayload,
 		req.Language,
@@ -117,7 +121,7 @@ var langNames = map[string]string{
 // supply the system prompt and the user-facing payload bytes.
 //
 //nolint:revive // keep arg order stable for the orchestrator callsite
-func generateWithPrompt(ctx context.Context, apiKey, model string, maxTokens int, prompt string, userPayload []byte, lang string, responseSchema *ResponseSchema) (GenerationResult, error) {
+func generateWithPrompt(ctx context.Context, apiKey, model string, maxTokens int, reasoningEffort, prompt string, userPayload []byte, lang string, responseSchema *ResponseSchema) (GenerationResult, error) {
 	if apiKey == "" {
 		return GenerationResult{}, fmt.Errorf("gemini API key is not configured")
 	}
@@ -136,6 +140,20 @@ func generateWithPrompt(ctx context.Context, apiKey, model string, maxTokens int
 	}
 
 	// Build the payload without the API key — we store it for auditing.
+	generationConfig := map[string]any{
+		"maxOutputTokens": maxTokens,
+	}
+	// Gemini 3 spends maxOutputTokens on both hidden thinking and visible JSON.
+	// B1 uses a tiny structured response, so make the lowest supported thinking
+	// level explicit instead of inheriting Gemini 3's high default. Gemini 2.5
+	// uses a different thinkingBudget contract, so leave it unchanged here.
+	if isGemini3Model(model) {
+		level, err := geminiThinkingLevel(reasoningEffort)
+		if err != nil {
+			return GenerationResult{}, err
+		}
+		generationConfig["thinkingConfig"] = map[string]string{"thinkingLevel": level}
+	}
 	payload := map[string]any{
 		"model": model,
 		"systemInstruction": map[string]any{
@@ -151,9 +169,7 @@ func generateWithPrompt(ctx context.Context, apiKey, model string, maxTokens int
 				},
 			},
 		},
-		"generationConfig": map[string]any{
-			"maxOutputTokens": maxTokens,
-		},
+		"generationConfig": generationConfig,
 	}
 	if responseSchema != nil {
 		config := payload["generationConfig"].(map[string]any)
@@ -247,6 +263,21 @@ func generateWithPrompt(ctx context.Context, apiKey, model string, maxTokens int
 	}
 	baseResult.Text = strings.Join(textParts, "")
 	return baseResult, nil
+}
+
+func isGemini3Model(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gemini-3")
+}
+
+func geminiThinkingLevel(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		value = "minimal"
+	}
+	if !ValidReasoningEffortForProvider(GeminiProvider{}.Descriptor(), value) {
+		return "", fmt.Errorf("invalid Gemini thinking level %q", value)
+	}
+	return value, nil
 }
 
 func firstHeader(headers http.Header, names ...string) string {

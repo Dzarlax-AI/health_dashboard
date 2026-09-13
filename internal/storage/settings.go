@@ -14,8 +14,8 @@ import (
 const (
 	SettingTodayInsightsB0Enabled     = "today_insights_b0_enabled"
 	SettingTodayInsightsB1Enabled     = "today_insights_b1_enabled"
-	SettingTodayInsightsB1QualityGate = "today_insights_b1_quality_gate_v2"
-	TodayInsightsB1QualityGateVersion = "today-insights-b1-quality-gate-v2"
+	SettingTodayInsightsB1QualityGate = "today_insights_b1_quality_gate_v3"
+	TodayInsightsB1QualityGateVersion = "today-insights-b1-quality-gate-v3"
 )
 
 // TodayInsightsB1QualityGateApproval is durable, tenant-scoped evidence that
@@ -28,6 +28,7 @@ type TodayInsightsB1QualityGateApproval struct {
 	Provider           string `json:"provider"`
 	Model              string `json:"model"`
 	Reasoning          string `json:"reasoning"`
+	MaxOutputTokens    int    `json:"max_output_tokens"`
 	PromptRevision     string `json:"prompt_revision"`
 	ClaimPacketVersion string `json:"claim_packet_version"`
 	NarrativeVersion   string `json:"narrative_version"`
@@ -57,6 +58,9 @@ func ValidateTodayInsightsB1QualityGateApproval(approval TodayInsightsB1QualityG
 	}
 	if approval.Reasoning != canonicalReasoning {
 		return fmt.Errorf("B1 quality-gate reasoning must match the provider capability")
+	}
+	if approval.MaxOutputTokens < 200 || approval.MaxOutputTokens > ai.DailyInsightMaxTokens {
+		return fmt.Errorf("B1 quality-gate max_output_tokens must be in [200, %d]", ai.DailyInsightMaxTokens)
 	}
 	if strings.TrimSpace(approval.PromptRevision) == "" || strings.TrimSpace(approval.ClaimPacketVersion) == "" || strings.TrimSpace(approval.NarrativeVersion) == "" {
 		return fmt.Errorf("B1 quality-gate prompt and narrative contract versions are required")
@@ -95,6 +99,9 @@ func canonicalTodayInsightsB1Reasoning(descriptor ai.ProviderDescriptor, reasoni
 	}
 	if reasoning == "" {
 		return "", fmt.Errorf("B1 quality-gate reasoning is required for provider %q", descriptor.ID)
+	}
+	if !ai.ValidReasoningEffortForProvider(descriptor, reasoning) {
+		return "", fmt.Errorf("invalid B1 quality-gate reasoning %q for provider %q", reasoning, descriptor.ID)
 	}
 	return reasoning, nil
 }
@@ -171,7 +178,7 @@ func TodayInsightsB1QualityGateMatchesConfig(approval TodayInsightsB1QualityGate
 		return false
 	}
 	identity := ai.DailyInsightNarrativeSlotCurrentReviewIdentity()
-	return approval.Provider == cfg.Provider && approval.Model == resolved.Model && approval.Reasoning == resolved.ReasoningEffort &&
+	return approval.Provider == cfg.Provider && approval.Model == resolved.Model && approval.Reasoning == resolved.ReasoningEffort && approval.MaxOutputTokens == resolved.MaxOutputTokens &&
 		approval.PromptRevision == identity.PromptRevision &&
 		approval.ClaimPacketVersion == identity.ClaimPacketVersion &&
 		approval.NarrativeVersion == identity.NarrativeVersion &&

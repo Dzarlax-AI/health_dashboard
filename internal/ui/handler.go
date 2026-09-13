@@ -3016,7 +3016,7 @@ func buildAdminAISettingsUpdate(body adminAISettingsRequest) (map[string]string,
 		if body.ReasoningEffort == "" {
 			body.ReasoningEffort = descriptor.DefaultReasoning
 		}
-		if !ai.ValidReasoningEffort(body.ReasoningEffort) {
+		if !ai.ValidReasoningEffortForProvider(descriptor, body.ReasoningEffort) {
 			return nil, fmt.Errorf("invalid reasoning_effort")
 		}
 	} else {
@@ -3053,6 +3053,7 @@ func adminAISettingsPayload(aiCfg storage.AIConfig) map[string]any {
 			"display_name":        descriptor.DisplayName,
 			"default_model":       descriptor.DefaultModel,
 			"supports_reasoning":  descriptor.SupportsReasoning,
+			"reasoning_efforts":   descriptor.ReasoningEfforts,
 			"api_key_placeholder": descriptor.APIKeyPlaceholder,
 			"configured":          settings.APIKey != "",
 			"model":               model,
@@ -3334,10 +3335,16 @@ func (h *Handler) adminTodayInsightsB1QualityGate(w http.ResponseWriter, r *http
 		http.Error(w, "normalize B1 quality-gate reasoning: "+err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
+	activeConfig := scope.DB.GetAIConfig(h.mgr.AIDefaultsFor(r.Context(), scope.Schema))
+	resolved, err := todayInsightsB1EvaluationMatchesActiveConfig(activeConfig, request.Evaluation, reasoning)
+	if err != nil {
+		http.Error(w, "quality-gate evaluation does not match the active B1 provider configuration: "+err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
 	approval := storage.TodayInsightsB1QualityGateApproval{
 		Version: storage.TodayInsightsB1QualityGateVersion, CorpusHash: corpusHash,
 		Provider: request.Evaluation.Provider, Model: request.Evaluation.Model,
-		Reasoning: reasoning, PromptRevision: identity.PromptRevision,
+		Reasoning: reasoning, MaxOutputTokens: resolved.MaxOutputTokens, PromptRevision: identity.PromptRevision,
 		ClaimPacketVersion: identity.ClaimPacketVersion, NarrativeVersion: identity.NarrativeVersion,
 		ReviewFingerprint: identity.Fingerprint, ApprovedAt: time.Now().UTC().Format(time.RFC3339),
 	}
@@ -3346,6 +3353,17 @@ func (h *Handler) adminTodayInsightsB1QualityGate(w http.ResponseWriter, r *http
 		return
 	}
 	jsonResponse(w, map[string]any{"schema": scope.Schema, "approval": approval, "quality_gate": gate})
+}
+
+func todayInsightsB1EvaluationMatchesActiveConfig(active storage.AIConfig, evaluation ai.DailyInsightNarrativeEvaluationOutput, reasoning string) (ai.ProviderConfig, error) {
+	_, resolved, err := storage.ResolveTodayInsightsB1ProviderConfig(active)
+	if err != nil {
+		return ai.ProviderConfig{}, err
+	}
+	if evaluation.Provider != active.Provider || evaluation.Model != resolved.Model || reasoning != resolved.ReasoningEffort || evaluation.MaxOutputTokens != resolved.MaxOutputTokens {
+		return ai.ProviderConfig{}, errors.New("evaluation provider, model, reasoning or output budget differs from active configuration")
+	}
+	return resolved, nil
 }
 
 func todayInsightsB1QualityGateApproved(db *storage.DB) bool {

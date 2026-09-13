@@ -562,7 +562,7 @@ func reviewedEvaluation(t *testing.T, corpus DailyInsightNarrativeCorpus) DailyI
 	t.Helper()
 	identity := DailyInsightNarrativeCurrentReviewIdentity()
 	output := DailyInsightNarrativeEvaluationOutput{
-		Version: "daily-insight-narrative-evaluation-v2", CorpusHash: "frozen-hash", RunsPerCase: 3,
+		Version: "daily-insight-narrative-evaluation-v3", CorpusHash: "frozen-hash", MaxOutputTokens: DailyInsightMaxTokens, RunsPerCase: 3,
 		PromptRevision: identity.PromptRevision, ClaimPacketVersion: identity.ClaimPacketVersion,
 		NarrativeVersion: identity.NarrativeVersion, ReviewFingerprint: identity.Fingerprint,
 		Cases: make([]DailyInsightNarrativeEvaluationCase, 0, len(corpus.Cases)),

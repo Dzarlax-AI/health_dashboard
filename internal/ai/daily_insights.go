@@ -12,7 +12,10 @@ import (
 
 // DailyInsightMaxTokens bounds one three-domain overlay. The server already
 // owns facts, state, actions and destinations, so prose has a small budget.
-const DailyInsightMaxTokens = 900
+// Gemini 3's output budget includes its (minimal) hidden thinking tokens as
+// well as the compact JSON response. 2048 leaves enough room for that vendor
+// contract while remaining a bounded per-slot expense.
+const DailyInsightMaxTokens = 2048
 
 // DailyInsightNarrativePromptRevision is the human-readable release revision
 // for the B1 prose instructions. The stronger review fingerprint below also
@@ -23,7 +26,7 @@ const DailyInsightNarrativePromptRevision = "today-domain-prose-prompt-v3"
 // DailyInsightNarrativeSlotPromptRevision governs the independently cached
 // overall, sleep, recovery and energy explanations. A change invalidates the
 // B1 approval because the provider no longer receives the same contract.
-const DailyInsightNarrativeSlotPromptRevision = "today-slot-prose-prompt-v4"
+const DailyInsightNarrativeSlotPromptRevision = "today-slot-prose-prompt-v5"
 
 const dailyInsightSystemPrompt = `You write short, human explanations for a personal wellbeing app.
 

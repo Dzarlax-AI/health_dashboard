@@ -480,14 +480,7 @@
             </div>
             <div class="admin-field-row" id="cfg-ai-reasoning-row" hidden>
               <label class="admin-field-label" for="cfg-ai-reasoning">{{T .Lang "admin_ai_reasoning"}}</label>
-              <select class="admin-field-input" id="cfg-ai-reasoning">
-                <option value="none">none</option>
-                <option value="low">low</option>
-                <option value="medium">medium</option>
-                <option value="high">high</option>
-                <option value="xhigh">xhigh</option>
-                <option value="max">max</option>
-              </select>
+              <select class="admin-field-input" id="cfg-ai-reasoning"></select>
             </div>
             <div class="admin-field-row">
               <label class="admin-field-label" for="cfg-ai-max-tokens">{{T .Lang "admin_ai_max_tokens"}}</label>
@@ -1282,7 +1275,15 @@ function selectAIProvider(id) {
   $('cfg-ai-model').value = provider.model || provider.default_model || '';
   $('cfg-ai-models').innerHTML = '';
   $('cfg-ai-reasoning-row').hidden = !provider.supports_reasoning;
-  $('cfg-ai-reasoning').value = provider.reasoning_effort || 'none';
+  var reasoning = $('cfg-ai-reasoning');
+  reasoning.innerHTML = '';
+  (provider.reasoning_efforts || []).forEach(function(value) {
+    var option = document.createElement('option');
+    option.value = value;
+    option.textContent = value;
+    reasoning.appendChild(option);
+  });
+  reasoning.value = provider.reasoning_effort || provider.default_reasoning || '';
 }
 
 function loadAIModels() {

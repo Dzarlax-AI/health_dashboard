@@ -26,12 +26,28 @@ type Model struct {
 // ProviderDescriptor contains non-secret provider metadata used by the Admin
 // UI. Installation-specific configuration never lives in the registry.
 type ProviderDescriptor struct {
-	ID                string `json:"id"`
-	DisplayName       string `json:"display_name"`
-	DefaultModel      string `json:"default_model"`
-	SupportsReasoning bool   `json:"supports_reasoning"`
-	APIKeyPlaceholder string `json:"api_key_placeholder"`
-	DefaultReasoning  string `json:"default_reasoning,omitempty"`
+	ID                string   `json:"id"`
+	DisplayName       string   `json:"display_name"`
+	DefaultModel      string   `json:"default_model"`
+	SupportsReasoning bool     `json:"supports_reasoning"`
+	ReasoningEfforts  []string `json:"reasoning_efforts,omitempty"`
+	APIKeyPlaceholder string   `json:"api_key_placeholder"`
+	DefaultReasoning  string   `json:"default_reasoning,omitempty"`
+}
+
+// ValidReasoningEffortForProvider keeps the Admin API from accepting a value
+// that a selected adapter cannot represent. Provider-specific lists are
+// deliberately explicit: "high" does not mean the same thing across vendors.
+func ValidReasoningEffortForProvider(descriptor ProviderDescriptor, value string) bool {
+	if !descriptor.SupportsReasoning {
+		return value == ""
+	}
+	for _, allowed := range descriptor.ReasoningEfforts {
+		if value == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 // ProviderConfig is the active provider's resolved configuration. Adapters
