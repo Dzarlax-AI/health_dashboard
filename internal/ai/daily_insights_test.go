@@ -63,7 +63,7 @@ func TestGenerateDailyInsightNarrativeUsesClaimPacketAndKeepsInvalidDomainFallba
 func TestGenerateDailyInsightNarrativeSlotSendsOnlyOneClosedPacket(t *testing.T) {
 	snapshot := dailyInsightTestSnapshot(t)
 	provider := &dailyInsightTestProvider{}
-	provider.response = `{"version":"today-insight-slot-v2","locale":"en","slot":{"key":"sleep","section":{"sentences":[{"text":"Recent nights were shorter than your usual sleep rhythm, so the pattern matters more than a single night.","claim_ids":["recent_sleep_below_reference"],"qualifier_ids":["personal_pattern","current_context"],"meaning_ids":["sleep_pattern_not_single_night"]}]}}}`
+	provider.response = `{"version":"today-insight-slot-v2","locale":"en","slot":{"key":"sleep","section":{"sentences":[{"text":"Recent nights were shorter than your usual sleep rhythm, so the pattern matters more than a single night.","claim_ids":["recent_sleep_below_reference"],"qualifier_ids":["personal_pattern","current_context"],"meaning_ids":["sleep_pattern_not_single_night"],"position_ids":[]}]}}}`
 	result, err := GenerateDailyInsightNarrativeSlot(context.Background(), provider, ProviderConfig{}, snapshot, "en", "sleep")
 	if err != nil || result.Section == nil {
 		t.Fatalf("GenerateDailyInsightNarrativeSlot: section=%#v err=%v", result.Section, err)
@@ -82,7 +82,7 @@ func TestGenerateDailyInsightNarrativeSlotSendsOnlyOneClosedPacket(t *testing.T)
 
 func TestGenerateDailyInsightNarrativeSlotClassifiesRejectedProseAsSemantic(t *testing.T) {
 	snapshot := dailyInsightTestSnapshot(t)
-	provider := &dailyInsightTestProvider{response: `{"version":"today-insight-slot-v2","locale":"en","slot":{"key":"sleep","section":{"sentences":[{"text":"You should rest today.","claim_ids":["recent_sleep_below_reference"],"qualifier_ids":["personal_pattern","current_context"],"meaning_ids":["sleep_pattern_not_single_night"]}]}}}`}
+	provider := &dailyInsightTestProvider{response: `{"version":"today-insight-slot-v2","locale":"en","slot":{"key":"sleep","section":{"sentences":[{"text":"You should rest today.","claim_ids":["recent_sleep_below_reference"],"qualifier_ids":["personal_pattern","current_context"],"meaning_ids":["sleep_pattern_not_single_night"],"position_ids":[]}]}}}`}
 	_, err := GenerateDailyInsightNarrativeSlot(context.Background(), provider, ProviderConfig{}, snapshot, "en", "sleep")
 	var semanticErr *DailyInsightNarrativeSemanticError
 	if err == nil || !errors.As(err, &semanticErr) {
@@ -135,6 +135,15 @@ func TestDailyInsightSlotPromptRejectsAbstractPacingBoilerplate(t *testing.T) {
 	for _, fragment := range []string{"guide, orientation, cue, verdict, score", "today's pace", "how the day is going", "second person", "lived, non-medical consequence", "tentative present possibility", "less energy means less energy"} {
 		if !strings.Contains(prompt, fragment) {
 			t.Fatalf("slot prompt no longer guards abstract pacing boilerplate %q", fragment)
+		}
+	}
+}
+
+func TestDailyInsightSlotPromptUsesServerPositionWithoutInterfaceVoice(t *testing.T) {
+	prompt := strings.ToLower(dailyInsightSlotSystemPrompt)
+	for _, fragment := range []string{"server_position", "supporting signal", "position_ids", "never mention a server"} {
+		if !strings.Contains(prompt, fragment) {
+			t.Fatalf("slot prompt no longer defines server position boundary %q", fragment)
 		}
 	}
 }

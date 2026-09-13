@@ -23,7 +23,7 @@ const (
 	DailyInsightPolicyVersion         = "daily-insight-policy-v2"
 	DailyInsightActionCatalogVersion  = "daily-insight-actions-v1"
 	DailyInsightPromptRevision        = "daily-insight-prompt-v4"
-	DailyInsightNarrativeInputVersion = "today-insight-slot-input-v6"
+	DailyInsightNarrativeInputVersion = "today-insight-slot-input-v7"
 	DailyInsightNarrativeVersion      = "today-insight-slot-v2"
 )
 
@@ -198,15 +198,16 @@ type DailyInsightChange struct {
 }
 
 type DailyInsightSnapshot struct {
-	Date       string                 `json:"date"`
-	DecisionID string                 `json:"decision_id"`
-	Version    string                 `json:"snapshot_version"`
-	UpdatedAt  *time.Time             `json:"updated_at,omitempty"`
-	Primary    DailyInsight           `json:"primary"`
-	Domains    []DailyInsightDomain   `json:"domains"`
-	Evidence   []DailyInsightEvidence `json:"evidence"`
-	Changes    []DailyInsightChange   `json:"changes"`
-	HasMore    bool                   `json:"has_more"`
+	Date                    string                 `json:"date"`
+	DecisionID              string                 `json:"decision_id"`
+	Version                 string                 `json:"snapshot_version"`
+	UpdatedAt               *time.Time             `json:"updated_at,omitempty"`
+	Primary                 DailyInsight           `json:"primary"`
+	Domains                 []DailyInsightDomain   `json:"domains"`
+	Evidence                []DailyInsightEvidence `json:"evidence"`
+	Changes                 []DailyInsightChange   `json:"changes"`
+	HasMore                 bool                   `json:"has_more"`
+	DecisionEvidenceDomains []string               `json:"-"`
 	// PolicyDigest is server-internal cache material. It binds a future
 	// narrative overlay to the exact canonical sleep records without exposing
 	// an implementation hash as a user-facing fact.
@@ -233,8 +234,30 @@ type DailyInsightNarrativeSlotInput struct {
 }
 
 type DailyInsightNarrativeDomainInput struct {
-	Key    string                       `json:"key"`
-	Claims []DailyInsightNarrativeClaim `json:"claims"`
+	Key      string                               `json:"key"`
+	Claims   []DailyInsightNarrativeClaim         `json:"claims"`
+	Position *DailyInsightNarrativeServerPosition `json:"server_position,omitempty"`
+}
+
+// DailyInsightNarrativeServerPosition is a server-owned frame for an
+// independently generated domain explanation. It is present only when this
+// domain was one of the explicit inputs to the final DailyDecision. The model
+// may use it to choose a coherent human framing, but may not state the basis
+// signals as additional claims or create a new relation between them.
+type DailyInsightNarrativeServerPosition struct {
+	ID                string                                      `json:"id"`
+	Statement         string                                      `json:"statement"`
+	SlotRole          string                                      `json:"slot_role"`
+	SupportingSignals []DailyInsightNarrativeServerPositionSignal `json:"supporting_signals"`
+}
+
+// DailyInsightNarrativeServerPositionSignal gives the model compact, factual
+// context for the server position without exposing measurements or display
+// copy. It is not separately citable prose material.
+type DailyInsightNarrativeServerPositionSignal struct {
+	Domain      string   `json:"domain"`
+	Proposition string   `json:"proposition"`
+	EvidenceIDs []string `json:"evidence_ids"`
 }
 
 type DailyInsightNarrativeClaim struct {
@@ -281,6 +304,7 @@ type DailyInsightNarrativeSentence struct {
 	ClaimIDs     []string `json:"claim_ids"`
 	QualifierIDs []string `json:"qualifier_ids"`
 	MeaningIDs   []string `json:"meaning_ids"`
+	PositionIDs  []string `json:"position_ids"`
 }
 
 type DailyInsightNarrativeDomain struct {
@@ -359,7 +383,91 @@ func BuildDailyInsightNarrativeSlotInput(snapshot *DailyInsightSnapshot, locale,
 			break
 		}
 	}
+	if len(input.Slot.Claims) > 0 && dailyInsightDecisionUsesDomain(snapshot, slot) {
+		input.Slot.Position = buildDailyInsightNarrativeServerPosition(snapshot, input.Locale)
+	}
 	return input, true
+}
+
+func dailyInsightDecisionUsesDomain(snapshot *DailyInsightSnapshot, domain string) bool {
+	if snapshot == nil {
+		return false
+	}
+	return containsDailyInsightID(snapshot.DecisionEvidenceDomains, domain)
+}
+
+func buildDailyInsightNarrativeServerPosition(snapshot *DailyInsightSnapshot, locale string) *DailyInsightNarrativeServerPosition {
+	if snapshot == nil || snapshot.Primary.NarrativeSubject == "" {
+		return nil
+	}
+	position := &DailyInsightNarrativeServerPosition{
+		ID:                "daily_decision_position",
+		Statement:         localizedDailyInsightServerPosition(locale, snapshot.Primary.NarrativeSubject),
+		SlotRole:          localizedDailyInsightServerPositionRole(locale),
+		SupportingSignals: []DailyInsightNarrativeServerPositionSignal{},
+	}
+	for _, domainKey := range snapshot.DecisionEvidenceDomains {
+		for _, domain := range snapshot.Domains {
+			if domain.Key != domainKey || !domainNarrativeEligible(domain) {
+				continue
+			}
+			claim := buildDailyInsightNarrativeClaim(snapshot, domain, locale)
+			position.SupportingSignals = append(position.SupportingSignals, DailyInsightNarrativeServerPositionSignal{
+				Domain: domain.Key, Proposition: claim.Proposition, EvidenceIDs: append([]string(nil), claim.EvidenceIDs...),
+			})
+			break
+		}
+	}
+	return position
+}
+
+func localizedDailyInsightServerPosition(locale, mode string) string {
+	switch normalizeDailyInsightLocale(locale) {
+	case "ru":
+		switch mode {
+		case "rest":
+			return "На сегодня сервер выбрал режим с приоритетом восстановления."
+		case "active_recovery":
+			return "На сегодня сервер выбрал более бережный режим с учётом восстановления."
+		case "push_hard":
+			return "На сегодня сервер видит пространство для более насыщенного дня."
+		default:
+			return "На сегодня сервер оставил сбалансированный режим."
+		}
+	case "sr":
+		switch mode {
+		case "rest":
+			return "Server je za danas izabrao režim u kome oporavak ima prednost."
+		case "active_recovery":
+			return "Server je za danas izabrao pažljiviji režim uz uvažavanje oporavka."
+		case "push_hard":
+			return "Server za danas vidi prostor za zahtevniji dan."
+		default:
+			return "Server je za danas zadržao uravnotežen režim."
+		}
+	default:
+		switch mode {
+		case "rest":
+			return "The server has set a recovery-first position for today."
+		case "active_recovery":
+			return "The server has set a lighter, recovery-aware position for today."
+		case "push_hard":
+			return "The server sees room for a more demanding day."
+		default:
+			return "The server has kept a balanced position for today."
+		}
+	}
+}
+
+func localizedDailyInsightServerPositionRole(locale string) string {
+	switch normalizeDailyInsightLocale(locale) {
+	case "ru":
+		return "Этот сигнал входит в основание этой позиции."
+	case "sr":
+		return "Ovaj signal je deo osnove za tu poziciju."
+	default:
+		return "This signal is part of the basis for that position."
+	}
 }
 
 func isDailyInsightNarrativeSlot(slot string) bool {
@@ -887,6 +995,7 @@ func ApplyDailyInsightNarrative(snapshot *DailyInsightSnapshot, narrative DailyI
 
 func cloneDailyInsightSnapshot(snapshot *DailyInsightSnapshot) *DailyInsightSnapshot {
 	out := *snapshot
+	out.DecisionEvidenceDomains = append([]string(nil), snapshot.DecisionEvidenceDomains...)
 	out.Primary.EvidenceIDs = append([]string(nil), snapshot.Primary.EvidenceIDs...)
 	if narrative := snapshot.Primary.Narrative; narrative != nil {
 		out.Primary.Narrative = &DailyInsightNarrativeOverlay{Text: narrative.Text, ClaimIDs: append([]string(nil), narrative.ClaimIDs...), EvidenceIDs: append([]string(nil), narrative.EvidenceIDs...)}
@@ -1117,7 +1226,7 @@ func cloneDailyInsightNarrativeSection(section DailyInsightNarrativeSection) *Da
 	out := DailyInsightNarrativeSection{Sentences: make([]DailyInsightNarrativeSentence, 0, len(section.Sentences))}
 	for _, sentence := range section.Sentences {
 		out.Sentences = append(out.Sentences, DailyInsightNarrativeSentence{
-			Text: strings.TrimSpace(sentence.Text), ClaimIDs: append([]string(nil), sentence.ClaimIDs...), QualifierIDs: append([]string(nil), sentence.QualifierIDs...), MeaningIDs: append([]string(nil), sentence.MeaningIDs...),
+			Text: strings.TrimSpace(sentence.Text), ClaimIDs: append([]string(nil), sentence.ClaimIDs...), QualifierIDs: append([]string(nil), sentence.QualifierIDs...), MeaningIDs: append([]string(nil), sentence.MeaningIDs...), PositionIDs: append([]string(nil), sentence.PositionIDs...),
 		})
 	}
 	return &out
@@ -1164,6 +1273,13 @@ func validateDailyInsightNarrativeSection(section DailyInsightNarrativeSection, 
 		}
 		if len(meanings) != 0 && len(sentence.MeaningIDs) == 0 {
 			return fmt.Errorf("sentence has no meaning IDs")
+		}
+		if input.Position != nil {
+			if len(sentence.PositionIDs) != 1 || sentence.PositionIDs[0] != input.Position.ID {
+				return fmt.Errorf("sentence must cite server position %q", input.Position.ID)
+			}
+		} else if len(sentence.PositionIDs) != 0 {
+			return fmt.Errorf("sentence cites a server position outside this slot")
 		}
 		for _, meaningID := range sentence.MeaningIDs {
 			if _, known := meanings[meaningID]; !known {
@@ -1254,8 +1370,14 @@ func BuildDailyInsightSnapshot(resp *BriefingResponse, lang string) *DailyInsigh
 		decision = BuildDailyDecision(resp)
 	}
 	decisionID := ""
+	decisionEvidenceDomains := []string{}
 	if decision != nil {
 		decisionID = decision.ID
+		for _, domain := range decision.EvidenceDomains {
+			if containsDailyInsightID(dailyInsightNarrativeDomainKeys, domain) && !containsDailyInsightID(decisionEvidenceDomains, domain) {
+				decisionEvidenceDomains = append(decisionEvidenceDomains, domain)
+			}
+		}
 	}
 	updatedAt := (*time.Time)(nil)
 	if resp.TodayGuidance != nil {
@@ -1264,7 +1386,7 @@ func BuildDailyInsightSnapshot(resp *BriefingResponse, lang string) *DailyInsigh
 
 	snapshot := &DailyInsightSnapshot{
 		Date: resp.Date, DecisionID: decisionID, Version: DailyInsightSnapshotVersion, UpdatedAt: updatedAt,
-		Domains: []DailyInsightDomain{}, Evidence: []DailyInsightEvidence{}, Changes: []DailyInsightChange{},
+		Domains: []DailyInsightDomain{}, Evidence: []DailyInsightEvidence{}, Changes: []DailyInsightChange{}, DecisionEvidenceDomains: decisionEvidenceDomains,
 	}
 	copy := dailyInsightCopy(lang)
 	snapshot.Domains = []DailyInsightDomain{
@@ -1357,6 +1479,7 @@ func DailyInsightMaterialHash(snapshot *DailyInsightSnapshot) string {
 		snapshot.Primary.NextStepID(),
 		snapshot.Primary.NextStepText(),
 	}
+	parts = append(parts, snapshot.DecisionEvidenceDomains...)
 	parts = append(parts, snapshot.Primary.EvidenceIDs...)
 	for _, evidence := range snapshot.Evidence {
 		parts = append(parts, evidence.ID, evidence.Domain, evidence.DataState, evidence.Confidence, evidence.ComparisonPeriod, evidence.Unit)

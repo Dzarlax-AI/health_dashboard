@@ -101,6 +101,33 @@ func TestFrozenCorpusRejectsFreeTextNarrativeSubject(t *testing.T) {
 	}
 }
 
+func TestFrozenCorpusRestoresClosedDecisionEvidenceDomains(t *testing.T) {
+	item := DailyInsightNarrativeCorpusCase{
+		ID: "decision-context", Locale: "en",
+		Snapshot: health.DailyInsightSnapshot{
+			DecisionID: "review-decision", Version: health.DailyInsightSnapshotVersion,
+			Primary: health.DailyInsight{State: "insight", AnswerKind: health.DailyInsightAnswerFactual, EvidenceIDs: []string{"recovery-evidence"}, NextStep: &health.DailyInsightAction{ID: "review-action"}},
+			Domains: []health.DailyInsightDomain{
+				{Key: "sleep"}, eligibleCorpusDomain("recovery", "recovery-evidence"), {Key: "energy"},
+			},
+			Evidence: []health.DailyInsightEvidence{{ID: "recovery-evidence", Domain: "recovery", DataState: "fresh", Confidence: "final"}},
+		},
+		PrimaryNarrativeSubject: "active_recovery", DecisionEvidenceDomains: []string{"recovery"},
+	}
+	snapshot, err := item.SnapshotForEvaluation()
+	if err != nil {
+		t.Fatalf("SnapshotForEvaluation: %v", err)
+	}
+	input, known := health.BuildDailyInsightNarrativeSlotInput(&snapshot, "en", "recovery")
+	if !known || input.Slot.Position == nil || input.Slot.Position.ID != "daily_decision_position" {
+		t.Fatalf("restored slot position = %#v", input)
+	}
+	item.DecisionEvidenceDomains = []string{"untrusted"}
+	if _, err := item.SnapshotForEvaluation(); err == nil || !strings.Contains(err.Error(), "unsupported decision evidence domain") {
+		t.Fatalf("invalid decision domain error = %v", err)
+	}
+}
+
 func TestFrozenCorpusRequiresEnergySubjectForEligibleEnergyClaim(t *testing.T) {
 	corpus := coveredNarrativeCorpus(t, 20)
 	energy := eligibleCorpusDomain("energy", "energy-evidence")

@@ -334,15 +334,24 @@ func TestDailyInsightNarrativeSlotsKeepSiblingMaterialIndependent(t *testing.T) 
 		State: "insight", AnswerKind: DailyInsightAnswerFactual, EvidenceIDs: []string{"decision-evidence"},
 		NextStep: &DailyInsightAction{ID: "daily-decision-active_recovery", Text: "Active recovery"}, NarrativeSubject: "active_recovery",
 	}
+	base.DecisionEvidenceDomains = []string{"energy"}
 	base.Evidence = append(base.Evidence, DailyInsightEvidence{ID: "decision-evidence", Domain: "recovery", DataState: "fresh", Confidence: "final"})
 	overall, known := BuildDailyInsightNarrativeSlotInput(base, "en", DailyInsightNarrativeOverallSlot)
 	if !known || len(overall.Slot.Claims) != 1 || overall.Slot.Claims[0].ID != "overall_daily_decision_context" {
 		t.Fatalf("overall slot packet = %#v, known=%v", overall, known)
 	}
-	if hash := DailyInsightNarrativeSlotMaterialHash(base, "en", "recovery"); hash == "" {
-		t.Fatal("recovery slot has no material hash")
-	} else if changed := DailyInsightNarrativeSlotMaterialHash(ApplyRecentSleepBelowReference(base, RecentSleepBelowReference{State: RecentSleepClaimTrue}, "en"), "en", "recovery"); changed != hash {
-		t.Fatalf("sleep update changed recovery slot hash: before=%s after=%s", hash, changed)
+	if hash := DailyInsightNarrativeSlotMaterialHash(base, "en", "energy"); hash == "" {
+		t.Fatal("energy slot has no material hash")
+	} else if changed := DailyInsightNarrativeSlotMaterialHash(ApplyRecentSleepBelowReference(base, RecentSleepBelowReference{State: RecentSleepClaimTrue}, "en"), "en", "energy"); changed != hash {
+		t.Fatalf("sleep update changed energy slot hash: before=%s after=%s", hash, changed)
+	}
+	energy, known := BuildDailyInsightNarrativeSlotInput(base, "en", "energy")
+	if !known || energy.Slot.Position == nil || energy.Slot.Position.ID != "daily_decision_position" || len(energy.Slot.Position.SupportingSignals) != 1 || energy.Slot.Position.SupportingSignals[0].Domain != "energy" {
+		t.Fatalf("energy server position = %#v, known=%v", energy.Slot.Position, known)
+	}
+	sleep, known := BuildDailyInsightNarrativeSlotInput(base, "en", "sleep")
+	if !known || sleep.Slot.Position != nil {
+		t.Fatalf("unrelated sleep slot received server position: %#v", sleep.Slot.Position)
 	}
 	section := &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
 		Text:     "Today is set to an active-recovery pace, keeping the selected pace scoped to today.",
@@ -357,6 +366,33 @@ func TestDailyInsightNarrativeSlotsKeepSiblingMaterialIndependent(t *testing.T) 
 	rendered, err := ApplyDailyInsightNarrativeSlot(base, "en", DailyInsightNarrativeOverallSlot, validated)
 	if err != nil || rendered.Primary.Narrative == nil || rendered.Primary.Narrative.Text != section.Sentences[0].Text {
 		t.Fatalf("apply overall slot: snapshot=%#v err=%v", rendered, err)
+	}
+}
+
+func TestDailyInsightNarrativeSlotRequiresServerPositionCitation(t *testing.T) {
+	duration := 7.2
+	snapshot := BuildDailyInsightSnapshot(&BriefingResponse{
+		Date: "2026-09-12", Sleep: &SleepAnalysis{LatestDate: "2026-09-12", LatestTotal: &duration, TotalAvg: 7.1},
+		ReadinessToday: 42, ReadinessTodayBand: "low", ReadinessServing: &ReadinessServingState{Status: ReadinessServingFresh, Confidence: ReadinessConfidenceFinal},
+		EnergyBank: &EnergyBank{Current: 45, Capacity: 80, ActionVerdict: "active_recovery", VerdictReason: "The current reserve supports a quieter day."},
+	}, "en")
+	input, known := BuildDailyInsightNarrativeSlotInput(snapshot, "en", "energy")
+	if !known || input.Slot.Position == nil || input.Slot.Position.ID != "daily_decision_position" {
+		t.Fatalf("energy slot should receive the decision position: %#v", input)
+	}
+	section := DailyInsightNarrativeSlot{
+		Version: DailyInsightNarrativeVersion, Locale: "en",
+		Slot: DailyInsightNarrativeDomain{Key: "energy", Section: &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
+			Text:     "The current energy context is in a recovery-oriented range, so ordinary tasks may feel more effortful.",
+			ClaimIDs: []string{"energy_current_verdict_context"}, QualifierIDs: []string{"current_context"}, MeaningIDs: []string{"energy_pacing_today"},
+		}}}},
+	}
+	if _, err := ValidateDailyInsightNarrativeSlotResponse(snapshot, "en", "energy", section); err == nil || !strings.Contains(err.Error(), "server position") {
+		t.Fatalf("missing server-position citation error = %v", err)
+	}
+	section.Slot.Section.Sentences[0].PositionIDs = []string{"daily_decision_position"}
+	if _, err := ValidateDailyInsightNarrativeSlotResponse(snapshot, "en", "energy", section); err != nil {
+		t.Fatalf("server-position citation rejected: %v", err)
 	}
 }
 

@@ -67,7 +67,11 @@ type DailyInsightNarrativeCorpusCase struct {
 	// evaluate the independent overall slot without retaining its display
 	// wording, action text, raw decision ID, or measurements.
 	PrimaryNarrativeSubject string `json:"primary_narrative_subject,omitempty"`
-	PrimaryMeaningID        string `json:"primary_meaning_id"`
+	// DecisionEvidenceDomains preserves the closed provenance list used to
+	// decide whether an independent domain slot receives the server position.
+	// It contains only known domain keys, never a raw decision reason or value.
+	DecisionEvidenceDomains []string `json:"decision_evidence_domains,omitempty"`
+	PrimaryMeaningID        string   `json:"primary_meaning_id"`
 }
 
 // SnapshotForEvaluation restores the closed, non-display variants that are
@@ -86,6 +90,14 @@ func (item DailyInsightNarrativeCorpusCase) SnapshotForEvaluation() (health.Dail
 			return health.DailyInsightSnapshot{}, fmt.Errorf("case %q has incomplete overall narrative context", item.ID)
 		}
 		snapshot.Primary.NarrativeSubject = item.PrimaryNarrativeSubject
+	}
+	for _, domain := range item.DecisionEvidenceDomains {
+		if domain != "sleep" && domain != "recovery" && domain != "energy" {
+			return health.DailyInsightSnapshot{}, fmt.Errorf("case %q has unsupported decision evidence domain %q", item.ID, domain)
+		}
+		if !containsCorpusString(snapshot.DecisionEvidenceDomains, domain) {
+			snapshot.DecisionEvidenceDomains = append(snapshot.DecisionEvidenceDomains, domain)
+		}
 	}
 	if len(item.NarrativeSubjects) == 0 {
 		return snapshot, nil
@@ -218,8 +230,18 @@ func SanitizeDailyInsightNarrativeCorpusCandidate(snapshot health.DailyInsightSn
 		Snapshot:                sanitized,
 		NarrativeSubjects:       subjects,
 		PrimaryNarrativeSubject: primarySubject,
+		DecisionEvidenceDomains: append([]string(nil), snapshot.DecisionEvidenceDomains...),
 		PrimaryMeaningID:        narrativeCorpusPrimaryMeaningID(snapshot),
 	}
+}
+
+func containsCorpusString(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
 }
 
 func sanitizedNarrativeDomainAction(action *health.DailyInsightAction) *health.DailyInsightAction {
