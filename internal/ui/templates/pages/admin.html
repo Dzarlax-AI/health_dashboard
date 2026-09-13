@@ -170,6 +170,29 @@
           <div id="admin-msg" style="display:none"></div>
         </details>
 
+        <!-- Today insights are enabled per profile only after the operator has
+             reviewed coverage. B1 remains a separate quality-gated rollout. -->
+        <details class="admin-section" id="admin-today-insights-section">
+          <summary class="section-title">{{T .Lang "admin_today_insights_title"}}</summary>
+          <p style="color:var(--text-secondary);font-size:13px;margin:0 0 12px">
+            {{T .Lang "admin_today_insights_desc"}}
+          </p>
+          <div class="admin-settings-form">
+            <div class="admin-field-row">
+              <label class="admin-field-label" for="cfg-today-insights-b0">{{T .Lang "admin_today_insights_b0"}}</label>
+              <input type="checkbox" id="cfg-today-insights-b0" disabled>
+            </div>
+            <div class="admin-field-row">
+              <span class="admin-field-label">{{T .Lang "admin_today_insights_b1"}}</span>
+              <span class="muted" id="cfg-today-insights-b1-status">{{T .Lang "admin_today_insights_loading"}}</span>
+            </div>
+            <div class="admin-settings-actions">
+              <button class="btn btn--primary btn--small" type="button" id="btn-save-today-insights" onclick="saveTodayInsightsConfig()" disabled>{{T .Lang "admin_save"}}</button>
+            </div>
+          </div>
+          <div id="admin-today-insights-msg" style="display:none"></div>
+        </details>
+
         <!-- Data quality maintenance -->
         <details class="admin-section">
           <summary class="section-title">{{T .Lang "admin_quality_maintenance_title"}}</summary>
@@ -564,6 +587,7 @@
 {{define "scripts"}}
 <script>
 var activeAdminSchema = '';
+var activeAdminSelectionGeneration = 0;
 
 function fetchWithAdminSchema(url, options) {
   if (!activeAdminSchema) return fetch(url, options);
@@ -601,6 +625,7 @@ function refreshTenantPanel() {
   loadCheckinCoverage();
   loadEnergySettings();
   loadStressObservability();
+  loadTodayInsightsConfig();
 }
 
 function switchProfileTab(tab) {
@@ -630,6 +655,10 @@ function adminOpenSection(id) {
 }
 
 function switchAdminTab(tab) {
+  if (_todayInsightsSaveInFlight) return;
+  activeAdminSelectionGeneration++;
+  var todayInsightsMsg = $('admin-today-insights-msg');
+  if (todayInsightsMsg) todayInsightsMsg.style.display = 'none';
   activeAdminSchema = (tab === 'admin' || tab === 'settings') ? '' : tab;
   document.querySelectorAll('[data-admin-tab]').forEach(function(btn) {
     var active = btn.getAttribute('data-admin-tab') === tab;
@@ -1054,6 +1083,33 @@ function runQualityDigest() {
 }
 
 var _aiSettings = null;
+var _todayInsightsConfigRequest = 0;
+var _todayInsightsConfigReadySchema = null;
+var _todayInsightsConfigReadySelectionGeneration = null;
+var _todayInsightsSaveInFlight = false;
+
+function setTodayInsightsSaveInFlight(inFlight) {
+  _todayInsightsSaveInFlight = inFlight;
+  document.querySelectorAll('[data-admin-tab]').forEach(function(tab) {
+    tab.disabled = inFlight;
+  });
+}
+
+function applyTodayInsightsConfig(d) {
+  var b0 = $('cfg-today-insights-b0');
+  var b1 = $('cfg-today-insights-b1-status');
+  if (!b0 || !b1) return;
+  b0.checked = !!d.b0_enabled;
+  if (d.b1_enabled) {
+    b1.textContent = '{{T .Lang "admin_today_insights_b1_enabled"}}';
+  } else if (d.b1_quality_gate_approved && !d.b1_quality_gate_matches_active_ai) {
+    b1.textContent = '{{T .Lang "admin_today_insights_b1_stale"}}';
+  } else if (d.b1_quality_gate_approved) {
+    b1.textContent = '{{T .Lang "admin_today_insights_b1_ready"}}';
+  } else {
+    b1.textContent = '{{T .Lang "admin_today_insights_b1_gated"}}';
+  }
+}
 
 function loadAdminSettings() {
   fetch('/api/admin/settings')
@@ -1101,6 +1157,90 @@ function loadEnergySettings() {
       msg.textContent = String(e.message || e);
       msg.style.display = '';
       msg.className = 'alert alert--error';
+    });
+}
+
+function loadTodayInsightsConfig() {
+  var b0 = $('cfg-today-insights-b0');
+  var b1 = $('cfg-today-insights-b1-status');
+  var save = $('btn-save-today-insights');
+  if (!b0 || !b1 || !save) return;
+  var requestedSchema = activeAdminSchema;
+  var requestedSelectionGeneration = activeAdminSelectionGeneration;
+  var request = ++_todayInsightsConfigRequest;
+  _todayInsightsConfigReadySchema = null;
+  _todayInsightsConfigReadySelectionGeneration = null;
+  b0.disabled = true;
+  save.disabled = true;
+  b1.textContent = '{{T .Lang "admin_today_insights_loading"}}';
+  fetchWithAdminSchema('/api/admin/today-insights/config')
+    .then(function(r) {
+      if (!r.ok) return r.text().then(function(t){ throw new Error(t || 'Failed to load Today insights configuration'); });
+      return r.json();
+    })
+    .then(function(d) {
+      if (request !== _todayInsightsConfigRequest || requestedSchema !== activeAdminSchema || requestedSelectionGeneration !== activeAdminSelectionGeneration) return;
+      applyTodayInsightsConfig(d);
+      b0.disabled = false;
+      save.disabled = false;
+      _todayInsightsConfigReadySchema = requestedSchema;
+      _todayInsightsConfigReadySelectionGeneration = requestedSelectionGeneration;
+    })
+    .catch(function(e) {
+      if (request !== _todayInsightsConfigRequest || requestedSchema !== activeAdminSchema || requestedSelectionGeneration !== activeAdminSelectionGeneration) return;
+      b1.textContent = String(e.message || e);
+    });
+}
+
+function saveTodayInsightsConfig() {
+  var b0 = $('cfg-today-insights-b0');
+  var msg = $('admin-today-insights-msg');
+  var save = $('btn-save-today-insights');
+  if (!b0 || !msg || !save) return;
+  if (_todayInsightsConfigReadySchema !== activeAdminSchema || _todayInsightsConfigReadySelectionGeneration !== activeAdminSelectionGeneration) {
+    loadTodayInsightsConfig();
+    return;
+  }
+  var savedSchema = activeAdminSchema;
+  var savedSelectionGeneration = activeAdminSelectionGeneration;
+  b0.disabled = true;
+  save.disabled = true;
+  setTodayInsightsSaveInFlight(true);
+  msg.style.display = '';
+  msg.className = 'alert';
+  msg.textContent = '{{T .Lang "admin_saving"}}';
+  fetchWithAdminSchema('/api/admin/today-insights/config', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({today_insights_b0_enabled: b0.checked})
+  })
+    .then(function(r) {
+      if (!r.ok) return r.text().then(function(t){ throw new Error(t || 'Failed to save Today insights configuration'); });
+      return r.json();
+    })
+    .then(function(d) {
+      if (savedSchema !== activeAdminSchema || savedSelectionGeneration !== activeAdminSelectionGeneration) {
+        setTodayInsightsSaveInFlight(false);
+        return;
+      }
+      applyTodayInsightsConfig(d);
+      b0.disabled = false;
+      save.disabled = false;
+      setTodayInsightsSaveInFlight(false);
+      msg.textContent = '{{T .Lang "admin_saved"}}';
+      msg.className = 'alert alert--success';
+      setTimeout(function(){ msg.style.display = 'none'; }, 3000);
+    })
+    .catch(function(e) {
+      if (savedSchema !== activeAdminSchema || savedSelectionGeneration !== activeAdminSelectionGeneration) {
+        setTodayInsightsSaveInFlight(false);
+        return;
+      }
+      msg.textContent = String(e.message || e);
+      msg.className = 'alert alert--error';
+      b0.disabled = false;
+      save.disabled = false;
+      setTodayInsightsSaveInFlight(false);
     });
 }
 
@@ -1467,7 +1607,10 @@ function createUser() {
 
 document.addEventListener('DOMContentLoaded', function() {
   loadAdminSettings();
-  if (tenantPanelVisible()) loadCheckinCoverage();
+  if (tenantPanelVisible()) {
+    loadCheckinCoverage();
+    loadTodayInsightsConfig();
+  }
   if ($('admin-users-table')) loadUsers();
 });
 </script>
