@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"health-receiver/internal/ai"
@@ -47,7 +48,36 @@ func TestEvaluatorRegistryDSNAllowsNoLegacyURLWhenIsolationIsEnabled(t *testing.
 func TestEvaluatorRegistryDSNAllowsStandardPostgresEnvironment(t *testing.T) {
 	values := map[string]string{
 		"PGHOST":     "database.example",
-		"PGPORT":     "5432",
+		"PGDATABASE": "health",
+		"PGUSER":     "readonly",
+		"PGSSLMODE":  "verify-full",
+	}
+	lookup := func(key string) (string, bool) { value, ok := values[key]; return value, ok }
+	got, err := evaluatorRegistryDSN("", lookup)
+	if err != nil {
+		t.Fatalf("evaluatorRegistryDSN() error = %v", err)
+	}
+	if got != "" {
+		t.Fatalf("registry dsn = %q, want empty PG* resolved DSN", got)
+	}
+}
+
+func TestEvaluatorRegistryDSNRejectsRemoteStandardPostgresWithoutTLS(t *testing.T) {
+	values := map[string]string{
+		"PGHOST":     "database.example",
+		"PGDATABASE": "health",
+		"PGUSER":     "readonly",
+	}
+	lookup := func(key string) (string, bool) { value, ok := values[key]; return value, ok }
+	_, err := evaluatorRegistryDSN("", lookup)
+	if err == nil || !strings.Contains(err.Error(), "PGSSLMODE") {
+		t.Fatalf("error = %v, want remote TLS rejection", err)
+	}
+}
+
+func TestEvaluatorRegistryDSNAllowsLocalStandardPostgresWithoutTLS(t *testing.T) {
+	values := map[string]string{
+		"PGHOST":     "127.0.0.1",
 		"PGDATABASE": "health",
 		"PGUSER":     "readonly",
 	}

@@ -12,9 +12,11 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"health-receiver/internal/ai"
@@ -265,26 +267,46 @@ func evaluatorRegistryDSN(databaseURL string, lookup func(string) (string, bool)
 		return isolation.RegistryDSN, nil
 	}
 	if databaseURL == "" {
-		if standardPostgresEnvironmentConfigured(lookup) {
+		if err := validateStandardPostgresEnvironment(lookup); err == nil {
 			// pgx accepts an empty connection string and resolves the standard
 			// PG* variables itself. This keeps the evaluator compatible with the
 			// local read-only DB profile without constructing or logging a URL
 			// containing credentials.
 			return "", nil
+		} else {
+			return "", fmt.Errorf("database URL is empty while tenant isolation is disabled: %w", err)
 		}
-		return "", fmt.Errorf("database URL is empty while tenant isolation is disabled")
 	}
 	return databaseURL, nil
 }
 
-func standardPostgresEnvironmentConfigured(lookup func(string) (string, bool)) bool {
-	for _, key := range []string{"PGHOST", "PGPORT", "PGDATABASE", "PGUSER"} {
+func validateStandardPostgresEnvironment(lookup func(string) (string, bool)) error {
+	for _, key := range []string{"PGHOST", "PGDATABASE", "PGUSER"} {
 		value, ok := lookup(key)
 		if !ok || value == "" {
-			return false
+			return fmt.Errorf("%s is required for standard PG* configuration", key)
 		}
 	}
-	return true
+	host, _ := lookup("PGHOST")
+	if postgresHostIsLocal(host) {
+		return nil
+	}
+	sslMode, _ := lookup("PGSSLMODE")
+	switch strings.ToLower(strings.TrimSpace(sslMode)) {
+	case "require", "verify-ca", "verify-full":
+		return nil
+	default:
+		return fmt.Errorf("PGSSLMODE must be require, verify-ca, or verify-full for non-local PGHOST")
+	}
+}
+
+func postgresHostIsLocal(host string) bool {
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if host == "" || strings.HasPrefix(host, "/") || strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // globalAIConfig converts the registry's installation-wide Admin values into
