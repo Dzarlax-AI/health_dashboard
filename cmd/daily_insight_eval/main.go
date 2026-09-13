@@ -251,9 +251,26 @@ func evaluatorRegistryDSN(databaseURL string, lookup func(string) (string, bool)
 		return isolation.RegistryDSN, nil
 	}
 	if databaseURL == "" {
+		if standardPostgresEnvironmentConfigured(lookup) {
+			// pgx accepts an empty connection string and resolves the standard
+			// PG* variables itself. This keeps the evaluator compatible with the
+			// local read-only DB profile without constructing or logging a URL
+			// containing credentials.
+			return "", nil
+		}
 		return "", fmt.Errorf("database URL is empty while tenant isolation is disabled")
 	}
 	return databaseURL, nil
+}
+
+func standardPostgresEnvironmentConfigured(lookup func(string) (string, bool)) bool {
+	for _, key := range []string{"PGHOST", "PGPORT", "PGDATABASE", "PGUSER"} {
+		value, ok := lookup(key)
+		if !ok || value == "" {
+			return false
+		}
+	}
+	return true
 }
 
 // globalAIConfig converts the registry's installation-wide Admin values into
