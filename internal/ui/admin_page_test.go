@@ -1,10 +1,33 @@
 package ui
 
 import (
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"health-receiver/internal/registry"
 )
+
+func TestAdminPageRendersTodayInsightsRolloutForProfile(t *testing.T) {
+	w := httptest.NewRecorder()
+	renderPage(w, "admin", adminPageData{
+		BasePage:  BasePage{Lang: "ru", IsAdmin: true},
+		MultiUser: true, CurrentSchema: "health",
+		UserTabs: []adminUserTab{{Username: "admin", SchemaName: "health", Current: true}},
+	})
+	if w.Code != 200 {
+		t.Fatalf("renderPage status = %d, want 200; body = %s", w.Code, w.Body.String())
+	}
+	for _, want := range []string{
+		"Запуск инсайтов на сегодня",
+		"cfg-today-insights-b0",
+		"function saveTodayInsightsConfig()",
+	} {
+		if !strings.Contains(w.Body.String(), want) {
+			t.Fatalf("rendered admin page missing %q", want)
+		}
+	}
+}
 
 func TestAdminPageDataUserTabsCanRepresentCurrentTenant(t *testing.T) {
 	data := adminPageData{

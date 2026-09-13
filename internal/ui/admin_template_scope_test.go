@@ -72,6 +72,39 @@ func TestAdminTemplateHasSeparateAdminSettingsAndTenantPanels(t *testing.T) {
 	}
 }
 
+func TestAdminTemplateScopesTodayInsightsRolloutToActiveProfile(t *testing.T) {
+	raw, err := os.ReadFile("templates/pages/admin.html")
+	if err != nil {
+		t.Fatalf("read admin template: %v", err)
+	}
+	body := string(raw)
+	for _, want := range []string{
+		`id="admin-today-insights-section"`,
+		`id="cfg-today-insights-b0"`,
+		`function loadTodayInsightsConfig()`,
+		`function saveTodayInsightsConfig()`,
+		`fetchWithAdminSchema('/api/admin/today-insights/config')`,
+		`today_insights_b0_enabled: b0.checked`,
+		`var requestedSchema = activeAdminSchema`,
+		`var requestedSelectionGeneration = activeAdminSelectionGeneration`,
+		`_todayInsightsConfigReadySelectionGeneration !== activeAdminSelectionGeneration`,
+		`var savedSchema = activeAdminSchema`,
+		`var savedSelectionGeneration = activeAdminSelectionGeneration`,
+		`function setTodayInsightsSaveInFlight(inFlight)`,
+		`document.querySelectorAll('[data-admin-tab]')`,
+		`setTodayInsightsSaveInFlight(true)`,
+		`applyTodayInsightsConfig(d)`,
+		`b0.disabled = true`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("admin template missing profile-scoped Today insights rollout behavior: %q", want)
+		}
+	}
+	if strings.Contains(body, `today_insights_b1_enabled:`) {
+		t.Fatal("admin template must not offer B1 enablement before the quality-gate workflow")
+	}
+}
+
 func TestAdminTemplateUsesExplicitAPIKeyReveal(t *testing.T) {
 	raw, err := os.ReadFile("templates/pages/admin.html")
 	if err != nil {
