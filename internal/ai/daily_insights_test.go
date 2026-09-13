@@ -114,7 +114,7 @@ func TestDailyInsightNarrativeSlotSchemaUsesStrictObjectKeywords(t *testing.T) {
 
 func TestDailyInsightSlotPromptDoesNotInviteForbiddenSafetyDisclaimers(t *testing.T) {
 	prompt := strings.ToLower(dailyInsightSlotSystemPrompt)
-	for _, fragment := range []string{"diagnos", "prognos", "диагноз", "прогноз", "dijagnoz", "prognoz"} {
+	for _, fragment := range []string{"diagnos", "prognos", "prediction", "диагноз", "прогноз", "dijagnoz", "prognoz"} {
 		if strings.Contains(prompt, fragment) {
 			t.Fatalf("slot prompt contains forbidden narrative fragment %q", fragment)
 		}

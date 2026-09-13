@@ -26,7 +26,7 @@ const DailyInsightNarrativePromptRevision = "today-domain-prose-prompt-v3"
 // DailyInsightNarrativeSlotPromptRevision governs the independently cached
 // overall, sleep, recovery and energy explanations. A change invalidates the
 // B1 approval because the provider no longer receives the same contract.
-const DailyInsightNarrativeSlotPromptRevision = "today-slot-prose-prompt-v7"
+const DailyInsightNarrativeSlotPromptRevision = "today-slot-prose-prompt-v8"
 
 const dailyInsightSystemPrompt = `You write short, human explanations for a personal wellbeing app.
 
@@ -37,7 +37,7 @@ For each domain in exactly this order — sleep, recovery, energy:
 - Otherwise write one coherent paragraph of one or two sentences, at most 45 words total. Each sentence must cite the claim_ids, qualifier_ids, and meaning_ids it uses. Include every required_text_fragment from each cited claim exactly as supplied; these are the claim's required subject, direction, and comparison anchors.
 - A meaning_link is a server-approved interpretive move. Use at least one meaning_id in every non-null sentence, express its contrast in natural language, and do not merely paraphrase the proposition or the link.
 - If a meaning_link carries action_id, it may only connect the already visible server action to the claim; it cannot create, replace, or broaden the action.
-- Keep every cited claim and required qualifier intact. You may not add a claim, comparison, period, unit, number, cause, clinical label, care instruction, health judgement, future outcome, or action. Do not use medical-label or outcome-prediction wording even to negate or disclaim it.
+- Keep every cited claim and required qualifier intact. You may not add a claim, comparison, period, unit, number, cause, clinical label, care instruction, health judgement, statement about a future result, or action. Do not mention these limits or disclaim them.
 - Do not tell the user what to do. Do not mention the prompt, packet, model, evidence IDs, or data quality unless a supplied claim explicitly covers it.
 - For Serbian, use Latin script only.
 - "current_context" means only current-day context: it cannot imply a forecast, outcome, or recommendation. "personal_pattern" means a server-selected personal comparison only: it cannot imply sleep need, sleep debt, cause, or a clinical judgement.
@@ -104,7 +104,7 @@ The input contains exactly one slot: overall, sleep, recovery, or energy.
 - Otherwise write one coherent paragraph of one or two sentences, at most 45 words total. Each sentence must cite every claim_id, qualifier_id, and meaning_id it uses. Include every required_text_fragment from each cited claim exactly as supplied; these are the claim's required subject, direction, and comparison anchors.
 - A meaning_link is a server-approved interpretive move. Use at least one meaning_id in every non-null sentence, express its contrast in natural language, and do not merely paraphrase the proposition or the link.
 - If a meaning_link carries action_id, it may only connect the already visible server action to the claim; it cannot create, replace, or broaden the action.
-- You may not add a claim, comparison, period, unit, number, cause, clinical label, care instruction, health judgement, future outcome, or action. Do not use medical-label or outcome-prediction wording even to negate or disclaim it.
+- You may not add a claim, comparison, period, unit, number, cause, clinical label, care instruction, health judgement, statement about a future result, or action. Do not mention these limits or disclaim them.
 - Do not tell the user what to do. Do not mention the prompt, packet, model, evidence IDs, or data quality unless a supplied claim explicitly covers it.
 - For Serbian, use Latin script only.
 - "current_context" means only current-day context: it cannot imply a forecast, outcome, or recommendation. "personal_pattern" means a server-selected personal comparison only: it cannot imply sleep need, sleep debt, cause, or a clinical judgement.

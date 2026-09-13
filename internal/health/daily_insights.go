@@ -23,7 +23,7 @@ const (
 	DailyInsightPolicyVersion         = "daily-insight-policy-v2"
 	DailyInsightActionCatalogVersion  = "daily-insight-actions-v1"
 	DailyInsightPromptRevision        = "daily-insight-prompt-v4"
-	DailyInsightNarrativeInputVersion = "today-insight-slot-input-v4"
+	DailyInsightNarrativeInputVersion = "today-insight-slot-input-v5"
 	DailyInsightNarrativeVersion      = "today-insight-slot-v2"
 )
 
@@ -615,7 +615,7 @@ func recoveryNarrativeMeaningLinks(locale string) []DailyInsightNarrativeMeaning
 }
 
 func energyNarrativeMeaningLinks(locale string) []DailyInsightNarrativeMeaningLink {
-	return []DailyInsightNarrativeMeaningLink{{ID: "energy_pacing_not_prediction", Statement: localizedNarrativeMeaning(locale, "energy_pacing_not_prediction")}}
+	return []DailyInsightNarrativeMeaningLink{{ID: "energy_pacing_today", Statement: localizedNarrativeMeaning(locale, "energy_pacing_today")}}
 }
 
 func localizedNarrativeMeaning(locale, id string) string {
@@ -626,7 +626,7 @@ func localizedNarrativeMeaning(locale, id string) string {
 			"sleep_pattern_not_single_night": "This combines several nights into one recent pattern instead of describing a single night.",
 			"sleep_wind_down_bridge":         "The already offered quieter evening gives the next sleep period more room.",
 			"recovery_pacing_not_verdict":    "Readiness helps set today’s pace without becoming a label for the person.",
-			"energy_pacing_not_prediction":   "The energy state helps set today’s pace without extending the statement beyond today.",
+			"energy_pacing_today":            "The energy state helps set today’s pace without extending the statement beyond today.",
 		},
 		"ru": {
 			"overall_pacing_guardrail":       "Выбранный темп относится к сегодняшнему дню, а не к результату всего дня.",
@@ -634,7 +634,7 @@ func localizedNarrativeMeaning(locale, id string) string {
 			"sleep_pattern_not_single_night": "Несколько ночей складываются в недавний паттерн, а не описывают одну ночь.",
 			"sleep_wind_down_bridge":         "Уже предложенный более тихий вечер даёт следующему периоду сна больше пространства.",
 			"recovery_pacing_not_verdict":    "Готовность помогает задать темп на сегодня, не становясь оценкой человека.",
-			"energy_pacing_not_prediction":   "Состояние энергии помогает задать темп на сегодня, не выходя за рамки сегодняшнего дня.",
+			"energy_pacing_today":            "Состояние энергии помогает задать темп на сегодня, не выходя за рамки сегодняшнего дня.",
 		},
 		"sr": {
 			"overall_pacing_guardrail":       "Izabrani tempo odnosi se na danas, a ne na ishod celog dana.",
@@ -642,7 +642,7 @@ func localizedNarrativeMeaning(locale, id string) string {
 			"sleep_pattern_not_single_night": "Nekoliko noći zajedno čine skorašnji obrazac, umesto da opisuju jednu noć.",
 			"sleep_wind_down_bridge":         "Već ponuđeno mirnije veče ostavlja više prostora za sledeći period sna.",
 			"recovery_pacing_not_verdict":    "Spremnost pomaže da se odredi tempo za danas, bez procene osobe.",
-			"energy_pacing_not_prediction":   "Stanje energije pomaže da se odredi tempo za danas, bez izlaska iz okvira današnjeg dana.",
+			"energy_pacing_today":            "Stanje energije pomaže da se odredi tempo za danas, bez izlaska iz okvira današnjeg dana.",
 		},
 	}
 	if byID, found := translations[normalizeDailyInsightLocale(locale)]; found {
