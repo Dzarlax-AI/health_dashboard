@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"health-receiver/internal/ai"
+	"health-receiver/internal/storage"
 )
 
 func TestEvaluatorRegistryDSNUsesIsolationRegistryWhenEnabled(t *testing.T) {
@@ -23,6 +24,58 @@ func TestEvaluatorRegistryDSNUsesIsolationRegistryWhenEnabled(t *testing.T) {
 	}
 	if want := values["REGISTRY_DATABASE_URL"]; got != want {
 		t.Fatalf("registry dsn = %q, want %q", got, want)
+	}
+}
+
+func TestResolveActiveDatabaseProviderConfigUsesOnlyActiveAdminConfig(t *testing.T) {
+	stored := storage.AIConfig{
+		Provider: ai.ProviderOpenAI,
+		Providers: map[string]storage.AIProviderSettings{
+			ai.ProviderOpenAI: {APIKey: "configured-openai-key", Model: "gpt-5.6-luna", ReasoningEffort: "none"},
+			ai.ProviderGemini: {APIKey: "configured-gemini-key", Model: "gemini-3-flash-preview", ReasoningEffort: "minimal"},
+		},
+		MaxOutputTokens: ai.DailyInsightMaxTokens,
+	}
+	provider, active, err := resolveActiveDatabaseProviderConfig(stored, "", "", "")
+	if err != nil {
+		t.Fatalf("resolve active database config: %v", err)
+	}
+	if provider.Descriptor().ID != ai.ProviderOpenAI || active.Model != "gpt-5.6-luna" || active.ReasoningEffort != "none" {
+		t.Fatalf("resolved active config = provider=%s config=%+v", provider.Descriptor().ID, active)
+	}
+}
+
+func TestResolveActiveDatabaseProviderConfigRejectsAlternateConfiguredProvider(t *testing.T) {
+	stored := storage.AIConfig{
+		Provider: ai.ProviderOpenAI,
+		Providers: map[string]storage.AIProviderSettings{
+			ai.ProviderOpenAI: {APIKey: "configured-openai-key", Model: "gpt-5.6-luna", ReasoningEffort: "none"},
+			ai.ProviderGemini: {APIKey: "configured-gemini-key", Model: "gemini-3-flash-preview", ReasoningEffort: "minimal"},
+		},
+		MaxOutputTokens: ai.DailyInsightMaxTokens,
+	}
+	_, _, err := resolveActiveDatabaseProviderConfig(stored, ai.ProviderGemini, "", "")
+	if err == nil || !strings.Contains(err.Error(), "active Admin provider") {
+		t.Fatalf("alternate provider error = %v", err)
+	}
+}
+
+func TestResolveActiveDatabaseProviderConfigRejectsActiveConfigOverrides(t *testing.T) {
+	stored := storage.AIConfig{
+		Provider: ai.ProviderOpenAI,
+		Providers: map[string]storage.AIProviderSettings{
+			ai.ProviderOpenAI: {APIKey: "configured-openai-key", Model: "gpt-5.6-luna", ReasoningEffort: "none"},
+		},
+		MaxOutputTokens: ai.DailyInsightMaxTokens,
+	}
+	for _, request := range []struct{ model, reasoning string }{
+		{model: "gpt-5.6-sol"},
+		{reasoning: "low"},
+	} {
+		_, _, err := resolveActiveDatabaseProviderConfig(stored, ai.ProviderOpenAI, request.model, request.reasoning)
+		if err == nil {
+			t.Fatalf("override model=%q reasoning=%q unexpectedly passed", request.model, request.reasoning)
+		}
 	}
 }
 
