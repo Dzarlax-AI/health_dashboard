@@ -301,7 +301,11 @@ func validateStandardPostgresEnvironment(lookup func(string) (string, bool)) err
 		}
 	}
 	host, _ := lookup("PGHOST")
-	if postgresHostIsLocal(host) {
+	if postgresHostIsLocal(host) || postgresHostIsTailscale(host) {
+		// A Tailscale address is reached through the encrypted tailnet
+		// transport. Some private Postgres deployments intentionally do not
+		// offer TLS inside that tunnel, so requiring a second TLS layer would
+		// make the documented read-only profile unusable.
 		return nil
 	}
 	sslMode, _ := lookup("PGSSLMODE")
@@ -320,6 +324,16 @@ func postgresHostIsLocal(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+func postgresHostIsTailscale(host string) bool {
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	ipv4 := ip.To4()
+	return ipv4 != nil && ipv4[0] == 100 && ipv4[1] >= 64 && ipv4[1] <= 127
 }
 
 // globalAIConfig converts the registry's installation-wide Admin values into

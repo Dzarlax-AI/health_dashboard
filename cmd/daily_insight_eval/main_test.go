@@ -144,6 +144,22 @@ func TestEvaluatorRegistryDSNAllowsLocalStandardPostgresWithoutTLS(t *testing.T)
 	}
 }
 
+func TestEvaluatorRegistryDSNAllowsTailscaleStandardPostgresWithoutTLS(t *testing.T) {
+	values := map[string]string{
+		"PGHOST":     "100.104.66.65",
+		"PGDATABASE": "health",
+		"PGUSER":     "readonly",
+	}
+	lookup := func(key string) (string, bool) { value, ok := values[key]; return value, ok }
+	got, err := evaluatorRegistryDSN("", lookup)
+	if err != nil {
+		t.Fatalf("evaluatorRegistryDSN() error = %v", err)
+	}
+	if got != "" {
+		t.Fatalf("registry dsn = %q, want empty PG* resolved DSN", got)
+	}
+}
+
 func TestGlobalAIConfigUsesInstallationWideProviderSettings(t *testing.T) {
 	config := globalAIConfig(map[string]string{
 		"ai_provider":                   ai.ProviderOpenAI,
