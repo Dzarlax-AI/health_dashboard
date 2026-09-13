@@ -803,6 +803,7 @@ type DailyInsightNarrativeEvaluationOutput struct {
 	Provider           string                                `json:"provider"`
 	Model              string                                `json:"model"`
 	Reasoning          string                                `json:"reasoning"`
+	MaxOutputTokens    int                                   `json:"max_output_tokens"`
 	PromptRevision     string                                `json:"prompt_revision"`
 	ClaimPacketVersion string                                `json:"claim_packet_version"`
 	NarrativeVersion   string                                `json:"narrative_version"`
@@ -837,7 +838,7 @@ func CheckDailyInsightNarrativeQualityGate(corpus DailyInsightNarrativeCorpus, c
 	if err := ValidateDailyInsightNarrativeCorpus(corpus); err != nil {
 		return DailyInsightNarrativeQualityGate{}, err
 	}
-	if output.Version != "daily-insight-narrative-evaluation-v2" {
+	if output.Version != "daily-insight-narrative-evaluation-v3" {
 		return DailyInsightNarrativeQualityGate{}, fmt.Errorf("unsupported evaluation version %q", output.Version)
 	}
 	if output.CorpusHash != corpusHash {
@@ -845,6 +846,9 @@ func CheckDailyInsightNarrativeQualityGate(corpus DailyInsightNarrativeCorpus, c
 	}
 	if output.RunsPerCase != 3 {
 		return DailyInsightNarrativeQualityGate{}, fmt.Errorf("evaluation has %d runs per case; want 3", output.RunsPerCase)
+	}
+	if output.MaxOutputTokens < 200 || output.MaxOutputTokens > DailyInsightMaxTokens {
+		return DailyInsightNarrativeQualityGate{}, fmt.Errorf("evaluation max_output_tokens must be in [200, %d]", DailyInsightMaxTokens)
 	}
 	identity := DailyInsightNarrativeCurrentReviewIdentity()
 	if output.PromptRevision != identity.PromptRevision ||

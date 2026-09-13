@@ -39,6 +39,7 @@ func (p *OpenAIProvider) Descriptor() ProviderDescriptor {
 		DisplayName:       "OpenAI",
 		DefaultModel:      defaultOpenAIModel,
 		SupportsReasoning: true,
+		ReasoningEfforts:  []string{"none", "low", "medium", "high", "xhigh", "max"},
 		APIKeyPlaceholder: "sk-...",
 		DefaultReasoning:  "none",
 	}

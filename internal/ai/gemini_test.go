@@ -58,6 +58,89 @@ func TestGeminiProviderStructuredOutputMultipartAndTelemetry(t *testing.T) {
 	}
 }
 
+func TestGemini3ProviderSetsExplicitMinimalThinkingLevel(t *testing.T) {
+	original := geminiClient
+	defer func() { geminiClient = original }()
+
+	var got map[string]any
+	geminiClient = testHTTPClient(func(r *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		return jsonResponse(http.StatusOK, `{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"ok"}]}}]}`), nil
+	})
+
+	_, err := (GeminiProvider{}).Generate(context.Background(), ProviderConfig{
+		APIKey: "secret", Model: "gemini-3-flash-preview", ReasoningEffort: "minimal", MaxOutputTokens: 2048,
+	}, GenerationRequest{Prompt: "p"})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	config := got["generationConfig"].(map[string]any)
+	thinking := config["thinkingConfig"].(map[string]any)
+	if got := thinking["thinkingLevel"]; got != "minimal" {
+		t.Fatalf("thinkingLevel = %#v, want minimal", got)
+	}
+}
+
+func TestGemini25ProviderDoesNotSendGemini3ThinkingConfig(t *testing.T) {
+	original := geminiClient
+	defer func() { geminiClient = original }()
+
+	var got map[string]any
+	geminiClient = testHTTPClient(func(r *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		return jsonResponse(http.StatusOK, `{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"ok"}]}}]}`), nil
+	})
+	_, err := (GeminiProvider{}).Generate(context.Background(), ProviderConfig{
+		APIKey: "secret", Model: "gemini-2.5-flash", ReasoningEffort: "minimal",
+	}, GenerationRequest{Prompt: "p"})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	config := got["generationConfig"].(map[string]any)
+	if _, found := config["thinkingConfig"]; found {
+		t.Fatalf("Gemini 2.5 request unexpectedly includes Gemini 3 thinkingConfig: %#v", config)
+	}
+}
+
+func TestGemini3ProviderRejectsUnsupportedThinkingLevel(t *testing.T) {
+	_, err := (GeminiProvider{}).Generate(context.Background(), ProviderConfig{
+		APIKey: "secret", Model: "gemini-3-flash-preview", ReasoningEffort: "none",
+	}, GenerationRequest{Prompt: "p"})
+	if err == nil || !strings.Contains(err.Error(), "invalid Gemini thinking level") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestGemini3ProUsesAndValidatesProThinkingLevels(t *testing.T) {
+	original := geminiClient
+	defer func() { geminiClient = original }()
+
+	var got map[string]any
+	geminiClient = testHTTPClient(func(r *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		return jsonResponse(http.StatusOK, `{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"ok"}]}}]}`), nil
+	})
+	_, err := (GeminiProvider{}).Generate(context.Background(), ProviderConfig{
+		APIKey: "secret", Model: "gemini-3-pro-preview",
+	}, GenerationRequest{Prompt: "p"})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	thinking := got["generationConfig"].(map[string]any)["thinkingConfig"].(map[string]any)
+	if got := thinking["thinkingLevel"]; got != "low" {
+		t.Fatalf("thinkingLevel = %#v, want low", got)
+	}
+	if _, err := geminiThinkingLevel("gemini-3-pro-preview", "minimal"); err == nil {
+		t.Fatal("Gemini 3 Pro accepted unsupported minimal thinking")
+	}
+}
+
 func TestGeminiProviderRejectsBlockedAndTruncatedResponses(t *testing.T) {
 	tests := []struct {
 		name string

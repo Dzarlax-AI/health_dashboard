@@ -26,12 +26,42 @@ type Model struct {
 // ProviderDescriptor contains non-secret provider metadata used by the Admin
 // UI. Installation-specific configuration never lives in the registry.
 type ProviderDescriptor struct {
-	ID                string `json:"id"`
-	DisplayName       string `json:"display_name"`
-	DefaultModel      string `json:"default_model"`
-	SupportsReasoning bool   `json:"supports_reasoning"`
-	APIKeyPlaceholder string `json:"api_key_placeholder"`
-	DefaultReasoning  string `json:"default_reasoning,omitempty"`
+	ID                string   `json:"id"`
+	DisplayName       string   `json:"display_name"`
+	DefaultModel      string   `json:"default_model"`
+	SupportsReasoning bool     `json:"supports_reasoning"`
+	ReasoningEfforts  []string `json:"reasoning_efforts,omitempty"`
+	APIKeyPlaceholder string   `json:"api_key_placeholder"`
+	DefaultReasoning  string   `json:"default_reasoning,omitempty"`
+}
+
+// ValidReasoningEffortForProvider keeps the Admin API from accepting a value
+// that a selected adapter cannot represent. Provider-specific lists are
+// deliberately explicit: "high" does not mean the same thing across vendors.
+func ValidReasoningEffortForProvider(descriptor ProviderDescriptor, value string) bool {
+	if !descriptor.SupportsReasoning {
+		return value == ""
+	}
+	for _, allowed := range descriptor.ReasoningEfforts {
+		if value == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+// ValidReasoningEffortForProviderModel applies the model-sensitive Gemini 3
+// matrix at the single boundary where an editable model and reasoning value
+// become a provider request. Other providers retain their descriptor list.
+func ValidReasoningEffortForProviderModel(providerID, model, value string) bool {
+	provider, err := GetProvider(providerID)
+	if err != nil {
+		return false
+	}
+	if providerID == ProviderGemini && isGemini3Model(model) {
+		return ValidGeminiThinkingLevel(model, value)
+	}
+	return ValidReasoningEffortForProvider(provider.Descriptor(), value)
 }
 
 // ProviderConfig is the active provider's resolved configuration. Adapters

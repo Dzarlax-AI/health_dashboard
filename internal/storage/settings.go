@@ -14,8 +14,8 @@ import (
 const (
 	SettingTodayInsightsB0Enabled     = "today_insights_b0_enabled"
 	SettingTodayInsightsB1Enabled     = "today_insights_b1_enabled"
-	SettingTodayInsightsB1QualityGate = "today_insights_b1_quality_gate_v2"
-	TodayInsightsB1QualityGateVersion = "today-insights-b1-quality-gate-v2"
+	SettingTodayInsightsB1QualityGate = "today_insights_b1_quality_gate_v3"
+	TodayInsightsB1QualityGateVersion = "today-insights-b1-quality-gate-v3"
 )
 
 // TodayInsightsB1QualityGateApproval is durable, tenant-scoped evidence that
@@ -28,6 +28,7 @@ type TodayInsightsB1QualityGateApproval struct {
 	Provider           string `json:"provider"`
 	Model              string `json:"model"`
 	Reasoning          string `json:"reasoning"`
+	MaxOutputTokens    int    `json:"max_output_tokens"`
 	PromptRevision     string `json:"prompt_revision"`
 	ClaimPacketVersion string `json:"claim_packet_version"`
 	NarrativeVersion   string `json:"narrative_version"`
@@ -51,12 +52,15 @@ func ValidateTodayInsightsB1QualityGateApproval(approval TodayInsightsB1QualityG
 	if strings.TrimSpace(approval.Provider) == "" || strings.TrimSpace(approval.Model) == "" {
 		return fmt.Errorf("B1 quality-gate provider and model are required")
 	}
-	canonicalReasoning, err := TodayInsightsB1QualityGateReasoning(approval.Provider, approval.Reasoning)
+	canonicalReasoning, err := TodayInsightsB1QualityGateReasoning(approval.Provider, approval.Model, approval.Reasoning)
 	if err != nil {
 		return err
 	}
 	if approval.Reasoning != canonicalReasoning {
 		return fmt.Errorf("B1 quality-gate reasoning must match the provider capability")
+	}
+	if approval.MaxOutputTokens < 200 || approval.MaxOutputTokens > ai.DailyInsightMaxTokens {
+		return fmt.Errorf("B1 quality-gate max_output_tokens must be in [200, %d]", ai.DailyInsightMaxTokens)
 	}
 	if strings.TrimSpace(approval.PromptRevision) == "" || strings.TrimSpace(approval.ClaimPacketVersion) == "" || strings.TrimSpace(approval.NarrativeVersion) == "" {
 		return fmt.Errorf("B1 quality-gate prompt and narrative contract versions are required")
@@ -77,24 +81,31 @@ func ValidateTodayInsightsB1QualityGateApproval(approval TodayInsightsB1QualityG
 // a provider's reasoning setting. Providers without reasoning support must
 // persist an empty value: a UI's stale "none" setting does not affect their
 // output and must not make a valid Gemini review impossible to reuse.
-func TodayInsightsB1QualityGateReasoning(providerID, reasoning string) (string, error) {
+func TodayInsightsB1QualityGateReasoning(providerID, model, reasoning string) (string, error) {
 	provider, err := ai.GetProvider(providerID)
 	if err != nil {
 		return "", fmt.Errorf("resolve B1 quality-gate provider: %w", err)
 	}
-	return canonicalTodayInsightsB1Reasoning(provider.Descriptor(), reasoning)
+	return canonicalTodayInsightsB1Reasoning(provider.Descriptor(), model, reasoning)
 }
 
-func canonicalTodayInsightsB1Reasoning(descriptor ai.ProviderDescriptor, reasoning string) (string, error) {
+func canonicalTodayInsightsB1Reasoning(descriptor ai.ProviderDescriptor, model, reasoning string) (string, error) {
 	if !descriptor.SupportsReasoning {
 		return "", nil
 	}
 	reasoning = strings.TrimSpace(reasoning)
 	if reasoning == "" {
-		reasoning = descriptor.DefaultReasoning
+		if descriptor.ID == ai.ProviderGemini && strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gemini-3") {
+			reasoning = ai.GeminiDefaultThinkingLevel(model)
+		} else {
+			reasoning = descriptor.DefaultReasoning
+		}
 	}
 	if reasoning == "" {
 		return "", fmt.Errorf("B1 quality-gate reasoning is required for provider %q", descriptor.ID)
+	}
+	if !ai.ValidReasoningEffortForProviderModel(descriptor.ID, model, reasoning) {
+		return "", fmt.Errorf("invalid B1 quality-gate reasoning %q for provider %q", reasoning, descriptor.ID)
 	}
 	return reasoning, nil
 }
@@ -117,7 +128,7 @@ func ResolveTodayInsightsB1ProviderConfig(cfg AIConfig) (ai.Provider, ai.Provide
 	if model == "" {
 		return nil, ai.ProviderConfig{}, fmt.Errorf("B1 model is required for provider %q", cfg.Provider)
 	}
-	reasoning, err := canonicalTodayInsightsB1Reasoning(descriptor, active.ReasoningEffort)
+	reasoning, err := canonicalTodayInsightsB1Reasoning(descriptor, model, active.ReasoningEffort)
 	if err != nil {
 		return nil, ai.ProviderConfig{}, err
 	}
@@ -171,7 +182,7 @@ func TodayInsightsB1QualityGateMatchesConfig(approval TodayInsightsB1QualityGate
 		return false
 	}
 	identity := ai.DailyInsightNarrativeSlotCurrentReviewIdentity()
-	return approval.Provider == cfg.Provider && approval.Model == resolved.Model && approval.Reasoning == resolved.ReasoningEffort &&
+	return approval.Provider == cfg.Provider && approval.Model == resolved.Model && approval.Reasoning == resolved.ReasoningEffort && approval.MaxOutputTokens == resolved.MaxOutputTokens &&
 		approval.PromptRevision == identity.PromptRevision &&
 		approval.ClaimPacketVersion == identity.ClaimPacketVersion &&
 		approval.NarrativeVersion == identity.NarrativeVersion &&
