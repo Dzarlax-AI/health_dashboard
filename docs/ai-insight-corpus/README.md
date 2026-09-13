@@ -91,7 +91,10 @@ go run ./cmd/daily_insight_eval \
 `daily_insight_candidates` is the preceding read-only, non-serving step. It
 reconstructs candidate snapshots from retained aggregate and derived state for
 an explicit tenant schema, then removes original dates, evidence IDs, source
-IDs, values, units, display copy and actions. It neither reads
+IDs, values, units, display copy and action copy. It retains only the closed
+sleep action marker <code>wind_down</code> when present, so the frozen review
+can exercise the matching server-owned meaning link without exposing action
+text or letting the provider create an action. It neither reads
 `health_records` payloads nor creates bundles, calls a provider, or writes a
 tenant setting. Its output is deliberately **not** a valid corpus: a reviewer
 must choose 20–30 cases, attach the required tags/scenario provenance, and
@@ -150,8 +153,9 @@ go run ./cmd/daily_insight_eval \
 ```
 
 The scaffold creates a **draft**, not a release approval. It requires every
-supported server claim in every shipped locale, alongside the required product
-states. The bounded controlled fixtures fill only structural coverage that is
+supported server claim and the action-linked <code>sleep_wind_down_bridge</code>
+meaning variant in every shipped locale, alongside the required product states.
+The bounded controlled fixtures fill only structural coverage that is
 absent from retained history; their origin remains explicit and they are never
 treated as user evidence. Inspect the origin mix, coverage matrix and
 deterministic fallback references; freeze the resulting checksum in the review
