@@ -42,6 +42,7 @@ docker run --rm --entrypoint /bin/sh "$backend_image" -ec '
   test "$(id -u)" -ne 0
   test -x /app/server
   test -x /app/tenant_isolation
+  test -x /app/daily_insight_availability
   command -v wget >/dev/null 2>&1
 '
 
