@@ -5,6 +5,15 @@ import (
 	"testing"
 )
 
+func TestVerifyHistoricalDailyInsightReadAccess(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	if err := db.VerifyHistoricalDailyInsightReadAccess(context.Background()); err != nil {
+		t.Fatalf("historical insight read access: %v", err)
+	}
+}
+
 // Historical candidates are a point-in-time corpus. A later sync must never
 // change a candidate's metric window just because metric_points retains both
 // days. This covers the cache supplement (night sleep/nap), raw fallback, and

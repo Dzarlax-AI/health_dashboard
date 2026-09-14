@@ -303,6 +303,26 @@ func TestOverallNarrativePropositionCarriesDecisionModeAcrossLocales(t *testing.
 	}
 }
 
+func TestNarrativeMeaningLinksUseModeSpecificHumanFraming(t *testing.T) {
+	for _, locale := range []string{"en", "ru", "sr"} {
+		moderate := overallNarrativeMeaningLinks(locale, "moderate")
+		activeRecovery := overallNarrativeMeaningLinks(locale, "active_recovery")
+		if len(moderate) != 1 || len(activeRecovery) != 1 || moderate[0].Statement == activeRecovery[0].Statement {
+			t.Fatalf("%s overall meanings do not distinguish modes: moderate=%#v active_recovery=%#v", locale, moderate, activeRecovery)
+		}
+		for _, statement := range []string{
+			recoveryNarrativeMeaningLinks(locale, "optimal")[0].Statement,
+			recoveryNarrativeMeaningLinks(locale, "low")[0].Statement,
+			energyNarrativeMeaningLinks(locale, "rest")[0].Statement,
+			energyNarrativeMeaningLinks(locale, "active_recovery")[0].Statement,
+		} {
+			if statement == "" {
+				t.Fatalf("%s has an empty narrative meaning", locale)
+			}
+		}
+	}
+}
+
 func TestDailyInsightNarrativeBundleDoesNotRequireAnOverallSection(t *testing.T) {
 	snapshot := &DailyInsightSnapshot{
 		DecisionID: "daily-decision", Version: DailyInsightSnapshotVersion,
@@ -384,7 +404,7 @@ func TestDailyInsightNarrativeSlotRequiresServerPositionCitation(t *testing.T) {
 	section := DailyInsightNarrativeSlot{
 		Version: DailyInsightNarrativeVersion, Locale: "en",
 		Slot: DailyInsightNarrativeDomain{Key: "energy", Section: &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
-			Text:     "The current energy context is in a recovery-oriented range, so ordinary tasks may feel more effortful.",
+			Text:     "Today is better suited to avoiding extra intensity, so ordinary tasks do not need a harder push.",
 			ClaimIDs: []string{"energy_current_verdict_context"}, QualifierIDs: []string{"current_context"}, MeaningIDs: []string{"energy_pacing_today"},
 		}}}},
 	}
@@ -496,6 +516,9 @@ func TestEnergyNarrativePropositionsAreObservationsNotActions(t *testing.T) {
 				}
 			}
 		}
+	}
+	if got, want := localizedEnergyNarrativeTextFragments("ru", "active_recovery"), []string{"сегодня лучше не добавлять интенсивности"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Russian active-recovery anchor = %#v, want %#v", got, want)
 	}
 }
 

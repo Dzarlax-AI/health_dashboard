@@ -8,8 +8,27 @@ import (
 
 	"health-receiver/internal/health"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
+
+// VerifyHistoricalDailyInsightReadAccess proves that an offline reviewer can
+// read the two retained sources used by historical snapshot reconstruction.
+// Without this probe, a connection pointed at a registry or otherwise
+// unauthorized schema can degrade into a misleading all-unavailable corpus.
+func (s *DB) VerifyHistoricalDailyInsightReadAccess(ctx context.Context) error {
+	for _, table := range []string{"daily_scores", "metric_points"} {
+		var probe int
+		err := s.pool.QueryRow(ctx, fmt.Sprintf("SELECT 1 FROM %s LIMIT 1", table)).Scan(&probe)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("probe historical insight source %s: %w", table, err)
+		}
+	}
+	return nil
+}
 
 // BuildHistoricalDailyInsightSnapshot reconstructs a candidate Today snapshot
 // for offline B1 review. It reads only the bounded cache/derived state that is

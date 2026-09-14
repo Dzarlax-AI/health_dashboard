@@ -23,7 +23,7 @@ const (
 	DailyInsightPolicyVersion         = "daily-insight-policy-v2"
 	DailyInsightActionCatalogVersion  = "daily-insight-actions-v1"
 	DailyInsightPromptRevision        = "daily-insight-prompt-v4"
-	DailyInsightNarrativeInputVersion = "today-insight-slot-input-v8"
+	DailyInsightNarrativeInputVersion = "today-insight-slot-input-v10"
 	DailyInsightNarrativeVersion      = "today-insight-slot-v2"
 )
 
@@ -524,7 +524,7 @@ func buildOverallDailyInsightNarrativeClaim(snapshot *DailyInsightSnapshot, loca
 		ComparisonPeriod:      "current day",
 		Confidence:            snapshot.Primary.AnswerKind,
 		RequiredQualifierIDs:  []string{"current_context"},
-		MeaningLinks:          overallNarrativeMeaningLinks(locale, snapshot.Primary.NextStepID()),
+		MeaningLinks:          overallNarrativeMeaningLinks(locale, snapshot.Primary.NarrativeSubject),
 	}
 }
 
@@ -674,13 +674,13 @@ func buildDailyInsightNarrativeClaim(snapshot *DailyInsightSnapshot, domain Dail
 	if claim.ID == "recovery_readiness_context" {
 		claim.Proposition = localizedRecoveryNarrativeProposition(locale, domain.Band)
 		claim.RequiredTextFragments = localizedRecoveryNarrativeTextFragments(locale, domain.Band)
-		claim.MeaningLinks = recoveryNarrativeMeaningLinks(locale)
+		claim.MeaningLinks = recoveryNarrativeMeaningLinks(locale, domain.Band)
 		return claim
 	}
 	if claim.ID == "energy_current_verdict_context" {
 		claim.Proposition = localizedEnergyNarrativeProposition(locale, domain.NarrativeSubject)
 		claim.RequiredTextFragments = localizedEnergyNarrativeTextFragments(locale, domain.NarrativeSubject)
-		claim.MeaningLinks = energyNarrativeMeaningLinks(locale)
+		claim.MeaningLinks = energyNarrativeMeaningLinks(locale, domain.NarrativeSubject)
 		return claim
 	}
 
@@ -702,12 +702,8 @@ func buildDailyInsightNarrativeClaim(snapshot *DailyInsightSnapshot, domain Dail
 	return claim
 }
 
-func overallNarrativeMeaningLinks(locale, actionID string) []DailyInsightNarrativeMeaningLink {
-	links := []DailyInsightNarrativeMeaningLink{{ID: "overall_pacing_guardrail", Statement: localizedNarrativeMeaning(locale, "overall_pacing_guardrail")}}
-	if actionID != "" {
-		links = append(links, DailyInsightNarrativeMeaningLink{ID: "overall_visible_action", Statement: localizedNarrativeMeaning(locale, "overall_visible_action"), ActionID: actionID})
-	}
-	return links
+func overallNarrativeMeaningLinks(locale, mode string) []DailyInsightNarrativeMeaningLink {
+	return []DailyInsightNarrativeMeaningLink{{ID: "overall_pacing_guardrail", Statement: localizedOverallNarrativeMeaning(locale, mode)}}
 }
 
 func sleepNarrativeMeaningLinks(locale, actionID string) []DailyInsightNarrativeMeaningLink {
@@ -718,45 +714,116 @@ func sleepNarrativeMeaningLinks(locale, actionID string) []DailyInsightNarrative
 	return links
 }
 
-func recoveryNarrativeMeaningLinks(locale string) []DailyInsightNarrativeMeaningLink {
-	return []DailyInsightNarrativeMeaningLink{{ID: "recovery_pacing_not_verdict", Statement: localizedNarrativeMeaning(locale, "recovery_pacing_not_verdict")}}
+func recoveryNarrativeMeaningLinks(locale, band string) []DailyInsightNarrativeMeaningLink {
+	return []DailyInsightNarrativeMeaningLink{{ID: "recovery_pacing_not_verdict", Statement: localizedRecoveryNarrativeMeaning(locale, band)}}
 }
 
-func energyNarrativeMeaningLinks(locale string) []DailyInsightNarrativeMeaningLink {
-	return []DailyInsightNarrativeMeaningLink{{ID: "energy_pacing_today", Statement: localizedNarrativeMeaning(locale, "energy_pacing_today")}}
+func energyNarrativeMeaningLinks(locale, verdict string) []DailyInsightNarrativeMeaningLink {
+	return []DailyInsightNarrativeMeaningLink{{ID: "energy_pacing_today", Statement: localizedEnergyNarrativeMeaning(locale, verdict)}}
 }
 
 func localizedNarrativeMeaning(locale, id string) string {
 	translations := map[string]map[string]string{
 		"en": {
-			"overall_pacing_guardrail":       "The selected pace matches how the day is shaping up.",
-			"overall_visible_action":         "The existing action follows the selected pace.",
 			"sleep_pattern_not_single_night": "A run of shorter nights is a backdrop for the day, not one isolated blip.",
 			"sleep_wind_down_bridge":         "The existing evening action follows the recent run of shorter nights.",
-			"recovery_pacing_not_verdict":    "Lower readiness can leave less room to absorb the ordinary demands of the day.",
-			"energy_pacing_today":            "A lower reserve can make ordinary tasks feel more effortful.",
 		},
 		"ru": {
-			"overall_pacing_guardrail":       "Выбранный темп совпадает с тем, как складывается сегодняшний день.",
-			"overall_visible_action":         "Действие связано с выбранным темпом.",
 			"sleep_pattern_not_single_night": "Серия более коротких ночей — это уже фон, с которым начинается день, а не единичный эпизод.",
 			"sleep_wind_down_bridge":         "Вечернее действие связано с недавней серией более коротких ночей.",
-			"recovery_pacing_not_verdict":    "При более низкой готовности привычный день может оставлять меньше пространства для восстановления.",
-			"energy_pacing_today":            "При более низком запасе привычные дела могут ощущаться тяжелее.",
 		},
 		"sr": {
-			"overall_pacing_guardrail":       "Izabrani tempo odgovara tome kako se dan razvija.",
-			"overall_visible_action":         "Radnja je povezana sa izabranim tempom.",
 			"sleep_pattern_not_single_night": "Niz kraćih noći je pozadina s kojom dan počinje, a ne izdvojen slučaj.",
 			"sleep_wind_down_bridge":         "Večernja radnja prati nedavni niz kraćih noći.",
-			"recovery_pacing_not_verdict":    "Pri nižoj spremnosti uobičajen dan može ostaviti manje prostora za oporavak.",
-			"energy_pacing_today":            "Pri nižoj rezervi uobičajene obaveze mogu delovati zahtevnije.",
 		},
 	}
 	if byID, found := translations[normalizeDailyInsightLocale(locale)]; found {
 		return byID[id]
 	}
 	return translations["en"][id]
+}
+
+func localizedOverallNarrativeMeaning(locale, mode string) string {
+	translations := map[string]map[string]string{
+		"en": {
+			"rest":            "A rest-oriented mode keeps extra load off the day.",
+			"active_recovery": "Active recovery keeps movement in the day without turning it into a test.",
+			"push_hard":       "A higher-load mode leaves room for a more demanding activity.",
+			"moderate":        "A moderate mode keeps the day ordinary rather than turning it into a test.",
+		},
+		"ru": {
+			"rest":            "Режим отдыха оставляет день без лишней нагрузки.",
+			"active_recovery": "Активное восстановление оставляет движение частью дня, но не его испытанием.",
+			"push_hard":       "Режим более высокой нагрузки оставляет место для более требовательной активности.",
+			"moderate":        "Умеренный режим оставляет день обычным, без необходимости превращать его в испытание.",
+		},
+		"sr": {
+			"rest":            "Režim odmora ostavlja dan bez dodatnog opterećenja.",
+			"active_recovery": "Aktivni oporavak zadržava kretanje u danu, ali bez pretvaranja u test.",
+			"push_hard":       "Režim većeg opterećenja ostavlja mesta za zahtevniju aktivnost.",
+			"moderate":        "Umeren režim ostavlja dan običnim, bez potrebe da postane test.",
+		},
+	}
+	if byMode, found := translations[normalizeDailyInsightLocale(locale)]; found {
+		if statement, found := byMode[mode]; found {
+			return statement
+		}
+		return byMode["moderate"]
+	}
+	return translations["en"]["moderate"]
+}
+
+func localizedRecoveryNarrativeMeaning(locale, band string) string {
+	higher := band == "optimal"
+	switch normalizeDailyInsightLocale(locale) {
+	case "ru":
+		if higher {
+			return "Хорошее восстановление оставляет больше пространства для обычных планов."
+		}
+		return "Когда восстановление не на пике, плотный день может ощущаться тяжелее."
+	case "sr":
+		if higher {
+			return "Dobar oporavak ostavlja više prostora za uobičajene planove."
+		}
+		return "Kada oporavak nije na vrhuncu, gušći dan može delovati zahtevnije."
+	default:
+		if higher {
+			return "Good recovery leaves more room for ordinary plans."
+		}
+		return "When recovery is not at its peak, a packed day can feel heavier."
+	}
+}
+
+func localizedEnergyNarrativeMeaning(locale, verdict string) string {
+	switch normalizeDailyInsightLocale(locale) {
+	case "ru":
+		switch verdict {
+		case "push_hard":
+			return "Когда сил достаточно, остаётся место для более требовательной активности."
+		case "rest":
+			return "Когда сил немного, привычные дела могут требовать больше усилий."
+		default:
+			return "Обычные дела сегодня можно оставить обычными, без лишней интенсивности."
+		}
+	case "sr":
+		switch verdict {
+		case "push_hard":
+			return "Kada ima dovoljno energije, ostaje mesta za zahtevniju aktivnost."
+		case "rest":
+			return "Kada je energije malo, uobičajene obaveze mogu tražiti više napora."
+		default:
+			return "Uobičajene obaveze danas mogu ostati uobičajene, bez dodatnog intenziteta."
+		}
+	default:
+		switch verdict {
+		case "push_hard":
+			return "When there is enough energy, there is room for a more demanding activity."
+		case "rest":
+			return "When energy is low, ordinary tasks can take more effort."
+		default:
+			return "Ordinary tasks can stay ordinary today, without extra intensity."
+		}
+	}
 }
 
 func localizedRecentSleepNarrativeProposition(locale string) string {
@@ -861,7 +928,7 @@ func localizedEnergyNarrativeProposition(locale, verdict string) string {
 		case "rest":
 			return "Сегодня сил немного."
 		default:
-			return "Энергия сегодня про восстановление."
+			return "Сегодня лучше не добавлять интенсивности."
 		}
 	case "sr":
 		switch verdict {
@@ -870,7 +937,7 @@ func localizedEnergyNarrativeProposition(locale, verdict string) string {
 		case "rest":
 			return "Trenutna rezerva energije je u opsegu nižeg kapaciteta."
 		default:
-			return "Trenutna rezerva energije je u opsegu oporavka."
+			return "Danas je bolje ne dodavati intenzitet."
 		}
 	default:
 		switch verdict {
@@ -879,7 +946,7 @@ func localizedEnergyNarrativeProposition(locale, verdict string) string {
 		case "rest":
 			return "The current energy context is in a lower-capacity range."
 		default:
-			return "The current energy context is in a recovery-oriented range."
+			return "Today is better suited to avoiding extra intensity."
 		}
 	}
 }
@@ -893,7 +960,7 @@ func localizedEnergyNarrativeTextFragments(locale, verdict string) []string {
 		case "rest":
 			return []string{"сегодня сил немного"}
 		default:
-			return []string{"энергия сегодня про восстановление"}
+			return []string{"сегодня лучше не добавлять интенсивности"}
 		}
 	case "sr":
 		switch verdict {
@@ -902,7 +969,7 @@ func localizedEnergyNarrativeTextFragments(locale, verdict string) []string {
 		case "rest":
 			return []string{"nižeg kapaciteta"}
 		default:
-			return []string{"opsegu oporavka"}
+			return []string{"bolje ne dodavati intenzitet"}
 		}
 	default:
 		switch verdict {
@@ -911,7 +978,7 @@ func localizedEnergyNarrativeTextFragments(locale, verdict string) []string {
 		case "rest":
 			return []string{"lower-capacity"}
 		default:
-			return []string{"recovery-oriented"}
+			return []string{"avoiding extra intensity"}
 		}
 	}
 }

@@ -80,6 +80,9 @@ func main() {
 		log.Fatalf("open read-only candidate source: %v", err)
 	}
 	defer closeSource()
+	if err := db.VerifyHistoricalDailyInsightReadAccess(ctx); err != nil {
+		log.Fatalf("verify historical candidate read access: %v", err)
+	}
 
 	allCandidates, failures := materializeCandidates(ctx, db, candidateJobs(start, end, selectedLocales), *includeCheckinPresence, *workers)
 	export := ai.DailyInsightNarrativeCandidateExport{Version: candidateExportVersion, Failures: failures}
