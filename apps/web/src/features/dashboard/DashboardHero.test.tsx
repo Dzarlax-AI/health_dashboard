@@ -31,7 +31,7 @@ describe("DashboardHero", () => {
   it("uses the server-owned primary insight instead of duplicating TodayGuidance", () => {
     const todayInsights: TodayInsightsResponse = {
       changes: [], date: "2026-08-02", decision_id: "fixture", domains: [], evidence: [],
-      generation: { fresh_for_snapshot: true, state: "disabled" }, has_more: false,
+      generation: { fresh_for_snapshot: true, narrative_mode: "disabled", state: "disabled" }, has_more: false,
       primary: { answer_kind: "factual_context", evidence_ids: [], fallback: true, meaning: "Keep the effort controlled.", next_step: { id: "moderate", text: "Measured day" }, observation: "Recovery supports a measured day.", state: "insight", title: "Today" }, snapshot_version: "fixture",
     };
     render(<DashboardHero locale="en" model={{ ...model, todayInsights }} />);
@@ -44,7 +44,7 @@ describe("DashboardHero", () => {
   it("uses a validated overall narrative without replacing the server action", () => {
     const todayInsights: TodayInsightsResponse = {
       changes: [], date: "2026-08-02", decision_id: "fixture", domains: [], evidence: [],
-      generation: { fresh_for_snapshot: true, state: "ready" }, has_more: false,
+      generation: { fresh_for_snapshot: true, narrative_mode: "disabled", state: "ready" }, has_more: false,
       primary: {
         answer_kind: "factual_context", evidence_ids: ["recovery"], fallback: true,
         meaning: "Keep the effort controlled.", narrative: { claim_ids: ["overall_daily_decision_context"], evidence_ids: ["recovery"], text: "The current context makes a measured day the more coherent choice." },

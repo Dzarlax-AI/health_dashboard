@@ -14,7 +14,7 @@ function loaders(): DashboardLoaders {
       decision_id: "fixture",
       domains: [],
       evidence: [],
-      generation: { fresh_for_snapshot: true, state: "disabled" },
+      generation: { fresh_for_snapshot: true, narrative_mode: "disabled", state: "disabled" },
       has_more: false,
       primary: { answer_kind: "factual_context", evidence_ids: [], fallback: true, meaning: "", observation: "", state: "no_material_change", title: "Today" },
       snapshot_version: "fixture",

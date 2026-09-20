@@ -72,6 +72,9 @@ export function TodayInsights({ locale, todayInsights }: TodayInsightsProps) {
   return (
     <section className="today-insights" aria-label={translate(locale, "todayFocus")}>
       <div className="today-insights__status">
+        {generation.narrative_mode === "preview" ? (
+          <StatusBadge tone="warn">{translate(locale, "todayInsightsPreview")}</StatusBadge>
+        ) : null}
         <StatusBadge tone={generation.state === "failed" ? "warn" : "neutral"}>
           {generationLabel(locale, generation.state)}
         </StatusBadge>

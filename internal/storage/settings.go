@@ -12,10 +12,16 @@ import (
 )
 
 const (
-	SettingTodayInsightsB0Enabled     = "today_insights_b0_enabled"
-	SettingTodayInsightsB1Enabled     = "today_insights_b1_enabled"
-	SettingTodayInsightsB1QualityGate = "today_insights_b1_quality_gate_v3"
-	TodayInsightsB1QualityGateVersion = "today-insights-b1-quality-gate-v3"
+	SettingTodayInsightsB0Enabled = "today_insights_b0_enabled"
+	SettingTodayInsightsB1Enabled = "today_insights_b1_enabled"
+	// SettingTodayInsightsB1PreviewEnabled permits provider-backed B1 prose for
+	// one tenant while its frozen-corpus product review is still in progress.
+	// It is deliberately distinct from the release flag below: preview must
+	// never be mistaken for a passing quality gate or roll out to another
+	// tenant merely because the same installation has shared AI defaults.
+	SettingTodayInsightsB1PreviewEnabled = "today_insights_b1_preview_enabled"
+	SettingTodayInsightsB1QualityGate    = "today_insights_b1_quality_gate_v3"
+	TodayInsightsB1QualityGateVersion    = "today-insights-b1-quality-gate-v3"
 )
 
 // TodayInsightsB1QualityGateApproval is durable, tenant-scoped evidence that
@@ -194,6 +200,12 @@ func TodayInsightsB1ApprovedForConfig(s *DB, cfg AIConfig) bool {
 	return approved && TodayInsightsB1QualityGateMatchesConfig(approval, cfg)
 }
 
+const (
+	TodayInsightsB1NarrativeModeDisabled = "disabled"
+	TodayInsightsB1NarrativeModePreview  = "preview"
+	TodayInsightsB1NarrativeModeApproved = "approved"
+)
+
 // TodayInsightsB0Enabled controls only the new canonical sleep claim/action.
 // The factual answer ladder remains available regardless of this flag.
 func TodayInsightsB0Enabled(s *DB) bool {
@@ -209,6 +221,32 @@ func TodayInsightsB1Enabled(s *DB) bool {
 	}
 	_, approved := TodayInsightsB1QualityGateApprovalFor(s)
 	return approved
+}
+
+// TodayInsightsB1PreviewEnabled is a tenant-local operator preview. It is
+// intentionally not an approval and does not change TodayInsightsB1Enabled.
+func TodayInsightsB1PreviewEnabled(s *DB) bool {
+	return getSettingBool(s, SettingTodayInsightsB1PreviewEnabled, false)
+}
+
+// TodayInsightsB1NarrativeMode is the sole runtime decision for provider
+// calls. Approved rollout wins over a redundant preview flag; preview is
+// otherwise available only to the tenant that explicitly enabled it.
+func TodayInsightsB1NarrativeMode(s *DB, cfg AIConfig) string {
+	if !cfg.Enabled() {
+		return TodayInsightsB1NarrativeModeDisabled
+	}
+	if TodayInsightsB1Enabled(s) && TodayInsightsB1ApprovedForConfig(s, cfg) {
+		return TodayInsightsB1NarrativeModeApproved
+	}
+	if TodayInsightsB1PreviewEnabled(s) {
+		return TodayInsightsB1NarrativeModePreview
+	}
+	return TodayInsightsB1NarrativeModeDisabled
+}
+
+func TodayInsightsB1GenerationEnabled(s *DB, cfg AIConfig) bool {
+	return TodayInsightsB1NarrativeMode(s, cfg) != TodayInsightsB1NarrativeModeDisabled
 }
 
 // NotifyConfig holds Telegram credentials and per-weekday report schedule.

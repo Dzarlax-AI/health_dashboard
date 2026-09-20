@@ -34,7 +34,7 @@ const response: TodayInsightsResponse = {
     },
   ],
   evidence: [],
-  generation: { fresh_for_snapshot: true, state: "disabled" },
+  generation: { fresh_for_snapshot: true, narrative_mode: "disabled", state: "disabled" },
   has_more: false,
   primary: {
     answer_kind: "factual_context",
@@ -108,5 +108,11 @@ describe("TodayInsights", () => {
 
     expect(screen.getByText("This is a calmer reading of the sleep context.")).toBeInTheDocument();
     expect(screen.queryByText("You slept well.")).not.toBeInTheDocument();
+  });
+
+  it("marks tenant-only B1 prose as a preview", () => {
+    render(<TodayInsights locale="en" todayInsights={{ ...response, generation: { fresh_for_snapshot: true, narrative_mode: "preview", state: "ready" } }} />);
+
+    expect(screen.getByText("AI preview")).toBeInTheDocument();
   });
 });

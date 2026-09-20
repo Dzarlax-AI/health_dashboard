@@ -20,11 +20,14 @@ const DailyInsightSnapshotVersion = "daily-insight-v2"
 // action catalogue must invalidate a previously generated narrative even if
 // the visible health values happen to be unchanged.
 const (
-	DailyInsightPolicyVersion         = "daily-insight-policy-v2"
-	DailyInsightActionCatalogVersion  = "daily-insight-actions-v1"
-	DailyInsightPromptRevision        = "daily-insight-prompt-v4"
-	DailyInsightNarrativeInputVersion = "today-insight-slot-input-v10"
-	DailyInsightNarrativeVersion      = "today-insight-slot-v2"
+	DailyInsightPolicyVersion        = "daily-insight-policy-v2"
+	DailyInsightActionCatalogVersion = "daily-insight-actions-v2"
+	DailyInsightPromptRevision       = "daily-insight-prompt-v4"
+	// Bump when the provider-visible packet or its rendering contract changes.
+	// The v13 packet carries server-formatted facts so the model can write one
+	// useful paragraph instead of a disconnected abstract add-on.
+	DailyInsightNarrativeInputVersion = "today-insight-slot-input-v13"
+	DailyInsightNarrativeVersion      = "today-insight-slot-v3"
 )
 
 const (
@@ -105,7 +108,9 @@ type DailyInsightNarrativeOverlay struct {
 
 // ApplyRecentSleepBelowReference adds the one Phase B0 claim to an otherwise
 // complete factual snapshot. It never changes the primary decision, and it
-// never turns an unknown canonical record into a health action.
+// never turns an unknown canonical record into a health action. A confirmed
+// current-evening claim exposes the same gentle server-selected next step on
+// every such day; the narrower ActionEvent cadence remains separate.
 func ApplyRecentSleepBelowReference(snapshot *DailyInsightSnapshot, claim RecentSleepBelowReference, locale string) *DailyInsightSnapshot {
 	if snapshot == nil {
 		return snapshot
@@ -139,7 +144,7 @@ func ApplyRecentSleepBelowReference(snapshot *DailyInsightSnapshot, claim Recent
 			domain.Insight.Observation, domain.Insight.Meaning = localizedRecentSleepBelowReference(locale)
 			domain.Insight.EvidenceIDs = []string{"sleep_recent_reference", "sleep_recent_short_nights"}
 			copy.Evidence = append(copy.Evidence, recentSleepClaimEvidence(claim, domain.Destination, copy.UpdatedAt)...)
-			if claim.ActionEvent {
+			if claim.EveningActionAvailable {
 				id, text := localizedWindDownAction(locale)
 				domain.Insight.NextStep = &DailyInsightAction{ID: id, Text: text}
 			} else {
@@ -214,9 +219,10 @@ type DailyInsightSnapshot struct {
 	PolicyDigest string `json:"-"`
 }
 
-// DailyInsightNarrativeInput is the provider-facing claim packet. It is
-// deliberately distinct from DailyInsightSnapshot: display copy, actions,
-// primary policy and unrelated domain fields never become model input.
+// DailyInsightNarrativeInput is the provider-facing rich-story packet. It is
+// deliberately narrower than DailyInsightSnapshot: only the selected,
+// localized facts, server relation and optional server action for eligible
+// slots become model input; raw events and unrelated domain fields do not.
 type DailyInsightNarrativeInput struct {
 	Version string                             `json:"version"`
 	Locale  string                             `json:"locale"`
@@ -236,7 +242,40 @@ type DailyInsightNarrativeSlotInput struct {
 type DailyInsightNarrativeDomainInput struct {
 	Key      string                               `json:"key"`
 	Claims   []DailyInsightNarrativeClaim         `json:"claims"`
+	Facts    []DailyInsightNarrativeFact          `json:"facts"`
+	Story    *DailyInsightNarrativeStory          `json:"story,omitempty"`
+	Action   *DailyInsightNarrativeAction         `json:"action,omitempty"`
 	Position *DailyInsightNarrativeServerPosition `json:"server_position,omitempty"`
+}
+
+// DailyInsightNarrativeFact is an already-localized, server-owned fact that
+// may be paraphrased in the reader-facing paragraph. DisplayValues are the
+// only numeric forms the provider may reproduce; their source values stay in
+// the snapshot/evidence layer rather than becoming model-owned calculations.
+type DailyInsightNarrativeFact struct {
+	ID            string   `json:"id"`
+	Statement     string   `json:"statement"`
+	DisplayValues []string `json:"display_values,omitempty"`
+	EvidenceIDs   []string `json:"evidence_ids"`
+}
+
+// DailyInsightNarrativeStory is the single relation selected by the server.
+// It lets the model arrange the supplied facts into a human note without
+// inventing causality, a diagnosis, or a new recommendation.
+type DailyInsightNarrativeStory struct {
+	ID         string   `json:"id"`
+	Kind       string   `json:"kind"`
+	Statement  string   `json:"statement"`
+	FactIDs    []string `json:"fact_ids"`
+	DecisionID string   `json:"decision_id,omitempty"`
+}
+
+// DailyInsightNarrativeAction is an optional action already selected by the
+// server. It is context, not a licence for the provider to add advice.
+type DailyInsightNarrativeAction struct {
+	ID      string   `json:"id"`
+	Text    string   `json:"text"`
+	FactIDs []string `json:"fact_ids"`
 }
 
 // DailyInsightNarrativeServerPosition is a server-owned frame for an
@@ -252,8 +291,8 @@ type DailyInsightNarrativeServerPosition struct {
 }
 
 // DailyInsightNarrativeServerPositionSignal gives the model compact, factual
-// context for the server position without exposing measurements or display
-// copy. It is not separately citable prose material.
+// context for the server position. It is not separately citable prose
+// material.
 type DailyInsightNarrativeServerPositionSignal struct {
 	Domain      string   `json:"domain"`
 	Proposition string   `json:"proposition"`
@@ -265,20 +304,29 @@ type DailyInsightNarrativeClaim struct {
 	Domain      string `json:"domain"`
 	Kind        string `json:"kind"`
 	Proposition string `json:"proposition"`
-	// RequiredTextFragments are localized, server-owned semantic anchors.
-	// The provider must include each one in its prose, so a cited claim ID
-	// cannot stand in for the actual subject, direction, or comparison.
-	RequiredTextFragments []string                           `json:"required_text_fragments,omitempty"`
-	EvidenceIDs           []string                           `json:"evidence_ids"`
-	ComparisonPeriod      string                             `json:"comparison_period,omitempty"`
-	Confidence            string                             `json:"confidence,omitempty"`
-	RequiredQualifierIDs  []string                           `json:"required_qualifier_ids,omitempty"`
-	MeaningLinks          []DailyInsightNarrativeMeaningLink `json:"meaning_links,omitempty"`
+	// AnchorVariants are complete, localized factual sentences authored and
+	// rendered by the server. They intentionally never enter provider JSON:
+	// literal-copy requirements made otherwise useful prose fail closed when a
+	// model naturally paraphrased the fact. A contract revision accompanies any
+	// wording change because the values are part of the rendered experience.
+	AnchorVariants       []DailyInsightNarrativeAnchorVariant `json:"-"`
+	EvidenceIDs          []string                             `json:"evidence_ids"`
+	ComparisonPeriod     string                               `json:"comparison_period,omitempty"`
+	Confidence           string                               `json:"confidence,omitempty"`
+	RequiredQualifierIDs []string                             `json:"required_qualifier_ids,omitempty"`
+	MeaningLinks         []DailyInsightNarrativeMeaningLink   `json:"meaning_links,omitempty"`
+}
+
+type DailyInsightNarrativeAnchorVariant struct {
+	ID   string `json:"id"`
+	Text string `json:"text"`
 }
 
 // DailyInsightNarrativeMeaningLink is a server-approved interpretive move for
-// one closed claim. The provider may phrase it naturally, but cannot create a
-// new explanation, causal story, or action outside this small catalogue.
+// one closed claim. It describes a permitted interpretive angle rather than
+// supplying ready-made user-facing prose. The provider selects one angle per
+// section and may phrase it naturally, but cannot create a new explanation,
+// causal story, or action outside this small catalogue.
 type DailyInsightNarrativeMeaningLink struct {
 	ID        string `json:"id"`
 	Statement string `json:"statement"`
@@ -296,7 +344,8 @@ type DailyInsightNarrative struct {
 }
 
 type DailyInsightNarrativeSection struct {
-	Sentences []DailyInsightNarrativeSentence `json:"sentences"`
+	AnchorVariantID string                          `json:"anchor_variant_id"`
+	Sentences       []DailyInsightNarrativeSentence `json:"sentences"`
 }
 
 type DailyInsightNarrativeSentence struct {
@@ -328,8 +377,9 @@ var dailyInsightNarrativeDomainKeys = []string{"sleep", "recovery", "energy"}
 var dailyInsightNarrativeSlotKeys = []string{DailyInsightNarrativeOverallSlot, "sleep", "recovery", "energy"}
 
 // BuildDailyInsightNarrativeInput converts a factual snapshot into the closed
-// proposition set that an optional provider may explain. It never sends the
-// primary, action copy, or display strings to the model.
+// rich-story material an optional provider may explain. It includes only the
+// selected slot's localized aggregate facts, relation and optional action —
+// never raw records, identifiers or unrelated domain state.
 func BuildDailyInsightNarrativeInput(snapshot *DailyInsightSnapshot, locale string) DailyInsightNarrativeInput {
 	input := DailyInsightNarrativeInput{
 		Version: DailyInsightNarrativeInputVersion,
@@ -340,13 +390,16 @@ func BuildDailyInsightNarrativeInput(snapshot *DailyInsightSnapshot, locale stri
 		return input
 	}
 	for _, key := range dailyInsightNarrativeDomainKeys {
-		packet := DailyInsightNarrativeDomainInput{Key: key, Claims: []DailyInsightNarrativeClaim{}}
+		packet := DailyInsightNarrativeDomainInput{Key: key, Claims: []DailyInsightNarrativeClaim{}, Facts: []DailyInsightNarrativeFact{}}
 		for _, domain := range snapshot.Domains {
 			if domain.Key != key {
 				continue
 			}
 			if domainNarrativeEligible(domain) {
 				packet.Claims = append(packet.Claims, buildDailyInsightNarrativeClaim(snapshot, domain, input.Locale))
+				packet.Facts = buildDailyInsightNarrativeDomainFacts(snapshot, domain, input.Locale)
+				packet.Story = buildDailyInsightNarrativeStory(packet.Claims, packet.Facts, domain.Insight.NextStep, input.Locale, domain.Key)
+				packet.Action = buildDailyInsightNarrativeAction(domain.Insight.NextStep, packet.Facts, input.Locale)
 			}
 			break
 		}
@@ -363,7 +416,7 @@ func BuildDailyInsightNarrativeSlotInput(snapshot *DailyInsightSnapshot, locale,
 	input := DailyInsightNarrativeSlotInput{
 		Version: DailyInsightNarrativeInputVersion,
 		Locale:  normalizeDailyInsightLocale(locale),
-		Slot:    DailyInsightNarrativeDomainInput{Key: slot, Claims: []DailyInsightNarrativeClaim{}},
+		Slot:    DailyInsightNarrativeDomainInput{Key: slot, Claims: []DailyInsightNarrativeClaim{}, Facts: []DailyInsightNarrativeFact{}},
 	}
 	if !isDailyInsightNarrativeSlot(slot) {
 		return DailyInsightNarrativeSlotInput{}, false
@@ -374,6 +427,9 @@ func BuildDailyInsightNarrativeSlotInput(snapshot *DailyInsightSnapshot, locale,
 	if slot == DailyInsightNarrativeOverallSlot {
 		if overallNarrativeEligible(snapshot) {
 			input.Slot.Claims = append(input.Slot.Claims, buildOverallDailyInsightNarrativeClaim(snapshot, input.Locale))
+			input.Slot.Facts = buildOverallDailyInsightNarrativeFacts(snapshot, input.Locale)
+			input.Slot.Story = buildDailyInsightNarrativeStory(input.Slot.Claims, input.Slot.Facts, snapshot.Primary.NextStep, input.Locale, slot)
+			input.Slot.Action = buildDailyInsightNarrativeAction(snapshot.Primary.NextStep, input.Slot.Facts, input.Locale)
 		}
 		return input, true
 	}
@@ -408,7 +464,7 @@ func buildDailyInsightNarrativeServerPosition(snapshot *DailyInsightSnapshot, lo
 	}
 	for _, domainKey := range snapshot.DecisionEvidenceDomains {
 		for _, domain := range snapshot.Domains {
-			if domain.Key != domainKey || !domainNarrativeEligible(domain) {
+			if domain.Key != domainKey || !domainNarrativeDecisionEligible(domain) {
 				continue
 			}
 			claim := buildDailyInsightNarrativeClaim(snapshot, domain, locale)
@@ -513,18 +569,40 @@ func overallNarrativeEligible(snapshot *DailyInsightSnapshot) bool {
 	}
 }
 
+// dailyInsightNarrativeDecisionDomains returns only the fresh domain contexts
+// that the server actually used for today's primary decision. A combined
+// explanation is meaningful only when at least two such contexts exist.
+func dailyInsightNarrativeDecisionDomains(snapshot *DailyInsightSnapshot) []string {
+	if snapshot == nil {
+		return nil
+	}
+	domains := make([]string, 0, len(snapshot.DecisionEvidenceDomains))
+	for _, key := range dailyInsightNarrativeDomainKeys {
+		if !containsDailyInsightID(snapshot.DecisionEvidenceDomains, key) {
+			continue
+		}
+		for _, domain := range snapshot.Domains {
+			if domain.Key == key && domainNarrativeDecisionEligible(domain) {
+				domains = append(domains, key)
+				break
+			}
+		}
+	}
+	return domains
+}
+
 func buildOverallDailyInsightNarrativeClaim(snapshot *DailyInsightSnapshot, locale string) DailyInsightNarrativeClaim {
 	return DailyInsightNarrativeClaim{
-		ID:                    "overall_daily_decision_context",
-		Domain:                DailyInsightNarrativeOverallSlot,
-		Kind:                  "daily_decision",
-		Proposition:           localizedOverallNarrativeProposition(locale, snapshot.Primary.NarrativeSubject),
-		RequiredTextFragments: localizedOverallNarrativeTextFragments(locale, snapshot.Primary.NarrativeSubject),
-		EvidenceIDs:           append([]string(nil), snapshot.Primary.EvidenceIDs...),
-		ComparisonPeriod:      "current day",
-		Confidence:            snapshot.Primary.AnswerKind,
-		RequiredQualifierIDs:  []string{"current_context"},
-		MeaningLinks:          overallNarrativeMeaningLinks(locale, snapshot.Primary.NarrativeSubject),
+		ID:                   "overall_daily_decision_context",
+		Domain:               DailyInsightNarrativeOverallSlot,
+		Kind:                 "daily_decision",
+		Proposition:          localizedOverallNarrativeProposition(locale, snapshot.Primary.NarrativeSubject),
+		AnchorVariants:       localizedOverallNarrativeAnchors(locale, snapshot.Primary.NarrativeSubject),
+		EvidenceIDs:          append([]string(nil), snapshot.Primary.EvidenceIDs...),
+		ComparisonPeriod:     "current day",
+		Confidence:           snapshot.Primary.AnswerKind,
+		RequiredQualifierIDs: []string{"current_context"},
+		MeaningLinks:         overallNarrativeMeaningLinks(locale, dailyInsightNarrativeDecisionDomains(snapshot)),
 	}
 }
 
@@ -566,43 +644,40 @@ func localizedOverallNarrativeProposition(locale, mode string) string {
 	}
 }
 
-func localizedOverallNarrativeTextFragments(locale, mode string) []string {
+func localizedOverallNarrativeAnchors(locale, mode string) []DailyInsightNarrativeAnchorVariant {
 	switch normalizeDailyInsightLocale(locale) {
 	case "ru":
-		fragments := []string{"сегодня"}
 		switch mode {
 		case "rest":
-			return append(fragments, "режим отдыха")
+			return []DailyInsightNarrativeAnchorVariant{{ID: "rest", Text: "На сегодня выбран режим отдыха."}}
 		case "active_recovery":
-			return append(fragments, "активного восстановления")
+			return []DailyInsightNarrativeAnchorVariant{{ID: "active-recovery", Text: "На сегодня выбран режим активного восстановления."}}
 		case "push_hard":
-			return append(fragments, "более высокой нагрузки")
+			return []DailyInsightNarrativeAnchorVariant{{ID: "push-hard", Text: "На сегодня выбран режим более высокой нагрузки."}}
 		default:
-			return append(fragments, "умеренный")
+			return []DailyInsightNarrativeAnchorVariant{{ID: "moderate", Text: "На сегодня выбран умеренный режим."}}
 		}
 	case "sr":
-		fragments := []string{"danas"}
 		switch mode {
 		case "rest":
-			return append(fragments, "režim odmora")
+			return []DailyInsightNarrativeAnchorVariant{{ID: "rest", Text: "Za danas je izabran režim odmora."}}
 		case "active_recovery":
-			return append(fragments, "aktivnog oporavka")
+			return []DailyInsightNarrativeAnchorVariant{{ID: "active-recovery", Text: "Za danas je izabran režim aktivnog oporavka."}}
 		case "push_hard":
-			return append(fragments, "većeg opterećenja")
+			return []DailyInsightNarrativeAnchorVariant{{ID: "push-hard", Text: "Za danas je izabran režim većeg opterećenja."}}
 		default:
-			return append(fragments, "umeren")
+			return []DailyInsightNarrativeAnchorVariant{{ID: "moderate", Text: "Za danas je izabran umeren režim."}}
 		}
 	default:
-		fragments := []string{"today"}
 		switch mode {
 		case "rest":
-			return append(fragments, "rest-oriented")
+			return []DailyInsightNarrativeAnchorVariant{{ID: "rest", Text: "Today is set to a rest-oriented pace."}}
 		case "active_recovery":
-			return append(fragments, "active-recovery")
+			return []DailyInsightNarrativeAnchorVariant{{ID: "active-recovery", Text: "Today is set to an active-recovery pace."}}
 		case "push_hard":
-			return append(fragments, "higher-load")
+			return []DailyInsightNarrativeAnchorVariant{{ID: "push-hard", Text: "Today is set to a higher-load pace."}}
 		default:
-			return append(fragments, "moderate")
+			return []DailyInsightNarrativeAnchorVariant{{ID: "moderate", Text: "Today is set to a moderate pace."}}
 		}
 	}
 }
@@ -622,6 +697,35 @@ func domainNarrativeEligible(domain DailyInsightDomain) bool {
 	// request to paraphrase it. B1 is an optional explanation of a distinct,
 	// server-selected claim; the deterministic factual card remains the useful
 	// answer on ordinary days.
+	if !domainNarrativeBaseEligible(domain) {
+		return false
+	}
+	switch domain.Insight.ClaimID {
+	case "recent_sleep_below_reference", "recovery_readiness_context":
+	default:
+		return false
+	}
+	return true
+}
+
+// domainNarrativeDecisionEligible is intentionally broader than the
+// independent-domain gate. Energy's current verdict can be a factual input to
+// a server-owned combined recommendation, but by itself it does not establish
+// a new relationship for a model to explain. Keeping that distinction avoids
+// spending a provider call merely to restate the energy card.
+func domainNarrativeDecisionEligible(domain DailyInsightDomain) bool {
+	if !domainNarrativeBaseEligible(domain) {
+		return false
+	}
+	switch domain.Insight.ClaimID {
+	case "recent_sleep_below_reference", "recovery_readiness_context", "energy_current_verdict_context":
+		return true
+	default:
+		return false
+	}
+}
+
+func domainNarrativeBaseEligible(domain DailyInsightDomain) bool {
 	if domain.Insight.State != "insight" || domain.Insight.Remediation != "" || domain.Insight.ClaimID == "" {
 		return false
 	}
@@ -639,9 +743,27 @@ func domainNarrativeEligible(domain DailyInsightDomain) bool {
 // call merely to restate the visible cards.
 func HasEligibleDailyInsightNarrativeClaims(snapshot *DailyInsightSnapshot, locale string) bool {
 	for _, slot := range dailyInsightNarrativeSlotKeys {
-		input, known := BuildDailyInsightNarrativeSlotInput(snapshot, locale, slot)
-		if known && len(input.Slot.Claims) > 0 {
+		if HasEligibleDailyInsightNarrativeSlot(snapshot, locale, slot) {
 			return true
+		}
+	}
+	return false
+}
+
+// HasEligibleDailyInsightNarrativeSlot distinguishes a claim with a distinct,
+// server-approved human meaning from a factual card that would only be
+// restated. Each eligible slot can refresh independently from the same
+// snapshot without changing the server-owned facts or actions.
+func HasEligibleDailyInsightNarrativeSlot(snapshot *DailyInsightSnapshot, locale, slot string) bool {
+	input, known := BuildDailyInsightNarrativeSlotInput(snapshot, locale, slot)
+	if !known {
+		return false
+	}
+	for _, claim := range input.Slot.Claims {
+		for _, meaning := range claim.MeaningLinks {
+			if strings.TrimSpace(meaning.ID) != "" && strings.TrimSpace(meaning.Statement) != "" {
+				return true
+			}
 		}
 	}
 	return false
@@ -667,19 +789,19 @@ func buildDailyInsightNarrativeClaim(snapshot *DailyInsightSnapshot, domain Dail
 		claim.Kind = "comparison"
 		claim.RequiredQualifierIDs = []string{"personal_pattern", "current_context"}
 		claim.Proposition = localizedRecentSleepNarrativeProposition(locale)
-		claim.RequiredTextFragments = localizedSleepNarrativeTextFragments(locale)
-		claim.MeaningLinks = sleepNarrativeMeaningLinks(locale, domain.Insight.NextStepID())
+		claim.AnchorVariants = localizedSleepNarrativeAnchors(locale)
+		claim.MeaningLinks = sleepNarrativeMeaningLinks(locale)
 		return claim
 	}
 	if claim.ID == "recovery_readiness_context" {
 		claim.Proposition = localizedRecoveryNarrativeProposition(locale, domain.Band)
-		claim.RequiredTextFragments = localizedRecoveryNarrativeTextFragments(locale, domain.Band)
+		claim.AnchorVariants = localizedRecoveryNarrativeAnchors(locale, domain.Band)
 		claim.MeaningLinks = recoveryNarrativeMeaningLinks(locale, domain.Band)
 		return claim
 	}
 	if claim.ID == "energy_current_verdict_context" {
 		claim.Proposition = localizedEnergyNarrativeProposition(locale, domain.NarrativeSubject)
-		claim.RequiredTextFragments = localizedEnergyNarrativeTextFragments(locale, domain.NarrativeSubject)
+		claim.AnchorVariants = localizedEnergyNarrativeAnchors(locale, domain.NarrativeSubject)
 		claim.MeaningLinks = energyNarrativeMeaningLinks(locale, domain.NarrativeSubject)
 		return claim
 	}
@@ -702,39 +824,250 @@ func buildDailyInsightNarrativeClaim(snapshot *DailyInsightSnapshot, domain Dail
 	return claim
 }
 
-func overallNarrativeMeaningLinks(locale, mode string) []DailyInsightNarrativeMeaningLink {
-	return []DailyInsightNarrativeMeaningLink{{ID: "overall_pacing_guardrail", Statement: localizedOverallNarrativeMeaning(locale, mode)}}
+func buildDailyInsightNarrativeDomainFacts(snapshot *DailyInsightSnapshot, domain DailyInsightDomain, locale string) []DailyInsightNarrativeFact {
+	facts := []DailyInsightNarrativeFact{}
+	add := func(id, statement string, evidenceIDs []string) {
+		statement = strings.TrimSpace(statement)
+		if statement == "" {
+			return
+		}
+		facts = append(facts, DailyInsightNarrativeFact{
+			ID: id, Statement: statement, DisplayValues: narrativeDisplayValues(statement), EvidenceIDs: append([]string(nil), evidenceIDs...),
+		})
+	}
+	add(domain.Key+"_summary", domain.Summary, domain.Insight.EvidenceIDs)
+	add(domain.Key+"_assessment", domain.Insight.Observation, domain.Insight.EvidenceIDs)
+	for _, evidenceID := range domain.Insight.EvidenceIDs {
+		for _, evidence := range snapshot.Evidence {
+			if evidence.ID != evidenceID {
+				continue
+			}
+			statement := localizedNarrativeEvidenceStatement(locale, evidence)
+			if statement == "" {
+				continue
+			}
+			values := narrativeDisplayValues(statement)
+			facts = append(facts, DailyInsightNarrativeFact{ID: evidence.ID, Statement: statement, DisplayValues: values, EvidenceIDs: []string{evidence.ID}})
+		}
+	}
+	return facts
 }
 
-func sleepNarrativeMeaningLinks(locale, actionID string) []DailyInsightNarrativeMeaningLink {
-	links := []DailyInsightNarrativeMeaningLink{{ID: "sleep_pattern_not_single_night", Statement: localizedNarrativeMeaning(locale, "sleep_pattern_not_single_night")}}
-	if actionID == "wind_down" {
-		links = append(links, DailyInsightNarrativeMeaningLink{ID: "sleep_wind_down_bridge", Statement: localizedNarrativeMeaning(locale, "sleep_wind_down_bridge"), ActionID: actionID})
+func buildOverallDailyInsightNarrativeFacts(snapshot *DailyInsightSnapshot, locale string) []DailyInsightNarrativeFact {
+	facts := []DailyInsightNarrativeFact{}
+	for _, key := range dailyInsightNarrativeDecisionDomains(snapshot) {
+		for _, domain := range snapshot.Domains {
+			if domain.Key != key {
+				continue
+			}
+			facts = append(facts, buildDailyInsightNarrativeDomainFacts(snapshot, domain, locale)...)
+			break
+		}
 	}
-	return links
+	if action := snapshot.Primary.NextStep; action != nil && strings.TrimSpace(action.Text) != "" {
+		facts = append(facts, DailyInsightNarrativeFact{
+			ID: "daily_decision", Statement: action.Text, DisplayValues: narrativeDisplayValues(action.Text), EvidenceIDs: append([]string(nil), snapshot.Primary.EvidenceIDs...),
+		})
+	}
+	return facts
+}
+
+func buildDailyInsightNarrativeStory(claims []DailyInsightNarrativeClaim, facts []DailyInsightNarrativeFact, action *DailyInsightAction, locale, slot string) *DailyInsightNarrativeStory {
+	if len(claims) != 1 || len(claims[0].MeaningLinks) != 1 || len(facts) == 0 {
+		return nil
+	}
+	meaning := claims[0].MeaningLinks[0]
+	factIDs := make([]string, 0, len(facts))
+	for _, fact := range facts {
+		factIDs = append(factIDs, fact.ID)
+	}
+	story := &DailyInsightNarrativeStory{ID: meaning.ID, Kind: slot + "_context", Statement: meaning.Statement, FactIDs: factIDs}
+	if action != nil {
+		story.DecisionID = action.ID
+	}
+	return story
+}
+
+func buildDailyInsightNarrativeAction(action *DailyInsightAction, facts []DailyInsightNarrativeFact, locale string) *DailyInsightNarrativeAction {
+	if action == nil || strings.TrimSpace(action.ID) == "" {
+		return nil
+	}
+	text := localizedDailyInsightNarrativeAction(locale, action.ID)
+	if text == "" {
+		text = action.Text
+	}
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	factIDs := make([]string, 0, len(facts))
+	for _, fact := range facts {
+		factIDs = append(factIDs, fact.ID)
+	}
+	return &DailyInsightNarrativeAction{ID: action.ID, Text: text, FactIDs: factIDs}
+}
+
+// localizedDailyInsightNarrativeAction is server-owned copy for a model
+// packet, separate from the compact UI label in DailyInsightAction.Text. It
+// is intentionally defined only for closed action IDs; the provider may make
+// it sound natural, but cannot add another suggestion or promise an outcome.
+func localizedDailyInsightNarrativeAction(locale, actionID string) string {
+	if actionID != "wind_down" {
+		return ""
+	}
+	switch normalizeDailyInsightLocale(locale) {
+	case "ru":
+		return "Сегодня вечером оставь себе спокойный час без задач и начни сворачиваться раньше."
+	case "sr":
+		return "Večeras ostavi sebi miran sat bez obaveza i počni da se smiruješ ranije."
+	default:
+		return "Leave yourself a calm hour without extra tasks tonight and start winding down earlier."
+	}
+}
+
+func localizedNarrativeEvidenceStatement(locale string, evidence DailyInsightEvidence) string {
+	if evidence.Value == nil {
+		return ""
+	}
+	value := *evidence.Value
+	if evidence.ID == "sleep_recent_reference" && (evidence.Unit == "h" || evidence.Unit == "hours") {
+		hours := int(value)
+		minutes := int(math.Round((value - float64(hours)) * 60))
+		if minutes == 60 {
+			hours, minutes = hours+1, 0
+		}
+		switch normalizeDailyInsightLocale(locale) {
+		case "ru":
+			return fmt.Sprintf("Твой обычный сон: %d ч %d мин.", hours, minutes)
+		case "sr":
+			return fmt.Sprintf("Tvoj uobičajeni san: %d h %d min.", hours, minutes)
+		default:
+			return fmt.Sprintf("Your usual sleep: %d h %d min.", hours, minutes)
+		}
+	}
+	if evidence.ID == "sleep_recent_short_nights" && evidence.Unit == "nights" {
+		switch normalizeDailyInsightLocale(locale) {
+		case "ru":
+			return fmt.Sprintf("Коротких ночей подряд: %.0f.", value)
+		case "sr":
+			return fmt.Sprintf("Kraćih noći zaredom: %.0f.", value)
+		default:
+			return fmt.Sprintf("Shorter nights in a row: %.0f.", value)
+		}
+	}
+	switch evidence.Unit {
+	case "h", "hours":
+		hours := int(value)
+		minutes := int(math.Round((value - float64(hours)) * 60))
+		if minutes == 60 {
+			hours, minutes = hours+1, 0
+		}
+		switch normalizeDailyInsightLocale(locale) {
+		case "ru":
+			return fmt.Sprintf("Длительность сна: %d ч %d мин.", hours, minutes)
+		case "sr":
+			return fmt.Sprintf("Trajanje sna: %d h %d min.", hours, minutes)
+		default:
+			return fmt.Sprintf("Sleep duration: %d h %d min.", hours, minutes)
+		}
+	case "percent", "score":
+		switch normalizeDailyInsightLocale(locale) {
+		case "ru":
+			return fmt.Sprintf("Текущее значение: %.0f%%.", value)
+		case "sr":
+			return fmt.Sprintf("Trenutna vrednost: %.0f%%.", value)
+		default:
+			return fmt.Sprintf("Current value: %.0f%%.", value)
+		}
+	case "nights":
+		switch normalizeDailyInsightLocale(locale) {
+		case "ru":
+			return fmt.Sprintf("Более коротких последних ночей: %.0f.", value)
+		case "sr":
+			return fmt.Sprintf("Skorijih kraćih noći: %.0f.", value)
+		default:
+			return fmt.Sprintf("Recent shorter nights: %.0f.", value)
+		}
+	default:
+		return fmt.Sprintf("%.2f", value)
+	}
+}
+
+// narrativeDisplayValues returns the numeric forms a provider may echo. The
+// packet keeps the surrounding localized statement, while this compact list
+// lets the validator reject an invented literal without banning useful values.
+func narrativeDisplayValues(text string) []string {
+	values := []string{}
+	for _, token := range narrativeNumericTokens(text) {
+		if !containsDailyInsightID(values, token) {
+			values = append(values, token)
+		}
+	}
+	return values
+}
+
+func narrativeNumericTokens(text string) []string {
+	values := []string{}
+	var current strings.Builder
+	flush := func() {
+		if current.Len() != 0 {
+			if token := strings.TrimRight(current.String(), ".,"); token != "" {
+				values = append(values, token)
+			}
+			current.Reset()
+		}
+	}
+	for _, r := range text {
+		if unicode.IsDigit(r) || ((r == '.' || r == ',') && current.Len() > 0) {
+			current.WriteRune(r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return values
+}
+
+func overallNarrativeMeaningLinks(locale string, domains []string) []DailyInsightNarrativeMeaningLink {
+	if len(domains) < 2 {
+		return nil
+	}
+	return []DailyInsightNarrativeMeaningLink{{
+		ID:        "overall_combined_context",
+		Statement: localizedOverallNarrativeMeaning(locale, domains),
+	}}
+}
+
+func sleepNarrativeMeaningLinks(locale string) []DailyInsightNarrativeMeaningLink {
+	return []DailyInsightNarrativeMeaningLink{{
+		ID: "sleep_personal_reference", Statement: localizedNarrativeMeaning(locale, "sleep_personal_reference"),
+	}}
 }
 
 func recoveryNarrativeMeaningLinks(locale, band string) []DailyInsightNarrativeMeaningLink {
-	return []DailyInsightNarrativeMeaningLink{{ID: "recovery_pacing_not_verdict", Statement: localizedRecoveryNarrativeMeaning(locale, band)}}
+	return []DailyInsightNarrativeMeaningLink{{
+		ID: "recovery_day_to_day_effect", Statement: localizedRecoveryNarrativeMeaning(locale, band),
+	}}
 }
 
 func energyNarrativeMeaningLinks(locale, verdict string) []DailyInsightNarrativeMeaningLink {
-	return []DailyInsightNarrativeMeaningLink{{ID: "energy_pacing_today", Statement: localizedEnergyNarrativeMeaning(locale, verdict)}}
+	if verdict == "active_recovery" {
+		return nil
+	}
+	return []DailyInsightNarrativeMeaningLink{{
+		ID: "energy_day_to_day_effect", Statement: localizedEnergyNarrativeMeaning(locale, verdict),
+	}}
 }
 
 func localizedNarrativeMeaning(locale, id string) string {
 	translations := map[string]map[string]string{
 		"en": {
-			"sleep_pattern_not_single_night": "A run of shorter nights is a backdrop for the day, not one isolated blip.",
-			"sleep_wind_down_bridge":         "The existing evening action follows the recent run of shorter nights.",
+			"sleep_personal_reference": "Several shorter nights in a row make a calmer end to today more fitting.",
 		},
 		"ru": {
-			"sleep_pattern_not_single_night": "Серия более коротких ночей — это уже фон, с которым начинается день, а не единичный эпизод.",
-			"sleep_wind_down_bridge":         "Вечернее действие связано с недавней серией более коротких ночей.",
+			"sleep_personal_reference": "Несколько коротких ночей подряд — повод сделать сегодняшний вечер спокойнее.",
 		},
 		"sr": {
-			"sleep_pattern_not_single_night": "Niz kraćih noći je pozadina s kojom dan počinje, a ne izdvojen slučaj.",
-			"sleep_wind_down_bridge":         "Večernja radnja prati nedavni niz kraćih noći.",
+			"sleep_personal_reference": "Nekoliko kraćih noći zaredom čini mirniji kraj dana boljim izborom.",
 		},
 	}
 	if byID, found := translations[normalizeDailyInsightLocale(locale)]; found {
@@ -743,34 +1076,41 @@ func localizedNarrativeMeaning(locale, id string) string {
 	return translations["en"][id]
 }
 
-func localizedOverallNarrativeMeaning(locale, mode string) string {
-	translations := map[string]map[string]string{
-		"en": {
-			"rest":            "A rest-oriented mode keeps extra load off the day.",
-			"active_recovery": "Active recovery keeps movement in the day without turning it into a test.",
-			"push_hard":       "A higher-load mode leaves room for a more demanding activity.",
-			"moderate":        "A moderate mode keeps the day ordinary rather than turning it into a test.",
-		},
-		"ru": {
-			"rest":            "Режим отдыха оставляет день без лишней нагрузки.",
-			"active_recovery": "Активное восстановление оставляет движение частью дня, но не его испытанием.",
-			"push_hard":       "Режим более высокой нагрузки оставляет место для более требовательной активности.",
-			"moderate":        "Умеренный режим оставляет день обычным, без необходимости превращать его в испытание.",
-		},
-		"sr": {
-			"rest":            "Režim odmora ostavlja dan bez dodatnog opterećenja.",
-			"active_recovery": "Aktivni oporavak zadržava kretanje u danu, ali bez pretvaranja u test.",
-			"push_hard":       "Režim većeg opterećenja ostavlja mesta za zahtevniju aktivnost.",
-			"moderate":        "Umeren režim ostavlja dan običnim, bez potrebe da postane test.",
-		},
-	}
-	if byMode, found := translations[normalizeDailyInsightLocale(locale)]; found {
-		if statement, found := byMode[mode]; found {
-			return statement
+func localizedOverallNarrativeMeaning(locale string, domains []string) string {
+	labels := make([]string, 0, len(domains))
+	for _, domain := range domains {
+		switch normalizeDailyInsightLocale(locale) {
+		case "ru":
+			switch domain {
+			case "sleep":
+				labels = append(labels, "сна")
+			case "recovery":
+				labels = append(labels, "восстановления")
+			case "energy":
+				labels = append(labels, "энергии")
+			}
+		case "sr":
+			switch domain {
+			case "sleep":
+				labels = append(labels, "san")
+			case "recovery":
+				labels = append(labels, "oporavak")
+			case "energy":
+				labels = append(labels, "energiju")
+			}
+		default:
+			labels = append(labels, domain)
 		}
-		return byMode["moderate"]
 	}
-	return translations["en"]["moderate"]
+	joined := strings.Join(labels, ", ")
+	switch normalizeDailyInsightLocale(locale) {
+	case "ru":
+		return "Сегодняшняя картина складывается из " + joined + "."
+	case "sr":
+		return "Današnja slika obuhvata " + joined + "."
+	default:
+		return "Today's picture brings together " + joined + "."
+	}
 }
 
 func localizedRecoveryNarrativeMeaning(locale, band string) string {
@@ -778,19 +1118,19 @@ func localizedRecoveryNarrativeMeaning(locale, band string) string {
 	switch normalizeDailyInsightLocale(locale) {
 	case "ru":
 		if higher {
-			return "Хорошее восстановление оставляет больше пространства для обычных планов."
+			return "Восстановление сегодня даёт устойчивую опору для общей картины дня."
 		}
-		return "Когда восстановление не на пике, плотный день может ощущаться тяжелее."
+		return "Восстановление сегодня — заметная часть общей картины дня."
 	case "sr":
 		if higher {
-			return "Dobar oporavak ostavlja više prostora za uobičajene planove."
+			return "Oporavak danas daje stabilniji oslonac celoj slici dana."
 		}
-		return "Kada oporavak nije na vrhuncu, gušći dan može delovati zahtevnije."
+		return "Oporavak je danas primetan deo cele slike dana."
 	default:
 		if higher {
-			return "Good recovery leaves more room for ordinary plans."
+			return "Recovery gives today’s overall picture a steadier foundation."
 		}
-		return "When recovery is not at its peak, a packed day can feel heavier."
+		return "Recovery is a noticeable part of today’s overall picture."
 	}
 }
 
@@ -799,29 +1139,29 @@ func localizedEnergyNarrativeMeaning(locale, verdict string) string {
 	case "ru":
 		switch verdict {
 		case "push_hard":
-			return "Когда сил достаточно, остаётся место для более требовательной активности."
+			return "Энергия сегодня даёт больше свободы в выборе темпа дня."
 		case "rest":
-			return "Когда сил немного, привычные дела могут требовать больше усилий."
+			return "Энергия сегодня — ресурс, который стоит распределить по дню."
 		default:
-			return "Обычные дела сегодня можно оставить обычными, без лишней интенсивности."
+			return "Энергия сегодня задаёт более спокойный ритм дня."
 		}
 	case "sr":
 		switch verdict {
 		case "push_hard":
-			return "Kada ima dovoljno energije, ostaje mesta za zahtevniju aktivnost."
+			return "Energija danas daje više slobode pri izboru ritma dana."
 		case "rest":
-			return "Kada je energije malo, uobičajene obaveze mogu tražiti više napora."
+			return "Energija je danas resurs koji vredi rasporediti kroz dan."
 		default:
-			return "Uobičajene obaveze danas mogu ostati uobičajene, bez dodatnog intenziteta."
+			return "Energija danas postavlja mirniji ritam dana."
 		}
 	default:
 		switch verdict {
 		case "push_hard":
-			return "When there is enough energy, there is room for a more demanding activity."
+			return "Energy gives you more room to choose the day’s pace."
 		case "rest":
-			return "When energy is low, ordinary tasks can take more effort."
+			return "Energy is a resource to spread across the day."
 		default:
-			return "Ordinary tasks can stay ordinary today, without extra intensity."
+			return "Energy sets a calmer rhythm for the day."
 		}
 	}
 }
@@ -837,14 +1177,14 @@ func localizedRecentSleepNarrativeProposition(locale string) string {
 	}
 }
 
-func localizedSleepNarrativeTextFragments(locale string) []string {
+func localizedSleepNarrativeAnchors(locale string) []DailyInsightNarrativeAnchorVariant {
 	switch normalizeDailyInsightLocale(locale) {
 	case "ru":
-		return []string{"короче твоего обычного ритма сна"}
+		return []DailyInsightNarrativeAnchorVariant{{ID: "recent-shorter-than-usual", Text: "Несколько последних ночей ты спал меньше обычного для тебя."}}
 	case "sr":
-		return []string{"kraće od tvog uobičajenog ritma sna"}
+		return []DailyInsightNarrativeAnchorVariant{{ID: "recent-shorter-than-usual", Text: "Nekoliko poslednjih noći spavao si manje nego što je za tebe uobičajeno."}}
 	default:
-		return []string{"shorter than your usual sleep rhythm"}
+		return []DailyInsightNarrativeAnchorVariant{{ID: "recent-shorter-than-usual", Text: "Several recent nights were shorter than usual for you."}}
 	}
 }
 
@@ -899,23 +1239,23 @@ func localizedRecoveryNarrativeProposition(locale, band string) string {
 	}
 }
 
-func localizedRecoveryNarrativeTextFragments(locale, band string) []string {
+func localizedRecoveryNarrativeAnchors(locale, band string) []DailyInsightNarrativeAnchorVariant {
 	switch normalizeDailyInsightLocale(locale) {
 	case "ru":
 		if band == "optimal" {
-			return []string{"восстановление на хорошем уровне"}
+			return []DailyInsightNarrativeAnchorVariant{{ID: "recovery-strong", Text: "Сегодня восстановление на хорошем уровне."}}
 		}
-		return []string{"восстановление не на пике"}
+		return []DailyInsightNarrativeAnchorVariant{{ID: "recovery-lower", Text: "Сегодня восстановление не на пике."}}
 	case "sr":
 		if band == "optimal" {
-			return []string{"višem opsegu spremnosti"}
+			return []DailyInsightNarrativeAnchorVariant{{ID: "recovery-strong", Text: "Danas su signali oporavka u višem opsegu spremnosti."}}
 		}
-		return []string{"nižem opsegu spremnosti"}
+		return []DailyInsightNarrativeAnchorVariant{{ID: "recovery-lower", Text: "Danas su signali oporavka u nižem opsegu spremnosti."}}
 	default:
 		if band == "optimal" {
-			return []string{"higher readiness"}
+			return []DailyInsightNarrativeAnchorVariant{{ID: "recovery-strong", Text: "Today's recovery signals sit in the higher readiness band."}}
 		}
-		return []string{"lower readiness"}
+		return []DailyInsightNarrativeAnchorVariant{{ID: "recovery-lower", Text: "Today's recovery signals sit in the lower readiness band."}}
 	}
 }
 
@@ -951,34 +1291,34 @@ func localizedEnergyNarrativeProposition(locale, verdict string) string {
 	}
 }
 
-func localizedEnergyNarrativeTextFragments(locale, verdict string) []string {
+func localizedEnergyNarrativeAnchors(locale, verdict string) []DailyInsightNarrativeAnchorVariant {
 	switch normalizeDailyInsightLocale(locale) {
 	case "ru":
 		switch verdict {
 		case "push_hard":
-			return []string{"сил сегодня достаточно"}
+			return []DailyInsightNarrativeAnchorVariant{{ID: "energy-available", Text: "Сил сегодня достаточно."}}
 		case "rest":
-			return []string{"сегодня сил немного"}
+			return []DailyInsightNarrativeAnchorVariant{{ID: "energy-lower", Text: "Сегодня сил немного."}}
 		default:
-			return []string{"сегодня лучше не добавлять интенсивности"}
+			return []DailyInsightNarrativeAnchorVariant{{ID: "energy-no-extra-intensity", Text: "Сегодня лучше не добавлять интенсивности."}}
 		}
 	case "sr":
 		switch verdict {
 		case "push_hard":
-			return []string{"većeg kapaciteta"}
+			return []DailyInsightNarrativeAnchorVariant{{ID: "energy-available", Text: "Današnja rezerva energije je u opsegu većeg kapaciteta."}}
 		case "rest":
-			return []string{"nižeg kapaciteta"}
+			return []DailyInsightNarrativeAnchorVariant{{ID: "energy-lower", Text: "Današnja rezerva energije je u opsegu nižeg kapaciteta."}}
 		default:
-			return []string{"bolje ne dodavati intenzitet"}
+			return []DailyInsightNarrativeAnchorVariant{{ID: "energy-no-extra-intensity", Text: "Danas je bolje ne dodavati intenzitet."}}
 		}
 	default:
 		switch verdict {
 		case "push_hard":
-			return []string{"higher-capacity"}
+			return []DailyInsightNarrativeAnchorVariant{{ID: "energy-available", Text: "The current energy context is in a higher-capacity range."}}
 		case "rest":
-			return []string{"lower-capacity"}
+			return []DailyInsightNarrativeAnchorVariant{{ID: "energy-lower", Text: "The current energy context is in a lower-capacity range."}}
 		default:
-			return []string{"avoiding extra intensity"}
+			return []DailyInsightNarrativeAnchorVariant{{ID: "energy-no-extra-intensity", Text: "Today is better suited to avoiding extra intensity."}}
 		}
 	}
 }
@@ -1135,13 +1475,21 @@ func ValidateDailyInsightNarrative(snapshot *DailyInsightSnapshot, locale string
 			invalid[DailyInsightNarrativeOverallSlot] = "slot has no eligible claims"
 		}
 	} else if candidate.Overall != nil {
-		if err := validateDailyInsightNarrativeSection(*candidate.Overall, overallInput.Slot, input.Locale); err != nil {
+		section, err := normalizeDailyInsightNarrativeSection(*candidate.Overall, overallInput.Slot, input.Locale)
+		if err != nil {
 			invalid[DailyInsightNarrativeOverallSlot] = err.Error()
 		} else {
-			out.Overall = cloneDailyInsightNarrativeSection(*candidate.Overall)
+			out.Overall = section
 		}
 	}
 	for _, expected := range input.Domains {
+		// A combined narrative can still contain independently generated slot
+		// sections. Rebuild the slot packet here rather than validating against
+		// the legacy combined input: only the slot packet carries the closed
+		// server_position that a section must cite. Dropping it makes an already
+		// accepted independent response fail a later quality-gate revalidation.
+		slotInput, _ := BuildDailyInsightNarrativeSlotInput(snapshot, input.Locale, expected.Key)
+		expected = slotInput.Slot
 		candidateDomain, found := provided[expected.Key]
 		if !found {
 			invalid[expected.Key] = "missing from provider response"
@@ -1159,12 +1507,13 @@ func ValidateDailyInsightNarrative(snapshot *DailyInsightSnapshot, locale string
 			out.Domains = append(out.Domains, DailyInsightNarrativeDomain{Key: expected.Key})
 			continue
 		}
-		if err := validateDailyInsightNarrativeSection(*candidateDomain.Section, expected, input.Locale); err != nil {
+		section, err := normalizeDailyInsightNarrativeSection(*candidateDomain.Section, expected, input.Locale)
+		if err != nil {
 			invalid[expected.Key] = err.Error()
 			out.Domains = append(out.Domains, DailyInsightNarrativeDomain{Key: expected.Key})
 			continue
 		}
-		out.Domains = append(out.Domains, DailyInsightNarrativeDomain{Key: expected.Key, Section: cloneDailyInsightNarrativeSection(*candidateDomain.Section)})
+		out.Domains = append(out.Domains, DailyInsightNarrativeDomain{Key: expected.Key, Section: section})
 	}
 	return out, invalid, nil
 }
@@ -1206,10 +1555,11 @@ func ValidateDailyInsightNarrativeSlot(snapshot *DailyInsightSnapshot, locale, s
 		return out, nil
 	}
 	if section != nil {
-		if err := validateDailyInsightNarrativeSection(*section, input.Slot, locale); err != nil {
+		var err error
+		section, err = normalizeDailyInsightNarrativeSection(*section, input.Slot, locale)
+		if err != nil {
 			return DailyInsightNarrative{}, err
 		}
-		section = cloneDailyInsightNarrativeSection(*section)
 	}
 	if slot == DailyInsightNarrativeOverallSlot {
 		out.Overall = section
@@ -1245,10 +1595,10 @@ func ValidateDailyInsightNarrativeSlotResponse(snapshot *DailyInsightSnapshot, l
 	if candidate.Slot.Section == nil {
 		return nil, nil
 	}
-	if err := validateDailyInsightNarrativeSection(*candidate.Slot.Section, input.Slot, locale); err != nil {
-		return nil, err
+	if candidate.Slot.Section.AnchorVariantID != "" {
+		return nil, fmt.Errorf("provider response must not select a server anchor variant")
 	}
-	return cloneDailyInsightNarrativeSection(*candidate.Slot.Section), nil
+	return normalizeDailyInsightNarrativeSection(*candidate.Slot.Section, input.Slot, locale)
 }
 
 // ApplyDailyInsightNarrativeSlot attaches an already validated independent
@@ -1300,11 +1650,76 @@ func cloneDailyInsightNarrativeSection(section DailyInsightNarrativeSection) *Da
 }
 
 func validateDailyInsightNarrativeSection(section DailyInsightNarrativeSection, input DailyInsightNarrativeDomainInput, locale string) error {
-	if len(section.Sentences) == 0 || len(section.Sentences) > 2 {
-		return fmt.Errorf("expected one or two sentences")
+	if section.AnchorVariantID != "" {
+		// Previously persisted v12 sections remain readable for audit/review. Raw
+		// provider responses still cannot choose an anchor (checked at the API
+		// boundary), and v13 rendering deliberately does not prepend one.
+		if _, err := dailyInsightNarrativeAnchor(input, section.AnchorVariantID); err != nil {
+			return err
+		}
+	}
+	return validateDailyInsightNarrativeSentences(section.Sentences, input, locale)
+}
+
+// normalizeDailyInsightNarrativeSection accepts a raw provider paragraph. The
+// model now writes the complete reader-facing text from server-selected facts;
+// an old anchor-prefixed section is intentionally stale after the v13 packet.
+func normalizeDailyInsightNarrativeSection(section DailyInsightNarrativeSection, input DailyInsightNarrativeDomainInput, locale string) (*DailyInsightNarrativeSection, error) {
+	if section.AnchorVariantID != "" {
+		if _, err := dailyInsightNarrativeAnchor(input, section.AnchorVariantID); err != nil {
+			return nil, err
+		}
+	}
+	if err := validateDailyInsightNarrativeSentences(section.Sentences, input, locale); err != nil {
+		return nil, err
+	}
+	return cloneDailyInsightNarrativeSection(section), nil
+}
+
+type dailyInsightNarrativeSelectedAnchor struct {
+	ID          string
+	ClaimID     string
+	Text        string
+	EvidenceIDs []string
+}
+
+func dailyInsightNarrativeAnchor(input DailyInsightNarrativeDomainInput, requestedID string) (dailyInsightNarrativeSelectedAnchor, error) {
+	anchors := make([]dailyInsightNarrativeSelectedAnchor, 0)
+	for _, claim := range input.Claims {
+		for _, anchor := range claim.AnchorVariants {
+			if anchor.ID == "" || strings.TrimSpace(anchor.Text) == "" {
+				return dailyInsightNarrativeSelectedAnchor{}, fmt.Errorf("claim %q has an invalid anchor variant", claim.ID)
+			}
+			anchors = append(anchors, dailyInsightNarrativeSelectedAnchor{ID: anchor.ID, ClaimID: claim.ID, Text: anchor.Text, EvidenceIDs: append([]string(nil), claim.EvidenceIDs...)})
+		}
+	}
+	if len(anchors) == 0 {
+		return dailyInsightNarrativeSelectedAnchor{}, fmt.Errorf("narrative claim packet has no anchor variants")
+	}
+	if requestedID == "" {
+		// Claim builders currently expose one fact anchor per eligible slot.
+		// Fail closed if a later builder adds alternatives without a server
+		// selection rule rather than handing that factual choice to the model.
+		if len(anchors) != 1 {
+			return dailyInsightNarrativeSelectedAnchor{}, fmt.Errorf("narrative claim packet needs a deterministic anchor selection")
+		}
+		return anchors[0], nil
+	}
+	for _, anchor := range anchors {
+		if anchor.ID == requestedID {
+			return anchor, nil
+		}
+	}
+	return dailyInsightNarrativeSelectedAnchor{}, fmt.Errorf("unapproved anchor variant ID %q", requestedID)
+}
+
+func validateDailyInsightNarrativeSentences(sentences []DailyInsightNarrativeSentence, input DailyInsightNarrativeDomainInput, locale string) error {
+	if len(sentences) == 0 || len(sentences) > 3 {
+		return fmt.Errorf("expected one to three narrative sentences")
 	}
 	claims := make(map[string]DailyInsightNarrativeClaim, len(input.Claims))
 	meanings := make(map[string]DailyInsightNarrativeMeaningLink)
+	meaningClaimIDs := make(map[string]map[string]struct{})
 	requiredClaims, requiredQualifiers := make(map[string]struct{}, len(input.Claims)), map[string]struct{}{}
 	for _, claim := range input.Claims {
 		claims[claim.ID] = claim
@@ -1314,19 +1729,22 @@ func validateDailyInsightNarrativeSection(section DailyInsightNarrativeSection, 
 		}
 		for _, meaning := range claim.MeaningLinks {
 			meanings[meaning.ID] = meaning
+			if meaningClaimIDs[meaning.ID] == nil {
+				meaningClaimIDs[meaning.ID] = make(map[string]struct{})
+			}
+			meaningClaimIDs[meaning.ID][claim.ID] = struct{}{}
 		}
 	}
-	usedClaims, usedQualifiers := map[string]struct{}{}, map[string]struct{}{}
+	usedClaims, usedQualifiers, usedMeanings := map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
 	wordCount := 0
-	textParts := make([]string, 0, len(section.Sentences))
-	for _, sentence := range section.Sentences {
+	for _, sentence := range sentences {
 		text := strings.TrimSpace(sentence.Text)
 		if text == "" {
 			return fmt.Errorf("empty sentence")
 		}
 		wordCount += len(strings.Fields(text))
-		if containsNarrativeDigit(text) {
-			return fmt.Errorf("new numeric text is not allowed")
+		if err := validateNarrativeNumbers(text, input.Facts); err != nil {
+			return err
 		}
 		if forbidden := forbiddenNarrativeFragment(text); forbidden != "" {
 			return fmt.Errorf("forbidden narrative content %q", forbidden)
@@ -1334,12 +1752,11 @@ func validateDailyInsightNarrativeSection(section DailyInsightNarrativeSection, 
 		if normalizeDailyInsightLocale(locale) == "sr" && containsCyrillicNarrativeText(text) {
 			return fmt.Errorf("Serbian narrative must use Latin script")
 		}
-		textParts = append(textParts, strings.ToLower(text))
 		if len(sentence.ClaimIDs) == 0 {
 			return fmt.Errorf("sentence has no claim IDs")
 		}
-		if len(meanings) != 0 && len(sentence.MeaningIDs) == 0 {
-			return fmt.Errorf("sentence has no meaning IDs")
+		if len(meanings) != 0 && len(sentence.MeaningIDs) != 1 {
+			return fmt.Errorf("section must cite exactly one meaning ID")
 		}
 		if input.Position != nil {
 			if len(sentence.PositionIDs) != 1 || sentence.PositionIDs[0] != input.Position.ID {
@@ -1352,12 +1769,26 @@ func validateDailyInsightNarrativeSection(section DailyInsightNarrativeSection, 
 			if _, known := meanings[meaningID]; !known {
 				return fmt.Errorf("unapproved meaning ID %q", meaningID)
 			}
+			usedMeanings[meaningID] = struct{}{}
 		}
 		for _, claimID := range sentence.ClaimIDs {
 			if _, known := claims[claimID]; !known {
 				return fmt.Errorf("unapproved claim ID %q", claimID)
 			}
 			usedClaims[claimID] = struct{}{}
+		}
+		for _, meaningID := range sentence.MeaningIDs {
+			allowedClaims := meaningClaimIDs[meaningID]
+			linked := false
+			for _, claimID := range sentence.ClaimIDs {
+				if _, allowed := allowedClaims[claimID]; allowed {
+					linked = true
+					break
+				}
+			}
+			if !linked {
+				return fmt.Errorf("meaning ID %q is not linked to a cited claim", meaningID)
+			}
 		}
 		for _, qualifierID := range sentence.QualifierIDs {
 			if _, required := requiredQualifiers[qualifierID]; !required {
@@ -1366,8 +1797,11 @@ func validateDailyInsightNarrativeSection(section DailyInsightNarrativeSection, 
 			usedQualifiers[qualifierID] = struct{}{}
 		}
 	}
-	if wordCount > 45 {
-		return fmt.Errorf("domain narrative exceeds 45 words")
+	if wordCount > 65 {
+		return fmt.Errorf("narrative exceeds 65 words")
+	}
+	if len(meanings) != 0 && len(usedMeanings) != 1 {
+		return fmt.Errorf("section must cite exactly one meaning ID")
 	}
 	for claimID := range requiredClaims {
 		if _, used := usedClaims[claimID]; !used {
@@ -1379,15 +1813,121 @@ func validateDailyInsightNarrativeSection(section DailyInsightNarrativeSection, 
 			return fmt.Errorf("missing required qualifier ID %q", qualifierID)
 		}
 	}
-	allText := strings.Join(textParts, " ")
-	for claimID := range usedClaims {
-		for _, fragment := range claims[claimID].RequiredTextFragments {
-			if !strings.Contains(allText, strings.ToLower(fragment)) {
-				return fmt.Errorf("missing required text fragment %q for claim %q", fragment, claimID)
+	return nil
+}
+
+func validateNarrativeNumbers(text string, facts []DailyInsightNarrativeFact) error {
+	allowed := map[string]struct{}{}
+	for _, fact := range facts {
+		for _, value := range fact.DisplayValues {
+			for _, token := range narrativeNumericTokens(value) {
+				allowed[token] = struct{}{}
 			}
 		}
 	}
+	for _, token := range narrativeNumericTokens(text) {
+		if _, ok := allowed[token]; !ok {
+			return fmt.Errorf("numeric text %q is not present in the server display catalog", token)
+		}
+	}
 	return nil
+}
+
+// dailyInsightNarrativeAnchorRestatementFragments is deliberately a small,
+// locale-specific denylist for the factual proposition already rendered by the
+// server. It is not an attempt at general semantic inference: the provider is
+// free to explain the allowed meaning naturally, but must not recast the same
+// factual state in different words beside the server fact.
+func dailyInsightNarrativeAnchorRestatementFragments(locale, anchorID string) []string {
+	switch normalizeDailyInsightLocale(locale) {
+	case "ru":
+		switch anchorID {
+		case "recent-shorter-than-usual":
+			return []string{"спал меньше обычного", "последние ночи были короче обычного"}
+		case "recovery-strong":
+			return []string{"восстановление на хорошем уровне", "восстановление выглядит сильным", "хорошее восстановление"}
+		case "recovery-lower":
+			return []string{"восстановление не на пике", "слабое восстановление"}
+		case "energy-available":
+			return []string{"сил сегодня достаточно", "энергии сегодня достаточно"}
+		case "energy-lower":
+			return []string{"сил немного", "мало сил", "энергии мало"}
+		case "energy-no-extra-intensity":
+			return []string{"не добавлять интенсивности"}
+		case "rest":
+			return []string{"выбран режим отдыха", "режим отдыха"}
+		case "active-recovery":
+			return []string{"выбран режим активного восстановления", "режим активного восстановления"}
+		case "push-hard":
+			return []string{"выбран режим более высокой нагрузки", "режим более высокой нагрузки"}
+		case "moderate":
+			return []string{"выбран умеренный режим", "умеренный режим"}
+		}
+	case "sr":
+		switch anchorID {
+		case "recent-shorter-than-usual":
+			return []string{"spavao si manje nego što je za tebe uobičajeno", "poslednjih noći bilo je kraće nego obično"}
+		case "recovery-strong":
+			return []string{"signali oporavka u višem opsegu spremnosti", "oporavak izgleda snažno"}
+		case "recovery-lower":
+			return []string{"signali oporavka u nižem opsegu spremnosti", "slabiji oporavak"}
+		case "energy-available":
+			return []string{"rezerva energije je u opsegu većeg kapaciteta", "dovoljno energije danas"}
+		case "energy-lower":
+			return []string{"rezerva energije je u opsegu nižeg kapaciteta", "malo energije danas"}
+		case "energy-no-extra-intensity":
+			return []string{"ne dodavati intenzitet"}
+		case "rest":
+			return []string{"izabran režim odmora", "režim odmora"}
+		case "active-recovery":
+			return []string{"izabran režim aktivnog oporavka", "režim aktivnog oporavka"}
+		case "push-hard":
+			return []string{"izabran režim većeg opterećenja", "režim većeg opterećenja"}
+		case "moderate":
+			return []string{"izabran umeren režim", "umeren režim"}
+		}
+	default:
+		switch anchorID {
+		case "recent-shorter-than-usual":
+			return []string{"recent nights were shorter than usual", "you slept less than usual"}
+		case "recovery-strong":
+			return []string{"recovery signals sit in the higher readiness band", "your recovery looks strong"}
+		case "recovery-lower":
+			return []string{"recovery signals sit in the lower readiness band", "your recovery is low"}
+		case "energy-available":
+			return []string{"current energy context is in a higher capacity range", "you have enough energy today"}
+		case "energy-lower":
+			return []string{"current energy context is in a lower capacity range", "you have little energy today"}
+		case "energy-no-extra-intensity":
+			return []string{"better suited to avoiding extra intensity", "do not add intensity"}
+		case "rest":
+			return []string{"today is set to a rest-oriented pace", "rest-oriented pace"}
+		case "active-recovery":
+			return []string{"today is set to an active-recovery pace", "active-recovery pace"}
+		case "push-hard":
+			return []string{"today is set to a higher-load pace", "higher-load pace"}
+		case "moderate":
+			return []string{"today is set to a moderate pace", "moderate pace"}
+		}
+	}
+	return nil
+}
+
+func normalizeDailyInsightNarrativeComparisonText(text string) string {
+	var out strings.Builder
+	space := true
+	for _, r := range strings.ToLower(text) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			out.WriteRune(r)
+			space = false
+			continue
+		}
+		if !space {
+			out.WriteByte(' ')
+			space = true
+		}
+	}
+	return strings.TrimSpace(out.String())
 }
 
 func containsCyrillicNarrativeText(text string) bool {
@@ -1413,10 +1953,17 @@ func forbiddenNarrativeFragment(text string) string {
 	for _, fragment := range []string{
 		"diagnos", "treatment", "prescrib", "prognos", "medical", "medic", "disease",
 		"you should", "you must", "need to", "avoid ", "take a ",
+		"limitation", "limited data", "insufficient data", "data quality", "uncertain", "scope", "calibrat",
 		"диагноз", "лечени", "прогноз", "болезн", "медицин", "лекар",
 		"тебе нужно", "вам нужно", "следует ", "избегай", "избегайте", "сделай ", "сделайте ",
+		"ограничен", "недостаточ", "не хватает данных", "качество данных", "неопредел", "калибров",
 		"dijagnoz", "lečen", "prognoz", "bolest", "medicin", "lek ",
 		"treba da", "izbeg", "uradi ", "uradite ",
+		"ograničen", "nedovoljno podataka", "kvalitet podataka", "neizves", "kalibr",
+		"random", "reliab", "случайн", "надежн", "надёжн", "slučajn", "pouzdan",
+		"sleep pattern in today’s picture", "sleep pattern in today's picture", "energy is a resource to spread across the day", "more room to choose the day’s pace", "more room to choose the day's pace",
+		"заметный рисунок сна", "энергию стоит распределить", "распределить энергию", "свободы в выборе темпа",
+		"primetan obrazac sna", "energija je danas resurs", "vredi rasporediti kroz dan", "više slobode pri izboru ritma dana",
 	} {
 		if strings.Contains(lower, fragment) {
 			return fragment
@@ -1591,7 +2138,12 @@ func DailyInsightNarrativeSlotMaterialHash(snapshot *DailyInsightSnapshot, local
 	if !known {
 		return ""
 	}
-	payload, err := jsonMarshalDailyInsightNarrativeSlotInput(input)
+	payload, err := jsonMarshalDailyInsightNarrativeSlotInput(struct {
+		Input                     DailyInsightNarrativeSlotInput `json:"input"`
+		MeaningCatalogFingerprint string                         `json:"meaning_catalog_fingerprint"`
+	}{
+		Input: input, MeaningCatalogFingerprint: DailyInsightNarrativeMeaningCatalogFingerprint(),
+	})
 	if err != nil {
 		// The input is made solely of static Go structs. Treat an impossible
 		// marshal failure as no usable material rather than reusing old prose.
@@ -1601,7 +2153,83 @@ func DailyInsightNarrativeSlotMaterialHash(snapshot *DailyInsightSnapshot, local
 	return hex.EncodeToString(sum[:])
 }
 
-func jsonMarshalDailyInsightNarrativeSlotInput(input DailyInsightNarrativeSlotInput) ([]byte, error) {
+// DailyInsightNarrativeAnchorCatalogFingerprint identifies the retired v24
+// factual-anchor catalogue. It remains available solely to validate historical
+// stored sections and corpus artifacts; rich-story generation does not depend
+// on it.
+func DailyInsightNarrativeAnchorCatalogFingerprint() string {
+	type entry struct {
+		Locale string   `json:"locale"`
+		ID     string   `json:"id"`
+		Text   string   `json:"text"`
+		Parts  []string `json:"restatement_fragments"`
+	}
+	entries := make([]entry, 0, 42)
+	add := func(locale string, anchors []DailyInsightNarrativeAnchorVariant) {
+		for _, anchor := range anchors {
+			entries = append(entries, entry{Locale: locale, ID: anchor.ID, Text: anchor.Text, Parts: dailyInsightNarrativeAnchorRestatementFragments(locale, anchor.ID)})
+		}
+	}
+	for _, locale := range []string{"en", "ru", "sr"} {
+		for _, mode := range []string{"rest", "active_recovery", "push_hard", "moderate"} {
+			add(locale, localizedOverallNarrativeAnchors(locale, mode))
+		}
+		add(locale, localizedSleepNarrativeAnchors(locale))
+		for _, band := range []string{"optimal", "low"} {
+			add(locale, localizedRecoveryNarrativeAnchors(locale, band))
+		}
+		for _, verdict := range []string{"push_hard", "rest", "active_recovery"} {
+			add(locale, localizedEnergyNarrativeAnchors(locale, verdict))
+		}
+	}
+	payload, err := json.Marshal(entries)
+	if err != nil {
+		panic(fmt.Sprintf("marshal daily insight anchor catalog: %v", err))
+	}
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
+
+// DailyInsightNarrativeMeaningCatalogFingerprint binds every server-approved
+// interpretive angle to cached prose and B1 approval. A meaning-link edit can
+// make a prior model output unsafe or redundant even when its factual anchor
+// remains unchanged, so it must invalidate review independently of a manual
+// prompt-revision bump.
+func DailyInsightNarrativeMeaningCatalogFingerprint() string {
+	type entry struct {
+		Locale    string `json:"locale"`
+		ClaimID   string `json:"claim_id"`
+		ID        string `json:"id"`
+		Statement string `json:"statement"`
+		ActionID  string `json:"action_id,omitempty"`
+	}
+	entries := make([]entry, 0, 30)
+	add := func(locale, claimID string, links []DailyInsightNarrativeMeaningLink) {
+		for _, link := range links {
+			entries = append(entries, entry{Locale: locale, ClaimID: claimID, ID: link.ID, Statement: link.Statement, ActionID: link.ActionID})
+		}
+	}
+	for _, locale := range []string{"en", "ru", "sr"} {
+		for _, domains := range [][]string{{"sleep", "recovery"}, {"sleep", "energy"}, {"recovery", "energy"}, {"sleep", "recovery", "energy"}} {
+			add(locale, "overall_daily_decision_context", overallNarrativeMeaningLinks(locale, domains))
+		}
+		add(locale, "recent_sleep_below_reference", sleepNarrativeMeaningLinks(locale))
+		for _, band := range []string{"optimal", "low"} {
+			add(locale, "recovery_readiness_context", recoveryNarrativeMeaningLinks(locale, band))
+		}
+		for _, verdict := range []string{"push_hard", "rest", "active_recovery"} {
+			add(locale, "energy_current_verdict_context", energyNarrativeMeaningLinks(locale, verdict))
+		}
+	}
+	payload, err := json.Marshal(entries)
+	if err != nil {
+		panic(fmt.Sprintf("marshal daily insight meaning catalog: %v", err))
+	}
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
+
+func jsonMarshalDailyInsightNarrativeSlotInput(input any) ([]byte, error) {
 	// Keep the standard-library dependency narrow in this file’s public hash
 	// path and retain deterministic struct-field ordering.
 	return json.Marshal(input)
@@ -1803,55 +2431,55 @@ func localizedInsightDataGuidance(locale, domain, state string) (observation, me
 		switch domain {
 		case "sleep":
 			if state == "stale" {
-				return "Последняя запись сна относится не к сегодняшней ночи.", "Персональное сравнение пока не показываем; проверь синхронизацию устройства, когда будет удобно.", "sync_sleep"
+				return "Карточка сна обновится после следующей синхронизации.", "Сегодня доступны восстановление и энергия.", "sync_sleep"
 			}
 			if state == "partial" {
-				return "Ночная запись ещё неполная, поэтому персональное сравнение пока не показываем.", "Заверши синхронизацию устройства, когда будет удобно.", "sync_sleep"
+				return "Карточка сна собирается после пробуждения.", "К ней можно вернуться позже, когда будет удобнее.", "sync_sleep"
 			}
-			return "За сегодняшнюю ночь пока нет пригодной записи сна.", "Остальные инсайты остаются доступны; проверь синхронизацию устройства, когда будет удобно.", "sync_sleep"
+			return "Карточка сна появится после следующей синхронизации.", "Сегодня доступны восстановление и энергия.", "sync_sleep"
 		case "recovery":
 			if state == ReadinessServingDataAccruing {
-				return "Сигналы восстановления за сегодня ещё собираются.", "Покажем более точный контекст после следующего обновления данных.", ""
+				return "Восстановление обновляется в течение утра.", "К этой карточке можно вернуться позже.", ""
 			}
-			return "Сигналы восстановления за сегодня пока неполные.", "Остальные инсайты остаются доступны; проверь синхронизацию устройства, когда будет удобно.", "sync_recovery"
+			return "Карточка восстановления обновится после следующей синхронизации.", "Сегодня доступны сон и энергия.", "sync_recovery"
 		default:
-			return "Данные об энергии за сегодня пока неполные.", "Остальные инсайты остаются доступны; проверь синхронизацию устройства, когда будет удобно.", "sync_energy"
+			return "Энергия обновляется по ходу дня.", "Сегодня доступны сон и восстановление.", "sync_energy"
 		}
 	case "sr":
 		switch domain {
 		case "sleep":
 			if state == "stale" {
-				return "Poslednji zapis sna ne odnosi se na prethodnu noć.", "Lično poređenje zasad ne prikazujemo; proverite sinhronizaciju uređaja kada vam odgovara.", "sync_sleep"
+				return "Kartica sna će se osvežiti nakon sledeće sinhronizacije.", "Danas su dostupni oporavak i energija.", "sync_sleep"
 			}
 			if state == "partial" {
-				return "Noćni zapis još nije potpun, pa lično poređenje zasad ne prikazujemo.", "Završite sinhronizaciju uređaja kada vam odgovara.", "sync_sleep"
+				return "Kartica sna se popunjava nakon buđenja.", "Možete joj se vratiti kasnije, kada vam odgovara.", "sync_sleep"
 			}
-			return "Za prethodnu noć još nema upotrebljivog zapisa sna.", "Ostali uvidi su i dalje dostupni; proverite sinhronizaciju uređaja kada vam odgovara.", "sync_sleep"
+			return "Kartica sna će se pojaviti nakon sledeće sinhronizacije.", "Danas su dostupni oporavak i energija.", "sync_sleep"
 		case "recovery":
 			if state == ReadinessServingDataAccruing {
-				return "Signali oporavka za danas se još prikupljaju.", "Precizniji kontekst će se pojaviti nakon sledećeg ažuriranja podataka.", ""
+				return "Oporavak se osvežava tokom jutra.", "Možete se vratiti ovoj kartici kasnije.", ""
 			}
-			return "Signali oporavka za danas još nisu potpuni.", "Ostali uvidi su i dalje dostupni; proverite sinhronizaciju uređaja kada vam odgovara.", "sync_recovery"
+			return "Kartica oporavka će se osvežiti nakon sledeće sinhronizacije.", "Danas su dostupni san i energija.", "sync_recovery"
 		default:
-			return "Podaci o energiji za danas još nisu potpuni.", "Ostali uvidi su i dalje dostupni; proverite sinhronizaciju uređaja kada vam odgovara.", "sync_energy"
+			return "Energija se osvežava tokom dana.", "Danas su dostupni san i oporavak.", "sync_energy"
 		}
 	default:
 		switch domain {
 		case "sleep":
 			if state == "stale" {
-				return "The latest sleep record is not from last night.", "A personal comparison is not shown yet; check device sync when convenient.", "sync_sleep"
+				return "Your sleep card will refresh after the next sync.", "Today’s recovery and energy are available now.", "sync_sleep"
 			}
 			if state == "partial" {
-				return "The overnight record is still incomplete, so a personal comparison is not shown yet.", "Finish device sync when convenient.", "sync_sleep"
+				return "Your sleep card is filling in after you wake up.", "You can come back to it later when it suits you.", "sync_sleep"
 			}
-			return "There is no usable sleep record for last night yet.", "The rest of Today remains available; check device sync when convenient.", "sync_sleep"
+			return "Your sleep card will appear after the next sync.", "Today’s recovery and energy are available now.", "sync_sleep"
 		case "recovery":
 			if state == ReadinessServingDataAccruing {
-				return "Today’s recovery signals are still accumulating.", "A more precise context will appear after the next data update.", ""
+				return "Recovery updates through the morning.", "You can come back to this card later.", ""
 			}
-			return "Today’s recovery signals are incomplete.", "The rest of Today remains available; check device sync when convenient.", "sync_recovery"
+			return "Your recovery card will refresh after the next sync.", "Today’s sleep and energy are available now.", "sync_recovery"
 		default:
-			return "Today’s energy data is incomplete.", "The rest of Today remains available; check device sync when convenient.", "sync_energy"
+			return "Energy updates through the day.", "Today’s sleep and recovery are available now.", "sync_energy"
 		}
 	}
 }
@@ -1861,7 +2489,7 @@ func localizedInsightFactualContext(locale, domain string) string {
 	case "ru":
 		switch domain {
 		case "sleep":
-			return "Ночь учтена в сегодняшнем контексте; личное сравнение появится, когда накопится история."
+			return "Прошедшая ночь уже стала частью сегодняшней картины."
 		case "recovery":
 			return "Доступные сигналы восстановления помогают задать спокойный темп дня."
 		default:
@@ -1870,7 +2498,7 @@ func localizedInsightFactualContext(locale, domain string) string {
 	case "sr":
 		switch domain {
 		case "sleep":
-			return "Noć je uračunata u današnji kontekst; lično poređenje će se pojaviti kada se prikupi više istorije."
+			return "Prethodna noć je već deo današnje slike."
 		case "recovery":
 			return "Dostupni signali oporavka pomažu da se odredi mirniji tempo dana."
 		default:
@@ -1879,7 +2507,7 @@ func localizedInsightFactualContext(locale, domain string) string {
 	default:
 		switch domain {
 		case "sleep":
-			return "Last night is part of today’s context; a personal comparison will appear as more history accumulates."
+			return "Last night is already part of today’s picture."
 		case "recovery":
 			return "Available recovery signals help set a measured pace for the day."
 		default:

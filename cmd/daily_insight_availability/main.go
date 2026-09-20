@@ -52,6 +52,18 @@ func main() {
 // mode it opens the same derived, schema-bound tenant pool as the service.
 // Neither path writes data or falls back to an administrative tenant pool.
 func openAvailabilitySource(ctx context.Context, schema string) (*storage.DB, func(), error) {
+	cfg, err := tenants.ParseTenantIsolationConfig(os.LookupEnv)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse isolated tenant source: %w", err)
+	}
+	if cfg.Enabled {
+		db, closeSource, err := tenants.OpenReadOnlyTenant(ctx, cfg, schema)
+		if err != nil {
+			return nil, nil, fmt.Errorf("open isolated tenant source: %w", err)
+		}
+		return db, closeSource, nil
+	}
+
 	dsn := strings.TrimSpace(os.Getenv("DATABASE_URL"))
 	if dsn != "" || standardPostgresEnvConfigured() {
 		db, err := storage.NewWithSchema(ctx, dsn, schema)
@@ -61,18 +73,7 @@ func openAvailabilitySource(ctx context.Context, schema string) (*storage.DB, fu
 		return db, db.Close, nil
 	}
 
-	cfg, err := tenants.ParseTenantIsolationConfig(os.LookupEnv)
-	if err != nil {
-		return nil, nil, fmt.Errorf("parse isolated tenant source: %w", err)
-	}
-	if !cfg.Enabled {
-		return nil, nil, fmt.Errorf("DATABASE_URL is required when tenant database isolation is disabled")
-	}
-	db, closeSource, err := tenants.OpenReadOnlyTenant(ctx, cfg, schema)
-	if err != nil {
-		return nil, nil, fmt.Errorf("open isolated tenant source: %w", err)
-	}
-	return db, closeSource, nil
+	return nil, nil, fmt.Errorf("DATABASE_URL is required when tenant database isolation is disabled")
 }
 
 func standardPostgresEnvConfigured() bool {

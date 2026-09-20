@@ -453,7 +453,7 @@ textarea {
   margin-bottom: var(--space-4);
 }
 
-.today-insights__status { display: flex; justify-content: flex-end; margin-bottom: calc(var(--space-3) * -1); }
+.today-insights__status { display: flex; justify-content: flex-end; gap: var(--space-2); margin-bottom: calc(var(--space-3) * -1); }
 
 .today-hero__action {
   display: inline-flex;

@@ -26,64 +26,62 @@ func (p *dailyInsightTestProvider) Generate(_ context.Context, _ ProviderConfig,
 	return GenerationResult{Text: p.response}, nil
 }
 
-func TestGenerateDailyInsightNarrativeUsesClaimPacketAndKeepsInvalidDomainFallback(t *testing.T) {
+func TestGenerateDailyInsightNarrativeSlotSendsOnlyCombinedOverallPacket(t *testing.T) {
 	snapshot := dailyInsightTestSnapshot(t)
-	provider := &dailyInsightTestProvider{}
-	provider.response = dailyInsightTestNarrative(t,
-		&health.DailyInsightNarrativeSection{Sentences: []health.DailyInsightNarrativeSentence{{
-			Text: "Recent nights were shorter than your usual sleep rhythm, so the pattern matters more than a single night.", ClaimIDs: []string{"recent_sleep_below_reference"}, QualifierIDs: []string{"personal_pattern", "current_context"}, MeaningIDs: []string{"sleep_pattern_not_single_night"},
-		}}},
-		&health.DailyInsightNarrativeSection{Sentences: []health.DailyInsightNarrativeSentence{{
-			Text: "You should rest today.", ClaimIDs: []string{"recovery_current_context"}, QualifierIDs: []string{"current_context"}, MeaningIDs: []string{"recovery_pacing_not_verdict"},
-		}}},
-	)
+	provider := &dailyInsightTestProvider{response: dailyInsightTestOverallNarrative(t, "The recommendation brings sleep and recovery together instead of relying on one measure.")}
 
-	result, err := GenerateDailyInsightNarrative(context.Background(), provider, ProviderConfig{}, snapshot, "en")
+	result, err := GenerateDailyInsightNarrativeSlot(context.Background(), provider, ProviderConfig{}, snapshot, "en", health.DailyInsightNarrativeOverallSlot)
 	if err != nil {
-		t.Fatalf("GenerateDailyInsightNarrative: %v", err)
+		t.Fatalf("GenerateDailyInsightNarrativeSlot: %v", err)
 	}
-	if result.InvalidDomains["recovery"] == "" {
-		t.Fatalf("unsafe recovery prose was accepted: %#v", result.Narrative)
-	}
-	if result.Narrative.Domains[0].Section == nil || result.Narrative.Domains[1].Section != nil {
-		t.Fatalf("partial narrative = %#v", result.Narrative)
-	}
-	var payload health.DailyInsightNarrativeInput
-	if err := json.Unmarshal(provider.request.UserPayload, &payload); err != nil {
-		t.Fatalf("decode packet: %v", err)
-	}
-	if payload.Version != health.DailyInsightNarrativeInputVersion || len(payload.Domains) != 3 || payload.Domains[0].Claims[0].Proposition == "" {
-		t.Fatalf("provider payload = %#v", payload)
-	}
-	if provider.request.ResponseSchema != dailyInsightNarrativeResponseSchema {
-		t.Fatal("provider did not receive NarrativeV3 schema")
-	}
-}
-
-func TestGenerateDailyInsightNarrativeSlotSendsOnlyOneClosedPacket(t *testing.T) {
-	snapshot := dailyInsightTestSnapshot(t)
-	provider := &dailyInsightTestProvider{}
-	provider.response = `{"version":"today-insight-slot-v2","locale":"en","slot":{"key":"sleep","section":{"sentences":[{"text":"Recent nights were shorter than your usual sleep rhythm, so the pattern matters more than a single night.","claim_ids":["recent_sleep_below_reference"],"qualifier_ids":["personal_pattern","current_context"],"meaning_ids":["sleep_pattern_not_single_night"],"position_ids":[]}]}}}`
-	result, err := GenerateDailyInsightNarrativeSlot(context.Background(), provider, ProviderConfig{}, snapshot, "en", "sleep")
-	if err != nil || result.Section == nil {
-		t.Fatalf("GenerateDailyInsightNarrativeSlot: section=%#v err=%v", result.Section, err)
+	if result.Section == nil {
+		t.Fatalf("overall slot unexpectedly has no narrative: %#v", result)
 	}
 	var payload health.DailyInsightNarrativeSlotInput
 	if err := json.Unmarshal(provider.request.UserPayload, &payload); err != nil {
-		t.Fatalf("decode slot packet: %v", err)
+		t.Fatalf("decode packet: %v", err)
 	}
-	if payload.Slot.Key != "sleep" || len(payload.Slot.Claims) != 1 || payload.Slot.Claims[0].ID != "recent_sleep_below_reference" || len(payload.Slot.Claims[0].MeaningLinks) == 0 {
-		t.Fatalf("slot payload = %#v", payload)
+	if payload.Version != health.DailyInsightNarrativeInputVersion || payload.Slot.Key != health.DailyInsightNarrativeOverallSlot || len(payload.Slot.Claims) != 1 || payload.Slot.Claims[0].MeaningLinks[0].ID != "overall_combined_context" {
+		t.Fatalf("provider payload = %#v", payload)
+	}
+	if len(payload.Slot.Facts) == 0 || payload.Slot.Story == nil {
+		t.Fatalf("provider did not receive rich server material: %#v", payload.Slot)
+	}
+	hasDisplayValue := false
+	for _, fact := range payload.Slot.Facts {
+		hasDisplayValue = hasDisplayValue || len(fact.DisplayValues) != 0
+	}
+	if !hasDisplayValue {
+		t.Fatalf("provider payload has no server-formatted numeric display values: %#v", payload.Slot.Facts)
+	}
+	if len(payload.Slot.Claims[0].AnchorVariants) != 0 {
+		t.Fatalf("provider payload leaked server-rendered anchors: %#v", payload.Slot.Claims[0])
 	}
 	if provider.request.ResponseSchema != dailyInsightNarrativeSlotResponseSchema {
 		t.Fatal("provider did not receive independent slot response schema")
 	}
 }
 
+func TestGenerateDailyInsightNarrativeSlotGeneratesDistinctDomainMeaning(t *testing.T) {
+	snapshot := dailyInsightTestSnapshot(t)
+	provider := &dailyInsightTestProvider{response: dailyInsightTestDomainNarrative(t, "sleep", "This is no longer one short night; it is a repeated departure from your usual sleep.", "recent_sleep_below_reference", []string{"personal_pattern", "current_context"}, "sleep_personal_reference")}
+	result, err := GenerateDailyInsightNarrativeSlot(context.Background(), provider, ProviderConfig{}, snapshot, "en", "sleep")
+	if err != nil || result.Section == nil {
+		t.Fatalf("GenerateDailyInsightNarrativeSlot: section=%#v err=%v", result.Section, err)
+	}
+	var payload health.DailyInsightNarrativeSlotInput
+	if err := json.Unmarshal(provider.request.UserPayload, &payload); err != nil {
+		t.Fatalf("decode packet: %v", err)
+	}
+	if payload.Slot.Key != "sleep" || len(payload.Slot.Claims) != 1 || payload.Slot.Claims[0].MeaningLinks[0].ID != "sleep_personal_reference" {
+		t.Fatalf("sleep provider payload = %#v", payload)
+	}
+}
+
 func TestGenerateDailyInsightNarrativeSlotClassifiesRejectedProseAsSemantic(t *testing.T) {
 	snapshot := dailyInsightTestSnapshot(t)
-	provider := &dailyInsightTestProvider{response: `{"version":"today-insight-slot-v2","locale":"en","slot":{"key":"sleep","section":{"sentences":[{"text":"You should rest today.","claim_ids":["recent_sleep_below_reference"],"qualifier_ids":["personal_pattern","current_context"],"meaning_ids":["sleep_pattern_not_single_night"],"position_ids":[]}]}}}`}
-	_, err := GenerateDailyInsightNarrativeSlot(context.Background(), provider, ProviderConfig{}, snapshot, "en", "sleep")
+	provider := &dailyInsightTestProvider{response: dailyInsightTestOverallNarrative(t, "You should rest today.")}
+	_, err := GenerateDailyInsightNarrativeSlot(context.Background(), provider, ProviderConfig{}, snapshot, "en", health.DailyInsightNarrativeOverallSlot)
 	var semanticErr *DailyInsightNarrativeSemanticError
 	if err == nil || !errors.As(err, &semanticErr) {
 		t.Fatalf("GenerateDailyInsightNarrativeSlot error = %v, want semantic rejection", err)
@@ -110,13 +108,50 @@ func TestDailyInsightNarrativeSlotSchemaUsesStrictObjectKeywords(t *testing.T) {
 	if _, misplaced := slotProperties["required"]; misplaced || slot["required"] == nil || slot["additionalProperties"] != false {
 		t.Fatalf("slot strict schema keywords are misplaced: %#v", slot)
 	}
+	sectionAny, ok := slotProperties["section"].(map[string]any)
+	if !ok {
+		t.Fatalf("section schema = %#v", slotProperties["section"])
+	}
+	anyOf, ok := sectionAny["anyOf"].([]any)
+	if !ok || len(anyOf) != 2 {
+		t.Fatalf("section alternatives = %#v", sectionAny["anyOf"])
+	}
+	sectionSchema, ok := anyOf[1].(map[string]any)
+	if !ok {
+		t.Fatalf("non-null section schema = %#v", anyOf[1])
+	}
+	section, ok := sectionSchema["properties"].(map[string]any)
+	if !ok || section["anchor_variant_id"] != nil || section["sentences"] == nil {
+		t.Fatalf("server-owned anchor schema = %#v", sectionSchema)
+	}
+	required, ok := sectionSchema["required"].([]string)
+	containsSentences := false
+	for _, field := range required {
+		containsSentences = containsSentences || field == "sentences"
+	}
+	if !ok || !containsSentences {
+		t.Fatalf("section required fields = %#v", sectionSchema["required"])
+	}
+	sentences, ok := section["sentences"].(map[string]any)
+	if !ok || sentences["maxItems"] != 3 {
+		t.Fatalf("section sentence limit = %#v", section["sentences"])
+	}
 }
 
 func TestDailyInsightSlotPromptDoesNotInviteForbiddenSafetyDisclaimers(t *testing.T) {
 	prompt := strings.ToLower(dailyInsightSlotSystemPrompt)
-	for _, fragment := range []string{"diagnos", "prognos", "prediction", "диагноз", "прогноз", "dijagnoz", "prognoz"} {
+	for _, fragment := range []string{"diagnos", "prognos", "диагноз", "прогноз", "dijagnoz", "prognoz"} {
 		if strings.Contains(prompt, fragment) {
 			t.Fatalf("slot prompt contains forbidden narrative fragment %q", fragment)
+		}
+	}
+}
+
+func TestDailyInsightSlotPromptKeepsSafeguardsOutOfReaderFacingProse(t *testing.T) {
+	prompt := strings.ToLower(dailyInsightSlotSystemPrompt)
+	for _, fragment := range []string{"never turn internal safeguards", "limits, scope, uncertainty, reliability, data quality"} {
+		if !strings.Contains(prompt, fragment) {
+			t.Fatalf("slot prompt no longer keeps internal safeguard %q out of reader prose", fragment)
 		}
 	}
 }
@@ -132,7 +167,7 @@ func TestDailyInsightSlotPromptRejectsInterfaceMetaVoice(t *testing.T) {
 
 func TestDailyInsightSlotPromptRejectsAbstractPacingBoilerplate(t *testing.T) {
 	prompt := strings.ToLower(dailyInsightSlotSystemPrompt)
-	for _, fragment := range []string{"guide, orientation, cue, verdict, score", "today's pace", "how the day is going", "second person", "lived, non-medical consequence", "tentative present possibility", "less energy means less energy"} {
+	for _, fragment := range []string{"guide, orientation, cue, verdict, score", "today's pace", "how the day is going", "second person", "facts.display_values", "required_qualifier_ids", "exactly one meaning_id", "causal link", "task difficulty", "chance, randomness, reliability"} {
 		if !strings.Contains(prompt, fragment) {
 			t.Fatalf("slot prompt no longer guards abstract pacing boilerplate %q", fragment)
 		}
@@ -165,17 +200,38 @@ func dailyInsightTestSnapshot(t *testing.T) *health.DailyInsightSnapshot {
 		ReadinessToday: 70, ReadinessTodayLabel: "Moderate", ReadinessServing: &health.ReadinessServingState{Status: health.ReadinessServingFresh, Confidence: health.ReadinessConfidenceFinal},
 		EnergyBank: &health.EnergyBank{Current: 56, Capacity: 80, ActionVerdict: "active_recovery", VerdictReason: "Current reserve is available."},
 	}, "en")
-	return health.ApplyRecentSleepBelowReference(base, health.RecentSleepBelowReference{State: health.RecentSleepClaimTrue}, "en")
+	base = health.ApplyRecentSleepBelowReference(base, health.RecentSleepBelowReference{State: health.RecentSleepClaimTrue}, "en")
+	base.DecisionID = "decision-for-test"
+	base.Primary = health.DailyInsight{
+		State: "insight", AnswerKind: health.DailyInsightAnswerFactual, EvidenceIDs: []string{base.Domains[1].Insight.EvidenceIDs[0]},
+		NextStep: &health.DailyInsightAction{ID: "daily-decision-moderate"}, NarrativeSubject: "moderate",
+	}
+	base.Domains[1].Insight.AnswerKind = health.DailyInsightAnswerFactual
+	base.Domains[1].Insight.ClaimID = "recovery_readiness_context"
+	base.DecisionEvidenceDomains = []string{"sleep", "recovery"}
+	return base
 }
 
-func dailyInsightTestNarrative(t *testing.T, sleep, recovery *health.DailyInsightNarrativeSection) string {
+func dailyInsightTestOverallNarrative(t *testing.T, text string) string {
 	t.Helper()
-	candidate := health.DailyInsightNarrative{Version: health.DailyInsightNarrativeVersion, Locale: "en", Domains: []health.DailyInsightNarrativeDomain{
-		{Key: "sleep", Section: sleep}, {Key: "recovery", Section: recovery}, {Key: "energy", Section: nil},
-	}}
+	candidate := health.DailyInsightNarrativeSlot{Version: health.DailyInsightNarrativeVersion, Locale: "en", Slot: health.DailyInsightNarrativeDomain{Key: health.DailyInsightNarrativeOverallSlot, Section: &health.DailyInsightNarrativeSection{Sentences: []health.DailyInsightNarrativeSentence{{
+		Text: text, ClaimIDs: []string{"overall_daily_decision_context"}, QualifierIDs: []string{"current_context"}, MeaningIDs: []string{"overall_combined_context"}, PositionIDs: []string{},
+	}}}}}
 	encoded, err := json.Marshal(candidate)
 	if err != nil {
 		t.Fatalf("marshal narrative: %v", err)
+	}
+	return string(encoded)
+}
+
+func dailyInsightTestDomainNarrative(t *testing.T, slot, text, claimID string, qualifiers []string, meaningID string) string {
+	t.Helper()
+	candidate := health.DailyInsightNarrativeSlot{Version: health.DailyInsightNarrativeVersion, Locale: "en", Slot: health.DailyInsightNarrativeDomain{Key: slot, Section: &health.DailyInsightNarrativeSection{Sentences: []health.DailyInsightNarrativeSentence{{
+		Text: text, ClaimIDs: []string{claimID}, QualifierIDs: qualifiers, MeaningIDs: []string{meaningID}, PositionIDs: []string{"daily_decision_position"},
+	}}}}}
+	encoded, err := json.Marshal(candidate)
+	if err != nil {
+		t.Fatalf("marshal domain narrative: %v", err)
 	}
 	return string(encoded)
 }

@@ -1,13 +1,121 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	"health-receiver/internal/ai"
+	"health-receiver/internal/health"
 	"health-receiver/internal/storage"
 )
+
+func TestOfflineReviewHTMLTemplateEscapesNarrativeAndKeepsDownloadWorkflow(t *testing.T) {
+	output := ai.DailyInsightNarrativeEvaluationOutput{
+		Provider: "openai", Model: "test-model", Reasoning: "none", RunsPerCase: 3,
+		Cases: []ai.DailyInsightNarrativeEvaluationCase{{
+			ID: "case-01", Locale: "en", Mode: "narrative_candidate",
+			Runs: []ai.DailyInsightNarrativeEvaluationRun{{
+				Narrative: &health.DailyInsightNarrative{Domains: []health.DailyInsightNarrativeDomain{{Key: "sleep", Section: &health.DailyInsightNarrativeSection{Sentences: []health.DailyInsightNarrativeSentence{{Text: "</script><img src=x>"}}}}}},
+				Review:    ai.DailyInsightNarrativeRunReview{Domains: []ai.DailyInsightNarrativeDomainReview{{Key: "sleep", OutputStatus: "valid"}}},
+			}},
+		}},
+	}
+	encoded, err := json.Marshal(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet, err := json.Marshal(ai.DailyInsightNarrativeReviewPacket{Cases: []ai.DailyInsightNarrativeReviewPacketCase{{
+		ID: "case-01", Fallbacks: []ai.NarrativeCorpusFallback{{Key: "sleep", Summary: "deterministic_fallback", Context: "Server context", Observation: "Server observation", Meaning: "Server meaning"}},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rendered strings.Builder
+	if err := offlineReviewHTMLTemplate.Execute(&rendered, offlineReviewHTMLData{CorpusHash: "abc", EvaluationJSON: string(encoded), AnchorJSON: `{}`, ReviewPacketJSON: string(packet)}); err != nil {
+		t.Fatal(err)
+	}
+	html := rendered.String()
+	for _, want := range []string{"Daily Insight B1 — human review", "Download draft", "Download completed review", "download-complete", "added_meaning", "domain.review_reason=area.value;updateProgress()", "const artifact=JSON.parse(", "const serverAnchors=JSON.parse(", "const reviewPacket=JSON.parse(", "fallbackText(item,key)", "Review the exact server fallback below.", "deterministic fallback", "reviewRules(item,review.key,section)", "Server facts: ", "Server-approved story: ", "Model narrative: ", "Model-cited interpretation: ", "Other permitted interpretations, not cited: ", "Exact visible server copy: ", "const corpusHash=\"abc\";", "JSON.stringify(artifact,null,2)+'\\n'"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("rendered review missing %q", want)
+		}
+	}
+	if strings.Contains(html, "JSON.stringify(artifact,null,2)+'\\\\n'") {
+		t.Fatal("worksheet must append a JSON newline, not literal backslash-n bytes")
+	}
+	if strings.Contains(html, "</script><img src=x>") {
+		t.Fatalf("narrative escaped script boundary leaked: %s", html)
+	}
+	if strings.Contains(html, "innerHTML") {
+		t.Fatal("review worksheet must render provider text through textContent")
+	}
+}
+
+func TestOfflineReviewServerAnchorsAllowsPrivacyMinimizedClaimOnlySlot(t *testing.T) {
+	corpus := ai.DailyInsightNarrativeCorpus{Cases: []ai.DailyInsightNarrativeCorpusCase{{
+		ID: "recovery-claim-only", Locale: "en",
+		Snapshot: health.DailyInsightSnapshot{
+			Domains: []health.DailyInsightDomain{{
+				Key: "recovery", Band: "optimal", DataState: "fresh", Confidence: "final",
+				Insight: health.DailyInsight{
+					State: "insight", AnswerKind: health.DailyInsightAnswerFactual,
+					ClaimID: "recovery_readiness_context", EvidenceIDs: []string{"recovery-evidence"},
+				},
+			}},
+			Evidence: []health.DailyInsightEvidence{{
+				ID: "recovery-evidence", Domain: "recovery", DataState: "fresh", Confidence: "final",
+			}},
+		},
+	}}}
+	review := ai.DailyInsightNarrativeEvaluationOutput{Cases: []ai.DailyInsightNarrativeEvaluationCase{{
+		ID: "recovery-claim-only", Locale: "en",
+		Runs: []ai.DailyInsightNarrativeEvaluationRun{{Narrative: &health.DailyInsightNarrative{
+			Version: health.DailyInsightNarrativeVersion, Locale: "en",
+			Domains: []health.DailyInsightNarrativeDomain{{Key: "recovery", Section: &health.DailyInsightNarrativeSection{}}},
+		}}},
+	}}}
+
+	anchors, err := offlineReviewServerAnchors(corpus, review)
+	if err != nil {
+		t.Fatalf("claim-only slot rejected: %v", err)
+	}
+	if _, found := anchors["recovery-claim-only"][0]["recovery"]; found {
+		t.Fatal("claim-only slot should rely on the review packet, not invent a fact or story panel")
+	}
+}
+
+func TestValidateOfflineReviewRowsAllowsBlankRubricButRejectsStructuralEdits(t *testing.T) {
+	want := ai.DailyInsightNarrativeRunReview{Domains: []ai.DailyInsightNarrativeDomainReview{{Key: "sleep", OutputStatus: "valid"}, {Key: "energy", OutputStatus: "validator_rejected"}}}
+	if err := validateOfflineReviewRows(want, want); err != nil {
+		t.Fatalf("blank reviewer rubric rejected: %v", err)
+	}
+	if err := validateOfflineReviewRows(want, ai.DailyInsightNarrativeRunReview{}); err == nil || !strings.Contains(err.Error(), "rows") {
+		t.Fatalf("missing worksheet rows accepted: %v", err)
+	}
+	changed := want
+	changed.Domains = append([]ai.DailyInsightNarrativeDomainReview(nil), want.Domains...)
+	changed.Domains[0].OutputStatus = "null"
+	if err := validateOfflineReviewRows(want, changed); err == nil || !strings.Contains(err.Error(), "status") {
+		t.Fatalf("changed worksheet status accepted: %v", err)
+	}
+}
+
+func TestValidateOfflineNarrativeRunRejectsTextInRejectedSlot(t *testing.T) {
+	snapshot := health.DailyInsightSnapshot{}
+	run := ai.DailyInsightNarrativeEvaluationRun{
+		Narrative: &health.DailyInsightNarrative{
+			Version: health.DailyInsightNarrativeVersion,
+			Locale:  "en",
+			Overall: &health.DailyInsightNarrativeSection{},
+		},
+		InvalidDomains: map[string]string{health.DailyInsightNarrativeOverallSlot: "semantic validation failed"},
+	}
+	if err := validateOfflineNarrativeRun(snapshot, "en", run); err == nil || !strings.Contains(err.Error(), "retains model text") {
+		t.Fatalf("rejected slot text was accepted: %v", err)
+	}
+}
 
 func TestRunIndependentEvaluationRunsPreservesOrderAndBoundsConcurrency(t *testing.T) {
 	started := make(chan struct{}, evaluationRunConcurrency)

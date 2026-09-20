@@ -60,6 +60,7 @@ type AIBriefingPlan struct {
 // state, including disabled or failed narrative generation.
 type TodayInsightsGeneration struct {
 	State             string                       `json:"state" jsonschema:"enum=cold,enum=generating,enum=ready,enum=failed,enum=disabled"`
+	NarrativeMode     string                       `json:"narrative_mode" jsonschema:"enum=disabled,enum=preview,enum=approved"`
 	FreshForSnapshot  bool                         `json:"fresh_for_snapshot"`
 	RetryAfterSeconds int                          `json:"retry_after_seconds,omitempty"`
 	Slots             []TodayInsightSlotGeneration `json:"slots,omitempty"`

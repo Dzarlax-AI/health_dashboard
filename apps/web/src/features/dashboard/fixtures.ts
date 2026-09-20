@@ -293,7 +293,7 @@ function todayInsights(locale: Locale, fixture: FixtureName): TodayInsightsRespo
       },
     ],
     evidence: [],
-    generation: { fresh_for_snapshot: !stale, state: partial ? "generating" : "disabled" },
+    generation: { fresh_for_snapshot: !stale, narrative_mode: "disabled", state: partial ? "generating" : "disabled" },
     has_more: false,
     primary: {
       answer_kind: "factual_context",

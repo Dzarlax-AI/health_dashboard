@@ -2134,6 +2134,14 @@
               "fresh_for_snapshot": {
                 "type": "boolean"
               },
+              "narrative_mode": {
+                "enum": [
+                  "disabled",
+                  "preview",
+                  "approved"
+                ],
+                "type": "string"
+              },
               "retry_after_seconds": {
                 "type": "integer"
               },
@@ -2192,6 +2200,7 @@
             },
             "required": [
               "state",
+              "narrative_mode",
               "fresh_for_snapshot"
             ],
             "type": "object"

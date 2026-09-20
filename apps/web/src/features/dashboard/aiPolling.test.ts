@@ -51,7 +51,7 @@ function todayInsights(
     decision_id: "fixture",
     domains: [],
     evidence: [],
-    generation: { fresh_for_snapshot: freshForSnapshot, state },
+    generation: { fresh_for_snapshot: freshForSnapshot, narrative_mode: "disabled", state },
     has_more: false,
     primary: { answer_kind: "factual_context", evidence_ids: [], fallback: true, meaning: "", observation: "", state: "insight", title: "Today" },
     snapshot_version: "fixture",

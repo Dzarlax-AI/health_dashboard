@@ -35,6 +35,9 @@ func BuildDailyInsightNarrativeCorpusScaffold(export DailyInsightNarrativeCandid
 		}
 		return fmt.Errorf("candidate export does not cover required observed state %q", tags)
 	}
+	normalObserved := add(hasNormalContext, []string{"observed_state", "normal_context"}, false) == nil
+	positiveObserved := add(hasPositiveRecoveryContext, []string{"observed_state", "positive_context"}, false) == nil
+	_ = add(hasProvisionalContext, []string{"observed_state", "provisional_context"}, false)
 
 	for index, locale := range []string{"en", "ru", "sr"} {
 		tags := []string{"observed_state", "complete_sleep"}
@@ -78,9 +81,9 @@ func BuildDailyInsightNarrativeCorpusScaffold(export DailyInsightNarrativeCandid
 
 	selected = append(selected,
 		syntheticLimitedHistoryCase(len(selected)+1),
-		syntheticRecoveryEnergyConflictCase(len(selected)+2, "en"),
-		syntheticRecoveryEnergyConflictCase(len(selected)+3, "ru"),
-		syntheticRecoveryEnergyConflictCase(len(selected)+4, "sr"),
+		syntheticRecoveryEnergyConflictCase(len(selected)+2, "en", !normalObserved, !positiveObserved),
+		syntheticRecoveryEnergyConflictCase(len(selected)+3, "ru", false, false),
+		syntheticRecoveryEnergyConflictCase(len(selected)+4, "sr", false, false),
 		syntheticLateSourceUpdateCase(len(selected)+5),
 	)
 	corpus := DailyInsightNarrativeCorpus{Version: "daily-insight-narrative-corpus-v1", Cases: selected}
@@ -130,6 +133,37 @@ func hasIncompleteSleep(item DailyInsightNarrativeCorpusCase) bool {
 	return found && (sleep.DataState == "partial" || sleep.DataState == "missing" || sleep.DataState == "stale")
 }
 
+func hasNormalContext(item DailyInsightNarrativeCorpusCase) bool {
+	snapshot, err := item.SnapshotForEvaluation()
+	if err != nil || snapshot.Primary.State != "insight" || snapshot.Primary.AnswerKind != health.DailyInsightAnswerFactual || snapshot.Primary.NarrativeSubject != "moderate" {
+		return false
+	}
+	sleep, found := narrativeCorpusDomain(snapshot, "sleep")
+	return found && sleep.DataState == "fresh" && sleep.Confidence == "final"
+}
+
+func hasPositiveRecoveryContext(item DailyInsightNarrativeCorpusCase) bool {
+	snapshot, err := item.SnapshotForEvaluation()
+	if err != nil {
+		return false
+	}
+	recovery, found := narrativeCorpusDomain(snapshot, "recovery")
+	return found && recovery.DataState == "fresh" && recovery.Confidence == "final" && recovery.Band == "optimal" && recovery.Insight.ClaimID == "recovery_readiness_context"
+}
+
+func hasProvisionalContext(item DailyInsightNarrativeCorpusCase) bool {
+	snapshot, err := item.SnapshotForEvaluation()
+	if err != nil {
+		return false
+	}
+	for _, domain := range snapshot.Domains {
+		if domain.Insight.AnswerKind == health.DailyInsightAnswerProvisional && domain.Insight.ClaimID == "" {
+			return true
+		}
+	}
+	return false
+}
+
 func hasAbsentCheckin(item DailyInsightNarrativeCorpusCase) bool {
 	return item.Scenario.CheckIn == "absent"
 }
@@ -142,7 +176,7 @@ func hasOnlyUnavailableDomains(item DailyInsightNarrativeCorpusCase) bool {
 func syntheticLimitedHistoryCase(index int) DailyInsightNarrativeCorpusCase {
 	return DailyInsightNarrativeCorpusCase{
 		ID: fmt.Sprintf("synthetic-%03d", index), Locale: "ru", Origin: DailyInsightNarrativeOriginSynthetic,
-		Tags:             []string{DailyInsightNarrativeOriginSynthetic, "limited_history", "no_checkin"},
+		Tags:             []string{DailyInsightNarrativeOriginSynthetic, "limited_history", "provisional_context", "no_checkin"},
 		Scenario:         DailyInsightNarrativeCorpusScenario{CheckIn: "absent"},
 		PrimaryMeaningID: "primary:sleep:provisional_pattern",
 		Snapshot: health.DailyInsightSnapshot{Date: "review-day", Version: health.DailyInsightSnapshotVersion, Domains: []health.DailyInsightDomain{{
@@ -152,31 +186,52 @@ func syntheticLimitedHistoryCase(index int) DailyInsightNarrativeCorpusCase {
 	}
 }
 
-func syntheticRecoveryEnergyConflictCase(index int, locale string) DailyInsightNarrativeCorpusCase {
+func syntheticRecoveryEnergyConflictCase(index int, locale string, coverNormal, coverPositive bool) DailyInsightNarrativeCorpusCase {
+	recoveryBand := ""
+	if coverPositive {
+		recoveryBand = "optimal"
+	}
+	sleepHours, usualSleep, shortNights := 5.8, 7.2, 3.0
 	return DailyInsightNarrativeCorpusCase{
 		ID: fmt.Sprintf("synthetic-%03d", index), Locale: locale, Origin: DailyInsightNarrativeOriginSynthetic,
-		Tags:                    syntheticConflictTags(locale),
-		Scenario:                DailyInsightNarrativeCorpusScenario{ConflictEvidenceIDs: map[string]string{"recovery": "evidence-recovery", "energy": "evidence-energy"}},
-		NarrativeSubjects:       map[string]string{"energy": "active_recovery"},
+		Tags:     syntheticConflictTags(locale, coverNormal, coverPositive),
+		Scenario: DailyInsightNarrativeCorpusScenario{ConflictEvidenceIDs: map[string]string{"recovery": "evidence-recovery", "energy": "evidence-energy"}},
+		// Keep the conflict packet narrative-eligible for energy. The direct
+		// active-recovery action is deliberately server-only, so it cannot cover
+		// the independently reviewed energy explanation slot.
+		NarrativeSubjects:       map[string]string{"energy": "rest"},
 		PrimaryNarrativeSubject: "moderate",
+		DecisionEvidenceDomains: []string{"recovery", "energy"},
 		PrimaryMeaningID:        "primary:recovery:recovery_readiness_context",
 		Snapshot: health.DailyInsightSnapshot{Date: "review-day", Version: health.DailyInsightSnapshotVersion,
 			Domains: []health.DailyInsightDomain{
-				{Key: "sleep", DataState: "fresh", Confidence: "final", Insight: health.DailyInsight{State: "insight", AnswerKind: health.DailyInsightAnswerConfirmedPersonal, ClaimID: "recent_sleep_below_reference", EvidenceIDs: []string{"evidence-sleep"}, NextStep: &health.DailyInsightAction{ID: "wind_down"}}},
-				{Key: "recovery", DataState: "fresh", Confidence: "final", Insight: health.DailyInsight{State: "insight", AnswerKind: health.DailyInsightAnswerFactual, ClaimID: "recovery_readiness_context", EvidenceIDs: []string{"evidence-recovery"}}},
+				{Key: "sleep", DataState: "fresh", Confidence: "final", Insight: health.DailyInsight{State: "insight", AnswerKind: health.DailyInsightAnswerConfirmedPersonal, ClaimID: "recent_sleep_below_reference", EvidenceIDs: []string{"evidence-sleep", "sleep_recent_reference", "sleep_recent_short_nights"}, NextStep: &health.DailyInsightAction{ID: "wind_down"}}},
+				{Key: "recovery", Band: recoveryBand, DataState: "fresh", Confidence: "final", Insight: health.DailyInsight{State: "insight", AnswerKind: health.DailyInsightAnswerFactual, ClaimID: "recovery_readiness_context", EvidenceIDs: []string{"evidence-recovery"}}},
 				{Key: "energy", DataState: "fresh", Confidence: "final", Insight: health.DailyInsight{State: "insight", AnswerKind: health.DailyInsightAnswerFactual, ClaimID: "energy_current_verdict_context", EvidenceIDs: []string{"evidence-energy"}}},
 			},
 			DecisionID: "review-decision",
 			Primary:    health.DailyInsight{State: "insight", AnswerKind: health.DailyInsightAnswerFactual, EvidenceIDs: []string{"evidence-recovery"}, NextStep: &health.DailyInsightAction{ID: "review-action"}},
-			Evidence:   []health.DailyInsightEvidence{{ID: "evidence-sleep", Domain: "sleep", DataState: "fresh", Confidence: "final"}, {ID: "evidence-recovery", Domain: "recovery", DataState: "fresh", Confidence: "final"}, {ID: "evidence-energy", Domain: "energy", DataState: "fresh", Confidence: "final"}},
+			Evidence: []health.DailyInsightEvidence{
+				{ID: "evidence-sleep", Domain: "sleep", DataState: "fresh", Confidence: "final", Value: &sleepHours, Unit: "h"},
+				{ID: "sleep_recent_reference", Domain: "sleep", DataState: "fresh", Confidence: "final", Value: &usualSleep, Unit: "h"},
+				{ID: "sleep_recent_short_nights", Domain: "sleep", DataState: "fresh", Confidence: "final", Value: &shortNights, Unit: "nights"},
+				{ID: "evidence-recovery", Domain: "recovery", DataState: "fresh", Confidence: "final"},
+				{ID: "evidence-energy", Domain: "energy", DataState: "fresh", Confidence: "final"},
+			},
 		},
 	}
 }
 
-func syntheticConflictTags(locale string) []string {
+func syntheticConflictTags(locale string, coverNormal, coverPositive bool) []string {
 	tags := []string{DailyInsightNarrativeOriginSynthetic, "energy_recovery_conflict", "complete_sleep"}
 	if locale == "en" {
 		tags = append(tags, "mixed_sleep_baseline")
+	}
+	if coverNormal {
+		tags = append(tags, "normal_context")
+	}
+	if coverPositive {
+		tags = append(tags, "positive_context")
 	}
 	return tags
 }

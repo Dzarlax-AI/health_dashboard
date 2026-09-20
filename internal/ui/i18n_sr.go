@@ -418,6 +418,8 @@ var translationsSr = map[string]string{
 	"admin_today_insights_desc":                 "Uključi činjenični dnevni uvid samo za ovaj profil i nakon provere pokrivenosti podataka. AI narativ ima zaseban quality gate.",
 	"admin_today_insights_b0":                   "Činjenični dnevni uvid (B0)",
 	"admin_today_insights_b1":                   "AI narativ (B1)",
+	"admin_today_insights_b1_preview":           "B1 pregled za ovaj profil",
+	"admin_today_insights_b1_preview_desc":      "Koristi aktivni model samo za ovaj profil; ne odobrava niti pušta B1 za druge.",
 	"admin_today_insights_loading":              "Učitavanje…",
 	"admin_today_insights_b1_enabled":           "Uključen",
 	"admin_today_insights_b1_ready":             "Proveren i spreman, ali nije uključen",

@@ -734,10 +734,10 @@ func makeTodayDerivedStateTrigger(ctx context.Context, db *storage.DB, schema st
 				lang = "en"
 			}
 			cfg := aiConfig()
-			if !storage.TodayInsightsB1Enabled(db) || !storage.TodayInsightsB1ApprovedForConfig(db, cfg) {
+			if !storage.TodayInsightsB1GenerationEnabled(db, cfg) {
 				// Match the request path: a mutation-triggered refresh may persist
 				// deterministic material, but must never call a provider before
-				// the explicit B1 opt-in and approved configuration are present.
+				// the tenant explicitly enables approved B1 or its isolated preview.
 				// Keep the stored bundle fingerprint disabled too. Otherwise a
 				// background refresh could leave a misleading cold/generating B1
 				// state even though the provider boundary correctly refuses it.

@@ -186,6 +186,11 @@
               <span class="admin-field-label">{{T .Lang "admin_today_insights_b1"}}</span>
               <span class="muted" id="cfg-today-insights-b1-status">{{T .Lang "admin_today_insights_loading"}}</span>
             </div>
+            <div class="admin-field-row">
+              <label class="admin-field-label" for="cfg-today-insights-b1-preview">{{T .Lang "admin_today_insights_b1_preview"}}</label>
+              <input type="checkbox" id="cfg-today-insights-b1-preview" disabled>
+            </div>
+            <p class="muted" style="font-size:12px;margin:0">{{T .Lang "admin_today_insights_b1_preview_desc"}}</p>
             <div class="admin-settings-actions">
               <button class="btn btn--primary btn--small" type="button" id="btn-save-today-insights" onclick="saveTodayInsightsConfig()" disabled>{{T .Lang "admin_save"}}</button>
             </div>
@@ -1098,8 +1103,10 @@ function setTodayInsightsSaveInFlight(inFlight) {
 function applyTodayInsightsConfig(d) {
   var b0 = $('cfg-today-insights-b0');
   var b1 = $('cfg-today-insights-b1-status');
-  if (!b0 || !b1) return;
+  var preview = $('cfg-today-insights-b1-preview');
+  if (!b0 || !b1 || !preview) return;
   b0.checked = !!d.b0_enabled;
+  preview.checked = !!d.b1_preview_enabled;
   if (d.b1_enabled) {
     b1.textContent = '{{T .Lang "admin_today_insights_b1_enabled"}}';
   } else if (d.b1_quality_gate_approved && !d.b1_quality_gate_matches_active_ai) {
@@ -1163,14 +1170,16 @@ function loadEnergySettings() {
 function loadTodayInsightsConfig() {
   var b0 = $('cfg-today-insights-b0');
   var b1 = $('cfg-today-insights-b1-status');
+  var preview = $('cfg-today-insights-b1-preview');
   var save = $('btn-save-today-insights');
-  if (!b0 || !b1 || !save) return;
+  if (!b0 || !b1 || !preview || !save) return;
   var requestedSchema = activeAdminSchema;
   var requestedSelectionGeneration = activeAdminSelectionGeneration;
   var request = ++_todayInsightsConfigRequest;
   _todayInsightsConfigReadySchema = null;
   _todayInsightsConfigReadySelectionGeneration = null;
   b0.disabled = true;
+  preview.disabled = true;
   save.disabled = true;
   b1.textContent = '{{T .Lang "admin_today_insights_loading"}}';
   fetchWithAdminSchema('/api/admin/today-insights/config')
@@ -1182,6 +1191,7 @@ function loadTodayInsightsConfig() {
       if (request !== _todayInsightsConfigRequest || requestedSchema !== activeAdminSchema || requestedSelectionGeneration !== activeAdminSelectionGeneration) return;
       applyTodayInsightsConfig(d);
       b0.disabled = false;
+      preview.disabled = false;
       save.disabled = false;
       _todayInsightsConfigReadySchema = requestedSchema;
       _todayInsightsConfigReadySelectionGeneration = requestedSelectionGeneration;
@@ -1194,9 +1204,10 @@ function loadTodayInsightsConfig() {
 
 function saveTodayInsightsConfig() {
   var b0 = $('cfg-today-insights-b0');
+  var preview = $('cfg-today-insights-b1-preview');
   var msg = $('admin-today-insights-msg');
   var save = $('btn-save-today-insights');
-  if (!b0 || !msg || !save) return;
+  if (!b0 || !preview || !msg || !save) return;
   if (_todayInsightsConfigReadySchema !== activeAdminSchema || _todayInsightsConfigReadySelectionGeneration !== activeAdminSelectionGeneration) {
     loadTodayInsightsConfig();
     return;
@@ -1204,6 +1215,7 @@ function saveTodayInsightsConfig() {
   var savedSchema = activeAdminSchema;
   var savedSelectionGeneration = activeAdminSelectionGeneration;
   b0.disabled = true;
+  preview.disabled = true;
   save.disabled = true;
   setTodayInsightsSaveInFlight(true);
   msg.style.display = '';
@@ -1212,7 +1224,7 @@ function saveTodayInsightsConfig() {
   fetchWithAdminSchema('/api/admin/today-insights/config', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({today_insights_b0_enabled: b0.checked})
+    body: JSON.stringify({today_insights_b0_enabled: b0.checked, today_insights_b1_preview_enabled: preview.checked})
   })
     .then(function(r) {
       if (!r.ok) return r.text().then(function(t){ throw new Error(t || 'Failed to save Today insights configuration'); });
@@ -1225,6 +1237,7 @@ function saveTodayInsightsConfig() {
       }
       applyTodayInsightsConfig(d);
       b0.disabled = false;
+      preview.disabled = false;
       save.disabled = false;
       setTodayInsightsSaveInFlight(false);
       msg.textContent = '{{T .Lang "admin_saved"}}';

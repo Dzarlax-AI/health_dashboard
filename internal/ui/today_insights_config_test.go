@@ -40,3 +40,13 @@ func TestTodayInsightsConfigAllowsB1EnableAfterQualityGate(t *testing.T) {
 		t.Fatalf("B1 setting = %q", got)
 	}
 }
+
+func TestTodayInsightsConfigAllowsTenantPreviewWithoutQualityGate(t *testing.T) {
+	settings, err := todayInsightsConfigSettings(map[string]bool{storage.SettingTodayInsightsB1PreviewEnabled: true}, false)
+	if err != nil {
+		t.Fatalf("todayInsightsConfigSettings preview: %v", err)
+	}
+	if got := settings[storage.SettingTodayInsightsB1PreviewEnabled]; got != "true" {
+		t.Fatalf("B1 preview setting = %q", got)
+	}
+}

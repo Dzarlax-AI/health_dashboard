@@ -379,21 +379,40 @@ func (r *Registry) GetGlobalSetting(ctx context.Context, key string) string {
 	return v
 }
 
-// GetAllGlobalSettings returns every key/value pair from global_settings.
-func (r *Registry) GetAllGlobalSettings(ctx context.Context) map[string]string {
+// LoadAllGlobalSettings returns every key/value pair from global_settings and
+// keeps an unavailable registry distinguishable from an empty configuration.
+// Callers that make a rollout decision from these values must use this method;
+// treating a permission or transport failure as an empty map can otherwise
+// produce misleading "not configured" diagnostics.
+func (r *Registry) LoadAllGlobalSettings(ctx context.Context) (map[string]string, error) {
 	out := make(map[string]string)
 	rows, err := r.pool.Query(ctx, `SELECT key, value FROM health_registry.global_settings`)
 	if err != nil {
-		return out
+		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var k, v string
-		if err := rows.Scan(&k, &v); err == nil {
-			out[k] = v
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
 		}
+		out[k] = v
 	}
-	return out
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// GetAllGlobalSettings preserves the historic best-effort behavior for
+// optional runtime defaults. Commands that require authoritative settings use
+// LoadAllGlobalSettings instead.
+func (r *Registry) GetAllGlobalSettings(ctx context.Context) map[string]string {
+	settings, err := r.LoadAllGlobalSettings(ctx)
+	if err != nil {
+		return map[string]string{}
+	}
+	return settings
 }
 
 // SaveGlobalSettings upserts the supplied keys atomically.

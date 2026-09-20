@@ -438,6 +438,8 @@ var translationsRu = map[string]string{
 	"admin_today_insights_desc":       "Включайте фактический ежедневный инсайт только для этого профиля и после проверки покрытия данных. AI-нарратив проходит отдельный quality gate.",
 	"admin_today_insights_b0":         "Фактический ежедневный инсайт (B0)",
 	"admin_today_insights_b1":         "AI-нарратив (B1)",
+	"admin_today_insights_b1_preview": "B1 preview для этого профиля",
+	"admin_today_insights_b1_preview_desc": "Использует активную модель только для этого профиля; не является одобрением и не включает B1 для других.",
 	"admin_today_insights_loading":    "Загружаю…",
 	"admin_today_insights_b1_enabled": "Включён",
 	"admin_today_insights_b1_ready":   "Проверен и готов, но не включён",

@@ -124,15 +124,22 @@ must not infer a diagnosis, prognosis or treatment from `answer_kind`.
 The optional `claim_id` is server-owned. The current B0 sleep claim,
 `recent_sleep_below_reference`, is disabled by default and can use only the
 canonical `completed_night_sleep` records. It never falls back to a dashboard
-sleep card or `daily_scores.sleep_total`. Its optional `next_step` with ID
+sleep card or `daily_scores.sleep_total`. A confirmed current-evening claim
+can expose the compact `next_step` with ID `wind_down` on each qualifying
+evening. The separate seven-day `action_event` cadence remains an internal
+reporting/delivery boundary, not a reason to hide the in-product next step.
 `wind_down` belongs only to the Sleep domain; it does not replace the main
 daily decision or authorize an AI provider to create another action.
 
 AI framing for Today Insights is separately opt-in (`today_insights_b1_enabled`)
 and disabled by default. It additionally requires a tenant-scoped record of a
 passing frozen-corpus quality gate; a bare boolean cannot activate a provider.
-A provider outage, invalid response or disabled flag never removes the
-deterministic server explanation.
+During product review, an admin may instead enable the tenant-only
+`today_insights_b1_preview_enabled` flag. Preview permits the same closed
+claim packet and validators for that tenant only, but is never a quality
+approval and is exposed as `generation.narrative_mode: "preview"` so clients
+can label it accordingly. A provider outage, invalid response or either
+disabled flag never removes the deterministic server explanation.
 
 When B1 is enabled and a domain-specific provider response passes validation,
 the corresponding `domains[].insight` may additionally contain:
@@ -155,13 +162,15 @@ action from it.
 Admins inspect or change these tenant-scoped rollout gates through
 `GET`/`POST /api/admin/today-insights/config`; the POST body may contain only
 the boolean keys `today_insights_b0_enabled` and
-`today_insights_b1_enabled`. Enabling a gate is an operator decision after
+`today_insights_b1_enabled` and `today_insights_b1_preview_enabled`. Enabling
+the release gate is an operator decision after
 coverage or output review, never an automatic side effect of deployment. B1
 returns `409 Conflict` until an admin submits a reviewed corpus/evaluation
 artifact to `POST /api/admin/today-insights/b1-quality-gate`; the server
 independently revalidates its canonical checksum, three runs and quality rule,
 then persists only the approval metadata. `GET /api/admin/today-insights/config`
-also exposes `b1_quality_gate_approved`.
+also exposes `b1_quality_gate_approved`, `b1_preview_enabled`, and
+`b1_narrative_mode` (`disabled`, `preview`, or `approved`).
 It also exposes `b1_quality_gate_matches_active_ai`: changing the active
 provider, model, reasoning, B1 prompt, response schema, or claim-packet
 contract makes B1 ineffective until that exact configuration has a newly

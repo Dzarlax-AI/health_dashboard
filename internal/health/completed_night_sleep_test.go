@@ -51,7 +51,7 @@ func TestEvaluateRecentSleepBelowReferenceUsesFourNightsAndSevenDayCadence(t *te
 		records = append(records, finalNight(date.AddDate(0, 0, offset), duration, "current-"+fmt.Sprint(offset)))
 	}
 	got := EvaluateRecentSleepBelowReference(records, "2026-09-10", date, loc)
-	if got.State != RecentSleepClaimTrue || got.CurrentShortDays != 3 || got.ReferenceHours != 8 || !got.ActionEvent || got.EvidenceDigest == "" {
+	if got.State != RecentSleepClaimTrue || got.CurrentShortDays != 3 || got.ReferenceHours != 8 || !got.EveningActionAvailable || !got.ActionEvent || got.EvidenceDigest == "" {
 		t.Fatalf("claim = %#v", got)
 	}
 
@@ -61,8 +61,8 @@ func TestEvaluateRecentSleepBelowReferenceUsesFourNightsAndSevenDayCadence(t *te
 		finalNight(date.AddDate(0, 0, -4), 7.4, "prior-short-4"),
 	)
 	got = EvaluateRecentSleepBelowReference(records, "2026-09-10", date, loc)
-	if got.State != RecentSleepClaimTrue || got.ActionEvent {
-		t.Fatalf("prior true must suppress action, got %#v", got)
+	if got.State != RecentSleepClaimTrue || !got.EveningActionAvailable || got.ActionEvent {
+		t.Fatalf("prior true must suppress only the event, got %#v", got)
 	}
 }
 
@@ -99,7 +99,7 @@ func TestEvaluateRecentSleepBelowReferenceDoesNotTreatUnknownCadenceAsBlocker(t 
 		records = append(records, finalNight(now.AddDate(0, 0, offset), duration, fmt.Sprintf("current-%d", offset)))
 	}
 	got := EvaluateRecentSleepBelowReference(records, "2026-09-10", now, loc)
-	if got.State != RecentSleepClaimTrue || !got.ActionEvent {
+	if got.State != RecentSleepClaimTrue || !got.EveningActionAvailable || !got.ActionEvent {
 		t.Fatalf("unknown earlier cadence date blocked action: %#v", got)
 	}
 }
@@ -116,7 +116,7 @@ func TestEvaluateRecentSleepBelowReferenceDoesNotCreateHistoricalAction(t *testi
 		records = append(records, finalNight(wakeDate.AddDate(0, 0, offset), 7.4, fmt.Sprintf("current-%d", offset)))
 	}
 	got := EvaluateRecentSleepBelowReference(records, wakeDate.Format("2006-01-02"), now, loc)
-	if got.State != RecentSleepClaimTrue || got.ActionEvent {
+	if got.State != RecentSleepClaimTrue || got.EveningActionAvailable || got.ActionEvent {
 		t.Fatalf("historical evaluation must be a claim, not an action: %#v", got)
 	}
 }
@@ -141,7 +141,7 @@ func TestEvaluateRecentSleepBelowReferenceKeepsMorningObservationProvisional(t *
 		current,
 	}
 	got := EvaluateRecentSleepBelowReference(records, "2026-09-10", now, loc)
-	if got.State != RecentSleepClaimProvisional || got.ActionEvent {
+	if got.State != RecentSleepClaimProvisional || got.EveningActionAvailable || got.ActionEvent {
 		t.Fatalf("morning claim = %#v", got)
 	}
 }

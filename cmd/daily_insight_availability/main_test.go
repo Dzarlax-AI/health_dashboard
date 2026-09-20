@@ -42,3 +42,24 @@ func TestOpenAvailabilitySourceRejectsIncompleteIsolationConfig(t *testing.T) {
 		t.Fatalf("openAvailabilitySource returned source on configuration error")
 	}
 }
+
+func TestOpenAvailabilitySourceDoesNotBypassIncompleteIsolationWithLegacyDSN(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://legacy.example/health")
+	t.Setenv("TENANT_DB_ISOLATION_ENABLED", "true")
+	t.Setenv("ADMIN_DATABASE_URL", "")
+	t.Setenv("REGISTRY_DATABASE_URL", "")
+	t.Setenv("TENANT_DATABASE_URL_BASE", "")
+	t.Setenv("TENANT_DB_MASTER_SECRET", "")
+	t.Setenv("TENANT_DB_MASTER_SECRET_VERSION", "")
+	for _, key := range []string{"PGHOST", "PGPORT", "PGDATABASE", "PGUSER"} {
+		t.Setenv(key, "")
+	}
+
+	db, closeSource, err := openAvailabilitySource(context.Background(), "health")
+	if err == nil || !strings.Contains(err.Error(), "parse isolated tenant source") {
+		t.Fatalf("openAvailabilitySource error = %v, want isolation configuration error", err)
+	}
+	if db != nil || closeSource != nil {
+		t.Fatalf("openAvailabilitySource bypassed isolation with legacy DSN")
+	}
+}

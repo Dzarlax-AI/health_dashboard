@@ -1719,9 +1719,11 @@ func (h *Handler) todayInsights(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	aiCfg := db.GetAIConfig(h.mgr.AIDefaultsFor(r.Context(), schema))
-	if !storage.TodayInsightsB1Enabled(db) || !storage.TodayInsightsB1ApprovedForConfig(db, aiCfg) {
+	narrativeMode := storage.TodayInsightsB1NarrativeMode(db, aiCfg)
+	if narrativeMode == storage.TodayInsightsB1NarrativeModeDisabled {
 		// The deterministic snapshot is the product baseline. Do not spend a
 		// provider call merely because an installation has general AI settings.
+		// A tenant-only preview is separately visible in the response mode.
 		aiCfg = storage.AIConfig{}
 	}
 	if aiCfg.Enabled() && !health.HasEligibleDailyInsightNarrativeClaims(snapshot, lang) {
@@ -1778,8 +1780,7 @@ func (h *Handler) todayInsights(w http.ResponseWriter, r *http.Request) {
 	} else {
 		for _, slot := range todayInsightNarrativeSlots {
 			input, known := health.BuildDailyInsightNarrativeSlotInput(snapshot, lang, slot)
-			if !known || len(input.Slot.Claims) == 0 {
-				slotStates = append(slotStates, clientapi.TodayInsightSlotGeneration{Key: slot, State: storage.DailyInsightStateDisabled, FreshForSnapshot: true})
+			if !known || len(input.Slot.Claims) == 0 || !health.HasEligibleDailyInsightNarrativeSlot(snapshot, lang, slot) {
 				continue
 			}
 			slotHash := health.DailyInsightNarrativeSlotMaterialHash(snapshot, lang, slot)
@@ -1797,7 +1798,8 @@ func (h *Handler) todayInsights(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, slot := range todayInsightNarrativeSlots {
 			input, known := health.BuildDailyInsightNarrativeSlotInput(snapshot, lang, slot)
-			if !known || len(input.Slot.Claims) == 0 {
+			if !known || len(input.Slot.Claims) == 0 || !health.HasEligibleDailyInsightNarrativeSlot(snapshot, lang, slot) {
+				slotStates = append(slotStates, clientapi.TodayInsightSlotGeneration{Key: slot, State: storage.DailyInsightStateDisabled, FreshForSnapshot: true})
 				continue
 			}
 			slotHash := health.DailyInsightNarrativeSlotMaterialHash(snapshot, lang, slot)
@@ -1841,7 +1843,7 @@ func (h *Handler) todayInsights(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, clientapi.TodayInsightsResponse{
 		DailyInsightSnapshot: snapshot,
 		Generation: clientapi.TodayInsightsGeneration{
-			State: state, FreshForSnapshot: fresh, RetryAfterSeconds: retryAfter, Slots: slotStates,
+			State: state, NarrativeMode: narrativeMode, FreshForSnapshot: fresh, RetryAfterSeconds: retryAfter, Slots: slotStates,
 		},
 	})
 }
@@ -3215,7 +3217,7 @@ func (h *Handler) adminEnergySettings(w http.ResponseWriter, r *http.Request) {
 // adminTodayInsightsConfig is the explicit tenant-scoped rollout gate for
 // Today insights. B0 remains off until canonical-night coverage is reviewed;
 // B1 remains off until its frozen corpus and review artifact pass the stored
-// quality gate.
+// quality gate. A tenant may separately opt into a visibly marked preview.
 func (h *Handler) adminTodayInsightsConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -3226,6 +3228,7 @@ func (h *Handler) adminTodayInsightsConfig(w http.ResponseWriter, r *http.Reques
 		writeStatusError(w, scopeErr)
 		return
 	}
+	activeAIConfig := scope.DB.GetAIConfig(h.mgr.AIDefaultsFor(r.Context(), scope.Schema))
 	if r.Method == http.MethodPost {
 		var body map[string]bool
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -3236,7 +3239,6 @@ func (h *Handler) adminTodayInsightsConfig(w http.ResponseWriter, r *http.Reques
 			http.Error(w, "body is empty", http.StatusBadRequest)
 			return
 		}
-		activeAIConfig := scope.DB.GetAIConfig(h.mgr.AIDefaultsFor(r.Context(), scope.Schema))
 		b1Approved := storage.TodayInsightsB1ApprovedForConfig(scope.DB, activeAIConfig)
 		toSave, err := todayInsightsConfigSettings(body, b1Approved)
 		if err != nil {
@@ -3257,6 +3259,8 @@ func (h *Handler) adminTodayInsightsConfig(w http.ResponseWriter, r *http.Reques
 		"schema":                            scope.Schema,
 		"b0_enabled":                        storage.TodayInsightsB0Enabled(scope.DB),
 		"b1_enabled":                        storage.TodayInsightsB1Enabled(scope.DB) && b1MatchesActiveAI,
+		"b1_preview_enabled":                storage.TodayInsightsB1PreviewEnabled(scope.DB),
+		"b1_narrative_mode":                 storage.TodayInsightsB1NarrativeMode(scope.DB, activeAIConfig),
 		"b1_quality_gate_approved":          todayInsightsB1QualityGateApproved(scope.DB),
 		"b1_quality_gate_matches_active_ai": b1MatchesActiveAI,
 	})
@@ -3266,8 +3270,9 @@ var errTodayInsightsB1QualityGateRequired = errors.New("B1 cannot be enabled bef
 
 func todayInsightsConfigSettings(body map[string]bool, b1Approved bool) (map[string]string, error) {
 	allowed := map[string]bool{
-		storage.SettingTodayInsightsB0Enabled: true,
-		storage.SettingTodayInsightsB1Enabled: true,
+		storage.SettingTodayInsightsB0Enabled:        true,
+		storage.SettingTodayInsightsB1Enabled:        true,
+		storage.SettingTodayInsightsB1PreviewEnabled: true,
 	}
 	toSave := make(map[string]string, len(body))
 	for key, enabled := range body {

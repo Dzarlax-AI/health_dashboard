@@ -1,7 +1,7 @@
 # B1 frozen narrative corpus
 
 This directory holds no production health data and no provider outputs. A B1
-release starts by placing a reviewed, anonymized JSON corpus outside the
+release starts by placing a reviewed, privacy-minimized JSON corpus outside the
 repository and freezing its SHA-256 checksum in the review record.
 
 The corpus JSON has this shape:
@@ -29,12 +29,16 @@ The corpus JSON has this shape:
 
 Use 20–30 cases. The validator requires coverage for: mixed sleep baseline,
 complete/incomplete sleep, limited history, no check-in, recovery/energy
-conflict, late source update, and no data. Required tags are not decorative:
+conflict, late source update, no data, an ordinary moderate day, positive
+recovery context, and a provisional non-claim context. Required tags are not decorative:
 the validator checks their matching snapshot state. In particular, complete
 sleep must be fresh/final, incomplete sleep must be unavailable or partial,
 limited history must be a non-claim provisional sleep context, no data must be
 fallback-only, and a late update needs a timestamp plus
-`update_kind: "late_source_update"`. At least one narrative-eligible case is
+`update_kind: "late_source_update"`. `normal_context` must be a factual
+moderate server assessment with fresh/final sleep; `positive_context` must contain a fresh/final
+optimal recovery claim; and `provisional_context` must contain a domain with
+a provisional answer and no claim. At least one narrative-eligible case is
 required for each of EN, RU and SR, so all three localizations receive actual
 model candidates rather than only deterministic fallback cases.
 
@@ -91,10 +95,11 @@ go run ./cmd/daily_insight_eval \
 `daily_insight_candidates` is the preceding read-only, non-serving step. It
 reconstructs candidate snapshots from retained aggregate and derived state for
 an explicit tenant schema, then removes original dates, evidence IDs, source
-IDs, values, units, display copy and action copy. It retains only the closed
-sleep action marker <code>wind_down</code> when present, so the frozen review
-can exercise the matching server-owned meaning link without exposing action
-text or letting the provider create an action. It neither reads
+IDs and raw event material. It retains only the localized aggregate statements,
+their display values, the server-selected relation, and an already-selected
+action when one belongs to the eligible slot. The provider receives this
+privacy-minimized rich-story packet, never an identifier, raw record, timestamp
+or unselected domain state. It neither reads
 `health_records` payloads nor creates bundles, calls a provider, or writes a
 tenant setting. Its output is deliberately **not** a valid corpus: a reviewer
 must choose 20–30 cases, attach the required tags/scenario provenance, and
@@ -153,24 +158,36 @@ go run ./cmd/daily_insight_eval \
 ```
 
 The scaffold creates a **draft**, not a release approval. It requires every
-supported server claim and the action-linked <code>sleep_wind_down_bridge</code>
-meaning variant in every shipped locale, alongside the required product states.
+supported server claim and every active serving meaning in every shipped locale,
+alongside the required product states — including normal, positive and
+provisional experiences rather than only edge conditions. A domain slot enters
+evaluation only when it has a distinct server-approved meaning; it never exists
+solely to paraphrase a displayed metric or action.
 The bounded controlled fixtures fill only structural coverage that is
 absent from retained history; their origin remains explicit and they are never
 treated as user evidence. Inspect the origin mix, coverage matrix and
 deterministic fallback references; freeze the resulting checksum in the review
 record before any provider evaluation. The references are derived from the
-same closed server claim packet, not copied display text: the corpus
-intentionally does not retain personal copy or measurements.
+same closed server rich-story packet. It retains privacy-minimized localized
+aggregate facts and display values so the review tests the actual narrative
+contract, but never identity, dates, raw records or source-event metadata.
+
+The scaffold first selects observed packets for normal, positive and
+provisional contexts. It retains the bounded controlled fixtures for the same
+states when retained history has no matching packet, so a sparse or new account
+does not make the quality review impossible; the fixture remains visibly
+synthetic and is never treated as evidence about that person.
 
 Create an offline review packet before selecting a provider. It contains the
-locale, origin, tags, permitted claim propositions, qualifier boundaries, a
-synthetic screen-composition baseline with a source-derived closed ID for the
-already-visible primary meaning plus closed domain meaning IDs, and the
-claim-derived fallback reference
-for every case, but makes no network request. The baseline explicitly excludes
-values, display wording and action content; it exists so the reviewer can
-reject prose that adds nothing beyond the visible card:
+locale, origin, tags, permitted claim propositions, qualifier boundaries, the
+exact localized server facts supplied to B1, the server-selected relation and
+action, a source-derived closed ID for the already-visible primary meaning plus
+closed domain meaning IDs, and the claim-derived fallback reference for every
+case, but makes no network request. For the privacy-minimized frozen corpus, it
+also includes the deterministic fallback copy and surrounding factual context
+that a person would see. It excludes identifiers, dates, raw records, and all
+live data. This gives the reviewer a real duplication baseline and lets
+fallback-only controls be assessed as a user-facing experience:
 
 ```bash
 go run ./cmd/daily_insight_eval \
@@ -199,8 +216,12 @@ unavailable candidate becomes an opaque category such as
 the original date, query, and database error text are intentionally not
 emitted into the artifact.
 
-Run exactly three independent generations per eligible slot of every eligible case, with an explicit
-provider/model/reasoning selection:
+Run exactly three independent generations for every serving-eligible slot of
+every eligible case, with an explicit provider/model/reasoning selection.
+<code>overall</code>, <code>sleep</code>, <code>recovery</code>, and
+<code>energy</code> are independently eligible; a domain with no distinct
+meaning remains deterministic server text rather than requesting a weak AI
+paraphrase:
 
 ```bash
 go run ./cmd/daily_insight_eval \
@@ -216,14 +237,21 @@ the selected provider configuration from installation-wide Admin settings in
 `health_registry`. In tenant-isolation mode it uses `REGISTRY_DATABASE_URL`,
 just as production does, and never opens a tenant data pool. It never prints
 or writes the key into the output artifact. Do not use this option from an
-untrusted machine or a registry/admin database connection.
+untrusted machine or a registry/admin database connection. This mode requires
+`SELECT` access to `health_registry.global_settings`; missing registry access
+is a hard configuration-read error, never evidence that no provider is
+configured.
 
-The evaluator sends only the closed claim packet, never snapshot display copy,
-actions, raw health records or credentials. It writes the closed
-claim-derived fallback reference next to every candidate narrative for product
-review. Mark a case useful only when the narrative adds meaning without
-repeating a card, strengthening a claim, inventing a cause, giving advice, or
-using medical language. Provider errors and null slots are not improvements.
+The evaluator sends only the closed rich-story packet: selected localized
+aggregate facts and display values, one server-selected relation, and an
+already-selected optional action. It never sends identifiers, dates, raw health
+records or credentials. The model returns a complete short narrative; the
+server does not prepend a separate factual sentence. The offline worksheet
+writes exact privacy-minimized fallback copy next to every candidate narrative
+for product review. Mark a case useful only when the narrative makes the
+server-selected relation easier to understand without strengthening a claim,
+inventing a cause, reporting an unobserved feeling, adding advice, or using
+medical language. Provider errors and null slots are not improvements.
 Fallback-only cases are mandatory safety controls: they must retain the exact
 server fallback and never have provider output, but they are not included in
 the usefulness denominator. B1 remains disabled unless all factual/safety
@@ -232,13 +260,13 @@ judged more useful than fallback. The evaluator also reports the improvement
 rate over all cases so coverage cannot be hidden.
 
 For every successful generation, fill one `review.domains[]` worksheet entry
-for each eligible slot (`overall`, `sleep`, `recovery`, `energy`) in the output JSON. The evaluator derives
+for every serving-eligible slot in the output JSON. The evaluator derives
 `better_than_fallback`; it is not a free-form reviewer toggle:
 
 ```json
 "review": {
   "domains": [{
-    "key": "sleep",
+    "key": "overall",
 	"output_status": "valid",
     "claim_fidelity": "pass",
     "qualifier_fidelity": "pass",
@@ -246,22 +274,52 @@ for each eligible slot (`overall`, `sleep`, `recovery`, `energy`) in the output 
     "added_meaning": 2,
     "screen_duplication": "none",
     "language": "pass",
-    "review_reason": "Explains an allowed limitation without restating the card."
+    "review_reason": "Adds a natural integrated observation without repeating the hero."
   }]
 }
 ```
 
-The evaluator pre-populates `output_status` as `valid`, `null`,
-`validator_rejected`, or `provider_error`; do not alter it. For `valid`
-slots, use `pass|fail` for `claim_fidelity`, `qualifier_fidelity` and
+The evaluator pre-populates every serving-eligible slot's `output_status` as
+`valid`, `null`, `validator_rejected`, or `provider_error`; do not alter it.
+For a `valid` result, use `pass|fail` for `claim_fidelity`, `qualifier_fidelity` and
 `language`; `safe|violation` for `safety`; an explicit `0|1|2` for
 `added_meaning`; and
 `none|domain|hero|both` for `screen_duplication`. A run is better only when
-every eligible slot is safe, faithful, natural, non-duplicative, and scores
+the serving-eligible result is safe, faithful, natural, non-duplicative, and scores
 `2` for added meaning. Do not remove cases or unsuccessful runs: the eligible
 denominator and every fallback control are fixed before provider output
 exists. Then validate the immutable corpus hash, all three runs and the 70%
 rule:
+
+For an already-produced evaluation artifact, the evaluator can render a local
+browser worksheet rather than asking a reviewer to edit JSON by hand:
+
+```bash
+go run ./cmd/daily_insight_eval \
+  --corpus /safe/path/frozen-corpus.json \
+  --check /safe/path/unreviewed-evaluation.json \
+  --render-review \
+  --out /safe/path/review.html
+```
+
+This mode is strictly offline: it rechecks the frozen corpus and B1 contract,
+the immutable case/locale/tag/fallback metadata, the expected per-slot
+`output_status` rows, and any stored narrative that claims to be valid. It
+then embeds the existing privacy-minimized artifact plus reviewer-only evidence
+in the HTML page: server facts, model narrative, exact deterministic fallback
+and surrounding factual context, allowed claim/qualifier, the `meaning_id`
+actually cited by the model (and uncited alternatives), and the exact static
+screen baseline. Fallback-only controls render their actual server copy even
+though they require no score. Rich-story packet or prompt changes are part of
+the current B1 identity, so an older evaluation becomes stale rather than being
+shown as current. It makes no provider, database, or network request.
+**Download draft** can save partial work locally;
+**Download completed review** stays disabled until at least one valid slot and
+every valid slot has all rubric fields and a reason. Both downloads are valid
+JSON. Neither action approves B1 or alters server state. Validate the completed
+JSON with `--check` before submitting it to an authenticated admin endpoint.
+
+Then validate the immutable corpus hash, all three runs and the 70% rule:
 
 ```bash
 go run ./cmd/daily_insight_eval \

@@ -461,6 +461,8 @@ var translationsEn = map[string]string{
 	"admin_today_insights_desc":       "Enable the factual daily insight for this profile only after reviewing its data coverage. AI narrative stays separately quality-gated.",
 	"admin_today_insights_b0":         "Factual daily insight (B0)",
 	"admin_today_insights_b1":         "AI narrative (B1)",
+	"admin_today_insights_b1_preview": "B1 preview for this profile",
+	"admin_today_insights_b1_preview_desc": "Uses the active provider only for this profile; it does not approve or release B1.",
 	"admin_today_insights_loading":    "Loading…",
 	"admin_today_insights_b1_enabled": "Enabled",
 	"admin_today_insights_b1_ready":   "Reviewed and ready, but not enabled",

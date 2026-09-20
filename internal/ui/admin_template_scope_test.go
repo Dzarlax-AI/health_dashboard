@@ -81,10 +81,12 @@ func TestAdminTemplateScopesTodayInsightsRolloutToActiveProfile(t *testing.T) {
 	for _, want := range []string{
 		`id="admin-today-insights-section"`,
 		`id="cfg-today-insights-b0"`,
+		`id="cfg-today-insights-b1-preview"`,
 		`function loadTodayInsightsConfig()`,
 		`function saveTodayInsightsConfig()`,
 		`fetchWithAdminSchema('/api/admin/today-insights/config')`,
 		`today_insights_b0_enabled: b0.checked`,
+		`today_insights_b1_preview_enabled: preview.checked`,
 		`var requestedSchema = activeAdminSchema`,
 		`var requestedSelectionGeneration = activeAdminSelectionGeneration`,
 		`_todayInsightsConfigReadySelectionGeneration !== activeAdminSelectionGeneration`,

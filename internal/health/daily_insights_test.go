@@ -1,7 +1,6 @@
 package health
 
 import (
-	"reflect"
 	"strings"
 	"testing"
 )
@@ -73,12 +72,32 @@ func TestBuildDailyInsightSnapshotUsesFactualSleepContextWithoutBaseline(t *test
 		if domain.Insight.AnswerKind != DailyInsightAnswerProvisional {
 			t.Fatalf("answer kind = %q", domain.Insight.AnswerKind)
 		}
-		if domain.Insight.Observation != "Last night is part of today’s context; a personal comparison will appear as more history accumulates." {
+		if domain.Insight.Observation != "Last night is already part of today’s picture." {
 			t.Fatalf("observation = %q", domain.Insight.Observation)
 		}
 		return
 	}
 	t.Fatal("sleep domain missing")
+}
+
+func TestLocalizedInsightDataGuidanceKeepsTechnicalCaveatsOffTheCard(t *testing.T) {
+	for _, locale := range []string{"en", "ru", "sr"} {
+		for _, domain := range []string{"sleep", "recovery", "energy"} {
+			for _, state := range []string{"missing", "stale", "partial", ReadinessServingDataAccruing} {
+				observation, meaning, _ := localizedInsightDataGuidance(locale, domain, state)
+				text := strings.ToLower(observation + " " + meaning)
+				for _, forbidden := range []string{
+					"limited", "insufficient", "incomplete", "data quality", "uncertain", "calibrat",
+					"огранич", "недостат", "непол", "качество данных", "неопредел", "калибров",
+					"ogranič", "nedovoljno", "nepotpun", "kvalitet podataka", "neizves", "kalibr",
+				} {
+					if strings.Contains(text, forbidden) {
+						t.Fatalf("%s/%s/%s exposes %q in %q", locale, domain, state, forbidden, text)
+					}
+				}
+			}
+		}
+	}
 }
 
 func TestBuildDailyInsightSnapshotPreservesZeroValuedFacts(t *testing.T) {
@@ -183,7 +202,7 @@ func TestDailyInsightMaterialHashIncludesAnswerPolicy(t *testing.T) {
 
 func TestApplyRecentSleepBelowReferenceAddsOnlySleepAction(t *testing.T) {
 	base := BuildDailyInsightSnapshot(&BriefingResponse{Date: "2026-09-10"}, "en")
-	got := ApplyRecentSleepBelowReference(base, RecentSleepBelowReference{State: RecentSleepClaimTrue, ReferenceHours: 7.8, CurrentShortDays: 3, ActionEvent: true}, "en")
+	got := ApplyRecentSleepBelowReference(base, RecentSleepBelowReference{State: RecentSleepClaimTrue, ReferenceHours: 7.8, CurrentShortDays: 3, EveningActionAvailable: true, ActionEvent: true}, "en")
 	sleep := dailyInsightDomain(t, got, "sleep")
 	if sleep.Insight.AnswerKind != DailyInsightAnswerConfirmedPersonal || sleep.Insight.ClaimID != "recent_sleep_below_reference" || sleep.Insight.NextStep == nil || sleep.Insight.NextStep.ID != "wind_down" {
 		t.Fatalf("sleep B0 claim = %#v", sleep.Insight)
@@ -199,6 +218,76 @@ func TestApplyRecentSleepBelowReferenceAddsOnlySleepAction(t *testing.T) {
 	}
 	if DailyInsightMaterialHash(base) == DailyInsightMaterialHash(got) {
 		t.Fatal("canonical sleep claim must invalidate the material hash")
+	}
+}
+
+func TestApplyRecentSleepBelowReferenceKeepsGentleActionAfterEventCadenceSuppresses(t *testing.T) {
+	base := BuildDailyInsightSnapshot(&BriefingResponse{Date: "2026-09-10"}, "en")
+	got := ApplyRecentSleepBelowReference(base, RecentSleepBelowReference{
+		State: RecentSleepClaimTrue, ReferenceHours: 7.8, CurrentShortDays: 3,
+		EveningActionAvailable: true,
+	}, "en")
+	if sleep := dailyInsightDomain(t, got, "sleep"); sleep.Insight.NextStep == nil || sleep.Insight.NextStep.ID != "wind_down" {
+		t.Fatalf("cadence-suppressed current evening lost server action: %#v", sleep.Insight)
+	}
+
+	withoutEveningEligibility := ApplyRecentSleepBelowReference(base, RecentSleepBelowReference{State: RecentSleepClaimTrue}, "en")
+	if sleep := dailyInsightDomain(t, withoutEveningEligibility, "sleep"); sleep.Insight.NextStep != nil {
+		t.Fatalf("non-evening claim unexpectedly received action: %#v", sleep.Insight.NextStep)
+	}
+}
+
+func TestApplyRecentSleepBelowReferenceLocalizesWindDownAction(t *testing.T) {
+	want := map[string]string{
+		"en": "Wind down this evening",
+		"ru": "Сделать вечер тише",
+		"sr": "Utišati veče",
+	}
+	for locale, actionText := range want {
+		base := BuildDailyInsightSnapshot(&BriefingResponse{Date: "2026-09-10"}, locale)
+		got := ApplyRecentSleepBelowReference(base, RecentSleepBelowReference{State: RecentSleepClaimTrue, EveningActionAvailable: true, ActionEvent: true}, locale)
+		sleep := dailyInsightDomain(t, got, "sleep")
+		if sleep.Insight.NextStep == nil || sleep.Insight.NextStep.ID != "wind_down" || sleep.Insight.NextStep.Text != actionText {
+			t.Fatalf("%s wind-down action = %#v, want %q", locale, sleep.Insight.NextStep, actionText)
+		}
+	}
+}
+
+func TestSleepNarrativePacketUsesDetailedServerOwnedWindDownCopy(t *testing.T) {
+	snapshot := ApplyRecentSleepBelowReference(
+		BuildDailyInsightSnapshot(&BriefingResponse{Date: "2026-09-12"}, "ru"),
+		RecentSleepBelowReference{State: RecentSleepClaimTrue, ReferenceHours: 7.8, CurrentShortDays: 3, EveningActionAvailable: true},
+		"ru",
+	)
+	input, known := BuildDailyInsightNarrativeSlotInput(snapshot, "ru", "sleep")
+	if !known || input.Slot.Action == nil {
+		t.Fatalf("sleep action packet = %#v, known=%v", input, known)
+	}
+	if want := "Сегодня вечером оставь себе спокойный час без задач и начни сворачиваться раньше."; input.Slot.Action.Text != want {
+		t.Fatalf("narrative action = %q, want %q", input.Slot.Action.Text, want)
+	}
+	if got := dailyInsightDomain(t, snapshot, "sleep").Insight.NextStep.Text; got != "Сделать вечер тише" {
+		t.Fatalf("compact UI action changed to %q", got)
+	}
+}
+
+func TestSleepNarrativePacketRestoresKnownActionCopyFromPrivacyMinimizedMarker(t *testing.T) {
+	action := buildDailyInsightNarrativeAction(&DailyInsightAction{ID: "wind_down"}, nil, "ru")
+	if action == nil {
+		t.Fatal("privacy-minimized wind_down marker lost narrative action")
+	}
+	if want := "Сегодня вечером оставь себе спокойный час без задач и начни сворачиваться раньше."; action.Text != want {
+		t.Fatalf("narrative action = %q, want %q", action.Text, want)
+	}
+}
+
+func TestSleepNarrativeEvidenceNamesUsualSleepAndRepeatedShortNights(t *testing.T) {
+	reference, shortNights := 7.2, 3.0
+	if got, want := localizedNarrativeEvidenceStatement("ru", DailyInsightEvidence{ID: "sleep_recent_reference", Value: &reference, Unit: "h"}), "Твой обычный сон: 7 ч 12 мин."; got != want {
+		t.Fatalf("reference fact = %q, want %q", got, want)
+	}
+	if got, want := localizedNarrativeEvidenceStatement("ru", DailyInsightEvidence{ID: "sleep_recent_short_nights", Value: &shortNights, Unit: "nights"}), "Коротких ночей подряд: 3."; got != want {
+		t.Fatalf("short-nights fact = %q, want %q", got, want)
 	}
 }
 
@@ -222,7 +311,7 @@ func TestDailyInsightNarrativeKeepsFallbackAndRejectsOnlyUnsafeDomain(t *testing
 	}
 
 	validSleep := &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
-		Text: "Recent nights were shorter than your usual sleep rhythm, so the pattern matters more than a single night.", ClaimIDs: []string{"recent_sleep_below_reference"}, QualifierIDs: []string{"personal_pattern", "current_context"}, MeaningIDs: []string{"sleep_pattern_not_single_night"},
+		Text: "The comparison stays with your own usual sleep, rather than a universal target.", ClaimIDs: []string{"recent_sleep_below_reference"}, QualifierIDs: []string{"personal_pattern", "current_context"}, MeaningIDs: []string{"sleep_personal_reference"},
 	}}}
 	unsafeRecovery := &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
 		Text: "Today is 100% safe.", ClaimIDs: []string{"recovery_current_context"}, QualifierIDs: []string{"current_context"}, MeaningIDs: []string{"recovery_pacing_not_verdict"},
@@ -268,6 +357,19 @@ func TestDailyInsightNarrativeSkipsGenericCurrentContext(t *testing.T) {
 	}
 }
 
+func TestDailyInsightNarrativeSkipsUnsupportedClaimID(t *testing.T) {
+	snapshot := &DailyInsightSnapshot{
+		Domains: []DailyInsightDomain{{
+			Key: "recovery", DataState: "fresh", Confidence: "final",
+			Insight: DailyInsight{State: "insight", AnswerKind: DailyInsightAnswerFactual, ClaimID: "recovery_current_context", EvidenceIDs: []string{"recovery-evidence"}},
+		}},
+		Evidence: []DailyInsightEvidence{{ID: "recovery-evidence", Domain: "recovery", DataState: "fresh", Confidence: "final"}},
+	}
+	if HasEligibleDailyInsightNarrativeClaims(snapshot, "en") {
+		t.Fatalf("unsupported generic claim unexpectedly eligible: %#v", BuildDailyInsightNarrativeInput(snapshot, "en"))
+	}
+}
+
 func TestDailyInsightNarrativeInputKeepsCanonicalDomainSlotsForPartialSnapshot(t *testing.T) {
 	snapshot := &DailyInsightSnapshot{Domains: []DailyInsightDomain{{Key: "recovery"}}}
 	input := BuildDailyInsightNarrativeInput(snapshot, "en")
@@ -303,22 +405,14 @@ func TestOverallNarrativePropositionCarriesDecisionModeAcrossLocales(t *testing.
 	}
 }
 
-func TestNarrativeMeaningLinksUseModeSpecificHumanFraming(t *testing.T) {
+func TestNarrativeMeaningLinksRequireDistinctCombinedContext(t *testing.T) {
 	for _, locale := range []string{"en", "ru", "sr"} {
-		moderate := overallNarrativeMeaningLinks(locale, "moderate")
-		activeRecovery := overallNarrativeMeaningLinks(locale, "active_recovery")
-		if len(moderate) != 1 || len(activeRecovery) != 1 || moderate[0].Statement == activeRecovery[0].Statement {
-			t.Fatalf("%s overall meanings do not distinguish modes: moderate=%#v active_recovery=%#v", locale, moderate, activeRecovery)
+		if got := overallNarrativeMeaningLinks(locale, []string{"recovery"}); len(got) != 0 {
+			t.Fatalf("%s single-domain overall meaning = %#v", locale, got)
 		}
-		for _, statement := range []string{
-			recoveryNarrativeMeaningLinks(locale, "optimal")[0].Statement,
-			recoveryNarrativeMeaningLinks(locale, "low")[0].Statement,
-			energyNarrativeMeaningLinks(locale, "rest")[0].Statement,
-			energyNarrativeMeaningLinks(locale, "active_recovery")[0].Statement,
-		} {
-			if statement == "" {
-				t.Fatalf("%s has an empty narrative meaning", locale)
-			}
+		combined := overallNarrativeMeaningLinks(locale, []string{"recovery", "energy"})
+		if len(combined) != 1 || combined[0].ID != "overall_combined_context" || combined[0].Statement == "" {
+			t.Fatalf("%s combined overall meaning = %#v", locale, combined)
 		}
 	}
 }
@@ -348,15 +442,17 @@ func TestDailyInsightNarrativeSlotsKeepSiblingMaterialIndependent(t *testing.T) 
 	base := BuildDailyInsightSnapshot(&BriefingResponse{
 		Date: "2026-09-12", Sleep: &SleepAnalysis{LatestDate: "2026-09-12", LatestTotal: &duration, TotalAvg: 6.8},
 		ReadinessToday: 42, ReadinessTodayBand: "low", ReadinessServing: &ReadinessServingState{Status: ReadinessServingFresh, Confidence: ReadinessConfidenceFinal},
-		EnergyBank: &EnergyBank{Current: 45, Capacity: 80, ActionVerdict: "active_recovery", VerdictReason: "Current reserve is available."},
+		EnergyBank: &EnergyBank{Current: 45, Capacity: 80, ActionVerdict: "rest", VerdictReason: "Current reserve is available."},
 	}, "en")
 	base.DecisionID = "decision-for-test"
 	base.Primary = DailyInsight{
 		State: "insight", AnswerKind: DailyInsightAnswerFactual, EvidenceIDs: []string{"decision-evidence"},
-		NextStep: &DailyInsightAction{ID: "daily-decision-active_recovery", Text: "Active recovery"}, NarrativeSubject: "active_recovery",
+		NextStep: &DailyInsightAction{ID: "daily-decision-rest", Text: "Rest"}, NarrativeSubject: "rest",
 	}
-	base.DecisionEvidenceDomains = []string{"energy"}
+	base.DecisionEvidenceDomains = []string{"recovery", "energy"}
 	base.Evidence = append(base.Evidence, DailyInsightEvidence{ID: "decision-evidence", Domain: "recovery", DataState: "fresh", Confidence: "final"})
+	base.Domains[1].Insight.AnswerKind = DailyInsightAnswerFactual
+	base.Domains[1].Insight.ClaimID = "recovery_readiness_context"
 	overall, known := BuildDailyInsightNarrativeSlotInput(base, "en", DailyInsightNarrativeOverallSlot)
 	if !known || len(overall.Slot.Claims) != 1 || overall.Slot.Claims[0].ID != "overall_daily_decision_context" {
 		t.Fatalf("overall slot packet = %#v, known=%v", overall, known)
@@ -367,16 +463,16 @@ func TestDailyInsightNarrativeSlotsKeepSiblingMaterialIndependent(t *testing.T) 
 		t.Fatalf("sleep update changed energy slot hash: before=%s after=%s", hash, changed)
 	}
 	energy, known := BuildDailyInsightNarrativeSlotInput(base, "en", "energy")
-	if !known || energy.Slot.Position == nil || energy.Slot.Position.ID != "daily_decision_position" || len(energy.Slot.Position.SupportingSignals) != 1 || energy.Slot.Position.SupportingSignals[0].Domain != "energy" {
-		t.Fatalf("energy server position = %#v, known=%v", energy.Slot.Position, known)
+	if !known || len(energy.Slot.Claims) != 0 || energy.Slot.Position != nil {
+		t.Fatalf("energy should retain its deterministic card without standalone model prose: %#v, known=%v", energy, known)
 	}
 	sleep, known := BuildDailyInsightNarrativeSlotInput(base, "en", "sleep")
 	if !known || sleep.Slot.Position != nil {
 		t.Fatalf("unrelated sleep slot received server position: %#v", sleep.Slot.Position)
 	}
 	section := &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
-		Text:     "Today is set to an active-recovery pace, keeping the selected pace scoped to today.",
-		ClaimIDs: []string{"overall_daily_decision_context"}, QualifierIDs: []string{"current_context"}, MeaningIDs: []string{"overall_pacing_guardrail"},
+		Text:     "The recommendation brings recovery and energy together instead of relying on one measure.",
+		ClaimIDs: []string{"overall_daily_decision_context"}, QualifierIDs: []string{"current_context"}, MeaningIDs: []string{"overall_combined_context"},
 	}}}
 	validated, err := ValidateDailyInsightNarrativeSlotResponse(base, "en", DailyInsightNarrativeOverallSlot, DailyInsightNarrativeSlot{
 		Version: DailyInsightNarrativeVersion, Locale: "en", Slot: DailyInsightNarrativeDomain{Key: DailyInsightNarrativeOverallSlot, Section: section},
@@ -390,30 +486,51 @@ func TestDailyInsightNarrativeSlotsKeepSiblingMaterialIndependent(t *testing.T) 
 	}
 }
 
-func TestDailyInsightNarrativeSlotRequiresServerPositionCitation(t *testing.T) {
+func TestDailyInsightNarrativeSlotRejectsStandaloneEnergyParaphrase(t *testing.T) {
 	duration := 7.2
 	snapshot := BuildDailyInsightSnapshot(&BriefingResponse{
 		Date: "2026-09-12", Sleep: &SleepAnalysis{LatestDate: "2026-09-12", LatestTotal: &duration, TotalAvg: 7.1},
 		ReadinessToday: 42, ReadinessTodayBand: "low", ReadinessServing: &ReadinessServingState{Status: ReadinessServingFresh, Confidence: ReadinessConfidenceFinal},
-		EnergyBank: &EnergyBank{Current: 45, Capacity: 80, ActionVerdict: "active_recovery", VerdictReason: "The current reserve supports a quieter day."},
+		EnergyBank: &EnergyBank{Current: 45, Capacity: 80, ActionVerdict: "rest", VerdictReason: "The current reserve supports a quieter day."},
 	}, "en")
 	input, known := BuildDailyInsightNarrativeSlotInput(snapshot, "en", "energy")
-	if !known || input.Slot.Position == nil || input.Slot.Position.ID != "daily_decision_position" {
-		t.Fatalf("energy slot should receive the decision position: %#v", input)
+	if !known || len(input.Slot.Claims) != 0 || input.Slot.Position != nil {
+		t.Fatalf("energy slot should have no standalone model material: %#v", input)
 	}
 	section := DailyInsightNarrativeSlot{
 		Version: DailyInsightNarrativeVersion, Locale: "en",
 		Slot: DailyInsightNarrativeDomain{Key: "energy", Section: &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
-			Text:     "Today is better suited to avoiding extra intensity, so ordinary tasks do not need a harder push.",
-			ClaimIDs: []string{"energy_current_verdict_context"}, QualifierIDs: []string{"current_context"}, MeaningIDs: []string{"energy_pacing_today"},
+			Text:     "This is about energy available now, not a forecast for the day.",
+			ClaimIDs: []string{"energy_current_verdict_context"}, QualifierIDs: []string{"current_context"}, MeaningIDs: []string{"energy_day_to_day_effect"},
 		}}}},
 	}
-	if _, err := ValidateDailyInsightNarrativeSlotResponse(snapshot, "en", "energy", section); err == nil || !strings.Contains(err.Error(), "server position") {
-		t.Fatalf("missing server-position citation error = %v", err)
+	if _, err := ValidateDailyInsightNarrativeSlotResponse(snapshot, "en", "energy", section); err == nil || !strings.Contains(err.Error(), "no eligible claims") {
+		t.Fatalf("standalone energy paraphrase was accepted: %v", err)
 	}
-	section.Slot.Section.Sentences[0].PositionIDs = []string{"daily_decision_position"}
-	if _, err := ValidateDailyInsightNarrativeSlotResponse(snapshot, "en", "energy", section); err != nil {
-		t.Fatalf("server-position citation rejected: %v", err)
+}
+
+func TestValidateDailyInsightNarrativeRejectsIndependentEnergyParaphrase(t *testing.T) {
+	duration := 7.2
+	snapshot := BuildDailyInsightSnapshot(&BriefingResponse{
+		Date: "2026-09-12", Sleep: &SleepAnalysis{LatestDate: "2026-09-12", LatestTotal: &duration, TotalAvg: 7.1},
+		ReadinessToday: 42, ReadinessTodayBand: "low", ReadinessServing: &ReadinessServingState{Status: ReadinessServingFresh, Confidence: ReadinessConfidenceFinal},
+		EnergyBank: &EnergyBank{Current: 45, Capacity: 80, ActionVerdict: "rest", VerdictReason: "The current reserve supports a quieter day."},
+	}, "en")
+	candidate := DailyInsightNarrative{
+		Version: DailyInsightNarrativeVersion,
+		Locale:  "en",
+		Domains: []DailyInsightNarrativeDomain{
+			{Key: "sleep"},
+			{Key: "recovery"},
+			{Key: "energy", Section: &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
+				Text:     "This is about energy available now, not a forecast for the day.",
+				ClaimIDs: []string{"energy_current_verdict_context"}, QualifierIDs: []string{"current_context"}, MeaningIDs: []string{"energy_day_to_day_effect"}, PositionIDs: []string{"daily_decision_position"},
+			}}}},
+		},
+	}
+	_, invalid, err := ValidateDailyInsightNarrative(snapshot, "en", candidate)
+	if err != nil || invalid["energy"] == "" {
+		t.Fatalf("combined validation accepted standalone energy paraphrase: invalid=%#v err=%v", invalid, err)
 	}
 }
 
@@ -432,30 +549,173 @@ func TestDailyInsightNarrativeSlotRejectsMeaningOutsideServerCatalogue(t *testin
 	}
 }
 
-func TestDailyInsightNarrativeSlotRequiresClaimTextAnchors(t *testing.T) {
+func TestDailyInsightNarrativeSlotRejectsUnsupportedReliabilityAndReaderFacingCaveats(t *testing.T) {
+	snapshot := ApplyRecentSleepBelowReference(BuildDailyInsightSnapshot(&BriefingResponse{Date: "2026-09-12"}, "ru"), RecentSleepBelowReference{State: RecentSleepClaimTrue}, "ru")
+	for _, text := range []string{
+		"Это не случайность одной ночи.",
+		"Такой рисунок делает вывод надёжнее.",
+		"Данных пока недостаточно для вывода.",
+		"This assessment has limited data quality.",
+		"Ovo ima ograničen opseg.",
+		"Несколько коротких ночей складываются в заметный рисунок сна на сегодня.",
+		"Сегодня сил немного, поэтому энергию стоит распределить по дню.",
+		"Сегодня у тебя больше свободы в выборе темпа дня.",
+		"Several shorter nights form a real sleep pattern in today's picture.",
+		"Energy is a resource to spread across the day.",
+		"Imaš više slobode pri izboru ritma dana.",
+	} {
+		_, err := ValidateDailyInsightNarrativeSlotResponse(snapshot, "ru", "sleep", DailyInsightNarrativeSlot{
+			Version: DailyInsightNarrativeVersion,
+			Locale:  "ru",
+			Slot: DailyInsightNarrativeDomain{Key: "sleep", Section: &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
+				Text: text, ClaimIDs: []string{"recent_sleep_below_reference"}, QualifierIDs: []string{"personal_pattern", "current_context"}, MeaningIDs: []string{"sleep_personal_reference"},
+			}}}},
+		})
+		if err == nil || !strings.Contains(err.Error(), "forbidden narrative content") {
+			t.Fatalf("unsupported claim accepted for %q: %v", text, err)
+		}
+	}
+}
+
+func TestDailyInsightNarrativeSlotRejectsProviderAnchorSelection(t *testing.T) {
 	snapshot := ApplyRecentSleepBelowReference(BuildDailyInsightSnapshot(&BriefingResponse{Date: "2026-09-12"}, "en"), RecentSleepBelowReference{State: RecentSleepClaimTrue}, "en")
 	_, err := ValidateDailyInsightNarrativeSlotResponse(snapshot, "en", "sleep", DailyInsightNarrativeSlot{
 		Version: DailyInsightNarrativeVersion,
 		Locale:  "en",
-		Slot: DailyInsightNarrativeDomain{Key: "sleep", Section: &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
-			Text:     "It gives the current day a little more context.",
-			ClaimIDs: []string{"recent_sleep_below_reference"}, QualifierIDs: []string{"personal_pattern", "current_context"}, MeaningIDs: []string{"sleep_pattern_not_single_night"},
+		Slot: DailyInsightNarrativeDomain{Key: "sleep", Section: &DailyInsightNarrativeSection{AnchorVariantID: "recent-shorter-than-usual", Sentences: []DailyInsightNarrativeSentence{{
+			Text:     "The comparison stays with your own usual sleep, rather than a universal target.",
+			ClaimIDs: []string{"recent_sleep_below_reference"}, QualifierIDs: []string{"personal_pattern", "current_context"}, MeaningIDs: []string{"sleep_personal_reference"},
 		}}}},
 	})
-	if err == nil || !strings.Contains(err.Error(), "missing required text fragment") {
-		t.Fatalf("unexpected text-anchor validation error: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "must not select") {
+		t.Fatalf("unexpected provider-anchor validation error: %v", err)
 	}
 }
 
-func TestDailyInsightNarrativeRussianAnchorsUseEverydayLanguage(t *testing.T) {
-	if got, want := localizedRecoveryNarrativeTextFragments("ru", "low"), []string{"восстановление не на пике"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("low recovery anchors = %#v, want %#v", got, want)
+func TestDailyInsightNarrativeSlotRendersOneCompleteRichStory(t *testing.T) {
+	snapshot := ApplyRecentSleepBelowReference(BuildDailyInsightSnapshot(&BriefingResponse{Date: "2026-09-12"}, "en"), RecentSleepBelowReference{State: RecentSleepClaimTrue}, "en")
+	section := &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
+		Text: "Several recent nights were shorter than usual for you. The comparison stays with your own usual sleep rather than a universal target.", ClaimIDs: []string{"recent_sleep_below_reference"}, QualifierIDs: []string{"personal_pattern", "current_context"}, MeaningIDs: []string{"sleep_personal_reference"},
+	}}}
+	validated, err := ValidateDailyInsightNarrativeSlotResponse(snapshot, "en", "sleep", DailyInsightNarrativeSlot{
+		Version: DailyInsightNarrativeVersion,
+		Locale:  "en",
+		Slot:    DailyInsightNarrativeDomain{Key: "sleep", Section: section},
+	})
+	if err != nil {
+		t.Fatalf("rich story rejected: %v", err)
 	}
-	if got, want := localizedEnergyNarrativeTextFragments("ru", "rest"), []string{"сегодня сил немного"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("rest energy anchors = %#v, want %#v", got, want)
+	if validated.AnchorVariantID != "" {
+		t.Fatalf("rich story retained a legacy anchor: %#v", validated)
 	}
-	if got, want := localizedSleepNarrativeTextFragments("sr"), []string{"kraće od tvog uobičajenog ritma sna"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("Serbian sleep anchors = %#v, want %#v", got, want)
+	rendered, err := ApplyDailyInsightNarrativeSlot(snapshot, "en", "sleep", validated)
+	if err != nil || rendered.Domains[0].Insight.Narrative == nil || rendered.Domains[0].Insight.Narrative.Text != section.Sentences[0].Text {
+		t.Fatalf("rich-story overlay = %#v err=%v", rendered.Domains[0].Insight.Narrative, err)
+	}
+}
+
+func TestDailyInsightNarrativeSlotExposesServerFormattedFactsAndRejectsInventedNumbers(t *testing.T) {
+	snapshot := ApplyRecentSleepBelowReference(BuildDailyInsightSnapshot(&BriefingResponse{Date: "2026-09-12"}, "en"), RecentSleepBelowReference{State: RecentSleepClaimTrue, ReferenceHours: 7.8, CurrentShortDays: 3}, "en")
+	input, known := BuildDailyInsightNarrativeSlotInput(snapshot, "en", "sleep")
+	if !known || input.Slot.Story == nil || len(input.Slot.Facts) == 0 {
+		t.Fatalf("rich sleep packet = %#v, known=%v", input, known)
+	}
+	foundDisplayValue := false
+	for _, fact := range input.Slot.Facts {
+		foundDisplayValue = foundDisplayValue || len(fact.DisplayValues) > 0
+	}
+	if !foundDisplayValue {
+		t.Fatalf("packet has no display values: %#v", input.Slot.Facts)
+	}
+	valid := DailyInsightNarrativeSlot{Version: DailyInsightNarrativeVersion, Locale: "en", Slot: DailyInsightNarrativeDomain{Key: "sleep", Section: &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
+		Text: "Across the last 3 shorter nights, the pattern is worth carrying into today's picture.", ClaimIDs: []string{"recent_sleep_below_reference"}, QualifierIDs: []string{"personal_pattern", "current_context"}, MeaningIDs: []string{"sleep_personal_reference"},
+	}}}}}
+	if _, err := ValidateDailyInsightNarrativeSlotResponse(snapshot, "en", "sleep", valid); err != nil {
+		t.Fatalf("server-supplied number rejected: %v", err)
+	}
+	valid.Slot.Section.Sentences[0].Text = "Across the last 9 shorter nights, the pattern is worth carrying into today's picture."
+	if _, err := ValidateDailyInsightNarrativeSlotResponse(snapshot, "en", "sleep", valid); err == nil || !strings.Contains(err.Error(), "display catalog") {
+		t.Fatalf("invented number accepted: %v", err)
+	}
+}
+
+func TestDailyInsightNarrativeSlotRequiresExactlyOneMeaning(t *testing.T) {
+	snapshot := ApplyRecentSleepBelowReference(BuildDailyInsightSnapshot(&BriefingResponse{Date: "2026-09-12"}, "en"), RecentSleepBelowReference{State: RecentSleepClaimTrue}, "en")
+	section := &DailyInsightNarrativeSection{
+		Sentences: []DailyInsightNarrativeSentence{{
+			Text:         "The comparison stays with your own usual sleep, rather than a universal target.",
+			ClaimIDs:     []string{"recent_sleep_below_reference"},
+			QualifierIDs: []string{"personal_pattern", "current_context"},
+			MeaningIDs:   []string{"sleep_personal_reference", "sleep_personal_reference"},
+		}},
+	}
+	_, err := ValidateDailyInsightNarrativeSlotResponse(snapshot, "en", "sleep", DailyInsightNarrativeSlot{
+		Version: DailyInsightNarrativeVersion,
+		Locale:  "en",
+		Slot:    DailyInsightNarrativeDomain{Key: "sleep", Section: section},
+	})
+	if err == nil || !strings.Contains(err.Error(), "exactly one meaning") {
+		t.Fatalf("multiple meanings error = %v", err)
+	}
+}
+
+func TestDailyInsightNarrativeSlotAllowsFactInCompleteStory(t *testing.T) {
+	snapshot := ApplyRecentSleepBelowReference(BuildDailyInsightSnapshot(&BriefingResponse{Date: "2026-09-12"}, "en"), RecentSleepBelowReference{State: RecentSleepClaimTrue}, "en")
+	section := &DailyInsightNarrativeSection{
+		Sentences: []DailyInsightNarrativeSentence{{
+			Text:         "Several recent nights were shorter than usual for you. Several recent nights were shorter than usual for you. The repeated pattern is more meaningful than one short night.",
+			ClaimIDs:     []string{"recent_sleep_below_reference"},
+			QualifierIDs: []string{"personal_pattern", "current_context"},
+			MeaningIDs:   []string{"sleep_personal_reference"},
+		}},
+	}
+	_, err := ValidateDailyInsightNarrativeSlotResponse(snapshot, "en", "sleep", DailyInsightNarrativeSlot{
+		Version: DailyInsightNarrativeVersion,
+		Locale:  "en",
+		Slot:    DailyInsightNarrativeDomain{Key: "sleep", Section: section},
+	})
+	if err != nil {
+		t.Fatalf("complete story unexpectedly rejected: %v", err)
+	}
+}
+
+func TestDailyInsightNarrativeSlotAllowsNaturalFactParaphrase(t *testing.T) {
+	snapshot := ApplyRecentSleepBelowReference(BuildDailyInsightSnapshot(&BriefingResponse{Date: "2026-09-12"}, "en"), RecentSleepBelowReference{State: RecentSleepClaimTrue}, "en")
+	for _, text := range []string{
+		"Several, recent nights were shorter than usual for you; the repeated pattern matters more than one night.",
+		"You slept less than usual over several recent nights, which makes the pattern more meaningful than one night.",
+	} {
+		_, err := ValidateDailyInsightNarrativeSlotResponse(snapshot, "en", "sleep", DailyInsightNarrativeSlot{
+			Version: DailyInsightNarrativeVersion,
+			Locale:  "en",
+			Slot: DailyInsightNarrativeDomain{Key: "sleep", Section: &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
+				Text: text, ClaimIDs: []string{"recent_sleep_below_reference"}, QualifierIDs: []string{"personal_pattern", "current_context"}, MeaningIDs: []string{"sleep_personal_reference"},
+			}}}},
+		})
+		if err != nil {
+			t.Fatalf("natural fact paraphrase rejected for %q: %v", text, err)
+		}
+	}
+}
+
+func TestDailyInsightNarrativeAnchorCatalogFingerprintIsNonEmpty(t *testing.T) {
+	if fingerprint := DailyInsightNarrativeAnchorCatalogFingerprint(); len(fingerprint) != 64 {
+		t.Fatalf("anchor catalog fingerprint = %q", fingerprint)
+	}
+	if fingerprint := DailyInsightNarrativeMeaningCatalogFingerprint(); len(fingerprint) != 64 {
+		t.Fatalf("meaning catalog fingerprint = %q", fingerprint)
+	}
+}
+
+func TestDailyInsightNarrativeAnchorsAreCompleteEverydaySentences(t *testing.T) {
+	if got, want := localizedRecoveryNarrativeAnchors("ru", "low")[0].Text, "Сегодня восстановление не на пике."; got != want {
+		t.Fatalf("low recovery anchor = %q, want %q", got, want)
+	}
+	if got, want := localizedEnergyNarrativeAnchors("ru", "rest")[0].Text, "Сегодня сил немного."; got != want {
+		t.Fatalf("rest energy anchor = %q, want %q", got, want)
+	}
+	if got, want := localizedSleepNarrativeAnchors("sr")[0].Text, "Nekoliko poslednjih noći spavao si manje nego što je za tebe uobičajeno."; got != want {
+		t.Fatalf("Serbian sleep anchor = %q, want %q", got, want)
 	}
 }
 
@@ -465,8 +725,8 @@ func TestDailyInsightNarrativeSlotRequiresSerbianLatinScript(t *testing.T) {
 		Version: DailyInsightNarrativeVersion,
 		Locale:  "sr",
 		Slot: DailyInsightNarrativeDomain{Key: "sleep", Section: &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
-			Text:     "Нekoliko poslednjih noći bilo je kraće od ličnog obrasca, pa čini skorašnji obrazac.",
-			ClaimIDs: []string{"recent_sleep_below_reference"}, QualifierIDs: []string{"personal_pattern", "current_context"}, MeaningIDs: []string{"sleep_pattern_not_single_night"},
+			Text:     "Нekoliko poslednjih noći odstupa od tvog uobičajenog sna.",
+			ClaimIDs: []string{"recent_sleep_below_reference"}, QualifierIDs: []string{"personal_pattern", "current_context"}, MeaningIDs: []string{"sleep_personal_reference"},
 		}}}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "Latin script") {
@@ -474,7 +734,7 @@ func TestDailyInsightNarrativeSlotRequiresSerbianLatinScript(t *testing.T) {
 	}
 }
 
-func TestDailyInsightNarrativeIncludesDistinctRecoveryAndEnergyClaims(t *testing.T) {
+func TestDailyInsightNarrativeIncludesRecoveryButNotStandaloneEnergyParaphrase(t *testing.T) {
 	duration := 7.2
 	snapshot := BuildDailyInsightSnapshot(&BriefingResponse{
 		Date:               "2026-09-12",
@@ -483,26 +743,36 @@ func TestDailyInsightNarrativeIncludesDistinctRecoveryAndEnergyClaims(t *testing
 		ReadinessTodayBand: "low",
 		ReadinessTip:       "Recovery signals are more limited today.",
 		ReadinessServing:   &ReadinessServingState{Status: ReadinessServingFresh, Confidence: ReadinessConfidenceFinal},
-		EnergyBank:         &EnergyBank{Current: 45, Capacity: 80, ActionVerdict: "active_recovery", VerdictReason: "The current reserve supports a quieter day."},
+		EnergyBank:         &EnergyBank{Current: 45, Capacity: 80, ActionVerdict: "rest", VerdictReason: "The current reserve supports a quieter day."},
 	}, "en")
 	input := BuildDailyInsightNarrativeInput(snapshot, "en")
 	if got := narrativeInputClaimIDs(input, "recovery"); len(got) != 1 || got[0] != "recovery_readiness_context" {
 		t.Fatalf("recovery claims = %#v", got)
 	}
-	if got := narrativeInputClaimIDs(input, "energy"); len(got) != 1 || got[0] != "energy_current_verdict_context" {
-		t.Fatalf("energy claims = %#v", got)
+	if got := narrativeInputClaimIDs(input, "energy"); len(got) != 0 {
+		t.Fatalf("energy claims = %#v; a single energy card is deterministic-only", got)
 	}
 	if claim := narrativeInputClaim(input, "recovery"); strings.Contains(claim.Proposition, "Recovery signals are more limited today.") || claim.RequiredQualifierIDs[0] != "current_context" {
 		t.Fatalf("recovery packet leaked display copy or wrong qualifiers: %#v", claim)
 	}
-	if claim := narrativeInputClaim(input, "energy"); strings.Contains(claim.Proposition, "The current reserve supports a quieter day.") || claim.RequiredQualifierIDs[0] != "current_context" {
-		t.Fatalf("energy packet leaked display copy or wrong qualifiers: %#v", claim)
-	}
 	if got := dailyInsightDomain(t, snapshot, "energy").Band; got == "active_recovery" {
 		t.Fatalf("energy display band was overwritten by narrative subject")
 	}
-	if got := dailyInsightDomain(t, snapshot, "energy").NarrativeSubject; got != "active_recovery" {
+	if got := dailyInsightDomain(t, snapshot, "energy").NarrativeSubject; got != "rest" {
 		t.Fatalf("energy narrative subject = %q", got)
+	}
+}
+
+func TestDailyInsightNarrativeWithholdsEveryStandaloneEnergyVerdict(t *testing.T) {
+	for _, verdict := range []string{"push_hard", "rest", "active_recovery"} {
+		snapshot := BuildDailyInsightSnapshot(&BriefingResponse{
+			Date:       "2026-09-12",
+			EnergyBank: &EnergyBank{Current: 45, Capacity: 80, ActionVerdict: verdict, VerdictReason: "The current reserve supports a quieter day."},
+		}, "en")
+		input, known := BuildDailyInsightNarrativeSlotInput(snapshot, "en", "energy")
+		if !known || len(input.Slot.Claims) != 0 || input.Slot.Story != nil {
+			t.Fatalf("%s energy should have no permitted standalone B1 meaning: %#v", verdict, input)
+		}
 	}
 }
 
@@ -517,8 +787,8 @@ func TestEnergyNarrativePropositionsAreObservationsNotActions(t *testing.T) {
 			}
 		}
 	}
-	if got, want := localizedEnergyNarrativeTextFragments("ru", "active_recovery"), []string{"сегодня лучше не добавлять интенсивности"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("Russian active-recovery anchor = %#v, want %#v", got, want)
+	if got, want := localizedEnergyNarrativeAnchors("ru", "active_recovery")[0].Text, "Сегодня лучше не добавлять интенсивности."; got != want {
+		t.Fatalf("Russian active-recovery anchor = %q, want %q", got, want)
 	}
 }
 

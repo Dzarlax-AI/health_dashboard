@@ -157,13 +157,19 @@ type RecentSleepBelowReference struct {
 	Reason           string
 	ReferenceHours   float64
 	CurrentShortDays int
-	ActionEvent      bool
-	EvidenceDigest   string
+	// EveningActionAvailable is the server-owned, in-product gentle next step.
+	// It is available for every confirmed current evening claim; it is distinct
+	// from ActionEvent, which remains the once-per-seven-days event used by
+	// availability reporting and any future proactive delivery policy.
+	EveningActionAvailable bool
+	ActionEvent            bool
+	EvidenceDigest         string
 }
 
 // EvaluateRecentSleepBelowReference implements the closed B0 policy. The
 // reference window is D-93..D-4 (90 dates); the current window is D-3..D.
-// Unknown previous cadence dates never block a current evening action.
+// Every confirmed current evening claim receives the in-product gentle action.
+// Unknown previous cadence dates never block the separate seven-day event.
 func EvaluateRecentSleepBelowReference(records []CompletedNightSleep, wakeDate string, now time.Time, loc *time.Location) RecentSleepBelowReference {
 	finalize := func(result RecentSleepBelowReference) RecentSleepBelowReference {
 		result.EvidenceDigest = recentSleepEvidenceDigest(records, wakeDate)
@@ -247,6 +253,7 @@ func EvaluateRecentSleepBelowReference(records []CompletedNightSleep, wakeDate s
 		localNow.Hour() < 18 || now.Before(mustNightFinalizationTime(wakeDate, loc)) {
 		return finalize(result)
 	}
+	result.EveningActionAvailable = true
 	for offset := -7; offset <= -1; offset++ {
 		prior := date.AddDate(0, 0, offset).Format("2006-01-02")
 		priorResult := EvaluateRecentSleepBelowReference(records, prior, now, loc)

@@ -726,6 +726,8 @@ export interface components {
             }[] | null;
             generation: {
                 fresh_for_snapshot: boolean;
+                /** @enum {string} */
+                narrative_mode: "disabled" | "preview" | "approved";
                 retry_after_seconds?: number;
                 slots?: {
                     fresh_for_snapshot: boolean;
