@@ -65,7 +65,7 @@ func TestCandidateReviewHintsAreStructuralRatherThanProvenanceClaims(t *testing.
 	item := ai.DailyInsightNarrativeCorpusCase{
 		Locale: "en",
 		Snapshot: health.DailyInsightSnapshot{Domains: []health.DailyInsightDomain{
-			{Key: "sleep", DataState: "fresh", Confidence: "final", Insight: health.DailyInsight{State: "insight", AnswerKind: health.DailyInsightAnswerFactual}},
+			{Key: "sleep", DataState: "fresh", Confidence: "final", Insight: health.DailyInsight{State: "insight", AnswerKind: health.DailyInsightAnswerConfirmedPersonal, ClaimID: "recent_sleep_below_reference", EvidenceIDs: []string{"sleep-evidence"}}},
 			{Key: "recovery", DataState: "fresh", Confidence: "final", Insight: health.DailyInsight{State: "insight", AnswerKind: health.DailyInsightAnswerFactual}},
 			{Key: "energy", DataState: "fresh", Confidence: "final", NarrativeSubject: "rest", Insight: health.DailyInsight{State: "insight", AnswerKind: health.DailyInsightAnswerFactual, ClaimID: "energy_current_verdict_context", EvidenceIDs: []string{"energy-evidence"}}},
 		}},
