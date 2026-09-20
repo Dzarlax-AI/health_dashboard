@@ -131,13 +131,15 @@ indexes: it fails closed when one is missing. New-tenant provisioning creates
 them before activation, while existing tenants receive them only after
 `scripts/deploy-tenant-schema-gate.sh` has stopped the application service.
 
-For production, run `scripts/deploy-tenant-schema-gate.sh` as root with a
-root-owned mode-0600 environment file. The wrapper pins one image digest,
-audits before downtime, stops only the application service, migrates and audits
-while stopped, starts the pinned image, checks stability, audits again, and
-rechecks stability/logs. It never performs an automatic database rollback or
-old-image restart; on failure follow only the printed immutable recovery
-instructions after verifying backward compatibility.
+For production, run `scripts/deploy-tenant-schema-gate.sh` as root with
+root-owned mode-0600 audit and release environment files. Pass the resolved
+`release.env` through `--release-env`; the wrapper snapshots it with
+`O_NOFOLLOW` before Compose renders the exact immutable pair. The wrapper
+pins one image digest, audits before downtime, stops only the application
+service, migrates and audits while stopped, starts the pinned image, checks
+stability, audits again, and rechecks stability/logs. It never performs an
+automatic database rollback or old-image restart; on failure follow only the
+printed immutable recovery instructions after verifying backward compatibility.
 
 ## Rotation
 

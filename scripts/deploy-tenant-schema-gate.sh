@@ -28,6 +28,7 @@ usage() {
     '  --service NAME           Compose service to stop and start' \
     '  --primary-schema NAME    Canonical primary tenant schema' \
     '  --audit-env FILE         Root-owned, mode subset of 0600 CLI environment' \
+    '  --release-env FILE       Root-owned, mode subset of 0600 Compose release environment' \
     '  --network NAME           Docker network used by one-shot CLI containers' '' \
     'Optional:' \
     '  --readiness-timeout SEC  Stability deadline in seconds (default: 120)' \
@@ -41,12 +42,13 @@ compose_project=${HEALTH_GATE_PROJECT:-}
 service=${HEALTH_GATE_SERVICE:-}
 primary_schema=${HEALTH_GATE_PRIMARY_SCHEMA:-}
 audit_env=${HEALTH_GATE_AUDIT_ENV:-}
+release_env=${HEALTH_GATE_RELEASE_ENV:-}
 network=${HEALTH_GATE_NETWORK:-}
 readiness_timeout=${HEALTH_GATE_READINESS_TIMEOUT:-120}
 
 while (($# > 0)); do
   case "$1" in
-    --image|--compose-dir|--compose-file|--project|--service|--primary-schema|--audit-env|--network|--readiness-timeout)
+    --image|--compose-dir|--compose-file|--project|--service|--primary-schema|--audit-env|--release-env|--network|--readiness-timeout)
       (($# >= 2)) || { printf 'missing value for %s\n' "$1" >&2; exit 2; }
       case "$1" in
         --image) requested_image=$2 ;;
@@ -56,6 +58,7 @@ while (($# > 0)); do
         --service) service=$2 ;;
         --primary-schema) primary_schema=$2 ;;
         --audit-env) audit_env=$2 ;;
+        --release-env) release_env=$2 ;;
         --network) network=$2 ;;
         --readiness-timeout) readiness_timeout=$2 ;;
       esac
@@ -151,6 +154,7 @@ compose_fingerprint=''
 compose_path=''
 compose_dir_canonical=''
 audit_env_snapshot=$tmp_dir/audit.env
+release_env_snapshot=''
 recovery_compose=''
 recovery_dir=''
 
@@ -278,10 +282,12 @@ on_exit() {
 }
 trap on_exit EXIT
 
-# Open the operator file once with O_NOFOLLOW, validate the open descriptor and
-# trusted parent chain, then copy it to a private snapshot. Docker never sees the
-# mutable operator path.
-if ! "$PYTHON" -c '
+# Open an operator environment once with O_NOFOLLOW, validate the open
+# descriptor and trusted parent chain, then copy it to a private snapshot.
+# Docker never sees the mutable operator path.
+snapshot_operator_env() {
+  local source=$1 destination=$2 label=$3
+  if ! "$PYTHON" -c '
 import os, stat, sys
 src,dst=map(os.path.abspath,sys.argv[1:3]); uid=int(sys.argv[3]); allow=int(sys.argv[4]); owners={uid} if uid == 0 else {0,uid}
 parent = os.path.dirname(src)
@@ -308,10 +314,17 @@ try:
         os.fsync(out)
     finally: os.close(out)
 finally: os.close(fd)
-' "$audit_env" "$audit_env_snapshot" "$trusted_uid" "$allow_untrusted_ancestors_for_tests"; then
-  fail_usage 'audit-env or its parent chain is not trusted'
+' "$source" "$destination" "$trusted_uid" "$allow_untrusted_ancestors_for_tests"; then
+    fail_usage "$label or its parent chain is not trusted"
+  fi
+  $CHMOD 600 "$destination"
+}
+
+snapshot_operator_env "$audit_env" "$audit_env_snapshot" audit-env
+if [[ -n $release_env ]]; then
+  release_env_snapshot=$tmp_dir/release.env
+  snapshot_operator_env "$release_env" "$release_env_snapshot" release-env
 fi
-$CHMOD 600 "$audit_env_snapshot"
 
 if [[ $compose_file = /* ]]; then compose_candidate=$compose_file; else compose_candidate=$compose_dir/$compose_file; fi
 fingerprint_compose() {
@@ -448,7 +461,10 @@ rendered_compose=$tmp_dir/effective-compose.json
 rendered_compose_err=$tmp_dir/effective-compose.stderr
 : >"$rendered_compose"; : >"$rendered_compose_err"; $CHMOD 600 "$rendered_compose" "$rendered_compose_err"
 verify_compose_unchanged
-HEALTH_IMAGE=$target_digest "$DOCKER" compose --project-directory "$compose_dir_canonical" -f "$compose_path" -p "$compose_project" \
+compose_render_args=(--project-directory "$compose_dir_canonical")
+if [[ -n $release_env_snapshot ]]; then compose_render_args+=(--env-file "$release_env_snapshot"); fi
+compose_render_args+=(-f "$compose_path" -p "$compose_project")
+HEALTH_IMAGE=$target_digest "$DOCKER" compose "${compose_render_args[@]}" \
   config --format json >"$rendered_compose" 2>"$rendered_compose_err" || { printf 'effective compose rendering failed; details suppressed\n' >&2; exit 1; }
 verify_compose_unchanged
 rendered_fingerprint=$("$PYTHON" -c '

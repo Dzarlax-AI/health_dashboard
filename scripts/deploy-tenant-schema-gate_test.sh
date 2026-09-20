@@ -12,6 +12,8 @@ printf '%s\n' 'services:' '  health-receiver:' '    image: ${HEALTH_IMAGE}' '   
 printf 'ORIGINAL=1\n' >"$tmp/compose/dependency.env"
 printf 'TENANT_DB_MASTER_SECRET=do-not-leak-this-secret\n' >"$tmp/audit.env"
 chmod 600 "$tmp/audit.env"
+printf 'RELEASE_MARKER=1\n' >"$tmp/release.env"
+chmod 600 "$tmp/release.env"
 
 # The production entrypoint must reject this rootless test process before doing
 # anything else. Functional tests use a generated copy with only literal trust
@@ -90,6 +92,13 @@ print(json.dumps(value,separators=(",",":")))
 ' "$compose_file"
         exit 0
       fi
+      release_env=''
+      for ((i=1; i<=$#; i++)); do
+        if [[ ${!i} == --env-file ]]; then j=$((i+1)); release_env=${!j}; fi
+      done
+      [[ -n $release_env && $release_env != "$FAKE_ORIGINAL_RELEASE_ENV" ]] || exit 41
+      /usr/bin/python3 -c 'import os,stat,sys; p=sys.argv[1]; s=os.stat(p); assert stat.S_IMODE(s.st_mode)==0o600 and open(p).read()=="RELEASE_MARKER=1\n"' "$release_env"
+      if [[ ${FAKE_MUTATE_ORIGINAL_RELEASE_ENV:-0} == 1 ]]; then printf 'RELEASE_MARKER=mutated\n' >"$FAKE_ORIGINAL_RELEASE_ENV"; fi
       image=${HEALTH_IMAGE:-}
       [[ ${FAKE_COMPOSE_IGNORES_IMAGE:-0} != 1 ]] || image='ghcr.io/example/health:previous'
       if [[ ${FAKE_RECOVERY_RICH:-0} == 1 ]]; then
@@ -205,6 +214,8 @@ reset_fixture() {
   printf 'ORIGINAL=1\n' >"$tmp/compose/dependency.env"
   printf 'TENANT_DB_MASTER_SECRET=do-not-leak-this-secret\n' >"$tmp/audit.env"
   chmod 600 "$tmp/audit.env"
+  printf 'RELEASE_MARKER=1\n' >"$tmp/release.env"
+  chmod 600 "$tmp/release.env"
 }
 run_gate() {
   local output=$1 fail=${2:-} runtime=${3:-} payload=${4:-} digests=$digest_a
@@ -233,6 +244,7 @@ run_gate() {
     FAKE_FAIL_STAGE="$fail" FAKE_RUNTIME="$runtime" FAKE_PAYLOAD="$payload" \
     FAKE_COMPOSE_FILE="$tmp/compose/compose.yml" FAKE_DEPENDENCY_FILE="$tmp/compose/dependency.env" \
     FAKE_ORIGINAL_ENV="$tmp/audit.env" FAKE_MUTATE_ORIGINAL_ENV=1 FAKE_MUTATE_SOURCE_AFTER_RENDER=1 \
+    FAKE_ORIGINAL_RELEASE_ENV="$tmp/release.env" FAKE_MUTATE_ORIGINAL_RELEASE_ENV=1 \
     FAKE_COMPOSE_IGNORES_IMAGE="$ignores" FAKE_NETWORK_MISSING="$network_missing" \
     FAKE_MALFORMED_ENV_LAUNCH="$malformed_env" FAKE_COMPOSE_SWAP_DURING_RENDER="$render_swap" \
     FAKE_COMPOSE_BUILD_OVERRIDE="$build_override" \
@@ -241,7 +253,7 @@ run_gate() {
     FAKE_TRANSPORT_LOGICAL_FAIL="$logical_fail" \
     "$test_gate" --image "$mutable" --compose-dir "$tmp/compose" --compose-file compose.yml \
       --project health-test --service health-receiver --primary-schema health_primary \
-      --audit-env "$tmp/audit.env" --network health-net --readiness-timeout 2 >"$output" 2>&1 || rc=$?
+      --audit-env "$tmp/audit.env" --release-env "$tmp/release.env" --network health-net --readiness-timeout 2 >"$output" 2>&1 || rc=$?
   return "$rc"
 }
 expect_failure() {
