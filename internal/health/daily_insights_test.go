@@ -202,10 +202,13 @@ func TestDailyInsightMaterialHashIncludesAnswerPolicy(t *testing.T) {
 
 func TestApplyRecentSleepBelowReferenceAddsOnlySleepAction(t *testing.T) {
 	base := BuildDailyInsightSnapshot(&BriefingResponse{Date: "2026-09-10"}, "en")
-	got := ApplyRecentSleepBelowReference(base, RecentSleepBelowReference{State: RecentSleepClaimTrue, ReferenceHours: 7.8, CurrentShortDays: 3, EveningActionAvailable: true, ActionEvent: true}, "en")
+	got := ApplyRecentSleepBelowReference(base, RecentSleepBelowReference{State: RecentSleepClaimTrue, ReferenceHours: 7.8, CurrentShortNightCount: 3, EveningActionAvailable: true, ActionEvent: true}, "en")
 	sleep := dailyInsightDomain(t, got, "sleep")
 	if sleep.Insight.AnswerKind != DailyInsightAnswerConfirmedPersonal || sleep.Insight.ClaimID != "recent_sleep_below_reference" || sleep.Insight.NextStep == nil || sleep.Insight.NextStep.ID != "wind_down" {
 		t.Fatalf("sleep B0 claim = %#v", sleep.Insight)
+	}
+	if want := "3 of your last 4 nights were shorter than your usual sleep."; sleep.Insight.Observation != want {
+		t.Fatalf("sleep B0 observation = %q, want %q", sleep.Insight.Observation, want)
 	}
 	if got.Primary.NextStep != base.Primary.NextStep {
 		t.Fatalf("sleep action changed primary decision: before=%#v after=%#v", base.Primary.NextStep, got.Primary.NextStep)
@@ -224,7 +227,7 @@ func TestApplyRecentSleepBelowReferenceAddsOnlySleepAction(t *testing.T) {
 func TestApplyRecentSleepBelowReferenceKeepsGentleActionAfterEventCadenceSuppresses(t *testing.T) {
 	base := BuildDailyInsightSnapshot(&BriefingResponse{Date: "2026-09-10"}, "en")
 	got := ApplyRecentSleepBelowReference(base, RecentSleepBelowReference{
-		State: RecentSleepClaimTrue, ReferenceHours: 7.8, CurrentShortDays: 3,
+		State: RecentSleepClaimTrue, ReferenceHours: 7.8, CurrentShortNightCount: 3,
 		EveningActionAvailable: true,
 	}, "en")
 	if sleep := dailyInsightDomain(t, got, "sleep"); sleep.Insight.NextStep == nil || sleep.Insight.NextStep.ID != "wind_down" {
@@ -256,7 +259,7 @@ func TestApplyRecentSleepBelowReferenceLocalizesWindDownAction(t *testing.T) {
 func TestSleepNarrativePacketUsesDetailedServerOwnedWindDownCopy(t *testing.T) {
 	snapshot := ApplyRecentSleepBelowReference(
 		BuildDailyInsightSnapshot(&BriefingResponse{Date: "2026-09-12"}, "ru"),
-		RecentSleepBelowReference{State: RecentSleepClaimTrue, ReferenceHours: 7.8, CurrentShortDays: 3, EveningActionAvailable: true},
+		RecentSleepBelowReference{State: RecentSleepClaimTrue, ReferenceHours: 7.8, CurrentShortNightCount: 3, EveningActionAvailable: true},
 		"ru",
 	)
 	input, known := BuildDailyInsightNarrativeSlotInput(snapshot, "ru", "sleep")
@@ -286,7 +289,7 @@ func TestSleepNarrativeEvidenceNamesUsualSleepAndRepeatedShortNights(t *testing.
 	if got, want := localizedNarrativeEvidenceStatement("ru", DailyInsightEvidence{ID: "sleep_recent_reference", Value: &reference, Unit: "h"}), "Твой обычный сон: 7 ч 12 мин."; got != want {
 		t.Fatalf("reference fact = %q, want %q", got, want)
 	}
-	if got, want := localizedNarrativeEvidenceStatement("ru", DailyInsightEvidence{ID: "sleep_recent_short_nights", Value: &shortNights, Unit: "nights"}), "Коротких ночей подряд: 3."; got != want {
+	if got, want := localizedNarrativeEvidenceStatement("ru", DailyInsightEvidence{ID: "sleep_recent_short_nights", Value: &shortNights, Unit: "nights"}), "Коротких ночей за последние четыре: 3."; got != want {
 		t.Fatalf("short-nights fact = %q, want %q", got, want)
 	}
 }
@@ -615,7 +618,7 @@ func TestDailyInsightNarrativeSlotRendersOneCompleteRichStory(t *testing.T) {
 }
 
 func TestDailyInsightNarrativeSlotExposesServerFormattedFactsAndRejectsInventedNumbers(t *testing.T) {
-	snapshot := ApplyRecentSleepBelowReference(BuildDailyInsightSnapshot(&BriefingResponse{Date: "2026-09-12"}, "en"), RecentSleepBelowReference{State: RecentSleepClaimTrue, ReferenceHours: 7.8, CurrentShortDays: 3}, "en")
+	snapshot := ApplyRecentSleepBelowReference(BuildDailyInsightSnapshot(&BriefingResponse{Date: "2026-09-12"}, "en"), RecentSleepBelowReference{State: RecentSleepClaimTrue, ReferenceHours: 7.8, CurrentShortNightCount: 3}, "en")
 	input, known := BuildDailyInsightNarrativeSlotInput(snapshot, "en", "sleep")
 	if !known || input.Slot.Story == nil || len(input.Slot.Facts) == 0 {
 		t.Fatalf("rich sleep packet = %#v, known=%v", input, known)
@@ -628,14 +631,24 @@ func TestDailyInsightNarrativeSlotExposesServerFormattedFactsAndRejectsInventedN
 		t.Fatalf("packet has no display values: %#v", input.Slot.Facts)
 	}
 	valid := DailyInsightNarrativeSlot{Version: DailyInsightNarrativeVersion, Locale: "en", Slot: DailyInsightNarrativeDomain{Key: "sleep", Section: &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
-		Text: "Across the last 3 shorter nights, the pattern is worth carrying into today's picture.", ClaimIDs: []string{"recent_sleep_below_reference"}, QualifierIDs: []string{"personal_pattern", "current_context"}, MeaningIDs: []string{"sleep_personal_reference"},
+		Text: "Three shorter nights in the last four make the pattern worth carrying into today's picture.", ClaimIDs: []string{"recent_sleep_below_reference"}, QualifierIDs: []string{"personal_pattern", "current_context"}, MeaningIDs: []string{"sleep_personal_reference"},
 	}}}}}
 	if _, err := ValidateDailyInsightNarrativeSlotResponse(snapshot, "en", "sleep", valid); err != nil {
 		t.Fatalf("server-supplied number rejected: %v", err)
 	}
-	valid.Slot.Section.Sentences[0].Text = "Across the last 9 shorter nights, the pattern is worth carrying into today's picture."
+	valid.Slot.Section.Sentences[0].Text = "9 shorter nights in the last four make the pattern worth carrying into today's picture."
 	if _, err := ValidateDailyInsightNarrativeSlotResponse(snapshot, "en", "sleep", valid); err == nil || !strings.Contains(err.Error(), "display catalog") {
 		t.Fatalf("invented number accepted: %v", err)
+	}
+}
+
+func TestDailyInsightNarrativeSlotRejectsUnsupportedConsecutiveSleepStreak(t *testing.T) {
+	snapshot := ApplyRecentSleepBelowReference(BuildDailyInsightSnapshot(&BriefingResponse{Date: "2026-09-12"}, "en"), RecentSleepBelowReference{State: RecentSleepClaimTrue, ReferenceHours: 7.8, CurrentShortNightCount: 3}, "en")
+	candidate := DailyInsightNarrativeSlot{Version: DailyInsightNarrativeVersion, Locale: "en", Slot: DailyInsightNarrativeDomain{Key: "sleep", Section: &DailyInsightNarrativeSection{Sentences: []DailyInsightNarrativeSentence{{
+		Text: "Three shorter nights in a row make a calmer end to today more fitting.", ClaimIDs: []string{"recent_sleep_below_reference"}, QualifierIDs: []string{"personal_pattern", "current_context"}, MeaningIDs: []string{"sleep_personal_reference"},
+	}}}}}
+	if _, err := ValidateDailyInsightNarrativeSlotResponse(snapshot, "en", "sleep", candidate); err == nil || !strings.Contains(err.Error(), "overstates the four-night count") {
+		t.Fatalf("unsupported consecutive streak accepted: %v", err)
 	}
 }
 
@@ -754,6 +767,9 @@ func TestDailyInsightNarrativeWithholdsStandaloneRecoveryAndEnergyParaphrases(t 
 	}
 	if HasEligibleDailyInsightNarrativeSlot(snapshot, "en", "recovery") {
 		t.Fatal("standalone recovery card unexpectedly eligible for B1")
+	}
+	if HasEligibleDailyInsightNarrativeSlot(ApplyRecentSleepBelowReference(snapshot, RecentSleepBelowReference{State: RecentSleepClaimTrue, CurrentShortNightCount: 3}, "en"), "en", "sleep") {
+		t.Fatal("standalone B0 sleep pattern unexpectedly eligible for B1")
 	}
 	if got := dailyInsightDomain(t, snapshot, "energy").Band; got == "active_recovery" {
 		t.Fatalf("energy display band was overwritten by narrative subject")

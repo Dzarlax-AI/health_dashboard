@@ -156,7 +156,10 @@ type RecentSleepBelowReference struct {
 	State            string
 	Reason           string
 	ReferenceHours   float64
-	CurrentShortDays int
+	// CurrentShortNightCount is the number of shorter nights among the fixed
+	// D-3..D window. It is deliberately not a consecutive-streak length: a
+	// complete four-night window can have one ordinary night between short ones.
+	CurrentShortNightCount int
 	// EveningActionAvailable is the server-owned, in-product gentle next step.
 	// It is available for every confirmed current evening claim; it is distinct
 	// from ActionEvent, which remains the once-per-seven-days event used by
@@ -243,7 +246,7 @@ func EvaluateRecentSleepBelowReference(records []CompletedNightSleep, wakeDate s
 	if short >= 3 {
 		state = RecentSleepClaimTrue
 	}
-	result := RecentSleepBelowReference{State: state, ReferenceHours: reference, CurrentShortDays: short}
+	result := RecentSleepBelowReference{State: state, ReferenceHours: reference, CurrentShortNightCount: short}
 	localNow := now.In(loc)
 	// An action is a present-tense, evening-only Today event. The evaluator is
 	// also used for historical availability analysis, where a past `true` may

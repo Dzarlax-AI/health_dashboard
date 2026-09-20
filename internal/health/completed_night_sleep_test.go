@@ -51,7 +51,7 @@ func TestEvaluateRecentSleepBelowReferenceUsesFourNightsAndSevenDayCadence(t *te
 		records = append(records, finalNight(date.AddDate(0, 0, offset), duration, "current-"+fmt.Sprint(offset)))
 	}
 	got := EvaluateRecentSleepBelowReference(records, "2026-09-10", date, loc)
-	if got.State != RecentSleepClaimTrue || got.CurrentShortDays != 3 || got.ReferenceHours != 8 || !got.EveningActionAvailable || !got.ActionEvent || got.EvidenceDigest == "" {
+	if got.State != RecentSleepClaimTrue || got.CurrentShortNightCount != 3 || got.ReferenceHours != 8 || !got.EveningActionAvailable || !got.ActionEvent || got.EvidenceDigest == "" {
 		t.Fatalf("claim = %#v", got)
 	}
 

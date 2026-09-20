@@ -62,19 +62,15 @@ func TestGenerateDailyInsightNarrativeSlotSendsOnlyCombinedOverallPacket(t *test
 	}
 }
 
-func TestGenerateDailyInsightNarrativeSlotGeneratesDistinctDomainMeaning(t *testing.T) {
+func TestGenerateDailyInsightNarrativeSlotSkipsStandaloneSleepPattern(t *testing.T) {
 	snapshot := dailyInsightTestSnapshot(t)
 	provider := &dailyInsightTestProvider{response: dailyInsightTestDomainNarrative(t, "sleep", "This is no longer one short night; it is a repeated departure from your usual sleep.", "recent_sleep_below_reference", []string{"personal_pattern", "current_context"}, "sleep_personal_reference")}
 	result, err := GenerateDailyInsightNarrativeSlot(context.Background(), provider, ProviderConfig{}, snapshot, "en", "sleep")
-	if err != nil || result.Section == nil {
+	if err != nil || result.Section != nil {
 		t.Fatalf("GenerateDailyInsightNarrativeSlot: section=%#v err=%v", result.Section, err)
 	}
-	var payload health.DailyInsightNarrativeSlotInput
-	if err := json.Unmarshal(provider.request.UserPayload, &payload); err != nil {
-		t.Fatalf("decode packet: %v", err)
-	}
-	if payload.Slot.Key != "sleep" || len(payload.Slot.Claims) != 1 || payload.Slot.Claims[0].MeaningLinks[0].ID != "sleep_personal_reference" {
-		t.Fatalf("sleep provider payload = %#v", payload)
+	if provider.request.Prompt != "" {
+		t.Fatal("provider was called for a standalone sleep pattern")
 	}
 }
 
@@ -182,9 +178,18 @@ func TestDailyInsightSlotPromptRejectsInterfaceMetaVoice(t *testing.T) {
 
 func TestDailyInsightSlotPromptRejectsAbstractPacingBoilerplate(t *testing.T) {
 	prompt := strings.ToLower(dailyInsightSlotSystemPrompt)
-	for _, fragment := range []string{"guide, orientation, cue, verdict, score", "today's pace", "how the day is going", "second person", "facts.display_values", "required_qualifier_ids", "exactly one meaning_id", "causal link", "task difficulty", "chance, randomness, reliability"} {
+	for _, fragment := range []string{"guide, orientation, cue, verdict, score", "today's pace", "how the day is going", "second person", "facts.display_values", "required_qualifier_ids", "exactly one meaning_id", "causal link", "task difficulty", "chance, randomness, reliability", "counts shorter nights among the last four", "consecutive streak"} {
 		if !strings.Contains(prompt, fragment) {
 			t.Fatalf("slot prompt no longer guards abstract pacing boilerplate %q", fragment)
+		}
+	}
+}
+
+func TestDailyInsightSlotPromptUsesNarrativeForMeaningNotASecondCTA(t *testing.T) {
+	prompt := strings.ToLower(dailyInsightSlotSystemPrompt)
+	for _, fragment := range []string{"fact followed by the action is not an explanation", "rendered separately in the interface", "do not copy action.text", "makes the supplied story clearer"} {
+		if !strings.Contains(prompt, fragment) {
+			t.Fatalf("slot prompt no longer protects narrative value %q", fragment)
 		}
 	}
 }

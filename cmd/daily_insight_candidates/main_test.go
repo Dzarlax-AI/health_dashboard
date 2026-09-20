@@ -76,12 +76,12 @@ func TestCandidateReviewHintsAreStructuralRatherThanProvenanceClaims(t *testing.
 	for _, hint := range hints {
 		set[hint] = true
 	}
-	for _, want := range []string{"sleep_fresh_final", "narrative_eligible", "recovery_energy_both_final"} {
+	for _, want := range []string{"sleep_fresh_final", "recovery_energy_both_final"} {
 		if !set[want] {
 			t.Errorf("review hints = %v, missing %q", hints, want)
 		}
 	}
-	for _, forbidden := range []string{"no_checkin", "late_source_update", "energy_recovery_conflict"} {
+	for _, forbidden := range []string{"narrative_eligible", "no_checkin", "late_source_update", "energy_recovery_conflict"} {
 		if set[forbidden] {
 			t.Errorf("review hints = %v, must not infer %q", hints, forbidden)
 		}

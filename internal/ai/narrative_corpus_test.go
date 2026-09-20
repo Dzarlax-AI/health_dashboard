@@ -543,7 +543,7 @@ func TestBuildDailyInsightNarrativeReviewPacketUsesClosedClaimsAndFallbackRefere
 	if packet.Version != "daily-insight-narrative-review-packet-v6" || len(packet.Cases) != len(corpus.Cases) {
 		t.Fatalf("packet = %#v", packet)
 	}
-	if len(packet.Cases[0].Claims) < 2 || packet.Cases[0].Claims[0].ID != "overall_daily_decision_context" {
+	if len(packet.Cases[0].Claims) != 1 || packet.Cases[0].Claims[0].ID != "overall_daily_decision_context" {
 		t.Fatalf("claims = %#v", packet.Cases[0].Claims)
 	}
 	if len(packet.Cases[0].Fallbacks) < 3 || packet.Cases[0].Fallbacks[0].Summary != "server_claim" {

@@ -141,7 +141,7 @@ func ApplyRecentSleepBelowReference(snapshot *DailyInsightSnapshot, claim Recent
 			domain.Insight.AnswerKind = DailyInsightAnswerConfirmedPersonal
 			domain.Insight.ClaimID = "recent_sleep_below_reference"
 			domain.Insight.GapReason, domain.Insight.Remediation = "", ""
-			domain.Insight.Observation, domain.Insight.Meaning = localizedRecentSleepBelowReference(locale)
+			domain.Insight.Observation, domain.Insight.Meaning = localizedRecentSleepBelowReference(locale, claim.CurrentShortNightCount)
 			domain.Insight.EvidenceIDs = []string{"sleep_recent_reference", "sleep_recent_short_nights"}
 			copy.Evidence = append(copy.Evidence, recentSleepClaimEvidence(claim, domain.Destination, copy.UpdatedAt)...)
 			if claim.EveningActionAvailable {
@@ -161,7 +161,7 @@ func ApplyRecentSleepBelowReference(snapshot *DailyInsightSnapshot, claim Recent
 // same canonical history and current window that decided the claim.
 func recentSleepClaimEvidence(claim RecentSleepBelowReference, destination DailyInsightDestination, observedAt *time.Time) []DailyInsightEvidence {
 	reference := claim.ReferenceHours
-	shortNights := float64(claim.CurrentShortDays)
+	shortNights := float64(claim.CurrentShortNightCount)
 	threshold := 3.0
 	return []DailyInsightEvidence{
 		{
@@ -756,6 +756,15 @@ func HasEligibleDailyInsightNarrativeClaims(snapshot *DailyInsightSnapshot, loca
 // restated. Each eligible slot can refresh independently from the same
 // snapshot without changing the server-owned facts or actions.
 func HasEligibleDailyInsightNarrativeSlot(snapshot *DailyInsightSnapshot, locale, slot string) bool {
+	// The rich-sleep experiment showed that its only currently server-approved
+	// relation restates the deterministic B0 pattern and the separately rendered
+	// wind-down action. Preserve the packet shape for audit and validation of
+	// historical artifacts, but do not spend a provider call until a future
+	// sleep-specific relation adds distinct server-owned meaning. B1 serving is
+	// therefore currently limited to an overall, genuinely combined explanation.
+	if slot != DailyInsightNarrativeOverallSlot {
+		return false
+	}
 	input, known := BuildDailyInsightNarrativeSlotInput(snapshot, locale, slot)
 	if !known {
 		return false
@@ -948,11 +957,11 @@ func localizedNarrativeEvidenceStatement(locale string, evidence DailyInsightEvi
 	if evidence.ID == "sleep_recent_short_nights" && evidence.Unit == "nights" {
 		switch normalizeDailyInsightLocale(locale) {
 		case "ru":
-			return fmt.Sprintf("Коротких ночей подряд: %.0f.", value)
+			return fmt.Sprintf("Коротких ночей за последние четыре: %.0f.", value)
 		case "sr":
-			return fmt.Sprintf("Kraćih noći zaredom: %.0f.", value)
+			return fmt.Sprintf("Kraćih noći u poslednje četiri: %.0f.", value)
 		default:
-			return fmt.Sprintf("Shorter nights in a row: %.0f.", value)
+			return fmt.Sprintf("Shorter nights in the last four: %.0f.", value)
 		}
 	}
 	switch evidence.Unit {
@@ -1062,13 +1071,13 @@ func energyNarrativeMeaningLinks(locale, verdict string) []DailyInsightNarrative
 func localizedNarrativeMeaning(locale, id string) string {
 	translations := map[string]map[string]string{
 		"en": {
-			"sleep_personal_reference": "Several shorter nights in a row make a calmer end to today more fitting.",
+			"sleep_personal_reference": "Several shorter nights in the latest four make a calmer end to today more fitting.",
 		},
 		"ru": {
-			"sleep_personal_reference": "Несколько коротких ночей подряд — повод сделать сегодняшний вечер спокойнее.",
+			"sleep_personal_reference": "Несколько коротких ночей за последние четыре — повод сделать сегодняшний вечер спокойнее.",
 		},
 		"sr": {
-			"sleep_personal_reference": "Nekoliko kraćih noći zaredom čini mirniji kraj dana boljim izborom.",
+			"sleep_personal_reference": "Nekoliko kraćih noći u poslednje četiri čini mirniji kraj dana boljim izborom.",
 		},
 	}
 	if byID, found := translations[normalizeDailyInsightLocale(locale)]; found {
@@ -1750,6 +1759,9 @@ func validateDailyInsightNarrativeSentences(sentences []DailyInsightNarrativeSen
 		if forbidden := forbiddenNarrativeFragment(text); forbidden != "" {
 			return fmt.Errorf("forbidden narrative content %q", forbidden)
 		}
+		if err := validateDailyInsightNarrativeClaimScope(text, input); err != nil {
+			return err
+		}
 		if normalizeDailyInsightLocale(locale) == "sr" && containsCyrillicNarrativeText(text) {
 			return fmt.Errorf("Serbian narrative must use Latin script")
 		}
@@ -1815,6 +1827,36 @@ func validateDailyInsightNarrativeSentences(sentences []DailyInsightNarrativeSen
 		}
 	}
 	return nil
+}
+
+// validateDailyInsightNarrativeClaimScope protects a closed, asymmetric fact
+// in the B0 sleep claim. The evaluator counts shorter nights in D-3..D; it
+// does not establish that those nights were consecutive. This is intentionally
+// a narrow contract check rather than a general prose classifier.
+func validateDailyInsightNarrativeClaimScope(text string, input DailyInsightNarrativeDomainInput) error {
+	if !dailyInsightNarrativeInputHasClaim(input, "recent_sleep_below_reference") {
+		return nil
+	}
+	lower := strings.ToLower(text)
+	for _, fragment := range []string{
+		"in a row", "consecutive", "last three nights",
+		"подряд", "последние три ночи",
+		"zaredom", "poslednje tri noći",
+	} {
+		if strings.Contains(lower, fragment) {
+			return fmt.Errorf("sleep narrative overstates the four-night count as %q", fragment)
+		}
+	}
+	return nil
+}
+
+func dailyInsightNarrativeInputHasClaim(input DailyInsightNarrativeDomainInput, want string) bool {
+	for _, claim := range input.Claims {
+		if claim.ID == want {
+			return true
+		}
+	}
+	return false
 }
 
 func validateNarrativeNumbers(text string, facts []DailyInsightNarrativeFact) error {
@@ -2522,14 +2564,17 @@ func localizedCurrentSyncSleepContext(locale string) (observation, meaning strin
 	}
 }
 
-func localizedRecentSleepBelowReference(locale string) (observation, meaning string) {
+func localizedRecentSleepBelowReference(locale string, shortNightCount int) (observation, meaning string) {
+	if shortNightCount < 3 || shortNightCount > 4 {
+		shortNightCount = 3
+	}
 	switch locale {
 	case "ru":
-		return "Несколько последних ночей были короче твоего обычного ритма.", "Сегодня вечером оставь место для спокойного завершения дня."
+		return fmt.Sprintf("%d из последних 4 ночей были короче твоей обычной продолжительности сна.", shortNightCount), "Сегодня вечером оставь место для спокойного завершения дня."
 	case "sr":
-		return "Nekoliko poslednjih noći bilo je kraće od vašeg uobičajenog ritma.", "Ostavite večeras prostora za mirniji završetak dana."
+		return fmt.Sprintf("%d od poslednje 4 noći bile su kraće od tvog uobičajenog sna.", shortNightCount), "Ostavi večeras prostora za mirniji završetak dana."
 	default:
-		return "Several recent nights were shorter than your usual rhythm.", "Leave room for a quieter end to the day tonight."
+		return fmt.Sprintf("%d of your last 4 nights were shorter than your usual sleep.", shortNightCount), "Leave room for a quieter end to the day tonight."
 	}
 }
 
