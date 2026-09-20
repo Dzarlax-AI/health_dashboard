@@ -143,9 +143,8 @@ func TestFrozenCorpusRestoresClosedDecisionEvidenceDomains(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SnapshotForEvaluation: %v", err)
 	}
-	input, known := health.BuildDailyInsightNarrativeSlotInput(&snapshot, "en", "recovery")
-	if !known || input.Slot.Position == nil || input.Slot.Position.ID != "daily_decision_position" {
-		t.Fatalf("restored slot position = %#v", input)
+	if len(snapshot.DecisionEvidenceDomains) != 1 || snapshot.DecisionEvidenceDomains[0] != "recovery" {
+		t.Fatalf("restored decision evidence domains = %#v", snapshot.DecisionEvidenceDomains)
 	}
 	item.DecisionEvidenceDomains = []string{"untrusted"}
 	if _, err := item.SnapshotForEvaluation(); err == nil || !strings.Contains(err.Error(), "unsupported decision evidence domain") {
@@ -399,23 +398,16 @@ func TestValidateDailyInsightNarrativeCorpusRequiresEligibleCoverageForEveryLoca
 	}
 }
 
-func TestValidateDailyInsightNarrativeCorpusRequiresEveryClaimInEveryLocale(t *testing.T) {
-	corpus := coveredNarrativeCorpus(t, 20)
-	for index := range corpus.Cases {
-		if corpus.Cases[index].Locale != "ru" {
-			continue
+func TestDailyInsightNarrativeCorpusExcludesStandaloneRecoveryFromProviderCoverage(t *testing.T) {
+	for _, claimID := range RequiredDailyInsightNarrativeClaimIDs {
+		if claimID == "recovery_readiness_context" {
+			t.Fatal("standalone recovery remains in the provider claim catalogue")
 		}
-		filtered := corpus.Cases[index].Snapshot.Domains[:0]
-		for _, domain := range corpus.Cases[index].Snapshot.Domains {
-			if domain.Insight.ClaimID == "recovery_readiness_context" {
-				continue
-			}
-			filtered = append(filtered, domain)
-		}
-		corpus.Cases[index].Snapshot.Domains = filtered
 	}
-	if err := ValidateDailyInsightNarrativeCorpus(corpus); err == nil || !strings.Contains(err.Error(), "ru:recovery_readiness_context") {
-		t.Fatalf("validation error = %v, want missing RU recovery claim coverage", err)
+	for _, meaningID := range RequiredDailyInsightNarrativeMeaningIDs {
+		if meaningID == "recovery_day_to_day_effect" {
+			t.Fatal("standalone recovery remains in the provider meaning catalogue")
+		}
 	}
 }
 
@@ -551,7 +543,7 @@ func TestBuildDailyInsightNarrativeReviewPacketUsesClosedClaimsAndFallbackRefere
 	if packet.Version != "daily-insight-narrative-review-packet-v6" || len(packet.Cases) != len(corpus.Cases) {
 		t.Fatalf("packet = %#v", packet)
 	}
-	if len(packet.Cases[0].Claims) < 3 || packet.Cases[0].Claims[0].ID != "overall_daily_decision_context" {
+	if len(packet.Cases[0].Claims) < 2 || packet.Cases[0].Claims[0].ID != "overall_daily_decision_context" {
 		t.Fatalf("claims = %#v", packet.Cases[0].Claims)
 	}
 	if len(packet.Cases[0].Fallbacks) < 3 || packet.Cases[0].Fallbacks[0].Summary != "server_claim" {

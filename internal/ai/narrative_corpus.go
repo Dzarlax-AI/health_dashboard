@@ -371,22 +371,22 @@ var RequiredDailyInsightNarrativeCorpusTags = []string{
 // RequiredDailyInsightNarrativeClaimIDs are the complete B1 claim catalogue.
 // A frozen corpus must contain every supported claim in every shipped locale.
 // This measures provider behavior across the actual localized claim contract.
-// A standalone Energy verdict is deliberately deterministic-only: it is still
-// exercised in server fixtures, but no longer represented as provider prose.
+// Standalone Recovery and Energy verdicts are deliberately deterministic-only:
+// they remain server facts and can support a combined overall explanation, but
+// are never represented as provider prose on their own.
 var RequiredDailyInsightNarrativeClaimIDs = []string{
 	"overall_daily_decision_context",
 	"recent_sleep_below_reference",
-	"recovery_readiness_context",
 }
 
 // RequiredDailyInsightNarrativeMeaningIDs are server-owned interpretive
 // variants which must have explicit frozen-corpus coverage before B1 can be
-// approved. Each enabled domain has its own meaning, so the review cannot
-// approve a lively overall narrative while leaving a domain untested.
+// approved. Each provider-served meaning has explicit review coverage, so the
+// review cannot approve a lively overall narrative while leaving another
+// enabled narrative path untested.
 var RequiredDailyInsightNarrativeMeaningIDs = []string{
 	"overall_combined_context",
 	"sleep_personal_reference",
-	"recovery_day_to_day_effect",
 }
 
 const (

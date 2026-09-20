@@ -701,7 +701,7 @@ func domainNarrativeEligible(domain DailyInsightDomain) bool {
 		return false
 	}
 	switch domain.Insight.ClaimID {
-	case "recent_sleep_below_reference", "recovery_readiness_context":
+	case "recent_sleep_below_reference":
 	default:
 		return false
 	}
@@ -709,10 +709,11 @@ func domainNarrativeEligible(domain DailyInsightDomain) bool {
 }
 
 // domainNarrativeDecisionEligible is intentionally broader than the
-// independent-domain gate. Energy's current verdict can be a factual input to
-// a server-owned combined recommendation, but by itself it does not establish
-// a new relationship for a model to explain. Keeping that distinction avoids
-// spending a provider call merely to restate the energy card.
+// independent-domain gate. A recovery classification or Energy verdict can
+// support a server-owned combined recommendation, but neither alone
+// establishes a new relationship for a model to explain. Keeping that
+// distinction avoids spending a provider call merely to restate a visible
+// score or card.
 func domainNarrativeDecisionEligible(domain DailyInsightDomain) bool {
 	if !domainNarrativeBaseEligible(domain) {
 		return false
@@ -2175,9 +2176,6 @@ func DailyInsightNarrativeAnchorCatalogFingerprint() string {
 			add(locale, localizedOverallNarrativeAnchors(locale, mode))
 		}
 		add(locale, localizedSleepNarrativeAnchors(locale))
-		for _, band := range []string{"optimal", "low"} {
-			add(locale, localizedRecoveryNarrativeAnchors(locale, band))
-		}
 		for _, verdict := range []string{"push_hard", "rest", "active_recovery"} {
 			add(locale, localizedEnergyNarrativeAnchors(locale, verdict))
 		}
@@ -2214,9 +2212,6 @@ func DailyInsightNarrativeMeaningCatalogFingerprint() string {
 			add(locale, "overall_daily_decision_context", overallNarrativeMeaningLinks(locale, domains))
 		}
 		add(locale, "recent_sleep_below_reference", sleepNarrativeMeaningLinks(locale))
-		for _, band := range []string{"optimal", "low"} {
-			add(locale, "recovery_readiness_context", recoveryNarrativeMeaningLinks(locale, band))
-		}
 		for _, verdict := range []string{"push_hard", "rest", "active_recovery"} {
 			add(locale, "energy_current_verdict_context", energyNarrativeMeaningLinks(locale, verdict))
 		}

@@ -734,7 +734,7 @@ func TestDailyInsightNarrativeSlotRequiresSerbianLatinScript(t *testing.T) {
 	}
 }
 
-func TestDailyInsightNarrativeIncludesRecoveryButNotStandaloneEnergyParaphrase(t *testing.T) {
+func TestDailyInsightNarrativeWithholdsStandaloneRecoveryAndEnergyParaphrases(t *testing.T) {
 	duration := 7.2
 	snapshot := BuildDailyInsightSnapshot(&BriefingResponse{
 		Date:               "2026-09-12",
@@ -746,14 +746,14 @@ func TestDailyInsightNarrativeIncludesRecoveryButNotStandaloneEnergyParaphrase(t
 		EnergyBank:         &EnergyBank{Current: 45, Capacity: 80, ActionVerdict: "rest", VerdictReason: "The current reserve supports a quieter day."},
 	}, "en")
 	input := BuildDailyInsightNarrativeInput(snapshot, "en")
-	if got := narrativeInputClaimIDs(input, "recovery"); len(got) != 1 || got[0] != "recovery_readiness_context" {
-		t.Fatalf("recovery claims = %#v", got)
+	if got := narrativeInputClaimIDs(input, "recovery"); len(got) != 0 {
+		t.Fatalf("recovery claims = %#v; a single readiness card is deterministic-only", got)
 	}
 	if got := narrativeInputClaimIDs(input, "energy"); len(got) != 0 {
 		t.Fatalf("energy claims = %#v; a single energy card is deterministic-only", got)
 	}
-	if claim := narrativeInputClaim(input, "recovery"); strings.Contains(claim.Proposition, "Recovery signals are more limited today.") || claim.RequiredQualifierIDs[0] != "current_context" {
-		t.Fatalf("recovery packet leaked display copy or wrong qualifiers: %#v", claim)
+	if HasEligibleDailyInsightNarrativeSlot(snapshot, "en", "recovery") {
+		t.Fatal("standalone recovery card unexpectedly eligible for B1")
 	}
 	if got := dailyInsightDomain(t, snapshot, "energy").Band; got == "active_recovery" {
 		t.Fatalf("energy display band was overwritten by narrative subject")

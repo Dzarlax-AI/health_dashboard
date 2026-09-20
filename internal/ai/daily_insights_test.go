@@ -78,6 +78,21 @@ func TestGenerateDailyInsightNarrativeSlotGeneratesDistinctDomainMeaning(t *test
 	}
 }
 
+func TestGenerateDailyInsightNarrativeSlotSkipsStandaloneRecoveryCard(t *testing.T) {
+	snapshot := dailyInsightTestSnapshot(t)
+	snapshot.DecisionEvidenceDomains = []string{"recovery"}
+	snapshot.Primary.EvidenceIDs = append([]string(nil), snapshot.Domains[1].Insight.EvidenceIDs...)
+	provider := &dailyInsightTestProvider{response: dailyInsightTestDomainNarrative(t, "recovery", "Recovery is high today.", "recovery_readiness_context", []string{"current_context"}, "recovery_current_context")}
+
+	result, err := GenerateDailyInsightNarrativeSlot(context.Background(), provider, ProviderConfig{}, snapshot, "en", "recovery")
+	if err != nil || result.Section != nil {
+		t.Fatalf("GenerateDailyInsightNarrativeSlot: section=%#v err=%v", result.Section, err)
+	}
+	if provider.request.Prompt != "" {
+		t.Fatal("provider was called for a standalone recovery card")
+	}
+}
+
 func TestGenerateDailyInsightNarrativeSlotClassifiesRejectedProseAsSemantic(t *testing.T) {
 	snapshot := dailyInsightTestSnapshot(t)
 	provider := &dailyInsightTestProvider{response: dailyInsightTestOverallNarrative(t, "You should rest today.")}
