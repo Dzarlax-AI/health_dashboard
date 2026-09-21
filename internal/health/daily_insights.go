@@ -2619,10 +2619,11 @@ func buildDailyInsightNarrativeFacts(resp *BriefingResponse, domains []DailyInsi
 		}
 	}
 	if bank := resp.EnergyBank; bank != nil && energyNarrativeFresh(bank) {
-		add(DailyInsightNarrativeFact{ID: "energy_authoritative_state", Domain: "energy", Meaning: "authoritative EnergyBank current state and verdict", Window: "today so far", Fresh: true, Statement: localizedNarrativeEnergyFact(locale, bank), DisplayValues: []string{fmt.Sprintf("%d", bank.Current), fmt.Sprintf("%d", bank.Capacity), fmt.Sprintf("%d", bank.DrainSoFar), fmt.Sprintf("%d", bank.Strain), fmt.Sprintf("%d", bank.Stress)}, EvidenceIDs: []string{"energy_authoritative_state"}})
+		statement := localizedNarrativeEnergyFact(locale, bank)
+		add(DailyInsightNarrativeFact{ID: "energy_authoritative_state", Domain: "energy", Meaning: "authoritative EnergyBank current state and verdict", Window: "today so far", Fresh: true, Statement: statement, DisplayValues: narrativeDisplayValues(statement), EvidenceIDs: []string{"energy_authoritative_state"}})
 	}
 	if raw := resp.RawMetrics; raw != nil && raw.LastDate == resp.Date && narrativeBriefingDateAligned(resp.Date) {
-		if fact, ok := boundedSleepPatternFact(raw.Daily, locale); ok {
+		if fact, ok := boundedSleepPatternFact(raw.Daily, raw.LastDate, locale); ok {
 			add(fact)
 		}
 		if fact, ok := boundedActivityTrendFact(raw.Daily, raw.LastDate, locale); ok {
@@ -2750,15 +2751,16 @@ func readinessNarrativeFresh(resp *BriefingResponse) bool {
 
 // boundedSleepPatternFact summarizes only a closed four-day calendar window.
 // It emits no dates, records, source names, or individual-day values.
-func boundedSleepPatternFact(daily []DailyHealthMetrics, locale string) (DailyInsightNarrativeFact, bool) {
-	if len(daily) < 4 {
+func boundedSleepPatternFact(daily []DailyHealthMetrics, lastDate, locale string) (DailyInsightNarrativeFact, bool) {
+	last, ok := parseDailyNarrativeDate(lastDate)
+	if !ok || len(daily) < 4 {
 		return DailyInsightNarrativeFact{}, false
 	}
 	var newest, prior float64
 	var previous time.Time
 	for index := 0; index < 4; index++ {
 		date, ok := parseDailyNarrativeDate(daily[index].Date)
-		if !ok || daily[index].Sleep == nil || (index > 0 && previous.Sub(date) != 24*time.Hour) {
+		if !ok || daily[index].Sleep == nil || (index == 0 && !date.Equal(last)) || (index > 0 && previous.Sub(date) != 24*time.Hour) {
 			return DailyInsightNarrativeFact{}, false
 		}
 		previous = date

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"health-receiver/internal/health"
 )
@@ -261,6 +262,7 @@ type dailyInsightNarrativeSafetyReview struct {
 // GenerateDailyInsightNarrativeSlot asks the provider for the one eligible
 // overall synthesis. Standalone domain slots remain disabled.
 func GenerateDailyInsightNarrativeSlot(ctx context.Context, provider Provider, cfg ProviderConfig, snapshot *health.DailyInsightSnapshot, lang, slot string) (DailyInsightNarrativeSlotResult, error) {
+	lang = canonicalDailyInsightNarrativeLocale(lang)
 	input, known := health.BuildDailyInsightNarrativeSlotInput(snapshot, lang, slot)
 	if !known {
 		return DailyInsightNarrativeSlotResult{}, fmt.Errorf("unknown daily insight narrative slot %q", slot)
@@ -268,7 +270,7 @@ func GenerateDailyInsightNarrativeSlot(ctx context.Context, provider Provider, c
 	if !health.HasEligibleDailyInsightNarrativeSlot(snapshot, lang, slot) {
 		return DailyInsightNarrativeSlotResult{}, nil
 	}
-	return GenerateDailyInsightNarrativeSlotFromInput(ctx, provider, cfg, snapshot, lang, slot, input)
+	return generateDailyInsightNarrativeSlotFromCanonicalInput(ctx, provider, cfg, snapshot, lang, slot, input)
 }
 
 // GenerateDailyInsightNarrativeSlotFromInput is the same provider/decoder
@@ -276,6 +278,10 @@ func GenerateDailyInsightNarrativeSlot(ctx context.Context, provider Provider, c
 // packet. The offline evaluator uses it to preserve the exact baseline and
 // action options in its request while retaining the production validator.
 func GenerateDailyInsightNarrativeSlotFromInput(ctx context.Context, provider Provider, cfg ProviderConfig, snapshot *health.DailyInsightSnapshot, lang, slot string, input health.DailyInsightNarrativeSlotInput) (DailyInsightNarrativeSlotResult, error) {
+	return generateDailyInsightNarrativeSlotFromCanonicalInput(ctx, provider, cfg, snapshot, canonicalDailyInsightNarrativeLocale(lang), slot, input)
+}
+
+func generateDailyInsightNarrativeSlotFromCanonicalInput(ctx context.Context, provider Provider, cfg ProviderConfig, snapshot *health.DailyInsightSnapshot, lang, slot string, input health.DailyInsightNarrativeSlotInput) (DailyInsightNarrativeSlotResult, error) {
 	if snapshot == nil {
 		return DailyInsightNarrativeSlotResult{}, fmt.Errorf("daily insight snapshot is nil")
 	}
@@ -317,6 +323,16 @@ func GenerateDailyInsightNarrativeSlotFromInput(ctx context.Context, provider Pr
 		return DailyInsightNarrativeSlotResult{GenerationResult: generated, Section: section, SafetyEvidence: safetyEvidence}, nil
 	}
 	return DailyInsightNarrativeSlotResult{GenerationResult: generated, Section: section}, nil
+}
+
+func canonicalDailyInsightNarrativeLocale(locale string) string {
+	normalized := strings.ToLower(strings.TrimSpace(locale))
+	switch normalized {
+	case "en", "ru", "sr":
+		return normalized
+	default:
+		return "en"
+	}
 }
 
 // dailyInsightNarrativeRejectedGenerationResult preserves provider receipt

@@ -150,6 +150,29 @@ func TestGenerateDailyInsightNarrativeSlotFromInputSendsExactFrozenContext(t *te
 	}
 }
 
+func TestGenerateDailyInsightNarrativeSlotFromInputCanonicalizesUnsupportedLocaleToEnglish(t *testing.T) {
+	snapshot := dailyInsightTestSnapshot(t)
+	input, known := health.BuildDailyInsightNarrativeSlotInput(snapshot, "en", health.DailyInsightNarrativeOverallSlot)
+	if !known {
+		t.Fatal("overall slot is not known")
+	}
+	provider := &dailyInsightTestProvider{response: dailyInsightTestOverallNarrative(t, "The recommendation brings sleep and recovery together instead of relying on one measure.")}
+	result, err := GenerateDailyInsightNarrativeSlotFromInput(context.Background(), provider, ProviderConfig{}, snapshot, "de", health.DailyInsightNarrativeOverallSlot, input)
+	if err != nil || result.Section == nil {
+		t.Fatalf("GenerateDailyInsightNarrativeSlotFromInput: section=%#v err=%v", result.Section, err)
+	}
+	if len(provider.requests) != 2 || provider.requests[0].Language != "en" || provider.requests[1].Language != "en" {
+		t.Fatalf("unsupported locale did not use canonical English provider requests: %#v", provider.requests)
+	}
+	var captured health.DailyInsightNarrativeSlotInput
+	if err := json.Unmarshal(provider.requests[0].UserPayload, &captured); err != nil {
+		t.Fatalf("decode frozen input: %v", err)
+	}
+	if captured.Locale != "en" {
+		t.Fatalf("frozen input locale = %q, want canonical en", captured.Locale)
+	}
+}
+
 func TestGenerateDailyInsightNarrativeSlotSkipsStandaloneSleepPattern(t *testing.T) {
 	snapshot := dailyInsightTestSnapshot(t)
 	provider := &dailyInsightTestProvider{response: dailyInsightTestDomainNarrative(t, "sleep", "This is no longer one short night; it is a repeated departure from your usual sleep.", "recent_sleep_below_reference", []string{"personal_pattern", "current_context"}, "sleep_personal_reference")}

@@ -143,9 +143,12 @@ func (s *DB) EnsureDailyInsightNarrativeSlotsAsync(snapshot *health.DailyInsight
 	}
 	// Ingestion can refresh a snapshot before the first HTTP read creates its
 	// slot row. Persisting it first also makes prior prose unreadable at once.
-	if err := s.UpsertDailyInsightNarrativeSlot(context.Background(), DailyInsightNarrativeSlot{
+	initializeCtx, cancelInitialize := queryCtx()
+	err := s.UpsertDailyInsightNarrativeSlot(initializeCtx, DailyInsightNarrativeSlot{
 		Date: snapshot.Date, Lang: lang, Slot: slot, MaterialInputHash: materialHash, ProviderFingerprint: providerFingerprint,
-	}); err != nil {
+	})
+	cancelInitialize()
+	if err != nil {
 		log.Printf("daily insight narrative slot: initialize date=%s lang=%s slot=%s: %v", snapshot.Date, lang, slot, err)
 		return false
 	}

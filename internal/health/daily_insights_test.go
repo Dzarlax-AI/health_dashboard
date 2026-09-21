@@ -860,10 +860,27 @@ func TestNarrativeFactsWithholdIncompleteDailyWindowsAndMissingReadiness(t *test
 	}
 }
 
+func TestNarrativeEnergyFactDisplayValuesIncludeLocalizedVerdictNumbers(t *testing.T) {
+	facts := buildDailyInsightNarrativeFacts(&BriefingResponse{EnergyBank: &EnergyBank{
+		Current: 51, Capacity: 84, DrainSoFar: 16, Strain: 11, Stress: 9,
+		ActionVerdict: "moderate", VerdictReason: "HRV is 28 today.",
+	}}, nil, "en")
+	for _, fact := range facts {
+		if fact.ID != "energy_authoritative_state" {
+			continue
+		}
+		if got, want := strings.Join(fact.DisplayValues, ","), "51,84,16,11,9,28"; got != want {
+			t.Fatalf("energy display values = %q, want %q for statement %q", got, want, fact.Statement)
+		}
+		return
+	}
+	t.Fatalf("energy fact missing: %#v", facts)
+}
+
 func TestBoundedNarrativeDailyFactsFailClosedOnGapsOrUnorderedInput(t *testing.T) {
 	daily := narrativeDailyRows("2026-09-20", 11, 7, 100)
 	daily[2].Date = "2026-09-16"
-	if _, ok := boundedSleepPatternFact(daily, "en"); ok {
+	if _, ok := boundedSleepPatternFact(daily, "2026-09-20", "en"); ok {
 		t.Fatal("sleep fact accepted a calendar gap")
 	}
 	if _, ok := boundedActivityTrendFact(daily, "2026-09-20", "en"); ok {
@@ -871,11 +888,22 @@ func TestBoundedNarrativeDailyFactsFailClosedOnGapsOrUnorderedInput(t *testing.T
 	}
 	daily = narrativeDailyRows("2026-09-20", 11, 7, 100)
 	daily[3], daily[4] = daily[4], daily[3]
-	if _, ok := boundedSleepPatternFact(daily, "en"); ok {
+	if _, ok := boundedSleepPatternFact(daily, "2026-09-20", "en"); ok {
 		t.Fatal("sleep fact accepted unordered input")
 	}
 	if _, ok := boundedActivityTrendFact(daily, "2026-09-20", "en"); ok {
 		t.Fatal("activity fact accepted unordered input")
+	}
+	daily = narrativeDailyRows("2026-09-20", 11, 7, 100)
+	daily[0].Date = "2026-09-19"
+	if _, ok := boundedSleepPatternFact(daily, "2026-09-20", "en"); ok {
+		t.Fatal("sleep fact accepted a stale first row")
+	}
+	facts := buildDailyInsightNarrativeFacts(&BriefingResponse{Date: "2026-09-20", RawMetrics: &RawMetrics{LastDate: "2026-09-20", Daily: daily}}, nil, "en")
+	for _, fact := range facts {
+		if fact.ID == "sleep_recent_four_day_pattern" {
+			t.Fatalf("stale first row entered narrative eligibility: %#v", fact)
+		}
 	}
 }
 

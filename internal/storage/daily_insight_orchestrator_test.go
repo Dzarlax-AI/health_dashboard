@@ -61,6 +61,18 @@ func setTestNarrativeSlotGenerate(t *testing.T, generate func(context.Context, a
 	})
 }
 
+// overrideTestDailyInsightDebounce returns a restoration function. testDB holds
+// sharedFullDBMu until its cleanup runs, so callers defer this result after the
+// DB cleanup defer and restore the shared test DB state before that unlock.
+func overrideTestDailyInsightDebounce(t *testing.T, db *DB, duration time.Duration) func() {
+	t.Helper()
+	previous := db.dailyInsightDebounceFn
+	db.dailyInsightDebounceFn = duration
+	return func() {
+		db.dailyInsightDebounceFn = previous
+	}
+}
+
 func approvedNarrativeSlotConfig(t *testing.T, db *DB) AIConfig {
 	t.Helper()
 	identity := ai.DailyInsightNarrativeSlotCurrentReviewIdentity()
@@ -214,7 +226,8 @@ func TestOverallCoordinatorIdleExitRejectsOldPointerAndAllowsReschedule(t *testi
 func TestOverallRuntimeAllocatesOnlyOverallLifecycleRow(t *testing.T) {
 	db, cleanup := testDB(t)
 	defer cleanup()
-	db.dailyInsightDebounceFn = 10 * time.Millisecond
+	restoreDebounce := overrideTestDailyInsightDebounce(t, db, 10*time.Millisecond)
+	defer restoreDebounce()
 	config := approvedNarrativeSlotConfig(t, db)
 	var calls atomic.Int32
 	setTestNarrativeSlotGenerate(t, func(context.Context, ai.ProviderConfig, ai.GenerationRequest) (ai.GenerationResult, error) {
@@ -244,7 +257,8 @@ func TestOverallRuntimeAllocatesOnlyOverallLifecycleRow(t *testing.T) {
 func TestOverallSchedulerCollapsesBurstAndRunsLatestOnly(t *testing.T) {
 	db, cleanup := testDB(t)
 	defer cleanup()
-	db.dailyInsightDebounceFn = 10 * time.Millisecond
+	restoreDebounce := overrideTestDailyInsightDebounce(t, db, 10*time.Millisecond)
+	defer restoreDebounce()
 	config := approvedNarrativeSlotConfig(t, db)
 	var calls atomic.Int32
 	setTestNarrativeSlotGenerate(t, func(context.Context, ai.ProviderConfig, ai.GenerationRequest) (ai.GenerationResult, error) {
@@ -276,7 +290,8 @@ func TestOverallSchedulerCollapsesBurstAndRunsLatestOnly(t *testing.T) {
 func TestOverallSchedulerSerializesLatestWorkAndRejectsStaleSave(t *testing.T) {
 	db, cleanup := testDB(t)
 	defer cleanup()
-	db.dailyInsightDebounceFn = time.Nanosecond
+	restoreDebounce := overrideTestDailyInsightDebounce(t, db, time.Nanosecond)
+	defer restoreDebounce()
 	config := approvedNarrativeSlotConfig(t, db)
 	entered := make(chan struct{}, 2)
 	releaseFirst := make(chan struct{})
@@ -334,7 +349,8 @@ func TestOverallSchedulerSerializesLatestWorkAndRejectsStaleSave(t *testing.T) {
 func TestOverallSchedulerHonorsFailureBackoff(t *testing.T) {
 	db, cleanup := testDB(t)
 	defer cleanup()
-	db.dailyInsightDebounceFn = time.Nanosecond
+	restoreDebounce := overrideTestDailyInsightDebounce(t, db, time.Nanosecond)
+	defer restoreDebounce()
 	config := approvedNarrativeSlotConfig(t, db)
 	var calls atomic.Int32
 	setTestNarrativeSlotGenerate(t, func(context.Context, ai.ProviderConfig, ai.GenerationRequest) (ai.GenerationResult, error) {
