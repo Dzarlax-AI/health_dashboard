@@ -118,9 +118,9 @@ func main() {
 	}
 	identity := ai.DailyInsightNarrativeCurrentReviewIdentity()
 	output := ai.DailyInsightNarrativeEvaluationOutput{
-		Version: "daily-insight-narrative-evaluation-v3", CorpusHash: corpusHash, GeneratedAt: time.Now().UTC(),
+		Version: "daily-insight-narrative-evaluation-v6", CorpusHash: corpusHash, GeneratedAt: time.Now().UTC(),
 		Provider: *providerID, Model: config.Model, Reasoning: config.ReasoningEffort, MaxOutputTokens: config.MaxOutputTokens,
-		PromptRevision: identity.PromptRevision, ClaimPacketVersion: identity.ClaimPacketVersion,
+		PromptRevision: identity.PromptRevision, SafetyPromptRevision: identity.SafetyPromptRevision, SafetyMaxOutputTokens: identity.SafetyMaxOutputTokens, ClaimPacketVersion: identity.ClaimPacketVersion,
 		NarrativeVersion: identity.NarrativeVersion, ReviewFingerprint: identity.Fingerprint,
 		RunsPerCase: *runs,
 		Cases:       make([]ai.DailyInsightNarrativeEvaluationCase, 0, len(corpus.Cases)),
@@ -130,15 +130,22 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
+		frozenInput, known, err := ai.BuildDailyInsightNarrativeCorpusSlotInput(item, item.Locale, health.DailyInsightNarrativeOverallSlot)
+		if err != nil || !known {
+			if err == nil {
+				err = fmt.Errorf("unknown frozen overall packet")
+			}
+			log.Fatal(err)
+		}
 		result := ai.DailyInsightNarrativeEvaluationCase{ID: item.ID, Locale: item.Locale, Tags: item.Tags, Fallbacks: ai.DailyInsightNarrativeFallbacks(snapshot, item.Locale)}
-		if !health.HasEligibleDailyInsightNarrativeClaims(&snapshot, item.Locale) {
+		if !hasEligibleFrozenOverallInput(frozenInput) {
 			result.Mode = "deterministic_fallback"
 			output.Cases = append(output.Cases, result)
 			continue
 		}
 		result.Mode = "narrative_candidate"
 		result.Runs = runIndependentEvaluationRuns(*runs, func(_ int) ai.DailyInsightNarrativeEvaluationRun {
-			return evaluateNarrativeRun(snapshot, item.Locale, provider, config)
+			return evaluateNarrativeRun(snapshot, item.Locale, provider, config, frozenInput)
 		})
 		output.Cases = append(output.Cases, result)
 	}
@@ -177,43 +184,31 @@ func runIndependentEvaluationRuns(runs int, evaluate func(int) ai.DailyInsightNa
 	return results
 }
 
-func evaluateNarrativeRun(snapshot health.DailyInsightSnapshot, locale string, provider ai.Provider, config ai.ProviderConfig) ai.DailyInsightNarrativeEvaluationRun {
+func evaluateNarrativeRun(snapshot health.DailyInsightSnapshot, locale string, provider ai.Provider, config ai.ProviderConfig, frozenInput health.DailyInsightNarrativeSlotInput) ai.DailyInsightNarrativeEvaluationRun {
 	entry := ai.DailyInsightNarrativeEvaluationRun{InvalidDomains: map[string]string{}, ProviderErrors: map[string]string{}}
-	candidate := health.DailyInsightNarrative{Version: health.DailyInsightNarrativeVersion, Locale: locale, Domains: make([]health.DailyInsightNarrativeDomain, 0, 3)}
-	for _, slot := range []string{health.DailyInsightNarrativeOverallSlot, "sleep", "recovery", "energy"} {
-		input, known := health.BuildDailyInsightNarrativeSlotInput(&snapshot, locale, slot)
-		if !known || len(input.Slot.Claims) == 0 {
-			if slot != health.DailyInsightNarrativeOverallSlot {
-				candidate.Domains = append(candidate.Domains, health.DailyInsightNarrativeDomain{Key: slot})
-			}
-			continue
-		}
+	candidate := health.DailyInsightNarrative{Version: health.DailyInsightNarrativeVersion, Locale: locale}
+	if hasEligibleFrozenOverallInput(frozenInput) {
 		generationCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		generated, generationErr := ai.GenerateDailyInsightNarrativeSlot(generationCtx, provider, config, &snapshot, locale, slot)
+		generated, generationErr := ai.GenerateDailyInsightNarrativeSlotFromInput(generationCtx, provider, config, &snapshot, locale, health.DailyInsightNarrativeOverallSlot, frozenInput)
 		cancel()
 		entry.Attempts += generated.Attempts
 		entry.InputTokens += int(generated.InputTokens)
 		entry.OutputTokens += int(generated.OutputTokens)
+		entry.SafetyEvidence = generated.SafetyEvidence
+		if generated.SafetyEvidence != nil {
+			entry.Attempts += generated.SafetyEvidence.ProviderAttempts
+			entry.InputTokens += int(generated.SafetyEvidence.ProviderInputTokens)
+			entry.OutputTokens += int(generated.SafetyEvidence.ProviderOutputTokens)
+		}
 		if generationErr != nil {
-			// A slot is the runtime unit of generation. Keep successful siblings
-			// in the review artifact and mark only this slot as a provider failure;
-			// otherwise an unsafe successful section could be hidden by a later
-			// unrelated request failure.
 			var semanticErr *ai.DailyInsightNarrativeSemanticError
 			if errors.As(generationErr, &semanticErr) {
-				entry.InvalidDomains[slot] = semanticErr.Error()
+				entry.InvalidDomains[health.DailyInsightNarrativeOverallSlot] = semanticErr.Error()
 			} else {
-				entry.ProviderErrors[slot] = generationErr.Error()
+				entry.ProviderErrors[health.DailyInsightNarrativeOverallSlot] = generationErr.Error()
 			}
-			if slot != health.DailyInsightNarrativeOverallSlot {
-				candidate.Domains = append(candidate.Domains, health.DailyInsightNarrativeDomain{Key: slot})
-			}
-			continue
-		}
-		if slot == health.DailyInsightNarrativeOverallSlot {
-			candidate.Overall = generated.Section
 		} else {
-			candidate.Domains = append(candidate.Domains, health.DailyInsightNarrativeDomain{Key: slot, Section: generated.Section})
+			candidate.Overall = generated.Section
 		}
 	}
 	entry.Narrative = &candidate
@@ -225,6 +220,19 @@ func evaluateNarrativeRun(snapshot health.DailyInsightSnapshot, locale string, p
 	}
 	entry.Review = ai.DailyInsightNarrativeRunReviewWorksheet(snapshot, locale, entry.Narrative, entry.InvalidDomains, entry.ProviderErrors)
 	return entry
+}
+
+func hasEligibleFrozenOverallInput(input health.DailyInsightNarrativeSlotInput) bool {
+	if input.Slot.Key != health.DailyInsightNarrativeOverallSlot || len(input.Slot.Facts) == 0 {
+		return false
+	}
+	domains := map[string]struct{}{}
+	for _, fact := range input.Slot.Facts {
+		if fact.Fresh && fact.Domain != "" {
+			domains[fact.Domain] = struct{}{}
+		}
+	}
+	return len(domains) >= 2
 }
 
 // inspectProviderConfig verifies only configuration reachability. Its output
@@ -458,6 +466,7 @@ func loadEvaluationOutput(path string) ai.DailyInsightNarrativeEvaluationOutput 
 	if err := json.Unmarshal(raw, &review); err != nil {
 		log.Fatalf("decode review: %v", err)
 	}
+	ai.NormalizeDailyInsightNarrativeEvaluationOutput(&review)
 	return review
 }
 
@@ -543,7 +552,7 @@ func validateOfflineReviewArtifact(corpus ai.DailyInsightNarrativeCorpus, corpus
 		}
 		evaluated := byID[frozen.ID]
 		for runIndex, run := range evaluated.Runs {
-			if err := validateOfflineNarrativeRun(snapshot, frozen.Locale, run); err != nil {
+			if err := validateOfflineNarrativeRun(corpus.Version, frozen, snapshot, frozen.Locale, run); err != nil {
 				return fmt.Errorf("case %q run %d: %w", frozen.ID, runIndex+1, err)
 			}
 			want := ai.DailyInsightNarrativeRunReviewWorksheet(snapshot, frozen.Locale, run.Narrative, run.InvalidDomains, run.ProviderErrors)
@@ -561,7 +570,7 @@ func validateOfflineReviewArtifact(corpus ai.DailyInsightNarrativeCorpus, corpus
 // deliberately preserves rejected siblings for product reporting; this helper
 // prevents an altered artifact from smuggling their raw model prose into the
 // human worksheet.
-func validateOfflineNarrativeRun(snapshot health.DailyInsightSnapshot, locale string, run ai.DailyInsightNarrativeEvaluationRun) error {
+func validateOfflineNarrativeRun(corpusVersion string, frozen ai.DailyInsightNarrativeCorpusCase, snapshot health.DailyInsightSnapshot, locale string, run ai.DailyInsightNarrativeEvaluationRun) error {
 	sections := make(map[string]*health.DailyInsightNarrativeSection)
 	if run.Narrative != nil {
 		if run.Narrative.Version != health.DailyInsightNarrativeVersion || run.Narrative.Locale != locale {
@@ -603,6 +612,24 @@ func validateOfflineNarrativeRun(snapshot health.DailyInsightSnapshot, locale st
 		}
 		if run.InvalidDomains[slot] != "" || run.ProviderErrors[slot] != "" {
 			return fmt.Errorf("failed slot %q retains model text", slot)
+		}
+		if corpusVersion == ai.DailyInsightNarrativeCorpusVersionV2 && slot == health.DailyInsightNarrativeOverallSlot {
+			if len(run.Narrative.Domains) != 0 {
+				return fmt.Errorf("stored overall narrative contains domain text")
+			}
+			frozenInput, known, inputErr := ai.BuildDailyInsightNarrativeCorpusSlotInput(frozen, locale, slot)
+			if inputErr != nil || !known {
+				return fmt.Errorf("frozen overall packet is unavailable")
+			}
+			candidate := health.DailyInsightNarrativeSlot{
+				Version: run.Narrative.Version,
+				Locale:  run.Narrative.Locale,
+				Slot:    health.DailyInsightNarrativeDomain{Key: slot, Section: section},
+			}
+			if _, err := health.ValidateDailyInsightNarrativeSlotResponseWithInput(&snapshot, locale, slot, frozenInput.Slot, candidate); err != nil {
+				return fmt.Errorf("stored narrative slot %q no longer passes semantic validation: %w", slot, err)
+			}
+			continue
 		}
 		candidate := health.DailyInsightNarrative{Version: run.Narrative.Version, Locale: run.Narrative.Locale}
 		if slot == health.DailyInsightNarrativeOverallSlot {
@@ -738,15 +765,15 @@ const serverAnchors=JSON.parse({{.AnchorJSON}});
 const reviewPacket=JSON.parse({{.ReviewPacketJSON}});
 const reviewCases=Object.fromEntries(reviewPacket.cases.map(item=>[item.id,item]));
 const corpusHash={{.CorpusHash}};
-const optionSets={claim_fidelity:['','pass','fail'],qualifier_fidelity:['','pass','fail'],safety:['','safe','violation'],added_meaning:['','0','1','2'],screen_duplication:['','none','domain','hero','both'],language:['','pass','fail']};
+const optionSets={fidelity:['','pass','fail'],claim_fidelity:['','pass','fail'],qualifier_fidelity:['','pass','fail'],safety:['','safe','violation'],added_meaning:['','0','1','2'],screen_duplication:['','none','domain','hero','both'],language:['','pass','fail'],naturalness:['','pass','fail']};
 function node(tag,text,cls){const x=document.createElement(tag);if(text!==undefined)x.textContent=text;if(cls)x.className=cls;return x}
 function field(domain,key,label){const wrap=node('label');wrap.append(node('span',label));const select=node('select');for(const value of optionSets[key]){const o=node('option',value||'—');o.value=value;if(String(domain[key]??'')===value)o.selected=true;select.append(o)}select.addEventListener('change',()=>{domain[key]=key==='added_meaning'?(select.value===''?null:Number(select.value)):select.value;updateProgress()});wrap.append(select);return wrap}
 function reason(domain){const wrap=node('label');wrap.append(node('span','Reason'));const area=node('textarea');area.value=domain.review_reason||'';area.addEventListener('input',()=>{domain.review_reason=area.value;updateProgress()});wrap.append(area);return wrap}
 function fallbackText(item,key){const f=(item.fallbacks||[]).find(x=>x.key===key);if(!f)return'No slot fallback';const copy=[f.context,f.observation,f.meaning].filter(Boolean).join(' — ');return'Fallback ('+f.summary+'): '+(copy||'No server copy available')}
 function reviewRules(item,key,section){const packet=reviewCases[item.id];if(!packet||!section)return[];const sentence=(section.sentences||[])[0]||{};const claims=(packet.claims||[]).filter(claim=>(sentence.claim_ids||[]).includes(claim.id));const qualifiers=Object.fromEntries((packet.qualifier_definitions||[]).map(q=>[q.id,q.constraint]));const selectedMeaningIDs=new Set(sentence.meaning_ids||[]);const rules=[];for(const claim of claims){rules.push('Allowed claim: '+claim.id+' — '+claim.proposition);for(const qualifier of claim.required_qualifier_ids||[]){rules.push('Qualifier '+qualifier+': '+(qualifiers[qualifier]||'Preserve without strengthening the claim.'))}const selected=(claim.meaning_links||[]).filter(meaning=>selectedMeaningIDs.has(meaning.id)).map(meaning=>meaning.id+' — '+meaning.statement);if(selected.length)rules.push('Model-cited interpretation: '+selected.join(' | '));const alternatives=(claim.meaning_links||[]).filter(meaning=>!selectedMeaningIDs.has(meaning.id)).map(meaning=>meaning.id+' — '+meaning.statement);if(alternatives.length)rules.push('Other permitted interpretations, not cited: '+alternatives.join(' | '))}const visibleFacts=(packet.screen_baseline?.rendered_copy||[]).filter(copy=>copy.scope===key||(key==='overall'&&copy.scope==='overall')).map(copy=>copy.scope+': '+copy.text);if(visibleFacts.length)rules.push('Exact visible server copy: '+visibleFacts.join(' | '));const visible=(packet.screen_baseline?.displayed_meanings||[]).filter(meaning=>meaning.scope===key||(key==='overall'&&meaning.scope==='primary')).map(meaning=>meaning.scope+': '+meaning.constraint);if(visible.length)rules.push('Already visible on screen: '+visible.join(' | '));return rules}
-function render(){const meta=document.querySelector('#meta');meta.append(node('div','Corpus: '+corpusHash));meta.append(node('div','Provider: '+artifact.provider+' / '+artifact.model+' / '+artifact.reasoning));meta.append(node('div','Runs per case: '+artifact.runs_per_case));const root=document.querySelector('#cases');for(const item of artifact.cases){const card=node('section',undefined,'case');card.append(node('h2',item.id+' · '+item.locale+' · '+item.mode));card.append(node('div',(item.tags||[]).join(' · '),'muted'));if(item.mode==='deterministic_fallback'){card.append(node('p','Safety control: no provider text expected. Review the exact server fallback below.','muted'));for(const fallback of item.fallbacks||[]){const slot=node('section',undefined,'slot invalid');slot.append(node('h3',fallback.key+' · deterministic fallback'));slot.append(node('div',fallbackText(item,fallback.key),'fallback'));for(const copy of (reviewCases[item.id]?.screen_baseline?.rendered_copy||[]).filter(copy=>copy.scope===fallback.key)){slot.append(node('div','Exact server copy: '+copy.text,'anchor'))}card.append(slot)}root.append(card);continue}for(const [index,run] of (item.runs||[]).entries()){const runCard=node('article',undefined,'run');runCard.append(node('h3','Run '+(index+1)));if(run.invalid_domains){runCard.append(node('p','Validator fallback: '+JSON.stringify(run.invalid_domains),'muted'))}if(run.provider_errors){runCard.append(node('p','Provider error: '+JSON.stringify(run.provider_errors),'muted'))}const sections={overall:run.narrative?.overall};for(const d of run.narrative?.domains||[])sections[d.key]=d.section;for(const review of run.review?.domains||[]){const slot=node('section',undefined,'slot '+(review.output_status==='valid'?'':'invalid'));slot.append(node('h3',review.key+' · '+review.output_status));slot.append(node('div',fallbackText(item,review.key),'fallback'));const evidence=serverAnchors[item.id]?.[index]?.[review.key];if(evidence?.facts)slot.append(node('div','Server facts: '+evidence.facts,'anchor'));if(evidence?.story)slot.append(node('div','Server-approved story: '+evidence.story,'rule'));const section=sections[review.key];const text=(section?.sentences||[]).map(s=>s.text).join(' ');slot.append(node('p',text?'Model narrative: '+text:'No provider narrative.','copy'));for(const rule of reviewRules(item,review.key,section))slot.append(node('div',rule,'rule'));if(review.output_status==='valid'){const grid=node('div',undefined,'grid');grid.append(field(review,'claim_fidelity','Claim fidelity'));grid.append(field(review,'qualifier_fidelity','Qualifier fidelity'));grid.append(field(review,'safety','Safety'));grid.append(field(review,'added_meaning','Added meaning'));grid.append(field(review,'screen_duplication','Screen duplication'));grid.append(field(review,'language','Language'));slot.append(grid);slot.append(reason(review))}runCard.append(slot)}card.append(runCard)}root.append(card)}updateProgress()}
+function render(){const meta=document.querySelector('#meta');meta.append(node('div','Corpus: '+corpusHash));meta.append(node('div','Provider: '+artifact.provider+' / '+artifact.model+' / '+artifact.reasoning));meta.append(node('div','Runs per case: '+artifact.runs_per_case));const root=document.querySelector('#cases');for(const item of artifact.cases){const card=node('section',undefined,'case');card.append(node('h2',item.id+' · '+item.locale+' · '+item.mode));card.append(node('div',(item.tags||[]).join(' · '),'muted'));if(item.mode==='deterministic_fallback'){card.append(node('p','Safety control: no provider text expected. Review the exact server fallback below.','muted'));for(const fallback of item.fallbacks||[]){const slot=node('section',undefined,'slot invalid');slot.append(node('h3',fallback.key+' · deterministic fallback'));slot.append(node('div',fallbackText(item,fallback.key),'fallback'));for(const copy of (reviewCases[item.id]?.screen_baseline?.rendered_copy||[]).filter(copy=>copy.scope===fallback.key)){slot.append(node('div','Exact server copy: '+copy.text,'anchor'))}card.append(slot)}root.append(card);continue}for(const [index,run] of (item.runs||[]).entries()){const runCard=node('article',undefined,'run');runCard.append(node('h3','Run '+(index+1)));if(run.invalid_domains){runCard.append(node('p','Validator fallback: '+JSON.stringify(run.invalid_domains),'muted'))}if(run.provider_errors){runCard.append(node('p','Provider error: '+JSON.stringify(run.provider_errors),'muted'))}const sections={overall:run.narrative?.overall};for(const d of run.narrative?.domains||[])sections[d.key]=d.section;for(const review of run.review?.domains||[]){const slot=node('section',undefined,'slot '+(review.output_status==='valid'?'':'invalid'));slot.append(node('h3',review.key+' · '+review.output_status));slot.append(node('div',fallbackText(item,review.key),'fallback'));const evidence=serverAnchors[item.id]?.[index]?.[review.key];if(evidence?.facts)slot.append(node('div','Server facts: '+evidence.facts,'anchor'));if(evidence?.story)slot.append(node('div','Server-approved story: '+evidence.story,'rule'));const section=sections[review.key];const text=section?.text|| (section?.sentences||[]).map(s=>s.text).join(' ');slot.append(node('p',text?'Model narrative: '+text:'No provider narrative.','copy'));for(const rule of reviewRules(item,review.key,section))slot.append(node('div',rule,'rule'));if(review.output_status==='valid'){const grid=node('div',undefined,'grid');grid.append(field(review,'fidelity','Fidelity'));grid.append(field(review,'claim_fidelity','Claim fidelity'));grid.append(field(review,'qualifier_fidelity','Qualifier fidelity'));grid.append(field(review,'safety','Safety'));grid.append(field(review,'added_meaning','Added meaning'));grid.append(field(review,'screen_duplication','Screen duplication'));grid.append(field(review,'language','Language'));grid.append(field(review,'naturalness','Naturalness'));slot.append(grid);slot.append(reason(review))}runCard.append(slot)}card.append(runCard)}root.append(card)}updateProgress()}
 function reviewRows(){return artifact.cases.flatMap(c=>c.runs||[]).flatMap(r=>r.review?.domains||[]).filter(d=>d.output_status==='valid')}
-function isReviewed(d){return Boolean(d.claim_fidelity&&d.qualifier_fidelity&&d.safety&&d.added_meaning!==null&&d.added_meaning!==undefined&&d.screen_duplication&&d.language&&d.review_reason.trim())}
+function isReviewed(d){return Boolean((d.fidelity||d.claim_fidelity)&&d.claim_fidelity&&d.qualifier_fidelity&&d.safety&&d.added_meaning!==null&&d.added_meaning!==undefined&&d.screen_duplication&&d.language&&d.naturalness&&d.review_reason.trim())}
 function updateProgress(){const all=reviewRows();const done=all.filter(isReviewed).length;document.querySelector('#progress').textContent=done+'/'+all.length+' valid slots scored';document.querySelector('#download-complete').disabled=all.length===0||done!==all.length}
 function download(name){const blob=new Blob([JSON.stringify(artifact,null,2)+'\n'],{type:'application/json'});const url=URL.createObjectURL(blob);const a=node('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),0)}
 document.querySelector('#download-draft').addEventListener('click',()=>download('daily-insight-review-draft.json'));document.querySelector('#download-complete').addEventListener('click',()=>download('daily-insight-reviewed.json'));render();

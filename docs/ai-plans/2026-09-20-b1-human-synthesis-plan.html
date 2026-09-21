@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>План: B1 human daily synthesis</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root { --bg:#f4f6f8; --card:#fff; --text:#192132; --muted:#5b6678; --line:#dbe1e8; --blue:#285ea8; --amber:#9a5800; --red:#b42318; --green:#18723a; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--bg); color:var(--text); line-height:1.55; }
+    main { max-width:1060px; margin:0 auto; padding:32px 20px 56px; }
+    section { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:22px; margin:16px 0; }
+    h1,h2,h3 { line-height:1.22; margin-top:0; }
+    h2 { font-size:1.25rem; }
+    code { background:#eef2f7; padding:2px 5px; border-radius:4px; }
+    pre { overflow:auto; background:#111827; color:#eef2ff; padding:16px; border-radius:8px; }
+    .badge { display:inline-block; padding:5px 11px; border-radius:999px; background:#fff0d2; color:#724100; font-size:.8rem; font-weight:700; }
+    .muted { color:var(--muted); }
+    .decision { border-left:5px solid var(--blue); }
+    .approval { border-left:5px solid var(--amber); }
+    .risk { border-left:5px solid var(--red); }
+    .safe { border-left:5px solid var(--green); }
+    table { width:100%; border-collapse:collapse; }
+    th,td { text-align:left; vertical-align:top; border-bottom:1px solid var(--line); padding:10px 8px; }
+    th { color:var(--muted); font-size:.85rem; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>B1: человеческий синтез дня</h1>
+  <p class="badge">Локальный B1 gate пройден; B1 выключен до отдельного preview/deploy approval</p>
+  <p class="muted">Дата: 2026-09-20, фактический результат обновлён 2026-09-21. Этот план заменяет тупиковое требование, чтобы B1 объяснял только causal provenance финального action.</p>
+
+  <section class="decision">
+    <h2>Product decision</h2>
+    <p>B1 — это не пересказ карточки и не объяснение внутреннего decision engine. Это короткое человеческое наблюдение о том, как свежие сигналы сна, восстановления и энергии выглядят вместе сегодня. Luna сама замечает согласованность, контраст, напряжение или общую картину — сервер не выдаёт ей заранее выбранный смысл.</p>
+    <p><strong>Ключевая смена:</strong> eligibility больше не требует, чтобы два домена совместно изменили <code>DailyDecision</code>, а output не обязан попадать в закрытый relationship enum. Сервер владеет исходными фактами, числами и действиями; модель владеет аккуратной интерпретацией и человеческой формулировкой.</p>
+  </section>
+
+  <section>
+    <h2>Почему текущий B1 даёт ноль</h2>
+    <ul>
+      <li><code>overall</code> разрешён только при двух <code>DecisionEvidenceDomains</code>, хотя текущий decision builder честно сохраняет один источник финального action.</li>
+      <li>Provider получает заранее написанный server story и обязан цитировать один closed meaning. Ему остаётся либо перефразировать B0, либо вернуть <code>null</code>.</li>
+      <li>Standalone Sleep/Recovery/Energy закономерно повторяли уже видимые карточки и CTA.</li>
+      <li>Fresh overall-only evaluation подтвердила архитектурный тупик: девять из девяти controlled calls вернули валидный <code>null</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Новый контракт</h2>
+    <p>Сервер передаёт компактную privacy-minimized картину из 2–3 свежих доменов: факты, personal comparison, разрешённые числа, существующий B0-текст и CTA. Он не размечает факты как <code>supportive</code>/<code>straining</code> и не пишет за модель готовый story:</p>
+    <pre><code>{
+  "key": "sleep_recent_pattern",
+  "domain": "sleep",
+  "statement": "За последние четыре ночи три были короче обычного.",
+  "display_values": ["3 из 4"]
+}</code></pre>
+    <p>Ответ становится проще: один текст и список использованных fact IDs. Luna сама решает, какая связь важна и как её объяснить. Fact IDs нужны для traceability и evaluation, а не как грамматический каркас каждого предложения.</p>
+    <pre><code>{
+  "text": "...",
+  "fact_ids": ["sleep_recent_pattern", "recovery_today", "energy_now"],
+  "action_id": "wind_down"
+}</code></pre>
+  </section>
+
+  <section class="decision">
+    <h2>Достаточно богатый derived packet</h2>
+    <p>Luna не получает raw HealthKit samples или полный database snapshot, но и не остаётся с тремя бедными карточками. Packet собирается из уже вычисленных typed aggregate/derived fields и даёт модели контекст в трёх слоях:</p>
+    <table>
+      <thead><tr><th>Слой</th><th>Что можно передавать, когда доступно</th></tr></thead>
+      <tbody>
+        <tr><td>Сегодня</td><td>Сон и его состав, readiness и компоненты, HRV/RHR deviations, текущий EnergyBank, drain/strain/stress, активность, headline metrics, финальный server action.</td></tr>
+        <tr><td>Личная норма</td><td>Персональные baselines и точные сравнения, уже рассчитанные сервером: current value, baseline, delta, unit, window.</td></tr>
+        <tr><td>Недавняя динамика</td><td>Короткие ночи в закрытом окне, устойчивые изменения, recent aggregate trend и другие уже вычисленные multi-day patterns.</td></tr>
+      </tbody>
+    </table>
+    <p>В provider request не попадают <code>health_records</code>, отдельные HealthKit events, поминутные ряды, source-device identifiers, credentials или произвольный SQL result. Сервер отбирает только факты, которые уже имеют понятную семантику и единицы.</p>
+    <p>Packet включает visible B0 copy и CTA как anti-duplication context. Модель может использовать underlying facts для нового синтеза, но не должна просто переписать уже показанный текст. Точный набор полей участвует в material hash, поэтому добавление или изменение контекста регенерирует B1.</p>
+  </section>
+
+  <section class="safe">
+    <h2>Что модели разрешено</h2>
+    <ul>
+      <li>Видеть широкий derived context, но самостоятельно выбирать одну главную мысль и только нужные для неё facts.</li>
+      <li>Говорить, что сигналы согласуются, расходятся, компенсируют друг друга или дают неоднородную картину — без обязательного enum.</li>
+      <li>Делать осторожный бытовой вывод из их сочетания: что сегодня выделяется, что не совпадает с общей картиной, на что разумно обратить внимание.</li>
+      <li>Использовать тёплый, обычный русский/английский/сербский язык и второе лицо, если это звучит естественно.</li>
+      <li>Использовать одно-два разрешённых числа, только если они действительно делают мысль конкретнее; перечислять все доступные metrics не требуется.</li>
+      <li>Предложить одну новую низкорисковую и обратимую бытовую рекомендацию без обязательного <code>action_id</code>. Если используется более сильный server-owned intent, Luna выбирает не более одного переданного <code>action_id</code>.</li>
+      <li>Не соблюдать обязательную композицию «факт → объяснение → рекомендация» и не писать отчёт о каждом домене.</li>
+    </ul>
+    <h3>Пример целевого уровня</h3>
+    <p>«Сейчас выбивается только сон: три из последних четырёх ночей были короче твоей нормы. Восстановление и энергия держатся, поэтому весь день перестраивать не нужно. Лучше вложиться в вечер — оставить последний час без дел и начать сворачиваться пораньше.»</p>
+    <p class="muted">Точная фраза — иллюстрация тона, не hardcoded copy. Цель — одна понятная мысль и естественно встроенное действие, а не полное резюме packet.</p>
+  </section>
+
+  <section class="decision">
+    <h2>Рекомендация без искусственного CTA</h2>
+    <p>Daily decision и медицински значимые ограничения остаются server-owned. Небольшой request-specific catalogue нужен только для авторитетных intents вроде <code>wind_down</code>, <code>daily-decision-rest</code> или <code>daily-decision-moderate</code>. Luna при этом может заметить не предусмотренную сервером связь и предложить одну мягкую, обратимую бытовую идею с пустым <code>action_id</code>.</p>
+    <pre><code>{
+  "text": "...",
+  "fact_ids": ["sleep_recent_pattern", "recovery_today", "energy_now"],
+  "action_id": "wind_down"
+}</code></pre>
+    <p>Validator проверяет, что непустой <code>action_id</code> присутствовал в конкретном request catalogue, а текст не противоречит server-owned action и не добавляет медицинское вмешательство, сильную причинность, уверенный health outcome или опасное ограничение. Для нового низкорискового совета <code>action_id</code> не требуется; его factual grounding и реальная полезность проверяются через <code>fact_ids</code> и human review.</p>
+  </section>
+
+  <section class="risk">
+    <h2>Что остаётся запрещено</h2>
+    <ul>
+      <li>Новые числа, диагнозы, медицинские назначения и уверенные прогнозы.</li>
+      <li>Жёсткие causal claims вида «сон снизил восстановление». Наблюдаемая корреляция и осторожные связки «при этом», «на фоне», «похоже» разрешены.</li>
+      <li>Утверждения о самочувствии пользователя, которых нет в evidence.</li>
+      <li>Авторитетный <code>action_id</code> вне request-specific allow-list, противоречие server-owned action, экстремальная нагрузка/ограничение или обещание health outcome. Обычный мягкий обратимый совет сам по себе не запрещён.</li>
+      <li>Обсуждение качества данных, калибровки, confidence gates и внутренних ограничений.</li>
+    </ul>
+    <p>Ограничения защищают факты и безопасность, но не диктуют готовое предложение и не требуют от модели оправдывать внутренний алгоритм.</p>
+  </section>
+
+  <section>
+    <h2>Eligibility и fail-safe</h2>
+    <ol>
+      <li>Есть минимум два домена со свежими factual/confirmed observations.</li>
+      <li>Provider видит также уже показанный B0 baseline, чтобы искать добавочный смысл, а не случайно повторять карточки.</li>
+      <li>Provider обязан вернуть non-null section для eligible packet. <code>null</code> допускается только как технический fail-safe и считается product/evaluation failure, а не нормальным успехом.</li>
+      <li>Рекомендация необязательна. Luna может дать одну новую низкорисковую идею без <code>action_id</code> или выбрать ноль/один разрешённый server-owned intent.</li>
+      <li>Если provider/validator не проходит, UI показывает полноценный B0, а не пустое место и не «калибровку».</li>
+    </ol>
+  </section>
+
+  <section class="decision">
+    <h2>Обновляемость инсайтов</h2>
+    <p>Обновление — часть продуктового контракта, а не ручная регенерация:</p>
+    <ol>
+      <li><strong>B0 обновляется сразу</strong> после пересчёта snapshot: карточки, factual observations и server-owned CTA не ждут provider.</li>
+      <li><strong>Overall B1 имеет собственный material hash.</strong> В него входят selected facts, statements, display values, visible B0 baseline, точный request-specific action catalogue, локаль, prompt/schema identity и provider/model/reasoning.</li>
+      <li><strong>Любое материальное изменение</strong> одного из использованных доменов переводит overall slot в <code>cold</code> и запускает асинхронную регенерацию. Неиспользованный metric не инвалидирует текст.</li>
+      <li><strong>Устаревший текст не показывается.</strong> Narrative рендерится только при точном совпадении current material hash и provider fingerprint. Пока новая версия готовится, пользователь продолжает видеть полноценный B0, поэтому экран не становится пустым.</li>
+      <li><strong>HealthKit burst схлопывается.</strong> Изменения в коротком окне объединяются в один generation attempt после 30 секунд тишины. Для <code>date + lang + overall</code> одновременно работает не более одного provider request.</li>
+      <li><strong>Если snapshot изменился во время запроса,</strong> сохранение результата со старым hash отклоняется; после завершения запускается latest pending version.</li>
+      <li><strong>UI получает результат без reload:</strong> существующий visible-tab polling подхватывает ready slot; целевая задержка после стабилизации данных — один generation cycle плюс не более одного polling interval.</li>
+      <li><strong>Исторические даты cache-only.</strong> Provider вызывается только для текущего tenant-local дня; прошлые дни не регенерируются при просмотре.</li>
+      <li><strong>Ошибки не спамят provider:</strong> сохраняются lease, bounded retry/backoff и fail-closed save. Ошибка B1 никогда не блокирует B0.</li>
+    </ol>
+    <p>Доменные B0-карточки продолжают обновляться независимо. Общий B1 пересобирается только тогда, когда меняется совместная картина, которую он фактически описывает.</p>
+  </section>
+
+  <section>
+    <h2>Validator: только hard safety</h2>
+    <ul>
+      <li><code>fact_ids</code> содержат только supplied facts и подтверждают опору текста; не требуется размечать каждое предложение или упоминать все выбранные IDs дословно.</li>
+      <li>Числа встречаются только из <code>display_values</code>.</li>
+      <li>Нет диагнозов, медицинских назначений, новых действий, уверенной причинности или обещаний результата.</li>
+      <li><code>action_id</code> отсутствует либо входит в request-specific allow-list; пустой ID не запрещает новую низкорисковую обратимую рекомендацию.</li>
+      <li>Лимит: 1–3 коротких предложения, до 75 слов. Это предел, а не обязательный шаблон.</li>
+      <li>Убираются проверки <code>meaning_id</code>, server-written <code>story</code>, stance matrix, relationship enum, per-sentence citation и decision-domain provenance.</li>
+      <li>Не добавляется длинный blacklist стилистических штампов. Естественность, польза и повторы оцениваются corpus review, а не превращаются в runtime grammar.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Файлы, которые вероятно изменятся</h2>
+    <table>
+      <thead><tr><th>Файл</th><th>Изменение</th></tr></thead>
+      <tbody>
+        <tr><td><code>internal/health/daily_insights.go</code></td><td>Новый overall synthesis packet, request-specific action catalogue, eligibility и облегчённый hard-safety validator.</td></tr>
+        <tr><td><code>internal/health/daily_insights_test.go</code></td><td>Positive human synthesis cases и safety negatives.</td></tr>
+        <tr><td><code>internal/ai/daily_insights.go</code></td><td>Короткий prompt, новая response schema и review identity.</td></tr>
+        <tr><td><code>internal/ai/daily_insights_test.go</code></td><td>Проверка non-null expectation, references и natural multilingual output.</td></tr>
+        <tr><td><code>internal/ai/narrative_corpus.go</code></td><td>Frozen corpus/review packet для нового overall-only contract.</td></tr>
+        <tr><td><code>cmd/daily_insight_eval</code></td><td>Gate: factual/safety hard fail; added meaning, duplication и language — human product scores.</td></tr>
+        <tr><td><code>internal/storage/daily_insight_orchestrator.go</code></td><td>Новая material identity; B1 flags остаются закрытыми до review.</td></tr>
+        <tr><td><code>docs/ai-plans/2026-09-10-evidence-grounded-ai-insights.html</code></td><td>Запись фактической реализации и evaluation result.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="decision">
+    <h2>Модельная разбивка выполнения</h2>
+    <p>Работа идёт последовательными lanes, чтобы агенты не редактировали одни файлы одновременно. Sol остаётся lead-контроллером: формулирует bounded задания, принимает результаты, связывает контракты, исправляет расхождения и проводит финальную проверку. Основную реализацию Sol не пишет.</p>
+    <table>
+      <thead><tr><th>Этап и модель</th><th>Ответственность</th><th>Результат / gate</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>1. Luna</strong><br>bounded inventory</td>
+          <td>Инвентаризировать уже доступные aggregate/derived fields, их freshness/confidence, privacy suitability и текущие B0 renderings. Предложить точный packet catalogue и fixtures без архитектурных решений и без изменения production code.</td>
+          <td>Таблица source field → provider fact, omissions и test fixtures. Sol проверяет, что нет raw samples, выдуманных полей и утечки внутренних identifiers.</td>
+        </tr>
+        <tr>
+          <td><strong>2. Terra</strong><br>core implementation</td>
+          <td>По принятому каталогу реализовать rich synthesis packet, request-specific action options, упрощённую response schema, prompt, hard-safety validator, material identity и focused unit tests в <code>internal/health</code>/<code>internal/ai</code>.</td>
+          <td>Core tests green; никаких flags/deploy/provider calls. Sol инспектирует diff на соответствие продуктовой границе и возвращает конкретные corrections Terra.</td>
+        </tr>
+        <tr>
+          <td><strong>3. Terra</strong><br>refresh integration</td>
+          <td>После принятия core contract реализовать exact material hash, 30-second debounce, latest-wins single-flight/lease semantics и API rendering rules в storage/UI integration.</td>
+          <td>Concurrency/refresh tests доказывают отсутствие stale saves, provider spam и B0 blocking. Sol проверяет взаимодействие core и persistence.</td>
+        </tr>
+        <tr>
+          <td><strong>4. Luna</strong><br>evaluation mechanics</td>
+          <td>Обновить corpus builder, controlled fixtures, worksheet и evaluator под простой <code>text + fact_ids</code> contract. Механически подготовить frozen corpus и reproducible commands; не выставлять product scores и не принимать rollout decision.</td>
+          <td>Corpus validation и evaluator tests green. Sol проверяет coverage, provenance и отсутствие подгонки corpus под желаемый ответ.</td>
+        </tr>
+        <tr>
+          <td><strong>5. Luna provider</strong><br>subject under test</td>
+          <td>Выполнить ровно три independent generation runs на exact frozen corpus через active <code>gpt-5.6-luna / medium / 2048</code>.</td>
+          <td>Exact artifacts с request/validation metadata, без автоматического approval. Sol проводит human product scoring и классифицирует повторяющиеся failures.</td>
+        </tr>
+        <tr>
+          <td><strong>6. Astra</strong><br>one read-only final audit</td>
+          <td>После green integrated diff независимо проверить privacy boundary, unsupported inference, stale-refresh races, B0 fallback и соответствие approved plan. Astra не переписывает реализацию и не расширяет scope.</td>
+          <td>Evidence-backed findings с severity. Terra исправляет substantive code findings; Sol разрешает contract ambiguities и требует re-verification.</td>
+        </tr>
+        <tr>
+          <td><strong>7. Sol</strong><br>acceptance and correction</td>
+          <td>На каждом gate читать реальные diffs/outputs, не полагаться на summaries, координировать fix loops, запускать integrated verification, оценить каждый valid narrative по fidelity/safety/added meaning/duplication/language и обновить этот план фактическими результатами. Sol может сам внести узкую интеграционную коррекцию, но не забирает основной implementation lane.</td>
+          <td>Локальная реализация и evaluation либо приняты, либо отклонены с конкретными причинами. Sol не включает preview, не коммитит, не пушит и не деплоит без отдельного разрешения.</td>
+        </tr>
+      </tbody>
+    </table>
+    <p><strong>Порядок:</strong> Luna inventory → Terra core → Sol acceptance/corrections → Terra refresh → Sol integration → Luna evaluator/corpus → three Luna runs → Sol scoring → Astra audit → Terra fixes при необходимости → Sol final verification. Implementation agents не работают параллельно над общими файлами.</p>
+  </section>
+
+  <section>
+    <h2>Шаги реализации после одобрения</h2>
+    <ol>
+      <li>Luna инвентаризирует доступные typed aggregate/derived fields; Sol утверждает точный privacy-minimized provider catalogue.</li>
+      <li>Terra добавляет contract tests для свободного cross-domain synthesis и обязательной опоры минимум на два домена.</li>
+      <li>Terra заменяет decision-provenance overall packet на rich fresh-domain synthesis packet и добавляет request-specific low-risk action catalogue; standalone domain prose остаётся выключенной.</li>
+      <li>Упростить prompt/schema/validator и bump всех material versions, чтобы старое approval нельзя было переиспользовать.</li>
+      <li>Перевести overall slot на точный synthesis material hash, 30-second debounce и single-flight по <code>date + lang + overall</code>; stale in-flight result не может сохраниться.</li>
+      <li>Luna обновляет evaluator mechanics и собирает новый frozen 20-case corpus с реальными observed combinations и controlled safety cases; Sol проверяет artifact.</li>
+      <li>Выполнить ровно три независимых запуска active <code>openai / gpt-5.6-luna / medium / 2048</code>.</li>
+      <li>Sol проводит human scoring: fidelity, safety, added meaning, screen duplication, language. <code>null</code> в eligible case считается отсутствием пользы.</li>
+      <li>Astra выполняет один независимый read-only audit integrated diff; findings проходят fix/re-review loop.</li>
+      <li>Исправлять сначала contract/prompt общими правилами; не наращивать списки запрещённых фраз под каждый неудачный ответ.</li>
+      <li>Только после passing gate запросить отдельное разрешение на tenant preview. Normal B1 enablement и deployment не входят в это approval.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Проверка</h2>
+    <ul>
+      <li><code>go test ./internal/health ./internal/ai ./internal/storage -count=1</code></li>
+      <li><code>go test ./cmd/daily_insight_eval -count=1</code></li>
+      <li><code>go vet ./internal/health ./internal/ai ./internal/storage ./cmd/daily_insight_eval</code></li>
+      <li><code>make contract-check</code></li>
+      <li><code>git diff --check</code></li>
+      <li>Concurrency tests: burst updates дают один latest generation; stale lease/hash не сохраняется; provider failure оставляет B0 доступным.</li>
+      <li>Refresh tests: изменение cited sleep/recovery/energy fact или action catalogue инвалидирует overall, нерелевантный metric — нет, смена model/prompt/lang — да.</li>
+      <li>Corpus: три exact runs, ни одной factual/safety violation, высокий non-null coverage для eligible observed cases.</li>
+      <li>Human review: каждый принятый текст действительно добавляет смысл сверх трёх карточек и CTA; RU звучит как нормальное человеческое сообщение.</li>
+      <li>Naturalness gate: текст не обязан перечислять домены или следовать фиксированной композиции; канцелярит вроде «картина неоднородна» без конкретного человеческого вывода считается product failure.</li>
+    </ul>
+  </section>
+
+  <section class="safe">
+    <h2>Фактический результат реализации и evaluation</h2>
+    <ul>
+      <li><strong>Runtime contract:</strong> overall-only synthesis, минимум два свежих factual domains, input <code>today-insight-synthesis-input-v23</code>, generation prompt <code>today-overall-human-synthesis-v39</code>, safety prompt <code>today-overall-human-safety-review-v2</code>; standalone domain prose выключена.</li>
+      <li><strong>Risk-based freedom:</strong> Luna может написать новую мягкую обратимую рекомендацию с пустым <code>action_id</code>. Диагнозы, лекарства/дозировки, отказ от срочной помощи, явная причинность, уверенные health outcomes, экстремальная нагрузка/ограничение и конфликт с server action отклоняются.</li>
+      <li><strong>Refresh:</strong> exact material/provider identity, 30-second quiet window, latest-wins single-flight, stale-save rejection, cache-only history и B0 fallback реализованы и покрыты тестами.</li>
+      <li><strong>Fresh corpus:</strong> read-only export дал 90 anonymized candidates и 0 gaps за 30 завершённых дней; lexical privacy scan не нашёл дат, raw-table names, tenant/schema, device/source, contacts или credentials. Из него заморожено 20 cases: 18 eligible и 2 deterministic fallback.</li>
+      <li><strong>Provider:</strong> exact active configuration <code>openai / gpt-5.6-luna / medium / 2048</code>; для текущего v23/v39 выполнено ровно три generation + semantic-safety-review pair на каждый eligible case. Из 54 кандидатов 50 разрешены, четыре отклонены reviewer и безопасно оставлены на B0; provider errors — 0.</li>
+      <li><strong>Human review v23:</strong> Sol оценил все 50 разрешённых текстов по fidelity, safety, added meaning, screen duplication, language и naturalness. 13 из 18 eligible cases были лучше B0 во всех трёх запусках: 72.22% при заранее зафиксированном пороге 70%. Четыре cases не прошли из-за пойманного safety reject; ещё один — из-за неестественной сербской формулировки.</li>
+      <li><strong>Safety receipts:</strong> каждый allow/reject привязан к exact candidate hash, safety revision, token cap и review fingerprint. Caught reject — аудируемый non-improving fallback, а не показанный safety failure. Missing, stale, forged или противоречивый receipt, retained invalid prose и tampered failure metadata отклоняются fail-closed.</li>
+      <li><strong>Reproducibility:</strong> corpus semantic hash <code>4a87c767f2a4bff5986e8e28acdef4e06d947ea5e1c1e9582c6a45971e613c6f</code>; corpus file SHA-256 <code>08c1c307a04a46b0702c08eca6ddb55d4f0dbbf163d80aa95357b840d13f7701</code>; raw evaluation SHA-256 <code>6ae435e60b884a789ecbcd65d776b58aac373415393cde4a76981a98f9a1ef26</code>; reviewed artifact SHA-256 <code>695124e7f211d7eb925f0aeb394a45d0dcb6170fd758761abbca82ce61cbd76c</code>.</li>
+      <li><strong>Astra audit:</strong> первоначальные v20 findings закрыты обязательным semantic reviewer и date-aligned headline freshness. Повторный audit нашёл masking paths в offline quality gate; exact adversarial regressions добавлены, retained invalid prose, generic validator rejects и forged receipts теперь не могут спрятаться за error metadata. Финальный scoped re-check clean.</li>
+      <li><strong>Текущий статус:</strong> локальный implementation/evaluation gate пройден, но B1 не включён. Tenant preview, normal enablement и deployment требуют отдельного решения и не входят в это выполнение.</li>
+      <li><strong>Scope boundary:</strong> public API and DB schema не изменены; feature enablement, tenant preview, commit, push и deployment не выполнялись.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Data/API/deployment impact</h2>
+    <ul>
+      <li><strong>Public API:</strong> форма Today response не меняется; меняется только internal generation packet/cache identity.</li>
+      <li><strong>DB:</strong> migration не ожидается; существующий slot cache переиспользуется с новой identity.</li>
+      <li><strong>Privacy:</strong> provider получает только selected aggregate/derived facts и display values, без raw health records.</li>
+      <li><strong>UX:</strong> B0 остаётся всегда; B1 — optional overall paragraph поверх него.</li>
+      <li><strong>Production:</strong> flags, preview и deployment не меняются без отдельного разрешения.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Риски</h2>
+    <ul>
+      <li><strong>Мягкая причинность:</strong> естественный текст легко скатывается из «при этом» в «из-за этого»; deterministic validator дополняется обязательным semantic reviewer, а остаточные неоднозначные случаи проверяются на frozen corpus.</li>
+      <li><strong>Банальность:</strong> модель может соединить факты, но не добавить понимания. Это human product failure, а не повод снова зажать schema.</li>
+      <li><strong>Normal-day filler:</strong> два neutral факта не должны автоматически порождать пустой motivational текст.</li>
+      <li><strong>Double counting:</strong> текст не утверждает независимость доменов; он описывает видимую совместную картину.</li>
+      <li><strong>Localization:</strong> RU/SR оцениваются отдельно, а не считаются качественными по английскому примеру.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback</h2>
+    <p>Отключить B1/preview и вернуть deterministic B0. Новая material identity не позволит смешать cache с предыдущим contract. Публичный API и БД не требуют отката.</p>
+  </section>
+
+  <section class="approval">
+    <h2>Approval gate</h2>
+    <p><strong>Локальная implementation/evaluation завершена и quality gate пройден.</strong> Это разрешает считать ветку готовой к отдельному решению о tenant preview, но само по себе не включает B1 и не разрешает preview, normal enablement, deployment или изменение production settings.</p>
+  </section>
+</main>
+</body>
+</html>

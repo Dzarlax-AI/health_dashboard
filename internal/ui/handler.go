@@ -1720,13 +1720,14 @@ func (h *Handler) todayInsights(w http.ResponseWriter, r *http.Request) {
 	}
 	aiCfg := db.GetAIConfig(h.mgr.AIDefaultsFor(r.Context(), schema))
 	narrativeMode := storage.TodayInsightsB1NarrativeMode(db, aiCfg)
+	overallNarrativeEligible := health.HasEligibleDailyInsightNarrativeSlot(snapshot, lang, health.DailyInsightNarrativeOverallSlot)
 	if narrativeMode == storage.TodayInsightsB1NarrativeModeDisabled {
 		// The deterministic snapshot is the product baseline. Do not spend a
 		// provider call merely because an installation has general AI settings.
 		// A tenant-only preview is separately visible in the response mode.
 		aiCfg = storage.AIConfig{}
 	}
-	if aiCfg.Enabled() && !health.HasEligibleDailyInsightNarrativeClaims(snapshot, lang) {
+	if aiCfg.Enabled() && !overallNarrativeEligible {
 		// B1 does not paraphrase ordinary current-context cards. Present their
 		// server text as factual instead of showing an artificial "updating"
 		// state or spending a provider request that cannot add a permitted claim.
@@ -1764,12 +1765,17 @@ func (h *Handler) todayInsights(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "today insight bundle unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	// The factual bundle remains one atomic snapshot, but provider prose is
-	// independently cached by slot. A late sleep record therefore cannot wipe
-	// a still-valid energy explanation or make the primary recommendation wait.
+	// The factual bundle remains one atomic snapshot. B1 currently has only one
+	// combined overall synthesis; domain slot entries stay disabled for clients
+	// that already understand the additive slot response shape.
 	fresh := bundle.MaterialInputHash == materialHash && bundle.ProviderFingerprint == providerFingerprint
 	slotStates := make([]clientapi.TodayInsightSlotGeneration, 0, 4)
-	if !aiCfg.Enabled() || !fresh {
+	if !overallNarrativeEligible {
+		// Never materialize a lifecycle row for a packet without two fresh,
+		// server-derived domains. Otherwise polling would show a permanent cold
+		// state even though the scheduler correctly has no provider work to do.
+		slotStates = disabledTodayInsightNarrativeSlots(true)
+	} else if !aiCfg.Enabled() || !fresh {
 		state := storage.DailyInsightStateDisabled
 		if aiCfg.Enabled() && !fresh {
 			state = storage.DailyInsightStateCold
@@ -1778,18 +1784,17 @@ func (h *Handler) todayInsights(w http.ResponseWriter, r *http.Request) {
 			slotStates = append(slotStates, clientapi.TodayInsightSlotGeneration{Key: slot, State: state, FreshForSnapshot: fresh})
 		}
 	} else {
-		for _, slot := range todayInsightNarrativeSlots {
-			input, known := health.BuildDailyInsightNarrativeSlotInput(snapshot, lang, slot)
-			if !known || len(input.Slot.Claims) == 0 || !health.HasEligibleDailyInsightNarrativeSlot(snapshot, lang, slot) {
-				continue
-			}
-			slotHash := health.DailyInsightNarrativeSlotMaterialHash(snapshot, lang, slot)
-			if err := db.UpsertDailyInsightNarrativeSlot(r.Context(), storage.DailyInsightNarrativeSlot{
-				Date: snapshot.Date, Lang: lang, Slot: slot, MaterialInputHash: slotHash, ProviderFingerprint: providerFingerprint,
-			}); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
+		// Keep the provider input separate from a subsequently rendered overlay:
+		// B0 is the exact anti-duplication baseline and must not absorb old B1
+		// text on a polling response.
+		generationSnapshot := snapshot
+		const overall = health.DailyInsightNarrativeOverallSlot
+		slotHash := health.DailyInsightNarrativeSlotMaterialHash(generationSnapshot, lang, overall)
+		if err := db.UpsertDailyInsightNarrativeSlot(r.Context(), storage.DailyInsightNarrativeSlot{
+			Date: generationSnapshot.Date, Lang: lang, Slot: overall, MaterialInputHash: slotHash, ProviderFingerprint: providerFingerprint,
+		}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 		entries, err := db.GetDailyInsightNarrativeSlots(snapshot.Date, lang)
 		if err != nil {
@@ -1797,14 +1802,12 @@ func (h *Handler) todayInsights(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, slot := range todayInsightNarrativeSlots {
-			input, known := health.BuildDailyInsightNarrativeSlotInput(snapshot, lang, slot)
-			if !known || len(input.Slot.Claims) == 0 || !health.HasEligibleDailyInsightNarrativeSlot(snapshot, lang, slot) {
+			if slot != overall {
 				slotStates = append(slotStates, clientapi.TodayInsightSlotGeneration{Key: slot, State: storage.DailyInsightStateDisabled, FreshForSnapshot: true})
 				continue
 			}
-			slotHash := health.DailyInsightNarrativeSlotMaterialHash(snapshot, lang, slot)
 			entry, found := entries[slot]
-			entryFresh := found && entry.MaterialInputHash == slotHash && entry.ProviderFingerprint == providerFingerprint
+			entryFresh := todayInsightNarrativeSlotEntryFresh(entry, found, slotHash, providerFingerprint)
 			state := storage.DailyInsightStateCold
 			if entryFresh && entry.GenerationState != "" {
 				state = entry.GenerationState
@@ -1819,12 +1822,12 @@ func (h *Handler) todayInsights(w http.ResponseWriter, r *http.Request) {
 					if err := db.InvalidateDailyInsightNarrativeSlot(r.Context(), snapshot.Date, lang, slot, slotHash, providerFingerprint); err != nil {
 						log.Printf("today insights: invalidate unreadable slot %s: %v", slot, err)
 					}
-				} else if section, err := health.ValidateDailyInsightNarrativeSlotResponse(snapshot, lang, slot, candidate); err != nil {
+				} else if section, err := health.ValidateDailyInsightNarrativeSlotResponse(generationSnapshot, lang, slot, candidate); err != nil {
 					state = storage.DailyInsightStateFailed
 					if err := db.InvalidateDailyInsightNarrativeSlot(r.Context(), snapshot.Date, lang, slot, slotHash, providerFingerprint); err != nil {
 						log.Printf("today insights: invalidate incompatible slot %s: %v", slot, err)
 					}
-				} else if rendered, err := health.ApplyDailyInsightNarrativeSlot(snapshot, lang, slot, section); err != nil {
+				} else if rendered, err := health.ApplyDailyInsightNarrativeSlot(generationSnapshot, lang, slot, section); err != nil {
 					state = storage.DailyInsightStateFailed
 					log.Printf("today insights: apply slot %s: %v", slot, err)
 				} else {
@@ -1837,18 +1840,33 @@ func (h *Handler) todayInsights(w http.ResponseWriter, r *http.Request) {
 			}
 			slotStates = append(slotStates, clientapi.TodayInsightSlotGeneration{Key: slot, State: state, FreshForSnapshot: entryFresh, RetryAfterSeconds: retryAfter})
 		}
-		db.EnsureDailyInsightNarrativeSlotsAsync(snapshot, aiCfg, lang)
+		db.EnsureDailyInsightNarrativeSlotsAsync(generationSnapshot, aiCfg, lang)
 	}
 	state, retryAfter := aggregateTodayInsightGeneration(slotStates)
 	jsonResponse(w, clientapi.TodayInsightsResponse{
 		DailyInsightSnapshot: snapshot,
 		Generation: clientapi.TodayInsightsGeneration{
-			State: state, NarrativeMode: narrativeMode, FreshForSnapshot: fresh, RetryAfterSeconds: retryAfter, Slots: slotStates,
+			State: state, NarrativeMode: narrativeMode, FreshForSnapshot: fresh || !overallNarrativeEligible, RetryAfterSeconds: retryAfter, Slots: slotStates,
 		},
 	})
 }
 
 var todayInsightNarrativeSlots = []string{health.DailyInsightNarrativeOverallSlot, "sleep", "recovery", "energy"}
+
+func disabledTodayInsightNarrativeSlots(fresh bool) []clientapi.TodayInsightSlotGeneration {
+	slots := make([]clientapi.TodayInsightSlotGeneration, 0, len(todayInsightNarrativeSlots))
+	for _, slot := range todayInsightNarrativeSlots {
+		slots = append(slots, clientapi.TodayInsightSlotGeneration{Key: slot, State: storage.DailyInsightStateDisabled, FreshForSnapshot: fresh})
+	}
+	return slots
+}
+
+// todayInsightNarrativeSlotEntryFresh is deliberately strict: ready prose is
+// renderable only when both the current material and the provider review
+// fingerprint match. This is the final UI guard behind the storage save guard.
+func todayInsightNarrativeSlotEntryFresh(entry storage.DailyInsightNarrativeSlot, found bool, materialHash, providerFingerprint string) bool {
+	return found && entry.MaterialInputHash == materialHash && entry.ProviderFingerprint == providerFingerprint
+}
 
 // aggregateTodayInsightGeneration preserves the additive legacy state while
 // slot-level consumers can observe exactly which explanation is refreshing.

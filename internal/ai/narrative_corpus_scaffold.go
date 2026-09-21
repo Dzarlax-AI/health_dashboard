@@ -2,7 +2,7 @@ package ai
 
 import (
 	"fmt"
-	"time"
+	"sort"
 
 	"health-receiver/internal/health"
 )
@@ -86,7 +86,12 @@ func BuildDailyInsightNarrativeCorpusScaffold(export DailyInsightNarrativeCandid
 		syntheticRecoveryEnergyConflictCase(len(selected)+4, "sr", false, false),
 		syntheticLateSourceUpdateCase(len(selected)+5),
 	)
-	corpus := DailyInsightNarrativeCorpus{Version: "daily-insight-narrative-corpus-v1", Cases: selected}
+	corpus := DailyInsightNarrativeCorpus{
+		Version:       DailyInsightNarrativeCorpusVersionV2,
+		PacketVersion: health.DailyInsightNarrativeInputVersion,
+		PacketShape:   DailyInsightNarrativeCorpusCurrentPacketShape(),
+		Cases:         selected,
+	}
 	if err := ValidateDailyInsightNarrativeCorpus(corpus); err != nil {
 		return DailyInsightNarrativeCorpus{}, fmt.Errorf("validate corpus scaffold: %w", err)
 	}
@@ -104,13 +109,85 @@ func countCasesMatching(items []DailyInsightNarrativeCorpusCase, predicate func(
 }
 
 func observedNarrativeCorpusCase(item DailyInsightNarrativeCorpusCase, index int, tags []string, retainCheckin bool) DailyInsightNarrativeCorpusCase {
+	// Candidate exports may still contain review placeholders from the
+	// reconstruction step. Re-run the sanitizer at the freeze boundary so the
+	// v2 artifact never inherits dates, decision IDs, or source identifiers.
+	sanitized := SanitizeDailyInsightNarrativeCorpusCandidate(item.Snapshot, item.Locale, fmt.Sprintf("observed-%03d", index))
+	sanitized.Scenario = item.Scenario
+	// Candidate exports already carry the sanitized B1 material separately
+	// because health.DailyInsightSnapshot intentionally hides NarrativeFacts
+	// from JSON. Preserve that material through the freeze boundary, but copy
+	// it deeply so later validation sees exactly what will be frozen and no
+	// caller-owned slice can mutate the draft after selection.
+	if item.NarrativeFacts != nil {
+		sanitized.NarrativeFacts = cloneCorpusNarrativeFacts(item.NarrativeFacts)
+	}
+	if item.VisibleB0Baseline != nil {
+		sanitized.VisibleB0Baseline = cloneCorpusBaseline(item.VisibleB0Baseline)
+	}
+	if item.ActionOptions != nil {
+		sanitized.ActionOptions = cloneCorpusActionOptions(item.ActionOptions)
+	}
+	// v2 does not retain the closed decision identity; the overall packet is
+	// eligible from its derived fact set alone.
+	sanitized.Snapshot.DecisionID = ""
+	sanitized.PrimaryNarrativeSubject = ""
+	item = sanitized
 	item.ID = fmt.Sprintf("observed-%03d", index)
 	item.Origin = DailyInsightNarrativeOriginObserved
 	item.Tags = append([]string(nil), tags...)
+	item.Tags = append(item.Tags, v2TagsForCorpusCase(item)...)
 	if !retainCheckin {
 		item.Scenario.CheckIn = ""
 	}
 	return item
+}
+
+func cloneCorpusNarrativeFacts(facts []health.DailyInsightNarrativeFact) []health.DailyInsightNarrativeFact {
+	if facts == nil {
+		return nil
+	}
+	out := make([]health.DailyInsightNarrativeFact, len(facts))
+	for index, fact := range facts {
+		out[index] = fact
+		out[index].DisplayValues = append([]string(nil), fact.DisplayValues...)
+		out[index].EvidenceIDs = append([]string(nil), fact.EvidenceIDs...)
+	}
+	return out
+}
+
+func cloneCorpusBaseline(baseline *health.DailyInsightNarrativeBaseline) *health.DailyInsightNarrativeBaseline {
+	if baseline == nil {
+		return nil
+	}
+	out := *baseline
+	out.Domains = append([]health.DailyInsightBaselineDomain(nil), baseline.Domains...)
+	return &out
+}
+
+func cloneCorpusActionOptions(actions []health.DailyInsightNarrativeAction) []health.DailyInsightNarrativeAction {
+	if actions == nil {
+		return nil
+	}
+	out := make([]health.DailyInsightNarrativeAction, len(actions))
+	copy(out, actions)
+	for index := range out {
+		out[index].FactIDs = append([]string(nil), actions[index].FactIDs...)
+	}
+	return out
+}
+
+func v2TagsForCorpusCase(item DailyInsightNarrativeCorpusCase) []string {
+	derived, err := v2CorpusCoverageTags(item)
+	if err != nil {
+		panic(fmt.Sprintf("derive v2 corpus coverage tags: %v", err))
+	}
+	tags := make([]string, 0, len(derived))
+	for tag := range derived {
+		tags = append(tags, tag)
+	}
+	sort.Strings(tags)
+	return tags
 }
 
 func hasConfirmedSleepBaselineClaim(item DailyInsightNarrativeCorpusCase) bool {
@@ -174,16 +251,19 @@ func hasOnlyUnavailableDomains(item DailyInsightNarrativeCorpusCase) bool {
 }
 
 func syntheticLimitedHistoryCase(index int) DailyInsightNarrativeCorpusCase {
-	return DailyInsightNarrativeCorpusCase{
+	item := DailyInsightNarrativeCorpusCase{
 		ID: fmt.Sprintf("synthetic-%03d", index), Locale: "ru", Origin: DailyInsightNarrativeOriginSynthetic,
-		Tags:             []string{DailyInsightNarrativeOriginSynthetic, "limited_history", "provisional_context", "no_checkin"},
-		Scenario:         DailyInsightNarrativeCorpusScenario{CheckIn: "absent"},
-		PrimaryMeaningID: "primary:sleep:provisional_pattern",
-		Snapshot: health.DailyInsightSnapshot{Date: "review-day", Version: health.DailyInsightSnapshotVersion, Domains: []health.DailyInsightDomain{{
+		Tags:     []string{DailyInsightNarrativeOriginSynthetic, "limited_history", "provisional_context", "no_checkin", "safety_control", "missing_data", "no_action", "locale_ru"},
+		Scenario: DailyInsightNarrativeCorpusScenario{CheckIn: "absent"},
+		Snapshot: health.DailyInsightSnapshot{Version: health.DailyInsightSnapshotVersion, Domains: []health.DailyInsightDomain{{
 			Key: "sleep", DataState: "fresh", Confidence: "low",
 			Insight: health.DailyInsight{State: "insight", AnswerKind: health.DailyInsightAnswerProvisional, GapReason: "sleep_history_short", Fallback: true},
 		}}},
 	}
+	item.Snapshot.DecisionID = ""
+	item.Snapshot.Primary = health.DailyInsight{}
+	item.VisibleB0Baseline = &health.DailyInsightNarrativeBaseline{Primary: "No current overall context.", Domains: []health.DailyInsightBaselineDomain{{Domain: "sleep", Observation: "History is still limited."}}}
+	return item
 }
 
 func syntheticRecoveryEnergyConflictCase(index int, locale string, coverNormal, coverPositive bool) DailyInsightNarrativeCorpusCase {
@@ -192,20 +272,17 @@ func syntheticRecoveryEnergyConflictCase(index int, locale string, coverNormal, 
 		recoveryBand = "optimal"
 	}
 	sleepHours, usualSleep, shortNights := 5.8, 7.2, 3.0
-	return DailyInsightNarrativeCorpusCase{
+	item := DailyInsightNarrativeCorpusCase{
 		ID: fmt.Sprintf("synthetic-%03d", index), Locale: locale, Origin: DailyInsightNarrativeOriginSynthetic,
-		Tags:     syntheticConflictTags(locale, coverNormal, coverPositive),
+		Tags:     append(syntheticConflictTags(locale, coverNormal, coverPositive), "fresh_data", "action_options", "facts_sleep_recovery", "facts_sleep_energy", "facts_recovery_energy", "locale_"+locale),
 		Scenario: DailyInsightNarrativeCorpusScenario{ConflictEvidenceIDs: map[string]string{"recovery": "evidence-recovery", "energy": "evidence-energy"}},
 		// Keep the conflict packet narrative-eligible for energy. The direct
 		// active-recovery action is deliberately server-only, so it cannot cover
 		// the independently reviewed energy explanation slot.
-		NarrativeSubjects:       map[string]string{"energy": "rest"},
-		PrimaryNarrativeSubject: "moderate",
-		DecisionEvidenceDomains: []string{"recovery", "energy"},
-		PrimaryMeaningID:        "primary:recovery:recovery_readiness_context",
-		Snapshot: health.DailyInsightSnapshot{Date: "review-day", Version: health.DailyInsightSnapshotVersion,
+		NarrativeSubjects: map[string]string{"energy": "rest"},
+		Snapshot: health.DailyInsightSnapshot{Version: health.DailyInsightSnapshotVersion,
 			Domains: []health.DailyInsightDomain{
-				{Key: "sleep", DataState: "fresh", Confidence: "final", Insight: health.DailyInsight{State: "insight", AnswerKind: health.DailyInsightAnswerConfirmedPersonal, ClaimID: "recent_sleep_below_reference", EvidenceIDs: []string{"evidence-sleep", "sleep_recent_reference", "sleep_recent_short_nights"}, NextStep: &health.DailyInsightAction{ID: "wind_down"}}},
+				{Key: "sleep", DataState: "fresh", Confidence: "final", Insight: health.DailyInsight{State: "insight", AnswerKind: health.DailyInsightAnswerConfirmedPersonal, ClaimID: "recent_sleep_below_reference", EvidenceIDs: []string{"evidence-sleep", "evidence-sleep-reference", "evidence-sleep-short-nights"}, NextStep: &health.DailyInsightAction{ID: "wind_down"}}},
 				{Key: "recovery", Band: recoveryBand, DataState: "fresh", Confidence: "final", Insight: health.DailyInsight{State: "insight", AnswerKind: health.DailyInsightAnswerFactual, ClaimID: "recovery_readiness_context", EvidenceIDs: []string{"evidence-recovery"}}},
 				{Key: "energy", DataState: "fresh", Confidence: "final", Insight: health.DailyInsight{State: "insight", AnswerKind: health.DailyInsightAnswerFactual, ClaimID: "energy_current_verdict_context", EvidenceIDs: []string{"evidence-energy"}}},
 			},
@@ -213,13 +290,23 @@ func syntheticRecoveryEnergyConflictCase(index int, locale string, coverNormal, 
 			Primary:    health.DailyInsight{State: "insight", AnswerKind: health.DailyInsightAnswerFactual, EvidenceIDs: []string{"evidence-recovery"}, NextStep: &health.DailyInsightAction{ID: "review-action"}},
 			Evidence: []health.DailyInsightEvidence{
 				{ID: "evidence-sleep", Domain: "sleep", DataState: "fresh", Confidence: "final", Value: &sleepHours, Unit: "h"},
-				{ID: "sleep_recent_reference", Domain: "sleep", DataState: "fresh", Confidence: "final", Value: &usualSleep, Unit: "h"},
-				{ID: "sleep_recent_short_nights", Domain: "sleep", DataState: "fresh", Confidence: "final", Value: &shortNights, Unit: "nights"},
+				{ID: "evidence-sleep-reference", Domain: "sleep", DataState: "fresh", Confidence: "final", Value: &usualSleep, Unit: "h"},
+				{ID: "evidence-sleep-short-nights", Domain: "sleep", DataState: "fresh", Confidence: "final", Value: &shortNights, Unit: "nights"},
 				{ID: "evidence-recovery", Domain: "recovery", DataState: "fresh", Confidence: "final"},
 				{ID: "evidence-energy", Domain: "energy", DataState: "fresh", Confidence: "final"},
 			},
 		},
 	}
+	item.Snapshot.DecisionID = ""
+	item.Snapshot.Primary = health.DailyInsight{}
+	item.VisibleB0Baseline = &health.DailyInsightNarrativeBaseline{Primary: "Today is set to a moderate pace.", Domains: []health.DailyInsightBaselineDomain{{Domain: "sleep", Observation: "Recent sleep is below your reference."}, {Domain: "recovery", Observation: "Recovery is available."}, {Domain: "energy", Observation: "Energy is available."}}}
+	item.ActionOptions = []health.DailyInsightNarrativeAction{{ID: "wind_down", Text: "Try a calmer wind-down tonight."}}
+	item.NarrativeFacts = []health.DailyInsightNarrativeFact{
+		{ID: "sleep_recent_four_day_pattern", Domain: "sleep", Authority: "server_derived", Fresh: true, Statement: "Recent sleep has been shorter than your usual pattern.", DisplayValues: []string{"5.8", "7.2"}, EvidenceIDs: []string{"evidence-sleep"}},
+		{ID: "readiness_current", Domain: "recovery", Authority: "server_derived", Fresh: true, Statement: "Recovery is holding up today.", EvidenceIDs: []string{"evidence-recovery"}},
+		{ID: "energy_authoritative_state", Domain: "energy", Authority: "server_derived", Fresh: true, Statement: "Energy is available today, with some drain already visible.", EvidenceIDs: []string{"evidence-energy"}},
+	}
+	return item
 }
 
 func syntheticConflictTags(locale string, coverNormal, coverPositive bool) []string {
@@ -237,15 +324,14 @@ func syntheticConflictTags(locale string, coverNormal, coverPositive bool) []str
 }
 
 func syntheticLateSourceUpdateCase(index int) DailyInsightNarrativeCorpusCase {
-	updatedAt := time.Date(2000, time.January, 2, 18, 1, 0, 0, time.UTC)
 	return DailyInsightNarrativeCorpusCase{
 		ID: fmt.Sprintf("synthetic-%03d", index), Locale: "sr", Origin: DailyInsightNarrativeOriginSynthetic,
-		Tags:             []string{DailyInsightNarrativeOriginSynthetic, "late_source_update", "incomplete_sleep", "no_data"},
-		Scenario:         DailyInsightNarrativeCorpusScenario{UpdateKind: "late_source_update"},
-		PrimaryMeaningID: "primary:sleep:data_guidance",
-		Snapshot: health.DailyInsightSnapshot{Date: "review-day", Version: health.DailyInsightSnapshotVersion, UpdatedAt: &updatedAt, Domains: []health.DailyInsightDomain{{
+		Tags:     []string{DailyInsightNarrativeOriginSynthetic, "late_source_update", "incomplete_sleep", "no_data", "safety_control", "missing_data", "no_action", "locale_sr"},
+		Scenario: DailyInsightNarrativeCorpusScenario{UpdateKind: "late_source_update"},
+		Snapshot: health.DailyInsightSnapshot{Version: health.DailyInsightSnapshotVersion, Domains: []health.DailyInsightDomain{{
 			Key: "sleep", DataState: "partial", Confidence: "provisional",
 			Insight: health.DailyInsight{State: "insufficient_data", AnswerKind: health.DailyInsightAnswerDataGuidance, GapReason: "sleep_partial", Fallback: true},
 		}}},
+		VisibleB0Baseline: &health.DailyInsightNarrativeBaseline{Primary: "No current overall context.", Domains: []health.DailyInsightBaselineDomain{{Domain: "sleep", Observation: "Sleep data is incomplete."}}},
 	}
 }
