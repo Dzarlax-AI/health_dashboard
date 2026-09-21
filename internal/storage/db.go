@@ -37,10 +37,15 @@ type DB struct {
 	// hammering the API during a sustained upstream outage.
 	aiRegenLastFailAt sync.Map
 
-	// dailyInsightInFlight suppresses duplicate goroutines for one exact
-	// tenant-local factual snapshot and generation fingerprint. The durable
-	// bundle lease remains the cross-process authority.
+	// dailyInsightInFlight holds one overall-only coordinator per date/lang.
+	// The hash is intentionally excluded: a changed snapshot replaces pending
+	// work, while the durable row rejects a stale provider save.
 	dailyInsightInFlight sync.Map
+
+	// Tests may replace these two clocks without waiting thirty real seconds.
+	// Production instances leave both zero-valued and use wall time/default.
+	dailyInsightNowFn      func() time.Time
+	dailyInsightDebounceFn time.Duration
 }
 
 // BeginDashboardRefresh marks a cache generation as in progress. The returned

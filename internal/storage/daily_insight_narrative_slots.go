@@ -11,9 +11,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// DailyInsightNarrativeSlot is one independently refreshed text overlay. Its
-// input hash is intentionally separate from the factual snapshot hash: a late
-// sleep update must not invalidate recovery, energy, or overall prose.
+// DailyInsightNarrativeSlot is one durable B1 text overlay. Runtime currently
+// uses only `overall`; the row hash is intentionally separate from the B0
+// snapshot hash so a material update makes stale prose unreadable at once.
 type DailyInsightNarrativeSlot struct {
 	Date                string
 	Lang                string

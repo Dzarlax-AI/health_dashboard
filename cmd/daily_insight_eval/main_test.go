@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"sync/atomic"
@@ -10,6 +11,32 @@ import (
 	"health-receiver/internal/health"
 	"health-receiver/internal/storage"
 )
+
+type evaluatorSafetyRejectProvider struct {
+	responses []string
+	requests  []ai.GenerationRequest
+}
+
+func (p *evaluatorSafetyRejectProvider) Descriptor() ai.ProviderDescriptor {
+	return ai.ProviderDescriptor{ID: "test"}
+}
+
+func (p *evaluatorSafetyRejectProvider) ListModels(context.Context, string) ([]ai.Model, error) {
+	return nil, nil
+}
+
+func (p *evaluatorSafetyRejectProvider) Generate(_ context.Context, _ ai.ProviderConfig, request ai.GenerationRequest) (ai.GenerationResult, error) {
+	index := len(p.requests)
+	p.requests = append(p.requests, request)
+	return ai.GenerationResult{
+		Text:         p.responses[index],
+		RequestID:    "review-request-2",
+		InputTokens:  int64(100 + index),
+		OutputTokens: int64(10 + index),
+		TotalTokens:  int64(110 + 2*index),
+		Attempts:     1,
+	}, nil
+}
 
 func TestOfflineReviewHTMLTemplateEscapesNarrativeAndKeepsDownloadWorkflow(t *testing.T) {
 	output := ai.DailyInsightNarrativeEvaluationOutput{
@@ -102,6 +129,99 @@ func TestValidateOfflineReviewRowsAllowsBlankRubricButRejectsStructuralEdits(t *
 	}
 }
 
+func TestOfflineReviewRowsAcceptFactOnlyOverallV2Runs(t *testing.T) {
+	snapshot := health.DailyInsightSnapshot{
+		Version: health.DailyInsightSnapshotVersion,
+		NarrativeFacts: []health.DailyInsightNarrativeFact{
+			{ID: "sleep_recent_four_day_pattern", Domain: "sleep", Fresh: true, Statement: "Sleep context."},
+			{ID: "readiness_current", Domain: "recovery", Fresh: true, Statement: "Recovery context."},
+		},
+	}
+	narrative := &health.DailyInsightNarrative{Version: health.DailyInsightNarrativeVersion, Locale: "en", Overall: &health.DailyInsightNarrativeSection{Text: "Sleep and recovery are giving you a clearer picture today.", FactIDs: []string{"sleep_recent_four_day_pattern", "readiness_current"}, ActionID: "wind_down"}}
+	frozen := ai.DailyInsightNarrativeCorpusCase{
+		Snapshot:          snapshot,
+		NarrativeFacts:    append([]health.DailyInsightNarrativeFact(nil), snapshot.NarrativeFacts...),
+		VisibleB0Baseline: &health.DailyInsightNarrativeBaseline{Primary: "Today has useful context."},
+		ActionOptions:     []health.DailyInsightNarrativeAction{{ID: "wind_down", Text: "Try a calmer wind-down tonight."}},
+	}
+	if err := validateOfflineNarrativeRun(ai.DailyInsightNarrativeCorpusVersionV2, frozen, snapshot, "en", ai.DailyInsightNarrativeEvaluationRun{Narrative: narrative}); err != nil {
+		t.Fatalf("fact-only v2 narrative failed frozen offline validation: %v", err)
+	}
+	lowRisk := *narrative
+	lowRisk.Overall = &health.DailyInsightNarrativeSection{Text: "Sleep and recovery are giving you a clearer picture today. You could take a short walk if it feels useful.", FactIDs: []string{"sleep_recent_four_day_pattern", "readiness_current"}}
+	if err := validateOfflineNarrativeRun(ai.DailyInsightNarrativeCorpusVersionV2, frozen, snapshot, "en", ai.DailyInsightNarrativeEvaluationRun{Narrative: &lowRisk}); err != nil {
+		t.Fatalf("low-risk suggestion without action_id failed frozen offline validation: %v", err)
+	}
+	altered := *narrative
+	altered.Overall = &health.DailyInsightNarrativeSection{Text: narrative.Overall.Text, FactIDs: []string{"sleep_recent_four_day_pattern", "unsupported_fact"}, ActionID: "unsupported-action"}
+	if err := validateOfflineNarrativeRun(ai.DailyInsightNarrativeCorpusVersionV2, frozen, snapshot, "en", ai.DailyInsightNarrativeEvaluationRun{Narrative: &altered}); err == nil {
+		t.Fatal("altered frozen fact/action unexpectedly passed offline validation")
+	}
+	valid := ai.DailyInsightNarrativeRunReviewWorksheet(snapshot, "en", narrative, nil, nil)
+	if err := validateOfflineReviewRows(valid, valid); err != nil {
+		t.Fatalf("fact-only valid worksheet rejected: %v", err)
+	}
+	rejected := ai.DailyInsightNarrativeRunReviewWorksheet(snapshot, "en", &health.DailyInsightNarrative{Version: health.DailyInsightNarrativeVersion, Locale: "en"}, map[string]string{health.DailyInsightNarrativeOverallSlot: "semantic validation failed"}, nil)
+	if err := validateOfflineReviewRows(rejected, rejected); err != nil {
+		t.Fatalf("fact-only validator-rejected worksheet rejected: %v", err)
+	}
+
+	output := ai.DailyInsightNarrativeEvaluationOutput{Cases: []ai.DailyInsightNarrativeEvaluationCase{{
+		ID: "v2-fact-case", Locale: "en", Mode: "narrative_candidate",
+		Runs: []ai.DailyInsightNarrativeEvaluationRun{{Narrative: narrative, Review: valid}},
+	}}}
+	encoded, err := json.Marshal(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet, err := json.Marshal(ai.DailyInsightNarrativeReviewPacket{Cases: []ai.DailyInsightNarrativeReviewPacketCase{{ID: "v2-fact-case"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rendered strings.Builder
+	if err := offlineReviewHTMLTemplate.Execute(&rendered, offlineReviewHTMLData{CorpusHash: "v2-hash", EvaluationJSON: string(encoded), AnchorJSON: `{}`, ReviewPacketJSON: string(packet)}); err != nil {
+		t.Fatalf("render fact-only worksheet: %v", err)
+	}
+	if rendered.Len() == 0 {
+		t.Fatal("rendered fact-only worksheet is empty")
+	}
+}
+
+func TestEvaluateNarrativeRunRetainsSemanticRejectEvidenceWithoutNarrative(t *testing.T) {
+	snapshot := health.DailyInsightSnapshot{
+		Version: health.DailyInsightSnapshotVersion,
+		NarrativeFacts: []health.DailyInsightNarrativeFact{
+			{ID: "sleep_recent_four_day_pattern", Domain: "sleep", Fresh: true, Statement: "Sleep context."},
+			{ID: "readiness_current", Domain: "recovery", Fresh: true, Statement: "Recovery context."},
+		},
+	}
+	frozen := ai.DailyInsightNarrativeCorpusCase{
+		Snapshot:          snapshot,
+		NarrativeFacts:    append([]health.DailyInsightNarrativeFact(nil), snapshot.NarrativeFacts...),
+		VisibleB0Baseline: &health.DailyInsightNarrativeBaseline{Primary: "Today has useful context."},
+	}
+	input, known, err := ai.BuildDailyInsightNarrativeCorpusSlotInput(frozen, "en", health.DailyInsightNarrativeOverallSlot)
+	if err != nil || !known {
+		t.Fatalf("frozen input: known=%v err=%v", known, err)
+	}
+	candidate, err := json.Marshal(health.DailyInsightNarrativeSlot{
+		Version: health.DailyInsightNarrativeVersion,
+		Locale:  "en",
+		Slot: health.DailyInsightNarrativeDomain{Key: health.DailyInsightNarrativeOverallSlot, Section: &health.DailyInsightNarrativeSection{
+			Text: "Sleep and recovery are giving you a clearer picture today.", FactIDs: []string{"sleep_recent_four_day_pattern", "readiness_current"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &evaluatorSafetyRejectProvider{responses: []string{string(candidate), `{"version":"daily-insight-safety-review-v1","verdict":"reject","categories":["strong_unsupported_causality"]}`}}
+	run := evaluateNarrativeRun(snapshot, "en", provider, ai.ProviderConfig{}, input)
+	identity := ai.DailyInsightNarrativeCurrentReviewIdentity()
+	if len(provider.requests) != 2 || run.Narrative == nil || run.Narrative.Overall != nil || run.InvalidDomains[health.DailyInsightNarrativeOverallSlot] == "" || run.SafetyEvidence == nil || run.SafetyEvidence.Verdict != "reject" || len(run.SafetyEvidence.Categories) != 1 || run.SafetyEvidence.Categories[0] != "strong_unsupported_causality" || run.SafetyEvidence.SafetyPromptRevision != identity.SafetyPromptRevision || run.SafetyEvidence.SafetyMaxOutputTokens != identity.SafetyMaxOutputTokens || run.SafetyEvidence.ReviewFingerprint != identity.Fingerprint || run.SafetyEvidence.ProviderRequestID != "review-request-2" || run.SafetyEvidence.ProviderInputTokens != 101 || run.Attempts != 2 || run.InputTokens != 201 || run.OutputTokens != 21 {
+		t.Fatalf("semantic reject was not retained as an auditable non-renderable run: %#v", run)
+	}
+}
+
 func TestValidateOfflineNarrativeRunRejectsTextInRejectedSlot(t *testing.T) {
 	snapshot := health.DailyInsightSnapshot{}
 	run := ai.DailyInsightNarrativeEvaluationRun{
@@ -112,7 +232,8 @@ func TestValidateOfflineNarrativeRunRejectsTextInRejectedSlot(t *testing.T) {
 		},
 		InvalidDomains: map[string]string{health.DailyInsightNarrativeOverallSlot: "semantic validation failed"},
 	}
-	if err := validateOfflineNarrativeRun(snapshot, "en", run); err == nil || !strings.Contains(err.Error(), "retains model text") {
+	frozen := ai.DailyInsightNarrativeCorpusCase{Snapshot: snapshot}
+	if err := validateOfflineNarrativeRun(ai.DailyInsightNarrativeCorpusVersionV1, frozen, snapshot, "en", run); err == nil || !strings.Contains(err.Error(), "retains model text") {
 		t.Fatalf("rejected slot text was accepted: %v", err)
 	}
 }

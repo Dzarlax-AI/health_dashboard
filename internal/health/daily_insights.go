@@ -14,20 +14,20 @@ import (
 // DailyInsightSnapshot is the deterministic, client-safe basis for Today.
 // It deliberately contains no model output: policy chooses the domain,
 // evidence, and allowed action before any narrative provider is involved.
-const DailyInsightSnapshotVersion = "daily-insight-v2"
+const DailyInsightSnapshotVersion = "daily-insight-v3"
 
 // These versions are part of the material contract. Changing policy or the
 // action catalogue must invalidate a previously generated narrative even if
 // the visible health values happen to be unchanged.
 const (
-	DailyInsightPolicyVersion        = "daily-insight-policy-v2"
-	DailyInsightActionCatalogVersion = "daily-insight-actions-v2"
-	DailyInsightPromptRevision       = "daily-insight-prompt-v4"
+	DailyInsightPolicyVersion        = "daily-insight-policy-v3"
+	DailyInsightActionCatalogVersion = "daily-insight-actions-v3"
+	DailyInsightPromptRevision       = "daily-insight-prompt-v7"
 	// Bump when the provider-visible packet or its rendering contract changes.
-	// The v13 packet carries server-formatted facts so the model can write one
+	// The v23 packet carries server-formatted facts so the model can write one
 	// useful paragraph instead of a disconnected abstract add-on.
-	DailyInsightNarrativeInputVersion = "today-insight-slot-input-v13"
-	DailyInsightNarrativeVersion      = "today-insight-slot-v3"
+	DailyInsightNarrativeInputVersion = "today-insight-synthesis-input-v23"
+	DailyInsightNarrativeVersion      = "today-insight-synthesis-v4"
 )
 
 const (
@@ -144,6 +144,10 @@ func ApplyRecentSleepBelowReference(snapshot *DailyInsightSnapshot, claim Recent
 			domain.Insight.Observation, domain.Insight.Meaning = localizedRecentSleepBelowReference(locale, claim.CurrentShortNightCount)
 			domain.Insight.EvidenceIDs = []string{"sleep_recent_reference", "sleep_recent_short_nights"}
 			copy.Evidence = append(copy.Evidence, recentSleepClaimEvidence(claim, domain.Destination, copy.UpdatedAt)...)
+			copy.NarrativeFacts = appendOrReplaceDailyInsightNarrativeFact(copy.NarrativeFacts, DailyInsightNarrativeFact{
+				ID: "sleep_recent_short_nights", Domain: "sleep", Meaning: "recent server-derived short-night pattern", Window: "last four nights", Authority: "server_derived", Fresh: true,
+				Statement: localizedNarrativeRecentShortNights(locale, claim.CurrentShortNightCount), DisplayValues: []string{fmt.Sprintf("%d", claim.CurrentShortNightCount), "4"}, EvidenceIDs: []string{"sleep_recent_reference", "sleep_recent_short_nights"},
+			})
 			if claim.EveningActionAvailable {
 				id, text := localizedWindDownAction(locale)
 				domain.Insight.NextStep = &DailyInsightAction{ID: id, Text: text}
@@ -154,6 +158,27 @@ func ApplyRecentSleepBelowReference(snapshot *DailyInsightSnapshot, claim Recent
 		return copy
 	}
 	return copy
+}
+
+func appendOrReplaceDailyInsightNarrativeFact(facts []DailyInsightNarrativeFact, replacement DailyInsightNarrativeFact) []DailyInsightNarrativeFact {
+	for index := range facts {
+		if facts[index].ID == replacement.ID {
+			facts[index] = replacement
+			return facts
+		}
+	}
+	return append(facts, replacement)
+}
+
+func localizedNarrativeRecentShortNights(locale string, count int) string {
+	switch normalizeDailyInsightLocale(locale) {
+	case "ru":
+		return fmt.Sprintf("Коротких ночей за последние четыре: %d.", count)
+	case "sr":
+		return fmt.Sprintf("Kraćih noći u poslednje četiri: %d.", count)
+	default:
+		return fmt.Sprintf("Shorter nights in the last four: %d.", count)
+	}
 }
 
 // recentSleepClaimEvidence replaces display-aggregate references for the B0
@@ -217,22 +242,23 @@ type DailyInsightSnapshot struct {
 	// narrative overlay to the exact canonical sleep records without exposing
 	// an implementation hash as a user-facing fact.
 	PolicyDigest string `json:"-"`
+	// NarrativeFacts are privacy-minimized, server-derived aggregates prepared
+	// from BriefingResponse. They deliberately never carry raw HealthKit samples,
+	// sources/devices, identifiers, or EnergyBank component provenance.
+	NarrativeFacts []DailyInsightNarrativeFact `json:"-"`
 }
 
-// DailyInsightNarrativeInput is the provider-facing rich-story packet. It is
-// deliberately narrower than DailyInsightSnapshot: only the selected,
-// localized facts, server relation and optional server action for eligible
-// slots become model input; raw events and unrelated domain fields do not.
+// DailyInsightNarrativeInput is retained for historical corpus readers. The
+// provider-facing runtime packet is DailyInsightNarrativeSlotInput below.
 type DailyInsightNarrativeInput struct {
 	Version string                             `json:"version"`
 	Locale  string                             `json:"locale"`
 	Domains []DailyInsightNarrativeDomainInput `json:"domains"`
 }
 
-// DailyInsightNarrativeSlotInput is the exact, independent provider payload
-// for one screen slot. It deliberately does not include another slot's
-// display copy, action, or claim: a late sleep update must not reword the
-// recovery or overall explanation.
+// DailyInsightNarrativeSlotInput is the exact overall-only provider payload.
+// It contains privacy-minimized server-derived facts, visible B0 copy, and a
+// small closed action allow-list; no raw events or domain-only prose enter it.
 type DailyInsightNarrativeSlotInput struct {
 	Version string                           `json:"version"`
 	Locale  string                           `json:"locale"`
@@ -241,11 +267,17 @@ type DailyInsightNarrativeSlotInput struct {
 
 type DailyInsightNarrativeDomainInput struct {
 	Key      string                               `json:"key"`
-	Claims   []DailyInsightNarrativeClaim         `json:"claims"`
+	Claims   []DailyInsightNarrativeClaim         `json:"-"`
 	Facts    []DailyInsightNarrativeFact          `json:"facts"`
-	Story    *DailyInsightNarrativeStory          `json:"story,omitempty"`
-	Action   *DailyInsightNarrativeAction         `json:"action,omitempty"`
-	Position *DailyInsightNarrativeServerPosition `json:"server_position,omitempty"`
+	Story    *DailyInsightNarrativeStory          `json:"-"`
+	Action   *DailyInsightNarrativeAction         `json:"-"`
+	Position *DailyInsightNarrativeServerPosition `json:"-"`
+	// Baseline is exact already-visible B0 copy. It is anti-duplication context,
+	// not evidence: it has no IDs and cannot support the generated text.
+	Baseline *DailyInsightNarrativeBaseline `json:"visible_b0_baseline,omitempty"`
+	// ActionOptions is a small server-owned allow-list. The provider may pick at
+	// most one ID from it; absence means no action was selected.
+	ActionOptions []DailyInsightNarrativeAction `json:"action_options,omitempty"`
 }
 
 // DailyInsightNarrativeFact is an already-localized, server-owned fact that
@@ -254,9 +286,27 @@ type DailyInsightNarrativeDomainInput struct {
 // the snapshot/evidence layer rather than becoming model-owned calculations.
 type DailyInsightNarrativeFact struct {
 	ID            string   `json:"id"`
+	Domain        string   `json:"domain,omitempty"`
+	Meaning       string   `json:"meaning,omitempty"`
+	Window        string   `json:"window,omitempty"`
+	Authority     string   `json:"authority,omitempty"`
+	Fresh         bool     `json:"fresh,omitempty"`
 	Statement     string   `json:"statement"`
 	DisplayValues []string `json:"display_values,omitempty"`
 	EvidenceIDs   []string `json:"evidence_ids"`
+}
+
+type DailyInsightNarrativeBaseline struct {
+	Primary string                       `json:"primary"`
+	Domains []DailyInsightBaselineDomain `json:"domains"`
+}
+
+type DailyInsightBaselineDomain struct {
+	Domain      string `json:"domain"`
+	Summary     string `json:"summary"`
+	Observation string `json:"observation"`
+	Meaning     string `json:"meaning"`
+	NextStep    string `json:"next_step,omitempty"`
 }
 
 // DailyInsightNarrativeStory is the single relation selected by the server.
@@ -346,6 +396,11 @@ type DailyInsightNarrative struct {
 type DailyInsightNarrativeSection struct {
 	AnchorVariantID string                          `json:"anchor_variant_id"`
 	Sentences       []DailyInsightNarrativeSentence `json:"sentences"`
+	// Text/FactIDs/ActionID are the v14 overall-synthesis response. Sentences
+	// remains only for decoding historical frozen-corpus artifacts.
+	Text     string   `json:"text,omitempty"`
+	FactIDs  []string `json:"fact_ids,omitempty"`
+	ActionID string   `json:"action_id,omitempty"`
 }
 
 type DailyInsightNarrativeSentence struct {
@@ -376,10 +431,8 @@ var dailyInsightNarrativeDomainKeys = []string{"sleep", "recovery", "energy"}
 
 var dailyInsightNarrativeSlotKeys = []string{DailyInsightNarrativeOverallSlot, "sleep", "recovery", "energy"}
 
-// BuildDailyInsightNarrativeInput converts a factual snapshot into the closed
-// rich-story material an optional provider may explain. It includes only the
-// selected slot's localized aggregate facts, relation and optional action —
-// never raw records, identifiers or unrelated domain state.
+// BuildDailyInsightNarrativeInput retains the pre-v14 claim shape for frozen
+// corpus readers; it is not the runtime provider contract.
 func BuildDailyInsightNarrativeInput(snapshot *DailyInsightSnapshot, locale string) DailyInsightNarrativeInput {
 	input := DailyInsightNarrativeInput{
 		Version: DailyInsightNarrativeInputVersion,
@@ -408,10 +461,8 @@ func BuildDailyInsightNarrativeInput(snapshot *DailyInsightSnapshot, locale stri
 	return input
 }
 
-// BuildDailyInsightNarrativeSlotInput derives an isolated, closed claim
-// packet for one independently cached explanation. The bool is false only
-// for an unknown slot; known slots always return a packet so a caller can
-// distinguish a valid null slot from a programming error.
+// BuildDailyInsightNarrativeSlotInput derives the closed overall synthesis
+// packet. The bool is false only for an unknown slot.
 func BuildDailyInsightNarrativeSlotInput(snapshot *DailyInsightSnapshot, locale, slot string) (DailyInsightNarrativeSlotInput, bool) {
 	input := DailyInsightNarrativeSlotInput{
 		Version: DailyInsightNarrativeInputVersion,
@@ -425,11 +476,19 @@ func BuildDailyInsightNarrativeSlotInput(snapshot *DailyInsightSnapshot, locale,
 		return input, true
 	}
 	if slot == DailyInsightNarrativeOverallSlot {
-		if overallNarrativeEligible(snapshot) {
+		input.Slot.Facts = append(input.Slot.Facts, dailyInsightFreshNarrativeFacts(snapshot)...)
+		input.Slot.Baseline = dailyInsightVisibleB0Baseline(snapshot)
+		input.Slot.ActionOptions = dailyInsightNarrativeActionOptions(snapshot)
+		// Retained only for historical frozen-corpus readers; it is excluded
+		// from provider JSON and never establishes runtime eligibility.
+		if legacyOverallNarrativeEligible(snapshot) {
 			input.Slot.Claims = append(input.Slot.Claims, buildOverallDailyInsightNarrativeClaim(snapshot, input.Locale))
-			input.Slot.Facts = buildOverallDailyInsightNarrativeFacts(snapshot, input.Locale)
-			input.Slot.Story = buildDailyInsightNarrativeStory(input.Slot.Claims, input.Slot.Facts, snapshot.Primary.NextStep, input.Locale, slot)
-			input.Slot.Action = buildDailyInsightNarrativeAction(snapshot.Primary.NextStep, input.Slot.Facts, input.Locale)
+			if len(input.Slot.Facts) == 0 {
+				// Historical corpus snapshots predate NarrativeFacts. This fallback
+				// is never reached for runtime snapshots and remains excluded from
+				// the v14 provider contract by their retired field identities.
+				input.Slot.Facts = buildOverallDailyInsightNarrativeFacts(snapshot, input.Locale)
+			}
 		}
 		return input, true
 	}
@@ -536,33 +595,96 @@ func isDailyInsightNarrativeSlot(slot string) bool {
 }
 
 func overallNarrativeEligible(snapshot *DailyInsightSnapshot) bool {
-	if snapshot == nil {
+	return len(dailyInsightFreshNarrativeDomains(snapshot)) >= 2
+}
+
+func legacyOverallNarrativeEligible(snapshot *DailyInsightSnapshot) bool {
+	if snapshot == nil || snapshot.DecisionID == "" || snapshot.Primary.State != "insight" || snapshot.Primary.Remediation != "" || len(snapshot.Primary.EvidenceIDs) == 0 {
 		return false
 	}
-	primary := snapshot.Primary
-	if snapshot.DecisionID == "" || primary.State != "insight" || primary.Remediation != "" || primary.NextStep == nil || len(primary.EvidenceIDs) == 0 {
-		return false
-	}
-	freshEvidence := false
 	for _, evidence := range snapshot.Evidence {
-		if !containsDailyInsightID(primary.EvidenceIDs, evidence.ID) || evidence.DataState != "fresh" {
+		if !containsDailyInsightID(snapshot.Primary.EvidenceIDs, evidence.ID) || evidence.DataState != "fresh" {
 			continue
 		}
 		for _, domain := range snapshot.Domains {
 			if domain.Key == evidence.Domain && domain.DataState == "fresh" {
-				freshEvidence = true
-				break
+				return true
 			}
 		}
-		if freshEvidence {
-			break
+	}
+	return false
+}
+
+func dailyInsightFreshNarrativeFacts(snapshot *DailyInsightSnapshot) []DailyInsightNarrativeFact {
+	if snapshot == nil {
+		return []DailyInsightNarrativeFact{}
+	}
+	facts := make([]DailyInsightNarrativeFact, 0, len(snapshot.NarrativeFacts))
+	for _, fact := range snapshot.NarrativeFacts {
+		if fact.Fresh && fact.Domain != "" && fact.ID != "" {
+			facts = append(facts, fact)
 		}
 	}
-	if !freshEvidence {
-		return false
+	return facts
+}
+
+func dailyInsightFreshNarrativeDomains(snapshot *DailyInsightSnapshot) []string {
+	domains := []string{}
+	for _, fact := range dailyInsightFreshNarrativeFacts(snapshot) {
+		if !containsDailyInsightID(domains, fact.Domain) {
+			domains = append(domains, fact.Domain)
+		}
 	}
-	switch primary.AnswerKind {
-	case DailyInsightAnswerConfirmedPersonal, DailyInsightAnswerFactual:
+	return domains
+}
+
+func dailyInsightVisibleB0Baseline(snapshot *DailyInsightSnapshot) *DailyInsightNarrativeBaseline {
+	if snapshot == nil {
+		return nil
+	}
+	baseline := &DailyInsightNarrativeBaseline{Primary: joinVisibleB0Copy(snapshot.Primary), Domains: make([]DailyInsightBaselineDomain, 0, len(snapshot.Domains))}
+	for _, domain := range snapshot.Domains {
+		baseline.Domains = append(baseline.Domains, DailyInsightBaselineDomain{
+			Domain: domain.Key, Summary: domain.Summary, Observation: domain.Insight.Observation,
+			Meaning: domain.Insight.Meaning, NextStep: domain.Insight.NextStepText(),
+		})
+	}
+	return baseline
+}
+
+func joinVisibleB0Copy(insight DailyInsight) string {
+	return strings.TrimSpace(strings.Join([]string{insight.Title, insight.Observation, insight.Meaning, insight.NextStepText()}, "\n"))
+}
+
+func dailyInsightNarrativeActionOptions(snapshot *DailyInsightSnapshot) []DailyInsightNarrativeAction {
+	if snapshot == nil {
+		return []DailyInsightNarrativeAction{}
+	}
+	options := make([]DailyInsightNarrativeAction, 0, 2)
+	add := func(action *DailyInsightAction) {
+		if action == nil || action.ID == "" || action.Text == "" || len(options) >= 2 {
+			return
+		}
+		if !dailyInsightNarrativeLowRiskAction(action.ID) {
+			return
+		}
+		for _, option := range options {
+			if option.ID == action.ID {
+				return
+			}
+		}
+		options = append(options, DailyInsightNarrativeAction{ID: action.ID, Text: action.Text})
+	}
+	add(snapshot.Primary.NextStep)
+	for _, domain := range snapshot.Domains {
+		add(domain.Insight.NextStep)
+	}
+	return options
+}
+
+func dailyInsightNarrativeLowRiskAction(id string) bool {
+	switch id {
+	case "wind_down", "daily-decision-rest", "daily-decision-active_recovery", "daily-decision-moderate":
 		return true
 	default:
 		return false
@@ -738,10 +860,8 @@ func domainNarrativeBaseEligible(domain DailyInsightDomain) bool {
 	}
 }
 
-// HasEligibleDailyInsightNarrativeClaims reports whether a snapshot contains
-// at least one non-generic, server-owned claim that B1 may explain. It is a
-// cost and quality boundary: an all-factual snapshot must not make a provider
-// call merely to restate the visible cards.
+// HasEligibleDailyInsightNarrativeClaims reports whether the overall-only B1
+// packet contains fresh server-derived facts from at least two domains.
 func HasEligibleDailyInsightNarrativeClaims(snapshot *DailyInsightSnapshot, locale string) bool {
 	for _, slot := range dailyInsightNarrativeSlotKeys {
 		if HasEligibleDailyInsightNarrativeSlot(snapshot, locale, slot) {
@@ -751,10 +871,8 @@ func HasEligibleDailyInsightNarrativeClaims(snapshot *DailyInsightSnapshot, loca
 	return false
 }
 
-// HasEligibleDailyInsightNarrativeSlot distinguishes a claim with a distinct,
-// server-approved human meaning from a factual card that would only be
-// restated. Each eligible slot can refresh independently from the same
-// snapshot without changing the server-owned facts or actions.
+// HasEligibleDailyInsightNarrativeSlot is overall-only at runtime. Standalone
+// sleep, recovery, and energy prose remains disabled.
 func HasEligibleDailyInsightNarrativeSlot(snapshot *DailyInsightSnapshot, locale, slot string) bool {
 	// The rich-sleep experiment showed that its only currently server-approved
 	// relation restates the deterministic B0 pattern and the separately rendered
@@ -765,18 +883,9 @@ func HasEligibleDailyInsightNarrativeSlot(snapshot *DailyInsightSnapshot, locale
 	if slot != DailyInsightNarrativeOverallSlot {
 		return false
 	}
-	input, known := BuildDailyInsightNarrativeSlotInput(snapshot, locale, slot)
-	if !known {
-		return false
-	}
-	for _, claim := range input.Slot.Claims {
-		for _, meaning := range claim.MeaningLinks {
-			if strings.TrimSpace(meaning.ID) != "" && strings.TrimSpace(meaning.Statement) != "" {
-				return true
-			}
-		}
-	}
-	return false
+	// Legacy claims remain decodable for frozen historical corpus artifacts,
+	// but cannot schedule or serve a current B1 provider request.
+	return overallNarrativeEligible(snapshot)
 }
 
 func buildDailyInsightNarrativeClaim(snapshot *DailyInsightSnapshot, domain DailyInsightDomain, locale string) DailyInsightNarrativeClaim {
@@ -1017,23 +1126,36 @@ func narrativeDisplayValues(text string) []string {
 
 func narrativeNumericTokens(text string) []string {
 	values := []string{}
-	var current strings.Builder
-	flush := func() {
-		if current.Len() != 0 {
-			if token := strings.TrimRight(current.String(), ".,"); token != "" {
-				values = append(values, token)
-			}
-			current.Reset()
-		}
-	}
-	for _, r := range text {
-		if unicode.IsDigit(r) || ((r == '.' || r == ',') && current.Len() > 0) {
-			current.WriteRune(r)
+	runes := []rune(text)
+	for index := 0; index < len(runes); {
+		if !unicode.IsDigit(runes[index]) {
+			index++
 			continue
 		}
-		flush()
+		var current strings.Builder
+		current.WriteRune(runes[index])
+		index++
+		for index < len(runes) {
+			r := runes[index]
+			if unicode.IsDigit(r) {
+				current.WriteRune(r)
+				index++
+				continue
+			}
+			if (r == '.' || r == ',') && index+1 < len(runes) && unicode.IsDigit(runes[index+1]) {
+				current.WriteRune(r)
+				index++
+				continue
+			}
+			if isNarrativeGroupingSpace(r) && index+1 < len(runes) && unicode.IsDigit(runes[index+1]) {
+				current.WriteRune(r)
+				index++
+				continue
+			}
+			break
+		}
+		values = append(values, current.String())
 	}
-	flush()
 	return values
 }
 
@@ -1426,10 +1548,32 @@ func cloneDailyInsightSnapshot(snapshot *DailyInsightSnapshot) *DailyInsightSnap
 	}
 	out.Evidence = append([]DailyInsightEvidence(nil), snapshot.Evidence...)
 	out.Changes = append([]DailyInsightChange(nil), snapshot.Changes...)
+	out.NarrativeFacts = append([]DailyInsightNarrativeFact(nil), snapshot.NarrativeFacts...)
+	for index := range out.NarrativeFacts {
+		out.NarrativeFacts[index].DisplayValues = append([]string(nil), snapshot.NarrativeFacts[index].DisplayValues...)
+		out.NarrativeFacts[index].EvidenceIDs = append([]string(nil), snapshot.NarrativeFacts[index].EvidenceIDs...)
+	}
 	return &out
 }
 
 func flattenDailyInsightNarrativeSection(section DailyInsightNarrativeSection, input DailyInsightNarrativeDomainInput) (string, []string, []string) {
+	if text := strings.TrimSpace(section.Text); text != "" {
+		factIDs := append([]string(nil), section.FactIDs...)
+		evidenceIDs := make([]string, 0, len(factIDs))
+		for _, factID := range factIDs {
+			for _, fact := range input.Facts {
+				if fact.ID != factID {
+					continue
+				}
+				for _, evidenceID := range fact.EvidenceIDs {
+					if !containsDailyInsightID(evidenceIDs, evidenceID) {
+						evidenceIDs = append(evidenceIDs, evidenceID)
+					}
+				}
+			}
+		}
+		return text, factIDs, evidenceIDs
+	}
 	parts, claimIDs, evidenceIDs := make([]string, 0, len(section.Sentences)), []string{}, []string{}
 	for _, sentence := range section.Sentences {
 		parts = append(parts, strings.TrimSpace(sentence.Text))
@@ -1462,7 +1606,7 @@ func ValidateDailyInsightNarrative(snapshot *DailyInsightSnapshot, locale string
 	if candidate.Version != DailyInsightNarrativeVersion {
 		return DailyInsightNarrative{}, invalid, fmt.Errorf("unexpected narrative version %q", candidate.Version)
 	}
-	if candidate.Locale != input.Locale {
+	if candidate.Locale != normalizeDailyInsightLocale(locale) {
 		return DailyInsightNarrative{}, invalid, fmt.Errorf("unexpected narrative locale %q", candidate.Locale)
 	}
 	provided := make(map[string]DailyInsightNarrativeDomain, len(candidate.Domains))
@@ -1480,12 +1624,20 @@ func ValidateDailyInsightNarrative(snapshot *DailyInsightSnapshot, locale string
 
 	out := DailyInsightNarrative{Version: DailyInsightNarrativeVersion, Locale: input.Locale, Domains: make([]DailyInsightNarrativeDomain, 0, len(input.Domains))}
 	overallInput, _ := BuildDailyInsightNarrativeSlotInput(snapshot, input.Locale, DailyInsightNarrativeOverallSlot)
-	if len(overallInput.Slot.Claims) == 0 {
-		if candidate.Overall != nil {
-			invalid[DailyInsightNarrativeOverallSlot] = "slot has no eligible claims"
+	if candidate.Overall != nil {
+		var (
+			section *DailyInsightNarrativeSection
+			err     error
+		)
+		switch {
+		case overallNarrativeEligible(snapshot):
+			section, err = validateDailyInsightHumanSynthesis(candidate.Overall, overallInput.Slot, input.Locale)
+		case legacyOverallNarrativeEligible(snapshot):
+			// Frozen corpus artifacts may still use the pre-fact claim wrapper.
+			section, err = normalizeDailyInsightNarrativeSection(*candidate.Overall, overallInput.Slot, input.Locale)
+		default:
+			err = fmt.Errorf("overall synthesis has fewer than two fresh domains")
 		}
-	} else if candidate.Overall != nil {
-		section, err := normalizeDailyInsightNarrativeSection(*candidate.Overall, overallInput.Slot, input.Locale)
 		if err != nil {
 			invalid[DailyInsightNarrativeOverallSlot] = err.Error()
 		} else {
@@ -1555,6 +1707,27 @@ func ValidateDailyInsightNarrativeSlot(snapshot *DailyInsightSnapshot, locale, s
 		section = candidate.Domains[0].Section
 	}
 	out := DailyInsightNarrative{Version: DailyInsightNarrativeVersion, Locale: input.Locale}
+	if slot == DailyInsightNarrativeOverallSlot {
+		if !overallNarrativeEligible(snapshot) && !legacyOverallNarrativeEligible(snapshot) {
+			if section != nil {
+				return DailyInsightNarrative{}, fmt.Errorf("overall synthesis has fewer than two fresh domains")
+			}
+			return out, nil
+		}
+		if section != nil {
+			var err error
+			if overallNarrativeEligible(snapshot) {
+				section, err = validateDailyInsightHumanSynthesis(section, input.Slot, locale)
+			} else {
+				section, err = normalizeDailyInsightNarrativeSection(*section, input.Slot, locale)
+			}
+			if err != nil {
+				return DailyInsightNarrative{}, err
+			}
+		}
+		out.Overall = section
+		return out, nil
+	}
 	if len(input.Slot.Claims) == 0 {
 		if section != nil {
 			return DailyInsightNarrative{}, fmt.Errorf("slot %q has no eligible claims", slot)
@@ -1571,11 +1744,7 @@ func ValidateDailyInsightNarrativeSlot(snapshot *DailyInsightSnapshot, locale, s
 			return DailyInsightNarrative{}, err
 		}
 	}
-	if slot == DailyInsightNarrativeOverallSlot {
-		out.Overall = section
-	} else {
-		out.Domains = []DailyInsightNarrativeDomain{{Key: slot, Section: section}}
-	}
+	out.Domains = []DailyInsightNarrativeDomain{{Key: slot, Section: section}}
 	return out, nil
 }
 
@@ -1587,16 +1756,39 @@ func ValidateDailyInsightNarrativeSlotResponse(snapshot *DailyInsightSnapshot, l
 	if !known {
 		return nil, fmt.Errorf("unknown narrative slot %q", slot)
 	}
+	return ValidateDailyInsightNarrativeSlotResponseWithInput(snapshot, locale, slot, input.Slot, candidate)
+}
+
+// ValidateDailyInsightNarrativeSlotResponseWithInput validates against an
+// already-frozen provider packet. It is used by the offline evaluator so the
+// semantic boundary is checked against the exact B0 baseline, facts and
+// action allow-list that were sent to the provider rather than rebuilding a
+// potentially different packet from a sanitized snapshot.
+func ValidateDailyInsightNarrativeSlotResponseWithInput(snapshot *DailyInsightSnapshot, locale, slot string, input DailyInsightNarrativeDomainInput, candidate DailyInsightNarrativeSlot) (*DailyInsightNarrativeSection, error) {
+	if snapshot == nil {
+		return nil, fmt.Errorf("daily insight snapshot is nil")
+	}
+	if input.Key != slot {
+		return nil, fmt.Errorf("frozen narrative packet key %q, want %q", input.Key, slot)
+	}
 	if candidate.Version != DailyInsightNarrativeVersion {
 		return nil, fmt.Errorf("unexpected narrative version %q", candidate.Version)
 	}
-	if candidate.Locale != input.Locale {
+	if candidate.Locale != normalizeDailyInsightLocale(locale) {
 		return nil, fmt.Errorf("unexpected narrative locale %q", candidate.Locale)
 	}
 	if candidate.Slot.Key != slot {
 		return nil, fmt.Errorf("response slot %q, want %q", candidate.Slot.Key, slot)
 	}
-	if len(input.Slot.Claims) == 0 {
+	if slot == DailyInsightNarrativeOverallSlot {
+		if candidate.Slot.Section == nil {
+			// A provider null is a technical fail-safe; later evaluation treats it
+			// as product failure, but B0 must still remain available at runtime.
+			return nil, nil
+		}
+		return validateDailyInsightHumanSynthesis(candidate.Slot.Section, input, locale)
+	}
+	if len(input.Claims) == 0 {
 		if candidate.Slot.Section != nil {
 			return nil, fmt.Errorf("slot %q has no eligible claims", slot)
 		}
@@ -1608,7 +1800,7 @@ func ValidateDailyInsightNarrativeSlotResponse(snapshot *DailyInsightSnapshot, l
 	if candidate.Slot.Section.AnchorVariantID != "" {
 		return nil, fmt.Errorf("provider response must not select a server anchor variant")
 	}
-	return normalizeDailyInsightNarrativeSection(*candidate.Slot.Section, input.Slot, locale)
+	return normalizeDailyInsightNarrativeSection(*candidate.Slot.Section, input, locale)
 }
 
 // ApplyDailyInsightNarrativeSlot attaches an already validated independent
@@ -1621,10 +1813,25 @@ func ApplyDailyInsightNarrativeSlot(snapshot *DailyInsightSnapshot, locale, slot
 	if section == nil {
 		return cloneDailyInsightSnapshot(snapshot), nil
 	}
-	if err := validateDailyInsightNarrativeSection(*section, input.Slot, locale); err != nil {
-		return nil, err
+	var text string
+	var claimIDs, evidenceIDs []string
+	if slot == DailyInsightNarrativeOverallSlot {
+		validated, err := validateDailyInsightHumanSynthesis(section, input.Slot, locale)
+		if err != nil {
+			return nil, err
+		}
+		text, claimIDs = validated.Text, append([]string(nil), validated.FactIDs...)
+		for _, fact := range input.Slot.Facts {
+			if containsDailyInsightID(claimIDs, fact.ID) {
+				evidenceIDs = append(evidenceIDs, fact.EvidenceIDs...)
+			}
+		}
+	} else {
+		if err := validateDailyInsightNarrativeSection(*section, input.Slot, locale); err != nil {
+			return nil, err
+		}
+		text, claimIDs, evidenceIDs = flattenDailyInsightNarrativeSection(*section, input.Slot)
 	}
-	text, claimIDs, evidenceIDs := flattenDailyInsightNarrativeSection(*section, input.Slot)
 	out := cloneDailyInsightSnapshot(snapshot)
 	overlay := &DailyInsightNarrativeOverlay{Text: text, ClaimIDs: claimIDs, EvidenceIDs: evidenceIDs}
 	if slot == DailyInsightNarrativeOverallSlot {
@@ -1650,13 +1857,196 @@ func narrativeInputDomain(input DailyInsightNarrativeInput, key string) (DailyIn
 }
 
 func cloneDailyInsightNarrativeSection(section DailyInsightNarrativeSection) *DailyInsightNarrativeSection {
-	out := DailyInsightNarrativeSection{Sentences: make([]DailyInsightNarrativeSentence, 0, len(section.Sentences))}
+	out := DailyInsightNarrativeSection{AnchorVariantID: section.AnchorVariantID, Text: strings.TrimSpace(section.Text), FactIDs: append([]string(nil), section.FactIDs...), ActionID: section.ActionID, Sentences: make([]DailyInsightNarrativeSentence, 0, len(section.Sentences))}
 	for _, sentence := range section.Sentences {
 		out.Sentences = append(out.Sentences, DailyInsightNarrativeSentence{
 			Text: strings.TrimSpace(sentence.Text), ClaimIDs: append([]string(nil), sentence.ClaimIDs...), QualifierIDs: append([]string(nil), sentence.QualifierIDs...), MeaningIDs: append([]string(nil), sentence.MeaningIDs...), PositionIDs: append([]string(nil), sentence.PositionIDs...),
 		})
 	}
 	return &out
+}
+
+func validateDailyInsightHumanSynthesis(section *DailyInsightNarrativeSection, input DailyInsightNarrativeDomainInput, locale string) (*DailyInsightNarrativeSection, error) {
+	if section.AnchorVariantID != "" || len(section.Sentences) != 0 {
+		return nil, fmt.Errorf("human synthesis response must use text, fact_ids, and action_id only")
+	}
+	text := strings.TrimSpace(section.Text)
+	if text == "" {
+		return nil, fmt.Errorf("human synthesis text is empty")
+	}
+	if words := len(strings.Fields(text)); words > 75 {
+		return nil, fmt.Errorf("human synthesis has %d words, want at most 75", words)
+	}
+	if sentences := narrativeSentenceCount(text); sentences < 1 || sentences > 3 {
+		return nil, fmt.Errorf("human synthesis has %d sentences, want 1..3", sentences)
+	}
+	facts := make(map[string]DailyInsightNarrativeFact, len(input.Facts))
+	for _, fact := range input.Facts {
+		facts[fact.ID] = fact
+	}
+	if len(section.FactIDs) == 0 {
+		return nil, fmt.Errorf("human synthesis must cite facts")
+	}
+	domains := map[string]struct{}{}
+	seen := map[string]struct{}{}
+	for _, id := range section.FactIDs {
+		fact, ok := facts[id]
+		if !ok {
+			return nil, fmt.Errorf("unsupported fact ID %q", id)
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return nil, fmt.Errorf("duplicate fact ID %q", id)
+		}
+		seen[id] = struct{}{}
+		domains[fact.Domain] = struct{}{}
+	}
+	if len(domains) < 2 {
+		return nil, fmt.Errorf("human synthesis must cite at least two domains")
+	}
+	if err := validateNarrativeNumbers(text, input.Facts); err != nil {
+		return nil, err
+	}
+	if err := validateDailyInsightNarrativeLocale(text, locale); err != nil {
+		return nil, err
+	}
+	if violation := forbiddenHumanSynthesisFragment(text); violation != "" {
+		return nil, fmt.Errorf("unsafe human synthesis text contains %q", violation)
+	}
+	if violation := humanSynthesisServerActionConflict(text, input.ActionOptions); violation != "" {
+		return nil, fmt.Errorf("unsafe human synthesis %s", violation)
+	}
+	if section.ActionID != "" {
+		allowed := false
+		for _, action := range input.ActionOptions {
+			if action.ID == section.ActionID {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return nil, fmt.Errorf("unsupported action ID %q", section.ActionID)
+		}
+	}
+	return cloneDailyInsightNarrativeSection(*section), nil
+}
+
+func narrativeSentenceCount(text string) int {
+	runes := []rune(text)
+	count := 0
+	for index, r := range runes {
+		if (r == '.' || r == ',') && index > 0 && index+1 < len(runes) && unicode.IsDigit(runes[index-1]) && unicode.IsDigit(runes[index+1]) {
+			continue
+		}
+		if r == '.' || r == '!' || r == '?' {
+			count++
+		}
+	}
+	if count == 0 && strings.TrimSpace(text) != "" {
+		return 1
+	}
+	return count
+}
+
+func validateDailyInsightNarrativeLocale(text, locale string) error {
+	if normalizeDailyInsightLocale(locale) == "sr" && containsCyrillicNarrativeText(text) {
+		return fmt.Errorf("Serbian narrative must use Latin script")
+	}
+	if normalizeDailyInsightLocale(locale) == "ru" && !containsCyrillicNarrativeText(text) {
+		return fmt.Errorf("Russian narrative must use Cyrillic script")
+	}
+	if normalizeDailyInsightLocale(locale) == "en" && containsCyrillicNarrativeText(text) {
+		return fmt.Errorf("English narrative must not use Cyrillic script")
+	}
+	return nil
+}
+
+// This is deliberately a narrow hard-safety classifier, not a style grammar.
+// Naturalness and duplication belong to the evaluation corpus, not runtime.
+func forbiddenHumanSynthesisFragment(text string) string {
+	lower := strings.ToLower(text)
+	if forecast := humanSynthesisForecastOutcome(lower); forecast != "" {
+		return forecast
+	}
+	// Keep English causal verbs as whole words so ordinary "because of" is
+	// not mistaken for the forbidden stem inside be-cause.
+	for _, token := range strings.FieldsFunc(lower, func(r rune) bool { return !unicode.IsLetter(r) }) {
+		switch token {
+		case "cause", "causes", "caused", "causing":
+			return token
+		}
+	}
+	for _, fragment := range []string{
+		"diagnos", "disease", "medical", "treatment", "medication", "supplement", "prescrib", "prognos",
+		"диагноз", "болезн", "медицин", "лечени", "лекар", "добавк", "прогноз",
+		"dijagnoz", "bolest", "medicin", "lečen", "lek ", "suplement", "prognoz",
+		// Causality, forecasts, and assertions about feelings or capacity are
+		// hard health-safety boundaries, not prose-style preferences. Each stem
+		// covers the corresponding grammatical forms in the supported locales.
+		"leads to", "guarantee", "feel ", "can handle", "capacity", "able to",
+		"вызыва", "привод", "гарант", "почувству", "устал", "сможешь", "способен",
+		"uzroku", "dovodi", "garant", "oseća", "umor", "sposoban",
+		// A suggestion may be low-risk, but it cannot promise an unsupported
+		// benefit for energy or recovery.
+		"help protect", "help support", "help preserve", "help improve", "protect your energy", "support your recovery", "preserve your energy", "improve your recovery",
+		"поможет", "поддержит восстановление", "сохранит энергию", "улучшит восстановление",
+		"pomoći", "podržaće oporavak", "sačuvaće energiju", "poboljšaće oporavak",
+		// Do not let generated copy dismiss urgent or professional care.
+		"no need to see", "do not seek care", "don't seek care", "ignore urgent", "не нужно обращаться к врачу", "не обращайся к врачу", "игнорируй сроч", "ne moraš kod lekara", "nemoj kod lekara", "ignoriši hitn",
+		// Strong exercise or restriction commands are not reversible everyday
+		// suggestions and remain outside B1's authority.
+		"all-out", "maximal workout", "train hard", "fast all day", "skip meals", "starve", "тренируйся на максимум", "жестко огранич", "голодай", "не ешь", "treniraj maksimalno", "gladuj", "preskoči obroke", "strogo ogranič",
+	} {
+		if strings.Contains(lower, fragment) {
+			return fragment
+		}
+	}
+	return ""
+}
+
+// humanSynthesisForecastOutcome rejects promised health or functional
+// outcomes, rather than treating a language's generic future auxiliary as a
+// forecast. This lets ordinary soft future phrasing remain available in all
+// supported locales.
+func humanSynthesisForecastOutcome(lower string) string {
+	for _, fragment := range []string{
+		"will recover", "will improve", "will feel", "will be tired", "you'll recover", "you'll improve", "you'll feel", "recovery will", "energy will improve", "energy will fall", "readiness will improve", "readiness will fall", "feel better", "feel worse",
+		"будешь восстан", "восстановишься", "будешь чувств", "будешь устав", "станет лучше", "станет хуже", "энергия улучшится", "энергия снизится", "готовность улучшится", "готовность снизится", "завтра восстанов",
+		"ćeš se oporav", "oporavićeš se", "osećaćeš", "bićeš umor", "energija će se poboljš", "energija će pasti", "spremnost će se poboljš", "spremnost će pasti", "sutra ćeš se oporav",
+	} {
+		if strings.Contains(lower, fragment) {
+			return fragment
+		}
+	}
+	return ""
+}
+
+// humanSynthesisServerActionConflict preserves the server-owned safety
+// boundary without attempting to classify every ordinary suggestion. B1 may
+// offer a reversible everyday idea without action_id, but cannot contradict a
+// currently supplied server action.
+func humanSynthesisServerActionConflict(text string, options []DailyInsightNarrativeAction) string {
+	lower := strings.ToLower(text)
+	containsAny := func(fragments []string) bool {
+		for _, fragment := range fragments {
+			if strings.Contains(lower, fragment) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, option := range options {
+		switch option.ID {
+		case "wind_down":
+			if containsAny([]string{"stay up late", "skip sleep", "работай допоздна", "не ложись", "ostani budan", "preskoči san"}) {
+				return "contains a command that conflicts with the server action"
+			}
+		case "daily-decision-rest", "daily-decision-active_recovery", "daily-decision-moderate":
+			if containsAny([]string{"push through", "go hard", "work out hard", "работай на пределе", "тренируйся интенсивно", "idi do kraja", "treniraj jako"}) {
+				return "contains a command that conflicts with the server action"
+			}
+		}
+	}
+	return ""
 }
 
 func validateDailyInsightNarrativeSection(section DailyInsightNarrativeSection, input DailyInsightNarrativeDomainInput, locale string) error {
@@ -1860,21 +2250,79 @@ func dailyInsightNarrativeInputHasClaim(input DailyInsightNarrativeDomainInput, 
 }
 
 func validateNarrativeNumbers(text string, facts []DailyInsightNarrativeFact) error {
-	allowed := map[string]struct{}{}
+	allowed := []string{}
 	for _, fact := range facts {
 		for _, value := range fact.DisplayValues {
 			for _, token := range narrativeNumericTokens(value) {
-				allowed[token] = struct{}{}
+				allowed = append(allowed, token)
 			}
 		}
 	}
 	for _, token := range narrativeNumericTokens(text) {
-		if _, ok := allowed[token]; !ok {
+		if !narrativeNumberIsAllowed(token, allowed) {
 			return fmt.Errorf("numeric text %q is not present in the server display catalog", token)
 		}
 	}
 	return nil
 }
+
+// Russian and Serbian prose commonly renders decimal fractions with a comma.
+// Treat punctuation variants as the same supplied number without allowing a
+// different value or performing any model-owned calculation.
+func canonicalNarrativeNumericToken(token string) string {
+	return strings.ReplaceAll(token, ",", ".")
+}
+
+func narrativeNumberIsAllowed(token string, allowed []string) bool {
+	for _, value := range allowed {
+		if canonicalNarrativeNumericToken(token) == canonicalNarrativeNumericToken(value) {
+			return true
+		}
+		if grouped, ok := narrativeGroupedIntegerDigits(token); ok && digitsOnlyNarrativeNumber(value) && grouped == value {
+			return true
+		}
+	}
+	return false
+}
+
+func narrativeGroupedIntegerDigits(token string) (string, bool) {
+	var groups []string
+	var current strings.Builder
+	separator := rune(0)
+	for _, r := range token {
+		if unicode.IsDigit(r) {
+			current.WriteRune(r)
+			continue
+		}
+		if r != '.' && r != ',' && !isNarrativeGroupingSpace(r) {
+			return "", false
+		}
+		if current.Len() == 0 || (separator != 0 && separator != r) {
+			return "", false
+		}
+		groups, current = append(groups, current.String()), strings.Builder{}
+		separator = r
+	}
+	if separator == 0 || current.Len() == 0 {
+		return "", false
+	}
+	groups = append(groups, current.String())
+	if len(groups[0]) < 1 || len(groups[0]) > 3 {
+		return "", false
+	}
+	for _, group := range groups[1:] {
+		if len(group) != 3 {
+			return "", false
+		}
+	}
+	return strings.Join(groups, ""), true
+}
+
+func digitsOnlyNarrativeNumber(value string) bool {
+	return value != "" && strings.IndexFunc(value, func(r rune) bool { return !unicode.IsDigit(r) }) == -1
+}
+
+func isNarrativeGroupingSpace(r rune) bool { return r == ' ' || r == '\u00a0' || r == '\u202f' }
 
 // dailyInsightNarrativeAnchorRestatementFragments is deliberately a small,
 // locale-specific denylist for the factual proposition already rendered by the
@@ -2112,7 +2560,370 @@ func BuildDailyInsightSnapshot(resp *BriefingResponse, lang string) *DailyInsigh
 			}
 		}
 	}
+	snapshot.NarrativeFacts = buildDailyInsightNarrativeFacts(resp, snapshot.Domains, lang)
 	return snapshot
+}
+
+// buildDailyInsightNarrativeFacts selects only typed, derived briefing values.
+// In particular it intentionally excludes Sleep.Sources, raw samples,
+// EnergyBank.Components and IllnessSuspicion prose: those fields are either
+// identifying/provenance detail or have incompatible semantics during the
+// EnergyBank v1/v2 cutover.
+func buildDailyInsightNarrativeFacts(resp *BriefingResponse, domains []DailyInsightDomain, locale string) []DailyInsightNarrativeFact {
+	if resp == nil {
+		return []DailyInsightNarrativeFact{}
+	}
+	facts := make([]DailyInsightNarrativeFact, 0, 8)
+	add := func(fact DailyInsightNarrativeFact) {
+		fact.Authority = "server_derived"
+		facts = append(facts, fact)
+	}
+	if sleepNarrativeFactFresh(resp) {
+		sleep := resp.Sleep
+		values := []string{fmt.Sprintf("%.1f", *sleep.LatestTotal)}
+		statement := localizedNarrativeSleepFact(locale, *sleep.LatestTotal, sleep.TotalAvg)
+		if sleep.TotalAvg > 0 {
+			values = append(values, fmt.Sprintf("%.1f", sleep.TotalAvg))
+		}
+		add(DailyInsightNarrativeFact{ID: "sleep_canonical_comparison", Domain: "sleep", Meaning: "canonical sleep duration compared with recent average", Window: "last night and recent average", Fresh: true, Statement: statement, DisplayValues: values, EvidenceIDs: []string{"sleep_canonical_comparison"}})
+	}
+	if quality := resp.SleepQuality; sleepNarrativeFactFresh(resp) && quality != nil && quality.ScorePct != nil && quality.Confidence == SleepQualityConfidenceFinal {
+		value := fmt.Sprintf("%d", *quality.ScorePct)
+		add(DailyInsightNarrativeFact{ID: "sleep_quality", Domain: "sleep", Meaning: "server-derived sleep quality", Window: "last night", Fresh: true, Statement: localizedNarrativeSleepQualityFact(locale, *quality.ScorePct), DisplayValues: []string{value}, EvidenceIDs: []string{"sleep_quality"}})
+	}
+	if readinessNarrativeFresh(resp) {
+		score := resp.ReadinessDisplayScore
+		if score == 0 && resp.ReadinessToday != 0 {
+			score = resp.ReadinessToday
+		}
+		add(DailyInsightNarrativeFact{ID: "readiness_current", Domain: "recovery", Meaning: "current readiness display, band, and serving state", Window: "today", Fresh: true, Statement: localizedNarrativeReadinessFact(locale, score, firstNonEmptyInsight(resp.ReadinessTodayLabel, resp.ReadinessLabel), resp.ReadinessServing), DisplayValues: []string{fmt.Sprintf("%d", score)}, EvidenceIDs: []string{"readiness_current"}})
+	}
+	if headline := resp.Headline; headline != nil && narrativeBriefingDateAligned(resp.Date) {
+		added := 0
+		for _, metric := range headline.Metrics {
+			if added >= 2 { // context, not a metric dump
+				break
+			}
+			domain, ok := narrativeHeadlineMetricDomain(metric.Metric)
+			if !ok || metric.Value <= 0 || !headlineNarrativeFactFresh(resp, domains, domain, metric.Metric) {
+				continue
+			}
+			values := []string{fmt.Sprintf("%.1f", metric.Value)}
+			window := "current day"
+			if metric.Baseline > 0 {
+				window = "current day versus personal baseline"
+				values = append(values, fmt.Sprintf("%.1f", metric.Baseline), fmt.Sprintf("%.1f", metric.DeltaAbs))
+			}
+			add(DailyInsightNarrativeFact{ID: fmt.Sprintf("headline_%s", metric.Metric), Domain: domain, Meaning: "server-derived " + domain + " headline value", Window: window, Fresh: true, Statement: localizedNarrativeHeadlineFact(locale, metric), DisplayValues: values, EvidenceIDs: []string{fmt.Sprintf("headline_%s", metric.Metric)}})
+			added++
+		}
+	}
+	if bank := resp.EnergyBank; bank != nil && energyNarrativeFresh(bank) {
+		add(DailyInsightNarrativeFact{ID: "energy_authoritative_state", Domain: "energy", Meaning: "authoritative EnergyBank current state and verdict", Window: "today so far", Fresh: true, Statement: localizedNarrativeEnergyFact(locale, bank), DisplayValues: []string{fmt.Sprintf("%d", bank.Current), fmt.Sprintf("%d", bank.Capacity), fmt.Sprintf("%d", bank.DrainSoFar), fmt.Sprintf("%d", bank.Strain), fmt.Sprintf("%d", bank.Stress)}, EvidenceIDs: []string{"energy_authoritative_state"}})
+	}
+	if raw := resp.RawMetrics; raw != nil && raw.LastDate == resp.Date && narrativeBriefingDateAligned(resp.Date) {
+		if fact, ok := boundedSleepPatternFact(raw.Daily, locale); ok {
+			add(fact)
+		}
+		if fact, ok := boundedActivityTrendFact(raw.Daily, raw.LastDate, locale); ok {
+			add(fact)
+		}
+	}
+	return facts
+}
+
+// headlineNarrativeFactFresh keeps compact headline slices from relabelling a
+// prior measurement as today's fact. A headline is B0 display context; it
+// enters B1 only when the domain that owns the metric is fresh, final, and
+// factual, and when that domain has exact date-aligned evidence for the
+// specific metric. This deliberately withholds an otherwise useful headline
+// rather than letting it create a second fresh domain for B1 eligibility.
+func headlineNarrativeFactFresh(resp *BriefingResponse, domains []DailyInsightDomain, domain, metric string) bool {
+	if resp == nil || !narrativeBriefingDateAligned(resp.Date) || !narrativeDomainFreshFinalFactual(domains, domain) {
+		return false
+	}
+	if domain == "sleep" && metric == "sleep_total" {
+		return sleepNarrativeFactFresh(resp)
+	}
+	return narrativeDailyMetricFresh(resp.RawMetrics, resp.Date, metric)
+}
+
+func narrativeDomainFreshFinalFactual(domains []DailyInsightDomain, key string) bool {
+	for _, domain := range domains {
+		if domain.Key != key {
+			continue
+		}
+		return domain.DataState == "fresh" && domain.Confidence == "final" && domain.Insight.State == "insight" && domain.Insight.AnswerKind == DailyInsightAnswerFactual
+	}
+	return false
+}
+
+// narrativeDailyMetricFresh reads only the private, date-aligned carry. It
+// never serializes that carry to the provider. Requiring exactly one current
+// row makes ambiguous or compacted input fail closed.
+func narrativeDailyMetricFresh(raw *RawMetrics, date, metric string) bool {
+	if raw == nil || raw.LastDate != date || !narrativeBriefingDateAligned(date) {
+		return false
+	}
+	found, present := false, false
+	for _, daily := range raw.Daily {
+		if daily.Date != date {
+			continue
+		}
+		if found {
+			return false
+		}
+		found = true
+		switch metric {
+		case "sleep_total":
+			present = daily.Sleep != nil
+		case "sleep_awake":
+			present = daily.Awake != nil
+		case "sleep_deep":
+			present = daily.Deep != nil
+		case "sleep_rem":
+			present = daily.REM != nil
+		case "sleep_core":
+			present = daily.Core != nil
+		case "sleep_unspecified":
+			present = daily.Unspecified != nil
+		case "heart_rate_variability":
+			present = daily.HRV != nil
+		case "resting_heart_rate":
+			present = daily.RHR != nil
+		case "step_count", "steps":
+			present = daily.Steps != nil
+		case "active_energy":
+			present = daily.Calories != nil
+		case "apple_exercise_time":
+			present = daily.Exercise != nil
+		}
+	}
+	return found && present
+}
+
+// sleepNarrativeFactFresh is intentionally stricter than the UI fallback:
+// B1 can only expose a last-night value when the typed sleep record proves it
+// belongs to this briefing date.
+func sleepNarrativeFactFresh(resp *BriefingResponse) bool {
+	return resp != nil && resp.Sleep != nil && resp.Sleep.LatestTotal != nil && narrativeBriefingDateAligned(resp.Date) && resp.Sleep.LatestDate == resp.Date
+}
+
+func narrativeBriefingDateAligned(date string) bool {
+	_, ok := parseDailyNarrativeDate(date)
+	return ok
+}
+
+// narrativeHeadlineMetricDomain maps the fixed typed headline catalogue to
+// the domain that owns its meaning. Unknown metrics stay out of B1 rather than
+// being relabelled as recovery evidence.
+func narrativeHeadlineMetricDomain(metric string) (string, bool) {
+	switch metric {
+	case "sleep_total", "sleep_awake", "sleep_deep", "sleep_rem", "sleep_core", "sleep_unspecified":
+		return "sleep", true
+	case "heart_rate_variability", "resting_heart_rate":
+		return "recovery", true
+	case "step_count", "steps", "active_energy", "apple_exercise_time", "flights_climbed", "walking_running_distance":
+		return "activity", true
+	default:
+		return "", false
+	}
+}
+
+func readinessNarrativeFresh(resp *BriefingResponse) bool {
+	if resp == nil || (resp.ReadinessServing != nil && resp.ReadinessServing.Status != ReadinessServingFresh) || resp.ReadinessConfidence == ReadinessConfidenceLow {
+		return false
+	}
+	if resp.ReadinessDisplayScore != 0 || resp.ReadinessToday != 0 {
+		return true
+	}
+	if resp.RawMetrics == nil || resp.RawMetrics.ReadinessEvidence == nil {
+		return false
+	}
+	for _, component := range []ReadinessComponentEvidence{resp.RawMetrics.ReadinessEvidence.HRV, resp.RawMetrics.ReadinessEvidence.RHR, resp.RawMetrics.ReadinessEvidence.SleepDuration} {
+		if component.Present && component.Value != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// boundedSleepPatternFact summarizes only a closed four-day calendar window.
+// It emits no dates, records, source names, or individual-day values.
+func boundedSleepPatternFact(daily []DailyHealthMetrics, locale string) (DailyInsightNarrativeFact, bool) {
+	if len(daily) < 4 {
+		return DailyInsightNarrativeFact{}, false
+	}
+	var newest, prior float64
+	var previous time.Time
+	for index := 0; index < 4; index++ {
+		date, ok := parseDailyNarrativeDate(daily[index].Date)
+		if !ok || daily[index].Sleep == nil || (index > 0 && previous.Sub(date) != 24*time.Hour) {
+			return DailyInsightNarrativeFact{}, false
+		}
+		previous = date
+		if index < 2 {
+			newest += *daily[index].Sleep
+		} else {
+			prior += *daily[index].Sleep
+		}
+	}
+	newest, prior = newest/2, prior/2
+	return DailyInsightNarrativeFact{ID: "sleep_recent_four_day_pattern", Domain: "sleep", Meaning: "bounded recent sleep pattern without a causal claim", Window: "most recent four calendar days; newest two versus preceding two", Fresh: true, Statement: localizedNarrativeSleepPatternFact(locale, newest, prior), DisplayValues: []string{fmt.Sprintf("%.1f", newest), fmt.Sprintf("%.1f", prior)}, EvidenceIDs: []string{"sleep_recent_four_day_pattern"}}, true
+}
+
+// boundedActivityTrendFact compares two complete five-day aggregates. It is
+// deliberately activity-only so it does not present overlapping sleep or
+// readiness inputs as independent evidence.
+func boundedActivityTrendFact(daily []DailyHealthMetrics, lastDate, locale string) (DailyInsightNarrativeFact, bool) {
+	last, ok := parseDailyNarrativeDate(lastDate)
+	if !ok || len(daily) < 11 {
+		return DailyInsightNarrativeFact{}, false
+	}
+	// Daily is canonical newest-first. Require the current-day row explicitly,
+	// then ignore it: activity totals for LastDate are intraday and must not
+	// masquerade as a completed-day trend.
+	current, ok := parseDailyNarrativeDate(daily[0].Date)
+	if !ok || !current.Equal(last) {
+		return DailyInsightNarrativeFact{}, false
+	}
+	var newest, prior float64
+	for index := 1; index <= 10; index++ {
+		date, ok := parseDailyNarrativeDate(daily[index].Date)
+		expected := last.AddDate(0, 0, -index)
+		if !ok || !date.Equal(expected) || daily[index].Steps == nil {
+			return DailyInsightNarrativeFact{}, false
+		}
+		if index <= 5 {
+			newest += *daily[index].Steps
+		} else {
+			prior += *daily[index].Steps
+		}
+	}
+	newest, prior = newest/5, prior/5
+	return DailyInsightNarrativeFact{ID: "activity_recent_steps_trend", Domain: "activity", Meaning: "bounded completed-day activity trend", Window: "ten completed calendar days before the current day; newest five versus preceding five", Fresh: true, Statement: localizedNarrativeActivityTrendFact(locale, newest, prior), DisplayValues: []string{fmt.Sprintf("%.0f", newest), fmt.Sprintf("%.0f", prior)}, EvidenceIDs: []string{"activity_recent_steps_trend"}}, true
+}
+
+func parseDailyNarrativeDate(value string) (time.Time, bool) {
+	date, err := time.Parse("2006-01-02", value)
+	if err != nil || date.Format("2006-01-02") != value {
+		return time.Time{}, false
+	}
+	return date, true
+}
+
+func localizedNarrativeSleepPatternFact(locale string, newest, prior float64) string {
+	switch normalizeDailyInsightLocale(locale) {
+	case "ru":
+		return fmt.Sprintf("В закрытом окне из четырёх дней среднее за последние два: %.1f ч, перед ними: %.1f ч.", newest, prior)
+	case "sr":
+		return fmt.Sprintf("U zatvorenom prozoru od četiri dana prosek za poslednja dva iznosi %.1f h, a pre njih %.1f h.", newest, prior)
+	default:
+		return fmt.Sprintf("In a closed four-day window, the newest two-day average is %.1f h versus %.1f h before that.", newest, prior)
+	}
+}
+
+func localizedNarrativeActivityTrendFact(locale string, newest, prior float64) string {
+	switch normalizeDailyInsightLocale(locale) {
+	case "ru":
+		return fmt.Sprintf("В закрытом окне из десяти завершённых дней средняя активность за последние пять: %.0f шагов, перед ними: %.0f.", newest, prior)
+	case "sr":
+		return fmt.Sprintf("U zatvorenom prozoru od deset završenih dana prosečna aktivnost poslednjih pet je %.0f koraka, a pre njih %.0f.", newest, prior)
+	default:
+		return fmt.Sprintf("Across ten completed days before today, the newest five-day activity average is %.0f steps versus %.0f before that.", newest, prior)
+	}
+}
+
+func energyNarrativeFresh(bank *EnergyBank) bool {
+	if bank == nil {
+		return false
+	}
+	for _, flag := range bank.Flags {
+		if flag == "stale_stress" || flag == "data_accruing" {
+			return false
+		}
+	}
+	return bank.ActionVerdict != ""
+}
+
+func localizedNarrativeSleepFact(locale string, latest, average float64) string {
+	if average <= 0 {
+		switch normalizeDailyInsightLocale(locale) {
+		case "ru":
+			return fmt.Sprintf("Каноническая длительность сна прошлой ночью: %.1f ч.", latest)
+		case "sr":
+			return fmt.Sprintf("Kanonsko trajanje sna prošle noći: %.1f h.", latest)
+		default:
+			return fmt.Sprintf("Canonical sleep duration last night: %.1f h.", latest)
+		}
+	}
+	switch normalizeDailyInsightLocale(locale) {
+	case "ru":
+		return fmt.Sprintf("Каноническая длительность сна: %.1f ч при недавнем среднем %.1f ч.", latest, average)
+	case "sr":
+		return fmt.Sprintf("Kanonsko trajanje sna: %.1f h uz skorašnji prosek %.1f h.", latest, average)
+	default:
+		return fmt.Sprintf("Canonical sleep duration: %.1f h against a recent average of %.1f h.", latest, average)
+	}
+}
+
+func localizedNarrativeSleepQualityFact(locale string, score int) string {
+	switch normalizeDailyInsightLocale(locale) {
+	case "ru":
+		return fmt.Sprintf("Серверная оценка качества сна: %d%%.", score)
+	case "sr":
+		return fmt.Sprintf("Serverska procena kvaliteta sna: %d%%.", score)
+	default:
+		return fmt.Sprintf("Server-derived sleep quality: %d%%.", score)
+	}
+}
+
+func localizedNarrativeReadinessFact(locale string, score int, label string, serving *ReadinessServingState) string {
+	state := "fresh"
+	if serving != nil && serving.Status != "" {
+		state = serving.Status
+	}
+	switch normalizeDailyInsightLocale(locale) {
+	case "ru":
+		return fmt.Sprintf("Текущая готовность: %d%%, %s; состояние данных: %s.", score, label, state)
+	case "sr":
+		return fmt.Sprintf("Trenutna spremnost: %d%%, %s; stanje podataka: %s.", score, label, state)
+	default:
+		return fmt.Sprintf("Current readiness: %d%%, %s; data state: %s.", score, label, state)
+	}
+}
+
+func localizedNarrativeHeadlineFact(locale string, metric HeadlineMetricDelta) string {
+	if metric.Baseline <= 0 {
+		switch normalizeDailyInsightLocale(locale) {
+		case "ru":
+			return fmt.Sprintf("Текущее серверное значение %s: %.1f.", metric.Metric, metric.Value)
+		case "sr":
+			return fmt.Sprintf("Trenutna serverska vrednost %s: %.1f.", metric.Metric, metric.Value)
+		default:
+			return fmt.Sprintf("Current server-derived %s value: %.1f.", metric.Metric, metric.Value)
+		}
+	}
+	switch normalizeDailyInsightLocale(locale) {
+	case "ru":
+		return fmt.Sprintf("Серверный сдвиг %s: %.1f при базе %.1f.", metric.Metric, metric.Value, metric.Baseline)
+	case "sr":
+		return fmt.Sprintf("Serversko odstupanje %s: %.1f uz osnovu %.1f.", metric.Metric, metric.Value, metric.Baseline)
+	default:
+		return fmt.Sprintf("Server-derived %s shift: %.1f against a %.1f baseline.", metric.Metric, metric.Value, metric.Baseline)
+	}
+}
+
+func localizedNarrativeEnergyFact(locale string, bank *EnergyBank) string {
+	label := firstNonEmptyInsight(bank.VerdictLabel, bank.ActionVerdict)
+	switch normalizeDailyInsightLocale(locale) {
+	case "ru":
+		return fmt.Sprintf("EnergyBank: %d из %d, расход %d, нагрузка %d, стресс %d; вердикт: %s. %s", bank.Current, bank.Capacity, bank.DrainSoFar, bank.Strain, bank.Stress, label, bank.VerdictReason)
+	case "sr":
+		return fmt.Sprintf("EnergyBank: %d od %d, potrošnja %d, opterećenje %d, stres %d; zaključak: %s. %s", bank.Current, bank.Capacity, bank.DrainSoFar, bank.Strain, bank.Stress, label, bank.VerdictReason)
+	default:
+		return fmt.Sprintf("EnergyBank: %d of %d, drain %d, strain %d, stress %d; verdict: %s. %s", bank.Current, bank.Capacity, bank.DrainSoFar, bank.Strain, bank.Stress, label, bank.VerdictReason)
+	}
 }
 
 // DailyInsightMaterialHash excludes display timestamps and prose. It changes
@@ -2184,8 +2995,16 @@ func DailyInsightNarrativeSlotMaterialHash(snapshot *DailyInsightSnapshot, local
 	payload, err := jsonMarshalDailyInsightNarrativeSlotInput(struct {
 		Input                     DailyInsightNarrativeSlotInput `json:"input"`
 		MeaningCatalogFingerprint string                         `json:"meaning_catalog_fingerprint"`
+		PromptRevision            string                         `json:"prompt_revision"`
+		NarrativeVersion          string                         `json:"narrative_version"`
+		SnapshotVersion           string                         `json:"snapshot_version"`
+		PolicyVersion             string                         `json:"policy_version"`
+		ActionCatalogVersion      string                         `json:"action_catalog_version"`
 	}{
 		Input: input, MeaningCatalogFingerprint: DailyInsightNarrativeMeaningCatalogFingerprint(),
+		PromptRevision: DailyInsightPromptRevision, NarrativeVersion: DailyInsightNarrativeVersion,
+		SnapshotVersion: DailyInsightSnapshotVersion, PolicyVersion: DailyInsightPolicyVersion,
+		ActionCatalogVersion: DailyInsightActionCatalogVersion,
 	})
 	if err != nil {
 		// The input is made solely of static Go structs. Treat an impossible

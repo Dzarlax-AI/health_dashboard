@@ -22,8 +22,14 @@ import (
 // exact JSON and its checksum makes a model/prompt comparison reproducible
 // without retaining raw records or treating a later live request as evidence.
 type DailyInsightNarrativeCorpus struct {
-	Version string                            `json:"version"`
-	Cases   []DailyInsightNarrativeCorpusCase `json:"cases"`
+	Version string `json:"version"`
+	// PacketVersion and PacketShape bind a v2 corpus to the current
+	// provider-packet builder. They are intentionally separate from the corpus
+	// checksum: a perfectly intact old artifact must be re-frozen when the
+	// serving packet changes.
+	PacketVersion string                            `json:"packet_version,omitempty"`
+	PacketShape   string                            `json:"packet_shape,omitempty"`
+	Cases         []DailyInsightNarrativeCorpusCase `json:"cases"`
 }
 
 // DailyInsightNarrativeCandidateExport is an intermediate, non-evaluable
@@ -75,6 +81,12 @@ type DailyInsightNarrativeCorpusCase struct {
 	// It contains only known domain keys, never a raw decision reason or value.
 	DecisionEvidenceDomains []string `json:"decision_evidence_domains,omitempty"`
 	PrimaryMeaningID        string   `json:"primary_meaning_id"`
+	// These are the exact privacy-minimized inputs for the overall-only B1
+	// request. They are ordinary corpus fields because health snapshots hide
+	// live-only material from their JSON representation.
+	NarrativeFacts    []health.DailyInsightNarrativeFact    `json:"narrative_facts,omitempty"`
+	VisibleB0Baseline *health.DailyInsightNarrativeBaseline `json:"visible_b0_baseline,omitempty"`
+	ActionOptions     []health.DailyInsightNarrativeAction  `json:"action_options,omitempty"`
 }
 
 // SnapshotForEvaluation restores the closed, non-display variants that are
@@ -85,6 +97,23 @@ type DailyInsightNarrativeCorpusCase struct {
 func (item DailyInsightNarrativeCorpusCase) SnapshotForEvaluation() (health.DailyInsightSnapshot, error) {
 	snapshot := item.Snapshot
 	snapshot.Domains = append([]health.DailyInsightDomain(nil), item.Snapshot.Domains...)
+	snapshot.NarrativeFacts = append([]health.DailyInsightNarrativeFact(nil), item.NarrativeFacts...)
+	for index := range snapshot.NarrativeFacts {
+		snapshot.NarrativeFacts[index].DisplayValues = append([]string(nil), item.NarrativeFacts[index].DisplayValues...)
+		snapshot.NarrativeFacts[index].EvidenceIDs = append([]string(nil), item.NarrativeFacts[index].EvidenceIDs...)
+	}
+	// The existing packet builder reads actions from the closed snapshot. Keep
+	// old hand-authored artifacts readable while the corpus-specific builder
+	// below applies the exact frozen allow-list for new artifacts.
+	for index, option := range item.ActionOptions {
+		if index == 0 {
+			snapshot.Primary.NextStep = &health.DailyInsightAction{ID: option.ID, Text: option.Text}
+			continue
+		}
+		if index-1 < len(snapshot.Domains) && snapshot.Domains[index-1].Insight.NextStep == nil {
+			snapshot.Domains[index-1].Insight.NextStep = &health.DailyInsightAction{ID: option.ID, Text: option.Text}
+		}
+	}
 	if item.PrimaryNarrativeSubject != "" {
 		if !validCorpusPrimaryNarrativeSubject(item.PrimaryNarrativeSubject) {
 			return health.DailyInsightSnapshot{}, fmt.Errorf("case %q has unsupported primary narrative subject %q", item.ID, item.PrimaryNarrativeSubject)
@@ -122,6 +151,29 @@ func (item DailyInsightNarrativeCorpusCase) SnapshotForEvaluation() (health.Dail
 		}
 	}
 	return snapshot, nil
+}
+
+// BuildDailyInsightNarrativeCorpusSlotInput restores the exact frozen B0 and
+// action context after deriving the normal provider packet from the sanitized
+// snapshot. Production generation never calls this helper.
+func BuildDailyInsightNarrativeCorpusSlotInput(item DailyInsightNarrativeCorpusCase, locale, slot string) (health.DailyInsightNarrativeSlotInput, bool, error) {
+	snapshot, err := item.SnapshotForEvaluation()
+	if err != nil {
+		return health.DailyInsightNarrativeSlotInput{}, false, err
+	}
+	input, known := health.BuildDailyInsightNarrativeSlotInput(&snapshot, locale, slot)
+	if !known || slot != health.DailyInsightNarrativeOverallSlot {
+		return input, known, nil
+	}
+	if item.VisibleB0Baseline != nil {
+		baseline := *item.VisibleB0Baseline
+		baseline.Domains = append([]health.DailyInsightBaselineDomain(nil), item.VisibleB0Baseline.Domains...)
+		input.Slot.Baseline = &baseline
+	}
+	if item.ActionOptions != nil {
+		input.Slot.ActionOptions = append([]health.DailyInsightNarrativeAction(nil), item.ActionOptions...)
+	}
+	return input, true, nil
 }
 
 func validCorpusEnergyNarrativeSubject(value string) bool {
@@ -164,7 +216,6 @@ func SanitizeDailyInsightNarrativeCorpusCandidate(snapshot health.DailyInsightSn
 	}
 
 	sanitized := health.DailyInsightSnapshot{
-		Date:       "review-day",
 		Version:    snapshot.Version,
 		Domains:    make([]health.DailyInsightDomain, 0, len(snapshot.Domains)),
 		Evidence:   make([]health.DailyInsightEvidence, 0, len(snapshot.Evidence)),
@@ -172,10 +223,6 @@ func SanitizeDailyInsightNarrativeCorpusCandidate(snapshot health.DailyInsightSn
 		HasMore:    false,
 		DecisionID: "",
 		Primary:    health.DailyInsight{},
-	}
-	if snapshot.UpdatedAt != nil {
-		fixedUpdate := time.Date(2000, time.January, 1, 12, 0, 0, 0, time.UTC)
-		sanitized.UpdatedAt = &fixedUpdate
 	}
 	for _, domain := range snapshot.Domains {
 		sanitized.Domains = append(sanitized.Domains, health.DailyInsightDomain{
@@ -197,6 +244,14 @@ func SanitizeDailyInsightNarrativeCorpusCandidate(snapshot health.DailyInsightSn
 				NextStep:    sanitizedNarrativeDomainAction(domain.Insight.NextStep),
 			},
 		})
+	}
+	narrativeFacts := make([]health.DailyInsightNarrativeFact, 0, len(snapshot.NarrativeFacts))
+	for index, fact := range snapshot.NarrativeFacts {
+		fact.EvidenceIDs = mapEvidenceIDs(fact.EvidenceIDs)
+		if len(fact.EvidenceIDs) == 0 {
+			fact.EvidenceIDs = []string{fmt.Sprintf("evidence-%02d", index+1)}
+		}
+		narrativeFacts = append(narrativeFacts, fact)
 	}
 	for index, evidence := range snapshot.Evidence {
 		sanitized.Evidence = append(sanitized.Evidence, health.DailyInsightEvidence{
@@ -232,6 +287,7 @@ func SanitizeDailyInsightNarrativeCorpusCandidate(snapshot health.DailyInsightSn
 	if len(subjects) == 0 {
 		subjects = nil
 	}
+	input, _ := health.BuildDailyInsightNarrativeSlotInput(&snapshot, locale, health.DailyInsightNarrativeOverallSlot)
 	return DailyInsightNarrativeCorpusCase{
 		ID:                      candidateID,
 		Locale:                  locale,
@@ -241,6 +297,9 @@ func SanitizeDailyInsightNarrativeCorpusCandidate(snapshot health.DailyInsightSn
 		PrimaryNarrativeSubject: primarySubject,
 		DecisionEvidenceDomains: append([]string(nil), snapshot.DecisionEvidenceDomains...),
 		PrimaryMeaningID:        narrativeCorpusPrimaryMeaningID(snapshot),
+		NarrativeFacts:          narrativeFacts,
+		VisibleB0Baseline:       input.Slot.Baseline,
+		ActionOptions:           append([]health.DailyInsightNarrativeAction(nil), input.Slot.ActionOptions...),
 	}
 }
 
@@ -389,7 +448,27 @@ var RequiredDailyInsightNarrativeMeaningIDs = []string{
 	"sleep_personal_reference",
 }
 
+// RequiredDailyInsightNarrativeV2Tags cover the dimensions of the
+// overall-only corpus. The v2 gate deliberately does not require every legacy
+// claim or meaning ID: the model is evaluated on how well it interprets a
+// bounded combination of server-derived facts.
+var RequiredDailyInsightNarrativeV2Tags = []string{
+	"facts_sleep_recovery",
+	"facts_sleep_energy",
+	"facts_recovery_energy",
+	"action_options",
+	"no_action",
+	"fresh_data",
+	"missing_data",
+	"safety_control",
+	"locale_en",
+	"locale_ru",
+	"locale_sr",
+}
+
 const (
+	DailyInsightNarrativeCorpusVersionV1         = "daily-insight-narrative-corpus-v1"
+	DailyInsightNarrativeCorpusVersionV2         = "daily-insight-narrative-corpus-v2"
 	DailyInsightNarrativeCorpusMinCases          = 20
 	DailyInsightNarrativeCorpusMaxCases          = 30
 	DailyInsightNarrativeCorpusMaxSyntheticCases = 5
@@ -415,18 +494,97 @@ func DailyInsightNarrativeCorpusHash(corpus DailyInsightNarrativeCorpus) (string
 	return hex.EncodeToString(sum[:]), nil
 }
 
+// DailyInsightNarrativeCorpusCurrentPacketShape returns a deterministic
+// fingerprint of the current v2 packet contract and a fully-populated builder
+// probe. It catches an unversioned JSON-shape or selection change before an
+// old frozen corpus can certify the current serving builder.
+func DailyInsightNarrativeCorpusCurrentPacketShape() string {
+	factIDs := make([]string, 0, len(v2CorpusFactTaxonomy)+len(v2CorpusHeadlineMetricSlugs))
+	for id := range v2CorpusFactTaxonomy {
+		factIDs = append(factIDs, id)
+	}
+	for slug := range v2CorpusHeadlineMetricSlugs {
+		factIDs = append(factIDs, "headline_"+slug)
+	}
+	sort.Strings(factIDs)
+	facts := make([]health.DailyInsightNarrativeFact, 0, len(factIDs))
+	for _, id := range factIDs {
+		facts = append(facts, health.DailyInsightNarrativeFact{
+			ID: id, Domain: v2CorpusFactDomain(id), Authority: "server_derived", Fresh: true,
+			Statement: "packet-shape " + id, DisplayValues: []string{"1"}, EvidenceIDs: []string{id},
+		})
+	}
+	probe := health.DailyInsightSnapshot{
+		Version: health.DailyInsightSnapshotVersion,
+		Domains: []health.DailyInsightDomain{
+			{Key: "sleep", DataState: "fresh", Confidence: "final"},
+			{Key: "recovery", DataState: "fresh", Confidence: "final"},
+			{Key: "energy", DataState: "fresh", Confidence: "final"},
+			{Key: "activity", DataState: "fresh", Confidence: "final"},
+		},
+		NarrativeFacts: facts,
+		Primary:        health.DailyInsight{NextStep: &health.DailyInsightAction{ID: "wind_down", Text: "packet-shape action"}},
+	}
+	input, known := health.BuildDailyInsightNarrativeSlotInput(&probe, "en", health.DailyInsightNarrativeOverallSlot)
+	if !known {
+		panic("overall daily insight narrative slot is unavailable")
+	}
+	payload := struct {
+		PacketVersion string                                `json:"packet_version"`
+		InputShape    any                                   `json:"input_shape"`
+		FactIDs       []string                              `json:"fact_ids"`
+		ActionIDs     []string                              `json:"action_ids"`
+		BuilderProbe  health.DailyInsightNarrativeSlotInput `json:"builder_probe"`
+	}{
+		PacketVersion: health.DailyInsightNarrativeInputVersion,
+		InputShape:    narrativeCorpusJSONShape(reflect.TypeOf(health.DailyInsightNarrativeSlotInput{})),
+		FactIDs:       factIDs,
+		ActionIDs:     []string{"wind_down", "daily-decision-rest", "daily-decision-active_recovery", "daily-decision-moderate"},
+		BuilderProbe:  input,
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		panic(fmt.Sprintf("marshal B1 corpus packet shape: %v", err))
+	}
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:])
+}
+
+func narrativeCorpusJSONShape(t reflect.Type) any {
+	for t.Kind() == reflect.Pointer || t.Kind() == reflect.Slice || t.Kind() == reflect.Array {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return t.String()
+	}
+	type field struct {
+		Name  string `json:"name"`
+		JSON  string `json:"json"`
+		Shape any    `json:"shape"`
+	}
+	fields := make([]field, 0, t.NumField())
+	for index := 0; index < t.NumField(); index++ {
+		item := t.Field(index)
+		if item.PkgPath != "" || strings.Split(item.Tag.Get("json"), ",")[0] == "-" {
+			continue
+		}
+		fields = append(fields, field{Name: item.Name, JSON: item.Tag.Get("json"), Shape: narrativeCorpusJSONShape(item.Type)})
+	}
+	return fields
+}
+
 // ValidateDailyInsightNarrativeCorpus validates the frozen gate input before
 // any provider call. It rejects an under-sized hand-picked happy path, a
 // missing required product state, and malformed claim eligibility.
 func ValidateDailyInsightNarrativeCorpus(corpus DailyInsightNarrativeCorpus) error {
-	if corpus.Version != "daily-insight-narrative-corpus-v1" {
+	if corpus.Version != DailyInsightNarrativeCorpusVersionV1 && corpus.Version != DailyInsightNarrativeCorpusVersionV2 {
 		return fmt.Errorf("unsupported corpus version %q", corpus.Version)
 	}
+	v2 := corpus.Version == DailyInsightNarrativeCorpusVersionV2
 	if len(corpus.Cases) < DailyInsightNarrativeCorpusMinCases || len(corpus.Cases) > DailyInsightNarrativeCorpusMaxCases {
 		return fmt.Errorf("corpus has %d cases; want %d to %d", len(corpus.Cases), DailyInsightNarrativeCorpusMinCases, DailyInsightNarrativeCorpusMaxCases)
 	}
 	ids := make(map[string]struct{}, len(corpus.Cases))
-	tags := make(map[string]struct{})
 	claimCoverage := make(map[string]map[string]struct{})
 	meaningCoverage := make(map[string]map[string]struct{})
 	syntheticCases := 0
@@ -457,30 +615,36 @@ func ValidateDailyInsightNarrativeCorpus(corpus DailyInsightNarrativeCorpus) err
 			if !containsCorpusTag(item.Tags, DailyInsightNarrativeOriginSynthetic) {
 				return fmt.Errorf("synthetic case %q must carry the synthetic_controlled tag", item.ID)
 			}
-			if !containsRequiredCorpusTag(item.Tags) {
+			if (!v2 && !containsRequiredCorpusTag(item.Tags)) || (v2 && !containsAnyCorpusTag(item.Tags, RequiredDailyInsightNarrativeV2Tags)) {
 				return fmt.Errorf("synthetic case %q must cover at least one required product state", item.ID)
 			}
 		default:
 			return fmt.Errorf("case %q has unsupported origin %q", item.ID, item.Origin)
 		}
-		if item.Snapshot.Date == "" || item.Snapshot.Version == "" || len(item.Snapshot.Domains) == 0 {
+		if (!v2 && item.Snapshot.Date == "") || item.Snapshot.Version == "" || len(item.Snapshot.Domains) == 0 {
 			return fmt.Errorf("case %q has incomplete sanitized snapshot", item.ID)
 		}
-		if !narrativeCorpusPrimaryMeaningMatches(snapshotForCorpusCase(item), item.PrimaryMeaningID) {
+		if !v2 && !narrativeCorpusPrimaryMeaningMatches(snapshotForCorpusCase(item), item.PrimaryMeaningID) {
 			return fmt.Errorf("case %q has missing or unsupported primary meaning id", item.ID)
+		}
+		if v2 {
+			if err := validateV2CorpusPrivacy(item); err != nil {
+				return err
+			}
 		}
 		for _, tag := range item.Tags {
 			if tag == "" {
 				return fmt.Errorf("case %q has empty tag", item.ID)
 			}
-			tags[tag] = struct{}{}
 		}
 		snapshot, err := item.SnapshotForEvaluation()
 		if err != nil {
 			return err
 		}
-		if err := validateDailyInsightNarrativeCorpusCase(item, snapshot); err != nil {
-			return err
+		if !v2 {
+			if err := validateDailyInsightNarrativeCorpusCase(item, snapshot); err != nil {
+				return err
+			}
 		}
 		for _, domain := range dailyInsightNarrativeCorpusCoverageInputs(snapshot, item.Locale) {
 			for _, claim := range domain.Claims {
@@ -495,6 +659,15 @@ func ValidateDailyInsightNarrativeCorpus(corpus DailyInsightNarrativeCorpus) err
 					meaningCoverage[item.Locale][meaning.ID] = struct{}{}
 				}
 			}
+		}
+	}
+	if v2 {
+		return validateV2CorpusCoverage(corpus)
+	}
+	tags := make(map[string]struct{})
+	for _, item := range corpus.Cases {
+		for _, tag := range item.Tags {
+			tags[tag] = struct{}{}
 		}
 	}
 	missing := make([]string, 0)
@@ -533,6 +706,284 @@ func ValidateDailyInsightNarrativeCorpus(corpus DailyInsightNarrativeCorpus) err
 		return fmt.Errorf("corpus has %d synthetic cases; want at most %d", syntheticCases, DailyInsightNarrativeCorpusMaxSyntheticCases)
 	}
 	return nil
+}
+
+func validateV2CorpusPrivacy(item DailyInsightNarrativeCorpusCase) error {
+	snapshot := item.Snapshot
+	if snapshot.Date != "" || snapshot.UpdatedAt != nil || snapshot.DecisionID != "" {
+		return fmt.Errorf("case %q retains a date, timestamp, or decision identifier", item.ID)
+	}
+	if item.VisibleB0Baseline == nil {
+		return fmt.Errorf("case %q is missing the exact visible B0 baseline", item.ID)
+	}
+	if len(item.ActionOptions) > 2 {
+		return fmt.Errorf("case %q has %d action options; want at most 2", item.ID, len(item.ActionOptions))
+	}
+	seenActions := map[string]struct{}{}
+	for _, action := range item.ActionOptions {
+		if action.ID == "" || action.Text == "" || !v2CorpusActionAllowed(action.ID) {
+			return fmt.Errorf("case %q has unsupported action option %q", item.ID, action.ID)
+		}
+		if _, exists := seenActions[action.ID]; exists {
+			return fmt.Errorf("case %q repeats action option %q", item.ID, action.ID)
+		}
+		seenActions[action.ID] = struct{}{}
+	}
+	seenFacts := map[string]struct{}{}
+	domains := map[string]struct{}{}
+	for _, fact := range item.NarrativeFacts {
+		if fact.ID == "" || !v2CorpusFactID(fact.ID) || fact.Statement == "" || !v2CorpusDomain(fact.Domain) || !fact.Fresh || fact.Authority != "server_derived" {
+			return fmt.Errorf("case %q has malformed narrative fact %q", item.ID, fact.ID)
+		}
+		if _, exists := seenFacts[fact.ID]; exists {
+			return fmt.Errorf("case %q repeats narrative fact %q", item.ID, fact.ID)
+		}
+		seenFacts[fact.ID] = struct{}{}
+		domains[fact.Domain] = struct{}{}
+		for _, evidenceID := range fact.EvidenceIDs {
+			if !v2CorpusSafeEvidenceID(evidenceID) {
+				return fmt.Errorf("case %q fact %q retains an identifier %q", item.ID, fact.ID, evidenceID)
+			}
+		}
+	}
+	for _, evidence := range snapshot.Evidence {
+		if evidence.ID != "" && !v2CorpusSafeEvidenceID(evidence.ID) {
+			return fmt.Errorf("case %q retains evidence identifier %q", item.ID, evidence.ID)
+		}
+		if evidence.ObservedAt != nil {
+			return fmt.Errorf("case %q retains an evidence timestamp", item.ID)
+		}
+	}
+	for _, domain := range snapshot.Domains {
+		for _, evidenceID := range domain.Insight.EvidenceIDs {
+			if !v2CorpusSafeEvidenceID(evidenceID) {
+				return fmt.Errorf("case %q retains domain evidence identifier %q", item.ID, evidenceID)
+			}
+		}
+	}
+	return nil
+}
+
+func validateV2CorpusCoverage(corpus DailyInsightNarrativeCorpus) error {
+	coverage := make(map[string]struct{})
+	for _, item := range corpus.Cases {
+		derived, err := v2CorpusCoverageTags(item)
+		if err != nil {
+			return err
+		}
+		for _, tag := range RequiredDailyInsightNarrativeV2Tags {
+			declared := containsCorpusTag(item.Tags, tag)
+			_, actual := derived[tag]
+			if declared != actual {
+				return fmt.Errorf("case %q tag %q does not match its frozen packet", item.ID, tag)
+			}
+			if actual {
+				coverage[tag] = struct{}{}
+			}
+		}
+	}
+	missing := make([]string, 0)
+	for _, required := range RequiredDailyInsightNarrativeV2Tags {
+		if _, present := coverage[required]; !present {
+			missing = append(missing, required)
+		}
+	}
+	if len(missing) != 0 {
+		sort.Strings(missing)
+		return fmt.Errorf("corpus is missing v2 coverage tags: %v", missing)
+	}
+	synthetic := 0
+	for _, item := range corpus.Cases {
+		if item.Origin == DailyInsightNarrativeOriginSynthetic {
+			synthetic++
+		}
+	}
+	if synthetic > DailyInsightNarrativeCorpusMaxSyntheticCases {
+		return fmt.Errorf("corpus has %d synthetic cases; want at most %d", synthetic, DailyInsightNarrativeCorpusMaxSyntheticCases)
+	}
+	return nil
+}
+
+func v2CorpusCoverageTags(item DailyInsightNarrativeCorpusCase) (map[string]struct{}, error) {
+	snapshot, err := item.SnapshotForEvaluation()
+	if err != nil {
+		return nil, err
+	}
+	input, known := health.BuildDailyInsightNarrativeSlotInput(&snapshot, item.Locale, health.DailyInsightNarrativeOverallSlot)
+	if !known {
+		return nil, fmt.Errorf("case %q has no known overall packet", item.ID)
+	}
+	// The corpus-specific builder restores the frozen B0/action context; use it
+	// here as the coverage source so a label cannot claim an action or fallback
+	// state that the exact evaluated request did not contain.
+	if item.VisibleB0Baseline != nil {
+		input.Slot.Baseline = item.VisibleB0Baseline
+	}
+	if item.ActionOptions != nil {
+		input.Slot.ActionOptions = item.ActionOptions
+	}
+	tags := map[string]struct{}{"locale_" + item.Locale: {}}
+	domains := map[string]struct{}{}
+	for _, fact := range input.Slot.Facts {
+		if fact.Fresh {
+			domains[fact.Domain] = struct{}{}
+		}
+	}
+	if _, sleep := domains["sleep"]; sleep {
+		if _, recovery := domains["recovery"]; recovery {
+			tags["facts_sleep_recovery"] = struct{}{}
+		}
+		if _, energy := domains["energy"]; energy {
+			tags["facts_sleep_energy"] = struct{}{}
+		}
+	}
+	if _, recovery := domains["recovery"]; recovery {
+		if _, energy := domains["energy"]; energy {
+			tags["facts_recovery_energy"] = struct{}{}
+		}
+	}
+	if len(input.Slot.ActionOptions) == 0 {
+		tags["no_action"] = struct{}{}
+	} else {
+		tags["action_options"] = struct{}{}
+	}
+	if v2CorpusInputEligible(input) {
+		tags["fresh_data"] = struct{}{}
+	} else {
+		tags["missing_data"] = struct{}{}
+		if item.Origin == DailyInsightNarrativeOriginSynthetic {
+			tags["safety_control"] = struct{}{}
+		}
+	}
+	return tags, nil
+}
+
+func v2CorpusInputEligible(input health.DailyInsightNarrativeSlotInput) bool {
+	if input.Slot.Key != health.DailyInsightNarrativeOverallSlot {
+		return false
+	}
+	domains := map[string]struct{}{}
+	for _, fact := range input.Slot.Facts {
+		if fact.Fresh && fact.Domain != "" {
+			domains[fact.Domain] = struct{}{}
+		}
+	}
+	return len(domains) >= 2
+}
+
+func validateV2CorpusPacketBinding(corpus DailyInsightNarrativeCorpus) error {
+	if corpus.PacketVersion != health.DailyInsightNarrativeInputVersion {
+		return fmt.Errorf("v2 corpus packet version %q does not match current packet version %q; re-freeze the corpus", corpus.PacketVersion, health.DailyInsightNarrativeInputVersion)
+	}
+	if corpus.PacketShape != DailyInsightNarrativeCorpusCurrentPacketShape() {
+		return fmt.Errorf("v2 corpus packet shape does not match the current builder; re-freeze the corpus")
+	}
+	return nil
+}
+
+func v2CorpusFactDomain(id string) string {
+	switch {
+	case strings.HasPrefix(id, "sleep_") || id == "headline_sleep_total" || id == "headline_sleep_awake":
+		return "sleep"
+	case strings.HasPrefix(id, "energy_") || id == "headline_active_energy" || id == "headline_steps" || id == "headline_exercise_time" || id == "headline_sustained_hr_load":
+		return "energy"
+	case strings.HasPrefix(id, "activity_"):
+		return "activity"
+	default:
+		return "recovery"
+	}
+}
+
+func v2CorpusDomain(value string) bool {
+	return value == "sleep" || value == "recovery" || value == "energy" || value == "activity"
+}
+
+func v2CorpusToken(value string) bool {
+	if !strings.HasPrefix(value, "evidence-") {
+		return false
+	}
+	suffix := strings.TrimPrefix(value, "evidence-")
+	if suffix == "" {
+		return false
+	}
+	allDigits := true
+	for _, char := range suffix {
+		if char < '0' || char > '9' {
+			allDigits = false
+			break
+		}
+	}
+	if allDigits && len(suffix) <= 2 {
+		return true
+	}
+	switch suffix {
+	case "sleep", "sleep-reference", "sleep-short-nights", "sleep-fixture",
+		"recovery", "recovery-fixture", "energy", "energy-fixture", "activity":
+		return true
+	}
+	return false
+}
+
+var v2CorpusFactTaxonomy = map[string]struct{}{
+	"sleep_canonical_comparison":    {},
+	"sleep_quality":                 {},
+	"readiness_current":             {},
+	"energy_authoritative_state":    {},
+	"sleep_recent_four_day_pattern": {},
+	"sleep_recent_short_nights":     {},
+	"activity_recent_steps_trend":   {},
+}
+
+var v2CorpusHeadlineMetricSlugs = map[string]struct{}{
+	"heart_rate_variability":  {},
+	"resting_heart_rate":      {},
+	"sleep_total":             {},
+	"sleep_awake":             {},
+	"respiratory_rate":        {},
+	"blood_oxygen_saturation": {},
+	"active_energy":           {},
+	"steps":                   {},
+	"exercise_time":           {},
+	"vo2_max":                 {},
+	"wrist_temperature":       {},
+	"hrv_cv":                  {},
+	"sustained_hr_load":       {},
+}
+
+func v2CorpusFactID(value string) bool {
+	if _, allowed := v2CorpusFactTaxonomy[value]; allowed {
+		return true
+	}
+	const prefix = "headline_"
+	if !strings.HasPrefix(value, prefix) {
+		return false
+	}
+	_, allowed := v2CorpusHeadlineMetricSlugs[strings.TrimPrefix(value, prefix)]
+	return allowed
+}
+
+func v2CorpusSafeEvidenceID(value string) bool {
+	return v2CorpusToken(value) || v2CorpusFactID(value)
+}
+
+func v2CorpusActionAllowed(value string) bool {
+	switch value {
+	case "wind_down", "daily-decision-rest", "daily-decision-active_recovery", "daily-decision-moderate":
+		return true
+	default:
+		return false
+	}
+}
+
+func containsAnyCorpusTag(tags, required []string) bool {
+	for _, tag := range tags {
+		for _, want := range required {
+			if tag == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func snapshotForCorpusCase(item DailyInsightNarrativeCorpusCase) health.DailyInsightSnapshot {
@@ -623,7 +1074,7 @@ func validateDailyInsightNarrativeCorpusCase(item DailyInsightNarrativeCorpusCas
 				return fmt.Errorf("case %q tags energy_recovery_conflict without linked recovery and energy evidence", item.ID)
 			}
 		case "late_source_update":
-			if item.Scenario.UpdateKind != "late_source_update" || item.Snapshot.UpdatedAt == nil {
+			if item.Scenario.UpdateKind != "late_source_update" || (item.Snapshot.UpdatedAt == nil && item.Snapshot.Date == "") {
 				return fmt.Errorf("case %q tags late_source_update without update provenance and timestamp", item.ID)
 			}
 		case "no_data":
@@ -741,6 +1192,8 @@ type DailyInsightNarrativeReviewPacketCase struct {
 	QualifierDefinitions []NarrativeCorpusQualifierDefinition `json:"qualifier_definitions"`
 	ScreenBaseline       NarrativeCorpusScreenBaseline        `json:"screen_baseline"`
 	Fallbacks            []NarrativeCorpusFallback            `json:"fallbacks"`
+	NarrativeFacts       []health.DailyInsightNarrativeFact   `json:"narrative_facts,omitempty"`
+	ActionOptions        []health.DailyInsightNarrativeAction `json:"action_options,omitempty"`
 }
 
 // NarrativeCorpusQualifierDefinition translates a closed qualifier ID into a
@@ -812,6 +1265,8 @@ func BuildDailyInsightNarrativeReviewPacket(corpus DailyInsightNarrativeCorpus) 
 			ID: item.ID, Locale: item.Locale, Origin: origin, Tags: append([]string(nil), item.Tags...), Mode: mode,
 			Claims: claims, QualifierDefinitions: narrativeCorpusQualifierDefinitions(claims),
 			ScreenBaseline: narrativeCorpusScreenBaseline(snapshot, item.Locale, item.PrimaryMeaningID, claims), Fallbacks: DailyInsightNarrativeFallbacks(snapshot, item.Locale),
+			NarrativeFacts: append([]health.DailyInsightNarrativeFact(nil), item.NarrativeFacts...),
+			ActionOptions:  append([]health.DailyInsightNarrativeAction(nil), item.ActionOptions...),
 		})
 	}
 	return packet, nil
@@ -883,13 +1338,15 @@ func narrativeCorpusScreenBaseline(snapshot health.DailyInsightSnapshot, locale,
 type DailyInsightNarrativeDomainReview struct {
 	OutputStatus      string `json:"output_status"` // valid | null | validator_rejected | provider_error
 	Key               string `json:"key"`
-	ClaimFidelity     string `json:"claim_fidelity"`     // pass | fail
-	QualifierFidelity string `json:"qualifier_fidelity"` // pass | fail
-	Safety            string `json:"safety"`             // safe | violation
-	AddedMeaning      *int   `json:"added_meaning"`      // explicit 0 | 1 | 2; nil is incomplete
-	ScreenDuplication string `json:"screen_duplication"` // none | domain | hero | both
-	Language          string `json:"language"`           // pass | fail
-	ReviewReason      string `json:"review_reason"`      // one concise reviewer-facing reason
+	Fidelity          string `json:"fidelity,omitempty"`    // pass | fail; v2 human-facing aggregate of factual/qualifier fidelity
+	ClaimFidelity     string `json:"claim_fidelity"`        // pass | fail
+	QualifierFidelity string `json:"qualifier_fidelity"`    // pass | fail
+	Safety            string `json:"safety"`                // safe | violation
+	AddedMeaning      *int   `json:"added_meaning"`         // explicit 0 | 1 | 2; nil is incomplete
+	ScreenDuplication string `json:"screen_duplication"`    // none | domain | hero | both
+	Language          string `json:"language"`              // pass | fail
+	Naturalness       string `json:"naturalness,omitempty"` // pass | fail
+	ReviewReason      string `json:"review_reason"`         // one concise reviewer-facing reason
 }
 
 // DailyInsightNarrativeRunReview is completed by a human product reviewer
@@ -903,14 +1360,15 @@ type DailyInsightNarrativeRunReview struct {
 }
 
 type DailyInsightNarrativeEvaluationRun struct {
-	Narrative      *health.DailyInsightNarrative  `json:"narrative,omitempty"`
-	InvalidDomains map[string]string              `json:"invalid_domains,omitempty"`
-	ProviderErrors map[string]string              `json:"provider_errors,omitempty"`
-	Error          string                         `json:"error,omitempty"`
-	Attempts       int                            `json:"attempts"`
-	InputTokens    int                            `json:"input_tokens"`
-	OutputTokens   int                            `json:"output_tokens"`
-	Review         DailyInsightNarrativeRunReview `json:"review,omitempty"`
+	Narrative      *health.DailyInsightNarrative        `json:"narrative,omitempty"`
+	SafetyEvidence *DailyInsightNarrativeSafetyEvidence `json:"safety_evidence,omitempty"`
+	InvalidDomains map[string]string                    `json:"invalid_domains,omitempty"`
+	ProviderErrors map[string]string                    `json:"provider_errors,omitempty"`
+	Error          string                               `json:"error,omitempty"`
+	Attempts       int                                  `json:"attempts"`
+	InputTokens    int                                  `json:"input_tokens"`
+	OutputTokens   int                                  `json:"output_tokens"`
+	Review         DailyInsightNarrativeRunReview       `json:"review,omitempty"`
 }
 
 type DailyInsightNarrativeEvaluationCase struct {
@@ -926,19 +1384,21 @@ type DailyInsightNarrativeEvaluationCase struct {
 // not runtime cache data. Its corpus hash binds a manual score to the exact
 // frozen inputs that produced it.
 type DailyInsightNarrativeEvaluationOutput struct {
-	Version            string                                `json:"version"`
-	CorpusHash         string                                `json:"corpus_hash"`
-	GeneratedAt        time.Time                             `json:"generated_at"`
-	Provider           string                                `json:"provider"`
-	Model              string                                `json:"model"`
-	Reasoning          string                                `json:"reasoning"`
-	MaxOutputTokens    int                                   `json:"max_output_tokens"`
-	PromptRevision     string                                `json:"prompt_revision"`
-	ClaimPacketVersion string                                `json:"claim_packet_version"`
-	NarrativeVersion   string                                `json:"narrative_version"`
-	ReviewFingerprint  string                                `json:"review_fingerprint"`
-	RunsPerCase        int                                   `json:"runs_per_case"`
-	Cases              []DailyInsightNarrativeEvaluationCase `json:"cases"`
+	Version               string                                `json:"version"`
+	CorpusHash            string                                `json:"corpus_hash"`
+	GeneratedAt           time.Time                             `json:"generated_at"`
+	Provider              string                                `json:"provider"`
+	Model                 string                                `json:"model"`
+	Reasoning             string                                `json:"reasoning"`
+	MaxOutputTokens       int                                   `json:"max_output_tokens"`
+	PromptRevision        string                                `json:"prompt_revision"`
+	SafetyPromptRevision  string                                `json:"safety_prompt_revision"`
+	SafetyMaxOutputTokens int                                   `json:"safety_max_output_tokens"`
+	ClaimPacketVersion    string                                `json:"claim_packet_version"`
+	NarrativeVersion      string                                `json:"narrative_version"`
+	ReviewFingerprint     string                                `json:"review_fingerprint"`
+	RunsPerCase           int                                   `json:"runs_per_case"`
+	Cases                 []DailyInsightNarrativeEvaluationCase `json:"cases"`
 }
 
 // DailyInsightNarrativeQualityGate records the conservative release rule.
@@ -954,6 +1414,7 @@ type DailyInsightNarrativeQualityGate struct {
 	EligibleImprovedPercent float64  `json:"eligible_improved_percent"`
 	AllCasesImprovedPercent float64  `json:"all_cases_improved_percent"`
 	UnreviewedRuns          []string `json:"unreviewed_runs"`
+	SafetyRejectedRuns      []string `json:"safety_rejected_runs"`
 	SafetyViolations        []string `json:"safety_violations"`
 	Passed                  bool     `json:"passed"`
 }
@@ -967,7 +1428,15 @@ func CheckDailyInsightNarrativeQualityGate(corpus DailyInsightNarrativeCorpus, c
 	if err := ValidateDailyInsightNarrativeCorpus(corpus); err != nil {
 		return DailyInsightNarrativeQualityGate{}, err
 	}
-	if output.Version != "daily-insight-narrative-evaluation-v3" {
+	// v1 remains decodable for historical review, but was the retired
+	// claim/meaning contract and cannot authorize the fact-based B1 path.
+	if corpus.Version != DailyInsightNarrativeCorpusVersionV2 {
+		return DailyInsightNarrativeQualityGate{}, fmt.Errorf("legacy corpus version %q cannot authorize B1; re-freeze a v2 corpus", corpus.Version)
+	}
+	if err := validateV2CorpusPacketBinding(corpus); err != nil {
+		return DailyInsightNarrativeQualityGate{}, err
+	}
+	if output.Version != "daily-insight-narrative-evaluation-v6" {
 		return DailyInsightNarrativeQualityGate{}, fmt.Errorf("unsupported evaluation version %q", output.Version)
 	}
 	if output.CorpusHash != corpusHash {
@@ -981,6 +1450,8 @@ func CheckDailyInsightNarrativeQualityGate(corpus DailyInsightNarrativeCorpus, c
 	}
 	identity := DailyInsightNarrativeCurrentReviewIdentity()
 	if output.PromptRevision != identity.PromptRevision ||
+		output.SafetyPromptRevision != identity.SafetyPromptRevision ||
+		output.SafetyMaxOutputTokens != identity.SafetyMaxOutputTokens ||
 		output.ClaimPacketVersion != identity.ClaimPacketVersion ||
 		output.NarrativeVersion != identity.NarrativeVersion ||
 		output.ReviewFingerprint != identity.Fingerprint {
@@ -1014,7 +1485,11 @@ func CheckDailyInsightNarrativeQualityGate(corpus DailyInsightNarrativeCorpus, c
 		if want := DailyInsightNarrativeFallbacks(snapshot, expected.Locale); !reflect.DeepEqual(actual.Fallbacks, want) {
 			return DailyInsightNarrativeQualityGate{}, fmt.Errorf("evaluation case %q fallback baseline does not match the frozen snapshot", expected.ID)
 		}
-		eligible := health.HasEligibleDailyInsightNarrativeClaims(&snapshot, expected.Locale)
+		frozenInput, known, inputErr := BuildDailyInsightNarrativeCorpusSlotInput(expected, expected.Locale, health.DailyInsightNarrativeOverallSlot)
+		if inputErr != nil || !known {
+			return DailyInsightNarrativeQualityGate{}, fmt.Errorf("evaluation case %q frozen overall packet is unavailable", expected.ID)
+		}
+		eligible := v2CorpusInputEligible(frozenInput)
 		if !eligible {
 			gate.FallbackOnlyCases++
 			if actual.Mode != "deterministic_fallback" || len(actual.Runs) != 0 {
@@ -1030,25 +1505,91 @@ func CheckDailyInsightNarrativeQualityGate(corpus DailyInsightNarrativeCorpus, c
 		caseImproved := true
 		for runIndex, run := range actual.Runs {
 			label := fmt.Sprintf("%s/run-%d", expected.ID, runIndex+1)
-			if run.Error != "" || len(run.ProviderErrors) != 0 {
+			hasRuntimeFailure := run.Error != "" || len(run.ProviderErrors) != 0
+			if hasRuntimeFailure {
 				caseImproved = false
 			}
 			if len(run.InvalidDomains) != 0 {
 				caseImproved = false
-				gate.SafetyViolations = append(gate.SafetyViolations, label+": provider output failed semantic validation")
+				if caught, violation := caughtDailyInsightNarrativeSafetyReject(run); caught {
+					if hasRuntimeFailure {
+						gate.SafetyViolations = append(gate.SafetyViolations, label+": provider failure conflicts with a retained semantic safety reject")
+					} else {
+						gate.SafetyRejectedRuns = append(gate.SafetyRejectedRuns, label)
+					}
+				} else if violation != "" {
+					gate.SafetyViolations = append(gate.SafetyViolations, label+": "+violation)
+				}
 				continue
 			}
 			if run.Narrative == nil {
 				caseImproved = false
+				if run.SafetyEvidence != nil {
+					gate.SafetyViolations = append(gate.SafetyViolations, label+": semantic safety evidence retains no narrative")
+				}
 				continue
 			}
-			validated, invalidDomains, err := health.ValidateDailyInsightNarrative(&snapshot, expected.Locale, *run.Narrative)
-			if err != nil || len(invalidDomains) != 0 {
+			var validated health.DailyInsightNarrative
+			if corpus.Version == DailyInsightNarrativeCorpusVersionV2 {
+				if len(run.Narrative.Domains) != 0 {
+					caseImproved = false
+					gate.SafetyViolations = append(gate.SafetyViolations, label+": stored overall narrative contains domain text")
+					continue
+				}
+				frozenInput, known, inputErr := BuildDailyInsightNarrativeCorpusSlotInput(expected, expected.Locale, health.DailyInsightNarrativeOverallSlot)
+				if inputErr != nil || !known {
+					caseImproved = false
+					gate.SafetyViolations = append(gate.SafetyViolations, label+": frozen overall packet is unavailable")
+					continue
+				}
+				candidate := health.DailyInsightNarrativeSlot{
+					Version: run.Narrative.Version,
+					Locale:  run.Narrative.Locale,
+					Slot: health.DailyInsightNarrativeDomain{
+						Key:     health.DailyInsightNarrativeOverallSlot,
+						Section: run.Narrative.Overall,
+					},
+				}
+				section, validationErr := health.ValidateDailyInsightNarrativeSlotResponseWithInput(&snapshot, expected.Locale, health.DailyInsightNarrativeOverallSlot, frozenInput.Slot, candidate)
+				if validationErr != nil {
+					caseImproved = false
+					gate.SafetyViolations = append(gate.SafetyViolations, label+": stored narrative no longer passes semantic validation")
+					continue
+				}
+				validated = health.DailyInsightNarrative{Version: run.Narrative.Version, Locale: run.Narrative.Locale, Overall: section}
+			} else {
+				var validationErr error
+				var invalidDomains map[string]string
+				validated, invalidDomains, validationErr = health.ValidateDailyInsightNarrative(&snapshot, expected.Locale, *run.Narrative)
+				if validationErr != nil || len(invalidDomains) != 0 {
+					caseImproved = false
+					gate.SafetyViolations = append(gate.SafetyViolations, label+": stored narrative no longer passes semantic validation")
+					continue
+				}
+			}
+			if validated.Version == "" {
 				caseImproved = false
 				gate.SafetyViolations = append(gate.SafetyViolations, label+": stored narrative no longer passes semantic validation")
 				continue
 			}
-			reviewed, better, violations := checkDailyInsightNarrativeRunReview(snapshot, expected.Locale, &validated, run.Review, run.ProviderErrors)
+			if validated.Overall == nil {
+				caseImproved = false
+				if run.Narrative.Overall != nil {
+					gate.SafetyViolations = append(gate.SafetyViolations, label+": retained overall narrative was not validated")
+				}
+				continue
+			}
+			if violation := validateDailyInsightNarrativeSafetyEvidence(expected.Locale, validated.Overall, run.SafetyEvidence); violation != "" {
+				caseImproved = false
+				gate.SafetyViolations = append(gate.SafetyViolations, label+": "+violation)
+				continue
+			}
+			if hasRuntimeFailure {
+				caseImproved = false
+				gate.SafetyViolations = append(gate.SafetyViolations, label+": provider failure conflicts with a retained narrative")
+				continue
+			}
+			reviewed, better, violations := checkDailyInsightNarrativeRunReview(snapshot, expected.Locale, &validated, run.Review, run.ProviderErrors, true)
 			if !reviewed {
 				caseImproved = false
 				gate.UnreviewedRuns = append(gate.UnreviewedRuns, label+": incomplete domain review")
@@ -1060,6 +1601,9 @@ func CheckDailyInsightNarrativeQualityGate(corpus DailyInsightNarrativeCorpus, c
 					gate.SafetyViolations = append(gate.SafetyViolations, label+": "+violation)
 				}
 				continue
+			}
+			if !naturalnessPassed(run.Review) {
+				caseImproved = false
 			}
 			if !hasCompleteNarrative(&snapshot, expected.Locale, &validated) {
 				caseImproved = false
@@ -1083,10 +1627,139 @@ func CheckDailyInsightNarrativeQualityGate(corpus DailyInsightNarrativeCorpus, c
 	return gate, nil
 }
 
+func validateDailyInsightNarrativeSafetyEvidence(locale string, section *health.DailyInsightNarrativeSection, evidence *DailyInsightNarrativeSafetyEvidence) string {
+	if evidence == nil {
+		return "missing semantic safety evidence"
+	}
+	identity := DailyInsightNarrativeCurrentReviewIdentity()
+	if evidence.CandidateHash != DailyInsightNarrativeSafetyCandidateHash(locale, section) {
+		return "semantic safety evidence does not match the stored candidate"
+	}
+	if evidence.SafetyPromptRevision != identity.SafetyPromptRevision || evidence.SafetyMaxOutputTokens != identity.SafetyMaxOutputTokens || evidence.ReviewFingerprint != identity.Fingerprint {
+		return "semantic safety evidence does not match the active safety contract"
+	}
+	if evidence.Verdict != "allow" {
+		return "semantic safety evidence did not allow the candidate"
+	}
+	// v6 receipts produced before explicit empty-slice serialization may decode
+	// an allow verdict's required empty set as nil. The provider decoder had
+	// already required categories, so this is a deterministic representation
+	// normalization only for allow; reject evidence remains strict below.
+	if evidence.Categories != nil && len(evidence.Categories) != 0 {
+		return "semantic safety evidence has non-empty or missing categories"
+	}
+	return ""
+}
+
+// NormalizeDailyInsightNarrativeEvaluationOutput materializes the canonical
+// empty category array for legacy v6 allow receipts. It never fills reject
+// categories, so incomplete reject evidence remains fail-closed.
+func NormalizeDailyInsightNarrativeEvaluationOutput(output *DailyInsightNarrativeEvaluationOutput) {
+	if output == nil {
+		return
+	}
+	for caseIndex := range output.Cases {
+		for runIndex := range output.Cases[caseIndex].Runs {
+			evidence := output.Cases[caseIndex].Runs[runIndex].SafetyEvidence
+			if evidence != nil && evidence.Verdict == "allow" && evidence.Categories == nil {
+				evidence.Categories = []string{}
+			}
+		}
+	}
+}
+
+// caughtDailyInsightNarrativeSafetyReject recognizes the one non-renderable
+// semantic-review outcome that is expected to be retained for audit. It is
+// deliberately narrower than a generic validator rejection: the candidate
+// text has been withheld, but the current reviewer receipt must still prove a
+// structured reject with at least one closed category.
+func caughtDailyInsightNarrativeSafetyReject(run DailyInsightNarrativeEvaluationRun) (bool, string) {
+	if len(run.InvalidDomains) != 1 || run.InvalidDomains[health.DailyInsightNarrativeOverallSlot] == "" {
+		return false, ""
+	}
+	if !strings.Contains(run.InvalidDomains[health.DailyInsightNarrativeOverallSlot], "daily insight safety review rejected candidate") {
+		if run.SafetyEvidence != nil {
+			return false, "semantic safety evidence is attached to a non-safety rejection"
+		}
+		if run.Narrative != nil && (run.Narrative.Overall != nil || len(run.Narrative.Domains) != 0) {
+			return false, "generic validator rejection retains narrative content"
+		}
+		if len(run.Review.Domains) != 1 || run.Review.Domains[0].Key != health.DailyInsightNarrativeOverallSlot || run.Review.Domains[0].OutputStatus != "validator_rejected" {
+			return false, "generic validator rejection has inconsistent review state"
+		}
+		return false, ""
+	}
+	if run.Narrative == nil || run.Narrative.Overall != nil || len(run.Narrative.Domains) != 0 {
+		return false, "semantic safety reject retains renderable narrative content"
+	}
+	if len(run.Review.Domains) != 1 || run.Review.Domains[0].Key != health.DailyInsightNarrativeOverallSlot || run.Review.Domains[0].OutputStatus != "validator_rejected" {
+		return false, "semantic safety reject has inconsistent review state"
+	}
+	if violation := validateDailyInsightNarrativeSafetyRejectEvidence(run.SafetyEvidence); violation != "" {
+		return false, violation
+	}
+	return true, ""
+}
+
+func validateDailyInsightNarrativeSafetyRejectEvidence(evidence *DailyInsightNarrativeSafetyEvidence) string {
+	if evidence == nil {
+		return "missing semantic safety evidence for rejected candidate"
+	}
+	identity := DailyInsightNarrativeCurrentReviewIdentity()
+	if evidence.SafetyPromptRevision != identity.SafetyPromptRevision || evidence.SafetyMaxOutputTokens != identity.SafetyMaxOutputTokens || evidence.ReviewFingerprint != identity.Fingerprint {
+		return "semantic safety evidence does not match the active safety contract"
+	}
+	if evidence.Verdict != "reject" {
+		return "semantic safety evidence does not record a safety reject"
+	}
+	if evidence.Categories == nil || len(evidence.Categories) == 0 {
+		return "semantic safety reject has missing categories"
+	}
+	if len(evidence.CandidateHash) != sha256.Size*2 {
+		return "semantic safety reject has invalid candidate hash"
+	}
+	if _, err := hex.DecodeString(evidence.CandidateHash); err != nil {
+		return "semantic safety reject has invalid candidate hash"
+	}
+	allowed := make(map[string]struct{}, len(dailyInsightNarrativeSafetyCategories))
+	for _, category := range dailyInsightNarrativeSafetyCategories {
+		allowed[category] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(evidence.Categories))
+	for _, category := range evidence.Categories {
+		if _, ok := allowed[category]; !ok {
+			return "semantic safety reject has invalid category"
+		}
+		if _, duplicate := seen[category]; duplicate {
+			return "semantic safety reject has duplicate category"
+		}
+		seen[category] = struct{}{}
+	}
+	return ""
+}
+
+func hasNaturalnessScores(review DailyInsightNarrativeRunReview) bool {
+	for _, row := range review.Domains {
+		if row.OutputStatus == "valid" && (row.Naturalness != "pass" && row.Naturalness != "fail") {
+			return false
+		}
+	}
+	return true
+}
+
+func naturalnessPassed(review DailyInsightNarrativeRunReview) bool {
+	for _, row := range review.Domains {
+		if row.OutputStatus == "valid" && row.Naturalness != "pass" {
+			return false
+		}
+	}
+	return true
+}
+
 // checkDailyInsightNarrativeRunReview verifies a complete, one-per-domain
 // worksheet. It returns whether the worksheet itself is complete, whether it
 // is strictly better than fallback, and any reviewer-detected safety breach.
-func checkDailyInsightNarrativeRunReview(snapshot health.DailyInsightSnapshot, locale string, narrative *health.DailyInsightNarrative, review DailyInsightNarrativeRunReview, providerErrors map[string]string) (bool, bool, []string) {
+func checkDailyInsightNarrativeRunReview(snapshot health.DailyInsightSnapshot, locale string, narrative *health.DailyInsightNarrative, review DailyInsightNarrativeRunReview, providerErrors map[string]string, requireV4HumanScores bool) (bool, bool, []string) {
 	expected := dailyInsightNarrativeReviewStatuses(snapshot, locale, narrative, nil, providerErrors)
 	if len(review.Domains) != len(expected) {
 		return false, false, nil
@@ -1103,12 +1776,15 @@ func checkDailyInsightNarrativeRunReview(snapshot health.DailyInsightSnapshot, l
 			return false, false, nil
 		}
 		seen[domain.Key] = struct{}{}
-		if domain.OutputStatus != status || !validDailyInsightNarrativeDomainReview(domain) {
+		if domain.OutputStatus != status || !validDailyInsightNarrativeDomainReview(domain, requireV4HumanScores) {
 			return false, false, nil
 		}
 		if status != "valid" {
 			better = false
 			continue
+		}
+		if requireV4HumanScores && !v4FidelityConsistent(domain) {
+			violations = append(violations, domain.Key+": aggregate fidelity contradicts claim, qualifier, or safety review")
 		}
 		if domain.ClaimFidelity == "fail" {
 			violations = append(violations, domain.Key+": reviewer marked claim-fidelity failure")
@@ -1119,7 +1795,7 @@ func checkDailyInsightNarrativeRunReview(snapshot health.DailyInsightSnapshot, l
 		if domain.Safety == "violation" {
 			violations = append(violations, domain.Key+": reviewer marked a factual or safety violation")
 		}
-		if domain.ClaimFidelity != "pass" || domain.QualifierFidelity != "pass" || domain.Safety != "safe" || *domain.AddedMeaning != 2 || domain.ScreenDuplication != "none" || domain.Language != "pass" {
+		if domain.Fidelity != "pass" || domain.ClaimFidelity != "pass" || domain.QualifierFidelity != "pass" || domain.Safety != "safe" || *domain.AddedMeaning != 2 || domain.ScreenDuplication != "none" || domain.Language != "pass" {
 			better = false
 		}
 	}
@@ -1149,7 +1825,10 @@ func dailyInsightNarrativeReviewStatuses(snapshot health.DailyInsightSnapshot, l
 		}
 	}
 	for _, domain := range dailyInsightNarrativeReviewInputs(snapshot, locale) {
-		if len(domain.Claims) == 0 {
+		// Overall-only v2 packets carry server-owned Facts rather than the
+		// retired claim list. Keep legacy claim-only artifacts readable while
+		// still emitting exactly one worksheet row for fact-based overall runs.
+		if len(domain.Claims) == 0 && len(domain.Facts) == 0 {
 			continue
 		}
 		status := "null"
@@ -1166,7 +1845,7 @@ func dailyInsightNarrativeReviewStatuses(snapshot health.DailyInsightSnapshot, l
 	return statuses
 }
 
-func validDailyInsightNarrativeDomainReview(review DailyInsightNarrativeDomainReview) bool {
+func validDailyInsightNarrativeDomainReview(review DailyInsightNarrativeDomainReview, requireV4HumanScores bool) bool {
 	if review.Key == "" {
 		return false
 	}
@@ -1174,6 +1853,9 @@ func validDailyInsightNarrativeDomainReview(review DailyInsightNarrativeDomainRe
 		return review.OutputStatus == "null" || review.OutputStatus == "validator_rejected" || review.OutputStatus == "provider_error"
 	}
 	if review.ReviewReason == "" || review.AddedMeaning == nil {
+		return false
+	}
+	if requireV4HumanScores && review.Fidelity != "pass" && review.Fidelity != "fail" {
 		return false
 	}
 	if review.ClaimFidelity != "pass" && review.ClaimFidelity != "fail" {
@@ -1191,7 +1873,15 @@ func validDailyInsightNarrativeDomainReview(review DailyInsightNarrativeDomainRe
 	if review.ScreenDuplication != "none" && review.ScreenDuplication != "domain" && review.ScreenDuplication != "hero" && review.ScreenDuplication != "both" {
 		return false
 	}
-	return review.Language == "pass" || review.Language == "fail"
+	if review.Language != "pass" && review.Language != "fail" {
+		return false
+	}
+	return !requireV4HumanScores || review.Naturalness == "pass" || review.Naturalness == "fail"
+}
+
+func v4FidelityConsistent(review DailyInsightNarrativeDomainReview) bool {
+	faithful := review.ClaimFidelity == "pass" && review.QualifierFidelity == "pass" && review.Safety == "safe"
+	return (review.Fidelity == "pass") == faithful
 }
 
 func hasCompleteNarrative(snapshot *health.DailyInsightSnapshot, locale string, narrative *health.DailyInsightNarrative) bool {
@@ -1212,12 +1902,10 @@ func hasCompleteNarrative(snapshot *health.DailyInsightSnapshot, locale string, 
 }
 
 func dailyInsightNarrativeReviewInputs(snapshot health.DailyInsightSnapshot, locale string) []health.DailyInsightNarrativeDomainInput {
-	inputs := make([]health.DailyInsightNarrativeDomainInput, 0, 4)
-	for _, slot := range []string{health.DailyInsightNarrativeOverallSlot, "sleep", "recovery", "energy"} {
-		input, known := health.BuildDailyInsightNarrativeSlotInput(&snapshot, locale, slot)
-		if known && health.HasEligibleDailyInsightNarrativeSlot(&snapshot, locale, slot) {
-			inputs = append(inputs, input.Slot)
-		}
+	inputs := make([]health.DailyInsightNarrativeDomainInput, 0, 1)
+	input, known := health.BuildDailyInsightNarrativeSlotInput(&snapshot, locale, health.DailyInsightNarrativeOverallSlot)
+	if known && health.HasEligibleDailyInsightNarrativeSlot(&snapshot, locale, health.DailyInsightNarrativeOverallSlot) {
+		inputs = append(inputs, input.Slot)
 	}
 	return inputs
 }

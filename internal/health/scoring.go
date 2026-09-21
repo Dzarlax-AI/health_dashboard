@@ -59,6 +59,7 @@ func ComputeBriefing(d RawMetrics, lang string) *BriefingResponse {
 		Sleep:                 computeSleepAnalysis(d),
 		SleepQuality:          computeDashboardSleepQuality(d),
 		MetricCards:           metricCards,
+		RawMetrics:            &d,
 	}
 
 	// Coherence pass: when a stress headline fires, downgrade conflicting

@@ -588,6 +588,10 @@ type BriefingResponse struct {
 	// Populated by the API handler (not by GetHealthBriefing), so it stays
 	// optional and doesn't pollute internal-use callers of BriefingResponse.
 	AIInsight string `json:"ai_insight,omitempty"`
+	// RawMetrics is a private, in-process carry for deriving bounded B1
+	// aggregates from date-aligned Daily values. It is never part of the API
+	// response or provider payload.
+	RawMetrics *RawMetrics `json:"-"`
 }
 
 type ContextAnnotationSummary struct {
