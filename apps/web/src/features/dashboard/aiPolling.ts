@@ -15,23 +15,38 @@ export function shouldPollAI(
   return ai.generating || cacheIsCold;
 }
 
-// Today Insights always returns factual content. Poll only while its optional
-// provider acknowledgement is pending or the saved bundle no longer matches
-// that factual snapshot; never replace the visible facts with legacy AI text.
+// Today Insights always returns factual content. A disabled response is not a
+// permanent client state: rollout flags can change while the dashboard stays
+// open, so visible tabs keep revalidating it without spending the bounded
+// provider-generation retry budget. Never replace visible facts with legacy
+// AI text while that optional narrative is pending.
 export function shouldPollTodayInsights(
   todayInsights: TodayInsightsResponse | undefined,
   attempts: number,
 ): boolean {
-  if (!todayInsights || attempts >= maxAIPollAttempts) {
+  if (!todayInsights) {
     return false;
   }
   const { generation } = todayInsights;
+  if (generation.state === "disabled") {
+    return true;
+  }
+  if (attempts >= maxAIPollAttempts) {
+    return false;
+  }
   return (
     generation.state === "cold" ||
     generation.state === "generating" ||
     generation.state === "failed" ||
     !generation.fresh_for_snapshot
   );
+}
+
+export function isTodayInsightsGenerationPending(
+  todayInsights: TodayInsightsResponse | undefined,
+): boolean {
+  const state = todayInsights?.generation.state;
+  return state === "cold" || state === "generating" || state === "failed";
 }
 
 // todayInsightsPollDelayMs waits out a server-issued retry window instead of
