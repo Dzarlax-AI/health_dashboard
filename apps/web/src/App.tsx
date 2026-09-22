@@ -10,7 +10,10 @@ import { StatusPanel } from "./components/StatusPanel";
 import { fixtureNames, fixtureResources, resolveFixture } from "./features/dashboard/fixtures";
 import { DashboardDetails } from "./features/dashboard/DashboardDetails";
 import { DashboardHero } from "./features/dashboard/DashboardHero";
-import { todayInsightsPollDelayMs } from "./features/dashboard/aiPolling";
+import {
+  isTodayInsightsGenerationPending,
+  todayInsightsPollDelayMs,
+} from "./features/dashboard/aiPolling";
 import { loadDashboardResources, type DashboardResources } from "./features/dashboard/loader";
 import { buildDashboardViewModel } from "./features/dashboard/model";
 import { ScoreSummaryCard } from "./features/dashboard/ScoreSummaryCard";
@@ -87,9 +90,11 @@ function DashboardApp() {
   }, [fixture, locale, reloadKey]);
 
   useEffect(() => {
+    const currentTodayInsights =
+      state.status === "ready" ? state.resources.todayInsights : undefined;
     const pollDelay =
       state.status === "ready"
-        ? todayInsightsPollDelayMs(state.resources.todayInsights, aiPollAttempts.current)
+        ? todayInsightsPollDelayMs(currentTodayInsights, aiPollAttempts.current)
         : undefined;
     if (pollDelay === undefined || fixture) {
       return;
@@ -102,7 +107,9 @@ function DashboardApp() {
       timer =
         document.visibilityState === "visible"
           ? window.setTimeout(() => {
-              aiPollAttempts.current += 1;
+              if (isTodayInsightsGenerationPending(currentTodayInsights)) {
+                aiPollAttempts.current += 1;
+              }
               setReloadKey((value) => value + 1);
             }, pollDelay)
           : undefined;

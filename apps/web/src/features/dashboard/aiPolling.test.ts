@@ -1,5 +1,11 @@
 import type { AIBriefingResponse, TodayInsightsResponse } from "../../api/client";
-import { maxAIPollAttempts, shouldPollAI, shouldPollTodayInsights, todayInsightsPollDelayMs } from "./aiPolling";
+import {
+  isTodayInsightsGenerationPending,
+  maxAIPollAttempts,
+  shouldPollAI,
+  shouldPollTodayInsights,
+  todayInsightsPollDelayMs,
+} from "./aiPolling";
 
 function briefing(
   overrides: Partial<AIBriefingResponse> = {},
@@ -65,9 +71,22 @@ describe("Today Insights polling policy", () => {
     expect(shouldPollTodayInsights(todayInsights("ready", false), 0)).toBe(true);
   });
 
-  it("stops for ready, disabled, unavailable, and capped states", () => {
+  it("keeps revalidating a disabled narrative so a rollout becomes visible", () => {
+    expect(shouldPollTodayInsights(todayInsights("disabled"), 0)).toBe(true);
+    expect(todayInsightsPollDelayMs(todayInsights("disabled"), 0)).toBe(60_000);
+    expect(shouldPollTodayInsights(todayInsights("disabled"), maxAIPollAttempts)).toBe(true);
+    expect(isTodayInsightsGenerationPending(todayInsights("disabled"))).toBe(false);
+  });
+
+  it("spends the bounded retry budget only on provider generation states", () => {
+    expect(isTodayInsightsGenerationPending(todayInsights("cold"))).toBe(true);
+    expect(isTodayInsightsGenerationPending(todayInsights("generating"))).toBe(true);
+    expect(isTodayInsightsGenerationPending(todayInsights("failed"))).toBe(true);
+    expect(isTodayInsightsGenerationPending(todayInsights("ready"))).toBe(false);
+  });
+
+  it("stops for ready, unavailable, and capped active states", () => {
     expect(shouldPollTodayInsights(todayInsights("ready"), 0)).toBe(false);
-    expect(shouldPollTodayInsights(todayInsights("disabled"), 0)).toBe(false);
     expect(shouldPollTodayInsights(undefined, 0)).toBe(false);
     expect(shouldPollTodayInsights(todayInsights("cold"), maxAIPollAttempts)).toBe(false);
   });
