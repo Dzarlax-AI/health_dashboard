@@ -1,5 +1,6 @@
 import type { Locale } from "../../i18n";
 import { translate } from "../../i18n";
+import { fixtureResources } from "../dashboard/fixtures";
 import { sleepMetrics, type SleepResources } from "./loader";
 
 function dateOffset(days: number): string {
@@ -28,6 +29,7 @@ export function sleepFixtureResources(locale: Locale): SleepResources {
   } as const;
 
   return {
+    todayInsights: fixtureResources(locale, "normal").todayInsights,
     briefing: {
       date: "2026-08-05",
       sleep_quality: { score_pct: 82, duration_pct: 88, confidence: "final" },

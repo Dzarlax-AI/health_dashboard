@@ -1,4 +1,5 @@
 import { ReadinessRing } from "../../components/ReadinessRing";
+import { InsightPair } from "../../components/InsightPair";
 import { StatusPanel } from "../../components/StatusPanel";
 import { Surface } from "../../components/Surface";
 import { StatusBadge } from "../../components/StatusBadge";
@@ -58,11 +59,14 @@ export function DashboardHero({ locale, model }: DashboardHeroProps) {
           <StatusBadge tone={badgeTone}>
             {stateLabel}
           </StatusBadge>
-          <h1>{primary?.observation || model.title}</h1>
-          <p>{primary?.narrative?.text || primary?.meaning || model.detail}</p>
-          {primary?.next_step ? (
-            <p className="today-hero__action">{primary.next_step.text}</p>
-          ) : null}
+          <InsightPair
+            locale={locale}
+            title={primary?.observation || model.title}
+            observation={primary?.meaning || model.detail}
+            action={primary?.next_step?.text}
+            ai={model.todayInsights?.ai_insight}
+            state={model.todayInsights?.generation.slots?.find((slot) => slot.key === "overall")?.state}
+          />
           {model.checkinAnswer ? (
             <p className="today-hero__checkin">
               {translate(locale, "checkin")}: {model.checkinAnswer}

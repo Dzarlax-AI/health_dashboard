@@ -658,6 +658,13 @@ export interface components {
             } | null;
         };
         TodayInsightsResponse: {
+            ai_insight?: {
+                alternative_action?: string;
+                evidence_ids: string[] | null;
+                fact_ids: string[] | null;
+                stance: string;
+                text: string;
+            };
             changes: {
                 destination: {
                     id: string;
@@ -673,6 +680,13 @@ export interface components {
             date: string;
             decision_id: string;
             domains: {
+                ai_insight?: {
+                    alternative_action?: string;
+                    evidence_ids: string[] | null;
+                    fact_ids: string[] | null;
+                    stance: string;
+                    text: string;
+                };
                 /** Format: date-time */
                 as_of?: string;
                 band: string;

@@ -13,9 +13,12 @@ type TodayInsightDomain = NonNullable<TodayInsightsResponse["domains"]>[number];
 type TodayInsightDestination = TodayInsightDomain["destination"];
 
 function destinationHref(
+  domainKey: TodayInsightDomain["key"],
   destination: TodayInsightDestination,
   locale: Locale,
 ): string | undefined {
+  if (domainKey === "energy") return `/energy?lang=${locale}`;
+  if (domainKey === "recovery") return `/recovery?lang=${locale}`;
   if (destination.kind === "sleep" && destination.id === "sleep") {
     return `/sleep?lang=${locale}`;
   }
@@ -54,7 +57,7 @@ function dataStateLabel(locale: Locale, state: TodayInsightDomain["data_state"])
 
 /** Omits optional interpretation when any card already presents the same fact. */
 function supplementaryObservation(domain: TodayInsightDomain, summaries: ReadonlySet<string>): string | undefined {
-  const observation = domain.insight.narrative?.text.trim() || domain.insight.observation.trim();
+  const observation = domain.insight.observation.trim();
   if (!observation || summaries.has(observation)) {
     return undefined;
   }
@@ -83,7 +86,7 @@ export function TodayInsights({ locale, todayInsights }: TodayInsightsProps) {
       {domains.length > 0 ? (
         <div className="today-insights__domains">
           {domains.map((domain) => {
-            const href = destinationHref(domain.destination, locale);
+            const href = destinationHref(domain.key, domain.destination, locale);
             const observation = supplementaryObservation(domain, summaries);
             const content = (
               <>

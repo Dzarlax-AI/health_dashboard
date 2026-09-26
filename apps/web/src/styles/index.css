@@ -247,26 +247,96 @@ textarea {
 
 .today-hero__layout {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 4fr);
   align-items: center;
   gap: clamp(28px, 6vw, 84px);
   min-height: 320px;
 }
 
 .today-hero__layout > .score-gauge {
-  align-self: center;
+  align-self: start;
   justify-self: center;
   inline-size: 100%;
 }
 
 .today-hero__recommendation {
   min-width: 0;
-  max-width: 640px;
+  max-width: none;
   padding: clamp(22px, 3vw, 34px);
   border: 1px solid rgba(255, 255, 255, 0.72);
   border-radius: var(--today-card-radius);
   background: rgba(255, 255, 255, 0.78);
   box-shadow: var(--shadow);
+}
+
+.insight-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+  min-width: 0;
+  margin-block: var(--space-4);
+}
+
+.insight-pair__card {
+  min-width: 0;
+  padding: clamp(18px, 2vw, 26px);
+  border: 1px solid var(--border);
+  border-radius: var(--today-card-radius);
+  background: var(--surface);
+  overflow-wrap: anywhere;
+}
+
+.insight-pair__card--ai {
+  border-color: var(--today-energy);
+}
+
+.insight-pair__label {
+  display: block;
+  margin-bottom: var(--space-4);
+  font-size: var(--text-sm);
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.insight-pair__card h1 {
+  margin-bottom: var(--space-4);
+}
+
+.insight-pair__card p {
+  margin: 0 0 var(--space-3);
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.insight-pair__action {
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+  font-weight: 650;
+}
+
+.insight-pair__card--server .insight-pair__action {
+  width: fit-content;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+}
+
+.energy-history-list {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.energy-history-list__row {
+  display: grid;
+  grid-template-columns: 7ch minmax(0, 1fr) 4ch;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.energy-history-list__row meter {
+  width: 100%;
 }
 
 .today-hero__recommendation h1 {
@@ -1012,7 +1082,7 @@ a.today-insights__domain:hover {
   box-shadow: none;
 }
 
-[dark-mode] .today-hero__recommendation > .today-hero__action {
+[dark-mode] .insight-pair__card--server .insight-pair__action {
   border: 1px solid rgba(241, 245, 242, 0.18);
   background: rgba(241, 245, 242, 0.16);
   color: var(--text);
@@ -1980,6 +2050,10 @@ a.today-insights__domain:hover {
 
   .today-hero__recommendation {
     justify-self: stretch;
+  }
+
+  .insight-pair {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .supporting-scores {

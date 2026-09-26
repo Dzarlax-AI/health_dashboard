@@ -95,3 +95,39 @@ func TestHistoricalDailyInsightSnapshotKeepsOtherCandidatesWhenB0TablesAreAbsent
 	}
 	t.Fatalf("snapshot lost its retained non-sleep recovery candidate: %#v", snapshot.Domains)
 }
+
+func TestHistoricalDailyInsightSnapshotRetainsSameDayHRVSampleConfidence(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	recordID := insertTestRawRecord(t, db, "historical-readiness-samples")
+	if _, err := db.pool.Exec(ctx, `
+		INSERT INTO metric_points (health_record_id, metric_name, units, date, qty, source, quality) VALUES
+			($1, 'heart_rate_variability', 'ms', '2026-09-01 06:00:00 +0000', 50, 'Apple Watch', 'ok'),
+			($1, 'heart_rate_variability', 'ms', '2026-09-01 07:00:00 +0000', 52, 'Apple Watch', 'ok'),
+			($1, 'heart_rate_variability', 'ms', '2026-09-01 08:00:00 +0000', 54, 'Apple Watch', 'ok'),
+			($1, 'heart_rate_variability', 'ms', '2026-09-01 09:00:00 +0000', 56, 'Apple Watch', 'ok'),
+			($1, 'resting_heart_rate', 'count/min', '2026-09-01 08:00:00 +0000', 58, 'Apple Watch', 'ok'),
+			($1, 'sleep_total', 'hr', '2026-09-01 08:00:00 +0000', 7, 'Apple Watch', 'ok')`, recordID); err != nil {
+		t.Fatalf("seed historical metrics: %v", err)
+	}
+	if _, err := db.pool.Exec(ctx, `
+		INSERT INTO daily_scores (date, hrv_avg, rhr_avg, sleep_total)
+		VALUES ('2026-09-01', 53, 58, 7)`); err != nil {
+		t.Fatalf("seed historical score: %v", err)
+	}
+
+	snapshot, err := db.BuildHistoricalDailyInsightSnapshot(ctx, "2026-09-01", "en")
+	if err != nil {
+		t.Fatalf("build historical snapshot: %v", err)
+	}
+	for _, domain := range snapshot.Domains {
+		if domain.Key == "recovery" {
+			if domain.DataState != "fresh" {
+				t.Fatalf("recovery state = %q, want fresh from four same-day HRV samples", domain.DataState)
+			}
+			return
+		}
+	}
+	t.Fatal("historical snapshot lacks recovery domain")
+}

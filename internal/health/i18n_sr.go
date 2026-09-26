@@ -5,7 +5,7 @@ var sr = LangStrings{
 	"readiness_fair":    "Umjereno",
 	"readiness_low":     "Niska",
 	"tip_optimal":       "Odličan dan za naporan trening ili važne zadatke.",
-	"tip_fair":          "Malo odstupanje od vaše norme. Umjerena aktivnost je dobar izbor.",
+	"tip_fair":          "Malo odstupanje od lične norme. Umerena aktivnost je dobar izbor.",
 	"tip_low":           "Fokusirajte se na oporavak: hidratacija, odmor i izbjegavanje intenzivnog vježbanja.",
 
 	// Jedna preporuka na glavnom ekranu.
@@ -166,13 +166,13 @@ var sr = LangStrings{
 
 	"energy_reason_full_capacity": "Rezerva puna, HRV iznad ili na normi — zeleno svetlo za tvrdu sesiju.",
 	"energy_reason_optimal":       "Rezerva solidna, markeri stresa su čisti — normalan trening dan je ok.",
-	"energy_reason_low_capacity":  "Rezerva niska nakon današnjeg opterećenja — držite intenzitet lakim.",
+	"energy_reason_low_capacity":  "Rezerva je niska nakon današnjeg opterećenja — zadrži lak intenzitet.",
 	"energy_reason_high_stress":   "HRV %.1f SD od baseline, stres indeks %d — autonomna opterećenja su povišena.",
 	"energy_reason_acwr_spike":    "Današnje opterećenje je već %.0f%% od 28-dnevne norme — tvrda sesija bi gurnula spike dalje.",
 
 	// v2.2 stress-flag verdict overrides — STRESS_MEASUREMENT.md §4.3.
 	"energy_reason_illness_signature":           "Temperatura, frekvencija disanja i HRV — sve tri govore da telo bori infekciju. Danas je odmor pravi izbor.",
-	"energy_reason_recovery_debt":               "Jučerašnje opterećenje stiglo je noću (HRV ↓, RHR ↑) — držite danas lakim da se vrati dug pre nego što opet pritisnete.",
+	"energy_reason_recovery_debt":               "Jučerašnje opterećenje stiglo je noću (HRV ↓, RHR ↑) — neka današnji tempo ostane lak dok se oporavak ne stabilizuje.",
 	"energy_reason_rebound_addon":               "Napomena: HR je bio povišen, ali je HRV iznad norme — to je obrazac faze oporavka, ne akutni stres.",
 	"energy_reason_illness_suspicion_moderate":  "Respiratorni/autonomni signali liče na bolest, zato je današnja preporuka ograničena na aktivni oporavak.",
 	"energy_reason_illness_suspicion_high":      "Više signala liči na bolest, zato je današnja preporuka ograničena na odmor.",

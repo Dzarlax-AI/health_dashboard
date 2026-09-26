@@ -55,7 +55,7 @@ describe("TodayInsights", () => {
 
     expect(screen.getByRole("link", { name: /Sleep/ })).toHaveAttribute("href", "/sleep?lang=en");
     expect(screen.getByRole("link", { name: /Recovery/ })).toHaveAttribute("href", "/recovery?lang=en");
-    expect(screen.getByRole("link", { name: /Energy/ })).toHaveAttribute("href", "/activity?lang=en");
+    expect(screen.getByRole("link", { name: /Energy/ })).toHaveAttribute("href", "/energy?lang=en");
   });
 
   it("does not render when the optional endpoint is unavailable", () => {
@@ -84,7 +84,7 @@ describe("TodayInsights", () => {
     expect(screen.getAllByText("Energy is available")).toHaveLength(1);
   });
 
-  it("renders a validated domain narrative in preference to the factual fallback", () => {
+  it("keeps domain cards factual and reserves AI opinion for the domain page", () => {
     const withNarrative: TodayInsightsResponse = {
       ...response,
       domains: response.domains?.map((domain) =>
@@ -106,8 +106,8 @@ describe("TodayInsights", () => {
 
     render(<TodayInsights locale="en" todayInsights={withNarrative} />);
 
-    expect(screen.getByText("This is a calmer reading of the sleep context.")).toBeInTheDocument();
-    expect(screen.queryByText("You slept well.")).not.toBeInTheDocument();
+    expect(screen.queryByText("This is a calmer reading of the sleep context.")).not.toBeInTheDocument();
+    expect(screen.getByText("You slept well.")).toBeInTheDocument();
   });
 
   it("marks tenant-only B1 prose as a preview", () => {

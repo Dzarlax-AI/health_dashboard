@@ -44,7 +44,11 @@ func (s *DB) BuildHistoricalDailyInsightSnapshot(ctx context.Context, date, lang
 		return nil, fmt.Errorf("invalid historical insight date %q: %w", date, err)
 	}
 
-	data := s.rawMetricsFromDailyScoresAt(date, false)
+	// Reconstruct the selected day's raw-point sample counts as well as its
+	// cached values. With the cache-only path HRV.SampleCount is always zero,
+	// so every otherwise-complete historical recovery becomes data_accruing.
+	// freshDayFromRaw is date-bounded and read-only for historical dates too.
+	data := s.rawMetricsFromDailyScoresAt(date, true)
 	if data == nil {
 		data = s.rawMetricsFromPoints(date)
 	}

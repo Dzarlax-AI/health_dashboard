@@ -1,7 +1,8 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { ClientApiError, getAIBriefing } from "../../api/client";
+import { ClientApiError, getTodayInsights } from "../../api/client";
+import { fixtureResources } from "../dashboard/fixtures";
 import { sessionRecoveryStorageKey } from "../../auth/sessionRecovery";
 import { healthSectionConfigs } from "./config";
 import { healthDetailFixtureResources } from "./fixtures";
@@ -10,7 +11,7 @@ import { loadHealthDetailResources } from "./loader";
 
 vi.mock("../../api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../api/client")>();
-  return { ...actual, getAIBriefing: vi.fn() };
+  return { ...actual, getTodayInsights: vi.fn() };
 });
 
 vi.mock("./loader", async (importOriginal) => {
@@ -24,12 +25,12 @@ vi.mock("../../components/charts/LazyTrendChart", () => ({
   ),
 }));
 
-const mockedGetAIBriefing = vi.mocked(getAIBriefing);
+const mockedGetTodayInsights = vi.mocked(getTodayInsights);
 const mockedLoadHealthDetailResources = vi.mocked(loadHealthDetailResources);
 
 describe("HealthDetailPage", () => {
   afterEach(() => {
-    mockedGetAIBriefing.mockReset();
+    mockedGetTodayInsights.mockReset();
     mockedLoadHealthDetailResources.mockReset();
     window.sessionStorage.clear();
     window.history.replaceState({}, "", "/");
@@ -145,7 +146,7 @@ describe("HealthDetailPage", () => {
     expect(mockedLoadHealthDetailResources).toHaveBeenCalledTimes(2);
   });
 
-  it("polls a cold recovery AI cache and publishes the saved block", async () => {
+  it("polls a cold Recovery AI Insight and publishes the saved opinion", async () => {
     vi.useFakeTimers();
     vi.stubEnv("VITE_ENABLE_FIXTURES", "false");
     window.history.replaceState({}, "", "/recovery?lang=en");
@@ -154,18 +155,17 @@ describe("HealthDetailPage", () => {
       "en",
       "normal",
     );
-    initial.ai = {
-      ...initial.ai!,
-      generating: true,
-      blocks: {},
-      recovery: "",
-    };
+    const insightFixture = fixtureResources("en", "normal").todayInsights!;
+    initial.todayInsights = { ...insightFixture, generation: {
+      ...insightFixture.generation, state: "generating", slots: [{ key: "recovery", state: "generating", fresh_for_snapshot: true }],
+    } };
     mockedLoadHealthDetailResources.mockResolvedValue(initial);
-    mockedGetAIBriefing.mockResolvedValue({
-      ...initial.ai,
-      generating: false,
-      blocks: { RECOVERY: "Fresh recovery insight" },
-    } as NonNullable<typeof initial.ai>);
+    mockedGetTodayInsights.mockResolvedValue({ ...initial.todayInsights,
+      domains: initial.todayInsights.domains?.map((domain) => domain.key === "recovery"
+        ? { ...domain, ai_insight: { text: "Fresh recovery insight", stance: "qualify", fact_ids: [], evidence_ids: [] } }
+        : domain) ?? null,
+      generation: { ...initial.todayInsights.generation, state: "ready", slots: [{ key: "recovery", state: "ready", fresh_for_snapshot: true }] },
+    });
 
     render(<HealthDetailPage config={healthSectionConfigs.recovery} />);
     await act(async () => Promise.resolve());
@@ -176,6 +176,6 @@ describe("HealthDetailPage", () => {
     });
 
     expect(screen.getByText("Fresh recovery insight")).toBeInTheDocument();
-    expect(mockedGetAIBriefing).toHaveBeenCalledTimes(1);
+    expect(mockedGetTodayInsights).toHaveBeenCalledTimes(1);
   });
 });

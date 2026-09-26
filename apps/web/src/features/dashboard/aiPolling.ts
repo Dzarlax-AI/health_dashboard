@@ -59,6 +59,7 @@ export function todayInsightsPollDelayMs(
   if (!shouldPollTodayInsights(todayInsights, attempts)) {
     return undefined;
   }
+  if (todayInsights?.generation.state === "disabled") return 60_000;
   const retryAfter = todayInsights?.generation.retry_after_seconds ?? 0;
   if (todayInsights?.generation.state === "failed" && retryAfter > 0) {
     return retryAfter * 1_000;

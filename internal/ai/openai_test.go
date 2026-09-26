@@ -71,6 +71,71 @@ func TestOpenAIProviderGenerateResponsesContract(t *testing.T) {
 	if input, _ := got["input"].(string); !strings.Contains(input, `"date":"2026-08-05"`) {
 		t.Fatalf("input missing payload: %q", input)
 	}
+	if instructions, _ := got["instructions"].(string); strings.Contains(instructions, "All numbers and text must be") || !strings.Contains(instructions, "JSON property names and enum values") {
+		t.Fatalf("language wrapper conflicts with structured output: %q", instructions)
+	}
+}
+
+func TestOpenAIProviderSendsExplicitGPT6LunaReasoning(t *testing.T) {
+	var got map[string]any
+	client := testHTTPClient(func(r *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		return jsonResponse(http.StatusOK, `{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Text"}]}]}`), nil
+	})
+	provider := NewOpenAIProvider(client, "https://example.test")
+	_, err := provider.Generate(context.Background(), ProviderConfig{
+		APIKey: "secret", Model: "gpt-6-luna", ReasoningEffort: "medium",
+	}, GenerationRequest{Prompt: "p", UserPayload: []byte(`{}`)})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	reasoning, ok := got["reasoning"].(map[string]any)
+	if !ok || reasoning["effort"] != "medium" {
+		t.Fatalf("gpt-6-luna reasoning = %#v, want explicit medium", got["reasoning"])
+	}
+	if config, ok := got["text"].(map[string]any); ok && config["verbosity"] == "low" {
+		t.Fatalf("gpt-6-luna unexpectedly forced low verbosity: %#v", config)
+	}
+}
+
+func TestOpenAIProviderGPT6ReasoningDefaultsAndAstraConstraint(t *testing.T) {
+	for _, tc := range []struct {
+		model, effort, want string
+		wantError           bool
+	}{
+		{model: "gpt-6-luna", want: "medium"},
+		{model: "gpt-6-sol", effort: "low", want: "low"},
+		{model: "gpt-6-astra", want: "medium"},
+		{model: "gpt-6-astra", effort: "none", wantError: true},
+	} {
+		t.Run(tc.model+"/"+tc.effort, func(t *testing.T) {
+			var got map[string]any
+			client := testHTTPClient(func(r *http.Request) (*http.Response, error) {
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				return jsonResponse(http.StatusOK, `{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Text"}]}]}`), nil
+			})
+			_, err := NewOpenAIProvider(client, "https://example.test").Generate(context.Background(), ProviderConfig{
+				APIKey: "secret", Model: tc.model, ReasoningEffort: tc.effort,
+			}, GenerationRequest{Prompt: "p", UserPayload: []byte(`{}`)})
+			if tc.wantError {
+				if err == nil || got != nil {
+					t.Fatalf("unsupported effort made a request: err=%v payload=%#v", err, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			reasoning, ok := got["reasoning"].(map[string]any)
+			if !ok || reasoning["effort"] != tc.want {
+				t.Fatalf("reasoning = %#v, want %q", got["reasoning"], tc.want)
+			}
+		})
+	}
 }
 
 func TestOpenAIProviderGenerateStructuredOutputAndTelemetry(t *testing.T) {
