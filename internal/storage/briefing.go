@@ -51,10 +51,6 @@ func (s *DB) rawMetricsFromDailyScoresAt(lastDate string, includeFreshLatest boo
 			all = append(all, r)
 		}
 	}
-	if len(all) == 0 {
-		return nil
-	}
-
 	// appendIfPositive only appends real positive values — NULL or zero days
 	// are skipped so they don't dilute averages used in scoring.
 	appendIfPositive := func(dst *[]float64, p *float64) {
@@ -70,9 +66,21 @@ func (s *DB) rawMetricsFromDailyScoresAt(lastDate string, includeFreshLatest boo
 	if includeFreshLatest {
 		freshToday = s.freshDayFromRaw(lastDate)
 	}
+	if freshToday != nil && (len(all) == 0 || all[0].date != lastDate) {
+		// An ingest may reach metric_points before daily_scores. The fresh
+		// selected date must still be the first day in the evidence window.
+		all = append([]dailyScoreRow{{date: lastDate}}, all...)
+		if len(all) > 30 {
+			all = all[:30]
+		}
+	}
+	if len(all) == 0 {
+		return nil
+	}
 
 	d := &health.RawMetrics{LastDate: lastDate}
-	for i, r := range all {
+	for i := range all {
+		r := all[i]
 		isLatest := i == 0 && r.date == lastDate
 		if isLatest && freshToday != nil {
 			// Override stale daily_scores with fresh hourly data for today.
@@ -91,6 +99,7 @@ func (s *DB) rawMetricsFromDailyScoresAt(lastDate string, includeFreshLatest boo
 			r.vo2 = coalesce(freshToday.vo2, r.vo2)
 			r.resp = coalesce(freshToday.resp, r.resp)
 		}
+		all[i] = r
 		d.Daily = append(d.Daily, dailyHealthMetrics(r))
 		appendIfPositive(&d.HRV, r.hrv)
 		appendIfPositive(&d.RHR, r.rhr)

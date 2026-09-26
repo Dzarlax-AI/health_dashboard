@@ -14,7 +14,7 @@ import { AppHeader } from "../../components/AppHeader";
 import { InsightPair } from "../../components/InsightPair";
 import { StatusPanel } from "../../components/StatusPanel";
 import { fixtureResources } from "../dashboard/fixtures";
-import { todayInsightsPollDelayMs } from "../dashboard/aiPolling";
+import { isTodayInsightsGenerationPending, todayInsightsPollDelayMs } from "../dashboard/aiPolling";
 import { resolveLocale, translate } from "../../i18n";
 
 type EnergyState =
@@ -38,16 +38,19 @@ export function EnergyPage() {
     document.documentElement.lang = locale;
     if (fixture) return;
     const controller = new AbortController();
-    Promise.all([getTodayInsights(locale, controller.signal),
-      Promise.allSettled([getEnergyHistory(14, controller.signal), getSession(controller.signal)])])
-      .then(([insights, supporting]) => {
+    getTodayInsights(locale, controller.signal)
+      .then((insights) => {
+        if (controller.signal.aborted) return;
         clearSessionRecoveryAttempt(window.sessionStorage);
-        setState({
-          status: "ready",
-          insights,
-          history: supporting[0].status === "fulfilled" ? supporting[0].value : undefined,
-          session: supporting[1].status === "fulfilled" ? supporting[1].value : undefined,
-        });
+        setState((current) => ({ status: "ready", insights,
+          history: current.status === "ready" ? current.history : undefined,
+          session: current.status === "ready" ? current.session : undefined }));
+        void getEnergyHistory(14, controller.signal).then((history) => {
+          if (!controller.signal.aborted) setState((current) => current.status === "ready" ? { ...current, history } : current);
+        }).catch(() => undefined);
+        void getSession(controller.signal).then((session) => {
+          if (!controller.signal.aborted) setState((current) => current.status === "ready" ? { ...current, session } : current);
+        }).catch(() => undefined);
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
@@ -63,13 +66,21 @@ export function EnergyPage() {
   }, [fixture, locale, reloadKey]);
 
   useEffect(() => {
+    if (state.status === "ready" && ["disabled", "ready"].includes(state.insights.generation.state)) {
+      pollAttempts.current = 0;
+    }
+  }, [state]);
+
+  useEffect(() => {
     const delay = state.status === "ready" ? todayInsightsPollDelayMs(state.insights, pollAttempts.current) : undefined;
     if (fixture || delay === undefined) return;
     let timer: number | undefined;
     const schedule = () => {
       if (timer !== undefined) window.clearTimeout(timer);
       timer = document.visibilityState === "visible" ? window.setTimeout(() => {
-        pollAttempts.current += 1;
+        if (state.status === "ready" && isTodayInsightsGenerationPending(state.insights)) {
+          pollAttempts.current += 1;
+        }
         setReloadKey((value) => value + 1);
       }, delay) : undefined;
     };
@@ -100,6 +111,7 @@ export function EnergyPage() {
               action={domain.insight.next_step?.text}
               ai={domain.ai_insight}
               state={state.status === "ready" ? state.insights.generation.slots?.find((slot) => slot.key === "energy")?.state : undefined}
+              preview={state.status === "ready" && state.insights.generation.narrative_mode === "preview"}
             />
           ) : state.status === "loading" ? (
             <StatusPanel state="loading" title={translate(locale, "loadingTitle")} detail={translate(locale, "loadingDetail")} />

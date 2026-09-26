@@ -264,7 +264,7 @@ func evaluateRun(provider ai.Provider, cfg ai.ProviderConfig, item ai.AIInsightC
 		input, eligible := health.BuildAIInsightInput(snapshot, item.Locale, slot, nil)
 		result := evaluateSlot(provider, cfg, input, slot, eligible)
 		out.Slots = append(out.Slots, result)
-		sibling := health.AIInsightSibling{Slot: slot, State: result.Status}
+		sibling := health.AIInsightSibling{Slot: slot, State: evaluationSiblingState(result.Status)}
 		if result.Insight != nil {
 			sibling.Text, sibling.AlternativeAction = result.Insight.Text, result.Insight.AlternativeAction
 		}
@@ -273,6 +273,19 @@ func evaluateRun(provider ai.Provider, cfg ai.ProviderConfig, item ai.AIInsightC
 	input, eligible := health.BuildAIInsightInput(snapshot, item.Locale, "overall", siblings)
 	out.Slots = append(out.Slots, evaluateSlot(provider, cfg, input, "overall", eligible))
 	return out
+}
+
+// The corpus uses evaluation outcome labels, while production passes serving
+// slot states to the overall author. Keep the overall packet identical.
+func evaluationSiblingState(status string) string {
+	switch status {
+	case "valid":
+		return "ready"
+	case "null", "ineligible":
+		return "disabled"
+	default:
+		return "failed"
+	}
 }
 
 func evaluateSlot(provider ai.Provider, cfg ai.ProviderConfig, input health.AIInsightInput, slot string, eligible bool) evaluationSlot {

@@ -277,6 +277,12 @@ textarea {
   margin-block: var(--space-4);
 }
 
+.insight-pair__preview {
+  grid-column: 1 / -1;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
 .insight-pair__card {
   min-width: 0;
   padding: clamp(18px, 2vw, 26px);

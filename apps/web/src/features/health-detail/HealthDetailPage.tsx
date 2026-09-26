@@ -233,6 +233,7 @@ export function HealthDetailReady({
             action={recoveryDomain.insight.next_step?.text}
             ai={recoveryDomain.ai_insight}
             state={resources.todayInsights?.generation.slots?.find((slot) => slot.key === "recovery")?.state}
+            preview={resources.todayInsights?.generation.narrative_mode === "preview"}
           />
         ) : model.context ? (
           <article className="health-detail-context">
@@ -325,21 +326,23 @@ export function HealthDetailPage({ config }: { config: HealthSectionConfig }) {
     ) {
       return;
     }
-    const delay = todayInsightsPollDelayMs(state.resources.todayInsights, aiPollAttempts.current) ?? 60_000;
     let timer: number | undefined;
     const controller = new AbortController();
     const schedule = () => {
       if (timer !== undefined) window.clearTimeout(timer);
-      timer = document.visibilityState === "visible"
+      const delay = todayInsightsPollDelayMs(state.resources.todayInsights, aiPollAttempts.current);
+      timer = document.visibilityState === "visible" && delay !== undefined
         ? window.setTimeout(() => {
-            aiPollAttempts.current += 1;
+            if (state.resources.todayInsights?.generation.state !== "disabled") aiPollAttempts.current += 1;
             getTodayInsights(locale, controller.signal)
               .then((todayInsights) => setLiveState((current) =>
                 current.status === "ready"
                   ? { ...current, resources: { ...current.resources, todayInsights } }
                   : current,
               ))
-              .catch(() => undefined);
+              .catch(() => {
+                if (!controller.signal.aborted) schedule();
+              });
           }, delay)
         : undefined;
     };

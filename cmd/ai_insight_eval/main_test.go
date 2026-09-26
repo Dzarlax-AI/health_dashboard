@@ -46,6 +46,17 @@ func TestClassifyAIInsightFailure(t *testing.T) {
 	}
 }
 
+func TestEvaluationSiblingStateMatchesServing(t *testing.T) {
+	for status, want := range map[string]string{
+		"valid": "ready", "null": "disabled", "ineligible": "disabled",
+		"rejected_or_provider_error": "failed",
+	} {
+		if got := evaluationSiblingState(status); got != want {
+			t.Errorf("status %q mapped to %q, want %q", status, got, want)
+		}
+	}
+}
+
 type evaluationTestProvider struct {
 	responses []ai.GenerationResult
 	errors    []error

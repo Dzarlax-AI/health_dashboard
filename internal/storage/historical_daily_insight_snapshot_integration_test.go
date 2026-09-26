@@ -14,6 +14,26 @@ func TestVerifyHistoricalDailyInsightReadAccess(t *testing.T) {
 	}
 }
 
+func TestDailyScoreWindowPrependsFreshSelectedDateBeforeCacheCatchesUp(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	recordID := insertTestRawRecord(t, db, "fresh-selected-date")
+	if _, err := db.pool.Exec(ctx, `INSERT INTO daily_scores (date, hrv_avg) VALUES ('2026-09-01', 50)`); err != nil {
+		t.Fatalf("seed older daily score: %v", err)
+	}
+	if _, err := db.pool.Exec(ctx, `INSERT INTO metric_points (health_record_id, metric_name, units, date, qty, source, quality)
+		VALUES ($1, 'heart_rate_variability', 'ms', '2026-09-02 08:00:00 +0000', 80, 'Apple Watch', 'ok')`, recordID); err != nil {
+		t.Fatalf("seed fresh metric: %v", err)
+	}
+	got := db.rawMetricsFromDailyScoresAt("2026-09-02", true)
+	if got == nil || len(got.Daily) < 2 || got.Daily[0].Date != "2026-09-02" ||
+		got.Daily[0].HRV == nil || *got.Daily[0].HRV != 80 ||
+		len(got.HRVWithDates) == 0 || got.HRVWithDates[0].Date != "2026-09-02" {
+		t.Fatalf("fresh selected date missing from cache-backed window: %#v", got)
+	}
+}
+
 // Historical candidates are a point-in-time corpus. A later sync must never
 // change a candidate's metric window just because metric_points retains both
 // days. This covers the cache supplement (night sleep/nap), raw fallback, and

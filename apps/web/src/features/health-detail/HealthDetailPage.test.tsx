@@ -160,7 +160,7 @@ describe("HealthDetailPage", () => {
       ...insightFixture.generation, state: "generating", slots: [{ key: "recovery", state: "generating", fresh_for_snapshot: true }],
     } };
     mockedLoadHealthDetailResources.mockResolvedValue(initial);
-    mockedGetTodayInsights.mockResolvedValue({ ...initial.todayInsights,
+    mockedGetTodayInsights.mockRejectedValueOnce(new Error("temporary failure")).mockResolvedValue({ ...initial.todayInsights,
       domains: initial.todayInsights.domains?.map((domain) => domain.key === "recovery"
         ? { ...domain, ai_insight: { text: "Fresh recovery insight", stance: "qualify", fact_ids: [], evidence_ids: [] } }
         : domain) ?? null,
@@ -172,10 +172,10 @@ describe("HealthDetailPage", () => {
     expect(screen.getByRole("heading", { level: 1, name: "Recovery" })).toBeInTheDocument();
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.advanceTimersByTimeAsync(120_000);
     });
 
     expect(screen.getByText("Fresh recovery insight")).toBeInTheDocument();
-    expect(mockedGetTodayInsights).toHaveBeenCalledTimes(1);
+    expect(mockedGetTodayInsights).toHaveBeenCalledTimes(2);
   });
 });

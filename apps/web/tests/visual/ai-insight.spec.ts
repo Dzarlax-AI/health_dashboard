@@ -1,5 +1,11 @@
 import { expect, test } from "@playwright/test";
 
+const insightLabels = {
+  en: { server: "Server Insight", ai: "AI Insight" },
+  ru: { server: "Инсайт сервера", ai: "AI-инсайт" },
+  sr: { server: "Serverski uvid", ai: "AI uvid" },
+} as const;
+
 for (const locale of ["en", "ru", "sr"] as const) {
   for (const route of ["/", "/sleep", "/recovery", "/energy"] as const) {
     test(`${route} shows separate Server and AI Insights in ${locale} on mobile`, async ({ page }) => {
@@ -7,8 +13,8 @@ for (const locale of ["en", "ru", "sr"] as const) {
       await page.goto(`${route}?lang=${locale}&fixture=normal`);
       const pair = page.locator(".insight-pair");
       await expect(pair.locator(".insight-pair__card")).toHaveCount(2);
-      await expect(pair.getByText("Server Insight")).toBeVisible();
-      await expect(pair.getByText("AI Insight")).toBeVisible();
+      await expect(pair.getByText(insightLabels[locale].server)).toBeVisible();
+      await expect(pair.getByText(insightLabels[locale].ai)).toBeVisible();
       const boxes = await pair.locator(".insight-pair__card").evaluateAll((cards) => cards.map((card) => {
         const box = card.getBoundingClientRect();
         return { x: box.x, y: box.y, width: box.width };

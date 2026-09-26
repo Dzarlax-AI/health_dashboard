@@ -19,7 +19,7 @@ import {
 import { AppHeader } from "../../components/AppHeader";
 import { InsightPair } from "../../components/InsightPair";
 import { StatusPanel } from "../../components/StatusPanel";
-import { shouldPollAI, todayInsightsPollDelayMs } from "../dashboard/aiPolling";
+import { isTodayInsightsGenerationPending, shouldPollAI, todayInsightsPollDelayMs } from "../dashboard/aiPolling";
 import { resolveLocale, translate, type Locale } from "../../i18n";
 import { sleepFixtureResources } from "./fixtures";
 import { loadSleepResources, type SleepResources } from "./loader";
@@ -189,15 +189,17 @@ export function SleepReady({ resources, locale }: { resources: SleepResources; l
   }, [locale, todayAI, todayInsights]);
 
   useEffect(() => {
-    const delay = todayInsightsPollDelayMs(todayInsights, insightPollAttempts.current);
-    if (delay === undefined) return;
+    if (todayInsightsPollDelayMs(todayInsights, insightPollAttempts.current) === undefined) return;
     let timer: number | undefined;
     const controller = new AbortController();
     const schedule = () => {
       if (timer !== undefined) window.clearTimeout(timer);
-      timer = document.visibilityState === "visible" ? window.setTimeout(() => {
-        insightPollAttempts.current += 1;
-        getTodayInsights(locale, controller.signal).then(setTodayInsights).catch(() => undefined);
+      const delay = todayInsightsPollDelayMs(todayInsights, insightPollAttempts.current);
+      timer = document.visibilityState === "visible" && delay !== undefined ? window.setTimeout(() => {
+        if (isTodayInsightsGenerationPending(todayInsights)) insightPollAttempts.current += 1;
+        getTodayInsights(locale, controller.signal).then(setTodayInsights).catch(() => {
+          if (!controller.signal.aborted) schedule();
+        });
       }, delay) : undefined;
     };
     schedule();
@@ -276,6 +278,7 @@ export function SleepReady({ resources, locale }: { resources: SleepResources; l
             action={sleepDomain.insight.next_step?.text}
             ai={sleepDomain.ai_insight}
             state={todayInsights?.generation.slots?.find((slot) => slot.key === "sleep")?.state}
+            preview={todayInsights?.generation.narrative_mode === "preview"}
           />
         ) : currentInsight ? (
           <article className="sleep-ai-card">
