@@ -6,6 +6,18 @@ const insightLabels = {
   sr: { server: "Serverski uvid", ai: "AI uvid" },
 } as const;
 
+for (const route of ["/", "/sleep"] as const) {
+  for (const query of ["?lang=en", "?lang=en&fixture=unknown"] as const) {
+    test(`${route} requests live health data with ${query} in fixture-enabled builds`, async ({ page }) => {
+      await page.route("**/api/**", (request) => request.fulfill({ status: 503, contentType: "application/json", body: "{}" }));
+      const briefingRequest = page.waitForRequest((request) => request.url().includes("/api/health-briefing"));
+      await page.goto(`${route}${query}`);
+      await briefingRequest;
+      await expect(page.locator(".insight-pair__card")).toHaveCount(0);
+    });
+  }
+}
+
 for (const locale of ["en", "ru", "sr"] as const) {
   for (const route of ["/", "/sleep", "/recovery", "/energy"] as const) {
     test(`${route} shows separate Server and AI Insights in ${locale} on mobile`, async ({ page }) => {
@@ -48,3 +60,38 @@ test("server insight remains complete when AI is absent", async ({ page }) => {
   await expect(page.locator(".today-hero .insight-pair__card--server")).toBeVisible();
   await expect(page.locator(".today-hero .insight-pair__card--ai")).toHaveCount(0);
 });
+
+test("partial-sleep-data AI-unavailable copy keeps explicit contrast on the Sleep hero", async ({ page }) => {
+  await page.goto("/sleep?lang=en&fixture=partial");
+  const note = page.locator(".sleep-hero .insight-pair__unavailable");
+  await expect(note).toBeVisible();
+  await expect(note).toHaveText("Sleep data are partial. AI Insight is unavailable here; the Server Insight remains the reliable view.");
+  await expect(note).toHaveCSS("color", "rgb(247, 248, 255)");
+  await expect(note).toHaveCSS("background-color", "rgba(13, 28, 54, 0.48)");
+});
+
+for (const theme of ["light", "dark"] as const) {
+  for (const route of ["/", "/sleep", "/recovery", "/energy"] as const) {
+    test(`${route} insight cards use readable text on their own surface in ${theme} mode`, async ({ page }) => {
+      await page.emulateMedia({ colorScheme: theme });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.goto(`${route}?lang=ru&fixture=normal`);
+
+      const cards = page.locator(".insight-pair__card");
+      await expect(cards).toHaveCount(2);
+      for (const card of await cards.all()) {
+        await expect(card).toHaveCSS("background-color", theme === "light" ? "rgb(255, 255, 255)" : "rgb(27, 34, 30)");
+        await expect(card).toHaveCSS("color", theme === "light" ? "rgb(26, 26, 30)" : "rgb(241, 245, 242)");
+      }
+    });
+  }
+}
+
+for (const route of ["/sleep", "/recovery", "/energy"] as const) {
+  test(`${route} keeps a dark backdrop behind its light hero text`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`${route}?lang=ru&fixture=normal`);
+    const hero = page.locator(route === "/sleep" ? ".sleep-hero" : ".health-detail-hero");
+    await expect(hero).toHaveCSS("background-image", /linear-gradient/);
+  });
+}

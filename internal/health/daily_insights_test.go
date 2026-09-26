@@ -860,6 +860,49 @@ func TestNarrativeFactsWithholdIncompleteDailyWindowsAndMissingReadiness(t *test
 	}
 }
 
+func TestNarrativeFactsMakePartialSleepSemanticsExplicit(t *testing.T) {
+	current, previous := 1.0, 6.8
+	resp := &BriefingResponse{
+		Date:         "2026-09-20",
+		Sleep:        &SleepAnalysis{LatestDate: "2026-09-20", LatestTotal: &current, TotalAvg: 5.9},
+		SleepQuality: &SleepQualityBreakdown{Confidence: SleepQualityConfidencePartial},
+		RawMetrics: &RawMetrics{LastDate: "2026-09-20", Daily: []DailyHealthMetrics{
+			{Date: "2026-09-20", Sleep: &current},
+			{Date: "2026-09-19", Sleep: &previous},
+		}},
+	}
+	snapshot := BuildDailyInsightSnapshot(resp, "en")
+	facts := map[string]DailyInsightNarrativeFact{}
+	for _, fact := range snapshot.NarrativeFacts {
+		facts[fact.ID] = fact
+	}
+	for _, id := range []string{"sleep_current_recorded_duration"} {
+		fact, ok := facts[id]
+		if !ok || fact.Meaning != partialSleepCurrentDurationMeaning || fact.Window != partialSleepCurrentDurationWindow {
+			t.Fatalf("partial-safe fact %q = %#v", id, fact)
+		}
+	}
+	for _, locale := range []string{"en", "ru", "sr"} {
+		statement := localizedNarrativePartialSleepFact(locale, current)
+		if strings.Contains(strings.ToLower(statement), "sync") || strings.Contains(strings.ToLower(statement), "incomplete") || !strings.Contains(strings.ToLower(statement), "confirm") && locale == "en" {
+			t.Fatalf("partial sleep statement overstates cause or omits uncertainty for %s: %q", locale, statement)
+		}
+	}
+	for _, unsafe := range []string{"sleep_canonical_comparison", "sleep_quality", "sleep_recent_four_day_pattern"} {
+		if _, ok := facts[unsafe]; ok {
+			t.Fatalf("partial current sleep leaked unsafe fact %q: %#v", unsafe, facts[unsafe])
+		}
+	}
+
+	resp.Sleep.LatestDate = "2026-09-19"
+	stale := BuildDailyInsightSnapshot(resp, "en")
+	for _, fact := range stale.NarrativeFacts {
+		if fact.Domain == "sleep" {
+			t.Fatalf("stale sleep entered partial-safe packet: %#v", fact)
+		}
+	}
+}
+
 func TestNarrativeEnergyFactDisplayValuesExcludeServerVerdictNumbers(t *testing.T) {
 	facts := buildDailyInsightNarrativeFacts(&BriefingResponse{EnergyBank: &EnergyBank{
 		Current: 51, Capacity: 84, DrainSoFar: 16, Strain: 11, Stress: 9,

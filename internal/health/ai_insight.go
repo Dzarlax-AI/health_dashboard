@@ -14,11 +14,14 @@ import (
 // AIInsightVersion is deliberately separate from the retired explanatory
 // narrative contract. Old approved prose cannot be decoded as a second opinion.
 const AIInsightVersion = "today-ai-insight-v1"
-const AIInsightInputVersion = "today-ai-insight-input-v5.3"
+const AIInsightInputVersion = "today-ai-insight-input-v5.5"
+
+const partialSleepCurrentDurationMeaning = "currently recorded sleep duration; completeness of the night and sleep quality are unconfirmed by available data"
+const partialSleepCurrentDurationWindow = "current date, currently recorded duration; night completeness and quality unconfirmed"
 
 // AIInsightReaderCopyValidationRevision keeps cached/evaluated AI output tied
 // to the local reader-copy safety gate as that gate gains observed regressions.
-const AIInsightReaderCopyValidationRevision = "today-ai-insight-reader-copy-v5.3"
+const AIInsightReaderCopyValidationRevision = "today-ai-insight-reader-copy-v5.4"
 
 type DailyInsightAIInsight struct {
 	Text              string   `json:"text"`
@@ -108,12 +111,15 @@ func BuildAIInsightInput(snapshot *DailyInsightSnapshot, locale, slot string, si
 		input.Siblings = append([]AIInsightSibling(nil), siblings...)
 	} else {
 		found := false
+		partialSleepDataGuidance := false
 		for _, domain := range snapshot.Domains {
 			if domain.Key != slot {
 				continue
 			}
 			found = true
-			if domain.DataState != "fresh" || domain.Insight.State != "insight" {
+			partialSleepDataGuidance = slot == "sleep" && domain.DataState == "partial" &&
+				domain.Insight.State == "insufficient_data" && domain.Insight.GapReason == "sleep_partial"
+			if (domain.DataState != "fresh" || domain.Insight.State != "insight") && !partialSleepDataGuidance {
 				return AIInsightInput{}, false
 			}
 			server = domain.Insight
@@ -133,14 +139,19 @@ func BuildAIInsightInput(snapshot *DailyInsightSnapshot, locale, slot string, si
 				}
 			}
 		}
-		for _, fact := range aiInsightUsableFacts(snapshot) {
+		facts := aiInsightUsableFacts(snapshot)
+		if partialSleepDataGuidance {
+			facts = aiInsightPartialSleepSafeFacts(snapshot)
+		}
+		for _, fact := range facts {
 			if fact.Domain == slot || (slot == "recovery" && energyContextFresh && fact.ID == "energy_authoritative_state" && fact.Domain == "energy") {
 				input.Facts = append(input.Facts, fact)
 			}
 		}
 	}
+	partialSleepDataGuidance := slot == "sleep" && server.State == "insufficient_data" && server.GapReason == "sleep_partial"
 	if len(input.Facts) == 0 || server.State == "" ||
-		(slot != DailyInsightNarrativeOverallSlot && (server.State != "insight" || server.Remediation != "")) {
+		(slot != DailyInsightNarrativeOverallSlot && (server.State != "insight" || server.Remediation != "") && !partialSleepDataGuidance) {
 		return AIInsightInput{}, false
 	}
 	input.ServerInsight = AIInsightServerView{State: server.State, AnswerKind: server.AnswerKind, GapReason: server.GapReason,
@@ -151,10 +162,9 @@ func BuildAIInsightInput(snapshot *DailyInsightSnapshot, locale, slot string, si
 	return input, true
 }
 
-// A date-aligned sleep sample can still be an incomplete sync. In that state,
-// its current-night value and any trend containing it cannot support a claim
-// about a completed night. Keep other domains available to overall instead of
-// withholding the whole insight.
+// A date-aligned partial sleep record does not establish that the night was
+// complete or that quality is known. Keep partial Sleep out of Overall, and
+// expose it to the Sleep slot only through its explicit safe fact.
 func aiInsightUsableFacts(snapshot *DailyInsightSnapshot) []DailyInsightNarrativeFact {
 	domainStates := make(map[string]string, len(snapshot.Domains))
 	for _, domain := range snapshot.Domains {
@@ -183,6 +193,31 @@ func aiInsightUsableFacts(snapshot *DailyInsightSnapshot) []DailyInsightNarrativ
 		facts = append(facts, fact)
 	}
 	return facts
+}
+
+func aiInsightPartialSleepSafeFacts(snapshot *DailyInsightSnapshot) []DailyInsightNarrativeFact {
+	facts := make([]DailyInsightNarrativeFact, 0, 1)
+	for _, fact := range dailyInsightFreshNarrativeFacts(snapshot) {
+		if fact.Domain == "sleep" && aiInsightPartialSleepFactIsSafe(fact) {
+			facts = append(facts, fact)
+		}
+	}
+	return facts
+}
+
+// aiInsightPartialSleepFactIsSafe keeps the exception deliberately narrow:
+// the provider may only see a fact whose own fields limit it to the currently
+// recorded duration and explicitly leave completeness and quality unknown.
+// It does not admit trends or comparisons that could include it.
+// Domain state is a guard, not a substitute for each fact's own semantics.
+func aiInsightPartialSleepFactIsSafe(fact DailyInsightNarrativeFact) bool {
+	meaning, window := strings.ToLower(fact.Meaning), strings.ToLower(fact.Window)
+	switch fact.ID {
+	case "sleep_current_recorded_duration":
+		return meaning == partialSleepCurrentDurationMeaning && window == partialSleepCurrentDurationWindow
+	default:
+		return false
+	}
 }
 
 // A confirmed component already carries the same current value and, when
@@ -248,6 +283,9 @@ func ValidateAIInsightSlot(input AIInsightInput, candidate AIInsightSlotResponse
 			if err := validateAIInsightLocale(field, input.Locale); err != nil {
 				return nil, &AIInsightValidationError{Code: "locale_or_reader_copy", Err: err}
 			}
+			if aiInsightPartialSleepClaimsCompletion(input, field) {
+				return nil, aiInsightValidationError("partial_sleep_completion", "AI insight presents partial sleep as a completed night")
+			}
 		}
 	}
 	if len(section.FactIDs) == 0 {
@@ -284,6 +322,37 @@ func ValidateAIInsightSlot(input AIInsightInput, candidate AIInsightSlotResponse
 	return &DailyInsightAIInsight{Text: text, Stance: section.Stance, AlternativeAction: action,
 		FactIDs: append([]string(nil), section.FactIDs...), EvidenceIDs: evidence}, nil
 }
+
+func aiInsightPartialSleepClaimsCompletion(input AIInsightInput, field string) bool {
+	partialSleep := false
+	for _, domain := range input.DomainStates {
+		if domain.Domain == "sleep" && domain.DataState == "partial" {
+			partialSleep = true
+			break
+		}
+	}
+	if !partialSleep {
+		return false
+	}
+	for _, fact := range input.Facts {
+		if fact.ID == "sleep_current_recorded_duration" && aiInsightPartialSleepFactIsSafe(fact) {
+			return partialSleepAffirmativeCompletionPattern.MatchString(field)
+		}
+	}
+	return false
+}
+
+// This is a narrow regression guard for direct, affirmative sentence claims.
+// It deliberately does not classify clauses, quotations, or implications:
+// the reviewer remains responsible for broader wording and implication checks.
+var partialSleepAffirmativeCompletionPattern = regexp.MustCompile(`(?i)(?:^|[.!?]\s+)(?:` +
+	`(?:(?:this|it|the record|the data|data|record)\s+)?(?:is|was|shows|means|confirms|proves|indicates|counts as|represents)\s+(?:a\s+)?(?:full|completed)\s+night\b` +
+	`|(?:last|this|the)\s+night\s+(?:is|was)\s+(?:a\s+)?(?:full|completed)\s+night\b` +
+	`|это\s+(?:полная|завершенная|завершённая)\s+ночь` +
+	`|(?:прошлая|эта|сегодняшняя)\s+ночь\s+(?:была|есть)\s+(?:полной|завершенной|завершённой)(?:\s+ночью)?` +
+	`|(?:ovo je|noć je)\s+(?:cela|završena)\s+noć` +
+	`|(?:prošla|ova|ta)\s+noć\s+je\s+(?:bila\s+)?(?:cela|završena)(?:\s+noć)?` +
+	`)`)
 
 func validateAIInsightLocale(text, locale string) error {
 	if err := validateDailyInsightNarrativeLocale(text, locale); err != nil {

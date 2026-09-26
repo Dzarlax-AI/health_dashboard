@@ -19,4 +19,10 @@ describe("InsightPair", () => {
     expect(screen.getByText("Serverski uvid")).toBeInTheDocument();
     expect(screen.queryByText("AI pregled")).not.toBeInTheDocument();
   });
+
+  it("renders a legible partial-data explanation when no AI opinion is available", () => {
+    render(<InsightPair locale="en" observation="Sleep data are partial." state="disabled" aiUnavailableReason="Sleep data are partial. AI Insight is unavailable here; the Server Insight remains the reliable view." />);
+
+    expect(screen.getByText("Sleep data are partial. AI Insight is unavailable here; the Server Insight remains the reliable view.")).toHaveClass("insight-pair__unavailable");
+  });
 });

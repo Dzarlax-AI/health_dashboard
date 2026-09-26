@@ -11,10 +11,11 @@ interface InsightPairProps {
   action?: string;
   ai?: AIInsight;
   state?: string;
+  aiUnavailableReason?: string;
   preview?: boolean;
 }
 
-export function InsightPair({ locale, title, observation, meaning, action, ai, state, preview }: InsightPairProps) {
+export function InsightPair({ locale, title, observation, meaning, action, ai, state, aiUnavailableReason, preview }: InsightPairProps) {
   return (
     <div className="insight-pair" data-ai-state={state || (ai ? "ready" : "disabled")}>
       {preview ? <span className="insight-pair__preview">{translate(locale, "todayInsightsPreview")}</span> : null}
@@ -35,7 +36,7 @@ export function InsightPair({ locale, title, observation, meaning, action, ai, s
             </p>
           ) : null}
         </article>
-      ) : null}
+      ) : aiUnavailableReason ? <p className="insight-pair__unavailable">{aiUnavailableReason}</p> : null}
     </div>
   );
 }

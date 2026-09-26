@@ -95,9 +95,9 @@ export function EnergyPage() {
   const domain = state.status === "ready" ? state.insights.domains?.find((item) => item.key === "energy") : undefined;
   const history = state.status === "ready" ? state.history?.points : undefined;
   return (
-    <div className="app-shell health-detail-shell">
+    <div className="app-shell health-detail-shell energy-shell">
       <AppHeader locale={locale} isAdmin={state.status === "ready" && state.session?.is_admin} />
-      <main className="health-detail-page energy-page">
+      <main className="health-detail-page energy-page" data-section="energy">
         <section className="health-detail-hero">
           <div className="health-detail-hero__heading">
             <a className="health-detail-back" href={`/?lang=${locale}`} aria-label={translate(locale, "healthDetailBack")}>←</a>

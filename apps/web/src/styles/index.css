@@ -279,7 +279,8 @@ textarea {
 
 .insight-pair__preview {
   grid-column: 1 / -1;
-  color: var(--text-muted);
+  color: inherit;
+  opacity: 0.72;
   font-size: var(--text-sm);
 }
 
@@ -289,6 +290,7 @@ textarea {
   border: 1px solid var(--border);
   border-radius: var(--today-card-radius);
   background: var(--surface);
+  color: var(--text);
   overflow-wrap: anywhere;
 }
 
@@ -313,6 +315,18 @@ textarea {
   margin: 0 0 var(--space-3);
   line-height: 1.55;
   white-space: pre-wrap;
+}
+
+.sleep-hero .insight-pair__unavailable {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid rgba(247, 248, 255, 0.36);
+  border-radius: 12px;
+  background: rgba(13, 28, 54, 0.48);
+  color: #f7f8ff;
+  font-weight: 650;
+  line-height: 1.45;
 }
 
 .insight-pair__action {
@@ -1342,12 +1356,12 @@ a.today-insights__domain:hover {
 }
 
 .sleep-balance__goal {
-  color: var(--text-primary) !important;
+  color: var(--text) !important;
   font-weight: 650;
 }
 
 .sleep-balance small {
-  color: var(--text-muted);
+  color: var(--text-secondary);
 }
 
 .sleep-balance__form {
@@ -1369,9 +1383,9 @@ a.today-insights__domain:hover {
   width: 7rem;
   min-height: 2.75rem;
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius);
   background: var(--surface-2);
-  color: var(--text-primary);
+  color: var(--text);
   font: inherit;
   padding: 0 var(--space-3);
 }
@@ -1383,7 +1397,7 @@ a.today-insights__domain:hover {
 .sleep-balance__form button {
   min-height: 2.75rem;
   border: 0;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius);
   background: var(--accent);
   color: var(--accent-foreground);
   cursor: pointer;
@@ -1674,6 +1688,10 @@ a.today-insights__domain:hover {
     var(--bg);
 }
 
+.energy-shell {
+  --detail-accent: var(--today-energy);
+}
+
 .health-detail-page,
 .health-detail-fixtures {
   width: min(100% - 48px, 1080px);
@@ -1702,6 +1720,11 @@ a.today-insights__domain:hover {
   --detail-accent: #38bdf8;
   --detail-hero-from: rgba(11, 38, 59, 0.94);
   --detail-hero-to: rgba(28, 65, 84, 0.7);
+}
+
+.health-detail-page[data-section="energy"] {
+  --detail-hero-from: rgba(34, 25, 10, 0.95);
+  --detail-hero-to: rgba(75, 53, 20, 0.78);
 }
 
 .health-detail-fixtures {
@@ -1851,7 +1874,7 @@ a.today-insights__domain:hover {
   margin: var(--space-6) auto 0;
   padding: var(--space-5);
   border: 1px solid color-mix(in srgb, var(--detail-accent) 46%, rgba(255, 255, 255, 0.16));
-  border-radius: var(--radius-xl);
+  border-radius: var(--today-card-radius);
   background: rgba(9, 20, 25, 0.52);
   backdrop-filter: blur(12px);
 }
@@ -1873,7 +1896,7 @@ a.today-insights__domain:hover {
   margin: 0;
   padding: var(--space-3) var(--space-4);
   border-radius: var(--radius-lg);
-  background: color-mix(in srgb, var(--warning) 12%, var(--surface));
+  background: color-mix(in srgb, var(--warn) 12%, var(--surface));
   color: var(--text-secondary);
 }
 
@@ -1941,7 +1964,7 @@ a.today-insights__domain:hover {
 .health-detail-ranges button.is-active {
   background: var(--surface);
   box-shadow: var(--shadow-sm);
-  color: var(--text-primary);
+  color: var(--text);
   font-weight: 800;
 }
 
@@ -1954,7 +1977,7 @@ a.today-insights__domain:hover {
 .health-detail-trend-card {
   min-width: 0;
   padding: var(--space-5);
-  border-radius: var(--radius-xl);
+  border-radius: var(--today-card-radius);
   background: var(--surface-2);
 }
 

@@ -2592,7 +2592,12 @@ func buildDailyInsightNarrativeFacts(resp *BriefingResponse, domains []DailyInsi
 		fact.Authority = "server_derived"
 		facts = append(facts, fact)
 	}
-	if sleepNarrativeFactFresh(resp) {
+	partialSleep := narrativeDomainDataState(domains, "sleep") == "partial"
+	if sleepNarrativeFactFresh(resp) && partialSleep {
+		sleep := resp.Sleep
+		value := fmt.Sprintf("%.1f", *sleep.LatestTotal)
+		add(DailyInsightNarrativeFact{ID: "sleep_current_recorded_duration", Domain: "sleep", Meaning: partialSleepCurrentDurationMeaning, Window: partialSleepCurrentDurationWindow, Fresh: true, Statement: localizedNarrativePartialSleepFact(locale, *sleep.LatestTotal), DisplayValues: []string{value}, EvidenceIDs: []string{"sleep_current_recorded_duration"}})
+	} else if sleepNarrativeFactFresh(resp) {
 		sleep := resp.Sleep
 		values := []string{fmt.Sprintf("%.1f", *sleep.LatestTotal)}
 		statement := localizedNarrativeSleepFact(locale, *sleep.LatestTotal, sleep.TotalAvg)
@@ -2601,7 +2606,7 @@ func buildDailyInsightNarrativeFacts(resp *BriefingResponse, domains []DailyInsi
 		}
 		add(DailyInsightNarrativeFact{ID: "sleep_canonical_comparison", Domain: "sleep", Meaning: "canonical sleep duration compared with recent average", Window: "last night and recent average", Fresh: true, Statement: statement, DisplayValues: values, EvidenceIDs: []string{"sleep_canonical_comparison"}})
 	}
-	if quality := resp.SleepQuality; sleepNarrativeFactFresh(resp) && quality != nil && quality.ScorePct != nil && quality.Confidence == SleepQualityConfidenceFinal {
+	if quality := resp.SleepQuality; !partialSleep && sleepNarrativeFactFresh(resp) && quality != nil && quality.ScorePct != nil && quality.Confidence == SleepQualityConfidenceFinal {
 		value := fmt.Sprintf("%d", *quality.ScorePct)
 		add(DailyInsightNarrativeFact{ID: "sleep_quality", Domain: "sleep", Meaning: "server-derived sleep quality", Window: "last night", Fresh: true, Statement: localizedNarrativeSleepQualityFact(locale, *quality.ScorePct), DisplayValues: []string{value}, EvidenceIDs: []string{"sleep_quality"}})
 	}
@@ -2644,14 +2649,25 @@ func buildDailyInsightNarrativeFacts(resp *BriefingResponse, domains []DailyInsi
 		add(DailyInsightNarrativeFact{ID: "energy_authoritative_state", Domain: "energy", Meaning: "current EnergyBank reserve, drain, strain and stress measurements; server verdict is separate", Window: "today so far", Fresh: true, Statement: statement, DisplayValues: narrativeDisplayValues(statement), EvidenceIDs: []string{"energy_authoritative_state"}})
 	}
 	if raw := resp.RawMetrics; raw != nil && raw.LastDate == resp.Date && narrativeBriefingDateAligned(resp.Date) {
-		if fact, ok := boundedSleepPatternFact(raw.Daily, raw.LastDate, locale); ok {
-			add(fact)
+		if !partialSleep {
+			if fact, ok := boundedSleepPatternFact(raw.Daily, raw.LastDate, locale); ok {
+				add(fact)
+			}
 		}
 		if fact, ok := boundedActivityTrendFact(raw.Daily, raw.LastDate, locale); ok {
 			add(fact)
 		}
 	}
 	return facts
+}
+
+func narrativeDomainDataState(domains []DailyInsightDomain, key string) string {
+	for _, domain := range domains {
+		if domain.Key == key {
+			return domain.DataState
+		}
+	}
+	return ""
 }
 
 // headlineNarrativeFactFresh keeps compact headline slices from relabelling a
@@ -2944,6 +2960,17 @@ func localizedNarrativeSleepFact(locale string, latest, average float64) string 
 		return fmt.Sprintf("Kanonsko trajanje sna: %.1f h uz skorašnji prosek %.1f h.", latest, average)
 	default:
 		return fmt.Sprintf("Canonical sleep duration: %.1f h against a recent average of %.1f h.", latest, average)
+	}
+}
+
+func localizedNarrativePartialSleepFact(locale string, recorded float64) string {
+	switch normalizeDailyInsightLocale(locale) {
+	case "ru":
+		return fmt.Sprintf("Текущая записанная длительность сна: %.1f ч. Доступные данные не подтверждают полноту ночи или качество сна.", recorded)
+	case "sr":
+		return fmt.Sprintf("Trenutno zabeleženo trajanje sna je %.1f h. Dostupni podaci ne potvrđuju potpunost noći ni kvalitet sna.", recorded)
+	default:
+		return fmt.Sprintf("Currently recorded sleep duration is %.1f h. Available data do not confirm night completeness or sleep quality.", recorded)
 	}
 }
 

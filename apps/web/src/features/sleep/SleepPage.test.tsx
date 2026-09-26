@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { sleepFixtureResources } from "./fixtures";
 import { SleepReady } from "./SleepPage";
+import { translate } from "../../i18n";
 
 describe("SleepPage history periods", () => {
   it("shows transparent balance accounting and the editable manual goal", () => {
@@ -26,5 +27,14 @@ describe("SleepPage history periods", () => {
     fireEvent.click(screen.getByRole("button", { name: "All" }));
 
     expect(container.querySelectorAll(".sleep-history__night")).toHaveLength(90);
+  });
+
+  it.each(["en", "ru", "sr"] as const)("keeps the Server Insight visible and explains an absent AI Insight for partial sleep data in %s", (locale) => {
+    const resources = sleepFixtureResources(locale, "partial");
+    render(<SleepReady resources={resources} locale={locale} />);
+
+    expect(screen.getByText(translate(locale, "serverInsight"))).toBeVisible();
+    expect(screen.getByText(translate(locale, "sleepAIInsightUnavailablePartial"))).toBeVisible();
+    expect(screen.queryByText(translate(locale, "aiInsight"))).not.toBeInTheDocument();
   });
 });
