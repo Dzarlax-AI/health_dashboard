@@ -1839,6 +1839,45 @@
       "TodayInsightsResponse": {
         "additionalProperties": false,
         "properties": {
+          "ai_insight": {
+            "additionalProperties": false,
+            "properties": {
+              "alternative_action": {
+                "type": "string"
+              },
+              "evidence_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "fact_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "stance": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "text",
+              "stance",
+              "fact_ids",
+              "evidence_ids"
+            ],
+            "type": "object"
+          },
           "changes": {
             "items": {
               "additionalProperties": false,
@@ -1910,6 +1949,45 @@
             "items": {
               "additionalProperties": false,
               "properties": {
+                "ai_insight": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "alternative_action": {
+                      "type": "string"
+                    },
+                    "evidence_ids": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "fact_ids": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "stance": {
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "text",
+                    "stance",
+                    "fact_ids",
+                    "evidence_ids"
+                  ],
+                  "type": "object"
+                },
                 "as_of": {
                   "format": "date-time",
                   "type": "string"

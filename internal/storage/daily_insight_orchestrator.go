@@ -23,6 +23,7 @@ type dailyInsightNarrativeSlotWork struct {
 	snapshot            *health.DailyInsightSnapshot
 	aiCfg               AIConfig
 	lang                string
+	aiInsightInput      *health.AIInsightInput
 	materialHash        string
 	providerFingerprint string
 	notBefore           time.Time
@@ -219,7 +220,11 @@ func (s *DB) runDailyInsightNarrativeCoordinator(key string, coordinator *dailyI
 		if work == nil {
 			continue
 		}
-		if err := s.EnsureDailyInsightNarrativeSlot(context.Background(), work.snapshot, work.aiCfg, work.lang, health.DailyInsightNarrativeOverallSlot, work.materialHash, work.providerFingerprint); err != nil {
+		if work.aiInsightInput != nil {
+			if err := s.EnsureAIInsightSlot(context.Background(), work.snapshot, work.aiCfg, *work.aiInsightInput, work.materialHash, work.providerFingerprint); err != nil {
+				log.Printf("AI insight slot: date=%s lang=%s slot=%s: %v", work.snapshot.Date, work.lang, work.aiInsightInput.Slot, err)
+			}
+		} else if err := s.EnsureDailyInsightNarrativeSlot(context.Background(), work.snapshot, work.aiCfg, work.lang, health.DailyInsightNarrativeOverallSlot, work.materialHash, work.providerFingerprint); err != nil {
 			log.Printf("daily insight narrative slot: date=%s lang=%s slot=overall: %v", work.snapshot.Date, work.lang, err)
 		}
 	}

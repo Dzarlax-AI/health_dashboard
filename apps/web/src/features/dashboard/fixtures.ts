@@ -271,6 +271,7 @@ function todayInsights(locale: Locale, fixture: FixtureName): TodayInsightsRespo
         destination: { kind: "sleep", id: "sleep" },
         insight: { answer_kind: partial ? "provisional_pattern" : "confirmed_personal", evidence_ids: ["sleep"], fallback: true, meaning: localized(locale, { en: "Sleep context is available.", ru: "Контекст сна доступен.", sr: "Kontekst sna je dostupan." }), narrative: partial ? undefined : { claim_ids: ["recent_sleep_below_reference"], evidence_ids: ["sleep"], text: localized(locale, { en: "The recent pattern is worth noticing today, without defining the whole day.", ru: "Недавний паттерн стоит заметить сегодня, но он не определяет весь день.", sr: "Nedavni obrazac vredi primetiti danas, ali ne određuje ceo dan." }) }, observation: localized(locale, { en: "Your overnight pattern is usable.", ru: "Ночной паттерн можно использовать.", sr: "Noćni obrazac je upotrebljiv." }), state: "insight", title: localized(locale, { en: "Sleep", ru: "Сон", sr: "San" }) },
         key: "sleep",
+        ai_insight: partial ? undefined : { text: localized(locale, { en: "The sleep signal matters, but it does not need to define your whole day. If your energy feels steadier than the server's cautious read, a normal walk may be reasonable; keep the effort easy enough to adjust.", ru: "Сон сегодня важен, но он не обязан определять весь день. Если по ощущениям сил больше, чем предполагает осторожная оценка сервера, обычная прогулка вполне уместна — просто оставь себе возможность сбавить темп.", sr: "San je danas važan, ali ne mora da odredi ceo dan. Ako imaš više energije nego što sugeriše oprezna procena servera, obična šetnja je razumna; zadrži tempo koji lako možeš da prilagodiš." }), stance: "qualify", fact_ids: [], evidence_ids: [] },
         summary: localized(locale, { en: "Sleep", ru: "Сон", sr: "San" }),
       },
       {
@@ -280,6 +281,7 @@ function todayInsights(locale: Locale, fixture: FixtureName): TodayInsightsRespo
         destination: { kind: "section", id: "recovery" },
         insight: { answer_kind: stale ? "data_guidance" : "factual_context", evidence_ids: ["recovery"], fallback: true, meaning: localized(locale, { en: "Recovery is read directly from the server.", ru: "Восстановление берётся напрямую с сервера.", sr: "Oporavak stiže direktno sa servera." }), observation: localized(locale, { en: "Recovery remains the main context.", ru: "Восстановление остаётся главным контекстом.", sr: "Oporavak ostaje glavni kontekst." }), state: "insight", title: localized(locale, { en: "Recovery", ru: "Восстановление", sr: "Oporavak" }) },
         key: "recovery",
+        ai_insight: stale ? undefined : { text: localized(locale, { en: "I would read the recovery signal as one input, not a verdict. A modest plan with room to change course may fit better than a rigid target.", ru: "Я бы читала сигнал восстановления как один из ориентиров, а не как окончательный вердикт. Умеренный план, который можно подстроить по самочувствию, здесь полезнее жёсткой цели.", sr: "Signal oporavka bih čitala kao jedan orijentir, ne kao konačan sud. Umeren plan koji možeš da prilagodiš možda je korisniji od krutog cilja." }), stance: "qualify", fact_ids: [], evidence_ids: [] },
         summary: localized(locale, { en: "Recovery", ru: "Восстановление", sr: "Oporavak" }),
       },
       {
@@ -289,6 +291,7 @@ function todayInsights(locale: Locale, fixture: FixtureName): TodayInsightsRespo
         destination: energyDestination,
         insight: { answer_kind: "factual_context", evidence_ids: ["energy"], fallback: true, meaning: localized(locale, { en: "Energy keeps its existing activity detail.", ru: "Для энергии сохраняется текущая детализация активности.", sr: "Energija zadržava postojeći detalj aktivnosti." }), observation: localized(locale, { en: "Your reserve is available.", ru: "Запас доступен.", sr: "Tvoja rezerva je dostupna." }), state: "insight", title: localized(locale, { en: "Energy", ru: "Энергия", sr: "Energija" }) },
         key: "energy",
+        ai_insight: { text: localized(locale, { en: "This reserve is useful context, but it is not a command to spend it. I would leave room for how the day actually feels.", ru: "Запас энергии — полезный контекст, но не команда потратить его. Я бы оставила место для того, как день ощущается на самом деле.", sr: "Rezerva energije je koristan kontekst, ali nije naredba da je potrošiš. Ostavila bih prostor za to kako se dan zaista oseća." }), stance: "qualify", fact_ids: [], evidence_ids: [] },
         summary: localized(locale, { en: "Energy", ru: "Энергия", sr: "Energija" }),
       },
     ],
@@ -305,6 +308,7 @@ function todayInsights(locale: Locale, fixture: FixtureName): TodayInsightsRespo
       state: "insight",
       title: localized(locale, { en: "Today", ru: "Сегодня", sr: "Danas" }),
     },
+    ai_insight: fixture === "normal" ? { text: localized(locale, { en: "The server recommends a measured day. I see why: recovery is the main signal here. Still, that does not mean cancelling ordinary plans. If you feel steady, a familiar low-pressure activity may be more useful than treating the score as a restriction.", ru: "Сервер советует размеренный день, и я понимаю почему: сейчас главный сигнал — восстановление. Но это не значит, что привычные планы надо отменять. Если чувствуешь себя ровно, знакомая спокойная активность может быть полезнее, чем воспринимать оценку как запрет.", sr: "Server savetuje odmeren dan i razumem zašto: oporavak je glavni signal. To ipak ne znači da treba otkazati obične planove. Ako se osećaš stabilno, poznata lagana aktivnost može biti korisnija nego da ocenu shvatiš kao zabranu." }), stance: "qualify", alternative_action: localized(locale, { en: "Choose one familiar, easy activity and adjust by how it feels.", ru: "Выбери одну привычную спокойную активность и подстрой её по самочувствию.", sr: "Izaberi jednu poznatu laganu aktivnost i prilagodi je osećaju." }), fact_ids: [], evidence_ids: [] } : undefined,
     snapshot_version: "fixture-v1",
   };
 }

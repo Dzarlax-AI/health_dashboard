@@ -21,6 +21,7 @@ import { TodayInsights } from "./features/dashboard/TodayInsights";
 import { resolveHealthSection } from "./features/health-detail/config";
 import { HealthDetailPage } from "./features/health-detail/HealthDetailPage";
 import { SleepPage } from "./features/sleep/SleepPage";
+import { EnergyPage } from "./features/energy/EnergyPage";
 import { resolveLocale, translate, type Locale } from "./i18n";
 
 type AppState =
@@ -209,6 +210,7 @@ function DashboardApp() {
                   <ScoreSummaryCard
                     score={model.energy}
                     fallbackLabel={translate(locale, "energy")}
+                    href={`/energy?lang=${locale}`}
                   />
                 ) : null}
                 {model.sleep ? (
@@ -242,6 +244,7 @@ function DashboardApp() {
 
 export function App() {
   if (window.location.pathname === "/sleep") return <SleepPage />;
+  if (window.location.pathname === "/energy") return <EnergyPage />;
   const healthSection = resolveHealthSection(window.location.pathname);
   return healthSection ? <HealthDetailPage config={healthSection} /> : <DashboardApp />;
 }

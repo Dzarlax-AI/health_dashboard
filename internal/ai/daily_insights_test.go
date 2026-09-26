@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"health-receiver/internal/health"
 )
@@ -39,7 +40,7 @@ func (p *dailyInsightTestProvider) Generate(_ context.Context, cfg ProviderConfi
 		return GenerationResult{}, p.errors[index]
 	}
 	if index < len(p.responses) {
-		return GenerationResult{Text: p.responses[index], RequestID: fmt.Sprintf("request-%d", index+1), InputTokens: int64(100 + index), OutputTokens: int64(10 + index), TotalTokens: int64(110 + 2*index), FinishReason: "completed", Attempts: 1}, nil
+		return GenerationResult{Text: p.responses[index], RequestID: fmt.Sprintf("request-%d", index+1), InputTokens: int64(100 + index), OutputTokens: int64(10 + index), TotalTokens: int64(110 + 2*index), FinishReason: "completed", Attempts: 1, Latency: time.Duration(index+1) * time.Millisecond}, nil
 	}
 	if index == 0 {
 		return GenerationResult{Text: p.response, RequestID: "request-1", InputTokens: 100, OutputTokens: 10, TotalTokens: 110, FinishReason: "completed", Attempts: 1}, nil

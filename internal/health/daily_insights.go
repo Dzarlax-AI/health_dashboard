@@ -210,6 +210,7 @@ type DailyInsightDomain struct {
 	AsOf        *time.Time              `json:"as_of,omitempty"`
 	Summary     string                  `json:"summary"`
 	Insight     DailyInsight            `json:"insight"`
+	AIInsight   *DailyInsightAIInsight  `json:"ai_insight,omitempty"`
 	Destination DailyInsightDestination `json:"destination"`
 	// NarrativeSubject is a closed server-only variant for a permitted B1
 	// proposition. It must participate in the material hash, but does not
@@ -233,6 +234,7 @@ type DailyInsightSnapshot struct {
 	Version                 string                 `json:"snapshot_version"`
 	UpdatedAt               *time.Time             `json:"updated_at,omitempty"`
 	Primary                 DailyInsight           `json:"primary"`
+	AIInsight               *DailyInsightAIInsight `json:"ai_insight,omitempty"`
 	Domains                 []DailyInsightDomain   `json:"domains"`
 	Evidence                []DailyInsightEvidence `json:"evidence"`
 	Changes                 []DailyInsightChange   `json:"changes"`
@@ -1534,6 +1536,12 @@ func ApplyDailyInsightNarrative(snapshot *DailyInsightSnapshot, narrative DailyI
 
 func cloneDailyInsightSnapshot(snapshot *DailyInsightSnapshot) *DailyInsightSnapshot {
 	out := *snapshot
+	if insight := snapshot.AIInsight; insight != nil {
+		copy := *insight
+		copy.FactIDs = append([]string(nil), insight.FactIDs...)
+		copy.EvidenceIDs = append([]string(nil), insight.EvidenceIDs...)
+		out.AIInsight = &copy
+	}
 	out.DecisionEvidenceDomains = append([]string(nil), snapshot.DecisionEvidenceDomains...)
 	out.Primary.EvidenceIDs = append([]string(nil), snapshot.Primary.EvidenceIDs...)
 	if narrative := snapshot.Primary.Narrative; narrative != nil {
@@ -1541,6 +1549,12 @@ func cloneDailyInsightSnapshot(snapshot *DailyInsightSnapshot) *DailyInsightSnap
 	}
 	out.Domains = append([]DailyInsightDomain(nil), snapshot.Domains...)
 	for index := range out.Domains {
+		if insight := snapshot.Domains[index].AIInsight; insight != nil {
+			copy := *insight
+			copy.FactIDs = append([]string(nil), insight.FactIDs...)
+			copy.EvidenceIDs = append([]string(nil), insight.EvidenceIDs...)
+			out.Domains[index].AIInsight = &copy
+		}
 		out.Domains[index].Insight.EvidenceIDs = append([]string(nil), snapshot.Domains[index].Insight.EvidenceIDs...)
 		if narrative := snapshot.Domains[index].Insight.Narrative; narrative != nil {
 			out.Domains[index].Insight.Narrative = &DailyInsightNarrativeOverlay{Text: narrative.Text, ClaimIDs: append([]string(nil), narrative.ClaimIDs...), EvidenceIDs: append([]string(nil), narrative.EvidenceIDs...)}
@@ -2597,6 +2611,13 @@ func buildDailyInsightNarrativeFacts(resp *BriefingResponse, domains []DailyInsi
 			score = resp.ReadinessToday
 		}
 		add(DailyInsightNarrativeFact{ID: "readiness_current", Domain: "recovery", Meaning: "current readiness display, band, and serving state", Window: "today", Fresh: true, Statement: localizedNarrativeReadinessFact(locale, score, firstNonEmptyInsight(resp.ReadinessTodayLabel, resp.ReadinessLabel), resp.ReadinessServing), DisplayValues: []string{fmt.Sprintf("%d", score)}, EvidenceIDs: []string{"readiness_current"}})
+		if raw := resp.RawMetrics; raw != nil && raw.ReadinessEvidence != nil {
+			for _, component := range []ReadinessComponentEvidence{raw.ReadinessEvidence.HRV, raw.ReadinessEvidence.RHR} {
+				if fact, ok := readinessComponentNarrativeFact(resp, domains, locale, component); ok {
+					add(fact)
+				}
+			}
+		}
 	}
 	if headline := resp.Headline; headline != nil && narrativeBriefingDateAligned(resp.Date) {
 		added := 0
@@ -2620,7 +2641,7 @@ func buildDailyInsightNarrativeFacts(resp *BriefingResponse, domains []DailyInsi
 	}
 	if bank := resp.EnergyBank; bank != nil && energyNarrativeFresh(bank) {
 		statement := localizedNarrativeEnergyFact(locale, bank)
-		add(DailyInsightNarrativeFact{ID: "energy_authoritative_state", Domain: "energy", Meaning: "authoritative EnergyBank current state and verdict", Window: "today so far", Fresh: true, Statement: statement, DisplayValues: narrativeDisplayValues(statement), EvidenceIDs: []string{"energy_authoritative_state"}})
+		add(DailyInsightNarrativeFact{ID: "energy_authoritative_state", Domain: "energy", Meaning: "current EnergyBank reserve, drain, strain and stress measurements; server verdict is separate", Window: "today so far", Fresh: true, Statement: statement, DisplayValues: narrativeDisplayValues(statement), EvidenceIDs: []string{"energy_authoritative_state"}})
 	}
 	if raw := resp.RawMetrics; raw != nil && raw.LastDate == resp.Date && narrativeBriefingDateAligned(resp.Date) {
 		if fact, ok := boundedSleepPatternFact(raw.Daily, raw.LastDate, locale); ok {
@@ -2747,6 +2768,63 @@ func readinessNarrativeFresh(resp *BriefingResponse) bool {
 		}
 	}
 	return false
+}
+
+// readinessComponentNarrativeFact exposes at most the two recovery inputs
+// whose own serving evidence proves a current, final, adequately covered
+// aggregate. ReadinessEvidence carries no baseline; when a matching fresh
+// headline provides one, it may be stated as a comparison. Otherwise the
+// packet deliberately reports only the confirmed current value and coverage.
+func readinessComponentNarrativeFact(resp *BriefingResponse, domains []DailyInsightDomain, locale string, component ReadinessComponentEvidence) (DailyInsightNarrativeFact, bool) {
+	if resp == nil || resp.RawMetrics == nil || resp.RawMetrics.ReadinessEvidence == nil || resp.RawMetrics.ReadinessEvidence.Date != resp.Date || !narrativeBriefingDateAligned(resp.Date) ||
+		component.Value == nil || !component.Present || component.EvaluatedDate != resp.Date || component.SourceDate != resp.Date ||
+		component.Freshness != ReadinessFreshnessOK || component.Confidence != ReadinessConfidenceFinal || component.SampleCount <= 0 {
+		return DailyInsightNarrativeFact{}, false
+	}
+	metric, unit, id := "", "", ""
+	switch component.Metric {
+	case "heart_rate_variability":
+		if component.SampleCount < MinSleepWindowHRVSamplesForFullConfidence {
+			return DailyInsightNarrativeFact{}, false
+		}
+		metric, unit, id = "HRV", "ms", "readiness_hrv_current"
+	case "resting_heart_rate":
+		metric, unit, id = "resting heart rate", "bpm", "readiness_rhr_current"
+	default:
+		return DailyInsightNarrativeFact{}, false
+	}
+	baseline, hasBaseline := readinessComponentNarrativeBaseline(resp, domains, component.Metric, *component.Value)
+	values := []string{fmt.Sprintf("%.1f", *component.Value)}
+	samples := component.SampleCount
+	if component.Metric == "resting_heart_rate" {
+		// This counts retained RHR aggregate records, not independent pulse
+		// measurements. Freshness/confidence above owns eligibility; exposing
+		// the count as samples invites an unsupported reliability verdict.
+		samples = 0
+	} else {
+		values = append(values, fmt.Sprintf("%d", samples))
+	}
+	window := "today, confirmed same-day coverage"
+	meaning := "confirmed current recovery component without inferred deviation"
+	if hasBaseline {
+		values = append(values, fmt.Sprintf("%.1f", baseline))
+		window = "today versus confirmed personal baseline"
+		meaning = "confirmed current recovery component with personal baseline"
+	}
+	return DailyInsightNarrativeFact{ID: id, Domain: "recovery", Meaning: meaning, Window: window, Fresh: true,
+		Statement: localizedNarrativeRecoveryComponentFact(locale, metric, unit, *component.Value, samples, baseline, hasBaseline), DisplayValues: values, EvidenceIDs: []string{id}}, true
+}
+
+func readinessComponentNarrativeBaseline(resp *BriefingResponse, domains []DailyInsightDomain, metric string, value float64) (float64, bool) {
+	if resp == nil || resp.Headline == nil || !headlineNarrativeFactFresh(resp, domains, "recovery", metric) {
+		return 0, false
+	}
+	for _, candidate := range resp.Headline.Metrics {
+		if candidate.Metric == metric && candidate.Baseline > 0 && math.Abs(candidate.Value-value) < 0.0001 {
+			return candidate.Baseline, true
+		}
+	}
+	return 0, false
 }
 
 // boundedSleepPatternFact summarizes only a closed four-day calendar window.
@@ -2895,6 +2973,83 @@ func localizedNarrativeReadinessFact(locale string, score int, label string, ser
 	}
 }
 
+func localizedNarrativeRecoveryComponentFact(locale, metric, unit string, value float64, samples int, baseline float64, hasBaseline bool) string {
+	metric = localizedNarrativeRecoveryMetric(locale, metric)
+	coverage := ""
+	if samples > 0 {
+		coverage = "; " + localizedNarrativeRecoverySampleCount(locale, samples)
+		switch normalizeDailyInsightLocale(locale) {
+		case "ru":
+			coverage += " за этот день"
+		case "sr":
+			coverage += " za taj dan"
+		}
+	}
+	if hasBaseline {
+		switch normalizeDailyInsightLocale(locale) {
+		case "ru":
+			return fmt.Sprintf("Подтверждённое текущее значение %s: %.1f %s при личной базе %.1f %s%s.", metric, value, unit, baseline, unit, coverage)
+		case "sr":
+			return fmt.Sprintf("Potvrđena današnja vrednost %s: %.1f %s uz ličnu osnovu %.1f %s%s.", metric, value, unit, baseline, unit, coverage)
+		default:
+			return fmt.Sprintf("Confirmed current %s: %.1f %s against a personal baseline of %.1f %s%s.", metric, value, unit, baseline, unit, coverage)
+		}
+	}
+	switch normalizeDailyInsightLocale(locale) {
+	case "ru":
+		return fmt.Sprintf("Подтверждённое текущее значение %s: %.1f %s%s.", metric, value, unit, coverage)
+	case "sr":
+		return fmt.Sprintf("Potvrđena današnja vrednost %s: %.1f %s%s.", metric, value, unit, coverage)
+	default:
+		return fmt.Sprintf("Confirmed current %s: %.1f %s%s.", metric, value, unit, coverage)
+	}
+}
+
+func localizedNarrativeRecoveryMetric(locale, metric string) string {
+	if metric != "resting heart rate" {
+		return metric
+	}
+	switch normalizeDailyInsightLocale(locale) {
+	case "ru":
+		return "пульса в покое"
+	case "sr":
+		return "pulsa u mirovanju"
+	default:
+		return metric
+	}
+}
+
+func localizedNarrativeRecoverySampleCount(locale string, samples int) string {
+	switch normalizeDailyInsightLocale(locale) {
+	case "ru":
+		mod100 := samples % 100
+		if mod100 >= 11 && mod100 <= 14 {
+			return fmt.Sprintf("%d измерений", samples)
+		}
+		switch samples % 10 {
+		case 1:
+			return fmt.Sprintf("%d измерение", samples)
+		case 2, 3, 4:
+			return fmt.Sprintf("%d измерения", samples)
+		default:
+			return fmt.Sprintf("%d измерений", samples)
+		}
+	case "sr":
+		mod100 := samples % 100
+		if mod100 < 11 || mod100 > 14 {
+			if samples%10 == 1 {
+				return fmt.Sprintf("%d merenje", samples)
+			}
+		}
+		return fmt.Sprintf("%d merenja", samples)
+	default:
+		if samples == 1 {
+			return "1 same-day sample"
+		}
+		return fmt.Sprintf("%d same-day samples", samples)
+	}
+}
+
 func localizedNarrativeHeadlineFact(locale string, metric HeadlineMetricDelta) string {
 	if metric.Baseline <= 0 {
 		switch normalizeDailyInsightLocale(locale) {
@@ -2917,14 +3072,13 @@ func localizedNarrativeHeadlineFact(locale string, metric HeadlineMetricDelta) s
 }
 
 func localizedNarrativeEnergyFact(locale string, bank *EnergyBank) string {
-	label := firstNonEmptyInsight(bank.VerdictLabel, bank.ActionVerdict)
 	switch normalizeDailyInsightLocale(locale) {
 	case "ru":
-		return fmt.Sprintf("EnergyBank: %d из %d, расход %d, нагрузка %d, стресс %d; вердикт: %s. %s", bank.Current, bank.Capacity, bank.DrainSoFar, bank.Strain, bank.Stress, label, bank.VerdictReason)
+		return fmt.Sprintf("EnergyBank: запас %d из %d, расход %d, нагрузка %d, стресс %d.", bank.Current, bank.Capacity, bank.DrainSoFar, bank.Strain, bank.Stress)
 	case "sr":
-		return fmt.Sprintf("EnergyBank: %d od %d, potrošnja %d, opterećenje %d, stres %d; zaključak: %s. %s", bank.Current, bank.Capacity, bank.DrainSoFar, bank.Strain, bank.Stress, label, bank.VerdictReason)
+		return fmt.Sprintf("EnergyBank: rezerva %d od %d, potrošnja %d, opterećenje %d, stres %d.", bank.Current, bank.Capacity, bank.DrainSoFar, bank.Strain, bank.Stress)
 	default:
-		return fmt.Sprintf("EnergyBank: %d of %d, drain %d, strain %d, stress %d; verdict: %s. %s", bank.Current, bank.Capacity, bank.DrainSoFar, bank.Strain, bank.Stress, label, bank.VerdictReason)
+		return fmt.Sprintf("EnergyBank: reserve %d of %d, drain %d, strain %d, stress %d.", bank.Current, bank.Capacity, bank.DrainSoFar, bank.Strain, bank.Stress)
 	}
 }
 
@@ -3445,7 +3599,7 @@ func localizedSleepComparison(copy insightCopy, latest, baseline float64) string
 		case "ru":
 			return "Продолжительность сна близка к вашему среднему."
 		case "sr":
-			return "Trajanje sna je blizu vašeg prosjeka."
+			return "Trajanje sna je blizu ličnog proseka."
 		default:
 			return "Sleep duration is close to your usual average."
 		}
@@ -3455,7 +3609,7 @@ func localizedSleepComparison(copy insightCopy, latest, baseline float64) string
 		case "ru":
 			return fmt.Sprintf("На %.1f ч дольше вашего среднего.", delta)
 		case "sr":
-			return fmt.Sprintf("%.1f h duže od vašeg prosjeka.", delta)
+			return fmt.Sprintf("%.1f h duže od ličnog proseka.", delta)
 		default:
 			return fmt.Sprintf("%.1f hours longer than your usual average.", delta)
 		}
@@ -3464,7 +3618,7 @@ func localizedSleepComparison(copy insightCopy, latest, baseline float64) string
 	case "ru":
 		return fmt.Sprintf("На %.1f ч меньше вашего среднего.", -delta)
 	case "sr":
-		return fmt.Sprintf("%.1f h kraće od vašeg prosjeka.", -delta)
+		return fmt.Sprintf("%.1f h kraće od ličnog proseka.", -delta)
 	default:
 		return fmt.Sprintf("%.1f hours shorter than your usual average.", -delta)
 	}

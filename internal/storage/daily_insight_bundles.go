@@ -257,6 +257,13 @@ func DailyInsightGenerationFingerprint(cfg AIConfig, lang string) string {
 // bundle and records the generation fingerprint alongside it. This keeps a
 // provider/model/policy change from serving a narrative made for old rules.
 func (s *DB) RefreshTodayInsightSnapshotWithConfig(ctx context.Context, lang string, aiCfg AIConfig) (*health.DailyInsightSnapshot, error) {
+	return s.RefreshTodayInsightSnapshotWithFingerprint(ctx, lang, DailyInsightGenerationFingerprint(aiCfg, lang))
+}
+
+// RefreshTodayInsightSnapshotWithFingerprint lets each Today contract persist
+// its own generation identity without scheduling provider work. Ingestion uses
+// the AI Insight fingerprint; the legacy narrative API keeps its old one.
+func (s *DB) RefreshTodayInsightSnapshotWithFingerprint(ctx context.Context, lang, providerFingerprint string) (*health.DailyInsightSnapshot, error) {
 	snapshot, err := s.BuildTodayInsightSnapshot(ctx, lang, time.Now())
 	if err != nil {
 		return nil, err
@@ -273,7 +280,7 @@ func (s *DB) RefreshTodayInsightSnapshotWithConfig(ctx context.Context, lang str
 		SchemaVersion:       health.DailyInsightSnapshotVersion,
 		PolicyVersion:       health.DailyInsightPolicyVersion,
 		PromptRevision:      DailyInsightNarrativeStaticRevision(),
-		ProviderFingerprint: DailyInsightGenerationFingerprint(aiCfg, lang),
+		ProviderFingerprint: providerFingerprint,
 		Snapshot:            payload,
 	}); err != nil {
 		return nil, err

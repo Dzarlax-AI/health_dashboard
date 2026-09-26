@@ -127,7 +127,7 @@ test("dark-mode action chip keeps a distinct readable surface", async ({ page })
   await page.goto("/?lang=en&fixture=normal");
   await page.locator("html").evaluate((root) => root.setAttribute("dark-mode", ""));
 
-  const styles = await page.locator(".today-hero__action").evaluate((action) => {
+  const styles = await page.locator(".insight-pair__card--server .insight-pair__action").evaluate((action) => {
     const computed = getComputedStyle(action);
     return { backgroundColor: computed.backgroundColor, borderWidth: computed.borderWidth, color: computed.color };
   });

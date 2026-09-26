@@ -8,6 +8,7 @@ import {
   getSleepGoal,
   getSection,
   getSession,
+  getTodayInsights,
   type AIBriefingResponse,
   type DerivedMetricsResponse,
   type HealthBriefingResponse,
@@ -17,6 +18,7 @@ import {
   type SessionResponse,
   type SleepDurationBalanceResponse,
   type SleepGoalResponse,
+  type TodayInsightsResponse,
 } from "../../api/client";
 import type { Locale } from "../../i18n";
 
@@ -40,6 +42,7 @@ export interface SleepResources {
   session?: SessionResponse;
   balance?: SleepDurationBalanceResponse;
   goal?: SleepGoalResponse;
+  todayInsights?: TodayInsightsResponse;
   metrics: Partial<Record<SleepMetric, MetricDataResponse>>;
   missing: string[];
 }
@@ -53,6 +56,7 @@ export interface SleepLoaders {
   session: typeof getSession;
   balance: typeof getSleepDurationBalance;
   goal: typeof getSleepGoal;
+  todayInsights?: typeof getTodayInsights;
   metric: typeof getMetricData;
 }
 
@@ -65,6 +69,7 @@ const defaultLoaders: SleepLoaders = {
   session: getSession,
   balance: getSleepDurationBalance,
   goal: getSleepGoal,
+  todayInsights: getTodayInsights,
   metric: getMetricData,
 };
 
@@ -101,13 +106,14 @@ export async function loadSleepResources(
   const rawBriefing = await loaders.briefing(locale, signal);
   const briefingDate = normalizedDate(rawBriefing.date);
   const briefing = briefingDate ? { ...rawBriefing, date: briefingDate } : rawBriefing;
-  const [section, ai, session, range, balance, goal] = await Promise.allSettled([
+  const [section, ai, session, range, balance, goal, todayInsights] = await Promise.allSettled([
     loaders.section("sleep", locale, signal),
     loaders.ai(locale, signal),
     loaders.session(signal),
     loaders.range("sleep_total", signal),
     loaders.balance(signal, briefingDate),
     loaders.goal(signal, briefingDate),
+    loaders.todayInsights?.(locale, signal) ?? Promise.resolve(undefined),
   ]);
   throwIfAborted(signal);
 
@@ -118,6 +124,7 @@ export async function loadSleepResources(
     range.status === "rejected" ? "range" : undefined,
     balance.status === "rejected" ? "balance" : undefined,
     goal.status === "rejected" ? "goal" : undefined,
+    todayInsights.status === "rejected" ? "todayInsights" : undefined,
   ].filter((name): name is string => Boolean(name));
 
   if (!briefingDate) {
@@ -129,6 +136,7 @@ export async function loadSleepResources(
       range: fulfilled(range),
       balance: fulfilled(balance),
       goal: fulfilled(goal),
+      todayInsights: fulfilled(todayInsights),
       metrics: {},
       missing: fixedMissing,
     };
@@ -169,6 +177,7 @@ export async function loadSleepResources(
     range: fulfilled(range),
     balance: fulfilled(balance),
     goal: fulfilled(goal),
+    todayInsights: fulfilled(todayInsights),
     metrics,
     missing: [
       ...fixedMissing,

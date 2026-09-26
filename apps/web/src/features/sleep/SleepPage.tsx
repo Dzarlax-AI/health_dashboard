@@ -5,18 +5,21 @@ import {
   getAIBriefing,
   getSleepDurationBalance,
   getSleepGoal,
+  getTodayInsights,
   putSleepGoal,
   type AIBriefingResponse,
   type SleepDurationBalanceResponse,
   type SleepGoalValue,
+  type TodayInsightsResponse,
 } from "../../api/client";
 import {
   clearSessionRecoveryAttempt,
   recoverSessionOnUnauthorized,
 } from "../../auth/sessionRecovery";
 import { AppHeader } from "../../components/AppHeader";
+import { InsightPair } from "../../components/InsightPair";
 import { StatusPanel } from "../../components/StatusPanel";
-import { shouldPollAI } from "../dashboard/aiPolling";
+import { isTodayInsightsGenerationPending, shouldPollAI, todayInsightsPollDelayMs } from "../dashboard/aiPolling";
 import { resolveLocale, translate, type Locale } from "../../i18n";
 import { sleepFixtureResources } from "./fixtures";
 import { loadSleepResources, type SleepResources } from "./loader";
@@ -130,6 +133,7 @@ export function SleepReady({ resources, locale }: { resources: SleepResources; l
   const [selectedDate, setSelectedDate] = useState(resources.briefing.date || days[0]?.date || "");
   const [historicAI, setHistoricAI] = useState<AIBriefingResponse>();
   const [todayAI, setTodayAI] = useState(resources.ai);
+  const [todayInsights, setTodayInsights] = useState<TodayInsightsResponse | undefined>(resources.todayInsights);
   const [balance, setBalance] = useState<SleepDurationBalanceResponse | undefined>(resources.balance);
   const [goal, setGoal] = useState<SleepGoalValue | null | undefined>(resources.goal?.goal);
   const [goalHours, setGoalHours] = useState(resources.goal?.goal?.goal_hours?.toString() ?? "8");
@@ -137,6 +141,7 @@ export function SleepReady({ resources, locale }: { resources: SleepResources; l
   const [savingGoal, setSavingGoal] = useState(false);
   const [goalSaveError, setGoalSaveError] = useState(false);
   const aiPollAttempts = useRef(0);
+  const insightPollAttempts = useRef(0);
   const selected = days.find((day) => day.date === selectedDate) ?? days[0];
   const current = days.find((day) => day.date === resources.briefing.date);
   const visible = (range === "all" ? days : days.slice(0, range)).reverse();
@@ -154,6 +159,7 @@ export function SleepReady({ resources, locale }: { resources: SleepResources; l
   }, [locale, resources.briefing.date, selectedDate]);
 
   useEffect(() => {
+    if (todayInsights) return;
     if (!shouldPollAI(todayAI, aiPollAttempts.current)) {
       return;
     }
@@ -180,9 +186,33 @@ export function SleepReady({ resources, locale }: { resources: SleepResources; l
         window.clearTimeout(timer);
       }
     };
-  }, [locale, todayAI]);
+  }, [locale, todayAI, todayInsights]);
+
+  useEffect(() => {
+    if (todayInsightsPollDelayMs(todayInsights, insightPollAttempts.current) === undefined) return;
+    let timer: number | undefined;
+    const controller = new AbortController();
+    const schedule = () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      const delay = todayInsightsPollDelayMs(todayInsights, insightPollAttempts.current);
+      timer = document.visibilityState === "visible" && delay !== undefined ? window.setTimeout(() => {
+        if (isTodayInsightsGenerationPending(todayInsights)) insightPollAttempts.current += 1;
+        getTodayInsights(locale, controller.signal).then(setTodayInsights).catch(() => {
+          if (!controller.signal.aborted) schedule();
+        });
+      }, delay) : undefined;
+    };
+    schedule();
+    document.addEventListener("visibilitychange", schedule);
+    return () => {
+      document.removeEventListener("visibilitychange", schedule);
+      controller.abort();
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [locale, todayInsights]);
 
   const currentInsight = current ? sleepInsight(todayAI) : "";
+  const sleepDomain = todayInsights?.domains?.find((domain) => domain.key === "sleep");
   const historicInsight =
     historicAI?.date === selectedDate ? sleepInsight(historicAI) : "";
   const selectedComposition = selected ? sleepComposition(selected) : undefined;
@@ -240,7 +270,17 @@ export function SleepReady({ resources, locale }: { resources: SleepResources; l
             <article><span>{translate(locale, "sleepRegularity")}</span><strong>{resources.briefing.sleep_regularity_index !== undefined ? `${resources.briefing.sleep_regularity_index.toFixed(0)} / 100` : "—"}</strong></article>
           </div>
         </div>
-        {currentInsight ? (
+        {sleepDomain ? (
+          <InsightPair
+            locale={locale}
+            observation={sleepDomain.insight.observation}
+            meaning={sleepDomain.insight.meaning}
+            action={sleepDomain.insight.next_step?.text}
+            ai={sleepDomain.ai_insight}
+            state={todayInsights?.generation.slots?.find((slot) => slot.key === "sleep")?.state}
+            preview={todayInsights?.generation.narrative_mode === "preview"}
+          />
+        ) : currentInsight ? (
           <article className="sleep-ai-card">
             <span>✦ {translate(locale, "sleepInsight")}</span>
             <p>{currentInsight}</p>

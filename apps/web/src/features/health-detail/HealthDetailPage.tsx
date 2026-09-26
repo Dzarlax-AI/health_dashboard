@@ -1,15 +1,16 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
-import { ClientApiError, getAIBriefing } from "../../api/client";
+import { ClientApiError, getTodayInsights } from "../../api/client";
 import {
   clearSessionRecoveryAttempt,
   recoverSessionOnUnauthorized,
 } from "../../auth/sessionRecovery";
 import { AppHeader } from "../../components/AppHeader";
+import { InsightPair } from "../../components/InsightPair";
 import { LazyTrendChart } from "../../components/charts/LazyTrendChart";
 import { StatusPanel } from "../../components/StatusPanel";
 import { resolveLocale, translate, type Locale } from "../../i18n";
-import { shouldPollAI } from "../dashboard/aiPolling";
+import { todayInsightsPollDelayMs } from "../dashboard/aiPolling";
 import type { HealthSectionConfig } from "./config";
 import {
   healthDetailFixtureNames,
@@ -198,6 +199,9 @@ export function HealthDetailReady({
     [config, locale, resources],
   );
   const [range, setRange] = useState<HistoryRange>(30);
+  const recoveryDomain = config.key === "recovery"
+    ? resources.todayInsights?.domains?.find((domain) => domain.key === "recovery")
+    : undefined;
 
   return (
     <main className="health-detail-page" data-section={config.key}>
@@ -221,7 +225,17 @@ export function HealthDetailReady({
                 : translate(locale, "healthDetailMain")}</p>
           </div>
         </div>
-        {model.context ? (
+        {recoveryDomain ? (
+          <InsightPair
+            locale={locale}
+            observation={recoveryDomain.insight.observation}
+            meaning={recoveryDomain.insight.meaning}
+            action={recoveryDomain.insight.next_step?.text}
+            ai={recoveryDomain.ai_insight}
+            state={resources.todayInsights?.generation.slots?.find((slot) => slot.key === "recovery")?.state}
+            preview={resources.todayInsights?.generation.narrative_mode === "preview"}
+          />
+        ) : model.context ? (
           <article className="health-detail-context">
             <span>✦ {translate(locale, model.contextIsAI ? "healthDetailRecoveryInsight" : "healthDetailContext")}</span>
             <p>{model.context}</p>
@@ -308,7 +322,7 @@ export function HealthDetailPage({ config }: { config: HealthSectionConfig }) {
       fixture ||
       config.key !== "recovery" ||
       state.status !== "ready" ||
-      !shouldPollAI(state.resources.ai, aiPollAttempts.current)
+      todayInsightsPollDelayMs(state.resources.todayInsights, aiPollAttempts.current) === undefined
     ) {
       return;
     }
@@ -316,17 +330,20 @@ export function HealthDetailPage({ config }: { config: HealthSectionConfig }) {
     const controller = new AbortController();
     const schedule = () => {
       if (timer !== undefined) window.clearTimeout(timer);
-      timer = document.visibilityState === "visible"
+      const delay = todayInsightsPollDelayMs(state.resources.todayInsights, aiPollAttempts.current);
+      timer = document.visibilityState === "visible" && delay !== undefined
         ? window.setTimeout(() => {
-            aiPollAttempts.current += 1;
-            getAIBriefing(locale, controller.signal)
-              .then((ai) => setLiveState((current) =>
+            if (state.resources.todayInsights?.generation.state !== "disabled") aiPollAttempts.current += 1;
+            getTodayInsights(locale, controller.signal)
+              .then((todayInsights) => setLiveState((current) =>
                 current.status === "ready"
-                  ? { ...current, resources: { ...current.resources, ai } }
+                  ? { ...current, resources: { ...current.resources, todayInsights } }
                   : current,
               ))
-              .catch(() => undefined);
-          }, 60_000)
+              .catch(() => {
+                if (!controller.signal.aborted) schedule();
+              });
+          }, delay)
         : undefined;
     };
     schedule();

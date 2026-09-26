@@ -734,16 +734,12 @@ func makeTodayDerivedStateTrigger(ctx context.Context, db *storage.DB, schema st
 				lang = "en"
 			}
 			cfg := aiConfig()
-			if !storage.TodayInsightsB1GenerationEnabled(db, cfg) {
-				// Match the request path: a mutation-triggered refresh may persist
-				// deterministic material, but must never call a provider before
-				// the tenant explicitly enables approved B1 or its isolated preview.
-				// Keep the stored bundle fingerprint disabled too. Otherwise a
-				// background refresh could leave a misleading cold/generating B1
-				// state even though the provider boundary correctly refuses it.
+			if !storage.TodayInsightsB1PreviewEnabled(db) {
+				// Approval for the retired narrative is not approval for the new
+				// independent AI Insight. Match the request path's preview gate.
 				cfg = storage.AIConfig{}
 			}
-			snapshot, err := db.RefreshTodayInsightSnapshotWithConfig(ctx, lang, cfg)
+			_, err := db.RefreshTodayInsightSnapshotWithFingerprint(ctx, lang, storage.AIInsightGenerationFingerprint(cfg, lang))
 			if err != nil {
 				log.Printf("[%s] today insight snapshot: %v", schema, err)
 				return err
@@ -751,10 +747,9 @@ func makeTodayDerivedStateTrigger(ctx context.Context, db *storage.DB, schema st
 			if err := db.RefreshLegacyEnergyBankSnapshot(lang); err != nil {
 				return fmt.Errorf("refresh legacy energy bank snapshot: %w", err)
 			}
-			// The new Today path owns its own provider generation. Legacy blocks
-			// remain compatibility/on-demand for their existing endpoint and the
-			// morning report, so one derived-state refresh never pays twice.
-			db.EnsureDailyInsightNarrativeSlotsAsync(snapshot, cfg, lang)
+			// The request path owns AI Insight generation. Ingestion only refreshes
+			// deterministic facts; it must not queue the retired B1 writer into
+			// the same durable slot.
 			return nil
 		})
 	}

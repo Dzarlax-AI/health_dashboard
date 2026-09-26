@@ -2,6 +2,7 @@ import type { MetricDataResponse, SectionResponse } from "../../api/client";
 import type { Locale } from "../../i18n";
 import type { HealthSectionConfig } from "./config";
 import type { HealthDetailResources } from "./loader";
+import { fixtureResources } from "../dashboard/fixtures";
 
 export const healthDetailFixtureNames = ["normal", "partial", "empty"] as const;
 export type HealthDetailFixtureName = (typeof healthDetailFixtureNames)[number];
@@ -147,6 +148,8 @@ export function healthDetailFixtureResources(
   }
 
   return {
+    todayInsights: config.key === "recovery" && fixture === "normal"
+      ? fixtureResources(locale, "normal").todayInsights : undefined,
     briefing: {
       date: "2026-08-06",
       readiness: 74,

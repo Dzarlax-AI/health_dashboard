@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-const domainOrder = ["sleep", "recovery", "activity"];
+const domainOrder = ["sleep", "recovery", "energy"];
 
 test("keeps the three Today domains in server order on desktop", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });

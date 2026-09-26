@@ -6,6 +6,7 @@ import {
   getReadinessHistory,
   getSection,
   getSession,
+  getTodayInsights,
   type AIBriefingResponse,
   type HealthBriefingResponse,
   type MetricDataOptions,
@@ -13,6 +14,7 @@ import {
   type ReadinessHistoryResponse,
   type SectionResponse,
   type SessionResponse,
+  type TodayInsightsResponse,
 } from "../../api/client";
 import type { Locale } from "../../i18n";
 import type { HealthSectionConfig } from "./config";
@@ -21,6 +23,7 @@ export interface HealthDetailResources {
   briefing: HealthBriefingResponse;
   section?: SectionResponse;
   ai?: AIBriefingResponse;
+  todayInsights?: TodayInsightsResponse;
   session?: SessionResponse;
   readiness?: ReadinessHistoryResponse;
   metrics: Record<string, MetricDataResponse>;
@@ -33,6 +36,7 @@ export interface HealthDetailLoaders {
   briefing: typeof getHealthBriefing;
   section: typeof getSection;
   ai: typeof getAIBriefing;
+  todayInsights?: typeof getTodayInsights;
   session: typeof getSession;
   range: typeof getMetricRange;
   readiness: typeof getReadinessHistory;
@@ -43,6 +47,7 @@ const defaultLoaders: HealthDetailLoaders = {
   briefing: getHealthBriefing,
   section: getSection,
   ai: getAIBriefing,
+  todayInsights: getTodayInsights,
   session: getSession,
   range: getMetricRange,
   readiness: getReadinessHistory,
@@ -80,11 +85,14 @@ export async function loadHealthDetailResources(
 ): Promise<HealthDetailResources> {
   const briefing = await loaders.briefing(locale, signal);
   const to = dateOnly(briefing.date);
-  const [sectionResult, sessionResult, aiResult] = await Promise.allSettled([
+  const [sectionResult, sessionResult, aiResult, todayInsightsResult] = await Promise.allSettled([
     loaders.section(config.key, locale, signal),
     loaders.session(signal),
     config.context === "recovery-ai"
       ? loaders.ai(locale, signal)
+      : Promise.resolve(undefined),
+    config.key === "recovery"
+      ? loaders.todayInsights?.(locale, signal) ?? Promise.resolve(undefined)
       : Promise.resolve(undefined),
   ]);
   throwIfAborted(signal);
@@ -135,6 +143,7 @@ export async function loadHealthDetailResources(
     briefing,
     section,
     ai: fulfilled(aiResult),
+    todayInsights: fulfilled(todayInsightsResult),
     session: fulfilled(sessionResult),
     readiness: fulfilled(readinessResult[0]),
     metrics,
@@ -144,6 +153,7 @@ export async function loadHealthDetailResources(
       sectionResult.status === "rejected" ? "section" : undefined,
       sessionResult.status === "rejected" ? "session" : undefined,
       aiResult.status === "rejected" ? "ai" : undefined,
+      todayInsightsResult.status === "rejected" ? "todayInsights" : undefined,
       ...rangeResults.map((result, index) =>
         result.status === "rejected" ? `${metricCharts[index].metric}:range` : undefined,
       ),

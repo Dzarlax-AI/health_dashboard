@@ -109,10 +109,10 @@ func (p *OpenAIProvider) Generate(ctx context.Context, cfg ProviderConfig, gener
 	payload := map[string]any{
 		"model": cfg.Model,
 		"instructions": generation.Prompt +
-			"\n\nRESPONSE LANGUAGE: Write the entire response in " + langName +
-			". All numbers and text must be in " + langName + ".",
+			"\n\nRESPONSE LANGUAGE: Write natural-language prose in " + langName +
+			". Preserve JSON property names and enum values required by the schema, evidence IDs, and exact numeric forms from the input.",
 		"input": fmt.Sprintf(
-			"Use the evaluation date from the supplied health data; never infer it from server time.\n\nApple Health data (JSON):\n\n%s",
+			"Use only dates present in the supplied data; never infer a date from server time.\n\nHealth context (JSON):\n\n%s",
 			string(generation.UserPayload),
 		),
 		"max_output_tokens": cfg.MaxOutputTokens,
@@ -125,9 +125,15 @@ func (p *OpenAIProvider) Generate(ctx context.Context, cfg ProviderConfig, gener
 	if isOpenAIReasoningModel(cfg.Model) {
 		if cfg.ReasoningEffort == "" {
 			cfg.ReasoningEffort = "none"
+			if isGPT6Model(cfg.Model) {
+				cfg.ReasoningEffort = "medium"
+			}
 		}
 		if !ValidReasoningEffort(cfg.ReasoningEffort) {
 			return GenerationResult{}, fmt.Errorf("invalid OpenAI reasoning effort %q", cfg.ReasoningEffort)
+		}
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(cfg.Model)), "gpt-6-astra") && cfg.ReasoningEffort == "none" {
+			return GenerationResult{}, fmt.Errorf("OpenAI model %q does not support reasoning effort none", cfg.Model)
 		}
 		payload["reasoning"] = map[string]string{"effort": cfg.ReasoningEffort}
 	}
@@ -233,10 +239,14 @@ func ValidReasoningEffort(value string) bool {
 
 func isOpenAIReasoningModel(model string) bool {
 	model = strings.ToLower(strings.TrimSpace(model))
-	if strings.HasPrefix(model, "gpt-5") {
+	if strings.HasPrefix(model, "gpt-5") || isGPT6Model(model) {
 		return true
 	}
 	return len(model) > 1 && model[0] == 'o' && model[1] >= '0' && model[1] <= '9'
+}
+
+func isGPT6Model(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gpt-6")
 }
 
 func supportsOpenAIVerbosity(model string) bool {

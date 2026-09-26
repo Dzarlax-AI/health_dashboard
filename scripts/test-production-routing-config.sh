@@ -115,11 +115,12 @@ assert f["traefik.http.routers.health-frontend-root.middlewares"] == "authentik-
 assert f["traefik.http.routers.health-frontend-assets.middlewares"] == "authentik-auth"
 if mode == "canary":
     assert f["traefik.enable"] == "true"
+    assert "Path(`/energy`)" in root
     assert "HeaderRegexp(`Cookie`" in root and "health_frontend_canary=1" in root
     assert "HeaderRegexp(`Cookie`" in assets and "health_frontend_canary=1" in assets
 elif mode == "cutover":
     assert f["traefik.enable"] == "true"
-    assert root == "Host(`health.example.com`) && (Path(`/`) || Path(`/sleep`) || Path(`/activity`) || Path(`/cardio`) || Path(`/recovery`))"
+    assert root == "Host(`health.example.com`) && (Path(`/`) || Path(`/sleep`) || Path(`/activity`) || Path(`/cardio`) || Path(`/recovery`) || Path(`/energy`))"
     assert assets == "Host(`health.example.com`) && PathPrefix(`/assets/`)"
 else:
     assert f["traefik.enable"] == "false"

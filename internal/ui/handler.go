@@ -1720,21 +1720,36 @@ func (h *Handler) todayInsights(w http.ResponseWriter, r *http.Request) {
 	}
 	aiCfg := db.GetAIConfig(h.mgr.AIDefaultsFor(r.Context(), schema))
 	narrativeMode := storage.TodayInsightsB1NarrativeMode(db, aiCfg)
-	overallNarrativeEligible := health.HasEligibleDailyInsightNarrativeSlot(snapshot, lang, health.DailyInsightNarrativeOverallSlot)
+	// An approval for the retired explanatory narrative is not an approval for
+	// independent AI opinions. This contract is preview-only until its own
+	// frozen-corpus gate and rollout receive separate authorization.
+	if narrativeMode == storage.TodayInsightsB1NarrativeModeApproved {
+		narrativeMode = storage.TodayInsightsB1NarrativeModeDisabled
+		if storage.TodayInsightsB1PreviewEnabled(db) {
+			narrativeMode = storage.TodayInsightsB1NarrativeModePreview
+		}
+	}
+	anyAIInsightEligible := false
+	for _, slot := range todayInsightNarrativeSlots {
+		if _, eligible := health.BuildAIInsightInput(snapshot, lang, slot, nil); eligible {
+			anyAIInsightEligible = true
+			break
+		}
+	}
 	if narrativeMode == storage.TodayInsightsB1NarrativeModeDisabled {
 		// The deterministic snapshot is the product baseline. Do not spend a
 		// provider call merely because an installation has general AI settings.
 		// A tenant-only preview is separately visible in the response mode.
 		aiCfg = storage.AIConfig{}
 	}
-	if aiCfg.Enabled() && !overallNarrativeEligible {
+	if aiCfg.Enabled() && !anyAIInsightEligible {
 		// B1 does not paraphrase ordinary current-context cards. Present their
 		// server text as factual instead of showing an artificial "updating"
 		// state or spending a provider request that cannot add a permitted claim.
 		aiCfg = storage.AIConfig{}
 	}
 	materialHash := health.DailyInsightMaterialHash(snapshot)
-	providerFingerprint := storage.DailyInsightGenerationFingerprint(aiCfg, lang)
+	providerFingerprint := storage.AIInsightGenerationFingerprint(aiCfg, lang)
 	snapshotPayload, err := json.Marshal(snapshot)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1765,15 +1780,11 @@ func (h *Handler) todayInsights(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "today insight bundle unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	// The factual bundle remains one atomic snapshot. B1 currently has only one
-	// combined overall synthesis; domain slot entries stay disabled for clients
-	// that already understand the additive slot response shape.
+	// The factual bundle remains one atomic snapshot. AI opinions are additive
+	// and never overwrite its server-owned primary or domain insights.
 	fresh := bundle.MaterialInputHash == materialHash && bundle.ProviderFingerprint == providerFingerprint
 	slotStates := make([]clientapi.TodayInsightSlotGeneration, 0, 4)
-	if !overallNarrativeEligible {
-		// Never materialize a lifecycle row for a packet without two fresh,
-		// server-derived domains. Otherwise polling would show a permanent cold
-		// state even though the scheduler correctly has no provider work to do.
+	if !anyAIInsightEligible {
 		slotStates = disabledTodayInsightNarrativeSlots(true)
 	} else if !aiCfg.Enabled() || !fresh {
 		state := storage.DailyInsightStateDisabled
@@ -1784,69 +1795,17 @@ func (h *Handler) todayInsights(w http.ResponseWriter, r *http.Request) {
 			slotStates = append(slotStates, clientapi.TodayInsightSlotGeneration{Key: slot, State: state, FreshForSnapshot: fresh})
 		}
 	} else {
-		// Keep the provider input separate from a subsequently rendered overlay:
-		// B0 is the exact anti-duplication baseline and must not absorb old B1
-		// text on a polling response.
-		generationSnapshot := snapshot
-		const overall = health.DailyInsightNarrativeOverallSlot
-		slotHash := health.DailyInsightNarrativeSlotMaterialHash(generationSnapshot, lang, overall)
-		if err := db.UpsertDailyInsightNarrativeSlot(r.Context(), storage.DailyInsightNarrativeSlot{
-			Date: generationSnapshot.Date, Lang: lang, Slot: overall, MaterialInputHash: slotHash, ProviderFingerprint: providerFingerprint,
-		}); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		entries, err := db.GetDailyInsightNarrativeSlots(snapshot.Date, lang)
+		snapshot, slotStates, err = resolveTodayAIInsights(r.Context(), db, snapshot, aiCfg, lang, providerFingerprint)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		for _, slot := range todayInsightNarrativeSlots {
-			if slot != overall {
-				slotStates = append(slotStates, clientapi.TodayInsightSlotGeneration{Key: slot, State: storage.DailyInsightStateDisabled, FreshForSnapshot: true})
-				continue
-			}
-			entry, found := entries[slot]
-			entryFresh := todayInsightNarrativeSlotEntryFresh(entry, found, slotHash, providerFingerprint)
-			state := storage.DailyInsightStateCold
-			if entryFresh && entry.GenerationState != "" {
-				state = entry.GenerationState
-			}
-			if state == storage.DailyInsightStateReady && (entry.NarrativeInputHash != slotHash || len(entry.Narrative) == 0) {
-				state = storage.DailyInsightStateFailed
-			}
-			if state == storage.DailyInsightStateReady {
-				var candidate health.DailyInsightNarrativeSlot
-				if err := json.Unmarshal(entry.Narrative, &candidate); err != nil {
-					state = storage.DailyInsightStateFailed
-					if err := db.InvalidateDailyInsightNarrativeSlot(r.Context(), snapshot.Date, lang, slot, slotHash, providerFingerprint); err != nil {
-						log.Printf("today insights: invalidate unreadable slot %s: %v", slot, err)
-					}
-				} else if section, err := health.ValidateDailyInsightNarrativeSlotResponse(generationSnapshot, lang, slot, candidate); err != nil {
-					state = storage.DailyInsightStateFailed
-					if err := db.InvalidateDailyInsightNarrativeSlot(r.Context(), snapshot.Date, lang, slot, slotHash, providerFingerprint); err != nil {
-						log.Printf("today insights: invalidate incompatible slot %s: %v", slot, err)
-					}
-				} else if rendered, err := health.ApplyDailyInsightNarrativeSlot(generationSnapshot, lang, slot, section); err != nil {
-					state = storage.DailyInsightStateFailed
-					log.Printf("today insights: apply slot %s: %v", slot, err)
-				} else {
-					snapshot = rendered
-				}
-			}
-			retryAfter := 0
-			if entry.RetryAfter != nil && entry.RetryAfter.After(time.Now()) {
-				retryAfter = int(time.Until(*entry.RetryAfter).Seconds())
-			}
-			slotStates = append(slotStates, clientapi.TodayInsightSlotGeneration{Key: slot, State: state, FreshForSnapshot: entryFresh, RetryAfterSeconds: retryAfter})
-		}
-		db.EnsureDailyInsightNarrativeSlotsAsync(generationSnapshot, aiCfg, lang)
 	}
 	state, retryAfter := aggregateTodayInsightGeneration(slotStates)
 	jsonResponse(w, clientapi.TodayInsightsResponse{
 		DailyInsightSnapshot: snapshot,
 		Generation: clientapi.TodayInsightsGeneration{
-			State: state, NarrativeMode: narrativeMode, FreshForSnapshot: fresh || !overallNarrativeEligible, RetryAfterSeconds: retryAfter, Slots: slotStates,
+			State: state, NarrativeMode: narrativeMode, FreshForSnapshot: fresh || !anyAIInsightEligible, RetryAfterSeconds: retryAfter, Slots: slotStates,
 		},
 	})
 }

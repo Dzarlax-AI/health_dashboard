@@ -18,10 +18,10 @@ func (s *DB) rawMetricsFromDailyScores(lastDate string) *health.RawMetrics {
 }
 
 // rawMetricsFromDailyScoresAt builds the same 30-day cache-backed window for
-// a supplied date. Serving calls it with includeFreshLatest=true so today's
-// cache can be overlaid with newly ingested points. Offline historical review
-// must set it false: reading later raw points would silently change the
-// point-in-time candidate it is trying to evaluate.
+// a supplied date. Serving and historical evaluation call it with
+// includeFreshLatest=true so the selected day's cached values and sample
+// counts can be overlaid with date-bounded points. This reconstructs the
+// selected date from retained data; it is not an as-of-time replay.
 func (s *DB) rawMetricsFromDailyScoresAt(lastDate string, includeFreshLatest bool) *health.RawMetrics {
 	ctx, cancel := queryCtx()
 	defer cancel()
@@ -51,10 +51,6 @@ func (s *DB) rawMetricsFromDailyScoresAt(lastDate string, includeFreshLatest boo
 			all = append(all, r)
 		}
 	}
-	if len(all) == 0 {
-		return nil
-	}
-
 	// appendIfPositive only appends real positive values — NULL or zero days
 	// are skipped so they don't dilute averages used in scoring.
 	appendIfPositive := func(dst *[]float64, p *float64) {
@@ -63,17 +59,29 @@ func (s *DB) rawMetricsFromDailyScoresAt(lastDate string, includeFreshLatest boo
 		}
 	}
 
-	// For the most recent day, daily_scores may be stale (backfill hasn't run
-	// yet after a sync). Read fresh values from metric_points directly — they
-	// are always up-to-date (INSERT writes there immediately).
+	// For the requested latest day, daily_scores may be stale (backfill hasn't
+	// run yet after a sync). Read date-bounded metric_points directly; offline
+	// historical reconstruction also needs their sample counts for confidence.
 	var freshToday *dayRow
 	if includeFreshLatest {
 		freshToday = s.freshDayFromRaw(lastDate)
 	}
+	if freshToday != nil && (len(all) == 0 || all[0].date != lastDate) {
+		// An ingest may reach metric_points before daily_scores. The fresh
+		// selected date must still be the first day in the evidence window.
+		all = append([]dailyScoreRow{{date: lastDate}}, all...)
+		if len(all) > 30 {
+			all = all[:30]
+		}
+	}
+	if len(all) == 0 {
+		return nil
+	}
 
 	d := &health.RawMetrics{LastDate: lastDate}
-	for i, r := range all {
-		isLatest := i == 0
+	for i := range all {
+		r := all[i]
+		isLatest := i == 0 && r.date == lastDate
 		if isLatest && freshToday != nil {
 			// Override stale daily_scores with fresh hourly data for today.
 			r.hrv = coalesce(freshToday.hrv, r.hrv)
@@ -91,6 +99,7 @@ func (s *DB) rawMetricsFromDailyScoresAt(lastDate string, includeFreshLatest boo
 			r.vo2 = coalesce(freshToday.vo2, r.vo2)
 			r.resp = coalesce(freshToday.resp, r.resp)
 		}
+		all[i] = r
 		d.Daily = append(d.Daily, dailyHealthMetrics(r))
 		appendIfPositive(&d.HRV, r.hrv)
 		appendIfPositive(&d.RHR, r.rhr)

@@ -14,6 +14,26 @@ func TestVerifyHistoricalDailyInsightReadAccess(t *testing.T) {
 	}
 }
 
+func TestDailyScoreWindowPrependsFreshSelectedDateBeforeCacheCatchesUp(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	recordID := insertTestRawRecord(t, db, "fresh-selected-date")
+	if _, err := db.pool.Exec(ctx, `INSERT INTO daily_scores (date, hrv_avg) VALUES ('2026-09-01', 50)`); err != nil {
+		t.Fatalf("seed older daily score: %v", err)
+	}
+	if _, err := db.pool.Exec(ctx, `INSERT INTO metric_points (health_record_id, metric_name, units, date, qty, source, quality)
+		VALUES ($1, 'heart_rate_variability', 'ms', '2026-09-02 08:00:00 +0000', 80, 'Apple Watch', 'ok')`, recordID); err != nil {
+		t.Fatalf("seed fresh metric: %v", err)
+	}
+	got := db.rawMetricsFromDailyScoresAt("2026-09-02", true)
+	if got == nil || len(got.Daily) < 2 || got.Daily[0].Date != "2026-09-02" ||
+		got.Daily[0].HRV == nil || *got.Daily[0].HRV != 80 ||
+		len(got.HRVWithDates) == 0 || got.HRVWithDates[0].Date != "2026-09-02" {
+		t.Fatalf("fresh selected date missing from cache-backed window: %#v", got)
+	}
+}
+
 // Historical candidates are a point-in-time corpus. A later sync must never
 // change a candidate's metric window just because metric_points retains both
 // days. This covers the cache supplement (night sleep/nap), raw fallback, and
@@ -94,4 +114,40 @@ func TestHistoricalDailyInsightSnapshotKeepsOtherCandidatesWhenB0TablesAreAbsent
 		}
 	}
 	t.Fatalf("snapshot lost its retained non-sleep recovery candidate: %#v", snapshot.Domains)
+}
+
+func TestHistoricalDailyInsightSnapshotRetainsSameDayHRVSampleConfidence(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	recordID := insertTestRawRecord(t, db, "historical-readiness-samples")
+	if _, err := db.pool.Exec(ctx, `
+		INSERT INTO metric_points (health_record_id, metric_name, units, date, qty, source, quality) VALUES
+			($1, 'heart_rate_variability', 'ms', '2026-09-01 06:00:00 +0000', 50, 'Apple Watch', 'ok'),
+			($1, 'heart_rate_variability', 'ms', '2026-09-01 07:00:00 +0000', 52, 'Apple Watch', 'ok'),
+			($1, 'heart_rate_variability', 'ms', '2026-09-01 08:00:00 +0000', 54, 'Apple Watch', 'ok'),
+			($1, 'heart_rate_variability', 'ms', '2026-09-01 09:00:00 +0000', 56, 'Apple Watch', 'ok'),
+			($1, 'resting_heart_rate', 'count/min', '2026-09-01 08:00:00 +0000', 58, 'Apple Watch', 'ok'),
+			($1, 'sleep_total', 'hr', '2026-09-01 08:00:00 +0000', 7, 'Apple Watch', 'ok')`, recordID); err != nil {
+		t.Fatalf("seed historical metrics: %v", err)
+	}
+	if _, err := db.pool.Exec(ctx, `
+		INSERT INTO daily_scores (date, hrv_avg, rhr_avg, sleep_total)
+		VALUES ('2026-09-01', 53, 58, 7)`); err != nil {
+		t.Fatalf("seed historical score: %v", err)
+	}
+
+	snapshot, err := db.BuildHistoricalDailyInsightSnapshot(ctx, "2026-09-01", "en")
+	if err != nil {
+		t.Fatalf("build historical snapshot: %v", err)
+	}
+	for _, domain := range snapshot.Domains {
+		if domain.Key == "recovery" {
+			if domain.DataState != "fresh" {
+				t.Fatalf("recovery state = %q, want fresh from four same-day HRV samples", domain.DataState)
+			}
+			return
+		}
+	}
+	t.Fatal("historical snapshot lacks recovery domain")
 }

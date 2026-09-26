@@ -860,7 +860,7 @@ func TestNarrativeFactsWithholdIncompleteDailyWindowsAndMissingReadiness(t *test
 	}
 }
 
-func TestNarrativeEnergyFactDisplayValuesIncludeLocalizedVerdictNumbers(t *testing.T) {
+func TestNarrativeEnergyFactDisplayValuesExcludeServerVerdictNumbers(t *testing.T) {
 	facts := buildDailyInsightNarrativeFacts(&BriefingResponse{EnergyBank: &EnergyBank{
 		Current: 51, Capacity: 84, DrainSoFar: 16, Strain: 11, Stress: 9,
 		ActionVerdict: "moderate", VerdictReason: "HRV is 28 today.",
@@ -869,7 +869,7 @@ func TestNarrativeEnergyFactDisplayValuesIncludeLocalizedVerdictNumbers(t *testi
 		if fact.ID != "energy_authoritative_state" {
 			continue
 		}
-		if got, want := strings.Join(fact.DisplayValues, ","), "51,84,16,11,9,28"; got != want {
+		if got, want := strings.Join(fact.DisplayValues, ","), "51,84,16,11,9"; got != want || strings.Contains(fact.Statement, "28") {
 			t.Fatalf("energy display values = %q, want %q for statement %q", got, want, fact.Statement)
 		}
 		return
@@ -1263,6 +1263,110 @@ func TestEnergyNarrativePropositionsAreObservationsNotActions(t *testing.T) {
 	}
 	if got, want := localizedEnergyNarrativeAnchors("ru", "active_recovery")[0].Text, "Сегодня лучше не добавлять интенсивности."; got != want {
 		t.Fatalf("Russian active-recovery anchor = %q, want %q", got, want)
+	}
+}
+
+func TestRecoveryComponentNarrativeFactsRequireConfirmedCurrentCoverage(t *testing.T) {
+	hrv, rhr := 54.0, 51.0
+	evidence := &ReadinessEvidenceInput{Date: "2026-09-20",
+		HRV: ReadinessComponentEvidence{Metric: "heart_rate_variability", Value: &hrv, Present: true, EvaluatedDate: "2026-09-20", SourceDate: "2026-09-20", Freshness: ReadinessFreshnessOK, SampleCount: MinSleepWindowHRVSamplesForFullConfidence, Confidence: ReadinessConfidenceFinal},
+		RHR: ReadinessComponentEvidence{Metric: "resting_heart_rate", Value: &rhr, Present: true, EvaluatedDate: "2026-09-20", SourceDate: "2026-09-20", Freshness: ReadinessFreshnessOK, SampleCount: 1, Confidence: ReadinessConfidenceFinal},
+	}
+	resp := &BriefingResponse{Date: "2026-09-20", Headline: &HeadlineSignal{Metrics: []HeadlineMetricDelta{{Metric: "heart_rate_variability", Value: hrv, Baseline: 49, Unit: "ms"}}},
+		RawMetrics: &RawMetrics{LastDate: "2026-09-20", Daily: []DailyHealthMetrics{{Date: "2026-09-20", HRV: &hrv, RHR: &rhr}}, ReadinessEvidence: evidence}}
+	domains := []DailyInsightDomain{{Key: "recovery", DataState: "fresh", Confidence: "final", Insight: DailyInsight{State: "insight", AnswerKind: DailyInsightAnswerFactual}}}
+
+	hrvFact, ok := readinessComponentNarrativeFact(resp, domains, "en", evidence.HRV)
+	if !ok || hrvFact.ID != "readiness_hrv_current" || hrvFact.Window != "today versus confirmed personal baseline" || len(hrvFact.DisplayValues) != 3 || !strings.Contains(hrvFact.Statement, "personal baseline") {
+		t.Fatalf("fresh HRV fact = %#v, ok=%v", hrvFact, ok)
+	}
+	rhrFact, ok := readinessComponentNarrativeFact(resp, domains, "en", evidence.RHR)
+	if !ok || rhrFact.ID != "readiness_rhr_current" || rhrFact.Window != "today, confirmed same-day coverage" || len(rhrFact.DisplayValues) != 1 || strings.Contains(rhrFact.Statement, "baseline") {
+		t.Fatalf("baseline-free RHR fact = %#v, ok=%v", rhrFact, ok)
+	}
+	for _, locale := range []string{"en", "ru", "sr"} {
+		for _, count := range []int{1, 4} {
+			component := evidence.RHR
+			component.SampleCount = count
+			fact, ok := readinessComponentNarrativeFact(resp, domains, locale, component)
+			if !ok || len(fact.DisplayValues) != 1 || strings.Contains(fact.Statement, ";") || strings.Contains(fact.Meaning, "count") {
+				t.Fatalf("%s RHR record count became a quality cue: %#v", locale, fact)
+			}
+		}
+	}
+
+	for name, component := range map[string]ReadinessComponentEvidence{
+		"partial":      {Metric: "heart_rate_variability", Value: &hrv, Present: true, EvaluatedDate: resp.Date, SourceDate: resp.Date, Freshness: ReadinessFreshnessOK, SampleCount: 2, Confidence: ReadinessConfidenceProvisional},
+		"missing":      {Metric: "heart_rate_variability", Present: false, EvaluatedDate: resp.Date, SourceDate: resp.Date, Freshness: ReadinessFreshnessMissing, Confidence: ReadinessConfidenceLow},
+		"wrong date":   {Metric: "heart_rate_variability", Value: &hrv, Present: true, EvaluatedDate: resp.Date, SourceDate: "2026-09-19", Freshness: ReadinessFreshnessOK, SampleCount: 4, Confidence: ReadinessConfidenceFinal},
+		"low coverage": {Metric: "heart_rate_variability", Value: &hrv, Present: true, EvaluatedDate: resp.Date, SourceDate: resp.Date, Freshness: ReadinessFreshnessOK, SampleCount: 3, Confidence: ReadinessConfidenceFinal},
+	} {
+		if fact, ok := readinessComponentNarrativeFact(resp, domains, "en", component); ok {
+			t.Fatalf("%s component entered B1: %#v", name, fact)
+		}
+	}
+	evidence.Date = "2026-09-19"
+	if fact, ok := readinessComponentNarrativeFact(resp, domains, "en", evidence.HRV); ok {
+		t.Fatalf("mismatched ReadinessEvidence date entered B1: %#v", fact)
+	}
+}
+
+func TestLocalizedRecoveryComponentFactUsesLocalizedMetricAndSampleGrammar(t *testing.T) {
+	for _, tc := range []struct {
+		name, locale, metric, want string
+		samples                    int
+	}{
+		{"english singular", "en", "resting heart rate", "resting heart rate: 51.0 bpm; 1 same-day sample.", 1},
+		{"english plural", "en", "resting heart rate", "resting heart rate: 51.0 bpm; 4 same-day samples.", 4},
+		{"russian singular", "ru", "resting heart rate", "пульса в покое: 51.0 bpm; 1 измерение за этот день.", 1},
+		{"russian plural", "ru", "resting heart rate", "пульса в покое: 51.0 bpm; 4 измерения за этот день.", 4},
+		{"serbian singular", "sr", "resting heart rate", "pulsa u mirovanju: 51.0 bpm; 1 merenje za taj dan.", 1},
+		{"serbian plural", "sr", "resting heart rate", "pulsa u mirovanju: 51.0 bpm; 4 merenja za taj dan.", 4},
+		{"serbian twenty-one", "sr", "resting heart rate", "pulsa u mirovanju: 51.0 bpm; 21 merenje za taj dan.", 21},
+		{"serbian twenty-two", "sr", "resting heart rate", "pulsa u mirovanju: 51.0 bpm; 22 merenja za taj dan.", 22},
+		{"serbian eleven", "sr", "resting heart rate", "pulsa u mirovanju: 51.0 bpm; 11 merenja za taj dan.", 11},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := localizedNarrativeRecoveryComponentFact(tc.locale, tc.metric, "bpm", 51, tc.samples, 0, false)
+			if !strings.Contains(got, tc.want) {
+				t.Fatalf("localized fact = %q, want fragment %q", got, tc.want)
+			}
+		})
+	}
+	withBaseline := localizedNarrativeRecoveryComponentFact("ru", "resting heart rate", "bpm", 51, 1, 48, true)
+	if !strings.Contains(withBaseline, "пульса в покое: 51.0 bpm") || !strings.Contains(withBaseline, "48.0 bpm") || !strings.Contains(withBaseline, "1 измерение") {
+		t.Fatalf("baseline fact lost exact RHR values or singular grammar: %q", withBaseline)
+	}
+}
+
+func TestSerbianServerInsightCopyAvoidsFormalAddressOnPacketPaths(t *testing.T) {
+	copy := dailyInsightCopy("sr")
+	texts := []string{
+		localizedSleepComparison(copy, 7, 7),
+		localizedSleepComparison(copy, 8, 7),
+		localizedSleepComparison(copy, 6, 7),
+	}
+	for _, reason := range []string{GetStrings("sr")["energy_reason_low_capacity"], GetStrings("sr")["energy_reason_recovery_debt"]} {
+		energy := buildEnergyInsightDomain(&BriefingResponse{Date: "2026-09-20", EnergyBank: &EnergyBank{Current: 20, Capacity: 80, ActionVerdict: "active_recovery", VerdictReason: reason}}, nil, copy)
+		texts = append(texts, energy.Insight.Observation)
+	}
+	for _, text := range texts {
+		if strings.Contains(strings.ToLower(text), "vaš") || strings.Contains(strings.ToLower(text), "držite") {
+			t.Fatalf("formal Serbian B0 copy remained on Server Insight/packet path: %q", text)
+		}
+	}
+}
+
+func TestSerbianFairReadinessTipReachesRecoveryServerInsightWithoutFormalOrMixedCopy(t *testing.T) {
+	label, tip := readinessLabelTip(65, GetStrings("sr"))
+	if tip != "Malo odstupanje od lične norme. Umerena aktivnost je dobar izbor." {
+		t.Fatalf("fair Serbian readiness tip = %q", tip)
+	}
+	snapshot := BuildDailyInsightSnapshot(&BriefingResponse{Date: "2026-09-20", ReadinessToday: 65, ReadinessTodayLabel: label, ReadinessTip: tip,
+		ReadinessServing: &ReadinessServingState{Status: ReadinessServingFresh, Confidence: ReadinessConfidenceFinal}}, "sr")
+	recovery := dailyInsightDomain(t, snapshot, "recovery")
+	if recovery.Insight.Observation != tip || strings.Contains(strings.ToLower(recovery.Insight.Observation), "vaše") || strings.Contains(recovery.Insight.Observation, "Umjerena") {
+		t.Fatalf("Recovery Server Insight retained formal or mixed Serbian copy: %#v", recovery.Insight)
 	}
 }
 
