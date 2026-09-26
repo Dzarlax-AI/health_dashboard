@@ -86,7 +86,7 @@ test -n "$frontend_address"
 test "$(curl --fail --silent "http://$frontend_address/healthz")" = '{"status":"ok"}'
 
 index_html="$(curl --fail --silent "http://$frontend_address/")"
-for detail_route in sleep activity cardio recovery; do
+for detail_route in sleep activity cardio recovery energy; do
   detail_html="$(curl --fail --silent "http://$frontend_address/$detail_route")"
   test "$detail_html" = "$index_html"
 done

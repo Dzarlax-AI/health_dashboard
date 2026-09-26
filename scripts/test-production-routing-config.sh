@@ -4,6 +4,7 @@ set -eu
 root=$(CDPATH= cd "$(dirname "$0")/.." && pwd)
 compose=$root/deploy/production/health/docker-compose.yml
 resolver=$root/scripts/resolve-production-pair.sh
+frontend_nginx=$root/apps/web/container/nginx.conf
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/health-production-routing.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 
@@ -13,6 +14,18 @@ pair_digest=sha256:$(printf 'a%.0s' $(seq 1 64))
 pair_revision=$(printf '1%.0s' $(seq 1 40))
 backend_revision=$(printf '2%.0s' $(seq 1 40))
 frontend_revision=$(printf '3%.0s' $(seq 1 40))
+
+# Every frontend detail route accepted by Traefik must also serve the SPA from Nginx.
+python3 - "$frontend_nginx" <<'PY'
+import pathlib
+import re
+import sys
+
+nginx = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+match = re.search(r"location\s+~\s+\^/\(([^)]+)\)\$", nginx)
+assert match, "frontend SPA route location is missing"
+assert set(match.group(1).split("|")) == {"sleep", "activity", "cardio", "recovery", "energy"}, "frontend SPA routes differ from production routing"
+PY
 
 fake=$tmp/docker
 : > "$tmp/runtime.env"
