@@ -48,3 +48,29 @@ test("server insight remains complete when AI is absent", async ({ page }) => {
   await expect(page.locator(".today-hero .insight-pair__card--server")).toBeVisible();
   await expect(page.locator(".today-hero .insight-pair__card--ai")).toHaveCount(0);
 });
+
+for (const theme of ["light", "dark"] as const) {
+  for (const route of ["/", "/sleep", "/recovery", "/energy"] as const) {
+    test(`${route} insight cards use readable text on their own surface in ${theme} mode`, async ({ page }) => {
+      await page.emulateMedia({ colorScheme: theme });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.goto(`${route}?lang=ru&fixture=normal`);
+
+      const cards = page.locator(".insight-pair__card");
+      await expect(cards).toHaveCount(2);
+      for (const card of await cards.all()) {
+        await expect(card).toHaveCSS("background-color", theme === "light" ? "rgb(255, 255, 255)" : "rgb(27, 34, 30)");
+        await expect(card).toHaveCSS("color", theme === "light" ? "rgb(26, 26, 30)" : "rgb(241, 245, 242)");
+      }
+    });
+  }
+}
+
+for (const route of ["/sleep", "/recovery", "/energy"] as const) {
+  test(`${route} keeps a dark backdrop behind its light hero text`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`${route}?lang=ru&fixture=normal`);
+    const hero = page.locator(route === "/sleep" ? ".sleep-hero" : ".health-detail-hero");
+    await expect(hero).toHaveCSS("background-image", /linear-gradient/);
+  });
+}
