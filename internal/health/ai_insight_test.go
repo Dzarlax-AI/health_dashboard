@@ -165,10 +165,13 @@ func TestAIInsightRejectsPartialSleepCompletionInTextAndAction(t *testing.T) {
 	}
 	for _, candidate := range []AIInsightSlotResponse{
 		{Version: AIInsightVersion, Locale: "en", Slot: "sleep", Insight: &AIInsightSection{Text: "This is a full night. This is a full night.", FactIDs: []string{"sleep_current_recorded_duration"}, Stance: "agree"}},
+		{Version: AIInsightVersion, Locale: "en", Slot: "sleep", Insight: &AIInsightSection{Text: "Last night was a full night.", FactIDs: []string{"sleep_current_recorded_duration"}, Stance: "agree"}},
 		{Version: AIInsightVersion, Locale: "en", Slot: "sleep", Insight: &AIInsightSection{Text: "The record proves a full night of sleep.", FactIDs: []string{"sleep_current_recorded_duration"}, Stance: "agree"}},
 		{Version: AIInsightVersion, Locale: "en", Slot: "sleep", Insight: &AIInsightSection{Text: "Completeness is unconfirmed.", AlternativeAction: "This is a completed night before planning the day.", FactIDs: []string{"sleep_current_recorded_duration"}, Stance: "qualify"}},
 		{Version: AIInsightVersion, Locale: "ru", Slot: "sleep", Insight: &AIInsightSection{Text: "Это завершённая ночь. Это завершённая ночь.", FactIDs: []string{"sleep_current_recorded_duration"}, Stance: "agree"}},
+		{Version: AIInsightVersion, Locale: "ru", Slot: "sleep", Insight: &AIInsightSection{Text: "Прошлая ночь была полной ночью.", FactIDs: []string{"sleep_current_recorded_duration"}, Stance: "agree"}},
 		{Version: AIInsightVersion, Locale: "sr", Slot: "sleep", Insight: &AIInsightSection{Text: "Ovo je završena noć. Ovo je završena noć.", FactIDs: []string{"sleep_current_recorded_duration"}, Stance: "agree"}},
+		{Version: AIInsightVersion, Locale: "sr", Slot: "sleep", Insight: &AIInsightSection{Text: "Prošla noć je bila cela noć.", FactIDs: []string{"sleep_current_recorded_duration"}, Stance: "agree"}},
 	} {
 		candidateInput := input
 		candidateInput.Locale = candidate.Locale
@@ -180,8 +183,11 @@ func TestAIInsightRejectsPartialSleepCompletionInTextAndAction(t *testing.T) {
 	}
 	for _, candidate := range []AIInsightSlotResponse{
 		{Version: AIInsightVersion, Locale: "en", Slot: "sleep", Insight: &AIInsightSection{Text: "We cannot say this is a full night.", FactIDs: []string{"sleep_current_recorded_duration"}, Stance: "qualify"}},
+		{Version: AIInsightVersion, Locale: "en", Slot: "sleep", Insight: &AIInsightSection{Text: "Last night was not a full night.", FactIDs: []string{"sleep_current_recorded_duration"}, Stance: "qualify"}},
 		{Version: AIInsightVersion, Locale: "ru", Slot: "sleep", Insight: &AIInsightSection{Text: "Нельзя утверждать, что это завершённая ночь.", FactIDs: []string{"sleep_current_recorded_duration"}, Stance: "qualify"}},
+		{Version: AIInsightVersion, Locale: "ru", Slot: "sleep", Insight: &AIInsightSection{Text: "Прошлая ночь не была полной ночью.", FactIDs: []string{"sleep_current_recorded_duration"}, Stance: "qualify"}},
 		{Version: AIInsightVersion, Locale: "sr", Slot: "sleep", Insight: &AIInsightSection{Text: "Ne možemo reći da je ovo završena noć.", FactIDs: []string{"sleep_current_recorded_duration"}, Stance: "qualify"}},
+		{Version: AIInsightVersion, Locale: "sr", Slot: "sleep", Insight: &AIInsightSection{Text: "Prošla noć nije bila cela noć.", FactIDs: []string{"sleep_current_recorded_duration"}, Stance: "qualify"}},
 		{Version: AIInsightVersion, Locale: "en", Slot: "sleep", Insight: &AIInsightSection{Text: "These data cannot infer a full night; completeness is unconfirmed.", FactIDs: []string{"sleep_current_recorded_duration"}, Stance: "qualify"}},
 		{Version: AIInsightVersion, Locale: "ru", Slot: "sleep", Insight: &AIInsightSection{Text: "По этим данным нельзя сделать вывод о полной ночи.", FactIDs: []string{"sleep_current_recorded_duration"}, Stance: "qualify"}},
 		{Version: AIInsightVersion, Locale: "sr", Slot: "sleep", Insight: &AIInsightSection{Text: "Iz ovih podataka se ne može zaključiti da je to cela noć.", FactIDs: []string{"sleep_current_recorded_duration"}, Stance: "qualify"}},

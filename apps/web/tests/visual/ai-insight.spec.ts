@@ -6,6 +6,18 @@ const insightLabels = {
   sr: { server: "Serverski uvid", ai: "AI uvid" },
 } as const;
 
+for (const route of ["/", "/sleep"] as const) {
+  for (const query of ["?lang=en", "?lang=en&fixture=unknown"] as const) {
+    test(`${route} requests live health data with ${query} in fixture-enabled builds`, async ({ page }) => {
+      await page.route("**/api/**", (request) => request.fulfill({ status: 503, contentType: "application/json", body: "{}" }));
+      const briefingRequest = page.waitForRequest((request) => request.url().includes("/api/health-briefing"));
+      await page.goto(`${route}${query}`);
+      await briefingRequest;
+      await expect(page.locator(".insight-pair__card")).toHaveCount(0);
+    });
+  }
+}
+
 for (const locale of ["en", "ru", "sr"] as const) {
   for (const route of ["/", "/sleep", "/recovery", "/energy"] as const) {
     test(`${route} shows separate Server and AI Insights in ${locale} on mobile`, async ({ page }) => {

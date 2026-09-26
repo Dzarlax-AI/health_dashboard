@@ -345,7 +345,14 @@ func aiInsightPartialSleepClaimsCompletion(input AIInsightInput, field string) b
 // This is a narrow regression guard for direct, affirmative sentence claims.
 // It deliberately does not classify clauses, quotations, or implications:
 // the reviewer remains responsible for broader wording and implication checks.
-var partialSleepAffirmativeCompletionPattern = regexp.MustCompile(`(?i)(?:^|[.!?]\s+)(?:(?:this|it|the record|the data|data|record)\s+)?(?:is|was|shows|means|confirms|proves|indicates|counts as|represents)\s+(?:a\s+)?(?:full|completed)\s+night\b|(?:^|[.!?]\s+)это\s+(?:полная|завершенная|завершённая)\s+ночь|(?:^|[.!?]\s+)(?:ovo je|noć je)\s+(?:cela|završena)\s+noć`)
+var partialSleepAffirmativeCompletionPattern = regexp.MustCompile(`(?i)(?:^|[.!?]\s+)(?:` +
+	`(?:(?:this|it|the record|the data|data|record)\s+)?(?:is|was|shows|means|confirms|proves|indicates|counts as|represents)\s+(?:a\s+)?(?:full|completed)\s+night\b` +
+	`|(?:last|this|the)\s+night\s+(?:is|was)\s+(?:a\s+)?(?:full|completed)\s+night\b` +
+	`|это\s+(?:полная|завершенная|завершённая)\s+ночь` +
+	`|(?:прошлая|эта|сегодняшняя)\s+ночь\s+(?:была|есть)\s+(?:полной|завершенной|завершённой)(?:\s+ночью)?` +
+	`|(?:ovo je|noć je)\s+(?:cela|završena)\s+noć` +
+	`|(?:prošla|ova|ta)\s+noć\s+je\s+(?:bila\s+)?(?:cela|završena)(?:\s+noć)?` +
+	`)`)
 
 func validateAIInsightLocale(text, locale string) error {
 	if err := validateDailyInsightNarrativeLocale(text, locale); err != nil {

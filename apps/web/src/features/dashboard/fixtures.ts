@@ -35,10 +35,10 @@ function localized(
   return copy[locale];
 }
 
-export function resolveFixture(value: string | null): FixtureName {
-  return fixtureNames.includes(value as FixtureName)
+export function resolveFixture(value: string | null): FixtureName | undefined {
+  return value !== null && fixtureNames.includes(value as FixtureName)
     ? (value as FixtureName)
-    : "normal";
+    : undefined;
 }
 
 function briefing(locale: Locale, fixture: FixtureName): HealthBriefingResponse {
