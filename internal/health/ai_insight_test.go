@@ -105,10 +105,11 @@ func TestAIInsightOverallCanUseFreshFactsWhenServerPrimaryHasDataGap(t *testing.
 	}
 }
 
-func TestAIInsightDoesNotTreatPartialSleepAsCompletedNight(t *testing.T) {
+func TestAIInsightPartialSleepNeedsExplicitlySafeFacts(t *testing.T) {
 	snapshot := aiInsightTestSnapshot()
 	snapshot.Domains[0].DataState = "partial"
 	snapshot.Domains[0].Insight.State = "insufficient_data"
+	snapshot.Domains[0].Insight.GapReason = "sleep_partial"
 	snapshot.NarrativeFacts = []DailyInsightNarrativeFact{
 		{ID: "sleep_canonical_comparison", Domain: "sleep", Fresh: true, Statement: "Canonical sleep duration: 1.0 h against a recent average of 5.9 h.", DisplayValues: []string{"1.0", "5.9"}, EvidenceIDs: []string{"sleep-current"}},
 		{ID: "sleep_recent_four_day_pattern", Domain: "sleep", Fresh: true, Statement: "The newest two-day average is 4.7 h.", DisplayValues: []string{"4.7"}, EvidenceIDs: []string{"sleep-pattern"}},
@@ -119,7 +120,77 @@ func TestAIInsightDoesNotTreatPartialSleepAsCompletedNight(t *testing.T) {
 		t.Fatalf("partial sleep leaked into overall packet: %#v, eligible=%v", input, eligible)
 	}
 	if _, eligible := BuildAIInsightInput(snapshot, "en", "sleep", nil); eligible {
-		t.Fatal("partial sleep became a domain opinion")
+		t.Fatal("partial sleep without safe facts became a domain opinion")
+	}
+
+	snapshot.NarrativeFacts = append(snapshot.NarrativeFacts,
+		DailyInsightNarrativeFact{ID: "sleep_current_recorded_duration", Domain: "sleep", Fresh: true,
+			Meaning: partialSleepCurrentDurationMeaning, Window: partialSleepCurrentDurationWindow,
+			Statement: "Currently recorded sleep duration is 1.0 h. Available data do not confirm night completeness or sleep quality.", DisplayValues: []string{"1.0"}, EvidenceIDs: []string{"sleep-current-recorded-duration"}},
+	)
+	overall, overallEligible := BuildAIInsightInput(snapshot, "en", "overall", nil)
+	if !overallEligible || len(overall.Facts) != 1 || overall.Facts[0].ID != "energy_authoritative_state" {
+		t.Fatalf("partial Sleep fact entered Overall packet: %#v eligible=%v", overall, overallEligible)
+	}
+	sleep, eligible := BuildAIInsightInput(snapshot, "en", "sleep", nil)
+	if !eligible || sleep.ServerInsight.State != "insufficient_data" || len(sleep.Facts) != 1 || sleep.Facts[0].ID != "sleep_current_recorded_duration" {
+		t.Fatalf("partial sleep safe packet = %#v eligible=%v", sleep, eligible)
+	}
+	for _, fact := range sleep.Facts {
+		if fact.Window == "" || fact.Meaning == "" {
+			t.Fatalf("partial-safe fact lacks its own temporal semantics: %#v", fact)
+		}
+	}
+	final := *snapshot
+	final.Domains = append([]DailyInsightDomain(nil), snapshot.Domains...)
+	final.Domains[0].DataState, final.Domains[0].Confidence, final.Domains[0].Insight.State = "fresh", "final", "insight"
+	final.NarrativeFacts = []DailyInsightNarrativeFact{{ID: "sleep_canonical_comparison", Domain: "sleep", Fresh: true, Meaning: "latest completed sleep duration compared with recent completed-night average", Window: "latest completed night and recent completed nights", Statement: "Canonical sleep duration: 7.2 h.", EvidenceIDs: []string{"sleep-final"}}}
+	finalInput, finalEligible := BuildAIInsightInput(&final, "en", "sleep", nil)
+	if !finalEligible || AIInsightInputHash(sleep) == AIInsightInputHash(finalInput) {
+		t.Fatal("partial-to-final sleep transition did not invalidate the provisional AI cache")
+	}
+}
+
+func TestAIInsightRejectsPartialSleepCompletionInTextAndAction(t *testing.T) {
+	snapshot := aiInsightTestSnapshot()
+	snapshot.Domains[0].DataState = "partial"
+	snapshot.Domains[0].Insight.State = "insufficient_data"
+	snapshot.Domains[0].Insight.GapReason = "sleep_partial"
+	snapshot.NarrativeFacts = []DailyInsightNarrativeFact{{ID: "sleep_current_recorded_duration", Domain: "sleep", Fresh: true,
+		Meaning: partialSleepCurrentDurationMeaning, Window: partialSleepCurrentDurationWindow,
+		Statement: "Currently recorded sleep duration is 1.0 h; completeness and quality are unconfirmed.", EvidenceIDs: []string{"sleep-current-recorded-duration"}}}
+	input, eligible := BuildAIInsightInput(snapshot, "en", "sleep", nil)
+	if !eligible {
+		t.Fatal("partial-safe sleep input missing")
+	}
+	for _, candidate := range []AIInsightSlotResponse{
+		{Version: AIInsightVersion, Locale: "en", Slot: "sleep", Insight: &AIInsightSection{Text: "This is a full night. This is a full night.", FactIDs: []string{"sleep_current_recorded_duration"}, Stance: "agree"}},
+		{Version: AIInsightVersion, Locale: "en", Slot: "sleep", Insight: &AIInsightSection{Text: "The record proves a full night of sleep.", FactIDs: []string{"sleep_current_recorded_duration"}, Stance: "agree"}},
+		{Version: AIInsightVersion, Locale: "en", Slot: "sleep", Insight: &AIInsightSection{Text: "Completeness is unconfirmed.", AlternativeAction: "This is a completed night before planning the day.", FactIDs: []string{"sleep_current_recorded_duration"}, Stance: "qualify"}},
+		{Version: AIInsightVersion, Locale: "ru", Slot: "sleep", Insight: &AIInsightSection{Text: "Это завершённая ночь. Это завершённая ночь.", FactIDs: []string{"sleep_current_recorded_duration"}, Stance: "agree"}},
+		{Version: AIInsightVersion, Locale: "sr", Slot: "sleep", Insight: &AIInsightSection{Text: "Ovo je završena noć. Ovo je završena noć.", FactIDs: []string{"sleep_current_recorded_duration"}, Stance: "agree"}},
+	} {
+		candidateInput := input
+		candidateInput.Locale = candidate.Locale
+		if _, err := ValidateAIInsightSlot(candidateInput, candidate); err == nil {
+			t.Fatalf("partial sleep completion passed: %#v", candidate)
+		} else if validation, ok := err.(*AIInsightValidationError); !ok || validation.Code != "partial_sleep_completion" {
+			t.Fatalf("partial sleep completion error = %#v", err)
+		}
+	}
+	for _, candidate := range []AIInsightSlotResponse{
+		{Version: AIInsightVersion, Locale: "en", Slot: "sleep", Insight: &AIInsightSection{Text: "We cannot say this is a full night.", FactIDs: []string{"sleep_current_recorded_duration"}, Stance: "qualify"}},
+		{Version: AIInsightVersion, Locale: "ru", Slot: "sleep", Insight: &AIInsightSection{Text: "Нельзя утверждать, что это завершённая ночь.", FactIDs: []string{"sleep_current_recorded_duration"}, Stance: "qualify"}},
+		{Version: AIInsightVersion, Locale: "sr", Slot: "sleep", Insight: &AIInsightSection{Text: "Ne možemo reći da je ovo završena noć.", FactIDs: []string{"sleep_current_recorded_duration"}, Stance: "qualify"}},
+		{Version: AIInsightVersion, Locale: "en", Slot: "sleep", Insight: &AIInsightSection{Text: "These data cannot infer a full night; completeness is unconfirmed.", FactIDs: []string{"sleep_current_recorded_duration"}, Stance: "qualify"}},
+		{Version: AIInsightVersion, Locale: "ru", Slot: "sleep", Insight: &AIInsightSection{Text: "По этим данным нельзя сделать вывод о полной ночи.", FactIDs: []string{"sleep_current_recorded_duration"}, Stance: "qualify"}},
+		{Version: AIInsightVersion, Locale: "sr", Slot: "sleep", Insight: &AIInsightSection{Text: "Iz ovih podataka se ne može zaključiti da je to cela noć.", FactIDs: []string{"sleep_current_recorded_duration"}, Stance: "qualify"}},
+	} {
+		candidateInput := input
+		candidateInput.Locale = candidate.Locale
+		if _, err := ValidateAIInsightSlot(candidateInput, candidate); err != nil {
+			t.Fatalf("truthful partial-sleep caveat rejected: %#v err=%v", candidate, err)
+		}
 	}
 }
 

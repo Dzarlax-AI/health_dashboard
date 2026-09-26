@@ -317,6 +317,18 @@ textarea {
   white-space: pre-wrap;
 }
 
+.sleep-hero .insight-pair__unavailable {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid rgba(247, 248, 255, 0.36);
+  border-radius: 12px;
+  background: rgba(13, 28, 54, 0.48);
+  color: #f7f8ff;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
 .insight-pair__action {
   padding-top: var(--space-3);
   border-top: 1px solid var(--border);

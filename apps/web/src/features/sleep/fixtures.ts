@@ -1,6 +1,6 @@
 import type { Locale } from "../../i18n";
 import { translate } from "../../i18n";
-import { fixtureResources } from "../dashboard/fixtures";
+import { fixtureResources, type FixtureName } from "../dashboard/fixtures";
 import { sleepMetrics, type SleepResources } from "./loader";
 
 function dateOffset(days: number): string {
@@ -9,7 +9,7 @@ function dateOffset(days: number): string {
   return date.toISOString().slice(0, 10);
 }
 
-export function sleepFixtureResources(locale: Locale): SleepResources {
+export function sleepFixtureResources(locale: Locale, fixture: FixtureName = "normal"): SleepResources {
   const values = Array.from({ length: 90 }, (_, index) => ({
     date: dateOffset(index),
     total: 6.7 + ((index * 7) % 16) / 10,
@@ -28,11 +28,23 @@ export function sleepFixtureResources(locale: Locale): SleepResources {
     sleep_awake: "awake",
   } as const;
 
+  const todayInsights = fixtureResources(locale, fixture).todayInsights;
+  const partialTodayInsights = fixture === "partial" && todayInsights
+    ? {
+      ...todayInsights,
+      generation: {
+        ...todayInsights.generation,
+        narrative_mode: "preview" as const,
+        state: "disabled" as const,
+        slots: [{ key: "sleep" as const, state: "disabled" as const, fresh_for_snapshot: true }],
+      },
+    }
+    : todayInsights;
   return {
-    todayInsights: fixtureResources(locale, "normal").todayInsights,
+    todayInsights: partialTodayInsights,
     briefing: {
       date: "2026-08-05",
-      sleep_quality: { score_pct: 82, duration_pct: 88, confidence: "final" },
+      sleep_quality: { score_pct: 82, duration_pct: 88, confidence: fixture === "partial" ? "partial" : "final" },
       sleep_regularity_index: 76,
       sleep_regularity_nights: 14,
     } as SleepResources["briefing"],

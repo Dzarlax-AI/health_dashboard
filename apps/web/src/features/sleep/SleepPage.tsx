@@ -21,6 +21,7 @@ import { InsightPair } from "../../components/InsightPair";
 import { StatusPanel } from "../../components/StatusPanel";
 import { isTodayInsightsGenerationPending, shouldPollAI, todayInsightsPollDelayMs } from "../dashboard/aiPolling";
 import { resolveLocale, translate, type Locale } from "../../i18n";
+import { resolveFixture } from "../dashboard/fixtures";
 import { sleepFixtureResources } from "./fixtures";
 import { loadSleepResources, type SleepResources } from "./loader";
 import { buildSleepDays, sleepComposition, sleepInsight, type SleepDay } from "./model";
@@ -278,6 +279,7 @@ export function SleepReady({ resources, locale }: { resources: SleepResources; l
             action={sleepDomain.insight.next_step?.text}
             ai={sleepDomain.ai_insight}
             state={todayInsights?.generation.slots?.find((slot) => slot.key === "sleep")?.state}
+            aiUnavailableReason={todayInsights?.generation.narrative_mode === "preview" && sleepDomain.data_state === "partial" && !sleepDomain.ai_insight && todayInsights?.generation.slots?.find((slot) => slot.key === "sleep")?.state === "disabled" ? translate(locale, "sleepAIInsightUnavailablePartial") : undefined}
             preview={todayInsights?.generation.narrative_mode === "preview"}
           />
         ) : currentInsight ? (
@@ -459,9 +461,9 @@ export function SleepReady({ resources, locale }: { resources: SleepResources; l
 export function SleepPage() {
   const params = new URLSearchParams(window.location.search);
   const locale = resolveLocale(params.get("lang"));
-  const fixture = import.meta.env.VITE_ENABLE_FIXTURES === "true" && params.get("fixture") === "normal";
+  const fixture = import.meta.env.VITE_ENABLE_FIXTURES === "true" ? resolveFixture(params.get("fixture")) : undefined;
   const [state, setState] = useState<SleepState>(() =>
-    fixture ? { status: "ready", resources: sleepFixtureResources(locale) } : { status: "loading" },
+    fixture ? { status: "ready", resources: sleepFixtureResources(locale, fixture) } : { status: "loading" },
   );
   const [reloadKey, setReloadKey] = useState(0);
 

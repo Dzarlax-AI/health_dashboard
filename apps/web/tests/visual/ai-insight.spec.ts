@@ -49,6 +49,15 @@ test("server insight remains complete when AI is absent", async ({ page }) => {
   await expect(page.locator(".today-hero .insight-pair__card--ai")).toHaveCount(0);
 });
 
+test("partial-sleep-data AI-unavailable copy keeps explicit contrast on the Sleep hero", async ({ page }) => {
+  await page.goto("/sleep?lang=en&fixture=partial");
+  const note = page.locator(".sleep-hero .insight-pair__unavailable");
+  await expect(note).toBeVisible();
+  await expect(note).toHaveText("Sleep data are partial. AI Insight is unavailable here; the Server Insight remains the reliable view.");
+  await expect(note).toHaveCSS("color", "rgb(247, 248, 255)");
+  await expect(note).toHaveCSS("background-color", "rgba(13, 28, 54, 0.48)");
+});
+
 for (const theme of ["light", "dark"] as const) {
   for (const route of ["/", "/sleep", "/recovery", "/energy"] as const) {
     test(`${route} insight cards use readable text on their own surface in ${theme} mode`, async ({ page }) => {
