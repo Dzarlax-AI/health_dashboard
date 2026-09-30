@@ -130,6 +130,17 @@ func liftFloat(p *float32) *float64 {
 // rolling_3d target windows can read all three forward nights. Outside
 // data is still bounded by the rows actually present in daily_scores.
 func (s *DB) BackfillRecoveryStabilitySnapshots(from, to string) (int, error) {
+	if err := validateReadinessDateRange(from, to, "BackfillRecoveryStabilitySnapshots"); err != nil {
+		return 0, err
+	}
+	epochs, err := s.loadSourceEpochRunCache()
+	if err != nil {
+		return 0, err
+	}
+	return s.backfillRecoveryStabilitySnapshots(from, to, epochs)
+}
+
+func (s *DB) backfillRecoveryStabilitySnapshots(from, to string, epochs *sourceEpochRunCache) (int, error) {
 	fromT, err := time.Parse(isoDate, from)
 	if err != nil {
 		return 0, fmt.Errorf("BackfillRecoveryStabilitySnapshots: parse from: %w", err)
@@ -172,7 +183,7 @@ func (s *DB) BackfillRecoveryStabilitySnapshots(from, to string) (int, error) {
 	var firstErr error
 	for d := fromT; !d.After(toT); d = d.AddDate(0, 0, 1) {
 		date := d.Format(isoDate)
-		if err := s.writeRecoveryStabilityRow(context.Background(), d, date, byDate, effByDate, captureByDate, archByDate, latestObservedSleepDate); err != nil {
+		if err := s.writeRecoveryStabilityRow(context.Background(), d, date, epochs, byDate, effByDate, captureByDate, archByDate, latestObservedSleepDate); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -187,6 +198,7 @@ func (s *DB) writeRecoveryStabilityRow(
 	ctx context.Context,
 	t time.Time,
 	date string,
+	epochs *sourceEpochRunCache,
 	byDate map[string]health.SleepRow,
 	effByDate map[string]health.SleepEfficiencyResult,
 	captureByDate map[string]health.SleepCaptureConfidenceResult,
@@ -195,13 +207,7 @@ func (s *DB) writeRecoveryStabilityRow(
 ) error {
 	_ = ctx // reserved for future use; all storage helpers below use their own queryCtx
 
-	epoch, err := s.ResolveSourceEpoch(date)
-	if err != nil {
-		// ResolveSourceEpoch returns SentinelSourceEpoch instead of an
-		// error on no-match; a real error is unexpected. Fail fast.
-		return fmt.Errorf("resolve source_epoch for %s: %w", date, err)
-	}
-	epochStart := s.lookupEpochStart(epoch) // empty string when unknown — treat as no clip
+	epoch, epochStart := epochs.resolve(date) // empty epoch start means no clipping
 
 	// --- Daily-point target: night t+1 (i.e., daily_scores row for t+1) ---
 	tp1 := t.AddDate(0, 0, 1).Format(isoDate)

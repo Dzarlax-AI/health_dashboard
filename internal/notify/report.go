@@ -49,6 +49,8 @@ func deliveryFailureStatus(err error) (string, string) {
 
 // Config holds Telegram credentials and per-weekday schedule.
 type Config struct {
+	AIConfig storage.AIConfig
+
 	Token    string
 	ChatID   string
 	Lang     string
@@ -262,12 +264,15 @@ func sendMorningReport(bot *Bot, db *storage.DB, cfg Config, opts MorningSendOpt
 	if err != nil {
 		return false, status.Reason, err
 	}
-	aiBlocks := db.GetAIBlocks(today, cfg.Lang)
+	sleep, aiBlocks, evidenceErr := db.MorningReportEvidence(context.Background(), cfg.AIConfig, cfg.Lang, today, briefing)
+	if evidenceErr != nil {
+		log.Printf("morning report: evidence unavailable: %v", evidenceErr)
+	}
 	fresh := computeFreshness(db, time.Now())
-	msg := formatMorning(briefing, aiBlocks, cfg.Lang, loc, fresh, opts.CheckinExpired)
+	msg := formatMorning(briefing, aiBlocks, cfg.Lang, loc, fresh, opts.CheckinExpired, sleep)
 	richMsg := ""
 	if cfg.TelegramRichMessages {
-		richMsg = formatMorningRich(briefing, aiBlocks, cfg.Lang, loc, fresh, opts.CheckinExpired, "")
+		richMsg = formatMorningRich(briefing, aiBlocks, cfg.Lang, loc, fresh, opts.CheckinExpired, "", sleep)
 	}
 
 	if !status.Ready {
@@ -275,7 +280,7 @@ func sendMorningReport(bot *Bot, db *storage.DB, cfg Config, opts MorningSendOpt
 		if banner := tr(cfg.Lang, "tg_stale_"+staleReason); banner != "" && banner != "tg_stale_"+staleReason {
 			msg = banner + "\n\n" + msg
 			if cfg.TelegramRichMessages {
-				richMsg = formatMorningRich(briefing, aiBlocks, cfg.Lang, loc, fresh, opts.CheckinExpired, banner)
+				richMsg = formatMorningRich(briefing, aiBlocks, cfg.Lang, loc, fresh, opts.CheckinExpired, banner, sleep)
 			}
 		}
 	}
@@ -679,7 +684,9 @@ func abs(x int) int {
 }
 
 func morningEvidenceForReport(b *health.BriefingResponse, f freshness) health.MorningInsightEvidence {
-	excluded := make(map[string]bool)
+	// The dedicated dated sleep section is the source of truth for this report.
+	// Do not repeat a generic briefing sleep reason that may describe another night.
+	excluded := map[string]bool{"sleep": true}
 	if f.sleepKnown && f.sleepStale() {
 		excluded["sleep"] = true
 	}
@@ -745,15 +752,158 @@ func synthesisAddsInformation(synthesis string, evidence health.MorningInsightEv
 	return true
 }
 
+type morningSleepView struct {
+	lines         []string
+	explanation   string
+	explanationAI bool
+}
+
+func firstMorningSleep(values []health.MorningReportSleep) *health.MorningReportSleep {
+	if len(values) == 0 {
+		return nil
+	}
+	return &values[0]
+}
+
+func morningReportDate(b *health.BriefingResponse, sleepContext *health.MorningReportSleep) string {
+	if sleepContext != nil && strings.TrimSpace(sleepContext.ReportDate) != "" {
+		return sleepContext.ReportDate
+	}
+	if b == nil {
+		return ""
+	}
+	return b.Date
+}
+
+func appendMorningSleepCaveats(view *morningSleepView, sleepContext *health.MorningReportSleep, lang string) {
+	if sleepContext == nil {
+		return
+	}
+	switch sleepContext.Capture {
+	case health.NightCapturePartial:
+		view.lines = append(view.lines, morningSleepCopy(lang, "partial"))
+	case health.NightCaptureUnknown, "":
+		view.lines = append(view.lines, morningSleepCopy(lang, "unknown"))
+	}
+	if sleepContext.Assessment == health.NightDurationOutlier {
+		view.lines = append(view.lines, morningSleepCopy(lang, "outlier"))
+	} else if sleepContext.Assessment == health.NightDurationUnknown || sleepContext.Assessment == "" {
+		view.lines = append(view.lines, morningSleepCopy(lang, "assessment_unknown"))
+	}
+	if sleepContext.Finalization == health.NightFinalProvisional {
+		view.lines = append(view.lines, morningSleepCopy(lang, "provisional"))
+	}
+}
+
+func morningSleepCopy(lang, key string) string {
+	copy := map[string]map[string]string{
+		"en": {
+			"title": "Sleep", "current": "Sleep for the night of %s: %.1f h", "recorded_current": "Recorded sleep for %s: %.1f h", "baseline": "Usual level: %.1f h across %d nights", "no_current": "No sleep data for last night yet.", "older": "Latest recorded sleep (%s): %.1f h", "provisional": "This sleep record is provisional and may change.", "outlier": "This sleep duration is unusual; treat it with caution.", "partial": "The sleep record is incomplete, so its duration may be understated.", "unknown": "Sleep capture status is unknown; interpret this record with caution.", "assessment_unknown": "There is not enough reliable evidence to explain this sleep duration.", "plausible": "Duration alone cannot show sleep quality.",
+		},
+		"ru": {
+			"title": "Сон", "current": "Сон за ночь %s: %.1f ч", "recorded_current": "Запись сна за %s: %.1f ч", "baseline": "Обычный уровень: %.1f ч за %d ночей", "no_current": "Данных о прошедшей ночи пока нет.", "older": "Последняя запись сна (%s): %.1f ч", "provisional": "Запись предварительная и может измениться.", "outlier": "Длительность сна необычна; оценивайте её осторожно.", "partial": "Запись неполная, поэтому длительность может быть занижена.", "unknown": "Статус сбора данных о сне неизвестен; оценка ограничена.", "assessment_unknown": "Пока недостаточно надёжных данных, чтобы объяснить длительность сна.", "plausible": "По одной длительности нельзя оценить качество сна.",
+		},
+		"sr": {
+			"title": "San", "current": "San za noć %s: %.1f h", "recorded_current": "Zabeleženo spavanje za %s: %.1f h", "baseline": "Uobičajen nivo: %.1f h tokom %d noći", "no_current": "Podaci o protekloj noći još nisu dostupni.", "older": "Poslednji zabeleženi san (%s): %.1f h", "provisional": "Zapis je privremen i može se promeniti.", "outlier": "Trajanje sna je neuobičajeno; tumačite ga oprezno.", "partial": "Zapis je nepotpun, pa trajanje može biti potcenjeno.", "unknown": "Status prikupljanja sna nije poznat; tumačite zapis oprezno.", "assessment_unknown": "Još nema dovoljno pouzdanih podataka za objašnjenje trajanja sna.", "plausible": "Samo trajanje sna ne pokazuje njegov kvalitet.",
+		},
+	}
+	if values, ok := copy[lang]; ok {
+		if value, ok := values[key]; ok {
+			return value
+		}
+	}
+	return copy["en"][key]
+}
+
+func buildMorningSleepView(b *health.BriefingResponse, aiBlocks map[string]string, sleepContext *health.MorningReportSleep, lang string) morningSleepView {
+	view := morningSleepView{}
+	reportDate := morningReportDate(b, sleepContext)
+	if sleepContext != nil {
+		fresh := sleepContext.ReportDate != "" && sleepContext.Date == sleepContext.ReportDate
+		validHours := sleepContext.Hours != nil && plausibleSleepHours(*sleepContext.Hours)
+		if fresh && validHours {
+			label := "current"
+			if sleepContext.Capture != health.NightCaptureComplete {
+				label = "recorded_current"
+			}
+			view.lines = append(view.lines, fmt.Sprintf(morningSleepCopy(lang, label), sleepContext.ReportDate, *sleepContext.Hours))
+			if sleepContext.BaselineNights >= 7 && sleepContext.BaselineHours != nil && plausibleSleepHours(*sleepContext.BaselineHours) {
+				view.lines = append(view.lines, fmt.Sprintf(morningSleepCopy(lang, "baseline"), *sleepContext.BaselineHours, sleepContext.BaselineNights))
+			}
+			appendMorningSleepCaveats(&view, sleepContext, lang)
+			if sleepContext.Capture == health.NightCaptureComplete && sleepContext.Assessment == health.NightDurationPlausible {
+				view.explanation = morningSleepCopy(lang, "plausible")
+			}
+			final := sleepContext.Finalization == health.NightFinalFinal || sleepContext.Finalization == health.NightFinalProvisional
+			aiSleep := strings.TrimSpace(aiBlocks[ai.BlockSleep])
+			if aiSleep != "" && sleepContext.Capture == health.NightCaptureComplete && sleepContext.Assessment == health.NightDurationPlausible && final {
+				view.explanation = aiSleep
+				view.explanationAI = true
+			}
+		} else {
+			view.lines = append(view.lines, morningSleepCopy(lang, "no_current"))
+			if sleepContext.Date != "" && sleepContext.Date < sleepContext.ReportDate && validHours {
+				view.lines = append(view.lines, fmt.Sprintf(morningSleepCopy(lang, "older"), sleepContext.Date, *sleepContext.Hours))
+			}
+			appendMorningSleepCaveats(&view, sleepContext, lang)
+		}
+		if view.explanation == "" && sleepContext.Capture == health.NightCaptureComplete && sleepContext.Assessment == health.NightDurationPlausible && fresh && validHours {
+			view.explanation = morningSleepCopy(lang, "plausible")
+		}
+		return view
+	}
+
+	if b != nil && b.Sleep != nil && b.Sleep.LatestDate == reportDate {
+		if latest, ok := latestSleepHours(b.Sleep); ok {
+			view.lines = append(view.lines, fmt.Sprintf(morningSleepCopy(lang, "current"), b.Sleep.LatestDate, latest))
+		} else {
+			view.lines = append(view.lines, morningSleepCopy(lang, "no_current"))
+		}
+	} else {
+		view.lines = append(view.lines, morningSleepCopy(lang, "no_current"))
+		if b != nil && b.Sleep != nil && b.Sleep.LatestDate != "" && b.Sleep.LatestDate < reportDate {
+			if latest, ok := latestSleepHours(b.Sleep); ok {
+				view.lines = append(view.lines, fmt.Sprintf(morningSleepCopy(lang, "older"), b.Sleep.LatestDate, latest))
+			}
+		}
+	}
+	view.explanation = morningSleepCopy(lang, "assessment_unknown")
+	return view
+}
+
+func plausibleSleepHours(hours float64) bool {
+	return hours > 0 && hours <= 24
+}
+
+func renderMorningSleep(sb *strings.Builder, b *health.BriefingResponse, aiBlocks map[string]string, lang string, sleepContext *health.MorningReportSleep) {
+	view := buildMorningSleepView(b, aiBlocks, sleepContext, lang)
+	fmt.Fprintf(sb, "<b>😴 %s</b>\n", telegramText(morningSleepCopy(lang, "title")))
+	for _, line := range view.lines {
+		fmt.Fprintf(sb, "%s\n", telegramText(line))
+	}
+	if view.explanation != "" {
+		if view.explanationAI {
+			fmt.Fprintf(sb, "🤖 <i>%s</i>\n", telegramText(view.explanation))
+		} else {
+			fmt.Fprintf(sb, "%s\n", telegramText(view.explanation))
+		}
+	}
+	sb.WriteByte('\n')
+}
+
 // ── morning ──────────────────────────────────────────────────────────────────
 
-func formatMorning(b *health.BriefingResponse, aiBlocks map[string]string, lang string, loc *time.Location, f freshness, checkinExpired bool) string {
+func formatMorning(b *health.BriefingResponse, aiBlocks map[string]string, lang string, loc *time.Location, f freshness, checkinExpired bool, sleepContext ...health.MorningReportSleep) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "<b>🌅 %s — %s</b>\n\n", tr(lang, "tg_morning_header"), b.Date)
+	sleep := firstMorningSleep(sleepContext)
+	reportDate := morningReportDate(b, sleep)
+	fmt.Fprintf(&sb, "<b>🌅 %s — %s</b>\n\n", tr(lang, "tg_morning_header"), reportDate)
 
 	if d := staleDays(b.Date, loc); d >= 1 {
 		fmt.Fprintf(&sb, tr(lang, "tg_warn_stale")+"\n\n", d)
 	}
+
+	renderMorningSleep(&sb, b, aiBlocks, lang, sleep)
 
 	evidence := morningEvidenceForReport(b, f)
 	label := evidence.VerdictLabel
@@ -774,16 +924,6 @@ func formatMorning(b *health.BriefingResponse, aiBlocks map[string]string, lang 
 		fmt.Fprintf(&sb, "  ⚡ %s: %d/%d\n", tr(lang, "tg_energy"), b.EnergyBank.Current, b.EnergyBank.Capacity)
 	}
 	fmt.Fprintf(&sb, "  %s %s: %d/100\n", readinessEmoji(b.ReadinessToday), tr(lang, "tg_readiness"), b.ReadinessToday)
-	switch {
-	case f.sleepKnown && f.sleepStale():
-		fmt.Fprintf(&sb, "  😴 %s\n", telegramText(stripSimpleTags(fmt.Sprintf(tr(lang, "tg_sleep_silence"), fmtSilence(f.sleep, lang)))))
-	case b.Sleep != nil:
-		if latest, ok := latestSleepHours(b.Sleep); ok {
-			fmt.Fprintf(&sb, "  😴 %s: %.1fh\n", telegramText(sectionTitle(findSection(b, "sleep"), tr(lang, "sec_sleep"))), latest)
-		} else {
-			fmt.Fprintf(&sb, "  😴 %s: %.1fh (%s)\n", telegramText(sectionTitle(findSection(b, "sleep"), tr(lang, "sec_sleep"))), b.Sleep.TotalAvg, tr(lang, "tg_sleep_average"))
-		}
-	}
 	if f.watchKnown && f.watchOff() {
 		fmt.Fprintf(&sb, "  ❤️ %s\n", telegramText(stripSimpleTags(fmt.Sprintf(tr(lang, "tg_watch_off"), fmtSilence(f.watch, lang)))))
 	}

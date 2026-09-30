@@ -80,6 +80,17 @@ func (s *DB) LoadAutonomicRows(from, to string) ([]health.AutonomicRow, error) {
 // Load window: 180 days before `from` for warmup + 3 days after `to`
 // so the t+1..t+3 window is fully observable.
 func (s *DB) BackfillAcuteRiskSnapshots(from, to string) (int, error) {
+	if err := validateReadinessDateRange(from, to, "BackfillAcuteRiskSnapshots"); err != nil {
+		return 0, err
+	}
+	epochs, err := s.loadSourceEpochRunCache()
+	if err != nil {
+		return 0, err
+	}
+	return s.backfillAcuteRiskSnapshots(from, to, epochs)
+}
+
+func (s *DB) backfillAcuteRiskSnapshots(from, to string, epochs *sourceEpochRunCache) (int, error) {
 	fromT, err := time.Parse(isoDate, from)
 	if err != nil {
 		return 0, fmt.Errorf("BackfillAcuteRiskSnapshots: parse from: %w", err)
@@ -122,7 +133,7 @@ func (s *DB) BackfillAcuteRiskSnapshots(from, to string) (int, error) {
 	var firstErr error
 	for d := fromT; !d.After(toT); d = d.AddDate(0, 0, 1) {
 		date := d.Format(isoDate)
-		if err := s.writeAcuteRiskRow(context.Background(), d, date, rowByDate, hrvLookup, rhrLookup, orEventByDate, strictEventByDate); err != nil {
+		if err := s.writeAcuteRiskRow(context.Background(), d, date, epochs, rowByDate, hrvLookup, rhrLookup, orEventByDate, strictEventByDate); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -137,16 +148,13 @@ func (s *DB) writeAcuteRiskRow(
 	ctx context.Context,
 	t time.Time,
 	date string,
+	epochs *sourceEpochRunCache,
 	rowByDate map[string]health.AutonomicRow,
 	hrvLookup, rhrLookup DailyValueLookup,
 	orEventByDate, strictEventByDate map[string]int,
 ) error {
 	_ = ctx
-	epoch, err := s.ResolveSourceEpoch(date)
-	if err != nil {
-		return fmt.Errorf("resolve source_epoch for %s: %w", date, err)
-	}
-	epochStart := s.lookupEpochStart(epoch)
+	epoch, epochStart := epochs.resolve(date)
 
 	// Paired warmup count: days in (epochStart, t] with both HRV and
 	// RHR present. Note we count *up to and including* t — that's the
@@ -159,9 +167,9 @@ func (s *DB) writeAcuteRiskRow(
 		// target_kinds get the same reason; PKs distinct so the strict
 		// row does not overwrite the primary.
 		cov := mustMarshal(map[string]any{
-			"paired_count":       pairedCount,
-			"warmup_min_paired":  health.AcuteRiskWarmupMinPaired,
-			"reason_detail":      "paired HRV+RHR count below warmup threshold within current source_epoch",
+			"paired_count":      pairedCount,
+			"warmup_min_paired": health.AcuteRiskWarmupMinPaired,
+			"reason_detail":     "paired HRV+RHR count below warmup threshold within current source_epoch",
 		})
 		for _, tk := range []string{TargetKindEventT1T3, TargetKindEventStrictT1T3} {
 			if err := s.SaveTargetSnapshot(TargetSnapshot{
@@ -328,11 +336,11 @@ func (s *DB) writeAcuteRiskRow(
 			candidates[1].Format(isoDate),
 			candidates[2].Format(isoDate),
 		},
-		"per_day":            dayResults,
-		"paired_count":       pairedCount,
-		"hrv_z_threshold":    health.AcuteRiskHRVZThreshold,
-		"rhr_z_threshold":    health.AcuteRiskRHRZThreshold,
-		"baseline_window":    health.AcuteRiskBaselineWindowDays,
+		"per_day":         dayResults,
+		"paired_count":    pairedCount,
+		"hrv_z_threshold": health.AcuteRiskHRVZThreshold,
+		"rhr_z_threshold": health.AcuteRiskRHRZThreshold,
+		"baseline_window": health.AcuteRiskBaselineWindowDays,
 	})
 
 	// Primary OR-event.
@@ -393,18 +401,18 @@ func (s *DB) writeAcuteRiskRow(
 // --- Features ----------------------------------------------------------
 
 type acuteRiskFeatures struct {
-	HRVToday          *float64 `json:"hrv_today,omitempty"`
-	RHRToday          *float64 `json:"rhr_today,omitempty"`
-	HRVMean45         *float64 `json:"hrv_mean_45d,omitempty"`
-	HRVSD45           *float64 `json:"hrv_sd_45d,omitempty"`
-	RHRMean45         *float64 `json:"rhr_mean_45d,omitempty"`
-	RHRSD45           *float64 `json:"rhr_sd_45d,omitempty"`
-	HRVZToday         *float64 `json:"hrv_z_today,omitempty"`
-	RHRZToday         *float64 `json:"rhr_z_today,omitempty"`
-	PairedCountToT    int      `json:"paired_count_to_t"`
-	WarmupMet         bool     `json:"warmup_met"`
-	HRVEligibleCount45 int     `json:"hrv_eligible_count_45d"`
-	RHREligibleCount45 int     `json:"rhr_eligible_count_45d"`
+	HRVToday           *float64 `json:"hrv_today,omitempty"`
+	RHRToday           *float64 `json:"rhr_today,omitempty"`
+	HRVMean45          *float64 `json:"hrv_mean_45d,omitempty"`
+	HRVSD45            *float64 `json:"hrv_sd_45d,omitempty"`
+	RHRMean45          *float64 `json:"rhr_mean_45d,omitempty"`
+	RHRSD45            *float64 `json:"rhr_sd_45d,omitempty"`
+	HRVZToday          *float64 `json:"hrv_z_today,omitempty"`
+	RHRZToday          *float64 `json:"rhr_z_today,omitempty"`
+	PairedCountToT     int      `json:"paired_count_to_t"`
+	WarmupMet          bool     `json:"warmup_met"`
+	HRVEligibleCount45 int      `json:"hrv_eligible_count_45d"`
+	RHREligibleCount45 int      `json:"rhr_eligible_count_45d"`
 }
 
 func (s *DB) saveAcuteRiskFeatures(

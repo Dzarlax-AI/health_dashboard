@@ -11,7 +11,7 @@ const readinessRedesignRoutineLookbackDays = 14
 
 type readinessRedesignWriter struct {
 	name string
-	run  func(from, to string) (int, error)
+	run  func(from, to string, epochs *sourceEpochRunCache) (int, error)
 }
 
 func readinessRedesignRoutineWindow(dates []string, today time.Time) (string, string, bool) {
@@ -62,24 +62,45 @@ func (s *DB) RunReadinessRedesignBackfillForDatesAt(dates []string, today time.T
 }
 
 func (s *DB) runReadinessRedesignBackfillRange(from, to string) error {
-	writers := []readinessRedesignWriter{
-		{name: "recovery_stability", run: s.BackfillRecoveryStabilitySnapshots},
-		{name: "passive_efficiency", run: s.BackfillPassiveEfficiencySnapshots},
-		{name: "acute_risk", run: s.BackfillAcuteRiskSnapshots},
-		{name: "chronic_load", run: s.BackfillChronicLoadSnapshots},
+	epochs, err := s.loadSourceEpochRunCache()
+	if err != nil {
+		return err
 	}
-	return runReadinessRedesignWriters(from, to, writers)
+	writers := []readinessRedesignWriter{
+		{name: "recovery_stability", run: s.backfillRecoveryStabilitySnapshots},
+		{name: "passive_efficiency", run: s.backfillPassiveEfficiencySnapshots},
+		{name: "acute_risk", run: s.backfillAcuteRiskSnapshots},
+		{name: "chronic_load", run: s.backfillChronicLoadSnapshots},
+	}
+	return runReadinessRedesignWriters(from, to, epochs, writers)
 }
 
-func runReadinessRedesignWriters(from, to string, writers []readinessRedesignWriter) error {
+func runReadinessRedesignWriters(from, to string, epochs *sourceEpochRunCache, writers []readinessRedesignWriter) error {
 	log.Printf("readiness redesign backfill: starting %s..%s", from, to)
 	var errs []error
 	for _, w := range writers {
-		if n, err := w.run(from, to); err != nil {
-			log.Printf("readiness redesign backfill %s: wrote=%d err=%v", w.name, n, err)
+		started := time.Now()
+		n, err := w.run(from, to, epochs)
+		elapsed := time.Since(started)
+		if err != nil {
+			log.Printf("readiness redesign backfill %s: days=%d wrote=%d duration=%s err=%v", w.name, readinessRedesignDateCount(from, to), n, elapsed, err)
 			errs = append(errs, fmt.Errorf("%s: %w", w.name, err))
+		} else {
+			log.Printf("readiness redesign backfill %s: days=%d wrote=%d duration=%s", w.name, readinessRedesignDateCount(from, to), n, elapsed)
 		}
 	}
 	log.Printf("readiness redesign backfill: done %s..%s", from, to)
 	return errors.Join(errs...)
+}
+
+func readinessRedesignDateCount(from, to string) int {
+	fromDate, err := time.Parse(isoDate, from)
+	if err != nil {
+		return 0
+	}
+	toDate, err := time.Parse(isoDate, to)
+	if err != nil || toDate.Before(fromDate) {
+		return 0
+	}
+	return int(toDate.Sub(fromDate)/(24*time.Hour)) + 1
 }

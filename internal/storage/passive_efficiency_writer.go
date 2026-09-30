@@ -85,6 +85,17 @@ func (s *DB) LoadWalkingHRRows(from, to string) ([]health.WalkingHRRow, error) {
 // after `to` so the slow baseline has its lookback and rolling_3d
 // targets have all forward days available.
 func (s *DB) BackfillPassiveEfficiencySnapshots(from, to string) (int, error) {
+	if err := validateReadinessDateRange(from, to, "BackfillPassiveEfficiencySnapshots"); err != nil {
+		return 0, err
+	}
+	epochs, err := s.loadSourceEpochRunCache()
+	if err != nil {
+		return 0, err
+	}
+	return s.backfillPassiveEfficiencySnapshots(from, to, epochs)
+}
+
+func (s *DB) backfillPassiveEfficiencySnapshots(from, to string, epochs *sourceEpochRunCache) (int, error) {
 	fromT, err := time.Parse(isoDate, from)
 	if err != nil {
 		return 0, fmt.Errorf("BackfillPassiveEfficiencySnapshots: parse from: %w", err)
@@ -116,7 +127,7 @@ func (s *DB) BackfillPassiveEfficiencySnapshots(from, to string) (int, error) {
 	var firstErr error
 	for d := fromT; !d.After(toT); d = d.AddDate(0, 0, 1) {
 		date := d.Format(isoDate)
-		if err := s.writePassiveEfficiencyRow(context.Background(), d, date, rowByDate, verdictByDate); err != nil {
+		if err := s.writePassiveEfficiencyRow(context.Background(), d, date, epochs, rowByDate, verdictByDate); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -131,15 +142,12 @@ func (s *DB) writePassiveEfficiencyRow(
 	ctx context.Context,
 	t time.Time,
 	date string,
+	epochs *sourceEpochRunCache,
 	rowByDate map[string]health.WalkingHRRow,
 	verdict map[string]health.WalkingHREligibilityResult,
 ) error {
 	_ = ctx
-	epoch, err := s.ResolveSourceEpoch(date)
-	if err != nil {
-		return fmt.Errorf("resolve source_epoch for %s: %w", date, err)
-	}
-	epochStart := s.lookupEpochStart(epoch)
+	epoch, epochStart := epochs.resolve(date)
 
 	// daily_point target — eligibility verdict for t+1.
 	tp1 := t.AddDate(0, 0, 1).Format(isoDate)
@@ -227,7 +235,7 @@ func passiveTargetFromVerdict(
 			Eligible: false,
 			Reason:   health.PassiveEfficiencyNoWalkingHR,
 			Coverage: mustMarshal(map[string]any{
-				"target_date": targetDate,
+				"target_date":   targetDate,
 				"reason_detail": "no walking_heart_rate_average row for target date",
 			}),
 		}

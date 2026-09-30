@@ -79,7 +79,7 @@ func TestRunReadinessRedesignWriters_OrderAndContinueOnError(t *testing.T) {
 	makeWriter := func(name string, err error) readinessRedesignWriter {
 		return readinessRedesignWriter{
 			name: name,
-			run: func(from, to string) (int, error) {
+			run: func(from, to string, _ *sourceEpochRunCache) (int, error) {
 				if from != "2026-05-01" || to != "2026-05-15" {
 					t.Fatalf("%s got window %s..%s", name, from, to)
 				}
@@ -89,7 +89,7 @@ func TestRunReadinessRedesignWriters_OrderAndContinueOnError(t *testing.T) {
 		}
 	}
 
-	runReadinessRedesignWriters("2026-05-01", "2026-05-15", []readinessRedesignWriter{
+	runReadinessRedesignWriters("2026-05-01", "2026-05-15", nil, []readinessRedesignWriter{
 		makeWriter("recovery_stability", nil),
 		makeWriter("passive_efficiency", errors.New("boom")),
 		makeWriter("acute_risk", nil),

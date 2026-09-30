@@ -42,18 +42,18 @@ import (
 //
 // Version history:
 //
-//   1 — initial release. chronic_acute_density used ChronicLoadMinAcuteDensity = 3
-//       events / 14d, producing ~76% positive rate on the test slice
-//       (Acute OR base rate ~27.5%, expected events ~3.85 — threshold
-//       below expectation). Phase 1 floors showed event_base_rate AUC
-//       below random, label barely discriminated.
-//   2 — calibration retune (Phase 1 step 1).
-//       ChronicLoadMinAcuteDensity raised from 3 to 7 based on the
-//       Phase 1 floor distribution; new positive rate ~25%. The
-//       window-observability gate `requiredAcuteDays` now equals
-//       14 − 7 + 1 = 8 (was 12 at the v1 threshold). chronic_label
-//       semantics unchanged; the v2 stamp covers all writer rows
-//       written under the same writer pass.
+//	1 — initial release. chronic_acute_density used ChronicLoadMinAcuteDensity = 3
+//	    events / 14d, producing ~76% positive rate on the test slice
+//	    (Acute OR base rate ~27.5%, expected events ~3.85 — threshold
+//	    below expectation). Phase 1 floors showed event_base_rate AUC
+//	    below random, label barely discriminated.
+//	2 — calibration retune (Phase 1 step 1).
+//	    ChronicLoadMinAcuteDensity raised from 3 to 7 based on the
+//	    Phase 1 floor distribution; new positive rate ~25%. The
+//	    window-observability gate `requiredAcuteDays` now equals
+//	    14 − 7 + 1 = 8 (was 12 at the v1 threshold). chronic_label
+//	    semantics unchanged; the v2 stamp covers all writer rows
+//	    written under the same writer pass.
 const chronicLoadFormulaVersion = 2
 const chronicLoadFeatureVersion = 2
 
@@ -198,6 +198,17 @@ func (s *DB) LoadAcuteOrEventRows(from, to string) (map[string]int, error) {
 // lookback + ChronicLoadForwardWindowDays after `to` for the forward
 // window.
 func (s *DB) BackfillChronicLoadSnapshots(from, to string) (int, error) {
+	if err := validateReadinessDateRange(from, to, "BackfillChronicLoadSnapshots"); err != nil {
+		return 0, err
+	}
+	epochs, err := s.loadSourceEpochRunCache()
+	if err != nil {
+		return 0, err
+	}
+	return s.backfillChronicLoadSnapshots(from, to, epochs)
+}
+
+func (s *DB) backfillChronicLoadSnapshots(from, to string, epochs *sourceEpochRunCache) (int, error) {
 	fromT, err := time.Parse(isoDate, from)
 	if err != nil {
 		return 0, fmt.Errorf("BackfillChronicLoadSnapshots: parse from: %w", err)
@@ -251,7 +262,7 @@ func (s *DB) BackfillChronicLoadSnapshots(from, to string) (int, error) {
 	for d := fromT; !d.After(toT); d = d.AddDate(0, 0, 1) {
 		date := d.Format(isoDate)
 		if err := s.writeChronicLoadRow(context.Background(), d, date,
-			cfg, recoveryByDate, recoveryLookup, acute,
+			epochs, cfg, recoveryByDate, recoveryLookup, acute,
 			priorChronic, priorAcuteDensity, archByDate); err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -267,6 +278,7 @@ func (s *DB) writeChronicLoadRow(
 	ctx context.Context,
 	t time.Time,
 	date string,
+	epochs *sourceEpochRunCache,
 	cfg health.ChronicLoadConfig,
 	recoveryByDate map[string]recoveryRolling3dRow,
 	recoveryLookup DailyValueLookup,
@@ -275,11 +287,7 @@ func (s *DB) writeChronicLoadRow(
 	archByDate map[string]SleepArchitectureDay,
 ) error {
 	_ = ctx
-	epoch, err := s.ResolveSourceEpoch(date)
-	if err != nil {
-		return fmt.Errorf("resolve source_epoch for %s: %w", date, err)
-	}
-	epochStart := s.lookupEpochStart(epoch)
+	epoch, epochStart := epochs.resolve(date)
 
 	// Paired warmup: count eligible Recovery rolling_3d rows strictly
 	// before t+1, inside the current source_epoch. Counts up to and
