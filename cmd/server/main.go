@@ -833,6 +833,7 @@ func makeTestNotifyFn(db *storage.DB, mgr *tenants.Manager, schema string, notif
 		// state right now" query path (planned, not yet built) will
 		// regenerate intentionally. Only the explicit "test"
 		// admin button is now cache-only.
+		ncfg.AIConfig = db.GetAIConfig(mgr.AIDefaultsFor(context.Background(), schema))
 		return notify.SendMorningPreview(bot, db, ncfg)
 	}
 }
@@ -1011,6 +1012,7 @@ func makeReportTrigger(mgr *tenants.Manager, reg *registry.Registry, schema stri
 			}
 			return
 		}
+		ncfg.AIConfig = db.GetAIConfig(mgr.AIDefaultsFor(context.Background(), schema))
 		sent, reason, err := notify.SendMorningSmart(bot, db, ncfg, false)
 		if err != nil {
 			if sendMu != nil {
@@ -1072,6 +1074,7 @@ func makeMorningTrigger(ctx context.Context, db *storage.DB, sendMu *sync.Mutex,
 			return
 		}
 		ncfg := buildNotifyCfg(db, cfg)
+		ncfg.AIConfig = aiCfg
 		bot := notify.NewBot(ncfg.Token, ncfg.ChatID)
 
 		// Route through the same check-in gate as the scheduler so an
@@ -1404,7 +1407,8 @@ func runMorningSmartRetry(ctx context.Context, bot *notify.Bot, db *storage.DB, 
 		// Try to (re)generate AI insight on each tick — cheap if cached.
 		// Resolve AI defaults fresh per-tick so admin-managed global
 		// config is honoured even when it was set mid-day.
-		ensureTodayAIInsight(ctx, db, mgr.AIDefaultsFor(ctx, schema), ncfg.Lang)
+		ncfg.AIConfig = db.GetAIConfig(mgr.AIDefaultsFor(ctx, schema))
+		db.EnsureTodayAIInsightContext(ctx, ncfg.AIConfig, ncfg.Lang)
 
 		// Resolve all the per-tick state the gate consults. The check-in
 		// row lookup tolerates "no row" via GetTodayCheckin returning

@@ -8,6 +8,7 @@ The input is one JSON object:
 - reasons: localized rule-based facts already selected by severity.
 - sections: localized rule-based sleep, activity/cardio, and recovery summaries with their details.
 - daily: date-aligned measurements. Missing values are omitted on their calendar date; never shift or compare values across different dates.
+- night_sleep: the sole source for the sleep explanation. It contains the observed night date, duration, capture completeness, duration assessment, finalization, and (only with sufficient comparable nights) a baseline.
 - energy_bank and readiness: server-computed context.
 
 Safety and accuracy:
@@ -17,6 +18,7 @@ Safety and accuracy:
 - Never invent a trend, baseline, date, measurement, target, workout, or restriction.
 - If evidence is sparse or provisional, say so briefly.
 - Do not restate every metric. Connect only supplied facts.
+- For sleep, use only night_sleep. Never substitute sleep values in daily, verdicts, reasons, or other sections. If its date differs from date, explicitly identify the older night and say the current night is unavailable. Partial, unknown, or outlier capture cannot support a complete-night assessment; explain the limitation. Provisional nights must be described as provisional. Do not invent sleep stages or awakenings.
 - Keep each section scoped: sleep uses sleep facts; activity uses activity/cardio facts; recovery uses recovery facts.
 - Cross-section context is allowed only when the supplied evidence explicitly connects it.
 - When a section has insufficient evidence, say that its data is unavailable or incomplete. Never fill the gap.

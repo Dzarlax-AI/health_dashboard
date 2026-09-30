@@ -11,9 +11,11 @@ import (
 	"health-receiver/internal/storage"
 )
 
-func formatMorningRich(b *health.BriefingResponse, aiBlocks map[string]string, lang string, loc *time.Location, f freshness, checkinExpired bool, settleBanner string) string {
+func formatMorningRich(b *health.BriefingResponse, aiBlocks map[string]string, lang string, loc *time.Location, f freshness, checkinExpired bool, settleBanner string, sleepContext ...health.MorningReportSleep) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "<h2>🌅 %s</h2>\n", richEsc(richMorningDate(b.Date, lang)))
+	sleep := firstMorningSleep(sleepContext)
+	reportDate := morningReportDate(b, sleep)
+	fmt.Fprintf(&sb, "<h2>🌅 %s</h2>\n", richEsc(richMorningDate(reportDate, lang)))
 
 	if settleBanner != "" {
 		richTrustedParagraph(&sb, settleBanner)
@@ -21,6 +23,7 @@ func formatMorningRich(b *health.BriefingResponse, aiBlocks map[string]string, l
 	if d := staleDays(b.Date, loc); d >= 1 {
 		richTrustedParagraph(&sb, fmt.Sprintf(tr(lang, "tg_warn_stale"), d))
 	}
+	renderMorningSleepRich(&sb, b, aiBlocks, lang, sleep)
 
 	evidence := morningEvidenceForReport(b, f)
 	label := evidence.VerdictLabel
@@ -44,20 +47,6 @@ func formatMorningRich(b *health.BriefingResponse, aiBlocks map[string]string, l
 	}
 	metrics = append(metrics, fmt.Sprintf("◉ <strong>%d/100</strong> · %s",
 		b.ReadinessToday, richEsc(tr(lang, "tg_readiness"))))
-	switch {
-	case f.sleepKnown && f.sleepStale():
-		metricNotes = append(metricNotes, "😴 "+richText(stripSimpleTags(fmt.Sprintf(tr(lang, "tg_sleep_silence"), fmtSilence(f.sleep, lang)))))
-	case b.Sleep != nil:
-		if latest, ok := latestSleepHours(b.Sleep); ok {
-			metrics = append(metrics, fmt.Sprintf("☾ <strong>%.1fh</strong> · %s",
-				latest, richText(sectionTitle(findSection(b, "sleep"), tr(lang, "sec_sleep")))))
-		} else {
-			metrics = append(metrics, fmt.Sprintf("☾ <strong>%.1fh</strong> · %s · %s",
-				b.Sleep.TotalAvg,
-				richText(sectionTitle(findSection(b, "sleep"), tr(lang, "sec_sleep"))),
-				richEsc(tr(lang, "tg_sleep_average"))))
-		}
-	}
 	if f.watchKnown && f.watchOff() {
 		metricNotes = append(metricNotes, "❤️ "+richText(stripSimpleTags(fmt.Sprintf(tr(lang, "tg_watch_off"), fmtSilence(f.watch, lang)))))
 	}
@@ -99,6 +88,28 @@ func formatMorningRich(b *health.BriefingResponse, aiBlocks map[string]string, l
 		}
 	}
 	return strings.TrimSpace(sb.String())
+}
+
+func renderMorningSleepRich(sb *strings.Builder, b *health.BriefingResponse, aiBlocks map[string]string, lang string, sleepContext *health.MorningReportSleep) {
+	view := buildMorningSleepView(b, aiBlocks, sleepContext, lang)
+	fmt.Fprintf(sb, "<h3>😴 %s</h3>\n<p>", richEsc(morningSleepCopy(lang, "title")))
+	for i, line := range view.lines {
+		if i > 0 {
+			sb.WriteString("<br>")
+		}
+		sb.WriteString(richText(line))
+	}
+	if view.explanation != "" {
+		if len(view.lines) > 0 {
+			sb.WriteString("<br>")
+		}
+		if view.explanationAI {
+			fmt.Fprintf(sb, "🤖 <em>%s</em>", richText(view.explanation))
+		} else {
+			sb.WriteString(richText(view.explanation))
+		}
+	}
+	sb.WriteString("</p>\n")
 }
 
 func richMorningDate(date, lang string) string {

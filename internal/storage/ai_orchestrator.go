@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"health-receiver/internal/ai"
-	"health-receiver/internal/health"
 )
 
 // aiRegenFailBackoff is how long we wait after a failed regen before
@@ -41,35 +40,10 @@ func (s *DB) EnsureTodayAIInsightContext(ctx context.Context, aiCfg AIConfig, la
 	if !aiCfg.Enabled() {
 		return ""
 	}
-	provider, err := ai.GetProvider(aiCfg.Provider)
+	provider, providerCfg, fingerprint, err := morningGenerationConfig(aiCfg)
 	if err != nil {
 		log.Printf("EnsureTodayAIInsight: %v", err)
 		return ""
-	}
-	active := aiCfg.ActiveSettings()
-	descriptor := provider.Descriptor()
-	if active.Model == "" {
-		active.Model = descriptor.DefaultModel
-	}
-	if active.ReasoningEffort == "" {
-		active.ReasoningEffort = descriptor.DefaultReasoning
-	}
-	maxOutputTokens := aiCfg.MaxOutputTokens
-	if maxOutputTokens <= 0 || maxOutputTokens > ai.SynthesisMaxTokens {
-		maxOutputTokens = ai.SynthesisMaxTokens
-	}
-	providerCfg := ai.ProviderConfig{
-		APIKey:          active.APIKey,
-		Model:           active.Model,
-		MaxOutputTokens: maxOutputTokens,
-		ReasoningEffort: active.ReasoningEffort,
-	}
-	fingerprint := ai.GenerationFingerprint{
-		Provider:        aiCfg.Provider,
-		Model:           active.Model,
-		ReasoningEffort: active.ReasoningEffort,
-		MaxOutputTokens: maxOutputTokens,
-		PromptRevision:  ai.PromptRevision,
 	}
 	today := time.Now().In(s.reportTZLocation()).Format("2006-01-02")
 	key := today + "|" + lang
@@ -96,16 +70,17 @@ func (s *DB) EnsureTodayAIInsightContext(ctx context.Context, aiCfg AIConfig, la
 		log.Printf("EnsureTodayAIInsight: briefing: %v", err)
 		return ""
 	}
-	evidence := health.BuildMorningInsightEvidence(briefing, raw)
+	evidence, err := s.morningInsightEvidence(ctx, briefing, raw, today)
+	if err != nil {
+		log.Printf("EnsureTodayAIInsight: night evidence: %v", err)
+		return ""
+	}
 	evidenceJSON, err := json.Marshal(evidence)
 	if err != nil {
 		log.Printf("EnsureTodayAIInsight: marshal evidence: %v", err)
 		return ""
 	}
-	bundleHash := ai.HashForGeneration(ai.HashInsightBundle(evidence), fingerprint)
-	if briefing.DailyDecision != nil {
-		bundleHash = PlanInputsHash(briefing.DailyDecision.ID, bundleHash)
-	}
+	bundleHash := morningBundleHash(evidence, briefing, fingerprint)
 	if aiBundleCacheComplete(s.GetAIBlocksFull(today, lang), bundleHash) {
 		s.aiRegenLastFailAt.Delete(failureKey)
 		return s.GetAIInsightCombined(today, lang)
@@ -114,7 +89,7 @@ func (s *DB) EnsureTodayAIInsightContext(ctx context.Context, aiCfg AIConfig, la
 	generated, err := ai.GenerateInsightBundle(ctx, provider, providerCfg, evidenceJSON, lang)
 	log.Printf(
 		"EnsureTodayAIInsight: provider=%s model=%s block=BUNDLE request_id=%q attempts=%d latency=%s input_tokens=%d output_tokens=%d total_tokens=%d finish=%q",
-		aiCfg.Provider, active.Model, generated.RequestID, generated.Attempts,
+		aiCfg.Provider, providerCfg.Model, generated.RequestID, generated.Attempts,
 		generated.Latency, generated.InputTokens, generated.OutputTokens, generated.TotalTokens, generated.FinishReason,
 	)
 	for block, validationError := range generated.InvalidBlocks {
