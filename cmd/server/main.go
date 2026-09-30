@@ -255,22 +255,18 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	onNewData := func(db *storage.DB, dates []string) {
+	onNewData := func(db *storage.DB, dates []string, cacheReady bool) {
 		// The tenant schema is encoded in the DB pool's search_path.
 		// We rely on the manager to find the right backfill scheduler.
 		for schema, tdb := range mgr.AllDBs() {
 			if tdb == db {
-				if fn := mgr.BackfillDatesFor(schema); fn != nil {
-					fn(dates)
+				refresh := mgr.IngestRefreshFor(schema)
+				if refresh == nil {
+					if backfill := mgr.BackfillDatesFor(schema); backfill != nil {
+						refresh = func(dates []string, _ bool) { backfill(dates) }
+					}
 				}
-				// Ingest-driven morning report trigger: fires earlier
-				// than the scheduled morning hour when fresh sleep +
-				// activity data arrives, mirroring the single-tenant
-				// path in runSingleTenant.onNewData. Goroutine so a
-				// slow Telegram send never blocks the 200-response.
-				if trigger := mgr.MorningTriggerFor(schema); trigger != nil {
-					go trigger()
-				}
+				dispatchIngestRefresh(dates, cacheReady, refresh, mgr.MorningTriggerFor(schema))
 				break
 			}
 		}
@@ -325,11 +321,7 @@ func main() {
 		}
 	}
 
-	logged := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		mux.ServeHTTP(w, r)
-		log.Printf("%s %s %s %v", r.RemoteAddr, r.Method, r.URL.Path, time.Since(start).Round(time.Millisecond))
-	})
+	logged := logRequests(mux)
 
 	log.Printf("listening on %s (multi-user mode, %d user(s))", addr, len(users))
 	log.Printf("MCP endpoint: %s/mcp", baseURL)
@@ -348,14 +340,14 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	maybeFireMorningReport := makeMorningTrigger(ctx, db, &morningSendMu, mgr, reg, schema, notifyDefaults)
 	energyV2 := storage.NewEnergyV2Orchestrator()
 	todayDerived := storage.NewTodayDerivedStateCoordinator(energyV2)
-	backfillDatesFn := makeTodayDerivedStateTrigger(ctx, db, schema, notifyDefaults, todayDerived, func() storage.AIConfig {
+	refreshDatesFn := makeTodayDerivedStateRefresh(ctx, db, schema, notifyDefaults, todayDerived, func() storage.AIConfig {
 		return db.GetAIConfig(aiDefaults)
 	})
+	backfillDatesFn := func(dates []string) { refreshDatesFn(dates, false) }
 	startupBackfills := newStartupBackfillQueue(ctx, 5*time.Second)
 	enqueueStartupCacheRefresh(startupBackfills, db, schema, notifyDefaults, backfillDatesFn)
-	onNewData := func(_ *storage.DB, dates []string) {
-		backfillDatesFn(dates)
-		go maybeFireMorningReport()
+	onNewData := func(_ *storage.DB, dates []string, cacheReady bool) {
+		dispatchIngestRefresh(dates, cacheReady, refreshDatesFn, maybeFireMorningReport)
 	}
 
 	backfillFn := makeBackfillFn(db, backfillDatesFn)
@@ -364,6 +356,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	mgr.RegisterCallbacks(schema, tenants.TenantCallbacks{
 		Backfill:       backfillFn,
 		BackfillDates:  backfillDatesFn,
+		IngestRefresh:  refreshDatesFn,
 		MorningSendMu:  &morningSendMu,
 		TestNotify:     testNotifyFn,
 		NotifyDefaults: notifyDefaults,
@@ -400,11 +393,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 		}
 	}
 
-	logged := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		mux.ServeHTTP(w, r)
-		log.Printf("%s %s %s %v", r.RemoteAddr, r.Method, r.URL.Path, time.Since(start).Round(time.Millisecond))
-	})
+	logged := logRequests(mux)
 
 	log.Printf("listening on %s (single-user legacy mode)", addr)
 	log.Printf("MCP endpoint: %s/mcp", baseURL)
@@ -492,10 +481,11 @@ func serveHTTP(ctx context.Context, addr string, handler http.Handler, drain fun
 func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Registry, db *storage.DB, schema string,
 	notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig, baseURL string, todayDerived *storage.TodayDerivedStateCoordinator,
 	startupBackfills *startupBackfillQueue) {
-	backfillDatesFn := makeTodayDerivedStateTrigger(ctx, db, schema, notifyDefaults, todayDerived, func() storage.AIConfig {
+	refreshDatesFn := makeTodayDerivedStateRefresh(ctx, db, schema, notifyDefaults, todayDerived, func() storage.AIConfig {
 		// Resolve installation defaults when the queued refresh actually runs.
 		return db.GetAIConfig(mgr.AIDefaultsFor(ctx, schema))
 	})
+	backfillDatesFn := func(dates []string) { refreshDatesFn(dates, false) }
 
 	enqueueStartupCacheRefresh(startupBackfills, db, schema, notifyDefaults, backfillDatesFn)
 
@@ -508,6 +498,7 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Regist
 	mgr.RegisterCallbacks(schema, tenants.TenantCallbacks{
 		Backfill:       backfillFn,
 		BackfillDates:  backfillDatesFn,
+		IngestRefresh:  refreshDatesFn,
 		MorningTrigger: maybeFireMorningReport,
 		MorningSendMu:  &morningSendMu,
 		TestNotify:     testNotifyFn,
@@ -690,9 +681,6 @@ func runCacheBackfill(db *storage.DB, force bool) error {
 	return nil
 }
 
-// makeTodayDerivedStateTrigger returns the single mutation-driven Today
-// refresh chain. The coordinator owns the 60-second debounce and accumulates
-// the union of dates reported by POST /health bursts.
 // tenantTZOrUTC resolves the tenant's report timezone, falling back to
 // "UTC" (and warning once on first observation) when neither the
 // tenant's settings nor envNotifyDefaults supply one. The fallback
@@ -718,14 +706,29 @@ func tenantTZOrUTC(db *storage.DB, defaults storage.NotifyConfig, schema string)
 	return "UTC"
 }
 
-func makeTodayDerivedStateTrigger(ctx context.Context, db *storage.DB, schema string, defaults storage.NotifyConfig, coordinator *storage.TodayDerivedStateCoordinator, aiConfig func() storage.AIConfig) func([]string) {
-	return func(dates []string) {
-		coordinator.Trigger(ctx, db, schema, dates, func(affected []string) error {
+// dispatchIngestRefresh schedules recovery even when the inline cache failed.
+// Only a successful inline refresh may opportunistically trigger a report.
+func dispatchIngestRefresh(dates []string, cacheReady bool, refresh func([]string, bool), report func()) {
+	if refresh != nil {
+		refresh(dates, cacheReady)
+	}
+	if cacheReady && report != nil {
+		go report()
+	}
+}
+
+// makeTodayDerivedStateRefresh retains the complete mutation path for dirty
+// dates, while successful ingestion skips only the aggregate cache stage.
+func makeTodayDerivedStateRefresh(ctx context.Context, db *storage.DB, schema string, defaults storage.NotifyConfig, coordinator *storage.TodayDerivedStateCoordinator, aiConfig func() storage.AIConfig) func([]string, bool) {
+	return func(dates []string, cacheReady bool) {
+		coordinator.TriggerRefresh(ctx, db, schema, storage.TodayDerivedRefresh{Dates: dates, CacheReady: cacheReady}, func(affected []string) error {
 			if len(affected) == 0 {
 				return nil
 			}
 			log.Printf("[%s] today derived state: rebuilding %d date(s)", schema, len(affected))
-			return db.RunIncrementalBackfillForDatesAt(affected, tenantLocalNow(db, defaults))
+			return db.UpsertRecentCache(affected, true)
+		}, func(affected []string) error {
+			return db.RunReadinessRedesignBackfillForDatesAt(affected, tenantLocalNow(db, defaults))
 		}, func() string {
 			return tenantTZOrUTC(db, defaults, schema)
 		}, func() error {

@@ -18,6 +18,8 @@ import (
 type TenantCallbacks struct {
 	Backfill      func(force bool)
 	BackfillDates func(dates []string)
+	// IngestRefresh distinguishes already refreshed caches from failed inline work.
+	IngestRefresh func(dates []string, cacheReady bool)
 	// MorningTrigger is the opportunistic ingest-driven morning-report
 	// trigger for this tenant. Called by the shared mux's onNewData hook
 	// when fresh health data lands so the report can fire earlier than
@@ -432,6 +434,16 @@ func (m *Manager) BackfillDatesFor(schema string) func([]string) {
 	defer m.mu.RUnlock()
 	if e, ok := m.tenants[schema]; ok && e.callbacks != nil {
 		return e.callbacks.BackfillDates
+	}
+	return nil
+}
+
+// IngestRefreshFor returns the post-ingest derived-state trigger, or nil.
+func (m *Manager) IngestRefreshFor(schema string) func([]string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if e, ok := m.tenants[schema]; ok && e.callbacks != nil {
+		return e.callbacks.IngestRefresh
 	}
 	return nil
 }
