@@ -44,7 +44,7 @@ The backend build is pure Go (no CGO). Uses `jackc/pgx/v5` for PostgreSQL. Depen
 
 Single binary HTTP server (`cmd/server/main.go`) that wires together several packages:
 
-- **`internal/handler`** — receives health data from the Health Auto Export iOS app via `POST /health`, `/health/hourly`, `/health/vitals`. Uses **accept-then-process**: `InsertRaw` saves raw JSON to `health_records` synchronously and responds 200 immediately; a goroutine then parses, calls `InsertPoints` (chunked `pgx.Batch`, 500/chunk), rebuilds cache, and fires `onNewData()`. Auth via `X-API-Key` header (env `API_KEY`).
+- **`internal/handler`** — receives health data from the Health Auto Export iOS app via `POST /health`, `/health/hourly`, `/health/vitals`. Uses **accept-then-process**: `InsertRaw` saves raw JSON to `health_records` synchronously and responds 200 immediately; a bounded worker then parses, calls `InsertPoints` (chunked `pgx.Batch`, 500/chunk), refreshes the cache, and reports its success through `onNewData(db, dates, cacheReady)`. A failed inline cache refresh queues recovery and does not trigger an opportunistic morning report. Auth via `X-API-Key` header (env `API_KEY`).
 
 - **`internal/ai`** — provider-neutral AI integration. `provider.go` defines the adapter contract and registry; `gemini.go` and `openai.go` implement Gemini `generateContent` and OpenAI Responses API respectively. OpenAI defaults to `gpt-5.6-luna`, reasoning `none`, and `store=false`. The morning insight makes exactly one structured-output call from a deterministic, date-aligned evidence packet and validates a complete five-field bundle: `SYNTHESIS`, `SLEEP`, `YESTERDAY`, `RECOVERY`, and `RECOMMENDATION`. The server replaces `SYNTHESIS` and `RECOMMENDATION` with its authoritative verdict reason and action; the model may only explain the three section fields in at most 60 words each. Any invalid field rejects the entire generation. The shared cache hash covers the exact evidence plus provider/model/reasoning/output-limit/prompt-revision fingerprint. Both adapters use bounded retry for transient failures and expose request/usage metadata without logging payloads or API keys. Adapters expose model suggestions, but Admin keeps the model field editable.
 
@@ -97,11 +97,15 @@ POST /health → InsertRaw → health_records → 200 to client (sync, fast)
                          InsertPoints (chunked pgx.Batch)
                                ↓
                          metric_points → UpsertRecentCache → hourly_metrics → daily_scores
-                                              ↓ [debounced]
-                                         backfill scheduler
+                                              ↓ cache-ready / retry signal
+                                     Today derived-state coordinator
+                                              ↓
+                                 readiness redesign → Energy → Today
 ```
 
 `health_records` is the **source of truth** — metric_points and all cache tables are derived. New ingestion rows move `pending → complete` only after parsing; pending rows replay after restart. Payload content is immutable.
+
+**Post-ingest refresh ownership:** the handler owns the initial aggregate refresh. `TodayDerivedStateCoordinator.TriggerRefresh` skips aggregation for `CacheReady` dates but still runs readiness-redesign, Energy, and Today updates in order. Other mutation callbacks keep the full cache rebuild path. When signals merge, a cache-dirty date wins over a cache-ready signal. The first pass starts immediately; queued data-driven repeats wait 2 seconds. Failures impose a separate 60-second cooldown that new data cannot bypass, and dependent-stage retries retain completed cache work. `processed_at` records point-processing completion, not readiness of every derived view. Queue, inline-cache, and Today stage timings are logged without payload values; HTTP request logging masks Telegram webhook path secrets.
 
 Reads are cache-first: `daily_scores` → `hourly_metrics` → `minute_metrics` → `metric_points` (fallback).
 
@@ -262,7 +266,7 @@ Defined in `internal/storage/aggregates.go::SumMetrics` (exported):
 ## Cache Invalidation & Backfill
 
 - **On startup**: incremental backfill (refreshes last 48h). Only force-rebuilds when caches are empty (first import). Use `cmd/backfill --force` for manual full rebuild.
-- **After `POST /health`**: inline `UpsertRecentCache()` rebuilds hourly+daily for affected dates directly from metric_points (no stale window). Debounced backfill (2 min) runs as safety net to refresh last 48h.
+- **After `POST /health`**: inline `UpsertRecentCache()` rebuilds hourly+daily for affected dates directly from metric_points (no stale window). Today receives a cache-ready signal on success, or explicit affected dates for recovery on failure; successful ingestion does not rebuild the same aggregate cache again. Data-driven follow-ups wait 2 seconds and failed coordinator passes wait 60 seconds.
 - **ScoreVersion** constant in `scores.go` (currently 3): bump to invalidate all cached readiness scores on next run
 - **Force rebuild**: wipes cache tables, recomputes everything from `metric_points`
 

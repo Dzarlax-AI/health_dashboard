@@ -75,8 +75,9 @@ func affectsReadiness(points []storage.MetricPoint) bool {
 }
 
 type Handler struct {
-	mgr       *tenants.Manager
-	onNewData func(db *storage.DB, dates []string) // called after a successful insert; may be nil
+	mgr          *tenants.Manager
+	onNewData    func(db *storage.DB, dates []string, cacheReady bool) // reports whether inline cache refresh succeeded
+	refreshCache func(*storage.DB, []string, bool) error
 
 	hrZones health.HRZones // optional; zero value disables HR-zone computation on /health/workouts
 
@@ -84,20 +85,24 @@ type Handler struct {
 	jobsWG   sync.WaitGroup
 	timersWG sync.WaitGroup
 	closing  atomic.Bool
+	jobSeq   atomic.Uint64
 
-	sessMu   sync.Mutex
-	sessions map[string]*syncSession
+	sessMu      sync.Mutex
+	sessions    map[string]*syncSession
+	sessionWait time.Duration
 }
 
 // New constructs a handler. zones may be the zero value (HRZones{}) to leave
 // HR-zone columns NULL on workout ingest; configure via HEALTH_HR_ZONES_BPM.
-func New(mgr *tenants.Manager, onNewData func(db *storage.DB, dates []string), zones health.HRZones) *Handler {
+func New(mgr *tenants.Manager, onNewData func(db *storage.DB, dates []string, cacheReady bool), zones health.HRZones) *Handler {
 	h := &Handler{
-		mgr:       mgr,
-		onNewData: onNewData,
-		hrZones:   zones,
-		jobs:      make(chan func(), jobQueueSize),
-		sessions:  make(map[string]*syncSession),
+		mgr:          mgr,
+		onNewData:    onNewData,
+		refreshCache: (*storage.DB).UpsertRecentCache,
+		hrZones:      zones,
+		jobs:         make(chan func(), jobQueueSize),
+		sessions:     make(map[string]*syncSession),
+		sessionWait:  sessionTimeout,
 	}
 	go h.runWorker()
 	h.recoverPendingRecords()
@@ -125,7 +130,11 @@ func (h *Handler) recoverPendingRecords() {
 	}
 }
 
-func (h *Handler) processAcceptedRecord(db *storage.DB, id int64, body []byte, kind string) ([]storage.MetricPoint, error) {
+func (h *Handler) processAcceptedRecord(db *storage.DB, id int64, body []byte, kind string) (result []storage.MetricPoint, resultErr error) {
+	started := time.Now()
+	defer func() {
+		log.Printf("ingest record=%d stage=points_and_derived duration=%s success=%t points=%d", id, time.Since(started), resultErr == nil, len(result))
+	}()
 	parsed, err := parseMetricPayload(body)
 	if err != nil {
 		_ = db.SetHealthRecordProcessing(id, "failed", err)
@@ -222,8 +231,13 @@ func (h *Handler) runWorker() {
 // we run the job inline as a degraded-but-safe fallback rather than dropping it.
 func (h *Handler) enqueue(job func()) {
 	h.jobsWG.Add(1)
+	queuedAt := time.Now()
+	jobID := h.jobSeq.Add(1)
 	wrapped := func() {
 		defer h.jobsWG.Done()
+		started := time.Now()
+		log.Printf("ingest job=%d stage=queue wait=%s", jobID, started.Sub(queuedAt))
+		defer func() { log.Printf("ingest job=%d stage=work duration=%s", jobID, time.Since(started)) }()
 		job()
 	}
 	if h.closing.Load() {
@@ -271,9 +285,14 @@ func (h *Handler) flushDates(db *storage.DB, dates []string, recomputeReadiness 
 	if len(dates) == 0 {
 		return
 	}
-	db.UpsertRecentCache(dates, recomputeReadiness)
+	started := time.Now()
+	err := h.refreshCache(db, dates, recomputeReadiness)
+	log.Printf("ingest stage=inline_cache dates=%d duration=%s success=%t", len(dates), time.Since(started), err == nil)
+	if err != nil {
+		log.Printf("ingest: inline cache refresh failed; scheduling recovery: %v", err)
+	}
 	if h.onNewData != nil {
-		h.onNewData(db, dates)
+		h.onNewData(db, dates, err == nil)
 	}
 }
 
@@ -292,7 +311,11 @@ func (h *Handler) finalizeChunk(sessionID string, total int, db *storage.DB, dat
 	if !ok {
 		s = &syncSession{db: db, total: total, dates: make(map[string]bool)}
 		h.timersWG.Add(1)
-		s.timer = time.AfterFunc(sessionTimeout, func() {
+		wait := h.sessionWait
+		if wait <= 0 {
+			wait = sessionTimeout
+		}
+		s.timer = time.AfterFunc(wait, func() {
 			defer h.timersWG.Done()
 			h.sessMu.Lock()
 			ts, ok := h.sessions[sessionID]
