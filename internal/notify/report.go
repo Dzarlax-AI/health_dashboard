@@ -687,9 +687,6 @@ func morningEvidenceForReport(b *health.BriefingResponse, f freshness) health.Mo
 	// The dedicated dated sleep section is the source of truth for this report.
 	// Do not repeat a generic briefing sleep reason that may describe another night.
 	excluded := map[string]bool{"sleep": true}
-	if f.sleepKnown && f.sleepStale() {
-		excluded["sleep"] = true
-	}
 	if f.watchKnown && f.watchOff() {
 		excluded["recovery"] = true
 	}
