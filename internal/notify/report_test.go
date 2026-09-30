@@ -731,3 +731,20 @@ func sampleBriefing() *health.BriefingResponse {
 		Insights: []health.Insight{{Text: "Keep tonight consistent.", Type: "positive"}},
 	}
 }
+
+func TestCanonicalSleepSectionSuppressesSleepDerivedHeadlines(t *testing.T) {
+	for _, headline := range []health.HeadlineSignal{
+		{Key: "sleep_debt", Severity: "warning", Detail: "Conflicting headline: 3.1h"},
+		{Key: "stress", Severity: "warning", Detail: "Conflicting headline: 3.1h", Metrics: []health.HeadlineMetricDelta{{Metric: "sleep_awake"}, {Metric: "resting_heart_rate"}}},
+	} {
+		briefing := sampleBriefing()
+		briefing.Headline = &headline
+		hours := 7.4
+		sleep := health.MorningReportSleep{ReportDate: briefing.Date, Date: briefing.Date, Hours: &hours, Capture: health.NightCaptureComplete, Assessment: health.NightDurationPlausible, Finalization: health.NightFinalFinal}
+		for _, output := range []string{formatMorning(briefing, nil, "en", time.UTC, freshness{}, false, sleep), formatMorningRich(briefing, nil, "en", time.UTC, freshness{}, false, "", sleep)} {
+			if !strings.Contains(output, "7.4 h") || strings.Contains(output, "Conflicting headline") || strings.Contains(output, "3.1h") {
+				t.Fatalf("sleep-derived headline leaked: %s", output)
+			}
+		}
+	}
+}

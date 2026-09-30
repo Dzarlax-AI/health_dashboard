@@ -146,3 +146,40 @@ func TestBuildMorningInsightEvidenceAppliesExclusionsBeforeReasonCap(t *testing.
 		t.Fatalf("third reason = %#v, want recovery refill", got.Reasons[2])
 	}
 }
+
+func TestMorningSleepExclusionFiltersDerivedHeadlinesBeforeRanking(t *testing.T) {
+	for _, tc := range []struct {
+		key, metric string
+		excluded    bool
+	}{
+		{"sleep_debt", "", true}, {"stress", "sleep_total", true}, {"stress", "sleep_awake", true}, {"good_recovery", "sleep_total", true}, {"stress", "resting_heart_rate", false},
+	} {
+		t.Run(tc.key+tc.metric, func(t *testing.T) {
+			headline := &HeadlineSignal{Key: tc.key, Severity: "warning", Detail: "Aggregate headline", Metrics: []HeadlineMetricDelta{{Metric: tc.metric}}}
+			briefing := &BriefingResponse{Headline: headline, ReadinessTip: "Keep authoritative action", Sections: []BriefingSection{{Key: "sleep", Status: "low", Summary: "Generic sleep"}, {Key: "recovery", Status: "good", Summary: "Recovery"}, {Key: "activity", Status: "good", Summary: "Activity"}, {Key: "cardio", Status: "good", Summary: "Cardio"}}}
+			got := BuildMorningInsightEvidenceWithOptions(briefing, nil, MorningInsightOptions{ExcludeSections: map[string]bool{"sleep": true}})
+			if len(got.Reasons) != 3 || got.Action != briefing.ReadinessTip {
+				t.Fatalf("ranking/action changed: %#v", got)
+			}
+			hasHeadline := false
+			for _, reason := range got.Reasons {
+				if reason.Key == "headline" {
+					hasHeadline = true
+				}
+			}
+			if hasHeadline == tc.excluded {
+				t.Fatalf("headline exclusion = %v, expected %v", !hasHeadline, tc.excluded)
+			}
+			original := BuildMorningInsightEvidence(briefing, nil)
+			hasOriginalHeadline := false
+			for _, reason := range original.Reasons {
+				if reason.Key == "headline" {
+					hasOriginalHeadline = true
+				}
+			}
+			if !hasOriginalHeadline || briefing.Headline != headline {
+				t.Fatal("unfiltered caller or briefing mutated")
+			}
+		})
+	}
+}

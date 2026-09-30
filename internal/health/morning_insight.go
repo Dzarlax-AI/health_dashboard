@@ -106,7 +106,7 @@ func BuildMorningInsightEvidenceWithOptions(briefing *BriefingResponse, raw *Raw
 		}
 		add("alert:"+alert.Metric+":"+itoaSmall(i), "alert", alert.Severity, alert.Text, priority)
 	}
-	if briefing.Headline != nil {
+	if briefing.Headline != nil && !(options.ExcludeSections["sleep"] && morningHeadlineUsesSleep(briefing.Headline)) {
 		priority := 85
 		switch briefing.Headline.Severity {
 		case "critical":
@@ -176,4 +176,19 @@ func itoaSmall(value int) string {
 		return string(rune('0' + value))
 	}
 	return "many"
+}
+
+// morningHeadlineUsesSleep identifies aggregate-derived sleep claims by their
+// semantic metadata, not localized wording. Mixed stress headlines are omitted
+// as a whole because removing a metric would not rewrite their explanation.
+func morningHeadlineUsesSleep(headline *HeadlineSignal) bool {
+	if strings.HasPrefix(headline.Key, "sleep_") {
+		return true
+	}
+	for _, metric := range headline.Metrics {
+		if strings.HasPrefix(metric.Metric, "sleep_") || strings.HasPrefix(metric.Metric, "night_sleep") {
+			return true
+		}
+	}
+	return false
 }
