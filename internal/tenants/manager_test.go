@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -128,5 +129,29 @@ func TestIsolationEnabledIncompleteMetadataFailsBeforePoolOpen(t *testing.T) {
 		if len(mgr.AllDBs()) != 0 {
 			t.Fatal("failed pool was cached")
 		}
+	}
+}
+
+func TestLegacyCallbacksPreserveIndependentLocksAndDefaults(t *testing.T) {
+	mgr := New(nil, "postgres://db.example/health")
+	if err := mgr.SetLegacyMode(&storage.DB{}, "synthetic-key", "synthetic-hash"); err != nil {
+		t.Fatal(err)
+	}
+	var reportMu, checkinMu sync.Mutex
+	defaults := storage.NotifyConfig{Token: "synthetic-token", ChatID: "synthetic-chat"}
+	backfillCalled := false
+	mgr.RegisterCallbacks("health", TenantCallbacks{MorningSendMu: &reportMu, CheckinSendMu: &checkinMu, NotifyDefaults: defaults, BackfillDates: func([]string) { backfillCalled = true }})
+	if mgr.MorningSendMuFor("health") != &reportMu || mgr.CheckinSendMuFor("health") != &checkinMu || mgr.MorningSendMuFor("health") == mgr.CheckinSendMuFor("health") {
+		t.Fatal("legacy send paths lost independent shared locks")
+	}
+	if got := mgr.NotifyDefaultsFor("health"); got.Token != defaults.Token || got.ChatID != defaults.ChatID {
+		t.Fatal("legacy scheduler lost environment defaults")
+	}
+	mgr.BackfillDatesFor("health")(nil)
+	if !backfillCalled {
+		t.Fatal("legacy webhook cannot refresh answered check-in")
+	}
+	if mgr.MorningSendMuFor("other") != nil || mgr.CheckinSendMuFor("other") != nil || mgr.NotifyDefaultsFor("other").Token != "" {
+		t.Fatal("legacy callbacks leaked to an unrelated schema")
 	}
 }

@@ -71,10 +71,12 @@ type Manager struct {
 
 	// legacyMode is set when health_registry could not be created.
 	// In this mode a single fallback DB is used for all requests.
-	legacyMode bool
-	legacyDB   *storage.DB
-	legacyKey  string // API_KEY env value
-	legacyHash string // sha256(UI_PASSWORD) env value
+	legacyMode            bool
+	legacyDB              *storage.DB
+	legacyKey             string // API_KEY env value
+	legacyHash            string // sha256(UI_PASSWORD) env value
+	legacyCallbacks       *TenantCallbacks
+	legacyCallbacksSchema string
 }
 
 // poolOperation coalesces both cached-pool validation and pool creation for one
@@ -198,9 +200,25 @@ func (m *Manager) LegacyPasswordHash() string {
 func (m *Manager) RegisterCallbacks(schema string, cb TenantCallbacks) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.legacyMode {
+		m.legacyCallbacksSchema = schema
+		m.legacyCallbacks = &cb
+		return
+	}
 	if e, ok := m.tenants[schema]; ok {
 		e.callbacks = &cb
 	}
+}
+
+// callbacksForLocked reads callbacks while the caller holds m.mu.
+func (m *Manager) callbacksForLocked(schema string) *TenantCallbacks {
+	if m.legacyMode && schema == m.legacyCallbacksSchema {
+		return m.legacyCallbacks
+	}
+	if e, ok := m.tenants[schema]; ok {
+		return e.callbacks
+	}
+	return nil
 }
 
 // GetOrCreate returns the DB for schema, creating the pool on first call.
@@ -421,8 +439,8 @@ func (m *Manager) DBForEmail(ctx context.Context, email string) (*storage.DB, st
 func (m *Manager) BackfillFor(schema string) func(bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if e, ok := m.tenants[schema]; ok && e.callbacks != nil {
-		return e.callbacks.Backfill
+	if cb := m.callbacksForLocked(schema); cb != nil {
+		return cb.Backfill
 	}
 	return nil
 }
@@ -434,8 +452,8 @@ func (m *Manager) BackfillFor(schema string) func(bool) {
 func (m *Manager) BackfillDatesFor(schema string) func([]string) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if e, ok := m.tenants[schema]; ok && e.callbacks != nil {
-		return e.callbacks.BackfillDates
+	if cb := m.callbacksForLocked(schema); cb != nil {
+		return cb.BackfillDates
 	}
 	return nil
 }
@@ -444,8 +462,8 @@ func (m *Manager) BackfillDatesFor(schema string) func([]string) {
 func (m *Manager) IngestRefreshFor(schema string) func([]string, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if e, ok := m.tenants[schema]; ok && e.callbacks != nil {
-		return e.callbacks.IngestRefresh
+	if cb := m.callbacksForLocked(schema); cb != nil {
+		return cb.IngestRefresh
 	}
 	return nil
 }
@@ -454,8 +472,8 @@ func (m *Manager) IngestRefreshFor(schema string) func([]string, bool) {
 func (m *Manager) TestNotifyFor(schema string) func(string) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if e, ok := m.tenants[schema]; ok && e.callbacks != nil {
-		return e.callbacks.TestNotify
+	if cb := m.callbacksForLocked(schema); cb != nil {
+		return cb.TestNotify
 	}
 	return nil
 }
@@ -468,8 +486,8 @@ func (m *Manager) TestNotifyFor(schema string) func(string) error {
 func (m *Manager) MorningTriggerFor(schema string) func() {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if e, ok := m.tenants[schema]; ok && e.callbacks != nil {
-		return e.callbacks.MorningTrigger
+	if cb := m.callbacksForLocked(schema); cb != nil {
+		return cb.MorningTrigger
 	}
 	return nil
 }
@@ -479,12 +497,12 @@ func (m *Manager) MorningTriggerFor(schema string) func() {
 // it around their "HasSentMorningReport → send → Mark" sequence so the
 // two callers never race and produce a duplicate Telegram report.
 // Returns nil for tenants without a registered mutex; callers must
-// treat nil as "no dedup needed" (legacy single-sender mode).
+// avoid overlapping send paths until startup registers the shared lock.
 func (m *Manager) MorningSendMuFor(schema string) *sync.Mutex {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if e, ok := m.tenants[schema]; ok && e.callbacks != nil {
-		return e.callbacks.MorningSendMu
+	if cb := m.callbacksForLocked(schema); cb != nil {
+		return cb.MorningSendMu
 	}
 	return nil
 }
@@ -493,8 +511,8 @@ func (m *Manager) MorningSendMuFor(schema string) *sync.Mutex {
 func (m *Manager) CheckinSendMuFor(schema string) *sync.Mutex {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if e, ok := m.tenants[schema]; ok && e.callbacks != nil {
-		return e.callbacks.CheckinSendMu
+	if cb := m.callbacksForLocked(schema); cb != nil {
+		return cb.CheckinSendMu
 	}
 	return nil
 }
@@ -503,8 +521,8 @@ func (m *Manager) CheckinSendMuFor(schema string) *sync.Mutex {
 func (m *Manager) NotifyDefaultsFor(schema string) storage.NotifyConfig {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if e, ok := m.tenants[schema]; ok && e.callbacks != nil {
-		return e.callbacks.NotifyDefaults
+	if cb := m.callbacksForLocked(schema); cb != nil {
+		return cb.NotifyDefaults
 	}
 	return storage.NotifyConfig{}
 }
@@ -520,8 +538,8 @@ func (m *Manager) NotifyDefaultsFor(schema string) storage.NotifyConfig {
 func (m *Manager) AIDefaultsFor(ctx context.Context, schema string) storage.AIConfig {
 	m.mu.RLock()
 	base := storage.AIConfig{}
-	if e, ok := m.tenants[schema]; ok && e.callbacks != nil {
-		base = e.callbacks.AIDefaults
+	if cb := m.callbacksForLocked(schema); cb != nil {
+		base = cb.AIDefaults
 	}
 	m.mu.RUnlock()
 	base = base.Clone()

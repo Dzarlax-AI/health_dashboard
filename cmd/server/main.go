@@ -993,7 +993,7 @@ func makeMorningTrigger(ctx context.Context, db *storage.DB, sendMu *sync.Mutex,
 		}
 		today := now.Format("2006-01-02")
 		bot := notify.NewBot(cfg.Token, cfg.ChatID)
-		reportSent := db.HasSentMorningReport(today)
+		reportSent := db.HasSettledMorningReport(today)
 		eligible := reportSent
 		if !reportSent {
 			wake, err := db.ComputeMorningWakeStatus(today, loc, now)
@@ -1010,7 +1010,7 @@ func makeMorningTrigger(ctx context.Context, db *storage.DB, sendMu *sync.Mutex,
 			if eligible {
 				deadline := morningAIReportDeadline(db, cfg.Lang, today, now)
 				runMorningReportAttempt(sendMu,
-					func() bool { return db.HasSentMorningReport(today) },
+					func() bool { return db.HasSettledMorningReport(today) },
 					func() (bool, string, error) {
 						ready, failed := false, false
 						if ncfg.AIConfig.Enabled() {

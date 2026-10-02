@@ -45,7 +45,7 @@ func runMorningLifecycle(ctx context.Context, db *storage.DB, mgr *tenants.Manag
 		if err != nil {
 			log.Printf("morning lifecycle: check-in state unavailable: %v", err)
 		}
-		reportSent := db.HasSentMorningReport(today)
+		reportSent := db.HasSettledMorningReport(today)
 		if morningLifecycleDue(ncfg, now, reportSent, row != nil) || (!reportSent && morningAIShouldPrewarm(ncfg, now, false)) {
 			makeMorningTrigger(ctx, db, mgr.MorningSendMuFor(schema), mgr, reg, schema, defaults)()
 		}
