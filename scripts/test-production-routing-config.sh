@@ -92,7 +92,7 @@ assert set(backend["networks"]) == {"infra", "traefik"}
 assert set(frontend["networks"]) == {"traefik"}
 b = backend["labels"]
 f = frontend["labels"]
-assert b["traefik.http.routers.health-machine.rule"].endswith("(PathPrefix(`/health`) || PathPrefix(`/mcp`))")
+assert b["traefik.http.routers.health-machine.rule"].endswith("(PathPrefix(`/health`) || PathPrefix(`/mcp`) || Path(`/.well-known/oauth-protected-resource/mcp`))")
 assert "middlewares" not in {
     key.rsplit(".", 1)[-1]: value
     for key, value in b.items()

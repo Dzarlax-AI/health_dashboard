@@ -103,9 +103,9 @@ drain(Δt) = α · active_energy_kcal[Δt]
           + β · sustained_hr_load[Δt]      # v2.2, off by default
 ```
 
-In v2.0 launch ship with `α ≈ 0.08, β = 0` — calories alone are sufficient for non-athletic profiles, and validated by simulation against 31 days of historical data (`/tmp/calibrate_v2.py`, see Validation section). The `β`-term schema stays in `components JSONB` from day one because it covers the *autonomic load* signal kcal misses: elevated daytime HR with normal calories (sustained stress, illness onset, acute anxiety) should drain.
+The original v2.0 launch configuration used `α ≈ 0.08, β = 0`, with calories alone. Current v2.2 code can also compute the *autonomic load* signal that calories miss: elevated daytime HR with normal calories (sustained stress, illness onset, acute anxiety). The effective β term is applied only when `energy.stress_drain_enabled` is true; that flag defaults to false, so the signal can remain observable without changing the bank.
 
-Activated in v2.2. The exact shape of `sustained_hr_load` — hourly z-shift integration against a personal MAD-based awake baseline, with a coverage gate — is **defined in [STRESS_MEASUREMENT.md](STRESS_MEASUREMENT.md) §4.4**. This file does not duplicate that definition; the components JSONB carries both the canonical `sustained_hr_load_z` value used for drain and a parallel `hr_overshoot_bpm_hours` for human-readable audit ("HR ran ~8 bpm above your normal for 4 hours"). Raw `HR − RHR` is **not** the canonical signal — see the superseded `ENERGY_BANK_V2_2_DRAFT.md` for the historical proposal and why it was replaced.
+The v2.2 implementation computes `sustained_hr_load` using hourly z-shift integration against a personal MAD-based awake baseline, with a coverage gate; its canonical definition is **[STRESS_MEASUREMENT.md](STRESS_MEASUREMENT.md) §4.4**. The components JSONB carries the canonical `sustained_hr_load_z` value and a parallel `hr_overshoot_bpm_hours` for human-readable audit ("HR ran ~8 bpm above your normal for 4 hours"). Raw `HR − RHR` is **not** the canonical signal — see the superseded `ENERGY_BANK_V2_2_DRAFT.md` for the historical proposal and why it was replaced. Applying this term to bank drain remains gated by `energy.stress_drain_enabled`.
 
 ### Restore — asymptotic (Garmin Body Battery style)
 

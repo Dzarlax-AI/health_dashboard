@@ -9,7 +9,7 @@ back into Git.
 The stack keeps exactly one Go backend. It adds a static frontend and splits
 Traefik ownership into four boundaries:
 
-- `/health*` and `/mcp*` stay on the backend without Authentik redirects.
+- `/health*`, `/mcp*`, and the exact `/.well-known/oauth-protected-resource/mcp` discovery path stay on the backend without Authentik redirects. Health owns MCP authentication and OAuth metadata.
 - `/api/*` stays on the backend. Requests carrying `X-API-Key` preserve the
   machine/mobile boundary; browser requests pass through Authentik so
   ForwardAuth can establish the opaque tenant session.

@@ -35,6 +35,7 @@ import (
 	"health-receiver/internal/health"
 	"health-receiver/internal/mcpserver"
 	"health-receiver/internal/notify"
+	"health-receiver/internal/oauth"
 	"health-receiver/internal/registry"
 	"health-receiver/internal/storage"
 	"health-receiver/internal/tenants"
@@ -57,6 +58,10 @@ func main() {
 	trustFwdAuth := os.Getenv("TRUST_FORWARD_AUTH") == "true" || os.Getenv("TRUST_FWD_AUTH") == "true"
 	trustedFwdAuthNets := mustParseForwardAuthConfig(trustFwdAuth)
 	baseURL := getEnv("BASE_URL", "http://localhost"+addr)
+	mcpOAuth, err := oauth.ConfigFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatalf("invalid MCP OAuth configuration: %v", err)
+	}
 
 	// Env-level defaults for the first/only tenant.
 	envNotifyDefaults := storage.NotifyConfig{
@@ -170,7 +175,7 @@ func main() {
 			log.Fatalf("configure legacy tenant manager: %v", err)
 		}
 
-		runSingleTenant(ctx, addr, baseURL, trustFwdAuth, trustedFwdAuthNets, apiKey, mgr, nil,
+		runSingleTenant(ctx, addr, baseURL, trustFwdAuth, trustedFwdAuthNets, apiKey, mgr, nil, mcpOAuth,
 			legacyDB, "health", envNotifyDefaults, envAIDefaults, hrZones)
 		return
 	}
@@ -297,7 +302,9 @@ func main() {
 		startTenant(ctx, mgr, reg, db, schema, envNotifyDefaults, envAIDefaults, baseURL, todayDerived, startupBackfills)
 	})
 	uiHandler.Register(mux)
-	mcpserver.Register(mux, mgr, baseURL)
+	if err := mcpserver.Register(mux, mgr, mcpOAuth); err != nil {
+		log.Fatalf("register MCP: %v", err)
+	}
 
 	registerCheckinWebhook(mux, mgr, reg, envNotifyDefaults, baseURL, func(_ *storage.DB, schema string) {
 		if refresh := mgr.BackfillDatesFor(schema); refresh != nil {
@@ -332,7 +339,7 @@ func main() {
 
 // runSingleTenant runs the server in legacy single-user mode.
 func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth bool, trustedFwdAuthNets []*net.IPNet, apiKey string,
-	mgr *tenants.Manager, reg *registry.Registry,
+	mgr *tenants.Manager, reg *registry.Registry, mcpOAuth *oauth.Config,
 	db *storage.DB, schema string,
 	notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig, hrZones health.HRZones) {
 
@@ -376,7 +383,9 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	legacyUI.SetTrustedForwardAuthNetworkList(trustedFwdAuthNets)
 	legacyUI.ConfigureWebhook(notify.NewTelegramWebhookRegistrar(), baseURL)
 	legacyUI.Register(mux)
-	mcpserver.Register(mux, mgr, baseURL)
+	if err := mcpserver.Register(mux, mgr, mcpOAuth); err != nil {
+		log.Fatalf("register MCP: %v", err)
+	}
 	registerCheckinWebhook(mux, mgr, reg, notifyDefaults, baseURL, func(_ *storage.DB, schema string) {
 		if refresh := mgr.BackfillDatesFor(schema); refresh != nil {
 			refresh(nil)
