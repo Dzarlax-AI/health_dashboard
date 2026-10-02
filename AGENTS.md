@@ -56,7 +56,7 @@ Single binary HTTP server (`cmd/server/main.go`) that wires together several pac
 
   **`/api/ai-briefing` is non-blocking by design.** Returns `{insight, blocks, generating, disabled}`. Without `date`, or with today's tenant-local date, it kicks `EnsureTodayAIInsightAsync` on cold cache; a historical `?date=YYYY-MM-DD` lookup is cache-only and never calls a provider. `/api/health-briefing` reads AI text from cache only and never waits on an upstream provider. The web dashboard polls `/api/ai-briefing` every 60s while the tab is visible and the cache is cold (sparkle ✨ marks fresh updates), stops on `disabled` or after the cache is stable for ~10 min.
 
-- **`internal/mcpserver`** — MCP Streamable HTTP server at `/mcp` (mark3labs/mcp-go v0.44.1). Auth via `Authorization: Bearer <key>` or `X-API-Key` header (same `API_KEY` env). Exposes typed health, analysis, and workout tools; arbitrary SQL is not exposed.
+- **`internal/mcpserver`** — MCP Streamable HTTP server at `/mcp` (mark3labs/mcp-go v0.44.1). API-key auth accepts `X-API-Key` or the legacy `Authorization: Bearer <key>` form. Optional OAuth validates external RS256 JWTs against HTTPS JWKS and exact issuer, public MCP resource audience, expiry, configured read scope, and an explicit issuer-subject-to-Health-username map; all `MCP_OAUTH_*` settings are required together. OAuth mode serves stateless MCP transport and advertises protected-resource metadata at `/.well-known/oauth-protected-resource/mcp`. A Bearer value with exactly two dots is treated as a JWT and never falls back to API-key auth; opaque API keys containing two dots must use `X-API-Key`. Typed read-only tools include `get_sleep_balance`, which reads the saved snapshot and never recalculates. Arbitrary SQL is not exposed.
 
 - **`internal/tenants`** — tenant registry routing, durable provisioning, and database isolation. In isolated mode each active tenant authenticates with a UUID-derived PostgreSQL LOGIN role; `db_isolation_ready` must be true before `tenants.Manager` opens a request-serving runtime pool. `AdminProvisioner` intentionally uses short-lived pre-activation connections authenticated as the future tenant role to build the schema and prove ownership/ACL isolation; these are provisioning connections, never serve requests, and must not be replaced with the registry connection. Administrative provisioning/migration authority, registry authority, and tenant request pools use separate connection classes. Existing-install cutover, secret rotation, and rollback are operated through `cmd/tenant_isolation`; see `docs/TENANT_ISOLATION_RUNBOOK.md`.
 
@@ -303,7 +303,12 @@ The gate has a **second pass** for sources that emit `sleep_unspecified` only (n
 |---|---|---|
 | `DATABASE_URL` | — (required) | PostgreSQL connection string (e.g. `postgres://health_user:pass@host/db?search_path=health`) |
 | `ADDR` | `:8080` | Listen address |
-| `API_KEY` | — | Auth for `/health` and `/mcp` |
+| `API_KEY` | — | Auth for `/health` and as the legacy API-key option for `/mcp` |
+| `MCP_OAUTH_ISSUER` | unset | Exact issuer for optional MCP OAuth JWT validation; set with all other `MCP_OAUTH_*` values |
+| `MCP_OAUTH_JWKS_URL` | unset | HTTPS JWKS URL for optional MCP OAuth validation |
+| `MCP_OAUTH_RESOURCE` | unset | Canonical public HTTPS MCP URL ending in `/mcp`; checked as the token audience |
+| `MCP_OAUTH_READ_SCOPE` | unset | One required read scope for MCP OAuth tokens |
+| `MCP_OAUTH_SUBJECT_MAP` | unset | JSON object mapping exact issuer `sub` values to existing Health usernames |
 | `UI_PASSWORD` | — | Auth for web UI |
 | `SETUP_TOKEN` | — | Required capability for first-admin `POST /setup`; setup fails closed when empty |
 | `BASE_URL` | `http://localhost:8080` | Used for MCP server URL in logs |
