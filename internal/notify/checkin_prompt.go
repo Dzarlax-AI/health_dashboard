@@ -65,13 +65,14 @@ type CheckinStore interface {
 
 // SendCheckinPrompt builds the 2x2 inline keyboard, POSTs it to
 // Telegram, and persists the resulting message_id in a `prompted` row.
-// expiresAt is the morning-cap time — once the wall clock passes it,
-// the row gets transitioned to `expired` by the scheduler and the
-// morning report sends with a soft note.
+// expiresAt is retained for source compatibility; new rows use the
+// independent two-hour answer window.
 //
 // Store write is skipped when the Telegram send fails so we don't
 // claim "we prompted them" when no message ever arrived.
 func SendCheckinPrompt(bot CheckinBot, store CheckinStore, lang, date string, now, expiresAt time.Time) error {
+	_ = expiresAt
+	expiresAt = CheckinPromptExpiry(now)
 	rows, text := buildCheckinPromptButtons(lang, date)
 	var delivery notificationDeliveryStore
 	var token uuid.UUID

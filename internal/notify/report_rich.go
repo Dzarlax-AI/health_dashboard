@@ -11,18 +11,12 @@ import (
 	"health-receiver/internal/storage"
 )
 
-func formatMorningRich(b *health.BriefingResponse, aiBlocks map[string]string, lang string, loc *time.Location, f freshness, checkinExpired bool, settleBanner string, sleepContext ...health.MorningReportSleep) string {
+func formatMorningRich(b *health.BriefingResponse, aiBlocks map[string]string, lang string, loc *time.Location, f freshness, _ bool, _ string, sleepContext ...health.MorningReportSleep) string {
 	var sb strings.Builder
 	sleep := firstMorningSleep(sleepContext)
 	reportDate := morningReportDate(b, sleep)
 	fmt.Fprintf(&sb, "<h2>🌅 %s</h2>\n", richEsc(richMorningDate(reportDate, lang)))
 
-	if settleBanner != "" {
-		richTrustedParagraph(&sb, settleBanner)
-	}
-	if d := staleDays(b.Date, loc); d >= 1 {
-		richTrustedParagraph(&sb, fmt.Sprintf(tr(lang, "tg_warn_stale"), d))
-	}
 	renderMorningSleepRich(&sb, b, aiBlocks, lang, sleep)
 
 	evidence := morningEvidenceForReport(b, f)
@@ -32,6 +26,10 @@ func formatMorningRich(b *health.BriefingResponse, aiBlocks map[string]string, l
 	}
 	if label == "" {
 		label = firstReportText(b.ReadinessTodayLabel, tr(lang, "tg_no_data"))
+	}
+	dateMismatch := evidence.Date != "" && evidence.Date != reportDate
+	if dateMismatch {
+		label = fmt.Sprintf(tr(lang, "tg_morning_as_of_date"), evidence.Date) + ": " + label
 	}
 	fmt.Fprintf(&sb, "<aside><strong>%s</strong>", richText(label))
 	if evidence.VerdictReason != "" {
@@ -53,6 +51,11 @@ func formatMorningRich(b *health.BriefingResponse, aiBlocks map[string]string, l
 	if f.phoneKnown && f.phoneOff() {
 		metricNotes = append(metricNotes, "📱 "+richText(stripSimpleTags(fmt.Sprintf(tr(lang, "tg_phone_off"), fmtSilence(f.phone, lang)))))
 	}
+	if dateMismatch {
+		metricNotes = append(metricNotes, richText(fmt.Sprintf(tr(lang, "tg_morning_metrics_as_of_date"), evidence.Date)))
+	} else if morningMetricsPreliminary(sleep, reportDate, evidence.Date) {
+		metricNotes = append(metricNotes, richText(tr(lang, "tg_morning_metrics_preliminary")))
+	}
 	if len(metrics) > 0 {
 		fmt.Fprintf(&sb, "<p><strong>%s</strong><br>%s</p>\n",
 			richEsc(tr(lang, "tg_morning_metrics")), strings.Join(metrics, "<br>"))
@@ -62,12 +65,8 @@ func formatMorningRich(b *health.BriefingResponse, aiBlocks map[string]string, l
 	}
 
 	sb.WriteString("<hr/>\n")
-	if len(evidence.Reasons) > 0 {
-		fmt.Fprintf(&sb, "<p><strong>%s</strong>", richEsc(tr(lang, "tg_morning_why")))
-		for _, reason := range evidence.Reasons {
-			fmt.Fprintf(&sb, "<br>• %s", richText(reason.Text))
-		}
-		sb.WriteString("</p>\n")
+	for _, section := range morningAIExplanationSections(aiBlocks, lang, reportDate, dateMismatch, f) {
+		fmt.Fprintf(&sb, "<h3>🤖 %s</h3><p><em>%s</em></p>\n", richEsc(section.title), richText(section.text))
 	}
 	if synthesis := strings.TrimSpace(aiBlocks[ai.BlockSynthesis]); synthesisAddsInformation(synthesis, evidence) {
 		fmt.Fprintf(&sb, "<details><summary>✦ %s</summary><p><em>%s</em></p></details>\n",
@@ -82,11 +81,6 @@ func formatMorningRich(b *health.BriefingResponse, aiBlocks map[string]string, l
 			richEsc(tr(lang, "tg_morning_updated")), richText(strings.Join(parts, " · ")))
 	}
 
-	if checkinExpired {
-		if note := tr(lang, "checkin_expired_note"); note != "" && note != "checkin_expired_note" {
-			richTrustedParagraph(&sb, note)
-		}
-	}
 	return strings.TrimSpace(sb.String())
 }
 

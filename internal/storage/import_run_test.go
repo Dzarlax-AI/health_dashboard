@@ -778,3 +778,85 @@ func assertStageCounts(t *testing.T, db *DB, runID int64, wantPoints, wantWorkou
 func importFloatPtr(v float64) *float64 {
 	return &v
 }
+
+func TestMorningLaneSettlesFromDurableReservationWithoutClaimingSent(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	for _, status := range []string{"reserved", "ambiguous", "sent", "failed"} {
+		t.Run(status, func(t *testing.T) {
+			date := map[string]string{"reserved": "2026-07-01", "ambiguous": "2026-07-02", "sent": "2026-07-03", "failed": "2026-07-04"}[status]
+			key := "report:morning:" + date
+			token, reserved, err := db.ReserveNotificationDelivery(context.Background(), key)
+			if err != nil || !reserved {
+				t.Fatalf("reserve: %v %v", reserved, err)
+			}
+			if status != "reserved" {
+				if err := db.CompleteNotificationDelivery(context.Background(), key, token, status, "synthetic"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := db.HasSettledMorningReport(date); got != (status != "failed") {
+				t.Fatalf("settled=%v status=%s", got, status)
+			}
+			if db.HasSentMorningReport(date) {
+				t.Fatal("reservation must not be recorded as a confirmed send")
+			}
+		})
+	}
+	if db.HasSettledMorningReport("2026-07-05") {
+		t.Fatal("no reservation must remain eligible")
+	}
+	if err := db.MarkMorningReportSent("2026-07-06"); err != nil {
+		t.Fatal(err)
+	}
+	if !db.HasSettledMorningReport("2026-07-06") {
+		t.Fatal("legacy sent marker must settle the lane")
+	}
+}
+
+func TestLateTelegramCheckinExpiresAfterCutoffAndRestart(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	if err := db.EnsureSubjectiveCheckinsTableContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 2, 1, 0, 0, 0, time.UTC)
+	cases := []struct {
+		date, source, status string
+		expiry               time.Time
+	}{
+		{"2026-10-01", CheckinSourceTelegram, CheckinStatusPrompted, now.Add(-4 * time.Hour)},
+		{"2026-09-30", CheckinSourceTelegram, CheckinStatusPrompted, now.Add(-28 * time.Hour)},
+		{"2026-09-29", CheckinSourceTelegram, CheckinStatusAnswered, now.Add(-52 * time.Hour)},
+		{"2026-10-02", CheckinSourceTelegram, CheckinStatusPrompted, now.Add(time.Hour)},
+		{"2026-10-01", "synthetic-other", CheckinStatusPrompted, now.Add(-4 * time.Hour)},
+	}
+	for _, c := range cases {
+		if err := db.SaveCheckinPrompted(c.date, c.source, 42, c.expiry.Add(-2*time.Hour), c.expiry); err != nil {
+			t.Fatal(err)
+		}
+		if c.status == CheckinStatusAnswered {
+			if _, err := db.SaveCheckinAnswer(c.date, c.source, CheckinAnswerOK, c.expiry.Add(-time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for range 2 {
+		if err := db.ExpireOverdueTelegramCheckins(now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, c := range cases {
+		row, err := db.GetTodayCheckin(c.date, c.source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := c.status
+		if i < 2 {
+			want = CheckinStatusExpired
+		}
+		if row.Status != want {
+			t.Fatalf("case %d status=%s want=%s", i, row.Status, want)
+		}
+	}
+}

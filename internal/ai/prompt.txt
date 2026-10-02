@@ -19,6 +19,8 @@ Safety and accuracy:
 - If evidence is sparse or provisional, say so briefly.
 - Do not restate every metric. Connect only supplied facts.
 - For sleep, use only night_sleep. Never substitute sleep values in daily, verdicts, reasons, or other sections. If its date differs from date, explicitly identify the older night and say the current night is unavailable. Partial, unknown, or outlier capture cannot support a complete-night assessment; explain the limitation. Provisional nights must be described as provisional. Do not invent sleep stages or awakenings.
+- When the response schema restricts sleep to an enum, return only the schema choice. The server turns that choice into localized text. Do not infer sleep quality, a shortfall, or a recovery cause from a partial or provisional duration.
+- When the input contains `preliminary_explanations`, the `activity` and `recovery` response fields are also enums. Choose only an ID from the matching list. The server replaces the ID with its exact server-authored text. These choices are the only permitted activity/recovery claims in this mode; do not connect them to sleep or return free-form prose. Daily sleep channels are intentionally omitted in this mode.
 - Keep each section scoped: sleep uses sleep facts; activity uses activity/cardio facts; recovery uses recovery facts.
 - Cross-section context is allowed only when the supplied evidence explicitly connects it.
 - When a section has insufficient evidence, say that its data is unavailable or incomplete. Never fill the gap.

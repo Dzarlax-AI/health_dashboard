@@ -65,9 +65,9 @@ type Config struct {
 	EveningWeekendHour   int
 	TelegramRichMessages bool
 
-	// Smart-retry deadline. The morning trigger keeps deferring until sleep
-	// the wake detector is ready; past this hour it force-sends
-	// with a banner. Caller is responsible for picking a sensible default
+	// Smart-retry deadline. The morning trigger keeps deferring until the
+	// wake detector is ready; past this hour it force-sends with the same
+	// concise sleep-data caveat used by the regular formatter. Caller is responsible for picking a sensible default
 	// (typically MorningHour + 4, floor 11). Zero means "no cap" — use with
 	// care; can lead to no morning report on watch-off days.
 	MorningCapHour int
@@ -123,39 +123,17 @@ func (c Config) NextMorning(from time.Time) time.Time {
 	return t
 }
 
-// MinPromptWindow is the minimum stretch between the moment
-// runMorningSmartRetry enters and MorningCapTime, so the gate always
-// has time to send a check-in prompt and wait for an answer before the
-// cap-driven force-send fires. Without this floor, an adaptive cap
-// (typical_wake + 60min) earlier than the configured morning_hour
-// collapses the prompt window to zero and the gate jumps straight to
-// MorningActionForce on entry, silently disabling check-in. Pinned
-// by TestMorningCapTime_FloorsPastCapsToPromptWindow.
-const MinPromptWindow = 60 * time.Minute
-
 // MorningCapTime returns the deadline timestamp for today's morning report.
 // Past this time the smart-retry loop force-sends. Falls back to a sensible
 // default (morning hour + 4, never earlier than 11:00) if MorningCapHour is
 // unset, so a brand-new install with no override still has a deadline.
-//
-// Floors the result to now + MinPromptWindow when the computed cap is
-// already in the past at call time. Adaptive cap (typical_wake + 60min)
-// can land BEFORE the configured morning_hour for users whose schedule
-// puts the morning report well after their typical wake — without the
-// floor the smart-retry loop enters past cap and skips the check-in
-// prompt entirely.
 func (c Config) MorningCapTime(now time.Time) time.Time {
 	loc := c.location()
 	now = now.In(loc)
-	cap := c.computeMorningCap(now, loc)
-	if !cap.After(now) {
-		cap = now.Add(MinPromptWindow)
-	}
-	return cap
+	return c.computeMorningCap(now, loc)
 }
 
-// computeMorningCap is the pre-floor cap calculation. Split from
-// MorningCapTime so the floor is the single place it gets applied.
+// computeMorningCap resolves the configured or adaptive deadline.
 func (c Config) computeMorningCap(now time.Time, loc *time.Location) time.Time {
 	if c.TypicalWakeOK {
 		t := time.Date(now.Year(), now.Month(), now.Day(),
@@ -210,34 +188,34 @@ func SendMorningPreview(bot *Bot, db *storage.DB, cfg Config) error {
 	return err
 }
 
-// MorningSendOpts configures the morning report send. Existing callers
-// continue to use SendMorningSmart(force) which builds a default opts;
-// runMorningSmartRetry passes CheckinExpired=true on the expire-and-
-// force path so formatMorning appends the soft "answer tomorrow" note.
+// MorningSendOpts configures the morning report send. CheckinExpired is
+// retained for compatibility and does not affect report copy.
 type MorningSendOpts struct {
 	Force          bool
 	CheckinExpired bool
+	// RequireAI prevents a cache change between scheduler validation and send
+	// from turning an AI-ready report into a silent deterministic fallback.
+	RequireAI bool
 }
 
 // SendMorningSmart is the smart-retry-aware morning sender. When force is
 // false, it only sends after the wake detector is ready;
 // otherwise returns sent=false with a non-"ok" reason so the caller can retry
-// later. When force is true, it sends regardless and prepends a banner
-// explaining why the data is incomplete.
+// later. When force is true, it sends regardless; the sleep section states
+// any data limitation.
 //
-// Thin wrapper over SendMorningSmartOpts that preserves the historical
-// signature for the two non-cap call sites (ingest trigger + webhook
-// retrigger) — neither of those knows about check-in expiry.
+// Thin wrapper over SendMorningSmartOpts for the morning report trigger.
 //
-// Returns (sent, reason, error). reason is the wake detector's explicit
-// decision reason (for example post_wake_activity or still_writing).
+// Returns (attempted, reason, error). attempted is false when the report is
+// deferred or already reserved; it is true when this call reserved a send
+// attempt. The error reports the send or delivery-completion outcome. reason
+// is the wake detector's decision (for example post_wake_activity or still_writing).
 func SendMorningSmart(bot *Bot, db *storage.DB, cfg Config, force bool) (bool, string, error) {
 	return SendMorningSmartOpts(bot, db, cfg, MorningSendOpts{Force: force})
 }
 
-// SendMorningSmartOpts is the configurable variant. Callers that know
-// extra context (e.g. cap-path saw a prompted check-in expire) pass it
-// via MorningSendOpts so formatMorning can render the right copy.
+// SendMorningSmartOpts is the configurable variant. Check-in lifecycle state
+// does not affect report copy.
 func SendMorningSmartOpts(bot *Bot, db *storage.DB, cfg Config, opts MorningSendOpts) (bool, string, error) {
 	return sendMorningReport(bot, db, cfg, opts, reportDeliveryDurable)
 }
@@ -268,6 +246,9 @@ func sendMorningReport(bot *Bot, db *storage.DB, cfg Config, opts MorningSendOpt
 	if evidenceErr != nil {
 		log.Printf("morning report: evidence unavailable: %v", evidenceErr)
 	}
+	if opts.RequireAI && cfg.AIConfig.Enabled() && len(aiBlocks) == 0 {
+		return false, "ai_pending", nil
+	}
 	fresh := computeFreshness(db, time.Now())
 	msg := formatMorning(briefing, aiBlocks, cfg.Lang, loc, fresh, opts.CheckinExpired, sleep)
 	richMsg := ""
@@ -275,17 +256,17 @@ func sendMorningReport(bot *Bot, db *storage.DB, cfg Config, opts MorningSendOpt
 		richMsg = formatMorningRich(briefing, aiBlocks, cfg.Lang, loc, fresh, opts.CheckinExpired, "", sleep)
 	}
 
-	if !status.Ready {
-		staleReason := wakeStaleReason(status.Reason)
-		if banner := tr(cfg.Lang, "tg_stale_"+staleReason); banner != "" && banner != "tg_stale_"+staleReason {
-			msg = banner + "\n\n" + msg
-			if cfg.TelegramRichMessages {
-				richMsg = formatMorningRich(briefing, aiBlocks, cfg.Lang, loc, fresh, opts.CheckinExpired, banner, sleep)
-			}
-		}
-	}
+	// Forced sends keep the same concise data caveat in the sleep section;
+	// scheduler timing and check-in state do not add another banner.
 	key := "report:morning:" + today
 	reserved, err := deliverReport(policy, db, key, func() error { return sendReportHTML(bot, cfg, "morning", richMsg, msg) })
+	if reserved && err == nil {
+		sleepView := buildMorningSleepView(briefing, aiBlocks, &sleep, cfg.Lang)
+		evidence := morningEvidenceForReport(briefing, fresh)
+		dateMismatch := evidence.Date != "" && evidence.Date != today
+		sections := morningAIExplanationSections(aiBlocks, cfg.Lang, today, dateMismatch, fresh)
+		log.Printf("morning report: delivered ai_sleep=%v ai_sections=%d", sleepView.explanationAI, len(sections))
+	}
 	if !reserved && err == nil {
 		return false, "delivery_already_reserved", nil
 	}
@@ -300,17 +281,6 @@ func resolveMorningWakeStatus(status storage.MorningWakeStatus, err error, force
 		status.Reason = "query_error"
 	}
 	return status, nil
-}
-
-func wakeStaleReason(reason string) string {
-	switch reason {
-	case "no_data", "still_writing", "recent_segment":
-		return reason
-	case "query_error", "steps_query_error", "typical_query_error":
-		return "no_data"
-	default:
-		return "recent_segment"
-	}
 }
 
 // SendEvening sends a "today so far" snapshot. Activity bullets are intentionally
@@ -772,36 +742,47 @@ func morningReportDate(b *health.BriefingResponse, sleepContext *health.MorningR
 	return b.Date
 }
 
-func appendMorningSleepCaveats(view *morningSleepView, sleepContext *health.MorningReportSleep, lang string) {
+func appendMorningSleepCaveat(view *morningSleepView, sleepContext *health.MorningReportSleep, lang string) {
 	if sleepContext == nil {
 		return
 	}
-	switch sleepContext.Capture {
-	case health.NightCapturePartial:
+	switch {
+	case sleepContext.Capture == health.NightCapturePartial:
 		view.lines = append(view.lines, morningSleepCopy(lang, "partial"))
-	case health.NightCaptureUnknown, "":
+	case sleepContext.Capture != health.NightCaptureComplete:
 		view.lines = append(view.lines, morningSleepCopy(lang, "unknown"))
-	}
-	if sleepContext.Assessment == health.NightDurationOutlier {
-		view.lines = append(view.lines, morningSleepCopy(lang, "outlier"))
-	} else if sleepContext.Assessment == health.NightDurationUnknown || sleepContext.Assessment == "" {
+	case sleepContext.Finalization == health.NightFinalProvisional:
+		view.lines = append(view.lines, morningSleepCopy(lang, "provisional"))
+	case sleepContext.Assessment == health.NightDurationOutlier:
+		view.lines = append(view.lines, morningSleepCopy(lang, "assessment_limited"))
+	case sleepContext.Assessment == health.NightDurationUnknown || sleepContext.Assessment == "":
 		view.lines = append(view.lines, morningSleepCopy(lang, "assessment_unknown"))
 	}
-	if sleepContext.Finalization == health.NightFinalProvisional {
-		view.lines = append(view.lines, morningSleepCopy(lang, "provisional"))
+}
+
+func formatSleepDuration(hours float64, lang string) string {
+	minutes := int(hours*60 + 0.5)
+	h, m := minutes/60, minutes%60
+	if m == 0 {
+		return fmt.Sprintf(morningSleepCopy(lang, "duration_hours"), h)
 	}
+	return fmt.Sprintf(morningSleepCopy(lang, "duration_hours_minutes"), h, m)
+}
+
+func morningMetricsPreliminary(sleep *health.MorningReportSleep, reportDate, briefingDate string) bool {
+	return (briefingDate != "" && briefingDate != reportDate) || sleep == nil || sleep.Date != reportDate || sleep.Capture != health.NightCaptureComplete || sleep.Assessment != health.NightDurationPlausible || sleep.Finalization != health.NightFinalFinal
 }
 
 func morningSleepCopy(lang, key string) string {
 	copy := map[string]map[string]string{
 		"en": {
-			"title": "Sleep", "current": "Sleep for the night of %s: %.1f h", "recorded_current": "Recorded sleep for %s: %.1f h", "baseline": "Usual level: %.1f h across %d nights", "no_current": "No sleep data for last night yet.", "older": "Latest recorded sleep (%s): %.1f h", "provisional": "This sleep record is provisional and may change.", "outlier": "This sleep duration is unusual; treat it with caution.", "partial": "The sleep record is incomplete, so its duration may be understated.", "unknown": "Sleep capture status is unknown; interpret this record with caution.", "assessment_unknown": "There is not enough reliable evidence to explain this sleep duration.", "plausible": "Duration alone cannot show sleep quality.",
+			"title": "Sleep", "current": "Sleep for the night of %s: %s", "recorded_current": "Recorded sleep for %s: %s", "baseline": "Usual level: %s across %d nights", "no_current": "No sleep data for last night yet.", "older": "Latest recorded sleep (%s): %s", "provisional": "This sleep record is preliminary and may change.", "partial": "Sleep data are incomplete; duration may change.", "unknown": "Sleep capture status is unknown.", "assessment_unknown": "There is not enough reliable information to assess this duration.", "assessment_limited": "Interpret this sleep record cautiously; duration alone cannot establish recovery.", "plausible": "Duration alone cannot show sleep quality.", "duration_hours": "%d h", "duration_hours_minutes": "%d h %d min",
 		},
 		"ru": {
-			"title": "Сон", "current": "Сон за ночь %s: %.1f ч", "recorded_current": "Запись сна за %s: %.1f ч", "baseline": "Обычный уровень: %.1f ч за %d ночей", "no_current": "Данных о прошедшей ночи пока нет.", "older": "Последняя запись сна (%s): %.1f ч", "provisional": "Запись предварительная и может измениться.", "outlier": "Длительность сна необычна; оценивайте её осторожно.", "partial": "Запись неполная, поэтому длительность может быть занижена.", "unknown": "Статус сбора данных о сне неизвестен; оценка ограничена.", "assessment_unknown": "Пока недостаточно надёжных данных, чтобы объяснить длительность сна.", "plausible": "По одной длительности нельзя оценить качество сна.",
+			"title": "Сон", "current": "Сон за ночь %s: %s", "recorded_current": "Запись сна за %s: %s", "baseline": "Обычный уровень: %s за %d ночей", "no_current": "Данных о прошедшей ночи пока нет.", "older": "Последняя запись сна (%s): %s", "provisional": "Данные предварительные и могут измениться.", "partial": "Данные о сне неполные; длительность может измениться.", "unknown": "Статус сбора данных о сне неизвестен.", "assessment_unknown": "Пока недостаточно надёжных данных, чтобы оценить длительность сна.", "assessment_limited": "Эту запись сна стоит трактовать осторожно; по длительности нельзя уверенно судить о восстановлении.", "plausible": "По одной длительности нельзя оценить качество сна.", "duration_hours": "%d ч", "duration_hours_minutes": "%d ч %d мин",
 		},
 		"sr": {
-			"title": "San", "current": "San za noć %s: %.1f h", "recorded_current": "Zabeleženo spavanje za %s: %.1f h", "baseline": "Uobičajen nivo: %.1f h tokom %d noći", "no_current": "Podaci o protekloj noći još nisu dostupni.", "older": "Poslednji zabeleženi san (%s): %.1f h", "provisional": "Zapis je privremen i može se promeniti.", "outlier": "Trajanje sna je neuobičajeno; tumačite ga oprezno.", "partial": "Zapis je nepotpun, pa trajanje može biti potcenjeno.", "unknown": "Status prikupljanja sna nije poznat; tumačite zapis oprezno.", "assessment_unknown": "Još nema dovoljno pouzdanih podataka za objašnjenje trajanja sna.", "plausible": "Samo trajanje sna ne pokazuje njegov kvalitet.",
+			"title": "San", "current": "San za noć %s: %s", "recorded_current": "Zabeleženo spavanje za %s: %s", "baseline": "Uobičajen nivo: %s tokom %d noći", "no_current": "Podaci o protekloj noći još nisu dostupni.", "older": "Poslednji zabeleženi san (%s): %s", "provisional": "Podaci su preliminarni i mogu se promeniti.", "partial": "Podaci o snu su nepotpuni; trajanje može da se promeni.", "unknown": "Status prikupljanja sna nije poznat.", "assessment_unknown": "Još nema dovoljno pouzdanih podataka za procenu trajanja sna.", "assessment_limited": "Ovaj zapis sna treba tumačiti oprezno; samo trajanje ne potvrđuje oporavak.", "plausible": "Samo trajanje sna ne pokazuje njegov kvalitet.", "duration_hours": "%d h", "duration_hours_minutes": "%d h %d min",
 		},
 	}
 	if values, ok := copy[lang]; ok {
@@ -823,26 +804,28 @@ func buildMorningSleepView(b *health.BriefingResponse, aiBlocks map[string]strin
 			if sleepContext.Capture != health.NightCaptureComplete {
 				label = "recorded_current"
 			}
-			view.lines = append(view.lines, fmt.Sprintf(morningSleepCopy(lang, label), sleepContext.ReportDate, *sleepContext.Hours))
-			if sleepContext.BaselineNights >= 7 && sleepContext.BaselineHours != nil && plausibleSleepHours(*sleepContext.BaselineHours) {
-				view.lines = append(view.lines, fmt.Sprintf(morningSleepCopy(lang, "baseline"), *sleepContext.BaselineHours, sleepContext.BaselineNights))
+			view.lines = append(view.lines, fmt.Sprintf(morningSleepCopy(lang, label), sleepContext.ReportDate, formatSleepDuration(*sleepContext.Hours, lang)))
+			appendMorningSleepCaveat(&view, sleepContext, lang)
+			if sleepContext.Capture == health.NightCaptureComplete && sleepContext.Assessment == health.NightDurationPlausible && sleepContext.Finalization == health.NightFinalFinal && sleepContext.BaselineNights >= 7 && sleepContext.BaselineHours != nil && plausibleSleepHours(*sleepContext.BaselineHours) {
+				view.lines = append(view.lines, fmt.Sprintf(morningSleepCopy(lang, "baseline"), formatSleepDuration(*sleepContext.BaselineHours, lang), sleepContext.BaselineNights))
 			}
-			appendMorningSleepCaveats(&view, sleepContext, lang)
 			if sleepContext.Capture == health.NightCaptureComplete && sleepContext.Assessment == health.NightDurationPlausible {
 				view.explanation = morningSleepCopy(lang, "plausible")
 			}
 			final := sleepContext.Finalization == health.NightFinalFinal || sleepContext.Finalization == health.NightFinalProvisional
 			aiSleep := strings.TrimSpace(aiBlocks[ai.BlockSleep])
-			if aiSleep != "" && sleepContext.Capture == health.NightCaptureComplete && sleepContext.Assessment == health.NightDurationPlausible && final {
+			finalizedExplanation := sleepContext.Capture == health.NightCaptureComplete && sleepContext.Assessment == health.NightDurationPlausible && final
+			preliminaryExplanation := health.PreliminaryMorningSleepExplanationEligible(sleepContext, reportDate)
+			if aiSleep != "" && (finalizedExplanation || preliminaryExplanation) {
 				view.explanation = aiSleep
 				view.explanationAI = true
 			}
 		} else {
 			view.lines = append(view.lines, morningSleepCopy(lang, "no_current"))
 			if sleepContext.Date != "" && sleepContext.Date < sleepContext.ReportDate && validHours {
-				view.lines = append(view.lines, fmt.Sprintf(morningSleepCopy(lang, "older"), sleepContext.Date, *sleepContext.Hours))
+				view.lines = append(view.lines, fmt.Sprintf(morningSleepCopy(lang, "older"), sleepContext.Date, formatSleepDuration(*sleepContext.Hours, lang)))
 			}
-			appendMorningSleepCaveats(&view, sleepContext, lang)
+			appendMorningSleepCaveat(&view, sleepContext, lang)
 		}
 		if view.explanation == "" && sleepContext.Capture == health.NightCaptureComplete && sleepContext.Assessment == health.NightDurationPlausible && fresh && validHours {
 			view.explanation = morningSleepCopy(lang, "plausible")
@@ -852,7 +835,7 @@ func buildMorningSleepView(b *health.BriefingResponse, aiBlocks map[string]strin
 
 	if b != nil && b.Sleep != nil && b.Sleep.LatestDate == reportDate {
 		if latest, ok := latestSleepHours(b.Sleep); ok {
-			view.lines = append(view.lines, fmt.Sprintf(morningSleepCopy(lang, "current"), b.Sleep.LatestDate, latest))
+			view.lines = append(view.lines, fmt.Sprintf(morningSleepCopy(lang, "current"), b.Sleep.LatestDate, formatSleepDuration(latest, lang)))
 		} else {
 			view.lines = append(view.lines, morningSleepCopy(lang, "no_current"))
 		}
@@ -860,7 +843,7 @@ func buildMorningSleepView(b *health.BriefingResponse, aiBlocks map[string]strin
 		view.lines = append(view.lines, morningSleepCopy(lang, "no_current"))
 		if b != nil && b.Sleep != nil && b.Sleep.LatestDate != "" && b.Sleep.LatestDate < reportDate {
 			if latest, ok := latestSleepHours(b.Sleep); ok {
-				view.lines = append(view.lines, fmt.Sprintf(morningSleepCopy(lang, "older"), b.Sleep.LatestDate, latest))
+				view.lines = append(view.lines, fmt.Sprintf(morningSleepCopy(lang, "older"), b.Sleep.LatestDate, formatSleepDuration(latest, lang)))
 			}
 		}
 	}
@@ -890,15 +873,11 @@ func renderMorningSleep(sb *strings.Builder, b *health.BriefingResponse, aiBlock
 
 // ── morning ──────────────────────────────────────────────────────────────────
 
-func formatMorning(b *health.BriefingResponse, aiBlocks map[string]string, lang string, loc *time.Location, f freshness, checkinExpired bool, sleepContext ...health.MorningReportSleep) string {
+func formatMorning(b *health.BriefingResponse, aiBlocks map[string]string, lang string, loc *time.Location, f freshness, _ bool, sleepContext ...health.MorningReportSleep) string {
 	var sb strings.Builder
 	sleep := firstMorningSleep(sleepContext)
 	reportDate := morningReportDate(b, sleep)
 	fmt.Fprintf(&sb, "<b>🌅 %s — %s</b>\n\n", tr(lang, "tg_morning_header"), reportDate)
-
-	if d := staleDays(b.Date, loc); d >= 1 {
-		fmt.Fprintf(&sb, tr(lang, "tg_warn_stale")+"\n\n", d)
-	}
 
 	renderMorningSleep(&sb, b, aiBlocks, lang, sleep)
 
@@ -910,7 +889,12 @@ func formatMorning(b *health.BriefingResponse, aiBlocks map[string]string, lang 
 	if label == "" {
 		label = firstReportText(b.ReadinessTodayLabel, tr(lang, "tg_no_data"))
 	}
-	fmt.Fprintf(&sb, "⚡ <b>%s: %s</b>\n", tr(lang, "tg_morning_today"), telegramText(label))
+	todayLabel := tr(lang, "tg_morning_today")
+	dateMismatch := evidence.Date != "" && evidence.Date != reportDate
+	if dateMismatch {
+		todayLabel = fmt.Sprintf(tr(lang, "tg_morning_as_of_date"), evidence.Date)
+	}
+	fmt.Fprintf(&sb, "⚡ <b>%s: %s</b>\n", todayLabel, telegramText(label))
 	if evidence.VerdictReason != "" {
 		fmt.Fprintf(&sb, "%s\n", telegramText(evidence.VerdictReason))
 	}
@@ -927,14 +911,15 @@ func formatMorning(b *health.BriefingResponse, aiBlocks map[string]string, lang 
 	if f.phoneKnown && f.phoneOff() {
 		fmt.Fprintf(&sb, "  📱 %s\n", telegramText(stripSimpleTags(fmt.Sprintf(tr(lang, "tg_phone_off"), fmtSilence(f.phone, lang)))))
 	}
+	if dateMismatch {
+		fmt.Fprintf(&sb, "  %s\n", telegramText(fmt.Sprintf(tr(lang, "tg_morning_metrics_as_of_date"), evidence.Date)))
+	} else if morningMetricsPreliminary(sleep, reportDate, evidence.Date) {
+		fmt.Fprintf(&sb, "  %s\n", telegramText(tr(lang, "tg_morning_metrics_preliminary")))
+	}
 	sb.WriteByte('\n')
 
-	if len(evidence.Reasons) > 0 {
-		fmt.Fprintf(&sb, "<b>%s</b>\n", tr(lang, "tg_morning_why"))
-		for _, reason := range evidence.Reasons {
-			fmt.Fprintf(&sb, "  • %s\n", telegramText(reason.Text))
-		}
-		sb.WriteByte('\n')
+	for _, section := range morningAIExplanationSections(aiBlocks, lang, reportDate, dateMismatch, f) {
+		fmt.Fprintf(&sb, "🤖 <b>%s</b>\n<i>%s</i>\n\n", telegramText(section.title), telegramText(section.text))
 	}
 	if synthesis := strings.TrimSpace(aiBlocks[ai.BlockSynthesis]); synthesisAddsInformation(synthesis, evidence) {
 		fmt.Fprintf(&sb, "🤖 <i>%s</i>\n\n", telegramText(synthesis))
@@ -944,19 +929,6 @@ func formatMorning(b *health.BriefingResponse, aiBlocks map[string]string, lang 
 	}
 	if parts := morningFreshnessParts(f, lang); len(parts) > 0 {
 		fmt.Fprintf(&sb, "\n<i>%s: %s</i>\n", tr(lang, "tg_morning_updated"), telegramText(strings.Join(parts, " · ")))
-	}
-
-	// Soft footer: when the cap-path forced the report after the user
-	// didn't tap the check-in button in time, append a one-line italic
-	// nudge. Drives the next morning's engagement without scolding —
-	// "want the report to reflect your state better? answer tomorrow".
-	// Only the cap-path passes checkinExpired=true; ingest trigger and
-	// webhook-retrigger paths skip the note (it would be misleading
-	// when the user did answer or was never prompted).
-	if checkinExpired {
-		if note := tr(lang, "checkin_expired_note"); note != "" && note != "checkin_expired_note" {
-			fmt.Fprintf(&sb, "\n%s\n", note)
-		}
 	}
 
 	return strings.TrimRight(sb.String(), "\n")
@@ -1057,4 +1029,30 @@ func formatEvening(b *health.BriefingResponse, dash *storage.DashboardResponse, 
 	}
 
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+type morningAIExplanation struct{ title, text string }
+
+// Only the exact validated bundle supplied by MorningReportEvidence reaches
+// these sections. Partial sleep suppresses sleep claims, not other grounded AI.
+func morningAIExplanationSections(blocks map[string]string, lang, date string, mismatch bool, f freshness) []morningAIExplanation {
+	if mismatch {
+		return nil
+	}
+	titles := map[string][2]string{"en": {"Recovery", "Yesterday"}, "ru": {"Восстановление", "Вчера"}, "sr": {"Oporavak", "Juče"}}
+	title, ok := titles[lang]
+	if !ok {
+		title = titles["en"]
+	}
+	var result []morningAIExplanation
+	if text := strings.TrimSpace(blocks[ai.BlockRecovery]); text != "" && !(f.watchKnown && f.watchOff()) {
+		result = append(result, morningAIExplanation{title[0], text})
+	}
+	if text := strings.TrimSpace(blocks[ai.BlockYesterday]); text != "" && !(f.phoneKnown && f.phoneOff()) {
+		if day, err := time.Parse("2006-01-02", date); err == nil {
+			title[1] += " · " + day.AddDate(0, 0, -1).Format("2006-01-02")
+		}
+		result = append(result, morningAIExplanation{title[1], text})
+	}
+	return result
 }

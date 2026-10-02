@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -53,6 +54,162 @@ func TestSelectWakeCandidateUsesSegmentEndAndLatestReturnToSleep(t *testing.T) {
 	}
 }
 
+func TestSelectWakeCandidateHashIgnoresReceiptRefresh(t *testing.T) {
+	loc := testWakeLocation(t)
+	segment := wakeInputSegment{
+		Metric: "sleep_core", Start: time.Date(2026, 8, 5, 6, 0, 0, 0, loc),
+		Hours: 1.5, Source: "Apple Watch",
+		ReceivedAt: time.Date(2026, 8, 5, 8, 0, 0, 0, loc),
+	}
+	first, ok, err := selectWakeCandidate([]wakeInputSegment{segment}, "2026-08-05", loc)
+	if err != nil || !ok {
+		t.Fatalf("first candidate ok=%v err=%v", ok, err)
+	}
+	segment.ReceivedAt = segment.ReceivedAt.Add(time.Hour)
+	duplicate, ok, err := selectWakeCandidate([]wakeInputSegment{segment}, "2026-08-05", loc)
+	if err != nil || !ok {
+		t.Fatalf("duplicate candidate ok=%v err=%v", ok, err)
+	}
+	if first.InputsHash != duplicate.InputsHash {
+		t.Fatalf("receipt refresh changed sleep hash: %q != %q", first.InputsHash, duplicate.InputsHash)
+	}
+	segment.Hours += 0.25
+	changed, ok, err := selectWakeCandidate([]wakeInputSegment{segment}, "2026-08-05", loc)
+	if err != nil || !ok {
+		t.Fatalf("changed candidate ok=%v err=%v", ok, err)
+	}
+	if changed.InputsHash == first.InputsHash {
+		t.Fatal("sleep input change did not change hash")
+	}
+}
+
+func TestWakeInputClockPreservesDuplicatesAndRestartsOnChange(t *testing.T) {
+	first := time.Date(2026, 8, 5, 8, 30, 0, 0, time.UTC)
+	duplicateAt := first.Add(10 * time.Minute)
+	if got := wakeInputChangedAt("same", "same", first, duplicateAt); !got.Equal(first) {
+		t.Fatalf("duplicate reset change clock to %v, want %v", got, first)
+	}
+	if got := wakeInputChangedAt("new", "same", first, duplicateAt); !got.Equal(duplicateAt) {
+		t.Fatalf("changed inputs clock=%v, want %v", got, duplicateAt)
+	}
+	if got := wakeInputChangedAt("same", "", time.Time{}, duplicateAt); !got.Equal(duplicateAt) {
+		t.Fatalf("legacy marker clock=%v, want conservative start %v", got, duplicateAt)
+	}
+	clockRollback := first.Add(-time.Minute)
+	if got := wakeInputChangedAt("changed", "same", first, clockRollback); !got.Equal(first) {
+		t.Fatalf("clock rollback moved input clock backwards: %v, want %v", got, first)
+	}
+}
+
+func TestEvaluateMorningWakeUsesPersistedInputClockAfterReceiptRefresh(t *testing.T) {
+	loc := testWakeLocation(t)
+	wake := time.Date(2026, 8, 5, 7, 0, 0, 0, loc)
+	now := wake.Add(90 * time.Minute)
+	candidate := wakeCandidate{
+		Wake: wake, LatestIngest: now.Add(-5 * time.Minute),
+		IngestQuietSince: now.Add(-25 * time.Minute),
+		Source:           "Apple Watch", InputsHash: "stable", Signal: "detailed_stage_end",
+	}
+	status := evaluateMorningWake(candidate, now, 0, 0, false, loc)
+	if !status.Ready || status.Reason != "quiet_timeout" {
+		t.Fatalf("duplicate receipt refresh reset quiet window: %+v", status)
+	}
+	candidate.IngestQuietSince = now.Add(-10 * time.Minute)
+	status = evaluateMorningWake(candidate, now, 0, 0, false, loc)
+	if status.Ready || status.Reason != "still_writing" {
+		t.Fatalf("new sleep change did not enforce quiet window: %+v", status)
+	}
+}
+
+func TestComputeMorningWakeStatusPersistsSleepInputClockAcrossDuplicateSync(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx, cancel := queryCtx()
+	defer cancel()
+	loc := testWakeLocation(t)
+	recordID := insertTestRawRecord(t, db, "wake-duplicate-sync")
+	receivedAt := time.Date(2026, 8, 5, 8, 0, 0, 0, loc)
+	_, err := db.pool.Exec(ctx, `
+		INSERT INTO metric_points
+			(health_record_id, metric_name, units, date, qty, source, quality, received_at)
+		VALUES ($1,'sleep_core','hr','2026-08-05 06:00:00 +0200',1.5,'Apple Watch','ok',$2)
+	`, recordID, receivedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstNow := time.Date(2026, 8, 5, 8, 45, 0, 0, loc)
+	first, err := db.ComputeMorningWakeStatus("2026-08-05", loc, firstNow)
+	if err != nil || first.Ready || first.Reason != "still_writing" {
+		t.Fatalf("first status=%+v err=%v", first, err)
+	}
+	if _, err := db.pool.Exec(ctx, `UPDATE metric_points SET received_at=$1 WHERE health_record_id=$2 AND metric_name='sleep_core'`, firstNow.Add(9*time.Minute), recordID); err != nil {
+		t.Fatal(err)
+	}
+	secondNow := firstNow.Add(10 * time.Minute)
+	second, err := db.ComputeMorningWakeStatus("2026-08-05", loc, secondNow)
+	if err != nil || second.Ready || second.Reason != "still_writing" {
+		t.Fatalf("duplicate sync status=%+v err=%v", second, err)
+	}
+	if _, err := db.pool.Exec(ctx, `UPDATE metric_points SET qty=2.0, received_at=$1 WHERE health_record_id=$2 AND metric_name='sleep_core'`, secondNow.Add(time.Minute), recordID); err != nil {
+		t.Fatal(err)
+	}
+	changedNow := secondNow.Add(10 * time.Minute)
+	changed, err := db.ComputeMorningWakeStatus("2026-08-05", loc, changedNow)
+	if err != nil || changed.Ready || changed.Reason != "still_writing" {
+		t.Fatalf("changed sleep status=%+v err=%v", changed, err)
+	}
+	metric, err := db.GetDerivedMetric(DerivedMetricWakeTime, "2026-08-05")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal(metric.Metadata, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	if got := metadata["sleep_inputs_changed_at"]; got != changedNow.Format(time.RFC3339) {
+		t.Fatalf("persisted changed_at=%v, want %s", got, changedNow.Format(time.RFC3339))
+	}
+	if _, err := db.pool.Exec(ctx, `DELETE FROM metric_points WHERE health_record_id=$1 AND metric_name='sleep_core'`, recordID); err != nil {
+		t.Fatal(err)
+	}
+	missing, err := db.ComputeMorningWakeStatus("2026-08-05", loc, changedNow.Add(time.Minute))
+	if err != nil || missing.Reason != "no_data" {
+		t.Fatalf("missing-input status=%+v err=%v", missing, err)
+	}
+	metric, err = db.GetDerivedMetric(DerivedMetricWakeTime, "2026-08-05")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(metric.Metadata, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	if metadata["sleep_inputs_hash"] != "" {
+		t.Fatalf("missing inputs retained stale hash marker: %v", metadata)
+	}
+	appearedAt := changedNow.Add(time.Hour)
+	if _, err := db.pool.Exec(ctx, `
+		INSERT INTO metric_points
+			(health_record_id, metric_name, units, date, qty, source, quality, received_at)
+		VALUES ($1,'sleep_core','hr','2026-08-05 06:00:00 +0200',2.0,'Apple Watch','ok',$2)
+	`, recordID, appearedAt); err != nil {
+		t.Fatal(err)
+	}
+	appeared, err := db.ComputeMorningWakeStatus("2026-08-05", loc, appearedAt)
+	if err != nil || appeared.Ready || appeared.Reason != "still_writing" {
+		t.Fatalf("reappeared inputs did not start quiet window: %+v err=%v", appeared, err)
+	}
+	metric, err = db.GetDerivedMetric(DerivedMetricWakeTime, "2026-08-05")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(metric.Metadata, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	if got := metadata["sleep_inputs_changed_at"]; got != appearedAt.Format(time.RFC3339) {
+		t.Fatalf("reappeared changed_at=%v, want %s", got, appearedAt.Format(time.RFC3339))
+	}
+}
+
 func TestSelectWakeCandidatePrefersWatchAndExcludesEveningSleep(t *testing.T) {
 	loc := testWakeLocation(t)
 	segments := []wakeInputSegment{
@@ -92,6 +249,91 @@ func TestSelectWakeCandidateUsesMidnightSummaryAsLastFallback(t *testing.T) {
 	want := time.Date(2026, 8, 5, 7, 0, 0, 0, loc)
 	if !got.Wake.Equal(want) || got.Signal != "midnight_summary" {
 		t.Fatalf("candidate=%+v, want midnight summary at %v", got, want)
+	}
+}
+
+func TestSelectWakeCandidateMidnightHashRetainsSleepAndAwakeComponents(t *testing.T) {
+	loc := testWakeLocation(t)
+	start := time.Date(2026, 8, 5, 0, 0, 0, 0, loc)
+	received := time.Date(2026, 8, 5, 8, 10, 0, 0, loc)
+	firstInputs := []wakeInputSegment{
+		{Metric: "sleep_total", Start: start, Hours: 7, Source: "RingConn", Quality: "ok", ReceivedAt: received},
+		{Metric: "sleep_awake", Start: start, Hours: 1, Source: "RingConn", Quality: "ok", ReceivedAt: received},
+	}
+	first, ok, err := selectWakeCandidate(firstInputs, "2026-08-05", loc)
+	if err != nil || !ok {
+		t.Fatalf("first candidate ok=%v err=%v", ok, err)
+	}
+	compositionChanged := []wakeInputSegment{
+		{Metric: "sleep_total", Start: start, Hours: 7.5, Source: "RingConn", Quality: "ok", ReceivedAt: received.Add(time.Hour)},
+		{Metric: "sleep_awake", Start: start, Hours: 0.5, Source: "RingConn", Quality: "ok", ReceivedAt: received.Add(time.Hour)},
+	}
+	second, ok, err := selectWakeCandidate(compositionChanged, "2026-08-05", loc)
+	if err != nil || !ok {
+		t.Fatalf("second candidate ok=%v err=%v", ok, err)
+	}
+	if !first.Wake.Equal(second.Wake) {
+		t.Fatalf("equal-total composition changed wake: %v != %v", first.Wake, second.Wake)
+	}
+	if first.InputsHash == second.InputsHash {
+		t.Fatal("equal-total sleep/awake composition change did not change input hash")
+	}
+}
+
+func TestComputeMorningWakeStatusResetsClockForMidnightCompositionChange(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx, cancel := queryCtx()
+	defer cancel()
+	loc := testWakeLocation(t)
+	recordID := insertTestRawRecord(t, db, "wake-midnight-composition")
+	receivedAt := time.Date(2026, 8, 5, 8, 0, 0, 0, loc)
+	for _, input := range []struct {
+		metric string
+		qty    float64
+	}{
+		{"sleep_total", 7},
+		{"sleep_awake", 1},
+	} {
+		if _, err := db.pool.Exec(ctx, `
+			INSERT INTO metric_points
+				(health_record_id, metric_name, units, date, qty, source, quality, received_at)
+			VALUES ($1,$2,'hr','2026-08-05 00:00:00 +0200',$3,'RingConn','ok',$4)
+		`, recordID, input.metric, input.qty, receivedAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	firstNow := time.Date(2026, 8, 5, 8, 45, 0, 0, loc)
+	first, err := db.ComputeMorningWakeStatus("2026-08-05", loc, firstNow)
+	if err != nil || first.Ready || first.Reason != "still_writing" {
+		t.Fatalf("first status=%+v err=%v", first, err)
+	}
+	if _, err := db.pool.Exec(ctx, `
+		UPDATE metric_points SET qty=CASE metric_name
+			WHEN 'sleep_total' THEN 7.5 ELSE 0.5 END,
+		received_at=$1
+		WHERE health_record_id=$2 AND metric_name IN ('sleep_total','sleep_awake')
+	`, firstNow.Add(time.Minute), recordID); err != nil {
+		t.Fatal(err)
+	}
+	changedNow := firstNow.Add(10 * time.Minute)
+	changed, err := db.ComputeMorningWakeStatus("2026-08-05", loc, changedNow)
+	if err != nil || changed.Ready || changed.Reason != "still_writing" {
+		t.Fatalf("composition change status=%+v err=%v", changed, err)
+	}
+	if first.InputsHash == changed.InputsHash {
+		t.Fatal("composition change preserved the old hash")
+	}
+	metric, err := db.GetDerivedMetric(DerivedMetricWakeTime, "2026-08-05")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal(metric.Metadata, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	if got := metadata["sleep_inputs_changed_at"]; got != changedNow.Format(time.RFC3339) {
+		t.Fatalf("persisted changed_at=%v, want %s", got, changedNow.Format(time.RFC3339))
 	}
 }
 
@@ -303,5 +545,64 @@ func TestWakeCandidateVariantsReturnsEmptyDayWithoutAbortingProbe(t *testing.T) 
 		!variants.DetailedSessionEnd.IsZero() ||
 		!variants.SummarySessionEnd.IsZero() {
 		t.Fatalf("variants=%+v, want selected source with no eligible candidates", variants)
+	}
+}
+
+func TestComputeMorningWakeStatusConcurrentSourceChangeKeepsClock(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx, cancel := queryCtx()
+	defer cancel()
+	loc := testWakeLocation(t)
+	date := "2026-08-05"
+	now := time.Date(2026, 8, 5, 9, 0, 0, 0, loc)
+	id := insertTestRawRecord(t, db, "wake-concurrent-source")
+	if _, err := db.pool.Exec(ctx, `INSERT INTO metric_points (health_record_id,metric_name,units,date,qty,source,quality,received_at) VALUES ($1,'sleep_core','hr','2026-08-05 06:00:00 +0200',1.5,'RingConn','ok',$2)`, id, now); err != nil {
+		t.Fatal(err)
+	}
+	first, err := db.ComputeMorningWakeStatus(date, loc, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedAt := now.Add(time.Hour)
+	if _, err := db.pool.Exec(ctx, `UPDATE metric_points SET source='Apple Watch', received_at=$1 WHERE health_record_id=$2`, changedAt, id); err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan error, 8)
+	for range 8 {
+		go func() {
+			got, err := db.ComputeMorningWakeStatus(date, loc, changedAt)
+			if err == nil && (got.Ready || got.InputsHash == first.InputsHash || got.InputSource != "Apple Watch") {
+				err = fmt.Errorf("source change status: %+v", got)
+			}
+			results <- err
+		}()
+	}
+	for range 8 {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+	// An unrelated day cannot reset this day's persisted clock.
+	if _, err := db.ComputeMorningWakeStatus("2026-08-06", loc, changedAt.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.pool.Exec(ctx, `UPDATE metric_points SET received_at=$1 WHERE health_record_id=$2`, changedAt.Add(30*time.Minute), id); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.ComputeMorningWakeStatus(date, loc, changedAt.Add(30*time.Minute))
+	if err != nil || !got.Ready {
+		t.Fatalf("duplicate after quiet window: %+v err=%v", got, err)
+	}
+	metric, err := db.GetDerivedMetric(DerivedMetricWakeTime, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal(metric.Metadata, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	if metadata["sleep_inputs_changed_at"] != changedAt.Format(time.RFC3339) {
+		t.Fatalf("clock=%v", metadata["sleep_inputs_changed_at"])
 	}
 }

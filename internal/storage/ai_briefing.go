@@ -83,6 +83,20 @@ func (s *DB) HasSentMorningReport(date string) bool {
 	return exists
 }
 
+// HasSettledMorningReport reports whether the morning lane must stop for a date.
+// Reserved and ambiguous deliveries remain at-most-once even without sent_at;
+// definitive failures stay retryable. This does not claim successful delivery.
+func (s *DB) HasSettledMorningReport(date string) bool {
+	if s.HasSentMorningReport(date) {
+		return true
+	}
+	ctx, cancel := queryCtx()
+	defer cancel()
+	var settled bool
+	s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM notification_deliveries WHERE delivery_key=$1 AND status IN ('reserved','sent','ambiguous'))`, "report:morning:"+date).Scan(&settled)
+	return settled
+}
+
 // MarkMorningReportSent records that today's morning report was sent.
 // Uses upsert so the guard works even when no AI briefing was generated.
 func (s *DB) MarkMorningReportSent(date string) error {

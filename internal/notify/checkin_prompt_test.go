@@ -129,8 +129,8 @@ func TestSendCheckinPrompt_HappyPath(t *testing.T) {
 	bot := &fakeBot{msgID: 42}
 	store := &fakeCheckinStore{}
 	now := time.Date(2026, 5, 18, 8, 0, 0, 0, time.UTC)
-	cap := time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC)
-	if err := SendCheckinPrompt(bot, store, "ru", "2026-05-18", now, cap); err != nil {
+	legacyCap := time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC)
+	if err := SendCheckinPrompt(bot, store, "ru", "2026-05-18", now, legacyCap); err != nil {
 		t.Fatalf("send: %v", err)
 	}
 	if bot.lastText == "" || len(bot.lastRows) != 2 {
@@ -139,7 +139,7 @@ func TestSendCheckinPrompt_HappyPath(t *testing.T) {
 	if !store.saved {
 		t.Fatalf("store not invoked")
 	}
-	if store.lastMsg != 42 || !store.lastExp.Equal(cap) || store.lastSrc != storage.CheckinSourceTelegram {
+	if store.lastMsg != 42 || !store.lastExp.Equal(CheckinPromptExpiry(now)) || store.lastSrc != storage.CheckinSourceTelegram {
 		t.Errorf("store payload off: %+v", store)
 	}
 }
