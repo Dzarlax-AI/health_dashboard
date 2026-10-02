@@ -28,11 +28,15 @@ func morningLifecycleDue(cfg notify.Config, now time.Time, reportSent, hasChecki
 	}
 	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
 	scheduled := cfg.NextMorning(midnight.Add(-time.Nanosecond))
-	return !now.Before(scheduled)
+	return !now.Before(scheduled) || !now.Before(cfg.MorningCapTime(now))
 }
 
 func runMorningLifecycle(ctx context.Context, db *storage.DB, mgr *tenants.Manager, reg *registry.Registry, schema string, defaults storage.NotifyConfig) {
 	tick := func() {
+		// Expiry is persistence-only and must run through quiet hours and restart.
+		if err := expireOverdueMorningCheckins(db, mgr.CheckinSendMuFor(schema), time.Now()); err != nil {
+			log.Printf("check-in: overdue expiry: %v", err)
+		}
 		cfg := db.GetNotifyConfig(defaults)
 		if !cfg.Enabled() {
 			return
@@ -184,5 +188,19 @@ func morningAIShouldPrewarm(cfg notify.Config, now time.Time, eligible bool) boo
 	local := now.In(loc)
 	midnight := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
 	scheduled := cfg.NextMorning(midnight.Add(-time.Nanosecond))
+	cap := cfg.MorningCapTime(local)
+	if cap.Before(scheduled) {
+		scheduled = cap
+	}
 	return !local.Before(scheduled.Add(-30 * time.Minute))
+}
+
+type overdueMorningCheckinStore interface{ ExpireOverdueTelegramCheckins(time.Time) error }
+
+func expireOverdueMorningCheckins(store overdueMorningCheckinStore, mu *sync.Mutex, now time.Time) error {
+	if mu != nil {
+		mu.Lock()
+		defer mu.Unlock()
+	}
+	return store.ExpireOverdueTelegramCheckins(now)
 }

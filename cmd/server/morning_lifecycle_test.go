@@ -204,3 +204,35 @@ func TestMorningAIReportAttemptWaitsThenSendsExactlyOnce(t *testing.T) {
 		t.Fatalf("sends=%d marked=%v", sends, marked)
 	}
 }
+
+func TestMorningLifecycleAndPrewarmHonorEarlierAdaptiveCap(t *testing.T) {
+	cfg := notify.Config{Timezone: "Europe/Belgrade", MorningWeekdayHour: 10, MorningWeekendHour: 10, TypicalWakeOK: true, TypicalWakeHour: 7, TypicalWakeMinute: 47}
+	loc, _ := time.LoadLocation("Europe/Belgrade")
+	cap := time.Date(2026, 10, 1, 8, 47, 0, 0, loc)
+	if !morningLifecycleDue(cfg, cap, false, false) || morningLifecycleDue(cfg, cap.Add(-time.Second), false, false) {
+		t.Fatal("lifecycle must become due at adaptive cap before schedule")
+	}
+	if !morningAIShouldPrewarm(cfg, cap.Add(-30*time.Minute), false) || morningAIShouldPrewarm(cfg, cap.Add(-30*time.Minute-time.Second), false) {
+		t.Fatal("prewarm must precede the earlier adaptive cap")
+	}
+}
+
+type overdueCheckinRecorder struct{ times []time.Time }
+
+func (s *overdueCheckinRecorder) ExpireOverdueTelegramCheckins(now time.Time) error {
+	s.times = append(s.times, now)
+	return nil
+}
+func TestMorningExpiryRunsWithoutSendingThroughQuietHours(t *testing.T) {
+	store := &overdueCheckinRecorder{}
+	var mu sync.Mutex
+	for _, hour := range []int{20, 21, 23, 3} {
+		now := time.Date(2026, 10, 1, hour, 0, 0, 0, time.UTC)
+		if err := expireOverdueMorningCheckins(store, &mu, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(store.times) != 4 {
+		t.Fatal("quiet-hour persistence cleanup was suppressed")
+	}
+}

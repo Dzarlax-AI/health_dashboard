@@ -813,3 +813,50 @@ func TestMorningLaneSettlesFromDurableReservationWithoutClaimingSent(t *testing.
 		t.Fatal("legacy sent marker must settle the lane")
 	}
 }
+
+func TestLateTelegramCheckinExpiresAfterCutoffAndRestart(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	if err := db.EnsureSubjectiveCheckinsTableContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 2, 1, 0, 0, 0, time.UTC)
+	cases := []struct {
+		date, source, status string
+		expiry               time.Time
+	}{
+		{"2026-10-01", CheckinSourceTelegram, CheckinStatusPrompted, now.Add(-4 * time.Hour)},
+		{"2026-09-30", CheckinSourceTelegram, CheckinStatusPrompted, now.Add(-28 * time.Hour)},
+		{"2026-09-29", CheckinSourceTelegram, CheckinStatusAnswered, now.Add(-52 * time.Hour)},
+		{"2026-10-02", CheckinSourceTelegram, CheckinStatusPrompted, now.Add(time.Hour)},
+		{"2026-10-01", "synthetic-other", CheckinStatusPrompted, now.Add(-4 * time.Hour)},
+	}
+	for _, c := range cases {
+		if err := db.SaveCheckinPrompted(c.date, c.source, 42, c.expiry.Add(-2*time.Hour), c.expiry); err != nil {
+			t.Fatal(err)
+		}
+		if c.status == CheckinStatusAnswered {
+			if _, err := db.SaveCheckinAnswer(c.date, c.source, CheckinAnswerOK, c.expiry.Add(-time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for range 2 {
+		if err := db.ExpireOverdueTelegramCheckins(now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, c := range cases {
+		row, err := db.GetTodayCheckin(c.date, c.source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := c.status
+		if i < 2 {
+			want = CheckinStatusExpired
+		}
+		if row.Status != want {
+			t.Fatalf("case %d status=%s want=%s", i, row.Status, want)
+		}
+	}
+}

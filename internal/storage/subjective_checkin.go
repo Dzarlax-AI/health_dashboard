@@ -307,6 +307,15 @@ func (s *DB) ExpireCheckin(date, source string, now time.Time) (string, error) {
 	return CheckinStatusExpired, nil
 }
 
+// ExpireOverdueTelegramCheckins finalizes unanswered prompts even in quiet hours
+// and after a restart on another date. Answered rows and other channels are unchanged.
+func (s *DB) ExpireOverdueTelegramCheckins(now time.Time) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := s.pool.Exec(ctx, `UPDATE subjective_checkins SET status=$1 WHERE source=$2 AND status=$3 AND expires_at <= $4`, CheckinStatusExpired, CheckinSourceTelegram, CheckinStatusPrompted, now)
+	return err
+}
+
 // GetTodayCheckin returns the row for (date, source). Returns
 // (nil, nil) when no row exists — `pgx.ErrNoRows` is treated as a
 // non-error so callers can render the "no checkin yet" path uniformly.
