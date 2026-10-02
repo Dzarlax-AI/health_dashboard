@@ -18,6 +18,7 @@ type fakeRouter struct {
 	saveErr      error
 	saveCalls    int
 	ackCalls     int
+	lastAck      string
 	triggers     []string
 	lastDate     string
 	lastSource   string
@@ -35,8 +36,12 @@ func (f *fakeRouter) SaveAnswer(date, source, answer string, _ time.Time) (strin
 	f.lastDate, f.lastSource, f.lastAnswer = date, source, answer
 	return f.saveStatus, f.saveErr
 }
-func (f *fakeRouter) AnswerCallbackQuery(qid, text string) error { f.ackCalls++; return nil }
-func (f *fakeRouter) TriggerReport(schema string)                { f.triggers = append(f.triggers, schema) }
+func (f *fakeRouter) AnswerCallbackQuery(qid, text string) error {
+	f.ackCalls++
+	f.lastAck = text
+	return nil
+}
+func (f *fakeRouter) TriggerReport(schema string) { f.triggers = append(f.triggers, schema) }
 func (f *fakeRouter) SaveContextPromptAnswer(promptID, category, source string, _ time.Time) (string, error) {
 	f.contextCalls++
 	f.lastPromptID, f.lastCategory, f.lastSource = promptID, category, source
@@ -160,7 +165,7 @@ func TestWebhook_UnknownChatID(t *testing.T) {
 	}
 }
 
-func TestWebhook_HappyPath_AnsweredTriggersReport(t *testing.T) {
+func TestWebhook_HappyPath_AnsweredDoesNotTriggerReport(t *testing.T) {
 	router := &fakeRouter{saveStatus: "answered"}
 	h := NewWebhookHandler(WebhookConfig{
 		Secret: "good",
@@ -186,8 +191,11 @@ func TestWebhook_HappyPath_AnsweredTriggersReport(t *testing.T) {
 	if router.ackCalls != 1 {
 		t.Fatalf("ack not called: %d", router.ackCalls)
 	}
-	if len(router.triggers) != 1 || router.triggers[0] != "health" {
-		t.Fatalf("trigger report not called for schema: %v", router.triggers)
+	if len(router.triggers) != 0 {
+		t.Fatalf("check-in answer must not trigger a report: %v", router.triggers)
+	}
+	if want := ackText("ru"); router.lastAck != want {
+		t.Fatalf("ack=%q, want common saved acknowledgement %q", router.lastAck, want)
 	}
 }
 
@@ -207,6 +215,9 @@ func TestWebhook_LateAnswered_DoesNotTriggerReport(t *testing.T) {
 	}
 	if router.saveCalls != 1 || router.ackCalls != 1 {
 		t.Fatalf("save/ack should be 1 each; got save=%d ack=%d", router.saveCalls, router.ackCalls)
+	}
+	if want := ackText("ru"); router.lastAck != want {
+		t.Fatalf("late ack=%q, want common saved acknowledgement %q", router.lastAck, want)
 	}
 	if len(router.triggers) != 0 {
 		t.Fatalf("late answer must NOT retrigger report (already sent); got triggers=%v", router.triggers)

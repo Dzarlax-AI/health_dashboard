@@ -31,8 +31,9 @@ type DB struct {
 	aiRegenInFlight sync.Map
 
 	// aiRegenLastFailAt records the wall-clock time of the last failed
-	// EnsureTodayAIInsight (zero blocks saved). Keyed by "<date>|<lang>".
-	// When set, the next ~5 min of regen attempts return the (still empty)
+	// EnsureTodayAIInsight (zero blocks saved). Keyed by date, language, and
+	// exact evidence/generation hash; changed data gets its own attempt.
+	// When set, the next ~5 min of identical regen attempts return the current
 	// cache instead of hitting the provider again — avoids per-minute pollers
 	// hammering the API during a sustained upstream outage.
 	aiRegenLastFailAt sync.Map

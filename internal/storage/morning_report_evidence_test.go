@@ -41,6 +41,16 @@ func TestMorningGenerationHashRejectsChangedNightAndConfig(t *testing.T) {
 			t.Fatal("changed generation accepted old cache")
 		}
 	}
+	legacyFingerprint := fingerprint
+	legacyFingerprint.PromptRevision = "health-briefing-v4-sleep-night"
+	legacyHash := morningBundleHash(evidence, briefing, legacyFingerprint)
+	legacy := map[string]*AIBlock{}
+	for _, key := range ai.GeneratedBlockOrder {
+		legacy[key] = &AIBlock{Text: "legacy sleep prose", InputsHash: legacyHash}
+	}
+	if aiBundleCacheComplete(legacy, morningBundleHash(evidence, briefing, fingerprint)) {
+		t.Fatal("legacy free-text sleep bundle accepted under the constrained preliminary-sleep fingerprint")
+	}
 }
 
 func TestMorningReportEvidenceExactCacheAndLanguage(t *testing.T) {
@@ -70,7 +80,7 @@ func TestMorningReportEvidenceExactCacheAndLanguage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	evidence, err := db.morningInsightEvidence(ctx, briefing, db.GetRawMetrics(), today)
+	evidence, err := db.morningInsightEvidence(ctx, briefing, db.GetRawMetrics(), today, "ru")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +144,7 @@ func TestMorningEvidenceNewerUnverifiedNightDoesNotReuseOldCanonicalMetadata(t *
 	}
 	hours := 6.5
 	briefing := &health.BriefingResponse{Date: "2026-09-30", Sleep: &health.SleepAnalysis{LatestDate: "2026-09-30", LatestTotal: &hours}}
-	evidence, err := db.morningInsightEvidence(ctx, briefing, nil, "2026-09-30")
+	evidence, err := db.morningInsightEvidence(ctx, briefing, nil, "2026-09-30", "en")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +158,7 @@ func TestMorningEvidenceNewerUnverifiedNightDoesNotReuseOldCanonicalMetadata(t *
 		t.Fatal(err)
 	}
 	briefing.Sleep.LatestDate = "2026-09-29"
-	evidence, err = db.morningInsightEvidence(ctx, briefing, nil, "2026-09-30")
+	evidence, err = db.morningInsightEvidence(ctx, briefing, nil, "2026-09-30", "en")
 	if err != nil || (evidence.NightSleep.InputHash != "night-2" || evidence.NightSleep.Capture != health.NightCapturePartial) {
 		t.Fatalf("same-day canonical replaced by generic: %#v %v", evidence.NightSleep, err)
 	}

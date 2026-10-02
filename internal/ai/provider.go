@@ -13,7 +13,7 @@ const (
 	ProviderOpenAI = "openai"
 
 	DefaultMaxOutputTokens = 5000
-	PromptRevision         = "health-briefing-v4-sleep-night"
+	PromptRevision         = "health-briefing-v6-preliminary-claims"
 	SynthesisMaxTokens     = 1400
 )
 

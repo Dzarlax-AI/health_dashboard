@@ -33,7 +33,9 @@ type TenantCallbacks struct {
 	// observe HasSent=false within the same narrow window and produce
 	// duplicate Telegram messages (TOCTOU). nil means single-user legacy
 	// mode where only one sender path exists.
-	MorningSendMu  *sync.Mutex
+	MorningSendMu *sync.Mutex
+	// CheckinSendMu serializes prompt/reminder sends with answers, independently of reports.
+	CheckinSendMu  *sync.Mutex
 	TestNotify     func(kind string) error
 	NotifyDefaults storage.NotifyConfig
 	AIDefaults     storage.AIConfig
@@ -483,6 +485,16 @@ func (m *Manager) MorningSendMuFor(schema string) *sync.Mutex {
 	defer m.mu.RUnlock()
 	if e, ok := m.tenants[schema]; ok && e.callbacks != nil {
 		return e.callbacks.MorningSendMu
+	}
+	return nil
+}
+
+// CheckinSendMuFor returns the tenant's independent check-in lifecycle lock.
+func (m *Manager) CheckinSendMuFor(schema string) *sync.Mutex {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if e, ok := m.tenants[schema]; ok && e.callbacks != nil {
+		return e.callbacks.CheckinSendMu
 	}
 	return nil
 }

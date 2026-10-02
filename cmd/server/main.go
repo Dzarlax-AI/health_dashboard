@@ -336,7 +336,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	db *storage.DB, schema string,
 	notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig, hrZones health.HRZones) {
 
-	var morningSendMu sync.Mutex
+	var morningSendMu, checkinSendMu sync.Mutex
 	maybeFireMorningReport := makeMorningTrigger(ctx, db, &morningSendMu, mgr, reg, schema, notifyDefaults)
 	energyV2 := storage.NewEnergyV2Orchestrator()
 	todayDerived := storage.NewTodayDerivedStateCoordinator(energyV2)
@@ -358,6 +358,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 		BackfillDates:  backfillDatesFn,
 		IngestRefresh:  refreshDatesFn,
 		MorningSendMu:  &morningSendMu,
+		CheckinSendMu:  &checkinSendMu,
 		TestNotify:     testNotifyFn,
 		NotifyDefaults: notifyDefaults,
 		AIDefaults:     aiDefaults,
@@ -366,6 +367,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	go runReportScheduler(ctx, db, mgr, reg, schema, notifyDefaults, baseURL, func() {
 		backfillDatesFn([]string{db.Today()})
 	})
+	go runMorningLifecycle(ctx, db, mgr, reg, schema, notifyDefaults)
 	go runDailyQualityScan(db, schema, notifyDefaults, backfillDatesFn)
 	go runCompletedNightSleepCoordinator(ctx, db, schema)
 
@@ -489,7 +491,7 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Regist
 
 	enqueueStartupCacheRefresh(startupBackfills, db, schema, notifyDefaults, backfillDatesFn)
 
-	var morningSendMu sync.Mutex
+	var morningSendMu, checkinSendMu sync.Mutex
 	maybeFireMorningReport := makeMorningTrigger(ctx, db, &morningSendMu, mgr, reg, schema, notifyDefaults)
 
 	backfillFn := makeBackfillFn(db, backfillDatesFn)
@@ -501,6 +503,7 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Regist
 		IngestRefresh:  refreshDatesFn,
 		MorningTrigger: maybeFireMorningReport,
 		MorningSendMu:  &morningSendMu,
+		CheckinSendMu:  &checkinSendMu,
 		TestNotify:     testNotifyFn,
 		NotifyDefaults: notifyDefaults,
 		AIDefaults:     aiDefaults,
@@ -509,6 +512,7 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Regist
 	go runReportScheduler(ctx, db, mgr, reg, schema, notifyDefaults, baseURL, func() {
 		backfillDatesFn([]string{db.Today()})
 	})
+	go runMorningLifecycle(ctx, db, mgr, reg, schema, notifyDefaults)
 	go runDailyQualityScan(db, schema, notifyDefaults, backfillDatesFn)
 	go runCompletedNightSleepCoordinator(ctx, db, schema)
 }
@@ -838,19 +842,6 @@ func makeTestNotifyFn(db *storage.DB, mgr *tenants.Manager, schema string, notif
 	}
 }
 
-// makeMorningTrigger returns the opportunistic, ingest-driven morning report
-// trigger. Fires from onNewData on every batch of incoming health data; bails
-// quickly when conditions aren't met so it's safe to call frequently.
-//
-// Gates (in order):
-//   1. AI configured (otherwise no insight to layer on top — we still want the
-//      user to see something, but the rule-based path is the fallback scheduler's
-//      job; this opportunistic trigger is the "AI is ready" path).
-//   2. Past the morning floor (05:00 in tz) — don't ping at 3 a.m.
-//   3. Not already sent today.
-//   4. The shared wake detector is ready. It uses the end of the latest sleep
-//      stage, ingest quiet time, post-wake activity, and the personal median.
-
 // registerCheckinWebhook mounts the Telegram callback handler on mux.
 // Three-step secret lookup via registry.ResolveOrGenerateWebhookSecrets:
 //  1. health_registry.global_settings (persisted from previous boot)
@@ -923,7 +914,7 @@ func registerCheckinWebhook(mux *http.ServeMux, mgr *tenants.Manager, reg *regis
 				Schema:    schema,
 				Lang:      cfg.Lang,
 				TodayInTZ: time.Now().In(loc).Format("2006-01-02"),
-				Router:    &liveCheckinRouter{db: db, bot: bot, triggerReport: makeReportTrigger(mgr, reg, schema, notifyDefaults), refreshToday: refresh},
+				Router:    &liveCheckinRouter{db: db, bot: bot, checkinMu: mgr.CheckinSendMuFor(schema), refreshToday: refresh},
 			}, true
 		},
 	}))
@@ -932,15 +923,19 @@ func registerCheckinWebhook(mux *http.ServeMux, mgr *tenants.Manager, reg *regis
 
 // liveCheckinRouter is the production notify.CheckinAnswerRouter for
 // one tenant. Created per inbound webhook update by the TenantFinder
-// closure so each instance binds the right DB + Bot + report trigger.
+// closure so each instance binds the right DB, Bot, and check-in lock.
 type liveCheckinRouter struct {
-	db            *storage.DB
-	bot           *notify.Bot
-	triggerReport func()
-	refreshToday  func()
+	db           *storage.DB
+	bot          *notify.Bot
+	checkinMu    *sync.Mutex
+	refreshToday func()
 }
 
 func (r *liveCheckinRouter) SaveAnswer(date, source, answer string, answeredAt time.Time) (string, error) {
+	if r.checkinMu != nil {
+		r.checkinMu.Lock()
+		defer r.checkinMu.Unlock()
+	}
 	status, err := r.db.SaveCheckinAnswer(date, source, answer, answeredAt)
 	if err == nil {
 		if evidenceErr := r.db.RecordWakeCheckinEvidence(date, answeredAt); evidenceErr != nil {
@@ -968,218 +963,82 @@ func (r *liveCheckinRouter) SaveWakeFeedbackAnswer(date, response string, answer
 func (r *liveCheckinRouter) AnswerCallbackQuery(qid, text string) error {
 	return r.bot.AnswerCallbackQuery(qid, text)
 }
-func (r *liveCheckinRouter) TriggerReport(_ string) {
-	if r.triggerReport != nil {
-		go r.triggerReport()
-	}
-}
 
-// makeReportTrigger captures the dependencies needed to (re)run the
-// morning trigger for a tenant. Used by the webhook router to fire
-// the report async after a successful in-time answer.
-//
-// Acquires the same per-tenant sendMu as the scheduler + ingest paths
-// so the three-way race (webhook answer arriving while scheduler is
-// mid-tick while a fresh ingest fires) can't produce duplicate sends.
-// Sendmu nil → no other senders exist (legacy single-mode), original
-// lock-free behaviour preserved.
-func makeReportTrigger(mgr *tenants.Manager, reg *registry.Registry, schema string, defaults storage.NotifyConfig) func() {
+// makeMorningTrigger also serves the scheduled retry path. AI generation is
+// asynchronous, but report delivery waits for a matching cache on later ticks.
+// Check-ins remain independent from the report AI budget.
+func makeMorningTrigger(ctx context.Context, db *storage.DB, sendMu *sync.Mutex, mgr *tenants.Manager, reg *registry.Registry, schema string, defaults storage.NotifyConfig) func() {
 	return func() {
-		db, err := mgr.GetOrCreate(context.Background(), schema)
-		if err != nil || db == nil {
+		if ctx.Err() != nil {
 			return
 		}
-		scfg := db.GetNotifyConfig(defaults)
-		if !scfg.Enabled() {
-			return
-		}
-		loc := time.Local
-		if l, lerr := time.LoadLocation(scfg.Timezone); lerr == nil && scfg.Timezone != "" {
-			loc = l
-		}
-		today := time.Now().In(loc).Format("2006-01-02")
-		ncfg := buildNotifyCfg(db, scfg)
-		bot := notify.NewBot(ncfg.Token, ncfg.ChatID)
-
-		sendMu := mgr.MorningSendMuFor(schema)
-		if sendMu != nil {
-			sendMu.Lock()
-		}
-		sentReport := false
-		if db.HasSentMorningReport(today) {
-			if sendMu != nil {
-				sendMu.Unlock()
-			}
-			return
-		}
-		ncfg.AIConfig = db.GetAIConfig(mgr.AIDefaultsFor(context.Background(), schema))
-		sent, reason, err := notify.SendMorningSmart(bot, db, ncfg, false)
-		if err != nil {
-			if sendMu != nil {
-				sendMu.Unlock()
-			}
-			log.Printf("checkin-trigger: send: %v", err)
-			return
-		}
-		if sent {
-			if perr := db.MarkMorningReportSent(today); perr != nil {
-				log.Printf("checkin-trigger: mark sent: %v", perr)
-			}
-			sentReport = true
-		}
-		if sendMu != nil {
-			sendMu.Unlock()
-		}
-		if sentReport {
-			now := time.Now().In(loc)
-			if !trySendWakeFeedbackAfterMorning(bot, db, ncfg, today, now, morningCheckinEnabled(reg)) {
-				trySendContextPromptAfterMorning(bot, db, ncfg, today, now)
-			}
-			log.Printf("checkin-trigger: sent (reason=%s) for %s", reason, today)
-		}
-	}
-}
-
-func makeMorningTrigger(ctx context.Context, db *storage.DB, sendMu *sync.Mutex, mgr *tenants.Manager, reg *registry.Registry, schema string, notifyDefaults storage.NotifyConfig) func() {
-	return func() {
-		// AIDefaultsFor on each tick so the admin's installation-wide
-		// AI provider config is honoured even if it changed after process start.
-		aiDefaults := mgr.AIDefaultsFor(context.Background(), schema)
-		aiCfg := db.GetAIConfig(aiDefaults)
-		if !aiCfg.Enabled() {
-			return
-		}
-		cfg := db.GetNotifyConfig(notifyDefaults)
-		loc := time.Local
-		if cfg.Timezone != "" {
-			if l, err := time.LoadLocation(cfg.Timezone); err == nil {
-				loc = l
-			}
-		}
-		now := time.Now().In(loc)
-		today := now.Format("2006-01-02")
-
-		if now.Hour() < 5 {
-			return
-		}
-		if db.HasSentMorningReport(today) {
-			return
-		}
-		if insight := ensureTodayAIInsight(ctx, db, aiCfg, cfg.Lang); insight == "" {
-			log.Println("morning trigger: AI insight unavailable, aborting")
-			return
-		}
-
+		cfg := db.GetNotifyConfig(defaults)
 		if !cfg.Enabled() {
 			return
 		}
 		ncfg := buildNotifyCfg(db, cfg)
-		ncfg.AIConfig = aiCfg
-		bot := notify.NewBot(ncfg.Token, ncfg.ChatID)
-
-		// Route through the same check-in gate as the scheduler so an
-		// ingest-driven send doesn't bypass the subjective prompt path.
-		// Single-shot: if the gate picks Wait, we return and let the
-		// next ingest (or the scheduler at morning_hour) retry. Cap is
-		// notify.EffectiveMorningCap — honours row.ExpiresAt over a freshly-
-		// floored cap so an ingest-saved prompt deadline isn't silently
-		// extended on later ticks.
-		wakeStatus, wakeErr := db.ComputeMorningWakeStatus(today, loc, now)
-		if wakeErr != nil {
-			log.Printf("morning trigger: wake detection: %v", wakeErr)
-		}
-		settled := wakeErr == nil && wakeStatus.Ready
-		row, rerr := db.GetTodayCheckin(today, storage.CheckinSourceTelegram)
-		if rerr != nil {
-			log.Printf("morning trigger: read checkin: %v", rerr)
-			row = nil
-		}
-		cap := notify.EffectiveMorningCap(ncfg.MorningCapTime(now), row)
-		checkinEnabled := morningCheckinEnabled(reg)
-
-		inputs := notify.MorningGateInputs{
-			Now:            now,
-			Cap:            cap,
-			WakeReady:      settled,
-			HasCheckin:     row != nil,
-			CheckinEnabled: checkinEnabled,
-		}
-		if row != nil {
-			inputs.CheckinStatus = row.Status
-		}
-		action := notify.DecideMorningAction(inputs)
-		log.Printf("morning trigger: action=%s wake_ready=%v wake_reason=%s wake_confidence=%s checkin_status=%q", action, settled, wakeStatus.Reason, wakeStatus.Confidence, inputs.CheckinStatus)
-
-		switch action {
-		case notify.MorningActionNoop, notify.MorningActionWait:
+		loc := reportTimezone(ncfg)
+		now := time.Now().In(loc)
+		if now.Hour() < 5 {
 			return
-
-		case notify.MorningActionPrompt:
-			// Serialise prompt sends across concurrent ingest goroutines
-			// (multiple POST /health within seconds) and with the
-			// scheduler. SendCheckinPrompt POSTs to Telegram BEFORE the
-			// SaveCheckinPrompted upsert, so a parallel goroutine that
-			// also read row==nil would dup the Telegram message before
-			// either save commits. Re-read inside the lock to drop the
-			// loser of the race.
-			sendMu.Lock()
-			defer sendMu.Unlock()
-			if r2, _ := db.GetTodayCheckin(today, storage.CheckinSourceTelegram); r2 != nil {
-				log.Println("morning trigger: prompt already sent by other path, skipping")
-				return
-			}
-			if err := notify.SendCheckinPrompt(bot, db, ncfg.Lang, today, now, cap); err != nil {
-				log.Printf("morning trigger: prompt: %v", err)
-				return
-			}
-			log.Printf("morning trigger: check-in prompt sent for %s", today)
-			return
-
-		case notify.MorningActionExpireAndForce:
-			if _, err := db.ExpireCheckin(today, storage.CheckinSourceTelegram, now); err != nil {
-				log.Printf("morning trigger: expire checkin: %v", err)
-			}
-			fallthrough
-
-		case notify.MorningActionForce, notify.MorningActionSendReport:
-			force := action == notify.MorningActionForce || action == notify.MorningActionExpireAndForce
-			// Critical section: serialise the HasSent re-check + Send +
-			// MarkSent triple with the scheduler so the two paths can't
-			// both observe HasSent=false in the narrow window between
-			// the outer check and the actual Telegram POST.
-			sendMu.Lock()
-			if db.HasSentMorningReport(today) {
-				sendMu.Unlock()
-				return
-			}
-			sent, reason, err := notify.SendMorningSmartOpts(bot, db, ncfg, notify.MorningSendOpts{
-				Force:          force,
-				CheckinExpired: action == notify.MorningActionExpireAndForce,
-			})
+		}
+		today := now.Format("2006-01-02")
+		bot := notify.NewBot(cfg.Token, cfg.ChatID)
+		reportSent := db.HasSentMorningReport(today)
+		eligible := reportSent
+		if !reportSent {
+			wake, err := db.ComputeMorningWakeStatus(today, loc, now)
 			if err != nil {
-				sendMu.Unlock()
-				log.Printf("morning trigger: send telegram: %v", err)
-				return
+				log.Printf("morning report: wake detection: %v", err)
 			}
-			if !sent {
-				sendMu.Unlock()
-				log.Printf("morning trigger: deferring — %s", reason)
-				return
+			action := notify.DecideMorningAction(notify.MorningGateInputs{Now: now, Cap: ncfg.MorningCapTime(now), WakeReady: err == nil && wake.Ready})
+			eligible = action == notify.MorningActionForce || action == notify.MorningActionSendReport
+
+			ncfg.AIConfig = db.GetAIConfig(mgr.AIDefaultsFor(ctx, schema))
+			if morningAIShouldPrewarm(ncfg, now, eligible) {
+				db.EnsureTodayAIInsightAsyncContext(ctx, ncfg.AIConfig, cfg.Lang)
 			}
-			if err := db.MarkMorningReportSent(today); err != nil {
-				log.Printf("morning trigger: mark sent: %v", err)
+			if eligible {
+				deadline := morningAIReportDeadline(db, cfg.Lang, today, now)
+				runMorningReportAttempt(sendMu,
+					func() bool { return db.HasSentMorningReport(today) },
+					func() (bool, string, error) {
+						ready, failed := false, false
+						if ncfg.AIConfig.Enabled() {
+							briefing, err := db.GetHealthBriefing(cfg.Lang)
+							if err != nil {
+								return false, "evidence_error", err
+							}
+							_, blocks, generationFailed, err := db.MorningReportAIState(ctx, ncfg.AIConfig, cfg.Lang, today, briefing)
+							if err != nil {
+								log.Printf("morning report: AI cache evidence unavailable: %v", err)
+							}
+							ready = err == nil && len(blocks) != 0
+							failed = err == nil && generationFailed
+						}
+						gateNow := time.Now().In(loc)
+						if ncfg.AIConfig.Enabled() {
+							log.Printf("morning report: AI gate ready=%v failed=%v wait_elapsed=%s wait_expired=%v", ready, failed, gateNow.Sub(deadline.Add(-morningAIWaitBudget)).Round(time.Millisecond), !gateNow.Before(deadline))
+						}
+						if !morningAIAllowsReport(ncfg.AIConfig.Enabled(), ready, failed, gateNow, deadline) {
+							return false, "ai_pending", nil
+						}
+						if ncfg.AIConfig.Enabled() && !ready {
+							log.Printf("morning report: AI fallback failed=%v wait_expired=%v", failed, !time.Now().Before(deadline))
+						}
+						return notify.SendMorningSmartOpts(bot, db, ncfg, notify.MorningSendOpts{Force: action == notify.MorningActionForce, RequireAI: ready})
+					},
+					func() error { return db.MarkMorningReportSent(today) })
 			}
-			sendMu.Unlock()
-			if !trySendWakeFeedbackAfterMorning(bot, db, ncfg, today, now, morningCheckinEnabled(reg)) {
-				trySendContextPromptAfterMorning(bot, db, ncfg, today, now)
-			}
-			log.Printf("morning trigger: sent (reason=%s, forced=%v, action=%s)", reason, force, action)
 		}
+		// A failed report must not prevent the independent question. Conversely,
+		// check-in errors cannot affect a report that has already been attempted.
+		runTenantCheckinCycle(db, mgr, reg, schema, bot, ncfg, time.Now().In(loc), eligible)
 	}
 }
 
-// morningCheckinEnabled mirrors the feature-flag check in
-// runMorningSmartRetry exactly. Source of truth depends on whether the
+// morningCheckinEnabled follows the same availability contract as the
+// webhook registrar. Source of truth depends on whether the
 // registry is initialised: when reg != nil, health_registry.global_settings
 // is authoritative (lazy-init at startup writes there); otherwise env
 // vars are the only source the webhook registrar could have used.
@@ -1353,203 +1212,13 @@ func reportScheduleSignature(cfg notify.Config) reportSchedule {
 	}
 }
 
-// runMorningSmartRetry implements the scheduler-side smart-retry loop. It is
-// entered at the configured morning hour and ticks every 15 minutes until
-// either the report has been sent (by this loop, or by the opportunistic
-// ingest trigger) or the cap time is reached. At the cap, it force-sends with
-// a stale-data banner so we never go a day without a morning report.
+// runMorningSmartRetry attempts the scheduled factual report once. The minute
+// lifecycle owns subsequent retries without holding up evening scheduling.
 func runMorningSmartRetry(ctx context.Context, bot *notify.Bot, db *storage.DB, mgr *tenants.Manager, reg *registry.Registry, schema string, ncfg notify.Config, baseURL string) {
-	const tick = 15 * time.Minute
-
-	loc := time.Local
-	if ncfg.Timezone != "" {
-		if l, err := time.LoadLocation(ncfg.Timezone); err == nil {
-			loc = l
-		}
-	}
-	// sendMu is the per-tenant TOCTOU lock shared with the ingest
-	// trigger. nil for tenants without a registered mutex — those
-	// retain the original lock-free behaviour (single-sender path
-	// only). Both code paths grab it before the HasSent re-check.
-	sendMu := mgr.MorningSendMuFor(schema)
-	// entryCap is computed ONCE at scheduler entry and reused across
-	// every tick. Per-tick MorningCapTime would slide forward each
-	// iteration when no checkin row exists (MinPromptWindow floor
-	// always pushes cap = now + 60min), so the force-send branch
-	// would never see past=true and the loop would never terminate
-	// on watch-off days. Fixed entry cap lets the gate hit past=true
-	// at exactly the moment the user-promised deadline elapses.
-	// Pinned by codex review on PR #124.
-	entryCap := ncfg.MorningCapTime(time.Now())
-	log.Printf("morning smart-retry: window until %s", entryCap.Format("15:04"))
-
-	// Proactive notifications — registered at init() time by each
-	// rule's own file (weekly digest, EnergyBank backfill nudge,
-	// future illness / HRV crash / streak rules). MaybeFireAll
-	// walks the registry, honours per-rule cadence + eligibility,
-	// and never bubbles errors so a misbehaving rule can't break
-	// the morning report path. Sent before the morning report so
-	// each lands in its own Telegram notification rather than
-	// mingling with sleep numbers.
-	//
-	// See internal/notify/proactive.go for the registration
-	// contract and the migration story (LegacyKey field is the
-	// "don't re-fire today" lifeline for pre-framework data).
+	// The independent minute loop owns retries and reminders even after this
+	// scheduled invocation returns or the daily report has already been sent.
+	makeMorningTrigger(ctx, db, mgr.MorningSendMuFor(schema), mgr, reg, schema, mgr.NotifyDefaultsFor(schema))()
 	notify.MaybeFireAll(bot, db, ncfg, baseURL)
-
-	for {
-		today := time.Now().In(loc).Format("2006-01-02")
-		if db.HasSentMorningReport(today) {
-			log.Println("morning smart-retry: already sent (likely by ingest trigger or webhook), exiting loop")
-			return
-		}
-
-		// Try to (re)generate AI insight on each tick — cheap if cached.
-		// Resolve AI defaults fresh per-tick so admin-managed global
-		// config is honoured even when it was set mid-day.
-		ncfg.AIConfig = db.GetAIConfig(mgr.AIDefaultsFor(ctx, schema))
-		db.EnsureTodayAIInsightContext(ctx, ncfg.AIConfig, ncfg.Lang)
-
-		// Resolve all the per-tick state the gate consults. The check-in
-		// row lookup tolerates "no row" via GetTodayCheckin returning
-		// (nil, nil); any DB error is logged and treated as "no row" so
-		// the scheduler doesn't get stuck.
-		now := time.Now()
-		wakeStatus, wakeErr := db.ComputeMorningWakeStatus(today, loc, now)
-		if wakeErr != nil {
-			log.Printf("morning smart-retry: wake detection: %v", wakeErr)
-		}
-		settled := wakeErr == nil && wakeStatus.Ready
-		row, rerr := db.GetTodayCheckin(today, storage.CheckinSourceTelegram)
-		if rerr != nil {
-			log.Printf("morning smart-retry: read checkin: %v", rerr)
-			row = nil
-		}
-		// Per-tick cap: prefers row.ExpiresAt over the FIXED entryCap
-		// (computed once at scheduler entry, never recomputed). The
-		// nil-row case falls through to entryCap so the force-send
-		// branch can actually fire when sleep never settles — a per-
-		// tick MorningCapTime call would re-floor cap to now+60min
-		// every iteration, deferring the loop indefinitely. See
-		// notify.EffectiveMorningCap.
-		effectiveCap := notify.EffectiveMorningCap(entryCap, row)
-		checkinEnabled := morningCheckinEnabled(reg)
-
-		inputs := notify.MorningGateInputs{
-			Now:            now,
-			Cap:            effectiveCap,
-			WakeReady:      settled,
-			HasCheckin:     row != nil,
-			CheckinEnabled: checkinEnabled,
-		}
-		if row != nil {
-			inputs.CheckinStatus = row.Status
-		}
-		action := notify.DecideMorningAction(inputs)
-		log.Printf("morning smart-retry: action=%s wake_ready=%v wake_reason=%s wake_confidence=%s checkin_status=%q", action, settled, wakeStatus.Reason, wakeStatus.Confidence, inputs.CheckinStatus)
-
-		switch action {
-		case notify.MorningActionNoop:
-			return
-
-		case notify.MorningActionWait:
-			time.Sleep(tick)
-			continue
-
-		case notify.MorningActionPrompt:
-			// Serialise prompt sends with the ingest trigger so we
-			// don't deliver two Telegram prompts when concurrent
-			// goroutines both saw row==nil. Re-read the row INSIDE
-			// the mutex; SendCheckinPrompt POSTs to Telegram before
-			// SaveCheckinPrompted writes the row, so without the
-			// double-check the second sender would also POST before
-			// the first sender's SaveCheckinPrompted commits.
-			if sendMu != nil {
-				sendMu.Lock()
-			}
-			r2, _ := db.GetTodayCheckin(today, storage.CheckinSourceTelegram)
-			if r2 != nil {
-				if sendMu != nil {
-					sendMu.Unlock()
-				}
-				log.Println("morning smart-retry: prompt already sent by other path, skipping")
-				time.Sleep(tick)
-				continue
-			}
-			err := notify.SendCheckinPrompt(bot, db, ncfg.Lang, today, now, effectiveCap)
-			if sendMu != nil {
-				sendMu.Unlock()
-			}
-			if err != nil {
-				log.Printf("morning smart-retry: prompt: %v", err)
-			} else {
-				log.Printf("morning smart-retry: check-in prompt sent for %s", today)
-			}
-			time.Sleep(tick)
-			continue
-
-		case notify.MorningActionExpireAndForce:
-			if _, err := db.ExpireCheckin(today, storage.CheckinSourceTelegram, now); err != nil {
-				log.Printf("morning smart-retry: expire checkin: %v", err)
-			}
-			fallthrough
-
-		case notify.MorningActionForce, notify.MorningActionSendReport:
-			past := action == notify.MorningActionForce || action == notify.MorningActionExpireAndForce
-			// TOCTOU critical section: re-check HasSent inside the
-			// per-tenant mutex so the ingest goroutine can't slip a
-			// second send between the loop-top check and the actual
-			// Telegram POST. Manual lock/unlock (not defer) because
-			// the surrounding for-loop accumulates defers per iter.
-			// sendMu nil → single-sender legacy mode, skip locking.
-			if sendMu != nil {
-				sendMu.Lock()
-			}
-			alreadySent := db.HasSentMorningReport(today)
-			var sent bool
-			var reason string
-			var err error
-			if !alreadySent {
-				sent, reason, err = notify.SendMorningSmartOpts(bot, db, ncfg, notify.MorningSendOpts{
-					Force:          past,
-					CheckinExpired: action == notify.MorningActionExpireAndForce,
-				})
-				if err == nil && sent {
-					if perr := db.MarkMorningReportSent(today); perr != nil {
-						log.Printf("morning smart-retry: mark sent: %v", perr)
-					}
-				}
-			}
-			if sendMu != nil {
-				sendMu.Unlock()
-			}
-
-			if alreadySent {
-				log.Println("morning smart-retry: already sent by other path between tick start and lock, exiting")
-				return
-			}
-			if err != nil {
-				log.Printf("morning smart-retry: send error: %v", err)
-			}
-			if sent {
-				log.Printf("morning smart-retry: sent (reason=%s, forced=%v, action=%s)", reason, past, action)
-				now := time.Now().In(loc)
-				if !trySendWakeFeedbackAfterMorning(bot, db, ncfg, today, now, morningCheckinEnabled(reg)) {
-					trySendContextPromptAfterMorning(bot, db, ncfg, today, now)
-				}
-				return
-			}
-			if past {
-				// Force-send returned not-sent without an error — only happens when
-				// the bot is somehow disabled mid-loop. Bail to avoid spinning.
-				log.Printf("morning smart-retry: past cap but not sent (reason=%s), giving up", reason)
-				return
-			}
-			// SendMorningSmart deferred (e.g. sleep not yet settled). Retry next tick.
-			log.Printf("morning smart-retry: deferring (reason=%s), retry in %s", reason, tick)
-			time.Sleep(tick)
-		}
-	}
 }
 
 func trySendWakeFeedbackAfterMorning(bot *notify.Bot, db *storage.DB, cfg notify.Config, date string, now time.Time, webhookAvailable bool) bool {
@@ -1660,12 +1329,6 @@ func runDailyQualityScan(db *storage.DB, schema string, defaults storage.NotifyC
 			log.Printf("[%s] context prompt retention: pruned %d rows", schema, deleted)
 		}
 	}
-}
-
-// ensureTodayAIInsight is a thin wrapper around storage.DB.EnsureTodayAIInsight
-// kept for caller convenience.
-func ensureTodayAIInsight(ctx context.Context, db *storage.DB, aiDefaults storage.AIConfig, lang string) string {
-	return db.EnsureTodayAIInsightContext(ctx, db.GetAIConfig(aiDefaults), lang)
 }
 
 // migrateGlobalAIIfNeeded copies an admin tenant's per-tenant Gemini

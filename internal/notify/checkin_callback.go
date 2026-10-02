@@ -15,9 +15,8 @@ import (
 )
 
 // CheckinAnswerRouter is what the webhook calls after secret + tenant
-// validation succeed. Split from the bot abstraction so the same
-// interface can be backed by *storage.DB in production and a fake in
-// tests.
+// validation succeed. Saving an answer refreshes derived Today state through
+// its implementation; it does not trigger or revise a morning report.
 type CheckinAnswerRouter interface {
 	// SaveAnswer persists the answer and returns the resulting status
 	// ("answered" | "late_answered"). Implementation routes to the
@@ -26,10 +25,6 @@ type CheckinAnswerRouter interface {
 	// AnswerCallbackQuery acks the Telegram callback (kills the
 	// loading spinner on the button).
 	AnswerCallbackQuery(callbackQueryID, text string) error
-	// TriggerReport runs the morning-report send async after an
-	// in-time answer. No-op when the report has already been sent
-	// for today (idempotent on the tenant side).
-	TriggerReport(schema string)
 	// SaveContextPromptAnswer persists an opaque proactive-context
 	// answer. It does not trigger reports; answers only affect future
 	// caveats.
@@ -38,13 +33,12 @@ type CheckinAnswerRouter interface {
 }
 
 // CheckinTenant carries the per-tenant routing context the webhook
-// needs after a chat_id lookup. Schema is for logging + report
-// trigger; Lang drives the ack text; TodayInTZ is precomputed by the
+// needs after a chat_id lookup. Schema is for logging; Lang drives the ack
+// text; TodayInTZ is precomputed by the
 // TenantFinder so the webhook can reject stale callbacks (e.g. user
 // taps yesterday's already-answered button from chat history today —
-// without the date check we'd trigger today's report on a re-tap of
-// last morning's row). Router does the save + ack + (conditional)
-// re-trigger.
+// without the date check that could overwrite yesterday's saved answer.
+// Router does the save; Today refresh is owned by its implementation.
 type CheckinTenant struct {
 	Schema    string
 	Lang      string
@@ -68,8 +62,8 @@ type WebhookConfig struct {
 
 // NewWebhookHandler returns an http.HandlerFunc for the Telegram
 // callback. Path shape: `/api/telegram/webhook/<secret>`. The handler
-// is sync but fast: one store write + one outbound ack + an async
-// report trigger that returns immediately. Telegram needs the
+// is sync but fast: one store write + one outbound acknowledgement.
+// Telegram needs the
 // response within ~10s.
 func NewWebhookHandler(cfg WebhookConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -196,7 +190,7 @@ func NewWebhookHandler(cfg WebhookConfig) http.HandlerFunc {
 			fmt.Fprintln(w, "ignored: stale date")
 			return
 		}
-		status, err := tenant.Router.SaveAnswer(date, storage.CheckinSourceTelegram, answer, time.Now())
+		_, err = tenant.Router.SaveAnswer(date, storage.CheckinSourceTelegram, answer, time.Now())
 		if err != nil {
 			log.Printf("telegram webhook: save %s tenant=%s err=%v", answer, tenant.Schema, err)
 			// Best-effort ack with empty text to dismiss the Telegram
@@ -208,42 +202,18 @@ func NewWebhookHandler(cfg WebhookConfig) http.HandlerFunc {
 			fmt.Fprintln(w, "ignored: save error")
 			return
 		}
-		ack := ackText(tenant.Lang, answer, status)
+		ack := ackText(tenant.Lang)
 		if err := tenant.Router.AnswerCallbackQuery(upd.CallbackQuery.ID, ack); err != nil {
 			log.Printf("telegram webhook: ack: %v", err)
-		}
-		// Trigger today's report ONLY when the row transitioned to
-		// `answered` (in-time response to today's prompt). Late answers
-		// (status=late_answered) skip the trigger by design — the report
-		// already went out. Cross-day taps were rejected by the stale-
-		// date guard above, so any `date` reaching this point is today's
-		// in the tenant's TZ.
-		if status == storage.CheckinStatusAnswered {
-			tenant.Router.TriggerReport(tenant.Schema)
 		}
 		fmt.Fprintln(w, "ok")
 	}
 }
 
-// ackText picks the localised toast string for the Telegram callback
-// acknowledgement based on the answer and whether the save was in
-// time or post-hoc.
-func ackText(lang, answer, status string) string {
+// ackText confirms persistence identically for normal and late answers.
+func ackText(lang string) string {
 	strs := health.GetStrings(lang)
-	if status == storage.CheckinStatusLateAnswered {
-		return strs["checkin_ack_late"]
-	}
-	switch answer {
-	case storage.CheckinAnswerGreat:
-		return strs["checkin_ack_great"]
-	case storage.CheckinAnswerOK:
-		return strs["checkin_ack_ok"]
-	case storage.CheckinAnswerMeh:
-		return strs["checkin_ack_meh"]
-	case storage.CheckinAnswerSick:
-		return strs["checkin_ack_sick"]
-	}
-	return ""
+	return strs["checkin_ack_saved"]
 }
 
 func contextAckText(lang, status string) string {

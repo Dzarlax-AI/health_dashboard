@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -49,20 +50,23 @@ type wakeInputSegment struct {
 	Start      time.Time
 	Hours      float64
 	Source     string
+	Quality    string
 	ReceivedAt time.Time
 }
 
 type wakeEligibleSegment struct {
 	wakeInputSegment
-	End time.Time
+	End            time.Time
+	HashComponents []wakeInputSegment
 }
 
 type wakeCandidate struct {
-	Wake         time.Time
-	LatestIngest time.Time
-	Source       string
-	InputsHash   string
-	Signal       string
+	Wake             time.Time
+	LatestIngest     time.Time
+	IngestQuietSince time.Time
+	Source           string
+	InputsHash       string
+	Signal           string
 }
 
 type WakeBackfillResult struct {
@@ -104,23 +108,60 @@ func (s *DB) ComputeMorningWakeStatus(localDate string, loc *time.Location, now 
 	if loc == nil {
 		loc = time.UTC
 	}
-	candidate, ok, err := s.loadWakeCandidate(localDate, loc)
+	ctx, cancel := queryCtx()
+	defer cancel()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return MorningWakeStatus{Confidence: WakeConfidenceLow, Reason: "query_error"}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	// Serialize computations per tenant/date. The schema name scopes the
+	// transaction lock without adding a table or sharing state across tenants.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext(current_schema()), hashtext($1))`, "wake_time:"+localDate); err != nil {
+		return MorningWakeStatus{Confidence: WakeConfidenceLow, Reason: "query_error"}, err
+	}
+	// Re-read after taking the lock so a slower worker cannot persist a
+	// candidate captured before a newer computation for this date.
+	candidate, ok, err := loadWakeCandidate(ctx, tx, localDate, loc)
 	if err != nil {
 		return MorningWakeStatus{Confidence: WakeConfidenceLow, Reason: "query_error"}, err
 	}
 	if !ok {
+		if _, err := tx.Exec(ctx, `
+			UPDATE derived_metrics
+			   SET metadata = metadata || jsonb_build_object(
+				   'sleep_inputs_hash', '',
+				   'sleep_inputs_changed_at', GREATEST(
+					   COALESCE((metadata->>'sleep_inputs_changed_at')::timestamptz, $3), $3
+				   )
+			   )
+			 WHERE metric_name=$1 AND metric_date=$2
+		`, DerivedMetricWakeTime, localDate, now); err != nil {
+			return MorningWakeStatus{Confidence: WakeConfidenceLow, Reason: "query_error"}, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return MorningWakeStatus{Confidence: WakeConfidenceLow, Reason: "query_error"}, err
+		}
 		return MorningWakeStatus{Confidence: WakeConfidenceLow, Reason: "no_data"}, nil
 	}
-	steps, err := s.postWakeSteps(localDate, candidate.Wake, now)
+	previousHash, previousChangedAt, err := loadWakeInputClock(ctx, tx, localDate)
+	if err != nil {
+		return MorningWakeStatus{Confidence: WakeConfidenceLow, Reason: "query_error"}, err
+	}
+	candidate.IngestQuietSince = wakeInputChangedAt(candidate.InputsHash, previousHash, previousChangedAt, now)
+	steps, err := postWakeSteps(ctx, tx, localDate, candidate.Wake, now)
 	if err != nil {
 		return MorningWakeStatus{Confidence: WakeConfidenceLow, Reason: "steps_query_error"}, err
 	}
-	typicalMin, typicalOK, err := s.typicalDerivedWakeMinutes(localDate, 14, loc)
+	typicalMin, typicalOK, err := typicalDerivedWakeMinutes(ctx, tx, localDate, 14, loc)
 	if err != nil {
 		return MorningWakeStatus{Confidence: WakeConfidenceLow, Reason: "typical_query_error"}, err
 	}
 	status := evaluateMorningWake(candidate, now, steps, typicalMin, typicalOK, loc)
-	if err := s.saveWakeStatus(localDate, status, now); err != nil {
+	if err := saveWakeStatusTx(ctx, tx, localDate, status, now, candidate.IngestQuietSince); err != nil {
+		return status, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return status, err
 	}
 	return status, nil
@@ -178,15 +219,23 @@ func (s *DB) BackfillWakeTimes(from, to string, loc *time.Location, dryRun bool)
 }
 
 func (s *DB) loadWakeCandidate(localDate string, loc *time.Location) (wakeCandidate, bool, error) {
+	ctx, cancel := queryCtx()
+	defer cancel()
+	return loadWakeCandidate(ctx, s.pool, localDate, loc)
+}
+
+type wakeQueryer interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
+func loadWakeCandidate(ctx context.Context, queryer wakeQueryer, localDate string, loc *time.Location) (wakeCandidate, bool, error) {
 	targetDate, err := time.ParseInLocation("2006-01-02", localDate, loc)
 	if err != nil {
 		return wakeCandidate{}, false, fmt.Errorf("parse wake date: %w", err)
 	}
 	fromDate := targetDate.AddDate(0, 0, -1).Format("2006-01-02")
-	ctx, cancel := queryCtx()
-	defer cancel()
-	rows, err := s.pool.Query(ctx, `
-		SELECT metric_name, date, qty, source, received_at
+	rows, err := queryer.Query(ctx, `
+		SELECT metric_name, date, qty, source, quality, received_at
 		  FROM metric_points
 		 WHERE metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_unspecified','sleep_awake')
 		   AND quality='ok'
@@ -200,11 +249,11 @@ func (s *DB) loadWakeCandidate(localDate string, loc *time.Location) (wakeCandid
 	defer rows.Close()
 	var segments []wakeInputSegment
 	for rows.Next() {
-		var dateStr, source string
+		var dateStr, source, quality string
 		var hours float64
 		var receivedAt time.Time
 		var metric string
-		if err := rows.Scan(&metric, &dateStr, &hours, &source, &receivedAt); err != nil {
+		if err := rows.Scan(&metric, &dateStr, &hours, &source, &quality, &receivedAt); err != nil {
 			return wakeCandidate{}, false, err
 		}
 		start, err := parseMetricDate(dateStr)
@@ -216,6 +265,7 @@ func (s *DB) loadWakeCandidate(localDate string, loc *time.Location) (wakeCandid
 			Start:      start,
 			Hours:      hours,
 			Source:     source,
+			Quality:    quality,
 			ReceivedAt: receivedAt,
 		})
 	}
@@ -302,8 +352,15 @@ func selectWakeCandidate(segments []wakeInputSegment, localDate string, loc *tim
 		return wakeCandidate{}, false, nil
 	}
 	h := sha256.New()
+	fmt.Fprintf(h, "signal=%s\n", signal)
 	for _, segment := range selected {
-		fmt.Fprintf(h, "%s|%s|%.6f|%s\n", segment.Metric, segment.Start.UTC().Format(time.RFC3339Nano), segment.Hours, segment.Source)
+		components := segment.HashComponents
+		if len(components) == 0 {
+			components = []wakeInputSegment{segment.wakeInputSegment}
+		}
+		for _, component := range components {
+			fmt.Fprintf(h, "%s|%s|%.6f|%s|%s\n", component.Metric, component.Start.UTC().Format(time.RFC3339Nano), component.Hours, component.Source, component.Quality)
+		}
 	}
 	return wakeCandidate{
 		Wake:         wake,
@@ -336,6 +393,7 @@ func selectMidnightSummary(
 		asleepHours  float64
 		awakeHours   float64
 		latestIngest time.Time
+		components   []wakeInputSegment
 	}
 	groups := map[string]*summaryGroup{}
 	sourceTotals := map[string]float64{}
@@ -359,6 +417,7 @@ func selectMidnightSummary(
 		} else {
 			group.awakeHours += segment.Hours
 		}
+		group.components = append(group.components, segment)
 		if segment.ReceivedAt.After(group.latestIngest) {
 			group.latestIngest = segment.ReceivedAt
 		}
@@ -382,6 +441,12 @@ func selectMidnightSummary(
 	if best == nil {
 		return "", nil, false
 	}
+	sort.Slice(best.components, func(i, j int) bool {
+		if best.components[i].Start.Equal(best.components[j].Start) {
+			return best.components[i].Metric < best.components[j].Metric
+		}
+		return best.components[i].Start.Before(best.components[j].Start)
+	})
 	return source, []wakeEligibleSegment{{
 		wakeInputSegment: wakeInputSegment{
 			Metric:     "sleep_summary",
@@ -390,7 +455,8 @@ func selectMidnightSummary(
 			Source:     best.source,
 			ReceivedAt: best.latestIngest,
 		},
-		End: wake,
+		End:            wake,
+		HashComponents: best.components,
 	}}, true
 }
 
@@ -411,7 +477,11 @@ func evaluateMorningWake(candidate wakeCandidate, now time.Time, steps float64, 
 	if candidateAge < 0 || candidateAge < wakeActivityAge {
 		return status
 	}
-	if !candidate.LatestIngest.IsZero() && now.Sub(candidate.LatestIngest) < wakeIngestQuiet {
+	ingestQuietSince := candidate.IngestQuietSince
+	if ingestQuietSince.IsZero() {
+		ingestQuietSince = candidate.LatestIngest
+	}
+	if !ingestQuietSince.IsZero() && now.Sub(ingestQuietSince) < wakeIngestQuiet {
 		status.Reason = "still_writing"
 		return status
 	}
@@ -462,11 +532,11 @@ func evaluateMorningWake(candidate wakeCandidate, now time.Time, steps float64, 
 	return status
 }
 
-func (s *DB) postWakeSteps(localDate string, wake, now time.Time) (float64, error) {
-	ctx, cancel := queryCtx()
-	defer cancel()
+func postWakeSteps(ctx context.Context, queryer interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, localDate string, wake, now time.Time) (float64, error) {
 	var steps sql.NullFloat64
-	err := s.pool.QueryRow(ctx, `
+	err := queryer.QueryRow(ctx, `
 		WITH source_totals AS (
 			SELECT source, SUM(qty) AS source_total
 			  FROM metric_points
@@ -487,13 +557,11 @@ func (s *DB) postWakeSteps(localDate string, wake, now time.Time) (float64, erro
 	return steps.Float64, nil
 }
 
-func (s *DB) typicalDerivedWakeMinutes(beforeDate string, days int, loc *time.Location) (int, bool, error) {
+func typicalDerivedWakeMinutes(ctx context.Context, queryer wakeQueryer, beforeDate string, days int, loc *time.Location) (int, bool, error) {
 	if days <= 0 {
 		days = 14
 	}
-	ctx, cancel := queryCtx()
-	defer cancel()
-	rows, err := s.pool.Query(ctx, `
+	rows, err := queryer.Query(ctx, `
 		SELECT value_timestamp
 		  FROM derived_metrics
 		 WHERE metric_name=$1
@@ -523,6 +591,12 @@ func (s *DB) typicalDerivedWakeMinutes(beforeDate string, days int, loc *time.Lo
 	}
 	sort.Ints(minutes)
 	return minutes[len(minutes)/2], true, nil
+}
+
+func (s *DB) typicalDerivedWakeMinutes(beforeDate string, days int, loc *time.Location) (int, bool, error) {
+	ctx, cancel := queryCtx()
+	defer cancel()
+	return typicalDerivedWakeMinutes(ctx, s.pool, beforeDate, days, loc)
 }
 
 func (s *DB) saveWakeStatus(localDate string, status MorningWakeStatus, now time.Time) error {
@@ -564,28 +638,90 @@ func (s *DB) saveWakeStatus(localDate string, status MorningWakeStatus, now time
 	})
 }
 
+func loadWakeInputClock(ctx context.Context, tx pgx.Tx, localDate string) (string, time.Time, error) {
+	var metadata []byte
+	err := tx.QueryRow(ctx, `
+		SELECT metadata FROM derived_metrics
+		 WHERE metric_name=$1 AND metric_date=$2 FOR UPDATE
+	`, DerivedMetricWakeTime, localDate).Scan(&metadata)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", time.Time{}, nil
+	}
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	var marker struct {
+		Hash      string    `json:"sleep_inputs_hash"`
+		ChangedAt time.Time `json:"sleep_inputs_changed_at"`
+	}
+	if err := json.Unmarshal(metadata, &marker); err != nil {
+		return "", time.Time{}, nil
+	}
+	return marker.Hash, marker.ChangedAt, nil
+}
+
+func wakeInputChangedAt(currentHash, previousHash string, previousChangedAt, now time.Time) time.Time {
+	if currentHash != "" && currentHash == previousHash && !previousChangedAt.IsZero() {
+		return previousChangedAt
+	}
+	if !previousChangedAt.IsZero() && now.Before(previousChangedAt) {
+		return previousChangedAt
+	}
+	// Missing legacy markers intentionally start a fresh quiet window. This
+	// avoids treating an old receipt timestamp as proof that partial data is
+	// complete, while subsequent identical syncs preserve the clock.
+	return now
+}
+
+func saveWakeStatusTx(ctx context.Context, tx pgx.Tx, localDate string, status MorningWakeStatus, now, inputChangedAt time.Time) error {
+	if status.CandidateWake.IsZero() {
+		return nil
+	}
+	metadata, err := json.Marshal(map[string]any{
+		"confidence": status.Confidence, "reason": status.Reason,
+		"input_source": status.InputSource, "latest_ingest": status.LatestIngest,
+		"post_wake_steps": status.PostWakeSteps, "typical_wake_ok": status.TypicalWakeOK,
+		"signal": status.Signal, "sleep_inputs_hash": status.InputsHash,
+		"sleep_inputs_changed_at": inputChangedAt,
+	})
+	if err != nil {
+		return err
+	}
+	state := DerivedMetricStateProvisional
+	var finalizedAt *time.Time
+	if status.Ready {
+		state = DerivedMetricStateFinal
+		finalizedAt = &now
+	}
+	wake := status.CandidateWake
+	_, err = tx.Exec(ctx, `
+		INSERT INTO derived_metrics (
+			metric_name, metric_date, value_type, value_timestamp, unit,
+			state, formula_version, inputs_hash, calculated_at, finalized_at, metadata
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+		ON CONFLICT (metric_name, metric_date) DO UPDATE SET
+			value_timestamp=EXCLUDED.value_timestamp,
+			state=CASE WHEN derived_metrics.state='final' THEN derived_metrics.state ELSE EXCLUDED.state END,
+			formula_version=EXCLUDED.formula_version, inputs_hash=EXCLUDED.inputs_hash,
+			calculated_at=EXCLUDED.calculated_at,
+			finalized_at=COALESCE(derived_metrics.finalized_at, EXCLUDED.finalized_at),
+			metadata=derived_metrics.metadata || EXCLUDED.metadata
+	`, DerivedMetricWakeTime, localDate, DerivedValueTimestamp, wake, "timestamp", state,
+		WakeFormulaVersion, status.InputsHash, now, finalizedAt, json.RawMessage(metadata))
+	return err
+}
+
 // RecordWakeCheckinEvidence annotates the canonical wake candidate with the
 // time the user answered the existing morning check-in. The answer proves the
 // user was awake by that moment, but does not claim the candidate time itself
 // was exact.
 func (s *DB) RecordWakeCheckinEvidence(localDate string, answeredAt time.Time) error {
-	metric, err := s.GetDerivedMetric(DerivedMetricWakeTime, localDate)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
-	}
-	if err != nil || metric == nil {
-		return err
-	}
-	metadata := map[string]any{}
-	if len(metric.Metadata) != 0 {
-		_ = json.Unmarshal(metric.Metadata, &metadata)
-	}
-	metadata["subjective_checkin_answered_at"] = answeredAt
-	encoded, err := json.Marshal(metadata)
-	if err != nil {
-		return err
-	}
-	metric.Metadata = encoded
-	metric.MergeMetadata = true
-	return s.SaveDerivedMetric(*metric)
+	ctx, cancel := queryCtx()
+	defer cancel()
+	_, err := s.pool.Exec(ctx, `
+		UPDATE derived_metrics
+		   SET metadata = metadata || jsonb_build_object('subjective_checkin_answered_at', $3)
+		 WHERE metric_name=$1 AND metric_date=$2
+	`, DerivedMetricWakeTime, localDate, answeredAt.Format(time.RFC3339Nano))
+	return err
 }

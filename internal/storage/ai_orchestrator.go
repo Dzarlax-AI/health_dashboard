@@ -47,18 +47,11 @@ func (s *DB) EnsureTodayAIInsightContext(ctx context.Context, aiCfg AIConfig, la
 	}
 	today := time.Now().In(s.reportTZLocation()).Format("2006-01-02")
 	key := today + "|" + lang
-	failureKey := key + "|" + ai.HashForGeneration("", fingerprint)
 
 	if _, loaded := s.aiRegenInFlight.LoadOrStore(key, true); loaded {
 		return s.GetAIInsightCombined(today, lang)
 	}
 	defer s.aiRegenInFlight.Delete(key)
-
-	if v, ok := s.aiRegenLastFailAt.Load(failureKey); ok {
-		if t, ok := v.(time.Time); ok && time.Since(t) < aiRegenFailBackoff {
-			return s.GetAIInsightCombined(today, lang)
-		}
-	}
 
 	raw := s.GetRawMetrics()
 	if raw == nil {
@@ -70,7 +63,7 @@ func (s *DB) EnsureTodayAIInsightContext(ctx context.Context, aiCfg AIConfig, la
 		log.Printf("EnsureTodayAIInsight: briefing: %v", err)
 		return ""
 	}
-	evidence, err := s.morningInsightEvidence(ctx, briefing, raw, today)
+	evidence, err := s.morningInsightEvidence(ctx, briefing, raw, today, lang)
 	if err != nil {
 		log.Printf("EnsureTodayAIInsight: night evidence: %v", err)
 		return ""
@@ -81,6 +74,10 @@ func (s *DB) EnsureTodayAIInsightContext(ctx context.Context, aiCfg AIConfig, la
 		return ""
 	}
 	bundleHash := morningBundleHash(evidence, briefing, fingerprint)
+	failureKey := morningAIFailureKey(today, lang, bundleHash)
+	if s.morningAIRecentlyFailed(failureKey) {
+		return s.GetAIInsightCombined(today, lang)
+	}
 	if aiBundleCacheComplete(s.GetAIBlocksFull(today, lang), bundleHash) {
 		s.aiRegenLastFailAt.Delete(failureKey)
 		return s.GetAIInsightCombined(today, lang)
@@ -97,12 +94,12 @@ func (s *DB) EnsureTodayAIInsightContext(ctx context.Context, aiCfg AIConfig, la
 	}
 	if err != nil {
 		log.Printf("EnsureTodayAIInsight: provider=%s block=BUNDLE: %v", aiCfg.Provider, err)
-		s.aiRegenLastFailAt.Store(failureKey, time.Now())
+		s.recordMorningAIFailure(failureKey)
 		return s.GetAIInsightCombined(today, lang)
 	}
 	if err := s.SaveAIBundle(today, lang, generated.Blocks, bundleHash); err != nil {
 		log.Printf("EnsureTodayAIInsight: save bundle: %v", err)
-		s.aiRegenLastFailAt.Store(failureKey, time.Now())
+		s.recordMorningAIFailure(failureKey)
 		return s.GetAIInsightCombined(today, lang)
 	}
 	s.aiRegenLastFailAt.Delete(failureKey)
@@ -127,6 +124,11 @@ func aiBundleCacheComplete(full map[string]*AIBlock, expectedHash string) bool {
 // (best-effort signal for logging; not authoritative because the inner
 // gate races with this fast-path Load).
 func (s *DB) EnsureTodayAIInsightAsync(aiCfg AIConfig, lang string) bool {
+	return s.EnsureTodayAIInsightAsyncContext(context.Background(), aiCfg, lang)
+}
+
+// EnsureTodayAIInsightAsyncContext bounds scheduler generation and follows shutdown.
+func (s *DB) EnsureTodayAIInsightAsyncContext(ctx context.Context, aiCfg AIConfig, lang string) bool {
 	if !aiCfg.Enabled() {
 		return false
 	}
@@ -134,7 +136,11 @@ func (s *DB) EnsureTodayAIInsightAsync(aiCfg AIConfig, lang string) bool {
 	if _, ok := s.aiRegenInFlight.Load(key); ok {
 		return false
 	}
-	go s.EnsureTodayAIInsight(aiCfg, lang)
+	go func() {
+		generationCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+		defer cancel()
+		s.EnsureTodayAIInsightContext(generationCtx, aiCfg, lang)
+	}()
 	return true
 }
 
@@ -145,4 +151,32 @@ func (s *DB) AIRegenInFlight(lang string) bool {
 	key := time.Now().In(s.reportTZLocation()).Format("2006-01-02") + "|" + lang
 	_, ok := s.aiRegenInFlight.Load(key)
 	return ok
+}
+
+// morningAIFailureKey binds provider backoff to the exact current evidence and
+// generation fingerprint, both already included in bundleHash.
+func morningAIFailureKey(date, lang, bundleHash string) string {
+	return date + "|" + lang + "|" + bundleHash
+}
+
+func (s *DB) morningAIRecentlyFailed(key string) bool {
+	value, ok := s.aiRegenLastFailAt.Load(key)
+	if !ok {
+		return false
+	}
+	failedAt, ok := value.(time.Time)
+	return ok && time.Since(failedAt) < aiRegenFailBackoff
+}
+
+// Expired failures must not accumulate for every changed input packet.
+func (s *DB) recordMorningAIFailure(key string) {
+	now := time.Now()
+	s.aiRegenLastFailAt.Range(func(k, value any) bool {
+		failedAt, ok := value.(time.Time)
+		if !ok || now.Sub(failedAt) >= aiRegenFailBackoff {
+			s.aiRegenLastFailAt.Delete(k)
+		}
+		return true
+	})
+	s.aiRegenLastFailAt.Store(key, now)
 }

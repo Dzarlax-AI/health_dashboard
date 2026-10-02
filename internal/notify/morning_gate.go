@@ -6,36 +6,48 @@ import (
 	"health-receiver/internal/storage"
 )
 
-// EffectiveMorningCap honours an outstanding prompt's stored ExpiresAt
-// over a freshly-computed MorningCapTime. Without this preference an
-// ingest-driven prompt sent before morning_hour saves expires_at at
-// the original (unfloored) cap; a later scheduler tick recomputes
-// cap, MorningCapTime's floor pushes it to now+MinPromptWindow, and
-// the gate sees the prompted row as "before cap" instead of expiring
-// it on schedule. Callers pass the row that GetTodayCheckin returned
-// — nil or non-prompted rows fall through to the freshly-computed
-// cap unchanged. Pinned by TestEffectiveMorningCap.
-func EffectiveMorningCap(computed time.Time, row *storage.CheckinRow) time.Time {
-	if row == nil || row.Status != storage.CheckinStatusPrompted {
-		return computed
+// CheckinPromptExpiry is the primary answer-window boundary for every new
+// prompt. The report scheduler has its own deadline and cannot change this.
+func CheckinPromptExpiry(now time.Time) time.Time { return now.Add(2 * time.Hour) }
+
+// CheckinPending reports whether an unanswered prompt is still inside its
+// original two-hour window. Expired legacy rows suppress ancillary prompts
+// only until this window ends.
+func CheckinPending(row *storage.CheckinRow, now time.Time) bool {
+	if row == nil || row.PromptedAt.IsZero() || now.Before(row.PromptedAt) || !now.Before(CheckinPromptExpiry(row.PromptedAt)) {
+		return false
 	}
-	if row.ExpiresAt.IsZero() {
-		return computed
+	if !row.AnsweredAt.IsZero() || row.Answer != "" {
+		return false
 	}
-	return row.ExpiresAt
+	return row.Status == storage.CheckinStatusPrompted || row.Status == storage.CheckinStatusExpired
 }
 
-// MorningAction enumerates the scheduler decisions for one tick of
-// runMorningSmartRetry.
+// CheckinReminderDue selects the one reminder window: at least 60 minutes,
+// no more than four hours after the original prompt, on that same local day,
+// and before 20:00. Expired rows remain eligible when they are unanswered.
+func CheckinReminderDue(row *storage.CheckinRow, now time.Time, loc *time.Location) bool {
+	if row == nil || row.PromptedAt.IsZero() || loc == nil || row.Date == "" ||
+		!row.AnsweredAt.IsZero() || row.Answer != "" ||
+		(row.Status != storage.CheckinStatusPrompted && row.Status != storage.CheckinStatusExpired) {
+		return false
+	}
+	localNow := now.In(loc)
+	if row.Date != localNow.Format("2006-01-02") || row.PromptedAt.In(loc).Format("2006-01-02") != row.Date || localNow.Hour() >= 20 {
+		return false
+	}
+	elapsed := now.Sub(row.PromptedAt)
+	return elapsed >= time.Hour && elapsed <= 4*time.Hour
+}
+
+// MorningAction enumerates the report scheduler decisions for one tick.
 type MorningAction string
 
 const (
-	MorningActionNoop           MorningAction = "noop"             // report already sent today
-	MorningActionWait           MorningAction = "wait"             // try again next tick
-	MorningActionPrompt         MorningAction = "prompt"           // send check-in prompt (first time)
-	MorningActionSendReport     MorningAction = "send_report"      // user answered, send report now
-	MorningActionExpireAndForce MorningAction = "expire_and_force" // cap reached, mark expired, force-send
-	MorningActionForce          MorningAction = "force"            // cap reached, no check-in row, force-send
+	MorningActionNoop       MorningAction = "noop"        // report already sent today
+	MorningActionWait       MorningAction = "wait"        // try again next tick
+	MorningActionSendReport MorningAction = "send_report" // wake data ready, send report
+	MorningActionForce      MorningAction = "force"       // cap reached, force-send report
 )
 
 // MorningGateInputs carries the per-tick state DecideMorningAction
@@ -45,76 +57,26 @@ type MorningGateInputs struct {
 	Now               time.Time
 	Cap               time.Time
 	WakeReady         bool
-	HasCheckin        bool
-	CheckinStatus     string
+	HasCheckin        bool   // deprecated, ignored; retained for call-site compatibility
+	CheckinStatus     string // deprecated, ignored; retained for call-site compatibility
 	ReportAlreadySent bool
 
-	// CheckinEnabled is the feature-flag input. False = the webhook is
-	// not registered (no TELEGRAM_WEBHOOK_SECRET in env), so the user
-	// cannot answer a prompt. In that case the gate must bypass the
-	// prompt+wait path entirely and behave exactly like the pre-PR
-	// scheduler: try SendMorningSmart, force-send at cap. Otherwise we
-	// would prompt every morning and never get an answer, blocking the
-	// report until cap on every day.
-	CheckinEnabled bool
+	CheckinEnabled bool // deprecated, ignored; retained for call-site compatibility
 }
 
-// DecideMorningAction is the pure decision table. Lives separately
-// from the scheduler loop so the policy stays auditable and tests
-// don't need a fake scheduler.
-//
-// Policy:
-//   - report already sent → noop
-//   - past cap:
-//   - prompt is still in `prompted` state → expire + force
-//   - prompt was answered (even late) → send report normally
-//   - no prompt row → force without expire
-//   - before cap:
-//   - wake detector not ready → wait (don't prompt yet)
-//   - no checkin yet → prompt
-//   - checkin answered or late_answered → send report
-//   - checkin still in `prompted` → wait
+// DecideMorningAction keeps report delivery independent from check-in.
+// The check-in-related fields remain in MorningGateInputs for source
+// compatibility with scheduler callers during integration, but do not
+// affect this decision.
 func DecideMorningAction(in MorningGateInputs) MorningAction {
 	if in.ReportAlreadySent {
 		return MorningActionNoop
 	}
-	past := !in.Now.Before(in.Cap)
-
-	// Feature-flag bypass: when check-in is disabled we mirror the
-	// pre-PR scheduler exactly — past cap → force-send, before cap →
-	// SendReport (which itself defers until the wake detector is ready).
-	if !in.CheckinEnabled {
-		if past {
-			return MorningActionForce
-		}
-		return MorningActionSendReport
-	}
-
-	if past {
-		// At/after cap. The check-in answer state determines whether
-		// we send normally or force, and whether expire fires first.
-		if in.HasCheckin {
-			switch in.CheckinStatus {
-			case storage.CheckinStatusAnswered, storage.CheckinStatusLateAnswered:
-				return MorningActionSendReport
-			case storage.CheckinStatusPrompted:
-				return MorningActionExpireAndForce
-			}
-		}
+	if !in.Cap.IsZero() && !in.Now.Before(in.Cap) {
 		return MorningActionForce
 	}
-
-	// Before cap.
 	if !in.WakeReady {
 		return MorningActionWait
 	}
-	if !in.HasCheckin {
-		return MorningActionPrompt
-	}
-	if in.CheckinStatus == storage.CheckinStatusAnswered ||
-		in.CheckinStatus == storage.CheckinStatusLateAnswered {
-		return MorningActionSendReport
-	}
-	// prompted, before cap → keep waiting.
-	return MorningActionWait
+	return MorningActionSendReport
 }

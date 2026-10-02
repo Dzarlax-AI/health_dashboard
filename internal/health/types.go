@@ -101,17 +101,31 @@ type DailyHealthMetrics struct {
 // server policy before the model is called; the model may explain them but
 // never replace them.
 type MorningInsightEvidence struct {
-	NightSleep    *MorningReportSleep     `json:"night_sleep,omitempty"`
-	Date          string                  `json:"date"`
-	Verdict       string                  `json:"verdict"`
-	VerdictLabel  string                  `json:"verdict_label"`
-	VerdictReason string                  `json:"verdict_reason"`
-	Action        string                  `json:"action"`
-	Reasons       []MorningInsightReason  `json:"reasons"`
-	Sections      []MorningInsightSection `json:"sections"`
-	Daily         []DailyHealthMetrics    `json:"daily"`
-	EnergyBank    *EnergyBank             `json:"energy_bank,omitempty"`
-	Readiness     MorningReadinessContext `json:"readiness"`
+	NightSleep         *MorningReportSleep               `json:"night_sleep,omitempty"`
+	PreliminaryOptions *PreliminaryMorningInsightOptions `json:"preliminary_explanations,omitempty"`
+	Date               string                            `json:"date"`
+	Verdict            string                            `json:"verdict"`
+	VerdictLabel       string                            `json:"verdict_label"`
+	VerdictReason      string                            `json:"verdict_reason"`
+	Action             string                            `json:"action"`
+	Reasons            []MorningInsightReason            `json:"reasons"`
+	Sections           []MorningInsightSection           `json:"sections"`
+	Daily              []DailyHealthMetrics              `json:"daily"`
+	EnergyBank         *EnergyBank                       `json:"energy_bank,omitempty"`
+	Readiness          MorningReadinessContext           `json:"readiness"`
+}
+
+// PreliminaryMorningInsightOptions are server-authored statements the AI may
+// select while the current sleep record is still preliminary. The provider
+// returns only an ID; persistence uses the matching server text.
+type PreliminaryMorningInsightOptions struct {
+	Activity []MorningInsightOption `json:"activity"`
+	Recovery []MorningInsightOption `json:"recovery"`
+}
+
+type MorningInsightOption struct {
+	ID   string `json:"id"`
+	Text string `json:"text"`
 }
 
 // MorningInsightSection preserves the localized rule-based section result
