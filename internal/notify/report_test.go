@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -941,5 +942,27 @@ func TestMorningPreliminarySleepExplanationIsLocalizedAndGated(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestMorningOutlierHasDeterministicLimitationInBothFormats(t *testing.T) {
+	loc, _ := time.LoadLocation("UTC")
+	briefing := sampleBriefing()
+	hours, baseline := 10.5, 7.5
+	sleep := health.MorningReportSleep{ReportDate: briefing.Date, Date: briefing.Date, Hours: &hours, Capture: health.NightCaptureComplete, Assessment: health.NightDurationOutlier, Finalization: health.NightFinalFinal, BaselineHours: &baseline, BaselineNights: 14}
+	for _, lang := range []string{"en", "ru", "sr"} {
+		t.Run(lang, func(t *testing.T) {
+			blocks := map[string]string{ai.BlockSleep: "UNSAFE_SLEEP_PROSE"}
+			plain := formatMorning(briefing, blocks, lang, loc, freshness{}, false, sleep)
+			rich := formatMorningRich(briefing, blocks, lang, loc, freshness{}, false, "", sleep)
+			for name, text := range map[string]string{"plain": plain, "rich": rich} {
+				if !strings.Contains(text, morningSleepCopy(lang, "assessment_limited")) {
+					t.Fatalf("%s missing deterministic limitation: %s", name, text)
+				}
+				if strings.Contains(text, "UNSAFE_SLEEP_PROSE") || strings.Contains(text, morningSleepCopy(lang, "partial")) || strings.Contains(text, fmt.Sprintf(morningSleepCopy(lang, "baseline"), formatSleepDuration(baseline, lang), 14)) {
+					t.Fatalf("%s contains unsupported sleep claim: %s", name, text)
+				}
+			}
+		})
 	}
 }

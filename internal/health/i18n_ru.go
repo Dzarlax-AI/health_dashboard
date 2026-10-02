@@ -250,7 +250,7 @@ var ru = LangStrings{
 	"tg_today":                       "Сегодня",
 	"tg_morning_today":               "Сегодня",
 	"tg_morning_metrics":             "Главное",
-	"tg_morning_metrics_preliminary": "Оценки энергии и готовности предварительные, пока данные о сне неполные.",
+	"tg_morning_metrics_preliminary": "Оценки энергии и готовности предварительные из-за неопределённости записи сна.",
 	"tg_morning_as_of_date":          "По данным на %s",
 	"tg_morning_metrics_as_of_date":  "Оценки энергии и готовности предварительные: отчёт основан на данных за %s.",
 	"tg_sleep_average":               "среднее максимум за 7 ночей",

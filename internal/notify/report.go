@@ -753,6 +753,8 @@ func appendMorningSleepCaveat(view *morningSleepView, sleepContext *health.Morni
 		view.lines = append(view.lines, morningSleepCopy(lang, "unknown"))
 	case sleepContext.Finalization == health.NightFinalProvisional:
 		view.lines = append(view.lines, morningSleepCopy(lang, "provisional"))
+	case sleepContext.Assessment == health.NightDurationOutlier:
+		view.lines = append(view.lines, morningSleepCopy(lang, "assessment_limited"))
 	case sleepContext.Assessment == health.NightDurationUnknown || sleepContext.Assessment == "":
 		view.lines = append(view.lines, morningSleepCopy(lang, "assessment_unknown"))
 	}
@@ -774,13 +776,13 @@ func morningMetricsPreliminary(sleep *health.MorningReportSleep, reportDate, bri
 func morningSleepCopy(lang, key string) string {
 	copy := map[string]map[string]string{
 		"en": {
-			"title": "Sleep", "current": "Sleep for the night of %s: %s", "recorded_current": "Recorded sleep for %s: %s", "baseline": "Usual level: %s across %d nights", "no_current": "No sleep data for last night yet.", "older": "Latest recorded sleep (%s): %s", "provisional": "This sleep record is preliminary and may change.", "partial": "Sleep data are incomplete; duration may change.", "unknown": "Sleep capture status is unknown.", "assessment_unknown": "There is not enough reliable information to assess this duration.", "plausible": "Duration alone cannot show sleep quality.", "duration_hours": "%d h", "duration_hours_minutes": "%d h %d min",
+			"title": "Sleep", "current": "Sleep for the night of %s: %s", "recorded_current": "Recorded sleep for %s: %s", "baseline": "Usual level: %s across %d nights", "no_current": "No sleep data for last night yet.", "older": "Latest recorded sleep (%s): %s", "provisional": "This sleep record is preliminary and may change.", "partial": "Sleep data are incomplete; duration may change.", "unknown": "Sleep capture status is unknown.", "assessment_unknown": "There is not enough reliable information to assess this duration.", "assessment_limited": "Interpret this sleep record cautiously; duration alone cannot establish recovery.", "plausible": "Duration alone cannot show sleep quality.", "duration_hours": "%d h", "duration_hours_minutes": "%d h %d min",
 		},
 		"ru": {
-			"title": "Сон", "current": "Сон за ночь %s: %s", "recorded_current": "Запись сна за %s: %s", "baseline": "Обычный уровень: %s за %d ночей", "no_current": "Данных о прошедшей ночи пока нет.", "older": "Последняя запись сна (%s): %s", "provisional": "Данные предварительные и могут измениться.", "partial": "Данные о сне неполные; длительность может измениться.", "unknown": "Статус сбора данных о сне неизвестен.", "assessment_unknown": "Пока недостаточно надёжных данных, чтобы оценить длительность сна.", "plausible": "По одной длительности нельзя оценить качество сна.", "duration_hours": "%d ч", "duration_hours_minutes": "%d ч %d мин",
+			"title": "Сон", "current": "Сон за ночь %s: %s", "recorded_current": "Запись сна за %s: %s", "baseline": "Обычный уровень: %s за %d ночей", "no_current": "Данных о прошедшей ночи пока нет.", "older": "Последняя запись сна (%s): %s", "provisional": "Данные предварительные и могут измениться.", "partial": "Данные о сне неполные; длительность может измениться.", "unknown": "Статус сбора данных о сне неизвестен.", "assessment_unknown": "Пока недостаточно надёжных данных, чтобы оценить длительность сна.", "assessment_limited": "Эту запись сна стоит трактовать осторожно; по длительности нельзя уверенно судить о восстановлении.", "plausible": "По одной длительности нельзя оценить качество сна.", "duration_hours": "%d ч", "duration_hours_minutes": "%d ч %d мин",
 		},
 		"sr": {
-			"title": "San", "current": "San za noć %s: %s", "recorded_current": "Zabeleženo spavanje za %s: %s", "baseline": "Uobičajen nivo: %s tokom %d noći", "no_current": "Podaci o protekloj noći još nisu dostupni.", "older": "Poslednji zabeleženi san (%s): %s", "provisional": "Podaci su preliminarni i mogu se promeniti.", "partial": "Podaci o snu su nepotpuni; trajanje može da se promeni.", "unknown": "Status prikupljanja sna nije poznat.", "assessment_unknown": "Još nema dovoljno pouzdanih podataka za procenu trajanja sna.", "plausible": "Samo trajanje sna ne pokazuje njegov kvalitet.", "duration_hours": "%d h", "duration_hours_minutes": "%d h %d min",
+			"title": "San", "current": "San za noć %s: %s", "recorded_current": "Zabeleženo spavanje za %s: %s", "baseline": "Uobičajen nivo: %s tokom %d noći", "no_current": "Podaci o protekloj noći još nisu dostupni.", "older": "Poslednji zabeleženi san (%s): %s", "provisional": "Podaci su preliminarni i mogu se promeniti.", "partial": "Podaci o snu su nepotpuni; trajanje može da se promeni.", "unknown": "Status prikupljanja sna nije poznat.", "assessment_unknown": "Još nema dovoljno pouzdanih podataka za procenu trajanja sna.", "assessment_limited": "Ovaj zapis sna treba tumačiti oprezno; samo trajanje ne potvrđuje oporavak.", "plausible": "Samo trajanje sna ne pokazuje njegov kvalitet.", "duration_hours": "%d h", "duration_hours_minutes": "%d h %d min",
 		},
 	}
 	if values, ok := copy[lang]; ok {

@@ -276,7 +276,7 @@ var en = LangStrings{
 	"tg_today":                       "Today so far",
 	"tg_morning_today":               "Today",
 	"tg_morning_metrics":             "At a glance",
-	"tg_morning_metrics_preliminary": "Energy and readiness estimates are preliminary while sleep data are incomplete.",
+	"tg_morning_metrics_preliminary": "Energy and readiness estimates are preliminary because the sleep record has uncertainty.",
 	"tg_morning_as_of_date":          "As of %s",
 	"tg_morning_metrics_as_of_date":  "Energy and readiness estimates are preliminary; this report uses data from %s.",
 	"tg_sleep_average":               "average of up to 7 nights",

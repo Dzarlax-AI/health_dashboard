@@ -250,7 +250,7 @@ var sr = LangStrings{
 	"tg_today":                       "Danas dosad",
 	"tg_morning_today":               "Danas",
 	"tg_morning_metrics":             "Najvažnije",
-	"tg_morning_metrics_preliminary": "Procene energije i spremnosti su preliminarne dok su podaci o snu nepotpuni.",
+	"tg_morning_metrics_preliminary": "Procene energije i spremnosti su preliminarne zbog neizvesnosti u zapisu sna.",
 	"tg_morning_as_of_date":          "Prema podacima od %s",
 	"tg_morning_metrics_as_of_date":  "Procene energije i spremnosti su preliminarne; izveštaj koristi podatke od %s.",
 	"tg_sleep_average":               "prosek za najviše 7 noći",
