@@ -415,6 +415,10 @@ Available at `/mcp` for AI analysis via Claude or other MCP-compatible clients.
 
 Authentication: `Authorization: Bearer your-api-key` or `X-API-Key: your-api-key` header.
 
+OAuth-protected MCP clients use an external authorization server configured with `MCP_OAUTH_ISSUER`, `MCP_OAUTH_JWKS_URL`, `MCP_OAUTH_RESOURCE`, and `MCP_OAUTH_READ_SCOPE`. Set `MCP_OAUTH_SUBJECT_MAP` to a JSON object mapping exact issuer `sub` values to existing Health usernames. Leave all five variables unset to keep OAuth disabled and use API keys; partial OAuth configuration fails startup. The resource must be the canonical public HTTPS MCP URL ending in `/mcp`. OAuth metadata is published at `/.well-known/oauth-protected-resource/mcp`. When OAuth is enabled, Bearer credentials with exactly two dots are treated as JWTs and never fall back to API-key auth; an opaque API key containing two dots must be sent with `X-API-Key`. OAuth mode uses stateless MCP transport to prevent session state from crossing tenant identities.
+
+For OpenAI connector setup, use the exact redirect URI shown by the connector management page. Do not assume one callback URL applies to every deployment: `https://chatgpt.com/connector_platform_oauth_redirect` applies when the authorization server advertises RFC 9207 issuer identification and accepts the matching `iss`; otherwise use the callback-ID URI supplied by OpenAI. Configure authorization-code flow with PKCE S256 and validate the MCP resource as the token audience. The external token must carry the configured read scope, and its issuer and subject mapping must match exactly. API-key authentication remains available for clients configured with a key.
+
 Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 
 ```json
@@ -444,6 +448,7 @@ Available tools:
 | `summarize_metric` | Statistical summary + daily breakdown for the last N days. |
 | `compare_periods` | Compare a metric between two date ranges. |
 | `get_sleep_summary` | All sleep phases per night in one response. |
+| `get_sleep_balance` | Saved 14-period sleep-duration balance for an optional tenant-local wake date (defaults to today). Includes the manual goal and coverage state for each period; missing snapshots return `balance: null`; incomplete snapshots preserve `balance_hours: null`. Read-only and does not recalculate. |
 | `find_anomalies` | Days where a metric was statistically unusual. |
 | `get_weekly_summary` | Week-by-week aggregates for one or more metrics. |
 | `get_personal_records` | All-time best and worst values per metric. |
@@ -451,6 +456,8 @@ Available tools:
 | `list_workouts` | List Apple Health workouts (runs, rides, strength) in a date range with summary fields and time-in-HR-zone. Optional name filter. |
 | `get_workout` | One workout by its HAE UUID. |
 | `workout_stats` | Aggregate counters for workouts in a range: count, total duration, distance, energy, avg/max HR, total time-in-HR-zone. |
+
+See [Remote MCP OAuth setup](docs/MCP_OAUTH.md) for the connection steps, token limitations, and actions requiring operator approval.
 
 ### Readiness serving contract
 

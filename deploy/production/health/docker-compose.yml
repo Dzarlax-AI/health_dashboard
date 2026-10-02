@@ -20,7 +20,7 @@ services:
 
       # Machine clients retain their existing API-key/bearer boundary.
       traefik.http.routers.health-machine.entrypoints: https
-      traefik.http.routers.health-machine.rule: Host(`${HEALTH_HOST:?set the production dashboard hostname}`) && (PathPrefix(`/health`) || PathPrefix(`/mcp`))
+      traefik.http.routers.health-machine.rule: Host(`${HEALTH_HOST:?set the production dashboard hostname}`) && (PathPrefix(`/health`) || PathPrefix(`/mcp`) || Path(`/.well-known/oauth-protected-resource/mcp`))
       traefik.http.routers.health-machine.priority: "300"
       traefik.http.routers.health-machine.tls: "true"
       traefik.http.routers.health-machine.tls.certresolver: letsEncrypt
