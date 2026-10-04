@@ -54,7 +54,9 @@ export function TrendChart({
         tick={{ fill: chartTheme.text, fontSize: 11 }}
       />
       <YAxis
-        domain={tone === "readiness" ? [0, 100] : ["auto", "auto"]}
+        domain={tone === "readiness" ? [0, 100] : kind === "bar"
+          ? [(minimum: number) => Math.min(0, minimum), (maximum: number) => Math.max(0, maximum)]
+          : ["auto", "auto"]}
         axisLine={false}
         tickLine={false}
         width={42}
