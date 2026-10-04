@@ -126,11 +126,11 @@ export function EnergyPage() {
         <section className="health-detail-hero">
           <div className="health-detail-hero__heading">
             <a className="health-detail-back" href={`/?lang=${locale}`} aria-label={translate(locale, "healthDetailBack")}>←</a>
-            <div><p>{translate(locale, "today")}</p><h1>{translate(locale, "energyDetailTitle")}</h1></div>
+            <div><p>{briefing?.date || translate(locale, "today")}</p><h1>{translate(locale, "energyDetailTitle")}</h1></div>
           </div>
           <div className="health-detail-hero__body">
             <div className={`health-detail-gauge${bank ? "" : " is-neutral"}`}
-              style={{ "--detail-progress": bank && bank.capacity > 0 ? Math.min(100, Math.max(0, bank.current / bank.capacity * 100)) : 0 } as CSSProperties}>
+              style={{ "--detail-progress": bank ? Math.min(100, Math.max(0, bank.current)) : 0 } as CSSProperties}>
               <div className="health-detail-gauge__inner">
                 <strong data-testid="energy-reserve">{bank ? number.format(bank.current) : "—"}</strong>
                 <span>{translate(locale, "energyReserve")}</span>
@@ -139,6 +139,8 @@ export function EnergyPage() {
             <div className="health-detail-hero__copy">
               {bank?.verdict_label ? <span className="health-detail-status">{bank.verdict_label}</span> : null}
               <h2>{translate(locale, "energyReserve")}</h2>
+              {briefing?.readiness_serving?.status === "stale" ? <p>{translate(locale, "state_stale")}</p> : null}
+              {briefing?.readiness_serving && briefing.readiness_serving.status !== "stale" && briefing.readiness_serving.confidence !== "final" ? <p>{translate(locale, "state_partial")}</p> : null}
               <p>{bank?.verdict_reason || translate(locale, briefingFailed ? "errorDetail" : briefing ? "unavailableDetail" : "loadingDetail")}</p>
             </div>
           </div>
@@ -157,7 +159,7 @@ export function EnergyPage() {
                 label: new Intl.DateTimeFormat(locale, { day: "numeric", month: "short" }).format(new Date(`${point.date}T12:00:00`)),
                 value: point.current_eod,
               }))} />
-            <details className="energy-history-details">
+            <details className="energy-history-details" open={points.length === 1}>
               <summary>{translate(locale, "energyDailyValues")}</summary>
             <div className="energy-history-list">
               {[...points].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 14).map((point) => (

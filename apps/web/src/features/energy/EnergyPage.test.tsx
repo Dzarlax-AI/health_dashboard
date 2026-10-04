@@ -13,7 +13,7 @@ vi.mock("../../api/client", async (importOriginal) => {
 });
 
 afterEach(() => {
-    vi.mocked(getTodayInsights).mockReset();
+  vi.mocked(getTodayInsights).mockReset();
     vi.mocked(getEnergyHistory).mockReset();
     vi.mocked(getSession).mockReset();
     vi.mocked(getHealthBriefing).mockReset();
@@ -66,4 +66,39 @@ it("keeps a negative reserve and a zero capacity without fabricating a positive 
   const { container } = render(<EnergyPage />);
   expect(await screen.findByText("-12")).toBeVisible();
   expect(container.querySelector(".health-detail-gauge")).toHaveStyle("--detail-progress: 0");
+});
+
+it("uses the absolute bank scale when the daily capacity is low", async () => {
+  vi.mocked(getHealthBriefing).mockResolvedValue({ ...resources.briefing,
+    energy_bank: { ...resources.briefing.energy_bank!, current: 10, capacity: 20 } });
+  vi.mocked(getTodayInsights).mockResolvedValue(resources.todayInsights!);
+  vi.mocked(getSession).mockResolvedValue({ is_admin: false });
+  vi.mocked(getEnergyHistory).mockResolvedValue(resources.energyHistory!);
+  const { container } = render(<EnergyPage />);
+  await screen.findByTestId("energy-reserve");
+  expect(await screen.findByTestId("energy-reserve")).toHaveTextContent("10");
+  expect(container.querySelector(".health-detail-gauge")).toHaveStyle("--detail-progress: 10");
+});
+
+it("shows the briefing date and stale state instead of calling old data current", async () => {
+  vi.mocked(getHealthBriefing).mockResolvedValue({ ...resources.briefing, date: "2026-09-01",
+    readiness_serving: { ...resources.briefing.readiness_serving!, status: "stale" } });
+  vi.mocked(getTodayInsights).mockResolvedValue(resources.todayInsights!);
+  vi.mocked(getSession).mockResolvedValue({ is_admin: false });
+  vi.mocked(getEnergyHistory).mockResolvedValue(resources.energyHistory!);
+  render(<EnergyPage />);
+  expect(await screen.findByText("2026-09-01")).toBeVisible();
+  expect(screen.getByText("Last known data")).toBeVisible();
+  expect(screen.queryByText("Current reserve")).not.toBeInTheDocument();
+});
+
+it("exposes a single history day without opening the disclosure", async () => {
+  vi.mocked(getHealthBriefing).mockResolvedValue(resources.briefing);
+  vi.mocked(getTodayInsights).mockResolvedValue(resources.todayInsights!);
+  vi.mocked(getSession).mockResolvedValue({ is_admin: false });
+  vi.mocked(getEnergyHistory).mockResolvedValue({ ...resources.energyHistory!, points: [resources.energyHistory!.points![0]] });
+  const { container } = render(<EnergyPage />);
+  await screen.findByText("Daily values");
+  expect(container.querySelector(".energy-history-details")).toHaveAttribute("open");
+  expect(container.querySelector(".energy-history-list__row")).toBeVisible();
 });
