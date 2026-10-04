@@ -285,6 +285,7 @@ textarea {
 }
 
 .insight-pair__card {
+  color: var(--text);
   min-width: 0;
   padding: clamp(18px, 2vw, 26px);
   border: 1px solid var(--border);
@@ -1727,6 +1728,11 @@ a.today-insights__domain:hover {
   --detail-hero-to: rgba(75, 53, 20, 0.78);
 }
 
+.energy-insights { color: var(--text); }
+.energy-history-details summary { cursor: pointer; color: var(--text-secondary); margin-bottom: var(--space-4); }
+.energy-history-list__row meter { accent-color: var(--today-energy); }
+.energy-history-list__row meter::-webkit-meter-optimum-value { background: var(--today-energy); }
+
 .health-detail-fixtures {
   margin-block: var(--space-3) var(--space-5);
 }
@@ -1829,7 +1835,7 @@ a.today-insights__domain:hover {
   place-items: center;
   align-content: center;
   border-radius: 50%;
-  background: rgba(12, 27, 31, 0.84);
+  background: color-mix(in srgb, var(--detail-accent) 8%, #0c1b1f);
   box-shadow: inset 0 0 42px color-mix(in srgb, var(--detail-accent) 20%, transparent);
 }
 
