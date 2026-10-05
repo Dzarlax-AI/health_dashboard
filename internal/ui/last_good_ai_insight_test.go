@@ -16,6 +16,9 @@ func TestLastGoodAIIsDisplayOnlyAndDoesNotChangeCurrentEvidence(t *testing.T) {
 	if ai == nil || !ai.Stale || ai.SourceDate != entry.Date || !ai.GeneratedAt.Equal(saved) {
 		t.Fatalf("missing historical metadata: %#v", ai)
 	}
+	if len(ai.EvidenceIDs) != 0 || len(ai.FactIDs) != 1 || ai.FactIDs[0] != "old-fact" {
+		t.Fatal("historical fact IDs were presented as current evidence references")
+	}
 	if len(got.NarrativeFacts) != 0 || len(got.Evidence) != 0 || got.Domains[0].DataState != "partial" {
 		t.Fatal("previous opinion became current evidence")
 	}

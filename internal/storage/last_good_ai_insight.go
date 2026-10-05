@@ -82,7 +82,9 @@ func (entry LastGoodAIInsight) DisplayInsight() *health.DailyInsightAIInsight {
 	if !entry.GeneratedAt.IsZero() {
 		generatedAt = &entry.GeneratedAt
 	}
+	// Historical fact IDs are not evidence IDs, and cannot link into the current
+	// snapshot. Do not fabricate current evidence references for retained prose.
 	return &health.DailyInsightAIInsight{Text: entry.Insight.Text, Stance: entry.Insight.Stance,
 		AlternativeAction: entry.Insight.AlternativeAction, FactIDs: entry.Insight.FactIDs,
-		EvidenceIDs: entry.Insight.FactIDs, Stale: true, SourceDate: entry.Date, GeneratedAt: generatedAt}
+		EvidenceIDs: []string{}, Stale: true, SourceDate: entry.Date, GeneratedAt: generatedAt}
 }
