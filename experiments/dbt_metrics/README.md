@@ -7,7 +7,7 @@ This directory is a local experiment for the existing hourly and daily cache wri
 From the repository root, run the guarded driver with Python 3.12 and Docker available:
 
 ```bash
-/Users/dzarlax/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 experiments/dbt_metrics/scripts/run_pilot.py
+python3 experiments/dbt_metrics/scripts/run_pilot.py
 ```
 
 The driver installs the pinned dbt runtime into this directory's ignored `.venv`, creates a uniquely named container from the pinned PostgreSQL image digest, and binds its random host port to `127.0.0.1`. It writes an identity token in the database and a matching Docker label, checks both before database operations, and removes only that container ID and its anonymous volume when both markers still match. The database role used by dbt can read `source_data` and write `dbt_output`; it cannot write the source schema or read the Go oracle schema.
