@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -24,11 +25,14 @@ const partialSleepCurrentDurationWindow = "current date, currently recorded dura
 const AIInsightReaderCopyValidationRevision = "today-ai-insight-reader-copy-v5.4"
 
 type DailyInsightAIInsight struct {
-	Text              string   `json:"text"`
-	Stance            string   `json:"stance"`
-	AlternativeAction string   `json:"alternative_action,omitempty"`
-	FactIDs           []string `json:"fact_ids"`
-	EvidenceIDs       []string `json:"evidence_ids"`
+	Stale             bool       `json:"stale,omitempty"`
+	SourceDate        string     `json:"source_date,omitempty"`
+	GeneratedAt       *time.Time `json:"generated_at,omitempty"`
+	Text              string     `json:"text"`
+	Stance            string     `json:"stance"`
+	AlternativeAction string     `json:"alternative_action,omitempty"`
+	FactIDs           []string   `json:"fact_ids"`
+	EvidenceIDs       []string   `json:"evidence_ids"`
 }
 
 type AIInsightServerView struct {

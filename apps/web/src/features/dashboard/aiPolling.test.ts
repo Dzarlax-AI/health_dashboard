@@ -42,6 +42,10 @@ describe("AI polling policy", () => {
     expect(shouldPollAI(briefing({ disabled: true }), 0)).toBe(false);
   });
 
+  it("keeps a retained response polling slowly after the initial budget", () => {
+    expect(shouldPollAI(briefing({ previous: { text: "Old insight", source_date: "2026-08-01" } }), maxAIPollAttempts)).toBe(true);
+  });
+
   it("caps cold-cache polling attempts", () => {
     expect(shouldPollAI(briefing(), maxAIPollAttempts)).toBe(false);
   });
@@ -85,10 +89,11 @@ describe("Today Insights polling policy", () => {
     expect(isTodayInsightsGenerationPending(todayInsights("ready"))).toBe(false);
   });
 
-  it("stops for ready, unavailable, and capped active states", () => {
+  it("stops for ready and unavailable, but rechecks capped active states slowly", () => {
     expect(shouldPollTodayInsights(todayInsights("ready"), 0)).toBe(false);
     expect(shouldPollTodayInsights(undefined, 0)).toBe(false);
-    expect(shouldPollTodayInsights(todayInsights("cold"), maxAIPollAttempts)).toBe(false);
+    expect(shouldPollTodayInsights(todayInsights("cold"), maxAIPollAttempts)).toBe(true);
+    expect(todayInsightsPollDelayMs(todayInsights("cold"), maxAIPollAttempts)).toBe(300_000);
   });
 
   it("waits for the server backoff before retrying a failed acknowledgement", () => {

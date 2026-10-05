@@ -20,7 +20,7 @@ const DailyInsightSnapshotVersion = "daily-insight-v3"
 // action catalogue must invalidate a previously generated narrative even if
 // the visible health values happen to be unchanged.
 const (
-	DailyInsightPolicyVersion        = "daily-insight-policy-v3"
+	DailyInsightPolicyVersion        = "daily-insight-policy-v4"
 	DailyInsightActionCatalogVersion = "daily-insight-actions-v3"
 	DailyInsightPromptRevision       = "daily-insight-prompt-v7"
 	// Bump when the provider-visible packet or its rendering contract changes.
@@ -117,7 +117,9 @@ func ApplyRecentSleepBelowReference(snapshot *DailyInsightSnapshot, claim Recent
 	}
 	copy := cloneDailyInsightSnapshot(snapshot)
 	copy.PolicyDigest = claim.EvidenceDigest
-	if claim.State == RecentSleepClaimFalse || claim.State == RecentSleepClaimUnknown {
+	// The evening pattern has its own finalization gate. While it is pending,
+	// retain the current night's independent completeness and factual insight.
+	if claim.State != RecentSleepClaimTrue {
 		return copy
 	}
 	for index := range copy.Domains {
@@ -126,15 +128,6 @@ func ApplyRecentSleepBelowReference(snapshot *DailyInsightSnapshot, claim Recent
 			continue
 		}
 		switch claim.State {
-		case RecentSleepClaimProvisional:
-			domain.DataState, domain.Confidence = "partial", "provisional"
-			domain.Insight.State = "insight"
-			domain.Insight.AnswerKind = DailyInsightAnswerProvisional
-			domain.Insight.ClaimID = ""
-			domain.Insight.GapReason = "sleep_current_sync"
-			domain.Insight.Remediation = ""
-			domain.Insight.Observation, domain.Insight.Meaning = localizedCurrentSyncSleepContext(locale)
-			domain.Insight.NextStep = nil
 		case RecentSleepClaimTrue:
 			domain.DataState, domain.Confidence = "fresh", "final"
 			domain.Insight.State = "insight"
@@ -3552,17 +3545,6 @@ func localizedInsightFactualContext(locale, domain string) string {
 		default:
 			return "The current reserve can help choose a pace for the rest of the day."
 		}
-	}
-}
-
-func localizedCurrentSyncSleepContext(locale string) (observation, meaning string) {
-	switch locale {
-	case "ru":
-		return "Ночь учтена по текущей синхронизации.", "Окончательное сравнение появится после вечерней проверки данных."
-	case "sr":
-		return "Noć je evidentirana prema trenutnoj sinhronizaciji.", "Konačno poređenje će se pojaviti nakon večernje provere podataka."
-	default:
-		return "Last night is included from the current sync.", "The final comparison will appear after this evening’s data check."
 	}
 }
 

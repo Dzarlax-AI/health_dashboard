@@ -86,6 +86,8 @@ describe("sleep model", () => {
 
   it("prefers the scoped SLEEP block and falls back to synthesis", () => {
     expect(sleepInsight({ blocks: { SLEEP: "Scoped" } } as never)).toBe("Scoped");
+    expect(sleepInsight({ previous: { text: "Previous opinion", source_date: "2026-08-01" }, blocks: { SLEEP: "Stale block" } } as never)).toBe("Previous opinion");
+    expect(sleepInsight({ disabled: true, previous: { text: "Previous opinion" } } as never)).toBe("");
     expect(sleepInsight({ blocks: { SYNTHESIS: "Overview" } } as never)).toBe("Overview");
   });
 

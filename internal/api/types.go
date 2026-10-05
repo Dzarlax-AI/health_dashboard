@@ -28,7 +28,14 @@ type AIBriefingSection struct {
 // Sections is the canonical extensible representation. Insight, Blocks, and
 // the four named block fields remain additive compatibility surfaces for
 // already-released web and iOS clients.
+type PreviousAIBriefing struct {
+	SourceDate  string     `json:"source_date"`
+	Text        string     `json:"text"`
+	GeneratedAt *time.Time `json:"generated_at,omitempty"`
+}
+
 type AIBriefingResponse struct {
+	Previous         *PreviousAIBriefing `json:"previous,omitempty"`
 	Date             string              `json:"date"`
 	Lang             string              `json:"lang" jsonschema:"enum=en,enum=ru,enum=sr"`
 	Insight          string              `json:"insight"`

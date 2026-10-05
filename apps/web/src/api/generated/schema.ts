@@ -247,6 +247,12 @@ export interface components {
                 evidence_keys?: string[] | null;
                 title: string;
             };
+            previous?: {
+                /** Format: date-time */
+                generated_at?: string;
+                source_date: string;
+                text: string;
+            };
             recommendation: string;
             recovery: string;
             sections: {
@@ -662,6 +668,10 @@ export interface components {
                 alternative_action?: string;
                 evidence_ids: string[] | null;
                 fact_ids: string[] | null;
+                /** Format: date-time */
+                generated_at?: string;
+                source_date?: string;
+                stale?: boolean;
                 stance: string;
                 text: string;
             };
@@ -684,6 +694,10 @@ export interface components {
                     alternative_action?: string;
                     evidence_ids: string[] | null;
                     fact_ids: string[] | null;
+                    /** Format: date-time */
+                    generated_at?: string;
+                    source_date?: string;
+                    stale?: boolean;
                     stance: string;
                     text: string;
                 };

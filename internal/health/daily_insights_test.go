@@ -204,6 +204,50 @@ func TestDailyInsightMaterialHashIncludesAnswerPolicy(t *testing.T) {
 	}
 }
 
+func TestProvisionalSleepPatternPreservesCurrentNightFacts(t *testing.T) {
+	for _, complete := range []bool{true, false} {
+		t.Run(fmt.Sprintf("complete=%t", complete), func(t *testing.T) {
+			duration, score := 7.3, 80
+			quality := &SleepQualityBreakdown{ScorePct: &score, Confidence: SleepQualityConfidenceFinal}
+			if !complete {
+				quality = &SleepQualityBreakdown{Confidence: SleepQualityConfidencePartial}
+			}
+			base := BuildDailyInsightSnapshot(&BriefingResponse{
+				Date:         "2026-10-05",
+				Sleep:        &SleepAnalysis{LatestDate: "2026-10-05", LatestTotal: &duration, TotalAvg: 7.5},
+				SleepQuality: quality,
+			}, "ru")
+			before, err := json.Marshal(dailyInsightDomain(t, base, "sleep"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := ApplyRecentSleepBelowReference(base, RecentSleepBelowReference{
+				State: RecentSleepClaimProvisional, Reason: "current_night_provisional", EvidenceDigest: "pending-pattern",
+			}, "ru")
+			after, err := json.Marshal(dailyInsightDomain(t, got, "sleep"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(before) != string(after) {
+				t.Fatalf("pending evening pattern changed current sleep facts: before=%s after=%s", before, after)
+			}
+			if got.PolicyDigest != "pending-pattern" {
+				t.Fatal("claim identity was lost")
+			}
+			_, eligible := BuildAIInsightInput(got, "ru", "sleep", nil)
+			if complete && !eligible {
+				t.Fatal("complete current sleep lost AI eligibility")
+			}
+			if !complete && dailyInsightDomain(t, got, "sleep").DataState == "fresh" {
+				t.Fatal("incomplete sleep was promoted to fresh")
+			}
+			if dailyInsightDomain(t, got, "sleep").Insight.ClaimID == "recent_sleep_below_reference" {
+				t.Fatal("unconfirmed evening pattern became a confirmed claim")
+			}
+		})
+	}
+}
+
 func TestApplyRecentSleepBelowReferenceAddsOnlySleepAction(t *testing.T) {
 	base := BuildDailyInsightSnapshot(&BriefingResponse{Date: "2026-09-10"}, "en")
 	got := ApplyRecentSleepBelowReference(base, RecentSleepBelowReference{State: RecentSleepClaimTrue, ReferenceHours: 7.8, CurrentShortNightCount: 3, EveningActionAvailable: true, ActionEvent: true}, "en")
