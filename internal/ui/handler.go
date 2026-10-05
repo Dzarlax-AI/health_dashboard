@@ -1730,6 +1730,15 @@ func (h *Handler) todayInsights(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	retainAI := narrativeMode != storage.TodayInsightsB1NarrativeModeDisabled && aiCfg.Enabled()
+	// Retain pre-release accepted prose before a fast replacement can save null
+	// or invalidate the old cache. Keep it separate from generation evidence.
+	var lastGoodAI map[string]storage.LastGoodAIInsight
+	if retainAI {
+		lastGoodAI, err = db.GetLastGoodAIInsights(r.Context(), lang, snapshot.Date)
+		if err != nil {
+			log.Printf("today AI insight: read display history: %v", err)
+		}
+	}
 	anyAIInsightEligible := false
 	for _, slot := range todayInsightNarrativeSlots {
 		if _, eligible := health.BuildAIInsightInput(snapshot, lang, slot, nil); eligible {
@@ -1803,12 +1812,7 @@ func (h *Handler) todayInsights(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if retainAI {
-		retainedSnapshot, retainErr := attachLastGoodAIInsights(r.Context(), db, snapshot, lang)
-		if retainErr != nil {
-			log.Printf("today AI insight: read display history: %v", retainErr)
-		} else {
-			snapshot = retainedSnapshot
-		}
+		snapshot = applyLastGoodAIInsights(snapshot, lastGoodAI)
 	}
 	state, retryAfter := aggregateTodayInsightGeneration(slotStates)
 	jsonResponse(w, clientapi.TodayInsightsResponse{

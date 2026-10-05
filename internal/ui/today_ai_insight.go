@@ -119,14 +119,6 @@ func resolveOneTodayAIInsight(ctx context.Context, db *storage.DB, rendered, gen
 
 // Retained prose is attached after generation packets and siblings are resolved.
 // It cannot become evidence for a replacement opinion or a current action.
-func attachLastGoodAIInsights(ctx context.Context, db *storage.DB, snapshot *health.DailyInsightSnapshot, lang string) (*health.DailyInsightSnapshot, error) {
-	retained, err := db.GetLastGoodAIInsights(ctx, lang, snapshot.Date)
-	if err != nil {
-		return nil, err
-	}
-	return applyLastGoodAIInsights(snapshot, retained), nil
-}
-
 func applyLastGoodAIInsights(snapshot *health.DailyInsightSnapshot, retained map[string]storage.LastGoodAIInsight) *health.DailyInsightSnapshot {
 	out := snapshot
 	for _, slot := range []string{"overall", "sleep", "recovery", "energy"} {
