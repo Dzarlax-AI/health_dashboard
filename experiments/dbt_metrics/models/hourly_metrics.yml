@@ -1,0 +1,12 @@
+version: 2
+models:
+  - name: hourly_metrics
+    columns:
+      - name: metric_name
+        data_tests: [not_null]
+      - name: hour
+        data_tests: [not_null]
+      - name: source
+        data_tests: [not_null]
+      - name: sample_count
+        data_tests: [not_null]

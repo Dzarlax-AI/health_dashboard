@@ -1,0 +1,11 @@
+name: health_dbt_metrics_pilot
+version: '1.0.0'
+config-version: 2
+profile: health_dbt_metrics_pilot
+model-paths: [models]
+macro-paths: [macros]
+test-paths: [tests]
+clean-targets: [target, dbt_packages]
+models:
+  health_dbt_metrics_pilot:
+    +materialized: table

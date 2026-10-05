@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Health: модульные расчёты — этап 1</title>
+<style>
+body{margin:0;background:#f4f6f8;color:#182431;font:16px/1.6 system-ui,sans-serif}main{max-width:980px;margin:40px auto;padding:32px;background:white;border-radius:16px}h1,h2{line-height:1.25}h2{margin-top:32px}code{background:#eef1f5;padding:2px 5px;border-radius:4px;font-size:.9em}table{width:100%;border-collapse:collapse}th,td{text-align:left;vertical-align:top;padding:12px;border-bottom:1px solid #dae0e6}.gate{padding:20px;background:#fff4d6;border-radius:12px}.status{color:#526575}li{margin:8px 0}@media(max-width:700px){main{margin:0;padding:20px;border-radius:0}table{font-size:14px}}
+</style>
+<main>
+<p class="status">2026-10-05 · Этап реализован локально · Утверждён пользователем</p>
+<h1>Упростить обновление расчётов, сохранив текущие результаты</h1>
+<p>Первый этап: вынести SQL агрегаций в отдельные файлы, собрать известные правила в одном Go-каталоге и сделать проверяемым изменение расчётного контракта. Live-обработка остаётся в Go. dbt-пилот остаётся инструментом сравнения; переход на dbt в проде в этот этап не входит.</p>
+
+<h2>1. Основание и текущая структура</h2>
+<p>Проверена ветка <code>codex/dbt-metrics-pilot</code>, HEAD <code>d5cc509493a3b1c7b1c271b34bb5b3c9154169cd</code>. Существующие незакоммиченные файлы пилота сохраняются: его HTML-план, <code>experiments/dbt_metrics/</code> и <code>internal/storage/dbt_metrics_pilot_test.go</code>. Отложенный stash не раскрывается. Новые исходные файлы создаются в текущем checkout.</p>
+<p>SQL и правила hourly/daily живут в <code>internal/storage/aggregates.go</code>. Чистые бизнес-формулы уже выделены в <code>internal/health</code>. Derived-метрики уже сохраняют <code>FormulaVersion</code> и <code>InputsHash</code>; Readiness и Energy имеют собственные механизмы версий. Создавать параллельный универсальный движок версий не требуется.</p>
+<p>Завершённый dbt-пилот проверяет реальные Go-методы на синтетической PostgreSQL. Он выявил существующие различия обновления кеша; это исходные факты, а не ошибки, разрешённые к исправлению данным планом.</p>
+
+<h2>2. Объём и результат</h2>
+<ul>
+<li>Вынести SQL четырёх live-писателей и соответствующих legacy hourly/daily-писателей из Go-строк в source-owned <code>.sql</code>, встроенные через <code>go:embed</code>. Go сохраняет параметры, транзакции, порядок вызовов и обработку ошибок. Во время запуска внешний SQL-файл не нужен.</li>
+<li>Добавить статический Go-каталог известных SUM-метрик, восьми обычных daily-колонок и шести sleep-колонок. Сохранить совместимость экспортированного <code>SumMetrics</code> и существующих helper-функций. Политики live и legacy описать явно там, где они различаются.</li>
+<li>Объединить определения sleep-порогов, приоритетов и SQL-фрагментов, сохранив разные формы запросов для одного дня и нескольких дней. Подстановки SQL ограничить проверенными статическими именами/фрагментами; значения остаются параметрами pgx.</li>
+<li>Добавить версию контракта агрегаций и детерминированный отпечаток SQL/правил для отчёта сравнения. Они относятся к коду и тестовому отчёту; версия не записывается в продовые строки кеша.</li>
+<li>Описать процедуру будущего обновления: изменение правила → версия существующей формулы → проверки крайних случаев → сравнение дат → осознанный пересчёт → отдельный релиз. Зафиксировать, какие таблицы уже хранят версии, а какие ещё нет.</li>
+</ul>
+<p>Вне объёма: новые медицинские формулы, изменение значений, новая схема БД, миграции, автоматический исторический backfill, изменение API, tenant isolation, уведомлений, completed-night алгоритма, пула соединений и расписания refresh. Не включены commit, push, PR, merge, deploy и работа с реальными данными.</p>
+
+<h2>3. Инварианты и известные различия</h2>
+<table><tr><th>Область</th><th>Что сохраняем</th></tr>
+<tr><td>AVG разных источников</td><td>Live сначала усредняет часы внутри источника, затем источники. Legacy daily усредняет все hourly-строки вместе. При разном числе часов результаты могут различаться; тесты должны закрепить обе политики.</td></tr>
+<tr><td>Неизвестные метрики</td><td>Обычные неизвестные имена сохраняют AVG. Live sleep-путь использует SUM для sleep-префикса; legacy выбор зависит от существующего списка. Не вводим новый общий default.</td></tr>
+<tr><td>Выбор sleep-источника</td><td>При расхождении: минимум выше 1 часа и максимум больше минимума × 1.4. Иначе Watch → RingConn → максимальное значение; сохраняем tie-break и соответствие выбранных значения и источника.</td></tr>
+<tr><td>Повторные данные</td><td>Midnight dedup, quality-gates, source priority, TEXT-даты/SUBSTRING, REAL-приведения и разрешённые диапазоны остаются прежними.</td></tr>
+<tr><td>Удаление и неполные данные</td><td>Live non-sleep hourly не удаляет устаревшую строку после quality invalidation; sleep hourly пересобирает день в транзакции. Daily COALESCE и сохранение всего sleep-блока при отсутствии нового total остаются прежними.</td></tr>
+<tr><td>Backfill</td><td>Семидневное incremental окно, force-семантика, concurrency=2, частичные ошибки и порядок последующих baseline/sustained расчётов остаются прежними.</td></tr></table>
+
+<h2>4. Вероятные файлы</h2>
+<ul>
+<li><code>internal/storage/aggregates.go</code> — тонкие SQL-вызовы и совместимые helpers.</li>
+<li><code>internal/storage/aggregation_policy.go</code>, <code>aggregation_sql.go</code>, <code>sql/aggregates/*.sql</code> — новые каталог и встроенные запросы.</li>
+<li><code>internal/storage/aggregation_policy_test.go</code>, <code>dbt_metrics_pilot_test.go</code>, <code>sleep_unspecified_test.go</code> — новые проверки и расширение существующего dedup-guard на SQL-файлы.</li>
+<li><code>experiments/dbt_metrics/scripts/run_pilot.py</code> и fixtures — только необходимое расширение изолированного сравнения Go до/после, включая legacy. Существующий dbt-пилот и его результаты сохраняются.</li>
+<li><code>docs/CALCULATION_UPDATES.md</code> — новый практический guide; <code>AGENTS.md</code> и <code>CLAUDE.md</code> — одинаковая короткая архитектурная заметка. Этот HTML обновляется фактическими результатами.</li>
+</ul>
+
+<h2>5. Порядок выполнения и ответственность</h2>
+<ol>
+<li>Ведущий фиксирует baseline текущего кода в изолированном синтетическом контейнере и добавляет содержательные случаи: неравные часы разных источников, неизвестные метрики, tie-break, quality invalidation, неполный sleep, повторное обновление и force/incremental. Отдельные ожидания для live и legacy.</li>
+<li>После baseline один исполнитель <code>gpt-6-luna</code>, effort <code>medium</code>, последовательно выполняет извлечение SQL и каталог. Его границы: production aggregation-файлы и focused unit tests; запрещены изменения формул, API/DDL и внешние действия. Ведущий владеет harness/fixtures, документацией и приёмкой, чтобы избежать одновременных правок одних файлов.</li>
+<li>Ведущий проверяет весь diff, совпадение SQL-семантики и параметры. Затем запускает сравнение с baseline, существующий dbt-пилот и сборочные проверки. Несовпадение не принимается как допустимая оптимизация.</li>
+<li>Обновить guide и этот план: что выполнено, какие проверки действительно прошли, какие ограничения остались. Показать накопленный diff. Релиз потребует отдельного разрешения.</li>
+</ol>
+
+<h2>6. Проверки приёмки — запланированы</h2>
+<ul>
+<li>Точные значения, источники и количество hourly/daily-строк до/после для обоих Go-путей; отдельно неизменность незатронутых дат и порядок сохранения неполных данных. Временные служебные timestamp исключаются из сравнения явно.</li>
+<li>Повторный запуск, поздние данные, изменение значения и quality, coarse sleep, неполный блок, неизвестные метрики; проверки SQL-подстановок и детерминированности отпечатка.</li>
+<li>Существующий synthetic dbt runner полностью проходит с теми же известными различиями Go/dbt. Используется только контейнер пилота с loopback-портом, marker и точной проверкой владельца; <code>DATABASE_URL</code> и продовые credentials не используются.</li>
+<li><code>go test ./internal/storage ./internal/health</code>, <code>go test ./...</code>, <code>make contract-check</code>, pure-Go сборка <code>CGO_ENABLED=0 go build -o /tmp/health-calculation-modularity-server ./cmd/server</code>. Opt-in интеграционные тесты запускаются только с явно выделенной synthetic test DSN; пропущенные DB-тесты не считаются проверенными.</li>
+<li>Сравнение времени писателей в том же synthetic harness: исследовать повторяемое ухудшение. Эти измерения не доказывают продовую производительность.</li>
+</ul>
+
+<h2>7. Риски и откат</h2>
+<p>Основной риск — случайно унифицировать разные политики или изменить SQL при извлечении. Защита: baseline до правок, fixtures с ручными ожиданиями, разделение контекстов и просмотр каждого запроса. Второй риск — drift Go/dbt; каталог этого этапа каноничен для Go, dbt остаётся отдельной реализацией, проверяемой сравнением.</p>
+<p>Миграций и продовых записей нет. Откат — отменить только diff этого этапа, сохранив исходные untracked-файлы пилота и stash. Новый контракт/отпечаток не означает, что все исторические строки получили новую формулу; унификация хранения версий потребует отдельного плана.</p>
+
+<h2>8. Утверждённый объём</h2>
+<div class="gate"><strong>Утвердить этап 1:</strong> модульный SQL и каталог правил, локальная версия/отпечаток контракта, baseline-сравнение и guide — без изменения результатов и без релиза. Существенных открытых вопросов для этого объёма нет. Если обнаружится необходимость изменить формулу или схему, представить отдельно конкретное изменение объёма.</div>
+
+<h2>9. Фактическая реализация и приёмка</h2>
+<p>Этап выполнен локально на исходной ветке. SQL вынесен в десять встроенных файлов; каталог содержит 17 SUM-метрик, восемь обычных daily mappings, sleep-наборы, пороги и паттерны приоритетов. Live/legacy используют эти общие определения. Добавлены проверка допустимых колонок и отказ при пропущенных/лишних подстановках SQL.</p>
+<p>Контракт: <code>AggregateContractVersion = "1"</code>, отпечаток <code>sha256:0f221b927c46dc4f10f762f7bd067f8d70faad317af70343d4a5f0be833b94c8</code>. Отчёты harness и dbt сохраняют его. Отпечаток включает SQL, классификации, каталоги и генерируемые фрагменты; в БД он не записывается.</p>
+<ul>
+<li>Baseline записан до изменения production-кода. Все 12 снимков live / legacy-force / legacy-incremental совпали по точному JSON hourly/daily/SUM-каталога. Часы, источники, значения и количество строк сохранены; computed_at и время выполнения исключены явно.</li>
+<li>Полный synthetic dbt runner прошёл: семь сценариев обновления, пять отказов на некорректные параметры, девять dbt data tests; масштаб 17 642 points, 17 627 hourly-строк и 380 daily-строк. Известное отличие stale-hour и сохранение неполного sleep остались прежними.</li>
+<li>Свежие <code>go test ./internal/storage ./internal/health -count=1</code>, <code>go test ./...</code>, <code>make contract-check</code> и <code>CGO_ENABLED=0 go build</code> прошли. Первый общий запуск был ограничен sandbox bind для httptest; повтор с разрешённым loopback прошёл. Обычные opt-in DB integration tests пропущены; реальная PostgreSQL-проверка выполнена отдельным guarded synthetic harness.</li>
+<li>Медианы времени Go-писателей: полный набор 1.235 → 1.286 с, один день 10.98 → 11.20 мс. Это локальные три trial до/после с неконтролируемым кешем и параллельной тестовой нагрузкой; вывод об ускорении или продовой регрессии не делается.</li>
+<li>Просмотрен фактический diff. UpsertRecentCache, BackfillAggregates, baseline-HR writer, date helper, listMetricNames, sumMetricSlice и sleepDedupClause проверены на неизменность. AGENTS/CLAUDE получили одинаковую архитектурную заметку; добавлен <code>docs/CALCULATION_UPDATES.md</code>.</li>
+</ul>
+<p>Исполнитель: один Luna medium для SQL/catalog и focused tests; ведущий владел baseline, harness, независимым сравнением, документацией и финальной приёмкой. Синтетические контейнеры удалены с проверкой marker/владельца. Предыдущий dbt-пилот и отложенный stash сохранены. Commit, push, PR и deploy не выполнялись.</p>
+<p>Ограничения: eight ordinary daily mappings используются каталогом legacy writer и allowlist; явные transport-like проекции daily SQL остаются видимыми в шаблонах и покрыты сравнением. Чистые формулы Health, completed-night алгоритм и хранение исторических версий не изменены. Новая семантика AVG/quality/clear и единая версия каждой исторической строки потребуют отдельного согласованного изменения.</p>
+<h2>10. Release authorization</h2><p>The user explicitly authorized commit, push, PR creation, merge and deployment after green required checks. Release scope is this reviewed refactor plus the completed synthetic dbt experiment. The final review replaced fixed one-decimal SQL threshold formatting with precision-preserving decimal literals; current 1.0/1.4 values remain unchanged, and all 12 baseline snapshots plus the full Go suite passed again. Production deployment uses the authoritative immutable image pair and existing tenant schema gate. No runtime .env edits or formula/data changes are included.</p></main>
+</html>

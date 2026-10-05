@@ -1,0 +1,7 @@
+artifacts/
+.venv/
+target/
+logs/
+__pycache__/
+profiles.yml
+.user.yml

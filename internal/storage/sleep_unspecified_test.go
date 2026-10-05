@@ -87,23 +87,26 @@ func TestSleepDedup_NoInlineCopies(t *testing.T) {
 	// the row being filtered, not the correlated row).
 	re := regexp.MustCompile(`p2\.date[^,)]*?(!=|<>)\s*'00:00:00'`)
 
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatalf("read storage dir: %v", err)
-	}
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		path := filepath.Join(".", name)
-		data, err := os.ReadFile(path)
+	for _, dir := range []string{".", "sql/aggregates"} {
+		entries, err := os.ReadDir(dir)
 		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
+			t.Fatalf("read storage dir %s: %v", dir, err)
 		}
-		if loc := re.FindIndex(data); loc != nil {
-			line := strings.Count(string(data[:loc[0]]), "\n") + 1
-			t.Errorf("%s:%d looks like an inline copy of the OLD sleep dedup rule (p2.date != '00:00:00'). Use sleepDedupClause() instead — see TestSleepDedupClause_PrefersMidnightSummary for the canonical shape.", path, line)
+		for _, e := range entries {
+			name := e.Name()
+			allowedExt := strings.HasSuffix(name, ".go") || (dir != "." && strings.HasSuffix(name, ".sql"))
+			if e.IsDir() || !allowedExt || strings.HasSuffix(name, "_test.go") {
+				continue
+			}
+			path := filepath.Join(dir, name)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read %s: %v", path, err)
+			}
+			if loc := re.FindIndex(data); loc != nil {
+				line := strings.Count(string(data[:loc[0]]), "\n") + 1
+				t.Errorf("%s:%d looks like an inline copy of the OLD sleep dedup rule (p2.date != '00:00:00'). Use sleepDedupClause() instead — see TestSleepDedupClause_PrefersMidnightSummary for the canonical shape.", path, line)
+			}
 		}
 	}
 }

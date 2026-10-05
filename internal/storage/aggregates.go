@@ -60,13 +60,15 @@ func sumCombineExpr(valCol string) string {
 // in buildDailySleepBlock; both must keep the 1.0h floor and 1.4×
 // divergence threshold in lockstep with this helper.
 func sleepCrossValidationPickExpr(valCol string) string {
+	watch := sourcePriorityCondition("source", sleepSourcePriority[0])
+	ringConn := sourcePriorityCondition("source", sleepSourcePriority[1])
 	return `CASE
-		WHEN COUNT(*) > 1 AND MIN(` + valCol + `) > 1.0
-		 AND MAX(` + valCol + `) > MIN(` + valCol + `) * 1.4
+		WHEN COUNT(*) > 1 AND MIN(` + valCol + `) > ` + sqlPolicyNumber(sleepCrossValidationMinHours) + `
+		 AND MAX(` + valCol + `) > MIN(` + valCol + `) * ` + sqlPolicyNumber(sleepCrossValidationDivergence) + `
 		THEN MIN(` + valCol + `)
 		ELSE COALESCE(
-		    MAX(CASE WHEN source LIKE '%Ultra%' OR source LIKE '%Apple Watch%' THEN ` + valCol + ` END),
-		    MAX(CASE WHEN source LIKE '%RingConn%' THEN ` + valCol + ` END),
+		    MAX(CASE WHEN ` + watch + ` THEN ` + valCol + ` END),
+		    MAX(CASE WHEN ` + ringConn + ` THEN ` + valCol + ` END),
 		    MAX(` + valCol + `)
 		)
 	END`
@@ -88,6 +90,8 @@ func sleepCrossValidationPickExpr(valCol string) string {
 // sleepCrossValidationPickExpr — that is the whole point of having a
 // shared helper instead of ad-hoc inline CASEs.
 func sleepCrossValidationPickSourceExpr(table, valCol string) string {
+	watch := sourcePriorityCondition("source", sleepSourcePriority[0])
+	ringConn := sourcePriorityCondition("source", sleepSourcePriority[1])
 	// Tiebreak by `source ASC` so two rows with identical totals always
 	// resolve to the same pick across reruns. Without this, Postgres can
 	// return either row when sums tie, and the picked source flips
@@ -96,16 +100,16 @@ func sleepCrossValidationPickSourceExpr(table, valCol string) string {
 	return `(
 		CASE
 			WHEN (SELECT COUNT(*) FROM ` + table + `) > 1
-			 AND (SELECT MIN(` + valCol + `) FROM ` + table + `) > 1.0
+			 AND (SELECT MIN(` + valCol + `) FROM ` + table + `) > ` + sqlPolicyNumber(sleepCrossValidationMinHours) + `
 			 AND (SELECT MAX(` + valCol + `) FROM ` + table + `) >
-			     (SELECT MIN(` + valCol + `) FROM ` + table + `) * 1.4
+			     (SELECT MIN(` + valCol + `) FROM ` + table + `) * ` + sqlPolicyNumber(sleepCrossValidationDivergence) + `
 			THEN (SELECT source FROM ` + table + ` ORDER BY ` + valCol + ` ASC, source ASC LIMIT 1)
 			ELSE COALESCE(
 				(SELECT source FROM ` + table + `
-				  WHERE source LIKE '%Ultra%' OR source LIKE '%Apple Watch%'
+				  WHERE ` + watch + `
 				  ORDER BY ` + valCol + ` DESC, source ASC LIMIT 1),
 				(SELECT source FROM ` + table + `
-				  WHERE source LIKE '%RingConn%'
+				  WHERE ` + ringConn + `
 				  ORDER BY ` + valCol + ` DESC, source ASC LIMIT 1),
 				(SELECT source FROM ` + table + ` ORDER BY ` + valCol + ` DESC, source ASC LIMIT 1)
 			)
@@ -117,13 +121,13 @@ func sleepCrossValidationPickSourceExpr(table, valCol string) string {
 // total from a subquery with (source, source_total) columns.
 // Priority: Apple Watch ("Ultra") > iPhone > other (e.g. RingConn).
 // Falls back to MAX(source_total) if no Apple device is present.
-const preferredSourceSQL = `
+var preferredSourceSQL = `
 	SELECT COALESCE(
 		(SELECT source_total FROM source_totals
-		 WHERE source LIKE '%Ultra%' OR source LIKE '%Apple Watch%'
+		 WHERE ` + sourcePriorityCondition("source", sumSourcePriority[0]) + `
 		 ORDER BY source_total DESC LIMIT 1),
 		(SELECT source_total FROM source_totals
-		 WHERE source LIKE '%iPhone%'
+		 WHERE ` + sourcePriorityCondition("source", sumSourcePriority[1]) + `
 		 ORDER BY source_total DESC LIMIT 1),
 		(SELECT MAX(source_total) FROM source_totals)
 	)`
@@ -150,28 +154,6 @@ func preferredSourceForMetric(metric string) string {
 		return preferredSleepSourceSQL
 	}
 	return preferredSourceSQL
-}
-
-// SumMetrics is the canonical set of metrics that should be SUMmed within a bucket.
-// Exported so the MCP server can use the same classification without duplication.
-var SumMetrics = map[string]bool{
-	"step_count": true, "active_energy": true, "basal_energy_burned": true,
-	"apple_exercise_time": true, "apple_stand_time": true,
-	"flights_climbed": true, "walking_running_distance": true,
-	"time_in_daylight": true, "apple_stand_hour": true,
-	// sleep phases are SUM'd per source, then MAX'd across sources
-	"sleep_total": true, "sleep_deep": true, "sleep_rem": true,
-	"sleep_core": true, "sleep_awake": true,
-	// sleep_unspecified — coarse asleep total from sources without a
-	// deep/REM/core breakdown (RingConn, iPhone-only, older Apple Watch).
-	// SUM like the other stages; mutually exclusive with deep/rem/core
-	// per source. Once the v2.3 iOS client ships, RingConn-only nights
-	// land here instead of inflating sleep_core.
-	"sleep_unspecified": true,
-	// New-format split written by health-sync iOS — same SUM semantics
-	// as sleep_total. Treated as plain time-series; not yet cached in
-	// daily_scores (read directly from metric_points by briefing.go).
-	"night_sleep_total": true, "nap_total": true,
 }
 
 // sleepDedupClause returns a SQL WHERE clause that excludes per-segment sleep
@@ -306,22 +288,7 @@ func (s *DB) UpsertRecentCache(dates []string, recomputeReadiness bool) error {
 func (s *DB) upsertHourlyAvgForDate(date string) error {
 	ctx, cancel := longCtx()
 	defer cancel()
-	const q = `
-		INSERT INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val, sample_count)
-		SELECT metric_name,
-		       SUBSTRING(date, 1, 13) || ':00' AS hour,
-		       source,
-		       AVG(qty), MIN(qty), MAX(qty), COUNT(*)
-		FROM metric_points
-		WHERE SUBSTRING(date,1,10) = $1
-		  AND qty > 0
-		  AND quality = 'ok'
-		  AND metric_name NOT LIKE 'sleep\_%' ESCAPE '\'
-		  AND metric_name <> ALL($2::text[])
-		GROUP BY metric_name, SUBSTRING(date, 1, 13) || ':00', source
-		ON CONFLICT (metric_name, hour, source) DO UPDATE SET
-			avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val,
-			sample_count=EXCLUDED.sample_count`
+	q := aggregateSQL("live_hourly_avg")
 	if _, err := s.pool.Exec(ctx, q, date, sumMetricSlice()); err != nil {
 		return err
 	}
@@ -333,29 +300,7 @@ func (s *DB) upsertHourlyAvgForDate(date string) error {
 func (s *DB) upsertHourlySumForDate(date string) error {
 	ctx, cancel := longCtx()
 	defer cancel()
-	const q = `
-		INSERT INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val, sample_count)
-		SELECT metric_name, hour, source,
-		       SUM(minute_max) AS sum_val, MIN(minute_min) AS min_val, MAX(minute_max) AS max_val, COUNT(*)
-		FROM (
-			SELECT metric_name, source,
-			       SUBSTRING(date, 1, 13) || ':00' AS hour,
-			       SUBSTRING(date, 1, 16) AS minute,
-			       MAX(qty) AS minute_max, MIN(qty) AS minute_min
-			FROM metric_points
-			WHERE SUBSTRING(date,1,10) = $1
-			  AND qty > 0
-			  AND quality = 'ok'
-			  AND metric_name = ANY($2::text[])
-			  AND metric_name NOT LIKE 'sleep\_%' ESCAPE '\'
-			GROUP BY metric_name, source,
-			         SUBSTRING(date, 1, 13) || ':00',
-			         SUBSTRING(date, 1, 16)
-		) sub
-		GROUP BY metric_name, hour, source
-		ON CONFLICT (metric_name, hour, source) DO UPDATE SET
-			avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val,
-			sample_count=EXCLUDED.sample_count`
+	q := aggregateSQL("live_hourly_sum")
 	if _, err := s.pool.Exec(ctx, q, date, sumMetricSlice()); err != nil {
 		return err
 	}
@@ -396,29 +341,7 @@ func (s *DB) upsertHourlySleepForDate(date string) error {
 		return fmt.Errorf("delete stale: %w", err)
 	}
 
-	q := `
-		INSERT INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val, sample_count)
-		SELECT metric_name, hour, source,
-		       SUM(minute_max), MIN(minute_min), MAX(minute_max), COUNT(*)
-		FROM (
-			SELECT metric_name, source,
-			       SUBSTRING(date, 1, 13) || ':00' AS hour,
-			       SUBSTRING(date, 1, 16) AS minute,
-			       MAX(qty) AS minute_max, MIN(qty) AS minute_min
-			FROM metric_points
-			WHERE SUBSTRING(date,1,10) = $1
-			  AND qty > 0
-			  AND quality = 'ok'
-			  AND metric_name LIKE 'sleep\_%' ESCAPE '\'
-			  ` + sleepDedupClause("sleep_total") + `
-			GROUP BY metric_name, source,
-			         SUBSTRING(date, 1, 13) || ':00',
-			         SUBSTRING(date, 1, 16)
-		) sub
-		GROUP BY metric_name, hour, source
-		ON CONFLICT (metric_name, hour, source) DO UPDATE SET
-			avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val,
-			sample_count=EXCLUDED.sample_count`
+	q := aggregateSQLWith("live_hourly_sleep", map[string]string{"SLEEP_DEDUP": sleepDedupClause("sleep_total")})
 	if _, err := tx.Exec(ctx, q, date); err != nil {
 		return fmt.Errorf("insert: %w", err)
 	}
@@ -460,141 +383,13 @@ func (s *DB) upsertDailyForDate(date string) error {
 	// validation picks MIN), producing physically impossible ratios such as
 	// REM/Total > 100%. Latent today (single source — Apple Watch only) but
 	// would resurface immediately if RingConn is re-enabled.
-	q := `
-WITH per_source AS (
-    SELECT metric_name, source,
-           AVG(avg_val) AS avg_val,
-           SUM(avg_val) AS sum_val
-    FROM hourly_metrics
-    WHERE SUBSTRING(hour,1,10) = $1
-    GROUP BY metric_name, source
-),
-sleep_total_per_source AS (
-    SELECT source, sum_val FROM per_source WHERE metric_name = 'sleep_total'
-),
--- Pick ONE source for tonight from sleep_total totals; all five sleep_*
--- stages will be filtered to this source so phase ratios stay physically
--- consistent. Helper keeps thresholds in lockstep with the value-twin.
-sleep_picked AS (
-    SELECT ` + sleepCrossValidationPickSourceExpr("sleep_total_per_source", "sum_val") + ` AS src
-),
--- Atomicity gate: prevent mixed-source writes when MULTIPLE sources
--- contribute sleep_total for the night. With a single source there is
--- no mixing risk, and a strict 5-stage requirement would erase a real
--- night just because one stage happened to be 0 (e.g. a HAE-fed Apple
--- Watch night with sleep_awake = 0 — buildHourlyMetric filters qty>0
--- so the awake row never reaches hourly_metrics, completeness fails,
--- and all five sleep_* columns get NULL instead of the four real ones).
--- Therefore: when n_sources <= 1, trust the only source as-is.
--- When n_sources > 1, require ALL five stages from picked source so we
--- don't COALESCE-preserve a prior row's stage from a different device.
-sleep_picked_complete AS (
-    -- Conditional gate (option B per SLEEP_UNSPECIFIED_ROLLOUT.md):
-    --   single source     → trust as-is
-    --   multi-source + picked has all 5 traditional stages → complete (stage-tracking device)
-    --   multi-source + picked has sleep_total + sleep_unspecified → complete (coarse-only device)
-    -- Without the second clause, multi-source nights where MIN-pick lands
-    -- on a RingConn-only source (2 metrics) would fall through to NULL
-    -- writes and the prior block would survive untouched.
-    --
-    -- KNOWN LIMITATION (Issue #77): a multi-source night where the picked
-    -- source emits ONLY sleep_total (no stages, no sleep_unspecified) does
-    -- not match either branch — the gate fails, the prior daily_scores row
-    -- is preserved, and that source's contribution is silently dropped for
-    -- this night. Deliberate choice rather than oversight: accepting a
-    -- single-metric pick would let a malformed third-party importer wipe
-    -- a real staged night by writing only sleep_total. The v2.3 iOS
-    -- client always pairs sleep_total with sleep_unspecified for coarse
-    -- sources, and the HK XML importer in internal/applehealth/parse.go
-    -- maps both AsleepUnspecified and bare Asleep to sleep_unspecified,
-    -- so natively-imported data cannot hit this corner.
-    --
-    -- Regression coverage: internal/storage/sleep_gate.go mirrors this
-    -- logic as a pure Go function (EvaluateSleepPickedComplete) so unit
-    -- tests can exercise all four scenarios without a live Postgres.
-    -- When changing the gate here, mirror the change in sleep_gate.go
-    -- (and vice versa) — see sleep_gate_test.go for the expectations.
-    SELECT (
-        (SELECT COUNT(DISTINCT source) FROM sleep_total_per_source) <= 1
-        OR (
-          SELECT COUNT(DISTINCT metric_name) FROM per_source
-           WHERE source = (SELECT src FROM sleep_picked)
-             AND metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake')
-        ) = 5
-        OR (
-          SELECT COUNT(DISTINCT metric_name) FROM per_source
-           WHERE source = (SELECT src FROM sleep_picked)
-             AND metric_name IN ('sleep_total','sleep_unspecified')
-        ) = 2
-    ) AS ok
-),
-agg AS (
-    SELECT
-      metric_name,
-      AVG(avg_val) AS avg_across_sources,
-      -- preferred SUM source (non-sleep): Apple Watch > iPhone > MAX(any)
-      COALESCE(
-        MAX(sum_val) FILTER (WHERE source LIKE '%Ultra%' OR source LIKE '%Apple Watch%'),
-        MAX(sum_val) FILTER (WHERE source LIKE '%iPhone%'),
-        MAX(sum_val)
-      ) AS sum_preferred,
-      -- sleep: only when picked source covers all five stages. Otherwise
-      -- emit NULL for every stage so the existing COALESCE in ON CONFLICT
-      -- preserves the prior block atomically (no per-column drift).
-      CASE WHEN (SELECT ok FROM sleep_picked_complete)
-           THEN MAX(sum_val) FILTER (WHERE source = (SELECT src FROM sleep_picked))
-           ELSE NULL
-      END AS sum_sleep_resolved
-    FROM per_source
-    GROUP BY metric_name
-)
-INSERT INTO daily_scores
-    (date, hrv_avg, rhr_avg, sleep_total, sleep_deep, sleep_rem, sleep_core,
-     sleep_awake, sleep_unspecified, steps, calories, exercise_min, spo2_avg,
-     vo2_avg, resp_avg, computed_at)
-SELECT $1,
-    MAX(avg_across_sources)  FILTER (WHERE metric_name='heart_rate_variability'),
-    MAX(avg_across_sources)  FILTER (WHERE metric_name='resting_heart_rate'),
-    MAX(sum_sleep_resolved)  FILTER (WHERE metric_name='sleep_total'),
-    MAX(sum_sleep_resolved)  FILTER (WHERE metric_name='sleep_deep'),
-    MAX(sum_sleep_resolved)  FILTER (WHERE metric_name='sleep_rem'),
-    MAX(sum_sleep_resolved)  FILTER (WHERE metric_name='sleep_core'),
-    MAX(sum_sleep_resolved)  FILTER (WHERE metric_name='sleep_awake'),
-    MAX(sum_sleep_resolved)  FILTER (WHERE metric_name='sleep_unspecified'),
-    MAX(sum_preferred)       FILTER (WHERE metric_name='step_count'),
-    MAX(sum_preferred)       FILTER (WHERE metric_name='active_energy'),
-    MAX(sum_preferred)       FILTER (WHERE metric_name='apple_exercise_time'),
-    MAX(avg_across_sources)  FILTER (WHERE metric_name='blood_oxygen_saturation'),
-    MAX(avg_across_sources)  FILTER (WHERE metric_name='vo2_max'),
-    MAX(avg_across_sources)  FILTER (WHERE metric_name='respiratory_rate'),
-    NOW()::TEXT
-FROM agg
-ON CONFLICT(date) DO UPDATE SET
-    hrv_avg      = COALESCE(EXCLUDED.hrv_avg,      daily_scores.hrv_avg),
-    rhr_avg      = COALESCE(EXCLUDED.rhr_avg,      daily_scores.rhr_avg),
-    -- Sleep block writes are all-or-nothing per the atomicity gate
-    -- (sleep_picked_complete). When the gate passes, EXCLUDED.sleep_total
-    -- is non-NULL and we overwrite every stage column — even those that
-    -- legitimately become NULL because the picked source is coarse-only
-    -- (total + unspecified, no deep/rem/core/awake). Without this, a row
-    -- previously populated from a staged device would keep its Apple
-    -- Watch deep/REM next to RingConn coarse total — reintroducing the
-    -- mixed-source corruption the gate is designed to prevent
-    -- (CodeRabbit PR #73). Gate fails ⇒ EXCLUDED.sleep_total IS NULL
-    -- ⇒ preserve the prior row as a whole.
-    sleep_total       = CASE WHEN EXCLUDED.sleep_total IS NOT NULL THEN EXCLUDED.sleep_total       ELSE daily_scores.sleep_total       END,
-    sleep_deep        = CASE WHEN EXCLUDED.sleep_total IS NOT NULL THEN EXCLUDED.sleep_deep        ELSE daily_scores.sleep_deep        END,
-    sleep_rem         = CASE WHEN EXCLUDED.sleep_total IS NOT NULL THEN EXCLUDED.sleep_rem         ELSE daily_scores.sleep_rem         END,
-    sleep_core        = CASE WHEN EXCLUDED.sleep_total IS NOT NULL THEN EXCLUDED.sleep_core        ELSE daily_scores.sleep_core        END,
-    sleep_awake       = CASE WHEN EXCLUDED.sleep_total IS NOT NULL THEN EXCLUDED.sleep_awake       ELSE daily_scores.sleep_awake       END,
-    sleep_unspecified = CASE WHEN EXCLUDED.sleep_total IS NOT NULL THEN EXCLUDED.sleep_unspecified ELSE daily_scores.sleep_unspecified END,
-    steps        = COALESCE(EXCLUDED.steps,        daily_scores.steps),
-    calories     = COALESCE(EXCLUDED.calories,     daily_scores.calories),
-    exercise_min = COALESCE(EXCLUDED.exercise_min, daily_scores.exercise_min),
-    spo2_avg     = COALESCE(EXCLUDED.spo2_avg,     daily_scores.spo2_avg),
-    vo2_avg      = COALESCE(EXCLUDED.vo2_avg,      daily_scores.vo2_avg),
-    resp_avg     = COALESCE(EXCLUDED.resp_avg,     daily_scores.resp_avg),
-    computed_at  = EXCLUDED.computed_at`
+	q := aggregateSQLWith("live_daily", map[string]string{
+		"SLEEP_PICK_SOURCE":         sleepCrossValidationPickSourceExpr("sleep_total_per_source", "sum_val"),
+		"SLEEP_TRADITIONAL_METRICS": sqlStringList(sleepTraditionalMetrics),
+		"SLEEP_COARSE_METRICS":      sqlStringList(sleepCoarseMetrics),
+		"SUM_WATCH_CONDITION":       sourcePriorityCondition("source", sumSourcePriority[0]),
+		"SUM_IPHONE_CONDITION":      sourcePriorityCondition("source", sumSourcePriority[1]),
+	})
 	if _, err := s.pool.Exec(ctx, q, date); err != nil {
 		return err
 	}
@@ -694,20 +489,7 @@ func (s *DB) BackfillAggregates(force bool) error {
 // SUM metrics, where mixing sources per metric does not produce nonsensical
 // ratios.
 func (s *DB) BuildDailyMetrics(force bool) error {
-	type spec struct {
-		col  string
-		name string
-	}
-	specs := []spec{
-		{"hrv_avg", "heart_rate_variability"},
-		{"rhr_avg", "resting_heart_rate"},
-		{"steps", "step_count"},
-		{"calories", "active_energy"},
-		{"exercise_min", "apple_exercise_time"},
-		{"spo2_avg", "blood_oxygen_saturation"},
-		{"vo2_avg", "vo2_max"},
-		{"resp_avg", "respiratory_rate"},
-	}
+	specs := dailyMetricSpecs
 
 	const dailyConcurrency = 2
 	sem := make(chan struct{}, dailyConcurrency)
@@ -715,11 +497,11 @@ func (s *DB) BuildDailyMetrics(force bool) error {
 	for _, sp := range specs {
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(sp spec) {
+		go func(sp aggregationMetricSpec) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if err := s.buildDailyMetricCol(sp.col, sp.name, force); err != nil {
-				log.Printf("  daily %s (%s): %v", sp.col, sp.name, err)
+			if err := s.buildDailyMetricCol(sp.column, sp.metric, force); err != nil {
+				log.Printf("  daily %s (%s): %v", sp.column, sp.metric, err)
 			}
 		}(sp)
 	}
@@ -824,33 +606,18 @@ func (s *DB) buildDailyMetricCol(col, metric string, force bool) error {
 		return nil
 	}
 
-	var query string
-	if SumMetrics[metric] {
-		// Non-sleep SUM metrics: Apple Watch > iPhone > other.
-		srcPriority := `CASE
-			WHEN source LIKE '%%Ultra%%' OR source LIKE '%%Apple Watch%%' THEN 1
-			WHEN source LIKE '%%iPhone%%' THEN 2
-			ELSE 3 END`
-		query = fmt.Sprintf(`
-			SELECT day, source_total FROM (
-				SELECT day, source_total,
-				       ROW_NUMBER() OVER (PARTITION BY day ORDER BY src_rank, source_total DESC) AS rn
-				FROM (
-					SELECT SUBSTRING(hour,1,10) AS day, source, SUM(avg_val) AS source_total,
-					       %s AS src_rank
-					FROM hourly_metrics
-					WHERE metric_name = $1 %s
-					GROUP BY SUBSTRING(hour,1,10), source
-				) sub
-			) ranked WHERE rn = 1
-			ORDER BY day`, srcPriority, fromClause)
-	} else {
-		query = fmt.Sprintf(`
-			SELECT SUBSTRING(hour,1,10), AVG(avg_val)
-			FROM hourly_metrics
-			WHERE metric_name = $1 %s
-			GROUP BY SUBSTRING(hour,1,10)`, fromClause)
+	if !allowedDailyMetricColumn(col) {
+		return fmt.Errorf("unsupported daily metric column %q", col)
 	}
+	queryName := "legacy_daily_avg"
+	if SumMetrics[metric] {
+		queryName = "legacy_daily_sum"
+	}
+	replacements := map[string]string{"FROM_CLAUSE": fromClause}
+	if queryName == "legacy_daily_sum" {
+		replacements["SUM_SOURCE_RANK"] = legacySumSourceRankExpr()
+	}
+	query := aggregateSQLWith(queryName, replacements)
 
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
@@ -864,11 +631,8 @@ func (s *DB) buildDailyMetricCol(col, metric string, force bool) error {
 		if rows.Scan(&date, &val) != nil {
 			continue
 		}
-		s.pool.Exec(ctx, fmt.Sprintf(`
-			INSERT INTO daily_scores (date, %s, computed_at)
-			VALUES ($1, $2, NOW()::TEXT)
-			ON CONFLICT(date) DO UPDATE SET %s = excluded.%s, computed_at = excluded.computed_at`,
-			col, col, col), date, val)
+		s.pool.Exec(ctx,
+			aggregateSQLWith("legacy_daily_upsert", map[string]string{"COLUMN": col}), date, val)
 	}
 	return rows.Err()
 }
@@ -911,130 +675,18 @@ func (s *DB) buildDailySleepBlock(force bool) error {
 		args = append(args, refreshFrom)
 	}
 
-	// Multi-day variant of upsertDailyForDate's sleep block. Note: the
-	// per-day source pick is inlined rather than calling
-	// sleepCrossValidationPickSourceExpr because the helper assumes a
-	// flat (source, value) table — multi-day needs GROUP BY day. Threshold
-	// constants (1.0h floor, 1.4× divergence) and source priority
-	// (Apple Watch > RingConn > MAX) are duplicated here; keep them in
-	// lockstep with the helper above. (Rule: any threshold change touches
-	// both this function AND sleepCrossValidationPickSourceExpr.)
-	q := `
-WITH per_source AS (
-    SELECT SUBSTRING(hour,1,10) AS day, metric_name, source,
-           SUM(avg_val) AS sum_val
-    FROM hourly_metrics
-    WHERE metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake','sleep_unspecified')
-      ` + fromClause + `
-    GROUP BY SUBSTRING(hour,1,10), metric_name, source
-),
-sleep_total_per_day AS (
-    SELECT day, source, sum_val FROM per_source WHERE metric_name = 'sleep_total'
-),
-day_stats AS (
-    SELECT day,
-           COUNT(*)        AS n_sources,
-           MIN(sum_val)    AS min_total,
-           MAX(sum_val)    AS max_total
-    FROM sleep_total_per_day
-    GROUP BY day
-),
--- Both pickers add source ASC as a stable tiebreaker so equal totals
--- always resolve to the same row across reruns; without it, DISTINCT ON
--- can return either matching row and daily_scores would drift.
-priority_pick AS (
-    SELECT DISTINCT ON (day) day, source
-    FROM sleep_total_per_day
-    ORDER BY day,
-        CASE WHEN source LIKE '%Ultra%' OR source LIKE '%Apple Watch%' THEN 0
-             WHEN source LIKE '%RingConn%'                              THEN 1
-             ELSE                                                            2 END,
-        sum_val DESC,
-        source ASC
-),
-min_pick AS (
-    SELECT DISTINCT ON (day) day, source
-    FROM sleep_total_per_day
-    ORDER BY day, sum_val ASC, source ASC
-),
-sleep_picked AS (
-    SELECT s.day,
-        CASE WHEN s.n_sources > 1 AND s.min_total > 1.0
-                  AND s.max_total > s.min_total * 1.4
-             THEN m.source
-             ELSE p.source
-        END AS src
-    FROM day_stats s
-    LEFT JOIN priority_pick p ON p.day = s.day
-    LEFT JOIN min_pick      m ON m.day = s.day
-),
--- Atomicity gate: when MULTIPLE sources contributed sleep_total for the
--- night, demand the picked source has all five stages so we don't write
--- a NULL stage that ON CONFLICT COALESCE then fills from a prior row
--- with a DIFFERENT source (the mixing bug PR #26 closed). With a single
--- source there is no mixing risk, so trust it as-is — strict completeness
--- would erase a real night just because one stage happened to be 0
--- (HAE Apple Watch nights with sleep_awake = 0 hit this: hourly_metrics
--- filter qty > 0 drops the awake row, so the source has only 4 of 5
--- stages even though the night is fully recorded).
-sleep_complete AS (
-    -- Conditional gate (mirrors upsertDailyForDate):
-    --   single source                              → trust as-is
-    --   multi-source + all 5 stages from picked    → complete (stage-tracking device)
-    --   multi-source + total + unspecified picked  → complete (coarse-only device)
-    -- KNOWN LIMITATION (Issue #77): a picked source emitting ONLY sleep_total
-    -- (no stages, no unspecified) fails this gate by design — see the matching
-    -- comment in upsertDailyForDate's sleep_picked_complete CTE for the
-    -- reasoning. Both gates must stay in lockstep on this corner.
-    --
-    -- Regression coverage: see sleep_gate.go::EvaluateSleepPickedComplete
-    -- — pure Go twin exercised by sleep_gate_test.go.
-    SELECT sp.day, sp.src, (
-        (SELECT COUNT(DISTINCT source) FROM sleep_total_per_day WHERE day = sp.day) <= 1
-        OR (
-          SELECT COUNT(DISTINCT metric_name) FROM per_source
-           WHERE day = sp.day AND source = sp.src
-             AND metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake')
-        ) = 5
-        OR (
-          SELECT COUNT(DISTINCT metric_name) FROM per_source
-           WHERE day = sp.day AND source = sp.src
-             AND metric_name IN ('sleep_total','sleep_unspecified')
-        ) = 2
-    ) AS ok
-    FROM sleep_picked sp
-),
-day_metric AS (
-    SELECT p.day, p.metric_name,
-        CASE WHEN sc.ok AND p.source = sc.src THEN p.sum_val END AS val
-    FROM per_source p
-    JOIN sleep_complete sc ON sc.day = p.day
-)
-INSERT INTO daily_scores (date, sleep_total, sleep_deep, sleep_rem, sleep_core, sleep_awake, sleep_unspecified, computed_at)
-SELECT day,
-    MAX(val) FILTER (WHERE metric_name = 'sleep_total'),
-    MAX(val) FILTER (WHERE metric_name = 'sleep_deep'),
-    MAX(val) FILTER (WHERE metric_name = 'sleep_rem'),
-    MAX(val) FILTER (WHERE metric_name = 'sleep_core'),
-    MAX(val) FILTER (WHERE metric_name = 'sleep_awake'),
-    MAX(val) FILTER (WHERE metric_name = 'sleep_unspecified'),
-    NOW()::TEXT
-FROM day_metric
-GROUP BY day
-ON CONFLICT(date) DO UPDATE SET
-    -- Atomic overwrite when the gate passed (EXCLUDED.sleep_total IS NOT
-    -- NULL); preserve prior row as a whole otherwise. Mirrors the same
-    -- pattern in upsertDailyForDate — coarse-only picks must clear
-    -- stale stage columns from a prior staged-source write or we
-    -- re-create the mixed-source row the gate exists to prevent
-    -- (CodeRabbit PR #73).
-    sleep_total       = CASE WHEN EXCLUDED.sleep_total IS NOT NULL THEN EXCLUDED.sleep_total       ELSE daily_scores.sleep_total       END,
-    sleep_deep        = CASE WHEN EXCLUDED.sleep_total IS NOT NULL THEN EXCLUDED.sleep_deep        ELSE daily_scores.sleep_deep        END,
-    sleep_rem         = CASE WHEN EXCLUDED.sleep_total IS NOT NULL THEN EXCLUDED.sleep_rem         ELSE daily_scores.sleep_rem         END,
-    sleep_core        = CASE WHEN EXCLUDED.sleep_total IS NOT NULL THEN EXCLUDED.sleep_core        ELSE daily_scores.sleep_core        END,
-    sleep_awake       = CASE WHEN EXCLUDED.sleep_total IS NOT NULL THEN EXCLUDED.sleep_awake       ELSE daily_scores.sleep_awake       END,
-    sleep_unspecified = CASE WHEN EXCLUDED.sleep_total IS NOT NULL THEN EXCLUDED.sleep_unspecified ELSE daily_scores.sleep_unspecified END,
-    computed_at       = EXCLUDED.computed_at`
+	// Multi-day variant of upsertDailyForDate's sleep block. The query
+	// requires per-day grouping, so its thresholds and source-priority case
+	// are supplied from the shared aggregation policy catalog.
+	q := aggregateSQLWith("legacy_daily_sleep", map[string]string{
+		"FROM_CLAUSE":               fromClause,
+		"SLEEP_METRICS":             sqlStringList(sleepMetricNames),
+		"SLEEP_TRADITIONAL_METRICS": sqlStringList(sleepTraditionalMetrics),
+		"SLEEP_COARSE_METRICS":      sqlStringList(sleepCoarseMetrics),
+		"SLEEP_PRIORITY_CASE":       sleepSourcePriorityCaseExpr("source"),
+		"SLEEP_MIN_HOURS":           sqlPolicyNumber(sleepCrossValidationMinHours),
+		"SLEEP_DIVERGENCE":          sqlPolicyNumber(sleepCrossValidationDivergence),
+	})
 
 	if _, err := s.pool.Exec(ctx, q, args...); err != nil {
 		return fmt.Errorf("daily sleep block: %w", err)
@@ -1078,39 +730,14 @@ func (s *DB) buildHourlyMetric(metric, agg string, force bool) error {
 	// non-sleep metrics, which preserves the previous behaviour.
 	sleepDedup := sleepDedupClause(metric)
 
-	var query string
+	queryName := "legacy_hourly_avg"
 	if agg == "SUM" {
-		// SUM metrics: MAX within each minute (dedup re-syncs), then SUM per hour.
-		query = fmt.Sprintf(`
-			INSERT INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val, sample_count)
-			SELECT metric_name, hour, source, SUM(minute_max), MIN(minute_min), MAX(minute_max), COUNT(*)
-			FROM (
-				SELECT metric_name, source,
-				       SUBSTRING(date, 1, 13) || ':00' AS hour,
-				       SUBSTRING(date, 1, 16) AS minute,
-				       MAX(qty) AS minute_max, MIN(qty) AS minute_min
-				FROM metric_points
-				WHERE metric_name = $1 AND qty > 0 AND quality = 'ok' %s %s
-				GROUP BY metric_name, source, SUBSTRING(date, 1, 13) || ':00', SUBSTRING(date, 1, 16)
-			) sub
-			GROUP BY metric_name, hour, source
-			ON CONFLICT (metric_name, hour, source) DO UPDATE SET
-				avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val,
-				sample_count=EXCLUDED.sample_count`, sleepDedup, fromClause)
-	} else {
-		query = fmt.Sprintf(`
-			INSERT INTO hourly_metrics (metric_name, hour, source, avg_val, min_val, max_val, sample_count)
-			SELECT metric_name,
-			       SUBSTRING(date, 1, 13) || ':00' AS hour,
-			       source,
-			       AVG(qty), MIN(qty), MAX(qty), COUNT(*)
-			FROM metric_points
-			WHERE metric_name = $1 AND qty > 0 AND quality = 'ok' %s %s
-			GROUP BY metric_name, SUBSTRING(date, 1, 13) || ':00', source
-			ON CONFLICT (metric_name, hour, source) DO UPDATE SET
-				avg_val=EXCLUDED.avg_val, min_val=EXCLUDED.min_val, max_val=EXCLUDED.max_val,
-				sample_count=EXCLUDED.sample_count`, sleepDedup, fromClause)
+		queryName = "legacy_hourly_sum"
 	}
+	query := aggregateSQLWith(queryName, map[string]string{
+		"SLEEP_DEDUP": sleepDedup,
+		"FROM_CLAUSE": fromClause,
+	})
 
 	if !isSleepMetric(metric) {
 		_, err := s.pool.Exec(ctx, query, args...)
