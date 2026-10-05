@@ -99,7 +99,7 @@ export function DashboardDetails({
         </Surface>
       ) : null}
 
-      {!hideLegacyAI && (aiSections.length > 0 || ai?.insight) ? (
+      {!hideLegacyAI && !ai?.disabled && (aiSections.length > 0 || ai?.insight || ai?.previous?.text) ? (
         <Surface className="content-card insight-card">
           <div className="section-heading">
             <div>
@@ -110,7 +110,12 @@ export function DashboardDetails({
               <StatusBadge>{translate(locale, "updating")}</StatusBadge>
             ) : null}
           </div>
-          {aiSections.length > 0 ? (
+          {ai?.previous ? (
+            <div>
+              <p role="status">{translate(locale, "aiInsightPrevious")} · {ai.previous.source_date} · {translate(locale, ai.generating ? "updating" : "aiInsightPreviousContext")}</p>
+              <p>{ai.previous.text}</p>
+            </div>
+          ) : aiSections.length > 0 ? (
             <div className="insight-card__sections">
               {aiSections.map((section) => (
                 <article

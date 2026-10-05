@@ -11,9 +11,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// DailyInsightNarrativeSlot is one durable B1 text overlay. Runtime currently
-// uses only `overall`; the row hash is intentionally separate from the B0
-// snapshot hash so a material update makes stale prose unreadable at once.
+// DailyInsightNarrativeSlot fences current slot generation separately from B0.
+// A material change prevents reuse as current evidence; accepted display-only
+// prose survives in the tenant-local last-good settings namespace.
 type DailyInsightNarrativeSlot struct {
 	Date                string
 	Lang                string
@@ -160,14 +160,36 @@ func (s *DB) SaveDailyInsightNarrativeSlot(ctx context.Context, date, lang, slot
 	if leaseToken == "" || !json.Valid(narrative) {
 		return false, errors.New("invalid daily insight narrative slot save")
 	}
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE daily_insight_narrative_slots
+	// Publish last-good only from a successfully fenced modern AI result.
+	var candidate health.AIInsightSlotResponse
+	var lastGoodPayload []byte
+	if json.Unmarshal(narrative, &candidate) == nil && candidate.Version == health.AIInsightVersion &&
+		candidate.Locale == lang && candidate.Slot == slot && candidate.Insight != nil && candidate.Insight.Text != "" {
+		lastGoodPayload, _ = json.Marshal(LastGoodAIInsight{Version: health.AIInsightVersion,
+			Date: date, Lang: lang, Slot: slot, MaterialHash: materialHash, ProviderFingerprint: providerFingerprint,
+			Insight: candidate.Insight})
+	}
+	var saved bool
+	err := s.pool.QueryRow(ctx, `
+		WITH accepted AS (
+		 UPDATE daily_insight_narrative_slots
 		   SET narrative=$7, narrative_input_hash=$4, generation_state='ready',
 		       lease_hash=NULL, lease_until=NULL, failure_count=0, retry_after=NULL, updated_at=NOW()
 		 WHERE date=$1 AND lang=$2 AND slot=$3 AND material_input_hash=$4
-		   AND provider_fingerprint=$5 AND lease_hash=$6`,
-		date, lang, slot, materialHash, providerFingerprint, leaseToken, json.RawMessage(narrative))
-	return tag.RowsAffected() == 1, err
+		   AND provider_fingerprint=$5 AND lease_hash=$6
+		 RETURNING updated_at
+		), retained AS (
+		 INSERT INTO settings(key,value)
+		 SELECT $8, (jsonb_set($9::jsonb,'{generated_at}',to_jsonb(updated_at)))::text
+		 FROM accepted WHERE $9::jsonb IS NOT NULL
+		 ON CONFLICT(key) DO UPDATE SET value=excluded.value
+		 WHERE settings.value::jsonb->>'date' <= excluded.value::jsonb->>'date'
+		 RETURNING key
+		)
+		SELECT EXISTS(SELECT 1 FROM accepted)`,
+		date, lang, slot, materialHash, providerFingerprint, leaseToken, json.RawMessage(narrative),
+		lastGoodAIKey(lang, slot), json.RawMessage(lastGoodPayload)).Scan(&saved)
+	return saved, err
 }
 
 func (s *DB) FailDailyInsightNarrativeSlotGeneration(ctx context.Context, date, lang, slot, materialHash, providerFingerprint, leaseToken string, now time.Time) (bool, error) {

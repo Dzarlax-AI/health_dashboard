@@ -61,6 +61,26 @@
             ],
             "type": "object"
           },
+          "previous": {
+            "additionalProperties": false,
+            "properties": {
+              "generated_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "source_date": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source_date",
+              "text"
+            ],
+            "type": "object"
+          },
           "recommendation": {
             "type": "string"
           },
@@ -1863,6 +1883,16 @@
                   "null"
                 ]
               },
+              "generated_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "source_date": {
+                "type": "string"
+              },
+              "stale": {
+                "type": "boolean"
+              },
               "stance": {
                 "type": "string"
               },
@@ -1972,6 +2002,16 @@
                         "array",
                         "null"
                       ]
+                    },
+                    "generated_at": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "source_date": {
+                      "type": "string"
+                    },
+                    "stale": {
+                      "type": "boolean"
                     },
                     "stance": {
                       "type": "string"

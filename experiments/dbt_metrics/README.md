@@ -57,3 +57,24 @@ daily data fields, excludes `computed_at` and timing, and retains the candidate
 aggregation contract version/checksum in each snapshot. The main dbt pilot
 continues to exercise staged/coarse/incomplete sleep transitions and the known
 Go/dbt differences. See [calculation update workflow](../../docs/CALCULATION_UPDATES.md).
+
+## Rust dbt v2 compatibility preflight (2026-10-05)
+
+The official `dbt==2.0.6` binary was installed in a separate temporary virtual
+environment, preserving the pinned v1 pilot. Reproduce the adapter preflight:
+
+```bash
+python3 experiments/dbt_metrics/scripts/run_v2_smoke.py --dbt /path/to/v2/dbt
+```
+
+With synthetic credentials and loopback port 1, `dbt debug` rejects `type: postgres`
+before connecting: `dbt1005`, "The 'postgres' adapter is not yet supported by dbt."
+The ignored `artifacts/v2-smoke.json` records the binary version and diagnostic.
+No SQL benchmark ran; the configuration failure duration is not an aggregation
+timing. Experimental adapters were not enabled.
+
+[dbt v2 GA](https://docs.getdbt.com/blog/dbt-v2-is-ga) describes the Rust engine;
+the [supported platforms](https://docs.getdbt.com/docs/supported-data-platforms)
+and [Postgres adapter request](https://github.com/dbt-labs/dbt-core/issues/13123)
+explain the compatibility boundary. For this PostgreSQL pilot, retain v1 until
+a supported v2 adapter can execute the same fixtures and parity checks.

@@ -6,13 +6,13 @@ export function shouldPollAI(
   ai: AIBriefingResponse | undefined,
   attempts: number,
 ): boolean {
-  if (!ai || ai.disabled || attempts >= maxAIPollAttempts) {
+  if (!ai || ai.disabled || (attempts >= maxAIPollAttempts && !ai.previous)) {
     return false;
   }
   const hasSections = (ai.sections?.length ?? 0) > 0;
   const hasBlocks = Object.values(ai.blocks).some((body) => body.trim() !== "");
   const cacheIsCold = !ai.insight.trim() && !hasSections && !hasBlocks;
-  return ai.generating || cacheIsCold;
+  return ai.generating || cacheIsCold || !!ai.previous;
 }
 
 // Today Insights always returns factual content. A disabled response is not a
@@ -24,6 +24,8 @@ export function shouldPollTodayInsights(
   todayInsights: TodayInsightsResponse | undefined,
   attempts: number,
 ): boolean {
+  // Retain the call signature; attempts now control cadence, not visibility.
+  void attempts;
   if (!todayInsights) {
     return false;
   }
@@ -31,13 +33,11 @@ export function shouldPollTodayInsights(
   if (generation.state === "disabled") {
     return true;
   }
-  if (attempts >= maxAIPollAttempts) {
-    return false;
-  }
   return (
     generation.state === "cold" ||
     generation.state === "generating" ||
     generation.state === "failed" ||
+    (generation.slots?.some((slot) => ["cold", "generating", "failed"].includes(slot.state) || !slot.fresh_for_snapshot) ?? false) ||
     !generation.fresh_for_snapshot
   );
 }
@@ -60,7 +60,9 @@ export function todayInsightsPollDelayMs(
     return undefined;
   }
   if (todayInsights?.generation.state === "disabled") return 60_000;
-  const retryAfter = todayInsights?.generation.retry_after_seconds ?? 0;
+  const retryAfter = Math.max(todayInsights?.generation.retry_after_seconds ?? 0,
+    ...(todayInsights?.generation.slots?.map((slot) => slot.retry_after_seconds ?? 0) ?? []));
+  if (attempts >= maxAIPollAttempts) return Math.max(300_000, retryAfter * 1_000);
   if (todayInsights?.generation.state === "failed" && retryAfter > 0) {
     return retryAfter * 1_000;
   }

@@ -116,3 +116,41 @@ func resolveOneTodayAIInsight(ctx context.Context, db *storage.DB, rendered, gen
 	}
 	return rendered, insight, state, nil
 }
+
+// Retained prose is attached after generation packets and siblings are resolved.
+// It cannot become evidence for a replacement opinion or a current action.
+func applyLastGoodAIInsights(snapshot *health.DailyInsightSnapshot, retained map[string]storage.LastGoodAIInsight) *health.DailyInsightSnapshot {
+	out := snapshot
+	for _, slot := range []string{"overall", "sleep", "recovery", "energy"} {
+		entry, ok := retained[slot]
+		if !ok {
+			continue
+		}
+		var current *health.DailyInsightAIInsight
+		if slot == "overall" {
+			current = out.AIInsight
+		} else {
+			for _, domain := range out.Domains {
+				if domain.Key == slot {
+					current = domain.AIInsight
+					break
+				}
+			}
+		}
+		display := entry.DisplayInsight()
+		if current != nil {
+			// Current validated prose wins. Metadata must describe that same text.
+			if current.Text != display.Text || entry.Date != snapshot.Date {
+				continue
+			}
+			copy := *current
+			copy.SourceDate = entry.Date
+			copy.GeneratedAt = display.GeneratedAt
+			display = &copy
+		}
+		if applied, err := health.ApplyAIInsightSlot(out, slot, display); err == nil {
+			out = applied
+		}
+	}
+	return out
+}

@@ -1729,6 +1729,16 @@ func (h *Handler) todayInsights(w http.ResponseWriter, r *http.Request) {
 			narrativeMode = storage.TodayInsightsB1NarrativeModePreview
 		}
 	}
+	retainAI := narrativeMode != storage.TodayInsightsB1NarrativeModeDisabled && aiCfg.Enabled()
+	// Retain pre-release accepted prose before a fast replacement can save null
+	// or invalidate the old cache. Keep it separate from generation evidence.
+	var lastGoodAI map[string]storage.LastGoodAIInsight
+	if retainAI {
+		lastGoodAI, err = db.GetLastGoodAIInsights(r.Context(), lang, snapshot.Date)
+		if err != nil {
+			log.Printf("today AI insight: read display history: %v", err)
+		}
+	}
 	anyAIInsightEligible := false
 	for _, slot := range todayInsightNarrativeSlots {
 		if _, eligible := health.BuildAIInsightInput(snapshot, lang, slot, nil); eligible {
@@ -1800,6 +1810,9 @@ func (h *Handler) todayInsights(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+	}
+	if retainAI {
+		snapshot = applyLastGoodAIInsights(snapshot, lastGoodAI)
 	}
 	state, retryAfter := aggregateTodayInsightGeneration(slotStates)
 	jsonResponse(w, clientapi.TodayInsightsResponse{
@@ -1943,6 +1956,14 @@ func (h *Handler) aiBriefing(w http.ResponseWriter, r *http.Request) {
 		date == today && db.AIRegenInFlight(lang),
 		!aiCfg.Enabled(),
 	)
+	if date == today && aiCfg.Enabled() && !freshForDecision {
+		previousDate, previousText, generatedAt, err := db.GetPreviousAIBriefing(lang, today)
+		if err != nil {
+			log.Printf("ai briefing previous: %v", err)
+		} else if previousText != "" {
+			response.Previous = &clientapi.PreviousAIBriefing{SourceDate: previousDate, Text: previousText, GeneratedAt: generatedAt}
+		}
+	}
 	response.FreshForDecision = freshForDecision
 	if decision != nil {
 		response.DecisionID = decision.ID

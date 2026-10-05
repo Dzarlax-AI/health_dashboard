@@ -175,7 +175,7 @@ export function SleepReady({ resources, locale }: { resources: SleepResources; l
           ? window.setTimeout(() => {
               aiPollAttempts.current += 1;
               getAIBriefing(locale, controller.signal).then(setTodayAI).catch(() => undefined);
-            }, 60_000)
+            }, aiPollAttempts.current >= 10 ? 300_000 : 60_000)
           : undefined;
     };
     schedule();
@@ -285,6 +285,7 @@ export function SleepReady({ resources, locale }: { resources: SleepResources; l
         ) : currentInsight ? (
           <article className="sleep-ai-card">
             <span>✦ {translate(locale, "sleepInsight")}</span>
+            {todayAI?.previous ? <p role="status">{translate(locale, "aiInsightPrevious")} · {todayAI.previous.source_date} · {translate(locale, todayAI.generating ? "updating" : "aiInsightPreviousContext")}</p> : null}
             <p>{currentInsight}</p>
           </article>
         ) : current && todayAI?.generating ? (

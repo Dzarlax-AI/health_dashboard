@@ -29,6 +29,13 @@ export function InsightPair({ locale, title, observation, meaning, action, ai, s
       {ai ? (
         <article className="insight-pair__card insight-pair__card--ai" data-stance={ai.stance}>
           <span className="insight-pair__label">{translate(locale, "aiInsight")}</span>
+          {ai.stale ? (
+            <p className="insight-pair__previous" role="status">
+              {translate(locale, "aiInsightPrevious")} {ai.source_date}
+              {ai.generated_at ? ` · ${new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }).format(new Date(ai.generated_at))}` : ""}
+              {` · ${translate(locale, state === "failed" ? "aiInsightRefreshFailed" : state === "cold" || state === "generating" ? "updating" : "aiInsightPreviousContext")}`}
+            </p>
+          ) : null}
           <p>{ai.text}</p>
           {ai.alternative_action ? (
             <p className="insight-pair__action">

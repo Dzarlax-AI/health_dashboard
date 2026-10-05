@@ -364,3 +364,23 @@ func CombineAIBlocks(blocks map[string]string) string {
 	}
 	return sb.String()
 }
+
+// GetPreviousAIBriefing returns display-only prose from the latest cached day.
+// It does not authorize that day's action for the current decision.
+func (s *DB) GetPreviousAIBriefing(lang, throughDate string) (string, string, *time.Time, error) {
+	ctx, cancel := queryCtx()
+	defer cancel()
+	var date string
+	if err := s.pool.QueryRow(ctx, `SELECT COALESCE(MAX(date),'') FROM ai_briefing_blocks WHERE lang=$1 AND date<=$2 AND block='SYNTHESIS' AND text<>''`, lang, throughDate).Scan(&date); err != nil {
+		return "", "", nil, err
+	}
+	if date == "" {
+		return "", "", nil, nil
+	}
+	full := s.GetAIBlocksFull(date, lang)
+	synthesis := full["SYNTHESIS"]
+	if synthesis == nil || strings.TrimSpace(synthesis.Text) == "" {
+		return "", "", nil, nil
+	}
+	return date, synthesis.Text, &synthesis.UpdatedAt, nil
+}
