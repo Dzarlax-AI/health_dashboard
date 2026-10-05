@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"log"
 	"time"
 )
@@ -51,18 +52,28 @@ const MinBucketsPerHour = 3
 //
 // `loc` must be the tenant's REPORT_TZ.
 func (s *DB) HourlyHRSeriesForAwakeWindow(date string, loc *time.Location) ([]HourlyHRStat, bool) {
+	ctx, cancel := longCtx()
+	defer cancel()
+	rows, ok, _ := s.HourlyHRSeriesForAwakeWindowContext(ctx, date, loc)
+	return rows, ok
+}
+
+func (s *DB) HourlyHRSeriesForAwakeWindowContext(ctx context.Context, date string, loc *time.Location) ([]HourlyHRStat, bool, error) {
 	if loc == nil {
 		loc = time.UTC
 	}
 	d, err := time.ParseInLocation("2006-01-02", date, loc)
 	if err != nil {
-		return nil, false
+		return nil, false, err
 	}
 
-	wakeHour, onsetHour, _, _ := s.WakeTimeForDate(date, loc)
+	wakeHour, onsetHour, _, _, err := s.WakeTimeForDateContext(ctx, date, loc)
+	if err != nil {
+		return nil, false, err
+	}
 	awakeStart, awakeEnd := resolveAwakeBounds(d, wakeHour, onsetHour, loc)
 	if !awakeEnd.After(awakeStart) {
-		return []HourlyHRStat{}, true
+		return []HourlyHRStat{}, true, nil
 	}
 
 	const dateLayout = "2006-01-02 15:04:05 -0700"
@@ -81,8 +92,6 @@ func (s *DB) HourlyHRSeriesForAwakeWindow(date string, loc *time.Location) ([]Ho
 	// HH:MM:SS ±TZ" — Apple Health convention). Postgres handles the
 	// offset correctly; date_trunc('hour') then operates in UTC, but
 	// we re-attach loc when scanning into Go.
-	ctx, cancel := longCtx()
-	defer cancel()
 	rows, err := s.pool.Query(ctx, `
 		WITH ts_samples AS (
 		    SELECT date::timestamptz AS ts, qty
@@ -112,7 +121,7 @@ func (s *DB) HourlyHRSeriesForAwakeWindow(date string, loc *time.Location) ([]Ho
 		 ORDER BY hour_bucket`, startStr, endStr)
 	if err != nil {
 		log.Printf("HourlyHRSeriesForAwakeWindow %s: %v", date, err)
-		return nil, false
+		return nil, false, err
 	}
 	defer rows.Close()
 
@@ -123,7 +132,7 @@ func (s *DB) HourlyHRSeriesForAwakeWindow(date string, loc *time.Location) ([]Ho
 		var buckets, samples int
 		if err := rows.Scan(&hour, &med, &buckets, &samples); err != nil {
 			log.Printf("HourlyHRSeriesForAwakeWindow scan %s: %v", date, err)
-			continue
+			return nil, false, err
 		}
 		hour = hour.In(loc).Truncate(time.Hour)
 		stats[hour] = HourlyHRStat{
@@ -136,7 +145,7 @@ func (s *DB) HourlyHRSeriesForAwakeWindow(date string, loc *time.Location) ([]Ho
 	}
 	if err := rows.Err(); err != nil {
 		log.Printf("HourlyHRSeriesForAwakeWindow iter %s: %v", date, err)
-		return nil, false
+		return nil, false, err
 	}
 
 	// Zero-fill hours with no data so the returned slice matches the
@@ -151,7 +160,7 @@ func (s *DB) HourlyHRSeriesForAwakeWindow(date string, loc *time.Location) ([]Ho
 		}
 		out = append(out, HourlyHRStat{Hour: slot, CoverageOK: false})
 	}
-	return out, true
+	return out, true, nil
 }
 
 // emitHourSlots returns the sequence of hour-boundary timestamps in

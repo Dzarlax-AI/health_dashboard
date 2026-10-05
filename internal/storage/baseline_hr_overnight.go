@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"database/sql"
 	"log"
 	"os"
@@ -29,15 +30,28 @@ import (
 // loc must be the tenant's REPORT_TZ. Same convention as
 // WakeTimeForDate — caller resolves TZ once, threads it through.
 func (s *DB) ComputeOvernightHRBaseline(date string, loc *time.Location) (median float64, imputed bool, ok bool) {
+	ctx, cancel := queryCtx()
+	defer cancel()
+	median, imputed, ok, _ = s.ComputeOvernightHRBaselineContext(ctx, date, loc)
+	return
+}
+
+// ComputeOvernightHRBaselineContext is the context-aware form used by
+// bounded historical cache maintenance. Missing samples remain a successful
+// no-value result; database and date errors are returned.
+func (s *DB) ComputeOvernightHRBaselineContext(ctx context.Context, date string, loc *time.Location) (median float64, imputed bool, ok bool, err error) {
 	if loc == nil {
 		loc = time.UTC
 	}
 	d, err := time.ParseInLocation("2006-01-02", date, loc)
 	if err != nil {
-		return 0, false, false
+		return 0, false, false, err
 	}
 
-	wakeHour, _, wakeImputed, wakeOK := s.WakeTimeForDate(date, loc)
+	wakeHour, _, wakeImputed, wakeOK, err := s.WakeTimeForDateContext(ctx, date, loc)
+	if err != nil {
+		return 0, false, false, err
+	}
 	start, end, imputed := resolveBaselineWindow(d, wakeHour, wakeImputed, wakeOK, loc)
 
 	// metric_points.date is TEXT in "YYYY-MM-DD HH:MM:SS ±TZ" format —
@@ -48,8 +62,6 @@ func (s *DB) ComputeOvernightHRBaseline(date string, loc *time.Location) (median
 	startStr := start.In(loc).Format(dateLayout)
 	endStr := end.In(loc).Format(dateLayout)
 
-	ctx, cancel := queryCtx()
-	defer cancel()
 	var got sql.NullFloat64
 	// percentile_cont(0.5) WITHIN GROUP gives true median (PostgreSQL
 	// 11+). `qty` on heart_rate metric_points rows is the HR per
@@ -67,12 +79,12 @@ func (s *DB) ComputeOvernightHRBaseline(date string, loc *time.Location) (median
 		   AND date <  $2`, startStr, endStr).Scan(&got)
 	if err != nil {
 		log.Printf("ComputeOvernightHRBaseline %s: %v", date, err)
-		return 0, imputed, false
+		return 0, imputed, false, err
 	}
 	if !got.Valid || !isFiniteFloat(got.Float64) {
-		return 0, imputed, false
+		return 0, imputed, false, nil
 	}
-	return got.Float64, imputed, true
+	return got.Float64, imputed, true, nil
 }
 
 // UpsertBaselineHROvernightForDate is the exported wrapper around the
@@ -90,12 +102,19 @@ func (s *DB) UpsertBaselineHROvernightForDate(date string, loc *time.Location) {
 // HR), the column stays NULL via the conditional UPDATE — we never
 // overwrite a valid prior value with NULL.
 func (s *DB) upsertBaselineHROvernightForDate(date string, loc *time.Location) error {
-	median, _, ok := s.ComputeOvernightHRBaseline(date, loc)
+	ctx, cancel := queryCtx()
+	defer cancel()
+	return s.upsertBaselineHROvernightForDateContext(ctx, date, loc)
+}
+
+func (s *DB) upsertBaselineHROvernightForDateContext(ctx context.Context, date string, loc *time.Location) error {
+	median, _, ok, err := s.ComputeOvernightHRBaselineContext(ctx, date, loc)
+	if err != nil {
+		return err
+	}
 	if !ok {
 		return nil
 	}
-	ctx, cancel := queryCtx()
-	defer cancel()
 	if _, err := s.pool.Exec(ctx, `
 		UPDATE daily_scores
 		   SET baseline_hr_overnight = $2

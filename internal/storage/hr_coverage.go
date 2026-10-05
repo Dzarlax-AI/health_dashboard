@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"database/sql"
 	"log"
 	"time"
@@ -40,23 +41,31 @@ import (
 // `loc` must be the tenant's REPORT_TZ — same convention as
 // WakeTimeForDate / ComputeOvernightHRBaseline.
 func (s *DB) HRCoverageHours(date string, loc *time.Location) (int, bool) {
+	ctx, cancel := queryCtx()
+	defer cancel()
+	hours, ok, _ := s.HRCoverageHoursContext(ctx, date, loc)
+	return hours, ok
+}
+
+func (s *DB) HRCoverageHoursContext(ctx context.Context, date string, loc *time.Location) (int, bool, error) {
 	if loc == nil {
 		loc = time.UTC
 	}
 	d, err := time.ParseInLocation("2006-01-02", date, loc)
 	if err != nil {
-		return 0, false
+		return 0, false, err
 	}
 
-	wakeHour, onsetHour, _, _ := s.WakeTimeForDate(date, loc)
+	wakeHour, onsetHour, _, _, err := s.WakeTimeForDateContext(ctx, date, loc)
+	if err != nil {
+		return 0, false, err
+	}
 	awakeStart, awakeEnd := resolveAwakeBounds(d, wakeHour, onsetHour, loc)
 
 	const dateLayout = "2006-01-02 15:04:05 -0700"
 	startStr := awakeStart.In(loc).Format(dateLayout)
 	endStr := awakeEnd.In(loc).Format(dateLayout)
 
-	ctx, cancel := queryCtx()
-	defer cancel()
 	var hours sql.NullInt64
 	err = s.pool.QueryRow(ctx, `
 		SELECT COUNT(DISTINCT SUBSTRING(date, 1, 13))
@@ -67,12 +76,12 @@ func (s *DB) HRCoverageHours(date string, loc *time.Location) (int, bool) {
 		   AND date <  $2`, startStr, endStr).Scan(&hours)
 	if err != nil {
 		log.Printf("HRCoverageHours %s: %v", date, err)
-		return 0, false
+		return 0, false, err
 	}
 	if !hours.Valid {
-		return 0, true
+		return 0, true, nil
 	}
-	return int(hours.Int64), true
+	return int(hours.Int64), true, nil
 }
 
 // AwakeWindowBounds resolves the absolute [start, end) timestamps for
@@ -94,6 +103,22 @@ func (s *DB) AwakeWindowBounds(date string, loc *time.Location) (start, end time
 	wakeHour, onsetHour, _, _ := s.WakeTimeForDate(date, loc)
 	start, end = resolveAwakeBounds(d, wakeHour, onsetHour, loc)
 	return start, end, true
+}
+
+func (s *DB) AwakeWindowBoundsContext(ctx context.Context, date string, loc *time.Location) (start, end time.Time, ok bool, err error) {
+	if loc == nil {
+		loc = time.UTC
+	}
+	d, err := time.ParseInLocation("2006-01-02", date, loc)
+	if err != nil {
+		return time.Time{}, time.Time{}, false, err
+	}
+	wakeHour, onsetHour, _, _, err := s.WakeTimeForDateContext(ctx, date, loc)
+	if err != nil {
+		return time.Time{}, time.Time{}, false, err
+	}
+	start, end = resolveAwakeBounds(d, wakeHour, onsetHour, loc)
+	return start, end, true, nil
 }
 
 // resolveAwakeBounds turns the [wakeHour, onsetHour) hour-of-day pair

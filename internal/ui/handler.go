@@ -3594,12 +3594,25 @@ func (h *Handler) adminQualityFix(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	db := scope.DB
+	changed := false
+	defer func() {
+		if changed && h.mgr != nil {
+			if refresh := h.mgr.BackfillDatesFor(scope.Schema); refresh != nil {
+				// Partial quality updates also leave committed historical dirty dates.
+				refresh([]string{db.Today()})
+			}
+		}
+	}()
 	impossible, err := db.MarkExistingImpossible()
+	changed = impossible > 0
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	suspectPerMetric, err := db.MarkSuspectPoints(7, 3)
+	for _, n := range suspectPerMetric {
+		changed = changed || n > 0
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

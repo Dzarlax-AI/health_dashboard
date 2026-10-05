@@ -35,6 +35,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"health-receiver/internal/testdb"
 )
 
@@ -60,11 +61,11 @@ func cleanupSharedTestDBs() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if sharedFullDB != nil {
-		_ = testdb.DropSchema(ctx, sharedFullDB.pool, sharedFullName)
+		_ = testdb.DropSchema(ctx, sharedFullDB.pool.(*pgxpool.Pool), sharedFullName)
 		sharedFullDB.Close()
 	}
 	if sharedReadinessDB != nil {
-		_ = testdb.DropSchema(ctx, sharedReadinessDB.pool, sharedReadinessName)
+		_ = testdb.DropSchema(ctx, sharedReadinessDB.pool.(*pgxpool.Pool), sharedReadinessName)
 		sharedReadinessDB.Close()
 	}
 }
@@ -169,7 +170,7 @@ func testIsolatedReadinessDB(t *testing.T) (*DB, func()) {
 	db := NewFromPool(pool)
 	db.EnsureReadinessRedesignTables()
 	if err := db.VerifyReadinessRedesignSchema(); err != nil {
-		_ = testdb.DropSchema(ctx, db.pool, schema)
+		_ = testdb.DropSchema(ctx, db.pool.(*pgxpool.Pool), schema)
 		db.Close()
 		t.Fatalf("schema not healthy after EnsureReadinessRedesignTables: %v", err)
 	}
@@ -177,7 +178,7 @@ func testIsolatedReadinessDB(t *testing.T) (*DB, func()) {
 	cleanup := func() {
 		dropCtx, dropCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer dropCancel()
-		_ = testdb.DropSchema(dropCtx, db.pool, schema)
+		_ = testdb.DropSchema(dropCtx, db.pool.(*pgxpool.Pool), schema)
 		db.Close()
 	}
 	return db, cleanup
@@ -218,13 +219,13 @@ func getSharedFullDB(t *testing.T) *DB {
 	bootstrapPool.Close()
 	db := NewFromPool(pool)
 	if err := db.EnsureAllTables(); err != nil {
-		_ = testdb.DropSchema(ctx, db.pool, schema)
+		_ = testdb.DropSchema(ctx, db.pool.(*pgxpool.Pool), schema)
 		db.Close()
 		sharedFullErr = fmt.Errorf("EnsureAllTables: %w", err)
 		t.Fatalf("%v", sharedFullErr)
 	}
 	if err := db.MigrateSchemaContract(); err != nil {
-		_ = testdb.DropSchema(ctx, db.pool, schema)
+		_ = testdb.DropSchema(ctx, db.pool.(*pgxpool.Pool), schema)
 		db.Close()
 		sharedFullErr = fmt.Errorf("MigrateSchemaContract: %w", err)
 		t.Fatalf("%v", sharedFullErr)
@@ -270,7 +271,7 @@ func getSharedReadinessDB(t *testing.T) *DB {
 	db := NewFromPool(pool)
 	db.EnsureReadinessRedesignTables()
 	if err := db.VerifyReadinessRedesignSchema(); err != nil {
-		_ = testdb.DropSchema(ctx, db.pool, schema)
+		_ = testdb.DropSchema(ctx, db.pool.(*pgxpool.Pool), schema)
 		db.Close()
 		sharedReadinessErr = fmt.Errorf("schema not healthy after EnsureReadinessRedesignTables: %w", err)
 		t.Fatalf("%v", sharedReadinessErr)
@@ -284,7 +285,7 @@ func resetFullTestDB(t *testing.T, db *DB) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := testdb.TruncateCurrentSchema(ctx, db.pool); err != nil {
+	if err := testdb.TruncateCurrentSchema(ctx, db.pool.(*pgxpool.Pool)); err != nil {
 		t.Fatalf("reset full test DB: %v", err)
 	}
 	db.EnsureReadinessRedesignTables()
@@ -304,7 +305,7 @@ func resetReadinessTestDB(t *testing.T, db *DB) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := testdb.TruncateCurrentSchema(ctx, db.pool); err != nil {
+	if err := testdb.TruncateCurrentSchema(ctx, db.pool.(*pgxpool.Pool)); err != nil {
 		t.Fatalf("reset readiness test DB: %v", err)
 	}
 	db.EnsureReadinessRedesignTables()

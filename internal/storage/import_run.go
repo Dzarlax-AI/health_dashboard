@@ -228,6 +228,9 @@ func (s *ImportSession) touchLease(ctx context.Context) error {
 }
 
 func (s *ImportSession) Commit() (ImportCounters, error) {
+	s.db.cacheMu.Lock()
+	defer s.db.cacheMu.Unlock()
+
 	ctx, cancel := longCtx()
 	defer cancel()
 
@@ -250,6 +253,13 @@ func (s *ImportSession) Commit() (ImportCounters, error) {
 	if err := s.promoteCoverage(ctx, tx); err != nil {
 		return s.failCommit(tx, err)
 	}
+	coverageDates, err := importCoverageDates(ctx, tx, s.runID)
+	if err != nil {
+		return s.failCommit(tx, err)
+	}
+	if err := s.db.MarkCacheDirtyTx(ctx, tx, coverageDates); err != nil {
+		return s.failCommit(tx, fmt.Errorf("mark imported cache dates dirty: %w", err))
+	}
 	if err := s.promotePoints(ctx, tx); err != nil {
 		return s.failCommit(tx, err)
 	}
@@ -269,6 +279,26 @@ func (s *ImportSession) Commit() (ImportCounters, error) {
 		return s.counters, err
 	}
 	return s.counters, nil
+}
+
+func importCoverageDates(ctx context.Context, tx pgx.Tx, runID int64) ([]string, error) {
+	rows, err := tx.Query(ctx, `SELECT DISTINCT local_date FROM import_run_coverage WHERE import_run_id = $1`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("read import coverage dates: %w", err)
+	}
+	defer rows.Close()
+	var dates []string
+	for rows.Next() {
+		var date string
+		if err := rows.Scan(&date); err != nil {
+			return nil, fmt.Errorf("scan import coverage date: %w", err)
+		}
+		dates = append(dates, date)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate import coverage dates: %w", err)
+	}
+	return dates, nil
 }
 
 func (s *ImportSession) failCommit(tx pgx.Tx, cause error) (ImportCounters, error) {

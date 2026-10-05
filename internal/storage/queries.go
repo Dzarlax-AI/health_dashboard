@@ -662,6 +662,10 @@ func (s *DB) refreshDashboardSnapshotLocked(ctx context.Context) error {
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate dashboard cache: %w", err)
 	}
+	// The snapshot may be built inside one maintenance transaction, where
+	// every query shares a single connection and a second query cannot begin
+	// until the first result set has been explicitly closed.
+	rows.Close()
 	if result.Date != "" {
 		units, err := s.dashboardSnapshotUnits(ctx, result.Date)
 		if err != nil {

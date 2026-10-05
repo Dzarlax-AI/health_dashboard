@@ -141,6 +141,14 @@ func (s *DB) BackfillRecoveryStabilitySnapshots(from, to string) (int, error) {
 }
 
 func (s *DB) backfillRecoveryStabilitySnapshots(from, to string, epochs *sourceEpochRunCache) (int, error) {
+	return s.backfillRecoveryStabilitySnapshotsForMaintenance(from, to, "", "", epochs)
+}
+
+// backfillRecoveryStabilitySnapshotsForMaintenance retains the full-run
+// observation horizon when maintenance dispatches one target date at a time.
+// Candidate maturity uses the furthest observed date, including when a night
+// inside its forward window is missing.
+func (s *DB) backfillRecoveryStabilitySnapshotsForMaintenance(from, to, observationFrom, observationThrough string, epochs *sourceEpochRunCache) (int, error) {
 	fromT, err := time.Parse(isoDate, from)
 	if err != nil {
 		return 0, fmt.Errorf("BackfillRecoveryStabilitySnapshots: parse from: %w", err)
@@ -153,12 +161,35 @@ func (s *DB) backfillRecoveryStabilitySnapshots(from, to string, epochs *sourceE
 		return 0, fmt.Errorf("BackfillRecoveryStabilitySnapshots: to %q before from %q", to, from)
 	}
 
+	observationFromTime := fromT
+	if observationFrom != "" {
+		var parseErr error
+		observationFromTime, parseErr = time.Parse(isoDate, observationFrom)
+		if parseErr != nil {
+			return 0, fmt.Errorf("BackfillRecoveryStabilitySnapshots: parse observation start: %w", parseErr)
+		}
+		if observationFromTime.After(fromT) {
+			return 0, fmt.Errorf("BackfillRecoveryStabilitySnapshots: observation start %q after target start %q", observationFrom, from)
+		}
+	}
+	observationThroughTime := toT
+	if observationThrough != "" {
+		var parseErr error
+		observationThroughTime, parseErr = time.Parse(isoDate, observationThrough)
+		if parseErr != nil {
+			return 0, fmt.Errorf("BackfillRecoveryStabilitySnapshots: parse observation horizon: %w", parseErr)
+		}
+		if observationThroughTime.Before(toT) {
+			return 0, fmt.Errorf("BackfillRecoveryStabilitySnapshots: observation horizon %q before target end %q", observationThrough, to)
+		}
+	}
 	loadFrom := fromT.AddDate(0, 0, -ewmaWindowSlow).Format(isoDate)
 	loadTo := toT.AddDate(0, 0, 3).Format(isoDate)
 	rows, err := s.LoadSleepRows(loadFrom, loadTo)
 	if err != nil {
 		return 0, err
 	}
+	latestObservedSleepDate := ""
 	archLoadFrom := fromT.AddDate(0, 0, -14).Format(isoDate)
 	archByDate, err := s.LoadSleepArchitectureDays(archLoadFrom, to)
 	if err != nil {
@@ -169,13 +200,25 @@ func (s *DB) backfillRecoveryStabilitySnapshots(from, to string, epochs *sourceE
 	byDate := make(map[string]health.SleepRow, len(rows))
 	effByDate := make(map[string]health.SleepEfficiencyResult, len(rows))
 	captureByDate := make(map[string]health.SleepCaptureConfidenceResult, len(rows))
-	latestObservedSleepDate := ""
 	for _, r := range rows {
 		byDate[r.Date] = r
 		effByDate[r.Date] = health.ComputeSleepEfficiency(r)
 		captureByDate[r.Date] = health.ComputeSleepCaptureConfidence(r)
 		if r.Date > latestObservedSleepDate {
 			latestObservedSleepDate = r.Date
+		}
+	}
+	if observationFrom != "" || observationThrough != "" {
+		// Recovery candidate maturity depends on the maximum observed date
+		// in the original whole-run horizon. Read only that scalar instead
+		// of loading the entire range's sleep rows for each maintenance unit.
+		wholeLoadFrom := observationFromTime.AddDate(0, 0, -ewmaWindowSlow).Format(isoDate)
+		wholeLoadTo := observationThroughTime.AddDate(0, 0, 3).Format(isoDate)
+		ctx, cancel := queryCtx()
+		err := s.pool.QueryRow(ctx, `SELECT COALESCE(MAX(date), '') FROM daily_scores WHERE date BETWEEN $1 AND $2`, wholeLoadFrom, wholeLoadTo).Scan(&latestObservedSleepDate)
+		cancel()
+		if err != nil {
+			return 0, fmt.Errorf("read latest observed sleep date: %w", err)
 		}
 	}
 

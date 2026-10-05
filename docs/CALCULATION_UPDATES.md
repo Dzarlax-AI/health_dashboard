@@ -103,3 +103,32 @@ and benchmarks. The contract runner also pins unequal source coverage and
 unknown metrics and compares live, legacy-force and legacy-incremental
 snapshots against the recorded implementation. Ordinary DB integration tests
 remain opt-in; a skipped integration test is not a successful DB check.
+
+## Startup recovery and historical corrections
+
+Startup uses the tenant-local `_cache_maintenance_v1` journal in `settings`.
+Its identity includes aggregate SQL/policy, readiness score, auxiliary cache,
+Energy, and all readiness writer formula/feature versions. Bump the relevant
+version when semantics change. The first unknown identity requires a historical
+baseline; an exact completed identity with no dirty dates skips historical work.
+A matching interrupted target resumes its persisted phase/date cursor.
+
+Recovery runs bounded date transactions in dependency order: aggregate, overnight
+baseline, sustained HR, Recovery, Passive Efficiency, Acute Risk, Chronic Load,
+and readiness/Energy. The cursor advances only after commit. Background units
+have a 30-second SQL deadline and yield to foreground cache waiters between
+units. Continuous foreground work may delay maintenance. Source changes and
+per-date dirty generations commit together; completion cannot clear a newer
+correction. Final dashboard publication and the completion marker commit together.
+
+Historical corrections rebuild changed live aggregate dates, then auxiliary and
+writer-major dependencies from 17 days before the earliest changed date through
+today. The extra horizon covers Chronic's 14 forward days and Recovery's three
+forward nights. Synthetic `backfilled` Energy EOD rows are recalculated; observed
+intraday rows remain the record of what was calculated at that time. Historical
+hourly Energy graphs are not reconstructed by this repair.
+
+The startup worker retries incomplete tenants without monopolizing the installation
+queue. Manual backfill commands remain available. Local parity and isolated DB
+checks do not prove production latency; release acceptance requires a real sync
+and repeated startup on the deployed image pair.

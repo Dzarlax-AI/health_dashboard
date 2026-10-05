@@ -352,7 +352,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	})
 	backfillDatesFn := func(dates []string) { refreshDatesFn(dates, false) }
 	startupBackfills := newStartupBackfillQueue(ctx, 5*time.Second)
-	enqueueStartupCacheRefresh(startupBackfills, db, schema, notifyDefaults, backfillDatesFn)
+	enqueueStartupCacheRefresh(startupBackfills, db, schema, notifyDefaults, refreshDatesFn, todayDerived)
 	onNewData := func(_ *storage.DB, dates []string, cacheReady bool) {
 		dispatchIngestRefresh(dates, cacheReady, refreshDatesFn, maybeFireMorningReport)
 	}
@@ -498,7 +498,7 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Regist
 	})
 	backfillDatesFn := func(dates []string) { refreshDatesFn(dates, false) }
 
-	enqueueStartupCacheRefresh(startupBackfills, db, schema, notifyDefaults, backfillDatesFn)
+	enqueueStartupCacheRefresh(startupBackfills, db, schema, notifyDefaults, refreshDatesFn, todayDerived)
 
 	var morningSendMu, checkinSendMu sync.Mutex
 	maybeFireMorningReport := makeMorningTrigger(ctx, db, &morningSendMu, mgr, reg, schema, notifyDefaults)
@@ -617,23 +617,33 @@ func (q *startupBackfillQueue) next() (startupBackfillTask, bool) {
 }
 
 func enqueueStartupCacheRefresh(queue *startupBackfillQueue, db *storage.DB, schema string,
-	notifyDefaults storage.NotifyConfig, refreshToday func([]string)) {
-	queue.Enqueue(schema, func() {
-		force := db.NeedsForceBackfill()
-		if force {
-			log.Printf("[%s] startup cache refresh: caches empty; rebuilding all", schema)
-		} else {
-			log.Printf("[%s] startup cache refresh: incremental", schema)
-		}
-		if err := runCacheBackfill(db, force); err != nil {
-			log.Printf("[%s] startup cache refresh: failed: %v", schema, err)
+	notifyDefaults storage.NotifyConfig, refreshToday func([]string, bool), coordinator *storage.TodayDerivedStateCoordinator) {
+	var run func()
+	run = func() {
+		err := db.RunCacheMaintenance(queue.ctx, tenantTZOrUTC(db, notifyDefaults, schema), func(dates []string) error {
+			refreshToday(dates, len(dates) == 0)
+			waitCtx, cancel := context.WithTimeout(queue.ctx, 30*time.Second)
+			defer cancel()
+			return coordinator.WaitForIdle(waitCtx, db)
+		})
+		if err != nil {
+			log.Printf("[%s] startup cache maintenance: incomplete: %v", schema, err)
+			go func() {
+				timer := time.NewTimer(time.Minute)
+				defer timer.Stop()
+				select {
+				case <-queue.ctx.Done():
+				case <-timer.C:
+					queue.Enqueue(schema, run)
+				}
+			}()
 			return
 		}
-		if err := db.ReconcileRecentCompletedNightSleep(context.Background(), time.Now()); err != nil {
+		if err := db.ReconcileRecentCompletedNightSleep(queue.ctx, time.Now()); err != nil {
 			log.Printf("[%s] startup completed-night reconciliation: %v", schema, err)
 		}
-		refreshToday([]string{tenantLocalNow(db, notifyDefaults).Format("2006-01-02")})
-	})
+	}
+	queue.Enqueue(schema, run)
 }
 
 // makeBackfillFn returns the admin/import callback that recomputes caches.
@@ -739,9 +749,9 @@ func makeTodayDerivedStateRefresh(ctx context.Context, db *storage.DB, schema st
 				return nil
 			}
 			log.Printf("[%s] today derived state: rebuilding %d date(s)", schema, len(affected))
-			return db.UpsertRecentCache(affected, true)
+			return db.RefreshChangedCache(ctx, affected)
 		}, func(affected []string) error {
-			return db.RunReadinessRedesignBackfillForDatesAt(affected, tenantLocalNow(db, defaults))
+			return db.RepairHistoricalDependencies(ctx, affected, tenantTZOrUTC(db, defaults, schema), tenantLocalNow(db, defaults))
 		}, func() string {
 			return tenantTZOrUTC(db, defaults, schema)
 		}, func() error {

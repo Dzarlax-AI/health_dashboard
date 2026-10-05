@@ -14,8 +14,11 @@ import (
 )
 
 type DB struct {
-	pool    *pgxpool.Pool
-	cacheMu sync.Mutex // protects concurrent writes to hourly_metrics and daily_scores
+	// Protected by cacheMu; durable dirty generations remain authoritative
+	// after a restart. This map identifies successful inline work in this process.
+	cacheAppliedGenerations map[string]uint64
+	pool                    storagePool
+	cacheMu                 CachePriorityLock // serializes cache writes and lets queued foreground work run first
 
 	// dashboardRefreshes makes the request-visible snapshot state explicit
 	// without exposing the mutable cache tables. A completed snapshot remains
@@ -487,6 +490,8 @@ func (s *DB) InsertPoints(recordID int64, points []MetricPoint) error {
 	if len(points) == 0 {
 		return nil
 	}
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
 	ctx, cancel := longCtx()
 	defer cancel()
 	tx, err := s.pool.Begin(ctx)
@@ -494,6 +499,9 @@ func (s *DB) InsertPoints(recordID int64, points []MetricPoint) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
+	if err := s.MarkCacheDirtyTx(ctx, tx, cacheDatesFromPoints(points)); err != nil {
+		return fmt.Errorf("mark inserted cache dates dirty: %w", err)
+	}
 
 	// Three guards on the sleep_% UPDATE branch — all protect the cached
 	// per-night aggregate from being clobbered by garbage records that share
@@ -582,4 +590,18 @@ func (s *DB) InsertPoints(recordID int64, points []MetricPoint) error {
 	}
 
 	return tx.Commit(ctx)
+}
+
+func cacheDatesFromPoints(points []MetricPoint) []string {
+	dates := make(map[string]struct{})
+	for _, point := range points {
+		if len(point.Date) >= len("2006-01-02") {
+			dates[point.Date[:len("2006-01-02")]] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(dates))
+	for date := range dates {
+		out = append(out, date)
+	}
+	return out
 }

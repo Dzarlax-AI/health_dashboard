@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"sort"
 	"strings"
 	"time"
@@ -45,15 +46,25 @@ import (
 // REPORT_TZ itself because callers (notably energy_v2_orchestrator) are
 // per-tenant and already hold their loc.
 func (s *DB) WakeTimeForDate(date string, loc *time.Location) (wakeHour, sleepOnsetHour float64, imputed bool, ok bool) {
+	ctx, cancel := queryCtx()
+	defer cancel()
+	wakeHour, sleepOnsetHour, imputed, ok, _ = s.WakeTimeForDateContext(ctx, date, loc)
+	return
+}
+
+// WakeTimeForDateContext is the context-aware form used by bounded cache
+// maintenance. A database failure is returned separately from missing sleep,
+// which retains the existing imputed-window behavior.
+func (s *DB) WakeTimeForDateContext(ctx context.Context, date string, loc *time.Location) (wakeHour, sleepOnsetHour float64, imputed bool, ok bool, err error) {
 	if loc == nil {
 		loc = time.UTC
 	}
 	d, err := time.ParseInLocation("2006-01-02", date, loc)
 	if err != nil {
-		return 0, 0, false, false
+		return 0, 0, false, false, err
 	}
-	midnightD := d                                    // 00:00 local of date d (start of d)
-	midnightDPlus1 := d.AddDate(0, 0, 1)              // 00:00 local of d+1
+	midnightD := d                       // 00:00 local of date d (start of d)
+	midnightDPlus1 := d.AddDate(0, 0, 1) // 00:00 local of d+1
 	// Wide query window: d-1 12:00 local through d+2 12:00 local. Covers
 	// the night ending on d (likely starts d-1 evening) and the night
 	// starting on d (likely ends d+1 morning), with margin for late
@@ -61,11 +72,9 @@ func (s *DB) WakeTimeForDate(date string, loc *time.Location) (wakeHour, sleepOn
 	winStart := d.AddDate(0, 0, -1).Add(12 * time.Hour)
 	winEnd := d.AddDate(0, 0, 2).Add(12 * time.Hour)
 
-	segs, qerr := s.fetchAsleepSegments(winStart, winEnd)
+	segs, qerr := s.fetchAsleepSegmentsContext(ctx, winStart, winEnd)
 	if qerr != nil {
-		// Hard DB error — caller should treat as not-ok and fall back
-		// to the static cap on its own. Do not fabricate hours.
-		return 0, 0, false, false
+		return 0, 0, false, false, qerr
 	}
 
 	wake, wakeOK := pickMainSleep(segs, midnightD)
@@ -73,11 +82,11 @@ func (s *DB) WakeTimeForDate(date string, loc *time.Location) (wakeHour, sleepOn
 	if !wakeOK || !onsetOK {
 		// imputed_awake_window flag path. Both fields fall back together
 		// so downstream consumers don't mix real + fake on the same day.
-		return 7.0, 22.0, true, true
+		return 7.0, 22.0, true, true, nil
 	}
 	wakeLocal := wake.End.In(loc)
 	onsetLocal := onset.Start.In(loc)
-	return hourOfDay(wakeLocal), hourOfDay(onsetLocal), false, true
+	return hourOfDay(wakeLocal), hourOfDay(onsetLocal), false, true, nil
 }
 
 // sleepSegment is a merged asleep-state interval.
@@ -120,6 +129,10 @@ type rawSleepSegment struct {
 func (s *DB) fetchAsleepSegments(winStart, winEnd time.Time) ([]sleepSegment, error) {
 	ctx, cancel := queryCtx()
 	defer cancel()
+	return s.fetchAsleepSegmentsContext(ctx, winStart, winEnd)
+}
+
+func (s *DB) fetchAsleepSegmentsContext(ctx context.Context, winStart, winEnd time.Time) ([]sleepSegment, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT date, qty, source
 		  FROM metric_points
@@ -140,7 +153,7 @@ func (s *DB) fetchAsleepSegments(winStart, winEnd time.Time) ([]sleepSegment, er
 		var dateStr, source string
 		var qty float64
 		if err := rows.Scan(&dateStr, &qty, &source); err != nil {
-			continue
+			return nil, err
 		}
 		start, perr := parseSleepDate(dateStr)
 		if perr != nil {

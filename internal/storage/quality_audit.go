@@ -106,7 +106,13 @@ func (s *DB) MarkExistingImpossible() (int, error) {
 		if !ok {
 			continue
 		}
-		rows, err := s.pool.Query(ctx, `
+		s.cacheMu.Lock()
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			s.cacheMu.Unlock()
+			return total, fmt.Errorf("begin mark impossible %s: %w", name, err)
+		}
+		rows, err := tx.Query(ctx, `
 			UPDATE metric_points
 			   SET quality = 'impossible'
 			 WHERE metric_name = $1
@@ -114,23 +120,47 @@ func (s *DB) MarkExistingImpossible() (int, error) {
 			   AND (qty < $2 OR qty > $3)
 			RETURNING SUBSTRING(date,1,10)`, name, min, max)
 		if err != nil {
+			_ = tx.Rollback(ctx)
+			s.cacheMu.Unlock()
 			return total, fmt.Errorf("mark impossible %s: %w", name, err)
 		}
+		metricDates := map[string]struct{}{}
+		metricCount := 0
 		for rows.Next() {
 			var date string
 			if err := rows.Scan(&date); err != nil {
 				rows.Close()
+				_ = tx.Rollback(ctx)
+				s.cacheMu.Unlock()
 				return total, err
 			}
-			affected[date] = struct{}{}
-			affectedMetrics[name] = struct{}{}
-			total++
+			metricDates[date] = struct{}{}
+			metricCount++
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
+			_ = tx.Rollback(ctx)
+			s.cacheMu.Unlock()
 			return total, err
 		}
 		rows.Close()
+		if err := s.MarkCacheDirtyTx(ctx, tx, cacheDateSetKeys(metricDates)); err != nil {
+			_ = tx.Rollback(ctx)
+			s.cacheMu.Unlock()
+			return total, fmt.Errorf("mark impossible cache dates dirty: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			s.cacheMu.Unlock()
+			return total, fmt.Errorf("commit mark impossible %s: %w", name, err)
+		}
+		s.cacheMu.Unlock()
+		for date := range metricDates {
+			affected[date] = struct{}{}
+		}
+		if metricCount > 0 {
+			affectedMetrics[name] = struct{}{}
+			total += metricCount
+		}
 	}
 	if err := s.finalizeQualityChanges(ctx, affected, affectedMetrics); err != nil {
 		return total, err
@@ -172,7 +202,13 @@ func (s *DB) MarkSuspectPoints(days int, sigma float64) (map[string]int, error) 
 		// Compute mean+sd over a 30-day baseline window (excluding flagged
 		// rows), then UPDATE recent rows whose deviation exceeds sigma. CTE +
 		// UPDATE-FROM keeps it one round-trip per metric.
-		rows, err := s.pool.Query(ctx, `
+		s.cacheMu.Lock()
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			s.cacheMu.Unlock()
+			return out, fmt.Errorf("begin mark suspect %s: %w", name, err)
+		}
+		rows, err := tx.Query(ctx, `
 			WITH baseline AS (
 				SELECT AVG(qty)    AS mean,
 				       STDDEV(qty) AS sd
@@ -193,26 +229,46 @@ func (s *DB) MarkSuspectPoints(days int, sigma float64) (map[string]int, error) 
 			RETURNING SUBSTRING(mp.date,1,10)`,
 			name, days, sigma)
 		if err != nil {
+			_ = tx.Rollback(ctx)
+			s.cacheMu.Unlock()
 			return out, fmt.Errorf("mark suspect %s: %w", name, err)
 		}
 		n := 0
+		metricDates := map[string]struct{}{}
 		for rows.Next() {
 			var date string
 			if err := rows.Scan(&date); err != nil {
 				rows.Close()
+				_ = tx.Rollback(ctx)
+				s.cacheMu.Unlock()
 				return out, err
 			}
-			affected[date] = struct{}{}
-			affectedMetrics[name] = struct{}{}
+			metricDates[date] = struct{}{}
 			n++
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
+			_ = tx.Rollback(ctx)
+			s.cacheMu.Unlock()
 			return out, err
 		}
 		rows.Close()
+		if err := s.MarkCacheDirtyTx(ctx, tx, cacheDateSetKeys(metricDates)); err != nil {
+			_ = tx.Rollback(ctx)
+			s.cacheMu.Unlock()
+			return out, fmt.Errorf("mark suspect cache dates dirty: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			s.cacheMu.Unlock()
+			return out, fmt.Errorf("commit mark suspect %s: %w", name, err)
+		}
+		s.cacheMu.Unlock()
+		for date := range metricDates {
+			affected[date] = struct{}{}
+		}
 		if n > 0 {
 			out[name] = n
+			affectedMetrics[name] = struct{}{}
 		}
 	}
 	if err := s.finalizeQualityChanges(ctx, affected, affectedMetrics); err != nil {
@@ -230,11 +286,14 @@ func (s *DB) finalizeQualityChanges(ctx context.Context, affected, affectedMetri
 		dates = append(dates, date)
 	}
 	sort.Strings(dates)
+	s.cacheMu.Lock()
 	if _, err := s.pool.Exec(ctx, `DELETE FROM ai_briefing_blocks WHERE date = ANY($1)`, dates); err != nil {
+		s.cacheMu.Unlock()
 		return fmt.Errorf("invalidate AI blocks after quality change: %w", err)
 	}
-	if _, err := s.pool.Exec(ctx, `DELETE FROM energy_snapshots WHERE date = ANY($1)`, dates); err != nil {
-		return fmt.Errorf("invalidate energy snapshots after quality change: %w", err)
+	if _, err := s.pool.Exec(ctx, `DELETE FROM energy_snapshots WHERE date = ANY($1) AND 'backfilled' = ANY(flags)`, dates); err != nil {
+		s.cacheMu.Unlock()
+		return fmt.Errorf("invalidate backfilled energy snapshots after quality change: %w", err)
 	}
 	dailyColumns := map[string][]string{
 		"heart_rate_variability":  {"hrv_avg", "readiness", "score_version"},
@@ -247,9 +306,11 @@ func (s *DB) finalizeQualityChanges(ctx context.Context, affected, affectedMetri
 	cleared := map[string]struct{}{}
 	for metric := range affectedMetrics {
 		if _, err := s.pool.Exec(ctx, `DELETE FROM hourly_metrics WHERE metric_name=$1 AND SUBSTRING(hour,1,10)=ANY($2)`, metric, dates); err != nil {
+			s.cacheMu.Unlock()
 			return fmt.Errorf("clear hourly %s after quality change: %w", metric, err)
 		}
 		if _, err := s.pool.Exec(ctx, `DELETE FROM minute_metrics WHERE metric_name=$1 AND SUBSTRING(minute,1,10)=ANY($2)`, metric, dates); err != nil {
+			s.cacheMu.Unlock()
 			return fmt.Errorf("clear minute %s after quality change: %w", metric, err)
 		}
 		for _, column := range dailyColumns[metric] {
@@ -257,13 +318,25 @@ func (s *DB) finalizeQualityChanges(ctx context.Context, affected, affectedMetri
 				continue
 			}
 			if _, err := s.pool.Exec(ctx, "UPDATE daily_scores SET "+column+"=NULL WHERE date = ANY($1)", dates); err != nil {
+				s.cacheMu.Unlock()
 				return fmt.Errorf("clear daily %s after quality change: %w", column, err)
 			}
 			cleared[column] = struct{}{}
 		}
 	}
+	s.cacheMu.Unlock()
+	// Preserve the legacy best-effort immediate refresh behavior. Any failure
+	// leaves the durable dirty dates in the journal for the cache coordinator.
 	s.UpsertRecentCache(dates, true)
 	return nil
+}
+
+func cacheDateSetKeys(set map[string]struct{}) []string {
+	keys := make([]string, 0, len(set))
+	for key := range set {
+		keys = append(keys, key)
+	}
+	return keys
 }
 
 // zScoreEligible lists metrics where a 3σ z-score sweep is meaningful. These

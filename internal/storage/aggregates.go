@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -232,6 +233,10 @@ func (s *DB) UpsertRecentCache(dates []string, recomputeReadiness bool) error {
 	loc := s.reportTZLocation()
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
+	captured, err := s.CaptureCacheDirty(context.Background(), dates)
+	if err != nil {
+		return fmt.Errorf("capture aggregate input generations: %w", err)
+	}
 	fail := func(err error) error {
 		log.Printf("upsert recent cache: %v", err)
 		return err
@@ -279,6 +284,12 @@ func (s *DB) UpsertRecentCache(dates []string, recomputeReadiness bool) error {
 	defer cancel()
 	if err := s.refreshDashboardSnapshotLocked(ctx); err != nil {
 		return fail(fmt.Errorf("dashboard snapshot: %w", err))
+	}
+	if s.cacheAppliedGenerations == nil {
+		s.cacheAppliedGenerations = make(map[string]uint64)
+	}
+	for date, generation := range captured {
+		s.cacheAppliedGenerations[date] = generation
 	}
 	return nil
 }
