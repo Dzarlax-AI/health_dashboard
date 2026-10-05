@@ -1,0 +1,13 @@
+health_dbt_metrics_pilot:
+  target: local
+  outputs:
+    local:
+      type: postgres
+      host: 127.0.0.1
+      port: "{{ env_var('DBT_PILOT_PORT') | int }}"
+      user: pilot_dbt
+      password: synthetic-only
+      dbname: hp_dbt_pilot
+      schema: dbt_output
+      threads: 1
+      search_path: "dbt_output,source_data,public"

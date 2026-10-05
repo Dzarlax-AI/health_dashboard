@@ -1,0 +1,7 @@
+version: 2
+sources:
+  - name: source_data
+    schema: source_data
+    tables:
+      - name: metric_points
+      - name: calendar

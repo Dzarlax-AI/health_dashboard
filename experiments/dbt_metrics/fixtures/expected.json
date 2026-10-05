@@ -1,0 +1,31 @@
+{
+  "daily": {
+    "2026-01-01": {"hrv_avg":50,"rhr_avg":60,"steps":35,"calories":120,"exercise_min":30,"spo2_avg":98,"vo2_avg":45,"resp_avg":16,"sleep_total":7,"sleep_deep":1,"sleep_rem":2,"sleep_core":4,"sleep_awake":0.5,"sleep_unspecified":null},
+    "2026-01-02": {"sleep_total":7},
+    "2026-01-03": {"sleep_total":7},
+    "2026-01-04": {"sleep_total":7,"sleep_unspecified":null},
+    "2026-01-05": {"sleep_total":4,"sleep_unspecified":4,"sleep_deep":null,"sleep_rem":null,"sleep_core":null,"sleep_awake":null},
+    "2026-01-06": {"sleep_total":null,"sleep_rem":null},
+    "2026-01-07": {"sleep_total":7,"sleep_rem":2},
+    "2026-01-08": {"sleep_total":7,"sleep_rem":2},
+    "2026-01-09": {"sleep_total":4.999,"sleep_unspecified":4.999,"sleep_rem":null},
+    "2026-01-10": {"sleep_total":4,"sleep_unspecified":3.5,"sleep_rem":null},
+    "2026-01-11": {"rhr_avg":1.0000001},
+    "2026-01-12": {"sleep_total":7,"sleep_awake":null},
+    "2026-01-13": {"sleep_total":7},
+    "2026-01-14": {"sleep_total":null,"steps":null},
+    "2026-01-15": {"sleep_total":null,"steps":null}
+  },
+  "hourly": [
+    {"metric_name":"step_count","hour":"2026-01-01 10:00","source":"Apple Watch","avg_val":35,"min_val":10,"max_val":20,"sample_count":2},
+    {"metric_name":"sleep_total","hour":"2026-01-01 00:00","source":"Apple Watch","avg_val":7,"sample_count":1},
+    {"metric_name":"sleep_total","hour":"2026-01-13 02:00","source":"Other","avg_val":3,"min_val":2,"max_val":3,"sample_count":1},
+    {"metric_name":"sleep_custom","hour":"2026-01-10 02:00","source":"Other","avg_val":2,"sample_count":1}
+  ],
+  "absent_hourly": [
+    {"metric_name":"sleep_total","hour":"2026-01-01 02:00","source":"Apple Watch"},
+    {"metric_name":"step_count","hour":"2026-01-01 11:00","source":"Apple Watch"},
+    {"metric_name":"sleep_total","hour":"2026-01-13 00:00","source":"Other"},
+    {"metric_name":"sleep_awake","hour":"2026-01-12 00:00","source":"Apple Watch"}
+  ]
+}
