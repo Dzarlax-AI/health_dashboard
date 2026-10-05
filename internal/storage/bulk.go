@@ -12,6 +12,8 @@ func (s *DB) BulkInsertPoints(description string, points []MetricPoint) (int, er
 	if len(points) == 0 {
 		return 0, nil
 	}
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
 
 	ctx, cancel := longCtx()
 	defer cancel()
@@ -30,6 +32,9 @@ func (s *DB) BulkInsertPoints(description string, points []MetricPoint) (int, er
 	).Scan(&recordID)
 	if err != nil {
 		return 0, fmt.Errorf("insert health_record: %w", err)
+	}
+	if err := s.MarkCacheDirtyTx(ctx, tx, cacheDatesFromPoints(points)); err != nil {
+		return 0, fmt.Errorf("mark bulk-inserted cache dates dirty: %w", err)
 	}
 
 	inserted := 0

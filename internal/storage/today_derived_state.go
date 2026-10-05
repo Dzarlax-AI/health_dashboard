@@ -173,6 +173,17 @@ func (c *TodayDerivedStateCoordinator) run(ctx context.Context, db *DB, tenant *
 		}
 		pass++
 		passStarted := time.Now()
+		captured, err := captureTodayCacheDirty(ctx, db, batch.dates)
+		if err != nil {
+			c.requeue(tenant, batch, false)
+			logTodayDerivedStage(tenant.id, pass, "journal", passStarted, len(batch.dates), err)
+			if !c.wait(ctx, c.failureCooldown) {
+				c.finishWorker(tenant)
+				return
+			}
+			first = true
+			continue
+		}
 		cacheDates := cacheDirtyDates(batch.dates)
 		cacheComplete := len(cacheDates) == 0
 		if !cacheComplete && rebuild != nil {
@@ -288,11 +299,69 @@ func (c *TodayDerivedStateCoordinator) run(ctx context.Context, db *DB, tenant *
 				continue
 			}
 		}
+		if db.pool != nil {
+			db.cacheMu.Lock()
+			err = db.CompleteCacheDirty(ctx, captured)
+			db.cacheMu.Unlock()
+			if err != nil {
+				c.requeue(tenant, batch, true)
+				logTodayDerivedStage(tenant.id, pass, "journal_complete", passStarted, len(captured), err)
+				if !c.wait(ctx, c.failureCooldown) {
+					c.finishWorker(tenant)
+					return
+				}
+				first = true
+				continue
+			}
+		}
 		logTodayDerivedPass(tenant.id, pass, passStarted, "ok")
 		if !c.repeatIfPending(tenant) {
 			return
 		}
 		first = false
+	}
+}
+
+// Capture all durable dirty dates, including mutations whose in-memory signal
+// was lost on a restart. CacheReady is valid only for the exact generation
+// successfully aggregated by this process, never for a newer correction.
+func captureTodayCacheDirty(ctx context.Context, db *DB, dates map[string]bool) (map[string]uint64, error) {
+	if db.pool == nil { // Coordinator unit tests inject all I/O callbacks.
+		return nil, nil
+	}
+	db.cacheMu.Lock()
+	defer db.cacheMu.Unlock()
+	captured, err := db.CaptureCacheDirty(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	for date, generation := range captured {
+		dates[date] = dates[date] || db.cacheAppliedGenerations[date] != generation
+	}
+	return captured, nil
+}
+
+// WaitForIdle observes completion of the tenant's queued dependent stages.
+// It does not report success while failures are being retried or work remains.
+func (c *TodayDerivedStateCoordinator) WaitForIdle(ctx context.Context, db *DB) error {
+	if c == nil {
+		return errors.New("today coordinator unavailable")
+	}
+	tenant := c.tenantFor(db)
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		tenant.mu.Lock()
+		idle := !tenant.running && !tenant.pendingAny
+		tenant.mu.Unlock()
+		if idle {
+			return ctx.Err()
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
 	}
 }
 

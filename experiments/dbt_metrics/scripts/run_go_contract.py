@@ -19,7 +19,8 @@ RESULT = p.HERE / "artifacts/go-contract-after.json"
 def characterize(cid, dsn):
     dates = [f"2026-01-{i:02d}" for i in range(1, 16)]
     result = {}
-    for mode in ("live", "legacy-force", "legacy-incremental"):
+    modes = ("live", "legacy-force", "legacy-incremental", "legacy-date")
+    for mode in modes:
         p.require_owned(cid, p.TOKEN)
         p.load_sql(cid, "TRUNCATE source_data.metric_points, source_data.calendar, go_oracle.hourly_metrics, go_oracle.daily_scores;")
         p.load_sql(cid, (p.HERE / "fixtures/base.sql").read_text())
@@ -42,7 +43,10 @@ INSERT INTO source_data.metric_points VALUES
             p.require_owned(cid, p.TOKEN)
             observed = p.run_go(dsn, p.TOKEN, dates, output, reset)
             observed.pop("seconds")
-            result[f"{mode}/{label}"] = observed
+            if mode == "legacy-date":
+                p.assert_same_outputs(observed, result[f"legacy-force/{label}"], "bounded legacy date " + label)
+            else:
+                result[f"{mode}/{label}"] = observed
             return observed
 
         first = snapshot("initial", True)

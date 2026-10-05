@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"math"
 	"sort"
 	"time"
@@ -23,18 +24,28 @@ func (s *DB) todayChannelMedian(
 	channel BaselineChannel,
 	loc *time.Location,
 ) (float64, bool) {
+	ctx, cancel := queryCtx()
+	defer cancel()
+	value, ok, _ := s.todayChannelMedianContext(ctx, date, channel, loc)
+	return value, ok
+}
+
+func (s *DB) todayChannelMedianContext(ctx context.Context, date string, channel BaselineChannel, loc *time.Location) (float64, bool, error) {
 	d, err := time.ParseInLocation("2006-01-02", date, loc)
 	if err != nil {
-		return 0, false
+		return 0, false, err
 	}
 	from := d.In(loc)
 	until := d.AddDate(0, 0, 1).In(loc)
-	samples, _, err := s.fetchBaselineSamples(channel, from, until, loc)
-	if err != nil || len(samples) == 0 {
-		return 0, false
+	samples, _, err := s.fetchBaselineSamplesContext(ctx, channel, from, until, loc)
+	if err != nil {
+		return 0, false, err
+	}
+	if len(samples) == 0 {
+		return 0, false, nil
 	}
 	sort.Float64s(samples)
-	return percentileSorted(samples, 0.5), true
+	return percentileSorted(samples, 0.5), true, nil
 }
 
 // channelShift returns `(today − baseline) / sd`, the standard
@@ -50,18 +61,31 @@ func (s *DB) channelShift(
 	channel BaselineChannel,
 	loc *time.Location,
 ) (float64, bool) {
-	bl, ok := s.PersonalBaseline(date, channel, 30, loc)
-	if !ok {
-		return 0, false
+	ctx, cancel := queryCtx()
+	defer cancel()
+	value, ok, _ := s.channelShiftContext(ctx, date, channel, loc)
+	return value, ok
+}
+
+func (s *DB) channelShiftContext(ctx context.Context, date string, channel BaselineChannel, loc *time.Location) (float64, bool, error) {
+	bl, ok, err := s.PersonalBaselineContext(ctx, date, channel, 30, loc)
+	if err != nil {
+		return 0, false, err
 	}
-	today, ok := s.todayChannelMedian(date, channel, loc)
 	if !ok {
-		return 0, false
+		return 0, false, nil
+	}
+	today, ok, err := s.todayChannelMedianContext(ctx, date, channel, loc)
+	if err != nil {
+		return 0, false, err
+	}
+	if !ok {
+		return 0, false, nil
 	}
 	if bl.MADSD <= 0 {
-		return 0, false
+		return 0, false, nil
 	}
-	return (today - bl.Median) / bl.MADSD, true
+	return (today - bl.Median) / bl.MADSD, true, nil
 }
 
 // channelDrop returns `(baseline − today) / sd`, the inverted-sign
@@ -74,11 +98,21 @@ func (s *DB) channelDrop(
 	channel BaselineChannel,
 	loc *time.Location,
 ) (float64, bool) {
-	v, ok := s.channelShift(date, channel, loc)
-	if !ok {
-		return 0, false
+	ctx, cancel := queryCtx()
+	defer cancel()
+	v, ok, _ := s.channelDropContext(ctx, date, channel, loc)
+	return v, ok
+}
+
+func (s *DB) channelDropContext(ctx context.Context, date string, channel BaselineChannel, loc *time.Location) (float64, bool, error) {
+	v, ok, err := s.channelShiftContext(ctx, date, channel, loc)
+	if err != nil {
+		return 0, false, err
 	}
-	return -v, true
+	if !ok {
+		return 0, false, nil
+	}
+	return -v, true, nil
 }
 
 // meanFiniteHourZ returns the mean of a per-hour z-slice, skipping
@@ -123,10 +157,29 @@ func (s *DB) appendMultiChannelStressFlags(
 	hourZ []float64,
 	flags []string,
 ) []string {
-	hrvDrop, hrvOK := s.channelDrop(date, ChannelHRV, loc)
-	tempZ, tempOK := s.channelShift(date, ChannelTemp, loc)
-	respZ, respOK := s.channelShift(date, ChannelResp, loc)
-	rhrShift, rhrOK := s.channelShift(date, ChannelHROvernight, loc)
+	ctx, cancel := queryCtx()
+	defer cancel()
+	flags, _ = s.appendMultiChannelStressFlagsContext(ctx, date, loc, hourZ, flags)
+	return flags
+}
+
+func (s *DB) appendMultiChannelStressFlagsContext(ctx context.Context, date string, loc *time.Location, hourZ []float64, flags []string) ([]string, error) {
+	hrvDrop, hrvOK, err := s.channelDropContext(ctx, date, ChannelHRV, loc)
+	if err != nil {
+		return nil, err
+	}
+	tempZ, tempOK, err := s.channelShiftContext(ctx, date, ChannelTemp, loc)
+	if err != nil {
+		return nil, err
+	}
+	respZ, respOK, err := s.channelShiftContext(ctx, date, ChannelResp, loc)
+	if err != nil {
+		return nil, err
+	}
+	rhrShift, rhrOK, err := s.channelShiftContext(ctx, date, ChannelHROvernight, loc)
+	if err != nil {
+		return nil, err
+	}
 	dayHRShift, dayHROK := meanFiniteHourZ(hourZ)
 
 	// illness_signature — all three channels deviating together.
@@ -148,5 +201,5 @@ func (s *DB) appendMultiChannelStressFlags(
 		flags = append(flags, "parasympathetic_rebound")
 	}
 
-	return flags
+	return flags, nil
 }

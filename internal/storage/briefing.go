@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"sort"
@@ -925,16 +926,24 @@ func fillReadinessBands(pts []health.ReadinessPoint) {
 func (s *DB) computeReadinessHistory(outputDays int) ([]health.ReadinessPoint, error) {
 	ctx, cancel := queryCtx()
 	defer cancel()
-	window := 30
-	total := outputDays + window
 
 	// Determine the latest date from data (not server time) to avoid TZ mismatch.
 	var lastDate *string
-	s.pool.QueryRow(ctx, `SELECT SUBSTRING(date,1,10) FROM metric_points ORDER BY SUBSTRING(date,1,10) DESC LIMIT 1`).Scan(&lastDate)
+	if err := s.pool.QueryRow(ctx, `SELECT SUBSTRING(date,1,10) FROM metric_points ORDER BY SUBSTRING(date,1,10) DESC LIMIT 1`).Scan(&lastDate); err != nil {
+		return nil, err
+	}
 	if lastDate == nil {
 		return nil, fmt.Errorf("no metric data found")
 	}
-	fromDate := subtractDays(*lastDate, total)
+	return s.computeReadinessHistoryAt(ctx, outputDays, *lastDate)
+}
+
+// computeReadinessHistoryAt retains calendar lookback semantics while allowing
+// maintenance to compute one historical output date with a bounded query.
+func (s *DB) computeReadinessHistoryAt(ctx context.Context, outputDays int, lastDate string) ([]health.ReadinessPoint, error) {
+	window := 30
+	total := outputDays + window
+	fromDate := subtractDays(lastDate, total)
 
 	// Fetch date-keyed maps for the full look-back period.
 	fetch := func(metric, agg string, isSleep bool) (map[string]float64, error) {
@@ -951,11 +960,11 @@ func (s *DB) computeReadinessHistory(outputDays int) ([]health.ReadinessPoint, e
 				    WHERE metric_name = $1
 				      AND qty > 0
 				      AND quality = 'ok'
-				      AND SUBSTRING(date,1,10) >= $2
+				      AND SUBSTRING(date,1,10) >= $2 AND SUBSTRING(date,1,10) <= $3
 				    GROUP BY SUBSTRING(date,1,10), source
 				) sub
 				GROUP BY d`,
-				metric, fromDate)
+				metric, fromDate, lastDate)
 			pgxRows = r
 			err = e
 		} else {
@@ -965,9 +974,9 @@ func (s *DB) computeReadinessHistory(outputDays int) ([]health.ReadinessPoint, e
 				WHERE metric_name = $1
 				  AND qty > 0
 				  AND quality = 'ok'
-				  AND SUBSTRING(date,1,10) >= $2
+				  AND SUBSTRING(date,1,10) >= $2 AND SUBSTRING(date,1,10) <= $3
 				GROUP BY SUBSTRING(date,1,10)`,
-				metric, fromDate)
+				metric, fromDate, lastDate)
 			pgxRows = r
 			err = e
 		}
@@ -979,11 +988,12 @@ func (s *DB) computeReadinessHistory(outputDays int) ([]health.ReadinessPoint, e
 		for pgxRows.Next() {
 			var d string
 			var v float64
-			if err := pgxRows.Scan(&d, &v); err == nil {
-				m[d] = v
+			if err := pgxRows.Scan(&d, &v); err != nil {
+				return nil, err
 			}
+			m[d] = v
 		}
-		return m, nil
+		return m, pgxRows.Err()
 	}
 
 	hrvMap, err := fetch("heart_rate_variability", "AVG", false)

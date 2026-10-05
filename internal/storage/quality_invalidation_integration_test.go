@@ -19,6 +19,9 @@ func TestQualityReclassificationInvalidatesAndRebuildsDerivedState(t *testing.T)
 	if _, err := db.pool.Exec(ctx, `INSERT INTO energy_snapshots(ts_bucket,date,bank,drain_delta,restore_delta,formula_version) VALUES('2026-07-12 23:55:00+00',$1,50,10,10,2)`, date); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.pool.Exec(ctx, `INSERT INTO energy_snapshots(ts_bucket,date,bank,drain_delta,restore_delta,formula_version,flags) VALUES('2026-07-12 23:50:00+00',$1,50,10,10,2,ARRAY['backfilled'])`, date); err != nil {
+		t.Fatal(err)
+	}
 	flagged, err := db.MarkExistingImpossible()
 	if err != nil || flagged != 1 {
 		t.Fatalf("flagged=%d err=%v", flagged, err)
@@ -31,8 +34,8 @@ func TestQualityReclassificationInvalidatesAndRebuildsDerivedState(t *testing.T)
 	if err = db.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM ai_briefing_blocks WHERE date=$1),(SELECT count(*) FROM energy_snapshots WHERE date=$1)`, date).Scan(&blocks, &snapshots); err != nil {
 		t.Fatal(err)
 	}
-	if blocks != 0 || snapshots != 0 {
-		t.Fatalf("derived rows remain: blocks=%d snapshots=%d", blocks, snapshots)
+	if blocks != 0 || snapshots != 1 {
+		t.Fatalf("derived rows remain or live energy snapshot was lost: blocks=%d snapshots=%d", blocks, snapshots)
 	}
 	var spo2 *float64
 	if err = db.pool.QueryRow(ctx, `SELECT spo2_avg FROM daily_scores WHERE date=$1`, date).Scan(&spo2); err != nil || spo2 != nil {

@@ -58,7 +58,13 @@ func TestDBTMetricsPilot(t *testing.T) {
 	db := &DB{pool: pool}
 	start := time.Now()
 	mode := os.Getenv("DBT_PILOT_GO_MODE")
-	if mode == "legacy-force" || mode == "legacy-incremental" {
+	if mode == "legacy-date" {
+		for _, d := range dates {
+			if e := db.RebuildHistoricalCacheDate(ctx, d); e != nil {
+				t.Fatal(d, e)
+			}
+		}
+	} else if mode == "legacy-force" || mode == "legacy-incremental" {
 		force := mode == "legacy-force"
 		names, e := db.listMetricNames()
 		if e != nil {

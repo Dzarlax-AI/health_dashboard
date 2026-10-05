@@ -22,8 +22,10 @@ CREATE TABLE go_oracle.daily_scores (
  date text PRIMARY KEY,computed_at text,
  hrv_avg real,rhr_avg real,sleep_total real,sleep_deep real,sleep_rem real,
  sleep_core real,sleep_awake real,sleep_unspecified real,steps real,
- calories real,exercise_min real,spo2_avg real,vo2_avg real,resp_avg real
+ calories real,exercise_min real,spo2_avg real,vo2_avg real,resp_avg real,
+ baseline_hr_overnight real,sustained_hr_load real,stress_flags text[]
 );
+CREATE TABLE go_oracle.settings (key text PRIMARY KEY, value text, updated_at text);
 GRANT USAGE ON SCHEMA source_data TO pilot_dbt;
 GRANT SELECT ON ALL TABLES IN SCHEMA source_data TO pilot_dbt;
 REVOKE ALL ON SCHEMA go_oracle FROM pilot_dbt;

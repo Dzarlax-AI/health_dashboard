@@ -336,3 +336,36 @@ func TestTodayDerivedRefreshCancellationPreservesPendingWork(t *testing.T) {
 		t.Fatal("pending work was lost after cancellation")
 	}
 }
+
+func TestTodayCoordinatorIdleWaitHonorsDeadlineDuringRetry(t *testing.T) {
+	c := testTodayCoordinator()
+	db := &DB{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	failed := make(chan struct{}, 1)
+	c.TriggerRefresh(ctx, db, "failing", TodayDerivedRefresh{Dates: []string{"2026-10-01"}}, func([]string) error {
+		select {
+		case failed <- struct{}{}:
+		default:
+		}
+		return errors.New("injected failure")
+	}, nil, todayTimezone, nil)
+	select {
+	case <-failed:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not fail")
+	}
+	waitCtx, stop := context.WithTimeout(ctx, 30*time.Millisecond)
+	defer stop()
+	if err := c.WaitForIdle(waitCtx, db); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("wait returned %v", err)
+	}
+	// A failed tenant does not prevent another tenant's coordinator from finishing.
+	other := &DB{}
+	c.TriggerRefresh(ctx, other, "healthy", TodayDerivedRefresh{}, nil, nil, todayTimezone, nil)
+	healthyCtx, done := context.WithTimeout(ctx, time.Second)
+	defer done()
+	if err := c.WaitForIdle(healthyCtx, other); err != nil {
+		t.Fatal(err)
+	}
+}

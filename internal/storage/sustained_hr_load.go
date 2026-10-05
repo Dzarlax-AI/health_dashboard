@@ -1,10 +1,16 @@
 package storage
 
 import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
 	"log"
 	"math"
+	"strconv"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"health-receiver/internal/health"
 )
 
@@ -57,11 +63,25 @@ func (s *DB) ComputeSustainedHRLoadForDate(
 	date string,
 	loc *time.Location,
 ) (SustainedHRLoadResult, bool) {
+	ctx, cancel := longCtx()
+	defer cancel()
+	result, ok, _ := s.ComputeSustainedHRLoadForDateContext(ctx, date, loc)
+	return result, ok
+}
+
+// ComputeSustainedHRLoadForDateContext is the fail-closed form used by
+// historical maintenance. Insufficient physiological data remains a valid
+// gated result; database and cancellation errors are returned.
+func (s *DB) ComputeSustainedHRLoadForDateContext(
+	ctx context.Context,
+	date string,
+	loc *time.Location,
+) (SustainedHRLoadResult, bool, error) {
 	if loc == nil {
 		loc = time.UTC
 	}
 	if _, err := time.ParseInLocation("2006-01-02", date, loc); err != nil {
-		return SustainedHRLoadResult{}, false
+		return SustainedHRLoadResult{}, false, err
 	}
 
 	res := SustainedHRLoadResult{Flags: []string{}}
@@ -79,7 +99,10 @@ func (s *DB) ComputeSustainedHRLoadForDate(
 	// shouldn't be silenced by an HR-only gate. Stash the gated flag
 	// and fall through to the shared multi-channel call below.
 	gated := ""
-	coverage, ok := s.HRCoverageHours(date, loc)
+	coverage, ok, err := s.HRCoverageHoursContext(ctx, date, loc)
+	if err != nil {
+		return SustainedHRLoadResult{}, false, err
+	}
 	if !ok {
 		// Hard DB error — log already done by HRCoverageHours.
 		// Treat as "no data" rather than failing the orchestrator.
@@ -93,7 +116,9 @@ func (s *DB) ComputeSustainedHRLoadForDate(
 		// but the verdict layer and UI carry very different
 		// connotations: "still gathering" vs "sensor problem".
 		gated = "stale_stress"
-		if _, awakeEnd, okBounds := s.AwakeWindowBounds(date, loc); okBounds && time.Now().In(loc).Before(awakeEnd) {
+		if _, awakeEnd, okBounds, boundsErr := s.AwakeWindowBoundsContext(ctx, date, loc); boundsErr != nil {
+			return SustainedHRLoadResult{}, false, boundsErr
+		} else if okBounds && time.Now().In(loc).Before(awakeEnd) {
 			gated = "data_accruing"
 		}
 	}
@@ -104,7 +129,10 @@ func (s *DB) ComputeSustainedHRLoadForDate(
 	var bl PersonalBaselineResult
 	if gated == "" {
 		var blOK bool
-		bl, blOK = s.PersonalBaseline(date, ChannelHRAwake, 30, loc)
+		bl, blOK, err = s.PersonalBaselineContext(ctx, date, ChannelHRAwake, 30, loc)
+		if err != nil {
+			return SustainedHRLoadResult{}, false, err
+		}
 		if !blOK {
 			gated = "stale_stress"
 		} else if bl.State == CalibrationWarmup {
@@ -117,7 +145,10 @@ func (s *DB) ComputeSustainedHRLoadForDate(
 	// 07:00-22:00 fallback.
 	var series []HourlyHRStat
 	if gated == "" {
-		series, ok = s.HourlyHRSeriesForAwakeWindow(date, loc)
+		series, ok, err = s.HourlyHRSeriesForAwakeWindowContext(ctx, date, loc)
+		if err != nil {
+			return SustainedHRLoadResult{}, false, err
+		}
 		if !ok || len(series) == 0 {
 			gated = "stale_stress"
 		}
@@ -130,8 +161,11 @@ func (s *DB) ComputeSustainedHRLoadForDate(
 		// returns ok=false on empty so parasympathetic_rebound is
 		// naturally skipped, while illness_signature / recovery_debt
 		// can still fire from temp/resp/HRV/overnight-RHR.
-		res.Flags = s.appendMultiChannelStressFlags(date, loc, nil, res.Flags)
-		return res, true
+		res.Flags, err = s.appendMultiChannelStressFlagsContext(ctx, date, loc, nil, res.Flags)
+		if err != nil {
+			return SustainedHRLoadResult{}, false, err
+		}
+		return res, true, nil
 	}
 
 	// Convert per-hour data to z-series. Skip hours that failed the
@@ -151,8 +185,11 @@ func (s *DB) ComputeSustainedHRLoadForDate(
 
 	// Read the live tenant config so the z-threshold is settings-
 	// driven (PR-7's energy.z_threshold, default 0.5 per §4.4).
-	cfg := s.GetEnergyConfig()
-	res.SustainedHRLoadZ = health.SustainedHRLoad(hourZ, cfg.ZThreshold)
+	threshold, err := s.energyZThresholdContext(ctx)
+	if err != nil {
+		return SustainedHRLoadResult{}, false, err
+	}
+	res.SustainedHRLoadZ = health.SustainedHRLoad(hourZ, threshold)
 
 	// §4.3 HR-z-derived flags. Both feed PR-9 verdict layer:
 	//
@@ -179,7 +216,10 @@ func (s *DB) ComputeSustainedHRLoadForDate(
 	// coverage gate above: a day with stale_stress for HR can still
 	// flag illness_signature when the other three channels break
 	// baseline together.
-	res.Flags = s.appendMultiChannelStressFlags(date, loc, hourZ, res.Flags)
+	res.Flags, err = s.appendMultiChannelStressFlagsContext(ctx, date, loc, hourZ, res.Flags)
+	if err != nil {
+		return SustainedHRLoadResult{}, false, err
+	}
 
 	// HROvershootBpmHours: raw bpm·hours for the same hours that
 	// contributed to the z-load. Keeps the audit-trail line in
@@ -199,7 +239,21 @@ func (s *DB) ComputeSustainedHRLoadForDate(
 	}
 	res.HROvershootBpmHours = overshoot
 
-	return res, true
+	return res, true, nil
+}
+
+func (s *DB) energyZThresholdContext(ctx context.Context) (float64, error) {
+	var value sql.NullString
+	err := s.pool.QueryRow(ctx, `SELECT value FROM settings WHERE key = 'energy.z_threshold'`).Scan(&value)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return 0, err
+	}
+	if value.Valid && value.String != "" {
+		if parsed, parseErr := strconv.ParseFloat(value.String, 64); parseErr == nil {
+			return parsed, nil
+		}
+	}
+	return DefaultEnergyConfig().ZThreshold, nil
 }
 
 // upsertSustainedHRLoadForDate computes the v2.2 sustained-load value
@@ -226,11 +280,29 @@ func (s *DB) ComputeSustainedHRLoadForDate(
 // (zero-value, nil): no compute → no write → no error. Compute
 // succeeded but write failed → returns (res, err).
 func (s *DB) upsertSustainedHRLoadForDate(date string, loc *time.Location) (SustainedHRLoadResult, error) {
-	res, ok := s.ComputeSustainedHRLoadForDate(date, loc)
-	if !ok {
-		return SustainedHRLoadResult{}, nil
+	ctx, cancel := queryCtx()
+	defer cancel()
+	return s.upsertSustainedHRLoadForDateContext(ctx, date, loc)
+}
+
+// upsertSustainedHRLoadForDateContext is the bounded-maintenance writer. The
+// existing calculation helpers retain their established semantics; the
+// maintenance context bounds the durable write and is checked around compute.
+func (s *DB) upsertSustainedHRLoadForDateContext(ctx context.Context, date string, loc *time.Location) (SustainedHRLoadResult, error) {
+	if err := ctx.Err(); err != nil {
+		return SustainedHRLoadResult{}, err
 	}
-	return res, s.writeSustainedHRLoadRow(date, res)
+	res, ok, err := s.ComputeSustainedHRLoadForDateContext(ctx, date, loc)
+	if err != nil {
+		return SustainedHRLoadResult{}, err
+	}
+	if !ok {
+		return SustainedHRLoadResult{}, fmt.Errorf("compute sustained HR load for %s failed", date)
+	}
+	if err := ctx.Err(); err != nil {
+		return res, err
+	}
+	return res, s.writeSustainedHRLoadRowContext(ctx, date, res)
 }
 
 // writeSustainedHRLoadRow is the UPDATE half of
@@ -241,6 +313,12 @@ func (s *DB) upsertSustainedHRLoadForDate(date string, loc *time.Location) (Sust
 // Always called with a non-nil res; callers handle the "no compute"
 // path themselves.
 func (s *DB) writeSustainedHRLoadRow(date string, res SustainedHRLoadResult) error {
+	ctx, cancel := queryCtx()
+	defer cancel()
+	return s.writeSustainedHRLoadRowContext(ctx, date, res)
+}
+
+func (s *DB) writeSustainedHRLoadRowContext(ctx context.Context, date string, res SustainedHRLoadResult) error {
 	flags := res.Flags
 	if flags == nil {
 		flags = []string{}
@@ -252,8 +330,6 @@ func (s *DB) writeSustainedHRLoadRow(date string, res SustainedHRLoadResult) err
 		v := res.SustainedHRLoadZ
 		load = &v
 	}
-	ctx, cancel := queryCtx()
-	defer cancel()
 	if _, err := s.pool.Exec(ctx, `
 		UPDATE daily_scores
 		   SET sustained_hr_load = COALESCE($2, sustained_hr_load),

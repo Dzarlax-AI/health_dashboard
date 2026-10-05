@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"log"
 	"math"
 	"sort"
@@ -93,10 +94,10 @@ type PersonalBaselineResult struct {
 // distributions across ≥3 users are known). For now these are
 // best-effort defaults sized off domain knowledge.
 const (
-	SDFloorHR   = 3.0  // bpm — heart rate (awake or overnight)
-	SDFloorHRV  = 5.0  // ms — RMSSD jitter dominates below this
-	SDFloorResp = 0.5  // br/min — respiratory rate is tight, small floor OK
-	SDFloorTemp = 0.1  // degC — wrist temp samples have ~0.1°C precision
+	SDFloorHR   = 3.0 // bpm — heart rate (awake or overnight)
+	SDFloorHRV  = 5.0 // ms — RMSSD jitter dominates below this
+	SDFloorResp = 0.5 // br/min — respiratory rate is tight, small floor OK
+	SDFloorTemp = 0.1 // degC — wrist temp samples have ~0.1°C precision
 )
 
 // MinTempSamples is the per-channel sample-count override for wrist
@@ -128,6 +129,20 @@ func (s *DB) PersonalBaseline(
 	windowDays int,
 	loc *time.Location,
 ) (PersonalBaselineResult, bool) {
+	ctx, cancel := queryCtx()
+	defer cancel()
+	result, ok, _ := s.PersonalBaselineContext(ctx, date, channel, windowDays, loc)
+	return result, ok
+}
+
+// PersonalBaselineContext exposes query failures to bounded cache maintenance.
+func (s *DB) PersonalBaselineContext(
+	ctx context.Context,
+	date string,
+	channel BaselineChannel,
+	windowDays int,
+	loc *time.Location,
+) (PersonalBaselineResult, bool, error) {
 	if loc == nil {
 		loc = time.UTC
 	}
@@ -136,7 +151,7 @@ func (s *DB) PersonalBaseline(
 	}
 	d, err := time.ParseInLocation("2006-01-02", date, loc)
 	if err != nil {
-		return PersonalBaselineResult{}, false
+		return PersonalBaselineResult{}, false, err
 	}
 	// Window is [d - windowDays, d - 1] inclusive — per §4.1
 	// "rolling 30d ending BEFORE the day being scored" so the
@@ -144,10 +159,10 @@ func (s *DB) PersonalBaseline(
 	from := d.AddDate(0, 0, -windowDays).In(loc)
 	until := d.In(loc)
 
-	samples, newest, err := s.fetchBaselineSamples(channel, from, until, loc)
+	samples, newest, err := s.fetchBaselineSamplesContext(ctx, channel, from, until, loc)
 	if err != nil {
 		log.Printf("PersonalBaseline %s/%s: %v", date, channel, err)
-		return PersonalBaselineResult{}, false
+		return PersonalBaselineResult{}, false, err
 	}
 
 	// Staleness anchor is the day being scored, not the wall
@@ -170,7 +185,7 @@ func (s *DB) PersonalBaseline(
 			SampleCount: len(samples),
 			State:       state,
 			NewestAge:   ageOf(newest, asOf),
-		}, false
+		}, false, nil
 	}
 	// Wrist temp tighter gate: even at warmup state, fewer than 14
 	// samples is unreliable enough to skip.
@@ -179,7 +194,7 @@ func (s *DB) PersonalBaseline(
 			SampleCount: len(samples),
 			State:       CalibrationCold,
 			NewestAge:   ageOf(newest, asOf),
-		}, false
+		}, false, nil
 	}
 
 	median, sd := computeMedianMADSD(samples)
@@ -194,7 +209,7 @@ func (s *DB) PersonalBaseline(
 		SampleCount: len(samples),
 		NewestAge:   ageOf(newest, asOf),
 		State:       state,
-	}, true
+	}, true, nil
 }
 
 // classifyState implements the §4.1 state machine:
@@ -325,6 +340,15 @@ func (s *DB) fetchBaselineSamples(
 ) ([]float64, time.Time, error) {
 	ctx, cancel := queryCtx()
 	defer cancel()
+	return s.fetchBaselineSamplesContext(ctx, channel, from, until, loc)
+}
+
+func (s *DB) fetchBaselineSamplesContext(
+	ctx context.Context,
+	channel BaselineChannel,
+	from, until time.Time,
+	loc *time.Location,
+) ([]float64, time.Time, error) {
 
 	const dateLayout = "2006-01-02 15:04:05 -0700"
 	fromStr := from.In(loc).Format(dateLayout)
@@ -403,7 +427,7 @@ func (s *DB) fetchBaselineSamples(
 		var v float64
 		var dateRaw string
 		if err := rows.Scan(&v, &dateRaw); err != nil {
-			continue
+			return nil, time.Time{}, err
 		}
 		if !isFiniteFloat(v) {
 			continue

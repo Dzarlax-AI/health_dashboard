@@ -1,8 +1,12 @@
 package storage
 
 import (
+	"context"
+	"errors"
 	"log"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // TableStat holds row counts and date range for a pre-aggregated cache table.
@@ -184,7 +188,36 @@ func (s *DB) GetDataGaps(minGapDays, minHours int) ([]DataGap, error) {
 func (s *DB) RemoveAutoExportForRange(from, to string) {
 	ctx, cancel := queryCtx()
 	defer cancel()
-	res, err := s.pool.Exec(ctx, `
+	if err := validateDateRange(from, to); err != nil {
+		log.Printf("remove auto-export [%s,%s]: %v", from, to, err)
+		return
+	}
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		log.Printf("remove auto-export [%s,%s]: begin transaction: %v", from, to, err)
+		return
+	}
+	defer tx.Rollback(ctx)
+	dates, err := selectCacheDates(ctx, tx, `
+		SELECT DISTINCT SUBSTRING(mp.date,1,10)
+		  FROM metric_points mp
+		 WHERE mp.health_record_id IN (
+			SELECT id FROM health_records
+			 WHERE automation_name IN ('Health dash - Hourly', 'Health dash - Vitals')
+		 )
+		 AND SUBSTRING(mp.date,1,10) >= $1
+		 AND SUBSTRING(mp.date,1,10) <= $2`, from, to)
+	if err != nil {
+		log.Printf("remove auto-export [%s,%s]: read affected dates: %v", from, to, err)
+		return
+	}
+	if err := s.MarkCacheDirtyTx(ctx, tx, dates); err != nil {
+		log.Printf("remove auto-export [%s,%s]: mark cache dates dirty: %v", from, to, err)
+		return
+	}
+	res, err := tx.Exec(ctx, `
 		DELETE FROM metric_points
 		WHERE health_record_id IN (
 			SELECT id FROM health_records
@@ -196,24 +229,84 @@ func (s *DB) RemoveAutoExportForRange(from, to string) {
 		log.Printf("remove auto-export [%s,%s]: %v", from, to, err)
 		return
 	}
+	if err := tx.Commit(ctx); err != nil {
+		log.Printf("remove auto-export [%s,%s]: commit: %v", from, to, err)
+		return
+	}
 	log.Printf("removed %d Auto Export points for %s … %s", res.RowsAffected(), from, to)
 }
 
 // InvalidateDateRangeAggregates deletes all pre-aggregated rows for [from, to]
 // (inclusive, YYYY-MM-DD) so that the next backfill recomputes them from metric_points.
 func (s *DB) InvalidateDateRangeAggregates(from, to string) {
-	s.cacheMu.Lock()
-	defer s.cacheMu.Unlock()
 	ctx, cancel := queryCtx()
 	defer cancel()
-	if _, err := s.pool.Exec(ctx,
+	if err := validateDateRange(from, to); err != nil {
+		log.Printf("invalidate aggregates [%s,%s]: %v", from, to, err)
+		return
+	}
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		log.Printf("invalidate aggregates [%s,%s]: begin transaction: %v", from, to, err)
+		return
+	}
+	defer tx.Rollback(ctx)
+	dates, err := selectCacheDates(ctx, tx, `
+		SELECT DISTINCT SUBSTRING(date,1,10) FROM metric_points
+		 WHERE SUBSTRING(date,1,10) >= $1 AND SUBSTRING(date,1,10) <= $2`, from, to)
+	if err != nil {
+		log.Printf("invalidate aggregates [%s,%s]: read affected dates: %v", from, to, err)
+		return
+	}
+	if err := s.MarkCacheDirtyTx(ctx, tx, dates); err != nil {
+		log.Printf("invalidate aggregates [%s,%s]: mark cache dates dirty: %v", from, to, err)
+		return
+	}
+	if _, err := tx.Exec(ctx,
 		"DELETE FROM hourly_metrics WHERE SUBSTRING(hour,1,10) >= $1 AND SUBSTRING(hour,1,10) <= $2", from, to,
 	); err != nil {
 		log.Printf("invalidate hourly_metrics [%s,%s]: %v", from, to, err)
+		return
 	}
-	if _, err := s.pool.Exec(ctx, "DELETE FROM daily_scores WHERE date >= $1 AND date <= $2", from, to); err != nil {
+	if _, err := tx.Exec(ctx, "DELETE FROM daily_scores WHERE date >= $1 AND date <= $2", from, to); err != nil {
 		log.Printf("invalidate daily_scores [%s,%s]: %v", from, to, err)
+		return
 	}
+	if err := tx.Commit(ctx); err != nil {
+		log.Printf("invalidate aggregates [%s,%s]: commit: %v", from, to, err)
+	}
+}
+
+func validateDateRange(from, to string) error {
+	if err := validateCacheDate(from); err != nil {
+		return err
+	}
+	if err := validateCacheDate(to); err != nil {
+		return err
+	}
+	if from > to {
+		return errors.New("date range starts after it ends")
+	}
+	return nil
+}
+
+func selectCacheDates(ctx context.Context, tx pgx.Tx, query string, args ...any) ([]string, error) {
+	rows, err := tx.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var dates []string
+	for rows.Next() {
+		var date string
+		if err := rows.Scan(&date); err != nil {
+			return nil, err
+		}
+		dates = append(dates, date)
+	}
+	return dates, rows.Err()
 }
 
 // GetCacheStatus returns row counts and date ranges for all cache tables.
