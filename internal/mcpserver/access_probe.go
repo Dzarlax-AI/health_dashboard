@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/mail"
 	"net/url"
@@ -169,6 +170,7 @@ func NewAccessProbeHandler(cfg *AccessProbeConfig, verifier AccessAssertionVerif
 			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
 			return
 		}
+		log.Print("MCP Access assertion probe verified")
 		w.WriteHeader(http.StatusNoContent)
 	})
 }
