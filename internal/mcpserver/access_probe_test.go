@@ -234,6 +234,7 @@ func TestAccessProbeRejectionLogsOnlyFixedFlags(t *testing.T) {
 	for _, expected := range []string{
 		"reason=assertion_rejected", "assertion_count=1", "authorization_count=1", "authorization_oauth_prefix=true",
 		"claims_unverified_parsed=true", "claim_rs256=true", "claim_kid_present=true", "claim_issuer_match=true", "claim_audience_match=true",
+		"claim_audience_count=1", "claim_audience_unique_count=1", "claim_audience_contains_expected=true",
 		"claim_app_type=true", "claim_iat_present=true", "claim_nbf_present=true", "claim_exp_present=true", "claim_iat_time_valid=true",
 		"claim_nbf_time_valid=true", "claim_exp_time_valid=true", "claim_email_mapped=true",
 	} {
@@ -279,6 +280,65 @@ func TestAccessProbeRejectionLogsOnlyFixedFlags(t *testing.T) {
 	successHandler.ServeHTTP(response, request)
 	if response.Code != http.StatusNoContent || output.String() != "MCP Access assertion probe verified\n" {
 		t.Fatalf("success response=%d logs=%q", response.Code, output.String())
+	}
+}
+
+func TestAudienceShapeDiagnosticsAreValueFree(t *testing.T) {
+	const expected = "EXPECTED_AUDIENCE_SENTINEL"
+	for _, tc := range []struct {
+		name            string
+		raw             string
+		count           int
+		uniqueCount     int
+		contains, exact bool
+	}{
+		{"wrong", `"OTHER_AUDIENCE_SENTINEL"`, 1, 1, false, false},
+		{"single", `"EXPECTED_AUDIENCE_SENTINEL"`, 1, 1, true, true},
+		{"multiple", `["EXPECTED_AUDIENCE_SENTINEL","OTHER_AUDIENCE_SENTINEL"]`, 2, 2, true, false},
+		{"duplicate", `["EXPECTED_AUDIENCE_SENTINEL","EXPECTED_AUDIENCE_SENTINEL"]`, 2, 1, true, false},
+		{"malformed value", `["EXPECTED_AUDIENCE_SENTINEL",7]`, 0, 0, false, false},
+		{"malformed null", `null`, 0, 0, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			count, uniqueCount, contains, exact := audienceShape(json.RawMessage(tc.raw), expected)
+			if count != tc.count || uniqueCount != tc.uniqueCount || contains != tc.contains || exact != tc.exact {
+				t.Fatalf("audienceShape = (%d, %d, %t, %t), want (%d, %d, %t, %t)", count, uniqueCount, contains, exact, tc.count, tc.uniqueCount, tc.contains, tc.exact)
+			}
+		})
+	}
+}
+
+func TestExclusiveAudienceFailureUsesFixedDiagnosticReason(t *testing.T) {
+	cfg := &AccessProbeConfig{Enabled: true, Issuer: "https://issuer.example.test", Audience: "expected-aud-SENTINEL", UserMap: map[string]string{"owner@example.test": "admin"}}
+	claimPayload, _ := json.Marshal(map[string]any{"iss": cfg.Issuer, "aud": []string{cfg.Audience, "other-aud-SENTINEL"}, "type": "app", "email": "owner@example.test"})
+	encode := func(value []byte) string { return base64.RawURLEncoding.EncodeToString(value) }
+	assertion := encode([]byte(`{"alg":"RS256","kid":"KID_SENTINEL"}`)) + "." + encode(claimPayload) + ".SIGNATURE_SENTINEL"
+	h := NewAccessProbeHandler(cfg, assertionVerifierFunc(func(context.Context, string) (*accessauth.Identity, error) {
+		return nil, accessauth.ErrExclusiveAudience
+	}))
+	var output bytes.Buffer
+	previousWriter, previousFlags := log.Writer(), log.Flags()
+	log.SetOutput(&output)
+	log.SetFlags(0)
+	defer func() { log.SetOutput(previousWriter); log.SetFlags(previousFlags) }()
+
+	request := httptest.NewRequest(http.MethodPost, "/mcp/oauth", nil)
+	request.Header.Set("Cf-Access-Jwt-Assertion", assertion)
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d want=401", response.Code)
+	}
+	logged := output.String()
+	for _, expected := range []string{"reason=assertion_exclusive_audience", "claim_audience_count=2", "claim_audience_unique_count=2", "claim_audience_contains_expected=true", "claim_audience_match=false"} {
+		if !strings.Contains(logged, expected) {
+			t.Errorf("log missing %q: %s", expected, logged)
+		}
+	}
+	for _, secret := range []string{assertion, cfg.Audience, "other-aud-SENTINEL", "KID_SENTINEL", "owner@example.test", accessauth.ErrExclusiveAudience.Error()} {
+		if strings.Contains(logged, secret) {
+			t.Errorf("diagnostic log exposed untrusted value %q", secret)
+		}
 	}
 }
 

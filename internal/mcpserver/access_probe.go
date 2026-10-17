@@ -134,23 +134,27 @@ const (
 	probeRejectQueryCredential     probeRejectReason = "query_credential"
 	probeRejectVerifierUnavailable probeRejectReason = "verifier_unavailable"
 	probeRejectAssertionRejected   probeRejectReason = "assertion_rejected"
+	probeRejectExclusiveAudience   probeRejectReason = "assertion_exclusive_audience"
 	probeRejectIdentityMismatch    probeRejectReason = "identity_mismatch"
 )
 
 type unverifiedClaimFlags struct {
-	Parsed        bool
-	RS256         bool
-	KIDPresent    bool
-	IssuerMatch   bool
-	AudienceMatch bool
-	AppType       bool
-	IATPresent    bool
-	NBPresent     bool
-	EXPPresent    bool
-	IATValid      bool
-	NBValid       bool
-	EXPValid      bool
-	EmailMapped   bool
+	Parsed                   bool
+	RS256                    bool
+	KIDPresent               bool
+	IssuerMatch              bool
+	AudienceMatch            bool
+	AudienceCount            int
+	AudienceUniqueCount      int
+	AudienceContainsExpected bool
+	AppType                  bool
+	IATPresent               bool
+	NBPresent                bool
+	EXPPresent               bool
+	IATValid                 bool
+	NBValid                  bool
+	EXPValid                 bool
+	EmailMapped              bool
 }
 
 const probeRejectionLogInterval = 5 * time.Second
@@ -167,7 +171,7 @@ func newProbeRejectionLogThrottle() *probeRejectionLogThrottle {
 
 func newProbeRejectionLogThrottleWithClock(now func() time.Time) *probeRejectionLogThrottle {
 	return &probeRejectionLogThrottle{
-		last: make(map[probeRejectReason]time.Time, 9),
+		last: make(map[probeRejectReason]time.Time, 10),
 		now:  now,
 	}
 }
@@ -190,7 +194,7 @@ func knownProbeRejectReason(reason probeRejectReason) bool {
 	switch reason {
 	case probeRejectAssertionCount, probeRejectAssertionFormat, probeRejectAuthorizationCount,
 		probeRejectAuthorizationFormat, probeRejectAPIKey, probeRejectQueryCredential,
-		probeRejectVerifierUnavailable, probeRejectAssertionRejected, probeRejectIdentityMismatch:
+		probeRejectVerifierUnavailable, probeRejectAssertionRejected, probeRejectExclusiveAudience, probeRejectIdentityMismatch:
 		return true
 	default:
 		return false
@@ -251,6 +255,11 @@ func NewAccessProbeHandler(cfg *AccessProbeConfig, verifier AccessAssertionVerif
 			if errors.Is(err, accessauth.ErrUnavailable) {
 				logProbeRejection(logThrottle, probeRejectVerifierUnavailable, r, cfg, assertion, false)
 				http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
+				return
+			}
+			if errors.Is(err, accessauth.ErrExclusiveAudience) {
+				logProbeRejection(logThrottle, probeRejectExclusiveAudience, r, cfg, assertion, true)
+				http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 				return
 			}
 			logProbeRejection(logThrottle, probeRejectAssertionRejected, r, cfg, assertion, true)
@@ -319,9 +328,9 @@ func logProbeRejection(throttle *probeRejectionLogThrottle, reason probeRejectRe
 	if inspectClaims {
 		claims = inspectUnverifiedAccessAssertion(assertion, cfg)
 	}
-	log.Printf("MCP Access assertion probe rejected reason=%s assertion_count=%d assertion_nonempty=%t assertion_unpadded=%t assertion_no_comma=%t assertion_under_16k=%t assertion_compact_shape=%t authorization_count=%d authorization_bearer_prefix=%t authorization_oauth_prefix=%t authorization_shape=%t authorization_jwt_shape=%t authorization_colon_count=%d api_key_present=%t query_credential_present=%t claims_unverified_parsed=%t claim_rs256=%t claim_kid_present=%t claim_issuer_match=%t claim_audience_match=%t claim_app_type=%t claim_iat_present=%t claim_nbf_present=%t claim_exp_present=%t claim_iat_time_valid=%t claim_nbf_time_valid=%t claim_exp_time_valid=%t claim_email_mapped=%t",
+	log.Printf("MCP Access assertion probe rejected reason=%s assertion_count=%d assertion_nonempty=%t assertion_unpadded=%t assertion_no_comma=%t assertion_under_16k=%t assertion_compact_shape=%t authorization_count=%d authorization_bearer_prefix=%t authorization_oauth_prefix=%t authorization_shape=%t authorization_jwt_shape=%t authorization_colon_count=%d api_key_present=%t query_credential_present=%t claims_unverified_parsed=%t claim_rs256=%t claim_kid_present=%t claim_issuer_match=%t claim_audience_match=%t claim_audience_count=%d claim_audience_unique_count=%d claim_audience_contains_expected=%t claim_app_type=%t claim_iat_present=%t claim_nbf_present=%t claim_exp_present=%t claim_iat_time_valid=%t claim_nbf_time_valid=%t claim_exp_time_valid=%t claim_email_mapped=%t",
 		reason, len(assertions), assertion != "", strings.TrimSpace(assertion) == assertion, !strings.Contains(assertion, ","), len(assertion) <= 16*1024, assertionShape,
-		len(auths), authBearer, authOAuth, authShape, authJWTShape, authColonCount, len(apiKeys) > 0, hasQueryCredential(r), claims.Parsed, claims.RS256, claims.KIDPresent, claims.IssuerMatch, claims.AudienceMatch, claims.AppType, claims.IATPresent, claims.NBPresent, claims.EXPPresent, claims.IATValid, claims.NBValid, claims.EXPValid, claims.EmailMapped)
+		len(auths), authBearer, authOAuth, authShape, authJWTShape, authColonCount, len(apiKeys) > 0, hasQueryCredential(r), claims.Parsed, claims.RS256, claims.KIDPresent, claims.IssuerMatch, claims.AudienceMatch, claims.AudienceCount, claims.AudienceUniqueCount, claims.AudienceContainsExpected, claims.AppType, claims.IATPresent, claims.NBPresent, claims.EXPPresent, claims.IATValid, claims.NBValid, claims.EXPValid, claims.EmailMapped)
 }
 
 // inspectUnverifiedAccessAssertion produces diagnostic hints only. Its unsigned
@@ -351,7 +360,7 @@ func inspectUnverifiedAccessAssertion(assertion string, cfg *AccessProbeConfig) 
 	flags.RS256 = jsonString(header["alg"]) == "RS256"
 	flags.KIDPresent = jsonString(header["kid"]) != ""
 	flags.IssuerMatch = jsonString(payload["iss"]) == cfg.Issuer
-	flags.AudienceMatch = exactAudience(payload["aud"], cfg.Audience)
+	flags.AudienceCount, flags.AudienceUniqueCount, flags.AudienceContainsExpected, flags.AudienceMatch = audienceShape(payload["aud"], cfg.Audience)
 	flags.AppType = jsonString(payload["type"]) == "app"
 	flags.EmailMapped = cfg.UserMap[jsonString(payload["email"])] != ""
 	now := float64(time.Now().Unix())
@@ -389,13 +398,37 @@ func jsonString(raw json.RawMessage) string {
 	return value
 }
 
-func exactAudience(raw json.RawMessage, expected string) bool {
-	var one string
-	if json.Unmarshal(raw, &one) == nil {
-		return one == expected
+func audienceShape(raw json.RawMessage, expected string) (count, uniqueCount int, containsExpected, exact bool) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return 0, 0, false, false
 	}
-	var values []string
-	return json.Unmarshal(raw, &values) == nil && len(values) == 1 && values[0] == expected
+	if trimmed[0] == '"' {
+		var one string
+		if json.Unmarshal(raw, &one) != nil {
+			return 0, 0, false, false
+		}
+		return 1, 1, one == expected, one == expected
+	}
+	if trimmed[0] != '[' {
+		return 0, 0, false, false
+	}
+	var rawValues []json.RawMessage
+	if json.Unmarshal(raw, &rawValues) != nil || rawValues == nil {
+		return 0, 0, false, false
+	}
+	unique := make(map[string]struct{}, len(rawValues))
+	for _, rawValue := range rawValues {
+		var value string
+		if len(rawValue) == 0 || rawValue[0] != '"' || json.Unmarshal(rawValue, &value) != nil {
+			return 0, 0, false, false
+		}
+		unique[value] = struct{}{}
+		if value == expected {
+			containsExpected = true
+		}
+	}
+	return len(rawValues), len(unique), containsExpected, len(rawValues) == 1 && containsExpected
 }
 
 func jsonNumericDate(raw json.RawMessage) (float64, bool) {

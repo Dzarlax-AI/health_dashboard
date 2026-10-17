@@ -143,8 +143,15 @@ func TestVerifierRejectsInvalidTokens(t *testing.T) {
 	}
 	for _, tc := range bad {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := v.Verify(context.Background(), tc.token); err == nil || errors.Is(err, ErrUnavailable) {
+			_, err := v.Verify(context.Background(), tc.token)
+			if err == nil || errors.Is(err, ErrUnavailable) {
 				t.Fatalf("Verify error = %v, expected invalid-token error", err)
+			}
+			if tc.name != "multiple audiences" && errors.Is(err, ErrExclusiveAudience) {
+				t.Fatalf("Verify error = %v, only post-verification audience failures should use ErrExclusiveAudience", err)
+			}
+			if tc.name == "multiple audiences" && !errors.Is(err, ErrExclusiveAudience) {
+				t.Fatalf("Verify error = %v, want ErrExclusiveAudience", err)
 			}
 		})
 	}
