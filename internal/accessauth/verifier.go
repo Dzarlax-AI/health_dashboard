@@ -19,7 +19,12 @@ import (
 
 const maxTokenSize = 16 * 1024
 
-var ErrUnavailable = errors.New("cloudflare access verifier unavailable")
+var (
+	ErrUnavailable = errors.New("cloudflare access verifier unavailable")
+	// ErrExclusiveAudience marks a token whose signature and standard claims
+	// validated but whose audience was not exclusive to this application.
+	ErrExclusiveAudience = errors.New("invalid access token audience")
+)
 
 type Identity struct {
 	Email    string
@@ -101,7 +106,7 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (*Identity, error) {
 		return nil, errors.New("invalid access token claims")
 	}
 	if len(parsedClaims.Audience) != 1 || parsedClaims.Audience[0] != v.audience {
-		return nil, errors.New("invalid access token audience")
+		return nil, ErrExclusiveAudience
 	}
 	if parsedClaims.IssuedAt.Time.After(v.now()) {
 		return nil, errors.New("future access token")
