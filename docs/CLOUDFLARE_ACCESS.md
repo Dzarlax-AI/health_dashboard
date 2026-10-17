@@ -193,10 +193,11 @@ a browser User-Agent just to make a machine-client check pass.
    Do not trigger ingestion, imports, backfills, report delivery, or AI
    generation just to test authentication. Record actual deployment acceptance.
 
-The separate `MCP_OAUTH_*` Authentik issuer/subject configuration remains in
-place unless explicitly migrated in a later change. Its API-key alternative
-remains available even if OAuth is disabled. Do not retire Authentik while
-other clients still depend on its issuer or refresh tokens.
+During a browser-only migration, preserve the separate `MCP_OAUTH_*`
+issuer/subject configuration until its own MCP cutover has been accepted.
+API keys remain available even if OAuth is disabled. The maintainer's separate
+Cloudflare MCP profile is described below; do not retire a shared Authentik
+provider while other clients still depend on it.
 
 For a separately approved rollback, restore the captured mode/configuration,
 compatible images and DNS state through the same release gate, then verify the

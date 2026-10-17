@@ -63,11 +63,26 @@ passed. A successful connection does not prove the maximum grant lifetime.
 Use a separate Managed OAuth Access app for the new path and an exact callback
 obtained from the client's actual setup UI. Do not allow broad callback domains
 or automatically reuse a browser app audience, user allowlist or local role.
-Cloudflare owns the new path's OAuth challenge and protected-resource metadata
-at `/.well-known/cloudflare-access-protected-resource/mcp/oauth`; these must be
-reachable by an ordinary non-browser OAuth client. Register the actual client's
-exact redirect URI, use PKCE S256, and keep the Access policy limited to the
+For an unauthenticated `/mcp/oauth` request, follow the `resource_metadata` URL
+from Cloudflare's `WWW-Authenticate` header rather than hard-coding a discovery
+path. That advertised document must be reachable by an ordinary non-browser
+OAuth client. Register the actual client's exact redirect URI, use PKCE S256, and keep the Access policy limited to the
 intended MCP users. The old `/.well-known/oauth-protected-resource/mcp` remains independent.
+
+### Maintainer deployment
+
+On 17 October 2026, the independent Cloudflare MCP transport was enabled at
+`https://health.dzarlax.dev/mcp/oauth`, on the existing hostname. Its Google
+connection has a separate owner-only Access policy; the browser user allowlist
+does not automatically grant MCP access. Native API keys continue at `/mcp`,
+and external JWT OAuth remains an optional self-hosting configuration.
+
+A cutover from an older issuer must preserve its five `MCP_OAUTH_*` runtime
+fields until the new client's tool discovery, scoped read-only call and a
+repeated call after access-token expiry pass. Remove only that Health runtime
+profile; do not delete a shared Authentik provider or other services' clients.
+The configured five-minute access-token lifetime and 720-hour grant session
+are provider settings, not a guarantee of the maximum grant lifetime.
 
 ### External JWT OAuth configuration
 
