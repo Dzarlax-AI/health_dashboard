@@ -152,7 +152,8 @@ tests and token checks do not replace that acceptance.
 
 Large manual Apple Health archives use private SSH/API access with the existing
 token and tenant checks. The proxied web path retains the 100 MB network limit.
-The separate MCP OAuth issuer remains Authentik; this is a browser migration.
+At the browser cutover, the separate MCP OAuth issuer remained Authentik.
+The optional MCP migration is documented separately in [MCP OAuth](MCP_OAUTH.md#cloudflare-managed-oauth).
 
 ### Native client browser-signature filtering
 
@@ -201,6 +202,24 @@ For a separately approved rollback, restore the captured mode/configuration,
 compatible images and DNS state through the same release gate, then verify the
 previous Authentik/local login and native paths. Do not delete users, sessions,
 keys, medical data, or shared services as an authentication rollback.
+
+## Separate MCP authentication
+
+Web Access and MCP Access have independent profiles and distinct application
+AUD values. Enabling `BROWSER_AUTH_MODE=cloudflare` does not enable MCP OAuth.
+`MCP_ACCESS_ENABLED=true` adds the exact `/mcp/oauth` endpoint for a separate
+Managed OAuth application; it serves the read-only tools with per-request
+signed identity verification and active tenant resolution. MCP requires its
+configured application audience to be present in the verified token, including
+Cloudflare multi-audience tokens; web verification remains single-audience.
+A browser-only token cannot authorize MCP. Encoded or trailing variants do not
+fall back to `/mcp` key authentication.
+
+Keep `/mcp` and API keys for self-hosters and native clients. OIDC and Cloudflare
+remain optional, and unavailable signing keys do not disable native tokens.
+Retire only the old Health `MCP_OAUTH_*` runtime profile after actual new-client
+tool discovery, a scoped read-only call and post-expiry acceptance. Do not delete
+Authentik or its clients while any other service still depends on them.
 
 ## Local verification
 

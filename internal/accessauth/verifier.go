@@ -21,9 +21,6 @@ const maxTokenSize = 16 * 1024
 
 var (
 	ErrUnavailable = errors.New("cloudflare access verifier unavailable")
-	// ErrExclusiveAudience marks a token whose signature and standard claims
-	// validated but whose audience was not exclusive to this application.
-	ErrExclusiveAudience = errors.New("invalid access token audience")
 )
 
 type Identity struct {
@@ -45,6 +42,7 @@ type Verifier struct {
 	cacheTTL                  time.Duration
 	refreshInterval           time.Duration
 	fetchBackoff              time.Duration
+	allowAdditionalAudiences  bool
 
 	mu          sync.Mutex
 	keys        map[string]*rsa.PublicKey
@@ -54,15 +52,31 @@ type Verifier struct {
 }
 
 func NewVerifier(cfg *Config) (*Verifier, error) {
+	return newConfiguredVerifier(cfg, false)
+}
+
+// NewVerifierWithAudienceMembership accepts an application audience when it
+// is one member of a signed token's audience claim. Browser authentication
+// should continue using NewVerifier, which requires the application audience
+// to be exclusive.
+func NewVerifierWithAudienceMembership(cfg *Config) (*Verifier, error) {
+	return newConfiguredVerifier(cfg, true)
+}
+
+func newConfiguredVerifier(cfg *Config, allowAdditionalAudiences bool) (*Verifier, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	issuer := strings.TrimSuffix(cfg.Issuer, "/")
-	return newVerifier(issuer, cfg.Audience, issuer+"/cdn-cgi/access/certs", cfg.UserMap, &http.Client{Timeout: 4 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }})
+	return newVerifierWithAudiencePolicy(issuer, cfg.Audience, issuer+"/cdn-cgi/access/certs", cfg.UserMap, &http.Client{Timeout: 4 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, allowAdditionalAudiences)
 }
 
 // newVerifier is kept narrow so package tests can inject an in-memory JWKS server.
 func newVerifier(issuer, audience, jwksURL string, users map[string]string, client *http.Client) (*Verifier, error) {
+	return newVerifierWithAudiencePolicy(issuer, audience, jwksURL, users, client, false)
+}
+
+func newVerifierWithAudiencePolicy(issuer, audience, jwksURL string, users map[string]string, client *http.Client, allowAdditionalAudiences bool) (*Verifier, error) {
 	cfg := &Config{Issuer: issuer, Audience: audience, Origin: issuer, UserMap: users}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -74,7 +88,7 @@ func newVerifier(issuer, audience, jwksURL string, users map[string]string, clie
 	for email, username := range users {
 		copyUsers[email] = username
 	}
-	return &Verifier{issuer: issuer, audience: audience, jwksURL: jwksURL, users: copyUsers, client: client, now: time.Now, cacheTTL: 10 * time.Minute, refreshInterval: 30 * time.Second, fetchBackoff: 5 * time.Second}, nil
+	return &Verifier{issuer: issuer, audience: audience, jwksURL: jwksURL, users: copyUsers, client: client, now: time.Now, cacheTTL: 10 * time.Minute, refreshInterval: 30 * time.Second, fetchBackoff: 5 * time.Second, allowAdditionalAudiences: allowAdditionalAudiences}, nil
 }
 
 func (v *Verifier) Verify(ctx context.Context, raw string) (*Identity, error) {
@@ -105,8 +119,8 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (*Identity, error) {
 	if !parsed.Valid || parsedClaims.IssuedAt == nil || parsedClaims.NotBefore == nil || parsedClaims.ExpiresAt == nil || parsedClaims.Type != "app" {
 		return nil, errors.New("invalid access token claims")
 	}
-	if len(parsedClaims.Audience) != 1 || parsedClaims.Audience[0] != v.audience {
-		return nil, ErrExclusiveAudience
+	if !v.allowAdditionalAudiences && (len(parsedClaims.Audience) != 1 || parsedClaims.Audience[0] != v.audience) {
+		return nil, errors.New("invalid access token audience")
 	}
 	if parsedClaims.IssuedAt.Time.After(v.now()) {
 		return nil, errors.New("future access token")

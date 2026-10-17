@@ -114,6 +114,69 @@ func TestVerifierValidatesClaimsAndCachesKeys(t *testing.T) {
 	}
 }
 
+func TestVerifierAudiencePolicyIsScopedToMCPMembership(t *testing.T) {
+	key := mustRSA(t)
+	client := testClient(func() (*http.Response, error) {
+		return response(http.StatusOK, jwksJSON("key-a", &key.PublicKey)), nil
+	})
+	users := map[string]string{"alice@example.test": "alice"}
+	strict, err := newVerifier("https://team.example.com", "aud-1", "https://jwks.invalid/certs", users, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	membership, err := newVerifierWithAudiencePolicy("https://team.example.com", "aud-1", "https://jwks.invalid/certs", users, client, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	makeClaims := func(audience jwt.ClaimStrings) claims {
+		return claims{Email: "alice@example.test", Type: "app", RegisteredClaims: registeredClaims(now.Add(-time.Minute), now.Add(-time.Minute), now.Add(time.Hour), "https://team.example.com", audience)}
+	}
+	makeToken := func(c claims, signingKey *rsa.PrivateKey) string {
+		return signedToken(t, signingKey, "key-a", jwt.SigningMethodRS256, c)
+	}
+	validMulti := makeToken(makeClaims(jwt.ClaimStrings{"aud-1", "another-application"}), key)
+	if _, err := membership.Verify(context.Background(), validMulti); err != nil {
+		t.Fatalf("MCP membership verifier rejected signed multi-audience token: %v", err)
+	}
+	if _, err := strict.Verify(context.Background(), validMulti); err == nil {
+		t.Fatal("browser-strict verifier accepted multi-audience token")
+	}
+	for _, tc := range []struct {
+		name  string
+		token string
+	}{
+		{"foreign audience", makeToken(makeClaims(jwt.ClaimStrings{"browser-audience"}), key)},
+		{"invalid signature", makeToken(makeClaims(jwt.ClaimStrings{"aud-1", "another-application"}), mustRSA(t))},
+		{"wrong app type", func() string {
+			c := makeClaims(jwt.ClaimStrings{"aud-1", "another-application"})
+			c.Type = "login"
+			return makeToken(c, key)
+		}()},
+		{"expired", func() string {
+			c := makeClaims(jwt.ClaimStrings{"aud-1", "another-application"})
+			c.ExpiresAt = jwt.NewNumericDate(now.Add(-time.Minute))
+			return makeToken(c, key)
+		}()},
+		{"future not before", func() string {
+			c := makeClaims(jwt.ClaimStrings{"aud-1", "another-application"})
+			c.NotBefore = jwt.NewNumericDate(now.Add(time.Minute))
+			return makeToken(c, key)
+		}()},
+		{"unmapped email", func() string {
+			c := makeClaims(jwt.ClaimStrings{"aud-1", "another-application"})
+			c.Email = "other@example.test"
+			return makeToken(c, key)
+		}()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := membership.Verify(context.Background(), tc.token); err == nil || errors.Is(err, ErrUnavailable) {
+				t.Fatalf("MCP verifier error=%v, want signed-claim rejection", err)
+			}
+		})
+	}
+}
+
 func TestVerifierRejectsInvalidTokens(t *testing.T) {
 	key := mustRSA(t)
 	otherKey := mustRSA(t)
@@ -146,12 +209,6 @@ func TestVerifierRejectsInvalidTokens(t *testing.T) {
 			_, err := v.Verify(context.Background(), tc.token)
 			if err == nil || errors.Is(err, ErrUnavailable) {
 				t.Fatalf("Verify error = %v, expected invalid-token error", err)
-			}
-			if tc.name != "multiple audiences" && errors.Is(err, ErrExclusiveAudience) {
-				t.Fatalf("Verify error = %v, only post-verification audience failures should use ErrExclusiveAudience", err)
-			}
-			if tc.name == "multiple audiences" && !errors.Is(err, ErrExclusiveAudience) {
-				t.Fatalf("Verify error = %v, want ErrExclusiveAudience", err)
 			}
 		})
 	}

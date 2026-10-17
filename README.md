@@ -443,12 +443,20 @@ Features:
 
 ## MCP Server
 
-An optional Cloudflare Managed OAuth migration is being validated at the separate
-`/mcp/oauth` path on the same hostname. At this protocol-probe stage, the path
-only validates an Access assertion and returns an empty `204` response; it does
-not expose tools or read tenant data. It is disabled by default. Existing API
-keys and optional external OAuth continue to use `/mcp` independently. See the
-[MCP Access protocol probe](docs/MCP_OAUTH.md#mcp-access-protocol-probe).
+The native `/mcp` endpoint works with an API key, without OIDC, Cloudflare or
+an available JWKS endpoint. Optional authentication profiles are independent:
+
+| Endpoint | Optional authentication | Tenant selection |
+| --- | --- | --- |
+| `/mcp` | External RS256 JWT OAuth via `MCP_OAUTH_*` | Exact issuer subject mapped to an existing username |
+| `/mcp/oauth` | Cloudflare Managed OAuth via `MCP_ACCESS_*` | Verified Access email mapped to an existing username |
+
+The Cloudflare profile is disabled by default. When enabled, the exact
+`/mcp/oauth` endpoint serves the same read-only tools with stateless transport.
+Health verifies a signed assertion on every request and resolves the active
+local tenant again; a cookie, MCP session ID or tool argument cannot select a
+different user. Use a separate MCP Access application audience from the browser
+application. See [Cloudflare MCP setup](docs/MCP_OAUTH.md#cloudflare-managed-oauth).
 
 Available at `/mcp` for AI analysis via Claude or other MCP-compatible clients.
 
