@@ -1,13 +1,19 @@
 package mcpserver
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"health-receiver/internal/accessauth"
 )
@@ -178,6 +184,168 @@ func TestAccessProbeRejectsAmbiguousAssertionsAndUnavailableVerifier(t *testing.
 	}
 	if strings.Contains(w.Body.String(), "signed") {
 		t.Fatalf("response leaked assertion: %q", w.Body.String())
+	}
+}
+
+func TestAccessProbeRejectionLogsOnlyFixedFlags(t *testing.T) {
+	const (
+		issuer = "https://ISSUER_SENTINEL.example.test"
+		aud    = "AUDIENCE_SENTINEL"
+		email  = "PRIVATE_EMAIL_SENTINEL@example.test"
+	)
+	cfg := &AccessProbeConfig{Enabled: true, Issuer: issuer, Audience: aud, UserMap: map[string]string{email: "admin"}}
+	claims := map[string]any{
+		"iss": issuer, "aud": aud, "type": "app", "email": email, "sub": "SUBJECT_SENTINEL",
+		"iat": time.Now().Add(-time.Minute).Unix(), "nbf": time.Now().Add(-time.Minute).Unix(), "exp": time.Now().Add(time.Hour).Unix(),
+	}
+	header := map[string]string{"alg": "RS256", "kid": "KID_SENTINEL"}
+	encode := func(value any) string {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return base64.RawURLEncoding.EncodeToString(encoded)
+	}
+	assertion := encode(header) + "." + encode(claims) + ".SIGNATURE_SENTINEL"
+	h := NewAccessProbeHandler(cfg, assertionVerifierFunc(func(context.Context, string) (*accessauth.Identity, error) {
+		return nil, errors.New("RAW_VERIFIER_ERROR_SENTINEL")
+	}))
+
+	var output bytes.Buffer
+	previousWriter, previousFlags, previousPrefix := log.Writer(), log.Flags(), log.Prefix()
+	log.SetOutput(&output)
+	log.SetFlags(0)
+	defer func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+		log.SetPrefix(previousPrefix)
+	}()
+
+	request := httptest.NewRequest(http.MethodPost, "/mcp/oauth", nil)
+	request.Header.Set("Cf-Access-Jwt-Assertion", assertion)
+	request.Header.Set("Authorization", "Bearer oauth:AUTH_SENTINEL")
+	request.Header.Set("Cookie", "CF_Authorization=COOKIE_SENTINEL")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d want=401", response.Code)
+	}
+	firstLog := output.String()
+	for _, expected := range []string{
+		"reason=assertion_rejected", "assertion_count=1", "authorization_count=1", "authorization_oauth_prefix=true",
+		"claims_unverified_parsed=true", "claim_rs256=true", "claim_kid_present=true", "claim_issuer_match=true", "claim_audience_match=true",
+		"claim_app_type=true", "claim_iat_present=true", "claim_nbf_present=true", "claim_exp_present=true", "claim_iat_time_valid=true",
+		"claim_nbf_time_valid=true", "claim_exp_time_valid=true", "claim_email_mapped=true",
+	} {
+		if !strings.Contains(firstLog, expected) {
+			t.Errorf("log missing %q: %s", expected, firstLog)
+		}
+	}
+	for _, secret := range []string{assertion, "AUTH_SENTINEL", "COOKIE_SENTINEL", "RAW_VERIFIER_ERROR_SENTINEL", "KID_SENTINEL", issuer, aud, email, "SUBJECT_SENTINEL"} {
+		if strings.Contains(firstLog, secret) {
+			t.Errorf("log exposed sensitive/untrusted value %q", secret)
+		}
+	}
+
+	output.Reset()
+	request = httptest.NewRequest(http.MethodPost, "/mcp/oauth?api_key=QUERY_SENTINEL", nil)
+	request.Header.Set("Cf-Access-Jwt-Assertion", assertion)
+	request.Header.Set("X-API-Key", "API_KEY_SENTINEL")
+	request.Header.Set("Cookie", "CF_Authorization=COOKIE_SENTINEL")
+	response = httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("credential conflict status=%d want=400", response.Code)
+	}
+	secondLog := output.String()
+	for _, expected := range []string{"reason=api_key_present", "api_key_present=true", "query_credential_present=true"} {
+		if !strings.Contains(secondLog, expected) {
+			t.Errorf("log missing %q: %s", expected, secondLog)
+		}
+	}
+	for _, secret := range []string{assertion, "API_KEY_SENTINEL", "QUERY_SENTINEL", "COOKIE_SENTINEL", email} {
+		if strings.Contains(secondLog, secret) {
+			t.Errorf("credential rejection log exposed %q", secret)
+		}
+	}
+
+	output.Reset()
+	successHandler := NewAccessProbeHandler(cfg, assertionVerifierFunc(func(context.Context, string) (*accessauth.Identity, error) {
+		return &accessauth.Identity{Email: email, Username: "admin"}, nil
+	}))
+	request = httptest.NewRequest(http.MethodPost, "/mcp/oauth", nil)
+	request.Header.Set("Cf-Access-Jwt-Assertion", assertion)
+	response = httptest.NewRecorder()
+	successHandler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent || output.String() != "MCP Access assertion probe verified\n" {
+		t.Fatalf("success response=%d logs=%q", response.Code, output.String())
+	}
+}
+
+func TestProbeRejectionLogThrottleIsPerReasonAndExpires(t *testing.T) {
+	now := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+	throttle := newProbeRejectionLogThrottleWithClock(func() time.Time { return now })
+	if !throttle.allow(probeRejectAssertionRejected) || throttle.allow(probeRejectAssertionRejected) {
+		t.Fatal("first assertion rejection should log and immediate duplicate should be suppressed")
+	}
+	if !throttle.allow(probeRejectAPIKey) {
+		t.Fatal("different fixed reason should have an independent throttle")
+	}
+	now = now.Add(probeRejectionLogInterval - time.Nanosecond)
+	if throttle.allow(probeRejectAssertionRejected) {
+		t.Fatal("same reason should remain suppressed before the five-second window expires")
+	}
+	now = now.Add(time.Nanosecond)
+	if !throttle.allow(probeRejectAssertionRejected) {
+		t.Fatal("same reason should be allowed at the five-second boundary")
+	}
+	if throttle.allow(probeRejectReason("untrusted-reason")) {
+		t.Fatal("reason outside the fixed enum should never enter the limiter")
+	}
+}
+
+func TestAccessProbeConcurrentRejectionsLogOncePerReason(t *testing.T) {
+	cfg := &AccessProbeConfig{Enabled: true, UserMap: map[string]string{"owner@example.test": "admin"}}
+	h := NewAccessProbeHandler(cfg, assertionVerifierFunc(func(context.Context, string) (*accessauth.Identity, error) {
+		return nil, errors.New("ignored verifier error")
+	}))
+	var output bytes.Buffer
+	previousWriter, previousFlags := log.Writer(), log.Flags()
+	log.SetOutput(&output)
+	log.SetFlags(0)
+	defer func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+	}()
+
+	const burst = 64
+	var wg sync.WaitGroup
+	wg.Add(burst)
+	for range burst {
+		go func() {
+			defer wg.Done()
+			request := httptest.NewRequest(http.MethodPost, "/mcp/oauth", nil)
+			response := httptest.NewRecorder()
+			h.ServeHTTP(response, request)
+			if response.Code != http.StatusUnauthorized {
+				t.Errorf("burst response=%d want=401", response.Code)
+			}
+		}()
+	}
+	wg.Wait()
+	if lines := strings.Count(output.String(), "MCP Access assertion probe rejected"); lines != 1 {
+		t.Fatalf("same-reason burst emitted %d diagnostic lines, want 1: %q", lines, output.String())
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/mcp/oauth", nil)
+	request.Header.Set("Cf-Access-Jwt-Assertion", "not-a-jwt")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("distinct-reason response=%d want=401", response.Code)
+	}
+	if lines := strings.Count(output.String(), "MCP Access assertion probe rejected"); lines != 2 {
+		t.Fatalf("distinct fixed reason did not get its own diagnostic: %q", output.String())
 	}
 }
 
