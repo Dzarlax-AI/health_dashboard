@@ -5,6 +5,8 @@ services:
     image: ${HEALTH_IMAGE:-${HEALTH_BACKEND_IMAGE:?resolve an immutable compatible backend image first}}
     env_file:
       - ${HEALTH_RUNTIME_ENV_FILE:-.env}
+    environment:
+      BROWSER_AUTH_MODE: ${HEALTH_BROWSER_AUTH_MODE:-existing}
     restart: unless-stopped
     stop_grace_period: 35s
     healthcheck:
@@ -46,9 +48,9 @@ services:
       traefik.http.routers.health-telegram-webhook.tls.certresolver: letsEncrypt
       traefik.http.routers.health-telegram-webhook.service: health-backend
 
-      # Browser JSON calls rely on the backend's opaque tenant-aware local
-      # session. Document routes remain behind ForwardAuth, where the backend
-      # refreshes that session from trusted identity headers. Keeping API calls
+      # Browser JSON calls use the selected backend credential: an opaque local
+      # session in existing mode or a verified Access JWT in Cloudflare mode.
+      # Document routes remain behind the selected ForwardAuth. Keeping API calls
       # out of ForwardAuth prevents a cross-origin SSO redirect becoming a
       # browser fetch failure while preserving fail-closed backend auth.
       traefik.http.routers.health-browser-api.entrypoints: https
@@ -65,7 +67,7 @@ services:
       traefik.http.routers.health-legacy.priority: "10"
       traefik.http.routers.health-legacy.tls: "true"
       traefik.http.routers.health-legacy.tls.certresolver: letsEncrypt
-      traefik.http.routers.health-legacy.middlewares: authentik-auth
+      traefik.http.routers.health-legacy.middlewares: ${HEALTH_BROWSER_MIDDLEWARE:-authentik-auth}
       traefik.http.routers.health-legacy.service: health-backend
 
       # Stable explicit rollback/manual-QA URL for the Go dashboard.
@@ -74,9 +76,24 @@ services:
       traefik.http.routers.health-legacy-root.priority: "310"
       traefik.http.routers.health-legacy-root.tls: "true"
       traefik.http.routers.health-legacy-root.tls.certresolver: letsEncrypt
-      traefik.http.routers.health-legacy-root.middlewares: authentik-auth,health-legacy-root
+      traefik.http.routers.health-legacy-root.middlewares: ${HEALTH_BROWSER_MIDDLEWARE:-authentik-auth},health-legacy-root
       traefik.http.routers.health-legacy-root.service: health-backend
       traefik.http.middlewares.health-legacy-root.replacepath.path: /
+
+      # The optional Access gate uses the same backend verifier as browser API
+      # authentication. These labels survive independently of a temporary carrier.
+      traefik.http.middlewares.health-access-auth.forwardauth.address: http://health-receiver:8080/_internal/cloudflare-access/verify
+      traefik.http.middlewares.health-access-auth.forwardauth.trustforwardheader: "false"
+      traefik.http.middlewares.health-access-auth.forwardauth.authrequestheaders: Cf-Access-Jwt-Assertion,Cookie
+      traefik.http.middlewares.health-access-clear.headers.customrequestheaders.X-authentik-username: ""
+      traefik.http.middlewares.health-access-clear.headers.customrequestheaders.X-authentik-email: ""
+      traefik.http.middlewares.health-access-clear.headers.customrequestheaders.X-authentik-groups: ""
+      traefik.http.middlewares.health-access-clear.headers.customrequestheaders.X-authentik-uid: ""
+      traefik.http.middlewares.health-access-clear.headers.customrequestheaders.X-authentik-jwt: ""
+      traefik.http.middlewares.health-access-clear.headers.customrequestheaders.X-Forwarded-Host: ""
+      traefik.http.middlewares.health-access-clear.headers.customrequestheaders.X-Forwarded-Uri: ""
+      traefik.http.middlewares.health-access-clear.headers.customrequestheaders.X-Forwarded-Prefix: ""
+      traefik.http.middlewares.health-access-chain.chain.middlewares: health-access-clear,health-access-auth
     networks:
       - traefik
       - infra
@@ -99,14 +116,14 @@ services:
       traefik.http.routers.health-frontend-root.priority: "400"
       traefik.http.routers.health-frontend-root.tls: "true"
       traefik.http.routers.health-frontend-root.tls.certresolver: letsEncrypt
-      traefik.http.routers.health-frontend-root.middlewares: authentik-auth
+      traefik.http.routers.health-frontend-root.middlewares: ${HEALTH_BROWSER_MIDDLEWARE:-authentik-auth}
       traefik.http.routers.health-frontend-root.service: health-frontend
       traefik.http.routers.health-frontend-assets.entrypoints: https
       traefik.http.routers.health-frontend-assets.rule: ${HEALTH_FRONTEND_ASSETS_RULE:?set by resolve-production-pair.sh}
       traefik.http.routers.health-frontend-assets.priority: "390"
       traefik.http.routers.health-frontend-assets.tls: "true"
       traefik.http.routers.health-frontend-assets.tls.certresolver: letsEncrypt
-      traefik.http.routers.health-frontend-assets.middlewares: authentik-auth
+      traefik.http.routers.health-frontend-assets.middlewares: ${HEALTH_BROWSER_MIDDLEWARE:-authentik-auth}
       traefik.http.routers.health-frontend-assets.service: health-frontend
     networks:
       - traefik

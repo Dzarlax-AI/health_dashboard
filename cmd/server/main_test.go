@@ -34,6 +34,26 @@ func TestBootstrapAdminRequestAPIKeyOnlyDisablesBlankPasswordLogin(t *testing.T)
 	}
 }
 
+func TestShouldSeedBootstrapAdminKeepsCloudflareAccountsExplicit(t *testing.T) {
+	for _, tc := range []struct {
+		name                                        string
+		registryEmpty, cloudflare, apiKey, password bool
+		want                                        bool
+	}{
+		{"standalone empty registry with API key", true, false, true, false, true},
+		{"standalone empty registry with password", true, false, false, true, true},
+		{"cloudflare empty registry with bootstrap credentials", true, true, true, true, false},
+		{"cloudflare existing registry", false, true, true, true, false},
+		{"no bootstrap credentials", true, false, false, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldSeedBootstrapAdmin(tc.registryEmpty, tc.cloudflare, tc.apiKey, tc.password); got != tc.want {
+				t.Fatalf("shouldSeedBootstrapAdmin()=%v want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestReportScheduleAtDeadlineFiresInsteadOfReschedulingTomorrow(t *testing.T) {
 	cfg := notify.Config{Timezone: "UTC", MorningWeekdayHour: 8, MorningWeekendHour: 9, EveningWeekdayHour: 20, EveningWeekendHour: 21}
 	now := time.Date(2026, time.July, 13, 7, 0, 0, 0, time.UTC)

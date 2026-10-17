@@ -43,6 +43,8 @@ write_release() {
     echo "HEALTH_BACKEND_IMAGE=example.invalid/backend@sha256:$(printf 'b%.0s' $(seq 1 64))"
     echo "HEALTH_FRONTEND_IMAGE=example.invalid/frontend@sha256:$(printf 'f%.0s' $(seq 1 64))"
     echo "HEALTH_HOST=health.example.com"
+    echo "HEALTH_BROWSER_AUTH_MODE=$browser_auth"
+    echo "HEALTH_BROWSER_MIDDLEWARE=$browser_middleware"
     echo "HEALTH_FRONTEND_TRAEFIK_ENABLED=true"
     printf "HEALTH_FRONTEND_ROOT_RULE='%s'\n" "$root_rule"
     printf "HEALTH_FRONTEND_ASSETS_RULE='%s'\n" "$assets_rule"
@@ -92,6 +94,15 @@ dynamic = {
                 }
             },
             "health-legacy-root": {"replacePath": {"path": "/"}},
+            "health-access-clear": {"headers": {"customRequestHeaders": {
+                "X-authentik-username": "", "X-authentik-email": ""
+            }}},
+            "health-access-auth": {"forwardAuth": {
+                "address": compose["services"]["health-receiver"]["labels"]["traefik.http.middlewares.health-access-auth.forwardauth.address"],
+                "trustForwardHeader": False,
+                "authRequestHeaders": ["Cf-Access-Jwt-Assertion", "Cookie"],
+            }},
+            "health-access-chain": {"chain": {"middlewares": ["health-access-clear", "health-access-auth"]}},
         },
         "services": {
             "health-backend": {"loadBalancer": {"servers": [{"url": "http://127.0.0.1:9001"}]}},
@@ -105,6 +116,8 @@ PY
 }
 
 docker pull "$traefik_image" >/dev/null
+for browser_auth in existing cloudflare; do
+  if [ "$browser_auth" = cloudflare ]; then browser_middleware=health-access-chain; else browser_middleware=authentik-auth; fi
 for mode in canary cutover; do
   render_dynamic_config "$mode"
   if docker container inspect "$name" >/dev/null 2>&1; then
@@ -141,10 +154,10 @@ PY
     }
     sleep 1
   done
-  python3 - "$mode" "$tmp/rawdata.json" <<'PY'
+  python3 - "$mode" "$browser_middleware" "$tmp/rawdata.json" <<'PY'
 import json, sys
 
-mode, path = sys.argv[1:]
+mode, browser_middleware, path = sys.argv[1:]
 with open(path, encoding="utf-8") as stream:
     raw = json.load(stream)
 errors = []
@@ -171,12 +184,13 @@ if missing:
     )
 browser_api = raw["routers"]["health-browser-api@file"]
 if browser_api.get("middlewares"):
-    raise SystemExit("browser API must rely on backend session auth, not ForwardAuth")
+    raise SystemExit("browser API must rely on backend credentials, not ForwardAuth")
 for name in ("health-frontend-root@file", "health-frontend-assets@file"):
-    if "authentik-auth@file" not in raw["routers"][name].get("middlewares", []):
-        raise SystemExit(f"{name} must remain protected by Authentik")
+    if browser_middleware + "@file" not in raw["routers"][name].get("middlewares", []):
+        raise SystemExit(f"{name} must remain protected by {browser_middleware}")
 PY
   remove_owned_container
 done
+done
 
-echo "production Traefik rule tests passed"
+echo "production Traefik rule tests passed (existing and cloudflare browser auth)"

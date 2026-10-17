@@ -374,7 +374,11 @@ Admin users can manage accounts via the **Admin** panel (`/admin` > Users sectio
 
 ### Authentication
 
-Three methods are supported, checked in order:
+OIDC is optional. A standalone installation needs no Authentik, Cloudflare, or
+other identity provider: per-user API keys and the local password login remain
+available. Browser authentication and machine credentials are separate contracts.
+
+The default `BROWSER_AUTH_MODE=existing` preserves these methods:
 
 | Method | How |
 |---|---|
@@ -387,6 +391,32 @@ Three methods are supported, checked in order:
 | `SETUP_TOKEN` | Fresh interactive setup | Secret one-time capability for first-admin `POST /setup`; generate with `openssl rand -hex 32`. |
 | `TRUST_FORWARD_AUTH` | No | Enables Authentik identity headers only when explicit trusted CIDRs are also configured. |
 | `TRUSTED_FORWARD_AUTH_NETWORK(S)` | With ForwardAuth | Comma-separated proxy CIDRs; no private or loopback default is implied. |
+
+#### Optional Cloudflare Access web login
+
+`BROWSER_AUTH_MODE=cloudflare` replaces the browser ForwardAuth/local-session
+path with a verified Cloudflare Access application JWT on every request. Health
+maps a configured, verified email to an **existing** local account; its tenant
+and admin permissions still come from Health's registry. It does not create,
+merge, or promote users. This mode does not accept the old Health `auth` cookie
+or issue another 30-day local session.
+
+Native API keys continue to work independently, including when the IdP is not
+configured or its signing-key endpoint is unavailable. Health MCP retains its
+own optional OAuth configuration and API-key/opaque Bearer support. Enabling web
+Access does not change the MCP issuer, subjects, scopes, or refresh tokens.
+
+The maintainer's infrastructure is moving from **Authentik to Cloudflare
+Access**. This change provides the Health web migration path; it is not evidence
+that a particular production deployment or its separate MCP OAuth issuer has
+already switched. See [Cloudflare Access configuration and migration](docs/CLOUDFLARE_ACCESS.md)
+for both modes, the two-user mapping, native-route exceptions, CSRF and session
+behavior, deployment verification, and rollback.
+
+Cloudflare Free also limits uploads to 100 MB per request. Health's bulk-import
+handler accepts larger archives directly, so agree on a private large-import
+path or chunked-upload support before proxying the hostname; an Access bypass
+does not remove that network limit. The migration guide covers this boundary.
 
 Existing installs that predate bcrypt keep working: the first successful password login upgrades that user's legacy SHA-256 password hash to bcrypt. Existing browser cookies from older releases are intentionally invalidated once; log in again after deployment.
 
