@@ -408,8 +408,10 @@ Access does not change the MCP issuer, subjects, scopes, or refresh tokens.
 
 The maintainer switched the Health browser login from **Authentik to Cloudflare
 Access** on 17 October 2026, retaining the existing hostname and local accounts.
-The separate MCP OAuth issuer still uses Authentik. This deployment choice does
-not require other self-hosters to use either provider.
+The Health MCP integration also uses a separate **Cloudflare Managed OAuth**
+connection on the same hostname, at `/mcp/oauth`. The native API-key endpoint
+remains `/mcp`; generic external JWT OAuth is still optional for other
+self-hosters. Neither deployment choice requires an IdP for token-based access.
 See [Cloudflare Access configuration and migration](docs/CLOUDFLARE_ACCESS.md)
 for both modes, the two-user mapping, native-route exceptions, CSRF and session
 behavior, deployment verification, and rollback.

@@ -2167,7 +2167,7 @@ Restart: `docker compose up -d`.
 curl -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
   -H 'Content-Type: application/json' \
   -d "{
-    \"url\": \"https://health.dzarlax.dev/api/telegram/webhook/<TELEGRAM_WEBHOOK_SECRET>\",
+    \"url\": \"https://health.example.com/api/telegram/webhook/<TELEGRAM_WEBHOOK_SECRET>\",
     \"secret_token\": \"<TELEGRAM_WEBHOOK_TOKEN_HEADER>\",
     \"allowed_updates\": [\"callback_query\"]
   }"
