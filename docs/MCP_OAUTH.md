@@ -72,7 +72,7 @@ intended MCP users. The old `/.well-known/oauth-protected-resource/mcp` remains 
 ### Maintainer deployment
 
 On 17 October 2026, the independent Cloudflare MCP transport was enabled at
-`https://health.dzarlax.dev/mcp/oauth`, on the existing hostname. Its Google
+`/mcp/oauth` on the maintainer's existing Health hostname. Its Google
 connection has a separate owner-only Access policy; the browser user allowlist
 does not automatically grant MCP access. Native API keys continue at `/mcp`,
 and external JWT OAuth remains an optional self-hosting configuration.

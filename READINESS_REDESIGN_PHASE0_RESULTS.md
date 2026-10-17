@@ -11,7 +11,7 @@ running**, separate from what we decided in advance.
 ## 1. Operational status
 
 Production endpoint `POST /api/admin/readiness-redesign/backfill` has
-been exercised end-to-end on `health.dzarlax.dev`.
+been exercised end-to-end on the maintainer's private deployment.
 
 | Item | State |
 |---|---|
