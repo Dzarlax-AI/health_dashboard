@@ -11,12 +11,14 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"health-receiver/internal/accessauth"
 	"health-receiver/internal/ai"
 	clientapi "health-receiver/internal/api"
 	"health-receiver/internal/ctxdb"
@@ -37,14 +39,20 @@ type Handler struct {
 	reg                *registry.Registry
 	trustFwdAuth       bool
 	trustedFwdAuthNets []*net.IPNet
-	setupToken         string
-	ipLimiter          *attemptLimiter
-	accountLimiter     *attemptLimiter
-	onTenantCreated    func(schema string)
-	tenantSetup        tenants.TenantSetup
-	setupReconcileMu   sync.Mutex
-	setupReconcileLast time.Time
-	setupReconciling   bool
+	accessVerifier     interface {
+		Verify(context.Context, string) (*accessauth.Identity, error)
+	}
+	accessOrigin         string
+	accessAPIKeyResolver func(context.Context, string) (*storage.DB, string, bool, bool)
+	accessUserResolver   func(context.Context, string) (*storage.DB, string, bool, bool)
+	setupToken           string
+	ipLimiter            *attemptLimiter
+	accountLimiter       *attemptLimiter
+	onTenantCreated      func(schema string)
+	tenantSetup          tenants.TenantSetup
+	setupReconcileMu     sync.Mutex
+	setupReconcileLast   time.Time
+	setupReconciling     bool
 
 	// Webhook integration (optional). When configured, settings POST
 	// paths that change Telegram config trigger an async registrar
@@ -60,6 +68,15 @@ func New(mgr *tenants.Manager, reg *registry.Registry, trustFwdAuth bool) *Handl
 }
 func (h *Handler) SetSetupToken(s string)               { h.setupToken = s }
 func (h *Handler) SetTenantSetup(s tenants.TenantSetup) { h.tenantSetup = s }
+
+// ConfigureCloudflareAccess enables the opt-in browser auth profile. The API
+// key resolver remains independent and is evaluated before any JWT lookup.
+func (h *Handler) ConfigureCloudflareAccess(verifier interface {
+	Verify(context.Context, string) (*accessauth.Identity, error)
+}, origin string) {
+	h.accessVerifier = verifier
+	h.accessOrigin = origin
+}
 
 // ConfigureWebhook plugs the Telegram webhook registrar into the
 // settings write path. Called once at server boot from main.go with
@@ -148,6 +165,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /auth/session", h.guard(h.sessionRecovery))
 	mux.HandleFunc("POST /logout", h.logout)
 	mux.HandleFunc("/setup", h.setup)
+	mux.HandleFunc("/_internal/cloudflare-access/verify", h.cloudflareAccessVerify)
 
 	// Page routes
 	mux.HandleFunc("GET /{$}", h.guard(h.pageDashboard))
@@ -331,6 +349,10 @@ func writeStatusError(w http.ResponseWriter, err *httpStatusError) {
 // guard resolves the tenant from the session and injects the DB into the context.
 func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if h.accessVerifier != nil {
+			h.cloudflareGuard(next, w, r)
+			return
+		}
 		// Legacy single-user mode: use env-var credentials.
 		if h.mgr.LegacyMode() {
 			db := h.mgr.LegacyDB()
@@ -445,6 +467,163 @@ func (h *Handler) guard(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+func (h *Handler) cloudflareGuard(next http.HandlerFunc, w http.ResponseWriter, r *http.Request) {
+	apiKeys := r.Header.Values("X-API-Key")
+	if len(apiKeys) > 1 {
+		writeAPIAuthenticationRequired(w)
+		return
+	}
+	if len(apiKeys) == 1 {
+		key := apiKeys[0]
+		var db *storage.DB
+		var schema string
+		var admin, ok bool
+		if h.mgr != nil && h.mgr.LegacyMode() {
+			if key != "" && subtle.ConstantTimeCompare([]byte(key), []byte(h.mgr.LegacyAPIKey())) == 1 {
+				db, schema, admin, ok = h.mgr.LegacyDB(), "health", true, true
+			}
+		} else if key != "" {
+			db, schema, admin, ok = h.resolveAccessAPIKey(r.Context(), key)
+		}
+		if !ok || db == nil {
+			writeAPIAuthenticationRequired(w)
+			return
+		}
+		ctx := ctxdb.WithDB(r.Context(), db, schema)
+		ctx = ctxdb.WithIsAdmin(ctx, admin)
+		next(w, r.WithContext(ctx))
+		return
+	}
+	identity, err := h.cloudflareIdentity(r)
+	if err != nil || identity == nil {
+		if errors.Is(err, accessauth.ErrUnavailable) {
+			http.Error(w, "authentication temporarily unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		h.rejectCloudflareUnauthenticated(w, r)
+		return
+	}
+	if unsafeMethod(r.Method) && !h.sameOrigin(r) {
+		http.Error(w, "same-origin request required", http.StatusForbidden)
+		return
+	}
+	db, schema, admin, ok := h.resolveAccessUsername(r.Context(), identity.Username)
+	if !ok || db == nil {
+		h.rejectCloudflareUnauthenticated(w, r)
+		return
+	}
+	ctx := ctxdb.WithDB(r.Context(), db, schema)
+	ctx = ctxdb.WithIsAdmin(ctx, admin)
+	next(w, r.WithContext(ctx))
+}
+
+func (h *Handler) cloudflareIdentity(r *http.Request) (*accessauth.Identity, error) {
+	headers := r.Header.Values("Cf-Access-Jwt-Assertion")
+	var headerToken string
+	if len(headers) > 1 {
+		return nil, errors.New("duplicate access assertion")
+	}
+	headerPresent := len(headers) == 1
+	if headerPresent {
+		headerToken = headers[0]
+	}
+	var cookieTokens []string
+	cookiePresent := false
+	for _, c := range r.Cookies() {
+		if c.Name == "CF_Authorization" {
+			cookiePresent = true
+			cookieTokens = append(cookieTokens, c.Value)
+		}
+	}
+	if len(cookieTokens) > 1 {
+		return nil, errors.New("duplicate access cookies")
+	}
+	cookieToken := ""
+	if len(cookieTokens) == 1 {
+		cookieToken = cookieTokens[0]
+	}
+	if headerPresent && headerToken == "" {
+		return nil, errors.New("empty access assertion")
+	}
+	if cookiePresent && cookieToken == "" {
+		return nil, errors.New("empty access cookie")
+	}
+	if headerToken != "" && cookieToken != "" && headerToken != cookieToken {
+		return nil, errors.New("conflicting access assertions")
+	}
+	token := headerToken
+	if token == "" {
+		token = cookieToken
+	}
+	if token == "" {
+		return nil, errors.New("missing access assertion")
+	}
+	return h.accessVerifier.Verify(r.Context(), token)
+}
+
+func (h *Handler) cloudflareAccessVerify(w http.ResponseWriter, r *http.Request) {
+	if h.accessVerifier == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	identity, err := h.cloudflareIdentity(r)
+	if errors.Is(err, accessauth.ErrUnavailable) {
+		http.Error(w, "authentication temporarily unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if err != nil || identity == nil || (h.mgr != nil && h.mgr.LegacyMode()) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if _, _, _, ok := h.resolveAccessUsername(r.Context(), identity.Username); !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) resolveAccessAPIKey(ctx context.Context, key string) (*storage.DB, string, bool, bool) {
+	if h.accessAPIKeyResolver != nil {
+		return h.accessAPIKeyResolver(ctx, key)
+	}
+	if h.mgr == nil {
+		return nil, "", false, false
+	}
+	return h.mgr.DBForAPIKey(ctx, key)
+}
+
+func (h *Handler) resolveAccessUsername(ctx context.Context, username string) (*storage.DB, string, bool, bool) {
+	if h.accessUserResolver != nil {
+		return h.accessUserResolver(ctx, username)
+	}
+	if h.mgr == nil || h.mgr.LegacyMode() {
+		return nil, "", false, false
+	}
+	return h.mgr.DBForUsername(ctx, username)
+}
+
+func (h *Handler) rejectCloudflareUnauthenticated(w http.ResponseWriter, r *http.Request) {
+	if isAPIRequest(r) || r.URL.Path == "/auth/session" || r.URL.Path == "/_internal/cloudflare-access/verify" {
+		writeAPIAuthenticationRequired(w)
+		return
+	}
+	http.Redirect(w, r, "/login?next="+r.URL.RequestURI(), http.StatusFound)
+}
+
+func unsafeMethod(method string) bool {
+	return method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions
+}
+
+func (h *Handler) sameOrigin(r *http.Request) bool {
+	origins := r.Header.Values("Origin")
+	return len(origins) == 1 && origins[0] != "null" && origins[0] == h.accessOrigin
+}
+
 func isAPIRequest(r *http.Request) bool {
 	return strings.HasPrefix(r.URL.Path, "/api/")
 }
@@ -479,6 +658,14 @@ func (h *Handler) sessionRecovery(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
+	if h.accessVerifier != nil {
+		if r.Method != http.MethodGet {
+			http.Error(w, "password login is disabled", http.StatusForbidden)
+			return
+		}
+		http.Redirect(w, r, "/auth/session?next="+url.QueryEscape(safeNext(r.URL.Query().Get("next"))), http.StatusFound)
+		return
+	}
 	// If no users exist yet, redirect to setup wizard.
 	if !h.mgr.LegacyMode() && h.reg != nil && h.reg.IsEmpty(r.Context()) {
 		http.Redirect(w, r, "/setup", http.StatusFound)
@@ -558,6 +745,31 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if h.accessVerifier != nil {
+		identity, err := h.cloudflareIdentity(r)
+		if err != nil || identity == nil {
+			if errors.Is(err, accessauth.ErrUnavailable) {
+				http.Error(w, "authentication temporarily unavailable", http.StatusServiceUnavailable)
+			} else {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+			}
+			return
+		}
+		if !h.sameOrigin(r) {
+			http.Error(w, "same-origin request required", http.StatusForbidden)
+			return
+		}
+		if h.mgr != nil && h.mgr.LegacyMode() {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if _, _, _, ok := h.resolveAccessUsername(r.Context(), identity.Username); !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		http.Redirect(w, r, "/cdn-cgi/access/logout", http.StatusSeeOther)
+		return
+	}
 	if cookie, err := r.Cookie(authCookieName); err == nil {
 		if h.mgr.LegacyMode() {
 			_ = h.mgr.LegacyDB().DeleteAuthSession(cookie.Value)
@@ -579,6 +791,14 @@ func setupAvailable(legacyMode, registryPresent, registryEmpty bool) bool {
 }
 
 func (h *Handler) setup(w http.ResponseWriter, r *http.Request) {
+	if h.accessVerifier != nil {
+		if r.Method != http.MethodGet {
+			http.Error(w, "setup is disabled", http.StatusForbidden)
+			return
+		}
+		http.Redirect(w, r, "/auth/session?next=%2F", http.StatusFound)
+		return
+	}
 	if h.reg != nil && !h.reg.HasActiveUsers(r.Context()) {
 		h.reconcileSetupIfDue(r.Context(), time.Now())
 	}

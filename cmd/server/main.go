@@ -30,6 +30,7 @@ import (
 	// than installing tzdata into the runtime image.
 	_ "time/tzdata"
 
+	"health-receiver/internal/accessauth"
 	"health-receiver/internal/ai"
 	"health-receiver/internal/handler"
 	"health-receiver/internal/health"
@@ -61,6 +62,17 @@ func main() {
 	mcpOAuth, err := oauth.ConfigFromEnv(os.Getenv)
 	if err != nil {
 		log.Fatalf("invalid MCP OAuth configuration: %v", err)
+	}
+	accessConfig, err := accessauth.ParseConfig(os.LookupEnv)
+	if err != nil {
+		log.Fatalf("invalid browser authentication configuration: %v", err)
+	}
+	var accessVerifier *accessauth.Verifier
+	if accessConfig != nil {
+		accessVerifier, err = accessauth.NewVerifier(accessConfig)
+		if err != nil {
+			log.Fatalf("configure Cloudflare Access: %v", err)
+		}
 	}
 
 	// Env-level defaults for the first/only tenant.
@@ -132,6 +144,9 @@ func main() {
 	// Attempt to create health_registry schema and users table.
 	schemaErr := reg.EnsureSchema(ctx)
 	if schemaErr != nil {
+		if accessConfig != nil {
+			log.Fatalf("Cloudflare browser auth requires the multi-user registry; single-user fallback is unsupported: %v", schemaErr)
+		}
 		if isolationCfg.Enabled {
 			log.Fatalf("ensure registry schema in tenant isolation mode: %v", schemaErr)
 		}
@@ -179,6 +194,9 @@ func main() {
 			legacyDB, "health", envNotifyDefaults, envAIDefaults, hrZones)
 		return
 	}
+	if accessConfig != nil && reg.IsEmpty(ctx) {
+		log.Fatal("Cloudflare browser auth requires existing active registry accounts; bootstrap and setup are disabled in this mode")
+	}
 	var tenantSetup tenants.TenantSetup
 	if isolationCfg.Enabled {
 		provisioner, err := tenants.NewProvisioner(ctx, isolationCfg.AdminDSN, isolationCfg.TenantDSNBase, isolationCfg.Credentials, reg)
@@ -203,7 +221,7 @@ func main() {
 	//   1. Upgrade from single-user mode (health.metric_points exists, no users yet)
 	//   2. Fresh install with credentials pre-set in .env / docker-compose environment
 	// When neither API_KEY nor UI_PASSWORD is set, the setup wizard handles first-run.
-	if reg.IsEmpty(ctx) && (apiKey != "" || uiPassword != "") {
+	if shouldSeedBootstrapAdmin(reg.IsEmpty(ctx), accessConfig != nil, apiKey != "", uiPassword != "") {
 		log.Println("Registry empty — seeding admin user from API_KEY / UI_PASSWORD env vars…")
 		req, generatedPassword, err := bootstrapAdminRequest(apiKey, uiPassword, adminEmail)
 		if err != nil {
@@ -223,6 +241,16 @@ func main() {
 	users, err := reg.ListActiveUsers(ctx)
 	if err != nil {
 		log.Fatalf("list users: %v", err)
+	}
+	if accessConfig != nil {
+		if len(users) == 0 {
+			log.Fatal("Cloudflare browser auth requires at least one active registry user")
+		}
+		for _, username := range accessConfig.UserMap {
+			if _, err := reg.GetByUsername(ctx, username); err != nil {
+				log.Fatalf("Cloudflare browser auth user mapping references no active registry user")
+			}
+		}
 	}
 
 	// One-time backfill of installation-wide Gemini config for installs
@@ -281,6 +309,9 @@ func main() {
 	ingestHandler.Register(mux)
 
 	uiHandler := ui.New(mgr, reg, trustFwdAuth)
+	if accessConfig != nil {
+		uiHandler.ConfigureCloudflareAccess(accessVerifier, accessConfig.Origin)
+	}
 	uiHandler.SetTenantSetup(tenantSetup)
 	uiHandler.SetTrustedForwardAuthNetworkList(trustedFwdAuthNets)
 	uiHandler.SetSetupToken(strings.TrimSpace(os.Getenv("SETUP_TOKEN")))
@@ -335,6 +366,10 @@ func main() {
 	if err := serveHTTP(ctx, addr, logged, ingestHandler.Shutdown, startupBackfills.Start); err != nil {
 		log.Fatalf("server: %v", err)
 	}
+}
+
+func shouldSeedBootstrapAdmin(registryEmpty, cloudflareAccess, hasAPIKey, hasPassword bool) bool {
+	return registryEmpty && !cloudflareAccess && (hasAPIKey || hasPassword)
 }
 
 // runSingleTenant runs the server in legacy single-user mode.

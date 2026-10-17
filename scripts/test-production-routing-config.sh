@@ -69,17 +69,18 @@ export FAKE_FRONTEND_REVISION=$frontend_revision
 
 assert_config() {
   mode=$1
-  release=$tmp/$mode.env
-  rendered=$tmp/$mode.yml
-  gate_rendered=$tmp/$mode-gate.yml
+  browser_auth=${2:-existing}
+  release=$tmp/$mode-$browser_auth.env
+  rendered=$tmp/$mode-$browser_auth.yml
+  gate_rendered=$tmp/$mode-$browser_auth-gate.yml
   gate_digest=sha256:$(printf '9%.0s' $(seq 1 64))
   gate_image=ghcr.io/dzarlax-ai/health_dashboard@$gate_digest
-  "$resolver" --mode "$mode" --host health.example.com --output "$release"
+  "$resolver" --mode "$mode" --host health.example.com --output "$release" --browser-auth "$browser_auth"
   HEALTH_RUNTIME_ENV_FILE="$tmp/runtime.env" docker compose --env-file "$release" -f "$compose" config --format json > "$rendered"
-  python3 - "$mode" "$rendered" <<'PY'
+  python3 - "$mode" "$browser_auth" "$rendered" <<'PY'
 import json, sys
 
-mode, path = sys.argv[1:]
+mode, browser_auth, path = sys.argv[1:]
 with open(path, encoding="utf-8") as stream:
     config = json.load(stream)
 services = config["services"]
@@ -120,12 +121,19 @@ assert "middlewares" not in {
     for key, value in b.items()
     if key.startswith("traefik.http.routers.health-telegram-webhook.")
 }
-assert b["traefik.http.routers.health-legacy-root.middlewares"] == "authentik-auth,health-legacy-root"
+middleware = "health-access-chain" if browser_auth == "cloudflare" else "authentik-auth"
+assert backend["environment"]["BROWSER_AUTH_MODE"] == browser_auth
+assert b["traefik.http.routers.health-legacy.middlewares"] == middleware
+assert b["traefik.http.routers.health-legacy-root.middlewares"] == middleware + ",health-legacy-root"
+assert b["traefik.http.middlewares.health-access-auth.forwardauth.address"] == "http://health-receiver:8080/_internal/cloudflare-access/verify"
+assert b["traefik.http.middlewares.health-access-auth.forwardauth.authrequestheaders"] == "Cf-Access-Jwt-Assertion,Cookie"
+assert b["traefik.http.middlewares.health-access-auth.forwardauth.trustforwardheader"] == "false"
+assert b["traefik.http.middlewares.health-access-chain.chain.middlewares"] == "health-access-clear,health-access-auth"
 assert b["traefik.http.middlewares.health-legacy-root.replacepath.path"] == "/"
 root = f["traefik.http.routers.health-frontend-root.rule"]
 assets = f["traefik.http.routers.health-frontend-assets.rule"]
-assert f["traefik.http.routers.health-frontend-root.middlewares"] == "authentik-auth"
-assert f["traefik.http.routers.health-frontend-assets.middlewares"] == "authentik-auth"
+assert f["traefik.http.routers.health-frontend-root.middlewares"] == middleware
+assert f["traefik.http.routers.health-frontend-assets.middlewares"] == middleware
 if mode == "canary":
     assert f["traefik.enable"] == "true"
     assert "Path(`/energy`)" in root
@@ -152,9 +160,26 @@ assert actual == expected, f"schema gate image override = {actual!r}, want {expe
 PY
 }
 
-assert_config canary
-assert_config cutover
-assert_config rollback
+for auth in existing cloudflare; do
+  assert_config canary "$auth"
+  assert_config cutover "$auth"
+  assert_config rollback "$auth"
+done
+
+# An ordinary pair update must preserve the deployment's chosen auth mode.
+"$resolver" --mode cutover --host health.example.com --output "$tmp/saved.env" --browser-auth cloudflare
+"$resolver" --mode canary --host health.example.com --output "$tmp/saved.env"
+grep -qx "HEALTH_BROWSER_AUTH_MODE=cloudflare" "$tmp/saved.env"
+grep -qx "HEALTH_BROWSER_MIDDLEWARE=health-access-chain" "$tmp/saved.env"
+"$resolver" --mode rollback --host health.example.com --output "$tmp/saved.env" --browser-auth existing
+grep -qx "HEALTH_BROWSER_AUTH_MODE=existing" "$tmp/saved.env"
+if "$resolver" --mode canary --host health.example.com --output "$tmp/invalid-auth.env" --browser-auth invalid >/dev/null 2>&1; then
+  echo "invalid browser auth mode unexpectedly succeeded" >&2; exit 1
+fi
+printf "HEALTH_BROWSER_AUTH_MODE=invalid\n" > "$tmp/invalid-saved.env"
+if "$resolver" --mode canary --host health.example.com --output "$tmp/invalid-saved.env" >/dev/null 2>&1; then
+  echo "invalid saved auth mode unexpectedly succeeded" >&2; exit 1
+fi
 
 if "$resolver" --mode invalid --host health.example.com --output "$tmp/invalid.env" >/dev/null 2>&1; then
   echo "invalid mode unexpectedly succeeded" >&2

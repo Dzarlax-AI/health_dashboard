@@ -8,6 +8,7 @@ expected_frontend_image=ghcr.io/dzarlax-ai/health_dashboard-frontend
 mode=
 host=
 output=
+browser_auth=
 docker_bin=${DOCKER_BIN:-docker}
 
 fail() {
@@ -16,7 +17,7 @@ fail() {
 }
 
 usage() {
-  echo "usage: $0 --mode canary|cutover|rollback --host HOST --output FILE [--pair IMAGE:TAG]" >&2
+  echo "usage: $0 --mode canary|cutover|rollback --host HOST --output FILE [--pair IMAGE:TAG] [--browser-auth existing|cloudflare]" >&2
   exit 2
 }
 
@@ -26,6 +27,7 @@ while [ "$#" -gt 0 ]; do
     --host) [ "$#" -ge 2 ] || usage; host=$2; shift 2 ;;
     --output) [ "$#" -ge 2 ] || usage; output=$2; shift 2 ;;
     --pair) [ "$#" -ge 2 ] || usage; pair_ref=$2; shift 2 ;;
+    --browser-auth) [ "$#" -ge 2 ] || usage; browser_auth=$2; shift 2 ;;
     *) usage ;;
   esac
 done
@@ -33,6 +35,26 @@ done
 case "$mode" in canary|cutover|rollback) ;; *) usage ;; esac
 [ -n "$output" ] || usage
 [ -n "$host" ] || usage
+
+# Preserve the selected browser authentication mode when updating a release in
+# place. Parse only this public enum; never source an operator-controlled file.
+if [ -z "$browser_auth" ] && [ -f "$output" ]; then
+  browser_auth=$(python3 - "$output" <<'PY'
+import pathlib, sys
+values = [line.split("=", 1)[1].strip() for line in pathlib.Path(sys.argv[1]).read_text().splitlines()
+          if line.startswith("HEALTH_BROWSER_AUTH_MODE=")]
+if len(values) > 1 or (values and values[0] not in {"existing", "cloudflare"}):
+    raise SystemExit("production pair resolver: invalid saved browser auth mode")
+print(values[0] if values else "existing")
+PY
+  )
+fi
+browser_auth=${browser_auth:-existing}
+case "$browser_auth" in
+  existing) browser_middleware=authentik-auth ;;
+  cloudflare) browser_middleware=health-access-chain ;;
+  *) fail "--browser-auth must be existing or cloudflare" ;;
+esac
 command -v "$docker_bin" >/dev/null 2>&1 || fail "docker was not found"
 command -v python3 >/dev/null 2>&1 || fail "python3 was not found"
 
@@ -156,6 +178,8 @@ chmod 0600 "$tmp"
   printf 'HEALTH_FRONTEND_IMAGE=%s\n' "$frontend_ref"
   printf 'HEALTH_FRONTEND_REVISION=%s\n' "$frontend_revision"
   printf 'HEALTH_HOST=%s\n' "$host"
+  printf 'HEALTH_BROWSER_AUTH_MODE=%s\n' "$browser_auth"
+  printf 'HEALTH_BROWSER_MIDDLEWARE=%s\n' "$browser_middleware"
   printf 'HEALTH_FRONTEND_ROUTE_MODE=%s\n' "$mode"
   printf 'HEALTH_FRONTEND_TRAEFIK_ENABLED=%s\n' "$enabled"
   printf "HEALTH_FRONTEND_ROOT_RULE='%s'\n" "$root_rule"
