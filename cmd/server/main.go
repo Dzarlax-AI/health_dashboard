@@ -78,6 +78,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("invalid MCP Access probe configuration: %v", err)
 	}
+	if err := validateMCPAccessAudience(accessProbeConfig, accessConfig); err != nil {
+		log.Fatalf("invalid MCP Access probe configuration: %v", err)
+	}
 	var accessProbeVerifier mcpserver.AccessAssertionVerifier
 	if accessProbeConfig.Enabled {
 		accessProbeVerifier, err = mcpserver.NewAccessProbeVerifier(accessProbeConfig)
@@ -378,6 +381,13 @@ func main() {
 	if err := serveHTTP(ctx, addr, logged, ingestHandler.Shutdown, startupBackfills.Start); err != nil {
 		log.Fatalf("server: %v", err)
 	}
+}
+
+func validateMCPAccessAudience(probe *mcpserver.AccessProbeConfig, browser *accessauth.Config) error {
+	if probe != nil && probe.Enabled && browser != nil && probe.Audience == browser.Audience {
+		return errors.New("MCP_ACCESS_AUD must differ from the browser Cloudflare Access audience")
+	}
+	return nil
 }
 
 func shouldSeedBootstrapAdmin(registryEmpty, cloudflareAccess, hasAPIKey, hasPassword bool) bool {

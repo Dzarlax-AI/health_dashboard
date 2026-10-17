@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"health-receiver/internal/accessauth"
+	"health-receiver/internal/mcpserver"
 	"health-receiver/internal/notify"
 	"health-receiver/internal/registry"
 	"health-receiver/internal/storage"
@@ -134,5 +136,26 @@ func TestReadinessAllowsPoolsAddedAfterStartup(t *testing.T) {
 	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil).WithContext(context.Background()))
 	if w.Code != http.StatusOK {
 		t.Fatalf("ready status=%d body=%q", w.Code, w.Body.String())
+	}
+}
+
+func TestMCPAccessRequiresSeparateBrowserAudience(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		probe   *mcpserver.AccessProbeConfig
+		browser *accessauth.Config
+		wantErr bool
+	}{
+		{"both disabled", nil, nil, false},
+		{"standalone MCP Access", &mcpserver.AccessProbeConfig{Enabled: true, Audience: "mcp"}, nil, false},
+		{"browser only", &mcpserver.AccessProbeConfig{}, &accessauth.Config{Audience: "web"}, false},
+		{"distinct applications", &mcpserver.AccessProbeConfig{Enabled: true, Audience: "mcp"}, &accessauth.Config{Audience: "web"}, false},
+		{"reused browser audience", &mcpserver.AccessProbeConfig{Enabled: true, Audience: "web"}, &accessauth.Config{Audience: "web"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validateMCPAccessAudience(tc.probe, tc.browser); (err != nil) != tc.wantErr {
+				t.Fatalf("audience validation error=%v wantErr=%v", err, tc.wantErr)
+			}
+		})
 	}
 }
