@@ -105,7 +105,7 @@ func (c *AccessConfig) validate() error {
 	if err := validateAccessOrigin("MCP_ACCESS_ISSUER", c.Issuer); err != nil {
 		return err
 	}
-	if c.Audience == "" || strings.TrimSpace(c.Audience) != c.Audience || strings.Contains(c.Audience, ",") {
+	if c.Audience == "" || strings.TrimSpace(c.Audience) != c.Audience || strings.ContainsAny(c.Audience, ", \t\r\n") {
 		return errors.New("MCP_ACCESS_AUD must be one non-empty exact audience value")
 	}
 	if len(c.UserMap) == 0 {

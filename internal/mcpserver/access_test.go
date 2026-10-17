@@ -52,6 +52,7 @@ func TestParseAccessConfigIsIndependentAndFailClosed(t *testing.T) {
 		{"MCP_ACCESS_ENABLED": "true", "MCP_ACCESS_ISSUER": "https://tenant.cloudflareaccess.com", "MCP_ACCESS_AUD": "app", "MCP_ACCESS_USER_MAP": `{"owner@example.test":"admin","owner@example.test":"admin"}`},
 		{"MCP_ACCESS_ENABLED": "true", "MCP_ACCESS_ISSUER": "https://tenant.cloudflareaccess.com/", "MCP_ACCESS_AUD": "app", "MCP_ACCESS_USER_MAP": `{"owner@example.test":"admin"}`},
 		{"MCP_ACCESS_ENABLED": "true", "MCP_ACCESS_ISSUER": "https://tenant.cloudflareaccess.com", "MCP_ACCESS_AUD": "app,other", "MCP_ACCESS_USER_MAP": `{"owner@example.test":"admin"}`},
+		{"MCP_ACCESS_ENABLED": "true", "MCP_ACCESS_ISSUER": "https://tenant.cloudflareaccess.com", "MCP_ACCESS_AUD": "app other", "MCP_ACCESS_USER_MAP": `{"owner@example.test":"admin"}`},
 		{"MCP_ACCESS_ENABLED": "true", "MCP_ACCESS_ISSUER": "https://tenant.cloudflareaccess.com", "MCP_ACCESS_AUD": "app", "MCP_ACCESS_USER_MAP": `{" owner@example.test":"admin"}`},
 		{"MCP_ACCESS_ENABLED": "true", "MCP_ACCESS_ISSUER": "https://tenant.cloudflareaccess.com", "MCP_ACCESS_AUD": "app", "MCP_ACCESS_USER_MAP": `{"owner@example.test":" admin"}`},
 	}
