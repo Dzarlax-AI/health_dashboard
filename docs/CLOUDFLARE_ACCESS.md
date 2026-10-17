@@ -128,7 +128,12 @@ a separate change. Do not expose an unprotected public origin or assume that
 HTTP transfer encoding removes the request-size limit. An authentication
 cutover must not silently promise the previous 2 GiB web-upload behavior.
 
-### Maintainer deployment status
+### Maintainer deployment status: browser acceptance incomplete
+
+The deployment is live, but the full two-account browser cutover gate has not
+passed. The checks below are partial evidence, not completed cutover acceptance.
+Keep the captured rollback configuration until the second user's Google login
+and account switching have passed; do not retire Authentik on this evidence.
 
 On 17 October 2026, the Health browser login switched from Authentik ForwardAuth
 to Cloudflare Access on the existing hostname. The compatible backend/frontend
