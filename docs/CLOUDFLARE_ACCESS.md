@@ -112,6 +112,22 @@ silently issuing a long Health session.
 
 ## Migration from Authentik
 
+### Bulk-import request limit
+
+Cloudflare's Free plan has a
+[100 MB maximum upload size per request](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/4xx-client-error/error-413/).
+The Health bulk-import handler itself accepts up to 2 GiB. Proxying this
+hostname therefore reduces the effective browser/API bulk-upload limit;
+an Access bypass policy does not bypass Cloudflare's network limit. Native
+metric and workout ingestion already have smaller 16 MiB and 32 MiB limits.
+
+Agree on the large-import path before production cutover: use authenticated
+private access such as an SSH tunnel to the existing API with its normal token
+and tenant checks, or implement application-level multipart/chunked upload in
+a separate change. Do not expose an unprotected public origin or assume that
+HTTP transfer encoding removes the request-size limit. An authentication
+cutover must not silently promise the previous 2 GiB web-upload behavior.
+
 The maintainer is migrating the personal infrastructure from Authentik browser
 ForwardAuth to Cloudflare Access. Treat implementation support, a published
 image, and a verified production cutover as separate states. This guide does

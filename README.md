@@ -413,6 +413,11 @@ already switched. See [Cloudflare Access configuration and migration](docs/CLOUD
 for both modes, the two-user mapping, native-route exceptions, CSRF and session
 behavior, deployment verification, and rollback.
 
+Cloudflare Free also limits uploads to 100 MB per request. Health's bulk-import
+handler accepts larger archives directly, so agree on a private large-import
+path or chunked-upload support before proxying the hostname; an Access bypass
+does not remove that network limit. The migration guide covers this boundary.
+
 Existing installs that predate bcrypt keep working: the first successful password login upgrades that user's legacy SHA-256 password hash to bcrypt. Existing browser cookies from older releases are intentionally invalidated once; log in again after deployment.
 
 ### Legacy Single-User Mode
