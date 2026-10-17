@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -51,14 +53,12 @@ func TestAccessMCPIsolatedTenantRoutingIntegration(t *testing.T) {
 	if adminDSN == "" || registryDSN == "" {
 		t.Fatal("MCP DB fixtures require ADMIN_TEST_DSN and REGISTRY_TEST_DSN")
 	}
-	base, err := url.Parse(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	base.User = nil
+	// DSN may be empty when testdb uses libpq environment variables (as CI
+	// does). Build the credential-free base from the effective connection.
+	connection := root.Config().ConnConfig
+	base := url.URL{Scheme: "postgres", Host: net.JoinHostPort(connection.Host, strconv.Itoa(int(connection.Port))), Path: "/" + connection.Database}
 	query := base.Query()
-	query.Del("user")
-	query.Del("password")
+	query.Set("sslmode", "disable")
 	base.RawQuery = query.Encode()
 	reg, err := registry.New(ctx, registryDSN)
 	if err != nil {
