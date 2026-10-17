@@ -189,6 +189,7 @@ func TestAccessProbePathVariantsNeverReachNativeMCP(t *testing.T) {
 	for _, target := range []string{
 		"/mcp/oauth", "/mcp/oauth/", "/mcp/oauth/child", "/mcp/%6fauth", "/mcp/%256fauth",
 		"/mcp/OAUTH", "/mcp//oauth", "/mcp/./oauth", "/mcp/oauth%2fchild",
+		"/mcp/%25252525256fauth", "/mcp/%" + strings.Repeat("25", 200) + "6fauth",
 	} {
 		t.Run(target, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, target, nil)

@@ -255,6 +255,11 @@ func accessProbePath(r *http.Request) (reserved, canonical bool) {
 			}
 			candidate = next
 		}
+		// Bound decoding work, but never hand unresolved deeply encoded MCP
+		// paths to the native subtree. Ordinary native paths are unaffected.
+		if strings.Contains(candidate, "%") && strings.HasPrefix(strings.ToLower(path.Clean(candidate)), "/mcp/") {
+			return true, false
+		}
 	}
 	return false, false
 }
