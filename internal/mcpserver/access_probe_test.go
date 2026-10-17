@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -278,6 +279,73 @@ func TestAccessProbeRejectionLogsOnlyFixedFlags(t *testing.T) {
 	successHandler.ServeHTTP(response, request)
 	if response.Code != http.StatusNoContent || output.String() != "MCP Access assertion probe verified\n" {
 		t.Fatalf("success response=%d logs=%q", response.Code, output.String())
+	}
+}
+
+func TestProbeRejectionLogThrottleIsPerReasonAndExpires(t *testing.T) {
+	now := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+	throttle := newProbeRejectionLogThrottleWithClock(func() time.Time { return now })
+	if !throttle.allow(probeRejectAssertionRejected) || throttle.allow(probeRejectAssertionRejected) {
+		t.Fatal("first assertion rejection should log and immediate duplicate should be suppressed")
+	}
+	if !throttle.allow(probeRejectAPIKey) {
+		t.Fatal("different fixed reason should have an independent throttle")
+	}
+	now = now.Add(probeRejectionLogInterval - time.Nanosecond)
+	if throttle.allow(probeRejectAssertionRejected) {
+		t.Fatal("same reason should remain suppressed before the five-second window expires")
+	}
+	now = now.Add(time.Nanosecond)
+	if !throttle.allow(probeRejectAssertionRejected) {
+		t.Fatal("same reason should be allowed at the five-second boundary")
+	}
+	if throttle.allow(probeRejectReason("untrusted-reason")) {
+		t.Fatal("reason outside the fixed enum should never enter the limiter")
+	}
+}
+
+func TestAccessProbeConcurrentRejectionsLogOncePerReason(t *testing.T) {
+	cfg := &AccessProbeConfig{Enabled: true, UserMap: map[string]string{"owner@example.test": "admin"}}
+	h := NewAccessProbeHandler(cfg, assertionVerifierFunc(func(context.Context, string) (*accessauth.Identity, error) {
+		return nil, errors.New("ignored verifier error")
+	}))
+	var output bytes.Buffer
+	previousWriter, previousFlags := log.Writer(), log.Flags()
+	log.SetOutput(&output)
+	log.SetFlags(0)
+	defer func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+	}()
+
+	const burst = 64
+	var wg sync.WaitGroup
+	wg.Add(burst)
+	for range burst {
+		go func() {
+			defer wg.Done()
+			request := httptest.NewRequest(http.MethodPost, "/mcp/oauth", nil)
+			response := httptest.NewRecorder()
+			h.ServeHTTP(response, request)
+			if response.Code != http.StatusUnauthorized {
+				t.Errorf("burst response=%d want=401", response.Code)
+			}
+		}()
+	}
+	wg.Wait()
+	if lines := strings.Count(output.String(), "MCP Access assertion probe rejected"); lines != 1 {
+		t.Fatalf("same-reason burst emitted %d diagnostic lines, want 1: %q", lines, output.String())
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/mcp/oauth", nil)
+	request.Header.Set("Cf-Access-Jwt-Assertion", "not-a-jwt")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("distinct-reason response=%d want=401", response.Code)
+	}
+	if lines := strings.Count(output.String(), "MCP Access assertion probe rejected"); lines != 2 {
+		t.Fatalf("distinct fixed reason did not get its own diagnostic: %q", output.String())
 	}
 }
 

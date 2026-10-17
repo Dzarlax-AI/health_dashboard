@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"health-receiver/internal/accessauth"
@@ -152,6 +153,50 @@ type unverifiedClaimFlags struct {
 	EmailMapped   bool
 }
 
+const probeRejectionLogInterval = 5 * time.Second
+
+type probeRejectionLogThrottle struct {
+	mu   sync.Mutex
+	last map[probeRejectReason]time.Time
+	now  func() time.Time
+}
+
+func newProbeRejectionLogThrottle() *probeRejectionLogThrottle {
+	return newProbeRejectionLogThrottleWithClock(time.Now)
+}
+
+func newProbeRejectionLogThrottleWithClock(now func() time.Time) *probeRejectionLogThrottle {
+	return &probeRejectionLogThrottle{
+		last: make(map[probeRejectReason]time.Time, 9),
+		now:  now,
+	}
+}
+
+func (t *probeRejectionLogThrottle) allow(reason probeRejectReason) bool {
+	if t == nil || !knownProbeRejectReason(reason) {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := t.now()
+	if previous, ok := t.last[reason]; ok && now.Sub(previous) < probeRejectionLogInterval {
+		return false
+	}
+	t.last[reason] = now
+	return true
+}
+
+func knownProbeRejectReason(reason probeRejectReason) bool {
+	switch reason {
+	case probeRejectAssertionCount, probeRejectAssertionFormat, probeRejectAuthorizationCount,
+		probeRejectAuthorizationFormat, probeRejectAPIKey, probeRejectQueryCredential,
+		probeRejectVerifierUnavailable, probeRejectAssertionRejected, probeRejectIdentityMismatch:
+		return true
+	default:
+		return false
+	}
+}
+
 func (v accessProbeVerifier) Verify(ctx context.Context, token string) (*accessauth.Identity, error) {
 	return v.verifier.Verify(ctx, token)
 }
@@ -173,6 +218,7 @@ func NewAccessProbeHandler(cfg *AccessProbeConfig, verifier AccessAssertionVerif
 	if cfg == nil || !cfg.Enabled {
 		return http.NotFoundHandler()
 	}
+	logThrottle := newProbeRejectionLogThrottle()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		if r.Method != http.MethodPost || r.URL.Path != "/mcp/oauth" || r.URL.EscapedPath() != "/mcp/oauth" {
@@ -185,34 +231,34 @@ func NewAccessProbeHandler(cfg *AccessProbeConfig, verifier AccessAssertionVerif
 		}
 		assertions := r.Header.Values("Cf-Access-Jwt-Assertion")
 		if len(assertions) != 1 {
-			logProbeRejection(probeRejectAssertionCount, r, cfg, "", false)
+			logProbeRejection(logThrottle, probeRejectAssertionCount, r, cfg, "", false)
 			http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 			return
 		}
 		assertion := assertions[0]
 		if assertion == "" || strings.TrimSpace(assertion) != assertion || strings.Contains(assertion, ",") || len(assertion) > 16*1024 {
-			logProbeRejection(probeRejectAssertionFormat, r, cfg, assertion, false)
+			logProbeRejection(logThrottle, probeRejectAssertionFormat, r, cfg, assertion, false)
 			http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 			return
 		}
 		if reason := probeCredentialRejectReason(r); reason != "" {
-			logProbeRejection(reason, r, cfg, assertion, false)
+			logProbeRejection(logThrottle, reason, r, cfg, assertion, false)
 			http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 			return
 		}
 		identity, err := verifier.Verify(r.Context(), assertion)
 		if err != nil {
 			if errors.Is(err, accessauth.ErrUnavailable) {
-				logProbeRejection(probeRejectVerifierUnavailable, r, cfg, assertion, false)
+				logProbeRejection(logThrottle, probeRejectVerifierUnavailable, r, cfg, assertion, false)
 				http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
 				return
 			}
-			logProbeRejection(probeRejectAssertionRejected, r, cfg, assertion, true)
+			logProbeRejection(logThrottle, probeRejectAssertionRejected, r, cfg, assertion, true)
 			http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 			return
 		}
 		if identity == nil || identity.Email == "" || identity.Username == "" || cfg.UserMap[identity.Email] != identity.Username {
-			logProbeRejection(probeRejectIdentityMismatch, r, cfg, assertion, false)
+			logProbeRejection(logThrottle, probeRejectIdentityMismatch, r, cfg, assertion, false)
 			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
 			return
 		}
@@ -248,7 +294,10 @@ func hasQueryCredential(r *http.Request) bool {
 	return false
 }
 
-func logProbeRejection(reason probeRejectReason, r *http.Request, cfg *AccessProbeConfig, assertion string, inspectClaims bool) {
+func logProbeRejection(throttle *probeRejectionLogThrottle, reason probeRejectReason, r *http.Request, cfg *AccessProbeConfig, assertion string, inspectClaims bool) {
+	if !throttle.allow(reason) {
+		return
+	}
 	assertions := r.Header.Values("Cf-Access-Jwt-Assertion")
 	auths := r.Header.Values("Authorization")
 	apiKeys := r.Header.Values("X-API-Key")
