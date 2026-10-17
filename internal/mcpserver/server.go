@@ -58,8 +58,23 @@ func Register(mux *http.ServeMux, mgr *tenants.Manager, cfg *oauth.Config) error
 	return nil
 }
 
+// RegisterAccessProbe reserves /mcp/oauth independently of the native /mcp
+// transport. Disabled configuration keeps the canonical route at 404.
+func RegisterAccessProbe(mux *http.ServeMux, cfg *AccessProbeConfig, verifier AccessAssertionVerifier) {
+	if cfg != nil && cfg.Enabled {
+		mux.Handle("/mcp/oauth", NewAccessProbeHandler(cfg, verifier))
+	} else {
+		mux.Handle("/mcp/oauth", http.NotFoundHandler())
+	}
+	mux.Handle("/mcp/oauth/", http.NotFoundHandler())
+}
+
 func withAuth(next http.Handler, apiKeys, usernames DBResolver, verifier oauth.TokenVerifier, cfg *oauth.Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if reserved, _ := accessProbePath(r); reserved {
+			http.NotFound(w, r)
+			return
+		}
 		bad := func(status int, code string) {
 			if cfg != nil {
 				challenge := oauth.Challenge(cfg.Resource, []string{cfg.ReadScope})
