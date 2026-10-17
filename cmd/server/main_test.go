@@ -142,15 +142,15 @@ func TestReadinessAllowsPoolsAddedAfterStartup(t *testing.T) {
 func TestMCPAccessRequiresSeparateBrowserAudience(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
-		probe   *mcpserver.AccessProbeConfig
+		probe   *mcpserver.AccessConfig
 		browser *accessauth.Config
 		wantErr bool
 	}{
 		{"both disabled", nil, nil, false},
-		{"standalone MCP Access", &mcpserver.AccessProbeConfig{Enabled: true, Audience: "mcp"}, nil, false},
-		{"browser only", &mcpserver.AccessProbeConfig{}, &accessauth.Config{Audience: "web"}, false},
-		{"distinct applications", &mcpserver.AccessProbeConfig{Enabled: true, Audience: "mcp"}, &accessauth.Config{Audience: "web"}, false},
-		{"reused browser audience", &mcpserver.AccessProbeConfig{Enabled: true, Audience: "web"}, &accessauth.Config{Audience: "web"}, true},
+		{"standalone MCP Access", &mcpserver.AccessConfig{Enabled: true, Audience: "mcp"}, nil, false},
+		{"browser only", &mcpserver.AccessConfig{}, &accessauth.Config{Audience: "web"}, false},
+		{"distinct applications", &mcpserver.AccessConfig{Enabled: true, Audience: "mcp"}, &accessauth.Config{Audience: "web"}, false},
+		{"reused browser audience", &mcpserver.AccessConfig{Enabled: true, Audience: "web"}, &accessauth.Config{Audience: "web"}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := validateMCPAccessAudience(tc.probe, tc.browser); (err != nil) != tc.wantErr {

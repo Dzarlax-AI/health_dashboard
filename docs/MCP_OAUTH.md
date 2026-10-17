@@ -16,20 +16,35 @@ The current requirements are documented by [OpenAI authentication](https://devel
 
 ## Configure Health
 
-### MCP Access protocol probe
+### Cloudflare Managed OAuth
 
 Cloudflare Managed OAuth returns an opaque access token to its client and
 forwards a signed `Cf-Access-Jwt-Assertion` to the origin. Its opaque token cannot
 be used as the external RS256 JWT configured through `MCP_OAUTH_*` below. See
 [Cloudflare's token format documentation](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/managed-oauth/#token-format).
 
-The additive migration probe reserves the exact `/mcp/oauth` path. With the
-profile disabled it returns `404`; it must not fall through the native `/mcp/`
-subtree. When enabled, it verifies a single Access assertion using a separate
-MCP application's issuer, audience and explicit identity map, and returns only
-`204 No Content`. It does not resolve a tenant database, execute tools, issue a
-cookie or create a local session. This is an origin transport test, not an
-operational MCP endpoint or completed migration.
+The optional profile reserves the exact `/mcp/oauth` path on the existing
+hostname. It returns `404` when disabled; encoded, trailing-slash, case and
+subtree variants must not fall through to native API-key authentication.
+When enabled, a separate, always stateless MCP transport serves the same
+read-only tools. Each request verifies RS256 signature, the pinned team issuer,
+the configured MCP application audience, `type=app`, and required `iat`, `nbf`
+and `exp` claims. Cloudflare can include multiple audiences: the MCP verifier
+requires its exact configured audience to be present. The browser verifier
+retains its stricter single-audience policy, and a browser-only or foreign
+application token does not authorize MCP.
+
+The verified email must map explicitly to an existing Health username; the
+registry and restricted tenant pool are resolved again on every HTTP request.
+Disabled or isolation-unready tenants are denied even if their pool was cached.
+Unsigned identity headers, cookies, tool arguments and MCP session IDs cannot
+replace that identity. Duplicate assertions or credentials, `X-API-Key`, query
+credentials and malformed assertions are rejected. Optional Cloudflare opaque
+`Bearer oauth:...` values are transport credentials only and are never looked
+up as local API keys. No local browser session or refresh token is created.
+This server-to-server endpoint accepts requests without `Origin`; any supplied
+`Origin` header is rejected with `403`. Canonical non-POST requests receive
+`405` with `Allow: POST`, while invalid path variants remain `404`.
 
 ```dotenv
 MCP_ACCESS_ENABLED=true
@@ -40,16 +55,19 @@ MCP_ACCESS_USER_MAP={"alice@example.com":"alice"}
 
 Leave the profile disabled and its other values empty for standalone operation.
 Its configuration is independent of `BROWSER_AUTH_MODE` and `MCP_OAUTH_*`.
-Existing `/mcp` API keys and external OAuth are preserved during the probe.
+Existing `/mcp` API keys and optional external OAuth remain independent.
 Do not disable the old authorization server until real ChatGPT tool discovery,
-a scoped read-only call and post-expiry token refresh have passed on the final
-implementation.
+a scoped read-only call and a repeated call after access-token expiry have
+passed. A successful connection does not prove the maximum grant lifetime.
 
 Use a separate Managed OAuth Access app for the new path and an exact callback
 obtained from the client's actual setup UI. Do not allow broad callback domains
 or automatically reuse a browser app audience, user allowlist or local role.
-Cloudflare owns the new path's OAuth challenge and protected-resource metadata;
-the old `/.well-known/oauth-protected-resource/mcp` remains independent.
+Cloudflare owns the new path's OAuth challenge and protected-resource metadata
+at `/.well-known/cloudflare-access-protected-resource/mcp/oauth`; these must be
+reachable by an ordinary non-browser OAuth client. Register the actual client's
+exact redirect URI, use PKCE S256, and keep the Access policy limited to the
+intended MCP users. The old `/.well-known/oauth-protected-resource/mcp` remains independent.
 
 ### External JWT OAuth configuration
 
@@ -68,6 +86,15 @@ Issuer, JWKS, and resource URLs require HTTPS with no credentials, query, or fra
 Deploy only after approval, using the repository's release and tenant-schema gates. Publish `/.well-known/oauth-protected-resource/mcp` through the same public origin as `/mcp`, including through any reverse proxy. Its metadata identifies the resource, issuer, and required scope. Unauthenticated MCP requests return a `WWW-Authenticate` challenge linking to this document.
 
 ## Connect ChatGPT
+
+For Cloudflare Managed OAuth, connect to the exact `/mcp/oauth` URL and let the
+client discover Cloudflare's OAuth metadata. Copy that connection's actual
+redirect URI into the separate Access app, sign in with an allowed Google
+account, and verify tool discovery plus a scoped read-only call. Repeat after
+the configured access-token lifetime without a new sign-in before accepting
+the migration. The API-key `/mcp` endpoint is unchanged.
+
+For the optional external JWT OAuth profile on `/mcp`:
 
 1. In ChatGPT's available MCP/developer settings, create a connection to the canonical public `/mcp` URL and select OAuth. Availability and exact labels depend on the account and workspace.
 2. Complete the chosen client-registration configuration and copy the connection's actual redirect URI into the authorization server allowlist, as described above. Do not create a production client without approval.
