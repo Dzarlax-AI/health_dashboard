@@ -74,6 +74,20 @@ func main() {
 			log.Fatalf("configure Cloudflare Access: %v", err)
 		}
 	}
+	accessProbeConfig, err := mcpserver.ParseAccessProbeConfig(os.LookupEnv)
+	if err != nil {
+		log.Fatalf("invalid MCP Access probe configuration: %v", err)
+	}
+	if err := validateMCPAccessAudience(accessProbeConfig, accessConfig); err != nil {
+		log.Fatalf("invalid MCP Access probe configuration: %v", err)
+	}
+	var accessProbeVerifier mcpserver.AccessAssertionVerifier
+	if accessProbeConfig.Enabled {
+		accessProbeVerifier, err = mcpserver.NewAccessProbeVerifier(accessProbeConfig)
+		if err != nil {
+			log.Fatalf("configure MCP Access probe: %v", err)
+		}
+	}
 
 	// Env-level defaults for the first/only tenant.
 	envNotifyDefaults := storage.NotifyConfig{
@@ -190,7 +204,7 @@ func main() {
 			log.Fatalf("configure legacy tenant manager: %v", err)
 		}
 
-		runSingleTenant(ctx, addr, baseURL, trustFwdAuth, trustedFwdAuthNets, apiKey, mgr, nil, mcpOAuth,
+		runSingleTenant(ctx, addr, baseURL, trustFwdAuth, trustedFwdAuthNets, apiKey, mgr, nil, mcpOAuth, accessProbeConfig, accessProbeVerifier,
 			legacyDB, "health", envNotifyDefaults, envAIDefaults, hrZones)
 		return
 	}
@@ -333,6 +347,7 @@ func main() {
 		startTenant(ctx, mgr, reg, db, schema, envNotifyDefaults, envAIDefaults, baseURL, todayDerived, startupBackfills)
 	})
 	uiHandler.Register(mux)
+	mcpserver.RegisterAccessProbe(mux, accessProbeConfig, accessProbeVerifier)
 	if err := mcpserver.Register(mux, mgr, mcpOAuth); err != nil {
 		log.Fatalf("register MCP: %v", err)
 	}
@@ -359,13 +374,20 @@ func main() {
 		}
 	}
 
-	logged := logRequests(mux)
+	logged := mcpserver.ProtectAccessProbePathEquivalents(logRequests(mux))
 
 	log.Printf("listening on %s (multi-user mode, %d user(s))", addr, len(users))
 	log.Printf("MCP endpoint: %s/mcp", baseURL)
 	if err := serveHTTP(ctx, addr, logged, ingestHandler.Shutdown, startupBackfills.Start); err != nil {
 		log.Fatalf("server: %v", err)
 	}
+}
+
+func validateMCPAccessAudience(probe *mcpserver.AccessProbeConfig, browser *accessauth.Config) error {
+	if probe != nil && probe.Enabled && browser != nil && probe.Audience == browser.Audience {
+		return errors.New("MCP_ACCESS_AUD must differ from the browser Cloudflare Access audience")
+	}
+	return nil
 }
 
 func shouldSeedBootstrapAdmin(registryEmpty, cloudflareAccess, hasAPIKey, hasPassword bool) bool {
@@ -375,6 +397,7 @@ func shouldSeedBootstrapAdmin(registryEmpty, cloudflareAccess, hasAPIKey, hasPas
 // runSingleTenant runs the server in legacy single-user mode.
 func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth bool, trustedFwdAuthNets []*net.IPNet, apiKey string,
 	mgr *tenants.Manager, reg *registry.Registry, mcpOAuth *oauth.Config,
+	accessProbeConfig *mcpserver.AccessProbeConfig, accessProbeVerifier mcpserver.AccessAssertionVerifier,
 	db *storage.DB, schema string,
 	notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig, hrZones health.HRZones) {
 
@@ -420,6 +443,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	legacyUI.SetTrustedForwardAuthNetworkList(trustedFwdAuthNets)
 	legacyUI.ConfigureWebhook(notify.NewTelegramWebhookRegistrar(), baseURL)
 	legacyUI.Register(mux)
+	mcpserver.RegisterAccessProbe(mux, accessProbeConfig, accessProbeVerifier)
 	if err := mcpserver.Register(mux, mgr, mcpOAuth); err != nil {
 		log.Fatalf("register MCP: %v", err)
 	}
@@ -439,7 +463,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 		}
 	}
 
-	logged := logRequests(mux)
+	logged := mcpserver.ProtectAccessProbePathEquivalents(logRequests(mux))
 
 	log.Printf("listening on %s (single-user legacy mode)", addr)
 	log.Printf("MCP endpoint: %s/mcp", baseURL)

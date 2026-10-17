@@ -443,6 +443,13 @@ Features:
 
 ## MCP Server
 
+An optional Cloudflare Managed OAuth migration is being validated at the separate
+`/mcp/oauth` path on the same hostname. At this protocol-probe stage, the path
+only validates an Access assertion and returns an empty `204` response; it does
+not expose tools or read tenant data. It is disabled by default. Existing API
+keys and optional external OAuth continue to use `/mcp` independently. See the
+[MCP Access protocol probe](docs/MCP_OAUTH.md#mcp-access-protocol-probe).
+
 Available at `/mcp` for AI analysis via Claude or other MCP-compatible clients.
 
 Authentication: `Authorization: Bearer your-api-key` or `X-API-Key: your-api-key` header.

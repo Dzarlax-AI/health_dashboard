@@ -16,6 +16,43 @@ The current requirements are documented by [OpenAI authentication](https://devel
 
 ## Configure Health
 
+### MCP Access protocol probe
+
+Cloudflare Managed OAuth returns an opaque access token to its client and
+forwards a signed `Cf-Access-Jwt-Assertion` to the origin. Its opaque token cannot
+be used as the external RS256 JWT configured through `MCP_OAUTH_*` below. See
+[Cloudflare's token format documentation](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/managed-oauth/#token-format).
+
+The additive migration probe reserves the exact `/mcp/oauth` path. With the
+profile disabled it returns `404`; it must not fall through the native `/mcp/`
+subtree. When enabled, it verifies a single Access assertion using a separate
+MCP application's issuer, audience and explicit identity map, and returns only
+`204 No Content`. It does not resolve a tenant database, execute tools, issue a
+cookie or create a local session. This is an origin transport test, not an
+operational MCP endpoint or completed migration.
+
+```dotenv
+MCP_ACCESS_ENABLED=true
+MCP_ACCESS_ISSUER=https://team.example.test
+MCP_ACCESS_AUD=separate-mcp-application-audience
+MCP_ACCESS_USER_MAP={"alice@example.com":"alice"}
+```
+
+Leave the profile disabled and its other values empty for standalone operation.
+Its configuration is independent of `BROWSER_AUTH_MODE` and `MCP_OAUTH_*`.
+Existing `/mcp` API keys and external OAuth are preserved during the probe.
+Do not disable the old authorization server until real ChatGPT tool discovery,
+a scoped read-only call and post-expiry token refresh have passed on the final
+implementation.
+
+Use a separate Managed OAuth Access app for the new path and an exact callback
+obtained from the client's actual setup UI. Do not allow broad callback domains
+or automatically reuse a browser app audience, user allowlist or local role.
+Cloudflare owns the new path's OAuth challenge and protected-resource metadata;
+the old `/.well-known/oauth-protected-resource/mcp` remains independent.
+
+### External JWT OAuth configuration
+
 All five environment values are required together. Leaving all unset disables OAuth; partial configuration fails startup. The following example contains only synthetic configuration:
 
 ```dotenv
