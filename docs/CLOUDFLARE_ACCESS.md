@@ -128,10 +128,41 @@ a separate change. Do not expose an unprotected public origin or assume that
 HTTP transfer encoding removes the request-size limit. An authentication
 cutover must not silently promise the previous 2 GiB web-upload behavior.
 
-The maintainer is migrating the personal infrastructure from Authentik browser
-ForwardAuth to Cloudflare Access. Treat implementation support, a published
-image, and a verified production cutover as separate states. This guide does
-not claim that the Health production cutover has already occurred.
+### Maintainer deployment status
+
+On 17 October 2026, the Health browser login switched from Authentik ForwardAuth
+to Cloudflare Access on the existing hostname. The compatible backend/frontend
+pair from [PR #266](https://github.com/Dzarlax-AI/health_dashboard/pull/266),
+revision `bdc16185682af8c6234f3d4a8dea33880aa1cce8`, passed the production tenant
+schema release gate. All three active tenants passed the pre/post audits, each
+with 36 isolation probes and zero failures. Existing runtime secrets, native
+tokens, accounts and roles were preserved.
+
+The owner's Google login, same-origin browser API, native token API and a
+read-only MCP tool call passed after cutover. Both human accounts' existing API
+keys retain their distinct roles, including member denial on the admin API.
+The owner confirmed their own browser access; the second account's real Google
+login and account-switching acceptance remain unverified. Synthetic integration
+tests and token checks do not replace that acceptance.
+
+Large manual Apple Health archives use private SSH/API access with the existing
+token and tenant checks. The proxied web path retains the 100 MB network limit.
+The separate MCP OAuth issuer remains Authentik; this is a browser migration.
+
+### Native client browser-signature filtering
+
+During cutover, Cloudflare Browser Integrity Check rejected the standard Python
+MCP client with error 1010 (`browser_signature_banned`). A narrowly scoped
+[Configuration Rule](https://developers.cloudflare.com/rules/configuration-rules/settings/)
+sets `bic: false` for the Health hostname's existing native route exceptions:
+`/api*`, `/health*`, `/mcp*` and `/.well-known/oauth-protected-resource/mcp`.
+Browser routes and all other hostnames retain their existing protection.
+This rule changes browser-signature filtering only: Access route policies and
+the backend's native credential checks remain in force. Verify unauthenticated
+denial and real native clients after changing proxy settings; do not substitute
+a browser User-Agent just to make a machine-client check pass.
+
+### Cutover procedure
 
 1. Record the current compatible image pair, runtime configuration, route rules,
    local account mappings and roles. Back up and verify the registry/tenant

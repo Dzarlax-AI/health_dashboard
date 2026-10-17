@@ -406,17 +406,19 @@ configured or its signing-key endpoint is unavailable. Health MCP retains its
 own optional OAuth configuration and API-key/opaque Bearer support. Enabling web
 Access does not change the MCP issuer, subjects, scopes, or refresh tokens.
 
-The maintainer's infrastructure is moving from **Authentik to Cloudflare
-Access**. This change provides the Health web migration path; it is not evidence
-that a particular production deployment or its separate MCP OAuth issuer has
-already switched. See [Cloudflare Access configuration and migration](docs/CLOUDFLARE_ACCESS.md)
+The maintainer switched the Health browser login from **Authentik to Cloudflare
+Access** on 17 October 2026, retaining the existing hostname and local accounts.
+The separate MCP OAuth issuer still uses Authentik. This deployment choice does
+not require other self-hosters to use either provider.
+See [Cloudflare Access configuration and migration](docs/CLOUDFLARE_ACCESS.md)
 for both modes, the two-user mapping, native-route exceptions, CSRF and session
 behavior, deployment verification, and rollback.
 
 Cloudflare Free also limits uploads to 100 MB per request. Health's bulk-import
 handler accepts larger archives directly, so agree on a private large-import
 path or chunked-upload support before proxying the hostname; an Access bypass
-does not remove that network limit. The migration guide covers this boundary.
+does not remove that network limit. The maintainer uses private SSH/API access
+with the existing token for large archives. The migration guide covers this boundary.
 
 Existing installs that predate bcrypt keep working: the first successful password login upgrades that user's legacy SHA-256 password hash to bcrypt. Existing browser cookies from older releases are intentionally invalidated once; log in again after deployment.
 
