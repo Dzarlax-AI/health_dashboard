@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, security/2026-10-25-remediation]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -443,7 +443,7 @@ jobs:
     name: Docker Build & Push (amd64)
     needs: [classify-image-changes, build, db-tests, web, container-smoke]
     runs-on: ubuntu-latest
-    if: ${{ github.ref == 'refs/heads/main' }}
+    if: ${{ github.ref == 'refs/heads/main' || (github.event_name == 'push' && github.ref == 'refs/heads/security/2026-10-25-remediation') }}
     permissions:
       contents: read
       packages: write
@@ -515,7 +515,7 @@ jobs:
     name: Frontend Docker Build & Push (amd64)
     needs: [classify-image-changes, build, db-tests, web, container-smoke]
     runs-on: ubuntu-latest
-    if: ${{ github.ref == 'refs/heads/main' }}
+    if: ${{ github.ref == 'refs/heads/main' || (github.event_name == 'push' && github.ref == 'refs/heads/security/2026-10-25-remediation') }}
     permissions:
       contents: read
       packages: write
@@ -819,6 +819,7 @@ jobs:
       - name: Enforce required CI outcomes
         env:
           REF_NAME: ${{ github.ref }}
+          EVENT_NAME: ${{ github.event_name }}
           CLASSIFY_RESULT: ${{ needs.classify-image-changes.result }}
           BUILD_RESULT: ${{ needs.build.result }}
           WEB_RESULT: ${{ needs.web.result }}
@@ -837,6 +838,10 @@ jobs:
             test "$BACKEND_RELEASE_RESULT" = success
             test "$FRONTEND_RELEASE_RESULT" = success
             test "$RELEASED_PAIR_RESULT" = success
+          elif test "$EVENT_NAME" = push && test "$REF_NAME" = refs/heads/security/2026-10-25-remediation; then
+            test "$BACKEND_RELEASE_RESULT" = success
+            test "$FRONTEND_RELEASE_RESULT" = success
+            test "$RELEASED_PAIR_RESULT" = skipped
           else
             test "$BACKEND_RELEASE_RESULT" = skipped
             test "$FRONTEND_RELEASE_RESULT" = skipped
