@@ -84,7 +84,7 @@ Its read-only dashboard calls are:
 | `/api/dashboard` | `DashboardResponse`, lean cards | Phase-one OpenAPI |
 | `/api/readiness-history` | `[ReadinessPoint]`, Today/Trends | Phase-one OpenAPI |
 | `/api/settings` | `UserSettings`, server content locale and account display | Existing endpoint; full settings contract belongs to #219 |
-| `/api/metrics` | `[MetricSummary]`, localized metric catalogue | Existing endpoint; read-only expansion belongs to #218 |
+| `/api/metrics` | `[MetricSummary]`, localized metric catalogue | OpenAPI; optional unit evidence and variant labels |
 | `/api/metrics/latest` | `[LatestValue]` | Existing endpoint; read-only expansion belongs to #218 |
 | `/api/metrics/data` | `MetricDataResponse` | Existing endpoint; read-only expansion belongs to #218 |
 | `/api/metrics/range` | `MetricDateRange` | Existing endpoint; read-only expansion belongs to #218 |
@@ -94,6 +94,25 @@ Its read-only dashboard calls are:
 The iOS request client sends `Accept: application/json`, refuses to follow an
 authentication redirect silently, and decodes server errors separately from
 JSON responses.
+
+### Metric catalogue metadata
+
+`GET /api/metrics?lang=en|ru|sr` returns the existing array of series with stable
+`name`, localized `display_name`, `units`, `count`, `min`, and `max` fields.
+`count` and catalogue date bounds retain their hourly-cache row semantics;
+the count is not the number of original HealthKit samples.
+
+The optional `unit_status` is `known`, `unknown`, or `mixed`. `units` is non-empty
+only when complete raw-history evidence agrees on one non-empty unit. Missing
+or incomplete evidence is `unknown`; multiple distinct unit strings are `mixed`.
+Even equivalent spellings are not normalized here. This read-only metadata does
+not convert values, rewrite history, or change chart aggregation.
+
+When localized display names collide, the optional `variant_label` supplies a
+localized identifier label. Series keep their individual names and histories;
+a collision does not establish that their data should be merged. Older clients
+may ignore both fields. New clients should tolerate absent and future metadata
+and must not guess units or metric provenance from the name.
 
 ### AI briefing compatibility
 

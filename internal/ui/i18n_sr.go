@@ -164,6 +164,7 @@ var translationsSr = map[string]string{
 	"ate":  "Respiratorni ritam",
 
 	// Metric labels.
+	"metric_variant_identifier":                "Identifikator: %s",
 	"metric_sleep_total":                       "Ukupan san",
 	"metric_night_sleep_total":                 "Noćni san",
 	"metric_nap_total":                         "Dremke",

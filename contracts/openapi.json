@@ -1472,6 +1472,55 @@
         ],
         "type": "object"
       },
+      "MetricCatalogResponse": {
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "count": {
+              "type": "integer"
+            },
+            "display_name": {
+              "type": "string"
+            },
+            "max": {
+              "type": "string"
+            },
+            "min": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "unit_status": {
+              "enum": [
+                "known",
+                "unknown",
+                "mixed"
+              ],
+              "type": "string"
+            },
+            "units": {
+              "type": "string"
+            },
+            "variant_label": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "display_name",
+            "units",
+            "count",
+            "min",
+            "max"
+          ],
+          "type": "object"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
       "MetricDataResponse": {
         "additionalProperties": false,
         "properties": {
@@ -3222,6 +3271,69 @@
           }
         },
         "summary": "Rich current-day health briefing"
+      }
+    },
+    "/api/metrics": {
+      "get": {
+        "operationId": "listMetrics",
+        "parameters": [
+          {
+            "description": "Unsupported values are ignored and the server falls back to the documented default.",
+            "in": "query",
+            "name": "lang",
+            "required": false,
+            "schema": {
+              "default": "en",
+              "enum": [
+                "en",
+                "ru",
+                "sr"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricCatalogResponse"
+                }
+              }
+            },
+            "description": "Successful tenant-scoped response."
+          },
+          "302": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Browser authentication or initial setup is required; Location identifies the interactive route.",
+            "headers": {
+              "Location": {
+                "description": "Interactive login or setup route.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The backend could not load or encode the tenant response."
+          }
+        },
+        "summary": "Localized metric catalogue with conservative unit evidence"
       }
     },
     "/api/metrics/data": {

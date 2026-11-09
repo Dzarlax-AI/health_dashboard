@@ -16,6 +16,21 @@ type SessionResponse struct {
 	IsAdmin bool `json:"is_admin"`
 }
 
+// MetricCatalogItem keeps stable series identifiers separate from localized
+// presentation. Count remains the number of hourly cache rows, not raw samples.
+type MetricCatalogItem struct {
+	Name         string `json:"name"`
+	DisplayName  string `json:"display_name"`
+	Units        string `json:"units"`
+	Count        int    `json:"count"`
+	Min          string `json:"min"`
+	Max          string `json:"max"`
+	UnitStatus   string `json:"unit_status,omitempty" jsonschema:"enum=known,enum=unknown,enum=mixed"`
+	VariantLabel string `json:"variant_label,omitempty"`
+}
+
+type MetricCatalogResponse []MetricCatalogItem
+
 type NotificationSettingsResponse struct {
 	TelegramToken    string `json:"telegram_token"`
 	TelegramChatID   string `json:"telegram_chat_id"`

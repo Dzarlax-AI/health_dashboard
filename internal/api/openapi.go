@@ -34,6 +34,7 @@ func GenerateOpenAPI() ([]byte, error) {
 		"EnergyHistoryHourResponse":    EnergyHistoryHourResponse{},
 		"HealthBriefingResponse":       health.BriefingResponse{},
 		"MetricDataResponse":           MetricDataResponse{},
+		"MetricCatalogResponse":        MetricCatalogResponse{},
 		"MetricRangeResponse":          MetricRangeResponse{},
 		"ReadinessHistoryResponse":     ReadinessHistoryResponse{},
 		"ReportHistoryResponse":        ReportHistoryResponse{},
@@ -297,6 +298,14 @@ func clientPaths() map[string]any {
 		"/api/sleep/goal": map[string]any{
 			"get": sleepGoalGetOperation,
 			"put": sleepGoalPutOperation,
+		},
+		"/api/metrics": map[string]any{
+			"get": getOperation(
+				"listMetrics",
+				"Localized metric catalogue with conservative unit evidence",
+				[]any{langParameter()},
+				jsonResponseRef("MetricCatalogResponse"),
+			),
 		},
 		"/api/metrics/data": map[string]any{
 			"get": getOperation(

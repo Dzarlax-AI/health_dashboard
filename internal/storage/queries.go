@@ -15,12 +15,19 @@ import (
 
 // MetricSummary is returned by ListMetrics.
 type MetricSummary struct {
-	Name  string
-	Units string
-	Count int
-	Min   string
-	Max   string
+	Name       string
+	Units      string
+	UnitStatus string
+	Count      int
+	Min        string
+	Max        string
 }
+
+const (
+	MetricUnitKnown   = "known"
+	MetricUnitUnknown = "unknown"
+	MetricUnitMixed   = "mixed"
+)
 
 // DataPoint is a single time-bucketed value returned by metric data queries.
 type DataPoint struct {
@@ -232,15 +239,41 @@ type MetricStats struct {
 	Daily  []DataPoint `json:"daily"`
 }
 
+// Catalogue counts and dates retain their hourly-cache semantics. Unit
+// evidence includes the complete raw history, including the raw fallback
+// used by historical charts. No unit normalization or value conversion is
+// performed here; even equivalent spellings remain conservatively mixed.
+const metricCatalogQuery = `
+	WITH catalog AS (
+		SELECT metric_name, COUNT(*) AS cnt,
+		       MIN(SUBSTRING(hour,1,10)) AS first_date,
+		       MAX(SUBSTRING(hour,1,10)) AS last_date
+		FROM hourly_metrics
+		GROUP BY metric_name
+	), evidence AS (
+		SELECT p.metric_name,
+		       COUNT(*) FILTER (WHERE NULLIF(BTRIM(p.units), '') IS NULL) AS missing,
+		       COUNT(DISTINCT NULLIF(BTRIM(p.units), '')) AS distinct_units,
+		       MIN(NULLIF(BTRIM(p.units), '')) AS unit
+		FROM metric_points p
+		JOIN catalog c ON c.metric_name = p.metric_name
+		GROUP BY p.metric_name
+	)
+	SELECT c.metric_name,
+	       CASE WHEN e.distinct_units = 1 AND e.missing = 0 THEN e.unit ELSE '' END,
+	       CASE WHEN e.distinct_units > 1 THEN 'mixed'
+	            WHEN e.distinct_units = 1 AND e.missing = 0 THEN 'known'
+	            ELSE 'unknown' END,
+	       c.cnt, c.first_date, c.last_date
+	FROM catalog c
+	LEFT JOIN evidence e ON e.metric_name = c.metric_name
+	ORDER BY c.cnt DESC, c.metric_name`
+
 func (s *DB) ListMetrics() ([]MetricSummary, error) {
 	ctx, cancel := queryCtx()
 	defer cancel()
 
-	rows, err := s.pool.Query(ctx, `
-		SELECT metric_name, '', COUNT(*) AS cnt, MIN(SUBSTRING(hour,1,10)), MAX(SUBSTRING(hour,1,10))
-		FROM hourly_metrics
-		GROUP BY metric_name
-		ORDER BY cnt DESC`)
+	rows, err := s.pool.Query(ctx, metricCatalogQuery)
 	if err != nil {
 		return nil, err
 	}
@@ -249,7 +282,7 @@ func (s *DB) ListMetrics() ([]MetricSummary, error) {
 	var out []MetricSummary
 	for rows.Next() {
 		var m MetricSummary
-		if err := rows.Scan(&m.Name, &m.Units, &m.Count, &m.Min, &m.Max); err != nil {
+		if err := rows.Scan(&m.Name, &m.Units, &m.UnitStatus, &m.Count, &m.Min, &m.Max); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
