@@ -951,6 +951,13 @@ func buildMorningSleepView(b *health.BriefingResponse, aiBlocks map[string]strin
 		if observed := sleepContext.Observed; !sleepContext.HasUsableFinalNight(reportDate) && observed != nil && observed.State == "observed_stable" && plausibleSleepHours(observed.Hours) {
 			view.lines = append(view.lines, fmt.Sprintf(morningSleepCopy(lang, "observed"), observed.Wake.Format("15:04"), formatSleepDuration(observed.Hours, lang)))
 			observedUsed = true
+			if sleepContext.Date != reportDate || sleepContext.Capture != health.NightCaptureComplete || sleepContext.Assessment != health.NightDurationPlausible {
+				caveat := *sleepContext
+				if caveat.Date != reportDate {
+					caveat.Capture = health.NightCaptureUnknown
+				}
+				appendMorningSleepCaveat(&view, &caveat, lang)
+			}
 		}
 		fresh := sleepContext.ReportDate != "" && sleepContext.Date == sleepContext.ReportDate
 		validHours := sleepContext.Hours != nil && plausibleSleepHours(*sleepContext.Hours)
@@ -975,7 +982,7 @@ func buildMorningSleepView(b *health.BriefingResponse, aiBlocks map[string]strin
 				view.explanation = aiSleep
 				view.explanationAI = !preliminaryExplanation || health.MorningSleepAnalysisEligible(sleepContext, reportDate)
 			}
-		} else {
+		} else if !observedUsed {
 			view.lines = append(view.lines, morningSleepCopy(lang, "no_current"))
 			if sleepContext.Date != "" && sleepContext.Date < sleepContext.ReportDate && validHours {
 				view.lines = append(view.lines, fmt.Sprintf(morningSleepCopy(lang, "older"), sleepContext.Date, formatSleepDuration(*sleepContext.Hours, lang)))

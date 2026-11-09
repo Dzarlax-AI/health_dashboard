@@ -212,3 +212,74 @@ func TestAIInsightBackgroundNullIsTerminalAndOverallWaitsForDomains(t *testing.T
 		}
 	}
 }
+
+func TestAIInsightBackgroundRefreshHonorsApprovedModeWithoutPreview(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	cfg := approvedNarrativeSlotConfig(t, db)
+	if err := db.SaveSettings(map[string]string{SettingTodayInsightsB1PreviewEnabled: "false", "timezone": "UTC"}); err != nil {
+		t.Fatal(err)
+	}
+	if TodayInsightsB1NarrativeMode(db, cfg) != TodayInsightsB1NarrativeModeApproved {
+		t.Fatal("fixture did not establish approved mode")
+	}
+	restore := overrideTestDailyInsightDebounce(t, db, time.Millisecond)
+	defer restore()
+	var calls atomic.Int32
+	setTestNarrativeSlotGenerate(t, func(context.Context, ai.ProviderConfig, ai.GenerationRequest) (ai.GenerationResult, error) {
+		calls.Add(1)
+		return ai.GenerationResult{Text: `{"version":"today-ai-insight-v1","locale":"en","slot":"sleep","insight":null}`}, nil
+	})
+	snapshot := &health.DailyInsightSnapshot{Date: db.Today(), Primary: health.DailyInsight{State: "insight"}, Domains: []health.DailyInsightDomain{{Key: "sleep", DataState: "fresh", Confidence: "final", Insight: health.DailyInsight{State: "insight", Observation: "Observed sleep"}}}, NarrativeFacts: []health.DailyInsightNarrativeFact{{ID: "sleep_fact", Domain: "sleep", Fresh: true, Statement: "Recorded sleep observations"}}}
+	if err := db.ScheduleSnapshotAIInsights(context.Background(), snapshot, cfg, "en", "lifecycle"); err != nil {
+		t.Fatal(err)
+	}
+	waitForNarrativeProviderCalls(t, &calls, 1)
+}
+
+func TestAIInsightBackgroundReadsExactCachedOpinion(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	cfg := approvedNarrativeSlotConfig(t, db)
+	snapshot := &health.DailyInsightSnapshot{Date: db.Today(), Primary: health.DailyInsight{State: "insight"}, Domains: []health.DailyInsightDomain{{Key: "sleep", DataState: "fresh", Confidence: "final", Insight: health.DailyInsight{State: "insight", Observation: "Recorded sleep"}}}, NarrativeFacts: []health.DailyInsightNarrativeFact{{ID: "sleep_fact", Domain: "sleep", Fresh: true, Statement: "Sleep observations are recorded."}}}
+	input, eligible := health.BuildAIInsightInput(snapshot, "en", "sleep", nil)
+	if !eligible {
+		t.Fatal("fixture is not eligible")
+	}
+	hash := health.AIInsightInputHash(input)
+	fingerprint := AIInsightGenerationFingerprint(cfg, "en")
+	if err := db.UpsertDailyInsightNarrativeSlot(ctx, DailyInsightNarrativeSlot{Date: snapshot.Date, Lang: "en", Slot: "sleep", MaterialInputHash: hash, ProviderFingerprint: fingerprint}); err != nil {
+		t.Fatal(err)
+	}
+	token, err := db.ClaimDailyInsightNarrativeSlotGeneration(ctx, snapshot.Date, "en", "sleep", hash, fingerprint, time.Now())
+	if err != nil || token == "" {
+		t.Fatalf("lease %q %v", token, err)
+	}
+	body := json.RawMessage(`{"version":"today-ai-insight-v1","locale":"en","slot":"sleep","insight":{"text":"The recorded observations describe this sleep episode.","fact_ids":["sleep_fact"],"stance":"agree","alternative_action":""}}`)
+	if saved, err := db.SaveDailyInsightNarrativeSlot(ctx, snapshot.Date, "en", "sleep", hash, fingerprint, token, body); err != nil || !saved {
+		t.Fatalf("save %v %v", saved, err)
+	}
+	var calls atomic.Int32
+	setTestNarrativeSlotGenerate(t, func(context.Context, ai.ProviderConfig, ai.GenerationRequest) (ai.GenerationResult, error) {
+		calls.Add(1)
+		return ai.GenerationResult{}, errors.New("must remain read-only")
+	})
+	got, err := db.CurrentCachedAIInsight(ctx, snapshot, cfg, "en", "sleep")
+	if err != nil || got == nil || got.Text != "The recorded observations describe this sleep episode." {
+		t.Fatalf("cached opinion not loaded: %+v %v", got, err)
+	}
+	snapshot.NarrativeFacts[0].Statement = "Changed sleep observations."
+	if got, err = db.CurrentCachedAIInsight(ctx, snapshot, cfg, "en", "sleep"); err != nil || got != nil {
+		t.Fatal("old material rendered as current")
+	}
+	snapshot.NarrativeFacts[0].Statement = "Sleep observations are recorded."
+	other := cfg
+	other.Providers = map[string]AIProviderSettings{testNarrativeSlotProviderID: {APIKey: "test-key", Model: "different-model"}}
+	if got, err = db.CurrentCachedAIInsight(ctx, snapshot, other, "en", "sleep"); err != nil || got != nil {
+		t.Fatal("different provider fingerprint admitted")
+	}
+	if calls.Load() != 0 {
+		t.Fatal("cache reader initiated provider work")
+	}
+}

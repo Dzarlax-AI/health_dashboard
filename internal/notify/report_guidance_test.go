@@ -62,6 +62,28 @@ func TestMorningRecordedNightAnalysisSurvivesObservedEpisodeRendering(t *testing
 	}
 }
 
+func TestMorningObservedEpisodeDoesNotEraseCaptureLimitations(t *testing.T) {
+	b := &health.BriefingResponse{Date: "2026-11-09"}
+	hours := 6.85
+	for _, capture := range []string{health.NightCapturePartial, health.NightCaptureUnknown} {
+		sleep := health.MorningReportSleep{ReportDate: b.Date, Date: b.Date, Hours: &hours, Capture: capture, Assessment: health.NightDurationPlausible, Finalization: health.NightFinalProvisional, Observed: &health.MorningSleepReadiness{State: health.MorningSleepObservedStable, Hours: hours, Wake: time.Date(2026, 11, 9, 8, 50, 0, 0, time.UTC)}}
+		for _, message := range []string{formatMorning(b, nil, "en", time.UTC, freshness{}, false, sleep), formatMorningRich(b, nil, "en", time.UTC, freshness{}, false, "", sleep)} {
+			limitation := morningSleepCopy("en", "partial")
+			if capture == health.NightCaptureUnknown {
+				limitation = morningSleepCopy("en", "unknown")
+			}
+			if !strings.Contains(message, "08:50") || strings.Count(message, limitation) != 1 || strings.Contains(message, morningSleepCopy("en", "provisional")) {
+				t.Fatalf("observed timing erased actual capture limits: %s", message)
+			}
+		}
+		sleep.Date = "2026-11-08"
+		message := formatMorning(b, nil, "en", time.UTC, freshness{}, false, sleep)
+		if strings.Contains(message, morningSleepCopy("en", "no_current")) || strings.Count(message, morningSleepCopy("en", "unknown")) != 1 {
+			t.Fatalf("current observed episode contradicted by older canonical coverage: %s", message)
+		}
+	}
+}
+
 func TestMorningRecoveryDoesNotPresentWeeklySummaryAsToday(t *testing.T) {
 	b := &health.BriefingResponse{Date: "2026-11-09", ReadinessToday: 84, ReadinessTodayBand: "optimal", ReadinessTodayLabel: "Optimal", ReadinessConfidence: health.ReadinessConfidenceFinal, ReadinessServing: &health.ReadinessServingState{Status: health.ReadinessServingFresh, Confidence: health.ReadinessConfidenceFinal}, Sections: []health.BriefingSection{{Key: "recovery", Summary: "Moderate weekly recovery.", Details: []health.BriefingDetail{{Label: "HRV", Value: "38 ms"}}}}}
 	for _, msg := range []string{formatMorning(b, nil, "en", time.UTC, freshness{}, false), formatMorningRich(b, nil, "en", time.UTC, freshness{}, false, "")} {

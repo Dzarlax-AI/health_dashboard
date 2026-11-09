@@ -11,7 +11,7 @@ import (
 // RefreshCurrentAIInsights is the shared post-derived/restart/tick entry point.
 // Provider work is asynchronous and uses the existing exact-material leases.
 func (s *DB) RefreshCurrentAIInsights(ctx context.Context, cfg AIConfig, lang, trigger string) error {
-	if !TodayInsightsB1PreviewEnabled(s) || !cfg.Enabled() {
+	if !TodayInsightsB1GenerationEnabled(s, cfg) {
 		return nil
 	}
 	snapshot, err := s.BuildTodayInsightSnapshot(ctx, lang, s.dailyInsightNow())
@@ -64,7 +64,7 @@ func (s *DB) refreshAIInsightSlot(ctx context.Context, snapshot *health.DailyIns
 	}
 	sibling := health.AIInsightSibling{Slot: slot, State: DailyInsightStateDisabled}
 	status := AIGenerationStatus{Pipeline: "today", Date: snapshot.Date, Lang: lang, Slot: slot, State: DailyInsightStateDisabled, ReasonCode: "no_eligible_facts", Trigger: trigger}
-	if !TodayInsightsB1PreviewEnabled(s) || !cfg.Enabled() {
+	if !TodayInsightsB1GenerationEnabled(s, cfg) {
 		status.ReasonCode = "disabled"
 		s.observeAIGenerationStatus(ctx, status)
 		return sibling, nil

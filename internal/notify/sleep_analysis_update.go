@@ -72,11 +72,9 @@ func evaluateSleepAnalysisUpdate(ctx context.Context, db *storage.DB, cfg Config
 	// A matching current Sleep opinion may improve the explanation. Waiting
 	// for it does not delay a useful factual analysis of the changed record.
 	if snapshot, e := db.BuildTodayInsightSnapshot(ctx, cfg.Lang, now); e == nil && snapshot != nil && matchingRecordedSleepFacts(snapshot, sleep, cfg.Lang) {
-		for _, d := range snapshot.Domains {
-			if d.Key == "sleep" && d.AIInsight != nil && !d.AIInsight.Stale && d.AIInsight.Text != "" {
-				current.Text = d.AIInsight.Text
-				current.Source = "model"
-			}
+		if insight, e := db.CurrentCachedAIInsight(ctx, snapshot, cfg.AIConfig, cfg.Lang, "sleep"); e == nil && insight != nil && insight.Text != "" {
+			current.Text = insight.Text
+			current.Source = "model"
 		}
 	}
 	if current.Text == "" {
