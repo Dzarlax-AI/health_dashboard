@@ -41,19 +41,77 @@ func (s *DB) morningInsightEvidence(ctx context.Context, briefing *health.Briefi
 		return health.MorningInsightEvidence{}, err
 	}
 	sleep := health.SelectMorningReportSleep(today, nights)
+	for _, night := range nights {
+		if night.WakeDate == today && sleep.Date == today {
+			sleep.Episode, sleep.AnalysisStatus, err = s.recordedMorningSleepEpisode(ctx, night)
+			if err != nil {
+				return health.MorningInsightEvidence{}, err
+			}
+			if sleep.Episode == nil {
+				sleep.Episode = health.RecordedSleepAggregate(briefing, today, night.Source, night.DurationHours)
+				if sleep.Episode != nil {
+					sleep.AnalysisStatus = "recorded_aggregate"
+				}
+			}
+			break
+		}
+	}
+	health.AttachRecentRecordedSleepComparison(&sleep, briefing)
 	// Legacy ingestion may lack canonical coverage. Keep the observed date and
 	// duration but never claim complete capture or use its cached AI narrative.
 	if briefing.Sleep != nil && briefing.Sleep.LatestDate > sleep.Date && briefing.Sleep.LatestDate <= today && briefing.Sleep.LatestTotal != nil && *briefing.Sleep.LatestTotal > 0 {
 		hours := *briefing.Sleep.LatestTotal
 		sleep = health.MorningReportSleep{ReportDate: today, Date: briefing.Sleep.LatestDate, Hours: &hours, Capture: health.NightCaptureUnknown, Assessment: health.NightDurationUnknown}
 	}
-	if sleep.Capture != health.NightCaptureComplete || sleep.Assessment != health.NightDurationPlausible || sleep.Finalization != health.NightFinalFinal || sleep.BaselineNights < 7 || sleep.BaselineHours == nil || *sleep.BaselineHours <= 0 || *sleep.BaselineHours > 24 {
+	if !sleep.HasUsableFinalNight(today) {
+		observed, err := s.MorningSleepReadiness(ctx, today, time.Now())
+		if err != nil {
+			return health.MorningInsightEvidence{}, err
+		}
+		if observed.State == "observed_stable" || observed.Reason == "untracked_interval_stability" {
+			sleep.Observed = &observed
+		}
+	}
+	if raw != nil {
+		yesterday := date.AddDate(0, 0, -1).Format("2006-01-02")
+		for _, daily := range raw.Daily {
+			if daily.Date == yesterday {
+				sleep.YesterdayActivity = &health.MorningYesterdayActivity{Date: yesterday, Steps: daily.Steps, Calories: daily.Calories, Exercise: daily.Exercise}
+				break
+			}
+		}
+	}
+	if !health.MorningSleepAnalysisEligible(&sleep, today) || sleep.BaselineNights < 7 || sleep.BaselineHours == nil || *sleep.BaselineHours <= 0 || *sleep.BaselineHours > 24 {
 		sleep.BaselineHours = nil
 		sleep.BaselineNights = 0
 	}
-	evidence := health.BuildMorningInsightEvidenceWithOptions(briefing, raw, health.MorningInsightOptions{ExcludeSections: map[string]bool{"sleep": true}})
+	evidence := health.BuildMorningInsightEvidenceWithOptions(briefing, raw, health.MorningInsightOptions{ExcludeSections: map[string]bool{"sleep": true, "activity": true, "cardio": true}})
 	evidence.Date = today
 	evidence.NightSleep = &sleep
+	context := health.BuildInsightFactContext(health.BuildDailyInsightSnapshot(briefingForInsightSleep(briefing, sleep), lang))
+	// Briefing activity facts include today's values and rolling windows. The
+	// report's activity block is dated yesterday and uses Daily instead.
+	facts := context.Facts[:0]
+	for _, fact := range context.Facts {
+		if fact.Domain != "activity" && fact.Domain != "cardio" {
+			facts = append(facts, fact)
+		}
+	}
+	context.Facts = facts
+	evidence.FactContext = &context
+	if summary, facts, ok := health.MorningRecoveryContext(briefing, lang); ok {
+		sections := make([]health.MorningInsightSection, 0, len(evidence.Sections)+1)
+		for _, section := range evidence.Sections {
+			if section.Key != "recovery" {
+				sections = append(sections, section)
+			}
+		}
+		recovery := health.MorningInsightSection{Key: "recovery", Status: briefing.ReadinessTodayBand, Summary: summary}
+		for _, fact := range facts {
+			recovery.Details = append(recovery.Details, health.BriefingDetail{Note: fact})
+		}
+		evidence.Sections = append(sections, recovery)
+	}
 	health.NormalizeMorningInsightEvidence(&evidence, lang)
 	return evidence, nil
 }
@@ -71,10 +129,7 @@ func morningBundleHash(evidence health.MorningInsightEvidence, briefing *health.
 // It never calls a provider or writes data.
 func (s *DB) MorningReportAIState(ctx context.Context, cfg AIConfig, lang, today string, briefing *health.BriefingResponse) (health.MorningReportSleep, map[string]string, bool, error) {
 	fallback := health.MorningReportSleep{ReportDate: today, Capture: health.NightCaptureUnknown, Assessment: health.NightDurationUnknown}
-	var raw *health.RawMetrics
-	if cfg.Enabled() {
-		raw = s.GetRawMetrics()
-	}
+	raw := s.GetRawMetrics()
 	evidence, err := s.morningInsightEvidence(ctx, briefing, raw, today, lang)
 	if err != nil {
 		return fallback, nil, false, err

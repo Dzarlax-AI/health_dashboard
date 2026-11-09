@@ -25,6 +25,54 @@
           "generating": {
             "type": "boolean"
           },
+          "generation": {
+            "additionalProperties": false,
+            "properties": {
+              "date": {
+                "type": "string"
+              },
+              "lang": {
+                "type": "string"
+              },
+              "last_attempt_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "last_success_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "pipeline": {
+                "type": "string"
+              },
+              "reason_code": {
+                "type": "string"
+              },
+              "retry_after": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "slot": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              },
+              "trigger": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "pipeline",
+              "date",
+              "lang",
+              "slot",
+              "state",
+              "reason_code",
+              "trigger"
+            ],
+            "type": "object"
+          },
           "insight": {
             "type": "string"
           },
@@ -1542,6 +1590,77 @@
         ],
         "type": "object"
       },
+      "NotificationSettingsRequest": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "type": "object"
+      },
+      "NotificationSettingsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "is_admin": {
+            "type": "boolean"
+          },
+          "report_daytime_enabled": {
+            "type": "boolean"
+          },
+          "report_daytime_end_hour": {
+            "type": "integer"
+          },
+          "report_daytime_start_hour": {
+            "type": "integer"
+          },
+          "report_evening_weekday": {
+            "type": "integer"
+          },
+          "report_evening_weekend": {
+            "type": "integer"
+          },
+          "report_lang": {
+            "type": "string"
+          },
+          "report_morning_weekday": {
+            "type": "integer"
+          },
+          "report_morning_weekend": {
+            "type": "integer"
+          },
+          "telegram_chat_id": {
+            "type": "string"
+          },
+          "telegram_token": {
+            "type": "string"
+          },
+          "tenant": {
+            "type": "string"
+          },
+          "timezone": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "telegram_token",
+          "telegram_chat_id",
+          "report_lang",
+          "timezone",
+          "report_morning_weekday",
+          "report_morning_weekend",
+          "report_evening_weekday",
+          "report_evening_weekend",
+          "report_daytime_enabled",
+          "report_daytime_start_hour",
+          "report_daytime_end_hour",
+          "enabled"
+        ],
+        "type": "object"
+      },
       "ReadinessHistoryResponse": {
         "additionalProperties": false,
         "properties": {
@@ -1578,6 +1697,227 @@
         },
         "required": [
           "points"
+        ],
+        "type": "object"
+      },
+      "ReportHistoryDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "ai_metadata": {},
+          "attempts": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "body": {
+                  "type": "string"
+                },
+                "completed_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "error_code": {
+                  "type": "string"
+                },
+                "format": {
+                  "type": "string"
+                },
+                "id": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "message_id": {
+                  "type": "integer"
+                },
+                "report_id": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "reserved_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "report_id",
+                "format",
+                "body",
+                "status",
+                "reserved_at"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "content_available": {
+            "type": "boolean"
+          },
+          "context": {},
+          "decision_id": {
+            "type": "string"
+          },
+          "delivery_key": {
+            "type": "string"
+          },
+          "fallback_reason": {
+            "type": "string"
+          },
+          "format_revision": {
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "is_preview": {
+            "type": "boolean"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "language": {
+            "type": "string"
+          },
+          "local_date": {
+            "type": "string"
+          },
+          "plain_body": {
+            "type": "string"
+          },
+          "prepared_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "rich_body": {
+            "type": "string"
+          },
+          "scheduled_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "timezone": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "revision",
+          "format_revision",
+          "kind",
+          "local_date",
+          "timezone",
+          "language",
+          "prepared_at",
+          "is_preview",
+          "plain_body",
+          "rich_body",
+          "context",
+          "ai_metadata",
+          "content_available",
+          "attempts"
+        ],
+        "type": "object"
+      },
+      "ReportHistoryItem": {
+        "additionalProperties": false,
+        "properties": {
+          "content_available": {
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "is_preview": {
+            "type": "boolean"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "local_date": {
+            "type": "string"
+          },
+          "prepared_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "local_date",
+          "prepared_at",
+          "is_preview",
+          "content_available",
+          "status"
+        ],
+        "type": "object"
+      },
+      "ReportHistoryResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "content_available": {
+                  "type": "boolean"
+                },
+                "id": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "is_preview": {
+                  "type": "boolean"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "local_date": {
+                  "type": "string"
+                },
+                "prepared_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "local_date",
+                "prepared_at",
+                "is_preview",
+                "content_available",
+                "status"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "next_cursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "items"
         ],
         "type": "object"
       },
@@ -1706,6 +2046,18 @@
         },
         "required": [
           "is_admin"
+        ],
+        "type": "object"
+      },
+      "SettingsUpdateResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
         ],
         "type": "object"
       },
@@ -2277,6 +2629,17 @@
                         "recovery",
                         "energy"
                       ],
+                      "type": "string"
+                    },
+                    "last_attempt_at": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "last_success_at": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "reason_code": {
                       "type": "string"
                     },
                     "retry_after_seconds": {
@@ -3101,6 +3464,173 @@
         "summary": "Readiness score history"
       }
     },
+    "/api/reports/history": {
+      "get": {
+        "operationId": "listReportHistory",
+        "parameters": [
+          {
+            "description": "First local date, YYYY-MM-DD.",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "format": "date",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Last local date, YYYY-MM-DD.",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "format": "date",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "morning, evening, or proactive.",
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "format": "date",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Continuation cursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "format": "date",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportHistoryResponse"
+                }
+              }
+            },
+            "description": "Successful tenant-scoped response."
+          },
+          "302": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Browser authentication or initial setup is required; Location identifies the interactive route.",
+            "headers": {
+              "Location": {
+                "description": "Interactive login or setup route.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The backend could not load or encode the tenant response."
+          }
+        },
+        "summary": "Archived report deliveries"
+      }
+    },
+    "/api/reports/history/{id}": {
+      "get": {
+        "operationId": "getReportHistory",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ReportHistoryDetail"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ReportHistoryItem"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Archived content or metadata-only legacy delivery."
+          },
+          "302": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Browser authentication or initial setup is required; Location identifies the interactive route.",
+            "headers": {
+              "Location": {
+                "description": "Interactive login or setup route.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The backend could not load or encode the tenant response."
+          }
+        },
+        "summary": "Archived report details"
+      }
+    },
     "/api/section/{key}": {
       "get": {
         "operationId": "getSection",
@@ -3223,6 +3753,116 @@
           }
         },
         "summary": "Authenticated browser capabilities"
+      }
+    },
+    "/api/settings": {
+      "get": {
+        "operationId": "getNotificationSettings",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful tenant-scoped response."
+          },
+          "302": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Browser authentication or initial setup is required; Location identifies the interactive route.",
+            "headers": {
+              "Location": {
+                "description": "Interactive login or setup route.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The backend could not load or encode the tenant response."
+          }
+        },
+        "summary": "Tenant notification settings"
+      },
+      "post": {
+        "operationId": "updateNotificationSettings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotificationSettingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsUpdateResponse"
+                }
+              }
+            },
+            "description": "Successful tenant-scoped response."
+          },
+          "302": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Browser authentication or initial setup is required; Location identifies the interactive route.",
+            "headers": {
+              "Location": {
+                "description": "Interactive login or setup route.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Invalid JSON, daytime boolean, or daytime hours. Hours are 0 through 23 and start must differ from end."
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The backend could not update or encode the tenant response."
+          }
+        },
+        "summary": "Update tenant notification settings; daytime messages default off"
       }
     },
     "/api/sleep/balance": {

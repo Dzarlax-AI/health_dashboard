@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 
@@ -102,6 +103,7 @@ func (s *DB) EnsureAIInsightSlot(ctx context.Context, snapshot *health.DailyInsi
 	}
 	generationCtx, cancel := context.WithTimeout(ctx, dailyInsightGenerationDeadline)
 	defer cancel()
+	s.recordAIInsightAttempt(ctx, snapshot, input, providerFingerprint, "provider_started", false)
 	generated, generationErr := ai.GenerateAIInsightSlot(generationCtx, provider, ai.ProviderConfig{
 		APIKey: active.APIKey, Model: active.Model, ReasoningEffort: active.ReasoningEffort, MaxOutputTokens: active.MaxOutputTokens,
 	}, input)
@@ -110,6 +112,12 @@ func (s *DB) EnsureAIInsightSlot(ctx context.Context, snapshot *health.DailyInsi
 		generated.InputTokens, generated.OutputTokens, generated.ReviewUsage.RequestID, generated.ReviewUsage.Attempts,
 		generated.ReviewUsage.Latency, generated.ReviewUsage.InputTokens, generated.ReviewUsage.OutputTokens, generated.FinishReason)
 	if generationErr != nil {
+		reason := "provider_error"
+		var reviewErr *ai.AIInsightReviewError
+		if errors.As(generationErr, &reviewErr) {
+			reason = "review_rejected"
+		}
+		s.recordAIInsightAttempt(ctx, snapshot, input, providerFingerprint, reason, false)
 		_, failErr := s.FailDailyInsightNarrativeSlotGeneration(ctx, snapshot.Date, input.Locale, input.Slot, materialHash, providerFingerprint, lease, s.dailyInsightNow())
 		if failErr != nil {
 			return fmt.Errorf("generate AI insight: %v; record failure: %w", generationErr, failErr)
@@ -137,5 +145,6 @@ func (s *DB) EnsureAIInsightSlot(ctx context.Context, snapshot *health.DailyInsi
 	if !saved {
 		return nil // stale material or a lost lease cannot be rendered
 	}
+	s.recordAIInsightAttempt(ctx, snapshot, input, providerFingerprint, "ready", true)
 	return nil
 }

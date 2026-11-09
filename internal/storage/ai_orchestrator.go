@@ -15,7 +15,7 @@ import (
 // regen attempt per polling tick.
 const aiRegenFailBackoff = 5 * time.Minute
 
-// EnsureTodayAIInsight generates one structured five-block briefing from a
+// EnsureTodayAIInsight generates one structured six-block briefing from a
 // deterministic, date-aligned evidence packet. The server owns the verdict,
 // reasons, sections, and action; the provider may only explain them. Returns
 // the canonical overview string, or "" if AI is disabled / no metrics exist.
@@ -34,10 +34,14 @@ func (s *DB) EnsureTodayAIInsight(aiCfg AIConfig, lang string) string {
 
 // EnsureTodayAIInsightContext is the cancellation-aware variant used by
 // schedulers and shutdown-aware callers. AI insight v3 makes exactly one
-// provider call for one date-aligned evidence packet and stores five aligned
+// provider call for one date-aligned evidence packet and stores six aligned
 // rows under their existing compatibility keys.
 func (s *DB) EnsureTodayAIInsightContext(ctx context.Context, aiCfg AIConfig, lang string) string {
+	today := time.Now().In(s.reportTZLocation()).Format("2006-01-02")
+	status := AIGenerationStatus{Pipeline: "morning", Date: today, Lang: lang, Slot: "bundle", Trigger: "ensure", State: DailyInsightStateDisabled, ReasonCode: "disabled"}
+	record := func() { _ = s.saveAIGenerationStatus(ctx, status) }
 	if !aiCfg.Enabled() {
+		record()
 		return ""
 	}
 	provider, providerCfg, fingerprint, err := morningGenerationConfig(aiCfg)
@@ -45,7 +49,6 @@ func (s *DB) EnsureTodayAIInsightContext(ctx context.Context, aiCfg AIConfig, la
 		log.Printf("EnsureTodayAIInsight: %v", err)
 		return ""
 	}
-	today := time.Now().In(s.reportTZLocation()).Format("2006-01-02")
 	key := today + "|" + lang
 
 	if _, loaded := s.aiRegenInFlight.LoadOrStore(key, true); loaded {
@@ -55,6 +58,8 @@ func (s *DB) EnsureTodayAIInsightContext(ctx context.Context, aiCfg AIConfig, la
 
 	raw := s.GetRawMetrics()
 	if raw == nil {
+		status.ReasonCode = "no_eligible_facts"
+		record()
 		log.Println("EnsureTodayAIInsight: no raw metrics available")
 		return ""
 	}
@@ -74,15 +79,23 @@ func (s *DB) EnsureTodayAIInsightContext(ctx context.Context, aiCfg AIConfig, la
 		return ""
 	}
 	bundleHash := morningBundleHash(evidence, briefing, fingerprint)
+	status.MaterialHash, status.ProviderFingerprint = bundleHash, ai.HashForGeneration("", fingerprint)
 	failureKey := morningAIFailureKey(today, lang, bundleHash)
 	if s.morningAIRecentlyFailed(failureKey) {
+		status.State, status.ReasonCode = DailyInsightStateFailed, "backoff"
+		record()
 		return s.GetAIInsightCombined(today, lang)
 	}
 	if aiBundleCacheComplete(s.GetAIBlocksFull(today, lang), bundleHash) {
+		status.State, status.ReasonCode = DailyInsightStateReady, "ready"
+		record()
 		s.aiRegenLastFailAt.Delete(failureKey)
 		return s.GetAIInsightCombined(today, lang)
 	}
 
+	attemptedAt := time.Now()
+	status.State, status.ReasonCode, status.LastAttemptAt = DailyInsightStateGenerating, "provider_started", &attemptedAt
+	record()
 	generated, err := ai.GenerateInsightBundle(ctx, provider, providerCfg, evidenceJSON, lang)
 	log.Printf(
 		"EnsureTodayAIInsight: provider=%s model=%s block=BUNDLE request_id=%q attempts=%d latency=%s input_tokens=%d output_tokens=%d total_tokens=%d finish=%q",
@@ -93,16 +106,27 @@ func (s *DB) EnsureTodayAIInsightContext(ctx context.Context, aiCfg AIConfig, la
 		log.Printf("EnsureTodayAIInsight: provider=%s block=%s validation: %s", aiCfg.Provider, block, validationError)
 	}
 	if err != nil {
+		retry := time.Now().Add(aiRegenFailBackoff)
+		status.State, status.ReasonCode, status.RetryAfter = DailyInsightStateFailed, "provider_error", &retry
+		if len(generated.InvalidBlocks) > 0 {
+			status.ReasonCode = "review_rejected"
+		}
+		record()
 		log.Printf("EnsureTodayAIInsight: provider=%s block=BUNDLE: %v", aiCfg.Provider, err)
 		s.recordMorningAIFailure(failureKey)
 		return s.GetAIInsightCombined(today, lang)
 	}
 	if err := s.SaveAIBundle(today, lang, generated.Blocks, bundleHash); err != nil {
+		status.State, status.ReasonCode = DailyInsightStateFailed, "cache_write_failed"
+		record()
 		log.Printf("EnsureTodayAIInsight: save bundle: %v", err)
 		s.recordMorningAIFailure(failureKey)
 		return s.GetAIInsightCombined(today, lang)
 	}
 	s.aiRegenLastFailAt.Delete(failureKey)
+	succeededAt := time.Now()
+	status.State, status.ReasonCode, status.LastSuccessAt = DailyInsightStateReady, "ready", &succeededAt
+	record()
 	return s.GetAIInsightCombined(today, lang)
 }
 

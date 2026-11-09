@@ -302,13 +302,10 @@ func TestFormatMorningRich_StructureAndEscaping(t *testing.T) {
 		"<h3>😴 Sleep</h3>",
 		"No sleep data for last night yet.",
 		"<aside><strong>Moderate</strong>",
-		"<p><strong>At a glance</strong>",
-		"⚡ <strong>64/100</strong> · Energy",
-		"◉ <strong>70/100</strong> · Readiness",
-		"<hr/>",
-		"<details><summary>✦ Insights</summary>",
-		"<em>AI explains &lt;moderate &amp; controlled&gt;</em>",
-		"<strong>🎯 Plan for today</strong>",
+		"<h3>Recovery today</h3>",
+		"<h3>Energy as of report</h3>",
+		"64/100",
+		"<h3>Activity yesterday",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("rich morning missing %q:\n%s", want, out)
@@ -340,7 +337,6 @@ func TestFormatMorningLegacy_UsesSingleEscapedSynthesis(t *testing.T) {
 	for _, want := range []string{
 		"Moderate &lt;day&gt;",
 		"Fresh HRV &amp; adequate energy.",
-		"One &lt;safe &amp; aligned&gt; explanation.",
 		"Keep effort &lt;7 &amp; controlled.",
 	} {
 		if !strings.Contains(out, want) {
@@ -404,8 +400,8 @@ func TestMorningSleepContextIsCurrentDatedAndVisibleInPlainAndRich(t *testing.T)
 	if !strings.Contains(plain, "Morning report — 2026-06-15") || !strings.Contains(rich, "Monday, June 15") {
 		t.Fatalf("explicit report date should own both headers\nplain:\n%s\nrich:\n%s", plain, rich)
 	}
-	if strings.Index(plain, "😴 <b>Sleep") > strings.Index(plain, "⚡ <b>Fair") || strings.Index(rich, "<h3>😴 Sleep") > strings.Index(rich, "<aside>") {
-		t.Fatalf("sleep must precede readiness/verdict\nplain:\n%s\nrich:\n%s", plain, rich)
+	if strings.Index(plain, "⚡ <b>") > strings.Index(plain, "😴 Sleep") || strings.Index(rich, "<aside>") > strings.Index(rich, "<h3>😴 Sleep") {
+		t.Fatalf("decision must precede sleep\nplain:\n%s\nrich:\n%s", plain, rich)
 	}
 }
 
@@ -431,7 +427,7 @@ func TestMorningSleepIncompleteStatesHaveOneCaveatAndNoComparisonOrAIClaim(t *te
 		{
 			name:   "stale",
 			sleep:  health.MorningReportSleep{ReportDate: briefing.Date, Date: "2026-06-13", Hours: &hours, Capture: health.NightCaptureComplete, Assessment: health.NightDurationPlausible, Finalization: health.NightFinalFinal},
-			caveat: "Energy and readiness estimates are preliminary",
+			caveat: "No sleep data for last night yet.",
 		},
 		{
 			name:   "missing",
@@ -479,7 +475,7 @@ func TestMorningDateMismatchDatesTheReadinessAndEnergyValues(t *testing.T) {
 	plain := formatMorning(briefing, nil, "en", time.UTC, freshness{}, false, sleep)
 	rich := formatMorningRich(briefing, nil, "en", time.UTC, freshness{}, false, "", sleep)
 	for _, output := range []string{plain, rich} {
-		if !strings.Contains(output, "As of 2026-06-14") || !strings.Contains(output, "data from 2026-06-14") {
+		if !strings.Contains(output, "As of 2026-06-14") || !strings.Contains(output, "Energy as of report · 2026-06-14") {
 			t.Fatalf("older readiness/energy values need their source date:\n%s", output)
 		}
 	}
@@ -558,8 +554,8 @@ func TestMorningFormattersLocalizedSleepScenarios(t *testing.T) {
 					if state != "complete" && state != "partial" && strings.Contains(output, loc.aiSleep) {
 						t.Fatalf("%s %s output leaked AI sleep text:\n%s", loc.code, state, output)
 					}
-					if state == "partial" && !strings.Contains(output, loc.aiSleep) {
-						t.Fatalf("%s partial output should include bounded AI sleep explanation:\n%s", loc.code, output)
+					if state == "partial" && strings.Contains(output, loc.aiSleep) {
+						t.Fatalf("%s partial output should retain its concrete data caveat without an extra generic explanation:\n%s", loc.code, output)
 					}
 					if state != "complete" && strings.Contains(output, loc.baseline) {
 						t.Fatalf("%s %s output leaked baseline comparison:\n%s", loc.code, state, output)
@@ -616,8 +612,8 @@ func TestMorningSleepPartialAndProvisionalAreMarkedAndEscaped(t *testing.T) {
 	sleep.Finalization = "provisional"
 	sleep.Assessment = health.NightDurationPlausible
 	plain = formatMorning(briefing, map[string]string{ai.BlockSleep: "provisional AI"}, "ru", loc, freshness{}, false, sleep)
-	if !strings.Contains(plain, "предварительные") || !strings.Contains(plain, "provisional AI") {
-		t.Fatalf("provisional current sleep should be marked and may render AI: %s", plain)
+	if strings.Contains(plain, "предварительные") || !strings.Contains(plain, "provisional AI") {
+		t.Fatalf("current recorded sleep should render analysis without calendar-finality boilerplate: %s", plain)
 	}
 }
 
@@ -706,7 +702,7 @@ func TestCanonicalSleepSectionSuppressesConflictingBriefingSleepReason(t *testin
 	}
 }
 
-func TestDurationOnlyFallbackIsLocalizedAndFollowsDatedFact(t *testing.T) {
+func TestDurationOnlyFallbackDoesNotInventAnExplanation(t *testing.T) {
 	loc, _ := time.LoadLocation("UTC")
 	briefing := sampleBriefing()
 	hours := 7.4
@@ -721,12 +717,12 @@ func TestDurationOnlyFallbackIsLocalizedAndFollowsDatedFact(t *testing.T) {
 	for _, tc := range cases {
 		sleep := health.MorningReportSleep{ReportDate: briefing.Date, Date: briefing.Date, Hours: &hours, Capture: health.NightCaptureComplete, Assessment: health.NightDurationPlausible, Finalization: health.NightFinalFinal}
 		plain := formatMorning(briefing, nil, tc.lang, loc, freshness{}, false, sleep)
-		factAt, explanationAt := strings.Index(plain, "Sleep for the night"), strings.Index(plain, tc.want)
+		factAt := strings.Index(plain, "Sleep for the night")
 		if tc.lang != "en" {
 			factAt = strings.Index(plain, "2026-06-14")
 		}
-		if !strings.Contains(plain, tc.want) || factAt < 0 || explanationAt <= factAt {
-			t.Fatalf("%s copy should put the dated fact before the duration limit:\n%s", tc.lang, plain)
+		if strings.Contains(plain, tc.want) || factAt < 0 {
+			t.Fatalf("%s copy should retain the dated fact without a generic duration limit:\n%s", tc.lang, plain)
 		}
 		if strings.Contains(plain, "plausible range") || strings.Contains(plain, "правдоподобном диапазоне") || strings.Contains(plain, "verovatnom rasponu") {
 			t.Fatalf("%s copy exposed an internal classification:\n%s", tc.lang, plain)
@@ -744,15 +740,8 @@ func TestFormatMorningLegacy_FiltersStaleReasonsBeforeCapAndShowsFreshness(t *te
 		watchKnown: true,
 	}, false)
 
-	for _, want := range []string{"Updated: Watch 1h · Sleep 2 days"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("morning report missing %q:\n%s", want, out)
-		}
-	}
-	for _, hidden := range []string{"Adequate sleep", "Mixed markers", "Normal load", "<b>Why</b>"} {
-		if strings.Contains(out, hidden) {
-			t.Fatalf("undated or generic factor %q leaked into Why:\n%s", hidden, out)
-		}
+	if !strings.Contains(out, "Mixed markers") || strings.Contains(out, "Adequate sleep") {
+		t.Fatalf("sleep freshness must not suppress independent recovery or expose generic sleep: %s", out)
 	}
 }
 
@@ -888,6 +877,8 @@ func TestMorningPartialSleepKeepsOtherValidatedAIExplanations(t *testing.T) {
 	b := sampleBriefing()
 	hours := 6.0
 	sleep := health.MorningReportSleep{ReportDate: b.Date, Date: b.Date, Hours: &hours, Capture: health.NightCapturePartial, Assessment: health.NightDurationUnknown, Finalization: health.NightFinalProvisional}
+	steps := 5000.0
+	sleep.YesterdayActivity = &health.MorningYesterdayActivity{Date: "2026-06-13", Steps: &steps}
 	blocks := map[string]string{ai.BlockSleep: "unsupported sleep claim", ai.BlockRecovery: "grounded recovery explanation", ai.BlockYesterday: "grounded yesterday explanation"}
 	for _, output := range []string{formatMorning(b, blocks, "ru", time.UTC, freshness{}, false, sleep), formatMorningRich(b, blocks, "ru", time.UTC, freshness{}, false, "", sleep)} {
 		if strings.Contains(output, blocks[ai.BlockSleep]) {
@@ -910,8 +901,8 @@ func TestMorningPreliminarySleepExplanationIsLocalizedAndGated(t *testing.T) {
 		sleep health.MorningReportSleep
 		want  bool
 	}{
-		{"partial", base, true},
-		{"complete provisional", func() health.MorningReportSleep { v := base; v.Capture = health.NightCaptureComplete; return v }(), true},
+		{"partial", base, false},
+		{"complete provisional", func() health.MorningReportSleep { v := base; v.Capture = health.NightCaptureComplete; return v }(), false},
 		{"unknown", func() health.MorningReportSleep { v := base; v.Assessment = health.NightDurationUnknown; return v }(), false},
 		{"outlier", func() health.MorningReportSleep { v := base; v.Assessment = health.NightDurationOutlier; return v }(), false},
 		{"stale", func() health.MorningReportSleep { v := base; v.Date = "2026-06-13"; return v }(), false},
@@ -964,5 +955,60 @@ func TestMorningOutlierHasDeterministicLimitationInBothFormats(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestMorningReportFourDomainsUseDatedActivityAndDecisionFirst(t *testing.T) {
+	b := sampleBriefing()
+	b.Date = "2026-06-14"
+	steps, cal, exercise := 4321.0, 123.0, 20.0
+	sleep := health.MorningReportSleep{ReportDate: b.Date, Date: b.Date, Capture: health.NightCapturePartial, Assessment: health.NightDurationPlausible, Finalization: health.NightFinalProvisional, YesterdayActivity: &health.MorningYesterdayActivity{Date: "2026-06-13", Steps: &steps, Calories: &cal, Exercise: &exercise}}
+	for _, out := range []string{formatMorning(b, nil, "en", time.UTC, freshness{}, false, sleep), formatMorningRich(b, nil, "en", time.UTC, freshness{}, false, "", sleep)} {
+		decision := strings.Index(out, "Moderate")
+		sleepPos := strings.Index(out, "😴 Sleep")
+		recovery := strings.Index(out, "Recovery today")
+		energy := strings.Index(out, "Energy as of report")
+		activity := strings.Index(out, "Activity yesterday")
+		if decision < 0 || sleepPos < decision || recovery < sleepPos || energy < recovery || activity < energy {
+			t.Fatalf("wrong order: %s", out)
+		}
+		for _, want := range []string{"2026-06-13", "4321", "123 kcal", "20 min"} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("missing dated fact %q: %s", want, out)
+			}
+		}
+		if strings.Contains(out, "8400") {
+			t.Fatalf("today's undated section used as yesterday: %s", out)
+		}
+		if strings.Count(out, "Keep the day controlled.") != 1 {
+			t.Fatalf("decision repeated: %s", out)
+		}
+	}
+}
+
+func TestMorningFinalCanonicalNightTakesPrecedenceOverObservedEpisode(t *testing.T) {
+	b := sampleBriefing()
+	hours, baseline := 7.5, 7.25
+	sleep := health.MorningReportSleep{ReportDate: b.Date, Date: b.Date, Hours: &hours, BaselineHours: &baseline, BaselineNights: 8, Capture: health.NightCaptureComplete, Assessment: health.NightDurationPlausible, Finalization: health.NightFinalFinal, Observed: &health.MorningSleepReadiness{State: "observed_stable", Hours: 6, Wake: time.Date(2026, 6, 14, 7, 0, 0, 0, time.UTC)}}
+	for _, out := range []string{formatMorning(b, map[string]string{ai.BlockSleep: "Final night explanation."}, "en", time.UTC, freshness{}, false, sleep), formatMorningRich(b, map[string]string{ai.BlockSleep: "Final night explanation."}, "en", time.UTC, freshness{}, false, "", sleep)} {
+		for _, want := range []string{"7 h 30 min", "Usual level: 7 h 15 min across 8 nights", "Final night explanation."} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("missing %q: %s", want, out)
+			}
+		}
+		if strings.Contains(out, "Observed main sleep episode") || strings.Contains(out, "full night is not yet confirmed") {
+			t.Fatalf("observed fallback displaced final night: %s", out)
+		}
+	}
+}
+
+func TestMorningUntrackedIntervalKeepsCanonicalIncompleteCaveat(t *testing.T) {
+	b := sampleBriefing()
+	hours := 7.0
+	sleep := health.MorningReportSleep{ReportDate: b.Date, Date: b.Date, Hours: &hours, Capture: health.NightCapturePartial, Assessment: health.NightDurationPlausible, Finalization: health.NightFinalProvisional, Observed: &health.MorningSleepReadiness{Reason: "untracked_interval_stability"}}
+	for _, out := range []string{formatMorning(b, nil, "en", time.UTC, freshness{}, false, sleep), formatMorningRich(b, nil, "en", time.UTC, freshness{}, false, "", sleep)} {
+		if !strings.Contains(out, morningSleepCopy("en", "partial")) || !strings.Contains(out, morningSleepCopy("en", "untracked_stability")) {
+			t.Fatalf("missing capture or stability caveat: %s", out)
+		}
 	}
 }

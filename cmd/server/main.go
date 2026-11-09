@@ -433,6 +433,8 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 		backfillDatesFn([]string{db.Today()})
 	})
 	go runMorningLifecycle(ctx, db, mgr, reg, schema, notifyDefaults)
+	go runAIInsightLifecycle(ctx, db, mgr, schema, notifyDefaults)
+	go runDaytimeLifecycle(ctx, db, notifyDefaults, baseURL)
 	go runDailyQualityScan(db, schema, notifyDefaults, backfillDatesFn)
 	go runCompletedNightSleepCoordinator(ctx, db, schema)
 
@@ -581,6 +583,8 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Regist
 		backfillDatesFn([]string{db.Today()})
 	})
 	go runMorningLifecycle(ctx, db, mgr, reg, schema, notifyDefaults)
+	go runAIInsightLifecycle(ctx, db, mgr, schema, notifyDefaults)
+	go runDaytimeLifecycle(ctx, db, notifyDefaults, baseURL)
 	go runDailyQualityScan(db, schema, notifyDefaults, backfillDatesFn)
 	go runCompletedNightSleepCoordinator(ctx, db, schema)
 }
@@ -824,7 +828,7 @@ func makeTodayDerivedStateRefresh(ctx context.Context, db *storage.DB, schema st
 				// independent AI Insight. Match the request path's preview gate.
 				cfg = storage.AIConfig{}
 			}
-			_, err := db.RefreshTodayInsightSnapshotWithFingerprint(ctx, lang, storage.AIInsightGenerationFingerprint(cfg, lang))
+			snapshot, err := db.RefreshTodayInsightSnapshotWithFingerprint(ctx, lang, storage.AIInsightGenerationFingerprint(cfg, lang))
 			if err != nil {
 				log.Printf("[%s] today insight snapshot: %v", schema, err)
 				return err
@@ -832,10 +836,9 @@ func makeTodayDerivedStateRefresh(ctx context.Context, db *storage.DB, schema st
 			if err := db.RefreshLegacyEnergyBankSnapshot(lang); err != nil {
 				return fmt.Errorf("refresh legacy energy bank snapshot: %w", err)
 			}
-			// The request path owns AI Insight generation. Ingestion only refreshes
-			// deterministic facts; it must not queue the retired B1 writer into
-			// the same durable slot.
-			return nil
+			// Facts are ready before provider work is queued. Use the independent
+			// slot writer, never the retired overall-only narrative writer.
+			return db.ScheduleSnapshotAIInsights(ctx, snapshot, cfg, lang, "derived_refresh")
 		})
 	}
 }
@@ -865,6 +868,9 @@ func buildNotifyCfg(db *storage.DB, c storage.NotifyConfig) notify.Config {
 		EveningWeekdayHour:   c.EveningWeekdayHour,
 		EveningWeekendHour:   c.EveningWeekendHour,
 		TelegramRichMessages: c.TelegramRichMessages,
+		DaytimeEnabled:       c.DaytimeEnabled,
+		DaytimeStartHour:     c.DaytimeStartHour,
+		DaytimeEndHour:       c.DaytimeEndHour,
 		MorningCapHour:       c.MorningCapHour,
 	}
 	loc := time.Local
@@ -1104,7 +1110,14 @@ func makeMorningTrigger(ctx context.Context, db *storage.DB, sendMu *sync.Mutex,
 						if ncfg.AIConfig.Enabled() && !ready {
 							log.Printf("morning report: AI fallback failed=%v wait_expired=%v", failed, !time.Now().Before(deadline))
 						}
-						return notify.SendMorningSmartOpts(bot, db, ncfg, notify.MorningSendOpts{Force: action == notify.MorningActionForce, RequireAI: ready})
+						fallbackReason := ""
+						if ncfg.AIConfig.Enabled() && !ready {
+							fallbackReason = "wait_budget_exhausted"
+							if failed {
+								fallbackReason = "generation_failed"
+							}
+						}
+						return notify.SendMorningSmartOpts(bot, db, ncfg, notify.MorningSendOpts{Force: action == notify.MorningActionForce, RequireAI: ready, AIFallbackReason: fallbackReason})
 					},
 					func() error { return db.MarkMorningReportSent(today) })
 			}

@@ -279,6 +279,7 @@ export function SleepReady({ resources, locale }: { resources: SleepResources; l
             action={sleepDomain.insight.next_step?.text}
             ai={sleepDomain.ai_insight}
             state={todayInsights?.generation.slots?.find((slot) => slot.key === "sleep")?.state}
+            reasonCode={todayInsights?.generation.slots?.find((slot) => slot.key === "sleep")?.reason_code}
             aiUnavailableReason={todayInsights?.generation.narrative_mode === "preview" && sleepDomain.data_state === "partial" && !sleepDomain.ai_insight && todayInsights?.generation.slots?.find((slot) => slot.key === "sleep")?.state === "disabled" ? translate(locale, "sleepAIInsightUnavailablePartial") : undefined}
             preview={todayInsights?.generation.narrative_mode === "preview"}
           />

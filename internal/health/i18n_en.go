@@ -1,6 +1,14 @@
 package health
 
 var en = LangStrings{
+	"admin_notify_daytime_title":   "Important daytime updates",
+	"admin_notify_daytime_enabled": "Enable daytime Telegram messages",
+	"admin_notify_daytime_hint":    "Off by default. Up to two proactive messages per day, at least one hour apart. Uses your time zone. Normal energy use does not trigger a message.",
+	"admin_notify_daytime_start":   "From (hour)",
+	"admin_notify_daytime_end":     "Until (hour)",
+	"admin_notify_save_error":      "Settings were not saved. Check the daytime hours and try again.",
+	"ai_block_energy_header":       "Energy",
+
 	// Readiness
 	"readiness_optimal": "Optimal",
 	"readiness_fair":    "Fair",

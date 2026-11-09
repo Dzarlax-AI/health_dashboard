@@ -2588,8 +2588,7 @@ func buildDailyInsightNarrativeFacts(resp *BriefingResponse, domains []DailyInsi
 	partialSleep := narrativeDomainDataState(domains, "sleep") == "partial"
 	if sleepNarrativeFactFresh(resp) && partialSleep {
 		sleep := resp.Sleep
-		value := fmt.Sprintf("%.1f", *sleep.LatestTotal)
-		add(DailyInsightNarrativeFact{ID: "sleep_current_recorded_duration", Domain: "sleep", Meaning: partialSleepCurrentDurationMeaning, Window: partialSleepCurrentDurationWindow, Fresh: true, Statement: localizedNarrativePartialSleepFact(locale, *sleep.LatestTotal), DisplayValues: []string{value}, EvidenceIDs: []string{"sleep_current_recorded_duration"}})
+		add(RecordedSleepDurationFact(locale, *sleep.LatestTotal))
 	} else if sleepNarrativeFactFresh(resp) {
 		sleep := resp.Sleep
 		values := []string{fmt.Sprintf("%.1f", *sleep.LatestTotal)}
@@ -2609,11 +2608,13 @@ func buildDailyInsightNarrativeFacts(resp *BriefingResponse, domains []DailyInsi
 			score = resp.ReadinessToday
 		}
 		add(DailyInsightNarrativeFact{ID: "readiness_current", Domain: "recovery", Meaning: "current readiness display, band, and serving state", Window: "today", Fresh: true, Statement: localizedNarrativeReadinessFact(locale, score, firstNonEmptyInsight(resp.ReadinessTodayLabel, resp.ReadinessLabel), resp.ReadinessServing), DisplayValues: []string{fmt.Sprintf("%d", score)}, EvidenceIDs: []string{"readiness_current"}})
-		if raw := resp.RawMetrics; raw != nil && raw.ReadinessEvidence != nil {
-			for _, component := range []ReadinessComponentEvidence{raw.ReadinessEvidence.HRV, raw.ReadinessEvidence.RHR} {
-				if fact, ok := readinessComponentNarrativeFact(resp, domains, locale, component); ok {
-					add(fact)
-				}
+	}
+	// Component coverage is independent of the aggregate readiness cap, which
+	// can be provisional or low because another channel is incomplete.
+	if raw := resp.RawMetrics; raw != nil && raw.ReadinessEvidence != nil {
+		for _, component := range []ReadinessComponentEvidence{raw.ReadinessEvidence.HRV, raw.ReadinessEvidence.RHR} {
+			if fact, ok := readinessComponentNarrativeFact(resp, domains, locale, component); ok {
+				add(fact)
 			}
 		}
 	}
@@ -3340,7 +3341,10 @@ func buildRecoveryInsightDomain(resp *BriefingResponse, asOf *time.Time, copy in
 	if domain.Summary == "" {
 		domain.Summary = firstInsightText(resp.ReadinessLabel, copy.recoveryMeaning)
 	}
-	insightState, answerKind, observation := "insight", DailyInsightAnswerFactual, firstInsightText(resp.ReadinessTip)
+	insightState, answerKind, observation := "insight", DailyInsightAnswerFactual, localizedRecoveryAssessment(copy.locale, domain.Band)
+	if observation == "" {
+		observation = firstInsightText(resp.ReadinessTip)
+	}
 	meaning, gapReason, remediation := copy.recoveryMeaning, "", ""
 	if !recoveryInsightHasUsableEvidence(state) {
 		insightState, answerKind = "insufficient_data", DailyInsightAnswerDataGuidance
@@ -3385,6 +3389,11 @@ func buildEnergyInsightDomain(resp *BriefingResponse, asOf *time.Time, copy insi
 		domain.Summary = firstInsightText(resp.EnergyBank.VerdictLabel, copy.energyMeaning)
 	}
 	answerKind, observation, meaning := DailyInsightAnswerFactual, firstInsightText(resp.EnergyBank.VerdictReason), copy.energyMeaning
+	effectiveVerdict := resp.EnergyBank.ActionVerdict
+	if resp.TodayGuidance != nil && resp.TodayGuidance.Action != "" && resp.TodayGuidance.Action != effectiveVerdict {
+		effectiveVerdict = resp.TodayGuidance.Action
+		observation = resp.TodayGuidance.Reason
+	}
 	domain.Insight = DailyInsight{State: "insight", AnswerKind: answerKind, Title: copy.energyTitle, Observation: observation, Meaning: meaning, EvidenceIDs: []string{id}, Fallback: true}
 	if domain.DataState == "missing" {
 		domain.Insight.State = "insufficient_data"
@@ -3403,9 +3412,9 @@ func buildEnergyInsightDomain(resp *BriefingResponse, asOf *time.Time, copy insi
 	// Moderate is the ordinary-day verdict and does not justify a provider
 	// paraphrase. A final non-moderate verdict is an explicit server policy
 	// signal that B1 may explain, while the action itself remains server-owned.
-	if domain.Insight.State == "insight" && domain.Insight.AnswerKind == DailyInsightAnswerFactual && domain.DataState == "fresh" && domain.Confidence == "final" && resp.EnergyBank.ActionVerdict != "moderate" {
+	if domain.Insight.State == "insight" && domain.Insight.AnswerKind == DailyInsightAnswerFactual && domain.DataState == "fresh" && domain.Confidence == "final" && effectiveVerdict != "moderate" {
 		domain.Insight.ClaimID = "energy_current_verdict_context"
-		domain.NarrativeSubject = resp.EnergyBank.ActionVerdict
+		domain.NarrativeSubject = effectiveVerdict
 	}
 	return domain
 }

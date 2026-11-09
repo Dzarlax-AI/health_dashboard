@@ -208,6 +208,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/dashboard", h.guard(h.dashboard))
 	mux.HandleFunc("/api/health-briefing", h.guard(h.healthBriefing))
 	mux.HandleFunc("/api/ai-briefing", h.guard(h.aiBriefing))
+	mux.HandleFunc("GET /api/reports/history", h.guard(h.reportHistoryList))
+	mux.HandleFunc("GET /api/reports/history/{id}", h.guard(h.reportHistoryDetail))
 	mux.HandleFunc("GET /api/today-insights", h.guard(h.todayInsights))
 	mux.HandleFunc("GET /api/section/{key}", h.guard(h.sectionAPI))
 	mux.HandleFunc("GET /api/sections", h.guard(h.sectionsCatalogue))
@@ -2152,6 +2154,7 @@ func (h *Handler) aiBriefing(w http.ResponseWriter, r *http.Request) {
 		{"sleep", "SLEEP", "ai_block_sleep_header"},
 		{"yesterday", "YESTERDAY", "ai_block_yesterday_header"},
 		{"recovery", "RECOVERY", "ai_block_recovery_header"},
+		{"energy", "ENERGY", "ai_block_energy_header"},
 		{"recommendation", "RECOMMENDATION", "ai_block_recommendation_header"},
 	}
 	sections := make([]clientapi.AIBriefingSection, 0, len(blockOrder))
@@ -2176,6 +2179,14 @@ func (h *Handler) aiBriefing(w http.ResponseWriter, r *http.Request) {
 		date == today && db.AIRegenInFlight(lang),
 		!aiCfg.Enabled(),
 	)
+	if statuses, err := db.GetAIGenerationStatuses(r.Context(), date, lang); err == nil {
+		for i := range statuses {
+			if statuses[i].Pipeline == "morning" && statuses[i].Slot == "bundle" {
+				response.Generation = &statuses[i]
+				break
+			}
+		}
+	}
 	if date == today && aiCfg.Enabled() && !freshForDecision {
 		previousDate, previousText, generatedAt, err := db.GetPreviousAIBriefing(lang, today)
 		if err != nil {
@@ -3099,12 +3110,17 @@ func (h *Handler) userSettings(w http.ResponseWriter, r *http.Request) {
 			"timezone":               true,
 			"report_morning_weekday": true, "report_morning_weekend": true,
 			"report_evening_weekday": true, "report_evening_weekend": true,
+			"report_daytime_enabled": true, "report_daytime_start_hour": true, "report_daytime_end_hour": true,
 		}
 		clean := make(map[string]string)
 		for k, v := range body {
 			if allowed[k] {
 				clean[k] = v
 			}
+		}
+		if err := validateDaytimeSettings(clean, db.GetNotifyConfig(h.mgr.NotifyDefaultsFor(schema))); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
 		}
 		// Distinguish "client explicitly posted telegram_token" from
 		// "client omitted the field on a partial POST". Without this
@@ -3181,16 +3197,12 @@ func (h *Handler) userSettings(w http.ResponseWriter, r *http.Request) {
 
 	notifyDefaults := h.mgr.NotifyDefaultsFor(schema)
 	cfg := db.GetNotifyConfig(notifyDefaults)
-	out := map[string]any{
-		"telegram_token":         cfg.Token,
-		"telegram_chat_id":       cfg.ChatID,
-		"report_lang":            cfg.Lang,
-		"timezone":               cfg.Timezone,
-		"report_morning_weekday": cfg.MorningWeekdayHour,
-		"report_morning_weekend": cfg.MorningWeekendHour,
-		"report_evening_weekday": cfg.EveningWeekdayHour,
-		"report_evening_weekend": cfg.EveningWeekendHour,
-		"enabled":                cfg.Enabled(),
+	out := clientapi.NotificationSettingsResponse{
+		TelegramToken: cfg.Token, TelegramChatID: cfg.ChatID, ReportLang: cfg.Lang, Timezone: cfg.Timezone,
+		MorningWeekday: cfg.MorningWeekdayHour, MorningWeekend: cfg.MorningWeekendHour,
+		EveningWeekday: cfg.EveningWeekdayHour, EveningWeekend: cfg.EveningWeekendHour,
+		DaytimeEnabled: cfg.DaytimeEnabled, DaytimeStartHour: cfg.DaytimeStartHour, DaytimeEndHour: cfg.DaytimeEndHour,
+		Enabled: cfg.Enabled(),
 	}
 	// Identity: who the caller is logged in as. Lets native clients show
 	// "Logged in as X · Tenant Y" without a separate /api/me round-trip,
@@ -3200,9 +3212,9 @@ func (h *Handler) userSettings(w http.ResponseWriter, r *http.Request) {
 	// drifting if registry behaviour ever changes.
 	if h.reg != nil && !h.mgr.LegacyMode() {
 		if u, err := h.reg.GetBySchema(r.Context(), schema); err == nil && u != nil {
-			out["username"] = u.Username
-			out["tenant"] = u.SchemaName
-			out["is_admin"] = u.IsAdmin
+			out.Username = u.Username
+			out.Tenant = u.SchemaName
+			out.IsAdmin = &u.IsAdmin
 		}
 	}
 	jsonResponse(w, out)

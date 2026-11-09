@@ -3,6 +3,11 @@ import { render, screen } from "@testing-library/react";
 import { InsightPair } from "./InsightPair";
 
 describe("InsightPair", () => {
+  it("explains why a current AI opinion is absent without claiming it is updating", () => {
+    render(<InsightPair locale="ru" observation="Текущий серверный факт" state="disabled" reasonCode="no_added_value" />);
+    expect(screen.getByText("По текущим фактам AI не нашёл полезного дополнения.")).toBeInTheDocument();
+    expect(screen.queryByText("Обновляется")).not.toBeInTheDocument();
+  });
   it("localizes both labels and marks a tenant preview", () => {
     render(<InsightPair locale="ru" observation="Факт" preview ai={{
       text: "Мнение", stance: "qualify", alternative_action: "", fact_ids: [], evidence_ids: [],

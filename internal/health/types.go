@@ -101,6 +101,7 @@ type DailyHealthMetrics struct {
 // server policy before the model is called; the model may explain them but
 // never replace them.
 type MorningInsightEvidence struct {
+	FactContext        *InsightFactContext               `json:"fact_context,omitempty"`
 	NightSleep         *MorningReportSleep               `json:"night_sleep,omitempty"`
 	PreliminaryOptions *PreliminaryMorningInsightOptions `json:"preliminary_explanations,omitempty"`
 	Date               string                            `json:"date"`

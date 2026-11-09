@@ -103,6 +103,21 @@
               <input class="admin-field-input" type="number" id="cfg-evening-weekend" min="0" max="23" placeholder="21">
             </div>
           </div>
+          <div class="admin-field-group-title">{{T .Lang "admin_notify_daytime_title"}}</div>
+          <div class="admin-field-row">
+            <label class="admin-field-label" for="cfg-daytime-enabled"><input type="checkbox" id="cfg-daytime-enabled"> {{T .Lang "admin_notify_daytime_enabled"}}</label>
+            <div class="admin-field-hint">{{T .Lang "admin_notify_daytime_hint"}}</div>
+          </div>
+          <div class="admin-field-row-pair">
+            <div class="admin-field-half">
+              <label class="admin-field-label" for="cfg-daytime-start">{{T .Lang "admin_notify_daytime_start"}}</label>
+              <input class="admin-field-input" type="number" id="cfg-daytime-start" min="0" max="23" value="9">
+            </div>
+            <div class="admin-field-half">
+              <label class="admin-field-label" for="cfg-daytime-end">{{T .Lang "admin_notify_daytime_end"}}</label>
+              <input class="admin-field-input" type="number" id="cfg-daytime-end" min="0" max="23" value="21">
+            </div>
+          </div>
           <div class="admin-settings-actions">
             <button class="btn btn--primary btn--small" onclick="saveNotifySettings()">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
@@ -230,6 +245,9 @@ function loadSettings() {
       if (d.report_morning_weekend) $('cfg-morning-weekend').value = d.report_morning_weekend;
       if (d.report_evening_weekday) $('cfg-evening-weekday').value = d.report_evening_weekday;
       if (d.report_evening_weekend) $('cfg-evening-weekend').value = d.report_evening_weekend;
+      $('cfg-daytime-enabled').checked = d.report_daytime_enabled === true;
+      $('cfg-daytime-start').value = d.report_daytime_start_hour == null ? 9 : d.report_daytime_start_hour;
+      $('cfg-daytime-end').value = d.report_daytime_end_hour == null ? 21 : d.report_daytime_end_hour;
       updateTZRequired();
     });
 }
@@ -254,16 +272,24 @@ function saveNotifySettings() {
     report_morning_weekday: $('cfg-morning-weekday').value,
     report_morning_weekend: $('cfg-morning-weekend').value,
     report_evening_weekday: $('cfg-evening-weekday').value,
-    report_evening_weekend: $('cfg-evening-weekend').value
+    report_evening_weekend: $('cfg-evening-weekend').value,
+    report_daytime_enabled: String($('cfg-daytime-enabled').checked),
+    report_daytime_start_hour: $('cfg-daytime-start').value,
+    report_daytime_end_hour: $('cfg-daytime-end').value
   };
   fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
-    .then(function(r){return r.json()})
+    .then(function(r){ if (!r.ok) throw new Error('settings rejected'); return r.json(); })
     .then(function(d) {
       var msg = $('admin-notify-msg');
       msg.textContent = '{{T .Lang "admin_notify_saved"}}';
       msg.style.display = '';
       msg.className = 'alert alert--success';
       setTimeout(function(){ msg.style.display = 'none'; }, 3000);
+    }).catch(function() {
+      var msg = $('admin-notify-msg');
+      msg.textContent = '{{T .Lang "admin_notify_save_error"}}';
+      msg.style.display = '';
+      msg.className = 'alert alert--error';
     });
 }
 

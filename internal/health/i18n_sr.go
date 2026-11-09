@@ -1,6 +1,14 @@
 package health
 
 var sr = LangStrings{
+	"admin_notify_daytime_title":   "Važne promene tokom dana",
+	"admin_notify_daytime_enabled": "Uključi dnevne Telegram poruke",
+	"admin_notify_daytime_hint":    "Podrazumevano isključeno. Do dve dodatne poruke dnevno, sa razmakom od najmanje sat vremena. Koristi se tvoja vremenska zona. Uobičajena potrošnja energije ne pokreće poruku.",
+	"admin_notify_daytime_start":   "Od (sat)",
+	"admin_notify_daytime_end":     "Do (sat)",
+	"admin_notify_save_error":      "Podešavanja nisu sačuvana. Proveri sate za dnevne poruke i pokušaj ponovo.",
+	"ai_block_energy_header":       "Energija",
+
 	"readiness_optimal": "Optimalno",
 	"readiness_fair":    "Umjereno",
 	"readiness_low":     "Niska",

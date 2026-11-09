@@ -2,6 +2,16 @@ package health
 
 import "testing"
 
+func TestMorningActivityCannotUseCurrentDateMeasurements(t *testing.T) {
+	steps, hrv := 4000.0, 45.0
+	daily := []DailyHealthMetrics{{Date: "2026-11-08", Steps: &steps}, {Date: "2026-11-09", Steps: &steps, Calories: &steps, Exercise: &steps, HRV: &hrv}}
+	evidence := MorningInsightEvidence{Date: "2026-11-09", Daily: daily, NightSleep: &MorningReportSleep{YesterdayActivity: &MorningYesterdayActivity{Date: "2026-11-08", Steps: &steps}}}
+	NormalizeMorningInsightEvidence(&evidence, "en")
+	if evidence.Daily[1].Steps != nil || evidence.Daily[1].Calories != nil || evidence.Daily[1].Exercise != nil || evidence.Daily[1].HRV == nil || evidence.Daily[0].Steps == nil || daily[1].Steps == nil || evidence.NightSleep.YesterdayActivity.Date != "2026-11-08" {
+		t.Fatalf("activity date boundary or source snapshot changed: %+v", evidence)
+	}
+}
+
 func TestApplyPreliminaryMorningInsightPolicySanitizesSleepAndBuildsScopedOptions(t *testing.T) {
 	hours, hrv, sleepValue := 7.5, 51.0, 8.0
 	evidence := MorningInsightEvidence{
@@ -86,5 +96,19 @@ func TestNormalizeMorningInsightEvidenceKeepsOnlyCurrentComparableFinalBaseline(
 	stale.NightSleep.Date = "2026-09-29"
 	if NormalizeMorningInsightEvidence(&stale, "en") || stale.NightSleep.BaselineHours != nil || stale.NightSleep.BaselineNights != 0 {
 		t.Fatalf("stale-night baseline survived normalization: %#v", stale.NightSleep)
+	}
+}
+
+func TestPreliminarySleepFiltersSharedContextAndPreservesOtherDomains(t *testing.T) {
+	hours := 7.0
+	evidence := MorningInsightEvidence{Date: "2026-11-09", NightSleep: &MorningReportSleep{Date: "2026-11-09", Hours: &hours, Capture: NightCapturePartial, Assessment: NightDurationPlausible, Finalization: NightFinalProvisional}, FactContext: &InsightFactContext{Guidance: AIInsightServerView{Meaning: "sleep-derived"}, Facts: []DailyInsightNarrativeFact{{ID: "sleep_total", Domain: "sleep", Statement: "sleep"}, {ID: "readiness_current", Domain: "recovery", Statement: "recovery"}}, DomainStates: []AIInsightDomainState{{Domain: "recovery", DataState: "fresh", Confidence: "final"}}}}
+	if !NormalizeMorningInsightEvidence(&evidence, "en") {
+		t.Fatal("expected preliminary")
+	}
+	if len(evidence.FactContext.Facts) != 1 || evidence.FactContext.Facts[0].Domain != "recovery" || evidence.FactContext.Guidance.Meaning != "" {
+		t.Fatalf("unfiltered context: %#v", evidence.FactContext)
+	}
+	if len(evidence.PreliminaryOptions.Recovery) != 0 || len(evidence.PreliminaryOptions.Activity) == 0 {
+		t.Fatalf("domain freshness ignored: %#v", evidence.PreliminaryOptions)
 	}
 }

@@ -73,7 +73,9 @@ func (s *DB) BuildHistoricalDailyInsightSnapshot(ctx context.Context, date, lang
 	health.EnrichLabels(resp, health.GetStrings(lang))
 	resp.DailyDecision = health.BuildDailyDecision(resp)
 
+	resp, night := s.insightSleepBriefing(ctx, resp)
 	snapshot := health.BuildDailyInsightSnapshot(resp, lang)
+	applyRecordedSleepPresentation(snapshot, night, lang)
 	if snapshot == nil {
 		return nil, fmt.Errorf("build historical daily insight snapshot for %s", date)
 	}

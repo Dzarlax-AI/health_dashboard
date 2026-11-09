@@ -66,3 +66,30 @@ func TestCompletedNightSleepRequiresCommittedRawPointAndFinalizes(t *testing.T) 
 		t.Fatalf("finalized canonical night = %#v", got)
 	}
 }
+
+func TestNightCoverageIdenticalReplayPreservesOriginalObservation(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	if err := db.SaveSettings(map[string]string{"timezone": "UTC"}); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+	c := NightSleepCoverageCommitment{WakeDate: "2026-09-10", MetricDate: "2026-09-10 00:00:00 +0000", Source: "Apple Watch", SourceEpoch: "ios", CaptureCompleteness: health.NightCapturePartial, CoverageGeneration: "same-generation", CoveredIntervalStart: start, CoveredIntervalEnd: start.Add(24 * time.Hour), ObservedAt: start.Add(time.Hour), InputHash: "same-input"}
+	if err := db.SaveNightSleepCoverageCommitment(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	c.ObservedAt = c.ObservedAt.Add(time.Hour)
+	if err := db.SaveNightSleepCoverageCommitment(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	var got time.Time
+	if err := db.pool.QueryRow(ctx, `SELECT observed_at FROM night_sleep_coverage_commitments WHERE wake_date=$1 AND source=$2`, c.WakeDate, c.Source).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Equal(start.Add(time.Hour)) {
+		t.Fatalf("identical replay changed observation: %s", got)
+	}
+	// Receipt time and opaque generation do not order different inputs: a
+	// delayed replay and a legitimate correction remain indistinguishable.
+}

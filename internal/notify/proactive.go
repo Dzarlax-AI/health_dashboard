@@ -19,15 +19,15 @@ import (
 //
 // Lifecycle for each registered notification on a morning tick:
 //
-//   1. Cadence check: was this rule sent within the last `Cadence`?
-//      Reads `proactive_<Name>_last_sent` from the settings table.
-//   2. Hour gate (optional): if `HourOfDay >= 0`, only fire when the
-//      current hour-in-tenant-TZ equals it. -1 means "any tick".
-//   3. Eligible(): return false to skip silently (logged once at
-//      debug level for ops, never user-visible).
-//   4. Render(): build the message. Has access to the DB pool and
-//      baseURL for clickable links.
-//   5. Bot.Send + persist the date marker.
+//  1. Cadence check: was this rule sent within the last `Cadence`?
+//     Reads `proactive_<Name>_last_sent` from the settings table.
+//  2. Hour gate (optional): if `HourOfDay >= 0`, only fire when the
+//     current hour-in-tenant-TZ equals it. -1 means "any tick".
+//  3. Eligible(): return false to skip silently (logged once at
+//     debug level for ops, never user-visible).
+//  4. Render(): build the message. Has access to the DB pool and
+//     baseURL for clickable links.
+//  5. Bot.Send + persist the date marker.
 //
 // Errors at any step log + skip, never bubble — a notification rule
 // must not break the morning report path.
@@ -206,7 +206,12 @@ func fireOne(bot *Bot, db *storage.DB, cfg Config, baseURL string, p ProactiveNo
 		return
 	}
 
-	reserved, err := sendDurableReport(db, "proactive:"+p.Name+":"+now.Format("2006-01-02"), func() error { return bot.Send(msg) })
+	history := storage.ReportHistory{Kind: "proactive", LocalDate: now.Format("2006-01-02"), Timezone: cfg.location().String(), Language: cfg.Lang, PlainBody: msg}
+	deliveryKey := "proactive:" + p.Name + ":" + now.Format("2006-01-02")
+	token, reserved, err := db.ReserveProactive(ctx, &history, deliveryKey, nil, now, loc)
+	if err == nil && reserved {
+		_, err = sendReservedArchivedReport(reportDeliveryDurable, db, bot, cfg, deliveryKey, &history, token)
+	}
 	if err != nil {
 		log.Printf("proactive %s: send error: %v", p.Name, err)
 		return

@@ -11,6 +11,7 @@ import (
 	"health-receiver/internal/health"
 	"health-receiver/internal/storage"
 
+	"github.com/google/uuid"
 	"github.com/invopop/jsonschema"
 )
 
@@ -35,8 +36,14 @@ func GenerateOpenAPI() ([]byte, error) {
 		"MetricDataResponse":           MetricDataResponse{},
 		"MetricRangeResponse":          MetricRangeResponse{},
 		"ReadinessHistoryResponse":     ReadinessHistoryResponse{},
+		"ReportHistoryResponse":        ReportHistoryResponse{},
+		"ReportHistoryDetail":          storage.ReportHistoryDetail{},
+		"ReportHistoryItem":            storage.ReportHistoryItem{},
 		"SectionResponse":              SectionResponse{},
 		"SessionResponse":              SessionResponse{},
+		"NotificationSettingsResponse": NotificationSettingsResponse{},
+		"NotificationSettingsRequest":  NotificationSettingsRequest{},
+		"SettingsUpdateResponse":       SettingsUpdateResponse{},
 		"SleepDurationBalanceResponse": SleepDurationBalanceResponse{},
 		"SleepGoalRequest":             SleepGoalRequest{},
 		"SleepGoalResponse":            SleepGoalResponse{},
@@ -226,6 +233,8 @@ func clientPaths() map[string]any {
 		jsonResponseRef("SleepGoalResponse"),
 	)
 	sleepGoalPutOperation["responses"].(map[string]any)["400"] = jsonErrorResponse("Invalid effective date or goal hours outside 3 through 14.")
+	settingsPostOperation := putOperation("updateNotificationSettings", "Update tenant notification settings; daytime messages default off", "NotificationSettingsRequest", jsonResponseRef("SettingsUpdateResponse"))
+	settingsPostOperation["responses"].(map[string]any)["400"] = plainTextResponse("Invalid JSON, daytime boolean, or daytime hours. Hours are 0 through 23 and start must differ from end.")
 
 	return map[string]any{
 		"/api/dashboard": map[string]any{
@@ -254,6 +263,16 @@ func clientPaths() map[string]any {
 				},
 				jsonResponseRef("AIBriefingResponse"),
 			),
+		},
+		"/api/reports/history": map[string]any{
+			"get": getOperation("listReportHistory", "Archived report deliveries", []any{stringQueryParameter("from", "First local date, YYYY-MM-DD."), stringQueryParameter("to", "Last local date, YYYY-MM-DD."), stringQueryParameter("kind", "morning, evening, or proactive."), integerQueryParameter("limit", 20, 1, 100), stringQueryParameter("cursor", "Continuation cursor.")}, jsonResponseRef("ReportHistoryResponse")),
+		},
+		"/api/settings": map[string]any{
+			"get":  getOperation("getNotificationSettings", "Tenant notification settings", nil, jsonResponseRef("NotificationSettingsResponse")),
+			"post": settingsPostOperation,
+		},
+		"/api/reports/history/{id}": map[string]any{
+			"get": getOperation("getReportHistory", "Archived report details", []any{map[string]any{"name": "id", "in": "path", "required": true, "schema": map[string]any{"type": "string", "format": "uuid"}}}, jsonHistoryDetailResponse()),
 		},
 		"/api/today-insights": map[string]any{
 			"get": todayInsightsOperation,
@@ -373,6 +392,10 @@ func redirectResponse(description string) map[string]any {
 	}
 }
 
+func jsonHistoryDetailResponse() map[string]any {
+	return map[string]any{"description": "Archived content or metadata-only legacy delivery.", "content": map[string]any{"application/json": map[string]any{"schema": map[string]any{"oneOf": []any{schemaRef("ReportHistoryDetail"), schemaRef("ReportHistoryItem")}}}}}
+}
+
 func jsonResponseRef(name string) map[string]any {
 	return map[string]any{
 		"description": "Successful tenant-scoped response.",
@@ -489,6 +512,12 @@ func integerQueryParameter(name string, defaultValue, minimum, maximum int) map[
 
 func reflectedSchema(value any) (map[string]any, error) {
 	reflector := &jsonschema.Reflector{
+		Mapper: func(t reflect.Type) *jsonschema.Schema {
+			if t == reflect.TypeOf(uuid.UUID{}) {
+				return &jsonschema.Schema{Type: "string", Format: "uuid"}
+			}
+			return nil
+		},
 		Anonymous:      true,
 		DoNotReference: true,
 	}
