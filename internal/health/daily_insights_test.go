@@ -28,7 +28,7 @@ func TestBuildDailyInsightSnapshotSeparatesFactsFromInterpretations(t *testing.T
 	tests := []struct {
 		key, wantFact, wantMeaning string
 	}{
-		{"sleep", "Продолжительность сна — 7.1 ч.", "На 0.4 ч дольше вашего среднего."},
+		{"sleep", "Сон за ночь — 7 ч 6 мин.", "На 24 мин дольше среднего."},
 		{"recovery", "Готовность — 75%: Умеренно.", "Небольшое отклонение от нормы."},
 		{"energy", "Запас энергии — 51 из 84.", "Резерв приличный, маркеры стресса чистые"},
 	}
@@ -70,7 +70,7 @@ func TestBuildDailyInsightSnapshotUsesFactualSleepContextWithoutBaseline(t *test
 		if domain.Key != "sleep" {
 			continue
 		}
-		if domain.Summary != "Sleep duration was 7.1 hours." {
+		if domain.Summary != "Last night's sleep: 7 h 6 min." {
 			t.Fatalf("summary = %q", domain.Summary)
 		}
 		if domain.Insight.AnswerKind != DailyInsightAnswerProvisional {

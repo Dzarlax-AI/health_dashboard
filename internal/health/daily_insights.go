@@ -2596,6 +2596,7 @@ func buildDailyInsightNarrativeFacts(resp *BriefingResponse, domains []DailyInsi
 		if sleep.TotalAvg > 0 {
 			values = append(values, fmt.Sprintf("%.1f", sleep.TotalAvg))
 		}
+		values = append(values, narrativeDisplayValues(statement)...)
 		add(DailyInsightNarrativeFact{ID: "sleep_canonical_comparison", Domain: "sleep", Meaning: "canonical sleep duration compared with recent average", Window: "last night and recent average", Fresh: true, Statement: statement, DisplayValues: values, EvidenceIDs: []string{"sleep_canonical_comparison"}})
 	}
 	if quality := resp.SleepQuality; !partialSleep && sleepNarrativeFactFresh(resp) && quality != nil && quality.ScorePct != nil && quality.Confidence == SleepQualityConfidenceFinal {
@@ -2859,7 +2860,9 @@ func boundedSleepPatternFact(daily []DailyHealthMetrics, lastDate, locale string
 		}
 	}
 	newest, prior = newest/2, prior/2
-	return DailyInsightNarrativeFact{ID: "sleep_recent_four_day_pattern", Domain: "sleep", Meaning: "bounded recent sleep pattern without a causal claim", Window: "most recent four calendar days; newest two versus preceding two", Fresh: true, Statement: localizedNarrativeSleepPatternFact(locale, newest, prior), DisplayValues: []string{fmt.Sprintf("%.1f", newest), fmt.Sprintf("%.1f", prior)}, EvidenceIDs: []string{"sleep_recent_four_day_pattern"}}, true
+	statement := localizedNarrativeSleepPatternFact(locale, newest, prior)
+	values := append([]string{fmt.Sprintf("%.1f", newest), fmt.Sprintf("%.1f", prior)}, narrativeDisplayValues(statement)...)
+	return DailyInsightNarrativeFact{ID: "sleep_recent_four_day_pattern", Domain: "sleep", Meaning: "bounded recent sleep pattern without a causal claim", Window: "most recent four calendar days; newest two versus preceding two", Fresh: true, Statement: statement, DisplayValues: values, EvidenceIDs: []string{"sleep_recent_four_day_pattern"}}, true
 }
 
 // boundedActivityTrendFact compares two complete five-day aggregates. It is
@@ -2905,11 +2908,11 @@ func parseDailyNarrativeDate(value string) (time.Time, bool) {
 func localizedNarrativeSleepPatternFact(locale string, newest, prior float64) string {
 	switch normalizeDailyInsightLocale(locale) {
 	case "ru":
-		return fmt.Sprintf("В закрытом окне из четырёх дней среднее за последние два: %.1f ч, перед ними: %.1f ч.", newest, prior)
+		return fmt.Sprintf("Средний сон за последние две ночи: %s; за две предыдущие: %s.", readableSleepDuration(newest, locale), readableSleepDuration(prior, locale))
 	case "sr":
-		return fmt.Sprintf("U zatvorenom prozoru od četiri dana prosek za poslednja dva iznosi %.1f h, a pre njih %.1f h.", newest, prior)
+		return fmt.Sprintf("Prosečan san tokom poslednje dve noći: %s; tokom prethodne dve: %s.", readableSleepDuration(newest, locale), readableSleepDuration(prior, locale))
 	default:
-		return fmt.Sprintf("In a closed four-day window, the newest two-day average is %.1f h versus %.1f h before that.", newest, prior)
+		return fmt.Sprintf("Mean sleep over the last two nights: %s; over the preceding two: %s.", readableSleepDuration(newest, locale), readableSleepDuration(prior, locale))
 	}
 }
 
@@ -2937,34 +2940,37 @@ func energyNarrativeFresh(bank *EnergyBank) bool {
 }
 
 func localizedNarrativeSleepFact(locale string, latest, average float64) string {
+	duration := readableSleepDuration(latest, locale)
 	if average <= 0 {
 		switch normalizeDailyInsightLocale(locale) {
 		case "ru":
-			return fmt.Sprintf("Каноническая длительность сна прошлой ночью: %.1f ч.", latest)
+			return "Сон за ночь: " + duration + "."
 		case "sr":
-			return fmt.Sprintf("Kanonsko trajanje sna prošle noći: %.1f h.", latest)
+			return "San tokom noći: " + duration + "."
 		default:
-			return fmt.Sprintf("Canonical sleep duration last night: %.1f h.", latest)
+			return "Last night's sleep: " + duration + "."
 		}
 	}
+	mean := readableSleepDuration(average, locale)
+	comparison := localizedSleepComparison(dailyInsightCopy(locale), latest, average)
 	switch normalizeDailyInsightLocale(locale) {
 	case "ru":
-		return fmt.Sprintf("Каноническая длительность сна: %.1f ч при недавнем среднем %.1f ч.", latest, average)
+		return fmt.Sprintf("Сон за ночь: %s; среднее последних ночей: %s. %s", duration, mean, comparison)
 	case "sr":
-		return fmt.Sprintf("Kanonsko trajanje sna: %.1f h uz skorašnji prosek %.1f h.", latest, average)
+		return fmt.Sprintf("San tokom noći: %s; skorašnji prosek: %s. %s", duration, mean, comparison)
 	default:
-		return fmt.Sprintf("Canonical sleep duration: %.1f h against a recent average of %.1f h.", latest, average)
+		return fmt.Sprintf("Last night's sleep: %s; recent mean: %s. %s", duration, mean, comparison)
 	}
 }
 
 func localizedNarrativePartialSleepFact(locale string, recorded float64) string {
 	switch normalizeDailyInsightLocale(locale) {
 	case "ru":
-		return fmt.Sprintf("Текущая записанная длительность сна: %.1f ч. Доступные данные не подтверждают полноту ночи или качество сна.", recorded)
+		return fmt.Sprintf("Сейчас записано %s сна. Доступные данные не подтверждают полноту ночи или качество сна.", readableSleepDuration(recorded, locale))
 	case "sr":
-		return fmt.Sprintf("Trenutno zabeleženo trajanje sna je %.1f h. Dostupni podaci ne potvrđuju potpunost noći ni kvalitet sna.", recorded)
+		return fmt.Sprintf("Trenutno je zabeleženo %s sna. Dostupni podaci ne potvrđuju potpunost noći ni kvalitet sna.", readableSleepDuration(recorded, locale))
 	default:
-		return fmt.Sprintf("Currently recorded sleep duration is %.1f h. Available data do not confirm night completeness or sleep quality.", recorded)
+		return fmt.Sprintf("Currently recorded sleep duration is %s. Available data do not confirm night completeness or sleep quality.", readableSleepDuration(recorded, locale))
 	}
 }
 
@@ -3587,11 +3593,11 @@ func localizedSleepDuration(copy insightCopy, hours float64) string {
 	// authored sentence rather than leaking English into report_lang=ru/sr.
 	switch copy.sleepTitle {
 	case "Сон":
-		return fmt.Sprintf("Продолжительность сна — %.1f ч.", hours)
+		return "Сон за ночь — " + readableSleepDuration(hours, "ru") + "."
 	case "San":
-		return fmt.Sprintf("Trajanje sna je %.1f sati.", hours)
+		return "San tokom noći: " + readableSleepDuration(hours, "sr") + "."
 	default:
-		return fmt.Sprintf("Sleep duration was %.1f hours.", hours)
+		return "Last night's sleep: " + readableSleepDuration(hours, "en") + "."
 	}
 }
 
@@ -3612,10 +3618,11 @@ func sleepInsightInterpretation(resp *BriefingResponse, copy insightCopy, dataSt
 // localizedSleepComparison describes the latest duration against the personal baseline.
 func localizedSleepComparison(copy insightCopy, latest, baseline float64) string {
 	delta := latest - baseline
+	difference := readableSleepMinutes(int(math.Round(math.Abs(delta)*60)), copy.locale)
 	if math.Abs(delta) < 0.1 {
 		switch copy.locale {
 		case "ru":
-			return "Продолжительность сна близка к вашему среднему."
+			return "По длительности сон близок к среднему."
 		case "sr":
 			return "Trajanje sna je blizu ličnog proseka."
 		default:
@@ -3625,20 +3632,20 @@ func localizedSleepComparison(copy insightCopy, latest, baseline float64) string
 	if delta > 0 {
 		switch copy.locale {
 		case "ru":
-			return fmt.Sprintf("На %.1f ч дольше вашего среднего.", delta)
+			return "На " + difference + " дольше среднего."
 		case "sr":
-			return fmt.Sprintf("%.1f h duže od ličnog proseka.", delta)
+			return difference + " duže od ličnog proseka."
 		default:
-			return fmt.Sprintf("%.1f hours longer than your usual average.", delta)
+			return difference + " longer than your recent average."
 		}
 	}
 	switch copy.locale {
 	case "ru":
-		return fmt.Sprintf("На %.1f ч меньше вашего среднего.", -delta)
+		return "На " + difference + " короче среднего."
 	case "sr":
-		return fmt.Sprintf("%.1f h kraće od ličnog proseka.", -delta)
+		return difference + " kraće od ličnog proseka."
 	default:
-		return fmt.Sprintf("%.1f hours shorter than your usual average.", -delta)
+		return difference + " shorter than your recent average."
 	}
 }
 

@@ -26,7 +26,11 @@ func RecordedSleepNarrativeFacts(sleep MorningReportSleep, lang string) []DailyI
 		labels := map[string][]string{"ru": {"глубокий сон", "REM", "основной сон", "сон без стадий", "записанное бодрствование"}, "sr": {"duboki san", "REM", "osnovni san", "san bez faza", "zabeležena budnost"}, "en": {"deep sleep", "REM", "core sleep", "unstaged sleep", "recorded wakefulness"}}[normalizeDailyInsightLocale(lang)]
 		for i, value := range []*int{e.DeepMinutes, e.REMMinutes, e.CoreMinutes, e.UnspecifiedMinutes, e.AwakeMinutes} {
 			if value != nil {
-				parts = append(parts, fmt.Sprintf("%s: %d %s", labels[i], *value, unit))
+				valueText := fmt.Sprintf("%d %s", *value, unit)
+				if *value >= 60 {
+					valueText += " (" + readableSleepMinutes(*value, locale) + ")"
+				}
+				parts = append(parts, labels[i]+": "+valueText)
 			}
 		}
 		if e.AwakeBouts != nil {
@@ -34,18 +38,19 @@ func RecordedSleepNarrativeFacts(sleep MorningReportSleep, lang string) []DailyI
 			parts = append(parts, fmt.Sprintf("%s: %d", label, *e.AwakeBouts))
 		}
 		if e.Start != nil && e.Wake != nil {
-			parts = append(parts, e.Start.Format("15:04")+"–"+e.Wake.Format("15:04"))
+			label := map[string]string{"ru": "время сна", "sr": "vreme sna", "en": "sleep window"}[locale]
+			parts = append(parts, label+": "+e.Start.Format("15:04")+"–"+e.Wake.Format("15:04"))
 		}
 		if len(parts) > 0 {
 			add("sleep_recorded_architecture", recordedSleepArchitectureMeaning, strings.Join(parts, "; ")+".")
 		}
 	}
 	if sleep.RecentRecordedMeanHours != nil && sleep.RecentRecordedDifferenceMinutes != nil && sleep.RecentRecordedNights >= 2 {
-		statement := fmt.Sprintf("Recorded sleep: %d min; mean of %d recent recorded nights including this one: %d min; difference: %+d min.", int(math.Round(*sleep.Hours*60)), sleep.RecentRecordedNights, int(math.Round(*sleep.RecentRecordedMeanHours*60)), *sleep.RecentRecordedDifferenceMinutes)
+		statement := fmt.Sprintf("Sleep: %s; mean of %d recent recorded nights including this one: %s; difference: %+d min.", readableSleepDuration(*sleep.Hours, lang), sleep.RecentRecordedNights, readableSleepDuration(*sleep.RecentRecordedMeanHours, lang), *sleep.RecentRecordedDifferenceMinutes)
 		if lang == "ru" {
-			statement = fmt.Sprintf("Записанный сон: %d мин; среднее %d последних записей, включая эту: %d мин; разница: %+d мин.", int(math.Round(*sleep.Hours*60)), sleep.RecentRecordedNights, int(math.Round(*sleep.RecentRecordedMeanHours*60)), *sleep.RecentRecordedDifferenceMinutes)
+			statement = fmt.Sprintf("Сон за ночь: %s; среднее %d последних ночей, включая эту: %s; разница: %+d мин.", readableSleepDuration(*sleep.Hours, lang), sleep.RecentRecordedNights, readableSleepDuration(*sleep.RecentRecordedMeanHours, lang), *sleep.RecentRecordedDifferenceMinutes)
 		} else if lang == "sr" {
-			statement = fmt.Sprintf("Zabeležen san: %d min; prosek %d skorašnjih zapisa uključujući ovaj: %d min; razlika: %+d min.", int(math.Round(*sleep.Hours*60)), sleep.RecentRecordedNights, int(math.Round(*sleep.RecentRecordedMeanHours*60)), *sleep.RecentRecordedDifferenceMinutes)
+			statement = fmt.Sprintf("San tokom noći: %s; prosek %d poslednjih noći uključujući ovu: %s; razlika: %+d min.", readableSleepDuration(*sleep.Hours, lang), sleep.RecentRecordedNights, readableSleepDuration(*sleep.RecentRecordedMeanHours, lang), *sleep.RecentRecordedDifferenceMinutes)
 		}
 		add("sleep_recorded_comparison", recordedSleepComparisonMeaning, statement)
 	}
