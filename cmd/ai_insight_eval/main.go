@@ -29,6 +29,7 @@ type evaluation struct {
 	Selection         *evaluationSelection `json:"selection,omitempty"`
 	Model             string               `json:"model"`
 	Reasoning         string               `json:"reasoning"`
+	MaxOutputTokens   int                  `json:"max_output_tokens"`
 	PromptRevision    string               `json:"prompt_revision"`
 	ReviewFingerprint string               `json:"review_fingerprint"`
 	RunsPerCase       int                  `json:"runs_per_case"`
@@ -117,7 +118,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	result := evaluation{Version: "ai-insight-evaluation-v2", CorpusHash: hash, Model: cfg.Model, Reasoning: cfg.ReasoningEffort,
+	result := evaluation{Version: "ai-insight-evaluation-v2", CorpusHash: hash, Model: cfg.Model, Reasoning: cfg.ReasoningEffort, MaxOutputTokens: cfg.MaxOutputTokens,
 		PromptRevision: ai.AIInsightPromptRevision, ReviewFingerprint: ai.AIInsightReviewFingerprint(), RunsPerCase: *runs,
 		Selection: selection, Cases: make([]evaluationCase, 0, len(selectedCases))}
 	for index, item := range selectedCases {
@@ -198,6 +199,10 @@ func evaluationProviderConfig(databaseConfig bool, apiKeyEnv string) (ai.Provide
 		return nil, ai.ProviderConfig{}, fmt.Errorf("active Admin provider key is unavailable")
 	}
 	config.APIKey = active.APIKey
+	config.MaxOutputTokens = active.MaxOutputTokens
+	if config.MaxOutputTokens <= 0 || config.MaxOutputTokens > ai.DailyInsightMaxTokens {
+		config.MaxOutputTokens = ai.DailyInsightMaxTokens
+	}
 	return provider, config, nil
 }
 

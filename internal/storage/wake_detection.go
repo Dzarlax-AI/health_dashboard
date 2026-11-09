@@ -229,9 +229,17 @@ type wakeQueryer interface {
 }
 
 func loadWakeCandidate(ctx context.Context, queryer wakeQueryer, localDate string, loc *time.Location) (wakeCandidate, bool, error) {
+	segments, err := loadWakeSegments(ctx, queryer, localDate, loc)
+	if err != nil {
+		return wakeCandidate{}, false, err
+	}
+	return selectWakeCandidate(segments, localDate, loc)
+}
+
+func loadWakeSegments(ctx context.Context, queryer wakeQueryer, localDate string, loc *time.Location) ([]wakeInputSegment, error) {
 	targetDate, err := time.ParseInLocation("2006-01-02", localDate, loc)
 	if err != nil {
-		return wakeCandidate{}, false, fmt.Errorf("parse wake date: %w", err)
+		return nil, fmt.Errorf("parse wake date: %w", err)
 	}
 	fromDate := targetDate.AddDate(0, 0, -1).Format("2006-01-02")
 	rows, err := queryer.Query(ctx, `
@@ -244,7 +252,7 @@ func loadWakeCandidate(ctx context.Context, queryer wakeQueryer, localDate strin
 		 ORDER BY date, metric_name
 	`, fromDate, localDate)
 	if err != nil {
-		return wakeCandidate{}, false, err
+		return nil, err
 	}
 	defer rows.Close()
 	var segments []wakeInputSegment
@@ -254,7 +262,7 @@ func loadWakeCandidate(ctx context.Context, queryer wakeQueryer, localDate strin
 		var receivedAt time.Time
 		var metric string
 		if err := rows.Scan(&metric, &dateStr, &hours, &source, &quality, &receivedAt); err != nil {
-			return wakeCandidate{}, false, err
+			return nil, err
 		}
 		start, err := parseMetricDate(dateStr)
 		if err != nil {
@@ -270,9 +278,9 @@ func loadWakeCandidate(ctx context.Context, queryer wakeQueryer, localDate strin
 		})
 	}
 	if err := rows.Err(); err != nil {
-		return wakeCandidate{}, false, err
+		return nil, err
 	}
-	return selectWakeCandidate(segments, localDate, loc)
+	return segments, nil
 }
 
 func selectWakeCandidate(segments []wakeInputSegment, localDate string, loc *time.Location) (wakeCandidate, bool, error) {
@@ -361,6 +369,42 @@ func selectWakeCandidate(segments []wakeInputSegment, localDate string, loc *tim
 		for _, component := range components {
 			fmt.Fprintf(h, "%s|%s|%.6f|%s|%s\n", component.Metric, component.Start.UTC().Format(time.RFC3339Nano), component.Hours, component.Source, component.Quality)
 		}
+	}
+	// The wake time still comes from the existing candidate selection above.
+	// Quietness must also cover earlier detailed intervals, and competing
+	// sources that could make the observed episode ambiguous. Receipt times are
+	// deliberately excluded so identical re-uploads do not restart the clock.
+	wakeDay := wake.In(loc)
+	windowStart := time.Date(wakeDay.Year(), wakeDay.Month(), wakeDay.Day(), 12, 0, 0, 0, loc).AddDate(0, 0, -1)
+	var episode []wakeInputSegment
+	for _, segment := range segments {
+		if segment.Metric == "sleep_total" || segment.Source == "" || segment.Hours <= 0 || segment.Quality != "ok" {
+			continue
+		}
+		end := segment.Start.Add(time.Duration(segment.Hours * float64(time.Hour)))
+		if segment.Start.Before(wake) && end.After(windowStart) {
+			episode = append(episode, segment)
+		}
+	}
+	sort.Slice(episode, func(i, j int) bool {
+		a, b := episode[i], episode[j]
+		if !a.Start.Equal(b.Start) {
+			return a.Start.Before(b.Start)
+		}
+		if a.Source != b.Source {
+			return a.Source < b.Source
+		}
+		if a.Metric != b.Metric {
+			return a.Metric < b.Metric
+		}
+		if a.Hours != b.Hours {
+			return a.Hours < b.Hours
+		}
+		return a.Quality < b.Quality
+	})
+	fmt.Fprintln(h, "episode-inputs-v1")
+	for _, segment := range episode {
+		fmt.Fprintf(h, "%s|%s|%.6f|%s|%s\n", segment.Metric, segment.Start.UTC().Format(time.RFC3339Nano), segment.Hours, segment.Source, segment.Quality)
 	}
 	return wakeCandidate{
 		Wake:         wake,

@@ -182,6 +182,7 @@ export function EnergyPage() {
               action={domain.insight.next_step?.text}
               ai={domain.ai_insight}
               state={state.status === "ready" ? state.insights.generation.slots?.find((slot) => slot.key === "energy")?.state : undefined}
+              reasonCode={state.status === "ready" ? state.insights.generation.slots?.find((slot) => slot.key === "energy")?.reason_code : undefined}
               preview={state.status === "ready" && state.insights.generation.narrative_mode === "preview"}
             />
           ) : state.status === "loading" ? (

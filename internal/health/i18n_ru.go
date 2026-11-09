@@ -1,6 +1,14 @@
 package health
 
 var ru = LangStrings{
+	"admin_notify_daytime_title":   "Важные изменения в течение дня",
+	"admin_notify_daytime_enabled": "Включить дневные сообщения в Telegram",
+	"admin_notify_daytime_hint":    "По умолчанию выключено. До двух внеплановых сообщений в день с интервалом не менее часа. Время — в вашем часовом поясе. Обычный расход энергии не вызывает сообщение.",
+	"admin_notify_daytime_start":   "С (час)",
+	"admin_notify_daytime_end":     "До (час)",
+	"admin_notify_save_error":      "Настройки не сохранены. Проверьте часы дневных сообщений и повторите.",
+	"ai_block_energy_header":       "Энергия",
+
 	"readiness_optimal": "Оптимально",
 	"readiness_fair":    "Умеренно",
 	"readiness_low":     "Низкая",

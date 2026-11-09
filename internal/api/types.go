@@ -16,6 +16,31 @@ type SessionResponse struct {
 	IsAdmin bool `json:"is_admin"`
 }
 
+type NotificationSettingsResponse struct {
+	TelegramToken    string `json:"telegram_token"`
+	TelegramChatID   string `json:"telegram_chat_id"`
+	ReportLang       string `json:"report_lang"`
+	Timezone         string `json:"timezone"`
+	MorningWeekday   int    `json:"report_morning_weekday"`
+	MorningWeekend   int    `json:"report_morning_weekend"`
+	EveningWeekday   int    `json:"report_evening_weekday"`
+	EveningWeekend   int    `json:"report_evening_weekend"`
+	DaytimeEnabled   bool   `json:"report_daytime_enabled"`
+	DaytimeStartHour int    `json:"report_daytime_start_hour"`
+	DaytimeEndHour   int    `json:"report_daytime_end_hour"`
+	Enabled          bool   `json:"enabled"`
+	Username         string `json:"username,omitempty"`
+	Tenant           string `json:"tenant,omitempty"`
+	IsAdmin          *bool  `json:"is_admin,omitempty"`
+}
+
+// Settings updates retain the existing partial map-of-strings wire contract.
+type NotificationSettingsRequest map[string]string
+
+type SettingsUpdateResponse struct {
+	Status string `json:"status"`
+}
+
 // AIBriefingSection is one localized, ordered AI narrative block.
 type AIBriefingSection struct {
 	Key    string `json:"key"`
@@ -35,23 +60,24 @@ type PreviousAIBriefing struct {
 }
 
 type AIBriefingResponse struct {
-	Previous         *PreviousAIBriefing `json:"previous,omitempty"`
-	Date             string              `json:"date"`
-	Lang             string              `json:"lang" jsonschema:"enum=en,enum=ru,enum=sr"`
-	Insight          string              `json:"insight"`
-	Sections         []AIBriefingSection `json:"sections"`
-	Blocks           map[string]string   `json:"blocks"`
-	Sleep            string              `json:"sleep"`
-	Yesterday        string              `json:"yesterday"`
-	Recovery         string              `json:"recovery"`
-	Recommend        string              `json:"recommendation"`
-	Summary          string              `json:"summary"`
-	Generating       bool                `json:"generating"`
-	Disabled         bool                `json:"disabled"`
-	DecisionID       string              `json:"decision_id,omitempty"`
-	FreshForDecision bool                `json:"fresh_for_decision"`
-	UpdatedAt        *time.Time          `json:"updated_at,omitempty"`
-	Plan             *AIBriefingPlan     `json:"plan,omitempty"`
+	Generation       *storage.AIGenerationStatus `json:"generation,omitempty"`
+	Previous         *PreviousAIBriefing         `json:"previous,omitempty"`
+	Date             string                      `json:"date"`
+	Lang             string                      `json:"lang" jsonschema:"enum=en,enum=ru,enum=sr"`
+	Insight          string                      `json:"insight"`
+	Sections         []AIBriefingSection         `json:"sections"`
+	Blocks           map[string]string           `json:"blocks"`
+	Sleep            string                      `json:"sleep"`
+	Yesterday        string                      `json:"yesterday"`
+	Recovery         string                      `json:"recovery"`
+	Recommend        string                      `json:"recommendation"`
+	Summary          string                      `json:"summary"`
+	Generating       bool                        `json:"generating"`
+	Disabled         bool                        `json:"disabled"`
+	DecisionID       string                      `json:"decision_id,omitempty"`
+	FreshForDecision bool                        `json:"fresh_for_decision"`
+	UpdatedAt        *time.Time                  `json:"updated_at,omitempty"`
+	Plan             *AIBriefingPlan             `json:"plan,omitempty"`
 }
 
 // AIBriefingPlan is the sole actionable AI explanation for the current
@@ -77,10 +103,13 @@ type TodayInsightsGeneration struct {
 // whose evidence changed. State remains additive: older clients may continue
 // to use the aggregate Generation state.
 type TodayInsightSlotGeneration struct {
-	Key               string `json:"key" jsonschema:"enum=overall,enum=sleep,enum=recovery,enum=energy"`
-	State             string `json:"state" jsonschema:"enum=cold,enum=generating,enum=ready,enum=failed,enum=disabled"`
-	FreshForSnapshot  bool   `json:"fresh_for_snapshot"`
-	RetryAfterSeconds int    `json:"retry_after_seconds,omitempty"`
+	ReasonCode        string     `json:"reason_code,omitempty"`
+	LastAttemptAt     *time.Time `json:"last_attempt_at,omitempty"`
+	LastSuccessAt     *time.Time `json:"last_success_at,omitempty"`
+	Key               string     `json:"key" jsonschema:"enum=overall,enum=sleep,enum=recovery,enum=energy"`
+	State             string     `json:"state" jsonschema:"enum=cold,enum=generating,enum=ready,enum=failed,enum=disabled"`
+	FreshForSnapshot  bool       `json:"fresh_for_snapshot"`
+	RetryAfterSeconds int        `json:"retry_after_seconds,omitempty"`
 }
 
 // TodayInsightsResponse is today-only. It intentionally embeds the server
@@ -139,4 +168,10 @@ type EnergyHistoryHourResponse struct {
 	Granularity    string                        `json:"granularity" jsonschema:"enum=hour"`
 	FormulaVersion int                           `json:"formula_version"`
 	Points         []storage.EnergySnapshotPoint `json:"points"`
+}
+
+// ReportHistoryResponse lists immutable archived reports and metadata-only legacy deliveries.
+type ReportHistoryResponse struct {
+	Items      []storage.ReportHistoryItem `json:"items"`
+	NextCursor string                      `json:"next_cursor,omitempty"`
 }

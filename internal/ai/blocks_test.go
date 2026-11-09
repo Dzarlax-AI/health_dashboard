@@ -36,7 +36,7 @@ func TestGenerateInsightBundleUsesOneCallSchemaAndOperationTokenCap(t *testing.T
 		"sleep":"Sleep was slightly short, while the supplied stages remained stable.",
 		"activity":"Yesterday's activity stayed below the supplied target.",
 		"recovery":"Recovery remains moderate based on the supplied HRV and resting pulse.",
-		"recommendation":"Do an intense workout."
+		"energy":"Energy context is limited.","recommendation":"Do an intense workout."
 	}`}
 	evidence := []byte(`{
 		"verdict":"moderate",
@@ -58,7 +58,7 @@ func TestGenerateInsightBundleUsesOneCallSchemaAndOperationTokenCap(t *testing.T
 	if provider.req.ResponseSchema == nil || provider.req.ResponseSchema.Name != "morning_insight_bundle" {
 		t.Fatalf("response schema = %#v", provider.req.ResponseSchema)
 	}
-	if len(result.Blocks) != 5 || result.Blocks[BlockSleep] == "" || result.Blocks[BlockRecommendation] == "" {
+	if len(result.Blocks) != 6 || result.Blocks[BlockSleep] == "" || result.Blocks[BlockRecommendation] == "" {
 		t.Fatalf("blocks = %#v", result.Blocks)
 	}
 	if result.Blocks[BlockSynthesis] != "Recovery signals support a measured day." {
@@ -70,7 +70,7 @@ func TestGenerateInsightBundleUsesOneCallSchemaAndOperationTokenCap(t *testing.T
 }
 
 func TestGenerateInsightBundleConstrainsPreliminarySleepAndRemovesBaseline(t *testing.T) {
-	provider := &synthesisProvider{text: `{"overview":"Server verdict.","sleep":"awaiting_completion","activity":"activity_2","recovery":"recovery_2","recommendation":"Keep the server plan."}`}
+	provider := &synthesisProvider{text: `{"overview":"Server verdict.","sleep":"awaiting_completion","activity":"activity_2","recovery":"recovery_2","energy":"Energy context is limited.","recommendation":"Keep the server plan."}`}
 	evidence := []byte(`{"date":"2026-09-30","verdict_reason":"Server verdict.","action":"Keep the server plan.","sections":[{"key":"activity","summary":"Activity remained steady yesterday.","details":[{"label":"Steps","note":"within the recent range"}]},{"key":"recovery","summary":"Recovery signals are mixed.","details":[{"label":"HRV","note":"close to its recent range"}]}],"daily":[{"date":"2026-09-30","hrv":50,"sleep":7.5,"deep":2,"rem":1.5}],"night_sleep":{"report_date":"2026-09-30","date":"2026-09-30","hours":7.5,"baseline_hours":8.1,"baseline_nights":12,"capture":"partial","assessment":"plausible","finalization":"provisional"}}`)
 	result, err := GenerateInsightBundle(context.Background(), provider, ProviderConfig{}, evidence, "ru")
 	if err != nil {
@@ -113,7 +113,7 @@ func TestGenerateInsightBundleConstrainsPreliminarySleepAndRemovesBaseline(t *te
 }
 
 func TestGenerateInsightBundleRejectsUnsupportedPreliminarySleepText(t *testing.T) {
-	provider := &synthesisProvider{text: `{"overview":"Server verdict.","sleep":"The short night caused poor recovery.","activity":"The short night reduced your activity.","recovery":"Your short sleep caused poor recovery.","recommendation":"Keep the server plan."}`}
+	provider := &synthesisProvider{text: `{"overview":"Server verdict.","sleep":"The short night caused poor recovery.","activity":"The short night reduced your activity.","recovery":"Your short sleep caused poor recovery.","energy":"Energy context is limited.","recommendation":"Keep the server plan."}`}
 	evidence := []byte(`{"date":"2026-09-30","verdict_reason":"Server verdict.","action":"Keep the server plan.","night_sleep":{"report_date":"2026-09-30","date":"2026-09-30","hours":4,"capture":"partial","assessment":"plausible","finalization":"provisional"}}`)
 	result, err := GenerateInsightBundle(context.Background(), provider, ProviderConfig{}, evidence, "en")
 	if err == nil {
@@ -125,7 +125,7 @@ func TestGenerateInsightBundleRejectsUnsupportedPreliminarySleepText(t *testing.
 }
 
 func TestGenerateInsightBundleConstrainsFinalizedPartialSleep(t *testing.T) {
-	provider := &synthesisProvider{text: `{"overview":"Server verdict.","sleep":"awaiting_completion","activity":"activity_1","recovery":"recovery_1","recommendation":"Keep the server plan."}`}
+	provider := &synthesisProvider{text: `{"overview":"Server verdict.","sleep":"awaiting_completion","activity":"activity_1","recovery":"recovery_1","energy":"Energy context is limited.","recommendation":"Keep the server plan."}`}
 	evidence := []byte(`{"date":"2026-09-30","verdict_reason":"Server verdict.","action":"Keep the server plan.","night_sleep":{"report_date":"2026-09-30","date":"2026-09-30","hours":7.5,"capture":"partial","assessment":"plausible","finalization":"final"}}`)
 	result, err := GenerateInsightBundle(context.Background(), provider, ProviderConfig{}, evidence, "sr")
 	if err != nil {
@@ -150,7 +150,7 @@ func TestGenerateInsightBundleMapsPreliminarySectionChoicesInAllLocales(t *testi
 	}
 	for _, locale := range locales {
 		t.Run(locale.lang, func(t *testing.T) {
-			provider := &synthesisProvider{text: `{"overview":"Server verdict.","sleep":"recorded_duration","activity":"activity_1","recovery":"recovery_1","recommendation":"Keep the server plan."}`}
+			provider := &synthesisProvider{text: `{"overview":"Server verdict.","sleep":"recorded_duration","activity":"activity_1","recovery":"recovery_1","energy":"Energy context is limited.","recommendation":"Keep the server plan."}`}
 			body, err := json.Marshal(health.MorningInsightEvidence{
 				Date: "2026-09-30", VerdictReason: "Server verdict.", Action: "Keep the server plan.",
 				NightSleep: &health.MorningReportSleep{ReportDate: "2026-09-30", Date: "2026-09-30", Hours: floatPtr(7.5), Capture: health.NightCapturePartial, Assessment: health.NightDurationPlausible, Finalization: health.NightFinalProvisional},
@@ -174,7 +174,7 @@ func TestGenerateInsightBundleMapsPreliminarySectionChoicesInAllLocales(t *testi
 }
 
 func TestGenerateInsightBundleKeepsFinalSleepFreeText(t *testing.T) {
-	provider := &synthesisProvider{text: `{"overview":"Server verdict.","sleep":"The supplied stages were consistent with the recorded duration.","activity":"Activity was recorded yesterday.","recovery":"Recovery remains within the supplied range.","recommendation":"Keep the server plan."}`}
+	provider := &synthesisProvider{text: `{"overview":"Server verdict.","sleep":"The supplied stages were consistent with the recorded duration.","activity":"Activity was recorded yesterday.","recovery":"Recovery remains within the supplied range.","energy":"Energy context is limited.","recommendation":"Keep the server plan."}`}
 	evidence := []byte(`{"date":"2026-09-30","verdict_reason":"Server verdict.","action":"Keep the server plan.","night_sleep":{"report_date":"2026-09-30","date":"2026-09-30","hours":7.5,"baseline_hours":8.1,"baseline_nights":12,"capture":"complete","assessment":"plausible","finalization":"final"}}`)
 	result, err := GenerateInsightBundle(context.Background(), provider, ProviderConfig{}, evidence, "en")
 	if err != nil {
@@ -191,7 +191,7 @@ func TestGenerateInsightBundleKeepsFinalSleepFreeText(t *testing.T) {
 	if err := json.Unmarshal(provider.req.UserPayload, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := payload["night_sleep"].(map[string]any)["baseline_hours"]; !ok {
+	if payload["night_sleep"].(map[string]any)["prior_comparable_mean_minutes"] != float64(486) {
 		t.Fatalf("eligible final baseline omitted: %#v", payload["night_sleep"])
 	}
 }
@@ -209,7 +209,7 @@ func TestGenerateInsightBundleRejectsPartialValidation(t *testing.T) {
 		"sleep":"**Diagnosis:** illness confirmed.",
 		"activity":"Activity evidence is incomplete.",
 		"recovery":"Recovery remains moderate.",
-		"recommendation":"Keep the supplied moderate plan."
+		"energy":"Energy context is limited.","recommendation":"Keep the supplied moderate plan."
 	}`}
 	result, err := GenerateInsightBundle(context.Background(), provider, ProviderConfig{},
 		[]byte(`{"verdict_reason":"Overall evidence supports the moderate plan.","action":"Keep the supplied moderate plan."}`), "en")
@@ -219,7 +219,7 @@ func TestGenerateInsightBundleRejectsPartialValidation(t *testing.T) {
 	if _, ok := result.Blocks[BlockSleep]; ok {
 		t.Fatalf("unsafe sleep block was accepted: %#v", result.Blocks)
 	}
-	if len(result.Blocks) != 4 || result.InvalidBlocks[BlockSleep] == "" {
+	if len(result.Blocks) != 5 || result.InvalidBlocks[BlockSleep] == "" {
 		t.Fatalf("partial validation result = %#v invalid=%#v", result.Blocks, result.InvalidBlocks)
 	}
 }
@@ -230,7 +230,7 @@ func TestGenerateInsightBundleRequiresServerOwnedOverviewAndAction(t *testing.T)
 		"sleep":"Sleep data is incomplete.",
 		"activity":"Activity data is incomplete.",
 		"recovery":"Recovery data is incomplete.",
-		"recommendation":"Provider action."
+		"energy":"Energy context is limited.","recommendation":"Provider action."
 	}`}
 	result, err := GenerateInsightBundle(context.Background(), provider, ProviderConfig{}, []byte(`{}`), "en")
 	if err == nil {
@@ -269,3 +269,44 @@ func TestHashSynthesisUsesExactDatedEvidence(t *testing.T) {
 }
 
 func floatPtr(v float64) *float64 { return &v }
+
+func TestMorningBundleRequiresEnergyAndKeepsFreshDomainsFreeText(t *testing.T) {
+	hours, steps := 7.0, 1000.0
+	evidence := health.MorningInsightEvidence{Date: "2026-11-09", VerdictReason: "Steady.", Action: "Easy.", NightSleep: &health.MorningReportSleep{Date: "2026-11-09", Hours: &hours, Capture: health.NightCapturePartial, Assessment: health.NightDurationPlausible, Finalization: health.NightFinalProvisional, YesterdayActivity: &health.MorningYesterdayActivity{Date: "2026-11-08", Steps: &steps}}, FactContext: &health.InsightFactContext{DomainStates: []health.AIInsightDomainState{{Domain: "recovery", DataState: "fresh", Confidence: "final"}}}}
+	body, _ := json.Marshal(evidence)
+	p := &synthesisProvider{text: `{"overview":"Steady.","sleep":"recorded_duration","activity":"Yesterday had recorded activity.","recovery":"Recovery is stable.","energy":"Energy is available.","recommendation":"Easy."}`}
+	got, err := GenerateInsightBundle(context.Background(), p, ProviderConfig{}, body, "en")
+	if err != nil || got.Blocks[BlockEnergy] == "" {
+		t.Fatalf("bundle %#v, %v", got, err)
+	}
+	props := p.req.ResponseSchema.Schema["properties"].(map[string]any)
+	for _, key := range []string{"activity", "recovery"} {
+		if _, ok := props[key].(map[string]any)["enum"]; ok {
+			t.Fatalf("fresh %s restricted by sleep", key)
+		}
+	}
+	p.text = `{"overview":"Steady.","sleep":"recorded_duration","activity":"Yesterday had recorded activity.","recovery":"Recovery is stable.","recommendation":"Easy."}`
+	if _, err := GenerateInsightBundle(context.Background(), p, ProviderConfig{}, body, "en"); err == nil {
+		t.Fatal("missing energy accepted")
+	}
+}
+
+func TestCompleteRecordedSleepDoesNotOfferCalendarWaitingExplanation(t *testing.T) {
+	hours := 6.85
+	sleep := &health.MorningReportSleep{Date: "2026-11-09", Hours: &hours, Capture: health.NightCaptureComplete, Assessment: health.NightDurationPlausible, Finalization: health.NightFinalProvisional}
+	evidence := &health.MorningInsightEvidence{Date: sleep.Date, NightSleep: sleep}
+	if !health.NormalizeMorningInsightEvidence(evidence, "ru") {
+		t.Fatal("expected provisional claim boundary")
+	}
+	property := insightBundleSchema(true, evidence).Schema["properties"].(map[string]any)["sleep"].(map[string]any)
+	if _, restricted := property["enum"]; restricted {
+		t.Fatalf("recorded night analysis still restricted to boilerplate: %v", property)
+	}
+	provider := &synthesisProvider{text: `{"overview":"Steady.","sleep":"The recorded night is 6.85 hours; its timing and recorded stages describe this episode now.","activity":"activity_1","recovery":"recovery_1","energy":"Current reserve is available.","recommendation":"Easy."}`}
+	evidence.VerdictReason, evidence.Action = "Steady.", "Easy."
+	body, _ := json.Marshal(evidence)
+	got, err := GenerateInsightBundle(context.Background(), provider, ProviderConfig{}, body, "en")
+	if err != nil || got.Blocks[BlockSleep] != "The recorded night is 6.85 hours; its timing and recorded stages describe this episode now." {
+		t.Fatalf("current recorded-night analysis rejected: %v %+v", err, got)
+	}
+}

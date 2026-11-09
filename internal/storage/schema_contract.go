@@ -18,7 +18,7 @@ import (
 // SchemaContractVersion is bumped whenever the declared tenant schema
 // contract changes. Existing tenants are not current until both the permanent
 // marker and registry metadata carry this version and checksum.
-const SchemaContractVersion = 11
+const SchemaContractVersion = 12
 
 // TenantIdentityTable is the permanent marker shared by clean provisioning
 // and existing-tenant migrations. The provisioning marker is intentionally
@@ -105,9 +105,12 @@ type ContractCatalog interface {
 }
 
 var schemaContract = ContractManifest{
-	Tables:  []string{"health_records", "metric_points", "import_runs", "import_run_coverage", "import_stage_points", "import_stage_workouts", "minute_metrics", "hourly_metrics", "dashboard_cache_snapshots", "daily_scores", "settings", "notification_deliveries", "workouts", "ai_briefings", "ai_briefing_blocks", "daily_insight_bundles", "daily_insight_narrative_slots", "completed_night_sleep", "night_sleep_coverage_commitments", "sleep_period_coverage", "completed_sleep_episode", "sleep_goal", "sleep_duration_balance_snapshot", "energy_snapshots", "source_epochs", "target_snapshots", "feature_snapshots", "naive_baselines", "chip_calibrations", "subjective_checkins", "context_prompt_interactions", "derived_metrics", "derived_metric_feedback", "auth_sessions"},
-	Indexes: []string{"idx_auth_sessions_expires", "idx_chip_calibrations_sub_kind", "idx_completed_sleep_episode_wake_start", "idx_context_prompt_one_sent_per_day", "idx_context_prompt_status_expires", "idx_energy_snapshots_date", "idx_energy_snapshots_flags", "idx_energy_snapshots_ts", "idx_feature_snapshots_sub_date", "idx_health_records_completed_processed_at", "idx_hourly_date", "idx_hourly_metric_date", "idx_import_stage_points_coverage", "idx_import_stage_points_dedup", "idx_import_stage_workouts_dedup", "idx_import_stage_workouts_synthetic", "idx_naive_baselines_sub_kind_base_date", "idx_points_date", "idx_points_metric_date", "idx_points_quality_metric", "idx_source_epochs_active", "idx_target_snapshots_source_epoch", "idx_target_snapshots_sub_kind_date", "idx_workouts_name", "idx_workouts_start_time", "uq_source_epochs_kind_start"},
+	Tables:  []string{"health_records", "metric_points", "import_runs", "import_run_coverage", "import_stage_points", "import_stage_workouts", "minute_metrics", "hourly_metrics", "dashboard_cache_snapshots", "daily_scores", "settings", "notification_deliveries", "proactive_events", "report_history", "report_delivery_attempts", "workouts", "ai_briefings", "ai_briefing_blocks", "ai_generation_status", "daily_insight_bundles", "daily_insight_narrative_slots", "completed_night_sleep", "night_sleep_coverage_commitments", "sleep_period_coverage", "completed_sleep_episode", "sleep_goal", "sleep_duration_balance_snapshot", "energy_snapshots", "source_epochs", "target_snapshots", "feature_snapshots", "naive_baselines", "chip_calibrations", "subjective_checkins", "context_prompt_interactions", "derived_metrics", "derived_metric_feedback", "auth_sessions"},
+	Indexes: []string{"idx_proactive_events_active_rule", "idx_report_history_prepared", "idx_report_attempts_report", "idx_auth_sessions_expires", "idx_chip_calibrations_sub_kind", "idx_completed_sleep_episode_wake_start", "idx_context_prompt_one_sent_per_day", "idx_context_prompt_status_expires", "idx_energy_snapshots_date", "idx_energy_snapshots_flags", "idx_energy_snapshots_ts", "idx_feature_snapshots_sub_date", "idx_health_records_completed_processed_at", "idx_hourly_date", "idx_hourly_metric_date", "idx_import_stage_points_coverage", "idx_import_stage_points_dedup", "idx_import_stage_workouts_dedup", "idx_import_stage_workouts_synthetic", "idx_naive_baselines_sub_kind_base_date", "idx_points_date", "idx_points_metric_date", "idx_points_quality_metric", "idx_source_epochs_active", "idx_target_snapshots_source_epoch", "idx_target_snapshots_sub_kind_date", "idx_workouts_name", "idx_workouts_start_time", "uq_source_epochs_kind_start"},
 	IndexDefinitions: []IndexDefinition{
+		{Name: "idx_proactive_events_active_rule", Table: "proactive_events", Unique: true, AccessMethod: "btree", Keys: []string{"rule"}, Predicate: "state = 'active'"},
+		{Name: "idx_report_history_prepared", Table: "report_history", AccessMethod: "btree", Keys: []string{"prepared_at desc", "id desc"}},
+		{Name: "idx_report_attempts_report", Table: "report_delivery_attempts", AccessMethod: "btree", Keys: []string{"report_id", "reserved_at", "id"}},
 		{Name: "idx_auth_sessions_expires", Table: "auth_sessions", AccessMethod: "btree", Keys: []string{"expires_at"}},
 		{Name: "idx_chip_calibrations_sub_kind", Table: "chip_calibrations", AccessMethod: "btree", Keys: []string{"sub_score", "target_kind", "computed_at desc"}},
 		{Name: "idx_completed_sleep_episode_wake_start", Table: "completed_sleep_episode", AccessMethod: "btree", Keys: []string{"wake_date", "start_at"}},
@@ -160,10 +163,15 @@ var schemaContract = ContractManifest{
 		{Table: "daily_scores", Kind: "p", Columns: []string{"date"}},
 		{Table: "settings", Kind: "p", Columns: []string{"key"}},
 		{Table: "notification_deliveries", Kind: "p", Columns: []string{"delivery_key"}},
+		{Table: "proactive_events", Kind: "p", Columns: []string{"id"}},
+		{Table: "report_history", Kind: "p", Columns: []string{"id"}},
+		{Table: "report_history", Kind: "u", Columns: []string{"delivery_key", "revision"}},
+		{Table: "report_delivery_attempts", Kind: "p", Columns: []string{"id"}},
 		{Table: "workouts", Kind: "p", Columns: []string{"id"}},
 		{Table: "workouts", Kind: "u", Columns: []string{"external_id"}},
 		{Table: "ai_briefings", Kind: "p", Columns: []string{"date"}},
 		{Table: "ai_briefing_blocks", Kind: "p", Columns: []string{"date", "lang", "block"}},
+		{Table: "ai_generation_status", Kind: "p", Columns: []string{"pipeline", "date", "lang", "slot"}},
 		{Table: "daily_insight_bundles", Kind: "p", Columns: []string{"date", "lang"}},
 		{Table: "daily_insight_narrative_slots", Kind: "p", Columns: []string{"date", "lang", "slot"}},
 		{Table: "completed_night_sleep", Kind: "p", Columns: []string{"wake_date"}},
@@ -619,6 +627,15 @@ func (s *DB) ensureRuntimeSchemaContractObjectsContext(ctx context.Context) erro
 
 func (s *DB) ensureFullSchemaContractObjectsContext(ctx context.Context) error {
 	if err := s.ensureRuntimeSchemaContractObjectsContext(ctx); err != nil {
+		return err
+	}
+	if err := s.EnsureAIGenerationStatusTableContext(ctx); err != nil {
+		return err
+	}
+	if err := s.EnsureProactiveEventsTableContext(ctx); err != nil {
+		return err
+	}
+	if err := s.EnsureReportHistoryTablesContext(ctx); err != nil {
 		return err
 	}
 	if err := s.EnsureCompletedNightSleepTableContext(ctx); err != nil {

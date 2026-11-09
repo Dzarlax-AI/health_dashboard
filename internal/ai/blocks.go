@@ -17,6 +17,7 @@ const (
 	BlockSleep          = "SLEEP"
 	BlockYesterday      = "YESTERDAY"
 	BlockRecovery       = "RECOVERY"
+	BlockEnergy         = "ENERGY"
 	BlockRecommendation = "RECOMMENDATION"
 )
 
@@ -25,6 +26,7 @@ var GeneratedBlockOrder = []string{
 	BlockSleep,
 	BlockYesterday,
 	BlockRecovery,
+	BlockEnergy,
 	BlockRecommendation,
 }
 
@@ -45,7 +47,18 @@ func hashInputs(v any) string {
 // HashInsightBundle hashes the exact provider-facing evidence packet. The
 // generation fingerprint is layered on by the storage orchestrator.
 func HashInsightBundle(evidence health.MorningInsightEvidence) string {
-	return hashInputs(evidence)
+	payload, err := MorningProviderPayload(evidence)
+	if err != nil {
+		return ""
+	}
+	inputHash := ""
+	if evidence.NightSleep != nil {
+		inputHash = evidence.NightSleep.InputHash
+	}
+	return hashInputs(struct {
+		Payload        json.RawMessage
+		NightInputHash string
+	}{payload, inputHash})
 }
 
 // HashSynthesis is retained as a compatibility alias for callers and tests
@@ -59,6 +72,7 @@ type insightBundleEnvelope struct {
 	Sleep          string `json:"sleep"`
 	Activity       string `json:"activity"`
 	Recovery       string `json:"recovery"`
+	Energy         string `json:"energy"`
 	Recommendation string `json:"recommendation"`
 }
 
@@ -83,12 +97,13 @@ var insightBundleResponseSchema = &ResponseSchema{
 				"type":        "string",
 				"description": "One or two concise sentences explaining the supplied recovery facts.",
 			},
+			"energy": map[string]any{"type": "string", "description": "Explain the supplied current energy facts and their limits."},
 			"recommendation": map[string]any{
 				"type":        "string",
 				"description": "Repeat the supplied action exactly. The server replaces this field with its authoritative value before persistence.",
 			},
 		},
-		"required":             []string{"overview", "sleep", "activity", "recovery", "recommendation"},
+		"required":             []string{"overview", "sleep", "activity", "recovery", "energy", "recommendation"},
 		"additionalProperties": false,
 	},
 }
@@ -113,7 +128,7 @@ func GenerateInsightBundle(ctx context.Context, provider Provider, cfg ProviderC
 		return InsightBundleResult{}, fmt.Errorf("decode insight evidence: %w", err)
 	}
 	preliminarySleep := health.NormalizeMorningInsightEvidence(&evidence, lang)
-	providerPayload, err := json.Marshal(evidence)
+	providerPayload, err := MorningProviderPayload(evidence)
 	if err != nil {
 		return InsightBundleResult{}, fmt.Errorf("encode insight evidence: %w", err)
 	}
@@ -134,17 +149,23 @@ func GenerateInsightBundle(ctx context.Context, provider Provider, cfg ProviderC
 	var invalidPreliminary map[string]string
 	if preliminarySleep {
 		invalidPreliminary = make(map[string]string)
-		sleepText = selectedSleepExplanation(envelope.Sleep, evidence.NightSleep, lang)
-		if sleepText == "" {
-			invalidPreliminary[BlockSleep] = "unsupported preliminary sleep explanation"
+		if !health.MorningSleepAnalysisEligible(evidence.NightSleep, evidence.Date) {
+			sleepText = selectedSleepExplanation(envelope.Sleep, evidence.NightSleep, lang)
+			if sleepText == "" {
+				invalidPreliminary[BlockSleep] = "unsupported preliminary sleep explanation"
+			}
 		}
-		activityText = selectedPreliminaryExplanation(envelope.Activity, evidence.PreliminaryOptions.Activity)
-		if activityText == "" {
-			invalidPreliminary[BlockYesterday] = "unsupported preliminary activity explanation"
+		if len(evidence.PreliminaryOptions.Activity) > 0 {
+			activityText = selectedPreliminaryExplanation(envelope.Activity, evidence.PreliminaryOptions.Activity)
+			if activityText == "" {
+				invalidPreliminary[BlockYesterday] = "unsupported preliminary activity explanation"
+			}
 		}
-		recoveryText = selectedPreliminaryExplanation(envelope.Recovery, evidence.PreliminaryOptions.Recovery)
-		if recoveryText == "" {
-			invalidPreliminary[BlockRecovery] = "unsupported preliminary recovery explanation"
+		if len(evidence.PreliminaryOptions.Recovery) > 0 {
+			recoveryText = selectedPreliminaryExplanation(envelope.Recovery, evidence.PreliminaryOptions.Recovery)
+			if recoveryText == "" {
+				invalidPreliminary[BlockRecovery] = "unsupported preliminary recovery explanation"
+			}
 		}
 		if len(invalidPreliminary) > 0 {
 			return InsightBundleResult{GenerationResult: generated, InvalidBlocks: invalidPreliminary}, fmt.Errorf("insight bundle contains unsupported preliminary explanation")
@@ -155,6 +176,7 @@ func GenerateInsightBundle(ctx context.Context, provider Provider, cfg ProviderC
 		BlockSleep:          sleepText,
 		BlockYesterday:      activityText,
 		BlockRecovery:       recoveryText,
+		BlockEnergy:         envelope.Energy,
 		BlockRecommendation: firstNonEmptyInsight(evidence.Action, evidence.VerdictReason),
 	}
 	result := InsightBundleResult{
@@ -184,19 +206,19 @@ func insightBundleSchema(preliminary bool, evidence *health.MorningInsightEviden
 	for key, value := range insightBundleResponseSchema.Schema["properties"].(map[string]any) {
 		properties[key] = value
 	}
-	choices := []string{health.MorningSleepChoiceRecordedDuration}
-	if evidence.NightSleep.Capture == health.NightCapturePartial {
-		choices = append(choices, health.MorningSleepChoiceAwaitingCompletion)
-	} else {
-		choices = append(choices, health.MorningSleepChoiceAwaitingFinalization)
+	if !health.MorningSleepAnalysisEligible(evidence.NightSleep, evidence.Date) {
+		choices := []string{health.MorningSleepChoiceRecordedDuration, health.MorningSleepChoiceAwaitingCompletion}
+		properties["sleep"] = map[string]any{
+			"type": "string", "enum": choices,
+			"description": "Choose the interpretation of the incomplete capture. The server localizes it.",
+		}
 	}
-	properties["sleep"] = map[string]any{
-		"type":        "string",
-		"enum":        choices,
-		"description": "Choose the safe interpretation that best fits the preliminary sleep record. The server localizes the choice; do not return prose.",
+	if len(evidence.PreliminaryOptions.Activity) > 0 {
+		properties["activity"] = preliminaryOptionSchema(evidence.PreliminaryOptions.Activity, "Pick the most relevant server-authored activity/cardio statement ID. Return only its ID.")
 	}
-	properties["activity"] = preliminaryOptionSchema(evidence.PreliminaryOptions.Activity, "Pick the most relevant server-authored activity/cardio statement ID. Return only its ID.")
-	properties["recovery"] = preliminaryOptionSchema(evidence.PreliminaryOptions.Recovery, "Pick the most relevant server-authored recovery statement ID. Return only its ID.")
+	if len(evidence.PreliminaryOptions.Recovery) > 0 {
+		properties["recovery"] = preliminaryOptionSchema(evidence.PreliminaryOptions.Recovery, "Pick the most relevant server-authored recovery statement ID. Return only its ID.")
+	}
 	schema := make(map[string]any, len(insightBundleResponseSchema.Schema))
 	for key, value := range insightBundleResponseSchema.Schema {
 		schema[key] = value
@@ -220,8 +242,7 @@ func allowedPreliminarySleepChoice(choice string, sleep *health.MorningReportSle
 	if choice == health.MorningSleepChoiceRecordedDuration {
 		return true
 	}
-	return (sleep.Capture == health.NightCapturePartial && (sleep.Finalization == health.NightFinalProvisional || sleep.Finalization == health.NightFinalFinal) && choice == health.MorningSleepChoiceAwaitingCompletion) ||
-		(sleep.Capture == health.NightCaptureComplete && sleep.Finalization == health.NightFinalProvisional && choice == health.MorningSleepChoiceAwaitingFinalization)
+	return sleep.Capture == health.NightCapturePartial && (sleep.Finalization == health.NightFinalProvisional || sleep.Finalization == health.NightFinalFinal) && choice == health.MorningSleepChoiceAwaitingCompletion
 }
 
 func selectedSleepExplanation(choice string, sleep *health.MorningReportSleep, lang string) string {

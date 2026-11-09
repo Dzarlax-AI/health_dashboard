@@ -66,6 +66,7 @@ export function DashboardHero({ locale, model }: DashboardHeroProps) {
             action={primary?.next_step?.text}
             ai={model.todayInsights?.ai_insight}
             state={model.todayInsights?.generation.slots?.find((slot) => slot.key === "overall")?.state}
+            reasonCode={model.todayInsights?.generation.slots?.find((slot) => slot.key === "overall")?.reason_code}
           />
           {model.checkinAnswer ? (
             <p className="today-hero__checkin">

@@ -233,6 +233,7 @@ export function HealthDetailReady({
             action={recoveryDomain.insight.next_step?.text}
             ai={recoveryDomain.ai_insight}
             state={resources.todayInsights?.generation.slots?.find((slot) => slot.key === "recovery")?.state}
+            reasonCode={resources.todayInsights?.generation.slots?.find((slot) => slot.key === "recovery")?.reason_code}
             preview={resources.todayInsights?.generation.narrative_mode === "preview"}
           />
         ) : model.context ? (

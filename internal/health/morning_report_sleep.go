@@ -14,15 +14,38 @@ const (
 // MorningReportSleep is the dated canonical night used by the morning report.
 // Missing or incomplete capture is explicit and never replaced with an average.
 type MorningReportSleep struct {
-	ReportDate     string   `json:"report_date"`
-	Date           string   `json:"date"`
-	Hours          *float64 `json:"hours"`
-	BaselineHours  *float64 `json:"baseline_hours,omitempty"`
-	BaselineNights int      `json:"baseline_nights,omitempty"`
-	Capture        string   `json:"capture"`
-	Assessment     string   `json:"assessment"`
-	Finalization   string   `json:"finalization"`
-	InputHash      string   `json:"input_hash"`
+	AnalysisStatus                  string                    `json:"analysis_status,omitempty"`
+	RecentRecordedMeanHours         *float64                  `json:"recent_recorded_mean_hours,omitempty"`
+	RecentRecordedNights            int                       `json:"recent_recorded_nights,omitempty"`
+	RecentRecordedDifferenceMinutes *int                      `json:"recent_recorded_difference_minutes,omitempty"`
+	Episode                         *MorningSleepEpisode      `json:"episode,omitempty"`
+	Observed                        *MorningSleepReadiness    `json:"observed,omitempty"`
+	YesterdayActivity               *MorningYesterdayActivity `json:"yesterday_activity,omitempty"`
+	ReportDate                      string                    `json:"report_date"`
+	Date                            string                    `json:"date"`
+	Hours                           *float64                  `json:"hours"`
+	BaselineHours                   *float64                  `json:"baseline_hours,omitempty"`
+	BaselineNights                  int                       `json:"baseline_nights,omitempty"`
+	Capture                         string                    `json:"capture"`
+	Assessment                      string                    `json:"assessment"`
+	Finalization                    string                    `json:"finalization"`
+	InputHash                       string                    `json:"input_hash"`
+}
+
+type MorningYesterdayActivity struct {
+	Date     string   `json:"date"`
+	Steps    *float64 `json:"steps,omitempty"`
+	Calories *float64 `json:"calories,omitempty"`
+	Exercise *float64 `json:"exercise,omitempty"`
+}
+
+// HasUsableFinalNight keeps observed-episode fallback separate from a dated,
+// plausible canonical night that is already complete and final.
+func (sleep *MorningReportSleep) HasUsableFinalNight(reportDate string) bool {
+	return sleep != nil && reportDate != "" && sleep.Date == reportDate &&
+		sleep.Capture == NightCaptureComplete && sleep.Assessment == NightDurationPlausible &&
+		sleep.Finalization == NightFinalFinal && sleep.Hours != nil &&
+		!math.IsNaN(*sleep.Hours) && !math.IsInf(*sleep.Hours, 0) && *sleep.Hours > 0 && *sleep.Hours <= 24
 }
 
 // SelectMorningReportSleep selects the latest observed canonical night without
@@ -48,7 +71,7 @@ func SelectMorningReportSleep(reportDate string, nights []CompletedNightSleep) M
 	if err != nil {
 		return out
 	}
-	if !latest.IsDefinitiveClaimEligible() {
+	if latest.CaptureCompleteness != NightCaptureComplete || latest.DurationAssessment != NightDurationPlausible {
 		return out
 	}
 	from := date.AddDate(0, 0, -30).Format("2006-01-02")
@@ -65,6 +88,14 @@ func SelectMorningReportSleep(reportDate string, nights []CompletedNightSleep) M
 		out.BaselineHours = &average
 	}
 	return out
+}
+
+// MorningSleepAnalysisEligible permits analysis of the currently captured
+// night. Calendar finalization can revise it later; it is not an analysis gate.
+func MorningSleepAnalysisEligible(sleep *MorningReportSleep, reportDate string) bool {
+	return sleep != nil && sleep.Date == reportDate && reportDate != "" &&
+		sleep.Capture == NightCaptureComplete && sleep.Assessment == NightDurationPlausible &&
+		sleep.Hours != nil && !math.IsNaN(*sleep.Hours) && !math.IsInf(*sleep.Hours, 0) && *sleep.Hours > 0 && *sleep.Hours <= 24
 }
 
 // PreliminaryMorningSleepExplanationEligible permits only a plausible,

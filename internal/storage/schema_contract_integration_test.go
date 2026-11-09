@@ -71,6 +71,9 @@ func TestEnsureSchemaContractDoesNotCreatePartialSleepFeatureSchema(t *testing.T
 		"sleep_goal",
 		"completed_sleep_episode",
 		"sleep_period_coverage",
+		"ai_generation_status",
+		"report_delivery_attempts",
+		"report_history",
 	} {
 		if _, err := db.pool.Exec(ctx, "DROP TABLE "+table+" CASCADE"); err != nil {
 			t.Fatalf("drop %s: %v", table, err)
@@ -88,7 +91,7 @@ func TestEnsureSchemaContractDoesNotCreatePartialSleepFeatureSchema(t *testing.T
 			t.Fatalf("runtime schema ensure removed existing partial table %s", table)
 		}
 	}
-	for _, table := range []string{"sleep_period_coverage", "completed_sleep_episode", "sleep_goal", "sleep_duration_balance_snapshot"} {
+	for _, table := range []string{"sleep_period_coverage", "completed_sleep_episode", "sleep_goal", "sleep_duration_balance_snapshot", "ai_generation_status", "report_history", "report_delivery_attempts"} {
 		var exists bool
 		if err := db.pool.QueryRow(ctx, "SELECT to_regclass(current_schema() || '.' || $1) IS NOT NULL", table).Scan(&exists); err != nil {
 			t.Fatalf("inspect %s: %v", table, err)

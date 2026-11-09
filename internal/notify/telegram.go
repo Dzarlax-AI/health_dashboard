@@ -3,6 +3,7 @@ package notify
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -42,12 +43,21 @@ type telegramAPIResponse struct {
 // must not retry or fall back to a second send when the acknowledgement is
 // truncated after HTTP 200.
 func decodeTelegramResponse(resp *http.Response, dst any) error {
+	if resp.StatusCode >= 500 {
+		return telegramTransportError{cause: fmt.Errorf("telegram API: status %d", resp.StatusCode)}
+	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("telegram API: status %d", resp.StatusCode)
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return telegramTransportError{cause: fmt.Errorf("read telegram response: %w", err)}
+	}
+	var envelope struct {
+		OK *bool `json:"ok"`
+	}
+	if err = json.Unmarshal(body, &envelope); err != nil || envelope.OK == nil {
+		return telegramTransportError{cause: fmt.Errorf("decode telegram acknowledgment")}
 	}
 	if err = json.Unmarshal(body, dst); err != nil {
 		return telegramTransportError{cause: fmt.Errorf("decode telegram response: %w", err)}
@@ -78,6 +88,11 @@ func postJSON(url string, payload []byte) (*http.Response, error) {
 
 // Send sends an HTML-formatted message to the configured chat.
 func (b *Bot) Send(text string) error {
+	_, err := b.SendReceipt(text)
+	return err
+}
+
+func (b *Bot) SendReceipt(text string) (*int64, error) {
 	url := botAPIURL(b.token, "sendMessage")
 	payload, _ := json.Marshal(map[string]string{
 		"chat_id":    b.chatID,
@@ -86,17 +101,25 @@ func (b *Bot) Send(text string) error {
 	})
 	resp, err := postJSON(url, payload)
 	if err != nil {
-		return telegramTransportError{cause: err}
+		return nil, telegramTransportError{cause: err}
 	}
 	defer resp.Body.Close()
-	var parsed telegramAPIResponse
+	var parsed struct {
+		telegramAPIResponse
+		Result struct {
+			MessageID *int64 `json:"message_id"`
+		} `json:"result"`
+	}
 	if err = decodeTelegramResponse(resp, &parsed); err != nil {
-		return err
+		return nil, err
 	}
 	if !parsed.OK {
-		return fmt.Errorf("telegram API: ok=false description=%q", parsed.Description)
+		return nil, fmt.Errorf("telegram API: ok=false description=%q", parsed.Description)
 	}
-	return nil
+	if parsed.Result.MessageID == nil || *parsed.Result.MessageID <= 0 {
+		return nil, telegramTransportError{cause: errors.New("incomplete Telegram message acknowledgment")}
+	}
+	return parsed.Result.MessageID, nil
 }
 
 func buildRichMessagePayload(chatID, html string, replyMarkup any) ([]byte, error) {
@@ -114,24 +137,37 @@ func buildRichMessagePayload(chatID, html string, replyMarkup any) ([]byte, erro
 
 // SendRichHTML sends a Telegram Rich Message using InputRichMessage.html.
 func (b *Bot) SendRichHTML(html string) error {
+	_, err := b.SendRichHTMLReceipt(html)
+	return err
+}
+
+func (b *Bot) SendRichHTMLReceipt(html string) (*int64, error) {
 	url := botAPIURL(b.token, "sendRichMessage")
 	payload, err := buildRichMessagePayload(b.chatID, html, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	resp, err := postJSON(url, payload)
 	if err != nil {
-		return telegramTransportError{cause: err}
+		return nil, telegramTransportError{cause: err}
 	}
 	defer resp.Body.Close()
-	var parsed telegramAPIResponse
+	var parsed struct {
+		telegramAPIResponse
+		Result struct {
+			MessageID *int64 `json:"message_id"`
+		} `json:"result"`
+	}
 	if err = decodeTelegramResponse(resp, &parsed); err != nil {
-		return err
+		return nil, err
 	}
 	if !parsed.OK {
-		return fmt.Errorf("telegram API: ok=false description=%q", parsed.Description)
+		return nil, fmt.Errorf("telegram API: ok=false description=%q", parsed.Description)
 	}
-	return nil
+	if parsed.Result.MessageID == nil || *parsed.Result.MessageID <= 0 {
+		return nil, telegramTransportError{cause: errors.New("incomplete Telegram message acknowledgment")}
+	}
+	return parsed.Result.MessageID, nil
 }
 
 // InlineButton is a single Telegram inline-keyboard button. CallbackData
@@ -179,6 +215,9 @@ func (b *Bot) SendInlineKeyboard(text string, rows [][]InlineButton) (int64, err
 	}
 	if !parsed.OK {
 		return 0, fmt.Errorf("telegram API: ok=false: %s", parsed.Description)
+	}
+	if parsed.Result.MessageID <= 0 {
+		return 0, telegramTransportError{cause: errors.New("incomplete Telegram message acknowledgment")}
 	}
 	return parsed.Result.MessageID, nil
 }

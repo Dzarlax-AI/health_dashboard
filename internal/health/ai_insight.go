@@ -15,10 +15,32 @@ import (
 // AIInsightVersion is deliberately separate from the retired explanatory
 // narrative contract. Old approved prose cannot be decoded as a second opinion.
 const AIInsightVersion = "today-ai-insight-v1"
-const AIInsightInputVersion = "today-ai-insight-input-v5.5"
+const AIInsightInputVersion = "today-ai-insight-input-v9"
 
 const partialSleepCurrentDurationMeaning = "currently recorded sleep duration; completeness of the night and sleep quality are unconfirmed by available data"
 const partialSleepCurrentDurationWindow = "current date, currently recorded duration; night completeness and quality unconfirmed"
+const recordedSleepEpisodeMeaning = "duration of a complete plausible recorded sleep episode; daily calendar finalization is pending, not evidence of missing episode data; sleep quality is unconfirmed"
+const recordedSleepEpisodeWindow = "last recorded sleep episode; daily finalization remains provisional"
+
+func RecordedSleepDurationFact(locale string, hours float64) DailyInsightNarrativeFact {
+	return DailyInsightNarrativeFact{ID: "sleep_current_recorded_duration", Domain: "sleep", Meaning: partialSleepCurrentDurationMeaning, Window: partialSleepCurrentDurationWindow, Authority: "server_derived", Fresh: true, Statement: localizedNarrativePartialSleepFact(locale, hours), DisplayValues: []string{fmt.Sprintf("%.1f", hours)}, EvidenceIDs: []string{"sleep_current_recorded_duration"}}
+}
+
+// RecordedSleepEpisodeFact separates a complete captured episode from a partial
+// capture without granting finalized-night comparisons or quality claims.
+func RecordedSleepEpisodeFact(locale string, hours float64) DailyInsightNarrativeFact {
+	fact := RecordedSleepDurationFact(locale, hours)
+	fact.Meaning, fact.Window = recordedSleepEpisodeMeaning, recordedSleepEpisodeWindow
+	switch normalizeDailyInsightLocale(locale) {
+	case "ru":
+		fact.Statement = fmt.Sprintf("Зафиксировано %.1f ч сна за прошедшую ночь.", hours)
+	case "sr":
+		fact.Statement = fmt.Sprintf("Zabeleženo je %.1f h sna tokom protekle noći.", hours)
+	default:
+		fact.Statement = fmt.Sprintf("Recorded sleep for last night: %.1f h.", hours)
+	}
+	return fact
+}
 
 // AIInsightReaderCopyValidationRevision keeps cached/evaluated AI output tied
 // to the local reader-copy safety gate as that gate gains observed regressions.
@@ -42,6 +64,7 @@ type AIInsightServerView struct {
 	Observation string `json:"observation"`
 	Meaning     string `json:"meaning"`
 	Action      string `json:"action,omitempty"`
+	ActionMode  string `json:"action_mode,omitempty"`
 }
 
 type AIInsightSibling struct {
@@ -60,10 +83,12 @@ type AIInsightDomainState struct {
 // AIInsightInput contains bounded, derived evidence and the server's view as
 // a comparison point. It never contains raw samples or device provenance.
 type AIInsightInput struct {
+	Date          string                      `json:"date"`
 	Version       string                      `json:"version"`
 	Locale        string                      `json:"locale"`
 	Slot          string                      `json:"slot"`
 	ServerInsight AIInsightServerView         `json:"server_insight"`
+	DailyGuidance AIInsightServerView         `json:"daily_guidance"`
 	Facts         []DailyInsightNarrativeFact `json:"facts"`
 	DomainStates  []AIInsightDomainState      `json:"domain_states"`
 	Siblings      []AIInsightSibling          `json:"siblings,omitempty"`
@@ -104,7 +129,9 @@ func BuildAIInsightInput(snapshot *DailyInsightSnapshot, locale, slot string, si
 	if snapshot == nil || !isDailyInsightNarrativeSlot(slot) {
 		return AIInsightInput{}, false
 	}
-	input := AIInsightInput{Version: AIInsightInputVersion, Locale: locale, Slot: slot, Facts: []DailyInsightNarrativeFact{}}
+	context := BuildInsightFactContext(snapshot)
+	sleepUnconfirmed := insightSleepUnconfirmed(snapshot)
+	input := AIInsightInput{Date: snapshot.Date, Version: AIInsightInputVersion, Locale: locale, Slot: slot, Facts: []DailyInsightNarrativeFact{}, DailyGuidance: context.Guidance}
 	var server DailyInsight
 	if slot == DailyInsightNarrativeOverallSlot {
 		server = snapshot.Primary
@@ -113,6 +140,11 @@ func BuildAIInsightInput(snapshot *DailyInsightSnapshot, locale, slot string, si
 			input.DomainStates = append(input.DomainStates, AIInsightDomainState{Domain: domain.Key, DataState: domain.DataState, Confidence: domain.Confidence})
 		}
 		input.Siblings = append([]AIInsightSibling(nil), siblings...)
+		if sleepUnconfirmed {
+			for i := range input.Siblings {
+				input.Siblings[i].Text, input.Siblings[i].AlternativeAction = "", ""
+			}
+		}
 	} else {
 		found := false
 		partialSleepDataGuidance := false
@@ -121,8 +153,7 @@ func BuildAIInsightInput(snapshot *DailyInsightSnapshot, locale, slot string, si
 				continue
 			}
 			found = true
-			partialSleepDataGuidance = slot == "sleep" && domain.DataState == "partial" &&
-				domain.Insight.State == "insufficient_data" && domain.Insight.GapReason == "sleep_partial"
+			partialSleepDataGuidance = slot == "sleep" && ((domain.DataState == "partial" && domain.Insight.State == "insufficient_data" && domain.Insight.GapReason == "sleep_partial") || (domain.DataState == "fresh" && domain.Confidence == "provisional" && domain.Insight.State == "insight" && domain.Insight.GapReason == "sleep_recorded_episode"))
 			if (domain.DataState != "fresh" || domain.Insight.State != "insight") && !partialSleepDataGuidance {
 				return AIInsightInput{}, false
 			}
@@ -133,36 +164,34 @@ func BuildAIInsightInput(snapshot *DailyInsightSnapshot, locale, slot string, si
 		if !found {
 			return AIInsightInput{}, false
 		}
-		energyContextFresh := false
-		if slot == "recovery" {
-			for _, domain := range snapshot.Domains {
-				if domain.Key == "energy" {
-					input.DomainStates = append(input.DomainStates, AIInsightDomainState{Domain: domain.Key, DataState: domain.DataState, Confidence: domain.Confidence})
-					energyContextFresh = domain.DataState == "fresh" && domain.Confidence == "final"
-					break
-				}
+		for _, state := range context.DomainStates {
+			if state.Domain != slot && state.Domain != "sleep" {
+				input.DomainStates = append(input.DomainStates, state)
 			}
 		}
 		facts := aiInsightUsableFacts(snapshot)
 		if partialSleepDataGuidance {
 			facts = aiInsightPartialSleepSafeFacts(snapshot)
 		}
+		hasFocusFact := false
 		for _, fact := range facts {
-			if fact.Domain == slot || (slot == "recovery" && energyContextFresh && fact.ID == "energy_authoritative_state" && fact.Domain == "energy") {
+			if fact.Domain == slot {
+				hasFocusFact = true
+			}
+			if insightContextFactForSlot(fact, slot) && (fact.Domain == slot || insightContextCrossFactEligible(context, fact)) {
 				input.Facts = append(input.Facts, fact)
 			}
 		}
+		if !hasFocusFact {
+			return AIInsightInput{}, false
+		}
 	}
-	partialSleepDataGuidance := slot == "sleep" && server.State == "insufficient_data" && server.GapReason == "sleep_partial"
+	partialSleepDataGuidance := slot == "sleep" && ((server.State == "insufficient_data" && server.GapReason == "sleep_partial") || (server.State == "insight" && server.GapReason == "sleep_recorded_episode"))
 	if len(input.Facts) == 0 || server.State == "" ||
 		(slot != DailyInsightNarrativeOverallSlot && (server.State != "insight" || server.Remediation != "") && !partialSleepDataGuidance) {
 		return AIInsightInput{}, false
 	}
-	input.ServerInsight = AIInsightServerView{State: server.State, AnswerKind: server.AnswerKind, GapReason: server.GapReason,
-		Observation: server.Observation, Meaning: server.Meaning}
-	if server.NextStep != nil {
-		input.ServerInsight.Action = server.NextStep.Text
-	}
+	input.ServerInsight = sleepSafeInsightServerView(server, sleepUnconfirmed)
 	return input, true
 }
 
@@ -170,15 +199,14 @@ func BuildAIInsightInput(snapshot *DailyInsightSnapshot, locale, slot string, si
 // complete or that quality is known. Keep partial Sleep out of Overall, and
 // expose it to the Sleep slot only through its explicit safe fact.
 func aiInsightUsableFacts(snapshot *DailyInsightSnapshot) []DailyInsightNarrativeFact {
-	domainStates := make(map[string]string, len(snapshot.Domains))
-	for _, domain := range snapshot.Domains {
-		domainStates[domain.Key] = domain.DataState
-	}
+	sleepUnconfirmed := insightSleepUnconfirmed(snapshot)
 	fresh := dailyInsightFreshNarrativeFacts(snapshot)
 	facts := make([]DailyInsightNarrativeFact, 0, len(fresh))
 	for _, original := range fresh {
-		if original.Domain == "sleep" && domainStates["sleep"] != "fresh" {
-			continue
+		if sleepUnconfirmed && (original.Domain == "sleep" || factMentionsSleep(original)) {
+			if !hasRecordedSleepEpisode(snapshot) || original.Domain != "sleep" || !aiInsightPartialSleepFactIsSafe(original) {
+				continue
+			}
 		}
 		if aiInsightHeadlineDuplicatesComponent(original, fresh) {
 			continue
@@ -203,22 +231,40 @@ func aiInsightPartialSleepSafeFacts(snapshot *DailyInsightSnapshot) []DailyInsig
 	facts := make([]DailyInsightNarrativeFact, 0, 1)
 	for _, fact := range dailyInsightFreshNarrativeFacts(snapshot) {
 		if fact.Domain == "sleep" && aiInsightPartialSleepFactIsSafe(fact) {
+			if fact.ID != "sleep_current_recorded_duration" && !hasRecordedSleepEpisode(snapshot) {
+				continue
+			}
 			facts = append(facts, fact)
 		}
 	}
 	return facts
 }
 
+func hasRecordedSleepEpisode(snapshot *DailyInsightSnapshot) bool {
+	for _, d := range snapshot.Domains {
+		if d.Key == "sleep" && d.DataState == "fresh" && d.Insight.GapReason == "sleep_recorded_episode" {
+			return true
+		}
+	}
+	return false
+}
+
 // aiInsightPartialSleepFactIsSafe keeps the exception deliberately narrow:
 // the provider may only see a fact whose own fields limit it to the currently
-// recorded duration and explicitly leave completeness and quality unknown.
+// recorded duration, distinguishing partial capture from a complete episode
+// awaiting calendar finalization. Both leave sleep quality unconfirmed.
 // It does not admit trends or comparisons that could include it.
 // Domain state is a guard, not a substitute for each fact's own semantics.
 func aiInsightPartialSleepFactIsSafe(fact DailyInsightNarrativeFact) bool {
 	meaning, window := strings.ToLower(fact.Meaning), strings.ToLower(fact.Window)
 	switch fact.ID {
 	case "sleep_current_recorded_duration":
-		return meaning == partialSleepCurrentDurationMeaning && window == partialSleepCurrentDurationWindow
+		return (meaning == partialSleepCurrentDurationMeaning && window == partialSleepCurrentDurationWindow) ||
+			(meaning == recordedSleepEpisodeMeaning && window == recordedSleepEpisodeWindow)
+	case "sleep_recorded_architecture":
+		return meaning == recordedSleepArchitectureMeaning && window == "current recorded episode"
+	case "sleep_recorded_comparison":
+		return meaning == recordedSleepComparisonMeaning && window == "current recorded episode"
 	default:
 		return false
 	}
@@ -330,7 +376,7 @@ func ValidateAIInsightSlot(input AIInsightInput, candidate AIInsightSlotResponse
 func aiInsightPartialSleepClaimsCompletion(input AIInsightInput, field string) bool {
 	partialSleep := false
 	for _, domain := range input.DomainStates {
-		if domain.Domain == "sleep" && domain.DataState == "partial" {
+		if domain.Domain == "sleep" && (domain.DataState == "partial" || (domain.Confidence != "" && domain.Confidence != "final")) {
 			partialSleep = true
 			break
 		}

@@ -2,12 +2,34 @@ package storage
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"health-receiver/internal/ai"
 	"health-receiver/internal/health"
 )
+
+func TestMorningEvidenceUsesTodayRecoveryAndDatedYesterdayActivity(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	date := db.Today()
+	day, _ := time.Parse("2006-01-02", date)
+	yesterday := day.AddDate(0, 0, -1).Format("2006-01-02")
+	steps, hrv := 6400.0, 43.6
+	raw := &health.RawMetrics{LastDate: date, Daily: []health.DailyHealthMetrics{{Date: yesterday, Steps: &steps}, {Date: date, Steps: &steps}}, ReadinessEvidence: &health.ReadinessEvidenceInput{Date: date, HRV: health.ReadinessComponentEvidence{Metric: "heart_rate_variability", Present: true, Value: &hrv, EvaluatedDate: date, SourceDate: date, Freshness: health.ReadinessFreshnessOK, Confidence: health.ReadinessConfidenceFinal, SampleCount: health.MinSleepWindowHRVSamplesForFullConfidence}}}
+	b := &health.BriefingResponse{Date: date, ReadinessToday: 84, ReadinessTodayBand: "optimal", ReadinessTodayLabel: "Optimal", ReadinessConfidence: health.ReadinessConfidenceFinal, ReadinessServing: &health.ReadinessServingState{Status: health.ReadinessServingFresh, Confidence: health.ReadinessConfidenceFinal}, RawMetrics: raw, Sections: []health.BriefingSection{{Key: "recovery", Summary: "Moderate weekly recovery.", Details: []health.BriefingDetail{{Label: "HRV", Value: "38 ms"}}}}}
+	evidence, err := db.morningInsightEvidence(context.Background(), b, raw, date, "en")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evidence.NightSleep.YesterdayActivity == nil || evidence.NightSleep.YesterdayActivity.Date != yesterday || evidence.NightSleep.YesterdayActivity.Steps == nil || evidence.Daily[1].Steps != nil {
+		t.Fatalf("yesterday's activity not isolated from today: %+v", evidence)
+	}
+	if len(evidence.Sections) != 1 || strings.Contains(evidence.Sections[0].Summary, "Moderate") || !strings.Contains(evidence.Sections[0].Summary, "84") || len(evidence.Sections[0].Details) != 1 || !strings.Contains(evidence.Sections[0].Details[0].Note, "43.6") {
+		t.Fatalf("legacy weekly recovery reached morning provider: %+v", evidence.Sections)
+	}
+}
 
 func TestMorningGenerationHashRejectsChangedNightAndConfig(t *testing.T) {
 	cfg := AIConfig{Provider: "openai", Providers: map[string]AIProviderSettings{"openai": {APIKey: "synthetic-test-key"}}}
@@ -161,5 +183,45 @@ func TestMorningEvidenceNewerUnverifiedNightDoesNotReuseOldCanonicalMetadata(t *
 	evidence, err = db.morningInsightEvidence(ctx, briefing, nil, "2026-09-30", "en")
 	if err != nil || (evidence.NightSleep.InputHash != "night-2" || evidence.NightSleep.Capture != health.NightCapturePartial) {
 		t.Fatalf("same-day canonical replaced by generic: %#v %v", evidence.NightSleep, err)
+	}
+}
+
+func TestMorningEvidenceUsesFinalNightInsteadOfStableObservedEpisode(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	if err := db.SaveSettings(map[string]string{"timezone": "UTC"}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	date := now.Format("2006-01-02")
+	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	id := insertTestRawRecord(t, db, "final-versus-observed")
+	pointDate := day.Add(4 * time.Hour).Format("2006-01-02 15:04:05 -0700")
+	if _, err := db.pool.Exec(ctx, `INSERT INTO metric_points(health_record_id,metric_name,units,date,qty,source,quality) VALUES($1,'sleep_core','hr',$2,3,'Apple Watch','ok')`, id, pointDate); err != nil {
+		t.Fatal(err)
+	}
+	candidate, ok, err := db.loadWakeCandidate(date, time.UTC)
+	if err != nil || !ok {
+		t.Fatalf("candidate %v %v", ok, err)
+	}
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wake := MorningWakeStatus{Ready: true, Confidence: WakeConfidenceHigh, CandidateWake: candidate.Wake, InputSource: candidate.Source, InputsHash: candidate.InputsHash, Signal: candidate.Signal}
+	if err := saveWakeStatusTx(ctx, tx, date, wake, now.Add(-time.Hour), now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	final := health.CompletedNightSleep{WakeDate: date, DurationHours: 7.5, Source: "Apple Watch", SourceEpoch: "test", InputHash: "final", AlgorithmVersion: "v1", CaptureCompleteness: health.NightCaptureComplete, DurationAssessment: health.NightDurationPlausible, FinalizationState: health.NightFinalFinal, ClaimEligibility: health.NightClaimEligible, ObservedAt: now}
+	if err := db.SaveCompletedNightSleep(ctx, final, nil); err != nil {
+		t.Fatal(err)
+	}
+	evidence, err := db.morningInsightEvidence(ctx, &health.BriefingResponse{Date: date}, nil, date, "en")
+	if err != nil || evidence.NightSleep == nil || evidence.NightSleep.Observed != nil || !evidence.NightSleep.HasUsableFinalNight(date) {
+		t.Fatalf("final evidence: %#v, %v", evidence.NightSleep, err)
 	}
 }

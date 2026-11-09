@@ -15,7 +15,28 @@ import (
 // snapshot. Domain opinions settle first; overall sees the accepted siblings
 // or explicit fallback markers and is re-keyed when a late sibling changes.
 func resolveTodayAIInsights(ctx context.Context, db *storage.DB, snapshot *health.DailyInsightSnapshot,
-	cfg storage.AIConfig, lang, providerFingerprint string) (*health.DailyInsightSnapshot, []clientapi.TodayInsightSlotGeneration, error) {
+	cfg storage.AIConfig, lang, providerFingerprint string) (result *health.DailyInsightSnapshot, generationStates []clientapi.TodayInsightSlotGeneration, resultErr error) {
+	defer func() {
+		if resultErr != nil {
+			return
+		}
+		diagnostics, err := db.GetAIGenerationStatuses(ctx, snapshot.Date, lang)
+		if err != nil {
+			return
+		}
+		for i := range generationStates {
+			for _, d := range diagnostics {
+				if d.Pipeline == "today" && d.Slot == generationStates[i].Key {
+					generationStates[i].ReasonCode = d.ReasonCode
+					generationStates[i].LastAttemptAt = d.LastAttemptAt
+					generationStates[i].LastSuccessAt = d.LastSuccessAt
+				}
+			}
+		}
+	}()
+	if err := db.ScheduleSnapshotAIInsights(ctx, snapshot, cfg, lang, "request"); err != nil {
+		log.Printf("today AI insight: background scheduling unavailable: %v", err)
+	}
 	entries, err := db.GetDailyInsightNarrativeSlots(snapshot.Date, lang)
 	if err != nil {
 		return nil, nil, err
@@ -63,6 +84,7 @@ func resolveTodayAIInsights(ctx context.Context, db *storage.DB, snapshot *healt
 		return nil, nil, err
 	}
 	states = append(states, state)
+
 	return rendered, states, nil
 }
 

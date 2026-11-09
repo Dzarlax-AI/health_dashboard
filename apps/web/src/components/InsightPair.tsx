@@ -1,5 +1,5 @@
 import type { TodayInsightsResponse } from "../api/client";
-import { translate, type Locale } from "../i18n";
+import { translate, type Locale, type MessageKey } from "../i18n";
 
 type AIInsight = TodayInsightsResponse["ai_insight"];
 
@@ -11,11 +11,19 @@ interface InsightPairProps {
   action?: string;
   ai?: AIInsight;
   state?: string;
+  reasonCode?: string;
   aiUnavailableReason?: string;
   preview?: boolean;
 }
 
-export function InsightPair({ locale, title, observation, meaning, action, ai, state, aiUnavailableReason, preview }: InsightPairProps) {
+export function InsightPair({ locale, title, observation, meaning, action, ai, state, reasonCode, aiUnavailableReason, preview }: InsightPairProps) {
+  const reasonKeys: Record<string, MessageKey> = {
+    no_added_value: "aiInsightNoAddedValue", no_eligible_facts: "aiInsightNoFacts",
+    backoff: "aiInsightRetry", provider_error: "aiInsightRetry", review_rejected: "aiInsightRetry",
+    waiting_for_domains: "aiInsightWaitingDomains",
+  };
+  const reasonKey = reasonCode ? reasonKeys[reasonCode] : undefined;
+  const unavailable = reasonKey ? translate(locale, reasonKey) : aiUnavailableReason;
   return (
     <div className="insight-pair" data-ai-state={state || (ai ? "ready" : "disabled")}>
       {preview ? <span className="insight-pair__preview">{translate(locale, "todayInsightsPreview")}</span> : null}
@@ -37,13 +45,14 @@ export function InsightPair({ locale, title, observation, meaning, action, ai, s
             </p>
           ) : null}
           <p>{ai.text}</p>
+          {reasonKey && ai.stale ? <p role="status">{translate(locale, reasonKey)}</p> : null}
           {ai.alternative_action ? (
             <p className="insight-pair__action">
               <span>{translate(locale, "aiInsightAlternative")}</span> {ai.alternative_action}
             </p>
           ) : null}
         </article>
-      ) : aiUnavailableReason ? <p className="insight-pair__unavailable">{aiUnavailableReason}</p> : null}
+      ) : unavailable ? <p className="insight-pair__unavailable" role="status">{unavailable}</p> : null}
     </div>
   );
 }

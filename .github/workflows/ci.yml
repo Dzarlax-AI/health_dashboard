@@ -225,6 +225,9 @@ jobs:
       - name: Run import and durable-delivery DB lane
         run: make test-db-import
 
+      - name: Run insights and notification DB lane
+        run: make test-db-insights-notifications
+
       - name: Run routine DB lane
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.db_test_lane == 'stable' || inputs.db_test_lane == 'routine' }}
         run: make test-db

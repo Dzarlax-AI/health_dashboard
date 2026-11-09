@@ -40,7 +40,7 @@ func (p *controlledMorningProvider) Generate(ctx context.Context, _ ai.ProviderC
 	}
 	fields := map[string]string{}
 	props := req.ResponseSchema.Schema["properties"].(map[string]any)
-	for _, name := range []string{"overview", "sleep", "activity", "recovery", "recommendation"} {
+	for _, name := range []string{"overview", "sleep", "activity", "recovery", "energy", "recommendation"} {
 		fields[name] = "Synthetic observed context."
 		if choices, ok := props[name].(map[string]any)["enum"].([]string); ok && len(choices) > 0 {
 			fields[name] = choices[0]

@@ -218,3 +218,19 @@ Do not regenerate `contracts/openapi.compat.json` during normal development.
 It changes only after an explicitly reviewed breaking-contract decision.
 The generator refuses that file as an output path, and CODEOWNERS requires an
 explicit owner review when the protected baseline changes.
+
+## Report history and notification settings
+
+`GET /api/reports/history` and `GET /api/reports/history/{id}` expose immutable
+prepared report variants and transport outcomes within the authenticated tenant.
+The list defaults to the last 30 local days with limit 20 (maximum 100); `from`,
+`to`, `kind` and a stable continuation cursor are supported. Legacy deliveries
+have `content_available=false`, and foreign IDs return 404. Returned HTML is a
+string of data and must not be executed. Reads never generate AI or send messages.
+
+`GET /api/settings` includes `report_daytime_enabled` (initially false),
+`report_daytime_start_hour` (9) and `report_daytime_end_hour` (21).
+Partial `POST /api/settings` retains the existing string-valued map contract.
+Daytime boolean/hour values are validated before any settings are saved; hours
+are 0–23, unequal, with overnight windows supported. No tenant is activated by
+this release. See [delivery contracts](INSIGHTS_AND_REPORT_HISTORY.md).

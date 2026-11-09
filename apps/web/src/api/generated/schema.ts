@@ -140,6 +140,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/reports/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Archived report deliveries */
+        get: operations["listReportHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/reports/history/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Archived report details */
+        get: operations["getReportHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/section/{key}": {
         parameters: {
             query?: never;
@@ -168,6 +202,24 @@ export interface paths {
         get: operations["getSession"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Tenant notification settings */
+        get: operations["getNotificationSettings"];
+        put?: never;
+        /** Update tenant notification settings; daytime messages default off */
+        post: operations["updateNotificationSettings"];
         delete?: never;
         options?: never;
         head?: never;
@@ -239,6 +291,21 @@ export interface components {
             disabled: boolean;
             fresh_for_decision: boolean;
             generating: boolean;
+            generation?: {
+                date: string;
+                lang: string;
+                /** Format: date-time */
+                last_attempt_at?: string;
+                /** Format: date-time */
+                last_success_at?: string;
+                pipeline: string;
+                reason_code: string;
+                /** Format: date-time */
+                retry_after?: string;
+                slot: string;
+                state: string;
+                trigger: string;
+            };
             insight: string;
             /** @enum {string} */
             lang: "en" | "ru" | "sr";
@@ -590,6 +657,26 @@ export interface components {
             max: string;
             min: string;
         };
+        NotificationSettingsRequest: {
+            [key: string]: string;
+        };
+        NotificationSettingsResponse: {
+            enabled: boolean;
+            is_admin?: boolean;
+            report_daytime_enabled: boolean;
+            report_daytime_end_hour: number;
+            report_daytime_start_hour: number;
+            report_evening_weekday: number;
+            report_evening_weekend: number;
+            report_lang: string;
+            report_morning_weekday: number;
+            report_morning_weekend: number;
+            telegram_chat_id: string;
+            telegram_token: string;
+            tenant?: string;
+            timezone: string;
+            username?: string;
+        };
         ReadinessHistoryResponse: {
             points: {
                 /** @enum {string} */
@@ -597,6 +684,69 @@ export interface components {
                 date: string;
                 score: number;
             }[] | null;
+        };
+        ReportHistoryDetail: {
+            ai_metadata: unknown;
+            attempts: {
+                body: string;
+                /** Format: date-time */
+                completed_at?: string;
+                error_code?: string;
+                format: string;
+                /** Format: uuid */
+                id: string;
+                message_id?: number;
+                /** Format: uuid */
+                report_id: string;
+                /** Format: date-time */
+                reserved_at: string;
+                status: string;
+            }[] | null;
+            content_available: boolean;
+            context: unknown;
+            decision_id?: string;
+            delivery_key?: string;
+            fallback_reason?: string;
+            format_revision: string;
+            /** Format: uuid */
+            id: string;
+            is_preview: boolean;
+            kind: string;
+            language: string;
+            local_date: string;
+            plain_body: string;
+            /** Format: date-time */
+            prepared_at: string;
+            revision: number;
+            rich_body: string;
+            /** Format: date-time */
+            scheduled_at?: string;
+            timezone: string;
+        };
+        ReportHistoryItem: {
+            content_available: boolean;
+            /** Format: uuid */
+            id: string;
+            is_preview: boolean;
+            kind: string;
+            local_date: string;
+            /** Format: date-time */
+            prepared_at: string;
+            status: string;
+        };
+        ReportHistoryResponse: {
+            items: {
+                content_available: boolean;
+                /** Format: uuid */
+                id: string;
+                is_preview: boolean;
+                kind: string;
+                local_date: string;
+                /** Format: date-time */
+                prepared_at: string;
+                status: string;
+            }[] | null;
+            next_cursor?: string;
         };
         SectionResponse: {
             charts: {
@@ -626,6 +776,9 @@ export interface components {
         };
         SessionResponse: {
             is_admin: boolean;
+        };
+        SettingsUpdateResponse: {
+            status: string;
         };
         SleepDurationBalanceResponse: {
             balance_hours: number | null;
@@ -761,6 +914,11 @@ export interface components {
                     fresh_for_snapshot: boolean;
                     /** @enum {string} */
                     key: "overall" | "sleep" | "recovery" | "energy";
+                    /** Format: date-time */
+                    last_attempt_at?: string;
+                    /** Format: date-time */
+                    last_success_at?: string;
+                    reason_code?: string;
                     retry_after_seconds?: number;
                     /** @enum {string} */
                     state: "cold" | "generating" | "ready" | "failed" | "disabled";
@@ -1181,6 +1339,98 @@ export interface operations {
             };
         };
     };
+    listReportHistory: {
+        parameters: {
+            query?: {
+                /** @description First local date, YYYY-MM-DD. */
+                from?: string;
+                /** @description Last local date, YYYY-MM-DD. */
+                to?: string;
+                /** @description morning, evening, or proactive. */
+                kind?: string;
+                limit?: number;
+                /** @description Continuation cursor. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportHistoryResponse"];
+                };
+            };
+            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
+            302: {
+                headers: {
+                    /** @description Interactive login or setup route. */
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getReportHistory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Archived content or metadata-only legacy delivery. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportHistoryDetail"] | components["schemas"]["ReportHistoryItem"];
+                };
+            };
+            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
+            302: {
+                headers: {
+                    /** @description Interactive login or setup route. */
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
     getSection: {
         parameters: {
             query?: {
@@ -1257,6 +1507,99 @@ export interface operations {
                 };
             };
             /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getNotificationSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationSettingsResponse"];
+                };
+            };
+            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
+            302: {
+                headers: {
+                    /** @description Interactive login or setup route. */
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    updateNotificationSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NotificationSettingsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsUpdateResponse"];
+                };
+            };
+            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
+            302: {
+                headers: {
+                    /** @description Interactive login or setup route. */
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+            /** @description Invalid JSON, daytime boolean, or daytime hours. Hours are 0 through 23 and start must differ from end. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not update or encode the tenant response. */
             500: {
                 headers: {
                     [name: string]: unknown;

@@ -31,6 +31,7 @@ var requiredAIBundleBlocks = []string{
 	"SLEEP",
 	"YESTERDAY",
 	"RECOVERY",
+	"ENERGY",
 	"RECOMMENDATION",
 }
 
