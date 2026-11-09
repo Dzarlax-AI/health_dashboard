@@ -1,9 +1,48 @@
 package health
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
+
+func TestRecordedSleepAIInputDescribesObservationsRatherThanPermissionToAnalyze(t *testing.T) {
+	hours, mean, difference := 7.5, 7.75, -15
+	deep, rem, core, awake, bouts := 70, 90, 290, 12, 3
+	sleep := MorningReportSleep{ReportDate: "2026-10-10", Date: "2026-10-10", Hours: &hours,
+		Capture: NightCaptureComplete, Assessment: NightDurationPlausible, Finalization: NightFinalProvisional,
+		RecentRecordedMeanHours: &mean, RecentRecordedNights: 7, RecentRecordedDifferenceMinutes: &difference,
+		Episode: &MorningSleepEpisode{DeepMinutes: &deep, REMMinutes: &rem, CoreMinutes: &core, AwakeMinutes: &awake, AwakeBouts: &bouts}}
+	for _, locale := range []string{"en", "ru", "sr"} {
+		t.Run(locale, func(t *testing.T) {
+			snapshot := &DailyInsightSnapshot{Date: sleep.Date,
+				Domains:        []DailyInsightDomain{{Key: "sleep", DataState: "fresh", Confidence: "provisional", Insight: DailyInsight{State: "insight", GapReason: "sleep_recorded_episode"}}},
+				NarrativeFacts: RecordedSleepNarrativeFacts(sleep, locale)}
+			input, eligible := BuildAIInsightInput(snapshot, locale, "sleep", nil)
+			if !eligible || len(input.Facts) != 3 {
+				t.Fatalf("recorded observations unavailable: %+v", input)
+			}
+			body, _ := json.Marshal(input.Facts)
+			for _, bookkeeping := range []string{"unconfirmed", "finalization", "provisional", "calendar"} {
+				if strings.Contains(strings.ToLower(string(body)), bookkeeping) {
+					t.Fatalf("analysis evidence teaches a generic caveat: %s", body)
+				}
+			}
+			for _, value := range []string{"70", "90", "290", "12", "3"} {
+				if !strings.Contains(input.Facts[1].Statement, value) {
+					t.Fatalf("architecture observation omitted: %s", input.Facts[1].Statement)
+				}
+			}
+			originalHash := AIInsightInputHash(input)
+			changed := input
+			changed.Facts = append([]DailyInsightNarrativeFact(nil), input.Facts...)
+			changed.Facts[1].Statement += " Updated recorded observations."
+			if originalHash == AIInsightInputHash(changed) {
+				t.Fatal("new observations did not invalidate the analysis")
+			}
+		})
+	}
+}
 
 func TestRecordedSleepAnalysisUsesNightFactsInsteadOfWeeklyStages(t *testing.T) {
 	hours := 6.85

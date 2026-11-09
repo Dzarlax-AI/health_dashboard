@@ -15,19 +15,20 @@ import (
 // AIInsightVersion is deliberately separate from the retired explanatory
 // narrative contract. Old approved prose cannot be decoded as a second opinion.
 const AIInsightVersion = "today-ai-insight-v1"
-const AIInsightInputVersion = "today-ai-insight-input-v9"
+const AIInsightInputVersion = "today-ai-insight-input-v10"
 
 const partialSleepCurrentDurationMeaning = "currently recorded sleep duration; completeness of the night and sleep quality are unconfirmed by available data"
 const partialSleepCurrentDurationWindow = "current date, currently recorded duration; night completeness and quality unconfirmed"
-const recordedSleepEpisodeMeaning = "duration of a complete plausible recorded sleep episode; daily calendar finalization is pending, not evidence of missing episode data; sleep quality is unconfirmed"
-const recordedSleepEpisodeWindow = "last recorded sleep episode; daily finalization remains provisional"
+const recordedSleepEpisodeMeaning = "duration of the current recorded sleep episode"
+const recordedSleepEpisodeWindow = "current recorded episode"
 
 func RecordedSleepDurationFact(locale string, hours float64) DailyInsightNarrativeFact {
 	return DailyInsightNarrativeFact{ID: "sleep_current_recorded_duration", Domain: "sleep", Meaning: partialSleepCurrentDurationMeaning, Window: partialSleepCurrentDurationWindow, Authority: "server_derived", Fresh: true, Statement: localizedNarrativePartialSleepFact(locale, hours), DisplayValues: []string{fmt.Sprintf("%.1f", hours)}, EvidenceIDs: []string{"sleep_current_recorded_duration"}}
 }
 
 // RecordedSleepEpisodeFact separates a complete captured episode from a partial
-// capture without granting finalized-night comparisons or quality claims.
+// capture. The observations support an analysis of that episode; canonical
+// finality and any numerical quality score remain separate server decisions.
 func RecordedSleepEpisodeFact(locale string, hours float64) DailyInsightNarrativeFact {
 	fact := RecordedSleepDurationFact(locale, hours)
 	fact.Meaning, fact.Window = recordedSleepEpisodeMeaning, recordedSleepEpisodeWindow
@@ -252,7 +253,7 @@ func hasRecordedSleepEpisode(snapshot *DailyInsightSnapshot) bool {
 // aiInsightPartialSleepFactIsSafe keeps the exception deliberately narrow:
 // the provider may only see a fact whose own fields limit it to the currently
 // recorded duration, distinguishing partial capture from a complete episode
-// awaiting calendar finalization. Both leave sleep quality unconfirmed.
+// awaiting calendar finalization. It admits observations, not a quality score.
 // It does not admit trends or comparisons that could include it.
 // Domain state is a guard, not a substitute for each fact's own semantics.
 func aiInsightPartialSleepFactIsSafe(fact DailyInsightNarrativeFact) bool {

@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-const recordedSleepArchitectureMeaning = "observed architecture of the current recorded sleep episode; missing fields are unknown, not zero; calendar finalization is independent"
+const recordedSleepArchitectureMeaning = "recorded stages, wakefulness and timing of the current sleep episode; omitted measurements are unknown, not zero"
 const recordedSleepComparisonMeaning = "current recorded duration versus the recent recorded mean including the latest night; not an older personal baseline or a sustained trend"
 
 // RecordedSleepNarrativeFacts shares the same dated observations between the
@@ -21,14 +21,17 @@ func RecordedSleepNarrativeFacts(sleep MorningReportSleep, lang string) []DailyI
 	}
 	if e := sleep.Episode; e != nil {
 		var parts []string
+		locale := normalizeDailyInsightLocale(lang)
+		unit := map[string]string{"ru": "мин", "sr": "min", "en": "min"}[locale]
 		labels := map[string][]string{"ru": {"глубокий сон", "REM", "основной сон", "сон без стадий", "записанное бодрствование"}, "sr": {"duboki san", "REM", "osnovni san", "san bez faza", "zabeležena budnost"}, "en": {"deep sleep", "REM", "core sleep", "unstaged sleep", "recorded wakefulness"}}[normalizeDailyInsightLocale(lang)]
 		for i, value := range []*int{e.DeepMinutes, e.REMMinutes, e.CoreMinutes, e.UnspecifiedMinutes, e.AwakeMinutes} {
 			if value != nil {
-				parts = append(parts, fmt.Sprintf("%s: %d min", labels[i], *value))
+				parts = append(parts, fmt.Sprintf("%s: %d %s", labels[i], *value, unit))
 			}
 		}
 		if e.AwakeBouts != nil {
-			parts = append(parts, fmt.Sprintf("recorded awake intervals: %d", *e.AwakeBouts))
+			label := map[string]string{"ru": "эпизоды бодрствования", "sr": "intervali budnosti", "en": "recorded awake intervals"}[locale]
+			parts = append(parts, fmt.Sprintf("%s: %d", label, *e.AwakeBouts))
 		}
 		if e.Start != nil && e.Wake != nil {
 			parts = append(parts, e.Start.Format("15:04")+"–"+e.Wake.Format("15:04"))

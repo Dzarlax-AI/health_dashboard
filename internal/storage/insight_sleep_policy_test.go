@@ -31,7 +31,7 @@ func TestInsightCanonicalSleepPolicyWithholdsProvisionalComparisons(t *testing.T
 		if fact.ID != "sleep_current_recorded_duration" {
 			t.Fatalf("recorded episode leaked completed-night claims: %+v", fact)
 		}
-		if !strings.Contains(fact.Meaning, "not evidence of missing episode data") || strings.Contains(fact.Statement, "unconfirmed") {
+		if fact.Meaning != "duration of the current recorded sleep episode" || strings.Contains(fact.Statement, "unconfirmed") {
 			t.Fatalf("complete capture still described to AI as missing data: %+v", fact)
 		}
 	}
