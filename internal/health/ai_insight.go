@@ -15,7 +15,7 @@ import (
 // AIInsightVersion is deliberately separate from the retired explanatory
 // narrative contract. Old approved prose cannot be decoded as a second opinion.
 const AIInsightVersion = "today-ai-insight-v1"
-const AIInsightInputVersion = "today-ai-insight-input-v11"
+const AIInsightInputVersion = "today-ai-insight-input-v12"
 
 const partialSleepCurrentDurationMeaning = "currently recorded sleep duration; completeness of the night and sleep quality are unconfirmed by available data"
 const partialSleepCurrentDurationWindow = "current date, currently recorded duration; night completeness and quality unconfirmed"
@@ -23,7 +23,9 @@ const recordedSleepEpisodeMeaning = "duration of the current recorded sleep epis
 const recordedSleepEpisodeWindow = "current recorded episode"
 
 func RecordedSleepDurationFact(locale string, hours float64) DailyInsightNarrativeFact {
-	return DailyInsightNarrativeFact{ID: "sleep_current_recorded_duration", Domain: "sleep", Meaning: partialSleepCurrentDurationMeaning, Window: partialSleepCurrentDurationWindow, Authority: "server_derived", Fresh: true, Statement: localizedNarrativePartialSleepFact(locale, hours), DisplayValues: []string{fmt.Sprintf("%.1f", hours)}, EvidenceIDs: []string{"sleep_current_recorded_duration"}}
+	statement := localizedNarrativePartialSleepFact(locale, hours)
+	values := append([]string{fmt.Sprintf("%.1f", hours)}, narrativeDisplayValues(statement)...)
+	return DailyInsightNarrativeFact{ID: "sleep_current_recorded_duration", Domain: "sleep", Meaning: partialSleepCurrentDurationMeaning, Window: partialSleepCurrentDurationWindow, Authority: "server_derived", Fresh: true, Statement: statement, DisplayValues: values, EvidenceIDs: []string{"sleep_current_recorded_duration"}}
 }
 
 // RecordedSleepEpisodeFact separates a complete captured episode from a partial
@@ -34,12 +36,13 @@ func RecordedSleepEpisodeFact(locale string, hours float64) DailyInsightNarrativ
 	fact.Meaning, fact.Window = recordedSleepEpisodeMeaning, recordedSleepEpisodeWindow
 	switch normalizeDailyInsightLocale(locale) {
 	case "ru":
-		fact.Statement = fmt.Sprintf("Зафиксировано %.1f ч сна за прошедшую ночь.", hours)
+		fact.Statement = "Сон за ночь: " + readableSleepDuration(hours, locale) + "."
 	case "sr":
-		fact.Statement = fmt.Sprintf("Zabeleženo je %.1f h sna tokom protekle noći.", hours)
+		fact.Statement = "San tokom noći: " + readableSleepDuration(hours, locale) + "."
 	default:
-		fact.Statement = fmt.Sprintf("Recorded sleep for last night: %.1f h.", hours)
+		fact.Statement = "Last night's sleep: " + readableSleepDuration(hours, locale) + "."
 	}
+	fact.DisplayValues = narrativeDisplayValues(fact.Statement)
 	return fact
 }
 
