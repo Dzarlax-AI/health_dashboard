@@ -11,6 +11,12 @@ import (
 	"health-receiver/internal/health"
 )
 
+// Independent opinions retain their own preview authorization. Approval of the
+// retired explanatory narrative must not authorize this generation pipeline.
+func TodayAIInsightGenerationEnabled(s *DB, cfg AIConfig) bool {
+	return cfg.Enabled() && TodayInsightsB1PreviewEnabled(s)
+}
+
 // AIInsightGenerationFingerprint has a new contract identity. Historical B1
 // approvals and cached explanatory prose can never authorize/render this mode.
 func AIInsightGenerationFingerprint(cfg AIConfig, lang string) string {
@@ -31,7 +37,7 @@ func AIInsightGenerationFingerprint(cfg AIConfig, lang string) string {
 // ScheduleAIInsightSlotAsync retains the existing durable lease/CAS/backoff
 // and latest-wins debounce, now keyed independently for every eligible slot.
 func (s *DB) ScheduleAIInsightSlotAsync(snapshot *health.DailyInsightSnapshot, cfg AIConfig, input health.AIInsightInput) bool {
-	if snapshot == nil || !TodayInsightsB1GenerationEnabled(s, cfg) || input.Version != health.AIInsightInputVersion ||
+	if snapshot == nil || !TodayAIInsightGenerationEnabled(s, cfg) || input.Version != health.AIInsightInputVersion ||
 		snapshot.Date != s.dailyInsightNow().In(s.reportTZLocation()).Format("2006-01-02") {
 		return false
 	}
@@ -87,7 +93,7 @@ func (s *DB) EnsureAIInsightSlot(ctx context.Context, snapshot *health.DailyInsi
 		materialHash == "" || providerFingerprint == "" || health.AIInsightInputHash(input) != materialHash {
 		return fmt.Errorf("invalid AI insight generation input")
 	}
-	if !TodayInsightsB1GenerationEnabled(s, cfg) {
+	if !TodayAIInsightGenerationEnabled(s, cfg) {
 		return nil
 	}
 	if snapshot.Date != s.dailyInsightNow().In(s.reportTZLocation()).Format("2006-01-02") {

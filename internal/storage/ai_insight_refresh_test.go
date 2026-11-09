@@ -213,7 +213,7 @@ func TestAIInsightBackgroundNullIsTerminalAndOverallWaitsForDomains(t *testing.T
 	}
 }
 
-func TestAIInsightBackgroundRefreshHonorsApprovedModeWithoutPreview(t *testing.T) {
+func TestAIInsightBackgroundDoesNotReuseLegacyApproval(t *testing.T) {
 	db, cleanup := testDB(t)
 	defer cleanup()
 	cfg := approvedNarrativeSlotConfig(t, db)
@@ -234,6 +234,23 @@ func TestAIInsightBackgroundRefreshHonorsApprovedModeWithoutPreview(t *testing.T
 	if err := db.ScheduleSnapshotAIInsights(context.Background(), snapshot, cfg, "en", "lifecycle"); err != nil {
 		t.Fatal(err)
 	}
+	input, eligible := health.BuildAIInsightInput(snapshot, "en", "sleep", nil)
+	if !eligible {
+		t.Fatal("fixture is not eligible")
+	}
+	if TodayAIInsightGenerationEnabled(db, cfg) || db.ScheduleAIInsightSlotAsync(snapshot, cfg, input) {
+		t.Fatal("legacy narrative approval authorized independent opinions")
+	}
+	entries, err := db.GetDailyInsightNarrativeSlots(snapshot.Date, "en")
+	if err != nil || len(entries) != 0 || calls.Load() != 0 {
+		t.Fatalf("disabled pipeline created work: entries=%d calls=%d err=%v", len(entries), calls.Load(), err)
+	}
+	if err := db.SaveSettings(map[string]string{SettingTodayInsightsB1PreviewEnabled: "true"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ScheduleSnapshotAIInsights(context.Background(), snapshot, cfg, "en", "lifecycle"); err != nil {
+		t.Fatal(err)
+	}
 	waitForNarrativeProviderCalls(t, &calls, 1)
 }
 
@@ -242,6 +259,9 @@ func TestAIInsightBackgroundReadsExactCachedOpinion(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 	cfg := approvedNarrativeSlotConfig(t, db)
+	if err := db.SaveSettings(map[string]string{SettingTodayInsightsB1PreviewEnabled: "true"}); err != nil {
+		t.Fatal(err)
+	}
 	snapshot := &health.DailyInsightSnapshot{Date: db.Today(), Primary: health.DailyInsight{State: "insight"}, Domains: []health.DailyInsightDomain{{Key: "sleep", DataState: "fresh", Confidence: "final", Insight: health.DailyInsight{State: "insight", Observation: "Recorded sleep"}}}, NarrativeFacts: []health.DailyInsightNarrativeFact{{ID: "sleep_fact", Domain: "sleep", Fresh: true, Statement: "Sleep observations are recorded."}}}
 	input, eligible := health.BuildAIInsightInput(snapshot, "en", "sleep", nil)
 	if !eligible {

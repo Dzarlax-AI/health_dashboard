@@ -9,7 +9,7 @@ import (
 // CurrentCachedAIInsight follows the same exact-material validation as the
 // Today API, without scheduling, leasing, invalidation or provider calls.
 func (s *DB) CurrentCachedAIInsight(ctx context.Context, snapshot *health.DailyInsightSnapshot, cfg AIConfig, lang, slot string) (*health.DailyInsightAIInsight, error) {
-	if snapshot == nil || !TodayInsightsB1GenerationEnabled(s, cfg) {
+	if snapshot == nil || !TodayAIInsightGenerationEnabled(s, cfg) {
 		return nil, nil
 	}
 	input, eligible := health.BuildAIInsightInput(snapshot, lang, slot, nil)
