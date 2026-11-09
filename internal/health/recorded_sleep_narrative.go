@@ -7,7 +7,7 @@ import (
 )
 
 const recordedSleepArchitectureMeaning = "recorded stages, wakefulness and timing of the current sleep episode; omitted measurements are unknown, not zero"
-const recordedSleepComparisonMeaning = "current recorded duration versus the recent recorded mean including the latest night; not an older personal baseline or a sustained trend"
+const recordedSleepComparisonMeaning = "current recorded duration compared with the mean of the most recent recorded nights, including this episode"
 
 // RecordedSleepNarrativeFacts shares the same dated observations between the
 // morning explanation and the independent Sleep opinion.

@@ -15,6 +15,7 @@ import (
 func TestAIInsightReviewFingerprintBindsReaderCopyValidationRevision(t *testing.T) {
 	withoutValidationRevision, err := json.Marshal(struct {
 		Prompt         string          `json:"prompt"`
+		SleepPrompt    string          `json:"sleep_prompt"`
 		PromptRevision string          `json:"prompt_revision"`
 		Schema         *ResponseSchema `json:"schema"`
 		SafetyPrompt   string          `json:"safety_prompt"`
@@ -23,6 +24,7 @@ func TestAIInsightReviewFingerprintBindsReaderCopyValidationRevision(t *testing.
 		InputVersion   string          `json:"input_version"`
 	}{
 		Prompt:         aiInsightSystemPrompt,
+		SleepPrompt:    aiSleepInsightSystemPrompt,
 		PromptRevision: AIInsightPromptRevision,
 		Schema:         aiInsightResponseSchema,
 		SafetyPrompt:   aiInsightSafetyPrompt,
@@ -90,6 +92,26 @@ func TestGenerateAIInsightWithholdsSleepDisclaimerFlaggedByReview(t *testing.T) 
 		if err == nil || result.Insight != nil || result.Text != "" || len(provider.requests) != 2 || result.Review == nil || result.Review.Categories[0] != "sleep_analysis_missing" {
 			t.Fatalf("editorial rejection reached serving output: result=%+v err=%v", result, err)
 		}
+	}
+}
+
+func TestGenerateSleepInsightUsesAnAnalysisTask(t *testing.T) {
+	input := health.AIInsightInput{Version: health.AIInsightInputVersion, Locale: "en", Slot: "sleep",
+		Facts: []health.DailyInsightNarrativeFact{health.RecordedSleepEpisodeFact("en", 7.5)}}
+	candidate, _ := json.Marshal(health.AIInsightSlotResponse{Version: health.AIInsightVersion, Locale: "en", Slot: "sleep",
+		Insight: &health.AIInsightSection{Text: "The recorded episode is the focus of this analysis.", Stance: "agree", FactIDs: []string{"sleep_current_recorded_duration"}}})
+	review, _ := json.Marshal(map[string]any{"version": aiInsightSafetyVersion, "verdict": "allow",
+		"categories": []string{}, "language_review": neutralAIInsightLanguageReview("en")})
+	provider := &dailyInsightTestProvider{responses: []string{string(candidate), string(review)}}
+	_, err := GenerateAIInsightSlot(context.Background(), provider, ProviderConfig{}, input)
+	if err != nil || len(provider.requests) != 2 {
+		t.Fatalf("generation did not complete: %v", err)
+	}
+	if provider.requests[0].Prompt == aiInsightSystemPrompt {
+		t.Fatal("Sleep still receives the general task of debating the server and today's plan")
+	}
+	if provider.requests[1].Prompt != aiInsightSafetyPrompt {
+		t.Fatal("Sleep bypassed independent review")
 	}
 }
 

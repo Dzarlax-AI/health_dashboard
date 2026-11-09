@@ -15,7 +15,7 @@ import (
 // AIInsightVersion is deliberately separate from the retired explanatory
 // narrative contract. Old approved prose cannot be decoded as a second opinion.
 const AIInsightVersion = "today-ai-insight-v1"
-const AIInsightInputVersion = "today-ai-insight-input-v10"
+const AIInsightInputVersion = "today-ai-insight-input-v11"
 
 const partialSleepCurrentDurationMeaning = "currently recorded sleep duration; completeness of the night and sleep quality are unconfirmed by available data"
 const partialSleepCurrentDurationWindow = "current date, currently recorded duration; night completeness and quality unconfirmed"
