@@ -129,11 +129,15 @@ from an older personal baseline and includes the current record.
 Morning v10 sends reader-relevant observations instead of internal finalization,
 capture and diagnostic fields. Cache identity covers the exact provider payload
 plus the canonical input identity. The independent Sleep pipeline receives the
-same architecture/comparison facts under input v10 / prompt v9. Complete-episode
+same architecture/comparison facts under input v11 / prompt v10. Complete-episode
 facts describe observations without finalization or quality-permission warnings.
-The author explains duration, structure and recorded continuity; the independent
+Sleep uses its own descriptive analysis task instead of the general task of
+debating the server and daily plan. The author connects duration, structure and
+recorded continuity and ends with that interpretation. The independent
 review rejects a generic refusal to assess sleep as `sleep_analysis_missing`,
-including when it follows otherwise valid observations. Specific gaps that
+including when it follows otherwise valid observations. Routine closing
+statements about what one episode cannot prove are rejected as well; they are
+not required to make a descriptive observation safe. Specific gaps that
 affect a concrete conclusion remain explicit. Input and review fingerprints
 invalidate old cached prose when this contract changes. No scoring formula
 or canonical definitive-claim finalization gate changes. The diagnostic CLI embeds
