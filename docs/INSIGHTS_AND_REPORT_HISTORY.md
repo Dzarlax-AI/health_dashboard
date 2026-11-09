@@ -129,7 +129,13 @@ from an older personal baseline and includes the current record.
 Morning v10 sends reader-relevant observations instead of internal finalization,
 capture and diagnostic fields. Cache identity covers the exact provider payload
 plus the canonical input identity. The independent Sleep pipeline receives the
-same architecture/comparison facts under input v9 / prompt v8. No scoring formula
+same architecture/comparison facts under input v10 / prompt v9. Complete-episode
+facts describe observations without finalization or quality-permission warnings.
+The author explains duration, structure and recorded continuity; the independent
+review rejects a generic refusal to assess sleep as `sleep_analysis_missing`,
+including when it follows otherwise valid observations. Specific gaps that
+affect a concrete conclusion remain explicit. Input and review fingerprints
+invalidate old cached prose when this contract changes. No scoring formula
 or canonical definitive-claim finalization gate changes. The diagnostic CLI embeds
 tzdata, matching the server's timezone contract.
 

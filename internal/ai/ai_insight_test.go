@@ -76,6 +76,23 @@ func TestGenerateAIInsightRejectsUnsupportedDisagreement(t *testing.T) {
 	}
 }
 
+func TestGenerateAIInsightWithholdsSleepDisclaimerFlaggedByReview(t *testing.T) {
+	input := health.AIInsightInput{Version: health.AIInsightInputVersion, Locale: "en", Slot: "sleep",
+		Facts: []health.DailyInsightNarrativeFact{health.RecordedSleepEpisodeFact("en", 7.5)}}
+	candidate, _ := json.Marshal(health.AIInsightSlotResponse{Version: health.AIInsightVersion, Locale: "en", Slot: "sleep",
+		Insight: &health.AIInsightSection{Text: "The recorded duration is available, but it cannot tell us anything about sleep quality.", Stance: "qualify", FactIDs: []string{"sleep_current_recorded_duration"}}})
+	for _, verdict := range []string{"reject", "allow"} {
+		// A contradictory top-level allow cannot override an editorial failure.
+		review, _ := json.Marshal(map[string]any{"version": aiInsightSafetyVersion, "verdict": verdict,
+			"categories": []string{"sleep_analysis_missing"}, "language_review": neutralAIInsightLanguageReview("en")})
+		provider := &dailyInsightTestProvider{responses: []string{string(candidate), string(review)}}
+		result, err := GenerateAIInsightSlot(context.Background(), provider, ProviderConfig{}, input)
+		if err == nil || result.Insight != nil || result.Text != "" || len(provider.requests) != 2 || result.Review == nil || result.Review.Categories[0] != "sleep_analysis_missing" {
+			t.Fatalf("editorial rejection reached serving output: result=%+v err=%v", result, err)
+		}
+	}
+}
+
 func TestGenerateAIInsightRejectsReaderArtifactBeforeReview(t *testing.T) {
 	input := testAIInsightInput(t)
 	provider := &dailyInsightTestProvider{responses: []string{
