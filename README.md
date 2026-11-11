@@ -51,6 +51,8 @@ Health Dashboard is designed to make personal health analytics auditable: every 
 
 ## Clients
 
+Download the first-party iOS app, [Sync for Health Dash, on the App Store](https://apps.apple.com/us/app/sync-for-health-dash/id6762629294).
+
 Two iOS clients can stream data into this server:
 
 - **[health-sync](https://github.com/Dzarlax-AI/health-sync)** — first-party native client (Swift / SwiftUI). Sends 100+ HealthKit metrics in the background, includes a built-in read-only dashboard (Today / Sleep / Trends / Metrics) backed by the server's JSON API, and supports en / ru / sr UI locales.
