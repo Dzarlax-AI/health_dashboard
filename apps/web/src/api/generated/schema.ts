@@ -89,6 +89,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Localized metric catalogue with conservative unit evidence */
+        get: operations["listMetrics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/metrics/data": {
         parameters: {
             query?: never;
@@ -632,6 +649,17 @@ export interface components {
                 updated_at?: string;
             };
         };
+        MetricCatalogResponse: {
+            count: number;
+            display_name: string;
+            max: string;
+            min: string;
+            name: string;
+            /** @enum {string} */
+            unit_status?: "known" | "unknown" | "mixed";
+            units: string;
+            variant_label?: string;
+        }[] | null;
         MetricDataResponse: {
             agg: string;
             bucket: string;
@@ -1177,6 +1205,49 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthBriefingResponse"];
+                };
+            };
+            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
+            302: {
+                headers: {
+                    /** @description Interactive login or setup route. */
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    listMetrics: {
+        parameters: {
+            query?: {
+                /** @description Unsupported values are ignored and the server falls back to the documented default. */
+                lang?: "en" | "ru" | "sr";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricCatalogResponse"];
                 };
             };
             /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */

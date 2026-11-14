@@ -167,6 +167,7 @@ var translationsEn = map[string]string{
 	"ate":  "Respiratory Rate",
 
 	// Metric labels.
+	"metric_variant_identifier":                "Identifier: %s",
 	"metric_sleep_total":                       "Total Sleep",
 	"metric_night_sleep_total":                 "Night Sleep",
 	"metric_nap_total":                         "Naps",

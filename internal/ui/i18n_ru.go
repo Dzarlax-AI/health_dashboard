@@ -162,6 +162,7 @@ var translationsRu = map[string]string{
 	"ate":  "ЧДД",
 
 	// Metric labels.
+	"metric_variant_identifier":                "Идентификатор: %s",
 	"metric_sleep_total":                       "Общий сон",
 	"metric_night_sleep_total":                 "Ночной сон",
 	"metric_nap_total":                         "Дневной сон",

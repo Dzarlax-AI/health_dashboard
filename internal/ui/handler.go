@@ -1414,23 +1414,26 @@ func (h *Handler) listMetrics(w http.ResponseWriter, r *http.Request) {
 	if lang != "ru" && lang != "sr" {
 		lang = "en"
 	}
-	type metricItem struct {
-		Name        string `json:"name"`
-		DisplayName string `json:"display_name"`
-		Units       string `json:"units"`
-		Count       int    `json:"count"`
-		Min         string `json:"min"`
-		Max         string `json:"max"`
-	}
-	out := make([]metricItem, 0, len(metrics))
+	names := make(map[string]int, len(metrics))
 	for _, m := range metrics {
-		out = append(out, metricItem{
-			Name:        m.Name,
-			DisplayName: MetricName(lang, m.Name),
-			Units:       m.Units,
-			Count:       m.Count,
-			Min:         m.Min,
-			Max:         m.Max,
+		names[strings.ToLower(strings.TrimSpace(MetricName(lang, m.Name)))]++
+	}
+	out := make(clientapi.MetricCatalogResponse, 0, len(metrics))
+	for _, m := range metrics {
+		label := MetricName(lang, m.Name)
+		variant := ""
+		if names[strings.ToLower(strings.TrimSpace(label))] > 1 {
+			variant = fmt.Sprintf(T(lang, "metric_variant_identifier"), m.Name)
+		}
+		out = append(out, clientapi.MetricCatalogItem{
+			Name:         m.Name,
+			DisplayName:  label,
+			Units:        m.Units,
+			UnitStatus:   m.UnitStatus,
+			VariantLabel: variant,
+			Count:        m.Count,
+			Min:          m.Min,
+			Max:          m.Max,
 		})
 	}
 	jsonResponse(w, out)
