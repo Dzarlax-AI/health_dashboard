@@ -15,14 +15,19 @@ func MorningProviderPayload(evidence health.MorningInsightEvidence) ([]byte, err
 	if err != nil {
 		return nil, err
 	}
-	if !health.MorningSleepAnalysisEligible(evidence.NightSleep, evidence.Date) {
+	sleep := evidence.NightSleep
+	eligible := health.MorningSleepAnalysisEligible(sleep, evidence.Date)
+	if !eligible && (sleep == nil || sleep.Comparison == nil) {
 		return raw, nil
 	}
 	var payload map[string]any
 	if err = json.Unmarshal(raw, &payload); err != nil {
 		return nil, err
 	}
-	sleep := evidence.NightSleep
+	if !eligible {
+		payload["night_sleep"].(map[string]any)["comparison"] = comparisonObservations(sleep.Comparison)
+		return json.Marshal(payload)
+	}
 	night := map[string]any{"date": sleep.Date, "recorded_sleep_minutes": int(math.Round(*sleep.Hours * 60))}
 	if sleep.YesterdayActivity != nil {
 		activity := map[string]any{"date": sleep.YesterdayActivity.Date}
@@ -34,7 +39,7 @@ func MorningProviderPayload(evidence health.MorningInsightEvidence) ([]byte, err
 		night["yesterday_activity"] = activity
 	}
 	if sleep.Comparison != nil {
-		night["duration_comparison"] = sleep.Comparison
+		night["duration_comparison"] = comparisonObservations(sleep.Comparison)
 		if sleep.Comparison.DurationMinutes != nil {
 			night["recorded_sleep_minutes"] = *sleep.Comparison.DurationMinutes
 		}
@@ -66,4 +71,12 @@ func MorningProviderPayload(evidence health.MorningInsightEvidence) ([]byte, err
 	}
 	payload["night_sleep"] = night
 	return json.Marshal(payload)
+}
+
+func comparisonObservations(c *health.SleepDurationComparison) map[string]any {
+	return map[string]any{
+		"wake_date": c.WakeDate, "status": c.Status, "duration_minutes": c.DurationMinutes,
+		"window_start": c.WindowStart, "window_end_exclusive": c.WindowEndExclusive,
+		"eligible_nights": c.EligibleNights, "reference_minutes": c.ReferenceMinutes, "delta_minutes": c.DeltaMinutes,
+	}
 }
