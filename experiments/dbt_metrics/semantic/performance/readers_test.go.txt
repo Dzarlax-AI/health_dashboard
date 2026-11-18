@@ -1,0 +1,559 @@
+package mcpserver
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"health-receiver/internal/notify"
+	"health-receiver/internal/registry"
+	"health-receiver/internal/storage"
+	"health-receiver/internal/tenants"
+)
+
+const benchDate = "2026-10-26"
+const factLookup = `select sleep_comparison_status, stage_status, interval_count,
+    measured_points, timestamp_points, same_day_hrv_points
+    from semantic_sleep_hrv_day_v1 where wake_date=$1`
+
+type benchProfile struct {
+	db        *storage.DB
+	pool      *pgxpool.Pool
+	user      *registry.User
+	assertion string
+	delta     int
+	hrv       float64
+}
+
+func installBenchProfile(t *testing.T, root *pgxpool.Pool, bp benchProfile) {
+	t.Helper()
+	ctx := t.Context()
+	schema := pgx.Identifier{bp.user.SchemaName}.Sanitize()
+	role := pgx.Identifier{bp.user.DBRole}.Sanitize()
+	tx, err := root.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	execSQL := func(sql string) {
+		t.Helper()
+		if _, err := tx.Exec(ctx, sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+	execSQL("set local search_path to " + schema)
+	for _, table := range []string{"calendar", "hrv_point", "daily_hrv", "sleep_interval", "sleep_stage_day"} {
+		execSQL("create table " + table + " (like source_data." + table + " including all)")
+		execSQL("alter table " + table + " owner to " + role)
+	}
+	views := []string{"semantic_sleep_duration_comparison_v1", "semantic_sleep_intervals_v1", "semantic_sleep_day_v1", "semantic_hrv_observation_v1", "semantic_hrv_daily_v1", "semantic_hrv_night_v1", "semantic_sleep_hrv_day_v1"}
+	if os.Getenv("SEMANTIC_READER_MODE") == "night-card" {
+		raw, err := os.ReadFile(filepath.Join(os.Getenv("SEMANTIC_PERF_OUT"), "card-views.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var extra []string
+		if err := json.Unmarshal(raw, &extra); err != nil {
+			t.Fatal(err)
+		}
+		existing := map[string]bool{"sleep_duration_reference_v1": true}
+		for _, name := range views {
+			existing[name] = true
+		}
+		for _, name := range extra {
+			if !existing[name] {
+				views = append(views, name)
+				existing[name] = true
+			}
+		}
+	}
+	for _, view := range views {
+		var def string
+		if err := tx.QueryRow(ctx, "select pg_get_viewdef($1::regclass,false)", "dbt_output."+view).Scan(&def); err != nil {
+			t.Fatal(err)
+		}
+		def = strings.NewReplacer("source_data.", schema+".", "dbt_output.", schema+".").Replace(def)
+		execSQL("create view " + view + " with (security_invoker=true) as " + def)
+		execSQL("alter view " + view + " owner to " + role)
+	}
+	seed, err := os.ReadFile(filepath.Join(os.Getenv("SEMANTIC_PERF_SRC"), "install.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	execSQL(string(seed))
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type profileLatency struct {
+	P50MS, P95MS, P99MS float64
+}
+
+type perfRow struct {
+	BaseReads, ReplacementReads                               uint64           `json:",omitempty"`
+	Profiles                                                  []profileLatency `json:",omitempty"`
+	Path                                                      string
+	Clients, Repeat, Operations                               int
+	Cache, Variant                                            string
+	Evicted                                                   int
+	P50MS, P95MS, P99MS, GoCPUMSPerOp, PGCPUMSPerOp           float64
+	SQLPerOp, SQLRowsPerOp, SharedHitsPerOp, SharedReadsPerOp float64
+}
+type perfCounters struct{ sql, rows, hits, reads, goCPU, pgCPU float64 }
+
+func counters(t *testing.T, root *pgxpool.Pool) perfCounters {
+	t.Helper()
+	var c perfCounters
+	err := root.QueryRow(t.Context(), `select coalesce(sum(calls),0)::float8,coalesce(sum(rows),0)::float8,
+        coalesce(sum(shared_blks_hit),0)::float8,coalesce(sum(shared_blks_read),0)::float8
+        from pg_stat_statements where userid <> (select oid from pg_roles where rolname=current_user)
+        and dbid=(select oid from pg_database where datname=current_database())`).Scan(&c.sql, &c.rows, &c.hits, &c.reads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps, err := exec.Command("ps", "-ax", "-o", "ppid=,time=").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid := os.Getenv("SEMANTIC_PG_PID")
+	for _, line := range strings.Split(string(ps), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || fields[0] != pid {
+			continue
+		}
+		parts := strings.Split(fields[1], ":")
+		var seconds float64
+		for _, part := range parts {
+			n, err := strconv.ParseFloat(part, 64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			seconds = seconds*60 + n
+		}
+		c.pgCPU += seconds * 1000
+	}
+	var usage syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &usage); err != nil {
+		t.Fatal(err)
+	}
+	c.goCPU = float64(usage.Utime.Nano()+usage.Stime.Nano()) / 1e6
+	return c
+}
+
+func boundedFact(ctx context.Context, p benchProfile) error {
+	var status, stages string
+	var intervals, measured, timestamps, daily int
+	if err := p.pool.QueryRow(ctx, factLookup, benchDate).Scan(&status, &stages, &intervals, &measured, &timestamps, &daily); err != nil {
+		return err
+	}
+	if status != "available" || stages != "recorded_episode_stages" || intervals != 1 || measured != 0 || timestamps != 1 || daily != 1 {
+		return fmt.Errorf("bounded synthetic fact changed")
+	}
+
+	return nil
+}
+
+func metricHTTP(routes http.Handler, p benchProfile, path string) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(http.MethodGet, path, nil)
+	r.Header.Set("X-API-Key", p.user.APIKey)
+	w := httptest.NewRecorder()
+	routes.ServeHTTP(w, r)
+	return w
+}
+
+var nightCardBenchmark func(*testing.T, *pgxpool.Pool, []benchProfile, func(string, string) *httptest.ResponseRecorder)
+
+func runSemanticExperiment(t *testing.T, root *pgxpool.Pool, users []*registry.User, manager *tenants.Manager,
+	deriver tenants.CredentialDeriver, base string, routes http.Handler, mcpCall func(string, string) *httptest.ResponseRecorder, toolBody string) {
+	t.Helper()
+	ctx := t.Context()
+	out := os.Getenv("SEMANTIC_PERF_OUT")
+	mode := os.Getenv("SEMANTIC_READER_MODE")
+	cached := mode == "mcp-cache"
+	narrow := mode == "mcp-narrow" || cached
+	replace := mode == "replacement" || narrow
+	defer func() { storage.SemanticBenchQuery = storage.SemanticBenchReplacementSQL }()
+	defer storage.SemanticBenchReplacement.Store(false)
+	var profiles []benchProfile
+	for i, user := range users {
+		password, err := deriver.Derive(user.TenantID, user.DBRole, deriver.Current.Version)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := storage.RestrictedTenantPoolConfig(base, user.DBRole, password, user.SchemaName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pool, err := pgxpool.NewWithConfig(ctx, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer pool.Close()
+		db, _, _, ok := manager.DBForUsername(ctx, user.Username)
+		if !ok {
+			t.Fatal("fixture missing")
+		}
+		p := benchProfile{db: db, pool: pool, user: user, assertion: []string{"alice.jwt.fixture", "bob.jwt.fixture"}[i], delta: -42 - 60*i, hrv: 56.8}
+		installBenchProfile(t, root, p)
+		if mode == "night-card" {
+			profiles = append(profiles, p)
+			continue
+		}
+		if cached {
+			runSleepCacheDBT(t, p)
+			if _, err := p.pool.Exec(ctx, "analyze semantic_sleep_duration_cache_v1"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := boundedFact(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+		actual := metricHTTP(routes, p, "/api/sleep/comparison?date="+benchDate)
+		if actual.Code != 200 {
+			t.Fatal("comparison route failed")
+		}
+		if narrow {
+			storage.SemanticBenchQuery = storage.SemanticBenchNarrowSQL
+			if cached {
+				storage.SemanticBenchQuery = cachedSleepQuery
+			}
+			date, err := time.Parse(time.DateOnly, benchDate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Include the full canonical history, even before the evaluation calendar.
+			for offset := -149; offset <= 1; offset++ {
+				day := date.AddDate(0, 0, offset).Format(time.DateOnly)
+				body := strings.Replace(toolBody, benchDate, day, 1)
+				baseline := mcpCall(p.assertion, body)
+				storage.SemanticBenchReplacement.Store(true)
+				candidate := mcpCall(p.assertion, body)
+				storage.SemanticBenchReplacement.Store(false)
+				if baseline.Code != 200 || candidate.Code != 200 || !strings.Contains(candidate.Body.String(), `"wake_date":"`+day+`"`) || !bytes.Equal(baseline.Body.Bytes(), candidate.Body.Bytes()) {
+					t.Fatalf("MCP parity failed for fixture %d, date %s: %s vs %s", i, day, baseline.Body, candidate.Body)
+				}
+			}
+		} else if replace {
+			date, err := time.Parse(time.DateOnly, benchDate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Compare all calendar dates and one genuinely absent future night.
+			for offset := -89; offset <= 1; offset++ {
+				path := "/api/sleep/comparison?date=" + date.AddDate(0, 0, offset).Format(time.DateOnly)
+				baseline := metricHTTP(routes, p, path)
+				storage.SemanticBenchReplacement.Store(true)
+				candidate := metricHTTP(routes, p, path)
+				storage.SemanticBenchReplacement.Store(false)
+				if baseline.Code != 200 || candidate.Code != 200 || !bytes.Equal(baseline.Body.Bytes(), candidate.Body.Bytes()) {
+					t.Fatalf("comparison mismatch for fixture %d, offset %d: %s vs %s", i, offset, baseline.Body, candidate.Body)
+				}
+				if offset == 0 {
+					actual = candidate
+				}
+			}
+		}
+		if err := os.WriteFile(filepath.Join(out, fmt.Sprintf("client-%d.json", i)), actual.Body.Bytes(), 0600); err != nil {
+			t.Fatal(err)
+		}
+		metrics := metricHTTP(routes, p, "/api/metrics/data?metric=heart_rate_variability&bucket=day&from="+benchDate+"&to="+benchDate)
+		var series struct{ Points []storage.DataPoint }
+		if metrics.Code != 200 || json.Unmarshal(metrics.Body.Bytes(), &series) != nil || len(series.Points) != 1 ||
+			series.Points[0].Date != benchDate || math.Abs(series.Points[0].Qty-p.hrv) > 1e-4 {
+			t.Fatalf("Metrics HRV differs: status %d", metrics.Code)
+		}
+		profiles = append(profiles, p)
+	}
+	if mode == "night-card" {
+		nightCardBenchmark(t, root, profiles, mcpCall)
+		return
+	}
+	for i, p := range profiles {
+		names := []string{"semantic_sleep_duration_comparison_v1", "semantic_sleep_day_v1", "semantic_hrv_daily_v1", "semantic_sleep_hrv_day_v1"}
+		if cached {
+			names = append(names, "semantic_sleep_duration_cache_v1")
+		}
+		for _, name := range names {
+			relation := pgx.Identifier{profiles[1-i].user.SchemaName, name}.Sanitize()
+			err := p.pool.QueryRow(ctx, "select count(*) from "+relation).Scan(new(int))
+			var denied *pgconn.PgError
+			if !errors.As(err, &denied) || denied.Code != "42501" {
+				t.Fatalf("peer read on %s: %v", name, err)
+			}
+		}
+	}
+	var rows []perfRow
+	paths := []string{"Sleep HTTP", "MCP", "morning render"}
+	if narrow {
+		paths = []string{"MCP"}
+	}
+	for _, path := range paths {
+		for _, clients := range []int{1, 8} {
+			repeats := 3
+			if replace {
+				repeats = 6
+			}
+			for repeat := 1; repeat <= repeats; repeat++ {
+				for _, cache := range []string{"cold start", "warm"} {
+					order := []string{"base", "shadow"}
+					if repeat%2 == 0 {
+						order[0], order[1] = order[1], order[0]
+					}
+					if narrow {
+						// Counterbalance all three readers across the six repetitions.
+						orders := [][]string{
+							{"base", "wide", "narrow"}, {"wide", "narrow", "base"}, {"narrow", "base", "wide"},
+							{"narrow", "wide", "base"}, {"base", "narrow", "wide"}, {"wide", "base", "narrow"},
+						}
+						order = orders[(repeat-1)%len(orders)]
+					}
+					for _, arm := range order {
+						if cached && arm == "wide" {
+							arm = "cached"
+						}
+						shadow := arm != "base"
+						storage.SemanticBenchQuery = storage.SemanticBenchReplacementSQL
+						if arm == "narrow" {
+							storage.SemanticBenchQuery = storage.SemanticBenchNarrowSQL
+						}
+						if arm == "cached" {
+							storage.SemanticBenchQuery = cachedSleepQuery
+						}
+						storage.SemanticBenchReplacement.Store(replace && shadow)
+						apply := func(i int) error {
+							p := profiles[i%2]
+							switch path {
+							case "Sleep HTTP":
+								w := metricHTTP(routes, p, "/sleep?date="+benchDate)
+								if w.Code != 200 || !strings.Contains(w.Body.String(), fmt.Sprintf("%d min", p.delta)) {
+									return fmt.Errorf("Sleep page failed")
+								}
+							case "MCP":
+								w := mcpCall(p.assertion, toolBody)
+								if w.Code != 200 || !strings.Contains(w.Body.String(), fmt.Sprintf(`"delta_minutes":%d`, p.delta)) {
+									return fmt.Errorf("MCP response failed")
+								}
+							case "morning render":
+								body, err := notify.SemanticExperimentRender(ctx, p.db, benchDate)
+								if err != nil {
+									return err
+								}
+								if !strings.Contains(body, fmt.Sprintf("%d min", p.delta)) {
+									return fmt.Errorf("morning body differs")
+								}
+							}
+							if shadow && !replace {
+								return boundedFact(ctx, p)
+							}
+							return nil
+						}
+						evicted := 0
+						if cache == "cold start" {
+							if _, err := root.Exec(ctx, "checkpoint"); err != nil {
+								t.Fatal(err)
+							}
+							err := root.QueryRow(ctx, `select count(*) filter (where pg_buffercache_evict(bufferid)) from pg_buffercache
+                              where reldatabase=(select oid from pg_database where datname=current_database())
+                                and relfilenode in (select pg_relation_filenode(c.oid) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname=any($1::text[]) and c.relkind in ('r','i'))`, []string{users[0].SchemaName, users[1].SchemaName}).Scan(&evicted)
+							if err != nil {
+								t.Fatal(err)
+							}
+						} else {
+							for i := range 2 * clients {
+								if err := apply(i); err != nil {
+									t.Fatal(err)
+								}
+							}
+						}
+						n := 96
+						durations := make([]float64, n)
+						errs := make(chan error, clients)
+						baseBefore, replacementBefore := storage.SemanticBenchBaseReads.Load(), storage.SemanticBenchReplacementReads.Load()
+						before := counters(t, root)
+						var group sync.WaitGroup
+						start := make(chan struct{})
+						for j := range clients {
+							group.Add(1)
+							go func(j int) {
+								defer group.Done()
+								<-start
+								for i := j; i < n; i += clients {
+									then := time.Now()
+									err := apply(i)
+									durations[i] = float64(time.Since(then)) / 1e6
+									if err != nil {
+										errs <- err
+										return
+									}
+								}
+							}(j)
+						}
+						close(start)
+						group.Wait()
+						close(errs)
+						for err := range errs {
+							t.Fatal(err)
+						}
+						after := counters(t, root)
+						baseReads := storage.SemanticBenchBaseReads.Load() - baseBefore
+						replacementReads := storage.SemanticBenchReplacementReads.Load() - replacementBefore
+						var latency []profileLatency
+						if replace {
+							if (!shadow && (baseReads != uint64(n) || replacementReads != 0)) || (shadow && (replacementReads != uint64(n) || baseReads != 0)) {
+								t.Fatalf("%s: %d baseline and %d semantic reads for %d operations", path, baseReads, replacementReads, n)
+							}
+							for profile := range profiles {
+								var samples []float64
+								for i := profile; i < n; i += len(profiles) {
+									samples = append(samples, durations[i])
+								}
+								sort.Float64s(samples)
+								q := func(p float64) float64 { return samples[int(math.Ceil(p*float64(len(samples))))-1] }
+								latency = append(latency, profileLatency{q(0.5), q(0.95), q(0.99)})
+							}
+						}
+						sort.Float64s(durations)
+						div := float64(n)
+						variantName := arm
+						if replace && arm == "shadow" {
+							variantName = "replacement"
+						}
+						row := perfRow{Path: path, Clients: clients, Repeat: repeat, Operations: n, Cache: cache,
+							Variant: variantName, Evicted: evicted,
+							P50MS: durations[47], P95MS: durations[91], P99MS: durations[95], GoCPUMSPerOp: (after.goCPU - before.goCPU) / div,
+							PGCPUMSPerOp: (after.pgCPU - before.pgCPU) / div, SQLPerOp: (after.sql - before.sql) / div,
+							SQLRowsPerOp: (after.rows - before.rows) / div, SharedHitsPerOp: (after.hits - before.hits) / div, SharedReadsPerOp: (after.reads - before.reads) / div}
+						if replace {
+							row.BaseReads, row.ReplacementReads, row.Profiles = baseReads, replacementReads, latency
+						}
+						rows = append(rows, row)
+					}
+				}
+			}
+		}
+	}
+	// PostgreSQL execution plan keeps measured server-side rows/blocks separate
+	// from the number of values delivered by each response.
+	storage.SemanticBenchReplacement.Store(false)
+	planSQL := factLookup
+	if replace {
+		planSQL = storage.SemanticBenchReplacementSQL
+	}
+	if narrow {
+		planSQL = storage.SemanticBenchNarrowSQL
+	}
+	var plan json.RawMessage
+	if err := profiles[0].pool.QueryRow(ctx, "explain (analyze,buffers,format json) "+planSQL, benchDate).Scan(&plan); err != nil {
+		t.Fatal(err)
+	}
+	// Rerun one reversible historical correction to measure view refresh latency.
+	tx, err := profiles[0].pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	start := time.Now()
+	if _, err := tx.Exec(ctx, "update completed_night_sleep set duration_hours=duration_hours+1 where wake_date='2026-10-25'"); err != nil {
+		t.Fatal(err)
+	}
+	writeMS := float64(time.Since(start)) / 1e6
+	var revised int
+	start = time.Now()
+	correctionSQL := "select delta_minutes from semantic_sleep_day_v1 where wake_date=$1"
+	if narrow {
+		correctionSQL = "select delta_minutes from semantic_sleep_duration_comparison_v1 where wake_date=$1"
+	}
+	if err := tx.QueryRow(ctx, correctionSQL, benchDate).Scan(&revised); err != nil || revised != -44 {
+		t.Fatalf("correction expected -44 got %d err %v", revised, err)
+	}
+	refreshMS := float64(time.Since(start)) / 1e6
+	export := map[string]any{"fixture": "two synthetic isolated profiles; 150 canonical nights, 90 HRV timestamps per profile", "baseline": "existing normal paths, existing duration comparison on in disposable test tenants", "shadow": "same path plus one bounded semantic_sleep_hrv_day_v1 diagnostic statement via a restricted tenant pool", "cold": "checkpoint + evict tenant table/index shared buffers before each 96-call batch; warm OS cache and application pools, first wave cold", "sql_scope": "pg_stat_statements deltas for non-bootstrap roles in disposable DB", "cpu_scope": "Go process rusage; ps CPU time for PostgreSQL child processes, 10 ms OS counter resolution, including background workers; whole normal paths, excluding fixture setup", "iterations": rows, "explain": plan, "historical_update_ms": writeMS, "first_corrected_read_ms": refreshMS}
+	if replace {
+		delete(export, "shadow")
+		export["replacement"] = "one projected semantic_sleep_day_v1 SELECT in place of the existing comparison SELECT; same tenant pool, setting and fact hash"
+		export["parity"] = "byte-identical comparison HTTP responses at 90 calendar dates and one absent date per profile"
+		export["profile_order"] = []string{"A (delta -42)", "B (delta -102)"}
+		var basePlan json.RawMessage
+		if err := profiles[0].pool.QueryRow(ctx, "explain (analyze,buffers,format json) "+storage.SemanticBenchBaseSQL, benchDate).Scan(&basePlan); err != nil {
+			t.Fatal(err)
+		}
+		export["explain_baseline"] = basePlan
+	}
+	if narrow {
+		var widePlan json.RawMessage
+		if err := profiles[0].pool.QueryRow(ctx, "explain (analyze,buffers,format json) "+storage.SemanticBenchReplacementSQL, benchDate).Scan(&widePlan); err != nil {
+			t.Fatal(err)
+		}
+		var narrowPlan []struct{ Plan map[string]any }
+		if err := json.Unmarshal(plan, &narrowPlan); err != nil || len(narrowPlan) != 1 {
+			t.Fatal("missing narrow query plan")
+		}
+		relations := map[string]bool{}
+		var inspect func(map[string]any)
+		inspect = func(node map[string]any) {
+			if rel, ok := node["Relation Name"].(string); ok {
+				relations[rel] = true
+			}
+			if children, ok := node["Plans"].([]any); ok {
+				for _, child := range children {
+					inspect(child.(map[string]any))
+				}
+			}
+		}
+		inspect(narrowPlan[0].Plan)
+		if len(relations) != 1 || !relations["completed_night_sleep"] {
+			t.Fatalf("unexpected narrow plan relations: %v", relations)
+		}
+		export["explain_wide"] = widePlan
+		export["replacement"] = "MCP reads one comparison fact per call; base, wide sleep day, and narrow duration comparison, in all six orders"
+		export["parity"] = "byte-identical complete MCP responses on 150 canonical dates and one absent date per tenant"
+	}
+	if cached {
+		if err := tx.Rollback(ctx); err != nil {
+			t.Fatal(err)
+		}
+		delete(export, "historical_update_ms")
+		delete(export, "first_corrected_read_ms")
+		delete(export, "explain_wide")
+		export["replacement"] = "MCP current reader, narrow live view and indexed dbt incremental table in all six orders"
+		var cachePlan json.RawMessage
+		if err := profiles[0].pool.QueryRow(ctx, "explain (analyze,buffers,format json) "+cachedSleepQuery, benchDate).Scan(&cachePlan); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Contains(cachePlan, []byte(`"Relation Name": "semantic_sleep_duration_cache_v1"`)) || bytes.Contains(cachePlan, []byte("completed_night_sleep")) {
+			t.Fatal("unexpected cache read plan")
+		}
+		export["explain_cached"] = cachePlan
+		var timings []map[string]any
+		for i, p := range profiles {
+			timings = append(timings, verifySleepCacheRefresh(t, p, i, mcpCall, toolBody))
+		}
+		export["cache_refresh"] = timings
+	}
+	b, err := json.MarshalIndent(export, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(out, "semantic-performance.json"), b, 0600); err != nil {
+		t.Fatal(err)
+	}
+}

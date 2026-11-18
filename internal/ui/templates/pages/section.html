@@ -25,6 +25,14 @@
   </div>
   {{end}}
 
+  {{if .SleepComparisonText}}
+  <section class="card" aria-labelledby="sleep-comparison-title">
+    <h2 id="sleep-comparison-title">{{.SleepComparisonTitle}}</h2>
+    <time datetime="{{.SleepComparisonDate}}">{{.SleepComparisonDate}}</time>
+    <p>{{.SleepComparisonText}}</p>
+  </section>
+  {{end}}
+
   {{if .SleepStats}}
   <div id="sleep-stats-grid" style="margin-bottom:20px">
     {{range .SleepStats}}

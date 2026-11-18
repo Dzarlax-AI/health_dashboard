@@ -139,6 +139,7 @@ func buildServer(resolve DBResolver) *server.MCPServer {
 	registerAnalysisTools(s, resolve)
 	registerWorkoutTools(s, resolve)
 	registerSleepBalanceTool(s)
+	registerSleepComparisonTool(s)
 	return s
 }
 

@@ -4,11 +4,13 @@ import {
   ClientApiError,
   getAIBriefing,
   getSleepDurationBalance,
+  getSleepDurationComparison,
   getSleepGoal,
   getTodayInsights,
   putSleepGoal,
   type AIBriefingResponse,
   type SleepDurationBalanceResponse,
+  type SleepDurationComparison,
   type SleepGoalValue,
   type TodayInsightsResponse,
 } from "../../api/client";
@@ -128,10 +130,40 @@ function ScoreRing({ score, duration, locale }: { score?: number; duration?: num
   );
 }
 
+function SleepComparisonCard({ value, locale }: { value: SleepDurationComparison; locale: Locale }) {
+  const t = (key: Parameters<typeof translate>[1]) => translate(locale, key);
+  const duration = (minutes: number) =>
+    `${Math.floor(minutes / 60)} ${t("sleepHoursShort")} ${minutes % 60} ${t("sleepComparisonMinute")}`;
+  const statusCopy = {
+    available: "sleepComparisonUnavailable",
+    unavailable: "sleepComparisonUnavailable",
+    no_night: "sleepComparisonNoNight",
+    ineligible_night: "sleepComparisonIneligible",
+    insufficient_history: "sleepComparisonInsufficient",
+  } as const;
+  const delta = value.delta_minutes === null ? undefined
+    : new Intl.NumberFormat(locale, { signDisplay: "exceptZero" }).format(value.delta_minutes);
+  return (
+    <section className="sleep-section surface" aria-labelledby="sleep-comparison-title">
+      <div className="sleep-section__title">
+        <div><p>{dateLabel(value.wake_date, locale)}</p><h2 id="sleep-comparison-title">{t("sleepComparisonTitle")}</h2></div>
+        {delta !== undefined && <strong>{delta} {t("sleepComparisonMinute")}</strong>}
+      </div>
+      {value.duration_minutes !== null && <p>{t("sleepComparisonRecorded")} {duration(value.duration_minutes)}</p>}
+      {value.reference_minutes !== null
+        ? <p>{t("sleepComparisonReference")} {duration(value.reference_minutes)}</p>
+        : <p>{t(statusCopy[value.status])}</p>}
+      {value.eligible_nights !== null && <p>{t("sleepComparisonCoverage")} {value.eligible_nights} · {dateLabel(value.window_start, locale, true)} – {dateLabel(value.window_end_exclusive, locale, true)} ({t("sleepComparisonEndExclusive")})</p>}
+      {value.finalization === "provisional" && <p className="sleep-coverage">{t("sleepComparisonPreliminary")}</p>}
+    </section>
+  );
+}
+
 export function SleepReady({ resources, locale }: { resources: SleepResources; locale: Locale }) {
   const days = useMemo(() => buildSleepDays(resources), [resources]);
   const [range, setRange] = useState<7 | 30 | 90 | "all">(30);
   const [selectedDate, setSelectedDate] = useState(resources.briefing.date || days[0]?.date || "");
+  const [historicComparison, setHistoricComparison] = useState<SleepDurationComparison | null>();
   const [historicAI, setHistoricAI] = useState<AIBriefingResponse>();
   const [todayAI, setTodayAI] = useState(resources.ai);
   const [todayInsights, setTodayInsights] = useState<TodayInsightsResponse | undefined>(resources.todayInsights);
@@ -147,6 +179,18 @@ export function SleepReady({ resources, locale }: { resources: SleepResources; l
   const current = days.find((day) => day.date === resources.briefing.date);
   const visible = (range === "all" ? days : days.slice(0, range)).reverse();
   const score = resources.briefing.sleep_quality?.score_pct;
+
+  useEffect(() => {
+    if (!selectedDate || selectedDate === resources.comparison?.wake_date || resources.comparison == null) return;
+    const controller = new AbortController();
+    getSleepDurationComparison(controller.signal, selectedDate)
+      .then((comparison) => { if (!controller.signal.aborted) setHistoricComparison(comparison); })
+      .catch(() => { if (!controller.signal.aborted) setHistoricComparison(undefined); });
+    return () => controller.abort();
+  }, [resources.comparison, selectedDate]);
+
+  const comparison = resources.comparison?.wake_date === selectedDate ? resources.comparison
+    : historicComparison?.wake_date === selectedDate ? historicComparison : undefined;
 
   useEffect(() => {
     if (!selectedDate || selectedDate === resources.briefing.date) {
@@ -344,6 +388,8 @@ export function SleepReady({ resources, locale }: { resources: SleepResources; l
           </form>
         </section>
       ) : null}
+
+      {comparison && <SleepComparisonCard value={comparison} locale={locale} />}
 
       <section className="sleep-section surface">
         <div className="sleep-section__title">

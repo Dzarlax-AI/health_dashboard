@@ -56,7 +56,6 @@ func (s *DB) morningInsightEvidence(ctx context.Context, briefing *health.Briefi
 			break
 		}
 	}
-	health.AttachRecentRecordedSleepComparison(&sleep, briefing)
 	// Legacy ingestion may lack canonical coverage. Keep the observed date and
 	// duration but never claim complete capture or use its cached AI narrative.
 	if briefing.Sleep != nil && briefing.Sleep.LatestDate > sleep.Date && briefing.Sleep.LatestDate <= today && briefing.Sleep.LatestTotal != nil && *briefing.Sleep.LatestTotal > 0 {
@@ -84,6 +83,12 @@ func (s *DB) morningInsightEvidence(ctx context.Context, briefing *health.Briefi
 	if !health.MorningSleepAnalysisEligible(&sleep, today) || sleep.BaselineNights < 7 || sleep.BaselineHours == nil || *sleep.BaselineHours <= 0 || *sleep.BaselineHours > 24 {
 		sleep.BaselineHours = nil
 		sleep.BaselineNights = 0
+	}
+	sleep.Comparison = s.GetSleepDurationComparison(ctx, today)
+	if sleep.Comparison == nil {
+		health.AttachRecentRecordedSleepComparison(&sleep, briefing)
+	} else {
+		sleep.BaselineHours, sleep.BaselineNights = nil, 0
 	}
 	evidence := health.BuildMorningInsightEvidenceWithOptions(briefing, raw, health.MorningInsightOptions{ExcludeSections: map[string]bool{"sleep": true, "activity": true, "cardio": true}})
 	evidence.Date = today
@@ -132,6 +137,7 @@ func (s *DB) MorningReportAIState(ctx context.Context, cfg AIConfig, lang, today
 	raw := s.GetRawMetrics()
 	evidence, err := s.morningInsightEvidence(ctx, briefing, raw, today, lang)
 	if err != nil {
+		fallback.Comparison = s.GetSleepDurationComparison(ctx, today)
 		return fallback, nil, false, err
 	}
 	sleep := *evidence.NightSleep

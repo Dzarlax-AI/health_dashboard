@@ -947,8 +947,11 @@ func buildMorningSleepView(b *health.BriefingResponse, aiBlocks map[string]strin
 	view := morningSleepView{}
 	reportDate := morningReportDate(b, sleepContext)
 	if sleepContext != nil {
+		comparison := sleepContext.Comparison
+		hasCanonicalDuration := comparison != nil && comparison.DurationMinutes != nil &&
+			(comparison.Status == health.SleepComparisonAvailable || comparison.Status == health.SleepComparisonInsufficient)
 		observedUsed := false
-		if observed := sleepContext.Observed; !sleepContext.HasUsableFinalNight(reportDate) && observed != nil && observed.State == "observed_stable" && plausibleSleepHours(observed.Hours) {
+		if observed := sleepContext.Observed; !hasCanonicalDuration && !sleepContext.HasUsableFinalNight(reportDate) && observed != nil && observed.State == "observed_stable" && plausibleSleepHours(observed.Hours) {
 			view.lines = append(view.lines, fmt.Sprintf(morningSleepCopy(lang, "observed"), observed.Wake.Format("15:04"), formatSleepDuration(observed.Hours, lang)))
 			observedUsed = true
 			if sleepContext.Date != reportDate || sleepContext.Capture != health.NightCaptureComplete || sleepContext.Assessment != health.NightDurationPlausible {
@@ -966,7 +969,7 @@ func buildMorningSleepView(b *health.BriefingResponse, aiBlocks map[string]strin
 			if sleepContext.Capture != health.NightCaptureComplete {
 				label = "recorded_current"
 			}
-			if !observedUsed {
+			if !observedUsed && !hasCanonicalDuration {
 				view.lines = append(view.lines, fmt.Sprintf(morningSleepCopy(lang, label), sleepContext.ReportDate, formatSleepDuration(*sleepContext.Hours, lang)))
 				appendMorningSleepCaveat(&view, sleepContext, lang)
 			}
@@ -982,12 +985,16 @@ func buildMorningSleepView(b *health.BriefingResponse, aiBlocks map[string]strin
 				view.explanation = aiSleep
 				view.explanationAI = !preliminaryExplanation || health.MorningSleepAnalysisEligible(sleepContext, reportDate)
 			}
-		} else if !observedUsed {
+		} else if !observedUsed && !hasCanonicalDuration {
 			view.lines = append(view.lines, morningSleepCopy(lang, "no_current"))
 			if sleepContext.Date != "" && sleepContext.Date < sleepContext.ReportDate && validHours {
 				view.lines = append(view.lines, fmt.Sprintf(morningSleepCopy(lang, "older"), sleepContext.Date, formatSleepDuration(*sleepContext.Hours, lang)))
 			}
 			appendMorningSleepCaveat(&view, sleepContext, lang)
+		}
+		if sleepContext.Comparison != nil {
+			_, comparison := health.SleepComparisonText(*sleepContext.Comparison, lang)
+			view.lines = append(view.lines, comparison)
 		}
 		return view
 	}

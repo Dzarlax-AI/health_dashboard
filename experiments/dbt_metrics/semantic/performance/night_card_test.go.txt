@@ -1,0 +1,420 @@
+package mcpserver
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+	"health-receiver/internal/ctxdb"
+	"health-receiver/internal/notify"
+	"health-receiver/internal/storage"
+)
+
+const cardCache = "semantic_sleep_night_card_cache_v1"
+
+type cardClient func(string, string) *httptest.ResponseRecorder
+
+func init() { nightCardBenchmark = runNightCards }
+
+func registerSemanticNightCard(s *server.MCPServer) {
+	s.AddTool(mcp.NewTool("get_semantic_night_card", mcp.WithString("date", mcp.Required()), mcp.WithReadOnlyHintAnnotation(true)),
+		func(ctx context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			db := ctxdb.FromContext(ctx)
+			if db == nil {
+				return mcp.NewToolResultError("authenticated tenant required"), nil
+			}
+			day, err := sleepToolDate(r, db.Today)
+			if err != nil {
+				return mcp.NewToolResultError("invalid wake date"), nil
+			}
+			card, err := db.SemanticNightCard(ctx, day)
+			if err != nil {
+				return mcp.NewToolResultError("card unavailable"), nil
+			}
+			return mcp.NewToolResultJSON(card)
+		})
+}
+
+func cardRPC(call cardClient, p benchProfile, day string) (json.RawMessage, error) {
+	body := fmt.Sprintf(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"get_semantic_night_card","arguments":{"date":%q}}}`, day)
+	w := call(p.assertion, body)
+	if w.Code != 200 {
+		return nil, fmt.Errorf("night card MCP status %d", w.Code)
+	}
+	payload := w.Body.Bytes()
+	if !json.Valid(payload) {
+		for _, line := range bytes.Split(payload, []byte("\n")) {
+			if bytes.HasPrefix(line, []byte("data:")) {
+				payload = bytes.TrimSpace(line[5:])
+				break
+			}
+		}
+	}
+	var resp struct {
+		Result struct {
+			Card    json.RawMessage `json:"structuredContent"`
+			IsError bool            `json:"isError"`
+		}
+	}
+	if err := json.Unmarshal(payload, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Result.IsError || !json.Valid(resp.Result.Card) {
+		return nil, fmt.Errorf("invalid night card response %s", payload)
+	}
+	return resp.Result.Card, nil
+}
+
+func fixtureExec(t *testing.T, p benchProfile, sql string, args ...any) {
+	t.Helper()
+	if _, err := p.pool.Exec(t.Context(), sql, args...); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func cacheCard(t *testing.T, p benchProfile) cacheBuild {
+	t.Helper()
+	build, err := buildBenchmarkCache(t.Context(), p, cardCache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return build
+}
+
+func cacheVersions(t *testing.T, p benchProfile) map[string]string {
+	t.Helper()
+	rows, err := p.pool.Query(t.Context(), "select wake_date,xmin::text from "+cardCache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var day, xmin string
+		if err := rows.Scan(&day, &xmin); err != nil {
+			t.Fatal(err)
+		}
+		out[day] = xmin
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func requireCardParity(t *testing.T, p benchProfile) {
+	t.Helper()
+	var incorrect, dates int
+	err := p.pool.QueryRow(t.Context(), `select count(*) filter(where l.card is distinct from c.card),count(*)
+		from semantic_sleep_night_card_v1 l full join semantic_sleep_night_card_cache_v1 c using(wake_date)`).Scan(&incorrect, &dates)
+	if err != nil || incorrect != 0 || dates != 90 {
+		t.Fatalf("card parity: differences %d dates %d error %v", incorrect, dates, err)
+	}
+}
+
+func requestCard(t *testing.T, call cardClient, p benchProfile, day string, cached bool) json.RawMessage {
+	t.Helper()
+	storage.SemanticBenchCachedCard.Store(cached)
+	card, err := cardRPC(call, p, day)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return card
+}
+
+func cardPeerDenied(t *testing.T, p, peer benchProfile, name string) {
+	t.Helper()
+	relation := pgx.Identifier{peer.user.SchemaName, name}.Sanitize()
+	err := p.pool.QueryRow(t.Context(), "select count(*) from "+relation).Scan(new(int))
+	var denied *pgconn.PgError
+	if !errors.As(err, &denied) || denied.Code != "42501" {
+		t.Fatalf("cross-profile %s: %v", name, err)
+	}
+}
+
+// Compare persisted rows, then run both real reader transports for the changed fixture.
+func verifyCardCorrections(t *testing.T, p benchProfile, call cardClient) map[string]any {
+	t.Helper()
+	const changed = "2026-09-11"
+	ctx := t.Context()
+	old := requestCard(t, call, p, changed, true)
+	versions := cacheVersions(t, p)
+	fixtureExec(t, p, "update sleep_interval set stage='sleep_deep' where wake_date=$1 and stage='sleep_core'", changed)
+	committed := time.Now()
+	want := requestCard(t, call, p, changed, false)
+	liveLag := time.Since(committed)
+	if bytes.Equal(old, want) || !bytes.Equal(requestCard(t, call, p, changed, true), old) {
+		t.Fatal("expected stage-only correction before refresh")
+	}
+	type result struct {
+		build cacheBuild
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() { b, err := buildBenchmarkCache(ctx, p, cardCache); done <- result{b, err} }()
+	tick := time.NewTicker(25 * time.Millisecond)
+	defer tick.Stop()
+	var fresh time.Duration
+	var updated cacheBuild
+	for updated.WallMS == 0 {
+		select {
+		case <-tick.C:
+		case b := <-done:
+			if b.err != nil {
+				t.Fatal(b.err)
+			}
+			updated = b.build
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+		if fresh == 0 {
+			card := requestCard(t, call, p, changed, true)
+			switch {
+			case bytes.Equal(card, want):
+				fresh = time.Since(committed)
+			case !bytes.Equal(card, old):
+				t.Fatal("partial card observed during refresh")
+			}
+		}
+	}
+	if fresh == 0 {
+		t.Fatal("card did not refresh")
+	}
+	requireCardParity(t, p)
+	newVersions := cacheVersions(t, p)
+	for day, v := range versions {
+		if (newVersions[day] != v) != (day == changed) {
+			t.Fatalf("stage-only invalidation escaped date at %s", day)
+		}
+	}
+	// Move the complete episode and its evidence to an unused calendar date.
+	// Destination starts with a canonical record; first delete it and check its
+	// explicit no-night card is cacheable, then move the source episode there.
+	const dest = "2026-09-12"
+	if _, err := p.pool.Exec(ctx, `delete from sleep_interval where wake_date=$1`, dest); err != nil {
+		t.Fatal(err)
+	}
+	fixtureExec(t, p, "delete from completed_night_sleep where wake_date=$1", dest)
+	cacheCard(t, p)
+	requireCardParity(t, p)
+	b := requestCard(t, call, p, dest, true)
+	if !bytes.Contains(b, []byte(`"no_night"`)) {
+		t.Fatalf("missing calendar no-night state: %s", b)
+	}
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, "update completed_night_sleep set wake_date=$2 where wake_date=$1", changed, dest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(ctx, "update sleep_interval set wake_date=$2,start_at=start_at+interval '24 hours',end_at=end_at+interval '24 hours' where wake_date=$1", changed, dest); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cacheCard(t, p)
+	requireCardParity(t, p)
+	moved := requestCard(t, call, p, dest, true)
+	if bytes.Equal(b, moved) || !bytes.Contains(requestCard(t, call, p, changed, true), []byte(`"no_night"`)) {
+		t.Fatal("old/new move boundary failed")
+	}
+	fixtureExec(t, p, "update completed_night_sleep set source=source||'-changed' where wake_date=$1", dest)
+	cacheCard(t, p)
+	requireCardParity(t, p)
+	if bytes.Equal(moved, requestCard(t, call, p, dest, true)) {
+		t.Fatal("source-only correction invisible")
+	}
+	before := cacheVersions(t, p)
+	// Re-deliver equal input: write a new upstream tuple, preserve published versions.
+	fixtureExec(t, p, "update completed_night_sleep set source=source where wake_date=$1", dest)
+	noop := cacheCard(t, p)
+	requireCardParity(t, p)
+	for day, v := range cacheVersions(t, p) {
+		if before[day] != v {
+			t.Fatalf("no-op changed cached row for %s", day)
+		}
+	}
+	return map[string]any{"stage_only_commit_to_live_MCP_ms": float64(liveLag) / 1e6, "stage_only_commit_to_fresh_cached_MCP_ms": float64(fresh) / 1e6, "refresh": updated, "no_op_refresh": noop, "checks": []string{"atomic stage-only correction: only original date rewritten", "full 90-date parity after deletion, episode move and source change", "idempotent re-delivery renewed zero cache tuples"}}
+}
+
+func runNightCards(t *testing.T, root *pgxpool.Pool, profiles []benchProfile, call func(string, string) *httptest.ResponseRecorder) {
+	t.Helper()
+	defer storage.SemanticBenchCachedCard.Store(false)
+	ctx := t.Context()
+	for i, p := range profiles {
+		// The measured date contains five contiguous labels and exactly one internal awakening.
+		fixtureExec(t, p, `with original as (
+		  delete from sleep_interval where wake_date=$1 returning wake_date,source,start_at,end_at
+		)
+		insert into sleep_interval(wake_date,source,start_at,end_at,stage)
+		select wake_date,source,x.s,x.e,x.label from original
+		cross join lateral (values
+		(start_at-interval '5 minutes',start_at+interval '55 minutes','deep'),
+		(start_at+interval '55 minutes',start_at+interval '115 minutes','core'),
+		(start_at+interval '115 minutes',start_at+interval '120 minutes','awake'),
+		(start_at+interval '120 minutes',start_at+interval '180 minutes','rem'),
+		(start_at+interval '180 minutes',end_at,'core')) x(s,e,label)`, benchDate)
+		if i == 0 {
+			fixtureExec(t, p, "update completed_night_sleep set finalization_state='final',claim_eligibility='eligible' where wake_date=$1", benchDate)
+		} else {
+			// An open awake boundary prevents an exact total. The earlier internal bout remains observed.
+			fixtureExec(t, p, `insert into sleep_interval
+				select wake_date,source,max(end_at),max(end_at)+interval '4 minutes','awake'
+				from sleep_interval where wake_date=$1 group by wake_date,source`, benchDate)
+		}
+		cacheCard(t, p)
+		requireCardParity(t, p)
+		fixtureExec(t, p, "analyze "+cardCache)
+	}
+	var goldCards []json.RawMessage
+	var goldTexts []string
+	for i, p := range profiles {
+		for _, name := range []string{"semantic_sleep_night_card_v1", "semantic_sleep_continuity_v1", cardCache} {
+			cardPeerDenied(t, p, profiles[1-i], name)
+		}
+		live := requestCard(t, call, p, benchDate, false)
+		text, err := notify.SemanticExperimentNightReport(ctx, p.db, benchDate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var content struct {
+			Date     string `json:"wake_date"`
+			Source   string `json:"source"`
+			Duration struct {
+				Delta int `json:"delta_minutes"`
+			} `json:"duration"`
+			Stages struct {
+				Core *float64 `json:"core_minutes"`
+			} `json:"stages"`
+			Quality struct {
+				Confidence string `json:"confidence"`
+			} `json:"quality"`
+		}
+		if err := json.Unmarshal(live, &content); err != nil {
+			t.Fatal(err)
+		}
+		if content.Source != []string{"synthetic-a", "synthetic-b"}[i] || content.Date != benchDate || content.Duration.Delta != p.delta || content.Stages.Core == nil || content.Quality.Confidence == "" {
+			t.Fatalf("fixture content: %s", live)
+		}
+		wakeLabel := []string{"Internal awakenings 1", "Internal awakenings at least 1"}[i]
+		if !strings.Contains(text, wakeLabel) || !strings.Contains(text, "Deep 60.0 min (14.7% of recorded sleep)") || strings.Contains(text, "Structure component") != (i == 0) || !strings.Contains(text, fmt.Sprintf("Core %.1f min", *content.Stages.Core)) || !strings.Contains(text, "Quality confidence "+content.Quality.Confidence) || !strings.Contains(text, fmt.Sprintf("(%+d min)", p.delta)) {
+			t.Fatalf("missing projected fields in report")
+		}
+		if !bytes.Equal(live, requestCard(t, call, p, benchDate, true)) {
+			t.Fatal("live/cached MCP mismatch")
+		}
+		cachedText, err := notify.SemanticExperimentNightReport(ctx, p.db, benchDate)
+		if err != nil || cachedText != text {
+			t.Fatalf("live/cached render mismatch: %v", err)
+		}
+		goldCards = append(goldCards, live)
+		goldTexts = append(goldTexts, text)
+	}
+	var runs []perfRow
+	for _, path := range []string{"MCP", "morning render"} {
+		for _, clients := range []int{1, 8} {
+			for repeat := 0; repeat < 4; repeat++ {
+				for order := 0; order < 2; order++ {
+					cached := (repeat+order)%2 == 1
+					storage.SemanticBenchCachedCard.Store(cached)
+					apply := func(i int) error {
+						j := i % len(profiles)
+						p := profiles[j]
+						if path == "MCP" {
+							card, err := cardRPC(call, p, benchDate)
+							if err != nil {
+								return err
+							}
+							if !bytes.Equal(card, goldCards[j]) {
+								return errors.New("MCP drift")
+							}
+						}
+						if path == "morning render" {
+							body, err := notify.SemanticExperimentNightReport(ctx, p.db, benchDate)
+							if err != nil {
+								return err
+							}
+							if body != goldTexts[j] {
+								return errors.New("report drift")
+							}
+						}
+						return nil
+					}
+					for i := 0; i < 2*clients; i++ {
+						if err := apply(i); err != nil {
+							t.Fatal(err)
+						}
+					}
+					const n = 48
+					samples := make([]float64, n)
+					before := counters(t, root)
+					var wg sync.WaitGroup
+					start := make(chan struct{})
+					errs := make(chan error, clients)
+					for j := 0; j < clients; j++ {
+						wg.Add(1)
+						go func(j int) {
+							defer wg.Done()
+							<-start
+							for i := j; i < n; i += clients {
+								at := time.Now()
+								err := apply(i)
+								samples[i] = float64(time.Since(at)) / 1e6
+								if err != nil {
+									errs <- err
+									return
+								}
+							}
+						}(j)
+					}
+					close(start)
+					wg.Wait()
+					close(errs)
+					for err := range errs {
+						t.Fatal(err)
+					}
+					after := counters(t, root)
+					sort.Float64s(samples)
+					q := func(p float64) float64 { return samples[int(math.Ceil(p*n))-1] }
+					variant := "live"
+					if cached {
+						variant = "cached"
+					}
+					runs = append(runs, perfRow{Path: path, Clients: clients, Repeat: repeat + 1, Operations: n, Cache: "warm", Variant: variant, P50MS: q(.5), P95MS: q(.95), P99MS: q(.99), GoCPUMSPerOp: (after.goCPU - before.goCPU) / n, PGCPUMSPerOp: (after.pgCPU - before.pgCPU) / n, SQLPerOp: (after.sql - before.sql) / n, SQLRowsPerOp: (after.rows - before.rows) / n, SharedHitsPerOp: (after.hits - before.hits) / n, SharedReadsPerOp: (after.reads - before.reads) / n})
+				}
+			}
+		}
+	}
+	peerBefore := requestCard(t, call, profiles[1], "2026-09-11", true)
+	corrections := verifyCardCorrections(t, profiles[0], call)
+	if !bytes.Equal(requestCard(t, call, profiles[1], "2026-09-11", true), peerBefore) {
+		t.Fatal("peer response changed")
+	}
+	out := map[string]any{"fixture": "two isolated PostgreSQL roles; two synthetic profiles, 90 evaluated dates each, private random-port dbt lab", "transport": "actual stateless MCP /mcp/oauth with fixture identity verifier; actual deterministic English morning formatter plus experiment-only card section, no sending or AI", "measurement": "alternating paired order, four repetitions of 48 verified complete calls; tenant pools, PostgreSQL and OS caches warm; CPU via process rusage (Go) and summed PostgreSQL child CPU time, 10ms OS resolution", "parity": "both full profile card sets match live/cache; authenticated MCP and deterministic rendered bodies checked in every measured operation", "iterations": runs, "mutation": corrections}
+	data, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(os.Getenv("SEMANTIC_PERF_OUT"), "semantic-performance.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+}

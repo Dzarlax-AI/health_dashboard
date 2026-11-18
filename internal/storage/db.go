@@ -503,6 +503,13 @@ func (s *DB) InsertPoints(recordID int64, points []MetricPoint) error {
 		return fmt.Errorf("mark inserted cache dates dirty: %w", err)
 	}
 
+	if err := insertPointsTx(ctx, tx, recordID, points); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func insertPointsTx(ctx context.Context, tx pgx.Tx, recordID int64, points []MetricPoint) error {
 	// Three guards on the sleep_% UPDATE branch — all protect the cached
 	// per-night aggregate from being clobbered by garbage records that share
 	// the same (metric_name, date, source) key:
@@ -589,7 +596,7 @@ func (s *DB) InsertPoints(recordID int64, points []MetricPoint) error {
 		}
 	}
 
-	return tx.Commit(ctx)
+	return nil
 }
 
 func cacheDatesFromPoints(points []MetricPoint) []string {

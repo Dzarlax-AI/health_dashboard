@@ -33,6 +33,12 @@ func MorningProviderPayload(evidence health.MorningInsightEvidence) ([]byte, err
 		}
 		night["yesterday_activity"] = activity
 	}
+	if sleep.Comparison != nil {
+		night["duration_comparison"] = sleep.Comparison
+		if sleep.Comparison.DurationMinutes != nil {
+			night["recorded_sleep_minutes"] = *sleep.Comparison.DurationMinutes
+		}
+	}
 	if sleep.RecentRecordedMeanHours != nil {
 		night["recent_recorded_mean_minutes"] = int(math.Round(*sleep.RecentRecordedMeanHours * 60))
 		night["recent_recorded_nights"] = sleep.RecentRecordedNights

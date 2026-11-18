@@ -66,6 +66,15 @@ func evaluateSleepAnalysisUpdate(ctx context.Context, db *storage.DB, cfg Config
 		return nil, nil
 	}
 	current := newSleepAnalysisSnapshot(sleep, health.RecordedSleepAnalysisText(sleep, cfg.Lang))
+	// Compare both observations under the same rule when the pilot state
+	// differs between reports. A switch must not look like a changed night.
+	if sleep.Comparison != nil || previous.Analysis.Sleep.Comparison != nil {
+		for _, snapshot := range []*sleepAnalysisSnapshot{&previous.Analysis, &current} {
+			observed := snapshot.Sleep
+			observed.RecentRecordedMeanHours = nil
+			snapshot.Identity = health.SleepAnalysisIdentity(observed)
+		}
+	}
 	if current.Identity == "" || current.Identity == previous.Analysis.Identity {
 		return nil, nil
 	}

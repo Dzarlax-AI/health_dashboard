@@ -53,15 +53,18 @@ type SleepStat struct {
 // SectionPageData is the template data for section pages.
 type SectionPageData struct {
 	BasePage
-	SectionKey   string
-	SectionTitle string
-	IconColor    string
-	IconSVG      template.HTML
-	Summary      string
-	Details      []SectionDetail
-	SleepStats   []SleepStat
-	Charts       []SectionChart
-	Explains     []SectionExplain
+	SectionKey           string
+	SectionTitle         string
+	IconColor            string
+	IconSVG              template.HTML
+	Summary              string
+	Details              []SectionDetail
+	SleepStats           []SleepStat
+	SleepComparisonTitle string
+	SleepComparisonText  string
+	SleepComparisonDate  string
+	Charts               []SectionChart
+	Explains             []SectionExplain
 }
 
 // sectionMeta defines the charts and explainer keys for each section.

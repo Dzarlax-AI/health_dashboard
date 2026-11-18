@@ -20,6 +20,8 @@ export type SleepGoalRequest = components["schemas"]["SleepGoalRequest"];
 export type SleepGoalResponse = components["schemas"]["SleepGoalResponse"];
 export type SleepGoalValue = NonNullable<SleepGoalResponse["goal"]>;
 
+export type SleepDurationComparison = NonNullable<components["schemas"]["SleepDurationComparisonResponse"]["comparison"]>;
+
 type MetricDataQuery = operations["getMetricData"]["parameters"]["query"];
 
 export interface MetricDataOptions {
@@ -189,6 +191,17 @@ export async function getEnergyHistory(
 export async function getSession(signal?: AbortSignal): Promise<SessionResponse> {
   const { data, error, response } = await client.GET("/api/session", { signal });
   return requireData(data, error, response);
+}
+
+export async function getSleepDurationComparison(
+  signal?: AbortSignal,
+  date?: string,
+): Promise<SleepDurationComparison | null> {
+  const { data, error, response } = await client.GET("/api/sleep/comparison", {
+    params: { query: { date } },
+    signal,
+  });
+  return requireData(data, error, response).comparison;
 }
 
 export async function getSleepDurationBalance(

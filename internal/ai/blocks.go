@@ -44,6 +44,15 @@ func hashInputs(v any) string {
 	return hex.EncodeToString(sum[:])
 }
 
+const morningDurationComparisonPrompt = "Use night_sleep.duration_comparison (or night_sleep.comparison for a limited record) as the sole source for the comparison with usual sleep. Use the supplied signed delta only when status is available. Otherwise describe the recorded episode using available details. A provisional record can be revised. Draw no conclusions about sleep quality or the cause of the duration difference from the delta."
+
+func comparisonPrompt(evidence health.MorningInsightEvidence) string {
+	if evidence.NightSleep == nil || evidence.NightSleep.Comparison == nil {
+		return ""
+	}
+	return morningDurationComparisonPrompt
+}
+
 // HashInsightBundle hashes the exact provider-facing evidence packet. The
 // generation fingerprint is layered on by the storage orchestrator.
 func HashInsightBundle(evidence health.MorningInsightEvidence) string {
@@ -56,9 +65,10 @@ func HashInsightBundle(evidence health.MorningInsightEvidence) string {
 		inputHash = evidence.NightSleep.InputHash
 	}
 	return hashInputs(struct {
-		Payload        json.RawMessage
-		NightInputHash string
-	}{payload, inputHash})
+		Payload          json.RawMessage
+		NightInputHash   string
+		ComparisonPrompt string `json:"ComparisonPrompt,omitempty"`
+	}{payload, inputHash, comparisonPrompt(evidence)})
 }
 
 // HashSynthesis is retained as a compatibility alias for callers and tests
@@ -132,8 +142,12 @@ func GenerateInsightBundle(ctx context.Context, provider Provider, cfg ProviderC
 	if err != nil {
 		return InsightBundleResult{}, fmt.Errorf("encode insight evidence: %w", err)
 	}
+	prompt := systemPrompt
+	if comparison := comparisonPrompt(evidence); comparison != "" {
+		prompt += "\n" + comparison
+	}
 	generated, err := provider.Generate(ctx, cfg, GenerationRequest{
-		Prompt:         systemPrompt,
+		Prompt:         prompt,
 		UserPayload:    providerPayload,
 		Language:       lang,
 		ResponseSchema: insightBundleSchema(preliminarySleep, &evidence),

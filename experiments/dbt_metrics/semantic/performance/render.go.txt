@@ -1,0 +1,21 @@
+package notify
+
+import (
+	"context"
+	"time"
+
+	"health-receiver/internal/storage"
+)
+
+// Experiment-only Go overlay exposing the deterministic renderer to the harness.
+func SemanticExperimentRender(ctx context.Context, db *storage.DB, date string) (string, error) {
+	briefing, err := db.GetHealthBriefing("en")
+	if err != nil {
+		return "", err
+	}
+	sleep, blocks, err := db.MorningReportEvidence(ctx, storage.AIConfig{}, "en", date, briefing)
+	if err != nil {
+		return "", err
+	}
+	return formatMorning(briefing, blocks, "en", time.UTC, freshness{}, false, sleep), nil
+}

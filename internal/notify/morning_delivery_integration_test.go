@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -82,7 +83,7 @@ func TestMorningDeliveryWaitsForCurrentAIAndDoesNotWaitForCheckin(t *testing.T) 
 	if err := db.MigrateSchemaContract(); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.SaveSettings(map[string]string{"timezone": "UTC"}); err != nil {
+	if err := db.SaveSettings(map[string]string{"timezone": "UTC", "sleep_duration_comparison_enabled": "true"}); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
@@ -90,17 +91,44 @@ func TestMorningDeliveryWaitsForCurrentAIAndDoesNotWaitForCheckin(t *testing.T) 
 	if _, err := pool.Exec(ctx, `INSERT INTO hourly_metrics(metric_name,hour,source,avg_val,sample_count,min_val,max_val) VALUES('step_count',$1,'synthetic',10,1,10,10)`, today+" 08"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO daily_scores(date,sleep_total,hrv_avg,steps) VALUES($1,7.5,55,10)`, today); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO daily_scores(date,sleep_total,hrv_avg,steps) VALUES($1,6.8,55,10)`, today); err != nil {
 		t.Fatal(err)
 	}
-	night := health.CompletedNightSleep{WakeDate: today, DurationHours: 7.5, Source: "synthetic", SourceEpoch: "synthetic", InputHash: "night-1", AlgorithmVersion: "v1", CaptureCompleteness: health.NightCapturePartial, DurationAssessment: health.NightDurationPlausible, FinalizationState: health.NightFinalProvisional, ClaimEligibility: health.NightClaimIneligible, ObservedAt: now}
+	night := health.CompletedNightSleep{WakeDate: today, DurationHours: 6.8, Source: "synthetic", SourceEpoch: "synthetic", InputHash: "night-1", AlgorithmVersion: "v1", CaptureCompleteness: health.NightCaptureComplete, DurationAssessment: health.NightDurationPlausible, FinalizationState: health.NightFinalProvisional, ClaimEligibility: health.NightClaimIneligible, ObservedAt: now}
 	if err := db.SaveCompletedNightSleep(ctx, night, nil); err != nil {
 		t.Fatal(err)
+	}
+	for offset := 1; offset <= 7; offset++ {
+		prior := night
+		prior.WakeDate = now.AddDate(0, 0, -offset).Format(time.DateOnly)
+		prior.ObservedAt = now.AddDate(0, 0, -offset)
+		prior.DurationHours, prior.InputHash = 7.5, prior.WakeDate
+		prior.FinalizationState, prior.ClaimEligibility = health.NightFinalFinal, health.NightClaimEligible
+		if err := db.SaveCompletedNightSleep(ctx, prior, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	briefing, err := db.GetHealthBriefing("en")
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	fallback, blocks, err := db.MorningReportEvidence(ctx, storage.AIConfig{}, "en", today, briefing)
+	t.Logf("morning evidence with comparison and AI disabled: %s", time.Since(started))
+	if err != nil || len(blocks) != 0 || fallback.Comparison == nil || *fallback.Comparison.DeltaMinutes != -42 {
+		t.Fatalf("fallback comparison: %+v, blocks=%d, err=%v", fallback.Comparison, len(blocks), err)
+	}
+	plain := formatMorning(briefing, nil, "en", time.UTC, freshness{}, false, fallback)
+	rich := formatMorningRich(briefing, nil, "en", time.UTC, freshness{}, false, "", fallback)
+	for _, body := range []string{plain, rich} {
+		if !strings.Contains(body, "-42 min") || !strings.Contains(body, "Preliminary record") {
+			t.Fatal("preparing without AI did not preserve the comparison")
+		}
 	}
 	provider := &controlledMorningProvider{id: fmt.Sprintf("notify-morning-test-%d", morningDeliveryTestSequence.Add(1)), entered: make(chan struct{}), release: make(chan struct{})}
 	ai.RegisterProvider(provider)
 	aiCfg := storage.AIConfig{Provider: provider.id, Providers: map[string]storage.AIProviderSettings{provider.id: {APIKey: "synthetic-only"}}}
-	cfg := Config{Timezone: "UTC", Lang: "en", AIConfig: aiCfg}
+	cfg := Config{Timezone: "UTC", Lang: "en", AIConfig: aiCfg, TelegramRichMessages: true}
 	var mu sync.Mutex
 	var messages []string
 	fakeTelegram := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -147,9 +175,8 @@ func TestMorningDeliveryWaitsForCurrentAIAndDoesNotWaitForCheckin(t *testing.T) 
 		t.Fatal(err)
 	}
 	assertPending()
-	night.InputHash = "night-2"
-	night.DurationHours = 7.75
-	if err := db.SaveCompletedNightSleep(ctx, night, nil); err != nil {
+	priorDate := now.AddDate(0, 0, -7).Format(time.DateOnly)
+	if _, err := pool.Exec(ctx, "UPDATE completed_night_sleep SET duration_hours=8.5 WHERE wake_date=$1", priorDate); err != nil {
 		t.Fatal(err)
 	}
 	close(provider.release)
@@ -174,6 +201,45 @@ func TestMorningDeliveryWaitsForCurrentAIAndDoesNotWaitForCheckin(t *testing.T) 
 	if err != nil || attempted || reason != "delivery_already_reserved" {
 		t.Fatalf("duplicate send: attempted=%v reason=%s err=%v", attempted, reason, err)
 	}
+	items, err := db.ListReportHistory(ctx, storage.ReportHistoryQuery{Kind: "morning", From: today, To: today, Limit: 10})
+	if err != nil || len(items) != 1 {
+		t.Fatalf("morning archive count=%d error=%v", len(items), err)
+	}
+	detail, err := db.GetReportHistory(ctx, items[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var archived struct {
+		Sleep health.MorningReportSleep `json:"sleep"`
+	}
+	if err := json.Unmarshal(detail.Context, &archived); err != nil {
+		t.Fatal(err)
+	}
+	fact := archived.Sleep.Comparison
+	current := db.GetSleepDurationComparison(ctx, today)
+	if fact == nil || current == nil || fact.FactVersion != current.FactVersion || fact.DeltaMinutes == nil || *fact.DeltaMinutes != -51 ||
+		*fact.EligibleNights != 7 || fact.Finalization != health.NightFinalProvisional ||
+		!strings.Contains(detail.PlainBody, "-51 min") || !strings.Contains(detail.RichBody, "-51 min") {
+		t.Fatalf("prepared variants disagreed with shared comparison: %+v", fact)
+	}
+	if _, err := pool.Exec(ctx, "UPDATE completed_night_sleep SET duration_hours=7.5 WHERE wake_date=$1", priorDate); err != nil {
+		t.Fatal(err)
+	}
+	current = db.GetSleepDurationComparison(ctx, today)
+	if current.FactVersion == fact.FactVersion || *current.DeltaMinutes != -42 {
+		t.Fatalf("correction did not create a new comparison: %+v", current)
+	}
+	unchanged, err := db.GetReportHistory(ctx, items[0].ID)
+	if err != nil || string(unchanged.Context) != string(detail.Context) {
+		t.Fatalf("late correction rewrote prior archive: %v", err)
+	}
+	revision, err := evaluateSleepAnalysisUpdate(ctx, db, cfg, now, func() (*health.BriefingResponse, error) {
+		return db.GetHealthBriefing("en")
+	})
+	if err != nil || revision != nil {
+		t.Fatalf("historical correction triggered analysis revision: %v %v", revision, err)
+	}
+
 	row, err := db.GetTodayCheckin(today, storage.CheckinSourceTelegram)
 	if err != nil || row == nil || row.Status != storage.CheckinStatusPrompted {
 		t.Fatalf("report depended on answering check-in: %#v %v", row, err)

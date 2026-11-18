@@ -2,6 +2,7 @@
 .gocache
 bin
 docs/ai-plans
+experiments/dbt_metrics/artifacts/
 node_modules
 .pnpm-store
 apps/*/dist
