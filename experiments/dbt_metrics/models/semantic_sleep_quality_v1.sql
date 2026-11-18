@@ -32,4 +32,5 @@ with selected as (
                 when quality_basis in ('gaps_in_episode','open_awake_boundary') then 'low' else 'provisional' end as evidence_confidence
     from inputs
 )
-select * from ({{ semantic_sleep_quality('attributed') }}) evaluated
+select evaluated.*, (quality->>'score_pct')::integer as quality_score_pct
+from ({{ semantic_sleep_quality('attributed') }}) evaluated

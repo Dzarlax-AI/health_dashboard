@@ -12,6 +12,7 @@ import psycopg2
 import yaml
 
 from night_card_report import write_night_cards
+from verify_dbt_catalog import verify_dbt_catalog
 from semantic_inputs import load_profile
 from semantic_summary import summarize, summarize_night_cards
 
@@ -95,6 +96,7 @@ def run(lab, pg, profile, recovery, night_card_only=False, night_card_html=None)
         with conn, conn.cursor() as cur:
             acl = validate_acl(cur)
             cur.execute('set local role shadow_reader; set local search_path=dbt_output,pg_catalog')
+            catalog = verify_dbt_catalog(cur, json.loads((lab/'target/manifest.json').read_text()))
             output = summarize_night_cards(cur) if night_card_only else summarize(cur)
             if night_card_html:
                 write_night_cards(cur, night_card_html, recovery if replay else None)
@@ -115,7 +117,7 @@ def run(lab, pg, profile, recovery, night_card_only=False, night_card_html=None)
             raise RuntimeError('missing main-night Go formula parity proof')
         hrv = None if night_card_only else json.loads(execute([sys.executable,PILOT/'scripts/run_semantic_hrv_oracle.py'],env))
         return dict(dataset=name,provenance=provenance,coverage=output,
-                    checks=dict(dbt={r['unique_id']:r['status'] for r in results},edge_cases=edge_cases,
+                    checks=dict(catalog=catalog,dbt={r['unique_id']:r['status'] for r in results},edge_cases=edge_cases,
                     security_invoker_views=acl,cross_role_denials=2,sleep_go=proof[0],night_quality_go=quality_checks,hrv_go=hrv))
     finally:
         execute([pg/'pg_ctl','-D',lab/'db','-m','fast','-w','stop'],env)

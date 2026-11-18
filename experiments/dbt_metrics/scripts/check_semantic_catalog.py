@@ -6,7 +6,7 @@ from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
-CATALOG = ROOT / "experiments/dbt_metrics/semantic/catalog.yml"
+CATALOG = ROOT / "experiments/dbt_metrics/models/health_metric_catalog.yml"
 SWIFT = ROOT.parent / "health-sync/health-sync/HealthKitManager.swift"
 
 
@@ -115,6 +115,9 @@ def validate(catalog, swift):
                 raise ValueError(f"{name}: unmapped/obsolete DTO fields {actual ^ accounted}")
     items = list(definitions(catalog))
     indices = {item["metric_id"]:item for item in items}
+    for key, binding in catalog["dbt_bindings"].items():
+        if key not in indices or not binding.get("model") or not binding.get("columns"):
+            raise ValueError(f"invalid dbt binding: {key}")
     if len(indices) != len(items):
         raise ValueError("duplicate metric id")
     for item in items:
@@ -167,13 +170,19 @@ def compare_inventory(catalog, path):
     return {"row_counts":dict(counts), "entries":details}
 
 
+def read_catalog():
+    properties = json.loads(CATALOG.read_text(), object_pairs_hook=unique_pairs)
+    model = next(m for m in properties["models"] if m["name"] == "semantic_metric_catalog_v1")
+    return model["config"]["meta"]["health_catalog"]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--swift", type=Path, default=SWIFT)
     parser.add_argument("--inventory", type=Path, help="aggregate JSON with metric_name, units, rows only")
     parser.add_argument("--expand", action="store_true", help="emit resolved definitions")
     args = parser.parse_args()
-    catalog = json.loads(CATALOG.read_text(), object_pairs_hook=unique_pairs)
+    catalog = read_catalog()
     items = validate(catalog, args.swift)
     if args.expand:
         print(json.dumps(items, ensure_ascii=False, indent=2))

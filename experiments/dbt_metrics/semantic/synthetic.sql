@@ -12,6 +12,20 @@ insert into source_data.sleep_interval
 select wake_date, source, wake_date::date+time '06:30'-duration_hours*interval '1 hour',
  wake_date::date+time '06:30','sleep_core' from source_data.completed_night_sleep
 where capture_completeness='complete' and extract(day from wake_date::date)::int%7<>0;
+-- Preserve total asleep time and wake time while exercising all nightly
+-- scalar metrics on a continuous, fully observed synthetic episode.
+with original as (
+    delete from source_data.sleep_interval where wake_date='2026-08-20'
+    returning wake_date,source,start_at,end_at
+)
+insert into source_data.sleep_interval
+select wake_date, source, part.start_at, part.end_at, part.stage
+from original cross join lateral (values
+    (original.start_at-interval '2 minutes', original.start_at+interval '58 minutes', 'sleep_deep'),
+    (original.start_at+interval '58 minutes', original.start_at+interval '1 hour', 'sleep_awake'),
+    (original.start_at+interval '1 hour', original.end_at-interval '45 minutes', 'sleep_core'),
+    (original.end_at-interval '45 minutes', original.end_at, 'sleep_rem')
+) part(start_at,end_at,stage);
 insert into source_data.sleep_stage_day select wake_date,source,'sleep_core' from source_data.completed_night_sleep;
 insert into source_data.workout
 select date,'running',date::date+time '12:00',date::date+time '13:00' from source_data.calendar

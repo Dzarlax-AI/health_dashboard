@@ -1,4 +1,10 @@
 {
+ "version": 2,
+ "models": [{
+  "name": "semantic_metric_catalog_v1",
+  "description": "Health metric definitions and explicit bindings to modeled PostgreSQL columns.",
+  "config": {"meta": {"health_catalog":
+{
   "schema_version": 1,
   "description": "Local contract inventory. Each family field is a separate definition; field settings override family settings. Catalog version is independent of producer formula and row version.",
   "observation_defaults": {
@@ -32,6 +38,35 @@
     "roles": "Unit aliases are retained by channel, including divergent scales. Never aggregate across differing units until a versioned conversion is verified. Monitoring/evidence fields have value_type and grain like numeric metrics.",
     "unknown": "Unknown keys preserve original name, units and aggregate inventory counts. Unknown units and unresolved aliases stay unpublished. Omitted parents in inventory-only families indicate lineage not exhaustively established. Family parents are domain inputs; fields preserve producer-specific dependencies.",
     "time": "Extraction grain is per profile. Row clocks, provenance, nullable values, epoch and formula versions propagate from the source. Family groupings may include diagnostic values and evidence, but never store a narrative or identity as a numerical fact."
+  },
+  "dbt_bindings": {
+    "sleep_comparison.status": {"model": "semantic_sleep_duration_comparison_v1", "columns": ["status"]},
+    "sleep_comparison.duration_minutes": {"model": "semantic_sleep_duration_comparison_v1", "columns": ["duration_minutes"]},
+    "sleep_comparison.eligible_nights": {"model": "semantic_sleep_duration_comparison_v1", "columns": ["eligible_nights"]},
+    "sleep_comparison.reference_minutes": {"model": "semantic_sleep_duration_comparison_v1", "columns": ["reference_minutes"]},
+    "sleep_comparison.delta_minutes": {"model": "semantic_sleep_duration_comparison_v1", "columns": ["delta_minutes"]},
+    "main_night.duration_hours": {"model": "semantic_sleep_day_v1", "columns": ["duration_hours"]},
+    "main_night.duration_assessment": {"model": "semantic_sleep_day_v1", "columns": ["duration_assessment"]},
+    "main_night.capture_completeness": {"model": "semantic_sleep_day_v1", "columns": ["capture_completeness"]},
+    "main_night.claim_eligibility": {"model": "semantic_sleep_day_v1", "columns": ["claim_eligibility"]},
+    "main_night.finalization_state": {"model": "semantic_sleep_day_v1", "columns": ["finalization_state"]},
+    "main_night.observed_at": {"model": "semantic_sleep_duration_comparison_v1", "columns": ["observed_at"]},
+    "sleep_duration_reference_v1": {"model": "sleep_duration_reference_v1", "columns": ["reference_hours"], "window_days": 30, "minimum_nights": 7},
+    "sleep_reference_day_decision_v1": {"model": "semantic_sleep_history_v1", "columns": ["reason"]},
+    "main_sleep_episode_stages_v1": {"model": "semantic_sleep_day_v1", "columns": ["stage_status"]},
+    "main_sleep_stage_minutes_v1": {"model": "semantic_sleep_continuity_v1", "columns": ["deep_minutes", "rem_minutes", "core_minutes", "unspecified_minutes", "awake_minutes"]},
+    "main_sleep_internal_awakenings_v1": {"model": "semantic_sleep_continuity_v1", "columns": ["awakening_count"]},
+    "main_sleep_night_quality_v1": {"model": "semantic_sleep_quality_v1", "columns": ["quality_score_pct"]},
+    "hrv_fixed_clock_day_median_v1": {"model": "semantic_hrv_daily_v1", "columns": ["fixed_window_median_ms"]},
+    "hrv_daily_live_compat_v1": {"model": "semantic_hrv_daily_v1", "columns": ["live_ms"]},
+    "hrv_daily_legacy_compat_v1": {"model": "semantic_hrv_daily_v1", "columns": ["legacy_ms"]},
+    "hrv_morning_compat_v1": {"model": "semantic_hrv_daily_v1", "columns": ["morning_ms"]},
+    "hrv_main_sleep_sdnn_v1": {"model": "semantic_hrv_night_v1", "columns": ["mean_ms"]},
+    "hrv_workout_sdnn_v1": {"model": "semantic_hrv_workout_v1", "columns": ["interval_mean_ms", "timestamp_mean_ms"]},
+    "hrv_after_workout_sdnn_v1": {"model": "semantic_hrv_after_workout_v1", "columns": ["interval_mean_ms", "timestamp_mean_ms"]},
+    "hrv_observation_sdnn_v1": {"model": "semantic_hrv_observation_v1", "columns": ["qty"], "filter": {"method": "sdnn"}},
+    "hrv_observation_rmssd_v1": {"model": "semantic_hrv_observation_v1", "columns": ["qty"], "filter": {"method": "rmssd"}},
+    "hrv_observation_unknown_v1": {"model": "semantic_hrv_observation_v1", "columns": ["qty"], "filter": {"method": "unknown"}}
   },
   "observations": {
     "step_count": {"xml": ["StepCount", "count"], "ios": ["stepCount", "count", "hour_sum"], "ui_group": "activity", "bucket_sum": true, "daily_column": "steps", "inclusive_range": [0.0, 100000.0]},
@@ -1613,4 +1648,12 @@
       "status": "inventory_only"
     }
   }
+}
+  }},
+  "columns": [
+    {"name":"metric_id","data_tests":["unique","not_null"]},
+    {"name":"definition","description":"Resolved definition with grain, units, provenance, and consumers.","data_tests":["not_null"]},
+    {"name":"dbt_binding","description":"Model, value columns and any row restriction for an implemented fact."}
+  ]
+ }]
 }

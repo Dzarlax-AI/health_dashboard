@@ -113,7 +113,7 @@ dct render charts/sleep-comparison.yml --project-dir . --no-cache \
 
 ## Local sleep and HRV semantic shadow
 
-The [metric catalog](semantic/catalog.md) describes the supported observation keys and derived definitions. The shadow consumes [one profile per input schema](semantic/inputs.sql). The evaluation calendar defines the denominator. Load earlier nights for the Go reference window and adjacent HRV/workouts for boundary checks. HRV compatibility uses the writer's stored local date. Candidate interval joins compare absolute instants and keep source-specific means.
+The [dbt metric catalog](semantic/catalog.md) publishes the supported observation keys and derived definitions. Its query guide covers the PostgreSQL registry view and native MetricFlow sleep metrics. The shadow consumes [one profile per input schema](semantic/inputs.sql). The evaluation calendar defines the denominator. Load earlier nights for the Go reference window and adjacent HRV/workouts for boundary checks. HRV compatibility uses the writer's stored local date. Candidate interval joins compare absolute instants and keep source-specific means.
 
 Run from the repository root with PostgreSQL 17 server tools, the project's dbt Python environment and Go dependencies available locally.
 
