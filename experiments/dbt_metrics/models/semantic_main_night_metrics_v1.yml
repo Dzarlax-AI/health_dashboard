@@ -1,0 +1,102 @@
+version: 2
+models:
+  - name: semantic_metric_time_spine
+    time_spine:
+      standard_granularity_column: day
+    columns:
+      - name: day
+        granularity: day
+  - name: semantic_main_night_metrics_v1
+    description: One main-night observation per wake date within the target profile. Missing values remain null.
+    semantic_model:
+      enabled: "{{ var('semantic_shadow', false) }}"
+      name: main_night
+    agg_time_dimension: wake_day
+    columns:
+      - name: night_id
+        entity: {type: primary, name: night}
+        data_tests: [unique, not_null]
+      - name: wake_day
+        granularity: day
+        dimension: {type: time}
+    metrics:
+      - name: mean_nightly_duration_minutes
+        type: simple
+        label: Mean nightly duration minutes
+        agg: average
+        expr: duration_minutes
+        config:
+          enabled: "{{ var('semantic_shadow', false) }}"
+          meta: {catalog_id: sleep_comparison.duration_minutes}
+      - name: mean_nightly_reference_minutes
+        type: simple
+        label: Mean nightly reference minutes
+        agg: average
+        expr: reference_minutes
+        config:
+          enabled: "{{ var('semantic_shadow', false) }}"
+          meta: {catalog_id: sleep_comparison.reference_minutes}
+      - name: mean_nightly_delta_minutes
+        type: simple
+        label: Mean nightly delta minutes
+        agg: average
+        expr: delta_minutes
+        config:
+          enabled: "{{ var('semantic_shadow', false) }}"
+          meta: {catalog_id: sleep_comparison.delta_minutes}
+      - name: mean_nightly_deep_minutes
+        type: simple
+        label: Mean nightly deep minutes
+        agg: average
+        expr: deep_minutes
+        config:
+          enabled: "{{ var('semantic_shadow', false) }}"
+          meta: {catalog_id: main_sleep_stage_minutes_v1}
+      - name: mean_nightly_rem_minutes
+        type: simple
+        label: Mean nightly rem minutes
+        agg: average
+        expr: rem_minutes
+        config:
+          enabled: "{{ var('semantic_shadow', false) }}"
+          meta: {catalog_id: main_sleep_stage_minutes_v1}
+      - name: mean_nightly_core_minutes
+        type: simple
+        label: Mean nightly core minutes
+        agg: average
+        expr: core_minutes
+        config:
+          enabled: "{{ var('semantic_shadow', false) }}"
+          meta: {catalog_id: main_sleep_stage_minutes_v1}
+      - name: mean_nightly_unspecified_minutes
+        type: simple
+        label: Mean nightly unspecified minutes
+        agg: average
+        expr: unspecified_minutes
+        config:
+          enabled: "{{ var('semantic_shadow', false) }}"
+          meta: {catalog_id: main_sleep_stage_minutes_v1}
+      - name: mean_nightly_awake_minutes
+        type: simple
+        label: Mean nightly awake minutes
+        agg: average
+        expr: awake_minutes
+        config:
+          enabled: "{{ var('semantic_shadow', false) }}"
+          meta: {catalog_id: main_sleep_stage_minutes_v1}
+      - name: mean_nightly_awakening_count
+        type: simple
+        label: Mean nightly awakening count
+        agg: average
+        expr: awakening_count
+        config:
+          enabled: "{{ var('semantic_shadow', false) }}"
+          meta: {catalog_id: main_sleep_internal_awakenings_v1}
+      - name: mean_nightly_quality_score_pct
+        type: simple
+        label: Mean nightly quality score pct
+        agg: average
+        expr: quality_score_pct
+        config:
+          enabled: "{{ var('semantic_shadow', false) }}"
+          meta: {catalog_id: main_sleep_night_quality_v1}

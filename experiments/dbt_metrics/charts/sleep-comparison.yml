@@ -1,0 +1,40 @@
+title: Why was this night shorter than usual?
+source: artifacts/sleep_comparison.json
+
+charts:
+  nightly_duration:
+    type: bar
+    title: Recorded main nights and the October 26 reference
+    query:
+      sql: |
+        SELECT CAST(wake_date AS DATE) AS wake_day,
+               duration_minutes AS recorded,
+               MAX(reference_minutes) OVER () AS reference,
+               CASE WHEN finalization = 'provisional' THEN 'Preliminary'
+                    ELSE 'Final' END AS record_state
+        FROM sleep_comparison
+        WHERE scenario = 'Seven comparable nights'
+        ORDER BY wake_day
+    x: wake_day
+    y: recorded
+    color: record_state
+    y_label: Minutes asleep
+    layers:
+      - type: line
+        y: reference
+        label: Personal reference
+  threshold_and_correction:
+    type: table
+    title: Comparison for October 26 at three points in time
+    query:
+      sql: |
+        SELECT scenario AS "Snapshot", eligible_nights AS "Nights",
+               duration_minutes AS "Recorded (min)", reference_minutes AS "Usual (min)",
+               delta_minutes AS "Difference (min)", finalization AS "Current record"
+        FROM sleep_comparison
+        WHERE wake_date = '2026-10-26'
+        ORDER BY CASE scenario WHEN 'Six comparable nights' THEN 1
+                               WHEN 'Seven comparable nights' THEN 2 ELSE 3 END
+rows:
+  - nightly_duration
+  - threshold_and_correction

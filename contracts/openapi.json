@@ -2160,6 +2160,120 @@
         ],
         "type": "object"
       },
+      "SleepDurationComparisonResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "comparison": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "assessment": {
+                    "type": "string"
+                  },
+                  "capture": {
+                    "type": "string"
+                  },
+                  "delta_minutes": {
+                    "oneOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "duration_minutes": {
+                    "oneOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "eligible_nights": {
+                    "oneOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "fact_version": {
+                    "type": "string"
+                  },
+                  "finalization": {
+                    "type": "string"
+                  },
+                  "observed_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reference_minutes": {
+                    "oneOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "rule_version": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "enum": [
+                      "available",
+                      "no_night",
+                      "ineligible_night",
+                      "insufficient_history",
+                      "unavailable"
+                    ],
+                    "type": "string"
+                  },
+                  "wake_date": {
+                    "type": "string"
+                  },
+                  "window_end_exclusive": {
+                    "type": "string"
+                  },
+                  "window_start": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "wake_date",
+                  "status",
+                  "duration_minutes",
+                  "window_start",
+                  "window_end_exclusive",
+                  "eligible_nights",
+                  "reference_minutes",
+                  "delta_minutes",
+                  "rule_version"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "comparison"
+        ],
+        "type": "object"
+      },
       "SleepGoalRequest": {
         "additionalProperties": false,
         "properties": {
@@ -3941,6 +4055,84 @@
           }
         },
         "summary": "Transparent fourteen-period sleep-duration accounting relative to a manual goal"
+      }
+    },
+    "/api/sleep/comparison": {
+      "get": {
+        "operationId": "getSleepDurationComparison",
+        "parameters": [
+          {
+            "description": "Tenant-local wake date in YYYY-MM-DD. Defaults to today.",
+            "in": "query",
+            "name": "date",
+            "required": false,
+            "schema": {
+              "format": "date",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SleepDurationComparisonResponse"
+                }
+              }
+            },
+            "description": "Successful tenant-scoped response."
+          },
+          "302": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Browser authentication or initial setup is required; Location identifies the interactive route.",
+            "headers": {
+              "Location": {
+                "description": "Interactive login or setup route.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid date."
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The backend could not load or encode the tenant response."
+          }
+        },
+        "summary": "Main-night duration compared with the preceding 30 calendar dates"
       }
     },
     "/api/sleep/goal": {

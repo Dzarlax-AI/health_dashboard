@@ -14,6 +14,7 @@ const (
 // MorningReportSleep is the dated canonical night used by the morning report.
 // Missing or incomplete capture is explicit and never replaced with an average.
 type MorningReportSleep struct {
+	Comparison                      *SleepDurationComparison  `json:"comparison,omitempty"`
 	AnalysisStatus                  string                    `json:"analysis_status,omitempty"`
 	RecentRecordedMeanHours         *float64                  `json:"recent_recorded_mean_hours,omitempty"`
 	RecentRecordedNights            int                       `json:"recent_recorded_nights,omitempty"`

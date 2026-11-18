@@ -1,0 +1,20 @@
+package storage
+
+import (
+	"context"
+	"encoding/json"
+	"sync/atomic"
+)
+
+// All SQL identifiers are constants. The authenticated tenant pool sets search_path.
+var SemanticBenchCachedCard atomic.Bool
+
+func (db *DB) SemanticNightCard(ctx context.Context, date string) (json.RawMessage, error) {
+	query := "select card from semantic_sleep_night_card_v1 where wake_date=$1"
+	if SemanticBenchCachedCard.Load() {
+		query = "select card from semantic_sleep_night_card_cache_v1 where wake_date=$1"
+	}
+	var card json.RawMessage
+	err := db.pool.QueryRow(ctx, query, date).Scan(&card)
+	return card, err
+}

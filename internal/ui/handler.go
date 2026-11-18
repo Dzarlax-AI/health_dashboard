@@ -202,6 +202,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/metrics/range", h.guard(h.metricRange))
 	mux.HandleFunc("/api/metrics/data", h.guard(h.metricData))
 	mux.HandleFunc("GET /api/derived-metrics", h.guard(h.derivedMetrics))
+	mux.HandleFunc("GET /api/sleep/comparison", h.guard(h.sleepDurationComparison))
 	mux.HandleFunc("GET /api/sleep/balance", h.guard(h.sleepDurationBalance))
 	mux.HandleFunc("GET /api/sleep/goal", h.guard(h.sleepGoal))
 	mux.HandleFunc("PUT /api/sleep/goal", h.guard(h.sleepGoal))
@@ -1032,6 +1033,14 @@ func (h *Handler) pageSleep(w http.ResponseWriter, r *http.Request) {
 	lang := langFromRequest(r)
 	setLangCookie(w, r)
 	data := h.buildSectionPage("sleep", lang, db)
+	date := r.URL.Query().Get("date")
+	if _, err := health.ParseSleepComparisonDate(date); err != nil {
+		date = db.Today()
+	}
+	if comparison := db.GetSleepDurationComparison(r.Context(), date); comparison != nil {
+		data.SleepComparisonTitle, data.SleepComparisonText = health.SleepComparisonText(*comparison, lang)
+		data.SleepComparisonDate = comparison.WakeDate
+	}
 	data.IsAdmin = h.isAdmin(r)
 	renderPage(w, "section", data)
 }

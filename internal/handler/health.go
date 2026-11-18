@@ -141,7 +141,8 @@ func (h *Handler) processAcceptedRecord(db *storage.DB, id int64, body []byte, k
 		return nil, err
 	}
 	points := filterPointsByKind(parsed.Points, kind)
-	if err = db.InsertPoints(id, points); err != nil {
+	points, err = db.InsertAcceptedPoints(id, points, parsed.NightSleepCoverage)
+	if err != nil {
 		_ = db.SetHealthRecordProcessing(id, "pending", err)
 		return nil, err
 	}
@@ -150,21 +151,6 @@ func (h *Handler) processAcceptedRecord(db *storage.DB, id int64, body []byte, k
 	}
 	for _, coverageErr := range parsed.SleepPeriodCoverageErr {
 		log.Printf("record %d: ignore invalid sleep period coverage: %v", id, coverageErr)
-	}
-	// Canonical night sleep is a best-effort derived state. It is never
-	// allowed to delay or fail an accepted raw upload, and it is only fed by
-	// an explicit controlled-adapter coverage commitment.
-	for _, commitment := range parsed.NightSleepCoverage {
-		if !containsCommittedNightPoint(points, commitment) {
-			continue
-		}
-		if err := db.SaveNightSleepCoverageCommitment(context.Background(), commitment); err != nil {
-			log.Printf("record %d: save night sleep coverage: %v", id, err)
-			continue
-		}
-		if err := db.ReconcileCompletedNightSleep(context.Background(), commitment.WakeDate, time.Now()); err != nil {
-			log.Printf("record %d: reconcile completed night sleep: %v", id, err)
-		}
 	}
 	// Balance periods are independent from the legacy nightly aggregate. The
 	// storage operation replaces a period atomically, so a late correction

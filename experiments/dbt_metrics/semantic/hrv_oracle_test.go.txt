@@ -1,0 +1,190 @@
+package storage
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"math"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// Loaded into the storage test package using go test -overlay, so the isolated
+// experiment can invoke the exact unexported Go writers and morning reader.
+func TestSemanticShadowHRVOracle(t *testing.T) {
+	ctx := context.Background()
+	socket, port, name, user := os.Getenv("SEMANTIC_SHADOW_PG_SOCKET"), os.Getenv("SEMANTIC_SHADOW_PG_PORT"), os.Getenv("SEMANTIC_SHADOW_PG_DB"), os.Getenv("SEMANTIC_SHADOW_PG_USER")
+	canonical, err := filepath.EvalSymlinks(socket)
+	if err != nil || !strings.HasPrefix(canonical, "/private/tmp/") || (name != "sem_synthetic" && name != "sem_profile") || user != "shadow_reader" {
+		t.Fatal("requires owned local socket and shadow reader")
+	}
+	cfg, err := pgxpool.ParseConfig(fmt.Sprintf("host='%s' port=%s dbname=%s user=%s sslmode=disable", canonical, port, name, user))
+	if err != nil || cfg.ConnConfig.Host != canonical || cfg.ConnConfig.User != user || cfg.ConnConfig.Database != name || len(cfg.ConnConfig.Fallbacks) > 0 {
+		t.Fatal("unexpected oracle target")
+	}
+	cfg.MaxConns = 1
+	cfg.ConnConfig.RuntimeParams["search_path"] = "pg_temp,pg_catalog"
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, e := pool.Exec(ctx, q, args...); e != nil {
+			t.Fatal(e)
+		}
+	}
+	exec(`create temp view metric_points as select 'heart_rate_variability'::text metric_name,date,source,qty,quality from source_data.hrv_point;
+          create temp table hourly_metrics(metric_name text,hour text,source text,avg_val real,min_val real,max_val real,sample_count int,primary key(metric_name,hour,source));
+          create temp table daily_scores(date text primary key,computed_at text,hrv_avg real,rhr_avg real,sleep_total real,sleep_deep real,sleep_rem real,sleep_core real,sleep_awake real,sleep_unspecified real,steps real,calories real,exercise_min real,spo2_avg real,vo2_avg real,resp_avg real)`)
+	db := &DB{pool: pool}
+	type datum struct {
+		date                                           string
+		live, legacy, raw, cache, morning, fixedMedian *float64
+		count, fixedCount                              int
+		observed                                       *string
+		confidence                                     string
+	}
+	rows, err := pool.Query(ctx, `select date,live_ms,legacy_ms,raw_ms,persisted_ms,morning_ms,fixed_window_median_ms,n_points,fixed_window_points,morning_observed_on,morning_confidence
+                               from dbt_output.semantic_hrv_daily_v1 order by date`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var data []datum
+	for rows.Next() {
+		var d datum
+		if err = rows.Scan(&d.date, &d.live, &d.legacy, &d.raw, &d.cache, &d.morning, &d.fixedMedian, &d.count, &d.fixedCount, &d.observed, &d.confidence); err != nil {
+			t.Fatal(err)
+		}
+		data = append(data, d)
+	}
+	if rows.Err() != nil || len(data) != 90 {
+		t.Fatal("expected 90 evaluation dates", rows.Err())
+	}
+	metric := "heart_rate_variability"
+	// Exercise the legacy hourly writer and its exact daily SELECT. Its normal
+	// persistence rounds to a REAL column, as does the ternary comparison here.
+	if err = db.buildHourlyMetric(metric, "AVG", true); err != nil {
+		t.Fatal(err)
+	}
+	q := aggregateSQLWith("legacy_daily_avg", map[string]string{"FROM_CLAUSE": ""})
+	legacyRows, err := pool.Query(ctx, q, metric)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := map[string]*float64{}
+	for legacyRows.Next() {
+		var date string
+		var qty float64
+		if err = legacyRows.Scan(&date, &qty); err != nil {
+			t.Fatal(err)
+		}
+		v := float64(float32(qty))
+		legacy[date] = &v
+	}
+	if legacyRows.Err() != nil {
+		t.Fatal(legacyRows.Err())
+	}
+	exec("truncate pg_temp.hourly_metrics")
+	type comparison struct {
+		Dates        int     `json:"dates"`
+		NumericPairs int     `json:"numeric_pairs"`
+		Mismatches   int     `json:"mismatches"`
+		MaxDelta     float64 `json:"max_abs_ms"`
+	}
+	summary := map[string]*comparison{}
+	compare := func(key string, a, b *float64) {
+		c := summary[key]
+		if c == nil {
+			c = &comparison{}
+			summary[key] = c
+		}
+		c.Dates++
+		if a == nil || b == nil {
+			if a != b {
+				c.Mismatches++
+			}
+			return
+		}
+		c.NumericPairs++
+		diff := math.Abs(*a - *b)
+		c.MaxDelta = math.Max(c.MaxDelta, diff)
+		if diff > 1e-5 || math.IsNaN(diff) {
+			c.Mismatches++
+		}
+	}
+	metadataMismatches := 0
+	loc, err := time.LoadLocation("Europe/Belgrade")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range data {
+		if err = db.upsertHourlyAvgForDate(d.date); err != nil {
+			t.Fatal(err)
+		}
+		if err = db.upsertDailyForDate(d.date); err != nil {
+			t.Fatal(err)
+		}
+		var live *float64
+		if err = pool.QueryRow(ctx, "select hrv_avg from pg_temp.daily_scores where date=$1", d.date).Scan(&live); err != nil && err != pgx.ErrNoRows {
+			t.Fatal(err)
+		}
+		compare("live_compat", live, d.live)
+		compare("legacy_compat", legacy[d.date], d.legacy)
+		fresh := db.freshDayFromRaw(d.date)
+		var raw *float64
+		if fresh != nil {
+			raw = fresh.hrv
+		}
+		compare("fresh_raw", raw, d.raw)
+		ev := buildReadinessEvidence(d.date, dailyScoreRow{date: d.date, hrv: d.cache}, fresh).HRV
+		compare("morning_compat", ev.Value, d.morning)
+		observed := ""
+		if d.observed != nil {
+			observed = *d.observed
+		}
+		if ev.SampleCount != d.count || ev.SourceDate != observed || (ev.Present && ev.Confidence != d.confidence) || (!ev.Present && d.confidence != "missing") {
+			metadataMismatches++
+		}
+		day, err := time.ParseInLocation(time.DateOnly, d.date, loc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		samples, _, err := db.fetchBaselineSamplesContext(ctx, ChannelHRV, day, day.AddDate(0, 0, 1), loc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var median *float64
+		if n := len(samples); n > 0 {
+			sort.Float64s(samples)
+			m := (samples[(n-1)/2] + samples[n/2]) / 2
+			median = &m
+		}
+		compare("fixed_window_input_median", median, d.fixedMedian)
+		if len(samples) != d.fixedCount {
+			metadataMismatches++
+		}
+	}
+	result := map[string]any{"formulas": summary, "count_date_confidence_mismatches": metadataMismatches, "absolute_tolerance_ms": 1e-5}
+	b, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Printf("SHADOW_HRV_ORACLE %s\n", b)
+	for _, c := range summary {
+		if c.Mismatches > 0 {
+			t.Error("numeric or nullability mismatch")
+		}
+	}
+	if metadataMismatches > 0 {
+		t.Error("count/date/confidence mismatch")
+	}
+}

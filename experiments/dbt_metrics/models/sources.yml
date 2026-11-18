@@ -1,7 +1,13 @@
 version: 2
 sources:
   - name: source_data
-    schema: source_data
+    schema: "{{ var('semantic_source_schema', 'source_data') }}"
     tables:
       - name: metric_points
       - name: calendar
+      - name: completed_night_sleep
+      - name: sleep_interval
+      - name: sleep_stage_day
+      - name: hrv_point
+      - name: workout
+      - name: daily_hrv

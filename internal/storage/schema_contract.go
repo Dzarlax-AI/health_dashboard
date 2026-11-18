@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"health-receiver/experiments/dbt_metrics"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -18,7 +20,7 @@ import (
 // SchemaContractVersion is bumped whenever the declared tenant schema
 // contract changes. Existing tenants are not current until both the permanent
 // marker and registry metadata carry this version and checksum.
-const SchemaContractVersion = 12
+const SchemaContractVersion = 13
 
 // TenantIdentityTable is the permanent marker shared by clean provisioning
 // and existing-tenant migrations. The provisioning marker is intentionally
@@ -236,6 +238,7 @@ func SchemaContractChecksum() string {
 	sort.Strings(manifest.Tables)
 	sort.Strings(manifest.Indexes)
 	var canonical strings.Builder
+	fmt.Fprintf(&canonical, "view:sleep_duration_reference_v1:security_invoker=true\n%s\n", dbtmetrics.SleepDurationReferenceSQL("completed_night_sleep"))
 	for _, table := range manifest.Tables {
 		fmt.Fprintf(&canonical, "table:%s:relkind=ordinary-or-partitioned-table\n", table)
 	}
@@ -644,7 +647,10 @@ func (s *DB) ensureFullSchemaContractObjectsContext(ctx context.Context) error {
 	if err := s.EnsureDailyInsightNarrativeSlotsTableContext(ctx); err != nil {
 		return err
 	}
-	return s.EnsureSleepDurationBalanceTablesContext(ctx)
+	if err := s.EnsureSleepDurationBalanceTablesContext(ctx); err != nil {
+		return err
+	}
+	return s.ensureSleepDurationReference(ctx)
 }
 
 // VerifySchemaContract checks the manifest compiled into this binary.
@@ -683,6 +689,9 @@ func (s *DB) VerifySchemaContractContext(ctx context.Context) error {
 		if relkind != "r" && relkind != "p" {
 			return &SchemaContractMismatchError{Reason: "required table relation kind differs"}
 		}
+	}
+	if err := s.verifySleepDurationReference(ctx); err != nil {
+		return err
 	}
 	for _, expected := range manifest.IndexDefinitions {
 		var table, method, predicate string

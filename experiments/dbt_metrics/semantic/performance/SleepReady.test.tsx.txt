@@ -1,0 +1,21 @@
+import { readFileSync } from "node:fs";
+import { render, screen, within } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
+import { sleepFixtureResources } from "./fixtures";
+import { SleepReady } from "./SleepPage";
+
+describe("synthetic HTTP comparison in the Sleep screen", () => {
+  it.each([0, 1])("renders the dated fact from isolated profile %d", (index) => {
+    const resources = sleepFixtureResources("en");
+    const path = `${process.env.SEMANTIC_PERF_OUT}/client-${index}.json`;
+    const { comparison } = JSON.parse(readFileSync(path, "utf8"));
+    resources.comparison = comparison;
+    resources.briefing.date = comparison.wake_date;
+    render(<SleepReady resources={resources} locale="en" />);
+    const card = within(screen.getByRole("region", { name: "Compared with your usual sleep" }));
+    expect(card.getByText(`${-42 - index * 60} min`)).toBeVisible();
+    expect(card.getByText(/6 h 48 min/)).toBeVisible();
+    expect(card.getByText(new RegExp(`${7 + index} h 30 min`))).toBeVisible();
+    expect(card.getByText(/30 ·/)).toBeVisible();
+  });
+});

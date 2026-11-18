@@ -10,20 +10,27 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
 	"health-receiver/internal/accessauth"
+	"health-receiver/internal/api"
 	"health-receiver/internal/ctxdb"
+	"health-receiver/internal/health"
 	"health-receiver/internal/registry"
+	"health-receiver/internal/storage"
 	"health-receiver/internal/tenants"
 	"health-receiver/internal/testdb"
+	"health-receiver/internal/ui"
 )
 
 type integrationAccessVerifier map[string]*accessauth.Identity
@@ -107,7 +114,8 @@ func TestAccessMCPIsolatedTenantRoutingIntegration(t *testing.T) {
 			}
 		}
 	})
-	for _, suffix := range []string{"a", "b"} {
+	wakeDate, _ := time.Parse(time.DateOnly, "2026-10-26")
+	for index, suffix := range []string{"a", "b"} {
 		username := fmt.Sprintf("mcp%d%s", os.Getpid(), suffix)
 		user, err := provisioner.CreateTenant(ctx, registry.CreateUserReq{Username: username, SchemaName: username + "_schema", Password: "disposable-mcp-fixture-password"})
 		if err != nil {
@@ -118,8 +126,24 @@ func TestAccessMCPIsolatedTenantRoutingIntegration(t *testing.T) {
 		if !ok || db == nil {
 			t.Fatal("new fixture tenant did not resolve")
 		}
-		if err := db.SaveSettings(map[string]string{"mcp_fixture_marker": suffix}); err != nil {
+		if err := db.SaveSettings(map[string]string{"mcp_fixture_marker": suffix, "sleep_duration_comparison_enabled": "true"}); err != nil {
 			t.Fatal(err)
+		}
+		for offset := 0; offset <= 7; offset++ {
+			day := wakeDate.AddDate(0, 0, -offset)
+			night := health.CompletedNightSleep{
+				WakeDate: day.Format(time.DateOnly), DurationHours: 7.5 + float64(index), Source: "synthetic-" + suffix,
+				SourceEpoch: "fixture", AlgorithmVersion: "fixture", InputHash: day.Format(time.DateOnly),
+				CaptureCompleteness: health.NightCaptureComplete, DurationAssessment: health.NightDurationPlausible,
+				FinalizationState: health.NightFinalFinal, ClaimEligibility: health.NightClaimEligible, ObservedAt: day,
+			}
+			if offset == 0 {
+				night.DurationHours = 6.8
+				night.FinalizationState, night.ClaimEligibility = health.NightFinalProvisional, health.NightClaimIneligible
+			}
+			if err := db.SaveCompletedNightSleep(ctx, night, nil); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	cfg := &AccessConfig{Enabled: true, Issuer: "https://fixture.cloudflareaccess.com", Audience: "mcp-fixture", UserMap: map[string]string{"alice@example.test": users[0].Username, "bob@example.test": users[1].Username}}
@@ -131,10 +155,10 @@ func TestAccessMCPIsolatedTenantRoutingIntegration(t *testing.T) {
 	mcpServer.AddTool(mcp.NewTool("fixture_marker"), func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return jsonResult(map[string]string{"marker": ctxdb.FromContext(ctx).GetSetting("mcp_fixture_marker", "MISSING"), "schema": ctxdb.SchemaFromContext(ctx)})
 	})
+	registerSleepComparisonTool(mcpServer)
 	handler := withAccessAuth(newStatelessTransport(mcpServer), DBResolver(manager.DBForUsername), verifier, cfg)
-	call := func(assertion string) *httptest.ResponseRecorder {
+	call := func(assertion, body string) *httptest.ResponseRecorder {
 		t.Helper()
-		body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"fixture_marker","arguments":{"schema":"` + users[1].SchemaName + `","username":"` + users[1].Username + `","api_key":"` + users[1].APIKey + `"}}}`
 		r := httptest.NewRequest(http.MethodPost, "/mcp/oauth", strings.NewReader(body))
 		r.Header.Set("Cf-Access-Jwt-Assertion", assertion)
 		r.Header.Set("Content-Type", "application/json")
@@ -146,12 +170,17 @@ func TestAccessMCPIsolatedTenantRoutingIntegration(t *testing.T) {
 		handler.ServeHTTP(w, r)
 		return w
 	}
+	markerBody := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"fixture_marker","arguments":{"schema":"` + users[1].SchemaName + `","username":"` + users[1].Username + `","api_key":"` + users[1].APIKey + `"}}}`
+	httpRoutes := http.NewServeMux()
+	ui.New(manager, reg, false).Register(httpRoutes)
+	comparisonBody := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_sleep_duration_comparison","arguments":{"date":"2026-10-26"}}}`
+
 	for _, index := range []int{0, 1, 0} {
 		assertion, want := "alice.jwt.fixture", "a"
 		if index == 1 {
 			assertion, want = "bob.jwt.fixture", "b"
 		}
-		w := call(assertion)
+		w := call(assertion, markerBody)
 		if w.Code != http.StatusOK || w.Header().Get("Mcp-Session-Id") != "" {
 			t.Fatalf("stateless call status=%d", w.Code)
 		}
@@ -176,11 +205,75 @@ func TestAccessMCPIsolatedTenantRoutingIntegration(t *testing.T) {
 		if err := json.Unmarshal([]byte(response.Result.Content[0].Text), &result); err != nil || result["marker"] != want || result["schema"] != users[index].SchemaName {
 			t.Fatalf("MCP response did not follow current identity: %v", result)
 		}
+		request := httptest.NewRequest(http.MethodGet, "/api/sleep/comparison?date=2026-10-26", nil)
+		request.Header.Set("X-API-Key", users[index].APIKey)
+		httpResponse := httptest.NewRecorder()
+		httpRoutes.ServeHTTP(httpResponse, request)
+		var rawHTTP api.SleepDurationComparisonResponse
+		if httpResponse.Code != http.StatusOK || json.Unmarshal(httpResponse.Body.Bytes(), &rawHTTP) != nil || rawHTTP.Comparison == nil {
+			t.Fatalf("protected comparison status=%d", httpResponse.Code)
+		}
+		var rawMCP struct {
+			Result struct {
+				Structured api.SleepDurationComparisonResponse `json:"structuredContent"`
+			} `json:"result"`
+		}
+		comparisonResponse := call(assertion, comparisonBody)
+		mcpPayload := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(comparisonResponse.Body.String()), "data:"))
+		if i := strings.Index(mcpPayload, "\ndata:"); i >= 0 {
+			mcpPayload = strings.TrimSpace(mcpPayload[i+len("\ndata:"):])
+		}
+		if err := json.Unmarshal([]byte(mcpPayload), &rawMCP); err != nil {
+			t.Fatalf("decode comparison MCP: %v; %s", err, mcpPayload)
+		}
+		fact := rawHTTP.Comparison
+		if !reflect.DeepEqual(fact, rawMCP.Result.Structured.Comparison) || fact.Source != "synthetic-"+want ||
+			fact.Status != health.SleepComparisonAvailable || *fact.DeltaMinutes != -42-60*index || *fact.EligibleNights != 7 {
+			t.Fatalf("HTTP/MCP fact mismatch for tenant %d: %+v / %+v", index, fact, rawMCP.Result.Structured.Comparison)
+		}
+		db, _, _, ok := manager.DBForUsername(ctx, users[index].Username)
+		if !ok {
+			t.Fatal("fixture tenant did not resolve for report preparation")
+		}
+		report, _, err := db.MorningReportEvidence(ctx, storage.AIConfig{}, "en", "2026-10-26",
+			&health.BriefingResponse{Date: "2026-10-26"})
+		if err != nil || !reflect.DeepEqual(fact, report.Comparison) {
+			t.Fatalf("report facts differ from HTTP and MCP: %v", err)
+		}
+		page := httptest.NewRequest(http.MethodGet, "/sleep?date=2026-10-26", nil)
+		page.Header.Set("X-API-Key", users[index].APIKey)
+		rendered := httptest.NewRecorder()
+		httpRoutes.ServeHTTP(rendered, page)
+		if rendered.Code != http.StatusOK || !strings.Contains(rendered.Body.String(), fmt.Sprintf("%d min", -42-60*index)) {
+			t.Fatalf("Go Sleep route missed comparison for tenant %d, status=%d", index, rendered.Code)
+		}
+
+		user := users[index]
+		password, err := deriver.Derive(user.TenantID, user.DBRole, deriver.Current.Version)
+		if err != nil {
+			t.Fatal(err)
+		}
+		poolConfig, err := storage.RestrictedTenantPoolConfig(base.String(), user.DBRole, password, user.SchemaName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		peerView := pgx.Identifier{users[1-index].SchemaName, "sleep_duration_reference_v1"}.Sanitize()
+		err = pool.QueryRow(ctx, "SELECT count(*) FROM "+peerView).Scan(new(int))
+		pool.Close()
+		var denied *pgconn.PgError
+		if !errors.As(err, &denied) || denied.Code != "42501" {
+			t.Fatalf("cross-tenant view was not denied: %v", err)
+		}
+
 	}
 	if _, err := root.Exec(ctx, `UPDATE health_registry.users SET provisioning_state='failed' WHERE username=$1`, users[0].Username); err != nil {
 		t.Fatal(err)
 	}
-	if got := call("alice.jwt.fixture").Code; got != http.StatusUnauthorized && got != http.StatusForbidden {
+	if got := call("alice.jwt.fixture", markerBody).Code; got != http.StatusUnauthorized && got != http.StatusForbidden {
 		t.Fatalf("inactive tenant reused cached MCP pool: status=%d", got)
 	}
 }

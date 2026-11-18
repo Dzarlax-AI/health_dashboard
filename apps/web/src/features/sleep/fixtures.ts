@@ -42,6 +42,22 @@ export function sleepFixtureResources(locale: Locale, fixture: FixtureName = "no
     : todayInsights;
   return {
     todayInsights: partialTodayInsights,
+    comparison: {
+      wake_date: "2026-08-05",
+      status: "available",
+      duration_minutes: 408,
+      source: "Synthetic Watch",
+      capture: "complete",
+      assessment: "plausible",
+      finalization: "provisional",
+      window_start: "2026-07-06",
+      window_end_exclusive: "2026-08-05",
+      eligible_nights: 7,
+      reference_minutes: 450,
+      delta_minutes: -42,
+      rule_version: "sleep_duration_reference_v1",
+      fact_version: "fixture-available",
+    },
     briefing: {
       date: "2026-08-05",
       sleep_quality: { score_pct: 82, duration_pct: 88, confidence: fixture === "partial" ? "partial" : "final" },

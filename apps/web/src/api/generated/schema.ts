@@ -243,6 +243,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sleep/comparison": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Main-night duration compared with the preceding 30 calendar dates */
+        get: operations["getSleepDurationComparison"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sleep/goal": {
         parameters: {
             query?: never;
@@ -804,6 +821,27 @@ export interface components {
             state: "complete" | "incomplete";
             wake_date: string;
             window_start_date: string;
+        };
+        SleepDurationComparisonResponse: {
+            comparison: {
+                assessment?: string;
+                capture?: string;
+                delta_minutes: number | null;
+                duration_minutes: number | null;
+                eligible_nights: number | null;
+                fact_version?: string;
+                finalization?: string;
+                /** Format: date-time */
+                observed_at?: string;
+                reference_minutes: number | null;
+                rule_version: string;
+                source?: string;
+                /** @enum {string} */
+                status: "available" | "no_night" | "ineligible_night" | "insufficient_history" | "unavailable";
+                wake_date: string;
+                window_end_exclusive: string;
+                window_start: string;
+            } | null;
         };
         SleepGoalRequest: {
             effective_date: string;
@@ -1629,6 +1667,60 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SleepDurationBalanceResponse"];
+                };
+            };
+            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
+            302: {
+                headers: {
+                    /** @description Interactive login or setup route. */
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+            /** @description Invalid date. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getSleepDurationComparison: {
+        parameters: {
+            query?: {
+                /** @description Tenant-local wake date in YYYY-MM-DD. Defaults to today. */
+                date?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SleepDurationComparisonResponse"];
                 };
             };
             /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */

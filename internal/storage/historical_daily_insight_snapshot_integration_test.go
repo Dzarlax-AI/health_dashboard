@@ -97,7 +97,7 @@ func TestHistoricalDailyInsightSnapshotKeepsOtherCandidatesWhenB0TablesAreAbsent
 		VALUES ('2026-09-01', 50, 58)`); err != nil {
 		t.Fatalf("seed historical score: %v", err)
 	}
-	if _, err := db.pool.Exec(ctx, `DROP TABLE completed_night_sleep`); err != nil {
+	if _, err := db.pool.Exec(ctx, `DROP VIEW sleep_duration_reference_v1; DROP TABLE completed_night_sleep`); err != nil {
 		t.Fatalf("drop absent B0 table: %v", err)
 	}
 

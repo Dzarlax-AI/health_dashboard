@@ -1,0 +1,271 @@
+package handler
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"testing"
+	"time"
+
+	"health-receiver/internal/health"
+	"health-receiver/internal/storage"
+	"health-receiver/internal/testdb"
+)
+
+type repairSnapshot struct {
+	Kind                                                                                                    string
+	ID                                                                                                      int64
+	RecordID                                                                                                int64 `json:"record_id"`
+	Received                                                                                                time.Time
+	Time                                                                                                    time.Time
+	Status                                                                                                  string
+	ProcessingKind                                                                                          string `json:"processing_kind"`
+	Day, Date, Source, Epoch, Capture, Assessment, Finality, Claim, Hash, Algorithm, Units, Origin, Quality string
+	Duration                                                                                                float64
+	Observed                                                                                                time.Time
+	Commitment                                                                                              json.RawMessage
+	Raw                                                                                                     string `json:"-"`
+}
+
+type repairCandidate struct {
+	record   repairSnapshot
+	point    storage.MetricPoint
+	coverage storage.NightSleepCoverageCommitment
+}
+
+func TestLocalNightRecoveryDryRun(t *testing.T) {
+	file := os.Getenv("NIGHT_REPAIR_LOCAL_INPUT")
+	if file == "" {
+		t.Skip("no private local dry-run input")
+	}
+	socket, err := filepath.EvalSymlinks(os.Getenv("REPLAY_SOCKET"))
+	if err != nil || !strings.HasPrefix(socket, "/private/tmp/health-semantic-") {
+		t.Fatal("private local shadow socket required")
+	}
+	dsn := "host=" + socket + " port=5433 user=shadow_admin dbname=sem_profile sslmode=disable"
+	if os.Getenv("READINESS_TEST_DSN") != "" {
+		t.Fatal("unexpected replay target")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+	defer cancel()
+	f, err := os.Open(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var nights, points, packets []repairSnapshot
+	snapshotMetadata := json.RawMessage(nil)
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 16*1024), 8*1024*1024)
+	for scanner.Scan() {
+		var x repairSnapshot
+		if err := json.Unmarshal(scanner.Bytes(), &x); err != nil {
+			t.Fatal(err)
+		}
+		switch x.Kind {
+		case "night":
+			nights = append(nights, x)
+		case "point":
+			points = append(points, x)
+		case "packet":
+			x.Raw = scanner.Text()
+			packets = append(packets, x)
+		case "meta":
+			snapshotMetadata = append([]byte(nil), scanner.Bytes()...)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	admin, err := testdb.NewPool(ctx, dsn, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	schema := testdb.SchemaName("night_repair_local")
+	if err := testdb.CreateSchema(ctx, admin, schema); err != nil {
+		t.Fatal(err)
+	}
+	defer testdb.DropSchema(context.Background(), admin, schema)
+	pool, err := testdb.NewPool(ctx, dsn, schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := storage.NewFromPool(pool)
+	defer db.Close()
+	if err := db.MigrateSchemaContractContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveSettings(map[string]string{"timezone": "Europe/Belgrade", "sleep_duration_comparison_enabled": "true"}); err != nil {
+		t.Fatal(err)
+	}
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, x := range packets {
+		exec(`INSERT INTO health_records(id,received_at,processing_status,processing_kind) VALUES($1,$2,$3,$4)`, x.ID, x.Received, x.Status, x.ProcessingKind)
+	}
+	for _, x := range points {
+		exec(`INSERT INTO health_records(id,received_at) VALUES($1,$2) ON CONFLICT DO NOTHING`, x.RecordID, x.Time)
+		exec(`INSERT INTO metric_points(health_record_id,metric_name,units,date,qty,source,origin,quality)
+			VALUES($1,'night_sleep_total',$2,$3,$4,$5,$6,$7)`, x.RecordID, x.Units, x.Date, x.Duration, x.Source, x.Origin, x.Quality)
+	}
+	for _, x := range nights {
+		if len(x.Commitment) > 0 && string(x.Commitment) != "null" {
+			exec(`INSERT INTO night_sleep_coverage_commitments SELECT (jsonb_populate_record(NULL::night_sleep_coverage_commitments,$1::jsonb)).*`, x.Commitment)
+		}
+		exec(`INSERT INTO completed_night_sleep(wake_date,duration_hours,source,source_epoch,input_hash,capture_completeness,
+			duration_assessment,finalization_state,claim_eligibility,observed_at,algorithm_version)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, x.Day, x.Duration, x.Source, x.Epoch, x.Hash, x.Capture, x.Assessment, x.Finality, x.Claim, x.Observed, x.Algorithm)
+	}
+	var measured []string
+	for _, x := range nights {
+		if x.Day >= "2026-08-20" && x.Day <= "2026-11-17" {
+			measured = append(measured, x.Day)
+		}
+	}
+	availability := func() int {
+		count := 0
+		for _, day := range measured {
+			result := db.GetSleepDurationComparison(ctx, day)
+			if result == nil || result.Status == health.SleepComparisonUnavailable {
+				t.Fatalf("local comparison unavailable on %s", day)
+			}
+			if result.Status == health.SleepComparisonAvailable {
+				count++
+			}
+		}
+		return count
+	}
+	before := availability()
+
+	type group struct{ day, source, epoch string }
+	full := map[group][]repairCandidate{}
+	pending := map[string]bool{}
+	ambiguous := map[group]time.Time{}
+	for _, x := range packets {
+		p, err := parseMetricPayload([]byte(x.Raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		accepted := filterPointsByKind(p.Points, x.ProcessingKind)
+		for _, c := range p.NightSleepCoverage {
+			if !containsCommittedNightPoint(accepted, c) {
+				continue
+			}
+			if x.Status == "pending" {
+				pending[c.WakeDate] = true
+				continue
+			}
+			if c.CaptureCompleteness != health.NightCaptureComplete {
+				continue
+			}
+			key := group{c.WakeDate, c.Source, c.SourceEpoch}
+			for _, point := range accepted {
+				if point.MetricName == "night_sleep_total" && point.Source == c.Source && point.Date == c.MetricDate {
+					conflicting := false
+					for _, other := range accepted {
+						if other.MetricName == point.MetricName && other.Source == point.Source && len(other.Date) >= 10 &&
+							len(point.Date) >= 10 && other.Date[:10] == point.Date[:10] && other != point {
+							conflicting = true
+						}
+					}
+					for _, other := range p.NightSleepCoverage {
+						if c.WakeDate == other.WakeDate && c.Source == other.Source && c.InputHash != other.InputHash {
+							conflicting = true
+						}
+					}
+					if conflicting {
+						ambiguous[key] = x.Received
+					} else {
+						full[key] = append(full[key], repairCandidate{x, point, c})
+					}
+					break
+				}
+			}
+		}
+	}
+	type result struct {
+		Day, Disposition string
+		Before, After    float64
+		RawID            int64
+	}
+	var details []result
+	var applied []repairCandidate
+	for _, n := range nights {
+		if n.Day < "2026-08-20" || n.Day > "2026-11-17" || n.Capture == health.NightCaptureComplete {
+			continue
+		}
+		row := result{Day: n.Day, Before: n.Duration, Disposition: "no_full_packet"}
+		key := group{n.Day, n.Source, n.Epoch}
+		candidates := full[key]
+		sort.Slice(candidates, func(i, j int) bool {
+			l, r := candidates[i].record, candidates[j].record
+			if l.Received.Equal(r.Received) {
+				return l.ID > r.ID
+			}
+			return l.Received.After(r.Received)
+		})
+		if len(candidates) == 0 {
+			details = append(details, row)
+			continue
+		}
+		c := candidates[0]
+		row.After, row.RawID = c.point.Qty, c.record.ID
+		if pending[n.Day] || !ambiguous[key].Before(c.record.Received) || c.point.Qty < 3 || c.point.Qty > 14 {
+			row.Disposition = "manual_review"
+			details = append(details, row)
+			continue
+		}
+		if err := db.ReconcileCompletedNightSleep(ctx, n.Day, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		chosen, err := db.InsertAcceptedPoints(c.record.ID, []storage.MetricPoint{c.point}, []storage.NightSleepCoverageCommitment{c.coverage})
+		after, readErr := db.ListCompletedNightSleep(ctx, n.Day, n.Day)
+		if err != nil || readErr != nil {
+			t.Fatalf("local simulation %s: %v %v", n.Day, err, readErr)
+		}
+		if len(chosen) == 1 && len(after) == 1 && after[0].CaptureCompleteness == health.NightCaptureComplete && float32(after[0].DurationHours) == float32(c.point.Qty) {
+			row.Disposition = "recovered"
+			applied = append(applied, c)
+		} else if len(chosen) == 0 {
+			row.Disposition = "manual_review"
+		} else {
+			t.Fatalf("accepted candidate without expected canonical projection: %s", n.Day)
+		}
+		details = append(details, row)
+	}
+	for _, c := range applied {
+		accepted, err := db.InsertAcceptedPoints(c.record.ID, []storage.MetricPoint{c.point}, []storage.NightSleepCoverageCommitment{c.coverage})
+		if len(accepted) != 0 || err != nil {
+			t.Fatalf("dry-run repeat %s: %v", c.coverage.WakeDate, err)
+		}
+	}
+	data, err := json.Marshal(map[string]any{"meta": snapshotMetadata, "nights": len(nights), "packets": len(packets), "before": before, "after": availability(), "details": details})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allRows, err := db.ListCompletedNightSleep(ctx, "2026-06-21", "2026-11-17")
+	if err != nil {
+		t.Fatal(err)
+	}
+	patched, err := json.Marshal(allRows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(os.Getenv("NIGHT_REPAIR_PATCHED"), patched, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(os.Getenv("NIGHT_REPAIR_LOCAL_RESULT"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	fmt.Printf("%d dates replayed idempotently on the isolated copy\n", len(applied))
+}

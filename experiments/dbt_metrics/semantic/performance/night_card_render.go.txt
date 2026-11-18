@@ -1,0 +1,122 @@
+package notify
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"html"
+	"strings"
+
+	"health-receiver/internal/storage"
+)
+
+type cardStageSummary struct {
+	Deep                *float64 `json:"deep_minutes"`
+	REM                 *float64 `json:"rem_minutes"`
+	Core                *float64 `json:"core_minutes"`
+	Unspecified         *float64 `json:"unspecified_minutes"`
+	Awake               *float64 `json:"awake_minutes"`
+	DeepFraction        *float64 `json:"deep_fraction"`
+	REMFraction         *float64 `json:"rem_fraction"`
+	CoreFraction        *float64 `json:"core_fraction"`
+	UnspecifiedFraction *float64 `json:"unspecified_fraction"`
+	Basis               string   `json:"stage_basis"`
+	Reason              string   `json:"stage_reason"`
+}
+
+func renderNightCard(raw json.RawMessage) (string, error) {
+	var card struct {
+		Date         string `json:"wake_date"`
+		Source       string `json:"source"`
+		QualityBasis string `json:"quality_basis"`
+		Finalization string `json:"finalization"`
+		Duration     struct {
+			Minutes   *int   `json:"duration_minutes"`
+			Reference *int   `json:"reference_minutes"`
+			Delta     *int   `json:"delta_minutes"`
+			Status    string `json:"status"`
+		} `json:"duration"`
+		Stages     cardStageSummary `json:"stages"`
+		Continuity struct {
+			Count    *int     `json:"awakening_count"`
+			Observed *int     `json:"observed_internal_awake_bouts"`
+			Reason   string   `json:"continuity_reason"`
+			Gap      *float64 `json:"gap_minutes"`
+		} `json:"continuity"`
+		Quality struct {
+			Score      *int   `json:"score_pct"`
+			Confidence string `json:"confidence"`
+			Duration   *int   `json:"duration_pct"`
+			Continuity *int   `json:"continuity_pct"`
+			Structure  *int   `json:"structure_pct"`
+		} `json:"quality"`
+	}
+	if err := json.Unmarshal(raw, &card); err != nil {
+		return "", err
+	}
+	if card.Date == "" {
+		return "", fmt.Errorf("missing wake date")
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n\nRecorded night for %s", card.Date)
+	if card.Source != "" {
+		fmt.Fprintf(&b, "\nSource %s (%s)", html.EscapeString(card.Source), card.Finalization)
+	}
+	if d := card.Duration; d.Minutes != nil {
+		fmt.Fprintf(&b, "\nDuration %d min", *d.Minutes)
+		if d.Reference != nil && d.Delta != nil {
+			fmt.Fprintf(&b, ", reference %d min (%+d min)", *d.Reference, *d.Delta)
+		}
+	}
+	for _, stage := range []struct {
+		name              string
+		minutes, fraction *float64
+	}{
+		{"Deep", card.Stages.Deep, card.Stages.DeepFraction}, {"REM", card.Stages.REM, card.Stages.REMFraction}, {"Core", card.Stages.Core, card.Stages.CoreFraction},
+		{"Unspecified", card.Stages.Unspecified, card.Stages.UnspecifiedFraction}, {"Awake", card.Stages.Awake, nil},
+	} {
+		if stage.minutes != nil {
+			fmt.Fprintf(&b, "\n%s %.1f min", stage.name, *stage.minutes)
+			if stage.fraction != nil {
+				fmt.Fprintf(&b, " (%.1f%% of recorded sleep)", 100**stage.fraction)
+			}
+		}
+	}
+	fmt.Fprintf(&b, "\nStage evidence %s (%s)", card.Stages.Basis, card.Stages.Reason)
+	if card.Continuity.Count != nil {
+		fmt.Fprintf(&b, "\nInternal awakenings %d", *card.Continuity.Count)
+	} else if card.Continuity.Observed != nil && *card.Continuity.Observed > 0 {
+		fmt.Fprintf(&b, "\nInternal awakenings at least %d", *card.Continuity.Observed)
+	}
+	fmt.Fprintf(&b, "\nContinuity %s", card.Continuity.Reason)
+	if card.Continuity.Gap != nil && *card.Continuity.Gap > 0 {
+		fmt.Fprintf(&b, "; %.1f min unobserved", *card.Continuity.Gap)
+	}
+	if card.Quality.Score != nil {
+		fmt.Fprintf(&b, "\nSleep quality %d%%", *card.Quality.Score)
+	}
+	if card.Duration.Minutes != nil && card.Quality.Duration != nil {
+		fmt.Fprintf(&b, "\nDuration component %d%%", *card.Quality.Duration)
+	}
+	if card.Quality.Continuity != nil {
+		fmt.Fprintf(&b, "\nContinuity component %d%%", *card.Quality.Continuity)
+	}
+	if card.Quality.Structure != nil {
+		fmt.Fprintf(&b, "\nStructure component %d%%", *card.Quality.Structure)
+	}
+	fmt.Fprintf(&b, "\nQuality confidence %s (%s)", card.Quality.Confidence, card.QualityBasis)
+	return b.String(), nil
+}
+
+func SemanticExperimentNightReport(ctx context.Context, db *storage.DB, day string) (string, error) {
+	text, err := SemanticExperimentRender(ctx, db, day)
+	if err != nil {
+		return "", err
+	}
+	card, err := db.SemanticNightCard(ctx, day)
+	if err != nil {
+		return "", err
+	}
+	section, err := renderNightCard(card)
+	return text + section, err
+}

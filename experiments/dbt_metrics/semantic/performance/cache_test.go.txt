@@ -1,0 +1,233 @@
+package mcpserver
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"health-receiver/internal/storage"
+)
+
+const cacheTable = "semantic_sleep_duration_cache_v1"
+
+var cachedSleepQuery = strings.Replace(storage.SemanticBenchNarrowSQL, "semantic_sleep_duration_comparison_v1", cacheTable, 1)
+
+type cacheBuild struct {
+	WallMS     float64
+	DBTModelMS float64
+}
+
+// Run the installed dbt CLI as the fixture tenant, using the lab-only socket.
+// Each invocation reads the same canonical rows as the live MCP reader.
+func buildSleepCache(ctx context.Context, p benchProfile) (cacheBuild, error) {
+	return buildBenchmarkCache(ctx, p, cacheTable)
+}
+
+func buildBenchmarkCache(ctx context.Context, p benchProfile, model string) (cacheBuild, error) {
+	lab := os.Getenv("SEMANTIC_PERF_OUT")
+	project := filepath.Clean(filepath.Join(os.Getenv("SEMANTIC_PERF_SRC"), "..", ".."))
+	dir := filepath.Join(lab, p.user.SchemaName)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return cacheBuild{}, err
+	}
+	port, err := strconv.Atoi(os.Getenv("PGPORT"))
+	if err != nil {
+		return cacheBuild{}, err
+	}
+	profile := map[string]any{"health_dbt_metrics_pilot": map[string]any{"target": "local", "outputs": map[string]any{"local": map[string]any{
+		"type": "postgres", "host": lab, "port": port, "user": p.user.DBRole, "password": "socket-only", "dbname": "health_test", "schema": p.user.SchemaName, "threads": 1,
+	}}}}
+	config, err := json.Marshal(profile)
+	if err != nil {
+		return cacheBuild{}, err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "profiles.yml"), config, 0600); err != nil {
+		return cacheBuild{}, err
+	}
+	vars, err := json.Marshal(map[string]any{"semantic_sleep_cache": true, "semantic_night_card_cache": model == "semantic_sleep_night_card_cache_v1", "semantic_shadow": true, "sleep_duration_reference": true, "semantic_source_schema": p.user.SchemaName})
+	if err != nil {
+		return cacheBuild{}, err
+	}
+	target := filepath.Join(dir, "target")
+	cmd := exec.CommandContext(ctx, filepath.Join(project, ".venv/bin/dbt"), "run", "--project-dir", project, "--profiles-dir", dir, "--target-path", target, "--log-path", filepath.Join(dir, "logs"), "--vars", string(vars), "--select", model)
+	cmd.Env = append(os.Environ(), "DBT_SEND_ANONYMOUS_USAGE_STATS=false")
+	start := time.Now()
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return cacheBuild{}, fmt.Errorf("dbt cache build: %w: %s", err, output)
+	}
+	wallMS := float64(time.Since(start)) / 1e6
+	data, err := os.ReadFile(filepath.Join(target, "run_results.json"))
+	if err != nil {
+		return cacheBuild{}, err
+	}
+	var report struct {
+		Results []struct {
+			Status        string
+			ExecutionTime float64 `json:"execution_time"`
+		}
+	}
+	if err := json.Unmarshal(data, &report); err != nil {
+		return cacheBuild{}, err
+	}
+	if len(report.Results) != 1 || report.Results[0].Status != "success" {
+		return cacheBuild{}, errors.New("expected one successful dbt model")
+	}
+	return cacheBuild{wallMS, report.Results[0].ExecutionTime * 1000}, nil
+}
+
+func runSleepCacheDBT(t *testing.T, p benchProfile) cacheBuild {
+	t.Helper()
+	build, err := buildSleepCache(t.Context(), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return build
+}
+
+func cacheRowVersions(t *testing.T, p benchProfile) map[string]string {
+	t.Helper()
+	rows, err := p.pool.Query(t.Context(), "select wake_date,xmin::text from semantic_sleep_duration_cache_v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	state := map[string]string{}
+	for rows.Next() {
+		var day, v string
+		if err := rows.Scan(&day, &v); err != nil {
+			t.Fatal(err)
+		}
+		state[day] = v
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return state
+}
+
+func verifySleepCacheRefresh(t *testing.T, p benchProfile, index int, call func(string, string) *httptest.ResponseRecorder, body string) map[string]any {
+	t.Helper()
+	ctx := t.Context()
+	const changed = "2026-09-11"
+	const last = "2026-10-11"
+	storage.SemanticBenchQuery = cachedSleepQuery
+	defer storage.SemanticBenchReplacement.Store(false)
+	response := func(day string, cached bool) []byte {
+		storage.SemanticBenchReplacement.Store(cached)
+		w := call(p.assertion, strings.Replace(body, benchDate, day, 1))
+		if w.Code != 200 || !strings.Contains(w.Body.String(), `"wake_date":"`+day+`"`) {
+			t.Fatal("invalid MCP comparison response")
+		}
+		return w.Body.Bytes()
+	}
+	execOne := func(sql string) {
+		t.Helper()
+		tag, err := p.pool.Exec(ctx, sql, changed)
+		if err != nil || tag.RowsAffected() != 1 {
+			t.Fatalf("fixture mutation: rows=%d err=%v", tag.RowsAffected(), err)
+		}
+	}
+	// Retain the source row in the disposable tenant to replay a late insert.
+	execOne("create table bench_saved_night as select * from completed_night_sleep where wake_date=$1")
+	before := cacheRowVersions(t, p)
+	if len(before) != 150 {
+		t.Fatalf("expected 150 cached nights, got %d", len(before))
+	}
+	old := response(last, true)
+	execOne("update completed_night_sleep set duration_hours=duration_hours+1 where wake_date=$1")
+	committed := time.Now()
+	want := response(last, false)
+	if bytes.Equal(old, want) || !bytes.Equal(response(last, true), old) {
+		t.Fatal("missing expected stale interval after commit")
+	}
+	type outcome struct {
+		build cacheBuild
+		err   error
+	}
+	done := make(chan outcome, 1)
+	go func() { build, err := buildSleepCache(ctx, p); done <- outcome{build, err} }()
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	var firstFresh time.Duration
+	var refresh cacheBuild
+	for refresh.WallMS == 0 {
+		select {
+		case <-ticker.C:
+		case r := <-done:
+			if r.err != nil {
+				t.Fatal(r.err)
+			}
+			refresh = r.build
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+		if firstFresh == 0 {
+			b := response(last, true)
+			if bytes.Equal(b, want) {
+				firstFresh = time.Since(committed)
+			} else if !bytes.Equal(b, old) {
+				t.Fatal("partial comparison during refresh")
+			}
+		}
+	}
+	if firstFresh == 0 {
+		t.Fatal("new comparison unavailable after dbt commit")
+	}
+	checkVersions := func(prev, next map[string]string, removed bool) {
+		t.Helper()
+		for day := range before {
+			version, ok := next[day]
+			if day == changed && removed {
+				if ok {
+					t.Fatal("stale deleted cache row")
+				}
+				continue
+			}
+			if !ok || ((day >= changed && day <= last) != (version != prev[day])) {
+				t.Fatalf("unexpected cache write at %s", day)
+			}
+		}
+	}
+	after := cacheRowVersions(t, p)
+	checkVersions(before, after, false)
+	noop := runSleepCacheDBT(t, p)
+	retried := cacheRowVersions(t, p)
+	if len(retried) != len(after) {
+		t.Fatal("row count changed on retry")
+	}
+	for day, v := range after {
+		if retried[day] != v {
+			t.Fatal("retry rewrote an unchanged row")
+		}
+	}
+	execOne("delete from completed_night_sleep where wake_date=$1")
+	runSleepCacheDBT(t, p)
+	deleted := cacheRowVersions(t, p)
+	checkVersions(after, deleted, true)
+	if len(deleted) != 149 || !bytes.Equal(response(changed, true), response(changed, false)) || !bytes.Equal(response(last, true), response(last, false)) {
+		t.Fatal("deletion disagrees with live MCP")
+	}
+	execOne("insert into completed_night_sleep select * from bench_saved_night where wake_date=$1")
+	runSleepCacheDBT(t, p)
+	restored := cacheRowVersions(t, p)
+	checkVersions(deleted, restored, false)
+	if len(restored) != 150 || !bytes.Equal(response(last, true), old) {
+		t.Fatal("late insert did not restore original answer")
+	}
+	var mismatch int
+	err := p.pool.QueryRow(ctx, `select count(*) from semantic_sleep_duration_cache_v1 c full join semantic_sleep_duration_comparison_v1 v using(wake_date) where (to_jsonb(c)-'input_duration_hours') is distinct from to_jsonb(v)`).Scan(&mismatch)
+	if err != nil || mismatch != 0 {
+		t.Fatalf("cache/live mismatch: %d err %v", mismatch, err)
+	}
+	return map[string]any{"profile": index + 1, "changed_date": changed, "last_affected_date": last, "rewritten_dates": 31, "retry_writes": 0, "delete_and_reinsert_verified": true, "commit_to_first_fresh_mcp_ms": float64(firstFresh) / 1e6, "poll_interval_ms": 25, "refresh": refresh, "no_change_run": noop}
+}

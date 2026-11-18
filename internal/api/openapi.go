@@ -27,27 +27,28 @@ const (
 func GenerateOpenAPI() ([]byte, error) {
 	schemas := map[string]any{}
 	for name, value := range map[string]any{
-		"AIBriefingResponse":           AIBriefingResponse{},
-		"DashboardResponse":            storage.DashboardResponse{},
-		"DerivedMetricsResponse":       DerivedMetricsResponse{},
-		"EnergyHistoryDayResponse":     EnergyHistoryDayResponse{},
-		"EnergyHistoryHourResponse":    EnergyHistoryHourResponse{},
-		"HealthBriefingResponse":       health.BriefingResponse{},
-		"MetricDataResponse":           MetricDataResponse{},
-		"MetricRangeResponse":          MetricRangeResponse{},
-		"ReadinessHistoryResponse":     ReadinessHistoryResponse{},
-		"ReportHistoryResponse":        ReportHistoryResponse{},
-		"ReportHistoryDetail":          storage.ReportHistoryDetail{},
-		"ReportHistoryItem":            storage.ReportHistoryItem{},
-		"SectionResponse":              SectionResponse{},
-		"SessionResponse":              SessionResponse{},
-		"NotificationSettingsResponse": NotificationSettingsResponse{},
-		"NotificationSettingsRequest":  NotificationSettingsRequest{},
-		"SettingsUpdateResponse":       SettingsUpdateResponse{},
-		"SleepDurationBalanceResponse": SleepDurationBalanceResponse{},
-		"SleepGoalRequest":             SleepGoalRequest{},
-		"SleepGoalResponse":            SleepGoalResponse{},
-		"TodayInsightsResponse":        TodayInsightsResponse{},
+		"AIBriefingResponse":              AIBriefingResponse{},
+		"DashboardResponse":               storage.DashboardResponse{},
+		"DerivedMetricsResponse":          DerivedMetricsResponse{},
+		"EnergyHistoryDayResponse":        EnergyHistoryDayResponse{},
+		"EnergyHistoryHourResponse":       EnergyHistoryHourResponse{},
+		"HealthBriefingResponse":          health.BriefingResponse{},
+		"MetricDataResponse":              MetricDataResponse{},
+		"MetricRangeResponse":             MetricRangeResponse{},
+		"ReadinessHistoryResponse":        ReadinessHistoryResponse{},
+		"ReportHistoryResponse":           ReportHistoryResponse{},
+		"ReportHistoryDetail":             storage.ReportHistoryDetail{},
+		"ReportHistoryItem":               storage.ReportHistoryItem{},
+		"SectionResponse":                 SectionResponse{},
+		"SessionResponse":                 SessionResponse{},
+		"NotificationSettingsResponse":    NotificationSettingsResponse{},
+		"NotificationSettingsRequest":     NotificationSettingsRequest{},
+		"SettingsUpdateResponse":          SettingsUpdateResponse{},
+		"SleepDurationBalanceResponse":    SleepDurationBalanceResponse{},
+		"SleepDurationComparisonResponse": SleepDurationComparisonResponse{},
+		"SleepGoalRequest":                SleepGoalRequest{},
+		"SleepGoalResponse":               SleepGoalResponse{},
+		"TodayInsightsResponse":           TodayInsightsResponse{},
 	} {
 		schema, err := reflectedSchema(value)
 		if err != nil {
@@ -219,6 +220,12 @@ func clientPaths() map[string]any {
 		jsonResponseRef("SleepDurationBalanceResponse"),
 	)
 	sleepBalanceOperation["responses"].(map[string]any)["400"] = jsonErrorResponse("Invalid date.")
+	sleepComparisonOperation := getOperation(
+		"getSleepDurationComparison", "Main-night duration compared with the preceding 30 calendar dates",
+		[]any{stringQueryParameter("date", "Tenant-local wake date in YYYY-MM-DD. Defaults to today.")},
+		jsonResponseRef("SleepDurationComparisonResponse"),
+	)
+	sleepComparisonOperation["responses"].(map[string]any)["400"] = jsonErrorResponse("Invalid date.")
 	sleepGoalGetOperation := getOperation(
 		"getSleepGoal",
 		"Effective manual sleep-duration goal",
@@ -291,6 +298,7 @@ func clientPaths() map[string]any {
 		"/api/derived-metrics": map[string]any{
 			"get": derivedMetricsOperation,
 		},
+		"/api/sleep/comparison": map[string]any{"get": sleepComparisonOperation},
 		"/api/sleep/balance": map[string]any{
 			"get": sleepBalanceOperation,
 		},

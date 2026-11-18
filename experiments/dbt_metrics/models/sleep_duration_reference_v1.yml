@@ -1,0 +1,34 @@
+version: 2
+models:
+  - name: sleep_duration_reference_v1
+    description: Historical duration reference on 30 calendar wake dates before the exact canonical night.
+    config:
+      materialized: view
+      post_hook: "alter view {{ this }} set (security_invoker=true)"
+      enabled: "{{ var('sleep_duration_reference', false) }}"
+      contract:
+        enforced: true
+    columns:
+      - name: wake_date
+        data_type: text
+        data_tests: [unique, not_null]
+      - name: source
+        data_type: text
+      - name: source_epoch
+        data_type: text
+      - name: algorithm_version
+        data_type: text
+      - name: window_start
+        data_type: text
+      - name: window_end_exclusive
+        data_type: text
+      - name: eligible_nights
+        data_type: integer
+      - name: reference_hours
+        data_type: double precision
+      - name: rule_version
+        data_type: text
+      - name: history_version
+        data_type: text
+      - name: eligible_dates
+        data_type: text[]

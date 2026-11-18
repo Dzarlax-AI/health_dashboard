@@ -5,6 +5,7 @@ import {
   getMetricData,
   getMetricRange,
   getSleepDurationBalance,
+  getSleepDurationComparison,
   getSleepGoal,
   getSection,
   getSession,
@@ -17,6 +18,7 @@ import {
   type SectionResponse,
   type SessionResponse,
   type SleepDurationBalanceResponse,
+  type SleepDurationComparison,
   type SleepGoalResponse,
   type TodayInsightsResponse,
 } from "../../api/client";
@@ -41,6 +43,7 @@ export interface SleepResources {
   range?: MetricRangeResponse;
   session?: SessionResponse;
   balance?: SleepDurationBalanceResponse;
+  comparison?: SleepDurationComparison | null;
   goal?: SleepGoalResponse;
   todayInsights?: TodayInsightsResponse;
   metrics: Partial<Record<SleepMetric, MetricDataResponse>>;
@@ -55,6 +58,7 @@ export interface SleepLoaders {
   wake: typeof getDerivedMetrics;
   session: typeof getSession;
   balance: typeof getSleepDurationBalance;
+  comparison?: typeof getSleepDurationComparison;
   goal: typeof getSleepGoal;
   todayInsights?: typeof getTodayInsights;
   metric: typeof getMetricData;
@@ -68,6 +72,7 @@ const defaultLoaders: SleepLoaders = {
   wake: getDerivedMetrics,
   session: getSession,
   balance: getSleepDurationBalance,
+  comparison: getSleepDurationComparison,
   goal: getSleepGoal,
   todayInsights: getTodayInsights,
   metric: getMetricData,
@@ -106,7 +111,7 @@ export async function loadSleepResources(
   const rawBriefing = await loaders.briefing(locale, signal);
   const briefingDate = normalizedDate(rawBriefing.date);
   const briefing = briefingDate ? { ...rawBriefing, date: briefingDate } : rawBriefing;
-  const [section, ai, session, range, balance, goal, todayInsights] = await Promise.allSettled([
+  const [section, ai, session, range, balance, goal, todayInsights, comparison] = await Promise.allSettled([
     loaders.section("sleep", locale, signal),
     loaders.ai(locale, signal),
     loaders.session(signal),
@@ -114,6 +119,7 @@ export async function loadSleepResources(
     loaders.balance(signal, briefingDate),
     loaders.goal(signal, briefingDate),
     loaders.todayInsights?.(locale, signal) ?? Promise.resolve(undefined),
+    loaders.comparison?.(signal, briefingDate) ?? Promise.resolve(undefined),
   ]);
   throwIfAborted(signal);
 
@@ -136,6 +142,7 @@ export async function loadSleepResources(
       range: fulfilled(range),
       balance: fulfilled(balance),
       goal: fulfilled(goal),
+      comparison: fulfilled(comparison),
       todayInsights: fulfilled(todayInsights),
       metrics: {},
       missing: fixedMissing,
@@ -173,6 +180,7 @@ export async function loadSleepResources(
     section: fulfilled(section),
     ai: fulfilled(ai),
     wake: fulfilled(wake),
+    comparison: fulfilled(comparison),
     session: fulfilled(session),
     range: fulfilled(range),
     balance: fulfilled(balance),

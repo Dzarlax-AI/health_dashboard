@@ -1,0 +1,48 @@
+package storage
+
+import (
+	"context"
+	"errors"
+	"sync/atomic"
+
+	"github.com/jackc/pgx/v5"
+	"health-receiver/internal/health"
+)
+
+// Only linked into the disposable reader benchmark by the Go overlay.
+var SemanticBenchReplacement atomic.Bool
+var SemanticBenchQuery = SemanticBenchReplacementSQL
+var SemanticBenchBaseReads, SemanticBenchReplacementReads atomic.Uint64
+
+const SemanticBenchReplacementSQL = `
+	select s.status,s.duration_minutes,s.source,s.capture_completeness,s.duration_assessment,
+	       s.finalization_state,s.window_start,s.window_end_exclusive,s.eligible_nights,
+	       s.reference_minutes,s.delta_minutes,n.observed_at,s.source_epoch,s.algorithm_version,
+	       s.input_hash,s.claim_eligibility,s.history_version
+	  from semantic_sleep_day_v1 s join completed_night_sleep n using (wake_date)
+	 where s.wake_date=$1`
+
+const SemanticBenchNarrowSQL = `
+	select status,duration_minutes,source,capture_completeness,duration_assessment,
+	       finalization_state,window_start,window_end_exclusive,eligible_nights,
+	       reference_minutes,delta_minutes,observed_at,source_epoch,algorithm_version,
+	       input_hash,claim_eligibility,history_version
+	  from semantic_sleep_duration_comparison_v1
+	 where wake_date=$1`
+
+func (s *DB) semanticBenchRead(ctx context.Context, fact *health.SleepDurationComparison, n *health.CompletedNightSleep, historyVersion *string) error {
+	err := s.pool.QueryRow(ctx, SemanticBenchQuery, fact.WakeDate).Scan(
+		&fact.Status, &fact.DurationMinutes, &fact.Source, &fact.Capture, &fact.Assessment,
+		&fact.Finalization, &fact.WindowStart, &fact.WindowEndExclusive, &fact.EligibleNights,
+		&fact.ReferenceMinutes, &fact.DeltaMinutes, &n.ObservedAt, &n.SourceEpoch, &n.AlgorithmVersion,
+		&n.InputHash, &n.ClaimEligibility, historyVersion)
+	if errors.Is(err, pgx.ErrNoRows) {
+		fact.Status = health.SleepComparisonNoNight
+		return nil
+	}
+	if err == nil {
+		observed := n.ObservedAt.UTC()
+		fact.ObservedAt = &observed
+	}
+	return err
+}

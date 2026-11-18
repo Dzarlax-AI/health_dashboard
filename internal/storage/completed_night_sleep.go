@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -85,7 +84,11 @@ func (s *DB) SaveNightSleepCoverageCommitment(ctx context.Context, commitment Ni
 	if err := s.validateNightSleepCoverageCommitment(commitment); err != nil {
 		return err
 	}
-	_, err := s.pool.Exec(ctx, `
+	return saveNightSleepCoverage(ctx, s.pool, commitment)
+}
+
+func saveNightSleepCoverage(ctx context.Context, writer ContractCatalog, commitment NightSleepCoverageCommitment) error {
+	_, err := writer.Exec(ctx, `
 		INSERT INTO night_sleep_coverage_commitments(
 			wake_date,source,metric_date,source_epoch,capture_completeness,
 			coverage_generation,covered_interval_start,covered_interval_end,observed_at,input_hash
@@ -110,7 +113,10 @@ func (s *DB) SaveNightSleepCoverageCommitment(ctx context.Context, commitment Ni
 // the tenant-local wake day. A syntactically valid but misdated interval must
 // never promote an unrelated raw point into the canonical B0 evidence set.
 func (s *DB) validateNightSleepCoverageCommitment(commitment NightSleepCoverageCommitment) error {
-	loc := s.reportTZLocation()
+	return validateNightSleepWindow(commitment, s.reportTZLocation())
+}
+
+func validateNightSleepWindow(commitment NightSleepCoverageCommitment, loc *time.Location) error {
 	wakeDay, err := time.ParseInLocation("2006-01-02", commitment.WakeDate, loc)
 	if err != nil {
 		return fmt.Errorf("invalid night sleep coverage wake date: %w", err)
@@ -136,100 +142,99 @@ func (s *DB) validateNightSleepCoverageCommitment(commitment NightSleepCoverageC
 // ReconcileCompletedNightSleep selects the highest-priority committed source
 // and joins it to the exact raw night_sleep_total point named by the adapter.
 // Legacy sleep aggregates and naps are intentionally absent from this query.
+type sleepNightCatalog interface {
+	ContractCatalog
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
 func (s *DB) ReconcileCompletedNightSleep(ctx context.Context, wakeDate string, now time.Time) error {
-	rows, err := s.pool.Query(ctx, `
-		SELECT wake_date,source,metric_date,source_epoch,capture_completeness,
-		       coverage_generation,covered_interval_start,covered_interval_end,observed_at,input_hash
-		  FROM night_sleep_coverage_commitments
-		 WHERE wake_date=$1`, wakeDate)
+	loc := s.reportTZLocation()
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	commitments := make([]NightSleepCoverageCommitment, 0)
-	for rows.Next() {
-		var commitment NightSleepCoverageCommitment
-		if err := rows.Scan(&commitment.WakeDate, &commitment.Source, &commitment.MetricDate, &commitment.SourceEpoch,
-			&commitment.CaptureCompleteness, &commitment.CoverageGeneration, &commitment.CoveredIntervalStart,
-			&commitment.CoveredIntervalEnd, &commitment.ObservedAt, &commitment.InputHash); err != nil {
-			return err
-		}
-		commitments = append(commitments, commitment)
-	}
-	if err := rows.Err(); err != nil {
+	defer tx.Rollback(ctx)
+	if err = lockNightSleepIngest(ctx, tx); err != nil {
 		return err
 	}
-	if len(commitments) == 0 {
-		return nil
+	if err = reconcileCompletedNightSleep(ctx, tx, wakeDate, now, loc); err != nil {
+		return err
 	}
-	sort.Slice(commitments, func(i, j int) bool {
-		left, right := nightSleepSourceRank(commitments[i].Source), nightSleepSourceRank(commitments[j].Source)
-		if left != right {
-			return left < right
-		}
-		return commitments[i].Source < commitments[j].Source
+	return tx.Commit(ctx)
+}
+
+type nightCandidate struct {
+	NightSleepCoverageCommitment
+	hours   float64
+	quality string
+}
+
+func (n nightCandidate) full() bool {
+	return n.CaptureCompleteness == health.NightCaptureComplete && n.hours > 0 && n.quality == "ok"
+}
+
+func reconcileCompletedNightSleep(ctx context.Context, catalog sleepNightCatalog, wakeDate string, now time.Time, loc *time.Location) error {
+	rows, err := catalog.Query(ctx, `
+		SELECT c.wake_date,c.source,c.metric_date,c.source_epoch,c.capture_completeness,
+		       c.coverage_generation,c.covered_interval_start,c.covered_interval_end,c.observed_at,c.input_hash,
+		       COALESCE(m.qty,0), COALESCE(m.quality,'unknown')
+		  FROM night_sleep_coverage_commitments c
+		  LEFT JOIN metric_points m ON m.metric_name='night_sleep_total' AND m.date=c.metric_date AND m.source=c.source
+		 WHERE c.wake_date=$1`, wakeDate)
+	if err != nil {
+		return err
+	}
+	candidates, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (nightCandidate, error) {
+		var n nightCandidate
+		err := row.Scan(&n.WakeDate, &n.Source, &n.MetricDate, &n.SourceEpoch, &n.CaptureCompleteness,
+			&n.CoverageGeneration, &n.CoveredIntervalStart, &n.CoveredIntervalEnd, &n.ObservedAt, &n.InputHash, &n.hours, &n.quality)
+		return n, err
 	})
-	selected := commitments[0]
-	duration, quality, found, err := s.committedNightDuration(ctx, selected)
-	if err != nil {
+	if err != nil || len(candidates) == 0 {
 		return err
 	}
-	capture := selected.CaptureCompleteness
-	diagnostics := map[string]any{"candidate_state": "selected", "coverage_generation": selected.CoverageGeneration}
-	if !found {
-		capture = health.NightCaptureUnknown
-		diagnostics["candidate_state"] = "missing"
-	} else if quality != "ok" {
-		capture = health.NightCaptureUnknown
-		diagnostics["candidate_state"] = "quality_not_ok"
+	sort.Slice(candidates, func(i, j int) bool {
+		left, right := candidates[i], candidates[j]
+		if left.full() != right.full() {
+			return left.full()
+		}
+		if nightSleepSourceRank(left.Source) != nightSleepSourceRank(right.Source) {
+			return nightSleepSourceRank(left.Source) < nightSleepSourceRank(right.Source)
+		}
+		return left.Source < right.Source
+	})
+	selected := candidates[0]
+	capture, state := selected.CaptureCompleteness, "selected"
+	if selected.hours <= 0 {
+		capture, state = health.NightCaptureUnknown, "missing"
+	} else if selected.quality != "ok" {
+		capture, state = health.NightCaptureUnknown, "quality_not_ok"
 	}
-	for _, other := range commitments[1:] {
-		if nightSleepSourceRank(other.Source) != nightSleepSourceRank(selected.Source) {
+	for _, other := range candidates[1:] {
+		if selected.full() != other.full() || nightSleepSourceRank(other.Source) != nightSleepSourceRank(selected.Source) {
 			break
 		}
-		otherDuration, otherQuality, otherFound, err := s.committedNightDuration(ctx, other)
-		if err != nil {
-			return err
-		}
-		if otherFound && otherQuality == "ok" && (other.MetricDate != selected.MetricDate || otherDuration != duration) {
-			capture = health.NightCaptureUnknown
-			diagnostics["candidate_state"] = "conflicting"
+		if other.SourceEpoch == selected.SourceEpoch && other.hours > 0 && other.quality == "ok" &&
+			(other.MetricDate != selected.MetricDate || other.hours != selected.hours) {
+			capture, state = health.NightCaptureUnknown, "conflicting"
 			break
 		}
 	}
-	hashMaterial := fmt.Sprintf("%s\x1f%s\x1f%s\x1f%.9g\x1f%s", selected.InputHash, selected.MetricDate, selected.Source, duration, quality)
+	hashMaterial := fmt.Sprintf("%s\x1f%s\x1f%s\x1f%.9g\x1f%s", selected.InputHash, selected.MetricDate, selected.Source, selected.hours, selected.quality)
+	if state == "conflicting" {
+		hashMaterial += "\x1f" + state
+	}
 	inputHash := fmt.Sprintf("%x", sha256.Sum256([]byte(hashMaterial)))
 	canonical, err := health.CanonicalizeCompletedNight(health.CanonicalNightInput{
-		WakeDate: wakeDate, DurationHours: duration, Source: selected.Source, SourceEpoch: selected.SourceEpoch,
+		WakeDate: wakeDate, DurationHours: selected.hours, Source: selected.Source, SourceEpoch: selected.SourceEpoch,
 		InputHash: inputHash, CaptureCompleteness: capture, CoverageGeneration: selected.CoverageGeneration,
 		CoveredIntervalStart: &selected.CoveredIntervalStart, CoveredIntervalEnd: &selected.CoveredIntervalEnd,
 		ObservedAt: selected.ObservedAt, AlgorithmVersion: CompletedNightSleepAlgorithmVersion,
-	}, now, s.reportTZLocation())
+	}, now, loc)
 	if err != nil {
 		return err
 	}
-	return s.SaveCompletedNightSleep(ctx, canonical, diagnostics)
-}
-
-func (s *DB) committedNightDuration(ctx context.Context, commitment NightSleepCoverageCommitment) (duration float64, quality string, found bool, err error) {
-	err = s.pool.QueryRow(ctx, `
-		SELECT qty,COALESCE(quality,'ok')
-		  FROM metric_points
-		 WHERE metric_name='night_sleep_total' AND date=$1 AND source=$2`, commitment.MetricDate, commitment.Source).
-		Scan(&duration, &quality)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return 0, "missing", false, nil
-		}
-		return 0, "", false, err
-	}
-	if duration <= 0 {
-		// A coverage commitment is not sufficient on its own: the committed
-		// raw point must also describe a positive sleep duration before it can
-		// become a canonical night or support a user-facing claim.
-		return duration, "invalid_duration", false, nil
-	}
-	return duration, quality, true, nil
+	return saveCompletedNightSleep(ctx, catalog, canonical, map[string]string{"candidate_state": state, "coverage_generation": selected.CoverageGeneration})
 }
 
 func nightSleepSourceRank(source string) int {
@@ -250,6 +255,10 @@ func nightSleepSourceRank(source string) int {
 // reopening it through the canonicalizer's state rather than silently keeping
 // an obsolete final claim.
 func (s *DB) SaveCompletedNightSleep(ctx context.Context, night health.CompletedNightSleep, diagnostics any) error {
+	return saveCompletedNightSleep(ctx, s.pool, night, diagnostics)
+}
+
+func saveCompletedNightSleep(ctx context.Context, writer ContractCatalog, night health.CompletedNightSleep, diagnostics any) error {
 	if night.WakeDate == "" || night.InputHash == "" || night.AlgorithmVersion == "" {
 		return fmt.Errorf("invalid completed night identity")
 	}
@@ -257,7 +266,7 @@ func (s *DB) SaveCompletedNightSleep(ctx context.Context, night health.Completed
 	if err != nil {
 		return fmt.Errorf("marshal completed night diagnostics: %w", err)
 	}
-	_, err = s.pool.Exec(ctx, `
+	_, err = writer.Exec(ctx, `
 		INSERT INTO completed_night_sleep(
 			wake_date,duration_hours,source,source_epoch,input_hash,capture_completeness,
 			duration_assessment,finalization_state,claim_eligibility,coverage_generation,
@@ -279,7 +288,7 @@ func (s *DB) SaveCompletedNightSleep(ctx context.Context, night health.Completed
 			observed_at=excluded.observed_at,
 			finalized_at=excluded.finalized_at,
 			algorithm_version=excluded.algorithm_version,
-			diagnostics=excluded.diagnostics
+			diagnostics=COALESCE(NULLIF(completed_night_sleep.diagnostics,'null'::jsonb),'{}'::jsonb) || COALESCE(NULLIF(excluded.diagnostics,'null'::jsonb),'{}'::jsonb)
 		WHERE completed_night_sleep.input_hash IS DISTINCT FROM excluded.input_hash
 			OR completed_night_sleep.algorithm_version IS DISTINCT FROM excluded.algorithm_version`,
 		night.WakeDate, night.DurationHours, night.Source, night.SourceEpoch, night.InputHash,
@@ -332,15 +341,25 @@ func (s *DB) FinalizeCompletedNightSleep(ctx context.Context, now time.Time) err
 	if now.In(loc).Hour() < 18 {
 		today = now.In(loc).AddDate(0, 0, -1).Format("2006-01-02")
 	}
-	_, err := s.pool.Exec(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err = lockNightSleepIngest(ctx, tx); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `
 		UPDATE completed_night_sleep
 		   SET finalization_state=$1,
 		       claim_eligibility=CASE WHEN capture_completeness=$2 AND duration_assessment=$3 THEN $4 ELSE $5 END,
 		       finalized_at=COALESCE(finalized_at,$6)
 		 WHERE wake_date <= $7 AND finalization_state=$8`,
 		health.NightFinalFinal, health.NightCaptureComplete, health.NightDurationPlausible,
-		health.NightClaimEligible, health.NightClaimIneligible, now, today, health.NightFinalProvisional)
-	return err
+		health.NightClaimEligible, health.NightClaimIneligible, now, today, health.NightFinalProvisional); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // ReconcileRecentCompletedNightSleep replays only adapter commitments in the

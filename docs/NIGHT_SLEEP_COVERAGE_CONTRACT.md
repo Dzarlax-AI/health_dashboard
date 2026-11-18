@@ -51,11 +51,24 @@ UTC prefix. `metric_date` and `source` must match the raw
 - A payload cannot mark an arbitrary `sleep_total`, daily score, stage, or nap
   as a complete night. The server queries only the named
   `night_sleep_total` point.
-- A changed interval, generation, point date, source or source value changes
-  the server-derived input hash and reopens the canonical night.
-- The adapter must send one commitment per selected raw source. The server
-  applies the existing sleep source priority (Apple Watch, then RingConn, then
-  other) and marks same-priority irreconcilable candidates ineligible.
+- The accepted nightly point, coverage commitment and canonical night are
+  updated together. A partial or unattested replay cannot replace a complete
+  night. Its original payload is still accepted and retained.
+- For a covered night, identical observations are no-ops. The server orders
+  queued observations by immutable raw receipt time and ID. It also remembers
+  fingerprints of known full versions in the canonical date's diagnostics,
+  including a complete replay received again under another ID. A previously
+  superseded version from before the guard is not necessarily in that history.
+  The adapter's generation identifies a snapshot and does not establish its
+  chronology.
+- A new, valid complete correction can change the selected duration or wake
+  time. When the point key changes, only a demonstrably superseded point is
+  removed from derived storage. The immutable raw payload is preserved.
+- The adapter must send one unambiguous commitment and point per source and
+  wake date. When valid complete candidates exist, partial candidates do not
+  participate in selection or conflict detection. The existing source order
+  applies within each completeness class. Equal-priority full observations
+  within the same epoch can still conflict.
 
 ## Serving boundary
 

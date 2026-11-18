@@ -179,7 +179,7 @@ test-db-dashboard:
 	HEALTH_DB_TESTS=1 go test ./internal/storage -run '^TestGetDashboardServesOnlyAnAtomicallyCompletedSnapshot$$' -count=1 -timeout=60s
 
 test-db-sleep-insights:
-	HEALTH_DB_TESTS=1 go test ./internal/storage -run '^(TestCompletedNightSleepRequiresCommittedRawPointAndFinalizes|TestEnsureSchemaContractDoesNotCreatePartialSleepFeatureSchema)$$' -count=1 -timeout=60s
+	HEALTH_DB_TESTS=1 go test ./internal/storage -run '^(TestCompletedNightSleepRequiresCommittedRawPointAndFinalizes|TestEnsureSchemaContractDoesNotCreatePartialSleepFeatureSchema|TestSleepDurationComparisonSnapshots|TestAcceptedNightIngest.*)$$' -count=1 -timeout=60s
 
 test-db-sleep-balance:
 	HEALTH_DB_TESTS=1 go test ./internal/ui -run '^TestSleepGoal(AndBalance_ManualGoalPersistsWithHonestIncompleteBalance|_RejectsOutOfRangeGoal)$$' -count=1 -timeout=60s
