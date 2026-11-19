@@ -154,6 +154,10 @@ func (s *DB) loadLocalShadowEnergyInputs(ctx context.Context, profile, from, to 
 		FROM sleep_shadow.recalculation r
 		LEFT JOIN sleep_shadow.daily d USING (profile,wake_date)
 		WHERE r.profile=$1 AND r.wake_date BETWEEN $2::text::date AND $3::text::date`, profile, from, to)
+	return applySleepEnergyRows(inputs, rows, err)
+}
+
+func applySleepEnergyRows(inputs map[string]dailyInputs, rows pgx.Rows, err error) (map[string]dailyInputs, error) {
 	if err != nil {
 		return nil, err
 	}

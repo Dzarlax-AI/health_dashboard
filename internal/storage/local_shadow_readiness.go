@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"health-receiver/internal/health"
 )
 
@@ -58,6 +59,10 @@ func (s *DB) GetLocalShadowReadiness(ctx context.Context, profile, date string) 
 	if err != nil {
 		return nil, err
 	}
+	return s.readinessWithSleep(ctx, date, blocks, baseline), nil
+}
+
+func (s *DB) readinessWithSleep(ctx context.Context, date string, blocks map[string]*LocalShadowSleep, baseline []float64) *LocalShadowReadiness {
 	data := s.rawMetricsFromDailyScores(date)
 	if data == nil {
 		data = s.rawMetricsFromPoints(date)
@@ -85,7 +90,7 @@ func (s *DB) GetLocalShadowReadiness(ctx context.Context, profile, date string) 
 		Date: date, RawScore: resp.ReadinessRawScore, Score: resp.ReadinessDisplayScore,
 		Band: resp.ReadinessBand, Serving: resp.ReadinessServing,
 		Sleep: blocks[date], SleepQuality: resp.SleepQuality,
-	}, nil
+	}
 }
 
 func (s *DB) loadLocalShadowSleep(ctx context.Context, profile, date string) (map[string]*LocalShadowSleep, []float64, error) {
@@ -100,6 +105,10 @@ func (s *DB) loadLocalShadowSleep(ctx context.Context, profile, date string) (ma
 		LEFT JOIN sleep_shadow.daily d USING (profile,wake_date)
 		LEFT JOIN daily_scores h ON h.date=day::text
 		ORDER BY day DESC`, profile, date)
+	return readSleepBlocks(rows, err, date)
+}
+
+func readSleepBlocks(rows pgx.Rows, err error, date string) (map[string]*LocalShadowSleep, []float64, error) {
 	if err != nil {
 		return nil, nil, err
 	}

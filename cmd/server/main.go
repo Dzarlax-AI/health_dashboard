@@ -321,6 +321,7 @@ func main() {
 
 	ingestHandler := handler.New(mgr, onNewData, hrZones)
 	ingestHandler.Register(mux)
+	registerSleepRollout(ctx, mux, mgr, os.Getenv("HEALTH_SLEEP_V2_ENABLED") == "1")
 
 	uiHandler := ui.New(mgr, reg, trustFwdAuth)
 	if accessConfig != nil {
@@ -441,6 +442,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	mux := http.NewServeMux()
 	ingestHandler := handler.New(mgr, onNewData, hrZones)
 	ingestHandler.Register(mux)
+	registerSleepRollout(ctx, mux, mgr, os.Getenv("HEALTH_SLEEP_V2_ENABLED") == "1")
 	legacyUI := ui.New(mgr, reg, trustFwdAuth)
 	legacyUI.SetTrustedForwardAuthNetworkList(trustedFwdAuthNets)
 	legacyUI.ConfigureWebhook(notify.NewTelegramWebhookRegistrar(), baseURL)
