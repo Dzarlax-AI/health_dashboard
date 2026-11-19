@@ -241,6 +241,7 @@ func (s *DB) UpsertRecentCache(dates []string, recomputeReadiness bool) error {
 		log.Printf("upsert recent cache: %v", err)
 		return err
 	}
+	dailySQL := liveDailySQL(s.legacySleepDBTEnabled())
 	for _, date := range dates {
 		if err := s.upsertHourlyAvgForDate(date); err != nil {
 			return fail(fmt.Errorf("hourly avg %s: %w", date, err))
@@ -251,10 +252,10 @@ func (s *DB) UpsertRecentCache(dates []string, recomputeReadiness bool) error {
 		if err := s.upsertHourlySleepForDate(date); err != nil {
 			return fail(fmt.Errorf("hourly sleep %s: %w", date, err))
 		}
-		if err := s.upsertDailyForDate(date); err != nil {
+		if err := s.writeDailyScores(date, dailySQL); err != nil {
 			return fail(fmt.Errorf("daily scores %s: %w", date, err))
 		}
-		// Must run AFTER upsertDailyForDate — the latter creates the
+		// Must run after the daily write, which creates the
 		// daily_scores row that the baseline UPDATE targets. Cheap
 		// enough to run inside the same critical section (one
 		// percentile query + one UPDATE per date).
@@ -379,32 +380,14 @@ func sumMetricSlice() []string {
 //
 // Replaces a previous loop that issued 13 SELECTs + 13 UPSERTs in a tx.
 func (s *DB) upsertDailyForDate(date string) error {
+	return s.writeDailyScores(date, liveDailySQL(false))
+}
+
+func (s *DB) writeDailyScores(date, query string) error {
 	ctx, cancel := longCtx()
 	defer cancel()
-
-	// Per-metric resolution rule:
-	//   AVG metrics  → AVG(avg_val) across sources
-	//   SUM (sleep)  → ONE source picked once for the night via sleep_total
-	//                  cross-validation; all five sleep_* stages then come
-	//                  from that same source (see sleep_picked CTE below).
-	//   SUM (other)  → preferred source pick (Apple Watch > iPhone > MAX)
-	//
-	// Why pick the source once for sleep: resolving each phase independently
-	// can mix Apple Watch's REM with RingConn's sleep_total (when cross-
-	// validation picks MIN), producing physically impossible ratios such as
-	// REM/Total > 100%. Latent today (single source — Apple Watch only) but
-	// would resurface immediately if RingConn is re-enabled.
-	q := aggregateSQLWith("live_daily", map[string]string{
-		"SLEEP_PICK_SOURCE":         sleepCrossValidationPickSourceExpr("sleep_total_per_source", "sum_val"),
-		"SLEEP_TRADITIONAL_METRICS": sqlStringList(sleepTraditionalMetrics),
-		"SLEEP_COARSE_METRICS":      sqlStringList(sleepCoarseMetrics),
-		"SUM_WATCH_CONDITION":       sourcePriorityCondition("source", sumSourcePriority[0]),
-		"SUM_IPHONE_CONDITION":      sourcePriorityCondition("source", sumSourcePriority[1]),
-	})
-	if _, err := s.pool.Exec(ctx, q, date); err != nil {
-		return err
-	}
-	return nil
+	_, err := s.pool.Exec(ctx, query, date)
+	return err
 }
 
 // BackfillAggregates rebuilds hourly_metrics from metric_points and

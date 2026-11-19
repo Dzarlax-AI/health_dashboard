@@ -13,39 +13,10 @@ per_source AS (
     WHERE {{ affected_dates_filter('SUBSTRING(hour, 1, 10)') }}
     GROUP BY SUBSTRING(hour, 1, 10), metric_name, source
 ),
-sleep_totals AS (
-    SELECT date, source, sum_val FROM per_source WHERE metric_name = 'sleep_total'
-),
-sleep_stats AS (
-    SELECT date, COUNT(*) AS n_sources, MIN(sum_val) AS min_total, MAX(sum_val) AS max_total
-    FROM sleep_totals GROUP BY date
-),
-sleep_ranked AS (
-    SELECT st.date, st.source,
-           ROW_NUMBER() OVER (PARTITION BY st.date ORDER BY
-             CASE WHEN ss.n_sources > 1 AND ss.min_total > 1.0
-                        AND ss.max_total > ss.min_total * 1.4 THEN 0
-                  WHEN st.source LIKE '%Ultra%' OR st.source LIKE '%Apple Watch%' THEN 1
-                  WHEN st.source LIKE '%RingConn%' THEN 2 ELSE 3 END,
-             CASE WHEN ss.n_sources > 1 AND ss.min_total > 1.0
-                        AND ss.max_total > ss.min_total * 1.4 THEN st.sum_val END ASC,
-             CASE WHEN NOT (ss.n_sources > 1 AND ss.min_total > 1.0
-                        AND ss.max_total > ss.min_total * 1.4) THEN st.sum_val END DESC,
-             st.source ASC) AS rank
-    FROM sleep_totals st JOIN sleep_stats ss USING (date)
-),
-picked AS (SELECT date, source FROM sleep_ranked WHERE rank = 1),
-sleep_gate AS (
-    SELECT p.date,
-      (ss.n_sources <= 1 OR
-       COUNT(DISTINCT ps.metric_name) FILTER (WHERE ps.metric_name IN
-         ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake')) = 5 OR
-       COUNT(DISTINCT ps.metric_name) FILTER (WHERE ps.metric_name IN
-         ('sleep_total','sleep_unspecified')) = 2) AS complete
-    FROM picked p JOIN sleep_stats ss USING(date)
-    LEFT JOIN per_source ps ON ps.date=p.date AND ps.source=p.source
-    GROUP BY p.date, ss.n_sources
-),
+{{ legacy_sleep_selection_v1('per_source',
+    "CASE WHEN st.source LIKE '%Ultra%' OR st.source LIKE '%Apple Watch%' THEN 0 WHEN st.source LIKE '%RingConn%' THEN 1 ELSE 2 END",
+    '1.0', '1.4', "'sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake'", 5,
+    "'sleep_total','sleep_unspecified'", 2) }},
 resolved AS (
     SELECT d.date,
       (SELECT AVG(avg_val)::real FROM per_source WHERE date=d.date AND metric_name='heart_rate_variability') AS hrv_avg,

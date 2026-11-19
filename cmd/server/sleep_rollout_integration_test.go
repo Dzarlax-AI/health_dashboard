@@ -49,7 +49,8 @@ func (r sleepRolloutRegistry) GetAllGlobalSettings(context.Context) map[string]s
 	return nil
 }
 
-func TestSleepRolloutServerIntegration(t *testing.T) {
+func newSleepRolloutFixture(t *testing.T) (*tenants.Manager, *pgxpool.Pool) {
+	t.Helper()
 	ctx := context.Background()
 	dsn := testdb.DSN(t)
 	config, err := pgxpool.ParseConfig(dsn)
@@ -63,36 +64,28 @@ func TestSleepRolloutServerIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer admin.Close()
+	t.Cleanup(admin.Close)
 	name := pgx.Identifier{testdb.SchemaName("sleep_rollout_server")}.Sanitize()
 	if _, err := admin.Exec(ctx, "CREATE DATABASE "+name); err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
+	t.Cleanup(func() {
 		if _, err := admin.Exec(ctx, "DROP DATABASE "+name); err != nil {
 			t.Error(err)
 		}
-	}()
+	})
 	cfg := config.Copy()
 	cfg.ConnConfig.Database = strings.Trim(name, "\"")
 	root, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer root.Close()
+	t.Cleanup(root.Close)
 	exec := func(sql string, args ...any) {
 		t.Helper()
 		if _, err := root.Exec(ctx, sql, args...); err != nil {
 			t.Fatal(err)
 		}
-	}
-	read := func(sql string, args ...any) string {
-		t.Helper()
-		var out string
-		if err := root.QueryRow(ctx, sql, args...).Scan(&out); err != nil {
-			t.Fatal(err)
-		}
-		return out
 	}
 	base := fmt.Sprintf("host=%s port=%d dbname=%s sslmode=disable", cfg.ConnConfig.Host, cfg.ConnConfig.Port, cfg.ConnConfig.Database)
 	deriver := tenants.CredentialDeriver{Current: tenants.SecretVersion{Version: 1, Secret: []byte("synthetic-rollout-fixture-32-byte-secret")}}
@@ -106,11 +99,11 @@ func TestSleepRolloutServerIntegration(t *testing.T) {
 		}
 		roleSQL := pgx.Identifier{role}.Sanitize()
 		exec("CREATE ROLE " + roleSQL + " LOGIN PASSWORD '" + strings.ReplaceAll(password, "'", "''") + "'")
-		defer func() {
+		t.Cleanup(func() {
 			exec("DROP SCHEMA " + pgx.Identifier{schema}.Sanitize() + " CASCADE")
 			exec("DROP OWNED BY " + roleSQL)
 			exec("DROP ROLE " + roleSQL)
-		}()
+		})
 		exec("CREATE SCHEMA " + pgx.Identifier{schema}.Sanitize() + " AUTHORIZATION " + roleSQL)
 		db, err := storage.NewRestrictedTenant(ctx, base, role, password, schema)
 		if err != nil {
@@ -133,7 +126,27 @@ func TestSleepRolloutServerIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer mgr.Close()
+	t.Cleanup(mgr.Close)
+	return mgr, root
+}
+
+func TestSleepRolloutServerIntegration(t *testing.T) {
+	ctx := context.Background()
+	mgr, root := newSleepRolloutFixture(t)
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := root.Exec(ctx, sql, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := func(sql string, args ...any) string {
+		t.Helper()
+		var out string
+		if err := root.QueryRow(ctx, sql, args...).Scan(&out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
 	a, _, _, ok := mgr.DBForAPIKey(ctx, "rollout_a-key")
 	if !ok {
 		t.Fatal("isolated profile did not resolve")
