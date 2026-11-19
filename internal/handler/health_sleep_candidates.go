@@ -18,6 +18,8 @@ import (
 const sleepCandidatesAckHeader = "X-Health-Sleep-Candidates-Ack"
 const maxSleepCandidatesPerBatch = 32
 
+var errInvalidSleepCandidateBatch = errors.New("invalid sleep candidate batch")
+
 // EnableSleepCandidateBatches is called before registering the ingest routes
 // on servers whose runtime pools are isolated.
 func (h *Handler) EnableSleepCandidateBatches(prepare bool) {
@@ -41,15 +43,14 @@ func (h *Handler) acceptSleepCandidateBatch(w http.ResponseWriter, r *http.Reque
 		return 0, false
 	}
 	ctx := r.Context()
-	batchID, candidates, err := parseSleepCandidateBatch(envelope.Data.Candidates)
-	metrics := bytes.TrimSpace(envelope.Data.Metrics)
-	if err == nil && len(metrics) > 0 && metrics[0] == '[' {
-		// Do not put an unprocessable legacy payload at the head of a durable queue.
-		err = validateSleepCandidateMetrics(body)
-	} else if err == nil {
-		err = errors.New("sleep candidate batch requires a metrics array")
+	// Extract only the receipt identity before validating the current
+	// format. An already committed receipt owns its original validation.
+	var receipt struct {
+		BatchID string `json:"batch_id"`
 	}
-	if err != nil {
+	_ = json.Unmarshal(envelope.Data.Candidates, &receipt)
+	batchID, err := uuid.Parse(receipt.BatchID)
+	if err != nil || batchID == uuid.Nil || batchID.String() != receipt.BatchID {
 		if !h.sleepCandidatePrepare {
 			return 0, false
 		}
@@ -73,10 +74,23 @@ func (h *Handler) acceptSleepCandidateBatch(w http.ResponseWriter, r *http.Reque
 		total = 0
 	}
 	session := storage.IngestSyncSession{ID: r.Header.Get(hdrSyncSession), Total: total}
-	id, err := db.AcceptSleepRolloutBatch(ctx, batchID, record, candidates, h.sleepCandidatePrepare, session)
+	id, err := db.AcceptSleepRolloutBatch(ctx, batchID, record, h.sleepCandidatePrepare, session,
+		func() ([]storage.SleepRolloutInput, error) {
+			metrics := bytes.TrimSpace(envelope.Data.Metrics)
+			if len(metrics) == 0 || metrics[0] != '[' || validateSleepCandidateMetrics(body) != nil {
+				return nil, errInvalidSleepCandidateBatch
+			}
+			candidates, err := parseSleepCandidateBatch(envelope.Data.Candidates)
+			if err != nil && !errors.Is(err, sleepwire.ErrUnknownWakeZone) {
+				return nil, errInvalidSleepCandidateBatch
+			}
+			return candidates, err
+		})
 	switch {
-	case errors.Is(err, storage.ErrSleepRolloutDisabled):
+	case errors.Is(err, storage.ErrSleepRolloutDisabled), errors.Is(err, sleepwire.ErrUnknownWakeZone):
 		return 0, false
+	case errors.Is(err, errInvalidSleepCandidateBatch):
+		http.Error(w, "invalid sleep candidate batch", http.StatusBadRequest)
 	case errors.Is(err, storage.ErrSleepRolloutConflict):
 		http.Error(w, "sleep batch or revision conflict", http.StatusConflict)
 	case err != nil:
@@ -132,7 +146,7 @@ func validateSleepCandidateMetrics(body []byte) error {
 	return nil
 }
 
-func parseSleepCandidateBatch(raw json.RawMessage) (uuid.UUID, []storage.SleepRolloutInput, error) {
+func parseSleepCandidateBatch(raw json.RawMessage) ([]storage.SleepRolloutInput, error) {
 	var packet struct {
 		BatchID    string            `json:"batch_id"`
 		Candidates []json.RawMessage `json:"candidates"`
@@ -140,15 +154,16 @@ func parseSleepCandidateBatch(raw json.RawMessage) (uuid.UUID, []storage.SleepRo
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&packet); err != nil {
-		return uuid.Nil, nil, err
+		return nil, err
 	}
 	batchID, err := uuid.Parse(packet.BatchID)
 	if err != nil || batchID == uuid.Nil || batchID.String() != packet.BatchID ||
 		len(packet.Candidates) == 0 || len(packet.Candidates) > maxSleepCandidatesPerBatch {
-		return uuid.Nil, nil, errors.New("invalid sleep batch identity or count")
+		return nil, errors.New("invalid sleep batch identity or count")
 	}
 	inputs := make([]storage.SleepRolloutInput, 0, len(packet.Candidates))
 	seen := make(map[[2]string]bool, len(packet.Candidates))
+	unknownZone := false
 	for _, rawCandidate := range packet.Candidates {
 		var item struct {
 			SourceID  string              `json:"source_id"`
@@ -157,20 +172,25 @@ func parseSleepCandidateBatch(raw json.RawMessage) (uuid.UUID, []storage.SleepRo
 		decoder := json.NewDecoder(bytes.NewReader(rawCandidate))
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&item); err != nil {
-			return uuid.Nil, nil, err
+			return nil, err
 		}
 		date, err := validateSleepRolloutCandidate(item.SourceID, &item.Candidate)
-		if err != nil {
-			return uuid.Nil, nil, err
+		if errors.Is(err, sleepwire.ErrUnknownWakeZone) {
+			unknownZone = true
+		} else if err != nil {
+			return nil, err
 		}
 		key := [2]string{item.SourceID, item.Candidate.ID}
 		if seen[key] {
-			return uuid.Nil, nil, errors.New("duplicate sleep candidate key")
+			return nil, errors.New("duplicate sleep candidate key")
 		}
 		seen[key] = true
 		inputs = append(inputs, storage.SleepRolloutInput{
 			SourceID: item.SourceID, Candidate: item.Candidate, WakeDate: date, Raw: rawCandidate,
 		})
 	}
-	return batchID, inputs, nil
+	if unknownZone {
+		return nil, sleepwire.ErrUnknownWakeZone
+	}
+	return inputs, nil
 }

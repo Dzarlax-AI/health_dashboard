@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -173,12 +174,13 @@ func TestHealthSleepCandidatesMixedIngest(t *testing.T) {
 	check(post(mux, "rollout_a-key", badClock), 400, "")
 	expect("0", `SELECT count(*)::text FROM rollout_a.health_records WHERE payload=$1`, badClock)
 	// Model a receipt and its candidate stored before validation existed.
+	brokenDigest := sha256.Sum256([]byte(brokenBody))
 	exec(`WITH raw AS (
 		INSERT INTO rollout_a.health_records(payload,processing_status,processing_kind)
 		VALUES ($1,'pending','sleep_candidates') RETURNING id
 	)
 	INSERT INTO rollout_a.sleep_rollout_batches(batch_id,payload_hash,health_record_id)
-	SELECT $2,decode('00','hex'),id FROM raw`, brokenBody, brokenBatch)
+	SELECT $2,$3,id FROM raw`, brokenBody, brokenBatch, brokenDigest[:])
 	candidateJSON, err := json.Marshal(original["candidate"])
 	if err != nil {
 		t.Fatal(err)
@@ -192,6 +194,14 @@ func TestHealthSleepCandidatesMixedIngest(t *testing.T) {
 		t.Fatalf("existing invalid mixed receipt did not leave the pending queue: %v, %v", processed, err)
 	}
 	expect("failed", `SELECT processing_status FROM rollout_a.health_records WHERE payload=$1`, brokenBody)
+	brokenID := read(`SELECT id::text FROM rollout_a.health_records WHERE payload=$1`, brokenBody)
+	setMode("off")
+	replayID := check(post(mux, "rollout_a-key", brokenBody), 200, brokenBatch.String())
+	if fmt.Sprint(replayID) != brokenID {
+		t.Fatalf("old exact receipt returned %d; original %s", replayID, brokenID)
+	}
+	expect("1", `SELECT count(*)::text FROM rollout_a.health_records WHERE payload=$1`, brokenBody)
+	setMode("prepare")
 	// The quarantined receipt remains durable without counting as a valid upload.
 	firstBatch := uuid.New()
 	firstBody := mixed(firstBatch, original)
@@ -238,16 +248,20 @@ func TestHealthSleepCandidatesMixedIngest(t *testing.T) {
 	check(send(mux, "/health/sleep/v2", "rollout_a-key", experimental(original,
 		strings.Replace(legacy, `"qty":7`, `"qty":6`, 1))), 409, "")
 	workerNow := time.Now()
-	if applied, err := a.RunSleepRolloutNext(ctx, workerNow); err != nil || applied {
+	if applied, err := a.RunSleepRolloutNext(ctx, func() time.Time { return workerNow }); err != nil || applied {
 		t.Fatalf("candidate ran before its ordinary metrics: %v, %v", applied, err)
 	}
 	if processed, err := ingest.ProcessSleepCandidateMetrics(ctx, a); err != nil || !processed {
 		t.Fatalf("process first mixed metrics: %v, %v", processed, err)
 	}
-	if applied, err := a.RunSleepRolloutNext(ctx, workerNow); err != nil || !applied {
+	if applied, err := a.RunSleepRolloutNext(ctx, func() time.Time { return workerNow }); err != nil || !applied {
 		t.Fatalf("apply first candidate: %v, %v", applied, err)
 	}
 	expect("21600", `SELECT sleep_seconds::text FROM rollout_a.sleep_rollout_daily WHERE wake_date=$1::text::date`, day.Format(time.DateOnly))
+	auditTenant := uuid.MustParse(read(`SELECT tenant_id::text FROM rollout_a.__tenant_identity`))
+	if report, err := a.AuditSleepRolloutPreparation(ctx, auditTenant, day.Format(time.DateOnly), day.Format(time.DateOnly)); err != nil || report.FailedMixedBatches != 0 {
+		t.Fatalf("completed repair still reported as failed: %+v, %v", report, err)
+	}
 	correctionBatch := uuid.New()
 	corrected := mixed(correctionBatch, makeCandidate("night", "ring", "Asia/Singapore", 2),
 		makeCandidate("second-night", "watch", "Asia/Singapore", 1))
@@ -275,7 +289,7 @@ func TestHealthSleepCandidatesMixedIngest(t *testing.T) {
 		t.Fatalf("expected transient point write failure: %v, %v", processed, err)
 	}
 	expect("pending", `SELECT processing_status FROM rollout_a.health_records WHERE id=$1`, correctionID)
-	if applied, err := a.RunSleepRolloutNext(ctx, workerNow); err != nil || applied {
+	if applied, err := a.RunSleepRolloutNext(ctx, func() time.Time { return workerNow }); err != nil || applied {
 		t.Fatalf("candidate ran after failed point write: %v, %v", applied, err)
 	}
 	exec(`DROP TRIGGER fail_legacy_processing ON rollout_a.metric_points`)
@@ -288,7 +302,7 @@ func TestHealthSleepCandidatesMixedIngest(t *testing.T) {
 	}
 	expect("pending", `SELECT processing_status FROM rollout_a.health_records WHERE id=$1`, correctionID)
 	expect("0", `SELECT count(*)::text FROM rollout_a.metric_points WHERE source='Mixed Only'`)
-	if applied, err := a.RunSleepRolloutNext(ctx, workerNow); err != nil || applied {
+	if applied, err := a.RunSleepRolloutNext(ctx, func() time.Time { return workerNow }); err != nil || applied {
 		t.Fatalf("candidate ran after failed cache write: %v, %v", applied, err)
 	}
 	expect("2", `SELECT count(*)::text FROM rollout_a.sleep_rollout_packets WHERE applied_at IS NULL`)
@@ -318,7 +332,7 @@ func TestHealthSleepCandidatesMixedIngest(t *testing.T) {
 		t.Fatalf("replay with the global flag off returned %d instead of %d", got, correctionID)
 	}
 	check(post(restarted, "rollout_a-key", mixed(uuid.New(), original)), 200, "")
-	if applied, err := a.RunSleepRolloutNext(ctx, workerNow); err != nil || applied {
+	if applied, err := a.RunSleepRolloutNext(ctx, func() time.Time { return workerNow }); err != nil || applied {
 		t.Fatalf("off should hold queue, got %v, %v", applied, err)
 	}
 	expect("2", `SELECT count(*)::text FROM rollout_a.sleep_rollout_packets WHERE applied_at IS NULL`)
@@ -392,6 +406,12 @@ func TestHealthSleepCandidatesMixedIngest(t *testing.T) {
 	newMixed = strings.Replace(newMixed, `"metrics":[`, fmt.Sprintf(`"metrics":[{"name":"active_energy","units":"kcal","data":[{"date":%q,"qty":550,"source":"Mixed Only"}]},`, activityDate), 1)
 	newMixedRecord := check(post(restarted, "rollout_a-key", newMixed), 200, newMixedID.String())
 	wait("complete", `SELECT processing_status FROM rollout_a.health_records WHERE id=$1`, newMixedRecord)
+	unknownZone := strings.Replace(mixed(uuid.New(), original), `"wake_zone":"UTC"`, `"wake_zone":"Unmapped/Region"`, 1)
+	unknownZone = strings.ReplaceAll(unknownZone, "Legacy RingConn", "Unknown zone legacy")
+	unknownZoneID := check(post(restarted, "rollout_a-key", unknownZone), 200, "")
+	wait("complete", `SELECT processing_status FROM rollout_a.health_records WHERE id=$1`, unknownZoneID)
+	expect("1", `SELECT count(*)::text FROM rollout_a.metric_points WHERE health_record_id=$1 AND source='Unknown zone legacy'`, unknownZoneID)
+	expect("0", `SELECT count(*)::text FROM rollout_a.sleep_rollout_batches WHERE health_record_id=$1`, unknownZoneID)
 	closePrepared()
 	_, _, closeOldRecovery := open(true, false)
 	defer closeOldRecovery()
@@ -459,7 +479,11 @@ func TestHealthSleepCandidatesMixedSessionAggregatesOnce(t *testing.T) {
 	firstDay, secondDay := today.AddDate(0, 0, -2), today.AddDate(0, 0, -1)
 	post := func(date time.Time, metric, source string, withCandidate bool) int64 {
 		t.Helper()
-		sample := map[string]any{"qty": 100, "source": source, "date": date.Format(time.DateOnly) + " 10:00:00 +0000"}
+		qty := 100
+		if !withCandidate && metric == "resting_heart_rate" {
+			qty = 77
+		}
+		sample := map[string]any{"qty": qty, "source": source, "date": date.Format(time.DateOnly) + " 10:00:00 +0000"}
 		data := map[string]any{"metrics": []any{map[string]any{"name": metric, "data": []any{sample}}}}
 		if withCandidate {
 			data["sleep_candidates_v1"] = map[string]any{"batch_id": uuid.NewString(), "candidates": []any{map[string]any{
@@ -500,14 +524,24 @@ func TestHealthSleepCandidatesMixedSessionAggregatesOnce(t *testing.T) {
 		}
 	}
 
-	post(firstDay, "active_energy", "Mixed A", true)
+	post(firstDay, "resting_heart_rate", "Mixed A", true)
 	process()
 	assertWaiting()
-	ordinaryID := post(secondDay, "resting_heart_rate", "Ordinary", false)
+	post(firstDay, "resting_heart_rate", "Mixed A", false)
+	// A subsequent empty job completes only after the FIFO worker joins
+	// the ordinary chunk to its session. It has no notification or cache work.
+	barrier := httptest.NewRequest(http.MethodPost, "/health", strings.NewReader(`{"data":{"metrics":[]}}`))
+	barrier.Header.Set("X-API-Key", "rollout_a-key")
+	barrierReply := httptest.NewRecorder()
+	mux.ServeHTTP(barrierReply, barrier)
+	var ordinaryBarrier struct{ ID int64 }
+	if err := json.Unmarshal(barrierReply.Body.Bytes(), &ordinaryBarrier); err != nil || barrierReply.Code != 200 || ordinaryBarrier.ID == 0 {
+		t.Fatalf("ordinary queue barrier: %d %s %v", barrierReply.Code, barrierReply.Body, err)
+	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		var status string
-		if err := root.QueryRow(ctx, `SELECT processing_status FROM rollout_a.health_records WHERE id=$1`, ordinaryID).Scan(&status); err != nil {
+		if err := root.QueryRow(ctx, `SELECT processing_status FROM rollout_a.health_records WHERE id=$1`, ordinaryBarrier.ID).Scan(&status); err != nil {
 			t.Fatal(err)
 		}
 		if status == "complete" {
@@ -519,6 +553,15 @@ func TestHealthSleepCandidatesMixedSessionAggregatesOnce(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	assertWaiting()
+	day := firstDay.Format(time.DateOnly)
+	// Model an unrelated refresh that writes the current aggregate but
+	// leaves the earlier mixed chunk's readiness result in place.
+	if err := db.UpsertRecentCache([]string{day}, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := root.Exec(ctx, `UPDATE rollout_a.daily_scores SET readiness=123 WHERE date=$1`, day); err != nil {
+		t.Fatal(err)
+	}
 	post(secondDay, "active_energy", "Mixed B", true)
 	process()
 	select {
@@ -530,6 +573,14 @@ func TestHealthSleepCandidatesMixedSessionAggregatesOnce(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("completed mixed session did not notify readers")
 	}
+	var scoreRefreshed bool
+	if err := root.QueryRow(ctx, `SELECT COALESCE(readiness<>123 AND rhr_avg=77,false)
+		FROM rollout_a.daily_scores WHERE date=$1`, day).Scan(&scoreRefreshed); err != nil || !scoreRefreshed {
+		t.Fatalf("session certified an earlier readiness score: %v, %v", scoreRefreshed, err)
+	}
+	if err := ingest.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if err := derived.WaitForIdle(ctx, db); err != nil {
 		t.Fatal(err)
 	}
@@ -539,11 +590,11 @@ func TestHealthSleepCandidatesMixedSessionAggregatesOnce(t *testing.T) {
 		FROM (SELECT day,count(*) n FROM rollout_a.aggregate_calls GROUP BY day) calls`).Scan(&aggregateCalls); err != nil {
 		t.Fatal(err)
 	}
-	expected := firstDay.Format(time.DateOnly) + ":1," + secondDay.Format(time.DateOnly) + ":1"
+	expected := day + ":2," + secondDay.Format(time.DateOnly) + ":1"
 	if aggregateCalls != expected {
 		t.Fatalf("daily aggregates executed %s, want %s", aggregateCalls, expected)
 	}
-	t.Logf("one notification for three session parts and one aggregate per date: %s", aggregateCalls)
+	t.Logf("one session notification, current readiness, and no redundant aggregate: %s", aggregateCalls)
 }
 
 func TestHealthSleepPeriodReceiptOrder(t *testing.T) {

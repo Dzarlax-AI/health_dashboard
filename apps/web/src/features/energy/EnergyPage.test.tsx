@@ -58,16 +58,16 @@ it("keeps history and server insight when current reserve fails", async () => {
 });
 
 it.each([
-  { status: "stale", reserve: "—", standalone: undefined },
-  { status: undefined, reserve: "0", standalone: undefined },
-  { status: undefined, reserve: "0", standalone: 0 },
-] as const)("renders the EnergyBank reserve $reserve (standalone $standalone)", async ({ status, reserve, standalone }) => {
+  { status: "stale", reserve: "—", bank: 81, standalone: 42 },
+  { status: undefined, reserve: "0", bank: 0, standalone: undefined },
+  { status: undefined, reserve: "0", bank: 81, standalone: 0 },
+] as const)("renders the EnergyBank reserve $reserve (standalone $standalone)", async ({ status, reserve, bank, standalone }) => {
   window.history.replaceState({}, "", "/energy?lang=ru");
   const fixture = fixtureResources("ru", "normal");
   vi.mocked(getHealthBriefing).mockResolvedValue({
     ...fixture.briefing,
     energy_bank_status: status,
-    energy_bank: status === "stale" || standalone !== undefined ? undefined : { ...fixture.briefing.energy_bank!, current: 0 },
+    energy_bank: { ...fixture.briefing.energy_bank!, current: bank },
     energy_bank_current: standalone,
   });
   vi.mocked(getTodayInsights).mockResolvedValue(fixture.todayInsights!);

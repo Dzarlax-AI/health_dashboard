@@ -507,6 +507,19 @@ func TestLocalSleepRolloutRehearsal(t *testing.T) {
 	}
 	checkLegacySlots(activeHistory())
 	process(finalID, nil, "")
+	exec(expectedLegacy.pool, `UPDATE daily_scores SET sleep_total=8.5,sleep_core=7.5,
+		sleep_deep=0.5,sleep_rem=0.5,sleep_awake=0 WHERE date=$1`, secondNight)
+	for _, db := range []*storage.DB{oldDB, expectedLegacy.db} {
+		if err := db.RepairHistoricalDependencies(ctx, []string{secondNight}, tz, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, day := range []string{secondNight, today} {
+		compareReadiness(readiness(oldDB, "legacy-reference", day), readiness(expectedLegacy.db, "legacy-reference", day))
+		if got, want := bank(oldDB, day), bank(expectedLegacy.db, day); !reflect.DeepEqual(got, want) {
+			t.Fatalf("post-rollback EnergyBank %s: got %+v, want %+v", day, got, want)
+		}
+	}
 	checkLegacySlots(activeHistory())
 	if active() != "legacy" || processed(finalID) != "legacy" || observations(target.pool, true) != beforeRollback ||
 		observations(activeHistory(), true) != legacyObservations ||

@@ -4,7 +4,8 @@ CREATE TABLE IF NOT EXISTS sleep_shadow.rebuild_input_revision (
 );
 
 CREATE OR REPLACE FUNCTION sleep_shadow.bump_rebuild_input_revision()
-RETURNS trigger LANGUAGE plpgsql AS $rebuild$
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog AS $rebuild$
 DECLARE
     before_row jsonb;
     after_row jsonb;
@@ -16,7 +17,7 @@ BEGIN
         after_row := to_jsonb(NEW);
     END IF;
 
-    -- Use the same input columns as rebuildInputQueries.
+    -- Ignore derived projections written by the rebuild itself.
     CASE TG_TABLE_NAME
     WHEN 'daily_scores' THEN
         before_row := before_row - ARRAY['readiness','score_version','computed_at',
@@ -48,9 +49,13 @@ BEGIN
     IF TG_OP <> 'TRUNCATE' AND before_row IS NOT DISTINCT FROM after_row THEN
         RETURN NULL;
     END IF;
-    INSERT INTO sleep_shadow.rebuild_input_revision AS input (tenant_schema, revision)
-    VALUES (TG_TABLE_SCHEMA, 1)
-    ON CONFLICT (tenant_schema) DO UPDATE SET revision = input.revision + 1;
+    UPDATE sleep_shadow.rebuild_input_revision SET revision = revision + 1
+    WHERE tenant_schema = TG_TABLE_SCHEMA;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'missing shadow rebuild input revision for schema %', TG_TABLE_SCHEMA;
+    END IF;
     RETURN NULL;
 END;
 $rebuild$;
+
+REVOKE ALL ON FUNCTION sleep_shadow.bump_rebuild_input_revision() FROM PUBLIC;

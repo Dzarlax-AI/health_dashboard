@@ -320,7 +320,7 @@ func main() {
 	}
 
 	ingestHandler := handler.New(mgr, onNewData, hrZones)
-	registerHealthIngest(ctx, mux, mgr, ingestHandler, os.Getenv("HEALTH_SLEEP_V2_ENABLED") == "1")
+	drainIngest := registerHealthIngest(ctx, mux, mgr, ingestHandler, os.Getenv("HEALTH_SLEEP_V2_ENABLED") == "1")
 
 	uiHandler := ui.New(mgr, reg, trustFwdAuth)
 	if accessConfig != nil {
@@ -378,7 +378,7 @@ func main() {
 
 	log.Printf("listening on %s (multi-user mode, %d user(s))", addr, len(users))
 	log.Printf("MCP endpoint: %s/mcp", baseURL)
-	if err := serveHTTP(ctx, addr, logged, ingestHandler.Shutdown, startupBackfills.Start); err != nil {
+	if err := serveHTTP(ctx, addr, logged, drainIngest, startupBackfills.Start); err != nil {
 		log.Fatalf("server: %v", err)
 	}
 }
@@ -440,7 +440,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 
 	mux := http.NewServeMux()
 	ingestHandler := handler.New(mgr, onNewData, hrZones)
-	registerHealthIngest(ctx, mux, mgr, ingestHandler, os.Getenv("HEALTH_SLEEP_V2_ENABLED") == "1")
+	drainIngest := registerHealthIngest(ctx, mux, mgr, ingestHandler, os.Getenv("HEALTH_SLEEP_V2_ENABLED") == "1")
 	legacyUI := ui.New(mgr, reg, trustFwdAuth)
 	legacyUI.SetTrustedForwardAuthNetworkList(trustedFwdAuthNets)
 	legacyUI.ConfigureWebhook(notify.NewTelegramWebhookRegistrar(), baseURL)
@@ -469,7 +469,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 
 	log.Printf("listening on %s (single-user legacy mode)", addr)
 	log.Printf("MCP endpoint: %s/mcp", baseURL)
-	if err := serveHTTP(ctx, addr, logged, ingestHandler.Shutdown, startupBackfills.Start); err != nil {
+	if err := serveHTTP(ctx, addr, logged, drainIngest, startupBackfills.Start); err != nil {
 		log.Fatalf("server: %v", err)
 	}
 }

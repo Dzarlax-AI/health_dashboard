@@ -142,7 +142,7 @@ func TestSleepRolloutServeAndRollback(t *testing.T) {
 		if ok, err := ingest.ProcessSleepCandidateMetrics(ctx, db); err != nil || !ok {
 			t.Fatalf("ordinary part: %v, %v", ok, err)
 		}
-		if ok, err := db.RunSleepRolloutNext(ctx, now); err != nil || !ok {
+		if ok, err := db.RunSleepRolloutNext(ctx, func() time.Time { return now }); err != nil || !ok {
 			t.Fatalf("candidate part: %v, %v", ok, err)
 		}
 	}
@@ -184,19 +184,25 @@ func TestSleepRolloutServeAndRollback(t *testing.T) {
 		}
 		return result
 	}
+	prehistoryBody, prehistoryAck := batch(first.AddDate(0, 0, -1), "watch", "prehistory", "UTC", 1, 4)
 	firstBody, firstAck := batch(first, "watch", "first", "UTC", 1, 7)
 	oldBody, oldAck := batch(old, "ring", "moves", "UTC", 1, 6)
 	todayBody, todayAck := batch(today, "watch", "other", "UTC", 1, 7)
-	for _, packet := range [][2]string{{firstBody, firstAck}, {oldBody, oldAck}, {todayBody, todayAck}} {
+	for _, packet := range [][2]string{{prehistoryBody, prehistoryAck}, {firstBody, firstAck}, {oldBody, oldAck}, {todayBody, todayAck}} {
 		sendBatch(packet[0], packet[1])
 		apply()
 	}
 	completeLegacy()
 	sleepAndBank(8, 73)
+	if before := audit(); before.MismatchedResults == 0 {
+		t.Fatal("audit approved unbounded inputs before rebuilding the publication window")
+	}
+	exec(`INSERT INTO rollout_a.metric_points(health_record_id,metric_name,date,qty,source)
+		SELECT MIN(id),'night_sleep_total',$1 || ' 00:00:00 +0000',9,'Legacy Watch' FROM rollout_a.health_records`, todayDate)
 	// Rebuild can repair an interrupted preparation one date at a time.
 	exec(`DELETE FROM rollout_a.sleep_rollout_results WHERE day=$1::text::date`, firstDate)
-	if repaired, err := db.RebuildSleepRolloutPreparation(ctx, tenant, firstDate, todayDate); err != nil || repaired != 1 {
-		t.Fatalf("repair prepared date: %d, %v", repaired, err)
+	if repaired, err := db.RebuildSleepRolloutPreparation(ctx, tenant, firstDate, todayDate); err != nil || repaired != 3 {
+		t.Fatalf("repair prepared dates: %d, %v", repaired, err)
 	}
 	if repaired, err := db.RebuildSleepRolloutPreparation(ctx, tenant, firstDate, todayDate); err != nil || repaired != 0 {
 		t.Fatalf("repair repeat: %d, %v", repaired, err)
@@ -212,10 +218,10 @@ func TestSleepRolloutServeAndRollback(t *testing.T) {
 		t.Fatalf("publication accepted obsolete evidence: %v", err)
 	}
 	publication, err := db.SwitchSleepRollout(ctx, tenant, firstDate, todayDate, audit().Evidence, true)
-	if err != nil || !publication.Active || publication.Packet != 3 {
+	if err != nil || !publication.Active || publication.Packet != 4 {
 		t.Fatalf("serve: %+v, %v", publication, err)
 	}
-	preparedBank := func(date string) int {
+	preparedResult := func(date string) storage.BankResult {
 		t.Helper()
 		var result storage.BankResult
 		if err := json.Unmarshal([]byte(read(`SELECT energy::text FROM rollout_a.sleep_rollout_results WHERE day=$1::text::date`, date)), &result); err != nil {
@@ -224,10 +230,16 @@ func TestSleepRolloutServeAndRollback(t *testing.T) {
 		if result.State == "stale" {
 			t.Fatal("expected a numeric prepared bank")
 		}
-		return result.Display
+		return result
 	}
+	preparedBank := func(date string) int { return preparedResult(date).Display }
 	// The current bank comes from the same served revision as readiness.
-	sleepAndBank(7, preparedBank(todayDate))
+	original := sleepAndBank(7, preparedBank(todayDate))
+	if !slices.ContainsFunc(original.MetricCards, func(card health.MetricCard) bool {
+		return card.Metric == "night_sleep_total" && card.Value == "7.0"
+	}) {
+		t.Fatalf("sleep card did not replace legacy night duration: %+v", original.MetricCards)
+	}
 	t.Setenv("HEALTH_SLEEP_SERVE_ENABLED", "")
 	legacyWhileDisabled, err := db.ComputeBankForDate(ctx, "UTC", todayDate)
 	if err != nil || legacyWhileDisabled.State == "stale" {
@@ -264,12 +276,23 @@ func TestSleepRolloutServeAndRollback(t *testing.T) {
 	if freeSlot.Equal(observedAt) {
 		freeSlot = freeSlot.Add(5 * time.Minute)
 	}
+	bothDates := func() string {
+		return read(`SELECT string_agg(to_jsonb(d)::text||':'||d.xmin::text||'/'||to_jsonb(r)::text||':'||r.xmin::text,'|' ORDER BY d.wake_date)
+			FROM rollout_a.sleep_rollout_daily d JOIN rollout_a.sleep_rollout_results r ON r.day=d.wake_date
+			WHERE d.wake_date IN ($1::text::date,$2::text::date)`, oldDate, todayDate)
+	}
+	beforeMove := bothDates()
 	exec(`CREATE FUNCTION rollout_a.reject_test_sleep_snapshot() RETURNS trigger LANGUAGE plpgsql
 		AS $$ BEGIN RAISE EXCEPTION 'synthetic snapshot failure'; END $$`)
 	exec(`CREATE TRIGGER reject_test_sleep_snapshot BEFORE INSERT ON rollout_a.energy_snapshots
 		FOR EACH ROW EXECUTE FUNCTION rollout_a.reject_test_sleep_snapshot()`)
-	if _, err := db.RunSleepRolloutNext(ctx, freeSlot); err == nil {
-		t.Fatal("candidate commit survived the snapshot failure")
+	if _, err := db.RunSleepRolloutNext(ctx, func() time.Time { return freeSlot }); err == nil || !strings.Contains(err.Error(), "synthetic snapshot failure") {
+		t.Fatalf("expected injected snapshot failure: %v", err)
+	}
+	if bothDates() != beforeMove ||
+		read(`SELECT COUNT(*)::text FROM rollout_a.sleep_rollout_packets WHERE health_record_id=$1 AND applied_at IS NULL`, moveID) != "1" ||
+		read(`SELECT COUNT(*)::text FROM rollout_a.energy_snapshots WHERE ts_bucket=$1`, freeSlot) != "0" {
+		t.Fatal("failure changed the old or new date, receipt or snapshot")
 	}
 	sleepAndBank(7, preparedBank(todayDate))
 	if wake := read(`SELECT wake_date::text FROM rollout_a.sleep_rollout_candidates WHERE revision=1 AND id LIKE '%moves%'`); wake != oldDate {
@@ -277,12 +300,12 @@ func TestSleepRolloutServeAndRollback(t *testing.T) {
 	}
 	exec(`DROP TRIGGER reject_test_sleep_snapshot ON rollout_a.energy_snapshots`)
 	exec(`DROP FUNCTION rollout_a.reject_test_sleep_snapshot()`)
-	if ok, err := db.RunSleepRolloutNext(ctx, freeSlot); err != nil || !ok {
+	if ok, err := db.RunSleepRolloutNext(ctx, func() time.Time { return freeSlot }); err != nil || !ok {
 		t.Fatalf("retry candidate and snapshot: %v, %v", ok, err)
 	}
 	served := sleepAndBank(6, preparedBank(todayDate))
 	newObservation := read(`SELECT to_jsonb(s)::text || ':' || xmin::text FROM rollout_a.energy_snapshots s WHERE ts_bucket=$1`, freeSlot)
-	if !strings.Contains(newObservation, `"bank": `+strconv.Itoa(preparedBank(todayDate))) {
+	if got := read(`SELECT bank::text FROM rollout_a.energy_snapshots WHERE ts_bucket=$1`, freeSlot); got != strconv.Itoa(preparedResult(todayDate).Bank) {
 		t.Fatalf("free slot contains the wrong bank: %s", newObservation)
 	}
 	nights, err := db.GetSleepSummary(oldDate, todayDate)
@@ -293,6 +316,12 @@ func TestSleepRolloutServeAndRollback(t *testing.T) {
 	if err != nil || len(history) != 2 || history[0].Date != oldDate ||
 		history[1].Date != todayDate || history[1].Score != served.ReadinessScore {
 		t.Fatalf("served readiness history: %+v, %v", history, err)
+	}
+	// Even an unexpected missing row inside the audited range must not
+	// resurrect the legacy night that the move cleared.
+	exec(`DELETE FROM rollout_a.sleep_rollout_daily WHERE wake_date=$1::text::date`, oldDate)
+	if nights, err := db.GetSleepSummary(oldDate, oldDate); err != nil || len(nights) != 0 {
+		t.Fatalf("missing in-range night used legacy data: %+v, %v", nights, err)
 	}
 	if got := sendBatch(moveBody, moveAck); got != moveID {
 		t.Fatalf("serve replay changed receipt from %d to %d", moveID, got)
@@ -313,6 +342,12 @@ func TestSleepRolloutServeAndRollback(t *testing.T) {
 	}) {
 		t.Fatalf("historical observations or synthetic free slot missing: %+v, %v", hourly, err)
 	}
+	rendered, err := db.GetEnergyHistoryV2(ctx, "America/Los_Angeles", 72)
+	if err != nil || !slices.ContainsFunc(rendered, func(point storage.EnergySnapshotPoint) bool {
+		return point.TS.Equal(freeHistoricalSlot) && slices.Contains(point.Flags, "backfilled")
+	}) {
+		t.Fatalf("rendering timezone changed the synthetic observation instant: %+v, %v", rendered, err)
+	}
 	pendingBody, pendingAck := batch(today, "watch", "other", "UTC", 1, 7)
 	pendingID := sendBatch(pendingBody, pendingAck)
 	if _, err := db.SwitchSleepRollout(ctx, tenant, firstDate, todayDate, audit().Evidence, false); err == nil {
@@ -331,7 +366,7 @@ func TestSleepRolloutServeAndRollback(t *testing.T) {
 	}
 	completeLegacy()
 	publication, err = db.SwitchSleepRollout(ctx, tenant, firstDate, todayDate, audit().Evidence, false)
-	if err != nil || publication.Active || publication.Packet != 4 {
+	if err != nil || publication.Active || publication.Packet != 5 {
 		t.Fatalf("rollback: %+v, %v", publication, err)
 	}
 	legacyBank, err := db.ComputeBankForDate(ctx, "UTC", todayDate)
@@ -339,6 +374,12 @@ func TestSleepRolloutServeAndRollback(t *testing.T) {
 		t.Fatalf("legacy bank after rollback: %+v, %v", legacyBank, err)
 	}
 	sleepAndBank(8, legacyBank.Display)
+	if err := db.RefreshLegacyEnergyBankSnapshot("en"); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(`SELECT energy_eod_current::text FROM rollout_a.daily_scores WHERE date=$1`, todayDate); got != strconv.Itoa(legacyBank.Display) {
+		t.Fatalf("legacy EOD differs from the rolled-back briefing: %s vs %d", got, legacyBank.Display)
+	}
 	t.Setenv("HEALTH_SLEEP_SERVE_ENABLED", "")
 	sleepAndBank(8, legacyBank.Display)
 	nights, err = db.GetSleepSummary(oldDate, todayDate)

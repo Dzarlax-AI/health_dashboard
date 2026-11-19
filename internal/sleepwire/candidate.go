@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+var ErrUnknownWakeZone = errors.New("unknown wake zone")
+
 type LegacyAlias struct {
 	SourceEpoch string `json:"source_epoch"`
 	Source      string `json:"source"`
@@ -36,12 +38,8 @@ type Candidate struct {
 }
 
 func (c *Candidate) WakeDate() (string, error) {
-	if strings.TrimSpace(c.ID) == "" || c.Revision < 1 || c.Priority < 0 || c.Zone == "" || c.Zone == "Local" {
-		return "", errors.New("candidate requires id, positive revision, nonnegative priority and explicit wake zone")
-	}
-	zone, err := time.LoadLocation(c.Zone)
-	if err != nil {
-		return "", errors.New("invalid wake zone")
+	if strings.TrimSpace(c.ID) == "" || c.Revision < 1 || c.Priority < 0 {
+		return "", errors.New("candidate requires id, positive revision and nonnegative priority")
 	}
 	var lastAsleep time.Time
 	seen := make(map[string]bool, len(c.Stages))
@@ -97,6 +95,13 @@ func (c *Candidate) WakeDate() (string, error) {
 	c.LegacyAliases = slices.Compact(c.LegacyAliases)
 	if len(c.LegacyAliases) == 0 {
 		c.LegacyAliases = nil
+	}
+	if c.Zone == "" || c.Zone == "Local" {
+		return "", ErrUnknownWakeZone
+	}
+	zone, err := time.LoadLocation(c.Zone)
+	if err != nil {
+		return "", ErrUnknownWakeZone
 	}
 	return lastAsleep.In(zone).Format(time.DateOnly), nil
 }

@@ -134,8 +134,9 @@ func (s *DB) rawMetricsFromDailyScoresAt(lastDate string, includeFreshLatest boo
 	// daily_scores column yet), so the cached path needs a separate
 	// fetch. Empty slices when iOS hasn't synced new-format data —
 	// callers fall back to d.Sleep.
-	d.NightSleep = s.metricPointDailySums("night_sleep_total", lastDate, 30)
-	d.Nap = s.metricPointDailySums("nap_total", lastDate, 30)
+	d.NightSleepByDate = s.metricPointDailySums("night_sleep_total", lastDate, 30)
+	d.NightSleep = datedValues(d.NightSleepByDate)
+	d.Nap = datedValues(s.metricPointDailySums("nap_total", lastDate, 30))
 	// NapToday is point-in-time (today only) so the dashboard badge
 	// can't latch onto a prior day's nap. Slice filters qty>0 → its
 	// index 0 is the latest day someone napped, not necessarily today.
@@ -347,11 +348,11 @@ func (s *DB) metricPointDailyPoint(metric, date string) float64 {
 // standard preferred-source aggregation (MAX of per-source SUM). Used for
 // metrics that are not yet cached in daily_scores — currently
 // night_sleep_total and nap_total.
-func (s *DB) metricPointDailySums(metric, lastDate string, days int) []float64 {
+func (s *DB) metricPointDailySums(metric, lastDate string, days int) []health.DatedValue {
 	ctx, cancel := queryCtx()
 	defer cancel()
 	rows, err := s.pool.Query(ctx, `
-		SELECT MAX(source_sum)
+		SELECT d, MAX(source_sum)
 		FROM (
 			SELECT SUBSTRING(date,1,10) AS d, source, SUM(qty) AS source_sum
 			FROM metric_points
@@ -366,10 +367,10 @@ func (s *DB) metricPointDailySums(metric, lastDate string, days int) []float64 {
 		return nil
 	}
 	defer rows.Close()
-	var out []float64
+	var out []health.DatedValue
 	for rows.Next() {
-		var v float64
-		if err := rows.Scan(&v); err == nil {
+		var v health.DatedValue
+		if err := rows.Scan(&v.Date, &v.Val); err == nil {
 			out = append(out, v)
 		}
 	}
@@ -458,18 +459,19 @@ func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
 		REM:      datedValues(series["rem"]),
 		Awake:    datedValues(series["awake"]),
 		// New-format split written by health-sync iOS — see RawMetrics doc.
-		NightSleep:     datedValues(series["night_sleep"]),
-		Nap:            datedValues(series["nap"]),
-		NapToday:       s.metricPointDailyPoint("nap_total", lastDate),
-		Steps:          datedValues(series["steps"]),
-		Cal:            datedValues(series["calories"]),
-		Exercise:       datedValues(series["exercise"]),
-		SpO2:           datedValues(series["spo2"]),
-		VO2:            datedValues(series["vo2"]),
-		Resp:           datedValues(series["resp"]),
-		WristTemp:      datedValues(series["wrist_temp"]),
-		StepsWithDates: firstDated(series["steps"], 7),
-		HRVWithDates:   firstDated(series["hrv"], 7),
+		NightSleep:       datedValues(series["night_sleep"]),
+		NightSleepByDate: series["night_sleep"],
+		Nap:              datedValues(series["nap"]),
+		NapToday:         s.metricPointDailyPoint("nap_total", lastDate),
+		Steps:            datedValues(series["steps"]),
+		Cal:              datedValues(series["calories"]),
+		Exercise:         datedValues(series["exercise"]),
+		SpO2:             datedValues(series["spo2"]),
+		VO2:              datedValues(series["vo2"]),
+		Resp:             datedValues(series["resp"]),
+		WristTemp:        datedValues(series["wrist_temp"]),
+		StepsWithDates:   firstDated(series["steps"], 7),
+		HRVWithDates:     firstDated(series["hrv"], 7),
 	}
 	out.ReadinessEvidence = buildReadinessEvidence(lastDate, dailyScoreRow{date: lastDate}, s.freshDayFromRaw(lastDate))
 	return out
@@ -617,7 +619,7 @@ func (s *DB) chronicAvg(lastDate, col string) float64 {
 // all scoring and insight computation to the health package.
 // lang selects the output language ("en", "ru", "sr").
 func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
-	if briefing, handled, err := s.sleepRolloutBriefing(lang); handled || err != nil {
+	if briefing, handled, err := s.sleepRolloutBriefing(lang, false); handled || err != nil {
 		return briefing, err
 	}
 	return s.getHealthBriefing(lang, nil, nil)

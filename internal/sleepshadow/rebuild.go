@@ -30,6 +30,7 @@ const rebuildBindingConflict = `EXISTS (
 // Each date and its cursor commit together. Profiles blocked by pending input
 // or a failed date are reported and can be resumed with the same version.
 func RebuildAll(ctx context.Context, pool *pgxpool.Pool, bindings map[string]string, version string, now time.Time) ([]RebuildResult, error) {
+	started := time.Now()
 	if version == "" {
 		return nil, errors.New("rebuild requires a version")
 	}
@@ -67,7 +68,7 @@ func RebuildAll(ctx context.Context, pool *pgxpool.Pool, bindings map[string]str
 			continue
 		}
 		for ctx.Err() == nil {
-			phase, err := s.rebuildStep(ctx, profile, bindings[profile], version, fingerprint, now)
+			phase, err := s.rebuildStep(ctx, profile, bindings[profile], version, fingerprint, now.Add(time.Since(started)))
 			if errors.Is(err, errRebuildInputsChanged) {
 				fingerprint, err = rebuildInputsFingerprint(ctx, pool, bindings[profile])
 				if err == nil {
@@ -83,19 +84,21 @@ func RebuildAll(ctx context.Context, pool *pgxpool.Pool, bindings map[string]str
 				result.SleepDates++
 			case "derived":
 				result.DerivedDates++
-			case "published":
-				result.Complete = true
-			case "done":
-				latest, err := rebuildInputsFingerprint(ctx, pool, bindings[profile])
+			case "published", "done":
+				// Recheck both identities under the profile fence. A sleep update
+				// can commit after the preceding step released its lock.
+				valid, err := s.rebuildStillCurrent(ctx, profile, bindings[profile], version, fingerprint)
 				if err != nil {
 					failures = append(failures, fmt.Errorf("profile %q inputs: %w", profile, err))
-					break
+				} else if !valid {
+					fingerprint, err = rebuildInputsFingerprint(ctx, pool, bindings[profile])
+					if err == nil {
+						continue
+					}
+					failures = append(failures, fmt.Errorf("profile %q inputs: %w", profile, err))
+				} else {
+					result.Complete = true
 				}
-				if latest != fingerprint {
-					fingerprint = latest
-					continue
-				}
-				result.Complete = true
 			}
 			if phase == "done" || phase == "published" {
 				break
@@ -195,6 +198,7 @@ func legacyRebuildBindingConflict(ctx context.Context, tx pgx.Tx, profile, schem
 }
 
 func (s store) rebuildStep(ctx context.Context, profile, schema, version, fingerprint string, now time.Time) (string, error) {
+	stepStarted := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	var completedPhase string
@@ -225,7 +229,7 @@ func (s store) rebuildStep(ctx context.Context, profile, schema, version, finger
 			if !checkpoint.observationPending {
 				return nil
 			}
-			if err := publishRebuildObservation(ctx, tx, profile, schema, today, fingerprint, now); err != nil {
+			if err := publishRebuildObservation(ctx, tx, profile, schema, today, fingerprint, now, stepStarted); err != nil {
 				return err
 			}
 			checkpoint.observationPending = false
@@ -265,21 +269,41 @@ func (s store) rebuildStep(ctx context.Context, profile, schema, version, finger
 	return completedPhase, err
 }
 
-func publishRebuildObservation(ctx context.Context, tx pgx.Tx, profile, schema, today, fingerprint string, now time.Time) error {
+func publishRebuildObservation(ctx context.Context, tx pgx.Tx, profile, schema, today, fingerprint string, now, stepStarted time.Time) error {
+	// Match TRUNCATE lock order: relation locks precede the revision row.
+	for _, input := range rebuildInputTables {
+		table := pgx.Identifier{schema, input.table}.Sanitize()
+		if input.optional {
+			var exists bool
+			if err := tx.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&exists); err != nil {
+				return err
+			}
+			if !exists {
+				continue
+			}
+		}
+		if _, err := tx.Exec(ctx, `LOCK TABLE `+table+` IN ACCESS SHARE MODE`); err != nil {
+			return err
+		}
+	}
 	// The profile lock fences sleep changes. Tracked input writers must also
 	// commit through this revision row, so none can race observation publication.
 	var revision int64
 	if err := tx.QueryRow(ctx, rebuildInputRevisionSQL+" FOR UPDATE", schema).Scan(&revision); err != nil {
 		return err
 	}
-	latest, err := fingerprintRebuildInputs(ctx, tx, schema, revision)
+	if fingerprintRebuildInputs(revision) != fingerprint {
+		return errRebuildInputsChanged
+	}
+	observationTime := now.Add(time.Since(stepStarted))
+	publicationDay, err := storage.LocalShadowRebuildToday(ctx, tx, schema, observationTime)
 	if err != nil {
 		return err
 	}
-	if latest != fingerprint {
+	if publicationDay != today {
 		return errRebuildInputsChanged
 	}
-	if err := storage.PublishLocalShadowRebuildObservation(ctx, tx, schema, profile, today, now); err != nil {
+	if err := storage.PublishLocalShadowRebuildObservation(ctx, tx, schema, profile, today, observationTime); err != nil {
 		return err
 	}
 	after, err := rebuildInputRevision(ctx, tx, schema)
@@ -287,6 +311,28 @@ func publishRebuildObservation(ctx context.Context, tx pgx.Tx, profile, schema, 
 		return errors.New("rebuild inputs changed inside observation publication")
 	}
 	return err
+}
+
+// The completion decision observes the sleep revision and tenant input revision
+// together while holding the same profile fence used by sleep writers.
+func (s store) rebuildStillCurrent(ctx context.Context, profile, schema, version, fingerprint string) (bool, error) {
+	var valid bool
+	err := s.transaction(ctx, profile, func(tx pgx.Tx) error {
+		var revision int64
+		if err := tx.QueryRow(ctx, rebuildInputRevisionSQL+" FOR SHARE", schema).Scan(&revision); err != nil {
+			return err
+		}
+		latest := fingerprintRebuildInputs(revision)
+		if latest != fingerprint {
+			return nil
+		}
+		return tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM sleep_shadow.rebuild_checkpoint c
+			JOIN sleep_shadow.profile p ON p.id=c.profile
+			WHERE c.profile=$1 AND c.tenant_schema=$2 AND c.version=$3 AND c.phase='done'
+			AND NOT c.observation_pending AND c.source_revision=p.source_revision AND c.input_fingerprint=$4)
+			AND NOT EXISTS (SELECT 1 FROM sleep_shadow.pending WHERE profile=$1)`, profile, schema, version, latest).Scan(&valid)
+	})
+	return valid, err
 }
 
 type rebuildCheckpoint struct {

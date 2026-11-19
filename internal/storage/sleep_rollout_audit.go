@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -71,10 +72,13 @@ func auditSleepRolloutInTransaction(ctx context.Context, tx pgx.Tx, tenantID uui
 		return report, err
 	}
 	if err := tx.QueryRow(ctx, `
-		SELECT COUNT(*) FILTER (WHERE h.processing_status='pending'),
-		       COUNT(*) FILTER (WHERE h.processing_status='failed')
-		FROM sleep_rollout_batches b JOIN health_records h ON h.id=b.health_record_id`).
-		Scan(&report.PendingMixedBatches, &report.FailedMixedBatches); err != nil {
+		SELECT COUNT(*) FROM sleep_rollout_batches b
+		JOIN health_records h ON h.id=b.health_record_id WHERE h.processing_status='pending'`).
+		Scan(&report.PendingMixedBatches); err != nil {
+		return report, err
+	}
+	report.FailedMixedBatches, err = unresolvedSleepRolloutBatches(ctx, tx)
+	if err != nil {
 		return report, err
 	}
 	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM sleep_rollout_packets WHERE applied_at IS NULL`).
@@ -90,7 +94,7 @@ func auditSleepRolloutInTransaction(ctx context.Context, tx pgx.Tx, tenantID uui
 	for day := start; !day.After(end); day = day.AddDate(0, 0, 1) {
 		date := day.Format(time.DateOnly)
 		report.ExpectedDates++
-		result, err := unit.auditSleepRolloutDay(ctx, date, cfg)
+		result, err := unit.auditSleepRolloutDay(ctx, date, cfg, sleepRolloutWindow{From: from, Through: through})
 		if err != nil {
 			return report, fmt.Errorf("audit sleep date %s: %w", date, err)
 		}
@@ -110,7 +114,98 @@ func auditSleepRolloutInTransaction(ctx context.Context, tx pgx.Tx, tenantID uui
 	return report, nil
 }
 
-func (s *DB) auditSleepRolloutDay(ctx context.Context, date string, cfg EnergyConfig) (SleepRolloutAuditDay, error) {
+// A failed receipt stays unresolved unless one completed replacement owns
+// every original candidate and preserves every valid ordinary input. Keep
+// both immutable receipts so the decision can be recomputed during audit.
+func unresolvedSleepRolloutBatches(ctx context.Context, tx pgx.Tx) (int, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT original.id, (original.payload::jsonb->'data')::text, (replacement.payload::jsonb->'data')::text
+		FROM sleep_rollout_batches b
+		JOIN health_records original ON original.id=b.health_record_id AND original.processing_status='failed'
+		LEFT JOIN LATERAL (
+			SELECT h.payload
+			FROM sleep_rollout_batches retry
+			JOIN health_records h ON h.id=retry.health_record_id AND h.processing_status='complete'
+			WHERE retry.health_record_id>original.id
+			AND jsonb_typeof(original.payload::jsonb #> '{data,sleep_candidates_v1,candidates}')='array'
+			AND (h.payload::jsonb #> '{data,sleep_candidates_v1,candidates}')
+				 @> (original.payload::jsonb #> '{data,sleep_candidates_v1,candidates}')
+			AND NOT EXISTS (SELECT 1 FROM sleep_rollout_packets p
+				WHERE p.health_record_id=original.id AND p.applied_at IS NULL)
+		) replacement ON true`)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	// Multiple valid retries can exist. A full replacement resolves the
+	// original once, even if another retry omitted some ordinary inputs.
+	resolved := make(map[int64]bool)
+	for rows.Next() {
+		var id int64
+		var original, replacement *string
+		if err := rows.Scan(&id, &original, &replacement); err != nil {
+			return 0, err
+		}
+		resolved[id] = resolved[id] || (original != nil && replacement != nil && replacementCoversMixedMetrics(*original, *replacement))
+	}
+	var count int
+	for _, repaired := range resolved {
+		if !repaired {
+			count++
+		}
+	}
+	return count, rows.Err()
+}
+
+func replacementCoversMixedMetrics(original, replacement string) bool {
+	type metric struct {
+		Name  string
+		Units string
+		Data  []json.RawMessage
+	}
+	parse := func(raw string) (map[string]json.RawMessage, []metric, error) {
+		var metadata map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(raw), &metadata); err != nil {
+			return nil, nil, err
+		}
+		var metrics []metric
+		if err := json.Unmarshal(metadata["metrics"], &metrics); err != nil {
+			return nil, nil, err
+		}
+		delete(metadata, "metrics")
+		delete(metadata, "sleep_candidates_v1")
+		return metadata, metrics, nil
+	}
+	oldMetadata, oldMetrics, oldErr := parse(original)
+	newMetadata, newMetrics, newErr := parse(replacement)
+	if oldErr != nil || newErr != nil {
+		return false
+	}
+	for key, value := range oldMetadata {
+		if !bytes.Equal(value, newMetadata[key]) {
+			return false
+		}
+	}
+	type sampleKey struct{ name, units, raw string }
+	present := make(map[sampleKey]bool)
+	for _, metric := range newMetrics {
+		for _, raw := range metric.Data {
+			present[sampleKey{metric.Name, metric.Units, string(raw)}] = true
+		}
+	}
+	for _, metric := range oldMetrics {
+		for _, raw := range metric.Data {
+			var point struct{ Date string }
+			if json.Unmarshal(raw, &point) == nil && ValidateIngestMetricTime(point.Date) == nil &&
+				!present[sampleKey{metric.Name, metric.Units, string(raw)}] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (s *DB) auditSleepRolloutDay(ctx context.Context, date string, cfg EnergyConfig, window sleepRolloutWindow) (SleepRolloutAuditDay, error) {
 	out := SleepRolloutAuditDay{Date: date, Sleep: "unowned", Result: "missing"}
 	var (
 		owned    bool
@@ -145,11 +240,7 @@ func (s *DB) auditSleepRolloutDay(ctx context.Context, date string, cfg EnergyCo
 	if err := json.Unmarshal(energyJSON, &savedEnergy); err != nil {
 		return out, err
 	}
-	currentReadiness, err := s.readRolloutReadiness(ctx, date)
-	if err != nil {
-		return out, err
-	}
-	currentEnergy, err := s.readRolloutEnergy(ctx, date, cfg)
+	currentReadiness, currentEnergy, err := s.calculateSleepRolloutResult(ctx, date, cfg, window)
 	if err != nil {
 		return out, err
 	}

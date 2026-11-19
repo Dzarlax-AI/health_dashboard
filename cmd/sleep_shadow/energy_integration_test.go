@@ -82,6 +82,7 @@ func TestLocalEnergyBankAfterSleepSync(t *testing.T) {
 	observed := digest(true)
 
 	profile := uuid.NewString()
+	cleanupShadowProfiles(t, shadowPool, profile)
 	refresh := localEnergyRefresh(schema, profile, func() time.Time { return now })
 	start := func() http.Handler {
 		t.Helper()
@@ -453,7 +454,7 @@ func TestLocalEnergyBankAfterSleepSync(t *testing.T) {
 		saved = archived()
 		now = at(today, "09:28")
 		post(profile, coarse(4), "applied", http.StatusOK)
-		if got := readBriefing(); got.EnergyBankStatus != "stale" || got.EnergyBankCurrent != nil ||
+		if got := readBriefing(); got.EnergyBankStatus != "stale" || got.EnergyBankCurrent != nil || got.EnergyBank != nil ||
 			archived() != saved || slices.Contains(readBucket(occupied).flags, "energy_stale") || digest(true) != observed {
 			t.Fatal("reverse transition failed or rewrote the historical observation")
 		}

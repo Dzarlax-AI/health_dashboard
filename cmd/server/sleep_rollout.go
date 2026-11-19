@@ -11,13 +11,28 @@ import (
 	"health-receiver/internal/tenants"
 )
 
-func registerHealthIngest(ctx context.Context, mux *http.ServeMux, mgr *tenants.Manager, ingest *handler.Handler, sleepEnabled bool) {
-	if mgr.UsesIsolatedPools() {
-		ingest.EnableSleepCandidateBatches(sleepEnabled)
-		go runSleepRolloutWorker(ctx, mgr, ingest, sleepEnabled)
-	}
+func registerHealthIngest(ctx context.Context, mux *http.ServeMux, mgr *tenants.Manager, ingest *handler.Handler, sleepEnabled bool) func(context.Context) error {
 	ingest.Register(mux)
 	registerSleepRollout(mux, mgr, sleepEnabled)
+	if !mgr.UsesIsolatedPools() {
+		return ingest.Shutdown
+	}
+	ingest.EnableSleepCandidateBatches(sleepEnabled)
+	workerCtx, stop := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runSleepRolloutWorker(workerCtx, mgr, ingest, sleepEnabled)
+	}()
+	return func(ctx context.Context) error {
+		stop()
+		select {
+		case <-done:
+			return ingest.Shutdown(ctx)
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 func registerSleepRollout(mux *http.ServeMux, mgr *tenants.Manager, enabled bool) {
@@ -40,7 +55,7 @@ func runSleepRolloutWorker(ctx context.Context, mgr *tenants.Manager, ingest *ha
 		select {
 		case <-ctx.Done():
 			return
-		case now := <-ticker.C:
+		case <-ticker.C:
 			for _, db := range mgr.ActiveDBs(ctx) {
 				// Drain a bounded number per tick, independently of the prepare mode.
 				unit, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -59,7 +74,7 @@ func runSleepRolloutWorker(ctx context.Context, mgr *tenants.Manager, ingest *ha
 					continue
 				}
 				unit, cancel = context.WithTimeout(ctx, 30*time.Second)
-				_, err := db.RunSleepRolloutNext(unit, now)
+				_, err := db.RunSleepRolloutNext(unit, time.Now)
 				cancel()
 				if err != nil && ctx.Err() == nil {
 					log.Print("sleep rollout: a prepared receipt is pending retry")

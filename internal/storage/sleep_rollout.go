@@ -19,6 +19,26 @@ var sleepRolloutDDL string
 
 const SleepRolloutModeSetting = "sleep_rollout_mode"
 const rolloutReadinessBaselineDays = 30
+const sleepRolloutPreparationWindowSetting = "sleep_rollout_preparation_window"
+
+type sleepRolloutWindow struct {
+	From    string `json:"from"`
+	Through string `json:"through"`
+}
+
+func (s *DB) sleepRolloutPreparationWindow(ctx context.Context) (sleepRolloutWindow, error) {
+	var window sleepRolloutWindow
+	var value string
+	err := s.pool.QueryRow(ctx, `SELECT value FROM settings WHERE key=$1`, sleepRolloutPreparationWindowSetting).Scan(&value)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return window, nil
+	}
+	if err != nil {
+		return window, err
+	}
+	err = json.Unmarshal([]byte(value), &window)
+	return window, err
+}
 
 var ErrSleepRolloutDisabled = errors.New("sleep rollout is disabled")
 var ErrSleepRolloutConflict = errors.New("sleep rollout revision conflicts")
@@ -163,7 +183,7 @@ var rolloutDailySQL = `INSERT INTO sleep_rollout_daily
 // leaves the original receipt pending and rolls back both date placements. A
 // wake date still ahead of the tenant calendar stays pending without blocking
 // receipts eligible on the current local date.
-func (s *DB) RunSleepRolloutNext(ctx context.Context, now time.Time) (bool, error) {
+func (s *DB) RunSleepRolloutNext(ctx context.Context, clock func() time.Time) (bool, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
 	if err != nil {
 		return false, err
@@ -178,7 +198,7 @@ func (s *DB) RunSleepRolloutNext(ctx context.Context, now time.Time) (bool, erro
 	}
 	unit := &DB{pool: &cacheTransaction{Tx: tx, ctx: ctx}}
 	loc := unit.reportTZLocation()
-	today := now.In(loc).Format(time.DateOnly)
+	today := clock().In(loc).Format(time.DateOnly)
 	var sequence, revision int64
 	var source, id, date string
 	var snapshot json.RawMessage
@@ -205,7 +225,18 @@ func (s *DB) RunSleepRolloutNext(ctx context.Context, now time.Time) (bool, erro
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return false, err
 	}
+	publication, err := readSleepRolloutPublication(ctx, tx)
+	if err != nil {
+		return false, err
+	}
 	if revision > oldRevision {
+		window, err := unit.sleepRolloutPreparationWindow(ctx)
+		if err != nil {
+			return false, err
+		}
+		if publication != nil && publication.Active {
+			window = publication.window()
+		}
 		var priorities []string
 		if err := json.Unmarshal([]byte(unit.GetSetting("sleep_rollout_source_priority", "[]")), &priorities); err != nil {
 			return false, errors.New("invalid sleep rollout source priority")
@@ -232,28 +263,22 @@ func (s *DB) RunSleepRolloutNext(ctx context.Context, now time.Time) (bool, erro
 				return false, fmt.Errorf("rollout daily: %w", err)
 			}
 		}
-		if err := unit.prepareSleepRolloutResults(ctx, affected, sequence, today); err != nil {
+		if err := unit.prepareSleepRolloutResults(ctx, affected, sequence, today, window); err != nil {
 			return false, err
 		}
 	}
 	if _, err := tx.Exec(ctx, `UPDATE sleep_rollout_packets SET applied_at=now() WHERE sequence=$1`, sequence); err != nil {
 		return false, err
 	}
-	if revision > oldRevision && s.sleepRolloutServeEnabled() {
-		publication, err := readSleepRolloutPublication(ctx, tx)
-		if err != nil {
+	if revision > oldRevision && publication != nil && publication.Active && s.sleepRolloutServeEnabled() {
+		if _, err := unit.recordServedSleepObservation(ctx, loc, clock(), *publication); err != nil {
 			return false, err
-		}
-		if publication != nil && publication.Active {
-			if _, err := unit.recordServedSleepObservation(ctx, loc, now, *publication); err != nil {
-				return false, err
-			}
 		}
 	}
 	return true, tx.Commit(ctx)
 }
 
-func (s *DB) prepareSleepRolloutResults(ctx context.Context, dates []string, generation int64, today string) error {
+func (s *DB) prepareSleepRolloutResults(ctx context.Context, dates []string, generation int64, today string, window sleepRolloutWindow) error {
 	affected := make(map[string]bool)
 	for _, day := range dates {
 		start, err := time.Parse(time.DateOnly, day)
@@ -270,19 +295,15 @@ func (s *DB) prepareSleepRolloutResults(ctx context.Context, dates []string, gen
 	}
 	cfg := s.GetEnergyConfig()
 	for date := range affected {
-		if err := s.prepareSleepRolloutResult(ctx, date, generation, cfg); err != nil {
+		if err := s.prepareSleepRolloutResult(ctx, date, generation, cfg, window); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *DB) prepareSleepRolloutResult(ctx context.Context, date string, generation int64, cfg EnergyConfig) error {
-	r, err := s.readRolloutReadiness(ctx, date)
-	if err != nil {
-		return err
-	}
-	energy, err := s.readRolloutEnergy(ctx, date, cfg)
+func (s *DB) prepareSleepRolloutResult(ctx context.Context, date string, generation int64, cfg EnergyConfig, window sleepRolloutWindow) error {
+	r, energy, err := s.calculateSleepRolloutResult(ctx, date, cfg, window)
 	if err != nil {
 		return err
 	}
@@ -301,35 +322,25 @@ func (s *DB) prepareSleepRolloutResult(ctx context.Context, date string, generat
 	return err
 }
 
-func (s *DB) readRolloutReadiness(ctx context.Context, date string) (*LocalShadowReadiness, error) {
-	blocks, baseline, err := s.loadRolloutSleepWindow(ctx, date, "")
+func (s *DB) calculateSleepRolloutResult(ctx context.Context, date string, cfg EnergyConfig, window sleepRolloutWindow) (*LocalShadowReadiness, BankResult, error) {
+	blocks, baseline, err := s.loadRolloutSleepWindow(ctx, date, window)
 	if err != nil {
-		return nil, err
+		return nil, BankResult{}, err
 	}
-	return s.readinessWithSleep(ctx, date, blocks, baseline), nil
+	bank, err := s.computeServedSleepBank(ctx, date, blocks, cfg)
+	if err != nil {
+		return nil, BankResult{}, err
+	}
+	return s.readinessWithSleep(ctx, date, blocks, baseline), bank, nil
 }
 
-func (s *DB) loadRolloutSleepWindow(ctx context.Context, date, publishedFrom string) (map[string]*LocalShadowSleep, []float64, error) {
-	rows, err := s.pool.Query(ctx, `SELECT day::text,d.generation,d.candidate,d.revision,
-		d.sleep_seconds/3600,d.deep_seconds/3600,d.rem_seconds/3600,d.core_seconds/3600,
+func (s *DB) loadRolloutSleepWindow(ctx context.Context, date string, window sleepRolloutWindow) (map[string]*LocalShadowSleep, []float64, error) {
+	rows, err := s.pool.Query(ctx, `SELECT day::text,
+		CASE WHEN $3<>'' AND day::text BETWEEN $3 AND $4 THEN COALESCE(d.generation,0) ELSE d.generation END,
+		d.candidate,d.revision,d.sleep_seconds/3600,d.deep_seconds/3600,d.rem_seconds/3600,d.core_seconds/3600,
 		d.unspecified_seconds/3600,d.awake_seconds/3600,d.stage_conflict,h.sleep_total
 		FROM (SELECT $1::text::date-i AS day FROM generate_series(0,$2::integer) AS days(i)) days
 		LEFT JOIN sleep_rollout_daily d ON d.wake_date=day AND ($3='' OR day::text >= $3)
-		LEFT JOIN daily_scores h ON h.date=day::text ORDER BY day DESC`, date, rolloutReadinessBaselineDays, publishedFrom)
+		LEFT JOIN daily_scores h ON h.date=day::text ORDER BY day DESC`, date, rolloutReadinessBaselineDays, window.From, window.Through)
 	return readSleepBlocks(rows, err, date)
-}
-
-func (s *DB) readRolloutEnergy(ctx context.Context, date string, cfg EnergyConfig) (BankResult, error) {
-	from := subtractDays(date, energyWindowDays-1)
-	inputs, err := s.loadDailyEnergyInputs(ctx, from, date)
-	if err != nil {
-		return BankResult{}, err
-	}
-	rows, err := s.pool.Query(ctx, `SELECT wake_date::text,sleep_seconds/3600,deep_seconds/3600,rem_seconds/3600,awake_seconds/3600
-		FROM sleep_rollout_daily WHERE wake_date BETWEEN $1::text::date AND $2::text::date`, from, date)
-	inputs, err = applySleepEnergyRows(inputs, rows, err)
-	if err != nil {
-		return BankResult{}, err
-	}
-	return computeCalendarEnergyBank(inputs, date, cfg), nil
 }

@@ -100,9 +100,12 @@ func newSleepRolloutFixture(t *testing.T) (*tenants.Manager, *pgxpool.Pool) {
 		roleSQL := pgx.Identifier{role}.Sanitize()
 		exec("CREATE ROLE " + roleSQL + " LOGIN PASSWORD '" + strings.ReplaceAll(password, "'", "''") + "'")
 		t.Cleanup(func() {
-			exec("DROP SCHEMA " + pgx.Identifier{schema}.Sanitize() + " CASCADE")
-			exec("DROP OWNED BY " + roleSQL)
-			exec("DROP ROLE " + roleSQL)
+			for _, statement := range []string{"DROP SCHEMA IF EXISTS " + pgx.Identifier{schema}.Sanitize() + " CASCADE",
+				"DROP OWNED BY " + roleSQL, "DROP ROLE IF EXISTS " + roleSQL} {
+				if _, err := root.Exec(ctx, statement); err != nil {
+					t.Error(err)
+				}
+			}
 		})
 		exec("CREATE SCHEMA " + pgx.Identifier{schema}.Sanitize() + " AUTHORIZATION " + roleSQL)
 		db, err := storage.NewRestrictedTenant(ctx, base, role, password, schema)
@@ -187,18 +190,18 @@ func TestSleepRolloutServerIntegration(t *testing.T) {
 	packet := func(rev int, zone string, duration time.Duration) string {
 		return packetFor(oldDay, "watch", "night-1", rev, zone, duration)
 	}
-	muxFor := func(ctx context.Context, enabled bool) *http.ServeMux {
+	muxFor := func(ctx context.Context, enabled bool) (*http.ServeMux, func(context.Context) error) {
 		runCtx, cancel := context.WithCancel(ctx)
 		mux := http.NewServeMux()
 		legacy := handler.New(mgr, func(*storage.DB, []string, bool) {}, health.HRZones{})
+		drain := registerHealthIngest(runCtx, mux, mgr, legacy, enabled)
 		t.Cleanup(func() {
 			cancel()
-			if err := legacy.Shutdown(context.Background()); err != nil {
+			if err := drain(context.Background()); err != nil {
 				t.Error(err)
 			}
 		})
-		registerHealthIngest(runCtx, mux, mgr, legacy, enabled)
-		return mux
+		return mux, drain
 	}
 	do := func(mux *http.ServeMux, method, route, key, body string, status int) string {
 		t.Helper()
@@ -212,10 +215,11 @@ func TestSleepRolloutServerIntegration(t *testing.T) {
 		return strings.TrimSpace(w.Body.String())
 	}
 	const route = "/health/sleep/v2"
-	do(muxFor(ctx, false), "POST", route, "rollout_a-key", packet(1, "UTC", 6*time.Hour), 404)
+	disabledMux, _ := muxFor(ctx, false)
+	do(disabledMux, "POST", route, "rollout_a-key", packet(1, "UTC", 6*time.Hour), 404)
 	workerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	mux := muxFor(workerCtx, true)
+	mux, drainWorker := muxFor(workerCtx, true)
 	do(mux, "POST", route, "rollout_a-key", packet(1, "UTC", 6*time.Hour), 404)
 	if err := a.SaveSettings(map[string]string{storage.SleepRolloutModeSetting: "prepare", "timezone": "UTC", "sleep_rollout_source_priority": `["ring","watch"]`}); err != nil {
 		t.Fatal(err)
@@ -250,6 +254,11 @@ func TestSleepRolloutServerIntegration(t *testing.T) {
 	if err := a.SaveSettings(map[string]string{"sleep_rollout_source_priority": `["watch","ring"]`}); err != nil {
 		t.Fatal(err)
 	}
+	// The earlier packets use the live worker. Step the date boundary
+	// explicitly so a clock rollover cannot race the queue assertions.
+	if err := drainWorker(ctx); err != nil {
+		t.Fatal(err)
+	}
 	// Enqueue tomorrow before today's eligible correction to catch head-of-line blocking.
 	tomorrow := today.AddDate(0, 0, 1)
 	do(mux, "POST", route, "rollout_a-key", packetFor(today, "watch", "travel-tomorrow", 1, "Asia/Singapore", 6*time.Hour), 202)
@@ -259,7 +268,8 @@ func TestSleepRolloutServerIntegration(t *testing.T) {
 		CREATE TRIGGER fail_rebuild BEFORE INSERT OR UPDATE ON rollout_a.sleep_rollout_results
 		FOR EACH ROW EXECUTE FUNCTION rollout_a.fail_rebuild()`)
 	do(mux, "POST", route, "rollout_a-key", packet(2, "Asia/Singapore", 6*time.Hour), 202)
-	if ran, err := a.RunSleepRolloutNext(ctx, time.Now()); err == nil || ran {
+	fixedNow := func() time.Time { return today.Add(12 * time.Hour) }
+	if ran, err := a.RunSleepRolloutNext(ctx, fixedNow); err == nil || ran {
 		t.Fatalf("failure injection unexpectedly committed: %v, %v", ran, err)
 	}
 	if got := read(`SELECT count(*)::text FROM rollout_a.sleep_rollout_daily WHERE generation=4`); got != "0" {
@@ -267,6 +277,9 @@ func TestSleepRolloutServerIntegration(t *testing.T) {
 	}
 	poll("1", `SELECT count(*)::text FROM rollout_a.sleep_rollout_packets WHERE revision=2 AND applied_at IS NULL`)
 	exec("DROP TRIGGER fail_rebuild ON rollout_a.sleep_rollout_results")
+	if ran, err := a.RunSleepRolloutNext(ctx, fixedNow); err != nil || !ran {
+		t.Fatalf("eligible correction behind future receipt: %v, %v", ran, err)
+	}
 	poll("3", `SELECT count(*)::text FROM rollout_a.sleep_rollout_packets WHERE applied_at IS NOT NULL`)
 	owned := read(`SELECT string_agg(wake_date::text||'='||COALESCE(sleep_seconds::text,'missing'),',' ORDER BY wake_date)
 		FROM rollout_a.sleep_rollout_daily`)
@@ -342,10 +355,10 @@ func TestSleepRolloutServerIntegration(t *testing.T) {
 	}
 	// Honolulu's new local date begins at 10:00 UTC, well after UTC midnight.
 	localMidnight := tomorrow.Add(10 * time.Hour)
-	if ran, err := a.RunSleepRolloutNext(ctx, localMidnight.Add(-time.Nanosecond)); err != nil || ran {
+	if ran, err := a.RunSleepRolloutNext(ctx, func() time.Time { return localMidnight.Add(-time.Nanosecond) }); err != nil || ran {
 		t.Fatalf("future receipt ran before local midnight: %v %v", ran, err)
 	}
-	if ran, err := a.RunSleepRolloutNext(ctx, localMidnight); err != nil || !ran {
+	if ran, err := a.RunSleepRolloutNext(ctx, func() time.Time { return localMidnight }); err != nil || !ran {
 		t.Fatalf("future receipt unavailable on local date: %v %v", ran, err)
 	}
 	if got := read(`SELECT count(*)::text FROM rollout_a.sleep_rollout_results WHERE day=$1::date
@@ -359,7 +372,7 @@ func TestSleepRolloutServerIntegration(t *testing.T) {
 
 	pausedCtx, pause := context.WithCancel(ctx)
 	pause()
-	pausedMux := muxFor(pausedCtx, true)
+	pausedMux, _ := muxFor(pausedCtx, true)
 	do(pausedMux, "POST", route, "rollout_a-key", packet(3, "Asia/Singapore", 7*time.Hour), 202)
 	if err := a.SaveSettings(map[string]string{storage.SleepRolloutModeSetting: "off"}); err != nil {
 		t.Fatal(err)
@@ -372,7 +385,7 @@ func TestSleepRolloutServerIntegration(t *testing.T) {
 	if observed() != originalObservation {
 		t.Fatal("disabling candidate preparation or accepting a legacy sync rewrote the observation")
 	}
-	if processed, err := a.RunSleepRolloutNext(ctx, time.Now()); err != nil || processed {
+	if processed, err := a.RunSleepRolloutNext(ctx, time.Now); err != nil || processed {
 		t.Fatalf("disabled worker ran: %v %v", processed, err)
 	}
 	if got := read(`SELECT count(*)::text FROM rollout_a.sleep_rollout_packets WHERE applied_at IS NULL`); got != "1" {
@@ -384,7 +397,7 @@ func TestSleepRolloutServerIntegration(t *testing.T) {
 	}
 	restart, restartCancel := context.WithCancel(ctx)
 	defer restartCancel()
-	_ = muxFor(restart, true)
+	_, _ = muxFor(restart, true)
 	poll("0", `SELECT count(*)::text FROM rollout_a.sleep_rollout_packets WHERE applied_at IS NULL`)
 	if got := read(`SELECT sleep_seconds::text FROM rollout_a.sleep_rollout_daily WHERE wake_date=$1::date`, newDay); got != "25200" {
 		t.Fatal(got)

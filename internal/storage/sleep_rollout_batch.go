@@ -24,7 +24,7 @@ type SleepRolloutLegacyRecord struct {
 // AcceptSleepRolloutBatch serializes receipt lookup and durable acceptance.
 // Receipts already committed can be acknowledged in off without accepting
 // new candidates or scheduling a second copy of their legacy metrics.
-func (s *DB) AcceptSleepRolloutBatch(ctx context.Context, batchID uuid.UUID, record Record, candidates []SleepRolloutInput, allowNew bool, session IngestSyncSession) (id int64, err error) {
+func (s *DB) AcceptSleepRolloutBatch(ctx context.Context, batchID uuid.UUID, record Record, allowNew bool, session IngestSyncSession, validate func() ([]SleepRolloutInput, error)) (id int64, err error) {
 	digest := sha256.Sum256([]byte(record.Payload))
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -50,6 +50,10 @@ func (s *DB) AcceptSleepRolloutBatch(ctx context.Context, batchID uuid.UUID, rec
 		return 0, ErrSleepRolloutDisabled
 	}
 	if _, err := sleepRolloutProfile(ctx, tx); err != nil {
+		return 0, err
+	}
+	candidates, err := validate()
+	if err != nil {
 		return 0, err
 	}
 	unit := &DB{pool: &cacheTransaction{Tx: tx, ctx: ctx}}

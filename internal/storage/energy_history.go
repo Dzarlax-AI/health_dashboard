@@ -49,7 +49,10 @@ func (s *DB) SaveEnergyBankSnapshot(date string, eb *health.EnergyBank) error {
 // in sync from the canonical briefing, but deliberately does so only from a
 // mutation-driven coordinator. GetHealthBriefing itself stays read-only.
 func (s *DB) RefreshLegacyEnergyBankSnapshot(lang string) error {
-	briefing, err := s.getHealthBriefing(lang, nil, nil)
+	briefing, handled, err := s.sleepRolloutBriefing(lang, true)
+	if !handled && err == nil {
+		briefing, err = s.getHealthBriefing(lang, nil, nil)
+	}
 	if err != nil {
 		return fmt.Errorf("get health briefing: %w", err)
 	}

@@ -55,6 +55,22 @@ func newLocalShadowTestDB(t *testing.T) (*storage.DB, *pgxpool.Pool, *pgxpool.Po
 	return db, pool, shadowPool, schema
 }
 
+// Each test owns only its generated profiles, never the shared schema.
+func cleanupShadowProfiles(t *testing.T, pool *pgxpool.Pool, profiles ...string) {
+	t.Helper()
+	t.Cleanup(func() {
+		for _, table := range []string{"daily", "legacy_alias", "pending", "legacy_receipt", "recalculation", "energy_current", "rebuilt_readiness", "rebuild_checkpoint", "candidate", "profile"} {
+			column := "profile"
+			if table == "profile" {
+				column = "id"
+			}
+			if _, err := pool.Exec(context.Background(), "DELETE FROM sleep_shadow."+table+" WHERE "+column+" = ANY($1)", profiles); err != nil {
+				t.Errorf("clean shadow %s: %v", table, err)
+			}
+		}
+	})
+}
+
 func TestLocalReadinessUsesPublishedSleep(t *testing.T) {
 	db, pool, shadowPool, _ := newLocalShadowTestDB(t)
 	ctx := context.Background()
@@ -64,6 +80,7 @@ func TestLocalReadinessUsesPublishedSleep(t *testing.T) {
 	}
 
 	full, empty := uuid.NewString(), uuid.NewString()
+	cleanupShadowProfiles(t, shadowPool, full, empty)
 	fullHTTP := withLocalReadiness(shadow, db, full)
 	emptyHTTP := withLocalReadiness(shadow, db, empty)
 	const oldDay, newDay = "2026-01-26", "2026-01-27"

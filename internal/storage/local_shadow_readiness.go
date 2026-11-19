@@ -40,6 +40,19 @@ type LocalShadowSleep struct {
 // the briefing, with the published shadow sleep block owning covered dates.
 // profile is the shadow profile mapped to this DB's schema by the caller.
 func (s *DB) GetLocalShadowReadiness(ctx context.Context, profile, date string) (*LocalShadowReadiness, error) {
+	if _, inTransaction := s.pool.(*cacheTransaction); inTransaction {
+		return s.getLocalShadowReadiness(ctx, profile, date)
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(context.Background())
+	unit := &DB{pool: &cacheTransaction{Tx: tx, ctx: ctx}}
+	return unit.getLocalShadowReadiness(ctx, profile, date)
+}
+
+func (s *DB) getLocalShadowReadiness(ctx context.Context, profile, date string) (*LocalShadowReadiness, error) {
 	if date == "" {
 		var latest *string
 		err := s.pool.QueryRow(ctx, `
@@ -74,14 +87,8 @@ func (s *DB) readinessWithSleep(ctx context.Context, date string, blocks map[str
 		checkin = &health.SubjectiveCheckinSummary{Status: row.Status, Answer: row.Answer}
 	}
 	var sleepDisruption *health.MetricEvidenceInput
-	if len(blocks) > 0 {
-		var current *float64
-		if block := blocks[date]; block != nil {
-			current = block.Total
-		} else if value, _, ok := s.dailyMetricCurrentValue(date, "sleep_total", "sleep_total"); ok {
-			current = &value
-		}
-		sleepDisruption = localShadowSleepDisruption(current, baseline)
+	if block := blocks[date]; block != nil {
+		sleepDisruption = localShadowSleepDisruption(block.Total, baseline)
 	}
 	input := s.buildIllnessEvidenceInput(date, checkin, sleepDisruption)
 	resp.IllnessSuspicion = health.ComputeIllnessSuspicion(input)
@@ -166,6 +173,12 @@ func applyLocalShadowSleep(data *health.RawMetrics, blocks map[string]*LocalShad
 		return strings.Compare(b.Date, a.Date)
 	})
 	data.Sleep, data.Deep, data.REM, data.Awake = nil, nil, nil, nil
+	nightValues := make(map[string]float64, len(data.NightSleepByDate))
+	for _, day := range data.NightSleepByDate {
+		if day.Date >= firstDate && day.Date <= data.LastDate {
+			nightValues[day.Date] = day.Val
+		}
+	}
 	for _, day := range data.Daily {
 		owned := blocks[day.Date] != nil
 		appendStage := func(series *[]float64, value *float64) {
@@ -177,14 +190,28 @@ func applyLocalShadowSleep(data *health.RawMetrics, blocks map[string]*LocalShad
 		appendStage(&data.Deep, day.Deep)
 		appendStage(&data.REM, day.REM)
 		appendStage(&data.Awake, day.Awake)
+		_, hasLegacyNight := nightValues[day.Date]
+		if owned || !hasLegacyNight {
+			if day.Sleep != nil && (*day.Sleep > 0 || (owned && *day.Sleep == 0)) {
+				nightValues[day.Date] = *day.Sleep
+			} else {
+				delete(nightValues, day.Date)
+			}
+		}
 	}
+	nights := make([]health.DatedValue, 0, len(nightValues))
+	for date, value := range nightValues {
+		nights = append(nights, health.DatedValue{Date: date, Val: value})
+	}
+	slices.SortFunc(nights, func(a, b health.DatedValue) int { return strings.Compare(b.Date, a.Date) })
+	data.NightSleep = datedValues(nights)
 	block := blocks[data.LastDate]
 	if block == nil {
 		return
 	}
 	// Today's missing values cannot promote yesterday into the acute slot.
 	if block.Total == nil {
-		data.Sleep = nil
+		data.Sleep, data.NightSleep = nil, nil
 	}
 	if block.Awake == nil {
 		data.Awake = nil

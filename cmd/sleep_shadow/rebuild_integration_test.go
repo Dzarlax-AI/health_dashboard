@@ -517,6 +517,60 @@ func TestLocalRebuildAllProfiles(t *testing.T) {
 			t.Fatalf("later rebuilds rewrote observations for %s", entry.profile)
 		}
 	}
+	// A tenant may mutate its own inputs without direct rights to the shared
+	// revision table or another tenant's data.
+	role := testdb.SchemaName("shadow_writer")
+	quotedRole := pgx.Identifier{role}.Sanitize()
+	exec(shadowPool, "CREATE ROLE "+quotedRole)
+	t.Cleanup(func() {
+		if _, err := shadowPool.Exec(context.Background(), "DROP OWNED BY "+quotedRole); err != nil {
+			t.Error(err)
+		}
+		if _, err := shadowPool.Exec(context.Background(), "DROP ROLE "+quotedRole); err != nil {
+			t.Error(err)
+		}
+	})
+	exec(shadowPool, "GRANT USAGE ON SCHEMA "+pgx.Identifier{first.schema}.Sanitize()+" TO "+quotedRole)
+	exec(shadowPool, "GRANT INSERT ON "+pgx.Identifier{first.schema, "settings"}.Sanitize()+" TO "+quotedRole)
+	beforeRevision := read(shadowPool, "SELECT revision::text FROM sleep_shadow.rebuild_input_revision WHERE tenant_schema=$1", first.schema)
+	tx, err := shadowPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, "SET LOCAL ROLE "+quotedRole); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, "INSERT INTO "+pgx.Identifier{first.schema, "settings"}.Sanitize()+" (key,value) VALUES ('energy.test_permission','1')"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if read(shadowPool, "SELECT revision::text FROM sleep_shadow.rebuild_input_revision WHERE tenant_schema=$1", first.schema) == beforeRevision {
+		t.Fatal("tenant write failed to advance the input revision")
+	}
+	tx, err = shadowPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, "SET LOCAL ROLE "+quotedRole); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, "SELECT * FROM sleep_shadow.rebuild_input_revision"); err == nil {
+		t.Fatal("tenant could read shared revisions")
+	}
+	_ = tx.Rollback(ctx)
+	tx, err = shadowPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, "SET LOCAL ROLE "+quotedRole); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, "INSERT INTO "+pgx.Identifier{second.schema, "settings"}.Sanitize()+" (key,value) VALUES ('energy.test_permission','1')"); err == nil {
+		t.Fatal("tenant could write another schema")
+	}
+	_ = tx.Rollback(ctx)
 	t.Log("deleting the final raw point across a timezone date rollback cleared its projections and preserved observations")
 
 	exact := strings.Repeat("m", 63)

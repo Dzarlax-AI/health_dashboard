@@ -53,7 +53,8 @@ type syncSession struct {
 	total              int
 	received           int
 	dates              map[string]bool // true when an ordinary chunk still needs a refresh
-	cachedScores       map[string]bool
+	cachedDates        map[string]bool
+	pendingScores      map[string]bool
 	scoreMetricChanged bool
 	timer              *time.Timer
 }
@@ -252,6 +253,9 @@ func (h *Handler) enqueue(job func()) {
 // request receives 200, so a deadline only postpones derived-cache work.
 func (h *Handler) Shutdown(ctx context.Context) error {
 	h.closing.Store(true)
+	if err := h.waitForIngestJobs(ctx); err != nil {
+		return err
+	}
 	h.sessMu.Lock()
 	var sessions []*syncSession
 	for key, session := range h.sessions {
@@ -266,6 +270,10 @@ func (h *Handler) Shutdown(ctx context.Context) error {
 		h.enqueue(func() { h.flushSyncSession(session) })
 	}
 	h.timersWG.Wait()
+	return h.waitForIngestJobs(ctx)
+}
+
+func (h *Handler) waitForIngestJobs(ctx context.Context) error {
 	done := make(chan struct{})
 	go func() { h.jobsWG.Wait(); close(done) }()
 	select {
@@ -303,7 +311,7 @@ func (h *Handler) flushSyncSession(session *syncSession) {
 		dates = append(dates, date)
 		if needsRefresh {
 			dirty = append(dirty, date)
-			if _, cached := session.cachedScores[date]; cached {
+			if session.cachedDates[date] {
 				overlap = append(overlap, date)
 			}
 		}
@@ -313,7 +321,7 @@ func (h *Handler) flushSyncSession(session *syncSession) {
 		current, err := session.db.AppliedIngestCacheDates(overlap)
 		if err == nil {
 			for _, date := range overlap {
-				if current[date] && session.scoreMetricChanged && !session.cachedScores[date] &&
+				if current[date] && session.pendingScores[date] &&
 					(readinessFrom == "" || date < readinessFrom) {
 					readinessFrom = date
 				}
@@ -365,7 +373,8 @@ func (h *Handler) finishSyncChunk(part storage.IngestSyncSession, db *storage.DB
 	h.sessMu.Lock()
 	session, ok := h.sessions[key]
 	if !ok {
-		session = &syncSession{db: db, total: part.Total, dates: make(map[string]bool), cachedScores: make(map[string]bool)}
+		session = &syncSession{db: db, total: part.Total, dates: make(map[string]bool),
+			cachedDates: make(map[string]bool), pendingScores: make(map[string]bool)}
 		h.timersWG.Add(1)
 		wait := h.sessionWait
 		if wait <= 0 {
@@ -386,9 +395,10 @@ func (h *Handler) finishSyncChunk(part storage.IngestSyncSession, db *storage.DB
 	}
 	for _, date := range dates {
 		session.dates[date] = session.dates[date] || !cached
-		if cached {
-			session.cachedScores[date] = scoreAffected
-		}
+		session.cachedDates[date] = session.cachedDates[date] || cached
+		// An aggregate generation alone never proves that the score was
+		// computed after the ordinary score-bearing chunk.
+		session.pendingScores[date] = session.pendingScores[date] || (!cached && scoreAffected)
 	}
 	session.scoreMetricChanged = session.scoreMetricChanged || (!cached && scoreAffected)
 	session.received++

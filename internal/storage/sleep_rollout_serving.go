@@ -3,11 +3,13 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"health-receiver/internal/health"
 )
 
@@ -16,14 +18,15 @@ type rolloutBriefingSleep struct {
 	baseline []float64
 }
 
-func (s *DB) sleepRolloutBriefing(lang string) (*health.BriefingResponse, bool, error) {
+func (s *DB) sleepRolloutBriefing(lang string, legacyOnly bool) (*health.BriefingResponse, bool, error) {
 	ctx, cancel := queryCtx()
 	defer cancel()
 	var response *health.BriefingResponse
 	// Treat a rolled-back publication as a legacy current calculation. A
 	// historical five-minute observation from the pilot is still preserved.
 	handled, err := s.withSleepRolloutPublication(ctx, func(unit *DB, publication SleepRolloutPublication) error {
-		date, err := unit.latestSleepRolloutDate(ctx, publication.Active)
+		active := publication.Active && !legacyOnly
+		date, err := unit.latestSleepRolloutDate(ctx, active)
 		if err != nil {
 			return err
 		}
@@ -33,13 +36,13 @@ func (s *DB) sleepRolloutBriefing(lang string) (*health.BriefingResponse, bool, 
 		}
 		var overlay *rolloutBriefingSleep
 		var bank BankResult
-		if publication.Active {
-			blocks, baseline, err := unit.loadRolloutSleepWindow(ctx, date, publication.From)
+		if active {
+			blocks, baseline, err := unit.loadRolloutSleepWindow(ctx, date, publication.window())
 			if err != nil {
 				return err
 			}
 			overlay = &rolloutBriefingSleep{blocks: blocks, baseline: baseline}
-			bank, err = unit.computeServedSleepBank(ctx, date, blocks)
+			bank, err = unit.computeServedSleepBank(ctx, date, blocks, unit.GetEnergyConfig())
 			if err != nil {
 				return err
 			}
@@ -70,7 +73,7 @@ func rolloutCurrentEnergy(date string, bank BankResult) *localShadowCurrentEnerg
 	}}
 }
 
-func (s *DB) computeServedSleepBank(ctx context.Context, date string, blocks map[string]*LocalShadowSleep) (BankResult, error) {
+func (s *DB) computeServedSleepBank(ctx context.Context, date string, blocks map[string]*LocalShadowSleep, cfg EnergyConfig) (BankResult, error) {
 	from := subtractDays(date, energyWindowDays-1)
 	inputs, err := s.loadDailyEnergyInputs(ctx, from, date)
 	if err != nil {
@@ -84,7 +87,7 @@ func (s *DB) computeServedSleepBank(ctx context.Context, date string, blocks map
 		input.SleepTotal, input.SleepDeep, input.SleepRem, input.SleepAwake = block.Total, block.Deep, block.REM, block.Awake
 		inputs[day] = input
 	}
-	return computeCalendarEnergyBank(inputs, date, s.GetEnergyConfig()), nil
+	return computeCalendarEnergyBank(inputs, date, cfg), nil
 }
 
 func (s *DB) servedSleepSummary(ctx context.Context, publication SleepRolloutPublication, from, to string) ([]SleepNight, error) {
@@ -118,7 +121,7 @@ func (s *DB) servedSleepSummary(ctx context.Context, publication SleepRolloutPub
 		return nil, err
 	}
 	for _, night := range legacy {
-		if !published[night.Date] {
+		if !published[night.Date] && (night.Date < publication.From || night.Date > publication.Through) {
 			out = append(out, night)
 		}
 	}
@@ -140,7 +143,7 @@ func (s *DB) servedSleepReadinessHistory(ctx context.Context, publication SleepR
 		}
 		fillReadinessBands(legacy)
 		for _, point := range legacy {
-			if point.Date < publication.From {
+			if point.Date >= start && point.Date < publication.From {
 				points = append(points, point)
 			}
 		}
@@ -150,7 +153,7 @@ func (s *DB) servedSleepReadinessHistory(ctx context.Context, publication SleepR
 		return nil, err
 	}
 	for date := day.Format(time.DateOnly); date <= latest; date = day.Format(time.DateOnly) {
-		blocks, baseline, err := s.loadRolloutSleepWindow(ctx, date, publication.From)
+		blocks, baseline, err := s.loadRolloutSleepWindow(ctx, date, publication.window())
 		if err != nil {
 			return nil, err
 		}
@@ -183,11 +186,11 @@ func attachRolloutSleepSource(response *health.BriefingResponse, date string, bl
 // candidate. A mixed batch's legacy callback can run before the candidate.
 func (s *DB) recordServedSleepObservation(ctx context.Context, loc *time.Location, now time.Time, publication SleepRolloutPublication) (BankResult, error) {
 	date := now.In(loc).Format(time.DateOnly)
-	blocks, _, err := s.loadRolloutSleepWindow(ctx, date, publication.From)
+	blocks, _, err := s.loadRolloutSleepWindow(ctx, date, publication.window())
 	if err != nil {
 		return BankResult{}, err
 	}
-	result, err := s.computeServedSleepBank(ctx, date, blocks)
+	result, err := s.computeServedSleepBank(ctx, date, blocks, s.GetEnergyConfig())
 	if err != nil || result.State == "stale" {
 		return result, err
 	}
@@ -207,7 +210,16 @@ func (s *DB) recordServedSleepObservation(ctx context.Context, loc *time.Locatio
 // refreshRolloutEnergyObservation records only free slots once a tenant has
 // entered serve. The current bank remains a separate calculation and can
 // change in a slot whose observed historical value has already been recorded.
-func (s *DB) refreshRolloutEnergyObservation(ctx context.Context, tz string, now time.Time) (BankResult, bool, error) {
+func (s *DB) refreshRolloutEnergyObservation(ctx context.Context, tz string, clock func() time.Time) (BankResult, bool, error) {
+	result, handled, err := s.refreshRolloutEnergyObservationOnce(ctx, tz, clock)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "40001" && ctx.Err() == nil {
+		return s.refreshRolloutEnergyObservationOnce(ctx, tz, clock)
+	}
+	return result, handled, err
+}
+
+func (s *DB) refreshRolloutEnergyObservationOnce(ctx context.Context, tz string, clock func() time.Time) (BankResult, bool, error) {
 	if !s.sleepRolloutTenant {
 		return BankResult{}, false, nil
 	}
@@ -218,6 +230,14 @@ func (s *DB) refreshRolloutEnergyObservation(ctx context.Context, tz string, now
 	defer tx.Rollback(context.Background())
 	if err := lockSleepRollout(ctx, tx); err != nil {
 		return BankResult{}, false, err
+	}
+	// The advisory SELECT can establish this Repeatable Read snapshot
+	// before it gets the lock. The row lock detects a concurrent switch
+	// and forces the caller to retry the whole snapshot.
+	var mode string
+	err = tx.QueryRow(ctx, `SELECT value FROM settings WHERE key=$1 FOR SHARE`, SleepRolloutModeSetting).Scan(&mode)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return BankResult{}, true, err
 	}
 	publication, err := readSleepRolloutPublication(ctx, tx)
 	if err != nil || (publication == nil && !s.sleepRolloutServeEnabled()) {
@@ -232,6 +252,7 @@ func (s *DB) refreshRolloutEnergyObservation(ctx context.Context, tz string, now
 	if err != nil {
 		return BankResult{}, true, err
 	}
+	now := clock()
 	date := now.In(loc).Format(time.DateOnly)
 	unit := &DB{pool: &cacheTransaction{Tx: tx, ctx: ctx}}
 	if publication != nil && publication.Active && s.sleepRolloutServeEnabled() {
@@ -264,13 +285,14 @@ func (s *DB) servedSleepEnergyHistory(ctx context.Context, publication SleepRoll
 	if err != nil {
 		return nil, err
 	}
-	loc, err := time.LoadLocation(tz)
+	outputLoc, err := time.LoadLocation(tz)
 	if err != nil {
-		loc = time.UTC
+		outputLoc = time.UTC
 	}
+	loc := s.reportTZLocation()
 	occupied := make(map[time.Time]bool)
 	points = slices.DeleteFunc(points, func(point EnergySnapshotPoint) bool {
-		if point.TS.Format(time.DateOnly) >= publication.From && slices.Contains(point.Flags, "backfilled") {
+		if point.TS.In(loc).Format(time.DateOnly) >= publication.From && slices.Contains(point.Flags, "backfilled") {
 			return true
 		}
 		occupied[point.TS.UTC()] = true
@@ -288,11 +310,11 @@ func (s *DB) servedSleepEnergyHistory(ctx context.Context, publication SleepRoll
 			continue
 		}
 		date := day.Format(time.DateOnly)
-		blocks, _, err := s.loadRolloutSleepWindow(ctx, date, publication.From)
+		blocks, _, err := s.loadRolloutSleepWindow(ctx, date, publication.window())
 		if err != nil {
 			return nil, err
 		}
-		bank, err := s.computeServedSleepBank(ctx, date, blocks)
+		bank, err := s.computeServedSleepBank(ctx, date, blocks, s.GetEnergyConfig())
 		if err != nil {
 			return nil, err
 		}
@@ -306,7 +328,7 @@ func (s *DB) servedSleepEnergyHistory(ctx context.Context, publication SleepRoll
 				return nil, err
 			}
 		}
-		points = append(points, EnergySnapshotPoint{TS: slot, Bank: bank.Bank, DrainDelta: bank.TodayDrain,
+		points = append(points, EnergySnapshotPoint{TS: slot.In(outputLoc), Bank: bank.Bank, DrainDelta: bank.TodayDrain,
 			RestoreDelta: bank.TodayRestore, FormulaVersion: bank.FormulaVersion,
 			Flags: append(slices.Clone(bank.Flags), "backfilled"), Components: components})
 	}

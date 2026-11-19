@@ -27,6 +27,10 @@ type SleepRolloutPublication struct {
 	Evidence string    `json:"evidence"`
 }
 
+func (p SleepRolloutPublication) window() sleepRolloutWindow {
+	return sleepRolloutWindow{From: p.From, Through: p.Through}
+}
+
 // The same table set is fingerprinted by the read-only audit and fenced by
 // the switching transaction. Tuple versions cover inserts, updates and deletes.
 var sleepRolloutInputTables = []string{

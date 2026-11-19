@@ -26,8 +26,9 @@ type RawMetrics struct {
 	// fields so future trend uses fall in naturally. Empty when the iOS
 	// app hasn't synced new-format data yet — caller must fall back to
 	// `Sleep` in that case.
-	NightSleep []float64
-	Nap        []float64
+	NightSleep       []float64
+	NightSleepByDate []DatedValue `json:"-"`
+	Nap              []float64
 	// NapToday is today's nap_total only (0 when no nap today). Separate
 	// from Nap[0] because the slice filters qty>0 — the latest entry can
 	// be from any prior day someone napped, which would mis-attribute the
