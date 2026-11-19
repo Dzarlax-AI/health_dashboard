@@ -152,15 +152,22 @@ func (s *DB) ComputeBankForDate(ctx context.Context, tz, asOfDate string) (BankR
 		return BankResult{}, fmt.Errorf("parse asOfDate %q: %w", asOfDate, err)
 	}
 	startDate := subtractDays(asOfDate, energyWindowDays-1)
+	byDate, err := s.loadDailyEnergyInputs(ctx, startDate, asOfDate)
+	if err != nil {
+		return BankResult{}, err
+	}
+	return computeCalendarEnergyBank(byDate, asOfDate, s.GetEnergyConfig()), nil
+}
 
+func (s *DB) loadDailyEnergyInputs(ctx context.Context, from, to string) (map[string]dailyInputs, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT date, sleep_total, sleep_deep, sleep_rem, sleep_awake, calories,
 		       sustained_hr_load, stress_flags
 		FROM daily_scores
 		WHERE date >= $1 AND date <= $2`,
-		startDate, asOfDate)
+		from, to)
 	if err != nil {
-		return BankResult{}, err
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -170,7 +177,7 @@ func (s *DB) ComputeBankForDate(ctx context.Context, tz, asOfDate string) (BankR
 		var st, sd, sr, sa, kcal, shl *float64
 		var sf []string
 		if err := rows.Scan(&date, &st, &sd, &sr, &sa, &kcal, &shl, &sf); err != nil {
-			return BankResult{}, err
+			return nil, err
 		}
 		byDate[date] = dailyInputs{
 			SleepTotal: st, SleepDeep: sd, SleepRem: sr, SleepAwake: sa,
@@ -178,17 +185,20 @@ func (s *DB) ComputeBankForDate(ctx context.Context, tz, asOfDate string) (BankR
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return BankResult{}, err
+		return nil, err
 	}
 
+	return byDate, nil
+}
+
+func computeCalendarEnergyBank(byDate map[string]dailyInputs, asOfDate string, cfg EnergyConfig) BankResult {
 	days := make([]dailyInputs, energyWindowDays)
 	for i := 0; i < energyWindowDays; i++ {
 		date := subtractDays(asOfDate, energyWindowDays-1-i)
 		days[i] = byDate[date]
 	}
 
-	cfg := s.GetEnergyConfig()
-	return computeBankFromDays(days, cfg), nil
+	return computeBankFromDays(days, cfg)
 }
 
 // computeBankFromDays is the pure iteration: takes a length-21 slice

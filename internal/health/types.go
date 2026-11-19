@@ -587,6 +587,8 @@ type BriefingResponse struct {
 	SleepRegularityNights int                     `json:"sleep_regularity_nights,omitempty"`
 	MetricCards           []MetricCard            `json:"metric_cards"`
 	EnergyBank            *EnergyBank             `json:"energy_bank,omitempty"`
+	EnergyBankCurrent     *int                    `json:"energy_bank_current,omitempty"`
+	EnergyBankStatus      string                  `json:"energy_bank_status,omitempty"`
 	TodayGuidance         *DashboardTodayGuidance `json:"today_guidance,omitempty"`
 	// DailyDecision is the versioned action boundary consumed by native
 	// clients. It mirrors the final conservative TodayGuidance after all

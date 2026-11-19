@@ -713,6 +713,15 @@
             ],
             "type": "object"
           },
+          "energy_bank_current": {
+            "type": "integer"
+          },
+          "energy_bank_status": {
+            "enum": [
+              "stale"
+            ],
+            "type": "string"
+          },
           "greeting": {
             "type": "string"
           },

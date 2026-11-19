@@ -116,7 +116,11 @@ export function EnergyPage() {
   }, [fixture, state]);
 
   const domain = state.status === "ready" ? state.insights.domains?.find((item) => item.key === "energy") : undefined;
-  const bank = briefing?.energy_bank;
+  const energyStale = briefing?.energy_bank_status === "stale";
+  const bank = energyStale ? undefined : briefing?.energy_bank;
+  const reserve = energyStale ? undefined : briefing?.energy_bank_current ?? bank?.current;
+  const reserveMessage = energyStale ? translate(locale, "energyInsufficientData") : bank?.verdict_reason ||
+    (reserve === undefined ? translate(locale, briefingFailed ? "errorDetail" : briefing ? "unavailableDetail" : "loadingDetail") : "");
   const points = history?.points;
   const number = new Intl.NumberFormat(locale);
   return (
@@ -129,10 +133,10 @@ export function EnergyPage() {
             <div><p>{briefing?.date || translate(locale, "today")}</p><h1>{translate(locale, "energyDetailTitle")}</h1></div>
           </div>
           <div className="health-detail-hero__body">
-            <div className={`health-detail-gauge${bank ? "" : " is-neutral"}`}
-              style={{ "--detail-progress": bank ? Math.min(100, Math.max(0, bank.current)) : 0 } as CSSProperties}>
+            <div className={`health-detail-gauge${reserve === undefined ? " is-neutral" : ""}`}
+              style={{ "--detail-progress": reserve === undefined ? 0 : Math.min(100, Math.max(0, reserve)) } as CSSProperties}>
               <div className="health-detail-gauge__inner">
-                <strong data-testid="energy-reserve">{bank ? number.format(bank.current) : "—"}</strong>
+                <strong data-testid="energy-reserve">{reserve === undefined ? "—" : number.format(reserve)}</strong>
                 <span>{translate(locale, "energyReserve")}</span>
               </div>
             </div>
@@ -141,7 +145,7 @@ export function EnergyPage() {
               <h2>{translate(locale, "energyReserve")}</h2>
               {briefing?.readiness_serving?.status === "stale" ? <p>{translate(locale, "state_stale")}</p> : null}
               {briefing?.readiness_serving && briefing.readiness_serving.status !== "stale" && briefing.readiness_serving.confidence !== "final" ? <p>{translate(locale, "state_partial")}</p> : null}
-              <p>{bank?.verdict_reason || translate(locale, briefingFailed ? "errorDetail" : briefing ? "unavailableDetail" : "loadingDetail")}</p>
+              {reserveMessage ? <p>{reserveMessage}</p> : null}
             </div>
           </div>
         </section>

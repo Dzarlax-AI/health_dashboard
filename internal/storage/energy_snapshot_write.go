@@ -3,8 +3,11 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"time"
 )
+
+const energySnapshotStaleFlag = "energy_stale"
 
 // UpsertEnergySnapshot writes one EnergyBank v2 snapshot row keyed by
 // the 5-minute ts_bucket. Multiple ingests landing in the same bucket
@@ -31,10 +34,17 @@ func (s *DB) UpsertEnergySnapshotAt(ctx context.Context, tz string, ts time.Time
 	if err != nil {
 		return err
 	}
+	return s.writeEnergySnapshotAt(ctx, loc, ts, res, true)
+}
+
+func (s *DB) writeEnergySnapshotAt(ctx context.Context, loc *time.Location, ts time.Time, res BankResult, replace bool) error {
 	tsBucket := ts.In(loc).Truncate(5 * time.Minute)
-	dateStr := tsBucket.Format("2006-01-02")
+	dateStr := tsBucket.Format(isoDate)
 
 	flags := res.Flags
+	if res.State == "stale" {
+		flags = append(slices.Clone(flags), energySnapshotStaleFlag)
+	}
 	if flags == nil {
 		flags = []string{}
 	}
@@ -55,13 +65,9 @@ func (s *DB) UpsertEnergySnapshotAt(ctx context.Context, tz string, ts time.Time
 		components = raw
 	}
 
-	_, err = s.pool.Exec(ctx, `
-		INSERT INTO energy_snapshots (
-			ts_bucket, date, bank, drain_delta, restore_delta,
-			formula_version, components, flags, computed_at
-		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
-		ON CONFLICT (ts_bucket) DO UPDATE SET
+	onConflict := `ON CONFLICT (ts_bucket) DO NOTHING`
+	if replace {
+		onConflict = `ON CONFLICT (ts_bucket) DO UPDATE SET
 			date            = EXCLUDED.date,
 			bank            = EXCLUDED.bank,
 			drain_delta     = EXCLUDED.drain_delta,
@@ -69,7 +75,15 @@ func (s *DB) UpsertEnergySnapshotAt(ctx context.Context, tz string, ts time.Time
 			formula_version = EXCLUDED.formula_version,
 			components      = EXCLUDED.components,
 			flags           = EXCLUDED.flags,
-			computed_at     = NOW()`,
+			computed_at     = NOW()`
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO energy_snapshots (
+			ts_bucket, date, bank, drain_delta, restore_delta,
+			formula_version, components, flags, computed_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+		`+onConflict,
 		tsBucket, dateStr, res.Bank, res.TodayDrain, res.TodayRestore,
 		res.FormulaVersion, components, flags)
 	return err

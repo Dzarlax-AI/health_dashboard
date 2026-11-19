@@ -57,6 +57,33 @@ it("keeps history and server insight when current reserve fails", async () => {
   expect(screen.getByTestId("energy-reserve")).toHaveTextContent("—");
 });
 
+it.each([
+  { status: "stale", reserve: "—", standalone: undefined },
+  { status: undefined, reserve: "0", standalone: undefined },
+  { status: undefined, reserve: "0", standalone: 0 },
+] as const)("renders the EnergyBank reserve $reserve (standalone $standalone)", async ({ status, reserve, standalone }) => {
+  window.history.replaceState({}, "", "/energy?lang=ru");
+  const fixture = fixtureResources("ru", "normal");
+  vi.mocked(getHealthBriefing).mockResolvedValue({
+    ...fixture.briefing,
+    energy_bank_status: status,
+    energy_bank: status === "stale" || standalone !== undefined ? undefined : { ...fixture.briefing.energy_bank!, current: 0 },
+    energy_bank_current: standalone,
+  });
+  vi.mocked(getTodayInsights).mockResolvedValue(fixture.todayInsights!);
+  vi.mocked(getSession).mockResolvedValue({ is_admin: false });
+  vi.mocked(getEnergyHistory).mockResolvedValue(fixture.energyHistory!);
+  render(<EnergyPage />);
+
+  if (status === "stale") {
+    expect(await screen.findByText("Недостаточно данных")).toBeVisible();
+  } else {
+    expect(await screen.findByText("0", { exact: true })).toBeVisible();
+    expect(screen.queryByText("Недостаточно данных")).not.toBeInTheDocument();
+  }
+  expect(screen.getByTestId("energy-reserve").textContent).toBe(reserve);
+});
+
 it("keeps a negative reserve and a zero capacity without fabricating a positive score", async () => {
   vi.mocked(getHealthBriefing).mockResolvedValue({ ...resources.briefing,
     energy_bank: { ...resources.briefing.energy_bank!, current: -12, capacity: 0 } });

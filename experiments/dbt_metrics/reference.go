@@ -16,3 +16,17 @@ func SleepDurationReferenceSQL(relation string) string {
 	body = strings.TrimSuffix(strings.TrimSpace(body), "{% endmacro %}")
 	return strings.TrimSpace(strings.ReplaceAll(body, "{{ nights }}", relation))
 }
+
+//go:embed macros/shadow_sleep_daily_v1.sql
+var shadowSleepDailyMacro string
+
+// ShadowSleepDailySQL renders the daily sleep model for the shadow repository.
+// scope must be a trusted SQL predicate, with any request values passed as bind parameters.
+func ShadowSleepDailySQL(scope string) string {
+	body := strings.TrimPrefix(shadowSleepDailyMacro, "{% macro shadow_sleep_daily_v1(candidates, scope) %}")
+	body = strings.TrimSuffix(strings.TrimSpace(body), "{% endmacro %}")
+	return strings.TrimSpace(strings.NewReplacer(
+		"{{ candidates }}", "sleep_shadow.candidate",
+		"{{ scope }}", scope,
+	).Replace(body))
+}

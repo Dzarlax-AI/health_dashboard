@@ -40,6 +40,9 @@
     "time": "Extraction grain is per profile. Row clocks, provenance, nullable values, epoch and formula versions propagate from the source. Family groupings may include diagnostic values and evidence, but never store a narrative or identity as a numerical fact."
   },
   "dbt_bindings": {
+    "shadow_sleep_daily_duration_v1": {"model": "shadow_sleep_daily_v1", "columns": ["sleep_seconds"]},
+    "shadow_sleep_daily_stages_v1": {"model": "shadow_sleep_daily_v1", "columns": ["deep_seconds", "rem_seconds", "core_seconds", "unspecified_seconds", "awake_seconds"]},
+    "shadow_sleep_daily_stage_conflict_v1": {"model": "shadow_sleep_daily_v1", "columns": ["stage_conflict"]},
     "sleep_comparison.status": {"model": "semantic_sleep_duration_comparison_v1", "columns": ["status"]},
     "sleep_comparison.duration_minutes": {"model": "semantic_sleep_duration_comparison_v1", "columns": ["duration_minutes"]},
     "sleep_comparison.eligible_nights": {"model": "semantic_sleep_duration_comparison_v1", "columns": ["eligible_nights"]},
@@ -945,6 +948,41 @@
     }
   },
   "contracts": {
+    "shadow_sleep_daily_duration_v1": {
+      "owner": "experiments/dbt_metrics/macros/shadow_sleep_daily_v1.sql",
+      "units": ["s"],
+      "grain": "profile × local wake date",
+      "clock": "local date of last asleep interval; duration uses absolute timestamps",
+      "method": "union of asleep intervals in the selected candidate, excluding awake and in-bed time",
+      "quality": "no row without a selected candidate",
+      "parents": ["night_sleep_total"],
+      "consumers": ["local sleep shadow daily API"],
+      "status": "local_shadow",
+      "source_keys": ["sleep_shadow.candidate"]
+    },
+    "shadow_sleep_daily_stages_v1": {
+      "owner": "experiments/dbt_metrics/macros/shadow_sleep_daily_v1.sql",
+      "units": ["s"],
+      "grain": "profile × local wake date",
+      "method": "per-stage interval union from the selected candidate; classified sleep is removed from unspecified coverage",
+      "quality": "unobserved and contradictory stages are null; explicit observed zero is numeric zero",
+      "parents": ["shadow_sleep_daily_duration_v1", "sleep_core", "sleep_deep", "sleep_rem", "sleep_unspecified", "sleep_awake"],
+      "consumers": ["local sleep shadow daily API"],
+      "status": "local_shadow",
+      "source_keys": ["sleep_shadow.candidate"]
+    },
+    "shadow_sleep_daily_stage_conflict_v1": {
+      "owner": "experiments/dbt_metrics/macros/shadow_sleep_daily_v1.sql",
+      "units": ["boolean"],
+      "value_type": "boolean",
+      "grain": "profile × local wake date",
+      "method": "overlap between distinct detailed asleep stages or between awake and asleep",
+      "quality": "a conflict suppresses stage totals and preserves the observed asleep union",
+      "parents": ["shadow_sleep_daily_stages_v1"],
+      "consumers": ["local sleep shadow daily API"],
+      "status": "local_shadow",
+      "source_keys": ["sleep_shadow.candidate"]
+    },
     "sleep_analysis": {
       "owner": "internal/handler/health.go",
       "units": ["hr"],

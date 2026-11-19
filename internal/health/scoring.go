@@ -15,9 +15,8 @@ func ComputeBriefing(d RawMetrics, lang string) *BriefingResponse {
 	activitySec := scoreActivity(d, ls)
 	cardioSec := scoreCardio(d, ls)
 
-	readiness := computeReadinessWithEvidence(d)
-	readinessScore := readiness.DisplayScore
-	label, tip := readinessLabelTip(readinessScore, ls)
+	resp := newReadinessBriefing(d, ls)
+	readinessScore := resp.ReadinessScore
 
 	var sections []BriefingSection
 	for _, sec := range []*BriefingSection{recoverySec, sleepSec, activitySec, cardioSec} {
@@ -26,41 +25,18 @@ func ComputeBriefing(d RawMetrics, lang string) *BriefingResponse {
 		}
 	}
 
-	overall := overallStatus(sections)
 	highlights := buildHighlights(d, ls)
 	metricCards := buildMetricCards(d, ls)
-	headline := computeHeadline(d, ls)
-
-	resp := &BriefingResponse{
-		Date:                  d.LastDate,
-		Greeting:              "Here's your health summary",
-		Overall:               overall,
-		Headline:              headline,
-		Sections:              sections,
-		Highlights:            highlights,
-		ReadinessScore:        readinessScore,
-		ReadinessBand:         ReadinessBand(readinessScore),
-		ReadinessLabel:        label,
-		ReadinessTip:          tip,
-		ReadinessRawScore:     readiness.RawScore,
-		ReadinessDisplayScore: readiness.DisplayScore,
-		ReadinessConfidence:   readiness.Confidence,
-		ReadinessCapReason:    readiness.CapReason,
-		ReadinessComponents:   readiness.Components,
-		ReadinessServing:      readiness.Serving,
-		RecoverySource:        ReadinessRecoverySourceLegacyAlias,
-		RecoveryPct:           readinessScore,
-		ReadinessToday:        readinessScore,
-		ReadinessTodayBand:    ReadinessBand(readinessScore),
-		ReadinessTodayLabel:   label,
-		Correlation:           buildCorrelation(d),
-		Insights:              computeInsights(d, activitySec, readinessScore, ls),
-		Alerts:                computeAlerts(d, ls),
-		Sleep:                 computeSleepAnalysis(d),
-		SleepQuality:          computeDashboardSleepQuality(d),
-		MetricCards:           metricCards,
-		RawMetrics:            &d,
-	}
+	resp.Greeting = "Here's your health summary"
+	resp.Overall = overallStatus(sections)
+	resp.Sections = sections
+	resp.Highlights = highlights
+	resp.Correlation = buildCorrelation(d)
+	resp.Insights = computeInsights(d, activitySec, readinessScore, ls)
+	resp.Alerts = computeAlerts(d, ls)
+	resp.Sleep = computeSleepAnalysis(d)
+	resp.MetricCards = metricCards
+	resp.RawMetrics = &d
 
 	// Coherence pass: when a stress headline fires, downgrade conflicting
 	// "good" verdicts so the briefing doesn't say "stress" up top and
@@ -73,9 +49,46 @@ func ComputeBriefing(d RawMetrics, lang string) *BriefingResponse {
 	// fallback for fresh tenants and days where the v2 snapshot has not been
 	// written yet. The storage briefing path replaces this with the latest
 	// v2 energy_snapshots row when one exists.
-	resp.EnergyBank = computeLegacyEnergyBank(d, resp.ReadinessScore, headline, ls)
+	resp.EnergyBank = computeLegacyEnergyBank(d, resp.ReadinessScore, resp.Headline, ls)
 
 	return resp
+}
+
+// ComputeReadinessBriefing applies the live readiness formula and headline
+// limits without computing the briefing's other scores.
+func ComputeReadinessBriefing(d RawMetrics, lang string) *BriefingResponse {
+	ls := GetStrings(lang)
+	resp := newReadinessBriefing(d, ls)
+	applyCoherencePass(resp, ls)
+	updateReadinessServing(resp)
+	return resp
+}
+
+func newReadinessBriefing(d RawMetrics, ls LangStrings) *BriefingResponse {
+	readiness := computeReadinessWithEvidence(d)
+	score := readiness.DisplayScore
+	band := ReadinessBand(score)
+	label, tip := readinessLabelTip(score, ls)
+	return &BriefingResponse{
+		Date:                  d.LastDate,
+		Headline:              computeHeadline(d, ls),
+		ReadinessScore:        score,
+		ReadinessBand:         band,
+		ReadinessLabel:        label,
+		ReadinessTip:          tip,
+		ReadinessRawScore:     readiness.RawScore,
+		ReadinessDisplayScore: score,
+		ReadinessConfidence:   readiness.Confidence,
+		ReadinessCapReason:    readiness.CapReason,
+		ReadinessComponents:   readiness.Components,
+		ReadinessServing:      readiness.Serving,
+		RecoverySource:        ReadinessRecoverySourceLegacyAlias,
+		RecoveryPct:           score,
+		ReadinessToday:        score,
+		ReadinessTodayBand:    band,
+		ReadinessTodayLabel:   label,
+		SleepQuality:          computeDashboardSleepQuality(d),
+	}
 }
 
 func computeDashboardSleepQuality(d RawMetrics) *SleepQualityBreakdown {

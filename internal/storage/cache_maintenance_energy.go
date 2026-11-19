@@ -20,13 +20,25 @@ func (s *DB) repairHistoricalEnergyDate(ctx context.Context, date, tz string) er
 	if err != nil {
 		return err
 	}
-	ts, err := time.ParseInLocation("2006-01-02 15:04", date+" 23:55", loc)
+	return s.writeHistoricalEnergyResult(ctx, date, loc, res)
+}
+
+func (s *DB) writeHistoricalEnergyResult(ctx context.Context, date string, loc *time.Location, res BankResult) error {
+	ts, err := historicalEnergyBucket(date, loc)
 	if err != nil {
 		return err
 	}
-	ts = ts.Truncate(5 * time.Minute)
+	return s.writeHistoricalEnergyBucket(ctx, date, ts, res)
+}
+
+func historicalEnergyBucket(date string, loc *time.Location) (time.Time, error) {
+	ts, err := time.ParseInLocation("2006-01-02 15:04", date+" 23:55", loc)
+	return ts.Truncate(5 * time.Minute), err
+}
+
+func (s *DB) writeHistoricalEnergyBucket(ctx context.Context, date string, ts time.Time, res BankResult) error {
 	if res.State == "stale" {
-		_, err = s.pool.Exec(ctx, `DELETE FROM energy_snapshots WHERE ts_bucket=$1 AND 'backfilled'=ANY(flags)`, ts)
+		_, err := s.pool.Exec(ctx, `DELETE FROM energy_snapshots WHERE ts_bucket=$1 AND 'backfilled'=ANY(flags)`, ts)
 		return err
 	}
 	res.Flags = append(res.Flags, "backfilled")
@@ -37,7 +49,7 @@ func (s *DB) repairHistoricalEnergyDate(ctx context.Context, date, tz string) er
 	_, err = s.pool.Exec(ctx, `INSERT INTO energy_snapshots
 		(ts_bucket,date,bank,drain_delta,restore_delta,formula_version,components,flags,computed_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
-		ON CONFLICT(ts_bucket) DO UPDATE SET bank=EXCLUDED.bank,
+		ON CONFLICT(ts_bucket) DO UPDATE SET date=EXCLUDED.date,bank=EXCLUDED.bank,
 		drain_delta=EXCLUDED.drain_delta,restore_delta=EXCLUDED.restore_delta,
 		formula_version=EXCLUDED.formula_version,components=EXCLUDED.components,
 		flags=EXCLUDED.flags,computed_at=NOW()

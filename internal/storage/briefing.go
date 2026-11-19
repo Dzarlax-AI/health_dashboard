@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"slices"
 	"sort"
 	"time"
 
@@ -616,11 +617,17 @@ func (s *DB) chronicAvg(lastDate, col string) float64 {
 // all scoring and insight computation to the health package.
 // lang selects the output language ("en", "ru", "sr").
 func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
+	return s.getHealthBriefing(lang, nil)
+}
+
+func (s *DB) getHealthBriefing(lang string, currentEnergy *localShadowCurrentEnergy) (*health.BriefingResponse, error) {
 	ctx, cancel := queryCtx()
 	defer cancel()
 	// Use hourly_metrics for lastDate — avoids full scan of metric_points.
 	var lastDate *string
-	if err := s.pool.QueryRow(ctx, `SELECT MAX(SUBSTRING(hour,1,10)) FROM hourly_metrics`).Scan(&lastDate); err != nil || lastDate == nil {
+	if currentEnergy != nil {
+		lastDate = &currentEnergy.date
+	} else if err := s.pool.QueryRow(ctx, `SELECT MAX(SUBSTRING(hour,1,10)) FROM hourly_metrics`).Scan(&lastDate); err != nil || lastDate == nil {
 		return &health.BriefingResponse{Greeting: "Welcome! No health data yet."}, nil
 	}
 
@@ -687,17 +694,30 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 	// whole frame is yesterday, and the override should match that
 	// frame. Looking up "today" instead would split frame and override
 	// across day boundaries.
-	if resp.EnergyBank != nil && lastDate != nil {
-		ctxSnap, cancelSnap := queryCtx()
-		snap, err := s.GetLatestEnergySnapshotForDate(ctxSnap, *lastDate)
-		cancelSnap()
+	if lastDate != nil {
+		var snap *LatestEnergySnapshot
+		var err error
+		if currentEnergy != nil {
+			snap = &currentEnergy.LatestEnergySnapshot
+		} else {
+			ctxSnap, cancelSnap := queryCtx()
+			snap, err = s.GetLatestEnergySnapshotForDate(ctxSnap, *lastDate)
+			cancelSnap()
+		}
 		if err != nil {
 			// Don't break the briefing on a transient pool/scan error;
 			// fall through to v1 numbers, but surface so an operator
 			// can investigate sustained failures.
 			log.Printf("[ENERGY_V2] briefing override read (date=%s): %v", *lastDate, err)
 		}
-		if err == nil && snap != nil {
+		if err == nil && snap != nil && ((currentEnergy != nil && currentEnergy.state == "stale") || slices.Contains(snap.Flags, energySnapshotStaleFlag)) {
+			resp.EnergyBankStatus = "stale"
+			resp.EnergyBank = nil
+		} else if currentEnergy != nil && resp.EnergyBank == nil {
+			// The bank can be usable before the legacy HRV context is complete.
+			display := max(0, min(100, currentEnergy.Bank))
+			resp.EnergyBankCurrent = &display
+		} else if err == nil && snap != nil && resp.EnergyBank != nil {
 			display := snap.Bank
 			if display < 0 {
 				display = 0

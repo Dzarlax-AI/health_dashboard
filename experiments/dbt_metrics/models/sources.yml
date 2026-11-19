@@ -11,3 +11,7 @@ sources:
       - name: hrv_point
       - name: workout
       - name: daily_hrv
+  - name: sleep_shadow
+    schema: sleep_shadow
+    tables:
+      - name: candidate

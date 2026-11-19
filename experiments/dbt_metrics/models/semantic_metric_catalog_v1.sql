@@ -1,4 +1,4 @@
-{{ config(enabled=var('semantic_shadow', false), materialized='view',
+{{ config(enabled=var('semantic_shadow', false) or var('sleep_daily_shadow', false), materialized='view',
     post_hook='alter view {{ this }} set (security_invoker=true)') }}
 
 -- dbt reads the registry from this model's native properties at compile time.
