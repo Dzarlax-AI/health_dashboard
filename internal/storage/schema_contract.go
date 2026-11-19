@@ -20,7 +20,7 @@ import (
 // SchemaContractVersion is bumped whenever the declared tenant schema
 // contract changes. Existing tenants are not current until both the permanent
 // marker and registry metadata carry this version and checksum.
-const SchemaContractVersion = 14
+const SchemaContractVersion = 15
 
 // TenantIdentityTable is the permanent marker shared by clean provisioning
 // and existing-tenant migrations. The provisioning marker is intentionally
@@ -107,7 +107,7 @@ type ContractCatalog interface {
 }
 
 var schemaContract = ContractManifest{
-	Tables:  []string{"sleep_rollout_packets", "sleep_rollout_candidates", "sleep_rollout_daily", "sleep_rollout_results", "health_records", "metric_points", "import_runs", "import_run_coverage", "import_stage_points", "import_stage_workouts", "minute_metrics", "hourly_metrics", "dashboard_cache_snapshots", "daily_scores", "settings", "notification_deliveries", "proactive_events", "report_history", "report_delivery_attempts", "workouts", "ai_briefings", "ai_briefing_blocks", "ai_generation_status", "daily_insight_bundles", "daily_insight_narrative_slots", "completed_night_sleep", "night_sleep_coverage_commitments", "sleep_period_coverage", "completed_sleep_episode", "sleep_goal", "sleep_duration_balance_snapshot", "energy_snapshots", "source_epochs", "target_snapshots", "feature_snapshots", "naive_baselines", "chip_calibrations", "subjective_checkins", "context_prompt_interactions", "derived_metrics", "derived_metric_feedback", "auth_sessions"},
+	Tables:  []string{"sleep_rollout_batches", "sleep_rollout_packets", "sleep_rollout_candidates", "sleep_rollout_daily", "sleep_rollout_results", "health_records", "metric_points", "import_runs", "import_run_coverage", "import_stage_points", "import_stage_workouts", "minute_metrics", "hourly_metrics", "dashboard_cache_snapshots", "daily_scores", "settings", "notification_deliveries", "proactive_events", "report_history", "report_delivery_attempts", "workouts", "ai_briefings", "ai_briefing_blocks", "ai_generation_status", "daily_insight_bundles", "daily_insight_narrative_slots", "completed_night_sleep", "night_sleep_coverage_commitments", "sleep_period_coverage", "completed_sleep_episode", "sleep_goal", "sleep_duration_balance_snapshot", "energy_snapshots", "source_epochs", "target_snapshots", "feature_snapshots", "naive_baselines", "chip_calibrations", "subjective_checkins", "context_prompt_interactions", "derived_metrics", "derived_metric_feedback", "auth_sessions"},
 	Indexes: []string{"idx_proactive_events_active_rule", "idx_report_history_prepared", "idx_report_attempts_report", "idx_auth_sessions_expires", "idx_chip_calibrations_sub_kind", "idx_completed_sleep_episode_wake_start", "idx_context_prompt_one_sent_per_day", "idx_context_prompt_status_expires", "idx_energy_snapshots_date", "idx_energy_snapshots_flags", "idx_energy_snapshots_ts", "idx_feature_snapshots_sub_date", "idx_health_records_completed_processed_at", "idx_hourly_date", "idx_hourly_metric_date", "idx_import_stage_points_coverage", "idx_import_stage_points_dedup", "idx_import_stage_workouts_dedup", "idx_import_stage_workouts_synthetic", "idx_naive_baselines_sub_kind_base_date", "idx_points_date", "idx_points_metric_date", "idx_points_quality_metric", "idx_source_epochs_active", "idx_target_snapshots_source_epoch", "idx_target_snapshots_sub_kind_date", "idx_workouts_name", "idx_workouts_start_time", "uq_source_epochs_kind_start"},
 	IndexDefinitions: []IndexDefinition{
 		{Name: "idx_proactive_events_active_rule", Table: "proactive_events", Unique: true, AccessMethod: "btree", Keys: []string{"rule"}, Predicate: "state = 'active'"},
@@ -141,10 +141,12 @@ var schemaContract = ContractManifest{
 		{Name: "uq_source_epochs_kind_start", Table: "source_epochs", Unique: true, AccessMethod: "btree", Keys: []string{"kind", "start_date"}},
 	},
 	Columns: map[string][]string{
-		"sleep_rollout_packets":    {"sequence", "source_id", "candidate_id", "revision", "wake_date", "raw_payload", "candidate", "legacy_payload", "applied_at"},
+		"sleep_rollout_batches":    {"batch_id", "payload_hash", "health_record_id", "sync_session_id", "sync_session_total"},
+		"sleep_rollout_packets":    {"sequence", "source_id", "candidate_id", "revision", "wake_date", "raw_payload", "candidate", "legacy_payload", "applied_at", "health_record_id", "recovery_health_record_id"},
 		"sleep_rollout_candidates": {"profile", "id", "revision", "wake_date", "priority", "snapshot"},
 		"sleep_rollout_daily":      {"wake_date", "generation", "candidate", "revision", "sleep_seconds", "deep_seconds", "rem_seconds", "core_seconds", "unspecified_seconds", "awake_seconds", "stage_conflict"},
 		"sleep_rollout_results":    {"day", "generation", "readiness", "energy"},
+		"sleep_period_coverage":    {"ingest_record_id"},
 		"health_records":           {"processing_status", "processing_kind", "processing_error", "processed_at"},
 		"import_runs":              {"heartbeat_at", "lease_token"},
 		"metric_points":            {"quality", "origin", "import_run_id", "source_snapshot_at"},
@@ -156,6 +158,8 @@ var schemaContract = ContractManifest{
 	},
 	ColumnDefinitions: runtimeContractColumns(),
 	Constraints: []ConstraintDefinition{
+		{Table: "sleep_rollout_batches", Kind: "p", Columns: []string{"batch_id"}},
+		{Table: "sleep_rollout_batches", Kind: "u", Columns: []string{"health_record_id"}},
 		{Table: "sleep_rollout_packets", Kind: "p", Columns: []string{"sequence"}},
 		{Table: "sleep_rollout_packets", Kind: "u", Columns: []string{"source_id", "candidate_id", "revision"}},
 		{Table: "sleep_rollout_candidates", Kind: "p", Columns: []string{"id"}},

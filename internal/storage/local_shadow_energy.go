@@ -34,7 +34,7 @@ func (s *DB) GetLocalShadowEnergyBriefing(ctx context.Context, schema, profile, 
 	if err != nil {
 		return nil, err
 	}
-	return s.getHealthBriefing(lang, &current)
+	return s.getHealthBriefing(lang, &current, nil)
 }
 
 // RefreshLocalShadowEnergy publishes the current result, repairs synthetic

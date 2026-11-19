@@ -51,6 +51,20 @@ type EnergySnapshotPoint struct {
 // per-row; the API's top-level "state" comes from the freshest row
 // (caller responsibility).
 func (s *DB) GetEnergyHistoryV2(ctx context.Context, tz string, hours int) ([]EnergySnapshotPoint, error) {
+	now := time.Now()
+	var out []EnergySnapshotPoint
+	handled, err := s.withActiveSleepRollout(ctx, func(unit *DB, publication SleepRolloutPublication) error {
+		var readErr error
+		out, readErr = unit.servedSleepEnergyHistory(ctx, publication, tz, hours, now)
+		return readErr
+	})
+	if handled || err != nil {
+		return out, err
+	}
+	return s.getObservedEnergyHistory(ctx, tz, hours, now)
+}
+
+func (s *DB) getObservedEnergyHistory(ctx context.Context, tz string, hours int, now time.Time) ([]EnergySnapshotPoint, error) {
 	if hours <= 0 {
 		hours = 72
 	}
@@ -69,7 +83,7 @@ func (s *DB) GetEnergyHistoryV2(ctx context.Context, tz string, hours int) ([]En
 	// — they're the same instant in absolute time. The TZ only
 	// matters for *rendering* the output (p.TS = ts.In(loc) below),
 	// not for the range filter.
-	since := time.Now().Add(-time.Duration(hours) * time.Hour)
+	since := now.Add(-time.Duration(hours) * time.Hour)
 	rows, err := s.pool.Query(ctx, `
 		SELECT ts_bucket, bank, drain_delta, restore_delta, formula_version, flags, components
 		FROM energy_snapshots

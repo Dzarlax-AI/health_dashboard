@@ -82,7 +82,7 @@ func (s *DB) InsertAcceptedPoints(recordID int64, points []MetricPoint, coverage
 	accepted := ordinary
 	var extraDates []string
 	for _, entry := range entries {
-		applied, displacedDate, err := applyNightIngestEntry(ctx, tx, entry, recordID, received, loc)
+		applied, displacedDate, err := applyNightIngestEntry(ctx, tx, entry, recordID, received, loc, s.pointOrdering())
 		if err != nil {
 			return nil, err
 		}
@@ -96,7 +96,7 @@ func (s *DB) InsertAcceptedPoints(recordID int64, points []MetricPoint, coverage
 			extraDates = append(extraDates, displacedDate)
 		}
 	}
-	if err = insertPointsTx(ctx, tx, recordID, ordinary); err != nil {
+	if err = insertPointsTx(ctx, tx, recordID, ordinary, s.pointOrdering()); err != nil {
 		return nil, err
 	}
 	dates := append(cacheDatesFromPoints(accepted), extraDates...)
@@ -220,7 +220,7 @@ func hasNightPointConflict(ctx context.Context, tx pgx.Tx, entry nightIngestEntr
 	return false, rows.Err()
 }
 
-func applyNightIngestEntry(ctx context.Context, tx pgx.Tx, entry nightIngestEntry, id int64, received time.Time, loc *time.Location) (bool, string, error) {
+func applyNightIngestEntry(ctx context.Context, tx pgx.Tx, entry nightIngestEntry, id int64, received time.Time, loc *time.Location, ordering ingestPointOrdering) (bool, string, error) {
 	day, source := entry.key.wakeDate, entry.key.source
 	full := entry.coverage.CaptureCompleteness == health.NightCaptureComplete
 	if !full {
@@ -236,7 +236,7 @@ func applyNightIngestEntry(ctx context.Context, tx pgx.Tx, entry nightIngestEntr
 		}
 	}
 	if entry.coverage.InputHash == "" {
-		err := insertPointsTx(ctx, tx, id, []MetricPoint{entry.point})
+		err := insertPointsTx(ctx, tx, id, []MetricPoint{entry.point}, ordering)
 		return err == nil, "", err
 	}
 
@@ -318,7 +318,7 @@ func applyNightIngestEntry(ctx context.Context, tx pgx.Tx, entry nightIngestEntr
 	// Store the bound pair identity. Same coverage metadata with a corrected
 	// measurement can therefore update both the point and the commitment.
 	entry.coverage.InputHash = fingerprint
-	if err = insertPointsTx(ctx, tx, id, []MetricPoint{entry.point}); err != nil {
+	if err = insertPointsTx(ctx, tx, id, []MetricPoint{entry.point}, coveredNightOrdering); err != nil {
 		return false, "", err
 	}
 	if err = saveNightSleepCoverage(ctx, tx, entry.coverage); err != nil {

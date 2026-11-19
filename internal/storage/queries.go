@@ -795,6 +795,21 @@ type SleepNight struct {
 func (s *DB) GetSleepSummary(from, to string) ([]SleepNight, error) {
 	ctx, cancel := queryCtx()
 	defer cancel()
+	var nights []SleepNight
+	handled, err := s.withActiveSleepRollout(ctx, func(unit *DB, publication SleepRolloutPublication) error {
+		var readErr error
+		nights, readErr = unit.servedSleepSummary(ctx, publication, from, to)
+		return readErr
+	})
+	if handled || err != nil {
+		return nights, err
+	}
+	return s.getLegacySleepSummary(from, to)
+}
+
+func (s *DB) getLegacySleepSummary(from, to string) ([]SleepNight, error) {
+	ctx, cancel := queryCtx()
+	defer cancel()
 
 	sleepDedup := sleepDedupClause("sleep_total")
 	preferred := preferredSleepSourceSQL

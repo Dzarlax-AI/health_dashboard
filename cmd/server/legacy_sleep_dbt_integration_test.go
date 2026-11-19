@@ -94,7 +94,7 @@ func TestLegacySleepDBTSyncParityAndRollback(t *testing.T) {
 		}
 	}()
 	ingest.Register(mux)
-	post := func(schema string, body []byte) {
+	accept := func(schema string, body []byte) {
 		t.Helper()
 		req := httptest.NewRequest(http.MethodPost, "/health", strings.NewReader(string(body)))
 		req.Header.Set("X-API-Key", schema+"-key")
@@ -103,6 +103,9 @@ func TestLegacySleepDBTSyncParityAndRollback(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("%s sync: %d %s", schema, w.Code, w.Body.String())
 		}
+	}
+	awaitSync := func() {
+		t.Helper()
 		select {
 		case err := <-done:
 			if err != nil {
@@ -111,6 +114,11 @@ func TestLegacySleepDBTSyncParityAndRollback(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatal(ctx.Err())
 		}
+	}
+	post := func(schema string, body []byte) {
+		t.Helper()
+		accept(schema, body)
+		awaitSync()
 	}
 	metric := func(name string, data []map[string]any) map[string]any {
 		return map[string]any{"name": name, "units": "hr", "data": data}
@@ -147,7 +155,7 @@ func TestLegacySleepDBTSyncParityAndRollback(t *testing.T) {
 			point(day(-2), "RingConn", 7.5), point(day(-3), "iPhone", 6.5),
 		}),
 	)
-	checkParity := func() {
+	checkParity := func() int {
 		t.Helper()
 		a, b := dbs["rollout_a"], dbs["rollout_b"]
 		briefA, err := a.GetHealthBriefing("en")
@@ -164,8 +172,10 @@ func TestLegacySleepDBTSyncParityAndRollback(t *testing.T) {
 			briefA.EnergyBankStatus != briefB.EnergyBankStatus || !reflect.DeepEqual(briefA.EnergyBank, briefB.EnergyBank) {
 			t.Fatalf("live briefing mismatch for %s", day(0))
 		}
-		if briefA.EnergyBank == nil {
-			t.Fatal("live briefing has no current bank")
+		if briefA.ReadinessServing == nil || len(briefA.ReadinessServing.Components) == 0 ||
+			!reflect.DeepEqual(briefA.ReadinessServing, briefB.ReadinessServing) ||
+			!reflect.DeepEqual(briefA.ReadinessComponents, briefB.ReadinessComponents) {
+			t.Fatalf("readiness serving components mismatch: %+v vs %+v", briefA.ReadinessServing, briefB.ReadinessServing)
 		}
 		snapA, err := a.GetLatestEnergySnapshotForDate(ctx, day(0))
 		if err != nil {
@@ -183,6 +193,7 @@ func TestLegacySleepDBTSyncParityAndRollback(t *testing.T) {
 		if err != nil || len(histA) != 5 || !reflect.DeepEqual(histA, histB) {
 			t.Fatalf("readiness history mismatch: %v vs %v; %v", histA, histB, err)
 		}
+		var latestBank int
 		for offset := -4; offset <= 0; offset++ {
 			date := day(offset)
 			bankA, err := a.ComputeBankForDate(ctx, "UTC", date)
@@ -193,15 +204,31 @@ func TestLegacySleepDBTSyncParityAndRollback(t *testing.T) {
 			if err != nil || bankA.State == "stale" || !reflect.DeepEqual(bankA, bankB) {
 				t.Fatalf("%s bank mismatch: %+v vs %+v; %v", date, bankA, bankB, err)
 			}
-			if offset == 0 {
-				t.Logf("today readiness=%d (%s) bank=%d recovery=%d state=%s", briefA.ReadinessScore,
-					briefA.ReadinessBand, bankA.Bank, bankA.TodayRestore, bankA.State)
+			if offset < 0 {
+				continue
 			}
+			for i, view := range []struct {
+				brief *health.BriefingResponse
+				snap  *storage.LatestEnergySnapshot
+				bank  storage.BankResult
+			}{{briefA, snapA, bankA}, {briefB, snapB, bankB}} {
+				if view.snap.Bank != view.bank.Bank || view.snap.DrainDelta != view.bank.TodayDrain ||
+					view.snap.RestoreDelta != view.bank.TodayRestore || view.snap.FormulaVersion != view.bank.FormulaVersion {
+					t.Fatalf("%s: persisted snapshot %+v disagrees with current calculation %+v", schemas[i], view.snap, view.bank)
+				}
+				if view.brief.EnergyBank == nil || view.brief.EnergyBank.Current != max(0, min(100, view.snap.Bank)) {
+					t.Fatalf("%s: briefing bank %+v disagrees with persisted snapshot %+v", schemas[i], view.brief.EnergyBank, view.snap)
+				}
+			}
+			latestBank = snapA.Bank
+			t.Logf("today readiness=%d (%s) calculated and persisted bank=%d, recovery=%d, drain=%d, state=%s",
+				briefA.ReadinessScore, briefA.ReadinessBand, snapA.Bank, snapA.RestoreDelta, snapA.DrainDelta, bankA.State)
 		}
+		return latestBank
 	}
 	post("rollout_b", first)
 	post("rollout_a", first)
-	checkParity()
+	initialBank := checkParity()
 	probe := func(schema string) string {
 		return read(`SELECT count(*) FILTER (WHERE dbt)::text || '/' ||
 			count(*) FILTER (WHERE NOT dbt)::text FROM ` + schema + `.sleep_writer_probe`)
@@ -220,37 +247,93 @@ func TestLegacySleepDBTSyncParityAndRollback(t *testing.T) {
 	if got := read(`SELECT string_agg(DISTINCT source,',' ORDER BY source) FROM rollout_a.hourly_metrics WHERE metric_name='sleep_total'`); got != "Apple Watch,Apple Watch Ultra,RingConn,iPhone" {
 		t.Fatalf("unexpected source provenance: %s", got)
 	}
-	accepted := func() string {
-		return read(`SELECT string_agg(id::text || ':' || md5(payload::text), ',' ORDER BY id)
-			FROM rollout_a.health_records WHERE processing_status='complete' AND id=1`)
+	accepted := func(id int) string {
+		return read(`SELECT coalesce(max(md5(payload::text)), '') FROM rollout_a.health_records
+			WHERE processing_status='complete' AND id=$1`, id)
 	}
 	snapshots := func() string {
 		return read(`SELECT string_agg(to_jsonb(s)::text || ':' || xmin::text, '|' ORDER BY ts_bucket)
 			FROM rollout_a.energy_snapshots s`)
 	}
-	before, snapshotsBefore := accepted(), snapshots()
+	firstDigest, snapshotsBefore := accepted(1), snapshots()
+	correction := payload(
+		metric("sleep_analysis", []map[string]any{staged(day(0), "00:00:00", "Apple Watch", 5.5)}),
+		metric("sleep_total", []map[string]any{point(day(-1), "RingConn", 7.25)}),
+		metric("sleep_unspecified", []map[string]any{point(day(-1), "RingConn", 7.25)}),
+	)
+
+	// Hold the first daily write after the worker selected dbt. Updating the
+	// setting while PostgreSQL reports the waiter gives a deterministic boundary.
+	const syncBarrier = 280641
+	if _, err := root.Exec(ctx, fmt.Sprintf(`
+		CREATE FUNCTION rollout_a.block_dbt_daily_write() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+		  IF current_query() LIKE '%%legacy_sleep_input AS%%' THEN
+		    PERFORM pg_advisory_xact_lock(%d::bigint);
+		  END IF;
+		  RETURN NEW;
+		END $$;
+		CREATE TRIGGER block_dbt_daily_write BEFORE INSERT OR UPDATE ON rollout_a.daily_scores
+		FOR EACH ROW EXECUTE FUNCTION rollout_a.block_dbt_daily_write()`, syncBarrier)); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := root.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Rollback(context.Background())
+	if _, err := lock.Exec(ctx, `SELECT pg_advisory_xact_lock($1::bigint)`, int64(syncBarrier)); err != nil {
+		t.Fatal(err)
+	}
+	accept("rollout_a", correction)
+	waitDeadline := time.Now().Add(5 * time.Second)
+	for read(`SELECT count(*)::text FROM pg_locks WHERE database =
+		(SELECT oid FROM pg_database WHERE datname = current_database()) AND locktype='advisory'
+		AND classid=0 AND objid=$1 AND objsubid=1 AND NOT granted`, syncBarrier) != "1" {
+		if time.Now().After(waitDeadline) {
+			t.Fatal("dbt daily writer did not reach the rollback barrier")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	correctionDigest := accepted(2)
+	if firstDigest == "" || correctionDigest == "" {
+		t.Fatal("both /health packets must be durable before rollback")
+	}
 	if err := dbs["rollout_a"].SaveSettings(map[string]string{storage.LegacySleepDBTSetting: "false"}); err != nil {
 		t.Fatal(err)
 	}
-	checkParity()
-	if snapshots() != snapshotsBefore {
-		t.Fatal("turning off dbt rewrote existing EnergyBank snapshots")
+	if accepted(1) != firstDigest || accepted(2) != correctionDigest || snapshots() != snapshotsBefore {
+		t.Fatal("rollback changed accepted packets or snapshots while dbt was waiting")
 	}
-	correction := payload(metric("sleep_analysis", []map[string]any{
-		staged(day(0), "00:00:00", "Apple Watch", 5.5),
-	}))
-	post("rollout_a", correction)
+	if err := lock.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	awaitSync()
 	post("rollout_b", correction)
-	checkParity()
-	if got := dailySleep("rollout_a"); got != "5.5/0.75/-,7/-/7,7/0.75/-,6.5/-/6.5,8/1/-" {
-		t.Fatalf("correction after rollback did not reach legacy daily output: %s", got)
+	if got := checkParity(); got == initialBank {
+		t.Fatalf("expected the correction to change the bank from %d", initialBank)
 	}
-	if got := probe("rollout_a"); got != "5/1" {
+	if got := dailySleep("rollout_a"); got != "5.5/0.75/-,7.25/-/7.25,7/0.75/-,6.5/-/6.5,8/1/-" || got != dailySleep("rollout_b") {
+		t.Fatalf("in-flight dbt pass did not finish both dates: %s", got)
+	}
+	if got := probe("rollout_a"); got != "7/0" {
+		t.Fatalf("both writes in the active pass should retain dbt, got %s", got)
+	}
+
+	next := payload(metric("sleep_analysis", []map[string]any{staged(day(0), "00:00:00", "Apple Watch", 6)}))
+	post("rollout_a", next)
+	post("rollout_b", next)
+	checkParity()
+	if got := dailySleep("rollout_a"); got != "6/0.75/-,7.25/-/7.25,7/0.75/-,6.5/-/6.5,8/1/-" || got != dailySleep("rollout_b") {
+		t.Fatalf("next correction did not reach legacy daily output: %s", got)
+	}
+	if got := probe("rollout_a"); got != "7/1" {
 		t.Fatalf("expected the next sync to use the Go writer after rollback, got %s", got)
 	}
-	if before == "" || accepted() != before {
-		t.Fatal("rollback lost or modified the accepted raw packet")
+	if accepted(1) != firstDigest || accepted(2) != correctionDigest || accepted(3) == "" {
+		t.Fatal("rollback lost or modified accepted raw packets")
 	}
+
 	for _, schema := range schemas {
 		if observed(schema) != original[schema] {
 			t.Fatalf("historical observed snapshot was rewritten for %s", schema)

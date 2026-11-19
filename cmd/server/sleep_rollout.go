@@ -11,7 +11,16 @@ import (
 	"health-receiver/internal/tenants"
 )
 
-func registerSleepRollout(ctx context.Context, mux *http.ServeMux, mgr *tenants.Manager, enabled bool) {
+func registerHealthIngest(ctx context.Context, mux *http.ServeMux, mgr *tenants.Manager, ingest *handler.Handler, sleepEnabled bool) {
+	if mgr.UsesIsolatedPools() {
+		ingest.EnableSleepCandidateBatches(sleepEnabled)
+		go runSleepRolloutWorker(ctx, mgr, ingest, sleepEnabled)
+	}
+	ingest.Register(mux)
+	registerSleepRollout(mux, mgr, sleepEnabled)
+}
+
+func registerSleepRollout(mux *http.ServeMux, mgr *tenants.Manager, enabled bool) {
 	if !enabled || !mgr.UsesIsolatedPools() {
 		return
 	}
@@ -22,10 +31,9 @@ func registerSleepRollout(ctx context.Context, mux *http.ServeMux, mgr *tenants.
 		}
 		return db, true
 	}))
-	go runSleepRolloutWorker(ctx, mgr)
 }
 
-func runSleepRolloutWorker(ctx context.Context, mgr *tenants.Manager) {
+func runSleepRolloutWorker(ctx context.Context, mgr *tenants.Manager, ingest *handler.Handler, prepare bool) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
@@ -34,10 +42,23 @@ func runSleepRolloutWorker(ctx context.Context, mgr *tenants.Manager) {
 			return
 		case now := <-ticker.C:
 			for _, db := range mgr.ActiveDBs(ctx) {
-				if db.GetSetting(storage.SleepRolloutModeSetting, "off") != "prepare" {
+				// Drain a bounded number per tick, independently of the prepare mode.
+				unit, cancel := context.WithTimeout(ctx, 30*time.Second)
+				for range 16 {
+					processed, err := ingest.ProcessSleepCandidateMetrics(unit, db)
+					if err != nil && ctx.Err() == nil {
+						log.Print("sleep rollout: mixed metrics are pending retry")
+					}
+					if err != nil || !processed {
+						break
+					}
+				}
+				cancel()
+				mode := db.GetSetting(storage.SleepRolloutModeSetting, "off")
+				if !prepare || (mode != "prepare" && mode != "serve") {
 					continue
 				}
-				unit, cancel := context.WithTimeout(ctx, 30*time.Second)
+				unit, cancel = context.WithTimeout(ctx, 30*time.Second)
 				_, err := db.RunSleepRolloutNext(unit, now)
 				cancel()
 				if err != nil && ctx.Err() == nil {

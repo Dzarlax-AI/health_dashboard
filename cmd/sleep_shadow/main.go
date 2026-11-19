@@ -18,10 +18,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"health-receiver/internal/sleepshadow"
 	"health-receiver/internal/storage"
+	"health-receiver/internal/tenants"
 )
 
 func main() {
@@ -36,6 +38,13 @@ func run(args []string, clock func() time.Time) error {
 	confirmSchema := flags.String("confirm-legacy-schema", "", "verified original EnergyBank schema for those packets")
 	rebuildFile := flags.String("rebuild-all", "", "JSON file mapping every local shadow profile to its tenant schema")
 	rebuildVersion := flags.String("rebuild-version", "sleep-r9-v1", "checkpoint identity for the full local rebuild")
+	auditSchema := flags.String("audit-server-schema", "", "tenant schema to audit through its restricted PostgreSQL login")
+	auditTenant := flags.String("audit-server-tenant", "", "expected tenant UUID for the server preparation audit")
+	auditFrom := flags.String("audit-server-from", "", "first expected local date")
+	auditThrough := flags.String("audit-server-through", "", "last expected local date")
+	serverMode := flags.String("switch-server-mode", "", "switch the audited local tenant to serve or off")
+	serverEvidence := flags.String("switch-server-evidence", "", "evidence from the exact reviewed server audit")
+	rebuildServer := flags.Bool("rebuild-server-preparation", false, "repair prepared sleep results for owned dates before auditing")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -46,6 +55,16 @@ func run(args []string, clock func() time.Time) error {
 		return errors.New("unexpected positional arguments")
 	}
 	confirmLegacy := *confirmProfile != "" || *confirmSchema != ""
+	auditServer := *auditSchema != "" || *auditTenant != "" || *auditFrom != "" || *auditThrough != "" || *serverMode != "" || *serverEvidence != "" || *rebuildServer
+	if auditServer && (*auditSchema == "" || *auditTenant == "" || *auditFrom == "" || *auditThrough == "" || confirmLegacy || *rebuildFile != "") {
+		return errors.New("server audit requires schema, tenant UUID, first and last expected date, as a separate command")
+	}
+	if *rebuildServer && *serverMode != "" {
+		return errors.New("server rebuilding and switching are separate commands")
+	}
+	if (*serverMode == "") != (*serverEvidence == "") || (*serverMode != "" && *serverMode != "serve" && *serverMode != "off") {
+		return errors.New("server switch requires serve or off and the reviewed audit evidence")
+	}
 	if confirmLegacy && *rebuildFile != "" {
 		return errors.New("legacy pending confirmation and full rebuild are separate commands")
 	}
@@ -76,6 +95,39 @@ func run(args []string, clock func() time.Time) error {
 	defer stop()
 	startup, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	if auditServer {
+		tenantID, err := uuid.Parse(*auditTenant)
+		if err != nil || tenantID == uuid.Nil || config.ConnConfig.User != tenants.TenantRoleName(tenantID) {
+			return errors.New("server audit requires the expected tenant's PostgreSQL login")
+		}
+		db, err := storage.NewRestrictedTenant(startup, dsn, config.ConnConfig.User, config.ConnConfig.Password, *auditSchema)
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+		if err := db.AssertIdentity(startup, config.ConnConfig.User, *auditSchema); err != nil {
+			return err
+		}
+		if *serverMode != "" {
+			publication, err := db.SwitchSleepRollout(ctx, tenantID, *auditFrom, *auditThrough, *serverEvidence, *serverMode == "serve")
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(publication)
+		}
+		if *rebuildServer {
+			repaired, err := db.RebuildSleepRolloutPreparation(ctx, tenantID, *auditFrom, *auditThrough)
+			if err != nil {
+				return fmt.Errorf("repair stopped after %d committed dates: %w", repaired, err)
+			}
+			log.Printf("repaired %d prepared dates", repaired)
+		}
+		report, err := db.AuditSleepRolloutPreparation(ctx, tenantID, *auditFrom, *auditThrough)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(report)
+	}
 	pool, err := pgxpool.NewWithConfig(startup, config)
 	if err != nil {
 		return err

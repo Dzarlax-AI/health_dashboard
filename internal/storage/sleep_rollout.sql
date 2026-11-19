@@ -37,3 +37,16 @@ CREATE TABLE IF NOT EXISTS sleep_rollout_results (
     readiness jsonb NOT NULL,
     energy jsonb NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS sleep_rollout_batches (
+    batch_id uuid PRIMARY KEY,
+    payload_hash bytea NOT NULL,
+    health_record_id bigint NOT NULL UNIQUE REFERENCES health_records(id)
+);
+ALTER TABLE sleep_rollout_packets
+    ADD COLUMN IF NOT EXISTS health_record_id bigint REFERENCES health_records(id);
+ALTER TABLE sleep_rollout_batches
+    ADD COLUMN IF NOT EXISTS sync_session_id text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS sync_session_total integer NOT NULL DEFAULT 0;
+ALTER TABLE sleep_rollout_packets
+    ADD COLUMN IF NOT EXISTS recovery_health_record_id bigint REFERENCES health_records(id);

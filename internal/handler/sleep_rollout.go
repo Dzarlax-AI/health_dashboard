@@ -38,15 +38,11 @@ func SleepRolloutHandler(resolve func(*http.Request) (*storage.DB, bool)) http.H
 		}
 		decoder := json.NewDecoder(bytes.NewReader(body))
 		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&packet); err != nil || decoder.Decode(new(any)) != io.EOF ||
-			strings.TrimSpace(packet.SourceID) == "" || len(packet.SourceID) > 256 || len(packet.Candidate.ID) > 256 ||
-			len(packet.Candidate.Stages) > 4096 {
+		if err := decoder.Decode(&packet); err != nil || decoder.Decode(new(any)) != io.EOF {
 			http.Error(w, "invalid sleep packet", http.StatusBadRequest)
 			return
 		}
-		// The effective priority is selected from the tenant's policy on apply.
-		packet.Candidate.Priority = 0
-		date, err := packet.Candidate.WakeDate()
+		date, err := validateSleepRolloutCandidate(packet.SourceID, &packet.Candidate)
 		if err != nil || !validSleepRolloutLegacy(packet.Legacy) {
 			http.Error(w, "invalid sleep candidate or legacy payload", http.StatusBadRequest)
 			return
@@ -70,6 +66,16 @@ func SleepRolloutHandler(resolve func(*http.Request) (*storage.DB, bool)) http.H
 			_ = json.NewEncoder(w).Encode(map[string]string{"status": status})
 		}
 	}
+}
+
+func validateSleepRolloutCandidate(sourceID string, candidate *sleepwire.Candidate) (string, error) {
+	if strings.TrimSpace(sourceID) == "" || len(sourceID) > 256 ||
+		len(candidate.ID) > 256 || len(candidate.Stages) > 4096 {
+		return "", errors.New("invalid sleep candidate bounds")
+	}
+	// The effective priority is selected from the tenant's policy on apply.
+	candidate.Priority = 0
+	return candidate.WakeDate()
 }
 
 func validSleepRolloutLegacy(body json.RawMessage) bool {

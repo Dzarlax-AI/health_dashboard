@@ -188,15 +188,16 @@ func TestSleepRolloutServerIntegration(t *testing.T) {
 		return packetFor(oldDay, "watch", "night-1", rev, zone, duration)
 	}
 	muxFor := func(ctx context.Context, enabled bool) *http.ServeMux {
+		runCtx, cancel := context.WithCancel(ctx)
 		mux := http.NewServeMux()
 		legacy := handler.New(mgr, func(*storage.DB, []string, bool) {}, health.HRZones{})
 		t.Cleanup(func() {
+			cancel()
 			if err := legacy.Shutdown(context.Background()); err != nil {
 				t.Error(err)
 			}
 		})
-		legacy.Register(mux)
-		registerSleepRollout(ctx, mux, mgr, enabled)
+		registerHealthIngest(runCtx, mux, mgr, legacy, enabled)
 		return mux
 	}
 	do := func(mux *http.ServeMux, method, route, key, body string, status int) string {

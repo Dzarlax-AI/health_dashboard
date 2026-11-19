@@ -617,10 +617,13 @@ func (s *DB) chronicAvg(lastDate, col string) float64 {
 // all scoring and insight computation to the health package.
 // lang selects the output language ("en", "ru", "sr").
 func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
-	return s.getHealthBriefing(lang, nil)
+	if briefing, handled, err := s.sleepRolloutBriefing(lang); handled || err != nil {
+		return briefing, err
+	}
+	return s.getHealthBriefing(lang, nil, nil)
 }
 
-func (s *DB) getHealthBriefing(lang string, currentEnergy *localShadowCurrentEnergy) (*health.BriefingResponse, error) {
+func (s *DB) getHealthBriefing(lang string, currentEnergy *localShadowCurrentEnergy, sleep *rolloutBriefingSleep) (*health.BriefingResponse, error) {
 	ctx, cancel := queryCtx()
 	defer cancel()
 	// Use hourly_metrics for lastDate — avoids full scan of metric_points.
@@ -636,6 +639,10 @@ func (s *DB) getHealthBriefing(lang string, currentEnergy *localShadowCurrentEne
 	data := s.rawMetricsFromDailyScores(*lastDate)
 	if data == nil {
 		data = s.rawMetricsFromPoints(*lastDate)
+	}
+
+	if sleep != nil {
+		applyLocalShadowSleep(data, sleep.blocks)
 	}
 
 	// Supplement wrist_temperature (not in daily_scores) for anomaly detection.
@@ -656,10 +663,12 @@ func (s *DB) getHealthBriefing(lang string, currentEnergy *localShadowCurrentEne
 	// the user has fewer than 7 calendar days of per-segment sleep data
 	// (HAE midnight-summary nights cannot drive this — only iOS pushes can).
 	// scoreSleep falls back to the legacy stddev display in that case.
-	if sri, n, ok := s.ComputeSRI(14); ok {
-		v := sri
-		data.SleepRegularityIndex = &v
-		data.SleepRegularityNights = n
+	if sleep == nil {
+		if sri, n, ok := s.ComputeSRI(14); ok {
+			v := sri
+			data.SleepRegularityIndex = &v
+			data.SleepRegularityNights = n
+		}
 	}
 
 	resp := health.ComputeBriefing(*data, lang)
@@ -824,7 +833,11 @@ func (s *DB) getHealthBriefing(lang string, currentEnergy *localShadowCurrentEne
 		}
 	}
 
-	illnessInput := s.BuildIllnessEvidenceInput(*lastDate, resp.SubjectiveCheckin)
+	var sleepDisruption *health.MetricEvidenceInput
+	if sleep != nil && sleep.blocks[*lastDate] != nil {
+		sleepDisruption = localShadowSleepDisruption(sleep.blocks[*lastDate].Total, sleep.baseline)
+	}
+	illnessInput := s.buildIllnessEvidenceInput(*lastDate, resp.SubjectiveCheckin, sleepDisruption)
 	resp.IllnessSuspicion = health.ComputeIllnessSuspicion(illnessInput)
 	health.ApplyIllnessSafetyCap(resp, health.GetStrings(lang))
 	resp.TodayGuidance = health.ResolveDashboardTodayGuidance(
@@ -870,7 +883,10 @@ func (s *DB) getHealthBriefing(lang string, currentEnergy *localShadowCurrentEne
 
 	// Attach per-source sleep breakdown for the most recent night.
 	// Query hourly_metrics (indexed by hour) instead of metric_points.
-	if resp.Sleep != nil {
+	if sleep != nil && sleep.blocks[*lastDate] != nil {
+		attachRolloutSleepSource(resp, *lastDate, sleep.blocks[*lastDate])
+	}
+	if resp.Sleep != nil && (sleep == nil || sleep.blocks[*lastDate] == nil) {
 		sleepRows, qErr := s.pool.Query(ctx, `
 			SELECT source,
 				SUM(CASE WHEN metric_name='sleep_total'       THEN avg_val ELSE 0 END),
@@ -914,6 +930,17 @@ func (s *DB) getHealthBriefing(lang string, currentEnergy *localShadowCurrentEne
 // Results are served from the daily_scores cache when available and fresh;
 // otherwise the full sliding-window computation runs and the cache is updated.
 func (s *DB) GetReadinessHistory(outputDays int) ([]health.ReadinessPoint, error) {
+	var out []health.ReadinessPoint
+	ctx, cancel := queryCtx()
+	defer cancel()
+	handled, err := s.withActiveSleepRollout(ctx, func(unit *DB, publication SleepRolloutPublication) error {
+		var readErr error
+		out, readErr = unit.servedSleepReadinessHistory(ctx, publication, outputDays)
+		return readErr
+	})
+	if handled || err != nil {
+		return out, err
+	}
 	cached, err := s.readinessFromCache(outputDays)
 	if err == nil && s.isCacheRecent(cached) {
 		fillReadinessBands(cached)

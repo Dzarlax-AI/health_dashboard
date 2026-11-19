@@ -62,6 +62,7 @@ func (s *DB) EnsureSleepDurationBalanceTablesContext(ctx context.Context) error 
 			observed_at             TIMESTAMPTZ NOT NULL,
 			input_hash              TEXT NOT NULL
 		)`,
+		`ALTER TABLE sleep_period_coverage ADD COLUMN IF NOT EXISTS ingest_record_id BIGINT REFERENCES health_records(id)`,
 		`CREATE TABLE IF NOT EXISTS completed_sleep_episode (
 			episode_id              TEXT PRIMARY KEY,
 			wake_date               TEXT NOT NULL,
@@ -110,6 +111,16 @@ func (s *DB) EnsureSleepDurationBalanceTablesContext(ctx context.Context) error 
 // episodes. A replay with the same exact input hash is a no-op; a correction
 // never leaves mixed generations behind.
 func (s *DB) ApplySleepPeriodSnapshot(ctx context.Context, coverage SleepPeriodCoverageCommitment, episodes []CompletedSleepEpisodeCommitment) (bool, error) {
+	return s.applySleepPeriodSnapshot(ctx, nil, coverage, episodes)
+}
+
+// ApplyIngestSleepPeriodSnapshot orders ordinary and deferred uploads by their
+// original raw receipt. Direct writes keep their existing explicit semantics.
+func (s *DB) ApplyIngestSleepPeriodSnapshot(ctx context.Context, recordID int64, coverage SleepPeriodCoverageCommitment, episodes []CompletedSleepEpisodeCommitment) (bool, error) {
+	return s.applySleepPeriodSnapshot(ctx, &recordID, coverage, episodes)
+}
+
+func (s *DB) applySleepPeriodSnapshot(ctx context.Context, recordID *int64, coverage SleepPeriodCoverageCommitment, episodes []CompletedSleepEpisodeCommitment) (bool, error) {
 	if err := validateSleepPeriodCoverageCommitment(coverage, s.reportTZLocation()); err != nil {
 		return false, err
 	}
@@ -132,29 +143,39 @@ func (s *DB) ApplySleepPeriodSnapshot(ctx context.Context, coverage SleepPeriodC
 	if err != nil && err != pgx.ErrNoRows {
 		return false, err
 	}
-	if existingHash == coverage.InputHash {
+	if existingHash == coverage.InputHash && recordID == nil {
 		if err := tx.Commit(ctx); err != nil {
 			return false, err
 		}
 		return false, nil
 	}
-	if _, err := tx.Exec(ctx, `
+	tag, err := tx.Exec(ctx, `
 		INSERT INTO sleep_period_coverage(
 			wake_date,source_epoch,capture_completeness,coverage_generation,
-			covered_interval_start,covered_interval_end,observed_at,input_hash
-		) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+			covered_interval_start,covered_interval_end,observed_at,input_hash,ingest_record_id
+		) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
 		ON CONFLICT(wake_date) DO UPDATE SET
 			source_epoch=excluded.source_epoch,
 			capture_completeness=excluded.capture_completeness,
 			coverage_generation=excluded.coverage_generation,
 			covered_interval_start=excluded.covered_interval_start,
 			covered_interval_end=excluded.covered_interval_end,
-			observed_at=excluded.observed_at,
-			input_hash=excluded.input_hash`,
+			observed_at=CASE WHEN sleep_period_coverage.input_hash=excluded.input_hash
+			                 THEN sleep_period_coverage.observed_at ELSE excluded.observed_at END,
+			input_hash=excluded.input_hash,
+			ingest_record_id=excluded.ingest_record_id
+		WHERE $9::bigint IS NULL OR
+		  (COALESCE((SELECT received_at FROM health_records WHERE id=sleep_period_coverage.ingest_record_id),
+		            sleep_period_coverage.observed_at), COALESCE(sleep_period_coverage.ingest_record_id,0))
+		  <= (COALESCE((SELECT received_at FROM health_records WHERE id=$9),excluded.observed_at),$9)`,
 		coverage.WakeDate, coverage.SourceEpoch, coverage.CaptureCompleteness, coverage.CoverageGeneration,
-		coverage.CoveredIntervalStart, coverage.CoveredIntervalEnd, coverage.ObservedAt, coverage.InputHash,
-	); err != nil {
+		coverage.CoveredIntervalStart, coverage.CoveredIntervalEnd, coverage.ObservedAt, coverage.InputHash, recordID,
+	)
+	if err != nil {
 		return false, err
+	}
+	if tag.RowsAffected() == 0 || existingHash == coverage.InputHash {
+		return false, tx.Commit(ctx)
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM completed_sleep_episode WHERE wake_date=$1`, coverage.WakeDate); err != nil {
 		return false, err

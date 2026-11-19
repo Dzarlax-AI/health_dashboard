@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,11 +43,17 @@ const (
 const jobQueueSize = 256
 const maxIngestBodyBytes = 16 << 20
 
+type syncSessionKey struct {
+	db *storage.DB
+	id string
+}
+
 type syncSession struct {
 	db                 *storage.DB
 	total              int
 	received           int
-	dates              map[string]bool
+	dates              map[string]bool // true when an ordinary chunk still needs a refresh
+	cachedScores       map[string]bool
 	scoreMetricChanged bool
 	timer              *time.Timer
 }
@@ -75,9 +82,11 @@ func affectsReadiness(points []storage.MetricPoint) bool {
 }
 
 type Handler struct {
-	mgr          *tenants.Manager
-	onNewData    func(db *storage.DB, dates []string, cacheReady bool) // reports whether inline cache refresh succeeded
-	refreshCache func(*storage.DB, []string, bool) error
+	mgr                   *tenants.Manager
+	onNewData             func(db *storage.DB, dates []string, cacheReady bool) // reports whether inline cache refresh succeeded
+	refreshCache          func(*storage.DB, []string, bool) error
+	sleepCandidateBatches bool
+	sleepCandidatePrepare bool
 
 	hrZones health.HRZones // optional; zero value disables HR-zone computation on /health/workouts
 
@@ -88,7 +97,7 @@ type Handler struct {
 	jobSeq   atomic.Uint64
 
 	sessMu      sync.Mutex
-	sessions    map[string]*syncSession
+	sessions    map[syncSessionKey]*syncSession
 	sessionWait time.Duration
 }
 
@@ -101,7 +110,7 @@ func New(mgr *tenants.Manager, onNewData func(db *storage.DB, dates []string, ca
 		refreshCache: (*storage.DB).UpsertRecentCache,
 		hrZones:      zones,
 		jobs:         make(chan func(), jobQueueSize),
-		sessions:     make(map[string]*syncSession),
+		sessions:     make(map[syncSessionKey]*syncSession),
 		sessionWait:  sessionTimeout,
 	}
 	go h.runWorker()
@@ -157,7 +166,7 @@ func (h *Handler) processAcceptedRecord(db *storage.DB, id int64, body []byte, k
 	// cannot leave an old nap mixed with a new night. Failures remain best-effort
 	// derived-state failures and never turn an accepted upload into a rejection.
 	for _, coverage := range parsed.SleepPeriodCoverage {
-		changed, err := db.ApplySleepPeriodSnapshot(context.Background(), coverage, parsed.CompletedSleepEpisodes[coverage.WakeDate])
+		changed, err := db.ApplyIngestSleepPeriodSnapshot(context.Background(), id, coverage, parsed.CompletedSleepEpisodes[coverage.WakeDate])
 		if err != nil {
 			log.Printf("record %d: apply sleep period snapshot: %v", id, err)
 			continue
@@ -244,18 +253,18 @@ func (h *Handler) enqueue(job func()) {
 func (h *Handler) Shutdown(ctx context.Context) error {
 	h.closing.Store(true)
 	h.sessMu.Lock()
-	for id, session := range h.sessions {
+	var sessions []*syncSession
+	for key, session := range h.sessions {
 		if session.timer.Stop() {
 			h.timersWG.Done()
 		}
-		delete(h.sessions, id)
-		dates := make([]string, 0, len(session.dates))
-		for date := range session.dates {
-			dates = append(dates, date)
-		}
-		h.enqueue(func() { h.flushDates(session.db, dates, session.scoreMetricChanged) })
+		delete(h.sessions, key)
+		sessions = append(sessions, session)
 	}
 	h.sessMu.Unlock()
+	for _, session := range sessions {
+		h.enqueue(func() { h.flushSyncSession(session) })
+	}
 	h.timersWG.Wait()
 	done := make(chan struct{})
 	go func() { h.jobsWG.Wait(); close(done) }()
@@ -271,84 +280,129 @@ func (h *Handler) flushDates(db *storage.DB, dates []string, recomputeReadiness 
 	if len(dates) == 0 {
 		return
 	}
+	ready := h.refreshIngestDates(db, dates, recomputeReadiness)
+	if h.onNewData != nil {
+		h.onNewData(db, dates, ready)
+	}
+}
+
+func (h *Handler) refreshIngestDates(db *storage.DB, dates []string, recomputeReadiness bool) bool {
 	started := time.Now()
 	err := h.refreshCache(db, dates, recomputeReadiness)
 	log.Printf("ingest stage=inline_cache dates=%d duration=%s success=%t", len(dates), time.Since(started), err == nil)
 	if err != nil {
 		log.Printf("ingest: inline cache refresh failed; scheduling recovery: %v", err)
 	}
-	if h.onNewData != nil {
-		h.onNewData(db, dates, err == nil)
+	return err == nil
+}
+
+func (h *Handler) flushSyncSession(session *syncSession) {
+	dates := make([]string, 0, len(session.dates))
+	var dirty, overlap []string
+	for date, needsRefresh := range session.dates {
+		dates = append(dates, date)
+		if needsRefresh {
+			dirty = append(dirty, date)
+			if _, cached := session.cachedScores[date]; cached {
+				overlap = append(overlap, date)
+			}
+		}
+	}
+	var readinessFrom string
+	if len(overlap) != 0 {
+		current, err := session.db.AppliedIngestCacheDates(overlap)
+		if err == nil {
+			for _, date := range overlap {
+				if current[date] && session.scoreMetricChanged && !session.cachedScores[date] &&
+					(readinessFrom == "" || date < readinessFrom) {
+					readinessFrom = date
+				}
+			}
+			dirty = slices.DeleteFunc(dirty, func(date string) bool { return current[date] })
+		}
+	}
+	// A dirty aggregate refresh already recomputes the readiness suffix.
+	// If readiness must start earlier, refresh only the scores in a single
+	// pass after all remaining aggregate writes have completed.
+	if len(dirty) != 0 && readinessFrom != "" {
+		earliestDirty := slices.Min(dirty)
+		if earliestDirty <= readinessFrom {
+			readinessFrom = ""
+		}
+	}
+	ready := len(dirty) == 0 || h.refreshIngestDates(session.db, dirty, session.scoreMetricChanged && readinessFrom == "")
+	if ready && readinessFrom != "" {
+		if err := session.db.RefreshIngestReadinessSince(readinessFrom); err != nil {
+			log.Printf("ingest: readiness refresh failed; scheduling recovery: %v", err)
+			ready = false
+		}
+	}
+	if len(dates) > 0 && h.onNewData != nil {
+		h.onNewData(session.db, dates, ready)
 	}
 }
 
-// finalizeChunk is called from the per-record goroutine after InsertPoints.
-// Without session headers it flushes immediately (legacy per-POST behaviour).
-// With session headers it merges the chunk's dates into a shared session set
-// and flushes once when the last chunk arrives (or when the safety timer fires).
+// finalizeChunk tracks ordinary chunks whose cache writes are deferred.
 func (h *Handler) finalizeChunk(sessionID string, total int, db *storage.DB, dates []string, scoreAffected bool) {
-	if sessionID == "" {
+	h.finishSyncChunk(storage.IngestSyncSession{ID: sessionID, Total: total}, db, dates, scoreAffected, false)
+}
+
+// finishSyncChunk unites ordinary and already aggregated mixed parts. Only
+// the completed session (or its existing timeout) notifies downstream readers.
+func (h *Handler) finishSyncChunk(part storage.IngestSyncSession, db *storage.DB, dates []string, scoreAffected, cached bool) {
+	if part.ID == "" && !cached {
 		h.flushDates(db, dates, scoreAffected)
 		return
 	}
+	if part.ID == "" {
+		if len(dates) > 0 && h.onNewData != nil {
+			h.onNewData(db, dates, true)
+		}
+		return
+	}
 
+	key := syncSessionKey{db: db, id: part.ID}
 	h.sessMu.Lock()
-	s, ok := h.sessions[sessionID]
+	session, ok := h.sessions[key]
 	if !ok {
-		s = &syncSession{db: db, total: total, dates: make(map[string]bool)}
+		session = &syncSession{db: db, total: part.Total, dates: make(map[string]bool), cachedScores: make(map[string]bool)}
 		h.timersWG.Add(1)
 		wait := h.sessionWait
 		if wait <= 0 {
 			wait = sessionTimeout
 		}
-		s.timer = time.AfterFunc(wait, func() {
+		session.timer = time.AfterFunc(wait, func() {
 			defer h.timersWG.Done()
 			h.sessMu.Lock()
-			ts, ok := h.sessions[sessionID]
-			if !ok {
+			if h.sessions[key] != session {
 				h.sessMu.Unlock()
 				return
 			}
-			delete(h.sessions, sessionID)
+			delete(h.sessions, key)
 			h.sessMu.Unlock()
-			ds := make([]string, 0, len(ts.dates))
-			for d := range ts.dates {
-				ds = append(ds, d)
-			}
-			affected := ts.scoreMetricChanged
-			log.Printf("sync session %s: timed out at %d/%d, flushing %d dates (score=%v)",
-				sessionID, ts.received, ts.total, len(ds), affected)
-			h.enqueue(func() { h.flushDates(ts.db, ds, affected) })
+			h.enqueue(func() { h.flushSyncSession(session) })
 		})
-		h.sessions[sessionID] = s
+		h.sessions[key] = session
 	}
-	for _, d := range dates {
-		s.dates[d] = true
+	for _, date := range dates {
+		session.dates[date] = session.dates[date] || !cached
+		if cached {
+			session.cachedScores[date] = scoreAffected
+		}
 	}
-	if scoreAffected {
-		s.scoreMetricChanged = true
-	}
-	s.received++
-	complete := s.total > 0 && s.received >= s.total
-	var snapshot []string
-	var scoreSnap bool
+	session.scoreMetricChanged = session.scoreMetricChanged || (!cached && scoreAffected)
+	session.received++
+	complete := session.total > 0 && session.received >= session.total
 	if complete {
-		if s.timer.Stop() {
+		if session.timer.Stop() {
 			h.timersWG.Done()
 		}
-		delete(h.sessions, sessionID)
-		snapshot = make([]string, 0, len(s.dates))
-		for d := range s.dates {
-			snapshot = append(snapshot, d)
-		}
-		scoreSnap = s.scoreMetricChanged
+		delete(h.sessions, key)
 	}
 	h.sessMu.Unlock()
 
 	if complete {
-		log.Printf("sync session %s: complete (%d/%d), flushing %d dates (score=%v)",
-			sessionID, total, total, len(snapshot), scoreSnap)
-		h.flushDates(db, snapshot, scoreSnap)
+		h.flushSyncSession(session)
 	}
 }
 
@@ -418,15 +472,24 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 		ProcessingKind:        "all",
 	}
 
-	id, err := db.InsertRaw(rec)
-	if err != nil {
-		log.Printf("insert raw: %v", err)
-		http.Error(w, "failed to save record", http.StatusInternalServerError)
-		return
+	id, handled := h.acceptSleepCandidateBatch(w, r, db, rec, body)
+	if !handled {
+		id, err = db.InsertRaw(rec)
+		if err != nil {
+			log.Printf("insert raw: %v", err)
+			http.Error(w, "failed to save record", http.StatusInternalServerError)
+			return
+		}
+	}
+	if id == 0 {
+		return // The extension wrote an error response.
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"status": "ok", "id": id})
+	if handled {
+		return // The durable mixed-batch worker owns processing and retry.
+	}
 
 	sessionID := r.Header.Get(hdrSyncSession)
 	sessionTotal, _ := strconv.Atoi(r.Header.Get(hdrSyncSessionTotal))

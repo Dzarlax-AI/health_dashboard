@@ -17,6 +17,8 @@ type DB struct {
 	// Protected by cacheMu; durable dirty generations remain authoritative
 	// after a restart. This map identifies successful inline work in this process.
 	cacheAppliedGenerations map[string]uint64
+	sleepRolloutTenant      bool
+	preserveNewerIngest     bool // a mixed receipt may be processed after a newer ordinary upload
 	pool                    storagePool
 	cacheMu                 CachePriorityLock // serializes cache writes and lets queued foreground work run first
 
@@ -160,7 +162,7 @@ func NewRestrictedTenant(ctx context.Context, baseDSN, user, password, schema st
 		pool.Close()
 		return nil, fmt.Errorf("ping restricted tenant pool: %w", err)
 	}
-	return &DB{pool: pool}, nil
+	return &DB{pool: pool, sleepRolloutTenant: true}, nil
 }
 
 // AssertIdentity proves that a restricted pool authenticated as and resolves
@@ -422,6 +424,10 @@ type MetricPoint struct {
 func (s *DB) InsertRaw(r Record) (int64, error) {
 	ctx, cancel := queryCtx()
 	defer cancel()
+	return s.insertRawContext(ctx, r)
+}
+
+func (s *DB) insertRawContext(ctx context.Context, r Record) (int64, error) {
 	var recordID int64
 	status := "complete"
 	if r.PendingProcessing {
@@ -453,7 +459,7 @@ func (s *DB) PendingHealthRecords(limit int) ([]PendingHealthRecord, error) {
 	}
 	ctx, cancel := queryCtx()
 	defer cancel()
-	rows, err := s.pool.Query(ctx, `SELECT id,payload,processing_kind FROM health_records WHERE processing_status='pending' ORDER BY id LIMIT $1`, limit)
+	rows, err := s.pool.Query(ctx, `SELECT id,payload,processing_kind FROM health_records WHERE processing_status='pending' AND processing_kind<>$2 ORDER BY id LIMIT $1`, limit, sleepCandidateProcessingKind)
 	if err != nil {
 		return nil, err
 	}
@@ -503,13 +509,28 @@ func (s *DB) InsertPoints(recordID int64, points []MetricPoint) error {
 		return fmt.Errorf("mark inserted cache dates dirty: %w", err)
 	}
 
-	if err := insertPointsTx(ctx, tx, recordID, points); err != nil {
+	if err := insertPointsTx(ctx, tx, recordID, points, s.pointOrdering()); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
 }
 
-func insertPointsTx(ctx context.Context, tx pgx.Tx, recordID int64, points []MetricPoint) error {
+type ingestPointOrdering int
+
+const (
+	ordinaryPointOrdering ingestPointOrdering = iota
+	deferredPointOrdering
+	coveredNightOrdering
+)
+
+func (s *DB) pointOrdering() ingestPointOrdering {
+	if s.preserveNewerIngest {
+		return deferredPointOrdering
+	}
+	return ordinaryPointOrdering
+}
+
+func insertPointsTx(ctx context.Context, tx pgx.Tx, recordID int64, points []MetricPoint, ordering ingestPointOrdering) error {
 	// Three guards on the sleep_% UPDATE branch — all protect the cached
 	// per-night aggregate from being clobbered by garbage records that share
 	// the same (metric_name, date, source) key:
@@ -545,7 +566,8 @@ func insertPointsTx(ctx context.Context, tx pgx.Tx, recordID int64, points []Met
 	//      converges naturally.
 	const upsertSQL = `INSERT INTO metric_points
 		(health_record_id, metric_name, units, date, qty, source, origin, import_run_id, source_snapshot_at)
-		VALUES ($1, $2, $3, $4, $5, $6, 'live', NULL, NOW())
+		VALUES ($1, $2, $3, $4, $5, $6, 'live', NULL,
+			CASE WHEN $7=1 THEN COALESCE((SELECT received_at FROM health_records WHERE id=$1), NOW()) ELSE NOW() END)
 		ON CONFLICT(metric_name, date, source) DO UPDATE SET
 			received_at = NOW(),
 			qty = CASE
@@ -571,7 +593,19 @@ func insertPointsTx(ctx context.Context, tx pgx.Tx, recordID int64, points []Met
 			health_record_id = excluded.health_record_id,
 			origin = 'live',
 			import_run_id = NULL,
-			source_snapshot_at = NOW()`
+			source_snapshot_at = excluded.source_snapshot_at
+		WHERE $7=2 OR CASE
+		  WHEN $7=1 OR EXISTS (SELECT 1 FROM health_records
+		    WHERE id=metric_points.health_record_id AND processing_kind='sleep_candidates') THEN
+		    CASE WHEN metric_points.origin='live' AND metric_points.health_record_id IS NOT NULL THEN
+		      (COALESCE((SELECT received_at FROM health_records WHERE id=metric_points.health_record_id),
+		                metric_points.received_at, '-infinity'), metric_points.health_record_id)
+		      <= (COALESCE((SELECT received_at FROM health_records WHERE id=$1), NOW()), excluded.health_record_id)
+		    ELSE COALESCE(metric_points.source_snapshot_at, metric_points.received_at, '-infinity')
+		      <= COALESCE((SELECT received_at FROM health_records WHERE id=$1), NOW())
+		    END
+		  ELSE true
+		END`
 
 	const chunkSize = 500
 	for i := 0; i < len(points); i += chunkSize {
@@ -582,7 +616,7 @@ func insertPointsTx(ctx context.Context, tx pgx.Tx, recordID int64, points []Met
 		chunk := points[i:end]
 		batch := &pgx.Batch{}
 		for _, p := range chunk {
-			batch.Queue(upsertSQL, recordID, p.MetricName, p.Units, p.Date, p.Qty, p.Source)
+			batch.Queue(upsertSQL, recordID, p.MetricName, p.Units, p.Date, p.Qty, p.Source, int(ordering))
 		}
 		br := tx.SendBatch(ctx, batch)
 		for _, p := range chunk {

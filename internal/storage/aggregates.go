@@ -295,6 +295,21 @@ func (s *DB) UpsertRecentCache(dates []string, recomputeReadiness bool) error {
 	return nil
 }
 
+// RefreshIngestReadinessSince updates scoring and dashboard output for inputs
+// whose hourly and daily aggregates have already been committed.
+func (s *DB) RefreshIngestReadinessSince(fromDate string) error {
+	finish := s.BeginDashboardRefresh()
+	defer finish()
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	if err := s.RecomputeReadinessSince(fromDate); err != nil {
+		return err
+	}
+	ctx, cancel := longCtx()
+	defer cancel()
+	return s.refreshDashboardSnapshotLocked(ctx)
+}
+
 // upsertHourlyAvgForDate rebuilds hourly_metrics for ALL non-sleep AVG metrics
 // on `date` in a single SQL statement.
 func (s *DB) upsertHourlyAvgForDate(date string) error {

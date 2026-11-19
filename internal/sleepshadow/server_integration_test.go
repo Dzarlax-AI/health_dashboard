@@ -84,7 +84,11 @@ func TestShadowTransferAndLegacyReplay(t *testing.T) {
 		}
 		return output
 	}
-	alias := legacyAlias{"health-sync-ios-v1", "Apple Watch", "healthkit-sleep-v1:synthetic-original"}
+	alias := legacyAlias{
+		SourceEpoch: "health-sync-ios-v1",
+		Source:      "Apple Watch",
+		Generation:  "healthkit-sleep-v1:synthetic-original",
+	}
 	a := makeCandidate("A", 0, "2026-01-26T22:30:00Z", 2*time.Hour, 2*time.Hour, 2*time.Hour)
 	a.LegacyAliases = []legacyAlias{alias}
 	a.Stages[1].Kind = "deep"

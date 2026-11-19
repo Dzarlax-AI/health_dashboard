@@ -34,21 +34,38 @@ type SleepRolloutInput struct {
 // sleepRolloutIdentity runs under the same lock as acceptance and processing.
 // Its ID comes from the tenant-owned marker, never from packet data.
 func sleepRolloutIdentity(ctx context.Context, tx pgx.Tx) (uuid.UUID, error) {
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('health/sleep-rollout/' || current_schema(),0))`); err != nil {
+	if err := lockSleepRollout(ctx, tx); err != nil {
 		return uuid.Nil, err
 	}
+	return sleepRolloutProfile(ctx, tx)
+}
+
+func lockSleepRollout(ctx context.Context, tx pgx.Tx) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('health/sleep-rollout/' || current_schema(),0))`)
+	return err
+}
+
+func sleepRolloutProfile(ctx context.Context, tx pgx.Tx) (uuid.UUID, error) {
 	var mode string
-	if err := tx.QueryRow(ctx, `SELECT value FROM settings WHERE key=$1 FOR SHARE`, SleepRolloutModeSetting).Scan(&mode); errors.Is(err, pgx.ErrNoRows) || (err == nil && mode != "prepare") {
+	if err := tx.QueryRow(ctx, `SELECT value FROM settings WHERE key=$1 FOR SHARE`, SleepRolloutModeSetting).Scan(&mode); errors.Is(err, pgx.ErrNoRows) || (err == nil && mode != "prepare" && mode != "serve") {
 		return uuid.Nil, ErrSleepRolloutDisabled
 	} else if err != nil {
 		return uuid.Nil, err
+	}
+	if mode == "serve" {
+		publication, err := readSleepRolloutPublication(ctx, tx)
+		if err != nil {
+			return uuid.Nil, err
+		}
+		if publication == nil || !publication.Active {
+			return uuid.Nil, ErrSleepRolloutDisabled
+		}
 	}
 	identity, err := ReadTenantIdentityMarker(ctx, tx, "")
 	if err != nil {
 		return uuid.Nil, err
 	}
-	if identity.TenantID == uuid.Nil || identity.SchemaContractVersion != SchemaContractVersion ||
-		identity.SchemaContractChecksum != SchemaContractChecksum() {
+	if identity.TenantID == uuid.Nil || identity.SchemaContractVersion != SchemaContractVersion || identity.SchemaContractChecksum != SchemaContractChecksum() {
 		return uuid.Nil, errors.New("sleep rollout tenant contract is unverified")
 	}
 	return identity.TenantID, nil
@@ -56,10 +73,6 @@ func sleepRolloutIdentity(ctx context.Context, tx pgx.Tx) (uuid.UUID, error) {
 
 // AcceptSleepRollout commits the immutable raw packet and its work item in one step.
 func (s *DB) AcceptSleepRollout(ctx context.Context, input SleepRolloutInput) (string, error) {
-	normalized, err := json.Marshal(input.Candidate)
-	if err != nil {
-		return "", err
-	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return "", err
@@ -68,13 +81,50 @@ func (s *DB) AcceptSleepRollout(ctx context.Context, input SleepRolloutInput) (s
 	if _, err := sleepRolloutIdentity(ctx, tx); err != nil {
 		return "", err
 	}
+	var prepare bool
+	if err := tx.QueryRow(ctx, `SELECT value='prepare' FROM settings WHERE key=$1`, SleepRolloutModeSetting).Scan(&prepare); err != nil {
+		return "", err
+	}
+	if !prepare {
+		return "", ErrSleepRolloutDisabled
+	}
+	status, err := insertSleepRolloutCandidate(ctx, tx, input, nil)
+	if err != nil || status != "accepted" {
+		return status, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return status, nil
+}
+
+// The caller holds the tenant rollout lock. Mixed batches keep their legacy
+// input in the linked health record and can repeat a candidate independently
+// of the other metrics being uploaded in that batch.
+func insertSleepRolloutCandidate(ctx context.Context, tx pgx.Tx, input SleepRolloutInput, healthRecordID *int64) (string, error) {
+	normalized, err := json.Marshal(input.Candidate)
+	if err != nil {
+		return "", err
+	}
 	var previousMatches bool
-	err = tx.QueryRow(ctx, `SELECT candidate=$4::jsonb AND legacy_payload=$5::jsonb
+	err = tx.QueryRow(ctx, `SELECT candidate=$4::jsonb AND
+		($5::jsonb IS NULL OR legacy_payload=$5::jsonb)
 		FROM sleep_rollout_packets WHERE source_id=$1 AND candidate_id=$2 AND revision=$3`,
 		input.SourceID, input.Candidate.ID, input.Candidate.Revision, json.RawMessage(normalized), input.Legacy).Scan(&previousMatches)
 	if err == nil {
 		if !previousMatches {
 			return "", ErrSleepRolloutConflict
+		}
+		if healthRecordID != nil {
+			// Preserve the original receipt and candidate bytes. A valid new
+			// batch can repair only a failed ordinary prerequisite.
+			if _, err := tx.Exec(ctx, `UPDATE sleep_rollout_packets p SET recovery_health_record_id=$4
+				FROM health_records h
+				WHERE p.source_id=$1 AND p.candidate_id=$2 AND p.revision=$3 AND p.applied_at IS NULL
+				  AND h.id=COALESCE(p.recovery_health_record_id,p.health_record_id) AND h.processing_status='failed'`,
+				input.SourceID, input.Candidate.ID, input.Candidate.Revision, *healthRecordID); err != nil {
+				return "", err
+			}
 		}
 		return "repeat", nil
 	}
@@ -90,12 +140,10 @@ func (s *DB) AcceptSleepRollout(ctx context.Context, input SleepRolloutInput) (s
 		return "stale", nil
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO sleep_rollout_packets
-		(source_id,candidate_id,revision,wake_date,raw_payload,candidate,legacy_payload)
-		VALUES ($1,$2,$3,$4::text::date,$5,$6,$7)`, input.SourceID, input.Candidate.ID, input.Candidate.Revision,
-		input.WakeDate, input.Raw, json.RawMessage(normalized), input.Legacy); err != nil {
-		return "", err
-	}
-	if err := tx.Commit(ctx); err != nil {
+		(source_id,candidate_id,revision,wake_date,raw_payload,candidate,legacy_payload,health_record_id)
+		VALUES ($1,$2,$3,$4::text::date,$5,$6,COALESCE($7::jsonb,'null'::jsonb),$8)`,
+		input.SourceID, input.Candidate.ID, input.Candidate.Revision, input.WakeDate, input.Raw,
+		json.RawMessage(normalized), input.Legacy, healthRecordID); err != nil {
 		return "", err
 	}
 	return "accepted", nil
@@ -129,12 +177,16 @@ func (s *DB) RunSleepRolloutNext(ctx context.Context, now time.Time) (bool, erro
 		return false, err
 	}
 	unit := &DB{pool: &cacheTransaction{Tx: tx, ctx: ctx}}
-	today := now.In(unit.reportTZLocation()).Format(time.DateOnly)
+	loc := unit.reportTZLocation()
+	today := now.In(loc).Format(time.DateOnly)
 	var sequence, revision int64
 	var source, id, date string
 	var snapshot json.RawMessage
 	err = tx.QueryRow(ctx, `SELECT sequence,source_id,candidate_id,revision,wake_date::text,candidate
-		FROM sleep_rollout_packets WHERE applied_at IS NULL AND wake_date <= $1::text::date
+		FROM sleep_rollout_packets p WHERE applied_at IS NULL AND wake_date <= $1::text::date
+		  AND (p.health_record_id IS NULL OR EXISTS (
+		    SELECT 1 FROM health_records h WHERE h.id=COALESCE(p.recovery_health_record_id,p.health_record_id) AND h.processing_status='complete'
+		  ))
 		ORDER BY sequence LIMIT 1 FOR UPDATE`, today).
 		Scan(&sequence, &source, &id, &revision, &date, &snapshot)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -187,6 +239,17 @@ func (s *DB) RunSleepRolloutNext(ctx context.Context, now time.Time) (bool, erro
 	if _, err := tx.Exec(ctx, `UPDATE sleep_rollout_packets SET applied_at=now() WHERE sequence=$1`, sequence); err != nil {
 		return false, err
 	}
+	if revision > oldRevision && s.sleepRolloutServeEnabled() {
+		publication, err := readSleepRolloutPublication(ctx, tx)
+		if err != nil {
+			return false, err
+		}
+		if publication != nil && publication.Active {
+			if _, err := unit.recordServedSleepObservation(ctx, loc, now, *publication); err != nil {
+				return false, err
+			}
+		}
+	}
 	return true, tx.Commit(ctx)
 }
 
@@ -207,44 +270,53 @@ func (s *DB) prepareSleepRolloutResults(ctx context.Context, dates []string, gen
 	}
 	cfg := s.GetEnergyConfig()
 	for date := range affected {
-		r, err := s.readRolloutReadiness(ctx, date)
-		if err != nil {
-			return err
-		}
-		energy, err := s.readRolloutEnergy(ctx, date, cfg)
-		if err != nil {
-			return err
-		}
-		rawReadiness, err := json.Marshal(r)
-		if err != nil {
-			return err
-		}
-		rawEnergy, err := json.Marshal(energy)
-		if err != nil {
-			return err
-		}
-		if _, err := s.pool.Exec(ctx, `INSERT INTO sleep_rollout_results(day,generation,readiness,energy)
-			VALUES ($1::text::date,$2,$3,$4)
-			ON CONFLICT(day) DO UPDATE SET generation=EXCLUDED.generation,readiness=EXCLUDED.readiness,energy=EXCLUDED.energy`,
-			date, generation, json.RawMessage(rawReadiness), json.RawMessage(rawEnergy)); err != nil {
+		if err := s.prepareSleepRolloutResult(ctx, date, generation, cfg); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+func (s *DB) prepareSleepRolloutResult(ctx context.Context, date string, generation int64, cfg EnergyConfig) error {
+	r, err := s.readRolloutReadiness(ctx, date)
+	if err != nil {
+		return err
+	}
+	energy, err := s.readRolloutEnergy(ctx, date, cfg)
+	if err != nil {
+		return err
+	}
+	rawReadiness, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	rawEnergy, err := json.Marshal(energy)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `INSERT INTO sleep_rollout_results(day,generation,readiness,energy)
+		VALUES ($1::text::date,$2,$3,$4)
+		ON CONFLICT(day) DO UPDATE SET generation=EXCLUDED.generation,readiness=EXCLUDED.readiness,energy=EXCLUDED.energy`,
+		date, generation, json.RawMessage(rawReadiness), json.RawMessage(rawEnergy))
+	return err
+}
+
 func (s *DB) readRolloutReadiness(ctx context.Context, date string) (*LocalShadowReadiness, error) {
-	rows, err := s.pool.Query(ctx, `SELECT day::text,d.generation,d.candidate,d.revision,
-		d.sleep_seconds/3600,d.deep_seconds/3600,d.rem_seconds/3600,d.core_seconds/3600,
-		d.unspecified_seconds/3600,d.awake_seconds/3600,d.stage_conflict,h.sleep_total
-		FROM (SELECT $1::text::date-i AS day FROM generate_series(0,$2::integer) AS days(i)) days
-		LEFT JOIN sleep_rollout_daily d ON d.wake_date=day
-		LEFT JOIN daily_scores h ON h.date=day::text ORDER BY day DESC`, date, rolloutReadinessBaselineDays)
-	blocks, baseline, err := readSleepBlocks(rows, err, date)
+	blocks, baseline, err := s.loadRolloutSleepWindow(ctx, date, "")
 	if err != nil {
 		return nil, err
 	}
 	return s.readinessWithSleep(ctx, date, blocks, baseline), nil
+}
+
+func (s *DB) loadRolloutSleepWindow(ctx context.Context, date, publishedFrom string) (map[string]*LocalShadowSleep, []float64, error) {
+	rows, err := s.pool.Query(ctx, `SELECT day::text,d.generation,d.candidate,d.revision,
+		d.sleep_seconds/3600,d.deep_seconds/3600,d.rem_seconds/3600,d.core_seconds/3600,
+		d.unspecified_seconds/3600,d.awake_seconds/3600,d.stage_conflict,h.sleep_total
+		FROM (SELECT $1::text::date-i AS day FROM generate_series(0,$2::integer) AS days(i)) days
+		LEFT JOIN sleep_rollout_daily d ON d.wake_date=day AND ($3='' OR day::text >= $3)
+		LEFT JOIN daily_scores h ON h.date=day::text ORDER BY day DESC`, date, rolloutReadinessBaselineDays, publishedFrom)
+	return readSleepBlocks(rows, err, date)
 }
 
 func (s *DB) readRolloutEnergy(ctx context.Context, date string, cfg EnergyConfig) (BankResult, error) {
