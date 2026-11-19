@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -138,10 +139,10 @@ func TestSleepRolloutServerIntegration(t *testing.T) {
 		t.Fatal("isolated profile did not resolve")
 	}
 	today := time.Now().UTC().Truncate(24 * time.Hour)
-	oldDay := today.AddDate(0, 0, -2)
+	oldDay := today.AddDate(0, 0, -31)
 	newDay := oldDay.AddDate(0, 0, 1)
 	exec(`INSERT INTO rollout_a.daily_scores(date,sleep_total,sleep_core,sleep_deep,sleep_rem,sleep_awake,hrv_avg,rhr_avg,calories)
-		SELECT (date ` + "'" + today.Format(time.DateOnly) + "'" + `+i)::text,8,6,1,1,0,50,57,550 FROM generate_series(-34,0) i`)
+		SELECT (date ` + "'" + today.Format(time.DateOnly) + "'" + `+i)::text,8,6,1,1,0,50,57,550 FROM generate_series(-65,0) i`)
 	observedAt := newDay.Add(23*time.Hour + 55*time.Minute)
 	if err := a.UpsertEnergySnapshotAt(ctx, "UTC", observedAt, storage.BankResult{Bank: 73, FormulaVersion: 3}); err != nil {
 		t.Fatal(err)
@@ -150,21 +151,28 @@ func TestSleepRolloutServerIntegration(t *testing.T) {
 		return read(`SELECT to_jsonb(s)::text||':'||xmin::text FROM rollout_a.energy_snapshots s WHERE ts_bucket=$1`, observedAt)
 	}
 	originalObservation := observed()
-	packet := func(rev int, zone string, duration time.Duration) string {
+	packetFor := func(wakeBase time.Time, source, id string, rev int, zone string, duration time.Duration) string {
 		t.Helper()
-		start := oldDay.Add(16*time.Hour + 30*time.Minute)
-		body, err := json.Marshal(map[string]any{"source_id": "watch", "candidate": map[string]any{
-			"id": "night-1", "revision": rev, "wake_zone": zone,
-			"stages": []map[string]any{{"id": "stage1", "kind": "core", "start_at": start, "end_at": start.Add(duration)}},
+		start := wakeBase.Add(16*time.Hour + 30*time.Minute)
+		body, err := json.Marshal(map[string]any{"source_id": source, "candidate": map[string]any{
+			"id": id, "revision": rev, "wake_zone": zone, "zero_stages": []string{"awake"},
+			"stages": []map[string]any{
+				{"id": "core", "kind": "core", "start_at": start, "end_at": start.Add(duration - 2*time.Hour)},
+				{"id": "deep", "kind": "deep", "start_at": start.Add(duration - 2*time.Hour), "end_at": start.Add(duration - time.Hour)},
+				{"id": "rem", "kind": "rem", "start_at": start.Add(duration - time.Hour), "end_at": start.Add(duration)},
+			},
 		}, "legacy_payload": map[string]any{"data": map[string]any{"metrics": []map[string]any{
 			{"name": "sleep_total", "units": "hr", "data": []map[string]any{
-				{"date": oldDay.Format(time.DateOnly) + " 00:00:00 +0000", "qty": 6, "source": "Apple Watch"},
+				{"date": wakeBase.Format(time.DateOnly) + " 00:00:00 +0000", "qty": 6, "source": "Apple Watch"},
 			}},
 		}}}})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return string(body)
+	}
+	packet := func(rev int, zone string, duration time.Duration) string {
+		return packetFor(oldDay, "watch", "night-1", rev, zone, duration)
 	}
 	muxFor := func(ctx context.Context, enabled bool) *http.ServeMux {
 		mux := http.NewServeMux()
@@ -195,7 +203,7 @@ func TestSleepRolloutServerIntegration(t *testing.T) {
 	defer cancel()
 	mux := muxFor(workerCtx, true)
 	do(mux, "POST", route, "rollout_a-key", packet(1, "UTC", 6*time.Hour), 404)
-	if err := a.SaveSettings(map[string]string{storage.SleepRolloutModeSetting: "prepare", "timezone": "UTC"}); err != nil {
+	if err := a.SaveSettings(map[string]string{storage.SleepRolloutModeSetting: "prepare", "timezone": "UTC", "sleep_rollout_source_priority": `["ring","watch"]`}); err != nil {
 		t.Fatal(err)
 	}
 	do(mux, "POST", route, "rollout_b-key", packet(1, "UTC", 6*time.Hour), 404)
@@ -219,6 +227,19 @@ func TestSleepRolloutServerIntegration(t *testing.T) {
 	poll("1", `SELECT count(*)::text FROM rollout_a.sleep_rollout_packets WHERE applied_at IS NOT NULL`)
 	do(mux, "POST", route, "rollout_a-key", packet(1, "UTC", 6*time.Hour), 200)
 	do(mux, "POST", route, "rollout_a-key", packet(1, "UTC", 7*time.Hour), 409)
+	// An already preferred source occupies the destination under the old policy.
+	do(mux, "POST", route, "rollout_a-key", packetFor(newDay, "ring", "ring-night", 1, "UTC", 7*time.Hour), 202)
+	poll("2", `SELECT count(*)::text FROM rollout_a.sleep_rollout_packets WHERE applied_at IS NOT NULL`)
+	if got := read(`SELECT sleep_seconds::int::text FROM rollout_a.sleep_rollout_daily WHERE wake_date=$1::date`, newDay); got != "25200" {
+		t.Fatal(got)
+	}
+	if err := a.SaveSettings(map[string]string{"sleep_rollout_source_priority": `["watch","ring"]`}); err != nil {
+		t.Fatal(err)
+	}
+	// Enqueue tomorrow before today's eligible correction to catch head-of-line blocking.
+	tomorrow := today.AddDate(0, 0, 1)
+	do(mux, "POST", route, "rollout_a-key", packetFor(today, "watch", "travel-tomorrow", 1, "Asia/Singapore", 6*time.Hour), 202)
+
 	exec(`CREATE FUNCTION rollout_a.fail_rebuild() RETURNS trigger LANGUAGE plpgsql AS $$
 		BEGIN RAISE EXCEPTION 'temporary synthetic failure'; END; $$;
 		CREATE TRIGGER fail_rebuild BEFORE INSERT OR UPDATE ON rollout_a.sleep_rollout_results
@@ -227,20 +248,70 @@ func TestSleepRolloutServerIntegration(t *testing.T) {
 	if ran, err := a.RunSleepRolloutNext(ctx, time.Now()); err == nil || ran {
 		t.Fatalf("failure injection unexpectedly committed: %v, %v", ran, err)
 	}
-	if got := read(`SELECT count(*)::text FROM rollout_a.sleep_rollout_daily WHERE generation=2`); got != "0" {
+	if got := read(`SELECT count(*)::text FROM rollout_a.sleep_rollout_daily WHERE generation=4`); got != "0" {
 		t.Fatal("partial transfer escaped failed transaction")
 	}
 	poll("1", `SELECT count(*)::text FROM rollout_a.sleep_rollout_packets WHERE revision=2 AND applied_at IS NULL`)
 	exec("DROP TRIGGER fail_rebuild ON rollout_a.sleep_rollout_results")
-	poll("2", `SELECT count(*)::text FROM rollout_a.sleep_rollout_packets WHERE applied_at IS NOT NULL`)
+	poll("3", `SELECT count(*)::text FROM rollout_a.sleep_rollout_packets WHERE applied_at IS NOT NULL`)
 	owned := read(`SELECT string_agg(wake_date::text||'='||COALESCE(sleep_seconds::text,'missing'),',' ORDER BY wake_date)
 		FROM rollout_a.sleep_rollout_daily`)
 	if want := oldDay.Format(time.DateOnly) + "=missing," + newDay.Format(time.DateOnly) + "=21600"; owned != want {
 		t.Fatalf("daily: got %s want %s", owned, want)
 	}
-	if got := read(`SELECT count(*)::text FROM rollout_a.sleep_rollout_results WHERE day IN ($1::date,$2::date)
-		AND generation=2 AND readiness->'sleep' IS NOT NULL AND energy->>'State' IS NOT NULL`, oldDay, newDay); got != "2" {
-		t.Fatal(got)
+	// The destination's final result, not just its row, reaches D+30.
+	if got := read(`SELECT COALESCE(max(generation),0)::text FROM rollout_a.sleep_rollout_results WHERE day=$1::date`, today); got != "4" {
+		t.Fatalf("destination D+30 generation: %s, want 4", got)
+	}
+	if got := read(`SELECT count(*)::text FROM rollout_a.sleep_rollout_packets WHERE candidate_id='travel-tomorrow' AND applied_at IS NULL`); got != "1" {
+		t.Fatal("future receipt was not deferred")
+	}
+	if got := read(`SELECT count(*)::text FROM rollout_a.sleep_rollout_daily WHERE wake_date=$1::date`, tomorrow); got != "0" {
+		t.Fatal("future receipt changed the vitrine before midnight")
+	}
+	b, _, _, ok := mgr.DBForAPIKey(ctx, "rollout_b-key")
+	if !ok {
+		t.Fatal("control tenant did not resolve")
+	}
+	exec(`INSERT INTO rollout_b.daily_scores SELECT * FROM rollout_a.daily_scores`)
+	exec(`UPDATE rollout_b.daily_scores SET sleep_total=NULL,sleep_core=NULL,sleep_deep=NULL,sleep_rem=NULL,sleep_awake=NULL WHERE date=$1`, oldDay.Format(time.DateOnly))
+	exec(`UPDATE rollout_b.daily_scores SET sleep_total=6,sleep_core=4,sleep_deep=1,sleep_rem=1,sleep_awake=0 WHERE date=$1`, newDay.Format(time.DateOnly))
+	for _, day := range []time.Time{oldDay, newDay} {
+		date := day.Format(time.DateOnly)
+		exec(`TRUNCATE rollout_b.hourly_metrics`)
+		exec(`INSERT INTO rollout_b.hourly_metrics(metric_name,hour,source,avg_val,sample_count,min_val,max_val)
+			VALUES('step_count',$1,'synthetic',10,1,10,10)`, date+" 08")
+		wantReadiness, err := b.GetHealthBriefing("en")
+		if err != nil || wantReadiness == nil || wantReadiness.Date != date {
+			t.Fatalf("independent readiness fixture for %s: %v", date, err)
+		}
+		var gotReadiness storage.LocalShadowReadiness
+		if err := json.Unmarshal([]byte(read(`SELECT readiness::text FROM rollout_a.sleep_rollout_results WHERE day=$1::date AND generation=4`, day)), &gotReadiness); err != nil {
+			t.Fatal(err)
+		}
+		if gotReadiness.Score != wantReadiness.ReadinessDisplayScore || gotReadiness.RawScore != wantReadiness.ReadinessRawScore ||
+			gotReadiness.Band != wantReadiness.ReadinessBand || gotReadiness.Serving.Status != wantReadiness.ReadinessServing.Status {
+			t.Fatalf("readiness for %s: got %d/%d %s %s, independent %d/%d %s %s", date,
+				gotReadiness.RawScore, gotReadiness.Score, gotReadiness.Band, gotReadiness.Serving.Status,
+				wantReadiness.ReadinessRawScore, wantReadiness.ReadinessDisplayScore, wantReadiness.ReadinessBand, wantReadiness.ReadinessServing.Status)
+		}
+		if sleep := gotReadiness.Sleep; sleep == nil || (day.Equal(oldDay) && sleep.Total != nil) ||
+			(day.Equal(newDay) && (sleep.Total == nil || *sleep.Total != 6 || sleep.Awake == nil || *sleep.Awake != 0)) {
+			t.Fatalf("sleep evidence for %s: %+v", date, sleep)
+		}
+		wantEnergy, err := b.ComputeBankForDate(ctx, "UTC", date)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var gotEnergy storage.BankResult
+		if err := json.Unmarshal([]byte(read(`SELECT energy::text FROM rollout_a.sleep_rollout_results WHERE day=$1::date AND generation=4`, day)), &gotEnergy); err != nil {
+			t.Fatal(err)
+		}
+		if gotEnergy.State == "stale" || !reflect.DeepEqual(gotEnergy, wantEnergy) {
+			t.Fatalf("EnergyBank for %s: got %+v, independent %+v", date, gotEnergy, wantEnergy)
+		}
+		t.Logf("%s: readiness %d/%d %s %s, EnergyBank %d %s; independent Go matched", date,
+			gotReadiness.RawScore, gotReadiness.Score, gotReadiness.Band, gotReadiness.Serving.Status, gotEnergy.Bank, gotEnergy.State)
 	}
 	if got := read(`SELECT count(*)::text FROM rollout_b.sleep_rollout_packets`); got != "0" {
 		t.Fatal(got)
@@ -252,6 +323,25 @@ func TestSleepRolloutServerIntegration(t *testing.T) {
 		t.Fatal("legacy path changed during prepare")
 	}
 	cancel()
+	if err := a.SaveSettings(map[string]string{"timezone": "Pacific/Honolulu"}); err != nil {
+		t.Fatal(err)
+	}
+	// Honolulu's new local date begins at 10:00 UTC, well after UTC midnight.
+	localMidnight := tomorrow.Add(10 * time.Hour)
+	if ran, err := a.RunSleepRolloutNext(ctx, localMidnight.Add(-time.Nanosecond)); err != nil || ran {
+		t.Fatalf("future receipt ran before local midnight: %v %v", ran, err)
+	}
+	if ran, err := a.RunSleepRolloutNext(ctx, localMidnight); err != nil || !ran {
+		t.Fatalf("future receipt unavailable on local date: %v %v", ran, err)
+	}
+	if got := read(`SELECT count(*)::text FROM rollout_a.sleep_rollout_results WHERE day=$1::date
+		AND readiness->'sleep'->>'total_hours'='6' AND energy->>'State' IS NOT NULL`, tomorrow); got != "1" {
+		t.Fatal("deferred receipt didn't prepare both metrics on its wake date")
+	}
+	t.Log("D+30 recalculated, changed priority selected watch over previously preferred ring, tomorrow receipt applied at Honolulu midnight")
+	if err := a.SaveSettings(map[string]string{"timezone": "UTC"}); err != nil {
+		t.Fatal(err)
+	}
 
 	pausedCtx, pause := context.WithCancel(ctx)
 	pause()

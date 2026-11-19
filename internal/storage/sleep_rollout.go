@@ -18,6 +18,7 @@ import (
 var sleepRolloutDDL string
 
 const SleepRolloutModeSetting = "sleep_rollout_mode"
+const rolloutReadinessBaselineDays = 30
 
 var ErrSleepRolloutDisabled = errors.New("sleep rollout is disabled")
 var ErrSleepRolloutConflict = errors.New("sleep rollout revision conflicts")
@@ -111,7 +112,9 @@ var rolloutDailySQL = `INSERT INTO sleep_rollout_daily
 	awake_seconds=EXCLUDED.awake_seconds,stage_conflict=EXCLUDED.stage_conflict`
 
 // RunSleepRolloutNext processes one receipt. A failed date or dependency
-// leaves the original receipt pending and rolls back both date placements.
+// leaves the original receipt pending and rolls back both date placements. A
+// wake date still ahead of the tenant calendar stays pending without blocking
+// receipts eligible on the current local date.
 func (s *DB) RunSleepRolloutNext(ctx context.Context, now time.Time) (bool, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
 	if err != nil {
@@ -125,11 +128,14 @@ func (s *DB) RunSleepRolloutNext(ctx context.Context, now time.Time) (bool, erro
 	if err != nil {
 		return false, err
 	}
+	unit := &DB{pool: &cacheTransaction{Tx: tx, ctx: ctx}}
+	today := now.In(unit.reportTZLocation()).Format(time.DateOnly)
 	var sequence, revision int64
 	var source, id, date string
 	var snapshot json.RawMessage
 	err = tx.QueryRow(ctx, `SELECT sequence,source_id,candidate_id,revision,wake_date::text,candidate
-		FROM sleep_rollout_packets WHERE applied_at IS NULL ORDER BY sequence LIMIT 1 FOR UPDATE`).
+		FROM sleep_rollout_packets WHERE applied_at IS NULL AND wake_date <= $1::text::date
+		ORDER BY sequence LIMIT 1 FOR UPDATE`, today).
 		Scan(&sequence, &source, &id, &revision, &date, &snapshot)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
@@ -137,7 +143,6 @@ func (s *DB) RunSleepRolloutNext(ctx context.Context, now time.Time) (bool, erro
 	if err != nil {
 		return false, err
 	}
-	unit := &DB{pool: &cacheTransaction{Tx: tx, ctx: ctx}}
 	key, err := json.Marshal([2]string{source, id})
 	if err != nil {
 		return false, err
@@ -149,26 +154,33 @@ func (s *DB) RunSleepRolloutNext(ctx context.Context, now time.Time) (bool, erro
 		return false, err
 	}
 	if revision > oldRevision {
-		priority, err := rolloutSourcePriority(unit.GetSetting("sleep_rollout_source_priority", "[]"), source)
-		if err != nil {
-			return false, err
+		var priorities []string
+		if err := json.Unmarshal([]byte(unit.GetSetting("sleep_rollout_source_priority", "[]")), &priorities); err != nil {
+			return false, errors.New("invalid sleep rollout source priority")
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO sleep_rollout_candidates(profile,id,revision,wake_date,priority,snapshot)
-			VALUES ($1,$2,$3,$4::text::date,$5,$6)
+			VALUES ($1,$2,$3,$4::text::date,0,$5)
 			ON CONFLICT(id) DO UPDATE SET revision=EXCLUDED.revision,wake_date=EXCLUDED.wake_date,
-			priority=EXCLUDED.priority,snapshot=EXCLUDED.snapshot`, profile, string(key), revision, date, priority, snapshot); err != nil {
+			snapshot=EXCLUDED.snapshot`, profile, string(key), revision, date, snapshot); err != nil {
 			return false, err
 		}
 		affected := []string{date}
 		if oldDate != "" && oldDate != date {
 			affected = append(affected, oldDate)
 		}
+		// Candidate IDs are encoded [source, id] tuples. Rank every contender
+		// on both affected dates using the same current tenant policy.
+		if _, err := tx.Exec(ctx, `UPDATE sleep_rollout_candidates
+			SET priority=COALESCE(array_position($3::text[],id::jsonb->>0)-1,cardinality($3::text[]),0)
+			WHERE profile=$1 AND wake_date::text=ANY($2::text[])`, profile, affected, priorities); err != nil {
+			return false, err
+		}
 		for _, day := range affected {
 			if _, err := tx.Exec(ctx, rolloutDailySQL, profile, day, sequence); err != nil {
 				return false, fmt.Errorf("rollout daily: %w", err)
 			}
 		}
-		if err := unit.prepareSleepRolloutResults(ctx, affected, sequence, now.In(unit.reportTZLocation()).Format(time.DateOnly)); err != nil {
+		if err := unit.prepareSleepRolloutResults(ctx, affected, sequence, today); err != nil {
 			return false, err
 		}
 	}
@@ -178,19 +190,6 @@ func (s *DB) RunSleepRolloutNext(ctx context.Context, now time.Time) (bool, erro
 	return true, tx.Commit(ctx)
 }
 
-func rolloutSourcePriority(raw, source string) (int, error) {
-	var sources []string
-	if err := json.Unmarshal([]byte(raw), &sources); err != nil {
-		return 0, errors.New("invalid sleep rollout source priority")
-	}
-	for i, preferred := range sources {
-		if preferred == source {
-			return i, nil
-		}
-	}
-	return len(sources), nil
-}
-
 func (s *DB) prepareSleepRolloutResults(ctx context.Context, dates []string, generation int64, today string) error {
 	affected := make(map[string]bool)
 	for _, day := range dates {
@@ -198,7 +197,7 @@ func (s *DB) prepareSleepRolloutResults(ctx context.Context, dates []string, gen
 		if err != nil {
 			return err
 		}
-		for i := 0; i < 30; i++ {
+		for i := 0; i <= rolloutReadinessBaselineDays; i++ {
 			date := start.AddDate(0, 0, i).Format(time.DateOnly)
 			if date > today {
 				break
@@ -238,9 +237,9 @@ func (s *DB) readRolloutReadiness(ctx context.Context, date string) (*LocalShado
 	rows, err := s.pool.Query(ctx, `SELECT day::text,d.generation,d.candidate,d.revision,
 		d.sleep_seconds/3600,d.deep_seconds/3600,d.rem_seconds/3600,d.core_seconds/3600,
 		d.unspecified_seconds/3600,d.awake_seconds/3600,d.stage_conflict,h.sleep_total
-		FROM (SELECT $1::text::date-i AS day FROM generate_series(0,30) AS days(i)) days
+		FROM (SELECT $1::text::date-i AS day FROM generate_series(0,$2::integer) AS days(i)) days
 		LEFT JOIN sleep_rollout_daily d ON d.wake_date=day
-		LEFT JOIN daily_scores h ON h.date=day::text ORDER BY day DESC`, date)
+		LEFT JOIN daily_scores h ON h.date=day::text ORDER BY day DESC`, date, rolloutReadinessBaselineDays)
 	blocks, baseline, err := readSleepBlocks(rows, err, date)
 	if err != nil {
 		return nil, err
