@@ -302,11 +302,26 @@ func applyNightIngestEntry(ctx context.Context, tx pgx.Tx, entry nightIngestEntr
 	if prior.date == entry.point.Date && prior.recordID != 0 && prior.origin != "live" {
 		return false, "", nil
 	}
+	move := prior.date != "" && prior.date != entry.point.Date && prior.recordID != 0
+	if move && (prior.origin != "live" || prior.recordID != version.RecordID) {
+		return false, "", nil
+	}
+
+	// Coverage owns a correction only after its point can be written. A
+	// deferred mixed receipt must respect newer receipts at the exact key,
+	// including ordinary measurements that never supplied a commitment.
+	coveredOrdering := coveredNightOrdering
+	if ordering == deferredPointOrdering {
+		coveredOrdering = deferredCoveredNightOrdering
+	}
+	point := entry.point
+	tag, err := tx.Exec(ctx, upsertMetricPointSQL, id, point.MetricName, point.Units, point.Date,
+		point.Qty, point.Source, int(coveredOrdering))
+	if err != nil || tag.RowsAffected() == 0 {
+		return false, "", err
+	}
 	var displacedDate string
-	if prior.date != "" && prior.date != entry.point.Date && prior.recordID != 0 {
-		if prior.origin != "live" || prior.recordID != version.RecordID {
-			return false, "", nil
-		}
+	if move {
 		if _, err = tx.Exec(ctx, `DELETE FROM metric_points WHERE metric_name='night_sleep_total'
 			AND date=$1 AND source=$2 AND health_record_id=$3 AND origin='live'`, prior.date, source, prior.recordID); err != nil {
 			return false, "", err
@@ -318,9 +333,6 @@ func applyNightIngestEntry(ctx context.Context, tx pgx.Tx, entry nightIngestEntr
 	// Store the bound pair identity. Same coverage metadata with a corrected
 	// measurement can therefore update both the point and the commitment.
 	entry.coverage.InputHash = fingerprint
-	if err = insertPointsTx(ctx, tx, id, []MetricPoint{entry.point}, coveredNightOrdering); err != nil {
-		return false, "", err
-	}
 	if err = saveNightSleepCoverage(ctx, tx, entry.coverage); err != nil {
 		return false, "", err
 	}

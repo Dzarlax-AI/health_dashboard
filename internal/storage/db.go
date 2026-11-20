@@ -522,6 +522,7 @@ const (
 	ordinaryPointOrdering ingestPointOrdering = iota
 	deferredPointOrdering
 	coveredNightOrdering
+	deferredCoveredNightOrdering
 )
 
 func (s *DB) pointOrdering() ingestPointOrdering {
@@ -531,44 +532,43 @@ func (s *DB) pointOrdering() ingestPointOrdering {
 	return ordinaryPointOrdering
 }
 
-func insertPointsTx(ctx context.Context, tx pgx.Tx, recordID int64, points []MetricPoint, ordering ingestPointOrdering) error {
-	// Three guards on the sleep_% UPDATE branch — all protect the cached
-	// per-night aggregate from being clobbered by garbage records that share
-	// the same (metric_name, date, source) key:
-	//
-	//   1. RingConn midnight-summary inflation (recent nights only):
-	//      ignore a new value that is more than 30% larger than the existing
-	//      one when both are non-trivial AND the existing row is from
-	//      RingConn AND the night is within the last 3 days. Catches the
-	//      RingConn 14h-night outlier pattern in real time, while still
-	//      allowing free upward normalisation on older "stuck" rows after
-	//      iOS-side bug fixes (legitimate factor-of-7 corrections were
-	//      blocked by the original 1.3× / 30-day / all-source guard — see
-	//      Todoist 6gXCG8Qgpc73J4J7 for the incident log).
-	//
-	//   2. Zero-payload overwrite: a per-day chunked re-sync from iOS may
-	//      emit `qty=0` for a source that has only `.inBed` / late-evening
-	//      samples in the chunk's window (the actual sleep block started
-	//      the prior evening and falls outside the chunk). The client now
-	//      widens the sleep predicate, but as a belt-and-suspenders we keep
-	//      the existing positive value if the incoming one is zero. Applies
-	//      to all sleep_* metrics (zero is never a legitimate update).
-	//
-	//   3. sleep_total deflation (≥50% drop) on an established record:
-	//      symmetric to (1) but scoped to integral sleep_total only.
-	//      Per-stage drops (sleep_deep / sleep_rem) of >50% can be a
-	//      legitimate "bad night" reading — blocking those would lock in
-	//      stale stage breakdowns. Concrete miss observed during a 30-day
-	//      chunked re-sync — chunk_K's 12h-overlap window saw the FULL ~8h
-	//      night for wake-up date K, then chunk_K+1's window saw only a 1h
-	//      afternoon nap whose wake-up also landed on date K, and the
-	//      latter UPSERT replaced 8.14h with 1.08h. Real total swings
-	//      exceed 50% vanishingly rarely — when they do, the next sync run
-	//      converges naturally.
-	const upsertSQL = `INSERT INTO metric_points
+// Three guards on the sleep_% UPDATE branch — all protect the cached
+// per-night aggregate from being clobbered by garbage records that share
+// the same (metric_name, date, source) key:
+//
+//  1. RingConn midnight-summary inflation (recent nights only):
+//     ignore a new value that is more than 30% larger than the existing
+//     one when both are non-trivial AND the existing row is from
+//     RingConn AND the night is within the last 3 days. Catches the
+//     RingConn 14h-night outlier pattern in real time, while still
+//     allowing free upward normalisation on older "stuck" rows after
+//     iOS-side bug fixes (legitimate factor-of-7 corrections were
+//     blocked by the original 1.3× / 30-day / all-source guard — see
+//     Todoist 6gXCG8Qgpc73J4J7 for the incident log).
+//
+//  2. Zero-payload overwrite: a per-day chunked re-sync from iOS may
+//     emit `qty=0` for a source that has only `.inBed` / late-evening
+//     samples in the chunk's window (the actual sleep block started
+//     the prior evening and falls outside the chunk). The client now
+//     widens the sleep predicate, but as a belt-and-suspenders we keep
+//     the existing positive value if the incoming one is zero. Applies
+//     to all sleep_* metrics (zero is never a legitimate update).
+//
+//  3. sleep_total deflation (≥50% drop) on an established record:
+//     symmetric to (1) but scoped to integral sleep_total only.
+//     Per-stage drops (sleep_deep / sleep_rem) of >50% can be a
+//     legitimate "bad night" reading — blocking those would lock in
+//     stale stage breakdowns. Concrete miss observed during a 30-day
+//     chunked re-sync — chunk_K's 12h-overlap window saw the FULL ~8h
+//     night for wake-up date K, then chunk_K+1's window saw only a 1h
+//     afternoon nap whose wake-up also landed on date K, and the
+//     latter UPSERT replaced 8.14h with 1.08h. Real total swings
+//     exceed 50% vanishingly rarely — when they do, the next sync run
+//     converges naturally.
+const upsertMetricPointSQL = `INSERT INTO metric_points
 		(health_record_id, metric_name, units, date, qty, source, origin, import_run_id, source_snapshot_at)
 		VALUES ($1, $2, $3, $4, $5, $6, 'live', NULL,
-			CASE WHEN $7=1 THEN COALESCE((SELECT received_at FROM health_records WHERE id=$1), NOW()) ELSE NOW() END)
+			CASE WHEN $7 IN (1,3) THEN COALESCE((SELECT received_at FROM health_records WHERE id=$1), NOW()) ELSE NOW() END)
 		ON CONFLICT(metric_name, date, source) DO UPDATE SET
 			received_at = NOW(),
 			qty = CASE
@@ -596,7 +596,8 @@ func insertPointsTx(ctx context.Context, tx pgx.Tx, recordID int64, points []Met
 			import_run_id = NULL,
 			source_snapshot_at = excluded.source_snapshot_at
 		WHERE $7=2 OR CASE
-		  WHEN $7=1 OR EXISTS (SELECT 1 FROM health_records
+		  WHEN $7=3 AND metric_points.origin <> 'live' THEN false
+		  WHEN $7 IN (1,3) OR EXISTS (SELECT 1 FROM health_records
 		    WHERE id=metric_points.health_record_id AND processing_kind='sleep_candidates') THEN
 		    CASE WHEN metric_points.origin='live' AND metric_points.health_record_id IS NOT NULL THEN
 		      (COALESCE((SELECT received_at FROM health_records WHERE id=metric_points.health_record_id),
@@ -608,6 +609,7 @@ func insertPointsTx(ctx context.Context, tx pgx.Tx, recordID int64, points []Met
 		  ELSE true
 		END`
 
+func insertPointsTx(ctx context.Context, tx pgx.Tx, recordID int64, points []MetricPoint, ordering ingestPointOrdering) error {
 	const chunkSize = 500
 	for i := 0; i < len(points); i += chunkSize {
 		end := i + chunkSize
@@ -617,7 +619,7 @@ func insertPointsTx(ctx context.Context, tx pgx.Tx, recordID int64, points []Met
 		chunk := points[i:end]
 		batch := &pgx.Batch{}
 		for _, p := range chunk {
-			batch.Queue(upsertSQL, recordID, p.MetricName, p.Units, p.Date, p.Qty, p.Source, int(ordering))
+			batch.Queue(upsertMetricPointSQL, recordID, p.MetricName, p.Units, p.Date, p.Qty, p.Source, int(ordering))
 		}
 		br := tx.SendBatch(ctx, batch)
 		for _, p := range chunk {

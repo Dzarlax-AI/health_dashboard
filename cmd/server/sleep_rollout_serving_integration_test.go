@@ -21,6 +21,16 @@ import (
 )
 
 func TestSleepRolloutServeAndRollback(t *testing.T) {
+	t.Run("persisted rollback with serving enabled", func(t *testing.T) {
+		testSleepRolloutServeAndRollback(t, false)
+	})
+	t.Run("rollback with serving disabled", func(t *testing.T) {
+		testSleepRolloutServeAndRollback(t, true)
+	})
+}
+
+func testSleepRolloutServeAndRollback(t *testing.T, disableServeBeforeRollback bool) {
+	t.Helper()
 	t.Setenv("HEALTH_SLEEP_V2_ENABLED", "1")
 	t.Setenv("HEALTH_SLEEP_SERVE_ENABLED", "1")
 	t.Setenv("REPORT_TZ", "UTC")
@@ -365,7 +375,9 @@ func TestSleepRolloutServeAndRollback(t *testing.T) {
 		t.Fatal("rollback escaped the durable legacy calculation backlog")
 	}
 	completeLegacy()
-	t.Setenv("HEALTH_SLEEP_SERVE_ENABLED", "")
+	if disableServeBeforeRollback {
+		t.Setenv("HEALTH_SLEEP_SERVE_ENABLED", "")
+	}
 	publication, err = db.SwitchSleepRollout(ctx, tenant, firstDate, todayDate, audit().Evidence, false)
 	if err != nil || publication.Active || publication.Packet != 5 {
 		t.Fatalf("rollback: %+v, %v", publication, err)

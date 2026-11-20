@@ -269,3 +269,84 @@ func TestAcceptedNightIngestConcurrentDstAndPartialReplay(t *testing.T) {
 		t.Fatalf("concurrent update did not protect the full DST night: %+v %v", nights, err)
 	}
 }
+
+func TestAcceptedNightIngestDeferredCoverageKeepsNewerLivePoint(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx := t.Context()
+	t.Setenv("REPORT_TZ", "UTC")
+	deferred := &DB{pool: db.pool, preserveNewerIngest: true}
+
+	for _, test := range []struct {
+		name string
+		day  string
+		lag  time.Duration
+	}{
+		{name: "older receipt time", day: "2026-09-21", lag: time.Minute},
+		{name: "equal receipt time uses record ID", day: "2026-09-22"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			noon, err := time.Parse(time.RFC3339, test.day+"T12:00:00Z")
+			if err != nil {
+				t.Fatal(err)
+			}
+			point := MetricPoint{MetricName: "night_sleep_total", Date: test.day + " 07:00:00 +0000", Source: "Apple Watch", Units: "hr", Qty: 6}
+			coverage := NightSleepCoverageCommitment{
+				WakeDate: test.day, MetricDate: point.Date, Source: point.Source, SourceEpoch: "fixture",
+				CaptureCompleteness: health.NightCaptureComplete, CoverageGeneration: "fixture", InputHash: "covered-night",
+				CoveredIntervalStart: noon.AddDate(0, 0, -1), CoveredIntervalEnd: noon,
+			}
+			mixed := insertTestRawRecord(t, db, "deferred mixed sync")
+			ordinary := insertTestRawRecord(t, db, "ordinary live sync")
+			if _, err := db.pool.Exec(ctx, `UPDATE health_records SET
+				received_at=CASE WHEN id=$1 THEN $3::timestamptz ELSE $4::timestamptz END,
+				processing_kind=CASE WHEN id=$1 THEN 'sleep_candidates' ELSE processing_kind END
+				WHERE id IN ($1,$2)`, mixed, ordinary, noon, noon.Add(test.lag)); err != nil {
+				t.Fatal(err)
+			}
+
+			live := point
+			live.Qty = 8
+			if applied, err := db.InsertAcceptedPoints(ordinary, []MetricPoint{live}, nil); err != nil || len(applied) != 1 {
+				t.Fatalf("process ordinary receipt: %+v, %v", applied, err)
+			}
+			readPoint := func() string {
+				t.Helper()
+				var state string
+				if err := db.pool.QueryRow(ctx, `SELECT to_jsonb(m)::text||':'||xmin::text FROM metric_points m
+					WHERE metric_name='night_sleep_total' AND date=$1 AND source=$2`, point.Date, point.Source).Scan(&state); err != nil {
+					t.Fatal(err)
+				}
+				return state
+			}
+			before := readPoint()
+			if applied, err := deferred.InsertAcceptedPoints(mixed, []MetricPoint{point}, []NightSleepCoverageCommitment{coverage}); err != nil || len(applied) != 0 {
+				t.Fatalf("older covered point escaped receipt ordering: %+v, %v", applied, err)
+			}
+			if readPoint() != before {
+				t.Fatal("deferred receipt changed the newer point or its provenance")
+			}
+			var bound bool
+			if err := db.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM night_sleep_coverage_commitments WHERE wake_date=$1)
+				OR EXISTS(SELECT 1 FROM completed_night_sleep WHERE wake_date=$1)`, test.day).Scan(&bound); err != nil || bound {
+				t.Fatalf("skipped correction stored night metadata: %v, %v", bound, err)
+			}
+
+			correction := insertTestRawRecord(t, db, "newer covered correction")
+			if _, err := db.pool.Exec(ctx, `UPDATE health_records SET received_at=$2,processing_kind='sleep_candidates' WHERE id=$1`,
+				correction, noon.Add(time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			point.Qty = 7
+			if applied, err := deferred.InsertAcceptedPoints(correction, []MetricPoint{point}, []NightSleepCoverageCommitment{coverage}); err != nil || len(applied) != 1 {
+				t.Fatalf("newer covered correction was lost: %+v, %v", applied, err)
+			}
+			var storedID int64
+			var storedHours float64
+			if err := db.pool.QueryRow(ctx, `SELECT health_record_id,qty FROM metric_points
+				WHERE metric_name='night_sleep_total' AND date=$1 AND source=$2`, point.Date, point.Source).Scan(&storedID, &storedHours); err != nil || storedID != correction || storedHours != 7 {
+				t.Fatalf("covered correction did not own the point: id=%v hours=%v err=%v", storedID, storedHours, err)
+			}
+		})
+	}
+}
