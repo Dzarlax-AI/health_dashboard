@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"health-receiver/internal/health"
 	"health-receiver/internal/sleepshadow"
 	"health-receiver/internal/storage"
 )
@@ -509,6 +510,14 @@ func TestLocalSleepRolloutRehearsal(t *testing.T) {
 	process(finalID, nil, "")
 	exec(expectedLegacy.pool, `UPDATE daily_scores SET sleep_total=8.5,sleep_core=7.5,
 		sleep_deep=0.5,sleep_rem=0.5,sleep_awake=0 WHERE date=$1`, secondNight)
+	// Historical repair reads raw metric_points. Seed the final receipt's
+	// value there and a sentinel score so a skipped persisted repair fails.
+	for _, pool := range []*pgxpool.Pool{oldPool, expectedLegacy.pool} {
+		exec(pool, `WITH rec AS (INSERT INTO health_records DEFAULT VALUES RETURNING id)
+			INSERT INTO metric_points(health_record_id,metric_name,date,qty,units,source,quality)
+			SELECT id,'sleep_total','2026-03-09 08:00:00 +0000',8.5,'hr','fixture','ok' FROM rec`)
+	}
+	exec(oldPool, `UPDATE daily_scores SET readiness=-1 WHERE date=$1`, secondNight)
 	for _, db := range []*storage.DB{oldDB, expectedLegacy.db} {
 		if err := db.RepairHistoricalDependencies(ctx, []string{secondNight}, tz, now); err != nil {
 			t.Fatal(err)
@@ -519,6 +528,11 @@ func TestLocalSleepRolloutRehearsal(t *testing.T) {
 		if got, want := bank(oldDB, day), bank(expectedLegacy.db, day); !reflect.DeepEqual(got, want) {
 			t.Fatalf("post-rollback EnergyBank %s: got %+v, want %+v", day, got, want)
 		}
+	}
+	wantStored := health.ComputeReadinessScore(nil, nil, []float64{8.5})
+	var stored int
+	if err := oldPool.QueryRow(ctx, `SELECT readiness FROM daily_scores WHERE date=$1`, secondNight).Scan(&stored); err != nil || stored != wantStored {
+		t.Fatalf("persisted readiness after final receipt: got %d want %d: %v", stored, wantStored, err)
 	}
 	checkLegacySlots(activeHistory())
 	if active() != "legacy" || processed(finalID) != "legacy" || observations(target.pool, true) != beforeRollback ||

@@ -135,7 +135,10 @@ func (s *DB) readSleepRolloutSnapshot(ctx context.Context, activeOnly bool, read
 		publication.Active = false
 	}
 	unit := &DB{pool: &cacheTransaction{Tx: tx, ctx: ctx}}
-	return true, read(unit, *publication)
+	if err := read(unit, *publication); err != nil {
+		return true, err
+	}
+	return true, tx.Commit(ctx)
 }
 
 func pendingSleepRolloutLegacyDates(ctx context.Context, tx pgx.Tx) (int, error) {

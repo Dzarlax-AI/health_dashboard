@@ -87,7 +87,7 @@ func RebuildAll(ctx context.Context, pool *pgxpool.Pool, bindings map[string]str
 			case "published", "done":
 				// Recheck both identities under the profile fence. A sleep update
 				// can commit after the preceding step released its lock.
-				valid, err := s.rebuildStillCurrent(ctx, profile, bindings[profile], version, fingerprint)
+				valid, err := s.rebuildStillCurrent(ctx, profile, bindings[profile], version, fingerprint, func() time.Time { return now.Add(time.Since(started)) })
 				if err != nil {
 					failures = append(failures, fmt.Errorf("profile %q inputs: %w", profile, err))
 				} else if !valid {
@@ -315,7 +315,7 @@ func publishRebuildObservation(ctx context.Context, tx pgx.Tx, profile, schema, 
 
 // The completion decision observes the sleep revision and tenant input revision
 // together while holding the same profile fence used by sleep writers.
-func (s store) rebuildStillCurrent(ctx context.Context, profile, schema, version, fingerprint string) (bool, error) {
+func (s store) rebuildStillCurrent(ctx context.Context, profile, schema, version, fingerprint string, clock func() time.Time) (bool, error) {
 	var valid bool
 	err := s.transaction(ctx, profile, func(tx pgx.Tx) error {
 		var revision int64
@@ -326,11 +326,16 @@ func (s store) rebuildStillCurrent(ctx context.Context, profile, schema, version
 		if latest != fingerprint {
 			return nil
 		}
+		today, err := storage.LocalShadowRebuildToday(ctx, tx, schema, clock())
+		if err != nil {
+			return err
+		}
 		return tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM sleep_shadow.rebuild_checkpoint c
 			JOIN sleep_shadow.profile p ON p.id=c.profile
 			WHERE c.profile=$1 AND c.tenant_schema=$2 AND c.version=$3 AND c.phase='done'
-			AND NOT c.observation_pending AND c.source_revision=p.source_revision AND c.input_fingerprint=$4)
-			AND NOT EXISTS (SELECT 1 FROM sleep_shadow.pending WHERE profile=$1)`, profile, schema, version, latest).Scan(&valid)
+			AND NOT c.observation_pending AND c.source_revision=p.source_revision AND c.input_fingerprint=$4
+			AND c.through_date=$5::text::date)
+			AND NOT EXISTS (SELECT 1 FROM sleep_shadow.pending WHERE profile=$1)`, profile, schema, version, latest, today).Scan(&valid)
 	})
 	return valid, err
 }

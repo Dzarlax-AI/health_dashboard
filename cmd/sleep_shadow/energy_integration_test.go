@@ -81,8 +81,8 @@ func TestLocalEnergyBankAfterSleepSync(t *testing.T) {
 	}
 	observed := digest(true)
 
-	profile := uuid.NewString()
-	cleanupShadowProfiles(t, shadowPool, profile)
+	profile, unrelatedA, unrelatedB := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	cleanupShadowProfiles(t, shadowPool, profile, unrelatedA, unrelatedB)
 	refresh := localEnergyRefresh(schema, profile, func() time.Time { return now })
 	start := func() http.Handler {
 		t.Helper()
@@ -194,7 +194,7 @@ func TestLocalEnergyBankAfterSleepSync(t *testing.T) {
 		post(profile, moved, "refresh_unavailable", http.StatusServiceUnavailable)
 		post(profile, newer, "refresh_unavailable", http.StatusServiceUnavailable)
 		if incompatible == nil {
-			post(uuid.NewString(), b, "applied", http.StatusOK)
+			post(unrelatedA, b, "applied", http.StatusOK)
 		}
 		var queuedSchema, oldWinner, newWinner string
 		if err := pool.QueryRow(ctx, `SELECT
@@ -280,7 +280,7 @@ func TestLocalEnergyBankAfterSleepSync(t *testing.T) {
 	}
 	after := digest(false)
 	post(profile, moved, "repeat", 200)
-	post(uuid.NewString(), a, "applied", 200)
+	post(unrelatedB, a, "applied", 200)
 	if digest(false) != after || otherEnergy() != beforeOther {
 		t.Fatal("repeat or sync for an unrelated profile rewrote snapshots")
 	}

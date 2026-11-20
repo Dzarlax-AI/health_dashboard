@@ -49,7 +49,14 @@ func (s *DB) GetLocalShadowReadiness(ctx context.Context, profile, date string) 
 	}
 	defer tx.Rollback(context.Background())
 	unit := &DB{pool: &cacheTransaction{Tx: tx, ctx: ctx}}
-	return unit.getLocalShadowReadiness(ctx, profile, date)
+	result, err := unit.getLocalShadowReadiness(ctx, profile, date)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (s *DB) getLocalShadowReadiness(ctx context.Context, profile, date string) (*LocalShadowReadiness, error) {
@@ -216,6 +223,7 @@ func applyLocalShadowSleep(data *health.RawMetrics, blocks map[string]*LocalShad
 	if block.Awake == nil {
 		data.Awake = nil
 	}
+	data.SleepStagesDateAligned = true
 	e := data.ReadinessEvidence
 	component := func(metric string, value *float64) health.ReadinessComponentEvidence {
 		sourceDate := ""

@@ -28,7 +28,10 @@ type RawMetrics struct {
 	// `Sleep` in that case.
 	NightSleep       []float64
 	NightSleepByDate []DatedValue `json:"-"`
-	Nap              []float64
+	// A published sleep block explicitly owns presence and absence of each
+	// current-night stage in ReadinessEvidence.
+	SleepStagesDateAligned bool `json:"-"`
+	Nap                    []float64
 	// NapToday is today's nap_total only (0 when no nap today). Separate
 	// from Nap[0] because the slice filters qty>0 — the latest entry can
 	// be from any prior day someone napped, which would mis-attribute the

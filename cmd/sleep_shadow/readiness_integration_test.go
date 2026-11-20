@@ -232,4 +232,18 @@ func TestLocalReadinessUsesPublishedSleep(t *testing.T) {
 	if other := request(fullHTTP, http.MethodGet, "/profiles/"+empty+"/readiness", ""); other.Code != http.StatusNotFound {
 		t.Fatalf("route returned a profile outside its local binding: %d", other.Code)
 	}
+	t.Run("aborted snapshot returns an error", func(t *testing.T) {
+		if _, err := pool.Exec(ctx, `ALTER TABLE subjective_checkins RENAME TO subjective_checkins_test_hidden`); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if _, err := pool.Exec(context.Background(), `ALTER TABLE subjective_checkins_test_hidden RENAME TO subjective_checkins`); err != nil {
+				t.Error(err)
+			}
+		}()
+		result := request(fullHTTP, http.MethodGet, "/profiles/"+full+"/readiness?date="+newDay, "")
+		if result.Code != http.StatusInternalServerError {
+			t.Fatalf("aborted readiness snapshot returned %d: %s", result.Code, result.Body.String())
+		}
+	})
 }

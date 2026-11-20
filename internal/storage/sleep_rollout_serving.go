@@ -13,6 +13,8 @@ import (
 	"health-receiver/internal/health"
 )
 
+var ErrReadinessHistoryBusy = errors.New("readiness history is already being calculated")
+
 type rolloutBriefingSleep struct {
 	blocks   map[string]*LocalShadowSleep
 	baseline []float64
@@ -153,6 +155,9 @@ func (s *DB) servedSleepReadinessHistory(ctx context.Context, publication SleepR
 		return nil, err
 	}
 	for date := day.Format(time.DateOnly); date <= latest; date = day.Format(time.DateOnly) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		blocks, baseline, err := s.loadRolloutSleepWindow(ctx, date, publication.window())
 		if err != nil {
 			return nil, err

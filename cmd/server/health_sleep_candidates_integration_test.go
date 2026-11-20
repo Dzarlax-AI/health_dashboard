@@ -450,9 +450,14 @@ func TestHealthSleepCandidatesMixedSessionAggregatesOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	firstDay, secondDay := today.AddDate(0, 0, -2), today.AddDate(0, 0, -1)
+	day := firstDay.Format(time.DateOnly)
 	type notification struct {
-		dates []string
-		ready bool
+		dates          []string
+		ready          bool
+		scoreRefreshed bool
+		scoreErr       error
 	}
 	calls := make(chan notification, 4)
 	derived := storage.NewTodayDerivedStateCoordinator(storage.NewEnergyV2Orchestrator())
@@ -460,8 +465,11 @@ func TestHealthSleepCandidatesMixedSessionAggregatesOnce(t *testing.T) {
 		return storage.AIConfig{}
 	})
 	ingest := handler.New(mgr, func(_ *storage.DB, dates []string, ready bool) {
+		got := notification{dates: slices.Clone(dates), ready: ready}
+		got.scoreErr = root.QueryRow(ctx, `SELECT COALESCE(readiness<>123 AND rhr_avg=77,false)
+			FROM rollout_a.daily_scores WHERE date=$1`, day).Scan(&got.scoreRefreshed)
 		refreshDerived(dates, ready)
-		calls <- notification{dates: slices.Clone(dates), ready: ready}
+		calls <- got
 	}, health.HRZones{})
 	defer func() {
 		if err := ingest.Shutdown(ctx); err != nil {
@@ -475,8 +483,6 @@ func TestHealthSleepCandidatesMixedSessionAggregatesOnce(t *testing.T) {
 	registerHealthIngest(workerCtx, mux, mgr, ingest, true)
 
 	session := uuid.NewString()
-	today := time.Now().UTC().Truncate(24 * time.Hour)
-	firstDay, secondDay := today.AddDate(0, 0, -2), today.AddDate(0, 0, -1)
 	post := func(date time.Time, metric, source string, withCandidate bool) int64 {
 		t.Helper()
 		qty := 100
@@ -553,7 +559,6 @@ func TestHealthSleepCandidatesMixedSessionAggregatesOnce(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	assertWaiting()
-	day := firstDay.Format(time.DateOnly)
 	// Model an unrelated refresh that writes the current aggregate but
 	// leaves the earlier mixed chunk's readiness result in place.
 	if err := db.UpsertRecentCache([]string{day}, false); err != nil {
@@ -567,16 +572,14 @@ func TestHealthSleepCandidatesMixedSessionAggregatesOnce(t *testing.T) {
 	select {
 	case got := <-calls:
 		slices.Sort(got.dates)
+		if got.scoreErr != nil || !got.scoreRefreshed {
+			t.Fatalf("session certified an earlier readiness score: %v, %v", got.scoreRefreshed, got.scoreErr)
+		}
 		if !got.ready || !slices.Equal(got.dates, []string{firstDay.Format(time.DateOnly), secondDay.Format(time.DateOnly)}) {
 			t.Fatalf("wrong session notification: %+v", got)
 		}
 	case <-ctx.Done():
 		t.Fatal("completed mixed session did not notify readers")
-	}
-	var scoreRefreshed bool
-	if err := root.QueryRow(ctx, `SELECT COALESCE(readiness<>123 AND rhr_avg=77,false)
-		FROM rollout_a.daily_scores WHERE date=$1`, day).Scan(&scoreRefreshed); err != nil || !scoreRefreshed {
-		t.Fatalf("session certified an earlier readiness score: %v, %v", scoreRefreshed, err)
 	}
 	if err := ingest.Shutdown(ctx); err != nil {
 		t.Fatal(err)

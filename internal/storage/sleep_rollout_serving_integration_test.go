@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -50,6 +51,19 @@ func TestSleepRolloutEnergyRefreshWaitsForRollback(t *testing.T) {
 	if err != nil || want.State == "stale" {
 		t.Fatalf("legacy fixture: %+v, %v", want, err)
 	}
+	const legacySleepHours = 8
+	if got := want.Components["sleep_total_h"]; got != legacySleepHours {
+		t.Fatalf("legacy fixture sleep input: %v", got)
+	}
+
+	// A history snapshot must not queue more per-day queries while another
+	// active request owns the per-tenant calculation slot.
+	serving.sleepReadinessHistoryMu.Lock()
+	_, historyErr := serving.GetReadinessHistoryContext(ctx, MaxReadinessHistoryDays)
+	serving.sleepReadinessHistoryMu.Unlock()
+	if !errors.Is(historyErr, ErrReadinessHistoryBusy) {
+		t.Fatalf("concurrent history was not rejected: %v", historyErr)
+	}
 
 	rollback, err := db.pool.Begin(ctx)
 	if err != nil {
@@ -68,10 +82,18 @@ func TestSleepRolloutEnergyRefreshWaitsForRollback(t *testing.T) {
 		handled bool
 		err     error
 	}
+	refreshCtx, cancelRefresh := context.WithCancel(ctx)
 	done := make(chan outcome, 1)
+	joined := make(chan struct{})
 	go func() {
-		bank, handled, err := serving.refreshRolloutEnergyObservation(ctx, "UTC", func() time.Time { return now })
+		defer close(joined)
+		bank, handled, err := serving.refreshRolloutEnergyObservation(refreshCtx, "UTC", func() time.Time { return now })
 		done <- outcome{bank, handled, err}
+	}()
+	defer func() {
+		cancelRefresh()
+		_ = rollback.Rollback(context.Background())
+		<-joined
 	}()
 	for {
 		select {
@@ -101,15 +123,19 @@ func TestSleepRolloutEnergyRefreshWaitsForRollback(t *testing.T) {
 	}
 	select {
 	case got := <-done:
-		if got.err != nil || !got.handled || got.bank.Bank != want.Bank {
+		if got.err != nil || !got.handled || got.bank.Bank != want.Bank ||
+			got.bank.Components["sleep_total_h"] != legacySleepHours {
 			t.Fatalf("refresh used the rolled-back revision: %+v, want %d", got, want.Bank)
 		}
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
 	var stored int
-	if err := db.pool.QueryRow(ctx, "SELECT bank FROM energy_snapshots WHERE ts_bucket=$1", now).Scan(&stored); err != nil || stored != want.Bank {
-		t.Fatalf("post-rollback slot: %d, %v, want %d", stored, err, want.Bank)
+	var sleepHours *float64
+	err = db.pool.QueryRow(ctx, `SELECT bank,(components->>'sleep_total_h')::float8
+		FROM energy_snapshots WHERE ts_bucket=$1`, now).Scan(&stored, &sleepHours)
+	if err != nil || stored != want.Bank || sleepHours == nil || *sleepHours != legacySleepHours {
+		t.Fatalf("post-rollback slot: %d, sleep %v, %v; want bank %d and legacy sleep", stored, sleepHours, err, want.Bank)
 	}
 }
 
@@ -144,5 +170,67 @@ func TestSleepRolloutReplacementPreservesValidOrdinaryMetrics(t *testing.T) {
 	const partial = `{"metrics":[{"name":"step_count","units":"count","data":[{"date":"2026-02-27","qty":1}]}]}`
 	if !replacementCoversMixedMetrics(failed, complete) || replacementCoversMixedMetrics(failed, partial) {
 		t.Fatal("audit did not distinguish complete and partial repairs")
+	}
+}
+
+func TestSleepRolloutBriefingOmitsUnmeasuredStages(t *testing.T) {
+	total, oldStage, zero, rem := 8.0, 1.5, 0.0, 2.0
+	const date = "2026-01-30"
+	ls := health.GetStrings("en")
+	for _, tc := range []struct {
+		name       string
+		deep, rem  *float64
+		wantLabels bool
+	}{
+		{name: "coarse or conflicted"},
+		{name: "explicit zero and measured REM", deep: &zero, rem: &rem, wantLabels: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := health.RawMetrics{
+				LastDate: date, ReadinessEvidence: &health.ReadinessEvidenceInput{},
+				Daily: []health.DailyHealthMetrics{
+					{Date: "2026-01-29", Sleep: &total, Deep: &oldStage, REM: &oldStage},
+					{Date: "2026-01-28", Sleep: &total, Deep: &oldStage, REM: &oldStage},
+					{Date: "2026-01-27", Sleep: &total, Deep: &oldStage, REM: &oldStage},
+				},
+			}
+			applyLocalShadowSleep(&data, map[string]*LocalShadowSleep{date: {Total: &total, Deep: tc.deep, REM: tc.rem}})
+			briefing := health.ComputeBriefing(data, "en")
+			sleep := slices.IndexFunc(briefing.Sections, func(section health.BriefingSection) bool {
+				return section.Key == "sleep"
+			})
+			if sleep < 0 {
+				t.Fatal("published duration disappeared")
+			}
+			var deepText, remText string
+			for _, detail := range briefing.Sections[sleep].Details {
+				switch detail.Label {
+				case ls["lbl_deep_sleep"]:
+					deepText = detail.Value
+				case ls["lbl_rem"]:
+					remText = detail.Value
+				}
+			}
+			if tc.wantLabels {
+				if deepText != "0% of total" || remText != "25% of total" {
+					t.Fatalf("unexpected published stages: %q, %q", deepText, remText)
+				}
+			} else if deepText != "" || remText != "" {
+				t.Fatalf("reused an older stage: %q, %q", deepText, remText)
+			}
+		})
+	}
+}
+
+func TestSleepRolloutReadinessHistoryNormalizesDays(t *testing.T) {
+	for _, day := range []int{-1, 0, MaxReadinessHistoryDays + 1} {
+		if got := ReadinessHistoryDays(day); got != DefaultReadinessHistoryDays {
+			t.Fatalf("days %d returned %d", day, got)
+		}
+	}
+	for _, day := range []int{1, DefaultReadinessHistoryDays, MaxReadinessHistoryDays} {
+		if got := ReadinessHistoryDays(day); got != day {
+			t.Fatalf("days %d returned %d", day, got)
+		}
 	}
 }

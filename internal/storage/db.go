@@ -18,7 +18,8 @@ type DB struct {
 	// after a restart. This map identifies successful inline work in this process.
 	cacheAppliedGenerations map[string]uint64
 	sleepRolloutTenant      bool
-	preserveNewerIngest     bool // a mixed receipt may be processed after a newer ordinary upload
+	sleepReadinessHistoryMu sync.Mutex // caps concurrent active history reads per tenant pool
+	preserveNewerIngest     bool       // a mixed receipt may be processed after a newer ordinary upload
 	pool                    storagePool
 	cacheMu                 CachePriorityLock // serializes cache writes and lets queued foreground work run first
 

@@ -365,6 +365,7 @@ func TestSleepRolloutServeAndRollback(t *testing.T) {
 		t.Fatal("rollback escaped the durable legacy calculation backlog")
 	}
 	completeLegacy()
+	t.Setenv("HEALTH_SLEEP_SERVE_ENABLED", "")
 	publication, err = db.SwitchSleepRollout(ctx, tenant, firstDate, todayDate, audit().Evidence, false)
 	if err != nil || publication.Active || publication.Packet != 5 {
 		t.Fatalf("rollback: %+v, %v", publication, err)
@@ -380,8 +381,6 @@ func TestSleepRolloutServeAndRollback(t *testing.T) {
 	if got := read(`SELECT energy_eod_current::text FROM rollout_a.daily_scores WHERE date=$1`, todayDate); got != strconv.Itoa(legacyBank.Display) {
 		t.Fatalf("legacy EOD differs from the rolled-back briefing: %s vs %d", got, legacyBank.Display)
 	}
-	t.Setenv("HEALTH_SLEEP_SERVE_ENABLED", "")
-	sleepAndBank(8, legacyBank.Display)
 	nights, err = db.GetSleepSummary(oldDate, todayDate)
 	if err != nil || len(nights) != 2 || nights[0].Total != 8 || nights[1].Total != 8 {
 		t.Fatalf("rolled-back sleep on both dates: %+v, %v", nights, err)

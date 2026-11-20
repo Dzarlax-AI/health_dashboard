@@ -377,10 +377,10 @@ func TestSleepRolloutServerIntegration(t *testing.T) {
 	if err := a.SaveSettings(map[string]string{storage.SleepRolloutModeSetting: "off"}); err != nil {
 		t.Fatal(err)
 	}
-	do(mux, "POST", route, "rollout_a-key", packet(4, "Asia/Singapore", 7*time.Hour), 404)
-	do(mux, "GET", "/health", "rollout_a-key", "", 200)
+	do(pausedMux, "POST", route, "rollout_a-key", packet(4, "Asia/Singapore", 7*time.Hour), 404)
+	do(pausedMux, "GET", "/health", "rollout_a-key", "", 200)
 	oldPacket := fmt.Sprintf(`{"data":{"metrics":[{"name":"step_count","units":"count","data":[{"date":"%s 07:00:00 +0000","qty":42,"source":"synthetic"}]}]}}`, today.Format(time.DateOnly))
-	do(mux, "POST", "/health", "rollout_a-key", oldPacket, 200)
+	do(pausedMux, "POST", "/health", "rollout_a-key", oldPacket, 200)
 	poll("1", `SELECT count(*)::text FROM rollout_a.health_records WHERE processing_status='complete'`)
 	if observed() != originalObservation {
 		t.Fatal("disabling candidate preparation or accepting a legacy sync rewrote the observation")

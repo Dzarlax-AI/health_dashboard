@@ -100,12 +100,29 @@ func scoreSleep(d RawMetrics, ls LangStrings) *BriefingSection {
 		Note: durationNote, Trend: trend(todayPct, false),
 	})
 
-	// Deep/REM percentages: today's values relative to today's total.
-	todayDeepPct := 0.0
-	if len(d.Deep) > 0 && todaySleep > 0 {
-		todayDeepPct = d.Deep[0] / todaySleep * 100
+	// Legacy series are undated here. For a published night, the current
+	// values (including a confirmed zero) come only from that night's block.
+	showDeep, showREM := deepPct > 0, true
+	todayDeepPct, todayRemPct := 0.0, 0.0
+	if d.SleepStagesDateAligned {
+		showDeep, showREM = false, false
+		if evidence := d.ReadinessEvidence; evidence != nil && todaySleep > 0 {
+			if stage := evidence.SleepDeep.Value; stage != nil {
+				todayDeepPct, showDeep = *stage/todaySleep*100, true
+			}
+			if stage := evidence.SleepREM.Value; stage != nil {
+				todayRemPct, showREM = *stage/todaySleep*100, true
+			}
+		}
+	} else if todaySleep > 0 {
+		if len(d.Deep) > 0 {
+			todayDeepPct = d.Deep[0] / todaySleep * 100
+		}
+		if len(d.REM) > 0 {
+			todayRemPct = d.REM[0] / todaySleep * 100
+		}
 	}
-	if deepPct > 0 {
+	if showDeep {
 		dNote := ls["sleep_deep_good"]
 		if todayDeepPct < 15 {
 			dNote = ls["sleep_deep_low"]
@@ -119,10 +136,7 @@ func scoreSleep(d RawMetrics, ls LangStrings) *BriefingSection {
 			Note: dNote, Trend: deepTrend,
 		})
 	}
-
-	todayRemPct := 0.0
-	if len(d.REM) > 0 && todaySleep > 0 {
-		todayRemPct = d.REM[0] / todaySleep * 100
+	if showREM {
 		rNote := ls["sleep_rem_good"]
 		if todayRemPct < 20 {
 			rNote = ls["sleep_rem_low"]

@@ -537,6 +537,7 @@ func TestLocalRebuildAllProfiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer tx.Rollback(context.Background())
 	if _, err := tx.Exec(ctx, "SET LOCAL ROLE "+quotedRole); err != nil {
 		t.Fatal(err)
 	}
@@ -553,6 +554,7 @@ func TestLocalRebuildAllProfiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer tx.Rollback(context.Background())
 	if _, err := tx.Exec(ctx, "SET LOCAL ROLE "+quotedRole); err != nil {
 		t.Fatal(err)
 	}
@@ -564,6 +566,7 @@ func TestLocalRebuildAllProfiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer tx.Rollback(context.Background())
 	if _, err := tx.Exec(ctx, "SET LOCAL ROLE "+quotedRole); err != nil {
 		t.Fatal(err)
 	}

@@ -928,20 +928,54 @@ func (s *DB) getHealthBriefing(lang string, currentEnergy *localShadowCurrentEne
 	return resp, nil
 }
 
-// GetReadinessHistory returns readiness scores for the last `outputDays` days.
-// Results are served from the daily_scores cache when available and fresh;
-// otherwise the full sliding-window computation runs and the cache is updated.
+const (
+	DefaultReadinessHistoryDays = 30
+	MaxReadinessHistoryDays     = 365
+)
+
+// ReadinessHistoryDays applies the same supported window to all callers.
+func ReadinessHistoryDays(days int) int {
+	if days < 1 || days > MaxReadinessHistoryDays {
+		return DefaultReadinessHistoryDays
+	}
+	return days
+}
+
+// GetReadinessHistory returns readiness scores for the last outputDays days.
 func (s *DB) GetReadinessHistory(outputDays int) ([]health.ReadinessPoint, error) {
-	var out []health.ReadinessPoint
-	ctx, cancel := queryCtx()
+	return s.GetReadinessHistoryContext(context.Background(), outputDays)
+}
+
+func (s *DB) GetReadinessHistoryContext(ctx context.Context, outputDays int) ([]health.ReadinessPoint, error) {
+	outputDays = ReadinessHistoryDays(outputDays)
+	// Active histories use the live formula for each date. Bound the time
+	// spent on that snapshot and reserve the tenant pool for sync and reads.
+	activeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	handled, err := s.withActiveSleepRollout(ctx, func(unit *DB, publication SleepRolloutPublication) error {
+	var out []health.ReadinessPoint
+	held := false
+	defer func() {
+		if held {
+			s.sleepReadinessHistoryMu.Unlock()
+		}
+	}()
+	handled, err := s.withActiveSleepRollout(activeCtx, func(unit *DB, publication SleepRolloutPublication) error {
+		held = s.sleepReadinessHistoryMu.TryLock()
+		if !held {
+			return ErrReadinessHistoryBusy
+		}
 		var readErr error
-		out, readErr = unit.servedSleepReadinessHistory(ctx, publication, outputDays)
+		out, readErr = unit.servedSleepReadinessHistory(activeCtx, publication, outputDays)
 		return readErr
 	})
-	if handled || err != nil {
-		return out, err
+	if err != nil {
+		return nil, err
+	}
+	if handled {
+		return out, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	cached, err := s.readinessFromCache(outputDays)
 	if err == nil && s.isCacheRecent(cached) {
