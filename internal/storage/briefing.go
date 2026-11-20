@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"slices"
 	"sort"
 	"time"
 
@@ -133,8 +134,9 @@ func (s *DB) rawMetricsFromDailyScoresAt(lastDate string, includeFreshLatest boo
 	// daily_scores column yet), so the cached path needs a separate
 	// fetch. Empty slices when iOS hasn't synced new-format data —
 	// callers fall back to d.Sleep.
-	d.NightSleep = s.metricPointDailySums("night_sleep_total", lastDate, 30)
-	d.Nap = s.metricPointDailySums("nap_total", lastDate, 30)
+	d.NightSleepByDate = s.metricPointDailySums("night_sleep_total", lastDate, 30)
+	d.NightSleep = datedValues(d.NightSleepByDate)
+	d.Nap = datedValues(s.metricPointDailySums("nap_total", lastDate, 30))
 	// NapToday is point-in-time (today only) so the dashboard badge
 	// can't latch onto a prior day's nap. Slice filters qty>0 → its
 	// index 0 is the latest day someone napped, not necessarily today.
@@ -346,11 +348,11 @@ func (s *DB) metricPointDailyPoint(metric, date string) float64 {
 // standard preferred-source aggregation (MAX of per-source SUM). Used for
 // metrics that are not yet cached in daily_scores — currently
 // night_sleep_total and nap_total.
-func (s *DB) metricPointDailySums(metric, lastDate string, days int) []float64 {
+func (s *DB) metricPointDailySums(metric, lastDate string, days int) []health.DatedValue {
 	ctx, cancel := queryCtx()
 	defer cancel()
 	rows, err := s.pool.Query(ctx, `
-		SELECT MAX(source_sum)
+		SELECT d, MAX(source_sum)
 		FROM (
 			SELECT SUBSTRING(date,1,10) AS d, source, SUM(qty) AS source_sum
 			FROM metric_points
@@ -365,10 +367,10 @@ func (s *DB) metricPointDailySums(metric, lastDate string, days int) []float64 {
 		return nil
 	}
 	defer rows.Close()
-	var out []float64
+	var out []health.DatedValue
 	for rows.Next() {
-		var v float64
-		if err := rows.Scan(&v); err == nil {
+		var v health.DatedValue
+		if err := rows.Scan(&v.Date, &v.Val); err == nil {
 			out = append(out, v)
 		}
 	}
@@ -457,18 +459,19 @@ func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
 		REM:      datedValues(series["rem"]),
 		Awake:    datedValues(series["awake"]),
 		// New-format split written by health-sync iOS — see RawMetrics doc.
-		NightSleep:     datedValues(series["night_sleep"]),
-		Nap:            datedValues(series["nap"]),
-		NapToday:       s.metricPointDailyPoint("nap_total", lastDate),
-		Steps:          datedValues(series["steps"]),
-		Cal:            datedValues(series["calories"]),
-		Exercise:       datedValues(series["exercise"]),
-		SpO2:           datedValues(series["spo2"]),
-		VO2:            datedValues(series["vo2"]),
-		Resp:           datedValues(series["resp"]),
-		WristTemp:      datedValues(series["wrist_temp"]),
-		StepsWithDates: firstDated(series["steps"], 7),
-		HRVWithDates:   firstDated(series["hrv"], 7),
+		NightSleep:       datedValues(series["night_sleep"]),
+		NightSleepByDate: series["night_sleep"],
+		Nap:              datedValues(series["nap"]),
+		NapToday:         s.metricPointDailyPoint("nap_total", lastDate),
+		Steps:            datedValues(series["steps"]),
+		Cal:              datedValues(series["calories"]),
+		Exercise:         datedValues(series["exercise"]),
+		SpO2:             datedValues(series["spo2"]),
+		VO2:              datedValues(series["vo2"]),
+		Resp:             datedValues(series["resp"]),
+		WristTemp:        datedValues(series["wrist_temp"]),
+		StepsWithDates:   firstDated(series["steps"], 7),
+		HRVWithDates:     firstDated(series["hrv"], 7),
 	}
 	out.ReadinessEvidence = buildReadinessEvidence(lastDate, dailyScoreRow{date: lastDate}, s.freshDayFromRaw(lastDate))
 	return out
@@ -616,11 +619,20 @@ func (s *DB) chronicAvg(lastDate, col string) float64 {
 // all scoring and insight computation to the health package.
 // lang selects the output language ("en", "ru", "sr").
 func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
+	if briefing, handled, err := s.sleepRolloutBriefing(lang, false); handled || err != nil {
+		return briefing, err
+	}
+	return s.getHealthBriefing(lang, nil, nil)
+}
+
+func (s *DB) getHealthBriefing(lang string, currentEnergy *localShadowCurrentEnergy, sleep *rolloutBriefingSleep) (*health.BriefingResponse, error) {
 	ctx, cancel := queryCtx()
 	defer cancel()
 	// Use hourly_metrics for lastDate — avoids full scan of metric_points.
 	var lastDate *string
-	if err := s.pool.QueryRow(ctx, `SELECT MAX(SUBSTRING(hour,1,10)) FROM hourly_metrics`).Scan(&lastDate); err != nil || lastDate == nil {
+	if currentEnergy != nil {
+		lastDate = &currentEnergy.date
+	} else if err := s.pool.QueryRow(ctx, `SELECT MAX(SUBSTRING(hour,1,10)) FROM hourly_metrics`).Scan(&lastDate); err != nil || lastDate == nil {
 		return &health.BriefingResponse{Greeting: "Welcome! No health data yet."}, nil
 	}
 
@@ -629,6 +641,10 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 	data := s.rawMetricsFromDailyScores(*lastDate)
 	if data == nil {
 		data = s.rawMetricsFromPoints(*lastDate)
+	}
+
+	if sleep != nil {
+		applyLocalShadowSleep(data, sleep.blocks)
 	}
 
 	// Supplement wrist_temperature (not in daily_scores) for anomaly detection.
@@ -649,10 +665,12 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 	// the user has fewer than 7 calendar days of per-segment sleep data
 	// (HAE midnight-summary nights cannot drive this — only iOS pushes can).
 	// scoreSleep falls back to the legacy stddev display in that case.
-	if sri, n, ok := s.ComputeSRI(14); ok {
-		v := sri
-		data.SleepRegularityIndex = &v
-		data.SleepRegularityNights = n
+	if sleep == nil {
+		if sri, n, ok := s.ComputeSRI(14); ok {
+			v := sri
+			data.SleepRegularityIndex = &v
+			data.SleepRegularityNights = n
+		}
 	}
 
 	resp := health.ComputeBriefing(*data, lang)
@@ -687,17 +705,30 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 	// whole frame is yesterday, and the override should match that
 	// frame. Looking up "today" instead would split frame and override
 	// across day boundaries.
-	if resp.EnergyBank != nil && lastDate != nil {
-		ctxSnap, cancelSnap := queryCtx()
-		snap, err := s.GetLatestEnergySnapshotForDate(ctxSnap, *lastDate)
-		cancelSnap()
+	if lastDate != nil {
+		var snap *LatestEnergySnapshot
+		var err error
+		if currentEnergy != nil {
+			snap = &currentEnergy.LatestEnergySnapshot
+		} else {
+			ctxSnap, cancelSnap := queryCtx()
+			snap, err = s.GetLatestEnergySnapshotForDate(ctxSnap, *lastDate)
+			cancelSnap()
+		}
 		if err != nil {
 			// Don't break the briefing on a transient pool/scan error;
 			// fall through to v1 numbers, but surface so an operator
 			// can investigate sustained failures.
 			log.Printf("[ENERGY_V2] briefing override read (date=%s): %v", *lastDate, err)
 		}
-		if err == nil && snap != nil {
+		if err == nil && snap != nil && ((currentEnergy != nil && currentEnergy.state == "stale") || slices.Contains(snap.Flags, energySnapshotStaleFlag)) {
+			resp.EnergyBankStatus = "stale"
+			resp.EnergyBank = nil
+		} else if currentEnergy != nil && resp.EnergyBank == nil {
+			// The bank can be usable before the legacy HRV context is complete.
+			display := max(0, min(100, currentEnergy.Bank))
+			resp.EnergyBankCurrent = &display
+		} else if err == nil && snap != nil && resp.EnergyBank != nil {
 			display := snap.Bank
 			if display < 0 {
 				display = 0
@@ -804,7 +835,11 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 		}
 	}
 
-	illnessInput := s.BuildIllnessEvidenceInput(*lastDate, resp.SubjectiveCheckin)
+	var sleepDisruption *health.MetricEvidenceInput
+	if sleep != nil && sleep.blocks[*lastDate] != nil {
+		sleepDisruption = localShadowSleepDisruption(sleep.blocks[*lastDate].Total, sleep.baseline)
+	}
+	illnessInput := s.buildIllnessEvidenceInput(*lastDate, resp.SubjectiveCheckin, sleepDisruption)
 	resp.IllnessSuspicion = health.ComputeIllnessSuspicion(illnessInput)
 	health.ApplyIllnessSafetyCap(resp, health.GetStrings(lang))
 	resp.TodayGuidance = health.ResolveDashboardTodayGuidance(
@@ -850,7 +885,10 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 
 	// Attach per-source sleep breakdown for the most recent night.
 	// Query hourly_metrics (indexed by hour) instead of metric_points.
-	if resp.Sleep != nil {
+	if sleep != nil && sleep.blocks[*lastDate] != nil {
+		attachRolloutSleepSource(resp, *lastDate, sleep.blocks[*lastDate])
+	}
+	if resp.Sleep != nil && (sleep == nil || sleep.blocks[*lastDate] == nil) {
 		sleepRows, qErr := s.pool.Query(ctx, `
 			SELECT source,
 				SUM(CASE WHEN metric_name='sleep_total'       THEN avg_val ELSE 0 END),
@@ -890,10 +928,55 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 	return resp, nil
 }
 
-// GetReadinessHistory returns readiness scores for the last `outputDays` days.
-// Results are served from the daily_scores cache when available and fresh;
-// otherwise the full sliding-window computation runs and the cache is updated.
+const (
+	DefaultReadinessHistoryDays = 30
+	MaxReadinessHistoryDays     = 365
+)
+
+// ReadinessHistoryDays applies the same supported window to all callers.
+func ReadinessHistoryDays(days int) int {
+	if days < 1 || days > MaxReadinessHistoryDays {
+		return DefaultReadinessHistoryDays
+	}
+	return days
+}
+
+// GetReadinessHistory returns readiness scores for the last outputDays days.
 func (s *DB) GetReadinessHistory(outputDays int) ([]health.ReadinessPoint, error) {
+	return s.GetReadinessHistoryContext(context.Background(), outputDays)
+}
+
+func (s *DB) GetReadinessHistoryContext(ctx context.Context, outputDays int) ([]health.ReadinessPoint, error) {
+	outputDays = ReadinessHistoryDays(outputDays)
+	// Active histories use the live formula for each date. Bound the time
+	// spent on that snapshot and reserve the tenant pool for sync and reads.
+	activeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var out []health.ReadinessPoint
+	held := false
+	defer func() {
+		if held {
+			s.sleepReadinessHistoryMu.Unlock()
+		}
+	}()
+	handled, err := s.withActiveSleepRollout(activeCtx, func(unit *DB, publication SleepRolloutPublication) error {
+		held = s.sleepReadinessHistoryMu.TryLock()
+		if !held {
+			return ErrReadinessHistoryBusy
+		}
+		var readErr error
+		out, readErr = unit.servedSleepReadinessHistory(activeCtx, publication, outputDays)
+		return readErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	if handled {
+		return out, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	cached, err := s.readinessFromCache(outputDays)
 	if err == nil && s.isCacheRecent(cached) {
 		fillReadinessBands(cached)

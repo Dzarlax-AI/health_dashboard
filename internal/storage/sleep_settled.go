@@ -2,6 +2,7 @@ package storage
 
 import (
 	"database/sql"
+	"errors"
 	"time"
 )
 
@@ -101,4 +102,29 @@ func parseMetricDate(s string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, lastErr
+}
+
+// ValidateIngestMetricTime accepts the timestamp formats used by metric readers
+// and the legacy date-only representation of day summaries.
+func ValidateIngestMetricTime(value string) error {
+	var timestamp time.Time
+	var err error
+	if len(value) == len(time.DateOnly) {
+		timestamp, err = time.Parse(time.DateOnly, value)
+	} else {
+		timestamp, err = parseMetricDate(value)
+	}
+	if err != nil {
+		return err
+	}
+	if timestamp.Year() == 0 {
+		return errors.New("PostgreSQL does not accept year zero")
+	}
+	if len(value) > len(time.DateOnly) && value[len(value)-1] != 'Z' {
+		_, offset := timestamp.Zone()
+		if offset <= -16*60*60 || offset >= 16*60*60 || value[len(value)-2:] == "60" {
+			return errors.New("invalid metric time zone offset")
+		}
+	}
+	return nil
 }

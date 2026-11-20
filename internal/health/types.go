@@ -26,8 +26,12 @@ type RawMetrics struct {
 	// fields so future trend uses fall in naturally. Empty when the iOS
 	// app hasn't synced new-format data yet — caller must fall back to
 	// `Sleep` in that case.
-	NightSleep []float64
-	Nap        []float64
+	NightSleep       []float64
+	NightSleepByDate []DatedValue `json:"-"`
+	// A published sleep block explicitly owns presence and absence of each
+	// current-night stage in ReadinessEvidence.
+	SleepStagesDateAligned bool `json:"-"`
+	Nap                    []float64
 	// NapToday is today's nap_total only (0 when no nap today). Separate
 	// from Nap[0] because the slice filters qty>0 — the latest entry can
 	// be from any prior day someone napped, which would mis-attribute the
@@ -587,6 +591,8 @@ type BriefingResponse struct {
 	SleepRegularityNights int                     `json:"sleep_regularity_nights,omitempty"`
 	MetricCards           []MetricCard            `json:"metric_cards"`
 	EnergyBank            *EnergyBank             `json:"energy_bank,omitempty"`
+	EnergyBankCurrent     *int                    `json:"energy_bank_current,omitempty"`
+	EnergyBankStatus      string                  `json:"energy_bank_status,omitempty"`
 	TodayGuidance         *DashboardTodayGuidance `json:"today_guidance,omitempty"`
 	// DailyDecision is the versioned action boundary consumed by native
 	// clients. It mirrors the final conservative TodayGuidance after all

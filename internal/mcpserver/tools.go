@@ -11,6 +11,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 
 	"health-receiver/internal/ctxdb"
+	"health-receiver/internal/storage"
 )
 
 func registerMetricTools(s *server.MCPServer, _ DBResolver) {
@@ -43,10 +44,10 @@ func registerMetricTools(s *server.MCPServer, _ DBResolver) {
 
 	s.AddTool(mcp.NewTool("get_readiness_history",
 		mcp.WithDescription("Get daily composite readiness scores (0–100) and server-derived readiness bands for the last N days. For today's freshness/confidence contract, use get_health_briefing and read readiness_serving."),
-		mcp.WithNumber("days", mcp.Description("Number of recent days (default: 30)")),
+		mcp.WithNumber("days", mcp.Description("Number of recent days (1–365, default: 30)")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		days := req.GetInt("days", 30)
-		pts, err := ctxdb.FromContext(ctx).GetReadinessHistory(days)
+		days := storage.ReadinessHistoryDays(req.GetInt("days", storage.DefaultReadinessHistoryDays))
+		pts, err := ctxdb.FromContext(ctx).GetReadinessHistoryContext(ctx, days)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}

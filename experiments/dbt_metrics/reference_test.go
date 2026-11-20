@@ -205,3 +205,18 @@ func checkReferencePlan(t *testing.T, ctx context.Context, db *pgx.Conn) {
 		}
 	}
 }
+
+func TestShadowSleepDailyMatchesCompiledDBT(t *testing.T) {
+	path := os.Getenv("SLEEP_SHADOW_COMPILED_SQL")
+	if path == "" {
+		t.Skip("set SLEEP_SHADOW_COMPILED_SQL to the dbt runtime model's compiled SQL")
+	}
+	compiled, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := ShadowSleepDailySQL("profile = $1 AND wake_date = $2::text::date")
+	if strings.TrimSpace(string(compiled)) != got {
+		t.Fatal("dbt runtime model renders different SQL from Go")
+	}
+}

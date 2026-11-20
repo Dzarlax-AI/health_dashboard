@@ -77,14 +77,18 @@ func AggregateContractChecksum() string {
 		panic(fmt.Sprintf("list embedded aggregate SQL: %v", err))
 	}
 	for _, entry := range entries {
-		if entry.IsDir() {
+		if entry.IsDir() || entry.Name() == "live_daily_go_sleep.sql" {
 			continue
 		}
-		data, err := aggregateSQLFiles.ReadFile("sql/aggregates/" + entry.Name())
-		if err != nil {
-			panic(fmt.Sprintf("read embedded aggregate SQL %q: %v", entry.Name(), err))
+		data := aggregateSQL(strings.TrimSuffix(entry.Name(), ".sql"))
+		if entry.Name() == "live_daily.sql" {
+			// Fingerprint the default query as a single template, before rendering
+			// the Go policy. Splitting the template and adding a parity-only opt-in
+			// writer do not invalidate existing cache maintenance checkpoints.
+			data = strings.Replace(data, "{{SLEEP_SELECTION_CTES}}",
+				strings.TrimSuffix(aggregateSQL("live_daily_go_sleep"), "\n"), 1)
 		}
-		parts = append(parts, "sql="+entry.Name()+"\n"+string(data))
+		parts = append(parts, "sql="+entry.Name()+"\n"+data)
 	}
 	return fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(strings.Join(parts, "\n"))))
 }

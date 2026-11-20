@@ -473,6 +473,9 @@ export interface components {
                 verdict_reason: string;
                 verdict_severity?: string;
             };
+            energy_bank_current?: number;
+            /** @enum {string} */
+            energy_bank_status?: "stale";
             greeting: string;
             headline?: {
                 detail: string;

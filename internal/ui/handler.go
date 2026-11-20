@@ -1707,13 +1707,12 @@ func (h *Handler) metricData(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) readinessHistory(w http.ResponseWriter, r *http.Request) {
-	days := 30
-	if d := r.URL.Query().Get("days"); d != "" {
-		if n, err := strconv.Atoi(d); err == nil && n > 0 && n <= 365 {
-			days = n
-		}
+	days, _ := strconv.Atoi(r.URL.Query().Get("days"))
+	pts, err := h.tenantDB(r).GetReadinessHistoryContext(r.Context(), days)
+	if errors.Is(err, storage.ErrReadinessHistoryBusy) || errors.Is(err, context.DeadlineExceeded) {
+		http.Error(w, "readiness history temporarily unavailable", http.StatusServiceUnavailable)
+		return
 	}
-	pts, err := h.tenantDB(r).GetReadinessHistory(days)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

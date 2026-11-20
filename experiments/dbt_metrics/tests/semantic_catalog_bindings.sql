@@ -22,6 +22,7 @@ with relations(model_name, relation) as (
         union all
         select jsonb_object_keys(dbt_binding->'filter')
     ) fields
+    where dbt_binding->>'model' <> 'shadow_sleep_daily_v1' -- checked by the sleep shadow test
 )
 select b.metric_id, b.model_name, b.field
 from bindings b left join relations r using (model_name)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"sync"
+	"time"
 )
 
 // EnergyV2Orchestrator is the production glue between the read-side
@@ -75,13 +76,15 @@ func (o *EnergyV2Orchestrator) recompute(ctx context.Context, db *DB, schema, tz
 // Normal ingest callers should continue using Trigger/TriggerAfter so the
 // POST /health acceptance path remains non-blocking.
 func (o *EnergyV2Orchestrator) Refresh(ctx context.Context, db *DB, schema, tz string) bool {
-	res, err := db.ComputeBankForToday(ctx, tz)
+	res, handled, err := db.refreshRolloutEnergyObservation(ctx, tz, time.Now)
+	if !handled && err == nil {
+		res, err = db.ComputeBankForToday(ctx, tz)
+		if err == nil {
+			err = db.UpsertEnergySnapshot(ctx, tz, res)
+		}
+	}
 	if err != nil {
 		log.Printf("[ENERGY_V2] schema=%s compute error: %v", schema, err)
-		return false
-	}
-	if err := db.UpsertEnergySnapshot(ctx, tz, res); err != nil {
-		log.Printf("[ENERGY_V2] schema=%s upsert error: %v", schema, err)
 		return false
 	}
 	// One log line per recompute lets us observe v2 behaviour in production

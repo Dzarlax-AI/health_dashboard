@@ -82,7 +82,7 @@ func (s *DB) InsertAcceptedPoints(recordID int64, points []MetricPoint, coverage
 	accepted := ordinary
 	var extraDates []string
 	for _, entry := range entries {
-		applied, displacedDate, err := applyNightIngestEntry(ctx, tx, entry, recordID, received, loc)
+		applied, displacedDate, err := applyNightIngestEntry(ctx, tx, entry, recordID, received, loc, s.pointOrdering())
 		if err != nil {
 			return nil, err
 		}
@@ -96,7 +96,7 @@ func (s *DB) InsertAcceptedPoints(recordID int64, points []MetricPoint, coverage
 			extraDates = append(extraDates, displacedDate)
 		}
 	}
-	if err = insertPointsTx(ctx, tx, recordID, ordinary); err != nil {
+	if err = insertPointsTx(ctx, tx, recordID, ordinary, s.pointOrdering()); err != nil {
 		return nil, err
 	}
 	dates := append(cacheDatesFromPoints(accepted), extraDates...)
@@ -220,7 +220,7 @@ func hasNightPointConflict(ctx context.Context, tx pgx.Tx, entry nightIngestEntr
 	return false, rows.Err()
 }
 
-func applyNightIngestEntry(ctx context.Context, tx pgx.Tx, entry nightIngestEntry, id int64, received time.Time, loc *time.Location) (bool, string, error) {
+func applyNightIngestEntry(ctx context.Context, tx pgx.Tx, entry nightIngestEntry, id int64, received time.Time, loc *time.Location, ordering ingestPointOrdering) (bool, string, error) {
 	day, source := entry.key.wakeDate, entry.key.source
 	full := entry.coverage.CaptureCompleteness == health.NightCaptureComplete
 	if !full {
@@ -236,7 +236,7 @@ func applyNightIngestEntry(ctx context.Context, tx pgx.Tx, entry nightIngestEntr
 		}
 	}
 	if entry.coverage.InputHash == "" {
-		err := insertPointsTx(ctx, tx, id, []MetricPoint{entry.point})
+		err := insertPointsTx(ctx, tx, id, []MetricPoint{entry.point}, ordering)
 		return err == nil, "", err
 	}
 
@@ -302,11 +302,26 @@ func applyNightIngestEntry(ctx context.Context, tx pgx.Tx, entry nightIngestEntr
 	if prior.date == entry.point.Date && prior.recordID != 0 && prior.origin != "live" {
 		return false, "", nil
 	}
+	move := prior.date != "" && prior.date != entry.point.Date && prior.recordID != 0
+	if move && (prior.origin != "live" || prior.recordID != version.RecordID) {
+		return false, "", nil
+	}
+
+	// Coverage owns a correction only after its point can be written. A
+	// deferred mixed receipt must respect newer receipts at the exact key,
+	// including ordinary measurements that never supplied a commitment.
+	coveredOrdering := coveredNightOrdering
+	if ordering == deferredPointOrdering {
+		coveredOrdering = deferredCoveredNightOrdering
+	}
+	point := entry.point
+	tag, err := tx.Exec(ctx, upsertMetricPointSQL, id, point.MetricName, point.Units, point.Date,
+		point.Qty, point.Source, int(coveredOrdering))
+	if err != nil || tag.RowsAffected() == 0 {
+		return false, "", err
+	}
 	var displacedDate string
-	if prior.date != "" && prior.date != entry.point.Date && prior.recordID != 0 {
-		if prior.origin != "live" || prior.recordID != version.RecordID {
-			return false, "", nil
-		}
+	if move {
 		if _, err = tx.Exec(ctx, `DELETE FROM metric_points WHERE metric_name='night_sleep_total'
 			AND date=$1 AND source=$2 AND health_record_id=$3 AND origin='live'`, prior.date, source, prior.recordID); err != nil {
 			return false, "", err
@@ -318,9 +333,6 @@ func applyNightIngestEntry(ctx context.Context, tx pgx.Tx, entry nightIngestEntr
 	// Store the bound pair identity. Same coverage metadata with a corrected
 	// measurement can therefore update both the point and the commitment.
 	entry.coverage.InputHash = fingerprint
-	if err = insertPointsTx(ctx, tx, id, []MetricPoint{entry.point}); err != nil {
-		return false, "", err
-	}
 	if err = saveNightSleepCoverage(ctx, tx, entry.coverage); err != nil {
 		return false, "", err
 	}

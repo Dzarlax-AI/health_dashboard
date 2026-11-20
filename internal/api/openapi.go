@@ -70,6 +70,7 @@ func GenerateOpenAPI() ([]byte, error) {
 		{"HealthBriefingResponse", []string{"overall"}, []string{"", "good", "fair", "low"}},
 		{"HealthBriefingResponse", []string{"readiness_band"}, []string{"", "optimal", "fair", "low"}},
 		{"HealthBriefingResponse", []string{"readiness_today_band"}, []string{"", "optimal", "fair", "low"}},
+		{"HealthBriefingResponse", []string{"energy_bank_status"}, []string{"stale"}},
 		{"SleepDurationBalanceResponse", []string{"state"}, []string{"complete", "incomplete"}},
 		{"SleepDurationBalanceResponse", []string{"confidence"}, []string{"normal", "low"}},
 	} {

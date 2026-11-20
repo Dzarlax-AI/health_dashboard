@@ -381,6 +381,9 @@ func (m *Manager) VerifyTenantContract(ctx context.Context, schema string, db *s
 	return nil
 }
 
+// UsesIsolatedPools reports whether runtime pools are bound to verified tenant roles.
+func (m *Manager) UsesIsolatedPools() bool { return m.isolationEnabled }
+
 // DBForAPIKey looks up a tenant by API key and returns their DB.
 func (m *Manager) DBForAPIKey(ctx context.Context, key string) (*storage.DB, string, bool, bool) {
 	if m.LegacyMode() {

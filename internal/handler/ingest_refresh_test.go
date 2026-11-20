@@ -57,7 +57,7 @@ func TestSessionFinalizationRefreshesUnionOnce(t *testing.T) {
 			var cacheCalls atomic.Int32
 			var scores bool
 			h := &Handler{
-				sessions: make(map[string]*syncSession),
+				sessions: make(map[syncSessionKey]*syncSession),
 				refreshCache: func(_ *storage.DB, dates []string, recompute bool) error {
 					cacheCalls.Add(1)
 					scores = recompute
