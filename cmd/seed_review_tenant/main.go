@@ -303,12 +303,17 @@ func resetSeedWindow(ctx context.Context, pool *pgxpool.Pool, from, to string) e
 		{`DELETE FROM health_records WHERE automation_name = $1`, []any{reviewRecordPayload}},
 		{`DELETE FROM daily_scores`, nil},
 	}
-	for _, stmt := range stmts {
-		if _, err := pool.Exec(ctx, stmt.sql, stmt.args...); err != nil {
-			return fmt.Errorf("reset window %s..%s: %w", from, to, err)
+	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := storage.MarkMetricCatalogSourceChangedTx(ctx, tx); err != nil {
+			return err
 		}
-	}
-	return nil
+		for _, stmt := range stmts {
+			if _, err := tx.Exec(ctx, stmt.sql, stmt.args...); err != nil {
+				return fmt.Errorf("reset window %s..%s: %w", from, to, err)
+			}
+		}
+		return storage.MarkMetricCatalogHoursChangedTx(ctx, tx)
+	})
 }
 
 func buildProfiles(from time.Time, days int) []dayProfile {

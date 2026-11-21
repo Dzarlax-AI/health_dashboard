@@ -101,14 +101,46 @@ func (s *DB) compatibleMetricData(metric, from, to, bucket, agg string, bySource
 	return s.scanSourcePointsWithKey(query, metricNamesForRead(metric), from, to)
 }
 
-func (s *DB) compatibleMetricSummaries(ctx context.Context) ([]MetricSummary, error) {
+func compatibilityCatalogSQL() string {
 	const filter = "metric_name=ANY($1::text[])"
-	query := "WITH " + compatibilityPercentReceipts("metric_points", filter) +
+	const distinctFilter = "metric_name=ANY(ARRAY(SELECT stored_key FROM catalog_keys WHERE exact_key)) AND source<>''"
+	const rankedFilter = `metric_name=ANY(ARRAY(SELECT stored_key FROM catalog_keys WHERE NOT exact_key))
+		OR (metric_name=ANY(ARRAY(SELECT stored_key FROM catalog_keys WHERE exact_key)) AND COALESCE(source,'')='')`
+	// A single stored key with a non-empty source is unique at its exact date.
+	// Only aliases, separate archive keys and coalesced sources can need rank.
+	return "WITH " + compatibilityPercentReceipts("metric_points", filter) + `
+	catalog_keys AS (
+		SELECT stored_key,COUNT(*) OVER (PARTITION BY ` + canonicalMetricSQL("stored_key") + `)=1 AS exact_key
+		FROM unnest($1::text[]) AS keys(stored_key)
+	), catalog_rows AS (
+		(
+			WITH ` + metricCompatibilityUnitRows("metric_points", distinctFilter, compatibilityReceiptProof) + `
+			SELECT metric,date,source,unit FROM compatible_units WHERE qty>0 AND quality='ok'
+		)
+		UNION ALL
+		(
+			WITH ` + metricCompatibilityProjection("metric_points", rankedFilter, compatibilityReceiptProof, false) + `
+			SELECT metric,date,source,unit FROM compatible WHERE qty>0 AND quality='ok'
+		)
+	), source_hours AS (
+		SELECT metric,SUBSTRING(date,1,13) AS hour,source,MIN(unit) AS min_unit,MAX(unit) AS max_unit
+		FROM catalog_rows GROUP BY metric,hour,source
+	)
+	SELECT metric, CASE WHEN MIN(min_unit)=MAX(max_unit) THEN MIN(min_unit) ELSE '' END,
+		COUNT(*),SUBSTRING(MIN(hour),1,10),SUBSTRING(MAX(hour),1,10)
+	FROM source_hours GROUP BY metric`
+}
+
+func legacyCompatibilityCatalogSQL() string {
+	const filter = "metric_name=ANY($1::text[])"
+	return "WITH " + compatibilityPercentReceipts("metric_points", filter) +
 		metricCompatibilityProjection("metric_points", filter, compatibilityReceiptProof, false) + `
-	SELECT metric,
-	 CASE WHEN COUNT(DISTINCT unit)=1 THEN MIN(unit) ELSE '' END,
-	 COUNT(DISTINCT (SUBSTRING(date,1,13),source)), MIN(SUBSTRING(date,1,10)),MAX(SUBSTRING(date,1,10))
-	FROM compatible WHERE qty>0 AND quality='ok' GROUP BY metric`
+		SELECT metric,CASE WHEN COUNT(DISTINCT unit)=1 THEN MIN(unit) ELSE '' END,
+			COUNT(DISTINCT (SUBSTRING(date,1,13),source)),MIN(SUBSTRING(date,1,10)),MAX(SUBSTRING(date,1,10))
+		FROM compatible WHERE qty>0 AND quality='ok' GROUP BY metric`
+}
+
+func (s *DB) queryCompatibleMetricSummaries(ctx context.Context, query string) ([]MetricSummary, error) {
 	rows, err := s.pool.Query(ctx, query, compatibilityStoredMetricNames())
 	if err != nil {
 		return nil, err
@@ -207,8 +239,15 @@ func compatibilityLatestSQL(hourly string, legacy bool) string {
 // consumers, backed by the same stable unit projection as their graphs.
 func (s *DB) ListMetricsForContract(legacy bool) ([]MetricSummary, error) {
 	rows, err := s.ListMetrics()
-	if err != nil || !legacy {
-		return rows, err
+	if err != nil {
+		return nil, err
+	}
+	return metricCatalogForContract(rows, legacy), nil
+}
+
+func metricCatalogForContract(rows []MetricSummary, legacy bool) []MetricSummary {
+	if !legacy {
+		return rows
 	}
 	for _, row := range rows {
 		for _, alias := range metricAliases {
@@ -219,7 +258,7 @@ func (s *DB) ListMetricsForContract(legacy bool) ([]MetricSummary, error) {
 			}
 		}
 	}
-	return rows, nil
+	return rows
 }
 
 func (s *DB) LatestMetricsForContract(legacy bool) ([]LatestValue, error) {

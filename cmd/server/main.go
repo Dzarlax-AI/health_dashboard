@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"net"
@@ -44,6 +45,15 @@ import (
 )
 
 func main() {
+	prepareCatalogs := flag.Bool("prepare-metric-catalogs", false, "prepare and verify exact catalogs for all active registry tenants, then exit")
+	prepareSingleCatalog := flag.Bool("prepare-single-metric-catalog", false, "prepare and verify the single-user DATABASE_URL catalog, then exit")
+	flag.Parse()
+	if *prepareCatalogs && *prepareSingleCatalog {
+		log.Fatal("select one metric catalog preparation mode")
+	}
+	if flag.NArg() != 0 {
+		log.Fatal("unexpected positional arguments")
+	}
 	isolationCfg, err := tenants.ParseTenantIsolationConfig(os.LookupEnv)
 	if err != nil {
 		log.Fatalf("invalid tenant database isolation configuration: %v", err)
@@ -127,6 +137,16 @@ func main() {
 
 	ctx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stopSignals()
+	if *prepareSingleCatalog {
+		if isolationCfg.Enabled || accessConfig != nil {
+			log.Fatal("single-user catalog preparation is unavailable with tenant isolation or Cloudflare browser authentication")
+		}
+		if err := prepareSingleMetricCatalog(ctx, dbURL); err != nil {
+			log.Fatalf("single-user metric catalog preparation failed: %v", err)
+		}
+		log.Print("metric catalog preparation verified the single-user catalog")
+		return
+	}
 
 	// --- Registry ---
 	registryDSN := dbURL
@@ -154,6 +174,14 @@ func main() {
 		mgr = tenants.New(reg, dbURL)
 	}
 	defer mgr.Close()
+	if *prepareCatalogs {
+		count, err := prepareMetricCatalogs(ctx, mgr, reg)
+		if err != nil {
+			log.Fatalf("metric catalog preparation stopped after %d tenant(s): %v", count, err)
+		}
+		log.Printf("metric catalog preparation verified %d active tenant(s)", count)
+		return
+	}
 
 	// Attempt to create health_registry schema and users table.
 	schemaErr := reg.EnsureSchema(ctx)
@@ -300,6 +328,9 @@ func main() {
 		log.Println("No users registered. Visit /setup to create your account.")
 	}
 
+	stopCatalogs := startMetricCatalogWorker(ctx, mgr, reg)
+	defer stopCatalogs()
+
 	mux := http.NewServeMux()
 
 	onNewData := func(db *storage.DB, dates []string, cacheReady bool) {
@@ -437,6 +468,9 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	go runDaytimeLifecycle(ctx, db, notifyDefaults, baseURL)
 	go runDailyQualityScan(db, schema, notifyDefaults, backfillDatesFn)
 	go runCompletedNightSleepCoordinator(ctx, db, schema)
+
+	stopCatalogs := startMetricCatalogWorker(ctx, mgr, reg)
+	defer stopCatalogs()
 
 	mux := http.NewServeMux()
 	ingestHandler := handler.New(mgr, onNewData, hrZones)

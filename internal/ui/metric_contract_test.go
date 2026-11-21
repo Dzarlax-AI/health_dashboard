@@ -31,6 +31,9 @@ func TestHealthKitContractReadSurfaces(t *testing.T) {
 		id, old, day+" 10:00:00 +0200", day+" 10:10:00 +0200"); err != nil {
 		t.Fatal(err)
 	}
+	if err := db.PrepareMetricCatalog(ctx); err != nil {
+		t.Fatal(err)
+	}
 	handler := &Handler{}
 	get := func(route http.HandlerFunc, path, requestVersion, responseVersion string, target any) {
 		t.Helper()

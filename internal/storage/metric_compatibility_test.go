@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"cmp"
 	"math"
 	"slices"
 	"testing"
@@ -68,6 +69,9 @@ func TestArchiveAndLiveShareMetricCompatibility(t *testing.T) {
 	seed("height", outside, "cm", 180, fresh.Add(-time.Hour))
 	seed("distance_swimming", outside, "m", 1250, fresh.Add(-time.Hour))
 	seed("stair_ascent_speed", outside, "ft/s", 2, fresh.Add(-time.Hour))
+	if err := db.PrepareMetricCatalog(ctx); err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 2; i++ {
 		run, err := db.BeginAppleHealthXMLImport(ImportOptions{SourceName: "fixture", SnapshotAt: fresh})
 		if err != nil {
@@ -85,6 +89,9 @@ func TestArchiveAndLiveShareMetricCompatibility(t *testing.T) {
 		}
 		if result.SkippedPoints != 1 {
 			t.Errorf("run %d protected count = %d", i, result.SkippedPoints)
+		}
+		if built, err := db.RefreshMetricCatalog(ctx, time.Time{}, 0); err != nil || !built {
+			t.Fatalf("archive run %d did not refresh catalog: built=%t %v", i, built, err)
 		}
 	}
 	assertPointState(t, db, canonical, oldExact, source, 7, appleHealthXMLOrigin)
@@ -138,6 +145,16 @@ func TestArchiveAndLiveShareMetricCompatibility(t *testing.T) {
 	}
 	if !slices.Contains(names, canonical) || slices.Contains(names, old) {
 		t.Fatalf("catalog names=%v", names)
+	}
+	if built, err := db.RefreshMetricCatalog(ctx, time.Time{}, 0); err != nil || !built {
+		t.Fatalf("live correction did not refresh catalog: built=%t %v", built, err)
+	}
+	for _, legacy := range []bool{true, false} {
+		want := metricCatalogForContract(slices.Clone(summaries), legacy)
+		got, err := db.ReadMetricCatalog(ctx, legacy)
+		if err != nil || !slices.Equal(got, want) {
+			t.Fatalf("archive and corrected live catalog differs for legacy=%t: %v", legacy, err)
+		}
 	}
 	latest, err := db.GetLatestMetricValues()
 	if err != nil {
@@ -633,5 +650,67 @@ func TestHealthKitLatestGroupsArchiveKeysWithLiveMetrics(t *testing.T) {
 		if err != nil || len(rows) != 1 || rows[0] != (LatestValue{Metric: metric, Date: day, Unit: "km", Value: tc.value}) {
 			t.Fatalf("legacy=%t latest=%+v err=%v", tc.legacy, rows, err)
 		}
+	}
+}
+
+func TestHealthKitCatalogMatchesFullRanking(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx := t.Context()
+
+	proven, err := db.InsertRaw(Record{ContentType: "application/json",
+		Payload: `{"data":{"metrics":[{"name":"peripheral_perfusion_index","units":"%"}]}}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ambiguous, err := db.InsertRaw(Record{ContentType: "application/json", Payload: "malformed history"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.pool.Exec(ctx, `
+		INSERT INTO metric_points(health_record_id,metric_name,units,date,source,qty,origin,quality,source_snapshot_at)
+		VALUES
+		  ($1,'height','cm','2026-07-01 09:00:00 +0000','Watch',180,'live','ok','2026-07-01 10:00:00+00'),
+		  ($1,'height','m','2026-07-01 09:25:00 +0000','Watch',1.8,'live','ok','2026-07-01 10:00:00+00'),
+		  ($1,'height','m','2026-07-02 09:00:00 +0000',NULL,1.8,'live','ok','2026-07-02 10:00:00+00'),
+		  ($1,'height','m','2026-07-02 09:00:00 +0000','',2.6,'live','suspect','2026-07-02 11:00:00+00'),
+		  ($1,'six_min_walk_distance','m','2026-07-01 09:00:00 +0000','Watch',500,'live','ok','2026-07-01 10:00:00+00'),
+		  ($1,'six_minute_walking_test_distance','m','2026-07-01 09:00:00 +0000','Watch',400,'live','suspect','2026-07-01 11:00:00+00'),
+		  ($1,'six_min_walk_distance','m','2026-07-02 09:00:00 +0000','Watch',510,'live','ok','2026-07-02 10:00:00+00'),
+		  ($1,'distance_swimming','km','2026-07-01 10:00:00 +0000','Watch',2,'live','ok','2026-07-01 11:00:00+00'),
+		  ($1,'__healthkit_archive_sample:distance_swimming','m','2026-07-01 10:00:00 +0000','Watch',500,'apple_health_xml','ok','2026-07-02 11:00:00+00'),
+		  ($1,'peripheral_perfusion_index','%','2026-07-01 12:00:00 +0000','Watch',2.5,'live','ok','2026-07-01 13:00:00+00'),
+		  ($2,'peripheral_perfusion_index','%','2026-07-03 12:00:00 +0000','Watch',0.025,'live','ok','2026-07-03 13:00:00+00')
+	`, proven, ambiguous); err != nil {
+		t.Fatal(err)
+	}
+
+	query := legacyCompatibilityCatalogSQL()
+	rows, err := db.pool.Query(ctx, query, compatibilityStoredMetricNames())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var want []MetricSummary
+	for rows.Next() {
+		var m MetricSummary
+		if err := rows.Scan(&m.Name, &m.Units, &m.Count, &m.Min, &m.Max); err != nil {
+			t.Fatal(err)
+		}
+		want = append(want, m)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := db.queryCompatibleMetricSummaries(ctx, compatibilityCatalogSQL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := func(a, b MetricSummary) int { return cmp.Compare(a.Name, b.Name) }
+	slices.SortFunc(want, byName)
+	slices.SortFunc(got, byName)
+	if len(want) != 4 || !slices.Equal(got, want) {
+		t.Fatalf("catalog got %+v, full ranking want %+v", got, want)
 	}
 }

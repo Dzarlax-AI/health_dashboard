@@ -243,14 +243,8 @@ func (s *DB) UpsertRecentCache(dates []string, recomputeReadiness bool) error {
 	}
 	dailySQL := liveDailySQL(s.legacySleepDBTEnabled())
 	for _, date := range dates {
-		if err := s.upsertHourlyAvgForDate(date); err != nil {
-			return fail(fmt.Errorf("hourly avg %s: %w", date, err))
-		}
-		if err := s.upsertHourlySumForDate(date); err != nil {
-			return fail(fmt.Errorf("hourly sum %s: %w", date, err))
-		}
-		if err := s.upsertHourlySleepForDate(date); err != nil {
-			return fail(fmt.Errorf("hourly sleep %s: %w", date, err))
+		if err := s.rebuildRecentHourlyCatalog(date); err != nil {
+			return fail(fmt.Errorf("hourly aggregates %s: %w", date, err))
 		}
 		if err := s.writeDailyScores(date, dailySQL); err != nil {
 			return fail(fmt.Errorf("daily scores %s: %w", date, err))
@@ -308,6 +302,24 @@ func (s *DB) RefreshIngestReadinessSince(fromDate string) error {
 	ctx, cancel := longCtx()
 	defer cancel()
 	return s.refreshDashboardSnapshotLocked(ctx)
+}
+
+// Publish all hourly projections for one day with their catalog invalidation.
+func (s *DB) rebuildRecentHourlyCatalog(date string) error {
+	ctx, cancel := longCtx()
+	defer cancel()
+	return s.runCacheTransaction(ctx, func(unit *DB) error {
+		if err := unit.upsertHourlyAvgForDate(date); err != nil {
+			return err
+		}
+		if err := unit.upsertHourlySumForDate(date); err != nil {
+			return err
+		}
+		if err := unit.upsertHourlySleepForDate(date); err != nil {
+			return err
+		}
+		return MarkMetricCatalogHoursChangedTx(ctx, unit.pool)
+	})
 }
 
 // upsertHourlyAvgForDate rebuilds hourly_metrics for ALL non-sleep AVG metrics
@@ -428,6 +440,10 @@ func (s *DB) BackfillAggregates(force bool) error {
 				tx.Rollback(ctx)
 				return fmt.Errorf("clear %s: %w", tbl, err)
 			}
+		}
+		if err := MarkMetricCatalogHoursChangedTx(ctx, tx); err != nil {
+			tx.Rollback(ctx)
+			return fmt.Errorf("mark force clear: %w", err)
 		}
 		if err := tx.Commit(ctx); err != nil {
 			return fmt.Errorf("commit force clear: %w", err)
@@ -748,31 +764,23 @@ func (s *DB) buildHourlyMetric(metric, agg string, force bool) error {
 		"FROM_CLAUSE": fromClause,
 	})
 
-	if !isSleepMetric(metric) {
-		_, err := s.pool.Exec(ctx, query, args...)
-		return err
-	}
-
-	// Sleep path: DELETE same window + INSERT in one transaction.
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-
-	delArgs := []any{metric}
-	delWhere := ""
-	if refreshFromOpt != "" {
-		delArgs = append(delArgs, refreshFromOpt)
-		delWhere = " AND SUBSTRING(hour,1,10) >= $2"
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM hourly_metrics WHERE metric_name = $1`+delWhere, delArgs...); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, query, args...); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	return s.runCacheTransaction(ctx, func(unit *DB) error {
+		if isSleepMetric(metric) {
+			delArgs := []any{metric}
+			delWhere := ""
+			if refreshFromOpt != "" {
+				delArgs = append(delArgs, refreshFromOpt)
+				delWhere = " AND SUBSTRING(hour,1,10) >= $2"
+			}
+			if _, err := unit.pool.Exec(ctx, `DELETE FROM hourly_metrics WHERE metric_name = $1`+delWhere, delArgs...); err != nil {
+				return err
+			}
+		}
+		if _, err := unit.pool.Exec(ctx, query, args...); err != nil {
+			return err
+		}
+		return MarkMetricCatalogHoursChangedTx(ctx, unit.pool)
+	})
 }
 
 // subtractDaysStr subtracts N days from a YYYY-MM-DD string.

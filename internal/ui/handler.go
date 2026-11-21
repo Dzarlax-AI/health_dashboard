@@ -1078,7 +1078,7 @@ func (h *Handler) pageMetrics(w http.ResponseWriter, r *http.Request) {
 	lang := langFromRequest(r)
 	setLangCookie(w, r)
 	query := r.URL.Query().Get("q")
-	data := h.buildMetricsPageData(lang, query, db)
+	data := h.buildMetricsPageData(r.Context(), lang, query, db)
 	data.IsAdmin = h.isAdmin(r)
 	renderPage(w, "metrics", data)
 }
@@ -1087,7 +1087,7 @@ func (h *Handler) fragmentMetricsList(w http.ResponseWriter, r *http.Request) {
 	db := h.tenantDB(r)
 	lang := langFromRequest(r)
 	query := r.URL.Query().Get("q")
-	data := h.buildMetricsPageData(lang, query, db)
+	data := h.buildMetricsPageData(r.Context(), lang, query, db)
 	renderFragment(w, "metrics-list", data)
 }
 
@@ -1419,9 +1419,14 @@ func (h *Handler) listMetrics(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	metrics, err := h.tenantDB(r).ListMetricsForContract(version == metriccontract.Legacy)
+	metrics, err := h.tenantDB(r).ReadMetricCatalog(r.Context(), version == metriccontract.Legacy)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		if errors.Is(err, storage.ErrMetricCatalogUnavailable) {
+			w.Header().Set("Retry-After", "15")
+			http.Error(w, "metric catalog is being prepared", http.StatusServiceUnavailable)
+			return
+		}
+		http.Error(w, "metric catalog unavailable", http.StatusInternalServerError)
 		return
 	}
 	lang := r.URL.Query().Get("lang")

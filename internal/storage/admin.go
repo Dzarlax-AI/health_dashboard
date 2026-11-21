@@ -274,6 +274,10 @@ func (s *DB) InvalidateDateRangeAggregates(from, to string) {
 		log.Printf("invalidate daily_scores [%s,%s]: %v", from, to, err)
 		return
 	}
+	if err := MarkMetricCatalogHoursChangedTx(ctx, tx); err != nil {
+		log.Printf("invalidate aggregate catalog: %v", err)
+		return
+	}
 	if err := tx.Commit(ctx); err != nil {
 		log.Printf("invalidate aggregates [%s,%s]: commit: %v", from, to, err)
 	}

@@ -57,9 +57,12 @@ func registerMetricTools(s *server.MCPServer, _ DBResolver) {
 	s.AddTool(mcp.NewTool("list_metrics",
 		mcp.WithDescription("List all available health metrics with record counts and date ranges. Call this first to discover what data is available."),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		metrics, err := ctxdb.FromContext(ctx).ListMetrics()
+		metrics, err := ctxdb.FromContext(ctx).ReadMetricCatalog(ctx, false)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
+		}
+		if len(metrics) == 0 {
+			metrics = nil
 		}
 		return jsonResult(metrics)
 	})
@@ -356,7 +359,7 @@ func registerAnalysisTools(s *server.MCPServer, _ DBResolver) {
 		metric := storage.CanonicalMetricName(req.GetString("metric", ""))
 
 		// Get list of metrics to process.
-		metrics, err := ctxdb.FromContext(ctx).ListMetrics()
+		metrics, err := ctxdb.FromContext(ctx).ReadMetricCatalog(ctx, false)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
