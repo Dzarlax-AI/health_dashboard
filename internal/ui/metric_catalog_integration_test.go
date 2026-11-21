@@ -41,10 +41,10 @@ func TestMetricCatalogHTTPStatuses(t *testing.T) {
 	New(mgr, nil, false).Register(mux)
 	t.Setenv("HEALTH_METRICS_V1_ENABLED", "1")
 
-	request := func(version string) *httptest.ResponseRecorder {
+	request := func(path, version string) *httptest.ResponseRecorder {
 		t.Helper()
 		w := httptest.NewRecorder()
-		r := httptest.NewRequest(http.MethodGet, "/api/metrics?lang=ru", nil)
+		r := httptest.NewRequest(http.MethodGet, path, nil)
 		r.Header.Set("X-API-Key", "catalog-fixture")
 		if version != "" {
 			r.Header.Set(metriccontract.Header, version)
@@ -52,23 +52,61 @@ func TestMetricCatalogHTTPStatuses(t *testing.T) {
 		mux.ServeHTTP(w, r)
 		return w
 	}
-	pending := request("")
+	checkHTML := func(translationKey, unwantedKey string) {
+		t.Helper()
+		for _, path := range []string{"/metrics", "/fragments/metrics-list"} {
+			html := request(path+"?lang=ru&q=Walk", "")
+			body := html.Body.String()
+			if html.Code != http.StatusOK || !strings.Contains(body, T("ru", translationKey)) ||
+				strings.Contains(body, T("ru", unwantedKey)) {
+				t.Errorf("%s: status=%d, expected state %s and no %s", path, html.Code, translationKey, unwantedKey)
+			}
+			if translationKey != "no_metrics_found" && !strings.Contains(body, "/metrics?lang=ru&amp;q=Walk") {
+				t.Errorf("%s: retry URL should retain the query and language", path)
+			}
+		}
+	}
+
+	pending := request("/api/metrics?lang=ru", "")
 	if pending.Code != http.StatusServiceUnavailable || pending.Header().Get("Retry-After") == "" ||
 		pending.Header().Get(metriccontract.Header) != "1" {
 		t.Fatalf("pending catalog status=%d", pending.Code)
 	}
+	checkHTML("metrics_catalog_preparing", "no_metrics_found")
 	if err := db.SeedEmptyMetricCatalog(ctx); err != nil {
 		t.Fatal(err)
 	}
-	ready := request("2")
+	ready := request("/api/metrics?lang=ru", "2")
 	if ready.Code != http.StatusOK || ready.Header().Get(metriccontract.Header) != "2" ||
 		ready.Header().Get("Retry-After") != "" || strings.TrimSpace(ready.Body.String()) != "[]" {
 		t.Fatalf("empty catalog status=%d", ready.Code)
 	}
+	checkHTML("no_metrics_found", "metrics_catalog_preparing")
+
+	id, err := db.InsertRaw(storage.Record{ContentType: "application/json; metrics-contract=2", Payload: "{}"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertPoints(id, []storage.MetricPoint{{
+		MetricName: "six_minute_walking_test_distance", Units: "m", Date: "2026-08-01 10:00:00 +0000", Source: "Fixture", Qty: 500,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.PrepareMetricCatalog(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/metrics", "/fragments/metrics-list"} {
+		html := request(path+"?lang=ru&q=Walk", "")
+		if html.Code != http.StatusOK || !strings.Contains(html.Body.String(), `href="/metrics/six_minute_walking_test_distance"`) ||
+			strings.Contains(html.Body.String(), T("ru", "metrics_catalog_preparing")) {
+			t.Errorf("%s: expected the published metric after retry, status=%d", path, html.Code)
+		}
+	}
 	db.Close()
-	outage := request("2")
+	outage := request("/api/metrics?lang=ru", "2")
 	if outage.Code != http.StatusInternalServerError || outage.Header().Get("Retry-After") != "" ||
 		strings.TrimSpace(outage.Body.String()) != "metric catalog unavailable" {
 		t.Fatalf("database outage status=%d", outage.Code)
 	}
+	checkHTML("metrics_catalog_unavailable", "no_metrics_found")
 }

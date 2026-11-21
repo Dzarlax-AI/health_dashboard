@@ -625,4 +625,8 @@ var translationsSr = map[string]string{
 <p>Lična norma (HRV, puls, disanje) se još uči — treba oko nedelju dana neprekidnih podataka. Pragovi oznaka stresa za sada ostaju konzervativni.</p>
 <h5>Šta raditi</h5>
 <p>Samo nosite sat. Nakon nekoliko dana oznaka nestaje sama.</p>`,
+
+	"metrics_catalog_preparing":   "Katalog metrika se priprema.",
+	"metrics_catalog_unavailable": "Katalog metrika trenutno nije dostupan.",
+	"metrics_catalog_retry":       "Pokušaj ponovo",
 }

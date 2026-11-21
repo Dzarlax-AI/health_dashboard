@@ -2,16 +2,19 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"health-receiver/internal/storage"
 	"strings"
+
+	"health-receiver/internal/storage"
 )
 
 // MetricsPageData is the template data for the metrics list page.
 type MetricsPageData struct {
 	BasePage
-	Query      string
-	Categories []MetricCategory
+	Query         string
+	Categories    []MetricCategory
+	CatalogStatus string
 }
 
 // MetricCategory groups metrics for display.
@@ -46,6 +49,21 @@ var categories = []struct {
 }
 
 func (h *Handler) buildMetricsPageData(ctx context.Context, lang, query string, db *storage.DB) MetricsPageData {
+	data := MetricsPageData{
+		BasePage: BasePage{Lang: lang, Title: T(lang, "all_metrics"), ActiveNav: "metrics"},
+		Query:    query,
+	}
+	metrics, err := db.ReadMetricCatalog(ctx, false)
+	switch {
+	case errors.Is(err, storage.ErrMetricCatalogUnavailable):
+		data.CatalogStatus = "metrics_catalog_preparing"
+		return data
+	case err != nil:
+		data.CatalogStatus = "metrics_catalog_unavailable"
+		return data
+	case len(metrics) == 0:
+		return data
+	}
 	query = strings.ToLower(strings.TrimSpace(query))
 
 	// Fetch latest values to show on the list
@@ -63,14 +81,11 @@ func (h *Handler) buildMetricsPageData(ctx context.Context, lang, query string, 
 	}
 
 	// Also fetch the list of available metrics to only show ones with data
-	availableMetrics := map[string]bool{}
-	if metrics, err := db.ReadMetricCatalog(ctx, false); err == nil {
-		for _, m := range metrics {
-			availableMetrics[m.Name] = true
-		}
+	availableMetrics := make(map[string]bool, len(metrics))
+	for _, m := range metrics {
+		availableMetrics[m.Name] = true
 	}
 
-	var cats []MetricCategory
 	for _, c := range categories {
 		cat := MetricCategory{
 			Label: T(lang, c.LabelKey),
@@ -95,15 +110,11 @@ func (h *Handler) buildMetricsPageData(ctx context.Context, lang, query string, 
 			cat.Metrics = append(cat.Metrics, item)
 		}
 		if len(cat.Metrics) > 0 {
-			cats = append(cats, cat)
+			data.Categories = append(data.Categories, cat)
 		}
 	}
 
-	return MetricsPageData{
-		BasePage:   BasePage{Lang: lang, Title: T(lang, "all_metrics"), ActiveNav: "metrics"},
-		Query:      query,
-		Categories: cats,
-	}
+	return data
 }
 
 func fmtValue(v float64, unit string) string {

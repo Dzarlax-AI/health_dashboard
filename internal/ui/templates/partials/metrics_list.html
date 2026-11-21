@@ -1,5 +1,10 @@
 {{define "metrics-list"}}
-{{if .Categories}}
+{{if .CatalogStatus}}
+<div class="metrics-empty" role="status">
+  <p>{{T .Lang .CatalogStatus}}</p>
+  <a href="/metrics?lang={{.Lang}}&amp;q={{.Query}}">{{T .Lang "metrics_catalog_retry"}}</a>
+</div>
+{{else if .Categories}}
 {{range .Categories}}
 <div class="metrics-cat-section">
   <div class="metrics-cat-label"><span class="metrics-cat-dot" style="background:{{.Color}}"></span>{{.Label}}</div>
