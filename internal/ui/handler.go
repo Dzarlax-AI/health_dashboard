@@ -1451,7 +1451,7 @@ func (h *Handler) listMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) metricRange(w http.ResponseWriter, r *http.Request) {
-	_, ok := metriccontract.Read(w, r)
+	version, ok := metriccontract.Read(w, r)
 	if !ok {
 		return
 	}
@@ -1460,7 +1460,7 @@ func (h *Handler) metricRange(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "metric required", http.StatusBadRequest)
 		return
 	}
-	min, max, err := h.tenantDB(r).GetMetricDateRange(metric)
+	min, max, err := h.tenantDB(r).MetricDateRangeForContract(metric, version == metriccontract.Legacy)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

@@ -32,6 +32,8 @@ func TestMetricContractProbeAndInvalidWrite(t *testing.T) {
 		`{"data":{"metrics":[{"name":"six_min_walk_distance","units":"m","grain":"sample_start","data":[]}]}}`,
 		`{"data":{"metrics":[{"name":"__healthkit_archive_sample:distance_swimming","units":"km","data":[]}]}}`,
 		`{"data":{"metrics":[{"name":"distance_swimming","units":"km","grain":"hour_sum","data":[{"date":"2026-11-01 00:15:00 +0100","qty":0.25}]}]}}`,
+		`{"data":{"metrics":[{"name":"distance_swimming","units":"km","grain":"hour_sum","data":[{"date":"2026-11-01 00:00:00.5 +0100","qty":0.25}]}]}}`,
+		`{"data":{"metrics":[{"name":"height","units":"m","grain":"sample_start","data":[{"date":"2026-11-01  1:00:00 +0100","qty":1.8}]}]}}`,
 	} {
 		req := httptest.NewRequest(http.MethodPost, "/health", strings.NewReader(invalid))
 		req.Header.Set(metriccontract.Header, "2")

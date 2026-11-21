@@ -562,6 +562,9 @@ func parseFloat(s string) (float64, bool) {
 // parseRecord converts a single <Record> attribute map to 0–2 MetricPoints.
 func parseRecord(a map[string]string) []storage.MetricPoint {
 	hkType := a["type"]
+	if hkType == "HKQuantityTypeIdentifierSleepDurationGoal" {
+		return nil // HealthKit setting, not an observation.
+	}
 	if hkType == "" {
 		return nil
 	}

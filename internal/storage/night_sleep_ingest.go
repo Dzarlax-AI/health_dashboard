@@ -316,7 +316,7 @@ func applyNightIngestEntry(ctx context.Context, tx pgx.Tx, entry nightIngestEntr
 	}
 	point := entry.point
 	tag, err := tx.Exec(ctx, upsertMetricPointSQL, id, point.MetricName, point.Units, point.Date,
-		point.Qty, point.Source, int(coveredOrdering))
+		point.Qty, point.Source, int(coveredOrdering), "")
 	if err != nil || tag.RowsAffected() == 0 {
 		return false, "", err
 	}

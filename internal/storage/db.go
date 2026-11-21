@@ -575,7 +575,12 @@ const upsertMetricPointSQL = `WITH archived AS (
 		WHERE $8<>'' AND mp.metric_name=$2 AND mp.date=$4 AND mp.source=$6
 		    AND (mp.origin='apple_health_xml' OR EXISTS (
 		     SELECT 1 FROM health_records hr WHERE hr.id=mp.health_record_id AND hr.content_type IN ('apple-health-import','apple-health-import; catalog=1')))
-		ON CONFLICT(metric_name,date,source) DO NOTHING
+		ON CONFLICT(metric_name,date,source) DO UPDATE SET
+		    health_record_id=excluded.health_record_id, units=excluded.units, qty=excluded.qty,
+		    origin=excluded.origin, import_run_id=excluded.import_run_id,
+		    source_snapshot_at=excluded.source_snapshot_at, quality=excluded.quality, received_at=excluded.received_at
+		WHERE COALESCE(metric_points.source_snapshot_at, '-infinity')
+		      < COALESCE(excluded.source_snapshot_at, '-infinity')
 	)
 	INSERT INTO metric_points
 		(health_record_id, metric_name, units, date, qty, source, origin, import_run_id, source_snapshot_at)

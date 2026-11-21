@@ -54,17 +54,17 @@ var currentHourlyStoredKeys = func() []string {
 }()
 
 func usesCurrentHourlyMetric(metric string) bool {
-	return slices.Contains(currentHourlyMetrics, canonicalMetricName(metric))
+	return slices.Contains(currentHourlyMetrics, CanonicalMetricName(metric))
 }
 
 func usesSeparatedArchiveSamples(metric string) bool {
-	return slices.Contains(separatedArchiveMetrics, canonicalMetricName(metric))
+	return slices.Contains(separatedArchiveMetrics, CanonicalMetricName(metric))
 }
 
 // UsesCurrentMetricSum reports whether the canonical chart and MCP view use
 // per-source sums for a metric.
 func UsesCurrentMetricSum(metric string) bool {
-	return SumMetrics[canonicalMetricName(metric)] || usesCurrentHourlyMetric(metric)
+	return SumMetrics[CanonicalMetricName(metric)] || usesCurrentHourlyMetric(metric)
 }
 
 // CurrentMetricAggregation exposes the effective aggregation for v2 totals.
@@ -100,11 +100,11 @@ func catalogSQLList(keys []string) string {
 }
 
 func CanonicalMetricUnit(metric string) string {
-	return liveMetricDefinitions[canonicalMetricName(metric)].Unit
+	return liveMetricDefinitions[CanonicalMetricName(metric)].Unit
 }
 
 func CanonicalLiveMetric(metric string) (key, unit, grain string) {
-	key = canonicalMetricName(metric)
+	key = CanonicalMetricName(metric)
 	definition := liveMetricDefinitions[key]
 	return key, definition.Unit, definition.LiveGrain
 }
@@ -121,13 +121,14 @@ func loadMetricUnitRules() []metricUnitRule {
 	return rules
 }
 
-func canonicalMetricName(metric string) string {
+// CanonicalMetricName resolves a historical metric alias for reads.
+func CanonicalMetricName(metric string) string {
 	return dbtmetrics.CanonicalHealthKitKey(metric)
 }
 
 // CanonicalMetricPoint applies the shared wire and archive compatibility rules.
 func CanonicalMetricPoint(point MetricPoint) MetricPoint {
-	point.MetricName = canonicalMetricName(point.MetricName)
+	point.MetricName = CanonicalMetricName(point.MetricName)
 	rule, ok := dbtmetrics.ResolveHealthKitUnit(point.MetricName, point.Units)
 	if !ok {
 		return point
@@ -148,7 +149,7 @@ func normalizeStoredMetricPoint(point MetricPoint) MetricPoint {
 // A historical quantity only needs special reads when its key or numeric scale
 // changed. Equivalent labels are normalized on ingestion and use normal caches.
 func usesMetricCompatibility(metric string) bool {
-	key := canonicalMetricName(metric)
+	key := CanonicalMetricName(metric)
 	if slices.Contains(revisionSensitivePercent, key) || usesSeparatedArchiveSamples(key) || IsReservedMetricKey(key) {
 		return true
 	}
@@ -158,7 +159,7 @@ func usesMetricCompatibility(metric string) bool {
 		}
 	}
 	for _, rule := range metricUnitRules {
-		if rule.metric == metric && (rule.divisor != 1 || rule.multiplier != 0) {
+		if rule.metric == metric && !SumMetrics[key] && (rule.divisor != 1 || rule.multiplier != 0) {
 			return true
 		}
 	}
@@ -202,7 +203,7 @@ func newerLegacyMetricExists(candidate, snapshotParam string) string {
 }
 
 func metricNamesForRead(metric string) []string {
-	metric = canonicalMetricName(metric)
+	metric = CanonicalMetricName(metric)
 	out := []string{metric}
 	if usesCurrentHourlyMetric(metric) {
 		out = append(out, archiveSamplePrefix+metric)
@@ -221,7 +222,7 @@ func compatibilityStoredMetricNames() []string {
 		out = append(out, key, archiveSamplePrefix+key)
 	}
 	for _, rule := range metricUnitRules {
-		if (rule.divisor != 1 || rule.multiplier != 0) && !slices.Contains(out, rule.metric) {
+		if !SumMetrics[rule.metric] && (rule.divisor != 1 || rule.multiplier != 0) && !slices.Contains(out, rule.metric) {
 			out = append(out, rule.metric)
 		}
 	}
@@ -231,7 +232,12 @@ func compatibilityStoredMetricNames() []string {
 	return slices.Compact(slices.Sorted(slices.Values(out)))
 }
 
-func metricCompatibilityCTE(filter string) string {
+func metricCompatibilityCTE(filter string, legacy bool) string {
+	grainKey := ",grain"
+	if legacy {
+		// The original key admitted one row for the exact date and source.
+		grainKey = ""
+	}
 	canonical := canonicalMetricSQL("metric_name")
 	var quantity, unit strings.Builder
 	quantity.WriteString("CASE")
@@ -270,23 +276,22 @@ func metricCompatibilityCTE(filter string) string {
 			                  jsonb_build_object('metric', metric_name))
 		       ELSE false END
 		 )))
-), winning AS (
-	SELECT DISTINCT ON (metric,date,source,grain) metric,date,source,qty,units,quality,grain
-	FROM identified
-	ORDER BY metric,date,source,grain,snapshot_at DESC,(origin='live') DESC,id DESC
 ), normalized AS (
-	SELECT metric,date,source,` + quantity.String() + ` AS qty,` + unit.String() + ` AS unit,quality,grain
-	FROM winning
+	SELECT metric,date,source,` + quantity.String() + ` AS qty,` + unit.String() + ` AS unit,
+	       quality,grain,snapshot_at,origin,id
+	FROM identified
 ), compatible AS (
-	SELECT * FROM normalized
+	SELECT DISTINCT ON (metric,date,source` + grainKey + `) metric,date,source,qty,unit,quality,grain
+	FROM normalized
 	WHERE unit = CASE metric` + compatibilityUnitsSQL() + ` ELSE unit END
+	ORDER BY metric,date,source` + grainKey + `,snapshot_at DESC,(origin='live') DESC,id DESC
 ) `
 }
 
 func compatibilityUnitsSQL() string {
 	var sql strings.Builder
 	for _, name := range append(compatibilityStoredMetricNames(), currentHourlyMetrics...) {
-		key := canonicalMetricName(name)
+		key := CanonicalMetricName(name)
 		if unit := CanonicalMetricUnit(key); unit != "" {
 			sql.WriteString(" WHEN '" + key + "' THEN '" + unit + "'")
 		}

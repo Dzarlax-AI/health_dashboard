@@ -136,10 +136,16 @@ def unique_pairs(pairs):
 
 
 def definitions(catalog):
+    ingress = catalog["healthkit_ingress"]
+    ingress_by_key = {}
+    for identifier, rule in sorted((ingress["quantities"] | ingress["categories"]).items()):
+        if "key" in rule:
+            ingress_by_key.setdefault(rule["key"], []).append(rule | {"identifier": identifier})
     for key, row in catalog["observations"].items():
         units = source_units(row)
         yield dict(catalog["observation_defaults"], metric_id=key,
                    source_keys=[key], units=units or ["unknown"], evidence=row,
+                   healthkit_ingress=ingress_by_key.get(key, []),
                    quality=row.get("inclusive_range", "no named range; retain source quality"),
                    consumers=["Metrics"] if "ui_group" in row else ["unverified"],
                    method="channel-dependent; see adapter evidence",
@@ -184,6 +190,8 @@ def validate_ingress(ingress, observations):
             units[key] = row["unit"]
             if row.get("xml_requires_unit") and "xml_default_unit" in row:
                 raise ValueError(f"conflicting missing-unit policy: {key}")
+            if field == "quantities" and "live_grain" in row and row["live_grain"] not in {"hour_sum", "sample_start"}:
+                raise ValueError(f"unsupported live quantity grain: {key}")
             if row.get("separate_archive_samples") and row.get("live_grain") != "hour_sum":
                 raise ValueError(f"archive grain separation requires an hourly live total: {key}")
             if row.get("archive_scale_requires_revision") and (row["unit"] != "%" or not row.get("xml_fraction_to_percent")):

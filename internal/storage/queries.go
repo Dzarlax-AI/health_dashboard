@@ -995,14 +995,23 @@ func bucketExpression(bucket string) string {
 // GetMetricDateRange returns the earliest and latest dates for a metric.
 // Returns empty strings (no error) when the metric has no data.
 func (s *DB) GetMetricDateRange(metric string) (min, max string, err error) {
+	return s.MetricDateRangeForContract(metric, false)
+}
+
+func (s *DB) MetricDateRangeForContract(metric string, legacy bool) (min, max string, err error) {
 	ctx, cancel := queryCtx()
 	defer cancel()
 
 	var minN, maxN *string
-	if usesMetricCompatibility(metric) {
-		query := metricCompatibilityCTE("metric_name=ANY($1::text[])") + `
+	if usesMetricCompatibility(metric) || (!legacy && usesCurrentHourlyMetric(metric)) {
+		query := metricCompatibilityCTE("metric_name=ANY($1::text[])", legacy) + `
 			SELECT SUBSTRING(MIN(date),1,10),SUBSTRING(MAX(date),1,10)
-			FROM compatible WHERE qty>0 AND quality='ok'`
+			FROM compatible WHERE `
+		if legacy {
+			query += "qty>0"
+		} else {
+			query += "(qty>0 OR (grain='hour_sum' AND qty=0)) AND quality='ok'"
+		}
 		err = s.pool.QueryRow(ctx, query, metricNamesForRead(metric)).Scan(&minN, &maxN)
 	} else {
 		err = s.pool.QueryRow(ctx,

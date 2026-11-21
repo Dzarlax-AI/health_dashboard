@@ -305,7 +305,11 @@ func TestParseRecordUsesHealthKitIngressContract(t *testing.T) {
 		{"HKQuantityTypeIdentifierStairDescentSpeed", "", "2", "", "", 0},
 		{"HKQuantityTypeIdentifierPhysicalEffort", "kcal/hr·kg", "6", "physical_effort", "kcal/hr·kg", 6},
 		{"HKQuantityTypeIdentifierPhysicalEffort", "", "6", "", "", 0},
-		{"HKQuantityTypeIdentifierPhysicalEffort", "MET", "6", "", "", 0},
+		{"HKQuantityTypeIdentifierPhysicalEffort", "MET", "6", "physical_effort", "kcal/hr·kg", 6},
+		{"HKQuantityTypeIdentifierPhysicalEffort", "kcal/(kg*hr)", "6", "physical_effort", "kcal/hr·kg", 6},
+		{"HKQuantityTypeIdentifierDistanceWalkingRunning", "m", "1200", "walking_running_distance", "km", 1.2},
+		{"HKQuantityTypeIdentifierDistanceWalkingRunning", "km", "1.2", "walking_running_distance", "km", 1.2},
+		{"HKQuantityTypeIdentifierSleepDurationGoal", "hr", "8", "", "", 0},
 		{"HKQuantityTypeIdentifierPeripheralPerfusionIndex", "%", ".052", "peripheral_perfusion_index", "%", 5.2},
 		{"HKQuantityTypeIdentifierBloodAlcoholContent", "%", ".0008", "blood_alcohol_content", "%", .08},
 		{"HKCategoryTypeIdentifierHighHeartRateEvent", "", "HKCategoryValueNotApplicable", "high_heart_rate_event", "count", 1},
@@ -362,11 +366,12 @@ func TestArchiveRecordsUseSameSnapshotClockAsImport(t *testing.T) {
 	for _, tt := range []struct {
 		name, xml      string
 		found, invalid bool
+		wantRecords    int
 	}{
-		{"header", "<HealthData>" + export + record + "</HealthData>", true, false},
-		{"after record", "<HealthData>" + record + export + record + "</HealthData>", false, false},
-		{"invalid declared timestamp", `<HealthData exportDate="invalid">` + export + record + "</HealthData>", false, true},
-		{"nested metadata", "<HealthData><Me>" + export + "</Me>" + record + "</HealthData>", false, false},
+		{"header", "<HealthData>" + export + record + "</HealthData>", true, false, 1},
+		{"after record", "<HealthData>" + record + export + record + "</HealthData>", false, false, 2},
+		{"invalid declared timestamp", `<HealthData exportDate="invalid">` + export + record + "</HealthData>", false, true, 1},
+		{"nested metadata", "<HealthData><Me>" + export + "</Me>" + record + "</HealthData>", false, false, 1},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			stamp, found, err := exportDateFromXML(strings.NewReader(tt.xml))
@@ -383,8 +388,8 @@ func TestArchiveRecordsUseSameSnapshotClockAsImport(t *testing.T) {
 					t.Fatal("stream changed the declared clock, source or source interval")
 				}
 			}})
-			if err != nil || count == 0 {
-				t.Fatalf("record callback unavailable: count=%d err=%v", count, err)
+			if err != nil || count != tt.wantRecords {
+				t.Fatalf("record callbacks=%d, want %d, err=%v", count, tt.wantRecords, err)
 			}
 		})
 	}

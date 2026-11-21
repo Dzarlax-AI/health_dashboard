@@ -544,61 +544,59 @@ func TestBeginAppleHealthXMLImportEnsuresPersistentStageSchema(t *testing.T) {
 	}
 }
 
-func TestAppleHealthXMLImportReplacesSyntheticWorkoutDuplicate(t *testing.T) {
+func TestAppleHealthXMLImportReplacesUnambiguousSyntheticWorkout(t *testing.T) {
 	db, cleanup := testDB(t)
 	defer cleanup()
 
 	start := time.Date(2026, 7, 1, 8, 0, 0, 0, time.UTC)
-	end := start.Add(45 * time.Minute)
-	first := beginTestXMLImport(t, db, "workouts-1")
-	if err := first.AddWorkouts([]Workout{{
-		ExternalID:  "applexml:oldhash",
-		Name:        "Outdoor Run",
-		StartTime:   start,
-		EndTime:     end,
-		DurationSec: end.Sub(start).Seconds(),
-		DistanceKm:  importFloatPtr(8.0),
-	}}); err != nil {
-		t.Fatalf("stage first workout: %v", err)
+	newSnapshot := start.AddDate(0, 0, 2)
+	oldSnapshot := newSnapshot.Add(-time.Hour)
+	original := Workout{ExternalID: "applexml:oldhash", Name: "Outdoor Run",
+		StartTime: start, EndTime: start.Add(45 * time.Minute), DurationSec: 45 * 60, DistanceKm: importFloatPtr(8)}
+	corrected := original
+	corrected.ExternalID, corrected.DistanceKm = "applexml:newhash", importFloatPtr(8.2)
+	omitted := original
+	omitted.ExternalID = "applexml:omitted"
+	omitted.StartTime, omitted.EndTime = start.Add(time.Hour), original.EndTime.Add(time.Hour)
+	importWorkout := func(snapshot time.Time, workouts ...Workout) ImportCounters {
+		t.Helper()
+		run, err := db.BeginAppleHealthXMLImport(ImportOptions{SnapshotAt: snapshot, UnverifiedCoverage: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := run.AddWorkouts(workouts); err != nil {
+			t.Fatal(err)
+		}
+		counters, err := run.Commit()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return counters
 	}
-	if _, err := first.Commit(); err != nil {
-		t.Fatalf("commit first workout: %v", err)
+	importWorkout(oldSnapshot, original, omitted)
+	if got := importWorkout(newSnapshot, corrected); got.DeletedWorkouts != 1 || got.UpsertedWorkouts != 1 {
+		t.Fatalf("corrected workout counters=%+v", got)
 	}
-
-	second := beginTestXMLImport(t, db, "workouts-2")
-	if err := second.AddWorkouts([]Workout{{
-		ExternalID:  "applexml:newhash",
-		Name:        "Outdoor Run",
-		StartTime:   start,
-		EndTime:     end,
-		DurationSec: end.Sub(start).Seconds(),
-		DistanceKm:  importFloatPtr(8.2),
-	}}); err != nil {
-		t.Fatalf("stage second workout: %v", err)
+	if got := importWorkout(oldSnapshot, original); got.DeletedWorkouts != 0 || got.UpsertedWorkouts != 0 {
+		t.Fatalf("stale workout replay counters=%+v", got)
 	}
-	counters, err := second.Commit()
-	if err != nil {
-		t.Fatalf("commit second workout: %v", err)
-	}
-	if counters.DeletedWorkouts != 1 {
-		t.Fatalf("DeletedWorkouts = %d, want 1", counters.DeletedWorkouts)
-	}
-
-	ctx, cancel := queryCtx()
-	defer cancel()
+	importWorkout(newSnapshot, corrected)
 	var count int
-	var externalID string
 	var distance float64
-	if err := db.pool.QueryRow(ctx, `
-		SELECT COUNT(*), MAX(external_id), MAX(distance_km)
-		  FROM workouts
-		 WHERE name = 'Outdoor Run'
-		   AND start_time = $1
-		   AND end_time = $2`, start, end).Scan(&count, &externalID, &distance); err != nil {
-		t.Fatalf("read workouts: %v", err)
+	if err := db.pool.QueryRow(t.Context(), `
+		SELECT COUNT(*), MAX(distance_km) FILTER (WHERE external_id=$1)
+		FROM workouts WHERE external_id=ANY($2::text[])`,
+		corrected.ExternalID, []string{original.ExternalID, corrected.ExternalID, omitted.ExternalID},
+	).Scan(&count, &distance); err != nil || count != 2 || distance != 8.2 {
+		t.Fatalf("workouts after replay: count=%d corrected distance=%v err=%v", count, distance, err)
 	}
-	if count != 1 || externalID != "applexml:newhash" || distance != 8.2 {
-		t.Fatalf("workout state = count %d id %q distance %.1f, want 1/newhash/8.2", count, externalID, distance)
+	other := corrected
+	other.ExternalID = "applexml:other"
+	if got := importWorkout(newSnapshot.Add(time.Hour), corrected, other); got.DeletedWorkouts != 0 || got.UpsertedWorkouts != 2 {
+		t.Fatalf("ambiguous workout counters=%+v", got)
+	}
+	if got := importWorkout(newSnapshot.Add(2*time.Hour), original); got.DeletedWorkouts != 0 {
+		t.Fatalf("ambiguous stored interval counters=%+v", got)
 	}
 }
 

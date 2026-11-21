@@ -1,6 +1,20 @@
 package storage
 
-import "context"
+import (
+	"context"
+	"strings"
+	"time"
+)
+
+// Keep explicit timestamps inclusive, and include every offset in a whole-day window.
+func compatibilityDateWindow(to string) (filter, bound string) {
+	if date, wholeDay := strings.CutSuffix(to, " 23:59:59"); wholeDay {
+		if day, err := time.Parse(time.DateOnly, date); err == nil {
+			return "metric_name=ANY($1::text[]) AND date >= $2 AND date < $3", day.AddDate(0, 0, 1).Format(time.DateOnly)
+		}
+	}
+	return "metric_name=ANY($1::text[]) AND date >= $2 AND date <= $3", to
+}
 
 const compatibilityHourly = `, compatible_hours AS (
 	SELECT metric,SUBSTRING(date,1,13)||':00' AS hour,source,
@@ -16,7 +30,7 @@ var currentCompatibilityHourly = `, minute_values AS (
 	 CASE WHEN grain='legacy_live' AND metric IN (` + catalogSQLList(overlappingArchiveSampleMetrics) + `)
 	      THEN MAX(qty) ELSE SUM(qty) END AS qty,
 	 COUNT(*) AS point_count, MIN(qty) AS low, MAX(qty) AS high, MIN(unit) AS unit
-	FROM compatible WHERE qty>0 AND quality='ok'
+	FROM compatible WHERE (qty>0 OR (grain='hour_sum' AND qty=0)) AND quality='ok'
 	GROUP BY metric,SUBSTRING(date,1,16),SUBSTRING(date,21,5),source,grain
 ), hours_by_grain AS (
 	SELECT metric, SUBSTRING(minute,1,13)||':00' AS hour, utc_offset, source, grain,
@@ -31,7 +45,8 @@ var currentCompatibilityHourly = `, minute_values AS (
 ) `
 
 func (s *DB) compatibleMetricData(metric, from, to, bucket, agg string, bySource bool) ([]SourceDataPoints, error) {
-	query := metricCompatibilityCTE("metric_name=ANY($1::text[]) AND date >= $2 AND date <= $3")
+	filter, to := compatibilityDateWindow(to)
+	query := metricCompatibilityCTE(filter, false)
 	source := "source"
 	if !bySource {
 		source = "''::text"
@@ -60,8 +75,7 @@ func (s *DB) compatibleMetricData(metric, from, to, bucket, agg string, bySource
 		FROM compatible_hours GROUP BY bucket,src ORDER BY bucket,src`
 	} else {
 		if usesCurrentHourlyMetric(metric) {
-			// The legacy minute endpoint has always returned its physical
-			// sample-time buckets. Keep archive and live out of the same value.
+			// Keep archive and live out of the same sample-time bucket.
 			query += `, minute_samples AS (
 				SELECT *, DENSE_RANK() OVER (
 				 PARTITION BY metric,SUBSTRING(date,1,16),SUBSTRING(date,21,5),source
@@ -69,8 +83,15 @@ func (s *DB) compatibleMetricData(metric, from, to, bucket, agg string, bySource
 				) AS preferred
 				FROM compatible WHERE qty>0 AND quality='ok'
 			) `
-			query += `SELECT ` + bucketExpression(bucket) + ` AS bucket,` + source + ` AS src,` + agg + `(qty),MIN(qty),MAX(qty)
-				FROM minute_samples WHERE qty>0 AND preferred=1 GROUP BY bucket,src ORDER BY bucket,src`
+			if !bySource && agg == "SUM" {
+				query += `SELECT bucket,''::text,` + sumCombineExpr("source_sum") + `,MIN(low),MAX(high) FROM (
+					SELECT ` + bucketExpression(bucket) + ` AS bucket,source,SUM(qty) AS source_sum,MIN(qty) AS low,MAX(qty) AS high
+					FROM minute_samples WHERE preferred=1 GROUP BY bucket,source
+				) totals GROUP BY bucket ORDER BY bucket`
+			} else {
+				query += `SELECT ` + bucketExpression(bucket) + ` AS bucket,` + source + ` AS src,` + agg + `(qty),MIN(qty),MAX(qty)
+					FROM minute_samples WHERE preferred=1 GROUP BY bucket,src ORDER BY bucket,src`
+			}
 			return s.scanSourcePointsWithKey(query, metricNamesForRead(metric), from, to)
 		}
 		query += `SELECT ` + bucketExpression(bucket) + ` AS bucket,` + source + ` AS src,` + agg + `(qty),MIN(qty),MAX(qty)
@@ -80,7 +101,7 @@ func (s *DB) compatibleMetricData(metric, from, to, bucket, agg string, bySource
 }
 
 func (s *DB) compatibleMetricSummaries(ctx context.Context) ([]MetricSummary, error) {
-	query := metricCompatibilityCTE("metric_name=ANY($1::text[])") + `
+	query := metricCompatibilityCTE("metric_name=ANY($1::text[])", false) + `
 	SELECT metric,
 	 CASE WHEN COUNT(DISTINCT unit)=1 THEN MIN(unit) ELSE '' END,
 	 COUNT(DISTINCT (SUBSTRING(date,1,13),source)), MIN(SUBSTRING(date,1,10)),MAX(SUBSTRING(date,1,10))
@@ -108,7 +129,7 @@ func (s *DB) compatibleLatestMetricValues(ctx context.Context, legacy bool) ([]L
 		hourly = currentCompatibilityHourly
 		keys = append(keys, currentHourlyStoredKeys...)
 	}
-	query := metricCompatibilityCTE("metric_name=ANY($1::text[])") + hourly + `,
+	query := metricCompatibilityCTE("metric_name=ANY($1::text[])", legacy) + hourly + `,
 	latest AS (SELECT metric,MAX(SUBSTRING(hour,1,10)) AS day FROM compatible_hours GROUP BY metric),
 	by_source AS (
 		SELECT h.metric,h.source,MIN(h.unit) AS unit,l.day,SUM(h.qty) AS total,COUNT(*) AS hours
@@ -203,14 +224,29 @@ func (s *DB) compatibleLegacyMetricData(metric, from, to, bucket, agg string, by
 	if !bySource || (agg != "SUM" && agg != "MAX" && agg != "MIN") {
 		agg = "AVG"
 	}
+	filter, to := compatibilityDateWindow(to)
+	query := metricCompatibilityCTE(filter, true)
+	source := "''::text"
+	if bySource {
+		source = "SUBSTRING(source,1,POSITION('|' IN source || '|')-1)"
+	}
 	if bucket == "minute" {
-		return s.compatibleMetricData(metric, from, to, bucket, agg, bySource)
+		sqlAgg := aggFuncFor(metric)
+		if SumMetrics[CanonicalMetricName(metric)] && !bySource {
+			query += `SELECT bucket,''::text,` + sumCombineExpr("source_sum") + `,MIN(low),MAX(high) FROM (
+				SELECT SUBSTRING(date,1,16) AS bucket,source,SUM(qty) AS source_sum,MIN(qty) AS low,MAX(qty) AS high
+				FROM compatible WHERE qty>0 GROUP BY bucket,source
+			) totals GROUP BY bucket ORDER BY bucket`
+		} else {
+			query += `SELECT SUBSTRING(date,1,16) AS bucket,` + source + ` AS src,` + sqlAgg + `(qty),MIN(qty),MAX(qty)
+				FROM compatible WHERE qty>0 GROUP BY bucket,src ORDER BY bucket,src`
+		}
+		return s.scanSourcePointsWithKey(query, metricNamesForRead(metric), from, to)
 	}
 	// The old reader weights observations directly outside the hourly cache
 	// and weights each source/hour inside it. Preserve that boundary after
 	// normalizing compatible units, including for old archive-only dates.
-	query := metricCompatibilityCTE("metric_name=ANY($1::text[]) AND date >= $2 AND date <= $3") +
-		compatibilityHourly + `, cached AS (
+	query += compatibilityHourly + `, cached AS (
 		SELECT hour, source FROM hourly_metrics WHERE metric_name=ANY($1::text[])
 	), cache_limits AS (
 		SELECT MIN(hour) AS first_hour, COUNT(*) FILTER (WHERE hour >= $2 AND hour <= $3) AS window_hours
@@ -227,10 +263,6 @@ func (s *DB) compatibleLegacyMetricData(metric, from, to, bucket, agg string, by
 	period := "SUBSTRING(date,1,13)||':00'"
 	if bucket == "day" {
 		period = "SUBSTRING(date,1,10)"
-	}
-	source := "''::text"
-	if bySource {
-		source = "SUBSTRING(source,1,POSITION('|' IN source || '|')-1)"
 	}
 	query += `SELECT ` + period + ` AS bucket,` + source + ` AS src,
 			CASE WHEN BOOL_OR(cached) THEN AVG(qty) ELSE ` + agg + `(qty) END,MIN(low),MAX(high)

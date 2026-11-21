@@ -329,6 +329,8 @@
       "dietary_energy": {"Cal": {"unit": "kcal", "divisor": 1}},
       "distance_cycling": {"m": {"unit": "km", "divisor": 1000}},
       "distance_swimming": {"m": {"unit": "km", "divisor": 1000}},
+      "walking_running_distance": {"m": {"unit": "km", "divisor": 1000}},
+      "physical_effort": {"MET": {"unit": "kcal/hr·kg", "divisor": 1}, "kcal/(kg*hr)": {"unit": "kcal/hr·kg", "divisor": 1}},
       "heart_rate": {"count/min": {"unit": "bpm", "divisor": 1.0}},
       "heart_rate_recovery": {"count/min": {"unit": "bpm", "divisor": 1.0}},
       "height": {"cm": {"unit": "m", "divisor": 100.0}},

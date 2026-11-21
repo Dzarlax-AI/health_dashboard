@@ -353,7 +353,7 @@ func registerAnalysisTools(s *server.MCPServer, _ DBResolver) {
 		mcp.WithDescription("Best (max) and worst (min) daily values ever recorded for each metric, with the date they occurred. SUM metrics show best/worst daily totals (with multi-device dedup); AVG metrics show best/worst daily averages."),
 		mcp.WithString("metric", mcp.Description("Filter to a single metric. If omitted, returns records for all metrics.")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		metric := req.GetString("metric", "")
+		metric := storage.CanonicalMetricName(req.GetString("metric", ""))
 
 		// Get list of metrics to process.
 		metrics, err := ctxdb.FromContext(ctx).ListMetrics()

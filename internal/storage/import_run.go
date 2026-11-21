@@ -505,30 +505,10 @@ func protectedCurrentHourlyPoint(row, keys string) string {
 }
 
 func (s *ImportSession) promoteWorkouts(ctx context.Context, tx pgx.Tx) error {
-	deleted, err := tx.Exec(ctx, `
-		DELETE FROM workouts w
-		USING (
-			SELECT DISTINCT name, start_time, end_time
-			  FROM import_stage_workouts
-			 WHERE external_id LIKE 'applexml:%'
-			   AND import_run_id = $2
-		) st
-		WHERE w.origin = $1
-		  AND $4 AND COALESCE(w.source_snapshot_at, w.received_at) <= $3
-		  AND w.external_id LIKE 'applexml:%'
-		  AND w.name = st.name
-		  AND w.start_time = st.start_time
-		  AND w.end_time = st.end_time
-		  AND NOT EXISTS (
-		      SELECT 1 FROM import_stage_workouts exact
-		       WHERE exact.external_id = w.external_id
-		         AND exact.import_run_id = $2
-		  )`, appleHealthXMLOrigin, s.runID, s.snapshotAt, !s.unverifiedCoverage)
-	if err != nil {
-		return fmt.Errorf("delete stale synthetic workouts: %w", err)
-	}
-
-	tag, err := tx.Exec(ctx, `
+	// A dated export can replace a synthetic ID even with incomplete coverage.
+	// Require one distinct incoming ID and one stored ID for the exact interval.
+	// Omitted, tied and ambiguous intervals do not authorize removal.
+	err := tx.QueryRow(ctx, `
 		WITH incoming AS (
 			SELECT DISTINCT ON (external_id)
 			       external_id, name, start_time, end_time, duration_sec,
@@ -539,7 +519,25 @@ func (s *ImportSession) promoteWorkouts(ctx context.Context, tx pgx.Tx) error {
 			  FROM import_stage_workouts
 			 WHERE import_run_id = $3
 			 ORDER BY external_id, staged_seq DESC
-		)
+		), matched AS (
+			SELECT i.external_id AS incoming_id, MIN(w.external_id) AS stored_id,
+			       MIN(COALESCE(w.source_snapshot_at, w.received_at)) AS stored_snapshot
+			FROM incoming i
+			JOIN workouts w ON (w.name,w.start_time,w.end_time)=(i.name,i.start_time,i.end_time)
+			WHERE i.external_id LIKE 'applexml:%' AND w.external_id LIKE 'applexml:%'
+			  AND w.origin=$2 AND $4::timestamptz IS NOT NULL
+			  AND NOT EXISTS (
+			      SELECT 1 FROM incoming other
+			      WHERE (other.name,other.start_time,other.end_time)=(i.name,i.start_time,i.end_time)
+			        AND other.external_id<>i.external_id
+			  )
+			GROUP BY i.external_id
+			HAVING COUNT(*)=1 AND MIN(w.external_id)<>i.external_id
+		), replaced AS (
+			DELETE FROM workouts w USING matched m
+			WHERE w.external_id=m.stored_id AND m.stored_snapshot<$4
+			RETURNING 1
+		), promoted AS (
 		INSERT INTO workouts (
 			health_record_id, external_id, name, start_time, end_time, duration_sec,
 			is_indoor, location, avg_hr_bpm, max_hr_bpm, energy_kcal, intensity,
@@ -555,7 +553,8 @@ func (s *ImportSession) promoteWorkouts(ctx context.Context, tx pgx.Tx) error {
 			step_count_total, step_cadence_spm, temperature_c, humidity_pct,
 			hr_z1_sec, hr_z2_sec, hr_z3_sec, hr_z4_sec, hr_z5_sec,
 			$2, $3, $4
-		  FROM incoming
+		FROM incoming i
+		WHERE NOT EXISTS (SELECT 1 FROM matched m WHERE m.incoming_id=i.external_id AND m.stored_snapshot >= $4)
 		ON CONFLICT (external_id) DO UPDATE SET
 			received_at = NOW(),
 			health_record_id = excluded.health_record_id,
@@ -587,13 +586,15 @@ func (s *ImportSession) promoteWorkouts(ctx context.Context, tx pgx.Tx) error {
 			source_snapshot_at = excluded.source_snapshot_at
 		WHERE COALESCE(workouts.source_snapshot_at,
 		      CASE WHEN workouts.origin <> 'apple_health_xml' THEN workouts.received_at END, '-infinity')
-		      <= excluded.source_snapshot_at`,
-		s.healthRecordID, appleHealthXMLOrigin, s.runID, s.snapshotAt)
+		      <= excluded.source_snapshot_at
+		RETURNING 1
+		)
+		SELECT (SELECT COUNT(*) FROM replaced),(SELECT COUNT(*) FROM promoted)`,
+		s.healthRecordID, appleHealthXMLOrigin, s.runID, s.snapshotAt).
+		Scan(&s.counters.DeletedWorkouts, &s.counters.UpsertedWorkouts)
 	if err != nil {
-		return fmt.Errorf("upsert staged workouts: %w", err)
+		return fmt.Errorf("promote staged workouts: %w", err)
 	}
-	s.counters.DeletedWorkouts = deleted.RowsAffected()
-	s.counters.UpsertedWorkouts = tag.RowsAffected()
 	return nil
 }
 

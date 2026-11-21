@@ -38,8 +38,10 @@ func validateCurrentMetricPayload(body []byte) error {
 			if err := json.Unmarshal(raw, &sample); err != nil {
 				return errors.New("invalid quantity observation")
 			}
-			stamp, err := time.Parse("2006-01-02 15:04:05 -0700", sample.Date)
-			if err != nil || (grain == "hour_sum" && (stamp.Minute() != 0 || stamp.Second() != 0)) ||
+			const dateLayout = "2006-01-02 15:04:05 -0700"
+			stamp, err := time.Parse(dateLayout, sample.Date)
+			if err != nil || stamp.Format(dateLayout) != sample.Date ||
+				(grain == "hour_sum" && (stamp.Minute() != 0 || stamp.Second() != 0)) ||
 				(key == "heart_rate" && sample.Avg == nil) || (key != "heart_rate" && sample.Qty == nil) {
 				return errors.New("invalid quantity observation")
 			}

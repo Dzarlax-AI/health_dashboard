@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"math"
 	"slices"
 	"testing"
 	"time"
@@ -282,8 +283,12 @@ func TestHealthKitArchiveCoverageAndGrain(t *testing.T) {
 	assertPointState(t, db, metric, livePoint.Date, watch, .9, "live")
 	bySource, err := db.GetMetricDataBySource(metric, day, day+" 23:59:59", "hour", "SUM")
 	if err != nil || len(bySource) != 2 ||
-		!slices.ContainsFunc(bySource, func(s SourceDataPoints) bool { return s.Source == watch && len(s.Points) == 1 && s.Points[0].Qty > .89 }) ||
-		!slices.ContainsFunc(bySource, func(s SourceDataPoints) bool { return s.Source == ring && len(s.Points) == 1 && s.Points[0].Qty > .39 }) {
+		!slices.ContainsFunc(bySource, func(s SourceDataPoints) bool {
+			return s.Source == watch && len(s.Points) == 1 && math.Abs(s.Points[0].Qty-.9) < 1e-6
+		}) ||
+		!slices.ContainsFunc(bySource, func(s SourceDataPoints) bool {
+			return s.Source == ring && len(s.Points) == 1 && math.Abs(s.Points[0].Qty-.4) < 1e-6
+		}) {
 		t.Fatalf("hours by source=%+v err=%v", bySource, err)
 	}
 	points, err := db.GetMetricData(metric, day, day+" 23:59:59", "minute", "AVG")
@@ -293,7 +298,7 @@ func TestHealthKitArchiveCoverageAndGrain(t *testing.T) {
 
 	const effort = "physical_effort"
 	first := MetricPoint{MetricName: effort, Date: day + " 07:00:00 +0000", Units: "kcal/hr·kg", Qty: 3, Source: watch}
-	rejected := MetricPoint{MetricName: effort, Date: day + " 07:05:00 +0000", Units: "MET", Qty: 7, Source: watch}
+	rejected := MetricPoint{MetricName: effort, Date: day + " 07:05:00 +0000", Units: "unknown", Qty: 7, Source: watch}
 	if err := db.InsertPoints(live, []MetricPoint{first, rejected}); err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +355,10 @@ func TestHealthKitCoreHourlyCollisionKeepsArchiveSample(t *testing.T) {
 			}
 			sample := point
 			sample.Qty = 12
-			if err := run.AddPoints([]MetricPoint{sample}); err != nil {
+			otherSource := sample
+			otherSource.Source = "Phone"
+			otherSource.Qty = 10
+			if err := run.AddPoints([]MetricPoint{sample, otherSource}); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := run.Commit(); err != nil {
@@ -382,8 +390,146 @@ func TestHealthKitCoreHourlyCollisionKeepsArchiveSample(t *testing.T) {
 	if err != nil || len(minutes) != 4 || minutes[0].Qty != 12 || minutes[1].Qty != 12 {
 		t.Fatalf("canonical archive minute samples=%+v err=%v", minutes, err)
 	}
+	bySource, err := db.MetricDataBySourceForContract(metric, day, day+" 23:59:59", "minute", "SUM", false)
+	if err != nil || len(bySource) != 2 ||
+		!slices.ContainsFunc(bySource, func(s SourceDataPoints) bool {
+			return s.Source == "Phone" && len(s.Points) == 2 && s.Points[0].Qty == 10 && s.Points[1].Qty == 10
+		}) {
+		t.Fatalf("canonical minute samples by source=%+v err=%v", bySource, err)
+	}
 	latest, err := db.LatestMetricsForContract(false)
 	if err != nil || !slices.ContainsFunc(latest, func(p LatestValue) bool { return p.Metric == metric && p.Unit == "count" && p.Value == 360 }) {
 		t.Fatalf("canonical latest=%+v err=%v", latest, err)
+	}
+}
+
+func TestHealthKitArchiveFreshnessAndZeroLiveTotal(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	const day = "2026-07-01"
+	const metric = "step_count"
+	const date = day + " 08:00:00 +0000"
+	const source = "Watch"
+	newClock := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
+	point := MetricPoint{MetricName: metric, Units: "count", Date: date, Source: source, Qty: 20}
+	initial, err := db.BeginAppleHealthXMLImport(ImportOptions{SnapshotAt: newClock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := initial.AddPoints([]MetricPoint{point}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := initial.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	// Restore the pre-catalog storage shape, with the archive at the main key only.
+	if _, err := db.pool.Exec(t.Context(), "DELETE FROM metric_points WHERE metric_name=$1", archiveSamplePrefix+metric); err != nil {
+		t.Fatal(err)
+	}
+	run, err := db.BeginAppleHealthXMLImport(ImportOptions{SnapshotAt: newClock.Add(-time.Hour), UnverifiedCoverage: true, CatalogNormalized: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	point.Qty = 10
+	if err := run.AddPoints([]MetricPoint{point}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	assertPointState(t, db, metric, date, source, 20, appleHealthXMLOrigin)
+	assertPointState(t, db, archiveSamplePrefix+metric, date, source, 10, appleHealthXMLOrigin)
+
+	live, err := db.InsertRaw(Record{ContentType: "application/json; metrics-contract=2", Payload: "{}"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, qty := range []float64{150, 0} {
+		point.Qty = qty
+		if err := db.InsertPoints(live, []MetricPoint{point}); err != nil {
+			t.Fatal(err)
+		}
+		hours, err := db.MetricDataForContract(metric, day, day+" 23:59:59", "hour", "SUM", false)
+		if err != nil || len(hours) != 1 || hours[0].Qty != qty {
+			t.Fatalf("hourly total=%+v want %v err=%v", hours, qty, err)
+		}
+		assertPointState(t, db, archiveSamplePrefix+metric, date, source, 20, appleHealthXMLOrigin)
+	}
+}
+
+func TestHealthKitReadVersionsKeepExactMatchesUnitsAndDayBounds(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	const day = "2026-07-01"
+	const end = day + " 23:59:59"
+	const nextDay = "2026-07-02"
+	const latestDay = "2026-07-03"
+	const source = "Watch|A"
+	const cycling = "distance_cycling"
+	receipt := insertTestRawRecord(t, db, "synthetic legacy observations")
+	run, err := db.BeginAppleHealthXMLImport(ImportOptions{
+		SnapshotAt: time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC), UnverifiedCoverage: true, CatalogNormalized: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sample := MetricPoint{MetricName: cycling, Units: "km", Date: day + " 08:00:00 +0000", Source: source, Qty: 1}
+	if err := run.AddPoints([]MetricPoint{sample}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.pool.Exec(t.Context(), "UPDATE health_records SET received_at='2026-07-01 11:00:00+00' WHERE id=$1", receipt); err != nil {
+		t.Fatal(err)
+	}
+	sample.Qty = 3
+	if err := db.InsertPoints(receipt, []MetricPoint{sample}); err != nil {
+		t.Fatal(err)
+	}
+	for _, bucket := range []string{"minute", "hour", "day"} {
+		points, err := db.MetricDataForContract(cycling, day, end, bucket, "AVG", true)
+		if err != nil || len(points) != 1 || points[0].Qty != 3 {
+			t.Fatalf("legacy %s=%+v err=%v", bucket, points, err)
+		}
+	}
+	values, err := db.LatestMetricsForContract(true)
+	if err != nil || !slices.ContainsFunc(values, func(p LatestValue) bool { return p.Metric == cycling && p.Value == 3 }) {
+		t.Fatalf("legacy latest=%+v err=%v", values, err)
+	}
+
+	if _, err := db.pool.Exec(t.Context(), `
+		INSERT INTO metric_points(health_record_id,metric_name,units,date,source,qty,origin,quality,source_snapshot_at)
+		VALUES
+			($1,'six_min_walk_distance','m','2026-07-01 09:00:00 +0000','Watch|A',500,'live','ok','2026-07-01 12:00:00+00'),
+			($1,'six_minute_walking_test_distance','km','2026-07-01 09:00:00 +0000','Watch|A',0.5,'live','ok','2026-07-01 13:00:00+00'),
+			($1,'height','m','2026-07-01 23:59:59 +0200','Watch|A',1.8,'live','ok',NULL),
+			($1,'height','m','2026-07-01 23:59:59 +0200','Watch|B',2,'live','ok',NULL),
+			($1,'height','m','2026-07-02 00:00:00 +0200','Watch|A',1.7,'live','ok',NULL),
+			($1,'height','m','2026-07-03 10:00:00 +0200','Watch|A',1.6,'live','suspect',NULL)`, receipt); err != nil {
+		t.Fatal(err)
+	}
+	for _, legacy := range []bool{true, false} {
+		points, err := db.MetricDataForContract("six_min_walk_distance", day, end, "hour", "AVG", legacy)
+		if err != nil || len(points) != 1 || points[0].Qty != 500 {
+			t.Fatalf("legacy=%t compatible unit=%+v err=%v", legacy, points, err)
+		}
+		points, err = db.MetricDataForContract("height", day, end, "hour", "AVG", legacy)
+		if err != nil || len(points) != 1 || points[0].Date != day+" 23:00" || math.Abs(points[0].Qty-1.9) > 1e-6 {
+			t.Fatalf("legacy=%t day boundary=%+v err=%v", legacy, points, err)
+		}
+		min, max, err := db.MetricDateRangeForContract("height", legacy)
+		wantMax := nextDay
+		if legacy {
+			wantMax = latestDay
+		}
+		if err != nil || min != day || max != wantMax {
+			t.Fatalf("legacy=%t range=%s to %s want %s to %s err=%v", legacy, min, max, day, wantMax, err)
+		}
+	}
+	points, err := db.MetricDataBySourceForContract("height", day, end, "minute", "AVG", true)
+	if err != nil || len(points) != 1 || points[0].Source != "Watch" || len(points[0].Points) != 1 ||
+		math.Abs(points[0].Points[0].Qty-1.9) > 1e-6 {
+		t.Fatalf("legacy minute device groups=%+v err=%v", points, err)
 	}
 }
