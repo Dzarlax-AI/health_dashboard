@@ -20,7 +20,7 @@ import (
 // SchemaContractVersion is bumped whenever the declared tenant schema
 // contract changes. Existing tenants are not current until both the permanent
 // marker and registry metadata carry this version and checksum.
-const SchemaContractVersion = 15
+const SchemaContractVersion = 16
 
 // TenantIdentityTable is the permanent marker shared by clean provisioning
 // and existing-tenant migrations. The provisioning marker is intentionally
@@ -144,7 +144,7 @@ var schemaContract = ContractManifest{
 		"sleep_rollout_batches":    {"batch_id", "payload_hash", "health_record_id", "sync_session_id", "sync_session_total"},
 		"sleep_rollout_packets":    {"sequence", "source_id", "candidate_id", "revision", "wake_date", "raw_payload", "candidate", "legacy_payload", "applied_at", "health_record_id", "recovery_health_record_id"},
 		"sleep_rollout_candidates": {"profile", "id", "revision", "wake_date", "priority", "snapshot"},
-		"sleep_rollout_daily":      {"wake_date", "generation", "candidate", "revision", "sleep_seconds", "deep_seconds", "rem_seconds", "core_seconds", "unspecified_seconds", "awake_seconds", "stage_conflict"},
+		"sleep_rollout_daily":      {"wake_date", "generation", "candidate", "revision", "sleep_seconds", "deep_seconds", "rem_seconds", "core_seconds", "unspecified_seconds", "awake_seconds", "stage_conflict", "episode_selection"},
 		"sleep_rollout_results":    {"day", "generation", "readiness", "energy"},
 		"sleep_period_coverage":    {"ingest_record_id"},
 		"health_records":           {"processing_status", "processing_kind", "processing_error", "processed_at"},

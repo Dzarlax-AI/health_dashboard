@@ -19,12 +19,19 @@ const sleepRolloutPublicationSetting = "sleep_rollout_publication"
 var ErrSleepRolloutEvidenceChanged = errors.New("sleep rollout inputs changed after audit")
 
 type SleepRolloutPublication struct {
-	Active   bool      `json:"active"`
-	Tenant   uuid.UUID `json:"tenant"`
-	From     string    `json:"from"`
-	Through  string    `json:"through"`
-	Packet   int64     `json:"packet_boundary"`
-	Evidence string    `json:"evidence"`
+	Active       bool               `json:"active"`
+	Tenant       uuid.UUID          `json:"tenant"`
+	From         string             `json:"from"`
+	Through      string             `json:"through"`
+	Packet       int64              `json:"packet_boundary"`
+	Evidence     string             `json:"evidence"`
+	Projection   *sleepGoProjection `json:"projection,omitempty"`
+	goProjection *sleepGoProjection
+}
+
+func (p SleepRolloutPublication) readerPublication() SleepRolloutPublication {
+	p.goProjection = p.Projection
+	return p
 }
 
 func (p SleepRolloutPublication) window() sleepRolloutWindow {
@@ -113,7 +120,8 @@ func (s *DB) withSleepRolloutPublication(ctx context.Context, read func(*DB, Sle
 
 func (s *DB) readSleepRolloutSnapshot(ctx context.Context, activeOnly bool, read func(*DB, SleepRolloutPublication) error) (bool, error) {
 	enabled := s.sleepRolloutServeEnabled()
-	if !s.sleepRolloutTenant || (activeOnly && !enabled) {
+	projectionEnabled := s.sleepGoProjectionEnabled()
+	if !s.sleepRolloutTenant {
 		return false, nil
 	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
@@ -122,19 +130,36 @@ func (s *DB) readSleepRolloutSnapshot(ctx context.Context, activeOnly bool, read
 	}
 	defer tx.Rollback(context.Background())
 	publication, err := readSleepRolloutPublication(ctx, tx)
-	if err != nil || publication == nil || (activeOnly && !publication.Active) {
+	if err != nil {
 		return false, err
-	}
-	if err := verifySleepRolloutTenant(ctx, tx, publication.Tenant); err != nil {
-		return false, err
-	}
-	// A retained pilot observation may still be the latest stored row after
-	// rollback. A tenant with a publication always computes its current bank
-	// from the selected live path, including when the global flag is removed.
-	if !enabled {
-		publication.Active = false
 	}
 	unit := &DB{pool: &cacheTransaction{Tx: tx, ctx: ctx}}
+	if publication != nil && publication.Projection != nil {
+		if err := verifySleepRolloutTenant(ctx, tx, publication.Tenant); err != nil {
+			return false, err
+		}
+		resolved := publication.readerPublication()
+		resolved.Active = resolved.Active && enabled
+		publication = &resolved
+	} else if (publication == nil || !publication.Active || !enabled) && projectionEnabled {
+		projection, err := loadSleepGoProjection(ctx, tx)
+		if err != nil {
+			return false, err
+		}
+		if projection != nil {
+			publication = &SleepRolloutPublication{From: projection.From, Through: projection.Through, goProjection: projection}
+		}
+	}
+	if publication == nil || (activeOnly && publication.goProjection == nil && (!enabled || !publication.Active)) {
+		return false, nil
+	}
+	if publication.goProjection == nil {
+		if err := verifySleepRolloutTenant(ctx, tx, publication.Tenant); err != nil {
+			return false, err
+		}
+		// Serve can be disabled while observations from the old pilot persist.
+		publication.Active = publication.Active && enabled
+	}
 	if err := read(unit, *publication); err != nil {
 		return true, err
 	}
@@ -164,6 +189,23 @@ func (s *DB) SwitchSleepRollout(ctx context.Context, tenant uuid.UUID, from, thr
 	if active && !s.sleepRolloutServeEnabled() {
 		return publication, errors.New("enable the server serve switch before publication")
 	}
+	// Validate the revision-bound audit outside the writer fence.
+	var reviewed *sleepGoProjection
+	if s.sleepGoProjectionEnabled() || !active {
+		report, err := s.AuditSleepRolloutPreparation(ctx, tenant, from, through)
+		if err != nil {
+			return publication, err
+		}
+		reviewed = report.projection
+		if reviewed != nil {
+			if report.Evidence != evidence {
+				return publication, ErrSleepRolloutEvidenceChanged
+			}
+			if active && (!report.ProjectionReady || report.VerifiedProjectionDates == 0) {
+				return publication, errors.New("sleep projection has no verified dates or has an incomplete result")
+			}
+		}
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return publication, err
@@ -174,6 +216,9 @@ func (s *DB) SwitchSleepRollout(ctx context.Context, tenant uuid.UUID, from, thr
 	}
 	if err := lockSleepRollout(ctx, tx); err != nil {
 		return publication, err
+	}
+	if reviewed != nil {
+		return switchRevisionBoundSleepRollout(ctx, tx, tenant, from, through, evidence, active)
 	}
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('health/sleep-rollout-legacy/' || current_schema(),0))`); err != nil {
 		return publication, err
@@ -233,8 +278,15 @@ func (s *DB) SwitchSleepRollout(ctx context.Context, tenant uuid.UUID, from, thr
 			report.PendingMixedBatches != 0 || report.FailedMixedBatches != 0 || report.PendingCandidates != 0 {
 			return publication, errors.New("sleep rollout preparation is incomplete")
 		}
+		var revisionBound bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM sleep_rollout_daily WHERE episode_selection IS NOT NULL)`).Scan(&revisionBound); err != nil {
+			return publication, err
+		}
+		if revisionBound {
+			return publication, errors.New("revision-bound sleep selection is pending independent acceptance")
+		}
 		mode = "serve"
-	} else if current == nil || !current.Active || current.Tenant != tenant || current.From != from || current.Through != through {
+	} else if current == nil || !current.Active || current.Projection != nil || current.Tenant != tenant || current.From != from || current.Through != through {
 		return publication, errors.New("rollback must target the current published range")
 	}
 	// Every accepted candidate during serve must have an ordinary replayable
@@ -243,6 +295,10 @@ func (s *DB) SwitchSleepRollout(ctx context.Context, tenant uuid.UUID, from, thr
 	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(sequence),0) FROM sleep_rollout_packets`).Scan(&publication.Packet); err != nil {
 		return publication, err
 	}
+	return saveSleepRolloutPublication(ctx, tx, mode, publication)
+}
+
+func saveSleepRolloutPublication(ctx context.Context, tx pgx.Tx, mode string, publication SleepRolloutPublication) (SleepRolloutPublication, error) {
 	raw, err := json.Marshal(publication)
 	if err != nil {
 		return publication, err

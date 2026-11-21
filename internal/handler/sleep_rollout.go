@@ -75,7 +75,7 @@ func validateSleepRolloutCandidate(sourceID string, candidate *sleepwire.Candida
 	}
 	// The effective priority is selected from the tenant's policy on apply.
 	candidate.Priority = 0
-	return candidate.WakeDate()
+	return candidate.ValidateSource(sourceID)
 }
 
 func validSleepRolloutLegacy(body json.RawMessage) bool {

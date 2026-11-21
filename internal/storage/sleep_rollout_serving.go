@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"health-receiver/internal/health"
 )
 
@@ -27,8 +26,8 @@ func (s *DB) sleepRolloutBriefing(lang string, legacyOnly bool) (*health.Briefin
 	// Treat a rolled-back publication as a legacy current calculation. A
 	// historical five-minute observation from the pilot is still preserved.
 	handled, err := s.withSleepRolloutPublication(ctx, func(unit *DB, publication SleepRolloutPublication) error {
-		active := publication.Active && !legacyOnly
-		date, err := unit.latestSleepRolloutDate(ctx, active)
+		active := publication.goProjection != nil || (publication.Active && !legacyOnly)
+		date, err := unit.latestSleepRolloutDate(ctx, active, publication.goProjection)
 		if err != nil {
 			return err
 		}
@@ -39,11 +38,17 @@ func (s *DB) sleepRolloutBriefing(lang string, legacyOnly bool) (*health.Briefin
 		var overlay *rolloutBriefingSleep
 		var bank BankResult
 		if active {
-			blocks, baseline, err := unit.loadRolloutSleepWindow(ctx, date, publication.window())
+			blocks, baseline, err := unit.loadReaderSleepWindow(ctx, date, publication)
 			if err != nil {
 				return err
 			}
-			overlay = &rolloutBriefingSleep{blocks: blocks, baseline: baseline}
+			if publication.goProjection == nil || len(blocks) != 0 {
+				overlay = &rolloutBriefingSleep{blocks: blocks, baseline: baseline}
+			}
+			if publication.goProjection != nil && !hasProjectedEnergyInput(date, blocks) {
+				response, err = unit.getHealthBriefing(lang, nil, overlay)
+				return err
+			}
 			bank, err = unit.computeServedSleepBank(ctx, date, blocks, unit.GetEnergyConfig())
 			if err != nil {
 				return err
@@ -60,12 +65,18 @@ func (s *DB) sleepRolloutBriefing(lang string, legacyOnly bool) (*health.Briefin
 	return response, handled, err
 }
 
-func (s *DB) latestSleepRolloutDate(ctx context.Context, active bool) (string, error) {
+func (s *DB) latestSleepRolloutDate(ctx context.Context, active bool, projection *sleepGoProjection) (string, error) {
 	var date string
-	err := s.pool.QueryRow(ctx, `SELECT COALESCE(GREATEST(
+	today := time.Now().In(s.reportTZLocation()).Format(time.DateOnly)
+	query := `SELECT COALESCE(GREATEST(
 		(SELECT MAX(SUBSTRING(hour,1,10)) FROM hourly_metrics WHERE SUBSTRING(hour,1,10)<=$1),
-		(SELECT MAX(wake_date)::text FROM sleep_rollout_daily WHERE $2 AND wake_date<=$1::text::date)), '')`,
-		time.Now().In(s.reportTZLocation()).Format(time.DateOnly), active).Scan(&date)
+		(SELECT MAX(wake_date)::text FROM sleep_rollout_daily d WHERE $2 AND wake_date<=$1::text::date`
+	args := []any{today, active}
+	if projection != nil {
+		query += " AND d.wake_date BETWEEN $3::text::date AND $4::text::date AND " + ownedSleepGoProjectionSQL
+		args = append(args, projection.From, projection.Through)
+	}
+	err := s.pool.QueryRow(ctx, query+")), '')", args...).Scan(&date)
 	return date, err
 }
 
@@ -76,10 +87,18 @@ func rolloutCurrentEnergy(date string, bank BankResult) *localShadowCurrentEnerg
 }
 
 func (s *DB) computeServedSleepBank(ctx context.Context, date string, blocks map[string]*LocalShadowSleep, cfg EnergyConfig) (BankResult, error) {
+	inputs, err := s.loadServedSleepBankInputs(ctx, date, blocks)
+	if err != nil {
+		return BankResult{}, err
+	}
+	return computeCalendarEnergyBank(inputs, date, cfg), nil
+}
+
+func (s *DB) loadServedSleepBankInputs(ctx context.Context, date string, blocks map[string]*LocalShadowSleep) (map[string]dailyInputs, error) {
 	from := subtractDays(date, energyWindowDays-1)
 	inputs, err := s.loadDailyEnergyInputs(ctx, from, date)
 	if err != nil {
-		return BankResult{}, err
+		return nil, err
 	}
 	for day, block := range blocks {
 		if day < from || day > date {
@@ -89,7 +108,7 @@ func (s *DB) computeServedSleepBank(ctx context.Context, date string, blocks map
 		input.SleepTotal, input.SleepDeep, input.SleepRem, input.SleepAwake = block.Total, block.Deep, block.REM, block.Awake
 		inputs[day] = input
 	}
-	return computeCalendarEnergyBank(inputs, date, cfg), nil
+	return inputs, nil
 }
 
 func (s *DB) servedSleepSummary(ctx context.Context, publication SleepRolloutPublication, from, to string) ([]SleepNight, error) {
@@ -97,10 +116,17 @@ func (s *DB) servedSleepSummary(ctx context.Context, publication SleepRolloutPub
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.pool.Query(ctx, `SELECT wake_date::text,sleep_seconds/3600,COALESCE(deep_seconds/3600,0),
+	query := `SELECT wake_date::text,sleep_seconds/3600,COALESCE(deep_seconds/3600,0),
 		COALESCE(rem_seconds/3600,0),COALESCE(core_seconds/3600,0),
 		COALESCE(unspecified_seconds/3600,0),COALESCE(awake_seconds/3600,0)
-		FROM sleep_rollout_daily WHERE wake_date BETWEEN $1::text::date AND $2::text::date`, max(from, publication.From), to)
+		FROM sleep_rollout_daily d WHERE wake_date BETWEEN $1::text::date AND $2::text::date`
+	args := []any{max(from, publication.From), to}
+	if projection := publication.goProjection; projection != nil {
+		args = []any{max(from, projection.From), min(to, projection.Through), projection.Sources}
+		query = strings.Replace(query, "sleep_seconds/3600", "CASE WHEN ("+readySleepGoProjectionSQL+") THEN sleep_seconds/3600 END", 1)
+		query += " AND " + ownedSleepGoProjectionSQL
+	}
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +149,7 @@ func (s *DB) servedSleepSummary(ctx context.Context, publication SleepRolloutPub
 		return nil, err
 	}
 	for _, night := range legacy {
-		if !published[night.Date] && (night.Date < publication.From || night.Date > publication.Through) {
+		if !published[night.Date] && (publication.goProjection != nil || night.Date < publication.From || night.Date > publication.Through) {
 			out = append(out, night)
 		}
 	}
@@ -132,19 +158,21 @@ func (s *DB) servedSleepSummary(ctx context.Context, publication SleepRolloutPub
 }
 
 func (s *DB) servedSleepReadinessHistory(ctx context.Context, publication SleepRolloutPublication, outputDays int) ([]health.ReadinessPoint, error) {
-	latest, err := s.latestSleepRolloutDate(ctx, true)
+	latest, err := s.latestSleepRolloutDate(ctx, true, publication.goProjection)
 	if err != nil || latest == "" || outputDays <= 0 {
 		return nil, err
 	}
 	start := subtractDays(latest, outputDays-1)
 	points := []health.ReadinessPoint{}
-	if start < publication.From {
+	legacyByDate := make(map[string]health.ReadinessPoint)
+	if start < publication.From || publication.goProjection != nil {
 		legacy, err := s.computeReadinessHistoryAt(ctx, outputDays, latest)
 		if err != nil {
 			return nil, err
 		}
 		fillReadinessBands(legacy)
 		for _, point := range legacy {
+			legacyByDate[point.Date] = point
 			if point.Date >= start && point.Date < publication.From {
 				points = append(points, point)
 			}
@@ -155,15 +183,29 @@ func (s *DB) servedSleepReadinessHistory(ctx context.Context, publication SleepR
 		return nil, err
 	}
 	for date := day.Format(time.DateOnly); date <= latest; date = day.Format(time.DateOnly) {
+		if projection := publication.goProjection; projection != nil &&
+			subtractDays(date, rolloutReadinessBaselineDays) > projection.Through {
+			if point, ok := legacyByDate[date]; ok {
+				points = append(points, point)
+			}
+			day = day.AddDate(0, 0, 1)
+			continue
+		}
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		blocks, baseline, err := s.loadRolloutSleepWindow(ctx, date, publication.window())
+		blocks, baseline, err := s.loadReaderSleepWindow(ctx, date, publication)
 		if err != nil {
 			return nil, err
 		}
-		readiness := s.readinessWithSleep(ctx, date, blocks, baseline)
-		points = append(points, health.ReadinessPoint{Date: date, Score: readiness.Score, Band: readiness.Band})
+		if publication.goProjection != nil && len(blocks) == 0 {
+			if point, ok := legacyByDate[date]; ok {
+				points = append(points, point)
+			}
+		} else {
+			readiness := s.readinessWithSleep(ctx, date, blocks, baseline)
+			points = append(points, health.ReadinessPoint{Date: date, Score: readiness.Score, Band: readiness.Band})
+		}
 		day = day.AddDate(0, 0, 1)
 	}
 	return points, nil
@@ -191,9 +233,12 @@ func attachRolloutSleepSource(response *health.BriefingResponse, date string, bl
 // candidate. A mixed batch's legacy callback can run before the candidate.
 func (s *DB) recordServedSleepObservation(ctx context.Context, loc *time.Location, now time.Time, publication SleepRolloutPublication) (BankResult, error) {
 	date := now.In(loc).Format(time.DateOnly)
-	blocks, _, err := s.loadRolloutSleepWindow(ctx, date, publication.window())
+	blocks, _, err := s.loadReaderSleepWindow(ctx, date, publication)
 	if err != nil {
 		return BankResult{}, err
+	}
+	if publication.goProjection != nil && !hasProjectedEnergyInput(date, blocks) {
+		return BankResult{}, nil
 	}
 	result, err := s.computeServedSleepBank(ctx, date, blocks, s.GetEnergyConfig())
 	if err != nil || result.State == "stale" {
@@ -216,19 +261,12 @@ func (s *DB) recordServedSleepObservation(ctx context.Context, loc *time.Locatio
 // entered serve. The current bank remains a separate calculation and can
 // change in a slot whose observed historical value has already been recorded.
 func (s *DB) refreshRolloutEnergyObservation(ctx context.Context, tz string, clock func() time.Time) (BankResult, bool, error) {
-	result, handled, err := s.refreshRolloutEnergyObservationOnce(ctx, tz, clock)
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "40001" && ctx.Err() == nil {
-		return s.refreshRolloutEnergyObservationOnce(ctx, tz, clock)
-	}
-	return result, handled, err
-}
-
-func (s *DB) refreshRolloutEnergyObservationOnce(ctx context.Context, tz string, clock func() time.Time) (BankResult, bool, error) {
 	if !s.sleepRolloutTenant {
 		return BankResult{}, false, nil
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+	// Candidate writes and mode changes share this fence. In READ COMMITTED
+	// the reads after taking it see the preceding worker's committed inputs.
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return BankResult{}, false, err
 	}
@@ -236,17 +274,21 @@ func (s *DB) refreshRolloutEnergyObservationOnce(ctx context.Context, tz string,
 	if err := lockSleepRollout(ctx, tx); err != nil {
 		return BankResult{}, false, err
 	}
-	// The advisory SELECT can establish this Repeatable Read snapshot
-	// before it gets the lock. The row lock detects a concurrent switch
-	// and forces the caller to retry the whole snapshot.
-	var mode string
-	err = tx.QueryRow(ctx, `SELECT value FROM settings WHERE key=$1 FOR SHARE`, SleepRolloutModeSetting).Scan(&mode)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return BankResult{}, true, err
-	}
 	publication, err := readSleepRolloutPublication(ctx, tx)
-	if err != nil || (publication == nil && !s.sleepRolloutServeEnabled()) {
+	if err != nil {
 		return BankResult{}, false, err
+	}
+	var projection *sleepGoProjection
+	if publication != nil && publication.Projection != nil {
+		projection = publication.Projection
+	} else if s.sleepGoProjectionEnabled() && (publication == nil || !publication.Active || !s.sleepRolloutServeEnabled()) {
+		projection, err = loadSleepGoProjection(ctx, tx)
+		if err != nil {
+			return BankResult{}, true, err
+		}
+	}
+	if publication == nil && projection == nil && !s.sleepRolloutServeEnabled() {
+		return BankResult{}, false, nil
 	}
 	if publication != nil {
 		if err := verifySleepRolloutTenant(ctx, tx, publication.Tenant); err != nil {
@@ -260,12 +302,31 @@ func (s *DB) refreshRolloutEnergyObservationOnce(ctx context.Context, tz string,
 	now := clock()
 	date := now.In(loc).Format(time.DateOnly)
 	unit := &DB{pool: &cacheTransaction{Tx: tx, ctx: ctx}}
-	if publication != nil && publication.Active && s.sleepRolloutServeEnabled() {
+	if publication != nil && publication.Projection == nil && publication.Active && s.sleepRolloutServeEnabled() {
 		result, err := unit.recordServedSleepObservation(ctx, loc, now, *publication)
 		if err != nil {
 			return result, true, err
 		}
 		return result, true, tx.Commit(ctx)
+	}
+	if projection != nil {
+		blocks, _, err := unit.loadReaderSleepWindow(ctx, date, SleepRolloutPublication{goProjection: projection})
+		if err != nil {
+			return BankResult{}, true, err
+		}
+		if hasProjectedEnergyInput(date, blocks) {
+			result, err := unit.computeServedSleepBank(ctx, date, blocks, unit.GetEnergyConfig())
+			if err != nil {
+				return result, true, err
+			}
+			if result.State != "stale" {
+				if err := unit.writeEnergySnapshotAt(ctx, loc, now, result, false); err != nil {
+					return result, true, err
+				}
+			}
+			return result, true, tx.Commit(ctx)
+		}
+		return BankResult{}, false, nil
 	}
 	result, err := unit.ComputeBankForDate(ctx, tz, date)
 	if err != nil {
@@ -295,9 +356,26 @@ func (s *DB) servedSleepEnergyHistory(ctx context.Context, publication SleepRoll
 		outputLoc = time.UTC
 	}
 	loc := s.reportTZLocation()
+	affected := func(date string) bool { return date >= publication.From }
+	if projection := publication.goProjection; projection != nil {
+		rows, err := s.pool.Query(ctx, `SELECT wake_date::text FROM sleep_rollout_daily d
+			WHERE wake_date BETWEEN $1::text::date AND $2::text::date AND `+ownedSleepGoProjectionSQL,
+			projection.From, projection.Through)
+		if err != nil {
+			return nil, err
+		}
+		dates, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			return nil, err
+		}
+		affected = func(date string) bool {
+			from := subtractDays(date, energyWindowDays-1)
+			return slices.ContainsFunc(dates, func(day string) bool { return day >= from && day <= date })
+		}
+	}
 	occupied := make(map[time.Time]bool)
 	points = slices.DeleteFunc(points, func(point EnergySnapshotPoint) bool {
-		if point.TS.In(loc).Format(time.DateOnly) >= publication.From && slices.Contains(point.Flags, "backfilled") {
+		if affected(point.TS.In(loc).Format(time.DateOnly)) && slices.Contains(point.Flags, "backfilled") {
 			return true
 		}
 		occupied[point.TS.UTC()] = true
@@ -315,7 +393,10 @@ func (s *DB) servedSleepEnergyHistory(ctx context.Context, publication SleepRoll
 			continue
 		}
 		date := day.Format(time.DateOnly)
-		blocks, _, err := s.loadRolloutSleepWindow(ctx, date, publication.window())
+		if !affected(date) {
+			continue
+		}
+		blocks, _, err := s.loadReaderSleepWindow(ctx, date, publication)
 		if err != nil {
 			return nil, err
 		}

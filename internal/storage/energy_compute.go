@@ -151,6 +151,29 @@ func (s *DB) ComputeBankForDate(ctx context.Context, tz, asOfDate string) (BankR
 	if _, err := time.Parse("2006-01-02", asOfDate); err != nil {
 		return BankResult{}, fmt.Errorf("parse asOfDate %q: %w", asOfDate, err)
 	}
+	if s.sleepRolloutTenant {
+		var bank BankResult
+		handled, err := s.withActiveSleepRollout(ctx, func(unit *DB, publication SleepRolloutPublication) error {
+			if publication.goProjection == nil {
+				var err error
+				bank, err = unit.ComputeBankForDate(ctx, tz, asOfDate)
+				return err
+			}
+			blocks, _, err := unit.loadReaderSleepWindow(ctx, asOfDate, publication)
+			if err != nil {
+				return err
+			}
+			if !hasProjectedEnergyInput(asOfDate, blocks) {
+				bank, err = unit.ComputeBankForDate(ctx, tz, asOfDate)
+			} else {
+				bank, err = unit.computeServedSleepBank(ctx, asOfDate, blocks, unit.GetEnergyConfig())
+			}
+			return err
+		})
+		if handled || err != nil {
+			return bank, err
+		}
+	}
 	startDate := subtractDays(asOfDate, energyWindowDays-1)
 	byDate, err := s.loadDailyEnergyInputs(ctx, startDate, asOfDate)
 	if err != nil {
@@ -192,21 +215,31 @@ func (s *DB) loadDailyEnergyInputs(ctx context.Context, from, to string) (map[st
 }
 
 func computeCalendarEnergyBank(byDate map[string]dailyInputs, asOfDate string, cfg EnergyConfig) BankResult {
+	result, _ := calculateCalendarEnergyBank(byDate, asOfDate, cfg)
+	return result
+}
+
+func calculateCalendarEnergyBank(byDate map[string]dailyInputs, asOfDate string, cfg EnergyConfig) (BankResult, float64) {
 	days := make([]dailyInputs, energyWindowDays)
 	for i := 0; i < energyWindowDays; i++ {
 		date := subtractDays(asOfDate, energyWindowDays-1-i)
 		days[i] = byDate[date]
 	}
 
-	return computeBankFromDays(days, cfg)
+	return calculateBankFromDays(days, cfg)
 }
 
 // computeBankFromDays is the pure iteration: takes a length-21 slice
 // of daily inputs, returns today's bank result. Extracted so unit tests
 // can exercise the imputation / trust-state logic without a database.
 func computeBankFromDays(days []dailyInputs, cfg EnergyConfig) BankResult {
+	result, _ := calculateBankFromDays(days, cfg)
+	return result
+}
+
+func calculateBankFromDays(days []dailyInputs, cfg EnergyConfig) (BankResult, float64) {
 	if len(days) != energyWindowDays {
-		return BankResult{State: "stale", FormulaVersion: cfg.FormulaVersion}
+		return BankResult{State: "stale", FormulaVersion: cfg.FormulaVersion}, 0
 	}
 
 	// Pre-compute "raw" sleep quality and drain for every day. For days
@@ -314,7 +347,7 @@ func computeBankFromDays(days []dailyInputs, cfg EnergyConfig) BankResult {
 		res.TodayDrain = int(math.Round(todayDrain))
 		res.TodayRestore = int(math.Round(todayRestore))
 	}
-	return res
+	return res, bank
 }
 
 // trailingAvg averages values[i-7..i-1] over indices that are NOT
