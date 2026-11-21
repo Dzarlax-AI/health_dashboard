@@ -109,8 +109,7 @@ func main() {
 
 	ctx := context.Background()
 
-	// Two connections: a bare pgx for the UPDATE (single-statement SQL,
-	// no need for the storage abstraction), and a storage.DB for the
+	// Two connections: a bare pgx for the maintenance transactions, and a storage.DB for the
 	// targeted UpsertRecentCache afterwards. Both honour `search_path`
 	// from the DSN, so multi-tenant installs point this at one schema
 	// per run.
@@ -137,11 +136,19 @@ func main() {
 	// UPDATE in place is preferred over INSERT+DELETE: avoids the brief
 	// window when the row exists under both names (which would double-
 	// count if a /health POST landed mid-migration).
-	tag, err := conn.Exec(ctx, updateSQL)
+	var updated int64
+	err = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+		if err := storage.MarkMetricCatalogSourceChangedTx(ctx, tx); err != nil {
+			return err
+		}
+		tag, err := tx.Exec(ctx, updateSQL)
+		updated = tag.RowsAffected()
+		return err
+	})
 	if err != nil {
 		log.Fatalf("update: %v", err)
 	}
-	log.Printf("migrated %d rows", tag.RowsAffected())
+	log.Printf("migrated %d rows", updated)
 
 	rows, err := conn.Query(ctx, affectedDatesSQL)
 	if err != nil {
@@ -181,14 +188,22 @@ func main() {
 	// every source's sleep rows for that date from metric_points anyway,
 	// so deleting them upfront is free; per-source filtering would just
 	// be more SQL for no benefit.
-	tag2, err := conn.Exec(ctx, `
-		DELETE FROM hourly_metrics
-		 WHERE metric_name LIKE 'sleep\_%' ESCAPE '\'
-		   AND SUBSTRING(hour,1,10) = ANY($1::text[])`, dates)
+	var cleared int64
+	err = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			DELETE FROM hourly_metrics
+			 WHERE metric_name LIKE 'sleep\_%' ESCAPE '\'
+			   AND SUBSTRING(hour,1,10) = ANY($1::text[])`, dates)
+		if err != nil {
+			return err
+		}
+		cleared = tag.RowsAffected()
+		return storage.MarkMetricCatalogHoursChangedTx(ctx, tx)
+	})
 	if err != nil {
 		log.Fatalf("clear stale hourly sleep rows: %v", err)
 	}
-	log.Printf("cleared %d stale hourly_metrics sleep rows", tag2.RowsAffected())
+	log.Printf("cleared %d stale hourly_metrics sleep rows", cleared)
 
 	// storage.DB so we can call the same per-date cache rebuild path the
 	// server uses on every /health POST. This is orders of magnitude

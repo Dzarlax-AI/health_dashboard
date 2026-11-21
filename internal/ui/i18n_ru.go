@@ -784,4 +784,8 @@ var translationsRu = map[string]string{
 	"admin_users_msg_created":       "Пользователь {username} создан. API-ключ: {apiKey}",
 	"admin_users_msg_created_warn":  "Пользователь {username} создан. API-ключ: {apiKey} (предупреждение: {warning})",
 	"admin_users_msg_error_generic": "Не удалось создать пользователя.",
+
+	"metrics_catalog_preparing":   "Каталог метрик ещё готовится.",
+	"metrics_catalog_unavailable": "Каталог метрик временно недоступен.",
+	"metrics_catalog_retry":       "Повторить",
 }

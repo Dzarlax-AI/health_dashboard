@@ -252,11 +252,16 @@ func (s *DB) ListMetrics() ([]MetricSummary, error) {
 	ctx, cancel := queryCtx()
 	defer cancel()
 
-	rows, err := s.pool.Query(ctx, `
-		SELECT metric_name, '', COUNT(*) AS cnt, MIN(SUBSTRING(hour,1,10)), MAX(SUBSTRING(hour,1,10))
-		FROM hourly_metrics
-		GROUP BY metric_name
-		ORDER BY cnt DESC`)
+	return s.listMetricsContext(ctx, compatibilityCatalogSQL())
+}
+
+const hourlyCatalogSQL = `
+	SELECT metric_name, '', COUNT(*) AS cnt, MIN(SUBSTRING(hour,1,10)), MAX(SUBSTRING(hour,1,10))
+	FROM hourly_metrics
+	GROUP BY metric_name`
+
+func (s *DB) listMetricsContext(ctx context.Context, compatibilitySQL string) ([]MetricSummary, error) {
+	rows, err := s.pool.Query(ctx, hourlyCatalogSQL)
 	if err != nil {
 		return nil, err
 	}
@@ -276,12 +281,21 @@ func (s *DB) ListMetrics() ([]MetricSummary, error) {
 		return nil, err
 	}
 	rows.Close()
-	compatible, err := s.compatibleMetricSummaries(ctx)
+	compatible, err := s.queryCompatibleMetricSummaries(ctx, compatibilitySQL)
 	if err != nil {
 		return nil, err
 	}
 	out = append(out, compatible...)
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Count > out[j].Count })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		// Preserve legacy precedence between the two projections on ties.
+		if usesMetricCompatibility(out[i].Name) != usesMetricCompatibility(out[j].Name) {
+			return !usesMetricCompatibility(out[i].Name)
+		}
+		return out[i].Name < out[j].Name
+	})
 	return out, nil
 }
 

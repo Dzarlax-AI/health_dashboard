@@ -813,4 +813,8 @@ var translationsEn = map[string]string{
 	"admin_users_msg_created":       "User {username} created. API key: {apiKey}",
 	"admin_users_msg_created_warn":  "User {username} created. API key: {apiKey} (warning: {warning})",
 	"admin_users_msg_error_generic": "Error creating user.",
+
+	"metrics_catalog_preparing":   "The metrics catalog is being prepared.",
+	"metrics_catalog_unavailable": "The metrics catalog is temporarily unavailable.",
+	"metrics_catalog_retry":       "Try again",
 }

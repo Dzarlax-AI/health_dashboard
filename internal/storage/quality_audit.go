@@ -305,7 +305,12 @@ func (s *DB) finalizeQualityChanges(ctx context.Context, affected, affectedMetri
 	}
 	cleared := map[string]struct{}{}
 	for metric := range affectedMetrics {
-		if _, err := s.pool.Exec(ctx, `DELETE FROM hourly_metrics WHERE metric_name=$1 AND SUBSTRING(hour,1,10)=ANY($2)`, metric, dates); err != nil {
+		if err := s.runCacheTransaction(ctx, func(unit *DB) error {
+			if _, err := unit.pool.Exec(ctx, `DELETE FROM hourly_metrics WHERE metric_name=$1 AND SUBSTRING(hour,1,10)=ANY($2)`, metric, dates); err != nil {
+				return err
+			}
+			return MarkMetricCatalogHoursChangedTx(ctx, unit.pool)
+		}); err != nil {
 			s.cacheMu.Unlock()
 			return fmt.Errorf("clear hourly %s after quality change: %w", metric, err)
 		}

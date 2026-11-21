@@ -1,16 +1,20 @@
 package ui
 
 import (
+	"context"
+	"errors"
 	"fmt"
-	"health-receiver/internal/storage"
 	"strings"
+
+	"health-receiver/internal/storage"
 )
 
 // MetricsPageData is the template data for the metrics list page.
 type MetricsPageData struct {
 	BasePage
-	Query      string
-	Categories []MetricCategory
+	Query         string
+	Categories    []MetricCategory
+	CatalogStatus string
 }
 
 // MetricCategory groups metrics for display.
@@ -44,7 +48,22 @@ var categories = []struct {
 	{"cat_nutrition", "#f97316", "nutrition", []string{"dietary_energy", "dietary_protein", "dietary_carbs", "dietary_fat", "dietary_fat_saturated", "dietary_fat_monounsaturated", "dietary_fat_polyunsaturated", "dietary_water", "dietary_fiber", "dietary_sugar", "dietary_sodium", "dietary_caffeine", "dietary_calcium", "dietary_iron", "dietary_cholesterol", "dietary_potassium", "dietary_magnesium", "dietary_phosphorus", "dietary_zinc", "dietary_copper", "dietary_manganese", "dietary_selenium", "dietary_iodine", "dietary_molybdenum", "dietary_folate", "dietary_biotin", "dietary_vitamin_a", "dietary_vitamin_c", "dietary_vitamin_d", "dietary_vitamin_e", "dietary_vitamin_k", "dietary_vitamin_b6", "dietary_vitamin_b12", "dietary_niacin", "dietary_riboflavin", "dietary_thiamin", "dietary_pantothenic_acid", "alcoholic_beverages"}},
 }
 
-func (h *Handler) buildMetricsPageData(lang, query string, db *storage.DB) MetricsPageData {
+func (h *Handler) buildMetricsPageData(ctx context.Context, lang, query string, db *storage.DB) MetricsPageData {
+	data := MetricsPageData{
+		BasePage: BasePage{Lang: lang, Title: T(lang, "all_metrics"), ActiveNav: "metrics"},
+		Query:    query,
+	}
+	metrics, err := db.ReadMetricCatalog(ctx, false)
+	switch {
+	case errors.Is(err, storage.ErrMetricCatalogUnavailable):
+		data.CatalogStatus = "metrics_catalog_preparing"
+		return data
+	case err != nil:
+		data.CatalogStatus = "metrics_catalog_unavailable"
+		return data
+	case len(metrics) == 0:
+		return data
+	}
 	query = strings.ToLower(strings.TrimSpace(query))
 
 	// Fetch latest values to show on the list
@@ -62,14 +81,11 @@ func (h *Handler) buildMetricsPageData(lang, query string, db *storage.DB) Metri
 	}
 
 	// Also fetch the list of available metrics to only show ones with data
-	availableMetrics := map[string]bool{}
-	if metrics, err := db.ListMetrics(); err == nil {
-		for _, m := range metrics {
-			availableMetrics[m.Name] = true
-		}
+	availableMetrics := make(map[string]bool, len(metrics))
+	for _, m := range metrics {
+		availableMetrics[m.Name] = true
 	}
 
-	var cats []MetricCategory
 	for _, c := range categories {
 		cat := MetricCategory{
 			Label: T(lang, c.LabelKey),
@@ -94,15 +110,11 @@ func (h *Handler) buildMetricsPageData(lang, query string, db *storage.DB) Metri
 			cat.Metrics = append(cat.Metrics, item)
 		}
 		if len(cat.Metrics) > 0 {
-			cats = append(cats, cat)
+			data.Categories = append(data.Categories, cat)
 		}
 	}
 
-	return MetricsPageData{
-		BasePage:   BasePage{Lang: lang, Title: T(lang, "all_metrics"), ActiveNav: "metrics"},
-		Query:      query,
-		Categories: cats,
-	}
+	return data
 }
 
 func fmtValue(v float64, unit string) string {

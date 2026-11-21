@@ -78,7 +78,7 @@ func (s *DB) rebuildHistoricalAggregateDate(ctx context.Context, date string) er
 		return fmt.Errorf("daily sleep block for %s: %w", date, err)
 	}
 
-	return nil
+	return MarkMetricCatalogHoursChangedTx(ctx, s.pool)
 }
 
 func validateCacheMaintenanceDate(date string) error {

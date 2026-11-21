@@ -343,7 +343,10 @@ func (s *DB) MarkCacheDirtyTx(ctx context.Context, tx pgx.Tx, dates []string) er
 	if err := markCacheDirtyState(&state, dates); err != nil {
 		return err
 	}
-	return saveCacheMaintenanceRow(ctx, tx, state)
+	if err := saveCacheMaintenanceRow(ctx, tx, state); err != nil {
+		return err
+	}
+	return MarkMetricCatalogSourceChangedTx(ctx, tx)
 }
 
 // CaptureCacheDirty snapshots generations for selected dates. An empty date

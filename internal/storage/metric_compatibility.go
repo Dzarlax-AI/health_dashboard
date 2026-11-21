@@ -269,6 +269,14 @@ func metricCompatibilityProjection(relation, filter, proof string, legacy bool) 
 		// The original key admitted one row for the exact date and source.
 		grainKey = ""
 	}
+	return metricCompatibilityUnitRows(relation, filter, proof) + `, compatible AS (
+	SELECT DISTINCT ON (metric,date,source` + grainKey + `) metric,date,source,qty,unit,quality,grain
+	FROM compatible_units
+	ORDER BY metric,date,source` + grainKey + `,snapshot_at DESC,(origin='live') DESC,id DESC
+) `
+}
+
+func metricCompatibilityUnitRows(relation, filter, proof string) string {
 	canonical := canonicalMetricSQL("metric_name")
 	var quantity, unit strings.Builder
 	quantity.WriteString("CASE")
@@ -303,11 +311,8 @@ func metricCompatibilityProjection(relation, filter, proof string, legacy bool) 
 	SELECT metric,date,source,` + quantity.String() + ` AS qty,` + unit.String() + ` AS unit,
 	       quality,grain,snapshot_at,origin,id
 	FROM identified
-), compatible AS (
-	SELECT DISTINCT ON (metric,date,source` + grainKey + `) metric,date,source,qty,unit,quality,grain
-	FROM normalized
-	WHERE unit = CASE metric` + compatibilityUnitsSQL() + ` ELSE unit END
-	ORDER BY metric,date,source` + grainKey + `,snapshot_at DESC,(origin='live') DESC,id DESC
+), compatible_units AS NOT MATERIALIZED (
+	SELECT * FROM normalized WHERE unit = CASE metric` + compatibilityUnitsSQL() + ` ELSE unit END
 ) `
 }
 
