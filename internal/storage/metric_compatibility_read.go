@@ -133,11 +133,7 @@ func (s *DB) compatibleLatestMetricValues(ctx context.Context, legacy bool) ([]L
 		keys = append(keys, currentHourlyStoredKeys...)
 	}
 	keys = slices.Compact(slices.Sorted(slices.Values(keys)))
-	canonicalKeys := make([]string, len(keys))
-	for i, key := range keys {
-		canonicalKeys[i] = CanonicalMetricName(key)
-	}
-	rows, err := s.pool.Query(ctx, compatibilityLatestSQL(hourly, legacy), keys, legacy, currentHourlyMetrics, canonicalKeys)
+	rows, err := s.pool.Query(ctx, compatibilityLatestSQL(hourly, legacy), keys, legacy, currentHourlyMetrics)
 	if err != nil {
 		return nil, err
 	}
@@ -170,7 +166,7 @@ func compatibilityLatestSQL(hourly string, legacy bool) string {
 	      ELSE SUM(total)/SUM(hours) END
 	FROM by_source GROUP BY metric,day`
 	return `WITH metric_keys AS (
-		SELECT stored_key,metric FROM unnest($1::text[],$4::text[]) AS k(stored_key,metric)
+		SELECT stored_key,` + canonicalMetricSQL("stored_key") + ` AS metric FROM unnest($1::text[]) AS k(stored_key)
 	), candidate_days AS (
 		SELECT k.metric,MAX(SUBSTRING(p.date,1,10)) AS day
 		FROM metric_keys k

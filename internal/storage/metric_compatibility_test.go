@@ -592,3 +592,46 @@ func TestHealthKitLatestFallsBackWhenCandidateDayIsIneligible(t *testing.T) {
 		t.Fatalf("catalog lost receipt proof: %+v, %v", catalog, err)
 	}
 }
+
+func TestHealthKitLatestGroupsArchiveKeysWithLiveMetrics(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	const metric = "distance_cycling"
+	const day = "2026-07-01"
+	run, err := db.BeginAppleHealthXMLImport(ImportOptions{
+		SnapshotAt:         time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC),
+		UnverifiedCoverage: true, CatalogNormalized: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.AddPoints([]MetricPoint{
+		{MetricName: metric, Units: "km", Date: "2026-06-30 12:15:00 +0000", Source: "Watch", Qty: 6},
+		{MetricName: metric, Units: "km", Date: day + " 12:15:00 +0000", Source: "Watch", Qty: 4},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	live, err := db.InsertRaw(Record{ContentType: "application/json; metrics-contract=2", Payload: "{}"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertPoints(live, []MetricPoint{{
+		MetricName: metric, Units: "km", Date: day + " 11:00:00 +0000", Source: "Watch", Qty: 3,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		legacy bool
+		value  float64
+	}{{true, 3.5}, {false, 7}} {
+		rows, err := db.compatibleLatestMetricValues(t.Context(), tc.legacy)
+		if err != nil || len(rows) != 1 || rows[0] != (LatestValue{Metric: metric, Date: day, Unit: "km", Value: tc.value}) {
+			t.Fatalf("legacy=%t latest=%+v err=%v", tc.legacy, rows, err)
+		}
+	}
+}
