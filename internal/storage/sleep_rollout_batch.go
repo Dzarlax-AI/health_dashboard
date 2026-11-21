@@ -62,6 +62,11 @@ func (s *DB) AcceptSleepRolloutBatch(ctx context.Context, batchID uuid.UUID, rec
 	if err := tx.QueryRow(ctx, `SELECT value='serve' FROM settings WHERE key=$1`, SleepRolloutModeSetting).Scan(&serving); err != nil {
 		return 0, err
 	}
+	for _, candidate := range candidates {
+		if candidate.Candidate.Observation != nil && (!SleepEarlyObservationsEnabled() || serving) {
+			return 0, ErrSleepRolloutDisabled
+		}
+	}
 	if serving {
 		publication, err := readSleepRolloutPublication(ctx, tx)
 		if err != nil {

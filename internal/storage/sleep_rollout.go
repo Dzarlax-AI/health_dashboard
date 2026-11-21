@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"errors"
+	"os"
 	"slices"
 	"time"
 
@@ -16,6 +17,10 @@ import (
 
 //go:embed sleep_rollout.sql
 var sleepRolloutDDL string
+
+func SleepEarlyObservationsEnabled() bool {
+	return os.Getenv("HEALTH_SLEEP_EARLY_OBSERVATIONS_ENABLED") == "1"
+}
 
 const SleepRolloutModeSetting = "sleep_rollout_mode"
 const rolloutReadinessBaselineDays = 30
@@ -108,6 +113,9 @@ func (s *DB) AcceptSleepRollout(ctx context.Context, input SleepRolloutInput) (s
 	if !prepare {
 		return "", ErrSleepRolloutDisabled
 	}
+	if input.Candidate.Observation != nil {
+		return "", ErrSleepRolloutDisabled
+	}
 	status, err := insertSleepRolloutCandidate(ctx, tx, input, nil)
 	if err != nil || status != "accepted" {
 		return status, err
@@ -151,31 +159,10 @@ func insertSleepRolloutCandidate(ctx context.Context, tx pgx.Tx, input SleepRoll
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return "", err
 	}
-	var latest int64
-	var latestDate string
-	var latestRaw []byte
-	err = tx.QueryRow(ctx, `SELECT revision,wake_date::text,candidate FROM sleep_rollout_packets
-		WHERE source_id=$1 AND candidate_id=$2 ORDER BY revision DESC LIMIT 1`,
-		input.SourceID, input.Candidate.ID).Scan(&latest, &latestDate, &latestRaw)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	if stale, err := checkSleepRolloutReceipt(ctx, tx, input); err != nil {
 		return "", err
-	}
-	if input.Candidate.Revision < latest {
+	} else if stale {
 		return "stale", nil
-	}
-	if proof := input.Candidate.Coverage; proof != nil {
-		var seenAt time.Time
-		if err := tx.QueryRow(ctx, "SELECT transaction_timestamp()").Scan(&seenAt); err != nil {
-			return "", err
-		}
-		if proof.ObservedAt.After(seenAt.Add(5 * time.Minute)) {
-			return "", ErrSleepRolloutConflict
-		}
-	}
-	if input.Candidate.Coverage != nil || latest != 0 {
-		if err := validateSleepRolloutRevision(input, latest, latestDate, latestRaw); err != nil {
-			return "", err
-		}
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO sleep_rollout_packets
 		(source_id,candidate_id,revision,wake_date,raw_payload,candidate,legacy_payload,health_record_id)
@@ -232,6 +219,18 @@ func (s *DB) RunSleepRolloutNext(ctx context.Context, clock func() time.Time) (b
 	}
 	if err != nil {
 		return false, err
+	}
+	var current sleepwire.Candidate
+	if err := json.Unmarshal(snapshot, &current); err != nil {
+		return false, err
+	}
+	if current.Observation != nil {
+		// Early evidence is available to the read-only shadow and never
+		// enters the legacy or covered daily classifier.
+		if _, err := tx.Exec(ctx, `UPDATE sleep_rollout_packets SET applied_at=clock_timestamp() WHERE sequence=$1`, sequence); err != nil {
+			return false, err
+		}
+		return true, tx.Commit(ctx)
 	}
 	key, err := json.Marshal([2]string{source, id})
 	if err != nil {

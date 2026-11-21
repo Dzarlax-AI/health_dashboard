@@ -146,3 +146,20 @@ Candidate preparation and publication are separate operator actions. Review
 the range and source coverage, retain unknown dates, and use a disposable
 database for rehearsal. Synthetic parity tests cover calculation and state
 transitions. Source selection on a physical device requires separate review.
+
+## Daytime sleep in the EnergyBank experiment
+
+`HEALTH_SLEEP_EARLY_OBSERVATIONS_ENABLED=1` enables early observations and
+collects episode evidence for the local comparison as new projections are
+prepared. The server default is off. The normal EnergyBank and Readiness
+calculations continue to use their existing formulas. Early observations are
+excluded from the revision-bound publication audit.
+
+Use `cmd/sleep_shadow --compare-nap-energy-at RFC3339` with the restricted
+tenant and schema options and a disposable database on a local Unix socket.
+`--nap-energy-html` renders the Russian explanation. The comparison reads the
+current database snapshot and reports immediate and gradual hypothetical
+credits within the local date. It does not replay historical bank versions or
+persist any credit. Dates prepared before the flag was enabled may have no
+episode evidence. Calibration and real-device validation are required before
+a formula is enabled for users.

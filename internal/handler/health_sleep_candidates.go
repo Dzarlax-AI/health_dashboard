@@ -174,6 +174,9 @@ func parseSleepCandidateBatch(raw json.RawMessage) ([]storage.SleepRolloutInput,
 		if err := decoder.Decode(&item); err != nil {
 			return nil, err
 		}
+		if item.Candidate.Observation != nil && !storage.SleepEarlyObservationsEnabled() {
+			return nil, errInvalidSleepCandidateBatch
+		}
 		date, err := validateSleepRolloutCandidate(item.SourceID, &item.Candidate)
 		if errors.Is(err, sleepwire.ErrUnknownWakeZone) {
 			unknownZone = true

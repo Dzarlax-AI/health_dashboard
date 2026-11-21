@@ -46,6 +46,14 @@ type Withdrawal struct {
 	PreviousRevision int64  `json:"previous_revision"`
 }
 
+type Observation struct {
+	Start           time.Time `json:"start_at"`
+	End             time.Time `json:"end_at"`
+	ObservedAt      time.Time `json:"observed_at"`
+	DeletedStageIDs []string  `json:"deleted_stage_ids,omitempty"`
+	WakeDate        string    `json:"wake_date,omitempty"`
+}
+
 type Candidate struct {
 	ID            string        `json:"id"`
 	Revision      int64         `json:"revision"`
@@ -55,6 +63,7 @@ type Candidate struct {
 	ZeroStages    []string      `json:"zero_stages,omitempty"`
 	LegacyAliases []LegacyAlias `json:"legacy_aliases"`
 	Coverage      *Coverage     `json:"coverage,omitempty"`
+	Observation   *Observation  `json:"observation,omitempty"`
 	Withdrawal    *Withdrawal   `json:"withdrawal,omitempty"`
 }
 
@@ -84,6 +93,33 @@ func (c *Candidate) WakeDate() (string, error) {
 		}
 		proof.Start, proof.End, proof.ObservedAt = proof.Start.UTC(), proof.End.UTC(), proof.ObservedAt.UTC()
 	}
+	if obs := c.Observation; obs != nil {
+		if c.Coverage != nil || c.Withdrawal != nil || len(c.ZeroStages) != 0 || len(c.LegacyAliases) != 0 ||
+			obs.Start.IsZero() || !obs.End.After(obs.Start) || obs.End.Sub(obs.Start) > 72*time.Hour ||
+			obs.ObservedAt.Before(obs.End) || len(obs.DeletedStageIDs) > 4096 {
+			return "", errors.New("invalid episode observation")
+		}
+		obs.Start, obs.End, obs.ObservedAt = obs.Start.UTC(), obs.End.UTC(), obs.ObservedAt.UTC()
+		if len(obs.DeletedStageIDs) != 0 {
+			if len(c.Stages) != 0 {
+				return "", errors.New("deleted episode observation cannot contain stages")
+			}
+			if _, err := time.Parse(time.DateOnly, obs.WakeDate); err != nil {
+				return "", errors.New("invalid deleted episode wake date")
+			}
+			for _, id := range obs.DeletedStageIDs {
+				if strings.TrimSpace(id) == "" || len(id) > 256 {
+					return "", errors.New("invalid deleted stage identity")
+				}
+			}
+			slices.Sort(obs.DeletedStageIDs)
+			obs.DeletedStageIDs = slices.Compact(obs.DeletedStageIDs)
+			return obs.WakeDate, nil
+		}
+		if obs.WakeDate != "" {
+			return "", errors.New("positive observation derives its wake date")
+		}
+	}
 	if w := c.Withdrawal; w != nil {
 		if c.Coverage == nil || w.PreviousRevision < 1 || w.PreviousRevision >= c.Revision ||
 			len(c.Stages) != 0 || len(c.ZeroStages) != 0 || len(c.LegacyAliases) != 0 {
@@ -102,6 +138,9 @@ func (c *Candidate) WakeDate() (string, error) {
 		point := &c.Stages[i]
 		if point.ID == "" || seen[point.ID] || point.Start.IsZero() || !point.End.After(point.Start) {
 			return "", errors.New("stages require distinct ids and increasing absolute bounds")
+		}
+		if obs := c.Observation; obs != nil && (len(point.ID) > 256 || point.Start.Before(obs.Start) || point.End.After(obs.End)) {
+			return "", errors.New("stage lies outside the episode observation")
 		}
 		if c.Coverage != nil && !c.Coverage.Contains(point.Start, point.End) {
 			return "", errors.New("stage lies outside source coverage")
