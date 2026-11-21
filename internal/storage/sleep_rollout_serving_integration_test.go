@@ -13,6 +13,15 @@ import (
 )
 
 func TestSleepRolloutEnergyRefreshWaitsForRollback(t *testing.T) {
+	testSleepRolloutEnergyRefreshFence(t, false)
+}
+
+func TestSleepRolloutEnergyRefreshWaitsForWithdrawal(t *testing.T) {
+	testSleepRolloutEnergyRefreshFence(t, true)
+}
+
+func testSleepRolloutEnergyRefreshFence(t *testing.T, withdrawal bool) {
+	t.Helper()
 	db, cleanup := testDB(t)
 	defer cleanup()
 	t.Setenv("HEALTH_SLEEP_V2_ENABLED", "1")
@@ -40,6 +49,20 @@ func TestSleepRolloutEnergyRefreshWaitsForRollback(t *testing.T) {
 	}
 	defer db.pool.Exec(context.Background(), `DELETE FROM sleep_rollout_daily WHERE wake_date=$1::text::date`, date)
 	publication := SleepRolloutPublication{Active: true, Tenant: tenant, From: date, Through: date}
+	if withdrawal {
+		publication.Projection = &sleepGoProjection{From: date, Through: date, Sources: []string{"watch"}}
+		if _, err := db.pool.Exec(ctx, `UPDATE sleep_rollout_daily SET episode_selection=
+			'{"go_projection_owned":true,"policy":"source-covered-personal-window-v1","state":"measured",
+			"complete_sources":["watch"],"observed_sources":["watch"],"accounted_seconds":7200}'
+			WHERE wake_date=$1::text::date`, date); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.pool.Exec(ctx, `INSERT INTO sleep_rollout_results(day,generation,readiness,energy)
+			VALUES ($1::text::date,1,'{}','{}')`, date); err != nil {
+			t.Fatal(err)
+		}
+		defer db.pool.Exec(context.Background(), `DELETE FROM sleep_rollout_results WHERE day=$1::text::date`, date)
+	}
 	raw, err := json.Marshal(publication)
 	if err != nil {
 		t.Fatal(err)
@@ -111,20 +134,39 @@ func TestSleepRolloutEnergyRefreshWaitsForRollback(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	// Publish the same two-row transition as SwitchSleepRollout while the
-	// refresh is blocked on the transaction fence.
-	if _, err := rollback.Exec(ctx, `UPDATE settings SET value=CASE WHEN key=$1 THEN 'off'
-		ELSE jsonb_set(value::jsonb,'{active}','false')::text END WHERE key IN ($1,$2)`,
-		SleepRolloutModeSetting, sleepRolloutPublicationSetting); err != nil {
-		t.Fatal(err)
+	if withdrawal {
+		// Simulate the candidate worker committing a withdrawal and its
+		// generation under the writer lock, without touching the mode row.
+		if _, err := rollback.Exec(ctx, `UPDATE sleep_rollout_daily SET generation=2,candidate=NULL,revision=NULL,sleep_seconds=NULL,
+			episode_selection=jsonb_set(episode_selection- 'accounted_seconds','{state}','"confirmed_source_absence"')
+			WHERE wake_date=$1::text::date`, date); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := rollback.Exec(ctx, `UPDATE sleep_rollout_results SET generation=2 WHERE day=$1::text::date`, date); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		if _, err := rollback.Exec(ctx, `UPDATE settings SET value=CASE WHEN key=$1 THEN 'off'
+			ELSE jsonb_set(value::jsonb,'{active}','false')::text END WHERE key IN ($1,$2)`,
+			SleepRolloutModeSetting, sleepRolloutPublicationSetting); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := rollback.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
+	wantSleepHours := float64(legacySleepHours)
+	if withdrawal {
+		want, err = serving.ComputeBankForDate(ctx, "UTC", date)
+		if err != nil || !slices.Contains(want.Flags, "imputed_sleep") {
+			t.Fatalf("withdrawal fixture did not clear sleep: %v", err)
+		}
+		wantSleepHours = 0
+	}
 	select {
 	case got := <-done:
 		if got.err != nil || !got.handled || got.bank.Bank != want.Bank ||
-			got.bank.Components["sleep_total_h"] != legacySleepHours {
+			got.bank.Components["sleep_total_h"] != wantSleepHours {
 			t.Fatalf("refresh used the rolled-back revision: %+v, want %d", got, want.Bank)
 		}
 	case <-ctx.Done():
@@ -134,8 +176,9 @@ func TestSleepRolloutEnergyRefreshWaitsForRollback(t *testing.T) {
 	var sleepHours *float64
 	err = db.pool.QueryRow(ctx, `SELECT bank,(components->>'sleep_total_h')::float8
 		FROM energy_snapshots WHERE ts_bucket=$1`, now).Scan(&stored, &sleepHours)
-	if err != nil || stored != want.Bank || sleepHours == nil || *sleepHours != legacySleepHours {
-		t.Fatalf("post-rollback slot: %d, sleep %v, %v; want bank %d and legacy sleep", stored, sleepHours, err, want.Bank)
+	if err != nil || stored != want.Bank || (withdrawal && sleepHours != nil) ||
+		(!withdrawal && (sleepHours == nil || *sleepHours != wantSleepHours)) {
+		t.Fatalf("first observed slot did not use the committed sleep state: %v", err)
 	}
 }
 

@@ -56,6 +56,25 @@ func (s *DB) AcceptSleepRolloutBatch(ctx context.Context, batchID uuid.UUID, rec
 	if err != nil {
 		return 0, err
 	}
+	// Revision-bound work is staged in prepare. A previous publication is
+	// fenced so new coverage cannot silently switch the live classifier.
+	var serving bool
+	if err := tx.QueryRow(ctx, `SELECT value='serve' FROM settings WHERE key=$1`, SleepRolloutModeSetting).Scan(&serving); err != nil {
+		return 0, err
+	}
+	if serving {
+		publication, err := readSleepRolloutPublication(ctx, tx)
+		if err != nil {
+			return 0, err
+		}
+		if publication == nil || publication.Projection == nil {
+			for _, candidate := range candidates {
+				if candidate.Candidate.Coverage != nil {
+					return 0, ErrSleepRolloutConflict
+				}
+			}
+		}
+	}
 	unit := &DB{pool: &cacheTransaction{Tx: tx, ctx: ctx}}
 	record.PendingProcessing = true
 	record.ProcessingKind = sleepCandidateProcessingKind

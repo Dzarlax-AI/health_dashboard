@@ -132,3 +132,17 @@ The startup worker retries incomplete tenants without monopolizing the installat
 queue. Manual backfill commands remain available. Local parity and isolated DB
 checks do not prove production latency; release acceptance requires a real sync
 and repeated startup on the deployed image pair.
+
+## Revision-bound sleep projection pilot
+
+Each tenant can pin one revision-bound pilot range and source set. A rollback
+returns reads to Go and retains this association to enforce confirmed sleep
+withdrawals against legacy records and stale replays. Subsequent preparations
+use the same range and sources. Changing them requires an explicit handoff
+that preserves the withdrawn dates already owned by the projection. Deleting
+the publication row would discard that protection.
+
+Candidate preparation and publication are separate operator actions. Review
+the range and source coverage, retain unknown dates, and use a disposable
+database for rehearsal. Synthetic parity tests cover calculation and state
+transitions. Source selection on a physical device requires separate review.

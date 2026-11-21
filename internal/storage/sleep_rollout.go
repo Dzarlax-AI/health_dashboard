@@ -5,7 +5,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -152,12 +152,30 @@ func insertSleepRolloutCandidate(ctx context.Context, tx pgx.Tx, input SleepRoll
 		return "", err
 	}
 	var latest int64
-	if err := tx.QueryRow(ctx, `SELECT COALESCE(max(revision),0) FROM sleep_rollout_packets
-		WHERE source_id=$1 AND candidate_id=$2`, input.SourceID, input.Candidate.ID).Scan(&latest); err != nil {
+	var latestDate string
+	var latestRaw []byte
+	err = tx.QueryRow(ctx, `SELECT revision,wake_date::text,candidate FROM sleep_rollout_packets
+		WHERE source_id=$1 AND candidate_id=$2 ORDER BY revision DESC LIMIT 1`,
+		input.SourceID, input.Candidate.ID).Scan(&latest, &latestDate, &latestRaw)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return "", err
 	}
 	if input.Candidate.Revision < latest {
 		return "stale", nil
+	}
+	if proof := input.Candidate.Coverage; proof != nil {
+		var seenAt time.Time
+		if err := tx.QueryRow(ctx, "SELECT transaction_timestamp()").Scan(&seenAt); err != nil {
+			return "", err
+		}
+		if proof.ObservedAt.After(seenAt.Add(5 * time.Minute)) {
+			return "", ErrSleepRolloutConflict
+		}
+	}
+	if input.Candidate.Coverage != nil || latest != 0 {
+		if err := validateSleepRolloutRevision(input, latest, latestDate, latestRaw); err != nil {
+			return "", err
+		}
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO sleep_rollout_packets
 		(source_id,candidate_id,revision,wake_date,raw_payload,candidate,legacy_payload,health_record_id)
@@ -173,11 +191,11 @@ var rolloutDailySQL = `INSERT INTO sleep_rollout_daily
 	(wake_date,generation,candidate,revision,sleep_seconds,deep_seconds,rem_seconds,core_seconds,unspecified_seconds,awake_seconds,stage_conflict)
 	SELECT $2::text::date,$3,d.candidate,d.revision,d.sleep_seconds,d.deep_seconds,d.rem_seconds,
 		d.core_seconds,d.unspecified_seconds,d.awake_seconds,d.stage_conflict
-	FROM (SELECT true) seed LEFT JOIN (` + dbtmetrics.SleepDailySQL("sleep_rollout_candidates", "profile=$1 AND wake_date=$2::text::date") + `) d ON true
+	FROM (SELECT true) seed LEFT JOIN (` + dbtmetrics.SleepDailySQL("sleep_rollout_candidates", "profile=$1 AND wake_date=$2::text::date AND NOT snapshot ? 'withdrawal' AND NOT snapshot ? 'coverage'") + `) d ON true
 	ON CONFLICT (wake_date) DO UPDATE SET generation=EXCLUDED.generation,candidate=EXCLUDED.candidate,
 	revision=EXCLUDED.revision,sleep_seconds=EXCLUDED.sleep_seconds,deep_seconds=EXCLUDED.deep_seconds,
 	rem_seconds=EXCLUDED.rem_seconds,core_seconds=EXCLUDED.core_seconds,unspecified_seconds=EXCLUDED.unspecified_seconds,
-	awake_seconds=EXCLUDED.awake_seconds,stage_conflict=EXCLUDED.stage_conflict`
+	awake_seconds=EXCLUDED.awake_seconds,stage_conflict=EXCLUDED.stage_conflict,episode_selection=NULL`
 
 // RunSleepRolloutNext processes one receipt. A failed date or dependency
 // leaves the original receipt pending and rolls back both date placements. A
@@ -221,7 +239,8 @@ func (s *DB) RunSleepRolloutNext(ctx context.Context, clock func() time.Time) (b
 	}
 	var oldDate string
 	var oldRevision int64
-	err = tx.QueryRow(ctx, `SELECT wake_date::text,revision FROM sleep_rollout_candidates WHERE id=$1`, string(key)).Scan(&oldDate, &oldRevision)
+	var oldSnapshot json.RawMessage
+	err = tx.QueryRow(ctx, `SELECT wake_date::text,revision,snapshot FROM sleep_rollout_candidates WHERE id=$1`, string(key)).Scan(&oldDate, &oldRevision, &oldSnapshot)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return false, err
 	}
@@ -234,7 +253,7 @@ func (s *DB) RunSleepRolloutNext(ctx context.Context, clock func() time.Time) (b
 		if err != nil {
 			return false, err
 		}
-		if publication != nil && publication.Active {
+		if publication != nil && publication.Active && publication.Projection == nil {
 			window = publication.window()
 		}
 		var priorities []string
@@ -251,17 +270,29 @@ func (s *DB) RunSleepRolloutNext(ctx context.Context, clock func() time.Time) (b
 		if oldDate != "" && oldDate != date {
 			affected = append(affected, oldDate)
 		}
-		// Candidate IDs are encoded [source, id] tuples. Rank every contender
-		// on both affected dates using the same current tenant policy.
+		strictChanged := make(map[string]bool)
+		for _, raw := range []json.RawMessage{oldSnapshot, snapshot} {
+			if raw == nil {
+				continue
+			}
+			var candidate sleepwire.Candidate
+			if err := json.Unmarshal(raw, &candidate); err != nil {
+				return false, err
+			}
+			if err := addAffectedEpisodeDates(strictChanged, candidate); err != nil {
+				return false, err
+			}
+		}
+		// Reload priorities across the historical selection interval. The
+		// policy derives priority by source at read time for strict candidates.
 		if _, err := tx.Exec(ctx, `UPDATE sleep_rollout_candidates
 			SET priority=COALESCE(array_position($3::text[],id::jsonb->>0)-1,cardinality($3::text[]),0)
 			WHERE profile=$1 AND wake_date::text=ANY($2::text[])`, profile, affected, priorities); err != nil {
 			return false, err
 		}
-		for _, day := range affected {
-			if _, err := tx.Exec(ctx, rolloutDailySQL, profile, day, sequence); err != nil {
-				return false, fmt.Errorf("rollout daily: %w", err)
-			}
+		affected, err = unit.refreshSleepEpisodeSelection(ctx, tx, profile, affected, strictChanged, priorities, sequence, today)
+		if err != nil {
+			return false, err
 		}
 		if err := unit.prepareSleepRolloutResults(ctx, affected, sequence, today, window); err != nil {
 			return false, err
@@ -271,7 +302,7 @@ func (s *DB) RunSleepRolloutNext(ctx context.Context, clock func() time.Time) (b
 		return false, err
 	}
 	if revision > oldRevision && publication != nil && publication.Active && s.sleepRolloutServeEnabled() {
-		if _, err := unit.recordServedSleepObservation(ctx, loc, clock(), *publication); err != nil {
+		if _, err := unit.recordServedSleepObservation(ctx, loc, clock(), publication.readerPublication()); err != nil {
 			return false, err
 		}
 	}
@@ -294,7 +325,12 @@ func (s *DB) prepareSleepRolloutResults(ctx context.Context, dates []string, gen
 		}
 	}
 	cfg := s.GetEnergyConfig()
+	ordered := make([]string, 0, len(affected))
 	for date := range affected {
+		ordered = append(ordered, date)
+	}
+	slices.Sort(ordered)
+	for _, date := range ordered {
 		if err := s.prepareSleepRolloutResult(ctx, date, generation, cfg, window); err != nil {
 			return err
 		}

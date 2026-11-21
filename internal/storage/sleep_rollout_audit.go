@@ -14,33 +14,39 @@ import (
 )
 
 type SleepRolloutAudit struct {
-	Evidence            string                 `json:"evidence"`
-	From                string                 `json:"from"`
-	Through             string                 `json:"through"`
-	ExpectedDates       int                    `json:"expected_dates"`
-	MatchedDates        int                    `json:"matched_dates"`
-	UnownedDates        int                    `json:"unowned_dates"`
-	MissingResults      int                    `json:"missing_results"`
-	MismatchedResults   int                    `json:"mismatched_results"`
-	PendingMixedBatches int                    `json:"pending_mixed_batches"`
-	FailedMixedBatches  int                    `json:"failed_mixed_batches"`
-	PendingLegacyDates  int                    `json:"pending_legacy_dates"`
-	PendingCandidates   int                    `json:"pending_candidates"`
-	Dates               []SleepRolloutAuditDay `json:"dates"`
+	projection              *sleepGoProjection
+	projectionBoundary      int64
+	VerifiedProjectionDates int                    `json:"verified_projection_dates,omitempty"`
+	ProjectionReady         bool                   `json:"projection_ready,omitempty"`
+	Evidence                string                 `json:"evidence"`
+	From                    string                 `json:"from"`
+	Through                 string                 `json:"through"`
+	ExpectedDates           int                    `json:"expected_dates"`
+	MatchedDates            int                    `json:"matched_dates"`
+	UnownedDates            int                    `json:"unowned_dates"`
+	MissingResults          int                    `json:"missing_results"`
+	MismatchedResults       int                    `json:"mismatched_results"`
+	PendingMixedBatches     int                    `json:"pending_mixed_batches"`
+	FailedMixedBatches      int                    `json:"failed_mixed_batches"`
+	PendingLegacyDates      int                    `json:"pending_legacy_dates"`
+	PendingCandidates       int                    `json:"pending_candidates"`
+	Dates                   []SleepRolloutAuditDay `json:"dates"`
 }
 
 type SleepRolloutAuditDay struct {
-	Date         string `json:"date"`
-	Sleep        string `json:"sleep"`
-	Result       string `json:"result"`
-	Generation   int64  `json:"generation,omitempty"`
-	ReadinessOK  bool   `json:"readiness_ok"`
-	EnergyBankOK bool   `json:"energy_bank_ok"`
+	Date         string          `json:"date"`
+	Sleep        string          `json:"sleep"`
+	Result       string          `json:"result"`
+	Generation   int64           `json:"generation,omitempty"`
+	ReadinessOK  bool            `json:"readiness_ok"`
+	EnergyBankOK bool            `json:"energy_bank_ok"`
+	Selection    *sleepSelection `json:"episode_selection,omitempty"`
 }
 
 // AuditSleepRolloutPreparation compares each prepared date against the current
 // Go formulas and tenant inputs from a single read-only database snapshot.
-// The report is evidence for rollout review, not an activation token.
+// Revision-bound windows check the reader's eligibility and generation fence
+// instead of comparing the legacy preparation result on another projection.
 func (s *DB) AuditSleepRolloutPreparation(ctx context.Context, tenantID uuid.UUID, from, through string) (SleepRolloutAudit, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -65,6 +71,13 @@ func auditSleepRolloutInTransaction(ctx context.Context, tx pgx.Tx, tenantID uui
 	}
 	if err := verifySleepRolloutTenant(ctx, tx, tenantID); err != nil {
 		return report, err
+	}
+	projection, err := transitionSleepProjection(ctx, tx)
+	if err != nil {
+		return report, err
+	}
+	if projection != nil {
+		return auditRevisionBoundSleepRollout(ctx, tx, report, tenantID, projection)
 	}
 	unit := &DB{pool: &cacheTransaction{Tx: tx, ctx: ctx}}
 	report.Evidence, err = sleepRolloutEvidence(ctx, tx, tenantID, from, through)
@@ -208,19 +221,28 @@ func replacementCoversMixedMetrics(original, replacement string) bool {
 func (s *DB) auditSleepRolloutDay(ctx context.Context, date string, cfg EnergyConfig, window sleepRolloutWindow) (SleepRolloutAuditDay, error) {
 	out := SleepRolloutAuditDay{Date: date, Sleep: "unowned", Result: "missing"}
 	var (
-		owned    bool
-		hasNight bool
+		owned     bool
+		hasNight  bool
+		selection []byte
 	)
 	if err := s.pool.QueryRow(ctx, `
 		SELECT EXISTS(SELECT 1 FROM sleep_rollout_daily WHERE wake_date=$1::text::date),
-		       EXISTS(SELECT 1 FROM sleep_rollout_daily WHERE wake_date=$1::text::date AND candidate IS NOT NULL)`, date).
-		Scan(&owned, &hasNight); err != nil {
+		       EXISTS(SELECT 1 FROM sleep_rollout_daily WHERE wake_date=$1::text::date AND candidate IS NOT NULL),
+		       (SELECT episode_selection FROM sleep_rollout_daily WHERE wake_date=$1::text::date)`, date).
+		Scan(&owned, &hasNight, &selection); err != nil {
 		return out, err
 	}
 	if hasNight {
 		out.Sleep = "candidate"
 	} else if owned {
 		out.Sleep = "confirmed_absence"
+	}
+
+	if selection != nil {
+		if err := json.Unmarshal(selection, &out.Selection); err != nil {
+			return out, err
+		}
+		out.Sleep = out.Selection.State
 	}
 
 	var readinessJSON, energyJSON []byte
