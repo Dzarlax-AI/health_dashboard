@@ -88,13 +88,14 @@ func registerMetricTools(s *server.MCPServer, _ DBResolver) {
 		bucket := req.GetString("bucket", "day")
 		aggFunc := req.GetString("agg", "")
 		if aggFunc == "" {
-			if sumMetrics[metric] {
+			if storage.UsesCurrentMetricSum(metric) {
 				aggFunc = "SUM"
 			} else {
 				aggFunc = "AVG"
 			}
 		}
-		points, err := ctxdb.FromContext(ctx).GetMetricData(metric, from, to+" 23:59:59", bucket, aggFunc)
+		aggFunc = storage.CurrentMetricAggregation(metric, aggFunc)
+		points, err := ctxdb.FromContext(ctx).MetricDataForContract(metric, from, to+" 23:59:59", bucket, aggFunc, false)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -133,7 +134,7 @@ func registerAnalysisTools(s *server.MCPServer, _ DBResolver) {
 		bToStr := req.GetString("period_b_to", "")
 
 		agg := "AVG"
-		if sumMetrics[metric] {
+		if storage.UsesCurrentMetricSum(metric) {
 			agg = "SUM"
 		}
 
@@ -149,7 +150,7 @@ func registerAnalysisTools(s *server.MCPServer, _ DBResolver) {
 		// Use GetMetricData (day bucket) which handles multi-device dedup
 		// correctly for SUM metrics, then aggregate daily values.
 		queryPeriod := func(from, to string) (periodStats, error) {
-			points, err := ctxdb.FromContext(ctx).GetMetricData(metric, from, to+" 23:59:59", "day", agg)
+			points, err := ctxdb.FromContext(ctx).MetricDataForContract(metric, from, to+" 23:59:59", "day", agg, false)
 			if err != nil {
 				return periodStats{From: from, To: to}, err
 			}
@@ -169,7 +170,7 @@ func registerAnalysisTools(s *server.MCPServer, _ DBResolver) {
 					ps.Max = p.Qty
 				}
 			}
-			if sumMetrics[metric] {
+			if storage.UsesCurrentMetricSum(metric) {
 				ps.Value = sum // total over period
 			} else {
 				ps.Value = sum / float64(len(points)) // average over period
@@ -225,10 +226,10 @@ func registerAnalysisTools(s *server.MCPServer, _ DBResolver) {
 		sigma := req.GetFloat("sigma", 2.0)
 
 		agg := "AVG"
-		if sumMetrics[metric] {
+		if storage.UsesCurrentMetricSum(metric) {
 			agg = "SUM"
 		}
-		points, err := ctxdb.FromContext(ctx).GetMetricData(metric, from, to+" 23:59:59", "day", agg)
+		points, err := ctxdb.FromContext(ctx).MetricDataForContract(metric, from, to+" 23:59:59", "day", agg, false)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -293,12 +294,12 @@ func registerAnalysisTools(s *server.MCPServer, _ DBResolver) {
 				continue
 			}
 			agg := "AVG"
-			if sumMetrics[metric] {
+			if storage.UsesCurrentMetricSum(metric) {
 				agg = "SUM"
 			}
 			// Use GetMetricData which handles multi-device dedup,
 			// then aggregate daily values into weeks in Go.
-			points, err := ctxdb.FromContext(ctx).GetMetricData(metric, from, to+" 23:59:59", "day", agg)
+			points, err := ctxdb.FromContext(ctx).MetricDataForContract(metric, from, to+" 23:59:59", "day", agg, false)
 			if err != nil {
 				return mcp.NewToolResultError(fmt.Sprintf("%s: %v", metric, err)), nil
 			}
@@ -330,7 +331,7 @@ func registerAnalysisTools(s *server.MCPServer, _ DBResolver) {
 				wd.DataPoints++
 			}
 			// For AVG metrics, convert accumulated sum to average.
-			if !sumMetrics[metric] {
+			if !storage.UsesCurrentMetricSum(metric) {
 				for _, wd := range weekMap {
 					if wd.DataPoints > 0 {
 						wd.Value /= float64(wd.DataPoints)
@@ -352,7 +353,7 @@ func registerAnalysisTools(s *server.MCPServer, _ DBResolver) {
 		mcp.WithDescription("Best (max) and worst (min) daily values ever recorded for each metric, with the date they occurred. SUM metrics show best/worst daily totals (with multi-device dedup); AVG metrics show best/worst daily averages."),
 		mcp.WithString("metric", mcp.Description("Filter to a single metric. If omitted, returns records for all metrics.")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		metric := req.GetString("metric", "")
+		metric := storage.CanonicalMetricName(req.GetString("metric", ""))
 
 		// Get list of metrics to process.
 		metrics, err := ctxdb.FromContext(ctx).ListMetrics()
@@ -379,10 +380,10 @@ func registerAnalysisTools(s *server.MCPServer, _ DBResolver) {
 				continue
 			}
 			agg := "AVG"
-			if sumMetrics[m.Name] {
+			if storage.UsesCurrentMetricSum(m.Name) {
 				agg = "SUM"
 			}
-			points, derr := ctxdb.FromContext(ctx).GetMetricData(m.Name, minDate, maxDate+" 23:59:59", "day", agg)
+			points, derr := ctxdb.FromContext(ctx).MetricDataForContract(m.Name, minDate, maxDate+" 23:59:59", "day", agg, false)
 			if derr != nil || len(points) == 0 {
 				continue
 			}

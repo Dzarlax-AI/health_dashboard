@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"health-receiver/internal/storage"
 )
@@ -94,7 +95,7 @@ func TestParseXMLFocusedEdgeFixturePinsImportSafety(t *testing.T) {
 		t.Fatalf("point count = %d, want %d: %+v", got, want, points)
 	}
 	assertPoint(t, points, "blood_oxygen_saturation", "%", "2026-02-01 06:00:00 +0100", "Synthetic Watch", 98)
-	assertPoint(t, points, "walking_asymmetry", "%", "2026-02-01 06:05:00 +0100", "Synthetic Watch", 0)
+	assertPoint(t, points, "walking_asymmetry_percentage", "%", "2026-02-01 06:05:00 +0100", "Synthetic Watch", 0)
 	assertNoPoint(t, points, "heart_rate", "2026-02-01 06:10:00 +0100")
 	assertPoint(t, points, "mindful_minutes", "min", "2026-02-01 09:00:00 +0100", "Synthetic Phone", 15)
 	assertPoint(t, points, "apple_stand_hour", "count", "2026-02-01 10:00:00 +0100", "Synthetic Watch", 1)
@@ -182,6 +183,33 @@ func TestExportDateFromXML(t *testing.T) {
 	}
 }
 
+func TestExportDateFromStandardHeader(t *testing.T) {
+	const stamp = "2026-11-19 10:57:09 +0100"
+	tests := []struct {
+		name, header, want string
+		wantErr            bool
+	}{
+		{"child header", `<HealthData locale="en_US"><ExportDate value="` + stamp + `"/><Record/></HealthData>`, stamp, false},
+		{"legacy attribute wins", `<HealthData exportDate="` + stamp + `"><ExportDate value="bad"/></HealthData>`, stamp, false},
+		{"metadata missing", `<HealthData><Me/><Record/><ExportDate value="` + stamp + `"/></HealthData>`, "", false},
+		{"malformed child date", `<HealthData><ExportDate value="bad"/><Record/></HealthData>`, "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, found, err := exportDateFromXML(strings.NewReader(tt.header))
+			if tt.wantErr {
+				if err == nil || found {
+					t.Fatalf("expected parse error: found=%v err=%v", found, err)
+				}
+				return
+			}
+			if err != nil || found != (tt.want != "") || (found && got.Format(appleTimeLayout) != tt.want) {
+				t.Fatalf("export date = %v found=%v err=%v, want %q", got, found, err, tt.want)
+			}
+		})
+	}
+}
+
 func collectXMLFixturePoints(t *testing.T, path string) []storage.MetricPoint {
 	t.Helper()
 	var out []storage.MetricPoint
@@ -260,5 +288,109 @@ func assertMetricCount(t *testing.T, points []storage.MetricPoint, metric string
 	}
 	if got != want {
 		t.Fatalf("metric %s count = %d, want %d; points=%+v", metric, got, want, points)
+	}
+}
+
+func TestParseRecordUsesHealthKitIngressContract(t *testing.T) {
+	cases := []struct {
+		hkType, unit, value, metric, wantUnit string
+		want                                  float64
+	}{
+		{"HKQuantityTypeIdentifierCyclingFunctionalThresholdPower", "W", "243", "cycling_ftp", "W", 243},
+		{"HKQuantityTypeIdentifierUVExposure", "count", "4", "uv_exposure", "count", 4},
+		{"HKQuantityTypeIdentifierDietaryEnergyConsumed", "Cal", "240", "dietary_energy", "kcal", 240},
+		{"HKQuantityTypeIdentifierDistanceSwimming", "m", "1200", "distance_swimming", "km", 1.2},
+		{"HKQuantityTypeIdentifierDistanceSwimming", "km", "1.2", "distance_swimming", "km", 1.2},
+		{"HKQuantityTypeIdentifierStairAscentSpeed", "ft/s", "2", "stair_ascent_speed", "m/s", .6096},
+		{"HKQuantityTypeIdentifierStairDescentSpeed", "", "2", "", "", 0},
+		{"HKQuantityTypeIdentifierPhysicalEffort", "kcal/hr·kg", "6", "physical_effort", "kcal/hr·kg", 6},
+		{"HKQuantityTypeIdentifierPhysicalEffort", "", "6", "", "", 0},
+		{"HKQuantityTypeIdentifierPhysicalEffort", "MET", "6", "physical_effort", "kcal/hr·kg", 6},
+		{"HKQuantityTypeIdentifierPhysicalEffort", "kcal/(kg*hr)", "6", "physical_effort", "kcal/hr·kg", 6},
+		{"HKQuantityTypeIdentifierDistanceWalkingRunning", "m", "1200", "walking_running_distance", "km", 1.2},
+		{"HKQuantityTypeIdentifierDistanceWalkingRunning", "km", "1.2", "walking_running_distance", "km", 1.2},
+		{"HKQuantityTypeIdentifierSleepDurationGoal", "hr", "8", "", "", 0},
+		{"HKQuantityTypeIdentifierPeripheralPerfusionIndex", "%", ".052", "peripheral_perfusion_index", "%", 5.2},
+		{"HKQuantityTypeIdentifierBloodAlcoholContent", "%", ".0008", "blood_alcohol_content", "%", .08},
+		{"HKCategoryTypeIdentifierHighHeartRateEvent", "", "HKCategoryValueNotApplicable", "high_heart_rate_event", "count", 1},
+		{"HKCategoryTypeIdentifierLowHeartRateEvent", "", "0", "low_heart_rate_event", "count", 1},
+		{"HKCategoryTypeIdentifierIrregularHeartRhythmEvent", "", "HKCategoryValueNotApplicable", "irregular_heart_rhythm_event", "count", 1},
+		{"HKCategoryTypeIdentifierLowCardioFitnessEvent", "", "HKCategoryValueLowCardioFitnessEventLowFitness", "low_cardio_fitness_event", "count", 1},
+		{"HKCategoryTypeIdentifierLowCardioFitnessEvent", "", "0", "", "", 0},
+		{"HKCategoryTypeIdentifierHighHeartRateEvent", "", "", "", "", 0},
+		{"HKQuantityTypeIdentifierCyclingFtp", "W", "251", "", "", 0},
+	}
+	const date = "2026-01-02 10:00:00 +0000"
+	for _, tc := range cases {
+		t.Run(tc.hkType+"/"+tc.unit+"/"+tc.value, func(t *testing.T) {
+			for _, source := range []string{"Synthetic Watch", "Synthetic Other Device"} {
+				points := parseRecord(map[string]string{"type": tc.hkType, "unit": tc.unit,
+					"value": tc.value, "startDate": date, "sourceName": source})
+				if tc.metric == "" {
+					if len(points) != 0 {
+						t.Fatalf("expected no point, got %+v", points)
+					}
+					continue
+				}
+				if len(points) != 1 {
+					t.Fatalf("expected one point, got %+v", points)
+				}
+				assertPoint(t, points, tc.metric, tc.wantUnit, date, source, tc.want)
+			}
+		})
+	}
+}
+
+func TestArchiveRecordCarriesOriginalSleepEvidence(t *testing.T) {
+	const fixture = `<HealthData><ExportDate value="2026-10-26 09:00:00 +0100"/>
+	<Record type="HKCategoryTypeIdentifierSleepAnalysis" sourceName="Watch A" value="HKCategoryValueSleepAnalysisAsleepCore" startDate="2026-10-25 02:10:00 +0200" endDate="2026-10-25 02:20:00 +0100"/>
+	<Record type="HKCategoryTypeIdentifierSleepAnalysis" sourceName="Ring B" value="unknown" startDate="2026-10-25 02:10:00 +0200" endDate="2026-10-25 02:20:00 +0100"/>
+</HealthData>`
+	var observations []ArchiveRecord
+	if err := ParseXMLWithOptions(strings.NewReader(fixture), EmitOptions{
+		Records: func(record ArchiveRecord) { observations = append(observations, record) },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(observations) != 2 || observations[0].SourceName != "Watch A" || !observations[0].Accepted ||
+		observations[1].SourceName != "Ring B" || observations[1].Accepted ||
+		observations[0].End.Sub(observations[0].Start) != 70*time.Minute ||
+		observations[0].SnapshotAt.UTC().Format(time.RFC3339) != "2026-10-26T08:00:00Z" {
+		t.Fatalf("source intervals=%+v", observations)
+	}
+}
+
+func TestArchiveRecordsUseSameSnapshotClockAsImport(t *testing.T) {
+	const record = `<Record type="HKCategoryTypeIdentifierSleepAnalysis" sourceName="Original &amp; Watch " value="HKCategoryValueSleepAnalysisAsleepCore" startDate="2026-10-25 02:10:00 +0200" endDate="2026-10-25 02:20:00 +0100"/>`
+	const export = `<ExportDate value="2026-10-26 09:00:00 +0100"/>`
+	for _, tt := range []struct {
+		name, xml      string
+		found, invalid bool
+		wantRecords    int
+	}{
+		{"header", "<HealthData>" + export + record + "</HealthData>", true, false, 1},
+		{"after record", "<HealthData>" + record + export + record + "</HealthData>", false, false, 2},
+		{"invalid declared timestamp", `<HealthData exportDate="invalid">` + export + record + "</HealthData>", false, true, 1},
+		{"nested metadata", "<HealthData><Me>" + export + "</Me>" + record + "</HealthData>", false, false, 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			stamp, found, err := exportDateFromXML(strings.NewReader(tt.xml))
+			if found != tt.found || (err != nil) != tt.invalid {
+				t.Fatal("import resolved an unexpected header state")
+			}
+			count := 0
+			err = ParseXMLWithOptions(strings.NewReader(tt.xml), EmitOptions{Records: func(r ArchiveRecord) {
+				count++
+				_, startOffset := r.Start.Zone()
+				_, endOffset := r.End.Zone()
+				if !r.SnapshotAt.Equal(stamp) || r.SourceName != "Original & Watch " ||
+					startOffset != 7200 || endOffset != 3600 || r.End.Sub(r.Start) != 70*time.Minute {
+					t.Fatal("stream changed the declared clock, source or source interval")
+				}
+			}})
+			if err != nil || count != tt.wantRecords {
+				t.Fatalf("record callbacks=%d, want %d, err=%v", count, tt.wantRecords, err)
+			}
+		})
 	}
 }

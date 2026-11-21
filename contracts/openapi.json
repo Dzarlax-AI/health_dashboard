@@ -3426,6 +3426,18 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "description": "Select the Health Sync metrics representation. Omission uses the installation default.",
+            "in": "header",
+            "name": "X-Health-Metrics-Contract",
+            "schema": {
+              "enum": [
+                "1",
+                "2"
+              ],
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -3437,7 +3449,19 @@
                 }
               }
             },
-            "description": "Successful tenant-scoped response."
+            "description": "Successful tenant-scoped response.",
+            "headers": {
+              "X-Health-Metrics-Contract": {
+                "description": "The metrics representation used in this response.",
+                "schema": {
+                  "enum": [
+                    "1",
+                    "2"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "302": {
             "content": {
@@ -3456,6 +3480,26 @@
                 }
               }
             }
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Invalid metrics contract or query."
+          },
+          "406": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The installation has disabled explicit version 1 reads."
           },
           "500": {
             "content": {
@@ -3483,6 +3527,18 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "Select the Health Sync metrics representation. Omission uses the installation default.",
+            "in": "header",
+            "name": "X-Health-Metrics-Contract",
+            "schema": {
+              "enum": [
+                "1",
+                "2"
+              ],
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -3494,7 +3550,19 @@
                 }
               }
             },
-            "description": "Successful tenant-scoped response."
+            "description": "Successful tenant-scoped response.",
+            "headers": {
+              "X-Health-Metrics-Contract": {
+                "description": "The metrics representation used in this response.",
+                "schema": {
+                  "enum": [
+                    "1",
+                    "2"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "302": {
             "content": {
@@ -3513,6 +3581,26 @@
                 }
               }
             }
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Invalid metrics contract or query."
+          },
+          "406": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The installation has disabled explicit version 1 reads."
           },
           "500": {
             "content": {

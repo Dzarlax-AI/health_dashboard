@@ -246,7 +246,7 @@ func runImport(job *importJob, db *storage.DB, tmpPath, filename string, batchSi
 			isZip = false
 		}
 	}
-	snapshotAt := time.Now()
+	var snapshotAt time.Time
 	var exportDateErr error
 	var exportDateFound bool
 	if isZip {
@@ -265,15 +265,17 @@ func runImport(job *importJob, db *storage.DB, tmpPath, filename string, batchSi
 		}
 	}
 	if exportDateErr != nil {
-		log.Printf("import: could not read Apple Health exportDate, using import start as snapshot time: %v", exportDateErr)
+		log.Printf("import: Apple Health exportDate is unreadable; importing exact observations without a snapshot clock")
 	} else if !exportDateFound {
-		log.Printf("import: Apple Health exportDate not found, using import start as snapshot time")
+		log.Printf("import: Apple Health exportDate not found; importing exact observations without a snapshot clock")
 	}
 
 	var beginErr error
 	session, beginErr = db.BeginAppleHealthXMLImport(storage.ImportOptions{
-		SourceName: "apple-health-web-import",
-		SnapshotAt: snapshotAt,
+		SourceName:         "apple-health-web-import",
+		SnapshotAt:         snapshotAt,
+		UnverifiedCoverage: true,
+		CatalogNormalized:  true,
 	})
 	if beginErr != nil {
 		log.Printf("import begin error: %v", beginErr)

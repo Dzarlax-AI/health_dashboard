@@ -23,6 +23,7 @@ import (
 	clientapi "health-receiver/internal/api"
 	"health-receiver/internal/ctxdb"
 	"health-receiver/internal/health"
+	"health-receiver/internal/metriccontract"
 	"health-receiver/internal/notify"
 	"health-receiver/internal/registry"
 	"health-receiver/internal/storage"
@@ -1414,7 +1415,11 @@ func setLangCookie(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listMetrics(w http.ResponseWriter, r *http.Request) {
-	metrics, err := h.tenantDB(r).ListMetrics()
+	version, ok := metriccontract.Read(w, r)
+	if !ok {
+		return
+	}
+	metrics, err := h.tenantDB(r).ListMetricsForContract(version == metriccontract.Legacy)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1446,12 +1451,16 @@ func (h *Handler) listMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) metricRange(w http.ResponseWriter, r *http.Request) {
+	version, ok := metriccontract.Read(w, r)
+	if !ok {
+		return
+	}
 	metric := r.URL.Query().Get("metric")
 	if metric == "" {
 		http.Error(w, "metric required", http.StatusBadRequest)
 		return
 	}
-	min, max, err := h.tenantDB(r).GetMetricDateRange(metric)
+	min, max, err := h.tenantDB(r).MetricDateRangeForContract(metric, version == metriccontract.Legacy)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1601,7 +1610,11 @@ func (h *Handler) syncCheckpoint(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) latestMetricValues(w http.ResponseWriter, r *http.Request) {
-	vals, err := h.tenantDB(r).GetLatestMetricValues()
+	version, ok := metriccontract.Read(w, r)
+	if !ok {
+		return
+	}
+	vals, err := h.tenantDB(r).LatestMetricsForContract(version == metriccontract.Legacy)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1625,6 +1638,10 @@ func (h *Handler) clientSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) metricData(w http.ResponseWriter, r *http.Request) {
+	version, ok := metriccontract.Read(w, r)
+	if !ok {
+		return
+	}
 	q := r.URL.Query()
 	metric := q.Get("metric")
 	if metric == "" {
@@ -1678,8 +1695,11 @@ func (h *Handler) metricData(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if version == metriccontract.Current {
+		aggFunc = storage.CurrentMetricAggregation(metric, aggFunc)
+	}
 	if q.Get("by_source") == "1" {
-		sourcePoints, serr := db.GetMetricDataBySource(metric, from, to+" 23:59:59", bucket, aggFunc)
+		sourcePoints, serr := db.MetricDataBySourceForContract(metric, from, to+" 23:59:59", bucket, aggFunc, version == metriccontract.Legacy)
 		if serr == nil {
 			jsonResponse(w, clientapi.MetricDataResponse{
 				Metric:         metric,
@@ -1692,7 +1712,7 @@ func (h *Handler) metricData(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	points, err := db.GetMetricData(metric, from, to+" 23:59:59", bucket, aggFunc)
+	points, err := db.MetricDataForContract(metric, from, to+" 23:59:59", bucket, aggFunc, version == metriccontract.Legacy)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -2261,6 +2281,11 @@ func (h *Handler) adminStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status.TelegramEnabled = h.mgr.TestNotifyFor(scope.Schema) != nil
+	legacy, current, unversioned, unsupported := metriccontract.Counts()
+	w.Header().Set("X-Health-Metrics-Legacy-Requests", strconv.FormatUint(legacy, 10))
+	w.Header().Set("X-Health-Metrics-Current-Requests", strconv.FormatUint(current, 10))
+	w.Header().Set("X-Health-Metrics-Unversioned-Requests", strconv.FormatUint(unversioned, 10))
+	w.Header().Set("X-Health-Metrics-Unsupported-Requests", strconv.FormatUint(unsupported, 10))
 	jsonResponse(w, status)
 }
 
