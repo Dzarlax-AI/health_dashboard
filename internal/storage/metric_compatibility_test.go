@@ -533,3 +533,62 @@ func TestHealthKitReadVersionsKeepExactMatchesUnitsAndDayBounds(t *testing.T) {
 		t.Fatalf("legacy minute device groups=%+v err=%v", points, err)
 	}
 }
+
+func TestHealthKitLatestFallsBackWhenCandidateDayIsIneligible(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	const older = "2026-01-01"
+	const latest = "2026-07-01"
+	known, err := db.InsertRaw(Record{ContentType: "application/json; metrics-contract=2", Payload: "{}"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := db.InsertRaw(Record{ContentType: "application/json", Payload: "malformed legacy receipt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.pool.Exec(t.Context(), `
+		INSERT INTO metric_points(health_record_id,metric_name,units,date,source,qty,origin,quality,source_snapshot_at) VALUES
+			($1,'height','m',$3 || ' 08:00:00 +0000','Watch',1.8,'live','ok','2026-01-01 10:00:00+00'),
+			($1,'height','in',$4 || ' 08:00:00 +0000','Watch',72,'live','ok','2026-07-01 10:00:00+00'),
+			($1,'blood_alcohol_content','%',$3 || ' 09:00:00 +0000','Watch',0.03,'live','ok','2026-01-01 10:00:00+00'),
+			($2,'blood_alcohol_content','%',$4 || ' 09:00:00 +0000','Watch',0.3,'live','ok','2026-07-01 10:00:00+00'),
+			($1,'six_min_walk_distance','m',$3 || ' 10:00:00 +0000','Watch',490,'live','ok','2026-01-01 11:00:00+00'),
+			($1,'six_minute_walking_test_distance','m',$4 || ' 10:00:00 +0000','Watch',500,'live','ok','2026-07-01 11:00:00+00'),
+			($1,'six_min_walk_distance','m',$4 || ' 10:00:00 +0000','Watch',510,'live','suspect','2026-07-01 12:00:00+00'),
+			($1,'walking_speed','m/s',$4 || ' 12:00:00 +0000','Watch',2,'live','ok','2026-07-01 13:00:00+00')
+	`, known, legacy, older, latest); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, legacyView := range []bool{true, false} {
+		rows, err := db.compatibleLatestMetricValues(t.Context(), legacyView)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []LatestValue{
+			{Metric: "height", Date: older, Unit: "m", Value: 1.8},
+			{Metric: "blood_alcohol_content", Date: older, Unit: "%", Value: 0.03},
+			{Metric: "six_minute_walking_test_distance", Date: older, Unit: "m", Value: 490},
+			{Metric: "walking_speed", Date: latest, Unit: "m/s", Value: 2},
+		}
+		if len(rows) != len(want) {
+			t.Fatalf("legacy=%t rows=%+v", legacyView, rows)
+		}
+		for _, expected := range want {
+			if !slices.ContainsFunc(rows, func(got LatestValue) bool {
+				return got.Metric == expected.Metric && got.Date == expected.Date && got.Unit == expected.Unit &&
+					math.Abs(got.Value-expected.Value) < 1e-6
+			}) {
+				t.Fatalf("legacy=%t missing %+v in %+v", legacyView, expected, rows)
+			}
+		}
+	}
+	catalog, err := db.ListMetrics()
+	if err != nil || !slices.ContainsFunc(catalog, func(m MetricSummary) bool {
+		return m.Name == "blood_alcohol_content" && m.Units == "%" && m.Count == 1 && m.Max == older
+	}) {
+		t.Fatalf("catalog lost receipt proof: %+v, %v", catalog, err)
+	}
+}

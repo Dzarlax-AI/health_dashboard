@@ -232,7 +232,38 @@ func compatibilityStoredMetricNames() []string {
 	return slices.Compact(slices.Sorted(slices.Values(out)))
 }
 
+const compatibilityPercentEvidence = `
+	hr.content_type IN ('apple-health-import; catalog=1','application/json; metrics-contract=2')
+	OR CASE WHEN hr.content_type='application/json' AND pg_input_is_valid(hr.payload,'jsonb') THEN
+		jsonb_path_exists(hr.payload::jsonb, '$.data.metrics[*] ? (@.name == $metric && @.units == "%")',
+			jsonb_build_object('metric', point.metric_name))
+	ELSE false END`
+
+const compatibilityPointProof = `EXISTS (
+	SELECT 1 FROM health_records hr WHERE hr.id=point.health_record_id AND (` + compatibilityPercentEvidence + `)
+)`
+
+const compatibilityReceiptProof = `(point.health_record_id,point.metric_name) IN (SELECT health_record_id,metric_name FROM proven_percent_receipts)`
+
+// Wide reads prove each receipt/metric pair once. Other reads use the primary
+// key of health_records directly, without building a history-wide working set.
+func compatibilityPercentReceipts(relation, filter string) string {
+	return `proven_percent_receipts AS MATERIALIZED (
+		SELECT point.health_record_id,point.metric_name
+		FROM (
+			SELECT DISTINCT health_record_id,metric_name FROM ` + relation + `
+			WHERE metric_name IN (` + catalogSQLList(revisionSensitivePercent) + `) AND (` + filter + `)
+		) point
+		JOIN health_records hr ON hr.id=point.health_record_id
+		WHERE ` + compatibilityPercentEvidence + `
+	), `
+}
+
 func metricCompatibilityCTE(filter string, legacy bool) string {
+	return "WITH " + metricCompatibilityProjection("metric_points", filter, compatibilityPointProof, legacy)
+}
+
+func metricCompatibilityProjection(relation, filter, proof string, legacy bool) string {
 	grainKey := ",grain"
 	if legacy {
 		// The original key admitted one row for the exact date and source.
@@ -253,7 +284,7 @@ func metricCompatibilityCTE(filter string, legacy bool) string {
 	}
 	quantity.WriteString(" ELSE qty::double precision END")
 	unit.WriteString(" ELSE COALESCE(units,'') END")
-	return `WITH identified AS (
+	return `identified AS (
 	SELECT ` + canonical + ` AS metric, date, COALESCE(source,'') AS source, qty, units, quality,
 	COALESCE(source_snapshot_at,CASE WHEN origin <> 'apple_health_xml' THEN received_at END,
 	         '-infinity'::timestamptz) AS snapshot_at, origin,id,
@@ -265,17 +296,9 @@ func metricCompatibilityCTE(filter string, legacy bool) string {
 	               AND hr.content_type='application/json; metrics-contract=2') THEN 'hour_sum'
 	  ELSE 'legacy_live' END
 	ELSE '' END AS grain
-	FROM metric_points
+	FROM ` + relation + ` point
 	WHERE (` + filter + `)
-	  AND (metric_name NOT IN (` + catalogSQLList(revisionSensitivePercent) + `)
-	       OR EXISTS (
-		 SELECT 1 FROM health_records hr WHERE hr.id=health_record_id AND (
-		    hr.content_type IN ('apple-health-import; catalog=1','application/json; metrics-contract=2')
-		    OR CASE WHEN hr.content_type = 'application/json' AND pg_input_is_valid(hr.payload, 'jsonb') THEN
-			jsonb_path_exists(hr.payload::jsonb, '$.data.metrics[*] ? (@.name == $metric && @.units == "%")',
-			                  jsonb_build_object('metric', metric_name))
-		       ELSE false END
-		 )))
+	  AND (metric_name NOT IN (` + catalogSQLList(revisionSensitivePercent) + `) OR ` + proof + `)
 ), normalized AS (
 	SELECT metric,date,source,` + quantity.String() + ` AS qty,` + unit.String() + ` AS unit,
 	       quality,grain,snapshot_at,origin,id
