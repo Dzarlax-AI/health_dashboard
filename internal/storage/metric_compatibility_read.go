@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"time"
 )
@@ -101,7 +102,9 @@ func (s *DB) compatibleMetricData(metric, from, to, bucket, agg string, bySource
 }
 
 func (s *DB) compatibleMetricSummaries(ctx context.Context) ([]MetricSummary, error) {
-	query := metricCompatibilityCTE("metric_name=ANY($1::text[])", false) + `
+	const filter = "metric_name=ANY($1::text[])"
+	query := "WITH " + compatibilityPercentReceipts("metric_points", filter) +
+		metricCompatibilityProjection("metric_points", filter, compatibilityReceiptProof, false) + `
 	SELECT metric,
 	 CASE WHEN COUNT(DISTINCT unit)=1 THEN MIN(unit) ELSE '' END,
 	 COUNT(DISTINCT (SUBSTRING(date,1,13),source)), MIN(SUBSTRING(date,1,10)),MAX(SUBSTRING(date,1,10))
@@ -129,18 +132,8 @@ func (s *DB) compatibleLatestMetricValues(ctx context.Context, legacy bool) ([]L
 		hourly = currentCompatibilityHourly
 		keys = append(keys, currentHourlyStoredKeys...)
 	}
-	query := metricCompatibilityCTE("metric_name=ANY($1::text[])", legacy) + hourly + `,
-	latest AS (SELECT metric,MAX(SUBSTRING(hour,1,10)) AS day FROM compatible_hours GROUP BY metric),
-	by_source AS (
-		SELECT h.metric,h.source,MIN(h.unit) AS unit,l.day,SUM(h.qty) AS total,COUNT(*) AS hours
-		FROM compatible_hours h JOIN latest l ON l.metric=h.metric AND SUBSTRING(h.hour,1,10)=l.day
-		GROUP BY h.metric,h.source,l.day
-	)
-	SELECT metric,MIN(unit),day,
-	 CASE WHEN NOT $2 AND metric=ANY($3::text[]) THEN MAX(total)
-	      ELSE SUM(total)/SUM(hours) END
-	FROM by_source GROUP BY metric,day`
-	rows, err := s.pool.Query(ctx, query, keys, legacy, currentHourlyMetrics)
+	keys = slices.Compact(slices.Sorted(slices.Values(keys)))
+	rows, err := s.pool.Query(ctx, compatibilityLatestSQL(hourly, legacy), keys, legacy, currentHourlyMetrics)
 	if err != nil {
 		return nil, err
 	}
@@ -154,6 +147,60 @@ func (s *DB) compatibleLatestMetricValues(ctx context.Context, legacy bool) ([]L
 		values = append(values, v)
 	}
 	return values, rows.Err()
+}
+
+// Find a candidate day per canonical metric using the stored keys' date
+// indexes. Project the whole day so source totals and archive/live precedence
+// stay identical. A rejected candidate falls back only for its own metric.
+// The candidate selection and both projections share one MVCC snapshot.
+func compatibilityLatestSQL(hourly string, legacy bool) string {
+	aggregate := hourly + `,
+	latest AS (SELECT metric,MAX(SUBSTRING(hour,1,10)) AS day FROM compatible_hours GROUP BY metric),
+	by_source AS (
+		SELECT h.metric,h.source,MIN(h.unit) AS unit,l.day,SUM(h.qty) AS total,COUNT(*) AS hours
+		FROM compatible_hours h JOIN latest l ON l.metric=h.metric AND SUBSTRING(h.hour,1,10)=l.day
+		GROUP BY h.metric,h.source,l.day
+	)
+	SELECT metric,MIN(unit),day,
+	 CASE WHEN NOT $2 AND metric=ANY($3::text[]) THEN MAX(total)
+	      ELSE SUM(total)/SUM(hours) END
+	FROM by_source GROUP BY metric,day`
+	return `WITH metric_keys AS (
+		SELECT stored_key,` + canonicalMetricSQL("stored_key") + ` AS metric FROM unnest($1::text[]) AS k(stored_key)
+	), candidate_days AS (
+		SELECT k.metric,MAX(SUBSTRING(p.date,1,10)) AS day
+		FROM metric_keys k
+		CROSS JOIN LATERAL (
+			SELECT date FROM metric_points
+			WHERE metric_name=k.stored_key AND quality='ok'
+			  AND (qty>0 OR (NOT $2 AND k.metric=ANY($3::text[]) AND qty=0))
+			ORDER BY date DESC LIMIT 1
+		) p
+		GROUP BY k.metric
+	), recent_points AS (
+		SELECT p.* FROM metric_keys k JOIN candidate_days d USING(metric)
+		CROSS JOIN LATERAL (
+			SELECT * FROM metric_points
+			WHERE metric_name=k.stored_key AND SUBSTRING(date,1,10)=d.day OFFSET 0
+		) p
+	), recent_results AS MATERIALIZED (
+		WITH ` + metricCompatibilityProjection("recent_points", "true", compatibilityPointProof, legacy) + aggregate + `
+	), remaining_keys AS MATERIALIZED (
+		SELECT k.stored_key,d.day FROM metric_keys k JOIN candidate_days d USING(metric)
+		WHERE NOT EXISTS (SELECT 1 FROM recent_results r WHERE r.metric=k.metric)
+	), older_points AS MATERIALIZED (
+		SELECT p.* FROM remaining_keys k
+		CROSS JOIN LATERAL (
+			SELECT * FROM metric_points
+			WHERE metric_name=k.stored_key AND date<k.day OFFSET 0
+		) p
+	)
+	SELECT * FROM recent_results
+	UNION ALL
+	SELECT * FROM (
+		WITH ` + compatibilityPercentReceipts("older_points", "true") +
+		metricCompatibilityProjection("older_points", "true", compatibilityReceiptProof, legacy) + aggregate + `
+	) fallback`
 }
 
 // ListMetricsForContract includes the historical keys expected by legacy
