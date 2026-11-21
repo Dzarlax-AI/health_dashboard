@@ -507,7 +507,7 @@ func protectedCurrentHourlyPoint(row, keys string) string {
 func (s *ImportSession) promoteWorkouts(ctx context.Context, tx pgx.Tx) error {
 	// A dated export can replace a synthetic ID even with incomplete coverage.
 	// Require one distinct incoming ID and one stored ID for the exact interval.
-	// Omitted, tied and ambiguous intervals do not authorize removal.
+	// An ID taken over by live sync still blocks a duplicate XML correction.
 	err := tx.QueryRow(ctx, `
 		WITH incoming AS (
 			SELECT DISTINCT ON (external_id)
@@ -521,11 +521,12 @@ func (s *ImportSession) promoteWorkouts(ctx context.Context, tx pgx.Tx) error {
 			 ORDER BY external_id, staged_seq DESC
 		), matched AS (
 			SELECT i.external_id AS incoming_id, MIN(w.external_id) AS stored_id,
-			       MIN(COALESCE(w.source_snapshot_at, w.received_at)) AS stored_snapshot
+			       MIN(COALESCE(w.source_snapshot_at, w.received_at)) AS stored_snapshot,
+			       MIN(w.received_at) AS stored_receipt
 			FROM incoming i
 			JOIN workouts w ON (w.name,w.start_time,w.end_time)=(i.name,i.start_time,i.end_time)
 			WHERE i.external_id LIKE 'applexml:%' AND w.external_id LIKE 'applexml:%'
-			  AND w.origin=$2 AND $4::timestamptz IS NOT NULL
+			  AND w.origin IN ($2,'live') AND $4::timestamptz IS NOT NULL
 			  AND NOT EXISTS (
 			      SELECT 1 FROM incoming other
 			      WHERE (other.name,other.start_time,other.end_time)=(i.name,i.start_time,i.end_time)
@@ -535,8 +536,10 @@ func (s *ImportSession) promoteWorkouts(ctx context.Context, tx pgx.Tx) error {
 			HAVING COUNT(*)=1 AND MIN(w.external_id)<>i.external_id
 		), replaced AS (
 			DELETE FROM workouts w USING matched m
-			WHERE w.external_id=m.stored_id AND m.stored_snapshot<$4
-			RETURNING 1
+			WHERE w.external_id=m.stored_id AND w.origin=$2 AND m.stored_snapshot<$4
+			  AND COALESCE(w.source_snapshot_at,w.received_at)=m.stored_snapshot
+			  AND w.received_at IS NOT DISTINCT FROM m.stored_receipt
+			RETURNING m.incoming_id
 		), promoted AS (
 		INSERT INTO workouts (
 			health_record_id, external_id, name, start_time, end_time, duration_sec,
@@ -554,7 +557,10 @@ func (s *ImportSession) promoteWorkouts(ctx context.Context, tx pgx.Tx) error {
 			hr_z1_sec, hr_z2_sec, hr_z3_sec, hr_z4_sec, hr_z5_sec,
 			$2, $3, $4
 		FROM incoming i
-		WHERE NOT EXISTS (SELECT 1 FROM matched m WHERE m.incoming_id=i.external_id AND m.stored_snapshot >= $4)
+		WHERE NOT EXISTS (
+			SELECT 1 FROM matched m WHERE m.incoming_id=i.external_id
+			  AND NOT EXISTS (SELECT 1 FROM replaced r WHERE r.incoming_id=m.incoming_id)
+		)
 		ON CONFLICT (external_id) DO UPDATE SET
 			received_at = NOW(),
 			health_record_id = excluded.health_record_id,

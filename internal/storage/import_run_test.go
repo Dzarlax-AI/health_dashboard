@@ -600,6 +600,103 @@ func TestAppleHealthXMLImportReplacesUnambiguousSyntheticWorkout(t *testing.T) {
 	}
 }
 
+func TestAppleHealthXMLImportPreservesConcurrentLiveWorkout(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	start := time.Date(2026, 7, 1, 8, 0, 0, 0, time.UTC)
+	original := Workout{ExternalID: "applexml:original", Name: "Outdoor Run",
+		StartTime: start, EndTime: start.Add(time.Hour), DurationSec: 3600, DistanceKm: importFloatPtr(8)}
+	corrected := original
+	corrected.ExternalID, corrected.DistanceKm = "applexml:correction", importFloatPtr(8.2)
+	stage := func(snapshotAt time.Time, workout Workout) *ImportSession {
+		t.Helper()
+		run, err := db.BeginAppleHealthXMLImport(ImportOptions{SnapshotAt: snapshotAt, UnverifiedCoverage: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := run.AddWorkouts([]Workout{workout}); err != nil {
+			t.Fatal(err)
+		}
+		return run
+	}
+	if _, err := stage(start.AddDate(0, 0, 1), original).Commit(); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := start.AddDate(0, 0, 2)
+	run := stage(snapshot, corrected)
+
+	live, err := db.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer live.Rollback(context.Background())
+	var blocker uint32
+	if err := live.QueryRow(ctx, "SELECT pg_backend_pid()").Scan(&blocker); err != nil {
+		t.Fatal(err)
+	}
+	// Hold the row version produced by the live upsert uncommitted so the
+	// import matches the old XML version before it waits on the row.
+	tag, err := live.Exec(ctx, `UPDATE workouts SET origin='live', source_snapshot_at=NOW(),
+		received_at=NOW(), import_run_id=NULL, distance_km=9 WHERE external_id=$1`, original.ExternalID)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("apply live update: %v (%s)", err, tag)
+	}
+	var counters ImportCounters
+	var commitErr error
+	finished := make(chan struct{})
+	go func() {
+		counters, commitErr = run.Commit()
+		close(finished)
+	}()
+	defer func() {
+		_ = live.Rollback(context.Background())
+		<-finished
+	}()
+
+	for {
+		var waiting bool
+		if err := live.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_locks
+			WHERE NOT granted AND $1=ANY(pg_blocking_pids(pid)))`, blocker).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			break
+		}
+		select {
+		case <-finished:
+			t.Fatalf("import did not wait on the live row: %+v, %v", counters, commitErr)
+		case <-ctx.Done():
+			t.Fatal("import did not reach the locked row")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if err := live.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	<-finished
+	if commitErr != nil || counters.DeletedWorkouts != 0 || counters.UpsertedWorkouts != 0 {
+		t.Fatalf("overlapping XML correction: %+v, %v", counters, commitErr)
+	}
+
+	counters, err = stage(snapshot, corrected).Commit()
+	if err != nil || counters.DeletedWorkouts != 0 || counters.UpsertedWorkouts != 0 {
+		t.Fatalf("XML correction replay: %+v, %v", counters, err)
+	}
+	var count int
+	var origin string
+	var distance float64
+	if err := db.pool.QueryRow(t.Context(), `SELECT COUNT(*), MAX(origin), MAX(distance_km)
+		FROM workouts WHERE external_id IN ($1,$2)`, original.ExternalID, corrected.ExternalID).Scan(&count, &origin, &distance); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || origin != "live" || distance != 9 {
+		t.Fatalf("workout state: count=%d origin=%s distance=%v", count, origin, distance)
+	}
+}
+
 func TestAppleHealthXMLImportDoesNotOverwriteWorkoutFromNewerSnapshot(t *testing.T) {
 	db, cleanup := testDB(t)
 	defer cleanup()
