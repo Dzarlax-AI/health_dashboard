@@ -157,6 +157,10 @@ type LatestValue struct {
 // AVG metrics use a simple daily AVG across all sources and hours.
 // Reads from hourly_metrics (fast cache) instead of metric_points (4M+ rows).
 func (s *DB) GetLatestMetricValues() ([]LatestValue, error) {
+	return s.latestMetricValues(false)
+}
+
+func (s *DB) latestMetricValues(legacy bool) ([]LatestValue, error) {
 	ctx, cancel := queryCtx()
 	defer cancel()
 
@@ -214,9 +218,21 @@ func (s *DB) GetLatestMetricValues() ([]LatestValue, error) {
 		if err := rows.Scan(&v.Metric, &v.Unit, &v.Date, &v.Value); err != nil {
 			return nil, err
 		}
-		out = append(out, v)
+		if !usesMetricCompatibility(v.Metric) && (legacy || !usesCurrentHourlyMetric(v.Metric)) {
+			out = append(out, v)
+		}
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	compatible, err := s.compatibleLatestMetricValues(ctx, legacy)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, compatible...)
+	sort.Slice(out, func(i, j int) bool { return out[i].Metric < out[j].Metric })
+	return out, nil
 }
 
 // MetricStats is returned by SummarizeMetric.
@@ -252,14 +268,37 @@ func (s *DB) ListMetrics() ([]MetricSummary, error) {
 		if err := rows.Scan(&m.Name, &m.Units, &m.Count, &m.Min, &m.Max); err != nil {
 			return nil, err
 		}
-		out = append(out, m)
+		if !usesMetricCompatibility(m.Name) {
+			out = append(out, m)
+		}
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	compatible, err := s.compatibleMetricSummaries(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, compatible...)
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Count > out[j].Count })
+	return out, nil
 }
 
 func (s *DB) GetMetricData(metric, from, to, bucket, aggFunc string) ([]DataPoint, error) {
 	if aggFunc != "SUM" && aggFunc != "MAX" && aggFunc != "MIN" {
 		aggFunc = "AVG"
+	}
+
+	if usesMetricCompatibility(metric) {
+		if bucket == "minute" {
+			aggFunc = CurrentMetricAggregation(metric, aggFuncFor(metric))
+		}
+		result, err := s.compatibleMetricData(metric, from, to, bucket, aggFunc, false)
+		if err != nil || len(result) == 0 {
+			return nil, err
+		}
+		return result[0].Points, nil
 	}
 
 	switch bucket {
@@ -480,6 +519,13 @@ func (s *DB) GetMetricDataBySource(metric, from, to, bucket, aggFunc string) ([]
 		aggFunc = "AVG"
 	}
 
+	if usesMetricCompatibility(metric) {
+		if bucket == "minute" {
+			aggFunc = CurrentMetricAggregation(metric, aggFuncFor(metric))
+		}
+		return s.compatibleMetricData(metric, from, to, bucket, aggFunc, true)
+	}
+
 	pts, err := s.metricDataBySourceFromCache(metric, from, to, bucket)
 	if err != nil || len(pts) == 0 {
 		pts, err = s.metricDataBySourceRaw(metric, from, to, bucket, aggFunc)
@@ -532,10 +578,14 @@ func (s *DB) metricDataBySourceRaw(metric, from, to, bucket, aggFunc string) ([]
 }
 
 func (s *DB) scanSourcePoints(query, metric, from, to string) ([]SourceDataPoints, error) {
+	return s.scanSourcePointsWithKey(query, metric, from, to)
+}
+
+func (s *DB) scanSourcePointsWithKey(query string, key any, from, to string, extra ...any) ([]SourceDataPoints, error) {
 	ctx, cancel := queryCtx()
 	defer cancel()
 
-	rows, err := s.pool.Query(ctx, query, metric, from, to)
+	rows, err := s.pool.Query(ctx, query, append([]any{key, from, to}, extra...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -740,7 +790,7 @@ func (s *DB) SummarizeMetric(metric string, days int) (*MetricStats, error) {
 	from := t.AddDate(0, 0, -(days - 1)).Format("2006-01-02")
 
 	// Get daily-level data (already handles SUM/AVG and per-source dedup).
-	daily, err := s.GetMetricData(metric, from, to, "day", aggFuncFor(metric))
+	daily, err := s.MetricDataForContract(metric, from, to, "day", aggFuncFor(metric), false)
 	if err != nil || len(daily) == 0 {
 		return nil, fmt.Errorf("no data for %s in last %d days", metric, days)
 	}
@@ -766,6 +816,11 @@ func (s *DB) SummarizeMetric(metric string, days int) (*MetricStats, error) {
 		}
 	}
 	stats.Avg = sum / float64(len(daily))
+
+	if usesMetricCompatibility(metric) || usesCurrentHourlyMetric(metric) {
+		stats.Units = CanonicalMetricUnit(metric)
+		return &stats, nil
+	}
 
 	// Look up units from metric_points.
 	unitsCtx, unitsCancel := queryCtx()
@@ -944,10 +999,17 @@ func (s *DB) GetMetricDateRange(metric string) (min, max string, err error) {
 	defer cancel()
 
 	var minN, maxN *string
-	err = s.pool.QueryRow(ctx,
-		`SELECT SUBSTRING(MIN(date),1,10), SUBSTRING(MAX(date),1,10) FROM metric_points WHERE metric_name = $1`,
-		metric,
-	).Scan(&minN, &maxN)
+	if usesMetricCompatibility(metric) {
+		query := metricCompatibilityCTE("metric_name=ANY($1::text[])") + `
+			SELECT SUBSTRING(MIN(date),1,10),SUBSTRING(MAX(date),1,10)
+			FROM compatible WHERE qty>0 AND quality='ok'`
+		err = s.pool.QueryRow(ctx, query, metricNamesForRead(metric)).Scan(&minN, &maxN)
+	} else {
+		err = s.pool.QueryRow(ctx,
+			`SELECT SUBSTRING(MIN(date),1,10), SUBSTRING(MAX(date),1,10) FROM metric_points WHERE metric_name = $1`,
+			metric,
+		).Scan(&minN, &maxN)
+	}
 	if err == nil {
 		if minN != nil {
 			min = *minN

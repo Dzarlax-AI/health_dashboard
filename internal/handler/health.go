@@ -18,6 +18,7 @@ import (
 
 	"health-receiver/internal/ctxdb"
 	"health-receiver/internal/health"
+	"health-receiver/internal/metriccontract"
 	"health-receiver/internal/storage"
 	"health-receiver/internal/tenants"
 )
@@ -451,6 +452,10 @@ func (h *Handler) auth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
+	version, ok := metriccontract.Ingest(w, r)
+	if !ok {
+		return
+	}
 	if r.Method == http.MethodGet {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
@@ -469,6 +474,11 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
+	if version == metriccontract.Current && validateCurrentMetricPayload(body) != nil {
+		http.Error(w, "invalid version 2 health metrics payload", http.StatusBadRequest)
+		return
+	}
+
 	db := ctxdb.FromContext(r.Context())
 	rec := storage.Record{
 		AutomationName:        r.Header.Get("automation-name"),
@@ -476,7 +486,7 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 		AutomationAggregation: r.Header.Get("automation-aggregation"),
 		AutomationPeriod:      r.Header.Get("automation-period"),
 		SessionID:             r.Header.Get("session-id"),
-		ContentType:           r.Header.Get("Content-Type"),
+		ContentType:           metricContentType(r, version),
 		Payload:               string(body),
 		PendingProcessing:     true,
 		ProcessingKind:        "all",
@@ -517,6 +527,10 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) healthFiltered(kind string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		version, ok := metriccontract.Ingest(w, r)
+		if !ok {
+			return
+		}
 		if r.Method == http.MethodGet {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]string{"status": "ok", "filter": kind})
@@ -535,6 +549,11 @@ func (h *Handler) healthFiltered(kind string) http.HandlerFunc {
 		}
 		defer r.Body.Close()
 
+		if version == metriccontract.Current && validateCurrentMetricPayload(body) != nil {
+			http.Error(w, "invalid version 2 health metrics payload", http.StatusBadRequest)
+			return
+		}
+
 		db := ctxdb.FromContext(r.Context())
 		rec := storage.Record{
 			AutomationName:        r.Header.Get("automation-name"),
@@ -542,7 +561,7 @@ func (h *Handler) healthFiltered(kind string) http.HandlerFunc {
 			AutomationAggregation: r.Header.Get("automation-aggregation"),
 			AutomationPeriod:      r.Header.Get("automation-period"),
 			SessionID:             r.Header.Get("session-id"),
-			ContentType:           r.Header.Get("Content-Type"),
+			ContentType:           metricContentType(r, version),
 			Payload:               string(body),
 			PendingProcessing:     true,
 			ProcessingKind:        kind,
@@ -592,6 +611,7 @@ type payload struct {
 		Metrics []struct {
 			Name  string            `json:"name"`
 			Units string            `json:"units"`
+			Grain string            `json:"grain"`
 			Data  []json.RawMessage `json:"data"`
 		} `json:"metrics"`
 		NightSleepCoverage     []nightSleepCoveragePayload    `json:"night_sleep_coverage"`
@@ -865,6 +885,9 @@ var metricAliases = map[string]string{
 }
 
 func extractPoints(metricName, units string, raw json.RawMessage) []storage.MetricPoint {
+	if storage.IsReservedMetricKey(metricName) {
+		return nil
+	}
 	if canonical, ok := metricAliases[metricName]; ok {
 		metricName = canonical
 	}

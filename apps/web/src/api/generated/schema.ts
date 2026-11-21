@@ -1258,7 +1258,10 @@ export interface operations {
                 /** @description Unsupported values are ignored and the server falls back to the documented default. */
                 by_source?: "0" | "1";
             };
-            header?: never;
+            header?: {
+                /** @description Select the Health Sync metrics representation. Omission uses the installation default. */
+                "X-Health-Metrics-Contract"?: "1" | "2";
+            };
             path?: never;
             cookie?: never;
         };
@@ -1267,6 +1270,8 @@ export interface operations {
             /** @description Successful tenant-scoped response. */
             200: {
                 headers: {
+                    /** @description The metrics representation used in this response. */
+                    "X-Health-Metrics-Contract"?: "1" | "2";
                     [name: string]: unknown;
                 };
                 content: {
@@ -1282,6 +1287,24 @@ export interface operations {
                 };
                 content: {
                     "text/html": string;
+                };
+            };
+            /** @description Invalid metrics contract or query. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The installation has disabled explicit version 1 reads. */
+            406: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
                 };
             };
             /** @description The backend could not load or encode the tenant response. */
@@ -1301,7 +1324,10 @@ export interface operations {
                 /** @description Canonical metric name. */
                 metric: string;
             };
-            header?: never;
+            header?: {
+                /** @description Select the Health Sync metrics representation. Omission uses the installation default. */
+                "X-Health-Metrics-Contract"?: "1" | "2";
+            };
             path?: never;
             cookie?: never;
         };
@@ -1310,6 +1336,8 @@ export interface operations {
             /** @description Successful tenant-scoped response. */
             200: {
                 headers: {
+                    /** @description The metrics representation used in this response. */
+                    "X-Health-Metrics-Contract"?: "1" | "2";
                     [name: string]: unknown;
                 };
                 content: {
@@ -1325,6 +1353,24 @@ export interface operations {
                 };
                 content: {
                     "text/html": string;
+                };
+            };
+            /** @description Invalid metrics contract or query. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The installation has disabled explicit version 1 reads. */
+            406: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
                 };
             };
             /** @description The backend could not load or encode the tenant response. */

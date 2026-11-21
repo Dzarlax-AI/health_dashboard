@@ -11,13 +11,21 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const appleHealthXMLOrigin = "apple_health_xml"
+const (
+	appleHealthXMLOrigin                   = "apple_health_xml"
+	appleHealthImportContentType           = "apple-health-import"
+	normalizedAppleHealthImportContentType = "apple-health-import; catalog=1"
+)
 
 // ImportOptions describes one logical external import.
 type ImportOptions struct {
 	Origin     string
 	SourceName string
 	SnapshotAt time.Time
+	// UnverifiedCoverage stages exact observations without deleting omitted rows.
+	UnverifiedCoverage bool
+	// CatalogNormalized attests that the shared XML decoder produced the staged values.
+	CatalogNormalized bool
 }
 
 // ImportCounters records parser, staging, and promote outcomes for one import.
@@ -41,12 +49,14 @@ const abandonedRunningImportAge = 24 * time.Hour
 // ImportSession owns one XML import's durable metadata and persistent staging rows.
 // Call Commit after all parser callbacks succeed, or Abort on any parse/stage error.
 type ImportSession struct {
-	db             *DB
-	runID          int64
-	healthRecordID int64
-	snapshotAt     time.Time
-	leaseToken     uuid.UUID
-	counters       ImportCounters
+	db                 *DB
+	runID              int64
+	healthRecordID     int64
+	snapshotAt         *time.Time
+	unverifiedCoverage bool
+	catalogNormalized  bool
+	leaseToken         uuid.UUID
+	counters           ImportCounters
 	// afterLeaseLocked is used by DB-backed concurrency tests to pause after
 	// Commit has acquired the import-run row lock. Production sessions leave it nil.
 	afterLeaseLocked func()
@@ -62,8 +72,15 @@ func (s *DB) BeginAppleHealthXMLImport(opts ImportOptions) (*ImportSession, erro
 	if opts.SourceName == "" {
 		opts.SourceName = "apple-health-xml"
 	}
-	if opts.SnapshotAt.IsZero() {
-		opts.SnapshotAt = time.Now()
+	var snapshot *time.Time
+	if !opts.SnapshotAt.IsZero() {
+		snapshot = &opts.SnapshotAt
+	}
+	// import_runs retains a non-null timestamp for old readers. The sentinel
+	// represents a missing export clock, independent of the receipt timestamp.
+	runSnapshot := opts.SnapshotAt
+	if snapshot == nil {
+		runSnapshot = time.Unix(0, 0).UTC()
 	}
 
 	ctx, cancel := longCtx()
@@ -81,28 +98,34 @@ func (s *DB) BeginAppleHealthXMLImport(opts ImportOptions) (*ImportSession, erro
 		INSERT INTO import_runs (origin, source_name, snapshot_at, status, heartbeat_at, lease_token)
 		VALUES ($1, $2, $3, 'running', NOW(), $4)
 		RETURNING id`,
-		opts.Origin, opts.SourceName, opts.SnapshotAt, leaseToken,
+		opts.Origin, opts.SourceName, runSnapshot, leaseToken,
 	).Scan(&runID); err != nil {
 		return nil, fmt.Errorf("acquire active import lease: %w", err)
 	}
 
+	contentType := appleHealthImportContentType
+	if opts.CatalogNormalized {
+		contentType = normalizedAppleHealthImportContentType
+	}
 	var recordID int64
 	if err := s.pool.QueryRow(ctx, `
 		INSERT INTO health_records (automation_name, content_type, payload)
-		VALUES ($1, 'apple-health-import', $2)
+		VALUES ($1, $2, $3)
 		RETURNING id`,
-		opts.SourceName, fmt.Sprintf("import_run_id=%d", runID),
+		opts.SourceName, contentType, fmt.Sprintf("import_run_id=%d", runID),
 	).Scan(&recordID); err != nil {
 		_ = s.markImportFailed(runID, fmt.Sprintf("create health_record: %v", err))
 		return nil, fmt.Errorf("create import health_record: %w", err)
 	}
 
 	session := &ImportSession{
-		db:             s,
-		runID:          runID,
-		healthRecordID: recordID,
-		snapshotAt:     opts.SnapshotAt,
-		leaseToken:     leaseToken,
+		db:                 s,
+		runID:              runID,
+		healthRecordID:     recordID,
+		snapshotAt:         snapshot,
+		unverifiedCoverage: opts.UnverifiedCoverage || snapshot == nil,
+		catalogNormalized:  opts.CatalogNormalized,
+		leaseToken:         leaseToken,
 		counters: ImportCounters{
 			ImportRunID:    runID,
 			HealthRecordID: recordID,
@@ -151,6 +174,10 @@ func (s *ImportSession) AddPoints(points []MetricPoint) error {
 
 	rows := make([][]any, 0, len(points))
 	for _, p := range points {
+		p = normalizeStoredMetricPoint(p)
+		if usesSeparatedArchiveSamples(p.MetricName) {
+			p.MetricName = archiveSamplePrefix + p.MetricName
+		}
 		localDate := p.Date
 		if len(localDate) > 10 {
 			localDate = localDate[:10]
@@ -350,6 +377,13 @@ func (s *ImportSession) promoteCoverage(ctx context.Context, tx pgx.Tx) error {
 }
 
 func (s *ImportSession) promotePoints(ctx context.Context, tx pgx.Tx) error {
+	overlapKeys := []string{}
+	if s.catalogNormalized {
+		overlapKeys = overlappingArchiveSampleMetrics
+		if err := s.preserveArchiveHourBoundarySamples(ctx, tx); err != nil {
+			return err
+		}
+	}
 	var distinctPoints, existingExact, protectedExact int64
 	if err := tx.QueryRow(ctx, `
 		WITH incoming AS (
@@ -360,20 +394,33 @@ func (s *ImportSession) promotePoints(ctx context.Context, tx pgx.Tx) error {
 			 ORDER BY metric_name, date, source, staged_seq DESC
 		)
 		SELECT COUNT(*),
-		       COUNT(mp.id),
-		       COUNT(mp.id) FILTER (WHERE COALESCE(mp.source_snapshot_at, mp.received_at) > $1)
+		       COUNT(*) FILTER (WHERE mp.id IS NOT NULL OR `+newerLegacyMetricExists("i", "$1")+`),
+		       COUNT(*) FILTER (WHERE (mp.id IS NOT NULL AND ($1::timestamptz IS NULL OR
+		         COALESCE(mp.source_snapshot_at, CASE WHEN mp.origin <> 'apple_health_xml' THEN mp.received_at END, '-infinity') > $1
+		         OR `+protectedCurrentHourlyPoint("mp", "$3")+`)) OR `+newerLegacyMetricExists("i", "$1")+`)
 		  FROM incoming i
 		  LEFT JOIN metric_points mp
 		    ON mp.metric_name = i.metric_name
 		   AND mp.date = i.date
-		   AND COALESCE(mp.source, '') = i.source`, s.snapshotAt, s.runID).Scan(&distinctPoints, &existingExact, &protectedExact); err != nil {
+		   AND COALESCE(mp.source, '') = i.source`, s.snapshotAt, s.runID, overlapKeys).Scan(&distinctPoints, &existingExact, &protectedExact); err != nil {
 		return fmt.Errorf("count staged points: %w", err)
 	}
 
 	deleted, err := tx.Exec(ctx, `
+		WITH covered AS (
+			SELECT metric_name,source,local_date FROM import_run_coverage WHERE import_run_id=$1
+			UNION ALL
+			SELECT legacy_name,source,local_date FROM (
+				SELECT `+legacyMetricSQL("metric_name")+` AS legacy_name,source,local_date
+				FROM import_run_coverage WHERE import_run_id=$1
+			) aliases WHERE legacy_name IS NOT NULL
+			UNION ALL
+			SELECT $5||metric_name,source,local_date FROM import_run_coverage
+			WHERE import_run_id=$1 AND metric_name=ANY($4::text[])
+		)
 		DELETE FROM metric_points mp
-		USING import_run_coverage c
-		WHERE c.import_run_id = $1
+		USING covered c
+		WHERE $3 AND NOT `+protectedCurrentHourlyPoint("mp", "$4")+`
 		  AND mp.metric_name = c.metric_name
 		  AND COALESCE(mp.source, '') = c.source
 		  AND SUBSTRING(mp.date, 1, 10) = c.local_date
@@ -381,11 +428,12 @@ func (s *ImportSession) promotePoints(ctx context.Context, tx pgx.Tx) error {
 		  AND NOT EXISTS (
 		      SELECT 1
 		        FROM import_stage_points st
-		       WHERE st.metric_name = mp.metric_name
+		       WHERE (st.metric_name = mp.metric_name OR
+		            (st.metric_name=ANY($4::text[]) AND $5||st.metric_name=mp.metric_name))
 		         AND st.date = mp.date
 		         AND COALESCE(st.source, '') = COALESCE(mp.source, '')
 		         AND st.import_run_id = $1
-		  )`, s.runID, s.snapshotAt)
+		  )`, s.runID, s.snapshotAt, !s.unverifiedCoverage, overlapKeys, archiveSamplePrefix)
 	if err != nil {
 		return fmt.Errorf("delete stale covered points: %w", err)
 	}
@@ -400,8 +448,9 @@ func (s *ImportSession) promotePoints(ctx context.Context, tx pgx.Tx) error {
 		)
 		INSERT INTO metric_points
 			(health_record_id, metric_name, units, date, qty, source, origin, import_run_id, source_snapshot_at)
-		SELECT $1, metric_name, units, date, qty, source, $2, $3, $4
-		  FROM incoming
+		SELECT $1, i.metric_name, i.units, i.date, i.qty, i.source, $2, $3, $4
+		  FROM incoming i
+		 WHERE NOT `+newerLegacyMetricExists("i", "$4")+`
 		ON CONFLICT (metric_name, date, source) DO UPDATE SET
 			received_at = NOW(),
 			health_record_id = excluded.health_record_id,
@@ -410,8 +459,11 @@ func (s *ImportSession) promotePoints(ctx context.Context, tx pgx.Tx) error {
 			origin = excluded.origin,
 			import_run_id = excluded.import_run_id,
 			source_snapshot_at = excluded.source_snapshot_at
-		WHERE COALESCE(metric_points.source_snapshot_at, metric_points.received_at) <= excluded.source_snapshot_at`,
-		s.healthRecordID, appleHealthXMLOrigin, s.runID, s.snapshotAt)
+		WHERE COALESCE(metric_points.source_snapshot_at,
+		      CASE WHEN metric_points.origin <> 'apple_health_xml' THEN metric_points.received_at END, '-infinity')
+		      <= excluded.source_snapshot_at
+		  AND NOT `+protectedCurrentHourlyPoint("metric_points", "$5"),
+		s.healthRecordID, appleHealthXMLOrigin, s.runID, s.snapshotAt, overlapKeys)
 	if err != nil {
 		return fmt.Errorf("upsert staged points: %w", err)
 	}
@@ -421,6 +473,35 @@ func (s *ImportSession) promotePoints(ctx context.Context, tx pgx.Tx) error {
 	s.counters.InsertedPoints = distinctPoints - existingExact
 	s.counters.SkippedPoints = s.counters.ParsedPoints - distinctPoints + protectedExact
 	return nil
+}
+
+// Core SUM metrics retain their original key for the existing v1 caches.
+// Only hour-aligned archive samples can collide with the live v2 wire key.
+func (s *ImportSession) preserveArchiveHourBoundarySamples(ctx context.Context, tx pgx.Tx) error {
+	_, err := tx.Exec(ctx, `
+		WITH incoming AS (
+			SELECT DISTINCT ON (metric_name, date, source) metric_name, date, source, units, qty
+			FROM import_stage_points
+			WHERE import_run_id=$3 AND metric_name=ANY($5::text[]) AND SUBSTRING(date,15,5)='00:00'
+			ORDER BY metric_name,date,source,staged_seq DESC
+		)
+		INSERT INTO metric_points (health_record_id,metric_name,date,source,units,qty,origin,import_run_id,source_snapshot_at)
+		SELECT $1,$6||metric_name,date,source,units,qty,$2,$3,$4 FROM incoming
+		ON CONFLICT(metric_name,date,source) DO UPDATE SET
+		    health_record_id=excluded.health_record_id, units=excluded.units, qty=excluded.qty,
+		    import_run_id=excluded.import_run_id, source_snapshot_at=excluded.source_snapshot_at
+		WHERE COALESCE(metric_points.source_snapshot_at,'-infinity') <= excluded.source_snapshot_at`,
+		s.healthRecordID, appleHealthXMLOrigin, s.runID, s.snapshotAt, overlappingArchiveSampleMetrics, archiveSamplePrefix)
+	if err != nil {
+		return fmt.Errorf("preserve archive samples at hour boundaries: %w", err)
+	}
+	return nil
+}
+
+func protectedCurrentHourlyPoint(row, keys string) string {
+	return `(` + row + `.metric_name=ANY(` + keys + `::text[]) AND ` + row + `.origin='live'
+	 AND EXISTS (SELECT 1 FROM health_records hr WHERE hr.id=` + row + `.health_record_id
+	             AND hr.content_type='application/json; metrics-contract=2'))`
 }
 
 func (s *ImportSession) promoteWorkouts(ctx context.Context, tx pgx.Tx) error {
@@ -433,7 +514,7 @@ func (s *ImportSession) promoteWorkouts(ctx context.Context, tx pgx.Tx) error {
 			   AND import_run_id = $2
 		) st
 		WHERE w.origin = $1
-		  AND COALESCE(w.source_snapshot_at, w.received_at) <= $3
+		  AND $4 AND COALESCE(w.source_snapshot_at, w.received_at) <= $3
 		  AND w.external_id LIKE 'applexml:%'
 		  AND w.name = st.name
 		  AND w.start_time = st.start_time
@@ -442,7 +523,7 @@ func (s *ImportSession) promoteWorkouts(ctx context.Context, tx pgx.Tx) error {
 		      SELECT 1 FROM import_stage_workouts exact
 		       WHERE exact.external_id = w.external_id
 		         AND exact.import_run_id = $2
-		  )`, appleHealthXMLOrigin, s.runID, s.snapshotAt)
+		  )`, appleHealthXMLOrigin, s.runID, s.snapshotAt, !s.unverifiedCoverage)
 	if err != nil {
 		return fmt.Errorf("delete stale synthetic workouts: %w", err)
 	}
@@ -504,7 +585,9 @@ func (s *ImportSession) promoteWorkouts(ctx context.Context, tx pgx.Tx) error {
 			origin = excluded.origin,
 			import_run_id = excluded.import_run_id,
 			source_snapshot_at = excluded.source_snapshot_at
-		WHERE COALESCE(workouts.source_snapshot_at, workouts.received_at) <= excluded.source_snapshot_at`,
+		WHERE COALESCE(workouts.source_snapshot_at,
+		      CASE WHEN workouts.origin <> 'apple_health_xml' THEN workouts.received_at END, '-infinity')
+		      <= excluded.source_snapshot_at`,
 		s.healthRecordID, appleHealthXMLOrigin, s.runID, s.snapshotAt)
 	if err != nil {
 		return fmt.Errorf("upsert staged workouts: %w", err)

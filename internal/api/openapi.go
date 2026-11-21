@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"health-receiver/internal/health"
+	"health-receiver/internal/metriccontract"
 	"health-receiver/internal/storage"
 
 	"github.com/google/uuid"
@@ -308,7 +309,7 @@ func clientPaths() map[string]any {
 			"put": sleepGoalPutOperation,
 		},
 		"/api/metrics/data": map[string]any{
-			"get": getOperation(
+			"get": metricReadOperation(
 				"getMetricData",
 				"Time-bucketed metric history",
 				[]any{
@@ -323,7 +324,7 @@ func clientPaths() map[string]any {
 			),
 		},
 		"/api/metrics/range": map[string]any{
-			"get": getOperation(
+			"get": metricReadOperation(
 				"getMetricRange",
 				"Earliest and latest dates for a metric",
 				[]any{requiredStringQueryParameter("metric", "Canonical metric name.")},
@@ -350,6 +351,22 @@ func clientPaths() map[string]any {
 			),
 		},
 	}
+}
+
+func metricReadOperation(operationID, summary string, parameters []any, okResponse map[string]any) map[string]any {
+	contractSchema := map[string]any{"type": "string", "enum": []string{"1", "2"}}
+	parameters = append(parameters, map[string]any{
+		"name": metriccontract.Header, "in": "header", "schema": contractSchema,
+		"description": "Select the Health Sync metrics representation. Omission uses the installation default.",
+	})
+	okResponse["headers"] = map[string]any{
+		metriccontract.Header: map[string]any{"description": "The metrics representation used in this response.", "schema": contractSchema},
+	}
+	op := getOperation(operationID, summary, parameters, okResponse)
+	responses := op["responses"].(map[string]any)
+	responses["400"] = plainTextResponse("Invalid metrics contract or query.")
+	responses["406"] = plainTextResponse("The installation has disabled explicit version 1 reads.")
+	return op
 }
 
 func getOperation(operationID, summary string, parameters []any, okResponse map[string]any) map[string]any {

@@ -17,8 +17,6 @@ import (
 	"health-receiver/internal/tenants"
 )
 
-var sumMetrics = storage.SumMetrics
-
 // DBResolver resolves a tenant DB from an authenticated credential or username.
 type DBResolver func(ctx context.Context, key string) (*storage.DB, string, bool, bool)
 

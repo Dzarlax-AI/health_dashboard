@@ -59,11 +59,9 @@ func main() {
 		snapshotAt, exportDateFound, exportDateErr = applehealth.ExportDateFromXMLFile(*filePath)
 	}
 	if exportDateErr != nil {
-		log.Printf("could not read Apple Health exportDate, using import start as snapshot time: %v", exportDateErr)
-		snapshotAt = time.Now()
+		log.Printf("Apple Health exportDate is unreadable; importing exact observations without a snapshot clock")
 	} else if !exportDateFound {
-		log.Printf("Apple Health exportDate not found, using import start as snapshot time")
-		snapshotAt = time.Now()
+		log.Printf("Apple Health exportDate not found; importing exact observations without a snapshot clock")
 	}
 
 	var db *storage.DB
@@ -80,8 +78,10 @@ func main() {
 		defer db.Close()
 
 		session, err = db.BeginAppleHealthXMLImport(storage.ImportOptions{
-			SourceName: "apple-health-cli-import",
-			SnapshotAt: snapshotAt,
+			SourceName:         "apple-health-cli-import",
+			SnapshotAt:         snapshotAt,
+			UnverifiedCoverage: true,
+			CatalogNormalized:  true,
 		})
 		if err != nil {
 			log.Fatalf("begin import: %v", err)
@@ -147,10 +147,9 @@ func main() {
 
 	opts := applehealth.EmitOptions{Points: emit, Workouts: emitWorkouts}
 	var parseErr error
-	switch {
-	case len(*filePath) > 4 && (*filePath)[len(*filePath)-4:] == ".zip":
+	if ext == ".zip" {
 		parseErr = applehealth.ParseZipWithOptions(*filePath, opts, nil)
-	default:
+	} else {
 		parseErr = applehealth.ParseXMLFileWithOptions(*filePath, opts, nil)
 	}
 	if len(pending) > 0 {

@@ -10,6 +10,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"regexp"
 	"sort"
@@ -17,132 +18,32 @@ import (
 	"strings"
 	"time"
 
+	dbtmetrics "health-receiver/experiments/dbt_metrics"
 	"health-receiver/internal/health"
 	"health-receiver/internal/storage"
 )
 
-// hkSkip lists HK type suffixes (after "Identifier") that carry no useful
-// time-series data and should be silently ignored.
-var hkSkip = map[string]bool{
-	"":                   true,
-	"SleepDurationGoal":  true, // goal setting, not a measurement
-	"AudioExposureEvent": true, // category event, no value
-	"HandwashingEvent":   true,
-	"ToothbrushingEvent": true,
-	"MindfulSession":     true, // handled separately as mindful_minutes
-	"SleepAnalysis":      true, // handled separately
-	"AppleStandHour":     true, // handled separately
-}
-
-// hkTypeMap maps HKQuantityTypeIdentifier / HKCategoryTypeIdentifier suffixes
-// (everything after the last "Identifier") to (metricName, units).
-// Category types that need special handling (sleep, stand hour, mindfulness)
-// are handled separately in parseRecord.
-var hkTypeMap = map[string][2]string{
-	// Activity
-	"StepCount":              {"step_count", "count"},
-	"ActiveEnergyBurned":     {"active_energy", "kcal"},
-	"BasalEnergyBurned":      {"basal_energy_burned", "kcal"},
-	"AppleExerciseTime":      {"apple_exercise_time", "min"},
-	"AppleStandTime":         {"apple_stand_time", "min"},
-	"FlightsClimbed":         {"flights_climbed", "count"},
-	"DistanceWalkingRunning": {"walking_running_distance", "km"},
-	"DistanceCycling":        {"distance_cycling", "km"},
-	"DistanceSwimming":       {"distance_swimming", "km"},
-	"SwimmingStrokeCount":    {"swimming_stroke_count", "count"},
-	"TimeInDaylight":         {"time_in_daylight", "min"},
-	"PhysicalEffort":         {"physical_effort", "MET"},
-
-	// Heart & cardio
-	"HeartRate":                  {"heart_rate", "count/min"},
-	"HeartRateVariabilitySDNN":   {"heart_rate_variability", "ms"},
-	"RestingHeartRate":           {"resting_heart_rate", "count/min"},
-	"HeartRateRecoveryOneMinute": {"heart_rate_recovery", "count/min"},
-	"WalkingHeartRateAverage":    {"walking_heart_rate_average", "count/min"},
-
-	// Respiratory & SpO2
-	"RespiratoryRate":                    {"respiratory_rate", "count/min"},
-	"AppleSleepingBreathingDisturbances": {"breathing_disturbances", "count/hr"},
-	"VO2Max":                             {"vo2_max", "mL/kg·min"},
-
-	// Body measurements
-	"BodyMass":          {"body_mass", "kg"},
-	"BodyFatPercentage": {"body_fat_percentage", "%"},
-	"BodyMassIndex":     {"body_mass_index", "count"},
-	"LeanBodyMass":      {"lean_body_mass", "kg"},
-	"Height":            {"height", "cm"},
-
-	// Blood pressure (stored as separate metrics)
-	"BloodPressureSystolic":  {"blood_pressure_systolic", "mmHg"},
-	"BloodPressureDiastolic": {"blood_pressure_diastolic", "mmHg"},
-
-	// Temperature
-	"AppleSleepingWristTemperature": {"wrist_temperature", "degC"},
-
-	// Audio
-	"EnvironmentalAudioExposure":  {"environmental_audio", "dBASPL"},
-	"HeadphoneAudioExposure":      {"headphone_audio", "dBASPL"},
-	"EnvironmentalSoundReduction": {"environmental_sound_reduction", "dBASPL"},
-
-	// Blood oxygen (multiple identifiers → same metric)
-	"OxygenSaturation": {"blood_oxygen_saturation", "%"},
-	"BloodOxygen":      {"blood_oxygen_saturation", "%"},
-
-	// Gait & mobility
-	"WalkingSpeed":                   {"walking_speed", "km/hr"},
-	"WalkingStepLength":              {"walking_step_length", "cm"},
-	"WalkingAsymmetryPercentage":     {"walking_asymmetry", "%"},
-	"WalkingDoubleSupportPercentage": {"walking_double_support", "%"},
-	"AppleWalkingSteadiness":         {"walking_steadiness", "%"},
-	"StairAscentSpeed":               {"stair_ascent_speed", "ft/s"},
-	"StairDescentSpeed":              {"stair_descent_speed", "ft/s"},
-	"SixMinuteWalkTestDistance":      {"six_min_walk_distance", "m"},
-
-	// Nutrition (imported but kept separate)
-	"DietaryEnergyConsumed":      {"dietary_energy", "kcal"},
-	"DietaryProtein":             {"dietary_protein", "g"},
-	"DietaryCarbohydrates":       {"dietary_carbs", "g"},
-	"DietaryFatTotal":            {"dietary_fat", "g"},
-	"DietaryFiber":               {"dietary_fiber", "g"},
-	"DietarySugar":               {"dietary_sugar", "g"},
-	"DietaryWater":               {"dietary_water", "mL"},
-	"DietaryCaffeine":            {"dietary_caffeine", "mg"},
-	"NumberOfAlcoholicBeverages": {"alcoholic_beverages", "count"},
-}
-
-// hkFractionToPercent lists HK type suffixes where Apple Health stores values
-// as fractions (0.0–1.0) but the app uses percentage scale (0–100).
-// Values ≤ 1.0 are multiplied by 100 during import to match Health Auto Export format.
-var hkFractionToPercent = map[string]bool{
-	"OxygenSaturation":               true,
-	"BloodOxygen":                    true,
-	"BodyFatPercentage":              true,
-	"WalkingAsymmetryPercentage":     true,
-	"WalkingDoubleSupportPercentage": true,
-	"AppleWalkingSteadiness":         true,
-}
-
-// sleepValueMap maps HKCategoryValueSleepAnalysis* → metric name.
-// Duration is computed from startDate/endDate and stored in hours.
-// InBed is skipped — it overlaps with all stages.
-var sleepValueMap = map[string]string{
-	"HKCategoryValueSleepAnalysisAsleepDeep": "sleep_deep",
-	"HKCategoryValueSleepAnalysisAsleepREM":  "sleep_rem",
-	"HKCategoryValueSleepAnalysisAsleepCore": "sleep_core",
-	"HKCategoryValueSleepAnalysisAwake":      "sleep_awake",
-	// Coarse asleep without stage breakdown (iPhone Sleep Schedule,
-	// older Apple Watch). Routed to a dedicated metric so it stops
-	// inflating sleep_core. Pre-rollout imports landed in sleep_core;
-	// see cmd/migrate_sleep_unspecified to move historical rows.
-	"HKCategoryValueSleepAnalysisAsleepUnspecified": "sleep_unspecified",
-	"HKCategoryValueSleepAnalysisAsleep":            "sleep_unspecified",
-}
-
 // EmitOptions controls which Apple Health XML entities are emitted by the
 // streaming parser. Callbacks are optional; nil callbacks skip that entity type.
 type EmitOptions struct {
+	// Records observes original identity and interval before the storage
+	// projection. Seeing a record never establishes interval completeness.
+	Records  func(ArchiveRecord)
 	Points   func([]storage.MetricPoint)
 	Workouts func([]storage.Workout)
+}
+
+// ArchiveRecord carries source evidence for consumers such as sleep episode
+// candidates. A rejected projection still has its original source and times.
+type ArchiveRecord struct {
+	Identifier string
+	Value      string
+	Unit       string
+	SourceName string
+	Start      time.Time
+	End        time.Time
+	SnapshotAt time.Time
+	Accepted   bool
 }
 
 // ParseZip opens the zip at path, finds apple_health_export/export.xml inside,
@@ -177,7 +78,7 @@ func ParseZipWithOptions(path string, opts EmitOptions, onProgress func(read, to
 	return fmt.Errorf("apple_health_export/export.xml not found in zip")
 }
 
-// ExportDateFromZip reads HealthData@exportDate from an Apple Health export zip.
+// ExportDateFromZip reads the snapshot timestamp in an Apple Health export zip.
 func ExportDateFromZip(path string) (time.Time, bool, error) {
 	r, err := zip.OpenReader(path)
 	if err != nil {
@@ -220,7 +121,7 @@ func ParseXMLFileWithOptions(path string, opts EmitOptions, onProgress func(read
 	return ParseXMLWithOptions(newCountingReader(f, total, onProgress), opts)
 }
 
-// ExportDateFromXMLFile reads HealthData@exportDate from an export.xml file.
+// ExportDateFromXMLFile reads the snapshot timestamp in an export.xml file.
 func ExportDateFromXMLFile(path string) (time.Time, bool, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -230,16 +131,60 @@ func ExportDateFromXMLFile(path string) (time.Time, bool, error) {
 	return exportDateFromXML(f)
 }
 
+type archiveSnapshotHeader struct {
+	opened, done bool
+	time         time.Time
+	found        bool
+	err          error
+}
+
+func (h *archiveSnapshotHeader) readStart(dec *xml.Decoder, start xml.StartElement) error {
+	if h.done {
+		return nil
+	}
+	if !h.opened {
+		if start.Name.Local == "HealthData" {
+			h.opened = true
+			if value := strings.TrimSpace(attrMap(start.Attr)["exportDate"]); value != "" {
+				h.setDate(value)
+			}
+		}
+		return nil
+	}
+	switch start.Name.Local {
+	case "ExportDate":
+		h.setDate(strings.TrimSpace(attrMap(start.Attr)["value"]))
+	case "Me":
+		return dec.Skip()
+	default:
+		// The first body element closes the header even when no date was set.
+		h.done = true
+	}
+	return nil
+}
+
+func (h *archiveSnapshotHeader) setDate(value string) {
+	h.done = true
+	h.time, h.found, h.err = parseExportDate(value)
+}
+
+func (h *archiveSnapshotHeader) readEnd(end xml.EndElement) {
+	if h.opened && end.Name.Local == "HealthData" {
+		h.done = true
+	}
+}
+
 func exportDateFromXML(r io.Reader) (time.Time, bool, error) {
 	dec := xml.NewDecoder(r)
 	dec.Strict = false
 	dec.AutoClose = xml.HTMLAutoClose
 	dec.Entity = xml.HTMLEntity
 
-	for {
+	var header archiveSnapshotHeader
+	for !header.done {
 		tok, err := dec.Token()
 		if err == io.EOF {
-			return time.Time{}, false, nil
+			break
 		}
 		if err != nil {
 			if isHarmlessXMLErr(err) {
@@ -247,25 +192,27 @@ func exportDateFromXML(r io.Reader) (time.Time, bool, error) {
 			}
 			return time.Time{}, false, fmt.Errorf("xml decode: %w", err)
 		}
-		se, ok := tok.(xml.StartElement)
-		if !ok {
-			continue
-		}
-		if se.Name.Local != "HealthData" {
-			continue
-		}
-		for _, attr := range se.Attr {
-			if attr.Name.Local != "exportDate" || strings.TrimSpace(attr.Value) == "" {
-				continue
+		switch element := tok.(type) {
+		case xml.StartElement:
+			if err := header.readStart(dec, element); err != nil {
+				return time.Time{}, false, fmt.Errorf("xml decode: %w", err)
 			}
-			t, err := time.Parse(appleTimeLayout, attr.Value)
-			if err != nil {
-				return time.Time{}, false, fmt.Errorf("parse exportDate %q: %w", attr.Value, err)
-			}
-			return t, true, nil
+		case xml.EndElement:
+			header.readEnd(element)
 		}
+	}
+	return header.time, header.found, header.err
+}
+
+func parseExportDate(value string) (time.Time, bool, error) {
+	if value == "" {
 		return time.Time{}, false, nil
 	}
+	t, err := time.Parse(appleTimeLayout, value)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("parse exportDate %q: %w", value, err)
+	}
+	return t, true, nil
 }
 
 // countingReader wraps an io.Reader and calls onProgress every ~1 MB read.
@@ -314,6 +261,7 @@ func ParseXMLWithOptions(r io.Reader, opts EmitOptions) error {
 
 	var pointBatch []storage.MetricPoint
 	var workoutBatch []storage.Workout
+	var snapshot archiveSnapshotHeader
 
 	for {
 		tok, err := dec.Token()
@@ -328,6 +276,16 @@ func ParseXMLWithOptions(r io.Reader, opts EmitOptions) error {
 			return fmt.Errorf("xml decode: %w", err)
 		}
 
+		if opts.Records != nil && !snapshot.done {
+			switch element := tok.(type) {
+			case xml.StartElement:
+				if err := snapshot.readStart(dec, element); err != nil {
+					return fmt.Errorf("xml decode: %w", err)
+				}
+			case xml.EndElement:
+				snapshot.readEnd(element)
+			}
+		}
 		se, ok := tok.(xml.StartElement)
 		if !ok {
 			continue
@@ -335,10 +293,23 @@ func ParseXMLWithOptions(r io.Reader, opts EmitOptions) error {
 
 		switch se.Name.Local {
 		case "Record":
+			if opts.Points == nil && opts.Records == nil {
+				continue
+			}
+			attributes := attrMap(se.Attr)
+			pts := parseRecord(attributes)
+			if opts.Records != nil {
+				start, _ := time.Parse(appleTimeLayout, attributes["startDate"])
+				end, _ := time.Parse(appleTimeLayout, attributes["endDate"])
+				opts.Records(ArchiveRecord{
+					Identifier: attributes["type"], Value: attributes["value"],
+					Unit: attributes["unit"], SourceName: attributes["sourceName"],
+					Start: start, End: end, SnapshotAt: snapshot.time, Accepted: len(pts) != 0,
+				})
+			}
 			if opts.Points == nil {
 				continue
 			}
-			pts := parseRecord(attrMap(se.Attr))
 			pointBatch = append(pointBatch, pts...)
 			if len(pointBatch) >= batchSize {
 				opts.Points(pointBatch)
@@ -605,9 +576,10 @@ func parseRecord(a map[string]string) []storage.MetricPoint {
 	endDate := a["endDate"]
 
 	// ── Sleep analysis ────────────────────────────────────────────────────────
-	if hkType == "HKCategoryTypeIdentifierSleepAnalysis" {
-		metricName, ok := sleepValueMap[a["value"]]
-		if !ok {
+	metricName, categoryUnit, categoryMode := dbtmetrics.ResolveHealthKitCategory(hkType, a["value"])
+	switch categoryMode {
+	case "sleep_stages":
+		if metricName == "" {
 			return nil // InBed or unknown — skip
 		}
 		dur := durationHours(startDate, endDate)
@@ -615,79 +587,75 @@ func parseRecord(a map[string]string) []storage.MetricPoint {
 			return nil
 		}
 		pts := []storage.MetricPoint{
-			{MetricName: metricName, Units: "hr", Date: startDate, Qty: dur, Source: source},
+			{MetricName: metricName, Units: categoryUnit, Date: startDate, Qty: dur, Source: source},
 		}
 		// Also emit sleep_total for every "asleep" stage (aggregated by storage layer)
 		if metricName != "sleep_awake" {
 			pts = append(pts, storage.MetricPoint{
-				MetricName: "sleep_total", Units: "hr", Date: startDate, Qty: dur, Source: source,
+				MetricName: "sleep_total", Units: categoryUnit, Date: startDate, Qty: dur, Source: source,
 			})
 		}
 		return pts
-	}
-
-	// ── Apple Stand Hour ──────────────────────────────────────────────────────
-	if hkType == "HKCategoryTypeIdentifierAppleStandHour" {
+	case "stand_hour":
 		qty := 0.0
 		if a["value"] == "HKCategoryValueAppleStandHourStood" {
 			qty = 1
 		}
 		return []storage.MetricPoint{
-			{MetricName: "apple_stand_hour", Units: "count", Date: startDate, Qty: qty, Source: source},
+			{MetricName: metricName, Units: categoryUnit, Date: startDate, Qty: qty, Source: source},
 		}
-	}
-
-	// ── Mindful session ───────────────────────────────────────────────────────
-	if hkType == "HKCategoryTypeIdentifierMindfulSession" {
+	case "duration_minutes":
 		dur := durationHours(startDate, endDate) * 60 // convert to minutes
 		if dur <= 0 {
 			return nil
 		}
 		return []storage.MetricPoint{
-			{MetricName: "mindful_minutes", Units: "min", Date: startDate, Qty: dur, Source: source},
+			{MetricName: metricName, Units: categoryUnit, Date: startDate, Qty: dur, Source: source},
 		}
-	}
-
-	// ── Quantity types ────────────────────────────────────────────────────────
-	suffix := hkTypeSuffix(hkType)
-	if hkSkip[suffix] {
-		return nil
-	}
-
-	value, err := strconv.ParseFloat(a["value"], 64)
-	if err != nil {
-		return nil
-	}
-
-	units := a["unit"]
-
-	info, ok := hkTypeMap[suffix]
-	if ok {
-		if units == "" {
-			units = info[1]
-		}
-		// Apple Health stores percentage metrics as fractions (0.0–1.0)
-		// while Health Auto Export sends them as percentages (0–100).
-		// Normalize to percentage scale so both sources are consistent.
-		if hkFractionToPercent[suffix] && value > 0 && value <= 1.0 {
-			value *= 100
-		}
-		if health.IsImpossible(info[0], value) {
+	case "count":
+		if metricName == "" {
 			return nil
 		}
 		return []storage.MetricPoint{
-			{MetricName: info[0], Units: units, Date: startDate, Qty: value, Source: source},
+			{MetricName: metricName, Units: categoryUnit, Date: startDate, Qty: 1, Source: source},
 		}
+	case "skip":
+		return nil
+	}
+	value, err := strconv.ParseFloat(a["value"], 64)
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
+		return nil
+	}
+	unit := a["unit"]
+	if definition, ok := dbtmetrics.ResolveHealthKitQuantity(hkType); ok {
+		if unit == "" {
+			if definition.XMLRequiresUnit {
+				return nil
+			}
+			unit = definition.XMLDefaultUnit
+		}
+		if definition.XMLFraction && value > 0 && value <= 1 {
+			value *= 100
+		}
+		point := storage.CanonicalMetricPoint(storage.MetricPoint{
+			MetricName: definition.Key, Units: unit, Date: startDate, Qty: value, Source: source,
+		})
+		if definition.XMLRequiresUnit && point.Units != definition.Unit {
+			return nil
+		}
+		if definition.XMLLegacyKey != "" && health.IsImpossible(definition.XMLLegacyKey, value) {
+			return nil
+		}
+		return []storage.MetricPoint{point}
 	}
 
-	// Unknown HK type — store under a derived snake_case name so no data is lost.
-	// e.g. "HKQuantityTypeIdentifierSomeNewMetric" → "some_new_metric"
-	metricName := toSnakeCase(suffix)
-	if metricName == "" {
+	// Keep numeric records with no declared route only when their fallback key is distinct.
+	metricName = toSnakeCase(hkTypeSuffix(hkType))
+	if !dbtmetrics.HealthKitFallbackKeyAllowed(metricName) {
 		return nil
 	}
 	return []storage.MetricPoint{
-		{MetricName: metricName, Units: units, Date: startDate, Qty: value, Source: source},
+		{MetricName: metricName, Units: unit, Date: startDate, Qty: value, Source: source},
 	}
 }
 

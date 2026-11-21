@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -565,7 +566,18 @@ func (s *DB) pointOrdering() ingestPointOrdering {
 //     latter UPSERT replaced 8.14h with 1.08h. Real total swings
 //     exceed 50% vanishingly rarely — when they do, the next sync run
 //     converges naturally.
-const upsertMetricPointSQL = `INSERT INTO metric_points
+const upsertMetricPointSQL = `WITH archived AS (
+		INSERT INTO metric_points
+		    (health_record_id,metric_name,units,date,qty,source,origin,import_run_id,source_snapshot_at,quality,received_at)
+		SELECT mp.health_record_id,$8,mp.units,mp.date,mp.qty,mp.source,'apple_health_xml',mp.import_run_id,
+		       mp.source_snapshot_at,mp.quality,mp.received_at
+		FROM metric_points mp
+		WHERE $8<>'' AND mp.metric_name=$2 AND mp.date=$4 AND mp.source=$6
+		    AND (mp.origin='apple_health_xml' OR EXISTS (
+		     SELECT 1 FROM health_records hr WHERE hr.id=mp.health_record_id AND hr.content_type IN ('apple-health-import','apple-health-import; catalog=1')))
+		ON CONFLICT(metric_name,date,source) DO NOTHING
+	)
+	INSERT INTO metric_points
 		(health_record_id, metric_name, units, date, qty, source, origin, import_run_id, source_snapshot_at)
 		VALUES ($1, $2, $3, $4, $5, $6, 'live', NULL,
 			CASE WHEN $7 IN (1,3) THEN COALESCE((SELECT received_at FROM health_records WHERE id=$1), NOW()) ELSE NOW() END)
@@ -597,13 +609,21 @@ const upsertMetricPointSQL = `INSERT INTO metric_points
 			source_snapshot_at = excluded.source_snapshot_at
 		WHERE $7=2 OR CASE
 		  WHEN $7=3 AND metric_points.origin <> 'live' THEN false
+		  WHEN $8<>'' AND EXISTS (
+		   SELECT 1 FROM health_records WHERE id=$1 AND content_type='application/json; metrics-contract=2'
+		  ) AND (
+		   metric_points.origin='apple_health_xml' OR EXISTS (
+		    SELECT 1 FROM health_records WHERE id=metric_points.health_record_id AND content_type IN ('apple-health-import','apple-health-import; catalog=1')
+		   )
+		  ) THEN true
 		  WHEN $7 IN (1,3) OR EXISTS (SELECT 1 FROM health_records
 		    WHERE id=metric_points.health_record_id AND processing_kind='sleep_candidates') THEN
 		    CASE WHEN metric_points.origin='live' AND metric_points.health_record_id IS NOT NULL THEN
 		      (COALESCE((SELECT received_at FROM health_records WHERE id=metric_points.health_record_id),
 		                metric_points.received_at, '-infinity'), metric_points.health_record_id)
 		      <= (COALESCE((SELECT received_at FROM health_records WHERE id=$1), NOW()), excluded.health_record_id)
-		    ELSE COALESCE(metric_points.source_snapshot_at, metric_points.received_at, '-infinity')
+		    ELSE COALESCE(metric_points.source_snapshot_at,
+		      CASE WHEN metric_points.origin <> 'apple_health_xml' THEN metric_points.received_at END, '-infinity')
 		      <= COALESCE((SELECT received_at FROM health_records WHERE id=$1), NOW())
 		    END
 		  ELSE true
@@ -619,7 +639,16 @@ func insertPointsTx(ctx context.Context, tx pgx.Tx, recordID int64, points []Met
 		chunk := points[i:end]
 		batch := &pgx.Batch{}
 		for _, p := range chunk {
-			batch.Queue(upsertMetricPointSQL, recordID, p.MetricName, p.Units, p.Date, p.Qty, p.Source, int(ordering))
+			p = normalizeStoredMetricPoint(p)
+			pointOrdering := ordering
+			if ordering == ordinaryPointOrdering && (usesMetricCompatibility(p.MetricName) || usesCurrentHourlyMetric(p.MetricName)) {
+				pointOrdering = deferredPointOrdering
+			}
+			archiveKey := ""
+			if slices.Contains(overlappingArchiveSampleMetrics, p.MetricName) && len(p.Date) >= 19 && p.Date[14:19] == "00:00" {
+				archiveKey = archiveSamplePrefix + p.MetricName
+			}
+			batch.Queue(upsertMetricPointSQL, recordID, p.MetricName, p.Units, p.Date, p.Qty, p.Source, int(pointOrdering), archiveKey)
 		}
 		br := tx.SendBatch(ctx, batch)
 		for _, p := range chunk {
