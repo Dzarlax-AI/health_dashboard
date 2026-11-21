@@ -44,6 +44,8 @@ func run(args []string, clock func() time.Time) error {
 	auditThrough := flags.String("audit-server-through", "", "last expected local date")
 	serverMode := flags.String("switch-server-mode", "", "switch the audited local tenant to serve or off")
 	serverEvidence := flags.String("switch-server-evidence", "", "evidence from the exact reviewed server audit")
+	napEnergyAt := flags.String("compare-nap-energy-at", "", "compare experimental daytime sleep recovery on the local snapshot at an RFC3339 time")
+	napEnergyHTML := flags.Bool("nap-energy-html", false, "render the nap comparison as a Russian HTML preview")
 	rebuildServer := flags.Bool("rebuild-server-preparation", false, "repair prepared sleep results for owned dates before auditing")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -54,10 +56,22 @@ func run(args []string, clock func() time.Time) error {
 	if flags.NArg() != 0 {
 		return errors.New("unexpected positional arguments")
 	}
+	if *napEnergyHTML && *napEnergyAt == "" {
+		return errors.New("nap energy HTML requires --compare-nap-energy-at")
+	}
 	confirmLegacy := *confirmProfile != "" || *confirmSchema != ""
-	auditServer := *auditSchema != "" || *auditTenant != "" || *auditFrom != "" || *auditThrough != "" || *serverMode != "" || *serverEvidence != "" || *rebuildServer
-	if auditServer && (*auditSchema == "" || *auditTenant == "" || *auditFrom == "" || *auditThrough == "" || confirmLegacy || *rebuildFile != "") {
-		return errors.New("server audit requires schema, tenant UUID, first and last expected date, as a separate command")
+	auditServer := *auditSchema != "" || *auditTenant != "" || *auditFrom != "" || *auditThrough != "" || *serverMode != "" || *serverEvidence != "" || *rebuildServer || *napEnergyAt != ""
+	var compareAt time.Time
+	if *napEnergyAt != "" {
+		var err error
+		compareAt, err = time.Parse(time.RFC3339, *napEnergyAt)
+		if err != nil || compareAt.IsZero() || *serverMode != "" || *serverEvidence != "" || *rebuildServer || *auditFrom != "" || *auditThrough != "" {
+			return errors.New("nap comparison requires an RFC3339 time and a separate read-only command")
+		}
+	}
+	if auditServer && (*auditSchema == "" || *auditTenant == "" || confirmLegacy || *rebuildFile != "" ||
+		(compareAt.IsZero() && (*auditFrom == "" || *auditThrough == ""))) {
+		return errors.New("server audit requires a separate command with schema, tenant UUID and a comparison timestamp or date range")
 	}
 	if *rebuildServer && *serverMode != "" {
 		return errors.New("server rebuilding and switching are separate commands")
@@ -107,6 +121,16 @@ func run(args []string, clock func() time.Time) error {
 		defer db.Close()
 		if err := db.AssertIdentity(startup, config.ConnConfig.User, *auditSchema); err != nil {
 			return err
+		}
+		if !compareAt.IsZero() {
+			report, err := db.CompareEnergyNapShadow(ctx, tenantID, compareAt)
+			if err != nil {
+				return err
+			}
+			if *napEnergyHTML {
+				return renderNapEnergyPreview(os.Stdout, report)
+			}
+			return json.NewEncoder(os.Stdout).Encode(report)
 		}
 		if *serverMode != "" {
 			publication, err := db.SwitchSleepRollout(ctx, tenantID, *auditFrom, *auditThrough, *serverEvidence, *serverMode == "serve")

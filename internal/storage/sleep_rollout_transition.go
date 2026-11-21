@@ -93,10 +93,11 @@ func auditRevisionBoundSleepRollout(ctx context.Context, tx pgx.Tx, report Sleep
 	rows.Close()
 	// Use the worker's episode dates for both revisions. A packet's final
 	// wake date alone can miss an earlier episode in the same snapshot.
+	// Early observations do not update the canonical projection.
 	pending, err := tx.Query(ctx, `SELECT p.sequence,p.wake_date::text,p.candidate,c.wake_date::text,c.snapshot
 		FROM sleep_rollout_packets p
 		LEFT JOIN sleep_rollout_candidates c ON c.id::jsonb=jsonb_build_array(p.source_id,p.candidate_id)
-		WHERE p.applied_at IS NULL ORDER BY p.sequence`)
+		WHERE p.applied_at IS NULL AND NOT (p.candidate ? 'observation') ORDER BY p.sequence`)
 	if err != nil {
 		return report, err
 	}

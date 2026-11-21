@@ -36,6 +36,7 @@ func TestRevisionBoundSleepSelectionWithdrawal(t *testing.T) {
 	clock := func() time.Time { return day.Add(22 * time.Hour) }
 	t.Setenv("HEALTH_SLEEP_V2_ENABLED", "1")
 	t.Setenv("HEALTH_SLEEP_GO_PROJECTION_ENABLED", "1")
+	t.Setenv("HEALTH_SLEEP_EARLY_OBSERVATIONS_ENABLED", "1")
 	t.Setenv("HEALTH_SLEEP_SERVE_ENABLED", "")
 	ordinary := &DB{pool: db.pool, sleepRolloutTenant: true}
 	setSources := func(sources ...string) {
@@ -154,6 +155,52 @@ func TestRevisionBoundSleepSelectionWithdrawal(t *testing.T) {
 	apply()
 	previous := assertSelection("ring", "measured", 332*60, 136*60, 468*60)
 	checkOrdinary(332)
+	// The fixture replays an old day. Set the applied receipt clock to
+	// the fixture's processing time while keeping the actual worker path.
+	applied := day.Add(12*time.Hour + 10*time.Minute)
+	markAppliedAt := func(generation int64) {
+		t.Helper()
+		if _, err := db.pool.Exec(ctx, `UPDATE sleep_rollout_packets SET applied_at=$2 WHERE sequence=$1`, generation, applied); err != nil {
+			t.Fatal(err)
+		}
+	}
+	markAppliedAt(previous)
+	shadowAt := func(asOf time.Time) EnergyNapShadowResult {
+		t.Helper()
+		report, err := ordinary.CompareEnergyNapShadow(ctx, tenant, asOf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return report
+	}
+	if before := shadowAt(applied.Add(-time.Minute)); before.Status != "selection_unavailable_at_time" || before.Episodes != 0 {
+		t.Fatal("shadow read anticipated a future applied selection")
+	}
+	withNap := shadowAt(applied)
+	if withNap.Status != "compared" || withNap.Episodes != 1 || withNap.Immediate == nil || withNap.Immediate.PointsBeforeLimit <= 0 {
+		t.Fatalf("shadow read missed the confirmed additional episode: %+v", withNap)
+	}
+	setSourceObservation := func(at time.Time) {
+		t.Helper()
+		if _, err := db.pool.Exec(ctx, `UPDATE sleep_rollout_daily SET
+			episode_selection=jsonb_set(episode_selection,'{energy_naps,0,observed_at}',to_jsonb($2::timestamptz))
+			WHERE wake_date=$1::text::date`, date, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setSourceObservation(day.Add(36 * time.Hour))
+	if _, err := db.pool.Exec(ctx, `UPDATE sleep_rollout_packets SET applied_at=$2 WHERE sequence=$1`, previous, day.Add(36*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if late := shadowAt(applied); late.Status != "source_available_after_window" || late.SourceAvailableAfterWindow != 1 || late.Immediate != nil {
+		t.Fatal("late source confirmation reported a zero effect instead of unavailable evidence")
+	}
+	setSourceObservation(ring.Coverage.ObservedAt)
+	markAppliedAt(previous)
+	if next := shadowAt(day.AddDate(0, 0, 1)); next.Episodes != 0 {
+		t.Fatal("shadow read carried over the previous day's additional sleep")
+	}
+
 	withdraw := func(source string, newRevision, oldRevision int64) sleepwire.Candidate {
 		c := makeCandidate(source, "night", day, newRevision)
 		c.Withdrawal = &sleepwire.Withdrawal{WakeDate: date, PreviousRevision: oldRevision}
@@ -185,9 +232,16 @@ func TestRevisionBoundSleepSelectionWithdrawal(t *testing.T) {
 		t.Fatal(err)
 	}
 	apply()
-	assertSelection("watch", "measured", 300*60, -1, 300*60)
+	withdrawnGeneration := assertSelection("watch", "measured", 300*60, -1, 300*60)
 	checkOrdinary(300)
+	markAppliedAt(withdrawnGeneration)
+	if after := shadowAt(applied); after.Status != "compared" || after.Episodes != 0 || after.Immediate == nil || after.Immediate.SignedDelta != 0 {
+		t.Fatalf("shadow read retained a withdrawn episode: %+v", after)
+	}
 	accept("ring", ring, "repeat")
+	if after := shadowAt(applied); after.Status != "compared" || after.Episodes != 0 {
+		t.Fatal("an old receipt restored a withdrawn contribution")
+	}
 	stale := makeCandidate("ring", "night", day, 2, stage("old", "core", day, 360))
 	accept("ring", stale, "stale")
 	accept("watch", withdraw("watch", 3, 2), "accepted")

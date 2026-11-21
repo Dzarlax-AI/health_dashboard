@@ -44,9 +44,13 @@ type sleepSelection struct {
 // reader. The public audit decodes sleepSelection and omits these identities.
 type storedSleepSelection struct {
 	sleepSelection
-	CompleteSources   []string `json:"complete_sources,omitempty"`
-	ObservedSources   []string `json:"observed_sources,omitempty"`
-	GoProjectionOwned bool     `json:"go_projection_owned,omitempty"`
+	CompleteSources      []string     `json:"complete_sources,omitempty"`
+	ObservedSources      []string     `json:"observed_sources,omitempty"`
+	GoProjectionOwned    bool         `json:"go_projection_owned,omitempty"`
+	EnergyMainMinSeconds float64      `json:"energy_main_min_seconds,omitempty"`
+	EnergyMainZone       string       `json:"energy_main_zone,omitempty"`
+	EnergyMainEnd        *time.Time   `json:"energy_main_end,omitempty"`
+	EnergyNaps           *[]energyNap `json:"energy_naps,omitempty"`
 }
 
 func addAffectedEpisodeDates(dates map[string]bool, snapshot sleepwire.Candidate) error {
@@ -489,6 +493,10 @@ func summarizeRolloutDay(days map[string]*rolloutEpisodeDay, decisions map[strin
 			for _, proof := range day.withdrawals {
 				if proof.Contains(bounds.Start, bounds.End) {
 					result.State, result.Reason = "confirmed_source_absence", "withdrawal"
+					if SleepEarlyObservationsEnabled() {
+						naps := []energyNap{}
+						result.EnergyNaps = &naps
+					}
 					break
 				}
 			}
@@ -537,5 +545,16 @@ func summarizeRolloutDay(days map[string]*rolloutEpisodeDay, decisions map[strin
 	}
 	value := confirmed.Seconds()
 	result.AccountedSeconds = &value
+	if !SleepEarlyObservationsEnabled() {
+		return result
+	}
+	mainEnd := main.episode.Asleep[len(main.episode.Asleep)-1].End
+	result.EnergyMainEnd = &mainEnd
+	result.EnergyMainZone = day.zone
+	if window := rolloutSleepWindow(days, date, day.zone); window != nil {
+		result.EnergyMainMinSeconds = window.MinAsleep.Seconds()
+	}
+	naps := selectedEnergyNaps(day, main, decision, selected)
+	result.EnergyNaps = &naps
 	return result
 }
