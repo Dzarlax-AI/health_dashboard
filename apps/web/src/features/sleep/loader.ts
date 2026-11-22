@@ -111,6 +111,7 @@ export async function loadSleepResources(
   const rawBriefing = await loaders.briefing(locale, signal);
   const briefingDate = normalizedDate(rawBriefing.date);
   const briefing = briefingDate ? { ...rawBriefing, date: briefingDate } : rawBriefing;
+  const embeddedComparison = briefing.sleep_duration_comparison;
   const [section, ai, session, range, balance, goal, todayInsights, comparison] = await Promise.allSettled([
     loaders.section("sleep", locale, signal),
     loaders.ai(locale, signal),
@@ -119,7 +120,9 @@ export async function loadSleepResources(
     loaders.balance(signal, briefingDate),
     loaders.goal(signal, briefingDate),
     loaders.todayInsights?.(locale, signal) ?? Promise.resolve(undefined),
-    loaders.comparison?.(signal, briefingDate) ?? Promise.resolve(undefined),
+    embeddedComparison && embeddedComparison.wake_date === briefingDate
+      ? embeddedComparison
+      : loaders.comparison?.(signal, briefingDate),
   ]);
   throwIfAborted(signal);
 

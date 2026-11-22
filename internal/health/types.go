@@ -594,6 +594,10 @@ type BriefingResponse struct {
 	EnergyBankCurrent     *int                    `json:"energy_bank_current,omitempty"`
 	EnergyBankStatus      string                  `json:"energy_bank_status,omitempty"`
 	TodayGuidance         *DashboardTodayGuidance `json:"today_guidance,omitempty"`
+
+	// SleepDurationComparison explains the tenant-local wake date in the Today response.
+	SleepDurationComparison *SleepDurationComparison `json:"sleep_duration_comparison,omitempty"`
+
 	// DailyDecision is the versioned action boundary consumed by native
 	// clients. It mirrors the final conservative TodayGuidance after all
 	// safety caps have settled; AI may explain it but cannot replace it.

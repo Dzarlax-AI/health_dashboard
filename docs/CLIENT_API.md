@@ -58,7 +58,7 @@ The first TypeScript dashboard depends on these machine-described operations:
 
 | Endpoint | Purpose | Important partial states |
 |---|---|---|
-| `GET /api/health-briefing` | Rich current-day health state | Optional headline, EnergyBank, sleep quality, readiness serving state, illness/context/check-in signals. `sleep` is required but may be `null`. |
+| `GET /api/health-briefing` | Rich current-day health state | Optional headline, EnergyBank, sleep quality, readiness serving state, illness/context/check-in signals. When enabled for the tenant, `sleep_duration_comparison` carries the dated comparison and its evidence together so Today can explain the displayed value locally. `sleep` is required but may be `null`. |
 | `GET /api/ai-briefing` | Non-blocking AI narrative | `generating=true` means poll; `disabled=true` means hide AI; empty content is valid. |
 | `GET /api/today-insights` | Server-owned Today hero and Sleep/Recovery/Energy explanations | Today-only. Every primary/domain insight has a non-empty `title`, `observation`, and `meaning`; `answer_kind` distinguishes confirmed personal evidence, a provisional pattern, factual context, and data guidance. |
 | `GET /api/dashboard` | Lean cache-backed metric cards | Returns the latest complete hourly-cache day and may be empty for a fresh tenant; it never synchronously scans raw metric points. |

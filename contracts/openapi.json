@@ -1379,6 +1379,104 @@
               "null"
             ]
           },
+          "sleep_duration_comparison": {
+            "additionalProperties": false,
+            "properties": {
+              "assessment": {
+                "type": "string"
+              },
+              "capture": {
+                "type": "string"
+              },
+              "delta_minutes": {
+                "oneOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "duration_minutes": {
+                "oneOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "eligible_nights": {
+                "oneOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "fact_version": {
+                "type": "string"
+              },
+              "finalization": {
+                "type": "string"
+              },
+              "observed_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "reference_minutes": {
+                "oneOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "rule_version": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "available",
+                  "no_night",
+                  "ineligible_night",
+                  "insufficient_history",
+                  "unavailable"
+                ],
+                "type": "string"
+              },
+              "wake_date": {
+                "type": "string"
+              },
+              "window_end_exclusive": {
+                "type": "string"
+              },
+              "window_start": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "wake_date",
+              "status",
+              "duration_minutes",
+              "window_start",
+              "window_end_exclusive",
+              "eligible_nights",
+              "reference_minutes",
+              "delta_minutes",
+              "rule_version"
+            ],
+            "type": "object"
+          },
           "sleep_quality": {
             "additionalProperties": false,
             "properties": {

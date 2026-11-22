@@ -134,12 +134,19 @@ func TestMorningDeliveryWaitsForCurrentAIAndDoesNotWaitForCheckin(t *testing.T) 
 	fakeTelegram := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Text string `json:"text"`
+			Rich *struct {
+				HTML string `json:"html"`
+			} `json:"rich_message"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Error(err)
 		}
 		mu.Lock()
-		messages = append(messages, body.Text)
+		content := body.Text
+		if body.Rich != nil {
+			content = body.Rich.HTML
+		}
+		messages = append(messages, content)
 		id := len(messages)
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
@@ -230,8 +237,13 @@ func TestMorningDeliveryWaitsForCurrentAIAndDoesNotWaitForCheckin(t *testing.T) 
 		t.Fatalf("correction did not create a new comparison: %+v", current)
 	}
 	unchanged, err := db.GetReportHistory(ctx, items[0].ID)
-	if err != nil || string(unchanged.Context) != string(detail.Context) {
+	if err != nil || string(unchanged.Context) != string(detail.Context) ||
+		unchanged.PlainBody != detail.PlainBody || unchanged.RichBody != detail.RichBody {
 		t.Fatalf("late correction rewrote prior archive: %v", err)
+	}
+	if len(unchanged.Attempts) != 1 || unchanged.Attempts[0].Status != "sent" ||
+		unchanged.Attempts[0].Format != "rich" || unchanged.Attempts[0].Body != detail.RichBody {
+		t.Fatal("archived delivery attempt does not match the prepared morning report")
 	}
 	revision, err := evaluateSleepAnalysisUpdate(ctx, db, cfg, now, func() (*health.BriefingResponse, error) {
 		return db.GetHealthBriefing("en")
@@ -246,8 +258,9 @@ func TestMorningDeliveryWaitsForCurrentAIAndDoesNotWaitForCheckin(t *testing.T) 
 	}
 	mu.Lock()
 	count := len(messages)
+	deliveredArchivedBody := count == 2 && messages[1] == detail.RichBody
 	mu.Unlock()
-	if count != 2 || provider.calls.Load() != 2 {
+	if !deliveredArchivedBody || provider.calls.Load() != 2 {
 		t.Fatalf("messages=%d provider_calls=%d; want one prompt, one report, two input generations", count, provider.calls.Load())
 	}
 }

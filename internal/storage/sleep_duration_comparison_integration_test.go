@@ -12,6 +12,7 @@ import (
 func TestSleepDurationComparisonSnapshots(t *testing.T) {
 	db, cleanup := testDB(t)
 	defer cleanup()
+	t.Run("catalog window and minimum", func(t *testing.T) { checkSleepReferenceContract(t, db) })
 	ctx := t.Context()
 	date, _ := time.Parse(time.DateOnly, "2026-10-26")
 	wake := date.Format(time.DateOnly)
@@ -119,4 +120,82 @@ func TestSleepDurationComparisonSnapshots(t *testing.T) {
 	if err := db.VerifySchemaContractContext(ctx); err == nil {
 		t.Fatal("schema contract accepted a missing view")
 	}
+}
+
+// The catalog uses JSON-compatible YAML, like the embedded HealthKit ingress contract.
+func checkSleepReferenceContract(t *testing.T, db *DB) {
+	t.Helper()
+	catalog, err := os.ReadFile("../../experiments/dbt_metrics/models/health_metric_catalog.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	type rule struct {
+		WindowDays    int `json:"window_days"`
+		MinimumNights int `json:"minimum_nights"`
+	}
+	var document struct {
+		Models []struct {
+			Config struct {
+				Meta struct {
+					Catalog struct {
+						Bindings map[string]rule `json:"dbt_bindings"`
+					} `json:"health_catalog"`
+				}
+			}
+		}
+	}
+	if err := json.Unmarshal(catalog, &document); err != nil {
+		t.Fatal(err)
+	}
+	var spec rule
+	for _, model := range document.Models {
+		if binding, ok := model.Config.Meta.Catalog.Bindings["sleep_duration_reference_v1"]; ok {
+			spec = binding
+			break
+		}
+	}
+	if spec.MinimumNights < 2 || spec.WindowDays < spec.MinimumNights {
+		t.Fatalf("invalid sleep reference binding: %+v", spec)
+	}
+
+	// The target and the night just before the window must never contribute.
+	ctx := t.Context()
+	target := time.Date(2015, 7, 1, 0, 0, 0, 0, time.UTC)
+	wake := target.Format(time.DateOnly)
+	save := func(daysAgo int, hours float64) {
+		t.Helper()
+		day := target.AddDate(0, 0, -daysAgo)
+		night := health.CompletedNightSleep{
+			WakeDate: day.Format(time.DateOnly), DurationHours: hours, Source: "synthetic",
+			SourceEpoch: "contract", AlgorithmVersion: "v1", InputHash: day.Format(time.DateOnly),
+			CaptureCompleteness: health.NightCaptureComplete, DurationAssessment: health.NightDurationPlausible,
+			FinalizationState: health.NightFinalFinal, ClaimEligibility: health.NightClaimEligible, ObservedAt: day,
+		}
+		if err := db.SaveCompletedNightSleep(ctx, night, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	save(0, 6)
+	save(spec.WindowDays+1, 10)
+	for i := 1; i < spec.MinimumNights; i++ {
+		save(i, 8)
+	}
+	check := func(expected int, available bool) {
+		t.Helper()
+		var start, end string
+		var count int
+		var mean *float64
+		err := db.pool.QueryRow(ctx, `SELECT window_start,window_end_exclusive,eligible_nights,reference_hours
+			FROM sleep_duration_reference_v1 WHERE wake_date=$1`, wake).Scan(&start, &end, &count, &mean)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if start != target.AddDate(0, 0, -spec.WindowDays).Format(time.DateOnly) || end != wake ||
+			count != expected || (mean != nil) != available || (mean != nil && *mean != 8) {
+			t.Fatalf("catalog %+v: got [%s,%s), count=%d, mean=%v; want count=%d, available=%t", spec, start, end, count, mean, expected, available)
+		}
+	}
+	check(spec.MinimumNights-1, false)
+	save(spec.WindowDays, 8)
+	check(spec.MinimumNights, true)
 }

@@ -629,6 +629,25 @@ export interface components {
                 }[] | null;
                 total_avg: number;
             } | null;
+            sleep_duration_comparison?: {
+                assessment?: string;
+                capture?: string;
+                delta_minutes: number | null;
+                duration_minutes: number | null;
+                eligible_nights: number | null;
+                fact_version?: string;
+                finalization?: string;
+                /** Format: date-time */
+                observed_at?: string;
+                reference_minutes: number | null;
+                rule_version: string;
+                source?: string;
+                /** @enum {string} */
+                status: "available" | "no_night" | "ineligible_night" | "insufficient_history" | "unavailable";
+                wake_date: string;
+                window_end_exclusive: string;
+                window_start: string;
+            };
             sleep_quality?: {
                 confidence: string;
                 continuity_pct?: number;

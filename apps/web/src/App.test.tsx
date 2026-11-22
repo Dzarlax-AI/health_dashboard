@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 
 import { ClientApiError } from "./api/client";
 import { App } from "./App";
@@ -51,6 +51,24 @@ describe("foundation fixtures", () => {
       expect(screen.getByRole("heading", { level: 1 })).toBeInTheDocument();
     },
   );
+
+  it("opens the displayed sleep calculation locally", () => {
+    const fetch = vi.spyOn(globalThis, "fetch");
+    try {
+      renderFixture("normal", "ru");
+      expect(screen.getByText("На 50 мин меньше обычного")).toBeVisible();
+      const why = screen.getByText("Почему?");
+      expect(why.closest("details")).not.toHaveAttribute("open");
+      fireEvent.click(why);
+      expect(why.closest("details")).toHaveAttribute("open");
+      expect(screen.getByText("Обычная длительность 7 ч 20 мин")).toBeVisible();
+      expect(screen.getByText(/Сопоставимых ночей.*18/)).toBeVisible();
+      expect(screen.getByText("sleep_duration_reference_v1")).toBeVisible();
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      fetch.mockRestore();
+    }
+  });
 
   it("applies Serbian content and document language", () => {
     renderFixture("normal", "sr");
