@@ -156,3 +156,16 @@ The local driver measures complete MCP reads, then commits a historical edit and
 The local main-night card includes stage minutes and shares, evidence for internal awakenings, and the existing Go sleep-quality factors applied to the inputs attributed to that night. The temporal count requires a continuous detailed episode. Confirmed bouts in interrupted observations can still provide a lower bound. Daily sums cannot supply timing. The `quality_basis` and `quality_awake_basis` fields explain component admission and explicit versus inferred zero. Comparing scores from the historical Dashboard requires the same dated inputs and confidence evidence.
 
 Run the paired authenticated tool and morning report harness with `--night-card` on `run_semantic_reader_bench.sh`. The model `semantic_sleep_night_card_cache_v1` compares the full evaluated calendar to its saved rows on refresh, so stage-only edits, moving an episode and late historical inputs are reflected even with unchanged canonical duration. Only changed or removed cards cause writes. For a coverage report and private offline readback, run `run_semantic_shadow.py` with `--night-card-only` and optionally `--night-card-html PATH`. `extract_semantic_sleep_archive.py ARCHIVE NEW_DIRECTORY --as-of ISO_TIMESTAMP` recreates the two minimized inputs for `--private-extract` and `--sleep-recovery` from the local primary-profile archive using PostgreSQL 17 tools. Raw personal exports and dated readbacks belong in an owner-only directory. The existing duration-only cache remains independently queryable.
+
+
+## Workout timing and next-morning check-ins
+
+The first personal research report asks whether the time between the last workout and estimated sleep onset differed between mornings rated good or excellent and mornings rated so-so. It reports group sizes, exclusions and how the result changes when one so-so morning is omitted. Sleep stages are a proxy for sleep onset. A difference between groups describes the selected nights and cannot establish an optimal workout time.
+
+To reproduce the comparison and open a synthetic example, install the pilot dbt environment, start Docker and make PostgreSQL client tools available on PATH. From the repository root, run the following command with a new output path:
+
+```sh
+bash experiments/dbt_metrics/semantic/test_onset_statistics.sh /tmp/synthetic-workout-sleep.html
+```
+
+The check compares the aggregate from PostgreSQL with the dbt result, tests three group-size boundaries and renders the offline report. The research models are opt-in. For the pairing rules, missing-data policy and frozen prospective protocol, see the [study definition](semantic/workout_sleep_coverage.md).

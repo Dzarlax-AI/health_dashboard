@@ -9,3 +9,16 @@ clean-targets: [target, dbt_packages]
 models:
   health_dbt_metrics_pilot:
     +materialized: table
+    research_stage_onset_rows_v1:
+      +enabled: "{{ var('stage_onset_research', false) or var('packet_onset_research', false) }}"
+      +materialized: ephemeral
+    research_stage_onset_summary_v1:
+      +enabled: "{{ var('stage_onset_research', false) }}"
+    research_packet_onset_base_v1:
+      +enabled: "{{ var('packet_onset_research', false) }}"
+      +materialized: ephemeral
+    research_packet_onset_rows_v1:
+      +enabled: "{{ var('packet_onset_research', false) }}"
+      +materialized: ephemeral
+    research_packet_onset_summary_v1:
+      +enabled: "{{ var('packet_onset_research', false) }}"
