@@ -21,6 +21,7 @@ psql -X -v ON_ERROR_STOP=1 -qAt -f experiments/dbt_metrics/semantic/raw_packet_o
 
 python3 - "$repo_root" <<'PY'
 import json
+from datetime import datetime
 import subprocess
 import sys
 from pathlib import Path
@@ -83,7 +84,7 @@ for day, onset, end in [
     ("2026-11-14", "2026-11-13T21:00:00+00:00", "2026-11-14T04:30:00+00:00"),
 ]:
     actual = (by_day[day]["onset"], by_day[day]["asleep_end"])
-    if actual != (onset, end):
+    if tuple(map(datetime.fromisoformat, actual)) != tuple(map(datetime.fromisoformat, (onset, end))):
         raise SystemExit(f"{day}: timing={actual}, expected {(onset, end)}")
 print("PASS local timezone and corrected-owner onset/end selection")
 
