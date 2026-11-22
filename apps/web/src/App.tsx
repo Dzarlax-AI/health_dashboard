@@ -17,6 +17,7 @@ import {
 import { loadDashboardResources, type DashboardResources } from "./features/dashboard/loader";
 import { buildDashboardViewModel } from "./features/dashboard/model";
 import { ScoreSummaryCard } from "./features/dashboard/ScoreSummaryCard";
+import { SleepComparisonCard } from "./features/sleep/SleepComparisonCard";
 import { TodayInsights } from "./features/dashboard/TodayInsights";
 import { resolveHealthSection } from "./features/health-detail/config";
 import { HealthDetailPage } from "./features/health-detail/HealthDetailPage";
@@ -227,6 +228,9 @@ function DashboardApp() {
                 ) : null}
               </section>
             ) : null}
+            {state.resources.briefing.sleep_duration_comparison && (
+              <SleepComparisonCard value={state.resources.briefing.sleep_duration_comparison} locale={locale} onToday />
+            )}
             <DashboardDetails
               locale={locale}
               model={model}

@@ -11,6 +11,7 @@ import type {
   SleepDurationBalanceResponse,
   SleepGoalResponse,
 } from "../../api/client";
+import { fixtureResources } from "../dashboard/fixtures";
 import { loadSleepResources, sleepMetrics, type SleepLoaders } from "./loader";
 
 function metricResponse(metric = "sleep_total"): MetricDataResponse {
@@ -49,6 +50,23 @@ describe("sleep resource loader", () => {
     expect(result.metrics).toEqual({});
     expect(testLoaders.wake).not.toHaveBeenCalled();
     expect(testLoaders.metric).not.toHaveBeenCalled();
+  });
+
+  it("reuses the Today comparison only for the matching wake date", async () => {
+    const briefing = fixtureResources("en", "normal").briefing;
+    const testLoaders = loaders({
+      briefing: vi.fn(async () => briefing),
+      comparison: vi.fn(async () => null),
+    });
+    const current = await loadSleepResources("en", undefined, testLoaders);
+    expect(current.comparison).toEqual(briefing.sleep_duration_comparison);
+    expect(testLoaders.comparison).not.toHaveBeenCalled();
+
+    const previousDate = "2026-08-01";
+    testLoaders.briefing = vi.fn(async () => ({ ...briefing, date: previousDate }));
+    const previous = await loadSleepResources("en", undefined, testLoaders);
+    expect(previous.comparison).toBeNull();
+    expect(testLoaders.comparison).toHaveBeenCalledWith(undefined, previousDate);
   });
 
   it("loads the complete available sleep range for the All period", async () => {

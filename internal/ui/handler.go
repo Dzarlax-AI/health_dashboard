@@ -1937,6 +1937,7 @@ func (h *Handler) healthBriefing(w http.ResponseWriter, r *http.Request) {
 	// instead of waiting on this endpoint.
 	if resp != nil {
 		today := db.Today()
+		resp.SleepDurationComparison = db.GetSleepDurationComparison(r.Context(), today)
 		resp.AIInsight = db.GetAIInsightCombined(today, lang)
 		if resp.AIInsight == "" {
 			aiDefaults := h.mgr.AIDefaultsFor(r.Context(), schema)

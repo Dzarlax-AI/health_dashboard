@@ -48,6 +48,20 @@ function briefing(locale: Locale, fixture: FixtureName): HealthBriefingResponse 
 
   return {
     date: unavailable ? "" : "2026-08-02",
+    sleep_duration_comparison: fixture === "normal" ? {
+      wake_date: "2026-08-02",
+      status: "available",
+      duration_minutes: 390,
+      source: "Synthetic Watch",
+      finalization: "final",
+      window_start: "2026-07-03",
+      window_end_exclusive: "2026-08-02",
+      eligible_nights: 18,
+      reference_minutes: 440,
+      delta_minutes: -50,
+      rule_version: "sleep_duration_reference_v1",
+      fact_version: "fixture-sleep-comparison",
+    } : undefined,
     greeting: localized(locale, {
       en: "Good morning",
       ru: "Доброе утро",

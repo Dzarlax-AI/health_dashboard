@@ -1,7 +1,7 @@
 version: 2
 models:
   - name: sleep_duration_reference_v1
-    description: Historical duration reference on 30 calendar wake dates before the exact canonical night.
+    description: Average duration of comparable prior nights for the same source, source epoch and algorithm. The health metric catalog declares the calendar window and minimum eligible count.
     config:
       materialized: view
       post_hook: "alter view {{ this }} set (security_invoker=true)"

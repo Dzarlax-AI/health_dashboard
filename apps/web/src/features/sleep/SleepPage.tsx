@@ -26,6 +26,8 @@ import { resolveLocale, translate, type Locale } from "../../i18n";
 import { resolveFixture } from "../dashboard/fixtures";
 import { sleepFixtureResources } from "./fixtures";
 import { loadSleepResources, type SleepResources } from "./loader";
+import { dateLabel } from "./dateLabel";
+import { SleepComparisonCard } from "./SleepComparisonCard";
 import { buildSleepDays, sleepComposition, sleepInsight, type SleepDay } from "./model";
 
 type SleepState =
@@ -53,20 +55,6 @@ function dateTime(value: string | undefined, locale: Locale): string {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return "—";
   return new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(parsed);
-}
-
-function dateLabel(date: string, locale: Locale, compact = false): string {
-  const candidate = date.slice(0, 10);
-  const parsed = new Date(`${candidate}T12:00:00`);
-  if (
-    !/^\d{4}-\d{2}-\d{2}$/.test(candidate) ||
-    Number.isNaN(parsed.getTime()) ||
-    parsed.toISOString().slice(0, 10) !== candidate
-  ) return date;
-  return new Intl.DateTimeFormat(locale, compact
-    ? { day: "numeric", month: "short" }
-    : { weekday: "short", day: "numeric", month: "long" }
-  ).format(parsed);
 }
 
 function percentage(value: number, total: number, locale: Locale): string {
@@ -127,35 +115,6 @@ function ScoreRing({ score, duration, locale }: { score?: number; duration?: num
         <span>{score !== undefined ? translate(locale, "sleepQuality") : duration !== undefined ? translate(locale, "sleepDuration") : ""}</span>
       </div>
     </div>
-  );
-}
-
-function SleepComparisonCard({ value, locale }: { value: SleepDurationComparison; locale: Locale }) {
-  const t = (key: Parameters<typeof translate>[1]) => translate(locale, key);
-  const duration = (minutes: number) =>
-    `${Math.floor(minutes / 60)} ${t("sleepHoursShort")} ${minutes % 60} ${t("sleepComparisonMinute")}`;
-  const statusCopy = {
-    available: "sleepComparisonUnavailable",
-    unavailable: "sleepComparisonUnavailable",
-    no_night: "sleepComparisonNoNight",
-    ineligible_night: "sleepComparisonIneligible",
-    insufficient_history: "sleepComparisonInsufficient",
-  } as const;
-  const delta = value.delta_minutes === null ? undefined
-    : new Intl.NumberFormat(locale, { signDisplay: "exceptZero" }).format(value.delta_minutes);
-  return (
-    <section className="sleep-section surface" aria-labelledby="sleep-comparison-title">
-      <div className="sleep-section__title">
-        <div><p>{dateLabel(value.wake_date, locale)}</p><h2 id="sleep-comparison-title">{t("sleepComparisonTitle")}</h2></div>
-        {delta !== undefined && <strong>{delta} {t("sleepComparisonMinute")}</strong>}
-      </div>
-      {value.duration_minutes !== null && <p>{t("sleepComparisonRecorded")} {duration(value.duration_minutes)}</p>}
-      {value.reference_minutes !== null
-        ? <p>{t("sleepComparisonReference")} {duration(value.reference_minutes)}</p>
-        : <p>{t(statusCopy[value.status])}</p>}
-      {value.eligible_nights !== null && <p>{t("sleepComparisonCoverage")} {value.eligible_nights} · {dateLabel(value.window_start, locale, true)} – {dateLabel(value.window_end_exclusive, locale, true)} ({t("sleepComparisonEndExclusive")})</p>}
-      {value.finalization === "provisional" && <p className="sleep-coverage">{t("sleepComparisonPreliminary")}</p>}
-    </section>
   );
 }
 
