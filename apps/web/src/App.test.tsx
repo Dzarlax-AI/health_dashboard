@@ -63,7 +63,9 @@ describe("foundation fixtures", () => {
       expect(why.closest("details")).toHaveAttribute("open");
       expect(screen.getByText("Обычная длительность 7 ч 20 мин")).toBeVisible();
       expect(screen.getByText(/Сопоставимых ночей.*18/)).toBeVisible();
-      expect(screen.getByText("sleep_duration_reference_v1")).toBeVisible();
+      expect(screen.getByText(/с вашим средним за предыдущие 30 дней/)).toBeVisible();
+      expect(screen.getByText(/При синхронизации могут добавиться/)).toBeVisible();
+      expect(screen.queryByText("sleep_duration_reference_v1")).not.toBeInTheDocument();
       expect(fetch).not.toHaveBeenCalled();
     } finally {
       fetch.mockRestore();

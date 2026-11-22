@@ -20,11 +20,11 @@ export function SleepComparisonCard({ value, locale, onToday = false }: {
   } as const;
   const delta = value.delta_minutes;
   const details = <>
-    {onToday && (value.status === "available" || value.status === "insufficient_history") && <p>{t("sleepComparisonBasis")}</p>}
+    {value.rule_version === "sleep_duration_reference_v1" && <p>{t("sleepComparisonBasis")}</p>}
     {value.reference_minutes !== null && <p>{t("sleepComparisonReference")} {duration(value.reference_minutes)}</p>}
     {value.eligible_nights !== null && <p>{t("sleepComparisonCoverage")} {value.eligible_nights} · {dateLabel(value.window_start, locale, true)} – {dateLabel(value.window_end_exclusive, locale, true)} ({t("sleepComparisonEndExclusive")})</p>}
     {value.source && <p>{t("sleepComparisonSource")} {value.source}</p>}
-    {value.rule_version && <p>{t("sleepComparisonMethod")} <code>{value.rule_version}</code></p>}
+    <p>{t("sleepComparisonSync")}</p>
   </>;
   return (
     <section className="sleep-section surface" aria-labelledby="sleep-comparison-title">
