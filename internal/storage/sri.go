@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"strings"
 	"time"
 )
 
@@ -25,7 +24,7 @@ import (
 //   - Loads sleep_total, sleep_deep, sleep_rem, sleep_core, sleep_unspecified
 //     fragments (any "asleep" stage). sleep_awake fragments do NOT count
 //     as asleep.
-//   - Source priority: same as sleep dedup elsewhere (Apple Watch > RingConn).
+//   - Source priority: qualifying Apple Watch family, then highest-total source.
 //     Single source per night, picked by total duration in the window.
 //   - Each segment expands to a [start, start+qty hours] minute interval
 //     and OR-merges into a per-day [1440]bool mask. Cross-midnight segments
@@ -43,6 +42,10 @@ func (s *DB) ComputeSRI(days int) (sri float64, nights int, ok bool) {
 	// requested window has a previous-day reference for the consecutive-pair
 	// computation (otherwise the first day's pairs are dropped silently and
 	// the user-visible "14d SRI" only sees 13 day-pairs).
+	preferred, err := readPreferredSleepSource(ctx, s.pool)
+	if err != nil {
+		return 0, 0, false
+	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT date, qty, source, metric_name
 		FROM metric_points
@@ -51,7 +54,7 @@ func (s *DB) ComputeSRI(days int) (sri float64, nights int, ok bool) {
 		  AND quality = 'ok'
 		  AND SUBSTRING(date, 12, 8) != '00:00:00'
 		  AND SUBSTRING(date, 1, 10) >= TO_CHAR(NOW() - INTERVAL '1 day' * $1, 'YYYY-MM-DD')
-		ORDER BY date ASC`,
+		ORDER BY qty ASC, date ASC`,
 		days+1)
 	if err != nil {
 		return 0, 0, false
@@ -94,30 +97,9 @@ func (s *DB) ComputeSRI(days int) (sri float64, nights int, ok bool) {
 		return 0, 0, false
 	}
 
-	// Per-day source pick: prefer Apple Watch family if present with non-
-	// trivial total, else highest-total source. Mirrors the priority used in
-	// sleepCrossValidationPickExpr (Apple Watch > RingConn > anything else).
 	bestSource := map[string]string{}
-	for d, srcMap := range totalsBySrc {
-		var watchSrc string
-		var fallbackSrc string
-		var fallbackTotal float64
-		for src, total := range srcMap {
-			if (strings.Contains(src, "Ultra") || strings.Contains(src, "Apple Watch")) && total > 1.0 {
-				if watchSrc == "" || total > srcMap[watchSrc] {
-					watchSrc = src
-				}
-			}
-			if total > fallbackTotal {
-				fallbackTotal = total
-				fallbackSrc = src
-			}
-		}
-		if watchSrc != "" {
-			bestSource[d] = watchSrc
-		} else {
-			bestSource[d] = fallbackSrc
-		}
+	for day, totals := range totalsBySrc {
+		bestSource[day], _ = chooseSleepSource(totals, false, preferred)
 	}
 
 	// Build per-calendar-day [1440]bool asleep mask, OR-merging stages.

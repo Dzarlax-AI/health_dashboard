@@ -289,7 +289,11 @@ func (s *DB) RunSleepRolloutNext(ctx context.Context, clock func() time.Time) (b
 			WHERE profile=$1 AND wake_date::text=ANY($2::text[])`, profile, affected, priorities); err != nil {
 			return false, err
 		}
-		affected, err = unit.refreshSleepEpisodeSelection(ctx, tx, profile, affected, strictChanged, priorities, sequence, today)
+		preferred, err := readPreferredSleepSource(ctx, tx)
+		if err != nil {
+			return false, err
+		}
+		affected, err = unit.refreshSleepEpisodeSelection(ctx, tx, profile, affected, strictChanged, priorities, preferred, sequence, today)
 		if err != nil {
 			return false, err
 		}

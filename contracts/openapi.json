@@ -1428,6 +1428,9 @@
                 "format": "date-time",
                 "type": "string"
               },
+              "preferred_sleep_source": {
+                "type": "string"
+              },
               "reference_minutes": {
                 "oneOf": [
                   {
@@ -1442,6 +1445,9 @@
                 "type": "string"
               },
               "source": {
+                "type": "string"
+              },
+              "source_selection_reason": {
                 "type": "string"
               },
               "status": {
@@ -1712,6 +1718,9 @@
           "is_admin": {
             "type": "boolean"
           },
+          "preferred_sleep_source": {
+            "type": "string"
+          },
           "report_daytime_enabled": {
             "type": "boolean"
           },
@@ -1736,6 +1745,15 @@
           "report_morning_weekend": {
             "type": "integer"
           },
+          "sleep_sources": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "telegram_chat_id": {
             "type": "string"
           },
@@ -1753,6 +1771,8 @@
           }
         },
         "required": [
+          "preferred_sleep_source",
+          "sleep_sources",
           "telegram_token",
           "telegram_chat_id",
           "report_lang",
@@ -2321,6 +2341,9 @@
                     "format": "date-time",
                     "type": "string"
                   },
+                  "preferred_sleep_source": {
+                    "type": "string"
+                  },
                   "reference_minutes": {
                     "oneOf": [
                       {
@@ -2335,6 +2358,9 @@
                     "type": "string"
                   },
                   "source": {
+                    "type": "string"
+                  },
+                  "source_selection_reason": {
                     "type": "string"
                   },
                   "status": {
@@ -4107,7 +4133,7 @@
             "description": "The backend could not load or encode the tenant response."
           }
         },
-        "summary": "Tenant notification settings"
+        "summary": "Tenant notification settings and available sleep sources"
       },
       "post": {
         "operationId": "updateNotificationSettings",
@@ -4158,7 +4184,7 @@
                 }
               }
             },
-            "description": "Invalid JSON, daytime boolean, or daytime hours. Hours are 0 through 23 and start must differ from end."
+            "description": "Invalid JSON, unknown sleep source, daytime boolean, or daytime hours. Hours are 0 through 23 and start must differ from end."
           },
           "500": {
             "content": {
@@ -4171,7 +4197,7 @@
             "description": "The backend could not update or encode the tenant response."
           }
         },
-        "summary": "Update tenant notification settings; daytime messages default off"
+        "summary": "Update tenant notification settings and preferred sleep source"
       }
     },
     "/api/sleep/balance": {

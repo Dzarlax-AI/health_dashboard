@@ -72,13 +72,34 @@ func (s *DB) WakeTimeForDateContext(ctx context.Context, date string, loc *time.
 	winStart := d.AddDate(0, 0, -1).Add(12 * time.Hour)
 	winEnd := d.AddDate(0, 0, 2).Add(12 * time.Hour)
 
-	segs, qerr := s.fetchAsleepSegmentsContext(ctx, winStart, winEnd)
+	raws, qerr := s.fetchAsleepSegmentsContext(ctx, winStart, winEnd)
 	if qerr != nil {
 		return 0, 0, false, false, qerr
 	}
 
-	wake, wakeOK := pickMainSleep(segs, midnightD)
-	onset, onsetOK := pickMainSleep(segs, midnightDPlus1)
+	preferred, err := readPreferredSleepSource(ctx, s.pool)
+	if err != nil {
+		return 0, 0, false, false, err
+	}
+	auto := mergeBySource(raws)
+	wake, wakeOK := pickMainSleep(auto, midnightD)
+	onset, onsetOK := pickMainSleep(auto, midnightDPlus1)
+	if preferred != "" {
+		var intervals []sleepSegment
+		for _, r := range raws {
+			if r.Source == preferred {
+				intervals = append(intervals, sleepSegment{Start: r.Start, End: r.End})
+			}
+		}
+		covered := mergeSegments(intervals, 0)
+		runs := mergeSegments(covered, mergeTolerance)
+		if selected, valid := preferredMainSleep(runs, covered, midnightD); valid {
+			wake, wakeOK = selected, true
+		}
+		if selected, valid := preferredMainSleep(runs, covered, midnightDPlus1); valid {
+			onset, onsetOK = selected, true
+		}
+	}
 	if !wakeOK || !onsetOK {
 		// imputed_awake_window flag path. Both fields fall back together
 		// so downstream consumers don't mix real + fake on the same day.
@@ -126,13 +147,7 @@ type rawSleepSegment struct {
 // fetchAsleepSegments queries metric_points for asleep-state fragments
 // in [winStart, winEnd] (inclusive of start, exclusive of end), picks
 // the winning source by total hours, and returns merged sleepSegments.
-func (s *DB) fetchAsleepSegments(winStart, winEnd time.Time) ([]sleepSegment, error) {
-	ctx, cancel := queryCtx()
-	defer cancel()
-	return s.fetchAsleepSegmentsContext(ctx, winStart, winEnd)
-}
-
-func (s *DB) fetchAsleepSegmentsContext(ctx context.Context, winStart, winEnd time.Time) ([]sleepSegment, error) {
+func (s *DB) fetchAsleepSegmentsContext(ctx context.Context, winStart, winEnd time.Time) ([]rawSleepSegment, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT date, qty, source
 		  FROM metric_points
@@ -142,7 +157,7 @@ func (s *DB) fetchAsleepSegmentsContext(ctx context.Context, winStart, winEnd ti
 		   AND SUBSTRING(date, 12, 8) != '00:00:00'
 		   AND SUBSTRING(date, 1, 10) >= TO_CHAR($1::timestamptz, 'YYYY-MM-DD')
 		   AND SUBSTRING(date, 1, 10) <= TO_CHAR($2::timestamptz, 'YYYY-MM-DD')
-		 ORDER BY date ASC`, winStart, winEnd)
+		 ORDER BY date ASC, metric_name COLLATE "C", qty`, winStart, winEnd)
 	if err != nil {
 		return nil, err
 	}
@@ -168,7 +183,23 @@ func (s *DB) fetchAsleepSegmentsContext(ctx context.Context, winStart, winEnd ti
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return mergeBySource(raws), nil
+	return raws, nil
+}
+
+// A short capture or a tolerated gap cannot by itself override an observed
+// night. Count covered time in the chosen run separately for each midnight.
+func preferredMainSleep(runs, covered []sleepSegment, midnight time.Time) (sleepSegment, bool) {
+	selected, ok := pickMainSleep(runs, midnight)
+	if !ok {
+		return sleepSegment{}, false
+	}
+	var asleep time.Duration
+	for _, interval := range covered {
+		if !interval.Start.Before(selected.Start) && !interval.End.After(selected.End) {
+			asleep += interval.Duration()
+		}
+	}
+	return selected, asleep > time.Hour
 }
 
 // mergeBySource picks the winning source (Apple Watch > RingConn >
@@ -202,40 +233,44 @@ func mergeBySource(raws []rawSleepSegment) []sleepSegment {
 // sleepCrossValidationPickExpr (see CLAUDE.md "Sleep Source
 // Cross-Validation").
 func pickWinningSource(totals map[string]float64) string {
-	if len(totals) == 0 {
-		return ""
+	return pickSleepSource(totals, true)
+}
+
+// A preference competes only within the current signal class.
+func chooseSleepSource(totals map[string]float64, preferRing bool, preferred string) (source, reason string) {
+	if preferred == "" {
+		return pickSleepSource(totals, preferRing), "automatic"
 	}
-	var watch string
-	var watchHours float64
-	for src, h := range totals {
-		if (strings.Contains(src, "Ultra") || strings.Contains(src, "Apple Watch")) && h > 1.0 && h > watchHours {
-			watch = src
-			watchHours = h
+	if totals[preferred] > 1 {
+		return preferred, "preferred"
+	}
+	return pickSleepSource(totals, preferRing), "preferred_unavailable"
+}
+
+// SRI historically gives RingConn the ordinary fallback rank. Wake detection,
+// its probe, daily wake and sleep architecture give RingConn its own rank.
+func pickSleepSource(totals map[string]float64, preferRing bool) string {
+	var winner string
+	var bestHours float64
+	bestRank := 3
+	for source, hours := range totals {
+		if !(hours > 0) {
+			continue
+		}
+		rank := 2
+		if hours > 1 {
+			switch {
+			case strings.Contains(source, "Ultra"), strings.Contains(source, "Apple Watch"):
+				rank = 0
+			case preferRing && strings.Contains(source, "RingConn"):
+				rank = 1
+			}
+		}
+		if rank < bestRank || rank == bestRank && (hours > bestHours || hours == bestHours && source < winner) {
+			winner, bestRank, bestHours = source, rank, hours
 		}
 	}
-	if watch != "" {
-		return watch
-	}
-	var ring string
-	var ringHours float64
-	for src, h := range totals {
-		if strings.Contains(src, "RingConn") && h > 1.0 && h > ringHours {
-			ring = src
-			ringHours = h
-		}
-	}
-	if ring != "" {
-		return ring
-	}
-	var fallback string
-	var fallbackHours float64
-	for src, h := range totals {
-		if h > fallbackHours {
-			fallbackHours = h
-			fallback = src
-		}
-	}
-	return fallback
+	return winner
 }
 
 // mergeSegments merges sorted-or-unsorted segments where consecutive

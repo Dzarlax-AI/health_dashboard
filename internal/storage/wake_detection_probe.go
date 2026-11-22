@@ -5,7 +5,7 @@ import (
 )
 
 // WakeCandidateVariants is a read-only diagnostic comparison used by
-// cmd/wake_detection_probe while wake-v1 is being calibrated.
+// cmd/wake_detection_probe during wake calibration.
 type WakeCandidateVariants struct {
 	SleepTotalEnd      time.Time
 	DetailedSessionEnd time.Time
@@ -37,7 +37,7 @@ func (s *DB) WakeCandidateVariantsForDate(localDate string, loc *time.Location) 
 		   AND quality='ok'
 		   AND qty > 0
 		   AND SUBSTRING(date,1,10) BETWEEN $1 AND $2
-		 ORDER BY date, metric_name
+		 ORDER BY qty, date, metric_name COLLATE "C"
 	`, from, localDate)
 	if err != nil {
 		return WakeCandidateVariants{}, err
@@ -64,10 +64,25 @@ func (s *DB) WakeCandidateVariantsForDate(localDate string, loc *time.Location) 
 	if err := rows.Err(); err != nil {
 		return WakeCandidateVariants{}, err
 	}
-	source := pickWinningSource(totals)
+	preferred, err := readPreferredSleepSource(ctx, s.pool)
+	if err != nil {
+		return WakeCandidateVariants{}, err
+	}
+	source, reason := chooseSleepSource(totals, true, preferred)
+	if reason == "preferred" {
+		out := probeVariantsForSource(input, source, localDate, loc)
+		if !out.SleepTotalEnd.IsZero() || !out.DetailedSessionEnd.IsZero() || !out.SummarySessionEnd.IsZero() {
+			return out, nil
+		}
+		source = pickWinningSource(totals)
+	}
 	if source == "" {
 		return WakeCandidateVariants{}, nil
 	}
+	return probeVariantsForSource(input, source, localDate, loc), nil
+}
+
+func probeVariantsForSource(input []wakeProbeRow, source, localDate string, loc *time.Location) WakeCandidateVariants {
 	var out WakeCandidateVariants
 	out.SelectedSource = source
 	type summary struct {
@@ -116,8 +131,5 @@ func (s *DB) WakeCandidateVariantsForDate(localDate string, loc *time.Location) 
 			out.SummarySessionEnd = end
 		}
 	}
-	if out.SleepTotalEnd.IsZero() && out.DetailedSessionEnd.IsZero() && out.SummarySessionEnd.IsZero() {
-		return out, nil
-	}
-	return out, nil
+	return out
 }

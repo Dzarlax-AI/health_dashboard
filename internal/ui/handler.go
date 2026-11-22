@@ -1109,7 +1109,7 @@ func (h *Handler) pageMetricDetail(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) pageSettings(w http.ResponseWriter, r *http.Request) {
 	setLangCookie(w, r)
-	renderPage(w, "settings", h.basePage(r, "Settings", "settings"))
+	renderPage(w, "settings", h.basePage(r, T(langFromRequest(r), "nav_settings"), "settings"))
 }
 
 func (h *Handler) pageAdmin(w http.ResponseWriter, r *http.Request) {
@@ -3120,7 +3120,7 @@ func operationalContractWindow(h *Handler, db *storage.DB, schema string, days i
 	return fromT.Format("2006-01-02"), to
 }
 
-// userSettings handles GET/POST /api/settings — Telegram config, available to all users.
+// userSettings handles profile settings on the authenticated tenant connection.
 func (h *Handler) userSettings(w http.ResponseWriter, r *http.Request) {
 	db := h.tenantDB(r)
 	schema := h.tenantSchema(r)
@@ -3145,6 +3145,7 @@ func (h *Handler) userSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		allowed := map[string]bool{
+			storage.PreferredSleepSourceSetting: true,
 			"telegram_token": true, "telegram_chat_id": true, "report_lang": true,
 			"timezone":               true,
 			"report_morning_weekday": true, "report_morning_weekend": true,
@@ -3197,7 +3198,11 @@ func (h *Handler) userSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		oldToday := db.Today()
 
-		if err := db.SaveSettings(clean); err != nil {
+		if err := db.SaveUserSettings(r.Context(), clean); err != nil {
+			if errors.Is(err, storage.ErrUnknownSleepSource) {
+				http.Error(w, "unknown sleep source", http.StatusBadRequest)
+				return
+			}
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -3236,7 +3241,16 @@ func (h *Handler) userSettings(w http.ResponseWriter, r *http.Request) {
 
 	notifyDefaults := h.mgr.NotifyDefaultsFor(schema)
 	cfg := db.GetNotifyConfig(notifyDefaults)
+	preferred, sources, err := db.SleepSourcePreference(r.Context())
+	if err != nil {
+		http.Error(w, "could not load sleep sources", http.StatusInternalServerError)
+		return
+	}
+	if sources == nil {
+		sources = []string{}
+	}
 	out := clientapi.NotificationSettingsResponse{
+		PreferredSleepSource: preferred, SleepSources: sources,
 		TelegramToken: cfg.Token, TelegramChatID: cfg.ChatID, ReportLang: cfg.Lang, Timezone: cfg.Timezone,
 		MorningWeekday: cfg.MorningWeekdayHour, MorningWeekend: cfg.MorningWeekendHour,
 		EveningWeekday: cfg.EveningWeekdayHour, EveningWeekend: cfg.EveningWeekendHour,

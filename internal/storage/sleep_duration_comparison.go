@@ -46,12 +46,14 @@ func (s *DB) GetSleepDurationComparison(ctx context.Context, wakeDate string) *h
 	var mean *float64
 	err = s.pool.QueryRow(readCtx, `
 		select n.duration_hours,n.source,n.source_epoch,n.algorithm_version,n.input_hash,
-		       n.capture_completeness,n.duration_assessment,n.finalization_state,n.claim_eligibility,n.observed_at,
+		       coalesce(n.diagnostics->>'preferred_sleep_source',''),coalesce(n.diagnostics->>'source_selection_reason',''),
+               n.capture_completeness,n.duration_assessment,n.finalization_state,n.claim_eligibility,n.observed_at,
 		       r.window_start,r.window_end_exclusive,r.rule_version,r.eligible_nights,r.reference_hours,r.history_version
 		  from completed_night_sleep n
 		  join sleep_duration_reference_v1 r using (wake_date,source,source_epoch,algorithm_version)
 		 where n.wake_date=$1`, wakeDate).Scan(
 		&n.DurationHours, &n.Source, &n.SourceEpoch, &n.AlgorithmVersion, &n.InputHash,
+		&fact.PreferredSleepSource, &fact.SourceSelectionReason,
 		&n.CaptureCompleteness, &n.DurationAssessment, &n.FinalizationState, &n.ClaimEligibility, &n.ObservedAt,
 		&windowStart, &windowEnd, &ruleVersion, &count, &mean, &historyVersion)
 	if errors.Is(err, pgx.ErrNoRows) {

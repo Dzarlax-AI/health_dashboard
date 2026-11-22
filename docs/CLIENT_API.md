@@ -234,3 +234,9 @@ Partial `POST /api/settings` retains the existing string-valued map contract.
 Daytime boolean/hour values are validated before any settings are saved; hours
 are 0–23, unequal, with overnight windows supported. No tenant is activated by
 this release. See [delivery contracts](INSIGHTS_AND_REPORT_HISTORY.md).
+
+### Sleep source preference
+
+The authenticated user's `GET /api/settings` includes `sleep_sources` (exact known source strings) and `preferred_sleep_source`. A partial POST with `{"preferred_sleep_source":""}` restores automatic selection. A nonempty selection must belong to the same tenant's available sources or be its already-saved preference. Invalid choices return HTTP 400 and all changes in that request are rejected.
+
+New sleep comparisons can carry the preferred source and selection reason recorded with the calculation. The actual source remains in `source`. Older results can omit the reason. A device label from legacy points and an opaque sync source ID are independently selectable when their identities differ.

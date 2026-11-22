@@ -20,7 +20,7 @@ func (s *DB) MorningSleepReadiness(ctx context.Context, date string, now time.Ti
 	if err != nil {
 		return none, err
 	}
-	rows, err := s.pool.Query(ctx, `SELECT metric_name,date,qty,source,quality,received_at FROM metric_points WHERE metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_unspecified','sleep_awake') AND quality='ok' AND qty>0 AND SUBSTRING(date,1,10) BETWEEN $1 AND $2 ORDER BY date,metric_name`, day.AddDate(0, 0, -1).Format("2006-01-02"), date)
+	rows, err := s.pool.Query(ctx, `SELECT metric_name,date,qty,source,quality,received_at FROM metric_points WHERE metric_name IN ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_unspecified','sleep_awake') AND quality='ok' AND qty>0 AND SUBSTRING(date,1,10) BETWEEN $1 AND $2 ORDER BY qty,date,metric_name COLLATE "C"`, day.AddDate(0, 0, -1).Format("2006-01-02"), date)
 	if err != nil {
 		return none, err
 	}
@@ -42,7 +42,11 @@ func (s *DB) MorningSleepReadiness(ctx context.Context, date string, now time.Ti
 	if err != nil {
 		return none, err
 	}
-	candidate, ok, err := selectWakeCandidate(segments, date, loc)
+	preferred, err := readPreferredSleepSource(ctx, s.pool)
+	if err != nil {
+		return none, err
+	}
+	candidate, ok, err := selectWakeCandidateWithPreference(segments, date, loc, preferred)
 	if err != nil || !ok {
 		none.Reason = "wake_unavailable"
 		if len(segments) > 0 {

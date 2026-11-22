@@ -1,0 +1,11 @@
+version: 2
+sources:
+  - name: preferred_sleep_source
+    schema: source_data
+    description: Synthetic inputs and captured packet decisions for comparing per-tenant sleep source selection.
+    tables:
+      - name: wake_segment_case
+      - name: wake_segment
+      - name: sri_captures
+      - name: sri_segments
+      - name: sleep_rollout_daily

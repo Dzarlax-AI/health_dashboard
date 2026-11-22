@@ -215,10 +215,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Tenant notification settings */
+        /** Tenant notification settings and available sleep sources */
         get: operations["getNotificationSettings"];
         put?: never;
-        /** Update tenant notification settings; daytime messages default off */
+        /** Update tenant notification settings and preferred sleep source */
         post: operations["updateNotificationSettings"];
         delete?: never;
         options?: never;
@@ -639,9 +639,11 @@ export interface components {
                 finalization?: string;
                 /** Format: date-time */
                 observed_at?: string;
+                preferred_sleep_source?: string;
                 reference_minutes: number | null;
                 rule_version: string;
                 source?: string;
+                source_selection_reason?: string;
                 /** @enum {string} */
                 status: "available" | "no_night" | "ineligible_night" | "insufficient_history" | "unavailable";
                 wake_date: string;
@@ -702,6 +704,7 @@ export interface components {
         NotificationSettingsResponse: {
             enabled: boolean;
             is_admin?: boolean;
+            preferred_sleep_source: string;
             report_daytime_enabled: boolean;
             report_daytime_end_hour: number;
             report_daytime_start_hour: number;
@@ -710,6 +713,7 @@ export interface components {
             report_lang: string;
             report_morning_weekday: number;
             report_morning_weekend: number;
+            sleep_sources: string[] | null;
             telegram_chat_id: string;
             telegram_token: string;
             tenant?: string;
@@ -855,9 +859,11 @@ export interface components {
                 finalization?: string;
                 /** Format: date-time */
                 observed_at?: string;
+                preferred_sleep_source?: string;
                 reference_minutes: number | null;
                 rule_version: string;
                 source?: string;
+                source_selection_reason?: string;
                 /** @enum {string} */
                 status: "available" | "no_night" | "ineligible_night" | "insufficient_history" | "unavailable";
                 wake_date: string;
@@ -1696,7 +1702,7 @@ export interface operations {
                     "text/html": string;
                 };
             };
-            /** @description Invalid JSON, daytime boolean, or daytime hours. Hours are 0 through 23 and start must differ from end. */
+            /** @description Invalid JSON, unknown sleep source, daytime boolean, or daytime hours. Hours are 0 through 23 and start must differ from end. */
             400: {
                 headers: {
                     [name: string]: unknown;

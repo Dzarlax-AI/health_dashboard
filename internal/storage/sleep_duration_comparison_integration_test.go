@@ -58,7 +58,21 @@ func TestSleepDurationComparisonSnapshots(t *testing.T) {
 			export = append(export, chartRow{Scenario: scenario, SleepDurationComparison: *f})
 		}
 	}
+	if err := db.SaveSettings(map[string]string{PreferredSleepSourceSetting: "Later choice"}); err != nil {
+		t.Fatal(err)
+	}
 	six := db.GetSleepDurationComparison(ctx, wake)
+	if six.SourceSelectionReason != "" || six.PreferredSleepSource != "" {
+		t.Fatalf("an old night adopted the current preference: %+v", six)
+	}
+	if _, err := db.pool.Exec(ctx, `UPDATE completed_night_sleep SET diagnostics='{"source_selection_reason":"preferred_unavailable","preferred_sleep_source":"Earlier choice"}' WHERE wake_date=$1`, wake); err != nil {
+		t.Fatal(err)
+	}
+	explained := db.GetSleepDurationComparison(ctx, wake)
+	if explained.Source != "Synthetic Watch" || explained.PreferredSleepSource != "Earlier choice" || explained.SourceSelectionReason != "preferred_unavailable" || explained.FactVersion == six.FactVersion {
+		t.Fatalf("snapshot explanation: %+v", explained)
+	}
+
 	if six.Status != health.SleepComparisonInsufficient || *six.EligibleNights != 6 || six.DeltaMinutes != nil {
 		t.Fatalf("threshold: %+v", six)
 	}

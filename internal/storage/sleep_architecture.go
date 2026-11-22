@@ -106,6 +106,10 @@ func (s *DB) LoadSleepArchitectureDays(from, to string) (map[string]SleepArchite
 	queryFrom := fromT.AddDate(0, 0, -1).Format(isoDate)
 	ctx, cancel := queryCtx()
 	defer cancel()
+	preferred, err := readPreferredSleepSource(ctx, s.pool)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT date, metric_name, source, qty
 		  FROM metric_points
@@ -114,7 +118,7 @@ func (s *DB) LoadSleepArchitectureDays(from, to string) (map[string]SleepArchite
 		   AND quality = 'ok'
 		   AND SUBSTRING(date, 12, 8) != '00:00:00'
 		   AND SUBSTRING(date, 1, 10) BETWEEN $1 AND $2
-		 ORDER BY date ASC
+		 ORDER BY date ASC, metric_name COLLATE "C", qty
 	`, queryFrom, to)
 	if err != nil {
 		return nil, fmt.Errorf("LoadSleepArchitectureDays: %w", err)
@@ -133,7 +137,7 @@ func (s *DB) LoadSleepArchitectureDays(from, to string) (map[string]SleepArchite
 		return nil, err
 	}
 
-	all := ComputeSleepArchitectureDays(raw)
+	all := computeSleepArchitectureDays(raw, preferred)
 	out := map[string]SleepArchitectureDay{}
 	for date, day := range all {
 		if date >= from && date <= to {
@@ -147,6 +151,10 @@ func (s *DB) LoadSleepArchitectureDays(from, to string) (map[string]SleepArchite
 // from raw metric segments. It picks one source per date before
 // deriving architecture features.
 func ComputeSleepArchitectureDays(raw []SleepArchitectureRawSegment) map[string]SleepArchitectureDay {
+	return computeSleepArchitectureDays(raw, "")
+}
+
+func computeSleepArchitectureDays(raw []SleepArchitectureRawSegment, preferred string) map[string]SleepArchitectureDay {
 	grouped := map[string][]architectureSegment{}
 	for _, r := range raw {
 		if r.Hours <= 0 || r.Source == "" {
@@ -168,17 +176,17 @@ func ComputeSleepArchitectureDays(raw []SleepArchitectureRawSegment) map[string]
 
 	out := map[string]SleepArchitectureDay{}
 	for date, segs := range grouped {
-		out[date] = computeSleepArchitectureDay(date, segs)
+		out[date] = computeSleepArchitectureDay(date, segs, preferred)
 	}
 	return out
 }
 
-func computeSleepArchitectureDay(date string, segs []architectureSegment) SleepArchitectureDay {
+func computeSleepArchitectureDay(date string, segs []architectureSegment, preferred string) SleepArchitectureDay {
 	if len(segs) == 0 {
 		return missingArchitectureDay(date, SleepArchitectureReasonMissingSegments)
 	}
 
-	nightAsleep, source := architectureNightAsleepSegments(date, segs)
+	nightAsleep, source := architectureNightAsleepSegments(date, segs, preferred)
 	if source == "" {
 		return missingArchitectureDay(date, SleepArchitectureReasonMissingSegments)
 	}
@@ -247,7 +255,7 @@ func computeSleepArchitectureDay(date string, segs []architectureSegment) SleepA
 	}
 }
 
-func architectureNightAsleepSegments(date string, segs []architectureSegment) ([]architectureSegment, string) {
+func architectureNightAsleepSegments(date string, segs []architectureSegment, preferred string) ([]architectureSegment, string) {
 	if len(segs) == 0 {
 		return nil, ""
 	}
@@ -271,7 +279,7 @@ func architectureNightAsleepSegments(date string, segs []architectureSegment) ([
 		sourceHours[s.Source] += s.End.Sub(s.Start).Hours()
 	}
 
-	source := pickWinningSource(sourceHours)
+	source, _ := chooseSleepSource(sourceHours, true, preferred)
 	if source == "" {
 		return nil, ""
 	}
