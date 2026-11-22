@@ -242,8 +242,8 @@ func clientPaths() map[string]any {
 		jsonResponseRef("SleepGoalResponse"),
 	)
 	sleepGoalPutOperation["responses"].(map[string]any)["400"] = jsonErrorResponse("Invalid effective date or goal hours outside 3 through 14.")
-	settingsPostOperation := putOperation("updateNotificationSettings", "Update tenant notification settings; daytime messages default off", "NotificationSettingsRequest", jsonResponseRef("SettingsUpdateResponse"))
-	settingsPostOperation["responses"].(map[string]any)["400"] = plainTextResponse("Invalid JSON, daytime boolean, or daytime hours. Hours are 0 through 23 and start must differ from end.")
+	settingsPostOperation := putOperation("updateNotificationSettings", "Update tenant notification settings and preferred sleep source", "NotificationSettingsRequest", jsonResponseRef("SettingsUpdateResponse"))
+	settingsPostOperation["responses"].(map[string]any)["400"] = plainTextResponse("Invalid JSON, unknown sleep source, daytime boolean, or daytime hours. Hours are 0 through 23 and start must differ from end.")
 
 	return map[string]any{
 		"/api/dashboard": map[string]any{
@@ -277,7 +277,7 @@ func clientPaths() map[string]any {
 			"get": getOperation("listReportHistory", "Archived report deliveries", []any{stringQueryParameter("from", "First local date, YYYY-MM-DD."), stringQueryParameter("to", "Last local date, YYYY-MM-DD."), stringQueryParameter("kind", "morning, evening, or proactive."), integerQueryParameter("limit", 20, 1, 100), stringQueryParameter("cursor", "Continuation cursor.")}, jsonResponseRef("ReportHistoryResponse")),
 		},
 		"/api/settings": map[string]any{
-			"get":  getOperation("getNotificationSettings", "Tenant notification settings", nil, jsonResponseRef("NotificationSettingsResponse")),
+			"get":  getOperation("getNotificationSettings", "Tenant notification settings and available sleep sources", nil, jsonResponseRef("NotificationSettingsResponse")),
 			"post": settingsPostOperation,
 		},
 		"/api/reports/history/{id}": map[string]any{

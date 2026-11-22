@@ -16,21 +16,23 @@ const (
 )
 
 type SleepDurationComparison struct {
-	WakeDate           string     `json:"wake_date"`
-	Status             string     `json:"status" jsonschema:"enum=available,enum=no_night,enum=ineligible_night,enum=insufficient_history,enum=unavailable"`
-	DurationMinutes    *int       `json:"duration_minutes" jsonschema:"nullable"`
-	Source             string     `json:"source,omitempty"`
-	Capture            string     `json:"capture,omitempty"`
-	Assessment         string     `json:"assessment,omitempty"`
-	Finalization       string     `json:"finalization,omitempty"`
-	WindowStart        string     `json:"window_start"`
-	WindowEndExclusive string     `json:"window_end_exclusive"`
-	EligibleNights     *int       `json:"eligible_nights" jsonschema:"nullable"`
-	ReferenceMinutes   *int       `json:"reference_minutes" jsonschema:"nullable"`
-	DeltaMinutes       *int       `json:"delta_minutes" jsonschema:"nullable"`
-	RuleVersion        string     `json:"rule_version"`
-	ObservedAt         *time.Time `json:"observed_at,omitempty"`
-	FactVersion        string     `json:"fact_version,omitempty"`
+	WakeDate              string     `json:"wake_date"`
+	Status                string     `json:"status" jsonschema:"enum=available,enum=no_night,enum=ineligible_night,enum=insufficient_history,enum=unavailable"`
+	DurationMinutes       *int       `json:"duration_minutes" jsonschema:"nullable"`
+	Source                string     `json:"source,omitempty"`
+	PreferredSleepSource  string     `json:"preferred_sleep_source,omitempty"`
+	SourceSelectionReason string     `json:"source_selection_reason,omitempty"`
+	Capture               string     `json:"capture,omitempty"`
+	Assessment            string     `json:"assessment,omitempty"`
+	Finalization          string     `json:"finalization,omitempty"`
+	WindowStart           string     `json:"window_start"`
+	WindowEndExclusive    string     `json:"window_end_exclusive"`
+	EligibleNights        *int       `json:"eligible_nights" jsonschema:"nullable"`
+	ReferenceMinutes      *int       `json:"reference_minutes" jsonschema:"nullable"`
+	DeltaMinutes          *int       `json:"delta_minutes" jsonschema:"nullable"`
+	RuleVersion           string     `json:"rule_version"`
+	ObservedAt            *time.Time `json:"observed_at,omitempty"`
+	FactVersion           string     `json:"fact_version,omitempty"`
 }
 
 // ParseSleepComparisonDate requires a calendar date whose 30-day window can

@@ -193,8 +193,23 @@ func reconcileCompletedNightSleep(ctx context.Context, catalog sleepNightCatalog
 	if err != nil || len(candidates) == 0 {
 		return err
 	}
+	preferred, err := readPreferredSleepSource(ctx, catalog)
+	if err != nil {
+		return err
+	}
+	qualifies := func(n nightCandidate) bool {
+		return n.full() && health.PlausibleNightDuration(n.hours)
+	}
 	sort.Slice(candidates, func(i, j int) bool {
 		left, right := candidates[i], candidates[j]
+		if preferred != "" {
+			if qualifies(left) != qualifies(right) {
+				return qualifies(left)
+			}
+			if qualifies(left) && (left.Source == preferred) != (right.Source == preferred) {
+				return left.Source == preferred
+			}
+		}
 		if left.full() != right.full() {
 			return left.full()
 		}
@@ -211,8 +226,15 @@ func reconcileCompletedNightSleep(ctx context.Context, catalog sleepNightCatalog
 		capture, state = health.NightCaptureUnknown, "quality_not_ok"
 	}
 	for _, other := range candidates[1:] {
-		if selected.full() != other.full() || nightSleepSourceRank(other.Source) != nightSleepSourceRank(selected.Source) {
+		// An explicit eligible source has a rank of its own.
+		if preferred != "" && qualifies(selected) && selected.Source == preferred {
 			break
+		}
+		if preferred != "" && qualifies(other) != qualifies(selected) {
+			continue
+		}
+		if selected.full() != other.full() || nightSleepSourceRank(other.Source) != nightSleepSourceRank(selected.Source) {
+			continue
 		}
 		if other.SourceEpoch == selected.SourceEpoch && other.hours > 0 && other.quality == "ok" &&
 			(other.MetricDate != selected.MetricDate || other.hours != selected.hours) {
@@ -224,6 +246,14 @@ func reconcileCompletedNightSleep(ctx context.Context, catalog sleepNightCatalog
 	if state == "conflicting" {
 		hashMaterial += "\x1f" + state
 	}
+	reason := "automatic"
+	if preferred != "" {
+		reason = "preferred_unavailable"
+		if selected.Source == preferred && qualifies(selected) && state == "selected" {
+			reason = "preferred"
+		}
+		hashMaterial += "\x1f" + preferred + "\x1f" + reason
+	}
 	inputHash := fmt.Sprintf("%x", sha256.Sum256([]byte(hashMaterial)))
 	canonical, err := health.CanonicalizeCompletedNight(health.CanonicalNightInput{
 		WakeDate: wakeDate, DurationHours: selected.hours, Source: selected.Source, SourceEpoch: selected.SourceEpoch,
@@ -234,7 +264,7 @@ func reconcileCompletedNightSleep(ctx context.Context, catalog sleepNightCatalog
 	if err != nil {
 		return err
 	}
-	return saveCompletedNightSleep(ctx, catalog, canonical, map[string]string{"candidate_state": state, "coverage_generation": selected.CoverageGeneration})
+	return saveCompletedNightSleep(ctx, catalog, canonical, map[string]string{"preferred_sleep_source": preferred, "source_selection_reason": reason, "candidate_state": state, "coverage_generation": selected.CoverageGeneration})
 }
 
 func nightSleepSourceRank(source string) int {

@@ -71,12 +71,12 @@ func TestRolloutSelectionDaytimeAndDST(t *testing.T) {
 		}, Stages: []sleepwire.Stage{{Kind: "asleep_unspecified", Start: start, End: end}}}
 		days[key] = &rolloutEpisodeDay{zone: location.String(), episodes: groupRolloutSnapshot("shift", "ring", 1, snapshot, location)}
 	}
-	decision, main := selectRolloutDay(days, date)
+	decision, main := selectRolloutDay(days, date, "")
 	if decision.Main == "" || sleepstudy.Duration(main.episode.Asleep) != 543*time.Minute {
 		t.Fatalf("daytime main at DST: %+v", decision)
 	}
 	days[date].mixedZone = true
-	decision, _ = selectRolloutDay(days, date)
+	decision, _ = selectRolloutDay(days, date, "")
 	if decision.Main != "" || decision.Reason != "mixed_zones" {
 		t.Fatalf("mixed-zone selection: %+v", decision)
 	}

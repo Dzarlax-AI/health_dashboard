@@ -17,21 +17,23 @@ type SessionResponse struct {
 }
 
 type NotificationSettingsResponse struct {
-	TelegramToken    string `json:"telegram_token"`
-	TelegramChatID   string `json:"telegram_chat_id"`
-	ReportLang       string `json:"report_lang"`
-	Timezone         string `json:"timezone"`
-	MorningWeekday   int    `json:"report_morning_weekday"`
-	MorningWeekend   int    `json:"report_morning_weekend"`
-	EveningWeekday   int    `json:"report_evening_weekday"`
-	EveningWeekend   int    `json:"report_evening_weekend"`
-	DaytimeEnabled   bool   `json:"report_daytime_enabled"`
-	DaytimeStartHour int    `json:"report_daytime_start_hour"`
-	DaytimeEndHour   int    `json:"report_daytime_end_hour"`
-	Enabled          bool   `json:"enabled"`
-	Username         string `json:"username,omitempty"`
-	Tenant           string `json:"tenant,omitempty"`
-	IsAdmin          *bool  `json:"is_admin,omitempty"`
+	PreferredSleepSource string   `json:"preferred_sleep_source"`
+	SleepSources         []string `json:"sleep_sources"`
+	TelegramToken        string   `json:"telegram_token"`
+	TelegramChatID       string   `json:"telegram_chat_id"`
+	ReportLang           string   `json:"report_lang"`
+	Timezone             string   `json:"timezone"`
+	MorningWeekday       int      `json:"report_morning_weekday"`
+	MorningWeekend       int      `json:"report_morning_weekend"`
+	EveningWeekday       int      `json:"report_evening_weekday"`
+	EveningWeekend       int      `json:"report_evening_weekend"`
+	DaytimeEnabled       bool     `json:"report_daytime_enabled"`
+	DaytimeStartHour     int      `json:"report_daytime_start_hour"`
+	DaytimeEndHour       int      `json:"report_daytime_end_hour"`
+	Enabled              bool     `json:"enabled"`
+	Username             string   `json:"username,omitempty"`
+	Tenant               string   `json:"tenant,omitempty"`
+	IsAdmin              *bool    `json:"is_admin,omitempty"`
 }
 
 // Settings updates retain the existing partial map-of-strings wire contract.

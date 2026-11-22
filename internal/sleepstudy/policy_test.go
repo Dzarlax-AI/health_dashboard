@@ -99,3 +99,29 @@ func TestInvalidSpansAndUnion(t *testing.T) {
 		t.Fatalf("union/duration/overlap failed")
 	}
 }
+
+func TestSelectPreferredQualifiedEpisode(t *testing.T) {
+	ring := ep("long", "ring", 0, []Span{overnight(22, 0, 7, 0)})
+	watch := ep("shorter", "watch-2", 3, []Span{overnight(23, 0, 7, 0)})
+	w := window(21, 0, 8, 0, 7*time.Hour)
+	selectWith := func(want string, episodes ...Episode) Decision { return SelectPreferred(episodes, w, want) }
+	if got := selectWith("watch-2", ring, watch); got.Main != watch.ID {
+		t.Fatalf("qualified preference: %+v", got)
+	}
+	if got := selectWith("watch-1", ring, watch); got.Main != ring.ID {
+		t.Fatalf("distinct watch identities: %+v", got)
+	}
+	watch.Covered = false
+	if got := selectWith("watch-2", watch, ring); got.Main != ring.ID {
+		t.Fatalf("uncovered preference: %+v", got)
+	}
+	watch.Covered = true
+	watch.Asleep = []Span{overnight(23, 0, 3, 0)}
+	if got := selectWith("watch-2", watch, ring); got.Main != ring.ID {
+		t.Fatalf("short preference: %+v", got)
+	}
+	watch.Asleep = []Span{overnight(22, 15, 7, 0)}
+	if got := selectWith("watch-2", watch, ring); got.Main != "" || got.Reason != "ambiguous_overlap" {
+		t.Fatalf("ambiguous: %+v", got)
+	}
+}

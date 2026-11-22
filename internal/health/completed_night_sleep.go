@@ -68,6 +68,10 @@ type CanonicalNightInput struct {
 	AlgorithmVersion     string
 }
 
+func PlausibleNightDuration(hours float64) bool {
+	return hours >= 3 && hours <= 14
+}
+
 // CanonicalizeCompletedNight keeps capture completeness, plausibility, and
 // finalization independent. In particular, a complete but implausible duration
 // remains an outlier fact rather than becoming a misleading partial record.
@@ -101,7 +105,7 @@ func CanonicalizeCompletedNight(in CanonicalNightInput, now time.Time, loc *time
 	assessment := NightDurationUnknown
 	if in.DurationHours > 0 {
 		assessment = NightDurationPlausible
-		if in.DurationHours < 3 || in.DurationHours > 14 {
+		if !PlausibleNightDuration(in.DurationHours) {
 			assessment = NightDurationOutlier
 		}
 	}
@@ -153,9 +157,9 @@ func (n CompletedNightSleep) IsDefinitiveClaimEligible() bool {
 // RecentSleepBelowReference is a descriptive claim, never a sleep-debt or
 // biological-need estimate. Unknown input remains unknown rather than zero.
 type RecentSleepBelowReference struct {
-	State            string
-	Reason           string
-	ReferenceHours   float64
+	State          string
+	Reason         string
+	ReferenceHours float64
 	// CurrentShortNightCount is the number of shorter nights among the fixed
 	// D-3..D window. It is deliberately not a consecutive-streak length: a
 	// complete four-night window can have one ordinary night between short ones.

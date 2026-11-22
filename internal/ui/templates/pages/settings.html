@@ -5,10 +5,27 @@
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
       {{T .Lang "back"}}
     </a>
-    <span class="view-title">Settings</span>
+    <span class="view-title">{{T .Lang "nav_settings"}}</span>
   </div>
   <div id="admin-content">
     <div id="admin-body">
+
+      <section class="admin-section" aria-labelledby="sleep-source-title">
+        <div class="section-title" id="sleep-source-title">{{T .Lang "sleep_source_title"}}</div>
+        <form class="admin-settings-form" id="sleep-source-form">
+          <div class="admin-field-row">
+            <label class="admin-field-label" for="cfg-sleep-source">{{T .Lang "sleep_source_label"}}</label>
+            <select class="admin-field-input" id="cfg-sleep-source" aria-describedby="sleep-source-hint" disabled>
+              <option value="">{{T .Lang "sleep_source_automatic"}}</option>
+            </select>
+            <div class="admin-field-hint" id="sleep-source-hint">{{T .Lang "sleep_source_hint"}}</div>
+          </div>
+          <div class="admin-settings-actions">
+            <button class="btn btn--primary btn--small" id="save-sleep-source" type="submit" disabled>{{T .Lang "admin_notify_save"}}</button>
+          </div>
+          <div class="admin-field-hint" id="sleep-source-status" role="status"></div>
+        </form>
+      </section>
 
       <!-- Import -->
       <div class="admin-section" id="admin-import-section">
@@ -213,10 +230,56 @@ function pollImportStatus() {
     .catch(function() { setTimeout(pollImportStatus, 3000); });
 }
 
+var savedSleepSource = '';
+
+function showSleepSources(sources, selected) {
+  var select = $('cfg-sleep-source');
+  var status = $('sleep-source-status');
+  select.options.length = 1; // Keep the localized automatic option.
+  sources.forEach(function(source) { select.add(new Option(source, source)); });
+  if (selected && sources.indexOf(selected) === -1) {
+    var previous = new Option(selected + ' ({{T .Lang "sleep_source_unavailable"}})', selected);
+    previous.disabled = true;
+    select.add(previous);
+  }
+  savedSleepSource = selected;
+  select.value = selected;
+  select.disabled = !sources.length && !selected;
+  $('save-sleep-source').disabled = true;
+  status.textContent = !sources.length && !selected ? '{{T .Lang "sleep_source_empty"}}' : '';
+}
+
+function saveSleepSource(event) {
+  event.preventDefault();
+  var select = $('cfg-sleep-source');
+  var button = $('save-sleep-source');
+  if (button.disabled || select.disabled) return;
+  var selected = select.value;
+  select.disabled = true;
+  button.disabled = true;
+  fetch('/api/settings', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({preferred_sleep_source: selected})
+  }).then(function(response) {
+    if (!response.ok) throw new Error();
+    savedSleepSource = selected;
+    var lastOption = select.options[select.options.length - 1];
+    if (lastOption.disabled) select.remove(lastOption.index);
+    $('sleep-source-status').textContent = '{{T .Lang "sleep_source_saved"}}';
+  }).catch(function() {
+    $('sleep-source-status').textContent = '{{T .Lang "sleep_source_save_error"}}';
+  }).finally(function() {
+    select.disabled = select.options.length === 1;
+    button.disabled = select.value === savedSleepSource;
+  });
+}
+
 function loadSettings() {
   fetch('/api/settings')
-    .then(function(r){return r.json()})
+    .then(function(r){if (!r.ok) throw new Error(); return r.json();})
     .then(function(d) {
+      showSleepSources(d.sleep_sources || [], d.preferred_sleep_source || '');
       // is_admin is omitted in legacy mode and for non-admins; default
       // (true) covers the legacy case, the field gates the Retry
       // button visibility in multi-user mode.
@@ -249,6 +312,8 @@ function loadSettings() {
       $('cfg-daytime-start').value = d.report_daytime_start_hour == null ? 9 : d.report_daytime_start_hour;
       $('cfg-daytime-end').value = d.report_daytime_end_hour == null ? 21 : d.report_daytime_end_hour;
       updateTZRequired();
+    }).catch(function() {
+      $('sleep-source-status').textContent = '{{T .Lang "sleep_source_load_error"}}';
     });
 }
 
@@ -550,6 +615,11 @@ function renderEnergyBackfillProgress(s) {
 }
 
 document.addEventListener('DOMContentLoaded', function() {
+  $('sleep-source-form').addEventListener('submit', saveSleepSource);
+  $('cfg-sleep-source').addEventListener('change', function() {
+    $('save-sleep-source').disabled = this.value === savedSleepSource;
+    $('sleep-source-status').textContent = '';
+  });
   loadSettings();
   loadEnergyBackfillSummary();
   loadWebhookStatus();

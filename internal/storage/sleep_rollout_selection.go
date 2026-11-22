@@ -13,7 +13,7 @@ import (
 	"health-receiver/internal/sleepwire"
 )
 
-const sleepSelectionPolicy = "source-covered-personal-window-v1"
+const sleepSelectionPolicy = "source-covered-personal-window-v2"
 
 // Candidates carry up to 72 elapsed hours, and a neighboring packet can
 // move a borderline fragment across a local date or an offset change.
@@ -44,13 +44,16 @@ type sleepSelection struct {
 // reader. The public audit decodes sleepSelection and omits these identities.
 type storedSleepSelection struct {
 	sleepSelection
-	CompleteSources      []string     `json:"complete_sources,omitempty"`
-	ObservedSources      []string     `json:"observed_sources,omitempty"`
-	GoProjectionOwned    bool         `json:"go_projection_owned,omitempty"`
-	EnergyMainMinSeconds float64      `json:"energy_main_min_seconds,omitempty"`
-	EnergyMainZone       string       `json:"energy_main_zone,omitempty"`
-	EnergyMainEnd        *time.Time   `json:"energy_main_end,omitempty"`
-	EnergyNaps           *[]energyNap `json:"energy_naps,omitempty"`
+	PreferredSleepSource  string       `json:"preferred_sleep_source,omitempty"`
+	SelectedSource        string       `json:"selected_source,omitempty"`
+	SourceSelectionReason string       `json:"source_selection_reason,omitempty"`
+	CompleteSources       []string     `json:"complete_sources,omitempty"`
+	ObservedSources       []string     `json:"observed_sources,omitempty"`
+	GoProjectionOwned     bool         `json:"go_projection_owned,omitempty"`
+	EnergyMainMinSeconds  float64      `json:"energy_main_min_seconds,omitempty"`
+	EnergyMainZone        string       `json:"energy_main_zone,omitempty"`
+	EnergyMainEnd         *time.Time   `json:"energy_main_end,omitempty"`
+	EnergyNaps            *[]energyNap `json:"energy_naps,omitempty"`
 }
 
 func addAffectedEpisodeDates(dates map[string]bool, snapshot sleepwire.Candidate) error {
@@ -72,7 +75,7 @@ func addAffectedEpisodeDates(dates map[string]bool, snapshot sleepwire.Candidate
 	return nil
 }
 
-func (s *DB) refreshSleepEpisodeSelection(ctx context.Context, tx pgx.Tx, profile uuid.UUID, changed []string, strictChanged map[string]bool, priorities []string, generation int64, today string) ([]string, error) {
+func (s *DB) refreshSleepEpisodeSelection(ctx context.Context, tx pgx.Tx, profile uuid.UUID, changed []string, strictChanged map[string]bool, priorities []string, preferred string, generation int64, today string) ([]string, error) {
 	var refreshed []string
 	for _, date := range changed {
 		if strictChanged[date] {
@@ -103,7 +106,7 @@ func (s *DB) refreshSleepEpisodeSelection(ctx context.Context, tx pgx.Tx, profil
 			j++
 		}
 		from, through := subtractDays(dirty[i], rolloutAccountingNeighborDays+rolloutFragmentNeighborDays), subtractDays(dirty[j-1], -sleepstudy.HistoryDays-rolloutAccountingNeighborDays-rolloutFragmentNeighborDays)
-		part, err := refreshSleepEpisodeRange(ctx, tx, profile, strictChanged, priorities, generation, from, min(through, today), today)
+		part, err := refreshSleepEpisodeRange(ctx, tx, profile, strictChanged, priorities, preferred, generation, from, min(through, today), today)
 		if err != nil {
 			return nil, err
 		}
@@ -113,7 +116,7 @@ func (s *DB) refreshSleepEpisodeSelection(ctx context.Context, tx pgx.Tx, profil
 	return refreshed, nil
 }
 
-func refreshSleepEpisodeRange(ctx context.Context, tx pgx.Tx, profile uuid.UUID, strictChanged map[string]bool, priorities []string, generation int64, from, through, today string) ([]string, error) {
+func refreshSleepEpisodeRange(ctx context.Context, tx pgx.Tx, profile uuid.UUID, strictChanged map[string]bool, priorities []string, preferred string, generation int64, from, through, today string) ([]string, error) {
 	days, err := loadRolloutEpisodes(ctx, tx, profile, subtractDays(from, sleepstudy.HistoryDays+2*rolloutAccountingNeighborDays+rolloutFragmentNeighborDays), subtractDays(through, -2*rolloutAccountingNeighborDays-rolloutFragmentNeighborDays), priorities)
 	if err != nil {
 		return nil, err
@@ -126,7 +129,7 @@ func refreshSleepEpisodeRange(ctx context.Context, tx pgx.Tx, profile uuid.UUID,
 	selected := make(map[string]rolloutEpisode)
 	for date := subtractDays(from, rolloutAccountingNeighborDays); date <= min(today, subtractDays(through, -rolloutAccountingNeighborDays)); date = subtractDays(date, -1) {
 		if day := days[date]; day != nil {
-			decision, main := selectRolloutDay(days, date)
+			decision, main := selectRolloutDay(days, date, preferred)
 			decisions[date], selected[date] = decision, main
 		}
 	}
@@ -140,6 +143,18 @@ func refreshSleepEpisodeRange(ctx context.Context, tx pgx.Tx, profile uuid.UUID,
 		meta := storedSleepSelection{sleepSelection: sleepSelection{Policy: sleepSelectionPolicy, State: "unknown", Reason: "revision_moved"}}
 		if day != nil {
 			meta = summarizeRolloutDay(days, decisions, selected, date)
+			if main.packetID != "" {
+				meta.PreferredSleepSource = preferred
+				meta.SelectedSource = main.episode.Source
+				switch {
+				case preferred == "":
+					meta.SourceSelectionReason = "automatic"
+				case preferred == main.episode.Source:
+					meta.SourceSelectionReason = "preferred"
+				default:
+					meta.SourceSelectionReason = "preferred_unavailable"
+				}
+			}
 		}
 		meta.GoProjectionOwned = projection.admits(date, meta)
 		raw, err := json.Marshal(meta)
@@ -385,7 +400,7 @@ func rolloutSleepWindow(days map[string]*rolloutEpisodeDay, date, zone string) *
 	return sleepstudy.HistoricalWindow(date, zone, nil, history)
 }
 
-func selectRolloutDay(days map[string]*rolloutEpisodeDay, date string) (sleepstudy.Decision, rolloutEpisode) {
+func selectRolloutDay(days map[string]*rolloutEpisodeDay, date, preferred string) (sleepstudy.Decision, rolloutEpisode) {
 	day := days[date]
 	if day.mixedZone {
 		return sleepstudy.Decision{Reason: "mixed_zones"}, rolloutEpisode{}
@@ -405,7 +420,7 @@ func selectRolloutDay(days map[string]*rolloutEpisodeDay, date string) (sleepstu
 		}
 		episodes = append(episodes, e)
 	}
-	decision := sleepstudy.Select(episodes, window, "")
+	decision := sleepstudy.SelectPreferred(episodes, window, preferred)
 	decision.Additional, decision.Uncertain = resolveAdditionalEpisodes(episodes, decision)
 	for _, candidate := range day.episodes {
 		if candidate.episode.ID == decision.Main {

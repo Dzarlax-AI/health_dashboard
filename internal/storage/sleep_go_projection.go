@@ -99,7 +99,7 @@ const ownedSleepGoProjectionSQL = `d.episode_selection->>'go_projection_owned' =
 // The result and daily row were prepared by the same atomic candidate worker.
 // Missing or ambiguous coverage leaves the ordinary date on its current lane.
 const readySleepGoProjectionSQL = `
-	d.episode_selection->>'policy'='source-covered-personal-window-v1'
+	d.episode_selection->>'policy' IN ('source-covered-personal-window-v1','` + sleepSelectionPolicy + `')
 	AND d.episode_selection->'complete_sources' @> to_jsonb($3::text[])
 	AND d.episode_selection->'observed_sources' <@ to_jsonb($3::text[])
 	AND (d.episode_selection->>'state'='confirmed_source_absence'

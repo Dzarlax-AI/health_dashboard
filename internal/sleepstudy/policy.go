@@ -159,6 +159,16 @@ func intersectionDuration(a, b []Span) time.Duration {
 }
 
 func Select(episodes []Episode, window *Window, anchorID string) Decision {
+	return selectEpisode(episodes, window, anchorID, "")
+}
+
+// SelectPreferred applies a tenant's exact source identity to candidates for
+// the same main sleep after coverage, minimum duration and ambiguity checks.
+func SelectPreferred(episodes []Episode, window *Window, preferred string) Decision {
+	return selectEpisode(episodes, window, "", preferred)
+}
+
+func selectEpisode(episodes []Episode, window *Window, anchorID, preferred string) Decision {
 	d := Decision{}
 	seen := map[string]bool{}
 	for _, e := range episodes {
@@ -215,7 +225,15 @@ func Select(episodes []Episode, window *Window, anchorID string) Decision {
 		d.Reason = "below_threshold"
 		return d
 	}
-	sort.Slice(cs, func(i, j int) bool { return cs[i].overlap > cs[j].overlap })
+	sort.Slice(cs, func(i, j int) bool {
+		if cs[i].overlap != cs[j].overlap {
+			return cs[i].overlap > cs[j].overlap
+		}
+		if cs[i].e.Priority != cs[j].e.Priority {
+			return cs[i].e.Priority < cs[j].e.Priority
+		}
+		return cs[i].e.ID < cs[j].e.ID
+	})
 	best := cs[0]
 	for i := 1; i < len(cs); i++ {
 		other := cs[i]
@@ -227,6 +245,16 @@ func Select(episodes []Episode, window *Window, anchorID string) Decision {
 		if equivalent(best, other) && best.overlap == other.overlap {
 			if other.e.Priority < best.e.Priority || (other.e.Priority == best.e.Priority && other.e.ID < best.e.ID) {
 				best = other
+			}
+		}
+	}
+	if preferred != "" && best.e.Source != preferred {
+		for _, c := range cs {
+			// A separate nap can also intersect a broad personal sleep window.
+			// Require observations of the same episode before applying preference.
+			if c.e.Source == preferred && intersectionDuration(c.asleep, best.asleep) > 0 {
+				best = c
+				break
 			}
 		}
 	}

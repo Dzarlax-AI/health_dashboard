@@ -313,14 +313,8 @@ func (s *DB) SaveSettings(kv map[string]string) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	for k, v := range kv {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO settings (key, value, updated_at)
-			VALUES ($1, $2, NOW()::TEXT)
-			ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-			k, v); err != nil {
-			return err
-		}
+	if err := writeSettings(ctx, tx, kv); err != nil {
+		return err
 	}
 	return tx.Commit(ctx)
 }

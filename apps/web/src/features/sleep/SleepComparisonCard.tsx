@@ -24,6 +24,10 @@ export function SleepComparisonCard({ value, locale, onToday = false }: {
     {value.reference_minutes !== null && <p>{t("sleepComparisonReference")} {duration(value.reference_minutes)}</p>}
     {value.eligible_nights !== null && <p>{t("sleepComparisonCoverage")} {value.eligible_nights} · {dateLabel(value.window_start, locale, true)} – {dateLabel(value.window_end_exclusive, locale, true)} ({t("sleepComparisonEndExclusive")})</p>}
     {value.source && <p>{t("sleepComparisonSource")} {value.source}</p>}
+    {value.source && value.source_selection_reason === "preferred" && <p>{t("sleepComparisonPreferred")}</p>}
+    {value.source && value.source_selection_reason === "preferred_unavailable" && value.preferred_sleep_source &&
+      <p>{t("sleepComparisonFallback").replace("{source}", () => value.preferred_sleep_source ?? "")}</p>}
+    {value.source && value.source_selection_reason === "automatic" && <p>{t("sleepComparisonAutomatic")}</p>}
     <p>{t("sleepComparisonSync")}</p>
   </>;
   return (

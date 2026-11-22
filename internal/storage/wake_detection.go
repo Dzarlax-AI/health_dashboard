@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	WakeFormulaVersion = "wake-v1"
+	WakeFormulaVersion = "wake-v2"
 
 	WakeConfidenceLow    = "low"
 	WakeConfidenceMedium = "medium"
@@ -32,17 +32,19 @@ const (
 )
 
 type MorningWakeStatus struct {
-	Ready          bool      `json:"ready"`
-	Confidence     string    `json:"confidence"`
-	Reason         string    `json:"reason"`
-	CandidateWake  time.Time `json:"candidate_wake,omitempty"`
-	LatestIngest   time.Time `json:"latest_ingest,omitempty"`
-	PostWakeSteps  float64   `json:"post_wake_steps"`
-	InputSource    string    `json:"input_source,omitempty"`
-	InputsHash     string    `json:"inputs_hash,omitempty"`
-	TypicalWakeMin int       `json:"typical_wake_min,omitempty"`
-	TypicalWakeOK  bool      `json:"typical_wake_ok"`
-	Signal         string    `json:"signal,omitempty"`
+	Ready                 bool      `json:"ready"`
+	Confidence            string    `json:"confidence"`
+	Reason                string    `json:"reason"`
+	CandidateWake         time.Time `json:"candidate_wake,omitempty"`
+	LatestIngest          time.Time `json:"latest_ingest,omitempty"`
+	PostWakeSteps         float64   `json:"post_wake_steps"`
+	PreferredSource       string    `json:"preferred_source,omitempty"`
+	SourceSelectionReason string    `json:"source_selection_reason,omitempty"`
+	InputSource           string    `json:"input_source,omitempty"`
+	InputsHash            string    `json:"inputs_hash,omitempty"`
+	TypicalWakeMin        int       `json:"typical_wake_min,omitempty"`
+	TypicalWakeOK         bool      `json:"typical_wake_ok"`
+	Signal                string    `json:"signal,omitempty"`
 }
 
 type wakeInputSegment struct {
@@ -61,12 +63,14 @@ type wakeEligibleSegment struct {
 }
 
 type wakeCandidate struct {
-	Wake             time.Time
-	LatestIngest     time.Time
-	IngestQuietSince time.Time
-	Source           string
-	InputsHash       string
-	Signal           string
+	Wake                  time.Time
+	LatestIngest          time.Time
+	IngestQuietSince      time.Time
+	Source                string
+	SourceSelectionReason string
+	PreferredSource       string
+	InputsHash            string
+	Signal                string
 }
 
 type WakeBackfillResult struct {
@@ -91,13 +95,15 @@ func (s *DB) WakeCandidateForDate(localDate string, loc *time.Location) (Morning
 		return MorningWakeStatus{Confidence: WakeConfidenceLow, Reason: "no_data"}, nil
 	}
 	return MorningWakeStatus{
-		Confidence:    WakeConfidenceLow,
-		Reason:        "candidate_only",
-		CandidateWake: candidate.Wake,
-		LatestIngest:  candidate.LatestIngest,
-		InputSource:   candidate.Source,
-		InputsHash:    candidate.InputsHash,
-		Signal:        candidate.Signal,
+		Confidence:            WakeConfidenceLow,
+		Reason:                "candidate_only",
+		CandidateWake:         candidate.Wake,
+		LatestIngest:          candidate.LatestIngest,
+		InputSource:           candidate.Source,
+		SourceSelectionReason: candidate.SourceSelectionReason,
+		PreferredSource:       candidate.PreferredSource,
+		InputsHash:            candidate.InputsHash,
+		Signal:                candidate.Signal,
 	}, nil
 }
 
@@ -122,7 +128,8 @@ func (s *DB) ComputeMorningWakeStatus(localDate string, loc *time.Location, now 
 	}
 	// Re-read after taking the lock so a slower worker cannot persist a
 	// candidate captured before a newer computation for this date.
-	candidate, ok, err := loadWakeCandidate(ctx, tx, localDate, loc)
+	unit := &DB{pool: &cacheTransaction{Tx: tx, ctx: ctx}}
+	candidate, ok, err := unit.loadWakeCandidateContext(ctx, localDate, loc)
 	if err != nil {
 		return MorningWakeStatus{Confidence: WakeConfidenceLow, Reason: "query_error"}, err
 	}
@@ -202,13 +209,15 @@ func (s *DB) BackfillWakeTimes(from, to string, loc *time.Location, dryRun bool)
 			continue
 		}
 		status := MorningWakeStatus{
-			Confidence:    WakeConfidenceLow,
-			Reason:        "historical_backfill",
-			CandidateWake: candidate.Wake,
-			LatestIngest:  candidate.LatestIngest,
-			InputSource:   candidate.Source,
-			InputsHash:    candidate.InputsHash,
-			Signal:        candidate.Signal,
+			Confidence:            WakeConfidenceLow,
+			Reason:                "historical_backfill",
+			CandidateWake:         candidate.Wake,
+			LatestIngest:          candidate.LatestIngest,
+			InputSource:           candidate.Source,
+			SourceSelectionReason: candidate.SourceSelectionReason,
+			PreferredSource:       candidate.PreferredSource,
+			InputsHash:            candidate.InputsHash,
+			Signal:                candidate.Signal,
 		}
 		if err := s.saveWakeStatus(localDate, status, time.Now()); err != nil {
 			return result, fmt.Errorf("save wake %s: %w", localDate, err)
@@ -221,19 +230,23 @@ func (s *DB) BackfillWakeTimes(from, to string, loc *time.Location, dryRun bool)
 func (s *DB) loadWakeCandidate(localDate string, loc *time.Location) (wakeCandidate, bool, error) {
 	ctx, cancel := queryCtx()
 	defer cancel()
-	return loadWakeCandidate(ctx, s.pool, localDate, loc)
+	return s.loadWakeCandidateContext(ctx, localDate, loc)
 }
 
 type wakeQueryer interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }
 
-func loadWakeCandidate(ctx context.Context, queryer wakeQueryer, localDate string, loc *time.Location) (wakeCandidate, bool, error) {
-	segments, err := loadWakeSegments(ctx, queryer, localDate, loc)
+func (s *DB) loadWakeCandidateContext(ctx context.Context, localDate string, loc *time.Location) (wakeCandidate, bool, error) {
+	segments, err := loadWakeSegments(ctx, s.pool, localDate, loc)
 	if err != nil {
 		return wakeCandidate{}, false, err
 	}
-	return selectWakeCandidate(segments, localDate, loc)
+	preferred, err := readPreferredSleepSource(ctx, s.pool)
+	if err != nil {
+		return wakeCandidate{}, false, err
+	}
+	return selectWakeCandidateWithPreference(segments, localDate, loc, preferred)
 }
 
 func loadWakeSegments(ctx context.Context, queryer wakeQueryer, localDate string, loc *time.Location) ([]wakeInputSegment, error) {
@@ -249,7 +262,7 @@ func loadWakeSegments(ctx context.Context, queryer wakeQueryer, localDate string
 		   AND quality='ok'
 		   AND qty > 0
 		   AND SUBSTRING(date,1,10) BETWEEN $1 AND $2
-		 ORDER BY date, metric_name
+		 ORDER BY qty, date, metric_name COLLATE "C"
 	`, fromDate, localDate)
 	if err != nil {
 		return nil, err
@@ -284,6 +297,10 @@ func loadWakeSegments(ctx context.Context, queryer wakeQueryer, localDate string
 }
 
 func selectWakeCandidate(segments []wakeInputSegment, localDate string, loc *time.Location) (wakeCandidate, bool, error) {
+	return selectWakeCandidateWithPreference(segments, localDate, loc, "")
+}
+
+func selectWakeCandidateWithPreference(segments []wakeInputSegment, localDate string, loc *time.Location, preferred string) (wakeCandidate, bool, error) {
 	if loc == nil {
 		loc = time.UTC
 	}
@@ -321,11 +338,11 @@ func selectWakeCandidate(segments []wakeInputSegment, localDate string, loc *tim
 		}
 	}
 
-	source := pickWinningSource(detailedTotals)
+	source, selectionReason := chooseSleepSource(detailedTotals, true, preferred)
 	selected := detailed
 	signal := "detailed_stage_end"
 	if source == "" {
-		source = pickWinningSource(sleepTotalTotals)
+		source, selectionReason = chooseSleepSource(sleepTotalTotals, true, preferred)
 		selected = rawTotal
 		signal = "raw_sleep_total_end"
 	}
@@ -334,7 +351,7 @@ func selectWakeCandidate(segments []wakeInputSegment, localDate string, loc *tim
 	}
 	if source == "" || len(selected) == 0 {
 		var ok bool
-		source, selected, ok = selectMidnightSummary(segments, localDate, loc, isWakeWindow)
+		source, selected, selectionReason, ok = selectMidnightSummary(segments, localDate, loc, isWakeWindow, preferred)
 		if !ok {
 			return wakeCandidate{}, false, nil
 		}
@@ -407,11 +424,13 @@ func selectWakeCandidate(segments []wakeInputSegment, localDate string, loc *tim
 		fmt.Fprintf(h, "%s|%s|%.6f|%s|%s\n", segment.Metric, segment.Start.UTC().Format(time.RFC3339Nano), segment.Hours, segment.Source, segment.Quality)
 	}
 	return wakeCandidate{
-		Wake:         wake,
-		LatestIngest: latestIngest,
-		Source:       source,
-		InputsHash:   hex.EncodeToString(h.Sum(nil)),
-		Signal:       signal,
+		Wake:                  wake,
+		LatestIngest:          latestIngest,
+		Source:                source,
+		SourceSelectionReason: selectionReason,
+		PreferredSource:       preferred,
+		InputsHash:            hex.EncodeToString(h.Sum(nil)),
+		Signal:                signal,
 	}, true, nil
 }
 
@@ -429,8 +448,8 @@ func selectMidnightSummary(
 	segments []wakeInputSegment,
 	localDate string,
 	loc *time.Location,
-	isWakeWindow func(time.Time) bool,
-) (string, []wakeEligibleSegment, bool) {
+	isWakeWindow func(time.Time) bool, preferred string,
+) (string, []wakeEligibleSegment, string, bool) {
 	type summaryGroup struct {
 		start        time.Time
 		source       string
@@ -466,9 +485,22 @@ func selectMidnightSummary(
 			group.latestIngest = segment.ReceivedAt
 		}
 	}
-	source := pickWinningSource(sourceTotals)
+	source, selectionReason := chooseSleepSource(sourceTotals, true, preferred)
+	if selectionReason == "preferred" {
+		valid := false
+		for _, group := range groups {
+			end := group.start.Add(time.Duration((group.asleepHours + group.awakeHours) * float64(time.Hour)))
+			if group.source == source && group.asleepHours > 0 && isWakeWindow(end) {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			source, selectionReason = pickWinningSource(sourceTotals), "preferred_unavailable"
+		}
+	}
 	if source == "" {
-		return "", nil, false
+		return "", nil, "", false
 	}
 	var best *summaryGroup
 	var wake time.Time
@@ -483,7 +515,7 @@ func selectMidnightSummary(
 		}
 	}
 	if best == nil {
-		return "", nil, false
+		return "", nil, "", false
 	}
 	sort.Slice(best.components, func(i, j int) bool {
 		if best.components[i].Start.Equal(best.components[j].Start) {
@@ -501,21 +533,23 @@ func selectMidnightSummary(
 		},
 		End:            wake,
 		HashComponents: best.components,
-	}}, true
+	}}, selectionReason, true
 }
 
 func evaluateMorningWake(candidate wakeCandidate, now time.Time, steps float64, typicalMin int, typicalOK bool, loc *time.Location) MorningWakeStatus {
 	status := MorningWakeStatus{
-		Confidence:     WakeConfidenceLow,
-		Reason:         "recent_segment",
-		CandidateWake:  candidate.Wake,
-		LatestIngest:   candidate.LatestIngest,
-		PostWakeSteps:  steps,
-		InputSource:    candidate.Source,
-		InputsHash:     candidate.InputsHash,
-		TypicalWakeMin: typicalMin,
-		TypicalWakeOK:  typicalOK,
-		Signal:         candidate.Signal,
+		Confidence:            WakeConfidenceLow,
+		Reason:                "recent_segment",
+		CandidateWake:         candidate.Wake,
+		LatestIngest:          candidate.LatestIngest,
+		PostWakeSteps:         steps,
+		InputSource:           candidate.Source,
+		SourceSelectionReason: candidate.SourceSelectionReason,
+		PreferredSource:       candidate.PreferredSource,
+		InputsHash:            candidate.InputsHash,
+		TypicalWakeMin:        typicalMin,
+		TypicalWakeOK:         typicalOK,
+		Signal:                candidate.Signal,
 	}
 	candidateAge := now.Sub(candidate.Wake)
 	if candidateAge < 0 || candidateAge < wakeActivityAge {
@@ -648,13 +682,15 @@ func (s *DB) saveWakeStatus(localDate string, status MorningWakeStatus, now time
 		return nil
 	}
 	metadata, err := json.Marshal(map[string]any{
-		"confidence":      status.Confidence,
-		"reason":          status.Reason,
-		"input_source":    status.InputSource,
-		"latest_ingest":   status.LatestIngest,
-		"post_wake_steps": status.PostWakeSteps,
-		"typical_wake_ok": status.TypicalWakeOK,
-		"signal":          status.Signal,
+		"confidence":              status.Confidence,
+		"reason":                  status.Reason,
+		"input_source":            status.InputSource,
+		"source_selection_reason": status.SourceSelectionReason,
+		"preferred_source":        status.PreferredSource,
+		"latest_ingest":           status.LatestIngest,
+		"post_wake_steps":         status.PostWakeSteps,
+		"typical_wake_ok":         status.TypicalWakeOK,
+		"signal":                  status.Signal,
 	})
 	if err != nil {
 		return err
@@ -723,7 +759,9 @@ func saveWakeStatusTx(ctx context.Context, tx pgx.Tx, localDate string, status M
 	}
 	metadata, err := json.Marshal(map[string]any{
 		"confidence": status.Confidence, "reason": status.Reason,
-		"input_source": status.InputSource, "latest_ingest": status.LatestIngest,
+		"source_selection_reason": status.SourceSelectionReason,
+		"preferred_source":        status.PreferredSource,
+		"input_source":            status.InputSource, "latest_ingest": status.LatestIngest,
 		"post_wake_steps": status.PostWakeSteps, "typical_wake_ok": status.TypicalWakeOK,
 		"signal": status.Signal, "sleep_inputs_hash": status.InputsHash,
 		"sleep_inputs_changed_at": inputChangedAt,

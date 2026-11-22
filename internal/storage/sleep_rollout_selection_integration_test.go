@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"slices"
 	"testing"
 	"time"
@@ -148,12 +149,47 @@ func TestRevisionBoundSleepSelectionWithdrawal(t *testing.T) {
 		return generation
 	}
 	assertSelection("ring", "measured", 332*60, 136*60, 468*60)
+	assertSourceChoice := func(source, preferred, reason string) {
+		t.Helper()
+		var gotSource, gotPreferred, gotReason string
+		if err := db.pool.QueryRow(ctx, `SELECT episode_selection->>'selected_source',coalesce(episode_selection->>'preferred_sleep_source',''),episode_selection->>'source_selection_reason'
+            FROM sleep_rollout_daily WHERE wake_date=$1::date`, date).Scan(&gotSource, &gotPreferred, &gotReason); err != nil {
+			t.Fatal(err)
+		}
+		if gotSource != source || gotPreferred != preferred || gotReason != reason {
+			t.Fatalf("recorded choice %q/%q/%q", gotSource, gotPreferred, gotReason)
+		}
+		if os.Getenv("PACKET_CHOICE_DBT") == "1" {
+			if _, err := db.pool.Exec(ctx, `INSERT INTO source_data.sleep_rollout_daily
+                SELECT wake_date,generation,candidate,revision,sleep_seconds,episode_selection FROM sleep_rollout_daily WHERE wake_date=$1::date
+                ON CONFLICT(wake_date) DO UPDATE SET generation=excluded.generation,candidate=excluded.candidate,
+                revision=excluded.revision,sleep_seconds=excluded.sleep_seconds,episode_selection=excluded.episode_selection`, date); err != nil {
+				t.Fatal(err)
+			}
+			var agrees bool
+			if err := db.pool.QueryRow(ctx, `SELECT selected_source=$2 AND coalesce(preferred_sleep_source,'')=$3 AND source_selection_reason=$4
+                AND selection_version=$5 AND (generation,revision,sleep_seconds)=(SELECT generation,revision,sleep_seconds FROM sleep_rollout_daily WHERE wake_date=$1::date)
+                FROM dbt_output.packet_sleep_selection_v1 WHERE wake_date=$1::date`, date, source, preferred, reason, sleepSelectionPolicy).Scan(&agrees); err != nil || !agrees {
+				t.Fatalf("dbt capture disagrees: %v", err)
+			}
+		}
+	}
+	assertSourceChoice("ring", "", "automatic")
+	if err := db.SaveSettings(map[string]string{PreferredSleepSourceSetting: "absent watch"}); err != nil {
+		t.Fatal(err)
+	}
+	assertSourceChoice("ring", "", "automatic")
 	checkOrdinary(420)
 	setSources("watch", "ring")
 	watch = makeCandidate("watch", "night", day, 2, stage("main", "core", day, 300))
 	accept("watch", watch, "accepted")
 	apply()
 	previous := assertSelection("ring", "measured", 332*60, 136*60, 468*60)
+	assertSourceChoice("ring", "absent watch", "preferred_unavailable")
+	if err := db.SaveSettings(map[string]string{PreferredSleepSourceSetting: "ring"}); err != nil {
+		t.Fatal(err)
+	}
+	assertSourceChoice("ring", "absent watch", "preferred_unavailable")
 	checkOrdinary(332)
 	// The fixture replays an old day. Set the applied receipt clock to
 	// the fixture's processing time while keeping the actual worker path.
@@ -292,9 +328,13 @@ func TestRevisionBoundSleepSelectionWithdrawal(t *testing.T) {
 	if err := db.pool.QueryRow(ctx, `SELECT sleep_total FROM daily_scores WHERE date=$1`, date).Scan(&legacyHours); err != nil || legacyHours != 7 {
 		t.Fatal("ordinary projection must retain underlying historical rows")
 	}
+	if err := db.SaveSettings(map[string]string{PreferredSleepSourceSetting: "watch"}); err != nil {
+		t.Fatal(err)
+	}
 	restore := makeCandidate("watch", "night", day, 4, stage("new", "core", day, 390))
 	accept("watch", restore, "accepted")
 	apply()
+	assertSourceChoice("watch", "watch", "preferred")
 	checkOrdinary(390)
 	outsider := makeCandidate("unverified-other", "other", day, 1, stage("fragment", "core", day, 45))
 	accept("unverified-other", outsider, "accepted")
