@@ -332,21 +332,7 @@ func (s *DB) MarkCacheDirty(ctx context.Context, dates []string) error {
 // MarkCacheDirtyTx records dates in a caller-owned transaction, allowing an
 // import's source mutation and its recovery marker to commit atomically.
 func (s *DB) MarkCacheDirtyTx(ctx context.Context, tx pgx.Tx, dates []string) error {
-	dates, err := normalizeDirtyDates(dates)
-	if err != nil {
-		return err
-	}
-	state, err := lockCacheMaintenanceRow(ctx, tx)
-	if err != nil {
-		return err
-	}
-	if err := markCacheDirtyState(&state, dates); err != nil {
-		return err
-	}
-	if err := saveCacheMaintenanceRow(ctx, tx, state); err != nil {
-		return err
-	}
-	return MarkMetricCatalogSourceChangedTx(ctx, tx)
+	return s.markCacheDirtyWithHRVRepairsTx(ctx, tx, dates, nil)
 }
 
 // CaptureCacheDirty snapshots generations for selected dates. An empty date

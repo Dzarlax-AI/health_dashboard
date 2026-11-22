@@ -56,6 +56,10 @@ func (s *DB) rebuildHistoricalAggregateDate(ctx context.Context, date string) er
 		return err
 	}
 
+	repair, err := s.prepareHRVRepair(ctx, date)
+	if err != nil {
+		return err
+	}
 	metrics, err := s.listMetricNamesContext(ctx, date)
 	if err != nil {
 		return fmt.Errorf("list metrics for %s: %w", date, err)
@@ -78,7 +82,13 @@ func (s *DB) rebuildHistoricalAggregateDate(ctx context.Context, date string) er
 		return fmt.Errorf("daily sleep block for %s: %w", date, err)
 	}
 
-	return MarkMetricCatalogHoursChangedTx(ctx, s.pool)
+	if err := MarkMetricCatalogHoursChangedTx(ctx, s.pool); err != nil {
+		return err
+	}
+	if repair {
+		return s.acknowledgeHRVRepair(ctx, date)
+	}
+	return nil
 }
 
 func validateCacheMaintenanceDate(date string) error {

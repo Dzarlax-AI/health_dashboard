@@ -243,12 +243,21 @@ func (s *DB) UpsertRecentCache(dates []string, recomputeReadiness bool) error {
 	}
 	dailySQL := liveDailySQL(s.legacySleepDBTEnabled())
 	for _, date := range dates {
-		if err := s.rebuildRecentHourlyCatalog(date); err != nil {
-			return fail(fmt.Errorf("hourly aggregates %s: %w", date, err))
+		unitCtx, unitCancel := longCtx()
+		repaired, repairErr := s.rebuildRecentHRVRepair(unitCtx, date, dailySQL)
+		unitCancel()
+		if repairErr != nil {
+			return fail(fmt.Errorf("HRV repair %s: %w", date, repairErr))
 		}
-		if err := s.writeDailyScores(date, dailySQL); err != nil {
-			return fail(fmt.Errorf("daily scores %s: %w", date, err))
+		if !repaired {
+			if err := s.rebuildRecentHourlyCatalog(date); err != nil {
+				return fail(fmt.Errorf("hourly aggregates %s: %w", date, err))
+			}
+			if err := s.writeDailyScores(date, dailySQL); err != nil {
+				return fail(fmt.Errorf("daily scores %s: %w", date, err))
+			}
 		}
+
 		// Must run after the daily write, which creates the
 		// daily_scores row that the baseline UPDATE targets. Cheap
 		// enough to run inside the same critical section (one
@@ -309,17 +318,22 @@ func (s *DB) rebuildRecentHourlyCatalog(date string) error {
 	ctx, cancel := longCtx()
 	defer cancel()
 	return s.runCacheTransaction(ctx, func(unit *DB) error {
-		if err := unit.upsertHourlyAvgForDate(date); err != nil {
-			return err
-		}
-		if err := unit.upsertHourlySumForDate(date); err != nil {
-			return err
-		}
-		if err := unit.upsertHourlySleepForDate(date); err != nil {
-			return err
-		}
-		return MarkMetricCatalogHoursChangedTx(ctx, unit.pool)
+		return unit.writeRecentHourlyCatalog(ctx, date)
 	})
+}
+
+// writeRecentHourlyCatalog runs within the caller's transaction.
+func (s *DB) writeRecentHourlyCatalog(ctx context.Context, date string) error {
+	if err := s.upsertHourlyAvgForDate(date); err != nil {
+		return err
+	}
+	if err := s.upsertHourlySumForDate(date); err != nil {
+		return err
+	}
+	if err := s.upsertHourlySleepForDate(date); err != nil {
+		return err
+	}
+	return MarkMetricCatalogHoursChangedTx(ctx, s.pool)
 }
 
 // upsertHourlyAvgForDate rebuilds hourly_metrics for ALL non-sleep AVG metrics

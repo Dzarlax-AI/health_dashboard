@@ -6,6 +6,8 @@ import (
 	"sort"
 
 	"health-receiver/internal/health"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // QualityAuditEntry is one row of the impossible-values audit.
@@ -100,7 +102,7 @@ func (s *DB) MarkExistingImpossible() (int, error) {
 
 	total := 0
 	affected := map[string]struct{}{}
-	affectedMetrics := map[string]struct{}{}
+	affectedMetrics := map[string][]string{}
 	for _, name := range auditedMetrics {
 		min, max, ok := health.QualityRange(name)
 		if !ok {
@@ -112,53 +114,41 @@ func (s *DB) MarkExistingImpossible() (int, error) {
 			s.cacheMu.Unlock()
 			return total, fmt.Errorf("begin mark impossible %s: %w", name, err)
 		}
+		// Match ingestion's journal-before-point lock order.
+		state, err := lockCacheMaintenanceRow(ctx, tx)
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			s.cacheMu.Unlock()
+			return total, fmt.Errorf("lock quality change journal: %w", err)
+		}
 		rows, err := tx.Query(ctx, `
 			UPDATE metric_points
 			   SET quality = 'impossible'
 			 WHERE metric_name = $1
 			   AND quality = 'ok'
 			   AND (qty < $2 OR qty > $3)
-			RETURNING SUBSTRING(date,1,10)`, name, min, max)
+			RETURNING SUBSTRING(date,1,10), qty > 0`, name, min, max)
 		if err != nil {
 			_ = tx.Rollback(ctx)
 			s.cacheMu.Unlock()
 			return total, fmt.Errorf("mark impossible %s: %w", name, err)
 		}
-		metricDates := map[string]struct{}{}
-		metricCount := 0
-		for rows.Next() {
-			var date string
-			if err := rows.Scan(&date); err != nil {
-				rows.Close()
-				_ = tx.Rollback(ctx)
-				s.cacheMu.Unlock()
-				return total, err
-			}
-			metricDates[date] = struct{}{}
-			metricCount++
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
+		metricDates, projectionDates, metricCount, err := s.recordQualityChanges(ctx, tx, state, name, rows)
+		if err != nil {
 			_ = tx.Rollback(ctx)
 			s.cacheMu.Unlock()
-			return total, err
-		}
-		rows.Close()
-		if err := s.MarkCacheDirtyTx(ctx, tx, cacheDateSetKeys(metricDates)); err != nil {
-			_ = tx.Rollback(ctx)
-			s.cacheMu.Unlock()
-			return total, fmt.Errorf("mark impossible cache dates dirty: %w", err)
+			return total, fmt.Errorf("record quality change for %s: %w", name, err)
 		}
 		if err := tx.Commit(ctx); err != nil {
 			s.cacheMu.Unlock()
 			return total, fmt.Errorf("commit mark impossible %s: %w", name, err)
 		}
 		s.cacheMu.Unlock()
-		for date := range metricDates {
+		for _, date := range metricDates {
 			affected[date] = struct{}{}
 		}
 		if metricCount > 0 {
-			affectedMetrics[name] = struct{}{}
+			affectedMetrics[name] = projectionDates
 			total += metricCount
 		}
 	}
@@ -190,7 +180,7 @@ func (s *DB) MarkSuspectPoints(days int, sigma float64) (map[string]int, error) 
 
 	out := map[string]int{}
 	affected := map[string]struct{}{}
-	affectedMetrics := map[string]struct{}{}
+	affectedMetrics := map[string][]string{}
 	for _, name := range auditedMetrics {
 		// Sleep_* and step_count are noisy by nature — z-score thresholds
 		// flag legitimate variation. Skip until we have a per-metric tuned
@@ -207,6 +197,13 @@ func (s *DB) MarkSuspectPoints(days int, sigma float64) (map[string]int, error) 
 		if err != nil {
 			s.cacheMu.Unlock()
 			return out, fmt.Errorf("begin mark suspect %s: %w", name, err)
+		}
+		// Match ingestion's journal-before-point lock order.
+		state, err := lockCacheMaintenanceRow(ctx, tx)
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			s.cacheMu.Unlock()
+			return out, fmt.Errorf("lock quality change journal: %w", err)
 		}
 		rows, err := tx.Query(ctx, `
 			WITH baseline AS (
@@ -226,7 +223,7 @@ func (s *DB) MarkSuspectPoints(days int, sigma float64) (map[string]int, error) 
 			   AND b.sd > 0
 			   AND SUBSTRING(mp.date,1,10) >= TO_CHAR(NOW() - INTERVAL '1 day' * $2, 'YYYY-MM-DD')
 			   AND ABS(mp.qty - b.mean) / b.sd > $3
-			RETURNING SUBSTRING(mp.date,1,10)`,
+			RETURNING SUBSTRING(mp.date,1,10), mp.qty > 0`,
 			name, days, sigma)
 		if err != nil {
 			_ = tx.Rollback(ctx)
@@ -234,41 +231,23 @@ func (s *DB) MarkSuspectPoints(days int, sigma float64) (map[string]int, error) 
 			return out, fmt.Errorf("mark suspect %s: %w", name, err)
 		}
 		n := 0
-		metricDates := map[string]struct{}{}
-		for rows.Next() {
-			var date string
-			if err := rows.Scan(&date); err != nil {
-				rows.Close()
-				_ = tx.Rollback(ctx)
-				s.cacheMu.Unlock()
-				return out, err
-			}
-			metricDates[date] = struct{}{}
-			n++
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
+		metricDates, projectionDates, n, err := s.recordQualityChanges(ctx, tx, state, name, rows)
+		if err != nil {
 			_ = tx.Rollback(ctx)
 			s.cacheMu.Unlock()
-			return out, err
-		}
-		rows.Close()
-		if err := s.MarkCacheDirtyTx(ctx, tx, cacheDateSetKeys(metricDates)); err != nil {
-			_ = tx.Rollback(ctx)
-			s.cacheMu.Unlock()
-			return out, fmt.Errorf("mark suspect cache dates dirty: %w", err)
+			return out, fmt.Errorf("record quality change for %s: %w", name, err)
 		}
 		if err := tx.Commit(ctx); err != nil {
 			s.cacheMu.Unlock()
 			return out, fmt.Errorf("commit mark suspect %s: %w", name, err)
 		}
 		s.cacheMu.Unlock()
-		for date := range metricDates {
+		for _, date := range metricDates {
 			affected[date] = struct{}{}
 		}
 		if n > 0 {
 			out[name] = n
-			affectedMetrics[name] = struct{}{}
+			affectedMetrics[name] = projectionDates
 		}
 	}
 	if err := s.finalizeQualityChanges(ctx, affected, affectedMetrics); err != nil {
@@ -277,7 +256,39 @@ func (s *DB) MarkSuspectPoints(days int, sigma float64) (map[string]int, error) 
 	return out, nil
 }
 
-func (s *DB) finalizeQualityChanges(ctx context.Context, affected, affectedMetrics map[string]struct{}) error {
+// The old quality is always ok for rows returned by a quality sweep.
+// Only positive quantities could have contributed to an HRV aggregate.
+func (s *DB) recordQualityChanges(ctx context.Context, tx pgx.Tx, state CacheMaintenanceState, metric string, rows pgx.Rows) ([]string, []string, int, error) {
+	defer rows.Close()
+	all := map[string]struct{}{}
+	valid := map[string]struct{}{}
+	count := 0
+	for rows.Next() {
+		var date string
+		var wasPositive bool
+		if err := rows.Scan(&date, &wasPositive); err != nil {
+			return nil, nil, 0, err
+		}
+		all[date] = struct{}{}
+		if metric == "heart_rate_variability" && wasPositive {
+			valid[date] = struct{}{}
+		}
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, 0, err
+	}
+	rows.Close()
+	dates := cacheDateSetKeys(all)
+	hrvDates := cacheDateSetKeys(valid)
+	err := s.recordCacheDirtyWithHRVRepairsTx(ctx, tx, state, dates, hrvDates)
+	if metric == "heart_rate_variability" {
+		return dates, hrvDates, count, err
+	}
+	return dates, dates, count, err
+}
+
+func (s *DB) finalizeQualityChanges(ctx context.Context, affected map[string]struct{}, affectedMetrics map[string][]string) error {
 	if len(affected) == 0 {
 		return nil
 	}
@@ -296,37 +307,38 @@ func (s *DB) finalizeQualityChanges(ctx context.Context, affected, affectedMetri
 		return fmt.Errorf("invalidate backfilled energy snapshots after quality change: %w", err)
 	}
 	dailyColumns := map[string][]string{
-		"heart_rate_variability":  {"hrv_avg", "readiness", "score_version"},
+		"heart_rate_variability":  {"readiness", "score_version"},
 		"resting_heart_rate":      {"rhr_avg", "readiness", "score_version"},
 		"oxygen_saturation":       {"spo2_avg"},
 		"blood_oxygen_saturation": {"spo2_avg"},
 		"respiratory_rate":        {"resp_avg"},
 		"vo2_max":                 {"vo2_avg"},
 	}
-	cleared := map[string]struct{}{}
-	for metric := range affectedMetrics {
-		if err := s.runCacheTransaction(ctx, func(unit *DB) error {
-			if _, err := unit.pool.Exec(ctx, `DELETE FROM hourly_metrics WHERE metric_name=$1 AND SUBSTRING(hour,1,10)=ANY($2)`, metric, dates); err != nil {
-				return err
-			}
-			return MarkMetricCatalogHoursChangedTx(ctx, unit.pool)
-		}); err != nil {
-			s.cacheMu.Unlock()
-			return fmt.Errorf("clear hourly %s after quality change: %w", metric, err)
+	// HRV hourly and daily repair is handled by the durable correction journal.
+	for metric, metricDates := range affectedMetrics {
+		if len(metricDates) == 0 {
+			continue
 		}
-		if _, err := s.pool.Exec(ctx, `DELETE FROM minute_metrics WHERE metric_name=$1 AND SUBSTRING(minute,1,10)=ANY($2)`, metric, dates); err != nil {
+		if metric != "heart_rate_variability" {
+			if err := s.runCacheTransaction(ctx, func(unit *DB) error {
+				if _, err := unit.pool.Exec(ctx, `DELETE FROM hourly_metrics WHERE metric_name=$1 AND SUBSTRING(hour,1,10)=ANY($2)`, metric, metricDates); err != nil {
+					return err
+				}
+				return MarkMetricCatalogHoursChangedTx(ctx, unit.pool)
+			}); err != nil {
+				s.cacheMu.Unlock()
+				return fmt.Errorf("clear hourly %s after quality change: %w", metric, err)
+			}
+		}
+		if _, err := s.pool.Exec(ctx, `DELETE FROM minute_metrics WHERE metric_name=$1 AND SUBSTRING(minute,1,10)=ANY($2)`, metric, metricDates); err != nil {
 			s.cacheMu.Unlock()
 			return fmt.Errorf("clear minute %s after quality change: %w", metric, err)
 		}
 		for _, column := range dailyColumns[metric] {
-			if _, ok := cleared[column]; ok {
-				continue
-			}
-			if _, err := s.pool.Exec(ctx, "UPDATE daily_scores SET "+column+"=NULL WHERE date = ANY($1)", dates); err != nil {
+			if _, err := s.pool.Exec(ctx, "UPDATE daily_scores SET "+column+"=NULL WHERE date = ANY($1)", metricDates); err != nil {
 				s.cacheMu.Unlock()
 				return fmt.Errorf("clear daily %s after quality change: %w", column, err)
 			}
-			cleared[column] = struct{}{}
 		}
 	}
 	s.cacheMu.Unlock()

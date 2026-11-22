@@ -74,6 +74,12 @@ func (s *DB) InsertAcceptedPoints(recordID int64, points []MetricPoint, coverage
 	if err = lockNightSleepIngest(ctx, tx); err != nil {
 		return nil, err
 	}
+	// Mixed nightly/ordinary payloads must use the same journal-before-point
+	// lock order as ordinary ingestion and XML promotion.
+	cacheState, err := lockCacheMaintenanceRow(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
 	var received time.Time
 	if err = tx.QueryRow(ctx, `SELECT received_at FROM health_records WHERE id=$1`, recordID).Scan(&received); err != nil {
 		return nil, err
@@ -101,7 +107,7 @@ func (s *DB) InsertAcceptedPoints(recordID int64, points []MetricPoint, coverage
 	}
 	dates := append(cacheDatesFromPoints(accepted), extraDates...)
 	if len(dates) > 0 {
-		if err = s.MarkCacheDirtyTx(ctx, tx, dates); err != nil {
+		if err = s.recordCacheDirtyWithHRVRepairsTx(ctx, tx, cacheState, dates, nil); err != nil {
 			return nil, err
 		}
 	}

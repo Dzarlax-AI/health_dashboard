@@ -200,40 +200,41 @@ func (s *DB) RemoveAutoExportForRange(from, to string) {
 		return
 	}
 	defer tx.Rollback(ctx)
-	dates, err := selectCacheDates(ctx, tx, `
-		SELECT DISTINCT SUBSTRING(mp.date,1,10)
-		  FROM metric_points mp
-		 WHERE mp.health_record_id IN (
-			SELECT id FROM health_records
-			 WHERE automation_name IN ('Health dash - Hourly', 'Health dash - Vitals')
-		 )
-		 AND SUBSTRING(mp.date,1,10) >= $1
-		 AND SUBSTRING(mp.date,1,10) <= $2`, from, to)
+	// Serialize this deletion with the journal before changing point rows.
+	state, err := lockCacheMaintenanceRow(ctx, tx)
 	if err != nil {
-		log.Printf("remove auto-export [%s,%s]: read affected dates: %v", from, to, err)
+		log.Printf("remove auto-export [%s,%s]: lock cache journal: %v", from, to, err)
 		return
 	}
-	if err := s.MarkCacheDirtyTx(ctx, tx, dates); err != nil {
-		log.Printf("remove auto-export [%s,%s]: mark cache dates dirty: %v", from, to, err)
-		return
-	}
-	res, err := tx.Exec(ctx, `
-		DELETE FROM metric_points
-		WHERE health_record_id IN (
-			SELECT id FROM health_records
-			WHERE automation_name IN ('Health dash - Hourly', 'Health dash - Vitals')
-		)
-		AND SUBSTRING(date,1,10) >= $1
-		AND SUBSTRING(date,1,10) <= $2`, from, to)
+	var dates, hrvDates []string
+	var removed int64
+	err = tx.QueryRow(ctx, `
+        WITH removed AS (
+            DELETE FROM metric_points
+            WHERE health_record_id IN (
+                SELECT id FROM health_records
+                WHERE automation_name IN ('Health dash - Hourly', 'Health dash - Vitals')
+            )
+            AND SUBSTRING(date,1,10) BETWEEN $1 AND $2
+            RETURNING SUBSTRING(date,1,10) AS day, metric_name, qty, quality
+        )
+        SELECT count(*), array_agg(DISTINCT day),
+               array_agg(DISTINCT day) FILTER (WHERE metric_name='heart_rate_variability'
+                                               AND quality='ok' AND qty>0)
+        FROM removed`, from, to).Scan(&removed, &dates, &hrvDates)
 	if err != nil {
 		log.Printf("remove auto-export [%s,%s]: %v", from, to, err)
+		return
+	}
+	if err := s.recordCacheDirtyWithHRVRepairsTx(ctx, tx, state, dates, hrvDates); err != nil {
+		log.Printf("remove auto-export [%s,%s]: mark cache dates dirty: %v", from, to, err)
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
 		log.Printf("remove auto-export [%s,%s]: commit: %v", from, to, err)
 		return
 	}
-	log.Printf("removed %d Auto Export points for %s … %s", res.RowsAffected(), from, to)
+	log.Printf("removed %d Auto Export points for %s … %s", removed, from, to)
 }
 
 // InvalidateDateRangeAggregates deletes all pre-aggregated rows for [from, to]

@@ -1,6 +1,9 @@
 {{ config(enabled=var('semantic_shadow', false), materialized='view', post_hook="alter view {{ this }} set (security_invoker = true)") }}
 
-with points as (
+with cache as (
+    select date, hrv_avg, case when not repair_pending then hrv_avg end as fallback_ms
+    from {{ source('source_data','daily_hrv') }}
+), points as (
     select * from {{ ref('semantic_hrv_observation_v1') }}
 ), hours as (
     select writer_date, source, substring(date,1,13) as hour, avg(qty)::real as hour_ms
@@ -29,14 +32,14 @@ select c.date,l.live_ms,h.legacy_ms,r.raw_ms,coalesce(r.n_points,0) as n_points,
        coalesce(r.rmssd_points,0) as rmssd_points,
        coalesce(r.fixed_window_points,0) as fixed_window_points,r.fixed_window_median_ms,
        cache.hrv_avg as persisted_ms,
-       coalesce(r.raw_ms,cache.hrv_avg) as morning_ms,
-       case when r.raw_ms is not null then 'raw' when cache.hrv_avg is not null then 'same_day_cache'
+       coalesce(r.raw_ms,cache.fallback_ms) as morning_ms,
+       case when r.raw_ms is not null then 'raw' when cache.fallback_ms is not null then 'same_day_cache'
             else 'missing_same_day_value' end as morning_origin,
-       case when coalesce(r.raw_ms,cache.hrv_avg) is not null then c.date end as morning_observed_on,
-       case when r.n_points>=4 then 'final' when coalesce(r.raw_ms,cache.hrv_avg) is not null then 'provisional'
+       case when coalesce(r.raw_ms,cache.fallback_ms) is not null then c.date end as morning_observed_on,
+       case when r.n_points>=4 then 'final' when coalesce(r.raw_ms,cache.fallback_ms) is not null then 'provisional'
             else 'missing' end as morning_confidence
 from {{ source('source_data','calendar') }} c
 left join live l on l.writer_date=c.date
 left join legacy h on h.writer_date=c.date
 left join raw r on r.writer_date=c.date
-left join {{ source('source_data','daily_hrv') }} cache on cache.date=c.date
+left join cache on cache.date=c.date
