@@ -130,10 +130,13 @@ hourly Energy graphs are not reconstructed by this repair.
 
 When a contributing HRV point is withdrawn, the quality sweep, authoritative
 XML promotion or Auto Export removal records an exact-date repair in the
-tenant's settings, in the same transaction as the point change. The morning
-reader suppresses the pending date's cached HRV while allowing fresh samples.
-The aggregate writer removes that date's old HRV hours and daily value, runs
-its usual weighting rule, and clears the marker in one transaction. Other
+tenant's settings, in the same transaction as the point change. That transaction
+also clears the date's HRV hourly/minute rows, daily HRV, readiness and score
+version, and refreshes the dashboard snapshot. All cached readers therefore
+withhold withdrawn values even if the subsequent repair fails. The morning
+reader additionally suppresses pending cached HRV while allowing fresh samples.
+The aggregate writer rebuilds surviving samples with its usual weighting rule
+and clears the marker in one transaction. Other
 dates keep their same-day fallback. Startup can recover a surviving marker
 even if an older binary has already drained the general dirty journal. This
 event-driven repair covers new confirmed changes; old caches without such an

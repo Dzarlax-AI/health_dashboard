@@ -188,7 +188,7 @@ func (s *ImportSession) AddPoints(points []MetricPoint) error {
 			continue
 		}
 		rows = append(rows, []any{s.runID, p.MetricName, p.Units, p.Date, p.Qty, p.Source, localDate})
-		mayInvalidateHRV = mayInvalidateHRV || (p.MetricName == "heart_rate_variability" && p.Qty <= 0)
+		mayInvalidateHRV = mayInvalidateHRV || (p.MetricName == "heart_rate_variability" && float32(p.Qty) <= 0)
 		s.trackDate(localDate)
 	}
 	if len(rows) == 0 {

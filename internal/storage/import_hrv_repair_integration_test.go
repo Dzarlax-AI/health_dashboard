@@ -2,10 +2,14 @@ package storage
 
 import (
 	"context"
+	"errors"
+	"math"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const importHRVDay = "2026-07-01"
@@ -94,6 +98,8 @@ func TestAppleHealthXMLImportHRVRepairAuthoritativeSubset(t *testing.T) {
 	assertPointMissing(t, db, "heart_rate_variability", importHRVDay+" 09:00:00 +0200", "Watch")
 	assertPointState(t, db, "heart_rate_variability", importHRVAt, "Other", 80, "live")
 	assertPointState(t, db, "heart_rate", importHRVAt, "Watch", 65, "live")
+	assertHRVRepairValue(t, db, importHRVDay, nil)
+	assertHRVRepairHours(t, db, importHRVDay, nil)
 	repaired, err := db.rebuildRecentHRVRepair(t.Context(), importHRVDay, liveDailySQL(false))
 	if err != nil || !repaired {
 		t.Fatalf("consume imported HRV repair: repaired=%v err=%v", repaired, err)
@@ -155,24 +161,33 @@ func TestAppleHealthXMLImportHRVRepairIgnoresNonMutatingCoverage(t *testing.T) {
 }
 
 func TestAppleHealthXMLImportHRVRepairNonpositiveReplacement(t *testing.T) {
-	db, cleanup := testDB(t)
-	defer cleanup()
-	seedImportHRV(t, db)
-	session := beginTestXMLImport(t, db, "xml-hrv-zero-replacement")
-	if err := session.AddPoints([]MetricPoint{hrvRepairPoint(importHRVAt, "Watch", 0)}); err != nil {
-		t.Fatal(err)
+	for _, tc := range []struct {
+		name string
+		qty  float64
+	}{
+		{"zero", 0}, {"underflows_staging_real", math.SmallestNonzeroFloat64},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, cleanup := testDB(t)
+			defer cleanup()
+			seedImportHRV(t, db)
+			session := beginTestXMLImport(t, db, "xml-hrv-zero-replacement")
+			if err := session.AddPoints([]MetricPoint{hrvRepairPoint(importHRVAt, "Watch", tc.qty)}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := session.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			assertImportHRVRepairDates(t, db, importHRVDay)
+			repaired, err := db.rebuildRecentHRVRepair(t.Context(), importHRVDay, liveDailySQL(false))
+			if err != nil || !repaired {
+				t.Fatalf("consume zero-replacement repair: repaired=%v err=%v", repaired, err)
+			}
+			assertHRVRepairValue(t, db, importHRVDay, nil)
+			assertHRVRepairHours(t, db, importHRVDay, nil)
+			assertImportHRVRepairDates(t, db)
+		})
 	}
-	if _, err := session.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	assertImportHRVRepairDates(t, db, importHRVDay)
-	repaired, err := db.rebuildRecentHRVRepair(t.Context(), importHRVDay, liveDailySQL(false))
-	if err != nil || !repaired {
-		t.Fatalf("consume zero-replacement repair: repaired=%v err=%v", repaired, err)
-	}
-	assertHRVRepairValue(t, db, importHRVDay, nil)
-	assertHRVRepairHours(t, db, importHRVDay, nil)
-	assertImportHRVRepairDates(t, db)
 }
 
 func TestAppleHealthXMLImportHRVRepairRollsBackWithPromote(t *testing.T) {
@@ -184,7 +199,7 @@ func TestAppleHealthXMLImportHRVRepairRollsBackWithPromote(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.pool.Exec(t.Context(), `CREATE FUNCTION reject_hrv_import_commit() RETURNS trigger LANGUAGE plpgsql AS $$
-		BEGIN RAISE EXCEPTION 'synthetic import commit failure'; END $$;
+		BEGIN RAISE EXCEPTION 'synthetic import commit failure' USING ERRCODE='P2881'; END $$;
 		CREATE TRIGGER reject_hrv_import_commit BEFORE UPDATE ON import_runs
 		FOR EACH ROW WHEN (NEW.status='committed') EXECUTE FUNCTION reject_hrv_import_commit()`); err != nil {
 		t.Fatal(err)
@@ -198,8 +213,10 @@ func TestAppleHealthXMLImportHRVRepairRollsBackWithPromote(t *testing.T) {
 	if err := session.AddPoints([]MetricPoint{hrvRepairPoint(importHRVAt, "Watch", 0)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := session.Commit(); err == nil {
-		t.Fatal("expected synthetic promote failure")
+	_, err = session.Commit()
+	var injected *pgconn.PgError
+	if !errors.As(err, &injected) || injected.Code != "P2881" {
+		t.Fatalf("expected injected commit failure P2881, got %v", err)
 	}
 	assertPointState(t, db, "heart_rate_variability", importHRVAt, "Watch", 60, "live")
 	assertImportHRVRepairDates(t, db)

@@ -45,6 +45,27 @@ func (s *DB) recordCacheDirtyWithHRVRepairsTx(ctx context.Context, tx pgx.Tx, st
 			hrvRepairKeyPrefix, fmt.Sprint(state.Generation), hrvDates); err != nil {
 			return err
 		}
+		// Invalidate every persisted HRV read path before the source mutation
+		// commits. Repair may fail or run after restart; stale readiness must
+		// not remain reusable merely because it still has today's version.
+		if _, err := tx.Exec(ctx, `DELETE FROM hourly_metrics WHERE metric_name='heart_rate_variability' AND SUBSTRING(hour,1,10)=ANY($1)`, hrvDates); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM minute_metrics WHERE metric_name='heart_rate_variability' AND SUBSTRING(minute,1,10)=ANY($1)`, hrvDates); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE daily_scores SET hrv_avg=NULL, readiness=NULL, score_version=NULL WHERE date=ANY($1)`, hrvDates); err != nil {
+			return err
+		}
+		if err := MarkMetricCatalogHoursChangedTx(ctx, tx); err != nil {
+			return err
+		}
+		// Dashboard requests read the completed snapshot rather than hourly
+		// rows. Refresh only for confirmed withdrawals, never normal imports.
+		unit := &DB{pool: &cacheTransaction{Tx: tx, ctx: ctx}}
+		if err := unit.refreshDashboardSnapshotLocked(ctx); err != nil {
+			return err
+		}
 	}
 	return MarkMetricCatalogSourceChangedTx(ctx, tx)
 }

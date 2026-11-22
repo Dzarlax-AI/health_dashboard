@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -181,14 +182,15 @@ func TestHRVRepairCrashRetryWeightsAndHistoricalParity(t *testing.T) {
 	})
 
 	// Source correction and durable repair obligation commit together. Stop
-	// here to represent a process crash before any cache rows are cleared.
+	// here to represent a process crash before surviving samples are rebuilt.
 	markHRVRepairForTest(t, db, date, func(tx pgx.Tx) {
 		if _, err := tx.Exec(ctx, `UPDATE metric_points SET qty=20 WHERE metric_name='heart_rate_variability'
 			AND date=$1 AND source='source-a'`, date+" 08:30:00 +0000"); err != nil {
 			t.Fatal(err)
 		}
 	})
-	assertHRVRepairValue(t, db, date, &initial)
+	assertHRVRepairValue(t, db, date, nil)
+	assertHRVRepairHours(t, db, date, nil)
 	var pending string
 	if err := db.pool.QueryRow(ctx, `SELECT value FROM settings WHERE key=$1`, hrvRepairKeyPrefix+date).Scan(&pending); err != nil || pending == "" {
 		t.Fatalf("repair marker missing before retry: %q %v", pending, err)
@@ -450,7 +452,11 @@ func TestHRVWithdrawalIsProfileIsolatedAndKeepsArchivedReport(t *testing.T) {
 	if err != nil || len(before.Attempts) != 1 || before.Attempts[0].Status != "sent" {
 		t.Fatalf("read sent report before withdrawal: %+v err=%v", before, err)
 	}
+	if _, err := db.pool.Exec(ctx, `UPDATE daily_scores SET readiness=88,score_version=$2 WHERE date=$1`, date, ScoreVersion); err != nil {
+		t.Fatal(err)
+	}
 	db.RemoveAutoExportForRange(date, date)
+	assertHRVWithdrawalReadsInvalidated(t, db, date)
 	if err := db.UpsertRecentCache([]string{date}, false); err != nil {
 		t.Fatal(err)
 	}
@@ -471,4 +477,88 @@ func TestHRVWithdrawalIsProfileIsolatedAndKeepsArchivedReport(t *testing.T) {
 	if primaryPoints != 0 || otherPoints != 1 {
 		t.Fatalf("cross-profile mutation: primary points=%d other points=%d", primaryPoints, otherPoints)
 	}
+}
+
+// Check real reader paths before any best-effort refresh can run. This also
+// represents a process crash immediately after the source transaction commits.
+func assertHRVWithdrawalReadsInvalidated(t *testing.T, db *DB, date string) {
+	t.Helper()
+	ctx, cancel := queryCtx()
+	defer cancel()
+	assertHRVRepairValue(t, db, date, nil)
+	assertHRVRepairHours(t, db, date, nil)
+	var readiness, version *int
+	if err := db.pool.QueryRow(ctx, `SELECT readiness,score_version FROM daily_scores WHERE date=$1`, date).Scan(&readiness, &version); err != nil || readiness != nil || version != nil {
+		t.Fatalf("withdrawn HRV retained readiness=%v version=%v: %v", readiness, version, err)
+	}
+	for _, bucket := range []string{"hour", "day"} {
+		points, err := db.GetMetricData("heart_rate_variability", date, date+" 23:59:59", bucket, "AVG")
+		if err != nil {
+			t.Fatal(err)
+		}
+		fresh, err := db.metricDataRaw("heart_rate_variability", date, date+" 23:59:59", bucket, "AVG")
+		if err != nil || !reflect.DeepEqual(points, fresh) {
+			t.Fatalf("%s reader did not use surviving raw HRV: got=%+v raw=%+v %v", bucket, points, fresh, err)
+		}
+	}
+	autonomic, err := db.LoadAutonomicRows(date, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range autonomic {
+		if row.HRV != nil {
+			t.Fatalf("autonomic loader retained withdrawn HRV: %+v", row)
+		}
+	}
+	dashboard, err := db.GetDashboard()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, card := range dashboard.Cards {
+		if card.Metric == "heart_rate_variability" && card.Date == date {
+			t.Fatalf("dashboard snapshot retained withdrawn HRV: %+v", card)
+		}
+	}
+}
+
+func TestHRVWithdrawalFailedRefreshKeepsCachedReadersInvalidated(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx, cancel := queryCtx()
+	defer cancel()
+	date := "2026-10-29"
+	id := insertHRVRepairPoints(t, db, []MetricPoint{hrvRepairPoint(date+" 08:00:00 +0000", "auto-export", 90)})
+	if _, err := db.pool.Exec(ctx, `UPDATE health_records SET automation_name='Health dash - Hourly' WHERE id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
+	insertHRVRepairPoints(t, db, []MetricPoint{hrvRepairPoint(date+" 09:00:00 +0000", "survivor", 40)})
+	if err := db.UpsertRecentCache([]string{date}, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.pool.Exec(ctx, `UPDATE daily_scores SET readiness=88,score_version=$2 WHERE date=$1`, date, ScoreVersion); err != nil {
+		t.Fatal(err)
+	}
+	db.RemoveAutoExportForRange(date, date)
+	assertHRVWithdrawalReadsInvalidated(t, db, date)
+	if _, err := db.pool.Exec(ctx, `CREATE FUNCTION fail_hrv_refresh() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic HRV refresh failure'; END $$;
+		CREATE TRIGGER fail_hrv_refresh BEFORE INSERT ON hourly_metrics FOR EACH STATEMENT EXECUTE FUNCTION fail_hrv_refresh()`); err != nil {
+		t.Fatal(err)
+	}
+	defer db.pool.Exec(context.Background(), `DROP TRIGGER IF EXISTS fail_hrv_refresh ON hourly_metrics; DROP FUNCTION IF EXISTS fail_hrv_refresh()`)
+	if err := db.UpsertRecentCache([]string{date}, true); err == nil || !strings.Contains(err.Error(), "synthetic HRV refresh failure") {
+		t.Fatalf("expected injected HRV refresh failure, got %v", err)
+	}
+	assertHRVWithdrawalReadsInvalidated(t, db, date)
+	var pending bool
+	if err := db.pool.QueryRow(ctx, `SELECT EXISTS(SELECT FROM settings WHERE key=$1)`, hrvRepairKeyPrefix+date).Scan(&pending); err != nil || !pending {
+		t.Fatalf("failed refresh lost repair obligation: %v %v", pending, err)
+	}
+	if _, err := db.pool.Exec(ctx, `DROP TRIGGER IF EXISTS fail_hrv_refresh ON hourly_metrics; DROP FUNCTION IF EXISTS fail_hrv_refresh()`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpsertRecentCache([]string{date}, true); err != nil {
+		t.Fatal(err)
+	}
+	want := 40.0
+	assertHRVRepairValue(t, db, date, &want)
 }
