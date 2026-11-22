@@ -485,20 +485,19 @@ func selectMidnightSummary(
 			group.latestIngest = segment.ReceivedAt
 		}
 	}
-	source, selectionReason := chooseSleepSource(sourceTotals, true, preferred)
-	if selectionReason == "preferred" {
-		valid := false
+	if preferred != "" {
+		// Rank only devices with a usable midnight summary, including when
+		// the preferred device is absent or ends outside the wake window.
+		eligibleTotals := make(map[string]float64)
 		for _, group := range groups {
 			end := group.start.Add(time.Duration((group.asleepHours + group.awakeHours) * float64(time.Hour)))
-			if group.source == source && group.asleepHours > 0 && isWakeWindow(end) {
-				valid = true
-				break
+			if group.asleepHours > 0 && isWakeWindow(end) {
+				eligibleTotals[group.source] = sourceTotals[group.source]
 			}
 		}
-		if !valid {
-			source, selectionReason = pickWinningSource(sourceTotals), "preferred_unavailable"
-		}
+		sourceTotals = eligibleTotals
 	}
+	source, selectionReason := chooseSleepSource(sourceTotals, true, preferred)
 	if source == "" {
 		return "", nil, "", false
 	}

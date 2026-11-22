@@ -47,6 +47,7 @@ with segments as (
          when source_hours>1 and source like '%RingConn%' then 2 else 3 end,source_hours desc,source collate "C") as priority
   from (select * from normal_sources union all select * from midnight_sources) s
   join {{ source('preferred_sleep_source','wake_segment_case') }} c using(profile,capture)
+  where coalesce(c.preferred_source,'')='' or s.wake is not null
 ), chosen as (
   select profile,capture,source,signal,wake,latest_ingest,case
       when coalesce(preferred_source,'')='' then 'automatic'

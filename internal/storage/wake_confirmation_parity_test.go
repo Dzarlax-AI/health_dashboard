@@ -69,6 +69,17 @@ func TestWakeCandidateDBTParity(t *testing.T) {
 					t.Fatalf("equal-source wake winner: got %q at %v", goValue.Source, goValue.Wake)
 				}
 			}
+			switch capture {
+			case "invalid_watch", "absent_watch":
+				want := time.Date(2026, 3, 30, 7, 0, 0, 0, loc)
+				if !ok || goValue.Source != "RingConn" || !goValue.Wake.Equal(want) || goValue.SourceSelectionReason != "preferred_unavailable" {
+					t.Fatalf("expected valid midnight fallback from RingConn at %v, got %+v (ok=%t)", want, goValue, ok)
+				}
+			case "automatic_invalid_watch":
+				if ok {
+					t.Fatal("automatic mode must preserve the existing no-data result")
+				}
+			}
 			expected := map[string][2]string{
 				"prefer_ring": {"RingConn", "preferred"}, "thin": {"RingConn", "preferred_unavailable"},
 				"missing_pref": {"Z Apple Watch", "preferred_unavailable"}, "quality_first": {"Apple Watch", "preferred_unavailable"},
@@ -102,8 +113,8 @@ func TestWakeCandidateDBTParity(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if checked != 16 {
-		t.Fatalf("expected 16 candidate cases, got %d", checked)
+	if checked != 19 {
+		t.Fatalf("expected 19 candidate cases, got %d", checked)
 	}
 	t.Logf("candidate matches=%d, including an equal-source tie", checked)
 }

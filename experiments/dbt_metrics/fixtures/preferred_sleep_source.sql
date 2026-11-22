@@ -48,6 +48,18 @@ insert into source_data.wake_segment
 select profile,capture,writer_day,'Apple Watch',metric,start_at,6,received_at,quality
 from source_data.wake_segment where capture in ('prefer_midnight','invalid_midnight') and metric='sleep_total';
 
+-- An invalid high-priority summary must not hide usable data when a
+-- preference is configured. The same inputs also pin legacy automatic mode.
+insert into source_data.wake_segment_case(profile,capture,target_day,zone,preferred_source)
+values ('one','invalid_watch','2026-03-30','Europe/Belgrade','Apple Watch'),
+       ('one','absent_watch','2026-03-30','Europe/Belgrade','Unknown'),
+       ('one','automatic_invalid_watch','2026-03-30','Europe/Belgrade','');
+insert into source_data.wake_segment
+select profile,capture,target_day,source,'sleep_total',target_day::timestamp at time zone zone,
+       hours,(target_day + time '18:00') at time zone zone,'ok'
+from source_data.wake_segment_case cross join (values ('Apple Watch',17),('RingConn',7)) s(source,hours)
+where capture in ('invalid_watch','absent_watch','automatic_invalid_watch');
+
 CREATE TABLE source_data.sleep_rollout_daily (
     wake_date date PRIMARY KEY, generation bigint, candidate text, revision bigint,
     sleep_seconds double precision, episode_selection jsonb
