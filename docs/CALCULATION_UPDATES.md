@@ -128,6 +128,22 @@ forward nights. Synthetic `backfilled` Energy EOD rows are recalculated; observe
 intraday rows remain the record of what was calculated at that time. Historical
 hourly Energy graphs are not reconstructed by this repair.
 
+When a contributing HRV point is withdrawn, the quality sweep, authoritative
+XML promotion or Auto Export removal records an exact-date repair in the
+tenant's settings, in the same transaction as the point change. The morning
+reader suppresses the pending date's cached HRV while allowing fresh samples.
+The aggregate writer removes that date's old HRV hours and daily value, runs
+its usual weighting rule, and clears the marker in one transaction. Other
+dates keep their same-day fallback. Startup can recover a surviving marker
+even if an older binary has already drained the general dirty journal. This
+event-driven repair covers new confirmed changes; old caches without such an
+event require separate evidence before any retrospective repair. When the
+withdrawal removes the tenant's last hourly observation, the coordinator
+publishes an empty dashboard and completes the matching dirty generations.
+Archived delivery attempts retain their original bodies. The dbt pilot carries
+the date's pending-repair flag in its HRV cache extract so its morning value
+matches the Go reader throughout the repair.
+
 The startup worker retries incomplete tenants without monopolizing the installation
 queue. Manual backfill commands remain available. Local parity and isolated DB
 checks do not prove production latency; release acceptance requires a real sync

@@ -42,3 +42,32 @@ func TestQualityReclassificationInvalidatesAndRebuildsDerivedState(t *testing.T)
 		t.Fatalf("daily spo2=%v err=%v", spo2, err)
 	}
 }
+
+func TestQualityAuditClearsHRVOnlyForDatesWithWithdrawnHRV(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx, cancel := longCtx()
+	defer cancel()
+	recordID := insertTestRawRecord(t, db, "disjoint-quality-dates")
+	const hrvDay, pulseDay = "2026-07-12", "2026-07-13"
+	_, err := db.pool.Exec(ctx, `INSERT INTO metric_points(health_record_id,metric_name,date,qty,source,quality) VALUES
+		($1,'heart_rate_variability',$2,400,'watch','ok'),
+		($1,'resting_heart_rate',$3,999,'watch','ok')`, recordID, hrvDay+" 08:00:00 +0000", pulseDay+" 08:00:00 +0000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Only the second day has a cached HRV with no fresh HRV samples.
+	if _, err := db.pool.Exec(ctx, `INSERT INTO daily_scores(date,hrv_avg,computed_at)
+		VALUES($1,400,NOW()::text),($2,58,NOW()::text)`, hrvDay, pulseDay); err != nil {
+		t.Fatal(err)
+	}
+	if flagged, err := db.MarkExistingImpossible(); err != nil || flagged != 2 {
+		t.Fatalf("reclassified %d points: %v", flagged, err)
+	}
+	var withdrawn, cached *float64
+	err = db.pool.QueryRow(ctx, `SELECT (SELECT hrv_avg FROM daily_scores WHERE date=$1),
+		(SELECT hrv_avg FROM daily_scores WHERE date=$2)`, hrvDay, pulseDay).Scan(&withdrawn, &cached)
+	if err != nil || withdrawn != nil || cached == nil || *cached != 58 {
+		t.Fatalf("withdrawn HRV=%v, unaffected cached HRV=%v: %v", withdrawn, cached, err)
+	}
+}

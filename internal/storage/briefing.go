@@ -27,16 +27,19 @@ func (s *DB) rawMetricsFromDailyScores(lastDate string) *health.RawMetrics {
 func (s *DB) rawMetricsFromDailyScoresAt(lastDate string, includeFreshLatest bool) *health.RawMetrics {
 	ctx, cancel := queryCtx()
 	defer cancel()
+	// A committed withdrawal may precede the cache rebuild. During that
+	// interval the raw reader can still supply any surviving HRV samples.
 	rows, err := s.pool.Query(ctx, `
-		SELECT date, hrv_avg, rhr_avg, sleep_total, sleep_deep, sleep_rem,
+		SELECT date, CASE WHEN repair.key IS NULL THEN hrv_avg END, rhr_avg, sleep_total, sleep_deep, sleep_rem,
 		       sleep_core, sleep_unspecified, sleep_awake, steps, calories, exercise_min,
 		       spo2_avg, vo2_avg, resp_avg, baseline_hr_overnight
 		FROM daily_scores
+		LEFT JOIN settings repair ON repair.key=$3 || daily_scores.date
 		WHERE date >= $1 AND date <= $2
 		  AND (hrv_avg IS NOT NULL OR sleep_total IS NOT NULL OR steps IS NOT NULL)
 		ORDER BY date DESC
 		LIMIT 30`,
-		subtractDays(lastDate, 29), lastDate)
+		subtractDays(lastDate, 29), lastDate, hrvRepairKeyPrefix)
 	if err != nil {
 		return nil
 	}

@@ -22,7 +22,7 @@ create table source_data.hrv_point(
  check(time_kind <> 'timestamp' or start_at is not null));
 create table source_data.workout(
  id text primary key, kind text not null, start_at timestamptz not null, end_at timestamptz not null);
-create table source_data.daily_hrv(date text primary key, hrv_avg real);
+create table source_data.daily_hrv(date text primary key, hrv_avg real, repair_pending boolean not null default false);
 -- Aggregate stage observations may lack episode attribution. Keep them distinct from intervals.
 create table source_data.sleep_stage_day(
  date text not null, source text not null, metric_name text not null,

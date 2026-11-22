@@ -35,6 +35,9 @@ func (s *DB) RefreshChangedCache(ctx context.Context, dates []string) error {
 // across the historical range. The caller runs one installation-wide worker.
 // finish must synchronously refresh Today and drain durable dirty generations.
 func (s *DB) RunCacheMaintenance(ctx context.Context, tz string, finish func([]string) error) error {
+	if err := s.reconcileHRVRepairDirty(ctx); err != nil {
+		return fmt.Errorf("restore HRV repair obligations: %w", err)
+	}
 	state, err := s.LoadCacheMaintenance(ctx)
 	if err != nil {
 		return err
@@ -45,11 +48,14 @@ func (s *DB) RunCacheMaintenance(ctx context.Context, tz string, finish func([]s
 			return err
 		}
 		if empty {
-			return nil
-		}
-		state, err = s.BeginCacheMaintenance(ctx, from, to)
-		if err != nil {
-			return err
+			if len(state.Dirty) == 0 {
+				return nil
+			}
+		} else {
+			state, err = s.BeginCacheMaintenance(ctx, from, to)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	if state.TargetIdentity != "" {

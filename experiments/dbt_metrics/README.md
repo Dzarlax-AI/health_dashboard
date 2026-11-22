@@ -111,6 +111,10 @@ dct render charts/sleep-comparison.yml --project-dir . --no-cache \
   --format html --output artifacts/sleep-comparison.html
 ```
 
+## Incremental HRV correction check
+
+Run `python3 experiments/dbt_metrics/scripts/run_hrv_transition.py` with Docker, Go and the pilot dbt environment installed. The synthetic fixture compares the incremental writers and morning reader with the dbt observation and daily views. A correction from 60 to 70 ms updates both paths. Without a confirmed withdrawal, the morning comparison permits the provisional same-day cache. Once the withdrawal is recorded, both readers suppress the stale value even before the aggregate repair finishes. The storage tests exercise the actual withdrawal paths, restart, weighting and date isolation.
+
 ## Local sleep and HRV semantic shadow
 
 The [dbt metric catalog](semantic/catalog.md) publishes the supported observation keys and derived definitions. Its query guide covers the PostgreSQL registry view and native MetricFlow sleep metrics. The shadow consumes [one profile per input schema](semantic/inputs.sql). The evaluation calendar defines the denominator. Load earlier nights for the Go reference window and adjacent HRV/workouts for boundary checks. HRV compatibility uses the writer's stored local date. Candidate interval joins compare absolute instants and keep source-specific means.

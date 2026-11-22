@@ -27,8 +27,9 @@ from metric_points p join health_records h on h.id=p.health_record_id
 where metric_name='heart_rate_variability' and date>='2026-08-19' and date<'2026-11-19';
 select json_build_object('table','workout','row',json_build_array(md5(transaction_timestamp()::text||external_id),
   name,start_time,end_time)) from workouts where start_time < '2026-11-19'::timestamptz and end_time >= '2026-08-19'::timestamptz;
-select json_build_object('table','daily_hrv','row',json_build_array(date,hrv_avg))
-from daily_scores where date between '2026-08-20' and '2026-11-17';
+select json_build_object('table','daily_hrv','row',json_build_array(date,hrv_avg,repair.key is not null))
+from daily_scores left join settings repair on repair.key='cache_maintenance_hrv_repair_v1:' || daily_scores.date
+where date between '2026-08-20' and '2026-11-17';
 \endif
 select json_build_object('table','segment','row',json_build_array(date,md5(transaction_timestamp()::text||coalesce(source,'')),metric_name,qty))
 from metric_points where metric_name in ('sleep_deep','sleep_core','sleep_rem','sleep_awake','sleep_unspecified')

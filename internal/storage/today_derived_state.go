@@ -184,13 +184,54 @@ func (c *TodayDerivedStateCoordinator) run(ctx context.Context, db *DB, tenant *
 			first = true
 			continue
 		}
+		settleSentinel := func(err error) (bool, error) {
+			if !errors.Is(err, ErrNoHourlyMetricData) || db.pool == nil {
+				return false, err
+			}
+			empty, settleErr := db.settleEmptyCacheDirty(ctx, captured)
+			if settleErr != nil {
+				return false, settleErr
+			}
+			if !empty {
+				return false, errors.New("hourly data appeared while settling empty cache")
+			}
+			return true, nil
+		}
 		cacheDates := cacheDirtyDates(batch.dates)
 		cacheComplete := len(cacheDates) == 0
+		// A startup finish(nil) on a genuinely empty store has no dependent
+		// insight to generate. Publish the empty dashboard and finish cleanly.
+		if cacheComplete && len(batch.dates) == 0 && db.pool != nil {
+			empty, emptyErr := db.settleEmptyCacheDirty(ctx, captured)
+			if emptyErr != nil {
+				c.requeue(tenant, batch, false)
+				if !c.wait(ctx, c.failureCooldown) {
+					c.finishWorker(tenant)
+					return
+				}
+				first = true
+				continue
+			}
+			if empty {
+				if !c.repeatIfPending(tenant) {
+					return
+				}
+				continue
+			}
+		}
 		if !cacheComplete && rebuild != nil {
 			started := time.Now()
 			err := rebuild(cacheDates)
 			logTodayDerivedStage(tenant.id, pass, "cache", started, len(cacheDates), err)
 			if err != nil {
+				settled, settleErr := settleSentinel(err)
+				if settled {
+					if !c.repeatIfPending(tenant) {
+						return
+					}
+					continue
+				}
+				err = settleErr
 				if retryTodayDerivedStateError(err) {
 					c.requeue(tenant, batch, false)
 					logTodayDerivedPass(tenant.id, pass, passStarted, "failed")
@@ -231,6 +272,14 @@ func (c *TodayDerivedStateCoordinator) run(ctx context.Context, db *DB, tenant *
 			err := derive(allDates)
 			logTodayDerivedStage(tenant.id, pass, "derive", started, len(allDates), err)
 			if err != nil {
+				settled, settleErr := settleSentinel(err)
+				if settled {
+					if !c.repeatIfPending(tenant) {
+						return
+					}
+					continue
+				}
+				err = settleErr
 				if retryTodayDerivedStateError(err) {
 					c.requeue(tenant, batch, true)
 					logTodayDerivedPass(tenant.id, pass, passStarted, "failed")

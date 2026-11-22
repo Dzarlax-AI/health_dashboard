@@ -55,6 +55,7 @@ type ImportSession struct {
 	snapshotAt         *time.Time
 	unverifiedCoverage bool
 	catalogNormalized  bool
+	mayInvalidateHRV   bool
 	leaseToken         uuid.UUID
 	counters           ImportCounters
 	// afterLeaseLocked is used by DB-backed concurrency tests to pause after
@@ -173,6 +174,7 @@ func (s *ImportSession) AddPoints(points []MetricPoint) error {
 	}
 
 	rows := make([][]any, 0, len(points))
+	mayInvalidateHRV := false
 	for _, p := range points {
 		p = normalizeStoredMetricPoint(p)
 		if usesSeparatedArchiveSamples(p.MetricName) {
@@ -186,6 +188,7 @@ func (s *ImportSession) AddPoints(points []MetricPoint) error {
 			continue
 		}
 		rows = append(rows, []any{s.runID, p.MetricName, p.Units, p.Date, p.Qty, p.Source, localDate})
+		mayInvalidateHRV = mayInvalidateHRV || (p.MetricName == "heart_rate_variability" && p.Qty <= 0)
 		s.trackDate(localDate)
 	}
 	if len(rows) == 0 {
@@ -200,6 +203,7 @@ func (s *ImportSession) AddPoints(points []MetricPoint) error {
 		return fmt.Errorf("copy import points: %w", err)
 	}
 	s.counters.ParsedPoints += n
+	s.mayInvalidateHRV = s.mayInvalidateHRV || mayInvalidateHRV
 	return nil
 }
 
@@ -284,11 +288,18 @@ func (s *ImportSession) Commit() (ImportCounters, error) {
 	if err != nil {
 		return s.failCommit(tx, err)
 	}
-	if err := s.db.MarkCacheDirtyTx(ctx, tx, coverageDates); err != nil {
-		return s.failCommit(tx, fmt.Errorf("mark imported cache dates dirty: %w", err))
+	// Keep the established journal-before-source lock order while deriving
+	// the repair subset from the mutations that actually succeed below.
+	cacheState, err := lockCacheMaintenanceRow(ctx, tx)
+	if err != nil {
+		return s.failCommit(tx, fmt.Errorf("lock imported cache dates: %w", err))
 	}
-	if err := s.promotePoints(ctx, tx); err != nil {
+	hrvRepairDates, err := s.promotePoints(ctx, tx)
+	if err != nil {
 		return s.failCommit(tx, err)
+	}
+	if err := s.db.recordCacheDirtyWithHRVRepairsTx(ctx, tx, cacheState, coverageDates, hrvRepairDates); err != nil {
+		return s.failCommit(tx, fmt.Errorf("mark imported cache dates dirty: %w", err))
 	}
 	if err := s.promoteWorkouts(ctx, tx); err != nil {
 		return s.failCommit(tx, err)
@@ -376,12 +387,12 @@ func (s *ImportSession) promoteCoverage(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
-func (s *ImportSession) promotePoints(ctx context.Context, tx pgx.Tx) error {
+func (s *ImportSession) promotePoints(ctx context.Context, tx pgx.Tx) ([]string, error) {
 	overlapKeys := []string{}
 	if s.catalogNormalized {
 		overlapKeys = overlappingArchiveSampleMetrics
 		if err := s.preserveArchiveHourBoundarySamples(ctx, tx); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	var distinctPoints, existingExact, protectedExact int64
@@ -403,10 +414,12 @@ func (s *ImportSession) promotePoints(ctx context.Context, tx pgx.Tx) error {
 		    ON mp.metric_name = i.metric_name
 		   AND mp.date = i.date
 		   AND COALESCE(mp.source, '') = i.source`, s.snapshotAt, s.runID, overlapKeys).Scan(&distinctPoints, &existingExact, &protectedExact); err != nil {
-		return fmt.Errorf("count staged points: %w", err)
+		return nil, fmt.Errorf("count staged points: %w", err)
 	}
 
-	deleted, err := tx.Exec(ctx, `
+	var deletedPoints int64
+	var deletedHRVDates []string
+	err := tx.QueryRow(ctx, `
 		WITH covered AS (
 			SELECT metric_name,source,local_date FROM import_run_coverage WHERE import_run_id=$1
 			UNION ALL
@@ -417,7 +430,7 @@ func (s *ImportSession) promotePoints(ctx context.Context, tx pgx.Tx) error {
 			UNION ALL
 			SELECT $5||metric_name,source,local_date FROM import_run_coverage
 			WHERE import_run_id=$1 AND metric_name=ANY($4::text[])
-		)
+		), deleted AS (
 		DELETE FROM metric_points mp
 		USING covered c
 		WHERE $3 AND NOT `+protectedCurrentHourlyPoint("mp", "$4")+`
@@ -433,24 +446,33 @@ func (s *ImportSession) promotePoints(ctx context.Context, tx pgx.Tx) error {
 		         AND st.date = mp.date
 		         AND COALESCE(st.source, '') = COALESCE(mp.source, '')
 		         AND st.import_run_id = $1
-		  )`, s.runID, s.snapshotAt, !s.unverifiedCoverage, overlapKeys, archiveSamplePrefix)
+		  )
+		RETURNING CASE WHEN mp.metric_name='heart_rate_variability' AND mp.quality='ok' AND mp.qty>0
+			THEN SUBSTRING(mp.date,1,10) END AS hrv_day
+		)
+		SELECT count(*), array_agg(DISTINCT hrv_day) FILTER (WHERE hrv_day IS NOT NULL)
+		FROM deleted`, s.runID, s.snapshotAt, !s.unverifiedCoverage, overlapKeys, archiveSamplePrefix).Scan(&deletedPoints, &deletedHRVDates)
 	if err != nil {
-		return fmt.Errorf("delete stale covered points: %w", err)
+		return nil, fmt.Errorf("delete stale covered points: %w", err)
 	}
 
-	_, err = tx.Exec(ctx, `
+	// The shared XML parser excludes nonpositive HRV, so normal archive
+	// promotion must not materialize every upsert just to detect this rare
+	// transition accepted by the lower-level staging API.
+	incomingSQL := `
 		WITH incoming AS (
 			SELECT DISTINCT ON (metric_name, date, source)
 			       metric_name, units, date, qty, COALESCE(source, '') AS source
 			  FROM import_stage_points
 			 WHERE import_run_id = $3
 			 ORDER BY metric_name, date, source, staged_seq DESC
-		)
+		)`
+	upsertSQL := `
 		INSERT INTO metric_points
 			(health_record_id, metric_name, units, date, qty, source, origin, import_run_id, source_snapshot_at)
 		SELECT $1, i.metric_name, i.units, i.date, i.qty, i.source, $2, $3, $4
 		  FROM incoming i
-		 WHERE NOT `+newerLegacyMetricExists("i", "$4")+`
+		 WHERE NOT ` + newerLegacyMetricExists("i", "$4") + `
 		ON CONFLICT (metric_name, date, source) DO UPDATE SET
 			received_at = NOW(),
 			health_record_id = excluded.health_record_id,
@@ -462,17 +484,32 @@ func (s *ImportSession) promotePoints(ctx context.Context, tx pgx.Tx) error {
 		WHERE COALESCE(metric_points.source_snapshot_at,
 		      CASE WHEN metric_points.origin <> 'apple_health_xml' THEN metric_points.received_at END, '-infinity')
 		      <= excluded.source_snapshot_at
-		  AND NOT `+protectedCurrentHourlyPoint("metric_points", "$5"),
-		s.healthRecordID, appleHealthXMLOrigin, s.runID, s.snapshotAt, overlapKeys)
+		  AND NOT ` + protectedCurrentHourlyPoint("metric_points", "$5")
+	var invalidatedHRVDates []string
+	if s.mayInvalidateHRV {
+		err = tx.QueryRow(ctx, incomingSQL+`, invalidated_hrv AS MATERIALIZED (
+			SELECT mp.id, SUBSTRING(mp.date,1,10) AS day
+			FROM incoming i JOIN metric_points mp
+			  ON mp.metric_name=i.metric_name AND mp.date=i.date AND mp.source=i.source
+			WHERE mp.metric_name='heart_rate_variability' AND mp.quality='ok' AND mp.qty>0
+			  AND NOT COALESCE(i.qty>0,false)
+		), upserted AS (`+upsertSQL+` RETURNING id)
+		SELECT array_agg(DISTINCT invalidated_hrv.day)
+		FROM invalidated_hrv JOIN upserted USING (id)`,
+			s.healthRecordID, appleHealthXMLOrigin, s.runID, s.snapshotAt, overlapKeys).Scan(&invalidatedHRVDates)
+	} else {
+		_, err = tx.Exec(ctx, incomingSQL+upsertSQL,
+			s.healthRecordID, appleHealthXMLOrigin, s.runID, s.snapshotAt, overlapKeys)
+	}
 	if err != nil {
-		return fmt.Errorf("upsert staged points: %w", err)
+		return nil, fmt.Errorf("upsert staged points: %w", err)
 	}
 
-	s.counters.DeletedPoints = deleted.RowsAffected()
+	s.counters.DeletedPoints = deletedPoints
 	s.counters.UpdatedPoints = existingExact - protectedExact
 	s.counters.InsertedPoints = distinctPoints - existingExact
 	s.counters.SkippedPoints = s.counters.ParsedPoints - distinctPoints + protectedExact
-	return nil
+	return append(deletedHRVDates, invalidatedHRVDates...), nil
 }
 
 // Core SUM metrics retain their original key for the existing v1 caches.
