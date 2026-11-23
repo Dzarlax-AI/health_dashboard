@@ -19,12 +19,12 @@ RESULT = p.HERE / "artifacts/go-contract-after.json"
 def characterize(cid, dsn):
     dates = [f"2026-01-{i:02d}" for i in range(1, 16)]
     result = {}
-    modes = ("live", "legacy-force", "legacy-incremental", "legacy-date")
+    modes = ("live", "live-dbt", "legacy-force", "legacy-incremental", "legacy-date")
     for mode in modes:
         p.require_owned(cid, p.TOKEN)
         p.load_sql(cid, "TRUNCATE source_data.metric_points, source_data.calendar, go_oracle.hourly_metrics, go_oracle.daily_scores;")
         p.load_sql(cid, (p.HERE / "fixtures/base.sql").read_text())
-        # Unequal source hours: live HRV=25, legacy HRV=20. Unknown sleep:
+        # Unequal source hours: all daily HRV writers must return 25. Unknown sleep:
         # live sums 2+4, legacy averages them. Unknown ordinary remains AVG.
         p.load_sql(cid, """
 INSERT INTO source_data.metric_points VALUES
@@ -43,7 +43,9 @@ INSERT INTO source_data.metric_points VALUES
             p.require_owned(cid, p.TOKEN)
             observed = p.run_go(dsn, p.TOKEN, dates, output, reset)
             observed.pop("seconds")
-            if mode == "legacy-date":
+            if mode == "live-dbt":
+                p.assert_same_outputs(observed, result[f"live/{label}"], "opt-in legacy sleep SQL " + label)
+            elif mode == "legacy-date":
                 p.assert_same_outputs(observed, result[f"legacy-force/{label}"], "bounded legacy date " + label)
             else:
                 result[f"{mode}/{label}"] = observed
@@ -51,9 +53,9 @@ INSERT INTO source_data.metric_points VALUES
 
         first = snapshot("initial", True)
         day = next(row for row in first["daily"] if row["date"] == "2026-01-15")
-        assert day["hrv_avg"] == (25 if mode == "live" else 20), day
+        assert day["hrv_avg"] == 25, day
         unknown = next(row for row in first["hourly"] if row["metric_name"] == "sleep_unknown")
-        assert unknown["avg_val"] == (6 if mode == "live" else 3), unknown
+        assert unknown["avg_val"] == (6 if mode in ("live", "live-dbt") else 3), unknown
         ordinary = next(row for row in first["hourly"] if row["metric_name"] == "unknown_metric")
         assert ordinary["avg_val"] == 3, ordinary
         repeated = snapshot("repeat")
@@ -67,6 +69,16 @@ INSERT INTO source_data.metric_points VALUES ('unknown_metric','2026-01-14 10:01
         p.assert_untouched(first, mutated, {"2026-01-14", "2026-01-15"}, mode)
         # A clean rebuild captures the existing stale-hour versus rebuild split.
         snapshot("fresh-rebuild", True)
+
+        # Keep the saved snapshots intact. Exercise each newly source-weighted
+        # daily average on a date with two source-A hours and one source-B hour.
+        p.load_sql(cid, (p.HERE / "fixtures/daily_average_sources.sql").read_text())
+        p.load_sql(cid, (p.HERE / "fixtures/hourly_step_priority.sql").read_text())
+        averages = p.run_go(dsn, p.TOKEN, dates, output, False)
+        row = next(x for x in averages["daily"] if x["date"] == "2026-01-15")
+        p.compare(row, {"rhr_avg": 64, "spo2_avg": 94, "vo2_avg": 39, "resp_avg": 16})
+        step_day = next(x for x in averages["daily"] if x["date"] == "2026-01-14")
+        p.compare(step_day, {"steps": 34})
     os.environ.pop("DBT_PILOT_GO_MODE", None)
     return result
 
@@ -103,6 +115,16 @@ def main():
         if expected is not None:
             if observed.keys() != expected.keys():
                 raise RuntimeError("scenario set changed")
+            # The original characterization predates contract 2. Adjust only its
+            # two known changed HRV values; stale or absent dates and all other
+            # metrics still have to match the saved snapshot exactly.
+            for name, snapshot in expected.items():
+                if name.startswith("legacy-"):
+                    for row in snapshot["daily"]:
+                        if row["date"] == "2026-01-01" and row["hrv_avg"] == 53.333332:
+                            row["hrv_avg"] = 50
+                        if row["date"] == "2026-01-15" and row["hrv_avg"] == 20:
+                            row["hrv_avg"] = 25
             for name in expected:
                 p.assert_same_outputs(observed[name], expected[name], name)
                 for field in ("hourly", "daily", "sum_metrics"):

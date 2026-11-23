@@ -1542,7 +1542,7 @@ func (h *Handler) sleepDurationBalance(w http.ResponseWriter, r *http.Request) {
 	// This is deterministic local accounting, never a provider call. The save
 	// is idempotent and lets a newly created Goal yield an honest incomplete
 	// response immediately rather than an empty card until another ingest.
-	value, err := db.ReconcileSleepDurationBalance(r.Context(), date, time.Now())
+	value, err := db.SleepDurationBalanceForDisplay(r.Context(), date, time.Now())
 	if err != nil {
 		jsonError(w, "failed to calculate sleep duration balance", http.StatusInternalServerError)
 		return

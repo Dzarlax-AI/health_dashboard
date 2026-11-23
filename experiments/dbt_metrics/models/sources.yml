@@ -3,7 +3,12 @@ sources:
   - name: source_data
     schema: "{{ var('semantic_source_schema', 'source_data') }}"
     tables:
+      - name: health_records
       - name: metric_points
+      - name: metric_point_changes
+        description: Accepted point upserts in the optional partial offline capture, keyed by metric, original timestamp and source.
+      - name: verified_step_withdrawals
+        description: Current capture receipts for previously usable step cells physically withdrawn at the exact stored timestamp and source.
       - name: calendar
       - name: completed_night_sleep
       - name: sleep_interval
@@ -11,7 +16,23 @@ sources:
       - name: hrv_point
       - name: workout
       - name: daily_hrv
+      - name: readiness_hrv_snapshot_inputs
+        description: >-
+          Synthetic immutable dated candidate captures for the opt-in Readiness HRV
+          shadow. Each snapshot/profile/target_date/reader identifies one decision
+          version. reader_path records history, morning_warm or morning_cold;
+          snapshot_state records captured or unrecoverable. Each observed_date
+          contains raw_ms, cached_ms, repair_pending and cache_row_eligible, where
+          the latter captures the warm reader's cache WHERE eligibility before
+          repair suppression. evidence_present is the captured morning gate.
+          Null observed_date represents an empty capture. This is an experiment
+          fixture contract, not a production snapshot table.
   - name: sleep_shadow
-    schema: sleep_shadow
+    schema: "{{ var('sleep_shadow_source_schema', 'sleep_shadow') }}"
     tables:
       - name: candidate
+  - name: profile_metrics
+    schema: "{{ target.schema }}"
+    tables:
+      - name: metric_definition_v1
+      - name: metric_value_v1

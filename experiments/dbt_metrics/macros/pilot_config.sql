@@ -41,12 +41,12 @@
       FROM unnest(ARRAY[
         {% for value in values %}'{{ value }}'{% if not loop.last %}, {% endif %}{% endfor %}
       ]::text[]) requested(date)
-      LEFT JOIN source_data.calendar c ON c.date = requested.date
+      LEFT JOIN {{ source('source_data', 'calendar') }} c ON c.date = requested.date
       WHERE c.date IS NULL
     {% endset %}
     {% set missing = run_query(sql) %}
     {% if missing.rows | length > 0 %}
-      {{ exceptions.raise_compiler_error('affected_dates must exist in source_data.calendar') }}
+      {{ exceptions.raise_compiler_error('affected_dates must exist in the profile calendar') }}
     {% endif %}
   {% endif %}
 {% endmacro %}

@@ -66,62 +66,34 @@ type HRSample struct {
 	Avg  float64
 }
 
-// maxBucketSec caps the duration we ascribe to a single sample. HAE buckets
-// are normally ~60s; gaps wider than five minutes likely indicate the watch
-// stopped recording — counting them in full would over-inflate one zone.
-const maxBucketSec = 300.0
-
-// ComputeTimeInZones distributes total seconds across five HR zones based on
-// each sample's average BPM and the time delta to the next sample (or the
-// workout end for the final sample). Returns five integers (Z1..Z5).
-//
-// Algorithm:
-//  1. Sort samples by time.
-//  2. For each sample i, take the average BPM and the duration to sample i+1
-//     (or workoutEnd for the last). Cap at maxBucketSec.
-//  3. Find the zone for that BPM and accumulate.
-//
-// If zones are not configured or there are no samples, all five values are 0.
-func ComputeTimeInZones(samples []HRSample, workoutEnd time.Time, z HRZones) [5]int {
-	var out [5]int
-	if !z.configured || len(samples) == 0 {
-		return out
-	}
-	sorted := make([]HRSample, len(samples))
-	copy(sorted, samples)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Time.Before(sorted[j].Time) })
-
-	for i, s := range sorted {
-		var until time.Time
-		if i+1 < len(sorted) {
-			until = sorted[i+1].Time
-		} else {
-			until = workoutEnd
-		}
-		dur := until.Sub(s.Time).Seconds()
-		if dur <= 0 {
-			continue
-		}
-		if dur > maxBucketSec {
-			dur = maxBucketSec
-		}
-		zoneIdx := zoneFor(s.Avg, z)
-		out[zoneIdx] += int(dur + 0.5)
-	}
-	return out
+// WorkoutZoneInput is the normalized capture for workout_hr_zones_v1. Preserve
+// the ingest sort's ordering of tied instants and the precision of Go timestamps.
+type WorkoutZoneInput struct {
+	Samples   []workoutZoneSample `json:"samples"`
+	EndSecond int64               `json:"end_second"`
+	EndNano   int                 `json:"end_nano"`
+	Borders   []string            `json:"borders"`
 }
 
-func zoneFor(bpm float64, z HRZones) int {
-	switch {
-	case bpm < z.Borders[0]:
-		return 0
-	case bpm < z.Borders[1]:
-		return 1
-	case bpm < z.Borders[2]:
-		return 2
-	case bpm < z.Borders[3]:
-		return 3
-	default:
-		return 4
+type workoutZoneSample struct {
+	Second int64   `json:"second"`
+	Nano   int     `json:"nano"`
+	Avg    float64 `json:"avg"`
+}
+
+func NewWorkoutZoneInput(samples []HRSample, end time.Time, zones HRZones) WorkoutZoneInput {
+	input := WorkoutZoneInput{Samples: []workoutZoneSample{}, EndSecond: end.Unix(), EndNano: end.Nanosecond()}
+	if !zones.IsConfigured() {
+		return input
 	}
+	for _, border := range zones.Borders {
+		input.Borders = append(input.Borders, strconv.FormatFloat(border, 'g', -1, 64))
+	}
+	input.Samples = make([]workoutZoneSample, 0, len(samples))
+	sorted := append([]HRSample(nil), samples...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Time.Before(sorted[j].Time) })
+	for _, s := range sorted {
+		input.Samples = append(input.Samples, workoutZoneSample{s.Time.Unix(), s.Time.Nanosecond(), s.Avg})
+	}
+	return input
 }

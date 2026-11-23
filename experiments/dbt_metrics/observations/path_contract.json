@@ -1,0 +1,35 @@
+{
+  "contract_version": 1,
+  "purpose": "Local read contract for the 123 catalogued raw health observations.",
+  "catalog": "experiments/dbt_metrics/models/health_metric_catalog.yml",
+  "persisted_exporter": "experiments/dbt_metrics/observations/persisted.py",
+  "call": "HEALTH_METRIC_READ_DSN=postgresql://...@127.0.0.1/... experiments/dbt_metrics/.venv/bin/python experiments/dbt_metrics/observations/persisted.py --schema <profile_schema> --profile <synthetic_label> --output <private-dir>/persisted.json",
+  "supported_relations": {
+    "metric_points": "all catalogued raw observations, one row per persisted point",
+    "completed_night_sleep": "main_night.* fields with original algorithm_version; available_at is null because this table has no verified availability clock",
+    "workouts": "workout.* mapped columns; received_at is available_at, source_snapshot_at stays metadata",
+    "energy_snapshots": "energy_snapshot.* mapped columns; computed_at is available_at",
+    "target_snapshots": "target.* fields plus catalogued sub_score.target_kind target IDs when present; computed_at is available_at"
+  },
+  "omitted_relations": {
+    "feature_snapshots": "feature JSON payload has no verified per-field catalog binding",
+    "naive_baselines": "no verified catalog field contract for the persisted baseline rows"
+  },
+  "relation": "<profile_schema>.health_observation_v1",
+  "lookup": "SELECT observation_id, value, units, original_date, source FROM <profile_schema>.health_observation_v1 WHERE observation_id = $1 ORDER BY original_date, source",
+  "identity": ["observation_id", "original_date", "source"],
+  "fields": {
+    "observation_id": "catalog observations key; equals metric_points.metric_name",
+    "value": "nullable numeric metric_points.qty; JSON number or null",
+    "units": "exact metric_points.units; no conversion",
+    "original_date": "exact metric_points.date text including offset/precision; no timezone coercion",
+    "source": "exact metric_points.source",
+    "origin": "exact metric_points.origin provenance label",
+    "received_at": "metric_points.received_at ingestion timestamp",
+    "source_snapshot_at": "metric_points.source_snapshot_at source snapshot clock",
+    "catalog_units": "resolved permitted unit labels from XML/iOS/sleep declarations, or ['unknown']",
+    "catalog_grain": "iOS declared sample_start/hour_sum/event_start/stage_start/wake_date when available, otherwise inventory default"
+  },
+  "isolation": "The security_invoker view is created in each profile schema; distinct profile logins can read their own schema but cannot read another profile schema.",
+  "aggregation": "none; callers must choose a separate versioned reduction contract."
+}

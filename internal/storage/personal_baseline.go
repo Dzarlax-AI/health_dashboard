@@ -2,10 +2,12 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"log"
 	"math"
-	"sort"
 	"time"
+
+	dbtmetrics "health-receiver/experiments/dbt_metrics"
 )
 
 // BaselineChannel names the autonomic metric whose personal baseline
@@ -121,8 +123,7 @@ const MinTempSamples = 14
 // `windowDays` defaults to 30 when <=0 — spec uses 30 throughout.
 // `loc` must be the tenant's REPORT_TZ.
 //
-// Pure-math kernels (classifyState, computeMedianMADSD,
-// channelSDFloor) are extracted and unit-tested without DB.
+// Channel observations use the same dbt-owned statistics and calibration SQL as research reads.
 func (s *DB) PersonalBaseline(
 	date string,
 	channel BaselineChannel,
@@ -159,116 +160,74 @@ func (s *DB) PersonalBaselineContext(
 	from := d.AddDate(0, 0, -windowDays).In(loc)
 	until := d.In(loc)
 
-	samples, newest, err := s.fetchBaselineSamplesContext(ctx, channel, from, until, loc)
+	source, fromKey, untilKey := baselineSampleSource(channel, from, until, loc)
+	if source == "" {
+		return PersonalBaselineResult{State: CalibrationCold}, false, nil
+	}
+	// Calculate the distribution on the tenant database. Only candidate raw
+	// clocks cross the connection. Under the C collation, clocks of equal width
+	// with the same explicit offset sort chronologically. Other forms are
+	// parsed individually, preserving the Go adapter's nanosecond and
+	// local-wall-clock semantics even for old or malformed point timestamps.
+	query := `with source_samples(value, clock) as (` + source + `),
+		samples as materialized (
+			select value::float8, clock from source_samples
+			where value > '-Infinity'::float8 and value < 'Infinity'::float8
+		), stats as (` + dbtmetrics.PersonalBaselineStatsSQL + `),
+		clock_candidates as (
+			select max(clock collate "C") as clock from samples
+			group by case
+				when clock ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2} ([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]([.][0-9]+)? [+-][0-9]{4}$'
+				     and pg_input_is_valid(clock, 'timestamp with time zone')
+				then right(clock, 5) || ':' || length(clock)::text
+				else clock end
+		)
+		select sample_count, median, sd, array(select clock from clock_candidates),
+		       exists(select from source_samples where value is null) from stats`
+	var n int
+	var median, sd *float64
+	var clocks []string
+	var nullValue bool
+	err = s.pool.QueryRow(ctx, query, fromKey, untilKey).Scan(&n, &median, &sd, &clocks, &nullValue)
 	if err != nil {
 		log.Printf("PersonalBaseline %s/%s: %v", date, channel, err)
 		return PersonalBaselineResult{}, false, err
 	}
-
-	// Staleness anchor is the day being scored, not the wall
-	// clock. For live "today" calls this matches time.Now(), but
-	// for backfill of historical dates it prevents every old day
-	// from being flagged calibration_warmup just because the
-	// scored date is years in the past — the spec's intent ("does
-	// the baseline still describe physiology AS OF the scored
-	// day") was masked by the wall-clock anchor pre-2026-05.
-	//
-	// Live recompute calls (TenantRecompute / morning report)
-	// still pass today's date here, so behaviour is unchanged in
-	// production scoring; only backfill / validation now sees the
-	// correct steady-vs-warmup classification.
-	asOf := until
-	state := classifyState(len(samples), newest, asOf)
-
-	if state == CalibrationCold {
-		return PersonalBaselineResult{
-			SampleCount: len(samples),
-			State:       state,
-			NewestAge:   ageOf(newest, asOf),
-		}, false, nil
+	if nullValue {
+		// Legacy point adapters scan into float64 and surface a NULL input as an error.
+		return PersonalBaselineResult{}, false, errors.New("personal baseline: null sample value")
 	}
-	// Wrist temp tighter gate: even at warmup state, fewer than 14
-	// samples is unreliable enough to skip.
-	if channel == ChannelTemp && len(samples) < MinTempSamples {
-		return PersonalBaselineResult{
-			SampleCount: len(samples),
-			State:       CalibrationCold,
-			NewestAge:   ageOf(newest, asOf),
-		}, false, nil
+	var newest time.Time
+	for _, raw := range clocks {
+		if ts := parseBaselineSampleTS(raw, loc); ts.After(newest) {
+			newest = ts
+		}
 	}
-
-	median, sd := computeMedianMADSD(samples)
-	floor := channelSDFloor(channel)
-	if sd < floor {
-		sd = floor
+	var ageNS *int64
+	if !newest.IsZero() {
+		ns := until.Sub(newest).Nanoseconds()
+		ageNS = &ns
 	}
-
-	return PersonalBaselineResult{
-		Median:      median,
-		MADSD:       sd,
-		SampleCount: len(samples),
-		NewestAge:   ageOf(newest, asOf),
-		State:       state,
-	}, true, nil
-}
-
-// classifyState implements the §4.1 state machine:
-//
-//	cold:    samples < 3
-//	warmup:  3 ≤ samples < 7
-//	steady:  samples ≥ 7 AND newest ≤ 14 days old
-//
-// When samples ≥ 7 but newest > 14 days, classify as `warmup` — the
-// baseline is technically populated but the latest data point is
-// too old to trust as "still describes this person's current
-// physiology". (Apple-Watch-off-for-weeks scenario.)
-//
-// Pure function — pinned by unit tests.
-func classifyState(sampleCount int, newest, now time.Time) CalibrationState {
-	if sampleCount < 3 {
-		return CalibrationCold
+	var result PersonalBaselineResult
+	var eligible bool
+	// This scalar projection consumes only the first statement's result. It
+	// cannot observe another generation of samples if a sync arrives between calls.
+	const inputs = `with summary(channel,sample_count,median,sd,age_ns) as (
+		values ($1::text,$2::bigint,$3::float8,$4::float8,$5::bigint))`
+	var retainedAge *int64
+	err = s.pool.QueryRow(ctx, inputs+dbtmetrics.PersonalBaselineResultSQL,
+		string(channel), n, median, sd, ageNS).Scan(&result.SampleCount, &retainedAge,
+		&result.State, &eligible, &median, &sd)
+	if err != nil {
+		return PersonalBaselineResult{}, false, err
 	}
-	if sampleCount < 7 {
-		return CalibrationWarmup
+	if retainedAge != nil {
+		result.NewestAge = time.Duration(*retainedAge)
 	}
-	if newest.IsZero() {
-		// Shouldn't happen — sampleCount ≥ 7 implies samples exist
-		// — but guard rather than read uninitialized time.
-		return CalibrationWarmup
+	if eligible {
+		result.Median, result.MADSD = *median, *sd
 	}
-	if now.Sub(newest) > 14*24*time.Hour {
-		return CalibrationWarmup
-	}
-	return CalibrationSteady
-}
-
-// computeMedianMADSD returns the median and MAD-based SD of the
-// input. MAD = median absolute deviation; SD ≈ 1.4826 × MAD for a
-// normally-distributed sample (the constant comes from
-// Φ⁻¹(0.75) = 0.6745 → 1/0.6745). Robust to ~25% outliers, which
-// is exactly the post-illness / heavy-alcohol / travel-day pattern
-// we see in real autonomic data.
-//
-// Mutates the slice (sort) — caller should pass a slice it doesn't
-// need preserved, or copy first.
-//
-// Pure function — pinned by unit tests against the worked examples
-// in https://en.wikipedia.org/wiki/Median_absolute_deviation.
-func computeMedianMADSD(samples []float64) (median, sd float64) {
-	n := len(samples)
-	if n == 0 {
-		return 0, 0
-	}
-	sort.Float64s(samples)
-	median = percentileSorted(samples, 0.5)
-	devs := make([]float64, n)
-	for i, v := range samples {
-		devs[i] = math.Abs(v - median)
-	}
-	sort.Float64s(devs)
-	mad := percentileSorted(devs, 0.5)
-	sd = 1.4826 * mad
-	return median, sd
+	return result, eligible, nil
 }
 
 // percentileSorted returns the linear-interpolation percentile of a
@@ -289,33 +248,6 @@ func percentileSorted(sorted []float64, p float64) float64 {
 		return sorted[lo]
 	}
 	return sorted[lo] + (pos-float64(lo))*(sorted[hi]-sorted[lo])
-}
-
-// channelSDFloor returns the SD floor for the given channel. Pure
-// function — keeps the floor constants in one switch so changes
-// stay coordinated.
-func channelSDFloor(channel BaselineChannel) float64 {
-	switch channel {
-	case ChannelHRAwake, ChannelHROvernight:
-		return SDFloorHR
-	case ChannelHRV:
-		return SDFloorHRV
-	case ChannelResp:
-		return SDFloorResp
-	case ChannelTemp:
-		return SDFloorTemp
-	default:
-		return 0
-	}
-}
-
-// ageOf returns the age of `newest` relative to `now`. Zero
-// duration when `newest` is the zero time (no samples).
-func ageOf(newest, now time.Time) time.Duration {
-	if newest.IsZero() {
-		return 0
-	}
-	return now.Sub(newest)
 }
 
 // fetchBaselineSamples pulls the channel-specific sample series for
@@ -350,72 +282,11 @@ func (s *DB) fetchBaselineSamplesContext(
 	loc *time.Location,
 ) ([]float64, time.Time, error) {
 
-	const dateLayout = "2006-01-02 15:04:05 -0700"
-	fromStr := from.In(loc).Format(dateLayout)
-	untilStr := until.In(loc).Format(dateLayout)
-	fromDay := from.In(loc).Format("2006-01-02")
-	untilDay := until.In(loc).Format("2006-01-02")
-
-	var sql string
-	var args []any
-	switch channel {
-	case ChannelHRAwake:
-		// hourly_metrics.hour is TEXT "YYYY-MM-DD HH:00" — same
-		// string range comparison works.
-		sql = `
-			SELECT avg_val, hour
-			  FROM hourly_metrics
-			 WHERE metric_name = 'heart_rate'
-			   AND hour >= $1
-			   AND hour <  $2`
-		args = []any{fromStr[:13], untilStr[:13]}
-	case ChannelHROvernight:
-		sql = `
-			SELECT baseline_hr_overnight, date
-			  FROM daily_scores
-			 WHERE baseline_hr_overnight IS NOT NULL
-			   AND date >= $1
-			   AND date <  $2`
-		args = []any{fromDay, untilDay}
-	case ChannelHRV:
-		// Restrict to overnight samples per §4.1 caveat — Apple
-		// reports HRV during Breathe sessions / post-exercise /
-		// nocturnal, and the nocturnal subset is the cleanest
-		// baseline. Heuristic: samples whose hour-of-day falls
-		// between 23:00 and 09:00. Whole-night median for users
-		// without standardised Breathe routine.
-		sql = `
-			SELECT qty, date
-			  FROM metric_points
-			 WHERE metric_name = 'heart_rate_variability'
-			   AND quality = 'ok'
-			   AND date >= $1
-			   AND date <  $2
-			   AND (SUBSTRING(date, 12, 2) >= '23' OR SUBSTRING(date, 12, 2) < '09')`
-		args = []any{fromStr, untilStr}
-	case ChannelResp:
-		sql = `
-			SELECT qty, date
-			  FROM metric_points
-			 WHERE metric_name = 'respiratory_rate'
-			   AND quality = 'ok'
-			   AND date >= $1
-			   AND date <  $2`
-		args = []any{fromStr, untilStr}
-	case ChannelTemp:
-		sql = `
-			SELECT qty, date
-			  FROM metric_points
-			 WHERE metric_name = 'wrist_temperature'
-			   AND quality = 'ok'
-			   AND date >= $1
-			   AND date <  $2`
-		args = []any{fromStr, untilStr}
-	default:
+	sql, fromKey, untilKey := baselineSampleSource(channel, from, until, loc)
+	if sql == "" {
 		return nil, time.Time{}, nil
 	}
-
-	rows, err := s.pool.Query(ctx, sql, args...)
+	rows, err := s.pool.Query(ctx, sql, fromKey, untilKey)
 	if err != nil {
 		return nil, time.Time{}, err
 	}
@@ -439,6 +310,66 @@ func (s *DB) fetchBaselineSamplesContext(
 		}
 	}
 	return values, newest, rows.Err()
+}
+
+func baselineSampleSource(channel BaselineChannel, from, until time.Time, loc *time.Location) (string, string, string) {
+	const dateLayout = "2006-01-02 15:04:05 -0700"
+	fromStr := from.In(loc).Format(dateLayout)
+	untilStr := until.In(loc).Format(dateLayout)
+	fromDay := from.In(loc).Format("2006-01-02")
+	untilDay := until.In(loc).Format("2006-01-02")
+
+	switch channel {
+	case ChannelHRAwake:
+		// hourly_metrics.hour is TEXT "YYYY-MM-DD HH:00" — same
+		// string range comparison works.
+		return `
+			SELECT avg_val, hour
+			  FROM hourly_metrics
+			 WHERE metric_name = 'heart_rate'
+			   AND hour >= $1
+			   AND hour <  $2`, fromStr[:13], untilStr[:13]
+	case ChannelHROvernight:
+		return `
+			SELECT baseline_hr_overnight, date
+			  FROM daily_scores
+			 WHERE baseline_hr_overnight IS NOT NULL
+			   AND date >= $1
+			   AND date <  $2`, fromDay, untilDay
+	case ChannelHRV:
+		// Restrict to overnight samples per §4.1 caveat — Apple
+		// reports HRV during Breathe sessions / post-exercise /
+		// nocturnal, and the nocturnal subset is the cleanest
+		// baseline. Heuristic: samples whose hour-of-day falls
+		// between 23:00 and 09:00. Whole-night median for users
+		// without standardised Breathe routine.
+		return `
+			SELECT qty, date
+			  FROM metric_points
+			 WHERE metric_name = 'heart_rate_variability'
+			   AND quality = 'ok'
+			   AND date >= $1
+			   AND date <  $2
+			   AND (SUBSTRING(date, 12, 2) >= '23' OR SUBSTRING(date, 12, 2) < '09')`, fromStr, untilStr
+	case ChannelResp:
+		return `
+			SELECT qty, date
+			  FROM metric_points
+			 WHERE metric_name = 'respiratory_rate'
+			   AND quality = 'ok'
+			   AND date >= $1
+			   AND date <  $2`, fromStr, untilStr
+	case ChannelTemp:
+		return `
+			SELECT qty, date
+			  FROM metric_points
+			 WHERE metric_name = 'wrist_temperature'
+			   AND quality = 'ok'
+			   AND date >= $1
+			   AND date <  $2`, fromStr, untilStr
+	default:
+		return "", "", ""
+	}
 }
 
 // parseBaselineSampleTS handles the three timestamp formats this

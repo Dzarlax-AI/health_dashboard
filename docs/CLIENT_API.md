@@ -95,6 +95,20 @@ The iOS request client sends `Accept: application/json`, refuses to follow an
 authentication redirect silently, and decodes server errors separately from
 JSON responses.
 
+### Combined step totals in metrics contract v2
+
+For `step_count`, the combined hour and day series select one device per
+hour. Positive Apple Watch or Ultra totals have first priority, followed by
+iPhone and other sources. The highest total wins within a tier. If the
+only usable v2 hourly observation is zero, the combined series reports zero.
+The daily series and latest value sum the selected hours. For example, 35
+Watch steps during a morning hour and 100 phone-only steps during an evening
+hour contribute 135 steps. Use `by_source=1` for individual device series.
+At a clock change both occurrences of a repeated hour contribute to its
+single chart label after independent device selection. When a legacy hour
+has lost source observations, its previous total is retained until confirmed
+restoration or withdrawal.
+
 ### AI briefing compatibility
 
 `sections[]` is the canonical ordered and extensible AI shape. Released iOS

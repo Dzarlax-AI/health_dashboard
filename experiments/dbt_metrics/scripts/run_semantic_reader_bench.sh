@@ -94,12 +94,11 @@ if os.getenv('SEMANTIC_READER_MODE') == 'night-card':
 # the existing DTO hash. Capture the baseline SQL directly for EXPLAIN.
 getter=root/'internal/storage/sleep_duration_comparison.go'
 src=getter.read_text()
-begin='\terr = s.pool.QueryRow(readCtx, `'
+begin='\tquery := sleepComparisonQuery'
 end='\tpayload, _ := json.Marshal'
 assert src.count(begin)==src.count(end)==1
 lo,hi=src.index(begin),src.index(end)
 original=src[lo:hi]
-base_sql=original.split('`',2)[1]
 branch="""	if SemanticBenchReplacement.Load() {
 		SemanticBenchReplacementReads.Add(1)
 		if err := s.semanticBenchRead(readCtx, &fact, &n, &historyVersion); err != nil {
@@ -111,7 +110,7 @@ branch="""	if SemanticBenchReplacement.Load() {
 patched_getter=lab/'getter.go'
 patched_getter.write_text(src[:lo]+branch+original+'\t}\n'+src[hi:])
 helper=lab/'replacement.go'
-helper.write_text((source/'replacement.go.txt').read_text()+'\nconst SemanticBenchBaseSQL = `'+base_sql+'`\n')
+helper.write_text((source/'replacement.go.txt').read_text()+'\nvar SemanticBenchBaseSQL = sleepComparisonQuery\n')
 overlay[str(getter)]=str(patched_getter)
 overlay[str(root/'internal/storage/semantic_bench.go')]=str(helper)
 (lab/'overlay.json').write_text(json.dumps({'Replace':overlay}))

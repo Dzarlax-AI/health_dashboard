@@ -15,6 +15,8 @@ import (
 )
 
 type DB struct {
+	profileGraphSchema string // Set only on the isolated, read-only graph comparison handle.
+
 	// Protected by cacheMu; durable dirty generations remain authoritative
 	// after a restart. This map identifies successful inline work in this process.
 	cacheAppliedGenerations map[string]uint64
@@ -635,6 +637,10 @@ const upsertMetricPointSQL = `WITH archived AS (
 		END`
 
 func insertPointsTx(ctx context.Context, tx pgx.Tx, recordID int64, points []MetricPoint, ordering ingestPointOrdering) error {
+	previous, err := previousStepPoints(ctx, tx, points)
+	if err != nil {
+		return fmt.Errorf("read previous step values: %w", err)
+	}
 	const chunkSize = 500
 	for i := 0; i < len(points); i += chunkSize {
 		end := i + chunkSize
@@ -667,7 +673,7 @@ func insertPointsTx(ctx context.Context, tx pgx.Tx, recordID int64, points []Met
 		}
 	}
 
-	return nil
+	return repairLiveStepReplacements(ctx, tx, recordID, previous)
 }
 
 func cacheDatesFromPoints(points []MetricPoint) []string {

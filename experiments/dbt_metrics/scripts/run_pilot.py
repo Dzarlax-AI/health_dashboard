@@ -2,16 +2,20 @@
 """Run the isolated synthetic dbt pilot in a newly created local container."""
 from __future__ import annotations
 
+import argparse
+import fcntl
 import json
 import math
 import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
+
+from check_semantic_catalog import hourly_sum_metrics
 
 ROOT = Path(__file__).resolve().parents[3]
 HERE = Path(__file__).resolve().parents[1]
@@ -99,12 +103,20 @@ def read_outputs(container_id: str) -> dict[str, list[dict]]:
 
 def run_go(dsn: str, token: str, dates: list[str], output: Path, reset: bool) -> dict:
     child_env = os.environ.copy()
-    child_env.update({"DBT_PILOT_ENABLE": "synthetic-only", "DBT_PILOT_DSN": dsn,
-                      "DBT_PILOT_TOKEN": token, "DBT_PILOT_DATES": json.dumps(dates),
-                      "DBT_PILOT_RESET": "1" if reset else "0", "DBT_PILOT_OUTPUT": str(output)})
-    run(["go", "test", "./internal/storage", "-run", "^TestDBTMetricsPilot$", "-count=1"],
-        env=child_env, cwd=ROOT)
-    return json.loads(output.read_text())
+    child_env.pop("DATABASE_URL", None)
+    with tempfile.NamedTemporaryFile(dir=HERE / "artifacts", prefix=".oracle-", delete=False) as scratch:
+        oracle_path = Path(scratch.name)
+    try:
+        child_env.update({"DBT_PILOT_ENABLE": "synthetic-only", "DBT_PILOT_DSN": dsn,
+                          "DBT_PILOT_TOKEN": token, "DBT_PILOT_DATES": json.dumps(dates),
+                          "DBT_PILOT_RESET": "1" if reset else "0", "DBT_PILOT_OUTPUT": scratch.name})
+        run(["go", "test", "./internal/storage", "-run", "^TestDBTMetricsPilot$", "-count=1"],
+            env=child_env, cwd=ROOT)
+        result = json.loads(oracle_path.read_text())
+        oracle_path.replace(output)
+        return result
+    finally:
+        oracle_path.unlink(missing_ok=True)
 
 
 def keyed(rows: list[dict], key_fields: tuple[str, ...]) -> dict[tuple, dict]:
@@ -135,17 +147,29 @@ def assert_untouched(before: dict, after: dict, touched: set[str], context: str)
             compare(right[key], left[key])
 
 
-def dbt_incremental(dbt: Path, dbt_env: dict[str, str], dates: list[str]) -> None:
-    vars_json = json.dumps({"affected_dates": dates}, separators=(",", ":"))
-    run([str(dbt), "run", "--select", "hourly_metrics", "daily_metrics", "--vars", vars_json,
-         "--project-dir", str(HERE), "--profiles-dir", str(HERE)], env=dbt_env, cwd=ROOT)
-    run([str(dbt), "test", "--project-dir", str(HERE), "--profiles-dir", str(HERE)], env=dbt_env, cwd=ROOT)
+def dbt_incremental(dbt: Path, dbt_env: dict[str, str], dates: list[str], mode: str = "snapshot") -> None:
+    vars_json = json.dumps({"affected_dates": dates, "verified_step_withdrawals": True, "aggregate_capture_mode": mode}, separators=(",", ":"))
+    run([str(dbt), "run", "--select", "+daily_metrics", "--vars", vars_json,
+         "--project-dir", str(HERE), "--profiles-dir", dbt_env["DBT_PROFILES_DIR"]], env=dbt_env, cwd=ROOT)
+    run([str(dbt), "test", "--project-dir", str(HERE), "--profiles-dir", dbt_env["DBT_PROFILES_DIR"]], env=dbt_env, cwd=ROOT)
 
 
 def main() -> int:
-    dbt = ensure_runtime()
-    summary_path = HERE / "artifacts/run-summary.json"
-    summary_path.unlink(missing_ok=True)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--capture-bindings", action="store_true",help="export typed columns after the initial Go/dbt/golden comparison")
+    args = parser.parse_args()
+    if args.capture_bindings and not os.getenv("HEALTH_METRIC_AUDIT_DIR"):
+        parser.error("--capture-bindings requires HEALTH_METRIC_AUDIT_DIR")
+    artifacts = HERE / "artifacts"
+    artifacts.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".pilot-", dir=artifacts) as scratch:
+        return run_pilot(Path(scratch), args.capture_bindings)
+
+
+def run_pilot(lab: Path, capture_bindings: bool = False) -> int:
+    with (HERE / "artifacts/.pilot-runtime.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        dbt = ensure_runtime()
     # bind an ephemeral host port to loopback only; container is disposable
     docker("run", "-d", "--name", NAME, "--label", f"codex.health-dbt-pilot={TOKEN}",
            "-e", f"POSTGRES_USER=pilot_admin", "-e", f"POSTGRES_PASSWORD={PASSWORD}",
@@ -174,13 +198,9 @@ def main() -> int:
         load_sql(container_id, (HERE / "fixtures/base.sql").read_text())
         dates = [f"2026-01-{i:02d}" for i in range(1, 16)]
         dsn = f"postgres://pilot_admin:{PASSWORD}@127.0.0.1:{port}/{DB}?sslmode=disable"
-        output_path = HERE / "artifacts" / "oracle.json"
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path = lab / "oracle.json"
         env = os.environ.copy()
         env.pop("DATABASE_URL", None)
-        env.update({"DBT_PILOT_ENABLE": "synthetic-only", "DBT_PILOT_DSN": dsn,
-                    "DBT_PILOT_TOKEN": TOKEN, "DBT_PILOT_DATES": json.dumps(dates),
-                    "DBT_PILOT_RESET": "1", "DBT_PILOT_OUTPUT": str(output_path)})
         go_started = time.perf_counter()
         oracle = run_go(dsn, TOKEN, dates, output_path, reset=True)
         go_seconds = time.perf_counter() - go_started
@@ -194,13 +214,14 @@ def main() -> int:
         if denied.returncode == 0 or "permission denied" not in (denied.stdout + denied.stderr).lower():
             raise RuntimeError("dbt role unexpectedly wrote to source_data")
 
-        profiles = HERE / "profiles.yml"
+        profiles = lab / "profiles.yml"
         shutil.copyfile(HERE / "profiles.yml.example", profiles)
-        dbt_env = env | {"DBT_PILOT_PORT": str(port), "DBT_PROFILES_DIR": str(HERE),
+        dbt_env = env | {"DBT_PILOT_PORT": str(port), "DBT_PROFILES_DIR": str(lab),
+                         "DBT_TARGET_PATH": str(lab / "target"), "DBT_LOG_PATH": str(lab / "logs"),
                          "DBT_SEND_ANONYMOUS_USAGE_STATS": "false"}
         require_owned(container_id, TOKEN)
         dbt_started = time.perf_counter()
-        run([str(dbt), "build", "--project-dir", str(HERE), "--profiles-dir", str(HERE)], env=dbt_env, cwd=ROOT)
+        run([str(dbt), "build", "--project-dir", str(HERE), "--profiles-dir", dbt_env["DBT_PROFILES_DIR"]], env=dbt_env, cwd=ROOT)
         dbt_seconds = time.perf_counter() - dbt_started
         hourly = read_model_rows(container_id, "hourly_metrics", "metric_name,hour,source")
         daily = read_model_rows(container_id, "daily_metrics", "date")
@@ -221,12 +242,12 @@ def main() -> int:
                     raise RuntimeError(f"{label}: unexpected hourly row {key}")
             for date, partial in expected["daily"].items():
                 compare(dmap[date], partial)
-        sum_match = re.search(r"return\(\[(.*?)\]\s*\)\s*}}", (HERE / "macros/metric_lists.sql").read_text(), re.S)
-        if not sum_match:
-            raise RuntimeError("cannot parse dbt sum metrics list")
-        dbt_sums = sorted(re.findall(r"'([^']+)'", sum_match.group(1)))
+        dbt_sums = sorted(hourly_sum_metrics())
         if dbt_sums != oracle["sum_metrics"]:
             raise RuntimeError("dbt SUM metric list differs from the Go oracle")
+        if capture_bindings:
+            run([str(dbt.parent / "python"), str(HERE / "scripts/capture_bound_metrics.py"), str(port), "aggregates"], env=env, cwd=ROOT)
+            return 0
         rejected_inputs = []
         for label, vars_arg in (("missing_dates", "{}"),
                                 ("non_list_dates", '{"affected_dates":"2026-01-01"}'),
@@ -235,7 +256,7 @@ def main() -> int:
                                 ("partial_full_refresh", '{"affected_dates":["2026-01-01"]}')):
             extra_flags = ["--full-refresh"] if label == "partial_full_refresh" else []
             rejected = run([str(dbt), "run", "--select", "hourly_metrics", "--vars", vars_arg,
-                            "--project-dir", str(HERE), "--profiles-dir", str(HERE), *extra_flags],
+                            "--project-dir", str(HERE), "--profiles-dir", dbt_env["DBT_PROFILES_DIR"], *extra_flags],
                            env=dbt_env, cwd=ROOT, check=False, capture=True)
             if rejected.returncode == 0:
                 raise RuntimeError(f"dbt accepted invalid incremental input: {label}")
@@ -244,41 +265,46 @@ def main() -> int:
 
         phase_results = []
 
-        def phase(label: str, date: str, sql: str, *, expect_go_stale: bool = False):
+        def phase(label: str, date: str, sql: str, mode: str = "snapshot"):
             nonlocal oracle, actual
             before_go, before_dbt = oracle, actual
             require_owned(container_id, TOKEN)
             load_sql(container_id, sql)
             oracle = run_go(dsn, TOKEN, [date], output_path, reset=False)
             require_owned(container_id, TOKEN)
-            dbt_incremental(dbt, dbt_env, [date])
+            dbt_incremental(dbt, dbt_env, [date], mode)
             actual = read_outputs(container_id)
             assert_untouched(before_go, oracle, {date}, label + " Go")
             assert_untouched(before_dbt, actual, {date}, label + " dbt")
-            if expect_go_stale:
-                go_hourly = keyed(oracle["hourly"], ("metric_name", "hour", "source"))
-                dbt_hourly = keyed(actual["hourly"], ("metric_name", "hour", "source"))
-                differences = []
-                for key in go_hourly.keys() | dbt_hourly.keys():
-                    if key not in go_hourly or key not in dbt_hourly or go_hourly[key] != dbt_hourly[key]:
-                        differences.append(key)
-                known = ("step_count", date + " 10:00", "Apple Watch")
-                if differences != [known] or dbt_hourly.get(known) is not None or go_hourly.get(known, {}).get("avg_val") != 35:
-                    raise RuntimeError(f"{label}: expected only the documented Go stale-hour difference, got {differences}")
-                gdaily = keyed(oracle["daily"], ("date",))
-                ddaily = keyed(actual["daily"], ("date",))
-                if gdaily[(date,)]["steps"] != 35 or ddaily[(date,)]["steps"] != 100:
-                    raise RuntimeError(f"{label}: expected stale Watch total 35 in Go and iPhone total 100 in dbt")
-                for day in gdaily:
-                    for field, value in gdaily[day].items():
-                        if day == (date,) and field == "steps":
-                            continue
-                        compare(ddaily[day], {field: value})
-                phase_results.append({"phase": label, "result": "expected_go_stale_hour", "hourly_difference": list(known), "go_daily_steps": 35, "dbt_daily_steps": 100})
-            else:
-                assert_same_outputs(actual, oracle, label)
-                phase_results.append({"phase": label, "result": "go_dbt_match"})
+            assert_same_outputs(actual, oracle, label)
+            phase_results.append({"phase": label, "result": "go_dbt_match"})
             daily = keyed(actual["daily"], ("date",))
+            physical_expected = {"step_fold": 110, "step_zero": 0, "step_cache_only": 80,
+                                 "step_partial_same_source": 80, "step_restore": 5, "step_zero_revoked": None}
+            if label in physical_expected:
+                compare(daily[(date,)], {"steps": physical_expected[label]})
+            if label in ("disjoint_step_hours", "withdraw_hour_winners"):
+                compare(daily[(date,)], {"steps": 34 if label == "disjoint_step_hours" else 123})
+            if label in ("prior_daily_without_hour","prior_daily_with_receipt"):
+                want = 432 if label == "prior_daily_without_hour" else None
+                if daily[(date,)]["steps"] != want:
+                    raise RuntimeError(f"{label}: expected {want} steps, got {daily[(date,)]['steps']}")
+            if label == "daily_average_source_weights":
+                compare(daily[(date,)], {"rhr_avg": 64, "spo2_avg": 94, "vo2_avg": 39, "resp_avg": 16})
+            if label in ("two_resting_hr_sources", "partial_resting_hr"):
+                compare(daily[(date,)], {"rhr_avg": 60 if label == "two_resting_hr_sources" else 62})
+            if label in ("late_step_in_same_hour", "missing_watch_without_receipt", "physical_watch_with_receipt", "watch_returns_after_receipt"):
+                want = {"physical_watch_with_receipt": 100, "watch_returns_after_receipt": 35}.get(label, 40)
+                if daily[(date,)]["steps"] != want:
+                    raise RuntimeError(f"{label}: expected {want} steps, got {daily[(date,)]['steps']}")
+            if label == "partial_step_retransmission":
+                assert_same_outputs(actual, before_dbt, label)
+                if daily[(date,)]["steps"] != 35:
+                    raise RuntimeError("partial iPhone retransmission changed preferred Watch steps")
+            if label == "quality_invalidation" and daily[(date,)]["steps"] != 100:
+                raise RuntimeError("explicitly withdrawn Watch steps must fall back to iPhone")
+            if label == "all_steps_withdrawn" and daily[(date,)]["steps"] is not None:
+                raise RuntimeError("withdrawing the final step source must yield NULL")
             if label == "staged_to_coarse_sleep":
                 row = daily[("2026-01-03",)]
                 if row["sleep_total"] != 4.9 or row["sleep_unspecified"] != 4.9 or any(row[name] is not None for name in ("sleep_deep","sleep_rem","sleep_core","sleep_awake")):
@@ -316,10 +342,101 @@ INSERT INTO source_data.metric_points VALUES
 INSERT INTO source_data.metric_points VALUES
  ('sleep_total','2026-01-15 00:00:00 +0100','Other',4.9,'ok');
 """)
+        phase("daily_average_source_weights", "2026-01-15",
+              (HERE / "fixtures/daily_average_sources.sql").read_text())
+        phase("partial_step_retransmission", "2026-01-01", """
+INSERT INTO source_data.metric_points VALUES
+ ('step_count','2026-01-01 10:00:00 +0200','iPhone',100,'ok')
+ON CONFLICT (metric_name,date,source) DO UPDATE SET qty=EXCLUDED.qty, quality=EXCLUDED.quality;
+""")
+        phase("late_step_in_same_hour", "2026-01-01", """
+TRUNCATE source_data.metric_point_changes;
+INSERT INTO source_data.metric_point_changes VALUES ('step_count','2026-01-01 10:03:00 +0200','Apple Watch',5,'ok');
+INSERT INTO source_data.metric_points SELECT * FROM source_data.metric_point_changes;
+""", mode="partial")
+        # The same empty change batch first lacks an edit receipt, then gets
+        # an authoritative one. Only the second pass may revoke the Watch hour.
+        phase("missing_watch_without_receipt", "2026-01-01", """
+DROP TABLE dbt_output.step_hour_state;
+TRUNCATE source_data.metric_point_changes;
+""", mode="partial")
+        phase("physical_watch_with_receipt", "2026-01-01", """
+INSERT INTO source_data.verified_step_withdrawals
+SELECT date,source FROM source_data.metric_points WHERE metric_name='step_count' AND source='Apple Watch'
+AND substring(date,1,13)='2026-01-01 10';
+DELETE FROM source_data.metric_points p USING source_data.verified_step_withdrawals w
+WHERE p.metric_name='step_count' AND (p.date,p.source)=(w.point_date,w.source);
+""", mode="partial")
+        phase("watch_returns_after_receipt", "2026-01-01", """
+DELETE FROM source_data.verified_step_withdrawals;
+INSERT INTO source_data.metric_point_changes VALUES ('step_count','2026-01-01 10:00:00 +0200','Apple Watch',35,'ok');
+INSERT INTO source_data.metric_points SELECT * FROM source_data.metric_point_changes;
+""", mode="partial")
+        phase("disjoint_step_hours", "2026-01-14", (HERE / "fixtures/hourly_step_priority.sql").read_text())
+        phase("withdraw_hour_winners", "2026-01-14", """
+UPDATE source_data.metric_points SET quality='invalid' WHERE metric_name='step_count'
+AND substring(date,1,13)='2026-01-14 08' AND source IN ('Apple Watch','Ultra');
+""")
+        phase("step_fold", "2026-01-10", """
+INSERT INTO source_data.health_records VALUES (501,'application/json; metrics-contract=2');
+INSERT INTO source_data.metric_points VALUES
+ ('step_count','2026-01-10 02:00:00 +0200','Apple Watch',10,'ok',501),
+ ('step_count','2026-01-10 02:00:00 +0100','iPhone',100,'ok',501),
+ ('step_count','2026-01-10 02:00:00 +0100','Apple Watch',0,'ok',501);
+""")
+        phase("step_zero", "2026-01-11", """
+INSERT INTO source_data.metric_points VALUES ('step_count','2026-01-11 13:00:00 +0100','iPhone',0,'ok',501);
+""")
+        phase("step_zero_revoked", "2026-01-11", """
+UPDATE source_data.metric_points SET quality='invalid' WHERE metric_name='step_count' AND substring(date,1,10)='2026-01-11';
+""")
+        phase("step_cache_only", "2026-01-12", """
+INSERT INTO go_oracle.hourly_metrics VALUES ('step_count','2026-01-12 13:00','iPhone',80,80,80,1);
+INSERT INTO dbt_output.step_hour_state VALUES ('2026-01-12 13:00','iPhone',80,80,80,1,false);
+INSERT INTO source_data.metric_points VALUES ('step_count','2026-01-12 13:01:00 +0100','Apple Watch',5,'ok',501);
+""")
+        phase("step_partial_same_source", "2026-01-12", """
+INSERT INTO source_data.metric_points VALUES ('step_count','2026-01-12 13:01:00 +0100','iPhone',5,'ok',501);
+""")
+        phase("step_restore", "2026-01-12", """
+INSERT INTO source_data.metric_points VALUES ('step_count','2026-01-12 13:02:00 +0100','iPhone',80,'ok',501);
+""")
+        phase("two_resting_hr_sources", "2026-01-13", """
+INSERT INTO source_data.metric_points VALUES
+('resting_heart_rate','2026-01-13 07:00:00 +0100','A',50,'ok'),
+('resting_heart_rate','2026-01-13 07:00:00 +0100','B',70,'ok');
+""")
+        phase("partial_resting_hr", "2026-01-13", """
+TRUNCATE source_data.metric_point_changes;
+INSERT INTO source_data.metric_point_changes VALUES ('resting_heart_rate','2026-01-13 07:00:00 +0100','B',74,'ok');
+UPDATE source_data.metric_points SET qty=74 WHERE metric_name='resting_heart_rate'
+AND date='2026-01-13 07:00:00 +0100' AND source='B';
+""", mode="partial")
         phase("quality_invalidation", "2026-01-01", """
 UPDATE source_data.metric_points SET quality='invalid'
 WHERE metric_name='step_count' AND SUBSTRING(date,1,10)='2026-01-01' AND source='Apple Watch';
-""", expect_go_stale=True)
+""")
+
+        phase("all_steps_withdrawn", "2026-01-01", """
+UPDATE source_data.metric_points SET quality='invalid' WHERE metric_name='step_count'
+AND substring(date,1,10)='2026-01-01' AND source in ('iPhone','Other');
+""")
+        phase("step_source_returns", "2026-01-01", """
+UPDATE source_data.metric_points SET quality='ok' WHERE metric_name='step_count'
+AND substring(date,1,10)='2026-01-01' AND source in ('iPhone','Other');
+""")
+
+        # A historic summary may predate all hourly rows. An unrelated invalid
+        # point alone proves no previous cell changed. A verified edit does.
+        phase("prior_daily_without_hour", "2026-01-13", """
+UPDATE go_oracle.daily_scores SET steps=432 WHERE date='2026-01-13';
+UPDATE dbt_output.daily_metrics SET steps=432 WHERE date='2026-01-13';
+INSERT INTO source_data.metric_points VALUES ('step_count','2026-01-13 09:00:00 +0200','Other',0,'invalid');
+""")
+        phase("prior_daily_with_receipt", "2026-01-13", """
+INSERT INTO source_data.verified_step_withdrawals VALUES ('2026-01-13 08:00:00 +0100','Watch');
+""")
+        load_sql(container_id, "DELETE FROM source_data.verified_step_withdrawals;")
 
         incremental_sleep = keyed(actual["daily"], ("date",))[("2026-01-15",)]["sleep_total"]
         if incremental_sleep != 7:
@@ -350,7 +467,7 @@ CROSS JOIN (VALUES ('heart_rate_variability'),('step_count')) m(metric_name);
             go_aggregate_timings.append(oracle["seconds"])
             require_owned(container_id, TOKEN)
             dbt_started = time.perf_counter()
-            result = run([str(dbt), "run", "--full-refresh", "--project-dir", str(HERE), "--profiles-dir", str(HERE)],
+            result = run([str(dbt), "run", "--full-refresh", "--project-dir", str(HERE), "--profiles-dir", dbt_env["DBT_PROFILES_DIR"]],
                          env=dbt_env, cwd=ROOT, capture=True)
             dbt_timings.append(time.perf_counter() - dbt_started)
             if result.returncode != 0:
@@ -358,6 +475,7 @@ CROSS JOIN (VALUES ('heart_rate_variability'),('step_count')) m(metric_name);
         actual = read_outputs(container_id)
         assert_same_outputs(actual, oracle, "benchmark final full reconstruction")
         full_daily = keyed(actual["daily"], ("date",))
+        compare(full_daily[("2026-01-14",)], {"steps": 123})
         if full_daily[("2026-01-15",)]["sleep_total"] is not None or full_daily[("2026-01-01",)]["steps"] != 100:
             raise RuntimeError("full reconstruction did not expose expected history-dependent differences")
 
@@ -375,8 +493,8 @@ WHERE metric_name='heart_rate_variability' AND date='2025-01-01 00:00:00 +0000' 
             old_day_go_aggregate.append(oracle["seconds"])
             vars_json = '{"affected_dates":["2025-01-01"]}'
             started = time.perf_counter()
-            result = run([str(dbt), "run", "--select", "hourly_metrics", "daily_metrics", "--vars", vars_json,
-                          "--project-dir", str(HERE), "--profiles-dir", str(HERE)], env=dbt_env, cwd=ROOT, capture=True)
+            result = run([str(dbt), "run", "--select", "+daily_metrics", "--vars", vars_json,
+                          "--project-dir", str(HERE), "--profiles-dir", dbt_env["DBT_PROFILES_DIR"]], env=dbt_env, cwd=ROOT, capture=True)
             old_day_dbt_wall.append(time.perf_counter() - started)
             if result.returncode != 0:
                 raise RuntimeError(f"dbt old-day trial {trial} failed:\n" + result.stdout + result.stderr)
@@ -384,22 +502,22 @@ WHERE metric_name='heart_rate_variability' AND date='2025-01-01 00:00:00 +0000' 
             assert_same_outputs(actual, oracle, f"old-day trial {trial}")
             assert_untouched(before_oracle, oracle, {"2025-01-01"}, f"old-day trial {trial} Go")
             assert_untouched(before_actual, actual, {"2025-01-01"}, f"old-day trial {trial} dbt")
-        test_result = run([str(dbt), "test", "--project-dir", str(HERE), "--profiles-dir", str(HERE)],
+        test_result = run([str(dbt), "test", "--project-dir", str(HERE), "--profiles-dir", dbt_env["DBT_PROFILES_DIR"]],
                           env=dbt_env, cwd=ROOT, capture=True)
         if test_result.returncode != 0:
             raise RuntimeError("final dbt tests failed:\n" + test_result.stdout + test_result.stderr)
 
         run([str(dbt), "compile", "--vars", '{"affected_dates":["2025-01-01"]}',
-             "--project-dir", str(HERE), "--profiles-dir", str(HERE)], env=dbt_env, cwd=ROOT, capture=True)
+             "--project-dir", str(HERE), "--profiles-dir", dbt_env["DBT_PROFILES_DIR"]], env=dbt_env, cwd=ROOT, capture=True)
         explain_outputs = {}
-        compiled_dir = HERE / "target/compiled/health_dbt_metrics_pilot/models"
+        compiled_dir = lab / "target/compiled/health_dbt_metrics_pilot/models"
         for model in ("hourly_metrics", "daily_metrics"):
             sql_file = compiled_dir / f"{model}.sql"
             plan = docker("exec", "-i", container_id, "psql", "-X", "-A", "-t", "-v", "ON_ERROR_STOP=1",
                           "-U", "pilot_admin", "-d", DB, "-f", "-", input_text="EXPLAIN (ANALYZE, BUFFERS)\n" + sql_file.read_text(),
                           capture=True).stdout
             explain_outputs["one_day_" + model] = plan
-        run([str(dbt), "compile", "--full-refresh", "--project-dir", str(HERE), "--profiles-dir", str(HERE)],
+        run([str(dbt), "compile", "--full-refresh", "--project-dir", str(HERE), "--profiles-dir", dbt_env["DBT_PROFILES_DIR"]],
             env=dbt_env, cwd=ROOT, capture=True)
         for model in ("hourly_metrics", "daily_metrics"):
             sql_file = compiled_dir / f"{model}.sql"
@@ -408,7 +526,46 @@ WHERE metric_name='heart_rate_variability' AND date='2025-01-01 00:00:00 +0000' 
                           capture=True).stdout
             explain_outputs["full_" + model] = plan
         for name, output in explain_outputs.items():
-            (HERE / "artifacts" / f"explain-{name}.txt").write_text(output)
+            (lab / f"explain-{name}.txt").write_text(output)
+        # The offline feed retains the pre-image. Stop after committing the
+        # raw capture, then retry the whole graph before publishing the edit.
+        edit_date = "2026-01-14"
+        load_sql(container_id, """
+TRUNCATE source_data.metric_point_changes;
+INSERT INTO source_data.metric_point_changes VALUES
+ ('step_count','2026-01-14 17:00:00 +0100','iPhone',30,'ok'),
+ ('step_count','2026-01-14 17:02:00 +0100','iPhone',40,'ok');
+""")
+        dbt_incremental(dbt, dbt_env, [edit_date], "partial")
+        load_sql(container_id, """
+TRUNCATE source_data.metric_point_changes;
+INSERT INTO source_data.metric_point_changes VALUES
+ ('step_count','2026-01-14 17:01:00 +0100','iPhone',99,'ok'),
+ ('step_count','2026-01-14 17:01:00 +0100','Apple Watch',7,'ok');
+""")
+        edit_vars = json.dumps({"affected_dates": [edit_date], "aggregate_capture_mode": "partial"})
+        run([str(dbt), "run", "--select", "retained_metric_points", "--vars", edit_vars,
+             "--project-dir", str(HERE), "--profiles-dir", dbt_env["DBT_PROFILES_DIR"]], env=dbt_env, cwd=ROOT)
+        phone_hour = " WHERE hour='2026-01-14 17:00' AND source='iPhone'"
+        if scalar(container_id,"SELECT avg_val FROM dbt_output.step_hour_state"+phone_hour) != "70":
+            raise RuntimeError("raw capture overwrote the last successful hourly publication")
+        dbt_incremental(dbt, dbt_env, [edit_date], "partial")
+        if scalar(container_id,"SELECT avg_val FROM dbt_output.step_hour_state"+phone_hour) != "169":
+            raise RuntimeError("a late sample between two previously published minutes was lost on retry")
+        if scalar(container_id,"SELECT steps FROM dbt_output.daily_metrics WHERE date='2026-01-14'") != "130":
+            raise RuntimeError("later Watch sample did not take priority in the recovered hour")
+        load_sql(container_id, """
+TRUNCATE source_data.metric_point_changes;
+INSERT INTO source_data.metric_point_changes VALUES ('step_count','2026-01-14 17:00:00 +0100','iPhone',3,'ok');
+""")
+        dbt_incremental(dbt, dbt_env, [edit_date], "partial")
+        if scalar(container_id,"SELECT avg_val FROM dbt_output.step_hour_state"+phone_hour) != "142":
+            raise RuntimeError("confirmed positive replacement did not reach the hourly publication")
+        load_sql(container_id, "UPDATE dbt_output.daily_metrics SET steps=432,sleep_deep=888 WHERE date='2026-01-15'")
+        run([str(dbt), "run", "--full-refresh", "--select", "daily_metrics",
+             "--project-dir", str(HERE), "--profiles-dir", dbt_env["DBT_PROFILES_DIR"]], env=dbt_env,cwd=ROOT)
+        if scalar(container_id,"SELECT steps=432 AND sleep_deep IS DISTINCT FROM 888 FROM dbt_output.daily_metrics WHERE date='2026-01-15'") != "t":
+            raise RuntimeError("full refresh lost legacy daily-only steps or retained unrelated cache fields")
         report = {"container": container_id[:12], "synthetic_marker": TOKEN,
                   "host_port": port,
                   "go_version": run(["go", "version"], cwd=ROOT, capture=True).stdout.strip(),
@@ -427,14 +584,18 @@ WHERE metric_name='heart_rate_variability' AND date='2025-01-01 00:00:00 +0000' 
                   "daily_rows": len(actual["daily"]), "go_matches_dbt": True,
                   "dbt_source_write_denied": True, "sum_metrics": oracle["sum_metrics"],
                   "rejected_incremental_inputs": rejected_inputs,
-                  "scenario_results": phase_results,
+                  "scenario_results": phase_results,"dbt_retained_edit_retry": "passed","dbt_daily_only_full_refresh": "passed",
                   "aggregation_contract": oracle.get("aggregation_contract"),
                   "incomplete_after_complete_sleep_incremental_total": incremental_sleep,
                   "full_rebuild_after_incomplete_sleep_total": full_daily[("2026-01-15",)]["sleep_total"],
                   "full_rebuild_day1_steps_after_quality_invalidation": full_daily[("2026-01-01",)]["steps"],
                   "dbt_data_tests": "passed after benchmark trials",
                   "explain_analyze_buffers": {name: "artifacts/explain-" + name + ".txt" for name in explain_outputs}}
-        (HERE / "artifacts/run-summary.json").write_text(json.dumps(report, indent=2) + "\n")
+        (lab / "run-summary.json").write_text(json.dumps(report, indent=2) + "\n")
+        with (HERE / "artifacts/.pilot-publish.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            for artifact in [output_path, *lab.glob("explain-*.txt"), lab / "run-summary.json"]:
+                artifact.replace(HERE / "artifacts" / artifact.name)
         print(json.dumps(report, indent=2))
         return 0
     finally:
@@ -446,7 +607,6 @@ WHERE metric_name='heart_rate_variability' AND date='2025-01-01 00:00:00 +0000' 
                     docker("rm", "-f", "-v", container_id)
             except Exception:
                 print(f"Cleanup unresolved; owned container {container_id} remains for manual inspection", file=sys.stderr)
-        (HERE / ".user.yml").unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

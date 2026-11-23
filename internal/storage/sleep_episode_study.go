@@ -13,7 +13,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"health-receiver/experiments/dbt_metrics"
-	"health-receiver/internal/health"
 	"health-receiver/internal/sleepstudy"
 	"health-receiver/internal/sleepwire"
 )
@@ -303,8 +302,14 @@ func SleepEpisodeStudy(ctx context.Context, conn *pgx.Conn, from, through string
 		if err != nil {
 			return out, err
 		}
-		oldR := unit.readinessWithSleep(ctx, date, old, oldBaseline)
-		newR := unit.readinessWithSleep(ctx, date, newBlocks, baseline)
+		oldR, err := unit.readinessWithSleep(ctx, date, old, oldBaseline)
+		if err != nil {
+			return out, err
+		}
+		newR, err := unit.readinessWithSleep(ctx, date, newBlocks, baseline)
+		if err != nil {
+			return out, err
+		}
 		out.tally("readiness_raw_equal", oldR.RawScore == newR.RawScore)
 		out.tally("readiness_display_equal", oldR.Score == newR.Score)
 		out.tally("readiness_components_equal", reflect.DeepEqual(oldR.Serving, newR.Serving))
@@ -316,7 +321,10 @@ func SleepEpisodeStudy(ctx context.Context, conn *pgx.Conn, from, through string
 			step = "compare recorded wake scenario on fixed history"
 			alternativeBlocks := maps.Clone(newBlocks)
 			alternativeBlocks[date] = scenarioBlock
-			alternativeR := unit.readinessWithSleep(ctx, date, alternativeBlocks, baseline)
+			alternativeR, err := unit.readinessWithSleep(ctx, date, alternativeBlocks, baseline)
+			if err != nil {
+				return out, err
+			}
 			wakeEffects.tally("compared_dates", true)
 			wakeEffects.tally("readiness_raw_equal", newR.RawScore == alternativeR.RawScore)
 			wakeEffects.tally("readiness_display_equal", newR.Score == alternativeR.Score)
@@ -519,31 +527,32 @@ func (s *DB) compareStudyEnergy(ctx context.Context, date string, old, next map[
 	if err != nil {
 		return err
 	}
-	project := func(blocks map[string]*LocalShadowSleep) []dailyInputs {
-		days := make([]dailyInputs, energyWindowDays)
-		for i := range days {
-			d := subtractDays(date, energyWindowDays-1-i)
-			input := base[d]
-			if block := blocks[d]; block != nil {
+	project := func(blocks map[string]*LocalShadowSleep) map[string]dailyInputs {
+		inputs := maps.Clone(base)
+		for day, block := range blocks {
+			if block != nil {
+				input := inputs[day]
 				input.SleepTotal, input.SleepDeep, input.SleepRem, input.SleepAwake = block.Total, block.Deep, block.REM, block.Awake
+				inputs[day] = input
 			}
-			days[i] = input
 		}
-		return days
+		return inputs
 	}
 	oldInputs, nextInputs := project(old), project(next)
-	a := computeBankFromDays(oldInputs, cfg)
-	b := computeBankFromDays(nextInputs, cfg)
-	oldTrace, nextTrace := studyEnergyTrace(oldInputs, cfg), studyEnergyTrace(nextInputs, cfg)
+	a, oldTrace, err := s.readEnergyBankSQL(ctx, date, cfg, oldInputs)
+	if err != nil {
+		return err
+	}
+	b, nextTrace, err := s.readEnergyBankSQL(ctx, date, cfg, nextInputs)
+	if err != nil {
+		return err
+	}
 	out.tally("energy_state_equal", a.State == b.State)
 	out.tally("energy_imputed_sleep_equal", slices.Contains(a.Flags, "imputed_sleep") == slices.Contains(b.Flags, "imputed_sleep"))
 	comparable := a.State != "stale" && b.State != "stale"
 	out.tally("energy_comparable", comparable)
 	if !comparable {
 		return nil
-	}
-	if !oldTrace.agrees(a) || !nextTrace.agrees(b) {
-		return errors.New("energy trace differs from normal projection")
 	}
 	out.tally("energy_signed_equal", a.Bank == b.Bank)
 	out.tally("energy_display_equal", a.Display == b.Display)
@@ -556,45 +565,15 @@ func (s *DB) compareStudyEnergy(ctx context.Context, date string, old, next map[
 	out.delta("energy_before_limit", nextTrace.beforeClamp-oldTrace.beforeClamp)
 	out.delta("energy_bank_unrounded", nextTrace.bank-oldTrace.bank)
 	out.delta("energy_restore_unrounded", nextTrace.restore-oldTrace.restore)
-	todayOnly := slices.Clone(oldInputs)
-	todayOnly[len(todayOnly)-1] = nextInputs[len(nextInputs)-1]
-	out.delta("energy_only_current_night_restore", studyEnergyTrace(todayOnly, cfg).restore-oldTrace.restore)
+	oldInputs[date] = nextInputs[date]
+	_, todayTrace, err := s.readEnergyBankSQL(ctx, date, cfg, oldInputs)
+	if err != nil {
+		return err
+	}
+	out.delta("energy_only_current_night_restore", todayTrace.restore-oldTrace.restore)
 	return nil
 }
 
 func studyNear(a, b float64) bool { return math.Abs(a-b) <= 1e-9 }
 
 type energyTrace struct{ quality, incoming, restore, beforeClamp, bank float64 }
-
-func (t energyTrace) agrees(bank BankResult) bool {
-	return int(math.Round(t.bank)) == bank.Bank && int(math.Round(t.restore)) == bank.TodayRestore && studyNear(t.quality, bank.Components["sleep_quality"])
-}
-
-func studyEnergyTrace(days []dailyInputs, cfg EnergyConfig) energyTrace {
-	var quality, drain [energyWindowDays]float64
-	var missingSleep, missingActivity [energyWindowDays]bool
-	for i, d := range days {
-		missingSleep[i] = d.SleepTotal == nil || *d.SleepTotal <= 0 || d.SleepDeep == nil || d.SleepRem == nil || d.SleepAwake == nil
-		if !missingSleep[i] {
-			quality[i] = health.SleepQuality(*d.SleepTotal, *d.SleepDeep, *d.SleepRem, *d.SleepAwake)
-		}
-		missingActivity[i] = d.ActiveKcal == nil || *d.ActiveKcal < 0
-		if !missingActivity[i] {
-			drain[i] = health.DrainV2(*d.ActiveKcal, zeroIfNil(d.SustainedHRLoad), cfg.EffectiveAlpha(), cfg.EffectiveBeta())
-		}
-	}
-	t := energyTrace{bank: energySeed}
-	for i := energyIterStart; i < energyWindowDays; i++ {
-		if missingSleep[i] {
-			quality[i] = trailingAvg(quality[:], missingSleep[:], i, energyMinValidLookback, prefixMedianFloat(quality[:], missingSleep[:], i))
-		}
-		if missingActivity[i] {
-			drain[i] = trailingAvg(drain[:], missingActivity[:], i, energyMinValidLookback, prefixMedianFloat(drain[:], missingActivity[:], i))
-		}
-		t.quality, t.incoming = quality[i], t.bank
-		capacity := health.AsymptoticCapacity(t.incoming, t.quality)
-		t.restore, t.beforeClamp = capacity-t.incoming, capacity-drain[i]
-		t.bank = health.ClampSignedBank(t.beforeClamp)
-	}
-	return t
-}

@@ -146,35 +146,43 @@ func (s *DB) writePassiveEfficiencyRow(
 	rowByDate map[string]health.WalkingHRRow,
 	verdict map[string]health.WalkingHREligibilityResult,
 ) error {
-	_ = ctx
 	epoch, epochStart := epochs.resolve(date)
 
 	// daily_point target — eligibility verdict for t+1.
 	tp1 := t.AddDate(0, 0, 1).Format(isoDate)
 	dailySpec := passiveTargetFromVerdict(tp1, verdict, rowByDate)
 
-	// rolling_3d target — mean of eligible values across t+1..t+3.
-	// Same all-or-nothing rule as Recovery to avoid silent bias from
-	// partial averages.
-	rollingSpec := passiveRolling3dTarget(t, verdict, rowByDate)
-
+	days, rollingCoverage := passiveTargetWindow(t, verdict, rowByDate)
+	labels, err := s.chipTargets(ctx, chipTargetWindow{date: date, subScore: SubScorePassiveEfficiency, days: days}, TargetKindDailyPoint, TargetKindRolling3d)
+	if err != nil {
+		return err
+	}
 	// Features ≤ end of day t.
-	features := buildPassiveEfficiencyFeatures(t, epochStart, verdict)
+	w, err := s.chipFeatureWindow(ctx, t, epochStart, ewmaLookbackDays(ewmaWindowSlow), walkingHRLookup(verdict))
+	if err != nil {
+		return err
+	}
+	features := passiveEfficiencyFeatures{PrevWalkingHR: w.Today, Mean7d: w.Mean7, Mean30d: w.Mean30, EWMA45: w.Adaptive, EWMA180: w.Slow,
+		DeltaVsEWMA45: w.DeltaAdaptive, DeltaVsEWMA180: w.DeltaSlow, EligibleCount7d: w.N7, EligibleCount45d: w.AdaptiveN, EligibleCount180d: w.SlowN,
+		WarmupComplete45: w.AdaptiveN >= ewmaWindowAdaptive/2, WarmupComplete180: w.SlowN >= ewmaWindowSlow/3}
 	featuresJSON, err := json.Marshal(features)
 	if err != nil {
 		return fmt.Errorf("marshal features %s: %w", date, err)
 	}
 
 	// Naive baselines for both target_kinds.
-	baselines := buildPassiveEfficiencyNaiveBaselines(t, epochStart, verdict)
+	baselines, err := s.chipBaselines(ctx, t, epochStart, SubScorePassiveEfficiency, walkingHRLookup(verdict), TargetKindDailyPoint, TargetKindRolling3d)
+	if err != nil {
+		return err
+	}
 
 	if err := s.SaveTargetSnapshot(TargetSnapshot{
 		Date:              date,
 		SubScore:          SubScorePassiveEfficiency,
 		TargetKind:        TargetKindDailyPoint,
-		TargetValue:       dailySpec.Value,
-		Eligible:          dailySpec.Eligible,
-		EligibilityReason: dailySpec.Reason,
+		TargetValue:       labels[TargetKindDailyPoint].Value,
+		Eligible:          labels[TargetKindDailyPoint].Eligible,
+		EligibilityReason: labels[TargetKindDailyPoint].Reason,
 		DataCoverage:      dailySpec.Coverage,
 		SourceEpoch:       epoch,
 		FormulaVersion:    passiveEfficiencyFormulaVersion,
@@ -185,10 +193,10 @@ func (s *DB) writePassiveEfficiencyRow(
 		Date:              date,
 		SubScore:          SubScorePassiveEfficiency,
 		TargetKind:        TargetKindRolling3d,
-		TargetValue:       rollingSpec.Value,
-		Eligible:          rollingSpec.Eligible,
-		EligibilityReason: rollingSpec.Reason,
-		DataCoverage:      rollingSpec.Coverage,
+		TargetValue:       labels[TargetKindRolling3d].Value,
+		Eligible:          labels[TargetKindRolling3d].Eligible,
+		EligibilityReason: labels[TargetKindRolling3d].Reason,
+		DataCoverage:      rollingCoverage,
 		SourceEpoch:       epoch,
 		FormulaVersion:    passiveEfficiencyFormulaVersion,
 	}); err != nil {
@@ -254,65 +262,34 @@ func passiveTargetFromVerdict(
 	}
 }
 
-// passiveRolling3dTarget enforces the all-three-eligible rule: rolling
-// target is only eligible when every day in t+1..t+3 has a present and
-// in-range walking HR. One out-of-range or missing day flips it.
-func passiveRolling3dTarget(
-	t time.Time,
-	verdict map[string]health.WalkingHREligibilityResult,
-	rowByDate map[string]health.WalkingHRRow,
-) targetWriteSpec {
-	dates := []string{
-		t.AddDate(0, 0, 1).Format(isoDate),
-		t.AddDate(0, 0, 2).Format(isoDate),
-		t.AddDate(0, 0, 3).Format(isoDate),
-	}
-	values := make([]float64, 0, 3)
-	reasons := make([]string, 0, 3)
-	missing := make([]string, 0, 3)
-	for _, d := range dates {
-		v, hasVerdict := verdict[d]
-		if !hasVerdict {
+func passiveTargetWindow(t time.Time, verdict map[string]health.WalkingHREligibilityResult, rows map[string]health.WalkingHRRow) ([]chipTargetDay, json.RawMessage) {
+	dates, reasons, missing := []string{}, []string{}, []string{}
+	values := map[string]*float64{}
+	var days []chipTargetDay
+	eligible := 0
+	for offset := 1; offset <= 3; offset++ {
+		d := t.AddDate(0, 0, offset).Format(isoDate)
+		dates = append(dates, d)
+		v, ok := verdict[d]
+		if !ok {
 			missing = append(missing, d)
 			reasons = append(reasons, health.PassiveEfficiencyNoWalkingHR)
 			continue
 		}
 		reasons = append(reasons, v.EligibilityReason)
-		if !v.Eligible || v.Value == nil {
-			continue
-		}
-		values = append(values, *v.Value)
-	}
-	if len(values) < 3 {
-		cov := mustMarshal(map[string]any{
-			"target_dates":   dates,
-			"missing_dates":  missing,
-			"per_day_reason": reasons,
-			"eligible_count": len(values),
-		})
-		return targetWriteSpec{
-			Eligible: false,
-			Reason:   firstPassiveBlockingReason(reasons),
-			Coverage: cov,
+		days = append(days, chipTargetDay{Date: d, Value: v.Value, Eligible: v.Eligible, Reason: v.EligibilityReason})
+		if v.Eligible && v.Value != nil {
+			eligible++
+			values[d] = rowValueOrNil(rows, d)
 		}
 	}
-	mean := (values[0] + values[1] + values[2]) / 3.0
-	cov := mustMarshal(map[string]any{
-		"target_dates":   dates,
-		"per_day_reason": reasons,
-		"eligible_count": 3,
-		"per_day_value": map[string]*float64{
-			dates[0]: rowValueOrNil(rowByDate, dates[0]),
-			dates[1]: rowValueOrNil(rowByDate, dates[1]),
-			dates[2]: rowValueOrNil(rowByDate, dates[2]),
-		},
-	})
-	return targetWriteSpec{
-		Value:    &mean,
-		Eligible: true,
-		Reason:   health.PassiveEfficiencyOK,
-		Coverage: cov,
+	cov := map[string]any{"target_dates": dates, "per_day_reason": reasons, "eligible_count": eligible}
+	if eligible == 3 {
+		cov["per_day_value"] = values
+	} else {
+		cov["missing_dates"] = missing
 	}
+	return days, mustMarshal(cov)
 }
 
 func rowValueOrNil(rowByDate map[string]health.WalkingHRRow, date string) *float64 {
@@ -321,34 +298,6 @@ func rowValueOrNil(rowByDate map[string]health.WalkingHRRow, date string) *float
 		return nil
 	}
 	return r.Value
-}
-
-// firstPassiveBlockingReason picks the most informative reason to
-// surface when the rolling target is ineligible. Out-of-range is a
-// stronger signal than "data missing" (it means the value we saw was
-// implausible, not that we saw nothing), so it wins priority.
-func firstPassiveBlockingReason(reasons []string) string {
-	priority := map[string]int{
-		health.PassiveEfficiencyWalkingHROutOfRange: 3,
-		health.PassiveEfficiencyNoWalkingHR:         2,
-		health.PassiveEfficiencyOK:                  0,
-	}
-	best := ""
-	bestP := -1
-	for _, r := range reasons {
-		p, ok := priority[r]
-		if !ok {
-			p = 4
-		}
-		if p > bestP {
-			bestP = p
-			best = r
-		}
-	}
-	if best == "" {
-		return health.PassiveEfficiencyNoWalkingHR
-	}
-	return best
 }
 
 // --- Features ----------------------------------------------------------
@@ -376,79 +325,4 @@ func walkingHRLookup(verdict map[string]health.WalkingHREligibilityResult) Daily
 		}
 		return v.Value, true
 	}
-}
-
-func buildPassiveEfficiencyFeatures(
-	t time.Time,
-	epochStart string,
-	verdict map[string]health.WalkingHREligibilityResult,
-) passiveEfficiencyFeatures {
-	var out passiveEfficiencyFeatures
-	lookup := walkingHRLookup(verdict)
-
-	// Previous walking HR: eligibility result at date t (most recent
-	// observation by end of day t).
-	if v, ok := verdict[t.Format(isoDate)]; ok && v.Eligible && v.Value != nil {
-		out.PrevWalkingHR = ptrFloat(*v.Value)
-	}
-
-	mean7, n7 := windowMean(t, 7, epochStart, lookup)
-	out.Mean7d = mean7
-	out.EligibleCount7d = n7
-
-	mean30, _ := windowMean(t, 30, epochStart, lookup)
-	out.Mean30d = mean30
-
-	ewma45, n45 := windowEWMA(t, ewmaWindowAdaptive, epochStart, lookup)
-	out.EWMA45 = ewma45
-	out.EligibleCount45d = n45
-	out.WarmupComplete45 = n45 >= ewmaWindowAdaptive/2
-
-	ewma180, n180 := windowEWMA(t, ewmaWindowSlow, epochStart, lookup)
-	out.EWMA180 = ewma180
-	out.EligibleCount180d = n180
-	out.WarmupComplete180 = n180 >= ewmaWindowSlow/3
-
-	if out.PrevWalkingHR != nil {
-		if ewma45 != nil {
-			d := *out.PrevWalkingHR - *ewma45
-			out.DeltaVsEWMA45 = &d
-		}
-		if ewma180 != nil {
-			d := *out.PrevWalkingHR - *ewma180
-			out.DeltaVsEWMA180 = &d
-		}
-	}
-	return out
-}
-
-// --- Naive baselines ----------------------------------------------------
-
-func buildPassiveEfficiencyNaiveBaselines(t time.Time, epochStart string, verdict map[string]health.WalkingHREligibilityResult) []naiveBaselineRow {
-	out := make([]naiveBaselineRow, 0, 8)
-	lookup := walkingHRLookup(verdict)
-
-	var persist *float64
-	if v, ok := verdict[t.Format(isoDate)]; ok && v.Eligible && v.Value != nil {
-		persist = ptrFloat(*v.Value)
-	}
-	// Each classifier call passes the actual earliest-day offset for
-	// that baseline's lookback — see classifyBaselineNullReason's
-	// docstring for the per-baseline numbers.
-	out = append(out, appendBaselinePair(TargetKindDailyPoint, TargetKindRolling3d,
-		BaselineKindPersistenceYesterday, persist, classifyBaselineNullReason(t, 0, epochStart))...)
-
-	mean7, _ := windowMean(t, 7, epochStart, lookup)
-	out = append(out, appendBaselinePair(TargetKindDailyPoint, TargetKindRolling3d,
-		BaselineKindRolling7dMean, mean7, classifyBaselineNullReason(t, 6, epochStart))...)
-
-	mean30, _ := windowMean(t, 30, epochStart, lookup)
-	out = append(out, appendBaselinePair(TargetKindDailyPoint, TargetKindRolling3d,
-		BaselineKindRolling30dMean, mean30, classifyBaselineNullReason(t, 29, epochStart))...)
-
-	ewma45, _ := windowEWMA(t, ewmaWindowAdaptive, epochStart, lookup)
-	out = append(out, appendBaselinePair(TargetKindDailyPoint, TargetKindRolling3d,
-		BaselineKindEWMA45d, ewma45,
-		classifyBaselineNullReason(t, ewmaLookbackDays(ewmaWindowAdaptive), epochStart))...)
-	return out
 }

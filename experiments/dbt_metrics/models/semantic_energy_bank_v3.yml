@@ -1,0 +1,44 @@
+version: 2
+sources:
+  - name: energy_capture
+    schema: "{{ var('energy_source_schema', 'energy_capture') }}"
+    description: Immutable, profile-scoped synthetic effective inputs, including the daily sleep inputs selected by the reader.
+    tables:
+      - name: runs
+      - name: days
+      - name: decisions
+      - name: band_history
+      - name: legacy
+models:
+  - name: semantic_energy_bank_v3
+    config:
+      enabled: "{{ var('energy_bank_shadow', false) }}"
+    description: >-
+      EnergyBank v2 formula revision 3 before optional experimental nap credit.
+      Uses 21 calendar days, the first seven for lookback and 14 forward transitions.
+      Observed inputs are frozen at capture. Retrospective stale computations produce
+      no EOD snapshot. The signed internal bank can exist when UI rendering is suppressed.
+    columns:
+      - name: profile
+        data_tests: [not_null]
+      - name: capture_id
+        data_tests: [not_null]
+      - name: state
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['fresh', 'estimated', 'stale']
+  - name: semantic_energy_guidance_v1
+    config:
+      enabled: "{{ var('energy_bank_shadow', false) }}"
+    description: Per-profile verdict and reason for frozen band history, HRV, stress flags and illness classification.
+    columns:
+      - name: capture_id
+        data_tests: [not_null]
+  - name: semantic_energy_legacy_v1
+    config:
+      enabled: "{{ var('energy_bank_shadow', false) }}"
+    description: Legacy fallback calculated from the captured readiness, headline, daily series and activity baselines. A missing resting heart rate suppresses the fallback.
+    columns:
+      - name: capture_id
+        data_tests: [not_null]

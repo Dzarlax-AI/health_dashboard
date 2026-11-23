@@ -16,6 +16,27 @@ func TestLoadReadinessMonitoringSummary_CoverageAndDrift(t *testing.T) {
 	asOf := time.Date(2026, 5, 26, 0, 0, 0, 0, time.UTC)
 	v := 0.5
 
+	// Seed the other monitored input pipelines at their mature edge. An
+	// entirely absent pipeline correctly makes the overall status critical.
+	for _, target := range []struct {
+		subScore, kind string
+		lagDays        int
+	}{
+		{SubScoreRecoveryStability, TargetKindDailyPoint, 0},
+		{SubScoreRecoveryStability, TargetKindRolling3dCandidate2of3, 3},
+		{SubScorePassiveEfficiency, TargetKindDailyPoint, 0},
+		{SubScorePassiveEfficiency, TargetKindRolling3d, 3},
+		{SubScoreAcuteRisk, TargetKindEventStrictT1T3, 3},
+	} {
+		if err := db.SaveTargetSnapshot(TargetSnapshot{
+			Date: asOf.AddDate(0, 0, -target.lagDays).Format(isoDate), SubScore: target.subScore,
+			TargetKind: target.kind, TargetValue: &v, Eligible: true, EligibilityReason: EligibilityOK,
+			SourceEpoch: InitialSourceEpoch, FormulaVersion: 1,
+		}); err != nil {
+			t.Fatalf("seed stable %s/%s: %v", target.subScore, target.kind, err)
+		}
+	}
+
 	// Recovery rolling_3d recent coverage: 4 eligible, 6 ineligible,
 	// and 4 missing in the mature 14-day window ending at asOf-3.
 	// This should warn against the 70% floor and surface

@@ -18,7 +18,7 @@ func (s *DB) legacySleepDBTEnabled() bool {
 func liveDailySQL(useDBT bool) string {
 	var selection string
 	if useDBT {
-		selection = `legacy_sleep_input AS (SELECT $1::text AS date, * FROM per_source),
+		selection = `legacy_sleep_input AS (SELECT date, metric_name, source, sum_val FROM per_source),
 ` + legacySleepDBTSelectionSQL() + `,
 sleep_picked AS (SELECT source AS src FROM picked),
 sleep_picked_complete AS (SELECT complete AS ok FROM sleep_gate)`

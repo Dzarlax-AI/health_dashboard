@@ -60,7 +60,14 @@ func (s *DB) BuildHistoricalDailyInsightSnapshot(ctx context.Context, date, lang
 	}
 	s.populateHistoricalActivityContext(data, date)
 
-	resp := health.ComputeBriefing(*data, lang)
+	projection, err := s.morningReadinessProjection(ctx, data)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.computeBriefingSQL(ctx, data, lang, &projection)
+	if err != nil {
+		return nil, err
+	}
 	if resp.Sleep != nil && data.ReadinessEvidence != nil {
 		latest := data.ReadinessEvidence.SleepDuration
 		if latest.Present && latest.Value != nil && latest.SourceDate == date {
@@ -69,9 +76,14 @@ func (s *DB) BuildHistoricalDailyInsightSnapshot(ctx context.Context, date, lang
 			resp.Sleep.LatestDate = latest.SourceDate
 		}
 	}
-	s.applyHistoricalEnergySnapshot(ctx, resp, date, lang)
+	if err := s.applyHistoricalEnergySnapshot(ctx, resp, date, lang); err != nil {
+		return nil, err
+	}
 	health.EnrichLabels(resp, health.GetStrings(lang))
-	resp.DailyDecision = health.BuildDailyDecision(resp)
+	resp.DailyDecision, err = s.dailyDecision(ctx, resp)
+	if err != nil {
+		return nil, err
+	}
 
 	resp, night := s.insightSleepBriefing(ctx, resp)
 	snapshot := health.BuildDailyInsightSnapshot(resp, lang)
@@ -121,13 +133,13 @@ func (s *DB) populateHistoricalActivityContext(data *health.RawMetrics, date str
 	data.ActiveEnergyChronic28d = s.chronicAvg(date, "calories")
 }
 
-func (s *DB) applyHistoricalEnergySnapshot(ctx context.Context, resp *health.BriefingResponse, date, lang string) {
+func (s *DB) applyHistoricalEnergySnapshot(ctx context.Context, resp *health.BriefingResponse, date, lang string) error {
 	if resp == nil || resp.EnergyBank == nil {
-		return
+		return nil
 	}
 	snapshot, err := s.GetLatestEnergySnapshotForDate(ctx, date)
 	if err != nil || snapshot == nil {
-		return
+		return nil
 	}
 	display := snapshot.Bank
 	if display < 0 {
@@ -154,10 +166,5 @@ func (s *DB) applyHistoricalEnergySnapshot(ctx context.Context, resp *health.Bri
 	if bandsErr != nil {
 		bands = health.DefaultV2VerdictBands()
 	}
-	strings := health.GetStrings(lang)
-	verdict := health.ChooseVerdictV2(resp.EnergyBank.HRVZRaw, display, bands)
-	reason := health.BuildVerdictReasonV2(verdict, display, resp.EnergyBank.HRVZRaw, strings)
-	verdict, reason, _ = health.ApplyStressFlagVerdictOverride(verdict, reason, snapshot.Flags, strings)
-	resp.EnergyBank.ActionVerdict = verdict
-	resp.EnergyBank.VerdictReason = reason
+	return s.applySnapshotGuidanceSQL(ctx, resp, bands, health.GetStrings(lang))
 }

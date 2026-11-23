@@ -1,8 +1,6 @@
 # Updating Health calculations
 
-Live processing remains Go-owned. Aggregation SQL is embedded in the binary;
-the synthetic dbt project is an independent comparison tool. It is not a
-production refresh job.
+Go schedules live processing and owns its transactions. The local migration embeds shared dbt SQL in selected Go readers and writers. The disposable dbt project runs those definitions against fixtures. See the [migration plan](ai-plans/2026-11-22-dbt-all-derived-metrics.html) for the verified scope.
 
 ## Where to change a calculation
 
@@ -35,11 +33,34 @@ migration requires separate design and authorization.
 
 ## Preserve context-specific behavior
 
-Live daily AVG gives each source mean equal weight. Legacy daily AVG gives
-each persisted hourly row equal weight. Unequal hourly coverage can therefore
-produce different values. An unknown ordinary metric defaults to AVG; an
-unknown `sleep_` metric follows SUM in the live sleep writer but the existing
-catalog/default in legacy hourly aggregation.
+Aggregate contract 5 selects the step source independently for each physical hour, using the local hour and UTC offset.
+Apple Watch (including Ultra) takes priority over iPhone, followed by other
+devices. Within a priority tier the largest usable total wins. The daily value
+sums these hours. The combined v2 hourly and daily graphs and latest value
+use this ranking. Device-specific graphs expose each device's observations.
+A withdrawal reselects the affected hour from its surviving sources. The final withdrawal
+leaves a missing daily value. An incomplete incoming packet preserves valid
+measurements previously received from other sources.
+
+Live and historical day totals reconstruct physical hours from retained points
+and their sync or import receipts. A verified hourly zero contributes a
+measured zero. Two occurrences of the same clock hour can select different
+devices. Their contributions share one label on the hourly chart.
+
+Legacy hourly keys contain local time and source. If a cache cell outlives
+its source observations and a later partial sync cannot reconstruct it, keep
+the previous winner for the entire wall-clock hour. A confirmed restoration
+or withdrawal can change that result. Device charts still expose the individual
+sources. The bounded post-wake calculation uses timed observations because
+an old whole-hour total cannot be allocated to minutes after waking.
+
+Aggregate contract 3 gives each source equal weight for daily HRV, resting
+heart rate, oxygen saturation, VO₂ max and respiratory rate. Each source
+contributes its mean across valid hourly rows to foreground, full, incremental,
+and date-bounded writers and the unfiltered daily chart. Raw morning evidence
+and per-source or intraday readings retain their own grain. An unknown ordinary
+metric defaults to AVG. The live writer sums an unknown `sleep_` metric.
+Historical hourly aggregation applies its catalog and default rule.
 
 Sleep selection has a conservative divergence check (minimum above one hour,
 maximum greater than minimum × 1.4), then Watch/RingConn/maximum priority.

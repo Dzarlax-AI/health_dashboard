@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	dbtmetrics "health-receiver/experiments/dbt_metrics"
 	"health-receiver/internal/health"
 )
 
@@ -214,47 +215,30 @@ func (s *DB) dailyScoreBaseline(date, column string, days int) (avg, sd float64,
 func (s *DB) spO2ClusterEvidence(date string) *health.SpO2ClusterEvidence {
 	ctx, cancel := queryCtx()
 	defer cancel()
-	rows, err := s.pool.Query(ctx, `
-		SELECT source, COUNT(*), MIN(qty), AVG(qty),
-		       COUNT(*) FILTER (WHERE qty < 94),
-		       COUNT(*) FILTER (WHERE qty < 92)
-		  FROM metric_points
-		 WHERE metric_name = 'blood_oxygen_saturation'
-		   AND SUBSTRING(date,1,10) = $1
-		   AND qty > 0
-		   AND quality = 'ok'
-		 GROUP BY source
-		 ORDER BY source`, date)
+	rows, err := s.pool.Query(ctx, `with oxygen_samples as (
+        select source, qty, quality from metric_points
+        where metric_name='blood_oxygen_saturation' and substring(date,1,10)=$1
+    ) select * from (`+dbtmetrics.OxygenClusterRowsSQL+`) rows order by source`, date)
+	out := &health.SpO2ClusterEvidence{Status: "missing"}
 	if err != nil {
-		return &health.SpO2ClusterEvidence{Status: "missing"}
-	}
-	defer rows.Close()
-	out := &health.SpO2ClusterEvidence{Status: "ok"}
-	var sum float64
-	for rows.Next() {
-		var src string
-		var count, below94, below92 int
-		var minV, avgV float64
-		if err := rows.Scan(&src, &count, &minV, &avgV, &below94, &below92); err != nil {
-			continue
-		}
-		out.ValidReadings += count
-		out.Below94Count += below94
-		out.Below92Count += below92
-		if out.Min == 0 || minV < out.Min {
-			out.Min = minV
-		}
-		sum += avgV * float64(count)
-		out.Sources = append(out.Sources, health.SpO2SourceEvidence{
-			Source: src, Count: count, Below94Count: below94, Below92Count: below92,
-			Min: minV, Avg: avgV, Window: "unknown",
-		})
-	}
-	if out.ValidReadings == 0 {
-		out.Status = "missing"
 		return out
 	}
-	out.Avg = sum / float64(out.ValidReadings)
+	defer rows.Close()
+	for rows.Next() {
+		var device health.SpO2SourceEvidence
+		if err := rows.Scan(&device.Source, &device.Count, &device.Min, &device.Avg,
+			&device.Below94Count, &device.Below92Count, &device.Window,
+			&out.ValidReadings, &out.Min, &out.Avg, &out.Below94Count, &out.Below92Count); err != nil {
+			return &health.SpO2ClusterEvidence{Status: "missing"}
+		}
+		out.Sources = append(out.Sources, device)
+	}
+	if rows.Err() != nil {
+		return &health.SpO2ClusterEvidence{Status: "missing"}
+	}
+	if out.ValidReadings > 0 {
+		out.Status = "ok"
+	}
 	return out
 }
 

@@ -63,7 +63,7 @@ func TestEmbeddedAggregateTemplatesResolveAllStaticFragments(t *testing.T) {
 		aggregateSQLWith("legacy_hourly_avg", map[string]string{"SLEEP_DEDUP": "", "FROM_CLAUSE": ""}),
 		aggregateSQLWith("legacy_hourly_sum", map[string]string{"SLEEP_DEDUP": "", "FROM_CLAUSE": ""}),
 		aggregateSQLWith("legacy_daily_avg", map[string]string{"FROM_CLAUSE": ""}),
-		aggregateSQLWith("legacy_daily_sum", map[string]string{"FROM_CLAUSE": "", "SUM_SOURCE_RANK": legacySumSourceRankExpr()}),
+		aggregateSQLWith("legacy_daily_sum", map[string]string{"FROM_CLAUSE": ""}),
 		aggregateSQLWith("legacy_daily_upsert", map[string]string{"COLUMN": "steps"}),
 		aggregateSQLWith("legacy_daily_sleep", map[string]string{
 			"FROM_CLAUSE":               "",
@@ -104,7 +104,7 @@ func TestBuildDailyMetricColRejectsUnlistedColumnBeforeDatabaseAccess(t *testing
 }
 
 func TestLegacySumRankPreservesSourceOrder(t *testing.T) {
-	rank := legacySumSourceRankExpr()
+	rank := aggregateSQLWith("legacy_daily_sum", map[string]string{"FROM_CLAUSE": ""})
 	watch := strings.Index(rank, "Ultra")
 	phone := strings.Index(rank, "iPhone")
 	if watch < 0 || phone < 0 || watch > phone {

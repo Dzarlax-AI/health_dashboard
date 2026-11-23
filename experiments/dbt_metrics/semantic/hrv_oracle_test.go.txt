@@ -75,7 +75,7 @@ func TestSemanticShadowHRVOracle(t *testing.T) {
 	if err = db.buildHourlyMetric(metric, "AVG", true); err != nil {
 		t.Fatal(err)
 	}
-	q := aggregateSQLWith("legacy_daily_avg", map[string]string{"FROM_CLAUSE": ""})
+	q := historicalDailyMetricSQL(metric, "")
 	legacyRows, err := pool.Query(ctx, q, metric)
 	if err != nil {
 		t.Fatal(err)

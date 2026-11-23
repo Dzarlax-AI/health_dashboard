@@ -1,0 +1,16 @@
+version: 2
+sources:
+  - name: complex_sleep
+    schema: "{{ var('semantic_source_schema', 'source_data') }}"
+    description: Synthetic captures of the accepted balance commitments and wake candidate evidence, keyed by profile and capture version.
+    tables:
+      - name: balance_capture
+      - name: balance_goal
+      - name: balance_coverage
+      - name: balance_episode
+      - name: wake_capture
+      - name: wake_segment_case
+      - name: wake_segment
+
+      - name: sleep_rollout_daily
+        description: Tenant-local packet decisions written by the episode selector, including exact source-selection evidence for newly computed coverage-bearing episodes.

@@ -56,8 +56,14 @@ func (s *DB) rebuildHistoricalAggregateDate(ctx context.Context, date string) er
 		return err
 	}
 
+	if _, err := lockCacheMaintenanceRow(ctx, s.pool.(*cacheTransaction)); err != nil {
+		return err
+	}
 	repair, err := s.prepareHRVRepair(ctx, date)
 	if err != nil {
+		return err
+	}
+	if err := s.clearWithdrawnStepHours(ctx, "AND substring(date,1,10)=$1", date); err != nil {
 		return err
 	}
 	metrics, err := s.listMetricNamesContext(ctx, date)
@@ -152,15 +158,10 @@ func (s *DB) rebuildHistoricalDailyMetric(ctx context.Context, date, col, metric
 	if !allowedDailyMetricColumn(col) {
 		return fmt.Errorf("unsupported daily metric column %q", col)
 	}
-	name := "legacy_daily_avg"
-	replacements := map[string]string{"FROM_CLAUSE": "AND SUBSTRING(hour,1,10) = $2"}
-	if SumMetrics[metric] {
-		name = "legacy_daily_sum"
-		replacements["SUM_SOURCE_RANK"] = legacySumSourceRankExpr()
-	}
+	query := historicalDailyMetricSQL(metric, "AND SUBSTRING(hour,1,10) = $2")
 	var resultDate string
 	var value float64
-	err := s.pool.QueryRow(ctx, aggregateSQLWith(name, replacements), metric, date).Scan(&resultDate, &value)
+	err := s.pool.QueryRow(ctx, query, metric, date).Scan(&resultDate, &value)
 	if err == pgx.ErrNoRows {
 		return nil
 	}

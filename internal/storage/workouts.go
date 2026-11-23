@@ -1,9 +1,13 @@
 package storage
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
+
+	dbtmetrics "health-receiver/experiments/dbt_metrics"
+	"health-receiver/internal/health"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -67,6 +71,18 @@ type WorkoutStats struct {
 	TotalZ3Sec       *int     `json:"total_hr_z3_sec,omitempty"`
 	TotalZ4Sec       *int     `json:"total_hr_z4_sec,omitempty"`
 	TotalZ5Sec       *int     `json:"total_hr_z5_sec,omitempty"`
+}
+
+func (s *DB) WorkoutZoneSeconds(input health.WorkoutZoneInput) ([5]int, error) {
+	var result [5]int
+	payload, err := json.Marshal(input)
+	if err != nil {
+		return result, err
+	}
+	ctx, cancel := queryCtx()
+	defer cancel()
+	err = s.pool.QueryRow(ctx, dbtmetrics.WorkoutZoneSecondsSQL(), json.RawMessage(payload)).Scan(&result)
+	return result, err
 }
 
 // UpsertWorkout inserts or updates a workout keyed by external_id (the HAE
@@ -220,12 +236,7 @@ func (s *DB) GetWorkout(externalID string) (*Workout, error) {
 func (s *DB) ListWorkoutTypes() ([]WorkoutTypeCount, error) {
 	ctx, cancel := queryCtx()
 	defer cancel()
-	rows, err := s.pool.Query(ctx, `
-		SELECT name, COUNT(*) AS cnt, MIN(start_time), MAX(start_time)
-		FROM workouts
-		GROUP BY name
-		ORDER BY cnt DESC, name`,
-	)
+	rows, err := s.pool.Query(ctx, dbtmetrics.WorkoutTypeSQL())
 	if err != nil {
 		return nil, fmt.Errorf("list workout types: %w", err)
 	}
@@ -250,19 +261,9 @@ func (s *DB) WorkoutStats(from, to time.Time, nameFilter string) (WorkoutStats, 
 	ctx, cancel := queryCtx()
 	defer cancel()
 
-	q := `SELECT
-			COUNT(*),
-			COALESCE(SUM(duration_sec), 0),
-			SUM(distance_km),
-			SUM(energy_kcal),
-			AVG(avg_hr_bpm),
-			MAX(max_hr_bpm),
-			SUM(hr_z1_sec), SUM(hr_z2_sec), SUM(hr_z3_sec), SUM(hr_z4_sec), SUM(hr_z5_sec)
-		FROM workouts
-		WHERE start_time >= $1 AND start_time <= $2`
+	q := dbtmetrics.WorkoutPeriodSQL(nameFilter != "")
 	args := []any{from, to}
 	if nameFilter != "" {
-		q += ` AND name = $3`
 		args = append(args, nameFilter)
 	}
 

@@ -1,22 +1,71 @@
 package storage
 
 import (
+	"encoding/json"
 	"os"
 	"testing"
 	"time"
 )
 
+// The Docker pilot feeds the candidate available at the decision time and
+// the dbt result from the same transaction to the actual Go confirmation rule.
+func TestWakeConfirmationDBTParity(t *testing.T) {
+	path := os.Getenv("SYNTHETIC_WAKE_PARITY_FILE")
+	if path == "" {
+		t.Skip("opt-in synthetic wake confirmation pilot")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		Profile, Capture, Zone, Signal, Confidence, Reason  string
+		DecisionAt, CandidateWake, LatestIngest, QuietSince time.Time
+		Steps                                               float64
+		TypicalMinute                                       *int
+		Ready                                               bool
+	}
+	if err := json.Unmarshal(data, &cases); err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) != 16 {
+		t.Fatalf("wake captures %d", len(cases))
+	}
+	for _, c := range cases {
+		loc, err := time.LoadLocation(c.Zone)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var typical int
+		if c.TypicalMinute != nil {
+			typical = *c.TypicalMinute
+		}
+		want := MorningWakeStatus{Confidence: WakeConfidenceLow, Reason: "no_data"}
+		if !c.CandidateWake.IsZero() {
+			want = evaluateMorningWake(wakeCandidate{Wake: c.CandidateWake, LatestIngest: c.LatestIngest, IngestQuietSince: c.QuietSince, Signal: c.Signal}, c.DecisionAt, c.Steps, typical, c.TypicalMinute != nil, loc)
+		}
+		if want.Ready != c.Ready || want.Confidence != c.Confidence || want.Reason != c.Reason {
+			t.Fatalf("%s/%s: got %t/%s/%s, Go %t/%s/%s", c.Profile, c.Capture, c.Ready, c.Confidence, c.Reason, want.Ready, want.Confidence, want.Reason)
+		}
+	}
+	t.Logf("wake confirmation captures=%d matched", len(cases))
+}
+
 // TestWakeCandidateDBTParity drives the storage reader through actual typed
 // metric_points including its quality/date filter and detailed/summary priority.
 func TestWakeCandidateDBTParity(t *testing.T) {
-	if os.Getenv("PREFERRED_SLEEP_FIXTURE_TOKEN") == "" {
+	expectedToken := os.Getenv("SLEEP_DOCKER_TOKEN")
+	if expectedToken == "" {
+		expectedToken = os.Getenv("PREFERRED_SLEEP_FIXTURE_TOKEN")
+	}
+	if expectedToken == "" {
 		t.Skip("synthetic sleep Docker fixture required")
 	}
 	db, cleanup := testDB(t)
 	defer cleanup()
 	ctx := t.Context()
 	var token string
-	if err := db.pool.QueryRow(ctx, "select token from public.sleep_fixture_identity").Scan(&token); err != nil || token != os.Getenv("PREFERRED_SLEEP_FIXTURE_TOKEN") {
+	if err := db.pool.QueryRow(ctx, "select token from public.sleep_fixture_identity").Scan(&token); err != nil || token != expectedToken {
 		t.Fatal("synthetic fixture identity mismatch")
 	}
 	record := insertTestRawRecord(t, db, "wake-parity")

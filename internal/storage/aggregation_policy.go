@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	dbtmetrics "health-receiver/experiments/dbt_metrics"
 )
 
 // aggregationMetricSpec maps a daily_scores column to its hourly metric.
@@ -54,19 +56,22 @@ var (
 // the staged sleep metrics per source. night_sleep_total and nap_total retain
 // SUM semantics but are not columns in daily_scores.
 var SumMetrics = func() map[string]bool {
-	metrics := []string{
-		"step_count", "active_energy", "basal_energy_burned",
-		"apple_exercise_time", "apple_stand_time", "flights_climbed",
-		"walking_running_distance", "time_in_daylight", "apple_stand_hour",
-		"sleep_total", "sleep_deep", "sleep_rem", "sleep_core", "sleep_awake",
-		"sleep_unspecified", "night_sleep_total", "nap_total",
-	}
+	metrics := dbtmetrics.HourlySumMetricNames()
 	out := make(map[string]bool, len(metrics))
 	for _, metric := range metrics {
 		out[metric] = true
 	}
 	return out
 }()
+
+func isDailyAverageMetric(metric string) bool {
+	for _, spec := range dailyMetricSpecs {
+		if spec.metric == metric {
+			return !SumMetrics[metric]
+		}
+	}
+	return false
+}
 
 func allowedDailyMetricColumn(column string) bool {
 	for _, spec := range dailyMetricSpecs {
@@ -83,15 +88,6 @@ func sourcePriorityCondition(alias string, rule sourcePriorityRule) string {
 		conditions = append(conditions, alias+" LIKE '%"+pattern+"%'")
 	}
 	return strings.Join(conditions, " OR ")
-}
-
-func legacySumSourceRankExpr() string {
-	var cases []string
-	for i, rule := range sumSourcePriority {
-		cases = append(cases, "WHEN "+sourcePriorityCondition("source", rule)+fmt.Sprintf(" THEN %d", i+1))
-	}
-	cases = append(cases, fmt.Sprintf("ELSE %d END", len(sumSourcePriority)+1))
-	return "CASE " + strings.Join(cases, " ")
 }
 
 func sleepSourcePriorityCaseExpr(alias string) string {

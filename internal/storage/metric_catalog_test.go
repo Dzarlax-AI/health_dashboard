@@ -37,7 +37,7 @@ func TestMetricCatalogSnapshotLifecycle(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := db.rebuildRecentHourlyCatalog(day); err != nil {
+		if _, err := db.rebuildRecentAggregateDate(ctx, day, liveDailySQL(false)); err != nil {
 			t.Fatal(err)
 		}
 	}

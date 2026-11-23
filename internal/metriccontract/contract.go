@@ -51,19 +51,25 @@ func negotiate(w http.ResponseWriter, r *http.Request, defaultVersion Version) (
 	return version, true
 }
 
+// DefaultReadVersion is the representation used by browser charts that omit the header.
+func DefaultReadVersion() Version {
+	if os.Getenv("HEALTH_METRICS_V1_ENABLED") == "0" {
+		return Current
+	}
+	return Legacy
+}
+
 // Read selects the temporary legacy presentation for unversioned clients.
 // The flag only changes presentation and does not identify or block callers.
 func Read(w http.ResponseWriter, r *http.Request) (Version, bool) {
-	if os.Getenv("HEALTH_METRICS_V1_ENABLED") == "0" {
-		version, ok := negotiate(w, r, Current)
-		if ok && version == Legacy {
-			w.Header().Del(Header)
-			http.Error(w, "health metrics contract 1 is disabled", http.StatusNotAcceptable)
-			return "", false
-		}
-		return version, ok
+	defaultVersion := DefaultReadVersion()
+	version, ok := negotiate(w, r, defaultVersion)
+	if ok && defaultVersion == Current && version == Legacy {
+		w.Header().Del(Header)
+		http.Error(w, "health metrics contract 1 is disabled", http.StatusNotAcceptable)
+		return "", false
 	}
-	return negotiate(w, r, Legacy)
+	return version, ok
 }
 
 // Ingest keeps accepting the established wire format for unversioned senders,

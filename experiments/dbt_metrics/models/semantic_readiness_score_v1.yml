@@ -1,0 +1,23 @@
+version: 2
+sources:
+  - name: readiness_captures
+    schema: "{{ var('semantic_source_schema','source_data') }}"
+    tables:
+      - name: readiness_score_inputs
+        description: Immutable reader-selected RHR and sleep observations and the evidence available for one decision. Arrays are newest first. The headline and illness classifications are upstream inputs to the serving rules.
+models:
+  - name: semantic_readiness_score_v1
+    config:
+      enabled: "{{ var('readiness_score_shadow', false) }}"
+    description: >-
+      Local shadow of the historical raw Readiness score and the morning display,
+      including availability gates, sleep penalties, weight normalization and
+      ordered evidence, headline and illness caps. Morning status refers to the
+      evidence captured at decision time. Missing capture withholds all scores.
+    columns:
+      - name: case_id
+        data_tests: [not_null]
+      - name: profile
+        data_tests: [not_null]
+      - name: target_date
+        data_tests: [not_null]

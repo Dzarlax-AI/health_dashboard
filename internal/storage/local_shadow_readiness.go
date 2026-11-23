@@ -36,7 +36,7 @@ type LocalShadowSleep struct {
 	Conflict    *bool    `json:"stage_conflict"`
 }
 
-// GetLocalShadowReadiness reads the same Go readiness and safety rules used by
+// GetLocalShadowReadiness uses the same readiness solver and safety rules as
 // the briefing, with the published shadow sleep block owning covered dates.
 // profile is the shadow profile mapped to this DB's schema by the caller.
 func (s *DB) GetLocalShadowReadiness(ctx context.Context, profile, date string) (*LocalShadowReadiness, error) {
@@ -79,16 +79,20 @@ func (s *DB) getLocalShadowReadiness(ctx context.Context, profile, date string) 
 	if err != nil {
 		return nil, err
 	}
-	return s.readinessWithSleep(ctx, date, blocks, baseline), nil
+	return s.readinessWithSleep(ctx, date, blocks, baseline)
 }
 
-func (s *DB) readinessWithSleep(ctx context.Context, date string, blocks map[string]*LocalShadowSleep, baseline []float64) *LocalShadowReadiness {
+func (s *DB) readinessWithSleep(ctx context.Context, date string, blocks map[string]*LocalShadowSleep, baseline []float64) (*LocalShadowReadiness, error) {
 	data := s.rawMetricsFromDailyScores(date)
 	if data == nil {
 		data = s.rawMetricsFromPoints(date)
 	}
 	applyLocalShadowSleep(data, blocks)
-	resp := health.ComputeReadinessBriefing(*data, "en")
+	projection, err := s.morningReadinessProjection(ctx, data)
+	if err != nil {
+		return nil, err
+	}
+	resp := health.ComputeReadinessBriefingWithProjection(*data, "en", &projection)
 	var checkin *health.SubjectiveCheckinSummary
 	if row, err := s.GetTodayCheckin(date, CheckinSourceTelegram); err == nil && row != nil {
 		checkin = &health.SubjectiveCheckinSummary{Status: row.Status, Answer: row.Answer}
@@ -98,13 +102,16 @@ func (s *DB) readinessWithSleep(ctx context.Context, date string, blocks map[str
 		sleepDisruption = localShadowSleepDisruption(block.Total, baseline)
 	}
 	input := s.buildIllnessEvidenceInput(date, checkin, sleepDisruption)
-	resp.IllnessSuspicion = health.ComputeIllnessSuspicion(input)
+	resp.IllnessSuspicion, err = s.classifyIllness(ctx, input)
+	if err != nil {
+		return nil, err
+	}
 	health.ApplyIllnessSafetyCap(resp, health.GetStrings("en"))
 	return &LocalShadowReadiness{
 		Date: date, RawScore: resp.ReadinessRawScore, Score: resp.ReadinessDisplayScore,
 		Band: resp.ReadinessBand, Serving: resp.ReadinessServing,
 		Sleep: blocks[date], SleepQuality: resp.SleepQuality,
-	}
+	}, nil
 }
 
 func (s *DB) loadLocalShadowSleep(ctx context.Context, profile, date string) (map[string]*LocalShadowSleep, []float64, error) {

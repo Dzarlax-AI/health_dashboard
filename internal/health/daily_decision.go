@@ -26,13 +26,20 @@ func BuildDailyDecision(resp *BriefingResponse) *DailyDecision {
 	if resp == nil {
 		return nil
 	}
-	decision := &DailyDecision{
-		Mode:   fallbackDecisionMode(resp.ReadinessToday),
-		Label:  resp.ReadinessTodayLabel,
-		Reason: resp.ReadinessTip,
-	}
+	mode := fallbackDecisionMode(resp.ReadinessToday)
 	if resp.EnergyBank != nil {
-		decision.Mode = resp.EnergyBank.ActionVerdict
+		mode = resp.EnergyBank.ActionVerdict
+	}
+	if resp.TodayGuidance != nil {
+		mode = resp.TodayGuidance.Action
+	}
+	return RenderDailyDecision(resp, mode, dailyDecisionEvidenceDomains(resp))
+}
+
+// RenderDailyDecision localizes an evaluated boundary and computes its delivery identity.
+func RenderDailyDecision(resp *BriefingResponse, mode string, domains []string) *DailyDecision {
+	decision := &DailyDecision{Mode: mode, Label: resp.ReadinessTodayLabel, Reason: resp.ReadinessTip, EvidenceDomains: domains}
+	if resp.EnergyBank != nil {
 		if resp.EnergyBank.VerdictLabel != "" {
 			decision.Label = resp.EnergyBank.VerdictLabel
 		}
@@ -44,14 +51,12 @@ func BuildDailyDecision(resp *BriefingResponse) *DailyDecision {
 	// readiness-serving and sleep-confidence safety caps. It is the final
 	// authoritative action whenever it is available.
 	if resp.TodayGuidance != nil {
-		decision.Mode = resp.TodayGuidance.Action
 		decision.Label = resp.TodayGuidance.Label
 		decision.Reason = resp.TodayGuidance.Reason
 	}
 	if resp.Headline != nil && resp.Headline.Key != "" {
 		decision.SignalKeys = []string{resp.Headline.Key}
 	}
-	decision.EvidenceDomains = dailyDecisionEvidenceDomains(resp)
 	decision.ID = dailyDecisionID(resp, decision)
 	return decision
 }

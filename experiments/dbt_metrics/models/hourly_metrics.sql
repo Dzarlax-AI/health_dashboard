@@ -2,50 +2,23 @@
 {% do validate_affected_dates() %}
 
 WITH valid_points AS (
-    SELECT metric_name, date, source, qty::real AS qty
-    FROM {{ source('source_data', 'metric_points') }} p
-    WHERE qty > 0 AND quality = 'ok'
-      AND {{ affected_dates_filter('SUBSTRING(date, 1, 10)') }}
-      AND NOT (
-        metric_name LIKE 'sleep\_%' ESCAPE '\'
-        AND SUBSTRING(date, 12, 8) <> '00:00:00'
-        AND EXISTS (
-          SELECT 1 FROM {{ source('source_data', 'metric_points') }} midnight
-          WHERE midnight.metric_name = p.metric_name
-            AND SUBSTRING(midnight.date, 1, 10) = SUBSTRING(p.date, 1, 10)
-            AND midnight.source = p.source
-            AND SUBSTRING(midnight.date, 12, 8) = '00:00:00'
-            AND midnight.qty > 0 AND midnight.quality = 'ok'
-        )
-      )
+    SELECT metric_name, date, source, qty, quality
+    FROM {{ ref('retained_metric_points') }} p
+    WHERE {{ affected_dates_filter('SUBSTRING(date, 1, 10)') }}
+      AND (metric_name NOT LIKE 'sleep\_%' ESCAPE '\'
+           OR {{ keep_sleep_point(ref('retained_metric_points'), 'p') }})
 ),
-minute_values AS (
-    SELECT metric_name, source,
-           SUBSTRING(date, 1, 13) || ':00' AS hour,
-           SUBSTRING(date, 1, 16) AS minute,
-           MAX(qty)::real AS minute_max,
-           MIN(qty)::real AS minute_min
-    FROM valid_points
-    WHERE metric_name LIKE 'sleep\_%' ESCAPE '\' OR metric_name = ANY({{ sum_metrics_array() }})
-    GROUP BY metric_name, source, SUBSTRING(date, 1, 13), SUBSTRING(date, 1, 16)
+sum_points as (
+    select * from valid_points
+    where metric_name<>'step_count' and (metric_name like 'sleep\_%' escape '\' or metric_name = any({{ sum_metrics_array() }}))
 ),
-sum_rows AS (
-    SELECT metric_name, hour, source,
-           SUM(minute_max)::real AS avg_val,
-           MIN(minute_min)::real AS min_val,
-           MAX(minute_max)::real AS max_val,
-           COUNT(*)::integer AS sample_count
-    FROM minute_values GROUP BY metric_name, hour, source
-),
-avg_rows AS (
-    SELECT metric_name, SUBSTRING(date, 1, 13) || ':00' AS hour, source,
-           AVG(qty)::real AS avg_val, MIN(qty)::real AS min_val,
-           MAX(qty)::real AS max_val, COUNT(*)::integer AS sample_count
-    FROM valid_points
-    WHERE metric_name NOT LIKE 'sleep\_%' ESCAPE '\'
-      AND metric_name <> ALL({{ sum_metrics_array() }})
-    GROUP BY metric_name, SUBSTRING(date, 1, 13), source
+avg_points as (
+    select * from valid_points
+    where metric_name not like 'sleep\_%' escape '\' and metric_name <> all({{ sum_metrics_array() }})
 )
-SELECT * FROM avg_rows
-UNION ALL
-SELECT * FROM sum_rows
+{{ hourly_avg_rows('avg_points') }}
+union all
+{{ hourly_sum_rows('sum_points') }}
+union all
+select 'step_count',hour,source,avg_val,min_val,max_val,sample_count from {{ ref('step_hour_state') }}
+where avg_val is not null and {{ affected_dates_filter('substring(hour,1,10)') }}

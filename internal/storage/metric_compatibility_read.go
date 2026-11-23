@@ -40,7 +40,7 @@ var currentCompatibilityHourly = `, minute_values AS (
 	 MIN(low) AS low,MAX(high) AS high,MIN(unit) AS unit
 	FROM minute_values GROUP BY metric,SUBSTRING(minute,1,13),utc_offset,source,grain
 ), compatible_hours AS (
-	SELECT DISTINCT ON (metric,hour,utc_offset,source) metric,hour,source,qty,low,high,unit
+	SELECT DISTINCT ON (metric,hour,utc_offset,source) metric,hour,utc_offset,source,qty,low,high,unit
 	FROM hours_by_grain
 	ORDER BY metric,hour,utc_offset,source,(grain='hour_sum') DESC,(grain='legacy_live') DESC
 ) `
@@ -163,6 +163,9 @@ func (s *DB) compatibleLatestMetricValues(ctx context.Context, legacy bool) ([]L
 	if !legacy {
 		hourly = currentCompatibilityHourly
 		keys = append(keys, currentHourlyStoredKeys...)
+		// Combined steps, including a cached-only day, are emitted by the same
+		// physical-hour projection used by the Activity chart.
+		keys = slices.DeleteFunc(keys, func(key string) bool { return key == "step_count" || key == archiveSamplePrefix+"step_count" })
 	}
 	keys = slices.Compact(slices.Sorted(slices.Values(keys)))
 	rows, err := s.pool.Query(ctx, compatibilityLatestSQL(hourly, legacy), keys, legacy, currentHourlyMetrics)
@@ -187,7 +190,7 @@ func (s *DB) compatibleLatestMetricValues(ctx context.Context, legacy bool) ([]L
 // The candidate selection and both projections share one MVCC snapshot.
 func compatibilityLatestSQL(hourly string, legacy bool) string {
 	aggregate := hourly + `,
-	latest AS (SELECT metric,MAX(SUBSTRING(hour,1,10)) AS day FROM compatible_hours GROUP BY metric),
+    latest AS (SELECT metric,MAX(SUBSTRING(hour,1,10)) AS day FROM compatible_hours GROUP BY metric),
 	by_source AS (
 		SELECT h.metric,h.source,MIN(h.unit) AS unit,l.day,SUM(h.qty) AS total,COUNT(*) AS hours
 		FROM compatible_hours h JOIN latest l ON l.metric=h.metric AND SUBSTRING(h.hour,1,10)=l.day
@@ -279,6 +282,9 @@ func (s *DB) LatestMetricsForContract(legacy bool) ([]LatestValue, error) {
 }
 
 func (s *DB) MetricDataForContract(metric, from, to, bucket, agg string, legacy bool) ([]DataPoint, error) {
+	if metric == "step_count" && (bucket == "hour" || bucket == "day") {
+		return s.stepChart(from, to, bucket)
+	}
 	if !legacy && usesCurrentHourlyMetric(metric) {
 		rows, err := s.compatibleMetricData(metric, from, to, bucket, "SUM", false)
 		if len(rows) == 0 {

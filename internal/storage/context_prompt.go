@@ -464,7 +464,10 @@ func (s *DB) EvaluateLowSleepPromptUsefulness(signalDate string, candidate LowSl
 	} else if err != nil {
 		return LowSleepPromptGate{}, err
 	}
-	illness := health.ComputeIllnessSuspicion(s.BuildIllnessEvidenceInput(signalDate, subjective))
+	illness, err := s.classifyIllness(ctx, s.BuildIllnessEvidenceInput(signalDate, subjective))
+	if err != nil {
+		return LowSleepPromptGate{}, err
+	}
 	return evaluateLowSleepPromptGate(lowSleepPromptGateInput{
 		Candidate:              candidate,
 		SleepAwakeHours:        awake,

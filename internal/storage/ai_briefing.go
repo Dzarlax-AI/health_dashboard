@@ -110,18 +110,12 @@ func (s *DB) MarkMorningReportSent(date string) error {
 	return err
 }
 
-// GetTodayStepCount returns the best-source total step_count for the given date.
+// GetTodayStepCount sums the preferred source's contribution in each recorded hour.
 func (s *DB) GetTodayStepCount(date string) float64 {
 	ctx, cancel := queryCtx()
 	defer cancel()
 	var steps float64
-	s.pool.QueryRow(ctx, `
-		WITH source_totals AS (
-			SELECT source, SUM(qty) AS source_total
-			FROM metric_points
-			WHERE metric_name = 'step_count' AND SUBSTRING(date,1,10) = $1 AND qty > 0
-			GROUP BY source
-		) `+preferredSourceSQL, date).Scan(&steps)
+	s.pool.QueryRow(ctx, "select source_total from ("+stepsOnDateQuery+") totals", date).Scan(&steps)
 	return steps
 }
 
@@ -135,7 +129,7 @@ func (s *DB) GetRawMetrics() *health.RawMetrics {
 	ctx, cancel := queryCtx()
 	defer cancel()
 	var lastDate *string
-	if err := s.pool.QueryRow(ctx, `SELECT MAX(SUBSTRING(hour,1,10)) FROM hourly_metrics`).Scan(&lastDate); err != nil || lastDate == nil {
+	if err := s.pool.QueryRow(ctx, latestBriefingDateSQL).Scan(&lastDate); err != nil || lastDate == nil {
 		return nil
 	}
 	now := time.Now().In(s.reportTZLocation())

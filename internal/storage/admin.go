@@ -208,6 +208,7 @@ func (s *DB) RemoveAutoExportForRange(from, to string) {
 	}
 	var dates, hrvDates []string
 	var removed int64
+	var stepCells []byte
 	err = tx.QueryRow(ctx, `
         WITH removed AS (
             DELETE FROM metric_points
@@ -216,13 +217,19 @@ func (s *DB) RemoveAutoExportForRange(from, to string) {
                 WHERE automation_name IN ('Health dash - Hourly', 'Health dash - Vitals')
             )
             AND SUBSTRING(date,1,10) BETWEEN $1 AND $2
-            RETURNING SUBSTRING(date,1,10) AS day, metric_name, qty, quality
+            RETURNING SUBSTRING(date,1,10) AS day, SUBSTRING(date,1,16) AS minute, source, metric_name, qty, quality, origin, health_record_id
         )
         SELECT count(*), array_agg(DISTINCT day),
                array_agg(DISTINCT day) FILTER (WHERE metric_name='heart_rate_variability'
-                                               AND quality='ok' AND qty>0)
-        FROM removed`, from, to).Scan(&removed, &dates, &hrvDates)
+                                               AND quality='ok' AND qty>0),
+               jsonb_agg(DISTINCT jsonb_build_array(minute,coalesce(source,'')))
+                   FILTER (WHERE `+usableStepPointSQL("removed")+`)
+        FROM removed`, from, to).Scan(&removed, &dates, &hrvDates, &stepCells)
 	if err != nil {
+		log.Printf("remove auto-export [%s,%s]: %v", from, to, err)
+		return
+	}
+	if err := repairWithdrawnSteps(ctx, tx, stepCells, nil); err != nil {
 		log.Printf("remove auto-export [%s,%s]: %v", from, to, err)
 		return
 	}

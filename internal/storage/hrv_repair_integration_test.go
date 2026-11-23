@@ -172,11 +172,20 @@ func TestHRVRepairCrashRetryWeightsAndHistoricalParity(t *testing.T) {
 		{MetricName: "step_count", Units: "count", Date: date + " 12:00:00 +0000", Source: "source-a", Qty: 500},
 		hrvRepairPoint(neighbor+" 08:00:00 +0000", "neighbor", 35),
 	})
+	assertChart := func(want, low float64) {
+		t.Helper()
+		points, err := db.GetMetricData("heart_rate_variability", date, date+" 23:59:59", "day", "AVG")
+		if err != nil || len(points) != 1 || points[0].Qty != want || points[0].Min != low || points[0].Max != 90 {
+			t.Fatalf("unexpected daily HRV chart: %+v, error %v", points, err)
+		}
+	}
+	assertChart(77.5, 40)
 	if err := db.UpsertRecentCache([]string{date, neighbor}, false); err != nil {
 		t.Fatal(err)
 	}
 	initial := 77.5 // source-a mean=(50+80)/2; source-b mean=90; average sources.
 	assertHRVRepairValue(t, db, date, &initial)
+	assertChart(initial, 40)
 	assertHRVRepairHours(t, db, date, map[string]map[string]float64{
 		"08:00": {"source-a": 50, "source-b": 90}, "09:00": {"source-a": 80},
 	})
@@ -238,7 +247,7 @@ func TestHRVRepairCrashRetryWeightsAndHistoricalParity(t *testing.T) {
 
 	// Simulate a marker whose ordinary dirty entry was drained by an older
 	// binary. Startup recovery must restore it, and the historical builder
-	// must consume it using legacy hour weighting.
+	// must consume it with the same source weights as a foreground rebuild.
 	markHRVRepairForTest(t, restarted, date, func(tx pgx.Tx) {
 		if _, err := tx.Exec(ctx, `UPDATE metric_points SET qty=10 WHERE metric_name='heart_rate_variability'
 			AND date=$1 AND source='source-a'`, date+" 08:30:00 +0000"); err != nil {
@@ -277,8 +286,9 @@ func TestHRVRepairCrashRetryWeightsAndHistoricalParity(t *testing.T) {
 	if err = maintenance.RebuildHistoricalCacheDate(ctx, date); err != nil {
 		t.Fatal(err)
 	}
-	historical := 65.0 // corrected hour 25, other source-a hour 80, source-b hour 90.
+	historical := 71.25 // ((25+80)/2 + 90)/2.
 	assertHRVRepairValue(t, restarted, date, &historical)
+	assertChart(historical, 10)
 }
 
 func TestHRVDelayedPointWithoutWithdrawalKeepsExistingHour(t *testing.T) {

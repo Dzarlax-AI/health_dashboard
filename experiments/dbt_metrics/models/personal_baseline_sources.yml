@@ -1,0 +1,7 @@
+version: 2
+sources:
+  - name: personal_baseline_pilot
+    schema: "{{ var('personal_baseline_source_schema', 'baseline_fixture') }}"
+    tables:
+      - name: captures
+      - name: selected_samples

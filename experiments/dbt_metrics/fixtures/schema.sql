@@ -6,10 +6,15 @@ CREATE ROLE pilot_dbt LOGIN PASSWORD 'synthetic-only';
 CREATE SCHEMA dbt_output AUTHORIZATION pilot_dbt;
 CREATE TABLE source_data.metric_points (
  metric_name text NOT NULL, date text NOT NULL, source text NOT NULL,
- qty real, quality text NOT NULL DEFAULT 'ok', PRIMARY KEY(metric_name,date,source)
+ qty real, quality text NOT NULL DEFAULT 'ok', health_record_id bigint, origin text default 'live',
+ units text default 'count', id bigserial, received_at timestamptz default now(), source_snapshot_at timestamptz, PRIMARY KEY(metric_name,date,source)
 );
 CREATE INDEX idx_mp_name_day ON source_data.metric_points(metric_name,SUBSTRING(date,1,10));
 CREATE INDEX idx_mp_day ON source_data.metric_points(SUBSTRING(date,1,10));
+CREATE TABLE source_data.health_records(id bigint primary key,content_type text);
+CREATE VIEW go_oracle.health_records AS SELECT * FROM source_data.health_records;
+CREATE TABLE source_data.metric_point_changes (like source_data.metric_points including all);
+CREATE TABLE source_data.verified_step_withdrawals(point_date text not null,source text not null,primary key(point_date,source));
 CREATE TABLE source_data.calendar(date text PRIMARY KEY);
 CREATE VIEW go_oracle.metric_points AS SELECT * FROM source_data.metric_points;
 CREATE TABLE go_oracle.hourly_metrics (
@@ -25,6 +30,8 @@ CREATE TABLE go_oracle.daily_scores (
  calories real,exercise_min real,spo2_avg real,vo2_avg real,resp_avg real,
  baseline_hr_overnight real,sustained_hr_load real,stress_flags text[]
 );
+CREATE TABLE go_oracle.minute_metrics(metric_name text, minute text, source text);
+CREATE TABLE go_oracle.dashboard_cache_snapshots(singleton boolean primary key, completed_at timestamptz, payload jsonb);
 CREATE TABLE go_oracle.settings (key text PRIMARY KEY, value text, updated_at text);
 GRANT USAGE ON SCHEMA source_data TO pilot_dbt;
 GRANT SELECT ON ALL TABLES IN SCHEMA source_data TO pilot_dbt;

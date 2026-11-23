@@ -269,7 +269,7 @@ struct fields; the writers wrap them in `json.RawMessage` internally.
 
 Defined in `internal/storage/aggregates.go::SumMetrics` (exported):
 - **SUM metrics**: step_count, active_energy, basal_energy_burned, apple_exercise_time, apple_stand_time, flights_climbed, walking_running_distance, time_in_daylight, apple_stand_hour, sleep_total, sleep_deep, sleep_rem, sleep_core, sleep_unspecified, sleep_awake
-- **Source priority**: Apple Watch (Ultra) > iPhone > other (RingConn). For dashboard and daily_scores, preferred source is selected via `preferredSourceSQL`. Falls back to MAX(source_total) if no Apple device present.
+- **Source priority**: Apple Watch (Ultra) > iPhone > other (RingConn). For steps, each hour contributes the largest usable total in its highest available priority tier. Daily totals sum those hours. Other daily SUM measures retain their per-day source selection.
 - **Multi-device dedup (charts)**: MAX(per-source daily sum) across sources
 - **All others**: AVG
 

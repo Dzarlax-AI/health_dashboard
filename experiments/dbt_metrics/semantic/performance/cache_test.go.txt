@@ -137,6 +137,15 @@ func verifySleepCacheRefresh(t *testing.T, p benchProfile, index int, call func(
 			t.Fatalf("fixture mutation: rows=%d err=%v", tag.RowsAffected(), err)
 		}
 	}
+	// Upgrade a populated previous-version cache without dropping its relation.
+	if _, err := p.pool.Exec(ctx, "alter table semantic_sleep_duration_cache_v1 drop column rule_version"); err != nil {
+		t.Fatal(err)
+	}
+	runSleepCacheDBT(t, p)
+	var missingVersions int
+	if err := p.pool.QueryRow(ctx, "select count(*) from semantic_sleep_duration_cache_v1 where rule_version is distinct from 'sleep_duration_reference_v1'").Scan(&missingVersions); err != nil || missingVersions != 0 {
+		t.Fatalf("cache version migration: %d missing, err=%v", missingVersions, err)
+	}
 	// Retain the source row in the disposable tenant to replay a late insert.
 	execOne("create table bench_saved_night as select * from completed_night_sleep where wake_date=$1")
 	before := cacheRowVersions(t, p)

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -100,7 +101,7 @@ func TestAppleHealthXMLImportHRVRepairAuthoritativeSubset(t *testing.T) {
 	assertPointState(t, db, "heart_rate", importHRVAt, "Watch", 65, "live")
 	assertHRVRepairValue(t, db, importHRVDay, nil)
 	assertHRVRepairHours(t, db, importHRVDay, nil)
-	repaired, err := db.rebuildRecentHRVRepair(t.Context(), importHRVDay, liveDailySQL(false))
+	repaired, err := db.rebuildRecentAggregateDate(t.Context(), importHRVDay, liveDailySQL(false))
 	if err != nil || !repaired {
 		t.Fatalf("consume imported HRV repair: repaired=%v err=%v", repaired, err)
 	}
@@ -179,7 +180,7 @@ func TestAppleHealthXMLImportHRVRepairNonpositiveReplacement(t *testing.T) {
 				t.Fatal(err)
 			}
 			assertImportHRVRepairDates(t, db, importHRVDay)
-			repaired, err := db.rebuildRecentHRVRepair(t.Context(), importHRVDay, liveDailySQL(false))
+			repaired, err := db.rebuildRecentAggregateDate(t.Context(), importHRVDay, liveDailySQL(false))
 			if err != nil || !repaired {
 				t.Fatalf("consume zero-replacement repair: repaired=%v err=%v", repaired, err)
 			}
@@ -263,6 +264,26 @@ func TestAppleHealthXMLImportHRVRepairMixedIngestJournalLockOrder(t *testing.T) 
 	}()
 	// Observe the writer blocked on the journal before asserting that it
 	// holds no point-row lock. This avoids a timing-only concurrency test.
+	waitForCacheJournalWriter(t, tx)
+	var previous float64
+	if err := tx.QueryRow(t.Context(), `SELECT qty FROM metric_points
+		WHERE metric_name='heart_rate_variability' AND date=$1 AND source='Watch' FOR UPDATE NOWAIT`, importHRVAt).Scan(&previous); err != nil || previous != 60 {
+		t.Fatalf("mixed ingest locked or changed HRV before acquiring its journal: %v", err)
+	}
+	if err := tx.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		joined = true
+		t.Fatal(err)
+	}
+	joined = true
+	assertPointState(t, db, "heart_rate_variability", importHRVAt, "Watch", 70, "live")
+	assertImportHRVRepairDates(t, db)
+}
+
+func waitForCacheJournalWriter(t *testing.T, tx pgx.Tx) {
+	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	blocked := false
 	for time.Now().Before(deadline) {
@@ -282,21 +303,6 @@ func TestAppleHealthXMLImportHRVRepairMixedIngestJournalLockOrder(t *testing.T) 
 		time.Sleep(10 * time.Millisecond)
 	}
 	if !blocked {
-		t.Fatal("mixed ingest did not reach the held cache journal")
+		t.Fatal("writer did not reach the held cache journal")
 	}
-	var previous float64
-	if err := tx.QueryRow(t.Context(), `SELECT qty FROM metric_points
-		WHERE metric_name='heart_rate_variability' AND date=$1 AND source='Watch' FOR UPDATE NOWAIT`, importHRVAt).Scan(&previous); err != nil || previous != 60 {
-		t.Fatalf("mixed ingest locked or changed HRV before acquiring its journal: %v", err)
-	}
-	if err := tx.Commit(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-done; err != nil {
-		joined = true
-		t.Fatal(err)
-	}
-	joined = true
-	assertPointState(t, db, "heart_rate_variability", importHRVAt, "Watch", 70, "live")
-	assertImportHRVRepairDates(t, db)
 }

@@ -1,0 +1,22 @@
+version: 2
+sources:
+  - name: workout_capture
+    schema: "{{ var('workout_source_schema', 'workout_capture') }}"
+    tables:
+      - name: sessions
+      - name: periods
+models:
+  - name: workout_period_v1
+    config:
+      enabled: "{{ var('workout_shadow', false) }}"
+    description: Aggregate workouts starting in an inclusive interval with an optional exact name. Heart rates are averaged per workout.
+    columns:
+      - name: period_id
+        data_tests: [not_null]
+  - name: workout_type_v1
+    config:
+      enabled: "{{ var('workout_shadow', false) }}"
+    description: Rank workout types for one profile by frequency and then name across its captured history.
+    columns:
+      - name: name
+        data_tests: [not_null]

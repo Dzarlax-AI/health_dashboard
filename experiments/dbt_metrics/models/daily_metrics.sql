@@ -1,63 +1,47 @@
 {{ config(materialized='incremental', unique_key='date', incremental_strategy='merge') }}
 {% do validate_affected_dates() %}
+{% set previous_daily = none %}
+{% if execute and not is_incremental() %}
+    {% set previous_daily = adapter.get_relation(database=this.database,schema=this.schema,identifier=this.identifier) %}
+{% endif %}
 
 WITH days AS (
     SELECT date FROM {{ source('source_data', 'calendar') }} c
     WHERE {{ affected_dates_filter('c.date') }}
 ),
+daily_steps AS (
+    with points as (
+        {{ step_point_inputs(ref('retained_metric_points'),source('source_data','health_records'),affected_dates_filter('substring(p.date,1,10)')) }}
+    ), cached as (
+        select * from {{ ref('hourly_metrics') }} where metric_name='step_count'
+        and {{ affected_dates_filter('substring(hour,1,10)') }}
+    ), chosen as ({{ physical_step_hours('points','cached') }})
+    {{ daily_step_totals('chosen') }}
+),
 per_source AS (
-    SELECT SUBSTRING(hour, 1, 10) AS date, metric_name, source,
-           AVG(avg_val) AS avg_val,
-           SUM(avg_val)::real AS sum_val
-    FROM {{ ref('hourly_metrics') }}
-    WHERE {{ affected_dates_filter('SUBSTRING(hour, 1, 10)') }}
-    GROUP BY SUBSTRING(hour, 1, 10), metric_name, source
+    {{ daily_source_rows(ref('hourly_metrics'), affected_dates_filter('SUBSTRING(hour, 1, 10)')) }}
 ),
 {{ legacy_sleep_selection_v1('per_source',
     "CASE WHEN st.source LIKE '%Ultra%' OR st.source LIKE '%Apple Watch%' THEN 0 WHEN st.source LIKE '%RingConn%' THEN 1 ELSE 2 END",
     '1.0', '1.4', "'sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake'", 5,
     "'sleep_total','sleep_unspecified'", 2) }},
-resolved AS (
-    SELECT d.date,
-      (SELECT AVG(avg_val)::real FROM per_source WHERE date=d.date AND metric_name='heart_rate_variability') AS hrv_avg,
-      (SELECT AVG(avg_val)::real FROM per_source WHERE date=d.date AND metric_name='resting_heart_rate') AS rhr_avg,
-      (SELECT sum_val FROM per_source WHERE date=d.date AND metric_name='sleep_total' AND source=(SELECT source FROM picked WHERE date=d.date)) AS picked_sleep_total,
-      (SELECT sum_val FROM per_source WHERE date=d.date AND metric_name='sleep_deep' AND source=(SELECT source FROM picked WHERE date=d.date)) AS picked_sleep_deep,
-      (SELECT sum_val FROM per_source WHERE date=d.date AND metric_name='sleep_rem' AND source=(SELECT source FROM picked WHERE date=d.date)) AS picked_sleep_rem,
-      (SELECT sum_val FROM per_source WHERE date=d.date AND metric_name='sleep_core' AND source=(SELECT source FROM picked WHERE date=d.date)) AS picked_sleep_core,
-      (SELECT sum_val FROM per_source WHERE date=d.date AND metric_name='sleep_awake' AND source=(SELECT source FROM picked WHERE date=d.date)) AS picked_sleep_awake,
-      (SELECT sum_val FROM per_source WHERE date=d.date AND metric_name='sleep_unspecified' AND source=(SELECT source FROM picked WHERE date=d.date)) AS picked_sleep_unspecified,
-      (SELECT COALESCE(MAX(sum_val) FILTER (WHERE source LIKE '%Ultra%' OR source LIKE '%Apple Watch%'), MAX(sum_val) FILTER (WHERE source LIKE '%iPhone%'), MAX(sum_val)) FROM per_source WHERE date=d.date AND metric_name='step_count') AS steps,
-      (SELECT COALESCE(MAX(sum_val) FILTER (WHERE source LIKE '%Ultra%' OR source LIKE '%Apple Watch%'), MAX(sum_val) FILTER (WHERE source LIKE '%iPhone%'), MAX(sum_val)) FROM per_source WHERE date=d.date AND metric_name='active_energy') AS calories,
-      (SELECT COALESCE(MAX(sum_val) FILTER (WHERE source LIKE '%Ultra%' OR source LIKE '%Apple Watch%'), MAX(sum_val) FILTER (WHERE source LIKE '%iPhone%'), MAX(sum_val)) FROM per_source WHERE date=d.date AND metric_name='apple_exercise_time') AS exercise_min,
-      (SELECT AVG(avg_val)::real FROM per_source WHERE date=d.date AND metric_name='blood_oxygen_saturation') AS spo2_avg,
-      (SELECT AVG(avg_val)::real FROM per_source WHERE date=d.date AND metric_name='vo2_max') AS vo2_avg,
-      (SELECT AVG(avg_val)::real FROM per_source WHERE date=d.date AND metric_name='respiratory_rate') AS resp_avg,
-      COALESCE((SELECT complete FROM sleep_gate WHERE date=d.date), false) AS sleep_complete
-    FROM days d
+daily_picks as (
+    select p.date,p.source as picked_source,g.complete from picked p join sleep_gate g using(date)
+), candidates as (
+    {{ daily_candidates("source like '%Ultra%' or source like '%Apple Watch%'", "source like '%iPhone%'") }}
+), changes as (
+    select distinct substring(hour,1,10) as date from {{ ref('step_hour_state') }}
+    where withdrawn and {{ affected_dates_filter('substring(hour,1,10)') }}
 )
-SELECT r.date,
-       COALESCE(r.hrv_avg, prior.hrv_avg)::real AS hrv_avg,
-       COALESCE(r.rhr_avg, prior.rhr_avg)::real AS rhr_avg,
-       CASE WHEN r.sleep_complete THEN r.picked_sleep_total ELSE prior.sleep_total END::real AS sleep_total,
-       CASE WHEN r.sleep_complete THEN r.picked_sleep_deep ELSE prior.sleep_deep END::real AS sleep_deep,
-       CASE WHEN r.sleep_complete THEN r.picked_sleep_rem ELSE prior.sleep_rem END::real AS sleep_rem,
-       CASE WHEN r.sleep_complete THEN r.picked_sleep_core ELSE prior.sleep_core END::real AS sleep_core,
-       CASE WHEN r.sleep_complete THEN r.picked_sleep_awake ELSE prior.sleep_awake END::real AS sleep_awake,
-       CASE WHEN r.sleep_complete THEN r.picked_sleep_unspecified ELSE prior.sleep_unspecified END::real AS sleep_unspecified,
-       COALESCE(r.steps, prior.steps)::real AS steps,
-       COALESCE(r.calories, prior.calories)::real AS calories,
-       COALESCE(r.exercise_min, prior.exercise_min)::real AS exercise_min,
-       COALESCE(r.spo2_avg, prior.spo2_avg)::real AS spo2_avg,
-       COALESCE(r.vo2_avg, prior.vo2_avg)::real AS vo2_avg,
-       COALESCE(r.resp_avg, prior.resp_avg)::real AS resp_avg
-FROM resolved r
+select r.date,{{ daily_retained_values('r', 'prior', 'changed.date is not null') }}
+from candidates r left join changes changed on changed.date=r.date
 {% if is_incremental() %}
 LEFT JOIN {{ this }} prior ON prior.date = r.date
 {% else %}
-LEFT JOIN (SELECT NULL::text AS date, NULL::real AS hrv_avg, NULL::real AS rhr_avg,
+LEFT JOIN (SELECT {% if previous_daily is not none %}date{% else %}NULL::text{% endif %} AS date, NULL::real AS hrv_avg, NULL::real AS rhr_avg,
   NULL::real AS sleep_total, NULL::real AS sleep_deep, NULL::real AS sleep_rem,
   NULL::real AS sleep_core, NULL::real AS sleep_awake, NULL::real AS sleep_unspecified,
-  NULL::real AS steps, NULL::real AS calories, NULL::real AS exercise_min,
-  NULL::real AS spo2_avg, NULL::real AS vo2_avg, NULL::real AS resp_avg) prior ON false
+  {% if previous_daily is not none %}steps{% else %}NULL::real{% endif %} AS steps, NULL::real AS calories, NULL::real AS exercise_min,
+  NULL::real AS spo2_avg, NULL::real AS vo2_avg, NULL::real AS resp_avg
+  {% if previous_daily is not none %}FROM {{ previous_daily }}{% endif %}) prior ON prior.date=r.date
 {% endif %}

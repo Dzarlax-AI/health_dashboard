@@ -10,6 +10,34 @@ import (
 	"health-receiver/internal/health"
 )
 
+// energyBandsMinPoints is the minimum number of distinct eligible local dates
+// required before personal percentile bands replace the cold-start
+// defaults. Below this the percentile estimates are too noisy to
+// produce stable verdict assignments — a single outlier day shifts a
+// quartile by 10+ points on N=15, and that flapping is worse UX than
+// running on slightly-off defaults.
+//
+// 30 days chosen as the inflection point where bootstrap-derived
+// confidence intervals on the p20/p50/p80 estimates tighten to ±3
+// (acceptable: a verdict band moving ±3 doesn't flip many days
+// between buckets). Below ~20 the CI widens to ±8, well into the
+// flapping regime.
+const energyBandsMinPoints = 30
+
+// energyBandsProvisionalMinPoints is the lower confidence gate for an
+// explicitly marked warmup mode. It exists only to avoid overly
+// permissive cold-start defaults for tenants with enough compatible
+// history to be directionally useful, but not enough for mature
+// personal calibration.
+const energyBandsProvisionalMinPoints = 20
+
+// energyBandsWindowDays is the rolling window over which percentiles
+// are computed. 180 days balances two concerns: long enough to span
+// seasonal variation in activity (winter sedentary, summer active),
+// short enough that thresholds reflect the user's *current* fitness
+// rather than what they could do a year ago.
+const energyBandsWindowDays = 180
+
 func TestComputeUserVerdictBands_UsesOneLatestEligibleRowPerDate(t *testing.T) {
 	db, cleanup := testEnergyDB(t)
 	defer cleanup()
@@ -251,14 +279,16 @@ func TestComputeUserVerdictBands_ProvisionalClampsAllBoundariesToDefaults(t *tes
 }
 
 func TestComputeUserVerdictBands_ProvisionalFallsBackWhenClampBreaksMonotonicity(t *testing.T) {
-	sample := verdictBandSample{
-		p20: floatPtr(80),
-		p50: floatPtr(80),
-		p80: floatPtr(80),
-		n:   energyBandsProvisionalMinPoints,
+	db, cleanup := testEnergyDB(t)
+	defer cleanup()
+	rows := make([]energySnapshotSeed, energyBandsProvisionalMinPoints)
+	for i := range rows {
+		rows[i] = energySnapshot(bandTestDate(i), 20, 80, 2, nil)
 	}
-	if bands, ok := provisionalVerdictBandsFromSample(sample, 10, energyBandsProvisionalMinPoints); ok {
-		t.Fatalf("provisional ok=true with non-strict recovery/push monotonicity, bands=%+v", bands)
+	insertEnergySnapshots(t, db, rows...)
+	bands, err := db.ComputeUserVerdictBands(context.Background())
+	if err != nil || bands.CalibrationMode != "default_warmup" || bands.CompatibleFormulaDays != len(rows) {
+		t.Fatalf("non-strict provisional thresholds: bands=%+v err=%v", bands, err)
 	}
 }
 
@@ -518,8 +548,4 @@ func insertEnergySnapshots(t *testing.T, db *DB, rows ...energySnapshotSeed) {
 	if err != nil {
 		t.Fatalf("insert %d energy snapshots: %v", len(rows), err)
 	}
-}
-
-func floatPtr(v float64) *float64 {
-	return &v
 }

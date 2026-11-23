@@ -8,6 +8,30 @@ import (
 // It is a pure function — no I/O, all inputs come from RawMetrics.
 // lang selects the output language ("en", "ru", "sr"); defaults to "en".
 func ComputeBriefing(d RawMetrics, lang string) *BriefingResponse {
+	resp := ComputeBriefingWithProjection(d, lang, nil)
+	resp.EnergyBank = computeLegacyEnergyBank(d, resp.ReadinessScore, resp.Headline, GetStrings(lang))
+	return resp
+}
+
+// ComputeBriefingWithProjection composes the briefing around the reader's dated score.
+func ComputeBriefingWithProjection(d RawMetrics, lang string, projection *ReadinessProjection) *BriefingResponse {
+	return ComputeBriefingWithTrends(d, lang, projection, nil)
+}
+
+// MetricTrend contains the two dated comparisons used by a briefing card.
+type MetricTrend struct {
+	Pct7, Pct30       float64
+	Status7, Status30 string
+	Has7, Has30       bool
+}
+
+// ComputeBriefingWithTrends renders the SQL comparisons supplied by a dated storage reader.
+func ComputeBriefingWithTrends(d RawMetrics, lang string, projection *ReadinessProjection, trends map[string]MetricTrend) *BriefingResponse {
+	return ComputeBriefingWithMetrics(d, lang, projection, trends, computeSleepAnalysis(d))
+}
+
+// ComputeBriefingWithMetrics renders dated card trends and the weekly sleep summary.
+func ComputeBriefingWithMetrics(d RawMetrics, lang string, projection *ReadinessProjection, trends map[string]MetricTrend, weeklySleep *SleepAnalysis) *BriefingResponse {
 	ls := GetStrings(lang)
 
 	recoverySec := scoreRecovery(d, ls)
@@ -15,7 +39,7 @@ func ComputeBriefing(d RawMetrics, lang string) *BriefingResponse {
 	activitySec := scoreActivity(d, ls)
 	cardioSec := scoreCardio(d, ls)
 
-	resp := newReadinessBriefing(d, ls)
+	resp := newReadinessBriefing(d, ls, projection)
 	readinessScore := resp.ReadinessScore
 
 	var sections []BriefingSection
@@ -26,7 +50,7 @@ func ComputeBriefing(d RawMetrics, lang string) *BriefingResponse {
 	}
 
 	highlights := buildHighlights(d, ls)
-	metricCards := buildMetricCards(d, ls)
+	metricCards := buildMetricCards(d, ls, trends)
 	resp.Greeting = "Here's your health summary"
 	resp.Overall = overallStatus(sections)
 	resp.Sections = sections
@@ -34,7 +58,7 @@ func ComputeBriefing(d RawMetrics, lang string) *BriefingResponse {
 	resp.Correlation = buildCorrelation(d)
 	resp.Insights = computeInsights(d, activitySec, readinessScore, ls)
 	resp.Alerts = computeAlerts(d, ls)
-	resp.Sleep = computeSleepAnalysis(d)
+	resp.Sleep = weeklySleep
 	resp.MetricCards = metricCards
 	resp.RawMetrics = &d
 
@@ -45,27 +69,42 @@ func ComputeBriefing(d RawMetrics, lang string) *BriefingResponse {
 	resp.Overall = overallStatus(resp.Sections) // re-derive after coherence
 	updateReadinessServing(resp)
 
-	// Legacy EnergyBank runs after the coherence pass so it is a reasonable
-	// fallback for fresh tenants and days where the v2 snapshot has not been
-	// written yet. The storage briefing path replaces this with the latest
-	// v2 energy_snapshots row when one exists.
-	resp.EnergyBank = computeLegacyEnergyBank(d, resp.ReadinessScore, resp.Headline, ls)
-
 	return resp
 }
 
 // ComputeReadinessBriefing applies the live readiness formula and headline
 // limits without computing the briefing's other scores.
 func ComputeReadinessBriefing(d RawMetrics, lang string) *BriefingResponse {
+	return ComputeReadinessBriefingWithProjection(d, lang, nil)
+}
+
+// ComputeReadinessBriefingWithProjection composes the briefing around the reader's dated score.
+func ComputeReadinessBriefingWithProjection(d RawMetrics, lang string, projection *ReadinessProjection) *BriefingResponse {
 	ls := GetStrings(lang)
-	resp := newReadinessBriefing(d, ls)
+	resp := newReadinessBriefing(d, ls, projection)
 	applyCoherencePass(resp, ls)
 	updateReadinessServing(resp)
 	return resp
 }
 
-func newReadinessBriefing(d RawMetrics, ls LangStrings) *BriefingResponse {
-	readiness := computeReadinessWithEvidence(d)
+// ReadinessProjection is the score after dated evidence limits and before the headline pass.
+type ReadinessProjection struct {
+	RawScore, DisplayScore int
+	Confidence, CapReason  string
+}
+
+func newReadinessBriefing(d RawMetrics, ls LangStrings, projection *ReadinessProjection) *BriefingResponse {
+	var readiness readinessComputation
+	if projection == nil {
+		readiness = computeReadinessWithEvidence(d)
+	} else {
+		readiness.RawScore, readiness.DisplayScore = projection.RawScore, projection.DisplayScore
+		readiness.Confidence, readiness.CapReason = projection.Confidence, projection.CapReason
+		if e := d.ReadinessEvidence; e != nil {
+			readiness.Components = readinessComponentSummaries(*e)
+		}
+		readiness.Serving = readinessServingState(readiness.Confidence, readiness.CapReason, readiness.Components)
+	}
 	score := readiness.DisplayScore
 	band := ReadinessBand(score)
 	label, tip := readinessLabelTip(score, ls)
@@ -170,7 +209,15 @@ func buildHighlights(d RawMetrics, ls LangStrings) []BriefingDetail {
 	return out
 }
 
-func buildMetricCards(d RawMetrics, ls LangStrings) []MetricCard {
+// SleepCardSeries returns the metric and observations shown by the sleep card.
+func (d *RawMetrics) SleepCardSeries() (string, []float64) {
+	if len(d.NightSleep) > 0 {
+		return "night_sleep_total", d.NightSleep
+	}
+	return "sleep_total", d.Sleep
+}
+
+func buildMetricCards(d RawMetrics, ls LangStrings, trends map[string]MetricTrend) []MetricCard {
 	type cardSpec struct {
 		name    string
 		metric  string
@@ -186,12 +233,7 @@ func buildMetricCards(d RawMetrics, ls LangStrings) []MetricCard {
 	// trend math stays consistent with the displayed value. Readiness
 	// scoring (separate code path) is intentionally untouched in this
 	// change — it still uses d.Sleep so historical scores stay stable.
-	sleepVals := d.Sleep
-	sleepMetric := "sleep_total"
-	if len(d.NightSleep) > 0 {
-		sleepVals = d.NightSleep
-		sleepMetric = "night_sleep_total"
-	}
+	sleepMetric, sleepVals := d.SleepCardSeries()
 	var out []MetricCard
 	for _, sp := range []cardSpec{
 		{ls["lbl_steps"], "step_count", ls["lbl_steps"], d.Steps, 0},
@@ -208,12 +250,22 @@ func buildMetricCards(d RawMetrics, ls LangStrings) []MetricCard {
 		// matches the `chronicAvg` convention used by Energy Bank's strain
 		// (Gabbett 2016 ACWR: today / prior chronic mean).
 		today := sp.vals[0]
-		baseline7 := avg(safeSlice(sp.vals, 1, 8))
-		baseline30 := avg(safeSlice(sp.vals, 1, len(sp.vals)))
-
-		invertBetter := sp.metric == "resting_heart_rate"
-		pct7, label7, status7 := formatTrend(today, baseline7, invertBetter, ls["trend_vs_7d"])
-		pct30, label30, status30 := formatTrend(today, baseline30, invertBetter, ls["trend_vs_30d"])
+		var pct7, pct30 float64
+		var label7, label30, status7, status30 string
+		if trends != nil {
+			t := trends[sp.metric]
+			pct7, pct30, status7, status30 = t.Pct7, t.Pct30, t.Status7, t.Status30
+			if t.Has7 {
+				label7 = trendLabel(pct7, ls["trend_vs_7d"])
+			}
+			if t.Has30 {
+				label30 = trendLabel(pct30, ls["trend_vs_30d"])
+			}
+		} else {
+			invert := sp.metric == "resting_heart_rate"
+			pct7, label7, status7 = formatTrend(today, avg(safeSlice(sp.vals, 1, 8)), invert, ls["trend_vs_7d"])
+			pct30, label30, status30 = formatTrend(today, avg(safeSlice(sp.vals, 1, len(sp.vals))), invert, ls["trend_vs_30d"])
+		}
 
 		card := MetricCard{
 			Name:   sp.name,
@@ -273,6 +325,10 @@ func formatTrend(today, baseline float64, invertBetter bool, suffix string) (flo
 	case directional < -1:
 		status = "negative"
 	}
+	return pct, trendLabel(pct, suffix), status
+}
+
+func trendLabel(pct float64, suffix string) string {
 	var label string
 	switch {
 	case pct > 0:
@@ -282,5 +338,5 @@ func formatTrend(today, baseline float64, invertBetter bool, suffix string) (flo
 	default:
 		label = suffix
 	}
-	return pct, label, status
+	return label
 }

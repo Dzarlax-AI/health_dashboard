@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
+	"health-receiver/internal/api"
 	"health-receiver/internal/health"
 	"health-receiver/internal/ui"
 )
@@ -20,20 +22,28 @@ func TestTodaySleepComparisonBriefing(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	ui.New(mgr, nil, false).Register(mux)
-	fetch := func(key string) *health.SleepDurationComparison {
+	get := func(key, path string, result any) {
 		t.Helper()
-		request := httptest.NewRequest(http.MethodGet, "/api/health-briefing", nil)
+		request := httptest.NewRequest(http.MethodGet, path, nil)
 		request.Header.Set("X-API-Key", key)
 		response := httptest.NewRecorder()
 		mux.ServeHTTP(response, request)
-		var result health.BriefingResponse
 		if response.Code != http.StatusOK {
-			t.Fatalf("briefing HTTP status %d", response.Code)
+			t.Fatalf("%s HTTP status %d", path, response.Code)
 		}
-		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		if err := json.Unmarshal(response.Body.Bytes(), result); err != nil {
 			t.Fatal(err)
 		}
+	}
+	fetch := func(key string) *health.SleepDurationComparison {
+		var result health.BriefingResponse
+		get(key, "/api/health-briefing", &result)
 		return result.SleepDurationComparison
+	}
+	dated := func(day string) *health.SleepDurationComparison {
+		var result api.SleepDurationComparisonResponse
+		get("rollout_a-key", "/api/sleep/comparison?date="+day, &result)
+		return result.Comparison
 	}
 	if got := fetch("rollout_a-key"); got != nil {
 		t.Fatalf("comparison enabled by default: %v", got)
@@ -67,10 +77,21 @@ func TestTodaySleepComparisonBriefing(t *testing.T) {
 		first.DeltaMinutes == nil || *first.DeltaMinutes != -60 || first.FactVersion == "" {
 		t.Fatalf("original comparison: %+v", first)
 	}
+	if got := dated(first.WakeDate); !reflect.DeepEqual(got, first) {
+		t.Fatalf("dated Sleep and Today disagree: Sleep=%+v Today=%+v", got, first)
+	}
+	yesterday := date.AddDate(0, 0, -1).Format(time.DateOnly)
+	if got := dated(yesterday); got == nil || got.WakeDate != yesterday || got.Status != health.SleepComparisonInsufficient ||
+		got.EligibleNights == nil || *got.EligibleNights != 6 || got.ReferenceMinutes != nil || got.DeltaMinutes != nil {
+		t.Fatalf("dated Sleep must exclude the selected date and later nights: %+v", got)
+	}
 	saveNight(7, 8.75, "corrected")
 	next := fetch("rollout_a-key")
 	if next == nil || next.DeltaMinutes == nil || *next.DeltaMinutes != -75 || first.FactVersion == next.FactVersion {
 		t.Fatalf("comparison after historical correction: %+v", next)
+	}
+	if got := dated(first.WakeDate); !reflect.DeepEqual(got, next) {
+		t.Fatalf("dated Sleep and Today disagree after correction: Sleep=%+v Today=%+v", got, next)
 	}
 	if peer := fetch("rollout_b-key"); peer != nil {
 		t.Fatalf("another tenant saw a comparison: %+v", peer)

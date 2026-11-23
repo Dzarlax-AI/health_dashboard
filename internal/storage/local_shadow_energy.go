@@ -73,8 +73,10 @@ func RefreshLocalShadowEnergy(ctx context.Context, tx pgx.Tx, schema, profile st
 
 	cfg := unit.GetEnergyConfig()
 	for _, date := range dates {
-		res := computeCalendarEnergyBank(inputs, date, cfg)
-		var err error
+		res, _, err := unit.readEnergyBankSQL(ctx, date, cfg, inputs)
+		if err != nil {
+			return err
+		}
 		if date == today {
 			err = unit.publishLocalShadowEnergyToday(ctx, tx, schema, profile, today, loc, now, res)
 		} else {
@@ -124,7 +126,10 @@ func ReconcileLocalShadowEnergy(ctx context.Context, tx pgx.Tx, schema, profile 
 	if err != nil {
 		return err
 	}
-	res := computeCalendarEnergyBank(inputs, today, unit.GetEnergyConfig())
+	res, _, err := unit.readEnergyBankSQL(ctx, today, unit.GetEnergyConfig(), inputs)
+	if err != nil {
+		return err
+	}
 	return writeLocalShadowCurrentEnergy(ctx, tx, schema, profile, today, now, res, generations)
 }
 

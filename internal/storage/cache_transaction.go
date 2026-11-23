@@ -72,3 +72,19 @@ func (s *DB) runCacheTransaction(ctx context.Context, run func(*DB) error) error
 	}
 	return tx.Commit(ctx)
 }
+
+// Source corrections hold the tenant journal before changing any points. Take
+// the same lock before reading aggregate inputs so a second server cannot
+// publish an older statement snapshot after the correction commits.
+func (s *DB) withAggregatePublication(ctx context.Context, write func(*DB) error) error {
+	run := func(unit *DB) error {
+		if _, err := lockCacheMaintenanceRow(ctx, unit.pool.(*cacheTransaction)); err != nil {
+			return err
+		}
+		return write(unit)
+	}
+	if _, ok := s.pool.(*cacheTransaction); ok {
+		return run(s)
+	}
+	return s.runCacheTransaction(ctx, run)
+}

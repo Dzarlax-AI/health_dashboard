@@ -1,5 +1,5 @@
 {{ config(enabled=var('semantic_sleep_cache', false), materialized='incremental',
-    unique_key='wake_date', incremental_strategy='delete+insert',
+    unique_key='wake_date', incremental_strategy='delete+insert', on_schema_change='append_new_columns',
     indexes=[{'columns': ['wake_date'], 'unique': true}],
     pre_hook="select pg_advisory_xact_lock(174913, hashtext('{{ target.schema }}'))",
     post_hook="delete from {{ this }} where input_duration_hours is null") }}
@@ -15,6 +15,7 @@ changed as materialized (
     select wake_date from {{ nights }} n
     full join {{ this }} c using (wake_date)
     where n.wake_date is null or c.wake_date is null
+       or to_jsonb(c)->>'rule_version' is null
        or (n.duration_hours, n.source, n.source_epoch, n.algorithm_version, n.input_hash,
            n.capture_completeness, n.duration_assessment, n.finalization_state, n.claim_eligibility, n.observed_at)
           is distinct from
@@ -39,5 +40,5 @@ rebuild as (
 select wake_date, b.input_duration_hours, f.status, f.duration_minutes, f.reference_minutes,
        f.delta_minutes, f.eligible_nights, f.window_start, f.window_end_exclusive, f.observed_at,
        f.source, f.source_epoch, f.algorithm_version, f.input_hash, f.capture_completeness,
-       f.duration_assessment, f.finalization_state, f.claim_eligibility, f.history_version
+       f.duration_assessment, f.finalization_state, f.claim_eligibility, f.history_version, f.rule_version
 from rebuild b left join {{ compared }} f using (wake_date)

@@ -45,8 +45,8 @@ func TestRecoveryFeatures_DoNotReadFutureArchitectureSegments(t *testing.T) {
 		},
 	}
 
-	a := buildRecoveryFeatures(date, "", map[string]health.SleepRow{}, map[string]health.SleepEfficiencyResult{}, map[string]health.SleepCaptureConfidenceResult{}, withoutFuture)
-	b := buildRecoveryFeatures(date, "", map[string]health.SleepRow{}, map[string]health.SleepEfficiencyResult{}, map[string]health.SleepCaptureConfidenceResult{}, withFuture)
+	a := buildRecoveryFeatures(date, "", map[string]health.SleepRow{}, map[string]health.SleepEfficiencyResult{}, map[string]health.SleepCaptureConfidenceResult{}, BuildSleepArchitectureFeatureFields(date, withoutFuture))
+	b := buildRecoveryFeatures(date, "", map[string]health.SleepRow{}, map[string]health.SleepEfficiencyResult{}, map[string]health.SleepCaptureConfidenceResult{}, BuildSleepArchitectureFeatureFields(date, withFuture))
 	if !reflect.DeepEqual(a.SleepArchitectureFeatureFields, b.SleepArchitectureFeatureFields) {
 		t.Fatalf("Recovery features for t changed after adding t+1 architecture:\nwithout=%+v\nwith=%+v",
 			a.SleepArchitectureFeatureFields, b.SleepArchitectureFeatureFields)
@@ -76,8 +76,8 @@ func TestChronicFeatures_DoNotReadFutureArchitectureSegments(t *testing.T) {
 	}
 	lookup := func(string) (*float64, bool) { return nil, false }
 
-	a := buildChronicLoadFeatures(date, "", map[string]recoveryRolling3dRow{}, lookup, 0, false, withoutFuture)
-	b := buildChronicLoadFeatures(date, "", map[string]recoveryRolling3dRow{}, lookup, 0, false, withFuture)
+	a := buildChronicLoadFeatures(date, "", map[string]recoveryRolling3dRow{}, lookup, 0, false, BuildSleepArchitectureFeatureFields(date, withoutFuture))
+	b := buildChronicLoadFeatures(date, "", map[string]recoveryRolling3dRow{}, lookup, 0, false, BuildSleepArchitectureFeatureFields(date, withFuture))
 	if !reflect.DeepEqual(a.SleepArchitectureFeatureFields, b.SleepArchitectureFeatureFields) {
 		t.Fatalf("Chronic features for t changed after adding future-window architecture:\nwithout=%+v\nwith=%+v",
 			a.SleepArchitectureFeatureFields, b.SleepArchitectureFeatureFields)
