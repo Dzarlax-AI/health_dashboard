@@ -323,8 +323,8 @@ func (s *DB) MarkCacheDirty(ctx context.Context, dates []string) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.withCacheMaintenanceTx(ctx, func(_ pgx.Tx, state *CacheMaintenanceState) error {
-		return markCacheDirtyState(state, dates)
+	_, err = s.withCacheMaintenanceTx(ctx, func(tx pgx.Tx, state *CacheMaintenanceState) error {
+		return markAggregateDatesDirty(ctx, tx, state, dates)
 	})
 	return err
 }

@@ -106,9 +106,13 @@ func repairWithdrawnSteps(ctx context.Context, tx pgx.Tx, groups ...json.RawMess
 			dbtmetrics.StepPointInputsSQL("metric_points", "health_records",
 				"EXISTS (SELECT FROM hours h WHERE h.source=coalesce(p.source,'') AND substring(p.date,1,10)=substring(h.hour,1,10) AND substring(p.date,1,13)=substring(h.hour,1,13))") + `) i
 		) insert into hourly_metrics(metric_name,hour,source,avg_val,min_val,max_val,sample_count) ` + dbtmetrics.StepWallRowsSQL("step_points"),
-		cells + `, days as (select distinct substring(hour,1,10) as day from hours)
+		cells + `, days as (select distinct substring(hour,1,10) as day from hours), repaired as (
 			update daily_scores d set computed_at=now()::text, steps=(
-				select source_total from (` + physicalStepTotalsSQL("substring(p.date,1,10)=d.date", "hourly_metrics", "substring(hour,1,10)=d.date") + `) totals) from days where d.date=days.day`,
+				select source_total from (` + physicalStepTotalsSQL("substring(p.date,1,10)=d.date", "hourly_metrics", "substring(hour,1,10)=d.date") + `) totals) from days where d.date=days.day)
+            select set_config('health.hdbt_step_cells',
+                (coalesce(nullif(current_setting('health.hdbt_step_cells',true),'')::jsonb,'[]'::jsonb) ||
+                (select jsonb_agg(jsonb_build_array(minute,source)) from cells))::text,true)
+            where to_regclass(format('%I.hdbt_state',current_schema())) is not null`,
 	} {
 		if _, err := tx.Exec(ctx, query, json.RawMessage(payload)); err != nil {
 			return fmt.Errorf("repair withdrawn step cells: %w", err)

@@ -2,12 +2,15 @@ package tenants
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -602,6 +605,7 @@ func TestDatabaseIdentityTemporaryPrivilegeFlow(t *testing.T) {
 	rotationMigrator.Close()
 
 	returnDeriver := CredentialDeriver{Current: versionOne, Previous: &versionTwo}
+	verifyExportedWorkerSecret(t, ctx, spec, adminDSN, registryDSN, identityTestDSN(t, dsn, "", ""), returnDeriver)
 	returnMigrator, err := NewMigratorWithRegistryLock(ctx, adminDSN, registryDSN, identityTestDSN(t, dsn, "", ""), returnDeriver)
 	if err != nil {
 		t.Fatal(err)
@@ -999,6 +1003,38 @@ func assertNoLegacySchemaCreateGrant(t *testing.T, ctx context.Context, root *pg
 	}
 	if exists {
 		t.Fatalf("transient health_user schema CREATE grant survived for %s", schema)
+	}
+}
+
+// Run the operator command after rotation. The registry-selected version is
+// the previous configured secret, so using the current version would fail.
+func verifyExportedWorkerSecret(t *testing.T, ctx context.Context, spec TenantSpec, admin, reg, base string, d CredentialDeriver) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "worker.dsn")
+	cmd := exec.CommandContext(ctx, "go", "run", "../../cmd/dbt_worker_secret",
+		"--tenant-id", spec.TenantID.String(), "--schema", spec.SchemaName, "--out", path)
+	cmd.Env = append(os.Environ(),
+		"TENANT_DB_ISOLATION_ENABLED=true", "ADMIN_DATABASE_URL="+admin,
+		"REGISTRY_DATABASE_URL="+reg, "TENANT_DATABASE_URL_BASE="+base,
+		"TENANT_DB_MASTER_SECRET="+base64.StdEncoding.EncodeToString(d.Current.Secret),
+		"TENANT_DB_MASTER_SECRET_VERSION="+strconv.Itoa(d.Current.Version),
+		"TENANT_DB_PREVIOUS_MASTER_SECRET="+base64.StdEncoding.EncodeToString(d.Previous.Secret),
+		"TENANT_DB_PREVIOUS_MASTER_SECRET_VERSION="+strconv.Itoa(d.Previous.Version))
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("worker credential preparation failed: %v", err)
+	}
+	secret, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := pgx.Connect(ctx, strings.TrimSpace(string(secret)))
+	if err != nil {
+		t.Fatal("exported worker secret could not authenticate")
+	}
+	defer conn.Close(ctx)
+	var role string
+	if err := conn.QueryRow(ctx, "select current_user").Scan(&role); err != nil || role != spec.DBRole {
+		t.Fatal("exported worker secret authenticated with unexpected identity")
 	}
 }
 

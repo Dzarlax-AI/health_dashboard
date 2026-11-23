@@ -1,5 +1,7 @@
 {% macro affected_dates_filter(column_name) -%}
-  {% if var('affected_dates', []) | length > 0 %}
+  {% if var('tenant_aggregate_worker', false) %}
+    {{ column_name }} in (select date from {{ source('source_data','calendar') }})
+  {% elif var('affected_dates', []) | length > 0 %}
     {{ column_name }} = ANY(ARRAY[
       {% for date_value in var('affected_dates') %}
         '{{ date_value }}'{% if not loop.last %}, {% endif %}
@@ -14,7 +16,9 @@
    The source capture remains bounded to the caller's requested dates. #}
 {% macro step_affected_dates_filter(column_name) -%}
   {% set requested = var('affected_dates', []) %}
-  {% if requested %}
+  {% if var('tenant_aggregate_worker', false) %}
+    {{ column_name }} in (select date from {{ source('source_data','calendar') }})
+  {% elif requested %}
     ({% for day in requested %}
       {{ column_name }} between ('{{ day }}'::date-2)::text and ('{{ day }}'::date+2)::text
       {% if not loop.last %}or{% endif %}
@@ -43,7 +47,7 @@
       {% endif %}
     {% endfor %}
     {% set parsed_date = modules.datetime.datetime.strptime(value, '%Y-%m-%d') %}
-    {% if parsed_date.strftime('%Y-%m-%d') != value %}
+    {% if parsed_date.date().isoformat() != value %}
       {{ exceptions.raise_compiler_error('affected_dates must contain valid calendar dates') }}
     {% endif %}
   {% endfor %}

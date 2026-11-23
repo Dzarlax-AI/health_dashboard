@@ -1,6 +1,6 @@
 # Synthetic dbt metrics pilot
 
-This directory is a local experiment for the existing hourly and daily cache writers. It reads only generated synthetic rows in a disposable PostgreSQL 17.11 container and never reads `DATABASE_URL`, tenant data, or service configuration. It does not alter the application database or product deployment.
+The synthetic pilot commands exercise the hourly and daily cache writers with generated rows in a disposable PostgreSQL container. Two separate entry points use tenant data. The enrolled worker connects with the scoped tenant credential, and `scripts/with_serving_archive.sh` restores an operator-supplied private dump into a local disposable database. See the [worker and private archive runbook](../../docs/DBT_WORKER.md) for credentials, temporary files and cleanup.
 
 ## Run the complete graph in two local profiles
 

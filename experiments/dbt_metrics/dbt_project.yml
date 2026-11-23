@@ -9,3 +9,4 @@ clean-targets: [target, dbt_packages]
 models:
   health_dbt_metrics_pilot:
     +materialized: table
+    +pre-hook: "{{ tenant_work_lease() }}"

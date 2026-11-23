@@ -1,4 +1,4 @@
-{{ config(materialized='incremental', unique_key=['hour','source'], incremental_strategy='merge',on_schema_change='append_new_columns') }}
+{{ config(alias='hdbt_w_step' if var('tenant_aggregate_worker', false) else 'step_hour_state', materialized='incremental', unique_key=['hour','source'], incremental_strategy='merge',on_schema_change='append_new_columns') }}
 {% do validate_affected_dates() %}
 {% set prior_hours = none %}
 {% if execute and not is_incremental() %}
@@ -14,7 +14,7 @@ with points as (
         {{ step_point_inputs(ref('retained_metric_points'),source('source_data','health_records'),step_affected_dates_filter('substring(p.date,1,10)')) }}
     ) i
 ), valid as (
-    {{ step_wall_rows('points') }}
+    {{ step_wall_rows('points', ordered_steps=var('tenant_aggregate_worker', false)) }}
 ), receipts as (
     {% if var('verified_step_withdrawals', false) %}
     select distinct substring(point_date,1,13)||':00' as hour,source from {{ source('source_data','verified_step_withdrawals') }}
@@ -38,14 +38,14 @@ with points as (
       and not exists(select from signatures s where (p.hour,p.proven_input)=(s.hour,s.signature))
       and not exists (select from receipts r where (p.hour,p.source)=(r.hour,r.source))
 ), frozen as (
-    {{ incomplete_step_hours('points','prior_valid') }}
+    {{ incomplete_step_hours('points','prior_valid', ordered_steps=var('tenant_aggregate_worker', false)) }}
     union select a.hour from ({{ ambiguous_step_hours('points') }}) a
     where exists(select from prior p where p.hour=a.hour and p.avg_val is not null
         and not exists(select from receipts r where (r.hour,r.source)=(p.hour,p.source)))
 ), frozen_prior as (
     select p.* from prior p join frozen f using(hour)
     where not exists(select from receipts r where (r.hour,r.source)=(p.hour,p.source))
-), repairs as ({{ reconciled_step_alias_cells('points','frozen_prior') }}),
+), repairs as ({{ reconciled_step_alias_cells('points','frozen_prior', ordered_steps=var('tenant_aggregate_worker', false)) }}),
 held_hours as (
     select distinct p.hour from frozen_prior p left join repairs r using(hour,source)
     where p.avg_val is not null and (r.hour is null or r.avg_val is not null)

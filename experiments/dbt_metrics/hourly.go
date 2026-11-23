@@ -19,7 +19,7 @@ func HourlyRowsSQL(sum bool) string {
 	if sum {
 		macro = hourlySumMacro
 	}
-	return strings.ReplaceAll(macroBody(macro), "{{ points }}", "hourly_points")
+	return strings.ReplaceAll(stepMacroBody(macro, false), "{{ points }}", "hourly_points")
 }
 
 //go:embed macros/keep_sleep_point.sql
@@ -52,7 +52,7 @@ var dailySourceRowsMacro string
 // DailySourceRowsSQL groups persisted hours by date, metric and source. The
 // caller supplies a trusted relation and scope, with values passed as parameters.
 func DailySourceRowsSQL(hours, scope string) string {
-	return strings.NewReplacer("{{ hours }}", hours, "{{ scope }}", scope).Replace(macroBody(dailySourceRowsMacro))
+	return strings.NewReplacer("{{ hours }}", hours, "{{ scope }}", scope, "{{ source_sum }}", "sum(avg_val)").Replace(macroBody(dailySourceRowsMacro))
 }
 
 //go:embed macros/daily_source_mean.sql

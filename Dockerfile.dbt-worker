@@ -1,0 +1,23 @@
+FROM python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df AS dependencies
+COPY experiments/dbt_metrics/requirements.lock /tmp/requirements.lock
+RUN python -m venv /opt/dbt \
+    && /opt/dbt/bin/pip install --no-cache-dir --only-binary=:all: --no-binary=dbt-core-experimental-parser -r /tmp/requirements.lock \
+    && /opt/dbt/bin/pip check
+
+FROM python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df
+ARG BUILD_REVISION=unknown
+LABEL org.opencontainers.image.title="Health dbt worker" \
+      org.opencontainers.image.revision="${BUILD_REVISION}" \
+      org.opencontainers.image.source="https://github.com/Dzarlax-AI/health_dashboard" \
+      io.health-dashboard.image-role="dbt-worker"
+ENV PATH="/opt/dbt/bin:${PATH}" HOME=/tmp \
+    DBT_SEND_ANONYMOUS_USAGE_STATS=false PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+WORKDIR /app
+COPY --from=dependencies /opt/dbt /opt/dbt
+COPY experiments/dbt_metrics/dbt_project.yml experiments/dbt_metrics/requirements.lock ./experiments/dbt_metrics/
+COPY experiments/dbt_metrics/models ./experiments/dbt_metrics/models
+COPY experiments/dbt_metrics/macros ./experiments/dbt_metrics/macros
+COPY experiments/dbt_metrics/tests ./experiments/dbt_metrics/tests
+COPY experiments/dbt_metrics/scripts/tenant_aggregate_worker.py ./experiments/dbt_metrics/scripts/
+USER 65532:65532
+ENTRYPOINT ["/opt/dbt/bin/python", "/app/experiments/dbt_metrics/scripts/tenant_aggregate_worker.py"]

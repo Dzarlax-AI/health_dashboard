@@ -327,7 +327,6 @@ func BuildRollbackPlan(i TenantInventory) (RollbackPlan, error) {
 	}
 	p.Statements = append(p.Statements,
 		PlannedStatement{SQL: "ALTER SCHEMA " + quoteIdent(i.Schema) + " OWNER TO " + quoteIdent(i.SchemaOwner)},
-		PlannedStatement{SQL: "REVOKE ALL ON SCHEMA " + quoteIdent(i.Schema) + " FROM " + quoteIdent(i.Role)},
 		PlannedStatement{SQL: "ALTER DEFAULT PRIVILEGES FOR ROLE " + quoteIdent(i.Role) + " IN SCHEMA " + quoteIdent(i.Schema) + " REVOKE ALL ON TABLES FROM " + quoteIdent(i.Role)},
 		PlannedStatement{SQL: "ALTER DEFAULT PRIVILEGES FOR ROLE " + quoteIdent(i.Role) + " IN SCHEMA " + quoteIdent(i.Schema) + " REVOKE ALL ON SEQUENCES FROM " + quoteIdent(i.Role)},
 		PlannedStatement{SQL: "ALTER DEFAULT PRIVILEGES FOR ROLE " + quoteIdent(i.Role) + " IN SCHEMA " + quoteIdent(i.Schema) + " REVOKE EXECUTE ON FUNCTIONS FROM " + quoteIdent(i.Role)},
@@ -340,22 +339,8 @@ func BuildRollbackPlan(i TenantInventory) (RollbackPlan, error) {
 		}
 		p.Statements = append(p.Statements, PlannedStatement{Operation: "restore_tenant_identity_marker_contract"})
 	}
-	grants := append([]GrantRecord(nil), i.SchemaACL...)
-	grants = append(grants, i.Grants...)
-	sort.Slice(grants, func(a, b int) bool {
-		x, y := grants[a], grants[b]
-		return x.ObjectType+x.ObjectName+x.Grantee+x.Privilege < y.ObjectType+y.ObjectName+y.Grantee+y.Privilege
-	})
-	for _, g := range grants {
-		target, err := grantTarget(i.Schema, g)
-		if err != nil {
-			return RollbackPlan{}, err
-		}
-		sql := "GRANT " + g.Privilege + " ON " + g.ObjectType + " " + target + " TO " + grantPrincipal(g.Grantee)
-		if g.Grantable {
-			sql += " WITH GRANT OPTION"
-		}
-		p.appendRoleScoped(g.Grantor, sql)
+	if err := p.appendRollbackGrants(i.Schema, i.Grants); err != nil {
+		return RollbackPlan{}, err
 	}
 	for _, d := range i.DefaultPrivileges {
 		kind, ok := map[string]string{"r": "TABLES", "S": "SEQUENCES", "f": "FUNCTIONS", "T": "TYPES", "n": "SCHEMAS"}[d.ObjectType]
@@ -372,6 +357,12 @@ func BuildRollbackPlan(i TenantInventory) (RollbackPlan, error) {
 		}
 		p.appendRoleScoped(d.Grantor, sql)
 	}
+	// Keep schema lookup available until every qualified object and default ACL
+	// has been restored. Even the schema owner can revoke its own USAGE.
+	p.Statements = append(p.Statements, PlannedStatement{SQL: "REVOKE ALL ON SCHEMA " + quoteIdent(i.Schema) + " FROM " + quoteIdent(i.Role)})
+	if err := p.appendRollbackGrants(i.Schema, i.SchemaACL); err != nil {
+		return RollbackPlan{}, err
+	}
 	p.Statements = append(p.Statements, PlannedStatement{Operation: "registry_compare_and_set_isolation_ready_false"})
 	return p, nil
 }
@@ -383,6 +374,26 @@ func inventoryHasObject(i TenantInventory, kind, name string) bool {
 		}
 	}
 	return false
+}
+
+func (p *RollbackPlan) appendRollbackGrants(schema string, recorded []GrantRecord) error {
+	grants := append([]GrantRecord(nil), recorded...)
+	sort.Slice(grants, func(a, b int) bool {
+		x, y := grants[a], grants[b]
+		return x.ObjectType+x.ObjectName+x.Grantee+x.Privilege < y.ObjectType+y.ObjectName+y.Grantee+y.Privilege
+	})
+	for _, g := range grants {
+		target, err := grantTarget(schema, g)
+		if err != nil {
+			return err
+		}
+		sql := "GRANT " + g.Privilege + " ON " + g.ObjectType + " " + target + " TO " + grantPrincipal(g.Grantee)
+		if g.Grantable {
+			sql += " WITH GRANT OPTION"
+		}
+		p.appendRoleScoped(g.Grantor, sql)
+	}
+	return nil
 }
 
 func grantPrincipal(name string) string {

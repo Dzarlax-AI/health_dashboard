@@ -1,9 +1,9 @@
-{% macro hourly_sum_rows(points) %}
-select metric_name, hour, source, sum(minute_max)::real as avg_val,
+{% macro hourly_sum_rows(points, ordered_steps=false) %}
+select metric_name, hour, source, sum(minute_max{% if ordered_steps %} order by minute collate "C"{% endif %})::real as avg_val,
        min(minute_min)::real as min_val, max(minute_max)::real as max_val,
        count(*)::integer as sample_count
 from (
-    select metric_name, source, substring(date, 1, 13) || ':00' as hour,
+    select metric_name, source, {% if ordered_steps %}substring(date,1,16) as minute, {% endif %}substring(date, 1, 13) || ':00' as hour,
            max(qty)::real as minute_max, min(qty)::real as minute_min
     from {{ points }}
     where qty > 0 and quality = 'ok'

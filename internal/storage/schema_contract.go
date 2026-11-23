@@ -20,7 +20,7 @@ import (
 // SchemaContractVersion is bumped whenever the declared tenant schema
 // contract changes. Existing tenants are not current until both the permanent
 // marker and registry metadata carry this version and checksum.
-const SchemaContractVersion = 16
+const SchemaContractVersion = 17
 
 // TenantIdentityTable is the permanent marker shared by clean provisioning
 // and existing-tenant migrations. The provisioning marker is intentionally
@@ -241,6 +241,7 @@ func SchemaContractManifest() ContractManifest {
 			out.RequiredRows[i].Values[column] = value
 		}
 	}
+	addHDBTContract(&out)
 	return out
 }
 
@@ -302,6 +303,7 @@ func SchemaContractChecksum() string {
 			fmt.Fprintf(&canonical, "required-row:%s.%s=%s\n", row.Table, column, row.Values[column])
 		}
 	}
+	fmt.Fprintf(&canonical, "hdbt-ddl:%x\n", sha256.Sum256([]byte(hdbtDDL)))
 	sum := sha256.Sum256([]byte(canonical.String()))
 	return hex.EncodeToString(sum[:])
 }
@@ -666,7 +668,10 @@ func (s *DB) ensureFullSchemaContractObjectsContext(ctx context.Context) error {
 	if err := s.ensureSleepDurationReference(ctx); err != nil {
 		return err
 	}
-	_, err := s.pool.Exec(ctx, sleepRolloutDDL)
+	if _, err := s.pool.Exec(ctx, sleepRolloutDDL); err != nil {
+		return err
+	}
+	_, err := s.pool.Exec(ctx, hdbtDDL)
 	return err
 }
 
@@ -706,6 +711,9 @@ func (s *DB) VerifySchemaContractContext(ctx context.Context) error {
 		if relkind != "r" && relkind != "p" {
 			return &SchemaContractMismatchError{Reason: "required table relation kind differs"}
 		}
+	}
+	if err := s.verifyHDBTEnrollmentTrigger(ctx); err != nil {
+		addMissing("trigger:hdbt_enrollment_change")
 	}
 	if err := s.verifySleepDurationReference(ctx); err != nil {
 		return err

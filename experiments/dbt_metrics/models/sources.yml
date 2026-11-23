@@ -4,12 +4,16 @@ sources:
     schema: "{{ var('semantic_source_schema', 'source_data') }}"
     tables:
       - name: health_records
+        identifier: "{{ 'hdbt_i_records' if var('tenant_aggregate_worker', false) else 'health_records' }}"
       - name: metric_points
+        identifier: "{{ 'hdbt_i_points' if var('tenant_aggregate_worker', false) else 'metric_points' }}"
       - name: metric_point_changes
         description: Accepted point upserts in the optional partial offline capture, keyed by metric, original timestamp and source.
       - name: verified_step_withdrawals
+        identifier: "{{ 'hdbt_i_repairs' if var('tenant_aggregate_worker', false) else 'verified_step_withdrawals' }}"
         description: Current capture receipts for previously usable step cells physically withdrawn at the exact stored timestamp and source.
       - name: calendar
+        identifier: "{{ 'hdbt_i_calendar' if var('tenant_aggregate_worker', false) else 'calendar' }}"
       - name: completed_night_sleep
       - name: sleep_interval
       - name: sleep_stage_day

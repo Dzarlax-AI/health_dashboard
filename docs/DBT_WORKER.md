@@ -1,0 +1,37 @@
+# Tenant dbt aggregate worker
+
+Schema contract v17 adds an independent dirty-date queue and a published hourly/daily aggregate set inside each tenant schema. The optional worker builds the dbt models in a fixed workspace in the same schema. The Go ingestion transaction advances its existing calculation generation and records changed dates for enrolled workers. Go and dbt each acknowledge their own work. An accepted sync does not wait for dbt. The first reader is the all-time daily steps chart through the existing `/fragments/step-daily-series?to=YYYY-MM-DD` request (open lower bound). Explicit date ranges on this endpoint, other charts, Today, Readiness, Energy and sent reports retain their existing readers.
+
+## Install and enroll one profile
+
+1. Use the normal stopped-service fleet schema migration and audit with the candidate backend. Both worker flags default to false. The Go aggregate contract retains its v6 identity.
+2. Take the worker digest from the successful main release job for this backend revision. CI exercises the worker image against a disposable PostgreSQL tenant before publishing its full-SHA tag. Backend/frontend compatibility continues to use the existing pair pointer.
+3. On the trusted operator host, use the matching backend binary and the installation's normal isolated database environment. In a private directory run `/app/dbt_worker_secret --schema SCHEMA --tenant-id UUID --out /secure/profile-dbt.dsn`. The command verifies the active registry and tenant contract and creates a new mode-0400 file. Give the worker UID 65532 read access, e.g. by setting that file's owner on the host. During credential rotation generate a new file and recreate the container with the new mount. For `sslmode=verify-full`, the worker uses the system CA bundle unless the DSN specifies `sslrootcert`. Mount a custom CA at the absolute path specified in the DSN.
+4. Provide `HEALTH_DBT_WORKER_IMAGE` as the immutable digest reference, `HEALTH_DBT_TENANT_ID`, `HEALTH_DBT_TENANT_SCHEMA` and `HEALTH_DBT_TENANT_SECRET_PATH` as deployment inputs. The Compose supplement joins the base project's network. For an external Postgres attach the service to its normal private database network. Each enrolled profile needs its own service instance and secret.
+5. Start the worker with `docker compose -f docker-compose.yml -f compose.dbt-worker.yml --profile dbt up -d dbt-worker`. Its only database credential belongs to the named tenant. It has owner access inside that schema. The worker checks the UUID-derived login, private schema ownership, tenant marker and isolation before calculating.
+6. In a session authenticated to the selected tenant, set the tenant schema as the search path and run `UPDATE hdbt_state SET shadow_enabled=true WHERE singleton`. The first pass inventories dates present in source and aggregate history, then processes batches (default 16, configurable from 1 to 366). Subsequent passes start with changed dates. For each requested date the workspace includes occupied dates within two days and step inputs within four days to reconcile offset aliases. If any sync advances the journal during a build, the worker discards that attempt. Under continuous ingestion, reduce the batch size so each batch fits between changes. Repeated failures back off up to five minutes. A source date outside the supported calendar (years 0001 through 9999) yields `unsupported_calendar_date` and stays in the queue for correction.
+
+## Verify and switch
+
+Inspect status with the following tenant-local queries. Queue size can initially grow during incoming syncs. A caught-up worker reports ready with the current source generation.
+
+```sql
+SELECT shadow_enabled, read_enabled, initialized, ready, last_status,
+       source_generation, published_at, heartbeat_at FROM hdbt_state;
+SELECT (SELECT count(*) FROM hdbt_backfill) AS bootstrap_remaining,
+       (SELECT count(*) FROM hdbt_dirty) AS changed_dates;
+```
+
+On a rehearsal copy, record the complete chart with reads disabled. Compare every point of the enabled chart to the independent step oracle in the archive harness, including missing days and measured zeroes. Repeat after a late correction and its duplicate. For fractional source data, older Go v6 reads can vary with the PostgreSQL aggregation plan: a one-bit difference in an hourly sum can change the decision to retain an entire legacy hour. The serving formula sums minute evidence in time order and uses exact checks to decide which hours can be reconstructed. Keep the pre-cutover delta as a separate measurement. Verify an independently authenticated sibling profile keeps its original result. The candidate sums REAL calorie cells in chronological order. The deployed Go v6 aggregate can differ in its last floating-point bits. The step chart requires exact equality.
+
+After verification, run `UPDATE hdbt_state SET read_enabled=true WHERE singleton AND shadow_enabled AND ready` and check the affected row count. While an update is pending, a reader with both flags enabled combines previously published clean dates with a current, chronological calculation for the dirty dates and their neighbors. When there is no compatible complete baseline, it uses the full chronological calculation. Turning off reads restores the v6 reader. A worker that stops after publishing can continue to serve its complete generation while the source stays at that generation.
+
+## Roll back
+
+Set `read_enabled=false` in the tenant's singleton row to switch the chart back immediately while shadow computation continues. To end enrollment, set `shadow_enabled=false` and stop the worker. Re-enrollment bootstraps anew. Use the deployment schema gate and its rollback procedure for any backend rollback. The worker never writes sent reports.
+
+## Local checks
+
+Build with `docker build -f Dockerfile.dbt-worker -t health-dbt-worker:review .`. Run `python3 experiments/dbt_metrics/scripts/check_tenant_aggregate_worker.py --worker-image health-dbt-worker:review` for the disposable-tenant rehearsal. The worker and its image smoke test require PostgreSQL. The image smoke test uses synthetic data. To rehearse on a trusted, local custom-format profile dump, use `bash experiments/dbt_metrics/scripts/with_serving_archive.sh /path/to/archive.dump` with the pinned PostgreSQL image cached, a locked dbt environment and local PostgreSQL client tools. Set `HEALTH_ARCHIVE_WORKER_IMAGE` to the local worker image ID to include the containerized correction. The harness requires the complete Git tree of the pinned v16 baseline, `863ea99884cdbd4d02f05b1bda9c55af877bfb48`, in the local clone. It checks the tree before creating the database or restoring the dump. For a shallow checkout, fetch the baseline and its tree first.
+
+The archive run copies personal health data into an auto-removed PostgreSQL container and its anonymous data volume. The private temporary directory under `TMPDIR` holds a database password, tenant DSNs, dated chart responses, an accepted health payload, and the restore log. Use a trusted local Docker engine and a temporary filesystem appropriate for that data. Stdout contains aggregate results. Keep the original dump and the temporary files out of CI logs and uploads. On exit the harness stops PostgreSQL, attempts forced container and volume removal if stopping fails, and removes the temporary directory. After a machine crash or SIGKILL, check the disposable container, anonymous volume, and temporary directory before treating the copy as removed.

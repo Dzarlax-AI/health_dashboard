@@ -1,4 +1,4 @@
-{% macro step_point_inputs(points, receipts, scope) %}
+{% macro step_point_inputs(points, receipts, scope, neighbor_key="to_char(b.candidate_day,'YYYY-MM-DD')") %}
 with scoped as materialized (
     select p.metric_name,p.date,p.source,p.qty,p.quality,p.origin,p.id,p.health_record_id,p.source_snapshot_at,p.received_at
     from {{ points }} p where p.metric_name in ('step_count','__healthkit_archive_sample:step_count')
@@ -14,7 +14,7 @@ with scoped as materialized (
     select *,true as in_scope from scoped
     union all
     select p.metric_name,p.date,p.source,p.qty,p.quality,p.origin,p.id,p.health_record_id,p.source_snapshot_at,p.received_at,false
-    from bounds b join {{ points }} p on substring(p.date,1,10)=b.candidate_day::text
+    from bounds b join {{ points }} p on substring(p.date,1,10)={{ neighbor_key }}
     where p.metric_name in ('step_count','__healthkit_archive_sample:step_count')
       and p.units='count' and not ({{ scope }})
 ), exact_rows as (

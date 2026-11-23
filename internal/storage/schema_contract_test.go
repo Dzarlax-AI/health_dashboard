@@ -22,11 +22,11 @@ func TestSchemaContractManifestIsDeterministic(t *testing.T) {
 	if !regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(first) {
 		t.Fatalf("schema contract checksum is not lowercase SHA-256: %q", first)
 	}
-	if want := "de4e252ab3c735d53a78eb71d7a185981e0eb8e553ab1357036e401f343c8eae"; first != want {
+	if want := "eb028f02e392ba8798b9615f5c7dc8b97c15c2a17ff2ac82b4427b93b25ad191"; first != want {
 		t.Fatalf("schema contract checksum = %q, want %q; bump SchemaContractVersion when intentionally changing the manifest", first, want)
 	}
-	if SchemaContractVersion != 16 {
-		t.Fatalf("schema contract version = %d, want 16", SchemaContractVersion)
+	if SchemaContractVersion != 17 {
+		t.Fatalf("schema contract version = %d, want 17", SchemaContractVersion)
 	}
 }
 
@@ -193,7 +193,7 @@ func TestSchemaContractManifestDeclaresProvisioningVerifierObjects(t *testing.T)
 			t.Errorf("array element type %s = %q, want _text", column, arrayTypes[column])
 		}
 	}
-	if len(manifest.RequiredRows) != 1 || manifest.RequiredRows[0].Table != "source_epochs" {
+	if len(manifest.RequiredRows) != 2 || manifest.RequiredRows[0].Table != "source_epochs" {
 		t.Fatalf("bootstrap row invariant missing from manifest: %+v", manifest.RequiredRows)
 	}
 	wantRequiredValues := map[string]string{
