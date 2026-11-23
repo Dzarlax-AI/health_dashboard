@@ -15,8 +15,13 @@ import (
 var aggregateSQLFiles embed.FS
 var aggregateSQLMarker = regexp.MustCompile(`\{\{([A-Z0-9_]+)\}\}`)
 
+// The withdrawal statement has already resolved aliases for every point on
+// its scoped dates. Reuse those decisions when recomputing a touched day.
+const touchedStepInputs = `(select p.date,p.source,p.qty,p.quality,p.grain,p.stored_key,p.counted
+	from step_points p join touched t on substring(p.date,1,10)=t.day) inputs`
+
 var aggregateProjections = strings.NewReplacer(
-	"{{SURVIVING_STEP_TOTALS}}", physicalStepTotalsSQL("substring(date,1,10) in (select day from touched)", "surviving", "true"),
+	"{{SURVIVING_STEP_TOTALS}}", dbtmetrics.DailyStepTotalsSQL("("+dbtmetrics.PhysicalStepHoursSQL(touchedStepInputs, "surviving")+") selected"),
 	"{{DAILY_STEP_TOTALS}}", physicalStepTotalsSQL("substring(date,1,10)=$1", "hourly_metrics", "substring(hour,1,10)=$1"),
 	"{{HISTORICAL_STEP_TOTALS}}", physicalStepTotalsSQL("$1::text='step_count' {{POINT_SCOPE}}", "hourly_metrics", "metric_name=$1 {{FROM_CLAUSE}}"),
 	"{{WITHDRAWAL_STEP_INPUTS}}", dbtmetrics.StepPointInputsSQL("metric_points", "health_records", "true {{DATE_SCOPE}}"),
