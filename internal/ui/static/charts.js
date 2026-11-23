@@ -660,10 +660,18 @@ function stepDailySeriesURL(from, to) {
   return '/fragments/step-daily-series?to=' + encodeURIComponent(to) + (from ? '&from=' + encodeURIComponent(from) : '');
 }
 
+var metricChartRequests = Object.create(null);
+function beginMetricChartRequest(canvasId) {
+  var request = {};
+  metricChartRequests[canvasId] = request;
+  return request;
+}
+
 function loadMetricChart(canvasId, metric, from, to, bucket, agg, opts) {
   var el = document.getElementById(canvasId);
   if (!el) return;
   opts = opts || {};
+  var request = beginMetricChartRequest(canvasId);
   setLoading(true);
   var url = '/api/metrics/data?metric=' + encodeURIComponent(metric) + '&from=' + from + '&to=' + to;
   if (bucket) url += '&bucket=' + bucket;
@@ -671,8 +679,11 @@ function loadMetricChart(canvasId, metric, from, to, bucket, agg, opts) {
   if (opts.bySource) url += '&by_source=1';
 
   var series = opts.series ? Promise.resolve(opts.series) :
-    fetch(usesDailyStepSeries(metric, from, to, bucket, agg, opts) ? stepDailySeriesURL(from, to) : url).then(healthAPIResponse);
-  series.then(function(data) {
+    fetch(usesDailyStepSeries(metric, from, to, bucket, agg, opts) ? stepDailySeriesURL(from, to) : url).then(function(response) {
+      if (metricChartRequests[canvasId] === request) return healthAPIResponse(response);
+    });
+  return series.then(function(data) {
+      if (metricChartRequests[canvasId] !== request) return;
       setLoading(false);
       var pts = data.points || [];
       if (!pts.length) {
@@ -730,7 +741,11 @@ function loadMetricChart(canvasId, metric, from, to, bucket, agg, opts) {
         }
       });
     })
-    .catch(function(e) { setLoading(false); console.error('loadMetricChart error:', e); });
+    .catch(function(e) {
+      if (metricChartRequests[canvasId] !== request) return;
+      setLoading(false);
+      console.error('loadMetricChart error:', e);
+    });
 }
 
 // Helper: stat chip

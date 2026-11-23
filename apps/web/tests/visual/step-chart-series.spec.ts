@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 const ui = new URL("../../../../internal/ui/", import.meta.url);
 const template = readFileSync(new URL("templates/pages/metric_detail.html", ui), "utf8")
@@ -7,10 +7,9 @@ const template = readFileSync(new URL("templates/pages/metric_detail.html", ui),
   .replace(/{{[^}]*}}/g, "");
 const charts = readFileSync(new URL("static/charts.js", ui), "utf8");
 
-test("All plots the full daily step quantities once and preserves the source and short-range requests", async ({ page }) => {
-  const requests: URL[] = [];
-  let earliest = "2024-01-01";
-  const today = "2026-01-15";
+const today = "2026-01-15";
+
+async function serveStepPage(page: Page) {
   await page.route("**/metrics/step_count", (route) => route.fulfill({
     contentType: "text/html",
     body: `<script>
@@ -19,9 +18,22 @@ test("All plots the full daily step quantities once and preserves the source and
       function todayStr() { return '${today}'; }
       function daysAgoStr() { return '2025-12-17'; }
       function fmt2(value) { return String(value); }
-    </script>${template}`,
+    </script>${template}<script>
+      const originalLoad = loadMetricChart;
+      loadMetricChart = function(...args) {
+        const result = originalLoad(...args);
+        window.firstChartLoad ??= result;
+        return result;
+      };
+    </script>`,
   }));
   await page.route("**/static/charts.js*", (route) => route.fulfill({ contentType: "text/javascript", body: charts }));
+}
+
+test("All plots the full daily step quantities once and preserves the source and short-range requests", async ({ page }) => {
+  const requests: URL[] = [];
+  let earliest = "2024-01-01";
+  await serveStepPage(page);
   await page.route(/\/(fragments\/step-daily-series|api\/metrics\/(range|data))\?/, (route) => {
     const url = new URL(route.request().url());
     requests.push(url);
@@ -65,4 +77,26 @@ test("All plots the full daily step quantities once and preserves the source and
   expect(query.get("from")).toBe(earliest);
   expect(query.has("bucket")).toBe(false);
   await expect(page.locator("#from")).toHaveValue(earliest);
+});
+
+test("a delayed default result cannot replace the All chart", async ({ page }) => {
+  await serveStepPage(page);
+  let releaseDefault!: () => void;
+  const deferred = new Promise<void>((resolve) => { releaseDefault = resolve; });
+  await page.route("**/fragments/step-daily-series?*", async (route) => {
+    const initial = new URL(route.request().url()).searchParams.has("from");
+    if (initial) await deferred;
+    await route.fulfill({ json: { bucket: "day", points: [
+      { date: initial ? "2025-12-17" : "2024-01-01", qty: initial ? 99 : 12 },
+    ] } });
+  });
+  const defaultRequested = page.waitForRequest((request) => new URL(request.url()).searchParams.has("from"));
+  await page.goto("/metrics/step_count");
+  await defaultRequested;
+  await page.locator('button[onclick="applyPresetAll()"]').click();
+  await expect(page.locator("#stats-row")).toContainText("Avg12");
+  releaseDefault();
+  await page.evaluate("window.firstChartLoad");
+  await expect(page.locator("#from")).toHaveValue("2024-01-01");
+  await expect(page.locator("#stats-row")).toContainText("Avg12");
 });
