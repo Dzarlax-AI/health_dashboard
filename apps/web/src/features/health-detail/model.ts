@@ -1,4 +1,4 @@
-import type { HealthBriefingResponse, MetricDataResponse } from "../../api/client";
+import type { HealthBriefingResponse, MetricPlotSeries } from "../../api/client";
 import type { Locale } from "../../i18n";
 import type { HealthSectionConfig } from "./config";
 import type { HealthDetailResources } from "./loader";
@@ -41,16 +41,16 @@ function briefingSection(
   return briefing.sections?.find((section) => section.key === key);
 }
 
-function latestPoint(response?: MetricDataResponse) {
+function latestPoint(response?: MetricPlotSeries) {
   return response?.points?.filter((point) => Number.isFinite(point.qty)).reduce<
-    (NonNullable<MetricDataResponse["points"]>[number]) | undefined
+    (NonNullable<MetricPlotSeries["points"]>[number]) | undefined
   >(
     (latest, point) => (!latest || point.date > latest.date ? point : latest),
     undefined,
   );
 }
 
-function activityComparison(response?: MetricDataResponse): number | undefined {
+function activityComparison(response?: MetricPlotSeries): number | undefined {
   const points = (response?.points ?? [])
     .filter((point) => Number.isFinite(point.qty))
     .sort((a, b) => b.date.localeCompare(a.date));
@@ -72,7 +72,7 @@ function normalizedTrendPoints(points: { date: string; value: number }[]) {
     .sort((a, b) => a.date.localeCompare(b.date));
 }
 
-function trendPoints(response?: MetricDataResponse) {
+function trendPoints(response?: MetricPlotSeries) {
   return normalizedTrendPoints(
     (response?.points ?? []).map((point) => ({
       date: point.date.slice(0, 10),

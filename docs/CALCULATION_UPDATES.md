@@ -56,6 +56,13 @@ or withdrawal can change that result. Device charts still expose the individual
 sources. The bounded post-wake calculation uses timed observations because
 an old whole-hour total cannot be allocated to minutes after waking.
 
+The daily steps chart and Activity read published daily quantities from
+`daily_scores` when the maintenance journal certifies the calculation. A
+dirty date is reconstructed from physical hours in the same database snapshot.
+An incomplete rebuild or missing journal requires reconstructing the requested
+range. The detailed metrics API still computes observation extrema and source
+breakdowns separately.
+
 Aggregate contract 3 gives each source equal weight for daily HRV, resting
 heart rate, oxygen saturation, VO₂ max and respiratory rate. Each source
 contributes its mean across valid hourly rows to foreground, full, incremental,

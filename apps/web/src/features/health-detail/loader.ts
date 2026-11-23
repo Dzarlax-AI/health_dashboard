@@ -1,6 +1,7 @@
 import {
   getAIBriefing,
   getHealthBriefing,
+  getDailyStepSeries,
   getMetricData,
   getMetricRange,
   getReadinessHistory,
@@ -10,7 +11,7 @@ import {
   type AIBriefingResponse,
   type HealthBriefingResponse,
   type MetricDataOptions,
-  type MetricDataResponse,
+  type MetricPlotSeries,
   type ReadinessHistoryResponse,
   type SectionResponse,
   type SessionResponse,
@@ -26,7 +27,7 @@ export interface HealthDetailResources {
   todayInsights?: TodayInsightsResponse;
   session?: SessionResponse;
   readiness?: ReadinessHistoryResponse;
-  metrics: Record<string, MetricDataResponse>;
+  metrics: Record<string, MetricPlotSeries>;
   from?: string;
   to?: string;
   missing: string[];
@@ -41,6 +42,7 @@ export interface HealthDetailLoaders {
   range: typeof getMetricRange;
   readiness: typeof getReadinessHistory;
   metric: typeof getMetricData;
+  dailySteps: typeof getDailyStepSeries;
 }
 
 const defaultLoaders: HealthDetailLoaders = {
@@ -52,6 +54,7 @@ const defaultLoaders: HealthDetailLoaders = {
   range: getMetricRange,
   readiness: getReadinessHistory,
   metric: getMetricData,
+  dailySteps: getDailyStepSeries,
 };
 
 function dateOnly(value: string): string | undefined {
@@ -123,6 +126,9 @@ export async function loadHealthDetailResources(
               agg: (chart.agg || "AVG") as MetricDataOptions["agg"],
               bucket: "day",
             };
+            if (chart.metric === "step_count" && options.agg === "SUM") {
+              return loaders.dailySteps(from, to, signal);
+            }
             return loaders.metric(chart.metric, from, to, signal, options);
           }),
         )
@@ -133,7 +139,7 @@ export async function loadHealthDetailResources(
       : [];
   throwIfAborted(signal);
 
-  const metrics: Record<string, MetricDataResponse> = {};
+  const metrics: Record<string, MetricPlotSeries> = {};
   metricCharts.forEach((chart, index) => {
     const response = fulfilled(metricResults[index]);
     if (response) metrics[chart.metric] = response;

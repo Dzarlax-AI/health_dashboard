@@ -25,6 +25,7 @@ function loaders(section: SectionResponse): HealthDetailLoaders {
       max: "2026-08-06",
     }) as MetricRangeResponse),
     readiness: vi.fn(async () => ({ points: [] }) as ReadinessHistoryResponse),
+    dailySteps: vi.fn(async () => ({ bucket: "day", points: [{ date: "2026-08-06", qty: 0 }] })),
     metric: vi.fn(async (metric, _from, _to, _signal, options) => ({
       metric,
       agg: options?.agg ?? "AVG",
@@ -48,14 +49,13 @@ describe("health detail resource loader", () => {
       ],
     });
 
-    await loadHealthDetailResources(healthSectionConfigs.activity, "en", undefined, testLoaders);
+    const result = await loadHealthDetailResources(healthSectionConfigs.activity, "en", undefined, testLoaders);
 
-    expect(testLoaders.metric).toHaveBeenCalledWith(
-      "step_count",
+    expect(result.metrics.step_count.points).toEqual([{ date: "2026-08-06", qty: 0 }]);
+    expect(testLoaders.dailySteps).toHaveBeenCalledWith(
       "2026-01-01",
       "2026-08-06",
       undefined,
-      { agg: "SUM", bucket: "day" },
     );
     expect(testLoaders.metric).toHaveBeenCalledWith(
       "active_energy",

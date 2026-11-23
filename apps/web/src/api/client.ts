@@ -138,6 +138,27 @@ export async function getMetricData(
   return requireData(data, error, response);
 }
 
+export interface MetricPlotSeries {
+  bucket: string;
+  points?: { date: string; qty: number }[] | null;
+}
+
+export async function getDailyStepSeries(
+  from: string,
+  to: string,
+  signal?: AbortSignal,
+): Promise<MetricPlotSeries> {
+  const query = new URLSearchParams({ from, to });
+  const response = await fetch(`/fragments/step-daily-series?${query}`, {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok || response.redirected || response.headers.get("content-type")?.includes("text/html")) {
+    return requireData<MetricPlotSeries>(undefined, undefined, response);
+  }
+  return response.json();
+}
+
 export async function getMetricRange(
   metric: string,
   signal?: AbortSignal,

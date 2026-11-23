@@ -1,6 +1,8 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
+const backend = { target: process.env.HEALTH_API_PROXY_TARGET ?? "http://127.0.0.1:8080", changeOrigin: false };
+
 export default defineConfig({
   plugins: [react()],
   server: {
@@ -8,10 +10,8 @@ export default defineConfig({
     port: 4173,
     strictPort: true,
     proxy: {
-      "/api": {
-        target: process.env.HEALTH_API_PROXY_TARGET ?? "http://127.0.0.1:8080",
-        changeOrigin: false,
-      },
+      "/api": backend,
+      "/fragments/step-daily-series": backend,
     },
   },
   preview: {

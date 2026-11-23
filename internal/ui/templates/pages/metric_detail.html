@@ -62,6 +62,7 @@
 <script>
 var currentMetric = '{{.MetricName}}';
 var compareEnabled = false, bySourceEnabled = false;
+var chartSelection = 0;
 
 // Sleep-chart i18n bridge — populates the band labels + tooltip hint
 // in the caller's language. charts.js reads `window.SLEEP_PHASE_LABELS`
@@ -82,7 +83,8 @@ document.addEventListener('DOMContentLoaded', function() {
   reloadChart();
 });
 
-function reloadChart() {
+function reloadChart(series) {
+  chartSelection++;
   var from = $('from').value, to = $('to').value;
   var bucket = $('bucket').value, agg = $('agg').value;
   if (currentMetric === 'readiness') {
@@ -94,7 +96,7 @@ function reloadChart() {
     loadSleepChart('chart', from, to);
     return;
   }
-  loadMetricChart('chart', currentMetric, from, to, bucket, agg, {bySource: bySourceEnabled});
+  loadMetricChart('chart', currentMetric, from, to, bucket, agg, {bySource: bySourceEnabled, compare: compareEnabled, series: series});
 }
 
 function applyPreset(days) {
@@ -105,10 +107,31 @@ function applyPreset(days) {
   reloadChart();
 }
 
-function applyPresetAll() {
-  fetch('/api/metrics/range?metric=' + encodeURIComponent(currentMetric))
-    .then(function(r){return r.json()})
+async function applyPresetAll() {
+  var selection = ++chartSelection;
+  var to = todayStr(), bucket = $('bucket').value, agg = $('agg').value;
+  if (currentMetric === 'step_count' && !bySourceEnabled && !compareEnabled &&
+      (!bucket || bucket === 'day') && (!agg || agg === 'SUM')) {
+    try {
+      var response = await fetch(stepDailySeriesURL('', to));
+      var series = await healthAPIResponse(response);
+      if (selection !== chartSelection) return;
+      var from = series.points && series.points.length && series.points[0].date;
+      if (from && usesDailyStepSeries(currentMetric, from, to, bucket, agg, {})) {
+        $('from').value = from;
+        $('to').value = to;
+        document.querySelectorAll('.preset-btn').forEach(function(b) { b.classList.remove('active'); });
+        reloadChart(series);
+        return;
+      }
+    } catch (err) {
+      if (selection !== chartSelection || (response && response.status === 401)) return;
+    }
+  }
+  return fetch('/api/metrics/range?metric=' + encodeURIComponent(currentMetric))
+    .then(healthAPIResponse)
     .then(function(range) {
+      if (selection !== chartSelection) return;
       if (range.min) $('from').value = range.min;
       $('to').value = todayStr();
       document.querySelectorAll('.preset-btn').forEach(function(b) { b.classList.remove('active'); });
