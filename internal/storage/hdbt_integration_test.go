@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"testing"
+
+	"health-receiver/internal/testdb"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"health-receiver/internal/testdb"
-	"testing"
 )
 
 func TestHDBTMutationAndStepsCutover(t *testing.T) {
@@ -188,4 +189,90 @@ func TestHDBTStepsRoleIsolation(t *testing.T) {
 			t.Fatalf("expected isolation denial: %v", err)
 		}
 	}
+}
+
+func TestHDBTStepsDirtyNeighborAndPartialBootstrap(t *testing.T) {
+	db, done := testDB(t)
+	defer done()
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.pool.Exec(t.Context(), q, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer exec("update hdbt_state set shadow_enabled=false; truncate hdbt_dirty,hdbt_backfill,hdbt_daily_metrics")
+	state := emptyCacheMaintenanceState()
+	state.CompletedIdentity = CacheMaintenanceIdentity()
+	state.Generation = 4
+	setDailyStepSeriesJournal(t, db, state)
+	const priorDay = "2026-05-01"
+	const changedDay = "2026-05-12"
+	// Three minute maxima match the historical REAL only in chronological
+	// order. Proving that cell admits the second archive sample in minute zero.
+	receipt, err := db.InsertRaw(Record{ContentType: "apple-health-import", Payload: "{}"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec(`insert into metric_points(health_record_id,metric_name,units,date,source,qty,origin)
+		select $1,'step_count','count','2026-05-12 09:'||stamp||' +0000','Apple Watch',qty,'apple_health_xml'
+		from (values ('02:01',7.15::real),('01:01',0.15::real),('00:02',6::real),('00:01',11.1::real)) v(stamp,qty)`, receipt)
+	exec(`insert into hourly_metrics(metric_name,hour,source,avg_val,min_val,max_val,sample_count)
+		values ('step_count','2026-05-12 09:00','Apple Watch',18.4,0.15,11.1,3),
+		       ('step_count','2026-05-12 10:00','iPhone',80,40,40,2)`)
+	exec(`insert into daily_scores(date,steps) values('2026-05-01',18),('2026-05-12',99)`)
+	exec(`insert into hdbt_daily_metrics(date,steps) values('2026-05-01',21),('2026-05-12',57)`)
+	exec("update hdbt_state set shadow_enabled=true")
+	exec("update hdbt_state set initialized=true,read_enabled=true,ready=false,formula_id=$1,source_generation=3", hdbtFormula)
+	exec("insert into hdbt_dirty(date,generation) values('2026-05-10',4)")
+	expected := DailyStepPoint{changedDay, float64(float32(104.4))}
+	assertDailyStepSeries(t, db, "", changedDay, DailyStepPoint{priorDay, 21}, expected)
+	// An incomplete bootstrap cannot reuse the partial published series.
+	exec("insert into hdbt_backfill(date) values('2026-05-15')")
+	assertDailyStepSeries(t, db, "", changedDay, DailyStepPoint{priorDay, 18}, expected)
+	exec("update hdbt_state set read_enabled=false")
+	assertDailyStepSeries(t, db, "", changedDay, DailyStepPoint{priorDay, 18}, DailyStepPoint{changedDay, 99})
+}
+
+func TestHDBTStepsLiveDeliveryWithIncompleteHour(t *testing.T) {
+	db, done := testDB(t)
+	defer done()
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.pool.Exec(t.Context(), q, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer exec("update hdbt_state set shadow_enabled=false; truncate hdbt_dirty,hdbt_backfill,hdbt_daily_metrics,hdbt_step_repairs,hdbt_step_state")
+	state := emptyCacheMaintenanceState()
+	state.CompletedIdentity = CacheMaintenanceIdentity()
+	setDailyStepSeriesJournal(t, db, state)
+	const day = "2026-05-06"
+	// The old iPhone cell survived after its two original readings went missing.
+	const hour = day + " 08:00"
+	exec("insert into hourly_metrics(metric_name,hour,source,avg_val,min_val,max_val,sample_count) values('step_count',$1,'iPhone',80,40,40,2)", hour)
+	exec("insert into hdbt_step_state(hour,source,avg_val,min_val,max_val,sample_count,withdrawn) values($1,'iPhone',80,40,40,2,false)", hour)
+	exec("insert into hdbt_daily_metrics(date,steps) values($1,80)", day)
+	exec("update hdbt_state set shadow_enabled=true")
+	exec("update hdbt_state set initialized=true,read_enabled=true,ready=true,formula_id=$1,source_generation=0", hdbtFormula)
+	receipt, err := db.InsertRaw(Record{AutomationName: "Health dash - Hourly", ContentType: "application/json; metrics-contract=2", Payload: "{}"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	point := MetricPoint{"step_count", "count", day + " 08:00:00 +0000", 5, "Apple Watch"}
+	if err := db.InsertPoints(receipt, []MetricPoint{point}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpsertRecentCache([]string{day}, false); err != nil {
+		t.Fatal(err)
+	}
+	assertDailyStepSeries(t, db, "", day, DailyStepPoint{day, 80})
+	// Revoke the newer source through the same cleanup used by the importer.
+	// Its receipt covers Watch only. Missing iPhone samples remain protected.
+	db.RemoveAutoExportForRange(day, day)
+	var points, repairs int
+	if err := db.pool.QueryRow(t.Context(), `select (select count(*) from metric_points where source='Apple Watch'),
+		(select count(*) from hdbt_step_repairs where source='Apple Watch')`).Scan(&points, &repairs); err != nil || points != 0 || repairs != 1 {
+		t.Fatalf("points=%d repairs=%d: %v", points, repairs, err)
+	}
+	assertDailyStepSeries(t, db, "", day, DailyStepPoint{day, 80})
 }

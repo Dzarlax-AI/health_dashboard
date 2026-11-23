@@ -323,6 +323,18 @@ def validate(owner, env, tenant, scratch, result):
         require(status=="published","correction was not published")
         published,ms=chart(env,scratch,"published")
         require(published==fallback,"published correction differs from fallback")
+        # A real replacement may affect offset aliases recorded on a neighboring
+        # date. Rebuild every affected day independently and compare the whole chart.
+        received=json.loads((scratch/"accepted.json").read_text())["data"]["metrics"][0]["data"]
+        from datetime import date, timedelta
+        affected={str(date.fromisoformat(p["date"][:10])+timedelta(days=n))
+                  for p in received for n in range(-2,3)}
+        updated=archive_steps(lambda q:sql(tenant,q),sorted(affected & set(days)))
+        for day in affected:
+            reference.pop(day,None)
+        reference.update(updated)
+        reference.update({d:q for d,q in retained.items() if d in affected and d not in reference})
+        require(published==sorted(reference.items()),"corrected chart differs from independent oracle")
         live=published
         require(worker(env)[0]=="idle","extra work after checkpoint")
         receipt=int((scratch/(phase+"-receipt")).read_text())

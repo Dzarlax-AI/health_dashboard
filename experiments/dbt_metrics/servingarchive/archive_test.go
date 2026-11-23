@@ -40,7 +40,7 @@ func (r *chartRoute) TraceQueryStart(ctx context.Context, _ *pgx.Conn, q pgx.Tra
 		} else {
 			r.selected.Store(1)
 		}
-	case strings.HasPrefix(query, "with step_input as") && strings.Contains(query, "prior.steps::float8"):
+	case (strings.HasPrefix(query, "with canonical_inputs as") || strings.HasPrefix(query, "with step_input as")) && strings.Contains(query, "prior.steps::float8"):
 		r.selected.Store(3)
 	}
 	return ctx

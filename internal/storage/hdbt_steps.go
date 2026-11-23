@@ -4,8 +4,9 @@ import (
 	"context"
 	"strconv"
 
-	"github.com/jackc/pgx/v5"
 	dbtmetrics "health-receiver/experiments/dbt_metrics"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // readHDBTSteps is used only by Steps All. A disabled enrollment or read flag
@@ -88,8 +89,8 @@ func currentHDBTStepsSQL(patch bool) string {
 		prior = "hdbt_daily_metrics"
 	}
 	points, cached := stepHourInputs("substring(p.date,1,10)"+scope, "hourly_metrics", "substring(hour,1,10)"+scope)
-	return `with step_input as (select * from ` + points + `), step_cache as (select * from ` + cached + `),
-        recomputed as (` + dbtmetrics.OrderedStepTotalsSQL("step_input", "step_cache") + `)
+	return `with canonical_inputs as (select * from ` + points + `), canonical_cache as (select * from ` + cached + `),
+        recomputed as (` + dbtmetrics.OrderedStepTotalsSQL("canonical_inputs", "canonical_cache") + `)
         select day as date, source_total::real::float8 as qty from recomputed
         union all
         select prior.date,prior.steps::float8 from ` + prior + ` prior
@@ -97,5 +98,5 @@ func currentHDBTStepsSQL(patch bool) string {
           and not exists(select from recomputed r where r.day=prior.date)
           and not exists(select from hdbt_step_repairs r where substring(r.point_date,1,10)=prior.date)
           and not exists(select from hdbt_step_state h where h.withdrawn and substring(h.hour,1,10)=prior.date)
-          and not exists(select from step_input p where not p.counted and substring(p.date,1,10)=prior.date)`
+          and not exists(select from canonical_inputs p where not p.counted and substring(p.date,1,10)=prior.date)`
 }
