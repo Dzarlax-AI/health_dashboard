@@ -82,9 +82,26 @@ def exercise(image, directory, network, cid):
         + (ROOT / "internal/storage/sql/hdbt_v17.sql").read_text()
     )
     sql("""insert into metric_points(metric_name,date,source,qty) values
-        ('step_count','2026-01-01 10:00:00 +0000','Apple Watch',10),
-        ('step_count','2026-01-20 10:00:00 +0000','Apple Watch',70);
+        ('step_count','2026-01-01 10:00:00 +0000','Apple Watch',10);
         insert into settings(key,value) values('_cache_maintenance_v1','{"version":1,"generation":1,"dirty":{}}');""")
+    sql((PROJECT / "fixtures/tenant_step_accumulation.sql").read_text())
+    assert (
+        sql("""select float4send(sum(qty order by n))<>float4send(sum(qty order by n desc))
+        from (values(1,11.1::real),(2,0.15::real),(3,7.15::real)) samples(n,qty)""")
+        == "t"
+    )
+    sql("alter database postgres set enable_presorted_aggregate=off")
+
+    def check_step_sum():
+        # Independent physical oracle: every distinct archive sample counts. Compare
+        # binary REAL totals; the worker may not paper over a wrong input choice.
+        assert (
+            sql("""select float4send(steps)=(select float4send(sum(qty::float8)::real)
+                 from metric_points where date like '2026-01-20%')
+            from hdbt_daily_metrics where date='2026-01-20'""")
+            == "t"
+        ), "daily steps lost an observed sample during hourly cache proof"
+
     dsn_host, dsn_port = (
         ("fixture", "5432")
         if image
@@ -207,6 +224,7 @@ else:
     require_status("published")
     assert actual() == "10" and sql("select source_generation from hdbt_state") == "1"
     require_status("idle")
+    check_step_sum()
     other_xmin = sql("select xmin from hdbt_daily_metrics where date='2026-01-20'")
 
     sql("begin;" + mark(2) + "commit;")
@@ -295,6 +313,7 @@ else:
     assert reader.stdout.readline().strip() == "t"
     sql("update hdbt_state set shadow_enabled=false")
     assert sql("select not ready and not read_enabled and not initialized from hdbt_state") == "t"
+    sql("alter database postgres set enable_presorted_aggregate=on")
     require_status("disabled")
     try:
         sql("""begin; update metric_points set qty=170 where source='iPhone';
@@ -305,6 +324,7 @@ else:
         assert sql("select ready or read_enabled from hdbt_state") == "f"
         require_status("published")
         assert actual() == "170" and sql("select source_generation from hdbt_state") == "6"
+        check_step_sum()
         reader.stdin.write("select steps::int from hdbt_daily_metrics where date='2026-01-01'; commit;\n")
         reader.stdin.flush()
         assert reader.stdout.readline().strip() == "100"

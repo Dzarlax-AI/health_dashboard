@@ -31,14 +31,22 @@ func (s *DB) DailyStepSeries(ctx context.Context, from, to string) ([]DailyStepP
 			return err
 		}
 		// Missing or unrecognizable journal metadata cannot certify the rollup.
+		var generation *uint64
 		if err == nil {
-			var journalErr error
-			state, journalErr = decodeCacheMaintenanceState(raw)
-			if journalErr == nil && s.profileGraphSchema == "" && from == "" {
-				if published, ok := readHDBTSteps(ctx, tx, from, to, state.Generation); ok {
-					points = published
-					return nil
-				}
+			var decodeErr error
+			state, decodeErr = decodeCacheMaintenanceState(raw)
+			if decodeErr == nil {
+				generation = &state.Generation
+			}
+		}
+		if s.profileGraphSchema == "" && from == "" {
+			series, enabled, err := readHDBTSteps(ctx, tx, to, generation)
+			if err != nil {
+				return err
+			}
+			if enabled {
+				points = series
+				return nil
 			}
 		}
 		args := []any{from, to}

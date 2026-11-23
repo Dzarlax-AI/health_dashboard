@@ -19,7 +19,7 @@ func HourlyRowsSQL(sum bool) string {
 	if sum {
 		macro = hourlySumMacro
 	}
-	return strings.ReplaceAll(macroBody(macro), "{{ points }}", "hourly_points")
+	return strings.ReplaceAll(stepMacroBody(macro, false), "{{ points }}", "hourly_points")
 }
 
 //go:embed macros/keep_sleep_point.sql

@@ -29,11 +29,19 @@ import (
 )
 
 // Retain only which data query executed. Recorded SQL and bind values stay private.
-type chartRoute struct{ shadow atomic.Bool }
+type chartRoute struct{ selected atomic.Int32 }
 
 func (r *chartRoute) TraceQueryStart(ctx context.Context, _ *pgx.Conn, q pgx.TraceQueryStartData) context.Context {
-	if strings.Contains(strings.ToLower(q.SQL), "from hdbt_daily_metrics") {
-		r.shadow.Store(true)
+	query := strings.ToLower(strings.TrimSpace(q.SQL))
+	switch {
+	case strings.HasPrefix(query, "select date,steps::float8 as qty from hdbt_daily_metrics"):
+		if strings.Contains(query, "union all select * from") {
+			r.selected.Store(2)
+		} else {
+			r.selected.Store(1)
+		}
+	case strings.HasPrefix(query, "with step_input as") && strings.Contains(query, "prior.steps::float8"):
+		r.selected.Store(3)
 	}
 	return ctx
 }
@@ -59,6 +67,21 @@ func TestServingArchive(t *testing.T) {
 	c.Tracer = trace
 	if err != nil || !net.ParseIP(c.Host).IsLoopback() || len(c.Fallbacks) != 0 || c.Database != "serving_archive" || c.User != tenants.TenantRoleName(id) {
 		t.Fatal("unexpected archive connection")
+	}
+	switch os.Getenv("SERVING_ARCHIVE_PLAN") {
+	case "serial":
+		c.RuntimeParams["enable_hashagg"] = "off"
+		c.RuntimeParams["enable_presorted_aggregate"] = "off"
+		c.RuntimeParams["max_parallel_workers_per_gather"] = "0"
+	case "parallel":
+		c.RuntimeParams["enable_hashagg"] = "on"
+		c.RuntimeParams["enable_presorted_aggregate"] = "on"
+		c.RuntimeParams["max_parallel_workers_per_gather"] = "2"
+		c.RuntimeParams["parallel_setup_cost"] = "0"
+		c.RuntimeParams["parallel_tuple_cost"] = "0"
+	case "":
+	default:
+		t.Fatal("invalid archive plan")
 	}
 	c.RuntimeParams["search_path"] = "health"
 	ctx := t.Context()
@@ -198,7 +221,8 @@ func TestServingArchive(t *testing.T) {
 		if err = os.WriteFile(filepath.Join(scratch, "chart.json"), w.Body.Bytes(), 0600); err != nil {
 			t.Fatal(err)
 		}
-		t.Logf("chart_ms=%d chart_shadow=%t", ms, trace.shadow.Load())
+		route := []string{"go", "published", "patch", "raw"}[trace.selected.Load()]
+		t.Logf("chart_ms=%d chart_shadow=%t chart_route=%s", ms, route == "published", route)
 		return
 	}
 	if phase != "first" && phase != "retry" {

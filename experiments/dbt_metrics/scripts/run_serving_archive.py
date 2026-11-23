@@ -12,6 +12,8 @@ import tempfile
 import time
 import uuid
 
+from archive_step_oracle import archive_steps
+
 ROOT = Path(__file__).resolve().parents[3]
 PROJECT = ROOT / "experiments/dbt_metrics"
 BASE = "863ea99884cdbd4d02f05b1bda9c55af877bfb48"
@@ -127,6 +129,9 @@ def deployed_probe(env, scratch):
     probe(env,"baseline",root=source)
     probe(env,"chart",root=source)
     (scratch/"chart.json").replace(scratch/"v16-chart.json")
+    probe(env,"journal",root=source)
+    probe(env,"chart",root=source)
+    (scratch/"chart.json").replace(scratch/"v16-same-journal.json")
 
 
 def worker(env):
@@ -205,10 +210,10 @@ def bootstrap(owner, env, tenant):
                 host_child_cpu_seconds=round(used.ru_utime+used.ru_stime-client.ru_utime-client.ru_stime,3))
 
 
-def chart(env, scratch, shadow,phase="chart"):
+def chart(env, scratch, route,phase="chart"):
     output=probe(env,phase)
-    match=re.search(r"chart_ms=(\d+) chart_shadow=(true|false)",output)
-    require(match and (match[2]=="true")==shadow,"unexpected chart read path")
+    match=re.search(r"chart_ms=(\d+) chart_shadow=(?:true|false) chart_route=(\w+)",output)
+    require(match and match[2]==route,"unexpected chart read path")
     data=json.loads((scratch/"chart.json").read_text())
     pairs=[(p["date"],p["qty"]) for p in data["points"]]
     require(len(pairs)==len(dict(pairs)) and pairs==sorted(pairs),"chart ordering or duplicate date")
@@ -252,18 +257,54 @@ def recent_comparison(tenant):
 
 
 def validate(owner, env, tenant, scratch, result):
-    original=json.loads((scratch/"v16-chart.json").read_text())
-    expected=[(p["date"],p["qty"]) for p in original["points"]]
-    disabled,ms=chart(env,scratch,False)
-    require(disabled==expected,"updated Go fallback differs from deployed chart")
+    days=sql(tenant,"""select substring(date,1,10) as day from health.metric_points
+        union select date from health.daily_scores union select substring(hour,1,10) from health.hourly_metrics
+        order by 1""").splitlines()
+    actual_days=sql(tenant,"select date from health.hdbt_daily_metrics order by date").splitlines()
+    require(actual_days==days,"published calendar differs from source inventory")
+    reference=archive_steps(lambda q:sql(tenant,q),days)
+    # At initial enrollment there is no new withdrawal. Retain a published
+    # daily-only value if the archive no longer has any surviving hourly evidence.
+    previous = json.loads(sql(tenant,"select coalesce(json_agg(json_build_array(date,steps::float8)),'[]') "
+                              "from health.daily_scores where steps is not null"))
+    retained = {day:qty for day,qty in previous if day not in reference}
+    reference.update(retained)
+    result["retained_daily_only"]=len(retained)
+    expected=sorted(reference.items())
+    result["calendar_days"]=len(days)
+    def historical_delta(points):
+        observed=dict(points)
+        common=reference.keys() & observed.keys()
+        return dict(missing=len(reference.keys()-observed.keys()),extra=len(observed.keys()-reference.keys()),
+                    different=sum(reference[k]!=observed[k] for k in common),
+                    largest_absolute_gap=max((abs(reference[k]-observed[k]) for k in common),default=0))
+    legacy={}
+    for label in ("v16-chart","v16-same-journal"):
+        old=json.loads((scratch/(label+".json")).read_text())
+        legacy[label]=historical_delta([(p["date"],p["qty"]) for p in old["points"]])
+    ordinary,ms=chart(env,scratch,"go")
+    legacy["candidate_flags_off"]=historical_delta(ordinary)
+    result["legacy"]=legacy
     result["fallback_all_ms"]=ms
+    saved=json.loads(sql(tenant,"select coalesce(json_agg(json_build_array(date,steps::float8) order by date),'[]') "
+                         "from health.hdbt_daily_metrics where steps is not null"))
+    require([tuple(p) for p in saved]==expected,"shadow values differ from independent oracle before cutover")
     sql(tenant,"update health.hdbt_state set read_enabled=true")
-    live,ms=chart(env,scratch,True)
+    live,ms=chart(env,scratch,"published")
+    require(live==expected,"published chart differs from independent physical-step oracle")
     result["serving_all_ms"]=ms
-    chart(env,scratch,False,"range")
-    old,new=dict(expected),dict(live)
-    delta=sum(old.get(k)!=new.get(k) for k in old.keys()|new.keys())
-    require(delta==0,f"published chart differs from deployed chart on {delta} dates")
+    chart(env,scratch,"go","range")
+    # Both gates explicitly enabled, but this publication is not eligible. Check
+    # the actual Go recovery path under both scan-plan configurations.
+    sql(tenant,"update health.hdbt_state set ready=false")
+    result["raw_all_ms"]={}
+    try:
+        for plan in ("serial","parallel"):
+            raw,latency=chart(dict(env,SERVING_ARCHIVE_PLAN=plan),scratch,"raw")
+            require(raw==expected,"canonical Go fallback differs from independent oracle on "+plan)
+            result["raw_all_ms"][plan]=latency
+    finally:
+        sql(tenant,"update health.hdbt_state set ready=true")
     result["chart_days"]=len(live)
     probe(env,"warm")
     recent=recent_comparison(tenant)
@@ -276,11 +317,11 @@ def validate(owner, env, tenant, scratch, result):
     for phase in ("first","retry"):
         probe(env,phase)
         # With an outstanding source generation, the same URL must serve Go.
-        fallback,_=chart(env,scratch,False)
+        fallback,_=chart(env,scratch,"patch")
         require((fallback==live)==(phase=="retry"),"unexpected corrected step chart")
         status,t=image_once(owner,env,tenant,scratch,image) if image else worker(env)
         require(status=="published","correction was not published")
-        published,ms=chart(env,scratch,True)
+        published,ms=chart(env,scratch,"published")
         require(published==fallback,"published correction differs from fallback")
         live=published
         require(worker(env)[0]=="idle","extra work after checkpoint")
@@ -292,9 +333,13 @@ def validate(owner, env, tenant, scratch, result):
     result["corrections"]=timings
     result["correction_runtime"]="sidecar" if image else "local_locked_dbt"
     sql(tenant,"update health.hdbt_state set read_enabled=false")
-    require(chart(env,scratch,False)[0]==live,"read rollback altered steps")
+    rollback,_=chart(env,scratch,"go")
+    # v16 may choose different cached step cells under a different plan. The
+    # first rollback selects that legacy route; the issued reports remain frozen.
+    result["read_rollback_legacy_differences"]=sum(dict(rollback).get(day)!=qty for day,qty in live)
     sql(tenant,"update health.hdbt_state set shadow_enabled=false")
-    require(worker(env)[0]=="disabled" and chart(env,scratch,False)[0]==live,"worker rollback altered steps")
+    require(worker(env)[0]=="disabled","worker did not stop after rollback")
+    chart(env,scratch,"go")
     for name in ("report_history","report_delivery_attempts"):
         require(sql(owner,f"""select not exists(select from archive_check.{name} saved full join
             (select id,md5(to_jsonb(t)::text) fp from health.{name} t) cur using(id)

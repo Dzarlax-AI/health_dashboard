@@ -15,8 +15,8 @@ daily_steps AS (
     ), cached as (
         select * from {{ ref('hourly_metrics') }} where metric_name='step_count'
         and {{ step_affected_dates_filter('substring(hour,1,10)') }}
-    ), chosen as ({{ physical_step_hours('points','cached') }})
-    {{ daily_step_totals('chosen') }}
+    ), chosen as ({{ physical_step_hours('points','cached', ordered_steps=var('tenant_aggregate_worker', false)) }})
+    {{ daily_step_totals('chosen', ordered_steps=var('tenant_aggregate_worker', false)) }}
 ),
 per_source AS (
     {{ daily_source_rows(ref('hourly_metrics'), affected_dates_filter('SUBSTRING(hour, 1, 10)'), ordered_calorie_sum() if var('tenant_aggregate_worker', false) else 'sum(avg_val)') }}

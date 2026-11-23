@@ -20,7 +20,7 @@ import psycopg2
 from psycopg2.extensions import parse_dsn
 
 PROJECT = Path(__file__).resolve().parents[1]
-FORMULA = "aggregate_serving_v1"
+FORMULA = "aggregate_serving_v2"
 SCHEMA_CHECKSUM = "eb028f02e392ba8798b9615f5c7dc8b97c15c2a17ff2ac82b4427b93b25ad191"
 JOURNAL = "_cache_maintenance_v1"
 POINTS = "metric_name,date,source,qty,quality,health_record_id,origin,units,id,received_at,source_snapshot_at"

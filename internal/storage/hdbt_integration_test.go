@@ -84,14 +84,14 @@ func TestHDBTMutationAndStepsCutover(t *testing.T) {
 	want("select count(*) from hdbt_step_repairs where generation=4", 0)
 	exec("update daily_scores set steps=41 where date=$1", day)
 	exec("update hdbt_state set ready=true,initialized=true,read_enabled=true,formula_id=$1,source_generation=3", hdbtFormula)
-	assertDailyStepSeries(t, db, "", day, DailyStepPoint{day, 41})
+	assertDailyStepSeries(t, db, "", day, DailyStepPoint{day, 0})
 	exec("delete from hdbt_dirty")
 	assertDailyStepSeries(t, db, "", day, DailyStepPoint{day, 72})
 	assertDailyStepSeries(t, db, day, day, DailyStepPoint{day, 41})
 	exec("update hdbt_state set source_generation=2")
-	assertDailyStepSeries(t, db, "", day, DailyStepPoint{day, 41})
+	assertDailyStepSeries(t, db, "", day, DailyStepPoint{day, 0})
 	exec("update hdbt_state set source_generation=3, formula_id='old'")
-	assertDailyStepSeries(t, db, "", day, DailyStepPoint{day, 41})
+	assertDailyStepSeries(t, db, "", day, DailyStepPoint{day, 0})
 	exec("update hdbt_state set formula_id=$1, read_enabled=false", hdbtFormula)
 	assertDailyStepSeries(t, db, "", day, DailyStepPoint{day, 41})
 	exec("update hdbt_state set shadow_enabled=false")
@@ -163,7 +163,7 @@ func TestHDBTStepsRoleIsolation(t *testing.T) {
 	must("create schema " + neighbor)
 	must("create table " + neighbor + ".hdbt_daily_metrics(date text primary key, steps real)")
 	must("grant usage on schema " + local + " to " + role)
-	must("grant select on settings,hdbt_state,hdbt_dirty,hdbt_daily_metrics to " + role)
+	must("grant select on settings,hdbt_state,hdbt_dirty,hdbt_daily_metrics,hdbt_backfill to " + role)
 	state := emptyCacheMaintenanceState()
 	state.CompletedIdentity = CacheMaintenanceIdentity()
 	if _, err := lockCacheMaintenanceRow(ctx, tx); err != nil {
@@ -176,8 +176,9 @@ func TestHDBTStepsRoleIsolation(t *testing.T) {
 	must("update hdbt_state set initialized=true,ready=true,read_enabled=true,source_generation=0,formula_id=$1", hdbtFormula)
 	must("insert into hdbt_daily_metrics(date,steps) values('2026-10-10',72)")
 	must("set local role " + role)
-	read, ok := readHDBTSteps(ctx, tx, "", "2026-10-10", 0)
-	if !ok || len(read) != 1 || read[0] != (DailyStepPoint{"2026-10-10", 72}) {
+	generation := uint64(0)
+	read, ok, readErr := readHDBTSteps(ctx, tx, "2026-10-10", &generation)
+	if readErr != nil || !ok || len(read) != 1 || read[0] != (DailyStepPoint{"2026-10-10", 72}) {
 		t.Fatal("tenant-scoped published series unavailable")
 	}
 	for _, statement := range []string{"select steps from " + neighbor + ".hdbt_daily_metrics", "insert into " + neighbor + ".hdbt_daily_metrics values('2026-10-10',42)"} {

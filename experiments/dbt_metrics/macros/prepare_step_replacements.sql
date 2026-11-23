@@ -12,7 +12,7 @@
             select * from {{ state }} where avg_val is not null and {{ affected_dates_filter('substring(hour,1,10)') }}
         ), signatures as ({{ step_capture_signature('points') }}), unproven as (
             select c.* from cached c where not exists(select from signatures t where (c.hour,c.proven_input)=(t.hour,t.signature))
-        ), frozen as ({{ incomplete_step_hours('points','unproven') }}),
+        ), frozen as ({{ incomplete_step_hours('points','unproven', ordered_steps=var('tenant_aggregate_worker', false)) }}),
         edits as (
             select distinct substring(n.date,1,13)||':00' as hour
             from {{ incoming }} n left join {{ this }} old using(metric_name,date,source)

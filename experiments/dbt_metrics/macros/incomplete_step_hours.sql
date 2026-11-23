@@ -1,4 +1,4 @@
-{% macro incomplete_step_hours(points, cached) %}
+{% macro incomplete_step_hours(points, cached, ordered_steps=false) %}
 with alias_cells as (
     select distinct substring(date,1,13) as wall_hour,source from {{ points }} where not counted
 ), proof_points as (
@@ -18,7 +18,7 @@ with alias_cells as (
 ), evidence as (
     select substring(minute,1,13)||':00' as hour,source,
            array_agg(hi order by minute) as highs,array_agg(lo order by minute) as lows,
-           count(*) as n,sum(hi)::real as total,min(lo) as low,max(hi) as high
+           count(*) as n,sum(hi{% if ordered_steps %} order by minute collate "C"{% endif %})::real as total,min(lo) as low,max(hi) as high
     from minutes group by substring(minute,1,13),source,proof_mode
 )
 select distinct c.hour from {{ cached }} c
@@ -29,7 +29,7 @@ where not exists(select from {{ points }} z where c.avg_val=0 and z.source=c.sou
     coalesce((e.n=c.sample_count and (e.total,e.low,e.high)=(c.avg_val,c.min_val,c.max_val)),false)
     or (e.n>c.sample_count and exists (
         select from generate_series(1,(e.n-c.sample_count+1)::int) s(i)
-        where (select sum(v)::real from unnest(e.highs[s.i:s.i+c.sample_count-1]) v)=c.avg_val
+        where (select sum(v{% if ordered_steps %} order by ordinal{% endif %})::real from unnest(e.highs[s.i:s.i+c.sample_count-1]) {% if ordered_steps %}with ordinality as slice(v,ordinal){% else %}v{% endif %})=c.avg_val
           and (select min(v) from unnest(e.lows[s.i:s.i+c.sample_count-1]) v)=c.min_val
           and (select max(v) from unnest(e.highs[s.i:s.i+c.sample_count-1]) v)=c.max_val
     ))
