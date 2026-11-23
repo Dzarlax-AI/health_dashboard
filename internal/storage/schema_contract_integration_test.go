@@ -53,6 +53,11 @@ func TestEnsureSchemaContractIgnoresImportHousekeepingFailure(t *testing.T) {
 		VALUES('fixture','fixture',NOW()-INTERVAL '3 days',NOW()-INTERVAL '3 days','running',NOW()-INTERVAL '3 days')`); err != nil {
 		t.Fatal(err)
 	}
+	defer func() {
+		if _, err := db.pool.Exec(ctx, `DROP TRIGGER reject_stage_cleanup ON import_stage_points; DROP FUNCTION reject_stage_cleanup()`); err != nil {
+			t.Errorf("remove fixture trigger: %v", err)
+		}
+	}()
 	if err := db.EnsureSchemaContractContext(ctx); err != nil {
 		t.Fatalf("contract migration was coupled to best-effort import cleanup: %v", err)
 	}
