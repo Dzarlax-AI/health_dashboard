@@ -13,7 +13,11 @@ async function serveStepPage(page: Page) {
   await page.route("**/metrics/step_count", (route) => route.fulfill({
     contentType: "text/html",
     body: `<script>
-      class Chart { static register() {} destroy() {} }
+      class Chart {
+        static register() {}
+        constructor(_context, config) { window.lastChartConfig = config; }
+        destroy() {}
+      }
       function $(id) { return document.getElementById(id); }
       function todayStr() { return '${today}'; }
       function daysAgoStr() { return '2025-12-17'; }
@@ -99,4 +103,24 @@ test("a delayed default result cannot replace the All chart", async ({ page }) =
   await page.evaluate("window.firstChartLoad");
   await expect(page.locator("#from")).toHaveValue("2024-01-01");
   await expect(page.locator("#stats-row")).toContainText("Avg12");
+});
+
+test("All renders every daily step bar without animating a multi-year series", async ({ page }) => {
+  const total = 2048;
+  const points = Array.from({ length: total }, (_, i) => ({
+    date: new Date(Date.parse(today) - (total - 1 - i) * 86400000).toISOString().slice(0, 10),
+    qty: i,
+  }));
+  await serveStepPage(page);
+  await page.route("**/fragments/step-daily-series?*", (route) => {
+    const from = new URL(route.request().url()).searchParams.get("from");
+    return route.fulfill({ json: { bucket: "day", points: from ? points.filter((p) => p.date >= from) : points } });
+  });
+  await page.goto("/metrics/step_count");
+  await page.evaluate("window.firstChartLoad");
+  expect(await page.evaluate("Object.hasOwn(window.lastChartConfig.options, 'animation')")).toBe(false);
+  await page.locator('button[onclick="applyPresetAll()"]').click();
+  await expect(page.locator("#stats-row")).toContainText(`Points${total}`);
+  expect(await page.evaluate("window.lastChartConfig.data.datasets[0].data.length")).toBe(total);
+  expect(await page.evaluate("window.lastChartConfig.options.animation")).toBe(false);
 });

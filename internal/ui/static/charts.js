@@ -704,7 +704,7 @@ function loadMetricChart(canvasId, metric, from, to, bucket, agg, opts) {
         sr.innerHTML = chip('Points', pts.length, '') + chip('Avg', fmt2(avgV), '') + chip('Min', fmt2(Math.min.apply(null,vals)), '') + chip('Max', fmt2(Math.max.apply(null,vals)), '');
       }
 
-      _createChart(canvasId, {
+      var config = {
         type: isBar ? 'bar' : 'line',
         data: {
           labels: labels,
@@ -739,7 +739,11 @@ function loadMetricChart(canvasId, metric, from, to, bucket, agg, opts) {
             y: { beginAtZero: isBar, ticks:{ color:'#78716c', font:{size:11} }, grid:{ color:'#f0efed' } }
           }
         }
-      });
+      };
+      if (metric === 'step_count' && data.bucket === 'day' && pts.length > 365) {
+        config.options.animation = false;
+      }
+      _createChart(canvasId, config);
     })
     .catch(function(e) {
       if (metricChartRequests[canvasId] !== request) return;
