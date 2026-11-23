@@ -10,6 +10,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -136,6 +138,40 @@ func TestServingArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
+	if phase == "dashboard" {
+		ui.New(mgr, nil, false).Register(mux)
+		var elapsed []float64
+		for {
+			req := httptest.NewRequest(http.MethodGet, "/api/dashboard", nil)
+			req.Header.Set("X-API-Key", key)
+			w := httptest.NewRecorder()
+			start := time.Now()
+			mux.ServeHTTP(w, req)
+			elapsed = append(elapsed, float64(time.Since(start).Microseconds())/1000)
+			var dashboard storage.DashboardResponse
+			if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &dashboard) != nil || dashboard.CacheCompletedAt == "" {
+				t.Fatal("dashboard unavailable")
+			}
+			if len(elapsed) == 1 {
+				if err := os.WriteFile(filepath.Join(scratch, "dashboard-ready"), nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(scratch, "dashboard-stop")); err == nil {
+				break
+			}
+			time.Sleep(time.Second)
+		}
+		sort.Float64s(elapsed)
+		result, err := json.Marshal(map[string]any{"successful": len(elapsed), "median_ms": elapsed[len(elapsed)/2], "max_ms": elapsed[len(elapsed)-1]})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(scratch, "dashboard.json"), result, 0600); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
 	if phase == "chart" || phase == "range" {
 		ui.New(mgr, nil, false).Register(mux)
 		var end string
@@ -235,4 +271,8 @@ func TestServingArchive(t *testing.T) {
 	if err = pool.QueryRow(ctx, "select processing_status='complete' from health_records where id=$1", receipt.ID).Scan(&complete); err != nil || !complete {
 		t.Fatal("missing completed receipt")
 	}
+	if err = os.WriteFile(filepath.Join(scratch, phase+"-receipt"), []byte(strconv.FormatInt(receipt.ID, 10)), 0600); err != nil {
+		t.Fatal(err)
+	}
+
 }

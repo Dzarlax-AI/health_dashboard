@@ -1,4 +1,5 @@
 """Exercise release migration, tenant worker, and real chart on one trusted local archive."""
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -271,20 +272,25 @@ def validate(owner, env, tenant, scratch, result):
     result["calories"]=calorie_comparison(tenant)
     require(result["calories"]["ordered_mismatches"]==0,"ordered calorie oracle mismatch")
     timings=[]
+    image=owner.get("HEALTH_ARCHIVE_WORKER_IMAGE")
     for phase in ("first","retry"):
         probe(env,phase)
         # With an outstanding source generation, the same URL must serve Go.
         fallback,_=chart(env,scratch,False)
         require((fallback==live)==(phase=="retry"),"unexpected corrected step chart")
-        image=owner.get("HEALTH_ARCHIVE_WORKER_IMAGE")
         status,t=image_once(owner,env,tenant,scratch,image) if image else worker(env)
         require(status=="published","correction was not published")
         published,ms=chart(env,scratch,True)
         require(published==fallback,"published correction differs from fallback")
         live=published
         require(worker(env)[0]=="idle","extra work after checkpoint")
-        timings.append({"receipt":phase,"worker_seconds":t,"served_ms":ms})
+        receipt=int((scratch/(phase+"-receipt")).read_text())
+        lag=float(sql(tenant,f"select extract(epoch from s.published_at-r.received_at) from health.hdbt_state s "
+                             f"cross join health.health_records r where s.singleton and r.id={receipt}"))
+        require(lag>=0,"invalid receipt-to-checkpoint timing")
+        timings.append({"receipt":phase,"worker_seconds":t,"served_ms":ms,"accepted_to_published_seconds":round(lag,3)})
     result["corrections"]=timings
+    result["correction_runtime"]="sidecar" if image else "local_locked_dbt"
     sql(tenant,"update health.hdbt_state set read_enabled=false")
     require(chart(env,scratch,False)[0]==live,"read rollback altered steps")
     sql(tenant,"update health.hdbt_state set shadow_enabled=false")
@@ -301,6 +307,22 @@ def validate(owner, env, tenant, scratch, result):
     print(json.dumps(result,sort_keys=True),flush=True)
 
 
+@contextmanager
+def dashboards(env,scratch):
+    args=["go","test","-timeout=3h","-count=1","./experiments/dbt_metrics/servingarchive","-run","^TestServingArchive$"]
+    p=subprocess.Popen(args,env=dict(env,SERVING_ARCHIVE_PHASE="dashboard"),cwd=ROOT,
+                        stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    try:
+        end=time.monotonic()+120
+        while not (scratch/"dashboard-ready").exists():
+            require(p.poll() is None and time.monotonic()<end,"dashboard unavailable")
+            time.sleep(.3)
+        yield
+    finally:
+        (scratch/"dashboard-stop").touch()
+        require(p.wait(timeout=45)==0,"dashboard probe failed")
+
+
 def run_candidate(owner,env,tenant,scratch):
     probe(env,"migrate")
     require(sql(tenant,"select schema_contract_version from health.__tenant_identity")=="17","missing v17")
@@ -308,8 +330,11 @@ def run_candidate(owner,env,tenant,scratch):
             "shadow unexpectedly enabled on migration")
     probe(env,"journal")
     require(worker(env)[0]=="disabled","worker enabled before opt-in")
-    result={"bootstrap":bootstrap(owner,env,tenant)}
-    validate(owner,env,tenant,scratch,result)
+    with dashboards(env,scratch):
+        result={"bootstrap":bootstrap(owner,env,tenant)}
+        validate(owner,env,tenant,scratch,result)
+    result["dashboard"]=json.loads((scratch/"dashboard.json").read_text())
+    print(json.dumps(result,sort_keys=True),flush=True)
 
 
 def main():

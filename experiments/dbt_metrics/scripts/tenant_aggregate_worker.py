@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Maintain published hourly and daily dbt aggregates for one enrolled Health tenant."""
+
 import argparse
 from datetime import date, timedelta
 import json
@@ -23,12 +24,15 @@ FORMULA = "aggregate_serving_v1"
 SCHEMA_CHECKSUM = "eb028f02e392ba8798b9615f5c7dc8b97c15c2a17ff2ac82b4427b93b25ad191"
 JOURNAL = "_cache_maintenance_v1"
 POINTS = "metric_name,date,source,qty,quality,health_record_id,origin,units,id,received_at,source_snapshot_at"
-DAILY = ("date,hrv_avg,rhr_avg,sleep_total,sleep_deep,sleep_rem,sleep_core,sleep_awake,"
-         "sleep_unspecified,steps,calories,exercise_min,spo2_avg,vo2_avg,resp_avg")
-HOURLY = "metric_name,hour,source,avg_val,min_val,max_val,sample_count"
+DAILY = (
+    "date,hrv_avg,rhr_avg,sleep_total,sleep_deep,sleep_rem,sleep_core,sleep_awake,"
+    "sleep_unspecified,steps,calories,exercise_min,spo2_avg,vo2_avg,resp_avg"
+)
 STEPS = "('step_count','__healthkit_archive_sample:step_count')"
-WORK = ("hdbt_i_publish,hdbt_i_calendar,hdbt_i_points,hdbt_i_records,hdbt_i_repairs,"
-        "hdbt_w_points,hdbt_w_step,hdbt_w_hourly,hdbt_w_daily")
+WORK = (
+    "hdbt_i_publish,hdbt_i_calendar,hdbt_i_points,hdbt_i_records,hdbt_i_repairs,"
+    "hdbt_w_points,hdbt_w_step,hdbt_w_hourly,hdbt_w_daily"
+)
 STOP = threading.Event()
 active_connection = None
 
@@ -50,8 +54,11 @@ class WorkerError(Exception):
 def configuration():
     schema = os.environ["HEALTH_DBT_TENANT_SCHEMA"]
     tenant = uuid.UUID(os.environ["HEALTH_DBT_TENANT_ID"])
-    if not re.fullmatch(r"[a-z][a-z0-9_]{0,62}", schema) or schema.startswith("pg_") or schema in (
-            "public", "information_schema", "health_registry"):
+    if (
+        not re.fullmatch(r"[a-z][a-z0-9_]{0,62}", schema)
+        or schema.startswith("pg_")
+        or schema in ("public", "information_schema", "health_registry")
+    ):
         raise WorkerError("configuration")
     path = Path(os.environ["HEALTH_DBT_TENANT_DSN_FILE"])
     if not path.is_absolute() or not path.is_file() or path.stat().st_size > 8192:
@@ -60,8 +67,11 @@ def configuration():
         raise WorkerError("writable_secret")
     config = parse_dsn(path.read_text().strip())
     allowed = {"host", "port", "user", "dbname", "password", "sslmode", "sslrootcert", "sslcert", "sslkey"}
-    if (set(config) - allowed or not all(config.get(k) for k in ("host", "user", "dbname", "password"))
-            or config["user"] != "health_t_" + tenant.hex):
+    if (
+        set(config) - allowed
+        or not all(config.get(k) for k in ("host", "user", "dbname", "password"))
+        or config["user"] != "health_t_" + tenant.hex
+    ):
         raise WorkerError("credential_scope")
     config["port"] = int(config.get("port", "5432"))
     batch = int(os.getenv("HEALTH_DBT_BATCH_DAYS", "16"))
@@ -71,7 +81,8 @@ def configuration():
 
 
 def authorize(cur, schema, tenant):
-    cur.execute("""select exists(select from pg_roles r join pg_namespace n on r.oid=n.nspowner
+    cur.execute(
+        """select exists(select from pg_roles r join pg_namespace n on r.oid=n.nspowner
         join pg_class m on m.relnamespace=n.oid and m.relowner=r.oid and m.relname='__tenant_identity'
         where n.nspname=%s and m.relkind='r' and r.rolname=current_user and session_user=current_user
         and r.rolcanlogin and not (r.rolsuper or r.rolcreatedb or r.rolcreaterole or r.rolbypassrls or r.rolreplication)
@@ -87,12 +98,15 @@ def authorize(cur, schema, tenant):
         and not exists(select from aclexplode(coalesce(n.nspacl,acldefault('n',r.oid))) a where a.grantee<>r.oid)
         and not exists(select from pg_namespace peer join pg_class marker on marker.relnamespace=peer.oid
             where marker.relname='__tenant_identity' and peer.oid<>n.oid and has_schema_privilege(peer.oid,'USAGE')))""",
-                (schema,))
+        (schema,),
+    )
     if not cur.fetchone()[0]:
         raise WorkerError("tenant_acl")
     cur.execute(f'set search_path to pg_catalog,"{schema}"')
-    cur.execute("select count(*)=1 and bool_and(singleton and tenant_id=%s::uuid and schema_contract_version=17 and schema_contract_checksum=%s) from __tenant_identity",
-                (tenant, SCHEMA_CHECKSUM))
+    cur.execute(
+        "select count(*)=1 and bool_and(singleton and tenant_id=%s::uuid and schema_contract_version=17 and schema_contract_checksum=%s) from __tenant_identity",
+        (tenant, SCHEMA_CHECKSUM),
+    )
     if not cur.fetchone()[0]:
         raise WorkerError("tenant_identity")
 
@@ -105,7 +119,12 @@ def watermark(cur, lock=False):
         return None
     state = row[0]
     number = state.get("generation") if isinstance(state, dict) else None
-    if not isinstance(state, dict) or state.get("version") != 1 or type(number) != int or not 0 <= number < 2**64:
+    if (
+        not isinstance(state, dict)
+        or state.get("version") != 1
+        or type(number) is not int
+        or not 0 <= number < 2**64
+    ):
         raise WorkerError("journal_format")
     return number
 
@@ -113,14 +132,27 @@ def watermark(cur, lock=False):
 def initialize(cur):
     # Raw source and legacy-only dates both participate. This inventory is made
     # once per enrollment or formula change; normal syncs read only the dirty queue.
-    cur.execute("""truncate hdbt_backfill;
-        insert into hdbt_backfill select distinct substring(date,1,10) from metric_points
-          union select distinct substring(hour,1,10) from hourly_metrics union select date from daily_scores
+    cur.execute(
+        """truncate hdbt_backfill;
+        insert into hdbt_backfill
+        with recursive point_days(day) as (
+            (select substring(date,1,10) from metric_points order by 1 limit 1)
+            union all select following.day from point_days p cross join lateral
+                (select substring(date,1,10) as day from metric_points
+                 where substring(date,1,10)>p.day order by 1 limit 1) following
+        ), hour_days(day) as (
+            (select substring(hour,1,10) from hourly_metrics order by 1 limit 1)
+            union all select following.day from hour_days h cross join lateral
+                (select substring(hour,1,10) as day from hourly_metrics
+                 where substring(hour,1,10)>h.day order by 1 limit 1) following
+        )
+        select day from point_days union select day from hour_days union select date from daily_scores
           union select date from hdbt_daily_metrics;
-        truncate hdbt_step_state,hdbt_step_inputs,hdbt_hourly_metrics,hdbt_daily_metrics;
         update hdbt_state set initialized=true,ready=false,formula_id=%s,source_generation=null,
             bootstrap_cursor='',bootstrap_end=coalesce((select max(date) from hdbt_backfill),''),
-            last_status='bootstrap',heartbeat_at=clock_timestamp()""", (FORMULA,))
+            last_status='bootstrap',heartbeat_at=clock_timestamp()""",
+        (FORMULA,),
+    )
 
 
 def capture(cur, batch, attempt):
@@ -137,70 +169,120 @@ def capture(cur, batch, attempt):
         raise WorkerError("journal_regressed")
     if not initialized or formula != FORMULA:
         initialize(cur)
-    cur.execute("""select date from (select date from hdbt_dirty union select date from hdbt_backfill) pending
-                   order by date limit %s""", (batch,))
+    cur.execute(
+        """select date from (
+            (select date,0 as priority from hdbt_dirty order by date limit %s) union all
+            (select date,1 as priority from hdbt_backfill order by date limit %s)
+        ) pending group by date order by min(priority),date limit %s""",
+        (batch, batch, batch),
+    )
     core = [r[0] for r in cur.fetchall()]
     if not core:
         if ready and generation == checkpoint:
-            cur.execute("update hdbt_state set last_status='idle',heartbeat_at=now() where singleton and heartbeat_at<now()-interval '1 minute'")
+            cur.execute(
+                "update hdbt_state set last_status='idle',heartbeat_at=now() where singleton and heartbeat_at<now()-interval '1 minute'"
+            )
             return "idle"
         return generation, epoch, []
     days = [date.fromisoformat(d) for d in core]
     neighborhood = sorted({(d + timedelta(days=offset)).isoformat() for d in days for offset in range(-2, 3)})
     halo = sorted({(d + timedelta(days=offset)).isoformat() for d in days for offset in range(-4, 5)})
-    cur.execute("""insert into hdbt_work_lease values(true,%s::uuid)
-        on conflict(singleton) do update set attempt=excluded.attempt""", (attempt,))
+    cur.execute(
+        """insert into hdbt_work_lease values(true,%s::uuid)
+        on conflict(singleton) do update set attempt=excluded.attempt""",
+        (attempt,),
+    )
     cur.execute("truncate " + WORK)
     cur.execute("insert into hdbt_i_publish select unnest(%s::text[])", (core,))
-    cur.execute("""insert into hdbt_i_calendar
+    cur.execute(
+        """insert into hdbt_i_calendar
         select date from hdbt_i_publish union select distinct substring(date,1,10) from metric_points
             where substring(date,1,10)=any(%s) union select date from daily_scores where date=any(%s)
             union select distinct substring(hour,1,10) from hourly_metrics where substring(hour,1,10)=any(%s)
             union select date from hdbt_daily_metrics where date=any(%s)""",
-                (neighborhood, neighborhood, neighborhood, neighborhood))
-    cur.execute(f"""insert into hdbt_i_points select {POINTS} from metric_points
+        (neighborhood, neighborhood, neighborhood, neighborhood),
+    )
+    cur.execute(
+        f"""insert into hdbt_i_points select {POINTS} from metric_points
         where substring(date,1,10)=any(%s) and (metric_name in {STEPS} or substring(date,1,10) in
-            (select date from hdbt_i_calendar))""", (halo,))
+            (select date from hdbt_i_calendar))""",
+        (halo,),
+    )
     cur.execute(f"""insert into hdbt_w_points select * from hdbt_step_inputs
-            where substring(date,1,10) in (select date from hdbt_i_calendar);
+            where substring(date,1,10) in (select date from hdbt_i_calendar except select date from hdbt_backfill);
         insert into hdbt_w_points select * from hdbt_i_points where substring(date,1,10) not in
             (select date from hdbt_i_calendar);
         insert into hdbt_i_records select id,content_type from health_records where id in
             (select health_record_id from hdbt_i_points union select health_record_id from hdbt_w_points);
         insert into hdbt_i_repairs select point_date,source from hdbt_step_repairs
             where substring(point_date,1,10) in (select date from hdbt_i_calendar);
-        insert into hdbt_w_daily select * from hdbt_daily_metrics where date in (select date from hdbt_i_calendar);
+        insert into hdbt_w_daily select * from hdbt_daily_metrics
+            where date in (select date from hdbt_i_calendar except select date from hdbt_backfill);
         insert into hdbt_w_daily select {DAILY} from daily_scores where date in (select date from hdbt_i_calendar)
             on conflict do nothing;
         insert into hdbt_w_step select * from hdbt_step_state
-            where substring(hour,1,10) in (select date from hdbt_i_calendar);
+            where substring(hour,1,10) in (select date from hdbt_i_calendar except select date from hdbt_backfill);
         insert into hdbt_w_step select hour,source,avg_val,min_val,max_val,sample_count,false,null
             from hourly_metrics where metric_name='step_count' and substring(hour,1,10) in
-                (select date from hdbt_i_calendar except select date from hdbt_daily_metrics)
+                (select date from hdbt_i_calendar except
+                    (select date from hdbt_daily_metrics except select date from hdbt_backfill))
             on conflict do nothing;""")
     return generation, epoch, core
 
 
 def build(config, schema, dates, attempt):
-    variables = dict(tenant_aggregate_worker=True, semantic_source_schema=schema,
-                     verified_step_withdrawals=True, affected_dates=dates, tenant_aggregate_attempt=attempt)
-    profile = dict(config, type="postgres", schema=schema, threads=1, search_path=f"{schema},pg_catalog",
-                   password="{{ env_var('DBT_ENV_SECRET_TENANT_PASSWORD') }}")
+    variables = dict(
+        tenant_aggregate_worker=True,
+        semantic_source_schema=schema,
+        verified_step_withdrawals=True,
+        affected_dates=dates,
+        tenant_aggregate_attempt=attempt,
+    )
+    profile = dict(
+        config,
+        type="postgres",
+        schema=schema,
+        threads=1,
+        search_path=f"{schema},pg_catalog",
+        password="{{ env_var('DBT_ENV_SECRET_TENANT_PASSWORD') }}",
+    )
     with tempfile.TemporaryDirectory(prefix="health-dbt-") as temp:
         path = Path(temp)
-        (path / "profiles.yml").write_text(json.dumps({"health_dbt_metrics_pilot":
-            {"target": "tenant", "outputs": {"tenant": profile}}}))
+        (path / "profiles.yml").write_text(
+            json.dumps({"health_dbt_metrics_pilot": {"target": "tenant", "outputs": {"tenant": profile}}})
+        )
         env = {k: os.environ[k] for k in ("PATH", "LD_LIBRARY_PATH", "LANG", "TMPDIR") if k in os.environ}
-        env.update(HOME=temp, DBT_SEND_ANONYMOUS_USAGE_STATS="false",
-                   DBT_ENV_SECRET_TENANT_PASSWORD=config["password"])
-        proc = subprocess.Popen(["dbt", "build", "--profiles-dir", temp, "--project-dir", str(PROJECT),
-            "--target-path", str(path / "target"), "--log-path", str(path / "logs"), "--select", "+daily_metrics",
-            "--vars", json.dumps(variables)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True)
+        env.update(
+            HOME=temp,
+            DBT_SEND_ANONYMOUS_USAGE_STATS="false",
+            DBT_ENV_SECRET_TENANT_PASSWORD=config["password"],
+        )
+        proc = subprocess.Popen(
+            [
+                "dbt",
+                "build",
+                "--profiles-dir",
+                temp,
+                "--project-dir",
+                str(PROJECT),
+                "--target-path",
+                str(path / "target"),
+                "--log-path",
+                str(path / "logs"),
+                "--select",
+                "+daily_metrics",
+                "--vars",
+                json.dumps(variables),
+            ],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
         try:
             deadline = time.monotonic() + 1800
             while proc.poll() is None:
-                if STOP.wait(.25) or time.monotonic() >= deadline:
+                if STOP.wait(0.25) or time.monotonic() >= deadline:
                     raise WorkerError("build_interrupted")
             if proc.returncode:
                 raise WorkerError("dbt_build")
@@ -214,59 +296,81 @@ def build(config, schema, dates, attempt):
                     proc.wait()
         results = json.loads((path / "target/run_results.json").read_text())["results"]
         models = {r["unique_id"].split(".")[-1] for r in results if r["status"] == "success"}
-        if models != {"hourly_metrics","daily_metrics","step_hour_state","retained_metric_points"} or not any(
-                r["status"] == "pass" for r in results):
+        if models != {
+            "hourly_metrics",
+            "daily_metrics",
+            "step_hour_state",
+            "retained_metric_points",
+        } or not any(r["status"] == "pass" for r in results):
             raise WorkerError("dbt_receipt")
 
 
 def publish(cur, generation, epoch, dates):
     if watermark(cur, lock=True) != generation:
         return "stale"
-    cur.execute("""select shadow_enabled and initialized and formula_id=%s and enrollment_epoch=%s
-        from hdbt_state where singleton for update""", (FORMULA, epoch))
+    cur.execute(
+        """select shadow_enabled and initialized and formula_id=%s and enrollment_epoch=%s
+        from hdbt_state where singleton for update""",
+        (FORMULA, epoch),
+    )
     if not cur.fetchone()[0]:
         return "stale"
     if dates:
-        cur.execute("""select exists(select date from hdbt_i_calendar except select date from hdbt_w_daily)""")
+        cur.execute(
+            """select exists(select date from hdbt_i_calendar except select date from hdbt_w_daily)"""
+        )
         if cur.fetchone()[0]:
             raise WorkerError("incomplete_batch")
-        for target, source, key in (("hdbt_hourly_metrics","hdbt_w_hourly","substring(hour,1,10)"),
-                                    ("hdbt_daily_metrics","hdbt_w_daily","date"),
-                                    ("hdbt_step_state","hdbt_w_step","substring(hour,1,10)")):
+        for target, source, key in (
+            ("hdbt_hourly_metrics", "hdbt_w_hourly", "substring(hour,1,10)"),
+            ("hdbt_daily_metrics", "hdbt_w_daily", "date"),
+            ("hdbt_step_state", "hdbt_w_step", "substring(hour,1,10)"),
+        ):
             cur.execute(f"""delete from {target} where {key} in (select date from hdbt_i_calendar);
                 insert into {target} select * from {source} where {key} in (select date from hdbt_i_calendar)""")
-        cur.execute(f"""delete from hdbt_step_inputs where substring(date,1,10) in (select date from hdbt_i_calendar);
+        cur.execute(
+            f"""delete from hdbt_step_inputs where substring(date,1,10) in (select date from hdbt_i_calendar);
             insert into hdbt_step_inputs select * from hdbt_i_points where metric_name in {STEPS}
                 and substring(date,1,10) in (select date from hdbt_i_calendar);
             delete from hdbt_step_repairs where generation<=%s and substring(point_date,1,10) in (select date from hdbt_i_calendar);
             delete from hdbt_dirty where generation<=%s and date in (select date from hdbt_i_calendar);
-            delete from hdbt_backfill where date in (select date from hdbt_i_calendar)""", (generation, generation))
+            delete from hdbt_backfill where date in (select date from hdbt_i_calendar)""",
+            (generation, generation),
+        )
     cur.execute("""select not exists(select from hdbt_dirty) and not exists(select from hdbt_backfill)""")
     ready = cur.fetchone()[0]
-    cur.execute("""update hdbt_state set ready=%s, source_generation=case when %s then %s else source_generation end,
+    cur.execute(
+        """update hdbt_state set ready=%s, source_generation=case when %s then %s else source_generation end,
         bootstrap_cursor=greatest(bootstrap_cursor,%s),published_at=clock_timestamp(),heartbeat_at=clock_timestamp(),
         last_status=case when %s then 'published' else 'building' end where singleton""",
-                (ready, ready, generation, max(dates, default=""), ready))
+        (ready, ready, generation, max(dates, default=""), ready),
+    )
     return "published" if ready else "building"
 
 
 def once(schema, tenant, config, batch):
     global active_connection
     authorized = False
-    conn = psycopg2.connect(**config, connect_timeout=5, application_name="health-dbt-worker",
-                            options="-c search_path=pg_catalog -c lock_timeout=5s -c statement_timeout=10min")
+    conn = psycopg2.connect(
+        **config,
+        connect_timeout=5,
+        application_name="health-dbt-worker",
+        options="-c search_path=pg_catalog -c lock_timeout=5s -c statement_timeout=10min",
+    )
     active_connection = conn
     try:
         with conn, conn.cursor() as cur:
             authorize(cur, schema, tenant)
             authorized = True
-            cur.execute("select pg_try_advisory_lock(hashtextextended('health.dbt.worker:'||%s,0))", (tenant,))
+            cur.execute(
+                "select pg_try_advisory_lock(hashtextextended('health.dbt.worker:'||%s,0))", (tenant,)
+            )
             if not cur.fetchone()[0]:
                 return "busy"
         with conn, conn.cursor() as cur:
             attempt = str(uuid.uuid4())
             candidate = capture(cur, batch, attempt)
-        if isinstance(candidate,str):
+        if isinstance(candidate, str):
             return candidate
         generation, epoch, dates = candidate
         if dates:
@@ -276,15 +380,19 @@ def once(schema, tenant, config, batch):
         with conn, conn.cursor() as cur:
             result = publish(cur, generation, epoch, dates)
             if result == "stale":
-                cur.execute("update hdbt_state set heartbeat_at=now(),last_status='stale' where singleton and shadow_enabled")
+                cur.execute(
+                    "update hdbt_state set heartbeat_at=now(),last_status='stale' where singleton and shadow_enabled"
+                )
             return result
     except Exception as error:
         if authorized and not STOP.is_set() and not conn.closed:
             try:
                 with conn, conn.cursor() as cur:
                     category = str(error) if isinstance(error, WorkerError) else "database_error"
-                    cur.execute("update hdbt_state set heartbeat_at=now(),last_status=%s where singleton and shadow_enabled",
-                                (category,))
+                    cur.execute(
+                        "update hdbt_state set heartbeat_at=now(),last_status=%s where singleton and shadow_enabled",
+                        (category,),
+                    )
             except psycopg2.Error:
                 pass
         raise
@@ -316,7 +424,7 @@ def main():
         print(json.dumps({"status": result, "consecutive_failures": failures}), flush=True)
         if args.once:
             return int(bool(failures))
-        delay = min(300, 5 * 2**failures) if failures else (1 if result=="building" else 10)
+        delay = min(300, 5 * 2**failures) if failures else (1 if result == "building" else 10)
         STOP.wait(delay)
     return 0
 

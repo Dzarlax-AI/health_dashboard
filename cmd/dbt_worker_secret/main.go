@@ -63,13 +63,17 @@ func prepare(ctx context.Context, schema, id, out string) error {
 	if err != nil {
 		return errors.New("unable to derive registered credential version")
 	}
-	db, closeTenant, err := tenants.OpenReadOnlyTenant(ctx, cfg, schema)
+	db, err := storage.NewRestrictedTenant(ctx, cfg.TenantDSNBase, user.DBRole, password, schema)
 	if err != nil {
 		return errors.New("tenant contract verification failed")
 	}
-	defer closeTenant()
+	defer db.Close()
 	if err := db.AssertIdentity(ctx, user.DBRole, schema); err != nil {
 		return errors.New("tenant identity verification failed")
+	}
+	marker, err := db.ReadTenantIdentity(ctx)
+	if err != nil || marker.TenantID != tenantID || marker.SchemaContractVersion != user.SchemaContractVersion || marker.SchemaContractChecksum != user.SchemaContractChecksum {
+		return errors.New("permanent tenant contract does not match active registration")
 	}
 	base.User = url.UserPassword(user.DBRole, password)
 	return writeSecret(out, base.String())
