@@ -93,12 +93,17 @@ func TruncateCurrentSchema(ctx context.Context, pool *pgxpool.Pool) error {
 	defer rows.Close()
 
 	var tables []string
+	var aggregateState string
 	for rows.Next() {
 		var table string
 		if err := rows.Scan(&table); err != nil {
 			return fmt.Errorf("scan schema table: %w", err)
 		}
-		tables = append(tables, pgx.Identifier{schema, table}.Sanitize())
+		name := pgx.Identifier{schema, table}.Sanitize()
+		tables = append(tables, name)
+		if table == "hdbt_state" {
+			aggregateState = name
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate schema tables: %w", err)
@@ -109,6 +114,10 @@ func TruncateCurrentSchema(ctx context.Context, pool *pgxpool.Pool) error {
 	_, err = pool.Exec(ctx, "TRUNCATE "+strings.Join(tables, ", ")+" RESTART IDENTITY CASCADE")
 	if err != nil {
 		return fmt.Errorf("truncate schema tables: %w", err)
+	}
+	if aggregateState != "" {
+		_, err = pool.Exec(ctx, "insert into "+aggregateState+"(singleton) values(true)")
+		return err
 	}
 	return nil
 }

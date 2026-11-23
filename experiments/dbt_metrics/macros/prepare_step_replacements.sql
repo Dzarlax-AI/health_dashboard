@@ -1,6 +1,6 @@
 {% macro prepare_step_replacements(after_merge=false) %}
 {% if is_incremental() %}
-    {% set state = adapter.get_relation(database=this.database,schema=this.schema,identifier='step_hour_state') %}
+    {% set state = adapter.get_relation(database=this.database,schema=this.schema,identifier=('hdbt_w_step' if var('tenant_aggregate_worker', false) else 'step_hour_state')) %}
     {% set old_columns = adapter.get_columns_in_relation(this) | map(attribute='name') | list %}
     {% if state is not none and 'source_snapshot_at' in old_columns and 'proven_input' in (adapter.get_columns_in_relation(state) | map(attribute='name') | list) %}
         {% set incoming = source('source_data','metric_point_changes' if var('aggregate_capture_mode','snapshot') == 'partial' else 'metric_points') %}

@@ -222,6 +222,9 @@ jobs:
           REGISTRY_DATABASE_URL="$REGISTRY_TEST_DSN" \
             "$RUNNER_TEMP/tenant_isolation" --mode verify-db-identities
 
+      - name: Verify dbt journal and chart cutover
+        run: go test ./internal/storage -run "^TestHDBT" -count=1 -timeout=120s -v
+
       - name: Run import and durable-delivery DB lane
         run: make test-db-import
 
@@ -805,9 +808,61 @@ jobs:
             echo "- API contract: \`$API_CONTRACT_VERSION\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
+  dbt-worker:
+    name: Tenant dbt worker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - name: Build and test the worker with an isolated tenant
+        run: |
+          docker build -f Dockerfile.dbt-worker --build-arg BUILD_REVISION="$GITHUB_SHA" -t health-dbt-worker:ci .
+          python3 experiments/dbt_metrics/scripts/check_tenant_aggregate_worker.py --worker-image health-dbt-worker:ci
+      - name: Save tested main image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: docker save health-dbt-worker:ci | gzip > "$RUNNER_TEMP/dbt-worker.tar.gz"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          name: dbt-worker-${{ github.sha }}
+          path: ${{ runner.temp }}/dbt-worker.tar.gz
+          retention-days: 1
+          compression-level: 0
+
+  publish-dbt-worker:
+    name: Publish verified dbt worker
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [compatibility-gate]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+    steps:
+      - name: Load tested worker image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh run download "$GITHUB_RUN_ID" -n "dbt-worker-$GITHUB_SHA" -D "$RUNNER_TEMP"
+          docker load -i "$RUNNER_TEMP/dbt-worker.tar.gz"
+          test "$(docker inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' health-dbt-worker:ci)" = "$GITHUB_SHA"
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Publish full-SHA image and record digest
+        run: |
+          ref="ghcr.io/${GITHUB_REPOSITORY,,}-dbt-worker:$GITHUB_SHA"
+          docker tag health-dbt-worker:ci "$ref"
+          docker push "$ref"
+          docker inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$ref" >> "$GITHUB_STEP_SUMMARY"
+
   compatibility-gate:
     name: Compatibility Gate
     needs:
+      - dbt-worker
       - classify-image-changes
       - build
       - web
@@ -822,6 +877,7 @@ jobs:
       - name: Enforce required CI outcomes
         env:
           REF_NAME: ${{ github.ref }}
+          DBT_WORKER_RESULT: ${{ needs.dbt-worker.result }}
           CLASSIFY_RESULT: ${{ needs.classify-image-changes.result }}
           BUILD_RESULT: ${{ needs.build.result }}
           WEB_RESULT: ${{ needs.web.result }}
@@ -832,7 +888,7 @@ jobs:
           RELEASED_PAIR_RESULT: ${{ needs.released-pair.result }}
         run: |
           set -eu
-          for result in "$CLASSIFY_RESULT" "$BUILD_RESULT" "$WEB_RESULT" "$DB_RESULT" "$CANDIDATE_RESULT"; do
+          for result in "$DBT_WORKER_RESULT" "$CLASSIFY_RESULT" "$BUILD_RESULT" "$WEB_RESULT" "$DB_RESULT" "$CANDIDATE_RESULT"; do
             test "$result" = success
           done
 

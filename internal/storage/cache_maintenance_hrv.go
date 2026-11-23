@@ -32,7 +32,7 @@ func (s *DB) recordCacheDirtyWithHRVRepairsTx(ctx context.Context, tx pgx.Tx, st
 	if err != nil {
 		return err
 	}
-	if err := markCacheDirtyState(&state, dates); err != nil {
+	if err := markAggregateDatesDirty(ctx, tx, &state, dates); err != nil {
 		return err
 	}
 	if err := saveCacheMaintenanceRow(ctx, tx, state); err != nil {
@@ -150,7 +150,7 @@ func (s *DB) reconcileHRVRepairDirty(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		return markCacheDirtyState(state, missing)
+		return markAggregateDatesDirty(ctx, tx, state, missing)
 	})
 	return err
 }

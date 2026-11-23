@@ -1,4 +1,4 @@
-{{ config(materialized='incremental', unique_key=['metric_name','date','source'], incremental_strategy='merge', on_schema_change='append_new_columns',
+{{ config(alias='hdbt_w_points' if var('tenant_aggregate_worker', false) else 'retained_metric_points', materialized='incremental', unique_key=('id' if var('tenant_aggregate_worker', false) else ['metric_name','date','source']), incremental_strategy='merge', on_schema_change='append_new_columns',
           pre_hook=["{{ prepare_step_replacements() }}","{{ prepare_metric_capture() }}"],post_hook="{{ prepare_step_replacements(true) }}") }}
 {% do validate_affected_dates() %}
 {% set mode = var('aggregate_capture_mode', 'snapshot') %}

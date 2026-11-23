@@ -1,0 +1,22 @@
+services:
+  dbt-worker:
+    profiles: [dbt]
+    image: ${HEALTH_DBT_WORKER_IMAGE:?set the verified worker image digest}
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=256m,mode=1777
+    environment:
+      HEALTH_DBT_WORKER_ENABLED: "true"
+      HEALTH_DBT_TENANT_ID: ${HEALTH_DBT_TENANT_ID:?set tenant UUID}
+      HEALTH_DBT_TENANT_SCHEMA: ${HEALTH_DBT_TENANT_SCHEMA:?set tenant schema}
+      HEALTH_DBT_BATCH_DAYS: ${HEALTH_DBT_BATCH_DAYS:-16}
+      HEALTH_DBT_TENANT_DSN_FILE: /run/secrets/dbt_tenant_dsn
+    secrets: [dbt_tenant_dsn]
+    restart: unless-stopped
+    stop_grace_period: 60s
+secrets:
+  dbt_tenant_dsn:
+    file: ${HEALTH_DBT_TENANT_SECRET_PATH:?set tenant DSN file path}

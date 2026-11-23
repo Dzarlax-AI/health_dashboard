@@ -1,4 +1,4 @@
-{{ config(materialized='incremental', incremental_strategy='append', pre_hook="{{ delete_hourly_affected_days() }}") }}
+{{ config(alias='hdbt_w_hourly' if var('tenant_aggregate_worker', false) else 'hourly_metrics', materialized='incremental', incremental_strategy='append', pre_hook="{{ delete_hourly_affected_days() }}") }}
 {% do validate_affected_dates() %}
 
 WITH valid_points AS (

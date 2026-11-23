@@ -1,4 +1,4 @@
-{{ config(materialized='incremental', unique_key=['hour','source'], incremental_strategy='merge',on_schema_change='append_new_columns') }}
+{{ config(alias='hdbt_w_step' if var('tenant_aggregate_worker', false) else 'step_hour_state', materialized='incremental', unique_key=['hour','source'], incremental_strategy='merge',on_schema_change='append_new_columns') }}
 {% do validate_affected_dates() %}
 {% set prior_hours = none %}
 {% if execute and not is_incremental() %}
