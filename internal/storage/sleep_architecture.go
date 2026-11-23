@@ -1,9 +1,13 @@
 package storage
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
-	"sort"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	dbtmetrics "health-receiver/experiments/dbt_metrics"
 )
 
 const (
@@ -91,6 +95,28 @@ type architectureSegment struct {
 // reads one extra start-date before `from` so cross-midnight sleeps
 // ending on `from` are available.
 func (s *DB) LoadSleepArchitectureDays(from, to string) (map[string]SleepArchitectureDay, error) {
+	ctx, cancel := queryCtx()
+	defer cancel()
+	days, err := s.sleepArchitectureRows(ctx, from, to, "select * from architecture")
+	out := map[string]SleepArchitectureDay{}
+	if err != nil {
+		return nil, err
+	}
+	defer days.Close()
+	for days.Next() {
+		var day SleepArchitectureDay
+		if err := days.Scan(&day.Date, &day.Source, &day.AsleepHours, &day.WASOHours, &day.ExplicitWakeBouts, &day.GapInferredWakeBouts, &day.LongestWakeBoutHours, &day.FragmentationIndex, &day.Eligible, &day.Reason, &day.Confidence); err != nil {
+			return nil, err
+		}
+		out[day.Date] = day
+	}
+	if err := days.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *DB) sleepArchitectureRows(ctx context.Context, from, to, projection string, args ...any) (pgx.Rows, error) {
 	fromT, err := time.Parse(isoDate, from)
 	if err != nil {
 		return nil, fmt.Errorf("LoadSleepArchitectureDays: parse from: %w", err)
@@ -104,8 +130,6 @@ func (s *DB) LoadSleepArchitectureDays(from, to string) (map[string]SleepArchite
 	}
 
 	queryFrom := fromT.AddDate(0, 0, -1).Format(isoDate)
-	ctx, cancel := queryCtx()
-	defer cancel()
 	preferred, err := readPreferredSleepSource(ctx, s.pool)
 	if err != nil {
 		return nil, err
@@ -125,291 +149,113 @@ func (s *DB) LoadSleepArchitectureDays(from, to string) (map[string]SleepArchite
 	}
 	defer rows.Close()
 
-	raw := []SleepArchitectureRawSegment{}
+	// Preserve the recorded fixed offset and nanosecond duration of every
+	// interval. The first observation for an end date defines its local midnight.
+	type clockSegment struct {
+		Day    string  `json:"day"`
+		Source string  `json:"source"`
+		Metric string  `json:"metric"`
+		Start  int64   `json:"start_ns"`
+		End    int64   `json:"end_ns"`
+		Hours  float64 `json:"hours"`
+	}
+	origins := map[string]time.Time{}
+	segments := []clockSegment{}
 	for rows.Next() {
 		var r SleepArchitectureRawSegment
 		if err := rows.Scan(&r.Date, &r.MetricName, &r.Source, &r.Hours); err != nil {
-			return nil, fmt.Errorf("LoadSleepArchitectureDays scan: %w", err)
+			return nil, err
 		}
-		raw = append(raw, r)
+		start, err := parseSleepDate(r.Date)
+		if err != nil || r.Source == "" {
+			continue
+		}
+		end := start.Add(time.Duration(r.Hours * float64(time.Hour)))
+		date := end.Format(isoDate)
+		if date < from || date > to {
+			continue
+		}
+		origin, ok := origins[date]
+		if !ok {
+			origin = time.Date(end.Year(), end.Month(), end.Day(), 0, 0, 0, 0, end.Location())
+			origins[date] = origin
+		}
+		segments = append(segments, clockSegment{date, r.Source, r.MetricName, int64(start.Sub(origin)), int64(end.Sub(origin)), end.Sub(start).Hours()})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	rows.Close()
+	payload, err := json.Marshal(segments)
+	if err != nil {
+		return nil, err
+	}
+	query := `with segments as (
+		select r.*,p.ordinal,$2::text as preferred
+		from jsonb_array_elements($1::jsonb) with ordinality p(item,ordinal)
+		cross join lateral jsonb_to_record(p.item) r(day text,source text,metric text,start_ns bigint,end_ns bigint,hours float8)
+	), architecture as (` + dbtmetrics.SleepArchitectureDaysSQL + `) ` + projection
+	return s.pool.Query(ctx, query, append([]any{json.RawMessage(payload), preferred}, args...)...)
+}
 
-	all := computeSleepArchitectureDays(raw, preferred)
-	out := map[string]SleepArchitectureDay{}
-	for date, day := range all {
-		if date >= from && date <= to {
-			out[date] = day
+func (s *DB) LoadSleepArchitectureFeatures(from, to string) (map[string]SleepArchitectureFeatureFields, error) {
+	first, err := time.Parse(isoDate, from)
+	if err != nil {
+		return nil, err
+	}
+	last, err := time.Parse(isoDate, to)
+	if err != nil {
+		return nil, err
+	}
+	if last.Before(first) {
+		return nil, fmt.Errorf("LoadSleepArchitectureFeatures: to %q before from %q", to, from)
+	}
+	// Whole-history backfills normalize segment clocks in bounded batches.
+	// Each batch reads its own 13 preceding days for the first window.
+	const batchDays = 90
+	out := map[string]SleepArchitectureFeatureFields{}
+	for start := first; !start.After(last); start = start.AddDate(0, 0, batchDays) {
+		end := start.AddDate(0, 0, batchDays-1)
+		if end.After(last) {
+			end = last
+		}
+		if err := s.readSleepArchitectureFeatures(start, end, out); err != nil {
+			return nil, err
 		}
 	}
 	return out, nil
 }
 
-// ComputeSleepArchitectureDays computes per-end-date sleep architecture
-// from raw metric segments. It picks one source per date before
-// deriving architecture features.
-func ComputeSleepArchitectureDays(raw []SleepArchitectureRawSegment) map[string]SleepArchitectureDay {
-	return computeSleepArchitectureDays(raw, "")
-}
-
-func computeSleepArchitectureDays(raw []SleepArchitectureRawSegment, preferred string) map[string]SleepArchitectureDay {
-	grouped := map[string][]architectureSegment{}
-	for _, r := range raw {
-		if r.Hours <= 0 || r.Source == "" {
-			continue
-		}
-		start, err := parseSleepDate(r.Date)
-		if err != nil {
-			continue
-		}
-		end := start.Add(time.Duration(r.Hours * float64(time.Hour)))
-		date := end.Format(isoDate)
-		grouped[date] = append(grouped[date], architectureSegment{
-			Metric: r.MetricName,
-			Start:  start,
-			End:    end,
-			Source: r.Source,
-		})
-	}
-
-	out := map[string]SleepArchitectureDay{}
-	for date, segs := range grouped {
-		out[date] = computeSleepArchitectureDay(date, segs, preferred)
-	}
-	return out
-}
-
-func computeSleepArchitectureDay(date string, segs []architectureSegment, preferred string) SleepArchitectureDay {
-	if len(segs) == 0 {
-		return missingArchitectureDay(date, SleepArchitectureReasonMissingSegments)
-	}
-
-	nightAsleep, source := architectureNightAsleepSegments(date, segs, preferred)
-	if source == "" {
-		return missingArchitectureDay(date, SleepArchitectureReasonMissingSegments)
-	}
-
-	var nightStart, nightEnd time.Time
-	for i, s := range nightAsleep {
-		if i == 0 || s.Start.Before(nightStart) {
-			nightStart = s.Start
-		}
-		if i == 0 || s.End.After(nightEnd) {
-			nightEnd = s.End
-		}
-	}
-
-	var asleep, explicitWake []sleepSegment
-	var asleepHours, stagedHours float64
-	for _, s := range segs {
-		if s.Source != source {
-			continue
-		}
-		switch {
-		case isArchitectureAsleepMetric(s.Metric):
-			if !architectureSegmentInList(s, nightAsleep) {
-				continue
-			}
-			h := s.End.Sub(s.Start).Hours()
-			asleepHours += h
-			if s.Metric != "sleep_unspecified" {
-				stagedHours += h
-			}
-			asleep = append(asleep, sleepSegment{Start: s.Start, End: s.End})
-		case s.Metric == "sleep_awake":
-			if !s.End.After(nightStart) || !s.Start.Before(nightEnd) {
-				continue
-			}
-			explicitWake = append(explicitWake, sleepSegment{Start: s.Start, End: s.End})
-		}
-	}
-	if asleepHours <= 0 {
-		return missingArchitectureDay(date, SleepArchitectureReasonMissingSegments)
-	}
-	if stagedHours <= 0 {
-		day := missingArchitectureDay(date, SleepArchitectureReasonCoarseOnly)
-		day.Source = source
-		day.AsleepHours = asleepHours
-		return day
-	}
-
-	mergedAsleep := mergeSegments(asleep, 0)
-	mergedWake := mergeSegments(explicitWake, 0)
-	wasoHours, explicitBouts, longestWake := wakeStats(mergedWake)
-	gapBouts := countInferredGaps(mergedAsleep)
-	frag := float64(explicitBouts+gapBouts) / asleepHours
-	return SleepArchitectureDay{
-		Date:                 date,
-		Source:               source,
-		AsleepHours:          asleepHours,
-		WASOHours:            wasoHours,
-		ExplicitWakeBouts:    explicitBouts,
-		GapInferredWakeBouts: gapBouts,
-		LongestWakeBoutHours: longestWake,
-		FragmentationIndex:   frag,
-		Eligible:             true,
-		Reason:               SleepArchitectureReasonOK,
-		Confidence:           SleepArchitectureConfidenceHigh,
-	}
-}
-
-func architectureNightAsleepSegments(date string, segs []architectureSegment, preferred string) ([]architectureSegment, string) {
-	if len(segs) == 0 {
-		return nil, ""
-	}
-	loc := segs[0].End.Location()
-	refMidnight, err := time.ParseInLocation(isoDate, date, loc)
+func (s *DB) readSleepArchitectureFeatures(first, last time.Time, out map[string]SleepArchitectureFeatureFields) error {
+	from, to := first.Format(isoDate), last.Format(isoDate)
+	ctx, cancel := queryCtx()
+	defer cancel()
+	rows, err := s.sleepArchitectureRows(ctx, first.AddDate(0, 0, -13).Format(isoDate), to, `,
+		anchors as (select $3::date+n as anchor from generate_series(0,$4::date-$3::date) n)
+		select * from (`+dbtmetrics.SleepArchitectureWindowsSQL+`) windows order by anchor,days`, from, to)
 	if err != nil {
-		return nil, ""
+		return err
 	}
-	windowStart := refMidnight.Add(-midnightWindow)
-	windowEnd := refMidnight.Add(12 * time.Hour)
-	bySource := map[string][]architectureSegment{}
-	sourceHours := map[string]float64{}
-	for _, s := range segs {
-		if !isArchitectureAsleepMetric(s.Metric) {
-			continue
+	defer rows.Close()
+	var seven SleepArchitectureWindow
+	for rows.Next() {
+		var date string
+		var w SleepArchitectureWindow
+		if err := rows.Scan(&date, &w.Days, &w.EligibleDays, &w.SourceDays, &w.MissingReasonCounts, &w.Confidence, &w.WASOHours, &w.ExplicitWakeBouts, &w.GapInferredWakeBouts, &w.FragmentationIndex, &w.LongestWakeBoutHours); err != nil {
+			return err
 		}
-		if !s.End.After(windowStart) || !s.Start.Before(windowEnd) {
-			continue
+		if w.Days == 7 {
+			seven = w
+		} else {
+			out[date] = architectureFields(date, seven, w)
 		}
-		bySource[s.Source] = append(bySource[s.Source], s)
-		sourceHours[s.Source] += s.End.Sub(s.Start).Hours()
 	}
-
-	source, _ := chooseSleepSource(sourceHours, true, preferred)
-	if source == "" {
-		return nil, ""
-	}
-	return append([]architectureSegment(nil), bySource[source]...), source
+	return rows.Err()
 }
 
-func architectureSegmentInList(target architectureSegment, list []architectureSegment) bool {
-	for _, s := range list {
-		if s == target {
-			return true
-		}
-	}
-	return false
-}
-
-func absDuration(d time.Duration) time.Duration {
-	if d < 0 {
-		return -d
-	}
-	return d
-}
-
-func missingArchitectureDay(date, reason string) SleepArchitectureDay {
-	return SleepArchitectureDay{
-		Date:       date,
-		Reason:     reason,
-		Confidence: SleepArchitectureConfidenceUnavailable,
-	}
-}
-
-func isArchitectureAsleepMetric(metric string) bool {
-	switch metric {
-	case "sleep_deep", "sleep_rem", "sleep_core", "sleep_unspecified":
-		return true
-	default:
-		return false
-	}
-}
-
-func wakeStats(segs []sleepSegment) (hours float64, bouts int, longest float64) {
-	for _, s := range segs {
-		h := s.End.Sub(s.Start).Hours()
-		hours += h
-		bouts++
-		if h > longest {
-			longest = h
-		}
-	}
-	return hours, bouts, longest
-}
-
-func countInferredGaps(asleep []sleepSegment) int {
-	if len(asleep) < 2 {
-		return 0
-	}
-	sort.Slice(asleep, func(i, j int) bool { return asleep[i].Start.Before(asleep[j].Start) })
-	var out int
-	prev := asleep[0]
-	for i := 1; i < len(asleep); i++ {
-		cur := asleep[i]
-		if cur.Start.Sub(prev.End) > mergeTolerance {
-			out++
-		}
-		if cur.End.After(prev.End) {
-			prev = cur
-		}
-	}
-	return out
-}
-
-// BuildSleepArchitectureWindow summarizes architecture over the
-// inclusive trailing window [endDate-days+1, endDate].
-func BuildSleepArchitectureWindow(endDate time.Time, days int, byDate map[string]SleepArchitectureDay) SleepArchitectureWindow {
-	if days <= 0 {
-		days = 1
-	}
-	out := SleepArchitectureWindow{
-		Days:                days,
-		MissingReasonCounts: map[string]int{},
-		Confidence:          SleepArchitectureConfidenceUnavailable,
-	}
-	var waso, explicit, gaps, frag, longest float64
-	for i := days - 1; i >= 0; i-- {
-		date := endDate.AddDate(0, 0, -i).Format(isoDate)
-		day, ok := byDate[date]
-		if !ok {
-			out.MissingReasonCounts[SleepArchitectureReasonMissingSegments]++
-			continue
-		}
-		if day.Source != "" {
-			out.SourceDays++
-		}
-		if !day.Eligible {
-			reason := day.Reason
-			if reason == "" {
-				reason = SleepArchitectureReasonMissingSegments
-			}
-			out.MissingReasonCounts[reason]++
-			continue
-		}
-		out.EligibleDays++
-		waso += day.WASOHours
-		explicit += float64(day.ExplicitWakeBouts)
-		gaps += float64(day.GapInferredWakeBouts)
-		frag += day.FragmentationIndex
-		if day.LongestWakeBoutHours > longest {
-			longest = day.LongestWakeBoutHours
-		}
-	}
-	if out.EligibleDays == 0 {
-		return out
-	}
-	n := float64(out.EligibleDays)
-	out.Confidence = SleepArchitectureConfidenceHigh
-	if out.EligibleDays < days {
-		out.Confidence = "partial"
-	}
-	out.WASOHours = ptrFloat(waso / n)
-	out.ExplicitWakeBouts = ptrFloat(explicit / n)
-	out.GapInferredWakeBouts = ptrFloat(gaps / n)
-	out.FragmentationIndex = ptrFloat(frag / n)
-	out.LongestWakeBoutHours = ptrFloat(longest)
-	return out
-}
-
-func BuildSleepArchitectureFeatureFields(t time.Time, byDate map[string]SleepArchitectureDay) SleepArchitectureFeatureFields {
-	w7 := BuildSleepArchitectureWindow(t, 7, byDate)
-	w14 := BuildSleepArchitectureWindow(t, 14, byDate)
+func architectureFields(date string, w7, w14 SleepArchitectureWindow) SleepArchitectureFeatureFields {
 	return SleepArchitectureFeatureFields{
-		ArchitectureAvailableThrough: t.Format(isoDate),
+		ArchitectureAvailableThrough: date,
 		WASOHours7d:                  w7.WASOHours,
 		ExplicitWakeBouts7d:          w7.ExplicitWakeBouts,
 		GapInferredWakeBouts7d:       w7.GapInferredWakeBouts,

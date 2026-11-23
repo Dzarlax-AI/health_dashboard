@@ -2,49 +2,19 @@ package dbtmetrics
 
 import (
 	"encoding/json"
-	"net/url"
 	"os"
-	"path/filepath"
 	"reflect"
-	"strconv"
 	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"health-receiver/internal/health"
 )
 
 // TestSemanticNightQualityParity compares the actual JSON returned by the card
 // to the production Go formula with identical dated inputs, in one snapshot.
 func TestSemanticNightQualityParity(t *testing.T) {
-	socket := os.Getenv("SEMANTIC_SHADOW_PG_SOCKET")
-	if socket == "" {
-		t.Skip("local shadow socket is not configured")
-	}
-	if !filepath.IsAbs(socket) {
-		t.Fatal("absolute local socket required")
-	}
-	port, err := strconv.ParseUint(os.Getenv("SEMANTIC_SHADOW_PG_PORT"), 10, 16)
-	if err != nil || port == 0 {
-		t.Fatal("invalid port")
-	}
-	target := url.URL{Scheme: "postgres", Host: "localhost", User: url.User(os.Getenv("SEMANTIC_SHADOW_PG_USER")), Path: "/" + os.Getenv("SEMANTIC_SHADOW_PG_DB")}
-	target.RawQuery = url.Values{"host": {socket}, "port": {strconv.FormatUint(port, 10)}, "sslmode": {"disable"}}.Encode()
 	ctx := t.Context()
-	db, err := pgx.Connect(ctx, target.String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close(ctx)
-	tx, err := db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback(ctx)
-	var local bool
-	if err := tx.QueryRow(ctx, "select inet_server_addr() is null").Scan(&local); err != nil || !local {
-		t.Fatal("expected local socket")
-	}
+	tx := semanticSleepReadTransaction(t)
 	check := func(label, sql string) {
 		t.Helper()
 		rows, err := tx.Query(ctx, sql)

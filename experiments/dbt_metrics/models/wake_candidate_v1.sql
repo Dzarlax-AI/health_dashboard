@@ -1,4 +1,5 @@
-{{ config(enabled=var('preferred_sleep_source_shadow', false),materialized='view',post_hook="alter view {{ this }} set (security_invoker = true)") }}
+{{ config(enabled=var('preferred_sleep_source_shadow', false) or var('complex_sleep_parity', false),materialized='view',post_hook="alter view {{ this }} set (security_invoker = true)") }}
+{% set input_source = 'preferred_sleep_source' if var('preferred_sleep_source_shadow', false) else 'complex_sleep' %}
 
 -- The typed adapter preserves the stored date prefix independently of timezone
 -- conversion. Hash-change time is a separate durable input to confirmation.
@@ -6,8 +7,8 @@ with segments as (
   select c.profile,c.capture,c.target_day,c.zone,s.source,s.metric,s.start_at,s.hours,s.received_at,
          s.start_at+s.hours*interval '1 hour' as ends_at,
          s.start_at at time zone c.zone as local_start
-  from {{ source('preferred_sleep_source','wake_segment_case') }} c
-  join {{ source('preferred_sleep_source','wake_segment') }} s using(profile,capture)
+  from {{ source(input_source,'wake_segment_case') }} c
+  join {{ source(input_source,'wake_segment') }} s using(profile,capture)
   where s.writer_day between c.target_day-1 and c.target_day and s.source<>''
     and s.hours>0 and s.quality='ok' and s.metric in
     ('sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_unspecified','sleep_awake')
@@ -46,7 +47,7 @@ with segments as (
     case when source_hours>1 and (source like '%Apple Watch%' or source like '%Ultra%') then 1
          when source_hours>1 and source like '%RingConn%' then 2 else 3 end,source_hours desc,source collate "C") as priority
   from (select * from normal_sources union all select * from midnight_sources) s
-  join {{ source('preferred_sleep_source','wake_segment_case') }} c using(profile,capture)
+  join {{ source(input_source,'wake_segment_case') }} c using(profile,capture)
   where coalesce(c.preferred_source,'')='' or s.wake is not null
 ), chosen as (
   select profile,capture,source,signal,wake,latest_ingest,case
@@ -60,4 +61,4 @@ select c.profile,c.capture,c.target_day,
        case when wake is not null then signal end as signal,
        wake as candidate_wake,latest_ingest,
        case when wake is not null then source_selection_reason end as source_selection_reason
-from {{ source('preferred_sleep_source','wake_segment_case') }} c left join chosen using(profile,capture)
+from {{ source(input_source,'wake_segment_case') }} c left join chosen using(profile,capture)

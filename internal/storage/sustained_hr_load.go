@@ -17,7 +17,7 @@ import (
 // SustainedHRLoadResult is the §4.4 stress-drain output for one date —
 // computed by orchestrating WakeTimeForDate + HRCoverageHours +
 // PersonalBaseline(hr_awake) + HourlyHRSeriesForAwakeWindow and feeding
-// the resulting per-hour z-series through health.SustainedHRLoad.
+// the resulting per-hour z-series through the shared briefing stress SQL.
 //
 //   - SustainedHRLoadZ: dimensionless z-load that feeds the
 //     β · sustained_hr_load term in DrainV2. Higher = more autonomic
@@ -51,7 +51,7 @@ type SustainedHRLoadResult struct {
 // against existing helpers; no writes. Wraps `WakeTimeForDate +
 // HRCoverageHours + PersonalBaseline + HourlyHRSeriesForAwakeWindow`
 // and converts per-hour HR into z-load via health.HourZShift +
-// health.SustainedHRLoad.
+// the shared dbt stress/load predicates.
 //
 // Each prerequisite returns (zero, flag, ok=true) on degraded data
 // rather than erroring — the formula's response to partial data should
@@ -161,7 +161,7 @@ func (s *DB) ComputeSustainedHRLoadForDateContext(
 		// returns ok=false on empty so parasympathetic_rebound is
 		// naturally skipped, while illness_signature / recovery_debt
 		// can still fire from temp/resp/HRV/overnight-RHR.
-		res.Flags, err = s.appendMultiChannelStressFlagsContext(ctx, date, loc, nil, res.Flags)
+		err = s.applyStressSignals(ctx, date, loc, nil, 0, &res)
 		if err != nil {
 			return SustainedHRLoadResult{}, false, err
 		}
@@ -172,8 +172,7 @@ func (s *DB) ComputeSustainedHRLoadForDateContext(
 	// per-hour coverage check (< MinBucketsPerHour 5-min buckets)
 	// AND hours with no samples (zero-fill rows from
 	// HourlyHRSeriesForAwakeWindow). Use a NaN placeholder so
-	// health.SustainedHRLoad's NaN-tolerance kicks in and treats
-	// them as gaps, not zeros.
+	// the shared stress formula treats these positions as gaps.
 	hourZ := make([]float64, len(series))
 	for i, h := range series {
 		if !h.CoverageOK {
@@ -189,34 +188,7 @@ func (s *DB) ComputeSustainedHRLoadForDateContext(
 	if err != nil {
 		return SustainedHRLoadResult{}, false, err
 	}
-	res.SustainedHRLoadZ = health.SustainedHRLoad(hourZ, threshold)
-
-	// §4.3 HR-z-derived flags. Both feed PR-9 verdict layer:
-	//
-	//   acute_stress  — single hour z>+2 in the awake window. Per
-	//                   spec, drives no behaviour ("no action —
-	//                   transient"), but surfaces in components for
-	//                   diagnostic UI.
-	//   sustained_load — ≥4h consecutive z>+1. Real autonomic load
-	//                   day; pairs with the quantitative
-	//                   sustained_hr_load_z above. Distinct flag
-	//                   even when SustainedHRLoadZ > 0 (a single
-	//                   z=2 hour produces load but doesn't fire
-	//                   the run flag).
-	if health.AcuteStress(hourZ) {
-		res.Flags = append(res.Flags, "acute_stress")
-	}
-	if health.SustainedLoadFlag(hourZ) {
-		res.Flags = append(res.Flags, "sustained_load")
-	}
-
-	// §4.3 multi-channel flags — read autonomic channels (HRV, temp,
-	// resp, overnight RHR) and derive illness_signature /
-	// recovery_debt / parasympathetic_rebound. Independent of the HR
-	// coverage gate above: a day with stale_stress for HR can still
-	// flag illness_signature when the other three channels break
-	// baseline together.
-	res.Flags, err = s.appendMultiChannelStressFlagsContext(ctx, date, loc, hourZ, res.Flags)
+	err = s.applyStressSignals(ctx, date, loc, hourZ, threshold, &res)
 	if err != nil {
 		return SustainedHRLoadResult{}, false, err
 	}

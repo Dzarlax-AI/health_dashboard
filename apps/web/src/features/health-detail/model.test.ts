@@ -69,8 +69,6 @@ describe("health detail model", () => {
         } as unknown as HealthDetailResources["briefing"],
         metrics: {
           step_count: {
-            metric: "step_count",
-            agg: "SUM",
             bucket: "day",
             points,
           },

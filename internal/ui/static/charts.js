@@ -649,19 +649,41 @@ function loadReadinessChart(canvasId, from, to) {
 var BAR_METRICS = new Set(['step_count','active_energy','basal_energy_burned','apple_exercise_time','apple_stand_time','flights_climbed','walking_running_distance','time_in_daylight','apple_stand_hour','breathing_disturbances']);
 var SLEEP_METRICS = new Set(['sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_unspecified','sleep_awake']);
 
+// The full API switches Auto to daily beyond 14 inclusive UTC calendar dates.
+function usesDailyStepSeries(metric, from, to, bucket, agg, opts) {
+  if (metric !== 'step_count' || opts.bySource || opts.compare || (agg && agg !== 'SUM')) return false;
+  var span = Date.parse(to) - Date.parse(from);
+  return Number.isFinite(span) && span >= 0 && (bucket === 'day' || (!bucket && span >= 14 * 86400000));
+}
+
+function stepDailySeriesURL(from, to) {
+  return '/fragments/step-daily-series?to=' + encodeURIComponent(to) + (from ? '&from=' + encodeURIComponent(from) : '');
+}
+
+var metricChartRequests = Object.create(null);
+function beginMetricChartRequest(canvasId) {
+  var request = {};
+  metricChartRequests[canvasId] = request;
+  return request;
+}
+
 function loadMetricChart(canvasId, metric, from, to, bucket, agg, opts) {
   var el = document.getElementById(canvasId);
   if (!el) return;
   opts = opts || {};
+  var request = beginMetricChartRequest(canvasId);
   setLoading(true);
   var url = '/api/metrics/data?metric=' + encodeURIComponent(metric) + '&from=' + from + '&to=' + to;
   if (bucket) url += '&bucket=' + bucket;
   if (agg) url += '&agg=' + agg;
   if (opts.bySource) url += '&by_source=1';
 
-  fetch(url)
-    .then(healthAPIResponse)
-    .then(function(data) {
+  var series = opts.series ? Promise.resolve(opts.series) :
+    fetch(usesDailyStepSeries(metric, from, to, bucket, agg, opts) ? stepDailySeriesURL(from, to) : url).then(function(response) {
+      if (metricChartRequests[canvasId] === request) return healthAPIResponse(response);
+    });
+  return series.then(function(data) {
+      if (metricChartRequests[canvasId] !== request) return;
       setLoading(false);
       var pts = data.points || [];
       if (!pts.length) {
@@ -682,7 +704,7 @@ function loadMetricChart(canvasId, metric, from, to, bucket, agg, opts) {
         sr.innerHTML = chip('Points', pts.length, '') + chip('Avg', fmt2(avgV), '') + chip('Min', fmt2(Math.min.apply(null,vals)), '') + chip('Max', fmt2(Math.max.apply(null,vals)), '');
       }
 
-      _createChart(canvasId, {
+      var config = {
         type: isBar ? 'bar' : 'line',
         data: {
           labels: labels,
@@ -717,9 +739,17 @@ function loadMetricChart(canvasId, metric, from, to, bucket, agg, opts) {
             y: { beginAtZero: isBar, ticks:{ color:'#78716c', font:{size:11} }, grid:{ color:'#f0efed' } }
           }
         }
-      });
+      };
+      if (metric === 'step_count' && data.bucket === 'day' && pts.length > 365) {
+        config.options.animation = false;
+      }
+      _createChart(canvasId, config);
     })
-    .catch(function(e) { setLoading(false); console.error('loadMetricChart error:', e); });
+    .catch(function(e) {
+      if (metricChartRequests[canvasId] !== request) return;
+      setLoading(false);
+      console.error('loadMetricChart error:', e);
+    });
 }
 
 // Helper: stat chip

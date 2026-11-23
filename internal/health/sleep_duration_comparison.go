@@ -2,7 +2,6 @@ package health
 
 import (
 	"fmt"
-	"math"
 	"time"
 )
 
@@ -50,29 +49,6 @@ func NewSleepDurationComparison(date time.Time) SleepDurationComparison {
 	return SleepDurationComparison{
 		WakeDate: wake, Status: SleepComparisonUnavailable, RuleVersion: SleepComparisonRuleVersion,
 		WindowStart: date.AddDate(0, 0, -30).Format(time.DateOnly), WindowEndExclusive: wake,
-	}
-}
-
-// SetDurations applies the same rounding independently to both values before
-// computing a signed difference. Invalid recorded values have no numeric output.
-func (c *SleepDurationComparison) SetDurations(n CompletedNightSleep, reference *float64) {
-	c.Status = SleepComparisonIneligible
-	c.Source, c.Capture, c.Assessment, c.Finalization = n.Source, n.CaptureCompleteness, n.DurationAssessment, n.FinalizationState
-	observedAt := n.ObservedAt.UTC()
-	c.ObservedAt = &observedAt
-	if n.DurationHours > 0 && n.DurationHours <= 24 {
-		minutes := int(math.Round(n.DurationHours * 60))
-		c.DurationMinutes = &minutes
-	}
-	if c.DurationMinutes == nil || !(n.IsDefinitiveClaimEligible() || n.IsProvisionalObservationEligible()) {
-		return
-	}
-	c.Status = SleepComparisonInsufficient
-	if reference != nil && *reference > 0 && *reference <= 24 {
-		minutes := int(math.Round(*reference * 60))
-		delta := *c.DurationMinutes - minutes
-		c.ReferenceMinutes, c.DeltaMinutes = &minutes, &delta
-		c.Status = SleepComparisonAvailable
 	}
 }
 

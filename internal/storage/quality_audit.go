@@ -314,12 +314,13 @@ func (s *DB) finalizeQualityChanges(ctx context.Context, affected map[string]str
 		"respiratory_rate":        {"resp_avg"},
 		"vo2_max":                 {"vo2_avg"},
 	}
-	// HRV hourly and daily repair is handled by the durable correction journal.
+	// HRV has a durable repair marker. Step refresh needs the previous hour
+	// to identify and clear a withdrawn source before selecting a fallback.
 	for metric, metricDates := range affectedMetrics {
 		if len(metricDates) == 0 {
 			continue
 		}
-		if metric != "heart_rate_variability" {
+		if metric != "heart_rate_variability" && metric != "step_count" {
 			if err := s.runCacheTransaction(ctx, func(unit *DB) error {
 				if _, err := unit.pool.Exec(ctx, `DELETE FROM hourly_metrics WHERE metric_name=$1 AND SUBSTRING(hour,1,10)=ANY($2)`, metric, metricDates); err != nil {
 					return err

@@ -4,8 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"sync"
+
+	dbtmetrics "health-receiver/experiments/dbt_metrics"
 )
 
 // aggFuncFor returns the aggregation function name for a metric.
@@ -178,18 +181,7 @@ func sleepDedupClause(metric string) string {
 	if !isSleepMetric(metric) {
 		return ""
 	}
-	return `AND NOT (
-		SUBSTRING(date, 12, 8) != '00:00:00'
-		AND EXISTS (
-			SELECT 1 FROM metric_points p2
-			WHERE p2.metric_name = metric_points.metric_name
-			  AND SUBSTRING(p2.date, 1, 10) = SUBSTRING(metric_points.date, 1, 10)
-			  AND p2.source = metric_points.source
-			  AND SUBSTRING(p2.date, 12, 8) = '00:00:00'
-			  AND p2.qty > 0
-			  AND p2.quality = 'ok'
-		)
-	)`
+	return "AND " + dbtmetrics.KeepSleepPointSQL()
 }
 
 func (s *DB) listMetricNames() ([]string, error) {
@@ -233,6 +225,13 @@ func (s *DB) UpsertRecentCache(dates []string, recomputeReadiness bool) error {
 	loc := s.reportTZLocation()
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
+	ctxAlias, cancelAlias := longCtx()
+	aliases, err := stepAliasDates(ctxAlias, s.pool, dates)
+	cancelAlias()
+	if err != nil {
+		return fmt.Errorf("resolve affected step dates: %w", err)
+	}
+	dates = uniqueStepDates(append(slices.Clone(dates), aliases...))
 	captured, err := s.CaptureCacheDirty(context.Background(), dates)
 	if err != nil {
 		return fmt.Errorf("capture aggregate input generations: %w", err)
@@ -244,18 +243,10 @@ func (s *DB) UpsertRecentCache(dates []string, recomputeReadiness bool) error {
 	dailySQL := liveDailySQL(s.legacySleepDBTEnabled())
 	for _, date := range dates {
 		unitCtx, unitCancel := longCtx()
-		repaired, repairErr := s.rebuildRecentHRVRepair(unitCtx, date, dailySQL)
+		_, err := s.rebuildRecentAggregateDate(unitCtx, date, dailySQL)
 		unitCancel()
-		if repairErr != nil {
-			return fail(fmt.Errorf("HRV repair %s: %w", date, repairErr))
-		}
-		if !repaired {
-			if err := s.rebuildRecentHourlyCatalog(date); err != nil {
-				return fail(fmt.Errorf("hourly aggregates %s: %w", date, err))
-			}
-			if err := s.writeDailyScores(date, dailySQL); err != nil {
-				return fail(fmt.Errorf("daily scores %s: %w", date, err))
-			}
+		if err != nil {
+			return fail(fmt.Errorf("aggregate refresh %s: %w", date, err))
 		}
 
 		// Must run after the daily write, which creates the
@@ -313,15 +304,6 @@ func (s *DB) RefreshIngestReadinessSince(fromDate string) error {
 	return s.refreshDashboardSnapshotLocked(ctx)
 }
 
-// Publish all hourly projections for one day with their catalog invalidation.
-func (s *DB) rebuildRecentHourlyCatalog(date string) error {
-	ctx, cancel := longCtx()
-	defer cancel()
-	return s.runCacheTransaction(ctx, func(unit *DB) error {
-		return unit.writeRecentHourlyCatalog(ctx, date)
-	})
-}
-
 // writeRecentHourlyCatalog runs within the caller's transaction.
 func (s *DB) writeRecentHourlyCatalog(ctx context.Context, date string) error {
 	if err := s.upsertHourlyAvgForDate(date); err != nil {
@@ -353,11 +335,22 @@ func (s *DB) upsertHourlyAvgForDate(date string) error {
 func (s *DB) upsertHourlySumForDate(date string) error {
 	ctx, cancel := longCtx()
 	defer cancel()
+	if err := s.clearWithdrawnStepHours(ctx, "AND substring(date,1,10)=$1", date); err != nil {
+		return err
+	}
 	q := aggregateSQL("live_hourly_sum")
 	if _, err := s.pool.Exec(ctx, q, date, sumMetricSlice()); err != nil {
 		return err
 	}
 	return nil
+}
+
+// Only a present, explicitly ineligible source hour proves withdrawal. A missing
+// source on a partial sync cannot invalidate a previous measurement.
+func (s *DB) clearWithdrawnStepHours(ctx context.Context, scope string, args ...any) error {
+	query := aggregateSQLWith("withdrawn_step_hours", map[string]string{"DATE_SCOPE": scope})
+	_, err := s.pool.Exec(ctx, query, args...)
+	return err
 }
 
 // upsertHourlySleepForDate handles the 5 sleep_* metrics with the dedup clause.
@@ -431,10 +424,8 @@ func (s *DB) writeDailyScores(date, query string) error {
 	return err
 }
 
-// BackfillAggregates rebuilds hourly_metrics from metric_points and
-// daily_scores from hourly_metrics. If force=true all cache tables are
-// truncated first; otherwise the last 48h are refreshed (catches re-synced
-// data) and new data is appended.
+// BackfillAggregates rebuilds hourly and daily metrics. Force preserves step
+// cells until their source evidence can reconstruct the stored wall hour.
 func (s *DB) BackfillAggregates(force bool) error {
 	finishRefresh := s.BeginDashboardRefresh()
 	defer finishRefresh()
@@ -444,15 +435,16 @@ func (s *DB) BackfillAggregates(force bool) error {
 	ctx, cancel := longCtx()
 	defer cancel()
 	if force {
-		// Wrap deletion in a transaction so crash doesn't leave empty tables.
+		// A legacy step hour can be the last surviving record of its measurements.
+		// The hourly step writer replaces it once the source evidence is sufficient.
 		tx, err := s.pool.Begin(ctx)
 		if err != nil {
 			return fmt.Errorf("begin force clear: %w", err)
 		}
-		for _, tbl := range []string{"minute_metrics", "hourly_metrics"} {
-			if _, err := tx.Exec(ctx, "DELETE FROM "+tbl); err != nil {
+		for _, query := range []string{"DELETE FROM minute_metrics", "DELETE FROM hourly_metrics WHERE metric_name <> 'step_count'"} {
+			if _, err := tx.Exec(ctx, query); err != nil {
 				tx.Rollback(ctx)
-				return fmt.Errorf("clear %s: %w", tbl, err)
+				return fmt.Errorf("clear aggregate caches: %w", err)
 			}
 		}
 		if err := MarkMetricCatalogHoursChangedTx(ctx, tx); err != nil {
@@ -462,7 +454,7 @@ func (s *DB) BackfillAggregates(force bool) error {
 		if err := tx.Commit(ctx); err != nil {
 			return fmt.Errorf("commit force clear: %w", err)
 		}
-		log.Println("cache tables cleared")
+		log.Println("cache tables cleared except retained step hours")
 	}
 
 	metrics, err := s.listMetricNames()
@@ -620,6 +612,19 @@ func (s *DB) buildBaselineHROvernightAll(force bool) {
 	log.Printf("baseline_hr_overnight filled for %d dates", len(dates))
 }
 
+// historicalDailyMetricSQL is shared by bounded repairs and full/incremental backfills.
+func historicalDailyMetricSQL(metric, fromClause string) string {
+	replacements := map[string]string{"FROM_CLAUSE": fromClause}
+	if metric == "step_count" {
+		replacements["POINT_SCOPE"] = strings.ReplaceAll(fromClause, "hour", "date")
+		return aggregateSQLWith("legacy_daily_steps", replacements)
+	}
+	if SumMetrics[metric] {
+		return aggregateSQLWith("legacy_daily_sum", replacements)
+	}
+	return aggregateSQLWith("legacy_daily_avg", replacements)
+}
+
 func (s *DB) buildDailyMetricCol(col, metric string, force bool) error {
 	ctx, cancel := longCtx()
 	defer cancel()
@@ -630,6 +635,12 @@ func (s *DB) buildDailyMetricCol(col, metric string, force bool) error {
 		// from offline devices like Apple Watch syncing after a week).
 		var maxDate *string
 		s.pool.QueryRow(ctx, `SELECT MAX(SUBSTRING(hour,1,10)) FROM hourly_metrics WHERE metric_name = $1`, metric).Scan(&maxDate)
+		if metric == "step_count" {
+			// Zero-only sources have no positive legacy hourly cell.
+			if err := s.pool.QueryRow(ctx, `select greatest($1::text,max(substring(date,1,10))) from metric_points where metric_name in ($2,'__healthkit_archive_sample:step_count')`, maxDate, metric).Scan(&maxDate); err != nil {
+				return err
+			}
+		}
 		if maxDate == nil {
 			return nil
 		}
@@ -648,15 +659,16 @@ func (s *DB) buildDailyMetricCol(col, metric string, force bool) error {
 	if !allowedDailyMetricColumn(col) {
 		return fmt.Errorf("unsupported daily metric column %q", col)
 	}
-	queryName := "legacy_daily_avg"
-	if SumMetrics[metric] {
-		queryName = "legacy_daily_sum"
+	query := historicalDailyMetricSQL(metric, fromClause)
+
+	if metric == "step_count" {
+		return s.withAggregatePublication(ctx, func(unit *DB) error {
+			_, err := unit.pool.Exec(ctx, `INSERT INTO daily_scores (date, steps, computed_at)
+				SELECT day, source_total, NOW()::text FROM (`+query+`) totals
+				ON CONFLICT(date) DO UPDATE SET steps=excluded.steps, computed_at=excluded.computed_at`, args...)
+			return err
+		})
 	}
-	replacements := map[string]string{"FROM_CLAUSE": fromClause}
-	if queryName == "legacy_daily_sum" {
-		replacements["SUM_SOURCE_RANK"] = legacySumSourceRankExpr()
-	}
-	query := aggregateSQLWith(queryName, replacements)
 
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
@@ -778,7 +790,22 @@ func (s *DB) buildHourlyMetric(metric, agg string, force bool) error {
 		"FROM_CLAUSE": fromClause,
 	})
 
-	return s.runCacheTransaction(ctx, func(unit *DB) error {
+	publish := s.runCacheTransaction
+	if metric == "step_count" {
+		publish = s.withAggregatePublication
+	}
+	return publish(ctx, func(unit *DB) error {
+		if metric == "step_count" {
+			var err error
+			if refreshFromOpt == "" {
+				err = unit.clearWithdrawnStepHours(ctx, "")
+			} else {
+				err = unit.clearWithdrawnStepHours(ctx, "AND substring(date,1,10)>=$1", refreshFromOpt)
+			}
+			if err != nil {
+				return err
+			}
+		}
 		if isSleepMetric(metric) {
 			delArgs := []any{metric}
 			delWhere := ""

@@ -49,6 +49,14 @@ def swift_ingress_source(ingress):
     return "\n".join(result + ["    ]", "}", ""])
 
 
+def hourly_sum_metrics():
+    source = (ROOT / "experiments/dbt_metrics/macros/metric_lists.sql").read_text()
+    match = re.search(r"return\((\[.*?\])\s*\)\s*}}", source, re.S)
+    if not match:
+        raise ValueError("dbt hourly SUM catalog is missing")
+    return json.loads(match.group(1))
+
+
 def observation_evidence(swift_path, ingress):
     swift = swift_path.read_text()
     ui = (ROOT / "internal/ui/metrics_page.go").read_text()
@@ -97,7 +105,7 @@ def observation_evidence(swift_path, ingress):
     for group, keys in re.findall(r'"(\w+)", \[\]string\{([^}]+)\}', ui.split("var categories =", 1)[1].split("\n}\n", 1)[0]):
         for key in re.findall(r'"(\w+)"', keys):
             record(key, "ui_group", group)
-    for key in re.findall(r'"(\w+)"', policy.split('metrics := []string{', 1)[1].split('}', 1)[0]):
+    for key in hourly_sum_metrics():
         record(key, "bucket_sum", True)
     for column, key in re.findall(r'column: "(\w+)", metric: "(\w+)"', policy):
         record(key, "daily_column", column)

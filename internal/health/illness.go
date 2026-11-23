@@ -24,11 +24,22 @@ type illnessSignalEval struct {
 	autonomicProdrome bool
 }
 
-// ComputeIllnessSuspicion converts a date-aligned evidence input into an
-// experimental, non-diagnostic illness/respiratory-stress evidence object.
-// It deliberately does not read RawMetrics slices and does not affect
-// EnergyBank verdicts or stress flags.
-func ComputeIllnessSuspicion(in IllnessEvidenceInput) *IllnessSuspicion {
+// IllnessClassificationSignal contains only the categorical operands of the
+// confidence and pattern rules, after the dated measurements have been evaluated.
+type IllnessClassificationSignal struct {
+	Category               string `json:"category"`
+	Objective              bool   `json:"objective"`
+	Primary                bool   `json:"primary_signal"`
+	AutonomicOrTemperature bool   `json:"auto_or_temp"`
+	Strong                 bool   `json:"strong"`
+	IllnessSignature       bool   `json:"illness_signature"`
+	Confounder             bool   `json:"confounder"`
+	Prodrome               bool   `json:"prodrome"`
+	Persistence            bool   `json:"persistence"`
+	SubjectiveSick         bool   `json:"subjective_sick"`
+}
+
+func evaluateIllnessSignals(in IllnessEvidenceInput) []illnessSignalEval {
 	var evals []illnessSignalEval
 
 	evals = append(evals, evalMetric(in.RespiratoryRate, metricEvalSpec{
@@ -110,6 +121,33 @@ func ComputeIllnessSuspicion(in IllnessEvidenceInput) *IllnessSuspicion {
 		}, contributes: in.SubjectiveCheckin.Answer == "sick", strong: in.SubjectiveCheckin.Answer == "sick"})
 	}
 
+	return evals
+}
+
+// IllnessClassificationInputs keeps the displayed evidence in its original
+// order and supplies the non-identifying decision operands to the SQL classifier.
+func IllnessClassificationInputs(in IllnessEvidenceInput) ([]IllnessEvidenceSignal, []IllnessClassificationSignal) {
+	evals := evaluateIllnessSignals(in)
+	signals := make([]IllnessEvidenceSignal, 0, len(evals))
+	rules := make([]IllnessClassificationSignal, 0, len(evals))
+	for _, e := range evals {
+		sig := e.signal
+		sig.Contributes = e.contributes
+		signals = append(signals, sig)
+		rules = append(rules, IllnessClassificationSignal{Category: sig.Category, Objective: e.contributes && e.objective,
+			Primary: e.primary, AutonomicOrTemperature: e.autoOrTemp, Strong: e.strong, IllnessSignature: e.illnessSignature,
+			Confounder: e.strongConfounder, Prodrome: e.contributes && e.autonomicProdrome,
+			Persistence: e.contributes && sig.Kind == "objective_persistence", SubjectiveSick: sig.Kind == "subjective" && sig.Strength == "strong"})
+	}
+	return signals, rules
+}
+
+// ComputeIllnessSuspicion converts a date-aligned evidence input into an
+// experimental, non-diagnostic illness/respiratory-stress evidence object.
+// It deliberately does not read RawMetrics slices and does not affect
+// EnergyBank verdicts or stress flags.
+func ComputeIllnessSuspicion(in IllnessEvidenceInput) *IllnessSuspicion {
+	evals := evaluateIllnessSignals(in)
 	signals := make([]IllnessEvidenceSignal, 0, len(evals))
 	objectiveCategories := map[string]struct{}{}
 	strongObjective := false
@@ -191,6 +229,11 @@ func ComputeIllnessSuspicion(in IllnessEvidenceInput) *IllnessSuspicion {
 	}
 
 	pattern := illnessPattern(confidence, hasRespiratoryPrimary, hasOxygenObjective, hasAutonomicProdrome)
+	return PresentIllnessSuspicion(in, signals, confidence, pattern)
+}
+
+// PresentIllnessSuspicion preserves the evidence and explanation for the dated decision.
+func PresentIllnessSuspicion(in IllnessEvidenceInput, signals []IllnessEvidenceSignal, confidence, pattern string) *IllnessSuspicion {
 	return &IllnessSuspicion{
 		Date:         in.Date,
 		Confidence:   confidence,

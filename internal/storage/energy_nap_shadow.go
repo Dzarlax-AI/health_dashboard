@@ -225,8 +225,11 @@ func (s *DB) CompareEnergyNapShadow(ctx context.Context, tenant uuid.UUID, asOf 
 	if err != nil {
 		return out, err
 	}
-	base, unrounded := calculateCalendarEnergyBank(inputs, date, unit.GetEnergyConfig())
-	result := compareEnergyNapShadow(base, unrounded, naps, asOf)
+	base, trace, err := unit.readEnergyBankSQL(ctx, date, unit.GetEnergyConfig(), inputs)
+	if err != nil {
+		return out, err
+	}
+	result := compareEnergyNapShadow(base, trace.bank, naps, asOf)
 	result.SourceAvailableAfterWindow = out.SourceAvailableAfterWindow
 	if result.Episodes == 0 && out.SourceAvailableAfterWindow == len(naps) && len(naps) > 0 {
 		out.Status = "source_available_after_window"

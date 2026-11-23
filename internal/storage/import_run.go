@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -55,7 +56,8 @@ type ImportSession struct {
 	snapshotAt         *time.Time
 	unverifiedCoverage bool
 	catalogNormalized  bool
-	mayInvalidateHRV   bool
+	mayInvalidatePoint bool
+	hasStepPoints      bool
 	leaseToken         uuid.UUID
 	counters           ImportCounters
 	// afterLeaseLocked is used by DB-backed concurrency tests to pause after
@@ -174,7 +176,7 @@ func (s *ImportSession) AddPoints(points []MetricPoint) error {
 	}
 
 	rows := make([][]any, 0, len(points))
-	mayInvalidateHRV := false
+	mayInvalidatePoint := false
 	for _, p := range points {
 		p = normalizeStoredMetricPoint(p)
 		if usesSeparatedArchiveSamples(p.MetricName) {
@@ -187,8 +189,9 @@ func (s *ImportSession) AddPoints(points []MetricPoint) error {
 		if localDate == "" {
 			continue
 		}
+		s.hasStepPoints = s.hasStepPoints || p.MetricName == "step_count"
 		rows = append(rows, []any{s.runID, p.MetricName, p.Units, p.Date, p.Qty, p.Source, localDate})
-		mayInvalidateHRV = mayInvalidateHRV || (p.MetricName == "heart_rate_variability" && float32(p.Qty) <= 0)
+		mayInvalidatePoint = mayInvalidatePoint || ((p.MetricName == "heart_rate_variability" || p.MetricName == "step_count") && float32(p.Qty) <= 0)
 		s.trackDate(localDate)
 	}
 	if len(rows) == 0 {
@@ -203,7 +206,7 @@ func (s *ImportSession) AddPoints(points []MetricPoint) error {
 		return fmt.Errorf("copy import points: %w", err)
 	}
 	s.counters.ParsedPoints += n
-	s.mayInvalidateHRV = s.mayInvalidateHRV || mayInvalidateHRV
+	s.mayInvalidatePoint = s.mayInvalidatePoint || mayInvalidatePoint
 	return nil
 }
 
@@ -294,10 +297,28 @@ func (s *ImportSession) Commit() (ImportCounters, error) {
 	if err != nil {
 		return s.failCommit(tx, fmt.Errorf("lock imported cache dates: %w", err))
 	}
+	var stepDays []string
+	if err = tx.QueryRow(ctx, `select array(select distinct local_date from import_run_coverage
+		where import_run_id=$1 and metric_name in `+storedStepsSQL+`)`, s.runID).Scan(&stepDays); err != nil {
+		return s.failCommit(tx, err)
+	}
+	priorAliases, err := stepAliasDates(ctx, tx, stepDays)
+	if err != nil {
+		return s.failCommit(tx, err)
+	}
 	hrvRepairDates, err := s.promotePoints(ctx, tx)
 	if err != nil {
 		return s.failCommit(tx, err)
 	}
+	currentAliases, err := stepAliasDates(ctx, tx, stepDays)
+	if err != nil {
+		return s.failCommit(tx, err)
+	}
+	aliases := uniqueStepDates(append(priorAliases, currentAliases...))
+	if err = refreshStepAliasDates(ctx, tx, aliases); err != nil {
+		return s.failCommit(tx, err)
+	}
+	coverageDates = append(coverageDates, aliases...)
 	if err := s.db.recordCacheDirtyWithHRVRepairsTx(ctx, tx, cacheState, coverageDates, hrvRepairDates); err != nil {
 		return s.failCommit(tx, fmt.Errorf("mark imported cache dates dirty: %w", err))
 	}
@@ -389,9 +410,19 @@ func (s *ImportSession) promoteCoverage(ctx context.Context, tx pgx.Tx) error {
 
 func (s *ImportSession) promotePoints(ctx context.Context, tx pgx.Tx) ([]string, error) {
 	overlapKeys := []string{}
+	var archivedStepCells, changedStepKeys []byte
+	if s.hasStepPoints {
+		var err error
+		changedStepKeys, err = s.positiveStepChangesBeforeImport(ctx, tx)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if s.catalogNormalized {
 		overlapKeys = overlappingArchiveSampleMetrics
-		if err := s.preserveArchiveHourBoundarySamples(ctx, tx); err != nil {
+		var err error
+		archivedStepCells, err = s.preserveArchiveHourBoundarySamples(ctx, tx)
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -419,6 +450,7 @@ func (s *ImportSession) promotePoints(ctx context.Context, tx pgx.Tx) ([]string,
 
 	var deletedPoints int64
 	var deletedHRVDates []string
+	var deletedStepCells, replacedStepCells []byte
 	err := tx.QueryRow(ctx, `
 		WITH covered AS (
 			SELECT metric_name,source,local_date FROM import_run_coverage WHERE import_run_id=$1
@@ -448,17 +480,20 @@ func (s *ImportSession) promotePoints(ctx context.Context, tx pgx.Tx) ([]string,
 		         AND st.import_run_id = $1
 		  )
 		RETURNING CASE WHEN mp.metric_name='heart_rate_variability' AND mp.quality='ok' AND mp.qty>0
-			THEN SUBSTRING(mp.date,1,10) END AS hrv_day
+			THEN SUBSTRING(mp.date,1,10) END AS hrv_day,
+			CASE WHEN `+usableStepPointSQL("mp")+`
+			THEN jsonb_build_array(substring(mp.date,1,16),coalesce(mp.source,'')) END AS step_cell
 		)
-		SELECT count(*), array_agg(DISTINCT hrv_day) FILTER (WHERE hrv_day IS NOT NULL)
-		FROM deleted`, s.runID, s.snapshotAt, !s.unverifiedCoverage, overlapKeys, archiveSamplePrefix).Scan(&deletedPoints, &deletedHRVDates)
+		SELECT count(*), array_agg(DISTINCT hrv_day) FILTER (WHERE hrv_day IS NOT NULL),
+			jsonb_agg(DISTINCT step_cell) FILTER (WHERE step_cell IS NOT NULL)
+		FROM deleted`, s.runID, s.snapshotAt, !s.unverifiedCoverage, overlapKeys, archiveSamplePrefix).Scan(&deletedPoints, &deletedHRVDates, &deletedStepCells)
 	if err != nil {
 		return nil, fmt.Errorf("delete stale covered points: %w", err)
 	}
 
-	// The shared XML parser excludes nonpositive HRV, so normal archive
-	// promotion must not materialize every upsert just to detect this rare
-	// transition accepted by the lower-level staging API.
+	// Collect accepted transitions only when the staging input contains a
+	// potentially withdrawing value. Ordinary positive archive imports keep
+	// the direct set-based upsert path.
 	incomingSQL := `
 		WITH incoming AS (
 			SELECT DISTINCT ON (metric_name, date, source)
@@ -486,17 +521,19 @@ func (s *ImportSession) promotePoints(ctx context.Context, tx pgx.Tx) ([]string,
 		      <= excluded.source_snapshot_at
 		  AND NOT ` + protectedCurrentHourlyPoint("metric_points", "$5")
 	var invalidatedHRVDates []string
-	if s.mayInvalidateHRV {
-		err = tx.QueryRow(ctx, incomingSQL+`, invalidated_hrv AS MATERIALIZED (
-			SELECT mp.id, SUBSTRING(mp.date,1,10) AS day
+	if s.mayInvalidatePoint {
+		err = tx.QueryRow(ctx, incomingSQL+`, invalidated AS MATERIALIZED (
+			SELECT mp.id, mp.metric_name, substring(mp.date,1,10) AS day,
+			       substring(mp.date,1,16) AS minute, mp.source
 			FROM incoming i JOIN metric_points mp
 			  ON mp.metric_name=i.metric_name AND mp.date=i.date AND mp.source=i.source
-			WHERE mp.metric_name='heart_rate_variability' AND mp.quality='ok' AND mp.qty>0
+			WHERE ((mp.metric_name='heart_rate_variability' AND mp.quality='ok' AND mp.qty>0) OR (`+usableStepPointSQL("mp")+`))
 			  AND NOT COALESCE(i.qty>0,false)
 		), upserted AS (`+upsertSQL+` RETURNING id)
-		SELECT array_agg(DISTINCT invalidated_hrv.day)
-		FROM invalidated_hrv JOIN upserted USING (id)`,
-			s.healthRecordID, appleHealthXMLOrigin, s.runID, s.snapshotAt, overlapKeys).Scan(&invalidatedHRVDates)
+		SELECT array_agg(DISTINCT day) FILTER (WHERE metric_name='heart_rate_variability'),
+		       jsonb_agg(DISTINCT jsonb_build_array(minute,coalesce(source,''))) FILTER (WHERE metric_name='step_count')
+		FROM invalidated JOIN upserted USING (id)`,
+			s.healthRecordID, appleHealthXMLOrigin, s.runID, s.snapshotAt, overlapKeys).Scan(&invalidatedHRVDates, &replacedStepCells)
 	} else {
 		_, err = tx.Exec(ctx, incomingSQL+upsertSQL,
 			s.healthRecordID, appleHealthXMLOrigin, s.runID, s.snapshotAt, overlapKeys)
@@ -505,6 +542,18 @@ func (s *ImportSession) promotePoints(ctx context.Context, tx pgx.Tx) ([]string,
 		return nil, fmt.Errorf("upsert staged points: %w", err)
 	}
 
+	var changedStepCells []byte
+	if len(changedStepKeys) > 0 {
+		err = tx.QueryRow(ctx, `SELECT jsonb_agg(DISTINCT jsonb_build_array(substring(p.date,1,16),coalesce(p.source,'')))
+			FROM jsonb_array_elements($1::jsonb) k JOIN metric_points p ON p.metric_name=k->>0 AND p.date=k->>1 AND p.source=k->>2
+			WHERE p.import_run_id=$2`, json.RawMessage(changedStepKeys), s.runID).Scan(&changedStepCells)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := repairWithdrawnSteps(ctx, tx, deletedStepCells, replacedStepCells, archivedStepCells, changedStepCells); err != nil {
+		return nil, err
+	}
 	s.counters.DeletedPoints = deletedPoints
 	s.counters.UpdatedPoints = existingExact - protectedExact
 	s.counters.InsertedPoints = distinctPoints - existingExact
@@ -512,27 +561,60 @@ func (s *ImportSession) promotePoints(ctx context.Context, tx pgx.Tx) ([]string,
 	return append(deletedHRVDates, invalidatedHRVDates...), nil
 }
 
+// Compare positive corrections and additions against the cache before XML
+// promotion. Only accepted keys are repaired once snapshot precedence resolves.
+func (s *ImportSession) positiveStepChangesBeforeImport(ctx context.Context, tx pgx.Tx) ([]byte, error) {
+	var changed []byte
+	err := tx.QueryRow(ctx, `WITH incoming AS (
+		SELECT DISTINCT ON (date,source) date,source,qty,units FROM import_stage_points
+		WHERE import_run_id=$1 AND metric_name='step_count' ORDER BY date,source,staged_seq DESC
+	), keys AS (
+		SELECT 'step_count'::text AS metric_name,* FROM incoming WHERE qty>0
+		UNION ALL SELECT $2::text,* FROM incoming WHERE $3 AND qty>0 AND substring(date,15,5)='00:00'
+	), `+stepHourProofCTEs()+`
+	SELECT jsonb_agg(jsonb_build_array(k.metric_name,k.date,k.source))
+	FROM keys k LEFT JOIN metric_points p ON p.metric_name=k.metric_name AND p.date=k.date AND p.source=k.source
+	WHERE (p.qty IS DISTINCT FROM k.qty OR p.units IS DISTINCT FROM k.units OR p.origin IS DISTINCT FROM 'apple_health_xml')
+	  AND (p.id IS NOT NULL OR EXISTS (SELECT FROM wall_cache c WHERE c.hour=substring(k.date,1,13)||':00'))
+	  AND NOT EXISTS (SELECT FROM incomplete i WHERE i.hour=substring(k.date,1,13)||':00')`,
+		s.runID, archiveSamplePrefix+"step_count", s.catalogNormalized).Scan(&changed)
+	return changed, err
+}
+
 // Core SUM metrics retain their original key for the existing v1 caches.
 // Only hour-aligned archive samples can collide with the live v2 wire key.
-func (s *ImportSession) preserveArchiveHourBoundarySamples(ctx context.Context, tx pgx.Tx) error {
-	_, err := tx.Exec(ctx, `
+func (s *ImportSession) preserveArchiveHourBoundarySamples(ctx context.Context, tx pgx.Tx) ([]byte, error) {
+	const incoming = `
 		WITH incoming AS (
 			SELECT DISTINCT ON (metric_name, date, source) metric_name, date, source, units, qty
 			FROM import_stage_points
 			WHERE import_run_id=$3 AND metric_name=ANY($5::text[]) AND SUBSTRING(date,15,5)='00:00'
 			ORDER BY metric_name,date,source,staged_seq DESC
-		)
-		INSERT INTO metric_points (health_record_id,metric_name,date,source,units,qty,origin,import_run_id,source_snapshot_at)
+		)`
+	const upsert = `INSERT INTO metric_points (health_record_id,metric_name,date,source,units,qty,origin,import_run_id,source_snapshot_at)
 		SELECT $1,$6||metric_name,date,source,units,qty,$2,$3,$4 FROM incoming
 		ON CONFLICT(metric_name,date,source) DO UPDATE SET
 		    health_record_id=excluded.health_record_id, units=excluded.units, qty=excluded.qty,
 		    import_run_id=excluded.import_run_id, source_snapshot_at=excluded.source_snapshot_at
-		WHERE COALESCE(metric_points.source_snapshot_at,'-infinity') <= excluded.source_snapshot_at`,
-		s.healthRecordID, appleHealthXMLOrigin, s.runID, s.snapshotAt, overlappingArchiveSampleMetrics, archiveSamplePrefix)
-	if err != nil {
-		return fmt.Errorf("preserve archive samples at hour boundaries: %w", err)
+		WHERE COALESCE(metric_points.source_snapshot_at,'-infinity') <= excluded.source_snapshot_at`
+	args := []any{s.healthRecordID, appleHealthXMLOrigin, s.runID, s.snapshotAt, overlappingArchiveSampleMetrics, archiveSamplePrefix}
+	var cells []byte
+	var err error
+	if s.mayInvalidatePoint {
+		err = tx.QueryRow(ctx, incoming+`, invalidated AS MATERIALIZED (
+			SELECT p.id,substring(p.date,1,16) AS minute,p.source
+			FROM incoming i JOIN metric_points p ON p.metric_name=$6||i.metric_name AND p.date=i.date AND p.source=i.source
+			WHERE i.metric_name='step_count' AND i.qty<=0 AND p.qty>0 AND p.quality='ok'
+		), upserted AS (`+upsert+` RETURNING id)
+		SELECT jsonb_agg(DISTINCT jsonb_build_array(minute,coalesce(source,'')))
+		FROM invalidated JOIN upserted USING(id)`, args...).Scan(&cells)
+	} else {
+		_, err = tx.Exec(ctx, incoming+" "+upsert, args...)
 	}
-	return nil
+	if err != nil {
+		return nil, fmt.Errorf("preserve archive samples at hour boundaries: %w", err)
+	}
+	return cells, nil
 }
 
 func protectedCurrentHourlyPoint(row, keys string) string {

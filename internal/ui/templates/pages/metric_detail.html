@@ -82,19 +82,21 @@ document.addEventListener('DOMContentLoaded', function() {
   reloadChart();
 });
 
-function reloadChart() {
+function reloadChart(series) {
   var from = $('from').value, to = $('to').value;
   var bucket = $('bucket').value, agg = $('agg').value;
   if (currentMetric === 'readiness') {
+    beginMetricChartRequest('chart');
     loadReadinessChart('chart', from, to);
     return;
   }
   var isSleep = ['sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_unspecified','sleep_awake'].indexOf(currentMetric) >= 0;
   if (isSleep && !bucket && !agg) {
+    beginMetricChartRequest('chart');
     loadSleepChart('chart', from, to);
     return;
   }
-  loadMetricChart('chart', currentMetric, from, to, bucket, agg, {bySource: bySourceEnabled});
+  loadMetricChart('chart', currentMetric, from, to, bucket, agg, {bySource: bySourceEnabled, compare: compareEnabled, series: series});
 }
 
 function applyPreset(days) {
@@ -105,10 +107,34 @@ function applyPreset(days) {
   reloadChart();
 }
 
-function applyPresetAll() {
-  fetch('/api/metrics/range?metric=' + encodeURIComponent(currentMetric))
-    .then(function(r){return r.json()})
+async function applyPresetAll() {
+  var selection = beginMetricChartRequest('chart');
+  var to = todayStr(), bucket = $('bucket').value, agg = $('agg').value;
+  if (currentMetric === 'step_count' && !bySourceEnabled && !compareEnabled &&
+      (!bucket || bucket === 'day') && (!agg || agg === 'SUM')) {
+    try {
+      var response = await fetch(stepDailySeriesURL('', to));
+      if (selection !== metricChartRequests.chart) return;
+      var series = await healthAPIResponse(response);
+      if (selection !== metricChartRequests.chart) return;
+      var from = series.points && series.points.length && series.points[0].date;
+      if (from && usesDailyStepSeries(currentMetric, from, to, bucket, agg, {})) {
+        $('from').value = from;
+        $('to').value = to;
+        document.querySelectorAll('.preset-btn').forEach(function(b) { b.classList.remove('active'); });
+        reloadChart(series);
+        return;
+      }
+    } catch (err) {
+      if (selection !== metricChartRequests.chart || (response && response.status === 401)) return;
+    }
+  }
+  return fetch('/api/metrics/range?metric=' + encodeURIComponent(currentMetric))
+    .then(function(response) {
+      if (selection === metricChartRequests.chart) return healthAPIResponse(response);
+    })
     .then(function(range) {
+      if (selection !== metricChartRequests.chart) return;
       if (range.min) $('from').value = range.min;
       $('to').value = todayStr();
       document.querySelectorAll('.preset-btn').forEach(function(b) { b.classList.remove('active'); });

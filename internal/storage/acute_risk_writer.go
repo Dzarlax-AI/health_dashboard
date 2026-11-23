@@ -153,7 +153,6 @@ func (s *DB) writeAcuteRiskRow(
 	hrvLookup, rhrLookup DailyValueLookup,
 	orEventByDate, strictEventByDate map[string]int,
 ) error {
-	_ = ctx
 	epoch, epochStart := epochs.resolve(date)
 
 	// Paired warmup count: days in (epochStart, t] with both HRV and
@@ -171,23 +170,18 @@ func (s *DB) writeAcuteRiskRow(
 			"warmup_min_paired": health.AcuteRiskWarmupMinPaired,
 			"reason_detail":     "paired HRV+RHR count below warmup threshold within current source_epoch",
 		})
+		labels, err := s.chipTargets(ctx, chipTargetWindow{date: date, subScore: SubScoreAcuteRisk, paired: pairedCount}, TargetKindEventT1T3, TargetKindEventStrictT1T3)
+		if err != nil {
+			return err
+		}
 		for _, tk := range []string{TargetKindEventT1T3, TargetKindEventStrictT1T3} {
-			if err := s.SaveTargetSnapshot(TargetSnapshot{
-				Date:              date,
-				SubScore:          SubScoreAcuteRisk,
-				TargetKind:        tk,
-				Eligible:          false,
-				EligibilityReason: health.AcuteRiskEligibilityBaselineWarmup,
-				DataCoverage:      cov,
-				SourceEpoch:       epoch,
-				FormulaVersion:    acuteRiskFormulaVersion,
-			}); err != nil {
+			if err := s.saveChipTarget(date, SubScoreAcuteRisk, tk, epoch, acuteRiskFormulaVersion, labels[tk], cov); err != nil {
 				return fmt.Errorf("save warmup-ineligible %s/%s: %w", date, tk, err)
 			}
 		}
 		// Still emit a feature snapshot so the framework contract is
 		// consistent (1 feature row per (date, sub_score)).
-		if err := s.saveAcuteRiskFeatures(date, t, epoch, epochStart, rowByDate, hrvLookup, rhrLookup, pairedCount, false); err != nil {
+		if err := s.saveAcuteRiskFeatures(ctx, date, t, epoch, epochStart, hrvLookup, rhrLookup, pairedCount, false); err != nil {
 			return err
 		}
 		// Baselines write even when paired-warmup hasn't been met. The
@@ -196,12 +190,12 @@ func (s *DB) writeAcuteRiskRow(
 		// epoch. On day-zero of a fresh epoch this yields
 		// (NULL, baseline_source_epoch_boundary) — operator sees the
 		// pre-warmup state instead of a blank row.
-		if err := s.saveEventBaseRateBaseline(
+		if err := s.saveEventBaseRateBaseline(ctx,
 			t, date, SubScoreAcuteRisk, TargetKindEventT1T3,
 			orEventByDate, epoch, epochStart, acuteRiskFormulaVersion); err != nil {
 			return fmt.Errorf("save warmup-ineligible baseline %s/event_t1_t3: %w", date, err)
 		}
-		if err := s.saveEventBaseRateBaseline(
+		if err := s.saveEventBaseRateBaseline(ctx,
 			t, date, SubScoreAcuteRisk, TargetKindEventStrictT1T3,
 			strictEventByDate, epoch, epochStart, acuteRiskFormulaVersion); err != nil {
 			return fmt.Errorf("save warmup-ineligible baseline %s/event_strict_t1_t3: %w", date, err)
@@ -242,17 +236,12 @@ func (s *DB) writeAcuteRiskRow(
 			"paired_count":        pairedCount,
 			"reason_detail":       "at least one day in t+1..t+3 has no observable autonomic signal",
 		})
+		labels, err := s.chipTargets(ctx, chipTargetWindow{date: date, subScore: SubScoreAcuteRisk, paired: pairedCount}, TargetKindEventT1T3, TargetKindEventStrictT1T3)
+		if err != nil {
+			return err
+		}
 		for _, tk := range []string{TargetKindEventT1T3, TargetKindEventStrictT1T3} {
-			if err := s.SaveTargetSnapshot(TargetSnapshot{
-				Date:              date,
-				SubScore:          SubScoreAcuteRisk,
-				TargetKind:        tk,
-				Eligible:          false,
-				EligibilityReason: health.AcuteRiskEligibilityEventWindowDataMissing,
-				DataCoverage:      cov,
-				SourceEpoch:       epoch,
-				FormulaVersion:    acuteRiskFormulaVersion,
-			}); err != nil {
+			if err := s.saveChipTarget(date, SubScoreAcuteRisk, tk, epoch, acuteRiskFormulaVersion, labels[tk], cov); err != nil {
 				return fmt.Errorf("save window-missing %s/%s: %w", date, tk, err)
 			}
 		}
@@ -262,12 +251,12 @@ func (s *DB) writeAcuteRiskRow(
 		// Without this, the chip on the bleeding edge of every backfill
 		// (the last 3 dates) renders as `pending` forever, hiding a
 		// deployable prediction the user could otherwise see.
-		if err := s.saveEventBaseRateBaseline(
+		if err := s.saveEventBaseRateBaseline(ctx,
 			t, date, SubScoreAcuteRisk, TargetKindEventT1T3,
 			orEventByDate, epoch, epochStart, acuteRiskFormulaVersion); err != nil {
 			return fmt.Errorf("save window-missing baseline %s/event_t1_t3: %w", date, err)
 		}
-		if err := s.saveEventBaseRateBaseline(
+		if err := s.saveEventBaseRateBaseline(ctx,
 			t, date, SubScoreAcuteRisk, TargetKindEventStrictT1T3,
 			strictEventByDate, epoch, epochStart, acuteRiskFormulaVersion); err != nil {
 			return fmt.Errorf("save window-missing baseline %s/event_strict_t1_t3: %w", date, err)
@@ -275,7 +264,7 @@ func (s *DB) writeAcuteRiskRow(
 		// Feature snapshot still emitted so the (date, sub_score) PK is
 		// covered. warmupMet=true because the gate did pass; the window
 		// gate fired downstream of warmup.
-		return s.saveAcuteRiskFeatures(date, t, epoch, epochStart, rowByDate, hrvLookup, rhrLookup, pairedCount, true)
+		return s.saveAcuteRiskFeatures(ctx, date, t, epoch, epochStart, hrvLookup, rhrLookup, pairedCount, true)
 	}
 
 	type dayBreach struct {
@@ -289,7 +278,6 @@ func (s *DB) writeAcuteRiskRow(
 		Strict   bool     `json:"strict"`
 	}
 	dayResults := make([]dayBreach, 0, 3)
-	var eventOR, eventStrict bool
 
 	for _, c := range candidates {
 		ds := c.Format(isoDate)
@@ -318,17 +306,13 @@ func (s *DB) writeAcuteRiskRow(
 			}
 		}
 		db.Strict = db.HRVDrop && db.RHRSpike
-		if db.HRVDrop || db.RHRSpike {
-			eventOR = true
-		}
-		if db.Strict {
-			eventStrict = true
-		}
 		dayResults = append(dayResults, db)
 	}
 
-	orVal := boolToFloat(eventOR)
-	strictVal := boolToFloat(eventStrict)
+	labels, err := s.chipTargets(ctx, chipTargetWindow{date: date, subScore: SubScoreAcuteRisk, paired: pairedCount, days: dayResults}, TargetKindEventT1T3, TargetKindEventStrictT1T3)
+	if err != nil {
+		return err
+	}
 
 	cov := mustMarshal(map[string]any{
 		"window_dates": []string{
@@ -343,59 +327,34 @@ func (s *DB) writeAcuteRiskRow(
 		"baseline_window": health.AcuteRiskBaselineWindowDays,
 	})
 
-	// Primary OR-event.
-	if err := s.SaveTargetSnapshot(TargetSnapshot{
-		Date:              date,
-		SubScore:          SubScoreAcuteRisk,
-		TargetKind:        TargetKindEventT1T3,
-		TargetValue:       &orVal,
-		Eligible:          true,
-		EligibilityReason: health.AcuteRiskEligibilityOK,
-		DataCoverage:      cov,
-		SourceEpoch:       epoch,
-		FormulaVersion:    acuteRiskFormulaVersion,
-	}); err != nil {
-		return fmt.Errorf("save event_t1_t3 %s: %w", date, err)
+	for _, tk := range []string{TargetKindEventT1T3, TargetKindEventStrictT1T3} {
+		if err := s.saveChipTarget(date, SubScoreAcuteRisk, tk, epoch, acuteRiskFormulaVersion, labels[tk], cov); err != nil {
+			return err
+		}
 	}
-	// Secondary strict AND-event. Distinct target_kind, distinct PK —
-	// cannot overwrite primary.
-	if err := s.SaveTargetSnapshot(TargetSnapshot{
-		Date:              date,
-		SubScore:          SubScoreAcuteRisk,
-		TargetKind:        TargetKindEventStrictT1T3,
-		TargetValue:       &strictVal,
-		Eligible:          true,
-		EligibilityReason: health.AcuteRiskEligibilityOK,
-		DataCoverage:      cov,
-		SourceEpoch:       epoch,
-		FormulaVersion:    acuteRiskFormulaVersion,
-	}); err != nil {
-		return fmt.Errorf("save event_strict_t1_t3 %s: %w", date, err)
+	if v := labels[TargetKindEventT1T3].Value; v != nil {
+		orEventByDate[date] = int(*v)
 	}
-
-	// Remember this date's labels (both OR and strict) so the in-memory
-	// base-rate baselines for later dates in the same run can see them.
-	// Two maps — strict baseline must NOT be computed from OR labels
-	// because strict events are sparser (Codex review comment, PR #93).
-	orEventByDate[date] = int(orVal)
-	strictEventByDate[date] = int(strictVal)
+	if v := labels[TargetKindEventStrictT1T3].Value; v != nil {
+		strictEventByDate[date] = int(*v)
+	}
 
 	// Naive event base rates over the prior 90 days, computed
 	// independently per target_kind from its own label history. Same
 	// helper as the event_window_data_missing branch — see
 	// saveEventBaseRateBaseline's docstring for the offset/reason rule.
-	if err := s.saveEventBaseRateBaseline(
+	if err := s.saveEventBaseRateBaseline(ctx,
 		t, date, SubScoreAcuteRisk, TargetKindEventT1T3,
 		orEventByDate, epoch, epochStart, acuteRiskFormulaVersion); err != nil {
 		return fmt.Errorf("save base-rate baseline %s/event_t1_t3: %w", date, err)
 	}
-	if err := s.saveEventBaseRateBaseline(
+	if err := s.saveEventBaseRateBaseline(ctx,
 		t, date, SubScoreAcuteRisk, TargetKindEventStrictT1T3,
 		strictEventByDate, epoch, epochStart, acuteRiskFormulaVersion); err != nil {
 		return fmt.Errorf("save base-rate baseline %s/event_strict_t1_t3: %w", date, err)
 	}
 
-	return s.saveAcuteRiskFeatures(date, t, epoch, epochStart, rowByDate, hrvLookup, rhrLookup, pairedCount, true)
+	return s.saveAcuteRiskFeatures(ctx, date, t, epoch, epochStart, hrvLookup, rhrLookup, pairedCount, true)
 }
 
 // --- Features ----------------------------------------------------------
@@ -416,11 +375,11 @@ type acuteRiskFeatures struct {
 }
 
 func (s *DB) saveAcuteRiskFeatures(
+	ctx context.Context,
 	date string,
 	t time.Time,
 	epoch string,
 	epochStart string,
-	rowByDate map[string]health.AutonomicRow,
 	hrvLookup, rhrLookup DailyValueLookup,
 	pairedCount int,
 	warmupMet bool,
@@ -429,35 +388,16 @@ func (s *DB) saveAcuteRiskFeatures(
 		PairedCountToT: pairedCount,
 		WarmupMet:      warmupMet,
 	}
-	if row, ok := rowByDate[t.Format(isoDate)]; ok {
-		if row.HRV != nil {
-			feat.HRVToday = ptrFloat(*row.HRV)
-		}
-		if row.RHR != nil {
-			feat.RHRToday = ptrFloat(*row.RHR)
-		}
+	hrv, err := s.chipFeatureWindow(ctx, t, epochStart, health.AcuteRiskBaselineWindowDays-1, hrvLookup)
+	if err != nil {
+		return err
 	}
-
-	// Baselines at end-of-day-t (inclusive). Distinct from the
-	// per-candidate baselines used for target labelling (which exclude
-	// the candidate). Both are honest features — they reflect state
-	// available at t.
-	tPlusOne := t.AddDate(0, 0, 1)
-	hrvMean, hrvSD, hrvN := windowStatsBefore(tPlusOne, health.AcuteRiskBaselineWindowDays, epochStart, hrvLookup)
-	rhrMean, rhrSD, rhrN := windowStatsBefore(tPlusOne, health.AcuteRiskBaselineWindowDays, epochStart, rhrLookup)
-	feat.HRVMean45 = hrvMean
-	feat.HRVSD45 = hrvSD
-	feat.RHRMean45 = rhrMean
-	feat.RHRSD45 = rhrSD
-	feat.HRVEligibleCount45 = hrvN
-	feat.RHREligibleCount45 = rhrN
-	if feat.HRVToday != nil {
-		feat.HRVZToday = zScoreOrNil(*feat.HRVToday, hrvMean, hrvSD)
+	rhr, err := s.chipFeatureWindow(ctx, t, epochStart, health.AcuteRiskBaselineWindowDays-1, rhrLookup)
+	if err != nil {
+		return err
 	}
-	if feat.RHRToday != nil {
-		feat.RHRZToday = zScoreOrNil(*feat.RHRToday, rhrMean, rhrSD)
-	}
-
+	feat.HRVToday, feat.HRVMean45, feat.HRVSD45, feat.HRVZToday, feat.HRVEligibleCount45 = hrv.Today, hrv.Mean45, hrv.SD45, hrv.Z45, hrv.N45
+	feat.RHRToday, feat.RHRMean45, feat.RHRSD45, feat.RHRZToday, feat.RHREligibleCount45 = rhr.Today, rhr.Mean45, rhr.SD45, rhr.Z45, rhr.N45
 	featuresJSON, err := json.Marshal(feat)
 	if err != nil {
 		return fmt.Errorf("marshal acute features %s: %w", date, err)
@@ -528,13 +468,6 @@ func zScoreOrNil(value float64, mean, sd *float64) *float64 {
 	return &z
 }
 
-func boolToFloat(b bool) float64 {
-	if b {
-		return 1
-	}
-	return 0
-}
-
 // loadPriorEventLabels reads previously-written OR-event and
 // strict-event labels in the 90 days before `fromT` so the naive
 // base-rate baselines for the first dates in a backfill have history
@@ -594,11 +527,10 @@ func (s *DB) loadPriorEventLabels(fromT time.Time) (orMap, strictMap map[string]
 // edge of the backfill where the future label window hasn't closed
 // yet.
 //
-// When the rate is nil (no prior labels in window), reason is set
-// from classifyBaselineNullReason(t, 90, epochStart); on a value, it
-// stays empty. The 90-day offset matches priorEventBaseRate's
-// strictly-before-t walk.
+// The dbt baseline model returns the epoch-boundary or warmup reason when the
+// preceding window contains no eligible labels.
 func (s *DB) saveEventBaseRateBaseline(
+	ctx context.Context,
 	t time.Time,
 	date string,
 	subScore, targetKind string,
@@ -606,11 +538,18 @@ func (s *DB) saveEventBaseRateBaseline(
 	epoch, epochStart string,
 	formulaVersion int,
 ) error {
-	rate := priorEventBaseRate(t, 90, epochStart, eventByDate)
-	reason := ""
-	if rate == nil {
-		reason = classifyBaselineNullReason(t, 90, epochStart)
+	rows, err := s.chipBaselines(ctx, t, epochStart, subScore, func(day string) (*float64, bool) {
+		label, ok := eventByDate[day]
+		value := float64(label)
+		return &value, ok
+	}, targetKind)
+	if err != nil {
+		return err
 	}
+	if len(rows) != 1 || rows[0].BaselineKind != BaselineKindEventBaseRate {
+		return fmt.Errorf("unexpected event baselines for %s", subScore)
+	}
+	rate, reason := rows[0].Value, rows[0].Reason
 	return s.SaveNaiveBaseline(NaiveBaseline{
 		Date:           date,
 		SubScore:       subScore,
@@ -621,32 +560,4 @@ func (s *DB) saveEventBaseRateBaseline(
 		SourceEpoch:    epoch,
 		FormulaVersion: formulaVersion,
 	})
-}
-
-// priorEventBaseRate averages the eligible event labels for the
-// `windowDays` dates strictly before `t`. Dates older than
-// `epochStart` (when non-empty) are skipped so the baseline resets
-// at every source_epoch boundary — without this, the now-unconditional
-// classifier baseline writes (since #110) would leak labels from a
-// previous epoch into the first ~90 days of a new one. Returns nil
-// when no eligible labels fall in the (clipped) window.
-func priorEventBaseRate(t time.Time, windowDays int, epochStart string, eventByDate map[string]int) *float64 {
-	var sum, n int
-	for i := 1; i <= windowDays; i++ {
-		ds := t.AddDate(0, 0, -i).Format(isoDate)
-		if epochStart != "" && ds < epochStart {
-			continue
-		}
-		v, ok := eventByDate[ds]
-		if !ok {
-			continue
-		}
-		sum += v
-		n++
-	}
-	if n == 0 {
-		return nil
-	}
-	r := float64(sum) / float64(n)
-	return &r
 }

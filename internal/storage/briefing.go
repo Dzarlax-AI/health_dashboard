@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
 	"health-receiver/internal/health"
 )
 
@@ -112,7 +113,9 @@ func (s *DB) rawMetricsFromDailyScoresAt(lastDate string, includeFreshLatest boo
 		appendIfPositive(&d.Deep, r.deep)
 		appendIfPositive(&d.REM, r.rem)
 		appendIfPositive(&d.Awake, r.awake)
-		appendIfPositive(&d.Steps, r.steps)
+		if r.steps != nil && *r.steps >= 0 {
+			d.Steps = append(d.Steps, *r.steps)
+		}
 		appendIfPositive(&d.Cal, r.cal)
 		appendIfPositive(&d.Exercise, r.ex)
 		appendIfPositive(&d.SpO2, r.spo2)
@@ -125,7 +128,7 @@ func (s *DB) rawMetricsFromDailyScoresAt(lastDate string, includeFreshLatest boo
 		if len(d.StepsWithDates) >= 7 {
 			break
 		}
-		if r.steps != nil && *r.steps > 0 {
+		if r.steps != nil && *r.steps >= 0 {
 			d.StepsWithDates = append(d.StepsWithDates, health.DatedValue{Date: r.date, Val: *r.steps})
 		}
 		if r.hrv != nil && *r.hrv > 0 {
@@ -167,7 +170,7 @@ func dailyHealthMetrics(r dailyScoreRow) health.DailyHealthMetrics {
 		Core:        positivePtr(r.core),
 		Unspecified: positivePtr(r.unspecified),
 		Awake:       nonNegativePtr(r.awake),
-		Steps:       positivePtr(r.steps),
+		Steps:       nonNegativePtr(r.steps),
 		Calories:    positivePtr(r.cal),
 		Exercise:    positivePtr(r.ex),
 		SpO2:        positivePtr(r.spo2),
@@ -390,7 +393,9 @@ func (s *DB) rawMetricsFromPoints(lastDate string) *health.RawMetrics {
 		var err error
 		var rows pgx.Rows
 		quantityPredicate := dailyMetricQuantityPredicate(metric)
-		if agg == "SUM" {
+		if metric == "step_count" {
+			rows, err = s.pool.Query(ctx, physicalStepTotalsSQL("substring(date,1,10) between $1 and $2", "hourly_metrics", "substring(hour,1,10) between $1 and $2")+" order by day desc limit $3", subtractDays(lastDate, days), lastDate, days)
+		} else if agg == "SUM" {
 			sleepDedup := sleepDedupClause(metric)
 			r, e := s.pool.Query(ctx, fmt.Sprintf(`
 				SELECT d, MAX(source_sum)
@@ -562,17 +567,20 @@ func mergeDatedMetrics(series map[string][]health.DatedValue) []health.DailyHeal
 }
 
 // intradayPartialSum returns today's accumulated total for a SUM metric
-// (steps, active_energy) read from hourly_metrics. Source dedup picks the
+// read from hourly_metrics. Steps pick one source per hour. Active energy picks the
 // PREFERRED source for the day — Apple Watch first, then iPhone, falling
 // back to the source with the highest daily total when neither is present.
 // This mirrors buildDailyMetricCol exactly, so the intraday numerator
 // stays consistent with the chronic denominator computed via daily_scores.
 // Returns 0 when no data is present yet (e.g. early morning before any sync).
 func (s *DB) intradayPartialSum(date, metric string) float64 {
+	if metric == "step_count" {
+		return s.GetTodayStepCount(date)
+	}
 	ctx, cancel := queryCtx()
 	defer cancel()
 	var v *float64
-	err := s.pool.QueryRow(ctx, `
+	query := `
 		WITH source_totals AS (
 			SELECT source, SUM(avg_val) AS source_total
 			FROM hourly_metrics
@@ -589,7 +597,8 @@ func (s *DB) intradayPartialSum(date, metric string) float64 {
 			  WHERE source LIKE '%iPhone%'
 			  ORDER BY source_total DESC LIMIT 1),
 			(SELECT MAX(source_total) FROM source_totals)
-		)`, metric, date).Scan(&v)
+		)`
+	err := s.pool.QueryRow(ctx, query, metric, date).Scan(&v)
 	if err != nil || v == nil {
 		return 0
 	}
@@ -631,11 +640,11 @@ func (s *DB) GetHealthBriefing(lang string) (*health.BriefingResponse, error) {
 func (s *DB) getHealthBriefing(lang string, currentEnergy *localShadowCurrentEnergy, sleep *rolloutBriefingSleep) (*health.BriefingResponse, error) {
 	ctx, cancel := queryCtx()
 	defer cancel()
-	// Use hourly_metrics for lastDate — avoids full scan of metric_points.
+	// Bound the briefing to the newest observed day in the aggregate caches.
 	var lastDate *string
 	if currentEnergy != nil {
 		lastDate = &currentEnergy.date
-	} else if err := s.pool.QueryRow(ctx, `SELECT MAX(SUBSTRING(hour,1,10)) FROM hourly_metrics`).Scan(&lastDate); err != nil || lastDate == nil {
+	} else if err := s.pool.QueryRow(ctx, latestBriefingDateSQL).Scan(&lastDate); err != nil || lastDate == nil {
 		return &health.BriefingResponse{Greeting: "Welcome! No health data yet."}, nil
 	}
 
@@ -676,7 +685,14 @@ func (s *DB) getHealthBriefing(lang string, currentEnergy *localShadowCurrentEne
 		}
 	}
 
-	resp := health.ComputeBriefing(*data, lang)
+	projection, err := s.morningReadinessProjection(ctx, data)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.computeBriefingSQL(ctx, data, lang, &projection)
+	if err != nil {
+		return nil, err
+	}
 	resp.SleepRegularityIndex = data.SleepRegularityIndex
 	resp.SleepRegularityNights = data.SleepRegularityNights
 	if resp.Sleep != nil && data.ReadinessEvidence != nil {
@@ -708,6 +724,7 @@ func (s *DB) getHealthBriefing(lang string, currentEnergy *localShadowCurrentEne
 	// whole frame is yesterday, and the override should match that
 	// frame. Looking up "today" instead would split frame and override
 	// across day boundaries.
+	var snapshotBands *health.VerdictBands
 	if lastDate != nil {
 		var snap *LatestEnergySnapshot
 		var err error
@@ -727,10 +744,13 @@ func (s *DB) getHealthBriefing(lang string, currentEnergy *localShadowCurrentEne
 		if err == nil && snap != nil && ((currentEnergy != nil && currentEnergy.state == "stale") || slices.Contains(snap.Flags, energySnapshotStaleFlag)) {
 			resp.EnergyBankStatus = "stale"
 			resp.EnergyBank = nil
-		} else if currentEnergy != nil && resp.EnergyBank == nil {
-			// The bank can be usable before the legacy HRV context is complete.
-			display := max(0, min(100, currentEnergy.Bank))
-			resp.EnergyBankCurrent = &display
+		} else if err == nil && snap != nil && resp.EnergyBank == nil {
+			// Observed reserves stand alone when the legacy verdict lacks inputs.
+			// Retrospective estimates retain the existing projection and missing-RHR rules.
+			if !slices.Contains(snap.Flags, "backfilled") || currentEnergy != nil || len(data.RHR) == 0 {
+				display := max(0, min(100, snap.Bank))
+				resp.EnergyBankCurrent = &display
+			}
 		} else if err == nil && snap != nil && resp.EnergyBank != nil {
 			display := snap.Bank
 			if display < 0 {
@@ -792,21 +812,7 @@ func (s *DB) getHealthBriefing(lang string, currentEnergy *localShadowCurrentEne
 				log.Printf("[ENERGY_V2] compute verdict bands (date=%s): %v — falling back to defaults", *lastDate, bandsErr)
 				bands = health.DefaultV2VerdictBands()
 			}
-			ls := health.GetStrings(lang)
-			newVerdict := health.ChooseVerdictV2(resp.EnergyBank.HRVZRaw, display, bands)
-			newReason := health.BuildVerdictReasonV2(newVerdict, display, resp.EnergyBank.HRVZRaw, ls)
-			// §4.3 stress-flag overrides: illness_signature forces
-			// rest, recovery_debt suppresses push_hard,
-			// parasympathetic_rebound enriches reason text. Snapshot
-			// flags are the authoritative carrier — populated by
-			// ComputeBankForDate from daily_scores.stress_flags so
-			// the same data drives the bank, the verdict, and the AI
-			// prompt.
-			newVerdict, newReason, _ = health.ApplyStressFlagVerdictOverride(
-				newVerdict, newReason, snap.Flags, ls,
-			)
-			resp.EnergyBank.ActionVerdict = newVerdict
-			resp.EnergyBank.VerdictReason = newReason
+			snapshotBands = &bands
 		}
 	}
 
@@ -843,7 +849,15 @@ func (s *DB) getHealthBriefing(lang string, currentEnergy *localShadowCurrentEne
 		sleepDisruption = localShadowSleepDisruption(sleep.blocks[*lastDate].Total, sleep.baseline)
 	}
 	illnessInput := s.buildIllnessEvidenceInput(*lastDate, resp.SubjectiveCheckin, sleepDisruption)
-	resp.IllnessSuspicion = health.ComputeIllnessSuspicion(illnessInput)
+	resp.IllnessSuspicion, err = s.classifyIllness(ctx, illnessInput)
+	if err != nil {
+		return nil, err
+	}
+	if snapshotBands != nil {
+		if err := s.applySnapshotGuidanceSQL(ctx, resp, *snapshotBands, health.GetStrings(lang)); err != nil {
+			return nil, err
+		}
+	}
 	health.ApplyIllnessSafetyCap(resp, health.GetStrings(lang))
 	resp.TodayGuidance = health.ResolveDashboardTodayGuidance(
 		resp.EnergyBank,
@@ -926,7 +940,10 @@ func (s *DB) getHealthBriefing(lang string, currentEnergy *localShadowCurrentEne
 	// This is deliberately last: the daily decision is the canonical action
 	// contract for every client and must reflect the final v2 verdict, illness
 	// cap and localized labels rather than an intermediate scoring result.
-	resp.DailyDecision = health.BuildDailyDecision(resp)
+	resp.DailyDecision, err = s.dailyDecision(ctx, resp)
+	if err != nil {
+		return nil, err
+	}
 
 	return resp, nil
 }
@@ -989,7 +1006,9 @@ func (s *DB) GetReadinessHistoryContext(ctx context.Context, outputDays int) ([]
 	if err != nil {
 		return nil, err
 	}
-	go s.saveReadinessScores(pts)
+	if s.profileGraphSchema == "" {
+		go s.saveReadinessScores(pts)
+	}
 	fillReadinessBands(pts)
 	return pts, nil
 }
@@ -1008,7 +1027,7 @@ func fillReadinessBands(pts []health.ReadinessPoint) {
 
 // computeReadinessHistory is the raw sliding-window computation (no caching).
 // For each output day D it uses HRV/RHR/sleep data from D-29..D
-// (most-recent-first) and calls health.ComputeReadinessScore.
+// (most-recent-first) and evaluates the shared dbt score for all dates in one query.
 func (s *DB) computeReadinessHistory(outputDays int) ([]health.ReadinessPoint, error) {
 	ctx, cancel := queryCtx()
 	defer cancel()
@@ -1117,13 +1136,20 @@ func (s *DB) computeReadinessHistoryAt(ctx context.Context, outputDays int, last
 		allDates = allDates[len(allDates)-outputDays:]
 	}
 
-	out := make([]health.ReadinessPoint, 0, len(allDates))
+	inputs := make([]readinessScoreInput, 0, len(allDates))
 	for _, d := range allDates {
-		hrv := calendarAlignedValues(hrvMap, d, window)
-		rhr := calendarAlignedValues(rhrMap, d, window)
-		sleep := calendarAlignedValues(sleepMap, d, window)
-		score := health.ComputeReadinessScore(hrv, rhr, sleep)
-		out = append(out, health.ReadinessPoint{Date: d, Score: score})
+		inputs = append(inputs, readinessScoreInput{Date: d,
+			HRV:   calendarAlignedValues(hrvMap, d, window),
+			RHR:   calendarAlignedValues(rhrMap, d, window),
+			Sleep: calendarAlignedValues(sleepMap, d, window)})
+	}
+	scores, err := s.readReadinessScores(ctx, "history", inputs)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]health.ReadinessPoint, 0, len(inputs))
+	for i, p := range scores {
+		out = append(out, health.ReadinessPoint{Date: inputs[i].Date, Score: p.RawScore})
 	}
 	return out, nil
 }
@@ -1221,7 +1247,9 @@ func (s *DB) freshDayFromRaw(date string) *dayRow {
 	for _, sp := range specs {
 		var val float64
 		var err error
-		if sp.isSum {
+		if sp.metric == "step_count" {
+			err = s.pool.QueryRow(ctx, "select source_total from ("+stepsOnDateQuery+") totals", date).Scan(&val)
+		} else if sp.isSum {
 			sleepDedup := sleepDedupClause(sp.metric)
 			err = s.pool.QueryRow(ctx, fmt.Sprintf(`
 				WITH source_totals AS (
@@ -1241,7 +1269,7 @@ func (s *DB) freshDayFromRaw(date string) *dayRow {
 				*sp.count = n
 			}
 		}
-		if err == nil && val > 0 {
+		if err == nil && (val > 0 || sp.metric == "step_count" && val == 0) {
 			v := val
 			*sp.dest = &v
 			anyFound = true

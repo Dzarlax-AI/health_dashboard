@@ -156,28 +156,46 @@ func sleepCV(vals []float64) float64 {
 	return stddev(vals) / m * 100
 }
 
+// readinessHRVComponent keeps the diagnostic values used by the scoring path.
+type readinessHRVComponent struct {
+	today, recentMean, baselineMean, baselineSD, zToday, zTrend, blended float64
+}
+
+func computeReadinessHRV(values []float64) (readinessHRVComponent, bool) {
+	if len(values) < minBaseline+2 {
+		return readinessHRVComponent{}, false
+	}
+	c := readinessHRVComponent{today: values[0], recentMean: avg(safeSlice(values, 0, 7))}
+	base := safeSlice(values, 7, len(values))
+	c.baselineMean, c.baselineSD = avg(base), stddev(base)
+	c.zToday = zScore(c.today, c.baselineMean, c.baselineSD)
+	c.zTrend = zScore(c.recentMean, c.baselineMean, c.baselineSD)
+	c.blended = c.zToday*wToday + c.zTrend*wTrend
+	return c, true
+}
+
 // computeReadiness computes a single composite 0-100 readiness score.
 //
 // Data slices must be sorted most-recent-first (index 0 = today).
 // Needs at least minBaseline+2 days of data for meaningful results.
 func computeReadiness(d RawMetrics) (score int, label, tip string, recoveryPct int) {
-	components := 0
-	totalZ := 0.0
+	weighted, weight := readinessWeightedInputs(d)
+	if weight == 0 {
+		return 70, "", "", 70
+	}
+	s := int(math.Round(zToScore(weighted / weight)))
+	return s, "", "", s
+}
+
+// readinessWeightedInputs returns the numerator and denominator used for the
+// headline score, before normalization, clamping, and rounding.
+func readinessWeightedInputs(d RawMetrics) (float64, float64) {
+	totalZ, totalWeight := 0.0, 0.0
 
 	// --- HRV (higher = better) ---
-	if len(d.HRV) >= minBaseline+2 {
-		today := d.HRV[0]
-		recent7 := avg(safeSlice(d.HRV, 0, 7))
-		baseVals := safeSlice(d.HRV, 7, len(d.HRV))
-		baseMean := avg(baseVals)
-		baseSD := stddev(baseVals)
-
-		zToday := zScore(today, baseMean, baseSD)
-		zTrend := zScore(recent7, baseMean, baseSD)
-		blended := zToday*wToday + zTrend*wTrend
-
-		totalZ += blended * wHRV
-		components++
+	if hrv, ok := computeReadinessHRV(d.HRV); ok {
+		totalZ += hrv.blended * wHRV
+		totalWeight += wHRV
 	}
 
 	// --- RHR (lower = better → invert z-score) ---
@@ -193,7 +211,7 @@ func computeReadiness(d RawMetrics) (score int, label, tip string, recoveryPct i
 		blended := zToday*wToday + zTrend*wTrend
 
 		totalZ += blended * wRHR
-		components++
+		totalWeight += wRHR
 	}
 
 	// --- Sleep (duration + consistency) ---
@@ -236,31 +254,10 @@ func computeReadiness(d RawMetrics) (score int, label, tip string, recoveryPct i
 
 		sleepZ := durationZ + absPenalty + consistencyPenalty
 		totalZ += sleepZ * wSleep
-		components++
-	}
-
-	if components == 0 {
-		return 70, "", "", 70 // no data → neutral
-	}
-
-	// Normalize: totalZ is a weighted sum where weights sum to <1 when
-	// not all components are present. Scale up to compensate.
-	totalWeight := 0.0
-	if len(d.HRV) >= minBaseline+2 {
-		totalWeight += wHRV
-	}
-	if len(d.RHR) >= minBaseline+2 {
-		totalWeight += wRHR
-	}
-	if len(d.Sleep) >= minBaseline+2 {
 		totalWeight += wSleep
 	}
-	if totalWeight > 0 {
-		totalZ = totalZ / totalWeight
-	}
 
-	s := int(math.Round(zToScore(totalZ)))
-	return s, "", "", s
+	return totalZ, totalWeight
 }
 
 type readinessComputation struct {

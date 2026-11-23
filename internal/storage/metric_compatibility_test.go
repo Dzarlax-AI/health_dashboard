@@ -714,3 +714,59 @@ func TestHealthKitCatalogMatchesFullRanking(t *testing.T) {
 		t.Fatalf("catalog got %+v, full ranking want %+v", got, want)
 	}
 }
+
+func TestV2StepsSelectSourcePerPhysicalHour(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	const day = "2026-10-25"
+	live, err := db.InsertRaw(Record{ContentType: "application/json; metrics-contract=2", Payload: "{}"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	point := func(stamp, source string, qty float64) MetricPoint {
+		return MetricPoint{MetricName: "step_count", Units: "count", Date: day + " " + stamp, Source: source, Qty: qty}
+	}
+	if err := db.InsertPoints(live, []MetricPoint{
+		point("02:00:00 +0200", "Apple Watch", 40), point("02:00:00 +0200", "iPhone", 100),
+		point("02:00:00 +0100", "iPhone", 70), point("02:00:00 +0100", "Other", 700),
+		point("03:00:00 +0100", "Apple Watch", 0), point("03:00:00 +0100", "iPhone", 90),
+		point("04:00:00 +0100", "Apple Watch A", 5), point("04:10:00 +0100", "Apple Watch A", 15),
+		point("04:00:00 +0100", "Apple Watch B", 20), point("05:00:00 +0100", "Other", 12),
+		point("06:00:00 +0100", "Apple Watch", 0),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	end := day + " 23:59:59"
+	hours, err := db.MetricDataForContract("step_count", day, end, "hour", "SUM", false)
+	want := []DataPoint{{Date: day + " 02:00", Qty: 110, Min: 40, Max: 70}, {Date: day + " 03:00", Qty: 90, Min: 90, Max: 90}, {Date: day + " 04:00", Qty: 20, Min: 5, Max: 15}, {Date: day + " 05:00", Qty: 12, Min: 12, Max: 12}, {Date: day + " 06:00", Qty: 0, Min: 0, Max: 0}}
+	if err != nil || !slices.Equal(hours, want) {
+		t.Fatalf("hours=%+v err=%v want %+v", hours, err, want)
+	}
+	days, err := db.MetricDataForContract("step_count", day, end, "day", "SUM", false)
+	if err != nil || len(days) != 1 || days[0] != (DataPoint{Date: day, Qty: 232, Min: 0, Max: 90}) {
+		t.Fatalf("daily steps=%+v err=%v", days, err)
+	}
+	raw, err := db.MetricDataBySourceForContract("step_count", day, end, "day", "SUM", false)
+	if err != nil || len(raw) != 5 || !slices.ContainsFunc(raw, func(s SourceDataPoints) bool {
+		return s.Source == "iPhone" && len(s.Points) == 1 && s.Points[0].Qty == 260
+	}) {
+		t.Fatalf("source chart=%+v err=%v", raw, err)
+	}
+	latest := func() {
+		t.Helper()
+		rows, err := db.LatestMetricsForContract(false)
+		if err != nil || !slices.ContainsFunc(rows, func(p LatestValue) bool {
+			return p.Metric == "step_count" && p.Unit == "count" && p.Date == day && p.Value == 232
+		}) {
+			t.Fatalf("latest=%+v err=%v", rows, err)
+		}
+	}
+	latest()
+	// The newest raw day is rejected by unit compatibility. The historical
+	// fallback must use the same winners as the direct latest-day query.
+	if _, err := db.pool.Exec(t.Context(), `INSERT INTO metric_points(health_record_id,metric_name,date,source,units,qty)
+        VALUES($1,'step_count','2026-10-26 02:00:00 +0100','Other','invalid',1000)`, live); err != nil {
+		t.Fatal(err)
+	}
+	latest()
+}

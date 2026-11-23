@@ -91,7 +91,8 @@ func (s *DB) computeServedSleepBank(ctx context.Context, date string, blocks map
 	if err != nil {
 		return BankResult{}, err
 	}
-	return computeCalendarEnergyBank(inputs, date, cfg), nil
+	res, _, err := s.readEnergyBankSQL(ctx, date, cfg, inputs)
+	return res, err
 }
 
 func (s *DB) loadServedSleepBankInputs(ctx context.Context, date string, blocks map[string]*LocalShadowSleep) (map[string]dailyInputs, error) {
@@ -203,7 +204,10 @@ func (s *DB) servedSleepReadinessHistory(ctx context.Context, publication SleepR
 				points = append(points, point)
 			}
 		} else {
-			readiness := s.readinessWithSleep(ctx, date, blocks, baseline)
+			readiness, err := s.readinessWithSleep(ctx, date, blocks, baseline)
+			if err != nil {
+				return nil, err
+			}
 			points = append(points, health.ReadinessPoint{Date: date, Score: readiness.Score, Band: readiness.Band})
 		}
 		day = day.AddDate(0, 0, 1)

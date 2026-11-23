@@ -40,13 +40,8 @@ with interval_summary as (
     left join {{ ref('sleep_duration_reference_v1') }} r on r.wake_date = c.date
     left join interval_summary i on i.wake_date = c.date
     left join stage_day s on s.date = c.date and s.source = n.source
-), classified as (
-    select *, {{ sleep_duration_status() }} as status,
-           case when duration_hours > 0 and duration_hours <= 24
-                then {{ sleep_duration_minutes('duration_hours') }} end as duration_minutes
-    from inputs
-), rounded as (
-    select *, case when status = 'available' then {{ sleep_duration_minutes('reference_hours') }} end as reference_minutes
-    from classified
 )
-select *, duration_minutes - reference_minutes as delta_minutes from rounded
+select inputs.*, status, duration_minutes, reference_minutes,
+       delta_minutes
+from inputs
+{{ sleep_duration_comparison_fields() }}

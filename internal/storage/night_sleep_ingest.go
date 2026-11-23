@@ -47,6 +47,12 @@ func lockNightSleepIngest(ctx context.Context, tx pgx.Tx) error {
 // same transaction as their points and canonical projection. A failed write
 // leaves the raw record available to the normal accepted-record replay.
 func (s *DB) InsertAcceptedPoints(recordID int64, points []MetricPoint, coverage []NightSleepCoverageCommitment) ([]MetricPoint, error) {
+	accepted, _, err := s.InsertAcceptedPointsWithDates(recordID, points, coverage)
+	return accepted, err
+}
+
+// InsertAcceptedPointsWithDates returns all cache dates affected by the committed batch.
+func (s *DB) InsertAcceptedPointsWithDates(recordID int64, points []MetricPoint, coverage []NightSleepCoverageCommitment) ([]MetricPoint, []string, error) {
 	ordinary := make([]MetricPoint, 0, len(points))
 	var nightPoints []MetricPoint
 	for _, point := range points {
@@ -57,7 +63,8 @@ func (s *DB) InsertAcceptedPoints(recordID int64, points []MetricPoint, coverage
 		}
 	}
 	if len(nightPoints) == 0 {
-		return points, s.InsertPoints(recordID, points)
+		dates, err := s.insertPointsWithCacheDates(recordID, points)
+		return points, dates, err
 	}
 
 	loc := s.reportTZLocation()
@@ -68,21 +75,21 @@ func (s *DB) InsertAcceptedPoints(recordID int64, points []MetricPoint, coverage
 	defer cancel()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer tx.Rollback(ctx)
 	if err = lockNightSleepIngest(ctx, tx); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// Mixed nightly/ordinary payloads must use the same journal-before-point
 	// lock order as ordinary ingestion and XML promotion.
 	cacheState, err := lockCacheMaintenanceRow(ctx, tx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var received time.Time
 	if err = tx.QueryRow(ctx, `SELECT received_at FROM health_records WHERE id=$1`, recordID).Scan(&received); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	accepted := ordinary
@@ -90,7 +97,7 @@ func (s *DB) InsertAcceptedPoints(recordID int64, points []MetricPoint, coverage
 	for _, entry := range entries {
 		applied, displacedDate, err := applyNightIngestEntry(ctx, tx, entry, recordID, received, loc, s.pointOrdering())
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if applied {
 			accepted = append(accepted, entry.point)
@@ -102,19 +109,23 @@ func (s *DB) InsertAcceptedPoints(recordID int64, points []MetricPoint, coverage
 			extraDates = append(extraDates, displacedDate)
 		}
 	}
-	if err = insertPointsTx(ctx, tx, recordID, ordinary, s.pointOrdering()); err != nil {
-		return nil, err
+	aliases, err := insertPointsAndAliasDatesTx(ctx, tx, recordID, ordinary, s.pointOrdering())
+	if err != nil {
+		return nil, nil, err
 	}
-	dates := append(cacheDatesFromPoints(accepted), extraDates...)
+	if err = refreshStepAliasDates(ctx, tx, aliases); err != nil {
+		return nil, nil, err
+	}
+	dates := uniqueStepDates(append(append(cacheDatesFromPoints(accepted), extraDates...), aliases...))
 	if len(dates) > 0 {
 		if err = s.recordCacheDirtyWithHRVRepairsTx(ctx, tx, cacheState, dates, nil); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	if err = tx.Commit(ctx); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return accepted, nil
+	return accepted, dates, nil
 }
 
 func nightIngestEntries(points []MetricPoint, coverages []NightSleepCoverageCommitment, loc *time.Location) []nightIngestEntry {

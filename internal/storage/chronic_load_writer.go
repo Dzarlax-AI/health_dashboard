@@ -237,8 +237,7 @@ func (s *DB) backfillChronicLoadSnapshots(from, to string, epochs *sourceEpochRu
 	if err != nil {
 		return 0, err
 	}
-	archLoadFrom := fromT.AddDate(0, 0, -14).Format(isoDate)
-	archByDate, err := s.LoadSleepArchitectureDays(archLoadFrom, to)
+	archByDate, err := s.LoadSleepArchitectureFeatures(from, to)
 	if err != nil {
 		return 0, err
 	}
@@ -263,7 +262,7 @@ func (s *DB) backfillChronicLoadSnapshots(from, to string, epochs *sourceEpochRu
 		date := d.Format(isoDate)
 		if err := s.writeChronicLoadRow(context.Background(), d, date,
 			epochs, cfg, recoveryByDate, recoveryLookup, acute,
-			priorChronic, priorAcuteDensity, archByDate); err != nil {
+			priorChronic, priorAcuteDensity, archByDate[date]); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -284,9 +283,8 @@ func (s *DB) writeChronicLoadRow(
 	recoveryLookup DailyValueLookup,
 	acuteOrByDate map[string]int,
 	priorChronic, priorAcuteDensity map[string]int,
-	archByDate map[string]SleepArchitectureDay,
+	archFields SleepArchitectureFeatureFields,
 ) error {
-	_ = ctx
 	epoch, epochStart := epochs.resolve(date)
 
 	// Paired warmup: count eligible Recovery rolling_3d rows strictly
@@ -297,7 +295,12 @@ func (s *DB) writeChronicLoadRow(
 
 	// Feature snapshot is emitted in all cases (eligible or not) so the
 	// (date, sub_score) PK contract holds. Build it once and reuse.
-	features := buildChronicLoadFeatures(t, epochStart, recoveryByDate, recoveryLookup, pairedCount, warmupMet, archByDate)
+	w, err := s.chipFeatureWindow(ctx, t, epochStart, ewmaWindowSlow-1, recoveryLookup)
+	if err != nil {
+		return err
+	}
+	features := chronicLoadFeatures{SleepArchitectureFeatureFields: archFields, RecoveryToday: w.Today, BaselineMean45: w.Mean45, BaselineSD45: w.SD45, BaselineZToday: w.Z45,
+		EligibleCount45: w.N45, EligibleCount180: w.N180, PairedCountToT: pairedCount, WarmupMet: warmupMet, WarmupComplete45: w.N45 >= health.ChronicLoadBaselineWindowDays/2, WarmupComplete180: w.N180 >= ewmaWindowSlow/3}
 	featuresJSON, err := json.Marshal(features)
 	if err != nil {
 		return fmt.Errorf("marshal chronic features %s: %w", date, err)
@@ -309,17 +312,12 @@ func (s *DB) writeChronicLoadRow(
 			"warmup_min_paired": health.ChronicLoadWarmupMinPaired,
 			"reason_detail":     "eligible Recovery rolling_3d count below warmup threshold within current source_epoch",
 		})
+		labels, err := s.chipTargets(ctx, chipTargetWindow{date: date, subScore: SubScoreChronicLoad, paired: pairedCount, breach: cfg.MinBreachDays, density: cfg.MinAcuteDensity}, TargetKindChronicLabel, TargetKindChronicAcuteDensity)
+		if err != nil {
+			return err
+		}
 		for _, tk := range []string{TargetKindChronicLabel, TargetKindChronicAcuteDensity} {
-			if err := s.SaveTargetSnapshot(TargetSnapshot{
-				Date:              date,
-				SubScore:          SubScoreChronicLoad,
-				TargetKind:        tk,
-				Eligible:          false,
-				EligibilityReason: health.ChronicLoadEligibilityBaselineWarmup,
-				DataCoverage:      cov,
-				SourceEpoch:       epoch,
-				FormulaVersion:    chronicLoadFormulaVersion,
-			}); err != nil {
+			if err := s.saveChipTarget(date, SubScoreChronicLoad, tk, epoch, chronicLoadFormulaVersion, labels[tk], cov); err != nil {
 				return fmt.Errorf("save warmup-ineligible %s/%s: %w", date, tk, err)
 			}
 		}
@@ -330,12 +328,12 @@ func (s *DB) writeChronicLoadRow(
 		// has been met. Without these, the bleeding edge of every
 		// backfill (last 14 days, where the forward window can't close)
 		// would render the chip as `pending` indefinitely.
-		if err := s.saveEventBaseRateBaseline(
+		if err := s.saveEventBaseRateBaseline(ctx,
 			t, date, SubScoreChronicLoad, TargetKindChronicLabel,
 			priorChronic, epoch, epochStart, chronicLoadFormulaVersion); err != nil {
 			return fmt.Errorf("save warmup-ineligible baseline %s/chronic_label: %w", date, err)
 		}
-		if err := s.saveEventBaseRateBaseline(
+		if err := s.saveEventBaseRateBaseline(ctx,
 			t, date, SubScoreChronicLoad, TargetKindChronicAcuteDensity,
 			priorAcuteDensity, epoch, epochStart, chronicLoadFormulaVersion); err != nil {
 			return fmt.Errorf("save warmup-ineligible baseline %s/chronic_acute_density: %w", date, err)
@@ -433,13 +431,10 @@ func (s *DB) writeChronicLoadRow(
 	maxPossibleBreaches := breachCount + missingRecoveryDays
 	maxPossibleAcuteEvents := acuteCount + missingAcuteDays
 
-	chronicLabel := boolToFloat(breachCount >= cfg.MinBreachDays)
-	acuteDensityLabel := boolToFloat(acuteCount >= cfg.MinAcuteDensity)
-
-	chronicLabelEligible := breachCount >= cfg.MinBreachDays ||
-		maxPossibleBreaches < cfg.MinBreachDays
-	acuteDensityEligible := acuteCount >= cfg.MinAcuteDensity ||
-		maxPossibleAcuteEvents < cfg.MinAcuteDensity
+	labels, err := s.chipTargets(ctx, chipTargetWindow{date: date, subScore: SubScoreChronicLoad, paired: pairedCount, breach: cfg.MinBreachDays, density: cfg.MinAcuteDensity, days: cells}, TargetKindChronicLabel, TargetKindChronicAcuteDensity)
+	if err != nil {
+		return err
+	}
 
 	cov := mustMarshal(map[string]any{
 		"forward_window_days":       health.ChronicLoadForwardWindowDays,
@@ -457,57 +452,16 @@ func (s *DB) writeChronicLoadRow(
 		"per_day":                   cells,
 	})
 
-	// Primary chronic_label: gated independently on Recovery observability.
-	chronicLabelRow := TargetSnapshot{
-		Date:           date,
-		SubScore:       SubScoreChronicLoad,
-		TargetKind:     TargetKindChronicLabel,
-		DataCoverage:   cov,
-		SourceEpoch:    epoch,
-		FormulaVersion: chronicLoadFormulaVersion,
+	for _, tk := range []string{TargetKindChronicLabel, TargetKindChronicAcuteDensity} {
+		if err := s.saveChipTarget(date, SubScoreChronicLoad, tk, epoch, chronicLoadFormulaVersion, labels[tk], cov); err != nil {
+			return err
+		}
 	}
-	if chronicLabelEligible {
-		chronicLabelRow.TargetValue = &chronicLabel
-		chronicLabelRow.Eligible = true
-		chronicLabelRow.EligibilityReason = health.ChronicLoadEligibilityOK
-	} else {
-		chronicLabelRow.Eligible = false
-		chronicLabelRow.EligibilityReason = EligibilityEventWindowDataMissing
+	if v := labels[TargetKindChronicLabel].Value; v != nil {
+		priorChronic[date] = int(*v)
 	}
-	if err := s.SaveTargetSnapshot(chronicLabelRow); err != nil {
-		return fmt.Errorf("save chronic_label %s: %w", date, err)
-	}
-
-	// Secondary chronic_acute_density: gated independently on Acute observability.
-	acuteDensityRow := TargetSnapshot{
-		Date:           date,
-		SubScore:       SubScoreChronicLoad,
-		TargetKind:     TargetKindChronicAcuteDensity,
-		DataCoverage:   cov,
-		SourceEpoch:    epoch,
-		FormulaVersion: chronicLoadFormulaVersion,
-	}
-	if acuteDensityEligible {
-		acuteDensityRow.TargetValue = &acuteDensityLabel
-		acuteDensityRow.Eligible = true
-		acuteDensityRow.EligibilityReason = health.ChronicLoadEligibilityOK
-	} else {
-		acuteDensityRow.Eligible = false
-		acuteDensityRow.EligibilityReason = EligibilityEventWindowDataMissing
-	}
-	if err := s.SaveTargetSnapshot(acuteDensityRow); err != nil {
-		return fmt.Errorf("save chronic_acute_density %s: %w", date, err)
-	}
-
-	// Update prior-label maps with this date so the naive base-rate
-	// baselines for later iterations have access. Only update from
-	// rows that were eligibly labelled — ineligible rows have no
-	// meaningful predictand to feed forward into the base rate.
-	if chronicLabelEligible {
-		priorChronic[date] = int(chronicLabel)
-	}
-	if acuteDensityEligible {
-		priorAcuteDensity[date] = int(acuteDensityLabel)
+	if v := labels[TargetKindChronicAcuteDensity].Value; v != nil {
+		priorAcuteDensity[date] = int(*v)
 	}
 
 	// Naive base-rate baselines per target_kind. Written
@@ -516,12 +470,12 @@ func (s *DB) writeChronicLoadRow(
 	// 14-day window has closed for this date. The previous gating on
 	// per-target eligibility hid deployable predictions on the
 	// bleeding edge where the future label window can't close yet.
-	if err := s.saveEventBaseRateBaseline(
+	if err := s.saveEventBaseRateBaseline(ctx,
 		t, date, SubScoreChronicLoad, TargetKindChronicLabel,
 		priorChronic, epoch, epochStart, chronicLoadFormulaVersion); err != nil {
 		return fmt.Errorf("save chronic base-rate %s/chronic_label: %w", date, err)
 	}
-	if err := s.saveEventBaseRateBaseline(
+	if err := s.saveEventBaseRateBaseline(ctx,
 		t, date, SubScoreChronicLoad, TargetKindChronicAcuteDensity,
 		priorAcuteDensity, epoch, epochStart, chronicLoadFormulaVersion); err != nil {
 		return fmt.Errorf("save chronic base-rate %s/chronic_acute_density: %w", date, err)
@@ -550,47 +504,6 @@ type chronicLoadFeatures struct {
 	WarmupMet         bool     `json:"warmup_met"`
 	WarmupComplete45  bool     `json:"warmup_complete_45d"`
 	WarmupComplete180 bool     `json:"warmup_complete_180d"`
-}
-
-func buildChronicLoadFeatures(
-	t time.Time,
-	epochStart string,
-	recoveryByDate map[string]recoveryRolling3dRow,
-	recoveryLookup DailyValueLookup,
-	pairedCount int,
-	warmupMet bool,
-	archByDate map[string]SleepArchitectureDay,
-) chronicLoadFeatures {
-	out := chronicLoadFeatures{
-		PairedCountToT: pairedCount,
-		WarmupMet:      warmupMet,
-	}
-	out.SleepArchitectureFeatureFields = BuildSleepArchitectureFeatureFields(t, archByDate)
-	// Today's Recovery 3d-roll, when eligible.
-	if r, ok := recoveryByDate[t.Format(isoDate)]; ok && r.Eligible && r.Value != nil {
-		out.RecoveryToday = ptrFloat(*r.Value)
-	}
-	// EWMA45 baseline at end-of-day-t (inclusive at t but excluding
-	// t+1 onwards). Distinct from the per-candidate baselines used for
-	// the primary label — both are honest reflections of state at t.
-	tPlusOne := t.AddDate(0, 0, 1)
-	mean, sd, n45 := windowStatsBefore(tPlusOne, health.ChronicLoadBaselineWindowDays, epochStart, recoveryLookup)
-	out.BaselineMean45 = mean
-	out.BaselineSD45 = sd
-	out.EligibleCount45 = n45
-	out.WarmupComplete45 = n45 >= health.ChronicLoadBaselineWindowDays/2
-
-	if out.RecoveryToday != nil {
-		out.BaselineZToday = zScoreOrNil(*out.RecoveryToday, mean, sd)
-	}
-
-	// 180-day slow window — count only, used for chronic-drift warmup
-	// indicator. SD beyond a year of history wasn't requested in the
-	// feature spec.
-	_, _, n180 := windowStatsBefore(tPlusOne, ewmaWindowSlow, epochStart, recoveryLookup)
-	out.EligibleCount180 = n180
-	out.WarmupComplete180 = n180 >= ewmaWindowSlow/3
-	return out
 }
 
 // --- Helpers -----------------------------------------------------------

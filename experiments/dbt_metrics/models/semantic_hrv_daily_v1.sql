@@ -6,14 +6,13 @@ with cache as (
 ), points as (
     select * from {{ ref('semantic_hrv_observation_v1') }}
 ), hours as (
-    select writer_date, source, substring(date,1,13) as hour, avg(qty)::real as hour_ms
-    from points where writer_valid group by 1,2,3
+    select 'heart_rate_variability'::text as metric_name, source, substring(date,1,13) as hour,
+           avg(qty)::real as avg_val, min(qty) as min_val, max(qty) as max_val
+    from points where writer_valid group by source, substring(date,1,13)
 ), devices as (
-    select writer_date,source,avg(hour_ms) as device_ms from hours group by 1,2
-), live as (
-    select writer_date,avg(device_ms)::real as live_ms from devices group by 1
-), legacy as (
-    select writer_date,avg(hour_ms)::real as legacy_ms from hours group by 1
+    {{ daily_source_rows('hours', 'true') }}
+), daily as (
+    select date, {{ daily_source_mean() }} as avg_val from devices group by date
 ), raw as (
     select writer_date, avg(qty) filter(where writer_valid) as raw_ms,
            count(*) filter(where writer_valid) as n_points,
@@ -27,7 +26,7 @@ with cache as (
                filter(where quality='ok' and (substring(date,12,2)>='23' or substring(date,12,2)<'09')) as fixed_window_median_ms
     from points group by 1
 )
-select c.date,l.live_ms,h.legacy_ms,r.raw_ms,coalesce(r.n_points,0) as n_points,
+select c.date,d.avg_val as live_ms,d.avg_val as legacy_ms,r.raw_ms,coalesce(r.n_points,0) as n_points,
        coalesce(r.sdnn_points,0) as sdnn_points,coalesce(r.unknown_method_points,0) as unknown_method_points,
        coalesce(r.rmssd_points,0) as rmssd_points,
        coalesce(r.fixed_window_points,0) as fixed_window_points,r.fixed_window_median_ms,
@@ -39,7 +38,6 @@ select c.date,l.live_ms,h.legacy_ms,r.raw_ms,coalesce(r.n_points,0) as n_points,
        case when r.n_points>=4 then 'final' when coalesce(r.raw_ms,cache.fallback_ms) is not null then 'provisional'
             else 'missing' end as morning_confidence
 from {{ source('source_data','calendar') }} c
-left join live l on l.writer_date=c.date
-left join legacy h on h.writer_date=c.date
+left join daily d on d.date=c.date
 left join raw r on r.writer_date=c.date
 left join cache on cache.date=c.date

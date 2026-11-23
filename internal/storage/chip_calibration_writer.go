@@ -33,8 +33,6 @@ package storage
 
 import (
 	"fmt"
-	"math"
-	"sort"
 	"time"
 )
 
@@ -128,129 +126,14 @@ func (s *DB) RecomputeChipCalibrations(asOfDate string) ([]ChipCalibrationRecomp
 }
 
 func (s *DB) recomputeOneChipCalibration(subScore, targetKind, epoch string, asOf time.Time) (*ChipCalibration, error) {
-	if epoch == "" || epoch == SentinelSourceEpoch {
-		return &ChipCalibration{
-			SubScore: subScore, TargetKind: targetKind, SourceEpoch: epoch,
-			Status: ChipCalibrationStatusNoCurrentEpoch,
-			Method: ChipCalibrationMethodPercentileP80,
-			CalibrationWindowDays: ChipCalibrationWindowDays,
-		}, nil
-	}
-
-	preds, labels, err := s.loadChipCalibrationPairs(subScore, targetKind, epoch, asOf, ChipCalibrationWindowDays)
-	if err != nil {
-		return nil, err
-	}
-
-	base := ChipCalibration{
-		SubScore: subScore, TargetKind: targetKind, SourceEpoch: epoch,
-		Method:                ChipCalibrationMethodPercentileP80,
-		CalibrationWindowDays: ChipCalibrationWindowDays,
-		NEligible:             len(preds),
-	}
-	for _, l := range labels {
-		if l == 1 {
-			base.NPositives++
-		}
-	}
-
-	if base.NEligible < ChipCalibrationMinEligible {
-		base.Status = ChipCalibrationStatusInsufficientEligible
-		return &base, nil
-	}
-	if base.NPositives < ChipCalibrationMinPositives {
-		base.Status = ChipCalibrationStatusInsufficientPositive
-		return &base, nil
-	}
-
-	// Percentile + base-rate guard. Both retained in audit fields so
-	// an operator can tell which one chose the final cutoff.
-	p80 := percentile(preds, 80)
-	baseRate := float64(base.NPositives) / float64(base.NEligible)
-	cutoff := math.Max(p80, baseRate)
-	base.P80 = &p80
-	base.BaseRate = &baseRate
-	base.Cutoff = &cutoff
-	base.Status = ChipCalibrationStatusActive
-	return &base, nil
-}
-
-// loadChipCalibrationPairs returns (predictions, labels) over the
-// last `windowDays` calendar days inside the given source_epoch,
-// anchored on `asOf` (tenant-local "today"). Joins naive_baselines
-// with target_snapshots on the same row keys the chip read path
-// uses; filters to eligible target rows with populated predictions
-// on both sides.
-func (s *DB) loadChipCalibrationPairs(subScore, targetKind, epoch string, asOf time.Time, windowDays int) ([]float64, []int, error) {
+	base := ChipCalibration{SubScore: subScore, TargetKind: targetKind, SourceEpoch: epoch,
+		Method: ChipCalibrationMethodPercentileP80, CalibrationWindowDays: ChipCalibrationWindowDays}
 	ctx, cancel := queryCtx()
 	defer cancel()
-	to := asOf
-	from := to.AddDate(0, 0, -(windowDays - 1))
-	// The JOIN constrains `t.source_epoch = n.source_epoch` so a
-	// target row written in a previous epoch can't pair with a
-	// prediction from the current epoch — same class of cross-epoch
-	// leak fixed for naive_baselines reads in #102 and §3.4 of the
-	// plan. With baseline writers epoch-clipped (PRs #108, #110) this
-	// is the last cross-epoch join that touched calibration data.
-	rows, err := s.pool.Query(ctx, `
-		SELECT n.predicted_value, t.target_value
-		  FROM naive_baselines n
-		  JOIN target_snapshots t
-		    ON t.date = n.date AND t.sub_score = n.sub_score
-		       AND t.target_kind = n.target_kind
-		       AND t.source_epoch = n.source_epoch
-		 WHERE n.sub_score = $1
-		   AND n.target_kind = $2
-		   AND n.baseline_kind = $3
-		   AND n.source_epoch = $4
-		   AND n.predicted_value IS NOT NULL
-		   AND t.eligible = TRUE
-		   AND t.target_value IS NOT NULL
-		   AND n.date BETWEEN $5 AND $6
-	`, subScore, targetKind, BaselineKindEventBaseRate, epoch,
-		from.Format(isoDate), to.Format(isoDate))
+	err := s.pool.QueryRow(ctx, chipCalibrationSQL, subScore, targetKind, epoch, asOf.Format(isoDate)).Scan(
+		&base.NEligible, &base.NPositives, &base.Status, &base.P80, &base.BaseRate, &base.Cutoff)
 	if err != nil {
-		return nil, nil, fmt.Errorf("loadChipCalibrationPairs: %w", err)
+		return nil, fmt.Errorf("recompute chip calibration: %w", err)
 	}
-	defer rows.Close()
-	var preds []float64
-	var labels []int
-	for rows.Next() {
-		var pred, label float32
-		if scanErr := rows.Scan(&pred, &label); scanErr != nil {
-			return nil, nil, fmt.Errorf("loadChipCalibrationPairs scan: %w", scanErr)
-		}
-		preds = append(preds, float64(pred))
-		l := 0
-		if label >= 0.5 {
-			l = 1
-		}
-		labels = append(labels, l)
-	}
-	return preds, labels, rows.Err()
+	return &base, nil
 }
-
-// percentile returns the requested `p`-th percentile of `xs` using
-// linear interpolation between order statistics — the standard
-// numpy / R `linear` definition. `p` is in [0, 100]; out-of-range
-// values panic in callers, but the writer always passes 80 so we
-// don't guard.
-func percentile(xs []float64, p float64) float64 {
-	if len(xs) == 0 {
-		return math.NaN()
-	}
-	sorted := append([]float64(nil), xs...)
-	sort.Float64s(sorted)
-	if len(sorted) == 1 {
-		return sorted[0]
-	}
-	rank := (p / 100.0) * float64(len(sorted)-1)
-	lo := int(math.Floor(rank))
-	hi := int(math.Ceil(rank))
-	if lo == hi {
-		return sorted[lo]
-	}
-	frac := rank - float64(lo)
-	return sorted[lo]*(1-frac) + sorted[hi]*frac
-}
-

@@ -1,0 +1,56 @@
+version: 2
+sources:
+  - name: chip_captures
+    schema: "{{ var('semantic_source_schema','source_data') }}"
+    tables:
+      - name: chip_target_input
+        description: Forward daily operands for retrospective labels. Never a morning prediction.
+      - name: chip_calibration_input
+        description: One isolated scope per profile, subscore, target, epoch and as-of date.
+      - name: chip_recovery_sleep_input
+        description: Complete dated capture assessments for the as-of window. Historical inputs can be unavailable.
+      - name: chip_baseline_input
+        description: Date-keyed eligible daily values or binary labels, captured for this target and epoch.
+      - name: chip_pairs
+        description: Saved baseline/target pairs in the parent capture scope, including excluded pairs.
+      - name: chip_display_input
+        description: Observed prediction and calibration operands for the specified reader mode.
+models:
+  - name: chip_targets_v1
+    config:
+      enabled: "{{ var('readiness_chips_shadow', false) }}"
+    description: >-
+      Primary and secondary hindsight targets with warmup and observability gates. Recovery and
+      Passive average eligible daily efficiency and walking HR. Acute and Chronic consume
+      the writer's daily standardized deviations and count qualifying forward observations.
+      This output is only known after the forward window. The synthetic comparison starts
+      at the daily operands. Recovery includes the mature two-of-three candidate, Acute includes
+      the strict same-day AND, Chronic includes acute density. Athletic wo_residual has no writer.
+  - name: chip_recovery_sleep_v1
+    config:
+      enabled: "{{ var('readiness_chips_shadow', false) }}"
+    description: The 52.5-hour weekly target subtracts eligible sleep even for a clipped epoch. Seven explicitly missing nights yield 52.5 hours of debt. An absent or incomplete assessment capture yields no result.
+  - name: chip_feature_windows_v1
+    config:
+      enabled: "{{ var('readiness_chips_shadow', false) }}"
+    description: Dated eligible observations for means, sample deviation, z-score, counts and 45/180-day EWMAs.
+  - name: chip_calibration_v1
+    config:
+      enabled: "{{ var('readiness_chips_shadow', false) }}"
+    description: Binary calibration from eligible pairs in the trailing 180 calendar days.
+  - name: chip_baseline_v1
+    config:
+      enabled: "{{ var('readiness_chips_shadow', false) }}"
+    description: >-
+      Replays every active naive baseline from saved daily operands for this decision.
+      Slow 180-day and recency decay are reserved identifiers with no baseline writer.
+      An as-of replay needs capture of which prior labels were known by that morning.
+  - name: chip_display_v1
+    config:
+      enabled: "{{ var('readiness_chips_shadow', false) }}"
+    description: >-
+      Operational chip state using the saved prediction and reader-specific cutoff.
+      Snapshot denotes supplied decision-time evidence. History replay can use a later
+      calibration for the same epoch and date. An unrecoverable morning emits no state.
+      Continuous chips expose the numeric prediction and the UI owns decimal formatting.
+      This experiment does not persist decision-time evidence for existing reports.

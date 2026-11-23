@@ -145,7 +145,7 @@ func (h *Handler) workouts(w http.ResponseWriter, r *http.Request) {
 
 	ingested, failed := 0, 0
 	for _, hw := range workouts {
-		summary, convErr := convertHAEWorkout(hw, h.hrZones)
+		summary, convErr := convertHAEWorkout(hw, h.hrZones, db.WorkoutZoneSeconds)
 		if convErr != nil {
 			log.Printf("record %d: convert workout %q: %v", recordID, hw.ID, convErr)
 			failed++
@@ -166,7 +166,7 @@ func (h *Handler) workouts(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func convertHAEWorkout(hw haeWorkout, zones health.HRZones) (storage.Workout, error) {
+func convertHAEWorkout(hw haeWorkout, zones health.HRZones, zoneSeconds func(health.WorkoutZoneInput) ([5]int, error)) (storage.Workout, error) {
 	if hw.ID == "" {
 		return storage.Workout{}, fmt.Errorf("missing id")
 	}
@@ -256,7 +256,13 @@ func convertHAEWorkout(hw haeWorkout, zones health.HRZones) (storage.Workout, er
 			log.Printf("workout %s: %d/%d heart-rate samples have unparseable timestamps (skipped)",
 				hw.ID, skipped, len(hw.HeartRateData))
 		}
-		secs := health.ComputeTimeInZones(samples, end, zones)
+		var secs [5]int
+		if len(samples) > 0 {
+			secs, err = zoneSeconds(health.NewWorkoutZoneInput(samples, end, zones))
+			if err != nil {
+				return storage.Workout{}, fmt.Errorf("compute workout HR zones: %w", err)
+			}
+		}
 		z1, z2, z3, z4, z5 := secs[0], secs[1], secs[2], secs[3], secs[4]
 		out.HRZ1Sec, out.HRZ2Sec, out.HRZ3Sec, out.HRZ4Sec, out.HRZ5Sec = &z1, &z2, &z3, &z4, &z5
 	}

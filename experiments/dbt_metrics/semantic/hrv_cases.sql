@@ -40,7 +40,7 @@ from (values
 ) as sample(d,src,qty,method,grain,duration);
 do $$ begin
  if not exists(select from dbt_output.semantic_hrv_daily_v1 where date='2000-03-26' and live_ms=75
-     and abs(legacy_ms-200.0/3)<0.00001 and raw_ms=48 and n_points=5 and sdnn_points=4 and fixed_window_points=5
+     and legacy_ms=75 and raw_ms=48 and n_points=5 and sdnn_points=4 and fixed_window_points=5
      and morning_origin='raw' and morning_confidence='final') then raise exception 'live, legacy, fresh or method gating'; end if;
  if not exists(select from dbt_output.semantic_hrv_daily_v1 where date='2000-10-30' and morning_ms=38
      and n_points=0 and morning_observed_on=date and morning_origin='same_day_cache' and morning_confidence='provisional')

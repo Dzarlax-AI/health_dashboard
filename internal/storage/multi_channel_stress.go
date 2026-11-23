@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"health-receiver/internal/health"
+	dbtmetrics "health-receiver/experiments/dbt_metrics"
 )
 
 // todayChannelMedian returns the median of `channel`'s samples taken
@@ -136,70 +136,43 @@ func meanFiniteHourZ(hourZ []float64) (float64, bool) {
 	return sum / float64(n), true
 }
 
-// appendMultiChannelStressFlags evaluates the §4.3 multi-channel
-// flags (illness_signature / recovery_debt / parasympathetic_rebound)
-// and appends them to `flags`. Returns the extended slice — caller
-// merges into SustainedHRLoadResult.Flags before persisting.
-//
-// All three flags are independent of the HR coverage gate and the
-// sustained_hr_load integral; they read autonomic channels (HRV,
-// temp, resp, overnight RHR) that have their own §4.1 calibration
-// state machines. A day with stale_stress for HR can still surface
-// illness_signature when temp+resp+hrv all break baseline.
-//
-// `hourZ` is the per-hour HR z-series the caller already computed
-// for sustained_hr_load; reused here to derive the daily HR-shift
-// summary the parasympathetic_rebound predicate consumes — no second
-// pass over hourly_metrics.
-func (s *DB) appendMultiChannelStressFlags(
-	date string,
-	loc *time.Location,
-	hourZ []float64,
-	flags []string,
-) []string {
-	ctx, cancel := queryCtx()
-	defer cancel()
-	flags, _ = s.appendMultiChannelStressFlagsContext(ctx, date, loc, hourZ, flags)
-	return flags
-}
-
-func (s *DB) appendMultiChannelStressFlagsContext(ctx context.Context, date string, loc *time.Location, hourZ []float64, flags []string) ([]string, error) {
+// applyStressSignals evaluates the shared daily load and flag predicates after
+// resolving each channel's own calibration and coverage. A missing HR series
+// still allows the independent overnight signals to fire.
+func (s *DB) applyStressSignals(ctx context.Context, date string, loc *time.Location, hourZ []float64, threshold float64, result *SustainedHRLoadResult) error {
 	hrvDrop, hrvOK, err := s.channelDropContext(ctx, date, ChannelHRV, loc)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	tempZ, tempOK, err := s.channelShiftContext(ctx, date, ChannelTemp, loc)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	respZ, respOK, err := s.channelShiftContext(ctx, date, ChannelResp, loc)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	rhrShift, rhrOK, err := s.channelShiftContext(ctx, date, ChannelHROvernight, loc)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	dayHRShift, dayHROK := meanFiniteHourZ(hourZ)
 
-	// illness_signature — all three channels deviating together.
-	if hrvOK && tempOK && respOK &&
-		health.IllnessSignature(tempZ, respZ, hrvDrop) {
-		flags = append(flags, "illness_signature")
+	var signals []string
+	err = s.pool.QueryRow(ctx, dbtmetrics.BriefingStressSignalsSQL(), hourZ, threshold,
+		availableStressShift(tempZ, tempOK), availableStressShift(respZ, respOK),
+		availableStressShift(hrvDrop, hrvOK), availableStressShift(rhrShift, rhrOK),
+		availableStressShift(dayHRShift, dayHROK)).Scan(&result.SustainedHRLoadZ, &signals)
+	if err != nil {
+		return err
 	}
+	result.Flags = append(result.Flags, signals...)
+	return nil
+}
 
-	// recovery_debt — overnight HRV down + overnight RHR up.
-	if hrvOK && rhrOK &&
-		health.RecoveryDebt(hrvDrop, rhrShift) {
-		flags = append(flags, "recovery_debt")
+func availableStressShift(value float64, available bool) *float64 {
+	if !available {
+		return nil
 	}
-
-	// parasympathetic_rebound — daily HR shift up + HRV above
-	// baseline (drop < −1).
-	if dayHROK && hrvOK &&
-		health.ParasympatheticRebound(dayHRShift, hrvDrop) {
-		flags = append(flags, "parasympathetic_rebound")
-	}
-
-	return flags, nil
+	return &value
 }

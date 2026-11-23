@@ -10,6 +10,18 @@
   {% endif %}
 {%- endmacro %}
 
+{# Only step aggregates need adjacent stored dates when one offset rendering changes.
+   The source capture remains bounded to the caller's requested dates. #}
+{% macro step_affected_dates_filter(column_name) -%}
+  {% set requested = var('affected_dates', []) %}
+  {% if requested %}
+    ({% for day in requested %}
+      {{ column_name }} between ('{{ day }}'::date-2)::text and ('{{ day }}'::date+2)::text
+      {% if not loop.last %}or{% endif %}
+    {% endfor %})
+  {% else %}TRUE{% endif %}
+{%- endmacro %}
+
 {% macro validate_affected_dates() %}
   {% set values = var('affected_dates', []) %}
   {% if values is string or values is mapping or values is not sequence %}
@@ -41,22 +53,19 @@
       FROM unnest(ARRAY[
         {% for value in values %}'{{ value }}'{% if not loop.last %}, {% endif %}{% endfor %}
       ]::text[]) requested(date)
-      LEFT JOIN source_data.calendar c ON c.date = requested.date
+      LEFT JOIN {{ source('source_data', 'calendar') }} c ON c.date = requested.date
       WHERE c.date IS NULL
     {% endset %}
     {% set missing = run_query(sql) %}
     {% if missing.rows | length > 0 %}
-      {{ exceptions.raise_compiler_error('affected_dates must exist in source_data.calendar') }}
+      {{ exceptions.raise_compiler_error('affected_dates must exist in the profile calendar') }}
     {% endif %}
   {% endif %}
 {% endmacro %}
 
 {% macro delete_hourly_affected_days() %}
   {% if is_incremental() and var('affected_dates', []) | length > 0 %}
-    DELETE FROM {{ this }} WHERE SUBSTRING(hour, 1, 10) = ANY(ARRAY[
-      {% for date_value in var('affected_dates') %}
-        '{{ date_value }}'{% if not loop.last %}, {% endif %}
-      {% endfor %}
-    ]::text[])
+    DELETE FROM {{ this }} WHERE {{ affected_dates_filter('substring(hour,1,10)') }}
+      or (metric_name='step_count' and {{ step_affected_dates_filter('substring(hour,1,10)') }})
   {% endif %}
 {% endmacro %}

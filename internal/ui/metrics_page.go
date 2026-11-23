@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"health-receiver/internal/metriccontract"
 	"health-receiver/internal/storage"
 )
 
@@ -71,7 +72,7 @@ func (h *Handler) buildMetricsPageData(ctx context.Context, lang, query string, 
 		Value float64
 		Unit  string
 	}{}
-	if vals, err := db.GetLatestMetricValues(); err == nil {
+	if vals, err := db.LatestMetricsForContract(metriccontract.DefaultReadVersion() == metriccontract.Legacy); err == nil {
 		for _, v := range vals {
 			latestMap[v.Metric] = struct {
 				Value float64

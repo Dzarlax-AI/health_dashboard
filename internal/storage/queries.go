@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	dbtmetrics "health-receiver/experiments/dbt_metrics"
 )
 
 // MetricSummary is returned by ListMetrics.
@@ -99,7 +100,7 @@ var dashboardCacheQuery = `
 		       h.source,
 		       SUM(h.avg_val)::double precision AS source_total
 		FROM hourly_metrics h
-		JOIN requested r ON r.metric = h.metric_name AND r.aggregation = 'SUM'
+		JOIN requested r ON r.metric = h.metric_name AND r.aggregation = 'SUM' AND r.metric <> 'step_count'
 		CROSS JOIN days d
 		WHERE SUBSTRING(h.hour, 1, 10) = d.today
 		   OR SUBSTRING(h.hour, 1, 10) = d.previous
@@ -128,7 +129,10 @@ var dashboardCacheQuery = `
 		WHERE SUBSTRING(h.hour, 1, 10) = d.today
 		   OR SUBSTRING(h.hour, 1, 10) = d.previous
 		GROUP BY SUBSTRING(h.hour, 1, 10), h.metric_name
+	), step_days AS (` + physicalStepTotalsSQL("substring(date,1,10) in (select today from days union all select previous from days)", "hourly_metrics", "substring(hour,1,10) in (select today from days union all select previous from days)") + `
 	), values_by_day AS (
+		SELECT day AS date, 'step_count' AS metric_name, source_total AS value FROM step_days
+		UNION ALL
 		SELECT date, metric_name, value FROM sum_values
 		UNION ALL
 		SELECT date, metric_name, value FROM avg_values
@@ -136,7 +140,7 @@ var dashboardCacheQuery = `
 	SELECT d.today,
 	       d.previous,
 	       r.metric,
-	       COALESCE(current.value, 0),
+	       current.value,
 	       COALESCE(previous.value, 0)
 	FROM days d
 	CROSS JOIN requested r
@@ -152,10 +156,8 @@ type LatestValue struct {
 	Date   string  `json:"date"`
 }
 
-// GetLatestMetricValues returns the latest non-zero daily value for every metric in the DB.
-// SUM metrics use MAX(per-source daily SUM) to avoid double-counting overlapping devices.
-// AVG metrics use a simple daily AVG across all sources and hours.
-// Reads from hourly_metrics (fast cache) instead of metric_points (4M+ rows).
+// GetLatestMetricValues returns the latest eligible value per metric. Steps use
+// the same physical hours as the chart, including a measured zero.
 func (s *DB) GetLatestMetricValues() ([]LatestValue, error) {
 	return s.latestMetricValues(false)
 }
@@ -169,6 +171,12 @@ func (s *DB) latestMetricValues(legacy bool) ([]LatestValue, error) {
 		sumList = append(sumList, "'"+m+"'")
 	}
 	sumIn := strings.Join(sumList, ",")
+	var dailyAverages []string
+	for _, spec := range dailyMetricSpecs {
+		if !SumMetrics[spec.metric] {
+			dailyAverages = append(dailyAverages, spec.metric)
+		}
+	}
 
 	query := fmt.Sprintf(`
 		WITH latest_day AS (
@@ -188,7 +196,7 @@ func (s *DB) latestMetricValues(legacy bool) ([]LatestValue, error) {
 				FROM hourly_metrics h
 				JOIN latest_day l ON h.metric_name = l.metric_name
 					AND SUBSTRING(h.hour,1,10) = l.max_date
-				WHERE h.metric_name IN (%s)
+				WHERE h.metric_name IN (%s) AND h.metric_name <> 'step_count'
 				GROUP BY h.metric_name, l.max_date, h.source
 			) sub GROUP BY metric_name, max_date
 		),
@@ -197,16 +205,24 @@ func (s *DB) latestMetricValues(legacy bool) ([]LatestValue, error) {
 			FROM hourly_metrics h
 			JOIN latest_day l ON h.metric_name = l.metric_name
 				AND SUBSTRING(h.hour,1,10) = l.max_date
-			WHERE h.metric_name NOT IN (%s)
+			WHERE h.metric_name NOT IN (%s) AND h.metric_name <> ALL($1::text[])
 			GROUP BY h.metric_name, l.max_date
-		)
+		), latest_average_hours AS (
+		    SELECT h.* FROM hourly_metrics h JOIN latest_day d ON d.metric_name=h.metric_name
+		    AND substring(h.hour,1,10)=d.max_date WHERE h.metric_name=ANY($1::text[])
+		),
+		step_days AS (%s), per_source AS (%s)
+		SELECT metric_name, '', date, %s FROM per_source GROUP BY metric_name,date
+		UNION ALL
 		SELECT metric_name, '', max_date, val FROM sum_agg
 		UNION ALL
 		SELECT metric_name, '', max_date, val FROM avg_agg
+		UNION ALL
+		SELECT 'step_count', 'count', day, source_total FROM step_days
 		ORDER BY metric_name
-	`, sumIn, sumIn)
+	`, sumIn, sumIn, latestPhysicalStepsSQL(), dbtmetrics.DailySourceRowsSQL("latest_average_hours", "true"), dbtmetrics.DailySourceMeanSQL())
 
-	rows, err := s.pool.Query(ctx, query)
+	rows, err := s.pool.Query(ctx, query, dailyAverages)
 	if err != nil {
 		return nil, err
 	}
@@ -218,7 +234,7 @@ func (s *DB) latestMetricValues(legacy bool) ([]LatestValue, error) {
 		if err := rows.Scan(&v.Metric, &v.Unit, &v.Date, &v.Value); err != nil {
 			return nil, err
 		}
-		if !usesMetricCompatibility(v.Metric) && (legacy || !usesCurrentHourlyMetric(v.Metric)) {
+		if v.Metric == "step_count" || (!usesMetricCompatibility(v.Metric) && (legacy || !usesCurrentHourlyMetric(v.Metric))) {
 			out = append(out, v)
 		}
 	}
@@ -304,6 +320,9 @@ func (s *DB) GetMetricData(metric, from, to, bucket, aggFunc string) ([]DataPoin
 		aggFunc = "AVG"
 	}
 
+	if metric == "step_count" && (bucket == "hour" || bucket == "day") {
+		return s.stepChart(from, to, bucket)
+	}
 	if usesMetricCompatibility(metric) {
 		if bucket == "minute" {
 			aggFunc = CurrentMetricAggregation(metric, aggFuncFor(metric))
@@ -406,7 +425,7 @@ func (s *DB) metricDataDayFromHourly(metric, from, to string) ([]DataPoint, erro
 		rawTo := to
 		if cacheStartDate != "" {
 			// Stop one day before the first cached day to avoid overlap.
-			rawTo = cacheStartDate
+			rawTo = min(to, cacheStartDate)
 		}
 		rawPoints, rerr := s.metricDataRaw(metric, from, rawTo, "day", aggFuncFor(metric))
 		if rerr == nil {
@@ -444,6 +463,8 @@ func (s *DB) metricDataDayFromHourly(metric, from, to string) ([]DataPoint, erro
 			) sub
 			GROUP BY day
 			ORDER BY day`, pickExpr)
+	} else if isDailyAverageMetric(metric) {
+		query = "WITH " + dailyAverageSeriesSQL("hourly_metrics", "metric_name = $1 AND hour >= $2 AND hour <= $3")
 	} else {
 		query = `
 			SELECT SUBSTRING(hour,1,10), AVG(avg_val), MIN(min_val), MAX(max_val)
@@ -470,6 +491,13 @@ func (s *DB) metricDataDayFromHourly(metric, from, to string) ([]DataPoint, erro
 	return out, rows.Err()
 }
 
+// dailyAverageSeriesSQL uses the same hourly and source weights as the daily cache
+// writers for both the cached and raw portions of the metrics chart.
+func dailyAverageSeriesSQL(hours, scope string) string {
+	return "per_source AS (" + dbtmetrics.DailySourceRowsSQL(hours, scope) + ") " +
+		"SELECT date, " + dbtmetrics.DailySourceMeanSQL() + ", MIN(min_val), MAX(max_val) FROM per_source GROUP BY date ORDER BY date"
+}
+
 // metricDataRaw reads directly from metric_points. Used as fallback when the
 // pre-aggregated cache is empty, and for bucket=minute on short ranges before
 // backfill runs.
@@ -494,12 +522,17 @@ func (s *DB) metricDataRaw(metric, from, to, bucket, aggFunc string) ([]DataPoin
 		query = fmt.Sprintf(`SELECT bucket, %s, MIN(source_min), MAX(source_max)
 			FROM (
 				SELECT %s AS bucket, source, SUM(qty) AS source_sum, MIN(qty) AS source_min, MAX(qty) AS source_max
-				FROM metric_points
+				FROM %s
 				WHERE metric_name = $1 AND date >= $2 AND date <= $3 AND qty > 0 %s
 				GROUP BY %s, source
 			) sub
 			GROUP BY bucket
-			ORDER BY bucket`, pickExpr, bucketExpr, sleepDedup, bucketExpr)
+			ORDER BY bucket`, pickExpr, bucketExpr, legacyChartPointRelation(metric), sleepDedup, bucketExpr)
+	} else if isDailyAverageMetric(metric) && bucket == "day" && aggFunc == "AVG" {
+		query = `WITH hourly_points AS (
+            SELECT metric_name, date, source, qty, quality FROM metric_points
+            WHERE metric_name = $1 AND date >= $2 AND date <= $3
+        ), hours AS (` + dbtmetrics.HourlyRowsSQL(false) + "), " + dailyAverageSeriesSQL("hours", "true")
 	} else {
 		query = "SELECT " + bucketExpr + " as bucket, " + aggFunc + `(qty), MIN(qty), MAX(qty)
 			FROM metric_points
@@ -529,6 +562,9 @@ func (s *DB) metricDataRaw(metric, from, to, bucket, aggFunc string) ([]DataPoin
 }
 
 func (s *DB) GetMetricDataBySource(metric, from, to, bucket, aggFunc string) ([]SourceDataPoints, error) {
+	if metric == "step_count" && (bucket == "day" || bucket == "hour") {
+		return s.stepChartBySource(from, to, bucket, true)
+	}
 	if aggFunc != "SUM" && aggFunc != "MAX" && aggFunc != "MIN" {
 		aggFunc = "AVG"
 	}
@@ -583,7 +619,7 @@ func (s *DB) metricDataBySourceRaw(metric, from, to, bucket, aggFunc string) ([]
 	bucketExpr := bucketExpression(bucket)
 	normSource := `SUBSTRING(source, 1, POSITION('|' IN source || '|') - 1)`
 	query := "SELECT " + bucketExpr + " as bucket, " + normSource + " as src, " + aggFunc + `(qty), MIN(qty), MAX(qty)
-		FROM metric_points
+		FROM ` + legacyChartPointRelation(metric) + `
 		WHERE metric_name = $1 AND date >= $2 AND date <= $3 AND qty > 0
 		` + sleepDedupClause(metric) + `
 		GROUP BY ` + bucketExpr + `, ` + normSource + `
@@ -596,10 +632,14 @@ func (s *DB) scanSourcePoints(query, metric, from, to string) ([]SourceDataPoint
 }
 
 func (s *DB) scanSourcePointsWithKey(query string, key any, from, to string, extra ...any) ([]SourceDataPoints, error) {
+	return s.scanSourcePointsArgs(query, append([]any{key, from, to}, extra...)...)
+}
+
+func (s *DB) scanSourcePointsArgs(query string, args ...any) ([]SourceDataPoints, error) {
 	ctx, cancel := queryCtx()
 	defer cancel()
 
-	rows, err := s.pool.Query(ctx, query, append([]any{key, from, to}, extra...)...)
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -692,6 +732,12 @@ func (s *DB) refreshDashboardSnapshot(ctx context.Context) error {
 }
 
 func (s *DB) refreshDashboardSnapshotLocked(ctx context.Context) error {
+	return s.withAggregatePublication(ctx, func(unit *DB) error {
+		return unit.writeDashboardSnapshot(ctx)
+	})
+}
+
+func (s *DB) writeDashboardSnapshot(ctx context.Context) error {
 	rows, err := s.pool.Query(ctx, dashboardCacheQuery)
 	if err != nil {
 		return fmt.Errorf("query dashboard cache: %w", err)
@@ -702,18 +748,23 @@ func (s *DB) refreshDashboardSnapshotLocked(ctx context.Context) error {
 	for rows.Next() {
 		var today, previous *string
 		var metric string
-		var value, previousValue float64
-		if err := rows.Scan(&today, &previous, &metric, &value, &previousValue); err != nil {
+		var measured *float64
+		var previousValue float64
+		if err := rows.Scan(&today, &previous, &metric, &measured, &previousValue); err != nil {
 			return fmt.Errorf("scan dashboard cache: %w", err)
 		}
 		if today == nil {
 			break
 		}
 		result.Date = *today
+		var value float64
+		if measured != nil {
+			value = *measured
+		}
 		if value == 0 && (metric == "resting_heart_rate" || metric == "wrist_temperature") && previousValue != 0 {
 			value = previousValue
 		}
-		if value == 0 {
+		if value == 0 && (metric != "step_count" || measured == nil) {
 			continue
 		}
 		result.Cards = append(result.Cards, CardData{

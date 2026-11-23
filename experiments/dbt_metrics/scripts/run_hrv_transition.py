@@ -116,7 +116,7 @@ GRANT SELECT ON source_data.daily_hrv, source_data.hrv_point TO pilot_dbt;
                 raise RuntimeError("synthetic PostgreSQL identity changed before storage tests")
             env.update({"HEALTH_DB_TESTS": "1", "READINESS_TEST_DSN": dsn})
             run(["go", "test", "./internal/storage", "-run",
-                 "^Test(HRV|QualityAuditClearsHRV|AppleHealthXMLImport|AcceptedNightIngest)",
+                 "^Test(HRV|DailyAverageChart|StepWithdrawalFencesConcurrentPublication|QualityAuditClearsHRV|AppleHealthXMLImport|AcceptedNightIngest)",
                  "-count=1", "-v"], env=env, cwd=ROOT)
         except BaseException as exc:
             failure = exc

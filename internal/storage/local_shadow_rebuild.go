@@ -50,7 +50,10 @@ func RebuildLocalShadowDerivedDate(ctx context.Context, tx pgx.Tx, schema, profi
 	if err != nil {
 		return err
 	}
-	result := computeCalendarEnergyBank(inputs, date, unit.GetEnergyConfig())
+	result, _, err := unit.readEnergyBankSQL(ctx, date, unit.GetEnergyConfig(), inputs)
+	if err != nil {
+		return err
+	}
 	ts, err := historicalEnergyBucket(date, loc)
 	if err != nil {
 		return err
@@ -78,6 +81,9 @@ func PublishLocalShadowRebuildObservation(ctx context.Context, tx pgx.Tx, schema
 	if err != nil {
 		return err
 	}
-	result := computeCalendarEnergyBank(inputs, today, unit.GetEnergyConfig())
+	result, _, err := unit.readEnergyBankSQL(ctx, today, unit.GetEnergyConfig(), inputs)
+	if err != nil {
+		return err
+	}
 	return unit.publishLocalShadowEnergyToday(ctx, tx, schema, profile, today, loc, now, result)
 }

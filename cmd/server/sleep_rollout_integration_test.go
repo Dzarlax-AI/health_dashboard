@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -57,7 +58,12 @@ func newSleepRolloutFixture(t *testing.T) (*tenants.Manager, *pgxpool.Pool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !filepath.IsAbs(config.ConnConfig.Host) || len(config.ConnConfig.Fallbacks) != 0 {
+	marker := os.Getenv("SLEEP_REFERENCE_PILOT_MARKER")
+	localLab := config.ConnConfig.Host == "127.0.0.1" && config.ConnConfig.Database == "sleep_reference_lab" && marker != ""
+	if (!filepath.IsAbs(config.ConnConfig.Host) && !localLab) || len(config.ConnConfig.Fallbacks) != 0 {
+		if marker != "" {
+			t.Fatal("sleep reference runner requires its own socket or marked loopback database")
+		}
 		t.Skip("server sleep rollout rehearsal requires a disposable local Unix socket")
 	}
 	admin, err := pgxpool.NewWithConfig(ctx, config)
@@ -65,6 +71,12 @@ func newSleepRolloutFixture(t *testing.T) (*tenants.Manager, *pgxpool.Pool) {
 		t.Fatal(err)
 	}
 	t.Cleanup(admin.Close)
+	if localLab {
+		var actual string
+		if err := admin.QueryRow(ctx, "select token from public.synthetic_sleep_reference").Scan(&actual); err != nil || actual != marker {
+			t.Fatalf("synthetic database identity mismatch: %v", err)
+		}
+	}
 	name := pgx.Identifier{testdb.SchemaName("sleep_rollout_server")}.Sanitize()
 	if _, err := admin.Exec(ctx, "CREATE DATABASE "+name); err != nil {
 		t.Fatal(err)

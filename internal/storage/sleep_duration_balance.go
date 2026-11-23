@@ -234,7 +234,17 @@ func (s *DB) GetEffectiveSleepGoal(ctx context.Context, date string) (*health.Sl
 	return &goal, nil
 }
 
+// SleepDurationBalanceForDisplay refreshes the ordinary tenant snapshot. The local
+// read-only graph comparison computes the same response without a persistent write.
+func (s *DB) SleepDurationBalanceForDisplay(ctx context.Context, wakeDate string, now time.Time) (health.SleepDurationBalance, error) {
+	return s.reconcileSleepDurationBalance(ctx, wakeDate, now, s.profileGraphSchema == "")
+}
+
 func (s *DB) ReconcileSleepDurationBalance(ctx context.Context, wakeDate string, now time.Time) (health.SleepDurationBalance, error) {
+	return s.reconcileSleepDurationBalance(ctx, wakeDate, now, true)
+}
+
+func (s *DB) reconcileSleepDurationBalance(ctx context.Context, wakeDate string, now time.Time, persist bool) (health.SleepDurationBalance, error) {
 	loc := s.reportTZLocation()
 	endDay, err := time.ParseInLocation("2006-01-02", wakeDate, loc)
 	if err != nil {
@@ -257,8 +267,10 @@ func (s *DB) ReconcileSleepDurationBalance(ctx context.Context, wakeDate string,
 	if err != nil {
 		return health.SleepDurationBalance{}, err
 	}
-	if err := s.saveSleepDurationBalanceSnapshot(ctx, result, goals, coverage, episodes, now); err != nil {
-		return health.SleepDurationBalance{}, err
+	if persist {
+		if err := s.saveSleepDurationBalanceSnapshot(ctx, result, goals, coverage, episodes, now); err != nil {
+			return health.SleepDurationBalance{}, err
+		}
 	}
 	return result, nil
 }

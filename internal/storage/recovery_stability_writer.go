@@ -55,12 +55,6 @@ const recoveryStabilityFormulaVersion = 3
 // formula evolve independently.
 const recoveryStabilityFeatureVersion = 3
 
-// recoveryStabilityPersonalSleepTargetH is the constant target nightly
-// sleep duration used by the sleep-debt feature. Hard-coded for Phase 0
-// (no per-user calibration). When/if user-specific targets land, this
-// becomes a setting and feature_version bumps.
-const recoveryStabilityPersonalSleepTargetH = 7.5
-
 // ewmaWindowAdaptive and ewmaWindowSlow encode the §3.3 decision: 45d
 // adaptive baseline, 180d slow baseline. Effective windows; α is
 // derived as 2/(N+1) at use sites.
@@ -190,8 +184,7 @@ func (s *DB) backfillRecoveryStabilitySnapshotsForMaintenance(from, to, observat
 		return 0, err
 	}
 	latestObservedSleepDate := ""
-	archLoadFrom := fromT.AddDate(0, 0, -14).Format(isoDate)
-	archByDate, err := s.LoadSleepArchitectureDays(archLoadFrom, to)
+	archByDate, err := s.LoadSleepArchitectureFeatures(from, to)
 	if err != nil {
 		return 0, err
 	}
@@ -226,7 +219,7 @@ func (s *DB) backfillRecoveryStabilitySnapshotsForMaintenance(from, to, observat
 	var firstErr error
 	for d := fromT; !d.After(toT); d = d.AddDate(0, 0, 1) {
 		date := d.Format(isoDate)
-		if err := s.writeRecoveryStabilityRow(context.Background(), d, date, epochs, byDate, effByDate, captureByDate, archByDate, latestObservedSleepDate); err != nil {
+		if err := s.writeRecoveryStabilityRow(context.Background(), d, date, epochs, byDate, effByDate, captureByDate, archByDate[date], latestObservedSleepDate); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -245,10 +238,9 @@ func (s *DB) writeRecoveryStabilityRow(
 	byDate map[string]health.SleepRow,
 	effByDate map[string]health.SleepEfficiencyResult,
 	captureByDate map[string]health.SleepCaptureConfidenceResult,
-	archByDate map[string]SleepArchitectureDay,
+	archFields SleepArchitectureFeatureFields,
 	latestObservedSleepDate string,
 ) error {
-	_ = ctx // reserved for future use; all storage helpers below use their own queryCtx
 
 	epoch, epochStart := epochs.resolve(date) // empty epoch start means no clipping
 
@@ -256,28 +248,42 @@ func (s *DB) writeRecoveryStabilityRow(
 	tp1 := t.AddDate(0, 0, 1).Format(isoDate)
 	dailyTarget := targetFromEff(effByDate[tp1], byDate[tp1], sleepCaptureForDate(captureByDate, tp1))
 
-	// --- Rolling 3-day target: mean of eff(t+1), eff(t+2), eff(t+3) ---
-	rollingTarget := rolling3dTarget(t, effByDate, byDate, captureByDate)
-	candidateRollingTarget := rolling3dCandidate2of3Target(t, effByDate, byDate, captureByDate, latestObservedSleepDate)
-
+	days, rollingCoverage, candidateCoverage := recoveryTargetWindow(t, effByDate, byDate, captureByDate, latestObservedSleepDate)
+	labels, err := s.chipTargets(ctx, chipTargetWindow{date: date, subScore: SubScoreRecoveryStability, days: days, latestSleep: latestObservedSleepDate}, TargetKindDailyPoint, TargetKindRolling3d, TargetKindRolling3dCandidate2of3)
+	if err != nil {
+		return err
+	}
 	// --- Feature payload: data strictly ≤ end of day `t` ---
-	features := buildRecoveryFeatures(t, epochStart, byDate, effByDate, captureByDate, archByDate)
+	w, err := s.chipFeatureWindow(ctx, t, epochStart, ewmaLookbackDays(ewmaWindowSlow), sleepEfficiencyLookup(effByDate))
+	if err != nil {
+		return err
+	}
+	features, err := s.recoveryFeatureContext(ctx, t, epochStart, byDate, effByDate, captureByDate, archFields)
+	if err != nil {
+		return err
+	}
+	features.PrevEfficiency, features.Mean7d, features.EWMA45, features.EWMA180 = w.Today, w.Mean7, w.Adaptive, w.Slow
+	features.EligibleCount7d, features.EligibleCount45d, features.EligibleCount180d = w.N7, w.AdaptiveN, w.SlowN
+	features.WarmupComplete45d, features.WarmupComplete180d = w.AdaptiveN >= ewmaWindowAdaptive/2, w.SlowN >= ewmaWindowSlow/3
 	featuresJSON, err := json.Marshal(features)
 	if err != nil {
 		return fmt.Errorf("marshal features %s: %w", date, err)
 	}
 
 	// --- Naive baselines (for both daily_point and rolling_3d targets) ---
-	naivePredictions := buildRecoveryNaiveBaselines(t, epochStart, effByDate)
+	naivePredictions, err := s.chipBaselines(ctx, t, epochStart, SubScoreRecoveryStability, sleepEfficiencyLookup(effByDate), TargetKindDailyPoint, TargetKindRolling3d, TargetKindRolling3dCandidate2of3)
+	if err != nil {
+		return err
+	}
 
 	// Persist.
 	if err := s.SaveTargetSnapshot(TargetSnapshot{
 		Date:              date,
 		SubScore:          SubScoreRecoveryStability,
 		TargetKind:        TargetKindDailyPoint,
-		TargetValue:       dailyTarget.Value,
-		Eligible:          dailyTarget.Eligible,
-		EligibilityReason: dailyTarget.Reason,
+		TargetValue:       labels[TargetKindDailyPoint].Value,
+		Eligible:          labels[TargetKindDailyPoint].Eligible,
+		EligibilityReason: labels[TargetKindDailyPoint].Reason,
 		DataCoverage:      dailyTarget.Coverage,
 		SourceEpoch:       epoch,
 		FormulaVersion:    recoveryStabilityFormulaVersion,
@@ -289,10 +295,10 @@ func (s *DB) writeRecoveryStabilityRow(
 		Date:              date,
 		SubScore:          SubScoreRecoveryStability,
 		TargetKind:        TargetKindRolling3d,
-		TargetValue:       rollingTarget.Value,
-		Eligible:          rollingTarget.Eligible,
-		EligibilityReason: rollingTarget.Reason,
-		DataCoverage:      rollingTarget.Coverage,
+		TargetValue:       labels[TargetKindRolling3d].Value,
+		Eligible:          labels[TargetKindRolling3d].Eligible,
+		EligibilityReason: labels[TargetKindRolling3d].Reason,
+		DataCoverage:      rollingCoverage,
 		SourceEpoch:       epoch,
 		FormulaVersion:    recoveryStabilityFormulaVersion,
 	}); err != nil {
@@ -303,10 +309,10 @@ func (s *DB) writeRecoveryStabilityRow(
 		Date:              date,
 		SubScore:          SubScoreRecoveryStability,
 		TargetKind:        TargetKindRolling3dCandidate2of3,
-		TargetValue:       candidateRollingTarget.Value,
-		Eligible:          candidateRollingTarget.Eligible,
-		EligibilityReason: candidateRollingTarget.Reason,
-		DataCoverage:      candidateRollingTarget.Coverage,
+		TargetValue:       labels[TargetKindRolling3dCandidate2of3].Value,
+		Eligible:          labels[TargetKindRolling3dCandidate2of3].Eligible,
+		EligibilityReason: labels[TargetKindRolling3dCandidate2of3].Reason,
+		DataCoverage:      candidateCoverage,
 		SourceEpoch:       epoch,
 		FormulaVersion:    recoveryStabilityFormulaVersion,
 	}); err != nil {
@@ -391,176 +397,47 @@ func targetFromEff(
 	}
 }
 
-// rolling3dTarget computes the mean of eff(t+1), eff(t+2), eff(t+3).
-// All three nights must be individually eligible. If any one fails,
-// the rolling target is ineligible and the rolling row records which
-// of the three nights blocked it. Avoids partial-window averages that
-// would be silently biased toward whichever nights survived.
-func rolling3dTarget(
-	t time.Time,
-	effByDate map[string]health.SleepEfficiencyResult,
-	byDate map[string]health.SleepRow,
-	captureByDate map[string]health.SleepCaptureConfidenceResult,
-) targetWriteSpec {
-	dates := []string{
-		t.AddDate(0, 0, 1).Format(isoDate),
-		t.AddDate(0, 0, 2).Format(isoDate),
-		t.AddDate(0, 0, 3).Format(isoDate),
-	}
-	values := make([]float64, 0, 3)
-	reasons := make([]string, 0, 3)
-	missing := make([]string, 0, 3)
-	captureClasses := make([]string, 0, 3)
-	captureReasons := make([]string, 0, 3)
-	captureConfidences := make([]float64, 0, 3)
-	lowConfidenceCount := 0
-	for _, d := range dates {
-		capture := sleepCaptureForDate(captureByDate, d)
-		captureClasses = append(captureClasses, capture.Class)
-		captureReasons = append(captureReasons, capture.Reason)
-		captureConfidences = append(captureConfidences, capture.Confidence)
-		if capture.LowConfidence {
-			lowConfidenceCount++
+func recoveryTargetWindow(t time.Time, eff map[string]health.SleepEfficiencyResult, rows map[string]health.SleepRow, captures map[string]health.SleepCaptureConfidenceResult, latest string) ([]chipTargetDay, json.RawMessage, json.RawMessage) {
+	dates, reasons, missing := []string{}, []string{}, []string{}
+	classes, captureReasons := []string{}, []string{}
+	confidences := []float64{}
+	var days []chipTargetDay
+	eligible, low := 0, 0
+	for offset := 1; offset <= 3; offset++ {
+		day := t.AddDate(0, 0, offset).Format(isoDate)
+		dates = append(dates, day)
+		c := sleepCaptureForDate(captures, day)
+		classes = append(classes, c.Class)
+		captureReasons = append(captureReasons, c.Reason)
+		confidences = append(confidences, c.Confidence)
+		if c.LowConfidence {
+			low++
 		}
-		row, ok := byDate[d]
-		if !ok || row.Date == "" {
-			missing = append(missing, d)
+		if rows[day].Date == "" {
+			missing = append(missing, day)
 			reasons = append(reasons, health.SleepEligibilitySleepTotalOutOfRange)
 			continue
 		}
-		e := effByDate[d]
+		e := eff[day]
 		reasons = append(reasons, e.EligibilityReason)
-		if !e.Eligible || e.Efficiency == nil {
-			continue
-		}
-		values = append(values, *e.Efficiency)
-	}
-
-	if len(values) < 3 {
-		cov := mustMarshal(map[string]any{
-			"target_dates":                  dates,
-			"missing_dates":                 missing,
-			"per_day_reason":                reasons,
-			"eligible_count":                len(values),
-			"per_day_capture_class":         captureClasses,
-			"per_day_capture_reason":        captureReasons,
-			"per_day_capture_confidence":    captureConfidences,
-			"low_capture_confidence_count":  lowConfidenceCount,
-			"strict_rolling_eligibility":    false,
-			"candidate_2of3_eligible_count": len(values),
-		})
-		return targetWriteSpec{
-			Eligible: false,
-			Reason:   firstBlockingReason(reasons),
-			Coverage: cov,
+		days = append(days, chipTargetDay{Date: day, Value: e.Efficiency, Eligible: e.Eligible, Reason: e.EligibilityReason})
+		if e.Eligible && e.Efficiency != nil {
+			eligible++
 		}
 	}
-	mean := (values[0] + values[1] + values[2]) / 3.0
-	cov := mustMarshal(map[string]any{
-		"target_dates":                  dates,
-		"per_day_reason":                reasons,
-		"eligible_count":                3,
-		"per_day_capture_class":         captureClasses,
-		"per_day_capture_reason":        captureReasons,
-		"per_day_capture_confidence":    captureConfidences,
-		"low_capture_confidence_count":  lowConfidenceCount,
-		"strict_rolling_eligibility":    true,
-		"candidate_2of3_eligible_count": 3,
-	})
-	return targetWriteSpec{
-		Value:    &mean,
-		Eligible: true,
-		Reason:   health.SleepEligibilityOK,
-		Coverage: cov,
+	coverage := map[string]any{"target_dates": dates, "per_day_reason": reasons, "eligible_count": eligible,
+		"per_day_capture_class": classes, "per_day_capture_reason": captureReasons, "per_day_capture_confidence": confidences,
+		"low_capture_confidence_count": low, "strict_rolling_eligibility": eligible == 3, "candidate_2of3_eligible_count": eligible}
+	if eligible < 3 {
+		coverage["missing_dates"] = missing
 	}
-}
-
-// rolling3dCandidate2of3Target is an evidence-only Recovery target.
-// It keeps the same forward label window as strict rolling_3d, but
-// allows one ineligible night and averages the eligible nights when at
-// least two are present. No product path should read this target kind.
-func rolling3dCandidate2of3Target(
-	t time.Time,
-	effByDate map[string]health.SleepEfficiencyResult,
-	byDate map[string]health.SleepRow,
-	captureByDate map[string]health.SleepCaptureConfidenceResult,
-	latestObservedSleepDate string,
-) targetWriteSpec {
-	dates := []string{
-		t.AddDate(0, 0, 1).Format(isoDate),
-		t.AddDate(0, 0, 2).Format(isoDate),
-		t.AddDate(0, 0, 3).Format(isoDate),
-	}
-	values := make([]float64, 0, 3)
-	reasons := make([]string, 0, 3)
-	missing := make([]string, 0, 3)
-	captureClasses := make([]string, 0, 3)
-	captureReasons := make([]string, 0, 3)
-	captureConfidences := make([]float64, 0, 3)
-	lowConfidenceCount := 0
-	for _, d := range dates {
-		capture := sleepCaptureForDate(captureByDate, d)
-		captureClasses = append(captureClasses, capture.Class)
-		captureReasons = append(captureReasons, capture.Reason)
-		captureConfidences = append(captureConfidences, capture.Confidence)
-		if capture.LowConfidence {
-			lowConfidenceCount++
-		}
-		row, ok := byDate[d]
-		if !ok || row.Date == "" {
-			missing = append(missing, d)
-			reasons = append(reasons, health.SleepEligibilitySleepTotalOutOfRange)
-			continue
-		}
-		e := effByDate[d]
-		reasons = append(reasons, e.EligibilityReason)
-		if !e.Eligible || e.Efficiency == nil {
-			continue
-		}
-		values = append(values, *e.Efficiency)
-	}
-
-	coverage := map[string]any{
-		"target_dates":                  dates,
-		"missing_dates":                 missing,
-		"per_day_reason":                reasons,
-		"eligible_count":                len(values),
-		"per_day_capture_class":         captureClasses,
-		"per_day_capture_reason":        captureReasons,
-		"per_day_capture_confidence":    captureConfidences,
-		"low_capture_confidence_count":  lowConfidenceCount,
-		"strict_rolling_eligibility":    len(values) == 3,
-		"candidate_2of3_eligible_count": len(values),
-		"candidate_2of3_eligible":       len(values) >= 2,
-		"candidate_2of3_value_days":     len(values),
-		"candidate_2of3_window_mature":  windowMature(dates, latestObservedSleepDate),
-		"latest_observed_sleep_date":    latestObservedSleepDate,
-	}
-	if !windowMature(dates, latestObservedSleepDate) {
-		return targetWriteSpec{
-			Eligible: false,
-			Reason:   EligibilitySleepDataMissing,
-			Coverage: mustMarshal(coverage),
-		}
-	}
-	if len(values) < 2 {
-		return targetWriteSpec{
-			Eligible: false,
-			Reason:   firstBlockingReason(reasons),
-			Coverage: mustMarshal(coverage),
-		}
-	}
-	var sum float64
-	for _, v := range values {
-		sum += v
-	}
-	mean := sum / float64(len(values))
-	return targetWriteSpec{
-		Value:    &mean,
-		Eligible: true,
-		Reason:   health.SleepEligibilityOK,
-		Coverage: mustMarshal(coverage),
-	}
+	strict := mustMarshal(coverage)
+	coverage["missing_dates"] = missing
+	coverage["candidate_2of3_eligible"] = eligible >= 2
+	coverage["candidate_2of3_value_days"] = eligible
+	coverage["candidate_2of3_window_mature"] = windowMature(dates, latest)
+	coverage["latest_observed_sleep_date"] = latest
+	return days, strict, mustMarshal(coverage)
 }
 
 func windowMature(dates []string, latestObservedDate string) bool {
@@ -573,37 +450,6 @@ func windowMature(dates []string, latestObservedDate string) bool {
 		}
 	}
 	return true
-}
-
-// firstBlockingReason picks the most informative reason to surface as
-// the rolling target's eligibility_reason when ≥1 night was ineligible.
-// Priority: any non-ok reason wins over ok; out_of_range beats
-// missing_awake_unknown beats coarse_only_source — surface the most
-// definitive blocker.
-func firstBlockingReason(reasons []string) string {
-	priority := map[string]int{
-		health.SleepEligibilitySleepTotalOutOfRange:  4,
-		health.SleepEligibilityMissingAwakeUnknown:   3,
-		health.SleepEligibilityCoarseOnlySource:      2,
-		health.SleepEligibilityOKAwakeStructuralZero: 1,
-		health.SleepEligibilityOK:                    0,
-	}
-	best := ""
-	bestP := -1
-	for _, r := range reasons {
-		p, ok := priority[r]
-		if !ok {
-			p = 5 // unknown reason — surface it
-		}
-		if p > bestP {
-			bestP = p
-			best = r
-		}
-	}
-	if best == "" {
-		return health.SleepEligibilitySleepTotalOutOfRange
-	}
-	return best
 }
 
 // --- Features ----------------------------------------------------------
@@ -627,90 +473,6 @@ type recoveryFeatures struct {
 	EligibleCount180d            int            `json:"eligible_count_180d"`
 	WarmupComplete45d            bool           `json:"warmup_complete_45d"`
 	WarmupComplete180d           bool           `json:"warmup_complete_180d"`
-}
-
-func buildRecoveryFeatures(
-	t time.Time,
-	epochStart string,
-	byDate map[string]health.SleepRow,
-	effByDate map[string]health.SleepEfficiencyResult,
-	captureByDate map[string]health.SleepCaptureConfidenceResult,
-	archByDate map[string]SleepArchitectureDay,
-) recoveryFeatures {
-	var out recoveryFeatures
-	out.SleepArchitectureFeatureFields = BuildSleepArchitectureFeatureFields(t, archByDate)
-	out.SleepCaptureClassCounts7d = map[string]int{}
-
-	// Previous eff: eligibility result for daily_scores row dated `t`
-	// itself (the most recent completed sleep). Plan §3.2: features for
-	// row `t` may read data up to end of day `t`, including the sleep
-	// that ended on the morning of `t` (Apple Health convention assigns
-	// that sleep to wake-date `t`).
-	if eff, ok := effByDate[t.Format(isoDate)]; ok && eff.Eligible && eff.Efficiency != nil {
-		out.PrevEfficiency = ptrFloat(*eff.Efficiency)
-	}
-	capture := sleepCaptureForDate(captureByDate, t.Format(isoDate))
-	out.SleepCaptureClass = capture.Class
-	out.SleepCaptureConfidence = ptrFloat(capture.Confidence)
-	out.SleepCaptureReason = capture.Reason
-	out.SleepCaptureLow = capture.LowConfidence
-
-	lookup := sleepEfficiencyLookup(effByDate)
-
-	// 7-day mean efficiency over [t-6, t], eligible nights only.
-	mean7, n7 := windowMean(t, 7, epochStart, lookup)
-	out.Mean7d = mean7
-	out.EligibleCount7d = n7
-
-	// EWMA 45 and EWMA 180 over the eligible series back to epoch start.
-	ewma45, n45 := windowEWMA(t, ewmaWindowAdaptive, epochStart, lookup)
-	out.EWMA45 = ewma45
-	out.EligibleCount45d = n45
-	out.WarmupComplete45d = n45 >= ewmaWindowAdaptive/2 // soft warmup threshold
-
-	ewma180, n180 := windowEWMA(t, ewmaWindowSlow, epochStart, lookup)
-	out.EWMA180 = ewma180
-	out.EligibleCount180d = n180
-	out.WarmupComplete180d = n180 >= ewmaWindowSlow/3 // soft warmup threshold
-
-	// Sleep debt over last 7 days: target * 7 − sum of sleep_total for
-	// the eligible nights. Missing/ineligible nights contribute 0 to
-	// the sum (i.e., counted as zero sleep against the target). This
-	// makes debt sensitive to coverage gaps, which is intentional —
-	// the eligible_count_7d feature lets downstream see how complete
-	// the window was.
-	var totalSlept float64
-	var confidenceSum float64
-	var confidenceDays int
-	for i := range 7 {
-		d := t.AddDate(0, 0, -i).Format(isoDate)
-		if epochStart != "" && d < epochStart {
-			continue
-		}
-		capture := sleepCaptureForDate(captureByDate, d)
-		out.SleepCaptureClassCounts7d[capture.Class]++
-		confidenceSum += capture.Confidence
-		confidenceDays++
-		if capture.LowConfidence {
-			out.SleepCaptureLowDays7d++
-		}
-		row, ok := byDate[d]
-		if !ok || row.Total == nil {
-			continue
-		}
-		eff := effByDate[d]
-		if !eff.Eligible {
-			continue
-		}
-		totalSlept += *row.Total
-	}
-	if confidenceDays > 0 {
-		out.SleepCaptureMeanConfidence7d = ptrFloat(confidenceSum / float64(confidenceDays))
-	}
-	debt := recoveryStabilityPersonalSleepTargetH*7 - totalSlept
-	out.SleepDebt7dHours = ptrFloat(debt)
-
-	return out
 }
 
 func sleepCaptureForDate(
@@ -745,68 +507,8 @@ type naiveBaselineRow struct {
 	Value        *float64
 	// Reason explains Value == nil. Empty when Value != nil. Must
 	// be one of the BaselineReason* enum values otherwise — see
-	// classifyBaselineNullReason for the rule that picks it.
+	// chip_baseline_v1 for the rule that picks it.
 	Reason string
-}
-
-func buildRecoveryNaiveBaselines(t time.Time, epochStart string, eff map[string]health.SleepEfficiencyResult) []naiveBaselineRow {
-	out := make([]naiveBaselineRow, 0, 12)
-
-	// Persistence — yesterday's efficiency predicts tomorrow's. For
-	// daily_point at t+1 this is eff(t). For rolling_3d at t+1..t+3
-	// this is also eff(t) (the most recent observed value).
-	var persist *float64
-	if e, ok := eff[t.Format(isoDate)]; ok && e.Eligible && e.Efficiency != nil {
-		persist = ptrFloat(*e.Efficiency)
-	}
-	// Each classifier call passes the actual earliest-day offset for
-	// that baseline's lookback — see classifyBaselineNullReason's
-	// docstring for the per-baseline numbers.
-	out = append(out, appendBaselineSet(BaselineKindPersistenceYesterday, persist, classifyBaselineNullReason(t, 0, epochStart),
-		TargetKindDailyPoint, TargetKindRolling3d, TargetKindRolling3dCandidate2of3)...)
-
-	lookup := sleepEfficiencyLookup(eff)
-
-	mean7, _ := windowMean(t, 7, epochStart, lookup)
-	out = append(out, appendBaselineSet(BaselineKindRolling7dMean, mean7, classifyBaselineNullReason(t, 6, epochStart),
-		TargetKindDailyPoint, TargetKindRolling3d, TargetKindRolling3dCandidate2of3)...)
-
-	mean30, _ := windowMean(t, 30, epochStart, lookup)
-	out = append(out, appendBaselineSet(BaselineKindRolling30dMean, mean30, classifyBaselineNullReason(t, 29, epochStart),
-		TargetKindDailyPoint, TargetKindRolling3d, TargetKindRolling3dCandidate2of3)...)
-
-	ewma45, _ := windowEWMA(t, ewmaWindowAdaptive, epochStart, lookup)
-	out = append(out, appendBaselineSet(BaselineKindEWMA45d, ewma45,
-		classifyBaselineNullReason(t, ewmaLookbackDays(ewmaWindowAdaptive), epochStart),
-		TargetKindDailyPoint, TargetKindRolling3d, TargetKindRolling3dCandidate2of3)...)
-
-	return out
-}
-
-// appendBaselinePair emits the same value/reason pair for two target
-// kinds. Centralises the "reason only when value is nil" rule so the
-// individual callers stay tabular.
-func appendBaselinePair(tk1, tk2, baselineKind string, val *float64, nullReason string) []naiveBaselineRow {
-	return appendBaselineSet(baselineKind, val, nullReason, tk1, tk2)
-}
-
-// appendBaselineSet emits the same value/reason pair for every listed
-// target kind.
-func appendBaselineSet(baselineKind string, val *float64, nullReason string, targetKinds ...string) []naiveBaselineRow {
-	reason := ""
-	if val == nil {
-		reason = nullReason
-	}
-	out := make([]naiveBaselineRow, 0, len(targetKinds))
-	for _, tk := range targetKinds {
-		out = append(out, naiveBaselineRow{
-			TargetKind:   tk,
-			BaselineKind: baselineKind,
-			Value:        val,
-			Reason:       reason,
-		})
-	}
-	return out
 }
 
 // --- Helpers -----------------------------------------------------------

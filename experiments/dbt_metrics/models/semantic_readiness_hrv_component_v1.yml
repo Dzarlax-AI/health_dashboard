@@ -1,0 +1,65 @@
+version: 2
+models:
+  - name: semantic_readiness_hrv_component_v1
+    config:
+      enabled: "{{ (var('readiness_hrv_shadow', false) or var('readiness_score_shadow', false)) }}"
+    description: >-
+      Opt-in synthetic shadow of the HRV component before Readiness component-weight
+      normalization, score mapping, rounding, and confidence caps. One row per
+      immutable captured reader slice and profile; never reconstructs old morning
+      decisions from today's corrected rows. Enabled by readiness_hrv_shadow or readiness_score_shadow.
+      Source rows capture per-date raw means, cached means, repair suppression and
+      cache-row eligibility. SQL independently applies reader-specific calendar
+      windows, anchor override, limits and positive-value filtering. An empty
+      capture uses a single row with null observed_date and means. Missing old
+      captures use snapshot_state=unrecoverable. Corrections use a new snapshot_id.
+    columns:
+      - name: snapshot_id
+        description: Immutable capture version; scoped with profile, target_date and reader.
+        data_tests: [not_null]
+      - name: profile
+        description: Synthetic isolated profile identity.
+        data_tests: [not_null]
+      - name: target_date
+        description: Tenant-local decision or historical anchor date.
+        data_tests: [not_null]
+      - name: reader
+        description: history or morning; their selected inputs remain distinct.
+      - name: reader_path
+        description: Captured history, morning_warm or morning_cold selection path.
+      - name: snapshot_state
+        description: captured or unrecoverable; no historical backprojection.
+      - name: evidence_present
+        description: Same-day evidence gate captured by the morning reader.
+      - name: input_ordinals
+        description: Exact ordered selected input positions, as a JSON array.
+      - name: input_dates
+        description: Exact ordered observation dates, as a JSON array.
+      - name: input_values
+        description: Exact ordered positive HRV values in ms, as a JSON array.
+      - name: n_values
+        description: Number of selected observations, not elapsed calendar days.
+      - name: available
+        description: Valid capture with at least nine observations and the reader's evidence gate.
+      - name: skip_reason
+        description: Null on success; invalid_snapshot, unrecoverable_snapshot, missing_same_day_evidence, missing_same_day_value or insufficient_observations otherwise.
+      - name: current_ms
+        description: Position zero of the captured reader slice.
+      - name: current_observed_date
+        description: Observation date of position zero; history requires the target date.
+      - name: recent7_mean_ms
+        description: Arithmetic mean of selected positions zero through six.
+      - name: baseline_mean_ms
+        description: Arithmetic mean of all selected positions seven onward.
+      - name: baseline_sd_ms
+        description: Population standard deviation of selected positions seven onward.
+      - name: z_today
+        description: Current standardized deviation, zero for baseline SD below 1e-9; null when unavailable.
+      - name: z_trend
+        description: Recent-seven standardized deviation with the same SD rule.
+      - name: blended_z
+        description: 0.60 times z_today plus 0.40 times z_trend, before global weight normalization.
+      - name: component_weight
+        description: Nominal HRV weight 0.40 when available, otherwise null; not the normalized share among available components.
+      - name: weighted_z
+        description: blended_z times nominal weight; null means this component contributes nothing.

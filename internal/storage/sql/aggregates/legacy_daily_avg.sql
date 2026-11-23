@@ -1,4 +1,4 @@
-SELECT SUBSTRING(hour,1,10), AVG(avg_val)
-FROM hourly_metrics
-WHERE metric_name = $1 {{FROM_CLAUSE}}
-GROUP BY SUBSTRING(hour,1,10)
+WITH per_source AS (
+    {{DAILY_METRIC_SOURCES}}
+)
+SELECT date, {{DAILY_SOURCE_MEAN}} AS avg_val FROM per_source GROUP BY date

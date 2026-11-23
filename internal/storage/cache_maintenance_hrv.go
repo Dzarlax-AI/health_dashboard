@@ -63,7 +63,7 @@ func (s *DB) recordCacheDirtyWithHRVRepairsTx(ctx context.Context, tx pgx.Tx, st
 		// Dashboard requests read the completed snapshot rather than hourly
 		// rows. Refresh only for confirmed withdrawals, never normal imports.
 		unit := &DB{pool: &cacheTransaction{Tx: tx, ctx: ctx}}
-		if err := unit.refreshDashboardSnapshotLocked(ctx); err != nil {
+		if err := unit.writeDashboardSnapshot(ctx); err != nil {
 			return err
 		}
 	}
@@ -97,21 +97,14 @@ func (s *DB) acknowledgeHRVRepair(ctx context.Context, date string) error {
 	return err
 }
 
-// rebuildRecentHRVRepair uses the same live writers as ordinary foreground
-// refresh. The marker lock fences an overlapping source transaction; its new
-// marker survives if the source mutation commits after this transaction.
-func (s *DB) rebuildRecentHRVRepair(ctx context.Context, date, dailySQL string) (bool, error) {
-	var present bool
-	if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT FROM settings WHERE key=$1)`, hrvRepairKeyPrefix+date).Scan(&present); err != nil {
-		return false, err
-	}
-	if !present {
-		return false, nil
-	}
-	repaired := false
-	err := s.runCacheTransaction(ctx, func(unit *DB) error {
-		locked, err := unit.prepareHRVRepair(ctx, date)
-		if err != nil || !locked {
+// Publish the complete foreground aggregate date while the source mutation
+// journal is locked, consuming any pending HRV repair in the same transaction.
+func (s *DB) rebuildRecentAggregateDate(ctx context.Context, date, dailySQL string) (bool, error) {
+	var repaired bool
+	err := s.withAggregatePublication(ctx, func(unit *DB) error {
+		var err error
+		repaired, err = unit.prepareHRVRepair(ctx, date)
+		if err != nil {
 			return err
 		}
 		if err := unit.writeRecentHourlyCatalog(ctx, date); err != nil {
@@ -120,11 +113,9 @@ func (s *DB) rebuildRecentHRVRepair(ctx context.Context, date, dailySQL string) 
 		if err := unit.writeDailyScores(date, dailySQL); err != nil {
 			return err
 		}
-
-		if err := unit.acknowledgeHRVRepair(ctx, date); err != nil {
-			return err
+		if repaired {
+			return unit.acknowledgeHRVRepair(ctx, date)
 		}
-		repaired = true
 		return nil
 	})
 	return repaired, err
@@ -198,7 +189,7 @@ func (s *DB) settleEmptyCacheDirty(ctx context.Context, captured map[string]uint
 				cleared = append(cleared, date)
 			}
 		}
-		if err := unit.refreshDashboardSnapshotLocked(ctx); err != nil {
+		if err := unit.writeDashboardSnapshot(ctx); err != nil {
 			return err
 		}
 		if err := saveCacheMaintenanceRow(ctx, tx, state); err != nil {

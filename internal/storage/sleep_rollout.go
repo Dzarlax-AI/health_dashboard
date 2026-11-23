@@ -370,7 +370,8 @@ func (s *DB) calculateSleepRolloutResult(ctx context.Context, date string, cfg E
 	if err != nil {
 		return nil, BankResult{}, err
 	}
-	return s.readinessWithSleep(ctx, date, blocks, baseline), bank, nil
+	readiness, err := s.readinessWithSleep(ctx, date, blocks, baseline)
+	return readiness, bank, err
 }
 
 func (s *DB) loadRolloutSleepWindow(ctx context.Context, date string, window sleepRolloutWindow) (map[string]*LocalShadowSleep, []float64, error) {

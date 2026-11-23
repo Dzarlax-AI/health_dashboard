@@ -41,35 +41,49 @@ func (s *DB) GetSleepDurationComparison(ctx context.Context, wakeDate string) *h
 	}
 
 	var n health.CompletedNightSleep
-	var historyVersion, windowStart, windowEnd, ruleVersion string
-	var count int
-	var mean *float64
-	err = s.pool.QueryRow(readCtx, `
-		select n.duration_hours,n.source,n.source_epoch,n.algorithm_version,n.input_hash,
-		       coalesce(n.diagnostics->>'preferred_sleep_source',''),coalesce(n.diagnostics->>'source_selection_reason',''),
-               n.capture_completeness,n.duration_assessment,n.finalization_state,n.claim_eligibility,n.observed_at,
-		       r.window_start,r.window_end_exclusive,r.rule_version,r.eligible_nights,r.reference_hours,r.history_version
-		  from completed_night_sleep n
-		  join sleep_duration_reference_v1 r using (wake_date,source,source_epoch,algorithm_version)
-		 where n.wake_date=$1`, wakeDate).Scan(
-		&n.DurationHours, &n.Source, &n.SourceEpoch, &n.AlgorithmVersion, &n.InputHash,
+	var historyVersion string
+	query := sleepComparisonQuery
+	if s.profileGraphSchema != "" {
+		query = `select c.status,c.duration_minutes,c.reference_minutes,c.delta_minutes,
+			c.source,c.source_epoch,c.algorithm_version,c.input_hash,
+			coalesce(n.diagnostics->>'preferred_sleep_source',''),coalesce(n.diagnostics->>'source_selection_reason',''),
+			c.capture_completeness,c.duration_assessment,c.finalization_state,c.claim_eligibility,c.observed_at,
+			c.window_start,c.window_end_exclusive,c.rule_version,c.eligible_nights,c.history_version
+			from ` + s.profileGraphRelation("semantic_sleep_duration_comparison_v1") + ` c
+			join completed_night_sleep n using (wake_date,source,source_epoch,algorithm_version,input_hash)
+			where c.wake_date=$1`
+	}
+	err = s.pool.QueryRow(readCtx, query, wakeDate).Scan(
+		&fact.Status, &fact.DurationMinutes, &fact.ReferenceMinutes, &fact.DeltaMinutes,
+		&fact.Source, &n.SourceEpoch, &n.AlgorithmVersion, &n.InputHash,
 		&fact.PreferredSleepSource, &fact.SourceSelectionReason,
-		&n.CaptureCompleteness, &n.DurationAssessment, &n.FinalizationState, &n.ClaimEligibility, &n.ObservedAt,
-		&windowStart, &windowEnd, &ruleVersion, &count, &mean, &historyVersion)
+		&fact.Capture, &fact.Assessment, &fact.Finalization, &n.ClaimEligibility, &n.ObservedAt,
+		&fact.WindowStart, &fact.WindowEndExclusive, &fact.RuleVersion, &fact.EligibleNights, &historyVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		fact.Status = health.SleepComparisonNoNight
 	} else if err != nil {
-		return &fact
+		unavailable := health.NewSleepDurationComparison(date)
+		return &unavailable
 	} else {
-		fact.WindowStart, fact.WindowEndExclusive, fact.RuleVersion = windowStart, windowEnd, ruleVersion
-		fact.EligibleNights = &count
-		fact.SetDurations(n, mean)
+		observed := n.ObservedAt.UTC()
+		fact.ObservedAt = &observed
 	}
 	payload, _ := json.Marshal([]any{fact, n.SourceEpoch, n.AlgorithmVersion, n.InputHash, n.ClaimEligibility, historyVersion})
 	hash := sha256.Sum256(payload)
 	fact.FactVersion = hex.EncodeToString(hash[:])
 	return &fact
 }
+
+var sleepComparisonQuery = `
+	select status,duration_minutes,reference_minutes,delta_minutes,
+	       n.source,n.source_epoch,n.algorithm_version,n.input_hash,
+	       coalesce(n.diagnostics->>'preferred_sleep_source',''),coalesce(n.diagnostics->>'source_selection_reason',''),
+	       n.capture_completeness,n.duration_assessment,n.finalization_state,n.claim_eligibility,n.observed_at,
+	       r.window_start,r.window_end_exclusive,r.rule_version,r.eligible_nights,r.history_version
+	  from completed_night_sleep n
+	  join sleep_duration_reference_v1 r using (wake_date,source,source_epoch,algorithm_version)
+	` + dbtmetrics.SleepDurationComparisonFieldsSQL() + `
+	 where n.wake_date=$1`
 
 func (s *DB) ensureSleepDurationReference(ctx context.Context) error {
 	// The provisioning/migration connection already has the tenant search path.

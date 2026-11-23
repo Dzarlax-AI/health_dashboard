@@ -1,0 +1,20 @@
+version: 2
+sources:
+  - name: briefing_pilot
+    schema: "{{ var('briefing_source_schema', 'briefing_pilot') }}"
+    tables:
+      - name: captured_inputs
+        description: Synthetic post-selection inputs with newest-first series. One immutable document per profile and capture.
+      - name: architecture_captures
+      - name: architecture_segments
+      - name: sri_captures
+        description: Window and wall-clock anchor fixed for each regularity calculation.
+      - name: oxygen_samples
+        description: Dated oxygen readings from the captured profile and day.
+      - name: sri_segments
+        description: Quality-tagged sleep fragments with the stored local wall time.
+models:
+  - name: briefing_components_v1
+    description: Scores for the four ComputeBriefing sections after the captured headline and the overall status. Original translated prose is rendered by Go.
+  - name: briefing_signals_v1
+    description: Stress flags, sustained load, walking HR eligibility and the dashboard's paired step-load/HRV series.

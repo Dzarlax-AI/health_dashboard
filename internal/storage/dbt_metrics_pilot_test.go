@@ -83,9 +83,27 @@ func TestDBTMetricsPilot(t *testing.T) {
 		if e = db.buildDailySleepBlock(force); e != nil {
 			t.Fatal(e)
 		}
-	} else if mode == "" || mode == "live" {
+	} else if mode == "" || mode == "live" || mode == "live-dbt" {
+		dailyWriter := db.upsertDailyForDate
+		if mode == "live-dbt" {
+			dailyWriter = func(date string) error { return db.writeDailyScores(date, liveDailySQL(true)) }
+		}
+		// The local receipt relation is the same evidence supplied by verified
+		// XML/admin source edits. Replay the real correction within its transaction.
+		err = db.runCacheTransaction(ctx, func(unit *DB) error {
+			tx := unit.pool.(*cacheTransaction)
+			var cells json.RawMessage
+			if err := tx.QueryRow(ctx, `select jsonb_agg(jsonb_build_array(substring(point_date,1,16),source)) from source_data.verified_step_withdrawals
+			where substring(point_date,1,10)=any($1)`, dates).Scan(&cells); err != nil {
+				return err
+			}
+			return repairWithdrawnSteps(ctx, tx, cells, nil)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
 		for _, d := range dates {
-			for _, f := range []func(string) error{db.upsertHourlyAvgForDate, db.upsertHourlySumForDate, db.upsertHourlySleepForDate, db.upsertDailyForDate} {
+			for _, f := range []func(string) error{db.upsertHourlyAvgForDate, db.upsertHourlySumForDate, db.upsertHourlySleepForDate, dailyWriter} {
 				if err = f(d); err != nil {
 					t.Fatal(d, err)
 				}

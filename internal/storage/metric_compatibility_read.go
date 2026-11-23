@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	dbtmetrics "health-receiver/experiments/dbt_metrics"
 )
 
 // Keep explicit timestamps inclusive, and include every offset in a whole-day window.
@@ -40,7 +42,7 @@ var currentCompatibilityHourly = `, minute_values AS (
 	 MIN(low) AS low,MAX(high) AS high,MIN(unit) AS unit
 	FROM minute_values GROUP BY metric,SUBSTRING(minute,1,13),utc_offset,source,grain
 ), compatible_hours AS (
-	SELECT DISTINCT ON (metric,hour,utc_offset,source) metric,hour,source,qty,low,high,unit
+	SELECT DISTINCT ON (metric,hour,utc_offset,source) metric,hour,utc_offset,source,qty,low,high,unit
 	FROM hours_by_grain
 	ORDER BY metric,hour,utc_offset,source,(grain='hour_sum') DESC,(grain='legacy_live') DESC
 ) `
@@ -48,6 +50,10 @@ var currentCompatibilityHourly = `, minute_values AS (
 func (s *DB) compatibleMetricData(metric, from, to, bucket, agg string, bySource bool) ([]SourceDataPoints, error) {
 	filter, to := compatibilityDateWindow(to)
 	query := metricCompatibilityCTE(filter, false)
+	if metric == "step_count" {
+		points := dbtmetrics.StepPointInputsSQL("metric_points", "health_records", filter)
+		query = "WITH compatible AS (SELECT 'step_count'::text AS metric,date,source,qty,'count'::text AS unit,quality,grain FROM (" + points + ") inputs WHERE counted) "
+	}
 	source := "source"
 	if !bySource {
 		source = "''::text"
@@ -163,6 +169,9 @@ func (s *DB) compatibleLatestMetricValues(ctx context.Context, legacy bool) ([]L
 	if !legacy {
 		hourly = currentCompatibilityHourly
 		keys = append(keys, currentHourlyStoredKeys...)
+		// Combined steps, including a cached-only day, are emitted by the same
+		// physical-hour projection used by the Activity chart.
+		keys = slices.DeleteFunc(keys, func(key string) bool { return key == "step_count" || key == archiveSamplePrefix+"step_count" })
 	}
 	keys = slices.Compact(slices.Sorted(slices.Values(keys)))
 	rows, err := s.pool.Query(ctx, compatibilityLatestSQL(hourly, legacy), keys, legacy, currentHourlyMetrics)
@@ -187,7 +196,7 @@ func (s *DB) compatibleLatestMetricValues(ctx context.Context, legacy bool) ([]L
 // The candidate selection and both projections share one MVCC snapshot.
 func compatibilityLatestSQL(hourly string, legacy bool) string {
 	aggregate := hourly + `,
-	latest AS (SELECT metric,MAX(SUBSTRING(hour,1,10)) AS day FROM compatible_hours GROUP BY metric),
+    latest AS (SELECT metric,MAX(SUBSTRING(hour,1,10)) AS day FROM compatible_hours GROUP BY metric),
 	by_source AS (
 		SELECT h.metric,h.source,MIN(h.unit) AS unit,l.day,SUM(h.qty) AS total,COUNT(*) AS hours
 		FROM compatible_hours h JOIN latest l ON l.metric=h.metric AND SUBSTRING(h.hour,1,10)=l.day
@@ -279,6 +288,9 @@ func (s *DB) LatestMetricsForContract(legacy bool) ([]LatestValue, error) {
 }
 
 func (s *DB) MetricDataForContract(metric, from, to, bucket, agg string, legacy bool) ([]DataPoint, error) {
+	if metric == "step_count" && (bucket == "hour" || bucket == "day") {
+		return s.stepChart(from, to, bucket)
+	}
 	if !legacy && usesCurrentHourlyMetric(metric) {
 		rows, err := s.compatibleMetricData(metric, from, to, bucket, "SUM", false)
 		if len(rows) == 0 {
@@ -297,6 +309,9 @@ func (s *DB) MetricDataForContract(metric, from, to, bucket, agg string, legacy 
 }
 
 func (s *DB) MetricDataBySourceForContract(metric, from, to, bucket, agg string, legacy bool) ([]SourceDataPoints, error) {
+	if metric == "step_count" && (bucket == "day" || bucket == "hour") {
+		return s.stepChartBySource(from, to, bucket, legacy)
+	}
 	if !legacy && usesCurrentHourlyMetric(metric) {
 		return s.compatibleMetricData(metric, from, to, bucket, "SUM", true)
 	}

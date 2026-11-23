@@ -115,7 +115,7 @@ func TestSleepReferenceParity(t *testing.T) {
 				t.Fatalf("dbt differs: %s %s n=%d mean=%v dates=%v group=%s/%s/%s", low, high, count, mean, days, source, epoch, algorithm)
 			}
 			fact := health.NewSleepDurationComparison(date)
-			fact.SetDurations(f.rows[0], mean)
+			applyReferenceDurations(&fact, f.rows[0], mean)
 			if f.mean == 7.5 && (fact.Status != health.SleepComparisonAvailable ||
 				*fact.DurationMinutes != 408 || *fact.ReferenceMinutes != 450 || *fact.DeltaMinutes != -42) {
 				t.Fatalf("rounded fact: %+v", fact)
@@ -218,5 +218,27 @@ func TestShadowSleepDailyMatchesCompiledDBT(t *testing.T) {
 	got := ShadowSleepDailySQL("profile = $1 AND wake_date = $2::text::date")
 	if strings.TrimSpace(string(compiled)) != got {
 		t.Fatal("dbt runtime model renders different SQL from Go")
+	}
+}
+
+// applyReferenceDurations retains the pre-migration Go oracle for parity tests.
+func applyReferenceDurations(c *health.SleepDurationComparison, n health.CompletedNightSleep, reference *float64) {
+	c.Status = health.SleepComparisonIneligible
+	c.Source, c.Capture, c.Assessment, c.Finalization = n.Source, n.CaptureCompleteness, n.DurationAssessment, n.FinalizationState
+	observedAt := n.ObservedAt.UTC()
+	c.ObservedAt = &observedAt
+	if n.DurationHours > 0 && n.DurationHours <= 24 {
+		minutes := int(math.Round(n.DurationHours * 60))
+		c.DurationMinutes = &minutes
+	}
+	if c.DurationMinutes == nil || !(n.IsDefinitiveClaimEligible() || n.IsProvisionalObservationEligible()) {
+		return
+	}
+	c.Status = health.SleepComparisonInsufficient
+	if reference != nil && *reference > 0 && *reference <= 24 {
+		minutes := int(math.Round(*reference * 60))
+		delta := *c.DurationMinutes - minutes
+		c.ReferenceMinutes, c.DeltaMinutes = &minutes, &delta
+		c.Status = health.SleepComparisonAvailable
 	}
 }

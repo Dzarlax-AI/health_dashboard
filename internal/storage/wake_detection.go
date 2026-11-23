@@ -613,18 +613,8 @@ func postWakeSteps(ctx context.Context, queryer interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, localDate string, wake, now time.Time) (float64, error) {
 	var steps sql.NullFloat64
-	err := queryer.QueryRow(ctx, `
-		WITH source_totals AS (
-			SELECT source, SUM(qty) AS source_total
-			  FROM metric_points
-			 WHERE metric_name='step_count'
-			   AND quality='ok'
-			   AND qty > 0
-			   AND SUBSTRING(date,1,10)=$1
-			   AND date::timestamptz >= $2
-			   AND date::timestamptz <= $3
-			 GROUP BY source
-		) `+preferredSourceSQL, localDate, wake, now).Scan(&steps)
+	err := queryer.QueryRow(ctx, "select sum(source_total) from ("+
+		physicalStepTotalsSQL("substring(date,1,10)=$1 and substring(date,21) ~ '^[+-]([01][0-9]|2[0-3])[0-5][0-9]$' and date::timestamptz between $2 and $3", "", "false")+") totals", localDate, wake, now).Scan(&steps)
 	if err != nil {
 		return 0, err
 	}

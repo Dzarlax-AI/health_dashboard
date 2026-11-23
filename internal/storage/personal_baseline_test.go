@@ -2,6 +2,7 @@ package storage
 
 import (
 	"math"
+	"sort"
 	"testing"
 	"time"
 )
@@ -213,4 +214,90 @@ func TestAgeOf_ZeroSafe(t *testing.T) {
 	if got < 3*time.Hour-time.Second || got > 3*time.Hour+time.Second {
 		t.Errorf("ageOf(3h-ago) = %v, want ≈3h", got)
 	}
+}
+
+// classifyState implements the §4.1 state machine:
+//
+//	cold:    samples < 3
+//	warmup:  3 ≤ samples < 7
+//	steady:  samples ≥ 7 AND newest ≤ 14 days old
+//
+// When samples ≥ 7 but newest > 14 days, classify as `warmup` — the
+// baseline is technically populated but the latest data point is
+// too old to trust as "still describes this person's current
+// physiology". (Apple-Watch-off-for-weeks scenario.)
+//
+// Pure function — pinned by unit tests.
+func classifyState(sampleCount int, newest, now time.Time) CalibrationState {
+	if sampleCount < 3 {
+		return CalibrationCold
+	}
+	if sampleCount < 7 {
+		return CalibrationWarmup
+	}
+	if newest.IsZero() {
+		// Shouldn't happen — sampleCount ≥ 7 implies samples exist
+		// — but guard rather than read uninitialized time.
+		return CalibrationWarmup
+	}
+	if now.Sub(newest) > 14*24*time.Hour {
+		return CalibrationWarmup
+	}
+	return CalibrationSteady
+}
+
+// computeMedianMADSD returns the median and MAD-based SD of the
+// input. MAD = median absolute deviation; SD ≈ 1.4826 × MAD for a
+// normally-distributed sample (the constant comes from
+// Φ⁻¹(0.75) = 0.6745 → 1/0.6745). Robust to ~25% outliers, which
+// is exactly the post-illness / heavy-alcohol / travel-day pattern
+// we see in real autonomic data.
+//
+// Mutates the slice (sort) — caller should pass a slice it doesn't
+// need preserved, or copy first.
+//
+// Pure function — pinned by unit tests against the worked examples
+// in https://en.wikipedia.org/wiki/Median_absolute_deviation.
+func computeMedianMADSD(samples []float64) (median, sd float64) {
+	n := len(samples)
+	if n == 0 {
+		return 0, 0
+	}
+	sort.Float64s(samples)
+	median = percentileSorted(samples, 0.5)
+	devs := make([]float64, n)
+	for i, v := range samples {
+		devs[i] = math.Abs(v - median)
+	}
+	sort.Float64s(devs)
+	mad := percentileSorted(devs, 0.5)
+	sd = 1.4826 * mad
+	return median, sd
+}
+
+// channelSDFloor returns the SD floor for the given channel. Pure
+// function — keeps the floor constants in one switch so changes
+// stay coordinated.
+func channelSDFloor(channel BaselineChannel) float64 {
+	switch channel {
+	case ChannelHRAwake, ChannelHROvernight:
+		return SDFloorHR
+	case ChannelHRV:
+		return SDFloorHRV
+	case ChannelResp:
+		return SDFloorResp
+	case ChannelTemp:
+		return SDFloorTemp
+	default:
+		return 0
+	}
+}
+
+// ageOf returns the age of `newest` relative to `now`. Zero
+// duration when `newest` is the zero time (no samples).
+func ageOf(newest, now time.Time) time.Duration {
+	if newest.IsZero() {
+		return 0
+	}
+	return now.Sub(newest)
 }

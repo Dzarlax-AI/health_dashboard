@@ -181,6 +181,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 	// htmx fragments
 	mux.HandleFunc("GET /fragments/metrics-list", h.guard(h.fragmentMetricsList))
+	mux.HandleFunc("GET /fragments/step-daily-series", h.guard(h.stepDailySeries))
 	mux.HandleFunc("GET /fragments/admin-status", h.adminGuard(h.fragmentAdminStatus))
 	mux.HandleFunc("GET /fragments/admin-readiness-contract", h.adminGuard(h.fragmentAdminReadinessContract))
 	mux.HandleFunc("GET /fragments/admin-readiness-monitoring", h.adminGuard(h.fragmentAdminReadinessMonitoring))
@@ -1091,6 +1092,31 @@ func (h *Handler) fragmentMetricsList(w http.ResponseWriter, r *http.Request) {
 	renderFragment(w, "metrics-list", data)
 }
 
+// The web chart plots daily quantities. The metrics API also serves extrema
+// and per-device observations, which have their own aggregation contracts.
+func (h *Handler) stepDailySeries(w http.ResponseWriter, r *http.Request) {
+	if _, ok := metriccontract.Read(w, r); !ok {
+		return
+	}
+	from, to := r.URL.Query().Get("from"), r.URL.Query().Get("to")
+	_, endErr := time.Parse(time.DateOnly, to)
+	_, startErr := time.Parse(time.DateOnly, from)
+	if endErr != nil || (from != "" && (startErr != nil || from > to)) {
+		jsonError(w, "expected an inclusive date range in YYYY-MM-DD format", http.StatusBadRequest)
+		return
+	}
+	points, err := h.tenantDB(r).DailyStepSeries(r.Context(), from, to)
+	if err != nil {
+		jsonError(w, "could not read the daily step series", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Cache-Control", "private, no-store")
+	jsonResponse(w, struct {
+		Bucket string                   `json:"bucket"`
+		Points []storage.DailyStepPoint `json:"points"`
+	}{Bucket: "day", Points: points})
+}
+
 func (h *Handler) pageMetricDetail(w http.ResponseWriter, r *http.Request) {
 	lang := langFromRequest(r)
 	setLangCookie(w, r)
@@ -1542,7 +1568,7 @@ func (h *Handler) sleepDurationBalance(w http.ResponseWriter, r *http.Request) {
 	// This is deterministic local accounting, never a provider call. The save
 	// is idempotent and lets a newly created Goal yield an honest incomplete
 	// response immediately rather than an empty card until another ingest.
-	value, err := db.ReconcileSleepDurationBalance(r.Context(), date, time.Now())
+	value, err := db.SleepDurationBalanceForDisplay(r.Context(), date, time.Now())
 	if err != nil {
 		jsonError(w, "failed to calculate sleep duration balance", http.StatusInternalServerError)
 		return
@@ -3146,7 +3172,7 @@ func (h *Handler) userSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		allowed := map[string]bool{
 			storage.PreferredSleepSourceSetting: true,
-			"telegram_token": true, "telegram_chat_id": true, "report_lang": true,
+			"telegram_token":                    true, "telegram_chat_id": true, "report_lang": true,
 			"timezone":               true,
 			"report_morning_weekday": true, "report_morning_weekend": true,
 			"report_evening_weekday": true, "report_evening_weekend": true,
