@@ -310,6 +310,14 @@ def validate(owner, env, tenant, scratch, result):
     recent=recent_comparison(tenant)
     require(not any(recent.values()),f"fresh canonical comparison {recent}")
     result["recent"]=recent
+    result["recent_go_v6_calories"]=json.loads(sql(tenant,"""with days as (
+        select max(date)::date as hi from health.daily_scores where steps>0)
+        select json_build_object('days',count(*),'differing_days',count(*) filter(where go.calories is distinct from v2.calories),
+        'max_ulp',coalesce(max(abs(('x'||encode(float4send(go.calories),'hex'))::bit(32)::bigint-
+          ('x'||encode(float4send(v2.calories),'hex'))::bit(32)::bigint)),0),
+        'different_at_one_decimal',count(*) filter(where round(go.calories::numeric,1) is distinct from round(v2.calories::numeric,1)))
+        from health.daily_scores go join health.hdbt_daily_metrics v2 using(date) cross join days
+        where go.date between (hi-6)::text and hi::text"""))
     result["calories"]=calorie_comparison(tenant)
     require(result["calories"]["ordered_mismatches"]==0,"ordered calorie oracle mismatch")
     timings=[]
@@ -317,7 +325,7 @@ def validate(owner, env, tenant, scratch, result):
     for phase in ("first","retry"):
         probe(env,phase)
         # With an outstanding source generation, the same URL must serve Go.
-        fallback,_=chart(env,scratch,"patch")
+        fallback,dirty_ms=chart(env,scratch,"patch")
         require((fallback==live)==(phase=="retry"),"unexpected corrected step chart")
         status,t=image_once(owner,env,tenant,scratch,image) if image else worker(env)
         require(status=="published","correction was not published")
@@ -341,7 +349,7 @@ def validate(owner, env, tenant, scratch, result):
         lag=float(sql(tenant,f"select extract(epoch from s.published_at-r.received_at) from health.hdbt_state s "
                              f"cross join health.health_records r where s.singleton and r.id={receipt}"))
         require(lag>=0,"invalid receipt-to-checkpoint timing")
-        timings.append({"receipt":phase,"worker_seconds":t,"served_ms":ms,"accepted_to_published_seconds":round(lag,3)})
+        timings.append({"receipt":phase,"worker_seconds":t,"dirty_patch_ms":dirty_ms,"served_ms":ms,"accepted_to_published_seconds":round(lag,3)})
     result["corrections"]=timings
     result["correction_runtime"]="sidecar" if image else "local_locked_dbt"
     sql(tenant,"update health.hdbt_state set read_enabled=false")

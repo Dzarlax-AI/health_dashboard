@@ -63,6 +63,7 @@ func TestServingArchive(t *testing.T) {
 	}
 	id, err := uuid.Parse(os.Getenv("HEALTH_DBT_TENANT_ID"))
 	c := cfg.ConnConfig
+	c.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol // Match the application tenant pool.
 	trace := &chartRoute{}
 	c.Tracer = trace
 	if err != nil || !net.ParseIP(c.Host).IsLoopback() || len(c.Fallbacks) != 0 || c.Database != "serving_archive" || c.User != tenants.TenantRoleName(id) {
@@ -173,7 +174,7 @@ func TestServingArchive(t *testing.T) {
 			elapsed = append(elapsed, float64(time.Since(start).Microseconds())/1000)
 			var dashboard storage.DashboardResponse
 			if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &dashboard) != nil || dashboard.CacheCompletedAt == "" {
-				t.Fatal("dashboard unavailable")
+				t.Fatalf("dashboard unavailable: http=%d, valid=%v, cards=%d, completed=%t", w.Code, json.Valid(w.Body.Bytes()), len(dashboard.Cards), dashboard.CacheCompletedAt != "")
 			}
 			if len(elapsed) == 1 {
 				if err := os.WriteFile(filepath.Join(scratch, "dashboard-ready"), nil, 0600); err != nil {
