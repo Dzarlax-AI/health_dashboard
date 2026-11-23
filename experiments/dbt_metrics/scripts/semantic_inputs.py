@@ -52,9 +52,9 @@ def align_reconstructed_segments(segments, stats):
     return result
 
 
-def prepare_sleep(data):
+def prepare_sleep(data, timezone_name="Europe/Belgrade"):
     """Reconstruct only a unique longest same-device session matching canonical duration."""
-    zone = ZoneInfo('Europe/Belgrade')
+    zone = ZoneInfo(timezone_name)
     by_source = defaultdict(list)
     summaries = defaultdict(set)
     boundary_counts = Counter()

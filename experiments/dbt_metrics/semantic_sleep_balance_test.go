@@ -2,7 +2,6 @@ package dbtmetrics
 
 import (
 	"encoding/json"
-	"math"
 	"os"
 	"testing"
 	"time"
@@ -24,7 +23,7 @@ func TestComplexSleepBalanceParity(t *testing.T) {
 			from source_data.balance_goal g where (g.profile,g.capture)=(c.profile,c.capture)),'[]'),
 		coalesce((select json_agg(json_build_object('WakeDate',period_day,'CaptureState',state))
 			from source_data.balance_coverage k where (k.profile,k.capture)=(c.profile,c.capture)),'[]'),
-		coalesce((select json_agg(json_build_object('ID',id,'Start',start_at,'End',end_at,'Source','watch','InputHash','fixture','DurationAssessment',assessment))
+		coalesce((select json_agg(json_build_object('ID',id,'Start',start_at,'End',end_at,'Source','watch','InputHash','fixture','DurationAssessment',assessment) order by start_at,id)
 			from source_data.balance_episode e where (e.profile,e.capture)=(c.profile,c.capture)),'[]'),
 		m.window_start_date::text,m.calculated_through,m.state,m.confidence,coalesce(m.incomplete_reason,''),
 		coalesce(m.last_complete_date::text,''),m.balance_hours,
@@ -69,12 +68,12 @@ func TestComplexSleepBalanceParity(t *testing.T) {
 			t.Fatal(err)
 		}
 		if want.WindowStartDate != start || !through.Equal(want.CalculatedThrough) || want.State != state || want.Confidence != confidence || want.IncompleteReason != reason || want.LastCompleteDate != last ||
-			(want.BalanceHours == nil) != (hours == nil) || (hours != nil && math.Abs(*hours-*want.BalanceHours) > 1e-9) || len(periods) != len(want.Periods) {
+			(want.BalanceHours == nil) != (hours == nil) || (hours != nil && *hours != *want.BalanceHours) || len(periods) != len(want.Periods) {
 			t.Fatalf("%s/%s balance mismatch", profile, name)
 		}
 		for i, p := range periods {
 			w := want.Periods[i]
-			if !p.Start.Equal(w.Start) || !p.End.Equal(w.End) || p.WakeDate != w.WakeDate || p.GoalHours != w.GoalHours || math.Abs(p.TotalSleepHours-w.TotalSleepHours) > 1e-9 || math.Abs(p.DeltaHours-w.DeltaHours) > 1e-9 || p.CaptureState != w.CaptureState || p.DurationAssessment != w.DurationAssessment {
+			if !p.Start.Equal(w.Start) || !p.End.Equal(w.End) || p.WakeDate != w.WakeDate || p.GoalHours != w.GoalHours || p.TotalSleepHours != w.TotalSleepHours || p.DeltaHours != w.DeltaHours || p.CaptureState != w.CaptureState || p.DurationAssessment != w.DurationAssessment {
 				t.Fatalf("%s/%s period %s mismatch", profile, name, p.WakeDate)
 			}
 		}

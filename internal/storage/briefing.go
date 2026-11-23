@@ -30,32 +30,19 @@ func (s *DB) rawMetricsFromDailyScoresAt(lastDate string, includeFreshLatest boo
 	defer cancel()
 	// A committed withdrawal may precede the cache rebuild. During that
 	// interval the raw reader can still supply any surviving HRV samples.
-	rows, err := s.pool.Query(ctx, `
+	all, err := readDailyCatalogRows(ctx, s, `
 		SELECT date, CASE WHEN repair.key IS NULL THEN hrv_avg END, rhr_avg, sleep_total, sleep_deep, sleep_rem,
 		       sleep_core, sleep_unspecified, sleep_awake, steps, calories, exercise_min,
 		       spo2_avg, vo2_avg, resp_avg, baseline_hr_overnight
-		FROM daily_scores
+		FROM %s AS daily_scores
 		LEFT JOIN settings repair ON repair.key=$3 || daily_scores.date
 		WHERE date >= $1 AND date <= $2
 		  AND (hrv_avg IS NOT NULL OR sleep_total IS NOT NULL OR steps IS NOT NULL)
 		ORDER BY date DESC
-		LIMIT 30`,
+		LIMIT 30`, scanDailyScoreRow,
 		subtractDays(lastDate, 29), lastDate, hrvRepairKeyPrefix)
 	if err != nil {
 		return nil
-	}
-	defer rows.Close()
-
-	var all []dailyScoreRow
-	for rows.Next() {
-		var r dailyScoreRow
-		if err := rows.Scan(
-			&r.date, &r.hrv, &r.rhr, &r.slp, &r.deep, &r.rem,
-			&r.core, &r.unspecified, &r.awake, &r.steps, &r.cal, &r.ex,
-			&r.spo2, &r.vo2, &r.resp, &r.nightHR,
-		); err == nil {
-			all = append(all, r)
-		}
 	}
 	// appendIfPositive only appends real positive values — NULL or zero days
 	// are skipped so they don't dilute averages used in scoring.
@@ -157,6 +144,13 @@ type dailyScoreRow struct {
 	hrv, rhr, slp, deep, rem, core, unspecified, awake *float64
 	steps, cal, ex, spo2, vo2, resp                    *float64
 	nightHR                                            *float64
+}
+
+func scanDailyScoreRow(row pgx.CollectableRow) (dailyScoreRow, error) {
+	var r dailyScoreRow
+	err := row.Scan(&r.date, &r.hrv, &r.rhr, &r.slp, &r.deep, &r.rem, &r.core,
+		&r.unspecified, &r.awake, &r.steps, &r.cal, &r.ex, &r.spo2, &r.vo2, &r.resp, &r.nightHR)
+	return r, err
 }
 
 func dailyHealthMetrics(r dailyScoreRow) health.DailyHealthMetrics {
@@ -940,7 +934,7 @@ func (s *DB) getHealthBriefing(lang string, currentEnergy *localShadowCurrentEne
 	// This is deliberately last: the daily decision is the canonical action
 	// contract for every client and must reflect the final v2 verdict, illness
 	// cap and localized labels rather than an intermediate scoring result.
-	resp.DailyDecision, err = s.dailyDecision(ctx, resp)
+	resp.DailyDecision, err = s.liveDailyDecision(ctx, *lastDate, resp)
 	if err != nil {
 		return nil, err
 	}

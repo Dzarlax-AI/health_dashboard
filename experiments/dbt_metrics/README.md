@@ -277,3 +277,34 @@ python3 experiments/dbt_metrics/metric_schema/profile_sql.py \
 Run `python3 experiments/dbt_metrics/scripts/test_preferred_sleep_source.py` from the repository root with Go, Docker and the pilot's Python environment installed. Set `DBT_BIN` to use an existing dbt executable. The runner creates a disposable PostgreSQL 16 database bound to loopback.
 
 Three views compare wake-time source selection, sleep regularity and the saved packet decision against the storage readers. The synthetic captures cover exact source labels, missing or short captures, automatic ties and packet withdrawals. The packet view reads the stored decision at its recorded generation and revision. Older decisions can lack preference metadata.
+
+See [Verifying the shared dbt catalog](semantic/catalog_verification.md) for the verification commands and the scope of the product readers.
+
+## Typed HRV receipts
+
+For a tenant-owned graph over the actual `metric_points` and `health_records`
+tables, set `hrv_receipt_inputs=true` together with `semantic_shadow=true` and
+`sleep_duration_reference=true`. The observation model then reads
+`hrv_receipt_points_v1`. The role must already have permission to read those
+inputs. The bounded profile export accepts `-v hrv_graph_schema=SCHEMA`
+to use that installed reader. Match the graph to the verified profile before
+export. The aggregate worker's restricted record projection contains only
+receipt identity and content type.
+
+For the generic HRV metric, a method is available when the winning receipt
+contains one matching sample and explicitly identifies SDNN or RMSSD. The
+original HealthKit SDNN identifier is another explicit source. Matching checks
+the receipt ID, original date string, source, unit and stored-precision
+quantity. An explicit interval requires a valid zoned end and an agreeing
+start when supplied. Hourly and daily buckets keep bucket precision.
+The current Health Sync client sends generic HRV without either method
+attribute. Legacy XML imports retain unknown method. For catalog-normalized XML, the
+import marker and matching run ID prove the catalog version whose only route
+to generic HRV is the HealthKit SDNN identifier and which rejects fallback
+key collisions. Its stored date is the sample start. The XML end is unavailable.
+
+The supported regression invokes `TestTypedHRVReceiptIngest` in
+`./internal/handler` with `HEALTH_DB_TESTS=1`, a disposable
+`READINESS_TEST_DSN`, and `HEALTH_DBT_BINARY` pointing at the project's dbt.
+It posts through the real HTTP handler, runs dbt and checks the observed values
+again after a correction.

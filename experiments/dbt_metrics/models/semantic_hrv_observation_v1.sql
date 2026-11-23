@@ -5,7 +5,7 @@
 with classified as (
     select p.*, coalesce(quality='ok' and qty>0,false) as writer_valid,
            coalesce(quality='ok' and qty between 4 and 300,false) as analytic_quality
-    from {{ source('source_data','hrv_point') }} p
+    from {{ ref('hrv_receipt_points_v1') if var('hrv_receipt_inputs', false) else source('source_data','hrv_point') }} p
 ), points as (
     select p.*, substring(date,1,10) as writer_date,
            case when time_kind = 'interval' then tstzrange(start_at,end_at,'[)') end as measurement,

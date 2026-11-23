@@ -23,12 +23,13 @@ FEATURES = (
     "semantic_sleep_cache", "semantic_night_card_cache", "readiness_hrv_shadow",
     "readiness_score_shadow", "readiness_chips_shadow", "energy_bank_shadow",
     "workout_shadow", "briefing_components_shadow", "complex_sleep_parity",
-    "personal_baseline_shadow", "profile_metric_reads",
-    "verified_step_withdrawals",
+    "personal_baseline_shadow", "profile_metric_reads", "archived_profile_fields",
+    "verified_step_withdrawals", "decision_journal_replay",
 )
 # Inputs use the same fixture contracts as the individual parity lanes. Names
 # differ from the defaults so an accidentally hardcoded reference fails.
 SOURCES = {
+    "archive_records_schema": ("archive_records", "profile_archived"),
     "semantic_source_schema": ("source_data", "profile_source"),
     "briefing_source_schema": ("briefing_pilot", "profile_briefing"),
     "energy_source_schema": ("energy_capture", "profile_energy"),
@@ -58,6 +59,7 @@ def prepare_inputs(sql, marker):
                  "fixtures/workout_capture.sql", "fixtures/personal_baseline.sql",
                  "fixtures/briefing_capture.sql",):
         load(name)
+    load("fixtures/profile_archive_records.sql")
     load("fixtures/profile_graph_cases.sql")
     load("fixtures/profile_step_aliases.sql")
     load("fixtures/profile_sections_points.sql")
@@ -76,9 +78,11 @@ def prepare_inputs(sql, marker):
     for old, new in SOURCES.values():
         sql(f"alter schema {old} rename to {new}; alter schema {new} owner to pilot_dbt; "
             f"grant select on all tables in schema {new} to pilot_dbt")
+    sql("set search_path=profile_source;" + (PILOT.parents[1] / "internal/storage/sql/hdbt_decision_inputs.sql").read_text())
     # This local role also serves as the tenant login for the read/rollback probe.
     sql(r"""select format('alter table %I.%I owner to pilot_dbt',schemaname,tablename)
         from pg_tables where schemaname='profile_source' \gexec""")
+    sql("grant insert on profile_energy.runs,profile_energy.days to pilot_dbt")
     # Copy only tables, never views that could lead back into the first profile.
     for original in [schema for _, schema in SOURCES.values()]:
         peer = original.replace("profile_", "peer_", 1)
@@ -110,6 +114,9 @@ def check_build(lab, sql, graph, role):
     results = json.loads((lab / "target/run_results.json").read_text())["results"]
     models = {n["name"]: n for n in nodes.values() if n["resource_type"] == "model"}
     expected = {f.stem for f in (PILOT / "models").rglob("*.sql")}
+    # This fixture supplies normalized HRV points. Its alternate source adapter
+    # is built from real HTTP and XML receipts in TestTypedHRVReceiptIngest.
+    expected.remove("hrv_receipt_points_v1")
     if models.keys() != expected:
         raise ValueError(f"manifest differs from model sources: {sorted(expected ^ models.keys())}")
     physical = {n["alias"] for n in models.values() if n["config"]["materialized"] != "ephemeral"}
@@ -151,7 +158,7 @@ def build(lab, name, *options, affected_dates=None, expect_failure=False):
         raise ValueError("expected rejection of a date outside this profile calendar")
 
 
-def install_and_probe(lab, name, role, peer_graph, sql, host, port, token, probe):
+def install_and_probe(lab, name, role, peer_graph, sql, host, port, token, probe, capture_archive=False):
     graph, source = f"{name}_graph", f"{name}_source"
     lab.mkdir()
     config = {"type": "postgres", "host": host, "port": int(port), "dbname": DB,
@@ -161,13 +168,17 @@ def install_and_probe(lab, name, role, peer_graph, sql, host, port, token, probe
         "target": "local", "outputs": {"local": config}}}))
     load_profile_fixture(sql, source, role, "profile_screen_metrics.sql")
     build(lab, name, "--full-refresh")
+    if capture_archive:
+        subprocess.run([PILOT/".venv/bin/python", PILOT/"scripts/capture_bound_metrics.py",
+                        str(port), "archive"], check=True)
+        return
     check_build(lab, sql, graph, role)
-    verify_graph_catalog(lambda query: sql(f"set role {role}; " + query), graph)
+    verify_graph_catalog(lambda query: sql(f"set role {role}; " + query), graph, source)
     for filename in ("profile_reader_legacy.sql", "profile_sections_legacy.sql"):
         load_profile_fixture(sql, source, role, filename)
     dsn = f"postgresql://{role}:synthetic-only@{host}:{port}/{DB}?" + urlencode({
         "sslmode": "disable", "search_path": source})
-    env = dict(os.environ, HEALTH_PROFILE_GRAPH_PROBE="1", DATABASE_URL=dsn, PROFILE_GRAPH_FIXTURE_TOKEN=token,
+    env = dict(os.environ, HEALTH_PROFILE_GRAPH_PROBE="1", DATABASE_URL=dsn, PROFILE_GRAPH_FIXTURE_TOKEN=token, PROFILE_ENERGY_SCHEMA=name+"_energy",
                PROFILE_SOURCE_SCHEMA=source, PROFILE_GRAPH_SCHEMA=graph, PROFILE_PEER_SCHEMA=peer_graph)
     subprocess.run([probe.resolve()], check=True, env=env)
     return env
@@ -261,6 +272,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reader-probe", type=Path, default=PILOT / "scripts/probe_profile_readers.py",
                         help="executable to verify product readers in each disposable profile")
+    parser.add_argument("--capture-archive-bindings", action="store_true",
+                        help="export typed stored-field samples from the disposable archive fixture")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="health-graph-") as tmp:
         cid = subprocess.check_output(["docker", "run", "--rm", "-d", "--tmpfs",
@@ -272,8 +285,7 @@ def main():
             if host != "127.0.0.1":
                 raise ValueError("expected loopback fixture database")
             for _ in range(100):
-                if subprocess.run(["docker", "exec", cid, "pg_isready", "-U", "postgres",
-                                   "-h", "127.0.0.1"], capture_output=True).returncode == 0:
+                if subprocess.run(["docker", "exec", cid, "pg_isready", "-h", "127.0.0.1", "-U", "postgres"], capture_output=True).returncode == 0:
                     break
                 time.sleep(.2)
             else:
@@ -281,11 +293,15 @@ def main():
 
             def sql(stmt):
                 return subprocess.check_output(["docker", "exec", "-i", cid, "psql", "-U", "postgres",
-                    "-d", DB, "-XqAt", "-v", "ON_ERROR_STOP=1"], input=stmt, text=True).strip()
+                    "-d", DB, "-XqAt", "-v", "ON_ERROR_STOP=1"], input="set jit=off; " + stmt, text=True).strip()
 
             token = secrets.token_hex(16)
             prepare_inputs(sql, token)
             profiles = (("profile", "pilot_dbt", "peer_graph"), ("peer", "peer_builder", "profile_graph"))
+            if args.capture_archive_bindings:
+                install_and_probe(Path(tmp)/"profile", "profile", "pilot_dbt", "peer_graph", sql,
+                                  host, port, token, args.reader_probe, capture_archive=True)
+                return
             environments = [install_and_probe(Path(tmp) / name, name, role, peer_graph, sql,
                                               host, port, token, args.reader_probe)
                             for name, role, peer_graph in profiles]

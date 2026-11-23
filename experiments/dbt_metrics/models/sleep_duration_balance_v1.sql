@@ -11,5 +11,5 @@ select profile,capture,wake_date,min(period_day) as window_start_date,max(ends_a
             then 'low' else 'normal' end as confidence,
        max(reason) filter(where period_day=first_missing) as incomplete_reason,
        max(period_day) filter(where first_missing is null or period_day<first_missing) as last_complete_date,
-       case when first_missing is null then sum(total_hours-goal_hours) end as balance_hours
+       case when first_missing is null then sum(total_hours-goal_hours order by period_day) end as balance_hours
 from dates group by profile,capture,wake_date,first_missing

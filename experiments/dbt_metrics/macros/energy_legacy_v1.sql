@@ -5,8 +5,20 @@ with inputs as (
          case when h.sd>=1e-9 then (hrv[1]-h.mean)/h.sd else 0 end as hrv_z,
          case when r.sd>=1e-9 then (rhr[1]-r.mean)/r.sd else 0 end as rhr_z
   from {{ inputs }} i
-  cross join lateral (select avg(x) as mean,stddev_pop(x) as sd from unnest(i.hrv[8:]) x) h
-  cross join lateral (select avg(x) as mean,stddev_pop(x) as sd from unnest(i.rhr[8:]) x) r
+  cross join lateral (
+    with samples as materialized (
+      select x, n from unnest(i.hrv[8:]) with ordinality as u(x,n)
+    ), center as (select sum(x order by n)/nullif(count(*),0) as mean from samples)
+    select mean, (select sqrt(sum((x-mean)*(x-mean) order by n)/nullif(count(*),0))
+                  from samples) as sd from center
+  ) h
+  cross join lateral (
+    with samples as materialized (
+      select x, n from unnest(i.rhr[8:]) with ordinality as u(x,n)
+    ), center as (select sum(x order by n)/nullif(count(*),0) as mean from samples)
+    select mean, (select sqrt(sum((x-mean)*(x-mean) order by n)/nullif(count(*),0))
+                  from samples) as sd from center
+  ) r
 ), loads as (
   select *,floor(0.5+100*least(1,greatest(0,
            0.5*case when usual_steps>1 then steps/usual_steps else 0 end+

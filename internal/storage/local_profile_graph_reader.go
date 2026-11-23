@@ -37,6 +37,9 @@ func NewLocalProfileGraphReader(ctx context.Context, dsn, sourceSchema, graphSch
 	}
 	config.ConnConfig.RuntimeParams["search_path"] = pgx.Identifier{sourceSchema}.Sanitize()
 	config.ConnConfig.RuntimeParams["default_transaction_read_only"] = "on"
+	// Bounded catalog lookups span a large UNION. LLVM setup can dominate
+	// the actual per-ID work on an isolated graph.
+	config.ConnConfig.RuntimeParams["jit"] = "off"
 	config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 	config.MaxConns = 4
 	config.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {

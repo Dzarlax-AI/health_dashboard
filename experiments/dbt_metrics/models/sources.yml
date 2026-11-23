@@ -3,6 +3,7 @@ sources:
   - name: source_data
     schema: "{{ var('semantic_source_schema', 'source_data') }}"
     tables:
+      - name: hdbt_decision_inputs
       - name: health_records
         identifier: "{{ 'hdbt_i_records' if var('tenant_aggregate_worker', false) else 'health_records' }}"
       - name: metric_points

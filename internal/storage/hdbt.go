@@ -12,7 +12,7 @@ import (
 //go:embed sql/hdbt_v17.sql
 var hdbtDDL string
 
-const hdbtFormula = "aggregate_serving_v2"
+const hdbtFormula = "aggregate_serving_v3"
 
 func markAggregateDatesDirty(ctx context.Context, tx pgx.Tx, state *CacheMaintenanceState, dates []string) error {
 	if len(dates) == 0 {

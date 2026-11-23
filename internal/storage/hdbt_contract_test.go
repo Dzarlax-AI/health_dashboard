@@ -6,9 +6,9 @@ import (
 	"testing"
 )
 
-func TestHDBTServingPreservesGoAggregateIdentity(t *testing.T) {
-	const deployed = "sha256:537bc145ef80ef9cc6d987b3e4dc9057a0759a7879e05996ca41e6928470799b"
-	if checksum := AggregateContractChecksum(); checksum != deployed || AggregateContractVersion != "6" {
+func TestHDBTServingPinsGoAggregateIdentity(t *testing.T) {
+	const expected = "sha256:1a4b28d778d80f4d4cbf9196a823d52d12e605c487c37abddc9b644a4ef38473"
+	if checksum := AggregateContractChecksum(); checksum != expected || AggregateContractVersion != "7" {
 		t.Fatalf("Go writer identity changed to %s / %s", AggregateContractVersion, checksum)
 	}
 }

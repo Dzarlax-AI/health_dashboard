@@ -11,6 +11,7 @@ import (
 	"health-receiver/internal/ctxdb"
 	"health-receiver/internal/metriccontract"
 	"health-receiver/internal/storage"
+	"health-receiver/internal/tenants"
 )
 
 func TestInstalledProfileDailyChart(t *testing.T) {
@@ -58,6 +59,46 @@ func TestInstalledProfileDailyChart(t *testing.T) {
 			if len(points) != 1 || points[0].Date != "2026-01-01" || points[0].Qty != route.want {
 				t.Fatalf("%s: points %+v, want %v", path, points, route.want)
 			}
+		}
+	}
+}
+
+func TestInstalledProfileCatalogStepsChart(t *testing.T) {
+	source, graph := os.Getenv("PROFILE_SOURCE_SCHEMA"), os.Getenv("PROFILE_GRAPH_SCHEMA")
+	if graph == "" {
+		t.Skip("requires the isolated full-profile dbt build")
+	}
+	candidate, err := storage.NewLocalProfileGraphReader(t.Context(), os.Getenv("DATABASE_URL"), source, graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer candidate.Close()
+	const key = "local-catalog-synthetic-key"
+	mgr := &tenants.Manager{}
+	if err := mgr.SetLegacyMode(candidate, key, ""); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	New(mgr, nil, false).Register(mux)
+	req := httptest.NewRequest(http.MethodGet, "/fragments/step-daily-series?to=2026-01-01", nil)
+	req.Header.Set("X-API-Key", key)
+	req.Header.Set(metriccontract.Header, "2")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var payload struct {
+		Bucket string                   `json:"bucket"`
+		Points []storage.DailyStepPoint `json:"points"`
+	}
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &payload) != nil || payload.Bucket != "day" {
+		t.Fatalf("steps chart HTTP %d", rec.Code)
+	}
+	want, err := candidate.QueryReadOnly("SELECT date, steps::float8 AS qty FROM daily_scores WHERE date<=$1 AND steps IS NOT NULL ORDER BY date", "2026-01-01")
+	if err != nil || len(want) == 0 || len(want) != len(payload.Points) {
+		t.Fatalf("daily series: chart %d, reference %d: %v", len(payload.Points), len(want), err)
+	}
+	for i, point := range payload.Points {
+		if want[i]["date"] != point.Date || want[i]["qty"] != point.Qty {
+			t.Fatalf("synthetic steps mismatch at row %d", i)
 		}
 	}
 }

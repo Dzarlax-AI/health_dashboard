@@ -133,6 +133,7 @@ def main():
         env.update(HEALTH_METRIC_AUDIT_DIR=tmp, PYTHONDONTWRITEBYTECODE="1", DBT_SEND_ANONYMOUS_USAGE_STATS="false")
         for cmd in ([sys.executable, PILOT/"scripts/run_complex_metrics.py"],
                     [sys.executable, PILOT/"scripts/run_pilot.py", "--capture-bindings"],
+                    [sys.executable, PILOT/"scripts/run_profile_graph.py", "--capture-archive-bindings"],
                     [sys.executable, PILOT/"observations/run.py"],
                     ["go", "run", "./experiments/dbt_metrics/runtimefields"],
                     [sys.executable, PILOT/"namedcontracts/capture_briefing.py"]):

@@ -7,7 +7,7 @@ with cache as (
     select * from {{ ref('semantic_hrv_observation_v1') }}
 ), hours as (
     select 'heart_rate_variability'::text as metric_name, source, substring(date,1,13) as hour,
-           avg(qty)::real as avg_val, min(qty) as min_val, max(qty) as max_val
+           avg(qty order by date collate "C")::real as avg_val, min(qty) as min_val, max(qty) as max_val
     from points where writer_valid group by source, substring(date,1,13)
 ), devices as (
     {{ daily_source_rows('hours', 'true') }}

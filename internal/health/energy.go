@@ -66,7 +66,7 @@ const (
 //
 // `headline` is consulted for the stress-coherence rule and may be nil.
 func computeLegacyEnergyBank(d RawMetrics, readinessScore int, headline *HeadlineSignal, ls LangStrings) *EnergyBank {
-	if len(d.HRV) < minBaseline+2 || len(d.Sleep) < minBaseline+2 {
+	if len(d.HRV) < minBaseline+2 || len(d.Sleep) < minBaseline+2 || len(d.RHR) == 0 {
 		return nil
 	}
 	if readinessScore <= 0 || d.Sleep[0] <= 0 {

@@ -15,6 +15,8 @@ KEYS = read_catalog()["dbt_model_keys"]
 PG_TYPES = {
     "number": {"smallint", "integer", "bigint", "numeric", "real", "double precision"},
     "text_list": {"text[]"},
+    "json": {"jsonb"},
+    "count_map": {"jsonb"},
     "number_map": {"jsonb"},
     "duration": {"bigint"},
     "integer": {"smallint", "integer", "bigint"},
@@ -29,7 +31,7 @@ def capture(cur, metric_id, binding, kind, schema):
     columns = binding["columns"]
     keys = KEYS[model]
     filters = binding.get("filter", {})
-    projection = sql.SQL(", ").join(map(sql.Identifier, keys + columns))
+    projection = sql.SQL(", ").join(map(sql.Identifier, dict.fromkeys(keys + columns)))
     predicate = sql.SQL(" and ").join(sql.SQL("{} = %s").format(sql.Identifier(k)) for k in filters)
     preferred = sql.SQL("({} is not null) desc").format(sql.Identifier(columns[0]))
     order = sql.SQL(", ").join([preferred, *map(sql.Identifier, keys)])
@@ -69,6 +71,8 @@ def main():
     if selected_models - KEYS.keys():
         raise ValueError("unknown capture model")
     user, database, schema = {
+        "archive": ("pilot_dbt", "health_profile_graph_fixture", "profile_graph"),
+        "complex_sleep": ("shadow_reader", "sem_synthetic", "dbt_output"),
         "semantic": ("shadow_reader", "sem_synthetic", "dbt_output"),
         "energy": ("pilot_dbt", "storage_pilot", "dbt_output"),
         "baseline": ("postgres", "personal_baseline_fixture", "derived"),
@@ -79,7 +83,7 @@ def main():
     }[lane]
     with psycopg2.connect(host="127.0.0.1", port=int(sys.argv[1]), user=user,
                           password="synthetic-only", dbname=database) as conn, conn.cursor() as cur:
-        if lane == "semantic":
+        if lane in ("semantic", "complex_sleep"):
             cur.execute("select token from public.sleep_fixture_identity")
             if cur.fetchone() != (os.environ["SLEEP_DOCKER_TOKEN"],):
                 raise ValueError("unexpected database identity")

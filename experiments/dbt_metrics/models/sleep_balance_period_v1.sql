@@ -18,9 +18,14 @@ with periods as (
         order by g.effective_date desc limit 1
     ) goal on true
     left join lateral (
-        select sum(extract(epoch from least(ep.end_at,b.ends_at)-greatest(ep.start_at,b.starts_at))/3600) as total_hours,
+        -- Match time.Duration.Hours() for each clipped episode before adding it.
+        select sum((duration.micros / 3600000000)::float8 +
+                   (duration.micros % 3600000000)::float8 / 3600000000::float8
+                   order by ep.start_at,ep.id) as total_hours,
                bool_or(ep.assessment='outlier') as flagged
         from {{ source('complex_sleep','balance_episode') }} ep
+        cross join lateral (select (extract(epoch from
+            least(ep.end_at,b.ends_at)-greatest(ep.start_at,b.starts_at))*1000000)::bigint as micros) duration
         where ep.profile=b.profile and ep.capture=b.capture
           and ep.end_at>b.starts_at and ep.start_at<b.ends_at
     ) e on true

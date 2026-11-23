@@ -20,7 +20,7 @@ import (
 // SchemaContractVersion is bumped whenever the declared tenant schema
 // contract changes. Existing tenants are not current until both the permanent
 // marker and registry metadata carry this version and checksum.
-const SchemaContractVersion = 17
+const SchemaContractVersion = 18
 
 // TenantIdentityTable is the permanent marker shared by clean provisioning
 // and existing-tenant migrations. The provisioning marker is intentionally
@@ -304,6 +304,7 @@ func SchemaContractChecksum() string {
 		}
 	}
 	fmt.Fprintf(&canonical, "hdbt-ddl:%x\n", sha256.Sum256([]byte(hdbtDDL)))
+	fmt.Fprintf(&canonical, "hdbt-decision-ddl:%x\n", sha256.Sum256([]byte(decisionJournalDDL)))
 	sum := sha256.Sum256([]byte(canonical.String()))
 	return hex.EncodeToString(sum[:])
 }
@@ -671,7 +672,7 @@ func (s *DB) ensureFullSchemaContractObjectsContext(ctx context.Context) error {
 	if _, err := s.pool.Exec(ctx, sleepRolloutDDL); err != nil {
 		return err
 	}
-	_, err := s.pool.Exec(ctx, hdbtDDL)
+	_, err := s.pool.Exec(ctx, hdbtDDL+"\n"+decisionJournalDDL)
 	return err
 }
 

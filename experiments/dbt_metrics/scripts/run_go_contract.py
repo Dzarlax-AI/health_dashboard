@@ -98,7 +98,7 @@ def main():
     cid = p.docker("inspect", "-f", "{{.Id}}", p.NAME, capture=True).stdout.strip()
     try:
         for _ in range(60):
-            if p.docker("exec", cid, "pg_isready", "-U", "pilot_admin", "-d", p.DB, capture=True, check=False).returncode == 0:
+            if p.docker("exec", cid, "pg_isready", "-h", "127.0.0.1", "-U", "pilot_admin", "-d", p.DB, capture=True, check=False).returncode == 0:
                 break
             time.sleep(1)
         else:

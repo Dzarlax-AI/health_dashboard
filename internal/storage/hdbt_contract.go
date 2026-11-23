@@ -13,6 +13,7 @@ func addHDBTContract(m *ContractManifest) {
 	const steps = "hour source avg_val min_val max_val sample_count withdrawn proven_input"
 	for _, s := range []struct{ tables, columns, key string }{
 		{"hdbt_state", "singleton shadow_enabled read_enabled initialized ready bootstrap_cursor bootstrap_end formula_id source_generation published_at heartbeat_at last_status enrollment_epoch", "singleton"},
+		{"hdbt_decision_inputs", "metric decision_key input_hash captured_at formula_version inputs result", "metric decision_key input_hash"},
 		{"hdbt_dirty", "date generation", "date"},
 		{"hdbt_step_repairs", "point_date source generation", "point_date source"},
 		{"hdbt_i_repairs", "point_date source", "point_date source"},
@@ -29,6 +30,15 @@ func addHDBTContract(m *ContractManifest) {
 			m.Columns[table] = strings.Fields(s.columns)
 			m.Constraints = append(m.Constraints, ConstraintDefinition{Table: table, Kind: "p", Columns: strings.Fields(s.key)})
 		}
+	}
+	for _, column := range []struct{ name, typ string }{
+		{"metric", "text"}, {"decision_key", "text"}, {"input_hash", "text"},
+		{"captured_at", "timestamp with time zone"}, {"formula_version", "integer"},
+		{"inputs", "jsonb"}, {"result", "jsonb"},
+	} {
+		m.ColumnDefinitions = append(m.ColumnDefinitions, ColumnDefinition{
+			Table: "hdbt_decision_inputs", Column: column.name, DataType: column.typ,
+		})
 	}
 	for _, col := range []string{"shadow_enabled", "read_enabled", "initialized", "ready"} {
 		m.ColumnDefinitions = append(m.ColumnDefinitions, ColumnDefinition{Table: "hdbt_state", Column: col, DataType: "boolean", Default: "false", RequireDefault: true})
