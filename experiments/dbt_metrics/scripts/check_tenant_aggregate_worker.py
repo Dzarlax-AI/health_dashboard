@@ -2,6 +2,7 @@
 """Exercise the deployable worker against a fresh, isolated PostgreSQL tenant."""
 
 import argparse
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -118,7 +119,7 @@ def exercise(image, directory, network, cid):
         HEALTH_DBT_TENANT_DSN_FILE="/run/tenant-dsn" if image else str(secret),
     )
 
-    def worker(*, wait=True, extra=None, name=None, loop=False, expired_attempt=None):
+    def worker(*, wait=True, extra=None, name=None, loop=False, expired_attempt=None, mounts=()):
         active = dict(env, **(extra or {}))
         args = [] if loop else ["--once"]
         if expired_attempt:
@@ -156,6 +157,8 @@ else:
                 "-v",
                 f"{secret}:/run/tenant-dsn:ro",
             ]
+            for source, target in mounts:
+                cmd += ["-v", f"{source}:{target}:ro"]
             if expired_attempt:
                 cmd += ["--entrypoint", "/opt/dbt/bin/python"]
             if name:
@@ -180,6 +183,34 @@ else:
 
     def actual():
         return sql("select steps::int from hdbt_daily_metrics where date='2026-01-01'")
+
+    # Run the actual chart reader as the tenant role on the fixture's private
+    # socket. The probe binary uses the same storage package as the service.
+    probe = directory / "chart"
+    machine = docker("exec", cid, "uname", "-m", capture_output=True).stdout.strip()
+    goarch = {"aarch64": "arm64", "x86_64": "amd64"}[machine]
+    subprocess.run(
+        ["go", "test", "-c", "-o", str(probe), "./experiments/dbt_metrics/servingarchive"],
+        cwd=ROOT,
+        env=dict(os.environ, GOOS="linux", GOARCH=goarch, CGO_ENABLED="0"),
+        check=True,
+    )
+    docker("cp", str(probe), f"{cid}:/tmp/chart", capture_output=True)
+
+    def chart(expected):
+        result = docker(
+            "exec",
+            "-e",
+            f"PGUSER={role}",
+            "-e",
+            f"HDBT_SMOKE_EXPECT={expected}",
+            cid,
+            "/tmp/chart",
+            "-test.v",
+            "-test.run=^TestHDBTWorkerSmokeStepChart$",
+            capture_output=True,
+        )
+        assert "--- PASS: TestHDBTWorkerSmokeStepChart " in result.stdout
 
     def mark(gen):
         return f"""update metric_points set qty={10 * gen} where date like '2026-01-01%';
@@ -233,48 +264,65 @@ else:
     assert actual() == "10" and sql("select last_status from hdbt_state") == "dbt_build"
     assert sql("select count(*) from hdbt_dirty") == "1"
     sql("alter table hdbt_w_daily drop constraint fixture_refuse_20")
-    # Hold generation 3 uncommitted as the worker builds generation 2. Release
-    # the source writer only once the worker is waiting on its publication fence.
-    hold = subprocess.Popen(
-        ["docker", "exec", "-i", cid, "psql", "-XqAt", "-U", "postgres", "-v", "ON_ERROR_STOP=1"],
-        text=True,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-    )
-    try:
-        hold.stdin.write(f"set search_path={schema},pg_catalog; begin;" + mark(3) + "select 'locked';\n")
-        hold.stdin.flush()
-        assert hold.stdout.readline().strip() == "locked"
-        pending = worker(wait=False)
+    # The gate holds the final dbt model before publication. All timing-sensitive
+    # assertions run while it is closed, independently of the worker lock timeout.
+    sql("""create function fixture_pause_model() returns trigger language plpgsql as $$begin
+        if current_setting('application_name') <> 'health-dbt-worker' then
+            perform pg_advisory_xact_lock(9301,2);
+            while not pg_try_advisory_xact_lock(9301,1) loop perform pg_sleep(0.05); end loop;
+        end if;
+        return null; end $$;
+        create trigger fixture_pause_model after insert or update on hdbt_w_daily for each statement
+        execute function fixture_pause_model();""")
+
+    @contextmanager
+    def model_gate():
+        hold = subprocess.Popen(
+            ["docker", "exec", "-i", cid, "psql", "-XqAt", "-U", "postgres", "-v", "ON_ERROR_STOP=1"],
+            text=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+        )
+        try:
+            hold.stdin.write("begin; select pg_advisory_xact_lock(9301,1) is not null;\n")
+            hold.stdin.flush()
+            assert hold.stdout.readline().strip() == "t"
+            yield
+        finally:
+            hold.stdin.close()
+            hold.wait(timeout=10)
+
+    def wait_at_model_gate():
         wait_for(
             lambda: (
-                sql("""select exists(select from pg_stat_activity where application_name='health-dbt-worker'
-            and wait_event_type='Lock' and query ilike '%from settings%for share%')""")
+                sql("""select exists(select from pg_locks where locktype='advisory'
+            and classid=9301 and objid=2 and granted)""")
                 == "t"
             )
         )
+
+    with model_gate():
+        pending = worker(wait=False)
+        wait_at_model_gate()
         require_status("busy")
         assert actual() == "10"
-        hold.stdin.write("commit;\n")
-        hold.stdin.close()
-        hold.wait(timeout=10)
-        assert status(pending) == ("stale", 0)
-    finally:
-        if hold.poll() is None:
-            hold.kill()
-            hold.wait()
+        sql("begin;" + mark(3) + "commit;")
+    assert status(pending) == ("stale", 0)
     assert sql("select count(*) from hdbt_dirty") == "1"
     previous = sql("select attempt from hdbt_work_lease")
     name = "hdbt-crash-" + secrets.token_hex(6)
-    crash = worker(wait=False, name=name)
-    try:
-        wait_for(lambda: sql("select attempt from hdbt_work_lease") != previous)
-        if image:
-            docker("kill", name, capture_output=True)
-        else:
-            crash.kill()
-    finally:
-        crash.wait(timeout=30)
+    with model_gate():
+        crash = worker(wait=False, name=name)
+        try:
+            wait_at_model_gate()
+            assert sql("select attempt from hdbt_work_lease") != previous
+            if image:
+                docker("kill", name, capture_output=True)
+            else:
+                crash.kill()
+        finally:
+            crash.wait(timeout=30)
+    sql("drop trigger fixture_pause_model on hdbt_w_daily; drop function fixture_pause_model()")
     assert actual() == "10"
     require_status("published")
     assert actual() == "30" and sql("select source_generation from hdbt_state") == "3"
@@ -283,6 +331,7 @@ else:
     assert work_xmin == sql("select xmin from hdbt_w_daily where date='2026-01-01'")
     assert sql("select count(*) from hdbt_dirty") == "0"
     assert other_xmin == sql("select xmin from hdbt_daily_metrics where date='2026-01-20'")
+    sql("update hdbt_state set read_enabled=true")
     # The frozen old Watch hour survives a missing raw sample. A later explicit
     # repair receipt is required to withdraw it in favour of the remaining phone.
     sql("""begin;
@@ -290,13 +339,17 @@ else:
         insert into metric_points(metric_name,date,source,qty) values('step_count','2026-01-01 10:00:00 +0000','iPhone',100);
         update settings set value='{"version":1,"generation":4}' where key='_cache_maintenance_v1';
         insert into hdbt_dirty values('2026-01-01',4); commit""")
+    chart(30)
     require_status("published")
+    chart(30)
     assert actual() == "30"
     sql("""begin;
         insert into hdbt_step_repairs values('2026-01-01 10:00:00 +0000','Apple Watch',5);
         update settings set value='{"version":1,"generation":5}' where key='_cache_maintenance_v1';
         insert into hdbt_dirty values('2026-01-01',5); commit""")
+    chart(100)
     require_status("published")
+    chart(100)
     assert actual() == "100" and sql("select count(*) from hdbt_step_repairs") == "0"
     sql("update hdbt_state set read_enabled=true")
     reader = subprocess.Popen(
@@ -331,9 +384,100 @@ else:
     finally:
         reader.stdin.close()
         reader.wait(timeout=10)
+    # Day 3 is inside the first core day's output footprint; its own alias on
+    # day 5 lies outside that footprint. Retain both its ACK and repair receipt.
+    sql("""begin; insert into metric_points(metric_name,date,source,qty) values
+        ('step_count','2026-01-03 10:00:00 +0000','retiring watch',15),
+        ('step_count','2026-01-05 01:30:00 +1400','Alias Watch',80);
+        update settings set value='{"version":1,"generation":7}' where key='_cache_maintenance_v1';
+        insert into hdbt_dirty values('2026-01-03',7),('2026-01-05',7); commit""")
+    require_status("building")
+    require_status("published")
+    assert sql("select steps::int from hdbt_daily_metrics where date='2026-01-05'") == "80"
+    sql("""begin; insert into metric_points(metric_name,date,source,qty)
+        values('step_count','2026-01-03 23:30:00 -1200','Alias Watch',80);
+        delete from metric_points where source='retiring watch';
+        insert into hdbt_step_repairs values('2026-01-03 10:00:00 +0000','retiring watch',8);
+        update settings set value='{"version":1,"generation":8}' where key='_cache_maintenance_v1';
+        insert into hdbt_dirty values('2026-01-01',8),('2026-01-03',8); commit""")
+    require_status("building")
+    assert sql("select date from hdbt_dirty") == "2026-01-03"
+    assert sql("select count(*) from hdbt_step_repairs where generation=8") == "1"
+    assert sql("select source_generation from hdbt_state where not ready") == "7"
+    require_status("published")
+    assert sql("select steps::int from hdbt_daily_metrics where date='2026-01-03'") == "80"
+    assert sql("select count(*) from hdbt_daily_metrics where date='2026-01-05' and steps>0") == "0"
+    assert sql("select count(*) from hdbt_step_repairs") == "0"
+    sql("""begin; insert into metric_points(metric_name,date,source,qty) values
+        ('step_count','0001-01-01 12:00:00 +0000','Watch',11),
+        ('step_count','9999-12-31 12:00:00 +0000','Watch',19);
+        update settings set value='{"version":1,"generation":9}' where key='_cache_maintenance_v1';
+        insert into hdbt_dirty values('0001-01-01',9),('9999-12-31',9); commit""")
+    require_status("building")
+    require_status("published")
+    assert (
+        sql(
+            "select steps::int from hdbt_daily_metrics where date in ('0001-01-01','9999-12-31') order by date"
+        )
+        == "11\n19"
+    )
+
+    # Generate a test-only trust root and serve TLS on the same isolated database.
+    cert, key = directory / "tls.crt", directory / "tls.key"
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-days",
+            "1",
+            "-subj",
+            "/CN=fixture",
+            "-addext",
+            "subjectAltName=DNS:fixture,IP:127.0.0.1",
+            "-keyout",
+            str(key),
+            "-out",
+            str(cert),
+        ],
+        capture_output=True,
+        check=True,
+    )
+    cert.chmod(0o444)
+    for file in (cert, key):
+        docker("cp", str(file), f"{cid}:/tmp/{file.name}", capture_output=True)
+    docker("exec", cid, "chown", "postgres:postgres", "/tmp/tls.key", capture_output=True)
+    docker("exec", cid, "chmod", "0600", "/tmp/tls.key", capture_output=True)
+    sql(
+        "alter system set ssl_cert_file='/tmp/tls.crt'; alter system set ssl_key_file='/tmp/tls.key';"
+        "alter system set ssl=on; select pg_reload_conf()"
+    )
+    wait_for(lambda: sql("show ssl") == "on")
+    verified = secret.read_text().replace("sslmode=disable", "sslmode=verify-full")
+
+    def set_dsn(contents):
+        secret.chmod(0o600)
+        secret.write_text(contents)
+        secret.chmod(0o444)
+
+    set_dsn(verified)
+    assert worker()[1] != 0  # The private test CA is outside the stock trust store.
+    roots = (
+        {"mounts": [(cert, "/etc/ssl/certs/ca-certificates.crt")]}
+        if image
+        else {"extra": {"SSL_CERT_FILE": str(cert)}}
+    )
+    sql("begin;" + mark(10) + "commit;")
+    require_status("published", **roots)  # Both the Python session and dbt verify the server.
+    mounted = "/tmp/fixture-ca.pem" if image else str(cert)
+    set_dsn(verified + "&sslrootcert=" + mounted)
+    require_status("idle", mounts=[(cert, mounted)] if image else [])
     print(
         "PASS bootstrap/re-enrollment, tenant ACL/checksum, scoped sync, stale/failed/crashed builds, "
-        "withdrawal proof, retained reader, expired work lease, SQL cancellation and disabled rollback"
+        "withdrawal proof, retained reader, expired lease, SQL cancellation, scoped ACK, chart parity, boundary dates and TLS"
     )
 
 

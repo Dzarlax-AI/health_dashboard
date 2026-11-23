@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"testing"
 
 	"health-receiver/internal/testdb"
@@ -72,6 +73,7 @@ func TestHDBTMutationAndStepsCutover(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer tx.Rollback(context.Background())
 	if err = repairWithdrawnSteps(ctx, tx, json.RawMessage(`[["2026-10-12 08:12","Watch"]]`)); err != nil {
 		t.Fatal(err)
 	}
@@ -122,6 +124,17 @@ func TestHDBTFlagsAreOfflineContractObjects(t *testing.T) {
 	var flags bool
 	if err := tx.QueryRow(ctx, "select shadow_enabled or read_enabled from hdbt_state where singleton").Scan(&flags); err != nil || flags {
 		t.Fatalf("initial flags: %t %v", flags, err)
+	}
+	for _, definition := range []string{
+		"update of read_enabled on hdbt_state for each row when (old.shadow_enabled is distinct from new.shadow_enabled)",
+		"update of shadow_enabled on hdbt_state for each row when (false)",
+	} {
+		if _, err := tx.Exec(ctx, "create or replace trigger hdbt_enrollment_change before "+definition+" execute function hdbt_reset_enrollment()"); err != nil {
+			t.Fatal(err)
+		}
+		if err := unit.verifyHDBTEnrollmentTrigger(ctx); err == nil {
+			t.Errorf("accepted invalid enrollment trigger: %s", definition)
+		}
 	}
 	if _, err := tx.Exec(ctx, "alter table hdbt_state disable trigger hdbt_enrollment_change"); err != nil {
 		t.Fatal(err)
@@ -200,7 +213,7 @@ func TestHDBTStepsDirtyNeighborAndPartialBootstrap(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	defer exec("update hdbt_state set shadow_enabled=false; truncate hdbt_dirty,hdbt_backfill,hdbt_daily_metrics")
+	defer exec("update hdbt_state set shadow_enabled=false; truncate hdbt_dirty,hdbt_backfill,hdbt_daily_metrics,hdbt_step_state")
 	state := emptyCacheMaintenanceState()
 	state.CompletedIdentity = CacheMaintenanceIdentity()
 	state.Generation = 4
@@ -219,6 +232,8 @@ func TestHDBTStepsDirtyNeighborAndPartialBootstrap(t *testing.T) {
 	exec(`insert into hourly_metrics(metric_name,hour,source,avg_val,min_val,max_val,sample_count)
 		values ('step_count','2026-05-12 09:00','Apple Watch',18.4,0.15,11.1,3),
 		       ('step_count','2026-05-12 10:00','iPhone',80,40,40,2)`)
+	exec(`insert into hdbt_step_state(hour,source,avg_val,min_val,max_val,sample_count,withdrawn)
+		select hour,source,avg_val,min_val,max_val,sample_count,false from hourly_metrics where metric_name='step_count'`)
 	exec(`insert into daily_scores(date,steps) values('2026-05-01',18),('2026-05-12',99)`)
 	exec(`insert into hdbt_daily_metrics(date,steps) values('2026-05-01',21),('2026-05-12',57)`)
 	exec("update hdbt_state set shadow_enabled=true")
@@ -266,6 +281,9 @@ func TestHDBTStepsLiveDeliveryWithIncompleteHour(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertDailyStepSeries(t, db, "", day, DailyStepPoint{day, 80})
+	// A previous dbt publication can outlive even the ordinary Go cell.
+	exec("delete from hourly_metrics where metric_name='step_count' and hour=$1", hour)
+	assertDailyStepSeries(t, db, "", day, DailyStepPoint{day, 80})
 	// Revoke the newer source through the same cleanup used by the importer.
 	// Its receipt covers Watch only. Missing iPhone samples remain protected.
 	db.RemoveAutoExportForRange(day, day)
@@ -275,4 +293,87 @@ func TestHDBTStepsLiveDeliveryWithIncompleteHour(t *testing.T) {
 		t.Fatalf("points=%d repairs=%d: %v", points, repairs, err)
 	}
 	assertDailyStepSeries(t, db, "", day, DailyStepPoint{day, 80})
+}
+
+func TestHDBTDirtyAliasOutsideRangeWithGermanDateStyle(t *testing.T) {
+	db, done := testDB(t)
+	defer done()
+	ctx := t.Context()
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(context.Background())
+	unit := &DB{pool: &cacheTransaction{Tx: tx, ctx: ctx}}
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := tx.Exec(ctx, q, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec("set local datestyle='German, DMY'")
+	exec("update hdbt_state set shadow_enabled=true")
+	exec("update hdbt_state set initialized=true,read_enabled=true,ready=true,formula_id=$1,source_generation=0", hdbtFormula)
+	state := emptyCacheMaintenanceState()
+	state.Generation = 1
+	state.CompletedIdentity = CacheMaintenanceIdentity()
+	if _, err = lockCacheMaintenanceRow(ctx, tx); err != nil {
+		t.Fatal(err)
+	}
+	if err = saveCacheMaintenanceRow(ctx, tx, state); err != nil {
+		t.Fatal(err)
+	}
+	id, err := unit.InsertRaw(Record{ContentType: "application/json; metrics-contract=2", Payload: "{}"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec(`insert into metric_points(health_record_id,metric_name,units,date,source,qty) values
+	  ($1,'step_count','count','2026-05-12 23:30:00 +0000','Watch',30),
+	  ($1,'step_count','count','2026-05-13 00:30:00 +0100','Watch',30)`, id)
+	exec("insert into hdbt_daily_metrics(date,steps) values('2026-05-12',30)")
+	exec("insert into hdbt_dirty(date,generation) values('2026-05-13',1)")
+	generation := uint64(1)
+	for _, tc := range []struct {
+		through string
+		want    []DailyStepPoint
+	}{
+		{"2026-05-12", nil}, {"2026-05-13", []DailyStepPoint{{"2026-05-13", 30}}},
+	} {
+		got, enabled, err := readHDBTSteps(ctx, tx, tc.through, &generation)
+		if err != nil || !enabled || !slices.Equal(got, tc.want) {
+			t.Fatalf("dirty alias through %s: got %+v enabled=%v: %v", tc.through, got, enabled, err)
+		}
+	}
+}
+
+func TestHDBTStepsRetainedPreimageAcceptsMiddleMinute(t *testing.T) {
+	db, done := testDB(t)
+	defer done()
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.pool.Exec(t.Context(), q, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer exec("update hdbt_state set shadow_enabled=false; truncate hdbt_dirty,hdbt_step_inputs,hdbt_step_state,hdbt_daily_metrics,hdbt_step_repairs")
+	state := emptyCacheMaintenanceState()
+	state.CompletedIdentity = CacheMaintenanceIdentity()
+	setDailyStepSeriesJournal(t, db, state)
+	const day = "2026-04-06"
+	id, err := db.InsertRaw(Record{ContentType: "application/json", Payload: "{}"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec(`insert into metric_points(health_record_id,metric_name,units,date,source,qty) values
+		($1,'step_count','count','2026-04-06 08:00:00 +0000','Watch',4),
+		($1,'step_count','count','2026-04-06 08:02:00 +0000','Watch',8)`, id)
+	exec(`insert into hdbt_step_inputs select metric_name,date,source,qty,quality,health_record_id,origin,units,id,received_at,source_snapshot_at from metric_points`)
+	exec("insert into hdbt_step_state(hour,source,avg_val,min_val,max_val,sample_count,withdrawn) values('2026-04-06 08:00','Watch',12,4,8,2,false)")
+	exec("insert into hdbt_daily_metrics(date,steps) values($1,12)", day)
+	exec("update hdbt_state set shadow_enabled=true")
+	exec("update hdbt_state set initialized=true,read_enabled=true,ready=true,formula_id=$1,source_generation=0", hdbtFormula)
+	if err = db.InsertPoints(id, []MetricPoint{{"step_count", "count", day + " 08:01:00 +0000", 1, "Watch"}}); err != nil {
+		t.Fatal(err)
+	}
+	assertDailyStepSeries(t, db, "", day, DailyStepPoint{day, 13})
 }

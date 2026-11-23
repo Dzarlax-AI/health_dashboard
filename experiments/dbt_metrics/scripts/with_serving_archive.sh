@@ -8,6 +8,7 @@ archive=$1
 script_dir=$(cd "$(dirname "$0")" && pwd)
 # Preload once with docker pull postgres@sha256:f2f98726820d0342055351c6e9d36e705f5bfffb3dd53ff556325114b08afb6d
 image=postgres@sha256:f2f98726820d0342055351c6e9d36e705f5bfffb3dd53ff556325114b08afb6d
+python3 "$script_dir/run_serving_archive.py" --preflight-baseline
 endpoint=${DOCKER_HOST:-$(docker context inspect --format '{{.Endpoints.docker.Host}}')}
 [[ "$endpoint" == unix://* ]] || { echo "A local Unix-socket Docker engine is required." >&2; exit 1; }
 # Pin every subsequent operation to the inspected socket, including cleanup.
@@ -19,11 +20,24 @@ scratch=$(mktemp -d)
 id=''
 watchdog=''
 cleanup() {
-    [[ -z "$watchdog" ]] || { kill "$watchdog" 2>/dev/null || true; wait "$watchdog" 2>/dev/null || true; }
-    if [[ -n "$id" ]]; then
-        if docker container inspect "$id" >/dev/null 2>&1; then docker stop -t 5 "$id" >/dev/null; fi
+    local code=$?
+    trap - EXIT
+    if [[ -n "$watchdog" ]]; then
+        kill "$watchdog" 2>/dev/null || true
+        wait "$watchdog" 2>/dev/null || true
     fi
-    rm -rf -- "$scratch"
+    if [[ -n "$id" ]] && ! docker stop -t 5 "$id" >/dev/null 2>&1; then
+        # The reserve watchdog may already have stopped the --rm container.
+        if ! docker rm -fv "$id" >/dev/null 2>&1; then
+            local remaining
+            if ! remaining=$(docker ps -aq --no-trunc --filter "id=$id") || [[ -n "$remaining" ]]; then
+                echo "Unable to verify removal of the disposable PostgreSQL container $id." >&2
+                code=1
+            fi
+        fi
+    fi
+    rm -rf -- "$scratch" || code=1
+    exit "$code"
 }
 trap cleanup EXIT
 trap 'exit 130' INT

@@ -50,7 +50,11 @@ func (s *DB) verifyHDBTEnrollmentTrigger(ctx context.Context) error {
         join pg_namespace n on n.oid=c.relnamespace join pg_proc f on f.oid=t.tgfoid
         where n.nspname=current_schema() and c.relname='hdbt_state' and t.tgname='hdbt_enrollment_change'
         and t.tgenabled in ('O','A') and t.tgtype=19 and f.pronamespace=n.oid
-        and f.proname='hdbt_reset_enrollment' and not f.prosecdef)`).Scan(&valid)
+        and f.proname='hdbt_reset_enrollment' and not f.prosecdef
+        and t.tgattr::text=(select attnum::text from pg_attribute
+            where attrelid=c.oid and attname='shadow_enabled' and not attisdropped)
+        and position('whenold.shadow_enabledisdistinctfromnew.shadow_enabledexecutefunction' in
+            regexp_replace(lower(pg_get_triggerdef(t.oid)), '[[:space:]()]', '', 'g'))>0)`).Scan(&valid)
 	if err != nil {
 		return err
 	}

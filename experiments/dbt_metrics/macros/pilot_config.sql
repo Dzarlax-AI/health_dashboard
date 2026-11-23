@@ -47,7 +47,7 @@
       {% endif %}
     {% endfor %}
     {% set parsed_date = modules.datetime.datetime.strptime(value, '%Y-%m-%d') %}
-    {% if parsed_date.strftime('%Y-%m-%d') != value %}
+    {% if parsed_date.date().isoformat() != value %}
       {{ exceptions.raise_compiler_error('affected_dates must contain valid calendar dates') }}
     {% endif %}
   {% endfor %}

@@ -814,6 +814,13 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Verify archive rehearsal safeguards and oracle
+        run: python3 experiments/dbt_metrics/scripts/test_serving_archive.py
       - name: Build and test the worker with an isolated tenant
         run: |
           docker build -f Dockerfile.dbt-worker --build-arg BUILD_REVISION="$GITHUB_SHA" -t health-dbt-worker:ci .

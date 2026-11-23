@@ -1,5 +1,5 @@
 """Exercise release migration, tenant worker, and real chart on one trusted local archive."""
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import json
 import os
 from pathlib import Path
@@ -8,6 +8,7 @@ import resource
 import secrets
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -154,15 +155,16 @@ def image_once(owner,env,tenant,scratch,image):
     network="archive-worker-"+secrets.token_hex(8)
     secret=scratch/"image.dsn"
     from urllib.parse import quote
-    secret.write_text("postgresql://"+tenant["PGUSER"]+":"+quote(tenant["PGPASSWORD"],safe="")+
-                      "@archive-db:5432/serving_archive?sslmode=disable")
-    # The containing directory is mode 0700. The production image uses a non-root UID.
-    secret.chmod(0o444)
-    invoke(["docker","network","create","--internal",network],owner)
-    connected=False
-    try:
+    with ExitStack() as cleanup:
+        cleanup.callback(secret.unlink,missing_ok=True)
+        secret.write_text("postgresql://"+tenant["PGUSER"]+":"+quote(tenant["PGPASSWORD"],safe="")+
+                          "@archive-db:5432/serving_archive?sslmode=disable")
+        # The containing directory is mode 0700. The production image uses a non-root UID.
+        secret.chmod(0o444)
+        invoke(["docker","network","create","--internal",network],owner)
+        cleanup.callback(invoke,["docker","network","rm",network],owner)
         invoke(["docker","network","connect","--alias","archive-db",network,database_container],owner)
-        connected=True
+        cleanup.callback(invoke,["docker","network","disconnect",network,database_container],owner)
         start=time.monotonic()
         mounted="/run/secrets/archive_tenant"
         result=invoke(["docker","run","--rm","--pull=never","--read-only","--cap-drop=ALL",
@@ -173,11 +175,6 @@ def image_once(owner,env,tenant,scratch,image):
             "-e","HEALTH_DBT_TENANT_ID="+env["HEALTH_DBT_TENANT_ID"],
             "-e","HEALTH_DBT_TENANT_DSN_FILE="+mounted,image,"--once"],owner,timeout=2100)
         return json.loads(result)["status"],round(time.monotonic()-start,3)
-    finally:
-        if connected:
-            invoke(["docker","network","disconnect",network,database_container],owner)
-        invoke(["docker","network","rm",network],owner)
-        secret.unlink(missing_ok=True)
 
 
 def meter(owner):
@@ -262,13 +259,9 @@ def validate(owner, env, tenant, scratch, result):
         order by 1""").splitlines()
     actual_days=sql(tenant,"select date from health.hdbt_daily_metrics order by date").splitlines()
     require(actual_days==days,"published calendar differs from source inventory")
-    reference=archive_steps(lambda q:sql(tenant,q),days)
-    # At initial enrollment there is no new withdrawal. Retain a published
-    # daily-only value if the archive no longer has any surviving hourly evidence.
     previous = json.loads(sql(tenant,"select coalesce(json_agg(json_build_array(date,steps::float8)),'[]') "
                               "from health.daily_scores where steps is not null"))
-    retained = {day:qty for day,qty in previous if day not in reference}
-    reference.update(retained)
+    reference, retained = archive_steps(lambda q:sql(tenant,q),days,dict(previous))
     result["retained_daily_only"]=len(retained)
     expected=sorted(reference.items())
     result["calendar_days"]=len(days)
@@ -327,22 +320,20 @@ def validate(owner, env, tenant, scratch, result):
         # With an outstanding source generation, the same URL must serve Go.
         fallback,dirty_ms=chart(env,scratch,"patch")
         require((fallback==live)==(phase=="retry"),"unexpected corrected step chart")
-        status,t=image_once(owner,env,tenant,scratch,image) if image else worker(env)
-        require(status=="published","correction was not published")
-        published,ms=chart(env,scratch,"published")
-        require(published==fallback,"published correction differs from fallback")
-        # A real replacement may affect offset aliases recorded on a neighboring
-        # date. Rebuild every affected day independently and compare the whole chart.
+        # Capture proof before the worker consumes confirmed repair receipts.
         received=json.loads((scratch/"accepted.json").read_text())["data"]["metrics"][0]["data"]
         from datetime import date, timedelta
         affected={str(date.fromisoformat(p["date"][:10])+timedelta(days=n))
                   for p in received for n in range(-2,3)}
-        updated=archive_steps(lambda q:sql(tenant,q),sorted(affected & set(days)))
+        updated,_=archive_steps(lambda q:sql(tenant,q),sorted(affected & set(days)),reference)
         for day in affected:
             reference.pop(day,None)
         reference.update(updated)
-        reference.update({d:q for d,q in retained.items() if d in affected and d not in reference})
-        require(published==sorted(reference.items()),"corrected chart differs from independent oracle")
+        require(fallback==sorted(reference.items()),"corrected chart differs from independent oracle")
+        status,t=image_once(owner,env,tenant,scratch,image) if image else worker(env)
+        require(status=="published","correction was not published")
+        published,ms=chart(env,scratch,"published")
+        require(published==fallback,"published correction differs from fallback")
         live=published
         require(worker(env)[0]=="idle","extra work after checkpoint")
         receipt=int((scratch/(phase+"-receipt")).read_text())
@@ -412,4 +403,13 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:] == ["--preflight-baseline"]:
+        result = subprocess.run(["git","archive","--format=tar",BASE], cwd=ROOT,
+                                env=dict(os.environ,GIT_NO_LAZY_FETCH="1"),
+                                stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        if result.returncode:
+            sys.exit(f"Baseline commit {BASE} and its complete tree must be available locally. Fetch the baseline before retrying.")
+    elif not sys.argv[1:]:
+        main()
+    else:
+        sys.exit("usage: run_serving_archive.py [--preflight-baseline]")

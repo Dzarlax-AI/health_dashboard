@@ -2,12 +2,13 @@
 """Maintain published hourly and daily dbt aggregates for one enrolled Health tenant."""
 
 import argparse
-from datetime import date, timedelta
+from datetime import date
 import json
 import os
 from pathlib import Path
 import re
 import signal
+import ssl
 import stat
 import subprocess
 import sys
@@ -76,6 +77,13 @@ def configuration():
         or config["user"] != "health_t_" + tenant.hex
     ):
         raise WorkerError("credential_scope")
+    if config.get("sslmode") == "verify-full" and "sslrootcert" not in config:
+        # pgx uses the system roots by default; libpq otherwise expects a
+        # per-user root.crt. Pin the same trust bundle for capture and dbt.
+        roots = ssl.get_default_verify_paths().cafile
+        if not roots:
+            raise WorkerError("system_ca_unavailable")
+        config["sslrootcert"] = roots
     config["port"] = int(config.get("port", "5432"))
     batch = int(os.getenv("HEALTH_DBT_BATCH_DAYS", "16"))
     if not 1 <= batch <= 366:
@@ -158,6 +166,19 @@ def initialize(cur):
     )
 
 
+def date_window(days, radius):
+    return sorted(
+        {
+            date.fromordinal(n).isoformat()
+            for day in days
+            for n in range(
+                max(date.min.toordinal(), day.toordinal() - radius),
+                min(date.max.toordinal(), day.toordinal() + radius) + 1,
+            )
+        }
+    )
+
+
 def capture(cur, batch, attempt):
     cur.execute("set transaction isolation level repeatable read")
     generation = watermark(cur)
@@ -187,9 +208,12 @@ def capture(cur, batch, attempt):
             )
             return "idle"
         return generation, epoch, []
-    days = [date.fromisoformat(d) for d in core]
-    neighborhood = sorted({(d + timedelta(days=offset)).isoformat() for d in days for offset in range(-2, 3)})
-    halo = sorted({(d + timedelta(days=offset)).isoformat() for d in days for offset in range(-4, 5)})
+    try:
+        days = [date.fromisoformat(d) for d in core]
+    except ValueError:
+        raise WorkerError("unsupported_calendar_date") from None
+    neighborhood = date_window(days, 2)
+    halo = date_window(days, 4)
     cur.execute(
         """insert into hdbt_work_lease values(true,%s::uuid)
         on conflict(singleton) do update set attempt=excluded.attempt""",
@@ -335,9 +359,9 @@ def publish(cur, generation, epoch, dates):
             f"""delete from hdbt_step_inputs where substring(date,1,10) in (select date from hdbt_i_calendar);
             insert into hdbt_step_inputs select * from hdbt_i_points where metric_name in {STEPS}
                 and substring(date,1,10) in (select date from hdbt_i_calendar);
-            delete from hdbt_step_repairs where generation<=%s and substring(point_date,1,10) in (select date from hdbt_i_calendar);
-            delete from hdbt_dirty where generation<=%s and date in (select date from hdbt_i_calendar);
-            delete from hdbt_backfill where date in (select date from hdbt_i_calendar)""",
+            delete from hdbt_step_repairs where generation<=%s and substring(point_date,1,10) in (select date from hdbt_i_publish);
+            delete from hdbt_dirty where generation<=%s and date in (select date from hdbt_i_publish);
+            delete from hdbt_backfill where date in (select date from hdbt_i_publish)""",
             (generation, generation),
         )
     cur.execute("""select not exists(select from hdbt_dirty) and not exists(select from hdbt_backfill)""")

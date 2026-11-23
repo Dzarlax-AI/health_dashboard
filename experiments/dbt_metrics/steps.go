@@ -80,7 +80,17 @@ var stepPointInputsMacro string
 
 // StepPointInputsSQL resolves input grain and exact-record precedence before aggregation.
 func StepPointInputsSQL(points, receipts, scope string) string {
-	return strings.NewReplacer("{{ points }}", points, "{{ receipts }}", receipts, "{{ scope }}", scope, "{{ step_instant('e.date') }}", StepInstantSQL("e.date")).Replace(macroBody(stepPointInputsMacro))
+	// Preserve the historical v6 writer definition and its maintenance identity.
+	return stepPointInputsSQL(points, receipts, scope, "b.candidate_day::text")
+}
+
+// ServingStepPointInputsSQL matches the dbt reader in every PostgreSQL DateStyle.
+func ServingStepPointInputsSQL(points, receipts, scope string) string {
+	return stepPointInputsSQL(points, receipts, scope, "to_char(b.candidate_day,'YYYY-MM-DD')")
+}
+
+func stepPointInputsSQL(points, receipts, scope, neighborKey string) string {
+	return strings.NewReplacer("{{ neighbor_key }}", neighborKey, "{{ points }}", points, "{{ receipts }}", receipts, "{{ scope }}", scope, "{{ step_instant('e.date') }}", StepInstantSQL("e.date")).Replace(macroBody(stepPointInputsMacro))
 }
 
 //go:embed macros/step_wall_rows.sql
@@ -89,6 +99,11 @@ var stepWallRowsMacro string
 // StepWallRowsSQL produces source cells for the offset-free compatibility cache.
 func StepWallRowsSQL(points string) string {
 	return stepWallRowsSQL(points, false)
+}
+
+// ServingStepWallRowsSQL rebuilds a source cell released by a verified receipt.
+func ServingStepWallRowsSQL(points string) string {
+	return stepWallRowsSQL(points, true)
 }
 
 func stepWallRowsSQL(points string, ordered bool) string {
@@ -109,6 +124,23 @@ func reconciledStepAliasCellsSQL(points, cached string, ordered bool) string {
 	return strings.NewReplacer("{{ points }}", points, "{{ cached }}", cached,
 		"{{ step_wall_rows('original_points', ordered_steps) }}", stepWallRowsSQL("original_points", ordered),
 		"{{ step_wall_rows('cell_points', ordered_steps) }}", stepWallRowsSQL("cell_points", ordered)).Replace(stepMacroBody(reconciledStepAliasCellsMacro, ordered))
+}
+
+//go:embed macros/step_capture_signature.sql
+var stepCaptureSignatureMacro string
+
+//go:embed macros/proven_step_edits.sql
+var provenStepEditsMacro string
+
+// ServingProvenStepEditsSQL identifies an edit whose previous raw capture can
+// reconstruct the published hour and whose previous observations still exist.
+func ServingProvenStepEditsSQL(points, cached, previous, scope string) string {
+	signature := strings.ReplaceAll(macroBody(stepCaptureSignatureMacro), "{{ points }}", points)
+	return strings.NewReplacer("{{ cached }}", cached, "{{ scope }}", scope,
+		"{{ incoming }}", "metric_points", "{{ previous }}", previous,
+		"{{ full_snapshot }}", "true", "{{ step_capture_signature(points) }}", signature,
+		"{{ incomplete_step_hours(points,'unproven', ordered_steps) }}", incompleteStepHoursSQL(points, "unproven", true),
+	).Replace(macroBody(provenStepEditsMacro))
 }
 
 // OrderedStepTotalsSQL is the worker's chronological formula, also used for

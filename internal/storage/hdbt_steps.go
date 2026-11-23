@@ -48,8 +48,8 @@ func readHDBTSteps(ctx context.Context, tx pgx.Tx, to string, generation *uint64
 		args := []any{to}
 		if hasDirty {
 			var dirty []string
-			if err := unit.QueryRow(ctx, `select array(select distinct (d.date::date+n)::text from hdbt_dirty d
-                cross join generate_series(-2,2) n where (d.date::date+n)::text <= $1)`, to).Scan(&dirty); err != nil {
+			if err := unit.QueryRow(ctx, `select array(select distinct to_char(d.date::date+n,'YYYY-MM-DD') from hdbt_dirty d
+                cross join generate_series(-2,2) n where (d.date::date+n) <= $1::date)`, to).Scan(&dirty); err != nil {
 				return err
 			}
 			if len(dirty) > 0 {
@@ -82,14 +82,43 @@ func collectHDBTSteps(ctx context.Context, tx pgx.Tx, query string, args ...any)
 }
 
 func currentHDBTStepsSQL(patch bool) string {
+	repairCTEs := ""
 	scope := " <= $1"
 	prior := "daily_scores"
 	if patch {
 		scope = " = any($2::text[])"
 		prior = "hdbt_daily_metrics"
 	}
-	points, cached := stepHourInputs("substring(p.date,1,10)"+scope, "hourly_metrics", "substring(hour,1,10)"+scope)
-	return `with canonical_inputs as (select * from ` + points + `), canonical_cache as (select * from ` + cached + `),
+	points := dbtmetrics.ServingStepPointInputsSQL("metric_points", "health_records", "substring(p.date,1,10)"+scope)
+	cached := `select hour,source,avg_val,min_val,max_val,sample_count from hourly_metrics h
+		where metric_name='step_count' and substring(hour,1,10)` + scope
+	if patch {
+		// On published dates the worker starts from its retained source cells.
+		// A receipt releases only that source in the affected wall hour.
+		previousInputs := dbtmetrics.ServingStepPointInputsSQL("hdbt_step_inputs", "health_records", "substring(p.date,1,10)"+scope)
+		repairCTEs = `, previous_rows as (
+			select * from hdbt_step_inputs where substring(date,1,10)` + scope + `
+		), previous_inputs as (` + previousInputs + `), previous_cells as (
+			select h.* from hdbt_step_state h where substring(h.hour,1,10)` + scope + ` and h.avg_val is not null
+		), proven_edits as (` + dbtmetrics.ServingProvenStepEditsSQL("previous_inputs", "previous_cells", "previous_rows", "substring(n.date,1,10)"+scope) + `),
+		ambiguous_hours as (` + dbtmetrics.AmbiguousStepHoursSQL("canonical_inputs") + `), receipts as (
+			select distinct substring(point_date,1,13)||':00' as hour,source from hdbt_step_repairs
+			where substring(point_date,1,10)` + scope + `
+		), repair_points as (
+			select 'step_count'::text as metric_name,p.* from canonical_inputs p join receipts r
+				on r.hour=substring(p.date,1,13)||':00' and r.source=p.source
+		), repaired as (` + dbtmetrics.ServingStepWallRowsSQL("repair_points") + `)`
+		cached += ` and not exists(select from hdbt_daily_metrics d where d.date=substring(h.hour,1,10))
+			union all select hour,source,avg_val,min_val,max_val,sample_count from hdbt_step_state h
+			where substring(hour,1,10)` + scope + ` and avg_val is not null and not withdrawn
+			and exists(select from hdbt_daily_metrics d where d.date=substring(h.hour,1,10))
+			and not exists(select from receipts r where (r.hour,r.source)=(h.hour,h.source))
+			and not exists(select from proven_edits p where p.hour=h.hour
+				and not exists(select from ambiguous_hours a where a.hour=p.hour))
+			union all select hour,source,avg_val,min_val,max_val,sample_count from repaired h
+			where exists(select from hdbt_daily_metrics d where d.date=substring(h.hour,1,10))`
+	}
+	return `with canonical_inputs as (` + points + `)` + repairCTEs + `, canonical_cache as (` + cached + `),
         recomputed as (` + dbtmetrics.OrderedStepTotalsSQL("canonical_inputs", "canonical_cache") + `)
         select day as date, source_total::real::float8 as qty from recomputed
         union all

@@ -132,9 +132,10 @@ def physical_hours(sources, cache, losers):
     return [(offset, priority(candidates)) for offset, candidates in sorted(by_offset.items())]
 
 
-def archive_steps(query, days):
-    """Read bounded batches including two calendar days of context for cross-date aliases."""
+def archive_steps(query, days, prior):
+    """Rebuild source totals and retain daily-only history unless positive evidence rules it out."""
     out = {}
+    retained = set()
     for i in range(0, len(days), 40):
         batch = days[i:i + 40]
         start, end = dt.date.fromisoformat(batch[0]), dt.date.fromisoformat(batch[-1])
@@ -168,5 +169,15 @@ def archive_steps(query, days):
         for hour in sorted(hours.keys() | cache.keys()):
             for _, quantity in physical_hours(hours[hour], cache[hour], losers):
                 totals[hour[:10]].append(quantity)
-        out.update((day, real(float_sum(values))) for day, values in totals.items())
-    return out
+        measured = {day: real(float_sum(values)) for day, values in totals.items()}
+        suppressed = {date[:10] for date, _, _ in losers}
+        suppressed.update(query(f"""
+            select substring(point_date,1,10) from health.hdbt_step_repairs
+              where substring(point_date,1,10) between '{start}' and '{end}'
+            union select substring(hour,1,10) from health.hdbt_step_state
+              where withdrawn and substring(hour,1,10) between '{start}' and '{end}'""").splitlines())
+        keep = wanted.intersection(prior) - measured.keys() - suppressed
+        out.update((day, prior[day]) for day in keep)
+        out.update(measured)
+        retained.update(keep)
+    return out, retained
