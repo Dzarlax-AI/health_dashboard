@@ -59,6 +59,7 @@ def prepare_inputs(sql, marker):
                  "fixtures/briefing_capture.sql",):
         load(name)
     load("fixtures/profile_graph_cases.sql")
+    load("fixtures/profile_step_aliases.sql")
     load("fixtures/profile_sections_points.sql")
     load("fixtures/profile_screen_sleep_sources.sql")
     sql(snapshot_fixture_sql())
@@ -210,6 +211,52 @@ def check_incremental(lab, sql):
           "all unrelated daily rows matched and an unknown date was rejected.")
 
 
+def check_step_aliases(lab, sql):
+    def totals(graph):
+        rows = sql(f"""select date,coalesce(steps::text,'missing') from {graph}.daily_metrics
+                       where date between '2026-01-16' and '2026-01-21' order by date""")
+        return [row.split('|')[1] for row in rows.splitlines()]
+
+    before = ["missing", "21", "37", "missing", "7", "10"]
+    if totals("profile_graph") != before or totals("peer_graph") != before:
+        raise ValueError("full refresh lost or duplicated step measurements across offsets")
+    sql("""set role pilot_dbt; insert into profile_source.metric_points(metric_name,date,source,qty,quality,units)
+        values ('step_count','2026-01-19 01:20:00 +0200','Watch',37,'ok','count')""")
+    build(lab, "profile", "--select", "+daily_metrics", affected_dates=["2026-01-19"])
+    if totals("profile_graph") != ["missing", "21", "37", "37", "7", "10"]:
+        raise ValueError("different measurement grains were collapsed")
+    sql("""set role pilot_dbt; update profile_source.metric_points set health_record_id=1
+           where date='2026-01-19 01:20:00 +0200'""")
+    build(lab, "profile", "--select", "+daily_metrics", affected_dates=["2026-01-19"])
+    if totals("profile_graph") != ["missing", "21", "missing", "37", "7", "10"] or totals("peer_graph") != before:
+        raise ValueError(f"one-day alias totals: {totals('profile_graph')} peer {totals('peer_graph')}")
+    if sql("select count(*) from profile_graph.hourly_metrics where metric_name='step_count' and hour='2026-01-18 23:00'") != "0":
+        raise ValueError("old UTC offset alias left an hourly cache cell")
+    sql("set role pilot_dbt; delete from profile_source.metric_points where date='2026-01-19 01:20:00 +0200'")
+    sql("set role pilot_dbt; insert into profile_source.verified_step_withdrawals values ('2026-01-19 01:20:00 +0200','Watch')")
+    build(lab, "profile", "--select", "+daily_metrics", affected_dates=["2026-01-19"])
+    if totals("profile_graph") != before or totals("peer_graph") != before:
+        raise ValueError("withdrawn local rendering failed to restore surviving UTC measurement")
+    # This other source makes the whole wall hour ambiguous. The known Watch
+    # cell can still be removed once its original aggregate is reproduced.
+    sql("""set role pilot_dbt; insert into profile_source.metric_points(metric_name,date,source,qty,quality,units,health_record_id)
+           values ('step_count','2026-01-18 23:40:00','Ring',3,'ok','count',1)""")
+    build(lab, "profile", "--select", "+daily_metrics", affected_dates=["2026-01-18"])
+    if totals("profile_graph") != before:
+        raise ValueError("adding the smaller, ambiguous source changed the winning cell")
+    sql("""set role pilot_dbt; delete from profile_source.verified_step_withdrawals;
+           insert into profile_source.metric_points(metric_name,date,source,qty,quality,units,health_record_id)
+           values ('step_count','2026-01-19 01:20:00 +0200','Watch',37,'ok','count',1)""")
+    build(lab, "profile", "--select", "+daily_metrics", affected_dates=["2026-01-19"])
+    if totals("profile_graph") != ["missing", "21", "3", "37", "7", "10"] or totals("peer_graph") != before:
+        raise ValueError("ambiguous wall hour retained a proven alias or lost its independent source")
+    wall = sql("""select source,avg_val from profile_graph.hourly_metrics
+                  where metric_name='step_count' and hour='2026-01-18 23:00'""")
+    if wall != "Ring|3":
+        raise ValueError(f"reconciled ambiguous hourly publication {wall}")
+    print("PASS: full and scoped offset aliases, unequal quantities, missing offsets, mixed-source fallback and withdrawal", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reader-probe", type=Path, default=PILOT / "scripts/probe_profile_readers.py",
@@ -254,6 +301,7 @@ def main():
             load_profile_fixture(sql, "profile_source", "pilot_dbt", "profile_screen_energy_correction.sql")
             build(Path(tmp) / "profile", "profile", "--select", "+daily_metrics", affected_dates=[days[-1]])
             screen_probes(args.reader_probe, environments, "after", "energy")
+            check_step_aliases(Path(tmp) / "profile", sql)
             physical_days = ["2024-10-27", "2024-10-28"]
             for name, role, _ in profiles:
                 load_profile_fixture(sql, name + "_source", role, "profile_physical_steps.sql")

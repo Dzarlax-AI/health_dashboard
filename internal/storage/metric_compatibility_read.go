@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	dbtmetrics "health-receiver/experiments/dbt_metrics"
 )
 
 // Keep explicit timestamps inclusive, and include every offset in a whole-day window.
@@ -48,6 +50,10 @@ var currentCompatibilityHourly = `, minute_values AS (
 func (s *DB) compatibleMetricData(metric, from, to, bucket, agg string, bySource bool) ([]SourceDataPoints, error) {
 	filter, to := compatibilityDateWindow(to)
 	query := metricCompatibilityCTE(filter, false)
+	if metric == "step_count" {
+		points := dbtmetrics.StepPointInputsSQL("metric_points", "health_records", filter)
+		query = "WITH compatible AS (SELECT 'step_count'::text AS metric,date,source,qty,'count'::text AS unit,quality,grain FROM (" + points + ") inputs WHERE counted) "
+	}
 	source := "source"
 	if !bySource {
 		source = "''::text"
@@ -303,6 +309,9 @@ func (s *DB) MetricDataForContract(metric, from, to, bucket, agg string, legacy 
 }
 
 func (s *DB) MetricDataBySourceForContract(metric, from, to, bucket, agg string, legacy bool) ([]SourceDataPoints, error) {
+	if metric == "step_count" && (bucket == "day" || bucket == "hour") {
+		return s.stepChartBySource(from, to, bucket, legacy)
+	}
 	if !legacy && usesCurrentHourlyMetric(metric) {
 		return s.compatibleMetricData(metric, from, to, bucket, "SUM", true)
 	}

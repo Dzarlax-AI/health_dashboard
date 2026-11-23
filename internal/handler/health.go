@@ -130,18 +130,18 @@ func (h *Handler) recoverPendingRecords() {
 		for _, record := range records {
 			record := record
 			h.enqueue(func() {
-				points, err := h.processAcceptedRecord(db, record.ID, []byte(record.Payload), record.ProcessingKind)
+				points, dates, err := h.processAcceptedRecord(db, record.ID, []byte(record.Payload), record.ProcessingKind)
 				if err != nil {
 					log.Printf("record %d: recover accepted payload: %v", record.ID, err)
 					return
 				}
-				h.finalizeChunk("", 0, db, datesOf(points), affectsReadiness(points))
+				h.finalizeChunk("", 0, db, dates, affectsReadiness(points))
 			})
 		}
 	}
 }
 
-func (h *Handler) processAcceptedRecord(db *storage.DB, id int64, body []byte, kind string) (result []storage.MetricPoint, resultErr error) {
+func (h *Handler) processAcceptedRecord(db *storage.DB, id int64, body []byte, kind string) (result []storage.MetricPoint, dates []string, resultErr error) {
 	started := time.Now()
 	defer func() {
 		log.Printf("ingest record=%d stage=points_and_derived duration=%s success=%t points=%d", id, time.Since(started), resultErr == nil, len(result))
@@ -149,13 +149,13 @@ func (h *Handler) processAcceptedRecord(db *storage.DB, id int64, body []byte, k
 	parsed, err := parseMetricPayload(body)
 	if err != nil {
 		_ = db.SetHealthRecordProcessing(id, "failed", err)
-		return nil, err
+		return nil, nil, err
 	}
 	points := filterPointsByKind(parsed.Points, kind)
-	points, err = db.InsertAcceptedPoints(id, points, parsed.NightSleepCoverage)
+	points, dates, err = db.InsertAcceptedPointsWithDates(id, points, parsed.NightSleepCoverage)
 	if err != nil {
 		_ = db.SetHealthRecordProcessing(id, "pending", err)
-		return nil, err
+		return nil, nil, err
 	}
 	for _, coverageErr := range parsed.NightSleepCoverageErr {
 		log.Printf("record %d: ignore invalid night sleep coverage: %v", id, coverageErr)
@@ -188,7 +188,8 @@ func (h *Handler) processAcceptedRecord(db *storage.DB, id int64, body []byte, k
 		}
 	}
 	err = db.SetHealthRecordProcessing(id, "complete", nil)
-	return acceptedPointsAfterStatusUpdate(id, points, err)
+	points, err = acceptedPointsAfterStatusUpdate(id, points, err)
+	return points, dates, err
 }
 
 // acceptedPointsAfterStatusUpdate preserves the successful ingest result when
@@ -515,13 +516,13 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 	sessionTotal, _ := strconv.Atoi(r.Header.Get(hdrSyncSessionTotal))
 
 	h.enqueue(func() {
-		points, err := h.processAcceptedRecord(db, id, body, "all")
+		points, dates, err := h.processAcceptedRecord(db, id, body, "all")
 		if err != nil {
 			log.Printf("record %d: process accepted payload: %v", id, err)
 			return
 		}
 		log.Printf("record %d: saved %d points", id, len(points))
-		h.finalizeChunk(sessionID, sessionTotal, db, datesOf(points), affectsReadiness(points))
+		h.finalizeChunk(sessionID, sessionTotal, db, dates, affectsReadiness(points))
 	})
 }
 
@@ -581,29 +582,15 @@ func (h *Handler) healthFiltered(kind string) http.HandlerFunc {
 		sessionTotal, _ := strconv.Atoi(r.Header.Get(hdrSyncSessionTotal))
 
 		h.enqueue(func() {
-			points, err := h.processAcceptedRecord(db, id, body, kind)
+			points, dates, err := h.processAcceptedRecord(db, id, body, kind)
 			if err != nil {
 				log.Printf("record %d: process accepted payload: %v", id, err)
 				return
 			}
 			log.Printf("record %d: saved %d points (filtered %s)", id, len(points), kind)
-			h.finalizeChunk(sessionID, sessionTotal, db, datesOf(points), affectsReadiness(points))
+			h.finalizeChunk(sessionID, sessionTotal, db, dates, affectsReadiness(points))
 		})
 	}
-}
-
-func datesOf(points []storage.MetricPoint) []string {
-	set := make(map[string]bool, len(points))
-	for _, p := range points {
-		if len(p.Date) >= 10 {
-			set[p.Date[:10]] = true
-		}
-	}
-	out := make([]string, 0, len(set))
-	for d := range set {
-		out = append(out, d)
-	}
-	return out
 }
 
 type payload struct {

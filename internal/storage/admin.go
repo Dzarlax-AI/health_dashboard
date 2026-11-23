@@ -206,6 +206,19 @@ func (s *DB) RemoveAutoExportForRange(from, to string) {
 		log.Printf("remove auto-export [%s,%s]: lock cache journal: %v", from, to, err)
 		return
 	}
+	var changedStepDays []string
+	if err := tx.QueryRow(ctx, `select array(select distinct substring(p.date,1,10) from metric_points p
+		join health_records r on r.id=p.health_record_id
+		where p.metric_name in `+storedStepsSQL+` and substring(p.date,1,10) between $1 and $2
+		and r.automation_name in ('Health dash - Hourly','Health dash - Vitals'))`, from, to).Scan(&changedStepDays); err != nil {
+		log.Printf("remove auto-export [%s,%s]: step dates: %v", from, to, err)
+		return
+	}
+	aliases, err := stepAliasDates(ctx, tx, changedStepDays)
+	if err != nil {
+		log.Printf("remove auto-export [%s,%s]: step aliases: %v", from, to, err)
+		return
+	}
 	var dates, hrvDates []string
 	var removed int64
 	var stepCells []byte
@@ -233,7 +246,11 @@ func (s *DB) RemoveAutoExportForRange(from, to string) {
 		log.Printf("remove auto-export [%s,%s]: %v", from, to, err)
 		return
 	}
-	if err := s.recordCacheDirtyWithHRVRepairsTx(ctx, tx, state, dates, hrvDates); err != nil {
+	if err := refreshStepAliasDates(ctx, tx, aliases); err != nil {
+		log.Printf("remove auto-export [%s,%s]: refresh aliases: %v", from, to, err)
+		return
+	}
+	if err := s.recordCacheDirtyWithHRVRepairsTx(ctx, tx, state, append(dates, aliases...), hrvDates); err != nil {
 		log.Printf("remove auto-export [%s,%s]: mark cache dates dirty: %v", from, to, err)
 		return
 	}

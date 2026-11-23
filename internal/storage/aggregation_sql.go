@@ -23,6 +23,7 @@ var aggregateProjections = strings.NewReplacer(
 	"{{LIVE_STEP_INPUTS}}", dbtmetrics.StepPointInputsSQL("metric_points", "health_records", "substring(p.date,1,10)=$1"),
 	"{{LEGACY_STEP_INPUTS}}", dbtmetrics.StepPointInputsSQL("metric_points", "health_records", "$1::text='step_count' {{FROM_CLAUSE}}"),
 	"{{STEP_WALL_ROWS}}", dbtmetrics.StepWallRowsSQL("step_points"),
+	"{{RECONCILED_STEP_ALIAS_CELLS}}", dbtmetrics.ReconciledStepAliasCellsSQL("step_points", "cached"),
 	"{{INCOMPLETE_STEP_HOURS}}", dbtmetrics.IncompleteStepHoursSQL("step_points", "cached"),
 	"{{DAILY_SLEEP_SOURCES}}", dbtmetrics.DailySourceRowsSQL("hourly_metrics", "metric_name IN ({{SLEEP_METRICS}}) {{FROM_CLAUSE}}"),
 	"{{BACKFILL_SLEEP_SELECTION}}", dbtmetrics.LegacySleepSelectionSQL("per_source", "{{SLEEP_PRIORITY_CASE}}", "{{SLEEP_MIN_HOURS}}", "{{SLEEP_DIVERGENCE}}", "{{SLEEP_TRADITIONAL_METRICS}}", "5", "{{SLEEP_COARSE_METRICS}}", "2"),
@@ -63,7 +64,7 @@ func aggregateSQLWith(name string, replacements map[string]string) string {
 
 // AggregateContractVersion identifies the current aggregation policy and SQL
 // contract. It is for reports and comparisons; cache rows do not store it.
-const AggregateContractVersion = "5"
+const AggregateContractVersion = "6"
 
 // AggregateContractChecksum is stable for a given policy catalog and embedded
 // SQL set, independent of filesystem ordering and map iteration.

@@ -21,4 +21,4 @@ union all
 {{ hourly_sum_rows('sum_points') }}
 union all
 select 'step_count',hour,source,avg_val,min_val,max_val,sample_count from {{ ref('step_hour_state') }}
-where avg_val is not null and {{ affected_dates_filter('substring(hour,1,10)') }}
+where avg_val is not null and {{ step_affected_dates_filter('substring(hour,1,10)') }}

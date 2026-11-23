@@ -33,7 +33,9 @@ migration requires separate design and authorization.
 
 ## Preserve context-specific behavior
 
-Aggregate contract 5 selects the step source independently for each physical hour, using the local hour and UTC offset.
+Aggregate contract 6 counts equivalent timestamp representations of a usable step measurement once. The source, measurement grain, quantity and UTC instant must all agree. An observed nonzero offset takes precedence over a UTC rendering. Remaining ties use bytewise timestamp order, which gives the same local date on every replay. A repeated wall-clock hour with two distinct UTC instants contributes twice. Unknown offsets retain the legacy wall-hour rules.
+
+Aggregate contract 5 introduced a rule that selects the step source independently for each physical hour, using the local hour and UTC offset.
 Apple Watch (including Ultra) takes priority over iPhone, followed by other
 devices. Within a priority tier the largest usable total wins. The daily value
 sums these hours. The combined v2 hourly and daily graphs and latest value

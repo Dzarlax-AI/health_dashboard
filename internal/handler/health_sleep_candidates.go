@@ -116,11 +116,11 @@ func (h *Handler) ProcessSleepCandidateMetrics(ctx context.Context, db *storage.
 			// ordinary part durably so the next valid receipt can proceed.
 			return unit.SetHealthRecordProcessing(record.ID, "failed", err)
 		}
-		points, err := h.processAcceptedRecord(unit, record.ID, body, "all")
+		points, affected, err := h.processAcceptedRecord(unit, record.ID, body, "all")
 		if err != nil {
 			return err
 		}
-		dates, scores, session = datesOf(points), affectsReadiness(points), record.Session
+		dates, scores, session = affected, affectsReadiness(points), record.Session
 		valid = true
 		if len(dates) == 0 {
 			return nil

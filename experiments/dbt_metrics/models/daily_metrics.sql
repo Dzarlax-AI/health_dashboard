@@ -7,14 +7,14 @@
 
 WITH days AS (
     SELECT date FROM {{ source('source_data', 'calendar') }} c
-    WHERE {{ affected_dates_filter('c.date') }}
+    WHERE {{ step_affected_dates_filter('c.date') }}
 ),
 daily_steps AS (
     with points as (
-        {{ step_point_inputs(ref('retained_metric_points'),source('source_data','health_records'),affected_dates_filter('substring(p.date,1,10)')) }}
+        {{ step_point_inputs(ref('retained_metric_points'),source('source_data','health_records'),step_affected_dates_filter('substring(p.date,1,10)')) }}
     ), cached as (
         select * from {{ ref('hourly_metrics') }} where metric_name='step_count'
-        and {{ affected_dates_filter('substring(hour,1,10)') }}
+        and {{ step_affected_dates_filter('substring(hour,1,10)') }}
     ), chosen as ({{ physical_step_hours('points','cached') }})
     {{ daily_step_totals('chosen') }}
 ),
@@ -31,7 +31,7 @@ daily_picks as (
     {{ daily_candidates("source like '%Ultra%' or source like '%Apple Watch%'", "source like '%iPhone%'") }}
 ), changes as (
     select distinct substring(hour,1,10) as date from {{ ref('step_hour_state') }}
-    where withdrawn and {{ affected_dates_filter('substring(hour,1,10)') }}
+    where withdrawn and {{ step_affected_dates_filter('substring(hour,1,10)') }}
 )
 select r.date,{{ daily_retained_values('r', 'prior', 'changed.date is not null') }}
 from candidates r left join changes changed on changed.date=r.date

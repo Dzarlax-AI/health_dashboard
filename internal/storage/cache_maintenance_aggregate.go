@@ -42,6 +42,9 @@ func (s *DB) RebuildHistoricalCacheDate(ctx context.Context, date string) error 
 		if err := unit.rebuildHistoricalAggregateDate(ctx, date); err != nil {
 			return err
 		}
+		if err := unit.refreshHistoricalAliasNeighbors(ctx, date); err != nil {
+			return err
+		}
 		loc := unit.reportTZLocation()
 		if err := unit.upsertBaselineHROvernightForDateContext(ctx, date, loc); err != nil {
 			return err

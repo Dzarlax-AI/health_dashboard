@@ -1,10 +1,14 @@
 {% macro incomplete_step_hours(points, cached) %}
-with proof_points as (
+with alias_cells as (
+    select distinct substring(date,1,13) as wall_hour,source from {{ points }} where not counted
+), proof_points as (
     -- Older hourly rows used only the primary key. New cache rows can also
     -- carry archive samples whose original primary record has been replaced.
     select p.*,mode as proof_mode from {{ points }} p
-    cross join (values (0),(1),(2),(3)) modes(mode)
-    where (mode<2 or p.stored_key='step_count') and (mode%2=0 or p.quality='ok')
+    cross join (values (0),(1),(2),(3),(4),(5),(6),(7)) modes(mode)
+    left join alias_cells a on (a.wall_hour,a.source)=(substring(p.date,1,13),p.source)
+    where (mode<4 or (p.counted and a.wall_hour is not null))
+      and (mode%4<2 or p.stored_key='step_count') and (mode%2=0 or p.quality='ok')
 ), minutes as (
     -- A quality correction can withdraw a previously published value. Its
     -- quantity still proves which old aggregate can actually be reconstructed.

@@ -297,10 +297,28 @@ func (s *ImportSession) Commit() (ImportCounters, error) {
 	if err != nil {
 		return s.failCommit(tx, fmt.Errorf("lock imported cache dates: %w", err))
 	}
+	var stepDays []string
+	if err = tx.QueryRow(ctx, `select array(select distinct local_date from import_run_coverage
+		where import_run_id=$1 and metric_name in `+storedStepsSQL+`)`, s.runID).Scan(&stepDays); err != nil {
+		return s.failCommit(tx, err)
+	}
+	priorAliases, err := stepAliasDates(ctx, tx, stepDays)
+	if err != nil {
+		return s.failCommit(tx, err)
+	}
 	hrvRepairDates, err := s.promotePoints(ctx, tx)
 	if err != nil {
 		return s.failCommit(tx, err)
 	}
+	currentAliases, err := stepAliasDates(ctx, tx, stepDays)
+	if err != nil {
+		return s.failCommit(tx, err)
+	}
+	aliases := uniqueStepDates(append(priorAliases, currentAliases...))
+	if err = refreshStepAliasDates(ctx, tx, aliases); err != nil {
+		return s.failCommit(tx, err)
+	}
+	coverageDates = append(coverageDates, aliases...)
 	if err := s.db.recordCacheDirtyWithHRVRepairsTx(ctx, tx, cacheState, coverageDates, hrvRepairDates); err != nil {
 		return s.failCommit(tx, fmt.Errorf("mark imported cache dates dirty: %w", err))
 	}

@@ -33,7 +33,8 @@ func (s *DB) BulkInsertPoints(description string, points []MetricPoint) (int, er
 	if err != nil {
 		return 0, fmt.Errorf("insert health_record: %w", err)
 	}
-	if err := s.MarkCacheDirtyTx(ctx, tx, cacheDatesFromPoints(points)); err != nil {
+	state, err := lockCacheMaintenanceRow(ctx, tx)
+	if err != nil {
 		return 0, fmt.Errorf("mark bulk-inserted cache dates dirty: %w", err)
 	}
 
@@ -52,5 +53,15 @@ func (s *DB) BulkInsertPoints(description string, points []MetricPoint) (int, er
 		}
 	}
 
+	aliases, err := stepAliasDates(ctx, tx, stepMutationDates(points))
+	if err != nil {
+		return 0, err
+	}
+	if err = s.recordCacheDirtyWithHRVRepairsTx(ctx, tx, state, append(cacheDatesFromPoints(points), aliases...), nil); err != nil {
+		return 0, err
+	}
+	if err = refreshStepAliasDates(ctx, tx, aliases); err != nil {
+		return 0, err
+	}
 	return inserted, tx.Commit(ctx)
 }

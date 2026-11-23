@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"sync"
 
@@ -224,6 +225,13 @@ func (s *DB) UpsertRecentCache(dates []string, recomputeReadiness bool) error {
 	loc := s.reportTZLocation()
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
+	ctxAlias, cancelAlias := longCtx()
+	aliases, err := stepAliasDates(ctxAlias, s.pool, dates)
+	cancelAlias()
+	if err != nil {
+		return fmt.Errorf("resolve affected step dates: %w", err)
+	}
+	dates = uniqueStepDates(append(slices.Clone(dates), aliases...))
 	captured, err := s.CaptureCacheDirty(context.Background(), dates)
 	if err != nil {
 		return fmt.Errorf("capture aggregate input generations: %w", err)

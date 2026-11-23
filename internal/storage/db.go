@@ -497,8 +497,13 @@ func (s *DB) SetHealthRecordProcessing(id int64, status string, processingErr er
 // For sleep midnight summaries: allow upward corrections up to +30%,
 // but block larger jumps that indicate Health Auto Export accumulation bug.
 func (s *DB) InsertPoints(recordID int64, points []MetricPoint) error {
+	_, err := s.insertPointsWithCacheDates(recordID, points)
+	return err
+}
+
+func (s *DB) insertPointsWithCacheDates(recordID int64, points []MetricPoint) ([]string, error) {
 	if len(points) == 0 {
-		return nil
+		return nil, nil
 	}
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
@@ -506,17 +511,25 @@ func (s *DB) InsertPoints(recordID int64, points []MetricPoint) error {
 	defer cancel()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer tx.Rollback(ctx)
-	if err := s.MarkCacheDirtyTx(ctx, tx, cacheDatesFromPoints(points)); err != nil {
-		return fmt.Errorf("mark inserted cache dates dirty: %w", err)
+	state, err := lockCacheMaintenanceRow(ctx, tx)
+	if err != nil {
+		return nil, err
 	}
-
-	if err := insertPointsTx(ctx, tx, recordID, points, s.pointOrdering()); err != nil {
-		return err
+	aliases, err := insertPointsAndAliasDatesTx(ctx, tx, recordID, points, s.pointOrdering())
+	if err != nil {
+		return nil, err
 	}
-	return tx.Commit(ctx)
+	dates := uniqueStepDates(append(cacheDatesFromPoints(points), aliases...))
+	if err = s.recordCacheDirtyWithHRVRepairsTx(ctx, tx, state, dates, nil); err != nil {
+		return nil, err
+	}
+	if err = refreshStepAliasDates(ctx, tx, aliases); err != nil {
+		return nil, err
+	}
+	return dates, tx.Commit(ctx)
 }
 
 type ingestPointOrdering int

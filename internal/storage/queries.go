@@ -522,12 +522,12 @@ func (s *DB) metricDataRaw(metric, from, to, bucket, aggFunc string) ([]DataPoin
 		query = fmt.Sprintf(`SELECT bucket, %s, MIN(source_min), MAX(source_max)
 			FROM (
 				SELECT %s AS bucket, source, SUM(qty) AS source_sum, MIN(qty) AS source_min, MAX(qty) AS source_max
-				FROM metric_points
+				FROM %s
 				WHERE metric_name = $1 AND date >= $2 AND date <= $3 AND qty > 0 %s
 				GROUP BY %s, source
 			) sub
 			GROUP BY bucket
-			ORDER BY bucket`, pickExpr, bucketExpr, sleepDedup, bucketExpr)
+			ORDER BY bucket`, pickExpr, bucketExpr, legacyChartPointRelation(metric), sleepDedup, bucketExpr)
 	} else if isDailyAverageMetric(metric) && bucket == "day" && aggFunc == "AVG" {
 		query = `WITH hourly_points AS (
             SELECT metric_name, date, source, qty, quality FROM metric_points
@@ -562,6 +562,9 @@ func (s *DB) metricDataRaw(metric, from, to, bucket, aggFunc string) ([]DataPoin
 }
 
 func (s *DB) GetMetricDataBySource(metric, from, to, bucket, aggFunc string) ([]SourceDataPoints, error) {
+	if metric == "step_count" && (bucket == "day" || bucket == "hour") {
+		return s.stepChartBySource(from, to, bucket, true)
+	}
 	if aggFunc != "SUM" && aggFunc != "MAX" && aggFunc != "MIN" {
 		aggFunc = "AVG"
 	}
@@ -616,7 +619,7 @@ func (s *DB) metricDataBySourceRaw(metric, from, to, bucket, aggFunc string) ([]
 	bucketExpr := bucketExpression(bucket)
 	normSource := `SUBSTRING(source, 1, POSITION('|' IN source || '|') - 1)`
 	query := "SELECT " + bucketExpr + " as bucket, " + normSource + " as src, " + aggFunc + `(qty), MIN(qty), MAX(qty)
-		FROM metric_points
+		FROM ` + legacyChartPointRelation(metric) + `
 		WHERE metric_name = $1 AND date >= $2 AND date <= $3 AND qty > 0
 		` + sleepDedupClause(metric) + `
 		GROUP BY ` + bucketExpr + `, ` + normSource + `
@@ -629,10 +632,14 @@ func (s *DB) scanSourcePoints(query, metric, from, to string) ([]SourceDataPoint
 }
 
 func (s *DB) scanSourcePointsWithKey(query string, key any, from, to string, extra ...any) ([]SourceDataPoints, error) {
+	return s.scanSourcePointsArgs(query, append([]any{key, from, to}, extra...)...)
+}
+
+func (s *DB) scanSourcePointsArgs(query string, args ...any) ([]SourceDataPoints, error) {
 	ctx, cancel := queryCtx()
 	defer cancel()
 
-	rows, err := s.pool.Query(ctx, query, append([]any{key, from, to}, extra...)...)
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
