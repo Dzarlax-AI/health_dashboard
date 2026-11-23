@@ -344,6 +344,15 @@ func TestHDBTDirtyAliasOutsideRangeWithGermanDateStyle(t *testing.T) {
 			t.Fatalf("dirty alias through %s: got %+v enabled=%v: %v", tc.through, got, enabled, err)
 		}
 	}
+	// Formatting a BC neighbor without its era could incorrectly read December
+	// of year 1 AD even though the chart ends on January 1.
+	exec("insert into hdbt_dirty(date,generation) values('0001-01-01',1)")
+	exec("insert into metric_points(health_record_id,metric_name,units,date,source,qty) values($1,'step_count','count','0001-12-31 10:00:00 +0000','Watch',9)", id)
+	got, enabled, err := readHDBTSteps(ctx, tx, "0001-01-01", &generation)
+	if err != nil || !enabled || len(got) != 0 {
+		t.Fatalf("steps outside earliest day: %+v enabled=%v: %v", got, enabled, err)
+	}
+
 }
 
 func TestHDBTStepsRetainedPreimageAcceptsMiddleMinute(t *testing.T) {

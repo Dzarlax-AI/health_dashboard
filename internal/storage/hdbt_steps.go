@@ -49,7 +49,7 @@ func readHDBTSteps(ctx context.Context, tx pgx.Tx, to string, generation *uint64
 		if hasDirty {
 			var dirty []string
 			if err := unit.QueryRow(ctx, `select array(select distinct to_char(d.date::date+n,'YYYY-MM-DD') from hdbt_dirty d
-                cross join generate_series(-2,2) n where (d.date::date+n) <= $1::date)`, to).Scan(&dirty); err != nil {
+                cross join generate_series(-2,2) n where (d.date::date+n) between date '0001-01-01' and $1::date)`, to).Scan(&dirty); err != nil {
 				return err
 			}
 			if len(dirty) > 0 {
