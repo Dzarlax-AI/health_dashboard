@@ -78,7 +78,7 @@ def exercise(image, directory, network, cid):
     sql(
         f"""set role {role};
         create table __tenant_identity(singleton boolean primary key,tenant_id uuid,schema_contract_version integer,schema_contract_checksum text);
-        insert into __tenant_identity values(true,'{tenant}',17,'{digest}');
+        insert into __tenant_identity values(true,'{tenant}',18,'{digest}');
         """
         + (ROOT / "internal/storage/sql/hdbt_v17.sql").read_text()
     )

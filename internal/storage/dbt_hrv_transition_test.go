@@ -78,8 +78,8 @@ func TestDBTHRVInvalidationTransition(t *testing.T) {
 			FROM dbt_output.semantic_hrv_daily_v1 WHERE date='2000-01-01'`).Scan(&live, &morning, &count, &origin, &confidence); e != nil {
 			t.Fatal(e)
 		}
-		if e := pool.QueryRow(ctx, `SELECT avg_val FROM go_oracle.hourly_metrics
-			WHERE metric_name='heart_rate_variability' AND hour='2000-01-01 08:00' AND source='fixture'`).Scan(&hourly); e != nil {
+		if e := pool.QueryRow(ctx, `SELECT (SELECT avg_val FROM go_oracle.hourly_metrics
+			WHERE metric_name='heart_rate_variability' AND hour='2000-01-01 08:00' AND source='fixture')`).Scan(&hourly); e != nil {
 			t.Fatal(e)
 		}
 		if e := pool.QueryRow(ctx, `SELECT hrv_avg FROM go_oracle.daily_scores WHERE date='2000-01-01'`).Scan(&daily); e != nil {
@@ -98,10 +98,10 @@ func TestDBTHRVInvalidationTransition(t *testing.T) {
 		t.Fatalf("valid correction mismatch: live=%v hourly=%v daily=%v morning=%v count=%d origin=%s", live, hourly, daily, morning, count, origin)
 	}
 	exec(`UPDATE source_data.metric_points SET quality='invalid' WHERE date='2000-01-01 08:00:00 +0000' AND source='fixture'`)
-	refresh("2000-01-01") // Deliberately retain the previously built cache.
+	refresh("2000-01-01") // Withdraw the rejected hour while preserving the retained daily fallback.
 	mirror()
 	read()
-	if live != nil || hourly == nil || *hourly != 70 || daily == nil || *daily != 70 || morning == nil || *morning != 70 || count != 0 || origin != "same_day_cache" || confidence != "provisional" {
+	if live != nil || hourly != nil || daily == nil || *daily != 70 || morning == nil || *morning != 70 || count != 0 || origin != "same_day_cache" || confidence != "provisional" {
 		t.Fatalf("transition mismatch: live=%v hourly=%v daily=%v morning=%v count=%d origin=%s confidence=%s", live, hourly, daily, morning, count, origin, confidence)
 	}
 	if fresh := db.freshDayFromRaw("2000-01-01"); fresh != nil {

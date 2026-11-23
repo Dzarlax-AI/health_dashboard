@@ -145,6 +145,11 @@ func TestComputeLegacyEnergyBank_MissingInputsReturnNil(t *testing.T) {
 	if got := computeLegacyEnergyBank(d, 70, nil, ls); got != nil {
 		t.Fatalf("computeLegacyEnergyBank with zero sleep today = %+v, want nil", got)
 	}
+	d.Sleep[0] = 7
+	if got := computeLegacyEnergyBank(d, 70, nil, ls); got != nil {
+		t.Fatal("missing resting heart rate should withhold legacy Energy")
+	}
+
 }
 
 func TestComputeStrain_ClampsAndHandlesMissingBaselines(t *testing.T) {

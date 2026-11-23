@@ -13,6 +13,10 @@ import (
 
 //go:embed sql/aggregates/*.sql
 var aggregateSQLFiles embed.FS
+
+//go:embed sql/aggregates/confirmed_invalid_average_hours.sql
+var confirmedInvalidAverageHours string
+
 var aggregateSQLMarker = regexp.MustCompile(`\{\{([A-Z0-9_]+)\}\}`)
 
 // The withdrawal statement has already resolved aliases for every point on
@@ -21,6 +25,7 @@ const touchedStepInputs = `(select p.date,p.source,p.qty,p.quality,p.grain,p.sto
 	from step_points p join touched t on substring(p.date,1,10)=t.day) inputs`
 
 var aggregateProjections = strings.NewReplacer(
+	"{{CONFIRMED_INVALID_AVERAGE_HOURS}}", confirmedInvalidAverageHours,
 	"{{SURVIVING_STEP_TOTALS}}", dbtmetrics.DailyStepTotalsSQL("("+dbtmetrics.PhysicalStepHoursSQL(touchedStepInputs, "surviving")+") selected"),
 	"{{DAILY_STEP_TOTALS}}", physicalStepTotalsSQL("substring(date,1,10)=$1", "hourly_metrics", "substring(hour,1,10)=$1"),
 	"{{HISTORICAL_STEP_TOTALS}}", physicalStepTotalsSQL("$1::text='step_count' {{POINT_SCOPE}}", "hourly_metrics", "metric_name=$1 {{FROM_CLAUSE}}"),
@@ -69,7 +74,7 @@ func aggregateSQLWith(name string, replacements map[string]string) string {
 
 // AggregateContractVersion identifies the current aggregation policy and SQL
 // contract. It is for reports and comparisons; cache rows do not store it.
-const AggregateContractVersion = "6"
+const AggregateContractVersion = "7"
 
 // AggregateContractChecksum is stable for a given policy catalog and embedded
 // SQL set, independent of filesystem ordering and map iteration.

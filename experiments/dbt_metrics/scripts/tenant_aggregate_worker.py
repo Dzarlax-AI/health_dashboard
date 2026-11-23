@@ -21,8 +21,8 @@ import psycopg2
 from psycopg2.extensions import parse_dsn
 
 PROJECT = Path(__file__).resolve().parents[1]
-FORMULA = "aggregate_serving_v2"
-SCHEMA_CHECKSUM = "eb028f02e392ba8798b9615f5c7dc8b97c15c2a17ff2ac82b4427b93b25ad191"
+FORMULA = "aggregate_serving_v3"
+SCHEMA_CHECKSUM = "ff23a6d755e1ec4824de1522c1fbe8053e4e52fec8eac64031adb0ab3149c731"
 JOURNAL = "_cache_maintenance_v1"
 POINTS = "metric_name,date,source,qty,quality,health_record_id,origin,units,id,received_at,source_snapshot_at"
 DAILY = (
@@ -115,7 +115,7 @@ def authorize(cur, schema, tenant):
         raise WorkerError("tenant_acl")
     cur.execute(f'set search_path to pg_catalog,"{schema}"')
     cur.execute(
-        "select count(*)=1 and bool_and(singleton and tenant_id=%s::uuid and schema_contract_version=17 and schema_contract_checksum=%s) from __tenant_identity",
+        "select count(*)=1 and bool_and(singleton and tenant_id=%s::uuid and schema_contract_version=18 and schema_contract_checksum=%s) from __tenant_identity",
         (tenant, SCHEMA_CHECKSUM),
     )
     if not cur.fetchone()[0]:

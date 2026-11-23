@@ -15,7 +15,8 @@ func stddev(vals []float64) float64 {
 	sum := 0.0
 	for _, v := range vals {
 		d := v - m
-		sum += d * d
+		// Round each squared deviation before summing, as in the PostgreSQL solver.
+		sum += float64(d * d)
 	}
 	return math.Sqrt(sum / float64(len(vals)))
 }

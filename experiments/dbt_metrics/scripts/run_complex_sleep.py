@@ -78,9 +78,10 @@ def main():
             run(PILOT/".venv/bin/dbt","build","--project-dir",PILOT,"--profiles-dir",lab,
                 "--target-path",lab/"target","--log-path",lab/"logs","--vars",
                 json.dumps(dict(sleep_duration_reference=True, semantic_shadow=True, complex_sleep_parity=True, sleep_daily_shadow=bool(audit))),
-                "--select","sleep_duration_reference_v1","semantic_*","sleep_balance_period_v1","sleep_duration_balance_v1","wake_confirmation_v1","wake_candidate_v1","packet_sleep_selection_v1",*extra_models,env=env)
+                "--select","sleep_duration_reference_v1","semantic_*","sleep_balance_period_v1","sleep_duration_balance_v1","sleep_balance_history_v1","wake_confirmation_v1","wake_candidate_v1","packet_sleep_selection_v1",*extra_models,env=env)
             if audit:
                 run(PILOT/".venv/bin/python", PILOT/"scripts/capture_bound_metrics.py", port, env=env)
+                run(PILOT/".venv/bin/python", PILOT/"scripts/capture_bound_metrics.py", port, "complex_sleep", env=env)
             for name in ("sleep_cases.sql","sleep_continuity_cases.sql","night_quality_cases.sql","hrv_cases.sql"):
                 sql((SEM/name).read_text())
             raw=sql("""select json_agg(json_build_object(

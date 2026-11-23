@@ -2,7 +2,9 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -24,6 +26,12 @@ func (s *DB) DailyStepSeries(ctx context.Context, from, to string) ([]DailyStepP
 	defer cancel()
 	var points []DailyStepPoint
 	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		if s.profileGraphSchema != "" && from == "" {
+			unit := &DB{pool: &cacheTransaction{Tx: tx, ctx: ctx}, profileGraphSchema: s.profileGraphSchema}
+			var err error
+			points, err = unit.catalogStepHistory(ctx, to)
+			return err
+		}
 		var state CacheMaintenanceState
 		var raw string
 		err := tx.QueryRow(ctx, "select value from settings where key=$1", cacheMaintenanceSettingKey).Scan(&raw)
@@ -75,4 +83,43 @@ func (s *DB) DailyStepSeries(ctx context.Context, from, to string) ([]DailyStepP
 		return err
 	})
 	return points, err
+}
+
+// catalogStepHistory exercises the same typed read surface as other catalog
+// consumers. DailyStepSeries pins one snapshot across the entire chart.
+func (s *DB) catalogStepHistory(ctx context.Context, to string) ([]DailyStepPoint, error) {
+	req := CatalogMetricRequest{MetricID: "daily.steps", Source: "daily_metrics", ToDate: to, Limit: 256}
+	var points []DailyStepPoint
+	for {
+		page, err := s.ReadCatalogMetricPage(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		for _, sample := range page.Samples {
+			if sample.Status == "missing" {
+				continue
+			}
+			if sample.Status != "available" || sample.Number == nil {
+				return nil, fmt.Errorf("unexpected steps sample status %q", sample.Status)
+			}
+			var key struct {
+				Date string `json:"date"`
+			}
+			if err = json.Unmarshal(sample.SampleKey, &key); err != nil {
+				return nil, err
+			}
+			if _, err = time.Parse(time.DateOnly, key.Date); err != nil {
+				return nil, err
+			}
+			qty, err := sample.Number.Float64()
+			if err != nil {
+				return nil, err
+			}
+			points = append(points, DailyStepPoint{Date: key.Date, Qty: float64(float32(qty))})
+		}
+		if page.Next == nil {
+			return points, nil
+		}
+		req.After = page.Next
+	}
 }

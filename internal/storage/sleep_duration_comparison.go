@@ -121,4 +121,4 @@ func (s *DB) verifySleepDurationReference(ctx context.Context) error {
 }
 
 // PostgreSQL 16 and 17 produce the same fingerprint for the checked model.
-const sleepReferenceCatalogFingerprint = "5a211e73d5d710a2a680270128abc8c2df5a7961cf59bf2bfac7548aa7256f52"
+const sleepReferenceCatalogFingerprint = "037e3dc02f3d5a6efb348e1a7efefb973c8da21522fc80ca5702235b62cebfbc"

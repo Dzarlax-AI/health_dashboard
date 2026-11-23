@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	dbtmetrics "health-receiver/experiments/dbt_metrics"
 	"health-receiver/internal/health"
 )
@@ -182,22 +184,16 @@ func (s *DB) dailyScoreBaseline(date, column string, days int) (avg, sd float64,
 	if days <= 0 {
 		days = 30
 	}
-	rows, err := s.pool.Query(ctx, `
-		SELECT `+column+`
-		  FROM daily_scores
-		 WHERE date >= $1
-		   AND date <  $2
-		   AND `+column+` IS NOT NULL
-		   AND `+column+` > 0`,
-		subtractDays(date, days), date)
+	samples, err := readDailyCatalogRows(ctx, s, `
+        SELECT `+column+` FROM %s AS daily_scores
+        WHERE date >= $1 AND date < $2 AND `+column+` IS NOT NULL AND `+column+` > 0`,
+		pgx.RowTo[float64], subtractDays(date, days), date)
 	if err != nil {
 		return 0, 0, 0, false
 	}
-	defer rows.Close()
 	var vals []float64
-	for rows.Next() {
-		var v float64
-		if err := rows.Scan(&v); err == nil && isFiniteFloat(v) {
+	for _, v := range samples {
+		if isFiniteFloat(v) {
 			vals = append(vals, v)
 		}
 	}

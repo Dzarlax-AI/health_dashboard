@@ -1,0 +1,17 @@
+version: 2
+sources:
+  - name: archive_records
+    schema: "{{ var('archive_records_schema', var('semantic_source_schema', 'source_data')) }}"
+    tables:
+      - name: workouts
+      - name: completed_night_sleep
+      - name: energy_snapshots
+      - name: target_snapshots
+      - name: feature_snapshots
+      - name: daily_insight_bundles
+      - name: naive_baselines
+      - name: chip_calibrations
+      - name: derived_metrics
+      - name: sleep_goal
+      - name: daily_scores
+      - name: report_history

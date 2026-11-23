@@ -2,6 +2,27 @@
 
 Go schedules live processing and owns its transactions. The local migration embeds shared dbt SQL in selected Go readers and writers. The disposable dbt project runs those definitions against fixtures. See the [migration plan](ai-plans/2026-11-22-dbt-all-derived-metrics.html) for the verified scope.
 
+## Aggregate contract 7
+
+Positive, accepted observations are ordered by their original timestamp before an hourly
+average. Summed metrics first choose the maximum in each writer minute, then add those
+float32 minute values in chronological order. Daily means and sums process hours in
+chronological order within each source. A daily average gives each source equal weight
+and visits sources in PostgreSQL's C collation. These orders fix the rounding seen by
+both historical and incremental writers. Step-specific alias and withdrawal handling
+continues to use its dedicated projections.
+
+If a represented source/hour contains only rejected observations, both average writers
+remove its obsolete cached hour atomically. An hour absent from the incoming source set
+does not prove withdrawal. If a daily input is missing, the existing per-field and
+whole-night retention rules still apply. A completed full repair is a separate result
+from a historical production cache that predates this contract.
+
+The archive harness in `experiments/dbt_metrics/scripts/verify_exact_aggregate_archive.py`
+checks raw projections and records previous cache differences. Its average-hour repair
+mode also executes the application writer on a private copy. The verification matrix records the
+independent recalculation separately from the prior publication.
+
 ## Where to change a calculation
 
 | Layer | Source | Responsibility |

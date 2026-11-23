@@ -1,0 +1,10 @@
+set jit=off;
+with d as materialized (select d.day,jsonb_build_object('Date',d.day,'Source',d.source,'AsleepHours',d.asleep_hours,'WASOHours',d.waso,'ExplicitWakeBouts',d.explicit_bouts,'GapInferredWakeBouts',d.gaps,'LongestWakeBoutHours',d.longest,'FragmentationIndex',d.fragmentation,'Eligible',d.eligible,'Reason',d.reason,'Confidence',d.confidence) as value
+         from archive_formula.sleep_architecture_days_v1 d),
+w as materialized (select w.anchor,w.days,jsonb_strip_nulls(case w.days when 7 then jsonb_build_object('waso_hours_7d',w.waso,'explicit_wake_bouts_7d',w.explicit_bouts,'gap_inferred_wake_bouts_7d',w.gaps,'longest_wake_bout_hours_7d',w.longest,'fragmentation_index_7d',w.fragmentation,'architecture_eligible_days_7d',w.eligible_days,'architecture_source_days_7d',w.source_days,'architecture_missing_reason_counts_7d',w.reasons,'architecture_confidence_7d',w.confidence)
+         else jsonb_build_object('waso_hours_14d',w.waso,'explicit_wake_bouts_14d',w.explicit_bouts,'gap_inferred_wake_bouts_14d',w.gaps,'longest_wake_bout_hours_14d',w.longest,'fragmentation_index_14d',w.fragmentation,'architecture_eligible_days_14d',w.eligible_days,'architecture_source_days_14d',w.source_days,'architecture_missing_reason_counts_14d',w.reasons,'architecture_confidence_14d',w.confidence,'architecture_available_through',w.anchor) end) as value from archive_formula.sleep_architecture_windows_v1 w),
+combined as (select anchor,(jsonb_agg(value order by days)->0)||(jsonb_agg(value order by days)->1) as value from w group by anchor),
+days as (select e.value is distinct from d.value as differs from d full join replay.expected_days e using(day)),
+windows as (select e.value is distinct from c.value as differs from combined c full join replay.expected_windows e using(anchor))
+select json_build_object('days',(select count(*) from days),'day_differences',(select count(*) from days where differs),
+       'windows',(select count(*) from windows),'window_differences',(select count(*) from windows where differs));

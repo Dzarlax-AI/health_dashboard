@@ -31,18 +31,21 @@ var readinessScoresSQL = `with inputs as (
 		"HRVPresent" bool, "RHRPresent" bool, "SleepPresent" bool, "LowQuality" bool,
 		"Provisional" bool, "Samples" int, "Illness" text)
 ), eligibility as (
-	select i.*, h.*, case when reader='morning' and not hrv_present then 'missing_same_day_evidence'
-		when coalesce(cardinality(hrv),0)=0 then 'missing_same_day_value'
-		when cardinality(hrv)<9 then 'insufficient_observations' end as skip_reason
-	from inputs i cross join lateral (
-		select max(v) filter(where pos=1) as current_ms, avg(v) filter(where pos<=7) as recent7_mean_ms,
-		       avg(v) filter(where pos>7) as baseline_mean_ms, stddev_pop(v) filter(where pos>7) as baseline_sd_ms
-		from unnest(i.hrv) with ordinality as a(v,pos)
-	) h
+	` + dbtmetrics.ReadinessEffectiveEligibilitySQL("inputs") + `
 ), hrv_scores as (` + dbtmetrics.ReadinessHRVMathSQL("eligibility") + `),
 captures as (select *, weighted_z as hrv_weighted_z, component_weight as hrv_weight, skip_reason as hrv_reason from hrv_scores),
 scores as (` + dbtmetrics.ReadinessScoreSQL("captures") + `)
-select target_date,raw_score,display_score,coalesce(confidence,''),coalesce(cap_reason,'') from scores order by target_date`
+`
+
+const readinessResultSQL = ` select target_date,raw_score,display_score,coalesce(confidence,''),coalesce(cap_reason,'') from scores order by target_date`
+
+const readinessDecisionPackets = `, decision_packets as (
+    select 'readiness'::text as metric, $2||'/'||s.target_date as decision_key, $3::int as formula_version,
+        jsonb_build_object('reader',$2,'effective',e.input) as inputs,
+        jsonb_build_object('RawScore',s.raw_score,'DisplayScore',s.display_score,
+            'Confidence',coalesce(s.confidence,''),'CapReason',coalesce(s.cap_reason,'')) as result
+    from scores s join jsonb_array_elements($1::jsonb) e(input) on e.input->>'Date'=s.target_date
+)`
 
 // Dates are unique and ascending. A history window requires only one query.
 func (s *DB) readReadinessScores(ctx context.Context, reader string, inputs []readinessScoreInput) ([]health.ReadinessProjection, error) {
@@ -53,7 +56,19 @@ func (s *DB) readReadinessScores(ctx context.Context, reader string, inputs []re
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.pool.Query(ctx, readinessScoresSQL, json.RawMessage(payload), reader)
+	return withDecisionJournal(ctx, s, func(db *DB, journal bool) ([]health.ReadinessProjection, error) {
+		return db.evaluateReadinessScores(ctx, reader, inputs, payload, journal)
+	})
+}
+
+func (s *DB) evaluateReadinessScores(ctx context.Context, reader string, inputs []readinessScoreInput, payload []byte, journal bool) ([]health.ReadinessProjection, error) {
+	query := readinessScoresSQL
+	args := []any{json.RawMessage(payload), reader}
+	if journal {
+		query += readinessDecisionPackets + decisionJournalInsertSQL
+		args = append(args, ScoreVersion)
+	}
+	rows, err := s.pool.Query(ctx, query+readinessResultSQL, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -76,10 +91,14 @@ func (s *DB) readReadinessScores(ctx context.Context, reader string, inputs []re
 	if len(scores) != len(inputs) {
 		return nil, fmt.Errorf("readiness returned %d of %d dates", len(scores), len(inputs))
 	}
+	if packet, _ := ctx.Value(localReadinessCaptureKey{}).(*LocalReadinessDecision); packet != nil && s.profileGraphSchema != "" && len(inputs) == 1 {
+		packet.Input = inputs[0]
+		packet.Result = scores[0]
+	}
 	return scores, nil
 }
 
-func (s *DB) morningReadinessProjection(ctx context.Context, d *health.RawMetrics) (health.ReadinessProjection, error) {
+func morningReadinessInput(d *health.RawMetrics) readinessScoreInput {
 	i := readinessScoreInput{Date: d.LastDate, HRV: d.HRV, RHR: d.RHR, Sleep: d.Sleep, HRVPresent: true, RHRPresent: true, SleepPresent: true}
 	if e := d.ReadinessEvidence; e != nil {
 		i.HRVPresent, i.RHRPresent, i.SleepPresent = e.HRV.Present, e.RHR.Present, e.SleepDuration.Present
@@ -88,7 +107,11 @@ func (s *DB) morningReadinessProjection(ctx context.Context, d *health.RawMetric
 		i.Samples = e.HRV.SampleCount
 		i.Illness = e.IllnessConfidence
 	}
-	scores, err := s.readReadinessScores(ctx, "morning", []readinessScoreInput{i})
+	return i
+}
+
+func (s *DB) morningReadinessProjection(ctx context.Context, d *health.RawMetrics) (health.ReadinessProjection, error) {
+	scores, err := s.readReadinessScores(ctx, "morning", []readinessScoreInput{morningReadinessInput(d)})
 	if err != nil {
 		return health.ReadinessProjection{}, err
 	}

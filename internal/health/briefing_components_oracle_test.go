@@ -82,6 +82,17 @@ func TestBriefingComponentsOracle(t *testing.T) {
 			"rebound": ParasympatheticRebound(in.DayHR, in.Drop), "walking_reason": walking.EligibilityReason,
 		})
 	}
+	if os.Getenv("HEALTH_ARCHIVE_ENERGY_ORACLE") == "1" {
+		for i, in := range fixtures {
+			b := ComputeBriefing(in.Raw, "en")
+			rows[i]["readiness_score"] = b.ReadinessScore
+			if e := b.EnergyBank; e != nil {
+				rows[i]["legacy_energy"] = map[string]any{"capacity": e.Capacity, "current": e.Current,
+					"drained": e.DrainSoFar, "strain": e.Strain, "stress": e.Stress,
+					"hrv_z": e.HRVZRaw, "verdict": e.ActionVerdict}
+			}
+		}
+	}
 	result, err := json.Marshal(rows)
 	if err != nil {
 		t.Fatal(err)

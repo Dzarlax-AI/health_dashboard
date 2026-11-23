@@ -29,6 +29,17 @@ insert into source_data.balance_episode select profile,capture,'nap',
   ((wake_date-2)+time '11:50') at time zone zone,((wake_date-2)+time '12:20') at time zone zone,'plausible'
 from source_data.balance_capture where capture<>'zero';
 
+-- Fractional episodes expose rounding before the daily sum.
+insert into source_data.balance_episode
+select profile,capture,'fragment-'||n,(wake_date+start_time) at time zone zone,
+       ((wake_date+start_time) at time zone zone)+duration,'plausible'
+from source_data.balance_capture cross join (values
+    (1,time '07:00',interval '18.849953 seconds'),
+    (2,time '08:00',interval '32.573510 seconds'),
+    (3,time '09:00',interval '3.179705 seconds')
+) as fragments(n,start_time,duration)
+where profile='one' and capture='initial';
+
 create table source_data.wake_capture(profile text, capture text,zone text not null,decision_at timestamptz not null,
  candidate_wake timestamptz,latest_ingest timestamptz,quiet_since timestamptz, signal text,steps float8 not null, typical_minute integer,primary key(profile,capture));
 insert into source_data.wake_capture

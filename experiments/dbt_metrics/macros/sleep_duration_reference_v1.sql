@@ -15,7 +15,7 @@ from {{ nights }} as current_night
 cross join lateral (
     select
         count(*)::integer as eligible_nights,
-        case when count(*) >= 7 then avg(previous.duration_hours) end as reference_hours,
+        case when count(*) >= 7 then avg(previous.duration_hours order by previous.wake_date) end as reference_hours,
         encode(sha256(convert_to(coalesce(jsonb_agg(
             jsonb_build_array(previous.wake_date, previous.duration_hours, previous.input_hash,
                 previous.capture_completeness, previous.duration_assessment,

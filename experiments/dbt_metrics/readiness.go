@@ -24,3 +24,11 @@ func ReadinessHRVMathSQL(eligibility string) string {
 	body := macroBody(readinessHRVMathMacro)
 	return strings.ReplaceAll(body, "{{ eligibility }}", eligibility)
 }
+
+//go:embed macros/readiness_effective_eligibility_v1.sql
+var readinessEffectiveEligibilityMacro string
+
+// ReadinessEffectiveEligibilitySQL projects the immutable ordered score inputs.
+func ReadinessEffectiveEligibilitySQL(inputs string) string {
+	return strings.ReplaceAll(macroBody(readinessEffectiveEligibilityMacro), "{{ inputs }}", inputs)
+}

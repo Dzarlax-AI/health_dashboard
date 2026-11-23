@@ -2,4 +2,5 @@
 
 with decisions as (select * from {{ source('energy_capture','decisions') }}),
 {{ energy_verdict_bands_v1(source('energy_capture','band_history')) }}
-select * from ({{ energy_guidance_v1('bands') }}) as guidance
+select guidance.*,case when mode='default_warmup' then 'default' else 'personal' end as source
+from ({{ energy_guidance_v1('bands') }}) as guidance

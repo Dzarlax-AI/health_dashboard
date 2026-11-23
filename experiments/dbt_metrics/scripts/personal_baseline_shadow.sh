@@ -35,7 +35,7 @@ health_dbt_metrics_pilot:
       threads: 1
 YAML
 DBT_SEND_ANONYMOUS_USAGE_STATS=false "$pilot/.venv/bin/dbt" build --project-dir "$pilot" --profiles-dir "$scratch" \
-    --target-path "$scratch/target" --log-path "$scratch/log" --vars '{personal_baseline_shadow: true}' --select personal_baseline_v1
+    --target-path "$scratch/target" --log-path "$scratch/log" --vars '{personal_baseline_shadow: true}' --select personal_baseline_v1 hrv_fixed_window_baseline_v1
 PERSONAL_BASELINE_FIXTURE_PORT="$port" go test ./internal/storage -count=1 -v -run '^TestPersonalBaselineDBTShadow$'
 if [[ -n ${HEALTH_METRIC_AUDIT_DIR:-} ]]; then
     PERSONAL_BASELINE_FIXTURE_PORT="$port" go test ./internal/storage -count=1 -run '^TestMetricRuntimeBaselineCapture$'

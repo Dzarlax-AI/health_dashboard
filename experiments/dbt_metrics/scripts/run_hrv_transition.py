@@ -67,7 +67,7 @@ def main() -> int:
                 raise RuntimeError("temporary PostgreSQL port is not loopback-bound")
             port = int(published.rsplit(":", 1)[1])
             for _ in range(60):
-                ready = docker("exec", container_id, "pg_isready", "-U", "pilot_admin", "-d", DB,
+                ready = docker("exec", container_id, "pg_isready", "-h", "127.0.0.1", "-U", "pilot_admin", "-d", DB,
                                check=False, capture=True)
                 if ready.returncode == 0:
                     break

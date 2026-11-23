@@ -11,9 +11,11 @@ def main():
     if any(not os.environ.get(key) for key in required):
         raise SystemExit("run through the disposable profile graph harness")
     cases = {
-        "internal/storage": ["TestInstalledProfileDailyReader", "TestInstalledProfileSleepReader"],
+        "internal/storage": ["TestInstalledProfileDailyReader", "TestInstalledProfileSleepReader",
+                             "TestInstalledCatalogValuePage", "TestInstalledCatalogMetricCoverage",
+                             "TestInstalledLocalEnergyDecision", "TestInstalledLocalReadinessDecision", "TestInstalledDecisionJournal", "TestInstalledTodayBriefingCapture"],
         "internal/ui": ["TestInstalledProfileSleepTransport",
-                        "TestInstalledProfileDailyChart"],
+                        "TestInstalledProfileDailyChart", "TestInstalledProfileCatalogStepsChart"],
         "internal/mcpserver": ["TestInstalledProfileSleepTransport"],
     }
     suite = os.environ.get("PROFILE_SCREEN_SUITE")
