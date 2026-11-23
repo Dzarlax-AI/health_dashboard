@@ -37,14 +37,17 @@ STOP = threading.Event()
 active_connection = None
 
 
-def cancel_on_shutdown():
-    STOP.wait()
-    conn = active_connection
-    if conn is not None and not conn.closed:
+def cancel_on_shutdown(read_fd):
+    # CPython can defer the Python signal handler while its main thread waits
+    # inside libpq. The low-level signal handler writes this byte immediately.
+    os.read(read_fd, 1)
+    STOP.set()
+    while (conn := active_connection) is not None and not conn.closed:
         try:
             conn.cancel()
         except psycopg2.Error:
-            pass
+            return
+        time.sleep(0.1)
 
 
 class WorkerError(Exception):
@@ -359,6 +362,8 @@ def once(schema, tenant, config, batch):
     )
     active_connection = conn
     try:
+        if STOP.is_set():
+            return "stopped"
         with conn, conn.cursor() as cur:
             authorize(cur, schema, tenant)
             authorized = True
@@ -408,9 +413,12 @@ def main():
     if os.getenv("HEALTH_DBT_WORKER_ENABLED", "").lower() != "true":
         print('{"status":"disabled"}')
         return 0
+    read_fd, write_fd = os.pipe()
+    os.set_blocking(write_fd, False)
+    signal.set_wakeup_fd(write_fd)
     signal.signal(signal.SIGTERM, lambda *_: STOP.set())
     signal.signal(signal.SIGINT, lambda *_: STOP.set())
-    threading.Thread(target=cancel_on_shutdown, daemon=True).start()
+    threading.Thread(target=cancel_on_shutdown, args=(read_fd,), daemon=True).start()
     failures = 0
     while not STOP.is_set():
         try:

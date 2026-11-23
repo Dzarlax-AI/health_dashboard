@@ -6,7 +6,8 @@ umask 077
 [[ $# == 1 && -s "$1" && -f "$1" ]] || { echo "Pass a trusted, local PostgreSQL custom-format archive." >&2; exit 2; }
 archive=$1
 script_dir=$(cd "$(dirname "$0")" && pwd)
-image=postgres:16-alpine
+# Preload once with docker pull postgres@sha256:f2f98726820d0342055351c6e9d36e705f5bfffb3dd53ff556325114b08afb6d
+image=postgres@sha256:f2f98726820d0342055351c6e9d36e705f5bfffb3dd53ff556325114b08afb6d
 endpoint=${DOCKER_HOST:-$(docker context inspect --format '{{.Endpoints.docker.Host}}')}
 [[ "$endpoint" == unix://* ]] || { echo "A local Unix-socket Docker engine is required." >&2; exit 1; }
 # Pin every subsequent operation to the inspected socket, including cleanup.

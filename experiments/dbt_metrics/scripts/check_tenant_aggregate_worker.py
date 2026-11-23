@@ -33,6 +33,13 @@ def wait_for(check):
 
 
 def exercise(image, directory, network, cid):
+    platform = (
+        docker(
+            "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", image, capture_output=True
+        ).stdout.strip()
+        if image
+        else None
+    )
     tenant = uuid.uuid4()
     role = "health_t_" + tenant.hex
     schema = "test_tenant"
@@ -78,8 +85,11 @@ def exercise(image, directory, network, cid):
         ('step_count','2026-01-01 10:00:00 +0000','Apple Watch',10),
         ('step_count','2026-01-20 10:00:00 +0000','Apple Watch',70);
         insert into settings(key,value) values('_cache_maintenance_v1','{"version":1,"generation":1,"dirty":{}}');""")
-    host, port = docker("port", cid, "5432/tcp", capture_output=True).stdout.strip().rsplit(":", 1)
-    dsn_host, dsn_port = ("fixture", "5432") if image else (host, port)
+    dsn_host, dsn_port = (
+        ("fixture", "5432")
+        if image
+        else docker("port", cid, "5432/tcp", capture_output=True).stdout.strip().rsplit(":", 1)
+    )
     secret = directory / "dsn"
     secret.write_text(f"postgresql://{role}:{password}@{dsn_host}:{dsn_port}/postgres?sslmode=disable")
     secret.chmod(0o444)
@@ -119,6 +129,8 @@ else:
                 "docker",
                 "run",
                 "--rm",
+                "--platform",
+                platform,
                 "--network",
                 network,
                 "--read-only",
@@ -137,7 +149,7 @@ else:
             child_env = os.environ.copy()
         else:
             cmd = [sys.executable, *([] if expired_attempt else [str(WORKER)]), *args]
-            child_env = dict(os.environ, **active)
+            child_env = dict(os.environ, TMPDIR=str(directory), **active)
         proc = subprocess.Popen(cmd, env=child_env, text=True, stdout=subprocess.PIPE)
         return status(proc) if wait else proc
 
@@ -301,7 +313,7 @@ else:
         reader.wait(timeout=10)
     print(
         "PASS bootstrap/re-enrollment, tenant ACL/checksum, scoped sync, stale/failed/crashed builds, "
-        "withdrawal proof, retained reader and disabled rollback"
+        "withdrawal proof, retained reader, expired work lease, SQL cancellation and disabled rollback"
     )
 
 
@@ -310,7 +322,7 @@ def main():
     parser.add_argument("--worker-image")
     args = parser.parse_args()
     network = "health-dbt-test-" + secrets.token_hex(8)
-    docker("network", "create", network, capture_output=True)
+    docker("network", "create", *(["--internal"] if args.worker_image else []), network, capture_output=True)
     try:
         cid = docker(
             "run",
@@ -322,8 +334,7 @@ def main():
             "fixture",
             "--tmpfs",
             "/var/lib/postgresql/data",
-            "-p",
-            "127.0.0.1::5432",
+            *([] if args.worker_image else ["-p", "127.0.0.1::5432"]),
             "-e",
             "POSTGRES_PASSWORD=synthetic-only",
             IMAGE,
