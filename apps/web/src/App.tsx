@@ -23,6 +23,10 @@ import { resolveHealthSection } from "./features/health-detail/config";
 import { HealthDetailPage } from "./features/health-detail/HealthDetailPage";
 import { SleepPage } from "./features/sleep/SleepPage";
 import { EnergyPage } from "./features/energy/EnergyPage";
+import { MetricsPage } from "./features/metrics/MetricsPage";
+import { MetricDetailPage } from "./features/metrics/MetricDetailPage";
+import { SettingsPage } from "./features/settings/SettingsPage";
+import { AdminPage } from "./features/admin/AdminPage";
 import { resolveLocale, translate, type Locale } from "./i18n";
 
 type AppState =
@@ -246,9 +250,25 @@ function DashboardApp() {
   );
 }
 
+function resolveMetricName(pathname: string): string | undefined {
+  const match = /^\/metrics\/([^/]+)$/.exec(pathname);
+  if (!match) return undefined;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
+}
+
 export function App() {
-  if (window.location.pathname === "/sleep") return <SleepPage />;
-  if (window.location.pathname === "/energy") return <EnergyPage />;
-  const healthSection = resolveHealthSection(window.location.pathname);
+  const { pathname } = window.location;
+  if (pathname === "/sleep") return <SleepPage />;
+  if (pathname === "/energy") return <EnergyPage />;
+  if (pathname === "/metrics") return <MetricsPage />;
+  const metricName = resolveMetricName(pathname);
+  if (metricName) return <MetricDetailPage metricName={metricName} />;
+  if (pathname === "/settings") return <SettingsPage />;
+  if (pathname === "/admin") return <AdminPage />;
+  const healthSection = resolveHealthSection(pathname);
   return healthSection ? <HealthDetailPage config={healthSection} /> : <DashboardApp />;
 }

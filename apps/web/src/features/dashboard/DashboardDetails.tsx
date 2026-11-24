@@ -137,7 +137,7 @@ export function DashboardDetails({
         <Surface as="article" className="content-card trend-card">
           <div className="section-heading">
             <h2>{translate(locale, "readinessTrend")}</h2>
-            <a href={`/?lang=${locale}`}>{translate(locale, "today")}</a>
+            <a href={`/metrics/readiness?lang=${locale}`}>{translate(locale, "openDetails")}</a>
           </div>
           <LazyTrendChart
             ariaLabel={translate(locale, "readinessTrend")}
@@ -151,6 +151,7 @@ export function DashboardDetails({
         <Surface as="article" className="content-card trend-card">
           <div className="section-heading">
             <h2>{translate(locale, "energyTrend")}</h2>
+            <a href={`/energy?lang=${locale}`}>{translate(locale, "openDetails")}</a>
           </div>
           <LazyTrendChart
             ariaLabel={translate(locale, "energyTrend")}
