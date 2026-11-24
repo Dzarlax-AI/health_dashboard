@@ -770,3 +770,40 @@ func TestV2StepsSelectSourcePerPhysicalHour(t *testing.T) {
 	}
 	latest()
 }
+
+func TestMetricRangeAcrossRejectedEdges(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx := t.Context()
+	record, err := db.InsertRaw(Record{ContentType: "application/json; metrics-contract=2", Payload: "{}"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Both 32-row probes see only rejected rows. The eligible day includes
+	// distinct physical times in a repeated local clock hour.
+	_, err = db.pool.Exec(ctx, `
+		INSERT INTO metric_points(health_record_id,metric_name,units,date,source,qty,origin,quality)
+		SELECT $1,'step_count','unknown',to_char(ts,'YYYY-MM-DD HH24:MI:SS')||' +0200','Watch',3,'live','ok'
+		FROM generate_series(timestamp '2026-09-01',timestamp '2026-11-30',interval '1 day') ts`, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(lo, hi string) {
+		t.Helper()
+		gotLo, gotHi, err := db.MetricDateRangeForContract("step_count", false)
+		if err != nil || gotLo != lo || gotHi != hi {
+			t.Fatalf("range = (%q,%q), %v; want (%q,%q)", gotLo, gotHi, err, lo, hi)
+		}
+	}
+	check("", "")
+	for _, stamp := range []string{"2026-10-25 02:00:00 +0200", "2026-10-25 02:00:00 +0100"} {
+		if err := db.InsertPoints(record, []MetricPoint{{MetricName: "step_count", Date: stamp, Units: "count", Source: "Watch", Qty: 0}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check("2026-10-25", "2026-10-25")
+	if _, err := db.pool.Exec(ctx, "UPDATE metric_points SET quality='suspect' WHERE units='count'"); err != nil {
+		t.Fatal(err)
+	}
+	check("", "")
+}
