@@ -1073,15 +1073,7 @@ func (s *DB) MetricDateRangeForContract(metric string, legacy bool) (min, max st
 
 	var minN, maxN *string
 	if usesMetricCompatibility(metric) || (!legacy && usesCurrentHourlyMetric(metric)) {
-		query := metricCompatibilityCTE("metric_name=ANY($1::text[])", legacy) + `
-			SELECT SUBSTRING(MIN(date),1,10),SUBSTRING(MAX(date),1,10)
-			FROM compatible WHERE `
-		if legacy {
-			query += "qty>0"
-		} else {
-			query += "(qty>0 OR (grain='hour_sum' AND qty=0)) AND quality='ok'"
-		}
-		err = s.pool.QueryRow(ctx, query, metricNamesForRead(metric)).Scan(&minN, &maxN)
+		err = s.pool.QueryRow(ctx, compatibleDateRangeSQL(legacy), metricNamesForRead(metric)).Scan(&minN, &maxN)
 	} else {
 		err = s.pool.QueryRow(ctx,
 			`SELECT SUBSTRING(MIN(date),1,10), SUBSTRING(MAX(date),1,10) FROM metric_points WHERE metric_name = $1`,

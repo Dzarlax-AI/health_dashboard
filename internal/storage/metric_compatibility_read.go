@@ -432,3 +432,47 @@ func (s *DB) compatibleLegacyMetricData(metric, from, to, bucket, agg string, by
 		FROM inputs GROUP BY bucket,src ORDER BY bucket,src`
 	return s.scanSourcePointsWithKey(query, metricNamesForRead(metric), from, to, bucket, bySource)
 }
+
+// Probe both ends of the date index for each stored name. Validate every
+// competing row at the candidate timestamps before trusting either boundary.
+// A bounded probe keeps a long run of rejected timestamps on the bulk path.
+func compatibleDateRangeSQL(legacy bool) string {
+	eligible := "(qty>0 OR (grain='hour_sum' AND qty=0)) AND quality='ok'"
+	if legacy {
+		eligible = "qty>0"
+	}
+	probe := func(order string) string {
+		return "SELECT p.date FROM metric_points p WHERE p.metric_name=k.name ORDER BY p.date " + order + " LIMIT 32"
+	}
+	return `WITH keys AS (SELECT unnest($1::text[]) AS name),
+	edges AS MATERIALIZED (
+		SELECT k.name, dir, array_agg(p.date) AS dates FROM keys k
+		CROSS JOIN LATERAL (
+			SELECT 'lo' AS dir, lo.date FROM (` + probe("ASC") + `) lo
+			UNION ALL SELECT 'hi', hi.date FROM (` + probe("DESC") + `) hi
+		) p GROUP BY k.name,dir
+	), candidate_dates AS (SELECT DISTINCT unnest(dates) AS date FROM edges),
+	candidate_points AS MATERIALIZED (
+		SELECT p.* FROM candidate_dates d CROSS JOIN keys k
+		CROSS JOIN LATERAL (SELECT * FROM metric_points WHERE metric_name=k.name AND date=d.date OFFSET 0) p
+	), accepted AS MATERIALIZED (
+		WITH ` + metricCompatibilityProjection("candidate_points", "true", compatibilityPointProof, legacy) + `
+		SELECT DISTINCT date FROM compatible WHERE ` + eligible + `
+	), bounds AS (SELECT min(date) AS lo,max(date) AS hi FROM accepted),
+	-- Unexamined rows of each key can only lie beyond its sampled edge.
+	-- If the edge is exhausted all its dates have already been examined.
+	proven AS (
+		SELECT b.* FROM bounds b WHERE NOT EXISTS (
+			SELECT FROM edges e WHERE cardinality(e.dates)=32 AND
+			  (b.lo IS NULL OR CASE WHEN e.dir='lo' THEN b.lo > (SELECT max(x) FROM unnest(e.dates) x)
+			                        ELSE b.hi < (SELECT min(x) FROM unnest(e.dates) x) END)
+		)
+	)
+	SELECT substring(lo,1,10),substring(hi,1,10) FROM proven
+	UNION ALL
+	SELECT * FROM (
+		` + metricCompatibilityCTE("metric_name=ANY($1::text[])", legacy) + `
+		SELECT substring(min(date),1,10),substring(max(date),1,10) FROM compatible WHERE ` + eligible + `
+		LIMIT (CASE WHEN EXISTS (SELECT FROM proven) THEN 0 ELSE 1 END)
+	) fallback`
+}

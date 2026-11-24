@@ -74,5 +74,5 @@ func latestPhysicalStepsSQL() string {
                         (select substring(hour,1,10) from hourly_metrics where metric_name='step_count' order by hour desc limit 1)) as day
     ), recent as materialized (` + physicalStepTotalsSQL("substring(date,1,10)=(select day from last_day)", "hourly_metrics", "substring(hour,1,10)=(select day from last_day)") + `)
     select day,source_total from recent union all
-    select day,source_total from (` + physicalStepTotalsSQL("not exists(select from recent) and substring(date,1,10)<(select day from last_day)", "hourly_metrics", "not exists(select from recent) and substring(hour,1,10)<(select day from last_day)") + ` order by day desc limit 1) older`
+    select day,source_total from (` + physicalStepTotalsSQL("substring(date,1,10)<(select day from last_day)", "hourly_metrics", "substring(hour,1,10)<(select day from last_day)") + ` order by day desc limit (case when exists(select from recent) then 0 else 1 end)) older`
 }

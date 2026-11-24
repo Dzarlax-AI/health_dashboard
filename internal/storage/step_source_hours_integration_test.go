@@ -124,3 +124,20 @@ func TestMeasuredZeroAcrossStepReaders(t *testing.T) {
 		t.Fatalf("zero-step dashboard: %+v, %v", dashboard, err)
 	}
 }
+
+func TestLatestStepsSkipsIneligibleNewestDay(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	insertHRVRepairPoints(t, db, []MetricPoint{
+		{MetricName: "step_count", Units: "count", Date: "2026-10-15 09:00:00 +0000", Source: "iPhone", Qty: 12},
+		{MetricName: "step_count", Units: "unknown", Date: "2026-10-16 09:00:00 +0000", Source: "iPhone", Qty: 35},
+	})
+	var day string
+	var steps float64
+	if err := db.pool.QueryRow(t.Context(), latestPhysicalStepsSQL()).Scan(&day, &steps); err != nil {
+		t.Fatal(err)
+	}
+	if day != "2026-10-15" || steps != 12 {
+		t.Fatalf("latest eligible steps = %s %v", day, steps)
+	}
+}
