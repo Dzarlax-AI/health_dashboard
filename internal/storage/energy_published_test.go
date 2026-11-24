@@ -43,6 +43,12 @@ func TestEnergyPublishedDecisionRequiresCurrentInputs(t *testing.T) {
 	if b.Bank != 17 || tr.beforeClamp != 5 {
 		t.Fatalf("published Energy result missing: %v %v", b.Bank, tr)
 	}
+	exec(`update hdbt_decision_queue set blocked_reason='result_conflict' where metric='energy_bank'`)
+	b, _ = read()
+	if b.Bank != first.Bank {
+		t.Fatal("quarantined result served instead of direct computation")
+	}
+	exec(`update hdbt_decision_queue set blocked_reason=null where metric='energy_bank'`)
 	cfg.AlphaFactor += 0.1
 	b, _ = read()
 	if b.Bank != first.Bank {

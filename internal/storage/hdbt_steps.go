@@ -2,12 +2,24 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"strconv"
 
 	dbtmetrics "health-receiver/experiments/dbt_metrics"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+var errHDBTStepEvidenceUnavailable = errors.New("dbt step withdrawal evidence unavailable")
+
+func hdbtDirtyStepDates(ctx context.Context, tx pgx.Tx, from, to string) ([]string, error) {
+	var days []string
+	err := tx.QueryRow(ctx, `select array(select distinct to_char(d.date::date+n,'YYYY-MM-DD') from hdbt_dirty d
+		cross join generate_series(-2,2) n where (d.date::date+n) between
+		coalesce(nullif($1,'')::date,date '0001-01-01') and $2::text::date)`, from, to).Scan(&days)
+	return days, err
+}
 
 // readHDBTSteps serves the daily chart for both bounded and all-time reads. A disabled enrollment or read flag
 // returns control to the ordinary v6 reader. An enrolled stale publication
@@ -50,9 +62,8 @@ func readHDBTSteps(ctx context.Context, tx pgx.Tx, from, to string, generation *
 		query := "select date,steps::float8 as qty from hdbt_daily_metrics where date between $1 and $2 and steps is not null"
 		args := []any{from, to}
 		if hasDirty {
-			var dirty []string
-			if err := unit.QueryRow(ctx, `select array(select distinct to_char(d.date::date+n,'YYYY-MM-DD') from hdbt_dirty d
-                cross join generate_series(-2,2) n where (d.date::date+n) between $1::date and $2::date)`, from, to).Scan(&dirty); err != nil {
+			dirty, err := hdbtDirtyStepDates(ctx, unit, from, to)
+			if err != nil {
 				return err
 			}
 			if len(dirty) > 0 {
@@ -70,9 +81,17 @@ func readHDBTSteps(ctx context.Context, tx pgx.Tx, from, to string, generation *
 	if err == nil && complete {
 		return points, true, nil
 	}
-	// A missing grant or broken publication rolls back its savepoint. The
-	// original snapshot remains available to the canonical fallback.
-	points, err = collectHDBTSteps(ctx, tx, currentHDBTStepsSQL(false)+" order by date", from, to)
+	// Use retained withdrawal evidence when it is available. If it cannot be
+	// read, let the ordinary reader certify its own cache against the Go journal.
+	err = pgx.BeginFunc(ctx, tx, func(unit pgx.Tx) error {
+		var readErr error
+		points, readErr = collectHDBTSteps(ctx, unit, currentHDBTStepsSQL(false)+" order by date", from, to)
+		return readErr
+	})
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && (pgErr.Code == "42P01" || pgErr.Code == "42501") {
+		return nil, false, errHDBTStepEvidenceUnavailable
+	}
 	return points, true, err
 }
 

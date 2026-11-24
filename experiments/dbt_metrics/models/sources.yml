@@ -13,6 +13,8 @@ sources:
       - name: verified_step_withdrawals
         identifier: "{{ 'hdbt_i_repairs' if var('tenant_aggregate_worker', false) else 'verified_step_withdrawals' }}"
         description: Current capture receipts for previously usable step cells physically withdrawn at the exact stored timestamp and source.
+      - name: hdbt_i_daily_withdrawals
+        description: Confirmed input withdrawals by calendar date and metric in the tenant worker capture.
       - name: calendar
         identifier: "{{ 'hdbt_i_calendar' if var('tenant_aggregate_worker', false) else 'calendar' }}"
       - name: completed_night_sleep

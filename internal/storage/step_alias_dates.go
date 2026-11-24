@@ -76,17 +76,25 @@ func stepAliasDates(ctx context.Context, q stepDateQuerier, dates []string) ([]s
 
 // The previous projection can release a date when a correction changes the
 // quantity or grain. The new projection can acquire a previously unseen peer.
-func insertPointsAndAliasDatesTx(ctx context.Context, tx pgx.Tx, recordID int64, points []MetricPoint, ordering ingestPointOrdering) ([]string, error) {
+func insertPointsAndAliasDatesTx(ctx context.Context, tx pgx.Tx, recordID int64, points []MetricPoint, ordering ingestPointOrdering) ([]string, dailyPointRepairs, error) {
 	dates := stepMutationDates(points)
 	before, err := stepAliasDates(ctx, tx, dates)
 	if err != nil {
-		return nil, err
+		return nil, dailyPointRepairs{}, err
+	}
+	previous, err := previousPositiveDailyPoints(ctx, tx, points)
+	if err != nil {
+		return nil, dailyPointRepairs{}, err
 	}
 	if err = insertPointsTx(ctx, tx, recordID, points, ordering); err != nil {
-		return nil, err
+		return nil, dailyPointRepairs{}, err
+	}
+	repairs, err := acceptedLiveDailyWithdrawals(ctx, tx, recordID, previous)
+	if err != nil {
+		return nil, dailyPointRepairs{}, err
 	}
 	after, err := stepAliasDates(ctx, tx, dates)
-	return uniqueStepDates(append(before, after...)), err
+	return uniqueStepDates(append(before, after...)), repairs, err
 }
 
 func refreshStepAliasDates(ctx context.Context, tx pgx.Tx, dates []string) error {

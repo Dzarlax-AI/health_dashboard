@@ -23,7 +23,7 @@ func (s *DB) markCacheDirtyWithHRVRepairsTx(ctx context.Context, tx pgx.Tx, dirt
 }
 
 // recordCacheDirtyWithHRVRepairsTx uses the caller's already locked state.
-func (s *DB) recordCacheDirtyWithHRVRepairsTx(ctx context.Context, tx pgx.Tx, state CacheMaintenanceState, dirtyDates, hrvRepairDates []string) error {
+func (s *DB) recordCacheDirtyWithHRVRepairsTx(ctx context.Context, tx pgx.Tx, state CacheMaintenanceState, dirtyDates, hrvRepairDates []string, withdrawals ...[]byte) error {
 	dates, err := normalizeDirtyDates(append(append([]string(nil), dirtyDates...), hrvRepairDates...))
 	if err != nil {
 		return err
@@ -33,6 +33,9 @@ func (s *DB) recordCacheDirtyWithHRVRepairsTx(ctx context.Context, tx pgx.Tx, st
 		return err
 	}
 	if err := markAggregateDatesDirty(ctx, tx, &state, dates); err != nil {
+		return err
+	}
+	if err := recordHDBTDailyWithdrawals(ctx, tx, state.Generation, withdrawals...); err != nil {
 		return err
 	}
 	if err := saveCacheMaintenanceRow(ctx, tx, state); err != nil {

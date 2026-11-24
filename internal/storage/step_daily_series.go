@@ -90,7 +90,18 @@ func (s *DB) dailyStepSeriesTx(ctx context.Context, tx pgx.Tx, from, to string) 
 		}
 	}
 	series, enabled, err := readHDBTSteps(ctx, tx, from, to, generation)
-	if err != nil {
+	var dirty []string
+	var unverifiedHistory bool
+	if errors.Is(err, errHDBTStepEvidenceUnavailable) {
+		// Go may have acknowledged a date that dbt still needs to correct.
+		// Do not retain its daily-only value without the independent dbt fence.
+		lookupErr := pgx.BeginFunc(ctx, tx, func(unit pgx.Tx) error {
+			var err error
+			dirty, err = hdbtDirtyStepDates(ctx, unit, from, to)
+			return err
+		})
+		unverifiedHistory = lookupErr != nil
+	} else if err != nil {
 		return nil, err
 	}
 	if enabled {
@@ -98,11 +109,10 @@ func (s *DB) dailyStepSeriesTx(ctx context.Context, tx pgx.Tx, from, to string) 
 	}
 	args := []any{from, to}
 	query := publishedStepSeries
-	if state.TargetIdentity != "" || state.CompletedIdentity != CacheMaintenanceIdentity() {
+	if unverifiedHistory || state.TargetIdentity != "" || state.CompletedIdentity != CacheMaintenanceIdentity() {
 		query = "select day as date, source_total::real::float8 as qty from (" +
 			physicalStepTotalsSQL("substring(p.date,1,10) between $1 and $2", "hourly_metrics", "substring(hour,1,10) between $1 and $2") + ") recomputed"
 	} else {
-		var dirty []string
 		for day := range state.Dirty {
 			if from <= day && day <= to {
 				dirty = append(dirty, day)

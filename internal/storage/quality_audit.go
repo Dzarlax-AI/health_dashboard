@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 
@@ -270,7 +271,7 @@ func (s *DB) recordQualityChanges(ctx context.Context, tx pgx.Tx, state CacheMai
 			return nil, nil, 0, err
 		}
 		all[date] = struct{}{}
-		if metric == "heart_rate_variability" && wasPositive {
+		if wasPositive {
 			valid[date] = struct{}{}
 		}
 		count++
@@ -280,8 +281,24 @@ func (s *DB) recordQualityChanges(ctx context.Context, tx pgx.Tx, state CacheMai
 	}
 	rows.Close()
 	dates := cacheDateSetKeys(all)
-	hrvDates := cacheDateSetKeys(valid)
-	err := s.recordCacheDirtyWithHRVRepairsTx(ctx, tx, state, dates, hrvDates)
+	positiveDates := cacheDateSetKeys(valid)
+	var hrvDates []string
+	if metric == "heart_rate_variability" {
+		hrvDates = positiveDates
+	}
+	var withdrawals []byte
+	if len(positiveDates) != 0 {
+		cells := make([][2]string, 0, len(positiveDates))
+		for _, date := range positiveDates {
+			cells = append(cells, [2]string{date, metric})
+		}
+		var err error
+		withdrawals, err = json.Marshal(cells)
+		if err != nil {
+			return nil, nil, 0, err
+		}
+	}
+	err := s.recordCacheDirtyWithHRVRepairsTx(ctx, tx, state, dates, hrvDates, withdrawals)
 	if metric == "heart_rate_variability" {
 		return dates, hrvDates, count, err
 	}

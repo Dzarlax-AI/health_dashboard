@@ -20,7 +20,7 @@ import (
 // SchemaContractVersion is bumped whenever the declared tenant schema
 // contract changes. Existing tenants are not current until both the permanent
 // marker and registry metadata carry this version and checksum.
-const SchemaContractVersion = 19
+const SchemaContractVersion = 20
 
 // TenantIdentityTable is the permanent marker shared by clean provisioning
 // and existing-tenant migrations. The provisioning marker is intentionally

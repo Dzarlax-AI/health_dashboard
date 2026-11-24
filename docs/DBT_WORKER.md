@@ -36,13 +36,17 @@ Build with `docker build -f Dockerfile.dbt-worker -t health-dbt-worker:review .`
 
 The archive run copies personal health data into an auto-removed PostgreSQL container and its anonymous data volume. The private temporary directory under `TMPDIR` holds a database password, tenant DSNs, dated chart responses, an accepted health payload, and the restore log. Use a trusted local Docker engine and a temporary filesystem appropriate for that data. Stdout contains aggregate results. Keep the original dump and the temporary files out of CI logs and uploads. On exit the harness stops PostgreSQL, attempts forced container and volume removal if stopping fails, and removes the temporary directory. After a machine crash or SIGKILL, check the disposable container, anonymous volume, and temporary directory before treating the copy as removed.
 
-### Decision publication in contract v19
+### Decision publication in contract v20
 
 The tenant settings `dbt_decision_capture_v1` and `dbt_decision_result_reads_v1` control different operations. Capture records the inputs available when the application evaluates a decision, its formula version and the reference result. The enrolled worker evaluates supported Energy, Readiness and Today receipts. It compares each candidate to the reference before publishing the batch in one transaction. A new receipt for an old date is eligible after the daily aggregates have caught up.
 
 The serving adapter checks the current inputs and formula version on each lookup. A missing publication or a late correction uses the ordinary solver. Disable the decision-result read setting for a per-profile rollback. Previously sent report bodies come from report history. Enabling capture today provides evidence for future decisions. It cannot recover the original inputs for older reports.
 
-For a rehearsal, compare the number of supported receipts, queued revisions and published results within the same read-only snapshot. A profile with zero receipts provides no evidence of decision parity.
+For a rehearsal, compare supported receipts, pending revisions where `blocked_reason IS NULL`, quarantined revisions and usable published results within the same read-only snapshot. A quarantined receipt keeps a fixed reason and is excluded from serving. A transient replay failure reports `decision_retry` while aggregation keeps its ordinary schedule. Investigate quarantined reasons before enabling result reads. A profile with zero receipts provides no evidence of decision parity.
+
+### Confirmed daily withdrawals
+
+The source mutation and its cache generation record confirmed withdrawals together. The worker captures the metric and day in the same snapshot as the inputs and acknowledges the receipt only after publishing that day. A fresh valid value takes priority. If the affected metric has no fresh value, publication clears its retained value. Sleep stages follow the retained-night selection together. Cache-only history without a withdrawal receipt is still eligible for retention. Receipts are prospective, so use a separate verified repair procedure for stale values published before this contract.
 
 ### Native catalog installation
 

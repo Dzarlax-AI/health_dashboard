@@ -183,6 +183,37 @@ func TestHDBTFlagsAreOfflineContractObjects(t *testing.T) {
 	}
 }
 
+func TestHDBTWithdrawalUpgradePreservesQueuedDecisions(t *testing.T) {
+	db, done := testDB(t)
+	defer done()
+	ctx := t.Context()
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(context.Background())
+	if _, err := tx.Exec(ctx, `drop table hdbt_i_daily_withdrawals,hdbt_daily_withdrawals;
+		alter table hdbt_decision_queue drop column blocked_reason;
+		insert into hdbt_decision_inputs(metric,decision_key,input_hash,captured_at,formula_version,inputs,result)
+		values('readiness','history/2026-10-10','fixture',now(),3,'{}','{}')`); err != nil {
+		t.Fatal(err)
+	}
+	unit := &DB{pool: &cacheTransaction{Tx: tx, ctx: ctx}}
+	for range 2 {
+		if err := unit.MigrateSchemaContractContext(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var pending int
+	if err := tx.QueryRow(ctx, `select count(*) from hdbt_decision_queue
+		where input_hash='fixture' and blocked_reason is null`).Scan(&pending); err != nil || pending != 1 {
+		t.Fatalf("migration lost or duplicated queued decision: pending=%d err=%v", pending, err)
+	}
+	if err := unit.VerifySchemaContractContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Exercise PostgreSQL's actual privilege checks, including an explicit target
 // schema. Roll back the fixture role and sibling schema together with its data.
 func TestHDBTStepsRoleIsolation(t *testing.T) {
@@ -217,6 +248,7 @@ func TestHDBTStepsRoleIsolation(t *testing.T) {
 	must("create table " + neighbor + ".hdbt_daily_metrics(date text primary key, steps real)")
 	must("grant usage on schema " + local + " to " + role)
 	must("grant select on settings,hdbt_state,hdbt_dirty,hdbt_daily_metrics,hdbt_backfill to " + role)
+	must("grant select on daily_scores,hourly_metrics,metric_points,health_records to " + role)
 	state := emptyCacheMaintenanceState()
 	state.CompletedIdentity = CacheMaintenanceIdentity()
 	if _, err := lockCacheMaintenanceRow(ctx, tx); err != nil {
@@ -228,6 +260,7 @@ func TestHDBTStepsRoleIsolation(t *testing.T) {
 	must("update hdbt_state set shadow_enabled=true")
 	must("update hdbt_state set initialized=true,ready=true,read_enabled=true,source_generation=0,formula_id=$1", hdbtFormula)
 	must("insert into hdbt_daily_metrics(date,steps) values('2026-10-10',72)")
+	must("insert into daily_scores(date,steps) values('2026-10-07',19),('2026-10-10',null)")
 	must("set local role " + role)
 	generation := uint64(0)
 	read, ok, readErr := readHDBTSteps(ctx, tx, "", "2026-10-10", &generation)
@@ -240,6 +273,53 @@ func TestHDBTStepsRoleIsolation(t *testing.T) {
 		if !errors.As(err, &pgErr) || pgErr.Code != "42501" {
 			t.Fatalf("expected isolation denial: %v", err)
 		}
+	}
+	must("reset role")
+	must("revoke select on hdbt_daily_metrics from " + role)
+	must("update daily_scores set steps=72 where date='2026-10-10'")
+	state.Generation = 1
+	if err := saveCacheMaintenanceRow(ctx, tx, state); err != nil {
+		t.Fatal(err)
+	}
+	must("update hdbt_state set source_generation=1")
+	must("insert into hdbt_dirty(date,generation) values('2026-10-10',1)")
+	must("set local role " + role)
+	read, readErr = db.dailyStepSeriesTx(ctx, tx, "", "2026-10-10")
+	if readErr != nil || !slices.Equal(read, []DailyStepPoint{{"2026-10-07", 19}}) {
+		t.Fatalf("Go fallback should retain historical data without reusing the withdrawn publication: %+v: %v", read, readErr)
+	}
+}
+
+func TestHDBTLiveDailyWithdrawalRequiresAcceptedReplacement(t *testing.T) {
+	db, done := testDB(t)
+	defer done()
+	const day = "2026-10-10"
+	const stamp = day + " 08:00:00 +0000"
+	insert := func(hrv, sleep float64) {
+		t.Helper()
+		record, err := db.InsertRaw(Record{ContentType: "application/json", Payload: "{}"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := db.InsertPoints(record, []MetricPoint{
+			{MetricName: "heart_rate_variability", Units: "ms", Date: stamp, Qty: hrv, Source: "Watch"},
+			{MetricName: "sleep_total", Units: "hr", Date: stamp, Qty: sleep, Source: "Watch"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert(42, 7)
+	insert(0, 0)
+	if err := db.UpsertRecentCache([]string{day}, false); err != nil {
+		t.Fatal(err)
+	}
+	var metrics []string
+	if err := db.pool.QueryRow(t.Context(), `select array_agg(metric_name order by metric_name)
+		from hdbt_daily_withdrawals where date=$1`, day).Scan(&metrics); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(metrics, []string{"heart_rate_variability"}) {
+		t.Fatalf("durable withdrawals after Go repair = %v; protected sleep must not be withdrawn", metrics)
 	}
 }
 
