@@ -298,7 +298,7 @@ func queryWakeCandidateSQL(ctx context.Context, queryer wakeQueryer, localDate s
 	var state string
 	var source, signal, reason *string
 	var wake, latest *time.Time
-	if err := rows.Scan(new(string), new(string), new(string), &state, &source, &signal, &wake, &latest, &reason); err != nil {
+	if err := rows.Scan(nil, nil, nil, &state, &source, &signal, &wake, &latest, &reason); err != nil {
 		return wakeCandidate{}, false, err
 	}
 	if state != "available" || wake == nil {

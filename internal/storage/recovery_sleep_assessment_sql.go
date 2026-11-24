@@ -14,7 +14,7 @@ var recoverySleepAssessmentSQL = `with inputs as (
            i."Deep" as deep,i."REM" as rem,i."Core" as core,i."Unspecified" as unspecified
     from jsonb_to_recordset($1::jsonb) as i("Date" text,"Total" float8,"Awake" float8,"Deep" float8,"REM" float8,"Core" float8,"Unspecified" float8)
 ), assessed as (` + dbtmetrics.RecoverySleepAssessmentSQL("inputs") + `)
-select day,eligible,eligibility_reason,efficiency,capture_class,capture_confidence,capture_reason,capture_low
+select day::text,eligible,eligibility_reason,efficiency,capture_class,capture_confidence,capture_reason,capture_low
 from assessed order by day`
 
 // assessRecoverySleepRows runs the shared dbt per-night formula once over the
