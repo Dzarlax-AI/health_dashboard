@@ -53,6 +53,13 @@ CREATE TABLE IF NOT EXISTS hdbt_w_step(LIKE hdbt_step_state INCLUDING INDEXES);
 CREATE TABLE IF NOT EXISTS hdbt_w_hourly(LIKE hdbt_hourly_metrics INCLUDING INDEXES);
 CREATE TABLE IF NOT EXISTS hdbt_w_daily(LIKE hdbt_daily_metrics INCLUDING INDEXES);
 CREATE TABLE IF NOT EXISTS hdbt_backfill(date text PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS hdbt_daily_withdrawals(
+    date text NOT NULL, metric_name text NOT NULL, generation numeric(20,0) NOT NULL,
+    PRIMARY KEY(date,metric_name)
+);
+CREATE TABLE IF NOT EXISTS hdbt_i_daily_withdrawals(
+    date text NOT NULL, metric_name text NOT NULL, PRIMARY KEY(date,metric_name)
+);
 ALTER TABLE hdbt_state ADD COLUMN IF NOT EXISTS enrollment_epoch bigint NOT NULL DEFAULT 0;
 CREATE OR REPLACE FUNCTION hdbt_reset_enrollment() RETURNS trigger
 LANGUAGE plpgsql SET search_path=pg_catalog AS $hdbt$

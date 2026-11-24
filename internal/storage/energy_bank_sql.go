@@ -81,11 +81,11 @@ func (s *DB) evaluateEnergyBankSQL(ctx context.Context, date string, cfg EnergyC
 	}
 	published, found, err := withPublishedDecision(ctx, s, func(db *DB) (publishedBank, bool, error) {
 		var answer publishedBank
-		q := energyRunSQL + source + `) select p.result from hdbt_decision_results p
-            where p.tableoid=to_regclass(format('%I.hdbt_decision_results',current_schema()))
-            and (` + decisionPublishedReadPredicate + `) and p.metric='energy_bank'
-            and p.decision_key=$1::text and p.formula_version=$2::int
-            and p.input_hash=encode(sha256(convert_to(jsonb_build_array($2::int,` + energyPacketSQL + `)::text,'UTF8')),'hex')`
+		q := energyRunSQL + source + `) select r.result from hdbt_decision_results r
+            where r.tableoid=to_regclass(format('%I.hdbt_decision_results',current_schema()))
+            and (` + decisionPublishedReadPredicate + `) and r.metric='energy_bank'
+            and r.decision_key=$1::text and r.formula_version=$2::int
+            and r.input_hash=encode(sha256(convert_to(jsonb_build_array($2::int,` + energyPacketSQL + `)::text,'UTF8')),'hex')`
 		err := db.pool.QueryRow(ctx, q, args...).Scan(&answer)
 		return answer, len(answer.Trace) == 5, err
 	})

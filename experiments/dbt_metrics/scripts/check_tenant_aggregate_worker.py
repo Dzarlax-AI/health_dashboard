@@ -75,10 +75,11 @@ def exercise(image, directory, network, cid):
                 f"revoke all on {schema}.{table} from pilot_dbt"
             )
     digest = re.search(r'^SCHEMA_CHECKSUM = "([0-9a-f]{64})"$', WORKER.read_text(), re.MULTILINE).group(1)
+    version = re.search(r'^SCHEMA_VERSION = (\d+)$', WORKER.read_text(), re.MULTILINE).group(1)
     sql(
         f"""set role {role};
         create table __tenant_identity(singleton boolean primary key,tenant_id uuid,schema_contract_version integer,schema_contract_checksum text);
-        insert into __tenant_identity values(true,'{tenant}',19,'{digest}');
+        insert into __tenant_identity values(true,'{tenant}',{version},'{digest}');
         """
         + (ROOT / "internal/storage/sql/hdbt_v17.sql").read_text()
         + (ROOT / "internal/storage/sql/hdbt_decision_inputs.sql").read_text()
@@ -327,12 +328,24 @@ else:
     require_status("idle")
     receipt(2, 71)
     receipt(3, 70)
-    assert worker(extra={"HEALTH_DBT_BATCH_DAYS": "16"}) == ("decision_parity", 1)
-    assert sql("select count(*) from hdbt_decision_results") == "1"
-    sql("delete from hdbt_decision_inputs where result->>'RawScore'='71'")
     require_status("published", extra={"HEALTH_DBT_BATCH_DAYS": "16"})
+    assert sql("select count(*) from hdbt_decision_queue where blocked_reason='decision_parity'") == "1"
     require_status("idle")
     assert sql("select count(*) from hdbt_decision_results where formula_version=3") == "2"
+    # A previously published exact result is acknowledged; a different
+    # existing result remains stored but is quarantined from readers.
+    sql("""insert into hdbt_decision_queue(metric,decision_key,input_hash)
+        select metric,decision_key,input_hash from hdbt_decision_results where metric='readiness'
+        order by input_hash limit 1""")
+    require_status("published", extra={"HEALTH_DBT_BATCH_DAYS": "16"})
+    sql("""insert into hdbt_decision_queue(metric,decision_key,input_hash)
+        select metric,decision_key,input_hash from hdbt_decision_results where metric='readiness'
+        order by input_hash limit 1;
+        update hdbt_decision_results r set result=jsonb_set(result,'{RawScore}','999')
+        from hdbt_decision_queue q where q.blocked_reason is null
+          and (r.metric,r.decision_key,r.input_hash)=(q.metric,q.decision_key,q.input_hash)""")
+    require_status("published", extra={"HEALTH_DBT_BATCH_DAYS": "16"})
+    assert sql("select count(*) from hdbt_decision_queue where blocked_reason='result_conflict'") == "1"
     other_xmin = sql("select xmin from hdbt_daily_metrics where date='2026-01-20'")
 
     @contextmanager
@@ -584,6 +597,35 @@ else:
     mounted = "/tmp/fixture-ca.pem" if image else str(cert)
     set_dsn(verified + "&sslrootcert=" + mounted)
     require_status("idle", mounts=[(cert, mounted)] if image else [])
+
+    # An explicit withdrawal clears a prior publication. A separate day with
+    # only a historical aggregate survives the same incremental batch.
+    trusted = {"mounts": [(cert, mounted)]} if image else {}
+    trusted["extra"] = {"HEALTH_DBT_BATCH_DAYS": "16"}
+    sql("""begin;
+        insert into metric_points(metric_name,date,source,qty)
+            values('heart_rate_variability','2026-02-10 10:00:00 +0000','Watch',42);
+        insert into daily_scores(date,hrv_avg) values('2026-02-11',31);
+        update settings set value='{"version":1,"generation":11}' where key='_cache_maintenance_v1';
+        insert into hdbt_dirty values('2026-02-10',11),('2026-02-11',11); commit""")
+    require_status("published", **trusted)
+    assert sql("select hrv_avg::int from hdbt_daily_metrics where date in ('2026-02-10','2026-02-11') order by date") == "42\n31"
+    sql("""begin;
+        delete from metric_points where date='2026-02-10 10:00:00 +0000' and metric_name='heart_rate_variability';
+        insert into hdbt_daily_withdrawals values('2026-02-10','heart_rate_variability',12);
+        update settings set value='{"version":1,"generation":12}' where key='_cache_maintenance_v1';
+        insert into hdbt_dirty values('2026-02-10',12),('2026-02-11',12); commit""")
+    sql("""alter table hdbt_w_daily add constraint fixture_require_old_hrv
+        check(date<>'2026-02-10' or hrv_avg is not null)""")
+    assert worker(**trusted)[1] != 0
+    assert sql("select generation from hdbt_daily_withdrawals where date='2026-02-10'") == "12"
+    assert sql("select hrv_avg::int from hdbt_daily_metrics where date='2026-02-10'") == "42"
+    sql("alter table hdbt_w_daily drop constraint fixture_require_old_hrv")
+    require_status("published", **trusted)
+    assert sql("select hrv_avg is null from hdbt_daily_metrics where date='2026-02-10'") == "t"
+    assert sql("select hrv_avg::int from hdbt_daily_metrics where date='2026-02-11'") == "31"
+    assert sql("select count(*) from hdbt_daily_withdrawals") == "0"
+
     print(
         "PASS bootstrap/re-enrollment, tenant ACL/checksum, scoped sync, stale/failed/crashed builds, "
         "withdrawal proof, retained reader, expired lease, SQL cancellation, scoped ACK, chart parity, boundary dates, TLS, "

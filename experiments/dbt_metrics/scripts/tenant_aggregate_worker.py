@@ -22,7 +22,8 @@ from psycopg2.extensions import parse_dsn
 
 PROJECT = Path(__file__).resolve().parents[1]
 FORMULA = "aggregate_serving_v3"
-SCHEMA_CHECKSUM = "22ae0dfda37d697610e9977b18421621ef7330864ce811bb46fb12753da6332d"
+SCHEMA_VERSION = 20
+SCHEMA_CHECKSUM = "f28ec572d75d2704ea20f6cc1b70a42285ecb1079904367723746fcc179548b5"
 JOURNAL = "_cache_maintenance_v1"
 POINTS = "metric_name,date,source,qty,quality,health_record_id,origin,units,id,received_at,source_snapshot_at"
 DAILY = (
@@ -31,7 +32,7 @@ DAILY = (
 )
 STEPS = "('step_count','__healthkit_archive_sample:step_count')"
 WORK = (
-    "hdbt_i_publish,hdbt_i_calendar,hdbt_i_points,hdbt_i_records,hdbt_i_repairs,"
+    "hdbt_i_publish,hdbt_i_calendar,hdbt_i_points,hdbt_i_records,hdbt_i_repairs,hdbt_i_daily_withdrawals,"
     "hdbt_w_points,hdbt_w_step,hdbt_w_hourly,hdbt_w_daily"
 )
 STOP = threading.Event()
@@ -115,8 +116,8 @@ def authorize(cur, schema, tenant):
         raise WorkerError("tenant_acl")
     cur.execute(f'set search_path to pg_catalog,"{schema}"')
     cur.execute(
-        "select count(*)=1 and bool_and(singleton and tenant_id=%s::uuid and schema_contract_version=19 and schema_contract_checksum=%s) from __tenant_identity",
-        (tenant, SCHEMA_CHECKSUM),
+        "select count(*)=1 and bool_and(singleton and tenant_id=%s::uuid and schema_contract_version=%s and schema_contract_checksum=%s) from __tenant_identity",
+        (tenant, SCHEMA_VERSION, SCHEMA_CHECKSUM),
     )
     if not cur.fetchone()[0]:
         raise WorkerError("tenant_identity")
@@ -144,7 +145,7 @@ def initialize(cur):
     # Raw source and legacy-only dates both participate. This inventory is made
     # once per enrollment or formula change; normal syncs read only the dirty queue.
     cur.execute(
-        """truncate hdbt_backfill;
+        """delete from hdbt_backfill;
         insert into hdbt_backfill
         with recursive point_days(day) as (
             (select substring(date,1,10) from metric_points order by 1 limit 1)
@@ -158,7 +159,7 @@ def initialize(cur):
                  where substring(hour,1,10)>h.day order by 1 limit 1) following
         )
         select day from point_days union select day from hour_days union select date from daily_scores
-          union select date from hdbt_daily_metrics;
+          union select date from hdbt_daily_metrics union select date from hdbt_daily_withdrawals;
         update hdbt_state set initialized=true,ready=false,formula_id=%s,source_generation=null,
             bootstrap_cursor='',bootstrap_end=coalesce((select max(date) from hdbt_backfill),''),
             last_status='bootstrap',heartbeat_at=clock_timestamp()""",
@@ -243,6 +244,8 @@ def capture(cur, batch, attempt):
             (select health_record_id from hdbt_i_points union select health_record_id from hdbt_w_points);
         insert into hdbt_i_repairs select point_date,source from hdbt_step_repairs
             where substring(point_date,1,10) in (select date from hdbt_i_calendar);
+        insert into hdbt_i_daily_withdrawals select date,metric_name from hdbt_daily_withdrawals
+            where date in (select date from hdbt_i_calendar);
         insert into hdbt_w_daily select * from hdbt_daily_metrics
             where date in (select date from hdbt_i_calendar except select date from hdbt_backfill);
         insert into hdbt_w_daily select {DAILY} from daily_scores where date in (select date from hdbt_i_calendar)
@@ -373,8 +376,9 @@ def publish(cur, generation, epoch, dates):
                 and substring(date,1,10) in (select date from hdbt_i_calendar);
             delete from hdbt_step_repairs where generation<=%s and substring(point_date,1,10) in (select date from hdbt_i_publish);
             delete from hdbt_dirty where generation<=%s and date in (select date from hdbt_i_publish);
+            delete from hdbt_daily_withdrawals where generation<=%s and date in (select date from hdbt_i_publish);
             delete from hdbt_backfill where date in (select date from hdbt_i_publish)""",
-            (generation, generation),
+            (generation, generation, generation),
         )
     cur.execute("""select not exists(select from hdbt_dirty) and not exists(select from hdbt_backfill)""")
     ready = cur.fetchone()[0]
@@ -399,7 +403,7 @@ def replay_decisions(conn, config, schema, batch):
             return
         epoch = state[0]
         cur.execute("""select metric,decision_key,input_hash from hdbt_decision_queue
-            order by metric,decision_key,input_hash limit %s""", (batch,))
+            where blocked_reason is null order by metric,decision_key,input_hash limit %s""", (batch,))
         keys = cur.fetchall()
         if not keys:
             return
@@ -415,34 +419,67 @@ def replay_decisions(conn, config, schema, batch):
                        where singleton for update""", (epoch,))
         if not cur.fetchone()[0]:
             return
+        # Each receipt is classified separately. Unknown staged identities make
+        # the entire selected batch suspect; never publish an unexplained row.
         cur.execute("""with staged as (
-                select metric,decision_key,input_hash,formula_version,result - 'Trace' from hdbt_w_energy
-                union all
-                select metric,decision_key,input_hash,formula_version,result from hdbt_w_readiness
-                union all
-                select metric,decision_key,input_hash,formula_version,result from hdbt_w_today
-            ), expected as (
-                select j.metric,j.decision_key,j.input_hash,j.formula_version,j.result
+                select metric,decision_key,input_hash,formula_version,result from hdbt_w_energy
+                union all select metric,decision_key,input_hash,formula_version,result from hdbt_w_readiness
+                union all select metric,decision_key,input_hash,formula_version,result from hdbt_w_today
+            ), unexpected as (
+                select 1 from staged s where not exists (select from hdbt_i_decisions i
+                  where (i.metric,i.decision_key,i.input_hash)=(s.metric,s.decision_key,s.input_hash))
+            ), classified as (
+                select i.metric,i.decision_key,i.input_hash,
+                  case when exists(select from unexpected) then 'unexpected_stage'
+                    when count(s.metric)=0 then 'missing_stage'
+                    when count(s.metric)<>1 then 'duplicate_stage'
+                    when bool_or(s.formula_version<>j.formula_version or
+                      (case when i.metric='energy_bank' then s.result - 'Trace' else s.result end)
+                        is distinct from j.result) then 'decision_parity'
+                    when bool_or(r.metric is not null and
+                      (r.formula_version<>s.formula_version or r.result is distinct from s.result))
+                      then 'result_conflict'
+                    else null end reason
                 from hdbt_i_decisions i join hdbt_decision_inputs j using(metric,decision_key,input_hash)
-            ), missing as (select * from expected except all select * from staged),
-            unexpected as (select * from staged except all select * from expected)
-            select not exists(select from missing) and not exists(select from unexpected)
-                and (select count(*) from expected)=%s""", (len(keys),))
-        if not cur.fetchone()[0]:
-            raise WorkerError("decision_parity")
+                left join staged s using(metric,decision_key,input_hash)
+                left join hdbt_decision_results r using(metric,decision_key,input_hash)
+                group by i.metric,i.decision_key,i.input_hash
+            ) update hdbt_decision_queue q set blocked_reason=c.reason from classified c
+              where (q.metric,q.decision_key,q.input_hash)=(c.metric,c.decision_key,c.input_hash)
+                and c.reason is not null""")
         cur.execute("""insert into hdbt_decision_results(metric,decision_key,input_hash,formula_version,result)
-            select metric,decision_key,input_hash,formula_version,result from hdbt_w_energy
-            union all
-            select metric,decision_key,input_hash,formula_version,result from hdbt_w_readiness
-            union all
-            select metric,decision_key,input_hash,formula_version,result from hdbt_w_today""")
+            select s.metric,s.decision_key,s.input_hash,s.formula_version,s.result from (
+              select metric,decision_key,input_hash,formula_version,result from hdbt_w_energy
+              union all select metric,decision_key,input_hash,formula_version,result from hdbt_w_readiness
+              union all select metric,decision_key,input_hash,formula_version,result from hdbt_w_today
+            ) s join hdbt_decision_queue q using(metric,decision_key,input_hash)
+              join hdbt_i_decisions i using(metric,decision_key,input_hash)
+            where q.blocked_reason is null on conflict do nothing""")
         cur.execute("""delete from hdbt_decision_queue q using hdbt_i_decisions i
-            where (q.metric,q.decision_key,q.input_hash)=(i.metric,i.decision_key,i.input_hash)""")
-        cur.execute("select exists(select from hdbt_decision_queue)")
+            where (q.metric,q.decision_key,q.input_hash)=(i.metric,i.decision_key,i.input_hash)
+              and q.blocked_reason is null""")
+        cur.execute("select exists(select from hdbt_decision_queue where blocked_reason is null)")
         return "building" if cur.fetchone()[0] else "published"
 
 
-def once(schema, tenant, config, batch, install_native_catalog=False):
+class DecisionReplay:
+    def __init__(self):
+        self.retry_after = 0.0
+
+    def run(self, conn, config, schema, batch):
+        if time.monotonic() < self.retry_after:
+            return None
+        try:
+            return replay_decisions(conn, config, schema, batch)
+        except Exception:
+            if STOP.is_set():
+                raise
+            # The decision cooldown never delays the aggregate loop.
+            self.retry_after = time.monotonic() + 10
+            return "decision_retry"
+
+
+def once(schema, tenant, config, batch, decisions, install_native_catalog=False):
     global active_connection
     authorized = False
     conn = psycopg2.connect(
@@ -471,7 +508,7 @@ def once(schema, tenant, config, batch, install_native_catalog=False):
             candidate = capture(cur, batch, attempt)
         if isinstance(candidate, str):
             if candidate in ("idle", "waiting_journal"):
-                decision_status = replay_decisions(conn, config, schema, batch)
+                decision_status = decisions.run(conn, config, schema, batch)
                 return decision_status or candidate
             return candidate
         generation, epoch, dates = candidate
@@ -486,7 +523,7 @@ def once(schema, tenant, config, batch, install_native_catalog=False):
                     "update hdbt_state set heartbeat_at=now(),last_status='stale' where singleton and shadow_enabled"
                 )
         if result in ("published", "building"):
-            decision_status = replay_decisions(conn, config, schema, batch)
+            decision_status = decisions.run(conn, config, schema, batch)
             if result == "published" and decision_status:
                 return decision_status
         return result
@@ -523,9 +560,10 @@ def main():
     signal.signal(signal.SIGINT, lambda *_: STOP.set())
     threading.Thread(target=cancel_on_shutdown, args=(read_fd,), daemon=True).start()
     failures = 0
+    decisions = DecisionReplay()
     while not STOP.is_set():
         try:
-            result = once(*configuration(), install_native_catalog=args.install_native_catalog)
+            result = once(*configuration(), decisions, install_native_catalog=args.install_native_catalog)
             failures = 0
         except Exception as error:
             if STOP.is_set():

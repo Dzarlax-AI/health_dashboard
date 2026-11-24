@@ -180,3 +180,27 @@ func TestIllnessClassificationReaders(t *testing.T) {
 	}
 	check("none")
 }
+
+func TestIllnessObjectivePatternUsesPersonalRHRForCurrentDate(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx := t.Context()
+	const date = "2026-10-08"
+	if _, err := db.pool.Exec(ctx, `insert into daily_scores(date,rhr_avg,resp_avg)
+		select to_char(date '2026-10-08'-n,'YYYY-MM-DD'), 60+n%3, 14+n%3
+		from generate_series(1,14) n;
+		insert into daily_scores(date,rhr_avg,resp_avg) values('2026-10-08',90,23)`); err != nil {
+		t.Fatal(err)
+	}
+	evidence := db.BuildIllnessEvidenceInput(date, nil)
+	if !metricHigh(evidence.RespiratoryRate, 1.5) || !metricHigh(evidence.RHR, 1) || evidence.ObjectivePatternDays != 0 {
+		t.Fatalf("daily RHR must not count as personal support: %+v", evidence)
+	}
+	if _, err := db.pool.Exec(ctx, `update daily_scores set baseline_hr_overnight=rhr_avg`); err != nil {
+		t.Fatal(err)
+	}
+	evidence = db.BuildIllnessEvidenceInput(date, nil)
+	if evidence.ObjectivePatternDays != 1 {
+		t.Fatalf("expected current-day personal RHR to support the pattern: %+v", evidence)
+	}
+}

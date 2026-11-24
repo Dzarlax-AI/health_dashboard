@@ -221,7 +221,7 @@ func (s *DB) RemoveAutoExportForRange(from, to string) {
 	}
 	var dates, hrvDates []string
 	var removed int64
-	var stepCells []byte
+	var stepCells, withdrawals []byte
 	err = tx.QueryRow(ctx, `
         WITH removed AS (
             DELETE FROM metric_points
@@ -236,8 +236,10 @@ func (s *DB) RemoveAutoExportForRange(from, to string) {
                array_agg(DISTINCT day) FILTER (WHERE metric_name='heart_rate_variability'
                                                AND quality='ok' AND qty>0),
                jsonb_agg(DISTINCT jsonb_build_array(minute,coalesce(source,'')))
-                   FILTER (WHERE `+usableStepPointSQL("removed")+`)
-        FROM removed`, from, to).Scan(&removed, &dates, &hrvDates, &stepCells)
+                   FILTER (WHERE `+usableStepPointSQL("removed")+`),
+               jsonb_agg(DISTINCT jsonb_build_array(day,metric_name))
+                   FILTER (WHERE quality='ok' AND qty>0 AND metric_name IN `+hdbtDailyWithdrawalMetrics+`)
+        FROM removed`, from, to).Scan(&removed, &dates, &hrvDates, &stepCells, &withdrawals)
 	if err != nil {
 		log.Printf("remove auto-export [%s,%s]: %v", from, to, err)
 		return
@@ -250,7 +252,7 @@ func (s *DB) RemoveAutoExportForRange(from, to string) {
 		log.Printf("remove auto-export [%s,%s]: refresh aliases: %v", from, to, err)
 		return
 	}
-	if err := s.recordCacheDirtyWithHRVRepairsTx(ctx, tx, state, append(dates, aliases...), hrvDates); err != nil {
+	if err := s.recordCacheDirtyWithHRVRepairsTx(ctx, tx, state, append(dates, aliases...), hrvDates, withdrawals); err != nil {
 		log.Printf("remove auto-export [%s,%s]: mark cache dates dirty: %v", from, to, err)
 		return
 	}

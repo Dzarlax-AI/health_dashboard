@@ -14,9 +14,12 @@ func addHDBTContract(m *ContractManifest) {
 	for _, s := range []struct{ tables, columns, key string }{
 		{"hdbt_state", "singleton shadow_enabled read_enabled initialized ready bootstrap_cursor bootstrap_end formula_id source_generation published_at heartbeat_at last_status enrollment_epoch", "singleton"},
 		{"hdbt_decision_inputs", "metric decision_key input_hash captured_at formula_version inputs result", "metric decision_key input_hash"},
-		{"hdbt_i_decisions hdbt_decision_queue", "metric decision_key input_hash", "metric decision_key input_hash"},
+		{"hdbt_i_decisions", "metric decision_key input_hash", "metric decision_key input_hash"},
+		{"hdbt_decision_queue", "metric decision_key input_hash blocked_reason", "metric decision_key input_hash"},
 		{"hdbt_decision_results", "metric decision_key input_hash formula_version result", "metric decision_key input_hash"},
 		{"hdbt_dirty", "date generation", "date"},
+		{"hdbt_daily_withdrawals", "date metric_name generation", "date metric_name"},
+		{"hdbt_i_daily_withdrawals", "date metric_name", "date metric_name"},
 		{"hdbt_step_repairs", "point_date source generation", "point_date source"},
 		{"hdbt_i_repairs", "point_date source", "point_date source"},
 		{"hdbt_hourly_metrics hdbt_w_hourly", hourly, "metric_name hour source"},
@@ -50,6 +53,7 @@ func addHDBTContract(m *ContractManifest) {
 			}
 		}
 	}
+	m.ColumnDefinitions = append(m.ColumnDefinitions, ColumnDefinition{Table: "hdbt_decision_queue", Column: "blocked_reason", DataType: "text", Nullable: true})
 	for _, col := range []string{"shadow_enabled", "read_enabled", "initialized", "ready"} {
 		m.ColumnDefinitions = append(m.ColumnDefinitions, ColumnDefinition{Table: "hdbt_state", Column: col, DataType: "boolean", Default: "false", RequireDefault: true})
 	}

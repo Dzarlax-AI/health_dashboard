@@ -216,8 +216,8 @@ func clientPaths() map[string]any {
 		"Canonical service-derived metric history",
 		[]any{
 			requiredEnumQueryParameter("metric", "Canonical metric name. Missing or unsupported values return 400.", "wake_time"),
-			stringQueryParameter("from", "Start date in YYYY-MM-DD; defaults to 30 days before to."),
-			stringQueryParameter("to", "End date in YYYY-MM-DD; defaults to tenant-local today."),
+			dateQueryParameter("from", "Start date in YYYY-MM-DD; defaults to 30 days before to."),
+			dateQueryParameter("to", "End date in YYYY-MM-DD; defaults to tenant-local today."),
 		},
 		jsonResponseRef("DerivedMetricsResponse"),
 	)
@@ -239,20 +239,20 @@ func clientPaths() map[string]any {
 	sleepBalanceOperation := getOperation(
 		"getSleepDurationBalance",
 		"Transparent fourteen-period sleep-duration accounting relative to a manual goal",
-		[]any{stringQueryParameter("date", "Optional tenant-local balance wake date in YYYY-MM-DD; defaults to today.")},
+		[]any{dateQueryParameter("date", "Optional tenant-local balance wake date in YYYY-MM-DD; defaults to today.")},
 		jsonResponseRef("SleepDurationBalanceResponse"),
 	)
 	sleepBalanceOperation["responses"].(map[string]any)["400"] = jsonErrorResponse("Invalid date.")
 	sleepComparisonOperation := getOperation(
 		"getSleepDurationComparison", "Main-night duration compared with the preceding 30 calendar dates",
-		[]any{stringQueryParameter("date", "Tenant-local wake date in YYYY-MM-DD. Defaults to today.")},
+		[]any{dateQueryParameter("date", "Tenant-local wake date in YYYY-MM-DD. Defaults to today.")},
 		jsonResponseRef("SleepDurationComparisonResponse"),
 	)
 	sleepComparisonOperation["responses"].(map[string]any)["400"] = jsonErrorResponse("Invalid date.")
 	sleepGoalGetOperation := getOperation(
 		"getSleepGoal",
 		"Effective manual sleep-duration goal",
-		[]any{stringQueryParameter("date", "Optional tenant-local date in YYYY-MM-DD; defaults to today.")},
+		[]any{dateQueryParameter("date", "Optional tenant-local date in YYYY-MM-DD; defaults to today.")},
 		jsonResponseRef("SleepGoalResponse"),
 	)
 	sleepGoalGetOperation["responses"].(map[string]any)["400"] = jsonErrorResponse("Invalid date.")
@@ -305,13 +305,13 @@ func clientPaths() map[string]any {
 				"Non-blocking cached AI narrative",
 				[]any{
 					langParameter(),
-					stringQueryParameter("date", "Optional historical date. Past dates are cache-only and never trigger AI generation."),
+					dateQueryParameter("date", "Optional historical date. Past dates are cache-only and never trigger AI generation."),
 				},
 				jsonResponseRef("AIBriefingResponse"),
 			),
 		},
 		"/api/reports/history": map[string]any{
-			"get": getOperation("listReportHistory", "Archived report deliveries", []any{stringQueryParameter("from", "First local date, YYYY-MM-DD."), stringQueryParameter("to", "Last local date, YYYY-MM-DD."), stringQueryParameter("kind", "morning, evening, or proactive."), integerQueryParameter("limit", 20, 1, 100), stringQueryParameter("cursor", "Continuation cursor.")}, jsonResponseRef("ReportHistoryResponse")),
+			"get": getOperation("listReportHistory", "Archived report deliveries", []any{dateQueryParameter("from", "First local date, YYYY-MM-DD."), dateQueryParameter("to", "Last local date, YYYY-MM-DD."), plainStringQueryParameter("kind", "morning, evening, or proactive."), integerQueryParameter("limit", 20, 1, 100), plainStringQueryParameter("cursor", "Continuation cursor.")}, jsonResponseRef("ReportHistoryResponse")),
 		},
 		"/api/settings": map[string]any{
 			"get":  getOperation("getNotificationSettings", "Tenant notification settings and available sleep sources", nil, jsonResponseRef("NotificationSettingsResponse")),
@@ -351,15 +351,15 @@ func clientPaths() map[string]any {
 				"Time-bucketed metric history",
 				[]any{
 					requiredStringQueryParameter("metric", "Canonical metric name."),
-					stringQueryParameter("from", "Start date in YYYY-MM-DD."),
-					stringQueryParameter("to", "End date in YYYY-MM-DD."),
+					dateQueryParameter("from", "Start date in YYYY-MM-DD."),
+					dateQueryParameter("to", "End date in YYYY-MM-DD."),
 					bucket,
 					aggregation,
 					enumQueryParameter("by_source", "0", "0", "1"),
 					quantityView, allRange,
-					stringQueryParameter("date_field", "Catalog calendar dimension used for inclusive from/to filters. Defaults to date."),
-					stringQueryParameter("limit", "Catalog page size from 1 to 256. Defaults to 50."),
-					stringQueryParameter("cursor", "Opaque catalog continuation for the same tenant, metric and date filters. An expired cursor requires restarting pagination."),
+					plainStringQueryParameter("date_field", "Catalog calendar dimension used for inclusive from/to filters. Defaults to date."),
+					plainStringQueryParameter("limit", "Catalog page size from 1 to 256. Defaults to 50."),
+					plainStringQueryParameter("cursor", "Opaque catalog continuation for the same tenant, metric and date filters. An expired cursor requires restarting pagination."),
 				},
 				metricDataResponse,
 			),
@@ -529,26 +529,35 @@ func requiredEnumQueryParameter(name, description string, values ...string) map[
 	return parameter
 }
 
-func stringQueryParameter(name, description string) map[string]any {
+func plainStringQueryParameter(name, description string) map[string]any {
 	return map[string]any{
 		"name":        name,
 		"in":          "query",
 		"required":    false,
 		"description": description,
 		"schema": map[string]any{
-			"type":    "string",
-			"format":  "date",
-			"pattern": `^\d{4}-\d{2}-\d{2}$`,
+			"type": "string",
 		},
 	}
 }
 
 func requiredStringQueryParameter(name, description string) map[string]any {
-	parameter := stringQueryParameter(name, description)
+	parameter := plainStringQueryParameter(name, description)
 	parameter["required"] = true
+	return parameter
+}
+
+func dateQueryParameter(name, description string) map[string]any {
+	parameter := plainStringQueryParameter(name, description)
 	schema := parameter["schema"].(map[string]any)
-	delete(schema, "format")
-	delete(schema, "pattern")
+	schema["format"] = "date"
+	schema["pattern"] = `^\d{4}-\d{2}-\d{2}$`
+	return parameter
+}
+
+func requiredDateQueryParameter(name, description string) map[string]any {
+	parameter := dateQueryParameter(name, description)
+	parameter["required"] = true
 	return parameter
 }
 

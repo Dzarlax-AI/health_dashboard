@@ -7120,8 +7120,6 @@
             "name": "schema",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           }
@@ -7202,8 +7200,6 @@
             "name": "schema",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           }
@@ -7282,8 +7278,6 @@
             "name": "schema",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           }
@@ -7363,8 +7357,6 @@
             "name": "schema",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           }
@@ -7432,8 +7424,6 @@
             "name": "schema",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           }
@@ -7513,8 +7503,6 @@
             "name": "schema",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           }
@@ -7584,8 +7572,6 @@
             "name": "schema",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           }
@@ -7655,8 +7641,6 @@
             "name": "schema",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           }
@@ -7726,8 +7710,6 @@
             "name": "schema",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           }
@@ -7797,6 +7779,8 @@
             "name": "from",
             "required": true,
             "schema": {
+              "format": "date",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           },
@@ -7806,6 +7790,8 @@
             "name": "to",
             "required": true,
             "schema": {
+              "format": "date",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           },
@@ -7815,8 +7801,6 @@
             "name": "sub_score",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           },
@@ -7840,8 +7824,6 @@
             "name": "schema",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           }
@@ -7911,8 +7893,6 @@
             "name": "schema",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           }
@@ -7980,8 +7960,6 @@
             "name": "schema",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           }
@@ -8051,8 +8029,6 @@
             "name": "schema",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           }
@@ -8120,8 +8096,6 @@
             "name": "schema",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           }
@@ -8201,8 +8175,6 @@
             "name": "schema",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           }
@@ -8283,8 +8255,6 @@
             "name": "schema",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           }
@@ -8478,8 +8448,6 @@
             "name": "schema",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           }
@@ -8571,8 +8539,6 @@
             "name": "schema",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           }
@@ -8664,8 +8630,6 @@
             "name": "schema",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           }
@@ -8735,8 +8699,6 @@
             "name": "schema",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           }
@@ -8816,8 +8778,6 @@
             "name": "schema",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           }
@@ -8885,8 +8845,6 @@
             "name": "schema",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           }
@@ -9602,8 +9560,6 @@
             "name": "filename",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           },
@@ -9613,8 +9569,6 @@
             "name": "size",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           },
@@ -9624,8 +9578,6 @@
             "name": "batch",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           },
@@ -9635,8 +9587,6 @@
             "name": "pause",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           }
@@ -9933,8 +9883,6 @@
             "name": "date_field",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           },
@@ -9944,8 +9892,6 @@
             "name": "limit",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           },
@@ -9955,8 +9901,6 @@
             "name": "cursor",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           },
@@ -10388,8 +10332,6 @@
             "name": "kind",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           },
@@ -10410,8 +10352,6 @@
             "name": "cursor",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           }
@@ -11513,8 +11453,6 @@
             "name": "schema",
             "required": false,
             "schema": {
-              "format": "date",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           }

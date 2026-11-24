@@ -90,7 +90,7 @@ func addMaintenanceOperations(paths map[string]any) {
 	// Cross-profile selection is privileged. Only handlers which resolve an
 	// explicit administrator scope receive this parameter.
 	scopedAdmin := func(method, path, id, summary, request, response string, params ...any) map[string]any {
-		selector := stringQueryParameter("schema", "Optional administrator target, validated against the tenant registry. Defaults to the authenticated profile.")
+		selector := plainStringQueryParameter("schema", "Optional administrator target, validated against the tenant registry. Defaults to the authenticated profile.")
 		params = append(params, selector)
 		return admin(method, path, id, summary, request, response, params...)
 	}
@@ -100,10 +100,10 @@ func addMaintenanceOperations(paths map[string]any) {
 	scopedAdmin("post", "/api/webhook-status/retry", "retryWebhookRegistration", "Schedule another webhook registration attempt", "", "WebhookRetryResponse")
 
 	upload := add("post", "/api/import/upload", "uploadHealthExport", "Start a streamed Apple Health import", "", "StatusMessage",
-		stringQueryParameter("filename", "File name hint for detecting XML and ZIP."),
-		stringQueryParameter("size", "Optional client-reported byte count for progress."),
-		stringQueryParameter("batch", "Compatibility parameter for batch size."),
-		stringQueryParameter("pause", "Compatibility parameter for batch pause."))
+		plainStringQueryParameter("filename", "File name hint for detecting XML and ZIP."),
+		plainStringQueryParameter("size", "Optional client-reported byte count for progress."),
+		plainStringQueryParameter("batch", "Compatibility parameter for batch size."),
+		plainStringQueryParameter("pause", "Compatibility parameter for batch pause."))
 	upload["requestBody"] = map[string]any{"required": true, "description": "Raw file contents, up to 2 GiB.", "content": map[string]any{"application/octet-stream": map[string]any{"schema": map[string]any{"type": "string", "format": "binary"}}}}
 	upload["responses"].(map[string]any)["413"] = plainTextResponse("Upload exceeds 2 GiB.")
 	add("get", "/api/import/status", "getImportStatus", "Read progress of the most recent import", "", "ImportStatus")
@@ -133,7 +133,7 @@ func addMaintenanceOperations(paths map[string]any) {
 	scopedAdmin("post", "/api/admin/today-insights/config", "updateTodayInsightsConfig", "Update Today Insights configuration", "TodayInsightsSettingsRequest", "TodayInsightsSettings")
 	scopedAdmin("post", "/api/admin/today-insights/b1-quality-gate", "recordTodayInsightsQualityGate", "Validate the frozen corpus and record its review", "TodayInsightsB1QualityGateRequest", "QualityGateResponse")
 	window := integerQueryParameter("window", 30, 7, 90)
-	asOf := stringQueryParameter("as_of", "Last tenant-local date in YYYY-MM-DD.")
+	asOf := dateQueryParameter("as_of", "Last tenant-local date in YYYY-MM-DD.")
 	scopedAdmin("get", "/api/admin/stress-observability", "getStressObservability", "Read stress signal coverage and diagnostics", "", "StressObservability", window, asOf)
 	scopedAdmin("get", "/api/admin/stress-validation", "getStressValidation", "Read stress validation against check-ins", "", "StressValidation", window, asOf)
 	admin("get", "/api/admin/users", "listUsers", "List profiles with masked API keys", "", "AdminUsersResponse")
@@ -141,7 +141,7 @@ func addMaintenanceOperations(paths map[string]any) {
 	username := map[string]any{"name": "username", "in": "path", "required": true, "schema": map[string]any{"type": "string"}}
 	admin("get", "/api/admin/users/{username}/api-key", "getUserAPIKey", "Read the API key for a profile", "", "AdminUserKey", username)
 	const readiness = "/api/admin/readiness-redesign/"
-	scopedAdmin("post", readiness+"backfill", "backfillReadiness", "Rebuild readiness snapshots over an inclusive date range", "", "ReadinessBackfillResponse", requiredStringQueryParameter("from", "First date in YYYY-MM-DD."), requiredStringQueryParameter("to", "Last date in YYYY-MM-DD."), stringQueryParameter("sub_score", "Sub-score name or all."), force)
+	scopedAdmin("post", readiness+"backfill", "backfillReadiness", "Rebuild readiness snapshots over an inclusive date range", "", "ReadinessBackfillResponse", requiredDateQueryParameter("from", "First date in YYYY-MM-DD."), requiredDateQueryParameter("to", "Last date in YYYY-MM-DD."), plainStringQueryParameter("sub_score", "Sub-score name or all."), force)
 	scopedAdmin("get", readiness+"config", "getReadinessConfig", "Read chronic load calibration thresholds", "", "ChronicLoadSettings")
 	scopedAdmin("post", readiness+"config", "updateReadinessConfig", "Update chronic load calibration thresholds", "ChronicLoadSettingsRequest", "ChronicLoadSettings")
 	scopedAdmin("get", readiness+"chip-calibrations", "listChipCalibrations", "Read readiness chip calibrations", "", "ChipCalibrationResponse")

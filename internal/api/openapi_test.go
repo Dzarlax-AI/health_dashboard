@@ -212,6 +212,71 @@ func TestClientContractModelsColdStartAndDiscriminatedEnergyResponses(t *testing
 	}
 }
 
+func TestQueryParameterSchemasDistinguishDatesFromPlainStrings(t *testing.T) {
+	doc := decodeDocument(t, mustGenerateOpenAPI(t))
+	paths := doc["paths"].(map[string]any)
+
+	checks := []struct {
+		path     string
+		name     string
+		required bool
+		isDate   bool
+	}{
+		{path: "/api/derived-metrics", name: "from", isDate: true},
+		{path: "/api/metrics/data", name: "to", isDate: true},
+		{path: "/api/admin/readiness-redesign/backfill", name: "from", required: true, isDate: true},
+		{path: "/api/admin/stress-validation", name: "as_of", isDate: true},
+		{path: "/api/metrics/data", name: "metric", required: true},
+		{path: "/api/metrics/data", name: "cursor"},
+		{path: "/api/import/upload", name: "filename"},
+		{path: "/api/import/upload", name: "size"},
+	}
+	for _, tc := range checks {
+		op := paths[tc.path].(map[string]any)
+		parameter := findQueryParameter(t, op, tc.name)
+		if got, _ := parameter["required"].(bool); got != tc.required {
+			t.Errorf("%s %s required=%v, want %v", tc.path, tc.name, got, tc.required)
+		}
+		schema := parameter["schema"].(map[string]any)
+		_, hasFormat := schema["format"]
+		_, hasPattern := schema["pattern"]
+		if tc.isDate && (!hasFormat || !hasPattern || schema["format"] != "date") {
+			t.Errorf("%s %s schema=%#v, want date format and pattern", tc.path, tc.name, schema)
+		}
+		if !tc.isDate && (hasFormat || hasPattern) {
+			t.Errorf("%s %s schema=%#v, want unconstrained plain string", tc.path, tc.name, schema)
+		}
+	}
+}
+
+func mustGenerateOpenAPI(t *testing.T) []byte {
+	t.Helper()
+	raw, err := GenerateOpenAPI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func findQueryParameter(t *testing.T, pathItem map[string]any, name string) map[string]any {
+	t.Helper()
+	for _, method := range []string{"get", "put", "post", "delete", "options", "head", "patch", "trace"} {
+		op, ok := pathItem[method].(map[string]any)
+		if !ok {
+			continue
+		}
+		parameters, _ := op["parameters"].([]any)
+		for _, rawParameter := range parameters {
+			parameter := rawParameter.(map[string]any)
+			if parameter["in"] == "query" && parameter["name"] == name {
+				return parameter
+			}
+		}
+	}
+	t.Fatalf("query parameter %q not found", name)
+	return nil
+}
+
 func TestCompatibleResponseContractRejectsBreakingChanges(t *testing.T) {
 	tests := []struct {
 		name       string

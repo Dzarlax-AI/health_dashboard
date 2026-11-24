@@ -4,6 +4,16 @@
 {% if execute and not is_incremental() %}
     {% set previous_daily = adapter.get_relation(database=this.database,schema=this.schema,identifier=this.identifier) %}
 {% endif %}
+{% set prior_metric = {
+    'hrv_avg': ['heart_rate_variability'],
+    'rhr_avg': ['resting_heart_rate'],
+    'sleep_total': ['sleep_total','sleep_deep','sleep_rem','sleep_core','sleep_awake','sleep_unspecified'],
+    'calories': ['active_energy'],
+    'exercise_min': ['apple_exercise_time'],
+    'spo2_avg': ['blood_oxygen_saturation','oxygen_saturation'],
+    'vo2_avg': ['vo2_max'],
+    'resp_avg': ['respiratory_rate']
+} %}
 
 WITH days AS (
     SELECT date FROM {{ source('source_data', 'calendar') }} c
@@ -36,7 +46,26 @@ daily_picks as (
 select r.date,{{ daily_retained_values('r', 'prior', 'changed.date is not null') }}
 from candidates r left join changes changed on changed.date=r.date
 {% if is_incremental() %}
+{% if var('tenant_aggregate_worker', false) %}
+LEFT JOIN (
+    select previous.date,previous.steps,
+    {% for column, metrics in prior_metric.items() %}
+    case when not coalesce(withdrawals.metrics && array['{{ metrics | join("','") }}']::text[],false)
+        then previous.{{ column }} end as {{ column }},
+    {% endfor %}
+    {% for column in ['sleep_deep','sleep_rem','sleep_core','sleep_awake','sleep_unspecified'] %}
+    case when not coalesce(withdrawals.metrics && array['{{ prior_metric['sleep_total'] | join("','") }}']::text[],false)
+        then previous.{{ column }} end as {{ column }}{% if not loop.last %},{% endif %}
+    {% endfor %}
+    from {{ this }} previous left join (
+        select date,array_agg(metric_name) as metrics
+        from {{ source('source_data','hdbt_i_daily_withdrawals') }}
+        group by date
+    ) withdrawals on withdrawals.date=previous.date
+) prior ON prior.date=r.date
+{% else %}
 LEFT JOIN {{ this }} prior ON prior.date = r.date
+{% endif %}
 {% else %}
 LEFT JOIN (SELECT {% if previous_daily is not none %}date{% else %}NULL::text{% endif %} AS date, NULL::real AS hrv_avg, NULL::real AS rhr_avg,
   NULL::real AS sleep_total, NULL::real AS sleep_deep, NULL::real AS sleep_rem,

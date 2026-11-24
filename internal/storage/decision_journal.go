@@ -24,9 +24,12 @@ const decisionPublishedReadPredicate = `exists (
     where f.key='` + SettingDecisionResultReads + `' and f.value='true'
       and s.singleton and s.shadow_enabled
       and not exists (
-        select from unnest(array['settings','hdbt_state','hdbt_decision_results']) rel
+        select from unnest(array['settings','hdbt_state','hdbt_decision_results','hdbt_decision_queue']) rel
         where to_regclass(format('%I.%I',current_schema(),rel)) is distinct from to_regclass(rel)
       )
+) and not exists (
+    select from hdbt_decision_queue q where q.blocked_reason is not null
+      and (q.metric,q.decision_key,q.input_hash)=(r.metric,r.decision_key,r.input_hash)
 )`
 
 // Only an enabled writer pays for JSON packaging. One flag lookup covers

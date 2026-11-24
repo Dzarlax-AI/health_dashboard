@@ -518,12 +518,12 @@ func (s *DB) insertPointsWithCacheDates(recordID int64, points []MetricPoint) ([
 	if err != nil {
 		return nil, err
 	}
-	aliases, err := insertPointsAndAliasDatesTx(ctx, tx, recordID, points, s.pointOrdering())
+	aliases, repairs, err := insertPointsAndAliasDatesTx(ctx, tx, recordID, points, s.pointOrdering())
 	if err != nil {
 		return nil, err
 	}
 	dates := uniqueStepDates(append(cacheDatesFromPoints(points), aliases...))
-	if err = s.recordCacheDirtyWithHRVRepairsTx(ctx, tx, state, dates, nil); err != nil {
+	if err = s.recordCacheDirtyWithHRVRepairsTx(ctx, tx, state, dates, repairs.hrvDates, repairs.withdrawals...); err != nil {
 		return nil, err
 	}
 	if err = refreshStepAliasDates(ctx, tx, aliases); err != nil {

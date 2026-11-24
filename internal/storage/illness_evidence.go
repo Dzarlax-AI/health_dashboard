@@ -20,10 +20,12 @@ func (s *DB) BuildIllnessEvidenceInput(date string, checkin *health.SubjectiveCh
 
 func (s *DB) buildIllnessEvidenceInput(date string, checkin *health.SubjectiveCheckinSummary, sleep *health.MetricEvidenceInput) health.IllnessEvidenceInput {
 	loc := s.reportTZLocation()
+	resp := s.respiratoryEvidence(date, loc)
+	personalRHR := s.channelMetricEvidence(date, ChannelHROvernight, "resting_heart_rate", "bpm", loc)
 	in := health.IllnessEvidenceInput{
 		Date:               date,
-		RespiratoryRate:    s.respiratoryEvidence(date, loc),
-		RHR:                s.rhrEvidence(date, loc),
+		RespiratoryRate:    resp,
+		RHR:                s.rhrEvidence(date, personalRHR),
 		HRV:                s.channelMetricEvidence(date, ChannelHRV, "heart_rate_variability", "ms", loc),
 		WristTempDeviation: s.channelMetricEvidence(date, ChannelTemp, "wrist_temperature", "degC", loc),
 		SubjectiveCheckin:  checkin,
@@ -36,7 +38,7 @@ func (s *DB) buildIllnessEvidenceInput(date string, checkin *health.SubjectiveCh
 	in.SustainedHRLoad = s.sustainedHRLoadEvidence(date)
 	in.SpO2LowCluster = s.spO2ClusterEvidence(date)
 	in.StressFlags = s.stressFlagsForDate(date)
-	in.ObjectivePatternDays = s.objectiveIllnessPatternDays(date)
+	in.ObjectivePatternDays = s.objectiveIllnessPatternDays(in, personalRHR, loc)
 	in.AutonomicPatternDays = s.autonomicLoadPatternDays(date)
 	return in
 }
@@ -51,8 +53,7 @@ func (s *DB) respiratoryEvidence(date string, loc *time.Location) *health.Metric
 	return channel
 }
 
-func (s *DB) rhrEvidence(date string, loc *time.Location) *health.MetricEvidenceInput {
-	channel := s.channelMetricEvidence(date, ChannelHROvernight, "resting_heart_rate", "bpm", loc)
+func (s *DB) rhrEvidence(date string, channel *health.MetricEvidenceInput) *health.MetricEvidenceInput {
 	daily := s.dailyScoreMetricEvidence(date, "resting_heart_rate", "rhr_avg", "bpm")
 	if strongerEvidence(daily, channel, true) {
 		if strings.Contains(daily.Method, "metric_points") {
@@ -260,11 +261,22 @@ func (s *DB) activityContextForDate(date string) string {
 	return "normal"
 }
 
-func (s *DB) objectiveIllnessPatternDays(date string) int {
+func (s *DB) objectiveIllnessPatternDays(current health.IllnessEvidenceInput, personalRHR *health.MetricEvidenceInput, loc *time.Location) int {
 	days := 0
-	for i := 0; i < 3; i++ {
-		d := subtractDays(date, i)
-		if s.hasObjectiveIllnessPattern(d) {
+	// The current day uses the same already-read observations. Objective
+	// support uses the personal RHR channel, even when stronger daily RHR
+	// evidence is displayed in the briefing.
+	if hasObjectiveIllnessPattern(current.RespiratoryRate, current.SpO2Average, personalRHR, current.HRV, current.WristTempDeviation) {
+		days++
+	}
+	for i := 1; i < 3; i++ {
+		date := subtractDays(current.Date, i)
+		resp := s.respiratoryEvidence(date, loc)
+		spo2 := s.dailyScoreMetricEvidence(date, "blood_oxygen_saturation", "spo2_avg", "%")
+		rhr := s.channelMetricEvidence(date, ChannelHROvernight, "resting_heart_rate", "bpm", loc)
+		hrv := s.channelMetricEvidence(date, ChannelHRV, "heart_rate_variability", "ms", loc)
+		temp := s.channelMetricEvidence(date, ChannelTemp, "wrist_temperature", "degC", loc)
+		if hasObjectiveIllnessPattern(resp, spo2, rhr, hrv, temp) {
 			days++
 		}
 	}
@@ -287,14 +299,7 @@ func (s *DB) autonomicLoadPatternDays(date string) int {
 	return days
 }
 
-func (s *DB) hasObjectiveIllnessPattern(date string) bool {
-	loc := s.reportTZLocation()
-	resp := s.respiratoryEvidence(date, loc)
-	spo2 := s.dailyScoreMetricEvidence(date, "blood_oxygen_saturation", "spo2_avg", "%")
-	rhr := s.channelMetricEvidence(date, ChannelHROvernight, "resting_heart_rate", "bpm", loc)
-	hrv := s.channelMetricEvidence(date, ChannelHRV, "heart_rate_variability", "ms", loc)
-	temp := s.channelMetricEvidence(date, ChannelTemp, "wrist_temperature", "degC", loc)
-
+func hasObjectiveIllnessPattern(resp, spo2, rhr, hrv, temp *health.MetricEvidenceInput) bool {
 	primary := metricHigh(resp, 1.5) || metricLow(spo2, -1.5) || spO2Drop(spo2, 0.7)
 	support := metricHigh(rhr, 1.0) || metricLow(hrv, -1.0) || metricHigh(temp, 1.0)
 	return primary && support

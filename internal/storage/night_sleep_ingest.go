@@ -109,7 +109,7 @@ func (s *DB) InsertAcceptedPointsWithDates(recordID int64, points []MetricPoint,
 			extraDates = append(extraDates, displacedDate)
 		}
 	}
-	aliases, err := insertPointsAndAliasDatesTx(ctx, tx, recordID, ordinary, s.pointOrdering())
+	aliases, repairs, err := insertPointsAndAliasDatesTx(ctx, tx, recordID, ordinary, s.pointOrdering())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -118,7 +118,7 @@ func (s *DB) InsertAcceptedPointsWithDates(recordID int64, points []MetricPoint,
 	}
 	dates := uniqueStepDates(append(append(cacheDatesFromPoints(accepted), extraDates...), aliases...))
 	if len(dates) > 0 {
-		if err = s.recordCacheDirtyWithHRVRepairsTx(ctx, tx, cacheState, dates, nil); err != nil {
+		if err = s.recordCacheDirtyWithHRVRepairsTx(ctx, tx, cacheState, dates, repairs.hrvDates, repairs.withdrawals...); err != nil {
 			return nil, nil, err
 		}
 	}
