@@ -21,7 +21,15 @@ func (s *DB) stepChart(from, to, bucket string) ([]DataPoint, error) {
 	query := "WITH selected AS (" + physicalStepHoursSQL(pointScope, "hourly_metrics", hourScope) + `)
 		SELECT ` + period + ` AS period,sum(avg_val::float8),min(min_val),max(max_val)
 		FROM selected GROUP BY period ORDER BY period`
-	rows, err := s.pool.Query(ctx, query, from, to)
+	args := []any{from, to}
+	if bucket == "day" {
+		// TODO(remove-after-ios-step-quantity): Once supported iOS installations
+		// request view=quantity and telemetry confirms full daily step reads
+		// have subsided, recheck their latency before removing this override.
+		// An unnamed statement lets PostgreSQL plan for the actual date bounds.
+		args = append([]any{pgx.QueryExecModeExec}, args...)
+	}
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
