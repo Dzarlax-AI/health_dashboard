@@ -62,7 +62,7 @@ def native_catalog_vars(schema):
     for model in ("recorded_feature_decision_v1", "native_feature_replay_v1"):
         groups.append(dict(archive_features, model=model, keys=[*archive_features["keys"], "revision"]))
     wake = next(group for group in groups if group["model"] == "archived_wake_time_v1")
-    groups.append(dict(wake, model="wake_confirmation_v1", keys=["profile", "capture"],
+    groups.append(dict(wake, model="wake_confirmation_v1", keys=["metric_date", "revision"],
                        fields=[dict(wake["fields"][0], column="candidate_wake")],
                        metadata={"observed_at": "candidate_wake", "available_at": "decision_at", "version": "inputs_hash"}))
     result["profile_graph_models"] = groups

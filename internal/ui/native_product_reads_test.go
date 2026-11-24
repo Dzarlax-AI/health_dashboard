@@ -115,7 +115,8 @@ func TestInstalledNativeProductReads(t *testing.T) {
 	on d.metric_name='wake_time' and d.metric_date='2026-10-22' and (c.value#>>'{}')::timestamptz=d.value_timestamp
 	where c.metric_id='wake_time' and c.source='wake_confirmation_v1' and exists(
 	select from hdbt_decision_inputs r where r.input_hash=c.sample_key->>'revision' and r.metric='wake_confirmation'
-	  and (r.result->>'candidate_wake')::timestamptz>d.value_timestamp))`).Scan(&exact); err != nil || !exact {
+	  and (r.result->>'candidate_wake')::timestamptz=d.value_timestamp
+	  and d.value_timestamp=timestamptz '2026-10-22 06:05:59.999656 UTC'))`).Scan(&exact); err != nil || !exact {
 		t.Fatalf("fractional wake timestamp lost storage precision: %v", err)
 	}
 	// Canary values in the disposable projection prove that the real GET uses the selected relation.

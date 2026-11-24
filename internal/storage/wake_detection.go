@@ -266,10 +266,11 @@ func (s *DB) loadWakeCandidateContext(ctx context.Context, localDate string, loc
 
 func queryWakeCandidateSQL(ctx context.Context, queryer wakeQueryer, localDate string, loc *time.Location, preferred string, inputs []wakeInputSegment) (wakeCandidate, bool, error) {
 	cases := `select current_user::text as profile,$1::text as capture,$2::date as target_day,$3::text as zone,$4::text as preferred_source`
-	segments := `select current_user::text as profile,$1::text as capture,s.metric,s.start_at,s.hours,s.source,s.quality,s.received_at,s.start_at+s.hours*interval '1 hour' as ends_at from jsonb_to_recordset($5::jsonb) as s(metric text,start_at timestamptz,hours float8,source text,quality text,received_at timestamptz)`
+	segments := `select current_user::text as profile,$1::text as capture,s.metric,s.start_at,s.hours,s.source,s.quality,s.received_at,s.ends_at from jsonb_to_recordset($5::jsonb) as s(metric text,start_at timestamptz,hours float8,source text,quality text,received_at timestamptz,ends_at timestamptz)`
 	type candidateSQLSegment struct {
 		Metric     string    `json:"metric"`
 		Start      time.Time `json:"start_at"`
+		End        time.Time `json:"ends_at"`
 		Hours      float64   `json:"hours"`
 		Source     string    `json:"source"`
 		Quality    string    `json:"quality"`
@@ -277,7 +278,7 @@ func queryWakeCandidateSQL(ctx context.Context, queryer wakeQueryer, localDate s
 	}
 	rowsInput := make([]candidateSQLSegment, len(inputs))
 	for i, segment := range inputs {
-		rowsInput[i] = candidateSQLSegment{segment.Metric, segment.Start, segment.Hours, segment.Source, segment.Quality, segment.ReceivedAt}
+		rowsInput[i] = candidateSQLSegment{segment.Metric, segment.Start, segment.Start.Add(time.Duration(segment.Hours * float64(time.Hour))).Truncate(time.Microsecond), segment.Hours, segment.Source, segment.Quality, segment.ReceivedAt}
 	}
 	encoded, err := json.Marshal(rowsInput)
 	if err != nil {
