@@ -22,11 +22,11 @@ func TestSchemaContractManifestIsDeterministic(t *testing.T) {
 	if !regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(first) {
 		t.Fatalf("schema contract checksum is not lowercase SHA-256: %q", first)
 	}
-	if want := "ff23a6d755e1ec4824de1522c1fbe8053e4e52fec8eac64031adb0ab3149c731"; first != want {
+	if want := "22ae0dfda37d697610e9977b18421621ef7330864ce811bb46fb12753da6332d"; first != want {
 		t.Fatalf("schema contract checksum = %q, want %q; bump SchemaContractVersion when intentionally changing the manifest", first, want)
 	}
-	if SchemaContractVersion != 18 {
-		t.Fatalf("schema contract version = %d, want 18", SchemaContractVersion)
+	if SchemaContractVersion != 19 {
+		t.Fatalf("schema contract version = %d, want 19", SchemaContractVersion)
 	}
 }
 

@@ -86,7 +86,7 @@ func (s *DB) getObservedEnergyHistory(ctx context.Context, tz string, hours int,
 	since := now.Add(-time.Duration(hours) * time.Hour)
 	rows, err := s.pool.Query(ctx, `
 		SELECT ts_bucket, bank, drain_delta, restore_delta, formula_version, flags, components
-		FROM energy_snapshots
+		FROM `+s.productArchiveRelation(ctx, "energy_snapshots", "tenant_native_energy_snapshot_v1")+`
 		WHERE ts_bucket >= $1
 		ORDER BY ts_bucket ASC`, since)
 	if err != nil {

@@ -2,6 +2,33 @@ package api
 
 import "health-receiver/internal/storage"
 
+type MetricCatalogItem struct {
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+	Units       string `json:"units"`
+	Count       int    `json:"count"`
+	Min         string `json:"min"`
+	Max         string `json:"max"`
+}
+
+type SectionCatalogueEntry struct {
+	Key      string `json:"key"`
+	Title    string `json:"title"`
+	Subtitle string `json:"subtitle"`
+	Icon     string `json:"icon"`
+}
+
+type SectionsResponse struct {
+	Sections []SectionCatalogueEntry `json:"sections"`
+}
+
+type MetricQuantityResponse struct {
+	Metric string                        `json:"metric"`
+	Bucket string                        `json:"bucket"`
+	Agg    string                        `json:"agg"`
+	Points []storage.MetricQuantityPoint `json:"points"`
+}
+
 type MetricDataResponse struct {
 	Metric         string                     `json:"metric"`
 	Bucket         string                     `json:"bucket"`

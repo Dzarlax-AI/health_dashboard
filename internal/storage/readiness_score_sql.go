@@ -56,9 +56,43 @@ func (s *DB) readReadinessScores(ctx context.Context, reader string, inputs []re
 	if err != nil {
 		return nil, err
 	}
+	if s.profileGraphSchema == "" {
+		if published, ok := s.publishedReadinessScores(ctx, reader, payload, len(inputs)); ok {
+			return published, nil
+		}
+	}
 	return withDecisionJournal(ctx, s, func(db *DB, journal bool) ([]health.ReadinessProjection, error) {
 		return db.evaluateReadinessScores(ctx, reader, inputs, payload, journal)
 	})
+}
+
+// A history request uses one snapshot for the entire batch. An absent receipt,
+// including a late input revision, keeps the ordinary evaluator on the same request.
+func (s *DB) publishedReadinessScores(ctx context.Context, reader string, payload []byte, count int) ([]health.ReadinessProjection, bool) {
+	const query = `select (r.result->>'RawScore')::int,(r.result->>'DisplayScore')::int,
+        r.result->>'Confidence',r.result->>'CapReason' from jsonb_array_elements($1::jsonb) with ordinality e(input,ord)
+        join hdbt_decision_results r on r.metric='readiness'
+          and r.decision_key=$2||'/'||(e.input->>'Date') and r.formula_version=$3::integer
+          and r.input_hash=encode(sha256(convert_to(jsonb_build_array($3::integer,
+              jsonb_build_object('reader',$2::text,'effective',e.input))::text,'UTF8')),'hex')
+        where ` + decisionPublishedReadPredicate + ` order by e.ord`
+	scores, found, err := withPublishedDecision(ctx, s, func(db *DB) ([]health.ReadinessProjection, bool, error) {
+		rows, err := db.pool.Query(ctx, query, json.RawMessage(payload), reader, ScoreVersion)
+		if err != nil {
+			return nil, false, err
+		}
+		defer rows.Close()
+		var scores []health.ReadinessProjection
+		for rows.Next() {
+			var score health.ReadinessProjection
+			if err := rows.Scan(&score.RawScore, &score.DisplayScore, &score.Confidence, &score.CapReason); err != nil {
+				return nil, false, err
+			}
+			scores = append(scores, score)
+		}
+		return scores, len(scores) == count, rows.Err()
+	})
+	return scores, found && err == nil
 }
 
 func (s *DB) evaluateReadinessScores(ctx context.Context, reader string, inputs []readinessScoreInput, payload []byte, journal bool) ([]health.ReadinessProjection, error) {

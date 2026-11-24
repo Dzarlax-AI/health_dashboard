@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"health-receiver/experiments/dbt_metrics"
 	"health-receiver/internal/health"
 
 	"github.com/jackc/pgx/v5"
@@ -223,7 +224,7 @@ func (s *DB) GetEffectiveSleepGoal(ctx context.Context, date string) (*health.Sl
 	var goal health.SleepGoal
 	err := s.pool.QueryRow(ctx, `
 		SELECT effective_date,goal_hours,version
-		  FROM sleep_goal WHERE effective_date <= $1
+		  FROM `+s.productArchiveRelation(ctx, "sleep_goal", "tenant_native_sleep_goal_v1")+` WHERE effective_date <= $1
 		 ORDER BY effective_date DESC LIMIT 1`, date).Scan(&goal.EffectiveDate, &goal.Hours, &goal.Version)
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -245,6 +246,29 @@ func (s *DB) ReconcileSleepDurationBalance(ctx context.Context, wakeDate string,
 }
 
 func (s *DB) reconcileSleepDurationBalance(ctx context.Context, wakeDate string, now time.Time, persist bool) (health.SleepDurationBalance, error) {
+	if _, nested := s.pool.(*cacheTransaction); nested {
+		return s.reconcileSleepDurationBalanceInUnit(ctx, wakeDate, now, persist)
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+	if err != nil {
+		return health.SleepDurationBalance{}, err
+	}
+	defer tx.Rollback(ctx)
+	unit := &DB{pool: &cacheTransaction{Tx: tx, ctx: ctx}, profileGraphSchema: s.profileGraphSchema}
+	result, err := unit.reconcileSleepDurationBalanceInUnit(ctx, wakeDate, now, persist)
+	if err != nil {
+		return health.SleepDurationBalance{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return health.SleepDurationBalance{}, err
+	}
+	return result, nil
+}
+
+// reconcileSleepDurationBalanceInUnit reads all inputs and writes the derived
+// snapshot on one repeatable-read transaction, so a late period replacement
+// cannot produce a snapshot assembled from mixed input generations.
+func (s *DB) reconcileSleepDurationBalanceInUnit(ctx context.Context, wakeDate string, now time.Time, persist bool) (health.SleepDurationBalance, error) {
 	loc := s.reportTZLocation()
 	endDay, err := time.ParseInLocation("2006-01-02", wakeDate, loc)
 	if err != nil {
@@ -263,14 +287,77 @@ func (s *DB) reconcileSleepDurationBalance(ctx context.Context, wakeDate string,
 	if err != nil {
 		return health.SleepDurationBalance{}, err
 	}
-	result, err := health.CalculateSleepDurationBalance(wakeDate, goals, coverage, episodes, loc)
+	result, err := calculateSleepDurationBalanceSQL(ctx, s, wakeDate, goals, coverage, episodes, loc)
 	if err != nil {
 		return health.SleepDurationBalance{}, err
 	}
 	if persist {
-		if err := s.saveSleepDurationBalanceSnapshot(ctx, result, goals, coverage, episodes, now); err != nil {
+		if err := s.saveSleepDurationBalanceSnapshot(ctx, result, goals, coverage, episodes, loc, now); err != nil {
 			return health.SleepDurationBalance{}, err
 		}
+	}
+	return result, nil
+}
+
+func calculateSleepDurationBalanceSQL(ctx context.Context, db *DB, wakeDate string, goals []health.SleepGoal, coverage []health.SleepBalanceCoverage, episodes []health.CompletedSleepEpisode, loc *time.Location) (health.SleepDurationBalance, error) {
+	if goals == nil {
+		goals = []health.SleepGoal{}
+	}
+	if coverage == nil {
+		coverage = []health.SleepBalanceCoverage{}
+	}
+	if episodes == nil {
+		episodes = []health.CompletedSleepEpisode{}
+	}
+	inputs, err := json.Marshal(map[string]any{
+		"wake_date": wakeDate, "zone": loc.String(), "goals": goals,
+		"coverage": coverage, "episodes": episodes,
+	})
+	if err != nil {
+		return health.SleepDurationBalance{}, err
+	}
+	periodSQL := dbtmetrics.SleepBalancePeriodSQL("balance_capture", "balance_goal", "balance_coverage", "balance_episode")
+	windowSQL := dbtmetrics.SleepBalanceWindowSQL("balance_periods")
+	query := `with input as (select $1::jsonb as inputs),
+	balance_capture as (
+	  select 1::integer as profile,'display'::text as capture,(inputs->>'wake_date')::date as wake_date,
+	         inputs->>'zone' as zone,inputs from input
+	), balance_goal as (
+	  select c.profile,c.capture,g."EffectiveDate" as effective_date,g."Hours" as hours from balance_capture c
+	  cross join lateral jsonb_to_recordset(c.inputs->'goals') g("EffectiveDate" date,"Hours" float8)
+	), balance_coverage as (
+	  select c.profile,c.capture,k."WakeDate" as period_day,k."CaptureState" as state from balance_capture c
+	  cross join lateral jsonb_to_recordset(c.inputs->'coverage') k("WakeDate" date,"CaptureState" text)
+	), balance_episode as (
+	  select c.profile,c.capture,e."ID" as id,e."Start" as start_at,e."End" as end_at,
+	         e."DurationAssessment" as assessment from balance_capture c
+	  cross join lateral jsonb_to_recordset(c.inputs->'episodes') e("ID" text,"Start" timestamptz,"End" timestamptz,"DurationAssessment" text)
+	), balance_periods as (` + periodSQL + `), balance_window as (` + windowSQL + `)
+	select w.wake_date::text,w.window_start_date::text,w.calculated_through,w.state,w.confidence,
+	       coalesce(w.incomplete_reason,''),coalesce(w.last_complete_date::text,''),w.balance_hours,
+	       coalesce((select jsonb_agg(jsonb_build_object(
+	          'WakeDate',p.period_day::text,'Start',p.starts_at,'End',p.ends_at,
+	          'GoalHours',p.goal_hours,'TotalSleepHours',p.total_hours,'DeltaHours',p.total_hours-p.goal_hours,
+	          'CaptureState',p.coverage,'DurationAssessment',p.assessment) order by p.period_day)
+	          from balance_periods p where p.reason is null and p.period_day<=w.last_complete_date),'[]'::jsonb)
+	  from balance_window w`
+	var result health.SleepDurationBalance
+	var periods []byte
+	if err := db.pool.QueryRow(ctx, query, json.RawMessage(inputs)).Scan(
+		&result.WakeDate, &result.WindowStartDate, &result.CalculatedThrough, &result.State,
+		&result.Confidence, &result.IncompleteReason, &result.LastCompleteDate, &result.BalanceHours, &periods,
+	); err != nil {
+		return health.SleepDurationBalance{}, err
+	}
+	if err := json.Unmarshal(periods, &result.Periods); err != nil {
+		return health.SleepDurationBalance{}, fmt.Errorf("decode sleep balance periods: %w", err)
+	}
+	// PostgreSQL returns absolute instants; retain the previous public contract
+	// by presenting the tenant-local wall clock and zone on the response.
+	result.CalculatedThrough = result.CalculatedThrough.In(loc)
+	for i := range result.Periods {
+		result.Periods[i].Start = result.Periods[i].Start.In(loc)
+		result.Periods[i].End = result.Periods[i].End.In(loc)
 	}
 	return result, nil
 }
@@ -345,11 +432,11 @@ func (s *DB) listCompletedSleepEpisodes(ctx context.Context, from, through strin
 	return episodes, rows.Err()
 }
 
-func (s *DB) saveSleepDurationBalanceSnapshot(ctx context.Context, result health.SleepDurationBalance, goals []health.SleepGoal, coverage []health.SleepBalanceCoverage, episodes []health.CompletedSleepEpisode, now time.Time) error {
+func (s *DB) saveSleepDurationBalanceSnapshot(ctx context.Context, result health.SleepDurationBalance, goals []health.SleepGoal, coverage []health.SleepBalanceCoverage, episodes []health.CompletedSleepEpisode, loc *time.Location, now time.Time) error {
 	if now.IsZero() {
 		return fmt.Errorf("sleep duration balance requires a calculation timestamp")
 	}
-	inputHash, err := sleepDurationBalanceInputHash(goals, coverage, episodes)
+	inputHash, err := sleepDurationBalanceInputHash(loc, goals, coverage, episodes)
 	if err != nil {
 		return err
 	}
@@ -357,7 +444,25 @@ func (s *DB) saveSleepDurationBalanceSnapshot(ctx context.Context, result health
 	if err != nil {
 		return fmt.Errorf("marshal sleep duration balance periods: %w", err)
 	}
-	_, err = s.pool.Exec(ctx, `
+	_, err = withDecisionJournal(ctx, s, func(db *DB, journal bool) (struct{}, error) {
+		args := []any{result.WakeDate, result.WindowStartDate, result.CalculatedThrough, result.State, result.Confidence,
+			result.IncompleteReason, result.LastCompleteDate, result.BalanceHours, json.RawMessage(periods), inputHash, SleepDurationBalanceAlgorithmVersion, now.UTC()}
+		sql := ""
+		if journal {
+			packet, err := json.Marshal(map[string]any{"wake_date": result.WakeDate, "zone": loc.String(), "goals": goals,
+				"coverage": coverage, "episodes": episodes})
+			if err != nil {
+				return struct{}{}, err
+			}
+			observed, err := json.Marshal(result)
+			if err != nil {
+				return struct{}{}, err
+			}
+			args = append(args, json.RawMessage(packet), json.RawMessage(observed))
+			sql = `with decision_packets as (select 'sleep_balance'::text as metric,$1::text as decision_key,
+            1 as formula_version,$13::jsonb as inputs,$14::jsonb as result)` + decisionJournalInsertSQL
+		}
+		_, err := db.pool.Exec(ctx, sql+`
 		INSERT INTO sleep_duration_balance_snapshot(
 			wake_date,window_start_date,calculated_through,state,confidence,incomplete_reason,
 			last_complete_date,balance_hours,periods,input_hash,algorithm_version,calculated_at
@@ -375,10 +480,10 @@ func (s *DB) saveSleepDurationBalanceSnapshot(ctx context.Context, result health
 			algorithm_version=excluded.algorithm_version,
 			calculated_at=excluded.calculated_at
 		WHERE sleep_duration_balance_snapshot.input_hash IS DISTINCT FROM excluded.input_hash
-			OR sleep_duration_balance_snapshot.algorithm_version IS DISTINCT FROM excluded.algorithm_version`,
-		result.WakeDate, result.WindowStartDate, result.CalculatedThrough, result.State, result.Confidence,
-		result.IncompleteReason, result.LastCompleteDate, result.BalanceHours, json.RawMessage(periods), inputHash,
-		SleepDurationBalanceAlgorithmVersion, now.UTC())
+			OR sleep_duration_balance_snapshot.algorithm_version IS DISTINCT FROM excluded.algorithm_version
+            OR sleep_duration_balance_snapshot.calculated_through IS DISTINCT FROM excluded.calculated_through`, args...)
+		return struct{}{}, err
+	})
 	return err
 }
 
@@ -462,7 +567,7 @@ func validateSleepGoalsForStorage(goals []health.SleepGoal) error {
 	return nil
 }
 
-func sleepDurationBalanceInputHash(goals []health.SleepGoal, coverage []health.SleepBalanceCoverage, episodes []health.CompletedSleepEpisode) (string, error) {
+func sleepDurationBalanceInputHash(loc *time.Location, goals []health.SleepGoal, coverage []health.SleepBalanceCoverage, episodes []health.CompletedSleepEpisode) (string, error) {
 	orderedGoals := append([]health.SleepGoal(nil), goals...)
 	orderedCoverage := append([]health.SleepBalanceCoverage(nil), coverage...)
 	orderedEpisodes := append([]health.CompletedSleepEpisode(nil), episodes...)
@@ -470,11 +575,12 @@ func sleepDurationBalanceInputHash(goals []health.SleepGoal, coverage []health.S
 	sort.Slice(orderedCoverage, func(i, j int) bool { return orderedCoverage[i].WakeDate < orderedCoverage[j].WakeDate })
 	sort.Slice(orderedEpisodes, func(i, j int) bool { return orderedEpisodes[i].ID < orderedEpisodes[j].ID })
 	payload, err := json.Marshal(struct {
+		Zone     string
 		Goals    []health.SleepGoal
 		Coverage []health.SleepBalanceCoverage
 		Episodes []health.CompletedSleepEpisode
 		Version  string
-	}{orderedGoals, orderedCoverage, orderedEpisodes, SleepDurationBalanceAlgorithmVersion})
+	}{loc.String(), orderedGoals, orderedCoverage, orderedEpisodes, SleepDurationBalanceAlgorithmVersion})
 	if err != nil {
 		return "", err
 	}

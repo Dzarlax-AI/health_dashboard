@@ -89,16 +89,8 @@ func registerMetricTools(s *server.MCPServer, _ DBResolver) {
 		from := req.GetString("from", "")
 		to := req.GetString("to", "")
 		bucket := req.GetString("bucket", "day")
-		aggFunc := req.GetString("agg", "")
-		if aggFunc == "" {
-			if storage.UsesCurrentMetricSum(metric) {
-				aggFunc = "SUM"
-			} else {
-				aggFunc = "AVG"
-			}
-		}
-		aggFunc = storage.CurrentMetricAggregation(metric, aggFunc)
-		points, err := ctxdb.FromContext(ctx).MetricDataForContract(metric, from, to+" 23:59:59", bucket, aggFunc, false)
+		aggFunc := storage.CurrentMetricAggregation(metric, req.GetString("agg", ""))
+		points, err := ctxdb.FromContext(ctx).MetricDataForContractContext(ctx, metric, from, to+" 23:59:59", bucket, aggFunc, false)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -153,7 +145,7 @@ func registerAnalysisTools(s *server.MCPServer, _ DBResolver) {
 		// Use GetMetricData (day bucket) which handles multi-device dedup
 		// correctly for SUM metrics, then aggregate daily values.
 		queryPeriod := func(from, to string) (periodStats, error) {
-			points, err := ctxdb.FromContext(ctx).MetricDataForContract(metric, from, to+" 23:59:59", "day", agg, false)
+			points, err := ctxdb.FromContext(ctx).MetricDataForContractContext(ctx, metric, from, to+" 23:59:59", "day", agg, false)
 			if err != nil {
 				return periodStats{From: from, To: to}, err
 			}
@@ -232,7 +224,7 @@ func registerAnalysisTools(s *server.MCPServer, _ DBResolver) {
 		if storage.UsesCurrentMetricSum(metric) {
 			agg = "SUM"
 		}
-		points, err := ctxdb.FromContext(ctx).MetricDataForContract(metric, from, to+" 23:59:59", "day", agg, false)
+		points, err := ctxdb.FromContext(ctx).MetricDataForContractContext(ctx, metric, from, to+" 23:59:59", "day", agg, false)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -302,7 +294,7 @@ func registerAnalysisTools(s *server.MCPServer, _ DBResolver) {
 			}
 			// Use GetMetricData which handles multi-device dedup,
 			// then aggregate daily values into weeks in Go.
-			points, err := ctxdb.FromContext(ctx).MetricDataForContract(metric, from, to+" 23:59:59", "day", agg, false)
+			points, err := ctxdb.FromContext(ctx).MetricDataForContractContext(ctx, metric, from, to+" 23:59:59", "day", agg, false)
 			if err != nil {
 				return mcp.NewToolResultError(fmt.Sprintf("%s: %v", metric, err)), nil
 			}
@@ -386,7 +378,7 @@ func registerAnalysisTools(s *server.MCPServer, _ DBResolver) {
 			if storage.UsesCurrentMetricSum(m.Name) {
 				agg = "SUM"
 			}
-			points, derr := ctxdb.FromContext(ctx).MetricDataForContract(m.Name, minDate, maxDate+" 23:59:59", "day", agg, false)
+			points, derr := ctxdb.FromContext(ctx).MetricDataForContractContext(ctx, m.Name, minDate, maxDate+" 23:59:59", "day", agg, false)
 			if derr != nil || len(points) == 0 {
 				continue
 			}

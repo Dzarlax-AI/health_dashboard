@@ -90,7 +90,7 @@ func TestHDBTMutationAndStepsCutover(t *testing.T) {
 	assertDailyStepSeries(t, db, "", day, DailyStepPoint{day, 0})
 	exec("delete from hdbt_dirty")
 	assertDailyStepSeries(t, db, "", day, DailyStepPoint{day, 72})
-	assertDailyStepSeries(t, db, day, day, DailyStepPoint{day, 41})
+	assertDailyStepSeries(t, db, day, day, DailyStepPoint{day, 72})
 	exec("update hdbt_state set source_generation=2")
 	assertDailyStepSeries(t, db, "", day, DailyStepPoint{day, 0})
 	exec("update hdbt_state set source_generation=3, formula_id='old'")
@@ -99,6 +99,45 @@ func TestHDBTMutationAndStepsCutover(t *testing.T) {
 	assertDailyStepSeries(t, db, "", day, DailyStepPoint{day, 41})
 	exec("update hdbt_state set shadow_enabled=false")
 	want("select count(*) from hdbt_state where ready or initialized or read_enabled", 0)
+}
+
+func TestDecisionQueueMigrationAndAtomicCapture(t *testing.T) {
+	db, done := testDB(t)
+	defer done()
+	ctx := t.Context()
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	exec := func(q string) {
+		t.Helper()
+		if _, err := tx.Exec(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	count := func(want int) {
+		t.Helper()
+		var n int
+		if err := tx.QueryRow(ctx, "select count(*) from hdbt_decision_queue").Scan(&n); err != nil || n != want {
+			t.Fatalf("queue count %d, want %d: %v", n, want, err)
+		}
+	}
+	exec("alter table hdbt_decision_inputs disable trigger hdbt_enqueue_decision")
+	exec(`insert into hdbt_decision_inputs select 'readiness','history/2026-01-18',n::text,now(),
+		case when n=1 then 4 else 3 end,'{}','{}' from generate_series(1,3) n`)
+	exec(`insert into hdbt_decision_results select metric,decision_key,input_hash,formula_version,result
+		from hdbt_decision_inputs where input_hash='3'`)
+	count(0)
+	exec(decisionJournalDDL)
+	count(1)
+	exec(decisionJournalDDL)
+	count(1)
+	exec("savepoint before_capture")
+	exec(`insert into hdbt_decision_inputs values('today_decision','2026-01-19','4',now(),1,'{}','{}')`)
+	count(2)
+	exec("rollback to savepoint before_capture")
+	count(1)
 }
 
 func TestHDBTFlagsAreOfflineContractObjects(t *testing.T) {
@@ -191,7 +230,7 @@ func TestHDBTStepsRoleIsolation(t *testing.T) {
 	must("insert into hdbt_daily_metrics(date,steps) values('2026-10-10',72)")
 	must("set local role " + role)
 	generation := uint64(0)
-	read, ok, readErr := readHDBTSteps(ctx, tx, "2026-10-10", &generation)
+	read, ok, readErr := readHDBTSteps(ctx, tx, "", "2026-10-10", &generation)
 	if readErr != nil || !ok || len(read) != 1 || read[0] != (DailyStepPoint{"2026-10-10", 72}) {
 		t.Fatal("tenant-scoped published series unavailable")
 	}
@@ -241,9 +280,12 @@ func TestHDBTStepsDirtyNeighborAndPartialBootstrap(t *testing.T) {
 	exec("insert into hdbt_dirty(date,generation) values('2026-05-10',4)")
 	expected := DailyStepPoint{changedDay, float64(float32(104.4))}
 	assertDailyStepSeries(t, db, "", changedDay, DailyStepPoint{priorDay, 21}, expected)
+	assertDailyStepSeries(t, db, changedDay, changedDay, expected)
+	assertDailyStepSeries(t, db, priorDay, priorDay, DailyStepPoint{priorDay, 21})
 	// An incomplete bootstrap cannot reuse the partial published series.
 	exec("insert into hdbt_backfill(date) values('2026-05-15')")
 	assertDailyStepSeries(t, db, "", changedDay, DailyStepPoint{priorDay, 18}, expected)
+	assertDailyStepSeries(t, db, changedDay, changedDay, expected)
 	exec("update hdbt_state set read_enabled=false")
 	assertDailyStepSeries(t, db, "", changedDay, DailyStepPoint{priorDay, 18}, DailyStepPoint{changedDay, 99})
 }
@@ -339,7 +381,7 @@ func TestHDBTDirtyAliasOutsideRangeWithGermanDateStyle(t *testing.T) {
 	}{
 		{"2026-05-12", nil}, {"2026-05-13", []DailyStepPoint{{"2026-05-13", 30}}},
 	} {
-		got, enabled, err := readHDBTSteps(ctx, tx, tc.through, &generation)
+		got, enabled, err := readHDBTSteps(ctx, tx, "", tc.through, &generation)
 		if err != nil || !enabled || !slices.Equal(got, tc.want) {
 			t.Fatalf("dirty alias through %s: got %+v enabled=%v: %v", tc.through, got, enabled, err)
 		}
@@ -348,7 +390,7 @@ func TestHDBTDirtyAliasOutsideRangeWithGermanDateStyle(t *testing.T) {
 	// of year 1 AD even though the chart ends on January 1.
 	exec("insert into hdbt_dirty(date,generation) values('0001-01-01',1)")
 	exec("insert into metric_points(health_record_id,metric_name,units,date,source,qty) values($1,'step_count','count','0001-12-31 10:00:00 +0000','Watch',9)", id)
-	got, enabled, err := readHDBTSteps(ctx, tx, "0001-01-01", &generation)
+	got, enabled, err := readHDBTSteps(ctx, tx, "", "0001-01-01", &generation)
 	if err != nil || !enabled || len(got) != 0 {
 		t.Fatalf("steps outside earliest day: %+v enabled=%v: %v", got, enabled, err)
 	}

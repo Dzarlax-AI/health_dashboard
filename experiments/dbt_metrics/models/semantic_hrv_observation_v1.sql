@@ -1,11 +1,11 @@
-{{ config(enabled=var('semantic_shadow', false), materialized='view', post_hook="alter view {{ this }} set (security_invoker = true)") }}
+{{ config(enabled=var('semantic_shadow', false) or var('tenant_native_catalog', false), materialized='ephemeral' if var('tenant_native_catalog', false) else 'view', post_hook="alter view {{ this }} set (security_invoker = true)") }}
 
 -- Keep the original date/offset for the Go compatibility paths. On analytic paths,
 -- identical instants from the same source/method are one physical candidate.
 with classified as (
     select p.*, coalesce(quality='ok' and qty>0,false) as writer_valid,
            coalesce(quality='ok' and qty between 4 and 300,false) as analytic_quality
-    from {{ ref('hrv_receipt_points_v1') if var('hrv_receipt_inputs', false) else source('source_data','hrv_point') }} p
+    from {{ ref('hrv_receipt_points_v1') if var('hrv_receipt_inputs', false) or var('tenant_native_catalog', false) else source('source_data','hrv_point') }} p
 ), points as (
     select p.*, substring(date,1,10) as writer_date,
            case when time_kind = 'interval' then tstzrange(start_at,end_at,'[)') end as measurement,

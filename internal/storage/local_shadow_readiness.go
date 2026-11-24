@@ -92,7 +92,11 @@ func (s *DB) readinessWithSleep(ctx context.Context, date string, blocks map[str
 	if err != nil {
 		return nil, err
 	}
-	resp := health.ComputeReadinessBriefingWithProjection(*data, "en", &projection)
+	quality, err := s.dashboardSleepQuality(ctx, data)
+	if err != nil {
+		return nil, err
+	}
+	resp := health.RenderReadinessBriefing(*data, "en", &projection, quality)
 	var checkin *health.SubjectiveCheckinSummary
 	if row, err := s.GetTodayCheckin(date, CheckinSourceTelegram); err == nil && row != nil {
 		checkin = &health.SubjectiveCheckinSummary{Status: row.Status, Answer: row.Answer}

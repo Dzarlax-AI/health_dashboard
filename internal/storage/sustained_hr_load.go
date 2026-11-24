@@ -5,8 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	dbtmetrics "health-receiver/experiments/dbt_metrics"
 	"log"
-	"math"
 	"strconv"
 	"time"
 
@@ -42,15 +42,26 @@ import (
 // a gate (coverage, calibration) fires — the day is "honestly zero",
 // not "errored".
 type SustainedHRLoadResult struct {
+	signalInputs        *stressSignalInputs
 	SustainedHRLoadZ    float64
 	HROvershootBpmHours float64
 	Flags               []string
 }
 
+// A receipt preserves the exact ordered awake-window observations, including
+// non-finite gaps that interrupt a sustained run.
+type stressSignalInputs struct {
+	series                       []HourlyHRStat
+	baseline, baselineSD         float64
+	hourZ                        []float64
+	threshold                    float64
+	temp, resp, drop, rhr, dayHR *float64
+}
+
 // ComputeSustainedHRLoadForDate is the §4.4 orchestrator. Pure read
 // against existing helpers; no writes. Wraps `WakeTimeForDate +
 // HRCoverageHours + PersonalBaseline + HourlyHRSeriesForAwakeWindow`
-// and converts per-hour HR into z-load via health.HourZShift +
+// and converts per-hour HR into z-load via the shared hourly stress SQL and
 // the shared dbt stress/load predicates.
 //
 // Each prerequisite returns (zero, flag, ok=true) on degraded data
@@ -168,18 +179,15 @@ func (s *DB) ComputeSustainedHRLoadForDateContext(
 		return res, true, nil
 	}
 
-	// Convert per-hour data to z-series. Skip hours that failed the
-	// per-hour coverage check (< MinBucketsPerHour 5-min buckets)
-	// AND hours with no samples (zero-fill rows from
-	// HourlyHRSeriesForAwakeWindow). Use a NaN placeholder so
-	// the shared stress formula treats these positions as gaps.
-	hourZ := make([]float64, len(series))
+	heartRates := make([]float64, len(series))
+	covered := make([]bool, len(series))
 	for i, h := range series {
-		if !h.CoverageOK {
-			hourZ[i] = math.NaN()
-			continue
-		}
-		hourZ[i] = health.HourZShift(h.Median5minMinHR, bl.Median, bl.MADSD)
+		heartRates[i], covered[i] = h.Median5minMinHR, h.CoverageOK
+	}
+	var hourZ []float64
+	err = s.pool.QueryRow(ctx, hourlyStressSeriesSQL, heartRates, covered, bl.Median, bl.MADSD).Scan(&hourZ, &res.HROvershootBpmHours)
+	if err != nil {
+		return SustainedHRLoadResult{}, false, err
 	}
 
 	// Read the live tenant config so the z-threshold is settings-
@@ -193,26 +201,20 @@ func (s *DB) ComputeSustainedHRLoadForDateContext(
 		return SustainedHRLoadResult{}, false, err
 	}
 
-	// HROvershootBpmHours: raw bpm·hours for the same hours that
-	// contributed to the z-load. Keeps the audit-trail line in
-	// human units so a future briefing can say "HR ran +8 bpm above
-	// your normal for ~3 hours" — back-converting z would require
-	// the user to remember their personal SD.
-	var overshoot float64
-	for i, h := range series {
-		if !h.CoverageOK {
-			continue
-		}
-		over := h.Median5minMinHR - bl.Median
-		if over > 0 {
-			overshoot += over
-		}
-		_ = i
-	}
-	res.HROvershootBpmHours = overshoot
+	res.signalInputs.series = series
+	res.signalInputs.baseline = bl.Median
+	res.signalInputs.baselineSD = bl.MADSD
 
 	return res, true, nil
 }
+
+// Preserve gaps in the ordered signal series expected by the daily load calculation.
+var hourlyStressSeriesSQL = `with hours as (
+    select observation.*, $3::float8 as baseline,$4::float8 as sd
+    from unnest($1::float8[], $2::bool[]) with ordinality observation(hour_hr,coverage_ok,position)
+), scored as (` + dbtmetrics.HourlyStressSQL + `)
+select array_agg(coalesce(hour_z,'NaN'::float8) order by position),
+       coalesce(sum(overshoot order by position),0) from scored`
 
 func (s *DB) energyZThresholdContext(ctx context.Context) (float64, error) {
 	var value sql.NullString
@@ -302,11 +304,45 @@ func (s *DB) writeSustainedHRLoadRowContext(ctx context.Context, date string, re
 		v := res.SustainedHRLoadZ
 		load = &v
 	}
-	if _, err := s.pool.Exec(ctx, `
-		UPDATE daily_scores
-		   SET sustained_hr_load = COALESCE($2, sustained_hr_load),
-		       stress_flags      = $3
-		 WHERE date = $1`, date, load, flags); err != nil {
+	const update = `UPDATE daily_scores SET sustained_hr_load=coalesce($2,sustained_hr_load),
+		stress_flags=$3 where date=$1`
+	args := []any{date, load, flags}
+	write := func(db *DB, capture bool) (bool, error) {
+		query := update
+		params := args
+		if capture && res.signalInputs != nil {
+			i := res.signalInputs
+			query = `with saved as (` + update + ` returning date), decision_packets as (
+				select 'stress_signals'::text metric,date decision_key,1 formula_version,
+				jsonb_build_object('hour_z',$4::float8[],'z_threshold',$5::float8,
+				 'temp',$6::float8,'resp',$7::float8,'drop',$8::float8,'rhr',$9::float8,'day_hr',$10::float8) || case when $11::timestamptz[] is null then '{}'::jsonb
+                    else jsonb_build_object('stress_hours',(select jsonb_agg(jsonb_build_object(
+                        'hour_start',h.start_at,'hour_hr',h.hr,'coverage_ok',h.covered,
+                        'baseline',$14::float8,'sd',$15::float8) order by h.ord)
+                        from unnest($11::timestamptz[],$12::float8[],$13::boolean[]) with ordinality
+                        h(start_at,hr,covered,ord))) end inputs,
+				jsonb_build_object('load',$2::float8,'flags',$3::text[]) result from saved
+			)` + decisionJournalInsertSQL + " select count(*) from saved"
+			var starts []time.Time
+			var heartRates []float64
+			var covered []bool
+			for _, h := range i.series {
+				starts = append(starts, h.Hour.UTC())
+				heartRates = append(heartRates, h.Median5minMinHR)
+				covered = append(covered, h.CoverageOK)
+			}
+			params = append(args, i.hourZ, i.threshold, i.temp, i.resp, i.drop, i.rhr, i.dayHR, starts, heartRates, covered, i.baseline, i.baselineSD)
+		}
+		_, err := db.pool.Exec(ctx, query, params...)
+		return false, err
+	}
+	var err error
+	if res.signalInputs == nil || len(res.signalInputs.hourZ) > 25 {
+		_, err = write(s, false)
+	} else {
+		_, err = withDecisionJournal(ctx, s, write)
+	}
+	if err != nil {
 		log.Printf("writeSustainedHRLoadRow %s: %v", date, err)
 		return err
 	}

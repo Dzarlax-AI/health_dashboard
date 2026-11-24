@@ -1,4 +1,4 @@
-{{ config(enabled=var('personal_baseline_shadow', false), materialized='view',
+{{ config(enabled=var('personal_baseline_shadow', false) or var('tenant_native_catalog', false), materialized='ephemeral' if var('tenant_native_catalog', false) else 'view',
     post_hook='alter view {{ this }} set (security_invoker=true)') }}
 
 select profile, capture, anchor, baseline_median, mad_sd, sample_count, state

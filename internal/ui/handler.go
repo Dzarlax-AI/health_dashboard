@@ -1092,29 +1092,33 @@ func (h *Handler) fragmentMetricsList(w http.ResponseWriter, r *http.Request) {
 	renderFragment(w, "metrics-list", data)
 }
 
-// The web chart plots daily quantities. The metrics API also serves extrema
-// and per-device observations, which have their own aggregation contracts.
+// stepDailySeries preserves the original chart envelope for legacy pages.
 func (h *Handler) stepDailySeries(w http.ResponseWriter, r *http.Request) {
 	if _, ok := metriccontract.Read(w, r); !ok {
 		return
 	}
 	from, to := r.URL.Query().Get("from"), r.URL.Query().Get("to")
-	_, endErr := time.Parse(time.DateOnly, to)
-	_, startErr := time.Parse(time.DateOnly, from)
-	if endErr != nil || (from != "" && (startErr != nil || from > to)) {
+	if _, err := time.Parse(time.DateOnly, to); err != nil || !validMetricStart(from, to, from == "") {
 		jsonError(w, "expected an inclusive date range in YYYY-MM-DD format", http.StatusBadRequest)
 		return
 	}
-	points, err := h.tenantDB(r).DailyStepSeries(r.Context(), from, to)
+	points, err := h.tenantDB(r).MetricQuantitiesForContract(r.Context(), "step_count", from, to, "day", "SUM", false)
 	if err != nil {
 		jsonError(w, "could not read the daily step series", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Cache-Control", "private, no-store")
 	jsonResponse(w, struct {
 		Bucket string                   `json:"bucket"`
 		Points []storage.DailyStepPoint `json:"points"`
 	}{Bucket: "day", Points: points})
+}
+
+func validMetricStart(from, to string, all bool) bool {
+	if all {
+		return from == ""
+	}
+	_, err := time.Parse(time.DateOnly, from)
+	return err == nil && from <= to
 }
 
 func (h *Handler) pageMetricDetail(w http.ResponseWriter, r *http.Request) {
@@ -1459,17 +1463,9 @@ func (h *Handler) listMetrics(w http.ResponseWriter, r *http.Request) {
 	if lang != "ru" && lang != "sr" {
 		lang = "en"
 	}
-	type metricItem struct {
-		Name        string `json:"name"`
-		DisplayName string `json:"display_name"`
-		Units       string `json:"units"`
-		Count       int    `json:"count"`
-		Min         string `json:"min"`
-		Max         string `json:"max"`
-	}
-	out := make([]metricItem, 0, len(metrics))
+	out := make([]clientapi.MetricCatalogItem, 0, len(metrics))
 	for _, m := range metrics {
-		out = append(out, metricItem{
+		out = append(out, clientapi.MetricCatalogItem{
 			Name:        m.Name,
 			DisplayName: MetricName(lang, m.Name),
 			Units:       m.Units,
@@ -1650,6 +1646,9 @@ func (h *Handler) latestMetricValues(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if vals == nil {
+		vals = []storage.LatestValue{}
+	}
 	jsonResponse(w, vals)
 }
 
@@ -1675,6 +1674,10 @@ func (h *Handler) metricData(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	metric := q.Get("metric")
+	if q.Get("view") == "catalog" {
+		h.catalogSeries(w, r)
+		return
+	}
 	if metric == "" {
 		http.Error(w, "metric required", http.StatusBadRequest)
 		return
@@ -1683,22 +1686,32 @@ func (h *Handler) metricData(w http.ResponseWriter, r *http.Request) {
 
 	from := q.Get("from")
 	to := q.Get("to")
-	tenantToday, _ := time.Parse("2006-01-02", db.Today())
-	if from == "" {
-		from = tenantToday.AddDate(0, 0, -7).Format("2006-01-02")
+	bucket := q.Get("bucket")
+	view, dateRange := q.Get("view"), q.Get("range")
+	quantity, all := view == "quantity", dateRange == "all"
+	if (view != "" && view != "full" && !quantity) || (dateRange != "" && !all) ||
+		(quantity && q.Get("by_source") != "" && q.Get("by_source") != "0") || (all && (!quantity || bucket != "day" || from != "")) {
+		jsonError(w, "unsupported metric view, source or range combination", http.StatusBadRequest)
+		return
 	}
-	if to == "" {
-		to = tenantToday.Format("2006-01-02")
+
+	if to == "" || (from == "" && !all) {
+		tenantToday, _ := time.Parse(time.DateOnly, db.Today())
+		if from == "" && !all {
+			from = tenantToday.AddDate(0, 0, -7).Format(time.DateOnly)
+		}
+		if to == "" {
+			to = tenantToday.Format(time.DateOnly)
+		}
 	}
-	fromDate, fromErr := time.Parse("2006-01-02", from)
-	toDate, toErr := time.Parse("2006-01-02", to)
-	if fromErr != nil || toErr != nil || fromDate.After(toDate) {
+	toDate, toErr := time.Parse(time.DateOnly, to)
+	if toErr != nil || !validMetricStart(from, to, all) {
 		http.Error(w, "from and to must be a valid ascending YYYY-MM-DD range", http.StatusBadRequest)
 		return
 	}
 
-	bucket := q.Get("bucket")
 	if bucket == "" {
+		fromDate, _ := time.Parse(time.DateOnly, from)
 		days := int(toDate.Sub(fromDate).Hours()/24) + 1
 		switch {
 		case days <= 1:
@@ -1715,7 +1728,23 @@ func (h *Handler) metricData(w http.ResponseWriter, r *http.Request) {
 	}
 
 	aggFunc := q.Get("agg")
-	if aggFunc == "" {
+	if quantity {
+		effective := storage.CurrentMetricAggregation(metric, "")
+		if version == metriccontract.Legacy {
+			effective = storage.LegacyMetricQuantityAggregation(metric)
+		}
+		switch aggFunc {
+		case "", effective:
+			aggFunc = effective
+		case "MIN", "MAX":
+			// Select the actual observation extremum from each bucket.
+		default:
+			jsonError(w, "unsupported aggregation for this metric quantity", http.StatusBadRequest)
+			return
+		}
+	} else if version == metriccontract.Current {
+		aggFunc = storage.CurrentMetricAggregation(metric, aggFunc)
+	} else if aggFunc == "" {
 		switch metric {
 		case "step_count", "active_energy", "basal_energy_burned",
 			"apple_exercise_time", "apple_stand_time", "flights_climbed",
@@ -1726,11 +1755,20 @@ func (h *Handler) metricData(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if version == metriccontract.Current {
-		aggFunc = storage.CurrentMetricAggregation(metric, aggFunc)
+	if quantity {
+		points, err := db.MetricQuantitiesForContract(r.Context(), metric, from, to, bucket, aggFunc, version == metriccontract.Legacy)
+		if err != nil {
+			jsonError(w, "could not read metric quantities", http.StatusInternalServerError)
+			return
+		}
+		if points == nil {
+			points = []storage.MetricQuantityPoint{}
+		}
+		jsonResponse(w, clientapi.MetricQuantityResponse{Metric: metric, Bucket: bucket, Agg: aggFunc, Points: points})
+		return
 	}
 	if q.Get("by_source") == "1" {
-		sourcePoints, serr := db.MetricDataBySourceForContract(metric, from, to+" 23:59:59", bucket, aggFunc, version == metriccontract.Legacy)
+		sourcePoints, serr := db.MetricDataBySourceForContractContext(r.Context(), metric, from, to+" 23:59:59", bucket, aggFunc, version == metriccontract.Legacy)
 		if serr == nil {
 			jsonResponse(w, clientapi.MetricDataResponse{
 				Metric:         metric,
@@ -1741,9 +1779,13 @@ func (h *Handler) metricData(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		if version == metriccontract.Current {
+			jsonError(w, "could not read per-source metrics", http.StatusInternalServerError)
+			return
+		}
 	}
 
-	points, err := db.MetricDataForContract(metric, from, to+" 23:59:59", bucket, aggFunc, version == metriccontract.Legacy)
+	points, err := db.MetricDataForContractContext(r.Context(), metric, from, to+" 23:59:59", bucket, aggFunc, version == metriccontract.Legacy)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1767,6 +1809,9 @@ func (h *Handler) readinessHistory(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if pts == nil {
+		pts = []health.ReadinessPoint{}
 	}
 	jsonResponse(w, clientapi.ReadinessHistoryResponse{Points: pts})
 }
@@ -1852,17 +1897,6 @@ func (h *Handler) energyHistory(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// sectionCatalogueEntry is one row in the stable section catalogue
-// returned by GET /api/sections. iOS / other native clients render
-// it as a navigation row; the abstract `Icon` token (e.g. "heart")
-// is mapped to a platform-specific symbol by the client.
-type sectionCatalogueEntry struct {
-	Key      string `json:"key"`
-	Title    string `json:"title"`
-	Subtitle string `json:"subtitle"`
-	Icon     string `json:"icon"`
-}
-
 // sectionCatalogue is the source of truth for which detail pages
 // exist on the server. Adding a new section means appending an
 // entry here AND providing the matching i18n keys
@@ -1884,16 +1918,16 @@ var sectionCatalogue = []struct {
 
 func (h *Handler) sectionsCatalogue(w http.ResponseWriter, r *http.Request) {
 	lang := supportedLang(r.URL.Query().Get("lang"))
-	out := make([]sectionCatalogueEntry, 0, len(sectionCatalogue))
+	out := make([]clientapi.SectionCatalogueEntry, 0, len(sectionCatalogue))
 	for _, s := range sectionCatalogue {
-		out = append(out, sectionCatalogueEntry{
+		out = append(out, clientapi.SectionCatalogueEntry{
 			Key:      s.Key,
 			Title:    T(lang, "section_"+s.Key+"_title"),
 			Subtitle: T(lang, "section_"+s.Key+"_subtitle"),
 			Icon:     s.Icon,
 		})
 	}
-	jsonResponse(w, map[string]any{"sections": out})
+	jsonResponse(w, clientapi.SectionsResponse{Sections: out})
 }
 
 func (h *Handler) sectionAPI(w http.ResponseWriter, r *http.Request) {
@@ -2342,7 +2376,7 @@ func (h *Handler) adminBackfill(w http.ResponseWriter, r *http.Request) {
 	if force {
 		msg = "full rebuild started for " + scope.Schema
 	}
-	jsonResponse(w, map[string]string{"status": "ok", "message": msg, "schema": scope.Schema})
+	jsonResponse(w, clientapi.CacheBackfillResponse{Status: "ok", Message: msg, Schema: scope.Schema})
 }
 
 // adminReadinessRedesignBackfill runs the Phase 0 sub-score writers
@@ -2457,10 +2491,7 @@ func (h *Handler) adminReadinessRedesignBackfill(w http.ResponseWriter, r *http.
 		return
 	}
 
-	type runResult struct {
-		Written int    `json:"written"`
-		Error   string `json:"error,omitempty"`
-	}
+	type runResult = clientapi.ReadinessBackfillResult
 	results := map[string]runResult{}
 
 	if wantRecovery {
@@ -2515,15 +2546,15 @@ func (h *Handler) adminReadinessRedesignBackfill(w http.ResponseWriter, r *http.
 		refresh([]string{db.Today()})
 	}
 
-	jsonResponse(w, map[string]any{
-		"schema":              schema,
-		"from":                from,
-		"to":                  to,
-		"days":                days,
-		"force":               force,
-		"chronic_load_config": chronicCfg,
-		"sub_scores":          results,
-		"schema_health":       schemaHealth,
+	jsonResponse(w, clientapi.ReadinessBackfillResponse{
+		Schema: schema,
+		From:   from,
+		To:     to,
+		Days:   days,
+		Force:  force,
+		Config: chronicCfg,
+		Scores: results,
+		Health: schemaHealth,
 	})
 }
 
@@ -2632,9 +2663,9 @@ func (h *Handler) adminReadinessRedesignConfig(w http.ResponseWriter, r *http.Re
 	}
 
 	_, status := db.LoadChronicLoadConfig()
-	jsonResponse(w, map[string]any{
-		"schema":              schema,
-		"chronic_load_config": status,
+	jsonResponse(w, clientapi.ChronicLoadSettings{
+		Schema: schema,
+		Config: status,
 	})
 }
 
@@ -2693,17 +2724,11 @@ func (h *Handler) adminReadinessRedesignChipCalibrations(w http.ResponseWriter, 
 		return
 	}
 
-	type calRow struct {
-		Tenant string `json:"tenant"`
-		storage.ChipCalibration
-	}
-	type tenantRecompute struct {
-		Tenant  string                                   `json:"tenant"`
-		Results []storage.ChipCalibrationRecomputeResult `json:"results"`
-	}
+	type calRow = clientapi.ChipCalibrationRow
+	type tenantRecompute = clientapi.ChipRecompute
 
-	resp := map[string]any{
-		"tenants": tenantSchemas(scopes),
+	resp := clientapi.ChipCalibrationResponse{
+		Tenants: tenantSchemas(scopes),
 	}
 	if r.Method == http.MethodPost {
 		recompute := make([]tenantRecompute, 0, len(scopes))
@@ -2720,7 +2745,7 @@ func (h *Handler) adminReadinessRedesignChipCalibrations(w http.ResponseWriter, 
 			}
 			recompute = append(recompute, tenantRecompute{Tenant: scope.schema, Results: results})
 		}
-		resp["recompute_results"] = recompute
+		resp.Results = recompute
 	}
 
 	allRows := make([]calRow, 0, len(scopes)*len(chipCalibrationConfigs))
@@ -2734,7 +2759,7 @@ func (h *Handler) adminReadinessRedesignChipCalibrations(w http.ResponseWriter, 
 			allRows = append(allRows, calRow{Tenant: scope.schema, ChipCalibration: c})
 		}
 	}
-	resp["rows"] = allRows
+	resp.Rows = allRows
 	jsonResponse(w, resp)
 }
 
@@ -2786,10 +2811,7 @@ func (h *Handler) adminReadinessRedesignOperationalContract(w http.ResponseWrite
 		return
 	}
 
-	type rowOut struct {
-		Tenant string `json:"tenant"`
-		storage.OperationalContractRow
-	}
+	type rowOut = clientapi.OperationalRow
 	out := make([]rowOut, 0, len(tenants)*days*4)
 	from, to := "", ""
 	for _, ten := range tenants {
@@ -2812,12 +2834,12 @@ func (h *Handler) adminReadinessRedesignOperationalContract(w http.ResponseWrite
 		}
 	}
 
-	jsonResponse(w, map[string]any{
-		"from":    from,
-		"to":      to,
-		"days":    days,
-		"tenants": tenantSchemas(tenants),
-		"rows":    out,
+	jsonResponse(w, clientapi.OperationalReport{
+		From:    from,
+		To:      to,
+		Days:    days,
+		Tenants: tenantSchemas(tenants),
+		Rows:    out,
 	})
 }
 
@@ -2838,10 +2860,7 @@ func (h *Handler) adminReadinessRedesignMonitoring(w http.ResponseWriter, r *htt
 		return
 	}
 
-	type tenantSummary struct {
-		Tenant string `json:"tenant"`
-		*storage.ReadinessMonitoringSummary
-	}
+	type tenantSummary = clientapi.MonitoringRow
 	rows := make([]tenantSummary, 0, len(scopes))
 	for _, scope := range scopes {
 		asOf := tenantLocalToday(h, scope.db, scope.schema)
@@ -2852,9 +2871,9 @@ func (h *Handler) adminReadinessRedesignMonitoring(w http.ResponseWriter, r *htt
 		}
 		rows = append(rows, tenantSummary{Tenant: scope.schema, ReadinessMonitoringSummary: summary})
 	}
-	jsonResponse(w, map[string]any{
-		"tenants": tenantSchemas(scopes),
-		"rows":    rows,
+	jsonResponse(w, clientapi.MonitoringReport{
+		Tenants: tenantSchemas(scopes),
+		Rows:    rows,
 	})
 }
 
@@ -3261,7 +3280,7 @@ func (h *Handler) userSettings(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		jsonResponse(w, map[string]string{"status": "ok"})
+		jsonResponse(w, clientapi.SettingsUpdateResponse{Status: "ok"})
 		return
 	}
 
@@ -3299,14 +3318,7 @@ func (h *Handler) userSettings(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, out)
 }
 
-type adminAISettingsRequest struct {
-	Provider        string `json:"provider"`
-	APIKey          string `json:"api_key"`
-	ClearAPIKey     bool   `json:"clear_api_key"`
-	Model           string `json:"model"`
-	ReasoningEffort string `json:"reasoning_effort"`
-	MaxOutputTokens int    `json:"max_output_tokens"`
-}
+type adminAISettingsRequest = clientapi.AdminAISettingsRequest
 
 func buildAdminAISettingsUpdate(body adminAISettingsRequest) (map[string]string, error) {
 	body.Provider = strings.TrimSpace(body.Provider)
@@ -3347,8 +3359,8 @@ func buildAdminAISettingsUpdate(body adminAISettingsRequest) (map[string]string,
 	return clean, nil
 }
 
-func adminAISettingsPayload(aiCfg storage.AIConfig) map[string]any {
-	providers := make([]map[string]any, 0)
+func adminAISettingsPayload(aiCfg storage.AIConfig) clientapi.AdminAISettingsResponse {
+	providers := make([]clientapi.AIProviderSettings, 0)
 	for _, descriptor := range ai.ProviderDescriptors() {
 		settings := aiCfg.SettingsFor(descriptor.ID)
 		model := settings.Model
@@ -3359,23 +3371,23 @@ func adminAISettingsPayload(aiCfg storage.AIConfig) map[string]any {
 		if reasoning == "" {
 			reasoning = descriptor.DefaultReasoning
 		}
-		providers = append(providers, map[string]any{
-			"id":                  descriptor.ID,
-			"display_name":        descriptor.DisplayName,
-			"default_model":       descriptor.DefaultModel,
-			"supports_reasoning":  descriptor.SupportsReasoning,
-			"reasoning_efforts":   descriptor.ReasoningEfforts,
-			"api_key_placeholder": descriptor.APIKeyPlaceholder,
-			"configured":          settings.APIKey != "",
-			"model":               model,
-			"reasoning_effort":    reasoning,
+		providers = append(providers, clientapi.AIProviderSettings{
+			ID:                descriptor.ID,
+			DisplayName:       descriptor.DisplayName,
+			DefaultModel:      descriptor.DefaultModel,
+			SupportsReasoning: descriptor.SupportsReasoning,
+			ReasoningEfforts:  descriptor.ReasoningEfforts,
+			Placeholder:       descriptor.APIKeyPlaceholder,
+			Configured:        settings.APIKey != "",
+			Model:             model,
+			ReasoningEffort:   reasoning,
 		})
 	}
-	return map[string]any{
-		"provider":          aiCfg.Provider,
-		"max_output_tokens": aiCfg.MaxOutputTokens,
-		"enabled":           aiCfg.Enabled(),
-		"providers":         providers,
+	return clientapi.AdminAISettingsResponse{
+		Provider:        aiCfg.Provider,
+		MaxOutputTokens: aiCfg.MaxOutputTokens,
+		Enabled:         aiCfg.Enabled(),
+		Providers:       providers,
 	}
 }
 
@@ -3418,7 +3430,7 @@ func (h *Handler) adminAISettings(w http.ResponseWriter, r *http.Request) {
 				refresh(nil)
 			}
 		}
-		jsonResponse(w, map[string]string{"status": "ok"})
+		jsonResponse(w, clientapi.SettingsUpdateResponse{Status: "ok"})
 		return
 	}
 
@@ -3509,17 +3521,17 @@ func (h *Handler) adminEnergySettings(w http.ResponseWriter, r *http.Request) {
 		if refresh := h.mgr.BackfillDatesFor(scope.Schema); refresh != nil {
 			refresh(nil)
 		}
-		jsonResponse(w, map[string]string{"status": "ok"})
+		jsonResponse(w, clientapi.SettingsUpdateResponse{Status: "ok"})
 		return
 	}
 
 	cfg := db.GetEnergyConfig()
-	jsonResponse(w, map[string]any{
-		"energy.beta":                 cfg.Beta,
-		"energy.z_threshold":          cfg.ZThreshold,
-		"energy.stress_drain_enabled": cfg.StressDrainEnabled,
-		"effective_beta":              cfg.EffectiveBeta(),
-		"schema":                      scope.Schema,
+	jsonResponse(w, clientapi.AdminEnergySettingsResponse{
+		Beta:               cfg.Beta,
+		ZThreshold:         cfg.ZThreshold,
+		StressDrainEnabled: cfg.StressDrainEnabled,
+		EffectiveBeta:      cfg.EffectiveBeta(),
+		Schema:             scope.Schema,
 	})
 }
 
@@ -3564,14 +3576,14 @@ func (h *Handler) adminTodayInsightsConfig(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	b1MatchesActiveAI := h.todayInsightsB1QualityGateMatchesActiveAI(scope.DB, scope.Schema, r.Context())
-	jsonResponse(w, map[string]any{
-		"schema":                            scope.Schema,
-		"b0_enabled":                        storage.TodayInsightsB0Enabled(scope.DB),
-		"b1_enabled":                        storage.TodayInsightsB1Enabled(scope.DB) && b1MatchesActiveAI,
-		"b1_preview_enabled":                storage.TodayInsightsB1PreviewEnabled(scope.DB),
-		"b1_narrative_mode":                 storage.TodayInsightsB1NarrativeMode(scope.DB, activeAIConfig),
-		"b1_quality_gate_approved":          todayInsightsB1QualityGateApproved(scope.DB),
-		"b1_quality_gate_matches_active_ai": b1MatchesActiveAI,
+	jsonResponse(w, clientapi.TodayInsightsSettings{
+		Schema:    scope.Schema,
+		B0Enabled: storage.TodayInsightsB0Enabled(scope.DB),
+		B1Enabled: storage.TodayInsightsB1Enabled(scope.DB) && b1MatchesActiveAI,
+		Preview:   storage.TodayInsightsB1PreviewEnabled(scope.DB),
+		Mode:      storage.TodayInsightsB1NarrativeMode(scope.DB, activeAIConfig),
+		Approved:  todayInsightsB1QualityGateApproved(scope.DB),
+		Matches:   b1MatchesActiveAI,
 	})
 }
 
@@ -3596,10 +3608,7 @@ func todayInsightsConfigSettings(body map[string]bool, b1Approved bool) (map[str
 	return toSave, nil
 }
 
-type todayInsightsB1QualityGateRequest struct {
-	Corpus     ai.DailyInsightNarrativeCorpus           `json:"corpus"`
-	Evaluation ai.DailyInsightNarrativeEvaluationOutput `json:"evaluation"`
-}
+type todayInsightsB1QualityGateRequest = clientapi.TodayInsightsB1QualityGateRequest
 
 // adminTodayInsightsB1QualityGate records a passing review only after the
 // server independently revalidates the frozen corpus, checksum and all three
@@ -3666,7 +3675,7 @@ func (h *Handler) adminTodayInsightsB1QualityGate(w http.ResponseWriter, r *http
 		http.Error(w, "save B1 quality-gate approval: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	jsonResponse(w, map[string]any{"schema": scope.Schema, "approval": approval, "quality_gate": gate})
+	jsonResponse(w, clientapi.QualityGateResponse{Schema: scope.Schema, Approval: approval, Gate: gate})
 }
 
 func todayInsightsB1EvaluationMatchesActiveConfig(active storage.AIConfig, evaluation ai.DailyInsightNarrativeEvaluationOutput, reasoning string) (ai.ProviderConfig, error) {
@@ -3805,10 +3814,7 @@ func (h *Handler) adminAIModels(w http.ResponseWriter, r *http.Request) {
 	}
 	schema := h.tenantSchema(r)
 	aiCfg := h.mgr.AIDefaultsFor(r.Context(), schema)
-	var body struct {
-		Provider string `json:"provider"`
-		APIKey   string `json:"api_key"`
-	}
+	var body clientapi.AIModelsRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
@@ -3833,7 +3839,7 @@ func (h *Handler) adminAIModels(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "provider model discovery failed", http.StatusBadGateway)
 		return
 	}
-	jsonResponse(w, map[string]any{"models": models})
+	jsonResponse(w, clientapi.AIModelsResponse{Models: models})
 }
 
 func (h *Handler) adminTestNotify(w http.ResponseWriter, r *http.Request) {
@@ -3856,7 +3862,7 @@ func (h *Handler) adminTestNotify(w http.ResponseWriter, r *http.Request) {
 	}
 	testNotify := h.mgr.TestNotifyFor(schema)
 	if testNotify == nil {
-		jsonResponse(w, map[string]string{"status": "error", "message": "Telegram not configured"})
+		jsonResponse(w, clientapi.StatusMessage{Status: "error", Message: "Telegram not configured"})
 		return
 	}
 	kind := r.URL.Query().Get("kind")
@@ -3864,10 +3870,10 @@ func (h *Handler) adminTestNotify(w http.ResponseWriter, r *http.Request) {
 		kind = "morning"
 	}
 	if err := testNotify(kind); err != nil {
-		jsonResponse(w, map[string]string{"status": "error", "message": err.Error()})
+		jsonResponse(w, clientapi.StatusMessage{Status: "error", Message: err.Error()})
 		return
 	}
-	jsonResponse(w, map[string]string{"status": "ok", "message": "message sent"})
+	jsonResponse(w, clientapi.StatusMessage{Status: "ok", Message: "message sent"})
 }
 
 func (h *Handler) adminGaps(w http.ResponseWriter, r *http.Request) {
@@ -3884,7 +3890,7 @@ func (h *Handler) adminGaps(w http.ResponseWriter, r *http.Request) {
 	if gaps == nil {
 		gaps = []storage.DataGap{}
 	}
-	jsonResponse(w, map[string]any{"gaps": gaps})
+	jsonResponse(w, clientapi.MetricGapsResponse{Gaps: gaps})
 }
 
 // adminQualityAudit returns a per-metric count of values currently in the
@@ -3907,9 +3913,9 @@ func (h *Handler) adminQualityAudit(w http.ResponseWriter, r *http.Request) {
 		entries = []storage.QualityAuditEntry{}
 	}
 	weekly, _ := db.WeeklyQualityReport(7)
-	jsonResponse(w, map[string]any{
-		"entries": entries,
-		"weekly":  weekly,
+	jsonResponse(w, clientapi.QualityAuditResponse{
+		Entries: entries,
+		Weekly:  weekly,
 	})
 }
 
@@ -3953,10 +3959,10 @@ func (h *Handler) adminQualityFix(w http.ResponseWriter, r *http.Request) {
 	for _, n := range suspectPerMetric {
 		suspectTotal += n
 	}
-	jsonResponse(w, map[string]any{
-		"impossible_flagged": impossible,
-		"suspect_flagged":    suspectTotal,
-		"per_metric":         suspectPerMetric,
+	jsonResponse(w, clientapi.QualityFixResponse{
+		ImpossibleFlagged: impossible,
+		SuspectFlagged:    suspectTotal,
+		PerMetric:         suspectPerMetric,
 	})
 }
 
@@ -3989,7 +3995,7 @@ func (h *Handler) adminQualityDigest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	jsonResponse(w, map[string]any{"ok": true})
+	jsonResponse(w, clientapi.QualityDigestResponse{OK: true})
 }
 
 func (h *Handler) adminCheckinCoverage(w http.ResponseWriter, r *http.Request) {
@@ -4012,9 +4018,7 @@ func (h *Handler) adminCheckinCoverage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodPost {
-		var req struct {
-			EnabledSince string `json:"enabled_since"`
-		}
+		var req clientapi.CoverageUpdateRequest
 		const maxBodyBytes = 1024
 		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 		dec.DisallowUnknownFields()
@@ -4082,7 +4086,7 @@ func (h *Handler) adminUsers(w http.ResponseWriter, r *http.Request) {
 		if h.onTenantCreated != nil {
 			h.onTenantCreated(user.SchemaName)
 		}
-		jsonResponse(w, map[string]any{"status": "ok", "user": user})
+		jsonResponse(w, clientapi.AdminNewUserResponse{Status: "ok", User: *user})
 		return
 	}
 
@@ -4092,17 +4096,7 @@ func (h *Handler) adminUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Mask password hashes.
-	type safeUser struct {
-		Username            string                     `json:"username"`
-		SchemaName          string                     `json:"schema_name"`
-		APIKey              string                     `json:"api_key_masked"`
-		Email               string                     `json:"email,omitempty"`
-		IsAdmin             bool                       `json:"is_admin"`
-		ProvisioningState   registry.ProvisioningState `json:"provisioning_state"`
-		TenantID            string                     `json:"tenant_id,omitempty"`
-		DBRole              string                     `json:"db_role,omitempty"`
-		DBCredentialVersion int                        `json:"db_credential_version,omitempty"`
-	}
+	type safeUser = clientapi.AdminUser
 	out := make([]safeUser, len(users))
 	for i, u := range users {
 		out[i] = safeUser{
@@ -4111,7 +4105,7 @@ func (h *Handler) adminUsers(w http.ResponseWriter, r *http.Request) {
 			TenantID: u.TenantID.String(), DBRole: u.DBRole, DBCredentialVersion: u.DBCredentialVersion,
 		}
 	}
-	jsonResponse(w, map[string]any{"users": out})
+	jsonResponse(w, clientapi.AdminUsersResponse{Users: out})
 }
 
 func (h *Handler) adminUserAPIKey(w http.ResponseWriter, r *http.Request) {
@@ -4136,9 +4130,9 @@ func (h *Handler) adminUserAPIKey(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Expires", "0")
-	jsonResponse(w, map[string]string{
-		"username": user.Username,
-		"api_key":  user.APIKey,
+	jsonResponse(w, clientapi.AdminUserKey{
+		Username: user.Username,
+		APIKey:   user.APIKey,
 	})
 }
 

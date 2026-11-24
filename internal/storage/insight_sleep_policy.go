@@ -22,25 +22,30 @@ func briefingForInsightSleep(b *health.BriefingResponse, sleep health.MorningRep
 	return &copy
 }
 
-func (s *DB) insightSleepBriefing(ctx context.Context, b *health.BriefingResponse) (*health.BriefingResponse, health.MorningReportSleep) {
+func (s *DB) insightSleepBriefing(ctx context.Context, b *health.BriefingResponse) (*health.BriefingResponse, health.MorningReportSleep, error) {
 	if b == nil {
-		return nil, health.MorningReportSleep{}
+		return nil, health.MorningReportSleep{}, nil
 	}
-	nights, err := s.ListCompletedNightSleep(ctx, b.Date, b.Date)
+	sleep, night, err := s.morningReportNight(ctx, b.Date, b.Date)
 	if err != nil {
-		return briefingForInsightSleep(b, health.MorningReportSleep{}), health.MorningReportSleep{}
+		// Archived profiles can predate the optional canonical night tables.
+		// Other insight domains still have their own dated evidence.
+		empty := health.MorningReportSleep{}
+		return briefingForInsightSleep(b, empty), empty, nil
 	}
-	sleep := health.SelectMorningReportSleep(b.Date, nights)
-	for _, night := range nights {
-		if night.WakeDate == b.Date && health.MorningSleepAnalysisEligible(&sleep, b.Date) {
-			sleep.Episode, sleep.AnalysisStatus, _ = s.recordedMorningSleepEpisode(ctx, night)
-			if sleep.Episode == nil {
-				sleep.Episode = health.RecordedSleepAggregate(b, b.Date, night.Source, night.DurationHours)
-			}
+	if night != nil && health.MorningSleepAnalysisEligible(&sleep, b.Date) {
+		sleep.Episode, sleep.AnalysisStatus, err = s.recordedMorningSleepEpisode(ctx, *night)
+		if err != nil {
+			return nil, health.MorningReportSleep{}, err
+		}
+		if sleep.Episode == nil {
+			sleep.Episode = health.RecordedSleepAggregate(b, b.Date, night.Source, night.DurationHours)
 		}
 	}
-	health.AttachRecentRecordedSleepComparison(&sleep, b)
-	return briefingForInsightSleep(b, sleep), sleep
+	if err := s.attachRecentSleepComparison(ctx, &sleep, b); err != nil {
+		return nil, health.MorningReportSleep{}, err
+	}
+	return briefingForInsightSleep(b, sleep), sleep, nil
 }
 
 // A complete recorded episode is fresh factual data even while the future

@@ -116,7 +116,7 @@ func (s *DB) LoadSleepArchitectureDays(from, to string) (map[string]SleepArchite
 	return out, nil
 }
 
-func (s *DB) sleepArchitectureRows(ctx context.Context, from, to, projection string, args ...any) (pgx.Rows, error) {
+func (s *DB) sleepArchitectureRows(ctx context.Context, from, to, projection string, windowAnchors ...string) (pgx.Rows, error) {
 	fromT, err := time.Parse(isoDate, from)
 	if err != nil {
 		return nil, fmt.Errorf("LoadSleepArchitectureDays: parse from: %w", err)
@@ -187,6 +187,22 @@ func (s *DB) sleepArchitectureRows(ctx context.Context, from, to, projection str
 	}
 	rows.Close()
 	payload, err := json.Marshal(segments)
+	if err != nil {
+		return nil, err
+	}
+	var anchorFrom, anchorTo *string
+	var args []any
+	if len(windowAnchors) == 2 {
+		anchorFrom, anchorTo = &windowAnchors[0], &windowAnchors[1]
+		args = []any{*anchorFrom, *anchorTo}
+	}
+	_, err = withDecisionJournal(ctx, s, func(db *DB, enabled bool) (bool, error) {
+		if !enabled {
+			return false, nil
+		}
+		_, err := db.pool.Exec(ctx, architectureReceiptSQL, json.RawMessage(payload), preferred, from, to, anchorFrom, anchorTo)
+		return true, err
+	})
 	if err != nil {
 		return nil, err
 	}

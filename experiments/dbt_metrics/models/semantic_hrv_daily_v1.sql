@@ -1,8 +1,12 @@
-{{ config(enabled=var('semantic_shadow', false), materialized='view', post_hook="alter view {{ this }} set (security_invoker = true)") }}
+{{ config(enabled=var('semantic_shadow', false) or var('tenant_native_catalog', false), materialized='ephemeral' if var('tenant_native_catalog', false) else 'view', post_hook="alter view {{ this }} set (security_invoker = true)") }}
 
 with cache as (
     select date, hrv_avg, case when not repair_pending then hrv_avg end as fallback_ms
-    from {{ source('source_data','daily_hrv') }}
+    {% if var('tenant_native_catalog', false) %}
+    from (select d.date,d.hrv_avg,exists(select from {{ adapter.quote(target.schema) }}.settings s
+        where s.key='cache_maintenance_hrv_repair_v1:'||d.date) as repair_pending
+        from {{ adapter.quote(target.schema) }}.daily_scores d) as native_days
+    {% else %}from {{ source('source_data','daily_hrv') }}{% endif %}
 ), points as (
     select * from {{ ref('semantic_hrv_observation_v1') }}
 ), hours as (
@@ -37,7 +41,9 @@ select c.date,d.avg_val as live_ms,d.avg_val as legacy_ms,r.raw_ms,coalesce(r.n_
        case when coalesce(r.raw_ms,cache.fallback_ms) is not null then c.date end as morning_observed_on,
        case when r.n_points>=4 then 'final' when coalesce(r.raw_ms,cache.fallback_ms) is not null then 'provisional'
             else 'missing' end as morning_confidence
-from {{ source('source_data','calendar') }} c
+{% if var('tenant_native_catalog', false) %}
+from (select date from cache union select writer_date from raw) c
+{% else %}from {{ source('source_data','calendar') }} c{% endif %}
 left join daily d on d.date=c.date
 left join raw r on r.writer_date=c.date
 left join cache on cache.date=c.date

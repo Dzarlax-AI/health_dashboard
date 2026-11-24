@@ -32,14 +32,19 @@ func ComputeBriefingWithTrends(d RawMetrics, lang string, projection *ReadinessP
 
 // ComputeBriefingWithMetrics renders dated card trends and the weekly sleep summary.
 func ComputeBriefingWithMetrics(d RawMetrics, lang string, projection *ReadinessProjection, trends map[string]MetricTrend, weeklySleep *SleepAnalysis) *BriefingResponse {
+	return RenderBriefing(d, lang, projection, trends, weeklySleep, computeDashboardSleepQuality(d), nil)
+}
+
+// RenderBriefing composes the dashboard from the dated metric results.
+func RenderBriefing(d RawMetrics, lang string, projection *ReadinessProjection, trends map[string]MetricTrend, weeklySleep *SleepAnalysis, quality *SleepQualityBreakdown, sectionsByName map[string]string) *BriefingResponse {
 	ls := GetStrings(lang)
 
 	recoverySec := scoreRecovery(d, ls)
 	sleepSec := scoreSleep(d, ls)
-	activitySec := scoreActivity(d, ls)
-	cardioSec := scoreCardio(d, ls)
+	activitySec := scoreActivity(d, ls, sectionsByName)
+	cardioSec := scoreCardio(d, ls, sectionsByName)
 
-	resp := newReadinessBriefing(d, ls, projection)
+	resp := readinessBriefingWithQuality(d, ls, projection, quality)
 	readinessScore := resp.ReadinessScore
 
 	var sections []BriefingSection
@@ -80,8 +85,13 @@ func ComputeReadinessBriefing(d RawMetrics, lang string) *BriefingResponse {
 
 // ComputeReadinessBriefingWithProjection composes the briefing around the reader's dated score.
 func ComputeReadinessBriefingWithProjection(d RawMetrics, lang string, projection *ReadinessProjection) *BriefingResponse {
+	return RenderReadinessBriefing(d, lang, projection, computeDashboardSleepQuality(d))
+}
+
+// RenderReadinessBriefing composes a dated score and sleep quality for the readiness reader.
+func RenderReadinessBriefing(d RawMetrics, lang string, projection *ReadinessProjection, quality *SleepQualityBreakdown) *BriefingResponse {
 	ls := GetStrings(lang)
-	resp := newReadinessBriefing(d, ls, projection)
+	resp := readinessBriefingWithQuality(d, ls, projection, quality)
 	applyCoherencePass(resp, ls)
 	updateReadinessServing(resp)
 	return resp
@@ -94,6 +104,10 @@ type ReadinessProjection struct {
 }
 
 func newReadinessBriefing(d RawMetrics, ls LangStrings, projection *ReadinessProjection) *BriefingResponse {
+	return readinessBriefingWithQuality(d, ls, projection, computeDashboardSleepQuality(d))
+}
+
+func readinessBriefingWithQuality(d RawMetrics, ls LangStrings, projection *ReadinessProjection, quality *SleepQualityBreakdown) *BriefingResponse {
 	var readiness readinessComputation
 	if projection == nil {
 		readiness = computeReadinessWithEvidence(d)
@@ -126,7 +140,7 @@ func newReadinessBriefing(d RawMetrics, ls LangStrings, projection *ReadinessPro
 		ReadinessToday:        score,
 		ReadinessTodayBand:    band,
 		ReadinessTodayLabel:   label,
-		SleepQuality:          computeDashboardSleepQuality(d),
+		SleepQuality:          quality,
 	}
 }
 

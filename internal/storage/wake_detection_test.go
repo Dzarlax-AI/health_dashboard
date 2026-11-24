@@ -1,10 +1,15 @@
 package storage
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func testWakeLocation(t *testing.T) *time.Location {
@@ -605,4 +610,442 @@ func TestComputeMorningWakeStatusConcurrentSourceChangeKeepsClock(t *testing.T) 
 	if metadata["sleep_inputs_changed_at"] != changedAt.Format(time.RFC3339) {
 		t.Fatalf("clock=%v", metadata["sleep_inputs_changed_at"])
 	}
+}
+
+func TestComputeMorningWakeStatusSerializesLateCorrectionAndRollsBack(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	ctx, cancel := queryCtx()
+	defer cancel()
+	loc := testWakeLocation(t)
+	date := "2026-08-05"
+	now := time.Date(2026, 8, 5, 9, 0, 0, 0, loc)
+	id := insertTestRawRecord(t, db, "wake-late-correction")
+	if _, err := db.pool.Exec(ctx, `INSERT INTO metric_points (health_record_id,metric_name,units,date,qty,source,quality,received_at) VALUES ($1,'sleep_core','hr','2026-08-05 06:00:00 +0200',1.5,'Apple Watch','ok',$2)`, id, now); err != nil {
+		t.Fatal(err)
+	}
+	initial, err := db.ComputeMorningWakeStatus(date, loc, now)
+	if err != nil || initial.Ready {
+		t.Fatalf("initial wake=%+v err=%v", initial, err)
+	}
+	if err := db.EnsureReportHistoryTablesContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+	key := "wake-test:" + uuid.NewString()
+	report := &ReportHistory{DeliveryKey: &key, Kind: "morning", LocalDate: date, Timezone: loc.String(), Language: "en", IsPreview: false, PlainBody: "sent report with original wake explanation", RichBody: "sent report with original wake explanation", DecisionID: "wake-before-correction", Context: json.RawMessage(`{"wake_reason":"still_writing"}`), AIMetadata: json.RawMessage(`{}`)}
+	token, reserved, err := db.ReserveArchivedReport(ctx, report)
+	if err != nil || !reserved {
+		t.Fatalf("archive report reserved=%v err=%v", reserved, err)
+	}
+	attempt, err := db.ReserveReportAttempt(ctx, report.ID, "html", report.PlainBody, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CompleteReportAttempt(ctx, attempt, "sent", "", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Hold the writer's advisory lock so the wake calculation waits while a late sync
+	// commits. The wake transaction must then see the corrected inputs.
+	lockTx, err := db.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lockTx.Rollback(ctx)
+	if _, err := lockTx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext(current_schema()),hashtext($1))`, "wake_time:"+date); err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan error, 1)
+	go func() {
+		got, err := db.ComputeMorningWakeStatus(date, loc, now.Add(time.Hour))
+		if err == nil && (got.InputsHash == initial.InputsHash || got.InputSource != "Apple Watch") {
+			err = fmt.Errorf("late-correction status did not use changed input: %+v", got)
+		}
+		results <- err
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var waiting bool
+		err = lockTx.QueryRow(ctx, `select exists(select from pg_locks waiter
+            where not waiter.granted and waiter.locktype='advisory'
+              and pg_backend_pid()=any(pg_blocking_pids(waiter.pid)))`).Scan(&waiting)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("wake writer did not reach the held advisory lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := lockTx.Exec(ctx, `update metric_points set qty=2.0,received_at=$1 where health_record_id=$2`, now.Add(time.Hour), id); err != nil {
+		t.Fatal(err)
+	}
+	if err := lockTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-results; err != nil {
+		t.Fatal(err)
+	}
+	corrected, err := db.GetDerivedMetric(DerivedMetricWakeTime, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	correctedHash, correctedAt := corrected.InputsHash, corrected.CalculatedAt
+	var metadataBefore json.RawMessage
+	if err := db.pool.QueryRow(ctx, `SELECT metadata FROM derived_metrics WHERE metric_name='wake_time' AND metric_date=$1`, date).Scan(&metadataBefore); err != nil {
+		t.Fatal(err)
+	}
+
+	// Force the final derived_metrics write to fail, after candidate and
+	// confirmation SQL have run, and prove the transaction preserves its row.
+	_, err = db.pool.Exec(ctx, `CREATE OR REPLACE FUNCTION wake_test_reject_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'forced wake test failure'; END $$; CREATE TRIGGER wake_test_reject_write BEFORE INSERT OR UPDATE ON derived_metrics FOR EACH ROW WHEN (NEW.metric_name='wake_time') EXECUTE FUNCTION wake_test_reject_write()`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.pool.Exec(ctx, `DROP TRIGGER IF EXISTS wake_test_reject_write ON derived_metrics; DROP FUNCTION IF EXISTS wake_test_reject_write()`)
+	if _, err := db.ComputeMorningWakeStatus(date, loc, now.Add(2*time.Hour)); err == nil {
+		t.Fatal("expected forced derived metric SQL failure")
+	}
+	var metadataAfter json.RawMessage
+	if err := db.pool.QueryRow(ctx, `SELECT metadata FROM derived_metrics WHERE metric_name='wake_time' AND metric_date=$1`, date).Scan(&metadataAfter); err != nil {
+		t.Fatal(err)
+	}
+	rolledBack, err := db.GetDerivedMetric(DerivedMetricWakeTime, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rolledBack.InputsHash != correctedHash || !rolledBack.CalculatedAt.Equal(correctedAt) || string(metadataAfter) != string(metadataBefore) {
+		t.Fatalf("failed tx changed persisted wake/hash-clock: before=%s after=%s metric=%+v", metadataBefore, metadataAfter, rolledBack)
+	}
+	var archivedBody, archivedDecision string
+	var contextMatches bool
+	if err := db.pool.QueryRow(ctx, `SELECT h.plain_body,h.decision_id,h.context=$2::jsonb FROM report_history h WHERE h.id=$1`, report.ID, report.Context).Scan(&archivedBody, &archivedDecision, &contextMatches); err != nil {
+		t.Fatal(err)
+	}
+	if archivedBody != report.PlainBody || archivedDecision != "wake-before-correction" || !contextMatches {
+		t.Fatalf("wake correction rewrote sent report: body=%q decision=%q contextMatches=%t", archivedBody, archivedDecision, contextMatches)
+	}
+}
+
+func evaluateMorningWake(candidate wakeCandidate, now time.Time, steps float64, typicalMin int, typicalOK bool, loc *time.Location) MorningWakeStatus {
+	status := MorningWakeStatus{
+		Confidence:            WakeConfidenceLow,
+		Reason:                "recent_segment",
+		CandidateWake:         candidate.Wake,
+		LatestIngest:          candidate.LatestIngest,
+		PostWakeSteps:         steps,
+		InputSource:           candidate.Source,
+		SourceSelectionReason: candidate.SourceSelectionReason,
+		PreferredSource:       candidate.PreferredSource,
+		InputsHash:            candidate.InputsHash,
+		TypicalWakeMin:        typicalMin,
+		TypicalWakeOK:         typicalOK,
+		Signal:                candidate.Signal,
+	}
+	candidateAge := now.Sub(candidate.Wake)
+	if candidateAge < 0 || candidateAge < wakeActivityAge {
+		return status
+	}
+	ingestQuietSince := candidate.IngestQuietSince
+	if ingestQuietSince.IsZero() {
+		ingestQuietSince = candidate.LatestIngest
+	}
+	if !ingestQuietSince.IsZero() && now.Sub(ingestQuietSince) < wakeIngestQuiet {
+		status.Reason = "still_writing"
+		return status
+	}
+	if steps >= wakeActivitySteps {
+		status.Ready = true
+		if candidate.Signal == "detailed_stage_end" {
+			status.Confidence = WakeConfidenceHigh
+			status.Reason = "post_wake_activity"
+		} else {
+			status.Confidence = WakeConfidenceMedium
+			status.Reason = "post_wake_activity_fallback"
+		}
+		return status
+	}
+	if candidate.Signal != "detailed_stage_end" && candidateAge < wakeFallbackAge {
+		status.Reason = "fallback_candidate"
+		return status
+	}
+	if typicalOK {
+		localWake := candidate.Wake.In(loc)
+		candidateMin := localWake.Hour()*60 + localWake.Minute()
+		if typicalMin-candidateMin > int(wakeEarlyTolerance/time.Minute) {
+			typicalGuard := time.Date(
+				localWake.Year(), localWake.Month(), localWake.Day(),
+				typicalMin/60, typicalMin%60, 0, 0, loc,
+			).Add(-wakeTypicalGuardOffset)
+			earlyDeadline := candidate.Wake.Add(wakeEarlyAge)
+			if typicalGuard.Before(earlyDeadline) {
+				earlyDeadline = typicalGuard
+			}
+			if now.Before(earlyDeadline) {
+				status.Reason = "early_candidate"
+				return status
+			}
+			status.Ready = true
+			status.Confidence = WakeConfidenceMedium
+			status.Reason = "early_candidate_timeout"
+			return status
+		}
+	}
+	if candidateAge < wakePassiveAge {
+		status.Reason = "awaiting_confirmation"
+		return status
+	}
+	status.Ready = true
+	status.Confidence = WakeConfidenceMedium
+	status.Reason = "quiet_timeout"
+	return status
+}
+
+// Go candidate selection remains a test oracle only; serving paths use the shared dbt SQL.
+type wakeEligibleSegment struct {
+	wakeInputSegment
+	End            time.Time
+	HashComponents []wakeInputSegment
+}
+
+func selectWakeCandidate(segments []wakeInputSegment, localDate string, loc *time.Location) (wakeCandidate, bool, error) {
+	return selectWakeCandidateWithPreference(segments, localDate, loc, "")
+}
+
+func selectWakeCandidateWithPreference(segments []wakeInputSegment, localDate string, loc *time.Location, preferred string) (wakeCandidate, bool, error) {
+	if loc == nil {
+		loc = time.UTC
+	}
+	isWakeWindow := func(end time.Time) bool {
+		localEnd := end.In(loc)
+		if localEnd.Format("2006-01-02") != localDate {
+			return false
+		}
+		minute := localEnd.Hour()*60 + localEnd.Minute()
+		return minute >= 3*60 && minute <= 15*60
+	}
+	isMidnight := func(start time.Time) bool {
+		return start.In(loc).Format("15:04:05") == "00:00:00"
+	}
+
+	var detailed, rawTotal []wakeEligibleSegment
+	detailedTotals := map[string]float64{}
+	sleepTotalTotals := map[string]float64{}
+	for _, segment := range segments {
+		if segment.Hours <= 0 || segment.Source == "" {
+			continue
+		}
+		end := segment.Start.Add(time.Duration(segment.Hours * float64(time.Hour)))
+		if isMidnight(segment.Start) || !isWakeWindow(end) {
+			continue
+		}
+		if segment.Metric == "sleep_total" {
+			sleepTotalTotals[segment.Source] += segment.Hours
+			rawTotal = append(rawTotal, wakeEligibleSegment{wakeInputSegment: segment, End: end})
+		} else {
+			detailed = append(detailed, wakeEligibleSegment{wakeInputSegment: segment, End: end})
+		}
+		if segment.Metric != "sleep_total" && segment.Metric != "sleep_awake" {
+			detailedTotals[segment.Source] += segment.Hours
+		}
+	}
+
+	source, selectionReason := chooseSleepSource(detailedTotals, true, preferred)
+	selected := detailed
+	signal := "detailed_stage_end"
+	if source == "" {
+		source, selectionReason = chooseSleepSource(sleepTotalTotals, true, preferred)
+		selected = rawTotal
+		signal = "raw_sleep_total_end"
+	}
+	if source != "" {
+		selected = slicesForSource(selected, source)
+	}
+	if source == "" || len(selected) == 0 {
+		var ok bool
+		source, selected, selectionReason, ok = selectMidnightSummary(segments, localDate, loc, isWakeWindow, preferred)
+		if !ok {
+			return wakeCandidate{}, false, nil
+		}
+		signal = "midnight_summary"
+	}
+
+	sort.Slice(selected, func(i, j int) bool {
+		if selected[i].Start.Equal(selected[j].Start) {
+			return selected[i].Metric < selected[j].Metric
+		}
+		return selected[i].Start.Before(selected[j].Start)
+	})
+	var wake, latestIngest time.Time
+	for _, segment := range selected {
+		if segment.End.After(wake) {
+			wake = segment.End
+		}
+		if segment.ReceivedAt.After(latestIngest) {
+			latestIngest = segment.ReceivedAt
+		}
+	}
+	if wake.IsZero() {
+		return wakeCandidate{}, false, nil
+	}
+	h := sha256.New()
+	fmt.Fprintf(h, "signal=%s\n", signal)
+	for _, segment := range selected {
+		components := segment.HashComponents
+		if len(components) == 0 {
+			components = []wakeInputSegment{segment.wakeInputSegment}
+		}
+		for _, component := range components {
+			fmt.Fprintf(h, "%s|%s|%.6f|%s|%s\n", component.Metric, component.Start.UTC().Format(time.RFC3339Nano), component.Hours, component.Source, component.Quality)
+		}
+	}
+	// The wake time still comes from the existing candidate selection above.
+	// Quietness must also cover earlier detailed intervals, and competing
+	// sources that could make the observed episode ambiguous. Receipt times are
+	// deliberately excluded so identical re-uploads do not restart the clock.
+	wakeDay := wake.In(loc)
+	windowStart := time.Date(wakeDay.Year(), wakeDay.Month(), wakeDay.Day(), 12, 0, 0, 0, loc).AddDate(0, 0, -1)
+	var episode []wakeInputSegment
+	for _, segment := range segments {
+		if segment.Metric == "sleep_total" || segment.Source == "" || segment.Hours <= 0 || segment.Quality != "ok" {
+			continue
+		}
+		end := segment.Start.Add(time.Duration(segment.Hours * float64(time.Hour)))
+		if segment.Start.Before(wake) && end.After(windowStart) {
+			episode = append(episode, segment)
+		}
+	}
+	sort.Slice(episode, func(i, j int) bool {
+		a, b := episode[i], episode[j]
+		if !a.Start.Equal(b.Start) {
+			return a.Start.Before(b.Start)
+		}
+		if a.Source != b.Source {
+			return a.Source < b.Source
+		}
+		if a.Metric != b.Metric {
+			return a.Metric < b.Metric
+		}
+		if a.Hours != b.Hours {
+			return a.Hours < b.Hours
+		}
+		return a.Quality < b.Quality
+	})
+	fmt.Fprintln(h, "episode-inputs-v1")
+	for _, segment := range episode {
+		fmt.Fprintf(h, "%s|%s|%.6f|%s|%s\n", segment.Metric, segment.Start.UTC().Format(time.RFC3339Nano), segment.Hours, segment.Source, segment.Quality)
+	}
+	return wakeCandidate{
+		Wake:                  wake,
+		LatestIngest:          latestIngest,
+		Source:                source,
+		SourceSelectionReason: selectionReason,
+		PreferredSource:       preferred,
+		InputsHash:            hex.EncodeToString(h.Sum(nil)),
+		Signal:                signal,
+	}, true, nil
+}
+
+func slicesForSource(segments []wakeEligibleSegment, source string) []wakeEligibleSegment {
+	out := make([]wakeEligibleSegment, 0, len(segments))
+	for _, segment := range segments {
+		if segment.Source == source {
+			out = append(out, segment)
+		}
+	}
+	return out
+}
+
+func selectMidnightSummary(
+	segments []wakeInputSegment,
+	localDate string,
+	loc *time.Location,
+	isWakeWindow func(time.Time) bool, preferred string,
+) (string, []wakeEligibleSegment, string, bool) {
+	type summaryGroup struct {
+		start        time.Time
+		source       string
+		asleepHours  float64
+		awakeHours   float64
+		latestIngest time.Time
+		components   []wakeInputSegment
+	}
+	groups := map[string]*summaryGroup{}
+	sourceTotals := map[string]float64{}
+	for _, segment := range segments {
+		if segment.Hours <= 0 || segment.Source == "" ||
+			segment.Start.In(loc).Format("2006-01-02 15:04:05") != localDate+" 00:00:00" {
+			continue
+		}
+		if segment.Metric != "sleep_total" && segment.Metric != "sleep_awake" {
+			continue
+		}
+		key := segment.Source + "|" + segment.Start.UTC().Format(time.RFC3339Nano)
+		group := groups[key]
+		if group == nil {
+			group = &summaryGroup{start: segment.Start, source: segment.Source}
+			groups[key] = group
+		}
+		if segment.Metric == "sleep_total" {
+			group.asleepHours += segment.Hours
+			sourceTotals[segment.Source] += segment.Hours
+		} else {
+			group.awakeHours += segment.Hours
+		}
+		group.components = append(group.components, segment)
+		if segment.ReceivedAt.After(group.latestIngest) {
+			group.latestIngest = segment.ReceivedAt
+		}
+	}
+	if preferred != "" {
+		// Rank only devices with a usable midnight summary, including when
+		// the preferred device is absent or ends outside the wake window.
+		eligibleTotals := make(map[string]float64)
+		for _, group := range groups {
+			end := group.start.Add(time.Duration((group.asleepHours + group.awakeHours) * float64(time.Hour)))
+			if group.asleepHours > 0 && isWakeWindow(end) {
+				eligibleTotals[group.source] = sourceTotals[group.source]
+			}
+		}
+		sourceTotals = eligibleTotals
+	}
+	source, selectionReason := chooseSleepSource(sourceTotals, true, preferred)
+	if source == "" {
+		return "", nil, "", false
+	}
+	var best *summaryGroup
+	var wake time.Time
+	for _, group := range groups {
+		if group.source != source || group.asleepHours <= 0 {
+			continue
+		}
+		end := group.start.Add(time.Duration((group.asleepHours + group.awakeHours) * float64(time.Hour)))
+		if isWakeWindow(end) && end.After(wake) {
+			best = group
+			wake = end
+		}
+	}
+	if best == nil {
+		return "", nil, "", false
+	}
+	sort.Slice(best.components, func(i, j int) bool {
+		if best.components[i].Start.Equal(best.components[j].Start) {
+			return best.components[i].Metric < best.components[j].Metric
+		}
+		return best.components[i].Start.Before(best.components[j].Start)
+	})
+	return source, []wakeEligibleSegment{{
+		wakeInputSegment: wakeInputSegment{
+			Metric:     "sleep_summary",
+			Start:      best.start,
+			Hours:      best.asleepHours + best.awakeHours,
+			Source:     best.source,
+			ReceivedAt: best.latestIngest,
+		},
+		End:            wake,
+		HashComponents: best.components,
+	}}, selectionReason, true
 }

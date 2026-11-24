@@ -2,6 +2,7 @@ package ui
 
 import (
 	"errors"
+	clientapi "health-receiver/internal/api"
 	"io"
 	"log"
 	"net/http"
@@ -60,21 +61,7 @@ func (j *importJob) status() importStatus {
 	return s
 }
 
-type importStatus struct {
-	Running          bool   `json:"running"`
-	Done             bool   `json:"done"`
-	Parsed           int64  `json:"parsed"`
-	Inserted         int64  `json:"inserted"`
-	Skipped          int64  `json:"skipped"`
-	WorkoutsParsed   int64  `json:"workouts_parsed"`
-	WorkoutsUpserted int64  `json:"workouts_upserted"`
-	WorkoutsFailed   int64  `json:"workouts_failed"`
-	BytesRead        int64  `json:"bytes_read"`
-	TotalBytes       int64  `json:"total_bytes"`
-	ElapsedSec       int    `json:"elapsed_sec"`
-	StartedAt        string `json:"started_at,omitempty"`
-	Err              string `json:"error,omitempty"`
-}
+type importStatus = clientapi.ImportStatus
 
 // per-schema import jobs (one at a time per tenant)
 var (
@@ -144,7 +131,7 @@ func (h *Handler) adminImportUpload(w http.ResponseWriter, r *http.Request) {
 	currentJobsMu.Lock()
 	if currentJobs[schema] != nil && currentJobs[schema].running {
 		currentJobsMu.Unlock()
-		jsonResponse(w, map[string]string{"status": "error", "message": "import already running"})
+		jsonResponse(w, clientapi.StatusMessage{Status: "error", Message: "import already running"})
 		return
 	}
 	currentJobs[schema] = job
@@ -182,7 +169,7 @@ func (h *Handler) adminImportUpload(w http.ResponseWriter, r *http.Request) {
 	backfill := h.mgr.BackfillFor(schema)
 	go runImport(job, db, tmp.Name(), filename, batchSize, time.Duration(pauseMs)*time.Millisecond, backfill)
 
-	jsonResponse(w, map[string]string{"status": "ok", "message": "import started"})
+	jsonResponse(w, clientapi.StatusMessage{Status: "ok", Message: "import started"})
 }
 
 func runImport(job *importJob, db *storage.DB, tmpPath, filename string, batchSize int, pause time.Duration, backfillFn func(bool)) {

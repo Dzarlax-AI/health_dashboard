@@ -1,8 +1,8 @@
-{{ config(enabled=var('briefing_components_shadow', false), materialized='view', post_hook="alter view {{ this }} set (security_invoker = true)") }}
+{{ config(enabled=var('briefing_components_shadow', false) or var('tenant_native_catalog', false), materialized='ephemeral' if var('tenant_native_catalog', false) else 'view', post_hook="alter view {{ this }} set (security_invoker = true)") }}
 
 with series as (
   select c.profile,c.capture,s.metric,x.ordinal,x.ms::float8 as value
-  from {{ source('briefing_pilot','captured_inputs') }} c
+  from ({{ today_metric_captures_v1('trend') }}) c
   cross join lateral (values
     ('step_count','Steps'),('resting_heart_rate','RHR'),('heart_rate_variability','HRV'),
     ('respiratory_rate','Resp'),

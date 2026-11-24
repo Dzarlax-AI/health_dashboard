@@ -21,12 +21,13 @@ func TestReadinessIOPerfHarness(t *testing.T) {
 	defer cleanup()
 
 	today := time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC)
+	// Row and serving digests were independently reproduced on base revision 2771974.
 	wantParity := map[int]struct {
 		rows, serving string
 	}{
-		1:  {rows: "951fa18d8b08e20ff1288e74356b85ff", serving: "1da42cb1afec09da60c3cb0b5616b91f48794d5042bbce384bc3482fe740aa6f"},
-		7:  {rows: "8fd4ab8cfd4572d7ff61b20e24e5ddae", serving: "8320a1af250c0094f8b797fe30f47a903885d28a489bc340119b3d0b8f83b369"},
-		30: {rows: "110fce03742084a709b06af9837ba22c", serving: "d4f34e4b7ba1745541c92ec0866e49b305fcd01e690e5b2186e81d3fd4a77a47"},
+		1:  {rows: "b5a39dc0fb61d4b16bc19106bea0fd4a", serving: "1da42cb1afec09da60c3cb0b5616b91f48794d5042bbce384bc3482fe740aa6f"},
+		7:  {rows: "13f4bdf6fe995ec5b4b7f280c986a191", serving: "8320a1af250c0094f8b797fe30f47a903885d28a489bc340119b3d0b8f83b369"},
+		30: {rows: "72f3e370693cb13712c657522627945a", serving: "d4f34e4b7ba1745541c92ec0866e49b305fcd01e690e5b2186e81d3fd4a77a47"},
 	}
 	for _, affectedDays := range []int{1, 7, 30} {
 		resetFullTestDB(t, db)

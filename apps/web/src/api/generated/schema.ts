@@ -4,6 +4,370 @@
  */
 
 export interface paths {
+    "/api/admin/ai-models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** List available models for an AI provider */
+        post: operations["listProviderModels"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/backfill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Schedule a tenant cache backfill */
+        post: operations["startCacheBackfill"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/checkin-coverage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Telegram check-in coverage */
+        get: operations["getCheckinCoverage"];
+        put?: never;
+        /** Update check-in coverage start date */
+        post: operations["updateCheckinCoverage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/energy-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read tenant Energy configuration */
+        get: operations["getEnergySettings"];
+        put?: never;
+        /** Update tenant Energy configuration */
+        post: operations["updateEnergySettings"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/gaps": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read detected gaps in metric coverage */
+        get: operations["getMetricGaps"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/quality-audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read data quality findings */
+        get: operations["getQualityAudit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/quality-digest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Send the weekly data quality digest */
+        post: operations["sendQualityDigest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/quality-fix": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Flag impossible and suspect measurements */
+        post: operations["applyQualityFix"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/readiness-redesign/backfill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Rebuild readiness snapshots over an inclusive date range */
+        post: operations["backfillReadiness"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/readiness-redesign/chip-calibrations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read readiness chip calibrations */
+        get: operations["listChipCalibrations"];
+        put?: never;
+        /** Recompute chip calibrations for a single tenant */
+        post: operations["recomputeChipCalibrations"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/readiness-redesign/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read chronic load calibration thresholds */
+        get: operations["getReadinessConfig"];
+        put?: never;
+        /** Update chronic load calibration thresholds */
+        post: operations["updateReadinessConfig"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/readiness-redesign/monitoring": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read readiness monitoring summaries */
+        get: operations["getReadinessMonitoring"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/readiness-redesign/operational-contract": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the readiness operational contract */
+        get: operations["getReadinessOperationalContract"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read installation AI configuration */
+        get: operations["getAISettings"];
+        put?: never;
+        /** Update installation AI configuration */
+        post: operations["updateAISettings"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read aggregate cache status */
+        get: operations["getCacheStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/stress-observability": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read stress signal coverage and diagnostics */
+        get: operations["getStressObservability"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/stress-validation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read stress validation against check-ins */
+        get: operations["getStressValidation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/today-insights/b1-quality-gate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Validate the frozen corpus and record its review */
+        post: operations["recordTodayInsightsQualityGate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/today-insights/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Today Insights configuration */
+        get: operations["getTodayInsightsConfig"];
+        put?: never;
+        /** Update Today Insights configuration */
+        post: operations["updateTodayInsightsConfig"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List profiles with masked API keys */
+        get: operations["listUsers"];
+        put?: never;
+        /** Provision a profile */
+        post: operations["createUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/users/{username}/api-key": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the API key for a profile */
+        get: operations["getUserAPIKey"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/ai-briefing": {
         parameters: {
             query?: never;
@@ -89,6 +453,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/import/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read progress of the most recent import */
+        get: operations["getImportStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/import/upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start a streamed Apple Health import */
+        post: operations["uploadHealthExport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Localized metric catalog with coverage and units */
+        get: operations["listMetrics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/metrics/data": {
         parameters: {
             query?: never;
@@ -98,6 +513,23 @@ export interface paths {
         };
         /** Time-bucketed metric history */
         get: operations["getMetricData"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/metrics/latest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Latest value and unit of each measured metric */
+        get: operations["getLatestMetricValues"];
         put?: never;
         post?: never;
         delete?: never;
@@ -191,6 +623,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Localized sections available for navigation */
+        get: operations["listSections"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/session": {
         parameters: {
             query?: never;
@@ -220,6 +669,74 @@ export interface paths {
         put?: never;
         /** Update tenant notification settings and preferred sleep source */
         post: operations["updateNotificationSettings"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings/energy-backfill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start retrospective Energy calculation */
+        post: operations["startEnergyBackfill"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings/energy-backfill/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Energy backfill progress */
+        get: operations["getEnergyBackfillStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings/energy-backfill/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read eligible dates for Energy backfill */
+        get: operations["getEnergyBackfillSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings/test-notify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Send a test Telegram notification */
+        post: operations["sendTestNotification"];
         delete?: never;
         options?: never;
         head?: never;
@@ -295,6 +812,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/webhook-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Telegram webhook registration status */
+        get: operations["getWebhookStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/webhook-status/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Schedule another webhook registration attempt */
+        post: operations["retryWebhookRegistration"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -350,6 +901,276 @@ export interface components {
             updated_at?: string;
             yesterday: string;
         };
+        AIModelsRequest: {
+            api_key?: string;
+            provider: string;
+        };
+        AIModelsResponse: {
+            models: {
+                display_name: string;
+                id: string;
+            }[] | null;
+        };
+        AdminAISettingsRequest: {
+            api_key?: string;
+            clear_api_key?: boolean;
+            max_output_tokens: number;
+            model?: string;
+            provider: string;
+            reasoning_effort?: string;
+        };
+        AdminAISettingsResponse: {
+            enabled: boolean;
+            max_output_tokens: number;
+            provider: string;
+            providers: {
+                api_key_placeholder: string;
+                configured: boolean;
+                default_model: string;
+                display_name: string;
+                id: string;
+                model: string;
+                reasoning_effort: string;
+                reasoning_efforts: string[] | null;
+                supports_reasoning: boolean;
+            }[] | null;
+        };
+        AdminCreateUser: {
+            IsAdmin?: boolean;
+            SchemaName?: string;
+            email?: string;
+            password?: string;
+            username: string;
+        };
+        AdminEnergySettingsResponse: {
+            effective_beta: number;
+            "energy.beta": number;
+            "energy.stress_drain_enabled": boolean;
+            "energy.z_threshold": number;
+            schema: string;
+        };
+        AdminNewUserResponse: {
+            status: string;
+            user: {
+                api_key: string;
+                /** Format: date-time */
+                created_at: string;
+                db_credential_version?: number;
+                db_isolation_ready: boolean;
+                db_role?: string;
+                email?: string;
+                is_admin: boolean;
+                provisioning_state: string;
+                schema_contract_checksum?: string;
+                schema_contract_version?: number;
+                schema_name: string;
+                /** Format: uuid */
+                tenant_id?: string;
+                username: string;
+            };
+        };
+        AdminUserKey: {
+            api_key: string;
+            username: string;
+        };
+        AdminUsersResponse: {
+            users: {
+                api_key_masked: string;
+                db_credential_version?: number;
+                db_role?: string;
+                email?: string;
+                is_admin: boolean;
+                provisioning_state: string;
+                schema_name: string;
+                tenant_id?: string;
+                username: string;
+            }[] | null;
+        };
+        CacheBackfillResponse: {
+            message: string;
+            schema: string;
+            status: string;
+        };
+        CacheStatus: {
+            daily_scores: {
+                metrics?: number;
+                newest?: string;
+                oldest?: string;
+                rows: number;
+            };
+            hourly_cache: {
+                metrics?: number;
+                newest?: string;
+                oldest?: string;
+                rows: number;
+            };
+            last_sync?: string;
+            minute_cache: {
+                metrics?: number;
+                newest?: string;
+                oldest?: string;
+                rows: number;
+            };
+            raw_points: {
+                metrics?: number;
+                newest?: string;
+                oldest?: string;
+                rows: number;
+            };
+            redesign_storage: {
+                error?: string;
+                healthy: boolean;
+            };
+            score_version: number;
+            telegram_enabled: boolean;
+        };
+        CatalogSeriesResponse: {
+            metric: string;
+            next_cursor?: string;
+            samples: {
+                available_at?: string;
+                boolean_value?: boolean;
+                dimensions?: {
+                    [key: string]: string;
+                };
+                disposition: string;
+                numeric_value?: string;
+                observed_at?: string;
+                reason?: string;
+                source?: string;
+                text_value?: string;
+                value?: unknown;
+                value_status: string;
+            }[] | null;
+        };
+        CheckinCoverage: {
+            days: number;
+            enabled_since?: string;
+            from: string;
+            rows: {
+                answer?: string;
+                /** Format: date-time */
+                answered_at?: string;
+                date: string;
+                /** Format: date-time */
+                expires_at?: string;
+                /** Format: date-time */
+                prompted_at?: string;
+                response_latency_seconds?: number;
+                source: string;
+                status: string;
+            }[] | null;
+            sla_active: boolean;
+            sla_rows: {
+                answer?: string;
+                /** Format: date-time */
+                answered_at?: string;
+                date: string;
+                /** Format: date-time */
+                expires_at?: string;
+                /** Format: date-time */
+                prompted_at?: string;
+                response_latency_seconds?: number;
+                source: string;
+                status: string;
+            }[] | null;
+            sla_summary: {
+                answer_counts: {
+                    [key: string]: number;
+                };
+                answered: number;
+                answered_coverage_percent: number;
+                average_response_seconds?: number;
+                expired: number;
+                late_answered: number;
+                missing: number;
+                pending: number;
+                prompted: number;
+                prompted_coverage_percent: number;
+                total_days: number;
+            };
+            source: string;
+            summary: {
+                answer_counts: {
+                    [key: string]: number;
+                };
+                answered: number;
+                answered_coverage_percent: number;
+                average_response_seconds?: number;
+                expired: number;
+                late_answered: number;
+                missing: number;
+                pending: number;
+                prompted: number;
+                prompted_coverage_percent: number;
+                total_days: number;
+            };
+            to: string;
+        };
+        ChipCalibrationResponse: {
+            recompute_results?: {
+                results: {
+                    error?: string;
+                    saved?: {
+                        BaseRate: number | null;
+                        CalibrationWindowDays: number;
+                        Cutoff: number | null;
+                        Method: string;
+                        NEligible: number;
+                        NPositives: number;
+                        P80: number | null;
+                        SourceEpoch: string;
+                        Status: string;
+                        SubScore: string;
+                        TargetKind: string;
+                    };
+                    sub_score: string;
+                    target_kind: string;
+                }[] | null;
+                tenant: string;
+            }[] | null;
+            rows: {
+                BaseRate: number | null;
+                CalibrationWindowDays: number;
+                Cutoff: number | null;
+                Method: string;
+                NEligible: number;
+                NPositives: number;
+                P80: number | null;
+                SourceEpoch: string;
+                Status: string;
+                SubScore: string;
+                TargetKind: string;
+                tenant: string;
+            }[] | null;
+            tenants: string[] | null;
+        };
+        ChronicLoadSettings: {
+            chronic_load_config: {
+                corrected_to_defaults: boolean;
+                defaults: {
+                    min_acute_density: number;
+                    min_breach_days: number;
+                };
+                effective: {
+                    min_acute_density: number;
+                    min_breach_days: number;
+                };
+                matches_defaults: boolean;
+                raw_settings: {
+                    min_acute_density: number;
+                    min_breach_days: number;
+                };
+            };
+            schema: string;
+        };
+        ChronicLoadSettingsRequest: {
+            "chronic_load.min_acute_density"?: number;
+            "chronic_load.min_breach_days"?: number;
+        };
+        CoverageUpdateRequest: {
+            enabled_since?: string;
+        };
         DashboardResponse: {
             cache_completed_at?: string;
             cache_state: string;
@@ -362,6 +1183,10 @@ export interface components {
             }[] | null;
             date: string;
             last_updated: string;
+        };
+        DateBoundsRequest: {
+            from?: string;
+            to?: string;
         };
         DerivedMetricsResponse: {
             from: string;
@@ -386,6 +1211,30 @@ export interface components {
                 /** @enum {string} */
                 value_type: "number" | "text" | "timestamp" | "json";
             }[] | null;
+        };
+        EnergyBackfillStatus: {
+            done: boolean;
+            elapsed_sec: number;
+            error?: string;
+            progress: {
+                done: number;
+                errors: number;
+                from: string;
+                ok: number;
+                skipped: number;
+                to: string;
+                total: number;
+                tz: string;
+            };
+            running: boolean;
+            started_at?: string;
+        };
+        EnergyBackfillSummary: {
+            backfilled_snapshots: number;
+            complete_daily_scores: number;
+            earliest_complete?: string;
+            tz?: string;
+            yesterday_in_tz?: string;
         };
         EnergyHistoryDayResponse: {
             /**
@@ -418,6 +1267,13 @@ export interface components {
                 /** Format: date-time */
                 ts: string;
             }[] | null;
+        };
+        EnergySettingsRequest: {
+            "energy.beta"?: string;
+            "energy.stress_drain_enabled"?: string;
+            "energy.z_threshold"?: string;
+        } & {
+            [key: string]: string;
         };
         HealthBriefingResponse: {
             ai_insight?: string;
@@ -673,6 +1529,35 @@ export interface components {
                 updated_at?: string;
             };
         };
+        ImportStatus: {
+            bytes_read: number;
+            done: boolean;
+            elapsed_sec: number;
+            error?: string;
+            inserted: number;
+            parsed: number;
+            running: boolean;
+            skipped: number;
+            started_at?: string;
+            total_bytes: number;
+            workouts_failed: number;
+            workouts_parsed: number;
+            workouts_upserted: number;
+        };
+        LatestMetricsResponse: {
+            date: string;
+            metric: string;
+            unit: string;
+            value: number;
+        }[];
+        MetricCatalogResponse: {
+            count: number;
+            display_name: string;
+            max: string;
+            min: string;
+            name: string;
+            units: string;
+        }[];
         MetricDataResponse: {
             agg: string;
             bucket: string;
@@ -694,9 +1579,98 @@ export interface components {
                 source: string;
             }[] | null;
         };
+        MetricGapsResponse: {
+            gaps: {
+                days: number;
+                from: string;
+                partial?: boolean;
+                to: string;
+                today_missing?: boolean;
+            }[] | null;
+        };
+        MetricQuantityResponse: {
+            agg: string;
+            bucket: string;
+            metric: string;
+            points: {
+                date: string;
+                qty: number;
+            }[];
+        };
         MetricRangeResponse: {
             max: string;
             min: string;
+        };
+        MonitoringReport: {
+            rows: {
+                AsOfDate: string;
+                BaselineDays: number;
+                CoverageRows: {
+                    ContractLagDays: number;
+                    Eligible: number;
+                    EligiblePct: number;
+                    ExpectedRows: number;
+                    FloorPct: number;
+                    InputStableTo: string;
+                    InputStalenessDays: number;
+                    InputStalenessReason: string;
+                    InputStalenessStatus: string;
+                    IssueSamples: {
+                        CaptureClass: string;
+                        Date: string;
+                        Eligible: boolean;
+                        Reason: string;
+                    }[] | null;
+                    MissingRows: number;
+                    ReasonCounts: {
+                        [key: string]: number;
+                    };
+                    Rows: number;
+                    Status: string;
+                    SubScore: string;
+                    TargetKind: string;
+                    TopReason: string;
+                    TopReasonRows: number;
+                    WindowFrom: string;
+                    WindowTo: string;
+                }[] | null;
+                DriftDays: number;
+                DriftRows: {
+                    BaselineEligible: number;
+                    BaselinePositives: number;
+                    BaselineRate: number;
+                    Delta: number;
+                    RecentEligible: number;
+                    RecentPositives: number;
+                    RecentRate: number;
+                    Status: string;
+                    SubScore: string;
+                    TargetKind: string;
+                    Threshold: number;
+                }[] | null;
+                OverallStatus: string;
+                SourceEpochAlerts: {
+                    EndDate: string;
+                    EpochID: string;
+                    Kind: string;
+                    Message: string;
+                    StartDate: string;
+                    Status: string;
+                }[] | null;
+                UnknownRateRows: {
+                    BaselineRate: number;
+                    BaselineRows: number;
+                    BaselineUnknown: number;
+                    RecentRate: number;
+                    RecentRows: number;
+                    RecentUnknown: number;
+                    Status: string;
+                    SubScore: string;
+                }[] | null;
+                WindowDays: number;
+                tenant: string;
+            }[] | null;
+            tenants: string[] | null;
         };
         NotificationSettingsRequest: {
             [key: string]: string;
@@ -719,6 +1693,120 @@ export interface components {
             tenant?: string;
             timezone: string;
             username?: string;
+        };
+        OperationalReport: {
+            days: number;
+            from: string;
+            rows: {
+                BaselineKind: string;
+                BaselineReason: string | null;
+                CalibrationStatus: string | null;
+                CurrentSourceEpoch: string | null;
+                Cutoff: number | null;
+                Date: string;
+                PredictedValue: number | null;
+                SourceEpoch: string | null;
+                SourceEpochChanged: boolean;
+                SubScore: string;
+                TargetEligibilityReason: string | null;
+                TargetEligible: boolean | null;
+                TargetKind: string;
+                tenant: string;
+            }[] | null;
+            tenants: string[] | null;
+            to: string;
+        };
+        QualityAuditResponse: {
+            entries: {
+                bad_count: number;
+                max: number;
+                metric: string;
+                min: number;
+                sample: number;
+                total_rows: number;
+            }[] | null;
+            weekly: {
+                days: number;
+                impossible: {
+                    [key: string]: number;
+                };
+                missed_nights: string[] | null;
+                suspect: {
+                    [key: string]: number;
+                };
+                watch_off_hours: number;
+            };
+        };
+        QualityDigestResponse: {
+            ok: boolean;
+        };
+        QualityFixResponse: {
+            impossible_flagged: number;
+            per_metric: {
+                [key: string]: number;
+            };
+            suspect_flagged: number;
+        };
+        QualityGateResponse: {
+            approval: {
+                approved_at: string;
+                claim_packet_version: string;
+                corpus_hash: string;
+                max_output_tokens: number;
+                model: string;
+                narrative_version: string;
+                prompt_revision: string;
+                provider: string;
+                reasoning: string;
+                review_fingerprint: string;
+                version: string;
+            };
+            quality_gate: {
+                all_cases_improved_percent: number;
+                eligible_cases: number;
+                eligible_improved_percent: number;
+                fallback_only_cases: number;
+                improved_cases: number;
+                passed: boolean;
+                safety_rejected_runs: string[] | null;
+                safety_violations: string[] | null;
+                total_cases: number;
+                unreviewed_runs: string[] | null;
+            };
+            schema: string;
+        };
+        ReadinessBackfillResponse: {
+            chronic_load_config: {
+                corrected_to_defaults: boolean;
+                defaults: {
+                    min_acute_density: number;
+                    min_breach_days: number;
+                };
+                effective: {
+                    min_acute_density: number;
+                    min_breach_days: number;
+                };
+                matches_defaults: boolean;
+                raw_settings: {
+                    min_acute_density: number;
+                    min_breach_days: number;
+                };
+            };
+            days: number;
+            force: boolean;
+            from: string;
+            schema: string;
+            schema_health: {
+                error?: string;
+                healthy: boolean;
+            };
+            sub_scores: {
+                [key: string]: {
+                    error?: string;
+                    written: number;
+                };
+            };
+            to: string;
         };
         ReadinessHistoryResponse: {
             points: {
@@ -817,6 +1905,14 @@ export interface components {
             summary: string;
             title: string;
         };
+        SectionsResponse: {
+            sections: {
+                icon: string;
+                key: string;
+                subtitle: string;
+                title: string;
+            }[];
+        };
         SessionResponse: {
             is_admin: boolean;
         };
@@ -881,6 +1977,356 @@ export interface components {
                 goal_hours: number;
                 version: string;
             } | null;
+        };
+        StatusMessage: {
+            message: string;
+            status: string;
+        };
+        StressObservability: {
+            applied: boolean;
+            beta: number;
+            distribution: {
+                days: number;
+                empty: number;
+                flag_counts: {
+                    [key: string]: number;
+                };
+                from: string;
+                load_max: number;
+                load_mean: number;
+                load_median: number;
+                load_p90: number;
+                to: string;
+            };
+            effective_beta: number;
+            from: string;
+            mode: string;
+            stress_drain_enabled: boolean;
+            timezone: string;
+            to: string;
+            validation: {
+                channel_1_hrv: {
+                    n: number;
+                    r?: number;
+                    sparse?: boolean;
+                };
+                channel_2_rhr: {
+                    n: number;
+                    r?: number;
+                    sparse?: boolean;
+                };
+                channel_3_sleep: {
+                    agreement_votes: number;
+                    awake_r?: number;
+                    deep_pct_first_third_r?: number;
+                    n: number;
+                    onset_latency_r?: number;
+                };
+                days: number;
+                flags?: string[] | null;
+                reason: string;
+                verdict: string;
+                window_days: number;
+            };
+            window_days: number;
+            z_threshold: number;
+        };
+        StressValidation: {
+            channel_1_hrv: {
+                n: number;
+                r?: number;
+                sparse?: boolean;
+            };
+            channel_2_rhr: {
+                n: number;
+                r?: number;
+                sparse?: boolean;
+            };
+            channel_3_sleep: {
+                agreement_votes: number;
+                awake_r?: number;
+                deep_pct_first_third_r?: number;
+                n: number;
+                onset_latency_r?: number;
+            };
+            days: number;
+            flags?: string[] | null;
+            reason: string;
+            verdict: string;
+            window_days: number;
+        };
+        TodayInsightsB1QualityGateRequest: {
+            corpus: {
+                cases: {
+                    action_options?: {
+                        fact_ids: string[] | null;
+                        id: string;
+                        text: string;
+                    }[] | null;
+                    decision_evidence_domains?: string[] | null;
+                    id: string;
+                    locale: string;
+                    narrative_facts?: {
+                        authority?: string;
+                        display_values?: string[] | null;
+                        domain?: string;
+                        evidence_ids: string[] | null;
+                        fresh?: boolean;
+                        id: string;
+                        meaning?: string;
+                        statement: string;
+                        window?: string;
+                    }[] | null;
+                    narrative_subjects?: {
+                        [key: string]: string;
+                    };
+                    origin?: string;
+                    primary_meaning_id: string;
+                    primary_narrative_subject?: string;
+                    scenario?: {
+                        checkin?: string;
+                        conflict_evidence_ids?: {
+                            [key: string]: string;
+                        };
+                        update_kind?: string;
+                    };
+                    snapshot: {
+                        ai_insight?: {
+                            alternative_action?: string;
+                            evidence_ids: string[] | null;
+                            fact_ids: string[] | null;
+                            /** Format: date-time */
+                            generated_at?: string;
+                            source_date?: string;
+                            stale?: boolean;
+                            stance: string;
+                            text: string;
+                        };
+                        changes: {
+                            destination: {
+                                id: string;
+                                kind: string;
+                            };
+                            detail: string;
+                            domain: string;
+                            evidence_ids: string[] | null;
+                            id: string;
+                            severity: string;
+                            title: string;
+                        }[] | null;
+                        date: string;
+                        decision_id: string;
+                        domains: {
+                            ai_insight?: {
+                                alternative_action?: string;
+                                evidence_ids: string[] | null;
+                                fact_ids: string[] | null;
+                                /** Format: date-time */
+                                generated_at?: string;
+                                source_date?: string;
+                                stale?: boolean;
+                                stance: string;
+                                text: string;
+                            };
+                            /** Format: date-time */
+                            as_of?: string;
+                            band: string;
+                            confidence?: string;
+                            data_state: string;
+                            destination: {
+                                id: string;
+                                kind: string;
+                            };
+                            insight: {
+                                answer_kind: string;
+                                claim_id?: string;
+                                evidence_ids: string[] | null;
+                                fallback: boolean;
+                                gap_reason?: string;
+                                meaning: string;
+                                narrative?: {
+                                    claim_ids: string[] | null;
+                                    evidence_ids: string[] | null;
+                                    text: string;
+                                };
+                                next_step?: {
+                                    id: string;
+                                    text: string;
+                                };
+                                observation: string;
+                                remediation_id?: string;
+                                state: string;
+                                title: string;
+                            };
+                            key: string;
+                            summary: string;
+                        }[] | null;
+                        evidence: {
+                            baseline?: number;
+                            comparison?: string;
+                            comparison_period?: string;
+                            confidence?: string;
+                            data_state: string;
+                            delta?: number;
+                            destination: {
+                                id: string;
+                                kind: string;
+                            };
+                            domain: string;
+                            id: string;
+                            /** Format: date-time */
+                            observed_at?: string;
+                            unit?: string;
+                            value?: number;
+                        }[] | null;
+                        has_more: boolean;
+                        primary: {
+                            answer_kind: string;
+                            claim_id?: string;
+                            evidence_ids: string[] | null;
+                            fallback: boolean;
+                            gap_reason?: string;
+                            meaning: string;
+                            narrative?: {
+                                claim_ids: string[] | null;
+                                evidence_ids: string[] | null;
+                                text: string;
+                            };
+                            next_step?: {
+                                id: string;
+                                text: string;
+                            };
+                            observation: string;
+                            remediation_id?: string;
+                            state: string;
+                            title: string;
+                        };
+                        snapshot_version: string;
+                        /** Format: date-time */
+                        updated_at?: string;
+                    };
+                    tags: string[] | null;
+                    visible_b0_baseline?: {
+                        domains: {
+                            domain: string;
+                            meaning: string;
+                            next_step?: string;
+                            observation: string;
+                            summary: string;
+                        }[] | null;
+                        primary: string;
+                    };
+                }[] | null;
+                packet_shape?: string;
+                packet_version?: string;
+                version: string;
+            };
+            evaluation: {
+                cases: {
+                    fallbacks: {
+                        context?: string;
+                        key: string;
+                        meaning: string;
+                        observation: string;
+                        summary: string;
+                    }[] | null;
+                    id: string;
+                    locale: string;
+                    mode: string;
+                    runs: {
+                        attempts: number;
+                        error?: string;
+                        input_tokens: number;
+                        invalid_domains?: {
+                            [key: string]: string;
+                        };
+                        narrative?: {
+                            domains: {
+                                key: string;
+                                section: {
+                                    action_id?: string;
+                                    anchor_variant_id: string;
+                                    fact_ids?: string[] | null;
+                                    sentences: {
+                                        claim_ids: string[] | null;
+                                        meaning_ids: string[] | null;
+                                        position_ids: string[] | null;
+                                        qualifier_ids: string[] | null;
+                                        text: string;
+                                    }[] | null;
+                                    text?: string;
+                                } | null;
+                            }[] | null;
+                            locale: string;
+                            overall?: {
+                                action_id?: string;
+                                anchor_variant_id: string;
+                                fact_ids?: string[] | null;
+                                sentences: {
+                                    claim_ids: string[] | null;
+                                    meaning_ids: string[] | null;
+                                    position_ids: string[] | null;
+                                    qualifier_ids: string[] | null;
+                                    text: string;
+                                }[] | null;
+                                text?: string;
+                            };
+                            version: string;
+                        };
+                        output_tokens: number;
+                        provider_errors?: {
+                            [key: string]: string;
+                        };
+                        review?: {
+                            domains: {
+                                added_meaning: number | null;
+                                claim_fidelity: string;
+                                fidelity?: string;
+                                key: string;
+                                language: string;
+                                naturalness?: string;
+                                output_status: string;
+                                qualifier_fidelity: string;
+                                review_reason: string;
+                                safety: string;
+                                screen_duplication: string;
+                            }[] | null;
+                            notes?: string;
+                        };
+                        safety_evidence?: {
+                            candidate_hash: string;
+                            categories: string[] | null;
+                            provider_attempts?: number;
+                            provider_finish_reason?: string;
+                            provider_input_tokens?: number;
+                            provider_latency_millis?: number;
+                            provider_output_tokens?: number;
+                            provider_request_id?: string;
+                            provider_total_tokens?: number;
+                            review_fingerprint: string;
+                            safety_max_output_tokens: number;
+                            safety_prompt_revision: string;
+                            verdict: string;
+                        };
+                    }[] | null;
+                    tags: string[] | null;
+                }[] | null;
+                claim_packet_version: string;
+                corpus_hash: string;
+                /** Format: date-time */
+                generated_at: string;
+                max_output_tokens: number;
+                model: string;
+                narrative_version: string;
+                prompt_revision: string;
+                provider: string;
+                reasoning: string;
+                review_fingerprint: string;
+                runs_per_case: number;
+                safety_max_output_tokens: number;
+                safety_prompt_revision: string;
+                version: string;
+            };
         };
         TodayInsightsResponse: {
             ai_insight?: {
@@ -1018,6 +2464,31 @@ export interface components {
             /** Format: date-time */
             updated_at?: string;
         };
+        TodayInsightsSettings: {
+            b0_enabled: boolean;
+            b1_enabled: boolean;
+            b1_narrative_mode: string;
+            b1_preview_enabled: boolean;
+            b1_quality_gate_approved: boolean;
+            b1_quality_gate_matches_active_ai: boolean;
+            schema: string;
+        };
+        TodayInsightsSettingsRequest: {
+            today_insights_b0_enabled?: boolean;
+            today_insights_b1_enabled?: boolean;
+            today_insights_b1_preview_enabled?: boolean;
+        };
+        WebhookRetryResponse: {
+            reason?: string;
+            status: string;
+        };
+        WebhookStatusResponse: {
+            description?: string;
+            reason: string;
+            state: string;
+            /** Format: date-time */
+            updated_at: string | null;
+        };
     };
     responses: never;
     parameters: never;
@@ -1027,6 +2498,1497 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    listProviderModels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AIModelsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AIModelsResponse"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Administrator authorization is required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    startCacheBackfill: {
+        parameters: {
+            query?: {
+                /** @description Unsupported values are ignored and the server falls back to the documented default. */
+                force?: "0" | "1";
+                /** @description Optional administrator target, validated against the tenant registry. Defaults to the authenticated profile. */
+                schema?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CacheBackfillResponse"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Administrator authorization is required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getCheckinCoverage: {
+        parameters: {
+            query?: {
+                days?: number;
+                /** @description Optional administrator target, validated against the tenant registry. Defaults to the authenticated profile. */
+                schema?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckinCoverage"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Administrator authorization is required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    updateCheckinCoverage: {
+        parameters: {
+            query?: {
+                days?: number;
+                /** @description Optional administrator target, validated against the tenant registry. Defaults to the authenticated profile. */
+                schema?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CoverageUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckinCoverage"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Administrator authorization is required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getEnergySettings: {
+        parameters: {
+            query?: {
+                /** @description Optional administrator target, validated against the tenant registry. Defaults to the authenticated profile. */
+                schema?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminEnergySettingsResponse"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Administrator authorization is required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    updateEnergySettings: {
+        parameters: {
+            query?: {
+                /** @description Optional administrator target, validated against the tenant registry. Defaults to the authenticated profile. */
+                schema?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EnergySettingsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsUpdateResponse"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Administrator authorization is required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getMetricGaps: {
+        parameters: {
+            query?: {
+                /** @description Optional administrator target, validated against the tenant registry. Defaults to the authenticated profile. */
+                schema?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricGapsResponse"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Administrator authorization is required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getQualityAudit: {
+        parameters: {
+            query?: {
+                /** @description Optional administrator target, validated against the tenant registry. Defaults to the authenticated profile. */
+                schema?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QualityAuditResponse"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Administrator authorization is required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    sendQualityDigest: {
+        parameters: {
+            query?: {
+                /** @description Optional administrator target, validated against the tenant registry. Defaults to the authenticated profile. */
+                schema?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QualityDigestResponse"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Administrator authorization is required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    applyQualityFix: {
+        parameters: {
+            query?: {
+                /** @description Optional administrator target, validated against the tenant registry. Defaults to the authenticated profile. */
+                schema?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QualityFixResponse"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Administrator authorization is required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    backfillReadiness: {
+        parameters: {
+            query: {
+                /** @description First date in YYYY-MM-DD. */
+                from: string;
+                /** @description Last date in YYYY-MM-DD. */
+                to: string;
+                /** @description Sub-score name or all. */
+                sub_score?: string;
+                /** @description Unsupported values are ignored and the server falls back to the documented default. */
+                force?: "0" | "1";
+                /** @description Optional administrator target, validated against the tenant registry. Defaults to the authenticated profile. */
+                schema?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadinessBackfillResponse"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Administrator authorization is required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    listChipCalibrations: {
+        parameters: {
+            query?: {
+                /** @description Optional administrator target, validated against the tenant registry. Defaults to the authenticated profile. */
+                schema?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChipCalibrationResponse"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Administrator authorization is required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    recomputeChipCalibrations: {
+        parameters: {
+            query?: {
+                /** @description Optional administrator target, validated against the tenant registry. Defaults to the authenticated profile. */
+                schema?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChipCalibrationResponse"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Administrator authorization is required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getReadinessConfig: {
+        parameters: {
+            query?: {
+                /** @description Optional administrator target, validated against the tenant registry. Defaults to the authenticated profile. */
+                schema?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChronicLoadSettings"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Administrator authorization is required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    updateReadinessConfig: {
+        parameters: {
+            query?: {
+                /** @description Optional administrator target, validated against the tenant registry. Defaults to the authenticated profile. */
+                schema?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChronicLoadSettingsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChronicLoadSettings"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Administrator authorization is required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getReadinessMonitoring: {
+        parameters: {
+            query?: {
+                /** @description Optional administrator target, validated against the tenant registry. Defaults to the authenticated profile. */
+                schema?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MonitoringReport"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Administrator authorization is required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getReadinessOperationalContract: {
+        parameters: {
+            query?: {
+                days?: number;
+                /** @description Optional administrator target, validated against the tenant registry. Defaults to the authenticated profile. */
+                schema?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationalReport"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Administrator authorization is required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getAISettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminAISettingsResponse"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Administrator authorization is required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    updateAISettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminAISettingsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsUpdateResponse"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Administrator authorization is required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getCacheStatus: {
+        parameters: {
+            query?: {
+                /** @description Optional administrator target, validated against the tenant registry. Defaults to the authenticated profile. */
+                schema?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CacheStatus"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Administrator authorization is required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getStressObservability: {
+        parameters: {
+            query?: {
+                window?: number;
+                /** @description Last tenant-local date in YYYY-MM-DD. */
+                as_of?: string;
+                /** @description Optional administrator target, validated against the tenant registry. Defaults to the authenticated profile. */
+                schema?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StressObservability"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Administrator authorization is required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getStressValidation: {
+        parameters: {
+            query?: {
+                window?: number;
+                /** @description Last tenant-local date in YYYY-MM-DD. */
+                as_of?: string;
+                /** @description Optional administrator target, validated against the tenant registry. Defaults to the authenticated profile. */
+                schema?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StressValidation"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Administrator authorization is required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    recordTodayInsightsQualityGate: {
+        parameters: {
+            query?: {
+                /** @description Optional administrator target, validated against the tenant registry. Defaults to the authenticated profile. */
+                schema?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TodayInsightsB1QualityGateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QualityGateResponse"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Administrator authorization is required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getTodayInsightsConfig: {
+        parameters: {
+            query?: {
+                /** @description Optional administrator target, validated against the tenant registry. Defaults to the authenticated profile. */
+                schema?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TodayInsightsSettings"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Administrator authorization is required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    updateTodayInsightsConfig: {
+        parameters: {
+            query?: {
+                /** @description Optional administrator target, validated against the tenant registry. Defaults to the authenticated profile. */
+                schema?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TodayInsightsSettingsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TodayInsightsSettings"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Administrator authorization is required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    listUsers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminUsersResponse"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Administrator authorization is required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    createUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminCreateUser"];
+            };
+        };
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminNewUserResponse"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Administrator authorization is required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getUserAPIKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                username: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminUserKey"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Administrator authorization is required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
     getAIBriefing: {
         parameters: {
             query?: {
@@ -1050,15 +4012,15 @@ export interface operations {
                     "application/json": components["schemas"]["AIBriefingResponse"];
                 };
             };
-            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
-            302: {
+            /** @description Authentication required. */
+            401: {
                 headers: {
-                    /** @description Interactive login or setup route. */
-                    Location?: string;
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/html": string;
+                    "application/json": {
+                        error: string;
+                    };
                 };
             };
             /** @description The backend could not load or encode the tenant response. */
@@ -1090,15 +4052,15 @@ export interface operations {
                     "application/json": components["schemas"]["DashboardResponse"];
                 };
             };
-            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
-            302: {
+            /** @description Authentication required. */
+            401: {
                 headers: {
-                    /** @description Interactive login or setup route. */
-                    Location?: string;
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/html": string;
+                    "application/json": {
+                        error: string;
+                    };
                 };
             };
             /** @description The backend could not load or encode the tenant response. */
@@ -1137,19 +4099,19 @@ export interface operations {
                     "application/json": components["schemas"]["DerivedMetricsResponse"];
                 };
             };
-            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
-            302: {
+            /** @description Missing or unsupported metric, or an invalid date range. */
+            400: {
                 headers: {
-                    /** @description Interactive login or setup route. */
-                    Location?: string;
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/html": string;
+                    "application/json": {
+                        error: string;
+                    };
                 };
             };
-            /** @description Missing or unsupported metric, or an invalid date range. */
-            400: {
+            /** @description Authentication required. */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1193,17 +4155,6 @@ export interface operations {
                     "application/json": components["schemas"]["EnergyHistoryDayResponse"] | components["schemas"]["EnergyHistoryHourResponse"];
                 };
             };
-            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
-            302: {
-                headers: {
-                    /** @description Interactive login or setup route. */
-                    Location?: string;
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/html": string;
-                };
-            };
             /** @description Invalid granularity. Use day or hour. */
             400: {
                 headers: {
@@ -1211,6 +4162,17 @@ export interface operations {
                 };
                 content: {
                     "text/plain": string;
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
                 };
             };
             /** @description The backend could not load or encode the tenant response. */
@@ -1245,15 +4207,15 @@ export interface operations {
                     "application/json": components["schemas"]["HealthBriefingResponse"];
                 };
             };
-            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
-            302: {
+            /** @description Authentication required. */
+            401: {
                 headers: {
-                    /** @description Interactive login or setup route. */
-                    Location?: string;
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/html": string;
+                    "application/json": {
+                        error: string;
+                    };
                 };
             };
             /** @description The backend could not load or encode the tenant response. */
@@ -1267,21 +4229,114 @@ export interface operations {
             };
         };
     };
-    getMetricData: {
+    getImportStatus: {
         parameters: {
-            query: {
-                /** @description Canonical metric name. */
-                metric: string;
-                /** @description Start date in YYYY-MM-DD. */
-                from?: string;
-                /** @description End date in YYYY-MM-DD. */
-                to?: string;
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportStatus"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    uploadHealthExport: {
+        parameters: {
+            query?: {
+                /** @description File name hint for detecting XML and ZIP. */
+                filename?: string;
+                /** @description Optional client-reported byte count for progress. */
+                size?: string;
+                /** @description Compatibility parameter for batch size. */
+                batch?: string;
+                /** @description Compatibility parameter for batch pause. */
+                pause?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Raw file contents, up to 2 GiB. */
+        requestBody: {
+            content: {
+                "application/octet-stream": string;
+            };
+        };
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StatusMessage"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Upload exceeds 2 GiB. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    listMetrics: {
+        parameters: {
+            query?: {
                 /** @description Unsupported values are ignored and the server falls back to the documented default. */
-                bucket?: "minute" | "hour" | "day";
-                /** @description Unsupported values are ignored and the server falls back to the documented default. */
-                agg?: "AVG" | "SUM" | "MAX" | "MIN";
-                /** @description Unsupported values are ignored and the server falls back to the documented default. */
-                by_source?: "0" | "1";
+                lang?: "en" | "ru" | "sr";
             };
             header?: {
                 /** @description Select the Health Sync metrics representation. Omission uses the installation default. */
@@ -1300,18 +4355,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MetricDataResponse"];
-                };
-            };
-            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
-            302: {
-                headers: {
-                    /** @description Interactive login or setup route. */
-                    Location?: string;
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/html": string;
+                    "application/json": components["schemas"]["MetricCatalogResponse"];
                 };
             };
             /** @description Invalid metrics contract or query. */
@@ -1321,6 +4365,191 @@ export interface operations {
                 };
                 content: {
                     "text/plain": string;
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description The installation has disabled explicit version 1 reads. */
+            406: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The metric catalog is being prepared. Retry after the Retry-After interval. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getMetricData: {
+        parameters: {
+            query: {
+                /** @description Canonical metric name. */
+                metric: string;
+                /** @description Start date in YYYY-MM-DD. */
+                from?: string;
+                /** @description End date in YYYY-MM-DD. */
+                to?: string;
+                /** @description Time bucket. When omitted, the server chooses minute for one day, hour for up to 14 days, and day for longer ranges. */
+                bucket?: "minute" | "hour" | "day";
+                /** @description The quantity view uses the metric’s native SUM or AVG when omitted, and also accepts that explicit aggregation. MIN and MAX select the observed extrema. Other quantity aggregations return 400. */
+                agg?: "AVG" | "SUM" | "MAX" | "MIN";
+                /** @description Unsupported values are ignored and the server falls back to the documented default. */
+                by_source?: "0" | "1";
+                /** @description Select full history, combined-source quantities, or typed samples for one catalog ID. Incompatible query combinations return 400. */
+                view?: "full" | "quantity" | "catalog";
+                /** @description All available dates through to, for the daily quantity view. Requires bucket=day and no from date. */
+                range?: "all";
+                /** @description Catalog calendar dimension used for inclusive from/to filters. Defaults to date. */
+                date_field?: string;
+                /** @description Catalog page size from 1 to 256. Defaults to 50. */
+                limit?: string;
+                /** @description Opaque catalog continuation for the same tenant, metric and date filters. An expired cursor requires restarting pagination. */
+                cursor?: string;
+            };
+            header?: {
+                /** @description Select the Health Sync metrics representation. Omission uses the installation default. */
+                "X-Health-Metrics-Contract"?: "1" | "2";
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Full history by default. The catalog view returns typed samples, with no_row for an unsampled definition, missing for a null value, and an empty array when filters select no samples. Numeric samples include an exact decimal string. For combined daily steps in version 2, both views use the same daily quantity. The full view also retains observed extrema. */
+            200: {
+                headers: {
+                    /** @description The metrics representation used in this response. */
+                    "X-Health-Metrics-Contract"?: "1" | "2";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricDataResponse"] | components["schemas"]["MetricQuantityResponse"] | components["schemas"]["CatalogSeriesResponse"];
+                };
+            };
+            /** @description Invalid metrics contract or query. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                    "text/plain": string;
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description The installation has disabled explicit version 1 reads. */
+            406: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Catalog lookup failed. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Catalog reads unavailable for this profile. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+        };
+    };
+    getLatestMetricValues: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Select the Health Sync metrics representation. Omission uses the installation default. */
+                "X-Health-Metrics-Contract"?: "1" | "2";
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    /** @description The metrics representation used in this response. */
+                    "X-Health-Metrics-Contract"?: "1" | "2";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LatestMetricsResponse"];
+                };
+            };
+            /** @description Invalid metrics contract or query. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
                 };
             };
             /** @description The installation has disabled explicit version 1 reads. */
@@ -1369,17 +4598,6 @@ export interface operations {
                     "application/json": components["schemas"]["MetricRangeResponse"];
                 };
             };
-            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
-            302: {
-                headers: {
-                    /** @description Interactive login or setup route. */
-                    Location?: string;
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/html": string;
-                };
-            };
             /** @description Invalid metrics contract or query. */
             400: {
                 headers: {
@@ -1387,6 +4605,17 @@ export interface operations {
                 };
                 content: {
                     "text/plain": string;
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
                 };
             };
             /** @description The installation has disabled explicit version 1 reads. */
@@ -1429,15 +4658,15 @@ export interface operations {
                     "application/json": components["schemas"]["ReadinessHistoryResponse"];
                 };
             };
-            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
-            302: {
+            /** @description Authentication required. */
+            401: {
                 headers: {
-                    /** @description Interactive login or setup route. */
-                    Location?: string;
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/html": string;
+                    "application/json": {
+                        error: string;
+                    };
                 };
             };
             /** @description The backend could not load or encode the tenant response. */
@@ -1479,15 +4708,15 @@ export interface operations {
                     "application/json": components["schemas"]["ReportHistoryResponse"];
                 };
             };
-            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
-            302: {
+            /** @description Authentication required. */
+            401: {
                 headers: {
-                    /** @description Interactive login or setup route. */
-                    Location?: string;
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/html": string;
+                    "application/json": {
+                        error: string;
+                    };
                 };
             };
             /** @description The backend could not load or encode the tenant response. */
@@ -1521,15 +4750,15 @@ export interface operations {
                     "application/json": components["schemas"]["ReportHistoryDetail"] | components["schemas"]["ReportHistoryItem"];
                 };
             };
-            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
-            302: {
+            /** @description Authentication required. */
+            401: {
                 headers: {
-                    /** @description Interactive login or setup route. */
-                    Location?: string;
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/html": string;
+                    "application/json": {
+                        error: string;
+                    };
                 };
             };
             /** @description The backend could not load or encode the tenant response. */
@@ -1567,15 +4796,58 @@ export interface operations {
                     "application/json": components["schemas"]["SectionResponse"];
                 };
             };
-            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
-            302: {
+            /** @description Authentication required. */
+            401: {
                 headers: {
-                    /** @description Interactive login or setup route. */
-                    Location?: string;
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/html": string;
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    listSections: {
+        parameters: {
+            query?: {
+                /** @description Unsupported values are ignored and the server falls back to the documented default. */
+                lang?: "en" | "ru" | "sr";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SectionsResponse"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
                 };
             };
             /** @description The backend could not load or encode the tenant response. */
@@ -1607,15 +4879,15 @@ export interface operations {
                     "application/json": components["schemas"]["SessionResponse"];
                 };
             };
-            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
-            302: {
+            /** @description Authentication required. */
+            401: {
                 headers: {
-                    /** @description Interactive login or setup route. */
-                    Location?: string;
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/html": string;
+                    "application/json": {
+                        error: string;
+                    };
                 };
             };
             /** @description The backend could not load or encode the tenant response. */
@@ -1647,15 +4919,15 @@ export interface operations {
                     "application/json": components["schemas"]["NotificationSettingsResponse"];
                 };
             };
-            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
-            302: {
+            /** @description Authentication required. */
+            401: {
                 headers: {
-                    /** @description Interactive login or setup route. */
-                    Location?: string;
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/html": string;
+                    "application/json": {
+                        error: string;
+                    };
                 };
             };
             /** @description The backend could not load or encode the tenant response. */
@@ -1691,17 +4963,6 @@ export interface operations {
                     "application/json": components["schemas"]["SettingsUpdateResponse"];
                 };
             };
-            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
-            302: {
-                headers: {
-                    /** @description Interactive login or setup route. */
-                    Location?: string;
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/html": string;
-                };
-            };
             /** @description Invalid JSON, unknown sleep source, daytime boolean, or daytime hours. Hours are 0 through 23 and start must differ from end. */
             400: {
                 headers: {
@@ -1711,7 +4972,203 @@ export interface operations {
                     "text/plain": string;
                 };
             };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
             /** @description The backend could not update or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    startEnergyBackfill: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["DateBoundsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnergyBackfillStatus"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Successful tenant-scoped response. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnergyBackfillStatus"];
+                };
+            };
+            /** @description A timezone and eligible daily inputs are required. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getEnergyBackfillStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnergyBackfillStatus"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getEnergyBackfillSummary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnergyBackfillSummary"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    sendTestNotification: {
+        parameters: {
+            query?: {
+                /** @description Unsupported values are ignored and the server falls back to the documented default. */
+                kind?: "morning" | "evening";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StatusMessage"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
             500: {
                 headers: {
                     [name: string]: unknown;
@@ -1743,19 +5200,19 @@ export interface operations {
                     "application/json": components["schemas"]["SleepDurationBalanceResponse"];
                 };
             };
-            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
-            302: {
+            /** @description Invalid date. */
+            400: {
                 headers: {
-                    /** @description Interactive login or setup route. */
-                    Location?: string;
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/html": string;
+                    "application/json": {
+                        error: string;
+                    };
                 };
             };
-            /** @description Invalid date. */
-            400: {
+            /** @description Authentication required. */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1797,19 +5254,19 @@ export interface operations {
                     "application/json": components["schemas"]["SleepDurationComparisonResponse"];
                 };
             };
-            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
-            302: {
+            /** @description Invalid date. */
+            400: {
                 headers: {
-                    /** @description Interactive login or setup route. */
-                    Location?: string;
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/html": string;
+                    "application/json": {
+                        error: string;
+                    };
                 };
             };
-            /** @description Invalid date. */
-            400: {
+            /** @description Authentication required. */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1851,19 +5308,19 @@ export interface operations {
                     "application/json": components["schemas"]["SleepGoalResponse"];
                 };
             };
-            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
-            302: {
+            /** @description Invalid date. */
+            400: {
                 headers: {
-                    /** @description Interactive login or setup route. */
-                    Location?: string;
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/html": string;
+                    "application/json": {
+                        error: string;
+                    };
                 };
             };
-            /** @description Invalid date. */
-            400: {
+            /** @description Authentication required. */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1906,19 +5363,19 @@ export interface operations {
                     "application/json": components["schemas"]["SleepGoalResponse"];
                 };
             };
-            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
-            302: {
+            /** @description Invalid effective date or goal hours outside 3 through 14. */
+            400: {
                 headers: {
-                    /** @description Interactive login or setup route. */
-                    Location?: string;
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/html": string;
+                    "application/json": {
+                        error: string;
+                    };
                 };
             };
-            /** @description Invalid effective date or goal hours outside 3 through 14. */
-            400: {
+            /** @description Authentication required. */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1960,17 +5417,6 @@ export interface operations {
                     "application/json": components["schemas"]["TodayInsightsResponse"];
                 };
             };
-            /** @description Browser authentication or initial setup is required; Location identifies the interactive route. */
-            302: {
-                headers: {
-                    /** @description Interactive login or setup route. */
-                    Location?: string;
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/html": string;
-                };
-            };
             /** @description The endpoint is today-only and does not accept a date parameter. */
             400: {
                 headers: {
@@ -1978,6 +5424,17 @@ export interface operations {
                 };
                 content: {
                     "text/plain": string;
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
                 };
             };
             /** @description The backend could not load or encode the tenant response. */
@@ -1991,6 +5448,98 @@ export interface operations {
             };
             /** @description Current-day source data is not available yet. */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getWebhookStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookStatusResponse"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    retryWebhookRegistration: {
+        parameters: {
+            query?: {
+                /** @description Optional administrator target, validated against the tenant registry. Defaults to the authenticated profile. */
+                schema?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookRetryResponse"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Administrator authorization is required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };

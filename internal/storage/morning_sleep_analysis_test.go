@@ -15,3 +15,22 @@ func TestMorningRecordedSleepAnalysisSeparatesSummaryAndIntervals(t *testing.T) 
 		t.Fatalf("night facts blocked by irrelevant summary, source or unclassified gap: %+v %s", e, reason)
 	}
 }
+
+func buildRecordedSleepEpisode(segments []wakeInputSegment, night health.CompletedNightSleep, loc *time.Location) (*health.MorningSleepEpisode, string) {
+	if night.CaptureCompleteness != health.NightCaptureComplete || night.DurationAssessment != health.NightDurationPlausible {
+		return nil, "capture_not_complete"
+	}
+	var selected []wakeInputSegment
+	for _, s := range segments {
+		// Match the existing architecture contract: midnight summary rows are
+		// aggregates, not interval starts. Mixing them creates artificial overlaps.
+		if s.Source == night.Source && s.Metric != "sleep_total" && s.Start.In(loc).Format("15:04:05") != "00:00:00" {
+			selected = append(selected, s)
+		}
+	}
+	candidate, ok, err := selectWakeCandidate(selected, night.WakeDate, loc)
+	if err != nil || !ok {
+		return nil, "detailed_intervals_unavailable"
+	}
+	return buildRecordedSleepEpisodeFromCandidate(segments, night, loc, candidate)
+}

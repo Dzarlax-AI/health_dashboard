@@ -18,6 +18,6 @@ COPY experiments/dbt_metrics/dbt_project.yml experiments/dbt_metrics/requirement
 COPY experiments/dbt_metrics/models ./experiments/dbt_metrics/models
 COPY experiments/dbt_metrics/macros ./experiments/dbt_metrics/macros
 COPY experiments/dbt_metrics/tests ./experiments/dbt_metrics/tests
-COPY experiments/dbt_metrics/scripts/tenant_aggregate_worker.py ./experiments/dbt_metrics/scripts/
+COPY experiments/dbt_metrics/scripts/tenant_aggregate_worker.py experiments/dbt_metrics/scripts/native_catalog_vars.py experiments/dbt_metrics/scripts/profile_graph_catalog.py experiments/dbt_metrics/scripts/check_semantic_catalog.py ./experiments/dbt_metrics/scripts/
 USER 65532:65532
 ENTRYPOINT ["/opt/dbt/bin/python", "/app/experiments/dbt_metrics/scripts/tenant_aggregate_worker.py"]

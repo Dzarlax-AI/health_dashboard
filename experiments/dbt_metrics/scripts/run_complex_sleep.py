@@ -85,8 +85,8 @@ def main():
             for name in ("sleep_cases.sql","sleep_continuity_cases.sql","night_quality_cases.sql","hrv_cases.sql"):
                 sql((SEM/name).read_text())
             raw=sql("""select json_agg(json_build_object(
-                'Profile',c.profile,'Capture',c.capture,'Zone',zone,'DecisionAt',decision_at,'CandidateWake',c.candidate_wake,
-                'LatestIngest',latest_ingest,'QuietSince',quiet_since,'Signal',signal,'Steps',steps,'TypicalMinute',typical_minute,
+                'Profile',c.profile,'Capture',c.capture,'Zone',c.zone,'DecisionAt',c.decision_at,'CandidateWake',c.candidate_wake,
+                'LatestIngest',c.latest_ingest,'QuietSince',c.quiet_since,'Signal',c.signal,'Steps',c.steps,'TypicalMinute',c.typical_minute,
                 'Reason',r.reason,'Ready',r.ready,'Confidence',r.confidence))
                 from source_data.wake_capture c left join dbt_output.wake_confirmation_v1 r using(profile,capture)""")
             wake_file=lab/"wake.json"

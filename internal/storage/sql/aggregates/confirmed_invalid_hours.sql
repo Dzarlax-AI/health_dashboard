@@ -1,6 +1,6 @@
 invalid_hours AS (
     SELECT metric_name, SUBSTRING(date,1,13)||':00' AS hour, source
-    FROM hourly_points
+    FROM hourly_points {{HOUR_FILTER}}
     GROUP BY 1,2,3
     HAVING COUNT(*) FILTER (WHERE qty > 0 AND quality='ok') = 0
 ), removed AS (

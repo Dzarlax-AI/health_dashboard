@@ -1,4 +1,4 @@
-{{ config(enabled=var('semantic_shadow', false), materialized='view',
+{{ config(enabled=var('semantic_shadow', false) or var('tenant_native_catalog', false), materialized='ephemeral' if var('tenant_native_catalog', false) else 'view',
     post_hook='alter view {{ this }} set (security_invoker=true)') }}
 
 -- The episode adapter associates real intervals to a canonical source and wake
@@ -38,7 +38,7 @@ with timeline as (
            max(observed_minutes) filter (where metric_name='sleep_unspecified') as unspecified,
            max(observed_minutes) filter (where metric_name='sleep_awake') as awake,
            jsonb_agg(jsonb_build_array(metric_name,observed_minutes) order by metric_name) as version_inputs
-    from {{ source('source_data','sleep_stage_day') }}
+    from {{ ref('native_sleep_stage_day_v1') if var('tenant_native_catalog',false) else source('source_data','sleep_stage_day') }}
     where metric_name in ('sleep_deep','sleep_rem','sleep_core','sleep_unspecified','sleep_awake')
     group by date,source
 ), input as (
@@ -62,7 +62,7 @@ with timeline as (
            encode(sha256(convert_to(jsonb_build_array('semantic_sleep_continuity_v1', c.date,n.source,n.input_hash,
                n.source_epoch,n.algorithm_version,n.capture_completeness,n.finalization_state,
                n.duration_assessment,n.duration_hours,e.version_inputs,s.version_inputs)::text,'UTF8')),'hex') as input_version
-    from {{ source('source_data','calendar') }} c
+    from {{ ref('native_night_calendar_v1') if var('tenant_native_catalog',false) else source('source_data','calendar') }} c
     left join {{ source('source_data','completed_night_sleep') }} n on n.wake_date=c.date
     left join episode e on e.wake_date=c.date
     left join summary s on s.date=c.date and s.source=n.source

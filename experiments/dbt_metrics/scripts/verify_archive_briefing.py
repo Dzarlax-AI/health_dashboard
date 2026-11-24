@@ -60,7 +60,7 @@ def run(container, database):
     env = Environment(undefined=StrictUndefined)
     env.globals.update(config=lambda **kwargs:'',var=lambda k,default=None:default,
                        source=lambda s,n:'briefing_inputs.'+n,ref=lambda n:n)
-    for m in ('weekly_sleep_round','weekly_sleep_analysis','briefing_metric_trends','energy_legacy_v1'):
+    for m in ('briefing_sections','today_metric_captures_v1','weekly_sleep_round','weekly_sleep_analysis','briefing_metric_trends','energy_legacy_v1'):
         env.globals.update({k:v for k,v in vars(env.from_string((ROOT/'macros'/(m+'.sql')).read_text()).module).items()
                             if not k.startswith('_')})
     decision = json.dumps([{'readiness':r['readiness_score'],'headline':r['headline']} for r in (expected or [])])

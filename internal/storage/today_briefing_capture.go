@@ -29,9 +29,28 @@ func todayBriefingCapture(b *health.BriefingResponse) (json.RawMessage, json.Raw
 	if b.EnergyBank != nil {
 		decision["energy_bank"] = map[string]any{"flags": b.EnergyBank.Flags}
 	}
-	inputs, err := json.Marshal(map[string]any{"reader": "morning", "effective": morningReadinessInput(d),
+	packet := map[string]any{"reader": "morning", "effective": morningReadinessInput(d),
 		"headline": headline, "final_illness": illness,
-		"raw": map[string]any{"ReadinessEvidence": d.ReadinessEvidence}, "decision": decision})
+		"raw": map[string]any{"ReadinessEvidence": d.ReadinessEvidence}, "decision": decision,
+		"weekly_inputs_v1": map[string]any{"Sleep": d.Sleep[:min(7, len(d.Sleep))], "Deep": d.Deep[:min(7, len(d.Deep))],
+			"REM": d.REM[:min(7, len(d.REM))], "Awake": d.Awake[:min(7, len(d.Awake))]},
+	}
+	metric, sleep := d.SleepCardSeries()
+	// The live selector returns at most 30 observations. A larger future input
+	// needs a new capture version so its full baseline can be reproduced.
+	if max(len(d.Steps), len(d.RHR), len(d.HRV), len(d.Resp), len(sleep)) <= 30 {
+		trends := map[string]any{"Steps": d.Steps, "RHR": d.RHR, "HRV": d.HRV, "Resp": d.Resp}
+		if metric == "night_sleep_total" {
+			trends["NightSleep"] = sleep
+		} else {
+			trends["Sleep"] = sleep
+		}
+		packet["trend_inputs_v1"] = trends
+	}
+	if max(len(d.Steps), len(d.Cal), len(d.Exercise), len(d.SpO2), len(d.VO2), len(d.Resp)) <= 30 {
+		packet["section_inputs_v1"] = briefingSectionInputs(d)
+	}
+	inputs, err := json.Marshal(packet)
 	if err != nil {
 		return nil, nil, err
 	}

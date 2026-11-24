@@ -16,6 +16,19 @@ var decisionJournalDDL string
 
 const SettingDecisionCapture = "dbt_decision_capture_v1"
 
+// SettingDecisionResultReads switches exact captured decisions independently of chart reads.
+const SettingDecisionResultReads = "dbt_decision_result_reads_v1"
+
+const decisionPublishedReadPredicate = `exists (
+    select from settings f cross join hdbt_state s
+    where f.key='` + SettingDecisionResultReads + `' and f.value='true'
+      and s.singleton and s.shadow_enabled
+      and not exists (
+        select from unnest(array['settings','hdbt_state','hdbt_decision_results']) rel
+        where to_regclass(format('%I.%I',current_schema(),rel)) is distinct from to_regclass(rel)
+      )
+)`
+
 // Only an enabled writer pays for JSON packaging. One flag lookup covers
 // every result in a bulk score query. Older or read-only handles keep the
 // original solver. A failed receipt insert cannot abort a caller's transaction.

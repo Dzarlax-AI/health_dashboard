@@ -1,13 +1,13 @@
-{{ config(enabled=var('briefing_components_shadow', false), materialized='view',
+{{ config(enabled=var('briefing_components_shadow', false) or var('tenant_native_catalog', false), materialized='ephemeral' if var('tenant_native_catalog', false) else 'view',
     post_hook='alter view {{ this }} set (security_invoker=true)') }}
 
-select c.profile, c.capture, h.hour_start, h.coverage_ok,
-       case when not h.coverage_ok or h.coverage_ok is null then null
-            when h.hour_hr is null or h.baseline is null or h.sd is null then null
-            when h.sd <= 0 or not (h.sd < 'Infinity'::float8 and
-                 h.hour_hr > '-Infinity'::float8 and h.hour_hr < 'Infinity'::float8 and
-                 h.baseline > '-Infinity'::float8 and h.baseline < 'Infinity'::float8) then 0
-            else (h.hour_hr - h.baseline) / h.sd end as hour_z
-from {{ source('briefing_pilot', 'captured_inputs') }} c
+with hours as (
+select c.profile, c.capture, h.*
+{% if var('tenant_native_catalog', false) %}
+from (select current_user::text as profile,input_hash as capture,inputs from {{ adapter.quote(target.schema) }}.hdbt_decision_inputs
+      where metric='stress_signals' and formula_version=1 and jsonb_typeof(inputs->'stress_hours')='array') c
+{% else %}from {{ source('briefing_pilot', 'captured_inputs') }} c{% endif %}
 cross join lateral jsonb_to_recordset(nullif(c.inputs->'stress_hours','null'::jsonb)) as h(
     hour_start timestamptz, coverage_ok boolean, hour_hr float8, baseline float8, sd float8)
+), scored as ({{ hourly_stress('hours') }})
+select profile,capture,hour_start,coverage_ok,hour_z from scored

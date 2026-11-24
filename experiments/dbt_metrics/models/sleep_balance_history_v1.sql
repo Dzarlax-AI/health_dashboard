@@ -1,4 +1,4 @@
-{{ config(enabled=var('complex_sleep_parity',false),materialized='view',post_hook="alter view {{ this }} set (security_invoker = true)") }}
+{{ config(enabled=var('complex_sleep_parity',false) or var('tenant_native_catalog',false),materialized='ephemeral' if var('tenant_native_catalog',false) else 'view',post_hook="alter view {{ this }} set (security_invoker = true)") }}
 
 -- The saved history exposes only the complete prefix of a captured balance window.
 select p.*, p.total_hours-p.goal_hours as delta_hours

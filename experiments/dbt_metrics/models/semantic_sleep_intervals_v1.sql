@@ -1,4 +1,4 @@
-{{ config(enabled=var('semantic_shadow', false), materialized='view',
+{{ config(enabled=var('semantic_shadow', false) or var('tenant_native_catalog', false), materialized='ephemeral' if var('tenant_native_catalog', false) else 'view',
     post_hook='alter view {{ this }} set (security_invoker=true)') }}
 
 -- Inputs must have independent episode attribution. A capture commitment is
@@ -6,7 +6,7 @@
 with labels as (
     select i.wake_date, i.source, i.start_at, i.end_at,
            regexp_replace(i.stage, '^sleep_', '') as label
-    from {{ source('source_data', 'sleep_interval') }} i
+    from {{ ref('native_sleep_interval_v1') if var('tenant_native_catalog',false) else source('source_data', 'sleep_interval') }} i
     join {{ source('source_data', 'completed_night_sleep') }} n using (wake_date, source)
 ), unions as (
     select wake_date, source,

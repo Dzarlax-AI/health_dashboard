@@ -30,14 +30,14 @@ models:
                 values: ['fresh', 'estimated', 'stale']
   - name: semantic_energy_guidance_v1
     config:
-      enabled: "{{ var('energy_bank_shadow', false) }}"
+      enabled: "{{ var('energy_bank_shadow', false) or var('tenant_native_catalog', false) }}"
     description: Per-profile verdict and reason for frozen band history, HRV, stress flags and illness classification.
     columns:
       - name: capture_id
         data_tests: [not_null]
   - name: semantic_energy_legacy_v1
     config:
-      enabled: "{{ var('energy_bank_shadow', false) }}"
+      enabled: "{{ var('energy_bank_shadow', false) or var('tenant_native_catalog', false) }}"
     description: Legacy fallback calculated from the captured readiness, headline, daily series and activity baselines. A missing resting heart rate suppresses the fallback.
     columns:
       - name: capture_id

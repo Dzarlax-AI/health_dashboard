@@ -1,4 +1,4 @@
-{{ config(enabled=var('archived_profile_fields', false), materialized='view',
+{{ config(enabled=var('archived_profile_fields', false), materialized='ephemeral' if var('tenant_native_catalog', false) else 'view',
     post_hook='alter view {{ this }} set (security_invoker=true)') }}
 
 -- Match GetEnergyHistory's zero-valued integers for partially populated legacy rows.

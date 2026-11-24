@@ -64,34 +64,31 @@ func catalogSampleKey(key json.RawMessage) bool {
 	return len(key) <= 8192 && json.Unmarshal(key, &obj) == nil && obj != nil
 }
 
+const SettingNativeCatalogReads = "dbt_native_catalog_reads_v1"
+
+var ErrNativeCatalogUnavailable = errors.New("tenant native catalog reader is unavailable")
+
 // ReadCatalogMetricPage reads the common metric_read_v1 contract for any
-// catalog ID installed in an isolated local graph. An unfiltered lookup of a
+// catalog ID installed in an isolated local graph or a tenant-native producer set. An unfiltered lookup of a
 // known definition with no facts returns its explicit status. A filter with
 // no matching sample returns an empty page. The caller cannot select a schema.
 func (s *DB) ReadCatalogMetricPage(ctx context.Context, request CatalogMetricRequest) (CatalogMetricPage, error) {
 	var page CatalogMetricPage
-	if s.profileGraphSchema == "" {
-		return page, errors.New("catalog value reads require an isolated local profile graph")
-	}
 	if request.MetricID == "" || len(request.MetricID) > 256 || len(request.Source) > 256 ||
 		request.Limit < 1 || request.Limit > 256 {
 		return page, errors.New("catalog read requires a metric ID and a page size of 1 to 256")
 	}
-	query := `select metric_id,value_status,disposition,reason,definition,dbt_binding,read_sources,
-		source,sample_key,source_metadata,original_observation_time,available_at,source_version,
-		value,numeric_value::text,boolean_value,text_value from ` + s.profileGraphRelation("metric_read_v1") +
-		` where metric_id=$1`
+	query := ` where metric_id=$1`
 	args := []any{request.MetricID}
 	if request.Source != "" {
 		args = append(args, request.Source)
 		query += fmt.Sprintf(" and source=$%d", len(args))
 	}
 	dateField := request.DateField
-	switch dateField {
-	case "":
+	if dateField == "" {
 		dateField = "date"
-	case "date", "day", "wake_date", "target_date", "target_day", "effective_date", "anchor", "anchor_date", "anchor_day", "period_day", "original_date", "metric_date", "local_date", "through_day", "start_date", "end_date", "observed_date", "as_of_date", "from_date", "to_date":
-	default:
+	}
+	if !ValidCatalogDateField(dateField) {
 		return page, errors.New("unknown native calendar field")
 	}
 	dateExpr := ""
@@ -136,6 +133,21 @@ func (s *DB) ReadCatalogMetricPage(ctx context.Context, request CatalogMetricReq
 	query += fmt.Sprintf(" order by source,sample_key limit $%d", len(args))
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	if s.pool == nil {
+		return page, ErrNativeCatalogUnavailable
+	}
+	relation := s.profileGraphRelation("metric_read_v1")
+	if s.profileGraphSchema == "" {
+		var err error
+		relation, err = s.nativeCatalogRelation(ctx, "tenant_native_metric_read_v1")
+		if err != nil {
+			return page, err
+		}
+	}
+	query = `select metric_id,value_status,disposition,reason,definition,dbt_binding,read_sources,
+		source,sample_key,source_metadata,original_observation_time,available_at,source_version,
+		value,numeric_value::text,boolean_value,text_value from ` + relation +
+		query
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return page, err
@@ -164,4 +176,40 @@ func (s *DB) ReadCatalogMetricPage(ctx context.Context, request CatalogMetricReq
 		page.Next = &CatalogMetricCursor{Source: *last.Source, SampleKey: last.SampleKey}
 	}
 	return page, nil
+}
+
+func (s *DB) nativeCatalogRelation(ctx context.Context, view string) (string, error) {
+	var tenantSchema string
+	err := s.pool.QueryRow(ctx, `select n.nspname from pg_namespace n
+            join pg_class c on c.relnamespace=n.oid and c.relname=$2
+            where n.nspname=current_schema() and n.nspname not in ('public','information_schema','health_registry')
+              and c.relkind='v' and c.relowner=n.nspowner and c.relowner=current_user::regrole and c.reloptions @> array['security_invoker=true']
+              and exists(select from settings where key=$1 and value='true'
+                  and tableoid=to_regclass(format('%I.settings',current_schema())))`, SettingNativeCatalogReads, view).Scan(&tenantSchema)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNativeCatalogUnavailable
+	}
+	if err != nil {
+		return "", err
+	}
+	return pgx.Identifier{tenantSchema, view}.Sanitize(), nil
+}
+
+// productArchiveRelation chooses a typed projection for indexed product reads.
+// Older tenant schemas and isolated archive rehearsals retain their ordinary relation.
+func (s *DB) productArchiveRelation(ctx context.Context, table, view string) string {
+	if s.profileGraphSchema == "" {
+		if relation, err := s.nativeCatalogRelation(ctx, view); err == nil {
+			return relation
+		}
+	}
+	return table
+}
+
+func ValidCatalogDateField(field string) bool {
+	switch field {
+	case "date", "day", "wake_date", "target_date", "target_day", "effective_date", "anchor", "anchor_date", "anchor_day", "period_day", "original_date", "metric_date", "local_date", "through_day", "start_date", "end_date", "observed_date", "as_of_date", "from_date", "to_date":
+		return true
+	}
+	return false
 }

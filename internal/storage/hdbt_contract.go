@@ -14,6 +14,8 @@ func addHDBTContract(m *ContractManifest) {
 	for _, s := range []struct{ tables, columns, key string }{
 		{"hdbt_state", "singleton shadow_enabled read_enabled initialized ready bootstrap_cursor bootstrap_end formula_id source_generation published_at heartbeat_at last_status enrollment_epoch", "singleton"},
 		{"hdbt_decision_inputs", "metric decision_key input_hash captured_at formula_version inputs result", "metric decision_key input_hash"},
+		{"hdbt_i_decisions hdbt_decision_queue", "metric decision_key input_hash", "metric decision_key input_hash"},
+		{"hdbt_decision_results", "metric decision_key input_hash formula_version result", "metric decision_key input_hash"},
 		{"hdbt_dirty", "date generation", "date"},
 		{"hdbt_step_repairs", "point_date source generation", "point_date source"},
 		{"hdbt_i_repairs", "point_date source", "point_date source"},
@@ -39,6 +41,14 @@ func addHDBTContract(m *ContractManifest) {
 		m.ColumnDefinitions = append(m.ColumnDefinitions, ColumnDefinition{
 			Table: "hdbt_decision_inputs", Column: column.name, DataType: column.typ,
 		})
+		if column.name != "captured_at" && column.name != "inputs" {
+			m.ColumnDefinitions = append(m.ColumnDefinitions, ColumnDefinition{Table: "hdbt_decision_results", Column: column.name, DataType: column.typ})
+			if column.name != "result" && column.name != "formula_version" {
+				for _, table := range []string{"hdbt_i_decisions", "hdbt_decision_queue"} {
+					m.ColumnDefinitions = append(m.ColumnDefinitions, ColumnDefinition{Table: table, Column: column.name, DataType: column.typ})
+				}
+			}
+		}
 	}
 	for _, col := range []string{"shadow_enabled", "read_enabled", "initialized", "ready"} {
 		m.ColumnDefinitions = append(m.ColumnDefinitions, ColumnDefinition{Table: "hdbt_state", Column: col, DataType: "boolean", Default: "false", RequireDefault: true})
@@ -70,6 +80,17 @@ func (s *DB) verifyHDBTEnrollmentTrigger(ctx context.Context) error {
 	}
 	if !valid {
 		return errors.New("missing aggregate enrollment reset trigger")
+	}
+	err = s.pool.QueryRow(ctx, `select exists(select from pg_trigger t join pg_class c on c.oid=t.tgrelid
+		join pg_namespace n on n.oid=c.relnamespace join pg_proc f on f.oid=t.tgfoid
+		where n.nspname=current_schema() and c.relname='hdbt_decision_inputs' and t.tgname='hdbt_enqueue_decision'
+		and t.tgenabled in ('O','A') and t.tgtype=5 and f.pronamespace=n.oid
+		and f.proname='hdbt_enqueue_decision' and not f.prosecdef)`).Scan(&valid)
+	if err != nil {
+		return err
+	}
+	if !valid {
+		return errors.New("missing decision queue trigger")
 	}
 	return nil
 }

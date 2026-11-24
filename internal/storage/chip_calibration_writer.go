@@ -130,10 +130,21 @@ func (s *DB) recomputeOneChipCalibration(subScore, targetKind, epoch string, asO
 		Method: ChipCalibrationMethodPercentileP80, CalibrationWindowDays: ChipCalibrationWindowDays}
 	ctx, cancel := queryCtx()
 	defer cancel()
-	err := s.pool.QueryRow(ctx, chipCalibrationSQL, subScore, targetKind, epoch, asOf.Format(isoDate)).Scan(
-		&base.NEligible, &base.NPositives, &base.Status, &base.P80, &base.BaseRate, &base.Cutoff)
-	if err != nil {
-		return nil, fmt.Errorf("recompute chip calibration: %w", err)
-	}
-	return &base, nil
+	return withDecisionJournal(ctx, s, func(db *DB, journal bool) (*ChipCalibration, error) {
+		query := chipCalibrationSQL
+		if journal {
+			query += `, decision_packets as (
+           select 'chip_calibration'::text as metric,concat_ws('/',$4::text,$1::text,$2::text,$3::text) as decision_key,
+              1 as formula_version, jsonb_build_object('epoch',$3::text,'as_of_date',$4::text,
+                'pairs',coalesce((select jsonb_agg(to_jsonb(p)-'case_id' order by day,baseline_kind)
+                  from candidate_pairs p),'[]'::jsonb)) as inputs,to_jsonb(c)-'case_id' as result from calibration c
+        )` + decisionJournalInsertSQL
+		}
+		err := db.pool.QueryRow(ctx, query+chipCalibrationResultSQL, subScore, targetKind, epoch, asOf.Format(isoDate)).Scan(
+			&base.NEligible, &base.NPositives, &base.Status, &base.P80, &base.BaseRate, &base.Cutoff)
+		if err != nil {
+			return nil, fmt.Errorf("recompute chip calibration: %w", err)
+		}
+		return &base, nil
+	})
 }

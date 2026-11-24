@@ -31,6 +31,8 @@ func TestWakeConfirmationDBTParity(t *testing.T) {
 	if len(cases) != 16 {
 		t.Fatalf("wake captures %d", len(cases))
 	}
+	db, cleanup := testDB(t)
+	defer cleanup()
 	for _, c := range cases {
 		loc, err := time.LoadLocation(c.Zone)
 		if err != nil {
@@ -46,6 +48,14 @@ func TestWakeConfirmationDBTParity(t *testing.T) {
 		}
 		if want.Ready != c.Ready || want.Confidence != c.Confidence || want.Reason != c.Reason {
 			t.Fatalf("%s/%s: got %t/%s/%s, Go %t/%s/%s", c.Profile, c.Capture, c.Ready, c.Confidence, c.Reason, want.Ready, want.Confidence, want.Reason)
+		}
+		candidate := wakeCandidate{Wake: c.CandidateWake, LatestIngest: c.LatestIngest, IngestQuietSince: c.QuietSince, Signal: c.Signal}
+		actual, err := queryWakeConfirmationSQL(t.Context(), db.pool, candidate, c.DecisionAt, c.Steps, typical, c.TypicalMinute != nil, loc)
+		if err != nil {
+			t.Fatalf("%s/%s: shared SQL confirmation: %v", c.Profile, c.Capture, err)
+		}
+		if actual.Ready != c.Ready || actual.Confidence != c.Confidence || actual.Reason != c.Reason {
+			t.Fatalf("%s/%s: SQL got %t/%s/%s, dbt expected %t/%s/%s", c.Profile, c.Capture, actual.Ready, actual.Confidence, actual.Reason, c.Ready, c.Confidence, c.Reason)
 		}
 	}
 	t.Logf("wake confirmation captures=%d matched", len(cases))
@@ -166,4 +176,58 @@ func TestWakeCandidateDBTParity(t *testing.T) {
 		t.Fatalf("expected 19 candidate cases, got %d", checked)
 	}
 	t.Logf("candidate matches=%d, including an equal-source tie", checked)
+}
+
+func TestWakeWriterUsesSharedSQLCandidateAndConfirmation(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	loc, err := time.LoadLocation("Europe/Belgrade")
+	if err != nil {
+		t.Fatal(err)
+	}
+	day := "2026-11-24"
+	record := insertTestRawRecord(t, db, "wake-primary-sql")
+	_, err = db.pool.Exec(t.Context(), `insert into metric_points(health_record_id,metric_name,units,date,qty,source,quality,received_at)
+		values($1,'sleep_deep','hr','2026-11-24 06:14:00 +0100',0.5000000003,'Synthetic Watch','ok','2026-11-24 07:00:00+01')`, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, ok, err := db.loadWakeCandidateContext(t.Context(), day, loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantWake := time.Date(2026, 11, 24, 6, 44, 0, 0, loc)
+	if !ok || !candidate.Wake.Equal(wantWake) || candidate.Signal != "detailed_stage_end" {
+		t.Fatalf("candidate=%+v ok=%t, want wake %s", candidate, ok, wantWake)
+	}
+
+	wake := candidate.Wake
+	latest := wake.Add(-time.Hour)
+	quiet := wake.Add(-20 * time.Minute)
+	for _, tc := range []struct {
+		name       string
+		candidate  wakeCandidate
+		now        time.Time
+		steps      float64
+		typical    int
+		typicalOK  bool
+		ready      bool
+		reason     string
+		confidence string
+	}{
+		{name: "activity threshold", candidate: wakeCandidate{Wake: wake, LatestIngest: latest, IngestQuietSince: quiet, Signal: "detailed_stage_end"}, now: wake.Add(time.Hour), steps: 100, ready: true, reason: "post_wake_activity", confidence: WakeConfidenceHigh},
+		{name: "fallback grace", candidate: wakeCandidate{Wake: wake, LatestIngest: latest, IngestQuietSince: quiet, Signal: "midnight_summary"}, now: wake.Add(89 * time.Minute), reason: "fallback_candidate", confidence: WakeConfidenceLow},
+		{name: "quiet timeout", candidate: wakeCandidate{Wake: wake, LatestIngest: latest, IngestQuietSince: quiet, Signal: "detailed_stage_end"}, now: wake.Add(time.Hour), reason: "quiet_timeout", confidence: WakeConfidenceMedium, ready: true},
+		{name: "no data", candidate: wakeCandidate{}, now: wake.Add(time.Hour), reason: "no_data", confidence: WakeConfidenceLow},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := queryWakeConfirmationSQL(t.Context(), db.pool, tc.candidate, tc.now, tc.steps, tc.typical, tc.typicalOK, loc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Ready != tc.ready || got.Reason != tc.reason || got.Confidence != tc.confidence {
+				t.Fatalf("got %t/%s/%s, want %t/%s/%s", got.Ready, got.Reason, got.Confidence, tc.ready, tc.reason, tc.confidence)
+			}
+		})
+	}
 }

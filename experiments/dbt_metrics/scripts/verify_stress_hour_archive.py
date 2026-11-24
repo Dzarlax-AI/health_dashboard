@@ -15,6 +15,7 @@ def query():
     env = Environment(undefined=StrictUndefined)
     env.globals.update(config=lambda **kwargs: "", var=lambda k, d=None:d,
                        source=lambda _,name:name)
+    env.globals["hourly_stress"] = env.from_string((PROJECT/"macros/hourly_stress.sql").read_text()).module.hourly_stress
     model = env.from_string((PROJECT/"models/stress_hour_z_v1.sql").read_text()).render()
     return f"""with days as materialized (
       select date::date as day from daily_scores where date>=:from_day and date<:until_day

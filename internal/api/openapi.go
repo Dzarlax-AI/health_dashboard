@@ -18,7 +18,7 @@ import (
 
 const (
 	OpenAPIVersion  = "3.1.0"
-	ContractVersion = "0.4.0"
+	ContractVersion = "0.5.0"
 )
 
 // GenerateOpenAPI builds the canonical public client contract. Route metadata
@@ -27,14 +27,19 @@ const (
 // registration depend on documentation code.
 func GenerateOpenAPI() ([]byte, error) {
 	schemas := map[string]any{}
-	for name, value := range map[string]any{
+	values := map[string]any{
 		"AIBriefingResponse":              AIBriefingResponse{},
 		"DashboardResponse":               storage.DashboardResponse{},
 		"DerivedMetricsResponse":          DerivedMetricsResponse{},
 		"EnergyHistoryDayResponse":        EnergyHistoryDayResponse{},
 		"EnergyHistoryHourResponse":       EnergyHistoryHourResponse{},
 		"HealthBriefingResponse":          health.BriefingResponse{},
+		"MetricCatalogResponse":           []MetricCatalogItem{},
+		"LatestMetricsResponse":           []storage.LatestValue{},
+		"SectionsResponse":                SectionsResponse{},
+		"MetricQuantityResponse":          MetricQuantityResponse{},
 		"MetricDataResponse":              MetricDataResponse{},
+		"CatalogSeriesResponse":           CatalogSeriesResponse{},
 		"MetricRangeResponse":             MetricRangeResponse{},
 		"ReadinessHistoryResponse":        ReadinessHistoryResponse{},
 		"ReportHistoryResponse":           ReportHistoryResponse{},
@@ -50,10 +55,18 @@ func GenerateOpenAPI() ([]byte, error) {
 		"SleepGoalRequest":                SleepGoalRequest{},
 		"SleepGoalResponse":               SleepGoalResponse{},
 		"TodayInsightsResponse":           TodayInsightsResponse{},
-	} {
+	}
+	maintenance := maintenanceSchemas()
+	for name, value := range maintenance {
+		values[name] = value
+	}
+	for name, value := range values {
 		schema, err := reflectedSchema(value)
 		if err != nil {
 			return nil, fmt.Errorf("schema %s: %w", name, err)
+		}
+		if _, ok := maintenance[name]; ok {
+			describeNullablePointers(schema, reflect.TypeOf(value))
 		}
 		schemas[name] = schema
 	}
@@ -98,6 +111,14 @@ func GenerateOpenAPI() ([]byte, error) {
 			return nil, fmt.Errorf("schema %s: %w", enum.schema, err)
 		}
 	}
+	// These catalog and chart handlers initialize their collections on empty profiles.
+	for _, name := range []string{"LatestMetricsResponse", "MetricCatalogResponse"} {
+		schemas[name].(map[string]any)["type"] = "array"
+	}
+	for name, field := range map[string]string{"MetricQuantityResponse": "points", "SectionsResponse": "sections"} {
+		schemas[name].(map[string]any)["properties"].(map[string]any)[field].(map[string]any)["type"] = "array"
+	}
+	configureMaintenanceInputs(schemas)
 	allowPropertyNull(schemas["HealthBriefingResponse"], "sleep")
 	// Pointer values are encoded as JSON null by the handler. Reflection keeps
 	// the scalar element type but does not retain pointer nullability, so make
@@ -110,7 +131,7 @@ func GenerateOpenAPI() ([]byte, error) {
 		"info": map[string]any{
 			"title":       "Health Dashboard Client API",
 			"version":     ContractVersion,
-			"description": "Tenant-aware read API shared by the web dashboard and native health-sync client. Tenant identity is resolved only from authenticated backend context.",
+			"description": "Shared client API for Health web and iOS. Tenant identity and administrator privileges are resolved from the authenticated backend context.",
 		},
 		"servers": []any{map[string]any{"url": "/"}},
 		"security": []any{
@@ -147,7 +168,7 @@ func GenerateOpenAPI() ([]byte, error) {
 				"narrow a documented enum",
 			},
 		},
-		"x-tenant-resolution": "The backend resolves tenant identity from the authenticated API key or session. Public client operations expose no tenant or schema selector.",
+		"x-tenant-resolution": "The backend resolves the requester from the authenticated API key or session. Scoped administrator operations can select a registry-validated target.",
 	}
 
 	out, err := json.MarshalIndent(doc, "", "  ")
@@ -245,7 +266,23 @@ func clientPaths() map[string]any {
 	settingsPostOperation := putOperation("updateNotificationSettings", "Update tenant notification settings and preferred sleep source", "NotificationSettingsRequest", jsonResponseRef("SettingsUpdateResponse"))
 	settingsPostOperation["responses"].(map[string]any)["400"] = plainTextResponse("Invalid JSON, unknown sleep source, daytime boolean, or daytime hours. Hours are 0 through 23 and start must differ from end.")
 
-	return map[string]any{
+	catalog := metricReadOperation("listMetrics", "Localized metric catalog with coverage and units", []any{langParameter()}, jsonResponseRef("MetricCatalogResponse"))
+	catalog["responses"].(map[string]any)["503"] = plainTextResponse("The metric catalog is being prepared. Retry after the Retry-After interval.")
+	quantityView := enumQueryParameter("view", "full", "full", "quantity", "catalog")
+	quantityView["description"] = "Select full history, combined-source quantities, or typed samples for one catalog ID. Incompatible query combinations return 400."
+	bucket := optionalEnumQuery("bucket", "Time bucket. When omitted, the server chooses minute for one day, hour for up to 14 days, and day for longer ranges.", "minute", "hour", "day")
+	aggregation := optionalEnumQuery("agg", "The quantity view uses the metric’s native SUM or AVG when omitted, and also accepts that explicit aggregation. MIN and MAX select the observed extrema. Other quantity aggregations return 400.", "AVG", "SUM", "MAX", "MIN")
+	allRange := optionalEnumQuery("range", "All available dates through to, for the daily quantity view. Requires bucket=day and no from date.", "all")
+	metricDataResponse := map[string]any{
+		"description": "Full history by default. The catalog view returns typed samples, with no_row for an unsampled definition, missing for a null value, and an empty array when filters select no samples. Numeric samples include an exact decimal string. For combined daily steps in version 2, both views use the same daily quantity. The full view also retains observed extrema.",
+		"content": map[string]any{"application/json": map[string]any{"schema": map[string]any{
+			"anyOf": []any{schemaRef("MetricDataResponse"), schemaRef("MetricQuantityResponse"), schemaRef("CatalogSeriesResponse")},
+		}}},
+	}
+	paths := map[string]any{
+		"/api/metrics":        map[string]any{"get": catalog},
+		"/api/metrics/latest": map[string]any{"get": metricReadOperation("getLatestMetricValues", "Latest value and unit of each measured metric", nil, jsonResponseRef("LatestMetricsResponse"))},
+		"/api/sections":       map[string]any{"get": getOperation("listSections", "Localized sections available for navigation", []any{langParameter()}, jsonResponseRef("SectionsResponse"))},
 		"/api/dashboard": map[string]any{
 			"get": getOperation(
 				"getDashboard",
@@ -316,11 +353,15 @@ func clientPaths() map[string]any {
 					requiredStringQueryParameter("metric", "Canonical metric name."),
 					stringQueryParameter("from", "Start date in YYYY-MM-DD."),
 					stringQueryParameter("to", "End date in YYYY-MM-DD."),
-					enumQueryParameter("bucket", "day", "minute", "hour", "day"),
-					enumQueryParameter("agg", "AVG", "AVG", "SUM", "MAX", "MIN"),
+					bucket,
+					aggregation,
 					enumQueryParameter("by_source", "0", "0", "1"),
+					quantityView, allRange,
+					stringQueryParameter("date_field", "Catalog calendar dimension used for inclusive from/to filters. Defaults to date."),
+					stringQueryParameter("limit", "Catalog page size from 1 to 256. Defaults to 50."),
+					stringQueryParameter("cursor", "Opaque catalog continuation for the same tenant, metric and date filters. An expired cursor requires restarting pagination."),
 				},
-				jsonResponseRef("MetricDataResponse"),
+				metricDataResponse,
 			),
 		},
 		"/api/metrics/range": map[string]any{
@@ -351,6 +392,8 @@ func clientPaths() map[string]any {
 			),
 		},
 	}
+	addMaintenanceOperations(paths)
+	return paths
 }
 
 func metricReadOperation(operationID, summary string, parameters []any, okResponse map[string]any) map[string]any {
@@ -366,6 +409,11 @@ func metricReadOperation(operationID, summary string, parameters []any, okRespon
 	responses := op["responses"].(map[string]any)
 	responses["400"] = plainTextResponse("Invalid metrics contract or query.")
 	responses["406"] = plainTextResponse("The installation has disabled explicit version 1 reads.")
+	if operationID == "getMetricData" {
+		responses["503"] = jsonErrorResponse("Catalog reads unavailable for this profile.")
+		responses["500"] = jsonErrorResponse("Catalog lookup failed.")
+		responses["400"].(map[string]any)["content"].(map[string]any)["application/json"] = jsonErrorResponse("Invalid catalog query.")["content"].(map[string]any)["application/json"]
+	}
 	return op
 }
 
@@ -375,7 +423,7 @@ func getOperation(operationID, summary string, parameters []any, okResponse map[
 		"summary":     summary,
 		"responses": map[string]any{
 			"200": okResponse,
-			"302": redirectResponse("Browser authentication or initial setup is required; Location identifies the interactive route."),
+			"401": jsonErrorResponse("Authentication required."),
 			"500": plainTextResponse("The backend could not load or encode the tenant response."),
 		},
 	}
@@ -385,35 +433,19 @@ func getOperation(operationID, summary string, parameters []any, okResponse map[
 	return op
 }
 
+func jsonRequestBody(schema string) map[string]any {
+	return map[string]any{"required": true, "content": map[string]any{"application/json": map[string]any{"schema": schemaRef(schema)}}}
+}
+
 func putOperation(operationID, summary, requestSchema string, okResponse map[string]any) map[string]any {
 	return map[string]any{
 		"operationId": operationID,
 		"summary":     summary,
-		"requestBody": map[string]any{
-			"required": true,
-			"content": map[string]any{
-				"application/json": map[string]any{"schema": schemaRef(requestSchema)},
-			},
-		},
+		"requestBody": jsonRequestBody(requestSchema),
 		"responses": map[string]any{
 			"200": okResponse,
-			"302": redirectResponse("Browser authentication or initial setup is required; Location identifies the interactive route."),
+			"401": jsonErrorResponse("Authentication required."),
 			"500": plainTextResponse("The backend could not update or encode the tenant response."),
-		},
-	}
-}
-
-func redirectResponse(description string) map[string]any {
-	return map[string]any{
-		"description": description,
-		"headers": map[string]any{
-			"Location": map[string]any{
-				"description": "Interactive login or setup route.",
-				"schema":      map[string]any{"type": "string"},
-			},
-		},
-		"content": map[string]any{
-			"text/html": map[string]any{"schema": map[string]any{"type": "string"}},
 		},
 	}
 }
@@ -464,6 +496,10 @@ func schemaRef(name string) map[string]any {
 
 func langParameter() map[string]any {
 	return enumQueryParameter("lang", "en", "en", "ru", "sr")
+}
+
+func optionalEnumQuery(name, description string, values ...string) map[string]any {
+	return map[string]any{"name": name, "in": "query", "description": description, "schema": map[string]any{"type": "string", "enum": values}}
 }
 
 func enumQueryParameter(name, defaultValue string, values ...string) map[string]any {
@@ -605,6 +641,49 @@ func setPropertyEnum(root any, path []string, values ...string) error {
 	}
 	schema["enum"] = stringsToAny(values)
 	return nil
+}
+
+// The reflector strips Go pointers. A required pointer serializes as null
+// when the underlying observation is missing, including in embedded rows.
+func describeNullablePointers(schema map[string]any, typ reflect.Type) {
+	if schema == nil {
+		return
+	}
+	for typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+	switch typ.Kind() {
+	case reflect.Slice, reflect.Array:
+		items, _ := schema["items"].(map[string]any)
+		describeNullablePointers(items, typ.Elem())
+	case reflect.Map:
+		element, _ := schema["additionalProperties"].(map[string]any)
+		describeNullablePointers(element, typ.Elem())
+	case reflect.Struct:
+		properties, _ := schema["properties"].(map[string]any)
+		if len(properties) == 0 {
+			return
+		}
+		for i := 0; i < typ.NumField(); i++ {
+			field := typ.Field(i)
+			name, opts, _ := strings.Cut(field.Tag.Get("json"), ",")
+			if field.PkgPath != "" || name == "-" {
+				continue
+			}
+			if field.Anonymous && name == "" {
+				describeNullablePointers(schema, field.Type)
+				continue
+			}
+			if name == "" {
+				name = field.Name
+			}
+			child, _ := properties[name].(map[string]any)
+			if field.Type.Kind() == reflect.Pointer && !strings.Contains(opts, "omitempty") {
+				allowPropertyNull(schema, name)
+			}
+			describeNullablePointers(child, field.Type)
+		}
+	}
 }
 
 func allowPropertyNull(root any, property string) {

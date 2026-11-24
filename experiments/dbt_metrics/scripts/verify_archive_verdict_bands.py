@@ -17,7 +17,7 @@ def query():
     env=Environment(undefined=StrictUndefined)
     env.globals.update(config=lambda **kwargs:"", source=lambda _,name:"input_"+name,
                        var=lambda k,d=None:d)
-    for name in ("energy_verdict_bands_v1","energy_guidance_v1"):
+    for name in ("energy_calibrated_bands_v1","energy_verdict_bands_v1","energy_guidance_v1"):
         env.globals[name]=getattr(env.from_string((PROJECT/"macros"/(name+".sql")).read_text()).module,name)
     model=env.from_string((PROJECT/"models/semantic_energy_guidance_v1.sql").read_text()).render()
     bands=env.globals["energy_verdict_bands_v1"]("history")

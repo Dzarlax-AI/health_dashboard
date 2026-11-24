@@ -8,6 +8,27 @@ from jinja2 import Environment, StrictUndefined
 from verify_archive_history import ROOT, comparison
 
 
+def reference_daily_sql():
+    return """with stats as (
+    select left(date,10) as day,
+      avg(qty) filter(where quality='ok' and qty>0) as raw,
+      percentile_cont(0.5) within group(order by qty) filter(where quality='ok' and
+         (substring(date,12,2)>='23' or substring(date,12,2)<'09')) as fixed
+    from source_data.metric_points where metric_name='heart_rate_variability' group by 1
+), hours as (
+    select left(date,10) as day,left(date,13) as hour,source,avg(qty order by date collate "C")::real as hr
+    from source_data.metric_points where metric_name='heart_rate_variability' and qty>0 and quality='ok' group by 1,2,3
+), per_device as (
+    select day,source,avg(hr order by hour collate "C") as source_avg from hours group by 1,2
+), per_day as (
+    select day,avg(source_avg order by source collate "C")::real as avg_val from per_device group by 1
+)
+select c.date,stats.fixed,coalesce(stats.raw,case when not d.repair_pending then d.hrv_avg end) as morning,
+       a.avg_val as recalculated, d.hrv_avg as stored
+from source_data.calendar c left join source_data.daily_hrv d using(date)
+left join stats on stats.day=c.date left join per_day a on a.day=c.date"""
+
+
 def render():
     env = Environment(undefined=StrictUndefined)
     env.globals.update(config=lambda **kwargs: '', var=lambda key, default=None: default,
@@ -36,27 +57,7 @@ union select substring(date,1,10) from source_data.hrv_point;
         ref = "select date, source, qty as v from source_data.hrv_point " + where
         actual = "select date, source, qty as v from semantic_hrv_observation_v1 " + where
         yield comparison(metric, 'date,source', ref, actual)
-    yield """
-create temporary view reference_daily as
-with stats as (
-    select left(date,10) as day,
-      avg(qty) filter(where quality='ok' and qty>0) as raw,
-      percentile_cont(0.5) within group(order by qty) filter(where quality='ok' and
-         (substring(date,12,2)>='23' or substring(date,12,2)<'09')) as fixed
-    from source_data.metric_points where metric_name='heart_rate_variability' group by 1
-), hours as (
-    select left(date,10) as day,left(date,13) as hour,source,avg(qty order by date collate "C")::real as hr
-    from source_data.metric_points where metric_name='heart_rate_variability' and qty>0 and quality='ok' group by 1,2,3
-), per_device as (
-    select day,source,avg(hr order by hour collate "C") as source_avg from hours group by 1,2
-), per_day as (
-    select day,avg(source_avg order by source collate "C")::real as avg_val from per_device group by 1
-)
-select c.date,stats.fixed,coalesce(stats.raw,case when not d.repair_pending then d.hrv_avg end) as morning,
-       a.avg_val as recalculated, d.hrv_avg as stored
-from source_data.calendar c left join source_data.daily_hrv d using(date)
-left join stats on stats.day=c.date left join per_day a on a.day=c.date;
-"""
+    yield "create temporary view reference_daily as " + reference_daily_sql() + ";"
     for metric, ref, actual in [
         ('hrv_fixed_clock_day_median_v1','fixed','fixed_window_median_ms'),
         ('hrv_morning_compat_v1','morning','morning_ms'),

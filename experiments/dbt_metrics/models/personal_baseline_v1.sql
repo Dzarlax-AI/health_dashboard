@@ -1,5 +1,20 @@
-{{ config(enabled=var('personal_baseline_shadow', false), materialized='view', post_hook="alter view {{ this }} set (security_invoker = true)") }}
+{{ config(enabled=var('personal_baseline_shadow', false) or var('tenant_native_catalog', false), materialized='ephemeral' if var('tenant_native_catalog', false) else 'view', post_hook="alter view {{ this }} set (security_invoker = true)") }}
 
+{% if var('tenant_native_catalog',false) %}
+select current_user::text as profile, j.decision_key||':'||j.input_hash as capture,
+       c.channel,c.anchor,c.zone,c.window_days,b.state,b.sample_count,
+       coalesce(b.age_ns,0)/1000000000::numeric as age_seconds,b.eligible,b.baseline_median,b.mad_sd,
+       coalesce(b.age_ns,0)::bigint as age_nanoseconds
+from {{ source('source_data','hdbt_decision_inputs') }} j
+cross join lateral jsonb_to_record(j.inputs) c(channel text,anchor date,zone text,window_days int,age_ns bigint)
+cross join lateral (
+    with samples as (select v::float8 as value from jsonb_array_elements_text(j.inputs->'values') v),
+    stats as ({{ personal_baseline_stats() }}),
+    summary as (select stats.*,c.channel,c.age_ns from stats)
+    {{ personal_baseline_result() }}
+) b
+where j.metric='personal_baseline' and j.formula_version=1 and jsonb_typeof(j.inputs->'values')='array'
+{% else %}
 with captures as (
     select *, anchor::timestamp at time zone zone as as_of,
            anchor - case when window_days > 0 then window_days else 30 end as first_day
@@ -24,3 +39,5 @@ from captures c cross join lateral (
     )
     {{ personal_baseline_result() }}
 ) b
+
+{% endif %}

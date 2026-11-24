@@ -1,8 +1,8 @@
-{{ config(enabled=var('briefing_components_shadow', false), materialized='view', post_hook="alter view {{ this }} set (security_invoker = true)") }}
+{{ config(enabled=var('briefing_components_shadow', false) or var('tenant_native_catalog', false), materialized='ephemeral' if var('tenant_native_catalog', false) else 'view', post_hook="alter view {{ this }} set (security_invoker = true)") }}
 
 with weekly_inputs as (
     select c.profile,c.capture,s."Sleep" as sleep,s."Deep" as deep,s."REM" as rem,s."Awake" as awake
-    from {{ source('briefing_pilot', 'captured_inputs') }} c
+    from ({{ today_metric_captures_v1('weekly') }}) c
     cross join lateral jsonb_to_record(c.inputs->'raw') s("Sleep" float8[],"Deep" float8[],"REM" float8[],"Awake" float8[])
 )
 select analysis.*, fields.* from ({{ weekly_sleep_analysis() }}) analysis

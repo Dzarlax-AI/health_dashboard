@@ -28,12 +28,16 @@ type LatestEnergySnapshot struct {
 // hard error to the briefing path; the caller must fall through to
 // the legacy EnergyBank instead.
 func (s *DB) GetLatestEnergySnapshotForDate(ctx context.Context, dateStr string) (*LatestEnergySnapshot, error) {
+	// Restrict the sort to this day. An unbounded timestamp-index walk can scan
+	// years of newer snapshots before reaching a historical date.
 	row := s.pool.QueryRow(ctx, `
-		SELECT bank, drain_delta, restore_delta, formula_version, flags
-		FROM energy_snapshots
-		WHERE date = $1
-		ORDER BY ts_bucket DESC
-		LIMIT 1`, dateStr)
+		WITH day AS MATERIALIZED (
+			SELECT ts_bucket, bank, drain_delta, restore_delta, formula_version, flags
+			FROM `+s.productArchiveRelation(ctx, "energy_snapshots", "tenant_native_energy_snapshot_v1")+`
+			WHERE date = $1
+		)
+		SELECT bank, drain_delta, restore_delta, formula_version, flags FROM day
+		ORDER BY ts_bucket DESC LIMIT 1`, dateStr)
 
 	var snap LatestEnergySnapshot
 	if err := row.Scan(&snap.Bank, &snap.DrainDelta, &snap.RestoreDelta,

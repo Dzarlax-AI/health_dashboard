@@ -67,6 +67,18 @@ func TestDailyStepSeriesUsesPublishedPrecisionAndOnlyRecomputesDirtyDates(t *tes
 	assertDailyStepSeries(t, db, day2, day2)
 	assertDailyStepSeries(t, db, day6, day6, DailyStepPoint{day6, 15})
 
+	// The full v2 chart keeps actual extrema while using the same published
+	// REAL quantity as the lightweight projection. The v1 wire stays intact.
+	for _, c := range []struct {
+		legacy bool
+		qty    float64
+	}{{false, 16777216}, {true, 16777217}} {
+		rows, err := db.MetricDataForContract("step_count", day4, day4+" 23:59:59", "day", "SUM", c.legacy)
+		if err != nil || len(rows) != 1 || rows[0].Qty != c.qty || rows[0].Min != 1 || rows[0].Max != 16777216 {
+			t.Fatalf("step observations legacy=%v: %+v, %v", c.legacy, rows, err)
+		}
+	}
+
 	// A completed identity can have outstanding foreground writes. Leave
 	// day6 clean to distinguish its published 15 from its raw quantity 35.
 	state.Generation = 1

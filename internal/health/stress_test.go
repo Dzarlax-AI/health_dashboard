@@ -9,6 +9,17 @@ import (
 // HourZShift
 // ============================================================================
 
+// Independent reference for comparisons with the shared SQL calculation.
+func HourZShift(hourHR, baseline, sd float64) float64 {
+	if !isFinite(hourHR) || !isFinite(baseline) || !isFinite(sd) {
+		return 0
+	}
+	if sd <= 0 {
+		return 0
+	}
+	return (hourHR - baseline) / sd
+}
+
 func TestHourZShift_NormalRange(t *testing.T) {
 	// Baseline 60 bpm, SD 5 bpm. Hour HR 70 → z = (70-60)/5 = +2.
 	got := HourZShift(70, 60, 5)
