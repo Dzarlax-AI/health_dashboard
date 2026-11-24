@@ -37,6 +37,7 @@ export function AdminEnergyTab({ locale, schema }: Props) {
   const [valError, setValError] = useState<string | null>(null);
 
   const [energy, setEnergy] = useState<AdminEnergySettingsResponse | null>(null);
+  const [energyLoadError, setEnergyLoadError] = useState<string | null>(null);
   const [stressEnabled, setStressEnabled] = useState(false);
   const [beta, setBeta] = useState("0.8");
   const [zThreshold, setZThreshold] = useState("0.5");
@@ -45,6 +46,7 @@ export function AdminEnergyTab({ locale, schema }: Props) {
 
   const loadAll = useCallback(async () => {
     setObsError(null);
+    setEnergyLoadError(null);
     await Promise.all([
       getStressObservability(30, schema)
         .then(setObs)
@@ -54,11 +56,16 @@ export function AdminEnergyTab({ locale, schema }: Props) {
       getEnergySettings(schema)
         .then((res) => {
           setEnergy(res);
+          setEnergyLoadError(null);
           setStressEnabled(Boolean(res["energy.stress_drain_enabled"]));
           setBeta(String(res["energy.beta"]));
           setZThreshold(String(res["energy.z_threshold"]));
         })
-        .catch(() => undefined),
+        .catch((error: unknown) =>
+          setEnergyLoadError(
+            error instanceof Error ? error.message : tp(locale, "errorGeneric"),
+          ),
+        ),
     ]);
   }, [locale, schema]);
 
@@ -77,12 +84,19 @@ export function AdminEnergyTab({ locale, schema }: Props) {
       .then((res) => {
         if (!controller.signal.aborted) {
           setEnergy(res);
+          setEnergyLoadError(null);
           setStressEnabled(Boolean(res["energy.stress_drain_enabled"]));
           setBeta(String(res["energy.beta"]));
           setZThreshold(String(res["energy.z_threshold"]));
         }
       })
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) {
+          setEnergyLoadError(
+            error instanceof Error ? error.message : tp(locale, "errorGeneric"),
+          );
+        }
+      });
     return () => controller.abort();
   }, [locale, schema]);
 
@@ -251,11 +265,26 @@ export function AdminEnergyTab({ locale, schema }: Props) {
       <details className="panel panel--collapsible">
         <summary>{tp(locale, "adminEnergyTitle")}</summary>
         <div className="panel__body">
+          {energyLoadError ? (
+            <div className="field">
+              <div className="notice notice--danger">{energyLoadError}</div>
+              <div className="btn-row">
+                <button
+                  type="button"
+                  className="btn btn--small"
+                  onClick={() => void loadAll()}
+                >
+                  {tp(locale, "retry")}
+                </button>
+              </div>
+            </div>
+          ) : null}
           <form className="field-grid" onSubmit={handleSaveEnergy}>
             <label className="field__checkbox">
               <input
                 type="checkbox"
                 checked={stressEnabled}
+                disabled={!energy || saving}
                 onChange={(event) => setStressEnabled(event.target.checked)}
               />
               {tp(locale, "adminEnergyStressEnabled")}
@@ -273,6 +302,7 @@ export function AdminEnergyTab({ locale, schema }: Props) {
                   max={5}
                   className="field__input"
                   value={beta}
+                  disabled={!energy || saving}
                   onChange={(event) => setBeta(event.target.value)}
                 />
               </div>
@@ -288,6 +318,7 @@ export function AdminEnergyTab({ locale, schema }: Props) {
                   max={3}
                   className="field__input"
                   value={zThreshold}
+                  disabled={!energy || saving}
                   onChange={(event) => setZThreshold(event.target.value)}
                 />
               </div>
@@ -300,7 +331,7 @@ export function AdminEnergyTab({ locale, schema }: Props) {
               <button
                 type="submit"
                 className="btn btn--primary btn--small"
-                disabled={saving}
+                disabled={!energy || saving}
               >
                 {saving ? tp(locale, "saving") : tp(locale, "save")}
               </button>

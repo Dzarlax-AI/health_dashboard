@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import * as client from "../../api/client";
 import * as ops from "../../api/operations";
+import { AdminEnergyTab } from "./AdminEnergyTab";
 import { AdminPage } from "./AdminPage";
 
 describe("AdminPage", () => {
@@ -105,5 +106,15 @@ describe("AdminPage", () => {
       expect(statusSpy).toHaveBeenCalledWith("health_alex", expect.any(AbortSignal));
     });
     expect(await screen.findByText("metric_points")).toBeInTheDocument();
+  });
+
+  it("keeps Energy settings Save disabled when settings load fails", async () => {
+    vi.spyOn(ops, "getStressObservability").mockRejectedValue(new Error("offline"));
+    vi.spyOn(ops, "getEnergySettings").mockRejectedValue(new Error("settings load failed"));
+
+    render(<AdminEnergyTab locale="en" schema="health_alex" />);
+
+    expect(await screen.findByText("settings load failed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
   });
 });

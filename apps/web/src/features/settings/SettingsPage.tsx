@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 
 import { ClientApiError } from "../../api/client";
 import {
@@ -83,6 +83,7 @@ export function SettingsPage() {
   const [sleepSourceNotice, setSleepSourceNotice] = useState<NoticeState | null>(null);
 
   // Apple Health Import
+  const importFileInputRef = useRef<HTMLInputElement | null>(null);
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importBatch, setImportBatch] = useState("500");
   const [importPause, setImportPause] = useState("150");
@@ -578,13 +579,22 @@ export function SettingsPage() {
               <p className="subpage__muted">{tp(locale, "importDesc")}</p>
               <div className="field-grid">
                 <div className="field">
-                  <label className="btn" htmlFor="import-file-input">
-                    {importFile ? importFile.name : tp(locale, "importChooseFile")}
-                  </label>
+                  <div className="btn-row">
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => importFileInputRef.current?.click()}
+                    >
+                      {importFile ? importFile.name : tp(locale, "importChooseFile")}
+                    </button>
+                  </div>
                   <input
+                    ref={importFileInputRef}
                     id="import-file-input"
                     type="file"
                     accept=".zip,.xml"
+                    tabIndex={-1}
+                    aria-hidden="true"
                     style={{ display: "none" }}
                     onChange={(event) =>
                       setImportFile(event.target.files?.[0] ?? null)

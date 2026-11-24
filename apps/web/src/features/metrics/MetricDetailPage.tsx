@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { ClientApiError, getSession, type SessionResponse } from "../../api/client";
+import {
+  ClientApiError,
+  getReadinessHistory,
+  getSession,
+  type SessionResponse,
+} from "../../api/client";
 import {
   listMetrics,
   queryMetricData,
   queryMetricRange,
-  queryReadinessHistory,
   type MetricAgg,
   type MetricBucket,
   type MetricPoint,
@@ -55,6 +59,7 @@ type ChartState =
       agg: string;
       points: MetricPoint[];
       comparePoints: MetricPoint[];
+      compareShiftDays: number;
       sources: MetricSourceSeries[];
       sleepRows: SleepPhaseRow[];
     };
@@ -79,6 +84,7 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
   );
   const [unit, setUnit] = useState("");
   const [rangeBounds, setRangeBounds] = useState<UnifiedMetricRangeResponse | null>(null);
+  const rangeBoundsRef = useRef<UnifiedMetricRangeResponse | null>(null);
   const [chartState, setChartState] = useState<ChartState>({ status: "loading" });
   const [loadedRequestKey, setLoadedRequestKey] = useState("");
   const requestSeq = useRef(0);
@@ -111,6 +117,7 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
       queryMetricRange(metricName, controller.signal)
         .then((bounds) => {
           if (!controller.signal.aborted) {
+            rangeBoundsRef.current = bounds;
             setRangeBounds(bounds);
           }
         })
@@ -209,12 +216,23 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
 
     const run = async () => {
       if (metricName === "readiness") {
-        const res = await queryReadinessHistory(queryFrom ?? "2000-01-01", to, controller.signal);
+        const requestedDays =
+          preset === "all"
+            ? 365
+            : Math.min(365, Math.max(daysBetweenInclusive(queryFrom ?? today, todayIso()), 1));
+        const res = await getReadinessHistory(requestedDays, controller.signal);
         if (!isCurrent()) return;
         clearSessionRecoveryAttempt(window.sessionStorage);
-        const points: MetricPoint[] = (res.history ?? [])
-          .filter((entry) => entry.readiness !== null)
-          .map((entry) => ({ date: entry.date, qty: entry.readiness as number }));
+        const allPoints: MetricPoint[] = (res.points ?? []).map((entry) => ({
+          date: entry.date,
+          qty: entry.score,
+        }));
+        const points =
+          preset === "all"
+            ? allPoints
+            : allPoints.filter(
+                (p) => (!queryFrom || p.date >= queryFrom) && p.date <= to,
+              );
         if (preset === "all" && points.length > 0) {
           setFrom(points[0].date.slice(0, 10));
         }
@@ -225,11 +243,28 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
           agg: "AVG",
           points,
           comparePoints: [],
+          compareShiftDays: 0,
           sources: [],
           sleepRows: [],
         });
         setLoadedRequestKey(currentRequestKey);
         return;
+      }
+
+      let resolvedFrom = queryFrom;
+      if (preset === "all") {
+        let earliest = rangeBoundsRef.current?.min?.slice(0, 10);
+        if (!earliest) {
+          const bounds = await queryMetricRange(metricName, controller.signal);
+          if (!isCurrent()) return;
+          rangeBoundsRef.current = bounds;
+          setRangeBounds(bounds);
+          earliest = bounds.min?.slice(0, 10);
+        }
+        if (earliest && /^\d{4}-\d{2}-\d{2}$/.test(earliest)) {
+          resolvedFrom = earliest;
+          setFrom(earliest);
+        }
       }
 
       if (isSleepChartMetric(metricName) && !bucket && !agg && !bySource && !compare) {
@@ -238,15 +273,14 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
             queryMetricData(
               phase,
               {
-                from: queryFrom,
+                from: resolvedFrom,
                 to,
                 bucket: "day",
                 agg: "SUM",
-                rangeAll: preset === "all",
                 view: "quantity",
               },
               controller.signal,
-            ).catch(() => null),
+            ),
           ),
         );
         if (!isCurrent()) return;
@@ -254,7 +288,7 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
         const rowMap = new Map<string, SleepPhaseRow>();
         SLEEP_PHASE_METRICS.forEach((phase, index) => {
           const resp = responses[index];
-          for (const p of resp?.points ?? []) {
+          for (const p of resp.points ?? []) {
             const key = p.date.slice(0, 10);
             let row = rowMap.get(key);
             if (!row) {
@@ -274,18 +308,24 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
         const sleepRows = Array.from(rowMap.values()).sort((a, b) =>
           a.date.localeCompare(b.date),
         );
-        const totalPoints: MetricPoint[] = sleepRows.map((row) => ({
-          date: row.date,
-          qty: Number(
-            (
-              row.sleep_deep +
-              row.sleep_core +
-              row.sleep_rem +
-              row.sleep_unspecified
-            ).toFixed(2),
-          ),
-        }));
-        if (preset === "all" && sleepRows.length > 0) {
+        const phaseIndex = SLEEP_PHASE_METRICS.indexOf(
+          metricName as (typeof SLEEP_PHASE_METRICS)[number],
+        );
+        const selectedPoints: MetricPoint[] =
+          phaseIndex >= 0
+            ? (responses[phaseIndex].points ?? [])
+            : sleepRows.map((row) => ({
+                date: row.date,
+                qty: Number(
+                  (
+                    row.sleep_deep +
+                    row.sleep_core +
+                    row.sleep_rem +
+                    row.sleep_unspecified
+                  ).toFixed(2),
+                ),
+              }));
+        if (preset === "all" && !resolvedFrom && sleepRows.length > 0) {
           setFrom(sleepRows[0].date);
         }
         setChartState({
@@ -293,8 +333,9 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
           mode: "sleep",
           bucket: "day",
           agg: "SUM",
-          points: totalPoints,
+          points: selectedPoints,
           comparePoints: [],
+          compareShiftDays: 0,
           sources: [],
           sleepRows,
         });
@@ -305,21 +346,22 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
       const mainPromise = queryMetricData(
         metricName,
         {
-          from: queryFrom,
+          from: resolvedFrom,
           to,
           bucket,
           agg,
           bySource,
-          rangeAll: preset === "all",
           view: bySource ? "full" : "quantity",
         },
         controller.signal,
       );
 
+      let compareShiftDays = 0;
       let comparePromise: Promise<MetricPoint[]> = Promise.resolve([]);
-      if (compare && !bySource && queryFrom) {
-        const span = daysBetweenInclusive(queryFrom, to);
-        const prevTo = shiftDateIso(queryFrom, -1);
+      if (compare && !bySource && resolvedFrom && preset !== "all") {
+        const span = daysBetweenInclusive(resolvedFrom, to);
+        compareShiftDays = span;
+        const prevTo = shiftDateIso(resolvedFrom, -1);
         const prevFrom = shiftDateIso(prevTo, -(span - 1));
         comparePromise = queryMetricData(
           metricName,
@@ -343,7 +385,7 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
 
       const points = main.points ?? [];
       const sources = main.points_by_source ?? [];
-      if (preset === "all" && points.length > 0) {
+      if (preset === "all" && !resolvedFrom && points.length > 0) {
         const firstDate = points[0].date.slice(0, 10);
         if (/^\d{4}-\d{2}-\d{2}$/.test(firstDate)) {
           setFrom(firstDate);
@@ -363,6 +405,7 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
         agg: main.agg || agg,
         points,
         comparePoints,
+        compareShiftDays,
         sources,
         sleepRows: [],
       });
@@ -371,26 +414,31 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
 
     run().catch(handleError);
     return () => controller.abort();
-  }, [agg, bucket, bySource, compare, currentRequestKey, locale, metricName, preset, queryFrom, reloadKey, to]);
+  }, [agg, bucket, bySource, compare, currentRequestKey, locale, metricName, preset, queryFrom, reloadKey, to, today]);
 
-  const effectiveChartState: ChartState =
-    loadedRequestKey !== currentRequestKey ? { status: "loading" } : chartState;
+  const effectiveChartState = useMemo<ChartState>(
+    () =>
+      loadedRequestKey !== currentRequestKey
+        ? { status: "loading" }
+        : chartState,
+    [chartState, currentRequestKey, loadedRequestKey],
+  );
 
   const stats = useMemo(() => {
-    if (chartState.status !== "ready") return null;
-    if (chartState.mode === "by_source") {
-      const flat = chartState.sources.flatMap((s) => s.points ?? []);
+    if (effectiveChartState.status !== "ready") return null;
+    if (effectiveChartState.mode === "by_source") {
+      const flat = effectiveChartState.sources.flatMap((s) => s.points ?? []);
       return computeSeriesStats(flat);
     }
-    return computeSeriesStats(chartState.points);
-  }, [chartState]);
+    return computeSeriesStats(effectiveChartState.points);
+  }, [effectiveChartState]);
 
   const handleDownloadCsv = () => {
-    if (chartState.status !== "ready") return;
+    if (effectiveChartState.status !== "ready") return;
     const csv = buildMetricCsv(
       metricName,
-      chartState.points,
-      chartState.mode === "by_source" ? chartState.sources : null,
+      effectiveChartState.points,
+      effectiveChartState.mode === "by_source" ? effectiveChartState.sources : null,
     );
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -532,7 +580,7 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
                 <button
                   type="button"
                   className="btn btn--small"
-                  disabled={chartState.status !== "ready"}
+                  disabled={effectiveChartState.status !== "ready"}
                   onClick={handleDownloadCsv}
                 >
                   {tp(locale, "exportCsv")}
@@ -564,8 +612,8 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
                   {unit ? ` ${unit}` : ""}
                 </strong>
               </div>
-              {chartState.status === "ready" &&
-              isBarChartMetric(metricName, chartState.agg) ? (
+              {effectiveChartState.status === "ready" &&
+              isBarChartMetric(metricName, effectiveChartState.agg) ? (
                 <div className="metric-stat">
                   <span>{tp(locale, "statSum")}</span>
                   <strong>
@@ -639,6 +687,7 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
                 mode={effectiveChartState.mode}
                 points={effectiveChartState.points}
                 comparePoints={effectiveChartState.comparePoints}
+                compareShiftDays={effectiveChartState.compareShiftDays}
                 sources={effectiveChartState.sources}
                 sleepRows={effectiveChartState.sleepRows}
               />

@@ -301,18 +301,87 @@ export function todayIso(now = new Date()): string {
   return `${year}-${month}-${day}`;
 }
 
+function parseIsoDateUtc(dateStr: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateStr);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const dt = new Date(Date.UTC(year, month - 1, day));
+  if (
+    dt.getUTCFullYear() !== year ||
+    dt.getUTCMonth() !== month - 1 ||
+    dt.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return dt;
+}
+
 export function shiftDateIso(dateStr: string, deltaDays: number): string {
-  const parsed = new Date(`${dateStr}T12:00:00`);
-  if (Number.isNaN(parsed.getTime())) return dateStr;
-  parsed.setDate(parsed.getDate() + deltaDays);
+  const parsed = parseIsoDateUtc(dateStr);
+  if (!parsed) return dateStr;
+  parsed.setUTCDate(parsed.getUTCDate() + deltaDays);
   return parsed.toISOString().slice(0, 10);
 }
 
 export function daysBetweenInclusive(from: string, to: string): number {
-  const start = new Date(`${from}T12:00:00`);
-  const end = new Date(`${to}T12:00:00`);
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return 1;
+  const start = parseIsoDateUtc(from);
+  const end = parseIsoDateUtc(to);
+  if (!start || !end) return 1;
   return Math.max(1, Math.round((end.getTime() - start.getTime()) / 86400000) + 1);
+}
+
+export function shiftBucketDate(dateStr: string, deltaDays: number): string {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    return shiftDateIso(dateStr, deltaDays);
+  }
+  const parsed = new Date(dateStr);
+  if (!Number.isNaN(parsed.getTime())) {
+    const shifted = new Date(parsed.getTime() + deltaDays * 86400000);
+    return shifted.toISOString();
+  }
+  return dateStr;
+}
+
+export function normalizeBucketKey(dateStr: string, bucket: string): string {
+  if (bucket === "day" || /^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    return dateStr.slice(0, 10);
+  }
+  const parsed = new Date(dateStr);
+  return Number.isNaN(parsed.getTime()) ? dateStr : parsed.toISOString();
+}
+
+export interface AlignedComparisonRow {
+  rawDate: string;
+  value?: number;
+  compare?: number;
+}
+
+export function alignComparisonSeries(
+  points: MetricPoint[],
+  comparePoints: MetricPoint[],
+  compareShiftDays: number,
+  bucket: string,
+): AlignedComparisonRow[] {
+  const rows = new Map<string, AlignedComparisonRow>();
+  for (const p of points) {
+    const key = normalizeBucketKey(p.date, bucket);
+    rows.set(key, { rawDate: key, value: p.qty });
+  }
+  for (const p of comparePoints) {
+    const shifted = shiftBucketDate(p.date, compareShiftDays);
+    const key = normalizeBucketKey(shifted, bucket);
+    const existing = rows.get(key);
+    if (existing) {
+      existing.compare = p.qty;
+    } else {
+      rows.set(key, { rawDate: key, compare: p.qty });
+    }
+  }
+  return Array.from(rows.values()).sort((a, b) =>
+    a.rawDate.localeCompare(b.rawDate),
+  );
 }
 
 export interface SeriesStats {

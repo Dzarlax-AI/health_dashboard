@@ -15,7 +15,10 @@ import type { MetricPoint, MetricSourceSeries } from "../../api/operations";
 import { chartTheme } from "../../components/charts/chartTheme";
 import { translate, type Locale } from "../../i18n";
 import { tp } from "../../i18n/pages";
-import { SLEEP_PHASE_METRICS } from "./catalog";
+import {
+  alignComparisonSeries,
+  SLEEP_PHASE_METRICS,
+} from "./catalog";
 
 const SOURCE_COLORS = [
   "#2563eb",
@@ -83,6 +86,7 @@ export interface MetricChartProps {
   mode: "line" | "bar" | "readiness" | "by_source" | "sleep";
   points: MetricPoint[];
   comparePoints?: MetricPoint[];
+  compareShiftDays?: number;
   sources?: MetricSourceSeries[];
   sleepRows?: SleepPhaseRow[];
 }
@@ -95,6 +99,7 @@ export function MetricChart({
   mode,
   points,
   comparePoints = [],
+  compareShiftDays = 0,
   sources = [],
   sleepRows = [],
 }: MetricChartProps) {
@@ -209,15 +214,24 @@ export function MetricChart({
     );
   }
 
-  if (points.length === 0) {
+  if (points.length === 0 && comparePoints.length === 0) {
     return <p className="subpage__muted">{tp(locale, "metricNoPoints")}</p>;
   }
 
-  const data = points.map((p, idx) => ({
-    tick: formatTick(p.date, locale, bucket),
-    value: p.qty,
-    compare: comparePoints[idx]?.qty,
-  }));
+  const data =
+    comparePoints.length > 0 && compareShiftDays > 0
+      ? alignComparisonSeries(points, comparePoints, compareShiftDays, bucket).map(
+          (row) => ({
+            ...row,
+            tick: formatTick(row.rawDate, locale, bucket),
+          }),
+        )
+      : points.map((p) => ({
+          rawDate: p.date,
+          tick: formatTick(p.date, locale, bucket),
+          value: p.qty,
+          compare: undefined,
+        }));
 
   const primaryColor =
     mode === "readiness" ? chartTheme.readiness : chartTheme.energy;

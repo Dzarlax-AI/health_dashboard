@@ -92,5 +92,8 @@ describe("SettingsPage", () => {
     expect(
       screen.getByRole("button", { name: "Run Energy backfill" }),
     ).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "Choose file (.zip, .xml)" }),
+    ).toBeEnabled();
   });
 });

@@ -105,7 +105,6 @@ export interface QueryMetricDataOptions {
   bucket?: MetricBucket;
   agg?: MetricAgg;
   bySource?: boolean;
-  rangeAll?: boolean;
   view?: "quantity" | "full";
 }
 
@@ -137,9 +136,7 @@ export async function queryMetricData(
   signal?: AbortSignal,
 ): Promise<UnifiedMetricSeriesResponse> {
   const params = new URLSearchParams({ metric, to: options.to });
-  if (options.rangeAll) {
-    params.set("range", "all");
-  } else if (options.from) {
+  if (options.from) {
     params.set("from", options.from);
   }
   if (options.bucket) {
@@ -167,28 +164,6 @@ export async function queryMetricRange(
     signal,
   });
   return parseJsonResponse<UnifiedMetricRangeResponse>(response);
-}
-
-export interface ReadinessHistoryEntry {
-  date: string;
-  readiness: number | null;
-  hrv_avg: number | null;
-  rhr_avg: number | null;
-  sleep_total: number | null;
-  steps_total: number | null;
-}
-
-export async function queryReadinessHistory(
-  from: string,
-  to: string,
-  signal?: AbortSignal,
-): Promise<{ history: ReadinessHistoryEntry[] }> {
-  const params = new URLSearchParams({ from, to });
-  const response = await fetch(withQuery("/api/readiness-history", params), {
-    headers: JSON_HEADERS,
-    signal,
-  });
-  return parseJsonResponse<{ history: ReadinessHistoryEntry[] }>(response);
 }
 
 // ---- Settings, Import, Webhook, Energy Backfill ---------------------------
