@@ -28,4 +28,20 @@ describe("AppHeader", () => {
       "/?fixture=partial&lang=sr",
     );
   });
+
+  it("marks the active primary nav route with aria-current", () => {
+    window.history.replaceState({}, "", "/metrics/step_count?lang=en");
+    render(<AppHeader locale="en" isAdmin />);
+
+    expect(screen.getByRole("link", { name: "Metrics" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(screen.getByRole("link", { name: "Settings" })).not.toHaveAttribute(
+      "aria-current",
+    );
+    expect(screen.getByRole("link", { name: "Admin" })).not.toHaveAttribute(
+      "aria-current",
+    );
+  });
 });

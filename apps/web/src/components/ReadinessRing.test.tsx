@@ -35,4 +35,12 @@ describe("ReadinessRing", () => {
       expected,
     );
   });
+
+  it("hides the rounded stroke cap dot when score is 0", () => {
+    const { container } = render(<ReadinessRing value={0} label="Energy" tone="energy" />);
+    const progress = container.querySelector(".score-gauge__progress");
+    expect(progress).toHaveAttribute("stroke-dasharray", "0 100");
+    expect(progress).toHaveAttribute("stroke-opacity", "0");
+    expect(progress).toHaveAttribute("stroke-linecap", "butt");
+  });
 });

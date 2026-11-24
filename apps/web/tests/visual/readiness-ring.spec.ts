@@ -57,6 +57,70 @@ for (const width of widths) {
   }
 }
 
+for (const width of [320, 390, 1024, 1440] as const) {
+  test(`donut gauges keep SVG sized to frame and text inside the ring at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 1100 });
+    await page.emulateMedia({ reducedMotion: "reduce" });
+
+    // Today hero + supporting Energy & Sleep rings
+    await page.goto("/?lang=ru&fixture=normal");
+    const todayRings = await page.locator("[data-score-gauge]").evaluateAll((nodes) =>
+      nodes.map((node) => {
+        const frame = node.querySelector<HTMLElement>("[data-gauge-frame]")!.getBoundingClientRect();
+        const svg = node.querySelector<SVGElement>("[data-gauge-svg]")!.getBoundingClientRect();
+        const value = node.querySelector<HTMLElement>(".score-gauge__value")!.getBoundingClientRect();
+        return {
+          frameW: frame.width,
+          frameH: frame.height,
+          svgW: svg.width,
+          svgH: svg.height,
+          valueW: value.width,
+          innerHole: frame.width * (91 / 120),
+        };
+      }),
+    );
+    expect(todayRings.length).toBeGreaterThanOrEqual(3);
+    for (const r of todayRings) {
+      expect(Math.abs(r.frameW - r.frameH)).toBeLessThanOrEqual(0.5);
+      expect(Math.abs(r.svgW - r.frameW)).toBeLessThanOrEqual(1);
+      expect(Math.abs(r.svgH - r.frameH)).toBeLessThanOrEqual(1);
+      expect(r.valueW).toBeLessThanOrEqual(r.innerHole);
+    }
+
+    // Detail gauges on /activity, /cardio, /recovery, /energy, /sleep
+    for (const [route, outerSel, innerSel] of [
+      ["/activity", ".health-detail-gauge", ".health-detail-gauge__inner"],
+      ["/cardio", ".health-detail-gauge", ".health-detail-gauge__inner"],
+      ["/recovery", ".health-detail-gauge", ".health-detail-gauge__inner"],
+      ["/energy", ".health-detail-gauge", ".health-detail-gauge__inner"],
+      ["/sleep", ".sleep-score", ".sleep-score__inner"],
+    ] as const) {
+      await page.goto(`${route}?lang=ru&fixture=normal`);
+      const box = await page.locator(outerSel).evaluate((outer, innerSelector) => {
+        const inner = outer.querySelector<HTMLElement>(innerSelector)!;
+        const strong = inner.querySelector<HTMLElement>("strong")!;
+        const o = outer.getBoundingClientRect();
+        const i = inner.getBoundingClientRect();
+        const s = strong.getBoundingClientRect();
+        return {
+          outerW: o.width,
+          outerH: o.height,
+          innerW: i.width,
+          innerH: i.height,
+          strongLeft: s.left,
+          strongRight: s.right,
+          innerLeft: i.left,
+          innerRight: i.right,
+        };
+      }, innerSel);
+      expect(Math.abs(box.outerW - box.outerH)).toBeLessThanOrEqual(0.5);
+      expect(Math.abs(box.innerW - box.innerH)).toBeLessThanOrEqual(0.5);
+      expect(box.strongLeft).toBeGreaterThanOrEqual(box.innerLeft - 0.5);
+      expect(box.strongRight).toBeLessThanOrEqual(box.innerRight + 0.5);
+    }
+  });
+}
+
 test("adjacent copy and confidence state do not move the ring", async ({ page }) => {
   await page.setViewportSize({ width: 1024, height: 900 });
   await page.emulateMedia({ reducedMotion: "reduce" });
