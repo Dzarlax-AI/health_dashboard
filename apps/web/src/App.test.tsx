@@ -145,4 +145,16 @@ describe("foundation fixtures", () => {
 
     expect(screen.getByRole("heading", { level: 1, name: title })).toBeInTheDocument();
   });
+
+  it.each([
+    ["/metrics", "All metrics"],
+    ["/metrics/step_count", "step_count"],
+    ["/settings", "Settings"],
+    ["/admin", "Administration"],
+  ])("routes %s to its migrated React page", (path, heading) => {
+    window.history.replaceState({}, "", `${path}?lang=en`);
+    render(<App />);
+
+    expect(screen.getByRole("heading", { level: 1, name: heading })).toBeInTheDocument();
+  });
 });

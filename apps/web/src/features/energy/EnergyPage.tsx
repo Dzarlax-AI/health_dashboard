@@ -22,7 +22,7 @@ import { resolveLocale, translate } from "../../i18n";
 
 type EnergyState =
   | { status: "loading" }
-  | { status: "ready"; insights: TodayInsightsResponse; session?: SessionResponse }
+  | { status: "ready"; insights: TodayInsightsResponse }
   | { status: "error"; message: string }
   | { status: "unauthenticated" };
 
@@ -34,6 +34,7 @@ export function EnergyPage() {
   const fixtureInsights = resources?.todayInsights;
   const [briefing, setBriefing] = useState<HealthBriefingResponse | undefined>(resources?.briefing);
   const [history, setHistory] = useState<EnergyHistoryDayResponse | undefined>(resources?.energyHistory);
+  const [session, setSession] = useState<SessionResponse | undefined>(resources?.session);
   const [briefingFailed, setBriefingFailed] = useState(false);
   const [historyFailed, setHistoryFailed] = useState(false);
   const [state, setState] = useState<EnergyState>(() => fixtureInsights
@@ -50,11 +51,7 @@ export function EnergyPage() {
       .then((insights) => {
         if (controller.signal.aborted) return;
         clearSessionRecoveryAttempt(window.sessionStorage);
-        setState((current) => ({ status: "ready", insights,
-          session: current.status === "ready" ? current.session : undefined }));
-        void getSession(controller.signal).then((session) => {
-          if (!controller.signal.aborted) setState((current) => current.status === "ready" ? { ...current, session } : current);
-        }).catch(() => undefined);
+        setState({ status: "ready", insights });
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
@@ -78,15 +75,24 @@ export function EnergyPage() {
         (target) => window.location.assign(target))) return;
       setFailed(true);
     };
-    // Current reserve, history and opinions load independently.
+    // Current reserve, history, session and opinions load independently.
+    void getSession(controller.signal).then((value) => {
+      if (!controller.signal.aborted) setSession(value);
+    }).catch(() => undefined);
     void getHealthBriefing(locale, controller.signal).then((value) => {
-      if (!controller.signal.aborted) setBriefing(value);
+      if (!controller.signal.aborted) {
+        setBriefing(value);
+        setBriefingFailed(false);
+      }
     }).catch((error: unknown) => handleError(error, setBriefingFailed));
     void getEnergyHistory(14, controller.signal).then((value) => {
-      if (!controller.signal.aborted) setHistory(value);
+      if (!controller.signal.aborted) {
+        setHistory(value);
+        setHistoryFailed(false);
+      }
     }).catch((error: unknown) => handleError(error, setHistoryFailed));
     return () => controller.abort();
-  }, [fixture, locale]);
+  }, [fixture, locale, reloadKey]);
 
   useEffect(() => {
     if (state.status === "ready" && ["disabled", "ready"].includes(state.insights.generation.state)) {
@@ -124,8 +130,8 @@ export function EnergyPage() {
   const points = history?.points;
   const number = new Intl.NumberFormat(locale);
   return (
-    <div className="app-shell health-detail-shell energy-shell">
-      <AppHeader locale={locale} isAdmin={state.status === "ready" && state.session?.is_admin} />
+    <div className="app-shell health-detail-shell energy-shell" data-locale={locale}>
+      <AppHeader locale={locale} isAdmin={Boolean(session?.is_admin)} />
       <main className="health-detail-page energy-page" data-section="energy">
         <section className="health-detail-hero">
           <div className="health-detail-hero__heading">
@@ -192,9 +198,26 @@ export function EnergyPage() {
           ) : state.status === "loading" ? (
             <StatusPanel state="loading" title={translate(locale, "loadingTitle")} detail={translate(locale, "loadingDetail")} />
           ) : state.status === "unauthenticated" ? (
-            <a className="primary-action" href={`/login?next=${encodeURIComponent(`/energy?lang=${locale}`)}`}>{translate(locale, "signIn")}</a>
+            <div className="standalone-status">
+              <StatusPanel state="error" title={translate(locale, "signInTitle")} detail={translate(locale, "signInDetail")} />
+              <a className="primary-action" href={`/login?next=${encodeURIComponent(`/energy?lang=${locale}`)}`}>{translate(locale, "signIn")}</a>
+            </div>
           ) : state.status === "error" ? (
-            <StatusPanel state="error" title={translate(locale, "errorTitle")} detail={state.message} />
+            <div className="standalone-status">
+              <StatusPanel state="error" title={translate(locale, "errorTitle")} detail={state.message} />
+              <button
+                type="button"
+                className="primary-action"
+                onClick={() => {
+                  setState({ status: "loading" });
+                  setBriefingFailed(false);
+                  setHistoryFailed(false);
+                  setReloadKey((value) => value + 1);
+                }}
+              >
+                {translate(locale, "retry")}
+              </button>
+            </div>
           ) : <p className="empty-note">{translate(locale, "historyAccruing")}</p>}
         </section>
       </main>

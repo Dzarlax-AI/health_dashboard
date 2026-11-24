@@ -53,6 +53,8 @@ export function ReadinessRing({
             r="50"
             pathLength="100"
             strokeDasharray={`${score} 100`}
+            strokeLinecap={score > 0 ? "round" : "butt"}
+            strokeOpacity={score > 0 ? undefined : 0}
             transform="rotate(-90 60 60)"
           />
         </svg>

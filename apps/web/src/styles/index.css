@@ -414,6 +414,7 @@ textarea {
   position: relative;
   display: grid;
   place-items: center;
+  container-type: inline-size;
   aspect-ratio: 1;
   inline-size: clamp(230px, 25vw, 330px);
   max-inline-size: 100%;
@@ -445,8 +446,8 @@ textarea {
 .score-gauge__content {
   position: absolute;
   inset: 0;
-  inline-size: auto;
-  block-size: auto;
+  inline-size: 100%;
+  block-size: 100%;
 }
 
 .score-gauge__svg {
@@ -472,12 +473,13 @@ textarea {
 .score-gauge__content {
   display: grid;
   place-items: center;
+  padding: 14%;
   pointer-events: none;
 }
 
 .score-gauge__value {
   color: var(--gauge-color);
-  font-size: clamp(3.4rem, 7vw, 5.6rem);
+  font-size: clamp(2rem, 26cqi, 4.75rem);
   font-variant-numeric: tabular-nums;
   font-weight: 800;
   letter-spacing: -0.07em;
@@ -485,7 +487,7 @@ textarea {
 }
 
 .score-gauge--card .score-gauge__value {
-  font-size: clamp(2.5rem, 4vw, 3.5rem);
+  font-size: clamp(1.75rem, 26cqi, 3.2rem);
 }
 
 .score-gauge__value small {
@@ -1229,23 +1231,29 @@ a.today-insights__domain:hover {
 
 .sleep-score__inner {
   display: grid;
+  container-type: inline-size;
   width: 72%;
   aspect-ratio: 1;
+  padding: 12px;
   place-items: center;
   align-content: center;
+  text-align: center;
   border-radius: 50%;
   background: rgba(21, 27, 57, 0.84);
   box-shadow: inset 0 0 42px rgba(126, 142, 232, 0.18);
 }
 
 .sleep-score__inner strong {
-  font-size: clamp(2.5rem, 7vw, 4.75rem);
+  font-size: clamp(1.9rem, 28cqi, 3.6rem);
+  font-variant-numeric: tabular-nums;
   line-height: 1;
 }
 
 .sleep-score__inner span {
   margin-top: var(--space-2);
   color: rgba(247, 248, 255, 0.66);
+  font-size: clamp(0.75rem, 8.5cqi, 0.95rem);
+  line-height: 1.2;
 }
 
 .sleep-key-metrics {
@@ -1830,24 +1838,30 @@ a.today-insights__domain:hover {
 
 .health-detail-gauge__inner {
   display: grid;
+  container-type: inline-size;
   width: 72%;
   aspect-ratio: 1;
+  padding: 12px;
   place-items: center;
   align-content: center;
+  text-align: center;
   border-radius: 50%;
   background: color-mix(in srgb, var(--detail-accent) 8%, #0c1b1f);
   box-shadow: inset 0 0 42px color-mix(in srgb, var(--detail-accent) 20%, transparent);
 }
 
 .health-detail-gauge__inner strong {
-  font-size: clamp(2.3rem, 6vw, 4.25rem);
+  font-size: clamp(1.65rem, 23cqi, 3.1rem);
+  font-variant-numeric: tabular-nums;
   line-height: 1;
 }
 
 .health-detail-gauge__inner span {
   margin-top: var(--space-2);
   color: rgba(247, 251, 249, 0.68);
+  font-size: clamp(0.75rem, 8.5cqi, 0.95rem);
   font-weight: 700;
+  line-height: 1.2;
 }
 
 .health-detail-hero__copy {

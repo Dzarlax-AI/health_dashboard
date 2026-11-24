@@ -129,3 +129,14 @@ it("exposes a single history day without opening the disclosure", async () => {
   expect(container.querySelector(".energy-history-details")).toHaveAttribute("open");
   expect(container.querySelector(".energy-history-list__row")).toBeVisible();
 });
+
+it("keeps Admin navigation visible and offers Retry when Today Insights fails", async () => {
+  vi.mocked(getHealthBriefing).mockResolvedValue(resources.briefing);
+  vi.mocked(getSession).mockResolvedValue({ is_admin: true });
+  vi.mocked(getTodayInsights).mockRejectedValue(new Error("temporary outage"));
+  vi.mocked(getEnergyHistory).mockResolvedValue(resources.energyHistory!);
+
+  render(<EnergyPage />);
+  expect(await screen.findByRole("link", { name: "Admin" })).toBeInTheDocument();
+  expect(await screen.findByRole("button", { name: "Try again" })).toBeInTheDocument();
+});
