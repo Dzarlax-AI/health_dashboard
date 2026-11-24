@@ -2,6 +2,7 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  ComposedChart,
   Legend,
   Line,
   LineChart,
@@ -112,10 +113,13 @@ export function MetricChart({
       ...row,
       tick: formatTick(row.date, locale, "day"),
     }));
+    const hasSleepTotal = sleepRows.some(
+      (row) => typeof row.sleep_total === "number" && Number.isFinite(row.sleep_total),
+    );
     return (
       <div className="metric-chart-box" role="img" aria-label={label}>
         <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={data} margin={{ top: 10, right: 12, bottom: 0, left: 0 }}>
+          <ComposedChart data={data} margin={{ top: 10, right: 12, bottom: 0, left: 0 }}>
             <CartesianGrid stroke={chartTheme.grid} vertical={false} />
             <XAxis
               dataKey="tick"
@@ -130,7 +134,13 @@ export function MetricChart({
               width={44}
               tick={{ fill: chartTheme.text, fontSize: 11 }}
             />
-            <Tooltip contentStyle={tooltipStyle} />
+            <Tooltip
+              contentStyle={tooltipStyle}
+              formatter={(value, name) => [
+                `${String(value)}${unit ? ` ${unit}` : ""}`,
+                String(name),
+              ]}
+            />
             <Legend />
             {SLEEP_PHASE_METRICS.map((phase) => (
               <Bar
@@ -142,7 +152,25 @@ export function MetricChart({
                 isAnimationActive={false}
               />
             ))}
-          </BarChart>
+            {hasSleepTotal ? (
+              <Line
+                type="monotone"
+                dataKey="sleep_total"
+                name={label}
+                stroke="var(--text)"
+                strokeWidth={2.5}
+                dot={{
+                  r: 4,
+                  stroke: "var(--text)",
+                  strokeWidth: 2,
+                  fill: chartTheme.tooltipBackground,
+                }}
+                activeDot={{ r: 5 }}
+                connectNulls={false}
+                isAnimationActive={false}
+              />
+            ) : null}
+          </ComposedChart>
         </ResponsiveContainer>
       </div>
     );

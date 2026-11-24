@@ -174,6 +174,7 @@ export interface SleepPhaseRow {
   sleep_rem: number;
   sleep_unspecified: number;
   sleep_awake: number;
+  sleep_total?: number;
 }
 
 const SLEEP_METRIC_SET = new Set<string>([
@@ -258,16 +259,13 @@ export function buildSleepPhaseRows(
         sleep_deep: 0,
         sleep_core: 0,
         sleep_rem: 0,
-        sleep_unspecified: totalQty,
+        sleep_unspecified: 0,
         sleep_awake: 0,
+        sleep_total: totalQty,
       };
       rowMap.set(key, row);
     } else {
-      const stagedAsleep =
-        row.sleep_deep + row.sleep_core + row.sleep_rem + row.sleep_unspecified;
-      if (stagedAsleep === 0 && totalQty > 0) {
-        row.sleep_unspecified = totalQty;
-      }
+      row.sleep_total = totalQty;
     }
   }
   return Array.from(rowMap.values()).sort((a, b) =>

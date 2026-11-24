@@ -180,8 +180,9 @@ describe("MetricDetailPage", () => {
         sleep_deep: 0,
         sleep_core: 0,
         sleep_rem: 0,
-        sleep_unspecified: 7.4,
+        sleep_unspecified: 0,
         sleep_awake: 0,
+        sleep_total: 7.4,
       },
       {
         date: "2026-11-22",
@@ -190,6 +191,7 @@ describe("MetricDetailPage", () => {
         sleep_rem: 1.5,
         sleep_unspecified: 0,
         sleep_awake: 0,
+        sleep_total: 8.2,
       },
     ]);
   });
