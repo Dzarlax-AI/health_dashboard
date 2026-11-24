@@ -1,43 +1,43 @@
 path	method	access	kind	openapi	path_clients
 /.well-known/oauth-protected-resource/mcp	GET	public	protocol	-	
-/api/admin/ai-models	POST	admin	api	yes	go-web
-/api/admin/backfill	POST	admin	api	yes	go-web
-/api/admin/checkin-coverage	GET	admin	api	yes	go-web
-/api/admin/checkin-coverage	POST	admin	api	yes	go-web
-/api/admin/energy-settings	GET	admin	api	yes	go-web
-/api/admin/energy-settings	POST	admin	api	yes	go-web
-/api/admin/gaps	GET	admin	api	yes	go-web
-/api/admin/quality-audit	GET	admin	api	yes	go-web
-/api/admin/quality-digest	POST	admin	api	yes	go-web
-/api/admin/quality-fix	POST	admin	api	yes	go-web
-/api/admin/readiness-redesign/backfill	POST	admin	api	yes	
-/api/admin/readiness-redesign/chip-calibrations	GET	admin	api	yes	go-web
-/api/admin/readiness-redesign/chip-calibrations	POST	admin	api	yes	go-web
-/api/admin/readiness-redesign/config	GET	admin	api	yes	
-/api/admin/readiness-redesign/config	POST	admin	api	yes	
-/api/admin/readiness-redesign/monitoring	GET	admin	api	yes	
-/api/admin/readiness-redesign/operational-contract	GET	admin	api	yes	
-/api/admin/settings	GET	admin	api	yes	go-web
-/api/admin/settings	POST	admin	api	yes	go-web
-/api/admin/status	GET	admin	api	yes	
-/api/admin/stress-observability	GET	admin	api	yes	go-web
-/api/admin/stress-validation	GET	admin	api	yes	go-web
+/api/admin/ai-models	POST	admin	api	yes	react,go-web
+/api/admin/backfill	POST	admin	api	yes	react,go-web
+/api/admin/checkin-coverage	GET	admin	api	yes	react,go-web
+/api/admin/checkin-coverage	POST	admin	api	yes	react,go-web
+/api/admin/energy-settings	GET	admin	api	yes	react,go-web
+/api/admin/energy-settings	POST	admin	api	yes	react,go-web
+/api/admin/gaps	GET	admin	api	yes	react,go-web
+/api/admin/quality-audit	GET	admin	api	yes	react,go-web
+/api/admin/quality-digest	POST	admin	api	yes	react,go-web
+/api/admin/quality-fix	POST	admin	api	yes	react,go-web
+/api/admin/readiness-redesign/backfill	POST	admin	api	yes	react
+/api/admin/readiness-redesign/chip-calibrations	GET	admin	api	yes	react,go-web
+/api/admin/readiness-redesign/chip-calibrations	POST	admin	api	yes	react,go-web
+/api/admin/readiness-redesign/config	GET	admin	api	yes	react
+/api/admin/readiness-redesign/config	POST	admin	api	yes	react
+/api/admin/readiness-redesign/monitoring	GET	admin	api	yes	react
+/api/admin/readiness-redesign/operational-contract	GET	admin	api	yes	react
+/api/admin/settings	GET	admin	api	yes	react,go-web
+/api/admin/settings	POST	admin	api	yes	react,go-web
+/api/admin/status	GET	admin	api	yes	react
+/api/admin/stress-observability	GET	admin	api	yes	react,go-web
+/api/admin/stress-validation	GET	admin	api	yes	react,go-web
 /api/admin/today-insights/b1-quality-gate	POST	admin	api	yes	
-/api/admin/today-insights/config	GET	admin	api	yes	go-web
-/api/admin/today-insights/config	POST	admin	api	yes	go-web
-/api/admin/users	GET	admin	api	yes	go-web
-/api/admin/users	POST	admin	api	yes	go-web
-/api/admin/users/{username}/api-key	GET	admin	api	yes	go-web
+/api/admin/today-insights/config	GET	admin	api	yes	react,go-web
+/api/admin/today-insights/config	POST	admin	api	yes	react,go-web
+/api/admin/users	GET	admin	api	yes	react,go-web
+/api/admin/users	POST	admin	api	yes	react,go-web
+/api/admin/users/{username}/api-key	GET	admin	api	yes	react,go-web
 /api/ai-briefing	GET	profile	api	yes	react,ios,go-web
 /api/dashboard	GET	profile	api	yes	react,ios
 /api/derived-metrics	GET	profile	api	yes	react
 /api/energy-history	GET	profile	api	yes	react,ios,go-web
 /api/health-briefing	GET	profile	api	yes	react,ios
-/api/import/status	GET	profile	api	yes	go-web
-/api/import/upload	POST	profile	api	yes	go-web
-/api/metrics	GET	profile	api	yes	ios
+/api/import/status	GET	profile	api	yes	react,go-web
+/api/import/upload	POST	profile	api	yes	react,go-web
+/api/metrics	GET	profile	api	yes	react,ios
 /api/metrics/data	GET	profile	api	yes	react,ios,go-web
-/api/metrics/latest	GET	profile	api	yes	ios
+/api/metrics/latest	GET	profile	api	yes	react,ios
 /api/metrics/range	GET	profile	api	yes	react,ios,go-web
 /api/readiness-history	GET	profile	api	yes	react,ios,go-web
 /api/reports/history	GET	profile	api	yes	
@@ -45,20 +45,20 @@ path	method	access	kind	openapi	path_clients
 /api/section/{key}	GET	profile	api	yes	react,ios
 /api/sections	GET	profile	api	yes	ios
 /api/session	GET	profile	api	yes	react
-/api/settings	GET	profile	api	yes	ios,go-web
-/api/settings	POST	profile	api	yes	ios,go-web
-/api/settings/energy-backfill	POST	profile	api	yes	go-web
-/api/settings/energy-backfill/status	GET	profile	api	yes	go-web
-/api/settings/energy-backfill/summary	GET	profile	api	yes	go-web
-/api/settings/test-notify	POST	profile	api	yes	go-web
+/api/settings	GET	profile	api	yes	react,ios,go-web
+/api/settings	POST	profile	api	yes	react,ios,go-web
+/api/settings/energy-backfill	POST	profile	api	yes	react,go-web
+/api/settings/energy-backfill/status	GET	profile	api	yes	react,go-web
+/api/settings/energy-backfill/summary	GET	profile	api	yes	react,go-web
+/api/settings/test-notify	POST	profile	api	yes	react,go-web
 /api/sleep/balance	GET	profile	api	yes	react
 /api/sleep/comparison	GET	profile	api	yes	react
 /api/sleep/goal	GET	profile	api	yes	react
 /api/sleep/goal	PUT	profile	api	yes	react
 /api/telegram/webhook/	POST	telegram-webhook	protocol	-	
 /api/today-insights	GET	profile	api	yes	react,ios
-/api/webhook-status	GET	profile	api	yes	go-web
-/api/webhook-status/retry	POST	admin	api	yes	go-web
+/api/webhook-status	GET	profile	api	yes	react,go-web
+/api/webhook-status/retry	POST	admin	api	yes	react,go-web
 /fragments/admin-readiness-contract	GET	admin	compat	-	go-web
 /fragments/admin-readiness-monitoring	GET	admin	compat	-	go-web
 /fragments/admin-readiness-onboarding/step-1	GET	admin	compat	-	go-web
