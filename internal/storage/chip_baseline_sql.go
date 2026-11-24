@@ -12,8 +12,9 @@ import (
 var chipBaselineSQL = `with selected as (
 	select ''::text as case_id, $1::text as sub_score,''::text as target_kind,
 	       $2::text::date as as_of_date,nullif($3::text,'')::date as epoch_start,$4::jsonb as days
-), predictions as (` + dbtmetrics.ChipBaselineSQL("selected") + `)
-select baseline_kind,predicted,reason from predictions order by baseline_kind`
+), predictions as (` + dbtmetrics.ChipBaselineSQL("selected") + `)`
+
+const chipBaselineResultSQL = ` select baseline_kind,predicted,reason from predictions order by baseline_kind`
 
 type chipBaselineDay struct {
 	Date     string  `json:"date"`
@@ -40,29 +41,42 @@ func (s *DB) chipBaselines(ctx context.Context, date time.Time, epochStart, subS
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.pool.Query(ctx, chipBaselineSQL, subScore, date.Format(isoDate), epochStart, json.RawMessage(payload))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []naiveBaselineRow
-	for rows.Next() {
-		var row naiveBaselineRow
-		if err := rows.Scan(&row.BaselineKind, &row.Value, &row.Reason); err != nil {
+	return withDecisionJournal(ctx, s, func(db *DB, journal bool) ([]naiveBaselineRow, error) {
+		query := chipBaselineSQL
+		args := []any{subScore, date.Format(isoDate), epochStart, json.RawMessage(payload)}
+		if journal {
+			args = append(args, targets)
+			query += `, decision_packets as (
+          select 'chip_baseline'::text as metric,concat_ws('/',i.as_of_date,i.sub_score,k.kind) as decision_key,
+                 1 as formula_version,(to_jsonb(i)-'case_id')||jsonb_build_object('target_kind',k.kind) as inputs,
+                 (select jsonb_agg(to_jsonb(p)-'case_id'-'target_kind' order by baseline_kind) from predictions p) as result
+          from selected i cross join unnest($5::text[]) k(kind)
+        )` + decisionJournalInsertSQL
+		}
+		rows, err := db.pool.Query(ctx, query+chipBaselineResultSQL, args...)
+		if err != nil {
 			return nil, err
 		}
-		for _, target := range targets {
-			row.TargetKind = target
-			out = append(out, row)
+		defer rows.Close()
+		var out []naiveBaselineRow
+		for rows.Next() {
+			var row naiveBaselineRow
+			if err := rows.Scan(&row.BaselineKind, &row.Value, &row.Reason); err != nil {
+				return nil, err
+			}
+			for _, target := range targets {
+				row.TargetKind = target
+				out = append(out, row)
+			}
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("no baseline kinds for %s", subScore)
-	}
-	return out, nil
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		if len(out) == 0 {
+			return nil, fmt.Errorf("no baseline kinds for %s", subScore)
+		}
+		return out, nil
+	})
 }
 
 var chipCalibrationSQL = `with selected as (
@@ -73,5 +87,6 @@ var chipCalibrationSQL = `with selected as (
 	from naive_baselines n join target_snapshots t using(date,sub_score,target_kind)
 	where n.sub_score=$1 and n.target_kind=$2 and n.source_epoch=$3
 	and n.date between ($4::text::date-179)::text and $4::text
-), calibration as (` + dbtmetrics.ChipCalibrationSQL("selected", "candidate_pairs") + `)
-select n_eligible,n_positives,calibration_status,p80,base_rate,cutoff from calibration`
+), calibration as (` + dbtmetrics.ChipCalibrationSQL("selected", "candidate_pairs") + `)`
+
+const chipCalibrationResultSQL = ` select n_eligible,n_positives,calibration_status,p80,base_rate,cutoff from calibration`

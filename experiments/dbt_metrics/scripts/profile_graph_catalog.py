@@ -32,6 +32,24 @@ def verify_graph_catalog(sql, graph_schema, source_schema):
     catalog = read_catalog()
     expected_ids = {d["metric_id"] for d in definitions(catalog)}
     view = f'"{graph_schema}".metric_read_v1'
+    # Exercise the observation transport for every catalogued ingress ID.
+    # Roll back the probes before measuring the fixture's actual coverage.
+    observations = sorted(set(catalog["observations"]) - catalog["non_values"].keys())
+    encoded = json.dumps(observations).replace("'", "''")
+    observed = json.loads(sql(f"""
+        begin;
+        insert into "{source_schema}".metric_points(metric_name,date,source,qty,quality,units)
+        select metric,'2024-09-01 12:00:00 +0000','catalog-observation-probe',0,'ok','fixture'
+        from jsonb_array_elements_text('{encoded}'::jsonb) metric;
+        select jsonb_agg(metric_id order by metric_id) from {view}
+        where sample_key->>'source'='catalog-observation-probe'
+          and source='{source_schema}.metric_points' and numeric_value=0
+          and value_status='available' and sample_key->>'units'='fixture';
+        rollback;
+    """))
+    if sorted(observed or []) != observations:
+        raise ValueError("catalog observation reader lost a measured zero, its source or its units")
+    print(f"PASS: {len(observations)} native observations retain measured zero and provenance.", flush=True)
     # Compare every date, NULL and measured value for one bound field. This
     # includes rows after the four examples used by the separate fixture audit.
     result = json.loads(sql(f"""

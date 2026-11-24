@@ -78,9 +78,10 @@ def exercise(image, directory, network, cid):
     sql(
         f"""set role {role};
         create table __tenant_identity(singleton boolean primary key,tenant_id uuid,schema_contract_version integer,schema_contract_checksum text);
-        insert into __tenant_identity values(true,'{tenant}',18,'{digest}');
+        insert into __tenant_identity values(true,'{tenant}',19,'{digest}');
         """
         + (ROOT / "internal/storage/sql/hdbt_v17.sql").read_text()
+        + (ROOT / "internal/storage/sql/hdbt_decision_inputs.sql").read_text()
     )
     sql("""insert into metric_points(metric_name,date,source,qty) values
         ('step_count','2026-01-01 10:00:00 +0000','Apple Watch',10);
@@ -119,9 +120,11 @@ def exercise(image, directory, network, cid):
         HEALTH_DBT_TENANT_DSN_FILE="/run/tenant-dsn" if image else str(secret),
     )
 
-    def worker(*, wait=True, extra=None, name=None, loop=False, expired_attempt=None, mounts=()):
+    def worker(*, wait=True, extra=None, name=None, loop=False, expired_attempt=None, mounts=(), native_catalog=False):
         active = dict(env, **(extra or {}))
         args = [] if loop else ["--once"]
+        if native_catalog:
+            args = ["--install-native-catalog"]
         if expired_attempt:
             # Replay an orphaned real dbt invocation after a newer workspace exists.
             entry = "/app/experiments/dbt_metrics/scripts" if image else str(WORKER.parent)
@@ -197,6 +200,55 @@ else:
     )
     docker("cp", str(probe), f"{cid}:/tmp/chart", capture_output=True)
 
+    # The aggregate stress fixture intentionally has a minimal schema. Exercise
+    # catalog installation on a second database using real offline provisioning.
+    sql("create database worker_catalog_fixture", tenant_path=False)
+
+    def catalog_sql(query):
+        return docker("exec","-i",cid,"psql","-XqAt","-v","ON_ERROR_STOP=1","-U","postgres",
+                      "-d","worker_catalog_fixture",input=query,capture_output=True).stdout.strip()
+
+    catalog_sql(f"create schema {schema} authorization {role}")
+    docker("exec","-e",f"PGUSER={role}","-e",f"HDBT_SMOKE_CATALOG_TENANT={tenant}",cid,"/tmp/chart",
+           "-test.v","-test.run=^TestHDBTWorkerSmokeProvisionCatalog$")
+    catalog_secret = directory / "catalog-dsn"
+    catalog_secret.write_text(secret.read_text().replace("/postgres?", "/worker_catalog_fixture?"))
+    catalog_secret.chmod(0o444)
+    catalog_args = {"native_catalog": True, "extra": {"HEALTH_DBT_TENANT_DSN_FILE":
+                    "/run/catalog-dsn" if image else str(catalog_secret)},
+                    "mounts": [(catalog_secret,"/run/catalog-dsn")] if image else []}
+    disabled = dict(catalog_args["extra"], HEALTH_DBT_WORKER_ENABLED="false")
+    assert worker(**dict(catalog_args, extra=disabled)) == ("disabled", 1)
+    wrong = dict(catalog_args["extra"], HEALTH_DBT_TENANT_ID=str(uuid.uuid4()))
+    assert worker(**dict(catalog_args, extra=wrong)) == ("credential_scope", 1)
+    # A conflict in the last typed projection must roll back the entire installation.
+    catalog_sql(f"set role {role}; create table {schema}.tenant_native_workout_v1 (id integer)")
+    assert worker(**catalog_args) == ("dbt_build", 1)
+    assert catalog_sql(f"""select count(*) from pg_class where relnamespace='{schema}'::regnamespace
+         and relname in ('tenant_native_metric_read_v1','tenant_native_sleep_goal_v1','tenant_native_energy_snapshot_v1')""") == "0"
+    catalog_sql(f"set role {role}; drop table {schema}.tenant_native_workout_v1")
+    for _ in range(2):
+        require_status("catalog_installed", **catalog_args)
+        assert catalog_sql(f"""select c.relkind='v' and c.relowner='{role}'::regrole and
+            c.reloptions @> array['security_invoker=true'] from pg_class c
+            where c.oid='{schema}.tenant_native_metric_read_v1'::regclass""") == "t"
+        assert catalog_sql(f"""set role {role}; set search_path={schema},pg_catalog; begin;
+            insert into settings(key,value) values('dbt_native_catalog_reads_v1','true');
+            select exists(select from tenant_native_metric_read_v1 where metric_id='step_count' and value_status='no_row'); rollback;""") == "t"
+        assert catalog_sql(f"""select count(*) from {schema}.settings
+            where key='dbt_native_catalog_reads_v1' and value='true'""") == "0"
+
+    catalog_oid = catalog_sql(f"select '{schema}.tenant_native_metric_read_v1'::regclass::oid")
+    catalog_sql(f"set role {role}; alter view {schema}.tenant_native_workout_v1 rename column location to incompatible_location")
+    assert worker(**catalog_args) == ("dbt_build", 1)
+    assert catalog_sql(f"select '{schema}.tenant_native_metric_read_v1'::regclass::oid") == catalog_oid
+    catalog_sql(f"set role {role}; alter view {schema}.tenant_native_workout_v1 rename column incompatible_location to location")
+    ui_probe = directory / "product_routes"
+    subprocess.run(["go", "test", "-c", "-o", str(ui_probe), "./internal/ui"], cwd=ROOT,
+                   env=dict(os.environ, GOOS="linux", GOARCH=goarch, CGO_ENABLED="0"), check=True)
+    docker("cp", str(ui_probe), f"{cid}:/tmp/product_routes", capture_output=True)
+    docker("exec", "-e", f"PGUSER={role}", "-e", "HDBT_INSTALLED_PRODUCT_FIXTURE=true", cid,
+           "/tmp/product_routes", "-test.v", "-test.run=^TestInstalledNativeProductReads$")
     def chart(expected):
         result = docker(
             "exec",
@@ -256,24 +308,32 @@ else:
     assert actual() == "10" and sql("select source_generation from hdbt_state") == "1"
     require_status("idle")
     check_step_sum()
-    other_xmin = sql("select xmin from hdbt_daily_metrics where date='2026-01-20'")
+    # A receipt arriving after bootstrap must wake the decision lane without a
+    # new source generation. Another revision preserves the original result.
+    def receipt(samples, score, version=3):
+        payload = json.dumps({"reader": "history", "effective": {
+            "Date": "2026-01-18", "HRV": [], "RHR": [], "Sleep": [], "HRVPresent": False,
+            "RHRPresent": False, "SleepPresent": False, "LowQuality": False,
+            "Provisional": False, "Samples": samples, "Illness": ""}})
+        result = json.dumps(dict(RawScore=score, DisplayScore=score, Confidence="", CapReason=""))
+        sql(f"""insert into hdbt_decision_inputs
+            select 'readiness','history/2026-01-18',
+              encode(sha256(convert_to(jsonb_build_array({version},p)::text,'UTF8')),'hex'),
+              now(),{version},p,'{result}'::jsonb from (select '{payload}'::jsonb p) inputs""")
 
-    sql("begin;" + mark(2) + "commit;")
-    sql("alter table hdbt_w_daily add constraint fixture_refuse_20 check(steps<>20)")
-    assert worker() == ("dbt_build", 1)
-    assert actual() == "10" and sql("select last_status from hdbt_state") == "dbt_build"
-    assert sql("select count(*) from hdbt_dirty") == "1"
-    sql("alter table hdbt_w_daily drop constraint fixture_refuse_20")
-    # The gate holds the final dbt model before publication. All timing-sensitive
-    # assertions run while it is closed, independently of the worker lock timeout.
-    sql("""create function fixture_pause_model() returns trigger language plpgsql as $$begin
-        if current_setting('application_name') <> 'health-dbt-worker' then
-            perform pg_advisory_xact_lock(9301,2);
-            while not pg_try_advisory_xact_lock(9301,1) loop perform pg_sleep(0.05); end loop;
-        end if;
-        return null; end $$;
-        create trigger fixture_pause_model after insert or update on hdbt_w_daily for each statement
-        execute function fixture_pause_model();""")
+    receipt(0, 70)
+    receipt(1, 70, version=4)
+    require_status("published", extra={"HEALTH_DBT_BATCH_DAYS": "16"})
+    require_status("idle")
+    receipt(2, 71)
+    receipt(3, 70)
+    assert worker(extra={"HEALTH_DBT_BATCH_DAYS": "16"}) == ("decision_parity", 1)
+    assert sql("select count(*) from hdbt_decision_results") == "1"
+    sql("delete from hdbt_decision_inputs where result->>'RawScore'='71'")
+    require_status("published", extra={"HEALTH_DBT_BATCH_DAYS": "16"})
+    require_status("idle")
+    assert sql("select count(*) from hdbt_decision_results where formula_version=3") == "2"
+    other_xmin = sql("select xmin from hdbt_daily_metrics where date='2026-01-20'")
 
     @contextmanager
     def model_gate():
@@ -300,6 +360,55 @@ else:
                 == "t"
             )
         )
+
+    # Hold decision publication while a new immutable receipt arrives. The
+    # first publication must be atomic and the later receipt must stay pending.
+    sql("""create function fixture_pause_decision() returns trigger language plpgsql as $$begin
+        perform pg_advisory_xact_lock(9301,2);
+        while not pg_try_advisory_xact_lock(9301,1) loop perform pg_sleep(0.05); end loop;
+        return null; end $$;
+        create trigger fixture_pause_decision after insert on hdbt_decision_results for each statement
+        execute function fixture_pause_decision();""")
+    sql("""with fixtures(metric,version,inputs,result) as (values
+        ('energy_bank',3,'{"run":{"target_day":"2026-01-19","formula_version":3,"alpha":1,"factor":1,
+            "stress_enabled":false,"beta":0,"snapshot_kind":"live"},"days":[]}'::jsonb,
+            '{"Bank":50,"Display":50,"State":"stale","Flags":["imputed_sleep","imputed_activity"],
+             "FormulaVersion":3,"AlphaUsed":1,"TodayDrain":0,"TodayRestore":0,"Components":null}'::jsonb),
+        ('today_decision',1,'{"readiness":75,"headline":"stress","illness":"","sleep":"",
+            "guidance_action":null,"bank_action":null}'::jsonb,
+            '{"mode":"active_recovery","evidence_domains":["recovery"],"signal_keys":["stress"]}'::jsonb))
+        insert into hdbt_decision_inputs select metric,'2026-01-19',
+            encode(sha256(convert_to(jsonb_build_array(version,inputs)::text,'UTF8')),'hex'),
+            now(),version,inputs,result from fixtures""")
+    with model_gate():
+        pending = worker(wait=False, extra={"HEALTH_DBT_BATCH_DAYS": "16"})
+        wait_at_model_gate()
+        receipt(4, 70)
+        assert sql("select count(*) from hdbt_decision_results") == "2"
+    assert status(pending) == ("building", 0)
+    sql("drop trigger fixture_pause_decision on hdbt_decision_results; drop function fixture_pause_decision()")
+    assert sql("select count(*) from hdbt_decision_results") == "4"
+    assert sql("select result->'Trace' from hdbt_decision_results where metric='energy_bank'") == "[50, 0, 0, 50, 50]"
+    require_status("published", extra={"HEALTH_DBT_BATCH_DAYS": "16"})
+    assert sql("select count(*) from hdbt_decision_results") == "5"
+    require_status("idle")
+
+    sql("begin;" + mark(2) + "commit;")
+    sql("alter table hdbt_w_daily add constraint fixture_refuse_20 check(steps<>20)")
+    assert worker() == ("dbt_build", 1)
+    assert actual() == "10" and sql("select last_status from hdbt_state") == "dbt_build"
+    assert sql("select count(*) from hdbt_dirty") == "1"
+    sql("alter table hdbt_w_daily drop constraint fixture_refuse_20")
+    # The gate holds the final dbt model before publication. All timing-sensitive
+    # assertions run while it is closed, independently of the worker lock timeout.
+    sql("""create function fixture_pause_model() returns trigger language plpgsql as $$begin
+        if current_setting('application_name') <> 'health-dbt-worker' then
+            perform pg_advisory_xact_lock(9301,2);
+            while not pg_try_advisory_xact_lock(9301,1) loop perform pg_sleep(0.05); end loop;
+        end if;
+        return null; end $$;
+        create trigger fixture_pause_model after insert or update on hdbt_w_daily for each statement
+        execute function fixture_pause_model();""")
 
     with model_gate():
         pending = worker(wait=False)
@@ -477,7 +586,8 @@ else:
     require_status("idle", mounts=[(cert, mounted)] if image else [])
     print(
         "PASS bootstrap/re-enrollment, tenant ACL/checksum, scoped sync, stale/failed/crashed builds, "
-        "withdrawal proof, retained reader, expired lease, SQL cancellation, scoped ACK, chart parity, boundary dates and TLS"
+        "withdrawal proof, retained reader, expired lease, SQL cancellation, scoped ACK, chart parity, boundary dates, TLS, "
+        "Readiness/Energy/Today decision replay, atomic failure/retry, concurrent receipts and unsupported versions"
     )
 
 

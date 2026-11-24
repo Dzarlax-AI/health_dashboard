@@ -205,7 +205,10 @@ func (s *DB) BuildTodayInsightSnapshot(ctx context.Context, lang string, now tim
 	if err != nil {
 		return nil, err
 	}
-	briefing, night := s.insightSleepBriefing(ctx, briefing)
+	briefing, night, err := s.insightSleepBriefing(ctx, briefing)
+	if err != nil {
+		return nil, err
+	}
 	snapshot := health.BuildDailyInsightSnapshot(briefing, lang)
 	applyRecordedSleepPresentation(snapshot, night, lang)
 	if snapshot == nil {

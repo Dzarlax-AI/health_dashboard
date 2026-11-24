@@ -1,4 +1,4 @@
-{{ config(enabled=var('hrv_receipt_inputs', false), materialized='view',
+{{ config(enabled=var('hrv_receipt_inputs', false) or var('tenant_native_catalog', false), materialized='ephemeral' if var('tenant_native_catalog', false) else 'view',
           post_hook='alter view {{ this }} set (security_invoker=true)') }}
 
 -- Match only the receipt referenced by the current winning metric point.

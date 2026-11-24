@@ -7,8 +7,8 @@ import (
 )
 
 func TestHDBTServingPinsGoAggregateIdentity(t *testing.T) {
-	const expected = "sha256:1a4b28d778d80f4d4cbf9196a823d52d12e605c487c37abddc9b644a4ef38473"
-	if checksum := AggregateContractChecksum(); checksum != expected || AggregateContractVersion != "7" {
+	const expected = "sha256:656754be9a0accb75edee45ec48b80e8709522e267edb93de4d35b51ff7c4ed2"
+	if checksum := AggregateContractChecksum(); checksum != expected || AggregateContractVersion != "8" {
 		t.Fatalf("Go writer identity changed to %s / %s", AggregateContractVersion, checksum)
 	}
 }

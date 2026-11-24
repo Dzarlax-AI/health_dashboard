@@ -76,11 +76,16 @@ func (o *EnergyV2Orchestrator) recompute(ctx context.Context, db *DB, schema, tz
 // Normal ingest callers should continue using Trigger/TriggerAfter so the
 // POST /health acceptance path remains non-blocking.
 func (o *EnergyV2Orchestrator) Refresh(ctx context.Context, db *DB, schema, tz string) bool {
-	res, handled, err := db.refreshRolloutEnergyObservation(ctx, tz, time.Now)
+	now := time.Now()
+	res, handled, err := db.refreshRolloutEnergyObservation(ctx, tz, func() time.Time { return now })
 	if !handled && err == nil {
-		res, err = db.ComputeBankForToday(ctx, tz)
+		var loc *time.Location
+		loc, err = time.LoadLocation(tz)
 		if err == nil {
-			err = db.UpsertEnergySnapshot(ctx, tz, res)
+			res, err = db.ComputeBankForDate(ctx, tz, now.In(loc).Format(time.DateOnly))
+		}
+		if err == nil {
+			err = db.writeEnergySnapshotAt(ctx, loc, now, res, true)
 		}
 	}
 	if err != nil {

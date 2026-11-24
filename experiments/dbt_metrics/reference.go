@@ -54,3 +54,50 @@ func LegacySleepSelectionSQL(relation, priority, minHours, divergence, tradition
 		"{{ coarse_count }}", coarseCount,
 	).Replace(body))
 }
+
+//go:embed macros/sleep_balance_period_v1.sql
+var sleepBalancePeriodMacro string
+
+// SleepBalancePeriodSQL renders the canonical balance period calculation from
+// the same macro used by the dbt model. Relation arguments must be trusted SQL
+// identifiers supplied by the caller.
+func SleepBalancePeriodSQL(captures, goals, coverage, episodes string) string {
+	body := macroBody(sleepBalancePeriodMacro)
+	return strings.NewReplacer(
+		"{{ captures }}", captures,
+		"{{ goals }}", goals,
+		"{{ coverage }}", coverage,
+		"{{ episodes }}", episodes,
+	).Replace(body)
+}
+
+//go:embed macros/sleep_balance_window_v1.sql
+var sleepBalanceWindowMacro string
+
+// SleepBalanceWindowSQL renders the canonical balance window summary from the
+// same macro used by the dbt model. periods must be a trusted SQL relation.
+func SleepBalanceWindowSQL(periods string) string {
+	body := macroBody(sleepBalanceWindowMacro)
+	return strings.ReplaceAll(body, "{{ periods }}", periods)
+}
+
+//go:embed macros/completed_night_sleep_v1.sql
+var completedNightSleepMacro string
+
+// CompletedNightSleepSQL renders the canonical completed-night state
+// calculation shared by dbt and transactional production writers.
+func CompletedNightSleepSQL(inputs string) string {
+	body := macroBody(completedNightSleepMacro)
+	body = strings.ReplaceAll(body, "{{ completed_night_duration_assessment_v1('duration_hours') }}", CompletedNightDurationAssessmentSQL("duration_hours"))
+	return strings.ReplaceAll(body, "{{ inputs }}", inputs)
+}
+
+//go:embed macros/completed_night_duration_assessment_v1.sql
+var completedNightDurationAssessmentMacro string
+
+// CompletedNightDurationAssessmentSQL renders the canonical duration class
+// used by both source selection and completed-night persistence.
+func CompletedNightDurationAssessmentSQL(hours string) string {
+	body := macroBody(completedNightDurationAssessmentMacro)
+	return strings.ReplaceAll(body, "{{ hours }}", hours)
+}

@@ -339,7 +339,7 @@ func (s *DB) GetMetricData(metric, from, to, bucket, aggFunc string) ([]DataPoin
 		// Read directly from metric_points — minute_metrics is no longer populated.
 		return s.metricDataRaw(metric, from, to, "minute", aggFuncFor(metric))
 	case "hour":
-		return s.metricDataFromCache("hourly_metrics", "hour", metric, from, to)
+		return s.metricDataFromCache(s.chartHoursRelation(), "hour", metric, from, to)
 	case "day":
 		return s.metricDataDayFromHourly(metric, from, to)
 	}
@@ -404,8 +404,11 @@ func (s *DB) metricDataDayFromHourly(metric, from, to string) ([]DataPoint, erro
 	defer cancel()
 
 	// Find the earliest hour we have in the cache for this metric.
+	hours := s.chartHoursRelation()
 	var minHour *string
-	s.pool.QueryRow(ctx, `SELECT MIN(hour) FROM hourly_metrics WHERE metric_name = $1`, metric).Scan(&minHour)
+	if err := s.pool.QueryRow(ctx, `SELECT MIN(hour) FROM `+hours+` WHERE metric_name = $1`, metric).Scan(&minHour); err != nil {
+		return nil, err
+	}
 
 	var out []DataPoint
 
@@ -428,9 +431,10 @@ func (s *DB) metricDataDayFromHourly(metric, from, to string) ([]DataPoint, erro
 			rawTo = min(to, cacheStartDate)
 		}
 		rawPoints, rerr := s.metricDataRaw(metric, from, rawTo, "day", aggFuncFor(metric))
-		if rerr == nil {
-			out = append(out, rawPoints...)
+		if rerr != nil {
+			return nil, rerr
 		}
+		out = append(out, rawPoints...)
 	}
 
 	if cacheStartDate == "" {
@@ -457,18 +461,18 @@ func (s *DB) metricDataDayFromHourly(metric, from, to string) ([]DataPoint, erro
 			FROM (
 				SELECT SUBSTRING(hour,1,10) AS day, source,
 				       SUM(avg_val) AS source_total, MIN(min_val) AS source_min, MAX(max_val) AS source_max
-				FROM hourly_metrics
+				FROM `+hours+`
 				WHERE metric_name = $1 AND hour >= $2 AND hour <= $3
 				GROUP BY SUBSTRING(hour,1,10), source
 			) sub
 			GROUP BY day
 			ORDER BY day`, pickExpr)
 	} else if isDailyAverageMetric(metric) {
-		query = "WITH " + dailyAverageSeriesSQL("hourly_metrics", "metric_name = $1 AND hour >= $2 AND hour <= $3")
+		query = "WITH " + dailyAverageSeriesSQL(hours, "metric_name = $1 AND hour >= $2 AND hour <= $3")
 	} else {
 		query = `
 			SELECT SUBSTRING(hour,1,10), AVG(avg_val), MIN(min_val), MAX(max_val)
-			FROM hourly_metrics
+			FROM ` + hours + `
 			WHERE metric_name = $1 AND hour >= $2 AND hour <= $3
 			GROUP BY SUBSTRING(hour,1,10)
 			ORDER BY SUBSTRING(hour,1,10)`
@@ -505,6 +509,7 @@ func (s *DB) metricDataRaw(metric, from, to, bucket, aggFunc string) ([]DataPoin
 	ctx, cancel := queryCtx()
 	defer cancel()
 
+	upperOperator, to := chartUpperBound(to)
 	bucketExpr := bucketExpression(bucket)
 	if aggFunc != "SUM" && aggFunc != "MAX" && aggFunc != "MIN" {
 		aggFunc = "AVG"
@@ -523,22 +528,22 @@ func (s *DB) metricDataRaw(metric, from, to, bucket, aggFunc string) ([]DataPoin
 			FROM (
 				SELECT %s AS bucket, source, SUM(qty) AS source_sum, MIN(qty) AS source_min, MAX(qty) AS source_max
 				FROM %s
-				WHERE metric_name = $1 AND date >= $2 AND date <= $3 AND qty > 0 %s
+				WHERE metric_name = $1 AND date >= $2 AND date `+upperOperator+` $3 AND qty > 0 %s
 				GROUP BY %s, source
 			) sub
 			GROUP BY bucket
-			ORDER BY bucket`, pickExpr, bucketExpr, legacyChartPointRelation(metric), sleepDedup, bucketExpr)
+			ORDER BY bucket`, pickExpr, bucketExpr, legacyChartPointRelation(metric, upperOperator), sleepDedup, bucketExpr)
 	} else if isDailyAverageMetric(metric) && bucket == "day" && aggFunc == "AVG" {
 		query = `WITH hourly_points AS (
             SELECT metric_name, date, source, qty, quality FROM metric_points
-            WHERE metric_name = $1 AND date >= $2 AND date <= $3
+            WHERE metric_name = $1 AND date >= $2 AND date ` + upperOperator + ` $3
         ), hours AS (` + dbtmetrics.HourlyRowsSQL(false) + "), " + dailyAverageSeriesSQL("hours", "true")
 	} else {
 		query = "SELECT " + bucketExpr + " as bucket, " + aggFunc + `(qty), MIN(qty), MAX(qty)
 			FROM metric_points
 			WHERE metric_name = $1
 			  AND date >= $2
-			  AND date <= $3
+			  AND date ` + upperOperator + ` $3
 			  AND qty > 0
 			GROUP BY ` + bucketExpr + `
 			ORDER BY ` + bucketExpr
@@ -585,14 +590,12 @@ func (s *DB) GetMetricDataBySource(metric, from, to, bucket, aggFunc string) ([]
 
 func (s *DB) metricDataBySourceFromCache(metric, from, to, bucket string) ([]SourceDataPoints, error) {
 	// minute_metrics is no longer populated; minute bucket falls through to raw.
-	table, col := "hourly_metrics", "hour"
+	table, col := s.chartHoursRelation(), "hour"
 	if bucket == "minute" {
 		return s.metricDataBySourceRaw(metric, from, to, bucket, aggFuncFor(metric))
-	} else if bucket == "hour" {
-		table, col = "hourly_metrics", "hour"
-	} else if bucket == "day" {
+	}
+	if bucket == "day" {
 		// Aggregate hourly_metrics down to day per source.
-		table, col = "hourly_metrics", "hour"
 		normSource := `SUBSTRING(source, 1, POSITION('|' IN source || '|') - 1)`
 		agg := aggFuncFor(metric)
 		query := fmt.Sprintf(`
@@ -616,11 +619,12 @@ func (s *DB) metricDataBySourceFromCache(metric, from, to, bucket string) ([]Sou
 }
 
 func (s *DB) metricDataBySourceRaw(metric, from, to, bucket, aggFunc string) ([]SourceDataPoints, error) {
+	upperOperator, to := chartUpperBound(to)
 	bucketExpr := bucketExpression(bucket)
 	normSource := `SUBSTRING(source, 1, POSITION('|' IN source || '|') - 1)`
 	query := "SELECT " + bucketExpr + " as bucket, " + normSource + " as src, " + aggFunc + `(qty), MIN(qty), MAX(qty)
-		FROM ` + legacyChartPointRelation(metric) + `
-		WHERE metric_name = $1 AND date >= $2 AND date <= $3 AND qty > 0
+		FROM ` + legacyChartPointRelation(metric, upperOperator) + `
+		WHERE metric_name = $1 AND date >= $2 AND date ` + upperOperator + ` $3 AND qty > 0
 		` + sleepDedupClause(metric) + `
 		GROUP BY ` + bucketExpr + `, ` + normSource + `
 		ORDER BY ` + bucketExpr + `, ` + normSource

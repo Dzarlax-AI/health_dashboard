@@ -59,7 +59,13 @@ func TestBriefingProjectionShadow(t *testing.T) {
 				response.EnergyBank.HRVZRaw = want.EnergyBank.HRVZRaw
 			}
 			if !reflect.DeepEqual(response, want) {
-				t.Fatalf("briefing differs at capture %d, language %s: sleep %+v, expected %+v", i, lang, response.Sleep, want.Sleep)
+				actual, expected := reflect.ValueOf(response).Elem(), reflect.ValueOf(want).Elem()
+				for n := 0; n < actual.NumField(); n++ {
+					if !reflect.DeepEqual(actual.Field(n).Interface(), expected.Field(n).Interface()) {
+						t.Errorf("briefing differs at capture %d, language %s, field %s", i, lang, actual.Type().Field(n).Name)
+					}
+				}
+				t.FailNow()
 			}
 		}
 	}

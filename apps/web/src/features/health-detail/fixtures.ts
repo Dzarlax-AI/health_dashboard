@@ -144,7 +144,7 @@ export function healthDetailFixtureResources(
   }
   if (fixture === "partial") {
     const firstMetric = Object.keys(metrics)[0];
-    if (firstMetric) metrics[firstMetric] = { ...metrics[firstMetric], points: metrics[firstMetric].points?.slice(-12) };
+    if (firstMetric) metrics[firstMetric] = { ...metrics[firstMetric], points: metrics[firstMetric].points?.slice(-12) ?? [] };
   }
 
   return {

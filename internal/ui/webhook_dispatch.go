@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	clientapi "health-receiver/internal/api"
 	"log"
 	"net/http"
 	"strings"
@@ -155,11 +156,7 @@ func (h *Handler) webhookStatus(w http.ResponseWriter, r *http.Request) {
 	if h.reg == nil {
 		// Legacy bootstrap without registry — webhook integration
 		// unavailable. Reply with a soft "unknown" rather than 500.
-		jsonResponse(w, map[string]any{
-			"state":      registry.StateUnknown,
-			"reason":     "",
-			"updated_at": nil,
-		})
+		jsonResponse(w, clientapi.WebhookStatusResponse{State: registry.StateUnknown})
 		return
 	}
 	schema := h.tenantSchema(r)
@@ -172,15 +169,9 @@ func (h *Handler) webhookStatus(w http.ResponseWriter, r *http.Request) {
 		schema = scope.Schema
 	}
 	st := h.reg.GetWebhookStatus(r.Context(), schema)
-	resp := map[string]any{
-		"state":       st.State,
-		"reason":      st.Reason,
-		"description": st.Description,
-	}
+	resp := clientapi.WebhookStatusResponse{State: st.State, Reason: st.Reason, Description: &st.Description}
 	if !st.UpdatedAt.IsZero() {
-		resp["updated_at"] = st.UpdatedAt
-	} else {
-		resp["updated_at"] = nil
+		resp.UpdatedAt = &st.UpdatedAt
 	}
 	jsonResponse(w, resp)
 }
@@ -214,7 +205,7 @@ func (h *Handler) webhookStatusRetry(w http.ResponseWriter, r *http.Request) {
 	if cfg.Token == "" {
 		// No token configured for this tenant — nothing to register.
 		// Mark deleted (or leave alone if already deleted/unknown).
-		jsonResponse(w, map[string]string{"status": "noop", "reason": "no token configured"})
+		jsonResponse(w, clientapi.WebhookRetryResponse{Status: "noop", Reason: "no token configured"})
 		return
 	}
 
@@ -231,5 +222,5 @@ func (h *Handler) webhookStatusRetry(w http.ResponseWriter, r *http.Request) {
 	// asked to retry on a tenant that DOES have a token.
 	go h.runWebhookRegistrar(schema, notify.TelegramDiff{NeedsRegister: true, NewToken: cfg.Token}, url, tokenHeader)
 
-	jsonResponse(w, map[string]string{"status": "pending"})
+	jsonResponse(w, clientapi.WebhookRetryResponse{Status: "pending"})
 }

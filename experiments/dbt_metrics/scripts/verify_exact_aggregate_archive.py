@@ -143,7 +143,7 @@ def repair_hrv_and_respiration():
     avg = f["hourly_avg_rows"]("hourly_points")
     slice_sql = (writer_dir/"legacy_hourly_avg.sql").read_text().replace("{{SLEEP_DEDUP}}", "").replace(
         "{{FROM_CLAUSE}}", "").replace("{{CONFIRMED_INVALID_AVERAGE_HOURS}}",
-        (writer_dir/"confirmed_invalid_average_hours.sql").read_text()).replace("{{HOURLY_AVG_ROWS}}",avg)
+        (writer_dir/"confirmed_invalid_hours.sql").read_text().replace("{{HOUR_FILTER}}", "")).replace("{{HOURLY_AVG_ROWS}}",avg)
     yield "begin; set local search_path=pg_temp,source_data,pg_catalog; set local jit=off;"
     yield """create temporary table hourly_metrics as select * from source_data.hourly_metrics;
       create unique index on hourly_metrics(metric_name,hour,source);"""

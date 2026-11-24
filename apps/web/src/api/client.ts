@@ -8,7 +8,7 @@ export type HealthBriefingResponse = components["schemas"]["HealthBriefingRespon
 export type AIBriefingResponse = components["schemas"]["AIBriefingResponse"];
 export type TodayInsightsResponse = components["schemas"]["TodayInsightsResponse"];
 export type DerivedMetricsResponse = components["schemas"]["DerivedMetricsResponse"];
-export type MetricDataResponse = components["schemas"]["MetricDataResponse"];
+export type MetricDataResponse = components["schemas"]["MetricDataResponse"] | components["schemas"]["MetricQuantityResponse"];
 export type MetricRangeResponse = components["schemas"]["MetricRangeResponse"];
 export type ReadinessHistoryResponse = components["schemas"]["ReadinessHistoryResponse"];
 export type SectionResponse = components["schemas"]["SectionResponse"];
@@ -117,25 +117,45 @@ export async function getSection(
 
 export async function getMetricData(
   metric: string,
-  from: string,
+  from: string | undefined,
   to: string,
   signal?: AbortSignal,
   options: MetricDataOptions = {},
 ): Promise<MetricDataResponse> {
   const { data, error, response } = await client.GET("/api/metrics/data", {
+    headers: { "X-Health-Metrics-Contract": "2" },
     params: {
       query: {
         metric,
         from,
         to,
         bucket: options.bucket ?? "day",
-        agg: options.agg ?? "AVG",
+        agg: options.agg,
         by_source: options.bySource ? "1" : "0",
+        view: options.bySource ? "full" : "quantity",
+        range: from === undefined ? "all" : undefined,
       },
     },
     signal,
   });
-  return requireData(data, error, response);
+  const result = requireData(data, error, response);
+  if ("samples" in result) throw new ClientApiError(500, "Unexpected metric history representation");
+  return result;
+}
+
+export async function getCatalogMetricData(
+  metric: string,
+  options: Pick<MetricDataQuery, "from" | "to" | "date_field" | "limit" | "cursor"> = {},
+  signal?: AbortSignal,
+): Promise<components["schemas"]["CatalogSeriesResponse"]> {
+  const { data, error, response } = await client.GET("/api/metrics/data", {
+    headers: { "X-Health-Metrics-Contract": "2" },
+    params: { query: { ...options, metric, view: "catalog" } },
+    signal,
+  });
+  const result = requireData(data, error, response);
+  if (!("samples" in result)) throw new ClientApiError(500, "Unexpected catalog representation");
+  return result;
 }
 
 export interface MetricPlotSeries {
@@ -143,27 +163,12 @@ export interface MetricPlotSeries {
   points?: { date: string; qty: number }[] | null;
 }
 
-export async function getDailyStepSeries(
-  from: string,
-  to: string,
-  signal?: AbortSignal,
-): Promise<MetricPlotSeries> {
-  const query = new URLSearchParams({ from, to });
-  const response = await fetch(`/fragments/step-daily-series?${query}`, {
-    headers: { Accept: "application/json" },
-    signal,
-  });
-  if (!response.ok || response.redirected || response.headers.get("content-type")?.includes("text/html")) {
-    return requireData<MetricPlotSeries>(undefined, undefined, response);
-  }
-  return response.json();
-}
-
 export async function getMetricRange(
   metric: string,
   signal?: AbortSignal,
 ): Promise<MetricRangeResponse> {
   const { data, error, response } = await client.GET("/api/metrics/range", {
+    headers: { "X-Health-Metrics-Contract": "2" },
     params: { query: { metric } },
     signal,
   });

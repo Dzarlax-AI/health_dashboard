@@ -162,7 +162,7 @@ func (s *DB) ListWorkouts(from, to time.Time, nameFilter string) ([]Workout, err
 			distance_km, avg_speed_kmh, max_speed_kmh, elevation_up_m,
 			step_count_total, step_cadence_spm, temperature_c, humidity_pct,
 			hr_z1_sec, hr_z2_sec, hr_z3_sec, hr_z4_sec, hr_z5_sec
-		FROM workouts
+		FROM ` + s.productArchiveRelation(ctx, "workouts", "tenant_native_workout_v1") + `
 		WHERE start_time >= $1 AND start_time <= $2`
 	args := []any{from, to}
 	if nameFilter != "" {
@@ -209,7 +209,7 @@ func (s *DB) GetWorkout(externalID string) (*Workout, error) {
 			distance_km, avg_speed_kmh, max_speed_kmh, elevation_up_m,
 			step_count_total, step_cadence_spm, temperature_c, humidity_pct,
 			hr_z1_sec, hr_z2_sec, hr_z3_sec, hr_z4_sec, hr_z5_sec
-		FROM workouts WHERE external_id = $1`,
+		FROM `+s.productArchiveRelation(ctx, "workouts", "tenant_native_workout_v1")+` WHERE external_id = $1`,
 		externalID,
 	).Scan(
 		&w.ExternalID, &w.Name, &w.StartTime, &w.EndTime, &w.DurationSec,
@@ -261,23 +261,30 @@ func (s *DB) WorkoutStats(from, to time.Time, nameFilter string) (WorkoutStats, 
 	ctx, cancel := queryCtx()
 	defer cancel()
 
-	q := dbtmetrics.WorkoutPeriodSQL(nameFilter != "")
-	args := []any{from, to}
-	if nameFilter != "" {
-		args = append(args, nameFilter)
-	}
+	return withDecisionJournal(ctx, s, func(db *DB, capture bool) (WorkoutStats, error) {
+		q := dbtmetrics.WorkoutPeriodSQL(nameFilter != "")
+		args := []any{from, to}
+		if nameFilter != "" {
+			args = append(args, nameFilter)
+		}
 
-	var st WorkoutStats
-	err := s.pool.QueryRow(ctx, q, args...).Scan(
-		&st.Count, &st.TotalDurationSec,
-		&st.TotalDistanceKm, &st.TotalEnergyKcal,
-		&st.AvgHRBPM, &st.MaxHRBPM,
-		&st.TotalZ1Sec, &st.TotalZ2Sec, &st.TotalZ3Sec, &st.TotalZ4Sec, &st.TotalZ5Sec,
-	)
-	if err != nil {
-		return WorkoutStats{}, fmt.Errorf("workout stats: %w", err)
-	}
-	return st, nil
+		if capture {
+			args = []any{from.UTC(), to.UTC(), nameFilter}
+			q = workoutPeriodReceiptSQL
+		}
+
+		var st WorkoutStats
+		err := db.pool.QueryRow(ctx, q, args...).Scan(
+			&st.Count, &st.TotalDurationSec,
+			&st.TotalDistanceKm, &st.TotalEnergyKcal,
+			&st.AvgHRBPM, &st.MaxHRBPM,
+			&st.TotalZ1Sec, &st.TotalZ2Sec, &st.TotalZ3Sec, &st.TotalZ4Sec, &st.TotalZ5Sec,
+		)
+		if err != nil {
+			return WorkoutStats{}, fmt.Errorf("workout stats: %w", err)
+		}
+		return st, nil
+	})
 }
 
 // nullableString returns NULL for empty strings (avoids storing "" instead

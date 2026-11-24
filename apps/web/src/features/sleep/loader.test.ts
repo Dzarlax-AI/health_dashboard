@@ -87,11 +87,22 @@ describe("sleep resource loader", () => {
     for (const metric of sleepMetrics) {
       expect(testLoaders.metric).toHaveBeenCalledWith(
         metric,
-        "2020-01-01",
+        undefined,
         "2026-08-05",
         undefined,
       );
     }
+  });
+
+  it("publishes chart history before the advisory bounds arrive", async () => {
+    let release!: (value: MetricRangeResponse) => void;
+    const deps = loaders({ range: () => new Promise((resolve) => { release = resolve; }) });
+    const charts = vi.fn(() => release({ min: "2020-01-01", max: "2026-08-05" }));
+    const result = await loadSleepResources("en", undefined, deps, charts);
+    expect(charts).toHaveBeenCalledWith(expect.objectContaining({ metrics: expect.objectContaining({
+      sleep_total: expect.objectContaining({ metric: "sleep_total" }),
+    }) }));
+    expect(result.range?.min).toBe("2020-01-01");
   });
 
   it("retries sleep_total once without discarding the other phase metrics", async () => {

@@ -57,3 +57,33 @@ func TestDailyAverageChartUsesEqualSourceWeights(t *testing.T) {
 		}
 	}
 }
+
+func TestRawChartWholeDayIncludesFinalSecond(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+	const day = "2026-10-15"
+	const next = "2026-10-16"
+	for _, c := range []struct{ metric, unit, bucket, agg string }{
+		{"heart_rate", "bpm", "hour", "AVG"},
+		{"resting_heart_rate", "bpm", "day", "AVG"},
+		{"active_energy", "kcal", "minute", "SUM"},
+		{"step_count", "count", "minute", "SUM"},
+	} {
+		t.Run(c.metric, func(t *testing.T) {
+			insertHRVRepairPoints(t, db, []MetricPoint{
+				{MetricName: c.metric, Units: c.unit, Source: "Watch", Date: day + " 23:59:59 +0100", Qty: 10},
+				{MetricName: c.metric, Units: c.unit, Source: "Watch", Date: next + " 00:00:00 +0100", Qty: 90},
+			})
+			for _, to := range []string{day + " 23:59:59", day + " 23:59:59 +0100", next} {
+				points, err := db.metricDataRaw(c.metric, day, to, c.bucket, c.agg)
+				if err != nil || len(points) != 1 || points[0].Qty != 10 {
+					t.Fatalf("combined through %q: %+v, %v", to, points, err)
+				}
+				sources, err := db.metricDataBySourceRaw(c.metric, day, to, c.bucket, c.agg)
+				if err != nil || len(sources) != 1 || len(sources[0].Points) != 1 || sources[0].Points[0].Qty != 10 {
+					t.Fatalf("per source through %q: %+v, %v", to, sources, err)
+				}
+			}
+		})
+	}
+}

@@ -2,7 +2,7 @@ package health
 
 import "fmt"
 
-func scoreActivity(d RawMetrics, ls LangStrings) *BriefingSection {
+func scoreActivity(d RawMetrics, ls LangStrings, sectionsByName map[string]string) *BriefingSection {
 	if len(d.Steps) == 0 && len(d.Cal) == 0 {
 		return nil
 	}
@@ -14,11 +14,13 @@ func scoreActivity(d RawMetrics, ls LangStrings) *BriefingSection {
 		stepsRecent = avg(d.Steps[:min(3, len(d.Steps))])
 		stepsBase := avg(d.Steps)
 		pct := pctChange(stepsRecent, stepsBase)
-		maxScore += 2
-		if pct > -10 {
-			score += 2
-		} else if pct > -30 {
-			score += 1
+		if sectionsByName == nil {
+			maxScore += 2
+			if pct > -10 {
+				score += 2
+			} else if pct > -30 {
+				score += 1
+			}
 		}
 		// Display today's value, score uses 3-day avg.
 		stepsToday = d.Steps[0]
@@ -38,11 +40,13 @@ func scoreActivity(d RawMetrics, ls LangStrings) *BriefingSection {
 		calRecent := avg(d.Cal[:min(3, len(d.Cal))])
 		calBase := avg(d.Cal)
 		pct := pctChange(calRecent, calBase)
-		maxScore += 2
-		if pct > -10 {
-			score += 2
-		} else if pct > -30 {
-			score += 1
+		if sectionsByName == nil {
+			maxScore += 2
+			if pct > -10 {
+				score += 2
+			} else if pct > -30 {
+				score += 1
+			}
 		}
 		calNote := ls["cal_note_normal"]
 		if pct > 10 {
@@ -59,11 +63,13 @@ func scoreActivity(d RawMetrics, ls LangStrings) *BriefingSection {
 
 	if len(d.Exercise) >= 3 {
 		exRecent := avg(d.Exercise[:min(3, len(d.Exercise))])
-		maxScore += 2
-		if exRecent >= 30 {
-			score += 2
-		} else if exRecent >= 15 {
-			score += 1
+		if sectionsByName == nil {
+			maxScore += 2
+			if exRecent >= 30 {
+				score += 2
+			} else if exRecent >= 15 {
+				score += 1
+			}
 		}
 		exNote := ls["ex_note_low"]
 		if exRecent >= 30 {
@@ -82,8 +88,19 @@ func scoreActivity(d RawMetrics, ls LangStrings) *BriefingSection {
 		})
 	}
 
-	if maxScore > 0 {
+	status := sectionsByName["activity"]
+	if sectionsByName == nil && maxScore > 0 {
 		ratio := float64(score) / float64(maxScore)
+		switch {
+		case ratio >= 0.7:
+			status = "good"
+		case ratio >= 0.4:
+			status = "fair"
+		default:
+			status = "low"
+		}
+	}
+	if status != "" {
 		// Summary text says "averaging X steps" — feed it the 3-day average,
 		// not today's count. Falls back to today only if we never set stepsRecent
 		// (no steps data was available, which can't happen here since maxScore>0
@@ -96,10 +113,10 @@ func scoreActivity(d RawMetrics, ls LangStrings) *BriefingSection {
 		if stepsForLabel >= 1000 {
 			stepsLabel = formatNumber(int(stepsForLabel))
 		}
-		if ratio >= 0.7 {
+		if status == "good" {
 			sec.Status = "good"
 			sec.Summary = fmt.Sprintf(ls["act_summary_good"], stepsLabel)
-		} else if ratio >= 0.4 {
+		} else if status == "fair" {
 			sec.Status = "fair"
 			sec.Summary = fmt.Sprintf(ls["act_summary_fair"], stepsLabel)
 		} else {

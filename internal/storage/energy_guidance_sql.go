@@ -14,15 +14,17 @@ var legacyBankSQL = `with selected as (select ''::text as profile, ''::text as c
 	$1::integer as readiness,$2::text as headline,$3::float8[] as sleep,$4::float8[] as hrv,$5::float8[] as rhr,
 	$6::float8 as steps,$7::float8 as usual_steps,$8::float8 as kcal,$9::float8 as usual_kcal),
 legacy as (` + dbtmetrics.EnergyLegacySQL("selected") + `)
-select capacity,current,drained,strain,stress,hrv_z,rhr_base,verdict,reason from legacy where state='available'`
+`
+
+const legacyBankSelectSQL = `select capacity,current,drained,strain,stress,hrv_z,rhr_base,verdict,reason from legacy where state='available'`
 
 // Coherence selects the morning capacity before the daily fallback is calculated.
 func (s *DB) computeBriefingSQL(ctx context.Context, d *health.RawMetrics, lang string, projection *health.ReadinessProjection) (*health.BriefingResponse, error) {
-	trends, weekly, err := s.briefingMetrics(ctx, d)
+	trends, weekly, quality, statuses, err := s.briefingMetrics(ctx, d)
 	if err != nil {
 		return nil, err
 	}
-	resp := health.ComputeBriefingWithMetrics(*d, lang, projection, trends, weekly)
+	resp := health.RenderBriefing(*d, lang, projection, trends, weekly, quality, statuses)
 	headline := ""
 	if resp.Headline != nil {
 		headline = resp.Headline.Key
@@ -30,9 +32,25 @@ func (s *DB) computeBriefingSQL(ctx context.Context, d *health.RawMetrics, lang 
 	e := health.EnergyBank{}
 	var reason string
 	var rhrBase float64
-	err = s.pool.QueryRow(ctx, legacyBankSQL, resp.ReadinessScore, headline, d.Sleep, d.HRV, d.RHR, d.StepsToday, d.StepsChronic28d, d.ActiveEnergyToday, d.ActiveEnergyChronic28d).Scan(
-		&e.Capacity, &e.Current, &e.DrainSoFar, &e.Strain, &e.Stress, &e.HRVZRaw, &rhrBase, &e.ActionVerdict, &reason)
-	if errors.Is(err, pgx.ErrNoRows) {
+	available, err := withDecisionJournal(ctx, s, func(db *DB, journal bool) (bool, error) {
+		query := legacyBankSQL
+		args := []any{resp.ReadinessScore, headline, d.Sleep, d.HRV, d.RHR, d.StepsToday, d.StepsChronic28d, d.ActiveEnergyToday, d.ActiveEnergyChronic28d}
+		if journal && d.LastDate != "" {
+			query += `, decision_packets as (
+                select 'energy_legacy'::text as metric,$10::text as decision_key,1 as formula_version,
+                    to_jsonb(i)-'profile'-'capture_id' as inputs,to_jsonb(l)-'profile'-'capture_id' as result
+                from selected i cross join legacy l where l.state='available'
+            )` + decisionJournalInsertSQL
+			args = append(args, d.LastDate)
+		}
+		err := db.pool.QueryRow(ctx, query+" "+legacyBankSelectSQL, args...).Scan(
+			&e.Capacity, &e.Current, &e.DrainSoFar, &e.Strain, &e.Stress, &e.HRVZRaw, &rhrBase, &e.ActionVerdict, &reason)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return err == nil, err
+	})
+	if err == nil && !available {
 		return resp, nil
 	}
 	if err != nil {

@@ -41,13 +41,27 @@ func (s *DB) ComputeUserVerdictBandsThrough(ctx context.Context, throughDate str
 	if err != nil {
 		return health.VerdictBands{}, err
 	}
-	var bands health.VerdictBands
-	err = s.pool.QueryRow(ctx, energyBandReadSQL, throughDate, cfg.FormulaVersion,
-		cfg.EffectiveAlpha(), cfg.EffectiveBeta(), cfg.StressDrainEnabled, calibrationCutoff,
-	).Scan(&bands.CalibrationMode, &bands.LatestFormulaDays, &bands.CompatibleFormulaDays,
-		&bands.UsedDays, &bands.Rest, &bands.Recovery, &bands.PushHard, &bands.Source)
-	bands.NDataPoints = bands.UsedDays
-	return bands, err
+	return withDecisionJournal(ctx, s, func(db *DB, journal bool) (health.VerdictBands, error) {
+		var bands health.VerdictBands
+		query := energyBandReadSQL
+		if journal {
+			query += `, decision_packets as (
+                select 'energy_bands'::text as metric,$1::text as decision_key,1 as formula_version,
+                 jsonb_build_object('through_day',d.through_day,'snapshot_formula',d.formula_version,
+                   'alpha',d.alpha_effective,'beta',d.beta_effective,'stress',d.stress_enabled,'settings_changed',d.settings_changed,
+                   'samples',(select coalesce(jsonb_agg(jsonb_build_object('sample',sample,'day',day,'bank',bank)
+                     order by sample,day),'[]'::jsonb) from samples where rn=1)) as inputs,
+                 jsonb_build_object('mode',d.mode,'latest_days',d.latest_days,'compatible_days',d.compatible_days,
+                   'used_days',d.used_days,'thresholds',d.thresholds) as result from bands d
+            )` + decisionJournalInsertSQL
+		}
+		err := db.pool.QueryRow(ctx, query+energyBandSelectSQL, throughDate, cfg.FormulaVersion,
+			cfg.EffectiveAlpha(), cfg.EffectiveBeta(), cfg.StressDrainEnabled, calibrationCutoff,
+		).Scan(&bands.CalibrationMode, &bands.LatestFormulaDays, &bands.CompatibleFormulaDays,
+			&bands.UsedDays, &bands.Rest, &bands.Recovery, &bands.PushHard, &bands.Source)
+		bands.NDataPoints = bands.UsedDays
+		return bands, err
+	})
 }
 
 var energyBandReadSQL = `with decisions as (
@@ -57,7 +71,9 @@ var energyBandReadSQL = `with decisions as (
 ), history as (
 	select ''::text as profile, ''::text as capture_id, date as day, ts_bucket, computed_at,
 	       formula_version, bank, flags from energy_snapshots
-), ` + dbtmetrics.EnergyVerdictBandsSQL("history") + `
+), ` + dbtmetrics.EnergyVerdictBandsSQL("history")
+
+const energyBandSelectSQL = `
 select mode,latest_days,compatible_days,used_days,trunc(thresholds[1])::int,
        trunc(thresholds[2])::int,trunc(thresholds[3])::int,
        case when mode='default_warmup' then 'default' else 'personal' end

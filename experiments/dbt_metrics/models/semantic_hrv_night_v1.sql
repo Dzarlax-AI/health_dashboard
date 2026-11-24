@@ -1,4 +1,4 @@
-{{ config(enabled=var('semantic_shadow', false), materialized='view', post_hook="alter view {{ this }} set (security_invoker = true)") }}
+{{ config(enabled=var('semantic_shadow', false) or var('tenant_native_catalog', false), materialized='ephemeral' if var('tenant_native_catalog', false) else 'view', post_hook="alter view {{ this }} set (security_invoker = true)") }}
 
 with episodes as (
     select wake_date,
@@ -32,7 +32,7 @@ select c.date as wake_date,m.source,coalesce(e.n_intervals,0) as n_sleep_interva
        case when n.wake_date is null then 'no_canonical_night' when e.asleep is null or isempty(e.asleep) then 'no_sleep_interval'
             when m.interval_points>0 or m.timestamp_points>0 then 'available'
             else coalesce(m.decisions,'no_observations') end as reason, m.decisions, m.observations_version
-from {{ source('source_data','calendar') }} c
+from {{ ref('native_night_calendar_v1') if var('tenant_native_catalog',false) else source('source_data','calendar') }} c
 left join {{ source('source_data','completed_night_sleep') }} n on n.wake_date=c.date
 left join episodes e on e.wake_date=c.date
 left join matched m on m.wake_date=c.date

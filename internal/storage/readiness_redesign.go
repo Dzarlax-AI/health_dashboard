@@ -40,6 +40,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	dbtmetrics "health-receiver/experiments/dbt_metrics"
 )
 
 // --- Enums (Phase 0 vocabulary) -----------------------------------------
@@ -459,12 +460,32 @@ func (s *DB) SaveTargetSnapshot(t TargetSnapshot) error {
 
 // FeatureSnapshot is the input to SaveFeatureSnapshot.
 type FeatureSnapshot struct {
+	replayInputs   func() map[string]any
 	Date           string
 	SubScore       string
 	Features       []byte // raw JSON; must be non-empty
 	SourceEpoch    string
 	FeatureVersion int
 }
+
+// The live statement contains one input packet. The durable journal computes its own content hash.
+var canonicalFeatureSnapshotSQL = `with feature_receipt as (
+            select 'chip_features'::text as metric,$1::text||'/'||$2::text as decision_key,
+              'current'::text as input_hash,
+              statement_timestamp() as captured_at,1 as formula_version,$6::jsonb as inputs,$3::jsonb as result
+          ), replay as (` + dbtmetrics.ChipFeatureReplaySQL("feature_receipt") + `), canonical as (
+            select jsonb_strip_nulls($3::jsonb || coalesce((
+              select jsonb_object_agg(k,v) from replay r
+              cross join lateral jsonb_each(to_jsonb(r)) as fields(k,v)
+              where k = any(case r.sub_score
+                when 'recovery_stability' then array['prev_efficiency','sleep_eff_mean_7d','sleep_eff_ewma_45d','sleep_eff_ewma_180d','sleep_debt_7d_hours','sleep_capture_class','sleep_capture_confidence','sleep_capture_reason','sleep_capture_low','sleep_capture_class_counts_7d','sleep_capture_low_days_7d','sleep_capture_mean_confidence_7d','eligible_count_7d','eligible_count_45d','eligible_count_180d','warmup_complete_45d','warmup_complete_180d']
+                when 'passive_efficiency' then array['prev_walking_hr','walking_hr_mean_7d','walking_hr_mean_30d','walking_hr_ewma_45d','walking_hr_ewma_180d','walking_hr_delta_vs_ewma_45d','walking_hr_delta_vs_ewma_180d','eligible_count_7d','eligible_count_45d','eligible_count_180d','warmup_complete_45d','warmup_complete_180d']
+                when 'acute_risk' then array['hrv_today','rhr_today','hrv_mean_45d','hrv_sd_45d','rhr_mean_45d','rhr_sd_45d','hrv_z_today','rhr_z_today','paired_count_to_t','warmup_met','hrv_eligible_count_45d','rhr_eligible_count_45d']
+                when 'chronic_load' then array['recovery_3d_today','recovery_3d_baseline_mean_45d','recovery_3d_baseline_sd_45d','recovery_3d_z_today','recovery_eligible_count_45d','recovery_eligible_count_180d','paired_count_to_t','warmup_met','warmup_complete_45d','warmup_complete_180d']
+                else array[]::text[] end)
+            ),'{}'::jsonb)) as features
+            where exists (select from replay)
+          )`
 
 // SaveFeatureSnapshot upserts the one canonical feature payload per
 // (date, sub_score). Bumping feature_version overwrites the row — no
@@ -480,21 +501,46 @@ func (s *DB) SaveFeatureSnapshot(f FeatureSnapshot) error {
 		return fmt.Errorf("SaveFeatureSnapshot: source_epoch must be non-empty")
 	}
 
+	if f.replayInputs == nil {
+		return fmt.Errorf("SaveFeatureSnapshot: replay inputs required for canonical SQL writer")
+	}
+	inputs := f.replayInputs()
+	inputs["date"] = f.Date
+	inputs["sub_score"] = f.SubScore
+	inputs["source_epoch"] = f.SourceEpoch
+	inputs["feature_version"] = f.FeatureVersion
+	inputPayload, err := json.Marshal(inputs)
+	if err != nil {
+		return fmt.Errorf("SaveFeatureSnapshot: marshal replay inputs: %w", err)
+	}
+
 	ctx, cancel := queryCtx()
 	defer cancel()
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO feature_snapshots
-			(date, sub_score, features, source_epoch, feature_version, computed_at)
-		VALUES ($1, $2, $3, $4, $5, NOW())
-		ON CONFLICT (date, sub_score) DO UPDATE SET
-			features = excluded.features,
-			source_epoch = excluded.source_epoch,
-			feature_version = excluded.feature_version,
-			computed_at = NOW()
-	`,
-		f.Date, f.SubScore, json.RawMessage(f.Features),
-		f.SourceEpoch, f.FeatureVersion,
-	)
+	write := func(db *DB, journal bool) (struct{}, error) {
+		args := []any{f.Date, f.SubScore, json.RawMessage(f.Features), f.SourceEpoch, f.FeatureVersion, json.RawMessage(inputPayload)}
+		query := canonicalFeatureSnapshotSQL
+		if journal {
+			query += `, decision_packets as (
+              select 'chip_features'::text as metric,$1::text||'/'||$2::text as decision_key,1 as formula_version,
+                $6::jsonb as inputs,canonical.features as result from canonical)` + decisionJournalInsertSQL
+		}
+		query += ` insert into feature_snapshots
+          (date,sub_score,features,source_epoch,feature_version,computed_at)
+          select $1,$2,canonical.features,$4,$5,now() from canonical
+          on conflict (date,sub_score) do update set
+            features=excluded.features,source_epoch=excluded.source_epoch,
+            feature_version=excluded.feature_version,computed_at=now()`
+		tag, err := db.pool.Exec(ctx, query, args...)
+		if err != nil {
+			return struct{}{}, fmt.Errorf("save canonical feature snapshot %s/%s: %w", f.Date, f.SubScore, err)
+		}
+		if tag.RowsAffected() != 1 {
+			return struct{}{}, fmt.Errorf("save canonical feature snapshot %s/%s: expected one row, wrote %d", f.Date, f.SubScore, tag.RowsAffected())
+		}
+		return struct{}{}, nil
+	}
+
+	_, err = withDecisionJournal(ctx, s, write)
 	return err
 }
 

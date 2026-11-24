@@ -1,8 +1,8 @@
 // Package storage — Recovery Stability writer.
 //
 // First real consumer of the Phase 0 redesign storage layer. Reads
-// sleep rows from daily_scores, computes per-night eligibility via
-// internal/health.ComputeSleepEfficiency, and emits target_snapshots,
+// sleep rows from daily_scores, computes per-night eligibility via the
+// shared Recovery SQL macro, and emits target_snapshots,
 // feature_snapshots, and naive_baselines for the Recovery Stability
 // sub-score per READINESS_REDESIGN_PLAN.md §4.2.
 //
@@ -191,15 +191,34 @@ func (s *DB) backfillRecoveryStabilitySnapshotsForMaintenance(from, to, observat
 
 	// Index rows by date for O(1) lookups during feature/target gather.
 	byDate := make(map[string]health.SleepRow, len(rows))
-	effByDate := make(map[string]health.SleepEfficiencyResult, len(rows))
-	captureByDate := make(map[string]health.SleepCaptureConfidenceResult, len(rows))
 	for _, r := range rows {
 		byDate[r.Date] = r
-		effByDate[r.Date] = health.ComputeSleepEfficiency(r)
-		captureByDate[r.Date] = health.ComputeSleepCaptureConfidence(r)
 		if r.Date > latestObservedSleepDate {
 			latestObservedSleepDate = r.Date
 		}
+	}
+	assessmentRows := make([]health.SleepRow, 0, len(rows)+180)
+	assessmentFrom, parseErr := time.Parse(isoDate, loadFrom)
+	if parseErr != nil {
+		return 0, fmt.Errorf("parse Recovery sleep assessment start: %w", parseErr)
+	}
+	assessmentThrough, parseErr := time.Parse(isoDate, loadTo)
+	if parseErr != nil {
+		return 0, fmt.Errorf("parse Recovery sleep assessment end: %w", parseErr)
+	}
+	for d := assessmentFrom; !d.After(assessmentThrough); d = d.AddDate(0, 0, 1) {
+		date := d.Format(isoDate)
+		row, ok := byDate[date]
+		if !ok {
+			row.Date = date
+		}
+		assessmentRows = append(assessmentRows, row)
+	}
+	assessmentCtx, assessmentCancel := queryCtx()
+	effByDate, captureByDate, err := s.assessRecoverySleepRows(assessmentCtx, assessmentRows)
+	assessmentCancel()
+	if err != nil {
+		return 0, err
 	}
 	if observationFrom != "" || observationThrough != "" {
 		// Recovery candidate maturity depends on the maximum observed date
@@ -253,19 +272,9 @@ func (s *DB) writeRecoveryStabilityRow(
 	if err != nil {
 		return err
 	}
-	// --- Feature payload: data strictly ≤ end of day `t` ---
-	w, err := s.chipFeatureWindow(ctx, t, epochStart, ewmaLookbackDays(ewmaWindowSlow), sleepEfficiencyLookup(effByDate))
-	if err != nil {
-		return err
-	}
-	features, err := s.recoveryFeatureContext(ctx, t, epochStart, byDate, effByDate, captureByDate, archFields)
-	if err != nil {
-		return err
-	}
-	features.PrevEfficiency, features.Mean7d, features.EWMA45, features.EWMA180 = w.Today, w.Mean7, w.Adaptive, w.Slow
-	features.EligibleCount7d, features.EligibleCount45d, features.EligibleCount180d = w.N7, w.AdaptiveN, w.SlowN
-	features.WarmupComplete45d, features.WarmupComplete180d = w.AdaptiveN >= ewmaWindowAdaptive/2, w.SlowN >= ewmaWindowSlow/3
-	featuresJSON, err := json.Marshal(features)
+	// SQL replay owns all 17 recovery fields; retain only the separately
+	// computed sleep-architecture payload here.
+	featuresJSON, err := json.Marshal(archFields)
 	if err != nil {
 		return fmt.Errorf("marshal features %s: %w", date, err)
 	}
@@ -320,6 +329,16 @@ func (s *DB) writeRecoveryStabilityRow(
 	}
 
 	if err := s.SaveFeatureSnapshot(FeatureSnapshot{
+		replayInputs: func() map[string]any {
+			rows := make([]health.SleepRow, 0, 7)
+			for i := range 7 {
+				day := t.AddDate(0, 0, -i).Format(isoDate)
+				r := byDate[day]
+				r.Date = day
+				rows = append(rows, r)
+			}
+			return map[string]any{"epoch_start": epochStart, "primary_days": chipDays(t, ewmaLookbackDays(ewmaWindowSlow), sleepEfficiencyLookup(effByDate)), "sleep": rows}
+		},
 		Date:           date,
 		SubScore:       SubScoreRecoveryStability,
 		Features:       featuresJSON,
@@ -482,7 +501,8 @@ func sleepCaptureForDate(
 	if capture, ok := captureByDate[date]; ok && capture.Class != "" {
 		return capture
 	}
-	return health.ComputeSleepCaptureConfidence(health.SleepRow{Date: date})
+	return health.SleepCaptureConfidenceResult{Class: health.SleepCaptureMissing, Confidence: 0,
+		Reason: health.SleepCaptureReasonNoTotal, LowConfidence: true}
 }
 
 // sleepEfficiencyLookup adapts a map of SleepEfficiencyResult to the

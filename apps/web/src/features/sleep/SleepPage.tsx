@@ -124,12 +124,18 @@ export function SleepReady({ resources, locale }: { resources: SleepResources; l
   const [selectedDate, setSelectedDate] = useState(resources.briefing.date || days[0]?.date || "");
   const [historicComparison, setHistoricComparison] = useState<SleepDurationComparison | null>();
   const [historicAI, setHistoricAI] = useState<AIBriefingResponse>();
-  const [todayAI, setTodayAI] = useState(resources.ai);
-  const [todayInsights, setTodayInsights] = useState<TodayInsightsResponse | undefined>(resources.todayInsights);
-  const [balance, setBalance] = useState<SleepDurationBalanceResponse | undefined>(resources.balance);
-  const [goal, setGoal] = useState<SleepGoalValue | null | undefined>(resources.goal?.goal);
-  const [goalHours, setGoalHours] = useState(resources.goal?.goal?.goal_hours?.toString() ?? "8");
-  const [goalEffectiveDate, setGoalEffectiveDate] = useState(resources.goal?.goal?.effective_date ?? resources.briefing.date);
+  const [polledAI, setTodayAI] = useState<AIBriefingResponse>();
+  const [polledInsights, setTodayInsights] = useState<TodayInsightsResponse>();
+  const [updatedBalance, setBalance] = useState<SleepDurationBalanceResponse>();
+  const [savedGoal, setGoal] = useState<SleepGoalValue | null>();
+  const [draftGoalHours, setGoalHours] = useState<string>();
+  const [draftEffectiveDate, setGoalEffectiveDate] = useState<string>();
+  const todayAI = polledAI ?? resources.ai;
+  const todayInsights = polledInsights ?? resources.todayInsights;
+  const balance = updatedBalance ?? resources.balance;
+  const goal = savedGoal === undefined ? resources.goal?.goal : savedGoal;
+  const goalHours = draftGoalHours ?? goal?.goal_hours?.toString() ?? "8";
+  const goalEffectiveDate = draftEffectiveDate ?? goal?.effective_date ?? resources.briefing.date;
   const [savingGoal, setSavingGoal] = useState(false);
   const [goalSaveError, setGoalSaveError] = useState(false);
   const aiPollAttempts = useRef(0);
@@ -157,8 +163,8 @@ export function SleepReady({ resources, locale }: { resources: SleepResources; l
     }
     const controller = new AbortController();
     getAIBriefing(locale, controller.signal, selectedDate)
-      .then(setHistoricAI)
-      .catch(() => setHistoricAI(undefined));
+      .then((result) => { if (!controller.signal.aborted) setHistoricAI(result); })
+      .catch(() => { if (!controller.signal.aborted) setHistoricAI(undefined); });
     return () => controller.abort();
   }, [locale, resources.briefing.date, selectedDate]);
 
@@ -177,7 +183,9 @@ export function SleepReady({ resources, locale }: { resources: SleepResources; l
         document.visibilityState === "visible"
           ? window.setTimeout(() => {
               aiPollAttempts.current += 1;
-              getAIBriefing(locale, controller.signal).then(setTodayAI).catch(() => undefined);
+              getAIBriefing(locale, controller.signal)
+                .then((result) => { if (!controller.signal.aborted) setTodayAI(result); })
+                .catch(() => undefined);
             }, aiPollAttempts.current >= 10 ? 300_000 : 60_000)
           : undefined;
     };
@@ -201,9 +209,9 @@ export function SleepReady({ resources, locale }: { resources: SleepResources; l
       const delay = todayInsightsPollDelayMs(todayInsights, insightPollAttempts.current);
       timer = document.visibilityState === "visible" && delay !== undefined ? window.setTimeout(() => {
         if (isTodayInsightsGenerationPending(todayInsights)) insightPollAttempts.current += 1;
-        getTodayInsights(locale, controller.signal).then(setTodayInsights).catch(() => {
-          if (!controller.signal.aborted) schedule();
-        });
+        getTodayInsights(locale, controller.signal)
+          .then((result) => { if (!controller.signal.aborted) setTodayInsights(result); })
+          .catch(() => { if (!controller.signal.aborted) schedule(); });
       }, delay) : undefined;
     };
     schedule();
@@ -478,8 +486,11 @@ export function SleepPage() {
     document.documentElement.lang = locale;
     if (fixture) return;
     const controller = new AbortController();
-    loadSleepResources(locale, controller.signal)
+    loadSleepResources(locale, controller.signal, undefined, (resources) => {
+      if (!controller.signal.aborted) setState({ status: "ready", resources });
+    })
       .then((resources) => {
+        if (controller.signal.aborted) return;
         clearSessionRecoveryAttempt(window.sessionStorage);
         setState({ status: "ready", resources });
       })

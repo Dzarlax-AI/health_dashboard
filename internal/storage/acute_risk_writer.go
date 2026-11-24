@@ -32,7 +32,6 @@ package storage
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math"
 	"time"
@@ -181,7 +180,7 @@ func (s *DB) writeAcuteRiskRow(
 		}
 		// Still emit a feature snapshot so the framework contract is
 		// consistent (1 feature row per (date, sub_score)).
-		if err := s.saveAcuteRiskFeatures(ctx, date, t, epoch, epochStart, hrvLookup, rhrLookup, pairedCount, false); err != nil {
+		if err := s.saveAcuteRiskFeatures(date, t, epoch, epochStart, hrvLookup, rhrLookup); err != nil {
 			return err
 		}
 		// Baselines write even when paired-warmup hasn't been met. The
@@ -264,7 +263,7 @@ func (s *DB) writeAcuteRiskRow(
 		// Feature snapshot still emitted so the (date, sub_score) PK is
 		// covered. warmupMet=true because the gate did pass; the window
 		// gate fired downstream of warmup.
-		return s.saveAcuteRiskFeatures(ctx, date, t, epoch, epochStart, hrvLookup, rhrLookup, pairedCount, true)
+		return s.saveAcuteRiskFeatures(date, t, epoch, epochStart, hrvLookup, rhrLookup)
 	}
 
 	type dayBreach struct {
@@ -354,7 +353,7 @@ func (s *DB) writeAcuteRiskRow(
 		return fmt.Errorf("save base-rate baseline %s/event_strict_t1_t3: %w", date, err)
 	}
 
-	return s.saveAcuteRiskFeatures(ctx, date, t, epoch, epochStart, hrvLookup, rhrLookup, pairedCount, true)
+	return s.saveAcuteRiskFeatures(date, t, epoch, epochStart, hrvLookup, rhrLookup)
 }
 
 // --- Features ----------------------------------------------------------
@@ -375,34 +374,17 @@ type acuteRiskFeatures struct {
 }
 
 func (s *DB) saveAcuteRiskFeatures(
-	ctx context.Context,
 	date string,
 	t time.Time,
 	epoch string,
 	epochStart string,
 	hrvLookup, rhrLookup DailyValueLookup,
-	pairedCount int,
-	warmupMet bool,
 ) error {
-	feat := acuteRiskFeatures{
-		PairedCountToT: pairedCount,
-		WarmupMet:      warmupMet,
-	}
-	hrv, err := s.chipFeatureWindow(ctx, t, epochStart, health.AcuteRiskBaselineWindowDays-1, hrvLookup)
-	if err != nil {
-		return err
-	}
-	rhr, err := s.chipFeatureWindow(ctx, t, epochStart, health.AcuteRiskBaselineWindowDays-1, rhrLookup)
-	if err != nil {
-		return err
-	}
-	feat.HRVToday, feat.HRVMean45, feat.HRVSD45, feat.HRVZToday, feat.HRVEligibleCount45 = hrv.Today, hrv.Mean45, hrv.SD45, hrv.Z45, hrv.N45
-	feat.RHRToday, feat.RHRMean45, feat.RHRSD45, feat.RHRZToday, feat.RHREligibleCount45 = rhr.Today, rhr.Mean45, rhr.SD45, rhr.Z45, rhr.N45
-	featuresJSON, err := json.Marshal(feat)
-	if err != nil {
-		return fmt.Errorf("marshal acute features %s: %w", date, err)
-	}
+	featuresJSON := []byte(`{}`)
 	return s.SaveFeatureSnapshot(FeatureSnapshot{
+		replayInputs: func() map[string]any {
+			return map[string]any{"epoch_start": epochStart, "primary_days": chipDays(t, ewmaWindowSlow, hrvLookup), "rhr_days": chipDays(t, ewmaWindowSlow, rhrLookup)}
+		},
 		Date:           date,
 		SubScore:       SubScoreAcuteRisk,
 		Features:       featuresJSON,

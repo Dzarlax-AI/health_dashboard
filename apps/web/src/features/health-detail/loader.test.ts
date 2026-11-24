@@ -4,7 +4,6 @@ import type {
   AIBriefingResponse,
   HealthBriefingResponse,
   MetricDataResponse,
-  MetricRangeResponse,
   ReadinessHistoryResponse,
   SectionResponse,
   SessionResponse,
@@ -20,17 +19,12 @@ function loaders(section: SectionResponse): HealthDetailLoaders {
       blocks: { RECOVERY: "Saved recovery insight" },
     }) as unknown as AIBriefingResponse),
     session: vi.fn(async () => ({ is_admin: true }) as SessionResponse),
-    range: vi.fn(async () => ({
-      min: "2026-01-01",
-      max: "2026-08-06",
-    }) as MetricRangeResponse),
     readiness: vi.fn(async () => ({ points: [] }) as ReadinessHistoryResponse),
-    dailySteps: vi.fn(async () => ({ bucket: "day", points: [{ date: "2026-08-06", qty: 0 }] })),
     metric: vi.fn(async (metric, _from, _to, _signal, options) => ({
       metric,
       agg: options?.agg ?? "AVG",
       bucket: "day",
-      points: [],
+      points: metric === "step_count" ? [{ date: "2026-08-06", qty: 0 }] : [],
     }) as MetricDataResponse),
   };
 }
@@ -52,14 +46,16 @@ describe("health detail resource loader", () => {
     const result = await loadHealthDetailResources(healthSectionConfigs.activity, "en", undefined, testLoaders);
 
     expect(result.metrics.step_count.points).toEqual([{ date: "2026-08-06", qty: 0 }]);
-    expect(testLoaders.dailySteps).toHaveBeenCalledWith(
-      "2026-01-01",
+    expect(testLoaders.metric).toHaveBeenCalledWith(
+      "step_count",
+      undefined,
       "2026-08-06",
       undefined,
+      { agg: "SUM", bucket: "day" },
     );
     expect(testLoaders.metric).toHaveBeenCalledWith(
       "active_energy",
-      "2026-01-01",
+      undefined,
       "2026-08-06",
       undefined,
       { agg: "SUM", bucket: "day" },
@@ -96,6 +92,19 @@ describe("health detail resource loader", () => {
     expect(result.missing).toContain("heart_rate_variability");
   });
 
+  it("shows chart points while optional session metadata is pending", async () => {
+    const deps = loaders({ key: "activity", title: "Activity", summary: "", details: [], explains: [],
+      charts: [{ metric: "step_count", agg: "SUM", label: "Steps" }] });
+    let release!: (value: SessionResponse) => void;
+    deps.session = () => new Promise((resolve) => { release = resolve; });
+    const chartsReady = vi.fn(() => release({ is_admin: true }));
+    const result = await loadHealthDetailResources(healthSectionConfigs.activity, "en", undefined, deps, chartsReady);
+    expect(chartsReady).toHaveBeenCalledWith(expect.objectContaining({ metrics: {
+      step_count: expect.objectContaining({ points: [{ date: "2026-08-06", qty: 0 }] }),
+    } }));
+    expect(result.session?.is_admin).toBe(true);
+  });
+
   it("rejects an aborted load instead of publishing partial resources", async () => {
     const controller = new AbortController();
     const testLoaders = loaders({
@@ -106,9 +115,9 @@ describe("health detail resource loader", () => {
       explains: [],
       charts: [{ metric: "vo2_max", agg: "AVG", label: "VO2" }],
     });
-    testLoaders.range = vi.fn(async () => {
+    testLoaders.metric = vi.fn(async () => {
       controller.abort(new DOMException("Superseded", "AbortError"));
-      return { min: "2026-01-01", max: "2026-08-06" };
+      return { metric: "vo2_max", agg: "AVG", bucket: "day", points: [] };
     });
 
     await expect(

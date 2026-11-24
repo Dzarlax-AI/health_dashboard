@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"health-receiver/experiments/dbt_metrics"
 	"health-receiver/internal/health"
 	"health-receiver/internal/registry"
 
@@ -149,6 +151,29 @@ func runProbe(ctx context.Context, conn *pgxpool.Conn, schema, from, to string) 
 	if err != nil {
 		return probeResult{}, err
 	}
+	assessmentRows := make([]health.SleepRow, 0, len(targets)*3)
+	seen := make(map[string]struct{}, len(targets)*3)
+	for _, target := range targets {
+		days, err := forwardDates(target.Date)
+		if err != nil {
+			return probeResult{}, err
+		}
+		for _, day := range days {
+			if _, ok := seen[day]; ok {
+				continue
+			}
+			seen[day] = struct{}{}
+			row, ok := sleepRows[day]
+			if !ok {
+				row.Date = day
+			}
+			assessmentRows = append(assessmentRows, row)
+		}
+	}
+	assessments, err := assessSleepRows(ctx, conn, assessmentRows)
+	if err != nil {
+		return probeResult{}, err
+	}
 
 	for _, target := range targets {
 		if target.Eligible {
@@ -163,22 +188,17 @@ func runProbe(ctx context.Context, conn *pgxpool.Conn, schema, from, to string) 
 		partialShort := false
 		missingCapture := false
 		for _, d := range days {
-			row, ok := sleepRows[d]
-			if !ok {
-				row = health.SleepRow{Date: d}
-			}
-			eff := health.ComputeSleepEfficiency(row)
-			capture := health.ComputeSleepCaptureConfidence(row)
-			if eff.Eligible && eff.Efficiency != nil {
+			assessment := assessments[d]
+			if assessment.Eligible {
 				eligibleCount++
 			}
-			if capture.LowConfidence {
+			if assessment.CaptureLow {
 				lowCapture = true
 			}
-			if capture.Class == health.SleepCapturePartialShort {
+			if assessment.CaptureClass == health.SleepCapturePartialShort {
 				partialShort = true
 			}
-			if capture.Class == health.SleepCaptureMissing {
+			if assessment.CaptureClass == health.SleepCaptureMissing {
 				missingCapture = true
 			}
 		}
@@ -206,6 +226,46 @@ func runProbe(ctx context.Context, conn *pgxpool.Conn, schema, from, to string) 
 		return probeResult{}, err
 	}
 	return res, nil
+}
+
+type sleepAssessment struct {
+	Eligible     bool
+	CaptureClass string
+	CaptureLow   bool
+}
+
+func assessSleepRows(ctx context.Context, conn *pgxpool.Conn, rows []health.SleepRow) (map[string]sleepAssessment, error) {
+	payload, err := json.Marshal(rows)
+	if err != nil {
+		return nil, err
+	}
+	query := `with inputs as (
+	    select i."Date"::date as day,i."Total" as total,i."Awake" as awake,
+	           i."Deep" as deep,i."REM" as rem,i."Core" as core,i."Unspecified" as unspecified
+	    from jsonb_to_recordset($1::jsonb) as i("Date" text,"Total" float8,"Awake" float8,"Deep" float8,"REM" float8,"Core" float8,"Unspecified" float8)
+	), assessed as (` + dbtmetrics.RecoverySleepAssessmentSQL("inputs") + `)
+	select day::text,eligible,capture_class,capture_low from assessed`
+	resultRows, err := conn.Query(ctx, query, json.RawMessage(payload))
+	if err != nil {
+		return nil, err
+	}
+	defer resultRows.Close()
+	result := make(map[string]sleepAssessment, len(rows))
+	for resultRows.Next() {
+		var day string
+		var assessment sleepAssessment
+		if err := resultRows.Scan(&day, &assessment.Eligible, &assessment.CaptureClass, &assessment.CaptureLow); err != nil {
+			return nil, err
+		}
+		result[day] = assessment
+	}
+	if err := resultRows.Err(); err != nil {
+		return nil, err
+	}
+	if len(result) != len(rows) {
+		return nil, fmt.Errorf("sleep assessment returned %d of %d dates", len(result), len(rows))
+	}
+	return result, nil
 }
 
 func loadPersistedTargetMetrics(ctx context.Context, conn *pgxpool.Conn, from, to string, res *probeResult) error {

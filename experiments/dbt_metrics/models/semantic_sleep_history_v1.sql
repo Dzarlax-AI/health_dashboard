@@ -1,4 +1,4 @@
-{{ config(enabled=var('semantic_shadow', false), materialized='view',
+{{ config(enabled=var('semantic_shadow', false) or var('tenant_native_catalog', false), materialized='ephemeral' if var('tenant_native_catalog', false) else 'view',
     post_hook='alter view {{ this }} set (security_invoker=true)') }}
 
 -- One decision for every calendar day in [D-30,D), even when D has no night.
@@ -16,7 +16,7 @@ with decisions as (
              when h.claim_eligibility <> 'eligible' then 'ineligible_claim'
              else 'eligible'
            end as reason
-    from {{ source('source_data', 'calendar') }} c
+    from {{ ref('native_night_calendar_v1') if var('tenant_native_catalog',false) else source('source_data', 'calendar') }} c
     cross join generate_series(1, 30) offsets(offset_days)
     left join {{ source('source_data', 'completed_night_sleep') }} n on n.wake_date = c.date
     left join {{ source('source_data', 'completed_night_sleep') }} h

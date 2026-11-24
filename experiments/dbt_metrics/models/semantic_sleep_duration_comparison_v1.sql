@@ -1,4 +1,4 @@
-{{ config(enabled=var('semantic_shadow', false), materialized='view',
+{{ config(enabled=var('semantic_shadow', false) or var('tenant_native_catalog', false), materialized='ephemeral' if var('tenant_native_catalog', false) else 'view',
     post_hook='alter view {{ this }} set (security_invoker=true)') }}
 
 -- One row per canonical wake date. The reader maps an absent row to no_night.
@@ -8,8 +8,13 @@ with inputs as (
            n.claim_eligibility, n.observed_at, r.window_start, r.window_end_exclusive,
            r.eligible_nights, r.reference_hours, r.history_version, r.rule_version
     from {{ source('source_data','completed_night_sleep') }} n
-    join {{ ref('sleep_duration_reference_v1') }} r
+    {% if var('tenant_native_catalog', false) %}
+    join {{ adapter.quote(target.schema) }}.sleep_duration_reference_v1 r
+    {% else %}join {{ ref('sleep_duration_reference_v1') }} r{% endif %}
       using (wake_date, source, source_epoch, algorithm_version)
+    {% if var('tenant_native_catalog', false) %}
+    where exists (select from {{ adapter.quote(target.schema) }}.settings where key='sleep_duration_comparison_enabled' and value='true')
+    {% endif %}
 )
 select wake_date, status, duration_minutes, reference_minutes,
        delta_minutes, eligible_nights,

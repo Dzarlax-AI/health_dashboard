@@ -18,10 +18,13 @@ func EnergyBankSQL(runs, days string) string {
 //go:embed macros/energy_verdict_bands_v1.sql
 var energyBandMacro string
 
+//go:embed macros/energy_calibrated_bands_v1.sql
+var energyCalibrationMacro string
+
 // EnergyVerdictBandsSQL returns the calibration CTEs following a decisions CTE.
 func EnergyVerdictBandsSQL(history string) string {
 	body := macroBody(energyBandMacro)
-	return strings.ReplaceAll(body, "{{ history }}", history)
+	return strings.NewReplacer("{{ history }}", history, "{{ energy_calibrated_bands_v1() }}", macroBody(energyCalibrationMacro)).Replace(body)
 }
 
 //go:embed macros/energy_guidance_v1.sql

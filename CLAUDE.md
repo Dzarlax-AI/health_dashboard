@@ -4,6 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 > **Twin file:** `AGENTS.md` is a Codex-equivalent of this file (auto-created by the codex CLI). When making substantive content changes here — gate semantics, migration caveats, architecture notes — mirror them in `AGENTS.md` too, otherwise the next Codex review reads stale docs. Only the opening "guidance to Claude/Codex" line differs between the two; the rest stays in lockstep.
 
+## One shared Health API
+
+Each product operation has one canonical API contract and one server implementation of its business rules. React and iOS use the same operation for the same inputs, including date ranges, sources, aggregation and permissions. Choose the data source, published dbt results and fallback on the server. Extend the canonical operation when adding a screen, client or faster read path. Register HTTP contract changes in the backend OpenAPI generator and verify them with `make contract-check`.
+
+Keep existing client URLs and legacy Go pages working during migration. Compatibility routes and protocol adapters delegate equivalent operations to the canonical implementation. Review every new route against the existing operations and test shared behavior across affected consumers.
+
 ## Commands
 
 ```bash

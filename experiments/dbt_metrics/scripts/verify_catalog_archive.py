@@ -62,6 +62,22 @@ def archive_vars(schema, selected, with_observations):
 
 def reference_relation(group, source, types):
     model = group["model"]
+    schema = ident(source)
+    if model == "archived_sleep_goal_v1":
+        return f"{schema}.sleep_goal"
+    if model == "archived_energy_eod_v1":
+        return f"(select * from {schema}.energy_snapshots where flags @> array['backfilled'])"
+    if model == "archived_legacy_energy_eod_v1":
+        return f"""(select date,coalesce(energy_capacity,0) capacity,coalesce(energy_eod_current,0) current_eod,
+            coalesce(energy_drain,0) drain,energy_verdict verdict from {schema}.daily_scores where energy_verdict is not null)"""
+    if model == "archived_wake_time_v1":
+        return f"(select * from {schema}.derived_metrics where metric_name='wake_time' and value_type='timestamp')"
+    if model == "daily_metrics":
+        return f"""(select d.* from {schema}.hdbt_daily_metrics d where exists(select from {schema}.hdbt_state s,
+            {schema}.settings j where s.singleton and s.ready and s.initialized and s.shadow_enabled
+            and s.formula_id='aggregate_serving_v3' and j.key='_cache_maintenance_v1'
+            and (j.value::jsonb->>'generation')::numeric=s.source_generation
+            and not exists(select from {schema}.hdbt_backfill) and not exists(select from {schema}.hdbt_dirty)))"""
     if model == "archived_main_night_v1":
         return f"""(select n.*,coalesce(n.diagnostics->>'preferred_sleep_source','') as preferred_sleep_source,
             coalesce(n.diagnostics->>'source_selection_reason','') as source_selection_reason

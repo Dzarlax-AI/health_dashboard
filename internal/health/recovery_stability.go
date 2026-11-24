@@ -1,10 +1,7 @@
 // Package health — Recovery Stability sub-score helpers.
 //
-// Pure functions for the Recovery Stability writer described in
-// READINESS_REDESIGN_PLAN.md §4.2. The storage-side writer in
-// internal/storage/ consumes ComputeSleepEfficiency to decide whether a
-// night is eligible and what the target value is; this file holds the
-// data transform with no I/O so it is trivial to test.
+// Independent reference formulas for the Recovery Stability parity tests.
+// The storage writer, diagnostic probe and dbt replay use recovery_sleep_assessment_v1.
 //
 // Eligibility patterns implemented (plan §4.2.1):
 //

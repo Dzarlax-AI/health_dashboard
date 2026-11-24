@@ -107,95 +107,68 @@ export async function loadSleepResources(
   locale: Locale,
   signal?: AbortSignal,
   loaders: SleepLoaders = defaultLoaders,
+  onCharts?: (resources: SleepResources) => void,
 ): Promise<SleepResources> {
   const rawBriefing = await loaders.briefing(locale, signal);
   const briefingDate = normalizedDate(rawBriefing.date);
   const briefing = briefingDate ? { ...rawBriefing, date: briefingDate } : rawBriefing;
   const embeddedComparison = briefing.sleep_duration_comparison;
-  const [section, ai, session, range, balance, goal, todayInsights, comparison] = await Promise.allSettled([
+  const supporting = Promise.allSettled([
     loaders.section("sleep", locale, signal),
     loaders.ai(locale, signal),
     loaders.session(signal),
-    loaders.range("sleep_total", signal),
     loaders.balance(signal, briefingDate),
     loaders.goal(signal, briefingDate),
     loaders.todayInsights?.(locale, signal) ?? Promise.resolve(undefined),
     embeddedComparison && embeddedComparison.wake_date === briefingDate
       ? embeddedComparison
       : loaders.comparison?.(signal, briefingDate),
-  ]);
-  throwIfAborted(signal);
-
-  const fixedMissing = [
-    section.status === "rejected" ? "section" : undefined,
-    ai.status === "rejected" ? "ai" : undefined,
-    session.status === "rejected" ? "session" : undefined,
-    range.status === "rejected" ? "range" : undefined,
-    balance.status === "rejected" ? "balance" : undefined,
-    goal.status === "rejected" ? "goal" : undefined,
-    todayInsights.status === "rejected" ? "todayInsights" : undefined,
-  ].filter((name): name is string => Boolean(name));
-
-  if (!briefingDate) {
-    return {
-      briefing,
-      section: fulfilled(section),
-      ai: fulfilled(ai),
-      session: fulfilled(session),
-      range: fulfilled(range),
-      balance: fulfilled(balance),
-      goal: fulfilled(goal),
-      comparison: fulfilled(comparison),
-      todayInsights: fulfilled(todayInsights),
-      metrics: {},
-      missing: fixedMissing,
-    };
-  }
-
-  const earliest = range.status === "fulfilled" ? normalizedDate(range.value.min) : undefined;
-  const from = earliest && earliest <= briefingDate ? earliest : dateOffset(briefingDate, -89);
-  const [wake] = await Promise.allSettled([
-    loaders.wake("wake_time", from, briefingDate, signal),
-  ]);
-  const metricResults = await Promise.allSettled(
-    sleepMetrics.map((metric) => loaders.metric(metric, from, briefingDate, signal)),
-  );
-  throwIfAborted(signal);
-
-  const metrics: Partial<Record<SleepMetric, MetricDataResponse>> = {};
-  sleepMetrics.forEach((metric, index) => {
-    const value = fulfilled(metricResults[index]);
-    if (value) {
-      metrics[metric] = value;
-    }
+  ] as const);
+  const rangeAndWake = Promise.allSettled([loaders.range("sleep_total", signal)]).then(async ([range]) => {
+    if (!briefingDate || signal?.aborted) return { range, wake: undefined };
+    const earliest = normalizedDate(fulfilled(range)?.min ?? "");
+    const from = earliest && earliest <= briefingDate ? earliest : dateOffset(briefingDate, -89);
+    const [wake] = await Promise.allSettled([loaders.wake("wake_time", from, briefingDate, signal)]);
+    return { range, wake };
   });
-  if (!metrics.sleep_total) {
+  const metricResults = briefingDate
+    ? await Promise.allSettled(sleepMetrics.map((metric) => loaders.metric(metric, undefined, briefingDate, signal)))
+    : [];
+  throwIfAborted(signal);
+  const metrics: SleepResources["metrics"] = {};
+  metricResults.forEach((result, i) => {
+    if (result.status === "fulfilled") metrics[sleepMetrics[i]] = result.value;
+  });
+  if (briefingDate && !metrics.sleep_total) {
     try {
-      metrics.sleep_total = await loaders.metric("sleep_total", from, briefingDate, signal);
+      metrics.sleep_total = await loaders.metric("sleep_total", undefined, briefingDate, signal);
     } catch {
       throwIfAborted(signal);
     }
     throwIfAborted(signal);
   }
+  const chartResources: SleepResources = {
+    briefing, metrics,
+    missing: metricResults.flatMap((result, i) =>
+      result.status === "rejected" && !metrics[sleepMetrics[i]] ? [sleepMetrics[i]] : []),
+  };
+  if (briefingDate) onCharts?.(chartResources);
 
+  const [[section, ai, session, balance, goal, insights, comparison], { range, wake }] = await Promise.all([supporting, rangeAndWake]);
+  throwIfAborted(signal);
   return {
-    briefing,
-    section: fulfilled(section),
-    ai: fulfilled(ai),
-    wake: fulfilled(wake),
-    comparison: fulfilled(comparison),
-    session: fulfilled(session),
-    range: fulfilled(range),
-    balance: fulfilled(balance),
-    goal: fulfilled(goal),
-    todayInsights: fulfilled(todayInsights),
-    metrics,
-    missing: [
-      ...fixedMissing,
-      wake.status === "rejected" ? "wake" : undefined,
-      ...metricResults.map((result, index) =>
-        result.status === "rejected" && !metrics[sleepMetrics[index]] ? sleepMetrics[index] : undefined,
-      ),
-    ].filter((name): name is string => Boolean(name)),
+    ...chartResources, section: fulfilled(section), ai: fulfilled(ai), session: fulfilled(session),
+    range: fulfilled(range), wake: wake && fulfilled(wake), balance: fulfilled(balance),
+    goal: fulfilled(goal), comparison: fulfilled(comparison), todayInsights: fulfilled(insights),
+    missing: [...chartResources.missing, ...[
+      section.status === "rejected" ? "section" : undefined,
+      ai.status === "rejected" ? "ai" : undefined,
+      session.status === "rejected" ? "session" : undefined,
+      range.status === "rejected" ? "range" : undefined,
+      wake?.status === "rejected" ? "wake" : undefined,
+      balance.status === "rejected" ? "balance" : undefined,
+      goal.status === "rejected" ? "goal" : undefined,
+      insights.status === "rejected" ? "todayInsights" : undefined,
+    ].filter((name): name is string => Boolean(name))],
   };
 }

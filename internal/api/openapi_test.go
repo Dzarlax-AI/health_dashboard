@@ -47,6 +47,47 @@ func TestCheckedInOpenAPIIsCurrentAndCompatible(t *testing.T) {
 	}
 }
 
+func TestMaintenanceContractModelsPartialUpdatesAndMissingObservations(t *testing.T) {
+	raw, err := GenerateOpenAPI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	schemas, err := componentSchemas(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"EnergySettingsRequest", "TodayInsightsSettingsRequest", "ChronicLoadSettingsRequest", "CoverageUpdateRequest", "DateBoundsRequest"} {
+		schema := schemas[name].(map[string]any)
+		if required, _ := schema["required"].([]any); len(required) > 0 {
+			t.Errorf("%s unexpectedly requires fields %v", name, required)
+		}
+	}
+	for _, name := range []string{"OperationalReport", "ChipCalibrationResponse"} {
+		rows := schemas[name].(map[string]any)["properties"].(map[string]any)["rows"].(map[string]any)
+		cutoff := rows["items"].(map[string]any)["properties"].(map[string]any)["Cutoff"].(map[string]any)
+		if _, ok := valueSet(cutoff["type"])[`"null"`]; !ok {
+			t.Errorf("%s excludes null cutoff", name)
+		}
+	}
+	for path, rawItem := range doc["paths"].(map[string]any) {
+		for _, rawOp := range rawItem.(map[string]any) {
+			op := rawOp.(map[string]any)
+			admin := strings.HasPrefix(path, "/api/admin/") || path == "/api/webhook-status/retry"
+			if (op["x-required-role"] == "admin") != admin {
+				t.Errorf("%s incorrect administrative role", path)
+			}
+			responses := op["responses"].(map[string]any)
+			if responses["401"] == nil || admin && responses["403"] == nil {
+				t.Errorf("%s missing authentication or authorization failure", path)
+			}
+		}
+	}
+}
+
 func TestClientContractHasExpectedPhaseOneOperationsAndNoTenantSelector(t *testing.T) {
 	raw, err := GenerateOpenAPI()
 	if err != nil {
@@ -94,6 +135,10 @@ func TestClientContractHasExpectedPhaseOneOperationsAndNoTenantSelector(t *testi
 				name, _ := parameter["name"].(string)
 				switch strings.ToLower(name) {
 				case "tenant", "tenant_id", "schema", "schema_name":
+					if name == "schema" && operation["x-required-role"] == "admin" &&
+						(strings.HasPrefix(path, "/api/admin/") || path == "/api/webhook-status/retry") {
+						continue
+					}
 					t.Errorf("%s %s exposes untrusted tenant selector %q", strings.ToUpper(method), path, name)
 				}
 			}

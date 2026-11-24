@@ -16,25 +16,31 @@ func (s *DB) recordedMorningSleepEpisode(ctx context.Context, night health.Compl
 	if err != nil {
 		return nil, "read_error", err
 	}
-	episode, reason := buildRecordedSleepEpisode(segments, night, s.reportTZLocation())
+	loc := s.reportTZLocation()
+	var selected []wakeInputSegment
+	for _, segment := range segments {
+		if segment.Source == night.Source && segment.Metric != "sleep_total" && segment.Start.In(loc).Format("15:04:05") != "00:00:00" {
+			selected = append(selected, segment)
+		}
+	}
+	candidate, ok, err := queryWakeCandidateSQL(ctx, s.pool, night.WakeDate, loc, "", selected)
+	if err != nil || !ok {
+		return nil, "detailed_intervals_unavailable", err
+	}
+	candidate.InputsHash = wakeCandidateInputHash(selected, night.WakeDate, loc, candidate)
+	episode, reason := buildRecordedSleepEpisodeFromCandidate(selected, night, loc, candidate)
 	return episode, reason, nil
 }
 
-func buildRecordedSleepEpisode(segments []wakeInputSegment, night health.CompletedNightSleep, loc *time.Location) (*health.MorningSleepEpisode, string) {
-	if night.CaptureCompleteness != health.NightCaptureComplete || night.DurationAssessment != health.NightDurationPlausible {
-		return nil, "capture_not_complete"
+func buildRecordedSleepEpisodeFromCandidate(segments []wakeInputSegment, night health.CompletedNightSleep, loc *time.Location, candidate wakeCandidate) (*health.MorningSleepEpisode, string) {
+	if candidate.Signal != "detailed_stage_end" {
+		return nil, "detailed_intervals_unavailable"
 	}
 	var selected []wakeInputSegment
-	for _, s := range segments {
-		// Match the existing architecture contract: midnight summary rows are
-		// aggregates, not interval starts. Mixing them creates artificial overlaps.
-		if s.Source == night.Source && s.Metric != "sleep_total" && s.Start.Format("15:04:05") != "00:00:00" {
-			selected = append(selected, s)
+	for _, segment := range segments {
+		if segment.Source == night.Source && segment.Metric != "sleep_total" && segment.Start.In(loc).Format("15:04:05") != "00:00:00" {
+			selected = append(selected, segment)
 		}
-	}
-	candidate, ok, err := selectWakeCandidate(selected, night.WakeDate, loc)
-	if err != nil || !ok || candidate.Signal != "detailed_stage_end" {
-		return nil, "detailed_intervals_unavailable"
 	}
 	previousNoon := time.Date(candidate.Wake.In(loc).Year(), candidate.Wake.In(loc).Month(), candidate.Wake.In(loc).Day(), 12, 0, 0, 0, loc).AddDate(0, 0, -1)
 	stages := map[string][]sleepSegment{}

@@ -36,24 +36,20 @@ func (s *DB) morningInsightEvidence(ctx context.Context, briefing *health.Briefi
 	if err != nil {
 		return health.MorningInsightEvidence{}, err
 	}
-	nights, err := s.ListCompletedNightSleep(ctx, date.AddDate(0, 0, -60).Format("2006-01-02"), today)
+	sleep, night, err := s.morningReportNight(ctx, date.AddDate(0, 0, -60).Format("2006-01-02"), today)
 	if err != nil {
 		return health.MorningInsightEvidence{}, err
 	}
-	sleep := health.SelectMorningReportSleep(today, nights)
-	for _, night := range nights {
-		if night.WakeDate == today && sleep.Date == today {
-			sleep.Episode, sleep.AnalysisStatus, err = s.recordedMorningSleepEpisode(ctx, night)
-			if err != nil {
-				return health.MorningInsightEvidence{}, err
+	if night != nil && night.WakeDate == today {
+		sleep.Episode, sleep.AnalysisStatus, err = s.recordedMorningSleepEpisode(ctx, *night)
+		if err != nil {
+			return health.MorningInsightEvidence{}, err
+		}
+		if sleep.Episode == nil {
+			sleep.Episode = health.RecordedSleepAggregate(briefing, today, night.Source, night.DurationHours)
+			if sleep.Episode != nil {
+				sleep.AnalysisStatus = "recorded_aggregate"
 			}
-			if sleep.Episode == nil {
-				sleep.Episode = health.RecordedSleepAggregate(briefing, today, night.Source, night.DurationHours)
-				if sleep.Episode != nil {
-					sleep.AnalysisStatus = "recorded_aggregate"
-				}
-			}
-			break
 		}
 	}
 	// Legacy ingestion may lack canonical coverage. Keep the observed date and
@@ -86,7 +82,9 @@ func (s *DB) morningInsightEvidence(ctx context.Context, briefing *health.Briefi
 	}
 	sleep.Comparison = s.GetSleepDurationComparison(ctx, today)
 	if sleep.Comparison == nil {
-		health.AttachRecentRecordedSleepComparison(&sleep, briefing)
+		if err := s.attachRecentSleepComparison(ctx, &sleep, briefing); err != nil {
+			return health.MorningInsightEvidence{}, err
+		}
 	} else {
 		sleep.BaselineHours, sleep.BaselineNights = nil, 0
 	}

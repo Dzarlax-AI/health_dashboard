@@ -7,16 +7,23 @@ import (
 	"time"
 
 	dbtmetrics "health-receiver/experiments/dbt_metrics"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // Keep explicit timestamps inclusive, and include every offset in a whole-day window.
 func compatibilityDateWindow(to string) (filter, bound string) {
+	op, bound := chartUpperBound(to)
+	return "metric_name=ANY($1::text[]) AND date >= $2 AND date " + op + " $3", bound
+}
+
+func chartUpperBound(to string) (operator, bound string) {
 	if date, wholeDay := strings.CutSuffix(to, " 23:59:59"); wholeDay {
 		if day, err := time.Parse(time.DateOnly, date); err == nil {
-			return "metric_name=ANY($1::text[]) AND date >= $2 AND date < $3", day.AddDate(0, 0, 1).Format(time.DateOnly)
+			return "<", day.AddDate(0, 0, 1).Format(time.DateOnly)
 		}
 	}
-	return "metric_name=ANY($1::text[]) AND date >= $2 AND date <= $3", to
+	return "<=", to
 }
 
 const compatibilityHourly = `, compatible_hours AS (
@@ -287,7 +294,47 @@ func (s *DB) LatestMetricsForContract(legacy bool) ([]LatestValue, error) {
 	return rows, nil
 }
 
+// chartReadPool gives existing chart queries the caller's shared deadline
+// without changing their autocommit fallback behavior.
+type chartReadPool struct {
+	storagePool
+	ctx            context.Context
+	publishedHours bool
+}
+
+func (p chartReadPool) Query(_ context.Context, sql string, args ...any) (pgx.Rows, error) {
+	return p.storagePool.Query(p.ctx, sql, args...)
+}
+
+func (p chartReadPool) QueryRow(_ context.Context, sql string, args ...any) pgx.Row {
+	return p.storagePool.QueryRow(p.ctx, sql, args...)
+}
+
+func (s *DB) chartReader(ctx context.Context) *DB {
+	return &DB{pool: chartReadPool{storagePool: s.pool, ctx: ctx}, profileGraphSchema: s.profileGraphSchema}
+}
+
 func (s *DB) MetricDataForContract(metric, from, to, bucket, agg string, legacy bool) ([]DataPoint, error) {
+	return s.MetricDataForContractContext(context.Background(), metric, from, to, bucket, agg, legacy)
+}
+
+func (s *DB) MetricDataForContractContext(ctx context.Context, metric, from, to, bucket, agg string, legacy bool) ([]DataPoint, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if metric == "step_count" && bucket == "day" && !legacy && agg == "SUM" && len(from) == len(time.DateOnly) {
+		if end, wholeDay := strings.CutSuffix(to, " 23:59:59"); wholeDay {
+			return s.stepObservationsWithDailyQuantities(ctx, from, end, to)
+		}
+	}
+	return readChartHours(ctx, s, metric, from, to, bucket, func(unit *DB) ([]DataPoint, error) {
+		return unit.metricObservations(metric, from, to, bucket, agg, legacy)
+	})
+}
+
+func (s *DB) metricObservations(metric, from, to, bucket, agg string, legacy bool) ([]DataPoint, error) {
 	if metric == "step_count" && (bucket == "hour" || bucket == "day") {
 		return s.stepChart(from, to, bucket)
 	}
@@ -308,7 +355,22 @@ func (s *DB) MetricDataForContract(metric, from, to, bucket, agg string, legacy 
 	return rows[0].Points, err
 }
 
+func (s *DB) MetricDataBySourceForContractContext(ctx context.Context, metric, from, to, bucket, agg string, legacy bool) ([]SourceDataPoints, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return readChartHours(ctx, s, metric, from, to, bucket, func(unit *DB) ([]SourceDataPoints, error) {
+		return unit.metricObservationsBySource(metric, from, to, bucket, agg, legacy)
+	})
+}
+
 func (s *DB) MetricDataBySourceForContract(metric, from, to, bucket, agg string, legacy bool) ([]SourceDataPoints, error) {
+	return s.MetricDataBySourceForContractContext(context.Background(), metric, from, to, bucket, agg, legacy)
+}
+
+func (s *DB) metricObservationsBySource(metric, from, to, bucket, agg string, legacy bool) ([]SourceDataPoints, error) {
 	if metric == "step_count" && (bucket == "day" || bucket == "hour") {
 		return s.stepChartBySource(from, to, bucket, legacy)
 	}

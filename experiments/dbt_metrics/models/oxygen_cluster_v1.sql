@@ -1,12 +1,12 @@
-{{ config(enabled=var('briefing_components_shadow', false) or var('archive_oxygen', false), materialized='view', post_hook="alter view {{ this }} set (security_invoker = true)") }}
+{{ config(enabled=var('briefing_components_shadow', false) or var('archive_oxygen', false) or var('tenant_native_catalog', false), materialized='ephemeral' if var('tenant_native_catalog', false) else 'view', post_hook="alter view {{ this }} set (security_invoker = true)") }}
 
 with
-{% if var('archive_oxygen', false) %}
+{% if var('archive_oxygen', false) or var('tenant_native_catalog', false) %}
 archive_samples as materialized (
     select left(date,10) as capture,source,qty,quality
     from {{ source('source_data','metric_points') }}
     where metric_name='blood_oxygen_saturation'
-), captures as (select distinct 'archive'::text as profile,capture from archive_samples),
+), captures as (select distinct {% if var('tenant_native_catalog', false) %}current_user::text{% else %}'archive'::text{% endif %} as profile,capture from archive_samples),
 {% else %}
 captures as (select profile,capture from {{ source('briefing_pilot','captured_inputs') }}),
 {% endif %}
@@ -20,7 +20,7 @@ select c.profile, c.capture,coalesce(max(minimum)::float8,0) as minimum_value, j
 from captures c
 left join lateral (
     with oxygen_samples as (
-        {% if var('archive_oxygen', false) %}
+        {% if var('archive_oxygen', false) or var('tenant_native_catalog', false) %}
         select source,qty,quality from archive_samples s where s.capture=c.capture
         {% else %}
         select source,qty,quality from {{ source('briefing_pilot','oxygen_samples') }} s

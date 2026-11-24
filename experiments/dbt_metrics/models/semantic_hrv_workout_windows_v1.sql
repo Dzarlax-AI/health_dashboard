@@ -1,10 +1,13 @@
-{{ config(enabled=var('semantic_shadow', false), materialized='view', post_hook="alter view {{ this }} set (security_invoker = true)") }}
+{{ config(enabled=var('semantic_shadow', false) or var('tenant_native_catalog', false), materialized='ephemeral' if var('tenant_native_catalog', false) else 'view', post_hook="alter view {{ this }} set (security_invoker = true)") }}
 
 -- Context workouts beyond the evaluation dates still participate in ambiguous
 -- assignment. Invalid episodes remain in the denominator with an explicit reason.
 with workouts as (
     select *,case when end_at>start_at then tstzrange(start_at,end_at,'[)') end as active
-    from {{ source('source_data','workout') }}
+    {% if var('tenant_native_catalog', false) %}
+    from (select id::text as id,name as kind,start_time as start_at,end_time as end_at
+          from {{ source('archive_records','workouts') }}) persisted_workouts
+    {% else %}from {{ source('source_data','workout') }}{% endif %}
 ), windows as (
     select id,kind,start_at,end_at,period,
            case when period='during' then active
@@ -42,6 +45,9 @@ select w.id,w.kind,w.start_at,w.end_at,w.period,s.source,
        case when w.bounds is null then 'invalid_workout_interval' when s.interval_points>0 then 'measured_interval'
             when s.timestamp_points>0 then 'timestamp_only' else coalesce(s.decisions,'no_observations') end as reason,
        s.decisions
-from windows w join {{ source('source_data','calendar') }} c
+from windows w
+{% if not var('tenant_native_catalog', false) %}
+join {{ source('source_data','calendar') }} c
   on c.date=(w.start_at at time zone '{{ var("semantic_timezone","Europe/Belgrade") }}')::date::text
+{% endif %}
 left join counts s on s.id=w.id and s.period=w.period

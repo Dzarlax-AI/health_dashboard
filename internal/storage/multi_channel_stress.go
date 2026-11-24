@@ -158,14 +158,16 @@ func (s *DB) applyStressSignals(ctx context.Context, date string, loc *time.Loca
 	}
 	dayHRShift, dayHROK := meanFiniteHourZ(hourZ)
 
+	inputs := &stressSignalInputs{hourZ: hourZ, threshold: threshold, temp: availableStressShift(tempZ, tempOK),
+		resp: availableStressShift(respZ, respOK), drop: availableStressShift(hrvDrop, hrvOK),
+		rhr: availableStressShift(rhrShift, rhrOK), dayHR: availableStressShift(dayHRShift, dayHROK)}
 	var signals []string
-	err = s.pool.QueryRow(ctx, dbtmetrics.BriefingStressSignalsSQL(), hourZ, threshold,
-		availableStressShift(tempZ, tempOK), availableStressShift(respZ, respOK),
-		availableStressShift(hrvDrop, hrvOK), availableStressShift(rhrShift, rhrOK),
-		availableStressShift(dayHRShift, dayHROK)).Scan(&result.SustainedHRLoadZ, &signals)
+	err = s.pool.QueryRow(ctx, dbtmetrics.BriefingStressSignalsSQL(), inputs.hourZ, inputs.threshold,
+		inputs.temp, inputs.resp, inputs.drop, inputs.rhr, inputs.dayHR).Scan(&result.SustainedHRLoadZ, &signals)
 	if err != nil {
 		return err
 	}
+	result.signalInputs = inputs
 	result.Flags = append(result.Flags, signals...)
 	return nil
 }

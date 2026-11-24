@@ -1,9 +1,7 @@
 import {
   getAIBriefing,
   getHealthBriefing,
-  getDailyStepSeries,
   getMetricData,
-  getMetricRange,
   getReadinessHistory,
   getSection,
   getSession,
@@ -39,10 +37,8 @@ export interface HealthDetailLoaders {
   ai: typeof getAIBriefing;
   todayInsights?: typeof getTodayInsights;
   session: typeof getSession;
-  range: typeof getMetricRange;
   readiness: typeof getReadinessHistory;
   metric: typeof getMetricData;
-  dailySteps: typeof getDailyStepSeries;
 }
 
 const defaultLoaders: HealthDetailLoaders = {
@@ -51,10 +47,8 @@ const defaultLoaders: HealthDetailLoaders = {
   ai: getAIBriefing,
   todayInsights: getTodayInsights,
   session: getSession,
-  range: getMetricRange,
   readiness: getReadinessHistory,
   metric: getMetricData,
-  dailySteps: getDailyStepSeries,
 };
 
 function dateOnly(value: string): string | undefined {
@@ -85,58 +79,32 @@ export async function loadHealthDetailResources(
   locale: Locale,
   signal?: AbortSignal,
   loaders: HealthDetailLoaders = defaultLoaders,
+  onCharts?: (resources: HealthDetailResources) => void,
 ): Promise<HealthDetailResources> {
-  const briefing = await loaders.briefing(locale, signal);
-  const to = dateOnly(briefing.date);
-  const [sectionResult, sessionResult, aiResult, todayInsightsResult] = await Promise.allSettled([
-    loaders.section(config.key, locale, signal),
+  const optional = Promise.allSettled([
     loaders.session(signal),
-    config.context === "recovery-ai"
-      ? loaders.ai(locale, signal)
-      : Promise.resolve(undefined),
-    config.key === "recovery"
-      ? loaders.todayInsights?.(locale, signal) ?? Promise.resolve(undefined)
-      : Promise.resolve(undefined),
+    config.context === "recovery-ai" ? loaders.ai(locale, signal) : Promise.resolve(undefined),
+    config.key === "recovery" ? loaders.todayInsights?.(locale, signal) : undefined,
+  ] as const);
+  const [briefing, [sectionResult]] = await Promise.all([
+    loaders.briefing(locale, signal),
+    Promise.allSettled([loaders.section(config.key, locale, signal)]),
   ]);
   throwIfAborted(signal);
-
+  const to = dateOnly(briefing.date);
   const section = fulfilled(sectionResult);
   const charts = section?.charts ?? [];
   const metricCharts = charts.filter(
-    (chart): chart is typeof chart & { metric: string } =>
-      Boolean(chart.metric) && !chart.virtual,
+    (chart): chart is typeof chart & { metric: string } => Boolean(chart.metric) && !chart.virtual,
   );
-  const rangeResults = await Promise.allSettled(
-    metricCharts.map((chart) => loaders.range(chart.metric, signal)),
-  );
-  throwIfAborted(signal);
-
-  const earliest = rangeResults
-    .map(fulfilled)
-    .map((range) => dateOnly(range?.min ?? ""))
-    .filter((date): date is string => Boolean(date))
-    .sort()[0];
-  const from = to ? earliest ?? dateOffset(to, -89) : undefined;
-
-  const metricResults =
-    from && to
-      ? await Promise.allSettled(
-          metricCharts.map((chart) => {
-            const options: MetricDataOptions = {
-              agg: (chart.agg || "AVG") as MetricDataOptions["agg"],
-              bucket: "day",
-            };
-            if (chart.metric === "step_count" && options.agg === "SUM") {
-              return loaders.dailySteps(from, to, signal);
-            }
-            return loaders.metric(chart.metric, from, to, signal, options);
-          }),
-        )
-      : [];
-  const readinessResult =
-    from && to && charts.some((chart) => chart.virtual)
-      ? await Promise.allSettled([loaders.readiness(365, signal)])
-      : [];
+  const readiness = to && charts.some((chart) => chart.virtual)
+    ? Promise.allSettled([loaders.readiness(365, signal)])
+    : Promise.resolve([]);
+  const metricResults = to ? await Promise.allSettled(metricCharts.map((chart) =>
+    loaders.metric(chart.metric, undefined, to, signal, {
+      agg: chart.agg as MetricDataOptions["agg"], bucket: "day",
+    }),
+  )) : [];
   throwIfAborted(signal);
 
   const metrics: Record<string, MetricPlotSeries> = {};
@@ -144,29 +112,30 @@ export async function loadHealthDetailResources(
     const response = fulfilled(metricResults[index]);
     if (response) metrics[chart.metric] = response;
   });
-
-  return {
-    briefing,
-    section,
-    ai: fulfilled(aiResult),
-    todayInsights: fulfilled(todayInsightsResult),
-    session: fulfilled(sessionResult),
-    readiness: fulfilled(readinessResult[0]),
-    metrics,
-    from,
-    to,
+  const earliest = Object.values(metrics)
+    .map((series) => dateOnly(series.points?.[0]?.date ?? ""))
+    .filter((date): date is string => Boolean(date))
+    .sort()[0];
+  const base: HealthDetailResources = {
+    briefing, section, metrics, to,
+    from: to ? earliest ?? dateOffset(to, -89) : undefined,
     missing: [
       sectionResult.status === "rejected" ? "section" : undefined,
-      sessionResult.status === "rejected" ? "session" : undefined,
-      aiResult.status === "rejected" ? "ai" : undefined,
-      todayInsightsResult.status === "rejected" ? "todayInsights" : undefined,
-      ...rangeResults.map((result, index) =>
-        result.status === "rejected" ? `${metricCharts[index].metric}:range` : undefined,
-      ),
-      ...metricResults.map((result, index) =>
-        result.status === "rejected" ? metricCharts[index].metric : undefined,
-      ),
-      readinessResult[0]?.status === "rejected" ? "readiness" : undefined,
-    ].filter((value): value is string => Boolean(value)),
+      ...metricResults.map((result, index) => result.status === "rejected" ? metricCharts[index].metric : undefined),
+    ].filter((name): name is string => Boolean(name)),
+  };
+  onCharts?.(base);
+
+  const [[session, ai, insights], [history]] = await Promise.all([optional, readiness]);
+  throwIfAborted(signal);
+  return {
+    ...base,
+    session: fulfilled(session), ai: fulfilled(ai), todayInsights: fulfilled(insights), readiness: fulfilled(history),
+    missing: [...base.missing, ...[
+      session.status === "rejected" ? "session" : undefined,
+      ai.status === "rejected" ? "ai" : undefined,
+      insights.status === "rejected" ? "todayInsights" : undefined,
+      history?.status === "rejected" ? "readiness" : undefined,
+    ].filter((name): name is string => Boolean(name))],
   };
 }

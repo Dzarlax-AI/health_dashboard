@@ -117,6 +117,11 @@ def check_build(lab, sql, graph, role):
     # This fixture supplies normalized HRV points. Its alternate source adapter
     # is built from real HTTP and XML receipts in TestTypedHRVReceiptIngest.
     expected.remove("hrv_receipt_points_v1")
+    # The worker smoke suite builds the tenant-specific journal adapters.
+    expected -= {"worker_energy_decisions", "hdbt_readiness_decisions", "worker_today_decisions"}
+    # Native source adapters are compiled by the tenant installation smoke test.
+    expected -= {"recorded_feature_decision_v1", "native_feature_replay_v1", "native_night_calendar_v1", "native_sleep_interval_v1",
+                 "native_sleep_stage_day_v1", "native_sleep_stage_points_v1"}
     if models.keys() != expected:
         raise ValueError(f"manifest differs from model sources: {sorted(expected ^ models.keys())}")
     physical = {n["alias"] for n in models.values() if n["config"]["materialized"] != "ephemeral"}

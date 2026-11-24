@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"math"
@@ -144,6 +145,18 @@ func (s *DB) PersonalBaselineContext(
 	windowDays int,
 	loc *time.Location,
 ) (PersonalBaselineResult, bool, error) {
+	type baselineOutcome struct {
+		value    PersonalBaselineResult
+		eligible bool
+	}
+	out, err := withDecisionJournal(ctx, s, func(db *DB, journal bool) (baselineOutcome, error) {
+		result, ok, err := db.evaluatePersonalBaseline(ctx, date, channel, windowDays, loc, journal)
+		return baselineOutcome{result, ok}, err
+	})
+	return out.value, out.eligible, err
+}
+
+func (s *DB) evaluatePersonalBaseline(ctx context.Context, date string, channel BaselineChannel, windowDays int, loc *time.Location, journal bool) (PersonalBaselineResult, bool, error) {
 	if loc == nil {
 		loc = time.UTC
 	}
@@ -183,12 +196,19 @@ func (s *DB) PersonalBaselineContext(
 				else clock end
 		)
 		select sample_count, median, sd, array(select clock from clock_candidates),
-		       exists(select from source_samples where value is null) from stats`
+		       exists(select from source_samples where value is null)`
 	var n int
 	var median, sd *float64
 	var clocks []string
 	var nullValue bool
-	err = s.pool.QueryRow(ctx, query, fromKey, untilKey).Scan(&n, &median, &sd, &clocks, &nullValue)
+	var values json.RawMessage
+	scan := []any{&n, &median, &sd, &clocks, &nullValue}
+	if journal {
+		query += `,
+            (select coalesce(jsonb_agg(value order by value),'[]') from samples)`
+		scan = append(scan, &values)
+	}
+	err = s.pool.QueryRow(ctx, query+" from stats", fromKey, untilKey).Scan(scan...)
 	if err != nil {
 		log.Printf("PersonalBaseline %s/%s: %v", date, channel, err)
 		return PersonalBaselineResult{}, false, err
@@ -215,8 +235,17 @@ func (s *DB) PersonalBaselineContext(
 	const inputs = `with summary(channel,sample_count,median,sd,age_ns) as (
 		values ($1::text,$2::bigint,$3::float8,$4::float8,$5::bigint))`
 	var retainedAge *int64
-	err = s.pool.QueryRow(ctx, inputs+dbtmetrics.PersonalBaselineResultSQL,
-		string(channel), n, median, sd, ageNS).Scan(&result.SampleCount, &retainedAge,
+	sql := inputs + ", solved as (" + dbtmetrics.PersonalBaselineResultSQL + ")"
+	args := []any{string(channel), n, median, sd, ageNS}
+	if journal {
+		args = append(args, date, loc.String(), windowDays, values)
+		sql += `, decision_packets as (
+          select 'personal_baseline'::text as metric,concat_ws('/',$6::text,$1::text,$8::int) as decision_key,
+            1 as formula_version,jsonb_build_object('channel',$1::text,'anchor',$6::text,'zone',$7::text,
+              'window_days',$8::int,'values',$9::jsonb,'age_ns',$5::bigint) as inputs,to_jsonb(b) as result from solved b
+        )` + decisionJournalInsertSQL
+	}
+	err = s.pool.QueryRow(ctx, sql+" select * from solved", args...).Scan(&result.SampleCount, &retainedAge,
 		&result.State, &eligible, &median, &sd)
 	if err != nil {
 		return PersonalBaselineResult{}, false, err

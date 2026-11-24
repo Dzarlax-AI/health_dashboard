@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,24 +13,25 @@ import (
 	"health-receiver/internal/testdb"
 )
 
-func TestMetricCatalogHTTPStatuses(t *testing.T) {
+func metricHTTPFixture(t *testing.T) (*storage.DB, *http.ServeMux, string) {
+	t.Helper()
 	dsn := testdb.DSN(t)
 	ctx := t.Context()
 	admin, err := testdb.NewPool(ctx, dsn, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer admin.Close()
+	t.Cleanup(admin.Close)
 	schema := testdb.SchemaName("metric_catalog_http")
 	if err := testdb.CreateSchema(ctx, admin, schema); err != nil {
 		t.Fatal(err)
 	}
-	defer testdb.DropSchema(ctx, admin, schema)
+	t.Cleanup(func() { testdb.DropSchema(context.Background(), admin, schema) })
 	db, err := storage.NewWithSchema(ctx, dsn, schema)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	t.Cleanup(db.Close)
 	if err := db.MigrateSchemaContractContext(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -39,6 +41,12 @@ func TestMetricCatalogHTTPStatuses(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	New(mgr, nil, false).Register(mux)
+	return db, mux, schema
+}
+
+func TestMetricCatalogHTTPStatuses(t *testing.T) {
+	db, mux, _ := metricHTTPFixture(t)
+	ctx := t.Context()
 	t.Setenv("HEALTH_METRICS_V1_ENABLED", "1")
 
 	request := func(path, version string) *httptest.ResponseRecorder {
@@ -67,6 +75,12 @@ func TestMetricCatalogHTTPStatuses(t *testing.T) {
 		}
 	}
 
+	for _, version := range []string{"1", "2"} {
+		emptyLatest := request("/api/metrics/latest", version)
+		if emptyLatest.Code != http.StatusOK || strings.TrimSpace(emptyLatest.Body.String()) != "[]" {
+			t.Fatalf("empty latest, contract %s: status %d, want an empty array", version, emptyLatest.Code)
+		}
+	}
 	pending := request("/api/metrics?lang=ru", "")
 	if pending.Code != http.StatusServiceUnavailable || pending.Header().Get("Retry-After") == "" ||
 		pending.Header().Get(metriccontract.Header) != "1" {

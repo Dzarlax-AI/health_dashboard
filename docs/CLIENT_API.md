@@ -36,10 +36,7 @@ The same endpoints support two client authentication modes:
 | Browser | Opaque `auth` cookie | Backend resolves the session user and tenant from the registry. |
 | Browser behind Authentik | Trusted ForwardAuth headers establish a local session | Headers are accepted only from configured trusted proxy networks. |
 
-Public client endpoints do not accept `tenant`, `tenant_id`, `schema`, or
-`schema_name` selectors. Query parameters and arbitrary headers cannot replace
-the authenticated tenant context. Admin-only cross-tenant operations are a
-separate explicit surface and are not part of this client contract.
+Ordinary requests use the authenticated profile. On operations supporting an administrative target, an administrator may select a different schema from the tenant registry. The backend validates this choice before opening its tenant connection. Settings, import and webhook operations that also serve ordinary profiles apply the override only after checking administrator privileges. The operation metadata records admin-only routes with `x-required-role: admin`.
 
 Clients must not send `X-authentik-*` headers themselves.
 
@@ -52,7 +49,7 @@ to English. The iOS app intentionally has two localization layers:
 - health content follows the server `report_lang` returned by `/api/settings`
   and is forwarded as the `lang` query parameter.
 
-## Phase-one contract coverage
+## Common reads
 
 The first TypeScript dashboard depends on these machine-described operations:
 
@@ -69,27 +66,13 @@ The OpenAPI response schemas are generated from the Go values encoded by the
 handlers. Named transport envelopes live in `internal/api`; health calculation
 and persistence types remain in `internal/health` and `internal/storage`.
 
-## Existing iOS call inventory
+## Registered operations and clients
 
-The companion application is currently located at:
+The [route inventory](../contracts/route-inventory.tsv) records the supported methods, access boundary, OpenAPI coverage and consumers observed at each path. It includes compatibility fragments, inbound sync, probes, the Telegram webhook and MCP operations. The client column reports static references at the path level. An empty column means the scan found no literal call in those clients. Background processing runs inside the server and uses the storage operations directly.
 
-`../health-sync/health-sync/ServerClient.swift`
+Run `make contract-check IOS_CHECKOUT=../health-sync` to compare both live client trees with the registered backend routes and the generated contract. Backend-only CI reads the reviewed iOS inventory and rescans React and Go templates. After an intentional change, run `python3 scripts/check-client-routes.py --ios ../health-sync --write` and review the diff. Client JSON belongs under `/api/`. Native ingestion uses its own delivery protocol. HTML fragments exist for the remaining Go pages.
 
-Its read-only dashboard calls are:
-
-| Endpoint | iOS model / use | Contract status |
-|---|---|---|
-| `/api/health-briefing` | `BriefingResponse`, Today | Phase-one OpenAPI |
-| `/api/ai-briefing` | `AIBriefingResponse`, Today polling | Phase-one OpenAPI |
-| `/api/dashboard` | `DashboardResponse`, lean cards | Phase-one OpenAPI |
-| `/api/readiness-history` | `[ReadinessPoint]`, Today/Trends | Phase-one OpenAPI |
-| `/api/settings` | `UserSettings`, server content locale and account display | Existing endpoint; full settings contract belongs to #219 |
-| `/api/metrics` | `[MetricSummary]`, localized metric catalogue | Existing endpoint; read-only expansion belongs to #218 |
-| `/api/metrics/latest` | `[LatestValue]` | Existing endpoint; read-only expansion belongs to #218 |
-| `/api/metrics/data` | `MetricDataResponse` | Existing endpoint; read-only expansion belongs to #218 |
-| `/api/metrics/range` | `MetricDateRange` | Existing endpoint; read-only expansion belongs to #218 |
-| `/api/section/{key}` | `SectionResponse` | Existing endpoint; read-only expansion belongs to #218 |
-| `/api/sections` | `SectionsCatalogueResponse` | Existing endpoint; read-only expansion belongs to #218 |
+For a chart that only displays quantities, request `GET /api/metrics/data?metric=step_count&bucket=day&view=quantity&from=2026-01-01&to=2026-01-31`. Use `range=all` in place of `from` for the entire history. The server resolves the effective aggregation and chooses the published or fallback series. Clients needing observed extrema or per-source values request the full projection. Existing URLs continue to support released clients.
 
 The iOS request client sends `Accept: application/json`, refuses to follow an
 authentication redirect silently, and decodes server errors separately from

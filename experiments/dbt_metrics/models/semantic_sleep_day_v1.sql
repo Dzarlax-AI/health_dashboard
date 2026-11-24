@@ -1,4 +1,4 @@
-{{ config(enabled=var('semantic_shadow', false), materialized='view',
+{{ config(enabled=var('semantic_shadow', false) or var('tenant_native_catalog', false), materialized='ephemeral' if var('tenant_native_catalog', false) else 'view',
     post_hook='alter view {{ this }} set (security_invoker=true)') }}
 
 with interval_summary as (
@@ -17,7 +17,7 @@ with interval_summary as (
     select s.date, s.source,
            array_agg(s.metric_name order by s.metric_name) as stage_keys,
            count(*) filter (where s.metric_name in ('sleep_deep','sleep_rem','sleep_core')) as detailed_keys
-    from {{ source('source_data', 'sleep_stage_day') }} s
+    from {{ ref('native_sleep_stage_day_v1') if var('tenant_native_catalog',false) else source('source_data', 'sleep_stage_day') }} s
     group by s.date, s.source
 ), inputs as (
     select c.date as wake_date, n.source, n.source_epoch, n.algorithm_version, n.input_hash,
@@ -35,9 +35,9 @@ with interval_summary as (
            encode(sha256(convert_to(jsonb_build_array(c.date, n.input_hash, n.source, n.source_epoch, n.algorithm_version,
                n.duration_hours, n.capture_completeness, n.duration_assessment, n.finalization_state,
                n.claim_eligibility, r.history_version, i.interval_version, s.stage_keys)::text,'UTF8')),'hex') as input_version
-    from {{ source('source_data','calendar') }} c
+    from {{ ref('native_night_calendar_v1') if var('tenant_native_catalog',false) else source('source_data','calendar') }} c
     left join {{ source('source_data','completed_night_sleep') }} n on n.wake_date = c.date
-    left join {{ ref('sleep_duration_reference_v1') }} r on r.wake_date = c.date
+    left join {{ adapter.quote(target.schema) ~ '.sleep_duration_reference_v1' if var('tenant_native_catalog',false) else ref('sleep_duration_reference_v1') }} r on r.wake_date = c.date
     left join interval_summary i on i.wake_date = c.date
     left join stage_day s on s.date = c.date and s.source = n.source
 )

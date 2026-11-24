@@ -1,40 +1,27 @@
-{{ config(enabled=var('complex_sleep_parity',false),materialized='view',post_hook="alter view {{ this }} set (security_invoker = true)") }}
+{{ config(enabled=var('complex_sleep_parity',false) or var('tenant_native_catalog',false),materialized='ephemeral' if var('tenant_native_catalog',false) else 'view',post_hook="alter view {{ this }} set (security_invoker = true)") }}
 
-with periods as (
-    select c.profile, c.capture, c.wake_date, c.zone, c.wake_date - n as period_day
-    from {{ source('complex_sleep','balance_capture') }} c cross join generate_series(0,13) n
-), bounds as (
-    select p.*, ((period_day - 1) + time '12:00') at time zone zone as starts_at,
-           (period_day + time '12:00') at time zone zone as ends_at
-    from periods p
-), inputs as (
-    select b.*, goal.hours as goal_hours, k.state as coverage,
-           coalesce(e.total_hours,0)::double precision as total_hours, e.flagged
-    from bounds b
-    left join {{ source('complex_sleep','balance_coverage') }} k using(profile,capture,period_day)
-    left join lateral (
-        select g.hours from {{ source('complex_sleep','balance_goal') }} g
-        where g.profile=b.profile and g.capture=b.capture and g.effective_date<=b.period_day
-        order by g.effective_date desc limit 1
-    ) goal on true
-    left join lateral (
-        -- Match time.Duration.Hours() for each clipped episode before adding it.
-        select sum((duration.micros / 3600000000)::float8 +
-                   (duration.micros % 3600000000)::float8 / 3600000000::float8
-                   order by ep.start_at,ep.id) as total_hours,
-               bool_or(ep.assessment='outlier') as flagged
-        from {{ source('complex_sleep','balance_episode') }} ep
-        cross join lateral (select (extract(epoch from
-            least(ep.end_at,b.ends_at)-greatest(ep.start_at,b.starts_at))*1000000)::bigint as micros) duration
-        where ep.profile=b.profile and ep.capture=b.capture
-          and ep.end_at>b.starts_at and ep.start_at<b.ends_at
-    ) e on true
+with {% if var('tenant_native_catalog',false) %}
+    balance_capture as (
+      select current_user::text as profile,j.decision_key||':'||j.input_hash as capture,
+             (inputs->>'wake_date')::date as wake_date,inputs->>'zone' as zone,inputs
+      from {{ source('source_data','hdbt_decision_inputs') }} j where metric='sleep_balance' and formula_version=1
+        and inputs ?& array['wake_date','zone','goals','coverage','episodes']
+    ), balance_goal as (
+      select profile,capture,g."EffectiveDate" as effective_date,g."Hours" as hours from balance_capture c
+      cross join lateral jsonb_to_recordset(nullif(inputs->'goals','null')) g("EffectiveDate" date,"Hours" float8)
+    ), balance_coverage as (
+      select profile,capture,k."WakeDate" as period_day,k."CaptureState" as state from balance_capture c
+      cross join lateral jsonb_to_recordset(nullif(inputs->'coverage','null')) k("WakeDate" date,"CaptureState" text)
+    ), balance_episode as (
+      select profile,capture,e."ID" as id,e."Start" as start_at,e."End" as end_at,e."DurationAssessment" as assessment
+      from balance_capture c cross join lateral jsonb_to_recordset(nullif(inputs->'episodes','null'))
+      e("ID" text,"Start" timestamptz,"End" timestamptz,"DurationAssessment" text)
+    ), {% endif %}period_rows as (
+    {{ sleep_balance_period_v1(
+        'balance_capture' if var('tenant_native_catalog',false) else source('complex_sleep','balance_capture'),
+        'balance_goal' if var('tenant_native_catalog',false) else source('complex_sleep','balance_goal'),
+        'balance_coverage' if var('tenant_native_catalog',false) else source('complex_sleep','balance_coverage'),
+        'balance_episode' if var('tenant_native_catalog',false) else source('complex_sleep','balance_episode')
+    ) }}
 )
-select *, case when coverage is null then 'coverage_missing'
-               when coverage='partial' then 'coverage_partial'
-               when coverage='unknown' then 'coverage_unknown'
-               when coverage<>'complete' then 'coverage_invalid'
-               when goal_hours is null then 'goal_missing' end as reason,
-       case when flagged or total_hours>0 and (total_hours<3 or total_hours>14)
-            then 'outlier' else 'plausible' end as assessment
-from inputs
+select * from period_rows

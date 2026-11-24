@@ -69,8 +69,11 @@ func UsesCurrentMetricSum(metric string) bool {
 
 // CurrentMetricAggregation exposes the effective aggregation for v2 totals.
 func CurrentMetricAggregation(metric, requested string) string {
-	if usesCurrentHourlyMetric(metric) {
+	if usesCurrentHourlyMetric(metric) || (requested == "" && UsesCurrentMetricSum(metric)) {
 		return "SUM"
+	}
+	if requested == "" {
+		return "AVG"
 	}
 	return requested
 }

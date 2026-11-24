@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"health-receiver/experiments/dbt_metrics"
 	"health-receiver/internal/health"
 
 	"github.com/jackc/pgx/v5"
@@ -165,8 +166,9 @@ func (s *DB) ReconcileCompletedNightSleep(ctx context.Context, wakeDate string, 
 
 type nightCandidate struct {
 	NightSleepCoverageCommitment
-	hours   float64
-	quality string
+	hours             float64
+	quality           string
+	durationPlausible bool
 }
 
 func (n nightCandidate) full() bool {
@@ -174,10 +176,11 @@ func (n nightCandidate) full() bool {
 }
 
 func reconcileCompletedNightSleep(ctx context.Context, catalog sleepNightCatalog, wakeDate string, now time.Time, loc *time.Location) error {
+	assessment := dbtmetrics.CompletedNightDurationAssessmentSQL("COALESCE(m.qty,0)")
 	rows, err := catalog.Query(ctx, `
 		SELECT c.wake_date,c.source,c.metric_date,c.source_epoch,c.capture_completeness,
 		       c.coverage_generation,c.covered_interval_start,c.covered_interval_end,c.observed_at,c.input_hash,
-		       COALESCE(m.qty,0), COALESCE(m.quality,'unknown')
+		       COALESCE(m.qty,0), COALESCE(m.quality,'unknown'), (`+assessment+`='plausible')
 		  FROM night_sleep_coverage_commitments c
 		  LEFT JOIN metric_points m ON m.metric_name='night_sleep_total' AND m.date=c.metric_date AND m.source=c.source
 		 WHERE c.wake_date=$1`, wakeDate)
@@ -187,7 +190,7 @@ func reconcileCompletedNightSleep(ctx context.Context, catalog sleepNightCatalog
 	candidates, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (nightCandidate, error) {
 		var n nightCandidate
 		err := row.Scan(&n.WakeDate, &n.Source, &n.MetricDate, &n.SourceEpoch, &n.CaptureCompleteness,
-			&n.CoverageGeneration, &n.CoveredIntervalStart, &n.CoveredIntervalEnd, &n.ObservedAt, &n.InputHash, &n.hours, &n.quality)
+			&n.CoverageGeneration, &n.CoveredIntervalStart, &n.CoveredIntervalEnd, &n.ObservedAt, &n.InputHash, &n.hours, &n.quality, &n.durationPlausible)
 		return n, err
 	})
 	if err != nil || len(candidates) == 0 {
@@ -198,7 +201,7 @@ func reconcileCompletedNightSleep(ctx context.Context, catalog sleepNightCatalog
 		return err
 	}
 	qualifies := func(n nightCandidate) bool {
-		return n.full() && health.PlausibleNightDuration(n.hours)
+		return n.full() && n.durationPlausible
 	}
 	sort.Slice(candidates, func(i, j int) bool {
 		left, right := candidates[i], candidates[j]
@@ -255,16 +258,60 @@ func reconcileCompletedNightSleep(ctx context.Context, catalog sleepNightCatalog
 		hashMaterial += "\x1f" + preferred + "\x1f" + reason
 	}
 	inputHash := fmt.Sprintf("%x", sha256.Sum256([]byte(hashMaterial)))
-	canonical, err := health.CanonicalizeCompletedNight(health.CanonicalNightInput{
+	input := health.CanonicalNightInput{
 		WakeDate: wakeDate, DurationHours: selected.hours, Source: selected.Source, SourceEpoch: selected.SourceEpoch,
 		InputHash: inputHash, CaptureCompleteness: capture, CoverageGeneration: selected.CoverageGeneration,
 		CoveredIntervalStart: &selected.CoveredIntervalStart, CoveredIntervalEnd: &selected.CoveredIntervalEnd,
 		ObservedAt: selected.ObservedAt, AlgorithmVersion: CompletedNightSleepAlgorithmVersion,
-	}, now, loc)
+	}
+	canonical, err := canonicalizeCompletedNight(ctx, catalog, input, now, loc, nil, nil)
 	if err != nil {
 		return err
 	}
 	return saveCompletedNightSleep(ctx, catalog, canonical, map[string]string{"preferred_sleep_source": preferred, "source_selection_reason": reason, "candidate_state": state, "coverage_generation": selected.CoverageGeneration})
+}
+
+type completedNightQueryer interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+// canonicalizeCompletedNight executes the same dbt macro used by the native
+// model. Validation remains at the adapter boundary; state and assessments
+// come from SQL inside the caller's transaction.
+func canonicalizeCompletedNight(ctx context.Context, queryer completedNightQueryer, in health.CanonicalNightInput, now time.Time, loc *time.Location, existingFinalizedAt, finalizedAtFallback *time.Time) (health.CompletedNightSleep, error) {
+	if loc == nil {
+		return health.CompletedNightSleep{}, fmt.Errorf("night canonicalization requires a tenant timezone")
+	}
+	if _, err := time.ParseInLocation("2006-01-02", in.WakeDate, loc); err != nil {
+		return health.CompletedNightSleep{}, fmt.Errorf("invalid wake date: %w", err)
+	}
+	if in.Source == "" || in.SourceEpoch == "" || in.InputHash == "" || in.AlgorithmVersion == "" {
+		return health.CompletedNightSleep{}, fmt.Errorf("night canonicalization requires source, epoch, input hash, and algorithm version")
+	}
+	if in.ObservedAt.IsZero() {
+		return health.CompletedNightSleep{}, fmt.Errorf("night canonicalization requires observed time")
+	}
+	if in.CaptureCompleteness == health.NightCaptureComplete && (in.CoverageGeneration == "" || in.CoveredIntervalStart == nil || in.CoveredIntervalEnd == nil || !in.CoveredIntervalEnd.After(*in.CoveredIntervalStart)) {
+		return health.CompletedNightSleep{}, fmt.Errorf("complete night requires a valid coverage commitment")
+	}
+	if in.CaptureCompleteness != "" && in.CaptureCompleteness != health.NightCaptureComplete && in.CaptureCompleteness != health.NightCapturePartial && in.CaptureCompleteness != health.NightCaptureUnknown {
+		return health.CompletedNightSleep{}, fmt.Errorf("invalid capture completeness %q", in.CaptureCompleteness)
+	}
+	start, end := any(nil), any(nil)
+	if in.CoveredIntervalStart != nil {
+		start = *in.CoveredIntervalStart
+	}
+	if in.CoveredIntervalEnd != nil {
+		end = *in.CoveredIntervalEnd
+	}
+	sql := dbtmetrics.CompletedNightSleepSQL(`(select $1::text as wake_date,$2::float8 as duration_hours,$3::text as capture_completeness,$4::text as coverage_generation,$5::timestamptz as covered_interval_start,$6::timestamptz as covered_interval_end,$7::timestamptz as decision_at,$8::text as zone,$9::timestamptz as existing_finalized_at,$10::timestamptz as finalized_at_fallback,false as persisted_state,null::text as persisted_capture_completeness,null::text as persisted_duration_assessment)`)
+	var capture, assessment, finality, eligibility string
+	var finalizedAt *time.Time
+	err := queryer.QueryRow(ctx, `select capture_state,duration_assessment,finalization_state,claim_eligibility,finalized_at from (`+sql+`) canonical`, in.WakeDate, in.DurationHours, in.CaptureCompleteness, in.CoverageGeneration, start, end, now, loc.String(), existingFinalizedAt, finalizedAtFallback).Scan(&capture, &assessment, &finality, &eligibility, &finalizedAt)
+	if err != nil {
+		return health.CompletedNightSleep{}, err
+	}
+	return health.CompletedNightSleep{WakeDate: in.WakeDate, DurationHours: in.DurationHours, Source: in.Source, SourceEpoch: in.SourceEpoch, InputHash: in.InputHash, CaptureCompleteness: capture, DurationAssessment: assessment, FinalizationState: finality, ClaimEligibility: eligibility, ObservedAt: in.ObservedAt, FinalizedAt: finalizedAt, AlgorithmVersion: in.AlgorithmVersion, CoverageGeneration: in.CoverageGeneration, CoveredIntervalStart: in.CoveredIntervalStart, CoveredIntervalEnd: in.CoveredIntervalEnd}, nil
 }
 
 func nightSleepSourceRank(source string) int {
@@ -379,14 +426,23 @@ func (s *DB) FinalizeCompletedNightSleep(ctx context.Context, now time.Time) err
 	if err = lockNightSleepIngest(ctx, tx); err != nil {
 		return err
 	}
+	input := `(select wake_date,duration_hours,capture_completeness,coverage_generation,covered_interval_start,covered_interval_end,$2::timestamptz as decision_at,$3::text as zone,finalized_at as existing_finalized_at,$2::timestamptz as finalized_at_fallback,true as persisted_state,capture_completeness as persisted_capture_completeness,duration_assessment as persisted_duration_assessment from locked)`
+	canonical := dbtmetrics.CompletedNightSleepSQL(input)
 	if _, err = tx.Exec(ctx, `
-		UPDATE completed_night_sleep
-		   SET finalization_state=$1,
-		       claim_eligibility=CASE WHEN capture_completeness=$2 AND duration_assessment=$3 THEN $4 ELSE $5 END,
-		       finalized_at=COALESCE(finalized_at,$6)
-		 WHERE wake_date <= $7 AND finalization_state=$8`,
-		health.NightFinalFinal, health.NightCaptureComplete, health.NightDurationPlausible,
-		health.NightClaimEligible, health.NightClaimIneligible, now, today, health.NightFinalProvisional); err != nil {
+		WITH locked AS MATERIALIZED (
+			SELECT wake_date,duration_hours,capture_completeness,duration_assessment,COALESCE(coverage_generation,'') AS coverage_generation,
+			       covered_interval_start,covered_interval_end,finalized_at,input_hash,algorithm_version
+			  FROM completed_night_sleep
+			 WHERE wake_date <= $1 AND finalization_state=$4
+			 ORDER BY wake_date FOR UPDATE
+		), canonical AS MATERIALIZED (`+canonical+`)
+		UPDATE completed_night_sleep target
+		   SET finalization_state=canonical.finalization_state,
+		       claim_eligibility=canonical.claim_eligibility,
+		       finalized_at=canonical.finalized_at
+		  FROM canonical
+		 WHERE target.wake_date=canonical.wake_date
+		   AND target.finalization_state=$4`, today, now, loc.String(), health.NightFinalProvisional); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"encoding/json"
+	clientapi "health-receiver/internal/api"
 	"log"
 	"net/http"
 	"os"
@@ -73,25 +74,12 @@ func (j *energyBackfillJob) status() energyBackfillStatus {
 	return s
 }
 
-type energyBackfillStatus struct {
-	Running    bool                           `json:"running"`
-	Done       bool                           `json:"done"`
-	Progress   storage.EnergyBackfillProgress `json:"progress"`
-	ElapsedSec int                            `json:"elapsed_sec"`
-	StartedAt  string                         `json:"started_at,omitempty"`
-	Err        string                         `json:"error,omitempty"`
-}
+type energyBackfillStatus = clientapi.EnergyBackfillStatus
 
 // energyBackfillSummary is the GET response shape — counts the UI
 // needs to render the "you have N days of history, M backfilled,
 // K computable" status line before the user clicks the button.
-type energyBackfillSummary struct {
-	CompleteDailyScores int    `json:"complete_daily_scores"`
-	BackfilledSnapshots int    `json:"backfilled_snapshots"`
-	EarliestComplete    string `json:"earliest_complete,omitempty"`
-	YesterdayInTZ       string `json:"yesterday_in_tz,omitempty"`
-	TZ                  string `json:"tz,omitempty"`
-}
+type energyBackfillSummary = clientapi.EnergyBackfillSummary
 
 var (
 	currentBackfillJobs   = map[string]*energyBackfillJob{}
@@ -216,10 +204,7 @@ func (h *Handler) energyBackfillRun(w http.ResponseWriter, r *http.Request) {
 	// Decode optional body — front-end may pass explicit from/to
 	// to backfill a specific window; empty body means "auto-resolve
 	// from earliest complete to yesterday".
-	var body struct {
-		From string `json:"from"`
-		To   string `json:"to"`
-	}
+	var body clientapi.DateBoundsRequest
 	if r.ContentLength > 0 {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)

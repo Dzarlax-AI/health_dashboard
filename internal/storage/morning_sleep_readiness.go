@@ -46,7 +46,7 @@ func (s *DB) MorningSleepReadiness(ctx context.Context, date string, now time.Ti
 	if err != nil {
 		return none, err
 	}
-	candidate, ok, err := selectWakeCandidateWithPreference(segments, date, loc, preferred)
+	candidate, ok, err := queryWakeCandidateSQL(ctx, s.pool, date, loc, preferred, segments)
 	if err != nil || !ok {
 		none.Reason = "wake_unavailable"
 		if len(segments) > 0 {
@@ -54,6 +54,7 @@ func (s *DB) MorningSleepReadiness(ctx context.Context, date string, now time.Ti
 		}
 		return none, err
 	}
+	candidate.InputsHash = wakeCandidateInputHash(segments, date, loc, candidate)
 	none.State = health.MorningSleepCollecting
 	saved, err := s.GetDerivedMetric(DerivedMetricWakeTime, date)
 	if errors.Is(err, pgx.ErrNoRows) {

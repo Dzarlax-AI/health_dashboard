@@ -30,8 +30,9 @@ var chipTargetsSQL = `with selected as (
 		         d->>'hrv' is not null or d->>'rhr' is not null)))
 		from jsonb_array_elements($7::jsonb) d),'[]'::jsonb) as days,
 	kind as target_kind from unnest($8::text[]) kind
-), outcomes as (` + dbtmetrics.ChipTargetsSQL("selected") + `)
-select target_kind,target_value,eligible,reason from outcomes`
+), outcomes as (` + dbtmetrics.ChipTargetsSQL("selected") + `)`
+
+const chipTargetsResultSQL = ` select target_kind,target_value,eligible,reason from outcomes`
 
 func (s *DB) chipTargets(ctx context.Context, w chipTargetWindow, kinds ...string) (map[string]targetWriteSpec, error) {
 	payload, err := json.Marshal(w.days)
@@ -41,27 +42,37 @@ func (s *DB) chipTargets(ctx context.Context, w chipTargetWindow, kinds ...strin
 	if string(payload) == "null" {
 		payload = []byte("[]")
 	}
-	rows, err := s.pool.Query(ctx, chipTargetsSQL, w.subScore, w.date, w.latestSleep, w.paired, w.breach, w.density, json.RawMessage(payload), kinds)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make(map[string]targetWriteSpec, len(kinds))
-	for rows.Next() {
-		var kind string
-		var r targetWriteSpec
-		if err := rows.Scan(&kind, &r.Value, &r.Eligible, &r.Reason); err != nil {
+	return withDecisionJournal(ctx, s, func(db *DB, journal bool) (map[string]targetWriteSpec, error) {
+		query := chipTargetsSQL
+		if journal {
+			query += `, decision_packets as (
+          select 'chip_targets'::text as metric,concat_ws('/',i.target_date,i.sub_score,i.target_kind) as decision_key,
+                 1 as formula_version,to_jsonb(i)-'case_id' as inputs,to_jsonb(o)-'case_id' as result
+          from selected i join outcomes o using(case_id,sub_score,target_kind)
+        )` + decisionJournalInsertSQL
+		}
+		rows, err := db.pool.Query(ctx, query+chipTargetsResultSQL, w.subScore, w.date, w.latestSleep, w.paired, w.breach, w.density, json.RawMessage(payload), kinds)
+		if err != nil {
 			return nil, err
 		}
-		out[kind] = r
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if len(out) != len(kinds) {
-		return nil, fmt.Errorf("returned %d of %d targets for %s", len(out), len(kinds), w.subScore)
-	}
-	return out, nil
+		defer rows.Close()
+		out := make(map[string]targetWriteSpec, len(kinds))
+		for rows.Next() {
+			var kind string
+			var r targetWriteSpec
+			if err := rows.Scan(&kind, &r.Value, &r.Eligible, &r.Reason); err != nil {
+				return nil, err
+			}
+			out[kind] = r
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		if len(out) != len(kinds) {
+			return nil, fmt.Errorf("returned %d of %d targets for %s", len(out), len(kinds), w.subScore)
+		}
+		return out, nil
+	})
 }
 
 func (s *DB) saveChipTarget(date, subScore, kind, epoch string, version int, result targetWriteSpec, coverage json.RawMessage) error {

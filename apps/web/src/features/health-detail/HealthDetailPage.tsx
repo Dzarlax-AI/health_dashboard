@@ -291,8 +291,11 @@ export function HealthDetailPage({ config }: { config: HealthSectionConfig }) {
   useEffect(() => {
     if (fixture) return;
     const controller = new AbortController();
-    loadHealthDetailResources(config, locale, controller.signal)
+    loadHealthDetailResources(config, locale, controller.signal, undefined, (resources) => {
+      if (!controller.signal.aborted) setLiveState({ status: "ready", resources });
+    })
       .then((resources) => {
+        if (controller.signal.aborted) return;
         clearSessionRecoveryAttempt(window.sessionStorage);
         setLiveState({ status: "ready", resources });
       })
@@ -336,11 +339,12 @@ export function HealthDetailPage({ config }: { config: HealthSectionConfig }) {
         ? window.setTimeout(() => {
             if (state.resources.todayInsights?.generation.state !== "disabled") aiPollAttempts.current += 1;
             getTodayInsights(locale, controller.signal)
-              .then((todayInsights) => setLiveState((current) =>
-                current.status === "ready"
+              .then((todayInsights) => {
+                if (controller.signal.aborted) return;
+                setLiveState((current) => current.status === "ready"
                   ? { ...current, resources: { ...current.resources, todayInsights } }
-                  : current,
-              ))
+                  : current);
+              })
               .catch(() => {
                 if (!controller.signal.aborted) schedule();
               });

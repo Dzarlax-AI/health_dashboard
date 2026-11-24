@@ -9,10 +9,13 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// readHDBTSteps is used only by Steps All. A disabled enrollment or read flag
+// readHDBTSteps serves the daily chart for both bounded and all-time reads. A disabled enrollment or read flag
 // returns control to the ordinary v6 reader. An enrolled stale publication
 // uses chronological minute sums, including when the Go dirty queue was ACKed.
-func readHDBTSteps(ctx context.Context, tx pgx.Tx, to string, generation *uint64) ([]DailyStepPoint, bool, error) {
+func readHDBTSteps(ctx context.Context, tx pgx.Tx, from, to string, generation *uint64) ([]DailyStepPoint, bool, error) {
+	if from == "" {
+		from = "0001-01-01"
+	}
 	var enabled, compatible, ready bool
 	var watermark *string
 	var points []DailyStepPoint
@@ -44,16 +47,16 @@ func readHDBTSteps(ctx context.Context, tx pgx.Tx, to string, generation *uint64
 		if bootstrapping || (!hasDirty && (!ready || published != *generation)) {
 			return nil
 		}
-		query := "select date,steps::float8 as qty from hdbt_daily_metrics where date <= $1 and steps is not null"
-		args := []any{to}
+		query := "select date,steps::float8 as qty from hdbt_daily_metrics where date between $1 and $2 and steps is not null"
+		args := []any{from, to}
 		if hasDirty {
 			var dirty []string
 			if err := unit.QueryRow(ctx, `select array(select distinct to_char(d.date::date+n,'YYYY-MM-DD') from hdbt_dirty d
-                cross join generate_series(-2,2) n where (d.date::date+n) between date '0001-01-01' and $1::date)`, to).Scan(&dirty); err != nil {
+                cross join generate_series(-2,2) n where (d.date::date+n) between $1::date and $2::date)`, from, to).Scan(&dirty); err != nil {
 				return err
 			}
 			if len(dirty) > 0 {
-				query += " and date<>all($2::text[]) union all select * from (" + currentHDBTStepsSQL(true) + ") changed"
+				query += " and date<>all($3::text[]) union all select * from (" + currentHDBTStepsSQL(true) + ") changed"
 				args = append(args, dirty)
 			}
 		}
@@ -69,7 +72,7 @@ func readHDBTSteps(ctx context.Context, tx pgx.Tx, to string, generation *uint64
 	}
 	// A missing grant or broken publication rolls back its savepoint. The
 	// original snapshot remains available to the canonical fallback.
-	points, err = collectHDBTSteps(ctx, tx, currentHDBTStepsSQL(false)+" order by date", to)
+	points, err = collectHDBTSteps(ctx, tx, currentHDBTStepsSQL(false)+" order by date", from, to)
 	return points, true, err
 }
 
@@ -83,10 +86,10 @@ func collectHDBTSteps(ctx context.Context, tx pgx.Tx, query string, args ...any)
 
 func currentHDBTStepsSQL(patch bool) string {
 	repairCTEs := ""
-	scope := " <= $1"
+	scope := " between $1 and $2"
 	prior := "daily_scores"
 	if patch {
-		scope = " = any($2::text[])"
+		scope = " = any($3::text[])"
 		prior = "hdbt_daily_metrics"
 	}
 	points := dbtmetrics.ServingStepPointInputsSQL("metric_points", "health_records", "substring(p.date,1,10)"+scope)

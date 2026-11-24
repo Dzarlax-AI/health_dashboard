@@ -63,6 +63,7 @@ contract-generate:
 
 contract-check:
 	go test ./internal/api -count=1
+	python3 scripts/check-client-routes.py $(if $(IOS_CHECKOUT),--ios "$(IOS_CHECKOUT)",)
 
 web-install:
 	$(PNPM) install --frozen-lockfile

@@ -1,6 +1,6 @@
-{{ config(enabled=var('briefing_components_shadow', false), materialized='view', post_hook="alter view {{ this }} set (security_invoker = true)") }}
+{{ config(enabled=var('briefing_components_shadow', false) or var('tenant_native_catalog', false), materialized='ephemeral' if var('tenant_native_catalog', false) else 'view', post_hook="alter view {{ this }} set (security_invoker = true)") }}
 
-with captures as (select * from {{ source('briefing_pilot','captured_inputs') }}),
+with captures as (select * from ({{ today_metric_captures_v1('stress') }})),
 steps as (
  select profile,capture,s,position,greatest(1,max((s->>'Val')::float8) over(partition by profile,capture)) as max_steps
  from captures cross join lateral jsonb_array_elements(coalesce(nullif(inputs->'raw'->'StepsWithDates','null'),'[]')) with ordinality t(s,position)
@@ -13,8 +13,9 @@ steps as (
  group by 1,2
 )
 select c.profile,c.capture,signals.*,
-  case when inputs->>'walking' is null then 'no_walking_hr' when (inputs->>'walking')::float8 between 50 and 180 then 'ok'
-       else 'walking_hr_out_of_range' end as walking_reason, coalesce(paired.series,'[]') as correlation
+  case when inputs ? 'stress_capture_v1' then null
+       when inputs->>'walking' is null then 'no_walking_hr' when (inputs->>'walking')::float8 between 50 and 180 then 'ok'
+       else 'walking_hr_out_of_range' end as walking_reason, case when not (inputs ? 'stress_capture_v1') then coalesce(paired.series,'[]') end as correlation
 from captures c
 cross join lateral (select
     array(select z::float8 from jsonb_array_elements_text(coalesce(nullif(inputs->'hour_z','null'), '[]'))

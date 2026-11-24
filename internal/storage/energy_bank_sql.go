@@ -35,6 +35,9 @@ const energySelectedDaysSQL = `select ''::text as profile, ''::text as capture_i
 	from unnest($7::float8[], $8::float8[], $9::float8[], $10::float8[], $11::float8[], $12::float8[])
 	with ordinality as r(sleep_total,deep,rem,awake,active_kcal,hr_load,i)`
 
+const energyPacketSQL = `jsonb_build_object('run',(select to_jsonb(er)-'profile'-'capture_id' from energy_run er),
+    'days',(select coalesce(jsonb_agg(to_jsonb(d)-'profile'-'capture_id' order by day),'[]'::jsonb) from energy_days d))`
+
 var energySolverCTE = `), energy_result as (` + dbtmetrics.EnergyBankSQL("energy_run", "energy_days") + `)
 	`
 
@@ -70,6 +73,32 @@ func (s *DB) evaluateEnergyBankSQL(ctx context.Context, date string, cfg EnergyC
 		}
 		args = append(args, selected[date].StressFlags)
 	}
+	// Compare the exact input packet and fetch the published answer in one snapshot.
+	// The trace also feeds the optional nap calculation and must match the same solver run.
+	type publishedBank struct {
+		BankResult
+		Trace []float64
+	}
+	published, found, err := withPublishedDecision(ctx, s, func(db *DB) (publishedBank, bool, error) {
+		var answer publishedBank
+		q := energyRunSQL + source + `) select p.result from hdbt_decision_results p
+            where p.tableoid=to_regclass(format('%I.hdbt_decision_results',current_schema()))
+            and (` + decisionPublishedReadPredicate + `) and p.metric='energy_bank'
+            and p.decision_key=$1::text and p.formula_version=$2::int
+            and p.input_hash=encode(sha256(convert_to(jsonb_build_array($2::int,` + energyPacketSQL + `)::text,'UTF8')),'hex')`
+		err := db.pool.QueryRow(ctx, q, args...).Scan(&answer)
+		return answer, len(answer.Trace) == 5, err
+	})
+	if err != nil {
+		return BankResult{}, energyTrace{}, err
+	}
+	if found {
+		if len(published.Flags) == 0 {
+			published.Flags = nil
+		}
+		t := published.Trace
+		return published.BankResult, energyTrace{bank: t[0], quality: t[1], restore: t[2], incoming: t[3], beforeClamp: t[4]}, nil
+	}
 	var res BankResult
 	var trace energyTrace
 	columns := []any{&res.Bank, &res.Display, &res.State, &res.Flags, &res.FormulaVersion, &res.AlphaUsed,
@@ -78,8 +107,7 @@ func (s *DB) evaluateEnergyBankSQL(ctx context.Context, date string, cfg EnergyC
 	if journal {
 		query += `, decision_packets as (
             select 'energy_bank'::text as metric, r.target_day::text as decision_key, r.formula_version,
-                jsonb_build_object('run',(select to_jsonb(er)-'profile'-'capture_id' from energy_run er),
-                    'days',(select coalesce(jsonb_agg(to_jsonb(d)-'profile'-'capture_id' order by day),'[]'::jsonb) from energy_days d)) as inputs,
+                ` + energyPacketSQL + ` as inputs,
                 jsonb_build_object('Bank',r.signed_bank,'Display',r.display_bank,'State',r.state,
                     'Flags',r.flags,'FormulaVersion',r.formula_version,'AlphaUsed',r.alpha_used,
                     'TodayDrain',r.drain_delta,'TodayRestore',r.restore_delta,'Components',r.components) as result
@@ -96,7 +124,7 @@ func (s *DB) evaluateEnergyBankSQL(ctx context.Context, date string, cfg EnergyC
             'captured_at',statement_timestamp())`
 		columns = append(columns, &packet)
 	}
-	err := s.pool.QueryRow(ctx, query+" from energy_result", args...).Scan(columns...)
+	err = s.pool.QueryRow(ctx, query+" from energy_result", args...).Scan(columns...)
 	if err != nil {
 		return BankResult{}, energyTrace{}, err
 	}

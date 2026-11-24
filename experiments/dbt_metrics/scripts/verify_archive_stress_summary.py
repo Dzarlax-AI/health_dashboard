@@ -34,6 +34,8 @@ def query():
     module=env.from_string((PROJECT/"macros/briefing_stress_signals.sql").read_text()).module
     env.globals.update(config=lambda **kwargs:"",var=lambda k,d=None:d,
                        source=lambda _,name:"signal_packets",briefing_stress_signals=module.briefing_stress_signals)
+    env.globals.update(today_metric_captures_v1=env.from_string(
+        (PROJECT/"macros/today_metric_captures_v1.sql").read_text()).module.today_metric_captures_v1)
     model=env.from_string((PROJECT/"models/briefing_signals_v1.sql").read_text()).render()
     hourly=hourly_query().split("    select (select count(*) from days)",1)[0]
     return hourly+f""", threshold as (

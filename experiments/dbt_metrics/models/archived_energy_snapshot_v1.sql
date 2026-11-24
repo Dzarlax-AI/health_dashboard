@@ -1,7 +1,4 @@
-{{ config(enabled=var('archived_profile_fields', false), materialized='view',
+{{ config(enabled=var('archived_profile_fields', false), materialized='ephemeral' if var('tenant_native_catalog', false) else 'view',
     post_hook='alter view {{ this }} set (security_invoker=true)') }}
 
-select ts_bucket, date, bank, drain_delta,
-       restore_delta, formula_version, flags, components,
-       computed_at
-from {{ source('archive_records', 'energy_snapshots') }}
+{{ archived_energy_snapshot_rows() }}

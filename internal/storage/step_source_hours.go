@@ -30,7 +30,7 @@ func (s *DB) stepChart(from, to, bucket string) ([]DataPoint, error) {
 
 func stepChartWindow(to, bucket string) (string, string, string, string) {
 	pointScope, hourScope := "date >= $1 and date <= $2", "hour >= $1 and hour <= $2"
-	if _, bound := compatibilityDateWindow(to); bound != to {
+	if _, bound := chartUpperBound(to); bound != to {
 		to = bound
 		pointScope, hourScope = "date >= $1 and date < $2", "hour >= $1 and hour < $2"
 	}
@@ -57,11 +57,11 @@ func (s *DB) stepChartBySource(from, to, bucket string, legacy bool) ([]SourceDa
 
 // Legacy raw charts expose the primary storage key. Keep that boundary while
 // resolving offset aliases against all retained step representations.
-func legacyChartPointRelation(metric string) string {
+func legacyChartPointRelation(metric, upperOperator string) string {
 	if metric != "step_count" {
 		return "metric_points"
 	}
-	points := dbtmetrics.StepPointInputsSQL("metric_points", "health_records", "p.date >= $2 and p.date <= $3")
+	points := dbtmetrics.StepPointInputsSQL("metric_points", "health_records", "p.date >= $2 and p.date "+upperOperator+" $3")
 	return "(select stored_key as metric_name,date,source,qty from (" + points + ") inputs where counted and quality='ok') step_points"
 }
 

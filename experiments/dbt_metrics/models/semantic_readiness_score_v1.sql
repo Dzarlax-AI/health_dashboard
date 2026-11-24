@@ -1,5 +1,6 @@
-{{ config(enabled=var('readiness_score_shadow', false), materialized='view', post_hook="alter view {{ this }} set (security_invoker = true)") }}
-with captures as (
+{% set native = var('tenant_native_catalog', false) %}
+{{ config(enabled=native or var('readiness_score_shadow', false), materialized='ephemeral' if native else 'view', post_hook="alter view {{ this }} set (security_invoker = true)") }}
+with {% if not native %}captures as (
     select s.*, h.weighted_z as hrv_weighted_z, h.component_weight as hrv_weight,
            h.evidence_present as hrv_present, h.skip_reason as hrv_reason,
            h.snapshot_state='captured' and h.skip_reason is distinct from 'invalid_snapshot' as captured
@@ -8,14 +9,16 @@ with captures as (
       on h.profile=s.profile and h.snapshot_id=s.hrv_snapshot_id
       and h.target_date=s.target_date and h.reader=s.reader
 )
-, all_scores as (
+, {% endif %}all_scores as (
+{% if not native %}
 select score.*, score.reader <> 'morning' or exists (
     select from {{ source('readiness_captures','readiness_score_inputs') }} c
     where c.profile=score.profile and c.case_id=score.case_id and c.headline is not null
 ) as has_final_context from ({{ readiness_score_v1('captures') }}) as score
 
-{% if var('decision_journal_replay', false) %}
-union all
+{% endif %}
+{% if native or var('decision_journal_replay', false) %}
+{% if not native %}union all{% endif %}
 select journal_replay.*, reader <> 'morning' or case_id like 'briefing:%' as has_final_context from (
     with inputs as (
         select (case j.metric when 'today_briefing' then 'briefing:' else 'journal:' end||j.input_hash)::text as case_id,current_user::text as profile,
@@ -33,6 +36,10 @@ select journal_replay.*, reader <> 'morning' or case_id like 'briefing:%' as has
               "LowQuality" boolean, "Provisional" boolean, "Samples" int, "Illness" text)
         where (j.metric='readiness' or (j.metric='today_briefing' and jsonb_typeof(j.inputs->'headline')='string'
               and jsonb_typeof(j.inputs->'final_illness')='string')) and j.formula_version=3
+        {% if native %}and j.metric='today_briefing' and j.inputs->>'reader'='morning'
+          and j.inputs->'effective' ?& array['Date','HRV','RHR','Sleep','HRVPresent','RHRPresent','SleepPresent',
+                                            'LowQuality','Provisional','Samples','Illness']
+          and (j.inputs#>>'{effective,Date}')=j.decision_key {% endif %}
     ), eligibility as (
         {{ readiness_effective_eligibility_v1('inputs') }}
     ), hrv_scores as (

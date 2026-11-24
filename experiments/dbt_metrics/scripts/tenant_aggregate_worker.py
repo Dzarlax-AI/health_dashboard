@@ -22,7 +22,7 @@ from psycopg2.extensions import parse_dsn
 
 PROJECT = Path(__file__).resolve().parents[1]
 FORMULA = "aggregate_serving_v3"
-SCHEMA_CHECKSUM = "ff23a6d755e1ec4824de1522c1fbe8053e4e52fec8eac64031adb0ab3149c731"
+SCHEMA_CHECKSUM = "22ae0dfda37d697610e9977b18421621ef7330864ce811bb46fb12753da6332d"
 JOURNAL = "_cache_maintenance_v1"
 POINTS = "metric_name,date,source,qty,quality,health_record_id,origin,units,id,received_at,source_snapshot_at"
 DAILY = (
@@ -115,7 +115,7 @@ def authorize(cur, schema, tenant):
         raise WorkerError("tenant_acl")
     cur.execute(f'set search_path to pg_catalog,"{schema}"')
     cur.execute(
-        "select count(*)=1 and bool_and(singleton and tenant_id=%s::uuid and schema_contract_version=18 and schema_contract_checksum=%s) from __tenant_identity",
+        "select count(*)=1 and bool_and(singleton and tenant_id=%s::uuid and schema_contract_version=19 and schema_contract_checksum=%s) from __tenant_identity",
         (tenant, SCHEMA_CHECKSUM),
     )
     if not cur.fetchone()[0]:
@@ -257,14 +257,24 @@ def capture(cur, batch, attempt):
     return generation, epoch, core
 
 
-def build(config, schema, dates, attempt):
+def build(config, schema, dates, attempt, target="aggregates"):
+    decisions = target == "decisions"
     variables = dict(
         tenant_aggregate_worker=True,
+        hdbt_decision_worker=decisions,
         semantic_source_schema=schema,
         verified_step_withdrawals=True,
         affected_dates=dates,
         tenant_aggregate_attempt=attempt,
     )
+    if target == "native_catalog":
+        from native_catalog_vars import native_catalog_vars
+        variables = native_catalog_vars(schema)
+        selectors = ["metric_read_v1"]
+    elif decisions:
+        selectors = ["worker_energy_decisions", "hdbt_readiness_decisions", "worker_today_decisions"]
+    else:
+        selectors = ["+daily_metrics"]
     profile = dict(
         config,
         type="postgres",
@@ -287,7 +297,7 @@ def build(config, schema, dates, attempt):
         proc = subprocess.Popen(
             [
                 "dbt",
-                "build",
+                "run" if target == "native_catalog" else "build",
                 "--profiles-dir",
                 temp,
                 "--project-dir",
@@ -297,7 +307,7 @@ def build(config, schema, dates, attempt):
                 "--log-path",
                 str(path / "logs"),
                 "--select",
-                "+daily_metrics",
+                *selectors,
                 "--vars",
                 json.dumps(variables),
             ],
@@ -323,12 +333,14 @@ def build(config, schema, dates, attempt):
                     proc.wait()
         results = json.loads((path / "target/run_results.json").read_text())["results"]
         models = {r["unique_id"].split(".")[-1] for r in results if r["status"] == "success"}
-        if models != {
-            "hourly_metrics",
-            "daily_metrics",
-            "step_hour_state",
-            "retained_metric_points",
-        } or not any(r["status"] == "pass" for r in results):
+        if target == "native_catalog":
+            valid = models == {"metric_read_v1"}
+        elif decisions:
+            valid = models == {"worker_energy_decisions", "hdbt_readiness_decisions", "worker_today_decisions"}
+        else:
+            valid = models == {"hourly_metrics", "daily_metrics", "step_hour_state", "retained_metric_points"}
+            valid = valid and any(r["status"] == "pass" for r in results)
+        if not valid:
             raise WorkerError("dbt_receipt")
 
 
@@ -375,7 +387,62 @@ def publish(cur, generation, epoch, dates):
     return "published" if ready else "building"
 
 
-def once(schema, tenant, config, batch):
+def replay_decisions(conn, config, schema, batch):
+    # Decisions are immutable receipts. A late sync can append a new revision of
+    # an old date after the aggregate watermark has already been acknowledged.
+    # Select missing identities independently so every revision can be replayed.
+    attempt = str(uuid.uuid4())
+    with conn, conn.cursor() as cur:
+        cur.execute("select enrollment_epoch from hdbt_state where singleton and shadow_enabled")
+        state = cur.fetchone()
+        if not state:
+            return
+        epoch = state[0]
+        cur.execute("""select metric,decision_key,input_hash from hdbt_decision_queue
+            order by metric,decision_key,input_hash limit %s""", (batch,))
+        keys = cur.fetchall()
+        if not keys:
+            return
+        cur.execute("""insert into hdbt_work_lease values(true,%s::uuid)
+            on conflict(singleton) do update set attempt=excluded.attempt""", (attempt,))
+        cur.execute("truncate hdbt_i_decisions")
+        cur.executemany("insert into hdbt_i_decisions(metric,decision_key,input_hash) values(%s,%s,%s)", keys)
+    build(config, schema, [], attempt, target="decisions")
+    if STOP.is_set():
+        return
+    with conn, conn.cursor() as cur:
+        cur.execute("""select enrollment_epoch=%s and shadow_enabled from hdbt_state
+                       where singleton for update""", (epoch,))
+        if not cur.fetchone()[0]:
+            return
+        cur.execute("""with staged as (
+                select metric,decision_key,input_hash,formula_version,result - 'Trace' from hdbt_w_energy
+                union all
+                select metric,decision_key,input_hash,formula_version,result from hdbt_w_readiness
+                union all
+                select metric,decision_key,input_hash,formula_version,result from hdbt_w_today
+            ), expected as (
+                select j.metric,j.decision_key,j.input_hash,j.formula_version,j.result
+                from hdbt_i_decisions i join hdbt_decision_inputs j using(metric,decision_key,input_hash)
+            ), missing as (select * from expected except all select * from staged),
+            unexpected as (select * from staged except all select * from expected)
+            select not exists(select from missing) and not exists(select from unexpected)
+                and (select count(*) from expected)=%s""", (len(keys),))
+        if not cur.fetchone()[0]:
+            raise WorkerError("decision_parity")
+        cur.execute("""insert into hdbt_decision_results(metric,decision_key,input_hash,formula_version,result)
+            select metric,decision_key,input_hash,formula_version,result from hdbt_w_energy
+            union all
+            select metric,decision_key,input_hash,formula_version,result from hdbt_w_readiness
+            union all
+            select metric,decision_key,input_hash,formula_version,result from hdbt_w_today""")
+        cur.execute("""delete from hdbt_decision_queue q using hdbt_i_decisions i
+            where (q.metric,q.decision_key,q.input_hash)=(i.metric,i.decision_key,i.input_hash)""")
+        cur.execute("select exists(select from hdbt_decision_queue)")
+        return "building" if cur.fetchone()[0] else "published"
+
+
+def once(schema, tenant, config, batch, install_native_catalog=False):
     global active_connection
     authorized = False
     conn = psycopg2.connect(
@@ -396,10 +463,16 @@ def once(schema, tenant, config, batch):
             )
             if not cur.fetchone()[0]:
                 return "busy"
+        if install_native_catalog:
+            build(config, schema, [], str(uuid.uuid4()), target="native_catalog")
+            return "catalog_installed"
         with conn, conn.cursor() as cur:
             attempt = str(uuid.uuid4())
             candidate = capture(cur, batch, attempt)
         if isinstance(candidate, str):
+            if candidate in ("idle", "waiting_journal"):
+                decision_status = replay_decisions(conn, config, schema, batch)
+                return decision_status or candidate
             return candidate
         generation, epoch, dates = candidate
         if dates:
@@ -412,7 +485,11 @@ def once(schema, tenant, config, batch):
                 cur.execute(
                     "update hdbt_state set heartbeat_at=now(),last_status='stale' where singleton and shadow_enabled"
                 )
-            return result
+        if result in ("published", "building"):
+            decision_status = replay_decisions(conn, config, schema, batch)
+            if result == "published" and decision_status:
+                return decision_status
+        return result
     except Exception as error:
         if authorized and not STOP.is_set() and not conn.closed:
             try:
@@ -433,10 +510,12 @@ def once(schema, tenant, config, batch):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--once", action="store_true")
+    parser.add_argument("--install-native-catalog", action="store_true",
+                        help="install the tenant-owned catalog view and exit")
     args = parser.parse_args()
     if os.getenv("HEALTH_DBT_WORKER_ENABLED", "").lower() != "true":
         print('{"status":"disabled"}')
-        return 0
+        return int(args.install_native_catalog)
     read_fd, write_fd = os.pipe()
     os.set_blocking(write_fd, False)
     signal.set_wakeup_fd(write_fd)
@@ -446,19 +525,21 @@ def main():
     failures = 0
     while not STOP.is_set():
         try:
-            result = once(*configuration())
+            result = once(*configuration(), install_native_catalog=args.install_native_catalog)
             failures = 0
         except Exception as error:
             if STOP.is_set():
-                return 0
+                return int(args.install_native_catalog)
             result = str(error) if isinstance(error, WorkerError) else "worker_error"
             failures = min(failures + 1, 6)
         print(json.dumps({"status": result, "consecutive_failures": failures}), flush=True)
+        if args.install_native_catalog:
+            return int(result != "catalog_installed")
         if args.once:
             return int(bool(failures))
         delay = min(300, 5 * 2**failures) if failures else (1 if result == "building" else 10)
         STOP.wait(delay)
-    return 0
+    return int(args.install_native_catalog)
 
 
 if __name__ == "__main__":

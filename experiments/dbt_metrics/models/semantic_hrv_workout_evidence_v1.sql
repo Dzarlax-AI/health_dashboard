@@ -1,10 +1,13 @@
-{{ config(enabled=var('semantic_shadow', false), materialized='view', post_hook="alter view {{ this }} set (security_invoker = true)") }}
+{{ config(enabled=var('semantic_shadow', false) or var('tenant_native_catalog', false), materialized='ephemeral' if var('tenant_native_catalog', false) else 'view', post_hook="alter view {{ this }} set (security_invoker = true)") }}
 
 -- Context workouts beyond the evaluation dates still participate in ambiguous
 -- assignment. Invalid episodes remain in the denominator with an explicit reason.
 with workouts as (
     select *,case when end_at>start_at then tstzrange(start_at,end_at,'[)') end as active
-    from {{ source('source_data','workout') }}
+    {% if var('tenant_native_catalog', false) %}
+    from (select id::text as id,name as kind,start_time as start_at,end_time as end_at
+          from {{ source('archive_records','workouts') }}) persisted_workouts
+    {% else %}from {{ source('source_data','workout') }}{% endif %}
 ), windows as (
     select id,kind,start_at,end_at,period,
            case when period='during' then active

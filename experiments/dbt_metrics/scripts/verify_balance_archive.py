@@ -21,10 +21,28 @@ PERSISTED = {
 
 def model_sql(name):
     body = (MODELS / (name + ".sql")).read_text().split("\n", 1)[1]
+    # Archive comparison supplies its own four input CTEs. Expand the same
+    # checked-in SQL macros used by Go and dbt without requiring dbt locally.
+    if name == "sleep_balance_period_v1":
+        macro = (MODELS.parent / "macros" / "sleep_balance_period_v1.sql").read_text()
+        macro = re.sub(r"^{% macro [^%]+%}\s*", "", macro.strip())
+        macro = re.sub(r"\s*{% endmacro %}$", "", macro)
+        body = re.sub(r"{{ sleep_balance_period_v1\(.*?\) }}", lambda _: macro, body, flags=re.S)
+        body = body.replace("{{ captures }}", "balance_capture").replace("{{ goals }}", "balance_goal")
+        body = body.replace("{{ coverage }}", "balance_coverage").replace("{{ episodes }}", "balance_episode")
+    elif name == "sleep_duration_balance_v1":
+        macro = (MODELS.parent / "macros" / "sleep_balance_window_v1.sql").read_text()
+        macro = re.sub(r"^{% macro [^%]+%}\s*", "", macro.strip())
+        macro = re.sub(r"\s*{% endmacro %}$", "", macro)
+        body = re.sub(r"{{ sleep_balance_window_v1\(.*?\) }}", lambda _: macro, body, flags=re.S)
+        body = body.replace("{{ periods }}", "sleep_balance_period_v1")
+    # Render only the supported archive branches, without a dbt installation on the operator host.
+    body = re.sub(r"{% if var\('tenant_native_catalog',false\) %}.*?{% endif %}", "", body, flags=re.S)
+    body = re.sub(r"'balance_[a-z]+' if var\('tenant_native_catalog',false\) else ", "", body)
     body = re.sub(r"{{ source\('complex_sleep','(balance_[a-z]+)'\) }}", r"\1", body)
     body = re.sub(r"{{ ref\('(sleep_[a-z_0-9]+)'\) }}", r"\1", body)
     if "{{" in body or "{%" in body:
-        raise ValueError(f"unresolved model template in {name}")
+        raise ValueError(f"unresolved archive template in {name}")
     return body
 
 

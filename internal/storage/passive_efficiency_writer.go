@@ -157,18 +157,8 @@ func (s *DB) writePassiveEfficiencyRow(
 	if err != nil {
 		return err
 	}
-	// Features ≤ end of day t.
-	w, err := s.chipFeatureWindow(ctx, t, epochStart, ewmaLookbackDays(ewmaWindowSlow), walkingHRLookup(verdict))
-	if err != nil {
-		return err
-	}
-	features := passiveEfficiencyFeatures{PrevWalkingHR: w.Today, Mean7d: w.Mean7, Mean30d: w.Mean30, EWMA45: w.Adaptive, EWMA180: w.Slow,
-		DeltaVsEWMA45: w.DeltaAdaptive, DeltaVsEWMA180: w.DeltaSlow, EligibleCount7d: w.N7, EligibleCount45d: w.AdaptiveN, EligibleCount180d: w.SlowN,
-		WarmupComplete45: w.AdaptiveN >= ewmaWindowAdaptive/2, WarmupComplete180: w.SlowN >= ewmaWindowSlow/3}
-	featuresJSON, err := json.Marshal(features)
-	if err != nil {
-		return fmt.Errorf("marshal features %s: %w", date, err)
-	}
+	// SQL replay owns the complete 12-field Passive Efficiency payload.
+	featuresJSON := []byte(`{}`)
 
 	// Naive baselines for both target_kinds.
 	baselines, err := s.chipBaselines(ctx, t, epochStart, SubScorePassiveEfficiency, walkingHRLookup(verdict), TargetKindDailyPoint, TargetKindRolling3d)
@@ -203,6 +193,9 @@ func (s *DB) writePassiveEfficiencyRow(
 		return fmt.Errorf("save rolling_3d target %s: %w", date, err)
 	}
 	if err := s.SaveFeatureSnapshot(FeatureSnapshot{
+		replayInputs: func() map[string]any {
+			return map[string]any{"epoch_start": epochStart, "primary_days": chipDays(t, ewmaLookbackDays(ewmaWindowSlow), walkingHRLookup(verdict))}
+		},
 		Date:           date,
 		SubScore:       SubScorePassiveEfficiency,
 		Features:       featuresJSON,

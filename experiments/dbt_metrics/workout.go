@@ -24,6 +24,11 @@ func WorkoutPeriodSQL(filterByName bool) string {
 	return workoutSQL(workoutPeriodMacro, "{{ sessions }}", "workouts", "{{ scope }}", scope)
 }
 
+// CapturedWorkoutPeriodSQL evaluates the same totals on the selected receipt rows.
+func CapturedWorkoutPeriodSQL() string {
+	return workoutSQL(workoutPeriodMacro, "{{ sessions }}", "sessions", "{{ scope }}", "true")
+}
+
 func WorkoutTypeSQL() string {
 	return workoutSQL(workoutTypeMacro, "{{ sessions }}", "workouts", "{{ scope }}", "true")
 }

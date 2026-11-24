@@ -13,7 +13,7 @@ def main():
     cases = {
         "internal/storage": ["TestInstalledProfileDailyReader", "TestInstalledProfileSleepReader",
                              "TestInstalledCatalogValuePage", "TestInstalledCatalogMetricCoverage",
-                             "TestInstalledLocalEnergyDecision", "TestInstalledLocalReadinessDecision", "TestInstalledDecisionJournal", "TestInstalledTodayBriefingCapture"],
+                             "TestInstalledLocalEnergyDecision", "TestInstalledLocalReadinessDecision", "TestInstalledDecisionJournal", "TestInstalledTodayBriefingCapture", "TestInstalledBriefingSeriesReplay"],
         "internal/ui": ["TestInstalledProfileSleepTransport",
                         "TestInstalledProfileDailyChart", "TestInstalledProfileCatalogStepsChart"],
         "internal/mcpserver": ["TestInstalledProfileSleepTransport"],

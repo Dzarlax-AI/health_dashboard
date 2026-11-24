@@ -294,14 +294,9 @@ func (s *DB) writeChronicLoadRow(
 	warmupMet := pairedCount >= health.ChronicLoadWarmupMinPaired
 
 	// Feature snapshot is emitted in all cases (eligible or not) so the
-	// (date, sub_score) PK contract holds. Build it once and reuse.
-	w, err := s.chipFeatureWindow(ctx, t, epochStart, ewmaWindowSlow-1, recoveryLookup)
-	if err != nil {
-		return err
-	}
-	features := chronicLoadFeatures{SleepArchitectureFeatureFields: archFields, RecoveryToday: w.Today, BaselineMean45: w.Mean45, BaselineSD45: w.SD45, BaselineZToday: w.Z45,
-		EligibleCount45: w.N45, EligibleCount180: w.N180, PairedCountToT: pairedCount, WarmupMet: warmupMet, WarmupComplete45: w.N45 >= health.ChronicLoadBaselineWindowDays/2, WarmupComplete180: w.N180 >= ewmaWindowSlow/3}
-	featuresJSON, err := json.Marshal(features)
+	// (date, sub_score) PK contract holds. SQL replay owns all 10 chronic
+	// fields; preserve the separately computed sleep-architecture payload.
+	featuresJSON, err := json.Marshal(archFields)
 	if err != nil {
 		return fmt.Errorf("marshal chronic features %s: %w", date, err)
 	}
@@ -339,6 +334,9 @@ func (s *DB) writeChronicLoadRow(
 			return fmt.Errorf("save warmup-ineligible baseline %s/chronic_acute_density: %w", date, err)
 		}
 		return s.SaveFeatureSnapshot(FeatureSnapshot{
+			replayInputs: func() map[string]any {
+				return map[string]any{"epoch_start": epochStart, "primary_days": chipDays(t, ewmaWindowSlow, recoveryLookup)}
+			},
 			Date:           date,
 			SubScore:       SubScoreChronicLoad,
 			Features:       featuresJSON,
@@ -482,6 +480,9 @@ func (s *DB) writeChronicLoadRow(
 	}
 
 	return s.SaveFeatureSnapshot(FeatureSnapshot{
+		replayInputs: func() map[string]any {
+			return map[string]any{"epoch_start": epochStart, "primary_days": chipDays(t, ewmaWindowSlow, recoveryLookup)}
+		},
 		Date:           date,
 		SubScore:       SubScoreChronicLoad,
 		Features:       featuresJSON,

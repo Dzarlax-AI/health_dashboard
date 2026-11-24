@@ -36,12 +36,3 @@ func RecordedSleepAggregate(b *BriefingResponse, date, source string, hours floa
 	}
 	return nil
 }
-
-func AttachRecentRecordedSleepComparison(sleep *MorningReportSleep, b *BriefingResponse) {
-	if sleep == nil || b == nil || b.Sleep == nil || !MorningSleepAnalysisEligible(sleep, b.Date) || b.Sleep.LatestDate != b.Date || b.Sleep.LatestTotal == nil || math.Abs(*b.Sleep.LatestTotal-*sleep.Hours)*60 > 1 || b.Sleep.Nights < 2 || math.IsNaN(b.Sleep.TotalAvg) || math.IsInf(b.Sleep.TotalAvg, 0) || b.Sleep.TotalAvg <= 0 || b.Sleep.TotalAvg > 24 {
-		return
-	}
-	mean := math.Round(b.Sleep.TotalAvg*100) / 100
-	difference := int(math.Round((*sleep.Hours - mean) * 60))
-	sleep.RecentRecordedMeanHours, sleep.RecentRecordedNights, sleep.RecentRecordedDifferenceMinutes = &mean, b.Sleep.Nights, &difference
-}
