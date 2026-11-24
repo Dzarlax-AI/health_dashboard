@@ -1,5 +1,6 @@
 import type {
   LatestMetricValue,
+  MetricAgg,
   MetricCatalogItem,
   MetricPoint,
   MetricSourceSeries,
@@ -154,6 +155,8 @@ export const METRIC_CATEGORIES: readonly MetricCategoryDefinition[] = [
   },
 ];
 
+export const READINESS_MAX_DAYS = 365;
+
 export const SLEEP_PHASE_METRICS = [
   "sleep_deep",
   "sleep_core",
@@ -162,36 +165,114 @@ export const SLEEP_PHASE_METRICS = [
   "sleep_awake",
 ] as const;
 
+export type SleepPhaseMetric = (typeof SLEEP_PHASE_METRICS)[number];
+
+export interface SleepPhaseRow {
+  date: string;
+  sleep_deep: number;
+  sleep_core: number;
+  sleep_rem: number;
+  sleep_unspecified: number;
+  sleep_awake: number;
+}
+
 const SLEEP_METRIC_SET = new Set<string>([
   "sleep_total",
   ...SLEEP_PHASE_METRICS,
 ]);
 
-const SUM_METRIC_SET = new Set<string>([
-  "step_count",
+// Mirrors backend storage.UsesCurrentMetricSum (dbt SumMetrics U hour_sum live
+// quantities) so /api/metrics/data?view=quantity only offers valid aggregations.
+const QUANTITY_SUM_METRIC_SET = new Set<string>([
   "active_energy",
-  "basal_energy_burned",
-  "walking_running_distance",
   "apple_exercise_time",
-  "apple_stand_time",
   "apple_stand_hour",
-  "flights_climbed",
+  "apple_stand_time",
+  "basal_energy_burned",
   "distance_cycling",
   "distance_swimming",
+  "flights_climbed",
+  "nap_total",
+  "night_sleep_total",
+  "sleep_awake",
+  "sleep_core",
+  "sleep_deep",
+  "sleep_rem",
+  "sleep_total",
+  "sleep_unspecified",
+  "step_count",
   "swimming_stroke_count",
-  "mindful_minutes",
   "time_in_daylight",
-  "dietary_energy",
-  "dietary_water",
+  "walking_running_distance",
 ]);
 
 export function isSleepChartMetric(metric: string): boolean {
   return SLEEP_METRIC_SET.has(metric);
 }
 
+export function usesSumMetricAggregation(metric: string): boolean {
+  return QUANTITY_SUM_METRIC_SET.has(metric);
+}
+
+export function supportedMetricAggregations(metric: string): readonly MetricAgg[] {
+  return usesSumMetricAggregation(metric)
+    ? ["", "SUM", "MAX", "MIN"]
+    : ["", "AVG", "MAX", "MIN"];
+}
+
 export function isBarChartMetric(metric: string, agg: string): boolean {
   if (agg === "SUM") return true;
-  return SUM_METRIC_SET.has(metric);
+  return QUANTITY_SUM_METRIC_SET.has(metric);
+}
+
+export function buildSleepPhaseRows(
+  phasePoints: Partial<Record<SleepPhaseMetric, readonly MetricPoint[] | null | undefined>>,
+  totalPoints?: readonly MetricPoint[] | null,
+): SleepPhaseRow[] {
+  const rowMap = new Map<string, SleepPhaseRow>();
+  for (const phase of SLEEP_PHASE_METRICS) {
+    for (const p of phasePoints[phase] ?? []) {
+      const key = p.date.slice(0, 10);
+      let row = rowMap.get(key);
+      if (!row) {
+        row = {
+          date: key,
+          sleep_deep: 0,
+          sleep_core: 0,
+          sleep_rem: 0,
+          sleep_unspecified: 0,
+          sleep_awake: 0,
+        };
+        rowMap.set(key, row);
+      }
+      row[phase] = Number(p.qty.toFixed(2));
+    }
+  }
+  for (const p of totalPoints ?? []) {
+    const key = p.date.slice(0, 10);
+    const totalQty = Number(p.qty.toFixed(2));
+    let row = rowMap.get(key);
+    if (!row) {
+      row = {
+        date: key,
+        sleep_deep: 0,
+        sleep_core: 0,
+        sleep_rem: 0,
+        sleep_unspecified: totalQty,
+        sleep_awake: 0,
+      };
+      rowMap.set(key, row);
+    } else {
+      const stagedAsleep =
+        row.sleep_deep + row.sleep_core + row.sleep_rem + row.sleep_unspecified;
+      if (stagedAsleep === 0 && totalQty > 0) {
+        row.sleep_unspecified = totalQty;
+      }
+    }
+  }
+  return Array.from(rowMap.values()).sort((a, b) =>
+    a.date.localeCompare(b.date),
+  );
 }
 
 export function formatCompactValue(value: number): string {

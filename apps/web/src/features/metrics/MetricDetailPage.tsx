@@ -26,16 +26,21 @@ import { resolveLocale, translate } from "../../i18n";
 import { tp } from "../../i18n/pages";
 import {
   buildMetricCsv,
+  buildSleepPhaseRows,
   computeSeriesStats,
   daysBetweenInclusive,
   formatCompactValue,
   isBarChartMetric,
   isSleepChartMetric,
+  READINESS_MAX_DAYS,
   shiftDateIso,
   SLEEP_PHASE_METRICS,
+  supportedMetricAggregations,
   todayIso,
+  type SleepPhaseMetric,
+  type SleepPhaseRow,
 } from "./catalog";
-import { MetricChart, type SleepPhaseRow } from "./MetricChart";
+import { MetricChart } from "./MetricChart";
 
 type PresetId = "1" | "7" | "30" | "90" | "365" | "all" | "custom";
 
@@ -68,6 +73,19 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
   const params = new URLSearchParams(window.location.search);
   const locale = resolveLocale(params.get("lang"));
   const today = useMemo(() => todayIso(), []);
+  const isReadiness = metricName === "readiness";
+  const readinessMinDate = useMemo(
+    () => shiftDateIso(today, -(READINESS_MAX_DAYS - 1)),
+    [today],
+  );
+  const visiblePresets = useMemo(
+    () => (isReadiness ? PRESETS.filter((item) => item.id !== "all") : PRESETS),
+    [isReadiness],
+  );
+  const supportedAggs = useMemo(
+    () => supportedMetricAggregations(metricName),
+    [metricName],
+  );
 
   const [preset, setPreset] = useState<PresetId>("30");
   const [from, setFrom] = useState(() => shiftDateIso(today, -29));
@@ -77,6 +95,23 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
   const [bySource, setBySource] = useState(false);
   const [compare, setCompare] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+
+  const effectivePreset: PresetId = isReadiness && preset === "all" ? "365" : preset;
+  const effectiveFrom = isReadiness
+    ? from < readinessMinDate
+      ? readinessMinDate
+      : from > today
+        ? today
+        : from
+    : from;
+  const effectiveTo = isReadiness
+    ? to > today
+      ? today
+      : to < effectiveFrom
+        ? effectiveFrom
+        : to
+    : to;
+  const effectiveAgg: MetricAgg = supportedAggs.includes(agg) ? agg : "";
 
   const [session, setSession] = useState<SessionResponse | undefined>();
   const [displayName, setDisplayName] = useState(() =>
@@ -129,30 +164,46 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
 
   const applyPreset = useCallback(
     (id: Exclude<PresetId, "custom">) => {
-      setPreset(id);
+      const targetId = isReadiness && id === "all" ? "365" : id;
+      setPreset(targetId);
       const nowStr = todayIso();
       setTo(nowStr);
-      if (id === "all") {
+      if (targetId === "all") {
         if (rangeBounds?.min) {
           setFrom(rangeBounds.min.slice(0, 10));
         }
         return;
       }
-      const days = Number(id);
+      const days = Number(targetId);
       setFrom(shiftDateIso(nowStr, -(days - 1)));
     },
-    [rangeBounds],
+    [isReadiness, rangeBounds],
   );
 
-  const shiftRange = useCallback((direction: -1 | 1) => {
-    setPreset("custom");
-    setFrom((prevFrom) => {
-      const span = daysBetweenInclusive(prevFrom, to);
+  const shiftRange = useCallback(
+    (direction: -1 | 1) => {
+      setPreset("custom");
+      const span = daysBetweenInclusive(effectiveFrom, effectiveTo);
       const step = Math.max(1, Math.round(span * 0.5)) * direction;
-      setTo((prevTo) => shiftDateIso(prevTo, step));
-      return shiftDateIso(prevFrom, step);
-    });
-  }, [to]);
+      let nextFrom = shiftDateIso(effectiveFrom, step);
+      let nextTo = shiftDateIso(effectiveTo, step);
+      if (isReadiness) {
+        if (nextFrom < readinessMinDate) {
+          nextFrom = readinessMinDate;
+          const shiftedEnd = shiftDateIso(readinessMinDate, span - 1);
+          nextTo = shiftedEnd > today ? today : shiftedEnd;
+        }
+        if (nextTo > today) {
+          nextTo = today;
+          const shiftedStart = shiftDateIso(today, -(span - 1));
+          nextFrom = shiftedStart < readinessMinDate ? readinessMinDate : shiftedStart;
+        }
+      }
+      setFrom(nextFrom);
+      setTo(nextTo);
+    },
+    [effectiveFrom, effectiveTo, isReadiness, readinessMinDate, today],
+  );
 
   // Keyboard shortcuts: Left/Right arrows shift window, 1-5 select presets.
   useEffect(() => {
@@ -180,8 +231,8 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
   }, [applyPreset, shiftRange]);
 
   // Main series loader using Unified Health API v2 (no legacy /fragments/*).
-  const queryFrom = preset === "all" ? undefined : from;
-  const currentRequestKey = `${metricName}|${preset}|${queryFrom ?? ""}|${to}|${bucket}|${agg}|${bySource}|${compare}|${reloadKey}`;
+  const queryFrom = effectivePreset === "all" ? undefined : effectiveFrom;
+  const currentRequestKey = `${metricName}|${effectivePreset}|${queryFrom ?? ""}|${effectiveTo}|${bucket}|${effectiveAgg}|${bySource}|${compare}|${reloadKey}`;
 
   useEffect(() => {
     const seq = ++requestSeq.current;
@@ -215,11 +266,11 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
     };
 
     const run = async () => {
-      if (metricName === "readiness") {
-        const requestedDays =
-          preset === "all"
-            ? 365
-            : Math.min(365, Math.max(daysBetweenInclusive(queryFrom ?? today, todayIso()), 1));
+      if (isReadiness) {
+        const requestedDays = Math.min(
+          READINESS_MAX_DAYS,
+          Math.max(daysBetweenInclusive(effectiveFrom, today), 1),
+        );
         const res = await getReadinessHistory(requestedDays, controller.signal);
         if (!isCurrent()) return;
         clearSessionRecoveryAttempt(window.sessionStorage);
@@ -227,15 +278,9 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
           date: entry.date,
           qty: entry.score,
         }));
-        const points =
-          preset === "all"
-            ? allPoints
-            : allPoints.filter(
-                (p) => (!queryFrom || p.date >= queryFrom) && p.date <= to,
-              );
-        if (preset === "all" && points.length > 0) {
-          setFrom(points[0].date.slice(0, 10));
-        }
+        const points = allPoints.filter(
+          (p) => p.date >= effectiveFrom && p.date <= effectiveTo,
+        );
         setChartState({
           status: "ready",
           mode: "readiness",
@@ -252,7 +297,7 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
       }
 
       let resolvedFrom = queryFrom;
-      if (preset === "all") {
+      if (effectivePreset === "all") {
         let earliest = rangeBoundsRef.current?.min?.slice(0, 10);
         if (!earliest) {
           const bounds = await queryMetricRange(metricName, controller.signal);
@@ -267,14 +312,14 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
         }
       }
 
-      if (isSleepChartMetric(metricName) && !bucket && !agg && !bySource && !compare) {
-        const responses = await Promise.all(
+      if (isSleepChartMetric(metricName) && !bucket && !effectiveAgg && !bySource && !compare) {
+        const phasePromise = Promise.all(
           SLEEP_PHASE_METRICS.map((phase) =>
             queryMetricData(
               phase,
               {
                 from: resolvedFrom,
-                to,
+                to: effectiveTo,
                 bucket: "day",
                 agg: "SUM",
                 view: "quantity",
@@ -283,49 +328,39 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
             ),
           ),
         );
+        const totalPromise =
+          metricName === "sleep_total"
+            ? queryMetricData(
+                "sleep_total",
+                {
+                  from: resolvedFrom,
+                  to: effectiveTo,
+                  bucket: "day",
+                  agg: "SUM",
+                  view: "quantity",
+                },
+                controller.signal,
+              )
+            : Promise.resolve(null);
+
+        const [responses, totalResponse] = await Promise.all([
+          phasePromise,
+          totalPromise,
+        ]);
         if (!isCurrent()) return;
         clearSessionRecoveryAttempt(window.sessionStorage);
-        const rowMap = new Map<string, SleepPhaseRow>();
+
+        const phasePoints: Partial<Record<SleepPhaseMetric, MetricPoint[]>> = {};
         SLEEP_PHASE_METRICS.forEach((phase, index) => {
-          const resp = responses[index];
-          for (const p of resp.points ?? []) {
-            const key = p.date.slice(0, 10);
-            let row = rowMap.get(key);
-            if (!row) {
-              row = {
-                date: key,
-                sleep_deep: 0,
-                sleep_core: 0,
-                sleep_rem: 0,
-                sleep_unspecified: 0,
-                sleep_awake: 0,
-              };
-              rowMap.set(key, row);
-            }
-            row[phase] = Number(p.qty.toFixed(2));
-          }
+          phasePoints[phase] = responses[index].points ?? [];
         });
-        const sleepRows = Array.from(rowMap.values()).sort((a, b) =>
-          a.date.localeCompare(b.date),
-        );
-        const phaseIndex = SLEEP_PHASE_METRICS.indexOf(
-          metricName as (typeof SLEEP_PHASE_METRICS)[number],
-        );
+        const totalPoints = totalResponse ? (totalResponse.points ?? []) : null;
+        const sleepRows = buildSleepPhaseRows(phasePoints, totalPoints);
         const selectedPoints: MetricPoint[] =
-          phaseIndex >= 0
-            ? (responses[phaseIndex].points ?? [])
-            : sleepRows.map((row) => ({
-                date: row.date,
-                qty: Number(
-                  (
-                    row.sleep_deep +
-                    row.sleep_core +
-                    row.sleep_rem +
-                    row.sleep_unspecified
-                  ).toFixed(2),
-                ),
-              }));
-        if (preset === "all" && !resolvedFrom && sleepRows.length > 0) {
+          metricName === "sleep_total"
+            ? (totalPoints ?? [])
+            : (phasePoints[metricName as SleepPhaseMetric] ?? []);
+        if (effectivePreset === "all" && !resolvedFrom && sleepRows.length > 0) {
           setFrom(sleepRows[0].date);
         }
         setChartState({
@@ -347,9 +382,9 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
         metricName,
         {
           from: resolvedFrom,
-          to,
+          to: effectiveTo,
           bucket,
-          agg,
+          agg: effectiveAgg,
           bySource,
           view: bySource ? "full" : "quantity",
         },
@@ -358,8 +393,8 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
 
       let compareShiftDays = 0;
       let comparePromise: Promise<MetricPoint[]> = Promise.resolve([]);
-      if (compare && !bySource && resolvedFrom && preset !== "all") {
-        const span = daysBetweenInclusive(resolvedFrom, to);
+      if (compare && !bySource && resolvedFrom && effectivePreset !== "all") {
+        const span = daysBetweenInclusive(resolvedFrom, effectiveTo);
         compareShiftDays = span;
         const prevTo = shiftDateIso(resolvedFrom, -1);
         const prevFrom = shiftDateIso(prevTo, -(span - 1));
@@ -369,7 +404,7 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
             from: prevFrom,
             to: prevTo,
             bucket,
-            agg,
+            agg: effectiveAgg,
             bySource: false,
             view: "quantity",
           },
@@ -385,7 +420,7 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
 
       const points = main.points ?? [];
       const sources = main.points_by_source ?? [];
-      if (preset === "all" && !resolvedFrom && points.length > 0) {
+      if (effectivePreset === "all" && !resolvedFrom && points.length > 0) {
         const firstDate = points[0].date.slice(0, 10);
         if (/^\d{4}-\d{2}-\d{2}$/.test(firstDate)) {
           setFrom(firstDate);
@@ -394,7 +429,7 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
 
       const mode = bySource
         ? "by_source"
-        : isBarChartMetric(metricName, main.agg || agg)
+        : isBarChartMetric(metricName, main.agg || effectiveAgg)
           ? "bar"
           : "line";
 
@@ -402,7 +437,7 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
         status: "ready",
         mode,
         bucket: main.bucket || bucket || "day",
-        agg: main.agg || agg,
+        agg: main.agg || effectiveAgg,
         points,
         comparePoints,
         compareShiftDays,
@@ -414,7 +449,22 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
 
     run().catch(handleError);
     return () => controller.abort();
-  }, [agg, bucket, bySource, compare, currentRequestKey, locale, metricName, preset, queryFrom, reloadKey, to, today]);
+  }, [
+    bucket,
+    bySource,
+    compare,
+    currentRequestKey,
+    effectiveAgg,
+    effectiveFrom,
+    effectivePreset,
+    effectiveTo,
+    isReadiness,
+    locale,
+    metricName,
+    queryFrom,
+    reloadKey,
+    today,
+  ]);
 
   const effectiveChartState = useMemo<ChartState>(
     () =>
@@ -444,10 +494,24 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `${metricName}-${from}-${to}.csv`;
+    link.download = `${metricName}-${effectiveFrom}-${effectiveTo}.csv`;
     link.click();
     URL.revokeObjectURL(url);
   };
+
+  const aggOptionLabels: Record<MetricAgg, string> = {
+    "": tp(locale, "autoOption"),
+    AVG: tp(locale, "aggAvg"),
+    SUM: tp(locale, "aggSum"),
+    MAX: tp(locale, "aggMax"),
+    MIN: tp(locale, "aggMin"),
+  };
+
+  const availableRangeLabel = isReadiness
+    ? `${readinessMinDate} → ${today}`
+    : rangeBounds?.min && rangeBounds?.max
+      ? `${rangeBounds.min.slice(0, 10)} → ${rangeBounds.max.slice(0, 10)}`
+      : null;
 
   return (
     <div className="app-shell" data-locale={locale}>
@@ -462,19 +526,19 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
             {unit ? <span className="pill">{unit}</span> : null}
           </div>
           <span className="subpage__muted">
-            {from} — {to}
+            {effectiveFrom} — {effectiveTo}
           </span>
         </header>
 
         <section className="panel">
           <div className="metric-toolbar">
             <div className="metric-presets" role="group" aria-label="Date presets">
-              {PRESETS.map((item) => (
+              {visiblePresets.map((item) => (
                 <button
                   key={item.id}
                   type="button"
-                  className={preset === item.id ? "is-active" : ""}
-                  aria-pressed={preset === item.id}
+                  className={effectivePreset === item.id ? "is-active" : ""}
+                  aria-pressed={effectivePreset === item.id}
                   onClick={() => applyPreset(item.id)}
                 >
                   {item.label ?? tp(locale, "presetAll")}
@@ -486,28 +550,61 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
               <input
                 type="date"
                 className="field__input"
-                value={from}
+                value={effectiveFrom}
+                min={isReadiness ? readinessMinDate : undefined}
+                max={isReadiness ? today : undefined}
                 aria-label="From date"
                 onChange={(event) => {
+                  const raw = event.target.value;
                   setPreset("custom");
-                  setFrom(event.target.value);
+                  if (!isReadiness || !raw) {
+                    setFrom(raw);
+                    return;
+                  }
+                  const clamped =
+                    raw < readinessMinDate
+                      ? readinessMinDate
+                      : raw > today
+                        ? today
+                        : raw;
+                  setFrom(clamped);
+                  if (clamped > effectiveTo) {
+                    setTo(clamped);
+                  }
                 }}
               />
               <span className="subpage__muted">—</span>
               <input
                 type="date"
                 className="field__input"
-                value={to}
+                value={effectiveTo}
+                min={isReadiness ? readinessMinDate : undefined}
+                max={isReadiness ? today : undefined}
                 aria-label="To date"
                 onChange={(event) => {
+                  const raw = event.target.value;
                   setPreset("custom");
-                  setTo(event.target.value);
+                  if (!isReadiness || !raw) {
+                    setTo(raw);
+                    return;
+                  }
+                  const clamped =
+                    raw < readinessMinDate
+                      ? readinessMinDate
+                      : raw > today
+                        ? today
+                        : raw;
+                  setTo(clamped);
+                  if (clamped < effectiveFrom) {
+                    setFrom(clamped);
+                  }
                 }}
               />
               <button
                 type="button"
                 className="btn btn--small"
                 aria-label={tp(locale, "prevShift")}
+                disabled={isReadiness && effectiveFrom <= readinessMinDate}
                 onClick={() => shiftRange(-1)}
               >
                 ‹
@@ -516,13 +613,14 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
                 type="button"
                 className="btn btn--small"
                 aria-label={tp(locale, "nextShift")}
+                disabled={isReadiness && effectiveTo >= today}
                 onClick={() => shiftRange(1)}
               >
                 ›
               </button>
             </div>
 
-            {metricName !== "readiness" ? (
+            {!isReadiness ? (
               <div className="btn-row">
                 <label className="field__label">
                   {tp(locale, "bucketLabel")}
@@ -544,14 +642,14 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
                   {tp(locale, "aggLabel")}
                   <select
                     className="field__select"
-                    value={agg}
+                    value={effectiveAgg}
                     onChange={(event) => setAgg(event.target.value as MetricAgg)}
                   >
-                    <option value="">{tp(locale, "autoOption")}</option>
-                    <option value="AVG">{tp(locale, "aggAvg")}</option>
-                    <option value="SUM">{tp(locale, "aggSum")}</option>
-                    <option value="MAX">{tp(locale, "aggMax")}</option>
-                    <option value="MIN">{tp(locale, "aggMin")}</option>
+                    {supportedAggs.map((option) => (
+                      <option key={option || "auto"} value={option}>
+                        {aggOptionLabels[option]}
+                      </option>
+                    ))}
                   </select>
                 </label>
 
@@ -571,7 +669,7 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
                   type="button"
                   className={`btn btn--small${compare ? " is-active" : ""}`}
                   aria-pressed={compare}
-                  disabled={bySource || preset === "all"}
+                  disabled={bySource || effectivePreset === "all"}
                   onClick={() => setCompare((prev) => !prev)}
                 >
                   {tp(locale, "compare")}
@@ -626,12 +724,10 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
                 <span>{tp(locale, "statPoints")}</span>
                 <strong>{stats.count}</strong>
               </div>
-              {rangeBounds?.min && rangeBounds?.max ? (
+              {availableRangeLabel ? (
                 <div className="metric-stat">
                   <span>{tp(locale, "statRange")}</span>
-                  <strong>
-                    {rangeBounds.min.slice(0, 10)} → {rangeBounds.max.slice(0, 10)}
-                  </strong>
+                  <strong>{availableRangeLabel}</strong>
                 </div>
               ) : null}
             </div>
@@ -678,6 +774,13 @@ export function MetricDetailPage({ metricName }: { metricName: string }) {
             <>
               {effectiveChartState.mode === "sleep" ? (
                 <p className="subpage__muted">{tp(locale, "metricSleepHint")}</p>
+              ) : effectiveChartState.mode === "readiness" ? (
+                <p className="subpage__muted">
+                  {tp(locale, "metricReadinessHint", {
+                    from: readinessMinDate,
+                    to: today,
+                  })}
+                </p>
               ) : null}
               <MetricChart
                 locale={locale}

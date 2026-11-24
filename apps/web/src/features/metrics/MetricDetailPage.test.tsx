@@ -5,8 +5,11 @@ import * as ops from "../../api/operations";
 import {
   alignComparisonSeries,
   buildMetricCsv,
+  buildSleepPhaseRows,
   computeSeriesStats,
   shiftDateIso,
+  supportedMetricAggregations,
+  todayIso,
 } from "./catalog";
 import { MetricDetailPage } from "./MetricDetailPage";
 
@@ -88,6 +91,150 @@ describe("MetricDetailPage", () => {
       expect(readinessSpy).toHaveBeenCalled();
     });
     expect(await screen.findByText("80")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "All" })).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/Readiness history is available for the last 365 days/i),
+    ).toBeInTheDocument();
+
+    const today = todayIso();
+    const minDate = shiftDateIso(today, -364);
+    const fromInput = screen.getByLabelText("From date") as HTMLInputElement;
+    expect(fromInput.min).toBe(minDate);
+    expect(fromInput.max).toBe(today);
+
+    fireEvent.change(fromInput, { target: { value: "2020-01-01" } });
+    expect(fromInput.value).toBe(minDate);
+  });
+
+  it("fetches stored sleep_total directly, preserves total-only nights, and uses stored totals for stats", async () => {
+    window.history.replaceState({}, "", "/metrics/sleep_total?lang=en");
+    vi.spyOn(client, "getSession").mockResolvedValue({ is_admin: false });
+    vi.spyOn(ops, "listMetrics").mockResolvedValue([
+      {
+        name: "sleep_total",
+        display_name: "Sleep total",
+        units: "hr",
+        count: 2,
+        min: "2026-11-21",
+        max: "2026-11-22",
+      },
+    ]);
+    vi.spyOn(ops, "queryMetricRange").mockResolvedValue({
+      min: "2026-11-21",
+      max: "2026-11-22",
+    });
+    const querySpy = vi.spyOn(ops, "queryMetricData").mockImplementation(async (metric) => {
+      if (metric === "sleep_total") {
+        return {
+          metric,
+          bucket: "day",
+          agg: "SUM",
+          points: [
+            // Night with ONLY stored sleep_total (no stage points)
+            { date: "2026-11-21", qty: 7.4 },
+            // Night where stored sleep_total (8.2) differs from sum of stages (7.0)
+            { date: "2026-11-22", qty: 8.2 },
+          ],
+        };
+      }
+      if (metric === "sleep_deep") {
+        return { metric, bucket: "day", agg: "SUM", points: [{ date: "2026-11-22", qty: 1.5 }] };
+      }
+      if (metric === "sleep_core") {
+        return { metric, bucket: "day", agg: "SUM", points: [{ date: "2026-11-22", qty: 4.0 }] };
+      }
+      if (metric === "sleep_rem") {
+        return { metric, bucket: "day", agg: "SUM", points: [{ date: "2026-11-22", qty: 1.5 }] };
+      }
+      return { metric, bucket: "day", agg: "SUM", points: [] };
+    });
+
+    render(<MetricDetailPage metricName="sleep_total" />);
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Sleep total" })).toBeInTheDocument();
+    expect(querySpy).toHaveBeenCalledWith(
+      "sleep_total",
+      expect.objectContaining({ bucket: "day", agg: "SUM", view: "quantity" }),
+      expect.any(AbortSignal),
+    );
+    // Stats must reflect stored sleep_total [7.4, 8.2] -> avg 7.8, min 7.4, max 8.2, sum 15.6 -> "16"
+    expect(await screen.findByText("7.8 hr")).toBeInTheDocument();
+    expect(screen.getByText("7.4 hr")).toBeInTheDocument();
+    expect(screen.getByText("8.2 hr")).toBeInTheDocument();
+    expect(screen.queryByText("No measurements recorded in this period.")).not.toBeInTheDocument();
+
+    const rows = buildSleepPhaseRows(
+      {
+        sleep_deep: [{ date: "2026-11-22", qty: 1.5 }],
+        sleep_core: [{ date: "2026-11-22", qty: 4.0 }],
+        sleep_rem: [{ date: "2026-11-22", qty: 1.5 }],
+      },
+      [
+        { date: "2026-11-21", qty: 7.4 },
+        { date: "2026-11-22", qty: 8.2 },
+      ],
+    );
+    expect(rows).toEqual([
+      {
+        date: "2026-11-21",
+        sleep_deep: 0,
+        sleep_core: 0,
+        sleep_rem: 0,
+        sleep_unspecified: 7.4,
+        sleep_awake: 0,
+      },
+      {
+        date: "2026-11-22",
+        sleep_deep: 1.5,
+        sleep_core: 4,
+        sleep_rem: 1.5,
+        sleep_unspecified: 0,
+        sleep_awake: 0,
+      },
+    ]);
+  });
+
+  it("restricts aggregation selector to supported aggregations for SUM and AVG metrics", async () => {
+    expect(supportedMetricAggregations("step_count")).toEqual(["", "SUM", "MAX", "MIN"]);
+    expect(supportedMetricAggregations("sleep_total")).toEqual(["", "SUM", "MAX", "MIN"]);
+    expect(supportedMetricAggregations("heart_rate")).toEqual(["", "AVG", "MAX", "MIN"]);
+    expect(supportedMetricAggregations("dietary_energy")).toEqual(["", "AVG", "MAX", "MIN"]);
+
+    vi.spyOn(client, "getSession").mockResolvedValue({ is_admin: false });
+    vi.spyOn(ops, "listMetrics").mockResolvedValue([]);
+    vi.spyOn(ops, "queryMetricRange").mockResolvedValue({
+      min: "2026-11-01",
+      max: "2026-11-24",
+    });
+    vi.spyOn(ops, "queryMetricData").mockResolvedValue({
+      metric: "step_count",
+      bucket: "day",
+      agg: "SUM",
+      points: [{ date: "2026-11-23", qty: 9000 }],
+    });
+
+    window.history.replaceState({}, "", "/metrics/step_count?lang=en");
+    const { unmount } = render(<MetricDetailPage metricName="step_count" />);
+    await screen.findByRole("heading", { level: 1, name: "step_count" });
+    const stepAggSelect = screen.getByLabelText("Aggregation") as HTMLSelectElement;
+    expect(Array.from(stepAggSelect.options).map((o) => o.value)).toEqual([
+      "",
+      "SUM",
+      "MAX",
+      "MIN",
+    ]);
+    unmount();
+
+    window.history.replaceState({}, "", "/metrics/heart_rate?lang=en");
+    render(<MetricDetailPage metricName="heart_rate" />);
+    await screen.findByRole("heading", { level: 1, name: "heart_rate" });
+    const hrAggSelect = screen.getByLabelText("Aggregation") as HTMLSelectElement;
+    expect(Array.from(hrAggSelect.options).map((o) => o.value)).toEqual([
+      "",
+      "AVG",
+      "MAX",
+      "MIN",
+    ]);
   });
 
   it("keeps sleep_deep statistics specific to sleep_deep and surfaces phase errors", async () => {

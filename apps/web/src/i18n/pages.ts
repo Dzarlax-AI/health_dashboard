@@ -58,6 +58,7 @@ const pageMessages = {
     metricNoPoints: "No measurements recorded in this period.",
     metricLoadError: "Could not load metric series.",
     metricSleepHint: "Stacked nightly sleep phases (hours).",
+    metricReadinessHint: "Readiness history is available for the last 365 days ({from} – {to}).",
 
     // Settings
     settingsTitle: "Settings",
@@ -327,6 +328,7 @@ const pageMessages = {
     metricNoPoints: "За выбранный период данных нет.",
     metricLoadError: "Не удалось загрузить данные метрики.",
     metricSleepHint: "Фазы сна по ночам (часы).",
+    metricReadinessHint: "История готовности доступна за последние 365 дней ({from} – {to}).",
 
     settingsTitle: "Настройки",
     sleepSourceTitle: "Предпочтительный источник сна",
@@ -594,6 +596,7 @@ const pageMessages = {
     metricNoPoints: "Nema merenja za izabrani period.",
     metricLoadError: "Nije moguće učitati seriju metrike.",
     metricSleepHint: "Faze sna po noćima (sati).",
+    metricReadinessHint: "Istorija spremnosti je dostupna za poslednjih 365 dana ({from} – {to}).",
 
     settingsTitle: "Podešavanja",
     sleepSourceTitle: "Željeni izvor sna",

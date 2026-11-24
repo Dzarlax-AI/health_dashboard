@@ -18,7 +18,10 @@ import { tp } from "../../i18n/pages";
 import {
   alignComparisonSeries,
   SLEEP_PHASE_METRICS,
+  type SleepPhaseRow,
 } from "./catalog";
+
+export type { SleepPhaseRow };
 
 const SOURCE_COLORS = [
   "#2563eb",
@@ -67,15 +70,6 @@ function formatTick(dateStr: string, locale: Locale, bucket: string): string {
     }).format(d);
   }
   return dateStr;
-}
-
-export interface SleepPhaseRow {
-  date: string;
-  sleep_deep: number;
-  sleep_core: number;
-  sleep_rem: number;
-  sleep_unspecified: number;
-  sleep_awake: number;
 }
 
 export interface MetricChartProps {
