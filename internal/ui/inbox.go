@@ -105,6 +105,13 @@ func checkinTimingForStatus(status string) string {
 	}
 }
 
+func effectiveCheckinStatus(status, localDate, today string) string {
+	if status == storage.CheckinStatusPrompted && localDate != today {
+		return storage.CheckinStatusExpired
+	}
+	return status
+}
+
 func (h *Handler) inboxList(w http.ResponseWriter, r *http.Request) {
 	db := h.tenantDB(r)
 	if !storage.IsInAppInboxEnabled(db) {
@@ -145,6 +152,7 @@ func (h *Handler) inboxList(w http.ResponseWriter, r *http.Request) {
 		next = base64.RawURLEncoding.EncodeToString(data)
 	}
 	lang := h.inboxLang(r, db)
+	today := h.inboxToday(db, h.tenantSchema(r), time.Now())
 	promptTitle, _ := promptOptionsForAPI(lang)
 	items := make([]clientapi.InboxItemSummary, 0, len(rows))
 	for _, row := range rows {
@@ -166,13 +174,14 @@ func (h *Handler) inboxList(w http.ResponseWriter, r *http.Request) {
 			item.ReportID = row.ReportID
 		case storage.InboxKindPromptCheckin:
 			id := row.ID
+			status := effectiveCheckinStatus(row.CheckinStatus, row.LocalDate, today)
 			item.Title = promptTitle
 			item.PromptID = &id
-			item.Status = row.CheckinStatus
+			item.Status = status
 			item.Answer = row.CheckinAnswer
 			item.AnsweredAt = row.CheckinAnswered
 			item.ExpiresAt = row.CheckinExpires
-			item.Timing = checkinTimingForStatus(row.CheckinStatus)
+			item.Timing = checkinTimingForStatus(status)
 			item.AnsweredChannel = row.CheckinChannel
 		}
 		items = append(items, item)
@@ -253,15 +262,19 @@ func (h *Handler) inboxDetail(w http.ResponseWriter, r *http.Request) {
 	case storage.InboxKindPromptCheckin:
 		title, options := promptOptionsForAPI(lang)
 		pid := row.ID
+		today := h.inboxToday(db, h.tenantSchema(r), time.Now())
+		status := effectiveCheckinStatus(row.CheckinStatus, row.LocalDate, today)
 		resp.Title = title
 		resp.PromptID = &pid
-		resp.Status = row.CheckinStatus
+		resp.Status = status
 		resp.Answer = row.CheckinAnswer
 		resp.AnsweredAt = row.CheckinAnswered
 		resp.ExpiresAt = row.CheckinExpires
-		resp.Timing = checkinTimingForStatus(row.CheckinStatus)
+		resp.Timing = checkinTimingForStatus(status)
 		resp.AnsweredChannel = row.CheckinChannel
-		resp.Options = options
+		if row.LocalDate == today && (status == storage.CheckinStatusPrompted || status == storage.CheckinStatusExpired) {
+			resp.Options = options
+		}
 	}
 	jsonResponse(w, resp)
 }

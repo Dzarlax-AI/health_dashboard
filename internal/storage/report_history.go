@@ -57,8 +57,10 @@ CREATE TABLE IF NOT EXISTS report_history (
 CREATE TABLE IF NOT EXISTS report_delivery_attempts (
  id UUID PRIMARY KEY, report_id UUID NOT NULL REFERENCES report_history(id), format TEXT NOT NULL CHECK (format IN ('html','rich')),
  body TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('reserved','sent','failed','ambiguous')),
- reserved_at TIMESTAMPTZ NOT NULL, completed_at TIMESTAMPTZ, error_code TEXT NOT NULL, message_id BIGINT
+ reserved_at TIMESTAMPTZ NOT NULL, completed_at TIMESTAMPTZ, error_code TEXT NOT NULL, message_id BIGINT,
+ lease_token UUID
 );
+ALTER TABLE report_delivery_attempts ADD COLUMN IF NOT EXISTS lease_token UUID;
 CREATE INDEX IF NOT EXISTS idx_report_history_prepared ON report_history (prepared_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_report_attempts_report ON report_delivery_attempts (report_id, reserved_at, id);
 `
@@ -96,20 +98,30 @@ func (s *DB) ReserveArchivedReport(ctx context.Context, h *ReportHistory) (uuid.
 	token := uuid.New()
 	if !h.IsPreview {
 		var got uuid.UUID
-		err = tx.QueryRow(ctx, `INSERT INTO notification_deliveries(delivery_key,status,lease_token) VALUES($1,'reserved',$2) ON CONFLICT DO NOTHING RETURNING lease_token`, *h.DeliveryKey, token).Scan(&got)
+		err = tx.QueryRow(ctx, `INSERT INTO notification_deliveries(delivery_key,status,lease_token,reserved_at) VALUES($1,'reserved',$2,clock_timestamp()) ON CONFLICT DO NOTHING RETURNING lease_token`, *h.DeliveryKey, token).Scan(&got)
 		if errors.Is(err, pgx.ErrNoRows) {
 			var state string
 			var reservedAt time.Time
-			if err = tx.QueryRow(ctx, `SELECT status,reserved_at FROM notification_deliveries WHERE delivery_key=$1 FOR UPDATE`, *h.DeliveryKey).Scan(&state, &reservedAt); err != nil {
+			var existingLease uuid.UUID
+			if err = tx.QueryRow(ctx, `SELECT status,reserved_at,lease_token FROM notification_deliveries WHERE delivery_key=$1 FOR UPDATE`, *h.DeliveryKey).Scan(&state, &reservedAt, &existingLease); err != nil {
 				return uuid.Nil, false, err
 			}
 			retryable := state == "failed"
 			if state == "reserved" && time.Since(reservedAt) >= 30*time.Second {
 				// Holding the delivery row lock fences a previous preparer.
-				// Only an archived latest revision with zero transport attempts
-				// can be recovered. Legacy reservations remain ambiguous.
+				// Only a reservation with an archived report and zero transport
+				// attempts under that lease across any revision of this delivery
+				// key can be recovered. Legacy reservations remain ambiguous.
 				var noAttempt bool
-				err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM report_history h WHERE h.delivery_key=$1 AND h.revision=(SELECT max(revision) FROM report_history WHERE delivery_key=$1) AND NOT EXISTS(SELECT 1 FROM report_delivery_attempts a WHERE a.report_id=h.id))`, *h.DeliveryKey).Scan(&noAttempt)
+				err = tx.QueryRow(ctx, `
+					SELECT EXISTS(SELECT 1 FROM report_history h WHERE h.delivery_key=$1)
+					   AND NOT EXISTS(
+					       SELECT 1
+					         FROM report_delivery_attempts a
+					         JOIN report_history h ON h.id = a.report_id
+					        WHERE h.delivery_key = $1
+					          AND (a.lease_token = $2 OR (a.lease_token IS NULL AND a.reserved_at >= $3))
+					   )`, *h.DeliveryKey, existingLease, reservedAt).Scan(&noAttempt)
 				if err != nil {
 					return uuid.Nil, false, err
 				}
@@ -118,7 +130,7 @@ func (s *DB) ReserveArchivedReport(ctx context.Context, h *ReportHistory) (uuid.
 			if !retryable {
 				return uuid.Nil, false, nil
 			}
-			_, err = tx.Exec(ctx, `UPDATE notification_deliveries SET status='reserved',lease_token=$2,reserved_at=now(),completed_at=NULL,error_code=NULL WHERE delivery_key=$1`, *h.DeliveryKey, token)
+			_, err = tx.Exec(ctx, `UPDATE notification_deliveries SET status='reserved',lease_token=$2,reserved_at=clock_timestamp(),completed_at=NULL,error_code=NULL WHERE delivery_key=$1`, *h.DeliveryKey, token)
 		}
 		if err != nil {
 			return uuid.Nil, false, err
@@ -169,7 +181,11 @@ func (s *DB) ReserveReportAttempt(ctx context.Context, reportID uuid.UUID, forma
 		}
 	}
 	id := uuid.New()
-	_, err = tx.Exec(ctx, `INSERT INTO report_delivery_attempts(id,report_id,format,body,status,reserved_at,error_code) VALUES($1,$2,$3,$4,'reserved',NOW(),'')`, id, reportID, format, body)
+	var leaseToken *uuid.UUID
+	if !preview && token != uuid.Nil {
+		leaseToken = &token
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO report_delivery_attempts(id,report_id,format,body,status,reserved_at,error_code,lease_token) VALUES($1,$2,$3,$4,'reserved',clock_timestamp(),'',$5)`, id, reportID, format, body, leaseToken)
 	if err != nil {
 		return uuid.Nil, err
 	}

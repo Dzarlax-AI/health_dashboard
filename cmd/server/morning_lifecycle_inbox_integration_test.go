@@ -54,6 +54,8 @@ func setupServerInboxTestDB(t *testing.T, prefix string) (*storage.DB, *pgxpool.
 
 func TestMorningTriggerRecoversStaleZeroAttemptReservationThroughMinuteTick(t *testing.T) {
 	t.Setenv("IN_APP_INBOX_ENABLED", "")
+	t.Setenv("TELEGRAM_WEBHOOK_SECRET", "")
+	t.Setenv("TELEGRAM_WEBHOOK_TOKEN_HEADER", "")
 	db, pool, schema, cleanup := setupServerInboxTestDB(t, "srv_morning_recover")
 	defer cleanup()
 

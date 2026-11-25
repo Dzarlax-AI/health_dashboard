@@ -283,20 +283,28 @@ func (s *DB) ReserveReportDeliveryForExisting(ctx context.Context, reportID uuid
 	token := uuid.New()
 	var got uuid.UUID
 	err = tx.QueryRow(ctx, `
-		INSERT INTO notification_deliveries(delivery_key,status,lease_token)
-		VALUES($1,'reserved',$2)
+		INSERT INTO notification_deliveries(delivery_key,status,lease_token,reserved_at)
+		VALUES($1,'reserved',$2,clock_timestamp())
 		ON CONFLICT DO NOTHING
 		RETURNING lease_token`, *deliveryKey, token).Scan(&got)
 	if errors.Is(err, pgx.ErrNoRows) {
 		var state string
 		var reservedAt time.Time
-		if err = tx.QueryRow(ctx, `SELECT status, reserved_at FROM notification_deliveries WHERE delivery_key = $1 FOR UPDATE`, *deliveryKey).Scan(&state, &reservedAt); err != nil {
+		var existingLease uuid.UUID
+		if err = tx.QueryRow(ctx, `SELECT status, reserved_at, lease_token FROM notification_deliveries WHERE delivery_key = $1 FOR UPDATE`, *deliveryKey).Scan(&state, &reservedAt, &existingLease); err != nil {
 			return uuid.Nil, false, err
 		}
 		retryable := state == "failed"
 		if state == "reserved" && time.Since(reservedAt) >= 30*time.Second {
 			var noAttempt bool
-			err = tx.QueryRow(ctx, `SELECT NOT EXISTS(SELECT 1 FROM report_delivery_attempts WHERE report_id = $1)`, reportID).Scan(&noAttempt)
+			err = tx.QueryRow(ctx, `
+				SELECT NOT EXISTS(
+					SELECT 1
+					  FROM report_delivery_attempts a
+					  JOIN report_history h ON h.id = a.report_id
+					 WHERE h.delivery_key = $1
+					   AND (a.lease_token = $2 OR (a.lease_token IS NULL AND a.reserved_at >= $3))
+				)`, *deliveryKey, existingLease, reservedAt).Scan(&noAttempt)
 			if err != nil {
 				return uuid.Nil, false, err
 			}
@@ -305,7 +313,7 @@ func (s *DB) ReserveReportDeliveryForExisting(ctx context.Context, reportID uuid
 		if !retryable {
 			return uuid.Nil, false, nil
 		}
-		if _, err = tx.Exec(ctx, `UPDATE notification_deliveries SET status='reserved', lease_token=$2, reserved_at=now(), completed_at=NULL, error_code=NULL WHERE delivery_key=$1`, *deliveryKey, token); err != nil {
+		if _, err = tx.Exec(ctx, `UPDATE notification_deliveries SET status='reserved', lease_token=$2, reserved_at=clock_timestamp(), completed_at=NULL, error_code=NULL WHERE delivery_key=$1`, *deliveryKey, token); err != nil {
 			return uuid.Nil, false, err
 		}
 	} else if err != nil {

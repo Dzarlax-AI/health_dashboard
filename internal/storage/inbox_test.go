@@ -203,6 +203,103 @@ func TestInboxMorningReportPublishAndTelegramRetryReusesReportID(t *testing.T) {
 	}
 }
 
+func TestInboxReportDeliveryLeaseScopedRecoveryAndCrossRevisionAmbiguity(t *testing.T) {
+	db, cleanup := setupInboxTestDB(t, "inbox_lease_recovery")
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Case 1: Lease 1 records a failed attempt, completes as failed, lease 2 is
+	// acquired and crashes before recording any attempt -> after 30s lease 2
+	// must be recoverable despite lease 1's historical attempt row.
+	day1 := "2026-11-26"
+	key1 := "report:morning:" + day1
+	r1 := &ReportHistory{
+		DeliveryKey: &key1,
+		Kind:        "morning",
+		LocalDate:   day1,
+		Timezone:    "UTC",
+		Language:    "en",
+		PlainBody:   "<b>Day 1</b>",
+	}
+	if _, _, err := db.PublishMorningReportToInbox(ctx, r1, false); err != nil {
+		t.Fatalf("publish day1: %v", err)
+	}
+	tok1, ok, err := db.ReserveReportDeliveryForExisting(ctx, r1.ID)
+	if err != nil || !ok {
+		t.Fatalf("reserve tok1: ok=%v err=%v", ok, err)
+	}
+	att1, err := db.ReserveReportAttempt(ctx, r1.ID, "html", r1.PlainBody, tok1)
+	if err != nil {
+		t.Fatalf("attempt 1: %v", err)
+	}
+	if err := db.CompleteReportAttempt(ctx, att1, "failed", "provider_rejected", nil); err != nil {
+		t.Fatalf("complete attempt 1: %v", err)
+	}
+	if err := db.CompleteNotificationDelivery(ctx, key1, tok1, "failed", "provider_rejected"); err != nil {
+		t.Fatalf("complete delivery failed: %v", err)
+	}
+	tok2, ok, err := db.ReserveReportDeliveryForExisting(ctx, r1.ID)
+	if err != nil || !ok || tok2 == tok1 {
+		t.Fatalf("reserve tok2: ok=%v err=%v", ok, err)
+	}
+	// Simulate crash before attempt 2: backdate tok2's reservation > 30s.
+	if _, err := db.pool.Exec(ctx, `UPDATE notification_deliveries SET reserved_at = NOW() - INTERVAL '45 seconds' WHERE delivery_key = $1`, key1); err != nil {
+		t.Fatalf("backdate tok2: %v", err)
+	}
+	if db.HasSettledMorningReport(day1) {
+		t.Fatal("stale zero-attempt lease 2 must not appear settled despite earlier failed lease 1 attempt")
+	}
+	tok3, ok, err := db.ReserveReportDeliveryForExisting(ctx, r1.ID)
+	if err != nil || !ok || tok3 == tok2 {
+		t.Fatalf("recover stale zero-attempt lease 2: ok=%v err=%v", ok, err)
+	}
+
+	// Case 2: Lease 1 starts an attempt on rev 1 and crashes (ambiguous). A new
+	// rev 2 is later published under the same delivery_key. Neither HasSettled
+	// nor ReserveReportDeliveryForExisting may reclaim the reservation.
+	day2 := "2026-11-27"
+	key2 := "report:morning:" + day2
+	rev1 := &ReportHistory{
+		DeliveryKey: &key2,
+		Kind:        "morning",
+		LocalDate:   day2,
+		Timezone:    "UTC",
+		Language:    "en",
+		PlainBody:   "<b>Day 2 rev1</b>",
+	}
+	if _, _, err := db.PublishMorningReportToInbox(ctx, rev1, false); err != nil {
+		t.Fatalf("publish day2 rev1: %v", err)
+	}
+	ambigTok, ok, err := db.ReserveReportDeliveryForExisting(ctx, rev1.ID)
+	if err != nil || !ok {
+		t.Fatalf("reserve ambigTok: ok=%v err=%v", ok, err)
+	}
+	if _, err := db.ReserveReportAttempt(ctx, rev1.ID, "html", rev1.PlainBody, ambigTok); err != nil {
+		t.Fatalf("reserve attempt on rev1: %v", err)
+	}
+	if _, err := db.pool.Exec(ctx, `UPDATE notification_deliveries SET reserved_at = NOW() - INTERVAL '45 seconds' WHERE delivery_key = $1`, key2); err != nil {
+		t.Fatalf("backdate ambigTok: %v", err)
+	}
+	rev2 := &ReportHistory{
+		DeliveryKey: &key2,
+		Kind:        "morning",
+		LocalDate:   day2,
+		Timezone:    "UTC",
+		Language:    "en",
+		PlainBody:   "<b>Day 2 rev2</b>",
+	}
+	if _, _, err := db.PublishMorningReportToInbox(ctx, rev2, true); err != nil {
+		t.Fatalf("publish day2 rev2: %v", err)
+	}
+	if !db.HasSettledMorningReport(day2) {
+		t.Fatal("reservation with transport attempt on rev1 must stay settled after rev2 is published")
+	}
+	if _, ok, err := db.ReserveReportDeliveryForExisting(ctx, rev2.ID); err != nil || ok {
+		t.Fatalf("rev2 must not reclaim reservation that had an attempt on rev1: ok=%v err=%v", ok, err)
+	}
+}
+
 func TestInboxCheckinUnifiedAnswersConcurrencyAndCrossDayGuard(t *testing.T) {
 	db, cleanup := setupInboxTestDB(t, "inbox_checkin")
 	defer cleanup()

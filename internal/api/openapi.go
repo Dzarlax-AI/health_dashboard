@@ -247,6 +247,34 @@ func clientPaths() map[string]any {
 	todayInsightsOperation["responses"].(map[string]any)["503"] = plainTextResponse(
 		"Current-day source data is not available yet.",
 	)
+	inboxListOperation := getOperation(
+		"listInbox",
+		"Chronological feed of morning reports and morning check-in prompts",
+		[]any{
+			langParameter(),
+			integerQueryParameter("limit", 20, 1, 100),
+			plainStringQueryParameter("cursor", "Opaque continuation cursor ordered by (created_at, id)."),
+		},
+		jsonResponseRef("InboxFeedResponse"),
+	)
+	inboxListOperation["responses"].(map[string]any)["404"] = plainTextResponse("In-app Inbox is disabled for this profile.")
+	inboxPendingOperation := getOperation(
+		"listPendingInboxPrompts",
+		"Active unanswered morning check-in prompts for today",
+		[]any{langParameter()},
+		jsonResponseRef("InboxPendingResponse"),
+	)
+	inboxPendingOperation["responses"].(map[string]any)["404"] = plainTextResponse("In-app Inbox is disabled for this profile.")
+	inboxItemOperation := getOperation(
+		"getInboxItem",
+		"Inbox item detail with normalized report text or canonical check-in state",
+		[]any{
+			map[string]any{"name": "id", "in": "path", "required": true, "schema": map[string]any{"type": "string", "format": "uuid"}},
+			langParameter(),
+		},
+		jsonResponseRef("InboxDetailResponse"),
+	)
+	inboxItemOperation["responses"].(map[string]any)["404"] = plainTextResponse("In-app Inbox is disabled for this profile, or the requested item was not found.")
 	sleepBalanceOperation := getOperation(
 		"getSleepDurationBalance",
 		"Transparent fourteen-period sleep-duration accounting relative to a manual goal",
@@ -332,35 +360,13 @@ func clientPaths() map[string]any {
 			"get": getOperation("getReportHistory", "Archived report details", []any{map[string]any{"name": "id", "in": "path", "required": true, "schema": map[string]any{"type": "string", "format": "uuid"}}}, jsonHistoryDetailResponse()),
 		},
 		"/api/inbox": map[string]any{
-			"get": getOperation(
-				"listInbox",
-				"Chronological feed of morning reports and morning check-in prompts",
-				[]any{
-					langParameter(),
-					integerQueryParameter("limit", 20, 1, 100),
-					plainStringQueryParameter("cursor", "Opaque continuation cursor ordered by (created_at, id)."),
-				},
-				jsonResponseRef("InboxFeedResponse"),
-			),
+			"get": inboxListOperation,
 		},
 		"/api/inbox/pending": map[string]any{
-			"get": getOperation(
-				"listPendingInboxPrompts",
-				"Active unanswered morning check-in prompts for today",
-				[]any{langParameter()},
-				jsonResponseRef("InboxPendingResponse"),
-			),
+			"get": inboxPendingOperation,
 		},
 		"/api/inbox/{id}": map[string]any{
-			"get": getOperation(
-				"getInboxItem",
-				"Inbox item detail with normalized report text or canonical check-in state",
-				[]any{
-					map[string]any{"name": "id", "in": "path", "required": true, "schema": map[string]any{"type": "string", "format": "uuid"}},
-					langParameter(),
-				},
-				jsonResponseRef("InboxDetailResponse"),
-			),
+			"get": inboxItemOperation,
 		},
 		"/api/prompts/{prompt_id}/answer": map[string]any{
 			"post": promptAnswerOperation(),

@@ -41,6 +41,10 @@ type AppState =
   | { status: "unauthenticated" }
   | { status: "error"; message: string };
 
+const PENDING_INBOX_REFRESH_MS = 5 * 60 * 1000;
+const PENDING_INBOX_RETRY_BASE_MS = 30 * 1000;
+const PENDING_INBOX_MAX_RETRIES = 3;
+
 function fixtureHref(locale: Locale, fixture: string): string {
   return `/?${new URLSearchParams({ lang: locale, fixture }).toString()}`;
 }
@@ -55,6 +59,8 @@ function DashboardApp() {
   const [pendingPrompts, setPendingPrompts] = useState<PendingCheckinPrompt[]>([]);
   const [inboxSupported, setInboxSupported] = useState(false);
   const [pendingReloadKey, setPendingReloadKey] = useState(0);
+  const inboxDisabledRef = useRef(false);
+  const pendingRetryAttemptsRef = useRef(0);
   const aiPollAttempts = useRef(0);
   const fixtureState: AppState | undefined = fixture
     ? fixture === "loading"
@@ -105,12 +111,14 @@ function DashboardApp() {
   }, [fixture, locale, reloadKey]);
 
   useEffect(() => {
-    if (fixture) {
+    if (fixture || inboxDisabledRef.current) {
       return;
     }
     const controller = new AbortController();
+    let retryTimer: number | undefined;
     getPendingInboxPrompts(locale, controller.signal)
       .then((res) => {
+        pendingRetryAttemptsRef.current = 0;
         setInboxSupported(true);
         setPendingPrompts(res.prompts ?? []);
       })
@@ -119,12 +127,70 @@ function DashboardApp() {
           return;
         }
         if (error instanceof ClientApiError && error.status === 404) {
+          inboxDisabledRef.current = true;
           setInboxSupported(false);
           setPendingPrompts([]);
+          return;
+        }
+        if (error instanceof ClientApiError && error.status === 401) {
+          return;
+        }
+        if (
+          document.visibilityState === "visible" &&
+          pendingRetryAttemptsRef.current < PENDING_INBOX_MAX_RETRIES
+        ) {
+          pendingRetryAttemptsRef.current += 1;
+          retryTimer = window.setTimeout(
+            () => setPendingReloadKey((value) => value + 1),
+            PENDING_INBOX_RETRY_BASE_MS * pendingRetryAttemptsRef.current,
+          );
         }
       });
-    return () => controller.abort();
-  }, [fixture, locale, pendingReloadKey]);
+    return () => {
+      controller.abort();
+      if (retryTimer !== undefined) {
+        window.clearTimeout(retryTimer);
+      }
+    };
+  }, [fixture, locale, reloadKey, pendingReloadKey]);
+
+  useEffect(() => {
+    if (fixture) {
+      return;
+    }
+    let intervalId: number | undefined;
+    const stopInterval = () => {
+      if (intervalId !== undefined) {
+        window.clearInterval(intervalId);
+        intervalId = undefined;
+      }
+    };
+    const startInterval = () => {
+      stopInterval();
+      if (document.visibilityState === "visible" && !inboxDisabledRef.current) {
+        intervalId = window.setInterval(() => {
+          if (inboxDisabledRef.current) {
+            stopInterval();
+            return;
+          }
+          setPendingReloadKey((value) => value + 1);
+        }, PENDING_INBOX_REFRESH_MS);
+      }
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible" && !inboxDisabledRef.current) {
+        pendingRetryAttemptsRef.current = 0;
+        setPendingReloadKey((value) => value + 1);
+      }
+      startInterval();
+    };
+    startInterval();
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      stopInterval();
+    };
+  }, [fixture]);
 
   useEffect(() => {
     const currentTodayInsights =

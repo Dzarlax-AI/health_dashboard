@@ -338,6 +338,7 @@ func runtimeContractColumns() []ColumnDefinition {
 		{Table: "report_delivery_attempts", Column: "completed_at", DataType: "timestamp with time zone", Nullable: true},
 		{Table: "report_delivery_attempts", Column: "error_code", DataType: "text", Nullable: false},
 		{Table: "report_delivery_attempts", Column: "message_id", DataType: "bigint", Nullable: true},
+		{Table: "report_delivery_attempts", Column: "lease_token", DataType: "uuid", Nullable: true},
 		{Table: "inbox_items", Column: "id", DataType: "uuid", Nullable: false},
 		{Table: "inbox_items", Column: "logical_key", DataType: "text", Nullable: false},
 		{Table: "inbox_items", Column: "kind", DataType: "text", Nullable: false},

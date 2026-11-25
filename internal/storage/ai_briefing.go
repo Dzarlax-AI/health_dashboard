@@ -105,13 +105,18 @@ func (s *DB) HasSettledMorningReport(date string) bool {
 			     OR (
 			       n.status = 'reserved'
 			       AND NOT (
-			         n.reserved_at <= NOW() - INTERVAL '30 seconds'
+			         n.reserved_at <= clock_timestamp() - INTERVAL '30 seconds'
 			         AND EXISTS(
 			           SELECT 1
 			             FROM report_history h
 			            WHERE h.delivery_key = n.delivery_key
-			              AND h.revision = (SELECT max(revision) FROM report_history WHERE delivery_key = n.delivery_key)
-			              AND NOT EXISTS(SELECT 1 FROM report_delivery_attempts a WHERE a.report_id = h.id)
+			         )
+			         AND NOT EXISTS(
+			           SELECT 1
+			             FROM report_delivery_attempts a
+			             JOIN report_history h ON h.id = a.report_id
+			            WHERE h.delivery_key = n.delivery_key
+			              AND (a.lease_token = n.lease_token OR (a.lease_token IS NULL AND a.reserved_at >= n.reserved_at))
 			         )
 			       )
 			     )

@@ -182,7 +182,22 @@ func TestInboxEndpointsFeedPendingDetailAndAnswers(t *testing.T) {
 		t.Fatalf("telegram channel status=%d, want 400", w.Code)
 	}
 
-	// 6. Yesterday's prompt returns 409 {"status":"expired"}
+	// 6. Yesterday's prompt reports expired with no options on detail and returns 409 {"status":"expired"} on answer
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest(http.MethodGet, "/api/inbox/"+oldPromptID.String()+"?lang=en", nil).WithContext(adminContext(db, schema))
+	r.SetPathValue("id", oldPromptID.String())
+	h.inboxDetail(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("old prompt detail status=%d body=%s", w.Code, w.Body.String())
+	}
+	var oldDetail clientapi.InboxDetailResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &oldDetail); err != nil {
+		t.Fatal(err)
+	}
+	if oldDetail.Status != storage.CheckinStatusExpired || len(oldDetail.Options) != 0 {
+		t.Fatalf("old prompt detail = %+v, want status=expired and no options", oldDetail)
+	}
+
 	w = httptest.NewRecorder()
 	r = httptest.NewRequest(http.MethodPost, "/api/prompts/"+oldPromptID.String()+"/answer", bytes.NewBufferString(`{"answer":"ok","channel":"ios_app"}`)).WithContext(adminContext(db, schema))
 	r.SetPathValue("prompt_id", oldPromptID.String())
@@ -193,6 +208,34 @@ func TestInboxEndpointsFeedPendingDetailAndAnswers(t *testing.T) {
 	var expiredResp clientapi.PromptExpiredResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &expiredResp); err != nil || expiredResp.Status != storage.CheckinAnswerStatusExpired {
 		t.Fatalf("expired body=%s", w.Body.String())
+	}
+
+	// 6b. Today's prompt expired after its 2h window still exposes options on detail so same-day late answers work
+	if _, err := db.ExpireCanonicalCheckin(today, now.Add(3*time.Hour)); err != nil {
+		t.Fatalf("expire today prompt: %v", err)
+	}
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest(http.MethodGet, "/api/inbox/"+promptID.String()+"?lang=en", nil).WithContext(adminContext(db, schema))
+	r.SetPathValue("id", promptID.String())
+	h.inboxDetail(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("same-day expired detail status=%d body=%s", w.Code, w.Body.String())
+	}
+	var sameDayExpiredDetail clientapi.InboxDetailResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &sameDayExpiredDetail); err != nil {
+		t.Fatal(err)
+	}
+	if sameDayExpiredDetail.Status != storage.CheckinStatusExpired || len(sameDayExpiredDetail.Options) != 4 {
+		t.Fatalf("same-day expired detail = %+v, want status=expired with 4 options for late answer", sameDayExpiredDetail)
+	}
+	// Restore status to prompted before testing on-time answer below.
+	schemaPool, err := testdb.NewPool(ctx, dsn, schema)
+	if err != nil {
+		t.Fatalf("schema pool: %v", err)
+	}
+	defer schemaPool.Close()
+	if _, err := schemaPool.Exec(ctx, `UPDATE subjective_checkins SET status = 'prompted' WHERE date = $1`, today); err != nil {
+		t.Fatalf("restore prompted status: %v", err)
 	}
 
 	// 7. First valid answer -> 200 saved + triggers refresh; repeat with different answer -> 200 already_answered + no second refresh

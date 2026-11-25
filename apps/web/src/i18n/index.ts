@@ -188,6 +188,10 @@ const messages = {
     inboxPromptStatusLate: "Answered late",
     inboxPromptStatusExpired: "Expired",
     inboxPromptStatusPending: "Waiting for answer",
+    inboxAnswerGreat: "Great",
+    inboxAnswerOk: "OK",
+    inboxAnswerMeh: "Meh",
+    inboxAnswerSick: "Sick",
   },
   ru: {
     appTitle: "Здоровье",
@@ -374,6 +378,10 @@ const messages = {
     inboxPromptStatusLate: "Отвечено поздно",
     inboxPromptStatusExpired: "Истёк",
     inboxPromptStatusPending: "Ждёт ответа",
+    inboxAnswerGreat: "Отлично",
+    inboxAnswerOk: "Нормально",
+    inboxAnswerMeh: "Не очень",
+    inboxAnswerSick: "Болен(а)",
   },
   sr: {
     appTitle: "Zdravlje",
@@ -560,6 +568,10 @@ const messages = {
     inboxPromptStatusLate: "Kasni odgovor",
     inboxPromptStatusExpired: "Isteklo",
     inboxPromptStatusPending: "Čeka odgovor",
+    inboxAnswerGreat: "Odlično",
+    inboxAnswerOk: "Normalno",
+    inboxAnswerMeh: "Onako",
+    inboxAnswerSick: "Bolestan(a)",
   },
 } as const;
 

@@ -4535,6 +4535,15 @@ export interface operations {
                     };
                 };
             };
+            /** @description In-app Inbox is disabled for this profile. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
             /** @description The backend could not load or encode the tenant response. */
             500: {
                 headers: {
@@ -4576,6 +4585,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                     };
+                };
+            };
+            /** @description In-app Inbox is disabled for this profile. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
                 };
             };
             /** @description The backend could not load or encode the tenant response. */
@@ -4621,6 +4639,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                     };
+                };
+            };
+            /** @description In-app Inbox is disabled for this profile, or the requested item was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
                 };
             };
             /** @description The backend could not load or encode the tenant response. */

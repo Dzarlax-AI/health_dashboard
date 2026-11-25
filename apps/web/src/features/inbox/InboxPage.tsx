@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   answerInboxPrompt,
@@ -64,6 +64,21 @@ function statusLabelForCheckin(locale: Locale, status?: string): string {
   }
 }
 
+function answerLabelForCheckin(locale: Locale, answer?: string): string {
+  switch (answer) {
+    case "great":
+      return translate(locale, "inboxAnswerGreat");
+    case "ok":
+      return translate(locale, "inboxAnswerOk");
+    case "meh":
+      return translate(locale, "inboxAnswerMeh");
+    case "sick":
+      return translate(locale, "inboxAnswerSick");
+    default:
+      return answer ?? "";
+  }
+}
+
 export function InboxPage({ itemId }: InboxPageProps) {
   const params = new URLSearchParams(window.location.search);
   const locale = resolveLocale(params.get("lang"));
@@ -73,6 +88,8 @@ export function InboxPage({ itemId }: InboxPageProps) {
   const [loadingMore, setLoadingMore] = useState(false);
   const [detailSubmitting, setDetailSubmitting] = useState(false);
   const [detailError, setDetailError] = useState<string | undefined>(undefined);
+  const feedGenerationRef = useRef(0);
+  const loadMoreAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     document.documentElement.lang = locale;
@@ -82,6 +99,8 @@ export function InboxPage({ itemId }: InboxPageProps) {
     if (itemId) {
       return;
     }
+    feedGenerationRef.current += 1;
+    loadMoreAbortRef.current?.abort();
     const controller = new AbortController();
     Promise.all([
       getInbox(locale, { limit: 20 }, controller.signal),
@@ -180,9 +199,19 @@ export function InboxPage({ itemId }: InboxPageProps) {
     if (feedState.status !== "ready" || !feedState.nextCursor || loadingMore) {
       return;
     }
+    const generation = feedGenerationRef.current;
+    const controller = new AbortController();
+    loadMoreAbortRef.current = controller;
     setLoadingMore(true);
     try {
-      const more = await getInbox(locale, { limit: 20, cursor: feedState.nextCursor });
+      const more = await getInbox(
+        locale,
+        { limit: 20, cursor: feedState.nextCursor },
+        controller.signal,
+      );
+      if (feedGenerationRef.current !== generation || controller.signal.aborted) {
+        return;
+      }
       setFeedState((prev) =>
         prev.status === "ready"
           ? {
@@ -195,7 +224,10 @@ export function InboxPage({ itemId }: InboxPageProps) {
     } catch {
       // Keep existing feed visible so user can retry loading more.
     } finally {
-      setLoadingMore(false);
+      if (loadMoreAbortRef.current === controller) {
+        loadMoreAbortRef.current = null;
+        setLoadingMore(false);
+      }
     }
   }, [feedState, loadingMore, locale]);
 
@@ -299,9 +331,12 @@ export function InboxPage({ itemId }: InboxPageProps) {
                   <div className="inbox-checkin-detail">
                     <p className="inbox-checkin-detail__status">
                       {statusLabelForCheckin(locale, detailState.detail.status)}
-                      {detailState.detail.answer ? `: ${detailState.detail.answer}` : ""}
+                      {detailState.detail.answer
+                        ? `: ${answerLabelForCheckin(locale, detailState.detail.answer)}`
+                        : ""}
                     </p>
-                    {detailState.detail.status === "prompted" &&
+                    {(detailState.detail.status === "prompted" ||
+                      detailState.detail.status === "expired") &&
                     detailState.detail.prompt_id &&
                     detailState.detail.options &&
                     detailState.detail.options.length > 0 ? (
@@ -402,7 +437,9 @@ export function InboxPage({ itemId }: InboxPageProps) {
                         ) : item.kind === "prompt_checkin" ? (
                           <p className="inbox-item__meta">
                             {statusLabelForCheckin(locale, item.status)}
-                            {item.answer ? ` · ${item.answer}` : ""}
+                            {item.answer
+                              ? ` · ${answerLabelForCheckin(locale, item.answer)}`
+                              : ""}
                           </p>
                         ) : null}
                       </a>
