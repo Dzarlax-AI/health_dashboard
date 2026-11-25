@@ -831,7 +831,7 @@ func (s *DB) getHealthBriefing(lang string, currentEnergy *localShadowCurrentEne
 	// row exists for the briefing date — nil otherwise. GetTodayCheckin
 	// returns (nil, nil) on no-row, so the dashboard simply doesn't
 	// render the confirmation line until the user answers.
-	if row, cerr := s.GetTodayCheckin(*lastDate, CheckinSourceTelegram); cerr == nil && row != nil {
+	if row, cerr := s.GetCanonicalTodayCheckin(*lastDate); cerr == nil && row != nil {
 		resp.SubjectiveCheckin = &health.SubjectiveCheckinSummary{
 			Status: row.Status,
 			Answer: row.Answer,

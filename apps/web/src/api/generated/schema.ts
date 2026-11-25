@@ -487,6 +487,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/inbox": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Chronological feed of morning reports and morning check-in prompts */
+        get: operations["listInbox"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/inbox/pending": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Active unanswered morning check-in prompts for today */
+        get: operations["listPendingInboxPrompts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/inbox/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Inbox item detail with normalized report text or canonical check-in state */
+        get: operations["getInboxItem"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/metrics": {
         parameters: {
             query?: never;
@@ -549,6 +600,23 @@ export interface paths {
         get: operations["getMetricRange"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/prompts/{prompt_id}/answer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit a canonical answer for an active morning check-in prompt */
+        post: operations["answerInboxPrompt"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1051,6 +1119,7 @@ export interface components {
                 answer?: string;
                 /** Format: date-time */
                 answered_at?: string;
+                answered_channel?: string;
                 date: string;
                 /** Format: date-time */
                 expires_at?: string;
@@ -1065,6 +1134,7 @@ export interface components {
                 answer?: string;
                 /** Format: date-time */
                 answered_at?: string;
+                answered_channel?: string;
                 date: string;
                 /** Format: date-time */
                 expires_at?: string;
@@ -1544,6 +1614,84 @@ export interface components {
             workouts_parsed: number;
             workouts_upserted: number;
         };
+        InboxDetailResponse: {
+            answer?: string;
+            /** Format: date-time */
+            answered_at?: string;
+            /** @enum {string} */
+            answered_channel?: "ios_app" | "web" | "telegram";
+            body?: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            expires_at?: string;
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            kind: "morning_report" | "prompt_checkin";
+            language?: string;
+            local_date: string;
+            options?: {
+                id: string;
+                label: string;
+            }[] | null;
+            /** Format: date-time */
+            prepared_at?: string;
+            /** Format: uuid */
+            prompt_id?: string;
+            /** Format: date-time */
+            read_at?: string;
+            /** Format: uuid */
+            report_id?: string;
+            status?: string;
+            /** @enum {string} */
+            timing?: "on_time" | "late";
+            title: string;
+        };
+        InboxFeedResponse: {
+            items: {
+                answer?: string;
+                /** Format: date-time */
+                answered_at?: string;
+                /** @enum {string} */
+                answered_channel?: "ios_app" | "web" | "telegram";
+                /** Format: date-time */
+                created_at: string;
+                /** Format: date-time */
+                expires_at?: string;
+                /** Format: uuid */
+                id: string;
+                /** @enum {string} */
+                kind: "morning_report" | "prompt_checkin";
+                local_date: string;
+                preview?: string;
+                /** Format: uuid */
+                prompt_id?: string;
+                /** Format: date-time */
+                read_at?: string;
+                /** Format: uuid */
+                report_id?: string;
+                status?: string;
+                /** @enum {string} */
+                timing?: "on_time" | "late";
+                title: string;
+            }[];
+            next_cursor?: string;
+        };
+        InboxPendingResponse: {
+            prompts: {
+                /** Format: date-time */
+                expires_at: string;
+                local_date: string;
+                options: {
+                    id: string;
+                    label: string;
+                }[] | null;
+                /** Format: uuid */
+                prompt_id: string;
+                title: string;
+            }[];
+        };
         LatestMetricsResponse: {
             date: string;
             metric: string;
@@ -1715,6 +1863,26 @@ export interface components {
             }[] | null;
             tenants: string[] | null;
             to: string;
+        };
+        PromptAnswerRequest: {
+            /** @enum {string} */
+            answer: "great" | "ok" | "meh" | "sick";
+            /** @enum {string} */
+            channel: "ios_app" | "web";
+        };
+        PromptAnswerResponse: {
+            /** @enum {string} */
+            answer: "great" | "ok" | "meh" | "sick";
+            /** Format: date-time */
+            answered_at: string;
+            /** @enum {string} */
+            status: "saved" | "already_answered";
+            /** @enum {string} */
+            timing: "on_time" | "late";
+        };
+        PromptExpiredResponse: {
+            /** @enum {string} */
+            status: "expired";
         };
         QualityAuditResponse: {
             entries: {
@@ -4332,6 +4500,140 @@ export interface operations {
             };
         };
     };
+    listInbox: {
+        parameters: {
+            query?: {
+                /** @description Unsupported values are ignored and the server falls back to the documented default. */
+                lang?: "en" | "ru" | "sr";
+                limit?: number;
+                /** @description Opaque continuation cursor ordered by (created_at, id). */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InboxFeedResponse"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    listPendingInboxPrompts: {
+        parameters: {
+            query?: {
+                /** @description Unsupported values are ignored and the server falls back to the documented default. */
+                lang?: "en" | "ru" | "sr";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InboxPendingResponse"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getInboxItem: {
+        parameters: {
+            query?: {
+                /** @description Unsupported values are ignored and the server falls back to the documented default. */
+                lang?: "en" | "ru" | "sr";
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InboxDetailResponse"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
     listMetrics: {
         parameters: {
             query?: {
@@ -4634,6 +4936,83 @@ export interface operations {
                 };
                 content: {
                     "text/plain": string;
+                };
+            };
+        };
+    };
+    answerInboxPrompt: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                prompt_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PromptAnswerRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptAnswerResponse"];
+                };
+            };
+            /** @description Invalid JSON, answer choice, or client channel. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Unknown prompt or prompt belongs to another tenant. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Prompt local date does not match tenant-local today; row left unchanged. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptExpiredResponse"];
+                };
+            };
+            /** @description The backend could not save the prompt answer. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
                 };
             };
         };

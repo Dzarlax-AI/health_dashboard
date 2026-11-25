@@ -169,7 +169,7 @@ func runRange(db *storage.DB, schema, from, to string, includeCheckin bool) {
 }
 
 func checkinForDate(db *storage.DB, date string) *health.SubjectiveCheckinSummary {
-	row, err := db.GetTodayCheckin(date, storage.CheckinSourceTelegram)
+	row, err := db.GetCanonicalTodayCheckin(date)
 	if err != nil || row == nil {
 		return nil
 	}

@@ -20,6 +20,14 @@ const telegramHTTPTimeout = 5 * time.Second
 var telegramAPIBase = "https://api.telegram.org"
 var telegramHTTPClient = &http.Client{Timeout: telegramHTTPTimeout}
 
+// SetTelegramAPIBaseForTest redirects outbound Bot requests to a test server
+// and returns a restore callback.
+func SetTelegramAPIBaseForTest(base string) func() {
+	prev := telegramAPIBase
+	telegramAPIBase = base
+	return func() { telegramAPIBase = prev }
+}
+
 // Bot is a minimal Telegram bot client.
 type Bot struct {
 	token  string

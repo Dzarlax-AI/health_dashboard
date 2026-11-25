@@ -38,19 +38,21 @@ func runMorningLifecycle(ctx context.Context, db *storage.DB, mgr *tenants.Manag
 			log.Printf("check-in: overdue expiry: %v", err)
 		}
 		cfg := db.GetNotifyConfig(defaults)
-		if !cfg.Enabled() {
+		inboxEnabled := storage.IsInAppInboxEnabled(db)
+		telegramEnabled := cfg.Enabled()
+		if !inboxEnabled && !telegramEnabled {
 			return
 		}
 		ncfg := buildNotifyCfg(db, cfg)
 		now := time.Now().In(reportTimezone(ncfg))
 		today := now.Format("2006-01-02")
-		row, err := db.GetTodayCheckin(today, storage.CheckinSourceTelegram)
+		row, err := db.GetCanonicalTodayCheckin(today)
 		// A check-in read failure must not block the report lane.
 		if err != nil {
 			log.Printf("morning lifecycle: check-in state unavailable: %v", err)
 		}
-		reportSent := db.HasSettledMorningReport(today)
-		if morningLifecycleDue(ncfg, now, reportSent, row != nil) || (!reportSent && morningAIShouldPrewarm(ncfg, now, false)) {
+		reportDone := morningReportDoneForLifecycle(db, today, inboxEnabled, telegramEnabled)
+		if morningLifecycleDue(ncfg, now, reportDone, row != nil) || (!reportDone && morningAIShouldPrewarm(ncfg, now, false)) {
 			makeMorningTrigger(ctx, db, mgr.MorningSendMuFor(schema), mgr, reg, schema, defaults)()
 		}
 	}
@@ -67,6 +69,19 @@ func runMorningLifecycle(ctx context.Context, db *storage.DB, mgr *tenants.Manag
 	}
 }
 
+func morningReportDoneForLifecycle(db *storage.DB, today string, inboxEnabled, telegramEnabled bool) bool {
+	if !inboxEnabled {
+		return db.HasSettledMorningReport(today)
+	}
+	if !db.HasPublishedMorningInboxReport(today) {
+		return false
+	}
+	if !telegramEnabled {
+		return true
+	}
+	return db.HasSettledMorningReport(today)
+}
+
 // runTenantCheckinCycle shares only its own lock with callback persistence, so
 // a slow check-in send cannot hold the report's delivery lock.
 func runTenantCheckinCycle(db *storage.DB, mgr *tenants.Manager, reg *registry.Registry, schema string, bot *notify.Bot, cfg notify.Config, now time.Time, eligible bool) {
@@ -79,22 +94,60 @@ func runTenantCheckinCycle(db *storage.DB, mgr *tenants.Manager, reg *registry.R
 		checkinMu.Lock()
 		defer checkinMu.Unlock()
 	}
-	row, err := db.GetTodayCheckin(today, storage.CheckinSourceTelegram)
+	row, err := db.GetCanonicalTodayCheckin(today)
 	if err != nil {
 		log.Printf("check-in: read: %v", err)
 		return
 	}
-	enabled := morningCheckinEnabled(reg)
-	if enabled {
-		if row == nil && eligible {
-			if err := notify.SendCheckinPrompt(bot, db, cfg.Lang, today, now, notify.CheckinPromptExpiry(now)); err != nil {
-				log.Printf("check-in: prompt: %v", err)
+	inboxEnabled := storage.IsInAppInboxEnabled(db)
+	telegramEnabled := cfg.Enabled() && bot != nil
+	telegramWebhookReady := morningCheckinEnabled(reg)
+	checkinGateOpen := inboxEnabled || telegramWebhookReady
+
+	if checkinGateOpen {
+		if inboxEnabled {
+			if row == nil && eligible {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				_, createdRow, _, ensureErr := db.EnsureCanonicalCheckinPrompt(ctx, today, now, notify.CheckinPromptExpiry(now))
+				cancel()
+				if ensureErr != nil {
+					log.Printf("check-in: ensure inbox prompt: %v", ensureErr)
+					return
+				}
+				row = &createdRow
+				if telegramEnabled && telegramWebhookReady {
+					if err := notify.DeliverCheckinPromptToTelegram(bot, db, cfg.Lang, today); err != nil {
+						log.Printf("check-in: telegram prompt: %v", err)
+					}
+				}
+				return
 			}
-			// Always defer ancillary messages in the initial prompt cycle, including
-			// ambiguous delivery and persistence failure.
-			return
+			// Mid-day rollout or crash between commit and Telegram send:
+			// ensure the inbox card exists for a pre-existing row and deliver to Telegram if needed.
+			if row != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				_, _, _, ensureErr := db.EnsureCanonicalCheckinPrompt(ctx, today, row.PromptedAt, row.ExpiresAt)
+				cancel()
+				if ensureErr != nil {
+					log.Printf("check-in: sync inbox card: %v", ensureErr)
+				}
+				if telegramEnabled && telegramWebhookReady && row.PromptMessageID == 0 && row.Status == storage.CheckinStatusPrompted && now.Before(row.ExpiresAt) {
+					if err := notify.DeliverCheckinPromptToTelegram(bot, db, cfg.Lang, today); err != nil {
+						log.Printf("check-in: telegram prompt retry: %v", err)
+					}
+					return
+				}
+			}
+		} else if telegramEnabled && telegramWebhookReady {
+			if row == nil && eligible {
+				if err := notify.SendCheckinPrompt(bot, db, cfg.Lang, today, now, notify.CheckinPromptExpiry(now)); err != nil {
+					log.Printf("check-in: prompt: %v", err)
+				}
+				return
+			}
 		}
-		if notify.CheckinReminderDue(row, now, now.Location()) {
+
+		if telegramEnabled && telegramWebhookReady && notify.CheckinReminderDue(row, now, now.Location()) {
 			attempted, err := notify.SendCheckinReminderOnce(bot, db, cfg.Lang, today, now)
 			if err != nil {
 				log.Printf("check-in: reminder: %v", err)
@@ -104,7 +157,7 @@ func runTenantCheckinCycle(db *storage.DB, mgr *tenants.Manager, reg *registry.R
 			}
 		}
 		if row != nil && row.Status == storage.CheckinStatusPrompted && !now.Before(row.ExpiresAt) {
-			if _, err := db.ExpireCheckin(today, storage.CheckinSourceTelegram, now); err != nil {
+			if _, err := db.ExpireCanonicalCheckin(today, now); err != nil {
 				log.Printf("check-in: expire: %v", err)
 				return
 			}
@@ -113,10 +166,10 @@ func runTenantCheckinCycle(db *storage.DB, mgr *tenants.Manager, reg *registry.R
 			return
 		}
 	}
-	if !db.HasSentMorningReport(today) {
+	if !telegramEnabled || !db.HasSentMorningReport(today) {
 		return
 	}
-	if !trySendWakeFeedbackAfterMorning(bot, db, cfg, today, now, enabled) {
+	if !trySendWakeFeedbackAfterMorning(bot, db, cfg, today, now, telegramWebhookReady) {
 		trySendContextPromptAfterMorning(bot, db, cfg, today, now)
 	}
 }

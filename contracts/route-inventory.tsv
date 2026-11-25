@@ -35,10 +35,14 @@ path	method	access	kind	openapi	path_clients
 /api/health-briefing	GET	profile	api	yes	react,ios
 /api/import/status	GET	profile	api	yes	react,go-web
 /api/import/upload	POST	profile	api	yes	react,go-web
+/api/inbox	GET	profile	api	yes	react,ios
+/api/inbox/pending	GET	profile	api	yes	react,ios
+/api/inbox/{id}	GET	profile	api	yes	react,ios
 /api/metrics	GET	profile	api	yes	react,ios
 /api/metrics/data	GET	profile	api	yes	react,ios,go-web
 /api/metrics/latest	GET	profile	api	yes	react,ios
 /api/metrics/range	GET	profile	api	yes	react,ios,go-web
+/api/prompts/{prompt_id}/answer	POST	profile	api	yes	react,ios
 /api/readiness-history	GET	profile	api	yes	react,ios,go-web
 /api/reports/history	GET	profile	api	yes	
 /api/reports/history/{id}	GET	profile	api	yes	
