@@ -24,6 +24,7 @@ const (
 	CheckinSourceInbox = "inbox"
 
 	CheckinChannelIOSApp   = "ios_app"
+	CheckinChannelIOSPush  = "ios_push"
 	CheckinChannelWeb      = "web"
 	CheckinChannelTelegram = "telegram"
 
@@ -116,7 +117,7 @@ func CheckinInboxLogicalKey(localDate string) string {
 
 func ValidateCheckinChannel(channel string) error {
 	switch channel {
-	case CheckinChannelIOSApp, CheckinChannelWeb, CheckinChannelTelegram:
+	case CheckinChannelIOSApp, CheckinChannelIOSPush, CheckinChannelWeb, CheckinChannelTelegram:
 		return nil
 	default:
 		return fmt.Errorf("invalid check-in channel %q", channel)
@@ -125,7 +126,7 @@ func ValidateCheckinChannel(channel string) error {
 
 func ValidateClientCheckinChannel(channel string) error {
 	switch channel {
-	case CheckinChannelIOSApp, CheckinChannelWeb:
+	case CheckinChannelIOSApp, CheckinChannelIOSPush, CheckinChannelWeb:
 		return nil
 	default:
 		return fmt.Errorf("invalid client check-in channel %q", channel)
@@ -220,6 +221,11 @@ func (s *DB) PublishMorningReportToInbox(ctx context.Context, h *ReportHistory, 
 		}
 	} else {
 		if _, err = tx.Exec(ctx, `UPDATE inbox_items SET report_id = $2 WHERE id = $1`, inboxID, h.ID); err != nil {
+			return uuid.Nil, false, err
+		}
+	}
+	if IsAPNSPushEnabled(s) {
+		if err = enqueuePushDeliveriesTx(ctx, tx, inboxID, InboxKindMorningReport, h.PreparedAt.Add(morningReportPushTTL)); err != nil {
 			return uuid.Nil, false, err
 		}
 	}
@@ -380,6 +386,11 @@ func (s *DB) EnsureCanonicalCheckinPrompt(ctx context.Context, date string, prom
 		}
 	} else if err != nil {
 		return uuid.Nil, CheckinRow{}, false, err
+	}
+	if created && IsAPNSPushEnabled(s) {
+		if err = enqueuePushDeliveriesTx(ctx, tx, promptID, InboxKindPromptCheckin, expiresAt); err != nil {
+			return uuid.Nil, CheckinRow{}, false, err
+		}
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return uuid.Nil, CheckinRow{}, false, err

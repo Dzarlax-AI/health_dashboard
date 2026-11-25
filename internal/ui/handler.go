@@ -21,6 +21,7 @@ import (
 	"health-receiver/internal/accessauth"
 	"health-receiver/internal/ai"
 	clientapi "health-receiver/internal/api"
+	"health-receiver/internal/apnspush"
 	"health-receiver/internal/ctxdb"
 	"health-receiver/internal/health"
 	"health-receiver/internal/metriccontract"
@@ -63,6 +64,7 @@ type Handler struct {
 	webhookRegistrar  notify.WebhookRegistrar
 	webhookBaseURL    string
 	onCheckinAnswered func(db *storage.DB, schema string)
+	apnsSender        *apnspush.Sender
 }
 
 func New(mgr *tenants.Manager, reg *registry.Registry, trustFwdAuth bool) *Handler {
@@ -222,6 +224,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/inbox/pending", h.guard(h.inboxPending))
 	mux.HandleFunc("GET /api/inbox/{id}", h.guard(h.inboxDetail))
 	mux.HandleFunc("POST /api/prompts/{prompt_id}/answer", h.guard(h.promptAnswer))
+	mux.HandleFunc("POST /api/push/devices", h.guard(h.pushDeviceRegister))
+	mux.HandleFunc("DELETE /api/push/devices/{device_id}", h.guard(h.pushDeviceDelete))
 	mux.HandleFunc("GET /api/today-insights", h.guard(h.todayInsights))
 	mux.HandleFunc("GET /api/section/{key}", h.guard(h.sectionAPI))
 	mux.HandleFunc("GET /api/sections", h.guard(h.sectionsCatalogue))

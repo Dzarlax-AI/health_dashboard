@@ -43,6 +43,8 @@ path	method	access	kind	openapi	path_clients
 /api/metrics/latest	GET	profile	api	yes	react,ios
 /api/metrics/range	GET	profile	api	yes	react,ios,go-web
 /api/prompts/{prompt_id}/answer	POST	profile	api	yes	react,ios
+/api/push/devices	POST	profile	api	yes	ios
+/api/push/devices/{device_id}	DELETE	profile	api	yes	ios
 /api/readiness-history	GET	profile	api	yes	react,ios,go-web
 /api/reports/history	GET	profile	api	yes	
 /api/reports/history/{id}	GET	profile	api	yes	

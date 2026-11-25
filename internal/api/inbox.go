@@ -25,7 +25,7 @@ type InboxItemSummary struct {
 	AnsweredAt      *time.Time `json:"answered_at,omitempty"`
 	ExpiresAt       *time.Time `json:"expires_at,omitempty"`
 	Timing          string     `json:"timing,omitempty" jsonschema:"enum=on_time,enum=late"`
-	AnsweredChannel string     `json:"answered_channel,omitempty" jsonschema:"enum=ios_app,enum=web,enum=telegram"`
+	AnsweredChannel string     `json:"answered_channel,omitempty" jsonschema:"enum=ios_app,enum=ios_push,enum=web,enum=telegram"`
 	ReadAt          *time.Time `json:"read_at,omitempty"`
 }
 
@@ -50,7 +50,7 @@ type InboxDetailResponse struct {
 	AnsweredAt      *time.Time          `json:"answered_at,omitempty"`
 	ExpiresAt       *time.Time          `json:"expires_at,omitempty"`
 	Timing          string              `json:"timing,omitempty" jsonschema:"enum=on_time,enum=late"`
-	AnsweredChannel string              `json:"answered_channel,omitempty" jsonschema:"enum=ios_app,enum=web,enum=telegram"`
+	AnsweredChannel string              `json:"answered_channel,omitempty" jsonschema:"enum=ios_app,enum=ios_push,enum=web,enum=telegram"`
 	Options         []InboxPromptOption `json:"options,omitempty"`
 	ReadAt          *time.Time          `json:"read_at,omitempty"`
 }
@@ -69,7 +69,7 @@ type InboxPendingResponse struct {
 
 type PromptAnswerRequest struct {
 	Answer  string `json:"answer" jsonschema:"enum=great,enum=ok,enum=meh,enum=sick"`
-	Channel string `json:"channel" jsonschema:"enum=ios_app,enum=web"`
+	Channel string `json:"channel" jsonschema:"enum=ios_app,enum=ios_push,enum=web"`
 }
 
 type PromptAnswerResponse struct {

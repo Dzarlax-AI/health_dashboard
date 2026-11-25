@@ -2865,6 +2865,7 @@
           "answered_channel": {
             "enum": [
               "ios_app",
+              "ios_push",
               "web",
               "telegram"
             ],
@@ -2976,6 +2977,7 @@
                 "answered_channel": {
                   "enum": [
                     "ios_app",
+                    "ios_push",
                     "web",
                     "telegram"
                   ],
@@ -3926,6 +3928,7 @@
           "channel": {
             "enum": [
               "ios_app",
+              "ios_push",
               "web"
             ],
             "type": "string"
@@ -3988,6 +3991,77 @@
         },
         "required": [
           "status"
+        ],
+        "type": "object"
+      },
+      "PushDeviceRegisterRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "apns_env": {
+            "enum": [
+              "production",
+              "sandbox"
+            ],
+            "type": "string"
+          },
+          "apns_token": {
+            "type": "string"
+          },
+          "bundle_id": {
+            "type": "string"
+          },
+          "device_id": {
+            "type": "string"
+          },
+          "locale": {
+            "enum": [
+              "en",
+              "ru",
+              "sr"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "device_id",
+          "apns_token",
+          "apns_env",
+          "bundle_id",
+          "locale"
+        ],
+        "type": "object"
+      },
+      "PushDeviceRegisterResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "apns_env": {
+            "enum": [
+              "production",
+              "sandbox"
+            ],
+            "type": "string"
+          },
+          "binding_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "device_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "registration_version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "device_id",
+          "binding_id",
+          "enabled",
+          "registration_version",
+          "apns_env"
         ],
         "type": "object"
       },
@@ -10952,6 +11026,190 @@
           }
         },
         "summary": "Submit a canonical answer for an active morning check-in prompt"
+      }
+    },
+    "/api/push/devices": {
+      "post": {
+        "operationId": "registerPushDevice",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PushDeviceRegisterRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PushDeviceRegisterResponse"
+                }
+              }
+            },
+            "description": "Successful tenant-scoped response."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid JSON, device_id, apns_token, apns_env, bundle_id, or locale."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Authentication required."
+          },
+          "404": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Direct APNs push is disabled for this profile or server."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The backend could not save the push device registration."
+          }
+        },
+        "summary": "Register or refresh an iOS APNs device binding for the authenticated profile"
+      }
+    },
+    "/api/push/devices/{device_id}": {
+      "delete": {
+        "operationId": "deletePushDeviceBinding",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Opaque binding UUID returned when this device registered with this profile.",
+            "in": "query",
+            "name": "binding_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Device binding disabled (or already absent in this profile)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid device_id or binding_id."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Authentication required."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The backend could not disable the push device binding."
+          }
+        },
+        "summary": "Disable a specific iOS push device binding even when APNs delivery is toggled off"
       }
     },
     "/api/readiness-history": {

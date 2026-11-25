@@ -51,6 +51,8 @@ func GenerateOpenAPI() ([]byte, error) {
 		"PromptAnswerRequest":             PromptAnswerRequest{},
 		"PromptAnswerResponse":            PromptAnswerResponse{},
 		"PromptExpiredResponse":           PromptExpiredResponse{},
+		"PushDeviceRegisterRequest":       PushDeviceRegisterRequest{},
+		"PushDeviceRegisterResponse":      PushDeviceRegisterResponse{},
 		"SectionResponse":                 SectionResponse{},
 		"SessionResponse":                 SessionResponse{},
 		"NotificationSettingsResponse":    NotificationSettingsResponse{},
@@ -371,6 +373,12 @@ func clientPaths() map[string]any {
 		"/api/prompts/{prompt_id}/answer": map[string]any{
 			"post": promptAnswerOperation(),
 		},
+		"/api/push/devices": map[string]any{
+			"post": pushDeviceRegisterOperation(),
+		},
+		"/api/push/devices/{device_id}": map[string]any{
+			"delete": pushDeviceDeleteOperation(),
+		},
 		"/api/today-insights": map[string]any{
 			"get": todayInsightsOperation,
 		},
@@ -526,6 +534,49 @@ func promptAnswerOperation() map[string]any {
 				},
 			},
 			"500": jsonErrorResponse("The backend could not save the prompt answer."),
+		},
+	}
+}
+
+func pushDeviceRegisterOperation() map[string]any {
+	return map[string]any{
+		"operationId": "registerPushDevice",
+		"summary":     "Register or refresh an iOS APNs device binding for the authenticated profile",
+		"requestBody": jsonRequestBody("PushDeviceRegisterRequest"),
+		"responses": map[string]any{
+			"200": jsonResponseRef("PushDeviceRegisterResponse"),
+			"400": jsonErrorResponse("Invalid JSON, device_id, apns_token, apns_env, bundle_id, or locale."),
+			"401": jsonErrorResponse("Authentication required."),
+			"404": plainTextResponse("Direct APNs push is disabled for this profile or server."),
+			"500": jsonErrorResponse("The backend could not save the push device registration."),
+		},
+	}
+}
+
+func pushDeviceDeleteOperation() map[string]any {
+	return map[string]any{
+		"operationId": "deletePushDeviceBinding",
+		"summary":     "Disable a specific iOS push device binding even when APNs delivery is toggled off",
+		"parameters": []any{
+			map[string]any{
+				"name":     "device_id",
+				"in":       "path",
+				"required": true,
+				"schema":   map[string]any{"type": "string", "format": "uuid"},
+			},
+			map[string]any{
+				"name":        "binding_id",
+				"in":          "query",
+				"required":    true,
+				"description": "Opaque binding UUID returned when this device registered with this profile.",
+				"schema":      map[string]any{"type": "string", "format": "uuid"},
+			},
+		},
+		"responses": map[string]any{
+			"204": map[string]any{"description": "Device binding disabled (or already absent in this profile)."},
+			"400": jsonErrorResponse("Invalid device_id or binding_id."),
+			"401": jsonErrorResponse("Authentication required."),
+			"500": jsonErrorResponse("The backend could not disable the push device binding."),
 		},
 	}
 }
