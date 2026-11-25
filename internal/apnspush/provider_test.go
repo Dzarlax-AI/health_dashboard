@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"health-receiver/internal/storage"
 	"health-receiver/internal/testdb"
@@ -174,7 +175,7 @@ func (m *mockTransport) Send(_ context.Context, _, token, _, _, _ string, _ int,
 	return h(token, payload)
 }
 
-func setupPushWorkerTestDB(t *testing.T, prefix string) (*storage.DB, func()) {
+func setupPushWorkerTestDB(t *testing.T, prefix string) (*storage.DB, *pgxpool.Pool, func()) {
 	t.Helper()
 	dsn := testdb.DSN(t)
 	ctx := context.Background()
@@ -200,7 +201,7 @@ func setupPushWorkerTestDB(t *testing.T, prefix string) (*storage.DB, func()) {
 		bootstrap.Close()
 		t.Fatal(err)
 	}
-	return db, func() {
+	return db, pool, func() {
 		db.Close()
 		_ = testdb.DropSchema(context.Background(), bootstrap, schema)
 		bootstrap.Close()
@@ -210,7 +211,7 @@ func setupPushWorkerTestDB(t *testing.T, prefix string) (*storage.DB, func()) {
 func TestWorkerDeliversSkipsAnsweredAndClassifiesTransportErrors(t *testing.T) {
 	t.Setenv("IN_APP_INBOX_ENABLED", "")
 	t.Setenv("APNS_PUSH_ENABLED", "")
-	db, cleanup := setupPushWorkerTestDB(t, "apns_worker")
+	db, _, cleanup := setupPushWorkerTestDB(t, "apns_worker")
 	defer cleanup()
 	ctx := context.Background()
 
@@ -293,5 +294,64 @@ func TestWorkerDeliversSkipsAnsweredAndClassifiesTransportErrors(t *testing.T) {
 	}
 	if mockErr.calls != 1 {
 		t.Fatalf("ambiguous transport error must never retry blindly: calls=%d", mockErr.calls)
+	}
+}
+
+func TestWorkerFinalizationBudgetStartsAfterSlowAPNsResponse(t *testing.T) {
+	t.Setenv("IN_APP_INBOX_ENABLED", "")
+	t.Setenv("APNS_PUSH_ENABLED", "")
+	db, pool, cleanup := setupPushWorkerTestDB(t, "apns_slow_finish")
+	defer cleanup()
+	ctx := context.Background()
+
+	if err := db.SaveSettings(map[string]string{
+		"timezone":                       "UTC",
+		"report_lang":                    "en",
+		storage.SettingInAppInboxEnabled: "true",
+		storage.SettingAPNSPushEnabled:   "true",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.UpsertPushDevice(ctx, storage.UpsertPushDeviceInput{
+		DeviceID:  uuid.New(),
+		APNsToken: strings.Repeat("e", 64),
+		APNsEnv:   storage.PushEnvProduction,
+		BundleID:  DefaultTopic,
+		Locale:    "en",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	today := now.Format("2006-01-02")
+	key := "report:morning:" + today
+	if _, _, err := db.PublishMorningReportToInbox(ctx, &storage.ReportHistory{
+		DeliveryKey: &key, Kind: "morning", LocalDate: today, Timezone: "UTC", Language: "en", PlainBody: "Slow APNs test",
+	}, false); err != nil {
+		t.Fatal(err)
+	}
+
+	origTimeout := finishTimeout
+	finishTimeout = 150 * time.Millisecond
+	defer func() { finishTimeout = origTimeout }()
+
+	// Simulate APNs taking longer than finishTimeout (250ms > 150ms).
+	slowMock := &mockTransport{handler: func(_ string, _ []byte) (Result, error) {
+		time.Sleep(250 * time.Millisecond)
+		return Result{Status: 200}, nil
+	}}
+	if err := ProcessTenantDeliveries(ctx, db, slowMock, storage.NotifyConfig{Timezone: "UTC"}, now, 20); err != nil {
+		t.Fatal(err)
+	}
+	if slowMock.calls != 1 {
+		t.Fatalf("expected 1 APNs call, got %d", slowMock.calls)
+	}
+	// Verify the delivery is finalized strictly as accepted (not sending/ambiguous).
+	var deliveryState, attemptState string
+	if err := pool.QueryRow(ctx, `SELECT state FROM push_deliveries LIMIT 1`).Scan(&deliveryState); err != nil || deliveryState != storage.PushDeliveryStateAccepted {
+		t.Fatalf("delivery state after slow APNs = %q (err=%v), want accepted", deliveryState, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT status FROM push_delivery_attempts LIMIT 1`).Scan(&attemptState); err != nil || attemptState != storage.PushAttemptStatusAccepted {
+		t.Fatalf("attempt status after slow APNs = %q (err=%v), want accepted", attemptState, err)
 	}
 }

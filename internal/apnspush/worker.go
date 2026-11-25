@@ -14,13 +14,13 @@ import (
 	"health-receiver/internal/storage"
 )
 
-const (
-	CategoryCheckinMorning = "CHECKIN_MORNING"
+const CategoryCheckinMorning = "CHECKIN_MORNING"
 
-	min5xxBackoff  = 15 * time.Minute
-	maxRetryDelay  = 60 * time.Minute
-	min429Backoff  = 60 * time.Second
-	finishTimeout  = 5 * time.Second
+var (
+	min5xxBackoff = 15 * time.Minute
+	maxRetryDelay = 60 * time.Minute
+	min429Backoff = 60 * time.Second
+	finishTimeout = 5 * time.Second
 )
 
 // TransportSender is implemented by *Sender and mock senders in tests.
@@ -116,17 +116,20 @@ func ProcessTenantDeliveries(ctx context.Context, db *storage.DB, sender Transpo
 	return nil
 }
 
-func deliverClaimed(ctx context.Context, db *storage.DB, sender TransportSender, d *storage.ClaimedPushDelivery, today string, now time.Time) {
+func completeWithBudget(ctx context.Context, db *storage.DB, in storage.CompletePushDeliveryInput) (bool, error) {
 	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
 	defer cancel()
+	return db.CompletePushDelivery(finishCtx, in)
+}
 
+func deliverClaimed(ctx context.Context, db *storage.DB, sender TransportSender, d *storage.ClaimedPushDelivery, today string, now time.Time) {
 	// Verify device registration is still active and matches the enqueued binding/version/token.
 	if !d.DeviceEnabled ||
 		d.DeviceInvalidatedAt != nil ||
 		d.DeviceBindingID != d.BindingID ||
 		d.DeviceRegistrationVersion != d.RegistrationVersion ||
 		!bytes.Equal(d.DeviceTokenHash, d.TokenHash) {
-		if _, err := db.CompletePushDelivery(finishCtx, storage.CompletePushDeliveryInput{
+		if _, err := completeWithBudget(ctx, db, storage.CompletePushDeliveryInput{
 			DeliveryID:    d.ID,
 			LeaseToken:    d.LeaseToken,
 			DeliveryState: storage.PushDeliveryStateRejected,
@@ -142,7 +145,7 @@ func deliverClaimed(ctx context.Context, db *storage.DB, sender TransportSender,
 		if d.CheckinStatus != storage.CheckinStatusPrompted ||
 			d.LocalDate != today ||
 			(d.CheckinExpiresAt != nil && !now.Before(*d.CheckinExpiresAt)) {
-			if _, err := db.CompletePushDelivery(finishCtx, storage.CompletePushDeliveryInput{
+			if _, err := completeWithBudget(ctx, db, storage.CompletePushDeliveryInput{
 				DeliveryID:    d.ID,
 				LeaseToken:    d.LeaseToken,
 				DeliveryState: storage.PushDeliveryStateExpired,
@@ -165,7 +168,7 @@ func deliverClaimed(ctx context.Context, db *storage.DB, sender TransportSender,
 		err = errors.New("unknown push kind")
 	}
 	if err != nil {
-		_, _ = db.CompletePushDelivery(finishCtx, storage.CompletePushDeliveryInput{
+		_, _ = completeWithBudget(ctx, db, storage.CompletePushDeliveryInput{
 			DeliveryID:    d.ID,
 			LeaseToken:    d.LeaseToken,
 			DeliveryState: storage.PushDeliveryStateRejected,
@@ -185,7 +188,9 @@ func deliverClaimed(ctx context.Context, db *storage.DB, sender TransportSender,
 
 	res, sendErr := sender.Send(ctx, d.APNsEnv, d.DeviceAPNsToken, d.APNsID.String(), "alert", d.CollapseID, 10, d.ExpiresAt, payload)
 	outcome := classifyAPNsOutcome(d, attemptID, res, sendErr, now)
-	if _, err := db.CompletePushDelivery(finishCtx, outcome); err != nil {
+	// Start the finalization timeout budget AFTER APNs responds so slow HTTP
+	// responses (up to the 15s client timeout) never exhaust the DB write budget.
+	if _, err := completeWithBudget(ctx, db, outcome); err != nil {
 		log.Printf("apns: complete delivery=%s state=%s: %v", d.ID, outcome.DeliveryState, err)
 	}
 }
