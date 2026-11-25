@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   answerInboxPrompt,
@@ -25,6 +25,8 @@ interface InboxPageProps {
   itemId?: string;
 }
 
+type FeedRequest = { itemId?: string; locale: Locale; reloadKey: number };
+
 type FeedState =
   | { status: "loading" }
   | { status: "unauthenticated" }
@@ -32,6 +34,7 @@ type FeedState =
   | { status: "error"; message: string }
   | {
       status: "ready";
+      request: FeedRequest;
       items: InboxItemSummary[];
       nextCursor?: string;
       prompts: PendingCheckinPrompt[];
@@ -83,6 +86,7 @@ export function InboxPage({ itemId }: InboxPageProps) {
   const params = new URLSearchParams(window.location.search);
   const locale = resolveLocale(params.get("lang"));
   const [reloadKey, setReloadKey] = useState(0);
+  const feedRequest = useMemo(() => ({ itemId, locale, reloadKey }), [itemId, locale, reloadKey]);
   const [feedState, setFeedState] = useState<FeedState>({ status: "loading" });
   const [detailState, setDetailState] = useState<DetailState>({ status: "loading" });
   const [loadingMore, setLoadingMore] = useState(false);
@@ -90,12 +94,14 @@ export function InboxPage({ itemId }: InboxPageProps) {
   const [detailError, setDetailError] = useState<string | undefined>(undefined);
   const feedGenerationRef = useRef(0);
   const loadMoreAbortRef = useRef<AbortController | null>(null);
+  const canLoadMore = feedState.status === "ready" && feedState.request === feedRequest && !loadingMore;
 
   useEffect(() => {
     document.documentElement.lang = locale;
   }, [locale]);
 
   useEffect(() => {
+    const { itemId, locale } = feedRequest;
     if (itemId) {
       return;
     }
@@ -113,9 +119,13 @@ export function InboxPage({ itemId }: InboxPageProps) {
       getSession(controller.signal).catch(() => undefined),
     ])
       .then(([feed, pending, session]) => {
+        if (controller.signal.aborted) {
+          return;
+        }
         clearSessionRecoveryAttempt(window.sessionStorage);
         setFeedState({
           status: "ready",
+          request: feedRequest,
           items: feed.items ?? [],
           nextCursor: feed.next_cursor || undefined,
           prompts: pending.prompts ?? [],
@@ -150,7 +160,7 @@ export function InboxPage({ itemId }: InboxPageProps) {
         });
       });
     return () => controller.abort();
-  }, [itemId, locale, reloadKey]);
+  }, [feedRequest]);
 
   useEffect(() => {
     if (!itemId) {
@@ -196,7 +206,7 @@ export function InboxPage({ itemId }: InboxPageProps) {
   }, [itemId, locale, reloadKey]);
 
   const handleLoadMore = useCallback(async () => {
-    if (feedState.status !== "ready" || !feedState.nextCursor || loadingMore) {
+    if (!canLoadMore || !feedState.nextCursor) {
       return;
     }
     const generation = feedGenerationRef.current;
@@ -213,7 +223,7 @@ export function InboxPage({ itemId }: InboxPageProps) {
         return;
       }
       setFeedState((prev) =>
-        prev.status === "ready"
+        prev.status === "ready" && prev.request === feedRequest
           ? {
               ...prev,
               items: [...prev.items, ...(more.items ?? [])],
@@ -229,7 +239,7 @@ export function InboxPage({ itemId }: InboxPageProps) {
         setLoadingMore(false);
       }
     }
-  }, [feedState, loadingMore, locale]);
+  }, [canLoadMore, feedRequest, feedState, locale]);
 
   const handlePromptResolved = useCallback(() => {
     setReloadKey((k) => k + 1);
@@ -452,7 +462,7 @@ export function InboxPage({ itemId }: InboxPageProps) {
                   <button
                     type="button"
                     className="primary-action"
-                    disabled={loadingMore}
+                    disabled={!canLoadMore}
                     onClick={() => void handleLoadMore()}
                   >
                     {translate(locale, "inboxLoadMore")}

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { vi } from "vitest";
 
 import { ClientApiError, type PendingCheckinPrompt } from "../../api/client";
@@ -279,5 +279,62 @@ describe("InboxPage", () => {
       expect(screen.getByRole("button", { name: "Load older" })).not.toBeDisabled();
     });
     expect(screen.queryByText("Stale older item")).not.toBeInTheDocument();
+  });
+
+  it("waits for the refreshed cursor before requesting another page", async () => {
+    window.history.replaceState({}, "", "/inbox?lang=en");
+    const firstItem = {
+      id: "a1",
+      kind: "morning_report" as const,
+      local_date: "2026-11-25",
+      created_at: "2026-11-25T08:00:00Z",
+      title: "Morning Report",
+    };
+    let completeReload!: (value: clientApi.InboxFeedResponse) => void;
+    const pendingReload = new Promise<clientApi.InboxFeedResponse>((resolve) => {
+      completeReload = resolve;
+    });
+    const oldPageAborted = vi.fn();
+    const getInbox = vi.spyOn(clientApi, "getInbox")
+      .mockResolvedValueOnce({ items: [firstItem], next_cursor: "old-cursor" })
+      .mockImplementationOnce((_locale, _query, signal) => new Promise((_resolve, reject) => {
+        signal?.addEventListener("abort", () => {
+          oldPageAborted();
+          reject(new DOMException("Aborted", "AbortError"));
+        }, { once: true });
+      }))
+      .mockImplementationOnce(() => pendingReload)
+      .mockResolvedValue({ items: [] });
+    vi.spyOn(clientApi, "getPendingInboxPrompts")
+      .mockResolvedValueOnce({ prompts: [samplePrompt] })
+      .mockResolvedValue({ prompts: [] });
+    vi.spyOn(clientApi, "getSession").mockResolvedValue({ is_admin: false });
+    vi.spyOn(clientApi, "answerInboxPrompt").mockResolvedValue({
+      status: "saved",
+      answer: "great",
+      answered_at: "2026-11-25T08:10:00Z",
+      timing: "on_time",
+    });
+
+    render(<InboxPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Load older" }));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Great" })));
+    expect(oldPageAborted).toHaveBeenCalledOnce();
+    expect(getInbox).toHaveBeenCalledTimes(3);
+
+    const loadMore = screen.getByRole("button", { name: "Load older" });
+    expect(loadMore).toBeDisabled();
+    fireEvent.click(loadMore);
+    expect(getInbox).toHaveBeenCalledTimes(3);
+
+    await act(async () => {
+      completeReload({ items: [firstItem], next_cursor: "fresh-cursor" });
+    });
+    expect(loadMore).not.toBeDisabled();
+    fireEvent.click(loadMore);
+    expect(getInbox).toHaveBeenLastCalledWith(
+      "en", { limit: 20, cursor: "fresh-cursor" }, expect.any(AbortSignal),
+    );
+    await waitFor(() => expect(loadMore).not.toBeInTheDocument());
   });
 });
